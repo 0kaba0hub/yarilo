@@ -13,9 +13,12 @@ import (
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // Server is the yarilo backend (or single-node) server.
@@ -39,9 +42,9 @@ func New(cfg *config.Config) (*Server, error) {
 	if cfg.Storage.MaildirRoot == "" {
 		cfg.Storage.MaildirRoot = "/var/mail/vhosts"
 	}
-	mbox, err := maildir.New(cfg.Storage.MaildirRoot)
+	mbox, err := buildMailbox(cfg.Storage)
 	if err != nil {
-		return nil, fmt.Errorf("backend: maildir: %w", err)
+		return nil, fmt.Errorf("backend: mailbox: %w", err)
 	}
 
 	indexRoot := cfg.Storage.IndexDir
@@ -129,6 +132,17 @@ func (s *Server) Run(ctx context.Context) error {
 	<-ctx.Done()
 	s.index.Close() //nolint:errcheck
 	return nil
+}
+
+func buildMailbox(cfg config.StorageConfig) (mailbox.MailboxBackend, error) {
+	switch strings.ToLower(cfg.Mailbox) {
+	case "dbox":
+		return dbox.New(cfg.MaildirRoot)
+	case "mdbox":
+		return mdbox.New(cfg.MaildirRoot)
+	default:
+		return maildir.New(cfg.MaildirRoot)
+	}
 }
 
 func buildPassdbs(entries []config.PassdbEntry) ([]protocol.Passdb, error) {
