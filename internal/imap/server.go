@@ -73,6 +73,11 @@ func (s *Server) ListenAndServeTLS() error {
 	return s.srv.Serve(ln)
 }
 
+// Serve accepts connections on the given listener.
+func (s *Server) Serve(ln net.Listener) error {
+	return s.srv.Serve(ln)
+}
+
 // ListenAndServe starts the plain STARTTLS listener (port 143).
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.opts.AddrPlain)
@@ -240,7 +245,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		return nil, err
 	}
 
-	meta := &mailbox.MessageMeta{UID: uid, Flags: flagList, ModSeq: modseq, Size: uint32(size)}
+	meta := &mailbox.MessageMeta{UID: uid, Filename: filename, Flags: flagList, ModSeq: modseq, Size: uint32(size)}
 	if err := s.srv.opts.Index.AppendMessage(f.ID, meta); err != nil {
 		return nil, err
 	}
@@ -343,7 +348,10 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteRFC822Size(int64(m.Size))
 		}
 		for _, section := range opts.BodySection {
-			rc, ferr := s.srv.opts.Mailbox.Fetch(s.username, s.folder.Name, fmt.Sprintf("%d", m.UID))
+			if m.Filename == "" {
+				break
+			}
+			rc, ferr := s.srv.opts.Mailbox.Fetch(s.username, s.folder.Name, m.Filename)
 			if ferr != nil {
 				break
 			}

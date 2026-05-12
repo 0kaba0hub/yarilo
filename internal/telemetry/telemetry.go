@@ -41,6 +41,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	return nil
 }
 
+// Handler returns the HTTP handler used by the server (for testing).
+func (s *Server) Handler() http.Handler { return s.srv.Handler }
+
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok")) //nolint:errcheck
