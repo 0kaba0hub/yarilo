@@ -8,6 +8,7 @@ import (
 // MessageMeta holds per-message metadata stored in the index.
 type MessageMeta struct {
 	UID          uint32
+	Filename     string // backend-specific filename returned by MailboxBackend.Save
 	Flags        []string
 	Keywords     []string
 	ModSeq       uint64

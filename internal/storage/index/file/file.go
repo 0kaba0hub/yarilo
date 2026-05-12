@@ -4,12 +4,14 @@
 package file
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,9 +66,10 @@ type IndexFile struct {
 	logFileTail  uint32
 	logFileHead  uint32
 
-	records []indexRecord
-	logF    *os.File // append-only .index.log fd
-	modseq  uint64
+	records   []indexRecord
+	filenames map[uint32]string // uid → backend filename, persisted to .index.names
+	logF      *os.File          // append-only .index.log fd
+	modseq    uint64
 }
 
 type indexRecord struct {
@@ -159,6 +162,12 @@ func (b *Backend) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	if rec.flags&flagDeleted != 0 {
 		idx.deletedCount++
 	}
+	if m.Filename != "" {
+		idx.filenames[m.UID] = m.Filename
+		if err := idx.appendNameEntry(m.UID, m.Filename); err != nil {
+			return err
+		}
+	}
 	return idx.appendLogRecord(txAppend, rec)
 }
 
@@ -212,9 +221,10 @@ func (b *Backend) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.
 	for _, rec := range idx.records {
 		if seqSetContains(uids, rec.uid) {
 			result = append(result, &mailbox.MessageMeta{
-				UID:    rec.uid,
-				Flags:  indexFlagsToIMAP(rec.flags),
-				ModSeq: rec.modseq,
+				UID:      rec.uid,
+				Filename: idx.filenames[rec.uid],
+				Flags:    indexFlagsToIMAP(rec.flags),
+				ModSeq:   rec.modseq,
 			})
 		}
 	}
@@ -285,7 +295,7 @@ func (b *Backend) indexDir(user, folder string) string {
 // ---- IndexFile low-level ------------------------------------------------
 
 func openIndexFile(path string, uidValidity uint32) (*IndexFile, error) {
-	idx := &IndexFile{path: path}
+	idx := &IndexFile{path: path, filenames: make(map[uint32]string)}
 
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -302,6 +312,7 @@ func openIndexFile(path string, uidValidity uint32) (*IndexFile, error) {
 	if err := idx.readRecords(f); err != nil {
 		return nil, fmt.Errorf("fileindex: read records %s: %w", path, err)
 	}
+	idx.loadNames()
 	if err := idx.replayLog(); err != nil {
 		return nil, fmt.Errorf("fileindex: replay log %s: %w", path, err)
 	}
@@ -541,6 +552,39 @@ func (idx *IndexFile) close() error {
 		return idx.logF.Close()
 	}
 	return nil
+}
+
+// loadNames reads uid→filename entries from .index.names (best-effort).
+func (idx *IndexFile) loadNames() {
+	f, err := os.Open(idx.path + ".names")
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		tab := strings.IndexByte(line, '\t')
+		if tab < 0 {
+			continue
+		}
+		uid64, err := strconv.ParseUint(line[:tab], 10, 32)
+		if err != nil {
+			continue
+		}
+		idx.filenames[uint32(uid64)] = line[tab+1:]
+	}
+}
+
+// appendNameEntry persists one uid→filename entry to .index.names.
+func (idx *IndexFile) appendNameEntry(uid uint32, filename string) error {
+	f, err := os.OpenFile(idx.path+".names", os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%d\t%s\n", uid, filename)
+	return err
 }
 
 // seqSetContains reports whether uid is in the set.
