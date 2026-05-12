@@ -1,0 +1,65 @@
+name: Deps check — yarilo
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # every Monday at 09:00 UTC
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  check:
+    name: Check Go dependency updates
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check for updates
+        id: check
+        run: |
+          UPDATES=$(go list -m -u all 2>/dev/null | grep '\[' || true)
+          if [ -z "$UPDATES" ]; then
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_updates=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "updates<<EOF"
+              echo "$UPDATES"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create issue if updates available
+        if: steps.check.outputs.has_updates == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const updates = `${{ steps.check.outputs.updates }}`;
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'dependencies'
+            });
+            const alreadyOpen = existing.data.some(i => i.title === 'Go dependency updates available');
+            if (alreadyOpen) {
+              core.info('Issue already open, skipping');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Go dependency updates available',
+              labels: ['dependencies'],
+              body: `The following Go modules have newer versions available:\n\n\`\`\`\n${updates}\n\`\`\`\n\nTo update, run:\n\`\`\`sh\ngo get -u ./... && go mod tidy\n\`\`\``
+            });

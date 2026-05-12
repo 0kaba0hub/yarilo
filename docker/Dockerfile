@@ -9,6 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -trimpath -o /yarilo ./app/yarilo
 
 FROM alpine:3.23
+# hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /yarilo /usr/local/bin/yarilo
 COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml

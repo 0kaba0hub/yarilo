@@ -191,11 +191,6 @@ func (b *Backend) ListFolders(user string) ([]string, error) {
 
 // ---- uidlist ------------------------------------------------------------
 
-type uidEntry struct {
-	uid      uint32
-	filename string
-}
-
 func (b *Backend) uidListPath(user, folder string) string {
 	return filepath.Join(b.folderPath(user, folder), "dovecot-uidlist")
 }
