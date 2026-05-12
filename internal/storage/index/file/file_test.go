@@ -6,6 +6,90 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
+func TestLogReplay(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	f, _ := b.OpenFolder("u@x.com", "INBOX", 42)
+
+	// Append 3 messages, flag-update one, expunge one.
+	for i := uint32(1); i <= 3; i++ {
+		modseq, _ := b.NextModSeq(f.ID)
+		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Seen`}, ModSeq: modseq}) //nolint:errcheck
+	}
+	b.UpdateFlags(f.ID, 2, []string{`\Seen`, `\Flagged`}, nil) //nolint:errcheck
+	b.ExpungeMessage(f.ID, 3)                                  //nolint:errcheck
+	b.Close()                                                  //nolint:errcheck
+
+	// Reopen — all state must come from replaying .index.log.
+	b2 := New(dir)
+	f2, err := b2.OpenFolder("u@x.com", "INBOX", 42)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	msgs, err := b2.GetMessages(f2.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("after log replay: got %d messages, want 2", len(msgs))
+	}
+	// UID 2 must have \Flagged
+	var found bool
+	for _, m := range msgs {
+		if m.UID == 2 {
+			found = true
+			hasFlagged := false
+			for _, fl := range m.Flags {
+				if fl == `\Flagged` {
+					hasFlagged = true
+				}
+			}
+			if !hasFlagged {
+				t.Errorf("UID 2: expected \\Flagged in %v", m.Flags)
+			}
+		}
+		if m.UID == 3 {
+			t.Error("expunged UID 3 still present after log replay")
+		}
+	}
+	if !found {
+		t.Error("UID 2 missing after log replay")
+	}
+	b2.Close() //nolint:errcheck
+}
+
+func TestLogReplay_Keywords(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+
+	modseq, _ := b.NextModSeq(f.ID)
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{ //nolint:errcheck
+		UID:      1,
+		Flags:    []string{`\Seen`},
+		Keywords: []string{"$Forwarded"},
+		ModSeq:   modseq,
+	})
+	b.Close() //nolint:errcheck
+
+	b2 := New(dir)
+	f2, _ := b2.OpenFolder("u@x.com", "INBOX", 1)
+	msgs, _ := b2.GetMessages(f2.ID, mailbox.SeqSet{})
+	if len(msgs) != 1 {
+		t.Fatalf("after keyword log replay: got %d messages, want 1", len(msgs))
+	}
+	found := false
+	for _, kw := range msgs[0].Keywords {
+		if kw == "$Forwarded" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("$Forwarded missing after log replay: %v", msgs[0].Keywords)
+	}
+	b2.Close() //nolint:errcheck
+}
+
 func TestOpenFolder_CreateAndReopen(t *testing.T) {
 	b := New(t.TempDir())
 

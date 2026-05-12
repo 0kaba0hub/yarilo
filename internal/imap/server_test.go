@@ -516,3 +516,94 @@ func TestKeywords(t *testing.T) {
 		t.Errorf("$NotJunk missing after STORE: %v", msgs2[0].Flags)
 	}
 }
+
+func TestSearch(t *testing.T) {
+	cases := []struct {
+		name     string
+		criteria *imap.SearchCriteria
+		wantUIDs []uint32
+	}{
+		{
+			name:     "SEEN",
+			criteria: &imap.SearchCriteria{Flag: []imap.Flag{imap.FlagSeen}},
+			wantUIDs: []uint32{1, 3},
+		},
+		{
+			name:     "UNSEEN",
+			criteria: &imap.SearchCriteria{NotFlag: []imap.Flag{imap.FlagSeen}},
+			wantUIDs: []uint32{2},
+		},
+		{
+			name:     "FLAGGED",
+			criteria: &imap.SearchCriteria{Flag: []imap.Flag{imap.FlagFlagged}},
+			wantUIDs: []uint32{3},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			c := startAuthClient(t, "user@test.com", "testpass")
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			body := []byte(testMsg)
+			// UID 1: \Seen
+			appendWithFlags(t, c, "INBOX", body, imap.FlagSeen)
+			// UID 2: no flags
+			appendWithFlags(t, c, "INBOX", body)
+			// UID 3: \Seen \Flagged
+			appendWithFlags(t, c, "INBOX", body, imap.FlagSeen, imap.FlagFlagged)
+
+			if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+				t.Fatalf("SELECT: %v", err)
+			}
+
+			data, err := c.UIDSearch(tc.criteria, nil).Wait()
+			if err != nil {
+				t.Fatalf("UID SEARCH: %v", err)
+			}
+			got := data.AllUIDs()
+			want := make([]imap.UID, len(tc.wantUIDs))
+			for i, u := range tc.wantUIDs {
+				want[i] = imap.UID(u)
+			}
+			if !uidSetsEqual(got, want) {
+				t.Errorf("SEARCH %s: got UIDs %v, want %v", tc.name, got, want)
+			}
+		})
+	}
+}
+
+func appendWithFlags(t *testing.T, c *imapclient.Client, mbox string, body []byte, flags ...imap.Flag) {
+	t.Helper()
+	var opts *imap.AppendOptions
+	if len(flags) > 0 {
+		opts = &imap.AppendOptions{Flags: flags}
+	}
+	ac := c.Append(mbox, int64(len(body)), opts)
+	if _, err := ac.Write(body); err != nil {
+		t.Fatalf("Append write: %v", err)
+	}
+	if err := ac.Close(); err != nil {
+		t.Fatalf("Append close: %v", err)
+	}
+	if _, err := ac.Wait(); err != nil {
+		t.Fatalf("Append wait: %v", err)
+	}
+}
+
+func uidSetsEqual(a, b []imap.UID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := make(map[imap.UID]bool, len(b))
+	for _, u := range b {
+		m[u] = true
+	}
+	for _, u := range a {
+		if !m[u] {
+			return false
+		}
+	}
+	return true
+}

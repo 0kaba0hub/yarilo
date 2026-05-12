@@ -1,6 +1,8 @@
 package maildir
 
 import (
+	"bufio"
+	"os"
 	"strings"
 	"testing"
 )
@@ -152,6 +154,110 @@ func TestListFolders(t *testing.T) {
 	for _, want := range []string{"INBOX", "Sent", "Drafts"} {
 		if !has(want) {
 			t.Errorf("ListFolders missing %q, got %v", want, folders)
+		}
+	}
+}
+
+func TestAppendUIDEntry_HeaderFormat(t *testing.T) {
+	b, _ := New(t.TempDir())
+	b.Init("u@x.com") //nolint:errcheck
+
+	if err := b.AppendUIDEntry("u@x.com", "INBOX", 1, "msg1:2,S"); err != nil {
+		t.Fatalf("AppendUIDEntry: %v", err)
+	}
+	if err := b.AppendUIDEntry("u@x.com", "INBOX", 2, "msg2:2,"); err != nil {
+		t.Fatalf("AppendUIDEntry: %v", err)
+	}
+
+	path := b.uidListPath("u@x.com", "INBOX")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open uidlist: %v", err)
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+
+	// First line must be v3 header starting with "3 V"
+	if !sc.Scan() {
+		t.Fatal("uidlist is empty")
+	}
+	header := sc.Text()
+	if !strings.HasPrefix(header, "3 V") {
+		t.Errorf("header line %q does not start with '3 V'", header)
+	}
+	if !strings.Contains(header, " N") {
+		t.Errorf("header line %q missing N<nextuid>", header)
+	}
+	if !strings.Contains(header, " G") {
+		t.Errorf("header line %q missing G<guid>", header)
+	}
+
+	// Remaining lines: "uid :filename"
+	want := []struct {
+		uid      string
+		filename string
+	}{
+		{"1", "msg1:2,S"},
+		{"2", "msg2:2,"},
+	}
+	for i, w := range want {
+		if !sc.Scan() {
+			t.Fatalf("line %d missing", i+1)
+		}
+		line := sc.Text()
+		// format: "uid :filename" — separator is " :" (space+colon)
+		sep := strings.Index(line, " :")
+		if sep < 0 {
+			t.Fatalf("line %d %q has no ' :' separator", i+1, line)
+		}
+		gotFilename := line[sep+2:]
+		parts := strings.Fields(line[:sep])
+		if len(parts) == 0 {
+			t.Fatalf("line %d %q has no uid field", i+1, line)
+		}
+		if parts[0] != w.uid {
+			t.Errorf("line %d uid = %q, want %q", i+1, parts[0], w.uid)
+		}
+		if gotFilename != w.filename {
+			t.Errorf("line %d filename = %q, want %q", i+1, gotFilename, w.filename)
+		}
+	}
+}
+
+func TestUIDListRoundtrip(t *testing.T) {
+	b, _ := New(t.TempDir())
+	b.Init("u@x.com") //nolint:errcheck
+
+	entries := []struct {
+		uid      uint32
+		filename string
+	}{
+		{1, "aaa.bbb:2,S"},
+		{2, "ccc.ddd:2,FS"},
+		{3, "eee.fff:2,"},
+	}
+	for _, e := range entries {
+		if err := b.AppendUIDEntry("u@x.com", "INBOX", e.uid, e.filename); err != nil {
+			t.Fatalf("AppendUIDEntry uid=%d: %v", e.uid, err)
+		}
+	}
+
+	m, err := b.readUIDList("u@x.com", "INBOX")
+	if err != nil {
+		t.Fatalf("readUIDList: %v", err)
+	}
+	if len(m) != len(entries) {
+		t.Fatalf("readUIDList returned %d entries, want %d", len(m), len(entries))
+	}
+	for _, e := range entries {
+		uid, ok := m[e.filename]
+		if !ok {
+			t.Errorf("filename %q not found in uidlist", e.filename)
+			continue
+		}
+		if uid != e.uid {
+			t.Errorf("filename %q: uid = %d, want %d", e.filename, uid, e.uid)
 		}
 	}
 }
