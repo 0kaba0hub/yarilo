@@ -71,9 +71,9 @@ func TestCreate_Delete(t *testing.T) {
 // ---- Save + Fetch round-trip --------------------------------------------
 
 var saveFetchCases = []struct {
-	name   string
-	body   string
-	flags  []string
+	name  string
+	body  string
+	flags []string
 }{
 	{"simple", "From: a@b.com\r\nSubject: Hi\r\n\r\nBody\r\n", nil},
 	{"with flags", "From: a@b.com\r\n\r\nTest\r\n", []string{`\Seen`, `\Answered`}},
