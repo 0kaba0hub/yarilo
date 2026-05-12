@@ -139,6 +139,8 @@ type IndexBackend interface {
 | Sieve engine | `github.com/emersion/go-sieve` | RFC 5228, same ecosystem |
 | S3 client (obox) | `github.com/minio/minio-go/v7` | S3-compatible, production |
 | SQLite | `modernc.org/sqlite` | pure Go, no cgo |
+| MySQL | `github.com/go-sql-driver/mysql` | standard driver |
+| PostgreSQL | `github.com/jackc/pgx/v5` | native driver |
 | Cassandra | `github.com/gocql/gocql` | mature driver |
 | TLS / SNI | stdlib `crypto/tls` | per-domain cert loading |
 | Logging | `log/slog` JSON handler | standard, structured |
@@ -229,17 +231,19 @@ type IndexBackend interface {
 ## Phase 4 — Auth Backends (target: +1 month)
 
 ### Goals
-- LDAP passdb + userdb
-- OAuth2 / OIDC (XOAUTH2 SASL)
-- PAM passdb
+- SQL passdb/userdb: SQLite, MySQL, PostgreSQL (один драйвер, різні DSN)
+- OAuth2 / OIDC (XOAUTH2 SASL механізм)
 - Passdb chaining
 
 ### Deliverables
-- [ ] `internal/auth/ldap`
-- [ ] `internal/auth/oauth2`
-- [ ] `internal/auth/pam`
+- [ ] `internal/auth/sql` — єдиний SQL backend, підтримує SQLite / MySQL / PostgreSQL
+- [ ] `internal/auth/oauth2` — OIDC discovery, token introspection, XOAUTH2
 - [ ] passdb chain config
 - [ ] README auth section
+
+### Backlog (не в scope v1.0)
+- LDAP passdb/userdb
+- PAM passdb
 
 ---
 
@@ -400,12 +404,13 @@ storage:
 auth:
   backends:
     - type: sql
-      dsn: "/var/lib/yarilo/users.db"   # SQLite
-    - type: ldap
-      url: "ldap://localhost:389"
-      bind_dn: "cn=admin,dc=example,dc=com"
-      bind_password: ""
-      user_filter: "(mail=%s)"
+      dsn: "/var/lib/yarilo/users.db"              # SQLite
+      # dsn: "mysql://user:pass@localhost/yarilo"   # MySQL
+      # dsn: "postgres://user:pass@localhost/yarilo" # PostgreSQL
+    - type: oauth2
+      issuer: "https://accounts.example.com"
+      client_id: ""
+      client_secret: ""
 
 imap:
   listeners:
@@ -511,11 +516,11 @@ tls:
 - [ ] Cassandra
 
 ### Auth
-- [ ] SQL / SQLite passdb/userdb
-- [ ] LDAP passdb/userdb
-- [ ] PAM passdb
+- [ ] SQL passdb/userdb (SQLite / MySQL / PostgreSQL)
 - [ ] OAuth2/OIDC (XOAUTH2)
 - [ ] Passdb chaining
+- [ ] LDAP passdb/userdb *(backlog)*
+- [ ] PAM passdb *(backlog)*
 
 ### Filtering
 - [ ] Sieve (RFC 5228)
