@@ -1,0 +1,34 @@
+yarilo has been deployed.
+
+{{- if eq .Values.service.type "LoadBalancer" }}
+
+Get the external IP:
+  kubectl get svc -n {{ .Release.Namespace }} {{ include "yarilo.fullname" . }} -w
+
+{{- else if eq .Values.service.type "NodePort" }}
+
+Get the node port:
+  kubectl get svc -n {{ .Release.Namespace }} {{ include "yarilo.fullname" . }}
+
+{{- end }}
+
+IMAP (TLS):     {{ .Values.service.imapsPort }}
+{{- if .Values.imap.listenPlain }}
+IMAP (STARTTLS): {{ .Values.service.imapPort }}
+{{- end }}
+Telemetry:       http://<pod>:{{ .Values.service.telemetryPort }}/healthz
+
+{{- if not .Values.imap.tls.secretName }}
+
+WARNING: TLS is not configured.
+  Set imap.tls.secretName to the name of a Secret with tls.crt and tls.key.
+  Example:
+    kubectl create secret tls yarilo-tls \
+      --cert=fullchain.pem \
+      --key=privkey.pem \
+      -n {{ .Release.Namespace }}
+
+  Then install with:
+    --set imap.tls.secretName=yarilo-tls
+
+{{- end }}

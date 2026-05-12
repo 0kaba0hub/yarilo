@@ -1,0 +1,146 @@
+## yarilo Helm chart values
+## Full reference: https://github.com/0kaba0hub/yarilo
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  tag: ""          # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1    # single-node only — maildir PVC is not shared-access
+
+## -------------------------------------------------------------------
+## IMAP
+## -------------------------------------------------------------------
+imap:
+  ## TLS listener (IMAPS)
+  listen: ":993"
+  ## STARTTLS listener — set to "" to disable
+  listenPlain: ":143"
+
+  tls:
+    ## Name of an existing Secret containing tls.crt and tls.key.
+    ## Leave empty to disable TLS (plain-only mode).
+    secretName: ""
+    ## Annotation for cert-manager Certificate CR auto-issue.
+    ## certManager:
+    ##   clusterIssuer: letsencrypt-prod
+    ##   commonName: mail.example.com
+
+## -------------------------------------------------------------------
+## Authentication
+## -------------------------------------------------------------------
+auth:
+  passdb:
+    - driver: sqlite
+      ## Path inside the container (mounted from PVC or emptyDir).
+      dsn: /var/lib/yarilo/users.db
+
+  ## Alternatively pass DSN via an existing Secret:
+  ## existingSecret: yarilo-auth
+  ## existingSecretKey: dsn
+
+## -------------------------------------------------------------------
+## Storage
+## -------------------------------------------------------------------
+storage:
+  ## Mailbox format: maildir | dbox | mdbox (dbox/mdbox not yet implemented)
+  mailbox: maildir
+  maildirRoot: /var/mail/vhosts
+
+  ## Index backend: fileindex | sqlite (cassandra — future)
+  index: fileindex
+
+  persistence:
+    enabled: true
+    storageClass: ""   # "" = cluster default
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    ## Bind to an existing PVC instead of creating one:
+    # existingClaim: ""
+
+## -------------------------------------------------------------------
+## Telemetry
+## -------------------------------------------------------------------
+telemetry:
+  listen: ":8080"
+  ## Expose /metrics to a Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: false
+    namespace: ""          # defaults to Release.Namespace
+    interval: 30s
+    labels: {}
+
+## -------------------------------------------------------------------
+## Kubernetes service
+## -------------------------------------------------------------------
+service:
+  type: LoadBalancer
+  ## IMAPS
+  imapsPort: 993
+  ## IMAP STARTTLS
+  imapPort: 143
+  ## Telemetry / health
+  telemetryPort: 8080
+  ## Optional static IP for LoadBalancer
+  # loadBalancerIP: ""
+  annotations: {}
+
+## -------------------------------------------------------------------
+## Resources, probes, scheduling
+## -------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: telemetry
+  initialDelaySeconds: 10
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: telemetry
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+    add: [NET_BIND_SERVICE]
+
+## -------------------------------------------------------------------
+## Log level (overrides config; also settable via LOG_LEVEL env var)
+## -------------------------------------------------------------------
+logLevel: info   # debug | info | warn | error
+
+## -------------------------------------------------------------------
+## Extra environment variables injected into the container
+## -------------------------------------------------------------------
+extraEnv: []
+# - name: SOME_VAR
+#   value: "value"
+
+## -------------------------------------------------------------------
+## Extra volumes / mounts (e.g. for CA bundles)
+## -------------------------------------------------------------------
+extraVolumes: []
+extraVolumeMounts: []
