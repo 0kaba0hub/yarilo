@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yarilo.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+data:
+  yarilo.yaml: |
+    mode: single
+
+    imap:
+      listen: {{ .Values.imap.listen | quote }}
+      listen_plain: {{ .Values.imap.listenPlain | quote }}
+      {{- if .Values.imap.tls.secretName }}
+      tls_cert: /etc/yarilo/tls/tls.crt
+      tls_key: /etc/yarilo/tls/tls.key
+      {{- else }}
+      tls_cert: ""
+      tls_key: ""
+      {{- end }}
+
+    auth:
+      passdb:
+        {{- range .Values.auth.passdb }}
+        - driver: {{ .driver | quote }}
+          dsn: {{ .dsn | quote }}
+        {{- end }}
+
+    storage:
+      mailbox: {{ .Values.storage.mailbox | quote }}
+      maildir_root: {{ .Values.storage.maildirRoot | quote }}
+      index: {{ .Values.storage.index | quote }}
+      index_dir: ""
+
+    telemetry:
+      listen: {{ .Values.telemetry.listen | quote }}
+
+    log:
+      level: {{ .Values.logLevel | quote }}

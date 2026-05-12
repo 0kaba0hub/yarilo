@@ -1,0 +1,13 @@
+apiVersion: v2
+name: yarilo
+description: Production-grade IMAP/SMTP/JMAP mail server
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - imap
+  - smtp
+  - mail
+home: https://github.com/0kaba0hub/yarilo
+sources:
+  - https://github.com/0kaba0hub/yarilo

@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.service.loadBalancerIP }}
+  {{- end }}
+  ports:
+    - name: imaps
+      port: {{ .Values.service.imapsPort }}
+      targetPort: imaps
+      protocol: TCP
+    {{- if .Values.imap.listenPlain }}
+    - name: imap
+      port: {{ .Values.service.imapPort }}
+      targetPort: imap
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: {{ .Values.service.telemetryPort }}
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.selectorLabels" . | nindent 4 }}
