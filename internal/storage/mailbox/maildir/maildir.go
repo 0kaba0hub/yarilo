@@ -211,18 +211,17 @@ func (b *Backend) readUIDList(user, folder string) (map[string]uint32, error) {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
-		if strings.HasPrefix(line, "3 ") {
-			// header line
+		if strings.HasPrefix(line, "3 V") {
+			// v3 header line
 			continue
 		}
-		// uid [options] :filename
-		colon := strings.LastIndex(line, ":")
-		if colon < 0 {
+		// uid [options] :filename  — separator is " :" (space+colon before filename)
+		sep := strings.Index(line, " :")
+		if sep < 0 {
 			continue
 		}
-		filename := line[colon+1:]
-		before := line[:colon]
-		parts := strings.Fields(before)
+		filename := line[sep+2:]
+		parts := strings.Fields(line[:sep])
 		if len(parts) == 0 {
 			continue
 		}
