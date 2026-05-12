@@ -61,9 +61,11 @@ Single binary — three roles.
 ### Proxy
 - Accepts client connections (IMAP/POP3/JMAP/SMTP)
 - TLS termination, SNI per-domain
+- Completes protocol handshake to extract username (see Protocol Proxying below)
 - Authentication (passdb lookup)
 - Queries Director: which backend to route user@domain to
-- Proxies connection to backend (IMAP proxy protocol)
+- Forwards client IP + session metadata to backend
+- Transparently proxies raw TCP stream to backend
 - Stateless — scale horizontally without limits
 
 ### Director
@@ -73,13 +75,63 @@ Single binary — three roles.
 - Health checks to backend nodes (gRPC ping)
 - Failover: on backend failure -> reassign users -> notify proxies
 - gRPC API for proxy
+- Protocol-aware routing: different backends can serve different protocols
 
 ### Backend
-- Full IMAP/POP3/JMAP server
+- Full IMAP/POP3/JMAP/SMTP server
 - Sieve, Quota, ACL, FTS
 - Access to MailboxBackend + IndexBackend
+- Trusts proxy for pre-authenticated connections (via trusted network config)
 - Not exposed to internet — internal cluster only
 - Registers with Director on startup
+
+---
+
+### Protocol Proxying
+
+Each protocol requires the proxy to complete a partial handshake to identify
+the user before the connection can be routed and forwarded.
+
+| Protocol | Proxy completes | Forwarding mechanism |
+|:---|:---|:---|
+| IMAP | CAPABILITY, LOGIN/AUTHENTICATE | IMAP ID extension with `x-originating-ip`, `x-session-id`; backend accepts pre-auth |
+| POP3 | USER + PASS | XCLIENT command: `XCLIENT ADDR=<ip> PORT=<port> SESSION=<id>` |
+| SMTP inbound | EHLO | XCLIENT command (Postfix-compatible) |
+| SMTP submission | EHLO + AUTH | XCLIENT command + pre-auth to backend |
+| JMAP | HTTP auth header parse | HTTP `X-Forwarded-For` + `X-Session-ID` headers |
+| ManageSieve | AUTHENTICATE | Capability + pre-auth forward |
+
+**IMAP proxy flow:**
+```
+Client                  Proxy                   Backend
+  |--- CONNECT -------->|                           |
+  |<-- * OK Yarilo -----|                           |
+  |--- LOGIN user pwd ->|                           |
+  |    [auth passdb]    |                           |
+  |    [ask director]   |--- CONNECT -------------->|
+  |                     |<-- * OK Yarilo ----------|
+  |                     |--- ID ("x-originating-ip" "1.2.3.4"
+  |                     |        "x-session-id" "abc123") -->|
+  |                     |--- AUTHENTICATE PLAIN ... ->|
+  |<-- + OK ------------|<-- + OK ------------------|
+  |=== transparent TCP proxy =========================|
+```
+
+**POP3 proxy flow:**
+```
+Client                  Proxy                   Backend
+  |--- CONNECT -------->|                           |
+  |<-- +OK Yarilo ------|                           |
+  |--- USER alice ----->|                           |
+  |--- PASS secret ---->|                           |
+  |    [auth passdb]    |                           |
+  |    [ask director]   |--- CONNECT -------------->|
+  |                     |--- XCLIENT ADDR=1.2.3.4 ->|
+  |                     |--- USER alice ----------->|
+  |                     |--- PASS secret ---------->|
+  |<-- +OK -------------|<-- +OK --------------------|
+  |=== transparent TCP proxy =========================|
+```
 
 ---
 
