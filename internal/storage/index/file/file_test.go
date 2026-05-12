@@ -111,10 +111,10 @@ func TestSeqSetContains(t *testing.T) {
 		uid  uint32
 		want bool
 	}{
-		{mailbox.SeqSet{}, 99, true},                                   // empty = all
+		{mailbox.SeqSet{}, 99, true}, // empty = all
 		{mailbox.SeqSet{{From: 1, To: 5}}, 3, true},
 		{mailbox.SeqSet{{From: 1, To: 5}}, 6, false},
-		{mailbox.SeqSet{{From: 10, To: 0}}, 999999, true},             // To=0 means *
+		{mailbox.SeqSet{{From: 10, To: 0}}, 999999, true}, // To=0 means *
 		{mailbox.SeqSet{{From: 1, To: 3}, {From: 7, To: 9}}, 8, true},
 		{mailbox.SeqSet{{From: 1, To: 3}, {From: 7, To: 9}}, 5, false},
 	}

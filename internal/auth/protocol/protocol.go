@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 )
 
@@ -68,7 +67,6 @@ func (c Chain) Authenticate(username, password, service string) (*AuthResponse, 
 
 // Server is the yarilo-auth UNIX-socket server.
 type Server struct {
-	mu      sync.Mutex
 	passdbs []Passdb
 	connUID atomic.Uint64
 	pid     int

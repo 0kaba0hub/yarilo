@@ -7,25 +7,25 @@ import (
 
 // MessageMeta holds per-message metadata stored in the index.
 type MessageMeta struct {
-	UID      uint32
-	Flags    []string
-	Keywords []string
-	ModSeq   uint64
-	Size     uint32
-	VSize    uint32
+	UID          uint32
+	Flags        []string
+	Keywords     []string
+	ModSeq       uint64
+	Size         uint32
+	VSize        uint32
 	InternalDate time.Time
-	GUID     [16]byte
-	CacheOffset uint32
+	GUID         [16]byte
+	CacheOffset  uint32
 }
 
 // Folder holds index-level folder metadata.
 type Folder struct {
-	ID          uint64
-	Name        string
-	UIDValidity uint32
-	NextUID     uint32
-	Messages    uint32
-	Unseen      uint32
+	ID            uint64
+	Name          string
+	UIDValidity   uint32
+	NextUID       uint32
+	Messages      uint32
+	Unseen        uint32
 	HighestModSeq uint64
 }
 

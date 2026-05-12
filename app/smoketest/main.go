@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -73,7 +74,11 @@ func checkReady() error {
 
 func httpGet(url string) error {
 	c := &http.Client{Timeout: *flagTimeout}
-	resp, err := c.Get(url)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Do(req)
 	if err != nil {
 		return err
 	}

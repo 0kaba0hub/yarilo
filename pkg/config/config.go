@@ -10,11 +10,11 @@ import (
 type Config struct {
 	Mode string `koanf:"mode"` // proxy | director | backend | single
 
-	IMAP IMAPConfig `koanf:"imap"`
-	Auth AuthConfig `koanf:"auth"`
-	Storage StorageConfig `koanf:"storage"`
+	IMAP      IMAPConfig      `koanf:"imap"`
+	Auth      AuthConfig      `koanf:"auth"`
+	Storage   StorageConfig   `koanf:"storage"`
 	Telemetry TelemetryConfig `koanf:"telemetry"`
-	Log LogConfig `koanf:"log"`
+	Log       LogConfig       `koanf:"log"`
 }
 
 type IMAPConfig struct {
@@ -29,8 +29,8 @@ type AuthConfig struct {
 }
 
 type PassdbEntry struct {
-	Driver string `koanf:"driver"` // sqlite | mysql | postgres
-	DSN    string `koanf:"dsn"`
+	Driver string            `koanf:"driver"` // sqlite | mysql | postgres
+	DSN    string            `koanf:"dsn"`
 	Args   map[string]string `koanf:"args"`
 }
 
@@ -56,10 +56,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{
-		Mode: "single",
-		IMAP: IMAPConfig{Listen: ":993"},
+		Mode:      "single",
+		IMAP:      IMAPConfig{Listen: ":993"},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
-		Log: LogConfig{Level: "info"},
+		Log:       LogConfig{Level: "info"},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, err

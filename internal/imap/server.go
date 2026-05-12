@@ -177,7 +177,9 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		if !listMatch(full, patterns) {
 			continue
 		}
-		w.WriteList(&imaplib.ListData{Mailbox: full, Delim: '/'})
+		if err := w.WriteList(&imaplib.ListData{Mailbox: full, Delim: '/'}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -277,7 +279,9 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			continue
 		}
 		s.srv.opts.Index.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
-		w.WriteExpunge(m.UID)
+		if err := w.WriteExpunge(m.UID); err != nil {
+				return err
+			}
 	}
 	return nil
 }

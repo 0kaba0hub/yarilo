@@ -19,14 +19,14 @@ import (
 
 // Index file magic / version
 const (
-	indexMajor      = 7
-	indexMinor      = 3
-	logMajor        = 1
-	logMinor        = 3
-	baseHeaderSize  = 120 // bytes
-	baseRecordSize  = 5   // uid(4) + flags(1)
-	extRecordSize   = 8   // + modseq(8) — we always include modseq
-	compatFlagsLE   = 0x01
+	indexMajor     = 7
+	indexMinor     = 3
+	logMajor       = 1
+	logMinor       = 3
+	baseHeaderSize = 120 // bytes
+	baseRecordSize = 5   // uid(4) + flags(1)
+	extRecordSize  = 8   // + modseq(8) — we always include modseq
+	compatFlagsLE  = 0x01
 )
 
 // flag bits (IMAP standard flags stored in index record)
@@ -54,15 +54,15 @@ type IndexFile struct {
 	path string // path to .index file (without extension suffix)
 
 	// cached header values
-	indexID     uint32
-	uidValidity uint32
-	nextUID     uint32
-	msgCount    uint32
-	seenCount   uint32
+	indexID      uint32
+	uidValidity  uint32
+	nextUID      uint32
+	msgCount     uint32
+	seenCount    uint32
 	deletedCount uint32
-	logFileSeq  uint32
-	logFileTail uint32
-	logFileHead uint32
+	logFileSeq   uint32
+	logFileTail  uint32
+	logFileHead  uint32
 
 	records []indexRecord
 	logF    *os.File // append-only .index.log fd
@@ -70,10 +70,9 @@ type IndexFile struct {
 }
 
 type indexRecord struct {
-	uid     uint32
-	flags   uint8
-	modseq  uint64
-	keywords uint32
+	uid    uint32
+	flags  uint8
+	modseq uint64
 }
 
 // folderID encodes user+folder into a uint64 for the IndexBackend interface.
@@ -605,4 +604,3 @@ func indexFlagsToIMAP(b uint8) []string {
 	}
 	return flags
 }
-

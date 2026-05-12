@@ -133,9 +133,9 @@ func TestCreate_Delete(t *testing.T) {
 
 func TestListFolders(t *testing.T) {
 	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
-	b.Create("u@x.com", "Sent")    //nolint:errcheck
-	b.Create("u@x.com", "Drafts")  //nolint:errcheck
+	b.Init("u@x.com")             //nolint:errcheck
+	b.Create("u@x.com", "Sent")   //nolint:errcheck
+	b.Create("u@x.com", "Drafts") //nolint:errcheck
 
 	folders, err := b.ListFolders("u@x.com")
 	if err != nil {
