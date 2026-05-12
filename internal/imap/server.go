@@ -145,6 +145,7 @@ func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.Select
 		PermanentFlags: []imaplib.Flag{
 			imaplib.FlagAnswered, imaplib.FlagFlagged,
 			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
+			imaplib.Flag(`\*`), // supports user-defined keywords
 		},
 		NumMessages: uint32(len(msgs)),
 		UIDValidity: f.UIDValidity,
@@ -227,10 +228,15 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		return nil, err
 	}
 
-	var flagList []string
+	var flagList, kwList []string
 	if opts != nil {
 		for _, fl := range opts.Flags {
-			flagList = append(flagList, string(fl))
+			s := string(fl)
+			if strings.HasPrefix(s, `\`) {
+				flagList = append(flagList, s)
+			} else {
+				kwList = append(kwList, s)
+			}
 		}
 	}
 
@@ -245,7 +251,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		return nil, err
 	}
 
-	meta := &mailbox.MessageMeta{UID: uid, Filename: filename, Flags: flagList, ModSeq: modseq, Size: uint32(size)}
+	meta := &mailbox.MessageMeta{UID: uid, Filename: filename, Flags: flagList, Keywords: kwList, ModSeq: modseq, Size: uint32(size)}
 	if err := s.srv.opts.Index.AppendMessage(f.ID, meta); err != nil {
 		return nil, err
 	}
@@ -335,8 +341,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		}
 		mw := w.CreateMessage(seqNum)
 		if opts.Flags {
-			flags := toImapFlags(m.Flags)
-			mw.WriteFlags(flags)
+			mw.WriteFlags(toImapFlags(append(m.Flags, m.Keywords...)))
 		}
 		if opts.UID {
 			mw.WriteUID(imaplib.UID(m.UID))
@@ -379,12 +384,20 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		newFlags := applyStoreFlags(m.Flags, storeFlags)
-		s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, nil) //nolint:errcheck
+		allNew := applyStoreFlags(append(m.Flags, m.Keywords...), storeFlags)
+		var newFlags, newKW []string
+		for _, f := range allNew {
+			if strings.HasPrefix(f, `\`) {
+				newFlags = append(newFlags, f)
+			} else {
+				newKW = append(newKW, f)
+			}
+		}
+		s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
 
 		if !storeFlags.Silent {
 			mw := w.CreateMessage(seqNum)
-			mw.WriteFlags(toImapFlags(newFlags))
+			mw.WriteFlags(toImapFlags(append(newFlags, newKW...)))
 			mw.WriteUID(imaplib.UID(m.UID))
 			mw.Close() //nolint:errcheck
 		}
