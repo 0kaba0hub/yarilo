@@ -1,8 +1,12 @@
 package dbox
 
 import (
+	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -232,4 +236,123 @@ func TestFilenameSequenceMonotonic(t *testing.T) {
 			t.Errorf("filenames not monotonically increasing: %v", names)
 		}
 	}
+}
+
+// TestWireFormat verifies that the dbox file on disk starts with the two magic
+// bytes (0x01 0x02), contains the message body, and ends with the post-magic
+// sequence followed by metadata lines (G, R, Z, V).
+func TestWireFormat(t *testing.T) {
+	b, _ := New(t.TempDir())
+	b.Init("u@x.com") //nolint:errcheck
+
+	body := "From: a@b.com\r\nSubject: wire\r\n\r\nBody text\r\n"
+	filename, err := b.Save("u@x.com", "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Locate the file on disk (dbox stores it directly in the folder dir).
+	folderDir := filepath.Join(b.root, "x.com", "u", "INBOX")
+	raw, err := os.ReadFile(filepath.Join(folderDir, filename))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	// Magic pre: 0x01 0x02
+	if len(raw) < 2 || raw[0] != 0x01 || raw[1] != 0x02 {
+		t.Errorf("magic pre: want [01 02], got %s", formatHex(raw[:min(2, len(raw))]))
+	}
+
+	// Body must be present somewhere in the file.
+	if !bytes.Contains(raw, []byte("Body text")) {
+		t.Error("message body not found in dbox file")
+	}
+
+	// Post-magic sequence: '\n' 0x01 0x03 '\n'
+	postMagic := []byte{'\n', 0x01, 0x03, '\n'}
+	if !bytes.Contains(raw, postMagic) {
+		t.Error("post-magic [0a 01 03 0a] not found in dbox file")
+	}
+
+	// Metadata lines after post-magic.
+	tail := string(raw[bytes.Index(raw, postMagic)+len(postMagic):])
+	for _, prefix := range []string{"G", "R", "Z", "V"} {
+		if !strings.Contains(tail, prefix) {
+			t.Errorf("metadata key %q missing from file tail: %q", prefix, tail)
+		}
+	}
+}
+
+// TestConcurrentSave verifies that concurrent saves to the same folder produce
+// unique filenames and all messages remain fetchable.
+func TestConcurrentSave(t *testing.T) {
+	b, _ := New(t.TempDir())
+	b.Init("u@x.com") //nolint:errcheck
+
+	const n = 20
+	names := make([]string, n)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for i := 0; i < n; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := strings.Repeat("x", i+1)
+			fn, err := b.Save("u@x.com", "INBOX", strings.NewReader(body), int64(len(body)), nil)
+			if err != nil {
+				t.Errorf("Save goroutine %d: %v", i, err)
+				return
+			}
+			mu.Lock()
+			names[i] = fn
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// All names must be non-empty and unique.
+	seen := make(map[string]bool, n)
+	for i, fn := range names {
+		if fn == "" {
+			t.Errorf("names[%d] is empty (Save failed)", i)
+			continue
+		}
+		if seen[fn] {
+			t.Errorf("duplicate filename %q", fn)
+		}
+		seen[fn] = true
+	}
+
+	// All messages must be fetchable.
+	for _, fn := range names {
+		if fn == "" {
+			continue
+		}
+		rc, err := b.Fetch("u@x.com", "INBOX", fn)
+		if err != nil {
+			t.Errorf("Fetch(%q): %v", fn, err)
+			continue
+		}
+		rc.Close()
+	}
+}
+
+func formatHex(b []byte) string {
+	out := make([]byte, len(b)*3)
+	for i, v := range b {
+		const hx = "0123456789abcdef"
+		out[i*3] = hx[v>>4]
+		out[i*3+1] = hx[v&0xf]
+		out[i*3+2] = ' '
+	}
+	return string(bytes.TrimRight(out, " "))
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
