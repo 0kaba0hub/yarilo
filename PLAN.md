@@ -137,6 +137,7 @@ type IndexBackend interface {
 | IMAP wire format | `github.com/emersion/go-imap/v2` | RFC 3501/9051 + extensions, MIT |
 | SMTP wire format | `github.com/emersion/go-smtp` | RFC 5321, same author |
 | Sieve engine | `github.com/emersion/go-sieve` | RFC 5228, same ecosystem |
+| JMAP | `github.com/emersion/go-jmap` | RFC 8620/8621/8887, same author |
 | S3 client (obox) | `github.com/minio/minio-go/v7` | S3-compatible, production |
 | SQLite | `modernc.org/sqlite` | pure Go, no cgo |
 | MySQL | `github.com/go-sql-driver/mysql` | standard driver |
@@ -324,6 +325,8 @@ type IndexBackend interface {
 
 ### Goals
 - Full POP3 server (RFC 1939)
+- POP3S (port 995, TLS)
+- STARTTLS (port 110)
 - UIDL support
 - Reuses same auth + mailbox + index backends
 
@@ -334,7 +337,24 @@ type IndexBackend interface {
 
 ---
 
-## Phase 10 — Full-Text Search (target: +1-2 months)
+## Phase 10 — JMAP (target: +2-3 months)
+
+### Goals
+- JMAP Core (RFC 8620) — HTTP/HTTPS API
+- JMAP Mail (RFC 8621) — mailbox, email, thread operations
+- JMAP over WebSocket (RFC 8887) — push notifications
+- Shared auth + mailbox + index backends з IMAP
+- Порт 443 (HTTPS) + WebSocket upgrade
+
+### Deliverables
+- [ ] `internal/jmap` — JMAP Core + Mail handler (go-jmap)
+- [ ] `internal/jmap/push` — WebSocket push (RFC 8887)
+- [ ] `cmd/jmap` або merged binary
+- [ ] README JMAP section
+
+---
+
+## Phase 11 — Full-Text Search (target: +1-2 months)
 
 ### Goals
 - SQLite FTS5 — zero deps, single node
@@ -348,7 +368,7 @@ type IndexBackend interface {
 
 ---
 
-## Phase 11 — Admin API + Provisioning (target: +1-2 months)
+## Phase 12 — Admin API + Provisioning (target: +1-2 months)
 
 ### Goals
 - REST API: domain/user/mailbox management
@@ -481,13 +501,31 @@ tls:
 ## Feature Checklist
 
 ### Protocols
+
+| Protocol | Port | TLS | RFC |
+|:---|:---|:---|:---|
+| IMAP | 143 | STARTTLS | RFC 3501 / 9051 |
+| IMAPs | 993 | TLS | RFC 3501 / 9051 |
+| POP3 | 110 | STARTTLS | RFC 1939 |
+| POP3s | 995 | TLS | RFC 1939 |
+| LMTP | 24 | optional | RFC 2033 |
+| SMTP inbound | 25 | STARTTLS | RFC 5321 |
+| SMTP submission | 587 | STARTTLS | RFC 6409 |
+| ManageSieve | 4190 | STARTTLS | RFC 5804 |
+| JMAP | 443 | TLS | RFC 8620/8621 |
+| JMAP WebSocket | 443 | TLS+WS | RFC 8887 |
+
 - [ ] IMAP4rev1 (RFC 3501)
 - [ ] IMAP4rev2 (RFC 9051)
 - [ ] POP3 (RFC 1939)
 - [ ] LMTP (RFC 2033)
 - [ ] SMTP inbound (RFC 5321)
 - [ ] SMTP submission (RFC 6409)
+- [ ] Sieve filtering (RFC 5228)
 - [ ] ManageSieve (RFC 5804)
+- [ ] JMAP Core (RFC 8620)
+- [ ] JMAP Mail (RFC 8621)
+- [ ] JMAP WebSocket push (RFC 8887)
 
 ### IMAP Extensions
 - [ ] IDLE (RFC 2177)
@@ -559,5 +597,7 @@ tls:
 | v0.6.0 | Phase 6 — obox (S3) | Month 12 |
 | v0.7.0 | Phase 7 — Sieve + ManageSieve | Month 14 |
 | v0.8.0 | Phase 8 — Quota + ACL | Month 16 |
-| v0.9.0 | Phase 9 + 10 — POP3 + FTS | Month 18 |
-| v1.0.0 | Phase 11 — Admin API + hardening | Month 20 |
+| v0.9.0 | Phase 9 — POP3 | Month 18 |
+| v0.10.0 | Phase 10 — JMAP | Month 21 |
+| v0.11.0 | Phase 11 — FTS | Month 23 |
+| v1.0.0 | Phase 12 — Admin API + hardening | Month 25 |
