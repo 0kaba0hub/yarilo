@@ -87,6 +87,40 @@ Single binary — three roles.
 
 ---
 
+### Proxy Headers + XCLIENT
+
+Every protocol instance natively supports both directions:
+
+**Inbound** — receiving real client IP from an upstream load balancer:
+
+| Protocol | Mechanism |
+|:---|:---|
+| IMAP / POP3 / SMTP | PROXY protocol v1 + v2 (HAProxy) |
+| JMAP (HTTP) | `X-Forwarded-For`, `X-Real-IP`, `Forwarded` (RFC 7239) |
+
+**Outbound** — forwarding client metadata to backend:
+
+| Protocol | Mechanism |
+|:---|:---|
+| IMAP | IMAP ID extension (`x-originating-ip`, `x-originating-port`, `x-session-id`) |
+| POP3 | `XCLIENT ADDR=<ip> PORT=<port> SESSION=<id>` |
+| SMTP inbound | `XCLIENT ADDR=<ip> PORT=<port> HELO=<helo>` (Postfix-compatible) |
+| SMTP submission | `XCLIENT` + pre-authenticated session |
+| JMAP | `X-Forwarded-For` + `X-Session-ID` HTTP headers |
+| ManageSieve | IMAP-style ID forward |
+
+Config per protocol instance:
+
+```yaml
+imap:
+  proxy_protocol: true          # accept HAProxy PROXY v1/v2 from upstream LB
+  xclient_trusted_nets:         # networks allowed to send XCLIENT to this instance
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+```
+
+---
+
 ### Protocol Proxying
 
 Each protocol requires the proxy to complete a partial handshake to identify
@@ -178,6 +212,8 @@ yarilo/
 |  |- cluster/
 |  |  |- grpc/            # gRPC protocol proxy<->director<->backend
 |  |  \- ring/            # Consistent hashing ring
+|  |- proxyproto/         # HAProxy PROXY protocol v1/v2 (inbound + outbound)
+|  |- xclient/            # XCLIENT command (POP3/SMTP inbound + outbound)
 |  |- imap/               # IMAP protocol (go-imap/v2)
 |  |- pop3/               # POP3 protocol
 |  |- jmap/               # JMAP Core + Mail (go-jmap)
@@ -719,6 +755,18 @@ tls:
 - [ ] gRPC inter-component protocol
 - [ ] Director leader election
 - [ ] Backend health checks + failover
+- [ ] Per-protocol proxy instances (independent config + tuning)
+- [ ] Tag-based backend routing (route by domain, user, tag)
+
+### Proxy Headers + XCLIENT
+- [ ] HAProxy PROXY protocol v1 inbound
+- [ ] HAProxy PROXY protocol v2 inbound
+- [ ] XCLIENT inbound (POP3, SMTP)
+- [ ] XCLIENT outbound to backend (POP3, SMTP)
+- [ ] IMAP ID extension outbound (`x-originating-ip`, `x-session-id`)
+- [ ] HTTP `X-Forwarded-For` / `Forwarded` inbound (JMAP)
+- [ ] HTTP `X-Forwarded-For` / `X-Session-ID` outbound (JMAP)
+- [ ] `xclient_trusted_nets` per protocol instance
 
 ### Observability
 - [ ] `/healthz` on every instance
