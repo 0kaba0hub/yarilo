@@ -3,6 +3,7 @@ package mdbox
 import (
 	"io"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -333,5 +334,110 @@ func TestNew_ResumesFileID(t *testing.T) {
 	}
 	if b2.currentFileID != highID {
 		t.Errorf("resumed currentFileID = %d, want %d", b2.currentFileID, highID)
+	}
+}
+
+// TestConcurrentSave verifies that concurrent saves produce unique filenames
+// and all messages remain fetchable without data corruption.
+func TestConcurrentSave(t *testing.T) {
+	b := newBackend(t)
+	if err := b.Init(testUser); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 20
+	filenames := make([]string, n)
+	bodies := make([]string, n)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for i := 0; i < n; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := strings.Repeat("x", i+1)
+			fn, err := b.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+			if err != nil {
+				t.Errorf("Save goroutine %d: %v", i, err)
+				return
+			}
+			mu.Lock()
+			filenames[i] = fn
+			bodies[i] = body
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// All filenames must be non-empty and unique.
+	seen := make(map[string]bool, n)
+	for i, fn := range filenames {
+		if fn == "" {
+			t.Errorf("filenames[%d] empty (Save failed)", i)
+			continue
+		}
+		if seen[fn] {
+			t.Errorf("duplicate filename %q", fn)
+		}
+		seen[fn] = true
+	}
+
+	// All messages must be fetchable with correct content.
+	for i, fn := range filenames {
+		if fn == "" {
+			continue
+		}
+		rc, err := b.Fetch(testUser, "INBOX", fn)
+		if err != nil {
+			t.Errorf("Fetch(%q): %v", fn, err)
+			continue
+		}
+		got, _ := io.ReadAll(rc)
+		rc.Close()
+		if string(got) != bodies[i] {
+			t.Errorf("Fetch(%q): body mismatch (len got=%d want=%d)", fn, len(got), len(bodies[i]))
+		}
+	}
+}
+
+// TestRotationAndMapIntegrity verifies that after rotation, the map file
+// records entries from both the old and new m.* files, and List returns all.
+func TestRotationAndMapIntegrity(t *testing.T) {
+	b := newBackend(t)
+	b.rotateThreshold = 10
+	if err := b.Init(testUser); err != nil {
+		t.Fatal(err)
+	}
+
+	// Save enough messages to force multiple rotations.
+	const n = 5
+	var saved []string
+	for i := 0; i < n; i++ {
+		body := strings.Repeat("y", 20) // exceeds threshold → rotates each time
+		fn, err := b.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+		if err != nil {
+			t.Fatalf("Save[%d]: %v", i, err)
+		}
+		saved = append(saved, fn)
+	}
+
+	// List must return all n messages (map covers all files).
+	msgs, err := b.List(testUser, "INBOX")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(msgs) != n {
+		t.Fatalf("List after %d saves with rotation: got %d, want %d", n, len(msgs), n)
+	}
+
+	// Each saved file must still be fetchable.
+	for _, fn := range saved {
+		rc, err := b.Fetch(testUser, "INBOX", fn)
+		if err != nil {
+			t.Errorf("Fetch(%q) after rotation: %v", fn, err)
+			continue
+		}
+		rc.Close()
 	}
 }

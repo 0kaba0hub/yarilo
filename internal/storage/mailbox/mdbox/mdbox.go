@@ -127,6 +127,8 @@ func (b *Backend) Save(user, folder string, r io.Reader, _ int64, _ []string) (s
 	}
 
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// Lazy-initialise currentSize from the actual file on first write.
 	if b.currentSize == 0 {
 		fi, statErr := os.Stat(b.mfilePath(storageDir, b.currentFileID))
@@ -142,8 +144,6 @@ func (b *Backend) Save(user, folder string, r io.Reader, _ int64, _ []string) (s
 
 	fileID := b.currentFileID
 	offset := b.currentSize
-	b.currentSize += recLen
-	b.mu.Unlock()
 
 	mpath := b.mfilePath(storageDir, fileID)
 	f, err := os.OpenFile(mpath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
@@ -157,6 +157,7 @@ func (b *Backend) Save(user, folder string, r io.Reader, _ int64, _ []string) (s
 	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("mdbox/save: close mfile: %w", err)
 	}
+	b.currentSize += recLen
 
 	mapLine := fmt.Sprintf("%d %d %d 0\n", fileID, offset, physSize)
 	mapPath := b.mapPath(user, folder)
