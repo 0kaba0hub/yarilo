@@ -1,0 +1,84 @@
+name: Trivy — vulnerability & malware scan
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "internal/**"
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
+      - "docker/Dockerfile"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "internal/**"
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
+      - "docker/Dockerfile"
+  schedule:
+    - cron: "0 6 * * 1"  # every Monday at 06:00 UTC
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  trivy:
+    name: Trivy scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v7.1.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: yarilo:scan
+
+      - name: Run Trivy — image scan
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: yarilo:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload image scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Run Trivy — filesystem scan (deps + config)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+
+      - name: Upload filesystem scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
