@@ -72,11 +72,7 @@ func New(root string) (*Backend, error) {
 		b.currentFileID = 1
 	}
 
-	// Measure the current active file size so rotate logic is accurate.
-	curPath := filepath.Join(root, fmt.Sprintf("_active_dummy")) // placeholder
-	_ = curPath
-	// We do not know which user owns the active file in this global backend,
-	// so we leave currentSize=0; the next Save will correct it via stat.
+	// currentSize stays 0; Save() will stat the file on first write.
 	return b, nil
 }
 
@@ -199,7 +195,7 @@ func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("mdbox/fetch: seek: %w", err)
 	}
 
-	_, size, err := parseHeader(f)
+	size, err := parseHeader(f)
 	if err != nil {
 		return nil, fmt.Errorf("mdbox/fetch: parse header: %w", err)
 	}
@@ -274,7 +270,7 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 			f.Close()
 			return nil, fmt.Errorf("mdbox/list: seek: %w", seekErr)
 		}
-		_, size, parseErr := parseHeader(f)
+		size, parseErr := parseHeader(f)
 		f.Close()
 		if parseErr != nil {
 			return nil, fmt.Errorf("mdbox/list: parse header: %w", parseErr)
@@ -351,29 +347,21 @@ func buildRecord(body []byte, guid string, ts, physSize, virtSize uint32) []byte
 	return rec
 }
 
-// parseHeader reads a dbox record header from r and returns (uid, bodySize, error).
-// Format: \x01\x02 N <uid_hex8> <size_hex16>\n  (31 bytes total)
-func parseHeader(r io.Reader) (uid uint32, size uint32, err error) {
-	// header is: 2 (magic) + "N " (2) + 8 (uid hex) + " " + 16 (size hex) + "\n" = 30 bytes
-	// But we wrote: magicPre + "N " + %08x + " " + %016x + "\n"
-	// magicPre = 2 bytes, "N " = 2 bytes, 8 hex uid = 8 bytes, " " = 1 byte, 16 hex size = 16 bytes, "\n" = 1 byte → 30 bytes
+// parseHeader reads a dbox record header from r and returns the body size.
+// Format: \x01\x02 N <uid_hex8> <size_hex16>\n  (30 bytes total)
+func parseHeader(r io.Reader) (uint32, error) {
 	hdr := make([]byte, 30)
-	if _, err = io.ReadFull(r, hdr); err != nil {
-		return 0, 0, fmt.Errorf("read header: %w", err)
+	if _, err := io.ReadFull(r, hdr); err != nil {
+		return 0, fmt.Errorf("read header: %w", err)
 	}
 	if hdr[0] != 0x01 || hdr[1] != 0x02 {
-		return 0, 0, errors.New("bad dbox magic")
-	}
-	// hdr[2] == 'N', hdr[3] == ' ', hdr[4:12] = uid hex, hdr[12] = ' ', hdr[13:29] = size hex, hdr[29] = '\n'
-	uid64, err := strconv.ParseUint(string(hdr[4:12]), 16, 32)
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse uid: %w", err)
+		return 0, errors.New("bad dbox magic")
 	}
 	sz64, err := strconv.ParseUint(strings.TrimSpace(string(hdr[13:29])), 16, 64)
 	if err != nil {
-		return 0, 0, fmt.Errorf("parse size: %w", err)
+		return 0, fmt.Errorf("parse size: %w", err)
 	}
-	return uint32(uid64), uint32(sz64), nil
+	return uint32(sz64), nil
 }
 
 // ---- dbox.map helpers ---------------------------------------------------
