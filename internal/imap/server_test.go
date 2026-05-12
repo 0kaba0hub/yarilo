@@ -326,8 +326,8 @@ func TestList(t *testing.T) {
 
 func TestConcurrentSessions(t *testing.T) {
 	const (
-		goroutines  = 3
-		msgsEach    = 10
+		goroutines = 3
+		msgsEach   = 10
 	)
 
 	dir := t.TempDir()

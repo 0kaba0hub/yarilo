@@ -7,8 +7,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 )
 
 func openTestDB(t *testing.T) (*authsql.Passdb, string) {
@@ -70,7 +70,7 @@ func TestAuthenticate(t *testing.T) {
 			wantResult: protocol.AuthFail,
 		},
 		{
-			name:    "unknown user returns nil",
+			name:     "unknown user returns nil",
 			username: "nobody",
 			password: "pass",
 			wantNil:  true,
