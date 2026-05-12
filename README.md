@@ -166,6 +166,31 @@ yarilo -config yarilo.yaml
 
 Set `LOG_LEVEL=debug` to enable verbose protocol tracing without restarting.
 
+### Mailbox backend selection
+
+| Value | Format | Description |
+|:---|:---|:---|
+| `maildir` | Maildir | one file per message, `cur/` + `new/` + `tmp/` |
+| `dbox` | sdbox | one file per message in dbox wire format (GUID + metadata embedded) |
+| `mdbox` | mdbox | multiple messages per `m.<id>` file, higher density |
+
+```yaml
+storage:
+  mailbox: dbox          # maildir | dbox | mdbox
+  maildir_root: /var/mail/vhosts
+```
+
+### Migration from Maildir
+
+```sh
+yarilo-migrate \
+  --from /var/mail/vhosts \
+  --to   /var/mail/dbox \
+  --format dbox          # or mdbox
+```
+
+Use `--dry-run` to preview without writing.
+
 ---
 
 ## Documentation

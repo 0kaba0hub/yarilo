@@ -12,10 +12,10 @@ auth:
       dsn: /var/lib/yarilo/users.db
 
 storage:
-  mailbox: maildir
+  mailbox: maildir    # maildir | dbox | mdbox
   maildir_root: /var/mail/vhosts
   index: fileindex
-  index_dir: ""   # defaults to maildir_root
+  index_dir: ""       # defaults to maildir_root
 
 telemetry:
   listen: ":8080"
