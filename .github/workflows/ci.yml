@@ -184,4 +184,4 @@ jobs:
           package-name: yarilo
           package-type: container
           min-versions-to-keep: 10
-          token: ${{ secrets.GHCR_DELETE_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
