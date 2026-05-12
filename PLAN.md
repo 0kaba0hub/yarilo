@@ -3,6 +3,9 @@
 Yarilo is a production-grade IMAP/SMTP mail server written in Go,
 targeting full feature parity with industry-standard open-source IMAP servers.
 
+Internal protocols (yarilo-director, yarilo-auth, yarilo-dict, yarilo-admin, yarilo-stats)
+are specified in [INTERNALS.md](INTERNALS.md).
+
 ---
 
 ## Architecture
@@ -69,12 +72,12 @@ Single binary — three roles.
 - Stateless — scale horizontally without limits
 
 ### Director
-- Single active node (or multiple with leader election)
-- Consistent hashing ring: user@domain -> backend node
+- Single active node (or multiple with leader election via ring handshake)
+- Consistent hashing ring: user@domain -> backend node (MD5, 100 vhosts/backend)
 - Sticky sessions: all connections for one user go to the same backend
-- Health checks to backend nodes (gRPC ping)
+- Health checks to backend nodes (yarilo-director PING/PONG)
 - Failover: on backend failure -> reassign users -> notify proxies
-- gRPC API for proxy
+- yarilo-director TAB-delimited binary protocol (see INTERNALS.md §2) — proxy↔director and director↔director
 - Protocol-aware routing: different backends can serve different protocols
 
 ### Backend
@@ -210,8 +213,8 @@ yarilo/
 |  |- director/           # Director mode: hash ring, sticky sessions, health
 |  |- backend/            # Backend mode: wiring all components
 |  |- cluster/
-|  |  |- grpc/            # gRPC protocol proxy<->director<->backend
-|  |  \- ring/            # Consistent hashing ring
+|  |  |- proto/           # yarilo-director TAB-delimited protocol (proxy<->director<->backend)
+|  |  \- ring/            # Consistent hashing ring (MD5, 100 vhosts)
 |  |- proxyproto/         # HAProxy PROXY protocol v1/v2 (inbound + outbound)
 |  |- xclient/            # XCLIENT command (POP3/SMTP inbound + outbound)
 |  |- imap/               # IMAP protocol (go-imap/v2)
@@ -335,8 +338,9 @@ type IndexBackend interface {
 ### Deliverables
 - [ ] `go.mod` init, project skeleton
 - [ ] `MailboxBackend` + `IndexBackend` + `Proxy` + `Director` + `Backend` interfaces
-- [ ] `internal/cluster/ring` — consistent hashing
-- [ ] `internal/cluster/grpc` — gRPC protobuf for inter-component communication
+- [ ] `internal/cluster/ring` — consistent hashing (MD5, 100 vhosts)
+- [ ] `internal/cluster/proto` — yarilo-director TAB-delimited protocol
+- [ ] `internal/auth` — yarilo-auth protocol (VERSION handshake, SASL mechanisms)
 - [ ] `internal/proxy` — single-node stub (direct connection to backend)
 - [ ] `internal/director` — single-node stub (local routing)
 - [ ] `internal/storage/mailbox/maildir`
@@ -752,11 +756,16 @@ tls:
 - [ ] Director mode (consistent hashing, sticky sessions)
 - [ ] Backend mode
 - [ ] Single-node mode (all three in one process)
-- [ ] gRPC inter-component protocol
-- [ ] Director leader election
-- [ ] Backend health checks + failover
+- [ ] yarilo-director TAB-delimited protocol (proxy↔director, director ring)
+- [ ] yarilo-auth protocol (SASL, passdb chain, auth cache)
+- [ ] yarilo-dict protocol (quota, ACL, Sieve script storage)
+- [ ] yarilo-admin protocol (admin commands, multiplex streaming)
+- [ ] yarilo-stats protocol (event stream, Prometheus)
+- [ ] Director ring handshake + leader election
+- [ ] Backend health checks (PING/PONG) + failover
 - [ ] Per-protocol proxy instances (independent config + tuning)
 - [ ] Tag-based backend routing (route by domain, user, tag)
+- [ ] Proxy loop prevention (LOGIN_PROXY_TTL=5)
 
 ### Proxy Headers + XCLIENT
 - [ ] HAProxy PROXY protocol v1 inbound
