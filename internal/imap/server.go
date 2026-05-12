@@ -280,8 +280,8 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		}
 		s.srv.opts.Index.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		if err := w.WriteExpunge(m.UID); err != nil {
-				return err
-			}
+			return err
+		}
 	}
 	return nil
 }
