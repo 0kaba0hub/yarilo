@@ -8,18 +8,22 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - unparam
     - bodyclose
     - noctx
-    - exportloopref
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/0kaba0hub/yarilo
 
 linters-settings:
-  goimports:
-    local-prefixes: github.com/0kaba0hub/yarilo
   errcheck:
     check-type-assertions: true
     check-blank: false
