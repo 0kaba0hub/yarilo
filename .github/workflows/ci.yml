@@ -49,7 +49,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.1.6
 
       - name: Run hadolint
         uses: hadolint/hadolint-action@v3.3.0
