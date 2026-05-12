@@ -1,0 +1,24 @@
+mode: single  # single | proxy | director | backend
+
+imap:
+  listen: ":993"
+  listen_plain: ":143"
+  tls_cert: ""
+  tls_key: ""
+
+auth:
+  passdb:
+    - driver: sqlite
+      dsn: /var/lib/yarilo/users.db
+
+storage:
+  mailbox: maildir
+  maildir_root: /var/mail/vhosts
+  index: fileindex
+  index_dir: ""   # defaults to maildir_root
+
+telemetry:
+  listen: ":8080"
+
+log:
+  level: info    # set LOG_LEVEL=debug env var to override at runtime
