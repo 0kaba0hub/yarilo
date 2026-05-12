@@ -27,8 +27,12 @@ const (
 	logMinor       = 3
 	baseHeaderSize = 120 // bytes
 	baseRecordSize = 5   // uid(4) + flags(1)
-	extRecordSize  = 8   // + modseq(8) — we always include modseq
+	modseqExt      = 8   // modseq extension: always present
+	kwExt          = 4   // keyword bitmask extension: 4 bytes = 32 keywords
 	compatFlagsLE  = 0x01
+
+	// maxKeywords is the max number of keywords supported (32 bits).
+	maxKeywords = 32
 )
 
 // flag bits (IMAP standard flags stored in index record)
@@ -40,14 +44,16 @@ const (
 	flagDraft    = 0x10
 )
 
-// transaction log record types
+// transaction log record types (from INTERNALS.md §7)
 const (
-	txExpunge      = 0x00000001
-	txAppend       = 0x00000002
-	txFlagUpdate   = 0x00000004
-	txHeaderUpdate = 0x00000020
-	txModseqUpdate = 0x00008000
-	txBoundary     = 0x00080000
+	txExpunge       = 0x00000001
+	txAppend        = 0x00000002
+	txFlagUpdate    = 0x00000004
+	txHeaderUpdate  = 0x00000020
+	txExtIntro      = 0x00000040
+	txKeywordUpdate = 0x00000400
+	txModseqUpdate  = 0x00008000
+	txBoundary      = 0x00080000
 )
 
 // IndexFile manages the .index file for one mailbox folder.
@@ -65,21 +71,22 @@ type IndexFile struct {
 	logFileSeq   uint32
 	logFileTail  uint32
 	logFileHead  uint32
+	recordSize   uint32 // read from header; may grow when keywords are added
 
 	records   []indexRecord
 	filenames map[uint32]string // uid → backend filename, persisted to .index.names
+	recKeys   map[uint32]uint32 // uid → keyword bitmask
+	keywords  []string          // ordered keyword names (dovecot-keywords file)
 	logF      *os.File          // append-only .index.log fd
 	modseq    uint64
 }
 
 type indexRecord struct {
-	uid    uint32
-	flags  uint8
-	modseq uint64
+	uid         uint32
+	flags       uint8
+	modseq      uint64
+	keywordBits uint32
 }
-
-// folderID encodes user+folder into a uint64 for the IndexBackend interface.
-// Format: not used directly — each IndexFile is opened per (user, folder).
 
 // Backend is the FileIndex IndexBackend.
 type Backend struct {
@@ -149,10 +156,16 @@ func (b *Backend) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
+	kwBits, err := idx.internKeywords(m.Keywords)
+	if err != nil {
+		return err
+	}
+
 	rec := indexRecord{
-		uid:    m.UID,
-		flags:  imapFlagsToIndex(m.Flags),
-		modseq: m.ModSeq,
+		uid:         m.UID,
+		flags:       imapFlagsToIndex(m.Flags),
+		modseq:      m.ModSeq,
+		keywordBits: kwBits,
 	}
 	idx.records = append(idx.records, rec)
 	idx.msgCount++
@@ -162,13 +175,22 @@ func (b *Backend) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	if rec.flags&flagDeleted != 0 {
 		idx.deletedCount++
 	}
+	if kwBits != 0 {
+		idx.recKeys[m.UID] = kwBits
+	}
 	if m.Filename != "" {
 		idx.filenames[m.UID] = m.Filename
 		if err := idx.appendNameEntry(m.UID, m.Filename); err != nil {
 			return err
 		}
 	}
-	return idx.appendLogRecord(txAppend, rec)
+	if err := idx.appendLogRecord(txAppend, rec); err != nil {
+		return err
+	}
+	if kwBits != 0 {
+		return idx.appendKeywordUpdateLog(m.UID, kwBits)
+	}
+	return nil
 }
 
 func (b *Backend) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
@@ -181,6 +203,11 @@ func (b *Backend) UpdateFlags(folderID uint64, uid uint32, flags, keywords []str
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
+	kwBits, err := idx.internKeywords(keywords)
+	if err != nil {
+		return err
+	}
+
 	newFlags := imapFlagsToIndex(flags)
 	for i := range idx.records {
 		if idx.records[i].uid != uid {
@@ -189,9 +216,9 @@ func (b *Backend) UpdateFlags(folderID uint64, uid uint32, flags, keywords []str
 		old := idx.records[i].flags
 		idx.records[i].flags = newFlags
 		idx.records[i].modseq = idx.modseq + 1
+		idx.records[i].keywordBits = kwBits
 		idx.modseq++
 
-		// maintain seen/deleted counters
 		if old&flagSeen != 0 && newFlags&flagSeen == 0 {
 			idx.seenCount--
 		} else if old&flagSeen == 0 && newFlags&flagSeen != 0 {
@@ -202,7 +229,18 @@ func (b *Backend) UpdateFlags(folderID uint64, uid uint32, flags, keywords []str
 		} else if old&flagDeleted == 0 && newFlags&flagDeleted != 0 {
 			idx.deletedCount++
 		}
-		return idx.appendLogRecord(txFlagUpdate, idx.records[i])
+		if kwBits != 0 {
+			idx.recKeys[uid] = kwBits
+		} else {
+			delete(idx.recKeys, uid)
+		}
+		if err := idx.appendLogRecord(txFlagUpdate, idx.records[i]); err != nil {
+			return err
+		}
+		if kwBits != 0 {
+			return idx.appendKeywordUpdateLog(uid, kwBits)
+		}
+		return nil
 	}
 	return nil
 }
@@ -224,6 +262,7 @@ func (b *Backend) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.
 				UID:      rec.uid,
 				Filename: idx.filenames[rec.uid],
 				Flags:    indexFlagsToIMAP(rec.flags),
+				Keywords: idx.bitsToKeywords(rec.keywordBits),
 				ModSeq:   rec.modseq,
 			})
 		}
@@ -253,6 +292,7 @@ func (b *Backend) ExpungeMessage(folderID uint64, uid uint32) error {
 		}
 		idx.records = append(idx.records[:i], idx.records[i+1:]...)
 		idx.msgCount--
+		delete(idx.recKeys, uid)
 		return idx.appendLogRecord(txExpunge, rec)
 	}
 	return nil
@@ -269,6 +309,21 @@ func (b *Backend) NextModSeq(folderID uint64) (uint64, error) {
 	defer idx.mu.Unlock()
 	idx.modseq++
 	return idx.modseq, nil
+}
+
+// Keywords returns the ordered keyword list for the folder (Dovecot-compatible).
+func (b *Backend) Keywords(folderID uint64) ([]string, error) {
+	b.mu.Lock()
+	idx, ok := b.open[folderID]
+	b.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	out := make([]string, len(idx.keywords))
+	copy(out, idx.keywords)
+	return out, nil
 }
 
 func (b *Backend) Close() error {
@@ -295,7 +350,11 @@ func (b *Backend) indexDir(user, folder string) string {
 // ---- IndexFile low-level ------------------------------------------------
 
 func openIndexFile(path string, uidValidity uint32) (*IndexFile, error) {
-	idx := &IndexFile{path: path, filenames: make(map[uint32]string)}
+	idx := &IndexFile{
+		path:      path,
+		filenames: make(map[uint32]string),
+		recKeys:   make(map[uint32]uint32),
+	}
 
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -312,6 +371,7 @@ func openIndexFile(path string, uidValidity uint32) (*IndexFile, error) {
 	if err := idx.readRecords(f); err != nil {
 		return nil, fmt.Errorf("fileindex: read records %s: %w", path, err)
 	}
+	idx.loadKeywords()
 	idx.loadNames()
 	if err := idx.replayLog(); err != nil {
 		return nil, fmt.Errorf("fileindex: replay log %s: %w", path, err)
@@ -327,6 +387,7 @@ func (idx *IndexFile) initNew(uidValidity uint32) (*IndexFile, error) {
 	idx.uidValidity = uidValidity
 	idx.nextUID = 1
 	idx.modseq = 1
+	idx.recordSize = baseRecordSize + modseqExt
 
 	if err := idx.writeHeader(); err != nil {
 		return nil, err
@@ -337,7 +398,7 @@ func (idx *IndexFile) initNew(uidValidity uint32) (*IndexFile, error) {
 	return idx, nil
 }
 
-// writeHeader writes the 120-byte index header to the .index file.
+// writeHeader writes the 120-byte index header.
 func (idx *IndexFile) writeHeader() error {
 	buf := make([]byte, baseHeaderSize)
 	le := binary.LittleEndian
@@ -346,7 +407,7 @@ func (idx *IndexFile) writeHeader() error {
 	buf[1] = indexMinor
 	le.PutUint32(buf[2:], uint32(baseHeaderSize))
 	le.PutUint32(buf[6:], uint32(baseHeaderSize))
-	le.PutUint32(buf[10:], uint32(baseRecordSize+extRecordSize))
+	le.PutUint32(buf[10:], idx.recordSize)
 	buf[14] = compatFlagsLE
 
 	le.PutUint32(buf[16:], idx.indexID)
@@ -389,12 +450,16 @@ func (idx *IndexFile) readHeader(f *os.File) error {
 	idx.logFileTail = le.Uint32(buf[48:])
 	idx.logFileHead = le.Uint32(buf[52:])
 	idx.modseq = le.Uint64(buf[56:])
+	idx.recordSize = le.Uint32(buf[10:])
+	if idx.recordSize < baseRecordSize+modseqExt {
+		idx.recordSize = baseRecordSize + modseqExt
+	}
 	return nil
 }
 
 func (idx *IndexFile) readRecords(f *os.File) error {
-	recSize := baseRecordSize + extRecordSize
-	buf := make([]byte, recSize)
+	rs := idx.recordSize
+	buf := make([]byte, rs)
 	for {
 		_, err := io.ReadFull(f, buf)
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -408,10 +473,17 @@ func (idx *IndexFile) readRecords(f *os.File) error {
 			flags:  buf[4],
 			modseq: binary.LittleEndian.Uint64(buf[5:]),
 		}
+		// keyword extension present when record_size >= base+modseq+kw
+		if rs >= baseRecordSize+modseqExt+kwExt {
+			rec.keywordBits = binary.LittleEndian.Uint32(buf[baseRecordSize+modseqExt:])
+		}
 		if rec.uid == 0 {
 			continue
 		}
 		idx.records = append(idx.records, rec)
+		if rec.keywordBits != 0 {
+			idx.recKeys[rec.uid] = rec.keywordBits
+		}
 	}
 	return nil
 }
@@ -428,7 +500,6 @@ func (idx *IndexFile) replayLog() error {
 	}
 	defer f.Close()
 
-	// Skip 32-byte log header
 	if _, err := f.Seek(32, io.SeekStart); err != nil {
 		return nil
 	}
@@ -464,6 +535,9 @@ func (idx *IndexFile) applyLogRecord(txType uint32, data []byte) {
 			flags:  data[4],
 			modseq: binary.LittleEndian.Uint64(data[5:]),
 		}
+		if len(data) >= 17 {
+			rec.keywordBits = binary.LittleEndian.Uint32(data[13:])
+		}
 		idx.records = append(idx.records, rec)
 		idx.msgCount++
 	case txExpunge:
@@ -475,6 +549,7 @@ func (idx *IndexFile) applyLogRecord(txType uint32, data []byte) {
 			if r.uid == uid {
 				idx.records = append(idx.records[:i], idx.records[i+1:]...)
 				idx.msgCount--
+				delete(idx.recKeys, uid)
 				break
 			}
 		}
@@ -485,13 +560,39 @@ func (idx *IndexFile) applyLogRecord(txType uint32, data []byte) {
 		uid := binary.LittleEndian.Uint32(data[0:])
 		newFlags := data[4]
 		newModSeq := binary.LittleEndian.Uint64(data[5:])
+		var kwBits uint32
+		if len(data) >= 17 {
+			kwBits = binary.LittleEndian.Uint32(data[13:])
+		}
 		for i := range idx.records {
 			if idx.records[i].uid == uid {
 				idx.records[i].flags = newFlags
 				idx.records[i].modseq = newModSeq
+				idx.records[i].keywordBits = kwBits
 				break
 			}
 		}
+	case txKeywordUpdate:
+		// payload: uid(4) + keyword_bits(4)
+		if len(data) < 8 {
+			return
+		}
+		uid := binary.LittleEndian.Uint32(data[0:])
+		bits := binary.LittleEndian.Uint32(data[4:])
+		if bits != 0 {
+			idx.recKeys[uid] = bits
+		} else {
+			delete(idx.recKeys, uid)
+		}
+		for i := range idx.records {
+			if idx.records[i].uid == uid {
+				idx.records[i].keywordBits = bits
+				break
+			}
+		}
+	case txExtIntro:
+		// EXT_INTRO for keywords: payload contains the keyword name list.
+		// We reload from the dovecot-keywords file on open, so just skip here.
 	}
 }
 
@@ -513,28 +614,27 @@ func (idx *IndexFile) openLog() error {
 	return nil
 }
 
-// writeLogHeader writes the 32-byte log file header.
 func (idx *IndexFile) writeLogHeader(f *os.File) error {
 	buf := make([]byte, 32)
 	le := binary.LittleEndian
 	buf[0] = logMajor
 	buf[1] = logMinor
-	le.PutUint32(buf[2:], 32) // hdr_size
+	le.PutUint32(buf[2:], 32)
 	le.PutUint32(buf[6:], idx.indexID)
 	le.PutUint32(buf[10:], idx.logFileSeq)
-	binary.LittleEndian.PutUint64(buf[18:], idx.modseq) // initial_modseq
-	le.PutUint32(buf[26:], uint32(time.Now().Unix()))   // create_stamp
+	binary.LittleEndian.PutUint64(buf[18:], idx.modseq)
+	le.PutUint32(buf[26:], uint32(time.Now().Unix()))
 	_, err := f.Write(buf)
 	return err
 }
 
-// appendLogRecord writes one transaction record to .index.log.
-// Format: size(4) + type(4) + uid(4) + flags(1) + modseq(8) = 21 bytes total.
+// appendLogRecord writes one flag/expunge/append transaction to .index.log.
+// Payload: uid(4) + flags(1) + modseq(8) + keyword_bits(4) = 17 bytes.
 func (idx *IndexFile) appendLogRecord(txType uint32, rec indexRecord) error {
 	if idx.logF == nil {
 		return nil
 	}
-	const payloadSize = 13 // uid(4)+flags(1)+modseq(8)
+	const payloadSize = 17 // uid(4)+flags(1)+modseq(8)+kwbits(4)
 	const totalSize = 4 + 4 + payloadSize
 	buf := make([]byte, totalSize)
 	le := binary.LittleEndian
@@ -543,6 +643,48 @@ func (idx *IndexFile) appendLogRecord(txType uint32, rec indexRecord) error {
 	le.PutUint32(buf[8:], rec.uid)
 	buf[12] = rec.flags
 	le.PutUint64(buf[13:], rec.modseq)
+	le.PutUint32(buf[21:], rec.keywordBits)
+	_, err := idx.logF.Write(buf)
+	return err
+}
+
+// appendKeywordUpdateLog writes a KEYWORD_UPDATE record: uid(4) + bits(4).
+func (idx *IndexFile) appendKeywordUpdateLog(uid, bits uint32) error {
+	if idx.logF == nil {
+		return nil
+	}
+	const totalSize = 4 + 4 + 8 // size + type + payload
+	buf := make([]byte, totalSize)
+	le := binary.LittleEndian
+	le.PutUint32(buf[0:], totalSize)
+	le.PutUint32(buf[4:], txKeywordUpdate)
+	le.PutUint32(buf[8:], uid)
+	le.PutUint32(buf[12:], bits)
+	_, err := idx.logF.Write(buf)
+	return err
+}
+
+// appendExtIntroLog writes an EXT_INTRO record announcing the keywords extension.
+// Called once when the first keyword is registered for this folder.
+func (idx *IndexFile) appendExtIntroLog() error {
+	if idx.logF == nil {
+		return nil
+	}
+	const name = "keywords"
+	// payload: name_len(4) + name + record_size(4) + hdr_size(4) + reset_id(4)
+	nameBytes := []byte(name)
+	payloadSize := 4 + len(nameBytes) + 4 + 4 + 4
+	totalSize := 4 + 4 + payloadSize
+	buf := make([]byte, totalSize)
+	le := binary.LittleEndian
+	le.PutUint32(buf[0:], uint32(totalSize))
+	le.PutUint32(buf[4:], txExtIntro)
+	le.PutUint32(buf[8:], uint32(len(nameBytes)))
+	copy(buf[12:], nameBytes)
+	off := 12 + len(nameBytes)
+	le.PutUint32(buf[off:], kwExt) // record_size extension
+	le.PutUint32(buf[off+4:], 0)   // hdr_size extension
+	le.PutUint32(buf[off+8:], 0)   // reset_id
 	_, err := idx.logF.Write(buf)
 	return err
 }
@@ -554,7 +696,107 @@ func (idx *IndexFile) close() error {
 	return nil
 }
 
-// loadNames reads uid→filename entries from .index.names (best-effort).
+// ---- keyword helpers ----------------------------------------------------
+
+// internKeywords ensures all keyword names exist in dovecot-keywords,
+// returns the bitmask for the given set. Grows the keyword list as needed.
+// Also grows record_size in the index header if keywords are new.
+func (idx *IndexFile) internKeywords(names []string) (uint32, error) {
+	if len(names) == 0 {
+		return 0, nil
+	}
+	var bits uint32
+	newKeyword := false
+	for _, name := range names {
+		idx2 := idx.keywordIndex(name)
+		if idx2 < 0 {
+			if len(idx.keywords) >= maxKeywords {
+				return 0, fmt.Errorf("fileindex: keyword limit (%d) reached", maxKeywords)
+			}
+			idx2 = len(idx.keywords)
+			idx.keywords = append(idx.keywords, name)
+			if err := idx.saveKeywords(); err != nil {
+				return 0, err
+			}
+			newKeyword = true
+		}
+		if idx2 < maxKeywords {
+			bits |= 1 << uint(idx2)
+		}
+	}
+	// Grow record_size and write EXT_INTRO the first time keywords are used.
+	if newKeyword && idx.recordSize < baseRecordSize+modseqExt+kwExt {
+		idx.recordSize = baseRecordSize + modseqExt + kwExt
+		if err := idx.writeHeader(); err != nil {
+			return 0, err
+		}
+		if err := idx.appendExtIntroLog(); err != nil {
+			return 0, err
+		}
+	}
+	return bits, nil
+}
+
+// keywordIndex returns the index of name in idx.keywords, or -1 if not found.
+func (idx *IndexFile) keywordIndex(name string) int {
+	for i, kw := range idx.keywords {
+		if kw == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// bitsToKeywords converts a keyword bitmask back to keyword names.
+func (idx *IndexFile) bitsToKeywords(bits uint32) []string {
+	if bits == 0 {
+		return nil
+	}
+	var out []string
+	for i, name := range idx.keywords {
+		if i >= maxKeywords {
+			break
+		}
+		if bits&(1<<uint(i)) != 0 {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// loadKeywords reads the dovecot-keywords file co-located with the .index file.
+func (idx *IndexFile) loadKeywords() {
+	f, err := os.Open(idx.path + ".keywords")
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" {
+			idx.keywords = append(idx.keywords, line)
+		}
+	}
+}
+
+// saveKeywords rewrites the dovecot-keywords file.
+func (idx *IndexFile) saveKeywords() error {
+	f, err := os.OpenFile(idx.path+".keywords", os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for _, kw := range idx.keywords {
+		if _, err := fmt.Fprintln(f, kw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---- filename helpers ----------------------------------------------------
+
 func (idx *IndexFile) loadNames() {
 	f, err := os.Open(idx.path + ".names")
 	if err != nil {
@@ -576,7 +818,6 @@ func (idx *IndexFile) loadNames() {
 	}
 }
 
-// appendNameEntry persists one uid→filename entry to .index.names.
 func (idx *IndexFile) appendNameEntry(uid uint32, filename string) error {
 	f, err := os.OpenFile(idx.path+".names", os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
@@ -587,8 +828,9 @@ func (idx *IndexFile) appendNameEntry(uid uint32, filename string) error {
 	return err
 }
 
+// ---- log header ---------------------------------------------------------
+
 // seqSetContains reports whether uid is in the set.
-// An empty set or a range with From=0,To=0 matches everything.
 func seqSetContains(s mailbox.SeqSet, uid uint32) bool {
 	if len(s) == 0 {
 		return true
@@ -608,7 +850,7 @@ func seqSetContains(s mailbox.SeqSet, uid uint32) bool {
 	return false
 }
 
-// ---- flag conversion ---------------------------------------------------
+// ---- flag conversion ----------------------------------------------------
 
 func imapFlagsToIndex(flags []string) uint8 {
 	var b uint8

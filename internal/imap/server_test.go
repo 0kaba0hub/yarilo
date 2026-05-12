@@ -434,3 +434,85 @@ func TestConcurrentSessions(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// ---- TestKeywords -----------------------------------------------------------
+
+func TestKeywords(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// APPEND with a user-defined keyword.
+	body := []byte(testMsg)
+	flags := []imap.Flag{imap.Flag("$Forwarded")}
+	ac := c.Append("INBOX", int64(len(body)), &imap.AppendOptions{Flags: flags})
+	if _, err := ac.Write(body); err != nil {
+		t.Fatalf("Append write: %v", err)
+	}
+	if err := ac.Close(); err != nil {
+		t.Fatalf("Append close: %v", err)
+	}
+	if _, err := ac.Wait(); err != nil {
+		t.Fatalf("Append wait: %v", err)
+	}
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	// FETCH FLAGS — must include $Forwarded.
+	msgs, err := c.Fetch(
+		imap.SeqSetNum(1),
+		&imap.FetchOptions{Flags: true},
+	).Collect()
+	if err != nil {
+		t.Fatalf("FETCH: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 fetch result, got %d", len(msgs))
+	}
+	var found bool
+	for _, f := range msgs[0].Flags {
+		if f == "$Forwarded" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("$Forwarded not in FLAGS after APPEND: %v", msgs[0].Flags)
+	}
+
+	// STORE +FLAGS ($NotJunk) — add keyword via STORE.
+	storeCmd := c.Store(
+		imap.SeqSetNum(1),
+		&imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{"$NotJunk"}},
+		nil,
+	)
+	if err := storeCmd.Close(); err != nil {
+		t.Fatalf("STORE +FLAGS ($NotJunk): %v", err)
+	}
+
+	msgs2, err := c.Fetch(
+		imap.SeqSetNum(1),
+		&imap.FetchOptions{Flags: true},
+	).Collect()
+	if err != nil {
+		t.Fatalf("FETCH after STORE: %v", err)
+	}
+	if len(msgs2) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs2))
+	}
+	var foundForwarded, foundNotJunk bool
+	for _, f := range msgs2[0].Flags {
+		switch f {
+		case "$Forwarded":
+			foundForwarded = true
+		case "$NotJunk":
+			foundNotJunk = true
+		}
+	}
+	if !foundForwarded {
+		t.Errorf("$Forwarded missing after STORE: %v", msgs2[0].Flags)
+	}
+	if !foundNotJunk {
+		t.Errorf("$NotJunk missing after STORE: %v", msgs2[0].Flags)
+	}
+}

@@ -126,6 +126,80 @@ func TestSeqSetContains(t *testing.T) {
 	}
 }
 
+func TestKeywordsRoundTrip(t *testing.T) {
+	b := New(t.TempDir())
+	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+
+	modseq, _ := b.NextModSeq(f.ID)
+	err := b.AppendMessage(f.ID, &mailbox.MessageMeta{
+		UID:      1,
+		Flags:    []string{`\Seen`},
+		Keywords: []string{"$Forwarded", "$Junk"},
+		ModSeq:   modseq,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, _ := b.GetMessages(f.ID, mailbox.SeqSet{})
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	hasKW := func(kws []string, k string) bool {
+		for _, kw := range kws {
+			if kw == k {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasKW(msgs[0].Keywords, "$Forwarded") {
+		t.Errorf("$Forwarded not in keywords: %v", msgs[0].Keywords)
+	}
+	if !hasKW(msgs[0].Keywords, "$Junk") {
+		t.Errorf("$Junk not in keywords: %v", msgs[0].Keywords)
+	}
+	b.Close() //nolint:errcheck
+
+	// Verify keywords survive a close+reopen (disk persistence).
+	b2 := New(b.root)
+	f2, _ := b2.OpenFolder("u@x.com", "INBOX", 1)
+	msgs2, _ := b2.GetMessages(f2.ID, mailbox.SeqSet{})
+	if len(msgs2) != 1 {
+		t.Fatalf("after reopen: got %d messages, want 1", len(msgs2))
+	}
+	if !hasKW(msgs2[0].Keywords, "$Forwarded") {
+		t.Errorf("after reopen: $Forwarded not in keywords: %v", msgs2[0].Keywords)
+	}
+	b2.Close() //nolint:errcheck
+}
+
+func TestKeywordsUpdateFlags(t *testing.T) {
+	b := New(t.TempDir())
+	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}}) //nolint:errcheck
+
+	if err := b.UpdateFlags(f.ID, 1, []string{`\Seen`}, []string{"$NotJunk"}); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, _ := b.GetMessages(f.ID, mailbox.SeqSet{})
+	if len(msgs) == 0 {
+		t.Fatal("no messages after UpdateFlags")
+	}
+	found := false
+	for _, kw := range msgs[0].Keywords {
+		if kw == "$NotJunk" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("$NotJunk not in keywords after UpdateFlags: %v", msgs[0].Keywords)
+	}
+	b.Close() //nolint:errcheck
+}
+
 func TestFlagConversion(t *testing.T) {
 	flags := []string{`\Answered`, `\Flagged`, `\Deleted`, `\Seen`, `\Draft`}
 	idx := imapFlagsToIndex(flags)
