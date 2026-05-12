@@ -1,0 +1,64 @@
+name: Smoke test — yarilo
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "yarilo hostname"
+        required: true
+      imap_port:
+        description: "IMAPS port"
+        default: "993"
+      telemetry_url:
+        description: "Telemetry base URL (e.g. http://10.0.0.1:8080)"
+        required: true
+      insecure:
+        description: "Skip TLS cert verification (true/false)"
+        default: "false"
+
+  workflow_call:
+    inputs:
+      host:
+        type: string
+        required: true
+      imap_port:
+        type: string
+        default: "993"
+      telemetry_url:
+        type: string
+        required: true
+      insecure:
+        type: string
+        default: "false"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  smoke:
+    name: Smoke test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build smoketest
+        run: go build -o /tmp/smoketest ./app/smoketest
+
+      - name: Run smoke checks
+        run: |
+          /tmp/smoketest \
+            -host "${{ inputs.host }}" \
+            -imap-port "${{ inputs.imap_port }}" \
+            -telemetry "${{ inputs.telemetry_url }}" \
+            -insecure="${{ inputs.insecure }}" \
+            -timeout 15s
