@@ -17,8 +17,8 @@ func TestLogReplay(t *testing.T) {
 		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Seen`}, ModSeq: modseq}) //nolint:errcheck
 	}
 	b.UpdateFlags(f.ID, 2, []string{`\Seen`, `\Flagged`}, nil) //nolint:errcheck
-	b.ExpungeMessage(f.ID, 3)                                   //nolint:errcheck
-	b.Close()                                                    //nolint:errcheck
+	b.ExpungeMessage(f.ID, 3)                                  //nolint:errcheck
+	b.Close()                                                  //nolint:errcheck
 
 	// Reopen — all state must come from replaying .index.log.
 	b2 := New(dir)
