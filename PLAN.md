@@ -7,46 +7,109 @@ targeting full feature parity with industry-standard open-source IMAP servers.
 
 ## Architecture
 
+Yarilo запускається в одному з трьох режимів (`mode: proxy | director | backend`).
+Один бінарник — три ролі.
+
 ```
-                     ┌─────────────────────────────────────┐
-                     │              Clients                 │
-                     │  Thunderbird / Apple Mail / Outlook  │
-                     └────────┬──────────────┬─────────────┘
-                              │ IMAP/POP3    │ SMTP submit
-                 ┌────────────▼──────────┐   │
-                 │     IMAP Server       │   │
-                 │  (go-imap/v2 backend) │   │
-                 └────────────┬──────────┘   │
-                              │              │
-           ┌──────────────────┼──────────────▼──────────┐
-           │              Yarilo Core                    │
-           │                                             │
-           │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-           │  │   Auth   │  │  Quota   │  │   ACL    │  │
-           │  └──────────┘  └──────────┘  └──────────┘  │
-           │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-           │  │  Sieve   │  │   FTS    │  │  Admin   │  │
-           │  └──────────┘  └──────────┘  └──────────┘  │
-           └──────────────────┬──────────────────────────┘
-                              │
-        ┌─────────────────────┴──────────────────────────┐
-        │                 Storage Layer                   │
-        │                                                 │
-        │   MailboxBackend          IndexBackend          │
-        │   ┌──────────────┐        ┌──────────────┐      │
-        │   │   Maildir    │        │  FileIndex   │      │
-        │   │   dbox       │   +    │  SQLite      │      │
-        │   │   mdbox      │        │  Cassandra   │      │
-        │   │   obox (S3)  │        └──────────────┘      │
-        │   └──────────────┘                              │
-        └─────────────────────────────────────────────────┘
+  Internet
+     |
+     | IMAP/IMAPs/POP3/POP3s/JMAP/SMTP
+     v
++--------------------+     +--------------------+
+|      PROXY         |     |      PROXY         |  ...N proxies
+|                    |     |                    |
+| - TLS termination  |     | - TLS termination  |
+| - Auth (passdb)    |     | - Auth (passdb)    |
+| - Route lookup     |     | - Route lookup     |
++--------+-----------+     +----------+---------+
+         |  gRPC                      |
+         |  "where is user X?"        |
+         v                            v
++------------------------------------------------+
+|                  DIRECTOR                      |
+|                                                |
+| - Consistent hashing: user@domain -> backend  |
+| - Sticky sessions (один юзер = один backend)  |
+| - Backend registry + health checks            |
+| - Failover: reassign при падінні ноди         |
++--------+----------+----------+----------------+
+         |          |          |
+         v          v          v
+  +----------+ +----------+ +----------+
+  | BACKEND  | | BACKEND  | | BACKEND  |  ...N backends
+  |          | |          | |          |
+  | IMAP     | | IMAP     | | IMAP     |
+  | POP3     | | POP3     | | POP3     |
+  | JMAP     | | JMAP     | | JMAP     |
+  | Sieve    | | Sieve    | | Sieve    |
+  | Quota    | | Quota    | | Quota    |
+  | ACL      | | ACL      | | ACL      |
+  +----+-----+ +----+-----+ +----+-----+
+       |             |            |
+       v             v            v
+  +-----------+ +-----------+ +-----------+
+  | Mailbox   | | Mailbox   | | Mailbox   |
+  | Backend   | | Backend   | | Backend   |
+  | +Index    | | +Index    | | +Index    |
+  +-----------+ +-----------+ +-----------+
+       |                            |
+       v                            v
+  [Maildir/dbox/mdbox]          [obox → S3]
+  [FileIndex/SQLite]            [Cassandra]
 ```
 
-**MailboxBackend** — як і де зберігаються тіла листів (формат)
-**IndexBackend** — де зберігається індекс (UIDs, flags, modseq, folders)
+### Proxy
+- Приймає з'єднання клієнтів (IMAP/POP3/JMAP/SMTP)
+- TLS termination, SNI per-domain
+- Аутентифікація (passdb lookup)
+- Запитує Director: "на який backend роутити user@domain?"
+- Проксує з'єднання до backend (IMAP proxy protocol)
+- Stateless — можна додавати без обмежень
 
-Будь-яка комбінація: наприклад Maildir + FileIndex (single node),
-або mdbox + Cassandra (multi-node), або obox + Cassandra (cloud).
+### Director
+- Один (або кілька з election) активний вузол
+- Consistent hashing ring: user@domain → backend node
+- Sticky sessions: всі з'єднання одного юзера йдуть на один backend
+- Health checks до backend нод (gRPC ping)
+- Failover: при падінні backend → reassign users → notify proxies
+- gRPC API для proxy
+
+### Backend
+- Повноцінний IMAP/POP3/JMAP сервер
+- Sieve, Quota, ACL, FTS
+- Доступ до MailboxBackend + IndexBackend
+- Не виставляється в інтернет — тільки всередині кластера
+- Реєструється в Director при старті
+
+---
+
+### Deployment modes
+
+| Mode | Компоненти | Use case |
+|:---|:---|:---|
+| Single node | proxy + director + backend в одному процесі | dev / small |
+| Multi-node | окремі proxy / director / backend | production |
+| Cloud | proxy + director + backend(obox+Cassandra) | large scale |
+
+---
+
+### Storage Layer
+
+```
+MailboxBackend (формат зберігання листів)
+    |- Maildir    — local FS, один файл = один лист
+    |- dbox       — local FS, sdbox формат
+    |- mdbox      — local FS, кілька листів в файлі
+    \- obox       — S3-compatible object storage
+
+IndexBackend (де зберігається IMAP індекс)
+    |- FileIndex  — бінарні файли поруч з mailbox (single node)
+    |- SQLite     — dev / малі деплої
+    \- Cassandra  — multi-node / large scale
+```
+
+Будь-яка комбінація: Maildir+FileIndex (single node),
+mdbox+Cassandra (multi-node), obox+Cassandra (cloud).
 
 ---
 
@@ -55,44 +118,48 @@ targeting full feature parity with industry-standard open-source IMAP servers.
 ```
 yarilo/
 |- cmd/
-|  |- imap/               # IMAP server entrypoint
-|  |- smtp/               # SMTP inbound MTA entrypoint
-|  |- lmtp/               # LMTP local delivery entrypoint
-|  \- admin/              # Admin API entrypoint
+|  \- yarilo/             # єдиний бінарник, режим через конфіг
 |- internal/
-|  |- imap/               # IMAP protocol handlers (go-imap/v2 backend)
+|  |- proxy/              # Proxy mode: TLS, auth, routing, connection proxy
+|  |- director/           # Director mode: hash ring, sticky sessions, health
+|  |- backend/            # Backend mode: wiring всіх компонентів
+|  |- cluster/
+|  |  |- grpc/            # gRPC протокол proxy<->director<->backend
+|  |  \- ring/            # Consistent hashing ring
+|  |- imap/               # IMAP protocol (go-imap/v2)
+|  |- pop3/               # POP3 protocol
+|  |- jmap/               # JMAP Core + Mail (go-jmap)
+|  |  \- push/            # JMAP WebSocket push (RFC 8887)
 |  |- smtp/               # SMTP inbound + outbound
-|  |- lmtp/               # LMTP delivery agent
-|  |- pop3/               # POP3 protocol handler
+|  |- lmtp/               # LMTP delivery
+|  |- managesieve/        # ManageSieve protocol (RFC 5804)
 |  |- storage/
 |  |  |- mailbox/
-|  |  |  |- maildir/      # Maildir format (one file = one message)
-|  |  |  |- dbox/         # sdbox format (Dovecot-compatible)
-|  |  |  |- mdbox/        # mdbox format (multi-message files)
-|  |  |  \- obox/         # Object storage (S3-compatible)
+|  |  |  |- maildir/      # Maildir
+|  |  |  |- dbox/         # sdbox
+|  |  |  |- mdbox/        # mdbox
+|  |  |  \- obox/         # S3-compatible
 |  |  \- index/
-|  |     |- file/         # File-based index (like Dovecot lib-index)
-|  |     |- sqlite/       # SQLite index (dev / small deployments)
-|  |     \- cassandra/    # Cassandra index (multi-node / large scale)
+|  |     |- file/         # FileIndex (binary)
+|  |     |- sqlite/       # SQLite
+|  |     \- cassandra/    # Cassandra
 |  |- auth/
-|  |  |- sql/             # SQL passdb/userdb (SQLite or external DB)
-|  |  |- ldap/            # LDAP passdb/userdb
-|  |  |- pam/             # PAM passdb
-|  |  \- oauth2/          # OAuth2/OIDC passdb
-|  |- sieve/              # Sieve script engine (RFC 5228)
-|  |- managesieve/        # ManageSieve protocol (RFC 5804)
-|  |- quota/              # Quota tracking and enforcement
-|  |- acl/                # ACL and shared mailboxes
-|  |- fts/                # Full-text search
-|  |  |- sqlite/          # SQLite FTS5 (single node)
-|  |  \- elastic/         # Elasticsearch (large scale)
+|  |  |- sql/             # SQLite / MySQL / PostgreSQL
+|  |  \- oauth2/          # OAuth2/OIDC (XOAUTH2)
+|  |- sieve/              # Sieve engine (RFC 5228)
+|  |- quota/              # Quota tracking + enforcement
+|  |- acl/                # ACL + shared mailboxes
+|  |- fts/
+|  |  |- sqlite/          # SQLite FTS5
+|  |  \- elastic/         # Elasticsearch
 |  |- dkim/               # DKIM sign + verify
-|  |- spf/                # SPF verification
-|  |- dmarc/              # DMARC policy evaluation
-|  \- admin/              # Admin HTTP API
+|  |- spf/                # SPF
+|  |- dmarc/              # DMARC
+|  |- admin/              # Admin HTTP API
+|  \- telemetry/          # Health + Prometheus (кожен інстанс)
 |- pkg/
-|  |- mailbox/            # Core mailbox interfaces + types
-|  \- config/             # Configuration parsing
+|  |- mailbox/            # Core interfaces + types
+|  \- config/             # Config parsing
 |- config/
 |  \- yarilo.yaml         # Example config
 |- doc/
@@ -149,17 +216,20 @@ type IndexBackend interface {
 
 ---
 
-## Phase 1 — Core IMAP + Maildir + FileIndex (target: 2-3 months)
+## Phase 1 — Core: single-node + IMAP + Maildir + FileIndex (target: 2-3 months)
 
 ### Goals
-- Production-grade IMAP4rev1 server
+- Proxy + Director + Backend інтерфейси закладені з першого рядка коду
+- Single-node режим: всі три в одному процесі
+- IMAP4rev1 + основні extensions
 - Maildir mailbox backend (local FS)
-- FileIndex index backend (binary files, like Dovecot lib-index)
+- FileIndex index backend
 - Multi-tenant (user@domain)
-- Auth: flat file + SQLite passdb
+- Auth: SQLite passdb
 - TLS + SNI (per-domain certificates)
 - IMAP IDLE (RFC 2177)
 - CONDSTORE / QRESYNC (RFC 7162)
+- `/healthz`, `/readyz`, `/metrics` на кожному інстансі
 
 ### IMAP Extensions
 - `IDLE` — RFC 2177
@@ -176,17 +246,21 @@ type IndexBackend interface {
 
 ### Deliverables
 - [ ] `go.mod` init, project skeleton
-- [ ] `MailboxBackend` + `IndexBackend` interfaces
-- [ ] `internal/storage/mailbox/maildir` implementation
-- [ ] `internal/storage/index/file` implementation
-- [ ] IMAP server wiring `go-imap/v2`
-- [ ] SQLite auth passdb/userdb
-- [ ] TLS with SNI (per-domain certs)
-- [ ] Config: `yarilo.yaml`
-- [ ] `cmd/imap` binary
-- [ ] Docker: `golang:1.26-alpine` builder → `alpine:3.23` runtime
+- [ ] `MailboxBackend` + `IndexBackend` + `Proxy` + `Director` + `Backend` interfaces
+- [ ] `internal/cluster/ring` — consistent hashing
+- [ ] `internal/cluster/grpc` — gRPC protobuf для міжкомпонентної комунікації
+- [ ] `internal/proxy` — single-node stub (пряме з'єднання до backend)
+- [ ] `internal/director` — single-node stub (локальний routing)
+- [ ] `internal/storage/mailbox/maildir`
+- [ ] `internal/storage/index/file`
+- [ ] `internal/imap` — IMAP сервер (go-imap/v2)
+- [ ] `internal/auth/sql` — SQLite passdb
+- [ ] `internal/telemetry` — `/healthz`, `/readyz`, `/metrics`
+- [ ] Config: `yarilo.yaml` з `mode: single`
+- [ ] `cmd/yarilo` — єдиний бінарник
+- [ ] Docker: `golang:1.26-alpine` → `alpine:3.23`
 - [ ] GitHub Actions CI: build + test (linux/amd64)
-- [ ] README with config reference, deploy guide
+- [ ] README: config reference, deploy guide
 
 ---
 
@@ -459,6 +533,12 @@ pop3:
 
 managesieve:
   addr: ":4190"
+
+telemetry:
+  addr: "0.0.0.0:9090"      # кожен інстанс (proxy/director/backend)
+  health_path: /healthz      # GET -> 200 OK / 503
+  ready_path:  /readyz       # GET -> 200 OK коли готовий до трафіку
+  metrics_path: /metrics     # Prometheus exposition format
 
 admin:
   addr: "127.0.0.1:8080"
