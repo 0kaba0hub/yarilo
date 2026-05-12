@@ -11,7 +11,7 @@ spec:
     matchLabels:
       {{- include "yarilo.selectorLabels" . | nindent 6 }}
   strategy:
-    type: Recreate   # maildir PVC is ReadWriteOnce — only one pod at a time
+    type: Recreate   # ensures old pod releases the PVC before new pod mounts it
   template:
     metadata:
       labels:
