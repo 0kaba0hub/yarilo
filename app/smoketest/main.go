@@ -22,6 +22,7 @@ import (
 var (
 	flagHost          = flag.String("host", "localhost", "yarilo hostname")
 	flagIMAPSPort     = flag.String("imap-port", "993", "IMAPS port")
+	flagPOP3SPort     = flag.String("pop3s-port", "995", "POP3S port")
 	flagSMTPMXPort    = flag.String("smtp-mx-port", "25", "SMTP MX port")
 	flagSMTPSubPort   = flag.String("smtp-sub-port", "587", "SMTP submission port")
 	flagTelemetry     = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
@@ -29,6 +30,7 @@ var (
 	flagInsecure      = flag.Bool("insecure", false, "skip TLS certificate verification")
 	flagProxyProtocol = flag.Bool("proxy-protocol", false, "send HAProxy PROXY header before SMTP banner")
 	flagXClient       = flag.Bool("xclient", false, "check that MX port advertises XCLIENT in EHLO")
+	flagPOP3S         = flag.Bool("pop3s", false, "check POP3S greeting and CAPA")
 )
 
 type result struct {
@@ -62,6 +64,12 @@ func main() {
 			name string
 			fn   func() error
 		}{"smtp MX XCLIENT cap", checkSMTPXClient})
+	}
+	if *flagPOP3S {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"pop3s CAPA", checkPOP3S})
 	}
 
 	var failures []result
@@ -149,6 +157,59 @@ func checkIMAP() error {
 		}
 	}
 	fmt.Fprintf(conn, "A002 LOGOUT\r\n")
+	return nil
+}
+
+// ---- POP3S (port 995) ----------------------------------------------------
+
+func checkPOP3S() error {
+	addr := net.JoinHostPort(*flagHost, *flagPOP3SPort)
+	dialer := &net.Dialer{Timeout: *flagTimeout}
+	tlsCfg := &tls.Config{
+		ServerName:         *flagHost,
+		InsecureSkipVerify: *flagInsecure, //nolint:gosec
+	}
+	conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+
+	greeting, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("read greeting: %w", err)
+	}
+	if !strings.HasPrefix(greeting, "+OK") {
+		return fmt.Errorf("unexpected POP3 greeting: %q", greeting)
+	}
+
+	fmt.Fprintf(conn, "CAPA\r\n")
+	resp, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("CAPA response: %w", err)
+	}
+	if !strings.HasPrefix(resp, "+OK") {
+		return fmt.Errorf("CAPA failed: %q", resp)
+	}
+	foundUSER := false
+	for {
+		line, err := readLine(conn)
+		if err != nil {
+			return fmt.Errorf("CAPA read: %w", err)
+		}
+		if line == "." {
+			break
+		}
+		if strings.HasPrefix(line, "USER") {
+			foundUSER = true
+		}
+	}
+	if !foundUSER {
+		return fmt.Errorf("CAPA missing USER capability")
+	}
+
+	fmt.Fprintf(conn, "QUIT\r\n")
 	return nil
 }
 

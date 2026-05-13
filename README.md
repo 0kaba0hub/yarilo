@@ -149,6 +149,26 @@ imap:
   haproxy_timeout: 3                # seconds to wait for PROXY header
   disable_plaintext_auth: true      # reject AUTH without TLS
 
+pop3:
+  listen: ":995"                     # POP3S (TLS)
+  listen_plain: ""                   # STARTTLS (e.g. ":110"), empty = disabled
+  tls_cert: /etc/ssl/yarilo/cert.pem
+  tls_key:  /etc/ssl/yarilo/key.pem
+  tls_alt_cert: ""                   # optional ECDSA cert for dual-cert setup
+  tls_alt_key:  ""
+  tls_min_protocol: TLS1.2           # TLS1.2 | TLS1.3
+  tls_prefer_server_ciphers: false
+  disable_plaintext_auth: true       # reject USER/PASS without TLS
+  proxy_protocol: false
+  haproxy_timeout: 3
+  haproxy_trusted_nets:              # CIDRs allowed to send PROXY headers
+    - 127.0.0.1/32
+    - 10.0.0.0/8
+  xclient: false
+  xclient_trusted_nets:              # CIDRs allowed to send XCLIENT
+    - 127.0.0.1/32
+    - 10.0.0.0/8
+
 smtp:
   listen_mx:     ":25"
   listen_submit: ":587"
