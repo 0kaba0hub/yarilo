@@ -1,4 +1,4 @@
-package smtp
+package submission
 
 import (
 	"bufio"
@@ -6,15 +6,15 @@ import (
 	"strings"
 )
 
-type smtpWorkarounds uint32
+type submissionWorkarounds uint32
 
 const (
-	workaroundWhitespaceBeforePath smtpWorkarounds = 1 << iota
+	workaroundWhitespaceBeforePath submissionWorkarounds = 1 << iota
 	workaroundMailboxForPath
 )
 
-func parseSMTPWorkarounds(list []string) smtpWorkarounds {
-	var mask smtpWorkarounds
+func parseWorkarounds(list []string) submissionWorkarounds {
+	var mask submissionWorkarounds
 	for _, item := range list {
 		switch strings.ToLower(strings.TrimSpace(item)) {
 		case "whitespace-before-path":
@@ -26,27 +26,27 @@ func parseSMTPWorkarounds(list []string) smtpWorkarounds {
 	return mask
 }
 
-type smtpWorkaroundListener struct {
+type workaroundListener struct {
 	net.Listener
-	workarounds smtpWorkarounds
+	workarounds submissionWorkarounds
 }
 
-func (l *smtpWorkaroundListener) Accept() (net.Conn, error) {
+func (l *workaroundListener) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	return &smtpWorkaroundConn{Conn: c, br: bufio.NewReader(c), workarounds: l.workarounds}, nil
+	return &workaroundConn{Conn: c, br: bufio.NewReader(c), workarounds: l.workarounds}, nil
 }
 
-type smtpWorkaroundConn struct {
+type workaroundConn struct {
 	net.Conn
 	br          *bufio.Reader
 	pending     []byte
-	workarounds smtpWorkarounds
+	workarounds submissionWorkarounds
 }
 
-func (c *smtpWorkaroundConn) Read(b []byte) (int, error) {
+func (c *workaroundConn) Read(b []byte) (int, error) {
 	for {
 		if len(c.pending) > 0 {
 			n := copy(b, c.pending)
@@ -68,7 +68,7 @@ func (c *smtpWorkaroundConn) Read(b []byte) (int, error) {
 	}
 }
 
-func (c *smtpWorkaroundConn) applyWorkarounds(line string) string {
+func (c *workaroundConn) applyWorkarounds(line string) string {
 	upper := strings.ToUpper(line)
 	var prefixLen int
 	switch {

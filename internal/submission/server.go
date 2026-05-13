@@ -1,7 +1,7 @@
-// Package smtp implements the submission servers (port 587 / 465).
+// Package submission implements the submission servers (port 587 / 465).
 // AUTH PLAIN is required. Messages are forwarded to the configured upstream MTA
-// via protocol.smtp.relay. No MX inbound — external MTAs deliver to LMTP (port 24).
-package smtp
+// via protocol.submission.relay. No MX inbound — external MTAs deliver to LMTP (port 24).
+package submission
 
 import (
 	"bytes"
@@ -16,11 +16,11 @@ import (
 	"github.com/emersion/go-sasl"
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
+	"github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
-// Authenticator verifies SMTP AUTH credentials.
+// Authenticator verifies submission AUTH credentials.
 type Authenticator interface {
 	AuthPlain(username, password string) error
 }
@@ -35,21 +35,21 @@ type Options struct {
 	XClientNets      []*net.IPNet
 	DisablePlainAuth bool
 	// Protocol-level settings.
-	Config config.SMTPProtocolConfig
+	Config config.SubmissionProtocolConfig
 	Auth   Authenticator
 	Proxy  *proxy.Submission
 }
 
-// Server is the submission SMTP server (port 587 / 465).
+// Server is the submission server (port 587 / 465).
 type Server struct {
 	opts        Options
 	subSrv      *goSmtp.Server
-	workarounds smtpWorkarounds
+	workarounds submissionWorkarounds
 }
 
-// New creates the submission server. Call ServeSubmit to start it.
+// New creates the submission server. Call Serve to start it.
 func New(opts Options) *Server {
-	s := &Server{opts: opts, workarounds: parseSMTPWorkarounds(opts.Config.Workarounds)}
+	s := &Server{opts: opts, workarounds: parseWorkarounds(opts.Config.Workarounds)}
 	be := &backend{srv: s}
 	srv := goSmtp.NewServer(be)
 	srv.Domain = opts.Config.Hostname
@@ -67,16 +67,16 @@ func New(opts Options) *Server {
 	return s
 }
 
-// ServeSubmit starts the submission listener. tlsCfg non-nil = implicit TLS (port 465).
+// Serve starts the submission listener. tlsCfg non-nil = implicit TLS (port 465).
 // STARTTLS is handled by go-smtp when TLSConfig is set on the server; for ssl mode
-// the listener is wrapped with tls.NewListener before calling ServeSubmit.
-func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
-	slog.Info("smtp: submission listening", "addr", ln.Addr())
+// the listener is wrapped with tls.NewListener before calling Serve.
+func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
+	slog.Info("submission: listening", "addr", ln.Addr())
 	if tlsCfg != nil {
 		ln = tls.NewListener(ln, tlsCfg)
 	}
 	if s.workarounds != 0 {
-		ln = &smtpWorkaroundListener{Listener: ln, workarounds: s.workarounds}
+		ln = &workaroundListener{Listener: ln, workarounds: s.workarounds}
 	}
 	if s.opts.HAProxy {
 		ln = &proxyproto.Listener{
@@ -84,6 +84,9 @@ func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 			Policy:            proxyPolicy(s.opts.HAProxyNets),
 			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
+	}
+	if s.opts.XClient {
+		ln = &xclientListener{Listener: ln, trustedNets: s.opts.XClientNets}
 	}
 	return s.subSrv.Serve(ln)
 }
@@ -149,7 +152,7 @@ func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
 func (s *session) Data(r io.Reader) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return fmt.Errorf("smtp/data: read: %w", err)
+		return fmt.Errorf("submission/data: read: %w", err)
 	}
 	p := s.srv.opts.Proxy
 	if p == nil {
@@ -160,10 +163,10 @@ func (s *session) Data(r io.Reader) error {
 		}
 	}
 	if err := p.Send(s.from, s.rcpts, bytes.NewReader(data), s.remoteIP); err != nil {
-		slog.Info("smtp: proxy rejected", "from", s.from, "err", err)
+		slog.Info("submission: proxy rejected", "from", s.from, "err", err)
 		return err
 	}
-	slog.Info("smtp: proxied", "from", s.from, "rcpts", s.rcpts, "size", len(data))
+	slog.Info("submission: proxied", "from", s.from, "rcpts", s.rcpts, "size", len(data))
 	return nil
 }
 

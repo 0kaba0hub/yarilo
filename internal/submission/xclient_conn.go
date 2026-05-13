@@ -1,4 +1,4 @@
-package smtp
+package submission
 
 import (
 	"bufio"
@@ -9,10 +9,6 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/xclient"
 )
 
-// xclientListener wraps a net.Listener so every accepted connection is an
-// xclientConn that transparently handles the XCLIENT SMTP extension.
-// Only connections whose remote IP matches one of trustedNets may send XCLIENT;
-// an empty slice means no peer is trusted (XCLIENT lines are silently discarded).
 type xclientListener struct {
 	net.Listener
 	trustedNets []*net.IPNet
@@ -41,7 +37,7 @@ type xclientConn struct {
 	net.Conn
 	br          *bufio.Reader
 	pending     []byte
-	inMulti250  bool // true while inside a 250- multi-line response
+	inMulti250  bool
 	trustedNets []*net.IPNet
 
 	mu         sync.RWMutex
@@ -57,15 +53,12 @@ func newXClientConn(c net.Conn, trustedNets []*net.IPNet) *xclientConn {
 	}
 }
 
-// RemoteAddr returns the XCLIENT-updated address (or the real TCP addr before
-// any XCLIENT command is received).
 func (c *xclientConn) RemoteAddr() net.Addr {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.remoteAddr
 }
 
-// Read returns data to go-smtp, intercepting XCLIENT lines.
 func (c *xclientConn) Read(b []byte) (int, error) {
 	for {
 		if len(c.pending) > 0 {
@@ -99,8 +92,6 @@ func (c *xclientConn) Read(b []byte) (int, error) {
 	}
 }
 
-// isTrusted reports whether the TCP peer is in trustedNets.
-// An empty trustedNets means no peer is trusted.
 func (c *xclientConn) isTrusted() bool {
 	if len(c.trustedNets) == 0 {
 		return false
@@ -117,8 +108,6 @@ func (c *xclientConn) isTrusted() bool {
 	return false
 }
 
-// Write intercepts go-smtp's output to inject the XCLIENT capability line
-// into EHLO multi-line responses.
 func (c *xclientConn) Write(b []byte) (int, error) {
 	line := strings.TrimRight(string(b), "\r\n")
 	switch {

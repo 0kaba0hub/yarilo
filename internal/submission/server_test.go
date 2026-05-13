@@ -1,4 +1,4 @@
-package smtp
+package submission
 
 import (
 	"io"
@@ -9,7 +9,7 @@ import (
 	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
+	"github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
@@ -23,11 +23,11 @@ func (stubAuth) AuthPlain(u, p string) error {
 	return goSmtp.ErrAuthFailed
 }
 
-// buildTestServer starts a submission SMTP server on a random port.
+// buildTestServer starts a submission server on a random port.
 func buildTestServer(t *testing.T) (addr string, cleanup func()) {
 	t.Helper()
 	opts := Options{
-		Config: config.SMTPProtocolConfig{
+		Config: config.SubmissionProtocolConfig{
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
@@ -38,7 +38,7 @@ func buildTestServer(t *testing.T) (addr string, cleanup func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = srv.ServeSubmit(ln, nil) }()
+	go func() { _ = srv.Serve(ln, nil) }()
 	return ln.Addr().String(), func() { ln.Close() }
 }
 
@@ -46,7 +46,7 @@ func dialSMTP(t *testing.T, addr string) *goSmtp.Client {
 	t.Helper()
 	c, err := goSmtp.Dial(addr)
 	if err != nil {
-		t.Fatalf("SMTP dial %s: %v", addr, err)
+		t.Fatalf("dial %s: %v", addr, err)
 	}
 	return c
 }
@@ -131,7 +131,7 @@ func (s *stubRelaySession) Data(r io.Reader) error                     { _, _ = 
 func (s *stubRelaySession) Reset()                                     {}
 func (s *stubRelaySession) Logout() error                              { return nil }
 
-func buildStubRelay(t *testing.T) config.SMTPRelayConfig {
+func buildStubRelay(t *testing.T) config.RelayConfig {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -144,13 +144,13 @@ func buildStubRelay(t *testing.T) config.SMTPRelayConfig {
 
 	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
 	port, _ := strconv.Atoi(portStr)
-	return config.SMTPRelayConfig{Host: host, Port: port, SSL: "no", SSLVerify: false, ConnectTimeout: 5, CommandTimeout: 10}
+	return config.RelayConfig{Host: host, Port: port, SSL: "no", SSLVerify: false, ConnectTimeout: 5, CommandTimeout: 10}
 }
 
 func TestSubmission_Relay(t *testing.T) {
 	relayCfg := buildStubRelay(t)
 	opts := Options{
-		Config: config.SMTPProtocolConfig{
+		Config: config.SubmissionProtocolConfig{
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
@@ -163,7 +163,7 @@ func TestSubmission_Relay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = srv.ServeSubmit(ln, nil) }()
+	go func() { _ = srv.Serve(ln, nil) }()
 	t.Cleanup(func() { ln.Close() })
 
 	c := dialSMTP(t, ln.Addr().String())
