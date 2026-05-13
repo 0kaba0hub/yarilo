@@ -151,6 +151,7 @@ smtp:
   tls_cert: /etc/ssl/yarilo/cert.pem
   tls_key:  /etc/ssl/yarilo/key.pem
   proxy_protocol: false       # set true when behind HAProxy
+  xclient: false              # advertise and handle XCLIENT on MX (trusted relay infrastructure)
 
   # Optional external milters (e.g. rspamd). Checked before internal SPF/DKIM/DMARC.
   # socket formats: unix:/path/to/milter.sock | /path/to/milter.sock | tcp:host:port

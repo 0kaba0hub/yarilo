@@ -76,6 +76,9 @@ func (s *Server) ServeMX(ln net.Listener) error {
 	if s.opts.Config.ProxyProtocol {
 		ln = &proxyproto.Listener{Listener: ln}
 	}
+	if s.opts.Config.XClient {
+		ln = &xclientListener{ln}
+	}
 	return s.mxSrv.Serve(ln)
 }
 
