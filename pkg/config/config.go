@@ -107,11 +107,13 @@ type POP3ProtocolConfig struct {
 }
 
 type SMTPProtocolConfig struct {
-	Hostname           string         `koanf:"hostname"`
-	MaxMsgSize         int64          `koanf:"max_message_size"`
-	MaxLineLength      int            `koanf:"max_line_length"`
-	RecipientDelimiter string         `koanf:"recipient_delimiter"`
-	Milters            []MilterConfig `koanf:"milters"`
+	Hostname           string          `koanf:"hostname"`
+	MaxMsgSize         int64           `koanf:"max_message_size"`
+	MaxLineLength      int             `koanf:"max_line_length"`
+	MaxRecipients      int             `koanf:"max_recipients"`       // 0 = unlimited (Dovecot default)
+	RecipientDelimiter string          `koanf:"recipient_delimiter"`
+	Workarounds        []string        `koanf:"client_workarounds"`   // whitespace-before-path | mailbox-for-path | implicit-auth-external
+	Milters            []MilterConfig  `koanf:"milters"`
 	Relay              SMTPRelayConfig `koanf:"relay"`
 }
 
@@ -129,6 +131,7 @@ type SMTPRelayConfig struct {
 	Password       string `koanf:"password"`        // supports ${ENV_VAR}
 	SSL            string `koanf:"ssl"`             // no | smtps | starttls
 	SSLVerify      bool   `koanf:"ssl_verify"`      // default true
+	Trusted        bool   `koanf:"trusted"`         // send XCLIENT to relay (Postfix)
 	ConnectTimeout int    `koanf:"connect_timeout"` // seconds, default 30
 	CommandTimeout int    `koanf:"command_timeout"` // seconds, default 300
 }

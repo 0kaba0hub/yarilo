@@ -203,7 +203,7 @@ func TestSubmission_Relay(t *testing.T) {
 		},
 		Auth:      stubAuth{},
 		Deliverer: lmtp.New(mb, idx),
-		Relay:     NewRelay(relayCfg),
+		Relay:     NewRelay(relayCfg, "mx.example.com"),
 	}
 
 	srv := New(opts)

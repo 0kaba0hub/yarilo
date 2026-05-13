@@ -165,7 +165,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 		var relay *smtpsvr.Relay
 		if cfg.Protocol.SMTP.Relay.Host != "" {
-			relay = smtpsvr.NewRelay(cfg.Protocol.SMTP.Relay)
+			relay = smtpsvr.NewRelay(cfg.Protocol.SMTP.Relay, cfg.Protocol.SMTP.Hostname)
 		}
 
 		smtpServer = smtpsvr.New(smtpsvr.Options{

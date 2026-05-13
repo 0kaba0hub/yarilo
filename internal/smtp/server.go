@@ -65,7 +65,9 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 	srv := goSmtp.NewServer(be)
 	srv.Domain = s.opts.Config.Hostname
 	srv.MaxMessageBytes = s.opts.Config.MaxMsgSize
-	srv.MaxRecipients = 100
+	if r := s.opts.Config.MaxRecipients; r > 0 {
+		srv.MaxRecipients = r
+	}
 	if l := s.opts.Config.MaxLineLength; l > 0 {
 		srv.MaxLineLength = l
 	}
@@ -245,7 +247,7 @@ func (s *session) handleSubmission(_ context.Context, data []byte) error {
 			Message:      "Relay not configured",
 		}
 	}
-	if err := relay.Send(s.from, s.rcpts, bytes.NewReader(data)); err != nil {
+	if err := relay.Send(s.from, s.rcpts, bytes.NewReader(data), s.remoteIP); err != nil {
 		slog.Info("smtp: relay rejected", "from", s.from, "err", err)
 		return err
 	}
