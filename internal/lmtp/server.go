@@ -5,6 +5,7 @@ package lmtp
 
 import (
 	"bytes"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net"
@@ -32,6 +33,10 @@ type Options struct {
 	// XCLIENT extension support (Postfix-compatible).
 	XClient            bool
 	XClientTrustedNets []*net.IPNet
+
+	// TLSConfig enables STARTTLS on the LMTP listener.
+	// For immediate TLS (ssl mode), wrap the listener before calling Serve().
+	TLSConfig *tls.Config
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -54,6 +59,7 @@ func New(opts Options) *Server {
 	srv := goSmtp.NewServer(be)
 	srv.Domain = opts.Hostname
 	srv.LMTP = true
+	srv.TLSConfig = opts.TLSConfig
 	srv.ReadTimeout = time.Duration(opts.Config.ReadTimeout) * time.Second
 	srv.WriteTimeout = time.Duration(opts.Config.WriteTimeout) * time.Second
 
