@@ -121,11 +121,12 @@ type LMTPProxyConfig struct {
 }
 
 type IMAPProtocolConfig struct {
-	IdleNotifyInterval int    `koanf:"imap_idle_notify_interval"` // seconds; 0 = disabled
-	MaxLineLength      int    `koanf:"imap_max_line_length"`      // bytes; 0 = unlimited
-	IDSend             string `koanf:"imap_id_send"`              // ID pairs; * = default; empty = disabled
-	LoginGreeting      string `koanf:"login_greeting"`
-	LogoutFormat       string `koanf:"imap_logout_format"`
+	IdleNotifyInterval int      `koanf:"imap_idle_notify_interval"` // seconds; 0 = disabled
+	MaxLineLength      int      `koanf:"imap_max_line_length"`      // bytes; 0 = unlimited
+	IDSend             string   `koanf:"imap_id_send"`              // ID pairs; * = default; empty = disabled
+	LoginGreeting      string   `koanf:"login_greeting"`
+	LogoutFormat       string   `koanf:"imap_logout_format"`
+	ClientWorkarounds  []string `koanf:"client_workarounds"`
 }
 
 type POP3ProtocolConfig struct {

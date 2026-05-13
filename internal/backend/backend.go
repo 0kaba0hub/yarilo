@@ -103,6 +103,7 @@ func New(cfg *config.Config) (*Server, error) {
 			IDSend:             p.IDSend,
 			LoginGreeting:      p.LoginGreeting,
 			LogoutFormat:       p.LogoutFormat,
+			ClientWorkarounds:  imapsvr.ParseIMAPWorkarounds(p.ClientWorkarounds),
 		})
 	}
 
