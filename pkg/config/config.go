@@ -33,15 +33,17 @@ type IMAPConfig struct {
 }
 
 type SMTPConfig struct {
-	ListenMX      string         `koanf:"listen_mx"`
-	ListenSubmit  string         `koanf:"listen_submit"`
-	Hostname      string         `koanf:"hostname"`
-	MaxMsgSize    int64          `koanf:"max_message_size"`
-	TLSCert       string         `koanf:"tls_cert"`
-	TLSKey        string         `koanf:"tls_key"`
-	ProxyProtocol bool           `koanf:"proxy_protocol"` // HAProxy PROXY protocol on both listeners
-	XClient       bool           `koanf:"xclient"`        // advertise and handle XCLIENT on MX port
-	Milters       []MilterConfig `koanf:"milters"`
+	ListenMX           string         `koanf:"listen_mx"`
+	ListenSubmit       string         `koanf:"listen_submit"`
+	Hostname           string         `koanf:"hostname"`
+	MaxMsgSize         int64          `koanf:"max_message_size"`
+	TLSCert            string         `koanf:"tls_cert"`
+	TLSKey             string         `koanf:"tls_key"`
+	ProxyProtocol      bool           `koanf:"proxy_protocol"`       // HAProxy PROXY protocol on both listeners
+	HAProxyTrustedNets []string       `koanf:"haproxy_trusted_nets"` // CIDRs allowed to send PROXY header
+	XClient            bool           `koanf:"xclient"`              // advertise and handle XCLIENT on MX port
+	XClientTrustedNets []string       `koanf:"xclient_trusted_nets"` // CIDRs allowed to send XCLIENT
+	Milters            []MilterConfig `koanf:"milters"`
 }
 
 type MilterConfig struct {

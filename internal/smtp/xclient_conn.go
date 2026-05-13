@@ -11,20 +11,27 @@ import (
 
 // xclientListener wraps a net.Listener so every accepted connection is an
 // xclientConn that transparently handles the XCLIENT SMTP extension.
-type xclientListener struct{ net.Listener }
+// Only connections whose remote IP matches one of trustedNets may send XCLIENT;
+// an empty slice means no peer is trusted (XCLIENT lines are silently discarded).
+type xclientListener struct {
+	net.Listener
+	trustedNets []*net.IPNet
+}
 
 func (l *xclientListener) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	return newXClientConn(c), nil
+	return newXClientConn(c, l.trustedNets), nil
 }
 
 // xclientConn wraps net.Conn to handle XCLIENT (RFC / Postfix extension).
 //
 // Read side: lines starting with "XCLIENT " are intercepted, parsed (updating
 // remoteAddr), answered with "220 2.0.0 OK\r\n", and hidden from go-smtp.
+// If trustedNets is non-empty, XCLIENT is only processed when the TCP peer is
+// in one of those networks; otherwise the line is silently discarded.
 //
 // Write side: go-smtp calls textproto.PrintfLine which flushes after every
 // EHLO capability line, so each "250-..." arrives as its own Write call.
@@ -32,19 +39,21 @@ func (l *xclientListener) Accept() (net.Conn, error) {
 // "250-XCLIENT ADDR NAME\r\n" first, advertising the capability to the peer.
 type xclientConn struct {
 	net.Conn
-	br         *bufio.Reader
-	pending    []byte
-	inMulti250 bool // true while inside a 250- multi-line response
+	br          *bufio.Reader
+	pending     []byte
+	inMulti250  bool // true while inside a 250- multi-line response
+	trustedNets []*net.IPNet
 
 	mu         sync.RWMutex
 	remoteAddr net.Addr
 }
 
-func newXClientConn(c net.Conn) *xclientConn {
+func newXClientConn(c net.Conn, trustedNets []*net.IPNet) *xclientConn {
 	return &xclientConn{
-		Conn:       c,
-		br:         bufio.NewReader(c),
-		remoteAddr: c.RemoteAddr(),
+		Conn:        c,
+		br:          bufio.NewReader(c),
+		remoteAddr:  c.RemoteAddr(),
+		trustedNets: trustedNets,
 	}
 }
 
@@ -69,7 +78,9 @@ func (c *xclientConn) Read(b []byte) (int, error) {
 		if len(line) > 0 {
 			trimmed := strings.TrimRight(line, "\r\n")
 			if strings.HasPrefix(strings.ToUpper(trimmed), "XCLIENT ") {
-				c.handleXClient(trimmed)
+				if c.isTrusted() {
+					c.handleXClient(trimmed)
+				}
 				c.Conn.Write([]byte("220 2.0.0 OK\r\n")) //nolint:errcheck
 				if err != nil {
 					return 0, err
@@ -86,6 +97,25 @@ func (c *xclientConn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 	}
+}
+
+// isTrusted reports whether the TCP peer is in trustedNets.
+// When trustedNets is empty every peer is trusted (backwards-compatible default
+// for callers that don't configure network restrictions).
+func (c *xclientConn) isTrusted() bool {
+	if len(c.trustedNets) == 0 {
+		return true
+	}
+	tcpAddr, ok := c.Conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return false
+	}
+	for _, n := range c.trustedNets {
+		if n.Contains(tcpAddr.IP) {
+			return true
+		}
+	}
+	return false
 }
 
 // Write intercepts go-smtp's output to inject the XCLIENT capability line

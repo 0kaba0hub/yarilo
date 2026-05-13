@@ -29,7 +29,7 @@ func newTestConn(t *testing.T) (client net.Conn, server *xclientConn) {
 			ch <- result{nil, err}
 			return
 		}
-		ch <- result{newXClientConn(c), nil}
+		ch <- result{newXClientConn(c, nil), nil}
 	}()
 	c, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
@@ -224,6 +224,96 @@ func TestXClientConn_NoInjectOnNon250(t *testing.T) {
 	}
 }
 
+// ---- trusted networks ----------------------------------------------------
+
+// newTestConnWithTrustedNets is like newTestConn but passes trustedNets to xclientConn.
+func newTestConnWithTrustedNets(t *testing.T, trustedNets []*net.IPNet) (client net.Conn, server *xclientConn) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		conn *xclientConn
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		c, err := ln.Accept()
+		ln.Close() //nolint:errcheck
+		if err != nil {
+			ch <- result{nil, err}
+			return
+		}
+		ch <- result{newXClientConn(c, trustedNets), nil}
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-ch
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	t.Cleanup(func() {
+		c.Close()      //nolint:errcheck
+		r.conn.Close() //nolint:errcheck
+	})
+	return c, r.conn
+}
+
+func TestXClientConn_TrustedNet_Updates(t *testing.T) {
+	// 127.0.0.0/8 covers the loopback used in tests → XCLIENT must be processed.
+	_, trusted, _ := net.ParseCIDR("127.0.0.0/8")
+	client, srv := newTestConnWithTrustedNets(t, []*net.IPNet{trusted})
+	client.SetDeadline(deadline(5 * time.Second)) //nolint:errcheck
+	srv.SetDeadline(deadline(5 * time.Second))    //nolint:errcheck
+
+	fmt.Fprintf(client, "XCLIENT ADDR=9.9.9.9\r\n")
+	fmt.Fprintf(client, "EHLO relay\r\n")
+
+	buf := make([]byte, 256)
+	n, err := srv.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	line := strings.TrimRight(string(buf[:n]), "\r\n")
+	if !strings.Contains(line, "EHLO") {
+		t.Fatalf("expected EHLO, got %q", line)
+	}
+	ip := srv.RemoteAddr().(*net.TCPAddr).IP
+	if !ip.Equal(net.ParseIP("9.9.9.9")) {
+		t.Fatalf("expected 9.9.9.9 from trusted peer, got %v", ip)
+	}
+}
+
+func TestXClientConn_UntrustedNet_Ignored(t *testing.T) {
+	// 10.0.0.0/8 does NOT cover 127.0.0.1 → XCLIENT must be silently discarded.
+	_, untrusted, _ := net.ParseCIDR("10.0.0.0/8")
+	client, srv := newTestConnWithTrustedNets(t, []*net.IPNet{untrusted})
+	client.SetDeadline(deadline(5 * time.Second)) //nolint:errcheck
+	srv.SetDeadline(deadline(5 * time.Second))    //nolint:errcheck
+
+	origAddr := srv.RemoteAddr().String()
+
+	fmt.Fprintf(client, "XCLIENT ADDR=9.9.9.9\r\n")
+	fmt.Fprintf(client, "EHLO relay\r\n")
+
+	buf := make([]byte, 256)
+	n, err := srv.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	line := strings.TrimRight(string(buf[:n]), "\r\n")
+	if !strings.Contains(line, "EHLO") {
+		t.Fatalf("expected EHLO passthrough, got %q", line)
+	}
+	// remoteAddr must NOT have changed.
+	if got := srv.RemoteAddr().String(); got != origAddr {
+		t.Fatalf("expected remoteAddr to stay %q, got %q (untrusted peer changed it)", origAddr, got)
+	}
+}
+
 // ---- xclientListener -----------------------------------------------------
 
 func TestXClientListener_AcceptsAndWraps(t *testing.T) {
@@ -231,7 +321,7 @@ func TestXClientListener_AcceptsAndWraps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	xl := &xclientListener{ln}
+	xl := &xclientListener{Listener: ln}
 	defer xl.Close() //nolint:errcheck
 
 	ch := make(chan bool, 1)

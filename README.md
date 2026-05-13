@@ -151,7 +151,12 @@ smtp:
   tls_cert: /etc/ssl/yarilo/cert.pem
   tls_key:  /etc/ssl/yarilo/key.pem
   proxy_protocol: false       # set true when behind HAProxy
+  haproxy_trusted_nets:       # CIDRs allowed to send PROXY headers; empty = accept from any peer
+    - 10.0.0.0/8
+    - 172.16.0.0/12
   xclient: false              # advertise and handle XCLIENT on MX (trusted relay infrastructure)
+  xclient_trusted_nets:       # CIDRs allowed to send XCLIENT; empty = accept from any peer
+    - 10.0.0.0/8
 
   # Optional external milters (e.g. rspamd). Checked before internal SPF/DKIM/DMARC.
   # socket formats: unix:/path/to/milter.sock | /path/to/milter.sock | tcp:host:port

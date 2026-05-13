@@ -74,10 +74,15 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 func (s *Server) ServeMX(ln net.Listener) error {
 	slog.Info("smtp: MX listening", "addr", ln.Addr())
 	if s.opts.Config.ProxyProtocol {
-		ln = &proxyproto.Listener{Listener: ln}
+		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
+		ln = &proxyproto.Listener{
+			Listener: ln,
+			Policy:   proxyPolicy(nets),
+		}
 	}
 	if s.opts.Config.XClient {
-		ln = &xclientListener{ln}
+		nets := parseCIDRs(s.opts.Config.XClientTrustedNets)
+		ln = &xclientListener{Listener: ln, trustedNets: nets}
 	}
 	return s.mxSrv.Serve(ln)
 }
@@ -91,9 +96,48 @@ func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 		ln = tls.NewListener(ln, tlsCfg)
 	}
 	if s.opts.Config.ProxyProtocol {
-		ln = &proxyproto.Listener{Listener: ln}
+		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
+		ln = &proxyproto.Listener{
+			Listener: ln,
+			Policy:   proxyPolicy(nets),
+		}
 	}
 	return s.subSrv.Serve(ln)
+}
+
+// parseCIDRs parses a list of CIDR strings. Invalid entries are logged and skipped.
+func parseCIDRs(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, s := range cidrs {
+		_, ipnet, err := net.ParseCIDR(s)
+		if err != nil {
+			slog.Warn("smtp: invalid trusted CIDR, skipping", "cidr", s, "err", err)
+			continue
+		}
+		nets = append(nets, ipnet)
+	}
+	return nets
+}
+
+// proxyPolicy returns a go-proxyproto Policy function.
+// If nets is empty, all PROXY headers are rejected (IGNORE).
+// Otherwise only connections from trusted nets are USEd; others are IGNOREd.
+func proxyPolicy(nets []*net.IPNet) func(upstream net.Addr) (proxyproto.Policy, error) {
+	return func(upstream net.Addr) (proxyproto.Policy, error) {
+		if len(nets) == 0 {
+			return proxyproto.IGNORE, nil
+		}
+		tcpAddr, ok := upstream.(*net.TCPAddr)
+		if !ok {
+			return proxyproto.IGNORE, nil
+		}
+		for _, n := range nets {
+			if n.Contains(tcpAddr.IP) {
+				return proxyproto.USE, nil
+			}
+		}
+		return proxyproto.IGNORE, nil
+	}
 }
 
 // ---- backend / session --------------------------------------------------
