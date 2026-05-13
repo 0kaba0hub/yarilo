@@ -143,17 +143,10 @@ func New(cfg *config.Config) (*Server, error) {
 		})
 	}
 
-	// ---- SMTP ----
+	// ---- SMTP submission ----
 	var smtpServer *smtpsvr.Server
-	if svcs.SMTP.Active() || svcs.Submission.Active() || svcs.Submissions.Active() {
-		// HAProxy/XClient settings come from whichever SMTP service is primary (MX → submission).
-		primary := firstActive(svcs.SMTP, svcs.Submission, svcs.Submissions)
-		// DisablePlainAuth applies to submission; use the submission service setting.
-		subSvc := firstActive(svcs.Submission, svcs.Submissions)
-		disablePlain := true
-		if subSvc != nil {
-			disablePlain = subSvc.DisablePlainAuth
-		}
+	if svcs.Submission.Active() || svcs.Submissions.Active() {
+		primary := firstActive(svcs.Submission, svcs.Submissions)
 
 		var submissionProxy *smtpproxy.Submission
 		if cfg.Protocol.SMTP.Relay.Host != "" {
@@ -166,10 +159,9 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxyNets:      haproxyNets,
 			XClient:          primary.XClient,
 			XClientNets:      xclientNets,
-			DisablePlainAuth: disablePlain,
+			DisablePlainAuth: primary.DisablePlainAuth,
 			Config:           cfg.Protocol.SMTP,
 			Auth:             chainAuth{authChain},
-			Deliverer:        lmtp.NewDeliverer(mbox, idx),
 			Proxy:            submissionProxy,
 		})
 	}
@@ -266,21 +258,6 @@ func (s *Server) Run(ctx context.Context) error {
 				}
 			}()
 		}
-	}
-
-	// SMTP MX
-	if s.smtp != nil && svcs.SMTP.Active() {
-		go func() {
-			ln, err := net.Listen("tcp", listenAddr(svcs.SMTP))
-			if err != nil {
-				slog.Error("smtp: MX listen error", "err", err)
-				os.Exit(1)
-			}
-			if err := s.smtp.ServeMX(ln); err != nil {
-				slog.Error("smtp: MX server error", "err", err)
-				os.Exit(1)
-			}
-		}()
 	}
 
 	// Submission (STARTTLS)

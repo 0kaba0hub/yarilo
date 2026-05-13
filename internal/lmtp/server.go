@@ -14,6 +14,7 @@ import (
 	goSmtp "github.com/0kaba0hub/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
+	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -37,6 +38,10 @@ type Options struct {
 	// TLSConfig enables STARTTLS on the LMTP listener.
 	// For immediate TLS (ssl mode), wrap the listener before calling Serve().
 	TLSConfig *tls.Config
+
+	// Ring is the director's consistent-hashing ring. Non-nil on director nodes
+	// activates proxy mode; nil on backend nodes means local delivery.
+	Ring *ring.Ring
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -50,8 +55,12 @@ type Server struct {
 // New creates an LMTP server from Options.
 func New(opts Options) *Server {
 	var router *proxyRouter
-	if opts.Config.Proxy.Enabled {
-		router = newProxyRouter(opts.Hostname, opts.Config.Proxy)
+	if opts.Ring != nil {
+		timeout := time.Duration(opts.Config.Proxy.Timeout) * time.Second
+		if timeout == 0 {
+			timeout = 125 * time.Second
+		}
+		router = newProxyRouter(opts.Hostname, opts.Ring, timeout)
 	}
 
 	var userSem *userSemaphore
@@ -79,7 +88,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	slog.Info("lmtp: listening", "addr", ln.Addr(),
 		"haproxy", s.opts.ProxyProtocol,
 		"xclient", s.opts.XClient,
-		"proxy_mode", s.opts.Config.Proxy.Enabled,
+		"proxy_mode", s.opts.Ring != nil,
 	)
 	if s.opts.ProxyProtocol {
 		timeout := s.opts.HAProxyTimeout

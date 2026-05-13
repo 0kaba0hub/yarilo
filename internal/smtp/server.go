@@ -1,35 +1,31 @@
-// Package smtp implements the SMTP inbound (port 25) and submission (port 587/465) servers.
-// Inbound: local delivery via lmtp.Deliverer.
-// Submission: AUTH required → proxy to upstream MTA.
+// Package smtp implements the submission servers (port 587 / 465).
+// AUTH PLAIN is required. Messages are forwarded to the configured upstream MTA
+// via protocol.smtp.relay. No MX inbound — external MTAs deliver to LMTP (port 24).
 package smtp
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"strings"
 	"time"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// Authenticator verifies SMTP AUTH credentials (submission only).
+// Authenticator verifies SMTP AUTH credentials.
 type Authenticator interface {
 	AuthPlain(username, password string) error
 }
 
-// Options configures the SMTP servers.
+// Options configures the submission server.
 type Options struct {
 	// Infrastructure (per-listener; set by backend from ServiceConfig).
 	HAProxy          bool
@@ -39,64 +35,40 @@ type Options struct {
 	XClientNets      []*net.IPNet
 	DisablePlainAuth bool
 	// Protocol-level settings.
-	Config    config.SMTPProtocolConfig
-	Auth      Authenticator
-	Deliverer *lmtp.Deliverer // in-process local delivery (MX inbound)
-	Proxy     *proxy.Submission
+	Config config.SMTPProtocolConfig
+	Auth   Authenticator
+	Proxy  *proxy.Submission
 }
 
-// Server wraps two go-smtp servers: MX (port 25) and submission (port 587).
+// Server is the submission SMTP server (port 587 / 465).
 type Server struct {
 	opts   Options
-	mxSrv  *goSmtp.Server
 	subSrv *goSmtp.Server
 }
 
-// New creates both SMTP servers. Call Serve to start them.
+// New creates the submission server. Call ServeSubmit to start it.
 func New(opts Options) *Server {
 	s := &Server{opts: opts}
-	s.mxSrv = s.buildServer(false)
-	s.subSrv = s.buildServer(true)
+	be := &backend{srv: s}
+	srv := goSmtp.NewServer(be)
+	srv.Domain = opts.Config.Hostname
+	srv.MaxMessageBytes = opts.Config.MaxMsgSize
+	if r := opts.Config.MaxRecipients; r > 0 {
+		srv.MaxRecipients = r
+	}
+	if l := opts.Config.MaxLineLength; l > 0 {
+		srv.MaxLineLength = l
+	}
+	srv.AllowInsecureAuth = !opts.DisablePlainAuth
+	srv.ReadTimeout = 5 * time.Minute
+	srv.WriteTimeout = 5 * time.Minute
+	s.subSrv = srv
 	return s
 }
 
-func (s *Server) buildServer(submission bool) *goSmtp.Server {
-	be := &backend{srv: s, submission: submission}
-	srv := goSmtp.NewServer(be)
-	srv.Domain = s.opts.Config.Hostname
-	srv.MaxMessageBytes = s.opts.Config.MaxMsgSize
-	if r := s.opts.Config.MaxRecipients; r > 0 {
-		srv.MaxRecipients = r
-	}
-	if l := s.opts.Config.MaxLineLength; l > 0 {
-		srv.MaxLineLength = l
-	}
-	// For submission: allow AUTH on plain connections only if disable_plaintext_auth is false.
-	srv.AllowInsecureAuth = submission && !s.opts.DisablePlainAuth
-	srv.ReadTimeout = 5 * time.Minute
-	srv.WriteTimeout = 5 * time.Minute
-	return srv
-}
-
-// ServeMX starts the MX listener on the configured address.
-func (s *Server) ServeMX(ln net.Listener) error {
-	slog.Info("smtp: MX listening", "addr", ln.Addr())
-	if s.opts.HAProxy {
-		ln = &proxyproto.Listener{
-			Listener:          ln,
-			Policy:            proxyPolicy(s.opts.HAProxyNets),
-			ReadHeaderTimeout: s.haproxyTimeout(),
-		}
-	}
-	if s.opts.XClient {
-		ln = &xclientListener{Listener: ln, trustedNets: s.opts.XClientNets}
-	}
-	return s.mxSrv.Serve(ln)
-}
-
-// ServeSubmit starts the submission listener, optionally with TLS.
-// When ProxyProtocol is enabled in config, connections are wrapped in a HAProxy
-// PROXY protocol listener so the real client IP is extracted from the header.
+// ServeSubmit starts the submission listener. tlsCfg non-nil = implicit TLS (port 465).
+// STARTTLS is handled by go-smtp when TLSConfig is set on the server; for ssl mode
+// the listener is wrapped with tls.NewListener before calling ServeSubmit.
 func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 	slog.Info("smtp: submission listening", "addr", ln.Addr())
 	if tlsCfg != nil {
@@ -119,9 +91,6 @@ func (s *Server) haproxyTimeout() time.Duration {
 	return 3 * time.Second
 }
 
-// proxyPolicy returns a go-proxyproto Policy function.
-// If nets is empty, all PROXY headers are rejected (IGNORE).
-// Otherwise only connections from trusted nets are USEd; others are IGNOREd.
 func proxyPolicy(nets []*net.IPNet) func(upstream net.Addr) (proxyproto.Policy, error) {
 	return func(upstream net.Addr) (proxyproto.Policy, error) {
 		if len(nets) == 0 {
@@ -142,26 +111,18 @@ func proxyPolicy(nets []*net.IPNet) func(upstream net.Addr) (proxyproto.Policy, 
 
 // ---- backend / session --------------------------------------------------
 
-type backend struct {
-	srv        *Server
-	submission bool
-}
+type backend struct{ srv *Server }
 
 func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
-	remoteIP := remoteIP(c)
-	return &session{
-		srv:        b.srv,
-		submission: b.submission,
-		remoteIP:   remoteIP,
-	}, nil
+	remoteIP := connRemoteIP(c)
+	return &session{srv: b.srv, remoteIP: remoteIP}, nil
 }
 
 type session struct {
-	srv        *Server
-	submission bool
-	remoteIP   net.IP
-	from       string
-	rcpts      []string
+	srv      *Server
+	remoteIP net.IP
+	from     string
+	rcpts    []string
 }
 
 func (s *session) Reset() {
@@ -177,30 +138,8 @@ func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
 }
 
 func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
-	if s.submission {
-		s.rcpts = append(s.rcpts, to)
-	} else {
-		s.rcpts = append(s.rcpts, stripDelimiter(to, s.srv.opts.Config.RecipientDelimiter))
-	}
+	s.rcpts = append(s.rcpts, to)
 	return nil
-}
-
-// stripDelimiter removes the subaddress extension from an email address.
-// "user+tag@domain" with delimiter "+" → "user@domain".
-func stripDelimiter(addr, delim string) string {
-	if delim == "" {
-		return addr
-	}
-	addr = strings.Trim(addr, "<>")
-	at := strings.LastIndex(addr, "@")
-	if at < 0 {
-		return addr
-	}
-	local, domain := addr[:at], addr[at+1:]
-	if i := strings.Index(local, delim); i >= 0 {
-		local = local[:i]
-	}
-	return local + "@" + domain
 }
 
 func (s *session) Data(r io.Reader) error {
@@ -208,27 +147,6 @@ func (s *session) Data(r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("smtp/data: read: %w", err)
 	}
-
-	ctx := context.Background()
-	if s.submission {
-		return s.handleSubmission(ctx, data)
-	}
-	return s.handleInbound(ctx, data)
-}
-
-// handleInbound delivers MX inbound mail via LMTP.
-func (s *session) handleInbound(ctx context.Context, data []byte) error {
-	results := s.srv.opts.Deliverer.Deliver(ctx, s.from, s.rcpts, bytes.NewReader(data))
-	for _, r := range results {
-		if r.Err != nil {
-			slog.Error("smtp: delivery failed", "rcpt", r.Rcpt, "err", r.Err)
-		}
-	}
-	return nil
-}
-
-// handleSubmission proxies outbound mail to the upstream MTA.
-func (s *session) handleSubmission(_ context.Context, data []byte) error {
 	p := s.srv.opts.Proxy
 	if p == nil {
 		return &goSmtp.SMTPError{
@@ -245,12 +163,9 @@ func (s *session) handleSubmission(_ context.Context, data []byte) error {
 	return nil
 }
 
-// AuthMechanisms advertises PLAIN auth on submission sessions.
+// AuthMechanisms advertises PLAIN auth.
 func (s *session) AuthMechanisms() []string {
-	if s.submission {
-		return []string{sasl.Plain}
-	}
-	return nil
+	return []string{sasl.Plain}
 }
 
 // Auth returns a sasl.Server for the requested mechanism.
@@ -265,21 +180,10 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 
 // ---- helpers ------------------------------------------------------------
 
-func remoteIP(c *goSmtp.Conn) net.IP {
+func connRemoteIP(c *goSmtp.Conn) net.IP {
 	addr := c.Conn().RemoteAddr()
 	if tcp, ok := addr.(*net.TCPAddr); ok {
 		return tcp.IP
 	}
 	return net.IPv4zero
 }
-
-func extractDomain(addr string) string {
-	addr = strings.Trim(strings.TrimSpace(addr), "<>")
-	if at := strings.LastIndex(addr, "@"); at >= 0 {
-		return addr[at+1:]
-	}
-	return addr
-}
-
-// Ensure session implements AuthSession for go-smtp.
-var _ mailbox.MailboxBackend = (mailbox.MailboxBackend)(nil) // compile-time interface check placeholder

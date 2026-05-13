@@ -9,10 +9,7 @@ import (
 	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
-	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
@@ -26,44 +23,23 @@ func (stubAuth) AuthPlain(u, p string) error {
 	return goSmtp.ErrAuthFailed
 }
 
-// buildTestServer starts an MX or submission SMTP server on a random port.
-func buildTestServer(t *testing.T, submission bool) (addr string, cleanup func()) {
+// buildTestServer starts a submission SMTP server on a random port.
+func buildTestServer(t *testing.T) (addr string, cleanup func()) {
 	t.Helper()
-	dir := t.TempDir()
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx := fileindex.New(dir)
-	if err := mb.Init("alice@example.com"); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
 	opts := Options{
 		Config: config.SMTPProtocolConfig{
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
-		Auth:      stubAuth{},
-		Deliverer: lmtp.NewDeliverer(mb, idx),
+		Auth: stubAuth{},
 	}
-
 	srv := New(opts)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		if submission {
-			_ = srv.ServeSubmit(ln, nil)
-		} else {
-			_ = srv.ServeMX(ln)
-		}
-	}()
-	return ln.Addr().String(), func() {
-		ln.Close()
-		idx.Close() //nolint:errcheck
-	}
+	go func() { _ = srv.ServeSubmit(ln, nil) }()
+	return ln.Addr().String(), func() { ln.Close() }
 }
 
 func dialSMTP(t *testing.T, addr string) *goSmtp.Client {
@@ -99,23 +75,10 @@ func sendMessage(t *testing.T, c *goSmtp.Client, from, to, body string) {
 	}
 }
 
-// ---- MX inbound -------------------------------------------------------------
-
-func TestMXInbound_Deliver(t *testing.T) {
-	addr, cleanup := buildTestServer(t, false)
-	defer cleanup()
-
-	c := dialSMTP(t, addr)
-	defer c.Close()
-
-	const body = "From: sender@external.com\r\nTo: alice@example.com\r\nSubject: hi\r\n\r\nHello\r\n"
-	sendMessage(t, c, "sender@external.com", "alice@example.com", body)
-}
-
 // ---- Submission -------------------------------------------------------------
 
 func TestSubmission_WrongPassword(t *testing.T) {
-	addr, cleanup := buildTestServer(t, true)
+	addr, cleanup := buildTestServer(t)
 	defer cleanup()
 
 	c := dialSMTP(t, addr)
@@ -127,7 +90,7 @@ func TestSubmission_WrongPassword(t *testing.T) {
 }
 
 func TestSubmission_AuthOK(t *testing.T) {
-	addr, cleanup := buildTestServer(t, true)
+	addr, cleanup := buildTestServer(t)
 	defer cleanup()
 
 	c := dialSMTP(t, addr)
@@ -185,26 +148,14 @@ func buildStubRelay(t *testing.T) config.SMTPRelayConfig {
 }
 
 func TestSubmission_Relay(t *testing.T) {
-	dir := t.TempDir()
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx := fileindex.New(dir)
-	defer idx.Close() //nolint:errcheck
-	if err := mb.Init("alice@example.com"); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
 	relayCfg := buildStubRelay(t)
 	opts := Options{
 		Config: config.SMTPProtocolConfig{
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
-		Auth:      stubAuth{},
-		Deliverer: lmtp.NewDeliverer(mb, idx),
-		Proxy:     proxy.New(relayCfg, "mx.example.com"),
+		Auth:  stubAuth{},
+		Proxy: proxy.New(relayCfg, "mx.example.com"),
 	}
 
 	srv := New(opts)
@@ -227,49 +178,10 @@ func TestSubmission_Relay(t *testing.T) {
 
 // ---- unit helpers -----------------------------------------------------------
 
-func TestExtractDomain(t *testing.T) {
-	cases := []struct {
-		addr string
-		want string
-	}{
-		{"user@example.com", "example.com"},
-		{"<user@example.com>", "example.com"},
-		{"nodomain", "nodomain"},
-		{"", ""},
-	}
-	for _, tc := range cases {
-		got := extractDomain(tc.addr)
-		if got != tc.want {
-			t.Errorf("extractDomain(%q) = %q, want %q", tc.addr, got, tc.want)
-		}
-	}
-}
-
 func TestSession_Reset(t *testing.T) {
 	s := &session{from: "a@b.com", rcpts: []string{"c@d.com"}}
 	s.Reset()
 	if s.from != "" || len(s.rcpts) != 0 {
 		t.Error("Reset did not clear session state")
-	}
-}
-
-func TestStripDelimiter(t *testing.T) {
-	cases := []struct {
-		addr  string
-		delim string
-		want  string
-	}{
-		{"user+tag@example.com", "+", "user@example.com"},
-		{"user@example.com", "+", "user@example.com"},        // no tag
-		{"user+tag@example.com", "", "user+tag@example.com"}, // delimiter disabled
-		{"<user+tag@example.com>", "+", "user@example.com"},  // angle brackets stripped
-		{"user+a+b@example.com", "+", "user@example.com"},    // multiple delimiters — strip at first
-		{"nodomain", "+", "nodomain"},                        // no @ — passthrough
-	}
-	for _, tc := range cases {
-		got := stripDelimiter(tc.addr, tc.delim)
-		if got != tc.want {
-			t.Errorf("stripDelimiter(%q, %q) = %q, want %q", tc.addr, tc.delim, got, tc.want)
-		}
 	}
 }

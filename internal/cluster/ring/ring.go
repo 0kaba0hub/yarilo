@@ -71,6 +71,29 @@ func (r *Ring) Lookup(username string) string {
 	return r.vhosts[idx].ip
 }
 
+// LookupBackend returns a copy of the Backend for the given username.
+// Returns nil if the ring is empty or the backend is not found.
+func (r *Ring) LookupBackend(username string) *Backend {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.vhosts) == 0 {
+		return nil
+	}
+	h := userHash(username)
+	idx := sort.Search(len(r.vhosts), func(i int) bool {
+		return r.vhosts[i].hash >= h
+	})
+	if idx == len(r.vhosts) {
+		idx = 0
+	}
+	b := r.backends[r.vhosts[idx].ip]
+	if b == nil {
+		return nil
+	}
+	copy := *b
+	return &copy
+}
+
 func (r *Ring) rebuild() {
 	r.vhosts = r.vhosts[:0]
 	for ip, b := range r.backends {

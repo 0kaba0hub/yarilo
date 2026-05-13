@@ -2,7 +2,6 @@ package lmtp
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,50 +10,6 @@ import (
 
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
-
-// Deliverer is a thin wrapper used by the SMTP MX server for in-process local delivery.
-// It reuses the same delivery logic as the LMTP server without the network overhead.
-type Deliverer struct {
-	mb  mailbox.MailboxBackend
-	idx mailbox.IndexBackend
-}
-
-// NewDeliverer creates a Deliverer for use by the SMTP MX server.
-func NewDeliverer(mb mailbox.MailboxBackend, idx mailbox.IndexBackend) *Deliverer {
-	return &Deliverer{mb: mb, idx: idx}
-}
-
-// DeliverResult holds the per-recipient delivery outcome.
-type DeliverResult struct {
-	Rcpt string
-	Err  error
-}
-
-// Deliver delivers msg to each recipient. Returns one result per recipient.
-func (d *Deliverer) Deliver(ctx context.Context, from string, rcpts []string, msg io.Reader) []DeliverResult {
-	data, err := io.ReadAll(msg)
-	if err != nil {
-		err = fmt.Errorf("lmtp/deliver: read: %w", err)
-		results := make([]DeliverResult, len(rcpts))
-		for i, r := range rcpts {
-			results[i] = DeliverResult{Rcpt: r, Err: err}
-		}
-		return results
-	}
-
-	received := buildReceivedHeader(from)
-	full := append([]byte(received), data...)
-
-	results := make([]DeliverResult, len(rcpts))
-	for i, rcpt := range rcpts {
-		err := deliverOne(d.mb, d.idx, rcpt, bytes.NewReader(full), int64(len(full)))
-		if err != nil {
-			slog.Error("lmtp: delivery failed", "rcpt", rcpt, "err", err)
-		}
-		results[i] = DeliverResult{Rcpt: rcpt, Err: err}
-	}
-	return results
-}
 
 // deliverOne saves a single message to the recipient's mailbox and updates the index.
 func deliverOne(mb mailbox.MailboxBackend, idx mailbox.IndexBackend, rcpt string, r io.ReadSeeker, size int64) error {

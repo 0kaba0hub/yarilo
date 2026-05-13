@@ -74,7 +74,6 @@ func (s *ServiceConfig) Active() bool { return s != nil && s.Enabled }
 type ServicesConfig struct {
 	IMAP        *ServiceConfig `koanf:"imap"`        // port 143, STARTTLS
 	IMAPS       *ServiceConfig `koanf:"imaps"`       // port 993, SSL
-	SMTP        *ServiceConfig `koanf:"smtp"`        // port 25, MX inbound
 	Submission  *ServiceConfig `koanf:"submission"`  // port 587, STARTTLS outbound
 	Submissions *ServiceConfig `koanf:"submissions"` // port 465, SSL outbound
 	POP3        *ServiceConfig `koanf:"pop3"`        // port 110, STARTTLS
@@ -113,21 +112,12 @@ type LMTPProtocolConfig struct {
 	Proxy LMTPProxyConfig `koanf:"proxy"`
 }
 
-// LMTPProxyConfig enables director-mode LMTP proxy: routes recipients to
-// backend nodes via consistent hashing instead of delivering locally.
+// LMTPProxyConfig holds LMTP proxy settings used on director nodes.
+// Backends are taken from the director's ring (general settings); this section
+// only controls transport behaviour.
 type LMTPProxyConfig struct {
-	// Enabled activates proxy mode. When true, all recipients are routed to backends.
-	Enabled bool `koanf:"enabled"`
-	// Backends is the list of backend LMTP nodes.
-	Backends []LMTPBackendEntry `koanf:"backends"`
 	// Timeout is the per-backend connection+transaction timeout in seconds. Default: 125.
 	Timeout int `koanf:"timeout"`
-}
-
-// LMTPBackendEntry is a single backend node for LMTP proxy routing.
-type LMTPBackendEntry struct {
-	Host string `koanf:"host"`
-	Port int    `koanf:"port"` // default 24
 }
 
 type IMAPProtocolConfig struct {
@@ -312,7 +302,6 @@ func expandEnv(cfg *Config) {
 	cfg.General.SSL.TLSAltKey = expand(cfg.General.SSL.TLSAltKey)
 	expandSvcSSL(cfg.Services.IMAP)
 	expandSvcSSL(cfg.Services.IMAPS)
-	expandSvcSSL(cfg.Services.SMTP)
 	expandSvcSSL(cfg.Services.Submission)
 	expandSvcSSL(cfg.Services.Submissions)
 	expandSvcSSL(cfg.Services.POP3)

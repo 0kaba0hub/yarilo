@@ -155,25 +155,3 @@ func TestLMTP_MultipleRecipients(t *testing.T) {
 		t.Fatalf("expected 250 for alice delivery, got: %q", sc.Text())
 	}
 }
-
-func TestDeliverer_InProcess(t *testing.T) {
-	dir := t.TempDir()
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx := fileindex.New(dir)
-	defer idx.Close() //nolint:errcheck
-	if err := mb.Init("alice@example.com"); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
-	d := NewDeliverer(mb, idx)
-	results := d.Deliver(nil, "sender@external.com", []string{"alice@example.com"}, strings.NewReader(testMsg)) //nolint:staticcheck
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].Err != nil {
-		t.Fatalf("delivery error: %v", results[0].Err)
-	}
-}
