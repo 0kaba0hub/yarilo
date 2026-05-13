@@ -141,133 +141,77 @@ Full wire-format specification: [INTERNALS.md](INTERNALS.md).
 
 ```yaml
 # yarilo.yaml
-mode: backend   # proxy | director | backend
+mode: single   # proxy | director | backend | single
 
-imap:
-  listen: ":993"
-  listen_plain: ":143"              # STARTTLS
-  tls_cert: /etc/ssl/yarilo/cert.pem
-  tls_key:  /etc/ssl/yarilo/key.pem
-  tls_alt_cert: ""                  # optional ECDSA cert for dual-cert setup
-  tls_alt_key:  ""
-  tls_min_protocol: TLS1.2          # TLS1.2 | TLS1.3
-  tls_prefer_server_ciphers: false  # server cipher order preference
-  proxy_protocol: false             # set true when behind HAProxy
-  haproxy_timeout: 3                # seconds to wait for PROXY header
-  haproxy_trusted_nets:             # CIDRs allowed to send PROXY header (default: 127/8, 10/8)
-    - 127.0.0.1/32
-    - 10.0.0.0/8
-  xclient: false                    # handle XCLIENT pre-auth command from trusted relay
-  xclient_trusted_nets:             # CIDRs allowed to send XCLIENT (default: 127/8, 10/8)
-    - 127.0.0.1/32
-    - 10.0.0.0/8
-  disable_plaintext_auth: true      # reject AUTH without TLS
-  imap_idle_notify_interval: 120    # seconds between EXISTS keepalives during IDLE; 0 = disabled
-  imap_max_line_length: 65536       # max command line bytes (64 KB = Dovecot default); 0 = unlimited
-  mail_max_userip_connections: 10   # max simultaneous IMAP connections per user@IP; 0 = unlimited
-  imap_id_send: "name *"            # IMAP ID extension (RFC 2971): key-value pairs; * = server default; empty = disabled
-  login_greeting: ""                # custom greeting text replacing "IMAP server ready"; empty = default
-  imap_logout_format: ""            # log stats at disconnect: %{deleted} %{expunged} %{fetch_hdr_count} %{fetch_hdr_bytes} %{fetch_body_count} %{fetch_body_bytes}
+general:
+  ssl:
+    tls_cert: /etc/ssl/yarilo/cert.pem
+    tls_key:  /etc/ssl/yarilo/key.pem
+  haproxy:
+    trusted_nets: ["127.0.0.1/32", "10.0.0.0/8"]
+    timeout: 3
+  xclient:
+    trusted_nets: ["127.0.0.1/32", "10.0.0.0/8"]
+  limits:
+    mail_max_userip_connections: 10
 
-pop3:
-  listen: ":995"                     # POP3S (TLS)
-  listen_plain: ""                   # STARTTLS (e.g. ":110"), empty = disabled
-  tls_cert: /etc/ssl/yarilo/cert.pem
-  tls_key:  /etc/ssl/yarilo/key.pem
-  tls_alt_cert: ""                   # optional ECDSA cert for dual-cert setup
-  tls_alt_key:  ""
-  tls_min_protocol: TLS1.2           # TLS1.2 | TLS1.3
-  tls_prefer_server_ciphers: false
-  disable_plaintext_auth: true       # reject USER/PASS without TLS
-  proxy_protocol: false
-  haproxy_timeout: 3
-  haproxy_trusted_nets:              # CIDRs allowed to send PROXY headers
-    - 127.0.0.1/32
-    - 10.0.0.0/8
-  xclient: false
-  xclient_trusted_nets:              # CIDRs allowed to send XCLIENT
-    - 127.0.0.1/32
-    - 10.0.0.0/8
-  # --- Dovecot-parity behaviour ---
-  pop3_no_flag_updates: false        # false = set \Seen on RETR'd msgs at QUIT (Dovecot default)
-  pop3_reuse_xuidl: false            # true = use X-UIDL header for UIDL (migration from Courier/qmail/cPanel)
-  pop3_uidl_format: "%u.%v"         # UIDL format; Dovecot compat: "%08Xu%08Xv"
-                                     # vars: %u=UID %v=UIDValidity %f=filename %g=GUID %m=MD5(filename)
-  pop3_uidl_duplicates: rename       # allow | rename (rename appends -N suffix to keep UIDLs unique)
-  pop3_enable_last: false            # true = advertise and handle LAST command (RFC 1460)
-  pop3_delete_type: expunge          # expunge = remove from disk; flag = set pop3_deleted_flag (soft delete)
-  pop3_deleted_flag: "$POP3Deleted"  # IMAP flag to set when pop3_delete_type=flag
-  mail_max_userip_connections: 10    # max simultaneous POP3 connections per user@IP; 0 = unlimited
+services:
+  imaps:
+    enabled: true
+    port: 993
+    ssl_mode: ssl
+  imap:
+    enabled: true
+    port: 143
+    ssl_mode: starttls
+    disable_plaintext_auth: true
+  smtp:
+    enabled: true
+    port: 25
+    ssl_mode: no
+  submission:
+    enabled: true
+    port: 587
+    ssl_mode: starttls
+    disable_plaintext_auth: true
 
-smtp:
-  listen_mx:     ":25"
-  listen_submit: ":587"
-  hostname: mail.example.com
-  max_message_size: 41943040        # 40 MB
-  max_line_length: 4096             # SMTP command line limit (bytes)
-  recipient_delimiter: "+"          # subaddress: user+tag@domain → user@domain
-  tls_cert: /etc/ssl/yarilo/cert.pem
-  tls_key:  /etc/ssl/yarilo/key.pem
-  tls_alt_cert: ""                  # optional ECDSA cert for dual-cert setup
-  tls_alt_key:  ""
-  tls_min_protocol: TLS1.2          # TLS1.2 | TLS1.3
-  tls_prefer_server_ciphers: false  # server cipher order preference
-  disable_plaintext_auth: true      # reject submission AUTH without STARTTLS
-  proxy_protocol: false             # set true when behind HAProxy
-  haproxy_timeout: 3                # seconds to wait for PROXY header
-  haproxy_trusted_nets:             # CIDRs allowed to send PROXY headers; empty = nobody trusted
-    - 127.0.0.1/32                  # default
-    - 10.0.0.0/8                    # default
-  xclient: false                    # advertise and handle XCLIENT on MX (trusted relay infrastructure)
-  xclient_trusted_nets:             # CIDRs allowed to send XCLIENT; empty = nobody trusted
-    - 127.0.0.1/32                  # default
-    - 10.0.0.0/8                    # default
-
-  # Optional external milters (e.g. rspamd). Checked before internal SPF/DKIM/DMARC.
-  # socket formats: unix:/path/to/milter.sock | /path/to/milter.sock | tcp:host:port
-  milters:
-    - socket: unix:/run/rspamd/milter.sock  # local unix socket
-      timeout: 30             # seconds
-    # - socket: tcp:127.0.0.1:11332         # remote milter over TCP
-    #   timeout: 10
+protocol:
+  imap:
+    imap_idle_notify_interval: 120
+    imap_max_line_length: 65536
+    imap_id_send: "name *"
+  smtp:
+    hostname: mail.example.com
+    max_message_size: 41943040
+    recipient_delimiter: "+"
+    milters:
+      - socket: unix:/run/rspamd/milter.sock
+        timeout: 30
 
 spf:
   enabled: true
-
 dmarc:
   enabled: true
-
 dkim:
-  verify: true                # verify on inbound (MX)
-  sign:   true                # sign on outbound (submission)
+  verify: true
+  sign: true
   selector: mail
-
-  # Static key backend: domain → PEM file path
   keys:
     backend: static
     static:
       example.com: /etc/yarilo/dkim/example.com.pem
 
-  # Dynamic key backend: fetch from SQL DB (use backend: dynamic)
-  # keys:
-  #   backend: dynamic
-  #   dynamic:
-  #     driver: postgres
-  #     dsn: "${DKIM_DB_URL}"   # ${ENV_VAR} substitution supported
-  #     query: "SELECT private_key FROM dkim_keys WHERE domain = $1"
-  #     cache_ttl: 300          # seconds
-
 auth:
   passdb:
     - driver: postgres
-      dsn: "${DB_URL}"          # ${ENV_VAR} substitution supported
+      dsn: "${DB_URL}"
 
 storage:
   mailbox: maildir
   maildir_root: /var/mail/vhosts
 
 log:
-  level: info   # debug | info | warn | error
+  level: info
 ```
 
 ```sh
@@ -276,21 +220,139 @@ yarilo -config yarilo.yaml
 
 Set `LOG_LEVEL=debug` to enable verbose protocol tracing without restarting.
 
+---
+
+## Configuration reference
+
+### `general` — shared infrastructure
+
+#### `general.ssl`
+
+Shared TLS certificate used by all TLS-enabled listeners. Individual services can override with a per-service `ssl:` block.
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `tls_cert` | — | Path to PEM certificate (or chain). `${ENV_VAR}` expanded at startup. |
+| `tls_key` | — | Path to PEM private key. |
+| `tls_alt_cert` | — | Optional second certificate (e.g. ECDSA) for dual-cert SNI. |
+| `tls_alt_key` | — | Private key for `tls_alt_cert`. |
+| `tls_min_version` | `TLS1.2` | Minimum TLS version: `TLS1.2` \| `TLS1.3`. |
+| `prefer_server_ciphers` | `false` | Use server cipher-suite preference order. |
+
+#### `general.haproxy`
+
+HAProxy PROXY protocol v1/v2. When enabled on a service the real client IP is extracted from the `PROXY` header instead of the TCP source address. Only connections from `trusted_nets` are accepted; others ignore the header.
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `timeout` | `3` | Seconds to wait for the PROXY header before closing the connection. |
+| `trusted_nets` | `["127.0.0.1/32","10.0.0.0/8"]` | CIDRs allowed to send PROXY headers. |
+
+#### `general.xclient`
+
+SMTP XCLIENT pre-auth command (trusted relay passes real client info). Per-service `xclient_protocol: true` must also be set.
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `trusted_nets` | `["127.0.0.1/32","10.0.0.0/8"]` | CIDRs allowed to send XCLIENT. |
+
+#### `general.limits`
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `mail_max_userip_connections` | `10` | Max simultaneous connections per user+IP pair across IMAP and POP3. `0` = unlimited. |
+
+---
+
+### `services` — per-listener
+
+Each listener is a named key under `services`. A missing key or `enabled: false` means the listener is not started. Common fields:
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `enabled` | `false` | Start this listener. |
+| `port` | see table | TCP port to bind. |
+| `ssl_mode` | — | `ssl` = wrap in TLS immediately; `starttls` = plain with STARTTLS upgrade; `no` = plain only. |
+| `haproxy_protocol` | `false` | Enable HAProxy PROXY protocol on this listener (uses `general.haproxy` settings). |
+| `xclient_protocol` | `false` | Enable XCLIENT on this listener (uses `general.xclient` settings). |
+| `disable_plaintext_auth` | `false` | Reject AUTH/USER commands unless the connection is TLS-protected. |
+
+Listeners and their defaults:
+
+| Service key | Port | ssl_mode | Notes |
+|:---|:---|:---|:---|
+| `imaps` | `993` | `ssl` | IMAP over TLS (implicit). |
+| `imap` | `143` | `starttls` | IMAP with STARTTLS. |
+| `smtp` | `25` | `no` | MX inbound. No AUTH. |
+| `submission` | `587` | `starttls` | Outbound submission. AUTH required. |
+| `submissions` | `465` | `ssl` | Outbound submission, implicit TLS (port 465). |
+| `pop3` | `110` | `starttls` | POP3 with STARTTLS. |
+| `pop3s` | `995` | `ssl` | POP3 over TLS (implicit). |
+
+HAProxy and XClient settings (`timeout`, `trusted_nets`) are always taken from `general.haproxy` / `general.xclient` — the per-service flags only enable/disable the feature.
+
+---
+
+### `protocol.imap`
+
+Behaviour settings for all IMAP listeners (both `imaps` and `imap`).
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `imap_idle_notify_interval` | `120` | Seconds between unsolicited EXISTS responses during IDLE. `0` = disabled. |
+| `imap_max_line_length` | `65536` | Max IMAP command line length in bytes. `0` = unlimited. |
+| `imap_id_send` | `name *` | Space-separated key-value pairs sent in ID response (RFC 2971). `*` = server defaults. Empty string = ID extension disabled. |
+| `login_greeting` | `""` | Custom server greeting replacing the default `IMAP server ready`. Empty = default. |
+| `imap_logout_format` | `""` | Log line format at session end. Variables: `%{deleted}` `%{expunged}` `%{fetch_hdr_count}` `%{fetch_hdr_bytes}` `%{fetch_body_count}` `%{fetch_body_bytes}`. Empty = no stats line. |
+
+---
+
+### `protocol.smtp`
+
+Behaviour settings shared across `smtp`, `submission`, and `submissions` listeners.
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `hostname` | system hostname | EHLO/HELO banner and Message-ID domain. |
+| `max_message_size` | `41943040` | Max accepted message size in bytes (40 MiB). |
+| `max_line_length` | `4096` | Max SMTP command/data line length in bytes. |
+| `recipient_delimiter` | `+` | Subaddress separator: `user+tag@domain` → `user@domain`. Empty = disabled. |
+| `milters[].socket` | — | Milter socket: `unix:/path` or `tcp:host:port`. Checked before internal SPF/DKIM/DMARC. |
+| `milters[].timeout` | `30` | Milter response timeout in seconds. |
+
 ### SMTP inbound pipeline (port 25)
 
 ```
 connect → external milters → SPF check → DKIM verify → DMARC evaluate → LMTP local delivery
 ```
 
-If a milter rejects the message a `550 5.7.1` response is returned. Milter unavailability is fail-open (message continues).
+A milter `550` rejection returns `550 5.7.1` to the sender. Milter unavailability is fail-open.
 
-### SMTP submission pipeline (port 587)
+### SMTP submission pipeline (port 587 / 465)
 
 ```
 connect → AUTH PLAIN → external milters → DKIM sign → relay (phase 4)
 ```
 
-Submission requires AUTH PLAIN. DKIM signing uses the key for the sender domain. The signed message is logged; relay to the MTA queue is implemented in phase 4.
+Submission requires AUTH PLAIN. DKIM signing uses the key for the sender domain.
+
+---
+
+### `protocol.pop3`
+
+Behaviour settings for all POP3 listeners (`pop3` and `pop3s`).
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `pop3_no_flag_updates` | `false` | `false` = set `\Seen` on RETR'd messages at QUIT (Dovecot default). `true` = no flag changes. |
+| `pop3_reuse_xuidl` | `false` | Use `X-UIDL` header for UIDL values (migration from Courier / qmail / cPanel). |
+| `pop3_uidl_format` | `%u.%v` | UIDL format string. Variables: `%u` UID, `%v` UIDValidity, `%f` filename, `%g` GUID, `%m` MD5(filename). Dovecot compat: `%08Xu%08Xv`. |
+| `pop3_uidl_duplicates` | `rename` | `allow` = emit duplicate UIDLs as-is. `rename` = append `-N` suffix to keep UIDLs unique. |
+| `pop3_enable_last` | `false` | Advertise and handle the `LAST` command (RFC 1460). |
+| `pop3_delete_type` | `expunge` | `expunge` = remove message from disk at QUIT. `flag` = set `pop3_deleted_flag` (soft delete). |
+| `pop3_deleted_flag` | `""` | IMAP flag set when `pop3_delete_type: flag`. Example: `$POP3Deleted`. |
+
+---
 
 ### DKIM key backends
 
@@ -299,11 +361,28 @@ Submission requires AUTH PLAIN. DKIM signing uses the key for the sender domain.
 | `static` | PEM files on disk | `keys.static.<domain>: /path/to/key.pem` |
 | `dynamic` | SQL database | `keys.dynamic.{driver,dsn,query,cache_ttl}` |
 
-`${ENV_VAR}` in any DSN or TLS path is expanded at startup — no secrets in config files.
+```yaml
+# Static
+dkim:
+  keys:
+    backend: static
+    static:
+      example.com: /etc/yarilo/dkim/example.com.pem
 
-### HAProxy PROXY protocol
+# Dynamic (SQL — supports sqlite | mysql | postgres)
+dkim:
+  keys:
+    backend: dynamic
+    dynamic:
+      driver: postgres
+      dsn: "${DKIM_DB_URL}"
+      query: "SELECT private_key FROM dkim_keys WHERE domain = $1"
+      cache_ttl: 300   # seconds
+```
 
-Set `proxy_protocol: true` on `imap` and/or `smtp` to extract the real client IP from the HAProxy `PROXY` header. This applies to all listeners on that server (MX + submission for SMTP; TLS + STARTTLS for IMAP).
+`${ENV_VAR}` in any `dsn` or TLS path is expanded at startup — no secrets in config files.
+
+---
 
 ### Mailbox backend selection
 
@@ -315,7 +394,7 @@ Set `proxy_protocol: true` on `imap` and/or `smtp` to extract the real client IP
 
 ```yaml
 storage:
-  mailbox: dbox          # maildir | dbox | mdbox
+  mailbox: dbox
   maildir_root: /var/mail/vhosts
 ```
 
@@ -325,7 +404,7 @@ storage:
 yarilo-migrate \
   --from /var/mail/vhosts \
   --to   /var/mail/dbox \
-  --format dbox          # or mdbox
+  --format dbox   # or mdbox
 ```
 
 Use `--dry-run` to preview without writing.

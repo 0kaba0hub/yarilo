@@ -15,14 +15,46 @@ spec:
   loadBalancerIP: {{ .Values.service.loadBalancerIP }}
   {{- end }}
   ports:
+    {{- if .Values.services.imaps.enabled }}
     - name: imaps
-      port: {{ .Values.service.imapsPort }}
+      port: {{ .Values.services.imaps.port }}
       targetPort: imaps
       protocol: TCP
-    {{- if .Values.imap.listenPlain }}
+    {{- end }}
+    {{- if .Values.services.imap.enabled }}
     - name: imap
-      port: {{ .Values.service.imapPort }}
+      port: {{ .Values.services.imap.port }}
       targetPort: imap
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.services.smtp.enabled }}
+    - name: smtp
+      port: {{ .Values.services.smtp.port }}
+      targetPort: smtp
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.services.submission.enabled }}
+    - name: submission
+      port: {{ .Values.services.submission.port }}
+      targetPort: submission
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.services.submissions.enabled }}
+    - name: submissions
+      port: {{ .Values.services.submissions.port }}
+      targetPort: submissions
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.services.pop3.enabled }}
+    - name: pop3
+      port: {{ .Values.services.pop3.port }}
+      targetPort: pop3
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.services.pop3s.enabled }}
+    - name: pop3s
+      port: {{ .Values.services.pop3s.port }}
+      targetPort: pop3s
       protocol: TCP
     {{- end }}
   selector:

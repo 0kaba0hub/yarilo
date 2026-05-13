@@ -13,88 +13,107 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode string `koanf:"mode"` // proxy | director | backend | single
-
-	IMAP      IMAPConfig      `koanf:"imap"`
-	POP3      POP3Config      `koanf:"pop3"`
-	SMTP      SMTPConfig      `koanf:"smtp"`
+	Mode      string          `koanf:"mode"` // proxy | director | backend | single
+	General   GeneralConfig   `koanf:"general"`
+	Services  ServicesConfig  `koanf:"services"`
+	Protocol  ProtocolConfig  `koanf:"protocol"`
+	Auth      AuthConfig      `koanf:"auth"`
+	Storage   StorageConfig   `koanf:"storage"`
 	DKIM      DKIMConfig      `koanf:"dkim"`
 	SPF       SPFConfig       `koanf:"spf"`
 	DMARC     DMARCConfig     `koanf:"dmarc"`
-	Auth      AuthConfig      `koanf:"auth"`
-	Storage   StorageConfig   `koanf:"storage"`
 	Telemetry TelemetryConfig `koanf:"telemetry"`
 	Log       LogConfig       `koanf:"log"`
 }
 
-type IMAPConfig struct {
-	Listen               string   `koanf:"listen"`
-	ListenPlain          string   `koanf:"listen_plain"`
-	TLSCert              string   `koanf:"tls_cert"`
-	TLSKey               string   `koanf:"tls_key"`
-	TLSAltCert           string   `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
-	TLSAltKey            string   `koanf:"tls_alt_key"`               // optional secondary key
-	TLSMinVersion        string   `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
-	TLSPreferServer      bool     `koanf:"tls_prefer_server_ciphers"` // server cipher order
-	ProxyProtocol        bool     `koanf:"proxy_protocol"`
-	HAProxyTimeout       int      `koanf:"haproxy_timeout"`      // seconds, default 3
-	HAProxyTrustedNets   []string `koanf:"haproxy_trusted_nets"` // CIDRs allowed to send PROXY header
-	XClient              bool     `koanf:"xclient"`
-	XClientTrustedNets   []string `koanf:"xclient_trusted_nets"`        // CIDRs allowed to send XCLIENT
-	DisablePlainAuth     bool     `koanf:"disable_plaintext_auth"`      // reject auth without TLS
-	IdleNotifyInterval   int      `koanf:"imap_idle_notify_interval"`   // seconds; 0 = no keepalive
-	MaxLineLength        int      `koanf:"imap_max_line_length"`        // bytes; 0 = unlimited
-	MaxUserIPConnections int      `koanf:"mail_max_userip_connections"` // 0 = unlimited
-	IDSend               string   `koanf:"imap_id_send"`                // ID extension pairs; * = server default; empty = disabled
-	LoginGreeting        string   `koanf:"login_greeting"`              // replaces "IMAP server ready"; empty = default
-	LogoutFormat         string   `koanf:"imap_logout_format"`          // %{deleted} %{expunged} etc.; empty = disabled
+// GeneralConfig holds shared infrastructure settings inherited by all services.
+type GeneralConfig struct {
+	SSL     SSLConfig     `koanf:"ssl"`
+	HAProxy HAProxyConfig `koanf:"haproxy"`
+	XClient XClientConfig `koanf:"xclient"`
+	Limits  LimitsConfig  `koanf:"limits"`
 }
 
-type POP3Config struct {
-	Listen             string   `koanf:"listen"`       // POP3S address, e.g. ":995"
-	ListenPlain        string   `koanf:"listen_plain"` // STARTTLS address, e.g. ":110"
-	TLSCert            string   `koanf:"tls_cert"`
-	TLSKey             string   `koanf:"tls_key"`
-	TLSAltCert         string   `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
-	TLSAltKey          string   `koanf:"tls_alt_key"`               // optional secondary key
-	TLSMinVersion      string   `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
-	TLSPreferServer    bool     `koanf:"tls_prefer_server_ciphers"` // server cipher order
-	ProxyProtocol      bool     `koanf:"proxy_protocol"`
-	HAProxyTimeout     int      `koanf:"haproxy_timeout"`      // seconds, default 3
-	HAProxyTrustedNets []string `koanf:"haproxy_trusted_nets"` // CIDRs allowed to send PROXY header
-	XClient            bool     `koanf:"xclient"`
-	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`   // CIDRs allowed to send XCLIENT
-	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"` // reject USER/PASS without TLS
-	// POP3-specific behaviour
-	NoFlagUpdates        bool   `koanf:"pop3_no_flag_updates"`        // don't set \Seen on RETR
-	ReuseXUIDL           bool   `koanf:"pop3_reuse_xuidl"`            // honour X-UIDL header (migration)
-	UIDLFormat           string `koanf:"pop3_uidl_format"`            // e.g. "%u.%v" or "%08Xu%08Xv"
-	UIDLDuplicates       string `koanf:"pop3_uidl_duplicates"`        // allow | rename
-	EnableLast           bool   `koanf:"pop3_enable_last"`            // enable LAST command (RFC 1460)
-	DeleteType           string `koanf:"pop3_delete_type"`            // expunge | flag
-	DeletedFlag          string `koanf:"pop3_deleted_flag"`           // IMAP flag for soft-delete
-	MaxUserIPConnections int    `koanf:"mail_max_userip_connections"` // 0 = unlimited
+type SSLConfig struct {
+	TLSCert       string `koanf:"tls_cert"`
+	TLSKey        string `koanf:"tls_key"`
+	TLSAltCert    string `koanf:"tls_alt_cert"`
+	TLSAltKey     string `koanf:"tls_alt_key"`
+	TLSMinVersion string `koanf:"tls_min_version"`
+	PreferServer  bool   `koanf:"prefer_server_ciphers"`
 }
 
-type SMTPConfig struct {
-	ListenMX           string         `koanf:"listen_mx"`
-	ListenSubmit       string         `koanf:"listen_submit"`
+type HAProxyConfig struct {
+	Timeout     int      `koanf:"timeout"`      // seconds to wait for PROXY header
+	TrustedNets []string `koanf:"trusted_nets"` // CIDRs allowed to send PROXY header
+}
+
+type XClientConfig struct {
+	TrustedNets []string `koanf:"trusted_nets"` // CIDRs allowed to send XCLIENT
+}
+
+type LimitsConfig struct {
+	MaxUserIPConnections int `koanf:"mail_max_userip_connections"` // 0 = unlimited
+}
+
+// ServiceConfig is per-listener configuration.
+// A nil pointer in ServicesConfig means the listener is not started.
+type ServiceConfig struct {
+	Enabled          bool       `koanf:"enabled"`
+	Port             int        `koanf:"port"`
+	ConnectionLimit  int        `koanf:"connection_limit"` // 0 = unlimited
+	SSLMode          string     `koanf:"ssl_mode"`         // no | ssl | starttls
+	SSL              *SSLConfig `koanf:"ssl"`              // overrides general.ssl
+	HAProxy          bool       `koanf:"haproxy_protocol"`
+	XClient          bool       `koanf:"xclient_protocol"`
+	DisablePlainAuth bool       `koanf:"disable_plaintext_auth"`
+}
+
+// Active returns true if the service is configured and enabled.
+func (s *ServiceConfig) Active() bool { return s != nil && s.Enabled }
+
+// ServicesConfig holds per-listener configuration.
+// Nil pointer = listener not started.
+type ServicesConfig struct {
+	IMAP        *ServiceConfig `koanf:"imap"`        // port 143, STARTTLS
+	IMAPS       *ServiceConfig `koanf:"imaps"`       // port 993, SSL
+	SMTP        *ServiceConfig `koanf:"smtp"`        // port 25, MX inbound
+	Submission  *ServiceConfig `koanf:"submission"`  // port 587, STARTTLS outbound
+	Submissions *ServiceConfig `koanf:"submissions"` // port 465, SSL outbound
+	POP3        *ServiceConfig `koanf:"pop3"`        // port 110, STARTTLS
+	POP3S       *ServiceConfig `koanf:"pop3s"`       // port 995, SSL
+}
+
+// ProtocolConfig holds protocol-level behaviour settings, independent of listener.
+type ProtocolConfig struct {
+	IMAP IMAPProtocolConfig `koanf:"imap"`
+	POP3 POP3ProtocolConfig `koanf:"pop3"`
+	SMTP SMTPProtocolConfig `koanf:"smtp"`
+}
+
+type IMAPProtocolConfig struct {
+	IdleNotifyInterval int    `koanf:"imap_idle_notify_interval"` // seconds; 0 = disabled
+	MaxLineLength      int    `koanf:"imap_max_line_length"`      // bytes; 0 = unlimited
+	IDSend             string `koanf:"imap_id_send"`              // ID pairs; * = default; empty = disabled
+	LoginGreeting      string `koanf:"login_greeting"`
+	LogoutFormat       string `koanf:"imap_logout_format"`
+}
+
+type POP3ProtocolConfig struct {
+	NoFlagUpdates  bool   `koanf:"pop3_no_flag_updates"`
+	ReuseXUIDL     bool   `koanf:"pop3_reuse_xuidl"`
+	UIDLFormat     string `koanf:"pop3_uidl_format"`
+	UIDLDuplicates string `koanf:"pop3_uidl_duplicates"` // allow | rename
+	EnableLast     bool   `koanf:"pop3_enable_last"`
+	DeleteType     string `koanf:"pop3_delete_type"` // expunge | flag
+	DeletedFlag    string `koanf:"pop3_deleted_flag"`
+}
+
+type SMTPProtocolConfig struct {
 	Hostname           string         `koanf:"hostname"`
 	MaxMsgSize         int64          `koanf:"max_message_size"`
-	TLSCert            string         `koanf:"tls_cert"`
-	TLSKey             string         `koanf:"tls_key"`
-	TLSAltCert         string         `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
-	TLSAltKey          string         `koanf:"tls_alt_key"`               // optional secondary key
-	TLSMinVersion      string         `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
-	TLSPreferServer    bool           `koanf:"tls_prefer_server_ciphers"` // server cipher order
-	ProxyProtocol      bool           `koanf:"proxy_protocol"`            // HAProxy PROXY protocol on both listeners
-	HAProxyTrustedNets []string       `koanf:"haproxy_trusted_nets"`      // CIDRs allowed to send PROXY header
-	HAProxyTimeout     int            `koanf:"haproxy_timeout"`           // seconds, default 3
-	XClient            bool           `koanf:"xclient"`                   // advertise and handle XCLIENT on MX port
-	XClientTrustedNets []string       `koanf:"xclient_trusted_nets"`      // CIDRs allowed to send XCLIENT
-	DisablePlainAuth   bool           `koanf:"disable_plaintext_auth"`    // reject submission AUTH without TLS
-	MaxLineLength      int            `koanf:"max_line_length"`           // SMTP command line limit, default 4096
-	RecipientDelimiter string         `koanf:"recipient_delimiter"`       // subaddress delimiter, default "+"
+	MaxLineLength      int            `koanf:"max_line_length"`
+	RecipientDelimiter string         `koanf:"recipient_delimiter"`
 	Milters            []MilterConfig `koanf:"milters"`
 }
 
@@ -118,8 +137,6 @@ type DKIMKeysConfig struct {
 	Dynamic DKIMDynamicConfig `koanf:"dynamic"`
 }
 
-// DKIMDynamicConfig holds DB connection info for DKIM key lookup.
-// DSN supports ${ENV_VAR} substitution.
 type DKIMDynamicConfig struct {
 	Driver   string `koanf:"driver"`    // sqlite | mysql | postgres
 	DSN      string `koanf:"dsn"`       // supports ${ENV_VAR}
@@ -160,8 +177,7 @@ type LogConfig struct {
 	Level string `koanf:"level"`
 }
 
-// Load reads the YAML config file at path.
-// All string values support ${ENV_VAR} substitution.
+// Load reads the YAML config file at path and applies defaults.
 func Load(path string) (*Config, error) {
 	k := koanf.New(".")
 	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
@@ -170,41 +186,31 @@ func Load(path string) (*Config, error) {
 	defaultTrustedNets := []string{"127.0.0.1/32", "10.0.0.0/8"}
 	cfg := &Config{
 		Mode: "single",
-		IMAP: IMAPConfig{
-			Listen:               ":993",
-			TLSMinVersion:        "TLS1.2",
-			HAProxyTimeout:       3,
-			HAProxyTrustedNets:   defaultTrustedNets,
-			XClientTrustedNets:   defaultTrustedNets,
-			DisablePlainAuth:     true,
-			IdleNotifyInterval:   120,
-			MaxLineLength:        65536,
-			MaxUserIPConnections: 10,
-			IDSend:               "name *",
+		General: GeneralConfig{
+			SSL: SSLConfig{TLSMinVersion: "TLS1.2"},
+			HAProxy: HAProxyConfig{
+				Timeout:     3,
+				TrustedNets: defaultTrustedNets,
+			},
+			XClient: XClientConfig{TrustedNets: defaultTrustedNets},
+			Limits:  LimitsConfig{MaxUserIPConnections: 10},
 		},
-		POP3: POP3Config{
-			Listen:               ":995",
-			TLSMinVersion:        "TLS1.2",
-			HAProxyTimeout:       3,
-			HAProxyTrustedNets:   defaultTrustedNets,
-			XClientTrustedNets:   defaultTrustedNets,
-			DisablePlainAuth:     true,
-			UIDLFormat:           "%u.%v",
-			UIDLDuplicates:       "rename",
-			DeleteType:           "expunge",
-			MaxUserIPConnections: 10,
-		},
-		SMTP: SMTPConfig{
-			ListenMX:           ":25",
-			ListenSubmit:       ":587",
-			MaxMsgSize:         41943040,
-			TLSMinVersion:      "TLS1.2",
-			HAProxyTrustedNets: defaultTrustedNets,
-			HAProxyTimeout:     3,
-			XClientTrustedNets: defaultTrustedNets,
-			DisablePlainAuth:   true,
-			MaxLineLength:      4096,
-			RecipientDelimiter: "+",
+		Protocol: ProtocolConfig{
+			IMAP: IMAPProtocolConfig{
+				IdleNotifyInterval: 120,
+				MaxLineLength:      65536,
+				IDSend:             "name *",
+			},
+			POP3: POP3ProtocolConfig{
+				UIDLFormat:     "%u.%v",
+				UIDLDuplicates: "rename",
+				DeleteType:     "expunge",
+			},
+			SMTP: SMTPProtocolConfig{
+				MaxMsgSize:         41943040,
+				MaxLineLength:      4096,
+				RecipientDelimiter: "+",
+			},
 		},
 		DKIM:      DKIMConfig{Selector: "mail", SignHeaders: defaultSignHeaders, OversignHeaders: defaultOversignHeaders},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
@@ -217,57 +223,87 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// ResolveSSL merges general.ssl with a per-service SSL override (service wins per field).
+func (cfg *Config) ResolveSSL(svc *ServiceConfig) SSLConfig {
+	merged := cfg.General.SSL
+	if svc.SSL == nil {
+		return merged
+	}
+	if svc.SSL.TLSCert != "" {
+		merged.TLSCert = svc.SSL.TLSCert
+	}
+	if svc.SSL.TLSKey != "" {
+		merged.TLSKey = svc.SSL.TLSKey
+	}
+	if svc.SSL.TLSAltCert != "" {
+		merged.TLSAltCert = svc.SSL.TLSAltCert
+	}
+	if svc.SSL.TLSAltKey != "" {
+		merged.TLSAltKey = svc.SSL.TLSAltKey
+	}
+	if svc.SSL.TLSMinVersion != "" {
+		merged.TLSMinVersion = svc.SSL.TLSMinVersion
+	}
+	return merged
+}
+
+// BuildTLSConfig constructs a *tls.Config from an SSLConfig.
+func BuildTLSConfig(ssl SSLConfig) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(ssl.TLSCert, ssl.TLSKey)
+	if err != nil {
+		return nil, fmt.Errorf("tls: load cert %q: %w", ssl.TLSCert, err)
+	}
+	certs := []tls.Certificate{cert}
+	if ssl.TLSAltCert != "" && ssl.TLSAltKey != "" {
+		alt, err := tls.LoadX509KeyPair(ssl.TLSAltCert, ssl.TLSAltKey)
+		if err != nil {
+			return nil, fmt.Errorf("tls: load alt cert %q: %w", ssl.TLSAltCert, err)
+		}
+		certs = append(certs, alt)
+	}
+	tlsCfg := &tls.Config{
+		Certificates:             certs,
+		PreferServerCipherSuites: ssl.PreferServer,
+		MinVersion:               tls.VersionTLS12,
+	}
+	if ssl.TLSMinVersion == "TLS1.3" {
+		tlsCfg.MinVersion = tls.VersionTLS13
+	}
+	return tlsCfg, nil
+}
+
 var defaultSignHeaders = []string{
 	"From", "To", "Subject", "Date", "Message-ID", "Content-Type",
 }
 
 var defaultOversignHeaders = []string{"From"}
 
-// expandEnv substitutes ${ENV_VAR} in all string fields that may contain secrets.
 func expandEnv(cfg *Config) {
-	cfg.SMTP.TLSCert = expand(cfg.SMTP.TLSCert)
-	cfg.SMTP.TLSKey = expand(cfg.SMTP.TLSKey)
-	cfg.SMTP.TLSAltCert = expand(cfg.SMTP.TLSAltCert)
-	cfg.SMTP.TLSAltKey = expand(cfg.SMTP.TLSAltKey)
-	cfg.IMAP.TLSCert = expand(cfg.IMAP.TLSCert)
-	cfg.IMAP.TLSKey = expand(cfg.IMAP.TLSKey)
-	cfg.IMAP.TLSAltCert = expand(cfg.IMAP.TLSAltCert)
-	cfg.IMAP.TLSAltKey = expand(cfg.IMAP.TLSAltKey)
-	cfg.POP3.TLSCert = expand(cfg.POP3.TLSCert)
-	cfg.POP3.TLSKey = expand(cfg.POP3.TLSKey)
-	cfg.POP3.TLSAltCert = expand(cfg.POP3.TLSAltCert)
-	cfg.POP3.TLSAltKey = expand(cfg.POP3.TLSAltKey)
+	cfg.General.SSL.TLSCert = expand(cfg.General.SSL.TLSCert)
+	cfg.General.SSL.TLSKey = expand(cfg.General.SSL.TLSKey)
+	cfg.General.SSL.TLSAltCert = expand(cfg.General.SSL.TLSAltCert)
+	cfg.General.SSL.TLSAltKey = expand(cfg.General.SSL.TLSAltKey)
+	expandSvcSSL(cfg.Services.IMAP)
+	expandSvcSSL(cfg.Services.IMAPS)
+	expandSvcSSL(cfg.Services.SMTP)
+	expandSvcSSL(cfg.Services.Submission)
+	expandSvcSSL(cfg.Services.Submissions)
+	expandSvcSSL(cfg.Services.POP3)
+	expandSvcSSL(cfg.Services.POP3S)
 	cfg.DKIM.Keys.Dynamic.DSN = expand(cfg.DKIM.Keys.Dynamic.DSN)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
 	}
 }
 
-// BuildTLSConfig constructs a *tls.Config from cert/key paths and TLS settings.
-// altCert/altKey are optional (dual-cert: RSA primary + ECDSA secondary).
-// minVersion: "TLS1.2" (default) or "TLS1.3". preferServer controls cipher ordering.
-func BuildTLSConfig(certFile, keyFile, altCert, altKey, minVersion string, preferServer bool) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("tls: load cert %q: %w", certFile, err)
+func expandSvcSSL(svc *ServiceConfig) {
+	if svc == nil || svc.SSL == nil {
+		return
 	}
-	certs := []tls.Certificate{cert}
-	if altCert != "" && altKey != "" {
-		alt, err := tls.LoadX509KeyPair(altCert, altKey)
-		if err != nil {
-			return nil, fmt.Errorf("tls: load alt cert %q: %w", altCert, err)
-		}
-		certs = append(certs, alt)
-	}
-	cfg := &tls.Config{
-		Certificates:             certs,
-		PreferServerCipherSuites: preferServer,
-		MinVersion:               tls.VersionTLS12,
-	}
-	if minVersion == "TLS1.3" {
-		cfg.MinVersion = tls.VersionTLS13
-	}
-	return cfg, nil
+	svc.SSL.TLSCert = expand(svc.SSL.TLSCert)
+	svc.SSL.TLSKey = expand(svc.SSL.TLSKey)
+	svc.SSL.TLSAltCert = expand(svc.SSL.TLSAltCert)
+	svc.SSL.TLSAltKey = expand(svc.SSL.TLSAltKey)
 }
 
 func expand(s string) string {

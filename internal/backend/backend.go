@@ -30,14 +30,12 @@ import (
 
 // Server is the yarilo backend (or single-node) server.
 type Server struct {
-	cfg     *config.Config
-	telem   *telemetry.Server
-	imap    *imapsvr.Server
-	pop3    *pop3svr.Server
-	pop3TLS *tls.Config
-	smtp    *smtpsvr.Server
-	smtpTLS *tls.Config
-	index   *file.Backend
+	cfg   *config.Config
+	telem *telemetry.Server
+	imap  *imapsvr.Server // nil if neither IMAP nor IMAPS is active
+	pop3  *pop3svr.Server // nil if neither POP3 nor POP3S is active
+	smtp  *smtpsvr.Server // nil if no SMTP/Submission/Submissions is active
+	index *file.Backend
 }
 
 // New creates and wires all components according to cfg.
@@ -57,145 +55,152 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: mailbox: %w", err)
 	}
-
 	indexRoot := cfg.Storage.IndexDir
 	if indexRoot == "" {
 		indexRoot = cfg.Storage.MaildirRoot
 	}
 	idx := file.New(indexRoot)
 
-	// ---- TLS configs ----
-	var imapTLS, smtpTLS *tls.Config
-	if cfg.IMAP.TLSCert != "" && cfg.IMAP.TLSKey != "" {
-		t, err := config.BuildTLSConfig(
-			cfg.IMAP.TLSCert, cfg.IMAP.TLSKey,
-			cfg.IMAP.TLSAltCert, cfg.IMAP.TLSAltKey,
-			cfg.IMAP.TLSMinVersion, cfg.IMAP.TLSPreferServer,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("backend: IMAP TLS: %w", err)
-		}
-		imapTLS = t
-	}
-	if cfg.SMTP.TLSCert != "" && cfg.SMTP.TLSKey != "" {
-		t, err := config.BuildTLSConfig(
-			cfg.SMTP.TLSCert, cfg.SMTP.TLSKey,
-			cfg.SMTP.TLSAltCert, cfg.SMTP.TLSAltKey,
-			cfg.SMTP.TLSMinVersion, cfg.SMTP.TLSPreferServer,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("backend: SMTP TLS: %w", err)
-		}
-		smtpTLS = t
-	}
+	// ---- shared connection limiter (IMAP + POP3) ----
+	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
 
-	var pop3TLS *tls.Config
-	if cfg.POP3.TLSCert != "" && cfg.POP3.TLSKey != "" {
-		t, err := config.BuildTLSConfig(
-			cfg.POP3.TLSCert, cfg.POP3.TLSKey,
-			cfg.POP3.TLSAltCert, cfg.POP3.TLSAltKey,
-			cfg.POP3.TLSMinVersion, cfg.POP3.TLSPreferServer,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("backend: POP3 TLS: %w", err)
-		}
-		pop3TLS = t
-	}
-
-	// ---- connection limiter (shared IMAP + POP3) ----
-	connLimiter := connlimit.New(cfg.IMAP.MaxUserIPConnections)
-
-	// ---- POP3 ----
-	pop3 := pop3svr.New(pop3svr.Options{
-		Addr:               cfg.POP3.Listen,
-		AddrPlain:          cfg.POP3.ListenPlain,
-		TLSConfig:          pop3TLS,
-		Mailbox:            mbox,
-		Index:              idx,
-		Auth:               authChain,
-		ProxyProtocol:      cfg.POP3.ProxyProtocol,
-		HAProxyTimeout:     time.Duration(cfg.POP3.HAProxyTimeout) * time.Second,
-		HAProxyTrustedNets: parseCIDRs(cfg.POP3.HAProxyTrustedNets),
-		XClient:            cfg.POP3.XClient,
-		XClientTrustedNets: parseCIDRs(cfg.POP3.XClientTrustedNets),
-		DisablePlainAuth:   cfg.POP3.DisablePlainAuth,
-		NoFlagUpdates:      cfg.POP3.NoFlagUpdates,
-		ReuseXUIDL:         cfg.POP3.ReuseXUIDL,
-		UIDLFormat:         cfg.POP3.UIDLFormat,
-		UIDLDuplicates:     cfg.POP3.UIDLDuplicates,
-		EnableLast:         cfg.POP3.EnableLast,
-		DeleteType:         cfg.POP3.DeleteType,
-		DeletedFlag:        cfg.POP3.DeletedFlag,
-		ConnLimit:          connLimiter,
-	})
+	// ---- HAProxy / XClient shared nets ----
+	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
+	xclientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
+	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
 
 	// ---- IMAP ----
-	imapAddr := cfg.IMAP.Listen
-	if imapAddr == "" {
-		imapAddr = ":993"
-	}
-	imap := imapsvr.New(imapsvr.Options{
-		Addr:               imapAddr,
-		AddrPlain:          cfg.IMAP.ListenPlain,
-		TLSConfig:          imapTLS,
-		Mailbox:            mbox,
-		Index:              idx,
-		Auth:               authChain,
-		ProxyProtocol:      cfg.IMAP.ProxyProtocol,
-		HAProxyTimeout:     time.Duration(cfg.IMAP.HAProxyTimeout) * time.Second,
-		HAProxyTrustedNets: parseCIDRs(cfg.IMAP.HAProxyTrustedNets),
-		XClient:            cfg.IMAP.XClient,
-		XClientTrustedNets: parseCIDRs(cfg.IMAP.XClientTrustedNets),
-		DisablePlainAuth:   cfg.IMAP.DisablePlainAuth,
-		IdleNotifyInterval: time.Duration(cfg.IMAP.IdleNotifyInterval) * time.Second,
-		MaxLineLength:      cfg.IMAP.MaxLineLength,
-		ConnLimit:          connLimiter,
-		IDSend:             cfg.IMAP.IDSend,
-		LoginGreeting:      cfg.IMAP.LoginGreeting,
-		LogoutFormat:       cfg.IMAP.LogoutFormat,
-	})
-
-	// ---- DKIM key provider ----
-	var keyProv dkim.KeyProvider
-	if cfg.DKIM.Sign {
-		switch strings.ToLower(cfg.DKIM.Keys.Backend) {
-		case "dynamic":
-			d := cfg.DKIM.Keys.Dynamic
-			ttl := time.Duration(d.CacheTTL) * time.Second
-			if ttl == 0 {
-				ttl = 5 * time.Minute
-			}
-			kp, err := dkim.NewSQLKeyProvider(d.Driver, d.DSN, d.Query, ttl)
+	var imapServer *imapsvr.Server
+	svcs := cfg.Services
+	if svcs.IMAP.Active() || svcs.IMAPS.Active() {
+		primary := firstActive(svcs.IMAPS, svcs.IMAP)
+		var imapTLS *tls.Config
+		if svcs.IMAPS.Active() {
+			t, err := buildTLS(cfg, svcs.IMAPS)
 			if err != nil {
-				return nil, fmt.Errorf("backend: DKIM SQL key provider: %w", err)
+				return nil, fmt.Errorf("backend: IMAPS TLS: %w", err)
 			}
-			keyProv = kp
-		default: // static
-			keyProv = dkim.NewStaticKeyProvider(cfg.DKIM.Keys.Static)
+			imapTLS = t
 		}
+		p := cfg.Protocol.IMAP
+		imapServer = imapsvr.New(imapsvr.Options{
+			Addr:               listenAddr(svcs.IMAPS),
+			AddrPlain:          listenAddr(svcs.IMAP),
+			TLSConfig:          imapTLS,
+			Mailbox:            mbox,
+			Index:              idx,
+			Auth:               authChain,
+			ProxyProtocol:      primary.HAProxy,
+			HAProxyTimeout:     haproxyTimeout,
+			HAProxyTrustedNets: haproxyNets,
+			XClient:            primary.XClient,
+			XClientTrustedNets: xclientNets,
+			DisablePlainAuth:   primary.DisablePlainAuth,
+			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
+			MaxLineLength:      p.MaxLineLength,
+			ConnLimit:          connLimiter,
+			IDSend:             p.IDSend,
+			LoginGreeting:      p.LoginGreeting,
+			LogoutFormat:       p.LogoutFormat,
+		})
 	}
 
-	// ---- milter clients ----
-	var milters []*smtpsvr.MilterClient
-	for _, mc := range cfg.SMTP.Milters {
-		c, err := smtpsvr.NewMilterClient(mc.Socket, mc.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("backend: milter %s: %w", mc.Socket, err)
+	// ---- POP3 ----
+	var pop3Server *pop3svr.Server
+	if svcs.POP3.Active() || svcs.POP3S.Active() {
+		primary := firstActive(svcs.POP3S, svcs.POP3)
+		var pop3TLS *tls.Config
+		if svcs.POP3S.Active() {
+			t, err := buildTLS(cfg, svcs.POP3S)
+			if err != nil {
+				return nil, fmt.Errorf("backend: POP3S TLS: %w", err)
+			}
+			pop3TLS = t
 		}
-		milters = append(milters, c)
+		p := cfg.Protocol.POP3
+		pop3Server = pop3svr.New(pop3svr.Options{
+			Addr:               listenAddr(svcs.POP3S),
+			AddrPlain:          listenAddr(svcs.POP3),
+			TLSConfig:          pop3TLS,
+			Mailbox:            mbox,
+			Index:              idx,
+			Auth:               authChain,
+			ProxyProtocol:      primary.HAProxy,
+			HAProxyTimeout:     haproxyTimeout,
+			HAProxyTrustedNets: haproxyNets,
+			XClient:            primary.XClient,
+			XClientTrustedNets: xclientNets,
+			DisablePlainAuth:   primary.DisablePlainAuth,
+			NoFlagUpdates:      p.NoFlagUpdates,
+			ReuseXUIDL:         p.ReuseXUIDL,
+			UIDLFormat:         p.UIDLFormat,
+			UIDLDuplicates:     p.UIDLDuplicates,
+			EnableLast:         p.EnableLast,
+			DeleteType:         p.DeleteType,
+			DeletedFlag:        p.DeletedFlag,
+			ConnLimit:          connLimiter,
+		})
 	}
 
 	// ---- SMTP ----
-	smtp := smtpsvr.New(smtpsvr.Options{
-		Config:    cfg.SMTP,
-		DKIMCfg:   cfg.DKIM,
-		SPFCfg:    cfg.SPF,
-		DMARCCfg:  cfg.DMARC,
-		Auth:      chainAuth{authChain},
-		KeyProv:   keyProv,
-		Deliverer: lmtp.New(mbox, idx),
-		Milters:   milters,
-	})
+	var smtpServer *smtpsvr.Server
+	if svcs.SMTP.Active() || svcs.Submission.Active() || svcs.Submissions.Active() {
+		// HAProxy/XClient settings come from whichever SMTP service is primary (MX → submission).
+		primary := firstActive(svcs.SMTP, svcs.Submission, svcs.Submissions)
+		// DisablePlainAuth applies to submission; use the submission service setting.
+		subSvc := firstActive(svcs.Submission, svcs.Submissions)
+		disablePlain := true
+		if subSvc != nil {
+			disablePlain = subSvc.DisablePlainAuth
+		}
+
+		// ---- DKIM key provider ----
+		var keyProv dkim.KeyProvider
+		if cfg.DKIM.Sign {
+			switch strings.ToLower(cfg.DKIM.Keys.Backend) {
+			case "dynamic":
+				d := cfg.DKIM.Keys.Dynamic
+				ttl := time.Duration(d.CacheTTL) * time.Second
+				if ttl == 0 {
+					ttl = 5 * time.Minute
+				}
+				kp, err := dkim.NewSQLKeyProvider(d.Driver, d.DSN, d.Query, ttl)
+				if err != nil {
+					return nil, fmt.Errorf("backend: DKIM SQL key provider: %w", err)
+				}
+				keyProv = kp
+			default:
+				keyProv = dkim.NewStaticKeyProvider(cfg.DKIM.Keys.Static)
+			}
+		}
+
+		// ---- milter clients ----
+		var milters []*smtpsvr.MilterClient
+		for _, mc := range cfg.Protocol.SMTP.Milters {
+			c, err := smtpsvr.NewMilterClient(mc.Socket, mc.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("backend: milter %s: %w", mc.Socket, err)
+			}
+			milters = append(milters, c)
+		}
+
+		smtpServer = smtpsvr.New(smtpsvr.Options{
+			HAProxy:          primary.HAProxy,
+			HAProxyTimeout:   haproxyTimeout,
+			HAProxyNets:      haproxyNets,
+			XClient:          primary.XClient,
+			XClientNets:      xclientNets,
+			DisablePlainAuth: disablePlain,
+			Config:           cfg.Protocol.SMTP,
+			DKIMCfg:          cfg.DKIM,
+			SPFCfg:           cfg.SPF,
+			DMARCCfg:         cfg.DMARC,
+			Auth:             chainAuth{authChain},
+			KeyProv:          keyProv,
+			Deliverer:        lmtp.New(mbox, idx),
+			Milters:          milters,
+		})
+	}
 
 	// ---- telemetry ----
 	telemAddr := cfg.Telemetry.Listen
@@ -205,18 +210,16 @@ func New(cfg *config.Config) (*Server, error) {
 	telem := telemetry.New(telemAddr)
 
 	return &Server{
-		cfg:     cfg,
-		telem:   telem,
-		imap:    imap,
-		pop3:    pop3,
-		pop3TLS: pop3TLS,
-		smtp:    smtp,
-		smtpTLS: smtpTLS,
-		index:   idx,
+		cfg:   cfg,
+		telem: telem,
+		imap:  imapServer,
+		pop3:  pop3Server,
+		smtp:  smtpServer,
+		index: idx,
 	}, nil
 }
 
-// Run starts all servers. Blocks until ctx is cancelled.
+// Run starts all configured servers and blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		if err := s.telem.ListenAndServe(ctx); err != nil {
@@ -225,67 +228,102 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 	s.telem.SetReady(true)
 
-	if s.cfg.IMAP.TLSCert != "" {
+	svcs := s.cfg.Services
+
+	// IMAP
+	if s.imap != nil {
+		if svcs.IMAPS.Active() {
+			go func() {
+				if err := s.imap.ListenAndServeTLS(); err != nil {
+					slog.Error("imap: TLS server error", "err", err)
+					os.Exit(1)
+				}
+			}()
+		}
+		if svcs.IMAP.Active() {
+			go func() {
+				if err := s.imap.ListenAndServe(); err != nil {
+					slog.Error("imap: plain server error", "err", err)
+					os.Exit(1)
+				}
+			}()
+		}
+	}
+
+	// POP3
+	if s.pop3 != nil {
+		if svcs.POP3S.Active() {
+			go func() {
+				if err := s.pop3.ListenAndServeTLS(); err != nil {
+					slog.Error("pop3: TLS server error", "err", err)
+					os.Exit(1)
+				}
+			}()
+		}
+		if svcs.POP3.Active() {
+			go func() {
+				if err := s.pop3.ListenAndServe(); err != nil {
+					slog.Error("pop3: plain server error", "err", err)
+					os.Exit(1)
+				}
+			}()
+		}
+	}
+
+	// SMTP MX
+	if s.smtp != nil && svcs.SMTP.Active() {
 		go func() {
-			if err := s.imap.ListenAndServeTLS(); err != nil {
-				slog.Error("imap: TLS server error", "err", err)
+			ln, err := net.Listen("tcp", listenAddr(svcs.SMTP))
+			if err != nil {
+				slog.Error("smtp: MX listen error", "err", err)
 				os.Exit(1)
 			}
-		}()
-	}
-	if s.cfg.IMAP.ListenPlain != "" {
-		go func() {
-			if err := s.imap.ListenAndServe(); err != nil {
-				slog.Error("imap: plain server error", "err", err)
+			if err := s.smtp.ServeMX(ln); err != nil {
+				slog.Error("smtp: MX server error", "err", err)
 				os.Exit(1)
 			}
 		}()
 	}
 
-	mxAddr := s.cfg.SMTP.ListenMX
-	if mxAddr == "" {
-		mxAddr = ":25"
-	}
-	go func() {
-		ln, err := net.Listen("tcp", mxAddr)
-		if err != nil {
-			slog.Error("smtp: MX listen error", "err", err)
-			os.Exit(1)
-		}
-		if err := s.smtp.ServeMX(ln); err != nil {
-			slog.Error("smtp: MX server error", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	subAddr := s.cfg.SMTP.ListenSubmit
-	if subAddr == "" {
-		subAddr = ":587"
-	}
-	go func() {
-		ln, err := net.Listen("tcp", subAddr)
-		if err != nil {
-			slog.Error("smtp: submission listen error", "err", err)
-			os.Exit(1)
-		}
-		if err := s.smtp.ServeSubmit(ln, s.smtpTLS); err != nil {
-			slog.Error("smtp: submission server error", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	if s.cfg.POP3.TLSCert != "" {
+	// Submission (STARTTLS)
+	if s.smtp != nil && svcs.Submission.Active() {
 		go func() {
-			if err := s.pop3.ListenAndServeTLS(); err != nil {
-				slog.Error("pop3: TLS server error", "err", err)
+			ln, err := net.Listen("tcp", listenAddr(svcs.Submission))
+			if err != nil {
+				slog.Error("smtp: submission listen error", "err", err)
+				os.Exit(1)
+			}
+			var tlsCfg *tls.Config
+			if svcs.Submission.SSLMode == "ssl" {
+				t, err := buildTLS(s.cfg, svcs.Submission)
+				if err != nil {
+					slog.Error("smtp: submission TLS error", "err", err)
+					os.Exit(1)
+				}
+				tlsCfg = t
+			}
+			if err := s.smtp.ServeSubmit(ln, tlsCfg); err != nil {
+				slog.Error("smtp: submission server error", "err", err)
 				os.Exit(1)
 			}
 		}()
 	}
-	if s.cfg.POP3.ListenPlain != "" {
+
+	// Submissions (SSL-only, port 465)
+	if s.smtp != nil && svcs.Submissions.Active() {
 		go func() {
-			if err := s.pop3.ListenAndServe(); err != nil {
-				slog.Error("pop3: plain server error", "err", err)
+			ln, err := net.Listen("tcp", listenAddr(svcs.Submissions))
+			if err != nil {
+				slog.Error("smtp: submissions listen error", "err", err)
+				os.Exit(1)
+			}
+			tlsCfg, err := buildTLS(s.cfg, svcs.Submissions)
+			if err != nil {
+				slog.Error("smtp: submissions TLS error", "err", err)
+				os.Exit(1)
+			}
+			if err := s.smtp.ServeSubmit(ln, tlsCfg); err != nil {
+				slog.Error("smtp: submissions server error", "err", err)
 				os.Exit(1)
 			}
 		}()
@@ -294,6 +332,35 @@ func (s *Server) Run(ctx context.Context) error {
 	<-ctx.Done()
 	s.index.Close() //nolint:errcheck
 	return nil
+}
+
+// ---- helpers ----------------------------------------------------------------
+
+// firstActive returns the first non-nil active ServiceConfig from the list.
+func firstActive(svcs ...*config.ServiceConfig) *config.ServiceConfig {
+	for _, s := range svcs {
+		if s.Active() {
+			return s
+		}
+	}
+	return nil
+}
+
+// listenAddr converts a ServiceConfig into a TCP listen address.
+func listenAddr(svc *config.ServiceConfig) string {
+	if svc == nil {
+		return ""
+	}
+	return fmt.Sprintf(":%d", svc.Port)
+}
+
+// buildTLS resolves TLS config for a service (merges general.ssl + per-service override).
+func buildTLS(cfg *config.Config, svc *config.ServiceConfig) (*tls.Config, error) {
+	ssl := cfg.ResolveSSL(svc)
+	if ssl.TLSCert == "" {
+		return nil, nil
+	}
+	return config.BuildTLSConfig(ssl)
 }
 
 func parseCIDRs(cidrs []string) []*net.IPNet {

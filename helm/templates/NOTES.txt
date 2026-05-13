@@ -12,16 +12,34 @@ Get the node port:
 
 {{- end }}
 
-IMAP (TLS):     {{ .Values.service.imapsPort }}
-{{- if .Values.imap.listenPlain }}
-IMAP (STARTTLS): {{ .Values.service.imapPort }}
+Active listeners:
+{{- if .Values.services.imaps.enabled }}
+  IMAPS (TLS):        {{ .Values.services.imaps.port }}
 {{- end }}
-Telemetry:       http://<pod>:{{ .Values.service.telemetryPort }}/healthz
+{{- if .Values.services.imap.enabled }}
+  IMAP (STARTTLS):    {{ .Values.services.imap.port }}
+{{- end }}
+{{- if .Values.services.smtp.enabled }}
+  SMTP (MX):          {{ .Values.services.smtp.port }}
+{{- end }}
+{{- if .Values.services.submission.enabled }}
+  Submission:         {{ .Values.services.submission.port }}
+{{- end }}
+{{- if .Values.services.submissions.enabled }}
+  Submissions (SSL):  {{ .Values.services.submissions.port }}
+{{- end }}
+{{- if .Values.services.pop3.enabled }}
+  POP3 (STARTTLS):    {{ .Values.services.pop3.port }}
+{{- end }}
+{{- if .Values.services.pop3s.enabled }}
+  POP3S (TLS):        {{ .Values.services.pop3s.port }}
+{{- end }}
+  Telemetry:          http://<pod>:{{ .Values.service.telemetryPort }}/healthz
 
-{{- if not .Values.imap.tls.secretName }}
+{{- if not .Values.tls.secretName }}
 
 WARNING: TLS is not configured.
-  Set imap.tls.secretName to the name of a Secret with tls.crt and tls.key.
+  Set tls.secretName to the name of a Secret with tls.crt and tls.key.
   Example:
     kubectl create secret tls yarilo-tls \
       --cert=fullchain.pem \
@@ -29,6 +47,6 @@ WARNING: TLS is not configured.
       -n {{ .Release.Namespace }}
 
   Then install with:
-    --set imap.tls.secretName=yarilo-tls
+    --set tls.secretName=yarilo-tls
 
 {{- end }}
