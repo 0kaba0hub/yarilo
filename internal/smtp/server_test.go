@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/emersion/go-sasl"
-	goSmtp "github.com/emersion/go-smtp"
+	goSmtp "github.com/0kaba0hub/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
