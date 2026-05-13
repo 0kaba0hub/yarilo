@@ -21,11 +21,12 @@ Protocol-level behaviour shared across all three SMTP listeners.
 | `hostname` | system hostname | EHLO/HELO banner and `Message-ID` domain. |
 | `max_message_size` | `41943040` | Maximum accepted message size in bytes (default 40 MiB). |
 | `max_line_length` | `4096` | Maximum SMTP command or DATA line length in bytes. |
+| `max_recipients` | `0` | Maximum recipients per message. `0` = unlimited. |
 | `recipient_delimiter` | `+` | Subaddress separator: `user+tag@domain` → `user@domain`. Empty = disabled. |
 
 ### `milters`
 
-External milter filters (e.g. rspamd, OpenDKIM). Checked before internal SPF / DKIM / DMARC processing. A milter `5xx` rejection returns `550 5.7.1` to the sender. Milter unavailability is fail-open (mail continues).
+External milter filters (e.g. rspamd, OpenDKIM). A milter `5xx` rejection returns `550 5.7.1` to the sender. Milter unavailability is fail-open (mail continues).
 
 | Key | Default | Description |
 |:---|:---|:---|
@@ -38,6 +39,7 @@ protocol:
     hostname: mail.example.com
     max_message_size: 41943040
     max_line_length: 4096
+    max_recipients: 100
     recipient_delimiter: "+"
     milters:
       - socket: unix:/run/rspamd/milter.sock
@@ -53,13 +55,8 @@ protocol:
 ```
 connect
   → external milters
-  → SPF check        (if spf.enabled)
-  → DKIM verify      (if dkim.verify)
-  → DMARC evaluate   (if dmarc.enabled)
   → LMTP local delivery
 ```
-
-A DMARC `reject` disposition returns `550 5.7.1` and the message is dropped.
 
 ---
 
@@ -70,30 +67,40 @@ connect
   → STARTTLS / TLS
   → AUTH PLAIN
   → external milters
-  → DKIM sign        (if dkim.sign)
-  → relay queue      (phase 4)
+  → relay (submission_relay_*)
 ```
 
-Submission requires AUTH PLAIN. DKIM signing uses the private key for the sender domain — see [DKIM.md](DKIM.md).
+Submission requires AUTH PLAIN. The message is forwarded to the configured relay server unchanged — signing and filtering are handled by external milters (e.g. rspamd, OpenDKIM).
 
 ---
 
-## SPF
+## Relay (`protocol.smtp.relay`)
+
+Mirrors Dovecot's `submission_relay_*` settings. One connection per message; fail-closed (451) on any transport error.
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `relay.host` | — | Relay hostname. Empty = relay disabled (451 returned). |
+| `relay.port` | `25` | Relay TCP port. |
+| `relay.user` | — | SASL PLAIN username. Empty = no AUTH. |
+| `relay.password` | — | SASL PLAIN password. Supports `${ENV_VAR}`. |
+| `relay.ssl` | `no` | Transport security: `no` \| `smtps` \| `starttls`. |
+| `relay.ssl_verify` | `true` | Verify relay TLS certificate. |
+| `relay.trusted` | `false` | Send XCLIENT to relay (Postfix) with real client IP. |
+| `relay.connect_timeout` | `30` | TCP connect timeout in seconds. |
+| `relay.command_timeout` | `300` | Per-command timeout in seconds. |
 
 ```yaml
-spf:
-  enabled: true
+protocol:
+  smtp:
+    relay:
+      host: smtp.example.com
+      port: 587
+      user: relay-user
+      password: "${RELAY_PASSWORD}"
+      ssl: starttls
+      ssl_verify: true
+      trusted: false
+      connect_timeout: 30
+      command_timeout: 300
 ```
-
-SPF result is passed to the DMARC evaluator. No standalone rejection on SPF failure — DMARC policy governs disposition.
-
----
-
-## DMARC
-
-```yaml
-dmarc:
-  enabled: true
-```
-
-Evaluates SPF alignment and DKIM alignment against the RFC 5322 `From` domain. Enforces `reject` and `quarantine` policies (quarantine is treated as reject in this implementation).

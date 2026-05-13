@@ -188,19 +188,6 @@ protocol:
       - socket: unix:/run/rspamd/milter.sock
         timeout: 30
 
-spf:
-  enabled: true
-dmarc:
-  enabled: true
-dkim:
-  verify: true
-  sign: true
-  selector: mail
-  keys:
-    backend: static
-    static:
-      example.com: /etc/yarilo/dkim/example.com.pem
-
 auth:
   passdb:
     - driver: postgres
@@ -248,8 +235,7 @@ yarilo-migrate \
 | [docs/GENERAL.md](docs/GENERAL.md) | `general`: shared SSL, HAProxy, XClient, connection limits |
 | [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config for all 7 listeners |
 | [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE interval, line length, ID, logout format |
-| [docs/SMTP.md](docs/SMTP.md) | `protocol.smtp`: hostname, size limits, milters, SPF, DMARC pipelines |
-| [docs/DKIM.md](docs/DKIM.md) | DKIM: verify/sign, static and dynamic key backends |
+| [docs/SMTP.md](docs/SMTP.md) | `protocol.smtp`: hostname, size limits, milters, relay |
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL format, soft-delete, migration |
 | [docs/JMAP.md](docs/JMAP.md) | JMAP (planned, Phase 5) |
 
