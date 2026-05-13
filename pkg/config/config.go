@@ -27,39 +27,39 @@ type Config struct {
 }
 
 type IMAPConfig struct {
-	Listen              string `koanf:"listen"`
-	ListenPlain         string `koanf:"listen_plain"`
-	TLSCert             string `koanf:"tls_cert"`
-	TLSKey              string `koanf:"tls_key"`
-	TLSAltCert          string `koanf:"tls_alt_cert"`             // optional secondary cert (e.g. ECDSA)
-	TLSAltKey           string `koanf:"tls_alt_key"`              // optional secondary key
-	TLSMinVersion       string `koanf:"tls_min_protocol"`         // TLS1.2 | TLS1.3
-	TLSPreferServer     bool   `koanf:"tls_prefer_server_ciphers"` // server cipher order
-	ProxyProtocol       bool   `koanf:"proxy_protocol"`
-	HAProxyTimeout      int    `koanf:"haproxy_timeout"`           // seconds, default 3
-	DisablePlainAuth    bool   `koanf:"disable_plaintext_auth"`    // reject auth without TLS
+	Listen           string `koanf:"listen"`
+	ListenPlain      string `koanf:"listen_plain"`
+	TLSCert          string `koanf:"tls_cert"`
+	TLSKey           string `koanf:"tls_key"`
+	TLSAltCert       string `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
+	TLSAltKey        string `koanf:"tls_alt_key"`               // optional secondary key
+	TLSMinVersion    string `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
+	TLSPreferServer  bool   `koanf:"tls_prefer_server_ciphers"` // server cipher order
+	ProxyProtocol    bool   `koanf:"proxy_protocol"`
+	HAProxyTimeout   int    `koanf:"haproxy_timeout"`        // seconds, default 3
+	DisablePlainAuth bool   `koanf:"disable_plaintext_auth"` // reject auth without TLS
 }
 
 type SMTPConfig struct {
-	ListenMX            string         `koanf:"listen_mx"`
-	ListenSubmit        string         `koanf:"listen_submit"`
-	Hostname            string         `koanf:"hostname"`
-	MaxMsgSize          int64          `koanf:"max_message_size"`
-	TLSCert             string         `koanf:"tls_cert"`
-	TLSKey              string         `koanf:"tls_key"`
-	TLSAltCert          string         `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
-	TLSAltKey           string         `koanf:"tls_alt_key"`               // optional secondary key
-	TLSMinVersion       string         `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
-	TLSPreferServer     bool           `koanf:"tls_prefer_server_ciphers"`  // server cipher order
-	ProxyProtocol       bool           `koanf:"proxy_protocol"`            // HAProxy PROXY protocol on both listeners
-	HAProxyTrustedNets  []string       `koanf:"haproxy_trusted_nets"`      // CIDRs allowed to send PROXY header
-	HAProxyTimeout      int            `koanf:"haproxy_timeout"`           // seconds, default 3
-	XClient             bool           `koanf:"xclient"`                   // advertise and handle XCLIENT on MX port
-	XClientTrustedNets  []string       `koanf:"xclient_trusted_nets"`      // CIDRs allowed to send XCLIENT
-	DisablePlainAuth    bool           `koanf:"disable_plaintext_auth"`    // reject submission AUTH without TLS
-	MaxLineLength       int            `koanf:"max_line_length"`           // SMTP command line limit, default 4096
-	RecipientDelimiter  string         `koanf:"recipient_delimiter"`       // subaddress delimiter, default "+"
-	Milters             []MilterConfig `koanf:"milters"`
+	ListenMX           string         `koanf:"listen_mx"`
+	ListenSubmit       string         `koanf:"listen_submit"`
+	Hostname           string         `koanf:"hostname"`
+	MaxMsgSize         int64          `koanf:"max_message_size"`
+	TLSCert            string         `koanf:"tls_cert"`
+	TLSKey             string         `koanf:"tls_key"`
+	TLSAltCert         string         `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
+	TLSAltKey          string         `koanf:"tls_alt_key"`               // optional secondary key
+	TLSMinVersion      string         `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
+	TLSPreferServer    bool           `koanf:"tls_prefer_server_ciphers"` // server cipher order
+	ProxyProtocol      bool           `koanf:"proxy_protocol"`            // HAProxy PROXY protocol on both listeners
+	HAProxyTrustedNets []string       `koanf:"haproxy_trusted_nets"`      // CIDRs allowed to send PROXY header
+	HAProxyTimeout     int            `koanf:"haproxy_timeout"`           // seconds, default 3
+	XClient            bool           `koanf:"xclient"`                   // advertise and handle XCLIENT on MX port
+	XClientTrustedNets []string       `koanf:"xclient_trusted_nets"`      // CIDRs allowed to send XCLIENT
+	DisablePlainAuth   bool           `koanf:"disable_plaintext_auth"`    // reject submission AUTH without TLS
+	MaxLineLength      int            `koanf:"max_line_length"`           // SMTP command line limit, default 4096
+	RecipientDelimiter string         `koanf:"recipient_delimiter"`       // subaddress delimiter, default "+"
+	Milters            []MilterConfig `koanf:"milters"`
 }
 
 type MilterConfig struct {

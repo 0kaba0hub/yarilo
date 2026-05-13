@@ -270,10 +270,10 @@ func TestStripDelimiter(t *testing.T) {
 		want  string
 	}{
 		{"user+tag@example.com", "+", "user@example.com"},
-		{"user@example.com", "+", "user@example.com"},      // no tag
+		{"user@example.com", "+", "user@example.com"},        // no tag
 		{"user+tag@example.com", "", "user+tag@example.com"}, // delimiter disabled
-		{"<user+tag@example.com>", "+", "user@example.com"}, // angle brackets stripped
-		{"user+a+b@example.com", "+", "user@example.com"},   // multiple delimiters — strip at first
+		{"<user+tag@example.com>", "+", "user@example.com"},  // angle brackets stripped
+		{"user+a+b@example.com", "+", "user@example.com"},    // multiple delimiters — strip at first
 		{"nodomain", "+", "nodomain"},                        // no @ — passthrough
 	}
 	for _, tc := range cases {
