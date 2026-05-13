@@ -41,9 +41,10 @@ type Options struct {
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
 type Server struct {
-	srv    *goSmtp.Server
-	opts   Options
-	router *proxyRouter // non-nil when proxy mode is active
+	srv     *goSmtp.Server
+	opts    Options
+	router  *proxyRouter   // non-nil when proxy mode is active
+	userSem *userSemaphore // non-nil when UserConcurrencyLimit > 0
 }
 
 // New creates an LMTP server from Options.
@@ -53,8 +54,13 @@ func New(opts Options) *Server {
 		router = newProxyRouter(opts.Hostname, opts.Config.Proxy)
 	}
 
-	s := &Server{opts: opts, router: router}
-	be := &backend{opts: opts, router: router}
+	var userSem *userSemaphore
+	if opts.Config.UserConcurrencyLimit > 0 {
+		userSem = newUserSemaphore(opts.Config.UserConcurrencyLimit)
+	}
+
+	s := &Server{opts: opts, router: router, userSem: userSem}
+	be := &backend{opts: opts, router: router, userSem: userSem}
 
 	srv := goSmtp.NewServer(be)
 	srv.Domain = opts.Hostname
@@ -116,12 +122,13 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 // ---- backend ----------------------------------------------------------------
 
 type backend struct {
-	opts   Options
-	router *proxyRouter
+	opts    Options
+	router  *proxyRouter
+	userSem *userSemaphore
 }
 
 func (b *backend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
-	return &session{opts: b.opts, router: b.router}, nil
+	return &session{opts: b.opts, router: b.router, userSem: b.userSem}, nil
 }
 
 // ---- session ----------------------------------------------------------------
@@ -129,6 +136,7 @@ func (b *backend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
 type session struct {
 	opts       Options
 	router     *proxyRouter
+	userSem    *userSemaphore
 	from       string
 	rcpts      []string            // local recipients
 	proxyRcpts map[string][]string // backend addr → []rcpt (proxy mode)
@@ -183,6 +191,25 @@ func (s *session) rcptProxy(to string) error {
 // Data is never called in LMTP mode — LMTPData handles DATA instead.
 func (s *session) Data(_ io.Reader) error { return nil }
 
+// prependHeaders prepends Received and Delivered-To headers to data.
+// rcpt is the original RCPT TO address; finalRcpt is after detail stripping.
+func (s *session) prependHeaders(data []byte, rcpt, finalRcpt string) []byte {
+	var hdrs []byte
+	switch s.opts.Config.HdrDeliveryAddress {
+	case "final":
+		hdrs = append(hdrs, ("Delivered-To: " + finalRcpt + "\r\n")...)
+	case "original":
+		hdrs = append(hdrs, ("Delivered-To: " + rcpt + "\r\n")...)
+	}
+	if s.opts.Config.AddReceivedHeader {
+		hdrs = append(hdrs, buildReceivedHeader(s.from)...)
+	}
+	if len(hdrs) == 0 {
+		return data
+	}
+	return append(hdrs, data...)
+}
+
 // LMTPData delivers the message and reports per-recipient status via status.SetStatus.
 func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	data, err := io.ReadAll(r)
@@ -190,17 +217,15 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		return err
 	}
 
-	var full []byte
+	// For proxy mode, build message with common headers (no per-rcpt Delivered-To).
+	proxyData := data
 	if s.opts.Config.AddReceivedHeader {
-		received := buildReceivedHeader(s.from)
-		full = append([]byte(received), data...)
-	} else {
-		full = data
+		proxyData = append([]byte(buildReceivedHeader(s.from)), data...)
 	}
 
 	// Proxy recipients: fan-out to backends in parallel.
 	if len(s.proxyRcpts) > 0 {
-		results := s.router.proxyFanOut(s.proxyRcpts, s.from, full)
+		results := s.router.proxyFanOut(s.proxyRcpts, s.from, proxyData)
 		for rcpt, rerr := range results {
 			if rerr != nil {
 				slog.Error("lmtp: proxy delivery failed", "rcpt", rcpt, "err", rerr)
@@ -210,7 +235,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					rerr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Proxy delivery failed"}
 				}
 			} else {
-				slog.Info("lmtp: proxy delivered", "rcpt", rcpt, "size", len(full))
+				slog.Info("lmtp: proxy delivered", "rcpt", rcpt, "size", len(proxyData))
 			}
 			status.SetStatus(rcpt, rerr)
 		}
@@ -222,7 +247,20 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		if !s.opts.Config.SaveToDetailMailbox {
 			deliverRcpt = stripDetail(rcpt)
 		}
-		err := deliverOne(s.opts.Mailbox, s.opts.Index, deliverRcpt, bytes.NewReader(full), int64(len(full)))
+
+		msg := s.prependHeaders(data, rcpt, deliverRcpt)
+
+		if s.userSem != nil {
+			user, _, _ := resolveMailbox(deliverRcpt)
+			if !s.userSem.acquire(user) {
+				slog.Warn("lmtp: user concurrency limit reached", "user", user)
+				status.SetStatus(rcpt, &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 4, 5}, Message: "Too many concurrent deliveries"})
+				continue
+			}
+			defer s.userSem.release(user) //nolint:gocritic
+		}
+
+		err := deliverOne(s.opts.Mailbox, s.opts.Index, deliverRcpt, bytes.NewReader(msg), int64(len(msg)))
 		if err != nil {
 			slog.Error("lmtp: delivery failed", "rcpt", rcpt, "err", err)
 			if s.opts.Config.VerboseReplies {
@@ -231,7 +269,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				err = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Local delivery failed"}
 			}
 		} else {
-			slog.Info("lmtp: delivered", "rcpt", rcpt, "size", len(full))
+			slog.Info("lmtp: delivered", "rcpt", rcpt, "size", len(msg))
 		}
 		status.SetStatus(rcpt, err)
 	}
