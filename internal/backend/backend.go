@@ -130,15 +130,18 @@ func New(cfg *config.Config) (*Server, error) {
 		imapAddr = ":993"
 	}
 	imap := imapsvr.New(imapsvr.Options{
-		Addr:             imapAddr,
-		AddrPlain:        cfg.IMAP.ListenPlain,
-		TLSConfig:        imapTLS,
-		Mailbox:          mbox,
-		Index:            idx,
-		Auth:             authChain,
-		ProxyProtocol:    cfg.IMAP.ProxyProtocol,
-		HAProxyTimeout:   time.Duration(cfg.IMAP.HAProxyTimeout) * time.Second,
-		DisablePlainAuth: cfg.IMAP.DisablePlainAuth,
+		Addr:               imapAddr,
+		AddrPlain:          cfg.IMAP.ListenPlain,
+		TLSConfig:          imapTLS,
+		Mailbox:            mbox,
+		Index:              idx,
+		Auth:               authChain,
+		ProxyProtocol:      cfg.IMAP.ProxyProtocol,
+		HAProxyTimeout:     time.Duration(cfg.IMAP.HAProxyTimeout) * time.Second,
+		HAProxyTrustedNets: parseCIDRs(cfg.IMAP.HAProxyTrustedNets),
+		XClient:            cfg.IMAP.XClient,
+		XClientTrustedNets: parseCIDRs(cfg.IMAP.XClientTrustedNets),
+		DisablePlainAuth:   cfg.IMAP.DisablePlainAuth,
 	})
 
 	// ---- DKIM key provider ----

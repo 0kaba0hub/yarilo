@@ -147,6 +147,13 @@ imap:
   tls_prefer_server_ciphers: false  # server cipher order preference
   proxy_protocol: false             # set true when behind HAProxy
   haproxy_timeout: 3                # seconds to wait for PROXY header
+  haproxy_trusted_nets:             # CIDRs allowed to send PROXY header (default: 127/8, 10/8)
+    - 127.0.0.1/32
+    - 10.0.0.0/8
+  xclient: false                    # handle XCLIENT pre-auth command from trusted relay
+  xclient_trusted_nets:             # CIDRs allowed to send XCLIENT (default: 127/8, 10/8)
+    - 127.0.0.1/32
+    - 10.0.0.0/8
   disable_plaintext_auth: true      # reject AUTH without TLS
 
 pop3:
