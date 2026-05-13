@@ -45,7 +45,7 @@ func buildTestServer(t *testing.T, submission bool) (addr string, cleanup func()
 			MaxMsgSize: 1 << 20,
 		},
 		Auth:      stubAuth{},
-		Deliverer: lmtp.New(mb, idx),
+		Deliverer: lmtp.NewDeliverer(mb, idx),
 	}
 
 	srv := New(opts)
@@ -203,7 +203,7 @@ func TestSubmission_Relay(t *testing.T) {
 			MaxMsgSize: 1 << 20,
 		},
 		Auth:      stubAuth{},
-		Deliverer: lmtp.New(mb, idx),
+		Deliverer: lmtp.NewDeliverer(mb, idx),
 		Proxy:     proxy.New(relayCfg, "mx.example.com"),
 	}
 

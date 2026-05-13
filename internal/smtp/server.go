@@ -41,7 +41,7 @@ type Options struct {
 	// Protocol-level settings.
 	Config    config.SMTPProtocolConfig
 	Auth      Authenticator
-	Deliverer *lmtp.Deliverer
+	Deliverer *lmtp.Deliverer // in-process local delivery (MX inbound)
 	Proxy     *proxy.Submission
 }
 

@@ -79,6 +79,7 @@ type ServicesConfig struct {
 	Submissions *ServiceConfig `koanf:"submissions"` // port 465, SSL outbound
 	POP3        *ServiceConfig `koanf:"pop3"`        // port 110, STARTTLS
 	POP3S       *ServiceConfig `koanf:"pop3s"`       // port 995, SSL
+	LMTP        *ServiceConfig `koanf:"lmtp"`        // port 24, local delivery (no auth, loopback only)
 }
 
 // ProtocolConfig holds protocol-level behaviour settings, independent of listener.

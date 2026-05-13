@@ -30,12 +30,13 @@ import (
 
 // Server is the yarilo backend (or single-node) server.
 type Server struct {
-	cfg   *config.Config
-	telem *telemetry.Server
-	imap  *imapsvr.Server // nil if neither IMAP nor IMAPS is active
-	pop3  *pop3svr.Server // nil if neither POP3 nor POP3S is active
-	smtp  *smtpsvr.Server // nil if no SMTP/Submission/Submissions is active
-	index *file.Backend
+	cfg      *config.Config
+	telem    *telemetry.Server
+	imap     *imapsvr.Server  // nil if neither IMAP nor IMAPS is active
+	pop3     *pop3svr.Server  // nil if neither POP3 nor POP3S is active
+	smtp     *smtpsvr.Server  // nil if no SMTP/Submission/Submissions is active
+	lmtp  *lmtp.Server     // nil if LMTP not configured
+	index    *file.Backend
 }
 
 // New creates and wires all components according to cfg.
@@ -168,9 +169,15 @@ func New(cfg *config.Config) (*Server, error) {
 			DisablePlainAuth: disablePlain,
 			Config:           cfg.Protocol.SMTP,
 			Auth:             chainAuth{authChain},
-			Deliverer:        lmtp.New(mbox, idx),
+			Deliverer:        lmtp.NewDeliverer(mbox, idx),
 			Proxy:            submissionProxy,
 		})
+	}
+
+	// ---- LMTP ----
+	var lmtpServer *lmtp.Server
+	if svcs.LMTP.Active() {
+		lmtpServer = lmtp.New(cfg.Protocol.SMTP.Hostname, mbox, idx)
 	}
 
 	// ---- telemetry ----
@@ -181,12 +188,13 @@ func New(cfg *config.Config) (*Server, error) {
 	telem := telemetry.New(telemAddr)
 
 	return &Server{
-		cfg:   cfg,
-		telem: telem,
-		imap:  imapServer,
-		pop3:  pop3Server,
-		smtp:  smtpServer,
-		index: idx,
+		cfg:     cfg,
+		telem:   telem,
+		imap:    imapServer,
+		pop3:    pop3Server,
+		smtp:    smtpServer,
+		lmtp: lmtpServer,
+		index:   idx,
 	}, nil
 }
 
@@ -275,6 +283,21 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			if err := s.smtp.ServeSubmit(ln, tlsCfg); err != nil {
 				slog.Error("smtp: submission server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+
+	// LMTP (port 24) — local delivery for external MTAs
+	if s.lmtp != nil && svcs.LMTP.Active() {
+		go func() {
+			ln, err := net.Listen("tcp", listenAddr(svcs.LMTP))
+			if err != nil {
+				slog.Error("lmtp: listen error", "err", err)
+				os.Exit(1)
+			}
+			if err := s.lmtp.Serve(ln); err != nil {
+				slog.Error("lmtp: server error", "err", err)
 				os.Exit(1)
 			}
 		}()
