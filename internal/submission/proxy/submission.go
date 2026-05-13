@@ -1,5 +1,5 @@
 // Package proxy implements the outbound submission proxy.
-// Accepts an authenticated SMTP session from an MUA and forwards it to
+// Accepts an authenticated session from an MUA and forwards it to
 // the configured upstream MTA — one TCP connection per message, fail-closed.
 package proxy
 
@@ -19,14 +19,13 @@ import (
 )
 
 // Submission proxies outbound mail to the configured upstream MTA.
-// Mirrors Dovecot's submission_relay_* behaviour: one connection per message,
-// fail-closed (4xx to client) on any transport error.
+// One connection per message, fail-closed (4xx to client) on any transport error.
 type Submission struct {
-	cfg      config.SMTPRelayConfig
+	cfg      config.RelayConfig
 	hostname string // EHLO hostname sent to the upstream
 }
 
-func New(cfg config.SMTPRelayConfig, hostname string) *Submission {
+func New(cfg config.RelayConfig, hostname string) *Submission {
 	if hostname == "" {
 		hostname = "localhost"
 	}
@@ -54,7 +53,7 @@ func (s *Submission) Send(from string, rcpts []string, body io.Reader, clientIP 
 
 	c, err := s.dial()
 	if err != nil {
-		slog.Error("smtp/proxy: connect failed", "host", s.cfg.Host, "err", err)
+		slog.Error("submission/proxy: connect failed", "host", s.cfg.Host, "err", err)
 		return &goSmtp.SMTPError{
 			Code:         451,
 			EnhancedCode: goSmtp.EnhancedCode{4, 4, 0},
@@ -64,7 +63,7 @@ func (s *Submission) Send(from string, rcpts []string, body io.Reader, clientIP 
 	defer c.Close()
 
 	if err := c.Hello(s.hostname); err != nil {
-		slog.Error("smtp/proxy: EHLO failed", "err", err)
+		slog.Error("submission/proxy: EHLO failed", "err", err)
 		return &goSmtp.SMTPError{
 			Code:         451,
 			EnhancedCode: goSmtp.EnhancedCode{4, 4, 0},
@@ -73,7 +72,7 @@ func (s *Submission) Send(from string, rcpts []string, body io.Reader, clientIP 
 	}
 
 	caps := s.probeCapabilities(c)
-	slog.Debug("smtp/proxy: upstream capabilities",
+	slog.Debug("submission/proxy: upstream capabilities",
 		"host", s.cfg.Host,
 		"8bitmime", caps.has8BitMIME,
 		"dsn", caps.hasDSN,
@@ -82,14 +81,14 @@ func (s *Submission) Send(from string, rcpts []string, body io.Reader, clientIP 
 
 	if s.cfg.Trusted && caps.hasXCLIENT && clientIP != nil {
 		if err := c.XClient(goSmtp.XClientData{Addr: clientIP}); err != nil {
-			slog.Warn("smtp/proxy: XCLIENT failed", "err", err)
+			slog.Warn("submission/proxy: XCLIENT failed", "err", err)
 		}
 	}
 
 	if s.cfg.User != "" {
 		auth := sasl.NewPlainClient("", s.cfg.User, s.cfg.Password)
 		if err := c.Auth(auth); err != nil {
-			slog.Error("smtp/proxy: auth failed", "user", s.cfg.User, "err", err)
+			slog.Error("submission/proxy: auth failed", "user", s.cfg.User, "err", err)
 			return &goSmtp.SMTPError{
 				Code:         451,
 				EnhancedCode: goSmtp.EnhancedCode{4, 7, 0},
@@ -103,7 +102,7 @@ func (s *Submission) Send(from string, rcpts []string, body io.Reader, clientIP 
 		if errors.As(err, &smtpErr) {
 			return smtpErr
 		}
-		slog.Error("smtp/proxy: send failed", "err", err)
+		slog.Error("submission/proxy: send failed", "err", err)
 		return &goSmtp.SMTPError{
 			Code:         451,
 			EnhancedCode: goSmtp.EnhancedCode{4, 4, 0},

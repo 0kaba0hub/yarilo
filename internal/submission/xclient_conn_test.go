@@ -1,4 +1,4 @@
-package smtp
+package submission
 
 import (
 	"bufio"
@@ -9,16 +9,11 @@ import (
 	"time"
 )
 
-// loopbackNet is 127.0.0.0/8 — used as the default trusted network in tests
-// so that connections from 127.0.0.1 are allowed to send XCLIENT.
 var loopbackNet = func() *net.IPNet {
 	_, n, _ := net.ParseCIDR("127.0.0.0/8")
 	return n
 }()
 
-// newTestConn creates a real TCP connection pair. server is wrapped in
-// xclientConn with 127.0.0.0/8 as the trusted network.
-// Uses TCP so OS send buffers avoid deadlocks.
 func newTestConn(t *testing.T) (client net.Conn, server *xclientConn) {
 	t.Helper()
 	return newTestConnWithTrustedNets(t, []*net.IPNet{loopbackNet})
@@ -26,7 +21,6 @@ func newTestConn(t *testing.T) (client net.Conn, server *xclientConn) {
 
 func deadline(d time.Duration) time.Time { return time.Now().Add(d) }
 
-// readLine reads one CRLF-terminated line from r.
 func readLine(t *testing.T, r *bufio.Reader) string {
 	t.Helper()
 	line, err := r.ReadString('\n')
@@ -35,8 +29,6 @@ func readLine(t *testing.T, r *bufio.Reader) string {
 	}
 	return strings.TrimRight(line, "\r\n")
 }
-
-// ---- Read side -----------------------------------------------------------
 
 func TestXClientConn_RemoteAddrDefault(t *testing.T) {
 	_, srv := newTestConn(t)
@@ -50,12 +42,9 @@ func TestXClientConn_UpdatesRemoteAddr(t *testing.T) {
 	client.SetDeadline(deadline(5 * time.Second)) //nolint:errcheck
 	srv.SetDeadline(deadline(5 * time.Second))    //nolint:errcheck
 
-	// Send XCLIENT then a regular line.
 	fmt.Fprintf(client, "XCLIENT ADDR=1.2.3.4 NAME=[UNAVAILABLE]\r\n")
 
-	// srv.Read must consume the XCLIENT line internally (respond 220, not forward it).
 	buf := make([]byte, 256)
-	// Give the server time to process. Then send a passthrough line.
 	fmt.Fprintf(client, "EHLO relay.example.com\r\n")
 
 	n, err := srv.Read(buf)
@@ -81,13 +70,11 @@ func TestXClientConn_XClientResponds220(t *testing.T) {
 	fmt.Fprintf(client, "XCLIENT ADDR=2.2.2.2\r\n")
 	fmt.Fprintf(client, "QUIT\r\n")
 
-	// srv.Read must be driven to trigger XCLIENT interception + 220 write.
 	go func() {
 		buf := make([]byte, 256)
 		srv.Read(buf) //nolint:errcheck
 	}()
 
-	// Client must receive "220 2.0.0 OK" response.
 	cr := bufio.NewReader(client)
 	line := readLine(t, cr)
 	if !strings.HasPrefix(line, "220") {
@@ -118,7 +105,6 @@ func TestXClientConn_CaseInsensitive(t *testing.T) {
 	client.SetDeadline(deadline(5 * time.Second)) //nolint:errcheck
 	srv.SetDeadline(deadline(5 * time.Second))    //nolint:errcheck
 
-	// lowercase xclient
 	fmt.Fprintf(client, "xclient addr=5.6.7.8\r\n")
 	fmt.Fprintf(client, "NOOP\r\n")
 
@@ -134,14 +120,11 @@ func TestXClientConn_CaseInsensitive(t *testing.T) {
 	}
 }
 
-// ---- Write side ----------------------------------------------------------
-
 func TestXClientConn_InjectsCapIntoEHLO(t *testing.T) {
 	client, srv := newTestConn(t)
 	client.SetDeadline(deadline(5 * time.Second)) //nolint:errcheck
 	srv.SetDeadline(deadline(5 * time.Second))    //nolint:errcheck
 
-	// Simulate go-smtp writing EHLO response line by line.
 	go func() {
 		srv.Write([]byte("250-yarilo.example.com\r\n")) //nolint:errcheck
 		srv.Write([]byte("250-PIPELINING\r\n"))         //nolint:errcheck
@@ -202,9 +185,6 @@ func TestXClientConn_NoInjectOnNon250(t *testing.T) {
 	}
 }
 
-// ---- trusted networks ----------------------------------------------------
-
-// newTestConnWithTrustedNets is like newTestConn but passes trustedNets to xclientConn.
 func newTestConnWithTrustedNets(t *testing.T, trustedNets []*net.IPNet) (client net.Conn, server *xclientConn) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -241,7 +221,6 @@ func newTestConnWithTrustedNets(t *testing.T, trustedNets []*net.IPNet) (client 
 }
 
 func TestXClientConn_TrustedNet_Updates(t *testing.T) {
-	// 127.0.0.0/8 covers the loopback used in tests → XCLIENT must be processed.
 	_, trusted, _ := net.ParseCIDR("127.0.0.0/8")
 	client, srv := newTestConnWithTrustedNets(t, []*net.IPNet{trusted})
 	client.SetDeadline(deadline(5 * time.Second)) //nolint:errcheck
@@ -266,7 +245,6 @@ func TestXClientConn_TrustedNet_Updates(t *testing.T) {
 }
 
 func TestXClientConn_UntrustedNet_Ignored(t *testing.T) {
-	// 10.0.0.0/8 does NOT cover 127.0.0.1 → XCLIENT must be silently discarded.
 	_, untrusted, _ := net.ParseCIDR("10.0.0.0/8")
 	client, srv := newTestConnWithTrustedNets(t, []*net.IPNet{untrusted})
 	client.SetDeadline(deadline(5 * time.Second)) //nolint:errcheck
@@ -286,13 +264,10 @@ func TestXClientConn_UntrustedNet_Ignored(t *testing.T) {
 	if !strings.Contains(line, "EHLO") {
 		t.Fatalf("expected EHLO passthrough, got %q", line)
 	}
-	// remoteAddr must NOT have changed.
 	if got := srv.RemoteAddr().String(); got != origAddr {
-		t.Fatalf("expected remoteAddr to stay %q, got %q (untrusted peer changed it)", origAddr, got)
+		t.Fatalf("expected remoteAddr to stay %q, got %q", origAddr, got)
 	}
 }
-
-// ---- xclientListener -----------------------------------------------------
 
 func TestXClientListener_AcceptsAndWraps(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

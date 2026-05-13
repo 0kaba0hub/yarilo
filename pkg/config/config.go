@@ -83,10 +83,10 @@ type ServicesConfig struct {
 
 // ProtocolConfig holds protocol-level behaviour settings, independent of listener.
 type ProtocolConfig struct {
-	IMAP IMAPProtocolConfig `koanf:"imap"`
-	POP3 POP3ProtocolConfig `koanf:"pop3"`
-	SMTP SMTPProtocolConfig `koanf:"smtp"`
-	LMTP LMTPProtocolConfig `koanf:"lmtp"`
+	IMAP       IMAPProtocolConfig       `koanf:"imap"`
+	POP3       POP3ProtocolConfig       `koanf:"pop3"`
+	Submission SubmissionProtocolConfig `koanf:"submission"`
+	LMTP       LMTPProtocolConfig       `koanf:"lmtp"`
 }
 
 type LMTPProtocolConfig struct {
@@ -139,19 +139,19 @@ type POP3ProtocolConfig struct {
 	DeletedFlag    string `koanf:"pop3_deleted_flag"`
 }
 
-type SMTPProtocolConfig struct {
-	Hostname           string          `koanf:"hostname"`
-	MaxMsgSize         int64           `koanf:"max_message_size"`
-	MaxLineLength      int             `koanf:"max_line_length"`
-	MaxRecipients      int             `koanf:"max_recipients"` // 0 = unlimited (Dovecot default)
-	RecipientDelimiter string          `koanf:"recipient_delimiter"`
-	Workarounds        []string        `koanf:"client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
-	Relay              SMTPRelayConfig `koanf:"relay"`
+type SubmissionProtocolConfig struct {
+	Hostname           string      `koanf:"hostname"`
+	MaxMsgSize         int64       `koanf:"max_message_size"`
+	MaxLineLength      int         `koanf:"max_line_length"`
+	MaxRecipients      int         `koanf:"max_recipients"` // 0 = unlimited (Dovecot default)
+	RecipientDelimiter string      `koanf:"recipient_delimiter"`
+	Workarounds        []string    `koanf:"client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
+	Relay              RelayConfig `koanf:"relay"`
 }
 
-// SMTPRelayConfig mirrors Dovecot's submission_relay_* settings.
+// RelayConfig mirrors Dovecot's submission_relay_* settings.
 // Host must be non-empty to enable relaying; otherwise submission returns 451.
-type SMTPRelayConfig struct {
+type RelayConfig struct {
 	Host           string `koanf:"host"`
 	Port           int    `koanf:"port"` // default 25
 	User           string `koanf:"user"`
@@ -217,11 +217,11 @@ func Load(path string) (*Config, error) {
 				UIDLDuplicates: "rename",
 				DeleteType:     "expunge",
 			},
-			SMTP: SMTPProtocolConfig{
+			Submission: SubmissionProtocolConfig{
 				MaxMsgSize:         41943040,
 				MaxLineLength:      4096,
 				RecipientDelimiter: "+",
-				Relay: SMTPRelayConfig{
+				Relay: RelayConfig{
 					Port:           25,
 					SSL:            "no",
 					SSLVerify:      true,
@@ -307,7 +307,7 @@ func expandEnv(cfg *Config) {
 	expandSvcSSL(cfg.Services.Submissions)
 	expandSvcSSL(cfg.Services.POP3)
 	expandSvcSSL(cfg.Services.POP3S)
-	cfg.Protocol.SMTP.Relay.Password = expand(cfg.Protocol.SMTP.Relay.Password)
+	cfg.Protocol.Submission.Relay.Password = expand(cfg.Protocol.Submission.Relay.Password)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
 	}

@@ -1,4 +1,4 @@
-package smtp
+package submission
 
 import (
 	"bufio"
@@ -10,10 +10,10 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
-func TestParseSMTPWorkarounds(t *testing.T) {
+func TestParseWorkarounds(t *testing.T) {
 	cases := []struct {
 		input []string
-		want  smtpWorkarounds
+		want  submissionWorkarounds
 	}{
 		{nil, 0},
 		{[]string{"whitespace-before-path"}, workaroundWhitespaceBeforePath},
@@ -23,20 +23,20 @@ func TestParseSMTPWorkarounds(t *testing.T) {
 		{[]string{"unknown-thing"}, 0},
 	}
 	for _, tc := range cases {
-		got := parseSMTPWorkarounds(tc.input)
+		got := parseWorkarounds(tc.input)
 		if got != tc.want {
-			t.Errorf("parseSMTPWorkarounds(%v) = %b, want %b", tc.input, got, tc.want)
+			t.Errorf("parseWorkarounds(%v) = %b, want %b", tc.input, got, tc.want)
 		}
 	}
 }
 
 func TestApplyWorkarounds_WhitespaceBeforePath(t *testing.T) {
-	c := &smtpWorkaroundConn{workarounds: workaroundWhitespaceBeforePath}
+	c := &workaroundConn{workarounds: workaroundWhitespaceBeforePath}
 	cases := []struct{ in, want string }{
 		{"MAIL FROM: <alice@example.com>\r\n", "MAIL FROM:<alice@example.com>\r\n"},
 		{"RCPT TO:  <bob@example.com>\r\n", "RCPT TO:<bob@example.com>\r\n"},
-		{"MAIL FROM:<alice@example.com>\r\n", "MAIL FROM:<alice@example.com>\r\n"}, // already correct
-		{"DATA\r\n", "DATA\r\n"}, // other commands unchanged
+		{"MAIL FROM:<alice@example.com>\r\n", "MAIL FROM:<alice@example.com>\r\n"},
+		{"DATA\r\n", "DATA\r\n"},
 	}
 	for _, tc := range cases {
 		got := c.applyWorkarounds(tc.in)
@@ -47,12 +47,12 @@ func TestApplyWorkarounds_WhitespaceBeforePath(t *testing.T) {
 }
 
 func TestApplyWorkarounds_MailboxForPath(t *testing.T) {
-	c := &smtpWorkaroundConn{workarounds: workaroundMailboxForPath}
+	c := &workaroundConn{workarounds: workaroundMailboxForPath}
 	cases := []struct{ in, want string }{
 		{"MAIL FROM:alice@example.com\r\n", "MAIL FROM:<alice@example.com>\r\n"},
 		{"RCPT TO:bob@example.com\r\n", "RCPT TO:<bob@example.com>\r\n"},
-		{"MAIL FROM:<alice@example.com>\r\n", "MAIL FROM:<alice@example.com>\r\n"}, // already wrapped
-		{"EHLO test\r\n", "EHLO test\r\n"},                                         // other commands unchanged
+		{"MAIL FROM:<alice@example.com>\r\n", "MAIL FROM:<alice@example.com>\r\n"},
+		{"EHLO test\r\n", "EHLO test\r\n"},
 	}
 	for _, tc := range cases {
 		got := c.applyWorkarounds(tc.in)
@@ -63,7 +63,7 @@ func TestApplyWorkarounds_MailboxForPath(t *testing.T) {
 }
 
 func TestApplyWorkarounds_Both(t *testing.T) {
-	c := &smtpWorkaroundConn{workarounds: workaroundWhitespaceBeforePath | workaroundMailboxForPath}
+	c := &workaroundConn{workarounds: workaroundWhitespaceBeforePath | workaroundMailboxForPath}
 	cases := []struct{ in, want string }{
 		{"MAIL FROM: alice@example.com\r\n", "MAIL FROM:<alice@example.com>\r\n"},
 		{"RCPT TO:  bob\r\n", "RCPT TO:<bob>\r\n"},
@@ -76,11 +76,9 @@ func TestApplyWorkarounds_Both(t *testing.T) {
 	}
 }
 
-// TestSMTPWorkaround_Integration sends raw SMTP commands with whitespace-before-path
-// and verifies go-smtp accepts them after the workaround wrapper normalises them.
-func TestSMTPWorkaround_Integration(t *testing.T) {
+func TestWorkaround_Integration(t *testing.T) {
 	opts := Options{
-		Config: config.SMTPProtocolConfig{
+		Config: config.SubmissionProtocolConfig{
 			Hostname:    "mx.example.com",
 			MaxMsgSize:  1 << 20,
 			Workarounds: []string{"whitespace-before-path"},
@@ -93,7 +91,7 @@ func TestSMTPWorkaround_Integration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	go func() { _ = srv.ServeSubmit(ln, nil) }()
+	go func() { _ = srv.Serve(ln, nil) }()
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
@@ -115,29 +113,24 @@ func TestSMTPWorkaround_Integration(t *testing.T) {
 	readLine() // 220 greeting
 	send("EHLO test")
 	for {
-		line := readLine()
-		if strings.HasPrefix(line, "250 ") {
+		if strings.HasPrefix(readLine(), "250 ") {
 			break
 		}
 	}
 
 	// AUTH PLAIN: base64("\x00alice@example.com\x00secret")
 	send("AUTH PLAIN AGFsaWNlQGV4YW1wbGUuY29tAHNlY3JldA==")
-	resp := readLine()
-	if !strings.HasPrefix(resp, "235") {
+	if resp := readLine(); !strings.HasPrefix(resp, "235") {
 		t.Fatalf("AUTH: expected 235, got %q", resp)
 	}
 
-	// Send with whitespace before path — workaround should fix it
 	send("MAIL FROM: <alice@example.com>")
-	resp = readLine()
-	if !strings.HasPrefix(resp, "250") {
+	if resp := readLine(); !strings.HasPrefix(resp, "250") {
 		t.Fatalf("MAIL FROM with space: expected 250, got %q", resp)
 	}
 
 	send("RCPT TO: <bob@example.com>")
-	resp = readLine()
-	if !strings.HasPrefix(resp, "250") {
+	if resp := readLine(); !strings.HasPrefix(resp, "250") {
 		t.Fatalf("RCPT TO with space: expected 250, got %q", resp)
 	}
 }

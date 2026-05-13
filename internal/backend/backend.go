@@ -17,12 +17,12 @@ import (
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
-	smtpsvr "github.com/0kaba0hub/yarilo/internal/smtp"
-	smtpproxy "github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
+	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
+	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -30,13 +30,13 @@ import (
 
 // Server is the yarilo backend (or single-node) server.
 type Server struct {
-	cfg   *config.Config
-	telem *telemetry.Server
-	imap  *imapsvr.Server // nil if neither IMAP nor IMAPS is active
-	pop3  *pop3svr.Server // nil if neither POP3 nor POP3S is active
-	smtp  *smtpsvr.Server // nil if no SMTP/Submission/Submissions is active
-	lmtp  *lmtp.Server    // nil if LMTP not configured
-	index *file.Backend
+	cfg        *config.Config
+	telem      *telemetry.Server
+	imap       *imapsvr.Server // nil if neither IMAP nor IMAPS is active
+	pop3       *pop3svr.Server // nil if neither POP3 nor POP3S is active
+	submission *submsvr.Server // nil if no Submission/Submissions is active
+	lmtp       *lmtp.Server    // nil if LMTP not configured
+	index      *file.Backend
 }
 
 // New creates and wires all components according to cfg.
@@ -145,23 +145,23 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// ---- SMTP submission ----
-	var smtpServer *smtpsvr.Server
+	var smtpServer *submsvr.Server
 	if svcs.Submission.Active() || svcs.Submissions.Active() {
 		primary := firstActive(svcs.Submission, svcs.Submissions)
 
-		var submissionProxy *smtpproxy.Submission
-		if cfg.Protocol.SMTP.Relay.Host != "" {
-			submissionProxy = smtpproxy.New(cfg.Protocol.SMTP.Relay, cfg.Protocol.SMTP.Hostname)
+		var submissionProxy *submproxy.Submission
+		if cfg.Protocol.Submission.Relay.Host != "" {
+			submissionProxy = submproxy.New(cfg.Protocol.Submission.Relay, cfg.Protocol.Submission.Hostname)
 		}
 
-		smtpServer = smtpsvr.New(smtpsvr.Options{
+		smtpServer = submsvr.New(submsvr.Options{
 			HAProxy:          primary.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
 			HAProxyNets:      haproxyNets,
 			XClient:          primary.XClient,
 			XClientNets:      xclientNets,
 			DisablePlainAuth: primary.DisablePlainAuth,
-			Config:           cfg.Protocol.SMTP,
+			Config:           cfg.Protocol.Submission,
 			Auth:             chainAuth{authChain},
 			Proxy:            submissionProxy,
 		})
@@ -179,7 +179,7 @@ func New(cfg *config.Config) (*Server, error) {
 			lmtpTLS = t
 		}
 		lmtpServer = lmtp.New(lmtp.Options{
-			Hostname:           cfg.Protocol.SMTP.Hostname,
+			Hostname:           cfg.Protocol.Submission.Hostname,
 			Config:             cfg.Protocol.LMTP,
 			Mailbox:            mbox,
 			Index:              idx,
@@ -200,13 +200,13 @@ func New(cfg *config.Config) (*Server, error) {
 	telem := telemetry.New(telemAddr)
 
 	return &Server{
-		cfg:   cfg,
-		telem: telem,
-		imap:  imapServer,
-		pop3:  pop3Server,
-		smtp:  smtpServer,
-		lmtp:  lmtpServer,
-		index: idx,
+		cfg:        cfg,
+		telem:      telem,
+		imap:       imapServer,
+		pop3:       pop3Server,
+		submission: smtpServer,
+		lmtp:       lmtpServer,
+		index:      idx,
 	}, nil
 }
 
@@ -262,7 +262,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Submission (STARTTLS)
-	if s.smtp != nil && svcs.Submission.Active() {
+	if s.submission != nil && svcs.Submission.Active() {
 		go func() {
 			ln, err := net.Listen("tcp", listenAddr(svcs.Submission))
 			if err != nil {
@@ -278,7 +278,7 @@ func (s *Server) Run(ctx context.Context) error {
 				}
 				tlsCfg = t
 			}
-			if err := s.smtp.ServeSubmit(ln, tlsCfg); err != nil {
+			if err := s.submission.Serve(ln, tlsCfg); err != nil {
 				slog.Error("smtp: submission server error", "err", err)
 				os.Exit(1)
 			}
@@ -311,7 +311,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Submissions (SSL-only, port 465)
-	if s.smtp != nil && svcs.Submissions.Active() {
+	if s.submission != nil && svcs.Submissions.Active() {
 		go func() {
 			ln, err := net.Listen("tcp", listenAddr(svcs.Submissions))
 			if err != nil {
@@ -323,7 +323,7 @@ func (s *Server) Run(ctx context.Context) error {
 				slog.Error("smtp: submissions TLS error", "err", err)
 				os.Exit(1)
 			}
-			if err := s.smtp.ServeSubmit(ln, tlsCfg); err != nil {
+			if err := s.submission.Serve(ln, tlsCfg); err != nil {
 				slog.Error("smtp: submissions server error", "err", err)
 				os.Exit(1)
 			}
