@@ -112,11 +112,25 @@ type SMTPProtocolConfig struct {
 	MaxLineLength      int            `koanf:"max_line_length"`
 	RecipientDelimiter string         `koanf:"recipient_delimiter"`
 	Milters            []MilterConfig `koanf:"milters"`
+	Relay              SMTPRelayConfig `koanf:"relay"`
 }
 
 type MilterConfig struct {
 	Socket  string `koanf:"socket"`  // unix:/path or tcp:host:port
 	Timeout int    `koanf:"timeout"` // seconds, default 30
+}
+
+// SMTPRelayConfig mirrors Dovecot's submission_relay_* settings.
+// Host must be non-empty to enable relaying; otherwise submission returns 451.
+type SMTPRelayConfig struct {
+	Host           string `koanf:"host"`
+	Port           int    `koanf:"port"`            // default 25
+	User           string `koanf:"user"`
+	Password       string `koanf:"password"`        // supports ${ENV_VAR}
+	SSL            string `koanf:"ssl"`             // no | smtps | starttls
+	SSLVerify      bool   `koanf:"ssl_verify"`      // default true
+	ConnectTimeout int    `koanf:"connect_timeout"` // seconds, default 30
+	CommandTimeout int    `koanf:"command_timeout"` // seconds, default 300
 }
 
 type AuthConfig struct {
@@ -177,6 +191,13 @@ func Load(path string) (*Config, error) {
 				MaxMsgSize:         41943040,
 				MaxLineLength:      4096,
 				RecipientDelimiter: "+",
+				Relay: SMTPRelayConfig{
+					Port:           25,
+					SSL:            "no",
+					SSLVerify:      true,
+					ConnectTimeout: 30,
+					CommandTimeout: 300,
+				},
 			},
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
@@ -250,6 +271,7 @@ func expandEnv(cfg *Config) {
 	expandSvcSSL(cfg.Services.Submissions)
 	expandSvcSSL(cfg.Services.POP3)
 	expandSvcSSL(cfg.Services.POP3S)
+	cfg.Protocol.SMTP.Relay.Password = expand(cfg.Protocol.SMTP.Relay.Password)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
 	}

@@ -163,6 +163,11 @@ func New(cfg *config.Config) (*Server, error) {
 			milters = append(milters, c)
 		}
 
+		var relay *smtpsvr.Relay
+		if cfg.Protocol.SMTP.Relay.Host != "" {
+			relay = smtpsvr.NewRelay(cfg.Protocol.SMTP.Relay)
+		}
+
 		smtpServer = smtpsvr.New(smtpsvr.Options{
 			HAProxy:          primary.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
@@ -170,10 +175,11 @@ func New(cfg *config.Config) (*Server, error) {
 			XClient:          primary.XClient,
 			XClientNets:      xclientNets,
 			DisablePlainAuth: disablePlain,
-			Config:    cfg.Protocol.SMTP,
-			Auth:      chainAuth{authChain},
-			Deliverer: lmtp.New(mbox, idx),
+			Config:           cfg.Protocol.SMTP,
+			Auth:             chainAuth{authChain},
+			Deliverer:        lmtp.New(mbox, idx),
 			Milters:          milters,
+			Relay:            relay,
 		})
 	}
 

@@ -3,6 +3,7 @@ package smtp
 import (
 	"io"
 	"net"
+	"strconv"
 	"testing"
 
 	"github.com/emersion/go-sasl"
@@ -134,8 +135,93 @@ func TestSubmission_AuthOK(t *testing.T) {
 	if err := c.Auth(plainAuth("alice@example.com", "secret")); err != nil {
 		t.Fatalf("AUTH: %v", err)
 	}
-	const body = "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n\r\nHello\r\n"
-	sendMessage(t, c, "alice@example.com", "bob@example.com", body)
+	// No relay configured → DATA must return 451.
+	if err := c.Mail("alice@example.com", nil); err != nil {
+		t.Fatalf("MAIL FROM: %v", err)
+	}
+	if err := c.Rcpt("bob@example.com", nil); err != nil {
+		t.Fatalf("RCPT TO: %v", err)
+	}
+	wc, err := c.Data()
+	if err != nil {
+		t.Fatalf("DATA: %v", err)
+	}
+	io.WriteString(wc, "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n\r\nHello\r\n") //nolint:errcheck
+	if err := wc.Close(); err == nil {
+		t.Fatal("expected 451 relay error when no relay configured")
+	}
+}
+
+// stubRelayBackend is a minimal SMTP server used as a relay in tests.
+type stubRelayBackend struct{}
+
+func (b *stubRelayBackend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
+	return &stubRelaySession{}, nil
+}
+
+type stubRelaySession struct{}
+
+func (s *stubRelaySession) Mail(_ string, _ *goSmtp.MailOptions) error  { return nil }
+func (s *stubRelaySession) Rcpt(_ string, _ *goSmtp.RcptOptions) error  { return nil }
+func (s *stubRelaySession) Data(r io.Reader) error                       { _, _ = io.ReadAll(r); return nil }
+func (s *stubRelaySession) Reset()                                       {}
+func (s *stubRelaySession) Logout() error                                { return nil }
+
+func buildStubRelay(t *testing.T) config.SMTPRelayConfig {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := goSmtp.NewServer(&stubRelayBackend{})
+	srv.Domain = "relay.test"
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { ln.Close() })
+
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	return config.SMTPRelayConfig{Host: host, Port: port, SSL: "no", SSLVerify: false, ConnectTimeout: 5, CommandTimeout: 10}
+}
+
+func TestSubmission_Relay(t *testing.T) {
+	dir := t.TempDir()
+	mb, err := maildir.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := fileindex.New(dir)
+	defer idx.Close() //nolint:errcheck
+	if err := mb.Init("alice@example.com"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	relayCfg := buildStubRelay(t)
+	opts := Options{
+		Config: config.SMTPProtocolConfig{
+			Hostname:   "mx.example.com",
+			MaxMsgSize: 1 << 20,
+		},
+		Auth:      stubAuth{},
+		Deliverer: lmtp.New(mb, idx),
+		Relay:     NewRelay(relayCfg),
+	}
+
+	srv := New(opts)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.ServeSubmit(ln, nil) }()
+	t.Cleanup(func() { ln.Close() })
+
+	c := dialSMTP(t, ln.Addr().String())
+	defer c.Close()
+
+	if err := c.Auth(plainAuth("alice@example.com", "secret")); err != nil {
+		t.Fatalf("AUTH: %v", err)
+	}
+	const body = "From: alice@example.com\r\nTo: bob@external.com\r\nSubject: relayed\r\n\r\nHello\r\n"
+	sendMessage(t, c, "alice@example.com", "bob@external.com", body)
 }
 
 // ---- unit helpers -----------------------------------------------------------

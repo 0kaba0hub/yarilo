@@ -42,6 +42,7 @@ type Options struct {
 	Auth      Authenticator
 	Deliverer *lmtp.Deliverer
 	Milters   []*MilterClient
+	Relay     *Relay
 }
 
 // Server wraps two go-smtp servers: MX (port 25) and submission (port 587).
@@ -174,7 +175,11 @@ func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
 }
 
 func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
-	s.rcpts = append(s.rcpts, stripDelimiter(to, s.srv.opts.Config.RecipientDelimiter))
+	if s.submission {
+		s.rcpts = append(s.rcpts, to)
+	} else {
+		s.rcpts = append(s.rcpts, stripDelimiter(to, s.srv.opts.Config.RecipientDelimiter))
+	}
 	return nil
 }
 
@@ -230,9 +235,21 @@ func (s *session) handleInbound(ctx context.Context, data []byte) error {
 	return nil
 }
 
-// handleSubmission accepts outbound submission mail (relay is a future phase).
+// handleSubmission proxies outbound mail to the configured relay server.
 func (s *session) handleSubmission(_ context.Context, data []byte) error {
-	slog.Info("smtp: submission accepted", "from", s.from, "rcpts", s.rcpts, "size", len(data))
+	relay := s.srv.opts.Relay
+	if relay == nil {
+		return &goSmtp.SMTPError{
+			Code:         451,
+			EnhancedCode: goSmtp.EnhancedCode{4, 3, 0},
+			Message:      "Relay not configured",
+		}
+	}
+	if err := relay.Send(s.from, s.rcpts, bytes.NewReader(data)); err != nil {
+		slog.Info("smtp: relay rejected", "from", s.from, "err", err)
+		return err
+	}
+	slog.Info("smtp: relayed", "from", s.from, "rcpts", s.rcpts, "size", len(data))
 	return nil
 }
 
