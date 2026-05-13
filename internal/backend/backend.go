@@ -16,6 +16,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/dkim"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
 	smtpsvr "github.com/0kaba0hub/yarilo/internal/smtp"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
@@ -31,6 +32,8 @@ type Server struct {
 	cfg     *config.Config
 	telem   *telemetry.Server
 	imap    *imapsvr.Server
+	pop3    *pop3svr.Server
+	pop3TLS *tls.Config
 	smtp    *smtpsvr.Server
 	smtpTLS *tls.Config
 	index   *file.Backend
@@ -84,6 +87,35 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		smtpTLS = t
 	}
+
+	var pop3TLS *tls.Config
+	if cfg.POP3.TLSCert != "" && cfg.POP3.TLSKey != "" {
+		t, err := config.BuildTLSConfig(
+			cfg.POP3.TLSCert, cfg.POP3.TLSKey,
+			cfg.POP3.TLSAltCert, cfg.POP3.TLSAltKey,
+			cfg.POP3.TLSMinVersion, cfg.POP3.TLSPreferServer,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("backend: POP3 TLS: %w", err)
+		}
+		pop3TLS = t
+	}
+
+	// ---- POP3 ----
+	pop3 := pop3svr.New(pop3svr.Options{
+		Addr:               cfg.POP3.Listen,
+		AddrPlain:          cfg.POP3.ListenPlain,
+		TLSConfig:          pop3TLS,
+		Mailbox:            mbox,
+		Index:              idx,
+		Auth:               authChain,
+		ProxyProtocol:      cfg.POP3.ProxyProtocol,
+		HAProxyTimeout:     time.Duration(cfg.POP3.HAProxyTimeout) * time.Second,
+		HAProxyTrustedNets: parseCIDRs(cfg.POP3.HAProxyTrustedNets),
+		XClient:            cfg.POP3.XClient,
+		XClientTrustedNets: parseCIDRs(cfg.POP3.XClientTrustedNets),
+		DisablePlainAuth:   cfg.POP3.DisablePlainAuth,
+	})
 
 	// ---- IMAP ----
 	imapAddr := cfg.IMAP.Listen
@@ -155,6 +187,8 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg:     cfg,
 		telem:   telem,
 		imap:    imap,
+		pop3:    pop3,
+		pop3TLS: pop3TLS,
 		smtp:    smtp,
 		smtpTLS: smtpTLS,
 		index:   idx,
@@ -219,9 +253,39 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
+	if s.cfg.POP3.TLSCert != "" {
+		go func() {
+			if err := s.pop3.ListenAndServeTLS(); err != nil {
+				slog.Error("pop3: TLS server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+	if s.cfg.POP3.ListenPlain != "" {
+		go func() {
+			if err := s.pop3.ListenAndServe(); err != nil {
+				slog.Error("pop3: plain server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+
 	<-ctx.Done()
 	s.index.Close() //nolint:errcheck
 	return nil
+}
+
+func parseCIDRs(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, s := range cidrs {
+		_, ipnet, err := net.ParseCIDR(s)
+		if err != nil {
+			slog.Warn("backend: invalid CIDR, skipping", "cidr", s, "err", err)
+			continue
+		}
+		nets = append(nets, ipnet)
+	}
+	return nets
 }
 
 // chainAuth adapts protocol.Chain to smtp.Authenticator.

@@ -16,6 +16,7 @@ type Config struct {
 	Mode string `koanf:"mode"` // proxy | director | backend | single
 
 	IMAP      IMAPConfig      `koanf:"imap"`
+	POP3      POP3Config      `koanf:"pop3"`
 	SMTP      SMTPConfig      `koanf:"smtp"`
 	DKIM      DKIMConfig      `koanf:"dkim"`
 	SPF       SPFConfig       `koanf:"spf"`
@@ -38,6 +39,23 @@ type IMAPConfig struct {
 	ProxyProtocol    bool   `koanf:"proxy_protocol"`
 	HAProxyTimeout   int    `koanf:"haproxy_timeout"`        // seconds, default 3
 	DisablePlainAuth bool   `koanf:"disable_plaintext_auth"` // reject auth without TLS
+}
+
+type POP3Config struct {
+	Listen             string   `koanf:"listen"`       // POP3S address, e.g. ":995"
+	ListenPlain        string   `koanf:"listen_plain"` // STARTTLS address, e.g. ":110"
+	TLSCert            string   `koanf:"tls_cert"`
+	TLSKey             string   `koanf:"tls_key"`
+	TLSAltCert         string   `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
+	TLSAltKey          string   `koanf:"tls_alt_key"`               // optional secondary key
+	TLSMinVersion      string   `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
+	TLSPreferServer    bool     `koanf:"tls_prefer_server_ciphers"` // server cipher order
+	ProxyProtocol      bool     `koanf:"proxy_protocol"`
+	HAProxyTimeout     int      `koanf:"haproxy_timeout"`      // seconds, default 3
+	HAProxyTrustedNets []string `koanf:"haproxy_trusted_nets"` // CIDRs allowed to send PROXY header
+	XClient            bool     `koanf:"xclient"`
+	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`   // CIDRs allowed to send XCLIENT
+	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"` // reject USER/PASS without TLS
 }
 
 type SMTPConfig struct {
@@ -140,6 +158,14 @@ func Load(path string) (*Config, error) {
 			HAProxyTimeout:   3,
 			DisablePlainAuth: true,
 		},
+		POP3: POP3Config{
+			Listen:             ":995",
+			TLSMinVersion:      "TLS1.2",
+			HAProxyTimeout:     3,
+			HAProxyTrustedNets: defaultTrustedNets,
+			XClientTrustedNets: defaultTrustedNets,
+			DisablePlainAuth:   true,
+		},
 		SMTP: SMTPConfig{
 			ListenMX:           ":25",
 			ListenSubmit:       ":587",
@@ -179,6 +205,10 @@ func expandEnv(cfg *Config) {
 	cfg.IMAP.TLSKey = expand(cfg.IMAP.TLSKey)
 	cfg.IMAP.TLSAltCert = expand(cfg.IMAP.TLSAltCert)
 	cfg.IMAP.TLSAltKey = expand(cfg.IMAP.TLSAltKey)
+	cfg.POP3.TLSCert = expand(cfg.POP3.TLSCert)
+	cfg.POP3.TLSKey = expand(cfg.POP3.TLSKey)
+	cfg.POP3.TLSAltCert = expand(cfg.POP3.TLSAltCert)
+	cfg.POP3.TLSAltKey = expand(cfg.POP3.TLSAltKey)
 	cfg.DKIM.Keys.Dynamic.DSN = expand(cfg.DKIM.Keys.Dynamic.DSN)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
