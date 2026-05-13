@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/emersion/go-sasl"
 	goSmtp "github.com/0kaba0hub/go-smtp"
+	"github.com/emersion/go-sasl"
 
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
@@ -162,11 +162,11 @@ func (b *stubRelayBackend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
 
 type stubRelaySession struct{}
 
-func (s *stubRelaySession) Mail(_ string, _ *goSmtp.MailOptions) error  { return nil }
-func (s *stubRelaySession) Rcpt(_ string, _ *goSmtp.RcptOptions) error  { return nil }
-func (s *stubRelaySession) Data(r io.Reader) error                       { _, _ = io.ReadAll(r); return nil }
-func (s *stubRelaySession) Reset()                                       {}
-func (s *stubRelaySession) Logout() error                                { return nil }
+func (s *stubRelaySession) Mail(_ string, _ *goSmtp.MailOptions) error { return nil }
+func (s *stubRelaySession) Rcpt(_ string, _ *goSmtp.RcptOptions) error { return nil }
+func (s *stubRelaySession) Data(r io.Reader) error                     { _, _ = io.ReadAll(r); return nil }
+func (s *stubRelaySession) Reset()                                     {}
+func (s *stubRelaySession) Logout() error                              { return nil }
 
 func buildStubRelay(t *testing.T) config.SMTPRelayConfig {
 	t.Helper()
@@ -245,7 +245,6 @@ func TestExtractDomain(t *testing.T) {
 	}
 }
 
-
 func TestSession_Reset(t *testing.T) {
 	s := &session{from: "a@b.com", rcpts: []string{"c@d.com"}}
 	s.Reset()
@@ -253,7 +252,6 @@ func TestSession_Reset(t *testing.T) {
 		t.Error("Reset did not clear session state")
 	}
 }
-
 
 func TestStripDelimiter(t *testing.T) {
 	cases := []struct {
@@ -275,4 +273,3 @@ func TestStripDelimiter(t *testing.T) {
 		}
 	}
 }
-

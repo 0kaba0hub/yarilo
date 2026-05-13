@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emersion/go-sasl"
 	goSmtp "github.com/0kaba0hub/go-smtp"
+	"github.com/emersion/go-sasl"
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/lmtp"

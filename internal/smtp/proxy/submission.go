@@ -12,8 +12,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/emersion/go-sasl"
 	goSmtp "github.com/0kaba0hub/go-smtp"
+	"github.com/emersion/go-sasl"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )

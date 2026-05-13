@@ -110,9 +110,9 @@ type SMTPProtocolConfig struct {
 	Hostname           string          `koanf:"hostname"`
 	MaxMsgSize         int64           `koanf:"max_message_size"`
 	MaxLineLength      int             `koanf:"max_line_length"`
-	MaxRecipients      int             `koanf:"max_recipients"`       // 0 = unlimited (Dovecot default)
+	MaxRecipients      int             `koanf:"max_recipients"` // 0 = unlimited (Dovecot default)
 	RecipientDelimiter string          `koanf:"recipient_delimiter"`
-	Workarounds        []string        `koanf:"client_workarounds"`   // whitespace-before-path | mailbox-for-path | implicit-auth-external
+	Workarounds        []string        `koanf:"client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
 	Relay              SMTPRelayConfig `koanf:"relay"`
 }
 
@@ -120,7 +120,7 @@ type SMTPProtocolConfig struct {
 // Host must be non-empty to enable relaying; otherwise submission returns 451.
 type SMTPRelayConfig struct {
 	Host           string `koanf:"host"`
-	Port           int    `koanf:"port"`            // default 25
+	Port           int    `koanf:"port"` // default 25
 	User           string `koanf:"user"`
 	Password       string `koanf:"password"`        // supports ${ENV_VAR}
 	SSL            string `koanf:"ssl"`             // no | smtps | starttls
