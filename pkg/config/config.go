@@ -115,10 +115,17 @@ func Load(path string) (*Config, error) {
 	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
 		return nil, err
 	}
+	defaultTrustedNets := []string{"127.0.0.1/32", "10.0.0.0/8"}
 	cfg := &Config{
-		Mode:      "single",
-		IMAP:      IMAPConfig{Listen: ":993"},
-		SMTP:      SMTPConfig{ListenMX: ":25", ListenSubmit: ":587", MaxMsgSize: 41943040},
+		Mode: "single",
+		IMAP: IMAPConfig{Listen: ":993"},
+		SMTP: SMTPConfig{
+			ListenMX:           ":25",
+			ListenSubmit:       ":587",
+			MaxMsgSize:         41943040,
+			HAProxyTrustedNets: defaultTrustedNets,
+			XClientTrustedNets: defaultTrustedNets,
+		},
 		DKIM:      DKIMConfig{Selector: "mail", SignHeaders: defaultSignHeaders, OversignHeaders: defaultOversignHeaders},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
