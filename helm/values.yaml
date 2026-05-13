@@ -9,22 +9,103 @@ image:
 replicaCount: 1    # single-node only — maildir PVC is not shared-access
 
 ## -------------------------------------------------------------------
-## IMAP
+## TLS (shared certificate mounted at /etc/yarilo/tls/)
 ## -------------------------------------------------------------------
-imap:
-  ## TLS listener (IMAPS)
-  listen: ":993"
-  ## STARTTLS listener — set to "" to disable
-  listenPlain: ":143"
+tls:
+  ## Name of an existing Secret containing tls.crt and tls.key.
+  ## Required if imaps, submissions, or pop3s is enabled.
+  secretName: ""
 
-  tls:
-    ## Name of an existing Secret containing tls.crt and tls.key.
-    ## Leave empty to disable TLS (plain-only mode).
-    secretName: ""
-    ## Annotation for cert-manager Certificate CR auto-issue.
-    ## certManager:
-    ##   clusterIssuer: letsencrypt-prod
-    ##   commonName: mail.example.com
+## -------------------------------------------------------------------
+## Services — per-listener toggles
+## -------------------------------------------------------------------
+services:
+  ## IMAP over TLS (port 993)
+  imaps:
+    enabled: true
+    port: 993
+    disablePlainAuth: false
+
+  ## IMAP with STARTTLS (port 143)
+  imap:
+    enabled: false
+    port: 143
+    disablePlainAuth: false
+
+  ## SMTP MX inbound (port 25)
+  smtp:
+    enabled: false
+    port: 25
+
+  ## Submission STARTTLS (port 587)
+  submission:
+    enabled: false
+    port: 587
+    disablePlainAuth: true
+
+  ## Submission SSL (port 465)
+  submissions:
+    enabled: false
+    port: 465
+    disablePlainAuth: true
+
+  ## POP3 with STARTTLS (port 110)
+  pop3:
+    enabled: false
+    port: 110
+
+  ## POP3 over TLS (port 995)
+  pop3s:
+    enabled: false
+    port: 995
+
+## -------------------------------------------------------------------
+## Protocol tuning (independent of listener)
+## -------------------------------------------------------------------
+protocol:
+  imap:
+    idleNotifyInterval: 120      # seconds; 0 = disabled
+    maxLineLength: 65536          # bytes
+    idSend: "name *"              # ID pairs; * = default; empty = disabled
+    loginGreeting: ""
+    logoutFormat: ""
+
+  smtp:
+    hostname: ""                  # defaults to system hostname
+    maxMessageSize: 41943040      # 40 MiB
+    maxLineLength: 4096
+    recipientDelimiter: "+"
+
+  pop3:
+    noFlagUpdates: false
+    reuseXUIDL: false
+    uidlFormat: "%u.%v"
+    uidlDuplicates: rename        # allow | rename
+    enableLast: false
+    deleteType: expunge           # expunge | flag
+    deletedFlag: ""
+
+## -------------------------------------------------------------------
+## General infrastructure (shared across all listeners)
+## -------------------------------------------------------------------
+general:
+  limits:
+    maxUserIPConnections: 10      # 0 = unlimited; per user+IP pair
+
+  haproxy:
+    ## Enable PROXY protocol on ALL listeners (requires trusted upstream LB).
+    enabled: false
+    trustedNets:
+      - "127.0.0.1/32"
+      - "10.0.0.0/8"
+    timeout: 3                    # seconds to wait for PROXY header
+
+  xclient:
+    ## Enable XCLIENT on ALL listeners.
+    enabled: false
+    trustedNets:
+      - "127.0.0.1/32"
+      - "10.0.0.0/8"
 
 ## -------------------------------------------------------------------
 ## Authentication
@@ -35,19 +116,15 @@ auth:
       ## Path inside the container (mounted from PVC or emptyDir).
       dsn: /var/lib/yarilo/users.db
 
-  ## Alternatively pass DSN via an existing Secret:
-  ## existingSecret: yarilo-auth
-  ## existingSecretKey: dsn
-
 ## -------------------------------------------------------------------
 ## Storage
 ## -------------------------------------------------------------------
 storage:
-  ## Mailbox format: maildir | dbox | mdbox (dbox/mdbox not yet implemented)
+  ## Mailbox format: maildir | dbox | mdbox
   mailbox: maildir
   maildirRoot: /var/mail/vhosts
 
-  ## Index backend: fileindex | sqlite (cassandra — future)
+  ## Index backend: fileindex | sqlite
   index: fileindex
 
   persistence:
@@ -75,11 +152,7 @@ telemetry:
 ## -------------------------------------------------------------------
 service:
   type: LoadBalancer
-  ## IMAPS
-  imapsPort: 993
-  ## IMAP STARTTLS
-  imapPort: 143
-  ## Telemetry / health
+  ## Telemetry / health (always ClusterIP, separate service)
   telemetryPort: 8080
   ## Optional static IP for LoadBalancer
   # loadBalancerIP: ""
@@ -128,7 +201,7 @@ containerSecurityContext:
     add: [NET_BIND_SERVICE]
 
 ## -------------------------------------------------------------------
-## Log level (overrides config; also settable via LOG_LEVEL env var)
+## Log level (also settable via LOG_LEVEL env var)
 ## -------------------------------------------------------------------
 logLevel: info   # debug | info | warn | error
 

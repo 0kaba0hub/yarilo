@@ -54,17 +54,6 @@ Image reference — tag defaults to appVersion.
 {{- end }}
 
 {{/*
-Name of the TLS secret (imap.tls.secretName or generated name).
-*/}}
-{{- define "yarilo.tlsSecretName" -}}
-{{- if .Values.imap.tls.secretName }}
-{{- .Values.imap.tls.secretName }}
-{{- else }}
-{{- include "yarilo.fullname" . }}-tls
-{{- end }}
-{{- end }}
-
-{{/*
 Config checksum annotation — forces pod restart on ConfigMap change.
 */}}
 {{- define "yarilo.configChecksum" -}}

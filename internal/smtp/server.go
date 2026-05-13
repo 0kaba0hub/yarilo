@@ -33,14 +33,22 @@ type Authenticator interface {
 
 // Options configures the SMTP servers.
 type Options struct {
-	Config    config.SMTPConfig
-	DKIMCfg   config.DKIMConfig
-	SPFCfg    config.SPFConfig
-	DMARCCfg  config.DMARCConfig
-	Auth      Authenticator
-	KeyProv   dkim.KeyProvider // nil → no signing
+	// Infrastructure (per-listener; set by backend from ServiceConfig).
+	HAProxy          bool
+	HAProxyTimeout   time.Duration
+	HAProxyNets      []*net.IPNet
+	XClient          bool
+	XClientNets      []*net.IPNet
+	DisablePlainAuth bool
+	// Protocol-level settings.
+	Config   config.SMTPProtocolConfig
+	DKIMCfg  config.DKIMConfig
+	SPFCfg   config.SPFConfig
+	DMARCCfg config.DMARCConfig
+	Auth     Authenticator
+	KeyProv  dkim.KeyProvider // nil → no signing
 	Deliverer *lmtp.Deliverer
-	Milters   []*MilterClient
+	Milters  []*MilterClient
 }
 
 // Server wraps two go-smtp servers: MX (port 25) and submission (port 587).
@@ -68,7 +76,7 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 		srv.MaxLineLength = l
 	}
 	// For submission: allow AUTH on plain connections only if disable_plaintext_auth is false.
-	srv.AllowInsecureAuth = submission && !s.opts.Config.DisablePlainAuth
+	srv.AllowInsecureAuth = submission && !s.opts.DisablePlainAuth
 	srv.ReadTimeout = 5 * time.Minute
 	srv.WriteTimeout = 5 * time.Minute
 	return srv
@@ -77,17 +85,15 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 // ServeMX starts the MX listener on the configured address.
 func (s *Server) ServeMX(ln net.Listener) error {
 	slog.Info("smtp: MX listening", "addr", ln.Addr())
-	if s.opts.Config.ProxyProtocol {
-		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
+	if s.opts.HAProxy {
 		ln = &proxyproto.Listener{
 			Listener:          ln,
-			Policy:            proxyPolicy(nets),
+			Policy:            proxyPolicy(s.opts.HAProxyNets),
 			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
 	}
-	if s.opts.Config.XClient {
-		nets := parseCIDRs(s.opts.Config.XClientTrustedNets)
-		ln = &xclientListener{Listener: ln, trustedNets: nets}
+	if s.opts.XClient {
+		ln = &xclientListener{Listener: ln, trustedNets: s.opts.XClientNets}
 	}
 	return s.mxSrv.Serve(ln)
 }
@@ -100,11 +106,10 @@ func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 	if tlsCfg != nil {
 		ln = tls.NewListener(ln, tlsCfg)
 	}
-	if s.opts.Config.ProxyProtocol {
-		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
+	if s.opts.HAProxy {
 		ln = &proxyproto.Listener{
 			Listener:          ln,
-			Policy:            proxyPolicy(nets),
+			Policy:            proxyPolicy(s.opts.HAProxyNets),
 			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
 	}
@@ -112,8 +117,8 @@ func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 }
 
 func (s *Server) haproxyTimeout() time.Duration {
-	if s.opts.Config.HAProxyTimeout > 0 {
-		return time.Duration(s.opts.Config.HAProxyTimeout) * time.Second
+	if s.opts.HAProxyTimeout > 0 {
+		return s.opts.HAProxyTimeout
 	}
 	return 3 * time.Second
 }

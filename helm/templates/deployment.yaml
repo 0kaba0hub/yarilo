@@ -40,12 +40,41 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
+            {{- if .Values.services.imaps.enabled }}
             - name: imaps
-              containerPort: 993
+              containerPort: {{ .Values.services.imaps.port }}
               protocol: TCP
+            {{- end }}
+            {{- if .Values.services.imap.enabled }}
             - name: imap
-              containerPort: 143
+              containerPort: {{ .Values.services.imap.port }}
               protocol: TCP
+            {{- end }}
+            {{- if .Values.services.smtp.enabled }}
+            - name: smtp
+              containerPort: {{ .Values.services.smtp.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.services.submission.enabled }}
+            - name: submission
+              containerPort: {{ .Values.services.submission.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.services.submissions.enabled }}
+            - name: submissions
+              containerPort: {{ .Values.services.submissions.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.services.pop3.enabled }}
+            - name: pop3
+              containerPort: {{ .Values.services.pop3.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.services.pop3s.enabled }}
+            - name: pop3s
+              containerPort: {{ .Values.services.pop3s.port }}
+              protocol: TCP
+            {{- end }}
             - name: telemetry
               containerPort: 8080
               protocol: TCP
@@ -65,7 +94,7 @@ spec:
               mountPath: /var/lib/yarilo
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.imap.tls.secretName }}
+            {{- if .Values.tls.secretName }}
             - name: tls
               mountPath: /etc/yarilo/tls
               readOnly: true
@@ -88,10 +117,10 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
-        {{- if .Values.imap.tls.secretName }}
+        {{- if .Values.tls.secretName }}
         - name: tls
           secret:
-            secretName: {{ include "yarilo.tlsSecretName" . }}
+            secretName: {{ .Values.tls.secretName }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

@@ -9,16 +9,98 @@ data:
   yarilo.yaml: |
     mode: single
 
-    imap:
-      listen: {{ .Values.imap.listen | quote }}
-      listen_plain: {{ .Values.imap.listenPlain | quote }}
-      {{- if .Values.imap.tls.secretName }}
-      tls_cert: /etc/yarilo/tls/tls.crt
-      tls_key: /etc/yarilo/tls/tls.key
-      {{- else }}
-      tls_cert: ""
-      tls_key: ""
-      {{- end }}
+    general:
+      ssl:
+        {{- if .Values.tls.secretName }}
+        tls_cert: /etc/yarilo/tls/tls.crt
+        tls_key: /etc/yarilo/tls/tls.key
+        {{- else }}
+        tls_cert: ""
+        tls_key: ""
+        {{- end }}
+        tls_min_version: TLS1.2
+      haproxy:
+        timeout: {{ .Values.general.haproxy.timeout }}
+        trusted_nets:
+          {{- range .Values.general.haproxy.trustedNets }}
+          - {{ . | quote }}
+          {{- end }}
+      xclient:
+        trusted_nets:
+          {{- range .Values.general.xclient.trustedNets }}
+          - {{ . | quote }}
+          {{- end }}
+      limits:
+        mail_max_userip_connections: {{ .Values.general.limits.maxUserIPConnections }}
+
+    services:
+      imaps:
+        enabled: {{ .Values.services.imaps.enabled }}
+        port: {{ .Values.services.imaps.port }}
+        ssl_mode: ssl
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: {{ .Values.general.xclient.enabled }}
+        disable_plaintext_auth: {{ .Values.services.imaps.disablePlainAuth }}
+      imap:
+        enabled: {{ .Values.services.imap.enabled }}
+        port: {{ .Values.services.imap.port }}
+        ssl_mode: starttls
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: {{ .Values.general.xclient.enabled }}
+        disable_plaintext_auth: {{ .Values.services.imap.disablePlainAuth }}
+      smtp:
+        enabled: {{ .Values.services.smtp.enabled }}
+        port: {{ .Values.services.smtp.port }}
+        ssl_mode: no
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: {{ .Values.general.xclient.enabled }}
+      submission:
+        enabled: {{ .Values.services.submission.enabled }}
+        port: {{ .Values.services.submission.port }}
+        ssl_mode: starttls
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: false
+        disable_plaintext_auth: {{ .Values.services.submission.disablePlainAuth }}
+      submissions:
+        enabled: {{ .Values.services.submissions.enabled }}
+        port: {{ .Values.services.submissions.port }}
+        ssl_mode: ssl
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: false
+        disable_plaintext_auth: {{ .Values.services.submissions.disablePlainAuth }}
+      pop3:
+        enabled: {{ .Values.services.pop3.enabled }}
+        port: {{ .Values.services.pop3.port }}
+        ssl_mode: starttls
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: {{ .Values.general.xclient.enabled }}
+      pop3s:
+        enabled: {{ .Values.services.pop3s.enabled }}
+        port: {{ .Values.services.pop3s.port }}
+        ssl_mode: ssl
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: {{ .Values.general.xclient.enabled }}
+
+    protocol:
+      imap:
+        imap_idle_notify_interval: {{ .Values.protocol.imap.idleNotifyInterval }}
+        imap_max_line_length: {{ .Values.protocol.imap.maxLineLength }}
+        imap_id_send: {{ .Values.protocol.imap.idSend | quote }}
+        login_greeting: {{ .Values.protocol.imap.loginGreeting | quote }}
+        imap_logout_format: {{ .Values.protocol.imap.logoutFormat | quote }}
+      smtp:
+        hostname: {{ .Values.protocol.smtp.hostname | quote }}
+        max_message_size: {{ .Values.protocol.smtp.maxMessageSize }}
+        max_line_length: {{ .Values.protocol.smtp.maxLineLength }}
+        recipient_delimiter: {{ .Values.protocol.smtp.recipientDelimiter | quote }}
+      pop3:
+        pop3_no_flag_updates: {{ .Values.protocol.pop3.noFlagUpdates }}
+        pop3_reuse_xuidl: {{ .Values.protocol.pop3.reuseXUIDL }}
+        pop3_uidl_format: {{ .Values.protocol.pop3.uidlFormat | quote }}
+        pop3_uidl_duplicates: {{ .Values.protocol.pop3.uidlDuplicates | quote }}
+        pop3_enable_last: {{ .Values.protocol.pop3.enableLast }}
+        pop3_delete_type: {{ .Values.protocol.pop3.deleteType | quote }}
+        pop3_deleted_flag: {{ .Values.protocol.pop3.deletedFlag | quote }}
 
     auth:
       passdb:

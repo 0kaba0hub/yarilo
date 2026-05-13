@@ -43,7 +43,7 @@ func buildTestServer(t *testing.T, submission bool) (addr string, cleanup func()
 	}
 
 	opts := Options{
-		Config: config.SMTPConfig{
+		Config: config.SMTPProtocolConfig{
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
@@ -158,7 +158,7 @@ func TestSubmission_DKIMSign(t *testing.T) {
 	}
 
 	opts := Options{
-		Config: config.SMTPConfig{
+		Config: config.SMTPProtocolConfig{
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
