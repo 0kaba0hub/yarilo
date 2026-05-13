@@ -115,6 +115,13 @@ func New(cfg *config.Config) (*Server, error) {
 		XClient:            cfg.POP3.XClient,
 		XClientTrustedNets: parseCIDRs(cfg.POP3.XClientTrustedNets),
 		DisablePlainAuth:   cfg.POP3.DisablePlainAuth,
+		NoFlagUpdates:      cfg.POP3.NoFlagUpdates,
+		ReuseXUIDL:         cfg.POP3.ReuseXUIDL,
+		UIDLFormat:         cfg.POP3.UIDLFormat,
+		UIDLDuplicates:     cfg.POP3.UIDLDuplicates,
+		EnableLast:         cfg.POP3.EnableLast,
+		DeleteType:         cfg.POP3.DeleteType,
+		DeletedFlag:        cfg.POP3.DeletedFlag,
 	})
 
 	// ---- IMAP ----
@@ -123,15 +130,18 @@ func New(cfg *config.Config) (*Server, error) {
 		imapAddr = ":993"
 	}
 	imap := imapsvr.New(imapsvr.Options{
-		Addr:             imapAddr,
-		AddrPlain:        cfg.IMAP.ListenPlain,
-		TLSConfig:        imapTLS,
-		Mailbox:          mbox,
-		Index:            idx,
-		Auth:             authChain,
-		ProxyProtocol:    cfg.IMAP.ProxyProtocol,
-		HAProxyTimeout:   time.Duration(cfg.IMAP.HAProxyTimeout) * time.Second,
-		DisablePlainAuth: cfg.IMAP.DisablePlainAuth,
+		Addr:               imapAddr,
+		AddrPlain:          cfg.IMAP.ListenPlain,
+		TLSConfig:          imapTLS,
+		Mailbox:            mbox,
+		Index:              idx,
+		Auth:               authChain,
+		ProxyProtocol:      cfg.IMAP.ProxyProtocol,
+		HAProxyTimeout:     time.Duration(cfg.IMAP.HAProxyTimeout) * time.Second,
+		HAProxyTrustedNets: parseCIDRs(cfg.IMAP.HAProxyTrustedNets),
+		XClient:            cfg.IMAP.XClient,
+		XClientTrustedNets: parseCIDRs(cfg.IMAP.XClientTrustedNets),
+		DisablePlainAuth:   cfg.IMAP.DisablePlainAuth,
 	})
 
 	// ---- DKIM key provider ----

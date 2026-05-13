@@ -27,15 +27,18 @@ type Server struct {
 
 // Options configures the IMAP server.
 type Options struct {
-	Addr             string // TLS address, e.g. ":993"
-	AddrPlain        string // STARTTLS address, e.g. ":143"
-	TLSConfig        *tls.Config
-	Mailbox          mailbox.MailboxBackend
-	Index            mailbox.IndexBackend
-	Auth             protocol.Passdb
-	ProxyProtocol    bool          // wrap listener with HAProxy PROXY protocol
-	HAProxyTimeout   time.Duration // ReadHeaderTimeout for proxyproto.Listener
-	DisablePlainAuth bool          // reject AUTH on unencrypted connections
+	Addr               string // TLS address, e.g. ":993"
+	AddrPlain          string // STARTTLS address, e.g. ":143"
+	TLSConfig          *tls.Config
+	Mailbox            mailbox.MailboxBackend
+	Index              mailbox.IndexBackend
+	Auth               protocol.Passdb
+	ProxyProtocol      bool          // wrap listener with HAProxy PROXY protocol
+	HAProxyTimeout     time.Duration // ReadHeaderTimeout for proxyproto.Listener
+	HAProxyTrustedNets []*net.IPNet  // CIDRs allowed to send PROXY header; empty = nobody
+	XClient            bool          // handle XCLIENT pre-auth command
+	XClientTrustedNets []*net.IPNet  // CIDRs allowed to send XCLIENT; empty = nobody
+	DisablePlainAuth   bool          // reject AUTH on unencrypted connections
 }
 
 // New creates an IMAP server.
@@ -98,9 +101,34 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 		if timeout == 0 {
 			timeout = 3 * time.Second
 		}
-		return &proxyproto.Listener{Listener: ln, ReadHeaderTimeout: timeout}
+		ln = &proxyproto.Listener{
+			Listener:          ln,
+			ReadHeaderTimeout: timeout,
+			Policy:            proxyPolicy(s.opts.HAProxyTrustedNets),
+		}
+	}
+	if s.opts.XClient {
+		ln = &xclientImapListener{Listener: ln, trustedNets: s.opts.XClientTrustedNets}
 	}
 	return ln
+}
+
+func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
+	return func(upstream net.Addr) (proxyproto.Policy, error) {
+		if len(nets) == 0 {
+			return proxyproto.IGNORE, nil
+		}
+		tcp, ok := upstream.(*net.TCPAddr)
+		if !ok {
+			return proxyproto.IGNORE, nil
+		}
+		for _, n := range nets {
+			if n.Contains(tcp.IP) {
+				return proxyproto.USE, nil
+			}
+		}
+		return proxyproto.IGNORE, nil
+	}
 }
 
 func (s *Server) newSession(_ *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {

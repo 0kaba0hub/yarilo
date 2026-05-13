@@ -28,17 +28,20 @@ type Config struct {
 }
 
 type IMAPConfig struct {
-	Listen           string `koanf:"listen"`
-	ListenPlain      string `koanf:"listen_plain"`
-	TLSCert          string `koanf:"tls_cert"`
-	TLSKey           string `koanf:"tls_key"`
-	TLSAltCert       string `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
-	TLSAltKey        string `koanf:"tls_alt_key"`               // optional secondary key
-	TLSMinVersion    string `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
-	TLSPreferServer  bool   `koanf:"tls_prefer_server_ciphers"` // server cipher order
-	ProxyProtocol    bool   `koanf:"proxy_protocol"`
-	HAProxyTimeout   int    `koanf:"haproxy_timeout"`        // seconds, default 3
-	DisablePlainAuth bool   `koanf:"disable_plaintext_auth"` // reject auth without TLS
+	Listen             string   `koanf:"listen"`
+	ListenPlain        string   `koanf:"listen_plain"`
+	TLSCert            string   `koanf:"tls_cert"`
+	TLSKey             string   `koanf:"tls_key"`
+	TLSAltCert         string   `koanf:"tls_alt_cert"`              // optional secondary cert (e.g. ECDSA)
+	TLSAltKey          string   `koanf:"tls_alt_key"`               // optional secondary key
+	TLSMinVersion      string   `koanf:"tls_min_protocol"`          // TLS1.2 | TLS1.3
+	TLSPreferServer    bool     `koanf:"tls_prefer_server_ciphers"` // server cipher order
+	ProxyProtocol      bool     `koanf:"proxy_protocol"`
+	HAProxyTimeout     int      `koanf:"haproxy_timeout"`      // seconds, default 3
+	HAProxyTrustedNets []string `koanf:"haproxy_trusted_nets"` // CIDRs allowed to send PROXY header
+	XClient            bool     `koanf:"xclient"`
+	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`   // CIDRs allowed to send XCLIENT
+	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"` // reject auth without TLS
 }
 
 type POP3Config struct {
@@ -56,6 +59,14 @@ type POP3Config struct {
 	XClient            bool     `koanf:"xclient"`
 	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`   // CIDRs allowed to send XCLIENT
 	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"` // reject USER/PASS without TLS
+	// POP3-specific behaviour
+	NoFlagUpdates  bool   `koanf:"pop3_no_flag_updates"` // don't set \Seen on RETR
+	ReuseXUIDL     bool   `koanf:"pop3_reuse_xuidl"`     // honour X-UIDL header (migration)
+	UIDLFormat     string `koanf:"pop3_uidl_format"`     // e.g. "%u.%v" or "%08Xu%08Xv"
+	UIDLDuplicates string `koanf:"pop3_uidl_duplicates"` // allow | rename
+	EnableLast     bool   `koanf:"pop3_enable_last"`     // enable LAST command (RFC 1460)
+	DeleteType     string `koanf:"pop3_delete_type"`     // expunge | flag
+	DeletedFlag    string `koanf:"pop3_deleted_flag"`    // IMAP flag for soft-delete
 }
 
 type SMTPConfig struct {
@@ -153,10 +164,12 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Mode: "single",
 		IMAP: IMAPConfig{
-			Listen:           ":993",
-			TLSMinVersion:    "TLS1.2",
-			HAProxyTimeout:   3,
-			DisablePlainAuth: true,
+			Listen:             ":993",
+			TLSMinVersion:      "TLS1.2",
+			HAProxyTimeout:     3,
+			HAProxyTrustedNets: defaultTrustedNets,
+			XClientTrustedNets: defaultTrustedNets,
+			DisablePlainAuth:   true,
 		},
 		POP3: POP3Config{
 			Listen:             ":995",
@@ -165,6 +178,9 @@ func Load(path string) (*Config, error) {
 			HAProxyTrustedNets: defaultTrustedNets,
 			XClientTrustedNets: defaultTrustedNets,
 			DisablePlainAuth:   true,
+			UIDLFormat:         "%u.%v",
+			UIDLDuplicates:     "rename",
+			DeleteType:         "expunge",
 		},
 		SMTP: SMTPConfig{
 			ListenMX:           ":25",
