@@ -171,7 +171,7 @@ func checkSMTP(addr string, submission bool) error {
 
 	// EHLO
 	fmt.Fprintf(conn, "EHLO smoketest\r\n")
-	var authAdvertised bool
+	var authAdvertised, starttlsAdvertised bool
 	for {
 		line, err := readLine(conn)
 		if err != nil {
@@ -179,6 +179,9 @@ func checkSMTP(addr string, submission bool) error {
 		}
 		if strings.Contains(line, "AUTH") && strings.Contains(line, "PLAIN") {
 			authAdvertised = true
+		}
+		if strings.Contains(line, "STARTTLS") {
+			starttlsAdvertised = true
 		}
 		// Multi-line: "250-..." continues; "250 ..." is the last line.
 		if strings.HasPrefix(line, "250 ") {
@@ -191,6 +194,9 @@ func checkSMTP(addr string, submission bool) error {
 
 	if submission && !authAdvertised {
 		return fmt.Errorf("submission port did not advertise AUTH PLAIN in EHLO")
+	}
+	if submission && !starttlsAdvertised {
+		return fmt.Errorf("submission port did not advertise STARTTLS in EHLO")
 	}
 
 	// Graceful quit
