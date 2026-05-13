@@ -1,7 +1,7 @@
 # yarilo
 
 <table><tr>
-<td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg" width="110" alt="yarilo logo"/></td>
+<td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg" width="180" alt="yarilo logo"/></td>
 <td>
 
 Production-grade IMAP/SMTP/JMAP mail server written in Go.
