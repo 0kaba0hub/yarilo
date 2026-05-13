@@ -25,7 +25,7 @@ internal/
 pkg/
   mailbox/       — MailboxBackend + IndexBackend interfaces, core types
   config/        — YAML config via koanf
-helm/yarilo/     — Helm chart (Chart.yaml, values.yaml, templates/)
+helm/     — Helm chart (Chart.yaml, values.yaml, templates/)
 docker/          — Dockerfile
 ```
 
@@ -96,7 +96,7 @@ Order: **lint → test → build & push → release**.
 - `lint`: golangci-lint + hadolint + `helm lint`
 - `test`: `go test ./...` with go-junit-report → dorny/test-reporter
 - `build`: GHCR push on `main` only; tag = git SHA + `latest` + semver if new release
-- `release`: triggered automatically when `helm/yarilo/Chart.yaml` `appVersion` is a new tag —
+- `release`: triggered automatically when `helm/Chart.yaml` `appVersion` is a new tag —
   git-cliff generates release notes, `gh release create` publishes.
 
 Never push directly to `main`. Feature branch → PR → user merges.
@@ -105,7 +105,7 @@ Never push directly to `main`. Feature branch → PR → user merges.
 
 ## Helm chart
 
-- Chart lives in `helm/yarilo/`. One chart, one app.
+- Chart lives in `helm/`. One chart, one app.
 - `appVersion` in `Chart.yaml` is the **single source of truth** for the release version.
   Bump it → CI creates the GitHub Release and GHCR tag automatically.
 - `strategy: Recreate` — ensures old pod releases the PVC before new pod mounts it.
@@ -126,7 +126,7 @@ Never push directly to `main`. Feature branch → PR → user merges.
 
 ## Release checklist
 
-Before bumping `appVersion` in `helm/yarilo/Chart.yaml`:
+Before bumping `appVersion` in `helm/Chart.yaml`:
 1. All unit tests pass (`go test ./...`)
 2. `helm lint helm/yarilo` passes
 3. Smoke test passes against staging

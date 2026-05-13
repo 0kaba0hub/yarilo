@@ -60,7 +60,7 @@ jobs:
       - name: Lint Helm chart
         run: |
           curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          helm lint helm/yarilo
+          helm lint helm
 
   test:
     name: Test
@@ -115,7 +115,7 @@ jobs:
       - name: Determine release version
         id: version
         run: |
-          APP_VERSION=$(awk '/^appVersion:/{gsub(/"/, ""); print $2}' helm/yarilo/Chart.yaml)
+          APP_VERSION=$(awk '/^appVersion:/{gsub(/"/, ""); print $2}' helm/Chart.yaml)
           RELEASE_TAG="v${APP_VERSION}"
           if git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | grep -q "${RELEASE_TAG}"; then
             IS_RELEASE=false
