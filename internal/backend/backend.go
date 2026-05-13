@@ -17,6 +17,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/dkim"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	"github.com/0kaba0hub/yarilo/internal/mailauth"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
 	smtpsvr "github.com/0kaba0hub/yarilo/internal/smtp"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
@@ -154,9 +155,11 @@ func New(cfg *config.Config) (*Server, error) {
 			disablePlain = subSvc.DisablePlainAuth
 		}
 
-		// ---- DKIM key provider ----
-		var keyProv dkim.KeyProvider
+		// ---- DKIM signer / verifier ----
+		var dkimSigner mailauth.Signer
+		var dkimVerifier mailauth.Verifier
 		if cfg.DKIM.Sign {
+			var keyProv dkim.KeyProvider
 			switch strings.ToLower(cfg.DKIM.Keys.Backend) {
 			case "dynamic":
 				d := cfg.DKIM.Keys.Dynamic
@@ -172,6 +175,17 @@ func New(cfg *config.Config) (*Server, error) {
 			default:
 				keyProv = dkim.NewStaticKeyProvider(cfg.DKIM.Keys.Static)
 			}
+			dkimSigner = &dkim.MessageSigner{
+				KeyProv: keyProv,
+				Cfg: dkim.SignConfig{
+					Selector:        cfg.DKIM.Selector,
+					SignHeaders:     cfg.DKIM.SignHeaders,
+					OversignHeaders: cfg.DKIM.OversignHeaders,
+				},
+			}
+		}
+		if cfg.DKIM.Verify {
+			dkimVerifier = &dkim.MessageVerifier{}
 		}
 
 		// ---- milter clients ----
@@ -192,11 +206,11 @@ func New(cfg *config.Config) (*Server, error) {
 			XClientNets:      xclientNets,
 			DisablePlainAuth: disablePlain,
 			Config:           cfg.Protocol.SMTP,
-			DKIMCfg:          cfg.DKIM,
 			SPFCfg:           cfg.SPF,
 			DMARCCfg:         cfg.DMARC,
 			Auth:             chainAuth{authChain},
-			KeyProv:          keyProv,
+			Signer:           dkimSigner,
+			Verifier:         dkimVerifier,
 			Deliverer:        lmtp.New(mbox, idx),
 			Milters:          milters,
 		})

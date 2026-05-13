@@ -5,7 +5,7 @@ import (
 
 	goSpf "blitiri.com.ar/go/spf"
 
-	"github.com/0kaba0hub/yarilo/internal/dkim"
+	"github.com/0kaba0hub/yarilo/internal/mailauth"
 )
 
 var parseRecordCases = []struct {
@@ -69,34 +69,34 @@ func TestOrgDomain(t *testing.T) {
 
 var dkimAlignCases = []struct {
 	name          string
-	results       []dkim.Result
+	results       []mailauth.Result
 	fromOrgDomain string
 	mode          Alignment
 	want          bool
 }{
 	{
 		"pass relaxed same org",
-		[]dkim.Result{{Domain: "mail.example.com", Pass: true}},
+		[]mailauth.Result{{Domain: "mail.example.com", Pass: true}},
 		"example.com", AlignmentRelaxed, true,
 	},
 	{
 		"pass strict — subdomain rejected",
-		[]dkim.Result{{Domain: "mail.example.com", Pass: true}},
+		[]mailauth.Result{{Domain: "mail.example.com", Pass: true}},
 		"example.com", AlignmentStrict, false,
 	},
 	{
 		"pass strict — exact match",
-		[]dkim.Result{{Domain: "example.com", Pass: true}},
+		[]mailauth.Result{{Domain: "example.com", Pass: true}},
 		"example.com", AlignmentStrict, true,
 	},
 	{
 		"fail — no passing results",
-		[]dkim.Result{{Domain: "example.com", Pass: false}},
+		[]mailauth.Result{{Domain: "example.com", Pass: false}},
 		"example.com", AlignmentRelaxed, false,
 	},
 	{
 		"pass relaxed — different org",
-		[]dkim.Result{{Domain: "other.com", Pass: true}},
+		[]mailauth.Result{{Domain: "other.com", Pass: true}},
 		"example.com", AlignmentRelaxed, false,
 	},
 }

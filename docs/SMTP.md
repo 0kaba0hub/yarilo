@@ -74,65 +74,7 @@ connect
   → relay queue      (phase 4)
 ```
 
-Submission requires AUTH PLAIN. DKIM signing uses the private key for the sender domain.
-
----
-
-## DKIM
-
-### Top-level keys
-
-| Key | Default | Description |
-|:---|:---|:---|
-| `dkim.verify` | `false` | Verify DKIM signatures on inbound MX mail. Result is passed to the DMARC evaluator. |
-| `dkim.sign` | `false` | Sign outbound submission mail with the sender domain's private key. |
-| `dkim.selector` | `mail` | DKIM selector (e.g. `mail` → DNS record `mail._domainkey.example.com`). |
-| `dkim.sign_headers` | `From,To,Subject,Date,Message-ID,Content-Type` | Headers included in the signature. |
-| `dkim.oversign_headers` | `From` | Headers oversigned (signed one extra time) to prevent injection attacks. |
-
-### Key backends
-
-**Static** — PEM files on disk:
-
-```yaml
-dkim:
-  sign: true
-  selector: mail
-  keys:
-    backend: static
-    static:
-      example.com: /etc/yarilo/dkim/example.com.pem
-      other.org:   /etc/yarilo/dkim/other.org.pem
-```
-
-**Dynamic** — SQL database (keys fetched at signing time, cached for `cache_ttl` seconds):
-
-```yaml
-dkim:
-  sign: true
-  selector: mail
-  keys:
-    backend: dynamic
-    dynamic:
-      driver: postgres          # sqlite | mysql | postgres
-      dsn: "${DKIM_DB_URL}"     # ${ENV_VAR} substitution supported
-      query: "SELECT private_key FROM dkim_keys WHERE domain = $1"
-      cache_ttl: 300
-```
-
-The query must return a single column with the RSA/Ed25519 private key in PEM format.
-
-### DNS record
-
-```
-mail._domainkey.example.com. IN TXT "v=DKIM1; k=rsa; p=<base64-pubkey>"
-```
-
-```sh
-# Generate key pair
-openssl genrsa -out example.com.pem 2048
-openssl rsa -in example.com.pem -pubout | grep -v '^-' | tr -d '\n'
-```
+Submission requires AUTH PLAIN. DKIM signing uses the private key for the sender domain — see [DKIM.md](DKIM.md).
 
 ---
 

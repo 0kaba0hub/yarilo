@@ -18,9 +18,9 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/dkim"
 	"github.com/0kaba0hub/yarilo/internal/dmarc"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	"github.com/0kaba0hub/yarilo/internal/mailauth"
 	"github.com/0kaba0hub/yarilo/internal/spf"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -41,12 +41,12 @@ type Options struct {
 	XClientNets      []*net.IPNet
 	DisablePlainAuth bool
 	// Protocol-level settings.
-	Config    config.SMTPProtocolConfig
-	DKIMCfg   config.DKIMConfig
-	SPFCfg    config.SPFConfig
-	DMARCCfg  config.DMARCConfig
+	Config   config.SMTPProtocolConfig
+	SPFCfg   config.SPFConfig
+	DMARCCfg config.DMARCConfig
 	Auth      Authenticator
-	KeyProv   dkim.KeyProvider // nil → no signing
+	Signer    mailauth.Signer   // nil = no signing
+	Verifier  mailauth.Verifier // nil = no verification
 	Deliverer *lmtp.Deliverer
 	Milters   []*MilterClient
 }
@@ -238,18 +238,18 @@ func (s *session) handleInbound(ctx context.Context, data []byte) error {
 		slog.Info("smtp: SPF", "from", s.from, "result", string(spfResult))
 	}
 
-	// DKIM verification.
-	var dkimResults []dkim.Result
-	if opts.DKIMCfg.Verify {
-		dkimResults, _ = dkim.Verify(bytes.NewReader(data))
-		for _, r := range dkimResults {
-			slog.Info("smtp: DKIM", "domain", r.Domain, "pass", r.Pass)
+	// Message authentication verification.
+	var authResults []mailauth.Result
+	if opts.Verifier != nil {
+		authResults, _ = opts.Verifier.Verify(ctx, bytes.NewReader(data))
+		for _, r := range authResults {
+			slog.Info("smtp: auth", "protocol", r.Protocol, "domain", r.Domain, "pass", r.Pass)
 		}
 	}
 
 	// DMARC evaluation.
 	if opts.DMARCCfg.Enabled {
-		res := dmarc.Evaluate(ctx, fromDomain, spfResult, fromDomain, dkimResults)
+		res := dmarc.Evaluate(ctx, fromDomain, spfResult, fromDomain, authResults)
 		slog.Info("smtp: DMARC", "from", fromDomain, "disposition", string(res.Disposition))
 		if res.Disposition == dmarc.PolicyReject {
 			return &goSmtp.SMTPError{
@@ -275,22 +275,12 @@ func (s *session) handleSubmission(ctx context.Context, data []byte) error {
 	opts := s.srv.opts
 	fromDomain := extractDomain(s.from)
 
-	if opts.DKIMCfg.Sign && opts.KeyProv != nil {
-		signer, err := opts.KeyProv.GetPrivateKey(ctx, fromDomain)
+	if opts.Signer != nil {
+		signed, err := opts.Signer.Sign(ctx, fromDomain, bytes.NewReader(data))
 		if err != nil {
-			slog.Info("smtp: DKIM sign skipped", "domain", fromDomain, "reason", err)
+			slog.Error("smtp: sign error", "domain", fromDomain, "err", err)
 		} else {
-			signCfg := dkim.SignConfig{
-				Selector:        opts.DKIMCfg.Selector,
-				SignHeaders:     opts.DKIMCfg.SignHeaders,
-				OversignHeaders: opts.DKIMCfg.OversignHeaders,
-			}
-			var signed bytes.Buffer
-			if err := dkim.Sign(&signed, bytes.NewReader(data), fromDomain, signer, signCfg); err != nil {
-				slog.Error("smtp: DKIM sign error", "domain", fromDomain, "err", err)
-			} else {
-				data = signed.Bytes()
-			}
+			data, _ = io.ReadAll(signed)
 		}
 	}
 

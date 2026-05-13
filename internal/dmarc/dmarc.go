@@ -11,7 +11,7 @@ import (
 
 	goSpf "blitiri.com.ar/go/spf"
 
-	"github.com/0kaba0hub/yarilo/internal/dkim"
+	"github.com/0kaba0hub/yarilo/internal/mailauth"
 )
 
 // Policy is the DMARC disposition policy.
@@ -51,7 +51,7 @@ type Result struct {
 // fromDomain is the RFC5322.From header domain.
 // spfResult and spfDomain are from the envelope SPF check.
 // dkimResults are from DKIM verification.
-func Evaluate(ctx context.Context, fromDomain string, spfResult goSpf.Result, spfDomain string, dkimResults []dkim.Result) Result {
+func Evaluate(ctx context.Context, fromDomain string, spfResult goSpf.Result, spfDomain string, dkimResults []mailauth.Result) Result {
 	rec, err := fetchRecord(ctx, fromDomain)
 	if err != nil {
 		// No DMARC record → treat as p=none.
@@ -144,7 +144,7 @@ func parseAlignment(v string) Alignment {
 }
 
 // checkDKIMAlignment returns true if any DKIM result passes and aligns with fromOrgDomain.
-func checkDKIMAlignment(results []dkim.Result, fromOrgDomain string, mode Alignment) bool {
+func checkDKIMAlignment(results []mailauth.Result, fromOrgDomain string, mode Alignment) bool {
 	for _, r := range results {
 		if !r.Pass {
 			continue

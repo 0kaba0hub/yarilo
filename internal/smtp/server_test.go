@@ -47,7 +47,6 @@ func buildTestServer(t *testing.T, submission bool) (addr string, cleanup func()
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
-		DKIMCfg:   config.DKIMConfig{},
 		SPFCfg:    config.SPFConfig{Enabled: false},
 		DMARCCfg:  config.DMARCConfig{Enabled: false},
 		Auth:      stubAuth{},
@@ -162,15 +161,16 @@ func TestSubmission_DKIMSign(t *testing.T) {
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
-		DKIMCfg: config.DKIMConfig{
-			Sign:        true,
-			Selector:    "sel",
-			SignHeaders: []string{"From", "To", "Subject"},
+		SPFCfg:   config.SPFConfig{Enabled: false},
+		DMARCCfg: config.DMARCConfig{Enabled: false},
+		Auth:     stubAuth{},
+		Signer: &dkim.MessageSigner{
+			KeyProv: &staticKeyProvider{key: key},
+			Cfg: dkim.SignConfig{
+				Selector:    "sel",
+				SignHeaders: []string{"From", "To", "Subject"},
+			},
 		},
-		SPFCfg:    config.SPFConfig{Enabled: false},
-		DMARCCfg:  config.DMARCConfig{Enabled: false},
-		Auth:      stubAuth{},
-		KeyProv:   &staticKeyProvider{key: key},
 		Deliverer: lmtp.New(mb, idx),
 	}
 
@@ -284,5 +284,5 @@ func TestStripDelimiter(t *testing.T) {
 	}
 }
 
-// Compile-time check: dkim.KeyProvider is satisfied by staticKeyProvider.
+// Compile-time check: staticKeyProvider satisfies dkim.KeyProvider.
 var _ dkim.KeyProvider = (*staticKeyProvider)(nil)
