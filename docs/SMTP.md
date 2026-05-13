@@ -5,10 +5,10 @@ Yarilo runs three SMTP listeners from a single server instance:
 | Service key | Port | Role |
 |:---|:---|:---|
 | `smtp` | `25` | MX inbound — receives mail from the internet. No AUTH. |
-| `submission` | `587` | Outbound submission — requires AUTH PLAIN, STARTTLS. |
-| `submissions` | `465` | Outbound submission — requires AUTH PLAIN, implicit TLS. |
+| `submission` | `587` | Outbound submission — AUTH PLAIN required, STARTTLS. |
+| `submissions` | `465` | Outbound submission — AUTH PLAIN required, implicit TLS. |
 
-See [SERVICES.md](SERVICES.md) for listener-level settings (port, ssl_mode, haproxy_protocol, disable_plaintext_auth, etc.).
+See [SERVICES.md](SERVICES.md) for listener-level settings (`port`, `ssl_mode`, `haproxy_protocol`, `xclient_protocol`, `disable_plaintext_auth`).
 
 ---
 
@@ -36,37 +36,35 @@ protocol:
 
 ---
 
-## Inbound pipeline (port 25)
+## Inbound (port 25)
 
-```
-connect → LMTP local delivery
-```
+Accepts mail from external MTAs. No AUTH. Subaddress extension is stripped using `recipient_delimiter` before delivery.
+
+After DATA the message is passed to the internal delivery engine (`lmtp.Deliverer`) which writes directly to the mailbox — no outbound network connection is made.
 
 ---
 
-## Submission pipeline (port 587 / 465)
+## Submission (port 587 / 465)
 
-```
-connect → STARTTLS / TLS → AUTH PLAIN → relay (submission_relay_*)
-```
+Accepts mail from MUAs. AUTH PLAIN is required (the only advertised mechanism). After successful authentication and DATA, the message is forwarded to the configured upstream MTA via `protocol.smtp.relay`. If `relay.host` is empty, submission returns `451`.
 
-Submission requires AUTH PLAIN. The message is forwarded to the configured relay server unchanged.
+`disable_plaintext_auth: true` in the service config blocks AUTH on unencrypted connections; pair it with `ssl_mode: starttls` (port 587) or `ssl_mode: ssl` (port 465).
 
 ---
 
 ## Relay (`protocol.smtp.relay`)
 
-Mirrors Dovecot's `submission_relay_*` settings. One connection per message; fail-closed (451) on any transport error.
+Configures the upstream MTA for submission. One TCP connection per message; any transport error returns `451 4.4.0` to the MUA.
 
 | Key | Default | Description |
 |:---|:---|:---|
-| `relay.host` | — | Relay hostname. Empty = relay disabled (451 returned). |
-| `relay.port` | `25` | Relay TCP port. |
-| `relay.user` | — | SASL PLAIN username. Empty = no AUTH. |
+| `relay.host` | — | Upstream MTA hostname or IP. Empty = relay disabled, submission returns 451. |
+| `relay.port` | `25` | Upstream MTA port. |
+| `relay.user` | — | SASL PLAIN username sent to upstream. Empty = no AUTH. |
 | `relay.password` | — | SASL PLAIN password. Supports `${ENV_VAR}`. |
-| `relay.ssl` | `no` | Transport security: `no` \| `smtps` \| `starttls`. |
-| `relay.ssl_verify` | `true` | Verify relay TLS certificate. |
-| `relay.trusted` | `false` | Send XCLIENT to relay (Postfix) with real client IP. |
+| `relay.ssl` | `no` | Transport security to upstream: `no` \| `starttls` \| `smtps`. |
+| `relay.ssl_verify` | `true` | Verify upstream TLS certificate. |
+| `relay.trusted` | `false` | Send XCLIENT to upstream with the MUA's real IP (requires upstream to advertise XCLIENT). |
 | `relay.connect_timeout` | `30` | TCP connect timeout in seconds. |
 | `relay.command_timeout` | `300` | Per-command timeout in seconds. |
 
