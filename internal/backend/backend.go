@@ -18,6 +18,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
 	smtpsvr "github.com/0kaba0hub/yarilo/internal/smtp"
+	smtpproxy "github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
@@ -153,9 +154,9 @@ func New(cfg *config.Config) (*Server, error) {
 			disablePlain = subSvc.DisablePlainAuth
 		}
 
-		var relay *smtpsvr.Relay
+		var submissionProxy *smtpproxy.Submission
 		if cfg.Protocol.SMTP.Relay.Host != "" {
-			relay = smtpsvr.NewRelay(cfg.Protocol.SMTP.Relay, cfg.Protocol.SMTP.Hostname)
+			submissionProxy = smtpproxy.New(cfg.Protocol.SMTP.Relay, cfg.Protocol.SMTP.Hostname)
 		}
 
 		smtpServer = smtpsvr.New(smtpsvr.Options{
@@ -168,7 +169,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Config:           cfg.Protocol.SMTP,
 			Auth:             chainAuth{authChain},
 			Deliverer:        lmtp.New(mbox, idx),
-			Relay:            relay,
+			Proxy:            submissionProxy,
 		})
 	}
 

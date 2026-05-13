@@ -10,6 +10,7 @@ import (
 	goSmtp "github.com/0kaba0hub/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -203,7 +204,7 @@ func TestSubmission_Relay(t *testing.T) {
 		},
 		Auth:      stubAuth{},
 		Deliverer: lmtp.New(mb, idx),
-		Relay:     NewRelay(relayCfg, "mx.example.com"),
+		Proxy:     proxy.New(relayCfg, "mx.example.com"),
 	}
 
 	srv := New(opts)

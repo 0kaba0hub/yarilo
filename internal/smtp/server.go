@@ -1,6 +1,6 @@
-// Package smtp implements the SMTP inbound (port 25) and submission (port 587) servers.
-// Inbound: milters → LMTP deliver.
-// Submission: AUTH required → milters → relay.
+// Package smtp implements the SMTP inbound (port 25) and submission (port 587/465) servers.
+// Inbound: local delivery via lmtp.Deliverer.
+// Submission: AUTH required → proxy to upstream MTA.
 package smtp
 
 import (
@@ -19,6 +19,7 @@ import (
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -41,7 +42,7 @@ type Options struct {
 	Config    config.SMTPProtocolConfig
 	Auth      Authenticator
 	Deliverer *lmtp.Deliverer
-	Relay     *Relay
+	Proxy     *proxy.Submission
 }
 
 // Server wraps two go-smtp servers: MX (port 25) and submission (port 587).
@@ -226,21 +227,21 @@ func (s *session) handleInbound(ctx context.Context, data []byte) error {
 	return nil
 }
 
-// handleSubmission proxies outbound mail to the configured relay server.
+// handleSubmission proxies outbound mail to the upstream MTA.
 func (s *session) handleSubmission(_ context.Context, data []byte) error {
-	relay := s.srv.opts.Relay
-	if relay == nil {
+	p := s.srv.opts.Proxy
+	if p == nil {
 		return &goSmtp.SMTPError{
 			Code:         451,
 			EnhancedCode: goSmtp.EnhancedCode{4, 3, 0},
-			Message:      "Relay not configured",
+			Message:      "Upstream MTA not configured",
 		}
 	}
-	if err := relay.Send(s.from, s.rcpts, bytes.NewReader(data), s.remoteIP); err != nil {
-		slog.Info("smtp: relay rejected", "from", s.from, "err", err)
+	if err := p.Send(s.from, s.rcpts, bytes.NewReader(data), s.remoteIP); err != nil {
+		slog.Info("smtp: proxy rejected", "from", s.from, "err", err)
 		return err
 	}
-	slog.Info("smtp: relayed", "from", s.from, "rcpts", s.rcpts, "size", len(data))
+	slog.Info("smtp: proxied", "from", s.from, "rcpts", s.rcpts, "size", len(data))
 	return nil
 }
 
