@@ -9,6 +9,7 @@ import (
 	"time"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
+
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
