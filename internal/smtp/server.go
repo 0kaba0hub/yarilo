@@ -42,13 +42,14 @@ type Options struct {
 
 // Server is the submission SMTP server (port 587 / 465).
 type Server struct {
-	opts   Options
-	subSrv *goSmtp.Server
+	opts        Options
+	subSrv      *goSmtp.Server
+	workarounds smtpWorkarounds
 }
 
 // New creates the submission server. Call ServeSubmit to start it.
 func New(opts Options) *Server {
-	s := &Server{opts: opts}
+	s := &Server{opts: opts, workarounds: parseSMTPWorkarounds(opts.Config.Workarounds)}
 	be := &backend{srv: s}
 	srv := goSmtp.NewServer(be)
 	srv.Domain = opts.Config.Hostname
@@ -73,6 +74,9 @@ func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 	slog.Info("smtp: submission listening", "addr", ln.Addr())
 	if tlsCfg != nil {
 		ln = tls.NewListener(ln, tlsCfg)
+	}
+	if s.workarounds != 0 {
+		ln = &smtpWorkaroundListener{Listener: ln, workarounds: s.workarounds}
 	}
 	if s.opts.HAProxy {
 		ln = &proxyproto.Listener{

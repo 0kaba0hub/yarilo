@@ -1,4 +1,4 @@
-package lmtp
+package smtp
 
 import (
 	"bufio"
@@ -6,22 +6,15 @@ import (
 	"strings"
 )
 
-// lmtpWorkarounds is a bitmask of active client workarounds.
-type lmtpWorkarounds uint32
+type smtpWorkarounds uint32
 
 const (
-	// workaroundWhitespaceBeforePath allows whitespace before the path in
-	// MAIL FROM and RCPT TO commands (e.g. "MAIL FROM: <user@example.com>").
-	workaroundWhitespaceBeforePath lmtpWorkarounds = 1 << iota
-	// workaroundMailboxForPath allows a bare mailbox name (no domain) in
-	// RCPT TO (e.g. "RCPT TO:<alice>").
+	workaroundWhitespaceBeforePath smtpWorkarounds = 1 << iota
 	workaroundMailboxForPath
 )
 
-// parseWorkarounds parses a list of workaround names into a bitmask.
-// Unknown names are silently ignored (matching Dovecot behaviour).
-func parseWorkarounds(list []string) lmtpWorkarounds {
-	var mask lmtpWorkarounds
+func parseSMTPWorkarounds(list []string) smtpWorkarounds {
+	var mask smtpWorkarounds
 	for _, item := range list {
 		switch strings.ToLower(strings.TrimSpace(item)) {
 		case "whitespace-before-path":
@@ -33,27 +26,27 @@ func parseWorkarounds(list []string) lmtpWorkarounds {
 	return mask
 }
 
-type lmtpWorkaroundListener struct {
+type smtpWorkaroundListener struct {
 	net.Listener
-	workarounds lmtpWorkarounds
+	workarounds smtpWorkarounds
 }
 
-func (l *lmtpWorkaroundListener) Accept() (net.Conn, error) {
+func (l *smtpWorkaroundListener) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	return &lmtpWorkaroundConn{Conn: c, br: bufio.NewReader(c), workarounds: l.workarounds}, nil
+	return &smtpWorkaroundConn{Conn: c, br: bufio.NewReader(c), workarounds: l.workarounds}, nil
 }
 
-type lmtpWorkaroundConn struct {
+type smtpWorkaroundConn struct {
 	net.Conn
 	br          *bufio.Reader
 	pending     []byte
-	workarounds lmtpWorkarounds
+	workarounds smtpWorkarounds
 }
 
-func (c *lmtpWorkaroundConn) Read(b []byte) (int, error) {
+func (c *smtpWorkaroundConn) Read(b []byte) (int, error) {
 	for {
 		if len(c.pending) > 0 {
 			n := copy(b, c.pending)
@@ -75,7 +68,7 @@ func (c *lmtpWorkaroundConn) Read(b []byte) (int, error) {
 	}
 }
 
-func (c *lmtpWorkaroundConn) applyWorkarounds(line string) string {
+func (c *smtpWorkaroundConn) applyWorkarounds(line string) string {
 	upper := strings.ToUpper(line)
 	var prefixLen int
 	switch {

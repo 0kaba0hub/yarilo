@@ -47,6 +47,7 @@ type Options struct {
 	IDSend             string             // imap_id_send: "key val …"; * = server default; empty = disabled
 	LoginGreeting      string             // login_greeting: replaces "IMAP server ready"; empty = default
 	LogoutFormat       string             // imap_logout_format: %{deleted} %{expunged} etc.; empty = disabled
+	ClientWorkarounds  imapWorkarounds    // tb-extra-mailbox-sep | tb-lsub-flags
 }
 
 // New creates an IMAP server.
@@ -313,6 +314,12 @@ func (s *session) Subscribe(_ string) error   { return nil }
 func (s *session) Unsubscribe(_ string) error { return nil }
 
 func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, _ *imaplib.ListOptions) error {
+	if s.srv.opts.ClientWorkarounds&workaroundTBExtraMailboxSep != 0 {
+		ref = strings.TrimPrefix(ref, "/")
+		for i, p := range patterns {
+			patterns[i] = strings.TrimPrefix(p, "/")
+		}
+	}
 	folders, err := s.srv.opts.Mailbox.ListFolders(s.username)
 	if err != nil {
 		return err
@@ -322,7 +329,8 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		if !listMatch(full, patterns) {
 			continue
 		}
-		if err := w.WriteList(&imaplib.ListData{Mailbox: full, Delim: '/'}); err != nil {
+		attrs := mailboxAttrs(name, folders, s.srv.opts.ClientWorkarounds)
+		if err := w.WriteList(&imaplib.ListData{Mailbox: full, Delim: '/', Attrs: attrs}); err != nil {
 			return err
 		}
 	}

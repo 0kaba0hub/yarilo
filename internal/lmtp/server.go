@@ -104,6 +104,9 @@ func (s *Server) Serve(ln net.Listener) error {
 	if s.opts.XClient {
 		ln = &xclientListener{Listener: ln, trustedNets: s.opts.XClientTrustedNets}
 	}
+	if wa := parseWorkarounds(s.opts.Config.ClientWorkarounds); wa != 0 {
+		ln = &lmtpWorkaroundListener{Listener: ln, workarounds: wa}
+	}
 	return s.srv.Serve(ln)
 }
 
