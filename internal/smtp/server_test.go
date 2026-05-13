@@ -263,5 +263,26 @@ func TestIsReject_Nil(t *testing.T) {
 	}
 }
 
+func TestStripDelimiter(t *testing.T) {
+	cases := []struct {
+		addr  string
+		delim string
+		want  string
+	}{
+		{"user+tag@example.com", "+", "user@example.com"},
+		{"user@example.com", "+", "user@example.com"},      // no tag
+		{"user+tag@example.com", "", "user+tag@example.com"}, // delimiter disabled
+		{"<user+tag@example.com>", "+", "user@example.com"}, // angle brackets stripped
+		{"user+a+b@example.com", "+", "user@example.com"},   // multiple delimiters — strip at first
+		{"nodomain", "+", "nodomain"},                        // no @ — passthrough
+	}
+	for _, tc := range cases {
+		got := stripDelimiter(tc.addr, tc.delim)
+		if got != tc.want {
+			t.Errorf("stripDelimiter(%q, %q) = %q, want %q", tc.addr, tc.delim, got, tc.want)
+		}
+	}
+}
+
 // Compile-time check: dkim.KeyProvider is satisfied by staticKeyProvider.
 var _ dkim.KeyProvider = (*staticKeyProvider)(nil)

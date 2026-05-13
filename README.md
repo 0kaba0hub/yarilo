@@ -138,26 +138,40 @@ mode: backend   # proxy | director | backend
 
 imap:
   listen: ":993"
-  listen_plain: ":143"        # STARTTLS
+  listen_plain: ":143"              # STARTTLS
   tls_cert: /etc/ssl/yarilo/cert.pem
   tls_key:  /etc/ssl/yarilo/key.pem
-  proxy_protocol: false       # set true when behind HAProxy
+  tls_alt_cert: ""                  # optional ECDSA cert for dual-cert setup
+  tls_alt_key:  ""
+  tls_min_protocol: TLS1.2          # TLS1.2 | TLS1.3
+  tls_prefer_server_ciphers: false  # server cipher order preference
+  proxy_protocol: false             # set true when behind HAProxy
+  haproxy_timeout: 3                # seconds to wait for PROXY header
+  disable_plaintext_auth: true      # reject AUTH without TLS
 
 smtp:
   listen_mx:     ":25"
   listen_submit: ":587"
   hostname: mail.example.com
-  max_message_size: 41943040  # 40 MB
+  max_message_size: 41943040        # 40 MB
+  max_line_length: 4096             # SMTP command line limit (bytes)
+  recipient_delimiter: "+"          # subaddress: user+tag@domain → user@domain
   tls_cert: /etc/ssl/yarilo/cert.pem
   tls_key:  /etc/ssl/yarilo/key.pem
-  proxy_protocol: false       # set true when behind HAProxy
-  haproxy_trusted_nets:       # CIDRs allowed to send PROXY headers; empty = nobody trusted
-    - 127.0.0.1/32            # default
-    - 10.0.0.0/8              # default
-  xclient: false              # advertise and handle XCLIENT on MX (trusted relay infrastructure)
-  xclient_trusted_nets:       # CIDRs allowed to send XCLIENT; empty = nobody trusted
-    - 127.0.0.1/32            # default
-    - 10.0.0.0/8              # default
+  tls_alt_cert: ""                  # optional ECDSA cert for dual-cert setup
+  tls_alt_key:  ""
+  tls_min_protocol: TLS1.2          # TLS1.2 | TLS1.3
+  tls_prefer_server_ciphers: false  # server cipher order preference
+  disable_plaintext_auth: true      # reject submission AUTH without STARTTLS
+  proxy_protocol: false             # set true when behind HAProxy
+  haproxy_timeout: 3                # seconds to wait for PROXY header
+  haproxy_trusted_nets:             # CIDRs allowed to send PROXY headers; empty = nobody trusted
+    - 127.0.0.1/32                  # default
+    - 10.0.0.0/8                    # default
+  xclient: false                    # advertise and handle XCLIENT on MX (trusted relay infrastructure)
+  xclient_trusted_nets:             # CIDRs allowed to send XCLIENT; empty = nobody trusted
+    - 127.0.0.1/32                  # default
+    - 10.0.0.0/8                    # default
 
   # Optional external milters (e.g. rspamd). Checked before internal SPF/DKIM/DMARC.
   # socket formats: unix:/path/to/milter.sock | /path/to/milter.sock | tcp:host:port

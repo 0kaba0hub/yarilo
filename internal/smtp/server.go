@@ -64,7 +64,11 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 	srv.Domain = s.opts.Config.Hostname
 	srv.MaxMessageBytes = s.opts.Config.MaxMsgSize
 	srv.MaxRecipients = 100
-	srv.AllowInsecureAuth = submission // submission requires AUTH; allow over plain for TLS
+	if l := s.opts.Config.MaxLineLength; l > 0 {
+		srv.MaxLineLength = l
+	}
+	// For submission: allow AUTH on plain connections only if disable_plaintext_auth is false.
+	srv.AllowInsecureAuth = submission && !s.opts.Config.DisablePlainAuth
 	srv.ReadTimeout = 5 * time.Minute
 	srv.WriteTimeout = 5 * time.Minute
 	return srv
@@ -76,8 +80,9 @@ func (s *Server) ServeMX(ln net.Listener) error {
 	if s.opts.Config.ProxyProtocol {
 		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
 		ln = &proxyproto.Listener{
-			Listener: ln,
-			Policy:   proxyPolicy(nets),
+			Listener:          ln,
+			Policy:            proxyPolicy(nets),
+			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
 	}
 	if s.opts.Config.XClient {
@@ -98,11 +103,19 @@ func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 	if s.opts.Config.ProxyProtocol {
 		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
 		ln = &proxyproto.Listener{
-			Listener: ln,
-			Policy:   proxyPolicy(nets),
+			Listener:          ln,
+			Policy:            proxyPolicy(nets),
+			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
 	}
 	return s.subSrv.Serve(ln)
+}
+
+func (s *Server) haproxyTimeout() time.Duration {
+	if s.opts.Config.HAProxyTimeout > 0 {
+		return time.Duration(s.opts.Config.HAProxyTimeout) * time.Second
+	}
+	return 3 * time.Second
 }
 
 // parseCIDRs parses a list of CIDR strings. Invalid entries are logged and skipped.
@@ -177,8 +190,26 @@ func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
 }
 
 func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
-	s.rcpts = append(s.rcpts, to)
+	s.rcpts = append(s.rcpts, stripDelimiter(to, s.srv.opts.Config.RecipientDelimiter))
 	return nil
+}
+
+// stripDelimiter removes the subaddress extension from an email address.
+// "user+tag@domain" with delimiter "+" → "user@domain".
+func stripDelimiter(addr, delim string) string {
+	if delim == "" {
+		return addr
+	}
+	addr = strings.Trim(addr, "<>")
+	at := strings.LastIndex(addr, "@")
+	if at < 0 {
+		return addr
+	}
+	local, domain := addr[:at], addr[at+1:]
+	if i := strings.Index(local, delim); i >= 0 {
+		local = local[:i]
+	}
+	return local + "@" + domain
 }
 
 func (s *session) Data(r io.Reader) error {
