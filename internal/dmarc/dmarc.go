@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	goSpf "blitiri.com.ar/go/spf"
+
 	"github.com/0kaba0hub/yarilo/internal/dkim"
 )
 
