@@ -29,12 +29,16 @@ func buildBackendServer(t *testing.T, users ...string) (addr string, mb *maildir
 		}
 	}
 
-	cfg := config.LMTPProtocolConfig{
-		AddReceivedHeader: false,
-		ReadTimeout:       5,
-		WriteTimeout:      5,
-	}
-	srv := New("backend.test", cfg, mb, idx)
+	srv := New(Options{
+		Hostname: "backend.test",
+		Config: config.LMTPProtocolConfig{
+			AddReceivedHeader: false,
+			ReadTimeout:       5,
+			WriteTimeout:      5,
+		},
+		Mailbox: mb,
+		Index:   idx,
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -57,18 +61,20 @@ func buildProxyServer(t *testing.T, backends ...string) string {
 		entries[i] = config.LMTPBackendEntry{Host: host, Port: port}
 	}
 
-	cfg := config.LMTPProtocolConfig{
-		AddReceivedHeader: false,
-		ReadTimeout:       5,
-		WriteTimeout:      5,
-		Proxy: config.LMTPProxyConfig{
-			Enabled:  true,
-			Backends: entries,
-			Timeout:  5,
-		},
-	}
 	// Proxy mode: no local mailbox.
-	srv := New("proxy.test", cfg, nil, nil)
+	srv := New(Options{
+		Hostname: "proxy.test",
+		Config: config.LMTPProtocolConfig{
+			AddReceivedHeader: false,
+			ReadTimeout:       5,
+			WriteTimeout:      5,
+			Proxy: config.LMTPProxyConfig{
+				Enabled:  true,
+				Backends: entries,
+				Timeout:  5,
+			},
+		},
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -102,16 +108,18 @@ func TestLMTP_Proxy_SingleBackend(t *testing.T) {
 
 func TestLMTP_Proxy_UnknownRoute(t *testing.T) {
 	// Proxy with no backends → routing fails → 451 at RCPT TO.
-	cfg := config.LMTPProtocolConfig{
-		ReadTimeout:  5,
-		WriteTimeout: 5,
-		Proxy: config.LMTPProxyConfig{
-			Enabled:  true,
-			Backends: nil,
-			Timeout:  5,
+	srv := New(Options{
+		Hostname: "proxy.test",
+		Config: config.LMTPProtocolConfig{
+			ReadTimeout:  5,
+			WriteTimeout: 5,
+			Proxy: config.LMTPProxyConfig{
+				Enabled:  true,
+				Backends: nil,
+				Timeout:  5,
+			},
 		},
-	}
-	srv := New("proxy.test", cfg, nil, nil)
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

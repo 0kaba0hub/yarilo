@@ -26,13 +26,17 @@ func buildTestServer(t *testing.T) string {
 	}
 	t.Cleanup(func() { idx.Close() }) //nolint:errcheck
 
-	cfg := config.LMTPProtocolConfig{
-		AddReceivedHeader:  true,
-		HdrDeliveryAddress: "final",
-		ReadTimeout:        5,
-		WriteTimeout:       5,
-	}
-	srv := New("lmtp.test", cfg, mb, idx)
+	srv := New(Options{
+		Hostname: "lmtp.test",
+		Config: config.LMTPProtocolConfig{
+			AddReceivedHeader:  true,
+			HdrDeliveryAddress: "final",
+			ReadTimeout:        5,
+			WriteTimeout:       5,
+		},
+		Mailbox: mb,
+		Index:   idx,
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

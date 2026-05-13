@@ -11,65 +11,117 @@ import (
 	"time"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
+	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
+// Options configures the LMTP server.
+type Options struct {
+	Hostname string
+	Config   config.LMTPProtocolConfig
+	Mailbox  mailbox.MailboxBackend
+	Index    mailbox.IndexBackend
+
+	// HAProxy PROXY protocol support.
+	ProxyProtocol      bool
+	HAProxyTimeout     time.Duration
+	HAProxyTrustedNets []*net.IPNet
+
+	// XCLIENT extension support (Postfix-compatible).
+	XClient            bool
+	XClientTrustedNets []*net.IPNet
+}
+
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
 type Server struct {
 	srv    *goSmtp.Server
-	cfg    config.LMTPProtocolConfig
-	mb     mailbox.MailboxBackend
-	idx    mailbox.IndexBackend
+	opts   Options
 	router *proxyRouter // non-nil when proxy mode is active
 }
 
-// New creates an LMTP server from config.
-func New(hostname string, cfg config.LMTPProtocolConfig, mb mailbox.MailboxBackend, idx mailbox.IndexBackend) *Server {
+// New creates an LMTP server from Options.
+func New(opts Options) *Server {
 	var router *proxyRouter
-	if cfg.Proxy.Enabled {
-		router = newProxyRouter(hostname, cfg.Proxy)
+	if opts.Config.Proxy.Enabled {
+		router = newProxyRouter(opts.Hostname, opts.Config.Proxy)
 	}
 
-	s := &Server{cfg: cfg, mb: mb, idx: idx, router: router}
-	be := &backend{cfg: cfg, mb: mb, idx: idx, router: router}
+	s := &Server{opts: opts, router: router}
+	be := &backend{opts: opts, router: router}
 
 	srv := goSmtp.NewServer(be)
-	srv.Domain = hostname
+	srv.Domain = opts.Hostname
 	srv.LMTP = true
-	srv.ReadTimeout = time.Duration(cfg.ReadTimeout) * time.Second
-	srv.WriteTimeout = time.Duration(cfg.WriteTimeout) * time.Second
+	srv.ReadTimeout = time.Duration(opts.Config.ReadTimeout) * time.Second
+	srv.WriteTimeout = time.Duration(opts.Config.WriteTimeout) * time.Second
 
 	s.srv = srv
 	return s
 }
 
-// Serve starts accepting LMTP connections on ln.
+// Serve starts accepting LMTP connections on ln, optionally wrapping it with
+// HAProxy PROXY protocol and XCLIENT support.
 func (s *Server) Serve(ln net.Listener) error {
-	slog.Info("lmtp: listening", "addr", ln.Addr(), "proxy", s.cfg.Proxy.Enabled)
+	slog.Info("lmtp: listening", "addr", ln.Addr(),
+		"haproxy", s.opts.ProxyProtocol,
+		"xclient", s.opts.XClient,
+		"proxy_mode", s.opts.Config.Proxy.Enabled,
+	)
+	if s.opts.ProxyProtocol {
+		timeout := s.opts.HAProxyTimeout
+		if timeout == 0 {
+			timeout = 3 * time.Second
+		}
+		ln = &proxyproto.Listener{
+			Listener:          ln,
+			Policy:            proxyPolicy(s.opts.HAProxyTrustedNets),
+			ReadHeaderTimeout: timeout,
+		}
+	}
+	if s.opts.XClient {
+		ln = &xclientListener{Listener: ln, trustedNets: s.opts.XClientTrustedNets}
+	}
 	return s.srv.Serve(ln)
+}
+
+// proxyPolicy returns a go-proxyproto Policy func.
+// Empty nets → IGNORE (reject all PROXY headers).
+// Trusted CIDR nets → USE; others IGNORE.
+func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
+	return func(upstream net.Addr) (proxyproto.Policy, error) {
+		if len(nets) == 0 {
+			return proxyproto.IGNORE, nil
+		}
+		tcpAddr, ok := upstream.(*net.TCPAddr)
+		if !ok {
+			return proxyproto.IGNORE, nil
+		}
+		for _, n := range nets {
+			if n.Contains(tcpAddr.IP) {
+				return proxyproto.USE, nil
+			}
+		}
+		return proxyproto.IGNORE, nil
+	}
 }
 
 // ---- backend ----------------------------------------------------------------
 
 type backend struct {
-	cfg    config.LMTPProtocolConfig
-	mb     mailbox.MailboxBackend
-	idx    mailbox.IndexBackend
+	opts   Options
 	router *proxyRouter
 }
 
 func (b *backend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
-	return &session{cfg: b.cfg, mb: b.mb, idx: b.idx, router: b.router}, nil
+	return &session{opts: b.opts, router: b.router}, nil
 }
 
 // ---- session ----------------------------------------------------------------
 
 type session struct {
-	cfg        config.LMTPProtocolConfig
-	mb         mailbox.MailboxBackend
-	idx        mailbox.IndexBackend
+	opts       Options
 	router     *proxyRouter
 	from       string
 	rcpts      []string            // local recipients
@@ -93,7 +145,7 @@ func (s *session) rcptLocal(to string) error {
 	if err != nil {
 		return &goSmtp.SMTPError{Code: 501, EnhancedCode: goSmtp.EnhancedCode{5, 1, 3}, Message: "Bad recipient address"}
 	}
-	exists, err := s.mb.FolderExists(user, "INBOX")
+	exists, err := s.opts.Mailbox.FolderExists(user, "INBOX")
 	if err != nil {
 		slog.Error("lmtp: user lookup failed", "user", user, "err", err)
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary user lookup error"}
@@ -133,7 +185,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	}
 
 	var full []byte
-	if s.cfg.AddReceivedHeader {
+	if s.opts.Config.AddReceivedHeader {
 		received := buildReceivedHeader(s.from)
 		full = append([]byte(received), data...)
 	} else {
@@ -146,7 +198,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		for rcpt, rerr := range results {
 			if rerr != nil {
 				slog.Error("lmtp: proxy delivery failed", "rcpt", rcpt, "err", rerr)
-				if s.cfg.VerboseReplies {
+				if s.opts.Config.VerboseReplies {
 					rerr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: rerr.Error()}
 				} else {
 					rerr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Proxy delivery failed"}
@@ -161,13 +213,13 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	// Local recipients: deliver directly.
 	for _, rcpt := range s.rcpts {
 		deliverRcpt := rcpt
-		if !s.cfg.SaveToDetailMailbox {
+		if !s.opts.Config.SaveToDetailMailbox {
 			deliverRcpt = stripDetail(rcpt)
 		}
-		err := deliverOne(s.mb, s.idx, deliverRcpt, bytes.NewReader(full), int64(len(full)))
+		err := deliverOne(s.opts.Mailbox, s.opts.Index, deliverRcpt, bytes.NewReader(full), int64(len(full)))
 		if err != nil {
 			slog.Error("lmtp: delivery failed", "rcpt", rcpt, "err", err)
-			if s.cfg.VerboseReplies {
+			if s.opts.Config.VerboseReplies {
 				err = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: err.Error()}
 			} else {
 				err = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Local delivery failed"}

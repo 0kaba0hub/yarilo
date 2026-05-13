@@ -177,7 +177,17 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- LMTP ----
 	var lmtpServer *lmtp.Server
 	if svcs.LMTP.Active() {
-		lmtpServer = lmtp.New(cfg.Protocol.SMTP.Hostname, cfg.Protocol.LMTP, mbox, idx)
+		lmtpServer = lmtp.New(lmtp.Options{
+			Hostname:           cfg.Protocol.SMTP.Hostname,
+			Config:             cfg.Protocol.LMTP,
+			Mailbox:            mbox,
+			Index:              idx,
+			ProxyProtocol:      svcs.LMTP.HAProxy,
+			HAProxyTimeout:     haproxyTimeout,
+			HAProxyTrustedNets: haproxyNets,
+			XClient:            svcs.LMTP.XClient,
+			XClientTrustedNets: xclientNets,
+		})
 	}
 
 	// ---- telemetry ----
