@@ -45,7 +45,7 @@ func TestSignAndVerify(t *testing.T) {
 
 	cfg := SignConfig{
 		Selector:        "sel",
-		SignHeaders:      []string{"From", "To", "Subject"},
+		SignHeaders:     []string{"From", "To", "Subject"},
 		OversignHeaders: []string{"From"},
 	}
 

@@ -9,8 +9,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/0kaba0hub/yarilo/internal/dkim"
 	goSpf "blitiri.com.ar/go/spf"
+	"github.com/0kaba0hub/yarilo/internal/dkim"
 )
 
 // Policy is the DMARC disposition policy.
@@ -32,10 +32,10 @@ const (
 
 // Record holds the parsed DMARC record fields relevant to policy evaluation.
 type Record struct {
-	Policy    Policy
-	SPPolicy  Policy    // subdomain policy (sp=); defaults to Policy if absent
-	ADKIM     Alignment // DKIM alignment; default relaxed
-	ASPF      Alignment // SPF alignment; default relaxed
+	Policy   Policy
+	SPPolicy Policy    // subdomain policy (sp=); defaults to Policy if absent
+	ADKIM    Alignment // DKIM alignment; default relaxed
+	ASPF     Alignment // SPF alignment; default relaxed
 }
 
 // Result is the outcome of a DMARC evaluation.

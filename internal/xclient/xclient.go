@@ -44,7 +44,7 @@ func DecodeXText(s string) (string, error) {
 			if !ok1 || !ok2 {
 				return "", fmt.Errorf("xclient/xtext: invalid hex %q at position %d", s[i:i+3], i)
 			}
-			b.WriteByte(byte(hi<<4 | lo))
+			b.WriteByte(hi<<4 | lo)
 			i += 3
 		} else {
 			b.WriteByte(s[i])

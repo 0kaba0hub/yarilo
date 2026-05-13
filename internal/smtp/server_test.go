@@ -13,8 +13,8 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/dkim"
-	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )

@@ -13,8 +13,8 @@ var extractDomainCases = []struct {
 }{
 	{"user@example.com", "example.com", false},
 	{"<user@example.com>", "example.com", false},
-	{"<>", "", false},     // null sender (bounces)
-	{"", "", false},       // null sender
+	{"<>", "", false}, // null sender (bounces)
+	{"", "", false},   // null sender
 	{"nodomain", "", true},
 }
 

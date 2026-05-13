@@ -213,7 +213,7 @@ func (s *session) handleSubmission(ctx context.Context, data []byte) error {
 		} else {
 			signCfg := dkim.SignConfig{
 				Selector:        opts.DKIMCfg.Selector,
-				SignHeaders:      opts.DKIMCfg.SignHeaders,
+				SignHeaders:     opts.DKIMCfg.SignHeaders,
 				OversignHeaders: opts.DKIMCfg.OversignHeaders,
 			}
 			var signed bytes.Buffer

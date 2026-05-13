@@ -11,10 +11,10 @@ import (
 )
 
 var resolveMailboxCases = []struct {
-	rcpt      string
-	wantUser  string
+	rcpt       string
+	wantUser   string
 	wantFolder string
-	wantErr   bool
+	wantErr    bool
 }{
 	{"user@example.com", "user@example.com", "INBOX", false},
 	{"<user@example.com>", "user@example.com", "INBOX", false},

@@ -58,7 +58,7 @@ func (d *Deliverer) Deliver(ctx context.Context, from string, rcpts []string, ms
 	return results
 }
 
-func (d *Deliverer) deliverOne(ctx context.Context, rcpt string, r io.ReadSeeker) error {
+func (d *Deliverer) deliverOne(_ context.Context, rcpt string, r io.ReadSeeker) error {
 	user, folder, err := resolveMailbox(rcpt)
 	if err != nil {
 		return fmt.Errorf("lmtp/deliver: resolve %q: %w", rcpt, err)

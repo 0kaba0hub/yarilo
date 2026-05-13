@@ -52,7 +52,7 @@ type DKIMConfig struct {
 	Verify          bool           `koanf:"verify"`
 	Sign            bool           `koanf:"sign"`
 	Selector        string         `koanf:"selector"`
-	SignHeaders      []string       `koanf:"sign_headers"`
+	SignHeaders     []string       `koanf:"sign_headers"`
 	OversignHeaders []string       `koanf:"oversign_headers"`
 	Keys            DKIMKeysConfig `koanf:"keys"`
 }

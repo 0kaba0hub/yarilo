@@ -49,7 +49,7 @@ func Verify(r io.Reader) ([]Result, error) {
 // SignConfig holds per-message signing parameters (resolved from Config).
 type SignConfig struct {
 	Selector        string
-	SignHeaders      []string
+	SignHeaders     []string
 	OversignHeaders []string
 }
 
