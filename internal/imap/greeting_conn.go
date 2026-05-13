@@ -23,7 +23,7 @@ func (l *greetingListener) Accept() (net.Conn, error) {
 // greetingConn rewrites the first "IMAP server ready" occurrence in Write output.
 // go-imap/v2 sends the greeting as a single Write call:
 //
-//	* OK [CAPABILITY ...] IMAP server ready\r\n
+//   - OK [CAPABILITY ...] IMAP server ready\r\n
 type greetingConn struct {
 	net.Conn
 	replacement string

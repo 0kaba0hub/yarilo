@@ -42,12 +42,12 @@ type IMAPConfig struct {
 	XClient              bool     `koanf:"xclient"`
 	XClientTrustedNets   []string `koanf:"xclient_trusted_nets"`        // CIDRs allowed to send XCLIENT
 	DisablePlainAuth     bool     `koanf:"disable_plaintext_auth"`      // reject auth without TLS
-	IdleNotifyInterval   int    `koanf:"imap_idle_notify_interval"`   // seconds; 0 = no keepalive
-	MaxLineLength        int    `koanf:"imap_max_line_length"`        // bytes; 0 = unlimited
-	MaxUserIPConnections int    `koanf:"mail_max_userip_connections"` // 0 = unlimited
-	IDSend               string `koanf:"imap_id_send"`               // ID extension pairs; * = server default; empty = disabled
-	LoginGreeting        string `koanf:"login_greeting"`             // replaces "IMAP server ready"; empty = default
-	LogoutFormat         string `koanf:"imap_logout_format"`         // %{deleted} %{expunged} etc.; empty = disabled
+	IdleNotifyInterval   int      `koanf:"imap_idle_notify_interval"`   // seconds; 0 = no keepalive
+	MaxLineLength        int      `koanf:"imap_max_line_length"`        // bytes; 0 = unlimited
+	MaxUserIPConnections int      `koanf:"mail_max_userip_connections"` // 0 = unlimited
+	IDSend               string   `koanf:"imap_id_send"`                // ID extension pairs; * = server default; empty = disabled
+	LoginGreeting        string   `koanf:"login_greeting"`              // replaces "IMAP server ready"; empty = default
+	LogoutFormat         string   `koanf:"imap_logout_format"`          // %{deleted} %{expunged} etc.; empty = disabled
 }
 
 type POP3Config struct {

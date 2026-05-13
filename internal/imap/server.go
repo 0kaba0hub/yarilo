@@ -44,9 +44,9 @@ type Options struct {
 	IdleNotifyInterval time.Duration      // send EXISTS keepalive during IDLE; 0 = disabled
 	MaxLineLength      int                // max command line bytes; 0 = unlimited (Dovecot default 65536)
 	ConnLimit          *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
-	IDSend             string            // imap_id_send: "key val …"; * = server default; empty = disabled
-	LoginGreeting      string            // login_greeting: replaces "IMAP server ready"; empty = default
-	LogoutFormat       string            // imap_logout_format: %{deleted} %{expunged} etc.; empty = disabled
+	IDSend             string             // imap_id_send: "key val …"; * = server default; empty = disabled
+	LoginGreeting      string             // login_greeting: replaces "IMAP server ready"; empty = default
+	LogoutFormat       string             // imap_logout_format: %{deleted} %{expunged} etc.; empty = disabled
 }
 
 // New creates an IMAP server.
