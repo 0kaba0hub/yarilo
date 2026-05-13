@@ -14,10 +14,8 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
-	"github.com/0kaba0hub/yarilo/internal/dkim"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
-	"github.com/0kaba0hub/yarilo/internal/mailauth"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
 	smtpsvr "github.com/0kaba0hub/yarilo/internal/smtp"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
@@ -155,39 +153,6 @@ func New(cfg *config.Config) (*Server, error) {
 			disablePlain = subSvc.DisablePlainAuth
 		}
 
-		// ---- DKIM signer / verifier ----
-		var dkimSigner mailauth.Signer
-		var dkimVerifier mailauth.Verifier
-		if cfg.DKIM.Sign {
-			var keyProv dkim.KeyProvider
-			switch strings.ToLower(cfg.DKIM.Keys.Backend) {
-			case "dynamic":
-				d := cfg.DKIM.Keys.Dynamic
-				ttl := time.Duration(d.CacheTTL) * time.Second
-				if ttl == 0 {
-					ttl = 5 * time.Minute
-				}
-				kp, err := dkim.NewSQLKeyProvider(d.Driver, d.DSN, d.Query, ttl)
-				if err != nil {
-					return nil, fmt.Errorf("backend: DKIM SQL key provider: %w", err)
-				}
-				keyProv = kp
-			default:
-				keyProv = dkim.NewStaticKeyProvider(cfg.DKIM.Keys.Static)
-			}
-			dkimSigner = &dkim.MessageSigner{
-				KeyProv: keyProv,
-				Cfg: dkim.SignConfig{
-					Selector:        cfg.DKIM.Selector,
-					SignHeaders:     cfg.DKIM.SignHeaders,
-					OversignHeaders: cfg.DKIM.OversignHeaders,
-				},
-			}
-		}
-		if cfg.DKIM.Verify {
-			dkimVerifier = &dkim.MessageVerifier{}
-		}
-
 		// ---- milter clients ----
 		var milters []*smtpsvr.MilterClient
 		for _, mc := range cfg.Protocol.SMTP.Milters {
@@ -205,13 +170,9 @@ func New(cfg *config.Config) (*Server, error) {
 			XClient:          primary.XClient,
 			XClientNets:      xclientNets,
 			DisablePlainAuth: disablePlain,
-			Config:           cfg.Protocol.SMTP,
-			SPFCfg:           cfg.SPF,
-			DMARCCfg:         cfg.DMARC,
-			Auth:             chainAuth{authChain},
-			Signer:           dkimSigner,
-			Verifier:         dkimVerifier,
-			Deliverer:        lmtp.New(mbox, idx),
+			Config:    cfg.Protocol.SMTP,
+			Auth:      chainAuth{authChain},
+			Deliverer: lmtp.New(mbox, idx),
 			Milters:          milters,
 		})
 	}

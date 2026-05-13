@@ -1,10 +1,6 @@
 package smtp
 
 import (
-	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
 	"io"
 	"net"
 	"testing"
@@ -12,7 +8,6 @@ import (
 	"github.com/emersion/go-sasl"
 	goSmtp "github.com/emersion/go-smtp"
 
-	"github.com/0kaba0hub/yarilo/internal/dkim"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
@@ -47,8 +42,6 @@ func buildTestServer(t *testing.T, submission bool) (addr string, cleanup func()
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
-		SPFCfg:    config.SPFConfig{Enabled: false},
-		DMARCCfg:  config.DMARCConfig{Enabled: false},
 		Auth:      stubAuth{},
 		Deliverer: lmtp.New(mb, idx),
 	}
@@ -145,60 +138,6 @@ func TestSubmission_AuthOK(t *testing.T) {
 	sendMessage(t, c, "alice@example.com", "bob@example.com", body)
 }
 
-func TestSubmission_DKIMSign(t *testing.T) {
-	dir := t.TempDir()
-	mb, _ := maildir.New(dir)
-	idx := fileindex.New(dir)
-	defer idx.Close() //nolint:errcheck
-
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	opts := Options{
-		Config: config.SMTPProtocolConfig{
-			Hostname:   "mx.example.com",
-			MaxMsgSize: 1 << 20,
-		},
-		SPFCfg:   config.SPFConfig{Enabled: false},
-		DMARCCfg: config.DMARCConfig{Enabled: false},
-		Auth:     stubAuth{},
-		Signer: &dkim.MessageSigner{
-			KeyProv: &staticKeyProvider{key: key},
-			Cfg: dkim.SignConfig{
-				Selector:    "sel",
-				SignHeaders: []string{"From", "To", "Subject"},
-			},
-		},
-		Deliverer: lmtp.New(mb, idx),
-	}
-
-	srv := New(opts)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = srv.ServeSubmit(ln, nil) }()
-	defer ln.Close()
-
-	c := dialSMTP(t, ln.Addr().String())
-	defer c.Close()
-
-	if err := c.Auth(plainAuth("alice@example.com", "secret")); err != nil {
-		t.Fatalf("AUTH: %v", err)
-	}
-	const body = "From: alice@example.com\r\nTo: bob@external.com\r\nSubject: signed\r\n\r\nSigned body\r\n"
-	sendMessage(t, c, "alice@example.com", "bob@external.com", body)
-}
-
-// staticKeyProvider returns the same RSA key for any domain.
-type staticKeyProvider struct{ key crypto.Signer }
-
-func (p *staticKeyProvider) GetPrivateKey(_ context.Context, _ string) (crypto.Signer, error) {
-	return p.key, nil
-}
-
 // ---- unit helpers -----------------------------------------------------------
 
 func TestExtractDomain(t *testing.T) {
@@ -284,5 +223,3 @@ func TestStripDelimiter(t *testing.T) {
 	}
 }
 
-// Compile-time check: staticKeyProvider satisfies dkim.KeyProvider.
-var _ dkim.KeyProvider = (*staticKeyProvider)(nil)

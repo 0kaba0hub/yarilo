@@ -19,9 +19,6 @@ type Config struct {
 	Protocol  ProtocolConfig  `koanf:"protocol"`
 	Auth      AuthConfig      `koanf:"auth"`
 	Storage   StorageConfig   `koanf:"storage"`
-	DKIM      DKIMConfig      `koanf:"dkim"`
-	SPF       SPFConfig       `koanf:"spf"`
-	DMARC     DMARCConfig     `koanf:"dmarc"`
 	Telemetry TelemetryConfig `koanf:"telemetry"`
 	Log       LogConfig       `koanf:"log"`
 }
@@ -122,36 +119,6 @@ type MilterConfig struct {
 	Timeout int    `koanf:"timeout"` // seconds, default 30
 }
 
-type DKIMConfig struct {
-	Verify          bool           `koanf:"verify"`
-	Sign            bool           `koanf:"sign"`
-	Selector        string         `koanf:"selector"`
-	SignHeaders     []string       `koanf:"sign_headers"`
-	OversignHeaders []string       `koanf:"oversign_headers"`
-	Keys            DKIMKeysConfig `koanf:"keys"`
-}
-
-type DKIMKeysConfig struct {
-	Backend string            `koanf:"backend"` // static | dynamic
-	Static  map[string]string `koanf:"static"`  // domain → PEM file path
-	Dynamic DKIMDynamicConfig `koanf:"dynamic"`
-}
-
-type DKIMDynamicConfig struct {
-	Driver   string `koanf:"driver"`    // sqlite | mysql | postgres
-	DSN      string `koanf:"dsn"`       // supports ${ENV_VAR}
-	Query    string `koanf:"query"`     // must return single column: private_key PEM
-	CacheTTL int    `koanf:"cache_ttl"` // seconds, default 300
-}
-
-type SPFConfig struct {
-	Enabled bool `koanf:"enabled"`
-}
-
-type DMARCConfig struct {
-	Enabled bool `koanf:"enabled"`
-}
-
 type AuthConfig struct {
 	Passdb []PassdbEntry `koanf:"passdb"`
 }
@@ -212,7 +179,6 @@ func Load(path string) (*Config, error) {
 				RecipientDelimiter: "+",
 			},
 		},
-		DKIM:      DKIMConfig{Selector: "mail", SignHeaders: defaultSignHeaders, OversignHeaders: defaultOversignHeaders},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
 	}
@@ -272,12 +238,6 @@ func BuildTLSConfig(ssl SSLConfig) (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
-var defaultSignHeaders = []string{
-	"From", "To", "Subject", "Date", "Message-ID", "Content-Type",
-}
-
-var defaultOversignHeaders = []string{"From"}
-
 func expandEnv(cfg *Config) {
 	cfg.General.SSL.TLSCert = expand(cfg.General.SSL.TLSCert)
 	cfg.General.SSL.TLSKey = expand(cfg.General.SSL.TLSKey)
@@ -290,7 +250,6 @@ func expandEnv(cfg *Config) {
 	expandSvcSSL(cfg.Services.Submissions)
 	expandSvcSSL(cfg.Services.POP3)
 	expandSvcSSL(cfg.Services.POP3S)
-	cfg.DKIM.Keys.Dynamic.DSN = expand(cfg.DKIM.Keys.Dynamic.DSN)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
 	}

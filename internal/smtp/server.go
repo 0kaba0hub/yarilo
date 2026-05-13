@@ -1,6 +1,6 @@
 // Package smtp implements the SMTP inbound (port 25) and submission (port 587) servers.
-// Inbound: SPF verify → external milters → DKIM verify → DMARC evaluate → LMTP deliver.
-// Submission: AUTH required → external milters → DKIM sign → relay.
+// Inbound: milters → LMTP deliver.
+// Submission: AUTH required → milters → relay.
 package smtp
 
 import (
@@ -18,10 +18,7 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/dmarc"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
-	"github.com/0kaba0hub/yarilo/internal/mailauth"
-	"github.com/0kaba0hub/yarilo/internal/spf"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -41,12 +38,8 @@ type Options struct {
 	XClientNets      []*net.IPNet
 	DisablePlainAuth bool
 	// Protocol-level settings.
-	Config   config.SMTPProtocolConfig
-	SPFCfg   config.SPFConfig
-	DMARCCfg config.DMARCConfig
+	Config    config.SMTPProtocolConfig
 	Auth      Authenticator
-	Signer    mailauth.Signer   // nil = no signing
-	Verifier  mailauth.Verifier // nil = no verification
 	Deliverer *lmtp.Deliverer
 	Milters   []*MilterClient
 }
@@ -226,42 +219,9 @@ func (s *session) Data(r io.Reader) error {
 	return s.handleInbound(ctx, data)
 }
 
-// handleInbound processes MX inbound mail: SPF → DKIM verify → DMARC → deliver.
+// handleInbound delivers MX inbound mail via LMTP.
 func (s *session) handleInbound(ctx context.Context, data []byte) error {
-	opts := s.srv.opts
-	fromDomain := extractDomain(s.from)
-
-	// SPF check.
-	var spfResult spf.Result
-	if opts.SPFCfg.Enabled {
-		spfResult, _ = spf.Check(ctx, s.remoteIP, s.from, "")
-		slog.Info("smtp: SPF", "from", s.from, "result", string(spfResult))
-	}
-
-	// Message authentication verification.
-	var authResults []mailauth.Result
-	if opts.Verifier != nil {
-		authResults, _ = opts.Verifier.Verify(ctx, bytes.NewReader(data))
-		for _, r := range authResults {
-			slog.Info("smtp: auth", "protocol", r.Protocol, "domain", r.Domain, "pass", r.Pass)
-		}
-	}
-
-	// DMARC evaluation.
-	if opts.DMARCCfg.Enabled {
-		res := dmarc.Evaluate(ctx, fromDomain, spfResult, fromDomain, authResults)
-		slog.Info("smtp: DMARC", "from", fromDomain, "disposition", string(res.Disposition))
-		if res.Disposition == dmarc.PolicyReject {
-			return &goSmtp.SMTPError{
-				Code:         550,
-				EnhancedCode: goSmtp.EnhancedCode{5, 7, 1},
-				Message:      "DMARC policy rejection",
-			}
-		}
-	}
-
-	// LMTP local delivery.
-	results := opts.Deliverer.Deliver(ctx, s.from, s.rcpts, bytes.NewReader(data))
+	results := s.srv.opts.Deliverer.Deliver(ctx, s.from, s.rcpts, bytes.NewReader(data))
 	for _, r := range results {
 		if r.Err != nil {
 			slog.Error("smtp: delivery failed", "rcpt", r.Rcpt, "err", r.Err)
@@ -270,21 +230,8 @@ func (s *session) handleInbound(ctx context.Context, data []byte) error {
 	return nil
 }
 
-// handleSubmission processes outbound submission: DKIM sign → relay placeholder.
-func (s *session) handleSubmission(ctx context.Context, data []byte) error {
-	opts := s.srv.opts
-	fromDomain := extractDomain(s.from)
-
-	if opts.Signer != nil {
-		signed, err := opts.Signer.Sign(ctx, fromDomain, bytes.NewReader(data))
-		if err != nil {
-			slog.Error("smtp: sign error", "domain", fromDomain, "err", err)
-		} else {
-			data, _ = io.ReadAll(signed)
-		}
-	}
-
-	// TODO(phase3): relay signed message to MTA queue.
+// handleSubmission accepts outbound submission mail (relay is a future phase).
+func (s *session) handleSubmission(_ context.Context, data []byte) error {
 	slog.Info("smtp: submission accepted", "from", s.from, "rcpts", s.rcpts, "size", len(data))
 	return nil
 }
