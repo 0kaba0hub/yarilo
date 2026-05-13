@@ -30,13 +30,13 @@ import (
 
 // Server is the yarilo backend (or single-node) server.
 type Server struct {
-	cfg      *config.Config
-	telem    *telemetry.Server
-	imap     *imapsvr.Server  // nil if neither IMAP nor IMAPS is active
-	pop3     *pop3svr.Server  // nil if neither POP3 nor POP3S is active
-	smtp     *smtpsvr.Server  // nil if no SMTP/Submission/Submissions is active
-	lmtp  *lmtp.Server     // nil if LMTP not configured
-	index    *file.Backend
+	cfg   *config.Config
+	telem *telemetry.Server
+	imap  *imapsvr.Server // nil if neither IMAP nor IMAPS is active
+	pop3  *pop3svr.Server // nil if neither POP3 nor POP3S is active
+	smtp  *smtpsvr.Server // nil if no SMTP/Submission/Submissions is active
+	lmtp  *lmtp.Server    // nil if LMTP not configured
+	index *file.Backend
 }
 
 // New creates and wires all components according to cfg.
@@ -188,13 +188,13 @@ func New(cfg *config.Config) (*Server, error) {
 	telem := telemetry.New(telemAddr)
 
 	return &Server{
-		cfg:     cfg,
-		telem:   telem,
-		imap:    imapServer,
-		pop3:    pop3Server,
-		smtp:    smtpServer,
-		lmtp: lmtpServer,
-		index:   idx,
+		cfg:   cfg,
+		telem: telem,
+		imap:  imapServer,
+		pop3:  pop3Server,
+		smtp:  smtpServer,
+		lmtp:  lmtpServer,
+		index: idx,
 	}, nil
 }
 
