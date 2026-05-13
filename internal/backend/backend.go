@@ -177,7 +177,26 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- LMTP ----
 	var lmtpServer *lmtp.Server
 	if svcs.LMTP.Active() {
-		lmtpServer = lmtp.New(cfg.Protocol.SMTP.Hostname, mbox, idx)
+		var lmtpTLS *tls.Config
+		if svcs.LMTP.SSLMode == "starttls" {
+			t, err := buildTLS(cfg, svcs.LMTP)
+			if err != nil {
+				return nil, fmt.Errorf("backend: LMTP STARTTLS: %w", err)
+			}
+			lmtpTLS = t
+		}
+		lmtpServer = lmtp.New(lmtp.Options{
+			Hostname:           cfg.Protocol.SMTP.Hostname,
+			Config:             cfg.Protocol.LMTP,
+			Mailbox:            mbox,
+			Index:              idx,
+			ProxyProtocol:      svcs.LMTP.HAProxy,
+			HAProxyTimeout:     haproxyTimeout,
+			HAProxyTrustedNets: haproxyNets,
+			XClient:            svcs.LMTP.XClient,
+			XClientTrustedNets: xclientNets,
+			TLSConfig:          lmtpTLS,
+		})
 	}
 
 	// ---- telemetry ----
@@ -295,6 +314,16 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				slog.Error("lmtp: listen error", "err", err)
 				os.Exit(1)
+			}
+			if svcs.LMTP.SSLMode == "ssl" {
+				tlsCfg, err := buildTLS(s.cfg, svcs.LMTP)
+				if err != nil {
+					slog.Error("lmtp: TLS error", "err", err)
+					os.Exit(1)
+				}
+				if tlsCfg != nil {
+					ln = tls.NewListener(ln, tlsCfg)
+				}
 			}
 			if err := s.lmtp.Serve(ln); err != nil {
 				slog.Error("lmtp: server error", "err", err)

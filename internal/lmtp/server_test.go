@@ -10,6 +10,7 @@ import (
 
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
 func buildTestServer(t *testing.T) string {
@@ -25,7 +26,17 @@ func buildTestServer(t *testing.T) string {
 	}
 	t.Cleanup(func() { idx.Close() }) //nolint:errcheck
 
-	srv := New("lmtp.test", mb, idx)
+	srv := New(Options{
+		Hostname: "lmtp.test",
+		Config: config.LMTPProtocolConfig{
+			AddReceivedHeader:  true,
+			HdrDeliveryAddress: "final",
+			ReadTimeout:        5,
+			WriteTimeout:       5,
+		},
+		Mailbox: mb,
+		Index:   idx,
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -98,9 +109,13 @@ func TestLMTP_UnknownRecipient(t *testing.T) {
 	conn, sc := dialLMTP(t, addr)
 	sendLHLO(t, conn, sc)
 
-	resp := deliver(t, conn, sc, "sender@external.com", "nobody@example.com", testMsg)
-	if strings.HasPrefix(resp[0], "250") {
-		t.Fatalf("expected error for unknown recipient, got: %q", resp[0])
+	fmt.Fprintf(conn, "MAIL FROM:<sender@external.com>\r\n")
+	sc.Scan()
+	fmt.Fprintf(conn, "RCPT TO:<nobody@example.com>\r\n")
+	sc.Scan()
+	resp := sc.Text()
+	if !strings.HasPrefix(resp, "550") {
+		t.Fatalf("expected 550 5.1.1 at RCPT TO for unknown user, got: %q", resp)
 	}
 }
 
@@ -124,23 +139,20 @@ func TestLMTP_MultipleRecipients(t *testing.T) {
 	sc.Scan()
 	fmt.Fprintf(conn, "RCPT TO:<alice@example.com>\r\n")
 	sc.Scan()
-	fmt.Fprintf(conn, "RCPT TO:<nobody@example.com>\r\n") // unknown
+	fmt.Fprintf(conn, "RCPT TO:<nobody@example.com>\r\n") // unknown — rejected at RCPT TO
 	sc.Scan()
+	rcptResp := sc.Text()
+	if !strings.HasPrefix(rcptResp, "550") {
+		t.Fatalf("expected 550 for unknown rcpt, got: %q", rcptResp)
+	}
+
+	// Only alice was accepted — DATA delivers to her only.
 	fmt.Fprintf(conn, "DATA\r\n")
 	sc.Scan() // 354
-
 	fmt.Fprintf(conn, "%s\r\n.\r\n", testMsg)
-
-	// Per-recipient responses: one per RCPT TO.
 	sc.Scan()
-	first := sc.Text()
-	sc.Scan()
-	second := sc.Text()
-
-	ok := strings.HasPrefix(first, "250") && !strings.HasPrefix(second, "250") ||
-		!strings.HasPrefix(first, "250") && strings.HasPrefix(second, "250")
-	if !ok {
-		t.Fatalf("expected one 250 and one error, got: %q / %q", first, second)
+	if !strings.HasPrefix(sc.Text(), "250") {
+		t.Fatalf("expected 250 for alice delivery, got: %q", sc.Text())
 	}
 }
 

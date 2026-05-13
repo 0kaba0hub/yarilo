@@ -1,0 +1,202 @@
+package lmtp
+
+import (
+	"bufio"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/pkg/config"
+)
+
+type featureServer struct {
+	addr       string
+	mb         *maildir.Backend
+	maildirCur string // alice's INBOX/cur path for direct file inspection
+}
+
+func buildFeatureServer(t *testing.T, cfg config.LMTPProtocolConfig) featureServer {
+	t.Helper()
+	dir := t.TempDir()
+	mb, err := maildir.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := fileindex.New(dir)
+	t.Cleanup(func() { idx.Close() }) //nolint:errcheck
+	if err := mb.Init("alice@example.com"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	srv := New(Options{Hostname: "lmtp.test", Config: cfg, Mailbox: mb, Index: idx})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() { _ = srv.Serve(ln) }()
+	return featureServer{
+		addr:       ln.Addr().String(),
+		mb:         mb,
+		maildirCur: filepath.Join(dir, "example.com", "alice", "INBOX", "cur"),
+	}
+}
+
+func TestLMTP_HdrDeliveryAddress_Final(t *testing.T) {
+	fs := buildFeatureServer(t, config.LMTPProtocolConfig{
+		ReadTimeout:        5,
+		WriteTimeout:       5,
+		HdrDeliveryAddress: "final",
+	})
+	conn, sc := dialLMTP(t, fs.addr)
+	sendLHLO(t, conn, sc)
+	resp := deliver(t, conn, sc, "sender@external.com", "alice+tag@example.com", testMsg)
+	if !strings.HasPrefix(resp[0], "250") {
+		t.Fatalf("expected 250, got: %q", resp[0])
+	}
+	// final: detail stripped → alice@example.com
+	checkDirHeader(t, fs.maildirCur, "Delivered-To", "alice@example.com")
+}
+
+func TestLMTP_HdrDeliveryAddress_Original(t *testing.T) {
+	fs := buildFeatureServer(t, config.LMTPProtocolConfig{
+		ReadTimeout:        5,
+		WriteTimeout:       5,
+		HdrDeliveryAddress: "original",
+	})
+	conn, sc := dialLMTP(t, fs.addr)
+	sendLHLO(t, conn, sc)
+	resp := deliver(t, conn, sc, "sender@external.com", "alice+tag@example.com", testMsg)
+	if !strings.HasPrefix(resp[0], "250") {
+		t.Fatalf("expected 250, got: %q", resp[0])
+	}
+	// original: +tag kept
+	checkDirHeader(t, fs.maildirCur, "Delivered-To", "alice+tag@example.com")
+}
+
+func TestLMTP_HdrDeliveryAddress_None(t *testing.T) {
+	fs := buildFeatureServer(t, config.LMTPProtocolConfig{
+		ReadTimeout:        5,
+		WriteTimeout:       5,
+		HdrDeliveryAddress: "none",
+	})
+	conn, sc := dialLMTP(t, fs.addr)
+	sendLHLO(t, conn, sc)
+	resp := deliver(t, conn, sc, "sender@external.com", "alice@example.com", testMsg)
+	if !strings.HasPrefix(resp[0], "250") {
+		t.Fatalf("expected 250, got: %q", resp[0])
+	}
+	checkDirNoHeader(t, fs.maildirCur, "Delivered-To")
+}
+
+func TestLMTP_UserConcurrencyLimit(t *testing.T) {
+	sem := newUserSemaphore(1)
+	user := "alice@example.com"
+
+	if !sem.acquire(user) {
+		t.Fatal("first acquire should succeed")
+	}
+	if sem.acquire(user) {
+		t.Fatal("second acquire should fail when limit=1")
+	}
+	sem.release(user)
+	if !sem.acquire(user) {
+		t.Fatal("acquire after release should succeed")
+	}
+	sem.release(user)
+}
+
+func TestParseWorkarounds(t *testing.T) {
+	cases := []struct {
+		input []string
+		want  lmtpWorkarounds
+	}{
+		{nil, 0},
+		{[]string{"whitespace-before-path"}, workaroundWhitespaceBeforePath},
+		{[]string{"mailbox-for-path"}, workaroundMailboxForPath},
+		{[]string{"whitespace-before-path", "mailbox-for-path"}, workaroundWhitespaceBeforePath | workaroundMailboxForPath},
+		{[]string{"unknown-thing"}, 0},
+	}
+	for _, tc := range cases {
+		got := parseWorkarounds(tc.input)
+		if got != tc.want {
+			t.Errorf("parseWorkarounds(%v) = %b, want %b", tc.input, got, tc.want)
+		}
+	}
+}
+
+// checkDirHeader reads the first file in curDir and asserts header is present with value.
+func checkDirHeader(t *testing.T, curDir, header, value string) {
+	t.Helper()
+	f := firstFileIn(t, curDir)
+	checkFileHeader(t, f, header, value)
+}
+
+// checkDirNoHeader asserts that header is NOT present in any message in curDir.
+func checkDirNoHeader(t *testing.T, curDir, header string) {
+	t.Helper()
+	f := firstFileIn(t, curDir)
+	checkFileNoHeader(t, f, header)
+}
+
+func firstFileIn(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+	t.Fatalf("no files in %s", dir)
+	return ""
+}
+
+func checkFileHeader(t *testing.T, path, header, value string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	prefix := strings.ToLower(header) + ":"
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.TrimRight(line, "\r") == "" {
+			break // end of headers
+		}
+		if strings.HasPrefix(strings.ToLower(line), prefix) {
+			if strings.Contains(line, value) {
+				return
+			}
+			t.Fatalf("header %q found but value %q missing: %q", header, value, line)
+		}
+	}
+	t.Fatalf("header %q not found in %s", header, path)
+}
+
+func checkFileNoHeader(t *testing.T, path, header string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	prefix := strings.ToLower(header) + ":"
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.TrimRight(line, "\r") == "" {
+			return // end of headers, not found — good
+		}
+		if strings.HasPrefix(strings.ToLower(line), prefix) {
+			t.Fatalf("unexpected header %q in %s: %q", header, path, line)
+		}
+	}
+}

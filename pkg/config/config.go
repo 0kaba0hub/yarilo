@@ -87,6 +87,47 @@ type ProtocolConfig struct {
 	IMAP IMAPProtocolConfig `koanf:"imap"`
 	POP3 POP3ProtocolConfig `koanf:"pop3"`
 	SMTP SMTPProtocolConfig `koanf:"smtp"`
+	LMTP LMTPProtocolConfig `koanf:"lmtp"`
+}
+
+type LMTPProtocolConfig struct {
+	// Greeting shown in the 220 banner. Default: "Yarilo ready."
+	LoginGreeting string `koanf:"login_greeting"`
+	// AddReceivedHeader prepends a Received: header to delivered messages. Default: true.
+	AddReceivedHeader bool `koanf:"add_received_header"`
+	// SaveToDetailMailbox delivers user+folder@domain to mailbox 'folder' instead of INBOX. Default: false.
+	SaveToDetailMailbox bool `koanf:"save_to_detail_mailbox"`
+	// HdrDeliveryAddress controls the Delivered-To header: none | final | original. Default: "final".
+	HdrDeliveryAddress string `koanf:"hdr_delivery_address"`
+	// VerboseReplies includes diagnostic details in error responses. Default: false.
+	VerboseReplies bool `koanf:"verbose_replies"`
+	// UserConcurrencyLimit is the max concurrent deliveries per user (0 = unlimited). Default: 0.
+	UserConcurrencyLimit int `koanf:"user_concurrency_limit"`
+	// ReadTimeout is the per-command read timeout in seconds. Default: 300.
+	ReadTimeout int `koanf:"read_timeout"`
+	// WriteTimeout is the per-command write timeout in seconds. Default: 300.
+	WriteTimeout int `koanf:"write_timeout"`
+	// ClientWorkarounds is a list of client compatibility workarounds.
+	ClientWorkarounds []string `koanf:"client_workarounds"`
+	// Proxy configures LMTP proxy mode (director → backend routing).
+	Proxy LMTPProxyConfig `koanf:"proxy"`
+}
+
+// LMTPProxyConfig enables director-mode LMTP proxy: routes recipients to
+// backend nodes via consistent hashing instead of delivering locally.
+type LMTPProxyConfig struct {
+	// Enabled activates proxy mode. When true, all recipients are routed to backends.
+	Enabled bool `koanf:"enabled"`
+	// Backends is the list of backend LMTP nodes.
+	Backends []LMTPBackendEntry `koanf:"backends"`
+	// Timeout is the per-backend connection+transaction timeout in seconds. Default: 125.
+	Timeout int `koanf:"timeout"`
+}
+
+// LMTPBackendEntry is a single backend node for LMTP proxy routing.
+type LMTPBackendEntry struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"` // default 24
 }
 
 type IMAPProtocolConfig struct {
@@ -196,6 +237,13 @@ func Load(path string) (*Config, error) {
 					ConnectTimeout: 30,
 					CommandTimeout: 300,
 				},
+			},
+			LMTP: LMTPProtocolConfig{
+				LoginGreeting:      "Yarilo ready.",
+				AddReceivedHeader:  true,
+				HdrDeliveryAddress: "final",
+				ReadTimeout:        300,
+				WriteTimeout:       300,
 			},
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
