@@ -83,7 +83,7 @@ Yarilo is a single binary that runs in one of three roles (`mode: proxy | direct
 |:---|:---|:---|
 | IMAP4rev2 | RFC 9051 | IDLE, MOVE, CONDSTORE, UNSELECT, NAMESPACE, QUOTA, ACL, BINARY, UIDPLUS, SORT, THREAD, ESEARCH, NOTIFY, QRESYNC, URLAUTH, SPECIAL-USE |
 | SMTP / Submission | RFC 5321, RFC 6409 | STARTTLS, AUTH PLAIN/LOGIN/SCRAM, SIZE, PIPELINING, CHUNKING/BDAT, DSN, XCLIENT |
-| LMTP | RFC 2033 | per-recipient replies, quota checks |
+| LMTP | RFC 2033 | per-recipient status codes, proxy/director mode, HAProxy, XCLIENT, STARTTLS, Delivered-To header, per-user concurrency limit, client workarounds |
 | POP3 | RFC 1939 | STLS, UIDL, CAPA, XCLIENT |
 | JMAP | RFC 8620, RFC 8621 | HTTP dispatch, WebSocket push (RFC 8887) |
 | ManageSieve | RFC 5804 | full Sieve script management |
@@ -174,6 +174,11 @@ services:
     port: 587
     ssl_mode: starttls
     disable_plaintext_auth: true
+  lmtp:
+    enabled: true
+    port: 24
+    ssl_mode: no
+    xclient_protocol: true
 
 protocol:
   imap:
@@ -233,6 +238,7 @@ yarilo-migrate \
 | [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config for all 7 listeners |
 | [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE interval, line length, ID, logout format |
 | [docs/SMTP.md](docs/SMTP.md) | `protocol.smtp`: hostname, size limits, milters, relay |
+| [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: local delivery, proxy/director mode, HAProxy, XCLIENT, TLS, headers |
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL format, soft-delete, migration |
 | [docs/JMAP.md](docs/JMAP.md) | JMAP (planned, Phase 5) |
 

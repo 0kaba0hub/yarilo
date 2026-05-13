@@ -31,6 +31,7 @@ All services share the following fields:
 | `submissions` | `465` | `ssl` | [SMTP.md](SMTP.md) |
 | `pop3` | `110` | `starttls` | [POP3.md](POP3.md) |
 | `pop3s` | `995` | `ssl` | [POP3.md](POP3.md) |
+| `lmtp` | `24` | `no` | [LMTP.md](LMTP.md) |
 
 ---
 
@@ -95,6 +96,21 @@ services:
     port: 995
     ssl_mode: ssl
 ```
+
+### LMTP local delivery (backend node)
+
+```yaml
+services:
+  lmtp:
+    enabled: true
+    port: 24
+    ssl_mode: no
+    xclient_protocol: true
+```
+
+See [LMTP.md](LMTP.md) for protocol-level settings and proxy/director mode.
+
+---
 
 ### Per-service TLS certificate override
 
