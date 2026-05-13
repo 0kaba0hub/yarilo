@@ -128,4 +128,3 @@ func TestMilterClient_FailOpen(t *testing.T) {
 		t.Errorf("fail-open: expected nil, got: %v", err)
 	}
 }
-

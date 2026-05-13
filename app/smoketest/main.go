@@ -161,12 +161,13 @@ func checkSMTPMX() error {
 	}
 	defer conn.Close()
 
-	caps, err := smtpEHLO(conn, "smoketest")
+	caps, err := smtpEHLO(conn)
 	if err != nil {
 		return err
 	}
 	_ = caps
-	return smtpQuit(conn)
+	smtpQuit(conn)
+	return nil
 }
 
 // checkSMTPSubmission verifies the submission port:
@@ -180,7 +181,7 @@ func checkSMTPSubmission() error {
 	}
 	defer conn.Close()
 
-	caps, err := smtpEHLO(conn, "smoketest")
+	caps, err := smtpEHLO(conn)
 	if err != nil {
 		return err
 	}
@@ -210,14 +211,15 @@ func checkSMTPSubmission() error {
 	}
 
 	// Second EHLO after upgrade must still advertise AUTH PLAIN.
-	caps2, err := smtpEHLO(tlsConn, "smoketest")
+	caps2, err := smtpEHLO(tlsConn)
 	if err != nil {
 		return fmt.Errorf("post-STARTTLS EHLO: %w", err)
 	}
 	if !caps2["AUTH PLAIN"] {
 		return fmt.Errorf("post-STARTTLS EHLO missing AUTH PLAIN")
 	}
-	return smtpQuit(tlsConn)
+	smtpQuit(tlsConn)
+	return nil
 }
 
 // checkSMTPProxyProtocol sends a HAProxy PROXY header before the SMTP banner
@@ -256,14 +258,15 @@ func checkSMTPXClient() error {
 	}
 	defer conn.Close()
 
-	caps, err := smtpEHLO(conn, "smoketest")
+	caps, err := smtpEHLO(conn)
 	if err != nil {
 		return err
 	}
 	if !caps["XCLIENT"] {
 		return fmt.Errorf("MX port did not advertise XCLIENT in EHLO")
 	}
-	return smtpQuit(conn)
+	smtpQuit(conn)
+	return nil
 }
 
 // ---- SMTP helpers --------------------------------------------------------
@@ -291,8 +294,8 @@ func smtpDial(addr string, _ bool) (net.Conn, error) {
 
 // smtpEHLO sends EHLO and returns the set of advertised capabilities.
 // Keys are normalised: "AUTH PLAIN", "STARTTLS", "XCLIENT", "PIPELINING", …
-func smtpEHLO(conn net.Conn, helo string) (map[string]bool, error) {
-	fmt.Fprintf(conn, "EHLO %s\r\n", helo)
+func smtpEHLO(conn net.Conn) (map[string]bool, error) {
+	fmt.Fprintf(conn, "EHLO smoketest\r\n")
 	caps := make(map[string]bool)
 	for {
 		line, err := readLine(conn)
@@ -315,9 +318,8 @@ func smtpEHLO(conn net.Conn, helo string) (map[string]bool, error) {
 	return caps, nil
 }
 
-func smtpQuit(conn net.Conn) error {
+func smtpQuit(conn net.Conn) {
 	fmt.Fprintf(conn, "QUIT\r\n")
-	return nil
 }
 
 // ---- low-level -----------------------------------------------------------

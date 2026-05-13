@@ -166,8 +166,8 @@ func TestXClientConn_InjectsCapIntoEHLO(t *testing.T) {
 	// Simulate go-smtp writing EHLO response line by line.
 	go func() {
 		srv.Write([]byte("250-yarilo.example.com\r\n")) //nolint:errcheck
-		srv.Write([]byte("250-PIPELINING\r\n"))          //nolint:errcheck
-		srv.Write([]byte("250 SIZE 41943040\r\n"))       //nolint:errcheck
+		srv.Write([]byte("250-PIPELINING\r\n"))         //nolint:errcheck
+		srv.Write([]byte("250 SIZE 41943040\r\n"))      //nolint:errcheck
 	}()
 
 	cr := bufio.NewReader(client)
