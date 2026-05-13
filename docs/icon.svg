@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+<defs>
+
+  <!-- Flame rays gradient (golden at base → fiery red at tips) -->
+  <radialGradient id="flG" cx="100" cy="100" r="100" gradientUnits="userSpaceOnUse">
+    <stop offset="80%" stop-color="#fde047"/>
+    <stop offset="91%" stop-color="#f97316"/>
+    <stop offset="100%" stop-color="#c2410c"/>
+  </radialGradient>
+
+  <!-- Inner disk: dark warm amber background (makes gold symbol pop) -->
+  <radialGradient id="dkBg" cx="40%" cy="35%" r="65%">
+    <stop offset="0%" stop-color="#431407"/>
+    <stop offset="100%" stop-color="#78350f"/>
+  </radialGradient>
+
+  <!-- Kolovrat arm fill (bright gold, slightly dimmer at outer reach) -->
+  <radialGradient id="armG" cx="100" cy="100" r="72" gradientUnits="userSpaceOnUse">
+    <stop offset="0%"   stop-color="#fef9c3"/>
+    <stop offset="30%"  stop-color="#fde047"/>
+    <stop offset="75%"  stop-color="#fbbf24"/>
+    <stop offset="100%" stop-color="#f59e0b"/>
+  </radialGradient>
+
+  <!-- Central sun disc -->
+  <radialGradient id="ctrG" cx="38%" cy="35%" r="65%">
+    <stop offset="0%"   stop-color="#fffde7"/>
+    <stop offset="40%"  stop-color="#fef08a"/>
+    <stop offset="100%" stop-color="#fbbf24"/>
+  </radialGradient>
+
+  <!-- Flame ray at 12 o'clock, tip r=97, base at circle edge r≈83 -->
+  <path id="fl" fill="url(#flG)"
+    d="M 100,3 C 90,6 85,13 92,17 L 100,15 L 108,17 C 115,13 110,6 100,3 Z"/>
+
+  <!-- Kolovrat arm at 0° (up, hook clockwise = right), width 20px -->
+  <path id="arm" fill="url(#armG)"
+    d="M 90,100 L 90,40 L 132,40 L 132,60 L 110,60 L 110,100 Z"/>
+
+</defs>
+
+<!-- Warm cream outer background -->
+<circle cx="100" cy="100" r="100" fill="#fffbeb"/>
+
+<!-- 16 flame rays at 22.5° spacing -->
+<use href="#fl" transform="rotate(0,100,100)"/>
+<use href="#fl" transform="rotate(22.5,100,100)"/>
+<use href="#fl" transform="rotate(45,100,100)"/>
+<use href="#fl" transform="rotate(67.5,100,100)"/>
+<use href="#fl" transform="rotate(90,100,100)"/>
+<use href="#fl" transform="rotate(112.5,100,100)"/>
+<use href="#fl" transform="rotate(135,100,100)"/>
+<use href="#fl" transform="rotate(157.5,100,100)"/>
+<use href="#fl" transform="rotate(180,100,100)"/>
+<use href="#fl" transform="rotate(202.5,100,100)"/>
+<use href="#fl" transform="rotate(225,100,100)"/>
+<use href="#fl" transform="rotate(247.5,100,100)"/>
+<use href="#fl" transform="rotate(270,100,100)"/>
+<use href="#fl" transform="rotate(292.5,100,100)"/>
+<use href="#fl" transform="rotate(315,100,100)"/>
+<use href="#fl" transform="rotate(337.5,100,100)"/>
+
+<!-- Main disk: dark warm interior, bright orange border -->
+<circle cx="100" cy="100" r="82" fill="url(#dkBg)" stroke="#ea580c" stroke-width="4"/>
+
+<!-- 8-arm clockwise kolovrat -->
+<use href="#arm" transform="rotate(0,100,100)"/>
+<use href="#arm" transform="rotate(45,100,100)"/>
+<use href="#arm" transform="rotate(90,100,100)"/>
+<use href="#arm" transform="rotate(135,100,100)"/>
+<use href="#arm" transform="rotate(180,100,100)"/>
+<use href="#arm" transform="rotate(225,100,100)"/>
+<use href="#arm" transform="rotate(270,100,100)"/>
+<use href="#arm" transform="rotate(315,100,100)"/>
+
+<!-- Central sun disc (covers arm origins) -->
+<circle cx="100" cy="100" r="13" fill="url(#ctrG)"/>
+<circle cx="100" cy="100" r="13" fill="none" stroke="#f97316" stroke-width="1.5"/>
+
+</svg>
