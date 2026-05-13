@@ -153,9 +153,12 @@ smtp:
   proxy_protocol: false       # set true when behind HAProxy
 
   # Optional external milters (e.g. rspamd). Checked before internal SPF/DKIM/DMARC.
+  # socket formats: unix:/path/to/milter.sock | /path/to/milter.sock | tcp:host:port
   milters:
-    - socket: unix:/run/rspamd/milter.sock
+    - socket: unix:/run/rspamd/milter.sock  # local unix socket
       timeout: 30             # seconds
+    # - socket: tcp:127.0.0.1:11332         # remote milter over TCP
+    #   timeout: 10
 
 spf:
   enabled: true
