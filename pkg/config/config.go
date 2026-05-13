@@ -91,7 +91,7 @@ type ProtocolConfig struct {
 }
 
 type LMTPProtocolConfig struct {
-	// Greeting shown in the 220 banner. Default: "Dovecot ready."
+	// Greeting shown in the 220 banner. Default: "Yarilo ready."
 	LoginGreeting string `koanf:"login_greeting"`
 	// AddReceivedHeader prepends a Received: header to delivered messages. Default: true.
 	AddReceivedHeader bool `koanf:"add_received_header"`
@@ -239,7 +239,7 @@ func Load(path string) (*Config, error) {
 				},
 			},
 			LMTP: LMTPProtocolConfig{
-				LoginGreeting:      "Dovecot ready.",
+				LoginGreeting:      "Yarilo ready.",
 				AddReceivedHeader:  true,
 				HdrDeliveryAddress: "final",
 				ReadTimeout:        300,
