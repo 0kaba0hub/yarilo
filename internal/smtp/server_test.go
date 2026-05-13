@@ -1,19 +1,16 @@
 package smtp
 
 import (
-	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
 	"io"
 	"net"
+	"strconv"
 	"testing"
 
+	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
-	goSmtp "github.com/emersion/go-smtp"
 
-	"github.com/0kaba0hub/yarilo/internal/dkim"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -47,11 +44,8 @@ func buildTestServer(t *testing.T, submission bool) (addr string, cleanup func()
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
-		DKIMCfg:   config.DKIMConfig{},
-		SPFCfg:    config.SPFConfig{Enabled: false},
-		DMARCCfg:  config.DMARCConfig{Enabled: false},
 		Auth:      stubAuth{},
-		Deliverer: lmtp.New(mb, idx),
+		Deliverer: lmtp.NewDeliverer(mb, idx),
 	}
 
 	srv := New(opts)
@@ -142,36 +136,75 @@ func TestSubmission_AuthOK(t *testing.T) {
 	if err := c.Auth(plainAuth("alice@example.com", "secret")); err != nil {
 		t.Fatalf("AUTH: %v", err)
 	}
-	const body = "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n\r\nHello\r\n"
-	sendMessage(t, c, "alice@example.com", "bob@example.com", body)
+	// No relay configured → DATA must return 451.
+	if err := c.Mail("alice@example.com", nil); err != nil {
+		t.Fatalf("MAIL FROM: %v", err)
+	}
+	if err := c.Rcpt("bob@example.com", nil); err != nil {
+		t.Fatalf("RCPT TO: %v", err)
+	}
+	wc, err := c.Data()
+	if err != nil {
+		t.Fatalf("DATA: %v", err)
+	}
+	io.WriteString(wc, "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n\r\nHello\r\n") //nolint:errcheck
+	if err := wc.Close(); err == nil {
+		t.Fatal("expected 451 relay error when no relay configured")
+	}
 }
 
-func TestSubmission_DKIMSign(t *testing.T) {
-	dir := t.TempDir()
-	mb, _ := maildir.New(dir)
-	idx := fileindex.New(dir)
-	defer idx.Close() //nolint:errcheck
+// stubRelayBackend is a minimal SMTP server used as a relay in tests.
+type stubRelayBackend struct{}
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+func (b *stubRelayBackend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
+	return &stubRelaySession{}, nil
+}
+
+type stubRelaySession struct{}
+
+func (s *stubRelaySession) Mail(_ string, _ *goSmtp.MailOptions) error { return nil }
+func (s *stubRelaySession) Rcpt(_ string, _ *goSmtp.RcptOptions) error { return nil }
+func (s *stubRelaySession) Data(r io.Reader) error                     { _, _ = io.ReadAll(r); return nil }
+func (s *stubRelaySession) Reset()                                     {}
+func (s *stubRelaySession) Logout() error                              { return nil }
+
+func buildStubRelay(t *testing.T) config.SMTPRelayConfig {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv := goSmtp.NewServer(&stubRelayBackend{})
+	srv.Domain = "relay.test"
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { ln.Close() })
 
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	return config.SMTPRelayConfig{Host: host, Port: port, SSL: "no", SSLVerify: false, ConnectTimeout: 5, CommandTimeout: 10}
+}
+
+func TestSubmission_Relay(t *testing.T) {
+	dir := t.TempDir()
+	mb, err := maildir.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := fileindex.New(dir)
+	defer idx.Close() //nolint:errcheck
+	if err := mb.Init("alice@example.com"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	relayCfg := buildStubRelay(t)
 	opts := Options{
 		Config: config.SMTPProtocolConfig{
 			Hostname:   "mx.example.com",
 			MaxMsgSize: 1 << 20,
 		},
-		DKIMCfg: config.DKIMConfig{
-			Sign:        true,
-			Selector:    "sel",
-			SignHeaders: []string{"From", "To", "Subject"},
-		},
-		SPFCfg:    config.SPFConfig{Enabled: false},
-		DMARCCfg:  config.DMARCConfig{Enabled: false},
 		Auth:      stubAuth{},
-		KeyProv:   &staticKeyProvider{key: key},
-		Deliverer: lmtp.New(mb, idx),
+		Deliverer: lmtp.NewDeliverer(mb, idx),
+		Proxy:     proxy.New(relayCfg, "mx.example.com"),
 	}
 
 	srv := New(opts)
@@ -180,7 +213,7 @@ func TestSubmission_DKIMSign(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() { _ = srv.ServeSubmit(ln, nil) }()
-	defer ln.Close()
+	t.Cleanup(func() { ln.Close() })
 
 	c := dialSMTP(t, ln.Addr().String())
 	defer c.Close()
@@ -188,15 +221,8 @@ func TestSubmission_DKIMSign(t *testing.T) {
 	if err := c.Auth(plainAuth("alice@example.com", "secret")); err != nil {
 		t.Fatalf("AUTH: %v", err)
 	}
-	const body = "From: alice@example.com\r\nTo: bob@external.com\r\nSubject: signed\r\n\r\nSigned body\r\n"
+	const body = "From: alice@example.com\r\nTo: bob@external.com\r\nSubject: relayed\r\n\r\nHello\r\n"
 	sendMessage(t, c, "alice@example.com", "bob@external.com", body)
-}
-
-// staticKeyProvider returns the same RSA key for any domain.
-type staticKeyProvider struct{ key crypto.Signer }
-
-func (p *staticKeyProvider) GetPrivateKey(_ context.Context, _ string) (crypto.Signer, error) {
-	return p.key, nil
 }
 
 // ---- unit helpers -----------------------------------------------------------
@@ -219,47 +245,11 @@ func TestExtractDomain(t *testing.T) {
 	}
 }
 
-func TestParseMilterSocket(t *testing.T) {
-	cases := []struct {
-		socket   string
-		wantNet  string
-		wantAddr string
-		wantErr  bool
-	}{
-		{"unix:/run/milter.sock", "unix", "/run/milter.sock", false},
-		{"/run/milter.sock", "unix", "/run/milter.sock", false},
-		{"tcp:127.0.0.1:7357", "tcp", "127.0.0.1:7357", false},
-		{"udp:localhost:1234", "", "", true},
-	}
-	for _, tc := range cases {
-		n, a, err := parseMilterSocket(tc.socket)
-		if tc.wantErr {
-			if err == nil {
-				t.Errorf("parseMilterSocket(%q): expected error", tc.socket)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("parseMilterSocket(%q): %v", tc.socket, err)
-			continue
-		}
-		if n != tc.wantNet || a != tc.wantAddr {
-			t.Errorf("parseMilterSocket(%q) = (%q,%q), want (%q,%q)", tc.socket, n, a, tc.wantNet, tc.wantAddr)
-		}
-	}
-}
-
 func TestSession_Reset(t *testing.T) {
 	s := &session{from: "a@b.com", rcpts: []string{"c@d.com"}}
 	s.Reset()
 	if s.from != "" || len(s.rcpts) != 0 {
 		t.Error("Reset did not clear session state")
-	}
-}
-
-func TestIsReject_Nil(t *testing.T) {
-	if isReject(nil) {
-		t.Error("nil action should not be a reject")
 	}
 }
 
@@ -283,6 +273,3 @@ func TestStripDelimiter(t *testing.T) {
 		}
 	}
 }
-
-// Compile-time check: dkim.KeyProvider is satisfied by staticKeyProvider.
-var _ dkim.KeyProvider = (*staticKeyProvider)(nil)

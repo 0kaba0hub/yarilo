@@ -1,6 +1,6 @@
-// Package smtp implements the SMTP inbound (port 25) and submission (port 587) servers.
-// Inbound: SPF verify → external milters → DKIM verify → DMARC evaluate → LMTP deliver.
-// Submission: AUTH required → external milters → DKIM sign → relay.
+// Package smtp implements the SMTP inbound (port 25) and submission (port 587/465) servers.
+// Inbound: local delivery via lmtp.Deliverer.
+// Submission: AUTH required → proxy to upstream MTA.
 package smtp
 
 import (
@@ -14,14 +14,12 @@ import (
 	"strings"
 	"time"
 
+	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
-	goSmtp "github.com/emersion/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/dkim"
-	"github.com/0kaba0hub/yarilo/internal/dmarc"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
-	"github.com/0kaba0hub/yarilo/internal/spf"
+	"github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -42,13 +40,9 @@ type Options struct {
 	DisablePlainAuth bool
 	// Protocol-level settings.
 	Config    config.SMTPProtocolConfig
-	DKIMCfg   config.DKIMConfig
-	SPFCfg    config.SPFConfig
-	DMARCCfg  config.DMARCConfig
 	Auth      Authenticator
-	KeyProv   dkim.KeyProvider // nil → no signing
-	Deliverer *lmtp.Deliverer
-	Milters   []*MilterClient
+	Deliverer *lmtp.Deliverer // in-process local delivery (MX inbound)
+	Proxy     *proxy.Submission
 }
 
 // Server wraps two go-smtp servers: MX (port 25) and submission (port 587).
@@ -71,7 +65,9 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 	srv := goSmtp.NewServer(be)
 	srv.Domain = s.opts.Config.Hostname
 	srv.MaxMessageBytes = s.opts.Config.MaxMsgSize
-	srv.MaxRecipients = 100
+	if r := s.opts.Config.MaxRecipients; r > 0 {
+		srv.MaxRecipients = r
+	}
 	if l := s.opts.Config.MaxLineLength; l > 0 {
 		srv.MaxLineLength = l
 	}
@@ -181,7 +177,11 @@ func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
 }
 
 func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
-	s.rcpts = append(s.rcpts, stripDelimiter(to, s.srv.opts.Config.RecipientDelimiter))
+	if s.submission {
+		s.rcpts = append(s.rcpts, to)
+	} else {
+		s.rcpts = append(s.rcpts, stripDelimiter(to, s.srv.opts.Config.RecipientDelimiter))
+	}
 	return nil
 }
 
@@ -210,58 +210,15 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	ctx := context.Background()
-	opts := s.srv.opts
-
-	// Run external milters before internal checks.
-	for _, mc := range opts.Milters {
-		if err := mc.Check(ctx, s.from, s.rcpts, bytes.NewReader(data)); err != nil {
-			slog.Info("smtp: milter rejected", "err", err)
-			return &goSmtp.SMTPError{Code: 550, EnhancedCode: goSmtp.EnhancedCode{5, 7, 1}, Message: err.Error()}
-		}
-	}
-
 	if s.submission {
 		return s.handleSubmission(ctx, data)
 	}
 	return s.handleInbound(ctx, data)
 }
 
-// handleInbound processes MX inbound mail: SPF → DKIM verify → DMARC → deliver.
+// handleInbound delivers MX inbound mail via LMTP.
 func (s *session) handleInbound(ctx context.Context, data []byte) error {
-	opts := s.srv.opts
-	fromDomain := extractDomain(s.from)
-
-	// SPF check.
-	var spfResult spf.Result
-	if opts.SPFCfg.Enabled {
-		spfResult, _ = spf.Check(ctx, s.remoteIP, s.from, "")
-		slog.Info("smtp: SPF", "from", s.from, "result", string(spfResult))
-	}
-
-	// DKIM verification.
-	var dkimResults []dkim.Result
-	if opts.DKIMCfg.Verify {
-		dkimResults, _ = dkim.Verify(bytes.NewReader(data))
-		for _, r := range dkimResults {
-			slog.Info("smtp: DKIM", "domain", r.Domain, "pass", r.Pass)
-		}
-	}
-
-	// DMARC evaluation.
-	if opts.DMARCCfg.Enabled {
-		res := dmarc.Evaluate(ctx, fromDomain, spfResult, fromDomain, dkimResults)
-		slog.Info("smtp: DMARC", "from", fromDomain, "disposition", string(res.Disposition))
-		if res.Disposition == dmarc.PolicyReject {
-			return &goSmtp.SMTPError{
-				Code:         550,
-				EnhancedCode: goSmtp.EnhancedCode{5, 7, 1},
-				Message:      "DMARC policy rejection",
-			}
-		}
-	}
-
-	// LMTP local delivery.
-	results := opts.Deliverer.Deliver(ctx, s.from, s.rcpts, bytes.NewReader(data))
+	results := s.srv.opts.Deliverer.Deliver(ctx, s.from, s.rcpts, bytes.NewReader(data))
 	for _, r := range results {
 		if r.Err != nil {
 			slog.Error("smtp: delivery failed", "rcpt", r.Rcpt, "err", r.Err)
@@ -270,32 +227,21 @@ func (s *session) handleInbound(ctx context.Context, data []byte) error {
 	return nil
 }
 
-// handleSubmission processes outbound submission: DKIM sign → relay placeholder.
-func (s *session) handleSubmission(ctx context.Context, data []byte) error {
-	opts := s.srv.opts
-	fromDomain := extractDomain(s.from)
-
-	if opts.DKIMCfg.Sign && opts.KeyProv != nil {
-		signer, err := opts.KeyProv.GetPrivateKey(ctx, fromDomain)
-		if err != nil {
-			slog.Info("smtp: DKIM sign skipped", "domain", fromDomain, "reason", err)
-		} else {
-			signCfg := dkim.SignConfig{
-				Selector:        opts.DKIMCfg.Selector,
-				SignHeaders:     opts.DKIMCfg.SignHeaders,
-				OversignHeaders: opts.DKIMCfg.OversignHeaders,
-			}
-			var signed bytes.Buffer
-			if err := dkim.Sign(&signed, bytes.NewReader(data), fromDomain, signer, signCfg); err != nil {
-				slog.Error("smtp: DKIM sign error", "domain", fromDomain, "err", err)
-			} else {
-				data = signed.Bytes()
-			}
+// handleSubmission proxies outbound mail to the upstream MTA.
+func (s *session) handleSubmission(_ context.Context, data []byte) error {
+	p := s.srv.opts.Proxy
+	if p == nil {
+		return &goSmtp.SMTPError{
+			Code:         451,
+			EnhancedCode: goSmtp.EnhancedCode{4, 3, 0},
+			Message:      "Upstream MTA not configured",
 		}
 	}
-
-	// TODO(phase3): relay signed message to MTA queue.
-	slog.Info("smtp: submission accepted", "from", s.from, "rcpts", s.rcpts, "size", len(data))
+	if err := p.Send(s.from, s.rcpts, bytes.NewReader(data), s.remoteIP); err != nil {
+		slog.Info("smtp: proxy rejected", "from", s.from, "err", err)
+		return err
+	}
+	slog.Info("smtp: proxied", "from", s.from, "rcpts", s.rcpts, "size", len(data))
 	return nil
 }
 

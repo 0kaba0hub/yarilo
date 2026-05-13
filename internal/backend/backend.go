@@ -14,11 +14,11 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
-	"github.com/0kaba0hub/yarilo/internal/dkim"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
 	smtpsvr "github.com/0kaba0hub/yarilo/internal/smtp"
+	smtpproxy "github.com/0kaba0hub/yarilo/internal/smtp/proxy"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
@@ -35,6 +35,7 @@ type Server struct {
 	imap  *imapsvr.Server // nil if neither IMAP nor IMAPS is active
 	pop3  *pop3svr.Server // nil if neither POP3 nor POP3S is active
 	smtp  *smtpsvr.Server // nil if no SMTP/Submission/Submissions is active
+	lmtp  *lmtp.Server    // nil if LMTP not configured
 	index *file.Backend
 }
 
@@ -154,34 +155,9 @@ func New(cfg *config.Config) (*Server, error) {
 			disablePlain = subSvc.DisablePlainAuth
 		}
 
-		// ---- DKIM key provider ----
-		var keyProv dkim.KeyProvider
-		if cfg.DKIM.Sign {
-			switch strings.ToLower(cfg.DKIM.Keys.Backend) {
-			case "dynamic":
-				d := cfg.DKIM.Keys.Dynamic
-				ttl := time.Duration(d.CacheTTL) * time.Second
-				if ttl == 0 {
-					ttl = 5 * time.Minute
-				}
-				kp, err := dkim.NewSQLKeyProvider(d.Driver, d.DSN, d.Query, ttl)
-				if err != nil {
-					return nil, fmt.Errorf("backend: DKIM SQL key provider: %w", err)
-				}
-				keyProv = kp
-			default:
-				keyProv = dkim.NewStaticKeyProvider(cfg.DKIM.Keys.Static)
-			}
-		}
-
-		// ---- milter clients ----
-		var milters []*smtpsvr.MilterClient
-		for _, mc := range cfg.Protocol.SMTP.Milters {
-			c, err := smtpsvr.NewMilterClient(mc.Socket, mc.Timeout)
-			if err != nil {
-				return nil, fmt.Errorf("backend: milter %s: %w", mc.Socket, err)
-			}
-			milters = append(milters, c)
+		var submissionProxy *smtpproxy.Submission
+		if cfg.Protocol.SMTP.Relay.Host != "" {
+			submissionProxy = smtpproxy.New(cfg.Protocol.SMTP.Relay, cfg.Protocol.SMTP.Hostname)
 		}
 
 		smtpServer = smtpsvr.New(smtpsvr.Options{
@@ -192,14 +168,16 @@ func New(cfg *config.Config) (*Server, error) {
 			XClientNets:      xclientNets,
 			DisablePlainAuth: disablePlain,
 			Config:           cfg.Protocol.SMTP,
-			DKIMCfg:          cfg.DKIM,
-			SPFCfg:           cfg.SPF,
-			DMARCCfg:         cfg.DMARC,
 			Auth:             chainAuth{authChain},
-			KeyProv:          keyProv,
-			Deliverer:        lmtp.New(mbox, idx),
-			Milters:          milters,
+			Deliverer:        lmtp.NewDeliverer(mbox, idx),
+			Proxy:            submissionProxy,
 		})
+	}
+
+	// ---- LMTP ----
+	var lmtpServer *lmtp.Server
+	if svcs.LMTP.Active() {
+		lmtpServer = lmtp.New(cfg.Protocol.SMTP.Hostname, mbox, idx)
 	}
 
 	// ---- telemetry ----
@@ -215,6 +193,7 @@ func New(cfg *config.Config) (*Server, error) {
 		imap:  imapServer,
 		pop3:  pop3Server,
 		smtp:  smtpServer,
+		lmtp:  lmtpServer,
 		index: idx,
 	}, nil
 }
@@ -304,6 +283,21 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			if err := s.smtp.ServeSubmit(ln, tlsCfg); err != nil {
 				slog.Error("smtp: submission server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+
+	// LMTP (port 24) — local delivery for external MTAs
+	if s.lmtp != nil && svcs.LMTP.Active() {
+		go func() {
+			ln, err := net.Listen("tcp", listenAddr(svcs.LMTP))
+			if err != nil {
+				slog.Error("lmtp: listen error", "err", err)
+				os.Exit(1)
+			}
+			if err := s.lmtp.Serve(ln); err != nil {
+				slog.Error("lmtp: server error", "err", err)
 				os.Exit(1)
 			}
 		}()

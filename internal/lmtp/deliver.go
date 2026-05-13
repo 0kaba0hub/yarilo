@@ -1,5 +1,3 @@
-// Package lmtp implements local LMTP delivery to a MailboxBackend + IndexBackend.
-// It is invoked by the SMTP inbound server after anti-spam/auth checks pass.
 package lmtp
 
 import (
@@ -14,14 +12,15 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// Deliverer delivers messages to local mailboxes.
+// Deliverer is a thin wrapper used by the SMTP MX server for in-process local delivery.
+// It reuses the same delivery logic as the LMTP server without the network overhead.
 type Deliverer struct {
 	mb  mailbox.MailboxBackend
 	idx mailbox.IndexBackend
 }
 
-// New creates a Deliverer backed by mb and idx.
-func New(mb mailbox.MailboxBackend, idx mailbox.IndexBackend) *Deliverer {
+// NewDeliverer creates a Deliverer for use by the SMTP MX server.
+func NewDeliverer(mb mailbox.MailboxBackend, idx mailbox.IndexBackend) *Deliverer {
 	return &Deliverer{mb: mb, idx: idx}
 }
 
@@ -31,13 +30,11 @@ type DeliverResult struct {
 	Err  error
 }
 
-// Deliver delivers msg to each recipient in rcpts.
-// msg is buffered so it can be delivered to multiple recipients.
-// Returns one result per recipient; a nil Err means success.
+// Deliver delivers msg to each recipient. Returns one result per recipient.
 func (d *Deliverer) Deliver(ctx context.Context, from string, rcpts []string, msg io.Reader) []DeliverResult {
 	data, err := io.ReadAll(msg)
 	if err != nil {
-		err = fmt.Errorf("lmtp/deliver: read message: %w", err)
+		err = fmt.Errorf("lmtp/deliver: read: %w", err)
 		results := make([]DeliverResult, len(rcpts))
 		for i, r := range rcpts {
 			results[i] = DeliverResult{Rcpt: r, Err: err}
@@ -50,61 +47,60 @@ func (d *Deliverer) Deliver(ctx context.Context, from string, rcpts []string, ms
 
 	results := make([]DeliverResult, len(rcpts))
 	for i, rcpt := range rcpts {
-		results[i] = DeliverResult{
-			Rcpt: rcpt,
-			Err:  d.deliverOne(ctx, rcpt, bytes.NewReader(full)),
+		err := deliverOne(d.mb, d.idx, rcpt, bytes.NewReader(full), int64(len(full)))
+		if err != nil {
+			slog.Error("lmtp: delivery failed", "rcpt", rcpt, "err", err)
 		}
+		results[i] = DeliverResult{Rcpt: rcpt, Err: err}
 	}
 	return results
 }
 
-func (d *Deliverer) deliverOne(_ context.Context, rcpt string, r io.ReadSeeker) error {
+// deliverOne saves a single message to the recipient's mailbox and updates the index.
+func deliverOne(mb mailbox.MailboxBackend, idx mailbox.IndexBackend, rcpt string, r io.ReadSeeker, size int64) error {
 	user, folder, err := resolveMailbox(rcpt)
 	if err != nil {
-		return fmt.Errorf("lmtp/deliver: resolve %q: %w", rcpt, err)
+		return fmt.Errorf("lmtp: resolve %q: %w", rcpt, err)
 	}
 
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("lmtp/deliver: seek: %w", err)
+		return fmt.Errorf("lmtp: seek: %w", err)
 	}
 	data, _ := io.ReadAll(r)
-	size := int64(len(data))
 
-	filename, err := d.mb.Save(user, folder, bytes.NewReader(data), size, nil)
+	filename, err := mb.Save(user, folder, bytes.NewReader(data), size, nil)
 	if err != nil {
-		return fmt.Errorf("lmtp/deliver: save for %q: %w", rcpt, err)
+		return fmt.Errorf("lmtp: save for %q: %w", rcpt, err)
 	}
 
-	f, err := d.idx.OpenFolder(user, folder, 0)
+	f, err := idx.OpenFolder(user, folder, 0)
 	if err != nil {
-		_ = d.mb.Remove(user, folder, filename)
-		return fmt.Errorf("lmtp/deliver: open index for %q: %w", rcpt, err)
+		_ = mb.Remove(user, folder, filename)
+		return fmt.Errorf("lmtp: open index for %q: %w", rcpt, err)
 	}
 
-	modseq, err := d.idx.NextModSeq(f.ID)
+	modseq, err := idx.NextModSeq(f.ID)
 	if err != nil {
-		_ = d.mb.Remove(user, folder, filename)
-		return fmt.Errorf("lmtp/deliver: modseq for %q: %w", rcpt, err)
+		_ = mb.Remove(user, folder, filename)
+		return fmt.Errorf("lmtp: modseq for %q: %w", rcpt, err)
 	}
 
 	meta := &mailbox.MessageMeta{
 		Filename: filename,
-		Flags:    nil,
 		ModSeq:   modseq,
 		Size:     uint32(size),
 	}
-	if err := d.idx.AppendMessage(f.ID, meta); err != nil {
-		_ = d.mb.Remove(user, folder, filename)
-		return fmt.Errorf("lmtp/deliver: index append for %q: %w", rcpt, err)
+	if err := idx.AppendMessage(f.ID, meta); err != nil {
+		_ = mb.Remove(user, folder, filename)
+		return fmt.Errorf("lmtp: index append for %q: %w", rcpt, err)
 	}
 
 	slog.Info("lmtp: delivered", "rcpt", rcpt, "uid", meta.UID, "size", size)
 	return nil
 }
 
-// resolveMailbox maps an RCPT address to (user, folder).
-// Format: user@domain → user=user@domain, folder=INBOX
-// Format: user+folder@domain → user=user@domain, folder=folder
+// resolveMailbox maps RCPT TO address to (user, folder).
+// user+folder@domain → user=user@domain, folder=folder; otherwise folder=INBOX.
 func resolveMailbox(rcpt string) (user, folder string, err error) {
 	rcpt = strings.TrimSpace(strings.Trim(rcpt, "<>"))
 	at := strings.LastIndex(rcpt, "@")
@@ -119,8 +115,7 @@ func resolveMailbox(rcpt string) (user, folder string, err error) {
 		folder = local[plus+1:]
 		local = local[:plus]
 	}
-	user = local + "@" + domain
-	return user, folder, nil
+	return local + "@" + domain, folder, nil
 }
 
 func buildReceivedHeader(from string) string {
