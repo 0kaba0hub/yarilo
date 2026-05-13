@@ -138,23 +138,59 @@ mode: backend   # proxy | director | backend
 
 imap:
   listen: ":993"
+  listen_plain: ":143"        # STARTTLS
   tls_cert: /etc/ssl/yarilo/cert.pem
   tls_key:  /etc/ssl/yarilo/key.pem
+  proxy_protocol: false       # set true when behind HAProxy
 
 smtp:
-  listen: ":587"
-  mode: submission
+  listen_mx:     ":25"
+  listen_submit: ":587"
+  hostname: mail.example.com
+  max_message_size: 41943040  # 40 MB
+  tls_cert: /etc/ssl/yarilo/cert.pem
+  tls_key:  /etc/ssl/yarilo/key.pem
+  proxy_protocol: false       # set true when behind HAProxy
+
+  # Optional external milters (e.g. rspamd). Checked before internal SPF/DKIM/DMARC.
+  milters:
+    - socket: unix:/run/rspamd/milter.sock
+      timeout: 30             # seconds
+
+spf:
+  enabled: true
+
+dmarc:
+  enabled: true
+
+dkim:
+  verify: true                # verify on inbound (MX)
+  sign:   true                # sign on outbound (submission)
+  selector: mail
+
+  # Static key backend: domain → PEM file path
+  keys:
+    backend: static
+    static:
+      example.com: /etc/yarilo/dkim/example.com.pem
+
+  # Dynamic key backend: fetch from SQL DB (use backend: dynamic)
+  # keys:
+  #   backend: dynamic
+  #   dynamic:
+  #     driver: postgres
+  #     dsn: "${DKIM_DB_URL}"   # ${ENV_VAR} substitution supported
+  #     query: "SELECT private_key FROM dkim_keys WHERE domain = $1"
+  #     cache_ttl: 300          # seconds
 
 auth:
   passdb:
-    - driver: sql
-      dsn: "postgres://yarilo:secret@localhost/yarilo"
+    - driver: postgres
+      dsn: "${DB_URL}"          # ${ENV_VAR} substitution supported
 
 storage:
   mailbox: maildir
   maildir_root: /var/mail/vhosts
-
-  index: fileindex
 
 log:
   level: info   # debug | info | warn | error
@@ -165,6 +201,35 @@ yarilo -config yarilo.yaml
 ```
 
 Set `LOG_LEVEL=debug` to enable verbose protocol tracing without restarting.
+
+### SMTP inbound pipeline (port 25)
+
+```
+connect → external milters → SPF check → DKIM verify → DMARC evaluate → LMTP local delivery
+```
+
+If a milter rejects the message a `550 5.7.1` response is returned. Milter unavailability is fail-open (message continues).
+
+### SMTP submission pipeline (port 587)
+
+```
+connect → AUTH PLAIN → external milters → DKIM sign → relay (phase 4)
+```
+
+Submission requires AUTH PLAIN. DKIM signing uses the key for the sender domain. The signed message is logged; relay to the MTA queue is implemented in phase 4.
+
+### DKIM key backends
+
+| `keys.backend` | Source | Config |
+|:---|:---|:---|
+| `static` | PEM files on disk | `keys.static.<domain>: /path/to/key.pem` |
+| `dynamic` | SQL database | `keys.dynamic.{driver,dsn,query,cache_ttl}` |
+
+`${ENV_VAR}` in any DSN or TLS path is expanded at startup — no secrets in config files.
+
+### HAProxy PROXY protocol
+
+Set `proxy_protocol: true` on `imap` and/or `smtp` to extract the real client IP from the HAProxy `PROXY` header. This applies to all listeners on that server (MX + submission for SMTP; TLS + STARTTLS for IMAP).
 
 ### Mailbox backend selection
 
