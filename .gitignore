@@ -1,0 +1,7 @@
+# Build outputs
+yarilo
+yarilo-migrate
+smoketest
+
+# macOS
+.DS_Store
