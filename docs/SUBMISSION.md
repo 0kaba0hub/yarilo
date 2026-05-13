@@ -1,4 +1,4 @@
-# SMTP configuration
+# Submission configuration
 
 Yarilo runs two submission listeners. MX inbound (port 25) is handled by an external MTA (Postfix, Exim, etc.) which delivers to yarilo via LMTP (port 24).
 
@@ -11,9 +11,9 @@ See [SERVICES.md](SERVICES.md) for listener-level settings (`port`, `ssl_mode`, 
 
 ---
 
-## `protocol.smtp`
+## `protocol.submission`
 
-Protocol-level behaviour shared across all three SMTP listeners.
+Protocol-level behaviour shared across both submission listeners.
 
 | Key | Default | Description |
 |:---|:---|:---|
@@ -25,7 +25,7 @@ Protocol-level behaviour shared across all three SMTP listeners.
 
 ```yaml
 protocol:
-  smtp:
+  submission:
     hostname: mail.example.com
     max_message_size: 41943040
     max_line_length: 4096
@@ -37,13 +37,13 @@ protocol:
 
 ## Submission (port 587 / 465)
 
-Accepts mail from MUAs. AUTH PLAIN is required (the only advertised mechanism). After successful authentication and DATA, the message is forwarded to the configured upstream MTA via `protocol.smtp.relay`. If `relay.host` is empty, submission returns `451`.
+Accepts mail from MUAs. AUTH PLAIN is required (the only advertised mechanism). After successful authentication and DATA, the message is forwarded to the configured upstream MTA via `protocol.submission.relay`. If `relay.host` is empty, submission returns `451`.
 
 `disable_plaintext_auth: true` in the service config blocks AUTH on unencrypted connections; pair it with `ssl_mode: starttls` (port 587) or `ssl_mode: ssl` (port 465).
 
 ---
 
-## Relay (`protocol.smtp.relay`)
+## Relay (`protocol.submission.relay`)
 
 Configures the upstream MTA for submission. One TCP connection per message; any transport error returns `451 4.4.0` to the MUA.
 
@@ -61,7 +61,7 @@ Configures the upstream MTA for submission. One TCP connection per message; any 
 
 ```yaml
 protocol:
-  smtp:
+  submission:
     relay:
       host: smtp.example.com
       port: 587

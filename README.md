@@ -4,7 +4,7 @@
 <td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg" width="180" alt="yarilo logo"/></td>
 <td>
 
-Production-grade IMAP/SMTP/JMAP mail server written in Go.
+Production-grade IMAP/Submission/LMTP/JMAP mail server written in Go.
 Three-tier cluster (proxy → director → backend), pluggable storage (Maildir / dbox / mdbox / S3), Sieve filtering, full Dovecot 2.3 protocol compatibility.
 
 [![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml)
@@ -25,7 +25,7 @@ Yarilo is a single binary that runs in one of three roles (`mode: proxy | direct
 ```
   Internet
      |
-     | IMAP / IMAPs / SUBMISSION / SMTP / POP3 / JMAP
+     | IMAP / IMAPs / SUBMISSION / POP3 / JMAP
      v
 +------------------+     +------------------+
 |     PROXY        |     |     PROXY        |  ...N
@@ -52,7 +52,7 @@ Yarilo is a single binary that runs in one of three roles (`mode: proxy | direct
   | IMAP     | | IMAP     | | IMAP     |
   | POP3     | | POP3     | | POP3     |
   | JMAP     | | JMAP     | | JMAP     |
-  | SMTP/LDA | | SMTP/LDA | | SMTP/LDA |
+  | Sub/LMTP | | Sub/LMTP | | Sub/LMTP |
   | Sieve    | | Sieve    | | Sieve    |
   | Quota    | | Quota    | | Quota    |
   | ACL      | | ACL      | | ACL      |
@@ -73,7 +73,7 @@ Yarilo is a single binary that runs in one of three roles (`mode: proxy | direct
 
 **Director** — consistent-hashing ring (MD5, 100 vhosts/backend). One user always lands on the same backend. Detects failures and reassigns. All intra-cluster traffic uses the TAB-delimited yarilo-director protocol (see [INTERNALS.md](INTERNALS.md) §2).
 
-**Backend** — full mail server: IMAP, POP3, JMAP, SMTP/LMTP, ManageSieve, Sieve execution engine, Quota, ACL, FTS. Speaks natively to the mailbox + index layer.
+**Backend** — full mail server: IMAP, POP3, JMAP, Submission, LMTP, ManageSieve, Sieve execution engine, Quota, ACL, FTS. Speaks natively to the mailbox + index layer.
 
 ---
 
@@ -181,7 +181,7 @@ protocol:
     imap_idle_notify_interval: 120
     imap_max_line_length: 65536
     imap_id_send: "name *"
-  smtp:
+  submission:
     hostname: mail.example.com
     max_message_size: 41943040
     recipient_delimiter: "+"
@@ -233,7 +233,7 @@ yarilo-migrate \
 | [docs/GENERAL.md](docs/GENERAL.md) | `general`: shared SSL, HAProxy, XClient, connection limits |
 | [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config for all 7 listeners |
 | [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE interval, line length, ID, logout format |
-| [docs/SMTP.md](docs/SMTP.md) | `protocol.smtp`: hostname, size limits, milters, relay |
+| [docs/SUBMISSION.md](docs/SUBMISSION.md) | `protocol.submission`: hostname, size limits, relay |
 | [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: local delivery, proxy/director mode, HAProxy, XCLIENT, TLS, headers |
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL format, soft-delete, migration |
 | [docs/JMAP.md](docs/JMAP.md) | JMAP (planned, Phase 5) |
