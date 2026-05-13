@@ -39,6 +39,8 @@ type Options struct {
 	XClient            bool          // handle XCLIENT pre-auth command
 	XClientTrustedNets []*net.IPNet  // CIDRs allowed to send XCLIENT; empty = nobody
 	DisablePlainAuth   bool          // reject AUTH on unencrypted connections
+	IdleNotifyInterval time.Duration // send EXISTS keepalive during IDLE; 0 = disabled
+	MaxLineLength      int           // max command line bytes; 0 = unlimited (Dovecot default 65536)
 }
 
 // New creates an IMAP server.
@@ -106,6 +108,9 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 			ReadHeaderTimeout: timeout,
 			Policy:            proxyPolicy(s.opts.HAProxyTrustedNets),
 		}
+	}
+	if s.opts.MaxLineLength > 0 {
+		ln = &maxLineLenListener{Listener: ln, limit: s.opts.MaxLineLength}
 	}
 	if s.opts.XClient {
 		ln = &xclientImapListener{Listener: ln, trustedNets: s.opts.XClientTrustedNets}
@@ -313,8 +318,23 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 func (s *session) Poll(_ *imapserver.UpdateWriter, _ bool) error { return nil }
 
 func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
-	<-stop
-	return nil
+	interval := s.srv.opts.IdleNotifyInterval
+	if interval <= 0 || s.folder == nil {
+		<-stop
+		return nil
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return nil
+		case <-ticker.C:
+			if err := w.WriteNumMessages(s.folder.Messages); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) error {

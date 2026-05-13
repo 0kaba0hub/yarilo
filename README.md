@@ -155,6 +155,8 @@ imap:
     - 127.0.0.1/32
     - 10.0.0.0/8
   disable_plaintext_auth: true      # reject AUTH without TLS
+  imap_idle_notify_interval: 120    # seconds between EXISTS keepalives during IDLE; 0 = disabled
+  imap_max_line_length: 65536       # max command line bytes (64 KB = Dovecot default); 0 = unlimited
 
 pop3:
   listen: ":995"                     # POP3S (TLS)

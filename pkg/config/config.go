@@ -40,8 +40,10 @@ type IMAPConfig struct {
 	HAProxyTimeout     int      `koanf:"haproxy_timeout"`      // seconds, default 3
 	HAProxyTrustedNets []string `koanf:"haproxy_trusted_nets"` // CIDRs allowed to send PROXY header
 	XClient            bool     `koanf:"xclient"`
-	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`   // CIDRs allowed to send XCLIENT
-	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"` // reject auth without TLS
+	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`      // CIDRs allowed to send XCLIENT
+	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"`    // reject auth without TLS
+	IdleNotifyInterval int      `koanf:"imap_idle_notify_interval"` // seconds; 0 = no keepalive
+	MaxLineLength      int      `koanf:"imap_max_line_length"`      // bytes; 0 = unlimited
 }
 
 type POP3Config struct {
@@ -170,6 +172,8 @@ func Load(path string) (*Config, error) {
 			HAProxyTrustedNets: defaultTrustedNets,
 			XClientTrustedNets: defaultTrustedNets,
 			DisablePlainAuth:   true,
+			IdleNotifyInterval: 120,
+			MaxLineLength:      65536,
 		},
 		POP3: POP3Config{
 			Listen:             ":995",

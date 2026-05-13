@@ -142,6 +142,8 @@ func New(cfg *config.Config) (*Server, error) {
 		XClient:            cfg.IMAP.XClient,
 		XClientTrustedNets: parseCIDRs(cfg.IMAP.XClientTrustedNets),
 		DisablePlainAuth:   cfg.IMAP.DisablePlainAuth,
+		IdleNotifyInterval: time.Duration(cfg.IMAP.IdleNotifyInterval) * time.Second,
+		MaxLineLength:      cfg.IMAP.MaxLineLength,
 	})
 
 	// ---- DKIM key provider ----
