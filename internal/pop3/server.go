@@ -33,11 +33,11 @@ type Options struct {
 	XClientTrustedNets []*net.IPNet
 	DisablePlainAuth   bool // reject USER/PASS without TLS
 	// POP3-specific behaviour (Dovecot parity)
-	NoFlagUpdates  bool   // pop3_no_flag_updates: skip \Seen on RETR
-	ReuseXUIDL     bool   // pop3_reuse_xuidl: use X-UIDL header (migration)
-	UIDLFormat     string // pop3_uidl_format: %u=UID %v=UIDValidity %f=filename %g=GUID
-	UIDLDuplicates string // pop3_uidl_duplicates: allow | rename
-	EnableLast     bool   // pop3_enable_last: LAST command (RFC 1460)
+	NoFlagUpdates  bool               // pop3_no_flag_updates: skip \Seen on RETR
+	ReuseXUIDL     bool               // pop3_reuse_xuidl: use X-UIDL header (migration)
+	UIDLFormat     string             // pop3_uidl_format: %u=UID %v=UIDValidity %f=filename %g=GUID
+	UIDLDuplicates string             // pop3_uidl_duplicates: allow | rename
+	EnableLast     bool               // pop3_enable_last: LAST command (RFC 1460)
 	DeleteType     string             // pop3_delete_type: expunge | flag
 	DeletedFlag    string             // pop3_deleted_flag: IMAP flag for soft-delete
 	ConnLimit      *connlimit.Limiter // per-user@IP connection limit; nil = unlimited

@@ -34,11 +34,11 @@ type Options struct {
 	Mailbox            mailbox.MailboxBackend
 	Index              mailbox.IndexBackend
 	Auth               protocol.Passdb
-	ProxyProtocol      bool          // wrap listener with HAProxy PROXY protocol
-	HAProxyTimeout     time.Duration // ReadHeaderTimeout for proxyproto.Listener
-	HAProxyTrustedNets []*net.IPNet  // CIDRs allowed to send PROXY header; empty = nobody
-	XClient            bool          // handle XCLIENT pre-auth command
-	XClientTrustedNets []*net.IPNet  // CIDRs allowed to send XCLIENT; empty = nobody
+	ProxyProtocol      bool               // wrap listener with HAProxy PROXY protocol
+	HAProxyTimeout     time.Duration      // ReadHeaderTimeout for proxyproto.Listener
+	HAProxyTrustedNets []*net.IPNet       // CIDRs allowed to send PROXY header; empty = nobody
+	XClient            bool               // handle XCLIENT pre-auth command
+	XClientTrustedNets []*net.IPNet       // CIDRs allowed to send XCLIENT; empty = nobody
 	DisablePlainAuth   bool               // reject AUTH on unencrypted connections
 	IdleNotifyInterval time.Duration      // send EXISTS keepalive during IDLE; 0 = disabled
 	MaxLineLength      int                // max command line bytes; 0 = unlimited (Dovecot default 65536)
