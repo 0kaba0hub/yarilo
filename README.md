@@ -158,6 +158,9 @@ imap:
   imap_idle_notify_interval: 120    # seconds between EXISTS keepalives during IDLE; 0 = disabled
   imap_max_line_length: 65536       # max command line bytes (64 KB = Dovecot default); 0 = unlimited
   mail_max_userip_connections: 10   # max simultaneous IMAP connections per user@IP; 0 = unlimited
+  imap_id_send: "name *"            # IMAP ID extension (RFC 2971): key-value pairs; * = server default; empty = disabled
+  login_greeting: ""                # custom greeting text replacing "IMAP server ready"; empty = default
+  imap_logout_format: ""            # log stats at disconnect: %{deleted} %{expunged} %{fetch_hdr_count} %{fetch_hdr_bytes} %{fetch_body_count} %{fetch_body_bytes}
 
 pop3:
   listen: ":995"                     # POP3S (TLS)
