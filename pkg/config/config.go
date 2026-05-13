@@ -87,6 +87,28 @@ type ProtocolConfig struct {
 	IMAP IMAPProtocolConfig `koanf:"imap"`
 	POP3 POP3ProtocolConfig `koanf:"pop3"`
 	SMTP SMTPProtocolConfig `koanf:"smtp"`
+	LMTP LMTPProtocolConfig `koanf:"lmtp"`
+}
+
+type LMTPProtocolConfig struct {
+	// Greeting shown in the 220 banner. Default: "Dovecot ready."
+	LoginGreeting string `koanf:"login_greeting"`
+	// AddReceivedHeader prepends a Received: header to delivered messages. Default: true.
+	AddReceivedHeader bool `koanf:"add_received_header"`
+	// SaveToDetailMailbox delivers user+folder@domain to mailbox 'folder' instead of INBOX. Default: false.
+	SaveToDetailMailbox bool `koanf:"save_to_detail_mailbox"`
+	// HdrDeliveryAddress controls the Delivered-To header: none | final | original. Default: "final".
+	HdrDeliveryAddress string `koanf:"hdr_delivery_address"`
+	// VerboseReplies includes diagnostic details in error responses. Default: false.
+	VerboseReplies bool `koanf:"verbose_replies"`
+	// UserConcurrencyLimit is the max concurrent deliveries per user (0 = unlimited). Default: 0.
+	UserConcurrencyLimit int `koanf:"user_concurrency_limit"`
+	// ReadTimeout is the per-command read timeout in seconds. Default: 300.
+	ReadTimeout int `koanf:"read_timeout"`
+	// WriteTimeout is the per-command write timeout in seconds. Default: 300.
+	WriteTimeout int `koanf:"write_timeout"`
+	// ClientWorkarounds is a list of client compatibility workarounds.
+	ClientWorkarounds []string `koanf:"client_workarounds"`
 }
 
 type IMAPProtocolConfig struct {
@@ -196,6 +218,13 @@ func Load(path string) (*Config, error) {
 					ConnectTimeout: 30,
 					CommandTimeout: 300,
 				},
+			},
+			LMTP: LMTPProtocolConfig{
+				LoginGreeting:     "Dovecot ready.",
+				AddReceivedHeader: true,
+				HdrDeliveryAddress: "final",
+				ReadTimeout:       300,
+				WriteTimeout:      300,
 			},
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},

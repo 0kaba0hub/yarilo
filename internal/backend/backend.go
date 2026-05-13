@@ -177,7 +177,7 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- LMTP ----
 	var lmtpServer *lmtp.Server
 	if svcs.LMTP.Active() {
-		lmtpServer = lmtp.New(cfg.Protocol.SMTP.Hostname, mbox, idx)
+		lmtpServer = lmtp.New(cfg.Protocol.SMTP.Hostname, cfg.Protocol.LMTP, mbox, idx)
 	}
 
 	// ---- telemetry ----

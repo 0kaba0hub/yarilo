@@ -99,6 +99,20 @@ func deliverOne(mb mailbox.MailboxBackend, idx mailbox.IndexBackend, rcpt string
 	return nil
 }
 
+// stripDetail removes the +detail part from an address: user+tag@domain → user@domain.
+func stripDetail(addr string) string {
+	addr = strings.TrimSpace(strings.Trim(addr, "<>"))
+	at := strings.LastIndex(addr, "@")
+	if at < 0 {
+		return addr
+	}
+	local, domain := addr[:at], addr[at+1:]
+	if plus := strings.Index(local, "+"); plus >= 0 {
+		local = local[:plus]
+	}
+	return local + "@" + domain
+}
+
 // resolveMailbox maps RCPT TO address to (user, folder).
 // user+folder@domain → user=user@domain, folder=folder; otherwise folder=INBOX.
 func resolveMailbox(rcpt string) (user, folder string, err error) {
