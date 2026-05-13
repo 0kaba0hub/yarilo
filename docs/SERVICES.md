@@ -15,7 +15,7 @@ All services share the following fields:
 | `ssl_mode` | — | TLS mode: `ssl` = implicit TLS; `starttls` = plain with STARTTLS upgrade; `no` = plain only. |
 | `haproxy_protocol` | `false` | Extract real client IP from HAProxy PROXY header. Uses `general.haproxy` for timeout and trusted nets. |
 | `xclient_protocol` | `false` | Accept XCLIENT command from trusted relays. Uses `general.xclient` for trusted nets. |
-| `disable_plaintext_auth` | `false` | Reject AUTH (IMAP/SMTP) or USER/PASS (POP3) unless the connection is TLS-protected. |
+| `disable_plaintext_auth` | `false` | Reject AUTH (IMAP/Submission) or USER/PASS (POP3) unless the connection is TLS-protected. |
 | `ssl` | — | Per-service SSL override. Same fields as `general.ssl`. If set, overrides only the specified fields. |
 
 ---
@@ -26,8 +26,8 @@ All services share the following fields:
 |:---|:---|:---|:---|
 | `imaps` | `993` | `ssl` | [IMAP.md](IMAP.md) |
 | `imap` | `143` | `starttls` | [IMAP.md](IMAP.md) |
-| `submission` | `587` | `starttls` | [SMTP.md](SMTP.md) |
-| `submissions` | `465` | `ssl` | [SMTP.md](SMTP.md) |
+| `submission` | `587` | `starttls` | [SUBMISSION.md](SUBMISSION.md) |
+| `submissions` | `465` | `ssl` | [SUBMISSION.md](SUBMISSION.md) |
 | `pop3` | `110` | `starttls` | [POP3.md](POP3.md) |
 | `pop3s` | `995` | `ssl` | [POP3.md](POP3.md) |
 | `lmtp` | `24` | `no` | [LMTP.md](LMTP.md) |
@@ -63,7 +63,7 @@ services:
     disable_plaintext_auth: true
 ```
 
-### Full mail server (IMAP + SMTP + POP3)
+### Full mail server (IMAP + Submission + POP3)
 
 ```yaml
 services:
