@@ -42,8 +42,9 @@ type IMAPConfig struct {
 	XClient            bool     `koanf:"xclient"`
 	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`      // CIDRs allowed to send XCLIENT
 	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"`    // reject auth without TLS
-	IdleNotifyInterval int      `koanf:"imap_idle_notify_interval"` // seconds; 0 = no keepalive
-	MaxLineLength      int      `koanf:"imap_max_line_length"`      // bytes; 0 = unlimited
+	IdleNotifyInterval    int `koanf:"imap_idle_notify_interval"`    // seconds; 0 = no keepalive
+	MaxLineLength         int `koanf:"imap_max_line_length"`         // bytes; 0 = unlimited
+	MaxUserIPConnections  int `koanf:"mail_max_userip_connections"`  // 0 = unlimited
 }
 
 type POP3Config struct {
@@ -67,8 +68,9 @@ type POP3Config struct {
 	UIDLFormat     string `koanf:"pop3_uidl_format"`     // e.g. "%u.%v" or "%08Xu%08Xv"
 	UIDLDuplicates string `koanf:"pop3_uidl_duplicates"` // allow | rename
 	EnableLast     bool   `koanf:"pop3_enable_last"`     // enable LAST command (RFC 1460)
-	DeleteType     string `koanf:"pop3_delete_type"`     // expunge | flag
-	DeletedFlag    string `koanf:"pop3_deleted_flag"`    // IMAP flag for soft-delete
+	DeleteType           string `koanf:"pop3_delete_type"`            // expunge | flag
+	DeletedFlag          string `koanf:"pop3_deleted_flag"`           // IMAP flag for soft-delete
+	MaxUserIPConnections int    `koanf:"mail_max_userip_connections"` // 0 = unlimited
 }
 
 type SMTPConfig struct {
@@ -166,25 +168,27 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Mode: "single",
 		IMAP: IMAPConfig{
-			Listen:             ":993",
-			TLSMinVersion:      "TLS1.2",
-			HAProxyTimeout:     3,
-			HAProxyTrustedNets: defaultTrustedNets,
-			XClientTrustedNets: defaultTrustedNets,
-			DisablePlainAuth:   true,
-			IdleNotifyInterval: 120,
-			MaxLineLength:      65536,
+			Listen:               ":993",
+			TLSMinVersion:        "TLS1.2",
+			HAProxyTimeout:       3,
+			HAProxyTrustedNets:   defaultTrustedNets,
+			XClientTrustedNets:   defaultTrustedNets,
+			DisablePlainAuth:     true,
+			IdleNotifyInterval:   120,
+			MaxLineLength:        65536,
+			MaxUserIPConnections: 10,
 		},
 		POP3: POP3Config{
-			Listen:             ":995",
-			TLSMinVersion:      "TLS1.2",
-			HAProxyTimeout:     3,
-			HAProxyTrustedNets: defaultTrustedNets,
-			XClientTrustedNets: defaultTrustedNets,
-			DisablePlainAuth:   true,
-			UIDLFormat:         "%u.%v",
-			UIDLDuplicates:     "rename",
-			DeleteType:         "expunge",
+			Listen:               ":995",
+			TLSMinVersion:        "TLS1.2",
+			HAProxyTimeout:       3,
+			HAProxyTrustedNets:   defaultTrustedNets,
+			XClientTrustedNets:   defaultTrustedNets,
+			DisablePlainAuth:     true,
+			UIDLFormat:           "%u.%v",
+			UIDLDuplicates:       "rename",
+			DeleteType:           "expunge",
+			MaxUserIPConnections: 10,
 		},
 		SMTP: SMTPConfig{
 			ListenMX:           ":25",

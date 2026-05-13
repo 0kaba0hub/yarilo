@@ -43,6 +43,7 @@ type session struct {
 
 	// set after successful login
 	lockKey  string
+	limitIP  string // IP used for ConnLimit.Acquire; released in releaseLock
 	username string
 	folder   *mailbox.Folder
 	msgs     []*mailbox.MessageMeta
@@ -153,7 +154,22 @@ func (s *session) cmdPass(arg string) {
 	}
 	s.username = res.Username
 
+	if lim := s.srv.opts.ConnLimit; lim != nil {
+		ip := s.remoteIP.String()
+		if !lim.Acquire(s.username, ip) {
+			slog.Warn("pop3: connection limit reached", "user", s.username, "ip", ip)
+			s.writeErr("too many simultaneous connections")
+			s.username = ""
+			return
+		}
+		s.limitIP = ip
+	}
+
 	if !s.srv.tryLock(s.username) {
+		if s.srv.opts.ConnLimit != nil {
+			s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+			s.limitIP = ""
+		}
 		s.writeErr("mailbox already in use, try again later")
 		s.username = ""
 		return
@@ -649,6 +665,10 @@ func (s *session) releaseLock() {
 	if s.lockKey != "" {
 		s.srv.unlock(s.lockKey)
 		s.lockKey = ""
+	}
+	if s.limitIP != "" && s.srv.opts.ConnLimit != nil {
+		s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+		s.limitIP = ""
 	}
 }
 

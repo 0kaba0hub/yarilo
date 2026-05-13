@@ -13,6 +13,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
+	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/internal/dkim"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
@@ -101,6 +102,9 @@ func New(cfg *config.Config) (*Server, error) {
 		pop3TLS = t
 	}
 
+	// ---- connection limiter (shared IMAP + POP3) ----
+	connLimiter := connlimit.New(cfg.IMAP.MaxUserIPConnections)
+
 	// ---- POP3 ----
 	pop3 := pop3svr.New(pop3svr.Options{
 		Addr:               cfg.POP3.Listen,
@@ -122,6 +126,7 @@ func New(cfg *config.Config) (*Server, error) {
 		EnableLast:         cfg.POP3.EnableLast,
 		DeleteType:         cfg.POP3.DeleteType,
 		DeletedFlag:        cfg.POP3.DeletedFlag,
+		ConnLimit:          connLimiter,
 	})
 
 	// ---- IMAP ----
@@ -144,6 +149,7 @@ func New(cfg *config.Config) (*Server, error) {
 		DisablePlainAuth:   cfg.IMAP.DisablePlainAuth,
 		IdleNotifyInterval: time.Duration(cfg.IMAP.IdleNotifyInterval) * time.Second,
 		MaxLineLength:      cfg.IMAP.MaxLineLength,
+		ConnLimit:          connLimiter,
 	})
 
 	// ---- DKIM key provider ----

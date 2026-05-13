@@ -157,6 +157,7 @@ imap:
   disable_plaintext_auth: true      # reject AUTH without TLS
   imap_idle_notify_interval: 120    # seconds between EXISTS keepalives during IDLE; 0 = disabled
   imap_max_line_length: 65536       # max command line bytes (64 KB = Dovecot default); 0 = unlimited
+  mail_max_userip_connections: 10   # max simultaneous IMAP connections per user@IP; 0 = unlimited
 
 pop3:
   listen: ":995"                     # POP3S (TLS)
@@ -186,6 +187,7 @@ pop3:
   pop3_enable_last: false            # true = advertise and handle LAST command (RFC 1460)
   pop3_delete_type: expunge          # expunge = remove from disk; flag = set pop3_deleted_flag (soft delete)
   pop3_deleted_flag: "$POP3Deleted"  # IMAP flag to set when pop3_delete_type=flag
+  mail_max_userip_connections: 10    # max simultaneous POP3 connections per user@IP; 0 = unlimited
 
 smtp:
   listen_mx:     ":25"

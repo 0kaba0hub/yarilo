@@ -16,6 +16,7 @@ import (
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -38,9 +39,10 @@ type Options struct {
 	HAProxyTrustedNets []*net.IPNet  // CIDRs allowed to send PROXY header; empty = nobody
 	XClient            bool          // handle XCLIENT pre-auth command
 	XClientTrustedNets []*net.IPNet  // CIDRs allowed to send XCLIENT; empty = nobody
-	DisablePlainAuth   bool          // reject AUTH on unencrypted connections
-	IdleNotifyInterval time.Duration // send EXISTS keepalive during IDLE; 0 = disabled
-	MaxLineLength      int           // max command line bytes; 0 = unlimited (Dovecot default 65536)
+	DisablePlainAuth   bool               // reject AUTH on unencrypted connections
+	IdleNotifyInterval time.Duration      // send EXISTS keepalive during IDLE; 0 = disabled
+	MaxLineLength      int                // max command line bytes; 0 = unlimited (Dovecot default 65536)
+	ConnLimit          *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
 }
 
 // New creates an IMAP server.
@@ -136,8 +138,8 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 	}
 }
 
-func (s *Server) newSession(_ *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-	sess := &session{srv: s}
+func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+	sess := &session{srv: s, imapConn: c}
 	return sess, &imapserver.GreetingData{PreAuth: false}, nil
 }
 
@@ -145,25 +147,58 @@ func (s *Server) newSession(_ *imapserver.Conn) (imapserver.Session, *imapserver
 
 type session struct {
 	srv      *Server
+	imapConn *imapserver.Conn // used to get RemoteAddr for conn limit
 	username string
+	limitIP  string // set after Login, cleared in Close
 	folder   *mailbox.Folder
 }
 
 var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
 
-func (s *session) Close() error { return nil }
+func (s *session) Close() error {
+	if s.srv.opts.ConnLimit != nil && s.username != "" {
+		s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+	}
+	return nil
+}
 
 func (s *session) Login(username, password string) error {
 	res, err := s.srv.opts.Auth.Authenticate(username, password, "imap")
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Invalid credentials"}
 	}
-	s.username = res.Username
+	authed := res.Username
+
+	if lim := s.srv.opts.ConnLimit; lim != nil {
+		ip := remoteIP(s.imapConn.NetConn())
+		if !lim.Acquire(authed, ip) {
+			slog.Warn("imap: connection limit reached", "user", authed, "ip", ip)
+			return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Too many simultaneous connections"}
+		}
+		s.limitIP = ip
+	}
+
+	s.username = authed
 	if err := s.srv.opts.Mailbox.Init(s.username); err != nil {
 		slog.Error("imap: mailbox init failed", "user", s.username, "err", err)
+		if s.srv.opts.ConnLimit != nil {
+			s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+		}
+		s.username = ""
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Internal error"}
 	}
 	return nil
+}
+
+// remoteIP extracts the IP string from a net.Conn's RemoteAddr.
+func remoteIP(c net.Conn) string {
+	if c == nil {
+		return ""
+	}
+	if tcp, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		return tcp.IP.String()
+	}
+	return c.RemoteAddr().String()
 }
 
 func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.SelectData, error) {
