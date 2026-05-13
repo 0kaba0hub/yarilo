@@ -9,6 +9,9 @@ on:
       imap_port:
         description: "IMAPS port"
         default: "993"
+      pop3s_port:
+        description: "POP3S port (leave empty to skip)"
+        default: ""
       telemetry_url:
         description: "Telemetry base URL (e.g. http://10.0.0.1:8080)"
         required: true
@@ -24,6 +27,9 @@ on:
       imap_port:
         type: string
         default: "993"
+      pop3s_port:
+        type: string
+        default: ""
       telemetry_url:
         type: string
         required: true
@@ -56,9 +62,14 @@ jobs:
 
       - name: Run smoke checks
         run: |
+          POP3S_FLAGS=""
+          if [ -n "${{ inputs.pop3s_port }}" ]; then
+            POP3S_FLAGS="-pop3s -pop3s-port ${{ inputs.pop3s_port }}"
+          fi
           /tmp/smoketest \
             -host "${{ inputs.host }}" \
             -imap-port "${{ inputs.imap_port }}" \
             -telemetry "${{ inputs.telemetry_url }}" \
             -insecure="${{ inputs.insecure }}" \
-            -timeout 15s
+            -timeout 15s \
+            $POP3S_FLAGS
