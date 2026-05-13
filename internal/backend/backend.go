@@ -115,6 +115,13 @@ func New(cfg *config.Config) (*Server, error) {
 		XClient:            cfg.POP3.XClient,
 		XClientTrustedNets: parseCIDRs(cfg.POP3.XClientTrustedNets),
 		DisablePlainAuth:   cfg.POP3.DisablePlainAuth,
+		NoFlagUpdates:      cfg.POP3.NoFlagUpdates,
+		ReuseXUIDL:         cfg.POP3.ReuseXUIDL,
+		UIDLFormat:         cfg.POP3.UIDLFormat,
+		UIDLDuplicates:     cfg.POP3.UIDLDuplicates,
+		EnableLast:         cfg.POP3.EnableLast,
+		DeleteType:         cfg.POP3.DeleteType,
+		DeletedFlag:        cfg.POP3.DeletedFlag,
 	})
 
 	// ---- IMAP ----

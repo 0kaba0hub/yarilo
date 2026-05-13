@@ -56,6 +56,14 @@ type POP3Config struct {
 	XClient            bool     `koanf:"xclient"`
 	XClientTrustedNets []string `koanf:"xclient_trusted_nets"`   // CIDRs allowed to send XCLIENT
 	DisablePlainAuth   bool     `koanf:"disable_plaintext_auth"` // reject USER/PASS without TLS
+	// POP3-specific behaviour
+	NoFlagUpdates  bool   `koanf:"pop3_no_flag_updates"` // don't set \Seen on RETR
+	ReuseXUIDL     bool   `koanf:"pop3_reuse_xuidl"`     // honour X-UIDL header (migration)
+	UIDLFormat     string `koanf:"pop3_uidl_format"`     // e.g. "%u.%v" or "%08Xu%08Xv"
+	UIDLDuplicates string `koanf:"pop3_uidl_duplicates"` // allow | rename
+	EnableLast     bool   `koanf:"pop3_enable_last"`     // enable LAST command (RFC 1460)
+	DeleteType     string `koanf:"pop3_delete_type"`     // expunge | flag
+	DeletedFlag    string `koanf:"pop3_deleted_flag"`    // IMAP flag for soft-delete
 }
 
 type SMTPConfig struct {
@@ -165,6 +173,9 @@ func Load(path string) (*Config, error) {
 			HAProxyTrustedNets: defaultTrustedNets,
 			XClientTrustedNets: defaultTrustedNets,
 			DisablePlainAuth:   true,
+			UIDLFormat:         "%u.%v",
+			UIDLDuplicates:     "rename",
+			DeleteType:         "expunge",
 		},
 		SMTP: SMTPConfig{
 			ListenMX:           ":25",

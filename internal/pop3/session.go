@@ -3,11 +3,14 @@ package pop3
 import (
 	"bufio"
 	"bytes"
+	"crypto/md5"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +47,9 @@ type session struct {
 	folder   *mailbox.Folder
 	msgs     []*mailbox.MessageMeta
 	deleted  []bool
+	seenMsgs []bool // tracks messages fetched via RETR this session
+	uidls    []string
+	lastMsg  int // highest seq number RETR'd (RFC 1460 LAST)
 
 	badCmds int
 }
@@ -183,7 +189,142 @@ func (s *session) loadMailbox() error {
 	s.folder = folder
 	s.msgs = msgs
 	s.deleted = make([]bool, len(msgs))
+	s.seenMsgs = make([]bool, len(msgs))
+	s.computeUIDLs()
 	return nil
+}
+
+// computeUIDLs pre-builds the UIDL string for every message.
+// Handles ReuseXUIDL (X-UIDL header from migrated messages) and
+// UIDLDuplicates (rename = append -N suffix to make UIDLs unique).
+func (s *session) computeUIDLs() {
+	s.uidls = make([]string, len(s.msgs))
+	rename := s.srv.opts.UIDLDuplicates == "rename"
+	seen := make(map[string]int)
+	for i, m := range s.msgs {
+		u := s.formatUIDL(m)
+		if s.srv.opts.ReuseXUIDL {
+			if xu := s.readXUIDL(m); xu != "" {
+				u = xu
+			}
+		}
+		if rename {
+			base := u
+			n := seen[base]
+			seen[base]++
+			if n > 0 {
+				u = fmt.Sprintf("%s-%d", base, n+1)
+			}
+		}
+		s.uidls[i] = u
+	}
+}
+
+// readXUIDL reads the X-UIDL header from the raw message file.
+// Used for migration from servers (Courier, qmail, cPanel, Plesk) that
+// stored per-message UIDLs in the X-UIDL header.
+func (s *session) readXUIDL(m *mailbox.MessageMeta) string {
+	rc, err := s.srv.opts.Mailbox.Fetch(s.username, "INBOX", m.Filename)
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	hdr, err := textproto.NewReader(bufio.NewReader(rc)).ReadMIMEHeader()
+	if err != nil && len(hdr) == 0 {
+		return ""
+	}
+	return hdr.Get("X-Uidl")
+}
+
+// formatUIDL formats a UIDL string from opts.UIDLFormat.
+// Supports Dovecot-style format variables: %u (UID), %v (UIDValidity),
+// %f (filename), %g (GUID hex), %m (MD5 of filename).
+// Optional width/format modifier between % and variable letter is passed
+// to fmt.Sprintf, e.g. "%08Xu" → fmt.Sprintf("%08X", uid).
+func (s *session) formatUIDL(m *mailbox.MessageMeta) string {
+	format := s.srv.opts.UIDLFormat
+	if format == "" {
+		format = "%u.%v"
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(format) {
+		if format[i] != '%' || i+1 >= len(format) {
+			b.WriteByte(format[i])
+			i++
+			continue
+		}
+		i++ // skip '%'
+		mod := ""
+		for i < len(format) && !isUIDLVar(format[i]) {
+			mod += string(format[i])
+			i++
+		}
+		if i >= len(format) {
+			b.WriteString("%" + mod)
+			break
+		}
+		v := format[i]
+		i++
+		switch v {
+		case 'u':
+			b.WriteString(applyNumFmt(mod, uint64(m.UID)))
+		case 'v':
+			b.WriteString(applyNumFmt(mod, uint64(s.folder.UIDValidity)))
+		case 'f':
+			b.WriteString(m.Filename)
+		case 'g':
+			b.WriteString(hex.EncodeToString(m.GUID[:]))
+		case 'm':
+			h := md5.Sum([]byte(m.Filename))
+			b.WriteString(hex.EncodeToString(h[:]))
+		default:
+			b.WriteByte('%')
+			b.WriteString(mod)
+			b.WriteByte(v)
+		}
+	}
+	return b.String()
+}
+
+func isUIDLVar(c byte) bool {
+	return c == 'u' || c == 'v' || c == 'f' || c == 'g' || c == 'm'
+}
+
+func applyNumFmt(mod string, val uint64) string {
+	if mod == "" || mod == "d" {
+		return strconv.FormatUint(val, 10)
+	}
+	return fmt.Sprintf("%"+mod, val)
+}
+
+func msgVSize(m *mailbox.MessageMeta) uint32 {
+	if m.VSize > 0 {
+		return m.VSize
+	}
+	return m.Size
+}
+
+func appendFlag(flags []string, flag string) []string {
+	for _, f := range flags {
+		if strings.EqualFold(f, flag) {
+			return flags
+		}
+	}
+	out := make([]string, len(flags)+1)
+	copy(out, flags)
+	out[len(flags)] = flag
+	return out
+}
+
+func removeFlag(flags []string, flag string) []string {
+	out := make([]string, 0, len(flags))
+	for _, f := range flags {
+		if !strings.EqualFold(f, flag) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func (s *session) cmdSTLS() {
@@ -258,6 +399,8 @@ func (s *session) handleTrans(cmd, arg string) {
 		s.cmdTop(arg)
 	case "UIDL":
 		s.cmdUidl(arg)
+	case "LAST":
+		s.cmdLast()
 	case "QUIT":
 		s.cmdQuit()
 	default:
@@ -276,14 +419,14 @@ func (s *session) cmdList(arg string) {
 		if !ok {
 			return
 		}
-		s.ok(fmt.Sprintf("%d %d", idx+1, s.msgs[idx].Size))
+		s.ok(fmt.Sprintf("%d %d", idx+1, msgVSize(s.msgs[idx])))
 		return
 	}
 	count, total := s.countActive()
 	s.ok(fmt.Sprintf("%d messages (%d octets)", count, total))
 	for i, m := range s.msgs {
 		if !s.deleted[i] {
-			fmt.Fprintf(s.conn, "%d %d\r\n", i+1, m.Size)
+			fmt.Fprintf(s.conn, "%d %d\r\n", i+1, msgVSize(m))
 		}
 	}
 	s.writeDot()
@@ -307,6 +450,10 @@ func (s *session) cmdRetr(arg string) {
 		s.writeErr("read error")
 		return
 	}
+	s.seenMsgs[idx] = true
+	if idx+1 > s.lastMsg {
+		s.lastMsg = idx + 1
+	}
 	s.ok(fmt.Sprintf("%d octets", len(data)))
 	writeMultiLine(s.conn, data)
 }
@@ -320,7 +467,25 @@ func (s *session) cmdDele(arg string) {
 	s.ok(fmt.Sprintf("message %d deleted", idx+1))
 }
 
+// cmdRset undeletes all messages. If EnableLast is set, also removes \Seen
+// flags from messages RETR'd this session (RFC 1460).
 func (s *session) cmdRset() {
+	if s.srv.opts.EnableLast {
+		for i, seen := range s.seenMsgs {
+			if !seen {
+				continue
+			}
+			m := s.msgs[i]
+			newFlags := removeFlag(m.Flags, `\Seen`)
+			if err := s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+				slog.Error("pop3: rset remove seen", "uid", m.UID, "err", err)
+			} else {
+				m.Flags = newFlags
+			}
+			s.seenMsgs[i] = false
+		}
+		s.lastMsg = 0
+	}
 	for i := range s.deleted {
 		s.deleted[i] = false
 	}
@@ -361,19 +526,71 @@ func (s *session) cmdUidl(arg string) {
 		if !ok {
 			return
 		}
-		s.ok(fmt.Sprintf("%d %s", idx+1, s.uidl(s.msgs[idx])))
+		s.ok(fmt.Sprintf("%d %s", idx+1, s.uidls[idx]))
 		return
 	}
 	s.ok("")
-	for i, m := range s.msgs {
+	for i := range s.msgs {
 		if !s.deleted[i] {
-			fmt.Fprintf(s.conn, "%d %s\r\n", i+1, s.uidl(m))
+			fmt.Fprintf(s.conn, "%d %s\r\n", i+1, s.uidls[i])
 		}
 	}
 	s.writeDot()
 }
 
+func (s *session) cmdLast() {
+	if !s.srv.opts.EnableLast {
+		s.badCmd()
+		return
+	}
+	s.ok(fmt.Sprintf("%d", s.lastMsg))
+}
+
+// cmdQuit applies \Seen flags (unless NoFlagUpdates) and commits deletions.
+// If DeleteType == "flag", sets the configured IMAP flag instead of expunging.
 func (s *session) cmdQuit() {
+	if !s.srv.opts.NoFlagUpdates {
+		for i, seen := range s.seenMsgs {
+			if seen && !s.deleted[i] {
+				m := s.msgs[i]
+				newFlags := appendFlag(m.Flags, `\Seen`)
+				if err := s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+					slog.Error("pop3: set seen", "uid", m.UID, "err", err)
+				}
+			}
+		}
+	}
+
+	var errCount int
+	if s.srv.opts.DeleteType == "flag" {
+		deletedFlag := s.srv.opts.DeletedFlag
+		if deletedFlag == "" {
+			deletedFlag = "$POP3Deleted"
+		}
+		for i, del := range s.deleted {
+			if !del {
+				continue
+			}
+			m := s.msgs[i]
+			newFlags := appendFlag(m.Flags, deletedFlag)
+			if err := s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+				slog.Error("pop3: flag deleted", "uid", m.UID, "err", err)
+				errCount++
+			}
+		}
+	} else {
+		errCount = s.expungeDeleted()
+	}
+
+	if errCount > 0 {
+		s.writeErr(fmt.Sprintf("%d message(s) could not be deleted", errCount))
+	} else {
+		s.ok("yarilo signing off")
+	}
+	s.state = stateDone
+}
+
+func (s *session) expungeDeleted() int {
 	var errCount int
 	for i, m := range s.msgs {
 		if !s.deleted[i] {
@@ -386,12 +603,7 @@ func (s *session) cmdQuit() {
 			s.srv.opts.Index.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		}
 	}
-	if errCount > 0 {
-		s.writeErr(fmt.Sprintf("%d message(s) could not be deleted", errCount))
-	} else {
-		s.ok("yarilo signing off")
-	}
-	s.state = stateDone
+	return errCount
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -399,22 +611,20 @@ func (s *session) cmdQuit() {
 func (s *session) sendCapa() {
 	s.ok("capability list follows")
 	fmt.Fprintf(s.conn, "TOP\r\nUIDL\r\nUSER\r\nRESP-CODES\r\nPIPELINING\r\nAUTH-RESP-CODE\r\nSASL PLAIN\r\n")
+	if s.srv.opts.EnableLast {
+		fmt.Fprintf(s.conn, "LAST\r\n")
+	}
 	if s.srv.opts.TLSConfig != nil && !s.onTLS {
 		fmt.Fprintf(s.conn, "STLS\r\n")
 	}
 	s.writeDot()
 }
 
-// uidl returns the UIDL string for a message: "<uid>.<uidvalidity>".
-func (s *session) uidl(m *mailbox.MessageMeta) string {
-	return fmt.Sprintf("%d.%d", m.UID, s.folder.UIDValidity)
-}
-
 func (s *session) countActive() (count int, total int64) {
 	for i, m := range s.msgs {
 		if !s.deleted[i] {
 			count++
-			total += int64(m.Size)
+			total += int64(msgVSize(m))
 		}
 	}
 	return count, total

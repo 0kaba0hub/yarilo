@@ -168,6 +168,15 @@ pop3:
   xclient_trusted_nets:              # CIDRs allowed to send XCLIENT
     - 127.0.0.1/32
     - 10.0.0.0/8
+  # --- Dovecot-parity behaviour ---
+  pop3_no_flag_updates: false        # false = set \Seen on RETR'd msgs at QUIT (Dovecot default)
+  pop3_reuse_xuidl: false            # true = use X-UIDL header for UIDL (migration from Courier/qmail/cPanel)
+  pop3_uidl_format: "%u.%v"         # UIDL format; Dovecot compat: "%08Xu%08Xv"
+                                     # vars: %u=UID %v=UIDValidity %f=filename %g=GUID %m=MD5(filename)
+  pop3_uidl_duplicates: rename       # allow | rename (rename appends -N suffix to keep UIDLs unique)
+  pop3_enable_last: false            # true = advertise and handle LAST command (RFC 1460)
+  pop3_delete_type: expunge          # expunge = remove from disk; flag = set pop3_deleted_flag (soft delete)
+  pop3_deleted_flag: "$POP3Deleted"  # IMAP flag to set when pop3_delete_type=flag
 
 smtp:
   listen_mx:     ":25"
