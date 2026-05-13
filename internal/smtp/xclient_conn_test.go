@@ -9,41 +9,19 @@ import (
 	"time"
 )
 
+// loopbackNet is 127.0.0.0/8 — used as the default trusted network in tests
+// so that connections from 127.0.0.1 are allowed to send XCLIENT.
+var loopbackNet = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("127.0.0.0/8")
+	return n
+}()
+
 // newTestConn creates a real TCP connection pair. server is wrapped in
-// xclientConn. Uses TCP so OS send buffers avoid deadlocks.
+// xclientConn with 127.0.0.0/8 as the trusted network.
+// Uses TCP so OS send buffers avoid deadlocks.
 func newTestConn(t *testing.T) (client net.Conn, server *xclientConn) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	type result struct {
-		conn *xclientConn
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		c, err := ln.Accept()
-		ln.Close() //nolint:errcheck
-		if err != nil {
-			ch <- result{nil, err}
-			return
-		}
-		ch <- result{newXClientConn(c, nil), nil}
-	}()
-	c, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := <-ch
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
-	t.Cleanup(func() {
-		c.Close()      //nolint:errcheck
-		r.conn.Close() //nolint:errcheck
-	})
-	return c, r.conn
+	return newTestConnWithTrustedNets(t, []*net.IPNet{loopbackNet})
 }
 
 func deadline(d time.Duration) time.Time { return time.Now().Add(d) }

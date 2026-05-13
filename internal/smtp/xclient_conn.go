@@ -100,11 +100,10 @@ func (c *xclientConn) Read(b []byte) (int, error) {
 }
 
 // isTrusted reports whether the TCP peer is in trustedNets.
-// When trustedNets is empty every peer is trusted (backwards-compatible default
-// for callers that don't configure network restrictions).
+// An empty trustedNets means no peer is trusted.
 func (c *xclientConn) isTrusted() bool {
 	if len(c.trustedNets) == 0 {
-		return true
+		return false
 	}
 	tcpAddr, ok := c.Conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
