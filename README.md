@@ -1,13 +1,20 @@
 # yarilo
 
+<table><tr>
+<td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg" width="110" alt="yarilo logo"/></td>
+<td>
+
+Production-grade IMAP/SMTP/JMAP mail server written in Go.
+Three-tier cluster (proxy → director → backend), pluggable storage (Maildir / dbox / mdbox / S3), Sieve filtering, full Dovecot 2.3 protocol compatibility.
+
 [![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)](PLAN.md)
 
-Production-grade IMAP/SMTP/JMAP mail server written in Go.
-Three-tier cluster (proxy → director → backend), pluggable storage (Maildir / dbox / mdbox / S3), Sieve filtering, full Dovecot 2.3 protocol compatibility.
+</td>
+</tr></table>
 
 ---
 
