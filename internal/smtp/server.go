@@ -64,7 +64,11 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 	srv.Domain = s.opts.Config.Hostname
 	srv.MaxMessageBytes = s.opts.Config.MaxMsgSize
 	srv.MaxRecipients = 100
-	srv.AllowInsecureAuth = submission // submission requires AUTH; allow over plain for TLS
+	if l := s.opts.Config.MaxLineLength; l > 0 {
+		srv.MaxLineLength = l
+	}
+	// For submission: allow AUTH on plain connections only if disable_plaintext_auth is false.
+	srv.AllowInsecureAuth = submission && !s.opts.Config.DisablePlainAuth
 	srv.ReadTimeout = 5 * time.Minute
 	srv.WriteTimeout = 5 * time.Minute
 	return srv
@@ -74,7 +78,16 @@ func (s *Server) buildServer(submission bool) *goSmtp.Server {
 func (s *Server) ServeMX(ln net.Listener) error {
 	slog.Info("smtp: MX listening", "addr", ln.Addr())
 	if s.opts.Config.ProxyProtocol {
-		ln = &proxyproto.Listener{Listener: ln}
+		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
+		ln = &proxyproto.Listener{
+			Listener:          ln,
+			Policy:            proxyPolicy(nets),
+			ReadHeaderTimeout: s.haproxyTimeout(),
+		}
+	}
+	if s.opts.Config.XClient {
+		nets := parseCIDRs(s.opts.Config.XClientTrustedNets)
+		ln = &xclientListener{Listener: ln, trustedNets: nets}
 	}
 	return s.mxSrv.Serve(ln)
 }
@@ -88,9 +101,56 @@ func (s *Server) ServeSubmit(ln net.Listener, tlsCfg *tls.Config) error {
 		ln = tls.NewListener(ln, tlsCfg)
 	}
 	if s.opts.Config.ProxyProtocol {
-		ln = &proxyproto.Listener{Listener: ln}
+		nets := parseCIDRs(s.opts.Config.HAProxyTrustedNets)
+		ln = &proxyproto.Listener{
+			Listener:          ln,
+			Policy:            proxyPolicy(nets),
+			ReadHeaderTimeout: s.haproxyTimeout(),
+		}
 	}
 	return s.subSrv.Serve(ln)
+}
+
+func (s *Server) haproxyTimeout() time.Duration {
+	if s.opts.Config.HAProxyTimeout > 0 {
+		return time.Duration(s.opts.Config.HAProxyTimeout) * time.Second
+	}
+	return 3 * time.Second
+}
+
+// parseCIDRs parses a list of CIDR strings. Invalid entries are logged and skipped.
+func parseCIDRs(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, s := range cidrs {
+		_, ipnet, err := net.ParseCIDR(s)
+		if err != nil {
+			slog.Warn("smtp: invalid trusted CIDR, skipping", "cidr", s, "err", err)
+			continue
+		}
+		nets = append(nets, ipnet)
+	}
+	return nets
+}
+
+// proxyPolicy returns a go-proxyproto Policy function.
+// If nets is empty, all PROXY headers are rejected (IGNORE).
+// Otherwise only connections from trusted nets are USEd; others are IGNOREd.
+func proxyPolicy(nets []*net.IPNet) func(upstream net.Addr) (proxyproto.Policy, error) {
+	return func(upstream net.Addr) (proxyproto.Policy, error) {
+		if len(nets) == 0 {
+			return proxyproto.IGNORE, nil
+		}
+		tcpAddr, ok := upstream.(*net.TCPAddr)
+		if !ok {
+			return proxyproto.IGNORE, nil
+		}
+		for _, n := range nets {
+			if n.Contains(tcpAddr.IP) {
+				return proxyproto.USE, nil
+			}
+		}
+		return proxyproto.IGNORE, nil
+	}
 }
 
 // ---- backend / session --------------------------------------------------
@@ -130,8 +190,26 @@ func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
 }
 
 func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
-	s.rcpts = append(s.rcpts, to)
+	s.rcpts = append(s.rcpts, stripDelimiter(to, s.srv.opts.Config.RecipientDelimiter))
 	return nil
+}
+
+// stripDelimiter removes the subaddress extension from an email address.
+// "user+tag@domain" with delimiter "+" → "user@domain".
+func stripDelimiter(addr, delim string) string {
+	if delim == "" {
+		return addr
+	}
+	addr = strings.Trim(addr, "<>")
+	at := strings.LastIndex(addr, "@")
+	if at < 0 {
+		return addr
+	}
+	local, domain := addr[:at], addr[at+1:]
+	if i := strings.Index(local, delim); i >= 0 {
+		local = local[:i]
+	}
+	return local + "@" + domain
 }
 
 func (s *session) Data(r io.Reader) error {

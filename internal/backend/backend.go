@@ -63,18 +63,26 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- TLS configs ----
 	var imapTLS, smtpTLS *tls.Config
 	if cfg.IMAP.TLSCert != "" && cfg.IMAP.TLSKey != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.IMAP.TLSCert, cfg.IMAP.TLSKey)
+		t, err := config.BuildTLSConfig(
+			cfg.IMAP.TLSCert, cfg.IMAP.TLSKey,
+			cfg.IMAP.TLSAltCert, cfg.IMAP.TLSAltKey,
+			cfg.IMAP.TLSMinVersion, cfg.IMAP.TLSPreferServer,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("backend: IMAP TLS: %w", err)
 		}
-		imapTLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		imapTLS = t
 	}
 	if cfg.SMTP.TLSCert != "" && cfg.SMTP.TLSKey != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.SMTP.TLSCert, cfg.SMTP.TLSKey)
+		t, err := config.BuildTLSConfig(
+			cfg.SMTP.TLSCert, cfg.SMTP.TLSKey,
+			cfg.SMTP.TLSAltCert, cfg.SMTP.TLSAltKey,
+			cfg.SMTP.TLSMinVersion, cfg.SMTP.TLSPreferServer,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("backend: SMTP TLS: %w", err)
 		}
-		smtpTLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		smtpTLS = t
 	}
 
 	// ---- IMAP ----
@@ -83,13 +91,15 @@ func New(cfg *config.Config) (*Server, error) {
 		imapAddr = ":993"
 	}
 	imap := imapsvr.New(imapsvr.Options{
-		Addr:          imapAddr,
-		AddrPlain:     cfg.IMAP.ListenPlain,
-		TLSConfig:     imapTLS,
-		Mailbox:       mbox,
-		Index:         idx,
-		Auth:          authChain,
-		ProxyProtocol: cfg.IMAP.ProxyProtocol,
+		Addr:             imapAddr,
+		AddrPlain:        cfg.IMAP.ListenPlain,
+		TLSConfig:        imapTLS,
+		Mailbox:          mbox,
+		Index:            idx,
+		Auth:             authChain,
+		ProxyProtocol:    cfg.IMAP.ProxyProtocol,
+		HAProxyTimeout:   time.Duration(cfg.IMAP.HAProxyTimeout) * time.Second,
+		DisablePlainAuth: cfg.IMAP.DisablePlainAuth,
 	})
 
 	// ---- DKIM key provider ----

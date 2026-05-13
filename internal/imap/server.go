@@ -27,13 +27,15 @@ type Server struct {
 
 // Options configures the IMAP server.
 type Options struct {
-	Addr          string // TLS address, e.g. ":993"
-	AddrPlain     string // STARTTLS address, e.g. ":143"
-	TLSConfig     *tls.Config
-	Mailbox       mailbox.MailboxBackend
-	Index         mailbox.IndexBackend
-	Auth          protocol.Passdb
-	ProxyProtocol bool // wrap listener with HAProxy PROXY protocol
+	Addr             string // TLS address, e.g. ":993"
+	AddrPlain        string // STARTTLS address, e.g. ":143"
+	TLSConfig        *tls.Config
+	Mailbox          mailbox.MailboxBackend
+	Index            mailbox.IndexBackend
+	Auth             protocol.Passdb
+	ProxyProtocol    bool          // wrap listener with HAProxy PROXY protocol
+	HAProxyTimeout   time.Duration // ReadHeaderTimeout for proxyproto.Listener
+	DisablePlainAuth bool          // reject AUTH on unencrypted connections
 }
 
 // New creates an IMAP server.
@@ -56,7 +58,7 @@ func New(opts Options) *Server {
 		NewSession:   s.newSession,
 		Caps:         caps,
 		TLSConfig:    opts.TLSConfig,
-		InsecureAuth: opts.TLSConfig == nil,
+		InsecureAuth: !opts.DisablePlainAuth,
 		Logger:       &slogLogger{},
 	})
 	return s
@@ -92,7 +94,11 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 	if s.opts.ProxyProtocol {
-		return &proxyproto.Listener{Listener: ln}
+		timeout := s.opts.HAProxyTimeout
+		if timeout == 0 {
+			timeout = 3 * time.Second
+		}
+		return &proxyproto.Listener{Listener: ln, ReadHeaderTimeout: timeout}
 	}
 	return ln
 }

@@ -20,11 +20,15 @@ import (
 )
 
 var (
-	flagHost      = flag.String("host", "localhost", "yarilo hostname")
-	flagIMAPSPort = flag.String("imap-port", "993", "IMAPS port")
-	flagTelemetry = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
-	flagTimeout   = flag.Duration("timeout", 10*time.Second, "per-check timeout")
-	flagInsecure  = flag.Bool("insecure", false, "skip TLS certificate verification")
+	flagHost          = flag.String("host", "localhost", "yarilo hostname")
+	flagIMAPSPort     = flag.String("imap-port", "993", "IMAPS port")
+	flagSMTPMXPort    = flag.String("smtp-mx-port", "25", "SMTP MX port")
+	flagSMTPSubPort   = flag.String("smtp-sub-port", "587", "SMTP submission port")
+	flagTelemetry     = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
+	flagTimeout       = flag.Duration("timeout", 10*time.Second, "per-check timeout")
+	flagInsecure      = flag.Bool("insecure", false, "skip TLS certificate verification")
+	flagProxyProtocol = flag.Bool("proxy-protocol", false, "send HAProxy PROXY header before SMTP banner")
+	flagXClient       = flag.Bool("xclient", false, "check that MX port advertises XCLIENT in EHLO")
 )
 
 type result struct {
@@ -43,6 +47,21 @@ func main() {
 		{"telemetry /healthz", checkHealth},
 		{"telemetry /readyz", checkReady},
 		{"imap CAPABILITY", checkIMAP},
+		{"smtp MX EHLO", checkSMTPMX},
+		{"smtp submission EHLO+STARTTLS", checkSMTPSubmission},
+	}
+
+	if *flagProxyProtocol {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"smtp MX PROXY protocol", checkSMTPProxyProtocol})
+	}
+	if *flagXClient {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"smtp MX XCLIENT cap", checkSMTPXClient})
 	}
 
 	var failures []result
@@ -64,13 +83,10 @@ func main() {
 	}
 }
 
-func checkHealth() error {
-	return httpGet(*flagTelemetry + "/healthz")
-}
+// ---- telemetry -----------------------------------------------------------
 
-func checkReady() error {
-	return httpGet(*flagTelemetry + "/readyz")
-}
+func checkHealth() error { return httpGet(*flagTelemetry + "/healthz") }
+func checkReady() error  { return httpGet(*flagTelemetry + "/readyz") }
 
 func httpGet(url string) error {
 	c := &http.Client{Timeout: *flagTimeout}
@@ -90,6 +106,8 @@ func httpGet(url string) error {
 	return nil
 }
 
+// ---- IMAP ----------------------------------------------------------------
+
 func checkIMAP() error {
 	addr := net.JoinHostPort(*flagHost, *flagIMAPSPort)
 	dialer := &net.Dialer{Timeout: *flagTimeout}
@@ -104,7 +122,6 @@ func checkIMAP() error {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
 
-	// Read greeting: * OK ...
 	greeting, err := readLine(conn)
 	if err != nil {
 		return fmt.Errorf("read greeting: %w", err)
@@ -113,7 +130,6 @@ func checkIMAP() error {
 		return fmt.Errorf("unexpected greeting: %q", greeting)
 	}
 
-	// Send CAPABILITY
 	fmt.Fprintf(conn, "A001 CAPABILITY\r\n")
 	for {
 		line, err := readLine(conn)
@@ -132,11 +148,181 @@ func checkIMAP() error {
 			return fmt.Errorf("CAPABILITY command failed: %q", line)
 		}
 	}
-
-	// Graceful logout
 	fmt.Fprintf(conn, "A002 LOGOUT\r\n")
 	return nil
 }
+
+// ---- SMTP MX (port 25) ---------------------------------------------------
+
+func checkSMTPMX() error {
+	conn, err := smtpDial(net.JoinHostPort(*flagHost, *flagSMTPMXPort), false)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	caps, err := smtpEHLO(conn)
+	if err != nil {
+		return err
+	}
+	_ = caps
+	smtpQuit(conn)
+	return nil
+}
+
+// checkSMTPSubmission verifies the submission port:
+//  1. EHLO advertises AUTH PLAIN and STARTTLS.
+//  2. Performs the STARTTLS upgrade and sends a second EHLO.
+func checkSMTPSubmission() error {
+	addr := net.JoinHostPort(*flagHost, *flagSMTPSubPort)
+	conn, err := smtpDial(addr, false)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	caps, err := smtpEHLO(conn)
+	if err != nil {
+		return err
+	}
+	if !caps["STARTTLS"] {
+		return fmt.Errorf("submission port did not advertise STARTTLS")
+	}
+	if !caps["AUTH PLAIN"] {
+		return fmt.Errorf("submission port did not advertise AUTH PLAIN")
+	}
+
+	// Perform STARTTLS upgrade.
+	fmt.Fprintf(conn, "STARTTLS\r\n")
+	line, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("STARTTLS: read response: %w", err)
+	}
+	if !strings.HasPrefix(line, "220") {
+		return fmt.Errorf("STARTTLS: unexpected response %q", line)
+	}
+	tlsCfg := &tls.Config{
+		ServerName:         *flagHost,
+		InsecureSkipVerify: *flagInsecure, //nolint:gosec
+	}
+	tlsConn := tls.Client(conn, tlsCfg)
+	if err := tlsConn.Handshake(); err != nil {
+		return fmt.Errorf("STARTTLS TLS handshake: %w", err)
+	}
+
+	// Second EHLO after upgrade must still advertise AUTH PLAIN.
+	caps2, err := smtpEHLO(tlsConn)
+	if err != nil {
+		return fmt.Errorf("post-STARTTLS EHLO: %w", err)
+	}
+	if !caps2["AUTH PLAIN"] {
+		return fmt.Errorf("post-STARTTLS EHLO missing AUTH PLAIN")
+	}
+	smtpQuit(tlsConn)
+	return nil
+}
+
+// checkSMTPProxyProtocol sends a HAProxy PROXY header before the SMTP banner
+// and verifies the server responds with 220.
+// Only run when -proxy-protocol flag is set (requires proxy_protocol: true in config).
+func checkSMTPProxyProtocol() error {
+	addr := net.JoinHostPort(*flagHost, *flagSMTPMXPort)
+	dialer := &net.Dialer{Timeout: *flagTimeout}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+
+	// Send HAProxy PROXY header with a fake source IP.
+	fmt.Fprintf(conn, "PROXY TCP4 203.0.113.1 %s 12345 25\r\n", *flagHost)
+
+	// Expect normal SMTP banner.
+	banner, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("PROXY: read banner: %w", err)
+	}
+	if !strings.HasPrefix(banner, "220") {
+		return fmt.Errorf("PROXY: unexpected banner %q", banner)
+	}
+	return nil
+}
+
+// checkSMTPXClient connects to MX and verifies EHLO advertises XCLIENT.
+// Only run when -xclient flag is set (requires xclient: true in config).
+func checkSMTPXClient() error {
+	conn, err := smtpDial(net.JoinHostPort(*flagHost, *flagSMTPMXPort), false)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	caps, err := smtpEHLO(conn)
+	if err != nil {
+		return err
+	}
+	if !caps["XCLIENT"] {
+		return fmt.Errorf("MX port did not advertise XCLIENT in EHLO")
+	}
+	smtpQuit(conn)
+	return nil
+}
+
+// ---- SMTP helpers --------------------------------------------------------
+
+// smtpDial opens a raw TCP connection and reads the 220 banner.
+func smtpDial(addr string, _ bool) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: *flagTimeout}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("connect %s: %w", addr, err)
+	}
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+
+	banner, err := readLine(conn)
+	if err != nil {
+		conn.Close() //nolint:errcheck
+		return nil, fmt.Errorf("read banner: %w", err)
+	}
+	if !strings.HasPrefix(banner, "220") {
+		conn.Close() //nolint:errcheck
+		return nil, fmt.Errorf("unexpected banner: %q", banner)
+	}
+	return conn, nil
+}
+
+// smtpEHLO sends EHLO and returns the set of advertised capabilities.
+// Keys are normalised: "AUTH PLAIN", "STARTTLS", "XCLIENT", "PIPELINING", …
+func smtpEHLO(conn net.Conn) (map[string]bool, error) {
+	fmt.Fprintf(conn, "EHLO smoketest\r\n")
+	caps := make(map[string]bool)
+	for {
+		line, err := readLine(conn)
+		if err != nil {
+			return nil, fmt.Errorf("EHLO read: %w", err)
+		}
+		// strip "250-" or "250 " prefix
+		cap := ""
+		if strings.HasPrefix(line, "250-") {
+			cap = line[4:]
+		} else if strings.HasPrefix(line, "250 ") {
+			cap = line[4:]
+			caps[cap] = true
+			break
+		} else {
+			return nil, fmt.Errorf("EHLO unexpected: %q", line)
+		}
+		caps[cap] = true
+	}
+	return caps, nil
+}
+
+func smtpQuit(conn net.Conn) {
+	fmt.Fprintf(conn, "QUIT\r\n")
+}
+
+// ---- low-level -----------------------------------------------------------
 
 func readLine(r io.Reader) (string, error) {
 	var buf []byte
