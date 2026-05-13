@@ -1,14 +1,13 @@
 # SMTP configuration
 
-Yarilo runs three SMTP listeners from a single server instance:
+Yarilo runs two submission listeners. MX inbound (port 25) is handled by an external MTA (Postfix, Exim, etc.) which delivers to yarilo via LMTP (port 24).
 
 | Service key | Port | Role |
 |:---|:---|:---|
-| `smtp` | `25` | MX inbound — receives mail from the internet. No AUTH. |
 | `submission` | `587` | Outbound submission — AUTH PLAIN required, STARTTLS. |
 | `submissions` | `465` | Outbound submission — AUTH PLAIN required, implicit TLS. |
 
-See [SERVICES.md](SERVICES.md) for listener-level settings (`port`, `ssl_mode`, `haproxy_protocol`, `xclient_protocol`, `disable_plaintext_auth`).
+See [SERVICES.md](SERVICES.md) for listener-level settings (`port`, `ssl_mode`, `haproxy_protocol`, `disable_plaintext_auth`).
 
 ---
 
@@ -33,14 +32,6 @@ protocol:
     max_recipients: 100
     recipient_delimiter: "+"
 ```
-
----
-
-## Inbound (port 25)
-
-Accepts mail from external MTAs. No AUTH. Subaddress extension is stripped using `recipient_delimiter` before delivery.
-
-After DATA the message is passed to the internal delivery engine (`lmtp.Deliverer`) which writes directly to the mailbox — no outbound network connection is made.
 
 ---
 

@@ -26,7 +26,6 @@ All services share the following fields:
 |:---|:---|:---|:---|
 | `imaps` | `993` | `ssl` | [IMAP.md](IMAP.md) |
 | `imap` | `143` | `starttls` | [IMAP.md](IMAP.md) |
-| `smtp` | `25` | `no` | [SMTP.md](SMTP.md) |
 | `submission` | `587` | `starttls` | [SMTP.md](SMTP.md) |
 | `submissions` | `465` | `ssl` | [SMTP.md](SMTP.md) |
 | `pop3` | `110` | `starttls` | [POP3.md](POP3.md) |
@@ -77,10 +76,6 @@ services:
     port: 143
     ssl_mode: starttls
     disable_plaintext_auth: true
-  smtp:
-    enabled: true
-    port: 25
-    ssl_mode: no
   submission:
     enabled: true
     port: 587

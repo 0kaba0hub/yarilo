@@ -82,7 +82,7 @@ Yarilo is a single binary that runs in one of three roles (`mode: proxy | direct
 | Protocol | Standard | Extensions |
 |:---|:---|:---|
 | IMAP4rev2 | RFC 9051 | IDLE, MOVE, CONDSTORE, UNSELECT, NAMESPACE, QUOTA, ACL, BINARY, UIDPLUS, SORT, THREAD, ESEARCH, NOTIFY, QRESYNC, URLAUTH, SPECIAL-USE |
-| SMTP / Submission | RFC 5321, RFC 6409 | STARTTLS, AUTH PLAIN/LOGIN/SCRAM, SIZE, PIPELINING, CHUNKING/BDAT, DSN, XCLIENT |
+| Submission | RFC 6409 | STARTTLS, AUTH PLAIN, SIZE, PIPELINING, relay to upstream MTA |
 | LMTP | RFC 2033 | per-recipient status codes, proxy/director mode, HAProxy, XCLIENT, STARTTLS, Delivered-To header, per-user concurrency limit, client workarounds |
 | POP3 | RFC 1939 | STLS, UIDL, CAPA, XCLIENT |
 | JMAP | RFC 8620, RFC 8621 | HTTP dispatch, WebSocket push (RFC 8887) |
@@ -165,10 +165,6 @@ services:
     port: 143
     ssl_mode: starttls
     disable_plaintext_auth: true
-  smtp:
-    enabled: true
-    port: 25
-    ssl_mode: no
   submission:
     enabled: true
     port: 587

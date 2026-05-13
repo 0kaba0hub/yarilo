@@ -74,7 +74,6 @@ func (s *ServiceConfig) Active() bool { return s != nil && s.Enabled }
 type ServicesConfig struct {
 	IMAP        *ServiceConfig `koanf:"imap"`        // port 143, STARTTLS
 	IMAPS       *ServiceConfig `koanf:"imaps"`       // port 993, SSL
-	SMTP        *ServiceConfig `koanf:"smtp"`        // port 25, MX inbound
 	Submission  *ServiceConfig `koanf:"submission"`  // port 587, STARTTLS outbound
 	Submissions *ServiceConfig `koanf:"submissions"` // port 465, SSL outbound
 	POP3        *ServiceConfig `koanf:"pop3"`        // port 110, STARTTLS
@@ -312,7 +311,6 @@ func expandEnv(cfg *Config) {
 	cfg.General.SSL.TLSAltKey = expand(cfg.General.SSL.TLSAltKey)
 	expandSvcSSL(cfg.Services.IMAP)
 	expandSvcSSL(cfg.Services.IMAPS)
-	expandSvcSSL(cfg.Services.SMTP)
 	expandSvcSSL(cfg.Services.Submission)
 	expandSvcSSL(cfg.Services.Submissions)
 	expandSvcSSL(cfg.Services.POP3)
