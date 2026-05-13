@@ -112,21 +112,12 @@ type LMTPProtocolConfig struct {
 	Proxy LMTPProxyConfig `koanf:"proxy"`
 }
 
-// LMTPProxyConfig enables director-mode LMTP proxy: routes recipients to
-// backend nodes via consistent hashing instead of delivering locally.
+// LMTPProxyConfig holds LMTP proxy settings used on director nodes.
+// Backends are taken from the director's ring (general settings); this section
+// only controls transport behaviour.
 type LMTPProxyConfig struct {
-	// Enabled activates proxy mode. When true, all recipients are routed to backends.
-	Enabled bool `koanf:"enabled"`
-	// Backends is the list of backend LMTP nodes.
-	Backends []LMTPBackendEntry `koanf:"backends"`
 	// Timeout is the per-backend connection+transaction timeout in seconds. Default: 125.
 	Timeout int `koanf:"timeout"`
-}
-
-// LMTPBackendEntry is a single backend node for LMTP proxy routing.
-type LMTPBackendEntry struct {
-	Host string `koanf:"host"`
-	Port int    `koanf:"port"` // default 24
 }
 
 type IMAPProtocolConfig struct {

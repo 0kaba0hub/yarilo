@@ -11,46 +11,31 @@ import (
 	goSmtp "github.com/0kaba0hub/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
-	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
-// proxyRouter resolves recipient usernames to backend LMTP addresses via consistent hashing.
+// proxyRouter resolves recipient usernames to backend LMTP addresses via the
+// director's consistent-hashing ring. Only active on director nodes.
 type proxyRouter struct {
 	ring     *ring.Ring
-	portMap  map[string]int // host → port
 	timeout  time.Duration
 	hostname string // LHLO name sent to upstream
 }
 
-func newProxyRouter(hostname string, cfg config.LMTPProxyConfig) *proxyRouter {
-	r := ring.New()
-	portMap := make(map[string]int, len(cfg.Backends))
-	for _, b := range cfg.Backends {
-		port := b.Port
-		if port == 0 {
-			port = 24
-		}
-		r.AddBackend(&ring.Backend{IP: b.Host, Port: port, Up: true})
-		portMap[b.Host] = port
-	}
-	timeout := time.Duration(cfg.Timeout) * time.Second
-	if timeout == 0 {
-		timeout = 125 * time.Second
-	}
-	return &proxyRouter{ring: r, portMap: portMap, timeout: timeout, hostname: hostname}
+func newProxyRouter(hostname string, r *ring.Ring, timeout time.Duration) *proxyRouter {
+	return &proxyRouter{ring: r, timeout: timeout, hostname: hostname}
 }
 
 // route returns the backend TCP address for a recipient username.
 func (p *proxyRouter) route(username string) (string, error) {
-	ip := p.ring.Lookup(username)
-	if ip == "" {
+	b := p.ring.LookupBackend(username)
+	if b == nil {
 		return "", fmt.Errorf("lmtp/proxy: no backend available")
 	}
-	port := p.portMap[ip]
+	port := b.Port
 	if port == 0 {
 		port = 24
 	}
-	return net.JoinHostPort(ip, fmt.Sprint(port)), nil
+	return net.JoinHostPort(b.IP, fmt.Sprint(port)), nil
 }
 
 // proxyResult is the per-recipient outcome from a proxy delivery.
@@ -126,7 +111,6 @@ func (p *proxyRouter) proxyForward(addr, from string, rcpts []string, data []byt
 
 	perRcpt, closeErr := wc.CloseWithLMTPResponse()
 
-	// Successful responses come in perRcpt; per-recipient failures in LMTPDataError.
 	rcptIdx := make(map[string]int, len(rcpts))
 	for i, r := range rcpts {
 		rcptIdx[r] = i
@@ -141,7 +125,6 @@ func (p *proxyRouter) proxyForward(addr, from string, rcpts []string, data []byt
 			}
 		}
 	} else if closeErr != nil {
-		// Connection-level failure: blame all accepted recipients.
 		for _, i := range accepted {
 			if results[i].err == nil {
 				results[i].err = fmt.Errorf("lmtp/proxy: data response %s: %w", addr, closeErr)

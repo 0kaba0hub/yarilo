@@ -5,14 +5,16 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
-// buildBackendServer starts a real LMTP backend server for alice and bob and
-// returns the listen address plus the mailbox for message count verification.
+// buildBackendServer starts a real LMTP backend server and returns its address
+// and mailbox for message count verification.
 func buildBackendServer(t *testing.T, users ...string) (addr string, mb *maildir.Backend) {
 	t.Helper()
 	dir := t.TempDir()
@@ -48,32 +50,29 @@ func buildBackendServer(t *testing.T, users ...string) (addr string, mb *maildir
 	return ln.Addr().String(), mb
 }
 
-// buildProxyServer starts an LMTP proxy server pointing at the given backend addresses.
+// buildProxyServer starts an LMTP proxy server using a ring built from the
+// given backend addresses.
 func buildProxyServer(t *testing.T, backends ...string) string {
 	t.Helper()
-	entries := make([]config.LMTPBackendEntry, len(backends))
-	for i, b := range backends {
+	r := ring.New()
+	for _, b := range backends {
 		host, portStr, _ := net.SplitHostPort(b)
 		port := 24
 		if portStr != "" {
 			fmt.Sscanf(portStr, "%d", &port)
 		}
-		entries[i] = config.LMTPBackendEntry{Host: host, Port: port}
+		r.AddBackend(&ring.Backend{IP: host, Port: port, Up: true})
 	}
 
-	// Proxy mode: no local mailbox.
 	srv := New(Options{
 		Hostname: "proxy.test",
 		Config: config.LMTPProtocolConfig{
 			AddReceivedHeader: false,
 			ReadTimeout:       5,
 			WriteTimeout:      5,
-			Proxy: config.LMTPProxyConfig{
-				Enabled:  true,
-				Backends: entries,
-				Timeout:  5,
-			},
+			Proxy:             config.LMTPProxyConfig{Timeout: 5},
 		},
+		Ring: r,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -96,7 +95,6 @@ func TestLMTP_Proxy_SingleBackend(t *testing.T) {
 		t.Fatalf("expected 250 via proxy, got: %q", resp[0])
 	}
 
-	// Verify the message landed in alice's INBOX on the backend.
 	msgs, err := mb.List("alice@example.com", "INBOX")
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -107,18 +105,15 @@ func TestLMTP_Proxy_SingleBackend(t *testing.T) {
 }
 
 func TestLMTP_Proxy_UnknownRoute(t *testing.T) {
-	// Proxy with no backends → routing fails → 451 at RCPT TO.
+	// Empty ring → routing fails → 451 at RCPT TO.
 	srv := New(Options{
 		Hostname: "proxy.test",
 		Config: config.LMTPProtocolConfig{
 			ReadTimeout:  5,
 			WriteTimeout: 5,
-			Proxy: config.LMTPProxyConfig{
-				Enabled:  true,
-				Backends: nil,
-				Timeout:  5,
-			},
+			Proxy:        config.LMTPProxyConfig{Timeout: 5},
 		},
+		Ring: ring.New(), // empty ring
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -141,23 +136,19 @@ func TestLMTP_Proxy_UnknownRoute(t *testing.T) {
 }
 
 func TestProxyRouter_Route_Consistent(t *testing.T) {
-	cfg := config.LMTPProxyConfig{
-		Enabled: true,
-		Backends: []config.LMTPBackendEntry{
-			{Host: "10.0.0.1", Port: 24},
-			{Host: "10.0.0.2", Port: 24},
-		},
-		Timeout: 5,
-	}
-	r := newProxyRouter("test", cfg)
+	r := ring.New()
+	r.AddBackend(&ring.Backend{IP: "10.0.0.1", Port: 24, Up: true})
+	r.AddBackend(&ring.Backend{IP: "10.0.0.2", Port: 24, Up: true})
+
+	router := newProxyRouter("test", r, 5*time.Second)
 
 	// Same username must always resolve to the same backend.
-	addr1, err := r.route("alice@example.com")
+	addr1, err := router.route("alice@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 10; i++ {
-		got, err := r.route("alice@example.com")
+		got, err := router.route("alice@example.com")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -166,11 +157,11 @@ func TestProxyRouter_Route_Consistent(t *testing.T) {
 		}
 	}
 
-	// Both backends should be reachable (different users may hash to different ones).
+	// Both backends should be reachable across different users.
 	seen := map[string]bool{}
 	for _, user := range []string{"alice@example.com", "bob@example.com", "carol@example.com",
 		"dave@example.com", "eve@example.com", "frank@example.com"} {
-		addr, err := r.route(user)
+		addr, err := router.route(user)
 		if err != nil {
 			t.Fatal(err)
 		}

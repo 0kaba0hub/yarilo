@@ -72,30 +72,19 @@ protocol:
 
 ## `protocol.lmtp.proxy`
 
-Proxy mode turns the LMTP listener into a **director**: instead of delivering locally, it routes each recipient to the correct backend node via consistent hashing. This is used on director-tier nodes; backend nodes run LMTP in local delivery mode.
+Proxy mode is active only on **director** nodes. The director's consistent-hashing ring (built from `general` backend settings) routes each recipient to the correct backend. Backend nodes always deliver locally — `protocol.lmtp.proxy` has no effect on them.
+
+When multiple recipients hash to different backends, deliveries run in parallel and per-recipient status codes are merged before replying to the MTA.
 
 | Key | Default | Description |
 |:---|:---|:---|
-| `proxy.enabled` | `false` | Enable director mode. When `true`, all RCPT TO addresses are routed to backends. |
 | `proxy.timeout` | `125` | Per-backend connect + transaction timeout in seconds. |
-| `proxy.backends[].host` | — | Backend hostname or IP address. |
-| `proxy.backends[].port` | `24` | Backend LMTP port. |
-
-When multiple recipients hash to different backends, deliveries run in parallel and per-recipient status codes are merged before replying to the MTA.
 
 ```yaml
 protocol:
   lmtp:
     proxy:
-      enabled: true
       timeout: 60
-      backends:
-        - host: backend1.internal
-          port: 24
-        - host: backend2.internal
-          port: 24
-        - host: backend3.internal
-          port: 24
 ```
 
 ---
@@ -152,21 +141,14 @@ services:
     enabled: true
     port: 24
     ssl_mode: no
-    haproxy_protocol: false
-    xclient_protocol: false
 
 protocol:
   lmtp:
     proxy:
-      enabled: true
       timeout: 60
-      backends:
-        - host: 10.0.1.10
-        - host: 10.0.1.11
-        - host: 10.0.1.12
 ```
 
-The proxy node forwards mail to the backend determined by consistent hashing on the recipient username. Failed backends return a `451` temporary error; the MTA retries later.
+Backends are taken from the director's ring (configured in `general` settings). The director routes each recipient via consistent hashing; failed backends return `451` and the MTA retries later.
 
 ---
 
