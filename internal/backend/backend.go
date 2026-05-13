@@ -6,12 +6,17 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
+	"github.com/0kaba0hub/yarilo/internal/dkim"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
+	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	smtpsvr "github.com/0kaba0hub/yarilo/internal/smtp"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
@@ -23,10 +28,12 @@ import (
 
 // Server is the yarilo backend (or single-node) server.
 type Server struct {
-	cfg   *config.Config
-	telem *telemetry.Server
-	imap  *imapsvr.Server
-	index *file.Backend
+	cfg     *config.Config
+	telem   *telemetry.Server
+	imap    *imapsvr.Server
+	smtp    *smtpsvr.Server
+	smtpTLS *tls.Config
+	index   *file.Backend
 }
 
 // New creates and wires all components according to cfg.
@@ -36,7 +43,7 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: auth: %w", err)
 	}
-	authSrv := protocol.Chain(passdbs)
+	authChain := protocol.Chain(passdbs)
 
 	// ---- storage ----
 	if cfg.Storage.MaildirRoot == "" {
@@ -53,17 +60,21 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 	idx := file.New(indexRoot)
 
-	// ---- TLS ----
-	var tlsCfg *tls.Config
+	// ---- TLS configs ----
+	var imapTLS, smtpTLS *tls.Config
 	if cfg.IMAP.TLSCert != "" && cfg.IMAP.TLSKey != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.IMAP.TLSCert, cfg.IMAP.TLSKey)
 		if err != nil {
-			return nil, fmt.Errorf("backend: TLS: %w", err)
+			return nil, fmt.Errorf("backend: IMAP TLS: %w", err)
 		}
-		tlsCfg = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+		imapTLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	}
+	if cfg.SMTP.TLSCert != "" && cfg.SMTP.TLSKey != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.SMTP.TLSCert, cfg.SMTP.TLSKey)
+		if err != nil {
+			return nil, fmt.Errorf("backend: SMTP TLS: %w", err)
 		}
+		smtpTLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	}
 
 	// ---- IMAP ----
@@ -72,12 +83,55 @@ func New(cfg *config.Config) (*Server, error) {
 		imapAddr = ":993"
 	}
 	imap := imapsvr.New(imapsvr.Options{
-		Addr:      imapAddr,
-		AddrPlain: cfg.IMAP.ListenPlain,
-		TLSConfig: tlsCfg,
-		Mailbox:   mbox,
-		Index:     idx,
-		Auth:      authSrv,
+		Addr:          imapAddr,
+		AddrPlain:     cfg.IMAP.ListenPlain,
+		TLSConfig:     imapTLS,
+		Mailbox:       mbox,
+		Index:         idx,
+		Auth:          authChain,
+		ProxyProtocol: cfg.IMAP.ProxyProtocol,
+	})
+
+	// ---- DKIM key provider ----
+	var keyProv dkim.KeyProvider
+	if cfg.DKIM.Sign {
+		switch strings.ToLower(cfg.DKIM.Keys.Backend) {
+		case "dynamic":
+			d := cfg.DKIM.Keys.Dynamic
+			ttl := time.Duration(d.CacheTTL) * time.Second
+			if ttl == 0 {
+				ttl = 5 * time.Minute
+			}
+			kp, err := dkim.NewSQLKeyProvider(d.Driver, d.DSN, d.Query, ttl)
+			if err != nil {
+				return nil, fmt.Errorf("backend: DKIM SQL key provider: %w", err)
+			}
+			keyProv = kp
+		default: // static
+			keyProv = dkim.NewStaticKeyProvider(cfg.DKIM.Keys.Static)
+		}
+	}
+
+	// ---- milter clients ----
+	var milters []*smtpsvr.MilterClient
+	for _, mc := range cfg.SMTP.Milters {
+		c, err := smtpsvr.NewMilterClient(mc.Socket, mc.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("backend: milter %s: %w", mc.Socket, err)
+		}
+		milters = append(milters, c)
+	}
+
+	// ---- SMTP ----
+	smtp := smtpsvr.New(smtpsvr.Options{
+		Config:    cfg.SMTP,
+		DKIMCfg:   cfg.DKIM,
+		SPFCfg:    cfg.SPF,
+		DMARCCfg:  cfg.DMARC,
+		Auth:      chainAuth{authChain},
+		KeyProv:   keyProv,
+		Deliverer: lmtp.New(mbox, idx),
+		Milters:   milters,
 	})
 
 	// ---- telemetry ----
@@ -88,30 +142,24 @@ func New(cfg *config.Config) (*Server, error) {
 	telem := telemetry.New(telemAddr)
 
 	return &Server{
-		cfg:   cfg,
-		telem: telem,
-		imap:  imap,
-		index: idx,
+		cfg:     cfg,
+		telem:   telem,
+		imap:    imap,
+		smtp:    smtp,
+		smtpTLS: smtpTLS,
+		index:   idx,
 	}, nil
 }
 
 // Run starts all servers. Blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
-	// Auth socket
-	go func() {
-		slog.Info("backend: auth socket not yet bound (single-node skips it)")
-	}()
-
-	// Telemetry
 	go func() {
 		if err := s.telem.ListenAndServe(ctx); err != nil {
 			slog.Error("telemetry: server error", "err", err)
 		}
 	}()
-
 	s.telem.SetReady(true)
 
-	// IMAP
 	if s.cfg.IMAP.TLSCert != "" {
 		go func() {
 			if err := s.imap.ListenAndServeTLS(); err != nil {
@@ -129,8 +177,54 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
+	mxAddr := s.cfg.SMTP.ListenMX
+	if mxAddr == "" {
+		mxAddr = ":25"
+	}
+	go func() {
+		ln, err := net.Listen("tcp", mxAddr)
+		if err != nil {
+			slog.Error("smtp: MX listen error", "err", err)
+			os.Exit(1)
+		}
+		if err := s.smtp.ServeMX(ln); err != nil {
+			slog.Error("smtp: MX server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	subAddr := s.cfg.SMTP.ListenSubmit
+	if subAddr == "" {
+		subAddr = ":587"
+	}
+	go func() {
+		ln, err := net.Listen("tcp", subAddr)
+		if err != nil {
+			slog.Error("smtp: submission listen error", "err", err)
+			os.Exit(1)
+		}
+		if err := s.smtp.ServeSubmit(ln, s.smtpTLS); err != nil {
+			slog.Error("smtp: submission server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+
 	<-ctx.Done()
 	s.index.Close() //nolint:errcheck
+	return nil
+}
+
+// chainAuth adapts protocol.Chain to smtp.Authenticator.
+type chainAuth struct{ c protocol.Chain }
+
+func (a chainAuth) AuthPlain(username, password string) error {
+	resp, err := a.c.Authenticate(username, password, "smtp")
+	if err != nil {
+		return fmt.Errorf("smtp/auth: %w", err)
+	}
+	if resp == nil || resp.Result != protocol.AuthOK {
+		return fmt.Errorf("smtp/auth: authentication failed")
+	}
 	return nil
 }
 

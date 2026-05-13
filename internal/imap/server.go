@@ -13,6 +13,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
+	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -26,12 +27,13 @@ type Server struct {
 
 // Options configures the IMAP server.
 type Options struct {
-	Addr      string // TLS address, e.g. ":993"
-	AddrPlain string // STARTTLS address, e.g. ":143"
-	TLSConfig *tls.Config
-	Mailbox   mailbox.MailboxBackend
-	Index     mailbox.IndexBackend
-	Auth      protocol.Passdb
+	Addr          string // TLS address, e.g. ":993"
+	AddrPlain     string // STARTTLS address, e.g. ":143"
+	TLSConfig     *tls.Config
+	Mailbox       mailbox.MailboxBackend
+	Index         mailbox.IndexBackend
+	Auth          protocol.Passdb
+	ProxyProtocol bool // wrap listener with HAProxy PROXY protocol
 }
 
 // New creates an IMAP server.
@@ -70,12 +72,12 @@ func (s *Server) ListenAndServeTLS() error {
 		return err
 	}
 	slog.Info("imap: listening (TLS)", "addr", s.opts.Addr)
-	return s.srv.Serve(ln)
+	return s.srv.Serve(s.wrapProxy(ln))
 }
 
 // Serve accepts connections on the given listener.
 func (s *Server) Serve(ln net.Listener) error {
-	return s.srv.Serve(ln)
+	return s.srv.Serve(s.wrapProxy(ln))
 }
 
 // ListenAndServe starts the plain STARTTLS listener (port 143).
@@ -85,7 +87,14 @@ func (s *Server) ListenAndServe() error {
 		return err
 	}
 	slog.Info("imap: listening (STARTTLS)", "addr", s.opts.AddrPlain)
-	return s.srv.Serve(ln)
+	return s.srv.Serve(s.wrapProxy(ln))
+}
+
+func (s *Server) wrapProxy(ln net.Listener) net.Listener {
+	if s.opts.ProxyProtocol {
+		return &proxyproto.Listener{Listener: ln}
+	}
+	return ln
 }
 
 func (s *Server) newSession(_ *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
