@@ -105,7 +105,7 @@ type POP3ProtocolConfig struct {
 	UIDLFormat     string `koanf:"pop3_uidl_format"`
 	UIDLDuplicates string `koanf:"pop3_uidl_duplicates"` // allow | rename
 	EnableLast     bool   `koanf:"pop3_enable_last"`
-	DeleteType     string `koanf:"pop3_delete_type"`  // expunge | flag
+	DeleteType     string `koanf:"pop3_delete_type"` // expunge | flag
 	DeletedFlag    string `koanf:"pop3_deleted_flag"`
 }
 

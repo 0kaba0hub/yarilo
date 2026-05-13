@@ -41,14 +41,14 @@ type Options struct {
 	XClientNets      []*net.IPNet
 	DisablePlainAuth bool
 	// Protocol-level settings.
-	Config   config.SMTPProtocolConfig
-	DKIMCfg  config.DKIMConfig
-	SPFCfg   config.SPFConfig
-	DMARCCfg config.DMARCConfig
-	Auth     Authenticator
-	KeyProv  dkim.KeyProvider // nil → no signing
+	Config    config.SMTPProtocolConfig
+	DKIMCfg   config.DKIMConfig
+	SPFCfg    config.SPFConfig
+	DMARCCfg  config.DMARCConfig
+	Auth      Authenticator
+	KeyProv   dkim.KeyProvider // nil → no signing
 	Deliverer *lmtp.Deliverer
-	Milters  []*MilterClient
+	Milters   []*MilterClient
 }
 
 // Server wraps two go-smtp servers: MX (port 25) and submission (port 587).
@@ -121,20 +121,6 @@ func (s *Server) haproxyTimeout() time.Duration {
 		return s.opts.HAProxyTimeout
 	}
 	return 3 * time.Second
-}
-
-// parseCIDRs parses a list of CIDR strings. Invalid entries are logged and skipped.
-func parseCIDRs(cidrs []string) []*net.IPNet {
-	nets := make([]*net.IPNet, 0, len(cidrs))
-	for _, s := range cidrs {
-		_, ipnet, err := net.ParseCIDR(s)
-		if err != nil {
-			slog.Warn("smtp: invalid trusted CIDR, skipping", "cidr", s, "err", err)
-			continue
-		}
-		nets = append(nets, ipnet)
-	}
-	return nets
 }
 
 // proxyPolicy returns a go-proxyproto Policy function.

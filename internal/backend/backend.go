@@ -32,9 +32,9 @@ import (
 type Server struct {
 	cfg   *config.Config
 	telem *telemetry.Server
-	imap  *imapsvr.Server  // nil if neither IMAP nor IMAPS is active
-	pop3  *pop3svr.Server  // nil if neither POP3 nor POP3S is active
-	smtp  *smtpsvr.Server  // nil if no SMTP/Submission/Submissions is active
+	imap  *imapsvr.Server // nil if neither IMAP nor IMAPS is active
+	pop3  *pop3svr.Server // nil if neither POP3 nor POP3S is active
+	smtp  *smtpsvr.Server // nil if no SMTP/Submission/Submissions is active
 	index *file.Backend
 }
 
