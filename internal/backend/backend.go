@@ -150,6 +150,9 @@ func New(cfg *config.Config) (*Server, error) {
 		IdleNotifyInterval: time.Duration(cfg.IMAP.IdleNotifyInterval) * time.Second,
 		MaxLineLength:      cfg.IMAP.MaxLineLength,
 		ConnLimit:          connLimiter,
+		IDSend:             cfg.IMAP.IDSend,
+		LoginGreeting:      cfg.IMAP.LoginGreeting,
+		LogoutFormat:       cfg.IMAP.LogoutFormat,
 	})
 
 	// ---- DKIM key provider ----

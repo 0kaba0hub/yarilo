@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,9 @@ type Options struct {
 	IdleNotifyInterval time.Duration      // send EXISTS keepalive during IDLE; 0 = disabled
 	MaxLineLength      int                // max command line bytes; 0 = unlimited (Dovecot default 65536)
 	ConnLimit          *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
+	IDSend             string             // imap_id_send: "key val …"; * = server default; empty = disabled
+	LoginGreeting      string             // login_greeting: replaces "IMAP server ready"; empty = default
+	LogoutFormat       string             // imap_logout_format: %{deleted} %{expunged} etc.; empty = disabled
 }
 
 // New creates an IMAP server.
@@ -117,6 +121,12 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 	if s.opts.XClient {
 		ln = &xclientImapListener{Listener: ln, trustedNets: s.opts.XClientTrustedNets}
 	}
+	if s.opts.LoginGreeting != "" {
+		ln = &greetingListener{Listener: ln, greeting: s.opts.LoginGreeting}
+	}
+	if s.opts.IDSend != "" {
+		ln = newIDListener(ln, s.opts.IDSend)
+	}
 	return ln
 }
 
@@ -151,6 +161,14 @@ type session struct {
 	username string
 	limitIP  string // set after Login, cleared in Close
 	folder   *mailbox.Folder
+
+	// logout stats (imap_logout_format)
+	statsDeleted    int
+	statsExpunged   int
+	statsFetchHdr   int
+	statsFetchHdrB  int64
+	statsFetchBody  int
+	statsFetchBodyB int64
 }
 
 var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
@@ -159,7 +177,45 @@ func (s *session) Close() error {
 	if s.srv.opts.ConnLimit != nil && s.username != "" {
 		s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
 	}
+	if s.srv.opts.LogoutFormat != "" && s.username != "" {
+		msg := formatLogoutMsg(s.srv.opts.LogoutFormat, map[string]string{
+			"deleted":          strconv.Itoa(s.statsDeleted),
+			"expunged":         strconv.Itoa(s.statsExpunged),
+			"fetch_hdr_count":  strconv.Itoa(s.statsFetchHdr),
+			"fetch_hdr_bytes":  strconv.FormatInt(s.statsFetchHdrB, 10),
+			"fetch_body_count": strconv.Itoa(s.statsFetchBody),
+			"fetch_body_bytes": strconv.FormatInt(s.statsFetchBodyB, 10),
+		})
+		slog.Info("imap: logout", "user", s.username, "stats", msg)
+	}
 	return nil
+}
+
+// formatLogoutMsg substitutes %{key} placeholders with values from vars.
+func formatLogoutMsg(format string, vars map[string]string) string {
+	var sb strings.Builder
+	i := 0
+	for i < len(format) {
+		if format[i] != '%' || i+2 >= len(format) || format[i+1] != '{' {
+			sb.WriteByte(format[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(format[i:], '}')
+		if end < 0 {
+			sb.WriteByte(format[i])
+			i++
+			continue
+		}
+		key := format[i+2 : i+end]
+		if v, ok := vars[key]; ok {
+			sb.WriteString(v)
+		} else {
+			sb.WriteString(format[i : i+end+1])
+		}
+		i += end + 1
+	}
+	return sb.String()
 }
 
 func (s *session) Login(username, password string) error {
@@ -388,6 +444,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			continue
 		}
 		s.srv.opts.Index.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
+		s.statsExpunged++
 		if err := w.WriteExpunge(m.UID); err != nil {
 			return err
 		}
@@ -460,6 +517,14 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 			body, _ := io.ReadAll(rc)
 			rc.Close()
+			switch section.Specifier {
+			case imaplib.PartSpecifierHeader, imaplib.PartSpecifierMIME:
+				s.statsFetchHdr++
+				s.statsFetchHdrB += int64(len(body))
+			default:
+				s.statsFetchBody++
+				s.statsFetchBodyB += int64(len(body))
+			}
 			bw := mw.WriteBodySection(section, int64(len(body)))
 			io.Copy(bw, bytes.NewReader(body)) //nolint:errcheck
 			bw.Close()
@@ -482,7 +547,12 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		allNew := applyStoreFlags(append(m.Flags, m.Keywords...), storeFlags)
+		current := append(m.Flags, m.Keywords...)
+		wasDeleted := hasFlag(current, `\Deleted`)
+		allNew := applyStoreFlags(current, storeFlags)
+		if !wasDeleted && hasFlag(allNew, `\Deleted`) {
+			s.statsDeleted++
+		}
 		var newFlags, newKW []string
 		for _, f := range allNew {
 			if strings.HasPrefix(f, `\`) {
