@@ -23,7 +23,7 @@ updates:
     open-pull-requests-limit: 5
 
   - package-ecosystem: helm
-    directory: /helm/yarilo
+    directory: /helm
     schedule:
       interval: weekly
       day: monday
