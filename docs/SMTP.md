@@ -24,15 +24,6 @@ Protocol-level behaviour shared across all three SMTP listeners.
 | `max_recipients` | `0` | Maximum recipients per message. `0` = unlimited. |
 | `recipient_delimiter` | `+` | Subaddress separator: `user+tag@domain` → `user@domain`. Empty = disabled. |
 
-### `milters`
-
-External milter filters (e.g. rspamd, OpenDKIM). A milter `5xx` rejection returns `550 5.7.1` to the sender. Milter unavailability is fail-open (mail continues).
-
-| Key | Default | Description |
-|:---|:---|:---|
-| `milters[].socket` | — | Milter socket address: `unix:/path/to/sock` or `tcp:host:port`. |
-| `milters[].timeout` | `30` | Milter response timeout in seconds. |
-
 ```yaml
 protocol:
   smtp:
@@ -41,11 +32,6 @@ protocol:
     max_line_length: 4096
     max_recipients: 100
     recipient_delimiter: "+"
-    milters:
-      - socket: unix:/run/rspamd/milter.sock
-        timeout: 30
-      - socket: tcp:127.0.0.1:11332
-        timeout: 10
 ```
 
 ---
@@ -53,9 +39,7 @@ protocol:
 ## Inbound pipeline (port 25)
 
 ```
-connect
-  → external milters
-  → LMTP local delivery
+connect → LMTP local delivery
 ```
 
 ---
@@ -63,14 +47,10 @@ connect
 ## Submission pipeline (port 587 / 465)
 
 ```
-connect
-  → STARTTLS / TLS
-  → AUTH PLAIN
-  → external milters
-  → relay (submission_relay_*)
+connect → STARTTLS / TLS → AUTH PLAIN → relay (submission_relay_*)
 ```
 
-Submission requires AUTH PLAIN. The message is forwarded to the configured relay server unchanged — signing and filtering are handled by external milters (e.g. rspamd, OpenDKIM).
+Submission requires AUTH PLAIN. The message is forwarded to the configured relay server unchanged.
 
 ---
 

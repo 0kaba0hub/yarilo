@@ -41,7 +41,6 @@ type Options struct {
 	Config    config.SMTPProtocolConfig
 	Auth      Authenticator
 	Deliverer *lmtp.Deliverer
-	Milters   []*MilterClient
 	Relay     *Relay
 }
 
@@ -210,16 +209,6 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	ctx := context.Background()
-	opts := s.srv.opts
-
-	// Run external milters before internal checks.
-	for _, mc := range opts.Milters {
-		if err := mc.Check(ctx, s.from, s.rcpts, bytes.NewReader(data)); err != nil {
-			slog.Info("smtp: milter rejected", "err", err)
-			return &goSmtp.SMTPError{Code: 550, EnhancedCode: goSmtp.EnhancedCode{5, 7, 1}, Message: err.Error()}
-		}
-	}
-
 	if s.submission {
 		return s.handleSubmission(ctx, data)
 	}

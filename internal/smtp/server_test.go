@@ -244,35 +244,6 @@ func TestExtractDomain(t *testing.T) {
 	}
 }
 
-func TestParseMilterSocket(t *testing.T) {
-	cases := []struct {
-		socket   string
-		wantNet  string
-		wantAddr string
-		wantErr  bool
-	}{
-		{"unix:/run/milter.sock", "unix", "/run/milter.sock", false},
-		{"/run/milter.sock", "unix", "/run/milter.sock", false},
-		{"tcp:127.0.0.1:7357", "tcp", "127.0.0.1:7357", false},
-		{"udp:localhost:1234", "", "", true},
-	}
-	for _, tc := range cases {
-		n, a, err := parseMilterSocket(tc.socket)
-		if tc.wantErr {
-			if err == nil {
-				t.Errorf("parseMilterSocket(%q): expected error", tc.socket)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("parseMilterSocket(%q): %v", tc.socket, err)
-			continue
-		}
-		if n != tc.wantNet || a != tc.wantAddr {
-			t.Errorf("parseMilterSocket(%q) = (%q,%q), want (%q,%q)", tc.socket, n, a, tc.wantNet, tc.wantAddr)
-		}
-	}
-}
 
 func TestSession_Reset(t *testing.T) {
 	s := &session{from: "a@b.com", rcpts: []string{"c@d.com"}}
@@ -282,11 +253,6 @@ func TestSession_Reset(t *testing.T) {
 	}
 }
 
-func TestIsReject_Nil(t *testing.T) {
-	if isReject(nil) {
-		t.Error("nil action should not be a reject")
-	}
-}
 
 func TestStripDelimiter(t *testing.T) {
 	cases := []struct {

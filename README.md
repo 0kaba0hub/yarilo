@@ -184,9 +184,6 @@ protocol:
     hostname: mail.example.com
     max_message_size: 41943040
     recipient_delimiter: "+"
-    milters:
-      - socket: unix:/run/rspamd/milter.sock
-        timeout: 30
 
 auth:
   passdb:

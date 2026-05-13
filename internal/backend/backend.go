@@ -153,16 +153,6 @@ func New(cfg *config.Config) (*Server, error) {
 			disablePlain = subSvc.DisablePlainAuth
 		}
 
-		// ---- milter clients ----
-		var milters []*smtpsvr.MilterClient
-		for _, mc := range cfg.Protocol.SMTP.Milters {
-			c, err := smtpsvr.NewMilterClient(mc.Socket, mc.Timeout)
-			if err != nil {
-				return nil, fmt.Errorf("backend: milter %s: %w", mc.Socket, err)
-			}
-			milters = append(milters, c)
-		}
-
 		var relay *smtpsvr.Relay
 		if cfg.Protocol.SMTP.Relay.Host != "" {
 			relay = smtpsvr.NewRelay(cfg.Protocol.SMTP.Relay, cfg.Protocol.SMTP.Hostname)
@@ -178,7 +168,6 @@ func New(cfg *config.Config) (*Server, error) {
 			Config:           cfg.Protocol.SMTP,
 			Auth:             chainAuth{authChain},
 			Deliverer:        lmtp.New(mbox, idx),
-			Milters:          milters,
 			Relay:            relay,
 		})
 	}

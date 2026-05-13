@@ -113,13 +113,7 @@ type SMTPProtocolConfig struct {
 	MaxRecipients      int             `koanf:"max_recipients"`       // 0 = unlimited (Dovecot default)
 	RecipientDelimiter string          `koanf:"recipient_delimiter"`
 	Workarounds        []string        `koanf:"client_workarounds"`   // whitespace-before-path | mailbox-for-path | implicit-auth-external
-	Milters            []MilterConfig  `koanf:"milters"`
 	Relay              SMTPRelayConfig `koanf:"relay"`
-}
-
-type MilterConfig struct {
-	Socket  string `koanf:"socket"`  // unix:/path or tcp:host:port
-	Timeout int    `koanf:"timeout"` // seconds, default 30
 }
 
 // SMTPRelayConfig mirrors Dovecot's submission_relay_* settings.
