@@ -506,7 +506,7 @@ func writeTopLines(w io.Writer, data []byte, n int) {
 	}
 
 	writeDotLines(w, headers)
-	w.Write([]byte("\r\n")) //nolint:errcheck — blank line after headers
+	w.Write([]byte("\r\n")) //nolint:errcheck // blank line after headers
 
 	bodyLines := bytes.Split(body, []byte("\n"))
 	if len(bodyLines) > 0 && len(bodyLines[len(bodyLines)-1]) == 0 {
