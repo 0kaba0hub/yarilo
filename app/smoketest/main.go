@@ -20,11 +20,13 @@ import (
 )
 
 var (
-	flagHost      = flag.String("host", "localhost", "yarilo hostname")
-	flagIMAPSPort = flag.String("imap-port", "993", "IMAPS port")
-	flagTelemetry = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
-	flagTimeout   = flag.Duration("timeout", 10*time.Second, "per-check timeout")
-	flagInsecure  = flag.Bool("insecure", false, "skip TLS certificate verification")
+	flagHost        = flag.String("host", "localhost", "yarilo hostname")
+	flagIMAPSPort   = flag.String("imap-port", "993", "IMAPS port")
+	flagSMTPMXPort  = flag.String("smtp-mx-port", "25", "SMTP MX port")
+	flagSMTPSubPort = flag.String("smtp-sub-port", "587", "SMTP submission port")
+	flagTelemetry   = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
+	flagTimeout     = flag.Duration("timeout", 10*time.Second, "per-check timeout")
+	flagInsecure    = flag.Bool("insecure", false, "skip TLS certificate verification")
 )
 
 type result struct {
@@ -43,6 +45,8 @@ func main() {
 		{"telemetry /healthz", checkHealth},
 		{"telemetry /readyz", checkReady},
 		{"imap CAPABILITY", checkIMAP},
+		{"smtp MX EHLO", checkSMTPMX},
+		{"smtp submission EHLO", checkSMTPSubmission},
 	}
 
 	var failures []result
@@ -104,7 +108,6 @@ func checkIMAP() error {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
 
-	// Read greeting: * OK ...
 	greeting, err := readLine(conn)
 	if err != nil {
 		return fmt.Errorf("read greeting: %w", err)
@@ -113,7 +116,6 @@ func checkIMAP() error {
 		return fmt.Errorf("unexpected greeting: %q", greeting)
 	}
 
-	// Send CAPABILITY
 	fmt.Fprintf(conn, "A001 CAPABILITY\r\n")
 	for {
 		line, err := readLine(conn)
@@ -133,8 +135,66 @@ func checkIMAP() error {
 		}
 	}
 
-	// Graceful logout
 	fmt.Fprintf(conn, "A002 LOGOUT\r\n")
+	return nil
+}
+
+// checkSMTPMX connects to port 25, reads the banner, sends EHLO and verifies
+// the server responds with 250.
+func checkSMTPMX() error {
+	return checkSMTP(net.JoinHostPort(*flagHost, *flagSMTPMXPort), false)
+}
+
+// checkSMTPSubmission connects to port 587, reads the banner, sends EHLO and
+// verifies the server advertises AUTH PLAIN (submission-only capability).
+func checkSMTPSubmission() error {
+	return checkSMTP(net.JoinHostPort(*flagHost, *flagSMTPSubPort), true)
+}
+
+func checkSMTP(addr string, submission bool) error {
+	dialer := &net.Dialer{Timeout: *flagTimeout}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+
+	// Read banner: 220 ...
+	banner, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("read banner: %w", err)
+	}
+	if !strings.HasPrefix(banner, "220") {
+		return fmt.Errorf("unexpected banner: %q", banner)
+	}
+
+	// EHLO
+	fmt.Fprintf(conn, "EHLO smoketest\r\n")
+	var authAdvertised bool
+	for {
+		line, err := readLine(conn)
+		if err != nil {
+			return fmt.Errorf("EHLO read: %w", err)
+		}
+		if strings.Contains(line, "AUTH") && strings.Contains(line, "PLAIN") {
+			authAdvertised = true
+		}
+		// Multi-line: "250-..." continues; "250 ..." is the last line.
+		if strings.HasPrefix(line, "250 ") {
+			break
+		}
+		if !strings.HasPrefix(line, "250") {
+			return fmt.Errorf("EHLO unexpected response: %q", line)
+		}
+	}
+
+	if submission && !authAdvertised {
+		return fmt.Errorf("submission port did not advertise AUTH PLAIN in EHLO")
+	}
+
+	// Graceful quit
+	fmt.Fprintf(conn, "QUIT\r\n")
 	return nil
 }
 
