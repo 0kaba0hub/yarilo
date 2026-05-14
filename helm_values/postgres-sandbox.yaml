@@ -1,0 +1,95 @@
+# Stand-alone Postgres for yarilo sandbox.
+# Sits alongside the yarilo Release in namespace yarilo-sb.
+#
+# Apply BEFORE the yarilo helm install so the DSN secret exists.
+#
+# kubectl apply -f helm_values/postgres-sandbox.yaml
+#
+# Resets are easy: kubectl delete -f .../postgres-sandbox.yaml; PVC is then
+# garbage-collected.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yarilo-sb
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: yarilo-postgres
+  namespace: yarilo-sb
+type: Opaque
+stringData:
+  # Yarilo passdb DSN — referenced from values-sandbox.yaml via ${DB_DSN}.
+  dsn: "postgres://yarilo:sandbox-secret@yarilo-postgres:5432/yarilo?sslmode=disable"
+  # Same credentials, split out so the StatefulSet can initialise the DB.
+  POSTGRES_DB: "yarilo"
+  POSTGRES_USER: "yarilo"
+  POSTGRES_PASSWORD: "sandbox-secret"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yarilo-postgres
+  namespace: yarilo-sb
+  labels:
+    app: yarilo-postgres
+spec:
+  clusterIP: None
+  ports:
+    - port: 5432
+      name: postgres
+  selector:
+    app: yarilo-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: yarilo-postgres
+  namespace: yarilo-sb
+spec:
+  serviceName: yarilo-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: yarilo-postgres
+  template:
+    metadata:
+      labels:
+        app: yarilo-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: yarilo-postgres
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "yarilo"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

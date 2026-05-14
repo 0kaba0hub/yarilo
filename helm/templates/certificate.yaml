@@ -1,0 +1,24 @@
+{{- if and .Values.tls.certificate.enabled .Values.tls.secretName }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "yarilo.fullname" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.tls.secretName }}
+  issuerRef:
+    kind: {{ .Values.tls.certificate.issuerRef.kind }}
+    name: {{ .Values.tls.certificate.issuerRef.name }}
+  dnsNames:
+    {{- range .Values.tls.certificate.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- with .Values.tls.certificate.duration }}
+  duration: {{ . }}
+  {{- end }}
+  {{- with .Values.tls.certificate.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
+{{- end }}

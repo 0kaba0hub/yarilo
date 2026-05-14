@@ -19,9 +19,6 @@ Active listeners:
 {{- if .Values.services.imap.enabled }}
   IMAP (STARTTLS):    {{ .Values.services.imap.port }}
 {{- end }}
-{{- if .Values.services.smtp.enabled }}
-  SMTP (MX):          {{ .Values.services.smtp.port }}
-{{- end }}
 {{- if .Values.services.submission.enabled }}
   Submission:         {{ .Values.services.submission.port }}
 {{- end }}
@@ -33,6 +30,9 @@ Active listeners:
 {{- end }}
 {{- if .Values.services.pop3s.enabled }}
   POP3S (TLS):        {{ .Values.services.pop3s.port }}
+{{- end }}
+{{- if .Values.services.lmtp.enabled }}
+  LMTP:               {{ .Values.services.lmtp.port }}
 {{- end }}
   Telemetry:          http://<pod>:{{ .Values.service.telemetryPort }}/healthz
 

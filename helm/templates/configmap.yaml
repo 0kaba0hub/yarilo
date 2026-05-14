@@ -48,12 +48,6 @@ data:
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
         disable_plaintext_auth: {{ .Values.services.imap.disablePlainAuth }}
-      smtp:
-        enabled: {{ .Values.services.smtp.enabled }}
-        port: {{ .Values.services.smtp.port }}
-        ssl_mode: no
-        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
-        xclient_protocol: {{ .Values.general.xclient.enabled }}
       submission:
         enabled: {{ .Values.services.submission.enabled }}
         port: {{ .Values.services.submission.port }}
@@ -80,6 +74,12 @@ data:
         ssl_mode: ssl
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
+      lmtp:
+        enabled: {{ .Values.services.lmtp.enabled }}
+        port: {{ .Values.services.lmtp.port }}
+        ssl_mode: "no"
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: {{ .Values.general.xclient.enabled }}
 
     protocol:
       imap:
@@ -88,11 +88,53 @@ data:
         imap_id_send: {{ .Values.protocol.imap.idSend | quote }}
         login_greeting: {{ .Values.protocol.imap.loginGreeting | quote }}
         imap_logout_format: {{ .Values.protocol.imap.logoutFormat | quote }}
-      smtp:
-        hostname: {{ .Values.protocol.smtp.hostname | quote }}
-        max_message_size: {{ .Values.protocol.smtp.maxMessageSize }}
-        max_line_length: {{ .Values.protocol.smtp.maxLineLength }}
-        recipient_delimiter: {{ .Values.protocol.smtp.recipientDelimiter | quote }}
+        {{- with .Values.protocol.imap.clientWorkarounds }}
+        client_workarounds:
+          {{- range . }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
+
+      submission:
+        hostname: {{ .Values.protocol.submission.hostname | default .Values.hostname | quote }}
+        max_message_size: {{ int64 .Values.protocol.submission.maxMessageSize }}
+        max_line_length: {{ int .Values.protocol.submission.maxLineLength }}
+        max_recipients: {{ .Values.protocol.submission.maxRecipients }}
+        recipient_delimiter: {{ .Values.protocol.submission.recipientDelimiter | quote }}
+        submission_add_received_header: {{ .Values.protocol.submission.addReceivedHeader }}
+        {{- with .Values.protocol.submission.clientWorkarounds }}
+        client_workarounds:
+          {{- range . }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
+        relay:
+          host: {{ .Values.protocol.submission.relay.host | quote }}
+          port: {{ .Values.protocol.submission.relay.port }}
+          user: {{ .Values.protocol.submission.relay.user | quote }}
+          password: {{ .Values.protocol.submission.relay.password | quote }}
+          ssl: {{ .Values.protocol.submission.relay.ssl | quote }}
+          ssl_verify: {{ .Values.protocol.submission.relay.sslVerify }}
+          trusted: {{ .Values.protocol.submission.relay.trusted }}
+          connect_timeout: {{ .Values.protocol.submission.relay.connectTimeout }}
+          command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
+
+      lmtp:
+        login_greeting: {{ .Values.protocol.lmtp.loginGreeting | quote }}
+        add_received_header: {{ .Values.protocol.lmtp.addReceivedHeader }}
+        save_to_detail_mailbox: {{ .Values.protocol.lmtp.saveToDetailMailbox }}
+        hdr_delivery_address: {{ .Values.protocol.lmtp.hdrDeliveryAddress | quote }}
+        verbose_replies: {{ .Values.protocol.lmtp.verboseReplies }}
+        user_concurrency_limit: {{ .Values.protocol.lmtp.userConcurrencyLimit }}
+        read_timeout: {{ .Values.protocol.lmtp.readTimeout }}
+        write_timeout: {{ .Values.protocol.lmtp.writeTimeout }}
+        {{- with .Values.protocol.lmtp.clientWorkarounds }}
+        client_workarounds:
+          {{- range . }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
+
       pop3:
         pop3_no_flag_updates: {{ .Values.protocol.pop3.noFlagUpdates }}
         pop3_reuse_xuidl: {{ .Values.protocol.pop3.reuseXUIDL }}
@@ -107,6 +149,24 @@ data:
         {{- range .Values.auth.passdb }}
         - driver: {{ .driver | quote }}
           dsn: {{ .dsn | quote }}
+          {{- with .passwordQuery }}
+          password_query: |
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with .userQuery }}
+          user_query: |
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with .iterateQuery }}
+          iterate_query: |
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with .defaultPassScheme }}
+          default_pass_scheme: {{ . | quote }}
+          {{- end }}
+          {{- if .skipSchema }}
+          skip_schema: true
+          {{- end }}
         {{- end }}
 
     storage:

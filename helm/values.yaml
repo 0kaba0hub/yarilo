@@ -9,12 +9,32 @@ image:
 replicaCount: 1    # single-node only — maildir PVC is not shared-access
 
 ## -------------------------------------------------------------------
+## Server hostname — used as EHLO banner, Message-ID domain, and the
+## hostname surfaced in Received: headers. Must match the TLS cert SAN
+## or some MUAs will reject the connection.
+## -------------------------------------------------------------------
+hostname: ""
+
+## -------------------------------------------------------------------
 ## TLS (shared certificate mounted at /etc/yarilo/tls/)
 ## -------------------------------------------------------------------
 tls:
   ## Name of an existing Secret containing tls.crt and tls.key.
   ## Required if imaps, submissions, or pop3s is enabled.
   secretName: ""
+
+  ## Optional cert-manager Certificate to provision the secretName above.
+  ## Requires cert-manager + a working ClusterIssuer in the cluster.
+  certificate:
+    enabled: false
+    issuerRef:
+      kind: ClusterIssuer
+      name: letsencrypt-prod
+    ## DNS names the cert is issued for. The first entry is the cert CN.
+    dnsNames: []
+    ## Optional duration / renewBefore (cert-manager defaults: 90d / 30d).
+    duration: ""
+    renewBefore: ""
 
 ## -------------------------------------------------------------------
 ## Services — per-listener toggles
@@ -31,11 +51,6 @@ services:
     enabled: false
     port: 143
     disablePlainAuth: false
-
-  ## SMTP MX inbound (port 25)
-  smtp:
-    enabled: false
-    port: 25
 
   ## Submission STARTTLS (port 587)
   submission:
@@ -59,6 +74,12 @@ services:
     enabled: false
     port: 995
 
+  ## LMTP local delivery (port 24) — fronted by external MTA (Postfix etc.).
+  ## Disable plaintextAuth doesn't apply (LMTP has no AUTH).
+  lmtp:
+    enabled: false
+    port: 24
+
 ## -------------------------------------------------------------------
 ## Protocol tuning (independent of listener)
 ## -------------------------------------------------------------------
@@ -69,12 +90,44 @@ protocol:
     idSend: "name *"              # ID pairs; * = default; empty = disabled
     loginGreeting: ""
     logoutFormat: ""
+    ## client_workarounds: tb-extra-mailbox-sep | tb-lsub-flags
+    clientWorkarounds: []
 
-  smtp:
-    hostname: ""                  # defaults to system hostname
+  submission:
+    ## hostname defaults to the top-level .Values.hostname when empty
+    hostname: ""
     maxMessageSize: 41943040      # 40 MiB
     maxLineLength: 4096
+    maxRecipients: 0              # 0 = unlimited
     recipientDelimiter: "+"
+    ## submission_add_received_header — protect sender identity by setting to false
+    addReceivedHeader: true
+    ## client_workarounds: whitespace-before-path | mailbox-for-path
+    clientWorkarounds: []
+    ## Outbound relay — when set, MAIL FROM is forwarded to this MTA.
+    ## Leave host empty to disable relay (DATA → 451).
+    relay:
+      host: ""
+      port: 25
+      user: ""
+      password: ""                # supports ${ENV_VAR}
+      ssl: "no"                   # no | smtps | starttls
+      sslVerify: true
+      trusted: false              # send XCLIENT to relay
+      connectTimeout: 30
+      commandTimeout: 300
+
+  lmtp:
+    loginGreeting: "Yarilo ready."
+    addReceivedHeader: true
+    saveToDetailMailbox: false
+    hdrDeliveryAddress: final     # none | final | original
+    verboseReplies: false
+    userConcurrencyLimit: 10      # 0 = unlimited
+    readTimeout: 300
+    writeTimeout: 300
+    ## client_workarounds: whitespace-before-path | mailbox-for-path
+    clientWorkarounds: []
 
   pop3:
     noFlagUpdates: false
@@ -109,11 +162,19 @@ general:
 
 ## -------------------------------------------------------------------
 ## Authentication
+##
+## Each passdb entry is tried in order. Per-entry fields:
+##   driver:            sqlite | mysql | postgres
+##   dsn:               driver-specific (supports ${ENV_VAR})
+##   passwordQuery:     custom SELECT; %u/%n/%d are bound parameters
+##   userQuery:         optional userdb lookup
+##   iterateQuery:      optional list-users query
+##   defaultPassScheme: PLAIN | BCRYPT | SHA512-CRYPT
+##   skipSchema:        true to skip CREATE TABLE on startup
 ## -------------------------------------------------------------------
 auth:
   passdb:
     - driver: sqlite
-      ## Path inside the container (mounted from PVC or emptyDir).
       dsn: /var/lib/yarilo/users.db
 
 ## -------------------------------------------------------------------
@@ -209,8 +270,11 @@ logLevel: info   # debug | info | warn | error
 ## Extra environment variables injected into the container
 ## -------------------------------------------------------------------
 extraEnv: []
-# - name: SOME_VAR
-#   value: "value"
+# - name: DB_PASSWORD
+#   valueFrom:
+#     secretKeyRef:
+#       name: yarilo-secrets
+#       key: db-password
 
 ## -------------------------------------------------------------------
 ## Extra volumes / mounts (e.g. for CA bundles)

@@ -27,12 +27,6 @@ spec:
       targetPort: imap
       protocol: TCP
     {{- end }}
-    {{- if .Values.services.smtp.enabled }}
-    - name: smtp
-      port: {{ .Values.services.smtp.port }}
-      targetPort: smtp
-      protocol: TCP
-    {{- end }}
     {{- if .Values.services.submission.enabled }}
     - name: submission
       port: {{ .Values.services.submission.port }}
@@ -55,6 +49,12 @@ spec:
     - name: pop3s
       port: {{ .Values.services.pop3s.port }}
       targetPort: pop3s
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.services.lmtp.enabled }}
+    - name: lmtp
+      port: {{ .Values.services.lmtp.port }}
+      targetPort: lmtp
       protocol: TCP
     {{- end }}
   selector:
