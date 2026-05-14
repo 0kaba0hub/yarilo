@@ -169,9 +169,13 @@ type AuthConfig struct {
 }
 
 type PassdbEntry struct {
-	Driver string            `koanf:"driver"` // sqlite | mysql | postgres
-	DSN    string            `koanf:"dsn"`
-	Args   map[string]string `koanf:"args"`
+	Driver            string `koanf:"driver"` // sqlite | mysql | postgres
+	DSN               string `koanf:"dsn"`
+	PasswordQuery     string `koanf:"password_query"`      // custom SELECT; %u/%n/%d substituted as parameters
+	UserQuery         string `koanf:"user_query"`          // optional userdb lookup; %u/%n/%d substituted
+	IterateQuery      string `koanf:"iterate_query"`       // optional list-users query (admin tooling)
+	DefaultPassScheme string `koanf:"default_pass_scheme"` // assumed scheme when stored password has no {SCHEME} prefix (default PLAIN)
+	SkipSchema        bool   `koanf:"skip_schema"`         // do not run CREATE TABLE IF NOT EXISTS on startup
 }
 
 type StorageConfig struct {

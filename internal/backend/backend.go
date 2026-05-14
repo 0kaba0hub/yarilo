@@ -424,7 +424,15 @@ func buildPassdbs(entries []config.PassdbEntry) ([]protocol.Passdb, error) {
 	for _, e := range entries {
 		switch strings.ToLower(e.Driver) {
 		case "sqlite", "mysql", "postgres":
-			db, err := authsql.New(e.Driver, e.DSN)
+			db, err := authsql.New(authsql.Config{
+				Driver:            e.Driver,
+				DSN:               e.DSN,
+				PasswordQuery:     e.PasswordQuery,
+				UserQuery:         e.UserQuery,
+				IterateQuery:      e.IterateQuery,
+				DefaultPassScheme: e.DefaultPassScheme,
+				SkipSchema:        e.SkipSchema,
+			})
 			if err != nil {
 				return nil, fmt.Errorf("passdb %s: %w", e.Driver, err)
 			}
