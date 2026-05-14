@@ -11,18 +11,38 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 
-	_ "modernc.org/sqlite" // SQLite driver (no cgo)
+	_ "github.com/go-sql-driver/mysql" // MySQL driver
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver (registered as "pgx")
+	_ "modernc.org/sqlite"             // SQLite driver (no cgo)
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS yarilo_users (
+// Per-driver schema. CREATE TABLE IF NOT EXISTS is run on every New() so
+// fresh installs work without manual migration.
+const (
+	schemaSQLite = `CREATE TABLE IF NOT EXISTS yarilo_users (
     username    TEXT PRIMARY KEY,
     password    TEXT NOT NULL,
     home        TEXT NOT NULL DEFAULT '',
     mail        TEXT NOT NULL DEFAULT '',
     enabled     INTEGER NOT NULL DEFAULT 1
-);
-`
+);`
+
+	schemaMySQL = `CREATE TABLE IF NOT EXISTS yarilo_users (
+    username    VARCHAR(255) PRIMARY KEY,
+    password    VARCHAR(255) NOT NULL,
+    home        VARCHAR(255) NOT NULL DEFAULT '',
+    mail        VARCHAR(255) NOT NULL DEFAULT '',
+    enabled     TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+
+	schemaPostgres = `CREATE TABLE IF NOT EXISTS yarilo_users (
+    username    TEXT PRIMARY KEY,
+    password    TEXT NOT NULL,
+    home        TEXT NOT NULL DEFAULT '',
+    mail        TEXT NOT NULL DEFAULT '',
+    enabled     INTEGER NOT NULL DEFAULT 1
+);`
+)
 
 // Passdb is an SQL-backed passdb entry.
 type Passdb struct {
@@ -32,7 +52,10 @@ type Passdb struct {
 
 // New opens an SQL passdb. driver: "sqlite", "mysql", or "postgres".
 func New(driver, dsn string) (*Passdb, error) {
-	drv := sqlDriver(driver)
+	drv, ok := sqlDriverName(driver)
+	if !ok {
+		return nil, fmt.Errorf("auth/sql: unsupported driver %q (want sqlite|mysql|postgres)", driver)
+	}
 	db, err := sql.Open(drv, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("auth/sql: open %s: %w", driver, err)
@@ -41,10 +64,11 @@ func New(driver, dsn string) (*Passdb, error) {
 		db.Close()
 		return nil, fmt.Errorf("auth/sql: ping %s: %w", driver, err)
 	}
-	if driver == "sqlite" {
+	schema, ok := schemaFor(driver)
+	if ok {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("auth/sql: schema: %w", err)
+			return nil, fmt.Errorf("auth/sql: schema %s: %w", driver, err)
 		}
 	}
 	return &Passdb{db: db, driver: driver}, nil
@@ -52,7 +76,7 @@ func New(driver, dsn string) (*Passdb, error) {
 
 // Authenticate checks username/password against the SQL store.
 // Returns nil (not found) to continue the passdb chain.
-func (p *Passdb) Authenticate(username, password, service string) (*protocol.AuthResponse, error) {
+func (p *Passdb) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
 	var storedPass, home, mailLoc string
 	var enabled int
 
@@ -88,23 +112,26 @@ func (p *Passdb) Close() error {
 	return p.db.Close()
 }
 
-func sqlDriver(driver string) string {
+func sqlDriverName(driver string) (string, bool) {
 	switch driver {
 	case "sqlite":
-		return "sqlite"
+		return "sqlite", true
 	case "mysql":
-		return "mysql"
+		return "mysql", true
 	case "postgres":
-		return "pgx"
+		return "pgx", true
 	}
-	return driver
+	return "", false
 }
 
-// checkPassword compares a plain-text or {PLAIN} prefixed stored password.
-// Production use should store bcrypt/argon2 hashes; this handles plain for dev.
-func checkPassword(stored, input string) bool {
-	if strings.HasPrefix(stored, "{PLAIN}") {
-		return stored[7:] == input
+func schemaFor(driver string) (string, bool) {
+	switch driver {
+	case "sqlite":
+		return schemaSQLite, true
+	case "mysql":
+		return schemaMySQL, true
+	case "postgres":
+		return schemaPostgres, true
 	}
-	return stored == input
+	return "", false
 }

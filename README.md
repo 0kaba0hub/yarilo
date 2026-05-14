@@ -237,6 +237,7 @@ yarilo-migrate \
 | [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: local delivery, proxy/director mode, HAProxy, XCLIENT, TLS, headers |
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL format, soft-delete, migration |
 | [docs/JMAP.md](docs/JMAP.md) | JMAP (planned, Phase 5) |
+| [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL backends (SQLite/MySQL/Postgres), password schemes |
 
 ---
 
