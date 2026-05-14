@@ -50,11 +50,6 @@ spec:
               containerPort: {{ .Values.services.imap.port }}
               protocol: TCP
             {{- end }}
-            {{- if .Values.services.smtp.enabled }}
-            - name: smtp
-              containerPort: {{ .Values.services.smtp.port }}
-              protocol: TCP
-            {{- end }}
             {{- if .Values.services.submission.enabled }}
             - name: submission
               containerPort: {{ .Values.services.submission.port }}
@@ -73,6 +68,11 @@ spec:
             {{- if .Values.services.pop3s.enabled }}
             - name: pop3s
               containerPort: {{ .Values.services.pop3s.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.services.lmtp.enabled }}
+            - name: lmtp
+              containerPort: {{ .Values.services.lmtp.port }}
               protocol: TCP
             {{- end }}
             - name: telemetry

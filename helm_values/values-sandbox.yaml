@@ -1,0 +1,86 @@
+## yarilo sandbox — mail-sb.seconddns.com
+##
+## Pre-reqs:
+##   1. cert-manager + ClusterIssuer "letsencrypt-prod" in the cluster.
+##   2. DNS A/AAAA for mail-sb.seconddns.com pointing at the LB IP.
+##   3. Postgres in yarilo-sb namespace (apply postgres-sandbox.yaml first).
+##
+## Install:
+##   helm upgrade --install yarilo ./helm \
+##     -f helm_values/values-sandbox.yaml \
+##     -n yarilo-sb --create-namespace
+
+hostname: mail-sb.seconddns.com
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  pullPolicy: Always
+
+logLevel: debug
+
+tls:
+  secretName: yarilo-tls
+  certificate:
+    enabled: true
+    issuerRef:
+      kind: ClusterIssuer
+      name: letsencrypt-prod
+    dnsNames:
+      - mail-sb.seconddns.com
+
+services:
+  imaps:       { enabled: true,  port: 993, disablePlainAuth: false }
+  imap:        { enabled: true,  port: 143, disablePlainAuth: false }
+  submission:  { enabled: true,  port: 587, disablePlainAuth: true }
+  submissions: { enabled: true,  port: 465, disablePlainAuth: true }
+  pop3:        { enabled: true,  port: 110 }
+  pop3s:       { enabled: true,  port: 995 }
+  lmtp:        { enabled: true,  port: 24 }
+
+protocol:
+  submission:
+    addReceivedHeader: true
+    maxMessageSize: 41943040
+    recipientDelimiter: "+"
+  lmtp:
+    addReceivedHeader: true
+    hdrDeliveryAddress: final
+  imap:
+    idleNotifyInterval: 120
+    maxLineLength: 65536
+
+## Passdb: Postgres deployed in yarilo-sb (see helm_values/postgres-sandbox.yaml).
+## DSN is sourced from the yarilo-postgres Secret via DB_DSN env var.
+auth:
+  passdb:
+    - driver: postgres
+      dsn: "${DB_DSN}"
+      defaultPassScheme: BCRYPT
+
+extraEnv:
+  - name: DB_DSN
+    valueFrom:
+      secretKeyRef:
+        name: yarilo-postgres
+        key: dsn
+
+storage:
+  mailbox: maildir
+  maildirRoot: /var/mail/vhosts
+  index: fileindex
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 5Gi
+
+service:
+  type: LoadBalancer
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
