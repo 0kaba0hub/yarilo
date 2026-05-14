@@ -3,6 +3,7 @@ package maildir
 import (
 	"bufio"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,9 @@ func TestSave_Fetch_Remove(t *testing.T) {
 	}
 	if !strings.Contains(filename, ":2,S") {
 		t.Errorf("filename %q should contain ':2,S'", filename)
+	}
+	if !strings.Contains(filename, ",S=") || !strings.Contains(filename, ",W=") {
+		t.Errorf("filename %q should contain ,S= and ,W= size annotations", filename)
 	}
 
 	rc, err := b.Fetch(user, folder, filename)
@@ -222,6 +226,154 @@ func TestAppendUIDEntry_HeaderFormat(t *testing.T) {
 		if gotFilename != w.filename {
 			t.Errorf("line %d filename = %q, want %q", i+1, gotFilename, w.filename)
 		}
+	}
+}
+
+// ---- VSize / size annotation tests -----------------------------------------
+
+func TestParseSizeInfo(t *testing.T) {
+	cases := []struct {
+		name             string
+		input            string
+		wantPhys         uint32
+		wantVirt         uint32
+		hasPhys, hasVirt bool
+	}{
+		{"both sizes", "1234.M.host,S=100,W=110:2,S", 100, 110, true, true},
+		{"only phys", "1234.M.host,S=100:2,S", 100, 0, true, false},
+		{"only virt", "1234.M.host,W=110:2,S", 0, 110, false, true},
+		{"no sizes", "1234.M.host:2,S", 0, 0, false, false},
+		{"no flags suffix", "1234.M.host,S=200,W=210", 200, 210, true, true},
+		{"bad number ignored", "1234.M.host,S=abc,W=42:2,", 0, 42, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, v, hp, hv := parseSizeInfo(tc.input)
+			if p != tc.wantPhys || v != tc.wantVirt || hp != tc.hasPhys || hv != tc.hasVirt {
+				t.Errorf("parseSizeInfo(%q) = (%d,%d,%v,%v), want (%d,%d,%v,%v)",
+					tc.input, p, v, hp, hv, tc.wantPhys, tc.wantVirt, tc.hasPhys, tc.hasVirt)
+			}
+		})
+	}
+}
+
+func TestSave_VSize_PureCRLF(t *testing.T) {
+	// CRLF input: virtual size equals physical (no normalisation needed).
+	b, _ := New(t.TempDir())
+	user := "u@x"
+	b.Init(user) //nolint:errcheck
+
+	body := "From: a@b\r\n\r\nhello\r\n"
+	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phys, virt, hasPhys, hasVirt := parseSizeInfo(filename)
+	if !hasPhys || !hasVirt {
+		t.Fatalf("filename missing size annotations: %q", filename)
+	}
+	if int(phys) != len(body) {
+		t.Errorf("phys=%d, want %d", phys, len(body))
+	}
+	if virt != phys {
+		t.Errorf("virt=%d, phys=%d — pure CRLF input should have virt==phys", virt, phys)
+	}
+}
+
+func TestSave_VSize_PureLF(t *testing.T) {
+	// LF-only input (e.g. imported from Unix mbox): each LF becomes CRLF on
+	// the wire, so virt > phys by exactly the LF count.
+	b, _ := New(t.TempDir())
+	user := "u@x"
+	b.Init(user) //nolint:errcheck
+
+	body := "From: a@b\n\nhello\n"
+	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phys, virt, _, _ := parseSizeInfo(filename)
+	if int(phys) != len(body) {
+		t.Errorf("phys=%d, want %d", phys, len(body))
+	}
+	wantVirt := uint32(len(body)) + uint32(strings.Count(body, "\n"))
+	if virt != wantVirt {
+		t.Errorf("virt=%d, want %d (= %d + %d LF count)", virt, wantVirt, len(body), strings.Count(body, "\n"))
+	}
+}
+
+func TestSave_VSize_MixedLineEndings(t *testing.T) {
+	// One CRLF line plus one bare LF line: only the bare LF adds a byte.
+	b, _ := New(t.TempDir())
+	user := "u@x"
+	b.Init(user) //nolint:errcheck
+
+	body := "header: ok\r\nbare-lf-after\n"
+	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phys, virt, _, _ := parseSizeInfo(filename)
+	if virt != phys+1 {
+		t.Errorf("virt=%d, phys=%d, want virt=phys+1 (one bare LF)", virt, phys)
+	}
+}
+
+func TestList_PopulatesSizesFromFilename(t *testing.T) {
+	b, _ := New(t.TempDir())
+	user := "u@x"
+	b.Init(user) //nolint:errcheck
+
+	body := "From: a@b\n\nhello\n"
+	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phys, virt, _, _ := parseSizeInfo(filename)
+
+	msgs, err := b.List(user, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Size != phys {
+		t.Errorf("Size=%d, want %d (from filename)", msgs[0].Size, phys)
+	}
+	if msgs[0].VSize != virt {
+		t.Errorf("VSize=%d, want %d (from filename)", msgs[0].VSize, virt)
+	}
+}
+
+func TestList_LegacyFilename_FallsBackToStat(t *testing.T) {
+	// Legacy files without ,S= must still produce a non-zero Size by stat().
+	dir := t.TempDir()
+	b, _ := New(dir)
+	user := "u@x"
+	b.Init(user) //nolint:errcheck
+
+	// Drop a legacy-named file (no size annotations) directly into cur/.
+	// User "u@x" lives at <root>/x/u (Dovecot virtual-hosting layout).
+	cur := filepath.Join(dir, "x", "u", "INBOX", "cur")
+	legacy := filepath.Join(cur, "1700000000.M0P0_0.host:2,")
+	body := []byte("legacy body\n")
+	if err := os.WriteFile(legacy, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := b.List(user, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Size != uint32(len(body)) {
+		t.Errorf("Size=%d, want %d (stat fallback)", msgs[0].Size, len(body))
+	}
+	if msgs[0].VSize != 0 {
+		t.Errorf("VSize=%d, want 0 (no W= for legacy file)", msgs[0].VSize)
 	}
 }
 
