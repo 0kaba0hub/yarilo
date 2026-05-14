@@ -79,7 +79,8 @@ func (b *Backend) Save(user, folder string, r io.Reader, size int64, flags []str
 	if err != nil {
 		return "", fmt.Errorf("maildir: create tmp: %w", err)
 	}
-	if _, err := io.Copy(f, r); err != nil {
+	sc := &sizeCounter{}
+	if _, err := io.Copy(f, io.TeeReader(r, sc)); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
 		return "", fmt.Errorf("maildir: write: %w", err)
@@ -90,13 +91,36 @@ func (b *Backend) Save(user, folder string, r io.Reader, size int64, flags []str
 	}
 
 	flagStr := encodeFlags(flags)
-	finalName := basename + ":2," + flagStr
+	// Dovecot filename convention: append ,S=<phys>,W=<virt> before :2,<flags>
+	// so List() can return both sizes without reading the file body. Virtual
+	// size = CRLF-normalised bytes (what POP3 RETR transmits).
+	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
 	dstPath := filepath.Join(folderPath, "cur", finalName)
 	if err := os.Rename(tmpPath, dstPath); err != nil {
 		os.Remove(tmpPath)
 		return "", fmt.Errorf("maildir: rename to cur: %w", err)
 	}
 	return finalName, nil
+}
+
+// sizeCounter is an io.Writer that records bytes written and the number of LF
+// bytes not preceded by CR (lone LFs that would gain a CR under CRLF
+// normalisation). Implements io.Writer so it can be plugged into io.TeeReader.
+type sizeCounter struct {
+	phys   uint32
+	lfNoCR uint32
+	prevCR bool
+}
+
+func (c *sizeCounter) Write(p []byte) (int, error) {
+	for _, b := range p {
+		c.phys++
+		if b == '\n' && !c.prevCR {
+			c.lfNoCR++
+		}
+		c.prevCR = b == '\r'
+	}
+	return len(p), nil
 }
 
 func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
@@ -139,10 +163,15 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 		}
 		name := e.Name()
 		flags, keywords := decodeFlags(name)
-		info, _ := e.Info()
+		phys, virt, hasPhys, _ := parseSizeInfo(name)
 		var sz uint32
-		if info != nil {
-			sz = uint32(info.Size())
+		switch {
+		case hasPhys:
+			sz = phys
+		default:
+			if info, _ := e.Info(); info != nil {
+				sz = uint32(info.Size())
+			}
 		}
 		uid := uidMap[name]
 		msgs = append(msgs, &mailbox.MessageMeta{
@@ -150,6 +179,7 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 			Flags:    flags,
 			Keywords: keywords,
 			Size:     sz,
+			VSize:    virt,
 		})
 	}
 	sort.Slice(msgs, func(i, j int) bool {
@@ -303,6 +333,31 @@ func encodeFlags(flags []string) string {
 		}
 	}
 	return b.String()
+}
+
+// parseSizeInfo extracts the Dovecot-convention ,S=N,W=N size annotations
+// from the part of a Maildir filename before ":2,<flags>". Missing keys leave
+// the corresponding hasX false (callers should stat() the file as a fallback).
+func parseSizeInfo(name string) (phys, virt uint32, hasPhys, hasVirt bool) {
+	prefix := name
+	if i := strings.Index(name, ":2,"); i >= 0 {
+		prefix = name[:i]
+	}
+	for _, kv := range strings.Split(prefix, ",") {
+		switch {
+		case strings.HasPrefix(kv, "S="):
+			if n, err := strconv.ParseUint(kv[2:], 10, 32); err == nil {
+				phys = uint32(n)
+				hasPhys = true
+			}
+		case strings.HasPrefix(kv, "W="):
+			if n, err := strconv.ParseUint(kv[2:], 10, 32); err == nil {
+				virt = uint32(n)
+				hasVirt = true
+			}
+		}
+	}
+	return
 }
 
 // decodeFlags parses flags and keywords from a Maildir filename.
