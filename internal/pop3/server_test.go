@@ -3,6 +3,7 @@ package pop3
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -268,6 +269,83 @@ func TestSession_Pass_WrongPassword(t *testing.T) {
 	resp := readline(t, r)
 	if !strings.HasPrefix(resp, "-ERR") {
 		t.Fatalf("PASS with wrong password: expected -ERR, got %q", resp)
+	}
+}
+
+// TestSession_AuthPlain_InitialResponse verifies RFC 5034 SASL PLAIN via the
+// POP3 AUTH command with an initial response: AUTH PLAIN <base64(\0u\0p)>.
+func TestSession_AuthPlain_InitialResponse(t *testing.T) {
+	opts := newTestOpts(
+		&mockAuth{users: map[string]string{"alice": "secret"}},
+		&mockMailbox{},
+		&mockIndex{},
+	)
+	c, r := newPOP3Session(t, opts)
+
+	payload := base64.StdEncoding.EncodeToString([]byte("\x00alice\x00secret"))
+	send(t, c, "AUTH PLAIN "+payload)
+	resp := readline(t, r)
+	if !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("AUTH PLAIN with IR: expected +OK, got %q", resp)
+	}
+	// In TRANSACTION state — STAT must work.
+	send(t, c, "STAT")
+	if r2 := readline(t, r); !strings.HasPrefix(r2, "+OK") {
+		t.Fatalf("STAT after AUTH PLAIN: expected +OK, got %q", r2)
+	}
+}
+
+// TestSession_AuthPlain_Continuation verifies the two-step AUTH PLAIN where
+// the client omits the initial response: server returns "+ ", then reads the
+// base64 payload from the next line.
+func TestSession_AuthPlain_Continuation(t *testing.T) {
+	opts := newTestOpts(
+		&mockAuth{users: map[string]string{"alice": "secret"}},
+		&mockMailbox{},
+		&mockIndex{},
+	)
+	c, r := newPOP3Session(t, opts)
+
+	send(t, c, "AUTH PLAIN")
+	prompt := readline(t, r)
+	if !strings.HasPrefix(prompt, "+ ") && prompt != "+" {
+		t.Fatalf("expected continuation prompt, got %q", prompt)
+	}
+	send(t, c, base64.StdEncoding.EncodeToString([]byte("\x00alice\x00secret")))
+	resp := readline(t, r)
+	if !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("AUTH PLAIN continuation: expected +OK, got %q", resp)
+	}
+}
+
+func TestSession_AuthPlain_WrongPassword(t *testing.T) {
+	opts := newTestOpts(
+		&mockAuth{users: map[string]string{"alice": "correct"}},
+		&mockMailbox{},
+		&mockIndex{},
+	)
+	c, r := newPOP3Session(t, opts)
+
+	payload := base64.StdEncoding.EncodeToString([]byte("\x00alice\x00wrong"))
+	send(t, c, "AUTH PLAIN "+payload)
+	resp := readline(t, r)
+	if !strings.HasPrefix(resp, "-ERR") {
+		t.Fatalf("AUTH PLAIN wrong pass: expected -ERR, got %q", resp)
+	}
+}
+
+func TestSession_AuthPlain_UnsupportedMechanism(t *testing.T) {
+	opts := newTestOpts(
+		&mockAuth{users: map[string]string{"alice": "secret"}},
+		&mockMailbox{},
+		&mockIndex{},
+	)
+	c, r := newPOP3Session(t, opts)
+
+	send(t, c, "AUTH CRAM-MD5")
+	resp := readline(t, r)
+	if !strings.HasPrefix(resp, "-ERR") {
+		t.Fatalf("AUTH CRAM-MD5: expected -ERR, got %q", resp)
 	}
 }
 

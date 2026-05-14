@@ -1,10 +1,66 @@
-mode: single  # single | proxy | director | backend
+mode: single   # single | proxy | director | backend
 
-imap:
-  listen: ":993"
-  listen_plain: ":143"
-  tls_cert: ""
-  tls_key: ""
+general:
+  ssl:
+    tls_cert: /etc/yarilo/tls/cert.pem
+    tls_key:  /etc/yarilo/tls/key.pem
+    tls_min_version: TLS1.2
+  haproxy:
+    trusted_nets: ["127.0.0.1/32", "10.0.0.0/8"]
+    timeout: 3
+  xclient:
+    trusted_nets: ["127.0.0.1/32", "10.0.0.0/8"]
+  limits:
+    mail_max_userip_connections: 10
+
+services:
+  imaps:
+    enabled: true
+    port: 993
+    ssl_mode: ssl
+  imap:
+    enabled: true
+    port: 143
+    ssl_mode: starttls
+    disable_plaintext_auth: false
+  submission:
+    enabled: true
+    port: 587
+    ssl_mode: starttls
+    disable_plaintext_auth: false
+  submissions:
+    enabled: true
+    port: 465
+    ssl_mode: ssl
+  pop3:
+    enabled: true
+    port: 110
+    ssl_mode: starttls
+    disable_plaintext_auth: false
+  pop3s:
+    enabled: true
+    port: 995
+    ssl_mode: ssl
+  lmtp:
+    enabled: true
+    port: 24
+    ssl_mode: "no"
+
+protocol:
+  imap:
+    imap_idle_notify_interval: 120
+    imap_max_line_length: 65536
+    imap_id_send: "name *"
+  submission:
+    hostname: mail.smoke.local
+    max_message_size: 41943040
+    max_line_length: 4096
+    recipient_delimiter: "+"
+    submission_add_received_header: true
+  lmtp:
+    login_greeting: "Yarilo smoke ready."
+    add_received_header: true
+    hdr_delivery_address: final
 
 auth:
   passdb:
@@ -12,13 +68,11 @@ auth:
       dsn: /var/lib/yarilo/users.db
 
 storage:
-  mailbox: maildir    # maildir | dbox | mdbox
+  mailbox: maildir
   maildir_root: /var/mail/vhosts
-  index: fileindex
-  index_dir: ""       # defaults to maildir_root
 
 telemetry:
   listen: ":8080"
 
 log:
-  level: info    # set LOG_LEVEL=debug env var to override at runtime
+  level: debug

@@ -154,6 +154,15 @@ func New(cfg *config.Config) (*Server, error) {
 			submissionProxy = submproxy.New(cfg.Protocol.Submission.Relay, cfg.Protocol.Submission.Hostname)
 		}
 
+		var submissionTLS *tls.Config
+		if primary.SSLMode != "no" && primary.SSLMode != "" {
+			t, err := buildTLS(cfg, primary, alpnSMTP)
+			if err != nil {
+				return nil, fmt.Errorf("backend: submission TLS: %w", err)
+			}
+			submissionTLS = t
+		}
+
 		smtpServer = submsvr.New(submsvr.Options{
 			HAProxy:          primary.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
@@ -161,6 +170,7 @@ func New(cfg *config.Config) (*Server, error) {
 			XClient:          primary.XClient,
 			XClientNets:      xclientNets,
 			DisablePlainAuth: primary.DisablePlainAuth,
+			TLSConfig:        submissionTLS,
 			Config:           cfg.Protocol.Submission,
 			Auth:             chainAuth{authChain},
 			Proxy:            submissionProxy,

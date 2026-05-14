@@ -104,18 +104,16 @@ func TestLMTP_Deliver(t *testing.T) {
 	}
 }
 
-func TestLMTP_UnknownRecipient(t *testing.T) {
+func TestLMTP_UnknownRecipient_AutoProvisions(t *testing.T) {
+	// LMTP is trusted (behind an MTA); first delivery for a new recipient
+	// auto-creates the Maildir instead of rejecting. Dovecot LMTP parity.
 	addr := buildTestServer(t)
 	conn, sc := dialLMTP(t, addr)
 	sendLHLO(t, conn, sc)
 
-	fmt.Fprintf(conn, "MAIL FROM:<sender@external.com>\r\n")
-	sc.Scan()
-	fmt.Fprintf(conn, "RCPT TO:<nobody@example.com>\r\n")
-	sc.Scan()
-	resp := sc.Text()
-	if !strings.HasPrefix(resp, "550") {
-		t.Fatalf("expected 550 5.1.1 at RCPT TO for unknown user, got: %q", resp)
+	resp := deliver(t, conn, sc, "sender@external.com", "newcomer@example.com", testMsg)
+	if !strings.HasPrefix(resp[0], "250") {
+		t.Fatalf("expected 250 for first-time recipient (auto-provision), got: %q", resp[0])
 	}
 }
 
@@ -139,19 +137,25 @@ func TestLMTP_MultipleRecipients(t *testing.T) {
 	sc.Scan()
 	fmt.Fprintf(conn, "RCPT TO:<alice@example.com>\r\n")
 	sc.Scan()
-	fmt.Fprintf(conn, "RCPT TO:<nobody@example.com>\r\n") // unknown — rejected at RCPT TO
+	if !strings.HasPrefix(sc.Text(), "250") {
+		t.Fatalf("expected 250 for alice RCPT, got: %q", sc.Text())
+	}
+	fmt.Fprintf(conn, "RCPT TO:<bob@example.com>\r\n") // new user — auto-provisioned
 	sc.Scan()
-	rcptResp := sc.Text()
-	if !strings.HasPrefix(rcptResp, "550") {
-		t.Fatalf("expected 550 for unknown rcpt, got: %q", rcptResp)
+	if !strings.HasPrefix(sc.Text(), "250") {
+		t.Fatalf("expected 250 for bob RCPT (auto-provision), got: %q", sc.Text())
 	}
 
-	// Only alice was accepted — DATA delivers to her only.
+	// DATA delivers per-recipient — two 250s expected (LMTP semantics).
 	fmt.Fprintf(conn, "DATA\r\n")
 	sc.Scan() // 354
 	fmt.Fprintf(conn, "%s\r\n.\r\n", testMsg)
 	sc.Scan()
 	if !strings.HasPrefix(sc.Text(), "250") {
 		t.Fatalf("expected 250 for alice delivery, got: %q", sc.Text())
+	}
+	sc.Scan()
+	if !strings.HasPrefix(sc.Text(), "250") {
+		t.Fatalf("expected 250 for bob delivery, got: %q", sc.Text())
 	}
 }

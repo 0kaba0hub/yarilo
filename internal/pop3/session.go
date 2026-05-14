@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -113,6 +114,8 @@ func (s *session) handleAuth(cmd, arg string) {
 		s.cmdUser(arg)
 	case "PASS":
 		s.cmdPass(arg)
+	case "AUTH":
+		s.cmdSASLAuth(arg)
 	case "QUIT":
 		s.ok("yarilo signing off")
 		s.state = stateDone
@@ -139,15 +142,69 @@ func (s *session) cmdPass(arg string) {
 		s.writeErr("USER required before PASS")
 		return
 	}
+	s.finishAuth(s.username, arg)
+}
+
+// cmdSASLAuth implements POP3 SASL (RFC 5034): "AUTH PLAIN [<base64-init>]".
+// With initial response: AUTH PLAIN <base64(\0user\0pass)>.
+// Without: server replies "+ ", reads the next line, expects the base64 there.
+// "*" cancels.
+func (s *session) cmdSASLAuth(arg string) {
+	parts := strings.SplitN(arg, " ", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		s.writeErr("missing mechanism")
+		return
+	}
+	mech := strings.ToUpper(parts[0])
+	if mech != "PLAIN" {
+		s.writeErr("unsupported mechanism")
+		return
+	}
+	if s.srv.opts.DisablePlainAuth && !s.onTLS {
+		s.writeErr("plaintext authentication disabled, use STLS first")
+		return
+	}
+
+	var payload string
+	if len(parts) == 2 {
+		payload = parts[1]
+	} else {
+		fmt.Fprintf(s.conn, "+ \r\n")
+		line, err := s.br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		payload = strings.TrimRight(line, "\r\n")
+		if payload == "*" {
+			s.writeErr("authentication cancelled")
+			return
+		}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		s.writeErr("invalid base64")
+		return
+	}
+	fields := strings.SplitN(string(decoded), "\x00", 3)
+	if len(fields) != 3 {
+		s.writeErr("invalid PLAIN response")
+		return
+	}
+	// fields[0]=authzid (ignored), fields[1]=username, fields[2]=password
+	s.finishAuth(fields[1], fields[2])
+}
+
+// finishAuth runs Authenticate, applies per-user conn limits, locks the
+// mailbox, and loads it. Used by both PASS (after USER) and AUTH PLAIN.
+func (s *session) finishAuth(username, password string) {
 	if s.srv.opts.DisablePlainAuth && !s.onTLS {
 		s.writeErr("plaintext authentication disabled, use STLS first")
 		s.username = ""
 		return
 	}
-
-	res, err := s.srv.opts.Auth.Authenticate(s.username, arg, "pop3")
+	res, err := s.srv.opts.Auth.Authenticate(username, password, "pop3")
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
-		slog.Info("pop3: auth failed", "user", s.username, "remoteIP", s.remoteIP)
+		slog.Info("pop3: auth failed", "user", username, "remoteIP", s.remoteIP)
 		s.writeErr("authentication failed")
 		s.username = ""
 		return

@@ -238,6 +238,7 @@ yarilo-migrate \
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL format, soft-delete, migration |
 | [docs/JMAP.md](docs/JMAP.md) | JMAP (planned, Phase 5) |
 | [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL backends (SQLite/MySQL/Postgres), password schemes |
+| [docs/SMOKE.md](docs/SMOKE.md) | End-to-end smoke test: AUTH → LMTP → IMAPS/POP3S read |
 
 ---
 

@@ -177,7 +177,13 @@ func (s *session) rcptLocal(to string) error {
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary user lookup error"}
 	}
 	if !exists {
-		return &goSmtp.SMTPError{Code: 550, EnhancedCode: goSmtp.EnhancedCode{5, 1, 1}, Message: "User doesn't exist: " + to}
+		// Auto-provision: LMTP is internal — the upstream MTA already vetted
+		// the recipient. Create INBOX on first delivery (Dovecot LMTP parity).
+		if err := s.opts.Mailbox.Init(user); err != nil {
+			slog.Error("lmtp: auto-provision failed", "user", user, "err", err)
+			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Mailbox provisioning failed"}
+		}
+		slog.Info("lmtp: provisioned mailbox", "user", user)
 	}
 	s.rcpts = append(s.rcpts, to)
 	return nil
