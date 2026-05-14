@@ -33,7 +33,7 @@ env:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       contents: read
     steps:
@@ -64,7 +64,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       checks: write
       contents: read
@@ -98,7 +98,7 @@ jobs:
     name: Build & Push
     if: github.event_name == 'push'
     needs: [lint, test]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     concurrency:
       group: build-main-${{ github.ref }}
       cancel-in-progress: false
@@ -127,6 +127,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.0.0
+        with:
+          driver: docker
 
       - name: Log in to GHCR
         uses: docker/login-action@v4.1.0
@@ -154,8 +156,6 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Generate release notes
         if: steps.version.outputs.is_release == 'true'
