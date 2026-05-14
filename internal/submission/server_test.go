@@ -1,9 +1,11 @@
 package submission
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
@@ -183,5 +185,100 @@ func TestSession_Reset(t *testing.T) {
 	s.Reset()
 	if s.from != "" || len(s.rcpts) != 0 {
 		t.Error("Reset did not clear session state")
+	}
+}
+
+// capturingRelayBackend records the last received body for assertions.
+type capturingRelayBackend struct {
+	mu   sync.Mutex
+	body []byte
+}
+
+func (b *capturingRelayBackend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
+	return &capturingRelaySession{backend: b}, nil
+}
+
+type capturingRelaySession struct {
+	backend *capturingRelayBackend
+}
+
+func (s *capturingRelaySession) Mail(_ string, _ *goSmtp.MailOptions) error { return nil }
+func (s *capturingRelaySession) Rcpt(_ string, _ *goSmtp.RcptOptions) error { return nil }
+func (s *capturingRelaySession) Data(r io.Reader) error {
+	b, _ := io.ReadAll(r)
+	s.backend.mu.Lock()
+	s.backend.body = b
+	s.backend.mu.Unlock()
+	return nil
+}
+func (s *capturingRelaySession) Reset()        {}
+func (s *capturingRelaySession) Logout() error { return nil }
+
+func buildCapturingRelay(t *testing.T) (config.RelayConfig, *capturingRelayBackend) {
+	t.Helper()
+	be := &capturingRelayBackend{}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := goSmtp.NewServer(be)
+	srv.Domain = "relay.test"
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { ln.Close() })
+
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	return config.RelayConfig{Host: host, Port: port, SSL: "no", SSLVerify: false, ConnectTimeout: 5, CommandTimeout: 10}, be
+}
+
+func runSubmissionWithReceivedHeader(t *testing.T, addReceived bool) []byte {
+	t.Helper()
+	relayCfg, captured := buildCapturingRelay(t)
+	opts := Options{
+		Config: config.SubmissionProtocolConfig{
+			Hostname:          "mx.example.com",
+			MaxMsgSize:        1 << 20,
+			AddReceivedHeader: addReceived,
+		},
+		Auth:  stubAuth{},
+		Proxy: proxy.New(relayCfg, "mx.example.com"),
+	}
+	srv := New(opts)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln, nil) }()
+	t.Cleanup(func() { ln.Close() })
+
+	c := dialSMTP(t, ln.Addr().String())
+	defer c.Close()
+	if err := c.Auth(plainAuth("alice@example.com", "secret")); err != nil {
+		t.Fatalf("AUTH: %v", err)
+	}
+	const body = "From: alice@example.com\r\nSubject: hi\r\n\r\nHi\r\n"
+	sendMessage(t, c, "alice@example.com", "bob@external.com", body)
+	captured.mu.Lock()
+	defer captured.mu.Unlock()
+	return captured.body
+}
+
+func TestSubmission_ReceivedHeader_AddedByDefault(t *testing.T) {
+	got := runSubmissionWithReceivedHeader(t, true)
+	if !bytes.HasPrefix(got, []byte("Received: from ")) {
+		t.Fatalf("expected Received: header prepended, got body starting with:\n%q", string(got[:min(80, len(got))]))
+	}
+	if !bytes.Contains(got, []byte("by mx.example.com with ESMTPA")) {
+		t.Fatalf("missing/wrong with-clause:\n%s", string(got))
+	}
+}
+
+func TestSubmission_ReceivedHeader_Suppressed(t *testing.T) {
+	got := runSubmissionWithReceivedHeader(t, false)
+	if bytes.HasPrefix(got, []byte("Received:")) {
+		t.Fatalf("expected no Received: header, got:\n%s", string(got))
+	}
+	if !bytes.HasPrefix(got, []byte("From: alice@example.com")) {
+		t.Fatalf("expected body to start with original headers, got:\n%s", string(got))
 	}
 }

@@ -77,7 +77,7 @@ func New(cfg *config.Config) (*Server, error) {
 		primary := firstActive(svcs.IMAPS, svcs.IMAP)
 		var imapTLS *tls.Config
 		if svcs.IMAPS.Active() {
-			t, err := buildTLS(cfg, svcs.IMAPS)
+			t, err := buildTLS(cfg, svcs.IMAPS, alpnIMAP)
 			if err != nil {
 				return nil, fmt.Errorf("backend: IMAPS TLS: %w", err)
 			}
@@ -113,7 +113,7 @@ func New(cfg *config.Config) (*Server, error) {
 		primary := firstActive(svcs.POP3S, svcs.POP3)
 		var pop3TLS *tls.Config
 		if svcs.POP3S.Active() {
-			t, err := buildTLS(cfg, svcs.POP3S)
+			t, err := buildTLS(cfg, svcs.POP3S, alpnPOP3)
 			if err != nil {
 				return nil, fmt.Errorf("backend: POP3S TLS: %w", err)
 			}
@@ -271,7 +271,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			var tlsCfg *tls.Config
 			if svcs.Submission.SSLMode == "ssl" {
-				t, err := buildTLS(s.cfg, svcs.Submission)
+				t, err := buildTLS(s.cfg, svcs.Submission, alpnSMTP)
 				if err != nil {
 					slog.Error("smtp: submission TLS error", "err", err)
 					os.Exit(1)
@@ -318,7 +318,7 @@ func (s *Server) Run(ctx context.Context) error {
 				slog.Error("smtp: submissions listen error", "err", err)
 				os.Exit(1)
 			}
-			tlsCfg, err := buildTLS(s.cfg, svcs.Submissions)
+			tlsCfg, err := buildTLS(s.cfg, svcs.Submissions, alpnSMTP)
 			if err != nil {
 				slog.Error("smtp: submissions TLS error", "err", err)
 				os.Exit(1)
@@ -355,14 +355,31 @@ func listenAddr(svc *config.ServiceConfig) string {
 	return fmt.Sprintf(":%d", svc.Port)
 }
 
-// buildTLS resolves TLS config for a service (merges general.ssl + per-service override).
-func buildTLS(cfg *config.Config, svc *config.ServiceConfig) (*tls.Config, error) {
+// buildTLS resolves TLS config for a service (merges general.ssl + per-service override)
+// and sets ALPN protocols matching the protocol (IANA RFC 7301 names).
+// Clients sending ALPN must match one of the listed protocols; clients without
+// ALPN are accepted (Dovecot 2.4 semantics).
+func buildTLS(cfg *config.Config, svc *config.ServiceConfig, alpn ...string) (*tls.Config, error) {
 	ssl := cfg.ResolveSSL(svc)
 	if ssl.TLSCert == "" {
 		return nil, nil
 	}
-	return config.BuildTLSConfig(ssl)
+	tlsCfg, err := config.BuildTLSConfig(ssl)
+	if err != nil {
+		return nil, err
+	}
+	if len(alpn) > 0 {
+		tlsCfg.NextProtos = alpn
+	}
+	return tlsCfg, nil
 }
+
+// ALPN protocol identifiers (IANA RFC 7301 registry).
+const (
+	alpnIMAP = "imap"
+	alpnPOP3 = "pop3"
+	alpnSMTP = "smtp"
+)
 
 func parseCIDRs(cidrs []string) []*net.IPNet {
 	nets := make([]*net.IPNet, 0, len(cidrs))

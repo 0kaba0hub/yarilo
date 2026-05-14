@@ -90,6 +90,16 @@ var parseCases = []struct {
 		"XCLIENT ADDR=[UNAVAILABLE]",
 		Attrs{Addr: ""},
 	},
+	{
+		"destaddr + destport (Dovecot 2.4 LMTP)",
+		"XCLIENT ADDR=1+2E2+2E3+2E4 DESTADDR=10+2E0+2E0+2E1 DESTPORT=24",
+		Attrs{Addr: "1.2.3.4", DestAddr: "10.0.0.1", DestPort: "24"},
+	},
+	{
+		"destip alias accepted (Dovecot 2.4 login-proxy)",
+		"XCLIENT ADDR=5+2E5+2E5+2E5 DESTIP=192+2E168+2E1+2E1 DESTPORT=993",
+		Attrs{Addr: "5.5.5.5", DestAddr: "192.168.1.1", DestPort: "993"},
+	},
 }
 
 func TestParse(t *testing.T) {
@@ -109,13 +119,15 @@ func TestParse(t *testing.T) {
 
 func TestFormat_RoundTrip(t *testing.T) {
 	original := Attrs{
-		Proto:   "ESMTP",
-		Addr:    "192.168.1.1",
-		Port:    "54321",
-		Helo:    "mail.example.com",
-		Login:   "user@example.com",
-		Session: "sess-123",
-		TTL:     "3",
+		Proto:    "ESMTP",
+		Addr:     "192.168.1.1",
+		Port:     "54321",
+		Helo:     "mail.example.com",
+		Login:    "user@example.com",
+		Session:  "sess-123",
+		TTL:      "3",
+		DestAddr: "10.0.0.1",
+		DestPort: "24",
 	}
 
 	lines := Format(original)
@@ -154,6 +166,12 @@ func TestFormat_RoundTrip(t *testing.T) {
 		}
 		if a.TTL != "" {
 			merged.TTL = a.TTL
+		}
+		if a.DestAddr != "" {
+			merged.DestAddr = a.DestAddr
+		}
+		if a.DestPort != "" {
+			merged.DestPort = a.DestPort
 		}
 	}
 	if merged != original {

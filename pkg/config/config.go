@@ -146,6 +146,7 @@ type SubmissionProtocolConfig struct {
 	MaxRecipients      int         `koanf:"max_recipients"` // 0 = unlimited (Dovecot default)
 	RecipientDelimiter string      `koanf:"recipient_delimiter"`
 	Workarounds        []string    `koanf:"client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
+	AddReceivedHeader  bool        `koanf:"submission_add_received_header"`
 	Relay              RelayConfig `koanf:"relay"`
 }
 
@@ -221,6 +222,7 @@ func Load(path string) (*Config, error) {
 				MaxMsgSize:         41943040,
 				MaxLineLength:      4096,
 				RecipientDelimiter: "+",
+				AddReceivedHeader:  true,
 				Relay: RelayConfig{
 					Port:           25,
 					SSL:            "no",

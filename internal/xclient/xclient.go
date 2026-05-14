@@ -11,14 +11,16 @@ import (
 
 // Attrs holds the fields carried by one or more XCLIENT commands.
 type Attrs struct {
-	Proto   string // SMTP | ESMTP | LMTP
-	Addr    string // client IP
-	Port    string // client port
-	Helo    string // client HELO/EHLO domain
-	Login   string // authenticated login name
-	Session string // session ID
-	TTL     string // hop count remaining
-	Forward string // base64-encoded forward data
+	Proto    string // SMTP | ESMTP | LMTP
+	Addr     string // client IP
+	Port     string // client port
+	Helo     string // client HELO/EHLO domain
+	Login    string // authenticated login name
+	Session  string // session ID
+	TTL      string // hop count remaining
+	Forward  string // base64-encoded forward data
+	DestAddr string // destination IP the client originally connected to (Dovecot 2.4 LMTP: DESTADDR; login-proxy: DESTIP)
+	DestPort string // destination port the client originally connected to
 }
 
 const unavailable = "[UNAVAILABLE]"
@@ -108,6 +110,10 @@ func Parse(line string) (Attrs, error) {
 			a.TTL = val
 		case "FORWARD":
 			a.Forward = val
+		case "DESTADDR", "DESTIP":
+			a.DestAddr = val
+		case "DESTPORT":
+			a.DestPort = val
 		}
 	}
 	return a, nil
@@ -126,6 +132,8 @@ func Format(a Attrs) []string {
 		{"SESSION", a.Session},
 		{"TTL", a.TTL},
 		{"FORWARD", a.Forward},
+		{"DESTADDR", a.DestAddr},
+		{"DESTPORT", a.DestPort},
 	}
 
 	var lines []string
