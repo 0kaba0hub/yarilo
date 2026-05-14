@@ -5,3 +5,7 @@ smoketest
 
 # macOS
 .DS_Store
+
+# Local-only docs
+INTERNALS.md
+PLAN.md
