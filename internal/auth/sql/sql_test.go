@@ -20,7 +20,7 @@ import (
 func openTestDB(t *testing.T) (*authsql.Passdb, string) {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "users.db")
-	p, err := authsql.New("sqlite", dsn)
+	p, err := authsql.New(authsql.Config{Driver: "sqlite", DSN: dsn})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestAuthenticate(t *testing.T) {
 }
 
 func TestNew_InvalidDSN(t *testing.T) {
-	_, err := authsql.New("sqlite", "/nonexistent/path/to/users.db")
+	_, err := authsql.New(authsql.Config{Driver: "sqlite", DSN: "/nonexistent/path/to/users.db"})
 	if err == nil {
 		t.Fatal("expected error for bad DSN, got nil")
 	}
@@ -181,7 +181,7 @@ func TestNew_InvalidDSN(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "close.db")
-	p, err := authsql.New("sqlite", dsn)
+	p, err := authsql.New(authsql.Config{Driver: "sqlite", DSN: dsn})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestClose(t *testing.T) {
 }
 
 func TestNew_UnsupportedDriver(t *testing.T) {
-	if _, err := authsql.New("oracle", "ignored"); err == nil {
+	if _, err := authsql.New(authsql.Config{Driver: "oracle", DSN: "ignored"}); err == nil {
 		t.Fatal("expected error for unsupported driver, got nil")
 	}
 }
@@ -201,7 +201,7 @@ func TestNew_UnsupportedDriver(t *testing.T) {
 // otherwise so CI without DB credentials still passes.
 func runDriverSmoke(t *testing.T, driver, dsn, insertParam string) {
 	t.Helper()
-	p, err := authsql.New(driver, dsn)
+	p, err := authsql.New(authsql.Config{Driver: driver, DSN: dsn})
 	if err != nil {
 		t.Fatalf("New(%s): %v", driver, err)
 	}

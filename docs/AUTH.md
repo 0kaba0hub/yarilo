@@ -12,7 +12,11 @@ A list of passdb entries. Each entry has a `driver` and a `dsn`. Order matters �
 |:---|:---|
 | `driver` | Backend type: `sqlite` \| `mysql` \| `postgres`. |
 | `dsn` | Driver-specific connection string. `${ENV_VAR}` is expanded at startup. |
-| `args` | Reserved for driver-specific knobs (not yet used). |
+| `password_query` | Optional custom SELECT for authentication. Defaults to the built-in `yarilo_users` schema. See [Custom queries](#custom-queries). |
+| `user_query` | Optional separate userdb lookup (`home`, `mail`). When unset, userdb fields come from `password_query`. |
+| `iterate_query` | Optional list-users query for admin tooling. |
+| `default_pass_scheme` | Assumed scheme when stored password has no `{SCHEME}` prefix and no crypt(3) marker. Default: `PLAIN`. |
+| `skip_schema` | `true` to skip `CREATE TABLE IF NOT EXISTS yarilo_users` on startup — use when connecting to an existing schema. |
 
 ```yaml
 auth:
@@ -134,6 +138,67 @@ auth:
       dsn: /var/lib/yarilo/legacy.db     # checked first
     - driver: postgres
       dsn: "postgres://...:5432/main"    # falls through to here
+```
+
+---
+
+## Custom queries
+
+`password_query`, `user_query`, and `iterate_query` accept any SELECT and can connect yarilo to an existing schema. The query may reference these variables, which are substituted **as parameterised values** (no string interpolation, no injection risk):
+
+| Variable | Meaning | Example |
+|:---|:---|:---|
+| `%u` | Full username | `alice@example.com` |
+| `%n` | Local part (before `@`) | `alice` |
+| `%d` | Domain (after `@`) | `example.com` |
+
+> **Do not quote `%u`/`%n`/`%d` in your YAML.** They are rewritten to `?` (sqlite/mysql) or `$1`/`$2`/`$3` (postgres) at runtime. Writing `'%u'` produces literal `'?'` which the DB will treat as a string, not a placeholder.
+
+### Contract
+
+- **`password_query` must return columns in this order:** `password`, `home`, `mail`, `enabled`. Use `AS` aliases to map an existing schema. `password` is the only column whose value is meaningfully used downstream when `user_query` is also set; `home`/`mail` can be empty strings.
+- **`user_query` must return:** `home`, `mail`. Called after a successful auth to fill in mailbox location from an authoritative source.
+- **`iterate_query` must return one column:** `username`.
+
+### Example: map an existing schema
+
+```yaml
+auth:
+  passdb:
+    - driver: postgres
+      dsn: "postgres://yarilo:${DB_PASSWORD}@db.internal:5432/mailapp"
+      skip_schema: true
+      password_query: |
+        SELECT pw_hash, maildir AS home, mail_path AS mail, active AS enabled
+        FROM mailbox_users WHERE email = %u
+      user_query: |
+        SELECT maildir, mail_path
+        FROM mailbox_users WHERE email = %u
+      iterate_query: |
+        SELECT email FROM mailbox_users WHERE active = 1
+      default_pass_scheme: BCRYPT
+```
+
+### Example: split passdb across hot/cold sources
+
+```yaml
+auth:
+  passdb:
+    # Fast cache table — recent logins, refreshed by app.
+    - driver: postgres
+      dsn: "postgres://yarilo:${DB_PASSWORD}@cache.internal:5432/auth"
+      skip_schema: true
+      password_query: |
+        SELECT pw_hash, '/srv/' || %n AS home, '' AS mail, 1 AS enabled
+        FROM auth_cache WHERE email = %u
+
+    # Authoritative store — falls through when not in cache.
+    - driver: mysql
+      dsn: "yarilo:${DB_PASSWORD}@tcp(db.internal:3306)/billing"
+      skip_schema: true
+      password_query: |
+        SELECT password, mail_home AS home, '' AS mail, enabled
+        FROM users WHERE email = %u
 ```
 
 ---

@@ -8,17 +8,26 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// checkPassword verifies an input password against a stored password string.
+// checkPassword verifies an input password against a stored password string,
+// using PLAIN as the fallback scheme when no {SCHEME} prefix is present and
+// no crypt(3) marker is detected.
+func checkPassword(stored, input string) bool {
+	return checkPasswordWithDefault(stored, input, "")
+}
+
+// checkPasswordWithDefault is like checkPassword but uses defaultScheme as
+// the fallback when no {SCHEME} prefix is present and no crypt(3) marker is
+// detected. Empty defaultScheme falls back to PLAIN (current behaviour).
+//
 // Recognised schemes (case-insensitive prefix):
 //   - {PLAIN} / {CLEARTEXT} — literal comparison (dev only)
 //   - {BCRYPT} / {BLF-CRYPT} — golang.org/x/crypto/bcrypt
 //   - {SHA512-CRYPT} — Linux crypt(3) SHA-512 ($6$salt$hash)
 //
-// Without a {SCHEME} prefix, the format is auto-detected from the crypt(3)
-// prefix ($2a$/$2b$/$2y$ → BCRYPT, $6$ → SHA512-CRYPT). Otherwise treated as
-// PLAIN — production deployments should always store an explicit hash.
-func checkPassword(stored, input string) bool {
-	scheme, hash := splitScheme(stored)
+// Crypt(3) autodetection applies even without a prefix: $2a$/$2b$/$2y$ →
+// BCRYPT, $6$ → SHA512-CRYPT.
+func checkPasswordWithDefault(stored, input, defaultScheme string) bool {
+	scheme, hash := splitSchemeWithDefault(stored, defaultScheme)
 	switch scheme {
 	case "PLAIN", "CLEARTEXT":
 		return subtle.ConstantTimeCompare([]byte(hash), []byte(input)) == 1
@@ -31,6 +40,10 @@ func checkPassword(stored, input string) bool {
 }
 
 func splitScheme(stored string) (scheme, hash string) {
+	return splitSchemeWithDefault(stored, "")
+}
+
+func splitSchemeWithDefault(stored, defaultScheme string) (scheme, hash string) {
 	if strings.HasPrefix(stored, "{") {
 		if end := strings.Index(stored, "}"); end > 0 {
 			return strings.ToUpper(stored[1:end]), stored[end+1:]
@@ -43,6 +56,9 @@ func splitScheme(stored string) (scheme, hash string) {
 		return "BCRYPT", stored
 	case strings.HasPrefix(stored, "$6$"):
 		return "SHA512-CRYPT", stored
+	}
+	if defaultScheme != "" {
+		return strings.ToUpper(defaultScheme), stored
 	}
 	return "PLAIN", stored
 }
