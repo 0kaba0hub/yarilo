@@ -34,6 +34,9 @@ type Options struct {
 	XClient          bool
 	XClientNets      []*net.IPNet
 	DisablePlainAuth bool
+	// TLSConfig enables STARTTLS on plain-text listeners (port 587).
+	// For implicit TLS (port 465) the listener is wrapped in Serve(_, tlsCfg).
+	TLSConfig *tls.Config
 	// Protocol-level settings.
 	Config config.SubmissionProtocolConfig
 	Auth   Authenticator
@@ -63,6 +66,7 @@ func New(opts Options) *Server {
 	srv.AllowInsecureAuth = !opts.DisablePlainAuth
 	srv.ReadTimeout = 5 * time.Minute
 	srv.WriteTimeout = 5 * time.Minute
+	srv.TLSConfig = opts.TLSConfig
 	s.subSrv = srv
 	return s
 }

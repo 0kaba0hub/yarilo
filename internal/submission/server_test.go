@@ -1,12 +1,22 @@
 package submission
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"io"
+	"math/big"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
@@ -186,6 +196,90 @@ func TestSession_Reset(t *testing.T) {
 	if s.from != "" || len(s.rcpts) != 0 {
 		t.Error("Reset did not clear session state")
 	}
+}
+
+// TestSubmission_STARTTLS_Advertised verifies that the submission server
+// advertises STARTTLS when Options.TLSConfig is set, and accepts the
+// STARTTLS command (not the broken pre-v0.3.6 behaviour where TLSConfig
+// was never wired and STARTTLS returned 502).
+func TestSubmission_STARTTLS_Advertised(t *testing.T) {
+	cert, err := generateSelfSignedCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{
+		Config: config.SubmissionProtocolConfig{
+			Hostname:   "mx.example.com",
+			MaxMsgSize: 1 << 20,
+		},
+		Auth:      stubAuth{},
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
+	}
+	srv := New(opts)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() { _ = srv.Serve(ln, nil) }()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+
+	if _, err := br.ReadString('\n'); err != nil { // 220 greeting
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(conn, "EHLO test\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	advertised := false
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(line, "STARTTLS") {
+			advertised = true
+		}
+		// last line has "250 " (space), not "250-"
+		if len(line) >= 4 && line[3] == ' ' {
+			break
+		}
+	}
+	if !advertised {
+		t.Fatal("STARTTLS not advertised in EHLO response")
+	}
+
+	if _, err := io.WriteString(conn, "STARTTLS\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	line, _ := br.ReadString('\n')
+	if !strings.HasPrefix(line, "220") {
+		t.Fatalf("expected 220 to STARTTLS, got: %q", line)
+	}
+}
+
+func generateSelfSignedCert() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
 }
 
 // capturingRelayBackend records the last received body for assertions.
