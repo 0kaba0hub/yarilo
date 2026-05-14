@@ -122,11 +122,12 @@ type backend struct{ srv *Server }
 
 func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 	remoteIP := connRemoteIP(c)
-	return &session{srv: b.srv, remoteIP: remoteIP}, nil
+	return &session{srv: b.srv, conn: c, remoteIP: remoteIP}, nil
 }
 
 type session struct {
 	srv      *Server
+	conn     *goSmtp.Conn
 	remoteIP net.IP
 	from     string
 	rcpts    []string
@@ -162,12 +163,39 @@ func (s *session) Data(r io.Reader) error {
 			Message:      "Upstream MTA not configured",
 		}
 	}
-	if err := p.Send(s.from, s.rcpts, bytes.NewReader(data), s.remoteIP); err != nil {
+	body := data
+	if s.srv.opts.Config.AddReceivedHeader {
+		body = append([]byte(s.receivedHeader()), data...)
+	}
+	if err := p.Send(s.from, s.rcpts, bytes.NewReader(body), s.remoteIP); err != nil {
 		slog.Info("submission: proxy rejected", "from", s.from, "err", err)
 		return err
 	}
-	slog.Info("submission: proxied", "from", s.from, "rcpts", s.rcpts, "size", len(data))
+	slog.Info("submission: proxied", "from", s.from, "rcpts", s.rcpts, "size", len(body))
 	return nil
+}
+
+func (s *session) receivedHeader() string {
+	helo := ""
+	tlsActive := false
+	if s.conn != nil {
+		helo = s.conn.Hostname()
+		_, tlsActive = s.conn.TLSConnectionState()
+	}
+	with := "ESMTPA"
+	if tlsActive {
+		with = "ESMTPSA"
+	}
+	hostname := s.srv.opts.Config.Hostname
+	if hostname == "" {
+		hostname = "yarilo"
+	}
+	client := s.remoteIP.String()
+	if helo == "" {
+		helo = client
+	}
+	return fmt.Sprintf("Received: from %s ([%s])\r\n\tby %s with %s;\r\n\t%s\r\n",
+		helo, client, hostname, with, time.Now().UTC().Format(time.RFC1123Z))
 }
 
 // AuthMechanisms advertises PLAIN auth.
