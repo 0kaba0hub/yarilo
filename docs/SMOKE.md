@@ -6,9 +6,12 @@ authenticate → deliver → read.
 | Step | What it exercises |
 |:---|:---|
 | Submission AUTH PLAIN over STARTTLS | passdb chain, bcrypt verify, STARTTLS handshake |
+| Submission AUTH LOGIN over STARTTLS | legacy SASL LOGIN mechanism (Outlook, Android MUAs) |
 | LMTP delivery | storage write path, auto-provisioning of new mailboxes |
-| IMAPS LOGIN + SELECT + FETCH | TLS+ALPN, IMAP server, index read |
-| POP3S USER/PASS + STAT + RETR | TLS+ALPN, POP3 server, message read |
+| IMAPS LOGIN command | IMAP native `LOGIN user password` (RFC 3501) |
+| IMAPS AUTHENTICATE PLAIN | IMAP SASL PLAIN via AUTHENTICATE |
+| POP3S USER/PASS | POP3 native `USER` + `PASS` |
+| POP3S AUTH PLAIN (SASL) | POP3 SASL PLAIN via AUTH (RFC 5034), with initial response |
 
 The harness lives in [`app/smoketest-e2e`](../app/smoketest-e2e) and runs against any yarilo deployment exposing the listeners — local binary, docker compose, or staging cluster.
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	imapclient "github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-sasl"
 )
 
 var (
@@ -42,10 +43,13 @@ func main() {
 		name string
 		fn   func() error
 	}{
-		{"submission AUTH PLAIN over STARTTLS", checkSubmissionAuth},
+		{"submission AUTH PLAIN over STARTTLS", checkSubmissionAuthPlain},
+		{"submission AUTH LOGIN over STARTTLS", checkSubmissionAuthLogin},
 		{"LMTP deliver to mailbox", deliverLMTP},
-		{"IMAPS LOGIN + SELECT INBOX + FETCH", readViaIMAPS},
-		{"POP3S USER/PASS + STAT + RETR", readViaPOP3S},
+		{"IMAPS LOGIN command", readViaIMAPS_LoginCommand},
+		{"IMAPS AUTHENTICATE PLAIN (SASL)", readViaIMAPS_AuthenticatePlain},
+		{"POP3S USER/PASS", readViaPOP3S_UserPass},
+		{"POP3S AUTH PLAIN (SASL)", readViaPOP3S_SaslPlain},
 	}
 
 	failed := false
@@ -65,24 +69,27 @@ func main() {
 
 // ---- step 1: submission AUTH ----------------------------------------------
 
-func checkSubmissionAuth() error {
+// dialSubmissionSTARTTLS performs EHLO + STARTTLS + EHLO and returns the
+// upgraded TLS connection ready for AUTH.
+func dialSubmissionSTARTTLS() (*tls.Conn, *bufio.Reader, error) {
 	addr := fmt.Sprintf("%s:%d", *flagHost, *flagSubmissionPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return nil, nil, fmt.Errorf("dial: %w", err)
 	}
-	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(*flagTimeout))
-
 	br := bufio.NewReader(conn)
 	if err := expectCode(br, "220"); err != nil {
-		return err
+		conn.Close()
+		return nil, nil, err
 	}
 	if err := smtpCmd(conn, br, "EHLO smoketest", "250"); err != nil {
-		return err
+		conn.Close()
+		return nil, nil, err
 	}
 	if err := smtpCmd(conn, br, "STARTTLS", "220"); err != nil {
-		return err
+		conn.Close()
+		return nil, nil, err
 	}
 	tlsConn := tls.Client(conn, &tls.Config{
 		ServerName:         *flagHost,
@@ -90,17 +97,56 @@ func checkSubmissionAuth() error {
 		NextProtos:         []string{"smtp"},
 	})
 	if err := tlsConn.HandshakeContext(deadlineCtx(*flagTimeout)); err != nil {
-		return fmt.Errorf("starttls handshake: %w", err)
+		conn.Close()
+		return nil, nil, fmt.Errorf("starttls handshake: %w", err)
 	}
 	br = bufio.NewReader(tlsConn)
 	if err := smtpCmd(tlsConn, br, "EHLO smoketest", "250"); err != nil {
+		tlsConn.Close()
+		return nil, nil, err
+	}
+	return tlsConn, br, nil
+}
+
+func checkSubmissionAuthPlain() error {
+	conn, br, err := dialSubmissionSTARTTLS()
+	if err != nil {
 		return err
 	}
+	defer conn.Close()
 	auth := base64.StdEncoding.EncodeToString([]byte("\x00" + *flagUser + "\x00" + *flagPass))
-	if err := smtpCmd(tlsConn, br, "AUTH PLAIN "+auth, "235"); err != nil {
+	if err := smtpCmd(conn, br, "AUTH PLAIN "+auth, "235"); err != nil {
 		return err
 	}
-	_ = smtpCmdNoCheck(tlsConn, br, "QUIT")
+	_ = smtpCmdNoCheck(conn, br, "QUIT")
+	return nil
+}
+
+// checkSubmissionAuthLogin runs the SMTP AUTH LOGIN handshake:
+//
+//	C: AUTH LOGIN
+//	S: 334 VXNlcm5hbWU6   (base64 "Username:")
+//	C: <base64 username>
+//	S: 334 UGFzc3dvcmQ6   (base64 "Password:")
+//	C: <base64 password>
+//	S: 235 OK
+func checkSubmissionAuthLogin() error {
+	conn, br, err := dialSubmissionSTARTTLS()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := smtpCmd(conn, br, "AUTH LOGIN", "334"); err != nil {
+		return err
+	}
+	if err := smtpCmd(conn, br, base64.StdEncoding.EncodeToString([]byte(*flagUser)), "334"); err != nil {
+		return err
+	}
+	if err := smtpCmd(conn, br, base64.StdEncoding.EncodeToString([]byte(*flagPass)), "235"); err != nil {
+		return err
+	}
+	_ = smtpCmdNoCheck(conn, br, "QUIT")
 	return nil
 }
 
@@ -147,7 +193,9 @@ func deliverLMTP() error {
 
 // ---- step 3: IMAPS read ----------------------------------------------------
 
-func readViaIMAPS() error {
+// imapVerifyINBOX dials IMAPS, runs the supplied authentication, and asserts
+// INBOX contains at least one message.
+func imapVerifyINBOX(auth func(*imapclient.Client) error) error {
 	addr := fmt.Sprintf("%s:%d", *flagHost, *flagIMAPSPort)
 	tlsCfg := &tls.Config{
 		ServerName:         *flagHost,
@@ -160,8 +208,8 @@ func readViaIMAPS() error {
 	}
 	defer c.Close() //nolint:errcheck
 
-	if err := c.Login(*flagUser, *flagPass).Wait(); err != nil {
-		return fmt.Errorf("imap login: %w", err)
+	if err := auth(c); err != nil {
+		return fmt.Errorf("imap auth: %w", err)
 	}
 	mb, err := c.Select("INBOX", nil).Wait()
 	if err != nil {
@@ -173,9 +221,23 @@ func readViaIMAPS() error {
 	return nil
 }
 
+func readViaIMAPS_LoginCommand() error {
+	return imapVerifyINBOX(func(c *imapclient.Client) error {
+		return c.Login(*flagUser, *flagPass).Wait()
+	})
+}
+
+func readViaIMAPS_AuthenticatePlain() error {
+	return imapVerifyINBOX(func(c *imapclient.Client) error {
+		return c.Authenticate(sasl.NewPlainClient("", *flagUser, *flagPass))
+	})
+}
+
 // ---- step 4: POP3S read ----------------------------------------------------
 
-func readViaPOP3S() error {
+// pop3VerifyRETR dials POP3S, runs the supplied auth, then runs STAT + RETR 1
+// and verifies the test subject appears in the message body.
+func pop3VerifyRETR(auth func(net.Conn, *bufio.Reader) error) error {
 	addr := fmt.Sprintf("%s:%d", *flagHost, *flagPOP3SPort)
 	tlsCfg := &tls.Config{
 		ServerName:         *flagHost,
@@ -194,17 +256,13 @@ func readViaPOP3S() error {
 	if err != nil || !strings.HasPrefix(line, "+OK") {
 		return fmt.Errorf("pop3 greeting: %q (err=%v)", line, err)
 	}
-	if err := pop3Cmd(conn, br, "USER "+*flagUser); err != nil {
-		return err
-	}
-	if err := pop3Cmd(conn, br, "PASS "+*flagPass); err != nil {
+	if err := auth(conn, br); err != nil {
 		return err
 	}
 	statLine, err := pop3CmdLine(conn, br, "STAT")
 	if err != nil {
 		return err
 	}
-	// STAT response: "+OK 1 1234"
 	parts := strings.Fields(statLine)
 	if len(parts) < 2 || parts[0] != "+OK" {
 		return fmt.Errorf("pop3 stat malformed: %q", statLine)
@@ -212,7 +270,6 @@ func readViaPOP3S() error {
 	if parts[1] == "0" {
 		return fmt.Errorf("pop3 inbox empty (STAT: %q)", statLine)
 	}
-	// RETR 1 — read full message, look for our test subject.
 	if _, err := io.WriteString(conn, "RETR 1\r\n"); err != nil {
 		return err
 	}
@@ -238,6 +295,23 @@ func readViaPOP3S() error {
 	}
 	_ = pop3Cmd(conn, br, "QUIT")
 	return nil
+}
+
+func readViaPOP3S_UserPass() error {
+	return pop3VerifyRETR(func(conn net.Conn, br *bufio.Reader) error {
+		if err := pop3Cmd(conn, br, "USER "+*flagUser); err != nil {
+			return err
+		}
+		return pop3Cmd(conn, br, "PASS "+*flagPass)
+	})
+}
+
+func readViaPOP3S_SaslPlain() error {
+	return pop3VerifyRETR(func(conn net.Conn, br *bufio.Reader) error {
+		// SASL PLAIN with initial response: AUTH PLAIN <base64 \0user\0pass>
+		b64 := base64.StdEncoding.EncodeToString([]byte("\x00" + *flagUser + "\x00" + *flagPass))
+		return pop3Cmd(conn, br, "AUTH PLAIN "+b64)
+	})
 }
 
 // ---- helpers ---------------------------------------------------------------

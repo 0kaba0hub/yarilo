@@ -101,6 +101,50 @@ func TestSubmission_WrongPassword(t *testing.T) {
 	}
 }
 
+// TestSubmission_EHLO_AdvertisesPlainAndLogin verifies the post-STARTTLS
+// EHLO response lists both AUTH PLAIN and AUTH LOGIN, so legacy MUAs that
+// only support LOGIN (older Outlook, some Android clients) can authenticate.
+func TestSubmission_EHLO_AdvertisesPlainAndLogin(t *testing.T) {
+	addr, cleanup := buildTestServer(t)
+	defer cleanup()
+
+	c := dialSMTP(t, addr)
+	defer c.Close()
+
+	ok, params := c.Extension("AUTH")
+	if !ok {
+		t.Fatal("AUTH extension not advertised")
+	}
+	if !strings.Contains(params, "PLAIN") {
+		t.Errorf("AUTH PLAIN missing from EHLO: %q", params)
+	}
+	if !strings.Contains(params, "LOGIN") {
+		t.Errorf("AUTH LOGIN missing from EHLO: %q", params)
+	}
+}
+
+func TestSubmission_AuthLOGIN_OK(t *testing.T) {
+	addr, cleanup := buildTestServer(t)
+	defer cleanup()
+	c := dialSMTP(t, addr)
+	defer c.Close()
+
+	if err := c.Auth(sasl.NewLoginClient("alice@example.com", "secret")); err != nil {
+		t.Fatalf("AUTH LOGIN: %v", err)
+	}
+}
+
+func TestSubmission_AuthLOGIN_Wrong(t *testing.T) {
+	addr, cleanup := buildTestServer(t)
+	defer cleanup()
+	c := dialSMTP(t, addr)
+	defer c.Close()
+
+	if err := c.Auth(sasl.NewLoginClient("alice@example.com", "wrong")); err == nil {
+		t.Fatal("expected AUTH LOGIN failure for wrong password")
+	}
+}
+
 func TestSubmission_AuthOK(t *testing.T) {
 	addr, cleanup := buildTestServer(t)
 	defer cleanup()

@@ -202,19 +202,26 @@ func (s *session) receivedHeader() string {
 		helo, client, hostname, with, time.Now().UTC().Format(time.RFC1123Z))
 }
 
-// AuthMechanisms advertises PLAIN auth.
+// AuthMechanisms advertises supported SASL mechanisms.
+// PLAIN: single-line base64 of \0user\0pass (RFC 4616).
+// LOGIN: interactive, two server prompts (legacy — Outlook, some Android MUAs).
 func (s *session) AuthMechanisms() []string {
-	return []string{sasl.Plain}
+	return []string{sasl.Plain, sasl.Login}
 }
 
 // Auth returns a sasl.Server for the requested mechanism.
 func (s *session) Auth(mech string) (sasl.Server, error) {
-	if mech != sasl.Plain {
-		return nil, goSmtp.ErrAuthUnknownMechanism
+	switch mech {
+	case sasl.Plain:
+		return sasl.NewPlainServer(func(_, username, password string) error {
+			return s.srv.opts.Auth.AuthPlain(username, password)
+		}), nil
+	case sasl.Login:
+		return newLoginServer(func(username, password string) error {
+			return s.srv.opts.Auth.AuthPlain(username, password)
+		}), nil
 	}
-	return sasl.NewPlainServer(func(_, username, password string) error {
-		return s.srv.opts.Auth.AuthPlain(username, password)
-	}), nil
+	return nil, goSmtp.ErrAuthUnknownMechanism
 }
 
 // ---- helpers ------------------------------------------------------------
