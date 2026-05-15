@@ -13,6 +13,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 var (
@@ -21,12 +22,6 @@ var (
 	flagFormat = flag.String("format", "dbox", "output format: dbox or mdbox")
 	flagDry    = flag.Bool("dry-run", false, "print actions without writing")
 )
-
-type dst interface {
-	Init(user string) error
-	Create(user, folder string) error
-	Save(user, folder string, r io.Reader, size int64, flags []string) (string, error)
-}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -37,25 +32,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	var backend dst
+	var backend mailbox.MailboxBackend
 	switch strings.ToLower(*flagFormat) {
 	case "dbox":
-		d, err := dbox.New(*flagTo)
-		if err != nil {
-			slog.Error("open dest", "err", err)
-			os.Exit(1)
-		}
-		backend = d
+		backend = dbox.New()
 	case "mdbox":
-		d, err := mdbox.New(*flagTo)
-		if err != nil {
-			slog.Error("open dest", "err", err)
-			os.Exit(1)
-		}
-		backend = d
+		backend = mdbox.New()
 	default:
 		slog.Error("unknown format", "format", *flagFormat)
 		os.Exit(1)
+	}
+
+	// Resolver maps each username to its destination home: <dst>/<domain>/<local>.
+	resolver := &mailbox.Resolver{
+		Root:         *flagTo,
+		HomeTemplate: "%d/%n",
 	}
 
 	var migrated, skipped int
@@ -70,7 +61,7 @@ func main() {
 			return nil
 		}
 		user := parts[1] + "@" + parts[0]
-		m, s, err := migrateUser(*flagFrom, backend, user)
+		m, s, err := migrateUser(*flagFrom, backend, resolver, user)
 		migrated += m
 		skipped += s
 		return err
@@ -83,10 +74,14 @@ func main() {
 }
 
 // migrateUser walks all maildir folders for one user.
-func migrateUser(srcRoot string, backend dst, user string) (migrated, skipped int, _ error) {
+func migrateUser(srcRoot string, backend mailbox.MailboxBackend, resolver *mailbox.Resolver, user string) (migrated, skipped int, _ error) {
 	userPath := userDir(srcRoot, user)
 
-	if err := backend.Init(user); err != nil {
+	info := resolver.UserInfo(user, "")
+	box := backend.OpenUser(info)
+	defer box.Close() //nolint:errcheck
+
+	if err := box.Init(); err != nil {
 		return 0, 0, fmt.Errorf("migrate: init %s: %w", user, err)
 	}
 
@@ -111,11 +106,11 @@ func migrateUser(srcRoot string, backend dst, user string) (migrated, skipped in
 
 	for _, f := range folders {
 		if f.name != "INBOX" {
-			if err := backend.Create(user, f.name); err != nil {
+			if err := box.Create(f.name); err != nil {
 				return migrated, skipped, fmt.Errorf("migrate: create %s/%s: %w", user, f.name, err)
 			}
 		}
-		m, s, err := migrateFolder(backend, user, f.name, f.path)
+		m, s, err := migrateFolder(box, user, f.name, f.path)
 		migrated += m
 		skipped += s
 		if err != nil {
@@ -126,7 +121,7 @@ func migrateUser(srcRoot string, backend dst, user string) (migrated, skipped in
 }
 
 // migrateFolder copies all messages from a maildir cur/ directory.
-func migrateFolder(backend dst, user, folder, folderPath string) (migrated, skipped int, _ error) {
+func migrateFolder(box mailbox.UserMailbox, user, folder, folderPath string) (migrated, skipped int, _ error) {
 	curPath := filepath.Join(folderPath, "cur")
 	entries, err := os.ReadDir(curPath)
 	if err != nil {
@@ -163,7 +158,7 @@ func migrateFolder(backend dst, user, folder, folderPath string) (migrated, skip
 			continue
 		}
 
-		_, saveErr := backend.Save(user, folder, f, info.Size(), flags)
+		_, saveErr := box.Save(folder, f, info.Size(), flags)
 		f.Close()
 		if saveErr != nil {
 			return migrated, skipped, fmt.Errorf("migrate: save %s/%s/%s: %w", user, folder, e.Name(), saveErr)
@@ -205,3 +200,7 @@ func maildirFlags(filename string) []string {
 	}
 	return flags
 }
+
+// migrateFolder uses box.Save which accepts io.Reader, but Save signature needs
+// an io.Reader not io.ReadSeeker — the file handle satisfies io.Reader.
+var _ io.Reader = (*os.File)(nil)

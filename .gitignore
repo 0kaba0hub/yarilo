@@ -1,7 +1,9 @@
 # Build outputs
-yarilo
-yarilo-migrate
-smoketest
+/yarilo
+app/yarilo/yarilo
+app/yarilo-migrate/yarilo-migrate
+app/smoketest/smoketest
+app/smoketest-e2e/smoketest-e2e
 
 # macOS
 .DS_Store
