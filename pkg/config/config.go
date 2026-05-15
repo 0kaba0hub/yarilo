@@ -192,8 +192,11 @@ type AuthServiceConfig struct {
 
 // DirectorServiceConfig configures the standalone yarilo-director process.
 type DirectorServiceConfig struct {
-	Listen   string         `koanf:"listen"`
-	Shutdown ShutdownConfig `koanf:"shutdown"`
+	Listen       string         `koanf:"listen"`
+	Shutdown     ShutdownConfig `koanf:"shutdown"`
+	UserExpire   int            `koanf:"user_expire"`   // seconds before user→backend mapping expires; 0 = 900
+	PingInterval int            `koanf:"ping_interval"` // seconds between PING probes; 0 = 30
+	PingTimeout  int            `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
 }
 
 // ShutdownConfig controls graceful shutdown behaviour.
@@ -308,6 +311,9 @@ func Load(path string) (*Config, error) {
 				SessionGracePeriod: 30,
 				KillTimeout:        5,
 			},
+			UserExpire:   900,
+			PingInterval: 30,
+			PingTimeout:  10,
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},

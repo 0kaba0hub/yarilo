@@ -63,7 +63,11 @@ func main() {
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
-	srv := director.New()
+	srv := director.NewWithOptions(director.Options{
+		UserExpire:   time.Duration(cfg.DirectorService.UserExpire) * time.Second,
+		PingInterval: time.Duration(cfg.DirectorService.PingInterval) * time.Second,
+		PingTimeout:  time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
+	})
 	errCh := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(ctx, cfg.DirectorService.Listen, tlsCfg); err != nil {

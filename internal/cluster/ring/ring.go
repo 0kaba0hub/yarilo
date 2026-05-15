@@ -14,11 +14,13 @@ const defaultVhosts = 100
 
 // Backend represents a backend node in the ring.
 type Backend struct {
-	IP     string
-	Port   int
-	Tag    string
-	Up     bool
-	Vhosts int // virtual nodes count; 0 = defaultVhosts (100)
+	IP               string
+	Port             int
+	Tag              string
+	Up               bool
+	Vhosts           int   // virtual nodes; 0 = defaultVhosts (100)
+	LastUpdownChange int64 // Unix timestamp of last up/down state change
+	Hostname         string
 }
 
 // Ring is a consistent-hashing ring.
@@ -56,7 +58,8 @@ func (r *Ring) RemoveBackend(ip string) {
 
 // SetUp marks a backend as up or down without removing it from the registry.
 // Used for BACKEND-FLUSH: the backend stays known but stops receiving new lookups.
-func (r *Ring) SetUp(ip string, up bool) bool {
+// Returns false if the backend is not found.
+func (r *Ring) SetUp(ip string, up bool, ts int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	b, ok := r.backends[ip]
@@ -64,6 +67,9 @@ func (r *Ring) SetUp(ip string, up bool) bool {
 		return false
 	}
 	b.Up = up
+	if ts != 0 {
+		b.LastUpdownChange = ts
+	}
 	r.rebuild()
 	return true
 }

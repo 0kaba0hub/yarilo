@@ -3,11 +3,16 @@ package director
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
+
+// --- helpers ---
 
 func dialTest(t *testing.T, addr string) (net.Conn, *bufio.Scanner) {
 	t.Helper()
@@ -20,14 +25,22 @@ func dialTest(t *testing.T, addr string) (net.Conn, *bufio.Scanner) {
 	return conn, sc
 }
 
-func readHandshake(t *testing.T, sc *bufio.Scanner) {
+// readHandshake reads server VERSION+HOST-HAND-START+…+HOST-HAND-END+DONE.
+// Returns the HOST lines received during the handshake.
+func readHandshake(t *testing.T, sc *bufio.Scanner) []string {
 	t.Helper()
+	var hosts []string
 	for sc.Scan() {
-		if sc.Text() == "DONE" {
-			return
+		line := sc.Text()
+		if line == "DONE" {
+			return hosts
+		}
+		if strings.HasPrefix(line, "HOST\t") {
+			hosts = append(hosts, line)
 		}
 	}
 	t.Fatal("server handshake never sent DONE")
+	return nil
 }
 
 func sendHandshake(t *testing.T, conn net.Conn) {
@@ -46,8 +59,14 @@ func readLine(t *testing.T, sc *bufio.Scanner) string {
 }
 
 func startServer(t *testing.T) (*Server, string) {
+	return startServerOpts(t, Options{
+		PingInterval: 24 * time.Hour, // disable PING during tests
+	})
+}
+
+func startServerOpts(t *testing.T, opts Options) (*Server, string) {
 	t.Helper()
-	srv := New()
+	srv := NewWithOptions(opts)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -63,13 +82,30 @@ func startServer(t *testing.T) (*Server, string) {
 	return srv, ln.Addr().String()
 }
 
-// --- individual test functions ---
+// --- tests ---
 
-func TestHandshake(t *testing.T) {
+func TestHandshake_EmptyRing(t *testing.T) {
 	_, addr := startServer(t)
 	conn, sc := dialTest(t, addr)
-	readHandshake(t, sc)
+	hosts := readHandshake(t, sc)
 	sendHandshake(t, conn)
+	if len(hosts) != 0 {
+		t.Errorf("expected no HOST lines on empty ring, got %v", hosts)
+	}
+}
+
+func TestHandshake_ExistingBackends(t *testing.T) {
+	srv, addr := startServer(t)
+	// Pre-populate ring before client connects.
+	srv.ring.AddBackend(&ring.Backend{IP: "10.0.0.1", Port: 993, Tag: "imap", Up: true})
+
+	conn, sc := dialTest(t, addr)
+	hosts := readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	if len(hosts) != 1 || !strings.Contains(hosts[0], "10.0.0.1") {
+		t.Errorf("expected 1 HOST line with 10.0.0.1, got %v", hosts)
+	}
 }
 
 func TestLookup_NoBackends(t *testing.T) {
@@ -101,7 +137,6 @@ func TestLookup_ReturnsHostWithTag(t *testing.T) {
 	if !strings.HasPrefix(line, "HOST\t2\t") {
 		t.Fatalf("expected HOST, got %q", line)
 	}
-	// HOST\t{id}\t{ip}\t{port}\t{tag}
 	parts := strings.Split(line, "\t")
 	if len(parts) < 5 {
 		t.Fatalf("HOST line missing tag field: %q", line)
@@ -111,6 +146,27 @@ func TestLookup_ReturnsHostWithTag(t *testing.T) {
 	}
 	if parts[4] != "imap" {
 		t.Errorf("unexpected tag: %q", parts[4])
+	}
+}
+
+func TestLookup_RecordsUserDir(t *testing.T) {
+	srv, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.1\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	conn.Write([]byte("LOOKUP\t3\talice@example.com\n"))
+	readLine(t, sc) // HOST
+
+	e := srv.userDir.Get("alice@example.com")
+	if e == nil {
+		t.Fatal("expected user directory entry after LOOKUP")
+	}
+	if e.Host != "10.0.0.1:993" {
+		t.Errorf("userdir host: want 10.0.0.1:993, got %q", e.Host)
 	}
 }
 
@@ -128,10 +184,29 @@ func TestBackendDown_RemovesFromRing(t *testing.T) {
 		t.Fatalf("BACKEND-DOWN: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t3\tuser@example.com\n"))
-	line := readLine(t, sc)
-	if !strings.HasPrefix(line, "FAIL\t3\t") {
-		t.Errorf("expected FAIL after backend removed, got %q", line)
+	conn.Write([]byte("LOOKUP\t4\tuser@example.com\n"))
+	if !strings.HasPrefix(readLine(t, sc), "FAIL\t4\t") {
+		t.Error("expected FAIL after backend removed")
+	}
+}
+
+func TestHostRemove_AliasForBackendDown(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.20\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	conn.Write([]byte("HOST-REMOVE\t10.0.0.20\n"))
+	if got := readLine(t, sc); got != "OK" {
+		t.Fatalf("HOST-REMOVE: expected OK, got %q", got)
+	}
+
+	conn.Write([]byte("LOOKUP\t5\tuser@example.com\n"))
+	if !strings.HasPrefix(readLine(t, sc), "FAIL\t5\t") {
+		t.Error("expected FAIL after HOST-REMOVE")
 	}
 }
 
@@ -149,10 +224,9 @@ func TestBackendFlush_StopsNewLookups(t *testing.T) {
 		t.Fatalf("BACKEND-FLUSH: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t4\tuser@example.com\n"))
-	line := readLine(t, sc)
-	if !strings.HasPrefix(line, "FAIL\t4\t") {
-		t.Errorf("expected FAIL after flush, got %q", line)
+	conn.Write([]byte("LOOKUP\t6\tuser@example.com\n"))
+	if !strings.HasPrefix(readLine(t, sc), "FAIL\t6\t") {
+		t.Error("expected FAIL after flush")
 	}
 }
 
@@ -171,25 +245,19 @@ func TestBackendFlush_UnknownBackend(t *testing.T) {
 func TestRingChange_PushedToAllClients(t *testing.T) {
 	_, addr := startServer(t)
 
-	// Client 1 registers a backend.
 	c1, sc1 := dialTest(t, addr)
 	readHandshake(t, sc1)
 	sendHandshake(t, c1)
 
-	// Client 2 connects and waits for push.
 	c2, sc2 := dialTest(t, addr)
 	readHandshake(t, sc2)
 	sendHandshake(t, c2)
 
-	// Client 1 sends BACKEND-UP — both should get RING-CHANGE.
 	c1.Write([]byte("BACKEND-UP\t10.0.0.4\t10993\timap\t100\n"))
-
-	// Client 1 gets OK response.
 	if got := readLine(t, sc1); got != "OK" {
 		t.Fatalf("c1 BACKEND-UP: expected OK, got %q", got)
 	}
 
-	// Client 2 gets unsolicited RING-CHANGE.
 	push := readLine(t, sc2)
 	if !strings.HasPrefix(push, "RING-CHANGE\t10.0.0.4\tup\t") {
 		t.Errorf("c2 expected RING-CHANGE push, got %q", push)
@@ -207,10 +275,9 @@ func TestRingChange_DownIncludesTag(t *testing.T) {
 	sendHandshake(t, conn)
 
 	conn.Write([]byte("BACKEND-UP\t10.0.0.5\t10993\tpop3\t100\n"))
-	readLine(t, sc) // OK (also RING-CHANGE for self — we don't care here)
+	readLine(t, sc) // OK
 
 	conn.Write([]byte("BACKEND-DOWN\t10.0.0.5\n"))
-	// First line is the OK response.
 	if got := readLine(t, sc); got != "OK" {
 		t.Fatalf("BACKEND-DOWN: expected OK, got %q", got)
 	}
@@ -222,17 +289,15 @@ func TestUserMove_OverridesRing(t *testing.T) {
 	readHandshake(t, sc)
 	sendHandshake(t, conn)
 
-	// Register a backend.
 	conn.Write([]byte("BACKEND-UP\t10.0.0.6\t10993\timap\t100\n"))
 	readLine(t, sc) // OK
 
-	// Move alice to a different backend (not in ring).
 	conn.Write([]byte("USER-MOVE\talice@example.com\t10.0.0.99\t10993\n"))
 	if got := readLine(t, sc); got != "OK" {
 		t.Fatalf("USER-MOVE: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t5\talice@example.com\n"))
+	conn.Write([]byte("LOOKUP\t7\talice@example.com\n"))
 	line := readLine(t, sc)
 	parts := strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] != "10.0.0.99" {
@@ -257,12 +322,84 @@ func TestUserRelease_FallsBackToRing(t *testing.T) {
 		t.Fatalf("USER-RELEASE: expected OK, got %q", got)
 	}
 
-	// After release, ring lookup should return the real backend.
-	conn.Write([]byte("LOOKUP\t6\tbob@example.com\n"))
+	conn.Write([]byte("LOOKUP\t8\tbob@example.com\n"))
 	line := readLine(t, sc)
 	parts := strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] == "10.0.0.99" {
 		t.Errorf("expected ring backend after release, got %q", line)
+	}
+}
+
+func TestUserWeak_MarksEntryWeak(t *testing.T) {
+	srv, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.8\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	// LOOKUP populates userDir as strong.
+	conn.Write([]byte("LOOKUP\t9\tcarol@example.com\n"))
+	readLine(t, sc) // HOST
+
+	e := srv.userDir.Get("carol@example.com")
+	if e == nil || e.Weak {
+		t.Fatal("expected strong entry after LOOKUP")
+	}
+
+	conn.Write([]byte("USER-WEAK\tcarol@example.com\n"))
+	if got := readLine(t, sc); got != "OK" {
+		t.Fatalf("USER-WEAK: expected OK, got %q", got)
+	}
+
+	e = srv.userDir.Get("carol@example.com")
+	if e == nil || !e.Weak {
+		t.Error("expected Weak=true after USER-WEAK")
+	}
+}
+
+func TestUserKick_BroadcastsKicked(t *testing.T) {
+	_, addr := startServer(t)
+
+	c1, sc1 := dialTest(t, addr)
+	readHandshake(t, sc1)
+	sendHandshake(t, c1)
+
+	c2, sc2 := dialTest(t, addr)
+	readHandshake(t, sc2)
+	sendHandshake(t, c2)
+
+	c1.Write([]byte("USER-KICK\tdave@example.com\n"))
+	if got := readLine(t, sc1); got != "OK" {
+		t.Fatalf("USER-KICK: expected OK, got %q", got)
+	}
+
+	push := readLine(t, sc2)
+	if push != "USER-KICKED\tdave@example.com" {
+		t.Errorf("c2 expected USER-KICKED, got %q", push)
+	}
+}
+
+func TestUserKilled_BroadcastsEverywhere(t *testing.T) {
+	_, addr := startServer(t)
+
+	c1, sc1 := dialTest(t, addr)
+	readHandshake(t, sc1)
+	sendHandshake(t, c1)
+
+	c2, sc2 := dialTest(t, addr)
+	readHandshake(t, sc2)
+	sendHandshake(t, c2)
+
+	c1.Write([]byte("USER-KILLED\t12345678\n"))
+	if got := readLine(t, sc1); got != "OK" {
+		t.Fatalf("USER-KILLED: expected OK, got %q", got)
+	}
+
+	push := readLine(t, sc2)
+	if push != "USER-KILLED-EVERYWHERE\t12345678" {
+		t.Errorf("c2 expected USER-KILLED-EVERYWHERE, got %q", push)
 	}
 }
 
@@ -286,13 +423,86 @@ func TestUserMoved_PushedToAllClients(t *testing.T) {
 	}
 }
 
+func TestPingPong(t *testing.T) {
+	_, addr := startServerOpts(t, Options{
+		PingInterval: 50 * time.Millisecond,
+		PingTimeout:  200 * time.Millisecond,
+	})
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	// Server will send PING; we reply PONG; expect no disconnect.
+	line := readLine(t, sc)
+	if line != "PING" {
+		t.Fatalf("expected PING from server, got %q", line)
+	}
+	conn.Write([]byte("PONG\n"))
+
+	// After PONG server should stay alive — send a LOOKUP to confirm.
+	conn.Write([]byte("LOOKUP\t1\tuser@example.com\n"))
+	got := readLine(t, sc)
+	if !strings.HasPrefix(got, "FAIL\t1\t") {
+		t.Errorf("expected FAIL (no backends), got %q", got)
+	}
+}
+
+func TestPing_TimeoutClosesConn(t *testing.T) {
+	_, addr := startServerOpts(t, Options{
+		PingInterval: 50 * time.Millisecond,
+		PingTimeout:  100 * time.Millisecond,
+	})
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	// Wait for PING then do NOT reply.
+	line := readLine(t, sc)
+	if line != "PING" {
+		t.Fatalf("expected PING, got %q", line)
+	}
+
+	// Server should close connection after PingTimeout.
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if sc.Scan() {
+		t.Errorf("expected conn closed, got extra line: %q", sc.Text())
+	}
+}
+
+func TestQuit_ClosesConnection(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("QUIT\tbye\n"))
+
+	// Connection should be closed by server.
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if sc.Scan() {
+		t.Errorf("expected conn closed after QUIT, got: %q", sc.Text())
+	}
+}
+
+func TestPingPong_ServerResponds(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	// Client sends PING; server must reply PONG.
+	conn.Write([]byte("PING\n"))
+	if got := readLine(t, sc); got != "PONG" {
+		t.Errorf("expected PONG from server, got %q", got)
+	}
+}
+
 func TestConfigurableVhosts(t *testing.T) {
 	srv, addr := startServer(t)
 	conn, sc := dialTest(t, addr)
 	readHandshake(t, sc)
 	sendHandshake(t, conn)
 
-	// Register backend with 50 vhosts.
 	conn.Write([]byte("BACKEND-UP\t10.0.0.8\t10993\timap\t50\n"))
 	if got := readLine(t, sc); got != "OK" {
 		t.Fatalf("BACKEND-UP: expected OK, got %q", got)
@@ -316,10 +526,9 @@ func TestMultipleClients_SharedRing(t *testing.T) {
 	c2, sc2 := dialTest(t, addr)
 	readHandshake(t, sc2)
 	sendHandshake(t, c2)
-	c2.Write([]byte("LOOKUP\t7\tuser@example.com\n"))
-	line := readLine(t, sc2)
-	if !strings.HasPrefix(line, "HOST\t7\t") {
-		t.Errorf("expected HOST from shared ring, got %q", line)
+	c2.Write([]byte("LOOKUP\t10\tuser@example.com\n"))
+	if !strings.HasPrefix(readLine(t, sc2), "HOST\t10\t") {
+		t.Error("expected HOST from shared ring")
 	}
 }
 
@@ -342,3 +551,5 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Error("server did not shut down in time")
 	}
 }
+
+var _ = fmt.Sprintf
