@@ -48,24 +48,22 @@ kubectl -n cert-manager get pods
 
 ### 3. `letsencrypt-prod` ClusterIssuer
 
-The SecondDNS workspace already ships a ready-made ClusterIssuer at [k8s_relay/clusterissuer-patch.yaml](../k8s_relay/clusterissuer-patch.yaml). It supports both solvers:
+The repo ships `deploy/clusterissuer.yaml` — a ready-to-apply ClusterIssuer with two solvers:
 
 | Solver | When it's used | Use case |
 |:---|:---|:---|
 | `http01` (nginx ingress) | default | web services that expose port 80 |
 | `dns01` (Cloudflare) | when `dnsZones` includes the target | mail (no port 80 needed), wildcards |
 
-For `mail-sb.seconddns.com` the DNS01 solver fires automatically because the zone selector matches `seconddns.com`.
-
-Apply if not yet present:
+Edit `deploy/clusterissuer.yaml` — replace `admin@example.com` and `example.com` with your values — then apply:
 
 ```sh
-kubectl apply -f /path/to/k8s_relay/clusterissuer-patch.yaml
+# Create the Cloudflare API token Secret first:
+kubectl -n cert-manager create secret generic cloudflare-api-token \
+  --from-literal=api-token=<CLOUDFLARE-API-TOKEN>
 
-# The Cloudflare API token Secret the issuer references:
-kubectl -n cert-manager get secret cloudflare-api-token \
-  || kubectl -n cert-manager create secret generic cloudflare-api-token \
-       --from-literal=api-token=<CLOUDFLARE-API-TOKEN>
+# Apply the ClusterIssuer:
+kubectl apply -f deploy/clusterissuer.yaml
 
 kubectl get clusterissuer letsencrypt-prod
 ```

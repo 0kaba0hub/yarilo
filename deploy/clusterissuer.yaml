@@ -1,0 +1,26 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    # Replace with your email address (used by Let's Encrypt for expiry notices).
+    email: admin@example.com
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+      # HTTP-01: for services that expose port 80 via nginx ingress.
+      - http01:
+          ingress:
+            ingressClassName: nginx
+      # DNS-01 via Cloudflare: for mail hostnames (no port 80) and wildcards.
+      # Fires when the requested domain matches one of the dnsZones below.
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+        selector:
+          dnsZones:
+            - example.com   # replace with your domain
