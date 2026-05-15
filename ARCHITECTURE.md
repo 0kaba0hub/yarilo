@@ -84,6 +84,57 @@ internal/
 pkg/
   mailbox/         — MailboxBackend + IndexBackend interfaces
   config/          — YAML config via koanf
+helm/
+  yarilo/          — single Helm chart for all components
+    Chart.yaml
+    values.yaml    — all component config in one file
+    templates/
+      imap-login/  — Deployment, Service, HPA per component
+      imap/
+      pop3-login/
+      pop3/
+      ...
+```
+
+---
+
+## Helm chart
+
+**One chart, one release.** All components deployed via a single `helm install yarilo ./helm/yarilo`.
+
+```sh
+helm install yarilo ./helm/yarilo -f values-prod.yaml
+helm upgrade yarilo ./helm/yarilo -f values-prod.yaml
+```
+
+Each component is independently configurable and can be enabled/disabled in `values.yaml`:
+
+```yaml
+components:
+  imapLogin:
+    enabled: true
+    replicas: 2
+    image:
+      tag: ""        # defaults to Chart.appVersion
+  imap:
+    enabled: true
+    replicas: 2
+  auth:
+    enabled: true
+    replicas: 2
+  anvil:
+    enabled: true
+    replicas: 1
+  director:
+    enabled: true
+    replicas: 2
+  # ...
+```
+
+All pod labels include `app.kubernetes.io/part-of: yarilo` to allow cluster-wide log tailing:
+
+```sh
+stern -l app.kubernetes.io/part-of=yarilo
 ```
 
 ---
