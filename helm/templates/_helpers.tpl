@@ -50,7 +50,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Image reference — tag defaults to appVersion.
 */}}
 {{- define "yarilo.image" -}}
-{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+{{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}
 {{- end }}
 
 {{/*
