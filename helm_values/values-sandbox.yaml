@@ -30,12 +30,12 @@ tls:
 
 services:
   imaps:       { enabled: true,  port: 993, disablePlainAuth: false }
-  imap:        { enabled: true,  port: 143, containerPort: 1143, disablePlainAuth: false }
+  imap:        { enabled: true,  port: 143, disablePlainAuth: false }
   submission:  { enabled: true,  port: 587, disablePlainAuth: true }
   submissions: { enabled: true,  port: 465, disablePlainAuth: true }
-  pop3:        { enabled: true,  port: 110, containerPort: 1110 }
+  pop3:        { enabled: true,  port: 110 }
   pop3s:       { enabled: true,  port: 995 }
-  lmtp:        { enabled: true,  port: 24, containerPort: 2024 }
+  lmtp:        { enabled: true,  port: 24 }
 
 protocol:
   submission:

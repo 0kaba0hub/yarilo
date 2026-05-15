@@ -36,47 +36,47 @@ data:
     services:
       imaps:
         enabled: {{ .Values.services.imaps.enabled }}
-        port: {{ .Values.services.imaps.port }}
+        port: {{ .Values.services.imaps.containerPort }}
         ssl_mode: ssl
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
         disable_plaintext_auth: {{ .Values.services.imaps.disablePlainAuth }}
       imap:
         enabled: {{ .Values.services.imap.enabled }}
-        port: {{ .Values.services.imap.containerPort | default .Values.services.imap.port }}
+        port: {{ .Values.services.imap.containerPort }}
         ssl_mode: starttls
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
         disable_plaintext_auth: {{ .Values.services.imap.disablePlainAuth }}
       submission:
         enabled: {{ .Values.services.submission.enabled }}
-        port: {{ .Values.services.submission.port }}
+        port: {{ .Values.services.submission.containerPort }}
         ssl_mode: starttls
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: false
         disable_plaintext_auth: {{ .Values.services.submission.disablePlainAuth }}
       submissions:
         enabled: {{ .Values.services.submissions.enabled }}
-        port: {{ .Values.services.submissions.port }}
+        port: {{ .Values.services.submissions.containerPort }}
         ssl_mode: ssl
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: false
         disable_plaintext_auth: {{ .Values.services.submissions.disablePlainAuth }}
       pop3:
         enabled: {{ .Values.services.pop3.enabled }}
-        port: {{ .Values.services.pop3.containerPort | default .Values.services.pop3.port }}
+        port: {{ .Values.services.pop3.containerPort }}
         ssl_mode: starttls
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       pop3s:
         enabled: {{ .Values.services.pop3s.enabled }}
-        port: {{ .Values.services.pop3s.port }}
+        port: {{ .Values.services.pop3s.containerPort }}
         ssl_mode: ssl
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       lmtp:
         enabled: {{ .Values.services.lmtp.enabled }}
-        port: {{ .Values.services.lmtp.containerPort | default .Values.services.lmtp.port }}
+        port: {{ .Values.services.lmtp.containerPort }}
         ssl_mode: "no"
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}

@@ -42,37 +42,37 @@ spec:
           ports:
             {{- if .Values.services.imaps.enabled }}
             - name: imaps
-              containerPort: {{ .Values.services.imaps.port }}
+              containerPort: {{ .Values.services.imaps.containerPort }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.imap.enabled }}
             - name: imap
-              containerPort: {{ .Values.services.imap.containerPort | default .Values.services.imap.port }}
+              containerPort: {{ .Values.services.imap.containerPort }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.submission.enabled }}
             - name: submission
-              containerPort: {{ .Values.services.submission.port }}
+              containerPort: {{ .Values.services.submission.containerPort }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.submissions.enabled }}
             - name: submissions
-              containerPort: {{ .Values.services.submissions.port }}
+              containerPort: {{ .Values.services.submissions.containerPort }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.pop3.enabled }}
             - name: pop3
-              containerPort: {{ .Values.services.pop3.containerPort | default .Values.services.pop3.port }}
+              containerPort: {{ .Values.services.pop3.containerPort }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.pop3s.enabled }}
             - name: pop3s
-              containerPort: {{ .Values.services.pop3s.port }}
+              containerPort: {{ .Values.services.pop3s.containerPort }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.lmtp.enabled }}
             - name: lmtp
-              containerPort: {{ .Values.services.lmtp.containerPort | default .Values.services.lmtp.port }}
+              containerPort: {{ .Values.services.lmtp.containerPort }}
               protocol: TCP
             {{- end }}
             - name: telemetry
