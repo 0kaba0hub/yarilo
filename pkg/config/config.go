@@ -13,14 +13,15 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode      string          `koanf:"mode"` // proxy | director | backend | single
-	General   GeneralConfig   `koanf:"general"`
-	Services  ServicesConfig  `koanf:"services"`
-	Protocol  ProtocolConfig  `koanf:"protocol"`
-	Auth      AuthConfig      `koanf:"auth"`
-	Storage   StorageConfig   `koanf:"storage"`
-	Telemetry TelemetryConfig `koanf:"telemetry"`
-	Log       LogConfig       `koanf:"log"`
+	Mode        string            `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	General     GeneralConfig     `koanf:"general"`
+	Services    ServicesConfig    `koanf:"services"`
+	Protocol    ProtocolConfig    `koanf:"protocol"`
+	Auth        AuthConfig        `koanf:"auth"`
+	AuthService AuthServiceConfig `koanf:"auth_service"`
+	Storage     StorageConfig     `koanf:"storage"`
+	Telemetry   TelemetryConfig   `koanf:"telemetry"`
+	Log         LogConfig         `koanf:"log"`
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.
@@ -164,6 +165,26 @@ type RelayConfig struct {
 	CommandTimeout int    `koanf:"command_timeout"` // seconds, default 300
 }
 
+// AuthServiceConfig configures the standalone yarilo-auth process.
+type AuthServiceConfig struct {
+	Listen   string         `koanf:"listen"`
+	MTLS     MTLSConfig     `koanf:"mtls"`
+	Shutdown ShutdownConfig `koanf:"shutdown"`
+}
+
+// MTLSConfig holds certificate paths for mutual TLS between yarilo components.
+type MTLSConfig struct {
+	Cert string `koanf:"cert"`
+	Key  string `koanf:"key"`
+	CA   string `koanf:"ca"`
+}
+
+// ShutdownConfig controls graceful shutdown behaviour.
+type ShutdownConfig struct {
+	SessionGracePeriod int `koanf:"session_grace_period"` // seconds to drain sessions before exit
+	KillTimeout        int `koanf:"kill_timeout"`         // seconds after grace before SIGKILL
+}
+
 type AuthConfig struct {
 	Passdb []PassdbEntry `koanf:"passdb"`
 }
@@ -244,6 +265,18 @@ func Load(path string) (*Config, error) {
 				WriteTimeout:       300,
 			},
 		},
+		AuthService: AuthServiceConfig{
+			Listen: ":9100",
+			MTLS: MTLSConfig{
+				Cert: "/etc/yarilo/tls/tls.crt",
+				Key:  "/etc/yarilo/tls/tls.key",
+				CA:   "/etc/yarilo/tls/ca.crt",
+			},
+			Shutdown: ShutdownConfig{
+				SessionGracePeriod: 30,
+				KillTimeout:        5,
+			},
+		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
 	}
@@ -308,6 +341,9 @@ func expandEnv(cfg *Config) {
 	cfg.General.SSL.TLSKey = expand(cfg.General.SSL.TLSKey)
 	cfg.General.SSL.TLSAltCert = expand(cfg.General.SSL.TLSAltCert)
 	cfg.General.SSL.TLSAltKey = expand(cfg.General.SSL.TLSAltKey)
+	cfg.AuthService.MTLS.Cert = expand(cfg.AuthService.MTLS.Cert)
+	cfg.AuthService.MTLS.Key = expand(cfg.AuthService.MTLS.Key)
+	cfg.AuthService.MTLS.CA = expand(cfg.AuthService.MTLS.CA)
 	expandSvcSSL(cfg.Services.IMAP)
 	expandSvcSSL(cfg.Services.IMAPS)
 	expandSvcSSL(cfg.Services.Submission)

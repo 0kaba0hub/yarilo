@@ -1,16 +1,19 @@
-// Package protocol implements the yarilo-auth UNIX-socket protocol.
+// Package protocol implements the yarilo-auth TCP+mTLS protocol.
 // Server → Client handshake, then AUTH/CONT/CANCEL commands.
 package protocol
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -84,19 +87,41 @@ func NewServer(passdbs []Passdb) *Server {
 	}
 }
 
-// ListenAndServe starts the auth server on the given UNIX socket path.
-func (s *Server) ListenAndServe(socketPath string) error {
-	os.Remove(socketPath)
-	l, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return err
+// ListenAndServe starts the auth TCP server. When tlsCfg is non-nil the
+// listener uses mTLS (TLS 1.3, RequireAndVerifyClientCert). Blocks until ctx
+// is cancelled; active sessions drain before the function returns.
+func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {
+	var ln net.Listener
+	var err error
+	if tlsCfg != nil {
+		ln, err = tls.Listen("tcp", addr, tlsCfg)
+	} else {
+		ln, err = net.Listen("tcp", addr)
 	}
+	if err != nil {
+		return fmt.Errorf("auth: listen %s: %w", addr, err)
+	}
+
+	var wg sync.WaitGroup
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
 	for {
-		conn, err := l.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
-			return err
+			wg.Wait()
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("auth: accept: %w", err)
 		}
-		go s.handleConn(conn)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.handleConn(conn)
+		}()
 	}
 }
 
