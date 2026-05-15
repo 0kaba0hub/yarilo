@@ -1,6 +1,16 @@
 name: Trivy — vulnerability & malware scan
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "internal/**"
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
+      - "docker/Dockerfile"
   schedule:
     - cron: "0 6 * * 1"  # every Monday at 06:00 UTC
   workflow_dispatch:
