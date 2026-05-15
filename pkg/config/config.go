@@ -13,17 +13,18 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode         string             `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
-	General      GeneralConfig      `koanf:"general"`
-	Services     ServicesConfig     `koanf:"services"`
-	Protocol     ProtocolConfig     `koanf:"protocol"`
-	Auth         AuthConfig         `koanf:"auth"`
-	InternalTLS  InternalTLSConfig  `koanf:"internal_tls"`
-	AuthService  AuthServiceConfig  `koanf:"auth_service"`
-	AnvilService AnvilServiceConfig `koanf:"anvil_service"`
-	Storage      StorageConfig      `koanf:"storage"`
-	Telemetry    TelemetryConfig    `koanf:"telemetry"`
-	Log          LogConfig          `koanf:"log"`
+	Mode            string                `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	General         GeneralConfig         `koanf:"general"`
+	Services        ServicesConfig        `koanf:"services"`
+	Protocol        ProtocolConfig        `koanf:"protocol"`
+	Auth            AuthConfig            `koanf:"auth"`
+	InternalTLS     InternalTLSConfig     `koanf:"internal_tls"`
+	AuthService     AuthServiceConfig     `koanf:"auth_service"`
+	AnvilService    AnvilServiceConfig    `koanf:"anvil_service"`
+	DirectorService DirectorServiceConfig `koanf:"director_service"`
+	Storage         StorageConfig         `koanf:"storage"`
+	Telemetry       TelemetryConfig       `koanf:"telemetry"`
+	Log             LogConfig             `koanf:"log"`
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.
@@ -189,6 +190,12 @@ type AuthServiceConfig struct {
 	Shutdown ShutdownConfig `koanf:"shutdown"`
 }
 
+// DirectorServiceConfig configures the standalone yarilo-director process.
+type DirectorServiceConfig struct {
+	Listen   string         `koanf:"listen"`
+	Shutdown ShutdownConfig `koanf:"shutdown"`
+}
+
 // ShutdownConfig controls graceful shutdown behaviour.
 type ShutdownConfig struct {
 	SessionGracePeriod int `koanf:"session_grace_period"` // seconds to drain sessions before exit
@@ -290,6 +297,13 @@ func Load(path string) (*Config, error) {
 		},
 		AuthService: AuthServiceConfig{
 			Listen: ":9100",
+			Shutdown: ShutdownConfig{
+				SessionGracePeriod: 30,
+				KillTimeout:        5,
+			},
+		},
+		DirectorService: DirectorServiceConfig{
+			Listen: ":9102",
 			Shutdown: ShutdownConfig{
 				SessionGracePeriod: 30,
 				KillTimeout:        5,

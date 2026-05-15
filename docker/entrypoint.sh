@@ -11,12 +11,15 @@ case "$YARILO_COMPONENT" in
   yarilo-anvil)
     exec /usr/local/bin/yarilo-anvil -config /etc/yarilo/yarilo.yaml
     ;;
+  yarilo-director)
+    exec /usr/local/bin/yarilo-director -config /etc/yarilo/yarilo.yaml
+    ;;
   yarilo-migrate)
     exec /usr/local/bin/yarilo-migrate "$@"
     ;;
   *)
     echo "Unknown YARILO_COMPONENT: '${YARILO_COMPONENT}'"
-    echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-migrate"
+    echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-director, yarilo-migrate"
     exit 1
     ;;
 esac
