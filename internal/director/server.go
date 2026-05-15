@@ -6,6 +6,9 @@
 //
 //	Server → Client handshake:
 //	  VERSION\tyarilo-director\t1\t0\n
+//	  HOST-HAND-START\n
+//	  HOST\t{ip}\t{port}\t{tag}\tD{down_ts}\tU{up_ts}\t{hostname}\n  (one per backend)
+//	  HOST-HAND-END\n
 //	  DONE\n
 //
 //	Client → Server handshake:
@@ -18,17 +21,26 @@
 //	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\n   (vhosts optional; 0 = 100)
 //	  BACKEND-DOWN\t{ip}\n
 //	  BACKEND-FLUSH\t{ip}\n                          (drain: stop new lookups, keep backend in registry)
+//	  HOST-REMOVE\t{ip}\n                            (alias for BACKEND-DOWN)
 //	  USER-MOVE\t{user}\t{ip}\t{port}\n              (force user to specific backend)
 //	  USER-RELEASE\t{user}\n                         (remove user override)
+//	  USER-WEAK\t{user}\n                            (mark current assignment as soft/weak)
+//	  USER-KICK\t{user}\n                            (broadcast kick to all login clients)
+//	  USER-KILLED\t{hash}\n                          (login reports sessions closed for hash)
+//	  PING\n
+//	  QUIT\t{reason}\n
 //
 //	Server responses:
-//	  HOST\t{id}\t{ip}\t{port}\n
+//	  HOST\t{id}\t{ip}\t{port}\t{tag}\n
 //	  FAIL\t{id}\treason=no-backends\n
 //	  OK\n
+//	  PONG\n
 //
 //	Server pushes (unsolicited, to all connected clients):
-//	  RING-CHANGE\t{ip}\t{event}\n                  (event: up | down | flush)
+//	  RING-CHANGE\t{ip}\t{event}\t{tag}\n            (event: up | down | flush)
 //	  USER-MOVED\t{user}\t{ip}\t{port}\n             (when user is moved by another client)
+//	  USER-KICKED\t{user}\n                          (broadcast kick notification)
+//	  USER-KILLED-EVERYWHERE\t{hash}\n               (director confirms all sessions gone)
 package director
 
 import (
@@ -42,6 +54,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
@@ -52,11 +65,40 @@ const (
 	minorVer  = 0
 )
 
+// Options configures Server behaviour.
+type Options struct {
+	UserExpire   time.Duration // how long a user→backend mapping lives; default 900s
+	PingInterval time.Duration // idle time before sending PING; default 30s
+	PingTimeout  time.Duration // time to wait for PONG before closing; default 10s
+}
+
+func (o *Options) userExpire() time.Duration {
+	if o.UserExpire <= 0 {
+		return 900 * time.Second
+	}
+	return o.UserExpire
+}
+
+func (o *Options) pingInterval() time.Duration {
+	if o.PingInterval <= 0 {
+		return 30 * time.Second
+	}
+	return o.PingInterval
+}
+
+func (o *Options) pingTimeout() time.Duration {
+	if o.PingTimeout <= 0 {
+		return 10 * time.Second
+	}
+	return o.PingTimeout
+}
+
 // client wraps an active connection with a per-connection write lock so
 // unsolicited pushes never interleave with command responses.
 type client struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn   net.Conn
+	mu     sync.Mutex
+	pongCh chan struct{} // receives a token each time PONG is received
 }
 
 func (c *client) WriteLine(line string) error {
@@ -69,30 +111,38 @@ func (c *client) WriteLine(line string) error {
 // Server is the yarilo-director TCP server.
 type Server struct {
 	ring *ring.Ring
+	opts Options
 
-	// userOverrides maps username → "ip:port" for admin-forced assignments.
-	// Set via USER-MOVE, cleared via USER-RELEASE.
+	// userDir stores user→backend mappings with TTL.
+	userDir *UserDir
+
+	// overrides maps username → "ip:port" for admin-forced assignments.
 	overrideMu sync.RWMutex
 	overrides  map[string]string
 
 	// clients is the registry of all currently connected clients.
-	// Used to broadcast RING-CHANGE and USER-MOVED events.
 	clientMu sync.RWMutex
 	clients  map[*client]struct{}
 }
 
-// New creates a director server with an empty ring.
+// New creates a director server with an empty ring and default options.
 func New() *Server {
+	return NewWithOptions(Options{})
+}
+
+// NewWithOptions creates a director server with custom options.
+func NewWithOptions(opts Options) *Server {
 	return &Server{
 		ring:      ring.New(),
+		opts:      opts,
+		userDir:   NewUserDir(opts.userExpire()),
 		overrides: make(map[string]string),
 		clients:   make(map[*client]struct{}),
 	}
 }
 
 // ListenAndServe starts the director TCP server. When tlsCfg is non-nil the
-// listener uses mTLS. Blocks until ctx is cancelled; active sessions drain
-// before the function returns.
+// listener uses mTLS. Blocks until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {
 	var ln net.Listener
 	var err error
@@ -144,8 +194,7 @@ func (s *Server) removeClient(c *client) {
 }
 
 // broadcast sends an unsolicited line to all connected clients except the one
-// that triggered the change. Errors are silently ignored — a dead client will
-// be removed when its read loop exits.
+// that triggered the change.
 func (s *Server) broadcast(line string, exclude *client) {
 	s.clientMu.RLock()
 	defer s.clientMu.RUnlock()
@@ -160,13 +209,19 @@ func (s *Server) broadcast(line string, exclude *client) {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	c := &client{conn: conn}
+	c := &client{conn: conn, pongCh: make(chan struct{}, 4)}
 	s.addClient(c)
 	defer s.removeClient(c)
 
 	rd := bufio.NewReaderSize(conn, 4096)
 
+	// Send server handshake: VERSION + current ring state + DONE.
 	_ = c.WriteLine(fmt.Sprintf("VERSION\t%s\t%d\t%d", protoName, majorVer, minorVer))
+	_ = c.WriteLine("HOST-HAND-START")
+	for _, b := range s.ring.Backends() {
+		_ = c.WriteLine(hostLine(b))
+	}
+	_ = c.WriteLine("HOST-HAND-END")
 	_ = c.WriteLine("DONE")
 
 	// Read client handshake — consume until DONE.
@@ -184,6 +239,11 @@ func (s *Server) handleConn(conn net.Conn) {
 			slog.Debug("director: client identified", "ip", fields[1], "port", fields[2])
 		}
 	}
+
+	// Start PING/PONG keepalive goroutine.
+	stopPing := make(chan struct{})
+	go s.pingLoop(c, stopPing)
+	defer close(stopPing)
 
 	for {
 		line, err := rd.ReadString('\n')
@@ -203,7 +263,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleLookup(c, fields)
 		case "BACKEND-UP":
 			s.handleBackendUp(c, fields)
-		case "BACKEND-DOWN":
+		case "BACKEND-DOWN", "HOST-REMOVE":
 			s.handleBackendDown(c, fields)
 		case "BACKEND-FLUSH":
 			s.handleBackendFlush(c, fields)
@@ -211,12 +271,70 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleUserMove(c, fields)
 		case "USER-RELEASE":
 			s.handleUserRelease(c, fields)
+		case "USER-WEAK":
+			s.handleUserWeak(c, fields)
+		case "USER-KICK":
+			s.handleUserKick(c, fields)
+		case "USER-KILLED":
+			s.handleUserKilled(c, fields)
+		case "PONG":
+			select {
+			case c.pongCh <- struct{}{}:
+			default:
+			}
+		case "PING":
+			_ = c.WriteLine("PONG")
+		case "QUIT":
+			reason := ""
+			if len(fields) >= 2 {
+				reason = fields[1]
+			}
+			slog.Info("director: client quit", "reason", reason)
+			return
 		}
 	}
 }
 
+// pingLoop sends periodic PING probes and closes the connection if PONG is not received.
+func (s *Server) pingLoop(c *client, stop <-chan struct{}) {
+	interval := s.opts.pingInterval()
+	timeout := s.opts.pingTimeout()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := c.WriteLine("PING"); err != nil {
+				return
+			}
+			// Wait for PONG within timeout.
+			timer := time.NewTimer(timeout)
+			select {
+			case <-c.pongCh:
+				timer.Stop()
+			case <-timer.C:
+				slog.Warn("director: PONG timeout, closing connection")
+				c.conn.Close()
+				return
+			case <-stop:
+				timer.Stop()
+				return
+			}
+		}
+	}
+}
+
+// hostLine formats a Backend as a HOST wire line for the handshake.
+func hostLine(b ring.Backend) string {
+	return fmt.Sprintf("HOST\t%s\t%d\t%s\tD%d\tU%d\t%s",
+		b.IP, b.Port, b.Tag, b.LastUpdownChange, b.LastUpdownChange, b.Hostname)
+}
+
 // handleLookup processes: LOOKUP\t{id}\t{user}
-// Checks admin overrides first, then falls back to ring consistent hashing.
+// Checks admin overrides first, then user directory, then falls back to ring.
 // Response: HOST\t{id}\t{ip}\t{port}\t{tag}
 func (s *Server) handleLookup(c *client, fields []string) {
 	if len(fields) < 3 {
@@ -224,7 +342,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	}
 	id, user := fields[1], fields[2]
 
-	// Check admin override — look up the backend entry to get the tag.
+	// Admin override wins everything.
 	s.overrideMu.RLock()
 	addr, hasOverride := s.overrides[user]
 	s.overrideMu.RUnlock()
@@ -232,14 +350,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	if hasOverride {
 		host, portStr, err := net.SplitHostPort(addr)
 		if err == nil {
-			// Best-effort tag lookup from ring (override may point to a non-ring backend).
-			tag := ""
-			for _, b := range s.ring.Backends() {
-				if b.IP == host {
-					tag = b.Tag
-					break
-				}
-			}
+			tag := s.backendTag(host)
 			_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, tag))
 			return
 		}
@@ -251,11 +362,15 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=no-backends", id))
 		return
 	}
+
+	// Record user→backend in directory.
+	addr = net.JoinHostPort(b.IP, strconv.Itoa(b.Port))
+	s.userDir.Set(user, addr, false)
+
 	_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%d\t%s", id, b.IP, b.Port, b.Tag))
 }
 
 // handleBackendUp processes: BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}
-// vhosts is optional; 0 or absent means default (100).
 func (s *Server) handleBackendUp(c *client, fields []string) {
 	if len(fields) < 3 {
 		_ = c.WriteLine("OK")
@@ -275,28 +390,24 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 	if len(fields) >= 5 {
 		vhosts, _ = strconv.Atoi(fields[4])
 	}
-	s.ring.AddBackend(&ring.Backend{IP: ip, Port: port, Tag: tag, Up: true, Vhosts: vhosts})
+	ts := time.Now().Unix()
+	s.ring.AddBackend(&ring.Backend{
+		IP: ip, Port: port, Tag: tag, Up: true, Vhosts: vhosts,
+		LastUpdownChange: ts,
+	})
 	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), c)
 	_ = c.WriteLine("OK")
 }
 
-// handleBackendDown processes: BACKEND-DOWN\t{ip}
-// Removes the backend from the ring entirely.
+// handleBackendDown processes: BACKEND-DOWN\t{ip} and HOST-REMOVE\t{ip}
 func (s *Server) handleBackendDown(c *client, fields []string) {
 	if len(fields) < 2 {
 		_ = c.WriteLine("OK")
 		return
 	}
 	ip := fields[1]
-	// Capture tag before removal for the broadcast.
-	tag := ""
-	for _, b := range s.ring.Backends() {
-		if b.IP == ip {
-			tag = b.Tag
-			break
-		}
-	}
+	tag := s.backendTag(ip)
 	s.ring.RemoveBackend(ip)
 	slog.Info("director: backend down", "ip", ip)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tdown\t%s", ip, tag), c)
@@ -304,23 +415,15 @@ func (s *Server) handleBackendDown(c *client, fields []string) {
 }
 
 // handleBackendFlush processes: BACKEND-FLUSH\t{ip}
-// Marks the backend as !Up so no new lookups are routed there, but keeps it
-// in the registry so its state is visible and it can be brought back up later.
+// Marks backend !Up so no new lookups are routed there, keeps it in the registry.
 func (s *Server) handleBackendFlush(c *client, fields []string) {
 	if len(fields) < 2 {
 		_ = c.WriteLine("OK")
 		return
 	}
 	ip := fields[1]
-	// Capture tag before marking down for the broadcast.
-	tag := ""
-	for _, b := range s.ring.Backends() {
-		if b.IP == ip {
-			tag = b.Tag
-			break
-		}
-	}
-	if !s.ring.SetUp(ip, false) {
+	tag := s.backendTag(ip)
+	if !s.ring.SetUp(ip, false, time.Now().Unix()) {
 		slog.Warn("director: flush requested for unknown backend", "ip", ip)
 		_ = c.WriteLine("OK")
 		return
@@ -331,7 +434,6 @@ func (s *Server) handleBackendFlush(c *client, fields []string) {
 }
 
 // handleUserMove processes: USER-MOVE\t{user}\t{ip}\t{port}
-// Forces the user to be routed to a specific backend, overriding the ring.
 func (s *Server) handleUserMove(c *client, fields []string) {
 	if len(fields) < 4 {
 		_ = c.WriteLine("OK")
@@ -344,13 +446,15 @@ func (s *Server) handleUserMove(c *client, fields []string) {
 	s.overrides[user] = addr
 	s.overrideMu.Unlock()
 
+	// Record in user directory as a strong assignment.
+	s.userDir.Set(user, addr, false)
+
 	slog.Info("director: user moved", "user", user, "backend", addr)
 	s.broadcast(fmt.Sprintf("USER-MOVED\t%s\t%s\t%s", user, ip, portStr), c)
 	_ = c.WriteLine("OK")
 }
 
 // handleUserRelease processes: USER-RELEASE\t{user}
-// Removes the admin override so the user falls back to ring-based routing.
 func (s *Server) handleUserRelease(c *client, fields []string) {
 	if len(fields) < 2 {
 		_ = c.WriteLine("OK")
@@ -362,6 +466,63 @@ func (s *Server) handleUserRelease(c *client, fields []string) {
 	delete(s.overrides, user)
 	s.overrideMu.Unlock()
 
+	s.userDir.Delete(user)
+
 	slog.Info("director: user released", "user", user)
 	_ = c.WriteLine("OK")
+}
+
+// handleUserWeak processes: USER-WEAK\t{user}
+// Marks the user's current directory entry as a soft/weak assignment.
+// A weak assignment may be replaced if the user logs in from a different backend.
+func (s *Server) handleUserWeak(c *client, fields []string) {
+	if len(fields) < 2 {
+		_ = c.WriteLine("OK")
+		return
+	}
+	user := fields[1]
+	e := s.userDir.Get(user)
+	if e != nil {
+		s.userDir.Set(user, e.Host, true)
+	}
+	slog.Info("director: user weakened", "user", user)
+	_ = c.WriteLine("OK")
+}
+
+// handleUserKick processes: USER-KICK\t{user}
+// Broadcasts a kick notification to all clients so login processes terminate
+// existing sessions for this user.
+func (s *Server) handleUserKick(c *client, fields []string) {
+	if len(fields) < 2 {
+		_ = c.WriteLine("OK")
+		return
+	}
+	user := fields[1]
+	slog.Info("director: user kick", "user", user)
+	s.broadcast(fmt.Sprintf("USER-KICKED\t%s", user), c)
+	_ = c.WriteLine("OK")
+}
+
+// handleUserKilled processes: USER-KILLED\t{hash}
+// A login client reports that all sessions for this user hash have been terminated.
+// The director broadcasts USER-KILLED-EVERYWHERE to confirm completion.
+func (s *Server) handleUserKilled(c *client, fields []string) {
+	if len(fields) < 2 {
+		_ = c.WriteLine("OK")
+		return
+	}
+	hashStr := fields[1]
+	slog.Info("director: user killed", "hash", hashStr)
+	s.broadcast(fmt.Sprintf("USER-KILLED-EVERYWHERE\t%s", hashStr), c)
+	_ = c.WriteLine("OK")
+}
+
+// backendTag looks up the tag for a backend IP, returning "" if not found.
+func (s *Server) backendTag(ip string) string {
+	for _, b := range s.ring.Backends() {
+		if b.IP == ip {
+			return b.Tag
+		}
+	}
+	return ""
 }
