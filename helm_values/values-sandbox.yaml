@@ -35,7 +35,7 @@ services:
   submissions: { enabled: true,  port: 465, disablePlainAuth: true }
   pop3:        { enabled: true,  port: 110 }
   pop3s:       { enabled: true,  port: 995 }
-  lmtp:        { enabled: true,  port: 24 }
+  lmtp:        { enabled: true,  port: 24, containerPort: 2024 }
 
 protocol:
   submission:

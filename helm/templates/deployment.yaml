@@ -72,7 +72,7 @@ spec:
             {{- end }}
             {{- if .Values.services.lmtp.enabled }}
             - name: lmtp
-              containerPort: {{ .Values.services.lmtp.port }}
+              containerPort: {{ .Values.services.lmtp.containerPort | default .Values.services.lmtp.port }}
               protocol: TCP
             {{- end }}
             - name: telemetry

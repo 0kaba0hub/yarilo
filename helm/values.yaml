@@ -74,11 +74,13 @@ services:
     enabled: false
     port: 995
 
-  ## LMTP local delivery (port 24) — fronted by external MTA (Postfix etc.).
-  ## Disable plaintextAuth doesn't apply (LMTP has no AUTH).
+  ## LMTP local delivery — fronted by external MTA (Postfix etc.).
+  ## containerPort uses an unprivileged port so the container needs no
+  ## NET_BIND_SERVICE capability; the Service maps port → containerPort.
   lmtp:
     enabled: false
-    port: 24
+    port: 24             # Service (LoadBalancer) port
+    containerPort: 2024  # container listen port (unprivileged)
 
 ## -------------------------------------------------------------------
 ## Protocol tuning (independent of listener)

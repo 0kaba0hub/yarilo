@@ -76,7 +76,7 @@ data:
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       lmtp:
         enabled: {{ .Values.services.lmtp.enabled }}
-        port: {{ .Values.services.lmtp.port }}
+        port: {{ .Values.services.lmtp.containerPort | default .Values.services.lmtp.port }}
         ssl_mode: "no"
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
