@@ -58,10 +58,7 @@ func New(cfg *config.Config) (*Server, error) {
 		Root:         cfg.Storage.MaildirRoot,
 		HomeTemplate: cfg.Storage.MailHomeTemplate,
 	}
-	mbox, err := buildMailbox(cfg.Storage)
-	if err != nil {
-		return nil, fmt.Errorf("backend: mailbox: %w", err)
-	}
+	mbox := buildMailbox(cfg.Storage)
 	idx := file.New()
 
 	// ---- shared connection limiter (IMAP + POP3) ----
@@ -421,14 +418,14 @@ func (a chainAuth) AuthPlain(username, password string) error {
 	return nil
 }
 
-func buildMailbox(cfg config.StorageConfig) (mailbox.MailboxBackend, error) {
+func buildMailbox(cfg config.StorageConfig) mailbox.MailboxBackend {
 	switch strings.ToLower(cfg.Mailbox) {
 	case "dbox":
-		return dbox.New(), nil
+		return dbox.New()
 	case "mdbox":
-		return mdbox.New(), nil
+		return mdbox.New()
 	default:
-		return maildir.New(), nil
+		return maildir.New()
 	}
 }
 
