@@ -310,14 +310,14 @@ simultaneously modify shared metadata files for the same user's maildir:
 
 | File | Risk |
 |:---|:---|
-| `dovecot-uidlist` | UID assignment race → duplicate UIDs or corruption |
+| `yarilo-uidlist` | UID assignment race → duplicate UIDs or corruption |
 | fileindex (`*.idx`) | concurrent writes → index corruption |
 
 Raw mail delivery (`rename()` into `new/`) is safe — `rename()` is atomic at the OS level.
 Only metadata files are at risk.
 
 **Required fix:** Replace `sync.Mutex` with `fcntl` advisory exclusive lock (`syscall.Flock` or
-`syscall.FcntlFlock`) on `dovecot-uidlist` and index files at every write. `fcntl` locks work
+`syscall.FcntlFlock`) on `yarilo-uidlist` and index files at every write. `fcntl` locks work
 across processes on the same host and over NFS (NFSv4) and CephFS (POSIX locking).
 
 **Status:** Not yet implemented. Must be done before multi-process mode ships.

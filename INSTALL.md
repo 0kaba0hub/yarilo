@@ -249,7 +249,7 @@ captured in `mailbox.UserInfo` at login time.
 | Per-user handle (`MailboxBackend.OpenUser`) | ✅ Phase 2 |
 | `Resolver` — `%d/%n` template → absolute home | ✅ Phase 2 |
 | Backends: maildir, dbox, mdbox | ✅ Phase 2 |
-| Index: fileindex (dovecot-uidlist v3) | ✅ Phase 2 |
+| Index: fileindex (yarilo-uidlist v3) | ✅ Phase 2 |
 | `UserInfo.Home` used by storage, not derived in backend | ✅ Phase 2 |
 
 ### Phase 3 — userdb-driven home override ✅
