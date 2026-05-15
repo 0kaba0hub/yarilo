@@ -1,6 +1,6 @@
-// yarilo-auth is the standalone authentication service for the yarilo mail server.
-// It exposes the yarilo-auth TCP+mTLS protocol on the configured address and
-// serves /healthz, /readyz, /metrics on the telemetry port.
+// yarilo-anvil is the connection-accounting service for the yarilo mail server.
+// It enforces mail_max_userip_connections across all login pods by tracking
+// active per-user@IP connections over the yarilo-anvil TCP+mTLS protocol.
 package main
 
 import (
@@ -16,13 +16,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
+	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
-// version is stamped at build time via -ldflags="-X main.version=<tag>".
 var version = "dev"
 
 func main() {
@@ -40,29 +38,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("yarilo-auth starting",
+	slog.Info("yarilo-anvil starting",
 		"version", version,
-		"listen", cfg.AuthService.Listen,
+		"listen", cfg.AnvilService.Listen,
 		"telemetry", cfg.Telemetry.Listen,
+		"max_userip_connections", cfg.General.Limits.MaxUserIPConnections,
+		"internal_tls", cfg.InternalTLS.Enabled,
 	)
-
-	var dbs []protocol.Passdb
-	for _, entry := range cfg.Auth.Passdb {
-		db, err := authsql.New(authsql.Config{
-			Driver:            entry.Driver,
-			DSN:               entry.DSN,
-			PasswordQuery:     entry.PasswordQuery,
-			UserQuery:         entry.UserQuery,
-			IterateQuery:      entry.IterateQuery,
-			DefaultPassScheme: entry.DefaultPassScheme,
-			SkipSchema:        entry.SkipSchema,
-		})
-		if err != nil {
-			slog.Error("passdb init failed", "driver", entry.Driver, "err", err)
-			os.Exit(1)
-		}
-		dbs = append(dbs, db)
-	}
 
 	var tlsCfg *tls.Config
 	if cfg.InternalTLS.Enabled {
@@ -82,10 +64,10 @@ func main() {
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
-	srv := protocol.NewServer(dbs)
+	srv := anvil.NewServer(cfg.General.Limits.MaxUserIPConnections)
 	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(ctx, cfg.AuthService.Listen, tlsCfg); err != nil {
+		if err := srv.ListenAndServe(ctx, cfg.AnvilService.Listen, tlsCfg); err != nil {
 			errCh <- err
 		}
 		close(errCh)
@@ -98,18 +80,18 @@ func main() {
 	case sig := <-sigCh:
 		slog.Info("received signal, shutting down", "signal", sig.String())
 		cancel()
-		grace := time.Duration(cfg.AuthService.Shutdown.SessionGracePeriod) * time.Second
+		grace := time.Duration(cfg.AnvilService.Shutdown.SessionGracePeriod) * time.Second
 		if grace > 0 {
 			time.Sleep(grace)
 		}
 	case err := <-errCh:
 		if err != nil {
-			slog.Error("auth server error", "err", err)
+			slog.Error("anvil server error", "err", err)
 			os.Exit(1)
 		}
 	}
 
-	slog.Info("yarilo-auth stopped")
+	slog.Info("yarilo-anvil stopped")
 }
 
 func runTelemetry(addr string) {

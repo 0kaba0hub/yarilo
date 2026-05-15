@@ -13,15 +13,17 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode        string            `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
-	General     GeneralConfig     `koanf:"general"`
-	Services    ServicesConfig    `koanf:"services"`
-	Protocol    ProtocolConfig    `koanf:"protocol"`
-	Auth        AuthConfig        `koanf:"auth"`
-	AuthService AuthServiceConfig `koanf:"auth_service"`
-	Storage     StorageConfig     `koanf:"storage"`
-	Telemetry   TelemetryConfig   `koanf:"telemetry"`
-	Log         LogConfig         `koanf:"log"`
+	Mode         string             `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	General      GeneralConfig      `koanf:"general"`
+	Services     ServicesConfig     `koanf:"services"`
+	Protocol     ProtocolConfig     `koanf:"protocol"`
+	Auth         AuthConfig         `koanf:"auth"`
+	InternalTLS  InternalTLSConfig  `koanf:"internal_tls"`
+	AuthService  AuthServiceConfig  `koanf:"auth_service"`
+	AnvilService AnvilServiceConfig `koanf:"anvil_service"`
+	Storage      StorageConfig      `koanf:"storage"`
+	Telemetry    TelemetryConfig    `koanf:"telemetry"`
+	Log          LogConfig          `koanf:"log"`
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.
@@ -165,18 +167,26 @@ type RelayConfig struct {
 	CommandTimeout int    `koanf:"command_timeout"` // seconds, default 300
 }
 
-// AuthServiceConfig configures the standalone yarilo-auth process.
-type AuthServiceConfig struct {
+// InternalTLSConfig controls mTLS for all inter-component connections.
+// When Enabled is false every component listens on plain TCP — use this
+// when a service mesh (Istio, Linkerd) handles transport security instead.
+type InternalTLSConfig struct {
+	Enabled bool   `koanf:"enabled"`
+	Cert    string `koanf:"cert"`
+	Key     string `koanf:"key"`
+	CA      string `koanf:"ca"`
+}
+
+// AnvilServiceConfig configures the standalone yarilo-anvil process.
+type AnvilServiceConfig struct {
 	Listen   string         `koanf:"listen"`
-	MTLS     MTLSConfig     `koanf:"mtls"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
 }
 
-// MTLSConfig holds certificate paths for mutual TLS between yarilo components.
-type MTLSConfig struct {
-	Cert string `koanf:"cert"`
-	Key  string `koanf:"key"`
-	CA   string `koanf:"ca"`
+// AuthServiceConfig configures the standalone yarilo-auth process.
+type AuthServiceConfig struct {
+	Listen   string         `koanf:"listen"`
+	Shutdown ShutdownConfig `koanf:"shutdown"`
 }
 
 // ShutdownConfig controls graceful shutdown behaviour.
@@ -265,13 +275,21 @@ func Load(path string) (*Config, error) {
 				WriteTimeout:       300,
 			},
 		},
+		InternalTLS: InternalTLSConfig{
+			Enabled: true,
+			Cert:    "/etc/yarilo/tls/tls.crt",
+			Key:     "/etc/yarilo/tls/tls.key",
+			CA:      "/etc/yarilo/tls/ca.crt",
+		},
+		AnvilService: AnvilServiceConfig{
+			Listen: ":9101",
+			Shutdown: ShutdownConfig{
+				SessionGracePeriod: 30,
+				KillTimeout:        5,
+			},
+		},
 		AuthService: AuthServiceConfig{
 			Listen: ":9100",
-			MTLS: MTLSConfig{
-				Cert: "/etc/yarilo/tls/tls.crt",
-				Key:  "/etc/yarilo/tls/tls.key",
-				CA:   "/etc/yarilo/tls/ca.crt",
-			},
 			Shutdown: ShutdownConfig{
 				SessionGracePeriod: 30,
 				KillTimeout:        5,
@@ -284,7 +302,19 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	expandEnv(cfg)
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func (cfg *Config) validate() error {
+	if cfg.InternalTLS.Enabled {
+		if cfg.InternalTLS.Cert == "" || cfg.InternalTLS.Key == "" || cfg.InternalTLS.CA == "" {
+			return fmt.Errorf("config: internal_tls.enabled is true but cert/key/ca are not set")
+		}
+	}
+	return nil
 }
 
 // ResolveSSL merges general.ssl with a per-service SSL override (service wins per field).
@@ -341,9 +371,9 @@ func expandEnv(cfg *Config) {
 	cfg.General.SSL.TLSKey = expand(cfg.General.SSL.TLSKey)
 	cfg.General.SSL.TLSAltCert = expand(cfg.General.SSL.TLSAltCert)
 	cfg.General.SSL.TLSAltKey = expand(cfg.General.SSL.TLSAltKey)
-	cfg.AuthService.MTLS.Cert = expand(cfg.AuthService.MTLS.Cert)
-	cfg.AuthService.MTLS.Key = expand(cfg.AuthService.MTLS.Key)
-	cfg.AuthService.MTLS.CA = expand(cfg.AuthService.MTLS.CA)
+	cfg.InternalTLS.Cert = expand(cfg.InternalTLS.Cert)
+	cfg.InternalTLS.Key = expand(cfg.InternalTLS.Key)
+	cfg.InternalTLS.CA = expand(cfg.InternalTLS.CA)
 	expandSvcSSL(cfg.Services.IMAP)
 	expandSvcSSL(cfg.Services.IMAPS)
 	expandSvcSSL(cfg.Services.Submission)
