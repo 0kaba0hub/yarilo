@@ -25,17 +25,16 @@ const (
 	indexMinor     = 3
 	logMajor       = 1
 	logMinor       = 3
-	baseHeaderSize = 120 // bytes
-	baseRecordSize = 5   // uid(4) + flags(1)
-	modseqExt      = 8   // modseq extension: always present
-	kwExt          = 4   // keyword bitmask extension: 4 bytes = 32 keywords
+	baseHeaderSize = 120
+	baseRecordSize = 5 // uid(4) + flags(1)
+	modseqExt      = 8 // modseq extension: always present
+	kwExt          = 4 // keyword bitmask extension: 4 bytes = 32 keywords
 	compatFlagsLE  = 0x01
 
-	// maxKeywords is the max number of keywords supported (32 bits).
 	maxKeywords = 32
 )
 
-// flag bits (IMAP standard flags stored in index record)
+// flag bits
 const (
 	flagAnswered = 0x01
 	flagFlagged  = 0x02
@@ -44,7 +43,7 @@ const (
 	flagDraft    = 0x10
 )
 
-// transaction log record types (from INTERNALS.md §7)
+// transaction log record types
 const (
 	txExpunge       = 0x00000001
 	txAppend        = 0x00000002
@@ -59,9 +58,8 @@ const (
 // IndexFile manages the .index file for one mailbox folder.
 type IndexFile struct {
 	mu   sync.Mutex
-	path string // path to .index file (without extension suffix)
+	path string
 
-	// cached header values
 	indexID      uint32
 	uidValidity  uint32
 	nextUID      uint32
@@ -71,13 +69,13 @@ type IndexFile struct {
 	logFileSeq   uint32
 	logFileTail  uint32
 	logFileHead  uint32
-	recordSize   uint32 // read from header; may grow when keywords are added
+	recordSize   uint32
 
 	records   []indexRecord
-	filenames map[uint32]string // uid → backend filename, persisted to .index.names
+	filenames map[uint32]string // uid → backend filename
 	recKeys   map[uint32]uint32 // uid → keyword bitmask
-	keywords  []string          // ordered keyword names (dovecot-keywords file)
-	logF      *os.File          // append-only .index.log fd
+	keywords  []string
+	logF      *os.File
 	modseq    uint64
 }
 
@@ -88,29 +86,38 @@ type indexRecord struct {
 	keywordBits uint32
 }
 
-// Backend is the FileIndex IndexBackend.
-type Backend struct {
-	root string
-	mu   sync.Mutex
-	open map[uint64]*IndexFile
-	next uint64 // monotonically increasing folder ID counter
-}
+// Backend is the FileIndex IndexBackend factory.
+// It holds no per-user state.
+type Backend struct{}
 
-// New creates a FileIndex backend rooted at root.
-func New(root string) *Backend {
-	return &Backend{
-		root: root,
+// New creates a FileIndex backend.
+func New() *Backend { return &Backend{} }
+
+// OpenUser returns a per-session index handle bound to u.
+// The index files are stored under u.Home (one .index file per folder).
+func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
+	return &userIndex{
+		home: u.Home,
 		open: make(map[uint64]*IndexFile),
 	}
 }
 
-func (b *Backend) OpenFolder(user, folder string, uidValidity uint32) (*mailbox.Folder, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+// userIndex is a per-session, per-user index handle.
+// Folder IDs assigned here are local to this handle.
+type userIndex struct {
+	home string
+	mu   sync.Mutex
+	open map[uint64]*IndexFile
+	next uint64
+}
 
-	b.next++
-	id := b.next
-	dir := b.indexDir(user, folder)
+func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	u.next++
+	id := u.next
+	dir := u.indexDir(folder)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -118,7 +125,7 @@ func (b *Backend) OpenFolder(user, folder string, uidValidity uint32) (*mailbox.
 	if err != nil {
 		return nil, err
 	}
-	b.open[id] = idx
+	u.open[id] = idx
 
 	f := &mailbox.Folder{
 		ID:            id,
@@ -132,10 +139,10 @@ func (b *Backend) OpenFolder(user, folder string, uidValidity uint32) (*mailbox.
 	return f, nil
 }
 
-func (b *Backend) SaveFolder(user string, f *mailbox.Folder) error {
-	b.mu.Lock()
-	idx, ok := b.open[f.ID]
-	b.mu.Unlock()
+func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
+	u.mu.Lock()
+	idx, ok := u.open[f.ID]
+	u.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", f.ID)
 	}
@@ -146,10 +153,10 @@ func (b *Backend) SaveFolder(user string, f *mailbox.Folder) error {
 	return idx.writeHeader()
 }
 
-func (b *Backend) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
-	b.mu.Lock()
-	idx, ok := b.open[folderID]
-	b.mu.Unlock()
+func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
@@ -193,10 +200,10 @@ func (b *Backend) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	return nil
 }
 
-func (b *Backend) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
-	b.mu.Lock()
-	idx, ok := b.open[folderID]
-	b.mu.Unlock()
+func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
@@ -245,10 +252,10 @@ func (b *Backend) UpdateFlags(folderID uint64, uid uint32, flags, keywords []str
 	return nil
 }
 
-func (b *Backend) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
-	b.mu.Lock()
-	idx, ok := b.open[folderID]
-	b.mu.Unlock()
+func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
@@ -270,10 +277,10 @@ func (b *Backend) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.
 	return result, nil
 }
 
-func (b *Backend) ExpungeMessage(folderID uint64, uid uint32) error {
-	b.mu.Lock()
-	idx, ok := b.open[folderID]
-	b.mu.Unlock()
+func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
@@ -298,10 +305,10 @@ func (b *Backend) ExpungeMessage(folderID uint64, uid uint32) error {
 	return nil
 }
 
-func (b *Backend) NextModSeq(folderID uint64) (uint64, error) {
-	b.mu.Lock()
-	idx, ok := b.open[folderID]
-	b.mu.Unlock()
+func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
 	if !ok {
 		return 0, fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
@@ -311,11 +318,10 @@ func (b *Backend) NextModSeq(folderID uint64) (uint64, error) {
 	return idx.modseq, nil
 }
 
-// Keywords returns the ordered keyword list for the folder (Dovecot-compatible).
-func (b *Backend) Keywords(folderID uint64) ([]string, error) {
-	b.mu.Lock()
-	idx, ok := b.open[folderID]
-	b.mu.Unlock()
+func (u *userIndex) Keywords(folderID uint64) ([]string, error) {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
@@ -326,28 +332,23 @@ func (b *Backend) Keywords(folderID uint64) ([]string, error) {
 	return out, nil
 }
 
-func (b *Backend) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, idx := range b.open {
+func (u *userIndex) Close() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, idx := range u.open {
 		if err := idx.close(); err != nil {
 			return err
 		}
 	}
-	b.open = make(map[uint64]*IndexFile)
+	u.open = make(map[uint64]*IndexFile)
 	return nil
 }
 
-func (b *Backend) indexDir(user, folder string) string {
-	if i := strings.LastIndex(user, "@"); i >= 0 {
-		domain := user[i+1:]
-		local := user[:i]
-		return filepath.Join(b.root, domain, local, "."+folder)
-	}
-	return filepath.Join(b.root, user, "."+folder)
+func (u *userIndex) indexDir(folder string) string {
+	return filepath.Join(u.home, "."+folder)
 }
 
-// ---- IndexFile low-level ------------------------------------------------
+// ---- IndexFile low-level ---------------------------------------------------
 
 func openIndexFile(path string, uidValidity uint32) (*IndexFile, error) {
 	idx := &IndexFile{
@@ -398,7 +399,6 @@ func (idx *IndexFile) initNew(uidValidity uint32) (*IndexFile, error) {
 	return idx, nil
 }
 
-// writeHeader writes the 120-byte index header.
 func (idx *IndexFile) writeHeader() error {
 	buf := make([]byte, baseHeaderSize)
 	le := binary.LittleEndian
@@ -411,7 +411,7 @@ func (idx *IndexFile) writeHeader() error {
 	buf[14] = compatFlagsLE
 
 	le.PutUint32(buf[16:], idx.indexID)
-	le.PutUint32(buf[20:], 0) // flags
+	le.PutUint32(buf[20:], 0)
 	le.PutUint32(buf[24:], idx.uidValidity)
 	le.PutUint32(buf[28:], idx.nextUID)
 	le.PutUint32(buf[32:], idx.msgCount)
@@ -473,7 +473,6 @@ func (idx *IndexFile) readRecords(f *os.File) error {
 			flags:  buf[4],
 			modseq: binary.LittleEndian.Uint64(buf[5:]),
 		}
-		// keyword extension present when record_size >= base+modseq+kw
 		if rs >= baseRecordSize+modseqExt+kwExt {
 			rec.keywordBits = binary.LittleEndian.Uint32(buf[baseRecordSize+modseqExt:])
 		}
@@ -488,7 +487,6 @@ func (idx *IndexFile) readRecords(f *os.File) error {
 	return nil
 }
 
-// replayLog applies committed transactions from .index.log.
 func (idx *IndexFile) replayLog() error {
 	logPath := idx.path + ".log"
 	f, err := os.Open(logPath)
@@ -573,7 +571,6 @@ func (idx *IndexFile) applyLogRecord(txType uint32, data []byte) {
 			}
 		}
 	case txKeywordUpdate:
-		// payload: uid(4) + keyword_bits(4)
 		if len(data) < 8 {
 			return
 		}
@@ -591,12 +588,10 @@ func (idx *IndexFile) applyLogRecord(txType uint32, data []byte) {
 			}
 		}
 	case txExtIntro:
-		// EXT_INTRO for keywords: payload contains the keyword name list.
-		// We reload from the dovecot-keywords file on open, so just skip here.
+		// keyword names are reloaded from dovecot-keywords on open
 	}
 }
 
-// openLog opens or creates the append-only .index.log file.
 func (idx *IndexFile) openLog() error {
 	logPath := idx.path + ".log"
 	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
@@ -628,13 +623,11 @@ func (idx *IndexFile) writeLogHeader(f *os.File) error {
 	return err
 }
 
-// appendLogRecord writes one flag/expunge/append transaction to .index.log.
-// Payload: uid(4) + flags(1) + modseq(8) + keyword_bits(4) = 17 bytes.
 func (idx *IndexFile) appendLogRecord(txType uint32, rec indexRecord) error {
 	if idx.logF == nil {
 		return nil
 	}
-	const payloadSize = 17 // uid(4)+flags(1)+modseq(8)+kwbits(4)
+	const payloadSize = 17
 	const totalSize = 4 + 4 + payloadSize
 	buf := make([]byte, totalSize)
 	le := binary.LittleEndian
@@ -648,12 +641,11 @@ func (idx *IndexFile) appendLogRecord(txType uint32, rec indexRecord) error {
 	return err
 }
 
-// appendKeywordUpdateLog writes a KEYWORD_UPDATE record: uid(4) + bits(4).
 func (idx *IndexFile) appendKeywordUpdateLog(uid, bits uint32) error {
 	if idx.logF == nil {
 		return nil
 	}
-	const totalSize = 4 + 4 + 8 // size + type + payload
+	const totalSize = 4 + 4 + 8
 	buf := make([]byte, totalSize)
 	le := binary.LittleEndian
 	le.PutUint32(buf[0:], totalSize)
@@ -664,14 +656,11 @@ func (idx *IndexFile) appendKeywordUpdateLog(uid, bits uint32) error {
 	return err
 }
 
-// appendExtIntroLog writes an EXT_INTRO record announcing the keywords extension.
-// Called once when the first keyword is registered for this folder.
 func (idx *IndexFile) appendExtIntroLog() error {
 	if idx.logF == nil {
 		return nil
 	}
 	const name = "keywords"
-	// payload: name_len(4) + name + record_size(4) + hdr_size(4) + reset_id(4)
 	nameBytes := []byte(name)
 	payloadSize := 4 + len(nameBytes) + 4 + 4 + 4
 	totalSize := 4 + 4 + payloadSize
@@ -682,9 +671,9 @@ func (idx *IndexFile) appendExtIntroLog() error {
 	le.PutUint32(buf[8:], uint32(len(nameBytes)))
 	copy(buf[12:], nameBytes)
 	off := 12 + len(nameBytes)
-	le.PutUint32(buf[off:], kwExt) // record_size extension
-	le.PutUint32(buf[off+4:], 0)   // hdr_size extension
-	le.PutUint32(buf[off+8:], 0)   // reset_id
+	le.PutUint32(buf[off:], kwExt)
+	le.PutUint32(buf[off+4:], 0)
+	le.PutUint32(buf[off+8:], 0)
 	_, err := idx.logF.Write(buf)
 	return err
 }
@@ -696,11 +685,8 @@ func (idx *IndexFile) close() error {
 	return nil
 }
 
-// ---- keyword helpers ----------------------------------------------------
+// ---- keyword helpers -------------------------------------------------------
 
-// internKeywords ensures all keyword names exist in dovecot-keywords,
-// returns the bitmask for the given set. Grows the keyword list as needed.
-// Also grows record_size in the index header if keywords are new.
 func (idx *IndexFile) internKeywords(names []string) (uint32, error) {
 	if len(names) == 0 {
 		return 0, nil
@@ -724,7 +710,6 @@ func (idx *IndexFile) internKeywords(names []string) (uint32, error) {
 			bits |= 1 << uint(idx2)
 		}
 	}
-	// Grow record_size and write EXT_INTRO the first time keywords are used.
 	if newKeyword && idx.recordSize < baseRecordSize+modseqExt+kwExt {
 		idx.recordSize = baseRecordSize + modseqExt + kwExt
 		if err := idx.writeHeader(); err != nil {
@@ -737,7 +722,6 @@ func (idx *IndexFile) internKeywords(names []string) (uint32, error) {
 	return bits, nil
 }
 
-// keywordIndex returns the index of name in idx.keywords, or -1 if not found.
 func (idx *IndexFile) keywordIndex(name string) int {
 	for i, kw := range idx.keywords {
 		if kw == name {
@@ -747,7 +731,6 @@ func (idx *IndexFile) keywordIndex(name string) int {
 	return -1
 }
 
-// bitsToKeywords converts a keyword bitmask back to keyword names.
 func (idx *IndexFile) bitsToKeywords(bits uint32) []string {
 	if bits == 0 {
 		return nil
@@ -764,7 +747,6 @@ func (idx *IndexFile) bitsToKeywords(bits uint32) []string {
 	return out
 }
 
-// loadKeywords reads the dovecot-keywords file co-located with the .index file.
 func (idx *IndexFile) loadKeywords() {
 	f, err := os.Open(idx.path + ".keywords")
 	if err != nil {
@@ -780,7 +762,6 @@ func (idx *IndexFile) loadKeywords() {
 	}
 }
 
-// saveKeywords rewrites the dovecot-keywords file.
 func (idx *IndexFile) saveKeywords() error {
 	f, err := os.OpenFile(idx.path+".keywords", os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o600)
 	if err != nil {
@@ -795,7 +776,7 @@ func (idx *IndexFile) saveKeywords() error {
 	return nil
 }
 
-// ---- filename helpers ----------------------------------------------------
+// ---- filename helpers ------------------------------------------------------
 
 func (idx *IndexFile) loadNames() {
 	f, err := os.Open(idx.path + ".names")
@@ -828,9 +809,8 @@ func (idx *IndexFile) appendNameEntry(uid uint32, filename string) error {
 	return err
 }
 
-// ---- log header ---------------------------------------------------------
+// ---- helpers ---------------------------------------------------------------
 
-// seqSetContains reports whether uid is in the set.
 func seqSetContains(s mailbox.SeqSet, uid uint32) bool {
 	if len(s) == 0 {
 		return true
@@ -849,8 +829,6 @@ func seqSetContains(s mailbox.SeqSet, uid uint32) bool {
 	}
 	return false
 }
-
-// ---- flag conversion ----------------------------------------------------
 
 func imapFlagsToIndex(flags []string) uint8 {
 	var b uint8

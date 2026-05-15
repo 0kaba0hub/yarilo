@@ -1,4 +1,4 @@
-// Package mdbox implements the MailboxBackend for the mdbox (multi-message dbox) format.
+// Package mdbox implements MailboxBackend for the mdbox (multi-message dbox) format.
 // Messages are stored in shared m.<file_id> files under mdbox-storage/; each folder
 // keeps a dbox.map text file that maps into those files by (file_id, offset).
 package mdbox
@@ -26,76 +26,92 @@ const (
 	rotateAt  = int64(10 * 1024 * 1024)
 )
 
-// Backend is an mdbox MailboxBackend.
+// Backend is the mdbox MailboxBackend factory.
+// It holds no per-user state; all per-user state (file rotation, locks) lives
+// in userMailbox, which is created fresh by OpenUser for each session.
 type Backend struct {
-	root          string
-	mu            sync.Mutex
-	currentFileID uint32
-	currentSize   int64
-	// rotateThreshold is used only in tests to override the 10 MB limit.
+	// rotateThreshold overrides the 10 MB rotation limit in tests.
 	rotateThreshold int64
 }
 
-// New creates an mdbox backend rooted at root.
-// It scans existing m.* files to resume from the highest file_id.
-func New(root string) (*Backend, error) {
-	b := &Backend{root: root, rotateThreshold: rotateAt}
-
-	// Walk all user trees looking for mdbox-storage/m.* to find the max file_id.
-	// We use a best-effort scan: failure to read a subdir is non-fatal.
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() || !strings.HasPrefix(d.Name(), "m.") {
-			return nil
-		}
-		// Only count files inside an mdbox-storage directory.
-		if filepath.Base(filepath.Dir(path)) != "mdbox-storage" {
-			return nil
-		}
-		idStr := d.Name()[2:]
-		id64, parseErr := strconv.ParseUint(idStr, 10, 32)
-		if parseErr != nil {
-			return nil
-		}
-		id := uint32(id64)
-		if id > b.currentFileID {
-			b.currentFileID = id
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("mdbox/new: %w", err)
-	}
-	if b.currentFileID == 0 {
-		b.currentFileID = 1
-	}
-
-	// currentSize stays 0; Save() will stat the file on first write.
-	return b, nil
+// New creates an mdbox backend.
+func New() *Backend {
+	return &Backend{rotateThreshold: rotateAt}
 }
 
-// Init creates the INBOX folder for user.
-func (b *Backend) Init(user string) error {
-	if err := os.MkdirAll(b.folderPath(user, "INBOX"), 0o700); err != nil {
+// OpenUser returns a per-session handle bound to u.
+// File rotation state (currentFileID, currentSize) is per-handle so that
+// concurrent sessions for the same user each hold their own state.
+// The underlying mdbox-storage files are shared on disk (append-only), so
+// concurrent writes are safe at the OS level but the per-handle state may
+// diverge after rotation — correct for the current single-backend-per-user
+// deployment; revisit when multi-node delivery is introduced (Phase 5).
+func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	return &userMailbox{b: b, home: u.Home}
+}
+
+// userMailbox is a per-session, per-user mdbox storage handle.
+type userMailbox struct {
+	b    *Backend
+	home string
+
+	mu            sync.Mutex
+	currentFileID uint32
+	currentSize   int64
+	initDone      bool
+}
+
+// Init creates the INBOX folder and scans the user's mdbox-storage to resume
+// from the highest existing file_id. Must be called before Save.
+func (u *userMailbox) Init() error {
+	if err := os.MkdirAll(u.folderPath("INBOX"), 0o700); err != nil {
 		return fmt.Errorf("mdbox/init: %w", err)
 	}
+
+	storageDir := u.storageDir()
+	if err := os.MkdirAll(storageDir, 0o700); err != nil {
+		return fmt.Errorf("mdbox/init: mkdir storage: %w", err)
+	}
+
+	// Scan for the highest existing m.<id> file to resume the sequence.
+	entries, err := os.ReadDir(storageDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("mdbox/init: scan storage: %w", err)
+	}
+	var maxID uint32
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "m.") {
+			continue
+		}
+		id64, parseErr := strconv.ParseUint(e.Name()[2:], 10, 32)
+		if parseErr != nil {
+			continue
+		}
+		if uint32(id64) > maxID {
+			maxID = uint32(id64)
+		}
+	}
+	u.mu.Lock()
+	if maxID > 0 {
+		u.currentFileID = maxID
+	} else {
+		u.currentFileID = 1
+	}
+	u.currentSize = 0
+	u.initDone = true
+	u.mu.Unlock()
 	return nil
 }
 
-// Create creates the named folder directory.
-func (b *Backend) Create(user, folder string) error {
-	if err := os.MkdirAll(b.folderPath(user, folder), 0o700); err != nil {
+func (u *userMailbox) Create(folder string) error {
+	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return fmt.Errorf("mdbox/create: %w", err)
 	}
 	return nil
 }
 
-// Delete removes a folder directory (and its dbox.map).
-// mdbox-storage is shared and is NOT removed.
-func (b *Backend) Delete(user, folder string) error {
-	if err := os.RemoveAll(b.folderPath(user, folder)); err != nil {
+func (u *userMailbox) Delete(folder string) error {
+	if err := os.RemoveAll(u.folderPath(folder)); err != nil {
 		return fmt.Errorf("mdbox/delete: %w", err)
 	}
 	return nil
@@ -103,7 +119,7 @@ func (b *Backend) Delete(user, folder string) error {
 
 // Save writes a message into the mdbox storage and appends a map entry.
 // Returns "<file_id>:<offset>" as the filename token.
-func (b *Backend) Save(user, folder string, r io.Reader, _ int64, _ []string) (string, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (string, error) {
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return "", fmt.Errorf("mdbox/save: read body: %w", err)
@@ -117,35 +133,34 @@ func (b *Backend) Save(user, folder string, r io.Reader, _ int64, _ []string) (s
 	record := buildRecord(body, guid, now, physSize, virtSize)
 	recLen := int64(len(record))
 
-	storageDir := b.storageDir(user)
+	storageDir := u.storageDir()
 	if err := os.MkdirAll(storageDir, 0o700); err != nil {
 		return "", fmt.Errorf("mdbox/save: mkdir storage: %w", err)
 	}
-
-	if err := os.MkdirAll(b.folderPath(user, folder), 0o700); err != nil {
+	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return "", fmt.Errorf("mdbox/save: mkdir folder: %w", err)
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
-	// Lazy-initialise currentSize from the actual file on first write.
-	if b.currentSize == 0 {
-		fi, statErr := os.Stat(b.mfilePath(storageDir, b.currentFileID))
+	// Lazy-initialise currentSize from the actual file on first Save after Init.
+	if u.currentSize == 0 && u.initDone {
+		fi, statErr := os.Stat(u.mfilePath(storageDir, u.currentFileID))
 		if statErr == nil {
-			b.currentSize = fi.Size()
+			u.currentSize = fi.Size()
 		}
 	}
 
-	if b.currentSize > b.rotateThreshold {
-		b.currentFileID++
-		b.currentSize = 0
+	if u.currentSize > u.b.rotateThreshold {
+		u.currentFileID++
+		u.currentSize = 0
 	}
 
-	fileID := b.currentFileID
-	offset := b.currentSize
+	fileID := u.currentFileID
+	offset := u.currentSize
 
-	mpath := b.mfilePath(storageDir, fileID)
+	mpath := u.mfilePath(storageDir, fileID)
 	f, err := os.OpenFile(mpath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("mdbox/save: open mfile: %w", err)
@@ -157,10 +172,10 @@ func (b *Backend) Save(user, folder string, r io.Reader, _ int64, _ []string) (s
 	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("mdbox/save: close mfile: %w", err)
 	}
-	b.currentSize += recLen
+	u.currentSize += recLen
 
 	mapLine := fmt.Sprintf("%d %d %d 0\n", fileID, offset, physSize)
-	mapPath := b.mapPath(user, folder)
+	mapPath := u.mapPath(folder)
 	mf, err := os.OpenFile(mapPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("mdbox/save: open dbox.map: %w", err)
@@ -176,16 +191,16 @@ func (b *Backend) Save(user, folder string, r io.Reader, _ int64, _ []string) (s
 	return fmt.Sprintf("%d:%d", fileID, offset), nil
 }
 
-// Fetch opens the message identified by "<file_id>:<offset>" and returns a reader
-// positioned at the start of the raw RFC 5322 body.
-func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
+// Fetch opens the message identified by "<file_id>:<offset>" and returns a
+// reader positioned at the start of the raw RFC 5322 body.
+func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
 	fileID, offset, err := parseFilename(filename)
 	if err != nil {
 		return nil, fmt.Errorf("mdbox/fetch: %w", err)
 	}
 
-	storageDir := b.storageDir(user)
-	mpath := b.mfilePath(storageDir, fileID)
+	storageDir := u.storageDir()
+	mpath := u.mfilePath(storageDir, fileID)
 	f, err := os.Open(mpath)
 	if err != nil {
 		return nil, fmt.Errorf("mdbox/fetch: open mfile: %w", err)
@@ -209,13 +224,13 @@ func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
 }
 
 // Remove marks the dbox.map entry for "<file_id>:<offset>" as expunged (lazy delete).
-func (b *Backend) Remove(user, folder, filename string) error {
+func (u *userMailbox) Remove(folder, filename string) error {
 	fileID, offset, err := parseFilename(filename)
 	if err != nil {
 		return fmt.Errorf("mdbox/remove: %w", err)
 	}
 
-	mapPath := b.mapPath(user, folder)
+	mapPath := u.mapPath(folder)
 	lines, err := readMapLines(mapPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -237,9 +252,8 @@ func (b *Backend) Remove(user, folder, filename string) error {
 	return writeMapLines(mapPath, lines)
 }
 
-// List returns all non-expunged messages in the folder.
-func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
-	mapPath := b.mapPath(user, folder)
+func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
+	mapPath := u.mapPath(folder)
 	lines, err := readMapLines(mapPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -248,7 +262,7 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 		return nil, fmt.Errorf("mdbox/list: %w", err)
 	}
 
-	storageDir := b.storageDir(user)
+	storageDir := u.storageDir()
 
 	type entry struct {
 		fileID uint32
@@ -262,7 +276,7 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 			continue
 		}
 
-		mpath := b.mfilePath(storageDir, rec.fileID)
+		mpath := u.mfilePath(storageDir, rec.fileID)
 		f, openErr := os.Open(mpath)
 		if openErr != nil {
 			return nil, fmt.Errorf("mdbox/list: open mfile: %w", openErr)
@@ -277,10 +291,11 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 			return nil, fmt.Errorf("mdbox/list: parse header: %w", parseErr)
 		}
 
+		token := fmt.Sprintf("%d:%d", rec.fileID, rec.offset)
 		entries = append(entries, entry{
 			fileID: rec.fileID,
 			offset: rec.offset,
-			meta:   &mailbox.MessageMeta{Size: size},
+			meta:   &mailbox.MessageMeta{Filename: token, Size: size},
 		})
 	}
 
@@ -298,19 +313,16 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 	return out, nil
 }
 
-// FolderExists reports whether the folder directory exists.
-func (b *Backend) FolderExists(user, folder string) (bool, error) {
-	_, err := os.Stat(b.folderPath(user, folder))
+func (u *userMailbox) FolderExists(folder string) (bool, error) {
+	_, err := os.Stat(u.folderPath(folder))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-// ListFolders returns INBOX plus any dot-prefixed directories under the user root.
-func (b *Backend) ListFolders(user string) ([]string, error) {
-	base := b.userRoot(user)
-	entries, err := os.ReadDir(base)
+func (u *userMailbox) ListFolders() ([]string, error) {
+	entries, err := os.ReadDir(u.home)
 	if err != nil {
 		return nil, fmt.Errorf("mdbox/listfolders: %w", err)
 	}
@@ -330,14 +342,16 @@ func (b *Backend) ListFolders(user string) ([]string, error) {
 	return folders, nil
 }
 
-// ---- dbox binary format helpers -----------------------------------------
+// AppendUIDEntry is a no-op for mdbox — UIDs are managed exclusively by UserIndex.
+func (u *userMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
 
-// buildRecord assembles the full dbox record bytes for one message.
+func (u *userMailbox) Close() error { return nil }
+
+// ---- dbox binary format helpers --------------------------------------------
+
 func buildRecord(body []byte, guid string, ts, physSize, virtSize uint32) []byte {
 	size := uint64(len(body))
-	// Header: \x01\x02 N <uid_hex8> <size_hex16>\n  (uid is always 0 here; index owns UIDs)
 	header := fmt.Sprintf("%sN %08x %016x\n", magicPre, uint32(0), size)
-	// Metadata block after body
 	meta := fmt.Sprintf("%sG%s\nR%08x\nZ%08x\nV%08x\n\n",
 		magicPost, guid, ts, physSize, virtSize)
 
@@ -348,8 +362,6 @@ func buildRecord(body []byte, guid string, ts, physSize, virtSize uint32) []byte
 	return rec
 }
 
-// parseHeader reads a dbox record header from r and returns the body size.
-// Format: \x01\x02 N <uid_hex8> <size_hex16>\n  (30 bytes total)
 func parseHeader(r io.Reader) (uint32, error) {
 	hdr := make([]byte, 30)
 	if _, err := io.ReadFull(r, hdr); err != nil {
@@ -365,7 +377,7 @@ func parseHeader(r io.Reader) (uint32, error) {
 	return uint32(sz64), nil
 }
 
-// ---- dbox.map helpers ---------------------------------------------------
+// ---- dbox.map helpers ------------------------------------------------------
 
 type mapRecord struct {
 	fileID   uint32
@@ -413,36 +425,28 @@ func writeMapLines(path string, recs []mapRecord) error {
 	return nil
 }
 
-// ---- path helpers -------------------------------------------------------
+// ---- path helpers ----------------------------------------------------------
 
-func (b *Backend) userRoot(user string) string {
-	if at := strings.LastIndex(user, "@"); at >= 0 {
-		return filepath.Join(b.root, user[at+1:], user[:at])
-	}
-	return filepath.Join(b.root, user)
-}
-
-func (b *Backend) folderPath(user, folder string) string {
-	base := b.userRoot(user)
+func (u *userMailbox) folderPath(folder string) string {
 	if folder == "INBOX" {
-		return filepath.Join(base, "INBOX")
+		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(base, "."+folder)
+	return filepath.Join(u.home, "."+folder)
 }
 
-func (b *Backend) storageDir(user string) string {
-	return filepath.Join(b.userRoot(user), "mdbox-storage")
+func (u *userMailbox) storageDir() string {
+	return filepath.Join(u.home, "mdbox-storage")
 }
 
-func (b *Backend) mfilePath(storageDir string, fileID uint32) string {
+func (u *userMailbox) mfilePath(storageDir string, fileID uint32) string {
 	return filepath.Join(storageDir, fmt.Sprintf("m.%d", fileID))
 }
 
-func (b *Backend) mapPath(user, folder string) string {
-	return filepath.Join(b.folderPath(user, folder), "dbox.map")
+func (u *userMailbox) mapPath(folder string) string {
+	return filepath.Join(u.folderPath(folder), "dbox.map")
 }
 
-// ---- misc helpers -------------------------------------------------------
+// ---- misc helpers ----------------------------------------------------------
 
 func parseFilename(s string) (fileID, offset uint32, err error) {
 	parts := strings.SplitN(s, ":", 2)

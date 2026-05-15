@@ -20,11 +20,13 @@ import (
 func startServerWith(t *testing.T, mb mailbox.MailboxBackend) *imapclient.Client {
 	t.Helper()
 
-	idx := file.New(t.TempDir())
+	resolver := &mailbox.Resolver{Root: t.TempDir(), HomeTemplate: "%d/%n"}
+	idx := file.New()
 	opts := imapserver.Options{
-		Mailbox: mb,
-		Index:   idx,
-		Auth:    &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Mailbox:  mb,
+		Index:    idx,
+		Resolver: resolver,
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 	}
 	srv := imapserver.New(opts)
 
@@ -57,22 +59,12 @@ type backendFactory struct {
 	new  func(t *testing.T) mailbox.MailboxBackend
 }
 
-func dboxBackend(t *testing.T) mailbox.MailboxBackend {
-	t.Helper()
-	b, err := dbox.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("dbox.New: %v", err)
-	}
-	return b
+func dboxBackend(_ *testing.T) mailbox.MailboxBackend {
+	return dbox.New()
 }
 
-func mdboxBackend(t *testing.T) mailbox.MailboxBackend {
-	t.Helper()
-	b, err := mdbox.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("mdbox.New: %v", err)
-	}
-	return b
+func mdboxBackend(_ *testing.T) mailbox.MailboxBackend {
+	return mdbox.New()
 }
 
 var backends = []backendFactory{

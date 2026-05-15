@@ -8,7 +8,7 @@ import (
 // MessageMeta holds per-message metadata stored in the index.
 type MessageMeta struct {
 	UID          uint32
-	Filename     string // backend-specific filename returned by MailboxBackend.Save
+	Filename     string // backend-specific filename returned by UserMailbox.Save
 	Flags        []string
 	Keywords     []string
 	ModSeq       uint64
@@ -37,60 +37,67 @@ type SeqRange struct {
 	From, To uint32 // inclusive; To==0 means '*'
 }
 
-// MailboxBackend is the storage interface for raw message bytes.
+// MailboxBackend is the per-process factory for user-scoped storage handles.
+// It holds no per-user state; all per-user state lives in UserMailbox.
+//
+// Phase 5 — multi-namespace stub:
+//
+//	OpenNamespace(user *UserInfo, namespace string) (UserMailbox, error)
+//	    Returns a handle for a shared or public namespace (e.g. "shared/" or "Public").
+//	    Implementation: separate Backend instance rooted at the namespace storage dir,
+//	    wrapped with the same UserMailbox contract. Namespace list comes from
+//	    config.Namespaces (private/shared/public, each with its own location template).
 type MailboxBackend interface {
-	// Init ensures directory structure exists for user.
-	Init(user string) error
-
-	// Create creates a new folder.
-	Create(user, folder string) error
-
-	// Delete removes a folder and all its messages.
-	Delete(user, folder string) error
-
-	// Save writes a message into the folder's tmp → cur flow.
-	// Returns the assigned filename (backend-specific).
-	Save(user, folder string, r io.Reader, size int64, flags []string) (string, error)
-
-	// Fetch returns a reader for the raw RFC 5322 message bytes.
-	Fetch(user, folder, filename string) (io.ReadCloser, error)
-
-	// Remove deletes a message by filename.
-	Remove(user, folder, filename string) error
-
-	// List returns all messages in a folder.
-	List(user, folder string) ([]*MessageMeta, error)
-
-	// FolderExists reports whether the folder exists.
-	FolderExists(user, folder string) (bool, error)
-
-	// ListFolders returns all folder names for a user.
-	ListFolders(user string) ([]string, error)
+	OpenUser(*UserInfo) UserMailbox
 }
 
-// IndexBackend is the storage interface for IMAP index data.
+// UserMailbox is a per-session, per-user storage handle bound to a single UserInfo
+// at creation time. Mirrors Dovecot's struct mail_storage (mail-storage-private.h:138).
+//
+// Init MUST be called before any other method — it creates the on-disk directory
+// structure. Callers that open a handle but never call Init will see errors from
+// the underlying filesystem operations.
+//
+// AppendUIDEntry records the uid→filename mapping used by the Maildir uidlist
+// (dovecot-uidlist v3). Backends that do not need a separate uidlist (dbox, mdbox)
+// implement this as a no-op — UIDs are managed exclusively by UserIndex.
+//
+// Close releases any open file descriptors held by the handle.
+type UserMailbox interface {
+	Init() error
+	Create(folder string) error
+	Delete(folder string) error
+	Save(folder string, r io.Reader, size int64, flags []string) (string, error)
+	Fetch(folder, filename string) (io.ReadCloser, error)
+	Remove(folder, filename string) error
+	List(folder string) ([]*MessageMeta, error)
+	FolderExists(folder string) (bool, error)
+	ListFolders() ([]string, error)
+	AppendUIDEntry(folder string, uid uint32, filename string) error
+	Close() error
+}
+
+// IndexBackend is the per-process factory for user-scoped index handles.
+//
+// Phase 5 — multi-namespace stub:
+//
+//	OpenNamespace(user *UserInfo, namespace string) (UserIndex, error)
+//	    Returns an index handle for a non-private namespace.
+//	    Implementation: separate Backend instance rooted at the namespace index dir.
 type IndexBackend interface {
-	// OpenFolder opens or creates the index for a folder.
-	OpenFolder(user, folder string, uidValidity uint32) (*Folder, error)
+	OpenUser(*UserInfo) UserIndex
+}
 
-	// SaveFolder persists updated folder metadata.
-	SaveFolder(user string, f *Folder) error
-
-	// AppendMessage adds a new message record to the folder index.
+// UserIndex is a per-session, per-user index handle.
+// All folder IDs are local to this handle — they must not be shared across handles.
+type UserIndex interface {
+	OpenFolder(folder string, uidValidity uint32) (*Folder, error)
+	SaveFolder(f *Folder) error
 	AppendMessage(folderID uint64, m *MessageMeta) error
-
-	// UpdateFlags updates the flags for a single message.
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
-
-	// GetMessages returns messages matching the SeqSet (by UID).
 	GetMessages(folderID uint64, uids SeqSet) ([]*MessageMeta, error)
-
-	// ExpungeMessage removes a message record from the index.
 	ExpungeMessage(folderID uint64, uid uint32) error
-
-	// NextModSeq increments and returns the next modseq for the folder.
 	NextModSeq(folderID uint64) (uint64, error)
-
-	// Close releases resources.
+	Keywords(folderID uint64) ([]string, error)
 	Close() error
 }

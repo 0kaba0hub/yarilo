@@ -1,5 +1,5 @@
-// Package maildir implements the MailboxBackend for Maildir format.
-// Filename: {secs}.M{usecs}P{pid}.{hostname}:2,{flags}
+// Package maildir implements MailboxBackend for Maildir format.
+// Filename: {secs}.M{usecs}P{pid}_{seq}.{hostname}:2,{flags}
 // uidlist: dovecot-uidlist v3
 package maildir
 
@@ -21,58 +21,69 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// Backend is a Maildir MailboxBackend.
+// Backend is the Maildir MailboxBackend factory.
+// It holds only process-wide state (hostname, pid, counter).
+// Per-user state lives in userMailbox.
 type Backend struct {
-	root     string
 	hostname string
 	pid      int
 	counter  atomic.Uint64
-	mu       sync.Mutex // guards uidlist writes
 }
 
-// New creates a Maildir backend rooted at root.
-func New(root string) (*Backend, error) {
+// New creates a Maildir backend.
+func New() *Backend {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "localhost"
 	}
 	return &Backend{
-		root:     root,
 		hostname: hostname,
 		pid:      os.Getpid(),
-	}, nil
+	}
 }
 
-func (b *Backend) Init(user string) error {
-	base := b.userRoot(user)
+// OpenUser returns a per-session handle bound to u. The handle's Home field
+// is used for all path resolution; usernames are never converted to paths here.
+func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	return &userMailbox{b: b, home: u.Home}
+}
+
+// userMailbox is a per-session, per-user Maildir storage handle.
+type userMailbox struct {
+	b    *Backend
+	home string
+	mu   sync.Mutex // guards uidlist appends
+}
+
+func (u *userMailbox) Init() error {
 	for _, sub := range []string{"INBOX/cur", "INBOX/new", "INBOX/tmp"} {
-		if err := os.MkdirAll(filepath.Join(base, sub), 0o700); err != nil {
-			return err
+		if err := os.MkdirAll(filepath.Join(u.home, sub), 0o700); err != nil {
+			return fmt.Errorf("maildir/init: %w", err)
 		}
 	}
 	return nil
 }
 
-func (b *Backend) Create(user, folder string) error {
-	base := b.folderPath(user, folder)
+func (u *userMailbox) Create(folder string) error {
+	base := u.folderPath(folder)
 	for _, sub := range []string{"cur", "new", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(base, sub), 0o700); err != nil {
-			return err
+			return fmt.Errorf("maildir/create: %w", err)
 		}
 	}
 	return nil
 }
 
-func (b *Backend) Delete(user, folder string) error {
-	return os.RemoveAll(b.folderPath(user, folder))
+func (u *userMailbox) Delete(folder string) error {
+	return os.RemoveAll(u.folderPath(folder))
 }
 
-func (b *Backend) Save(user, folder string, r io.Reader, size int64, flags []string) (string, error) {
-	folderPath := b.folderPath(user, folder)
+func (u *userMailbox) Save(folder string, r io.Reader, size int64, flags []string) (string, error) {
+	folderPath := u.folderPath(folder)
 	now := time.Now()
-	seq := b.counter.Add(1)
+	seq := u.b.counter.Add(1)
 	basename := fmt.Sprintf("%d.M%dP%d_%d.%s",
-		now.Unix(), now.UnixMicro()%1_000_000, b.pid, seq, b.hostname)
+		now.Unix(), now.UnixMicro()%1_000_000, u.b.pid, seq, u.b.hostname)
 
 	tmpPath := filepath.Join(folderPath, "tmp", basename)
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -92,8 +103,7 @@ func (b *Backend) Save(user, folder string, r io.Reader, size int64, flags []str
 
 	flagStr := encodeFlags(flags)
 	// Dovecot filename convention: append ,S=<phys>,W=<virt> before :2,<flags>
-	// so List() can return both sizes without reading the file body. Virtual
-	// size = CRLF-normalised bytes (what POP3 RETR transmits).
+	// so List() can return both sizes without reading the file body.
 	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
 	dstPath := filepath.Join(folderPath, "cur", finalName)
 	if err := os.Rename(tmpPath, dstPath); err != nil {
@@ -105,7 +115,7 @@ func (b *Backend) Save(user, folder string, r io.Reader, size int64, flags []str
 
 // sizeCounter is an io.Writer that records bytes written and the number of LF
 // bytes not preceded by CR (lone LFs that would gain a CR under CRLF
-// normalisation). Implements io.Writer so it can be plugged into io.TeeReader.
+// normalisation).
 type sizeCounter struct {
 	phys   uint32
 	lfNoCR uint32
@@ -123,8 +133,8 @@ func (c *sizeCounter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
-	p := filepath.Join(b.folderPath(user, folder), "cur", filename)
+func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
+	p := filepath.Join(u.folderPath(folder), "cur", filename)
 	f, err := os.Open(p)
 	if err != nil {
 		return nil, fmt.Errorf("maildir: fetch %s: %w", filename, err)
@@ -132,8 +142,8 @@ func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
 	return f, nil
 }
 
-func (b *Backend) Remove(user, folder, filename string) error {
-	p := filepath.Join(b.folderPath(user, folder), "cur", filename)
+func (u *userMailbox) Remove(folder, filename string) error {
+	p := filepath.Join(u.folderPath(folder), "cur", filename)
 	err := os.Remove(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -141,8 +151,8 @@ func (b *Backend) Remove(user, folder, filename string) error {
 	return err
 }
 
-func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
-	dir := filepath.Join(b.folderPath(user, folder), "cur")
+func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
+	dir := filepath.Join(u.folderPath(folder), "cur")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -151,7 +161,7 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 		return nil, err
 	}
 
-	uidMap, err := b.readUIDList(user, folder)
+	uidMap, err := u.readUIDList(folder)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +186,7 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 		uid := uidMap[name]
 		msgs = append(msgs, &mailbox.MessageMeta{
 			UID:      uid,
+			Filename: name,
 			Flags:    flags,
 			Keywords: keywords,
 			Size:     sz,
@@ -188,17 +199,16 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 	return msgs, nil
 }
 
-func (b *Backend) FolderExists(user, folder string) (bool, error) {
-	_, err := os.Stat(b.folderPath(user, folder))
+func (u *userMailbox) FolderExists(folder string) (bool, error) {
+	_, err := os.Stat(u.folderPath(folder))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-func (b *Backend) ListFolders(user string) ([]string, error) {
-	base := b.userRoot(user)
-	entries, err := os.ReadDir(base)
+func (u *userMailbox) ListFolders() ([]string, error) {
+	entries, err := os.ReadDir(u.home)
 	if err != nil {
 		return nil, err
 	}
@@ -207,11 +217,10 @@ func (b *Backend) ListFolders(user string) ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if e.Name() == "INBOX" {
+		name := e.Name()
+		if name == "INBOX" {
 			continue
 		}
-		// Dovecot stores sub-folders as ".Name" directories
-		name := e.Name()
 		if strings.HasPrefix(name, ".") {
 			folders = append(folders, strings.TrimPrefix(name, "."))
 		}
@@ -219,15 +228,37 @@ func (b *Backend) ListFolders(user string) ([]string, error) {
 	return folders, nil
 }
 
-// ---- uidlist ------------------------------------------------------------
+// AppendUIDEntry adds a new entry to dovecot-uidlist v3.
+// Called after Save() to record the uid → filename mapping.
+func (u *userMailbox) AppendUIDEntry(folder string, uid uint32, filename string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
-func (b *Backend) uidListPath(user, folder string) string {
-	return filepath.Join(b.folderPath(user, folder), "dovecot-uidlist")
+	path := u.uidListPath(folder)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	info, _ := f.Stat()
+	if info != nil && info.Size() == 0 {
+		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
+	}
+	_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
+	return err
 }
 
-// readUIDList returns filename→uid map from dovecot-uidlist v3.
-func (b *Backend) readUIDList(user, folder string) (map[string]uint32, error) {
-	path := b.uidListPath(user, folder)
+func (u *userMailbox) Close() error { return nil }
+
+// ---- uidlist ---------------------------------------------------------------
+
+func (u *userMailbox) uidListPath(folder string) string {
+	return filepath.Join(u.folderPath(folder), "dovecot-uidlist")
+}
+
+func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
+	path := u.uidListPath(folder)
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return make(map[string]uint32), nil
@@ -242,10 +273,8 @@ func (b *Backend) readUIDList(user, folder string) (map[string]uint32, error) {
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, "3 V") {
-			// v3 header line
 			continue
 		}
-		// uid [options] :filename  — separator is " :" (space+colon before filename)
 		sep := strings.Index(line, " :")
 		if sep < 0 {
 			continue
@@ -264,51 +293,17 @@ func (b *Backend) readUIDList(user, folder string) (map[string]uint32, error) {
 	return m, sc.Err()
 }
 
-// AppendUIDEntry adds a new entry to dovecot-uidlist v3.
-// Called after Save() to record the uid → filename mapping.
-func (b *Backend) AppendUIDEntry(user, folder string, uid uint32, filename string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+// ---- path helpers ----------------------------------------------------------
 
-	path := b.uidListPath(user, folder)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// Write header if file is new
-	info, _ := f.Stat()
-	if info != nil && info.Size() == 0 {
-		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
-	}
-	_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
-	return err
-}
-
-// ---- helpers ------------------------------------------------------------
-
-func (b *Backend) userRoot(user string) string {
-	// user@domain → domain/user  (Dovecot virtual hosting layout)
-	if at := strings.LastIndex(user, "@"); at >= 0 {
-		domain := user[at+1:]
-		local := user[:at]
-		return filepath.Join(b.root, domain, local)
-	}
-	return filepath.Join(b.root, user)
-}
-
-func (b *Backend) folderPath(user, folder string) string {
-	base := b.userRoot(user)
+func (u *userMailbox) folderPath(folder string) string {
 	if folder == "INBOX" {
-		return filepath.Join(base, "INBOX")
+		return filepath.Join(u.home, "INBOX")
 	}
-	// Sub-folders stored as .FolderName
-	return filepath.Join(base, "."+folder)
+	return filepath.Join(u.home, "."+folder)
 }
 
-// encodeFlags converts IMAP flag names to sorted Maildir flag chars.
-// Standard mapping: Answered→R, Deleted→T, Draft→D, Flagged→F, Seen→S
+// ---- flag helpers ----------------------------------------------------------
+
 func encodeFlags(flags []string) string {
 	set := make(map[byte]bool)
 	for _, f := range flags {
@@ -335,9 +330,6 @@ func encodeFlags(flags []string) string {
 	return b.String()
 }
 
-// parseSizeInfo extracts the Dovecot-convention ,S=N,W=N size annotations
-// from the part of a Maildir filename before ":2,<flags>". Missing keys leave
-// the corresponding hasX false (callers should stat() the file as a fallback).
 func parseSizeInfo(name string) (phys, virt uint32, hasPhys, hasVirt bool) {
 	prefix := name
 	if i := strings.Index(name, ":2,"); i >= 0 {
@@ -360,7 +352,6 @@ func parseSizeInfo(name string) (phys, virt uint32, hasPhys, hasVirt bool) {
 	return
 }
 
-// decodeFlags parses flags and keywords from a Maildir filename.
 func decodeFlags(filename string) (flags, keywords []string) {
 	idx := strings.Index(filename, ":2,")
 	if idx < 0 {

@@ -11,24 +11,24 @@ import (
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// buildBackendServer starts a real LMTP backend server and returns its address
-// and mailbox for message count verification.
-func buildBackendServer(t *testing.T, users ...string) (addr string, mb *maildir.Backend) {
+// buildBackendServer starts a real LMTP backend server and returns its address,
+// mailbox backend, and resolver for message count verification.
+func buildBackendServer(t *testing.T, users ...string) (addr string, mb mailbox.MailboxBackend, resolver *mailbox.Resolver) {
 	t.Helper()
 	dir := t.TempDir()
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx := fileindex.New(dir)
-	t.Cleanup(func() { idx.Close() }) //nolint:errcheck
+	resolver = &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	mbox := maildir.New()
+	idx := fileindex.New()
 
 	for _, u := range users {
-		if err := mb.Init(u); err != nil {
+		box := mbox.OpenUser(resolver.UserInfo(u, ""))
+		if err := box.Init(); err != nil {
 			t.Fatalf("Init %s: %v", u, err)
 		}
+		box.Close() //nolint:errcheck
 	}
 
 	srv := New(Options{
@@ -38,8 +38,9 @@ func buildBackendServer(t *testing.T, users ...string) (addr string, mb *maildir
 			ReadTimeout:       5,
 			WriteTimeout:      5,
 		},
-		Mailbox: mb,
-		Index:   idx,
+		Mailbox:  mbox,
+		Index:    idx,
+		Resolver: resolver,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -47,7 +48,7 @@ func buildBackendServer(t *testing.T, users ...string) (addr string, mb *maildir
 	}
 	t.Cleanup(func() { ln.Close() })
 	go func() { _ = srv.Serve(ln) }()
-	return ln.Addr().String(), mb
+	return ln.Addr().String(), mbox, resolver
 }
 
 // buildProxyServer starts an LMTP proxy server using a ring built from the
@@ -84,7 +85,7 @@ func buildProxyServer(t *testing.T, backends ...string) string {
 }
 
 func TestLMTP_Proxy_SingleBackend(t *testing.T) {
-	backendAddr, mb := buildBackendServer(t, "alice@example.com")
+	backendAddr, mb, resolver := buildBackendServer(t, "alice@example.com")
 	proxyAddr := buildProxyServer(t, backendAddr)
 
 	conn, sc := dialLMTP(t, proxyAddr)
@@ -95,7 +96,9 @@ func TestLMTP_Proxy_SingleBackend(t *testing.T) {
 		t.Fatalf("expected 250 via proxy, got: %q", resp[0])
 	}
 
-	msgs, err := mb.List("alice@example.com", "INBOX")
+	box := mb.OpenUser(resolver.UserInfo("alice@example.com", ""))
+	msgs, err := box.List("INBOX")
+	box.Close() //nolint:errcheck
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

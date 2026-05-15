@@ -43,15 +43,18 @@ type session struct {
 	remoteIP net.IP // updated by XCLIENT
 
 	// set after successful login
-	lockKey  string
-	limitIP  string // IP used for ConnLimit.Acquire; released in releaseLock
-	username string
-	folder   *mailbox.Folder
-	msgs     []*mailbox.MessageMeta
-	deleted  []bool
-	seenMsgs []bool // tracks messages fetched via RETR this session
-	uidls    []string
-	lastMsg  int // highest seq number RETR'd (RFC 1460 LAST)
+	lockKey     string
+	limitIP     string // IP used for ConnLimit.Acquire; released in releaseLock
+	pendingUser string // temporary storage of USER arg before PASS arrives
+	userInfo    *mailbox.UserInfo
+	box         mailbox.UserMailbox
+	idx         mailbox.UserIndex
+	folder      *mailbox.Folder
+	msgs        []*mailbox.MessageMeta
+	deleted     []bool
+	seenMsgs    []bool // tracks messages fetched via RETR this session
+	uidls       []string
+	lastMsg     int // highest seq number RETR'd (RFC 1460 LAST)
 
 	badCmds int
 }
@@ -104,7 +107,7 @@ func (s *session) dispatch(line string) {
 	}
 }
 
-// ---- AUTH state -----------------------------------------------------------
+// ---- AUTH state ------------------------------------------------------------
 
 func (s *session) handleAuth(cmd, arg string) {
 	switch cmd {
@@ -133,22 +136,21 @@ func (s *session) cmdUser(arg string) {
 		s.writeErr("missing username")
 		return
 	}
-	s.username = arg
+	s.pendingUser = arg
 	s.ok("send PASS")
 }
 
 func (s *session) cmdPass(arg string) {
-	if s.username == "" {
+	if s.pendingUser == "" {
 		s.writeErr("USER required before PASS")
 		return
 	}
-	s.finishAuth(s.username, arg)
+	username := s.pendingUser
+	s.pendingUser = ""
+	s.finishAuth(username, arg)
 }
 
 // cmdSASLAuth implements POP3 SASL (RFC 5034): "AUTH PLAIN [<base64-init>]".
-// With initial response: AUTH PLAIN <base64(\0user\0pass)>.
-// Without: server replies "+ ", reads the next line, expects the base64 there.
-// "*" cancels.
 func (s *session) cmdSASLAuth(arg string) {
 	parts := strings.SplitN(arg, " ", 2)
 	if len(parts) == 0 || parts[0] == "" {
@@ -194,44 +196,64 @@ func (s *session) cmdSASLAuth(arg string) {
 	s.finishAuth(fields[1], fields[2])
 }
 
-// finishAuth runs Authenticate, applies per-user conn limits, locks the
-// mailbox, and loads it. Used by both PASS (after USER) and AUTH PLAIN.
+// finishAuth authenticates, resolves UserInfo, opens storage handles, and
+// loads the mailbox. Used by both PASS (after USER) and AUTH PLAIN.
 func (s *session) finishAuth(username, password string) {
 	if s.srv.opts.DisablePlainAuth && !s.onTLS {
 		s.writeErr("plaintext authentication disabled, use STLS first")
-		s.username = ""
 		return
 	}
 	res, err := s.srv.opts.Auth.Authenticate(username, password, "pop3")
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		slog.Info("pop3: auth failed", "user", username, "remoteIP", s.remoteIP)
 		s.writeErr("authentication failed")
-		s.username = ""
 		return
 	}
-	s.username = res.Username
+
+	resolver := s.srv.opts.Resolver
+	if resolver == nil {
+		resolver = &mailbox.Resolver{}
+	}
+	userInfo := resolver.UserInfo(res.Username, res.Home)
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := s.remoteIP.String()
-		if !lim.Acquire(s.username, ip) {
-			slog.Warn("pop3: connection limit reached", "user", s.username, "ip", ip)
+		if !lim.Acquire(userInfo.Username, ip) {
+			slog.Warn("pop3: connection limit reached", "user", userInfo.Username, "ip", ip)
 			s.writeErr("too many simultaneous connections")
-			s.username = ""
 			return
 		}
 		s.limitIP = ip
 	}
 
-	if !s.srv.tryLock(s.username) {
+	if !s.srv.tryLock(userInfo.Username) {
 		if s.srv.opts.ConnLimit != nil {
-			s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+			s.srv.opts.ConnLimit.Release(userInfo.Username, s.limitIP)
 			s.limitIP = ""
 		}
 		s.writeErr("mailbox already in use, try again later")
-		s.username = ""
 		return
 	}
-	s.lockKey = s.username
+	s.lockKey = userInfo.Username
+
+	box := s.srv.opts.Mailbox.OpenUser(userInfo)
+	idx := s.srv.opts.Index.OpenUser(userInfo)
+
+	if err := box.Init(); err != nil {
+		slog.Error("pop3: mailbox init", "user", userInfo.Username, "err", err)
+		s.srv.unlock(s.lockKey)
+		s.lockKey = ""
+		if s.srv.opts.ConnLimit != nil {
+			s.srv.opts.ConnLimit.Release(userInfo.Username, s.limitIP)
+			s.limitIP = ""
+		}
+		s.writeErr("internal error")
+		return
+	}
+
+	s.userInfo = userInfo
+	s.box = box
+	s.idx = idx
 
 	if err := s.loadMailbox(); err != nil {
 		s.writeErr("internal error")
@@ -239,24 +261,20 @@ func (s *session) finishAuth(username, password string) {
 		s.lockKey = ""
 		return
 	}
-	slog.Info("pop3: login", "user", s.username, "messages", len(s.msgs))
+	slog.Info("pop3: login", "user", userInfo.Username, "messages", len(s.msgs))
 	s.state = stateTrans
 	s.ok(fmt.Sprintf("logged in, %d messages", len(s.msgs)))
 }
 
 func (s *session) loadMailbox() error {
-	if err := s.srv.opts.Mailbox.Init(s.username); err != nil {
-		slog.Error("pop3: mailbox init", "user", s.username, "err", err)
+	folder, err := s.idx.OpenFolder("INBOX", uint32(time.Now().Unix()))
+	if err != nil {
+		slog.Error("pop3: open folder", "user", s.userInfo.Username, "err", err)
 		return err
 	}
-	folder, err := s.srv.opts.Index.OpenFolder(s.username, "INBOX", uint32(time.Now().Unix()))
+	msgs, err := s.idx.GetMessages(folder.ID, mailbox.SeqSet{})
 	if err != nil {
-		slog.Error("pop3: open folder", "user", s.username, "err", err)
-		return err
-	}
-	msgs, err := s.srv.opts.Index.GetMessages(folder.ID, mailbox.SeqSet{})
-	if err != nil {
-		slog.Error("pop3: get messages", "user", s.username, "err", err)
+		slog.Error("pop3: get messages", "user", s.userInfo.Username, "err", err)
 		return err
 	}
 	s.folder = folder
@@ -268,8 +286,6 @@ func (s *session) loadMailbox() error {
 }
 
 // computeUIDLs pre-builds the UIDL string for every message.
-// Handles ReuseXUIDL (X-UIDL header from migrated messages) and
-// UIDLDuplicates (rename = append -N suffix to make UIDLs unique).
 func (s *session) computeUIDLs() {
 	s.uidls = make([]string, len(s.msgs))
 	rename := s.srv.opts.UIDLDuplicates == "rename"
@@ -294,10 +310,8 @@ func (s *session) computeUIDLs() {
 }
 
 // readXUIDL reads the X-UIDL header from the raw message file.
-// Used for migration from servers (Courier, qmail, cPanel, Plesk) that
-// stored per-message UIDLs in the X-UIDL header.
 func (s *session) readXUIDL(m *mailbox.MessageMeta) string {
-	rc, err := s.srv.opts.Mailbox.Fetch(s.username, "INBOX", m.Filename)
+	rc, err := s.box.Fetch("INBOX", m.Filename)
 	if err != nil {
 		return ""
 	}
@@ -310,10 +324,6 @@ func (s *session) readXUIDL(m *mailbox.MessageMeta) string {
 }
 
 // formatUIDL formats a UIDL string from opts.UIDLFormat.
-// Supports Dovecot-style format variables: %u (UID), %v (UIDValidity),
-// %f (filename), %g (GUID hex), %m (MD5 of filename).
-// Optional width/format modifier between % and variable letter is passed
-// to fmt.Sprintf, e.g. "%08Xu" → fmt.Sprintf("%08X", uid).
 func (s *session) formatUIDL(m *mailbox.MessageMeta) string {
 	format := s.srv.opts.UIDLFormat
 	if format == "" {
@@ -419,12 +429,11 @@ func (s *session) cmdSTLS() {
 	s.conn = tlsConn
 	s.br = bufio.NewReader(tlsConn)
 	s.onTLS = true
-	s.username = "" // RFC 2595 §4: reset state after TLS upgrade
+	s.pendingUser = "" // RFC 2595 §4: reset state after TLS upgrade
 }
 
 func (s *session) cmdXClient(arg string) {
 	if !s.srv.opts.XClient || !s.isTrusted() {
-		// Always respond +OK to avoid leaking XCLIENT support status.
 		s.ok("XCLIENT ignored")
 		return
 	}
@@ -450,7 +459,7 @@ func (s *session) isTrusted() bool {
 	return false
 }
 
-// ---- TRANSACTION state ----------------------------------------------------
+// ---- TRANSACTION state -----------------------------------------------------
 
 func (s *session) handleTrans(cmd, arg string) {
 	switch cmd {
@@ -511,7 +520,7 @@ func (s *session) cmdRetr(arg string) {
 		return
 	}
 	m := s.msgs[idx]
-	rc, err := s.srv.opts.Mailbox.Fetch(s.username, "INBOX", m.Filename)
+	rc, err := s.box.Fetch("INBOX", m.Filename)
 	if err != nil {
 		slog.Error("pop3: fetch", "uid", m.UID, "err", err)
 		s.writeErr("unable to fetch message")
@@ -540,8 +549,6 @@ func (s *session) cmdDele(arg string) {
 	s.ok(fmt.Sprintf("message %d deleted", idx+1))
 }
 
-// cmdRset undeletes all messages. If EnableLast is set, also removes \Seen
-// flags from messages RETR'd this session (RFC 1460).
 func (s *session) cmdRset() {
 	if s.srv.opts.EnableLast {
 		for i, seen := range s.seenMsgs {
@@ -550,7 +557,7 @@ func (s *session) cmdRset() {
 			}
 			m := s.msgs[i]
 			newFlags := removeFlag(m.Flags, `\Seen`)
-			if err := s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+			if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
 				slog.Error("pop3: rset remove seen", "uid", m.UID, "err", err)
 			} else {
 				m.Flags = newFlags
@@ -582,7 +589,7 @@ func (s *session) cmdTop(arg string) {
 		return
 	}
 	m := s.msgs[idx]
-	rc, err := s.srv.opts.Mailbox.Fetch(s.username, "INBOX", m.Filename)
+	rc, err := s.box.Fetch("INBOX", m.Filename)
 	if err != nil {
 		s.writeErr("unable to fetch message")
 		return
@@ -620,14 +627,13 @@ func (s *session) cmdLast() {
 }
 
 // cmdQuit applies \Seen flags (unless NoFlagUpdates) and commits deletions.
-// If DeleteType == "flag", sets the configured IMAP flag instead of expunging.
 func (s *session) cmdQuit() {
 	if !s.srv.opts.NoFlagUpdates {
 		for i, seen := range s.seenMsgs {
 			if seen && !s.deleted[i] {
 				m := s.msgs[i]
 				newFlags := appendFlag(m.Flags, `\Seen`)
-				if err := s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+				if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
 					slog.Error("pop3: set seen", "uid", m.UID, "err", err)
 				}
 			}
@@ -646,7 +652,7 @@ func (s *session) cmdQuit() {
 			}
 			m := s.msgs[i]
 			newFlags := appendFlag(m.Flags, deletedFlag)
-			if err := s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+			if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
 				slog.Error("pop3: flag deleted", "uid", m.UID, "err", err)
 				errCount++
 			}
@@ -669,17 +675,17 @@ func (s *session) expungeDeleted() int {
 		if !s.deleted[i] {
 			continue
 		}
-		if err := s.srv.opts.Mailbox.Remove(s.username, "INBOX", m.Filename); err != nil {
+		if err := s.box.Remove("INBOX", m.Filename); err != nil {
 			slog.Error("pop3: remove", "uid", m.UID, "err", err)
 			errCount++
 		} else {
-			s.srv.opts.Index.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
+			s.idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		}
 	}
 	return errCount
 }
 
-// ---- helpers --------------------------------------------------------------
+// ---- helpers ---------------------------------------------------------------
 
 func (s *session) sendCapa() {
 	s.ok("capability list follows")
@@ -703,7 +709,6 @@ func (s *session) countActive() (count int, total int64) {
 	return count, total
 }
 
-// parseMsgNum parses a 1-based message number and returns the 0-based index.
 func (s *session) parseMsgNum(arg string) (int, bool) {
 	n, err := strconv.Atoi(strings.TrimSpace(arg))
 	if err != nil || n < 1 || n > len(s.msgs) {
@@ -723,9 +728,15 @@ func (s *session) releaseLock() {
 		s.srv.unlock(s.lockKey)
 		s.lockKey = ""
 	}
-	if s.limitIP != "" && s.srv.opts.ConnLimit != nil {
-		s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+	if s.limitIP != "" && s.srv.opts.ConnLimit != nil && s.userInfo != nil {
+		s.srv.opts.ConnLimit.Release(s.userInfo.Username, s.limitIP)
 		s.limitIP = ""
+	}
+	if s.box != nil {
+		s.box.Close() //nolint:errcheck
+	}
+	if s.idx != nil {
+		s.idx.Close() //nolint:errcheck
 	}
 }
 
@@ -758,11 +769,8 @@ func (s *session) readLine() (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// writeMultiLine writes data as a dot-stuffed POP3 multi-line response,
-// terminated by ".\r\n".
 func writeMultiLine(w io.Writer, data []byte) {
 	lines := bytes.Split(data, []byte("\n"))
-	// Drop trailing empty element produced by a final newline.
 	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
 		lines = lines[:len(lines)-1]
 	}
@@ -777,10 +785,7 @@ func writeMultiLine(w io.Writer, data []byte) {
 	w.Write([]byte(".\r\n")) //nolint:errcheck
 }
 
-// writeTopLines writes the headers of data plus the first n body lines,
-// dot-stuffed, terminated by ".\r\n".
 func writeTopLines(w io.Writer, data []byte, n int) {
-	// Locate the blank line between headers and body.
 	var headers, body []byte
 	if idx := bytes.Index(data, []byte("\r\n\r\n")); idx >= 0 {
 		headers = data[:idx]
@@ -793,7 +798,7 @@ func writeTopLines(w io.Writer, data []byte, n int) {
 	}
 
 	writeDotLines(w, headers)
-	w.Write([]byte("\r\n")) //nolint:errcheck // blank line after headers
+	w.Write([]byte("\r\n")) //nolint:errcheck
 
 	bodyLines := bytes.Split(body, []byte("\n"))
 	if len(bodyLines) > 0 && len(bodyLines[len(bodyLines)-1]) == 0 {

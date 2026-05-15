@@ -14,6 +14,7 @@ import (
 	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // stubPassdb accepts exactly one user/password pair.
@@ -35,17 +36,15 @@ func startTestServer(t *testing.T) *imapclient.Client {
 	t.Helper()
 
 	dir := t.TempDir()
-
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatalf("maildir.New: %v", err)
-	}
-	idx := file.New(dir)
+	mb := maildir.New()
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
 
 	opts := imapserver.Options{
-		Mailbox: mb,
-		Index:   idx,
-		Auth:    &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Mailbox:  mb,
+		Index:    idx,
+		Resolver: resolver,
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 	}
 	srv := imapserver.New(opts)
 
@@ -71,8 +70,8 @@ func startTestServer(t *testing.T) *imapclient.Client {
 	return c
 }
 
-// startTestServerForUser starts a server, logs in as the given user+pass and
-// returns the authenticated client together with the temp dir used as root.
+// startAuthClient starts a server, logs in as the given user+pass and
+// returns the authenticated client.
 func startAuthClient(t *testing.T, user, pass string) *imapclient.Client {
 	t.Helper()
 	c := startTestServer(t)
@@ -331,17 +330,15 @@ func TestConcurrentSessions(t *testing.T) {
 	)
 
 	dir := t.TempDir()
-
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatalf("maildir.New: %v", err)
-	}
-	idx := file.New(dir)
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	idx := file.New()
 
 	srv := imapserver.New(imapserver.Options{
-		Mailbox: mb,
-		Index:   idx,
-		Auth:    &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Mailbox:  mb,
+		Index:    idx,
+		Resolver: resolver,
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 	})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -362,12 +359,6 @@ func TestConcurrentSessions(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			// Each goroutine uses a distinct user by appending the goroutine index.
-			user := fmt.Sprintf("user%d@test.com", g)
-			pass := "testpass"
-
-			// Stub passdb accepts any password for these synthetic users, so we
-			// create per-goroutine server with its own stub.
 			conn, dialErr := net.Dial("tcp", addr)
 			if dialErr != nil {
 				errCh <- fmt.Errorf("goroutine %d dial: %w", g, dialErr)
@@ -381,14 +372,11 @@ func TestConcurrentSessions(t *testing.T) {
 				return
 			}
 
-			// This goroutine's user won't authenticate with the shared stub passdb
-			// (which only accepts user@test.com), so authenticate as the shared user
-			// and use a unique mailbox name per goroutine to avoid conflicts.
-			if loginErr := c.Login("user@test.com", pass).Wait(); loginErr != nil {
+			// Authenticate as the shared user — each goroutine uses a unique folder.
+			if loginErr := c.Login("user@test.com", "testpass").Wait(); loginErr != nil {
 				errCh <- fmt.Errorf("goroutine %d login: %w", g, loginErr)
 				return
 			}
-			_ = user
 
 			mbox := fmt.Sprintf("Box%d", g)
 			if createErr := c.Create(mbox, nil).Wait(); createErr != nil {

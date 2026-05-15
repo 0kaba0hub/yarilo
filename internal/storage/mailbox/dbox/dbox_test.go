@@ -8,7 +8,23 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
+
+func testHome(root, user string) string {
+	if at := strings.LastIndex(user, "@"); at >= 0 {
+		return filepath.Join(root, user[at+1:], user[:at])
+	}
+	return filepath.Join(root, user)
+}
+
+func newBox(t *testing.T) (*userMailbox, string) {
+	t.Helper()
+	root := t.TempDir()
+	home := testHome(root, "u@x.com")
+	return New().OpenUser(&mailbox.UserInfo{Username: "u@x.com", Home: home}).(*userMailbox), root
+}
 
 func TestInit(t *testing.T) {
 	cases := []struct {
@@ -19,14 +35,13 @@ func TestInit(t *testing.T) {
 		{"noatuser"},
 	}
 	for _, tc := range cases {
-		b, err := New(t.TempDir())
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
-		if err := b.Init(tc.user); err != nil {
+		root := t.TempDir()
+		home := testHome(root, tc.user)
+		box := New().OpenUser(&mailbox.UserInfo{Username: tc.user, Home: home}).(*userMailbox)
+		if err := box.Init(); err != nil {
 			t.Errorf("Init(%q) error: %v", tc.user, err)
 		}
-		ok, err := b.FolderExists(tc.user, "INBOX")
+		ok, err := box.FolderExists("INBOX")
 		if err != nil || !ok {
 			t.Errorf("Init(%q): INBOX should exist, ok=%v err=%v", tc.user, ok, err)
 		}
@@ -41,21 +56,21 @@ func TestCreate_Delete(t *testing.T) {
 		{"Drafts"},
 		{"Archives"},
 	}
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	for _, tc := range cases {
-		if err := b.Create("u@x.com", tc.folder); err != nil {
+		if err := box.Create(tc.folder); err != nil {
 			t.Fatalf("Create(%q): %v", tc.folder, err)
 		}
-		ok, err := b.FolderExists("u@x.com", tc.folder)
+		ok, err := box.FolderExists(tc.folder)
 		if err != nil || !ok {
 			t.Errorf("Create(%q): folder should exist, ok=%v err=%v", tc.folder, ok, err)
 		}
-		if err := b.Delete("u@x.com", tc.folder); err != nil {
+		if err := box.Delete(tc.folder); err != nil {
 			t.Fatalf("Delete(%q): %v", tc.folder, err)
 		}
-		ok, err = b.FolderExists("u@x.com", tc.folder)
+		ok, err = box.FolderExists(tc.folder)
 		if err != nil || ok {
 			t.Errorf("Delete(%q): folder should be gone, ok=%v err=%v", tc.folder, ok, err)
 		}
@@ -72,11 +87,11 @@ func TestSave_Fetch_Roundtrip(t *testing.T) {
 		{"", nil},
 	}
 
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	for _, tc := range cases {
-		filename, err := b.Save("u@x.com", "INBOX", strings.NewReader(tc.body), int64(len(tc.body)), tc.flags)
+		filename, err := box.Save("INBOX", strings.NewReader(tc.body), int64(len(tc.body)), tc.flags)
 		if err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -84,7 +99,7 @@ func TestSave_Fetch_Roundtrip(t *testing.T) {
 			t.Errorf("filename %q must start with 'u.'", filename)
 		}
 
-		rc, err := b.Fetch("u@x.com", "INBOX", filename)
+		rc, err := box.Fetch("INBOX", filename)
 		if err != nil {
 			t.Fatalf("Fetch(%q): %v", filename, err)
 		}
@@ -100,31 +115,31 @@ func TestSave_Fetch_Roundtrip(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	body := "From: a@b.com\r\n\r\ntest\r\n"
-	filename, err := b.Save("u@x.com", "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := b.Remove("u@x.com", "INBOX", filename); err != nil {
+	if err := box.Remove("INBOX", filename); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	// Idempotent — must not error on second remove.
-	if err := b.Remove("u@x.com", "INBOX", filename); err != nil {
+	if err := box.Remove("INBOX", filename); err != nil {
 		t.Fatalf("Remove (idempotent): %v", err)
 	}
 	// Fetch after remove must error.
-	if _, err := b.Fetch("u@x.com", "INBOX", filename); err == nil {
+	if _, err := box.Fetch("INBOX", filename); err == nil {
 		t.Error("Fetch after Remove must return error")
 	}
 }
 
 func TestList(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	bodies := []string{
 		"From: a@b.com\r\n\r\nMsg1\r\n",
@@ -132,12 +147,12 @@ func TestList(t *testing.T) {
 		"From: a@b.com\r\n\r\nMsg3\r\n",
 	}
 	for _, body := range bodies {
-		if _, err := b.Save("u@x.com", "INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
+		if _, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	msgs, err := b.List("u@x.com", "INBOX")
+	msgs, err := box.List("INBOX")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -156,10 +171,10 @@ func TestList(t *testing.T) {
 }
 
 func TestList_EmptyFolder(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
-	msgs, err := b.List("u@x.com", "INBOX")
+	msgs, err := box.List("INBOX")
 	if err != nil {
 		t.Fatalf("List on empty folder: %v", err)
 	}
@@ -178,11 +193,11 @@ func TestFolderExists(t *testing.T) {
 		{"Sent", false},
 	}
 
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	for _, tc := range cases {
-		ok, err := b.FolderExists("u@x.com", tc.folder)
+		ok, err := box.FolderExists(tc.folder)
 		if err != nil {
 			t.Errorf("FolderExists(%q) error: %v", tc.folder, err)
 		}
@@ -193,12 +208,12 @@ func TestFolderExists(t *testing.T) {
 }
 
 func TestListFolders(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com")             //nolint:errcheck
-	b.Create("u@x.com", "Sent")   //nolint:errcheck
-	b.Create("u@x.com", "Drafts") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init()           //nolint:errcheck
+	box.Create("Sent")   //nolint:errcheck
+	box.Create("Drafts") //nolint:errcheck
 
-	folders, err := b.ListFolders("u@x.com")
+	folders, err := box.ListFolders()
 	if err != nil {
 		t.Fatalf("ListFolders: %v", err)
 	}
@@ -219,13 +234,13 @@ func TestListFolders(t *testing.T) {
 }
 
 func TestFilenameSequenceMonotonic(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	var names []string
 	for i := 0; i < 5; i++ {
 		body := "x"
-		fn, err := b.Save("u@x.com", "INBOX", strings.NewReader(body), int64(len(body)), nil)
+		fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,17 +257,16 @@ func TestFilenameSequenceMonotonic(t *testing.T) {
 // bytes (0x01 0x02), contains the message body, and ends with the post-magic
 // sequence followed by metadata lines (G, R, Z, V).
 func TestWireFormat(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	body := "From: a@b.com\r\nSubject: wire\r\n\r\nBody text\r\n"
-	filename, err := b.Save("u@x.com", "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// Locate the file on disk (dbox stores it directly in the folder dir).
-	folderDir := filepath.Join(b.root, "x.com", "u", "INBOX")
+	folderDir := filepath.Join(box.home, "INBOX")
 	raw, err := os.ReadFile(filepath.Join(folderDir, filename))
 	if err != nil {
 		t.Fatalf("read file: %v", err)
@@ -286,8 +300,8 @@ func TestWireFormat(t *testing.T) {
 // TestConcurrentSave verifies that concurrent saves to the same folder produce
 // unique filenames and all messages remain fetchable.
 func TestConcurrentSave(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t)
+	box.Init() //nolint:errcheck
 
 	const n = 20
 	names := make([]string, n)
@@ -300,7 +314,7 @@ func TestConcurrentSave(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			body := strings.Repeat("x", i+1)
-			fn, err := b.Save("u@x.com", "INBOX", strings.NewReader(body), int64(len(body)), nil)
+			fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 			if err != nil {
 				t.Errorf("Save goroutine %d: %v", i, err)
 				return
@@ -330,7 +344,7 @@ func TestConcurrentSave(t *testing.T) {
 		if fn == "" {
 			continue
 		}
-		rc, err := b.Fetch("u@x.com", "INBOX", fn)
+		rc, err := box.Fetch("INBOX", fn)
 		if err != nil {
 			t.Errorf("Fetch(%q): %v", fn, err)
 			continue
@@ -348,11 +362,4 @@ func formatHex(b []byte) string {
 		out[i*3+2] = ' '
 	}
 	return string(bytes.TrimRight(out, " "))
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
