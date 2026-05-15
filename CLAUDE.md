@@ -33,28 +33,31 @@ docker/          — Dockerfile
 
 ## Architecture rules
 
-- **Single binary, three roles**: `mode: proxy | director | backend | single`.
-  Never create separate binaries per role.
+**ARCHITECTURE.md is the single source of truth.** Read it before any implementation work.
+Every decision about processes, UIDs, IPC, storage, and k8s deployment is defined there.
+Code that contradicts ARCHITECTURE.md is wrong — fix the code, not the document.
+
+Key rules derived from ARCHITECTURE.md:
+
+- **Multi-binary, multi-process.** Each component is a separate compiled binary in `app/`.
+  Never create a single binary with mode flags. Never put two components in one `main.go`.
+- **`exec.Command` only — never `fork()`.** Go runtime + fork = undefined behavior.
+- **Privilege drop via `SysProcAttr.Credential` only.** `syscall.Setuid()` does not work
+  in multi-threaded Go. Credential is set at process start, before Go runtime initializes.
+- **Login process is TLS terminator for session lifetime.** `yarilo-imap-login` holds the
+  TLS conn and proxies plain bytes to `yarilo-imap` via Unix socket pair.
+  Session processes have zero TLS knowledge.
+- **fd-passing via SCM_RIGHTS.** Master binds ports, passes listening fd to login processes.
+  Login passes authenticated conn fd to master after auth success.
 - **`pkg/mailbox` interfaces are the contract** between all storage implementations.
-  Never import `internal/storage/*` from outside `internal/backend`.
+  Never import `internal/storage/*` from outside the session process packages.
 - **Per-user storage handle (Dovecot `mail_storage` pattern).**
-  Storage backends expose `OpenUser(*UserInfo) UserMailbox` (and analogously
-  `IndexBackend.OpenUser(*UserInfo) UserIndex`). Sessions call `OpenUser` once
-  after auth + userdb resolution and hold the returned handle; the handle's
-  methods take NO user/path parameter — `UserInfo` is captured at Open time.
-  `UserInfo` is built via `mailbox.Resolver` (userdb override > `mail_home`
-  template > nothing) and carries `Username` + `Home` (plus future per-user
-  context: uid/gid/settings/quota).
-  Anti-patterns: `Save(username string, ...)`, `Save(homePath string, ...)`,
-  any in-backend username→path derivation. See Dovecot 2.4
-  `src/lib-storage/mail-user.h` + `mail-storage-private.h:138`.
-- **Each worker writes only to its own tables/files.**
-  No cross-package writes. Concurrent writes = corruption.
-- **API reads DB, workers write DB.** (applies when DB layer is added)
-- **Proxy is stateless.** No session state on the proxy — it routes and splices TCP.
+  Storage backends expose `OpenUser(*UserInfo) UserMailbox`. Sessions call `OpenUser` once
+  after auth. Handle methods take NO user/path parameter — `UserInfo` is captured at Open time.
 - **Director owns the ring.** Nothing else modifies backend assignment.
-- **Internal protocols** (director, auth, dict) are TAB-delimited, LF-terminated,
+- **Internal protocols** (director, auth, anvil, ipc) are TAB-delimited, LF-terminated,
   with version handshake. See INTERNALS.md for exact wire format.
+- **Each process writes only to its own resources.** No cross-process writes to shared state.
 
 ---
 
