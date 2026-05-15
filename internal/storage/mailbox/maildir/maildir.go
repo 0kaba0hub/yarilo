@@ -1,6 +1,6 @@
 // Package maildir implements MailboxBackend for Maildir format.
 // Filename: {secs}.M{usecs}P{pid}_{seq}.{hostname}:2,{flags}
-// uidlist: dovecot-uidlist v3
+// uidlist: yarilo-uidlist v3
 package maildir
 
 import (
@@ -228,7 +228,7 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 	return folders, nil
 }
 
-// AppendUIDEntry adds a new entry to dovecot-uidlist v3.
+// AppendUIDEntry adds a new entry to yarilo-uidlist v3.
 // Called after Save() to record the uid → filename mapping.
 func (u *userMailbox) AppendUIDEntry(folder string, uid uint32, filename string) error {
 	u.mu.Lock()
@@ -254,7 +254,7 @@ func (u *userMailbox) Close() error { return nil }
 // ---- uidlist ---------------------------------------------------------------
 
 func (u *userMailbox) uidListPath(folder string) string {
-	return filepath.Join(u.folderPath(folder), "dovecot-uidlist")
+	return filepath.Join(u.folderPath(folder), "yarilo-uidlist")
 }
 
 func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {

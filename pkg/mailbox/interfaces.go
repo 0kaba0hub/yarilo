@@ -59,7 +59,7 @@ type MailboxBackend interface {
 // the underlying filesystem operations.
 //
 // AppendUIDEntry records the uid→filename mapping used by the Maildir uidlist
-// (dovecot-uidlist v3). Backends that do not need a separate uidlist (dbox, mdbox)
+// (yarilo-uidlist v3). Backends that do not need a separate uidlist (dbox, mdbox)
 // implement this as a no-op — UIDs are managed exclusively by UserIndex.
 //
 // Close releases any open file descriptors held by the handle.
