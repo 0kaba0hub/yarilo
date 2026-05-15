@@ -68,16 +68,16 @@ auth:
                '' AS mail,
                CASE WHEN active THEN 1 ELSE 0 END AS enabled
         FROM users
-        WHERE email = LOWER(%u)
+        WHERE username = LOWER(%u)
       userQuery: |
         SELECT home, mail_path
         FROM users
-        WHERE email = LOWER(%u)
+        WHERE username = LOWER(%u)
       iterateQuery: |
-        SELECT email
+        SELECT username
         FROM users
         WHERE active = TRUE
-        ORDER BY email
+        ORDER BY username
 
 extraEnv:
   - name: DB_DSN

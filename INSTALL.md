@@ -106,10 +106,10 @@ A single `users` table covers passdb (login + active flag) and userdb (storage /
 
 | Column | Role | Read by yarilo today? |
 |:---|:---|:---|
-| `email` (PK, lowercase enforced) | login | ✅ |
+| `username` (PK, lowercase enforced) | login — typically the full email | ✅ |
 | `password` | `{SCHEME}hash` — BCRYPT / SHA512-CRYPT / PLAIN | ✅ |
 | `active` | gates login | ✅ |
-| `home`, `mail_path` | per-user Maildir overrides | ⚠️ returned in userdb but maildir backend derives the path from the email |
+| `home`, `mail_path` | per-user Maildir overrides | ⚠️ returned in userdb but maildir backend derives the path from the username |
 | `mailbox_format` | `''` / `maildir` / `dbox` / `mdbox` — override global default | ❌ forward-compat |
 | `quota_bytes` | `0` = unlimited | ❌ forward-compat (quota engine, Phase 10) |
 | `allow_nets` | comma-separated CIDRs; `''` = no restriction | ❌ forward-compat (login ACL) |
@@ -181,14 +181,14 @@ dig +short mail-sb.seconddns.com
 One INSERT, one row:
 
 ```sh
-EMAIL="alice@mail-sb.seconddns.com"
+USERNAME="alice@mail-sb.seconddns.com"
 PASS="wonderland"
 HASH="$(htpasswd -nbB alice "$PASS" | cut -d: -f2)"
 
 kubectl -n yarilo-sb exec -i yarilo-postgres-0 -- \
   psql -U yarilo -d yarilo -c \
-  "INSERT INTO users (email, password, active, display_name)
-   VALUES (LOWER('${EMAIL}'), '{BCRYPT}${HASH}', TRUE, 'Alice');"
+  "INSERT INTO users (username, password, active, display_name)
+   VALUES (LOWER('${USERNAME}'), '{BCRYPT}${HASH}', TRUE, 'Alice');"
 ```
 
 Verify:
@@ -196,7 +196,7 @@ Verify:
 ```sh
 kubectl -n yarilo-sb exec yarilo-postgres-0 -- \
   psql -U yarilo -d yarilo -c \
-  "SELECT email, active, mailbox_format, quota_bytes, display_name FROM users;"
+  "SELECT username, active, mailbox_format, quota_bytes, display_name FROM users;"
 ```
 
 `home` / `mail_path` left blank — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. Populate them only when per-user overrides become useful.

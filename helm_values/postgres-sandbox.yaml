@@ -46,39 +46,39 @@ data:
     -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
     --
     -- Read-status per column (yarilo HEAD):
-    --   email, password, active          → used now (passwordQuery)
+    --   username, password, active       → used now (passwordQuery)
     --   home, mail_path                  → returned in userdb response but
     --                                       maildir backend currently derives
-    --                                       the path from the email anyway
+    --                                       the path from the username anyway
     --   mailbox_format, quota_bytes,
     --   allow_nets, director_tag,
     --   display_name, last_login_at      → forward-compat, not yet read by
     --                                       yarilo (quota engine, director,
     --                                       login ACL — future phases)
     CREATE TABLE IF NOT EXISTS users (
-        email          TEXT PRIMARY KEY,
-        password       TEXT NOT NULL,
+        username       VARCHAR(254) PRIMARY KEY,          -- RFC 5321 envelope max (full email)
+        password       VARCHAR(255) NOT NULL,             -- enough for {BCRYPT}/{SHA512-CRYPT} + headroom
         active         BOOLEAN NOT NULL DEFAULT TRUE,
 
         -- userdb / storage
-        home           TEXT NOT NULL DEFAULT '',          -- Maildir base override
-        mailbox_format TEXT NOT NULL DEFAULT '',          -- '' | maildir | dbox | mdbox
-        mail_path      TEXT NOT NULL DEFAULT '',          -- absolute path; '' = derived from email
-        quota_bytes    BIGINT NOT NULL DEFAULT 0,         -- 0 = unlimited
+        home           VARCHAR(255) NOT NULL DEFAULT '',  -- Maildir base override
+        mailbox_format VARCHAR(16)  NOT NULL DEFAULT '',  -- '' | maildir | dbox | mdbox
+        mail_path      VARCHAR(255) NOT NULL DEFAULT '',  -- absolute path; '' = derived from username
+        quota_bytes    BIGINT       NOT NULL DEFAULT 0,   -- 0 = unlimited
 
         -- access control / routing
-        allow_nets     TEXT NOT NULL DEFAULT '',          -- comma-separated CIDRs; '' = no restriction
-        director_tag   TEXT NOT NULL DEFAULT '',          -- routing tag for yarilo-director (Phase 5)
+        allow_nets     VARCHAR(512) NOT NULL DEFAULT '',  -- comma-separated CIDRs; '' = no restriction
+        director_tag   VARCHAR(64)  NOT NULL DEFAULT '',  -- routing tag for yarilo-director (Phase 5)
 
         -- ops / display
-        display_name   TEXT NOT NULL DEFAULT '',
+        display_name   VARCHAR(255) NOT NULL DEFAULT '',
         last_login_at  TIMESTAMPTZ,
 
         -- audit
         created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-        CHECK (email = LOWER(email))
+        CHECK (username = LOWER(username))
     );
 
     -- Index for iterate_query (active-user listing).
