@@ -82,19 +82,44 @@ The chart provisions a `Service` of type `LoadBalancer`. Make sure your cluster 
 
 ---
 
-## Step 1 — Postgres for the passdb
+## Step 1 — Postgres for passdb and userdb
 
-Apply the sandbox Postgres manifest. It creates the namespace, a `yarilo-postgres` Secret (DSN + DB credentials), a headless `Service`, and a 2 Gi PG 16 `StatefulSet`:
+Apply the sandbox Postgres manifest. It creates:
+
+- the `yarilo-sb` Namespace
+- a `yarilo-postgres` Secret (DSN + DB credentials, referenced by both Postgres and yarilo)
+- a `yarilo-postgres-init` ConfigMap mounted into `/docker-entrypoint-initdb.d/` — Postgres runs it on first startup to create the schema
+- a headless `yarilo-postgres` Service
+- a 2 Gi PG 16 `StatefulSet`
 
 ```sh
 kubectl apply -f helm_values/postgres-sandbox.yaml
 kubectl -n yarilo-sb get pods,svc,pvc
-kubectl -n yarilo-sb logs yarilo-postgres-0 --tail=20
+kubectl -n yarilo-sb logs yarilo-postgres-0 --tail=30
 ```
 
-Wait until `yarilo-postgres-0` is `Ready 1/1`. The DSN baked into the Secret is `postgres://yarilo:sandbox-secret@yarilo-postgres:5432/yarilo?sslmode=disable` — yarilo reads it via `${DB_DSN}` env var.
+Wait until `yarilo-postgres-0` is `Ready 1/1`. The DSN baked into the Secret is `postgres://yarilo:sandbox-secret@yarilo-postgres:5432/yarilo?sslmode=disable` — yarilo reads it via the `DB_DSN` env var.
 
-> **For production** swap `helm_values/postgres-sandbox.yaml` for a managed Postgres DSN — just replace the `dsn` field in the `yarilo-postgres` Secret (the Secret reference in `values-sandbox.yaml` stays the same).
+### Schema
+
+A single `users` table covers passdb (login + active flag) and userdb (storage / quota / routing):
+
+| Column | Role | Read by yarilo today? |
+|:---|:---|:---|
+| `username` (PK, lowercase enforced) | login — typically the full email | ✅ |
+| `password` | `{SCHEME}hash` — BCRYPT / SHA512-CRYPT / PLAIN | ✅ |
+| `active` | gates login | ✅ |
+| `home`, `mail_path` | per-user Maildir overrides | ⚠️ returned in userdb but maildir backend derives the path from the username |
+| `mailbox_format` | `''` / `maildir` / `dbox` / `mdbox` — override global default | ❌ forward-compat |
+| `quota_bytes` | `0` = unlimited | ❌ forward-compat (quota engine, Phase 10) |
+| `allow_nets` | comma-separated CIDRs; `''` = no restriction | ❌ forward-compat (login ACL) |
+| `director_tag` | sticky-routing tag for `yarilo-director` | ❌ forward-compat (Phase 5) |
+| `display_name`, `last_login_at` | admin / UI | ❌ forward-compat |
+| `created_at`, `updated_at` | audit (`updated_at` maintained by trigger) | ❌ admin-only |
+
+`values-sandbox.yaml` wires this up via three queries hitting the same table — `passwordQuery` (auth check), `userQuery` (post-auth home / mail lookup), `iterateQuery` (list active users). The split is intentional: when the time comes to migrate to a multi-table production layout (e.g., auth in an SSO store, profile in SQL), only the queries change. All `%u` placeholders are wrapped in `LOWER()` so callers may use mixed-case emails.
+
+> **For production** swap `helm_values/postgres-sandbox.yaml` for a managed Postgres DSN — replace the `dsn` field in the `yarilo-postgres` Secret and run the init SQL manually against the managed instance. The Secret reference in `values-sandbox.yaml` stays the same.
 
 ---
 
@@ -153,24 +178,30 @@ dig +short mail-sb.seconddns.com
 
 ## Step 5 — Seed a test user
 
-Bcrypt-hashed user inserted directly into the `yarilo_users` table that yarilo auto-creates on startup:
+One INSERT, one row:
 
 ```sh
-# Pick any password
+USERNAME="alice@mail-sb.seconddns.com"
 PASS="wonderland"
 HASH="$(htpasswd -nbB alice "$PASS" | cut -d: -f2)"
 
-kubectl -n yarilo-sb exec -it yarilo-postgres-0 -- \
+kubectl -n yarilo-sb exec -i yarilo-postgres-0 -- \
   psql -U yarilo -d yarilo -c \
-  "INSERT INTO yarilo_users (username, password, enabled) VALUES \
-   ('alice@mail-sb.seconddns.com', '{BCRYPT}${HASH}', 1);"
+  "INSERT INTO users (username, password, active, display_name)
+   VALUES (LOWER('${USERNAME}'), '{BCRYPT}${HASH}', TRUE, 'Alice');"
 ```
 
-If `yarilo_users` doesn't exist yet, restart the yarilo pod once so `New()` runs `CREATE TABLE IF NOT EXISTS`:
+Verify:
 
 ```sh
-kubectl -n yarilo-sb rollout restart deploy/yarilo
+kubectl -n yarilo-sb exec yarilo-postgres-0 -- \
+  psql -U yarilo -d yarilo -c \
+  "SELECT username, active, mailbox_format, quota_bytes, display_name FROM users;"
 ```
+
+`home` / `mail_path` left blank — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. Populate them only when per-user overrides become useful.
+
+`mailbox_format`, `allow_nets`, `director_tag`, `quota_bytes` are also intentionally default — yarilo doesn't read them yet (see the schema table above). They're in the table so future yarilo releases that wire those features won't require a schema migration.
 
 ---
 
