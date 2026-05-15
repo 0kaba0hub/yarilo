@@ -66,30 +66,44 @@ func (c *Conn) sendHandshake(ip string, localPort int) error {
 	return c.WriteLine("DONE")
 }
 
+// LookupResult is the response from a successful LOOKUP.
+type LookupResult struct {
+	Addr string // "ip:port"
+	Tag  string // backend tag (may be empty)
+}
+
 // Lookup asks the director for the backend address for the given username.
-// Returns the backend host:port string, or an error if no backends are available.
-func (c *Conn) Lookup(id, username string) (string, error) {
+// Returns LookupResult on success, or an error if no backends are available.
+func (c *Conn) Lookup(id, username string) (LookupResult, error) {
 	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s", id, TabEscape(username))); err != nil {
-		return "", fmt.Errorf("director lookup: write: %w", err)
+		return LookupResult{}, fmt.Errorf("director lookup: write: %w", err)
 	}
 	line, err := c.ReadLine()
 	if err != nil {
-		return "", fmt.Errorf("director lookup: read: %w", err)
+		return LookupResult{}, fmt.Errorf("director lookup: read: %w", err)
 	}
 	fields := ParseLine(line)
 	if len(fields) < 2 {
-		return "", fmt.Errorf("director lookup: unexpected response: %q", line)
+		return LookupResult{}, fmt.Errorf("director lookup: unexpected response: %q", line)
 	}
 	switch fields[0] {
 	case "HOST":
+		// HOST\t{id}\t{ip}\t{port}\t{tag}  (tag optional)
 		if len(fields) < 4 {
-			return "", fmt.Errorf("director lookup: malformed HOST: %q", line)
+			return LookupResult{}, fmt.Errorf("director lookup: malformed HOST: %q", line)
 		}
-		return net.JoinHostPort(fields[2], fields[3]), nil
+		tag := ""
+		if len(fields) >= 5 {
+			tag = fields[4]
+		}
+		return LookupResult{
+			Addr: net.JoinHostPort(fields[2], fields[3]),
+			Tag:  tag,
+		}, nil
 	case "FAIL":
-		return "", fmt.Errorf("director lookup: %s", fields[len(fields)-1])
+		return LookupResult{}, fmt.Errorf("director lookup: %s", fields[len(fields)-1])
 	default:
-		return "", fmt.Errorf("director lookup: unknown response: %q", line)
+		return LookupResult{}, fmt.Errorf("director lookup: unknown response: %q", line)
 	}
 }
 

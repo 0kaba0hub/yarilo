@@ -1,5 +1,5 @@
 // Package ring implements consistent hashing for yarilo-director.
-// Algorithm: MD5, 100 virtual nodes per backend, binary search.
+// Algorithm: MD5, 100 virtual nodes per backend (configurable), binary search.
 package ring
 
 import (
@@ -10,14 +10,15 @@ import (
 	"sync"
 )
 
-const vhostsPerBackend = 100
+const defaultVhosts = 100
 
 // Backend represents a backend node in the ring.
 type Backend struct {
-	IP   string
-	Port int
-	Tag  string
-	Up   bool
+	IP     string
+	Port   int
+	Tag    string
+	Up     bool
+	Vhosts int // virtual nodes count; 0 = defaultVhosts (100)
 }
 
 // Ring is a consistent-hashing ring.
@@ -51,6 +52,31 @@ func (r *Ring) RemoveBackend(ip string) {
 	defer r.mu.Unlock()
 	delete(r.backends, ip)
 	r.rebuild()
+}
+
+// SetUp marks a backend as up or down without removing it from the registry.
+// Used for BACKEND-FLUSH: the backend stays known but stops receiving new lookups.
+func (r *Ring) SetUp(ip string, up bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.backends[ip]
+	if !ok {
+		return false
+	}
+	b.Up = up
+	r.rebuild()
+	return true
+}
+
+// Backends returns a snapshot of all registered backends (up and down).
+func (r *Ring) Backends() []Backend {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Backend, 0, len(r.backends))
+	for _, b := range r.backends {
+		out = append(out, *b)
+	}
+	return out
 }
 
 // Lookup returns the backend IP for the given username.
@@ -90,8 +116,8 @@ func (r *Ring) LookupBackend(username string) *Backend {
 	if b == nil {
 		return nil
 	}
-	copy := *b
-	return &copy
+	cp := *b
+	return &cp
 }
 
 func (r *Ring) rebuild() {
@@ -100,7 +126,11 @@ func (r *Ring) rebuild() {
 		if !b.Up {
 			continue
 		}
-		for i := 0; i < vhostsPerBackend; i++ {
+		n := b.Vhosts
+		if n <= 0 {
+			n = defaultVhosts
+		}
+		for i := 0; i < n; i++ {
 			key := fmt.Sprintf("%s-%d", ip, i)
 			h := vhostHash(key)
 			r.vhosts = append(r.vhosts, vhost{hash: h, ip: ip})
