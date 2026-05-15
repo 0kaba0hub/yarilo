@@ -86,7 +86,7 @@ func New(opts Options) *Server {
 // Serve starts accepting LMTP connections on ln, optionally wrapping it with
 // HAProxy PROXY protocol and XCLIENT support.
 func (s *Server) Serve(ln net.Listener) error {
-	slog.Info("lmtp: listening", "addr", ln.Addr(),
+	slog.Info("lmtp: listening", "addr", ln.Addr().String(),
 		"haproxy", s.opts.ProxyProtocol,
 		"xclient", s.opts.XClient,
 		"proxy_mode", s.opts.Ring != nil,
