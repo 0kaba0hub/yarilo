@@ -199,6 +199,42 @@ MTA ──TCP:24──► yarilo-lmtp (root)
 
 ---
 
+## Graceful shutdown
+
+On SIGTERM (from k8s or operator):
+
+```
+SIGTERM received
+  │
+  ├─ login processes: stop accept() immediately
+  ├─ active sessions: grace period → finish current command, notify client
+  ├─ after session_grace_period: SIGTERM to all session processes
+  └─ after kill_timeout: SIGKILL to remaining processes
+```
+
+All timing parameters are configurable — never hardcoded. Values live in `helm/values.yaml`:
+
+```yaml
+shutdown:
+  sessionGracePeriod: 60   # seconds — time for active sessions to finish
+  killTimeout: 10          # seconds — between SIGTERM and SIGKILL
+```
+
+Kubernetes must be configured to match:
+
+```yaml
+# in Deployment spec:
+terminationGracePeriodSeconds: 90  # >= sessionGracePeriod + killTimeout + buffer
+```
+
+`terminationGracePeriodSeconds` is derived from values — never hardcoded in templates:
+
+```yaml
+terminationGracePeriodSeconds: {{ add .Values.shutdown.sessionGracePeriod .Values.shutdown.killTimeout 20 }}
+```
+
+---
+
 ## Go implementation rules
 
 ### Process spawning — exec.Command only
