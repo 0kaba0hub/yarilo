@@ -176,6 +176,39 @@ data:
       index: {{ .Values.storage.index | quote }}
       index_dir: ""
 
+    internal_tls:
+      enabled: {{ .Values.internalTLS.enabled }}
+      {{- if .Values.internalTLS.secretName }}
+      cert: /etc/yarilo/tls/tls.crt
+      key: /etc/yarilo/tls/tls.key
+      ca: /etc/yarilo/tls/ca.crt
+      {{- else }}
+      cert: ""
+      key: ""
+      ca: ""
+      {{- end }}
+
+    auth_service:
+      listen: {{ .Values.components.auth.listen | quote }}
+      shutdown:
+        session_grace_period: 30
+        kill_timeout: 5
+
+    anvil_service:
+      listen: {{ .Values.components.anvil.listen | quote }}
+      shutdown:
+        session_grace_period: 30
+        kill_timeout: 5
+
+    director_service:
+      listen: {{ .Values.components.director.listen | quote }}
+      shutdown:
+        session_grace_period: 30
+        kill_timeout: 5
+      user_expire: {{ .Values.components.director.userExpire }}
+      ping_interval: {{ .Values.components.director.pingInterval }}
+      ping_timeout: {{ .Values.components.director.pingTimeout }}
+
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}
 

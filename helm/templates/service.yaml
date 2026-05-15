@@ -1,10 +1,11 @@
+{{- if .Values.components.yarilo.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "yarilo.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "yarilo.labels" . | nindent 4 }}
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "yarilo") | nindent 4 }}
   {{- with .Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -58,7 +59,7 @@ spec:
       protocol: TCP
     {{- end }}
   selector:
-    {{- include "yarilo.selectorLabels" . | nindent 4 }}
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "yarilo") | nindent 4 }}
 ---
 apiVersion: v1
 kind: Service
@@ -66,8 +67,7 @@ metadata:
   name: {{ include "yarilo.fullname" . }}-telemetry
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "yarilo.labels" . | nindent 4 }}
-    app.kubernetes.io/component: telemetry
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "yarilo") | nindent 4 }}
 spec:
   type: ClusterIP
   ports:
@@ -76,4 +76,5 @@ spec:
       targetPort: telemetry
       protocol: TCP
   selector:
-    {{- include "yarilo.selectorLabels" . | nindent 4 }}
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "yarilo") | nindent 4 }}
+{{- end }}

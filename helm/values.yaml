@@ -6,17 +6,79 @@ image:
   tag: ""          # defaults to Chart.appVersion
   pullPolicy: IfNotPresent
 
-replicaCount: 1    # single-node only — maildir PVC is not shared-access
+## -------------------------------------------------------------------
+## Components — each runs as a separate Deployment + Service.
+## All enabled by default (multi-process mode). Set replicas: 0
+## or enabled: false to disable a component.
+## -------------------------------------------------------------------
+components:
+  ## Main mail server: IMAP / POP3 / LMTP / Submission sessions.
+  ## Requires a PVC for mail storage (storage.persistence).
+  yarilo:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+
+  ## Authentication service — passdb chain.
+  ## Stateless; safe to scale horizontally.
+  auth:
+    enabled: true
+    replicas: 1
+    listen: ":9100"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  ## Connection rate limiter (anvil).
+  ## Keeps per-user/IP counters in memory — keep replicas: 1.
+  anvil:
+    enabled: true
+    replicas: 1
+    listen: ":9101"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  ## Consistent-hash router.
+  ## Director-to-director ring sync (Phase B) is not yet implemented —
+  ## keep replicas: 1 until ring sync lands.
+  director:
+    enabled: true
+    replicas: 1
+    listen: ":9102"
+    userExpire: 900      # seconds before user→backend mapping expires
+    pingInterval: 30     # seconds between PING keepalive probes
+    pingTimeout: 10      # seconds to wait for PONG before closing
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
 
 ## -------------------------------------------------------------------
 ## Server hostname — used as EHLO banner, Message-ID domain, and the
-## hostname surfaced in Received: headers. Must match the TLS cert SAN
-## or some MUAs will reject the connection.
+## hostname surfaced in Received: headers. Must match the TLS cert SAN.
 ## -------------------------------------------------------------------
 hostname: ""
 
 ## -------------------------------------------------------------------
-## TLS (shared certificate mounted at /etc/yarilo/tls/)
+## External TLS (user-facing: IMAPS / Submissions / POP3S)
 ## -------------------------------------------------------------------
 tls:
   ## Name of an existing Secret containing tls.crt and tls.key.
@@ -24,20 +86,26 @@ tls:
   secretName: ""
 
   ## Optional cert-manager Certificate to provision the secretName above.
-  ## Requires cert-manager + a working ClusterIssuer in the cluster.
   certificate:
     enabled: false
     issuerRef:
       kind: ClusterIssuer
       name: letsencrypt-prod
-    ## DNS names the cert is issued for. The first entry is the cert CN.
     dnsNames: []
-    ## Optional duration / renewBefore (cert-manager defaults: 90d / 30d).
     duration: ""
     renewBefore: ""
 
 ## -------------------------------------------------------------------
-## Services — per-listener toggles
+## Internal mTLS (between components: yarilo ↔ auth ↔ anvil ↔ director)
+## When enabled, all inter-component connections use mTLS.
+## Provide a Secret with tls.crt, tls.key, and ca.crt.
+## -------------------------------------------------------------------
+internalTLS:
+  enabled: false
+  secretName: ""   # Secret name; must be in the same namespace
+
+## -------------------------------------------------------------------
+## Services — per-listener toggles (yarilo main component)
 ## -------------------------------------------------------------------
 services:
   ## IMAP over TLS (port 993)
@@ -96,22 +164,16 @@ protocol:
     idSend: "name *"              # ID pairs; * = default; empty = disabled
     loginGreeting: ""
     logoutFormat: ""
-    ## client_workarounds: tb-extra-mailbox-sep | tb-lsub-flags
     clientWorkarounds: []
 
   submission:
-    ## hostname defaults to the top-level .Values.hostname when empty
     hostname: ""
     maxMessageSize: 41943040      # 40 MiB
     maxLineLength: 4096
     maxRecipients: 0              # 0 = unlimited
     recipientDelimiter: "+"
-    ## submission_add_received_header — protect sender identity by setting to false
     addReceivedHeader: true
-    ## client_workarounds: whitespace-before-path | mailbox-for-path
     clientWorkarounds: []
-    ## Outbound relay — when set, MAIL FROM is forwarded to this MTA.
-    ## Leave host empty to disable relay (DATA → 451).
     relay:
       host: ""
       port: 25
@@ -119,7 +181,7 @@ protocol:
       password: ""                # supports ${ENV_VAR}
       ssl: "no"                   # no | smtps | starttls
       sslVerify: true
-      trusted: false              # send XCLIENT to relay
+      trusted: false
       connectTimeout: 30
       commandTimeout: 300
 
@@ -132,7 +194,6 @@ protocol:
     userConcurrencyLimit: 10      # 0 = unlimited
     readTimeout: 300
     writeTimeout: 300
-    ## client_workarounds: whitespace-before-path | mailbox-for-path
     clientWorkarounds: []
 
   pop3:
@@ -149,18 +210,16 @@ protocol:
 ## -------------------------------------------------------------------
 general:
   limits:
-    maxUserIPConnections: 10      # 0 = unlimited; per user+IP pair
+    maxUserIPConnections: 10      # 0 = unlimited
 
   haproxy:
-    ## Enable PROXY protocol on ALL listeners (requires trusted upstream LB).
     enabled: false
     trustedNets:
       - "127.0.0.1/32"
       - "10.0.0.0/8"
-    timeout: 3                    # seconds to wait for PROXY header
+    timeout: 3
 
   xclient:
-    ## Enable XCLIENT on ALL listeners.
     enabled: false
     trustedNets:
       - "127.0.0.1/32"
@@ -168,15 +227,6 @@ general:
 
 ## -------------------------------------------------------------------
 ## Authentication
-##
-## Each passdb entry is tried in order. Per-entry fields:
-##   driver:            sqlite | mysql | postgres
-##   dsn:               driver-specific (supports ${ENV_VAR})
-##   passwordQuery:     custom SELECT; %u/%n/%d are bound parameters
-##   userQuery:         optional userdb lookup
-##   iterateQuery:      optional list-users query
-##   defaultPassScheme: PLAIN | BCRYPT | SHA512-CRYPT
-##   skipSchema:        true to skip CREATE TABLE on startup
 ## -------------------------------------------------------------------
 auth:
   passdb:
@@ -184,25 +234,19 @@ auth:
       dsn: /var/lib/yarilo/users.db
 
 ## -------------------------------------------------------------------
-## Storage
+## Storage (yarilo main component only)
 ## -------------------------------------------------------------------
 storage:
-  ## Mailbox format: maildir | dbox | mdbox
   mailbox: maildir
   maildirRoot: /var/mail/vhosts
-  ## Dovecot-style home template (%d=domain, %n=local, %u=full email).
-  ## Default: "%d/%n"  →  /var/mail/vhosts/example.com/alice
   mailHomeTemplate: "%d/%n"
-
-  ## Index backend: fileindex | sqlite
   index: fileindex
 
   persistence:
     enabled: true
-    storageClass: ""   # "" = cluster default
+    storageClass: ""
     accessMode: ReadWriteOnce
     size: 10Gi
-    ## Bind to an existing PVC instead of creating one:
     # existingClaim: ""
 
 ## -------------------------------------------------------------------
@@ -210,35 +254,25 @@ storage:
 ## -------------------------------------------------------------------
 telemetry:
   listen: ":8080"
-  ## Expose /metrics to a Prometheus ServiceMonitor
   serviceMonitor:
     enabled: false
-    namespace: ""          # defaults to Release.Namespace
+    namespace: ""
     interval: 30s
     labels: {}
 
 ## -------------------------------------------------------------------
-## Kubernetes service
+## Kubernetes service (yarilo main — external)
 ## -------------------------------------------------------------------
 service:
   type: LoadBalancer
-  ## Telemetry / health (always ClusterIP, separate service)
   telemetryPort: 8080
-  ## Optional static IP for LoadBalancer
   # loadBalancerIP: ""
   annotations: {}
 
 ## -------------------------------------------------------------------
-## Resources, probes, scheduling
+## Shared probe / scheduling / security settings
+## Applied to all component Deployments unless overridden per-component.
 ## -------------------------------------------------------------------
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 1000m
-    memory: 512Mi
-
 livenessProbe:
   httpGet:
     path: /healthz
@@ -271,18 +305,12 @@ containerSecurityContext:
     add: [NET_BIND_SERVICE]
 
 ## -------------------------------------------------------------------
-## Component selector — passed as YARILO_COMPONENT env var to the
-## entrypoint script. Determines which binary the container runs.
-## -------------------------------------------------------------------
-component: yarilo   # yarilo | yarilo-auth | yarilo-migrate
-
-## -------------------------------------------------------------------
 ## Log level (also settable via LOG_LEVEL env var)
 ## -------------------------------------------------------------------
 logLevel: info   # debug | info | warn | error
 
 ## -------------------------------------------------------------------
-## Extra environment variables injected into the container
+## Extra environment variables injected into all containers
 ## -------------------------------------------------------------------
 extraEnv: []
 # - name: DB_PASSWORD
@@ -292,7 +320,7 @@ extraEnv: []
 #       key: db-password
 
 ## -------------------------------------------------------------------
-## Extra volumes / mounts (e.g. for CA bundles)
+## Extra volumes / mounts (applied to all Deployments)
 ## -------------------------------------------------------------------
 extraVolumes: []
 extraVolumeMounts: []
