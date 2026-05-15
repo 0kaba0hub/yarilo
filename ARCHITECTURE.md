@@ -297,6 +297,35 @@ persistence:
 
 ---
 
+## Known issues and required fixes
+
+### Cross-process file locking — storage corruption risk
+
+**Problem:** `internal/storage/mailbox/maildir` and `internal/storage/index/file` use `sync.Mutex`
+for concurrency control. `sync.Mutex` is in-process only — it does not protect against concurrent
+access from **separate OS processes**.
+
+In multi-process mode, `yarilo-imap` and `yarilo-lmtp` run as separate processes and can
+simultaneously modify shared metadata files for the same user's maildir:
+
+| File | Risk |
+|:---|:---|
+| `dovecot-uidlist` | UID assignment race → duplicate UIDs or corruption |
+| fileindex (`*.idx`) | concurrent writes → index corruption |
+
+Raw mail delivery (`rename()` into `new/`) is safe — `rename()` is atomic at the OS level.
+Only metadata files are at risk.
+
+**Required fix:** Replace `sync.Mutex` with `fcntl` advisory exclusive lock (`syscall.Flock` or
+`syscall.FcntlFlock`) on `dovecot-uidlist` and index files at every write. `fcntl` locks work
+across processes on the same host and over NFS (NFSv4) and CephFS (POSIX locking).
+
+**Status:** Not yet implemented. Must be done before multi-process mode ships.
+The current monolithic `single` mode masked this problem — all access was serialized
+by a single in-process mutex. Multi-process breaks this assumption.
+
+---
+
 ## Security model
 
 | Threat | Mitigation |
