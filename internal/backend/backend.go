@@ -51,9 +51,12 @@ func New(cfg *config.Config) (*Server, error) {
 	if cfg.Storage.MaildirRoot == "" {
 		cfg.Storage.MaildirRoot = "/var/mail/vhosts"
 	}
+	if cfg.Storage.MailHomeTemplate == "" {
+		cfg.Storage.MailHomeTemplate = "%d/%n"
+	}
 	resolver := &mailbox.Resolver{
 		Root:         cfg.Storage.MaildirRoot,
-		HomeTemplate: "%d/%n",
+		HomeTemplate: cfg.Storage.MailHomeTemplate,
 	}
 	mbox, err := buildMailbox(cfg.Storage)
 	if err != nil {

@@ -109,7 +109,7 @@ A single `users` table covers passdb (login + active flag) and userdb (storage /
 | `username` (PK, lowercase enforced) | login — typically the full email | ✅ |
 | `password` | `{SCHEME}hash` — BCRYPT / SHA512-CRYPT / PLAIN | ✅ |
 | `active` | gates login | ✅ |
-| `home`, `mail_path` | per-user Maildir overrides | ⚠️ returned in userdb but maildir backend derives the path from the username |
+| `home`, `mail_path` | per-user Maildir overrides | ✅ `home` passed to `Resolver.UserInfo` — overrides the global template |
 | `mailbox_format` | `''` / `maildir` / `dbox` / `mdbox` — override global default | ❌ forward-compat |
 | `quota_bytes` | `0` = unlimited | ❌ forward-compat (quota engine, Phase 10) |
 | `allow_nets` | comma-separated CIDRs; `''` = no restriction | ❌ forward-compat (login ACL) |
@@ -262,8 +262,20 @@ the passdb/userdb query result; each protocol server passes it to
 it verbatim (absolute path) or joins it with `Root` (relative path), skipping
 the template entirely. When it is empty the `%d/%n` template fires as usual.
 
-Per-user Maildir relocation is therefore a DB-only change — populate the `home`
-column in the `users` table, no code or config change needed.
+The **global** home layout is controlled by two config keys:
+
+```yaml
+storage:
+  maildirRoot: /var/mail/vhosts        # Root prepended to template-derived paths
+  mailHomeTemplate: "%d/%n"            # Dovecot %-vars: %d=domain, %n=local, %u=full email
+```
+
+Default (`%d/%n`) gives `/var/mail/vhosts/example.com/alice`. Switch to `%u`
+for a flat layout (`/var/mail/vhosts/alice@example.com`), or `%n` for
+single-domain setups.
+
+Per-user relocation is a DB-only change — populate the `home` column in the
+`users` table, no code or config change needed.
 
 ### Phase 5 — per-user mailbox format and namespaces
 
