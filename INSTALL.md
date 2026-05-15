@@ -236,6 +236,57 @@ LMTP on port 24 is normally not exposed publicly — for the sandbox the LoadBal
 
 ---
 
+## Storage architecture and phase roadmap
+
+yarilo storage follows the Dovecot `mail_storage` pattern: `MailboxBackend` and
+`IndexBackend` are per-process factories; `UserMailbox` / `UserIndex` are
+per-session handles created once after authentication and closed when the
+session ends. All per-user state (filesystem root, future quota, uid/gid) is
+captured in `mailbox.UserInfo` at login time.
+
+### Currently implemented
+
+| Mechanism | Status |
+|:---|:---|
+| Per-user handle (`MailboxBackend.OpenUser`) | ✅ Phase 2 |
+| `Resolver` — `%d/%n` template → absolute home | ✅ Phase 2 |
+| Backends: maildir, dbox, mdbox | ✅ Phase 2 |
+| Index: fileindex (dovecot-uidlist v3) | ✅ Phase 2 |
+| `UserInfo.Home` used by storage, not derived in backend | ✅ Phase 2 |
+
+### Phase 3 — userdb-driven home override
+
+`UserInfo.Home` is already plumbed through the stack. When the `userQuery`
+in `values.yaml` returns a non-empty `home` column, `Resolver.UserInfo` will
+use it verbatim (absolute) or join it with `Root` (relative). This makes
+per-user Maildir relocation a config-only change — no code needed.
+
+**Pending:** `passwordQuery` result-set does not yet forward the `home` field
+to `UserInfo`; the auth layer passes `""` as `homeOverride`, so the template
+always fires. Wire the userdb `home` column through the passdb/auth result into
+`Resolver.UserInfo(username, homeOverride)`.
+
+### Phase 5 — per-user mailbox format and namespaces
+
+The `mailbox_format` column in the `users` table is reserved for selecting a
+per-user backend (`maildir` / `dbox` / `mdbox`) instead of the global
+`storage.mailbox` config value. The `OpenNamespace` stub in the
+`MailboxBackend` / `IndexBackend` interfaces is placeholder for shared / public
+namespace support.
+
+**Pending:** `MailboxBackend.OpenNamespace(user *UserInfo, ns string)` — returns
+a handle for a non-private namespace rooted at the namespace storage dir.
+Namespace list (private / shared / public, each with its own location template)
+comes from a future `config.Namespaces` block. No schema migration needed.
+
+### Phase 10 — quota enforcement
+
+`UserInfo.QuotaBytes` field (stub, commented out) will be populated from the
+`quota_bytes` column and enforced at `UserMailbox.Save` time. The storage layer
+returns a typed error; IMAP and LMTP translate it to `OVERQUOTA` / `452`.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
