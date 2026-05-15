@@ -102,14 +102,17 @@ Wait until `yarilo-postgres-0` is `Ready 1/1`. The DSN baked into the Secret is 
 
 ### Schema
 
-The init script splits authentication from mailbox profile (Dovecot-style):
+A single `users` table covers both authentication (passdb) and mailbox profile (userdb):
 
-| Table | Role | Columns |
-|:---|:---|:---|
-| `auth_users` | passdb (authentication) | `email`, `password`, `active`, `created_at`, `updated_at` |
-| `mail_users` | userdb (mailbox profile) | `email` (FK), `home`, `mail_loc`, `quota_bytes` |
+| Column | Role |
+|:---|:---|
+| `email` (PK) | login |
+| `password` | `{SCHEME}hash` — BCRYPT / SHA512-CRYPT / PLAIN |
+| `active` | gates login |
+| `home`, `mail_loc`, `quota_bytes` | userdb profile (mailbox path overrides, quota) |
+| `created_at`, `updated_at` | audit |
 
-`mail_users.email` references `auth_users.email` with `ON DELETE CASCADE`, so deleting an auth record automatically drops its mailbox metadata. `values-sandbox.yaml` wires this up via three queries: `passwordQuery` (auth check), `userQuery` (post-auth home / mail lookup), and `iterateQuery` (list active users).
+`values-sandbox.yaml` wires this up via three queries hitting the same table — `passwordQuery` (auth check), `userQuery` (post-auth home / mail lookup), `iterateQuery` (list active users). The split is intentional: when the time comes to migrate to a multi-table production layout (e.g., auth in an SSO store, profile in SQL), only the queries change.
 
 > **For production** swap `helm_values/postgres-sandbox.yaml` for a managed Postgres DSN — replace the `dsn` field in the `yarilo-postgres` Secret and run the init SQL manually against the managed instance. The Secret reference in `values-sandbox.yaml` stays the same.
 
@@ -170,7 +173,7 @@ dig +short mail-sb.seconddns.com
 
 ## Step 5 — Seed a test user
 
-A test user lives in two tables — credentials in `auth_users`, mailbox profile in `mail_users`. Both rows must exist:
+One INSERT, one row:
 
 ```sh
 EMAIL="alice@mail-sb.seconddns.com"
@@ -178,13 +181,9 @@ PASS="wonderland"
 HASH="$(htpasswd -nbB alice "$PASS" | cut -d: -f2)"
 
 kubectl -n yarilo-sb exec -i yarilo-postgres-0 -- \
-  psql -U yarilo -d yarilo <<SQL
-INSERT INTO auth_users (email, password, active)
-  VALUES ('${EMAIL}', '{BCRYPT}${HASH}', TRUE);
-
-INSERT INTO mail_users (email)
-  VALUES ('${EMAIL}');
-SQL
+  psql -U yarilo -d yarilo -c \
+  "INSERT INTO users (email, password, active)
+   VALUES ('${EMAIL}', '{BCRYPT}${HASH}', TRUE);"
 ```
 
 Verify:
@@ -192,11 +191,10 @@ Verify:
 ```sh
 kubectl -n yarilo-sb exec yarilo-postgres-0 -- \
   psql -U yarilo -d yarilo -c \
-  "SELECT a.email, a.active, m.home, m.mail_loc
-   FROM auth_users a LEFT JOIN mail_users m USING (email);"
+  "SELECT email, active, home, mail_loc FROM users;"
 ```
 
-Leaving `home` and `mail_loc` empty is intentional — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. The `mail_users` row still has to exist so `userQuery` finds it; populate `home`/`mail_loc` later when per-user overrides become useful (e.g. moving heavy users onto a different volume).
+`home` and `mail_loc` are intentionally blank — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. Populate them only when per-user overrides become useful (e.g. moving heavy users onto a different volume).
 
 ---
 

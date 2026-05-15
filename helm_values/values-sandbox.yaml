@@ -49,10 +49,13 @@ protocol:
     idleNotifyInterval: 120
     maxLineLength: 65536
 
-## Split passdb (auth_users) and userdb (mail_users), Dovecot-style.
-## Schema is created by postgres-sandbox.yaml's init.sql, so skipSchema=true
-## tells yarilo not to attempt CREATE TABLE on its own (it would target the
-## built-in yarilo_users table, which we don't use here).
+## Single `users` table created by postgres-sandbox.yaml's init.sql.
+## passwordQuery handles authentication (returns only what's needed for
+## auth — password + active flag, home/mail intentionally blank).
+## userQuery handles userdb lookup post-auth.
+##
+## skipSchema=true tells yarilo not to attempt CREATE TABLE on its own
+## (it would otherwise target the built-in yarilo_users table).
 auth:
   passdb:
     - driver: postgres
@@ -64,15 +67,15 @@ auth:
                '' AS home,
                '' AS mail,
                CASE WHEN active THEN 1 ELSE 0 END AS enabled
-        FROM auth_users
+        FROM users
         WHERE email = %u
       userQuery: |
         SELECT home, mail_loc
-        FROM mail_users
+        FROM users
         WHERE email = %u
       iterateQuery: |
         SELECT email
-        FROM auth_users
+        FROM users
         WHERE active = TRUE
         ORDER BY email
 

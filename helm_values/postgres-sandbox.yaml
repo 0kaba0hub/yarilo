@@ -37,28 +37,26 @@ metadata:
   namespace: yarilo-sb
 data:
   01-schema.sql: |
-    -- auth_users — authentication only (passdb).
+    -- Single users table covering both passdb (password / active) and
+    -- userdb (home / mail_loc / quota) needs. values-sandbox.yaml splits
+    -- the SELECT into two queries (passwordQuery + userQuery) so the same
+    -- yarilo wiring works against multi-table production schemas.
+    --
     -- password column holds Dovecot-style "{SCHEME}hash". Supported schemes:
     -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
-    CREATE TABLE IF NOT EXISTS auth_users (
-        email      TEXT PRIMARY KEY,
-        password   TEXT NOT NULL,
-        active     BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    -- mail_users — mailbox profile (userdb). FK on auth_users so deleting
-    -- the auth record cascades and prevents orphaned mailbox metadata.
-    CREATE TABLE IF NOT EXISTS mail_users (
-        email       TEXT PRIMARY KEY REFERENCES auth_users(email) ON DELETE CASCADE,
+    CREATE TABLE IF NOT EXISTS users (
+        email       TEXT PRIMARY KEY,
+        password    TEXT NOT NULL,
+        active      BOOLEAN NOT NULL DEFAULT TRUE,
         home        TEXT NOT NULL DEFAULT '',
         mail_loc    TEXT NOT NULL DEFAULT '',
-        quota_bytes BIGINT NOT NULL DEFAULT 0
+        quota_bytes BIGINT NOT NULL DEFAULT 0,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    -- Helpful index for iterate_query.
-    CREATE INDEX IF NOT EXISTS auth_users_active_idx ON auth_users (active) WHERE active;
+    -- Index for iterate_query (active-user listing).
+    CREATE INDEX IF NOT EXISTS users_active_idx ON users (active) WHERE active;
 ---
 apiVersion: v1
 kind: Service
