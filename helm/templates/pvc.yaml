@@ -1,4 +1,8 @@
-{{- if and .Values.storage.persistence.enabled (not .Values.storage.persistence.existingClaim) }}
+{{- $imap := .Values.components.imap }}
+{{- $pop3 := .Values.components.pop3 }}
+{{- $lmtp := .Values.components.lmtp }}
+{{- $p := coalesce (and $imap.enabled $imap.storage.persistence.enabled | ternary $imap.storage.persistence nil) (and $pop3.enabled $pop3.storage.persistence.enabled | ternary $pop3.storage.persistence nil) (and $lmtp.enabled $lmtp.storage.persistence.enabled | ternary $lmtp.storage.persistence nil) }}
+{{- if $p }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -8,11 +12,11 @@ metadata:
     {{- include "yarilo.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - {{ .Values.storage.persistence.accessMode }}
-  {{- if .Values.storage.persistence.storageClass }}
-  storageClassName: {{ .Values.storage.persistence.storageClass }}
+    - {{ $p.accessMode }}
+  {{- if $p.storageClass }}
+  storageClassName: {{ $p.storageClass }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.storage.persistence.size }}
+      storage: {{ $p.size }}
 {{- end }}

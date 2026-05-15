@@ -1,22 +1,22 @@
-{{- if .Values.components.auth.enabled }}
+{{- if .Values.components.imap.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "yarilo.fullname" . }}-auth
+  name: {{ include "yarilo.fullname" . }}-imap
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "yarilo.componentLabels" (dict "root" . "component" "auth") | nindent 4 }}
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "imap") | nindent 4 }}
 spec:
-  replicas: {{ .Values.components.auth.replicas }}
+  replicas: {{ .Values.components.imap.replicas }}
   selector:
     matchLabels:
-      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "auth") | nindent 6 }}
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap") | nindent 6 }}
   strategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        {{- include "yarilo.componentLabels" (dict "root" . "component" "auth") | nindent 8 }}
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "imap") | nindent 8 }}
       annotations:
         {{- include "yarilo.configChecksum" . | nindent 8 }}
         {{- with .Values.podAnnotations }}
@@ -26,12 +26,12 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: yarilo-auth
+        - name: yarilo-imap
           image: {{ include "yarilo.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: YARILO_COMPONENT
-              value: "yarilo-auth"
+              value: "yarilo-imap"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
             {{- with .Values.extraEnv }}
@@ -40,8 +40,8 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: auth
-              containerPort: 9100
+            - name: imap
+              containerPort: {{ .Values.components.imap.containerPort }}
               protocol: TCP
             - name: telemetry
               containerPort: 8080
@@ -51,16 +51,18 @@ spec:
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
-            {{- toYaml .Values.components.auth.resources | nindent 12 }}
+            {{- toYaml .Values.components.imap.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/yarilo
               readOnly: true
-            - name: varlib
-              mountPath: /var/lib/yarilo
             - name: tmp
               mountPath: /tmp
-            {{- include "yarilo.internalTLSMount" .Values.components.auth.internalTLS | nindent 12 }}
+            {{- if .Values.components.imap.storage.persistence.enabled }}
+            - name: mail
+              mountPath: {{ .Values.components.imap.storage.maildirRoot }}
+            {{- end }}
+            {{- include "yarilo.internalTLSMount" .Values.components.imap.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -68,11 +70,14 @@ spec:
         - name: config
           configMap:
             name: {{ include "yarilo.fullname" . }}
-        - name: varlib
-          emptyDir: {}
         - name: tmp
           emptyDir: {}
-        {{- include "yarilo.internalTLSVolume" .Values.components.auth.internalTLS | nindent 8 }}
+        {{- if .Values.components.imap.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.imap.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -41,8 +41,33 @@ spec:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
             - name: director
-              containerPort: 9102
+              containerPort: {{ .Values.components.director.directorPort }}
               protocol: TCP
+            {{- if .Values.components.director.listeners.imaps.enabled }}
+            - name: imaps
+              containerPort: {{ .Values.components.director.listeners.imaps.containerPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.components.director.listeners.imap.enabled }}
+            - name: imap
+              containerPort: {{ .Values.components.director.listeners.imap.containerPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.components.director.listeners.pop3s.enabled }}
+            - name: pop3s
+              containerPort: {{ .Values.components.director.listeners.pop3s.containerPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.components.director.listeners.pop3.enabled }}
+            - name: pop3
+              containerPort: {{ .Values.components.director.listeners.pop3.containerPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.components.director.listeners.lmtp.enabled }}
+            - name: lmtp
+              containerPort: {{ .Values.components.director.listeners.lmtp.containerPort }}
+              protocol: TCP
+            {{- end }}
             - name: telemetry
               containerPort: 8080
               protocol: TCP
@@ -58,7 +83,8 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- include "yarilo.internalTLSMount" . | nindent 12 }}
+            {{- include "yarilo.externalTLSMount" .Values.components.director.tls.secretName | nindent 12 }}
+            {{- include "yarilo.internalTLSMount" .Values.components.director.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -68,7 +94,8 @@ spec:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
-        {{- include "yarilo.internalTLSVolume" . | nindent 8 }}
+        {{- include "yarilo.externalTLSVolume" .Values.components.director.tls.secretName | nindent 8 }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.director.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

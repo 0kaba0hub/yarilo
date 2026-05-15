@@ -1,4 +1,5 @@
 {{- if .Values.components.director.enabled }}
+## LoadBalancer — mail client connections (IMAPS/IMAP/POP3S/POP3/LMTP)
 apiVersion: v1
 kind: Service
 metadata:
@@ -6,16 +7,68 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
+  {{- with .Values.components.director.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.components.director.service.type }}
+  {{- if .Values.components.director.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.components.director.service.loadBalancerIP }}
+  {{- end }}
+  ports:
+    {{- if .Values.components.director.listeners.imaps.enabled }}
+    - name: imaps
+      port: {{ .Values.components.director.listeners.imaps.port }}
+      targetPort: imaps
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.director.listeners.imap.enabled }}
+    - name: imap
+      port: {{ .Values.components.director.listeners.imap.port }}
+      targetPort: imap
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.director.listeners.pop3s.enabled }}
+    - name: pop3s
+      port: {{ .Values.components.director.listeners.pop3s.port }}
+      targetPort: pop3s
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.director.listeners.pop3.enabled }}
+    - name: pop3
+      port: {{ .Values.components.director.listeners.pop3.port }}
+      targetPort: pop3
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.director.listeners.lmtp.enabled }}
+    - name: lmtp
+      port: {{ .Values.components.director.listeners.lmtp.port }}
+      targetPort: lmtp
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
+---
+## ClusterIP — internal director protocol (ring management between directors)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-director-ring
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
 spec:
   type: ClusterIP
   ports:
     - name: director
-      port: 9102
+      port: {{ .Values.components.director.directorPort }}
       targetPort: director
       protocol: TCP
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
 ---
+## ClusterIP — telemetry / health
 apiVersion: v1
 kind: Service
 metadata:
@@ -27,7 +80,7 @@ spec:
   type: ClusterIP
   ports:
     - name: telemetry
-      port: {{ .Values.service.telemetryPort }}
+      port: 8080
       targetPort: telemetry
       protocol: TCP
   selector:

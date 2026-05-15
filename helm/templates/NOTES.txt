@@ -1,52 +1,40 @@
-yarilo has been deployed.
+yarilo has been deployed to namespace {{ .Release.Namespace }}.
 
-{{- if eq .Values.service.type "LoadBalancer" }}
+Director service type: {{ .Values.components.director.service.type }}
 
-Get the external IP:
-  kubectl get svc -n {{ .Release.Namespace }} {{ include "yarilo.fullname" . }} -w
-
-{{- else if eq .Values.service.type "NodePort" }}
-
-Get the node port:
-  kubectl get svc -n {{ .Release.Namespace }} {{ include "yarilo.fullname" . }}
-
+Active listeners (director):
+{{- if .Values.components.director.listeners.imaps.enabled }}
+  IMAPS (TLS):      {{ .Values.components.director.listeners.imaps.port }}
+{{- end }}
+{{- if .Values.components.director.listeners.imap.enabled }}
+  IMAP (STARTTLS):  {{ .Values.components.director.listeners.imap.port }}
+{{- end }}
+{{- if .Values.components.director.listeners.pop3s.enabled }}
+  POP3S (TLS):      {{ .Values.components.director.listeners.pop3s.port }}
+{{- end }}
+{{- if .Values.components.director.listeners.pop3.enabled }}
+  POP3 (STARTTLS):  {{ .Values.components.director.listeners.pop3.port }}
+{{- end }}
+{{- if .Values.components.director.listeners.lmtp.enabled }}
+  LMTP:             {{ .Values.components.director.listeners.lmtp.port }}
 {{- end }}
 
-Active listeners:
-{{- if .Values.services.imaps.enabled }}
-  IMAPS (TLS):        {{ .Values.services.imaps.port }}
+Backend components:
+{{- if .Values.components.imap.enabled }}
+  IMAP backend: {{ include "yarilo.fullname" . }}-imap (port 993)
 {{- end }}
-{{- if .Values.services.imap.enabled }}
-  IMAP (STARTTLS):    {{ .Values.services.imap.port }}
+{{- if .Values.components.pop3.enabled }}
+  POP3 backend: {{ include "yarilo.fullname" . }}-pop3 (port 110)
 {{- end }}
-{{- if .Values.services.submission.enabled }}
-  Submission:         {{ .Values.services.submission.port }}
+{{- if .Values.components.lmtp.enabled }}
+  LMTP backend: {{ include "yarilo.fullname" . }}-lmtp (port 24)
 {{- end }}
-{{- if .Values.services.submissions.enabled }}
-  Submissions (SSL):  {{ .Values.services.submissions.port }}
-{{- end }}
-{{- if .Values.services.pop3.enabled }}
-  POP3 (STARTTLS):    {{ .Values.services.pop3.port }}
-{{- end }}
-{{- if .Values.services.pop3s.enabled }}
-  POP3S (TLS):        {{ .Values.services.pop3s.port }}
-{{- end }}
-{{- if .Values.services.lmtp.enabled }}
-  LMTP:               {{ .Values.services.lmtp.port }}
-{{- end }}
-  Telemetry:          http://<pod>:{{ .Values.service.telemetryPort }}/healthz
 
-{{- if not .Values.tls.secretName }}
+Telemetry: http://<pod>:8080/healthz
+
+{{- if not .Values.components.director.tls.secretName }}
 
 WARNING: TLS is not configured.
-  Set tls.secretName to the name of a Secret with tls.crt and tls.key.
-  Example:
-    kubectl create secret tls yarilo-tls \
-      --cert=fullchain.pem \
-      --key=privkey.pem \
-      -n {{ .Release.Namespace }}
-
-  Then install with:
-    --set tls.secretName=yarilo-tls
+  Set components.director.tls.secretName to the name of a Secret with tls.crt and tls.key.
 
 {{- end }}

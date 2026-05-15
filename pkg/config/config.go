@@ -190,13 +190,22 @@ type AuthServiceConfig struct {
 	Shutdown ShutdownConfig `koanf:"shutdown"`
 }
 
+// MailServerConfig describes one backend mail server the director routes sessions to.
+type MailServerConfig struct {
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+	// Tag groups backends into pools; an empty tag means the default pool.
+	Tag string `koanf:"tag"`
+}
+
 // DirectorServiceConfig configures the standalone yarilo-director process.
 type DirectorServiceConfig struct {
-	Listen       string         `koanf:"listen"`
-	Shutdown     ShutdownConfig `koanf:"shutdown"`
-	UserExpire   int            `koanf:"user_expire"`   // seconds before user→backend mapping expires; 0 = 900
-	PingInterval int            `koanf:"ping_interval"` // seconds between PING probes; 0 = 30
-	PingTimeout  int            `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
+	Listen       string             `koanf:"listen"`
+	Shutdown     ShutdownConfig     `koanf:"shutdown"`
+	UserExpire   int                `koanf:"user_expire"`   // seconds before user→backend mapping expires; 0 = 900
+	PingInterval int                `koanf:"ping_interval"` // seconds between PING probes; 0 = 30
+	PingTimeout  int                `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
+	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
 }
 
 // ShutdownConfig controls graceful shutdown behaviour.
