@@ -50,6 +50,7 @@ services:
   imap:
     enabled: false
     port: 143
+    containerPort: 1143
     disablePlainAuth: false
 
   ## Submission STARTTLS (port 587)
@@ -68,6 +69,7 @@ services:
   pop3:
     enabled: false
     port: 110
+    containerPort: 1110
 
   ## POP3 over TLS (port 995)
   pop3s:

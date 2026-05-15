@@ -43,7 +43,7 @@ data:
         disable_plaintext_auth: {{ .Values.services.imaps.disablePlainAuth }}
       imap:
         enabled: {{ .Values.services.imap.enabled }}
-        port: {{ .Values.services.imap.port }}
+        port: {{ .Values.services.imap.containerPort | default .Values.services.imap.port }}
         ssl_mode: starttls
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
@@ -64,7 +64,7 @@ data:
         disable_plaintext_auth: {{ .Values.services.submissions.disablePlainAuth }}
       pop3:
         enabled: {{ .Values.services.pop3.enabled }}
-        port: {{ .Values.services.pop3.port }}
+        port: {{ .Values.services.pop3.containerPort | default .Values.services.pop3.port }}
         ssl_mode: starttls
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}

@@ -47,7 +47,7 @@ spec:
             {{- end }}
             {{- if .Values.services.imap.enabled }}
             - name: imap
-              containerPort: {{ .Values.services.imap.port }}
+              containerPort: {{ .Values.services.imap.containerPort | default .Values.services.imap.port }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.submission.enabled }}
@@ -62,7 +62,7 @@ spec:
             {{- end }}
             {{- if .Values.services.pop3.enabled }}
             - name: pop3
-              containerPort: {{ .Values.services.pop3.port }}
+              containerPort: {{ .Values.services.pop3.containerPort | default .Values.services.pop3.port }}
               protocol: TCP
             {{- end }}
             {{- if .Values.services.pop3s.enabled }}
