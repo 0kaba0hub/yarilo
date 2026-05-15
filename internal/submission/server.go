@@ -75,7 +75,7 @@ func New(opts Options) *Server {
 // STARTTLS is handled by go-smtp when TLSConfig is set on the server; for ssl mode
 // the listener is wrapped with tls.NewListener before calling Serve.
 func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
-	slog.Info("submission: listening", "addr", ln.Addr())
+	slog.Info("submission: listening", "addr", ln.Addr().String())
 	if tlsCfg != nil {
 		ln = tls.NewListener(ln, tlsCfg)
 	}
