@@ -1,5 +1,5 @@
 {{- if .Values.components.pop3.enabled }}
-## ClusterIP — POP3 backend (director proxies 995/110 here)
+## Headless — POP3 backend pods (director resolves A-records → individual pod IPs)
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,6 +9,7 @@ metadata:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "pop3") | nindent 4 }}
 spec:
   type: ClusterIP
+  clusterIP: None
   ports:
     {{- if .Values.components.pop3.listeners.pop3s.enabled }}
     - name: pop3s

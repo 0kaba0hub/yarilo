@@ -1,5 +1,5 @@
 {{- if .Values.components.lmtp.enabled }}
-## ClusterIP — LMTP backend (MTA delivers here via director)
+## Headless — LMTP backend pods (director resolves A-records → individual pod IPs)
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,6 +9,7 @@ metadata:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "lmtp") | nindent 4 }}
 spec:
   type: ClusterIP
+  clusterIP: None
   ports:
     - name: lmtp
       port: {{ .Values.components.lmtp.listeners.lmtp.servicePort }}
