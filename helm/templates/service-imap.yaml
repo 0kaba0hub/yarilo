@@ -10,10 +10,18 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+    {{- if .Values.components.imap.listeners.imaps.enabled }}
+    - name: imaps
+      port: {{ .Values.components.imap.listeners.imaps.servicePort }}
+      targetPort: imaps
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.imap.listeners.imap.enabled }}
     - name: imap
-      port: 993
+      port: {{ .Values.components.imap.listeners.imap.servicePort }}
       targetPort: imap
       protocol: TCP
+    {{- end }}
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap") | nindent 4 }}
 ---

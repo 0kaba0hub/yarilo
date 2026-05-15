@@ -132,11 +132,20 @@ components:
         memory: 128Mi
 
   ## IMAP backend — handles sessions proxied from director.
+  ## Director proxies 993→imap:993, 143→imap:143.
   imap:
     enabled: true
     replicas: 1
-    listen: ":10993"
-    containerPort: 10993
+
+    listeners:
+      imaps:
+        enabled: true
+        servicePort: 993
+        containerPort: 10993
+      imap:
+        enabled: false
+        servicePort: 143
+        containerPort: 10143
 
     internalTLS:
       enabled: false
@@ -161,12 +170,20 @@ components:
         cpu: 1000m
         memory: 512Mi
 
-  ## POP3 backend.
+  ## POP3 backend — director proxies 995→pop3:995, 110→pop3:110.
   pop3:
     enabled: false
     replicas: 1
-    listen: ":10110"
-    containerPort: 10110
+
+    listeners:
+      pop3s:
+        enabled: true
+        servicePort: 995
+        containerPort: 10995
+      pop3:
+        enabled: false
+        servicePort: 110
+        containerPort: 10110
 
     internalTLS:
       enabled: false
@@ -191,12 +208,16 @@ components:
         cpu: 500m
         memory: 256Mi
 
-  ## LMTP backend — local delivery from MTA.
+  ## LMTP backend — director proxies 24→lmtp:24.
   lmtp:
     enabled: false
     replicas: 1
-    listen: ":10024"
-    containerPort: 10024
+
+    listeners:
+      lmtp:
+        enabled: true
+        servicePort: 24
+        containerPort: 10024
 
     internalTLS:
       enabled: false

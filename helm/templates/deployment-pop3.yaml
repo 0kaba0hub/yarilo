@@ -40,9 +40,16 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: pop3
-              containerPort: {{ .Values.components.pop3.containerPort }}
+            {{- if .Values.components.pop3.listeners.pop3s.enabled }}
+            - name: pop3s
+              containerPort: {{ .Values.components.pop3.listeners.pop3s.containerPort }}
               protocol: TCP
+            {{- end }}
+            {{- if .Values.components.pop3.listeners.pop3.enabled }}
+            - name: pop3
+              containerPort: {{ .Values.components.pop3.listeners.pop3.containerPort }}
+              protocol: TCP
+            {{- end }}
             - name: telemetry
               containerPort: 8080
               protocol: TCP

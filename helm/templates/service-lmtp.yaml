@@ -11,7 +11,7 @@ spec:
   type: ClusterIP
   ports:
     - name: lmtp
-      port: 24
+      port: {{ .Values.components.lmtp.listeners.lmtp.servicePort }}
       targetPort: lmtp
       protocol: TCP
   selector:

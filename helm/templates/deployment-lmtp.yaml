@@ -41,7 +41,7 @@ spec:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
             - name: lmtp
-              containerPort: {{ .Values.components.lmtp.containerPort }}
+              containerPort: {{ .Values.components.lmtp.listeners.lmtp.containerPort }}
               protocol: TCP
             - name: telemetry
               containerPort: 8080

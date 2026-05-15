@@ -40,9 +40,16 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: imap
-              containerPort: {{ .Values.components.imap.containerPort }}
+            {{- if .Values.components.imap.listeners.imaps.enabled }}
+            - name: imaps
+              containerPort: {{ .Values.components.imap.listeners.imaps.containerPort }}
               protocol: TCP
+            {{- end }}
+            {{- if .Values.components.imap.listeners.imap.enabled }}
+            - name: imap
+              containerPort: {{ .Values.components.imap.listeners.imap.containerPort }}
+              protocol: TCP
+            {{- end }}
             - name: telemetry
               containerPort: 8080
               protocol: TCP
