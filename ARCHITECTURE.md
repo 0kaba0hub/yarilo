@@ -297,6 +297,142 @@ persistence:
 
 ---
 
+## Logging standard
+
+All yarilo processes write structured JSON logs via `log/slog` to stderr.
+In multi-process mode stderr is a pipe to `yarilo-log`, which forwards to stdout.
+`LOG_LEVEL=debug` enables debug output — no code changes needed.
+
+### Guiding principle
+
+Follow Dovecot's log semantics: what is logged, when, and which fields appear.
+Format is JSON (slog), but the information content mirrors Dovecot exactly.
+
+---
+
+### Session ID
+
+Generated at connection accept time in the login process.
+
+```
+sessionID = base64( microseconds[48bit] | remote_port[16bit] | remote_ip_bytes )
+```
+
+- Stored in logs as a plain base64 string (no angle brackets in JSON)
+- In human-readable messages wrapped as `<sessionID>` to match Dovecot convention
+
+---
+
+### slog field names
+
+| Field | Type | Description |
+|:---|:---|:---|
+| `process` | string | binary name: `yarilo-imap-login`, `yarilo-imap`, … |
+| `pid` | int | OS process ID |
+| `version` | string | yarilo version (startup only) |
+| `user` | string | authenticated username (`alice@example.com`) |
+| `session` | string | session ID (base64, no `<>`) |
+| `method` | string | SASL mechanism: `PLAIN`, `LOGIN`, `OAUTH2` |
+| `rip` | string | effective remote IP — client IP after HAProxy/XCLIENT resolution |
+| `rport` | int | effective remote port |
+| `lip` | string | effective local IP — listener IP after HAProxy resolution |
+| `lport` | int | effective local port |
+| `pxip` | string | physical TCP peer IP (set only when differs from `rip`) |
+| `pxport` | int | physical TCP peer port (set only when differs from `rport`) |
+| `tls` | bool | true when TLS or HAProxy-terminated TLS |
+| `tls_cipher` | string | cipher suite (e.g. `TLS_AES_256_GCM_SHA384`) |
+| `in` | int | bytes received from client during session |
+| `out` | int | bytes sent to client during session |
+| `mpid` | int | PID of spawned session process (logged by login process on handoff) |
+| `err` | string | error string |
+
+---
+
+### Log events
+
+#### 1. Startup — every process
+
+```json
+{"level":"INFO","process":"yarilo-master","pid":1,"msg":"yarilo v0.3.11 starting","version":"0.3.11","services":["imap","lmtp","pop3"]}
+{"level":"INFO","process":"yarilo-imap-login","pid":42,"msg":"yarilo-imap-login ready","lip":"::","lport":10993}
+```
+
+#### 2. Connection accepted (login process, before auth)
+
+```json
+{"level":"DEBUG","process":"yarilo-imap-login","pid":42,"msg":"connection accepted","rip":"1.2.3.4","rport":54321,"lip":"10.0.0.1","lport":10993,"tls":true}
+```
+
+HAProxy / XCLIENT — after proxy header parsed, `rip`/`rport` update to real client values.
+Physical TCP peer is logged as `pxip`/`pxport` when they differ from `rip`/`rport`:
+
+```json
+{"level":"DEBUG","process":"yarilo-imap-login","pid":42,"msg":"haproxy: resolved client IP","rip":"203.0.113.5","rport":61234,"pxip":"10.0.0.2","pxport":54321}
+```
+
+#### 3. Auth failure
+
+```json
+{"level":"INFO","process":"yarilo-imap-login","pid":42,"msg":"Login failed","user":"alice@example.com","method":"PLAIN","rip":"203.0.113.5","rport":61234,"lip":"10.0.0.1","lport":10993,"pxip":"10.0.0.2","tls":true,"session":"abc123XY","err":"authentication failed"}
+```
+
+#### 4. Login success (handoff to session process)
+
+```json
+{"level":"INFO","process":"yarilo-imap-login","pid":42,"msg":"Login","user":"alice@example.com","method":"PLAIN","rip":"203.0.113.5","rport":61234,"lip":"10.0.0.1","lport":10993,"pxip":"10.0.0.2","tls":true,"session":"abc123XY","mpid":99}
+```
+
+`mpid` — PID of the spawned `yarilo-imap` process that takes over the session.
+
+#### 5. Session operations (session process — yarilo-imap/pop3/submission)
+
+Every log line from a session process embeds `user` + `session` in the logger base.
+The session process never logs without these fields.
+
+```json
+{"level":"INFO","process":"yarilo-imap","pid":99,"user":"alice@example.com","session":"abc123XY","msg":"SELECT INBOX","messages":142,"unseen":3}
+{"level":"ERROR","process":"yarilo-imap","pid":99,"user":"alice@example.com","session":"abc123XY","msg":"maildir: open failed","err":"permission denied","path":"/var/mail/example.com/alice/cur"}
+```
+
+#### 6. Disconnect / logout
+
+```json
+{"level":"INFO","process":"yarilo-imap","pid":99,"user":"alice@example.com","session":"abc123XY","msg":"Disconnected: Logged out","in":1234,"out":56789}
+{"level":"INFO","process":"yarilo-imap","pid":99,"user":"alice@example.com","session":"abc123XY","msg":"Disconnected: Connection closed","in":512,"out":1024}
+{"level":"INFO","process":"yarilo-imap-login","pid":42,"msg":"Disconnected: Inactivity","rip":"203.0.113.5","lip":"10.0.0.1","tls":true}
+```
+
+#### 7. LMTP delivery
+
+```json
+{"level":"INFO","process":"yarilo-lmtp","pid":55,"msg":"delivery accepted","from":"sender@other.com","to":"alice@example.com","size":4096,"rip":"10.0.0.3","session":"xyz789AB"}
+{"level":"INFO","process":"yarilo-lmtp","pid":55,"msg":"delivery failed","from":"sender@other.com","to":"bob@example.com","err":"user not found","rip":"10.0.0.3","session":"xyz789AB"}
+```
+
+---
+
+### IP resolution rules
+
+1. Physical TCP peer IP is always captured at accept time.
+2. If HAProxy protocol is enabled and PROXY header is present:
+   - `rip`/`rport` = client IP/port from PROXY header
+   - `pxip`/`pxport` = physical TCP peer (the load balancer)
+3. If XCLIENT is enabled and XCLIENT command is received:
+   - `rip`/`rport` updated from XCLIENT values
+   - `pxip`/`pxport` = physical TCP peer (the MTA)
+4. If neither HAProxy nor XCLIENT: `rip`/`rport` = physical TCP peer; `pxip`/`pxport` omitted.
+5. `lip`/`lport` = local listener address as bound by master (actual port, not the external port).
+
+---
+
+### Implementation rule
+
+Every login process creates a **base slog.Logger** at connection accept with `rip`, `rport`, `lip`, `lport`, `tls` already attached via `slog.With(...)`.
+Every session process creates a **base slog.Logger** with `user`, `session`, `pid` attached via `slog.With(...)`.
+All subsequent log calls use this base logger — never log without the session context.
+
+---
+
 ## Known issues and required fixes
 
 ### Cross-process file locking — storage corruption risk
