@@ -68,11 +68,11 @@ auth:
                '' AS mail,
                CASE WHEN active THEN 1 ELSE 0 END AS enabled
         FROM users
-        WHERE email = %u
+        WHERE email = LOWER(%u)
       userQuery: |
-        SELECT home, mail_loc
+        SELECT home, mail_path
         FROM users
-        WHERE email = %u
+        WHERE email = LOWER(%u)
       iterateQuery: |
         SELECT email
         FROM users

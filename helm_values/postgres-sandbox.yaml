@@ -38,25 +38,63 @@ metadata:
 data:
   01-schema.sql: |
     -- Single users table covering both passdb (password / active) and
-    -- userdb (home / mail_loc / quota) needs. values-sandbox.yaml splits
-    -- the SELECT into two queries (passwordQuery + userQuery) so the same
-    -- yarilo wiring works against multi-table production schemas.
+    -- userdb (home / mail_path / quota / allow_nets / director_tag).
+    -- values-sandbox.yaml splits the SELECT into passwordQuery + userQuery
+    -- so the same yarilo wiring works against multi-table production schemas.
     --
     -- password column holds Dovecot-style "{SCHEME}hash". Supported schemes:
     -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
+    --
+    -- Read-status per column (yarilo HEAD):
+    --   email, password, active          → used now (passwordQuery)
+    --   home, mail_path                  → returned in userdb response but
+    --                                       maildir backend currently derives
+    --                                       the path from the email anyway
+    --   mailbox_format, quota_bytes,
+    --   allow_nets, director_tag,
+    --   display_name, last_login_at      → forward-compat, not yet read by
+    --                                       yarilo (quota engine, director,
+    --                                       login ACL — future phases)
     CREATE TABLE IF NOT EXISTS users (
-        email       TEXT PRIMARY KEY,
-        password    TEXT NOT NULL,
-        active      BOOLEAN NOT NULL DEFAULT TRUE,
-        home        TEXT NOT NULL DEFAULT '',
-        mail_loc    TEXT NOT NULL DEFAULT '',
-        quota_bytes BIGINT NOT NULL DEFAULT 0,
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        email          TEXT PRIMARY KEY,
+        password       TEXT NOT NULL,
+        active         BOOLEAN NOT NULL DEFAULT TRUE,
+
+        -- userdb / storage
+        home           TEXT NOT NULL DEFAULT '',          -- Maildir base override
+        mailbox_format TEXT NOT NULL DEFAULT '',          -- '' | maildir | dbox | mdbox
+        mail_path      TEXT NOT NULL DEFAULT '',          -- absolute path; '' = derived from email
+        quota_bytes    BIGINT NOT NULL DEFAULT 0,         -- 0 = unlimited
+
+        -- access control / routing
+        allow_nets     TEXT NOT NULL DEFAULT '',          -- comma-separated CIDRs; '' = no restriction
+        director_tag   TEXT NOT NULL DEFAULT '',          -- routing tag for yarilo-director (Phase 5)
+
+        -- ops / display
+        display_name   TEXT NOT NULL DEFAULT '',
+        last_login_at  TIMESTAMPTZ,
+
+        -- audit
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+        CHECK (email = LOWER(email))
     );
 
     -- Index for iterate_query (active-user listing).
     CREATE INDEX IF NOT EXISTS users_active_idx ON users (active) WHERE active;
+
+    -- Auto-update updated_at on every UPDATE.
+    CREATE OR REPLACE FUNCTION users_set_updated_at() RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS users_updated_at ON users;
+    CREATE TRIGGER users_updated_at BEFORE UPDATE ON users
+        FOR EACH ROW EXECUTE FUNCTION users_set_updated_at();
 ---
 apiVersion: v1
 kind: Service

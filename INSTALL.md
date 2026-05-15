@@ -102,17 +102,22 @@ Wait until `yarilo-postgres-0` is `Ready 1/1`. The DSN baked into the Secret is 
 
 ### Schema
 
-A single `users` table covers both authentication (passdb) and mailbox profile (userdb):
+A single `users` table covers passdb (login + active flag) and userdb (storage / quota / routing):
 
-| Column | Role |
-|:---|:---|
-| `email` (PK) | login |
-| `password` | `{SCHEME}hash` — BCRYPT / SHA512-CRYPT / PLAIN |
-| `active` | gates login |
-| `home`, `mail_loc`, `quota_bytes` | userdb profile (mailbox path overrides, quota) |
-| `created_at`, `updated_at` | audit |
+| Column | Role | Read by yarilo today? |
+|:---|:---|:---|
+| `email` (PK, lowercase enforced) | login | ✅ |
+| `password` | `{SCHEME}hash` — BCRYPT / SHA512-CRYPT / PLAIN | ✅ |
+| `active` | gates login | ✅ |
+| `home`, `mail_path` | per-user Maildir overrides | ⚠️ returned in userdb but maildir backend derives the path from the email |
+| `mailbox_format` | `''` / `maildir` / `dbox` / `mdbox` — override global default | ❌ forward-compat |
+| `quota_bytes` | `0` = unlimited | ❌ forward-compat (quota engine, Phase 10) |
+| `allow_nets` | comma-separated CIDRs; `''` = no restriction | ❌ forward-compat (login ACL) |
+| `director_tag` | sticky-routing tag for `yarilo-director` | ❌ forward-compat (Phase 5) |
+| `display_name`, `last_login_at` | admin / UI | ❌ forward-compat |
+| `created_at`, `updated_at` | audit (`updated_at` maintained by trigger) | ❌ admin-only |
 
-`values-sandbox.yaml` wires this up via three queries hitting the same table — `passwordQuery` (auth check), `userQuery` (post-auth home / mail lookup), `iterateQuery` (list active users). The split is intentional: when the time comes to migrate to a multi-table production layout (e.g., auth in an SSO store, profile in SQL), only the queries change.
+`values-sandbox.yaml` wires this up via three queries hitting the same table — `passwordQuery` (auth check), `userQuery` (post-auth home / mail lookup), `iterateQuery` (list active users). The split is intentional: when the time comes to migrate to a multi-table production layout (e.g., auth in an SSO store, profile in SQL), only the queries change. All `%u` placeholders are wrapped in `LOWER()` so callers may use mixed-case emails.
 
 > **For production** swap `helm_values/postgres-sandbox.yaml` for a managed Postgres DSN — replace the `dsn` field in the `yarilo-postgres` Secret and run the init SQL manually against the managed instance. The Secret reference in `values-sandbox.yaml` stays the same.
 
@@ -182,8 +187,8 @@ HASH="$(htpasswd -nbB alice "$PASS" | cut -d: -f2)"
 
 kubectl -n yarilo-sb exec -i yarilo-postgres-0 -- \
   psql -U yarilo -d yarilo -c \
-  "INSERT INTO users (email, password, active)
-   VALUES ('${EMAIL}', '{BCRYPT}${HASH}', TRUE);"
+  "INSERT INTO users (email, password, active, display_name)
+   VALUES (LOWER('${EMAIL}'), '{BCRYPT}${HASH}', TRUE, 'Alice');"
 ```
 
 Verify:
@@ -191,10 +196,12 @@ Verify:
 ```sh
 kubectl -n yarilo-sb exec yarilo-postgres-0 -- \
   psql -U yarilo -d yarilo -c \
-  "SELECT email, active, home, mail_loc FROM users;"
+  "SELECT email, active, mailbox_format, quota_bytes, display_name FROM users;"
 ```
 
-`home` and `mail_loc` are intentionally blank — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. Populate them only when per-user overrides become useful (e.g. moving heavy users onto a different volume).
+`home` / `mail_path` left blank — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. Populate them only when per-user overrides become useful.
+
+`mailbox_format`, `allow_nets`, `director_tag`, `quota_bytes` are also intentionally default — yarilo doesn't read them yet (see the schema table above). They're in the table so future yarilo releases that wire those features won't require a schema migration.
 
 ---
 
