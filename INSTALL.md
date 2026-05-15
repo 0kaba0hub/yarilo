@@ -254,17 +254,16 @@ captured in `mailbox.UserInfo` at login time.
 | Index: fileindex (dovecot-uidlist v3) | ✅ Phase 2 |
 | `UserInfo.Home` used by storage, not derived in backend | ✅ Phase 2 |
 
-### Phase 3 — userdb-driven home override
+### Phase 3 — userdb-driven home override ✅
 
-`UserInfo.Home` is already plumbed through the stack. When the `userQuery`
-in `values.yaml` returns a non-empty `home` column, `Resolver.UserInfo` will
-use it verbatim (absolute) or join it with `Root` (relative). This makes
-per-user Maildir relocation a config-only change — no code needed.
+Already implemented. The auth layer (`internal/auth/sql`) returns `home` from
+the passdb/userdb query result; each protocol server passes it to
+`Resolver.UserInfo(username, res.Home)`. When `home` is non-empty yarilo uses
+it verbatim (absolute path) or joins it with `Root` (relative path), skipping
+the template entirely. When it is empty the `%d/%n` template fires as usual.
 
-**Pending:** `passwordQuery` result-set does not yet forward the `home` field
-to `UserInfo`; the auth layer passes `""` as `homeOverride`, so the template
-always fires. Wire the userdb `home` column through the passdb/auth result into
-`Resolver.UserInfo(username, homeOverride)`.
+Per-user Maildir relocation is therefore a DB-only change — populate the `home`
+column in the `users` table, no code or config change needed.
 
 ### Phase 5 — per-user mailbox format and namespaces
 
