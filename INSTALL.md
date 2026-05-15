@@ -1,6 +1,6 @@
 # Installing yarilo
 
-End-to-end deploy of the yarilo mail server onto a Kubernetes cluster (microk8s, k3s, EKS, GKE — any). This guide targets the sandbox release `mail-sb.seconddns.com`; substitute your own hostname / namespace anywhere they appear.
+End-to-end deploy of the yarilo mail server onto a Kubernetes cluster (microk8s, k3s, EKS, GKE — any). Examples use `mail.example.com` and namespace `yarilo-sb` — substitute your own values throughout.
 
 ---
 
@@ -22,7 +22,7 @@ End-to-end deploy of the yarilo mail server onto a Kubernetes cluster (microk8s,
 A record (or AAAA) for the public hostname pointing at the LoadBalancer IP that your cluster will assign:
 
 ```
-mail-sb.seconddns.com  A  <LB-IP>
+mail.example.com  A  <LB-IP>
 ```
 
 For real mail you would also need MX, SPF/TXT, DKIM, PTR. For sandbox just the A record is enough — the smoke test connects by hostname.
@@ -169,7 +169,7 @@ kubectl -n yarilo-sb get svc yarilo -w
 Once an `EXTERNAL-IP` appears, update DNS if you haven't already and wait for the A record to resolve:
 
 ```sh
-dig +short mail-sb.seconddns.com
+dig +short mail.example.com
 ```
 
 ---
@@ -179,7 +179,7 @@ dig +short mail-sb.seconddns.com
 One INSERT, one row:
 
 ```sh
-USERNAME="alice@mail-sb.seconddns.com"
+USERNAME="alice@mail.example.com"
 PASS="wonderland"
 HASH="$(htpasswd -nbB alice "$PASS" | cut -d: -f2)"
 
@@ -209,8 +209,8 @@ The `app/smoketest-e2e` binary drives the full mail flow (Submission AUTH PLAIN 
 
 ```sh
 go run ./app/smoketest-e2e/ \
-  -host mail-sb.seconddns.com \
-  -user alice@mail-sb.seconddns.com \
+  -host mail.example.com \
+  -user alice@mail.example.com \
   -pass wonderland \
   -submission-port 587 \
   -lmtp-port 24 \
