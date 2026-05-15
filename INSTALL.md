@@ -82,19 +82,36 @@ The chart provisions a `Service` of type `LoadBalancer`. Make sure your cluster 
 
 ---
 
-## Step 1 — Postgres for the passdb
+## Step 1 — Postgres for passdb and userdb
 
-Apply the sandbox Postgres manifest. It creates the namespace, a `yarilo-postgres` Secret (DSN + DB credentials), a headless `Service`, and a 2 Gi PG 16 `StatefulSet`:
+Apply the sandbox Postgres manifest. It creates:
+
+- the `yarilo-sb` Namespace
+- a `yarilo-postgres` Secret (DSN + DB credentials, referenced by both Postgres and yarilo)
+- a `yarilo-postgres-init` ConfigMap mounted into `/docker-entrypoint-initdb.d/` — Postgres runs it on first startup to create the schema
+- a headless `yarilo-postgres` Service
+- a 2 Gi PG 16 `StatefulSet`
 
 ```sh
 kubectl apply -f helm_values/postgres-sandbox.yaml
 kubectl -n yarilo-sb get pods,svc,pvc
-kubectl -n yarilo-sb logs yarilo-postgres-0 --tail=20
+kubectl -n yarilo-sb logs yarilo-postgres-0 --tail=30
 ```
 
-Wait until `yarilo-postgres-0` is `Ready 1/1`. The DSN baked into the Secret is `postgres://yarilo:sandbox-secret@yarilo-postgres:5432/yarilo?sslmode=disable` — yarilo reads it via `${DB_DSN}` env var.
+Wait until `yarilo-postgres-0` is `Ready 1/1`. The DSN baked into the Secret is `postgres://yarilo:sandbox-secret@yarilo-postgres:5432/yarilo?sslmode=disable` — yarilo reads it via the `DB_DSN` env var.
 
-> **For production** swap `helm_values/postgres-sandbox.yaml` for a managed Postgres DSN — just replace the `dsn` field in the `yarilo-postgres` Secret (the Secret reference in `values-sandbox.yaml` stays the same).
+### Schema
+
+The init script splits authentication from mailbox profile (Dovecot-style):
+
+| Table | Role | Columns |
+|:---|:---|:---|
+| `auth_users` | passdb (authentication) | `email`, `password`, `active`, `created_at`, `updated_at` |
+| `mail_users` | userdb (mailbox profile) | `email` (FK), `home`, `mail_loc`, `quota_bytes` |
+
+`mail_users.email` references `auth_users.email` with `ON DELETE CASCADE`, so deleting an auth record automatically drops its mailbox metadata. `values-sandbox.yaml` wires this up via three queries: `passwordQuery` (auth check), `userQuery` (post-auth home / mail lookup), and `iterateQuery` (list active users).
+
+> **For production** swap `helm_values/postgres-sandbox.yaml` for a managed Postgres DSN — replace the `dsn` field in the `yarilo-postgres` Secret and run the init SQL manually against the managed instance. The Secret reference in `values-sandbox.yaml` stays the same.
 
 ---
 
@@ -153,24 +170,33 @@ dig +short mail-sb.seconddns.com
 
 ## Step 5 — Seed a test user
 
-Bcrypt-hashed user inserted directly into the `yarilo_users` table that yarilo auto-creates on startup:
+A test user lives in two tables — credentials in `auth_users`, mailbox profile in `mail_users`. Both rows must exist:
 
 ```sh
-# Pick any password
+EMAIL="alice@mail-sb.seconddns.com"
 PASS="wonderland"
 HASH="$(htpasswd -nbB alice "$PASS" | cut -d: -f2)"
 
-kubectl -n yarilo-sb exec -it yarilo-postgres-0 -- \
-  psql -U yarilo -d yarilo -c \
-  "INSERT INTO yarilo_users (username, password, enabled) VALUES \
-   ('alice@mail-sb.seconddns.com', '{BCRYPT}${HASH}', 1);"
+kubectl -n yarilo-sb exec -i yarilo-postgres-0 -- \
+  psql -U yarilo -d yarilo <<SQL
+INSERT INTO auth_users (email, password, active)
+  VALUES ('${EMAIL}', '{BCRYPT}${HASH}', TRUE);
+
+INSERT INTO mail_users (email)
+  VALUES ('${EMAIL}');
+SQL
 ```
 
-If `yarilo_users` doesn't exist yet, restart the yarilo pod once so `New()` runs `CREATE TABLE IF NOT EXISTS`:
+Verify:
 
 ```sh
-kubectl -n yarilo-sb rollout restart deploy/yarilo
+kubectl -n yarilo-sb exec yarilo-postgres-0 -- \
+  psql -U yarilo -d yarilo -c \
+  "SELECT a.email, a.active, m.home, m.mail_loc
+   FROM auth_users a LEFT JOIN mail_users m USING (email);"
 ```
+
+Leaving `home` and `mail_loc` empty is intentional — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. The `mail_users` row still has to exist so `userQuery` finds it; populate `home`/`mail_loc` later when per-user overrides become useful (e.g. moving heavy users onto a different volume).
 
 ---
 

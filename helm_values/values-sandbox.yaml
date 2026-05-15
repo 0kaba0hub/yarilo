@@ -3,7 +3,7 @@
 ## Pre-reqs:
 ##   1. cert-manager + ClusterIssuer "letsencrypt-prod" in the cluster.
 ##   2. DNS A/AAAA for mail-sb.seconddns.com pointing at the LB IP.
-##   3. Postgres in yarilo-sb namespace (apply postgres-sandbox.yaml first).
+##   3. Postgres + schema in yarilo-sb namespace (apply postgres-sandbox.yaml first).
 ##
 ## Install:
 ##   helm upgrade --install yarilo ./helm \
@@ -49,13 +49,32 @@ protocol:
     idleNotifyInterval: 120
     maxLineLength: 65536
 
-## Passdb: Postgres deployed in yarilo-sb (see helm_values/postgres-sandbox.yaml).
-## DSN is sourced from the yarilo-postgres Secret via DB_DSN env var.
+## Split passdb (auth_users) and userdb (mail_users), Dovecot-style.
+## Schema is created by postgres-sandbox.yaml's init.sql, so skipSchema=true
+## tells yarilo not to attempt CREATE TABLE on its own (it would target the
+## built-in yarilo_users table, which we don't use here).
 auth:
   passdb:
     - driver: postgres
       dsn: "${DB_DSN}"
+      skipSchema: true
       defaultPassScheme: BCRYPT
+      passwordQuery: |
+        SELECT password,
+               '' AS home,
+               '' AS mail,
+               CASE WHEN active THEN 1 ELSE 0 END AS enabled
+        FROM auth_users
+        WHERE email = %u
+      userQuery: |
+        SELECT home, mail_loc
+        FROM mail_users
+        WHERE email = %u
+      iterateQuery: |
+        SELECT email
+        FROM auth_users
+        WHERE active = TRUE
+        ORDER BY email
 
 extraEnv:
   - name: DB_DSN

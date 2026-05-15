@@ -1,9 +1,9 @@
-# Stand-alone Postgres for yarilo sandbox.
+# Stand-alone Postgres for yarilo sandbox with split passdb/userdb schema.
 # Sits alongside the yarilo Release in namespace yarilo-sb.
 #
-# Apply BEFORE the yarilo helm install so the DSN secret exists.
+# Apply BEFORE the yarilo helm install so the DSN secret + tables exist.
 #
-# kubectl apply -f helm_values/postgres-sandbox.yaml
+#   kubectl apply -f helm_values/postgres-sandbox.yaml
 #
 # Resets are easy: kubectl delete -f .../postgres-sandbox.yaml; PVC is then
 # garbage-collected.
@@ -20,12 +20,45 @@ metadata:
   namespace: yarilo-sb
 type: Opaque
 stringData:
-  # Yarilo passdb DSN — referenced from values-sandbox.yaml via ${DB_DSN}.
+  # Yarilo passdb DSN — referenced from values-sandbox.yaml via DB_DSN.
   dsn: "postgres://yarilo:sandbox-secret@yarilo-postgres:5432/yarilo?sslmode=disable"
   # Same credentials, split out so the StatefulSet can initialise the DB.
   POSTGRES_DB: "yarilo"
   POSTGRES_USER: "yarilo"
   POSTGRES_PASSWORD: "sandbox-secret"
+---
+# Schema mounted into /docker-entrypoint-initdb.d/. Postgres runs every .sql
+# file in alphabetical order on the FIRST startup only (it checks for the
+# PG_VERSION marker on the data volume). Deleting the PVC re-applies it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yarilo-postgres-init
+  namespace: yarilo-sb
+data:
+  01-schema.sql: |
+    -- auth_users — authentication only (passdb).
+    -- password column holds Dovecot-style "{SCHEME}hash". Supported schemes:
+    -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
+    CREATE TABLE IF NOT EXISTS auth_users (
+        email      TEXT PRIMARY KEY,
+        password   TEXT NOT NULL,
+        active     BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- mail_users — mailbox profile (userdb). FK on auth_users so deleting
+    -- the auth record cascades and prevents orphaned mailbox metadata.
+    CREATE TABLE IF NOT EXISTS mail_users (
+        email       TEXT PRIMARY KEY REFERENCES auth_users(email) ON DELETE CASCADE,
+        home        TEXT NOT NULL DEFAULT '',
+        mail_loc    TEXT NOT NULL DEFAULT '',
+        quota_bytes BIGINT NOT NULL DEFAULT 0
+    );
+
+    -- Helpful index for iterate_query.
+    CREATE INDEX IF NOT EXISTS auth_users_active_idx ON auth_users (active) WHERE active;
 ---
 apiVersion: v1
 kind: Service
@@ -85,6 +118,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: init
+          configMap:
+            name: yarilo-postgres-init
   volumeClaimTemplates:
     - metadata:
         name: data
