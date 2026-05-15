@@ -121,6 +121,7 @@ spec:
         - name: tls
           secret:
             secretName: {{ .Values.tls.secretName }}
+            optional: true
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
