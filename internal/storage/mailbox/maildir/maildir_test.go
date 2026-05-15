@@ -6,7 +6,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
+
+func testHome(root, user string) string {
+	if at := strings.LastIndex(user, "@"); at >= 0 {
+		return filepath.Join(root, user[at+1:], user[:at])
+	}
+	return filepath.Join(root, user)
+}
+
+func newBox(t *testing.T, user string) (*userMailbox, string) {
+	t.Helper()
+	root := t.TempDir()
+	home := testHome(root, user)
+	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userMailbox), root
+}
 
 var encodeFlagsTests = []struct {
 	flags []string
@@ -64,19 +80,15 @@ func TestEncodeDecode_Roundtrip(t *testing.T) {
 }
 
 func TestSave_Fetch_Remove(t *testing.T) {
-	b, err := New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	user := "alice@example.com"
-	folder := "INBOX"
+	box, _ := newBox(t, user)
 
-	if err := b.Init(user); err != nil {
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
 	body := "From: test@example.com\r\nSubject: Test\r\n\r\nHello\r\n"
-	filename, err := b.Save(user, folder, strings.NewReader(body), int64(len(body)), []string{`\Seen`})
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), []string{`\Seen`})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -87,63 +99,63 @@ func TestSave_Fetch_Remove(t *testing.T) {
 		t.Errorf("filename %q should contain ,S= and ,W= size annotations", filename)
 	}
 
-	rc, err := b.Fetch(user, folder, filename)
+	rc, err := box.Fetch("INBOX", filename)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	rc.Close()
 
-	if err := b.Remove(user, folder, filename); err != nil {
+	if err := box.Remove("INBOX", filename); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	// Double remove must not error.
-	if err := b.Remove(user, folder, filename); err != nil {
+	if err := box.Remove("INBOX", filename); err != nil {
 		t.Fatalf("Remove (idempotent): %v", err)
 	}
 }
 
 func TestFolderExists(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
 
-	ok, err := b.FolderExists("u@x.com", "INBOX")
+	ok, err := box.FolderExists("INBOX")
 	if err != nil || !ok {
 		t.Fatalf("INBOX should exist after Init, got ok=%v err=%v", ok, err)
 	}
-	ok, err = b.FolderExists("u@x.com", "NoSuchFolder")
+	ok, err = box.FolderExists("NoSuchFolder")
 	if err != nil || ok {
 		t.Fatalf("NoSuchFolder should not exist, got ok=%v err=%v", ok, err)
 	}
 }
 
 func TestCreate_Delete(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
 
-	if err := b.Create("u@x.com", "Sent"); err != nil {
+	if err := box.Create("Sent"); err != nil {
 		t.Fatal(err)
 	}
-	ok, _ := b.FolderExists("u@x.com", "Sent")
+	ok, _ := box.FolderExists("Sent")
 	if !ok {
 		t.Fatal("Sent folder should exist after Create")
 	}
 
-	if err := b.Delete("u@x.com", "Sent"); err != nil {
+	if err := box.Delete("Sent"); err != nil {
 		t.Fatal(err)
 	}
-	ok, _ = b.FolderExists("u@x.com", "Sent")
+	ok, _ = box.FolderExists("Sent")
 	if ok {
 		t.Fatal("Sent folder should not exist after Delete")
 	}
 }
 
 func TestListFolders(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com")             //nolint:errcheck
-	b.Create("u@x.com", "Sent")   //nolint:errcheck
-	b.Create("u@x.com", "Drafts") //nolint:errcheck
+	box, _ := newBox(t, "u@x.com")
+	box.Init()           //nolint:errcheck
+	box.Create("Sent")   //nolint:errcheck
+	box.Create("Drafts") //nolint:errcheck
 
-	folders, err := b.ListFolders("u@x.com")
+	folders, err := box.ListFolders()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,17 +175,17 @@ func TestListFolders(t *testing.T) {
 }
 
 func TestAppendUIDEntry_HeaderFormat(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
 
-	if err := b.AppendUIDEntry("u@x.com", "INBOX", 1, "msg1:2,S"); err != nil {
+	if err := box.AppendUIDEntry("INBOX", 1, "msg1:2,S"); err != nil {
 		t.Fatalf("AppendUIDEntry: %v", err)
 	}
-	if err := b.AppendUIDEntry("u@x.com", "INBOX", 2, "msg2:2,"); err != nil {
+	if err := box.AppendUIDEntry("INBOX", 2, "msg2:2,"); err != nil {
 		t.Fatalf("AppendUIDEntry: %v", err)
 	}
 
-	path := b.uidListPath("u@x.com", "INBOX")
+	path := box.uidListPath("INBOX")
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open uidlist: %v", err)
@@ -259,12 +271,12 @@ func TestParseSizeInfo(t *testing.T) {
 
 func TestSave_VSize_PureCRLF(t *testing.T) {
 	// CRLF input: virtual size equals physical (no normalisation needed).
-	b, _ := New(t.TempDir())
 	user := "u@x"
-	b.Init(user) //nolint:errcheck
+	box, _ := newBox(t, user)
+	box.Init() //nolint:errcheck
 
 	body := "From: a@b\r\n\r\nhello\r\n"
-	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,12 +295,12 @@ func TestSave_VSize_PureCRLF(t *testing.T) {
 func TestSave_VSize_PureLF(t *testing.T) {
 	// LF-only input (e.g. imported from Unix mbox): each LF becomes CRLF on
 	// the wire, so virt > phys by exactly the LF count.
-	b, _ := New(t.TempDir())
 	user := "u@x"
-	b.Init(user) //nolint:errcheck
+	box, _ := newBox(t, user)
+	box.Init() //nolint:errcheck
 
 	body := "From: a@b\n\nhello\n"
-	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,12 +316,12 @@ func TestSave_VSize_PureLF(t *testing.T) {
 
 func TestSave_VSize_MixedLineEndings(t *testing.T) {
 	// One CRLF line plus one bare LF line: only the bare LF adds a byte.
-	b, _ := New(t.TempDir())
 	user := "u@x"
-	b.Init(user) //nolint:errcheck
+	box, _ := newBox(t, user)
+	box.Init() //nolint:errcheck
 
 	body := "header: ok\r\nbare-lf-after\n"
-	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,18 +332,18 @@ func TestSave_VSize_MixedLineEndings(t *testing.T) {
 }
 
 func TestList_PopulatesSizesFromFilename(t *testing.T) {
-	b, _ := New(t.TempDir())
 	user := "u@x"
-	b.Init(user) //nolint:errcheck
+	box, _ := newBox(t, user)
+	box.Init() //nolint:errcheck
 
 	body := "From: a@b\n\nhello\n"
-	filename, err := b.Save(user, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	phys, virt, _, _ := parseSizeInfo(filename)
 
-	msgs, err := b.List(user, "INBOX")
+	msgs, err := box.List("INBOX")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,21 +360,20 @@ func TestList_PopulatesSizesFromFilename(t *testing.T) {
 
 func TestList_LegacyFilename_FallsBackToStat(t *testing.T) {
 	// Legacy files without ,S= must still produce a non-zero Size by stat().
-	dir := t.TempDir()
-	b, _ := New(dir)
 	user := "u@x"
-	b.Init(user) //nolint:errcheck
+	box, root := newBox(t, user)
+	box.Init() //nolint:errcheck
 
 	// Drop a legacy-named file (no size annotations) directly into cur/.
 	// User "u@x" lives at <root>/x/u (Dovecot virtual-hosting layout).
-	cur := filepath.Join(dir, "x", "u", "INBOX", "cur")
+	cur := filepath.Join(root, "x", "u", "INBOX", "cur")
 	legacy := filepath.Join(cur, "1700000000.M0P0_0.host:2,")
 	body := []byte("legacy body\n")
 	if err := os.WriteFile(legacy, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	msgs, err := b.List(user, "INBOX")
+	msgs, err := box.List("INBOX")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,8 +389,8 @@ func TestList_LegacyFilename_FallsBackToStat(t *testing.T) {
 }
 
 func TestUIDListRoundtrip(t *testing.T) {
-	b, _ := New(t.TempDir())
-	b.Init("u@x.com") //nolint:errcheck
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
 
 	entries := []struct {
 		uid      uint32
@@ -390,12 +401,12 @@ func TestUIDListRoundtrip(t *testing.T) {
 		{3, "eee.fff:2,"},
 	}
 	for _, e := range entries {
-		if err := b.AppendUIDEntry("u@x.com", "INBOX", e.uid, e.filename); err != nil {
+		if err := box.AppendUIDEntry("INBOX", e.uid, e.filename); err != nil {
 			t.Fatalf("AppendUIDEntry uid=%d: %v", e.uid, err)
 		}
 	}
 
-	m, err := b.readUIDList("u@x.com", "INBOX")
+	m, err := box.readUIDList("INBOX")
 	if err != nil {
 		t.Fatalf("readUIDList: %v", err)
 	}

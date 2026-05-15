@@ -11,27 +11,28 @@ import (
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 type featureServer struct {
 	addr       string
-	mb         *maildir.Backend
 	maildirCur string // alice's INBOX/cur path for direct file inspection
 }
 
 func buildFeatureServer(t *testing.T, cfg config.LMTPProtocolConfig) featureServer {
 	t.Helper()
 	dir := t.TempDir()
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx := fileindex.New(dir)
-	t.Cleanup(func() { idx.Close() }) //nolint:errcheck
-	if err := mb.Init("alice@example.com"); err != nil {
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	idx := fileindex.New()
+
+	box := mb.OpenUser(resolver.UserInfo("alice@example.com", ""))
+	if err := box.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	srv := New(Options{Hostname: "lmtp.test", Config: cfg, Mailbox: mb, Index: idx})
+	box.Close() //nolint:errcheck
+
+	srv := New(Options{Hostname: "lmtp.test", Config: cfg, Mailbox: mb, Index: idx, Resolver: resolver})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -40,8 +41,7 @@ func buildFeatureServer(t *testing.T, cfg config.LMTPProtocolConfig) featureServ
 	go func() { _ = srv.Serve(ln) }()
 	return featureServer{
 		addr:       ln.Addr().String(),
-		mb:         mb,
-		maildirCur: filepath.Join(dir, "example.com", "alice", "INBOX", "cur"),
+		maildirCur: filepath.Join(resolver.Resolve("alice@example.com", ""), "INBOX", "cur"),
 	}
 }
 

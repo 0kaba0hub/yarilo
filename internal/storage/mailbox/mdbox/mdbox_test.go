@@ -2,31 +2,41 @@ package mdbox
 
 import (
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 const testUser = "alice@example.com"
 
-// newBackend returns a Backend with t.TempDir() as root.
-func newBackend(t *testing.T) *Backend {
-	t.Helper()
-	b, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
+func testHome(root, user string) string {
+	if at := strings.LastIndex(user, "@"); at >= 0 {
+		return filepath.Join(root, user[at+1:], user[:at])
 	}
-	return b
+	return filepath.Join(root, user)
+}
+
+// newBox returns a Backend and a per-user handle for testUser in a fresh TempDir.
+func newBox(t *testing.T) (*Backend, *userMailbox) {
+	t.Helper()
+	root := t.TempDir()
+	home := testHome(root, testUser)
+	b := New()
+	box := b.OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userMailbox)
+	return b, box
 }
 
 // ---- Init ---------------------------------------------------------------
 
 func TestInit(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	ok, err := b.FolderExists(testUser, "INBOX")
+	ok, err := box.FolderExists("INBOX")
 	if err != nil || !ok {
 		t.Fatalf("INBOX must exist after Init, ok=%v err=%v", ok, err)
 	}
@@ -43,25 +53,25 @@ var createDeleteCases = []struct {
 }
 
 func TestCreate_Delete(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, tc := range createDeleteCases {
 		t.Run(tc.folder, func(t *testing.T) {
-			if err := b.Create(testUser, tc.folder); err != nil {
+			if err := box.Create(tc.folder); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
-			ok, err := b.FolderExists(testUser, tc.folder)
+			ok, err := box.FolderExists(tc.folder)
 			if err != nil || !ok {
 				t.Fatalf("folder should exist after Create, ok=%v err=%v", ok, err)
 			}
 
-			if err := b.Delete(testUser, tc.folder); err != nil {
+			if err := box.Delete(tc.folder); err != nil {
 				t.Fatalf("Delete: %v", err)
 			}
-			ok, err = b.FolderExists(testUser, tc.folder)
+			ok, err = box.FolderExists(tc.folder)
 			if err != nil || ok {
 				t.Fatalf("folder should not exist after Delete, ok=%v err=%v", ok, err)
 			}
@@ -82,15 +92,15 @@ var saveFetchCases = []struct {
 }
 
 func TestSave_Fetch_Roundtrip(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, tc := range saveFetchCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := strings.NewReader(tc.body)
-			filename, err := b.Save(testUser, "INBOX", r, int64(len(tc.body)), tc.flags)
+			filename, err := box.Save("INBOX", r, int64(len(tc.body)), tc.flags)
 			if err != nil {
 				t.Fatalf("Save: %v", err)
 			}
@@ -98,7 +108,7 @@ func TestSave_Fetch_Roundtrip(t *testing.T) {
 				t.Fatalf("filename %q must contain ':'", filename)
 			}
 
-			rc, err := b.Fetch(testUser, "INBOX", filename)
+			rc, err := box.Fetch("INBOX", filename)
 			if err != nil {
 				t.Fatalf("Fetch: %v", err)
 			}
@@ -118,23 +128,23 @@ func TestSave_Fetch_Roundtrip(t *testing.T) {
 // ---- Remove -------------------------------------------------------------
 
 func TestRemove(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
 	body := "From: x@y.com\r\n\r\nHello\r\n"
-	filename, err := b.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if err := b.Remove(testUser, "INBOX", filename); err != nil {
+	if err := box.Remove("INBOX", filename); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
 	// After remove the message must not appear in List.
-	msgs, err := b.List(testUser, "INBOX")
+	msgs, err := box.List("INBOX")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -143,7 +153,7 @@ func TestRemove(t *testing.T) {
 	}
 
 	// Idempotent: removing again must not error.
-	if err := b.Remove(testUser, "INBOX", filename); err != nil {
+	if err := box.Remove("INBOX", filename); err != nil {
 		t.Fatalf("Remove (idempotent): %v", err)
 	}
 }
@@ -151,8 +161,8 @@ func TestRemove(t *testing.T) {
 // ---- List (with expunged) -----------------------------------------------
 
 func TestList_WithExpunged(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +173,7 @@ func TestList_WithExpunged(t *testing.T) {
 	}
 	filenames := make([]string, len(bodies))
 	for i, body := range bodies {
-		fn, err := b.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+		fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 		if err != nil {
 			t.Fatalf("Save[%d]: %v", i, err)
 		}
@@ -171,11 +181,11 @@ func TestList_WithExpunged(t *testing.T) {
 	}
 
 	// Expunge the middle message.
-	if err := b.Remove(testUser, "INBOX", filenames[1]); err != nil {
+	if err := box.Remove("INBOX", filenames[1]); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
-	msgs, err := b.List(testUser, "INBOX")
+	msgs, err := box.List("INBOX")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -203,14 +213,14 @@ var folderExistsCases = []struct {
 }
 
 func TestFolderExists(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, tc := range folderExistsCases {
 		t.Run(tc.folder, func(t *testing.T) {
-			ok, err := b.FolderExists(testUser, tc.folder)
+			ok, err := box.FolderExists(tc.folder)
 			if err != nil {
 				t.Fatalf("FolderExists: %v", err)
 			}
@@ -224,18 +234,18 @@ func TestFolderExists(t *testing.T) {
 // ---- ListFolders --------------------------------------------------------
 
 func TestListFolders(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Create(testUser, "Sent"); err != nil {
+	if err := box.Create("Sent"); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Create(testUser, "Drafts"); err != nil {
+	if err := box.Create("Drafts"); err != nil {
 		t.Fatal(err)
 	}
 
-	folders, err := b.ListFolders(testUser)
+	folders, err := box.ListFolders()
 	if err != nil {
 		t.Fatalf("ListFolders: %v", err)
 	}
@@ -262,21 +272,21 @@ func TestListFolders(t *testing.T) {
 // ---- Rotation -----------------------------------------------------------
 
 func TestRotation(t *testing.T) {
-	b := newBackend(t)
+	b, box := newBox(t)
 	// Use a tiny threshold so the second save triggers rotation.
 	b.rotateThreshold = 10
-	if err := b.Init(testUser); err != nil {
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
 	body1 := "From: a\r\n\r\nSmall message\r\n"
-	fn1, err := b.Save(testUser, "INBOX", strings.NewReader(body1), int64(len(body1)), nil)
+	fn1, err := box.Save("INBOX", strings.NewReader(body1), int64(len(body1)), nil)
 	if err != nil {
 		t.Fatalf("Save1: %v", err)
 	}
 
 	body2 := "From: b\r\n\r\nSecond message\r\n"
-	fn2, err := b.Save(testUser, "INBOX", strings.NewReader(body2), int64(len(body2)), nil)
+	fn2, err := box.Save("INBOX", strings.NewReader(body2), int64(len(body2)), nil)
 	if err != nil {
 		t.Fatalf("Save2: %v", err)
 	}
@@ -296,7 +306,7 @@ func TestRotation(t *testing.T) {
 		{fn1, body1},
 		{fn2, body2},
 	} {
-		rc, err := b.Fetch(testUser, "INBOX", tc.fn)
+		rc, err := box.Fetch("INBOX", tc.fn)
 		if err != nil {
 			t.Fatalf("Fetch(%q): %v", tc.fn, err)
 		}
@@ -308,40 +318,44 @@ func TestRotation(t *testing.T) {
 	}
 }
 
-// ---- New() resumes from highest file_id ---------------------------------
+// ---- New handle resumes from highest file_id on disk -------------------
 
 func TestNew_ResumesFileID(t *testing.T) {
 	root := t.TempDir()
-	b1, _ := New(root)
+	home := testHome(root, testUser)
+
+	b1 := New()
 	b1.rotateThreshold = 10
-	if err := b1.Init(testUser); err != nil {
+	box1 := b1.OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userMailbox)
+	if err := box1.Init(); err != nil {
 		t.Fatal(err)
 	}
 	body := "From: a\r\n\r\nMsg\r\n"
 	// Force two files by saving twice with tiny threshold.
-	if _, err := b1.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
+	if _, err := box1.Save("INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b1.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
+	if _, err := box1.Save("INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
 		t.Fatal(err)
 	}
-	highID := b1.currentFileID
+	highID := box1.currentFileID
 
-	// New backend scanning the same root must discover the same highest file_id.
-	b2, err := New(root)
-	if err != nil {
-		t.Fatalf("New (resume): %v", err)
+	// New handle scanning the same home must discover the same highest file_id.
+	b2 := New()
+	box2 := b2.OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userMailbox)
+	if err := box2.Init(); err != nil {
+		t.Fatalf("Init (resume): %v", err)
 	}
-	if b2.currentFileID != highID {
-		t.Errorf("resumed currentFileID = %d, want %d", b2.currentFileID, highID)
+	if box2.currentFileID != highID {
+		t.Errorf("resumed currentFileID = %d, want %d", box2.currentFileID, highID)
 	}
 }
 
 // TestConcurrentSave verifies that concurrent saves produce unique filenames
 // and all messages remain fetchable without data corruption.
 func TestConcurrentSave(t *testing.T) {
-	b := newBackend(t)
-	if err := b.Init(testUser); err != nil {
+	_, box := newBox(t)
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -357,7 +371,7 @@ func TestConcurrentSave(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			body := strings.Repeat("x", i+1)
-			fn, err := b.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+			fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 			if err != nil {
 				t.Errorf("Save goroutine %d: %v", i, err)
 				return
@@ -388,7 +402,7 @@ func TestConcurrentSave(t *testing.T) {
 		if fn == "" {
 			continue
 		}
-		rc, err := b.Fetch(testUser, "INBOX", fn)
+		rc, err := box.Fetch("INBOX", fn)
 		if err != nil {
 			t.Errorf("Fetch(%q): %v", fn, err)
 			continue
@@ -404,9 +418,9 @@ func TestConcurrentSave(t *testing.T) {
 // TestRotationAndMapIntegrity verifies that after rotation, the map file
 // records entries from both the old and new m.* files, and List returns all.
 func TestRotationAndMapIntegrity(t *testing.T) {
-	b := newBackend(t)
+	b, box := newBox(t)
 	b.rotateThreshold = 10
-	if err := b.Init(testUser); err != nil {
+	if err := box.Init(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -415,7 +429,7 @@ func TestRotationAndMapIntegrity(t *testing.T) {
 	var saved []string
 	for i := 0; i < n; i++ {
 		body := strings.Repeat("y", 20) // exceeds threshold → rotates each time
-		fn, err := b.Save(testUser, "INBOX", strings.NewReader(body), int64(len(body)), nil)
+		fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
 		if err != nil {
 			t.Fatalf("Save[%d]: %v", i, err)
 		}
@@ -423,7 +437,7 @@ func TestRotationAndMapIntegrity(t *testing.T) {
 	}
 
 	// List must return all n messages (map covers all files).
-	msgs, err := b.List(testUser, "INBOX")
+	msgs, err := box.List("INBOX")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -433,7 +447,7 @@ func TestRotationAndMapIntegrity(t *testing.T) {
 
 	// Each saved file must still be fetchable.
 	for _, fn := range saved {
-		rc, err := b.Fetch(testUser, "INBOX", fn)
+		rc, err := box.Fetch("INBOX", fn)
 		if err != nil {
 			t.Errorf("Fetch(%q) after rotation: %v", fn, err)
 			continue

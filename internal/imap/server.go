@@ -29,25 +29,26 @@ type Server struct {
 
 // Options configures the IMAP server.
 type Options struct {
-	Addr               string // TLS address, e.g. ":993"
-	AddrPlain          string // STARTTLS address, e.g. ":143"
+	Addr               string
+	AddrPlain          string
 	TLSConfig          *tls.Config
 	Mailbox            mailbox.MailboxBackend
 	Index              mailbox.IndexBackend
+	Resolver           *mailbox.Resolver
 	Auth               protocol.Passdb
-	ProxyProtocol      bool               // wrap listener with HAProxy PROXY protocol
-	HAProxyTimeout     time.Duration      // ReadHeaderTimeout for proxyproto.Listener
-	HAProxyTrustedNets []*net.IPNet       // CIDRs allowed to send PROXY header; empty = nobody
-	XClient            bool               // handle XCLIENT pre-auth command
-	XClientTrustedNets []*net.IPNet       // CIDRs allowed to send XCLIENT; empty = nobody
-	DisablePlainAuth   bool               // reject AUTH on unencrypted connections
-	IdleNotifyInterval time.Duration      // send EXISTS keepalive during IDLE; 0 = disabled
-	MaxLineLength      int                // max command line bytes; 0 = unlimited (Dovecot default 65536)
-	ConnLimit          *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
-	IDSend             string             // imap_id_send: "key val …"; * = server default; empty = disabled
-	LoginGreeting      string             // login_greeting: replaces "IMAP server ready"; empty = default
-	LogoutFormat       string             // imap_logout_format: %{deleted} %{expunged} etc.; empty = disabled
-	ClientWorkarounds  imapWorkarounds    // tb-extra-mailbox-sep | tb-lsub-flags
+	ProxyProtocol      bool
+	HAProxyTimeout     time.Duration
+	HAProxyTrustedNets []*net.IPNet
+	XClient            bool
+	XClientTrustedNets []*net.IPNet
+	DisablePlainAuth   bool
+	IdleNotifyInterval time.Duration
+	MaxLineLength      int
+	ConnLimit          *connlimit.Limiter
+	IDSend             string
+	LoginGreeting      string
+	LogoutFormat       string
+	ClientWorkarounds  imapWorkarounds
 }
 
 // New creates an IMAP server.
@@ -76,7 +77,6 @@ func New(opts Options) *Server {
 	return s
 }
 
-// ListenAndServeTLS starts the TLS listener (port 993).
 func (s *Server) ListenAndServeTLS() error {
 	if s.opts.TLSConfig == nil {
 		return fmt.Errorf("imap: TLS config required for IMAPS")
@@ -89,12 +89,10 @@ func (s *Server) ListenAndServeTLS() error {
 	return s.srv.Serve(s.wrapProxy(ln))
 }
 
-// Serve accepts connections on the given listener.
 func (s *Server) Serve(ln net.Listener) error {
 	return s.srv.Serve(s.wrapProxy(ln))
 }
 
-// ListenAndServe starts the plain STARTTLS listener (port 143).
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.opts.AddrPlain)
 	if err != nil {
@@ -154,16 +152,17 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 	return sess, &imapserver.GreetingData{PreAuth: false}, nil
 }
 
-// ---- session ------------------------------------------------------------
+// ---- session ---------------------------------------------------------------
 
 type session struct {
 	srv      *Server
-	imapConn *imapserver.Conn // used to get RemoteAddr for conn limit
-	username string
-	limitIP  string // set after Login, cleared in Close
+	imapConn *imapserver.Conn
+	userInfo *mailbox.UserInfo
+	box      mailbox.UserMailbox
+	idx      mailbox.UserIndex
+	limitIP  string
 	folder   *mailbox.Folder
 
-	// logout stats (imap_logout_format)
 	statsDeleted    int
 	statsExpunged   int
 	statsFetchHdr   int
@@ -175,10 +174,10 @@ type session struct {
 var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
 
 func (s *session) Close() error {
-	if s.srv.opts.ConnLimit != nil && s.username != "" {
-		s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+	if s.srv.opts.ConnLimit != nil && s.userInfo != nil {
+		s.srv.opts.ConnLimit.Release(s.userInfo.Username, s.limitIP)
 	}
-	if s.srv.opts.LogoutFormat != "" && s.username != "" {
+	if s.srv.opts.LogoutFormat != "" && s.userInfo != nil {
 		msg := formatLogoutMsg(s.srv.opts.LogoutFormat, map[string]string{
 			"deleted":          strconv.Itoa(s.statsDeleted),
 			"expunged":         strconv.Itoa(s.statsExpunged),
@@ -187,12 +186,17 @@ func (s *session) Close() error {
 			"fetch_body_count": strconv.Itoa(s.statsFetchBody),
 			"fetch_body_bytes": strconv.FormatInt(s.statsFetchBodyB, 10),
 		})
-		slog.Info("imap: logout", "user", s.username, "stats", msg)
+		slog.Info("imap: logout", "user", s.userInfo.Username, "stats", msg)
+	}
+	if s.box != nil {
+		s.box.Close() //nolint:errcheck
+	}
+	if s.idx != nil {
+		s.idx.Close() //nolint:errcheck
 	}
 	return nil
 }
 
-// formatLogoutMsg substitutes %{key} placeholders with values from vars.
 func formatLogoutMsg(format string, vars map[string]string) string {
 	var sb strings.Builder
 	i := 0
@@ -224,30 +228,37 @@ func (s *session) Login(username, password string) error {
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Invalid credentials"}
 	}
-	authed := res.Username
+
+	resolver := s.srv.opts.Resolver
+	if resolver == nil {
+		resolver = &mailbox.Resolver{}
+	}
+	userInfo := resolver.UserInfo(res.Username, res.Home)
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())
-		if !lim.Acquire(authed, ip) {
-			slog.Warn("imap: connection limit reached", "user", authed, "ip", ip)
+		if !lim.Acquire(userInfo.Username, ip) {
+			slog.Warn("imap: connection limit reached", "user", userInfo.Username, "ip", ip)
 			return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Too many simultaneous connections"}
 		}
 		s.limitIP = ip
 	}
 
-	s.username = authed
-	if err := s.srv.opts.Mailbox.Init(s.username); err != nil {
-		slog.Error("imap: mailbox init failed", "user", s.username, "err", err)
+	box := s.srv.opts.Mailbox.OpenUser(userInfo)
+	if err := box.Init(); err != nil {
+		slog.Error("imap: mailbox init failed", "user", userInfo.Username, "err", err)
 		if s.srv.opts.ConnLimit != nil {
-			s.srv.opts.ConnLimit.Release(s.username, s.limitIP)
+			s.srv.opts.ConnLimit.Release(userInfo.Username, s.limitIP)
 		}
-		s.username = ""
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Internal error"}
 	}
+
+	s.userInfo = userInfo
+	s.box = box
+	s.idx = s.srv.opts.Index.OpenUser(userInfo)
 	return nil
 }
 
-// remoteIP extracts the IP string from a net.Conn's RemoteAddr.
 func remoteIP(c net.Conn) string {
 	if c == nil {
 		return ""
@@ -259,7 +270,7 @@ func remoteIP(c net.Conn) string {
 }
 
 func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.SelectData, error) {
-	exists, err := s.srv.opts.Mailbox.FolderExists(s.username, name)
+	exists, err := s.box.FolderExists(name)
 	if err != nil {
 		return nil, err
 	}
@@ -270,13 +281,13 @@ func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.Select
 			Text: "No such mailbox",
 		}
 	}
-	f, err := s.srv.opts.Index.OpenFolder(s.username, name, uint32(time.Now().Unix()))
+	f, err := s.idx.OpenFolder(name, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, err
 	}
 	s.folder = f
 
-	msgs, _ := s.srv.opts.Index.GetMessages(f.ID, mailbox.SeqSet{})
+	msgs, _ := s.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	return &imaplib.SelectData{
 		Flags: []imaplib.Flag{
 			imaplib.FlagAnswered, imaplib.FlagFlagged,
@@ -285,7 +296,7 @@ func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.Select
 		PermanentFlags: []imaplib.Flag{
 			imaplib.FlagAnswered, imaplib.FlagFlagged,
 			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
-			imaplib.Flag(`\*`), // supports user-defined keywords
+			imaplib.Flag(`\*`),
 		},
 		NumMessages: uint32(len(msgs)),
 		UIDValidity: f.UIDValidity,
@@ -299,11 +310,11 @@ func (s *session) Unselect() error {
 }
 
 func (s *session) Create(name string, _ *imaplib.CreateOptions) error {
-	return s.srv.opts.Mailbox.Create(s.username, name)
+	return s.box.Create(name)
 }
 
 func (s *session) Delete(name string) error {
-	return s.srv.opts.Mailbox.Delete(s.username, name)
+	return s.box.Delete(name)
 }
 
 func (s *session) Rename(_, _ string, _ *imaplib.RenameOptions) error {
@@ -320,7 +331,7 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 			patterns[i] = strings.TrimPrefix(p, "/")
 		}
 	}
-	folders, err := s.srv.opts.Mailbox.ListFolders(s.username)
+	folders, err := s.box.ListFolders()
 	if err != nil {
 		return err
 	}
@@ -338,11 +349,11 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 }
 
 func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.StatusData, error) {
-	f, err := s.srv.opts.Index.OpenFolder(s.username, name, 0)
+	f, err := s.idx.OpenFolder(name, 0)
 	if err != nil {
 		return nil, err
 	}
-	msgs, _ := s.srv.opts.Index.GetMessages(f.ID, mailbox.SeqSet{})
+	msgs, _ := s.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	var unseen uint32
 	for _, m := range msgs {
 		if !hasFlag(m.Flags, `\Seen`) {
@@ -378,38 +389,33 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	var flagList, kwList []string
 	if opts != nil {
 		for _, fl := range opts.Flags {
-			s := string(fl)
-			if strings.HasPrefix(s, `\`) {
-				flagList = append(flagList, s)
+			fs := string(fl)
+			if strings.HasPrefix(fs, `\`) {
+				flagList = append(flagList, fs)
 			} else {
-				kwList = append(kwList, s)
+				kwList = append(kwList, fs)
 			}
 		}
 	}
 
 	size := r.Size()
-	modseq, _ := s.srv.opts.Index.NextModSeq(f.ID)
+	modseq, _ := s.idx.NextModSeq(f.ID)
 	uid := f.NextUID
 	f.NextUID++
 	f.Messages++
 
-	filename, err := s.srv.opts.Mailbox.Save(s.username, name, r, size, flagList)
+	filename, err := s.box.Save(name, r, size, flagList)
 	if err != nil {
 		return nil, err
 	}
 
 	meta := &mailbox.MessageMeta{UID: uid, Filename: filename, Flags: flagList, Keywords: kwList, ModSeq: modseq, Size: uint32(size)}
-	if err := s.srv.opts.Index.AppendMessage(f.ID, meta); err != nil {
+	if err := s.idx.AppendMessage(f.ID, meta); err != nil {
 		return nil, err
 	}
 
-	if mbe, ok := s.srv.opts.Mailbox.(interface {
-		AppendUIDEntry(user, folder string, uid uint32, filename string) error
-	}); ok {
-		mbe.AppendUIDEntry(s.username, name, uid, filename) //nolint:errcheck
-	}
-
-	s.srv.opts.Index.SaveFolder(s.username, f) //nolint:errcheck
+	s.box.AppendUIDEntry(name, uid, filename) //nolint:errcheck
+	s.idx.SaveFolder(f)                       //nolint:errcheck
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(uid)}, nil
 }
@@ -440,7 +446,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	msgs, err := s.srv.opts.Index.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -451,7 +457,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		if uids != nil && !uids.Contains(imaplib.UID(m.UID)) {
 			continue
 		}
-		s.srv.opts.Index.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
+		s.idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.statsExpunged++
 		if err := w.WriteExpunge(m.UID); err != nil {
 			return err
@@ -464,7 +470,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	msgs, err := s.srv.opts.Index.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return nil, err
 	}
@@ -493,7 +499,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	msgs, err := s.srv.opts.Index.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -519,7 +525,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := s.srv.opts.Mailbox.Fetch(s.username, s.folder.Name, m.Filename)
+			rc, ferr := s.box.Fetch(s.folder.Name, m.Filename)
 			if ferr != nil {
 				break
 			}
@@ -546,7 +552,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	msgs, err := s.srv.opts.Index.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -569,7 +575,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 				newKW = append(newKW, f)
 			}
 		}
-		s.srv.opts.Index.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
+		s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
 
 		if !storeFlags.Silent {
 			mw := w.CreateMessage(seqNum)
@@ -585,19 +591,17 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "COPY not yet implemented"}
 }
 
-// Namespace satisfies SessionNamespace.
 func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 	return &imaplib.NamespaceData{
 		Personal: []imaplib.NamespaceDescriptor{{Delim: '/'}},
 	}, nil
 }
 
-// Move satisfies SessionMove.
 func (s *session) Move(_ *imapserver.MoveWriter, _ imaplib.NumSet, _ string) error {
 	return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "MOVE not yet implemented"}
 }
 
-// ---- helpers ------------------------------------------------------------
+// ---- helpers ---------------------------------------------------------------
 
 type slogLogger struct{}
 
@@ -609,7 +613,7 @@ func (s *session) ensureFolder(name string) (*mailbox.Folder, error) {
 	if s.folder != nil && s.folder.Name == name {
 		return s.folder, nil
 	}
-	return s.srv.opts.Index.OpenFolder(s.username, name, uint32(time.Now().Unix()))
+	return s.idx.OpenFolder(name, uint32(time.Now().Unix()))
 }
 
 func listMatch(name string, patterns []string) bool {
@@ -641,7 +645,6 @@ func toImapFlags(flags []string) []imaplib.Flag {
 	return out
 }
 
-// numSetContains checks whether seqNum (for SeqSet) or uid (for UIDSet) is in numSet.
 func numSetContains(numSet imaplib.NumSet, seqNum uint32, uid imaplib.UID) bool {
 	switch ns := numSet.(type) {
 	case imaplib.SeqSet:

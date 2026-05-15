@@ -1,4 +1,4 @@
-// Package dbox implements the MailboxBackend for the sdbox (single-message dbox) format.
+// Package dbox implements MailboxBackend for the sdbox (single-message dbox) format.
 // Each message is stored in its own file named u.<16hex_seq>.
 // File layout follows the Dovecot dbox wire format documented in INTERNALS.md §8.
 package dbox
@@ -24,56 +24,65 @@ var (
 	magicPost = []byte{'\n', 0x01, 0x03, '\n'}
 )
 
-// Backend is an sdbox MailboxBackend.
+// Backend is the sdbox MailboxBackend factory.
+// It holds only a process-wide sequence counter for unique filenames.
 type Backend struct {
-	root    string
 	counter atomic.Uint64
 }
 
-// New creates an sdbox backend rooted at root.
-func New(root string) (*Backend, error) {
-	return &Backend{root: root}, nil
+// New creates an sdbox backend.
+func New() *Backend {
+	return &Backend{}
 }
 
-func (b *Backend) Init(user string) error {
-	base := b.userRoot(user)
-	if err := os.MkdirAll(filepath.Join(base, "INBOX"), 0o700); err != nil {
+// OpenUser returns a per-session handle bound to u.
+func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	return &userMailbox{b: b, home: u.Home}
+}
+
+// userMailbox is a per-session, per-user sdbox storage handle.
+type userMailbox struct {
+	b    *Backend
+	home string
+}
+
+func (u *userMailbox) Init() error {
+	if err := os.MkdirAll(filepath.Join(u.home, "INBOX"), 0o700); err != nil {
 		return fmt.Errorf("dbox/init: %w", err)
 	}
 	return nil
 }
 
-func (b *Backend) Create(user, folder string) error {
-	if err := os.MkdirAll(b.folderPath(user, folder), 0o700); err != nil {
+func (u *userMailbox) Create(folder string) error {
+	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return fmt.Errorf("dbox/create: %w", err)
 	}
 	return nil
 }
 
-func (b *Backend) Delete(user, folder string) error {
-	if err := os.RemoveAll(b.folderPath(user, folder)); err != nil {
+func (u *userMailbox) Delete(folder string) error {
+	if err := os.RemoveAll(u.folderPath(folder)); err != nil {
 		return fmt.Errorf("dbox/delete: %w", err)
 	}
 	return nil
 }
 
-func (b *Backend) Save(user, folder string, r io.Reader, size int64, flags []string) (string, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, size int64, flags []string) (string, error) {
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return "", fmt.Errorf("dbox/save read: %w", err)
 	}
 	physSize := uint32(len(body))
 
-	seq := b.counter.Add(1)
+	seq := u.b.counter.Add(1)
 	filename := fmt.Sprintf("u.%016x", seq)
-	dst := filepath.Join(b.folderPath(user, folder), filename)
+	dst := filepath.Join(u.folderPath(folder), filename)
 
 	guid := randomGUID()
 	now := time.Now()
 
 	var buf bytes.Buffer
-	// Header line: <magic_pre> ' ' N ' ' <uid_hex8> ' ' <size_hex16> '\n'
-	// uid is 0 — FileIndex manages IMAP UIDs; we store 0 in the file.
+	// Header: <magic_pre> N <uid_hex8> <size_hex16>\n  (uid=0; index manages UIDs)
 	buf.Write(magicPre)
 	fmt.Fprintf(&buf, " N %08x %016x\n", 0, physSize)
 	buf.Write(body)
@@ -98,27 +107,25 @@ func (b *Backend) Save(user, folder string, r io.Reader, size int64, flags []str
 		return "", fmt.Errorf("dbox/save close: %w", err)
 	}
 
-	_ = flags // flags are managed by the index, not embedded in the file
+	_ = flags // flags managed by index, not embedded in the file
 	return filename, nil
 }
 
-func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
-	p := filepath.Join(b.folderPath(user, folder), filename)
+func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
+	p := filepath.Join(u.folderPath(folder), filename)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil, fmt.Errorf("dbox/fetch %s: %w", filename, err)
 	}
 
-	// Header is always 31 bytes: magicPre(2) + ' N ' (3) + uid8(8) + ' ' (1) + size16(16) + '\n'(1) = 31
+	// Header is always 31 bytes: magicPre(2) + ' N ' (3) + uid8(8) + ' ' (1) + size16(16) + '\n'(1)
 	const headerLen = 31
 	if len(data) < headerLen {
 		return nil, fmt.Errorf("dbox/fetch %s: file too short (%d bytes)", filename, len(data))
 	}
 
 	var physSize uint32
-	// Parse size from header bytes [14:30] (the 16-hex physical-size field).
-	_, err = fmt.Sscanf(string(data[14:30]), "%x", &physSize)
-	if err != nil {
+	if _, err = fmt.Sscanf(string(data[14:30]), "%x", &physSize); err != nil {
 		return nil, fmt.Errorf("dbox/fetch %s: parse size: %w", filename, err)
 	}
 
@@ -133,8 +140,8 @@ func (b *Backend) Fetch(user, folder, filename string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(body)), nil
 }
 
-func (b *Backend) Remove(user, folder, filename string) error {
-	p := filepath.Join(b.folderPath(user, folder), filename)
+func (u *userMailbox) Remove(folder, filename string) error {
+	p := filepath.Join(u.folderPath(folder), filename)
 	err := os.Remove(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -145,8 +152,8 @@ func (b *Backend) Remove(user, folder, filename string) error {
 	return nil
 }
 
-func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
-	dir := b.folderPath(user, folder)
+func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
+	dir := u.folderPath(folder)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -175,21 +182,21 @@ func (b *Backend) List(user, folder string) ([]*mailbox.MessageMeta, error) {
 		}
 		items = append(items, item{name: name, size: sz})
 	}
-	// u.<hex_seq> filenames sort lexicographically in creation order.
 	sort.Slice(items, func(i, j int) bool { return items[i].name < items[j].name })
 
 	msgs := make([]*mailbox.MessageMeta, len(items))
 	for i, it := range items {
 		msgs[i] = &mailbox.MessageMeta{
-			UID:  0, // FileIndex assigns UIDs
-			Size: it.size,
+			Filename: it.name,
+			UID:      0, // UserIndex assigns UIDs
+			Size:     it.size,
 		}
 	}
 	return msgs, nil
 }
 
-func (b *Backend) FolderExists(user, folder string) (bool, error) {
-	_, err := os.Stat(b.folderPath(user, folder))
+func (u *userMailbox) FolderExists(folder string) (bool, error) {
+	_, err := os.Stat(u.folderPath(folder))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -199,9 +206,8 @@ func (b *Backend) FolderExists(user, folder string) (bool, error) {
 	return true, nil
 }
 
-func (b *Backend) ListFolders(user string) ([]string, error) {
-	base := b.userRoot(user)
-	entries, err := os.ReadDir(base)
+func (u *userMailbox) ListFolders() ([]string, error) {
+	entries, err := os.ReadDir(u.home)
 	if err != nil {
 		return nil, fmt.Errorf("dbox/listfolders: %w", err)
 	}
@@ -221,23 +227,18 @@ func (b *Backend) ListFolders(user string) ([]string, error) {
 	return folders, nil
 }
 
-// ---- helpers ---------------------------------------------------------------
+// AppendUIDEntry is a no-op for sdbox — UIDs are managed exclusively by UserIndex.
+func (u *userMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
 
-func (b *Backend) userRoot(user string) string {
-	if at := strings.LastIndex(user, "@"); at >= 0 {
-		domain := user[at+1:]
-		local := user[:at]
-		return filepath.Join(b.root, domain, local)
-	}
-	return filepath.Join(b.root, user)
-}
+func (u *userMailbox) Close() error { return nil }
 
-func (b *Backend) folderPath(user, folder string) string {
-	base := b.userRoot(user)
+// ---- path helpers ----------------------------------------------------------
+
+func (u *userMailbox) folderPath(folder string) string {
 	if folder == "INBOX" {
-		return filepath.Join(base, "INBOX")
+		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(base, "."+folder)
+	return filepath.Join(u.home, "."+folder)
 }
 
 func randomGUID() string {

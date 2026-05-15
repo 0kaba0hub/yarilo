@@ -109,7 +109,7 @@ A single `users` table covers passdb (login + active flag) and userdb (storage /
 | `username` (PK, lowercase enforced) | login — typically the full email | ✅ |
 | `password` | `{SCHEME}hash` — BCRYPT / SHA512-CRYPT / PLAIN | ✅ |
 | `active` | gates login | ✅ |
-| `home`, `mail_path` | per-user Maildir overrides | ⚠️ returned in userdb but maildir backend derives the path from the username |
+| `home`, `mail_path` | per-user Maildir overrides | ✅ `home` passed to `Resolver.UserInfo` — overrides the global template |
 | `mailbox_format` | `''` / `maildir` / `dbox` / `mdbox` — override global default | ❌ forward-compat |
 | `quota_bytes` | `0` = unlimited | ❌ forward-compat (quota engine, Phase 10) |
 | `allow_nets` | comma-separated CIDRs; `''` = no restriction | ❌ forward-compat (login ACL) |
@@ -233,6 +233,68 @@ Expected output:
 ```
 
 LMTP on port 24 is normally not exposed publicly — for the sandbox the LoadBalancer Service publishes it so you can test end-to-end. For production, restrict it via `Service.spec.loadBalancerSourceRanges` or move LMTP behind an MTA.
+
+---
+
+## Storage architecture and phase roadmap
+
+yarilo storage follows the Dovecot `mail_storage` pattern: `MailboxBackend` and
+`IndexBackend` are per-process factories; `UserMailbox` / `UserIndex` are
+per-session handles created once after authentication and closed when the
+session ends. All per-user state (filesystem root, future quota, uid/gid) is
+captured in `mailbox.UserInfo` at login time.
+
+### Currently implemented
+
+| Mechanism | Status |
+|:---|:---|
+| Per-user handle (`MailboxBackend.OpenUser`) | ✅ Phase 2 |
+| `Resolver` — `%d/%n` template → absolute home | ✅ Phase 2 |
+| Backends: maildir, dbox, mdbox | ✅ Phase 2 |
+| Index: fileindex (dovecot-uidlist v3) | ✅ Phase 2 |
+| `UserInfo.Home` used by storage, not derived in backend | ✅ Phase 2 |
+
+### Phase 3 — userdb-driven home override ✅
+
+Already implemented. The auth layer (`internal/auth/sql`) returns `home` from
+the passdb/userdb query result; each protocol server passes it to
+`Resolver.UserInfo(username, res.Home)`. When `home` is non-empty yarilo uses
+it verbatim (absolute path) or joins it with `Root` (relative path), skipping
+the template entirely. When it is empty the `%d/%n` template fires as usual.
+
+The **global** home layout is controlled by two config keys:
+
+```yaml
+storage:
+  maildirRoot: /var/mail/vhosts        # Root prepended to template-derived paths
+  mailHomeTemplate: "%d/%n"            # Dovecot %-vars: %d=domain, %n=local, %u=full email
+```
+
+Default (`%d/%n`) gives `/var/mail/vhosts/example.com/alice`. Switch to `%u`
+for a flat layout (`/var/mail/vhosts/alice@example.com`), or `%n` for
+single-domain setups.
+
+Per-user relocation is a DB-only change — populate the `home` column in the
+`users` table, no code or config change needed.
+
+### Phase 5 — per-user mailbox format and namespaces
+
+The `mailbox_format` column in the `users` table is reserved for selecting a
+per-user backend (`maildir` / `dbox` / `mdbox`) instead of the global
+`storage.mailbox` config value. The `OpenNamespace` stub in the
+`MailboxBackend` / `IndexBackend` interfaces is placeholder for shared / public
+namespace support.
+
+**Pending:** `MailboxBackend.OpenNamespace(user *UserInfo, ns string)` — returns
+a handle for a non-private namespace rooted at the namespace storage dir.
+Namespace list (private / shared / public, each with its own location template)
+comes from a future `config.Namespaces` block. No schema migration needed.
+
+### Phase 10 — quota enforcement
+
+`UserInfo.QuotaBytes` field (stub, commented out) will be populated from the
+`quota_bytes` column and enforced at `UserMailbox.Save` time. The storage layer
+returns a typed error; IMAP and LMTP translate it to `OVERQUOTA` / `452`.
 
 ---
 

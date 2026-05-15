@@ -1,15 +1,34 @@
 package file
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
+const (
+	testUser  = "u@x.com"
+	testUser2 = "alice@x.com"
+)
+
+func testHome(root, user string) string {
+	if at := strings.LastIndex(user, "@"); at >= 0 {
+		return filepath.Join(root, user[at+1:], user[:at])
+	}
+	return filepath.Join(root, user)
+}
+
+func openIdx(root, user string) *userIndex {
+	home := testHome(root, user)
+	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userIndex)
+}
+
 func TestLogReplay(t *testing.T) {
 	dir := t.TempDir()
-	b := New(dir)
-	f, _ := b.OpenFolder("u@x.com", "INBOX", 42)
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 42)
 
 	// Append 3 messages, flag-update one, expunge one.
 	for i := uint32(1); i <= 3; i++ {
@@ -21,8 +40,8 @@ func TestLogReplay(t *testing.T) {
 	b.Close()                                                  //nolint:errcheck
 
 	// Reopen — all state must come from replaying .index.log.
-	b2 := New(dir)
-	f2, err := b2.OpenFolder("u@x.com", "INBOX", 42)
+	b2 := openIdx(dir, testUser)
+	f2, err := b2.OpenFolder("INBOX", 42)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -60,8 +79,8 @@ func TestLogReplay(t *testing.T) {
 
 func TestLogReplay_Keywords(t *testing.T) {
 	dir := t.TempDir()
-	b := New(dir)
-	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
 
 	modseq, _ := b.NextModSeq(f.ID)
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{ //nolint:errcheck
@@ -72,8 +91,8 @@ func TestLogReplay_Keywords(t *testing.T) {
 	})
 	b.Close() //nolint:errcheck
 
-	b2 := New(dir)
-	f2, _ := b2.OpenFolder("u@x.com", "INBOX", 1)
+	b2 := openIdx(dir, testUser)
+	f2, _ := b2.OpenFolder("INBOX", 1)
 	msgs, _ := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if len(msgs) != 1 {
 		t.Fatalf("after keyword log replay: got %d messages, want 1", len(msgs))
@@ -91,9 +110,10 @@ func TestLogReplay_Keywords(t *testing.T) {
 }
 
 func TestOpenFolder_CreateAndReopen(t *testing.T) {
-	b := New(t.TempDir())
+	dir := t.TempDir()
+	b := openIdx(dir, testUser2)
 
-	f, err := b.OpenFolder("alice@x.com", "INBOX", 12345)
+	f, err := b.OpenFolder("INBOX", 12345)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,8 +126,8 @@ func TestOpenFolder_CreateAndReopen(t *testing.T) {
 	b.Close() //nolint:errcheck
 
 	// Reopen — must restore header from disk.
-	b2 := New(b.root)
-	f2, err := b2.OpenFolder("alice@x.com", "INBOX", 12345)
+	b2 := openIdx(dir, testUser2)
+	f2, err := b2.OpenFolder("INBOX", 12345)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +138,8 @@ func TestOpenFolder_CreateAndReopen(t *testing.T) {
 }
 
 func TestAppendAndGetMessages(t *testing.T) {
-	b := New(t.TempDir())
-	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+	b := openIdx(t.TempDir(), testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
 
 	for i := uint32(1); i <= 5; i++ {
 		modseq, _ := b.NextModSeq(f.ID)
@@ -140,8 +160,8 @@ func TestAppendAndGetMessages(t *testing.T) {
 }
 
 func TestUpdateFlags(t *testing.T) {
-	b := New(t.TempDir())
-	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+	b := openIdx(t.TempDir(), testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
 
 	modseq, _ := b.NextModSeq(f.ID)
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}, ModSeq: modseq}) //nolint:errcheck
@@ -153,9 +173,9 @@ func TestUpdateFlags(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("message not found after UpdateFlags")
 	}
-	hasFlag := func(flags []string, f string) bool {
-		for _, fl := range flags {
-			if fl == f {
+	hasFlag := func(flags []string, fl string) bool {
+		for _, f := range flags {
+			if f == fl {
 				return true
 			}
 		}
@@ -168,8 +188,8 @@ func TestUpdateFlags(t *testing.T) {
 }
 
 func TestExpungeMessage(t *testing.T) {
-	b := New(t.TempDir())
-	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+	b := openIdx(t.TempDir(), testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
 
 	for i := uint32(1); i <= 3; i++ {
 		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Deleted`}}) //nolint:errcheck
@@ -211,8 +231,9 @@ func TestSeqSetContains(t *testing.T) {
 }
 
 func TestKeywordsRoundTrip(t *testing.T) {
-	b := New(t.TempDir())
-	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
 
 	modseq, _ := b.NextModSeq(f.ID)
 	err := b.AppendMessage(f.ID, &mailbox.MessageMeta{
@@ -246,8 +267,8 @@ func TestKeywordsRoundTrip(t *testing.T) {
 	b.Close() //nolint:errcheck
 
 	// Verify keywords survive a close+reopen (disk persistence).
-	b2 := New(b.root)
-	f2, _ := b2.OpenFolder("u@x.com", "INBOX", 1)
+	b2 := openIdx(dir, testUser)
+	f2, _ := b2.OpenFolder("INBOX", 1)
 	msgs2, _ := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if len(msgs2) != 1 {
 		t.Fatalf("after reopen: got %d messages, want 1", len(msgs2))
@@ -259,8 +280,8 @@ func TestKeywordsRoundTrip(t *testing.T) {
 }
 
 func TestKeywordsUpdateFlags(t *testing.T) {
-	b := New(t.TempDir())
-	f, _ := b.OpenFolder("u@x.com", "INBOX", 1)
+	b := openIdx(t.TempDir(), testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
 
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}}) //nolint:errcheck
 

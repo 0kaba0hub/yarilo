@@ -37,6 +37,17 @@ docker/          — Dockerfile
   Never create separate binaries per role.
 - **`pkg/mailbox` interfaces are the contract** between all storage implementations.
   Never import `internal/storage/*` from outside `internal/backend`.
+- **Per-user storage handle (Dovecot `mail_storage` pattern).**
+  Storage backends expose `OpenUser(*UserInfo) UserMailbox` (and analogously
+  `IndexBackend.OpenUser(*UserInfo) UserIndex`). Sessions call `OpenUser` once
+  after auth + userdb resolution and hold the returned handle; the handle's
+  methods take NO user/path parameter — `UserInfo` is captured at Open time.
+  `UserInfo` is built via `mailbox.Resolver` (userdb override > `mail_home`
+  template > nothing) and carries `Username` + `Home` (plus future per-user
+  context: uid/gid/settings/quota).
+  Anti-patterns: `Save(username string, ...)`, `Save(homePath string, ...)`,
+  any in-backend username→path derivation. See Dovecot 2.4
+  `src/lib-storage/mail-user.h` + `mail-storage-private.h:138`.
 - **Each worker writes only to its own tables/files.**
   No cross-package writes. Concurrent writes = corruption.
 - **API reads DB, workers write DB.** (applies when DB layer is added)

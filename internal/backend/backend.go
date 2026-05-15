@@ -36,7 +36,6 @@ type Server struct {
 	pop3       *pop3svr.Server // nil if neither POP3 nor POP3S is active
 	submission *submsvr.Server // nil if no Submission/Submissions is active
 	lmtp       *lmtp.Server    // nil if LMTP not configured
-	index      *file.Backend
 }
 
 // New creates and wires all components according to cfg.
@@ -52,15 +51,15 @@ func New(cfg *config.Config) (*Server, error) {
 	if cfg.Storage.MaildirRoot == "" {
 		cfg.Storage.MaildirRoot = "/var/mail/vhosts"
 	}
-	mbox, err := buildMailbox(cfg.Storage)
-	if err != nil {
-		return nil, fmt.Errorf("backend: mailbox: %w", err)
+	if cfg.Storage.MailHomeTemplate == "" {
+		cfg.Storage.MailHomeTemplate = "%d/%n"
 	}
-	indexRoot := cfg.Storage.IndexDir
-	if indexRoot == "" {
-		indexRoot = cfg.Storage.MaildirRoot
+	resolver := &mailbox.Resolver{
+		Root:         cfg.Storage.MaildirRoot,
+		HomeTemplate: cfg.Storage.MailHomeTemplate,
 	}
-	idx := file.New(indexRoot)
+	mbox := buildMailbox(cfg.Storage)
+	idx := file.New()
 
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
@@ -90,6 +89,7 @@ func New(cfg *config.Config) (*Server, error) {
 			TLSConfig:          imapTLS,
 			Mailbox:            mbox,
 			Index:              idx,
+			Resolver:           resolver,
 			Auth:               authChain,
 			ProxyProtocol:      primary.HAProxy,
 			HAProxyTimeout:     haproxyTimeout,
@@ -126,6 +126,7 @@ func New(cfg *config.Config) (*Server, error) {
 			TLSConfig:          pop3TLS,
 			Mailbox:            mbox,
 			Index:              idx,
+			Resolver:           resolver,
 			Auth:               authChain,
 			ProxyProtocol:      primary.HAProxy,
 			HAProxyTimeout:     haproxyTimeout,
@@ -193,6 +194,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Config:             cfg.Protocol.LMTP,
 			Mailbox:            mbox,
 			Index:              idx,
+			Resolver:           resolver,
 			ProxyProtocol:      svcs.LMTP.HAProxy,
 			HAProxyTimeout:     haproxyTimeout,
 			HAProxyTrustedNets: haproxyNets,
@@ -216,7 +218,6 @@ func New(cfg *config.Config) (*Server, error) {
 		pop3:       pop3Server,
 		submission: smtpServer,
 		lmtp:       lmtpServer,
-		index:      idx,
 	}, nil
 }
 
@@ -341,7 +342,6 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	<-ctx.Done()
-	s.index.Close() //nolint:errcheck
 	return nil
 }
 
@@ -418,14 +418,14 @@ func (a chainAuth) AuthPlain(username, password string) error {
 	return nil
 }
 
-func buildMailbox(cfg config.StorageConfig) (mailbox.MailboxBackend, error) {
+func buildMailbox(cfg config.StorageConfig) mailbox.MailboxBackend {
 	switch strings.ToLower(cfg.Mailbox) {
 	case "dbox":
-		return dbox.New(cfg.MaildirRoot)
+		return dbox.New()
 	case "mdbox":
-		return mdbox.New(cfg.MaildirRoot)
+		return mdbox.New()
 	default:
-		return maildir.New(cfg.MaildirRoot)
+		return maildir.New()
 	}
 }
 

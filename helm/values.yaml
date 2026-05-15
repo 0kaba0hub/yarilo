@@ -184,6 +184,9 @@ storage:
   ## Mailbox format: maildir | dbox | mdbox
   mailbox: maildir
   maildirRoot: /var/mail/vhosts
+  ## Dovecot-style home template (%d=domain, %n=local, %u=full email).
+  ## Default: "%d/%n"  →  /var/mail/vhosts/example.com/alice
+  mailHomeTemplate: "%d/%n"
 
   ## Index backend: fileindex | sqlite
   index: fileindex

@@ -11,20 +11,21 @@ import (
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 func buildTestServer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx := fileindex.New(dir)
-	if err := mb.Init("alice@example.com"); err != nil {
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	idx := fileindex.New()
+
+	box := mb.OpenUser(resolver.UserInfo("alice@example.com", ""))
+	if err := box.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	t.Cleanup(func() { idx.Close() }) //nolint:errcheck
+	box.Close() //nolint:errcheck
 
 	srv := New(Options{
 		Hostname: "lmtp.test",
@@ -34,8 +35,9 @@ func buildTestServer(t *testing.T) string {
 			ReadTimeout:        5,
 			WriteTimeout:       5,
 		},
-		Mailbox: mb,
-		Index:   idx,
+		Mailbox:  mb,
+		Index:    idx,
+		Resolver: resolver,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

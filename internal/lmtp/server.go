@@ -25,6 +25,7 @@ type Options struct {
 	Config   config.LMTPProtocolConfig
 	Mailbox  mailbox.MailboxBackend
 	Index    mailbox.IndexBackend
+	Resolver *mailbox.Resolver
 
 	// HAProxy PROXY protocol support.
 	ProxyProtocol      bool
@@ -171,7 +172,15 @@ func (s *session) rcptLocal(to string) error {
 	if err != nil {
 		return &goSmtp.SMTPError{Code: 501, EnhancedCode: goSmtp.EnhancedCode{5, 1, 3}, Message: "Bad recipient address"}
 	}
-	exists, err := s.opts.Mailbox.FolderExists(user, "INBOX")
+	resolver := s.opts.Resolver
+	if resolver == nil {
+		resolver = &mailbox.Resolver{}
+	}
+	userInfo := resolver.UserInfo(user, "")
+	box := s.opts.Mailbox.OpenUser(userInfo)
+	defer box.Close() //nolint:errcheck
+
+	exists, err := box.FolderExists("INBOX")
 	if err != nil {
 		slog.Error("lmtp: user lookup failed", "user", user, "err", err)
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary user lookup error"}
@@ -179,7 +188,7 @@ func (s *session) rcptLocal(to string) error {
 	if !exists {
 		// Auto-provision: LMTP is internal — the upstream MTA already vetted
 		// the recipient. Create INBOX on first delivery (Dovecot LMTP parity).
-		if err := s.opts.Mailbox.Init(user); err != nil {
+		if err := box.Init(); err != nil {
 			slog.Error("lmtp: auto-provision failed", "user", user, "err", err)
 			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Mailbox provisioning failed"}
 		}
@@ -278,7 +287,18 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			defer s.userSem.release(user) //nolint:gocritic
 		}
 
-		err := deliverOne(s.opts.Mailbox, s.opts.Index, deliverRcpt, bytes.NewReader(msg), int64(len(msg)))
+		username, folder, _ := resolveMailbox(deliverRcpt)
+		resolver := s.opts.Resolver
+		if resolver == nil {
+			resolver = &mailbox.Resolver{}
+		}
+		userInfo := resolver.UserInfo(username, "")
+		rcptBox := s.opts.Mailbox.OpenUser(userInfo)
+		rcptIdx := s.opts.Index.OpenUser(userInfo)
+		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal
+		err := deliverOne(rcptBox, rcptIdx, folder, bytes.NewReader(msg), int64(len(msg)))
+		rcptBox.Close() //nolint:errcheck
+		rcptIdx.Close() //nolint:errcheck
 		if err != nil {
 			slog.Error("lmtp: delivery failed", "rcpt", rcpt, "err", err)
 			if s.opts.Config.VerboseReplies {

@@ -10,6 +10,7 @@ import (
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 func TestLMTPWorkaroundConn_ApplyWorkarounds(t *testing.T) {
@@ -71,15 +72,15 @@ func TestLMTPWorkaroundConn_ApplyWorkarounds(t *testing.T) {
 // server with whitespace-before-path enabled, sending raw MAIL FROM with a space.
 func TestLMTP_WhitespaceBeforePath_Integration(t *testing.T) {
 	dir := t.TempDir()
-	mb, err := maildir.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx := fileindex.New(dir)
-	t.Cleanup(func() { idx.Close() }) //nolint:errcheck
-	if err := mb.Init("alice@example.com"); err != nil {
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	idx := fileindex.New()
+
+	box := mb.OpenUser(resolver.UserInfo("alice@example.com", ""))
+	if err := box.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	box.Close() //nolint:errcheck
 
 	srv := New(Options{
 		Hostname: "lmtp.test",
@@ -89,8 +90,9 @@ func TestLMTP_WhitespaceBeforePath_Integration(t *testing.T) {
 			HdrDeliveryAddress: "final",
 			ClientWorkarounds:  []string{"whitespace-before-path"},
 		},
-		Mailbox: mb,
-		Index:   idx,
+		Mailbox:  mb,
+		Index:    idx,
+		Resolver: resolver,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

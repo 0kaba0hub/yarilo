@@ -11,33 +11,40 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// deliverOne saves a single message to the recipient's mailbox and updates the index.
-func deliverOne(mb mailbox.MailboxBackend, idx mailbox.IndexBackend, rcpt string, r io.ReadSeeker, size int64) error {
-	user, folder, err := resolveMailbox(rcpt)
-	if err != nil {
-		return fmt.Errorf("lmtp: resolve %q: %w", rcpt, err)
-	}
-
+// deliverOne saves a single message to a pre-opened UserMailbox/UserIndex pair.
+// The caller is responsible for opening handles via MailboxBackend.OpenUser and
+// IndexBackend.OpenUser (after resolving the recipient's UserInfo), and for
+// calling Init() on the UserMailbox before the first delivery in a session.
+//
+// Phase 4 — userdb lookup for LMTP:
+//
+//	Currently the resolver uses only the template (no userdb home override),
+//	because LMTP delivery is unauthenticated and yarilo has no userdb lookup
+//	path for incoming SMTP recipients. To support per-user home overrides
+//	during delivery (matching Dovecot's lda/lmtp behaviour), add a UserDB
+//	interface (driver: SQL query or dict protocol) and call it here before
+//	OpenUser, passing the resulting home as homeOverride to Resolver.UserInfo.
+func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64) error {
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("lmtp: seek: %w", err)
 	}
 	data, _ := io.ReadAll(r)
 
-	filename, err := mb.Save(user, folder, bytes.NewReader(data), size, nil)
+	filename, err := box.Save(folder, bytes.NewReader(data), size, nil)
 	if err != nil {
-		return fmt.Errorf("lmtp: save for %q: %w", rcpt, err)
+		return fmt.Errorf("lmtp: save: %w", err)
 	}
 
-	f, err := idx.OpenFolder(user, folder, 0)
+	f, err := idx.OpenFolder(folder, 0)
 	if err != nil {
-		_ = mb.Remove(user, folder, filename)
-		return fmt.Errorf("lmtp: open index for %q: %w", rcpt, err)
+		_ = box.Remove(folder, filename)
+		return fmt.Errorf("lmtp: open index: %w", err)
 	}
 
 	modseq, err := idx.NextModSeq(f.ID)
 	if err != nil {
-		_ = mb.Remove(user, folder, filename)
-		return fmt.Errorf("lmtp: modseq for %q: %w", rcpt, err)
+		_ = box.Remove(folder, filename)
+		return fmt.Errorf("lmtp: modseq: %w", err)
 	}
 
 	meta := &mailbox.MessageMeta{
@@ -46,11 +53,11 @@ func deliverOne(mb mailbox.MailboxBackend, idx mailbox.IndexBackend, rcpt string
 		Size:     uint32(size),
 	}
 	if err := idx.AppendMessage(f.ID, meta); err != nil {
-		_ = mb.Remove(user, folder, filename)
-		return fmt.Errorf("lmtp: index append for %q: %w", rcpt, err)
+		_ = box.Remove(folder, filename)
+		return fmt.Errorf("lmtp: index append: %w", err)
 	}
 
-	slog.Info("lmtp: delivered", "rcpt", rcpt, "uid", meta.UID, "size", size)
+	slog.Info("lmtp: delivered", "folder", folder, "uid", meta.UID, "size", size)
 	return nil
 }
 
@@ -68,9 +75,9 @@ func stripDetail(addr string) string {
 	return local + "@" + domain
 }
 
-// resolveMailbox maps RCPT TO address to (user, folder).
-// user+folder@domain → user=user@domain, folder=folder; otherwise folder=INBOX.
-func resolveMailbox(rcpt string) (user, folder string, err error) {
+// resolveMailbox maps RCPT TO address to (username, folder).
+// user+folder@domain → username=user@domain, folder=folder; otherwise folder=INBOX.
+func resolveMailbox(rcpt string) (username, folder string, err error) {
 	rcpt = strings.TrimSpace(strings.Trim(rcpt, "<>"))
 	at := strings.LastIndex(rcpt, "@")
 	if at < 0 {

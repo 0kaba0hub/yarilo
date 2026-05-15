@@ -179,10 +179,11 @@ type PassdbEntry struct {
 }
 
 type StorageConfig struct {
-	Mailbox     string `koanf:"mailbox"`
-	MaildirRoot string `koanf:"maildir_root"`
-	Index       string `koanf:"index"`
-	IndexDir    string `koanf:"index_dir"`
+	Mailbox          string `koanf:"mailbox"`
+	MaildirRoot      string `koanf:"maildir_root"`
+	MailHomeTemplate string `koanf:"mail_home_template"`
+	Index            string `koanf:"index"`
+	IndexDir         string `koanf:"index_dir"`
 }
 
 type TelemetryConfig struct {

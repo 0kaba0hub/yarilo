@@ -25,6 +25,7 @@ type Options struct {
 	TLSConfig          *tls.Config
 	Mailbox            mailbox.MailboxBackend
 	Index              mailbox.IndexBackend
+	Resolver           *mailbox.Resolver
 	Auth               protocol.Passdb
 	ProxyProtocol      bool
 	HAProxyTimeout     time.Duration

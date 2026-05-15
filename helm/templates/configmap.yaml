@@ -172,6 +172,7 @@ data:
     storage:
       mailbox: {{ .Values.storage.mailbox | quote }}
       maildir_root: {{ .Values.storage.maildirRoot | quote }}
+      mail_home_template: {{ .Values.storage.mailHomeTemplate | quote }}
       index: {{ .Values.storage.index | quote }}
       index_dir: ""
 
