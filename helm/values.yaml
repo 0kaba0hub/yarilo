@@ -271,6 +271,12 @@ containerSecurityContext:
     add: [NET_BIND_SERVICE]
 
 ## -------------------------------------------------------------------
+## Component selector — passed as YARILO_COMPONENT env var to the
+## entrypoint script. Determines which binary the container runs.
+## -------------------------------------------------------------------
+component: yarilo   # yarilo | yarilo-auth | yarilo-migrate
+
+## -------------------------------------------------------------------
 ## Log level (also settable via LOG_LEVEL env var)
 ## -------------------------------------------------------------------
 logLevel: info   # debug | info | warn | error

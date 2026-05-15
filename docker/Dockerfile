@@ -5,15 +5,20 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w" -trimpath -o /yarilo ./app/yarilo
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo         ./app/yarilo         && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-auth    ./app/yarilo-auth    && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-migrate ./app/yarilo-migrate
 
 FROM alpine:3.23
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates tzdata
-COPY --from=builder /yarilo /usr/local/bin/yarilo
+
+COPY --from=builder /out/ /usr/local/bin/
+COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
+
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 143 993 8080
 
-ENTRYPOINT ["/usr/local/bin/yarilo", "-config", "/etc/yarilo/yarilo.yaml"]
+ENTRYPOINT ["/entrypoint.sh"]
