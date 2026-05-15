@@ -11,18 +11,9 @@ on:
       - "go.mod"
       - "go.sum"
       - "docker/Dockerfile"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "app/**"
-      - "internal/**"
-      - "pkg/**"
-      - "go.mod"
-      - "go.sum"
-      - "docker/Dockerfile"
   schedule:
     - cron: "0 6 * * 1"  # every Monday at 06:00 UTC
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

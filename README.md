@@ -121,16 +121,16 @@ Yarilo is a single binary that runs in one of three roles (`mode: proxy | direct
 
 ## Cluster components
 
-| Component | Role |
-|:---|:---|
-| yarilo-director | consistent hashing, sticky sessions, failover |
-| yarilo-auth | passdb chain, auth cache, SASL dispatch |
-| yarilo-dict | Redis / SQLite key-value abstraction |
-| yarilo-admin | control socket (kick, reload, stats) |
-| yarilo-stats | per-user / per-domain connection metrics |
-| yarilo-anvil | connection rate limiting + penalty algorithm |
-| imap-hibernate | idle IMAP connection parking via FD-passing |
-| yarilo-indexer | background FTS indexing service |
+| Component | Role | Status |
+|:---|:---|:---|
+| yarilo-auth | passdb chain, auth cache, SASL dispatch — TCP+mTLS | ✅ v1.0.0 |
+| yarilo-director | consistent hashing, sticky sessions, failover | planned |
+| yarilo-anvil | connection rate limiting + penalty algorithm | planned |
+| yarilo-dict | Redis / SQLite key-value abstraction | planned |
+| yarilo-admin | control socket (kick, reload, stats) | planned |
+| yarilo-stats | per-user / per-domain connection metrics | planned |
+| imap-hibernate | idle IMAP connection parking via FD-passing | planned |
+| yarilo-indexer | background FTS indexing service | planned |
 
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
 Full wire-format specification: [INTERNALS.md](INTERNALS.md).
@@ -190,6 +190,18 @@ auth:
   passdb:
     - driver: postgres
       dsn: "${DB_URL}"
+
+# yarilo-auth standalone process (multi-process mode).
+# Listen address and mTLS cert paths used by the yarilo-auth binary.
+auth_service:
+  listen: ":9100"
+  mtls:
+    cert: /etc/yarilo/tls/tls.crt
+    key:  /etc/yarilo/tls/tls.key
+    ca:   /etc/yarilo/tls/ca.crt
+  shutdown:
+    session_grace_period: 30  # seconds to drain sessions on SIGTERM
+    kill_timeout: 5           # seconds before forced exit
 
 storage:
   mailbox: maildir
