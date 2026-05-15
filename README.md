@@ -194,6 +194,7 @@ auth:
 storage:
   mailbox: maildir
   maildir_root: /var/mail/vhosts
+  mail_home_template: "%d/%n"   # %d=domain %n=local %u=full email
 
 log:
   level: info

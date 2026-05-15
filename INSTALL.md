@@ -199,7 +199,7 @@ kubectl -n yarilo-sb exec yarilo-postgres-0 -- \
   "SELECT username, active, mailbox_format, quota_bytes, display_name FROM users;"
 ```
 
-`home` / `mail_path` left blank — the Maildir backend currently derives the path from the email itself (`<maildirRoot>/<domain>/<local-part>`) regardless of what userdb returns. Populate them only when per-user overrides become useful.
+`home` / `mail_path` left blank — yarilo uses the global `storage.mailHomeTemplate` (`%d/%n` by default) to derive the path: `<maildirRoot>/<domain>/<local-part>`. Set `home` to an absolute path in the `users` table to override the template for a specific user.
 
 `mailbox_format`, `allow_nets`, `director_tag`, `quota_bytes` are also intentionally default — yarilo doesn't read them yet (see the schema table above). They're in the table so future yarilo releases that wire those features won't require a schema migration.
 
