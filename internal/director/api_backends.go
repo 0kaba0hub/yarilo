@@ -36,7 +36,7 @@ func (s *Server) apiBackendAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	s.ring.AddBackend(&ring.Backend{
 		IP: req.IP, Port: req.Port, Tag: req.Tag, Up: true, Vhosts: req.Vhosts,
-		LastUpdownChange: time.Now().Unix(),
+		LastUp: time.Now().Unix(),
 	})
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", req.IP, req.Tag), nil)
 	s.updateMetrics()

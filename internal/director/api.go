@@ -123,14 +123,16 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) apiDump(w http.ResponseWriter, _ *http.Request) {
 	type bDump struct {
 		backendDTO
-		LastUpdownChange int64 `json:"last_updown_change"`
+		LastUp   int64 `json:"last_up"`
+		LastDown int64 `json:"last_down"`
 	}
 	backends := s.ring.Backends()
 	bs := make([]bDump, len(backends))
 	for i, b := range backends {
 		bs[i] = bDump{
-			backendDTO:       toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts}),
-			LastUpdownChange: b.LastUpdownChange,
+			backendDTO: toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts}),
+			LastUp:     b.LastUp,
+			LastDown:   b.LastDown,
 		}
 	}
 	type uDTO struct {

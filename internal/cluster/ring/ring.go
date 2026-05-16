@@ -14,13 +14,14 @@ const defaultVhosts = 100
 
 // Backend represents a backend node in the ring.
 type Backend struct {
-	IP               string
-	Port             int
-	Tag              string
-	Up               bool
-	Vhosts           int   // virtual nodes; 0 = defaultVhosts (100)
-	LastUpdownChange int64 // Unix timestamp of last up/down state change
-	Hostname         string
+	IP       string
+	Port     int
+	Tag      string
+	Up       bool
+	Vhosts   int   // virtual nodes; 0 = defaultVhosts (100)
+	LastUp   int64 // Unix timestamp of last transition to Up
+	LastDown int64 // Unix timestamp of last transition to Down (0 if never)
+	Hostname string
 }
 
 // Ring is a consistent-hashing ring.
@@ -72,7 +73,11 @@ func (r *Ring) SetUp(ip string, up bool, ts int64) bool {
 	}
 	b.Up = up
 	if ts != 0 {
-		b.LastUpdownChange = ts
+		if up {
+			b.LastUp = ts
+		} else {
+			b.LastDown = ts
+		}
 	}
 	r.rebuild()
 	return true
