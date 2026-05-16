@@ -11,6 +11,7 @@ import (
 	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -67,9 +68,14 @@ func mdboxBackend(_ *testing.T) mailbox.MailboxBackend {
 	return mdbox.New()
 }
 
+func maildirBackend(_ *testing.T) mailbox.MailboxBackend {
+	return maildir.New()
+}
+
 var backends = []backendFactory{
 	{"dbox", dboxBackend},
 	{"mdbox", mdboxBackend},
+	{"maildir", maildirBackend},
 }
 
 // TestIMAPBackends runs the full IMAP operation sequence against each backend.
