@@ -129,12 +129,10 @@ func (r *Ring) LookupBackend(username string) *Backend {
 }
 
 // LookupBackendByTag returns a backend for username restricted to backends
-// whose Tag matches tag. Falls back to the full ring when tag is empty.
-// Returns nil if no backends for that tag exist.
+// whose Tag exactly matches tag (including "" for untagged backends).
+// Returns nil if no backends with that tag exist.
+// To route over the full ring regardless of tag, use LookupBackend.
 func (r *Ring) LookupBackendByTag(username, tag string) *Backend {
-	if tag == "" {
-		return r.LookupBackend(username)
-	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.lookupLocked(username, r.tagVhosts[tag])

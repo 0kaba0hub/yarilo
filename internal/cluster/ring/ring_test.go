@@ -81,14 +81,28 @@ func TestLookupBackendByTag_IsolatesPool(t *testing.T) {
 	}
 }
 
-func TestLookupBackendByTag_EmptyTag_FullRing(t *testing.T) {
+func TestLookupBackendByTag_EmptyTag_UntaggedOnly(t *testing.T) {
+	r := New()
+	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
+	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "", Up: true}) // untagged
+
+	b := r.LookupBackendByTag("alice@example.com", "")
+	if b == nil {
+		t.Fatal("empty tag must route to untagged backends, got nil")
+	}
+	if b.IP != "10.0.0.2" {
+		t.Errorf("empty tag: expected untagged backend 10.0.0.2, got %q", b.IP)
+	}
+}
+
+func TestLookupBackendByTag_EmptyTag_NilWhenNoUntagged(t *testing.T) {
 	r := New()
 	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "hdd", Up: true})
 
 	b := r.LookupBackendByTag("alice@example.com", "")
-	if b == nil {
-		t.Fatal("empty tag must fall back to full ring, got nil")
+	if b != nil {
+		t.Errorf("empty tag with no untagged backends: want nil, got %+v", b)
 	}
 }
 

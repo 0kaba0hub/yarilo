@@ -468,8 +468,15 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		}
 	}
 
-	// Ring lookup — restricted to tag sub-ring when tag is set.
-	b := s.ring.LookupBackendByTag(user, tag)
+	// Ring lookup. When tag field is present in the LOOKUP command (even ""),
+	// restrict to backends with exactly that tag. When tag field is absent,
+	// use the full ring regardless of backend tags.
+	var b *ring.Backend
+	if len(fields) >= 4 {
+		b = s.ring.LookupBackendByTag(user, tag)
+	} else {
+		b = s.ring.LookupBackend(user)
+	}
 	if b == nil {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=no-backends", id))
 		return
