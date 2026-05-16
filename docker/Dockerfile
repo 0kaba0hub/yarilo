@@ -12,6 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-imap       ./app/yarilo-imap       && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-pop3       ./app/yarilo-pop3       && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-lmtp       ./app/yarilo-lmtp       && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-submission ./app/yarilo-submission && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-migrate    ./app/yarilo-migrate
 
 FROM alpine:3.23
@@ -24,6 +25,6 @@ COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
 
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 143 993 8080
+EXPOSE 143 993 465 587 8080
 
 ENTRYPOINT ["/entrypoint.sh"]

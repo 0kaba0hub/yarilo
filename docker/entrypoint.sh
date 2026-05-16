@@ -23,12 +23,15 @@ case "$YARILO_COMPONENT" in
   yarilo-lmtp)
     exec /usr/local/bin/yarilo-lmtp
     ;;
+  yarilo-submission)
+    exec /usr/local/bin/yarilo-submission
+    ;;
   yarilo-migrate)
     exec /usr/local/bin/yarilo-migrate "$@"
     ;;
   *)
     echo "Unknown YARILO_COMPONENT: '${YARILO_COMPONENT}'"
-    echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-director, yarilo-imap, yarilo-pop3, yarilo-lmtp, yarilo-migrate"
+    echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-director, yarilo-imap, yarilo-pop3, yarilo-lmtp, yarilo-submission, yarilo-migrate"
     exit 1
     ;;
 esac
