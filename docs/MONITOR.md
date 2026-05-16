@@ -136,21 +136,53 @@ tags:
 
 ## Prometheus metrics (director)
 
-The director exposes backend health via `/metrics`:
+The director exposes backend health and session counts via `/metrics`:
+
+### `yarilo_director_backend_info`
+
+Ring membership gauge. Value is always `1`; the `status` label carries the state.
 
 ```
-# Ring membership and status (1 = present; status = up | flush)
 yarilo_director_backend_info{ip="10.0.0.1", port="993", tag="ssd", status="up"} 1
-
-# Approximate session count from userDir TTL window
-yarilo_director_backend_sessions{ip="10.0.0.1", port="993", tag="ssd"} 42
+yarilo_director_backend_info{ip="10.0.0.2", port="993", tag="ssd", status="flush"} 1
 ```
 
-`backend_sessions` counts non-expired user→backend entries in the director's userDir
-(TTL = `user_expire`, default 900 s). It is an approximation — exact session counts
-require SESSION-OPEN/SESSION-CLOSE tracking (planned).
+| Label | Values | Description |
+|:---|:---|:---|
+| `ip` | — | Backend pod IP. |
+| `port` | — | Backend ring port. |
+| `tag` | — | Backend group tag. |
+| `status` | `up` \| `flush` | `up` = accepting new sessions; `flush` = draining (health check failed). |
 
-Alert example (Prometheus):
+### `yarilo_director_backend_sessions`
+
+Exact count of active proxied sessions per backend and client-facing protocol.
+Incremented when `biProxy` starts, decremented when it returns.
+
+```
+yarilo_director_backend_sessions{ip="10.0.0.1", port="993", tag="ssd", protocol="imaps"} 17
+yarilo_director_backend_sessions{ip="10.0.0.1", port="993", tag="ssd", protocol="imap"}  3
+yarilo_director_backend_sessions{ip="10.0.0.1", port="993", tag="ssd", protocol="pop3s"} 2
+```
+
+| Label | Values | Description |
+|:---|:---|:---|
+| `ip` | — | Backend pod IP. |
+| `port` | — | Backend ring port. |
+| `tag` | — | Backend group tag. |
+| `protocol` | `imap` \| `imaps` \| `pop3` \| `pop3s` \| `lmtp` | Client-facing protocol. |
+
+Total sessions per backend (all protocols):
 ```promql
+sum by (ip, port, tag) (yarilo_director_backend_sessions)
+```
+
+### Alert examples
+
+```promql
+# Backend not healthy
 yarilo_director_backend_info{status!="up"} == 1
+
+# Backend session count exceeds threshold
+sum by (ip, port, tag) (yarilo_director_backend_sessions) > 500
 ```
