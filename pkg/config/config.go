@@ -200,6 +200,13 @@ type MailServerConfig struct {
 	Tag string `koanf:"tag"`
 }
 
+// DirectorAPIConfig configures the HTTP admin API on yarilo-director.
+type DirectorAPIConfig struct {
+	Listen      string   `koanf:"listen"`       // default ":9103"
+	Token       string   `koanf:"token"`        // Bearer token; supports ${ENV_VAR}
+	AllowedNets []string `koanf:"allowed_nets"` // CIDRs allowed to call the API
+}
+
 // DirectorServiceConfig configures the standalone yarilo-director process.
 type DirectorServiceConfig struct {
 	Listen       string             `koanf:"listen"`
@@ -209,6 +216,7 @@ type DirectorServiceConfig struct {
 	PingTimeout  int                `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
 	Peers        []string           `koanf:"peers"`         // peer director addresses "host:port" for ring sync (replicas > 1)
+	API          DirectorAPIConfig  `koanf:"api"`
 }
 
 // ShutdownConfig controls graceful shutdown behaviour.
@@ -326,6 +334,13 @@ func Load(path string) (*Config, error) {
 			UserExpire:   900,
 			PingInterval: 30,
 			PingTimeout:  10,
+			API: DirectorAPIConfig{
+				Listen: ":9103",
+				// 127.0.0.0/8   — loopback (same-pod CLI)
+				// 10.96.0.0/12  — k8s service CIDR (kubeadm default)
+				// 10.244.0.0/16 — k8s pod CIDR (flannel/kubeadm default)
+				AllowedNets: []string{"127.0.0.0/8", "10.96.0.0/12", "10.244.0.0/16"},
+			},
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
@@ -412,6 +427,7 @@ func expandEnv(cfg *Config) {
 	expandSvcSSL(cfg.Services.Submissions)
 	expandSvcSSL(cfg.Services.POP3)
 	expandSvcSSL(cfg.Services.POP3S)
+	cfg.DirectorService.API.Token = expand(cfg.DirectorService.API.Token)
 	cfg.Protocol.Submission.Relay.Password = expand(cfg.Protocol.Submission.Relay.Password)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)

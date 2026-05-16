@@ -50,11 +50,11 @@ func NewPeerDialer(srv *Server, peers []string, tlsCfg *tls.Config, localIP stri
 func (d *PeerDialer) Start(ctx context.Context) {
 	for _, addr := range d.peers {
 		addr := addr
-		go d.runPeer(ctx, addr)
+		go d.RunPeer(ctx, addr)
 	}
 }
 
-func (d *PeerDialer) runPeer(ctx context.Context, addr string) {
+func (d *PeerDialer) RunPeer(ctx context.Context, addr string) {
 	backoff := 2 * time.Second
 	for {
 		if err := d.connectPeer(ctx, addr); err != nil && ctx.Err() == nil {

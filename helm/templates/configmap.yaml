@@ -202,6 +202,13 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+      api:
+        listen: {{ printf ":%d" (int .Values.components.director.api.port) | quote }}
+        token: "${DIRECTOR_API_TOKEN}"
+        allowed_nets:
+          {{- range .Values.components.director.api.allowedNets }}
+          - {{ . | quote }}
+          {{- end }}
 
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}

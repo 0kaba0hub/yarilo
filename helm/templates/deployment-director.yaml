@@ -71,6 +71,15 @@ spec:
             - name: telemetry
               containerPort: 8080
               protocol: TCP
+            - name: api
+              containerPort: {{ .Values.components.director.api.port }}
+              protocol: TCP
+          env:
+            - name: DIRECTOR_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "%s-director-api-token" (include "yarilo.fullname" .) }}
+                  key: token
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:

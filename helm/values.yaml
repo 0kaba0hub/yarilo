@@ -83,6 +83,17 @@ components:
     ##   yarilo-director-1.yarilo-director-headless:9102
     peers: []
 
+    ## HTTP admin API (yarilo-admin CLI target).
+    ## A 32-char token is auto-generated into Secret <release>-director-api-token on first
+    ## deploy and preserved on upgrades. To rotate: delete the Secret before helm upgrade.
+    api:
+      port: 9103
+      ## CIDRs allowed to reach the API. Default: loopback + k8s service/pod CIDRs.
+      allowedNets:
+        - "127.0.0.0/8"
+        - "10.96.0.0/12"
+        - "10.244.0.0/16"
+
     ## yarilo-monitor sidecar — probes backend pods and reports health to the director.
     ## Runs as a sidecar container in the director pod.
     monitor:
