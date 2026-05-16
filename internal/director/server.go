@@ -693,6 +693,33 @@ func (s *Server) LookupBackend(username string) *ring.Backend {
 	return s.ring.LookupBackend(username)
 }
 
+// RouteUser returns the backend IP for a recipient username, implementing
+// lmtp.UserRouter. Checks admin overrides, sticky userDir, then the ring.
+func (s *Server) RouteUser(username string) (string, error) {
+	s.overrideMu.RLock()
+	addr, hasOverride := s.overrides[username]
+	s.overrideMu.RUnlock()
+	if hasOverride {
+		host, _, err := net.SplitHostPort(addr)
+		if err == nil {
+			return host, nil
+		}
+	}
+	if e := s.userDir.Get(username); e != nil && !e.Weak {
+		host, _, err := net.SplitHostPort(e.Host)
+		if err == nil {
+			if b := s.ring.GetBackend(host); b != nil && b.Up {
+				return host, nil
+			}
+		}
+	}
+	b := s.ring.LookupBackend(username)
+	if b == nil {
+		return "", fmt.Errorf("no backends available")
+	}
+	return b.IP, nil
+}
+
 // RecordUser writes a user→backend mapping into the user directory.
 func (s *Server) RecordUser(username, backendAddr string) {
 	s.userDir.Set(username, backendAddr, false)
