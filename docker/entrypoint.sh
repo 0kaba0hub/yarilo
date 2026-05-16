@@ -17,8 +17,14 @@ case "$YARILO_COMPONENT" in
   yarilo-imap)
     exec /usr/local/bin/yarilo-imap
     ;;
+  yarilo-imap-login)
+    exec /usr/local/bin/yarilo-imap-login
+    ;;
   yarilo-pop3)
     exec /usr/local/bin/yarilo-pop3
+    ;;
+  yarilo-pop3-login)
+    exec /usr/local/bin/yarilo-pop3-login
     ;;
   yarilo-lmtp)
     exec /usr/local/bin/yarilo-lmtp
@@ -26,12 +32,19 @@ case "$YARILO_COMPONENT" in
   yarilo-submission)
     exec /usr/local/bin/yarilo-submission
     ;;
+  yarilo-submission-login)
+    exec /usr/local/bin/yarilo-submission-login
+    ;;
   yarilo-migrate)
     exec /usr/local/bin/yarilo-migrate "$@"
     ;;
   *)
     echo "Unknown YARILO_COMPONENT: '${YARILO_COMPONENT}'"
-    echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-director, yarilo-imap, yarilo-pop3, yarilo-lmtp, yarilo-submission, yarilo-migrate"
+    echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-director,"
+    echo "           yarilo-imap, yarilo-imap-login,"
+    echo "           yarilo-pop3, yarilo-pop3-login,"
+    echo "           yarilo-lmtp, yarilo-submission, yarilo-submission-login,"
+    echo "           yarilo-migrate"
     exit 1
     ;;
 esac

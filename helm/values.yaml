@@ -19,38 +19,13 @@ components:
     ## Internal director protocol (ring management, LOOKUP between directors).
     directorPort: 9102
 
-    ## Client-facing listeners (same ports as a regular mail server).
+    ## Client-facing listeners.
+    ## IMAP/POP3/Submission are handled by dedicated login pods; director only proxies LMTP.
     listeners:
-      imaps:
-        enabled: true
-        port: 993
-        containerPort: 10993
-      imap:
-        enabled: false
-        port: 143
-        containerPort: 10143
-      pop3s:
-        enabled: false
-        port: 995
-        containerPort: 10995
-      pop3:
-        enabled: false
-        port: 110
-        containerPort: 10110
       lmtp:
         enabled: false
         port: 24
         containerPort: 10024
-
-    ## TLS cert presented to mail clients (IMAPS/POP3S).
-    tls:
-      secretName: ""
-      certificate:
-        enabled: false
-        issuerRef:
-          kind: ClusterIssuer
-          name: letsencrypt-prod
-        dnsNames: []
 
     ## mTLS for internal connections (director ↔ auth, director ↔ backend).
     internalTLS:
@@ -299,8 +274,8 @@ components:
         cpu: 500m
         memory: 256Mi
 
-  ## Submission proxy — accepts mail from clients, relays to upstream MTA.
-  ## Standalone service; does NOT route through director.
+  ## Submission backend — accepts mail from submission-login pods, relays to upstream MTA.
+  ## ClusterIP only; mail clients connect to yarilo-submission-login (LoadBalancer).
   submission:
     enabled: false
     replicas: 1
@@ -319,9 +294,134 @@ components:
       enabled: false
       secretName: ""
 
-    ## TLS cert for client-facing listeners (same secret as director by default).
     tls:
       secretName: ""
+
+    service:
+      type: ClusterIP
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  ## IMAP login pod — TLS terminator + director LOOKUP + proxy to yarilo-imap backend.
+  ## Faces mail clients on 993/143; does NOT store mail.
+  imapLogin:
+    enabled: false
+    replicas: 1
+
+    listeners:
+      imaps:
+        enabled: true
+        servicePort: 993
+        containerPort: 10993
+      imap:
+        enabled: false
+        servicePort: 143
+        containerPort: 10143
+
+    ## TLS cert presented to mail clients (IMAPS / STARTTLS for IMAP).
+    tls:
+      secretName: ""
+      certificate:
+        enabled: false
+        issuerRef:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        dnsNames: []
+
+    ## mTLS for connections to director and backend pods.
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    service:
+      type: LoadBalancer
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  ## POP3 login pod — TLS terminator + director LOOKUP + proxy to yarilo-pop3 backend.
+  pop3Login:
+    enabled: false
+    replicas: 1
+
+    listeners:
+      pop3s:
+        enabled: true
+        servicePort: 995
+        containerPort: 10995
+      pop3:
+        enabled: false
+        servicePort: 110
+        containerPort: 10110
+
+    tls:
+      secretName: ""
+      certificate:
+        enabled: false
+        issuerRef:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        dnsNames: []
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    service:
+      type: LoadBalancer
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  ## Submission login pod — TLS terminator + director LOOKUP + proxy to yarilo-submission backend.
+  submissionLogin:
+    enabled: false
+    replicas: 1
+
+    listeners:
+      submission:
+        enabled: true
+        servicePort: 587
+        containerPort: 10587
+      submissions:
+        enabled: false
+        servicePort: 465
+        containerPort: 10465
+
+    tls:
+      secretName: ""
+      certificate:
+        enabled: false
+        issuerRef:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        dnsNames: []
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    service:
+      type: LoadBalancer
+      annotations: {}
 
     resources:
       requests:

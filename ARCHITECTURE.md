@@ -145,9 +145,9 @@ stern -l app.kubernetes.io/part-of=yarilo
 |:---|:---|:---|:---|
 | `yarilo-auth` | ClusterIP :9100 | 2+ | stateless, HPA |
 | `yarilo-anvil` | ClusterIP :9101 | 1 | shared conn state, single instance |
-| `yarilo-director` | ClusterIP :9102 | 2–3 | ring state, leader election |
-| `yarilo-health` | ClusterIP :9103 | 1–2 | polls backends, notifies director |
-| `yarilo-ipc` | ClusterIP :9104 | 1 | kick-user, admin command bus |
+| `yarilo-director` | ClusterIP :9102 + :24 | 2–3 | ring + LMTP proxy (port 24 via ClusterIP/NodePort for trusted MTAs) |
+| `yarilo-monitor` | sidecar in director pod | 1 | polls backends, reports health to director |
+| `yarilo-director-admin` | ClusterIP :9103 | — | HTTP admin API (same pod as director) |
 | `yarilo-imap-login` | LoadBalancer :993 / :143 | 2+ | stateless, HPA |
 | `yarilo-pop3-login` | LoadBalancer :995 / :110 | 2+ | stateless, HPA |
 | `yarilo-submission-login` | LoadBalancer :465 / :587 | 2+ | stateless, HPA |

@@ -1,22 +1,22 @@
-{{- if .Values.components.director.enabled }}
+{{- if .Values.components.submissionLogin.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "yarilo.fullname" . }}-director
+  name: {{ include "yarilo.fullname" . }}-submission-login
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "submission-login") | nindent 4 }}
 spec:
-  replicas: {{ .Values.components.director.replicas }}
+  replicas: {{ .Values.components.submissionLogin.replicas }}
   selector:
     matchLabels:
-      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 6 }}
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "submission-login") | nindent 6 }}
   strategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 8 }}
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "submission-login") | nindent 8 }}
       annotations:
         {{- include "yarilo.configChecksum" . | nindent 8 }}
         {{- with .Values.podAnnotations }}
@@ -26,52 +26,51 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: yarilo-director
+        - name: yarilo-submission-login
           image: {{ include "yarilo.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: YARILO_COMPONENT
-              value: "yarilo-director"
+              value: "yarilo-submission-login"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
-            - name: DIRECTOR_API_TOKEN
+            - name: POD_IP
               valueFrom:
-                secretKeyRef:
-                  name: {{ printf "%s-director-api-token" (include "yarilo.fullname" .) }}
-                  key: token
+                fieldRef:
+                  fieldPath: status.podIP
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: director
-              containerPort: {{ .Values.components.director.directorPort }}
+            {{- if .Values.components.submissionLogin.listeners.submission.enabled }}
+            - name: submission
+              containerPort: {{ .Values.components.submissionLogin.listeners.submission.containerPort }}
               protocol: TCP
-            {{- if .Values.components.director.listeners.lmtp.enabled }}
-            - name: lmtp
-              containerPort: {{ .Values.components.director.listeners.lmtp.containerPort }}
+            {{- end }}
+            {{- if .Values.components.submissionLogin.listeners.submissions.enabled }}
+            - name: submissions
+              containerPort: {{ .Values.components.submissionLogin.listeners.submissions.containerPort }}
               protocol: TCP
             {{- end }}
             - name: telemetry
               containerPort: 8080
-              protocol: TCP
-            - name: api
-              containerPort: {{ .Values.components.director.api.port }}
               protocol: TCP
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
-            {{- toYaml .Values.components.director.resources | nindent 12 }}
+            {{- toYaml .Values.components.submissionLogin.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/yarilo
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- include "yarilo.internalTLSMount" .Values.components.director.internalTLS | nindent 12 }}
+            {{- include "yarilo.externalTLSMount" .Values.components.submissionLogin.tls.secretName | nindent 12 }}
+            {{- include "yarilo.internalTLSMount" .Values.components.submissionLogin.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -81,7 +80,8 @@ spec:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
-        {{- include "yarilo.internalTLSVolume" .Values.components.director.internalTLS | nindent 8 }}
+        {{- include "yarilo.externalTLSVolume" .Values.components.submissionLogin.tls.secretName | nindent 8 }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.submissionLogin.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -1,5 +1,6 @@
 {{- if .Values.components.director.enabled }}
-## LoadBalancer — mail client connections (IMAPS/IMAP/POP3S/POP3/LMTP)
+{{- if .Values.components.director.listeners.lmtp.enabled }}
+## LoadBalancer — LMTP (incoming mail delivery from MX)
 apiVersion: v1
 kind: Service
 metadata:
@@ -17,38 +18,13 @@ spec:
   loadBalancerIP: {{ .Values.components.director.service.loadBalancerIP }}
   {{- end }}
   ports:
-    {{- if .Values.components.director.listeners.imaps.enabled }}
-    - name: imaps
-      port: {{ .Values.components.director.listeners.imaps.port }}
-      targetPort: imaps
-      protocol: TCP
-    {{- end }}
-    {{- if .Values.components.director.listeners.imap.enabled }}
-    - name: imap
-      port: {{ .Values.components.director.listeners.imap.port }}
-      targetPort: imap
-      protocol: TCP
-    {{- end }}
-    {{- if .Values.components.director.listeners.pop3s.enabled }}
-    - name: pop3s
-      port: {{ .Values.components.director.listeners.pop3s.port }}
-      targetPort: pop3s
-      protocol: TCP
-    {{- end }}
-    {{- if .Values.components.director.listeners.pop3.enabled }}
-    - name: pop3
-      port: {{ .Values.components.director.listeners.pop3.port }}
-      targetPort: pop3
-      protocol: TCP
-    {{- end }}
-    {{- if .Values.components.director.listeners.lmtp.enabled }}
     - name: lmtp
       port: {{ .Values.components.director.listeners.lmtp.port }}
       targetPort: lmtp
       protocol: TCP
-    {{- end }}
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
+{{- end }}
 ---
 ## ClusterIP — internal director protocol (ring management between directors)
 apiVersion: v1

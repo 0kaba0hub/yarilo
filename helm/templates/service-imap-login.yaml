@@ -1,0 +1,49 @@
+{{- if .Values.components.imapLogin.enabled }}
+## LoadBalancer — IMAP mail client connections (IMAPS:993 / IMAP:143 with STARTTLS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-imap-login
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "imap-login") | nindent 4 }}
+  {{- with .Values.components.imapLogin.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.components.imapLogin.service.type }}
+  ports:
+    {{- if .Values.components.imapLogin.listeners.imaps.enabled }}
+    - name: imaps
+      port: {{ .Values.components.imapLogin.listeners.imaps.servicePort }}
+      targetPort: imaps
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.imapLogin.listeners.imap.enabled }}
+    - name: imap
+      port: {{ .Values.components.imapLogin.listeners.imap.servicePort }}
+      targetPort: imap
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap-login") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-imap-login-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "imap-login") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap-login") | nindent 4 }}
+{{- end }}
