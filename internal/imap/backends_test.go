@@ -290,6 +290,211 @@ func TestIMAPBackends_CreateDelete(t *testing.T) {
 	}
 }
 
+// TestIMAPBackends_Copy verifies COPY moves a message to the destination folder.
+func TestIMAPBackends_Copy(t *testing.T) {
+	for _, bf := range backends {
+		bf := bf
+		t.Run(bf.name, func(t *testing.T) {
+			t.Parallel()
+			mb := bf.new(t)
+			c := startServerWith(t, mb)
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			const body = "From: a@b.com\r\n\r\nCopy test\r\n"
+			b := []byte(body)
+			ac := c.Append("INBOX", int64(len(b)), nil)
+			if _, err := ac.Write(b); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
+			ac.Close() //nolint:errcheck
+			if _, err := ac.Wait(); err != nil {
+				t.Fatalf("Append wait: %v", err)
+			}
+
+			if err := c.Create("Trash", nil).Wait(); err != nil {
+				t.Fatalf("CREATE Trash: %v", err)
+			}
+			if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+				t.Fatalf("SELECT: %v", err)
+			}
+			if _, err := c.Copy(imap.SeqSetNum(1), "Trash").Wait(); err != nil {
+				t.Fatalf("COPY: %v", err)
+			}
+
+			// INBOX still has 1 message.
+			sel, err := c.Select("INBOX", nil).Wait()
+			if err != nil {
+				t.Fatalf("SELECT INBOX after COPY: %v", err)
+			}
+			if sel.NumMessages != 1 {
+				t.Errorf("INBOX: want 1 message, got %d", sel.NumMessages)
+			}
+
+			// Trash has 1 message.
+			sel2, err := c.Select("Trash", nil).Wait()
+			if err != nil {
+				t.Fatalf("SELECT Trash after COPY: %v", err)
+			}
+			if sel2.NumMessages != 1 {
+				t.Errorf("Trash: want 1 message, got %d", sel2.NumMessages)
+			}
+		})
+	}
+}
+
+// TestIMAPBackends_Move verifies MOVE removes the message from source and adds to dest.
+func TestIMAPBackends_Move(t *testing.T) {
+	for _, bf := range backends {
+		bf := bf
+		t.Run(bf.name, func(t *testing.T) {
+			t.Parallel()
+			mb := bf.new(t)
+			c := startServerWith(t, mb)
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			const body = "From: a@b.com\r\n\r\nMove test\r\n"
+			b := []byte(body)
+			ac := c.Append("INBOX", int64(len(b)), nil)
+			if _, err := ac.Write(b); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
+			ac.Close() //nolint:errcheck
+			if _, err := ac.Wait(); err != nil {
+				t.Fatalf("Append wait: %v", err)
+			}
+
+			if err := c.Create("Sent", nil).Wait(); err != nil {
+				t.Fatalf("CREATE Sent: %v", err)
+			}
+			if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+				t.Fatalf("SELECT: %v", err)
+			}
+			if _, err := c.Move(imap.SeqSetNum(1), "Sent").Wait(); err != nil {
+				t.Fatalf("MOVE: %v", err)
+			}
+
+			// INBOX must be empty.
+			sel, err := c.Select("INBOX", nil).Wait()
+			if err != nil {
+				t.Fatalf("SELECT INBOX after MOVE: %v", err)
+			}
+			if sel.NumMessages != 0 {
+				t.Errorf("INBOX: want 0 messages, got %d", sel.NumMessages)
+			}
+
+			// Sent must have 1 message with original body.
+			sel2, err := c.Select("Sent", nil).Wait()
+			if err != nil {
+				t.Fatalf("SELECT Sent after MOVE: %v", err)
+			}
+			if sel2.NumMessages != 1 {
+				t.Errorf("Sent: want 1 message, got %d", sel2.NumMessages)
+			}
+
+			fetched, err := c.Fetch(
+				imap.SeqSetNum(1),
+				&imap.FetchOptions{BodySection: []*imap.FetchItemBodySection{{}}},
+			).Collect()
+			if err != nil {
+				t.Fatalf("FETCH after MOVE: %v", err)
+			}
+			if len(fetched) != 1 || len(fetched[0].BodySection) == 0 {
+				t.Fatal("FETCH: no body returned")
+			}
+			if got := string(fetched[0].BodySection[0].Bytes); !strings.Contains(got, "Move test") {
+				t.Errorf("FETCH body mismatch: %q", got)
+			}
+		})
+	}
+}
+
+// TestIMAPBackends_Rename verifies RENAME moves folder data and the old name disappears.
+func TestIMAPBackends_Rename(t *testing.T) {
+	for _, bf := range backends {
+		bf := bf
+		t.Run(bf.name, func(t *testing.T) {
+			t.Parallel()
+			mb := bf.new(t)
+			c := startServerWith(t, mb)
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			if err := c.Create("OldName", nil).Wait(); err != nil {
+				t.Fatalf("CREATE OldName: %v", err)
+			}
+			if err := c.Rename("OldName", "NewName", nil).Wait(); err != nil {
+				t.Fatalf("RENAME: %v", err)
+			}
+
+			listData, err := c.List("", "*", nil).Collect()
+			if err != nil {
+				t.Fatalf("LIST: %v", err)
+			}
+			var foundNew, foundOld bool
+			for _, m := range listData {
+				if m.Mailbox == "NewName" {
+					foundNew = true
+				}
+				if m.Mailbox == "OldName" {
+					foundOld = true
+				}
+			}
+			if !foundNew {
+				t.Error("NewName not in LIST after RENAME")
+			}
+			if foundOld {
+				t.Error("OldName still in LIST after RENAME")
+			}
+		})
+	}
+}
+
+// TestIMAPBackends_RenameINBOX verifies RENAME INBOX moves messages to the new
+// folder and leaves INBOX empty (RFC 3501 §6.3.5).
+func TestIMAPBackends_RenameINBOX(t *testing.T) {
+	for _, bf := range backends {
+		bf := bf
+		t.Run(bf.name, func(t *testing.T) {
+			t.Parallel()
+			mb := bf.new(t)
+			c := startServerWith(t, mb)
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			const body = "From: x@y.com\r\n\r\nINBOX rename test\r\n"
+			b := []byte(body)
+			ac := c.Append("INBOX", int64(len(b)), nil)
+			if _, err := ac.Write(b); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
+			ac.Close() //nolint:errcheck
+			if _, err := ac.Wait(); err != nil {
+				t.Fatalf("Append wait: %v", err)
+			}
+
+			if err := c.Rename("INBOX", "Archive", nil).Wait(); err != nil {
+				t.Fatalf("RENAME INBOX→Archive: %v", err)
+			}
+
+			// INBOX must now be empty.
+			sel, err := c.Select("INBOX", nil).Wait()
+			if err != nil {
+				t.Fatalf("SELECT INBOX after rename: %v", err)
+			}
+			if sel.NumMessages != 0 {
+				t.Errorf("INBOX: want 0 messages after rename, got %d", sel.NumMessages)
+			}
+
+			// Archive must have the message.
+			sel2, err := c.Select("Archive", nil).Wait()
+			if err != nil {
+				t.Fatalf("SELECT Archive: %v", err)
+			}
+			if sel2.NumMessages != 1 {
+				t.Errorf("Archive: want 1 message, got %d", sel2.NumMessages)
+			}
+		})
+	}
+}
+
 func hasImapFlag(flags []imap.Flag, want imap.Flag) bool {
 	for _, f := range flags {
 		if f == want {

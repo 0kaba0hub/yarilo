@@ -117,6 +117,13 @@ func (u *userMailbox) Delete(folder string) error {
 	return nil
 }
 
+func (u *userMailbox) Rename(oldName, newName string) error {
+	if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
+		return fmt.Errorf("mdbox/rename: %w", err)
+	}
+	return nil
+}
+
 // Save writes a message into the mdbox storage and appends a map entry.
 // Returns "<file_id>:<offset>" as the filename token.
 func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (string, error) {

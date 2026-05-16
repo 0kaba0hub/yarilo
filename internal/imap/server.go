@@ -317,8 +317,72 @@ func (s *session) Delete(name string) error {
 	return s.box.Delete(name)
 }
 
-func (s *session) Rename(_, _ string, _ *imaplib.RenameOptions) error {
-	return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "RENAME not yet implemented"}
+func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) error {
+	if strings.EqualFold(oldName, "INBOX") {
+		return s.renameInbox(newName)
+	}
+	if err := s.box.Rename(oldName, newName); err != nil {
+		return err
+	}
+	return s.idx.RenameFolder(oldName, newName)
+}
+
+// renameInbox implements RFC 3501 §6.3.5 INBOX rename semantics:
+// messages are moved to the new mailbox; INBOX itself is cleared but not deleted.
+func (s *session) renameInbox(dest string) error {
+	if err := s.box.Create(dest); err != nil {
+		return fmt.Errorf("imap/rename-inbox create: %w", err)
+	}
+	srcFolder, err := s.idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		return err
+	}
+	msgs, err := s.idx.GetMessages(srcFolder.ID, mailbox.SeqSet{})
+	if err != nil {
+		return err
+	}
+	destFolder, err := s.idx.OpenFolder(dest, uint32(time.Now().Unix()))
+	if err != nil {
+		return err
+	}
+	for _, m := range msgs {
+		rc, fetchErr := s.box.Fetch("INBOX", m.Filename)
+		if fetchErr != nil {
+			return fmt.Errorf("imap/rename-inbox fetch: %w", fetchErr)
+		}
+		data, readErr := io.ReadAll(rc)
+		rc.Close()
+		if readErr != nil {
+			return fmt.Errorf("imap/rename-inbox read: %w", readErr)
+		}
+		modseq, _ := s.idx.NextModSeq(destFolder.ID)
+		newUID := destFolder.NextUID
+		destFolder.NextUID++
+		destFolder.Messages++
+		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
+		if saveErr != nil {
+			return fmt.Errorf("imap/rename-inbox save: %w", saveErr)
+		}
+		meta := &mailbox.MessageMeta{
+			UID:          newUID,
+			Filename:     newFilename,
+			Flags:        m.Flags,
+			Keywords:     m.Keywords,
+			ModSeq:       modseq,
+			Size:         uint32(len(data)),
+			InternalDate: m.InternalDate,
+		}
+		if appendErr := s.idx.AppendMessage(destFolder.ID, meta); appendErr != nil {
+			return fmt.Errorf("imap/rename-inbox append: %w", appendErr)
+		}
+		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
+		s.box.Remove("INBOX", m.Filename)               //nolint:errcheck
+		s.idx.ExpungeMessage(srcFolder.ID, m.UID)       //nolint:errcheck
+	}
+	srcFolder.Messages = 0
+	s.idx.SaveFolder(srcFolder)  //nolint:errcheck
+	s.idx.SaveFolder(destFolder) //nolint:errcheck
+	return nil
 }
 
 func (s *session) Subscribe(_ string) error   { return nil }
@@ -588,7 +652,69 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 }
 
 func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, error) {
-	return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "COPY not yet implemented"}
+	if s.folder == nil {
+		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
+	}
+	exists, err := s.box.FolderExists(dest)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+	}
+	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		return nil, err
+	}
+	destFolder, err := s.ensureFolder(dest)
+	if err != nil {
+		return nil, err
+	}
+	var srcUIDs, dstUIDs imaplib.UIDSet
+	for i, m := range msgs {
+		seqNum := uint32(i + 1)
+		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
+			continue
+		}
+		rc, fetchErr := s.box.Fetch(s.folder.Name, m.Filename)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("imap/copy fetch: %w", fetchErr)
+		}
+		data, readErr := io.ReadAll(rc)
+		rc.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("imap/copy read: %w", readErr)
+		}
+		modseq, _ := s.idx.NextModSeq(destFolder.ID)
+		newUID := destFolder.NextUID
+		destFolder.NextUID++
+		destFolder.Messages++
+		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
+		if saveErr != nil {
+			return nil, fmt.Errorf("imap/copy save: %w", saveErr)
+		}
+		meta := &mailbox.MessageMeta{
+			UID:          newUID,
+			Filename:     newFilename,
+			Flags:        m.Flags,
+			Keywords:     m.Keywords,
+			ModSeq:       modseq,
+			Size:         uint32(len(data)),
+			InternalDate: m.InternalDate,
+		}
+		if appendErr := s.idx.AppendMessage(destFolder.ID, meta); appendErr != nil {
+			return nil, fmt.Errorf("imap/copy append: %w", appendErr)
+		}
+		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
+		srcUIDs.AddNum(imaplib.UID(m.UID))
+		dstUIDs.AddNum(imaplib.UID(newUID))
+	}
+	s.idx.SaveFolder(destFolder) //nolint:errcheck
+	return &imaplib.CopyData{
+		UIDValidity: destFolder.UIDValidity,
+		SourceUIDs:  srcUIDs,
+		DestUIDs:    dstUIDs,
+	}, nil
 }
 
 func (s *session) Namespace() (*imaplib.NamespaceData, error) {
@@ -597,8 +723,95 @@ func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 	}, nil
 }
 
-func (s *session) Move(_ *imapserver.MoveWriter, _ imaplib.NumSet, _ string) error {
-	return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "MOVE not yet implemented"}
+func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest string) error {
+	if s.folder == nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
+	}
+	exists, err := s.box.FolderExists(dest)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+	}
+	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		return err
+	}
+	destFolder, err := s.ensureFolder(dest)
+	if err != nil {
+		return err
+	}
+
+	type matched struct {
+		seqNum   uint32
+		srcUID   uint32
+		filename string
+	}
+	var hits []matched
+	var srcUIDs, dstUIDs imaplib.UIDSet
+
+	for i, m := range msgs {
+		seqNum := uint32(i + 1)
+		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
+			continue
+		}
+		rc, fetchErr := s.box.Fetch(s.folder.Name, m.Filename)
+		if fetchErr != nil {
+			return fmt.Errorf("imap/move fetch: %w", fetchErr)
+		}
+		data, readErr := io.ReadAll(rc)
+		rc.Close()
+		if readErr != nil {
+			return fmt.Errorf("imap/move read: %w", readErr)
+		}
+		modseq, _ := s.idx.NextModSeq(destFolder.ID)
+		newUID := destFolder.NextUID
+		destFolder.NextUID++
+		destFolder.Messages++
+		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
+		if saveErr != nil {
+			return fmt.Errorf("imap/move save: %w", saveErr)
+		}
+		meta := &mailbox.MessageMeta{
+			UID:          newUID,
+			Filename:     newFilename,
+			Flags:        m.Flags,
+			Keywords:     m.Keywords,
+			ModSeq:       modseq,
+			Size:         uint32(len(data)),
+			InternalDate: m.InternalDate,
+		}
+		if appendErr := s.idx.AppendMessage(destFolder.ID, meta); appendErr != nil {
+			return fmt.Errorf("imap/move append: %w", appendErr)
+		}
+		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
+		srcUIDs.AddNum(imaplib.UID(m.UID))
+		dstUIDs.AddNum(imaplib.UID(newUID))
+		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename})
+	}
+	s.idx.SaveFolder(destFolder) //nolint:errcheck
+
+	if err := w.WriteCopyData(&imaplib.CopyData{
+		UIDValidity: destFolder.UIDValidity,
+		SourceUIDs:  srcUIDs,
+		DestUIDs:    dstUIDs,
+	}); err != nil {
+		return err
+	}
+
+	// Expunge source in descending seq order (RFC 6851 §3.3).
+	for i := len(hits) - 1; i >= 0; i-- {
+		h := hits[i]
+		s.box.Remove(s.folder.Name, h.filename)     //nolint:errcheck
+		s.idx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
+		if err := w.WriteExpunge(h.seqNum); err != nil {
+			return err
+		}
+	}
+	s.folder.Messages -= uint32(len(hits))
+	s.idx.SaveFolder(s.folder) //nolint:errcheck
+	return nil
 }
 
 // ---- helpers ---------------------------------------------------------------
