@@ -83,6 +83,45 @@ components:
     ##   yarilo-director-1.yarilo-director-headless:9102
     peers: []
 
+    ## yarilo-monitor sidecar — probes backend pods and reports health to the director.
+    ## Runs as a sidecar container in the director pod.
+    monitor:
+      enabled: false
+
+      ## Image override (defaults to the same image as the director).
+      image: ""
+
+      ## Which protocols to probe on every backend in the ring.
+      ## Ports default to standard mail ports (993 / 110 / 24).
+      pollIMAP: true
+      imapPort: 993
+      pollPOP3: false
+      pop3Port: 110
+      pollLMTP: false
+      lmtpPort: 24
+
+      ## Poll interval and per-probe timeout (seconds).
+      interval: 10
+      timeout: 3
+
+      ## Consecutive failures before rapid poll; rapid poll threshold.
+      retryCount: 3
+      rapidRounds: 10
+      rapidFailsNeeded: 7
+
+      ## Per-tag monitoring credentials.
+      ## The tag is the same label used on backends, users, and storage.
+      ## The "" key covers untagged backends.
+      ##
+      ## tags:
+      ##   "":
+      ##     user: monitor@example.com
+      ##     password: secret
+      ##   ssd:
+      ##     user: monitor-ssd@example.com
+      ##     password: ssd-secret
+      tags: {}
+
     service:
       type: LoadBalancer
       annotations: {}
