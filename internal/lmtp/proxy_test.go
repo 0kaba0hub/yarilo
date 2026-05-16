@@ -53,8 +53,7 @@ func buildBackendServer(t *testing.T, users ...string) (addr string, mb mailbox.
 
 // ringRouter adapts a *ring.Ring to the UserRouter interface for testing.
 type ringRouter struct {
-	r    *ring.Ring
-	port int // backend LMTP port (used by the caller, not here)
+	r *ring.Ring
 }
 
 func (rr *ringRouter) RouteUser(username string) (string, error) {
