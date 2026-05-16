@@ -437,7 +437,7 @@ func (s *Server) pingLoop(c *client, stop <-chan struct{}) {
 // hostLine formats a Backend as a HOST wire line for the handshake.
 func hostLine(b ring.Backend) string {
 	return fmt.Sprintf("HOST\t%s\t%d\t%s\tD%d\tU%d\t%s",
-		b.IP, b.Port, b.Tag, b.LastUpdownChange, b.LastUpdownChange, b.Hostname)
+		b.IP, b.Port, b.Tag, b.LastDown, b.LastUp, b.Hostname)
 }
 
 // handleLookup processes: LOOKUP\t{id}\t{user}\t{tag}
@@ -512,7 +512,7 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 	ts := time.Now().Unix()
 	s.ring.AddBackend(&ring.Backend{
 		IP: ip, Port: port, Tag: tag, Up: true, Vhosts: vhosts,
-		LastUpdownChange: ts,
+		LastUp: ts,
 	})
 	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), c)
@@ -646,11 +646,11 @@ func (s *Server) handleUserKilled(c *client, fields []string) {
 func (s *Server) AddBackend(ip string, port int, tag string) {
 	ts := time.Now().Unix()
 	s.ring.AddBackend(&ring.Backend{
-		IP:               ip,
-		Port:             port,
-		Tag:              tag,
-		Up:               true,
-		LastUpdownChange: ts,
+		IP:     ip,
+		Port:   port,
+		Tag:    tag,
+		Up:     true,
+		LastUp: ts,
 	})
 	slog.Info("director: backend registered", "ip", ip, "port", port, "tag", tag)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), nil)

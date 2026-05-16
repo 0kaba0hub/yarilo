@@ -135,7 +135,8 @@ func (d *PeerDialer) connectPeer(ctx context.Context, addr string) error {
 }
 
 // applyHandshakeHost registers a backend received in the server's opening
-// handshake.  Wire format: HOST\t{ip}\t{port}\t{tag}\tD{ts}\tU{ts}\t{host}
+// handshake.  Wire format: HOST\t{ip}\t{port}\t{tag}\tD{down_ts}\tU{up_ts}\t{host}
+// Up state is derived from timestamps: lastUp >= lastDown → Up, otherwise Down.
 func (d *PeerDialer) applyHandshakeHost(line string) {
 	fields := strings.Split(line, "\t")
 	if len(fields) < 3 {
@@ -150,11 +151,31 @@ func (d *PeerDialer) applyHandshakeHost(line string) {
 	if len(fields) >= 4 {
 		tag = fields[3]
 	}
+	var lastDown, lastUp int64
+	for _, f := range fields[4:] {
+		if len(f) < 2 {
+			continue
+		}
+		v, pErr := strconv.ParseInt(f[1:], 10, 64)
+		if pErr != nil {
+			continue
+		}
+		switch f[0] {
+		case 'D':
+			lastDown = v
+		case 'U':
+			lastUp = v
+		}
+	}
+	// lastDown==0: backend never went down → Up.
+	// lastUp > lastDown: came up after last down → Up.
+	// lastDown >= lastUp (incl. equal): went down at or after last up → Down.
+	up := lastDown == 0 || lastUp > lastDown
 	d.srv.ring.AddBackend(&ring.Backend{
-		IP: ip, Port: port, Tag: tag, Up: true,
-		LastUpdownChange: time.Now().Unix(),
+		IP: ip, Port: port, Tag: tag, Up: up,
+		LastUp: lastUp, LastDown: lastDown,
 	})
-	slog.Debug("director: peer handshake backend", "ip", ip, "port", port, "tag", tag)
+	slog.Debug("director: peer handshake backend", "ip", ip, "port", port, "tag", tag, "up", up)
 }
 
 func (d *PeerDialer) handlePeerLine(conn net.Conn, line string) error {

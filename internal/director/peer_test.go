@@ -162,6 +162,48 @@ func TestPeerDialer_UserKickedBroadcastsLocally(t *testing.T) {
 	t.Error("USER-KICKED was not forwarded to srvB local client")
 }
 
+// TestPeerDialer_HandshakePreservesFlushedState verifies that a backend which is
+// currently flushed (Up=false) on srvA is NOT re-activated on srvB after the peer
+// handshake — the D/U timestamps in the HOST line must encode the down state.
+func TestPeerDialer_HandshakePreservesFlushedState(t *testing.T) {
+	srvA, addrA := startTestDirector(t)
+	srvB, _ := startTestDirector(t)
+
+	// Register and then flush the backend on A.
+	srvA.AddBackend("10.0.0.9", 993, "imap")
+	srvA.ring.SetUp("10.0.0.9", false, time.Now().Unix())
+
+	// Dial A from B.
+	pd := NewPeerDialer(srvB, []string{addrA}, nil, "127.0.0.1", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pd.Start(ctx)
+
+	// Give the handshake time to complete.
+	time.Sleep(300 * time.Millisecond)
+
+	// srvB must know about the backend (it appeared in handshake)…
+	backends := srvB.ring.Backends()
+	var found *ring.Backend
+	for i := range backends {
+		if backends[i].IP == "10.0.0.9" {
+			found = &backends[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("backend 10.0.0.9 missing from srvB registry after handshake")
+	}
+	// …but must NOT be active in the ring (Up=false).
+	if found.Up {
+		t.Errorf("backend 10.0.0.9 is Up=true on srvB, expected Up=false (was flushed on srvA)")
+	}
+	// Sanity: LookupBackend must return nil (no active backends).
+	if b := srvB.ring.LookupBackend("anyuser"); b != nil {
+		t.Errorf("LookupBackend returned %+v; expected nil for a fully-down ring", b)
+	}
+}
+
 // TestPeerDialer_PingPong verifies that the peer dialer responds to PING with PONG.
 func TestPeerDialer_PingPong(t *testing.T) {
 	_, addrA := startTestDirector(t)
