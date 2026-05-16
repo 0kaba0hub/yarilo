@@ -7,11 +7,13 @@ package login
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +39,8 @@ const (
 type Options struct {
 	// Protocol is one of the Protocol constants above.
 	Protocol Protocol
+	// Tag restricts director LOOKUP to backends with this tag. "" = full ring.
+	Tag string
 	// DirectorAddr is the host:port of yarilo-director (e.g. "yarilo-director:9102").
 	DirectorAddr string
 	// DirectorTLS is the mTLS config for connecting to yarilo-director.
@@ -59,15 +63,57 @@ type Options struct {
 	HAProxyNets    []*net.IPNet
 }
 
+// liveSession tracks one active proxied session for kick support.
+type liveSession struct {
+	id          string
+	user        string
+	backendConn net.Conn
+}
+
+// watchConn wraps a proto.Conn for the persistent director watch connection.
+// Writes are mutex-protected; reads happen in a dedicated goroutine.
+type watchConn struct {
+	mu sync.Mutex
+	c  *proto.Conn
+}
+
+func (w *watchConn) sessionOpen(sessID, username, backendIP string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s", sessID, proto.TabEscape(username), backendIP))
+}
+
+func (w *watchConn) sessionClose(sessID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.c.WriteLine(fmt.Sprintf("SESSION-CLOSE\t%s", sessID))
+}
+
+func (w *watchConn) pong() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.c.WriteLine("PONG")
+}
+
 // Server is the login proxy server.
 type Server struct {
-	opts  Options
-	reqID atomic.Uint64
+	opts   Options
+	reqID  atomic.Uint64
+	sessID atomic.Uint64
+
+	sessMu   sync.RWMutex
+	sessions map[string][]*liveSession // username → active sessions
+
+	watchMu sync.RWMutex
+	watch   *watchConn // persistent director connection for push notifications
 }
 
 // New creates a Server.
 func New(opts Options) *Server {
-	return &Server{opts: opts}
+	return &Server{
+		opts:     opts,
+		sessions: make(map[string][]*liveSession),
+	}
 }
 
 // Serve accepts connections on ln until the listener is closed.
@@ -146,6 +192,33 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	defer backendConn.Close()
 
+	// Register session for kick support.
+	sessID := fmt.Sprintf("%d", s.sessID.Add(1))
+	sess := &liveSession{id: sessID, user: pre.username, backendConn: backendConn}
+	s.sessMu.Lock()
+	s.sessions[pre.username] = append(s.sessions[pre.username], sess)
+	s.sessMu.Unlock()
+	defer func() {
+		s.sessMu.Lock()
+		list := s.sessions[pre.username]
+		for i, v := range list {
+			if v == sess {
+				s.sessions[pre.username] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		s.sessMu.Unlock()
+	}()
+
+	backendIP, _, _ := net.SplitHostPort(backendAddr)
+	s.watchMu.RLock()
+	wc := s.watch
+	s.watchMu.RUnlock()
+	if wc != nil {
+		wc.sessionOpen(sessID, pre.username, backendIP)
+		defer wc.sessionClose(sessID)
+	}
+
 	backendRd := bufio.NewReaderSize(backendConn, 4096)
 
 	// Discard backend's own greeting; client already received the login-pod greeting.
@@ -200,16 +273,23 @@ func (s *Server) handleConn(conn net.Conn) {
 	biProxy(rd, conn, backendRd, backendConn)
 }
 
-// directorLookup dials yarilo-director, issues a LOOKUP, returns the backend address.
+// directorLookup dials yarilo-director, issues a LOOKUP restricted to s.opts.Tag,
+// and returns the backend address.
 func (s *Server) directorLookup(username string) (string, error) {
-	c, err := proto.Dial(s.opts.DirectorAddr, s.opts.LocalIP, 0)
+	var c *proto.Conn
+	var err error
+	if s.opts.DirectorTLS != nil {
+		c, err = proto.DialTLS(s.opts.DirectorAddr, s.opts.LocalIP, 0, s.opts.DirectorTLS)
+	} else {
+		c, err = proto.Dial(s.opts.DirectorAddr, s.opts.LocalIP, 0)
+	}
 	if err != nil {
 		return "", fmt.Errorf("director dial: %w", err)
 	}
 	defer c.Close()
 
 	id := fmt.Sprintf("%d", s.reqID.Add(1))
-	result, err := c.Lookup(id, username)
+	result, err := c.Lookup(id, username, s.opts.Tag)
 	if err != nil {
 		return "", fmt.Errorf("director lookup: %w", err)
 	}
@@ -222,6 +302,103 @@ func (s *Server) directorLookup(username string) (string, error) {
 		}
 	}
 	return result.Addr, nil
+}
+
+// Watch maintains a persistent director connection for receiving USER-KICKED pushes.
+// Must be started as a goroutine before serving connections.
+func (s *Server) Watch(ctx context.Context) {
+	backoff := 2 * time.Second
+	for {
+		s.runWatch(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("login: director watch disconnected, reconnecting", "backoff", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > 60*time.Second {
+			backoff = 60 * time.Second
+		}
+	}
+}
+
+func (s *Server) runWatch(ctx context.Context) {
+	var c *proto.Conn
+	var err error
+	if s.opts.DirectorTLS != nil {
+		c, err = proto.DialTLS(s.opts.DirectorAddr, s.opts.LocalIP, 0, s.opts.DirectorTLS)
+	} else {
+		c, err = proto.Dial(s.opts.DirectorAddr, s.opts.LocalIP, 0)
+	}
+	if err != nil {
+		slog.Warn("login: director watch dial failed", "err", err)
+		return
+	}
+	defer c.Close()
+
+	wc := &watchConn{c: c}
+	s.watchMu.Lock()
+	s.watch = wc
+	s.watchMu.Unlock()
+	defer func() {
+		s.watchMu.Lock()
+		if s.watch == wc {
+			s.watch = nil
+		}
+		s.watchMu.Unlock()
+	}()
+
+	slog.Info("login: director watch connected", "addr", s.opts.DirectorAddr)
+
+	readErr := make(chan error, 1)
+	go func() { readErr <- s.watchReadLoop(c, wc) }()
+
+	select {
+	case <-ctx.Done():
+		c.Close()
+		<-readErr
+	case err := <-readErr:
+		if err != nil {
+			slog.Warn("login: director watch read error", "err", err)
+		}
+	}
+}
+
+func (s *Server) watchReadLoop(c *proto.Conn, wc *watchConn) error {
+	for {
+		line, err := c.ReadLine()
+		if err != nil {
+			return err
+		}
+		switch {
+		case strings.HasPrefix(line, "USER-KICKED\t"):
+			fields := strings.SplitN(line, "\t", 2)
+			if len(fields) == 2 {
+				s.kickUser(fields[1])
+			}
+		case line == "PING":
+			wc.pong()
+		}
+		// OK and other push lines silently ignored.
+	}
+}
+
+// kickUser closes all active backend connections for the given username,
+// causing biProxy to terminate and those sessions to be dropped.
+func (s *Server) kickUser(username string) {
+	s.sessMu.RLock()
+	sessions := make([]*liveSession, len(s.sessions[username]))
+	copy(sessions, s.sessions[username])
+	s.sessMu.RUnlock()
+
+	for _, sess := range sessions {
+		slog.Info("login: kicking session", "user", username, "session", sess.id)
+		sess.backendConn.Close()
+	}
 }
 
 func dialBackend(addr string, tlsCfg *tls.Config) (net.Conn, error) {

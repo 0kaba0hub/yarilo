@@ -36,6 +36,7 @@ type Config struct {
 	RetryCount       int    `koanf:"retry_count"`        // consecutive failures before rapid poll; default 3
 	RapidRounds      int    `koanf:"rapid_rounds"`       // rapid poll iterations; default 10
 	RapidFailsNeeded int    `koanf:"rapid_fails_needed"` // rapid poll failures to declare down; default 7
+	DrainTimeout     int    `koanf:"drain_timeout"`      // seconds from FLUSH to BACKEND-DOWN; default 60
 
 	// Protocol probes — applied to every backend in the ring.
 	PollIMAP bool `koanf:"poll_imap"`
@@ -90,6 +91,13 @@ func (c *Config) rapidFailsNeeded() int {
 		return 7
 	}
 	return c.RapidFailsNeeded
+}
+
+func (c *Config) drainTimeout() time.Duration {
+	if c.DrainTimeout <= 0 {
+		return 60 * time.Second
+	}
+	return time.Duration(c.DrainTimeout) * time.Second
 }
 
 func (c *Config) imapPort() int {
