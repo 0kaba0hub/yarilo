@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -104,6 +105,19 @@ func main() {
 	if err := startProxies(ctx, srv, cfg, extTLSCfg, backendTLSCfg); err != nil {
 		slog.Error("proxy startup failed", "err", err)
 		os.Exit(1)
+	}
+
+	// Dial peer director replicas for ring and user-directory sync (replicas > 1).
+	if len(cfg.DirectorService.Peers) > 0 {
+		localIP := os.Getenv("POD_IP")
+		_, portStr, _ := net.SplitHostPort(cfg.DirectorService.Listen)
+		localPort := 0
+		if p, err := strconv.Atoi(portStr); err == nil {
+			localPort = p
+		}
+		pd := director.NewPeerDialer(srv, cfg.DirectorService.Peers, ringTLSCfg, localIP, localPort)
+		pd.Start(ctx)
+		slog.Info("director: peer sync started", "peers", cfg.DirectorService.Peers)
 	}
 
 	// Start director-protocol server (ring management, inter-director sync).

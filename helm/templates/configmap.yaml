@@ -196,6 +196,12 @@ data:
           tag: {{ .tag | quote }}
         {{- end }}
       {{- end }}
+      {{- with .Values.components.director.peers }}
+      peers:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
 
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}

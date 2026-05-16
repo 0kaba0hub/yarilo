@@ -208,6 +208,7 @@ type DirectorServiceConfig struct {
 	PingInterval int                `koanf:"ping_interval"` // seconds between PING probes; 0 = 30
 	PingTimeout  int                `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
+	Peers        []string           `koanf:"peers"`         // peer director addresses "host:port" for ring sync (replicas > 1)
 }
 
 // ShutdownConfig controls graceful shutdown behaviour.
