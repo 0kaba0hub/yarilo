@@ -155,6 +155,9 @@ func resolveBackends(ctx context.Context, cfg *config.Config, srv *director.Serv
 
 // startProxies starts one proxy listener per enabled mail-protocol listener.
 func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config, extTLS, backendTLS *tls.Config) error {
+	haProxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
+	haProxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
+
 	type spec struct {
 		svc      *config.ServiceConfig
 		protocol string
@@ -173,16 +176,35 @@ func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config,
 		}
 		addr := fmt.Sprintf(":%d", s.svc.Port)
 		if err := srv.StartProxy(ctx, director.ProxyConfig{
-			Protocol:    s.protocol,
-			Addr:        addr,
-			ExtTLS:      s.tls,
-			BackendTLS:  backendTLS,
-			BackendPort: s.svc.Port, // backend pod listens on the same port number
+			Protocol:           s.protocol,
+			Addr:               addr,
+			ExtTLS:             s.tls,
+			BackendTLS:         backendTLS,
+			BackendPort:        s.svc.Port,
+			HAProxy:            s.svc.HAProxy,
+			HAProxyTimeout:     haProxyTimeout,
+			HAProxyTrustedNets: haProxyNets,
+			XClient:            s.svc.XClient,
 		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// parseCIDRs parses a list of CIDR strings into *net.IPNet values.
+// Invalid entries are logged and skipped.
+func parseCIDRs(ss []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(ss))
+	for _, s := range ss {
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			slog.Warn("director: invalid CIDR in trusted_nets", "cidr", s, "err", err)
+			continue
+		}
+		nets = append(nets, n)
+	}
+	return nets
 }
 
 func runTelemetry(addr string) {
