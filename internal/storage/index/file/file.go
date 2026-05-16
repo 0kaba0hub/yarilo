@@ -348,6 +348,72 @@ func (u *userIndex) indexDir(folder string) string {
 	return filepath.Join(u.home, "."+folder)
 }
 
+// GetPOP3UIDLs reads the pop3.uidl file for the folder.
+// Each line is "<uid>\t<uidl>". Returns empty map when file does not exist.
+func (u *userIndex) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	path := filepath.Join(filepath.Dir(idx.path), "pop3.uidl")
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return make(map[uint32]string), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	result := make(map[uint32]string)
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		tab := strings.IndexByte(line, '\t')
+		if tab < 0 {
+			continue
+		}
+		uid, err := strconv.ParseUint(line[:tab], 10, 32)
+		if err != nil {
+			continue
+		}
+		result[uint32(uid)] = line[tab+1:]
+	}
+	return result, sc.Err()
+}
+
+// SavePOP3UIDLs writes uid→uidl pairs to pop3.uidl atomically (write-tmp + rename).
+func (u *userIndex) SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	dir := filepath.Dir(idx.path)
+	dst := filepath.Join(dir, "pop3.uidl")
+	tmp := dst + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("pop3.uidl write: %w", err)
+	}
+	bw := bufio.NewWriter(f)
+	for uid, uidl := range uidls {
+		fmt.Fprintf(bw, "%d\t%s\n", uid, uidl) //nolint:errcheck
+	}
+	if err := bw.Flush(); err != nil {
+		f.Close()
+		os.Remove(tmp) //nolint:errcheck
+		return fmt.Errorf("pop3.uidl flush: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp) //nolint:errcheck
+		return fmt.Errorf("pop3.uidl close: %w", err)
+	}
+	return os.Rename(tmp, dst)
+}
+
 // ---- IndexFile low-level ---------------------------------------------------
 
 func openIndexFile(path string, uidValidity uint32) (*IndexFile, error) {

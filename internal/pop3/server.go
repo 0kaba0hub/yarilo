@@ -41,6 +41,8 @@ type Options struct {
 	EnableLast     bool               // pop3_enable_last: LAST command (RFC 1460)
 	DeleteType     string             // pop3_delete_type: expunge | flag
 	DeletedFlag    string             // pop3_deleted_flag: IMAP flag for soft-delete
+	SaveUIDL       bool               // pop3_save_uidl: persist UIDLs to index for stability across rebuilds
+	LockSession    bool               // pop3_lock_session: dotlock file to prevent IMAP+POP3 conflicts
 	ConnLimit      *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
 }
 

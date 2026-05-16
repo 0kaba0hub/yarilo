@@ -262,6 +262,8 @@ protocol:
     enableLast: false
     deleteType: expunge
     deletedFlag: ""
+    saveUIDL: false     # persist computed UIDLs to index for stability across index rebuilds
+    lockSession: false  # dotlock file in user home to prevent simultaneous IMAP+POP3 access
 
   lmtp:
     loginGreeting: "Yarilo ready."

@@ -7,11 +7,14 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/textproto"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -43,18 +46,19 @@ type session struct {
 	remoteIP net.IP // updated by XCLIENT
 
 	// set after successful login
-	lockKey     string
-	limitIP     string // IP used for ConnLimit.Acquire; released in releaseLock
-	pendingUser string // temporary storage of USER arg before PASS arrives
-	userInfo    *mailbox.UserInfo
-	box         mailbox.UserMailbox
-	idx         mailbox.UserIndex
-	folder      *mailbox.Folder
-	msgs        []*mailbox.MessageMeta
-	deleted     []bool
-	seenMsgs    []bool // tracks messages fetched via RETR this session
-	uidls       []string
-	lastMsg     int // highest seq number RETR'd (RFC 1460 LAST)
+	lockKey         string
+	sessionLockFile string // path to dotlock file; "" when not held
+	limitIP         string // IP used for ConnLimit.Acquire; released in releaseLock
+	pendingUser     string // temporary storage of USER arg before PASS arrives
+	userInfo        *mailbox.UserInfo
+	box             mailbox.UserMailbox
+	idx             mailbox.UserIndex
+	folder          *mailbox.Folder
+	msgs            []*mailbox.MessageMeta
+	deleted         []bool
+	seenMsgs        []bool // tracks messages fetched via RETR this session
+	uidls           []string
+	lastMsg         int // highest seq number RETR'd (RFC 1460 LAST)
 
 	badCmds int
 }
@@ -251,6 +255,18 @@ func (s *session) finishAuth(username, password string) {
 		return
 	}
 
+	// Dotlock is acquired after Init so the home directory exists on disk.
+	if s.srv.opts.LockSession && !s.acquireDotlock(userInfo.Home) {
+		s.srv.unlock(s.lockKey)
+		s.lockKey = ""
+		if s.srv.opts.ConnLimit != nil {
+			s.srv.opts.ConnLimit.Release(userInfo.Username, s.limitIP)
+			s.limitIP = ""
+		}
+		s.writeErr("mailbox already in use, try again later")
+		return
+	}
+
 	s.userInfo = userInfo
 	s.box = box
 	s.idx = idx
@@ -277,16 +293,26 @@ func (s *session) loadMailbox() error {
 		slog.Error("pop3: get messages", "user", s.userInfo.Username, "err", err)
 		return err
 	}
+	var savedUIDLs map[uint32]string
+	if s.srv.opts.SaveUIDL {
+		if saved, err := s.idx.GetPOP3UIDLs(folder.ID); err != nil {
+			slog.Warn("pop3: load saved uidls", "user", s.userInfo.Username, "err", err)
+		} else {
+			savedUIDLs = saved
+		}
+	}
 	s.folder = folder
 	s.msgs = msgs
 	s.deleted = make([]bool, len(msgs))
 	s.seenMsgs = make([]bool, len(msgs))
-	s.computeUIDLs()
+	s.computeUIDLs(savedUIDLs)
 	return nil
 }
 
 // computeUIDLs pre-builds the UIDL string for every message.
-func (s *session) computeUIDLs() {
+// saved is a uid→uidl map from a prior session (nil or empty = no prior data).
+// Priority: ReuseXUIDL header > saved index entry > format-computed value.
+func (s *session) computeUIDLs(saved map[uint32]string) {
 	s.uidls = make([]string, len(s.msgs))
 	rename := s.srv.opts.UIDLDuplicates == "rename"
 	seen := make(map[string]int)
@@ -296,6 +322,8 @@ func (s *session) computeUIDLs() {
 			if xu := s.readXUIDL(m); xu != "" {
 				u = xu
 			}
+		} else if v, ok := saved[m.UID]; ok && v != "" {
+			u = v
 		}
 		if rename {
 			base := u
@@ -640,6 +668,18 @@ func (s *session) cmdQuit() {
 		}
 	}
 
+	if s.srv.opts.SaveUIDL {
+		uidlMap := make(map[uint32]string, len(s.msgs))
+		for i, m := range s.msgs {
+			if !s.deleted[i] {
+				uidlMap[m.UID] = s.uidls[i]
+			}
+		}
+		if err := s.idx.SavePOP3UIDLs(s.folder.ID, uidlMap); err != nil {
+			slog.Warn("pop3: save uidls", "user", s.userInfo.Username, "err", err)
+		}
+	}
+
 	var errCount int
 	if s.srv.opts.DeleteType == "flag" {
 		deletedFlag := s.srv.opts.DeletedFlag
@@ -724,6 +764,10 @@ func (s *session) parseMsgNum(arg string) (int, bool) {
 }
 
 func (s *session) releaseLock() {
+	if s.sessionLockFile != "" {
+		os.Remove(s.sessionLockFile) //nolint:errcheck
+		s.sessionLockFile = ""
+	}
 	if s.lockKey != "" {
 		s.srv.unlock(s.lockKey)
 		s.lockKey = ""
@@ -738,6 +782,45 @@ func (s *session) releaseLock() {
 	if s.idx != nil {
 		s.idx.Close() //nolint:errcheck
 	}
+}
+
+// acquireDotlock creates a dotlock file at $HOME/dovecot-pop3-session.lock.
+// Returns true on success. A lock older than idleTimeout is considered stale
+// and will be stolen (the session that held it is certainly gone by then).
+func (s *session) acquireDotlock(home string) bool {
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		slog.Warn("pop3: dotlock mkdir", "home", home, "err", err)
+		return false
+	}
+	lockPath := filepath.Join(home, "dovecot-pop3-session.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err == nil {
+		fmt.Fprintf(f, "%d\n", os.Getpid()) //nolint:errcheck
+		f.Close()
+		s.sessionLockFile = lockPath
+		return true
+	}
+	if !errors.Is(err, os.ErrExist) {
+		slog.Warn("pop3: dotlock create", "home", home, "err", err)
+		return false
+	}
+	// Lock exists: treat as stale only if older than the idle timeout.
+	info, err := os.Stat(lockPath)
+	if err != nil || time.Since(info.ModTime()) < idleTimeout {
+		return false
+	}
+	// Stale lock: remove and re-create atomically.
+	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	f, err = os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false
+	}
+	fmt.Fprintf(f, "%d\n", os.Getpid()) //nolint:errcheck
+	f.Close()
+	s.sessionLockFile = lockPath
+	return true
 }
 
 func (s *session) setDeadline() {
