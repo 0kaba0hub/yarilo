@@ -298,13 +298,36 @@ protocol:
 ## -------------------------------------------------------------------
 general:
   limits:
+    ## Maximum simultaneous IMAP/POP3 connections from a single IP address.
     maxUserIPConnections: 10
+
+  ## HAProxy PROXY protocol v1/v2 support.
+  ## Enable when an upstream load balancer (HAProxy, nginx, AWS NLB with proxy_protocol)
+  ## sits in front of the director and forwards the real client IP in the PROXY header.
+  ## The director reads the header before TLS handshake; conn.RemoteAddr() always reflects
+  ## the real client IP after this point.
+  ##
+  ## haproxy_protocol must also be enabled per-listener (services.imaps.haproxy_protocol etc.)
+  ## in the generated config — the global enabled flag controls all listeners at once.
+  ##
+  ## trustedNets: CIDRs of load balancers allowed to send PROXY headers.
+  ##              Connections from untrusted IPs have the header silently ignored.
+  ## timeout:     Seconds to wait for the PROXY header before rejecting the connection.
   haproxy:
     enabled: false
     trustedNets:
       - "127.0.0.1/32"
       - "10.0.0.0/8"
     timeout: 3
+
+  ## XCLIENT forwarding support.
+  ## When enabled, the director sends an XCLIENT ADDR=<real-ip> command to the backend
+  ## (yarilo-imap / yarilo-pop3 / yarilo-lmtp) immediately after connecting, so the
+  ## backend session sees the real client IP instead of the director's pod IP.
+  ##
+  ## Requires the backend to trust the director's pod CIDR in its own xclient.trustedNets.
+  ## The director itself does not check trustedNets for outgoing XCLIENT — trustedNets here
+  ## is written into the backend config so it knows which sources to accept XCLIENT from.
   xclient:
     enabled: false
     trustedNets:

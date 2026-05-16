@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	proxyproto "github.com/pires/go-proxyproto"
 )
 
 // ProxyConfig describes one mail protocol listener on the director.
@@ -28,6 +30,13 @@ type ProxyConfig struct {
 	// BackendPort is the containerPort on the backend pod (same as the pod's listen port).
 	// Director dials pod-IP:BackendPort directly, bypassing kube-proxy.
 	BackendPort int
+	// HAProxy enables PROXY protocol v1/v2 header reading from trusted upstreams.
+	// The header is parsed during Accept so conn.RemoteAddr() always reflects the real IP.
+	HAProxy            bool
+	HAProxyTimeout     time.Duration
+	HAProxyTrustedNets []*net.IPNet
+	// XClient enables forwarding of the real client IP to the backend via XCLIENT.
+	XClient bool
 }
 
 // StartProxy starts a mail protocol proxy listener in the background.
@@ -37,7 +46,14 @@ func (s *Server) StartProxy(ctx context.Context, cfg ProxyConfig) error {
 	if err != nil {
 		return fmt.Errorf("director proxy %s listen %s: %w", cfg.Protocol, cfg.Addr, err)
 	}
-	slog.Info("director proxy listening", "protocol", cfg.Protocol, "addr", cfg.Addr)
+	if cfg.HAProxy {
+		ln = &proxyproto.Listener{
+			Listener:          ln,
+			Policy:            haProxyPolicy(cfg.HAProxyTrustedNets),
+			ReadHeaderTimeout: cfg.HAProxyTimeout,
+		}
+	}
+	slog.Info("director proxy listening", "protocol", cfg.Protocol, "addr", cfg.Addr, "haproxy", cfg.HAProxy)
 	go s.runProxy(ctx, ln, cfg)
 	return nil
 }
@@ -65,7 +81,13 @@ func (s *Server) handleProxyConn(conn net.Conn, cfg ProxyConfig) {
 	// Per-connection deadline covers the preamble phase only.
 	conn.SetDeadline(time.Now().Add(60 * time.Second)) //nolint:errcheck
 
+	// After proxyproto.Listener wraps the conn, RemoteAddr() already reflects
+	// the real client IP from the PROXY header (read eagerly during Accept).
 	remote := conn.RemoteAddr().String()
+	clientIP, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		clientIP = remote
+	}
 
 	// TLS-terminate client connection for IMAPS / POP3S.
 	if cfg.ExtTLS != nil {
@@ -121,9 +143,25 @@ func (s *Server) handleProxyConn(conn net.Conn, cfg ProxyConfig) {
 		return
 	}
 
+	// Forward real client IP to backend via XCLIENT before auth replay.
+	if cfg.XClient && clientIP != "" {
+		if err := forwardXClient(backendConn, backendRd, cfg.Protocol, clientIP); err != nil {
+			slog.Debug("proxy: xclient forward", "proto", cfg.Protocol, "clientIP", clientIP, "err", err)
+			return
+		}
+	}
+
 	// Replay auth command to backend.
 	if _, err := io.WriteString(backendConn, pre.authLine); err != nil {
 		slog.Debug("proxy: replay auth", "err", err)
+		return
+	}
+
+	// Discard backend responses to intermediate commands that the director already
+	// answered on behalf of the backend (USER for POP3, LHLO+MAIL FROM for LMTP).
+	// Without this, the client would receive duplicate responses.
+	if err := syncAfterReplay(backendRd, cfg.Protocol); err != nil {
+		slog.Debug("proxy: sync after replay", "err", err)
 		return
 	}
 
@@ -133,6 +171,91 @@ func (s *Server) handleProxyConn(conn net.Conn, cfg ProxyConfig) {
 
 	// Bidirectional proxy for the rest of the session.
 	biProxy(rd, conn, backendRd, backendConn)
+}
+
+// haProxyPolicy returns a proxyproto policy that accepts PROXY headers only
+// from trusted upstream IPs and ignores them from all others.
+func haProxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
+	return func(upstream net.Addr) (proxyproto.Policy, error) {
+		if len(nets) == 0 {
+			return proxyproto.IGNORE, nil
+		}
+		tcpAddr, ok := upstream.(*net.TCPAddr)
+		if !ok {
+			return proxyproto.IGNORE, nil
+		}
+		for _, n := range nets {
+			if n.Contains(tcpAddr.IP) {
+				return proxyproto.USE, nil
+			}
+		}
+		return proxyproto.IGNORE, nil
+	}
+}
+
+// forwardXClient sends an XCLIENT command with the real client IP to the backend
+// and reads the acknowledgement response. Must be called after discardGreeting.
+func forwardXClient(conn net.Conn, rd *bufio.Reader, protocol, clientIP string) error {
+	switch protocol {
+	case "imap", "imaps":
+		// IMAP XCLIENT: tagged command, backend responds "XCONN OK XCLIENT\r\n".
+		if _, err := fmt.Fprintf(conn, "XCONN XCLIENT ADDR=%s\r\n", clientIP); err != nil {
+			return fmt.Errorf("xclient imap send: %w", err)
+		}
+		if _, err := rd.ReadString('\n'); err != nil {
+			return fmt.Errorf("xclient imap ack: %w", err)
+		}
+	case "pop3", "pop3s":
+		// POP3 XCLIENT: backend responds "+OK XCLIENT ...\r\n".
+		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s\r\n", clientIP); err != nil {
+			return fmt.Errorf("xclient pop3 send: %w", err)
+		}
+		if _, err := rd.ReadString('\n'); err != nil {
+			return fmt.Errorf("xclient pop3 ack: %w", err)
+		}
+	case "lmtp":
+		// LMTP XCLIENT: backend responds "220 2.0.0 OK\r\n".
+		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s\r\n", clientIP); err != nil {
+			return fmt.Errorf("xclient lmtp send: %w", err)
+		}
+		if _, err := rd.ReadString('\n'); err != nil {
+			return fmt.Errorf("xclient lmtp ack: %w", err)
+		}
+	}
+	return nil
+}
+
+// syncAfterReplay discards backend responses to intermediate commands that the
+// director already answered to the client. Called after writing pre.authLine.
+//
+// POP3: director answered USER with "+OK"; backend will also emit "+OK" for the
+// replayed USER — discard it, let the PASS response reach the client via biProxy.
+//
+// LMTP: director answered LHLO and MAIL FROM; backend emits responses for all
+// three replayed commands — discard LHLO block + MAIL FROM line, let RCPT TO
+// response reach the client via biProxy.
+func syncAfterReplay(rd *bufio.Reader, protocol string) error {
+	switch protocol {
+	case "pop3", "pop3s":
+		_, err := rd.ReadString('\n') // "+OK" for USER
+		return err
+	case "lmtp":
+		// Discard multi-line LHLO 250 response (lines with "250-"; final "250 ").
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			if len(line) >= 4 && line[3] != '-' {
+				break
+			}
+		}
+		// Discard "250 OK" for MAIL FROM.
+		_, err := rd.ReadString('\n')
+		return err
+	default:
+		return nil
+	}
 }
 
 // dialBackend opens a TCP (or mTLS) connection to a backend pod.
