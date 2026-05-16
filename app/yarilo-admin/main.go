@@ -13,6 +13,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -218,7 +219,7 @@ func doRequest(method, path string, body any) ([]byte, error) {
 		}
 		bodyReader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, strings.TrimRight(apiURL, "/")+path, bodyReader)
+	req, err := http.NewRequestWithContext(context.Background(), method, strings.TrimRight(apiURL, "/")+path, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
