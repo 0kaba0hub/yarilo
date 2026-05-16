@@ -209,14 +209,24 @@ Same pattern as IMAP. Login pod proxies to session pod via plain TCP after auth.
 
 ### LMTP (port 24)
 
+LMTP is proxied through yarilo-director to ensure delivery reaches the backend that
+owns the recipient's mailbox (consistent-hash affinity, same as IMAP/POP3).
+
 ```
-MTA ──TCP:24──► yarilo-lmtp (yarilo uid)
+MTA ──TCP:24──► yarilo-director (yarilo uid)
+                    │ read LMTP preamble (extract recipient username)
+                    │ ring lookup → yarilo-lmtp pod address
+                    │ dial yarilo-lmtp pod :10024 (plain TCP, internal ClusterIP)
+                    │ goroutine: proxy TCP conn ↔ TCP conn
+                    │
+                yarilo-lmtp (yarilo uid)
                     auth lookup ──mTLS──► yarilo-auth :9100
                     goroutine per delivery
                     write to maildir via RWX PVC
 ```
 
-No login phase. LMTP is internal-only (ClusterIP or NodePort for trusted MTA).
+LMTP has no login phase — trusted MTAs connect directly to the director's ClusterIP or
+NodePort (protected by network policy; not exposed via LoadBalancer).
 
 ---
 
@@ -231,6 +241,7 @@ a login pod and its target session pod within the same trust boundary (ClusterIP
 | `*-login` | `yarilo-anvil` | mTLS TCP :9101 | TAB-delimited |
 | `*-login` | `yarilo-director` | mTLS TCP :9102 | TAB-delimited (INTERNALS.md §2) |
 | `*-login` | `yarilo-imap/pop3/submission` | plain TCP ClusterIP | raw protocol bytes (proxy) |
+| `yarilo-director` | `yarilo-lmtp` | plain TCP ClusterIP | raw LMTP bytes (proxy) |
 | `yarilo-health` | `yarilo-director` | mTLS TCP :9102 | TAB-delimited |
 | `yarilo-lmtp` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited |
 | admin | `yarilo-ipc` | mTLS TCP :9104 | TAB-delimited |

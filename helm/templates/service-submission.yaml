@@ -1,0 +1,45 @@
+{{- if .Values.components.submission.enabled }}
+## LoadBalancer — submission (587) and/or submissions (465) for mail clients.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-submission
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "submission") | nindent 4 }}
+spec:
+  type: LoadBalancer
+  ports:
+    {{- if .Values.components.submission.listeners.submission.enabled }}
+    - name: submission
+      port: {{ .Values.components.submission.listeners.submission.servicePort }}
+      targetPort: submission
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.submission.listeners.submissions.enabled }}
+    - name: submissions
+      port: {{ .Values.components.submission.listeners.submissions.servicePort }}
+      targetPort: submissions
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "submission") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-submission-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "submission") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "submission") | nindent 4 }}
+{{- end }}

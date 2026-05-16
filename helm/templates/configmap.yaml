@@ -64,6 +64,16 @@ data:
         ssl_mode: "no"
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
+      submission:
+        enabled: {{ .Values.components.submission.listeners.submission.enabled }}
+        port: {{ .Values.components.submission.listeners.submission.containerPort }}
+        ssl_mode: starttls
+        disable_plaintext_auth: true
+      submissions:
+        enabled: {{ .Values.components.submission.listeners.submissions.enabled }}
+        port: {{ .Values.components.submission.listeners.submissions.containerPort }}
+        ssl_mode: ssl
+        disable_plaintext_auth: true
 
     protocol:
       imap:

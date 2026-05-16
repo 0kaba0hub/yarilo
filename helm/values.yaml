@@ -299,6 +299,38 @@ components:
         cpu: 500m
         memory: 256Mi
 
+  ## Submission proxy — accepts mail from clients, relays to upstream MTA.
+  ## Standalone service; does NOT route through director.
+  submission:
+    enabled: false
+    replicas: 1
+
+    listeners:
+      submission:
+        enabled: true
+        servicePort: 587
+        containerPort: 10587
+      submissions:
+        enabled: false
+        servicePort: 465
+        containerPort: 10465
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    ## TLS cert for client-facing listeners (same secret as director by default).
+    tls:
+      secretName: ""
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
 ## -------------------------------------------------------------------
 ## Protocol tuning
 ## -------------------------------------------------------------------
