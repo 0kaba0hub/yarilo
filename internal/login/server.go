@@ -20,6 +20,7 @@ import (
 
 	proxyproto "github.com/pires/go-proxyproto"
 
+	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 )
 
@@ -61,6 +62,16 @@ type Options struct {
 	// preamble phase (IMAP :143, POP3 :110, Submission :587).
 	// Nil means STARTTLS is not advertised or available on this listener.
 	StarttlsTLS *tls.Config
+	// AnvilAddr is the host:port of yarilo-anvil for per-user@IP connection
+	// limiting (mail_max_userip_connections). Empty = no limit enforcement.
+	AnvilAddr string
+	// AnvilTLS is the mTLS config for connecting to yarilo-anvil.
+	// Nil means plain TCP.
+	AnvilTLS *tls.Config
+	// AnvilFailOpen controls what happens when yarilo-anvil is unreachable.
+	// true = allow the session (fail open); false = reject the session (fail closed).
+	AnvilFailOpen bool
+
 	// HAProxy enables PROXY protocol v1/v2 header reading from trusted upstreams.
 	HAProxy        bool
 	HAProxyTimeout time.Duration
@@ -187,6 +198,43 @@ func (s *Server) handleConn(conn net.Conn) {
 		"backend", backendAddr,
 	)
 
+	// Anvil connection limit check.
+	sessID := fmt.Sprintf("%d", s.sessID.Add(1))
+	if s.opts.AnvilAddr != "" {
+		ac, aerr := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 0)
+		if aerr != nil {
+			slog.Error("login: anvil dial failed", "addr", s.opts.AnvilAddr, "err", aerr)
+			if !s.opts.AnvilFailOpen {
+				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+				return
+			}
+		} else {
+			svc := anvilService(s.opts.Protocol)
+			cerr := ac.Connect(sessID, pre.username, clientIP, svc)
+			if cerr == anvil.ErrTooManyConns {
+				ac.Close()
+				slog.Warn("login: too many connections", "user", pre.username, "ip", clientIP)
+				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "too many connections")
+				return
+			}
+			if cerr != nil {
+				ac.Close()
+				slog.Error("login: anvil connect failed", "err", cerr)
+				if !s.opts.AnvilFailOpen {
+					writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+					return
+				}
+			} else {
+				defer func() {
+					if err := ac.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
+						slog.Debug("login: anvil disconnect", "err", err)
+					}
+					ac.Close()
+				}()
+			}
+		}
+	}
+
 	// Dial backend pod.
 	backendConn, err := dialBackend(backendAddr, s.opts.BackendTLS)
 	if err != nil {
@@ -197,7 +245,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer backendConn.Close()
 
 	// Register session for kick support.
-	sessID := fmt.Sprintf("%d", s.sessID.Add(1))
 	sess := &liveSession{id: sessID, user: pre.username, backendConn: backendConn}
 	s.sessMu.Lock()
 	s.sessions[pre.username] = append(s.sessions[pre.username], sess)
@@ -539,6 +586,18 @@ func writeProtoError(conn net.Conn, p Protocol, tag, msg string) {
 
 func isSubmission(p Protocol) bool {
 	return p == ProtocolSubmission || p == ProtocolSubmissions
+}
+
+// anvilService maps a login Protocol to the service name used in the anvil protocol.
+func anvilService(p Protocol) string {
+	switch p {
+	case ProtocolPOP3, ProtocolPOP3S:
+		return "pop3"
+	case ProtocolSubmission, ProtocolSubmissions:
+		return "smtp"
+	default:
+		return "imap"
+	}
 }
 
 func haProxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
