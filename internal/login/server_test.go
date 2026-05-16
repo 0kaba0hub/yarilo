@@ -281,8 +281,8 @@ func TestExtractIMAPPreamble_StarttlsUnavailable(t *testing.T) {
 
 	cli.Write([]byte("T1 STARTTLS\r\n"))
 	resp, _ := crd.ReadString('\n')
-	if !strings.HasPrefix(resp, "T1 NO") {
-		t.Errorf("expected T1 NO, got %q", resp)
+	if !strings.HasPrefix(resp, "T1 BAD") {
+		t.Errorf("expected T1 BAD (RFC 3501 §6.2.1), got %q", resp)
 	}
 
 	// Connection must still be alive; send LOGIN to complete.

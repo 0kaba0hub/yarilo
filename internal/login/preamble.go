@@ -77,7 +77,8 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 			return nil, fmt.Errorf("imap: client logged out before auth")
 		case "STARTTLS":
 			if extTLS == nil {
-				fmt.Fprintf(conn, "%s NO STARTTLS not available\r\n", tag)
+				// RFC 3501 §6.2.1 and RFC 9051 §6.2.1: BAD when TLS is not available.
+				fmt.Fprintf(conn, "%s BAD STARTTLS not available\r\n", tag)
 				continue
 			}
 			fmt.Fprintf(conn, "%s OK Begin TLS negotiation\r\n", tag)
