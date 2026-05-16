@@ -147,21 +147,23 @@ func NewWithOptions(opts Options) *Server {
 	}
 }
 
-// sessionOpen increments the exact session counter for backendIP.
+// sessionOpen increments the exact session counter for backendIP+protocol.
 // Called immediately before biProxy starts.
-func (s *Server) sessionOpen(backendIP string) {
+func (s *Server) sessionOpen(backendIP, protocol string) {
+	k := sessionKey(backendIP, protocol)
 	s.sessionsMu.Lock()
-	s.sessions[backendIP]++
+	s.sessions[k]++
 	s.sessionsMu.Unlock()
 	s.updateMetrics()
 }
 
-// sessionClose decrements the exact session counter for backendIP.
+// sessionClose decrements the exact session counter for backendIP+protocol.
 // Called via defer when the proxy handler returns.
-func (s *Server) sessionClose(backendIP string) {
+func (s *Server) sessionClose(backendIP, protocol string) {
+	k := sessionKey(backendIP, protocol)
 	s.sessionsMu.Lock()
-	if s.sessions[backendIP] > 0 {
-		s.sessions[backendIP]--
+	if s.sessions[k] > 0 {
+		s.sessions[k]--
 	}
 	s.sessionsMu.Unlock()
 	s.updateMetrics()
