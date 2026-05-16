@@ -131,7 +131,6 @@ func TestExtractIMAPPreamble_AuthenticatePlain(t *testing.T) {
 
 func TestExtractIMAPPreamble_Logout(t *testing.T) {
 	srv, cli := dialPipe(t)
-	cliRd := bufio.NewReader(cli)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -140,20 +139,17 @@ func TestExtractIMAPPreamble_Logout(t *testing.T) {
 		errCh <- err
 	}()
 
-	readCRLFLine(t, cliRd) // * OK greeting
-	fmt.Fprintf(cli, "A01 LOGOUT\r\n")
-	// net.Pipe is synchronous; drain server responses so it doesn't block writing BYE.
+	// Run client in its own goroutine so net.Pipe reads/writes on both ends
+	// can proceed concurrently without deadlocking.
 	go func() {
-		for {
-			_, err := cliRd.ReadString('\n')
-			if err != nil {
-				return
-			}
-		}
+		cliRd := bufio.NewReader(cli)
+		cliRd.ReadString('\n')             //nolint:errcheck // greeting
+		fmt.Fprintf(cli, "A01 LOGOUT\r\n") //nolint:errcheck
+		cliRd.ReadString('\n')             //nolint:errcheck // * BYE
+		cliRd.ReadString('\n')             //nolint:errcheck // A01 OK Logout
 	}()
 
-	err := <-errCh
-	if err == nil {
+	if err := <-errCh; err == nil {
 		t.Fatal("expected error on LOGOUT, got nil")
 	}
 }
