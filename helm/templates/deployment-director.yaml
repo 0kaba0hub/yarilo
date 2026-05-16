@@ -74,14 +74,12 @@ spec:
             - name: api
               containerPort: {{ .Values.components.director.api.port }}
               protocol: TCP
-          {{- if .Values.components.director.api.tokenSecret.name }}
           env:
             - name: DIRECTOR_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.components.director.api.tokenSecret.name }}
-                  key: {{ .Values.components.director.api.tokenSecret.key }}
-          {{- end }}
+                  name: {{ printf "%s-director-api-token" (include "yarilo.fullname" .) }}
+                  key: token
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
