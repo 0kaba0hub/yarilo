@@ -517,6 +517,31 @@ func (s *Server) handleUserKilled(c *client, fields []string) {
 	_ = c.WriteLine("OK")
 }
 
+// AddBackend registers a backend pod in the hash ring.
+// Called at startup after DNS resolution of headless services.
+func (s *Server) AddBackend(ip string, port int, tag string) {
+	ts := time.Now().Unix()
+	s.ring.AddBackend(&ring.Backend{
+		IP:               ip,
+		Port:             port,
+		Tag:              tag,
+		Up:               true,
+		LastUpdownChange: ts,
+	})
+	slog.Info("director: backend registered", "ip", ip, "port", port, "tag", tag)
+	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), nil)
+}
+
+// LookupBackend returns the backend for the given username or nil if ring is empty.
+func (s *Server) LookupBackend(username string) *ring.Backend {
+	return s.ring.LookupBackend(username)
+}
+
+// RecordUser writes a user→backend mapping into the user directory.
+func (s *Server) RecordUser(username, backendAddr string) {
+	s.userDir.Set(username, backendAddr, false)
+}
+
 // backendTag looks up the tag for a backend IP, returning "" if not found.
 func (s *Server) backendTag(ip string) string {
 	for _, b := range s.ring.Backends() {
