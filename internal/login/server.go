@@ -55,8 +55,12 @@ type Options struct {
 	BackendTLS *tls.Config
 	// ExtTLS is the client-facing TLS config for implicit-TLS listeners
 	// (IMAPS :993, POP3S :995, Submissions :465).
-	// Nil means plain-text / STARTTLS (login-pod handles STARTTLS upgrade).
+	// Nil means the listener is plain-text (no implicit TLS on accept).
 	ExtTLS *tls.Config
+	// StarttlsTLS is the TLS config offered via STARTTLS / STLS during the
+	// preamble phase (IMAP :143, POP3 :110, Submission :587).
+	// Nil means STARTTLS is not advertised or available on this listener.
+	StarttlsTLS *tls.Config
 	// HAProxy enables PROXY protocol v1/v2 header reading from trusted upstreams.
 	HAProxy        bool
 	HAProxyTimeout time.Duration
@@ -162,7 +166,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	// Extract preamble: handle pre-auth protocol exchange with mail client.
 	// Returns username (for director LOOKUP) and authLines (to replay to backend).
-	pre, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.ExtTLS)
+	pre, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS)
 	if err != nil {
 		slog.Debug("login: preamble", "proto", s.opts.Protocol, "remote", remote, "err", err)
 		return

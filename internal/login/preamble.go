@@ -61,7 +61,7 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 		switch cmd {
 		case "CAPABILITY":
 			caps := "IMAP4rev1 IMAP4rev2 AUTH=PLAIN AUTH=LOGIN"
-			if extTLS == nil {
+			if extTLS != nil {
 				caps += " STARTTLS"
 			}
 			fmt.Fprintf(conn, "* CAPABILITY %s\r\n", caps)
@@ -77,7 +77,8 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 			return nil, fmt.Errorf("imap: client logged out before auth")
 		case "STARTTLS":
 			if extTLS == nil {
-				return nil, fmt.Errorf("imap: STARTTLS but no TLS config")
+				fmt.Fprintf(conn, "%s NO STARTTLS not available\r\n", tag)
+				continue
 			}
 			fmt.Fprintf(conn, "%s OK Begin TLS negotiation\r\n", tag)
 			tlsConn := tls.Server(conn, extTLS)
@@ -104,33 +105,73 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 				fmt.Fprintf(conn, "%s BAD AUTHENTICATE requires mechanism\r\n", tag)
 				continue
 			}
-			if strings.ToUpper(fields[2]) != "PLAIN" {
+			switch strings.ToUpper(fields[2]) {
+			case "PLAIN":
+				var b64 string
+				if len(fields) >= 4 {
+					b64 = fields[3]
+				} else {
+					if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
+						return nil, fmt.Errorf("imap: send challenge: %w", err)
+					}
+					resp, err := rd.ReadString('\n')
+					if err != nil {
+						return nil, fmt.Errorf("imap: read auth: %w", err)
+					}
+					b64 = strings.TrimRight(resp, "\r\n")
+				}
+				username, err := decodePlainUsername(b64)
+				if err != nil {
+					fmt.Fprintf(conn, "%s BAD Invalid SASL encoding\r\n", tag)
+					continue
+				}
+				return &preamble{
+					username:  username,
+					authLines: []string{fmt.Sprintf("%s AUTHENTICATE PLAIN %s\r\n", tag, b64)},
+					cmdTag:    tag,
+				}, nil
+			case "LOGIN":
+				// Two-step: server prompts for username, then password.
+				if _, err := fmt.Fprintf(conn, "+ VXNlcm5hbWU6\r\n"); err != nil {
+					return nil, fmt.Errorf("imap: auth login username prompt: %w", err)
+				}
+				userB64, err := rd.ReadString('\n')
+				if err != nil {
+					return nil, fmt.Errorf("imap: auth login username: %w", err)
+				}
+				userB64 = strings.TrimRight(userB64, "\r\n")
+				userBytes, decErr := base64.StdEncoding.DecodeString(userB64)
+				if decErr != nil {
+					fmt.Fprintf(conn, "%s BAD Invalid base64\r\n", tag)
+					continue
+				}
+				username := string(userBytes)
+				if _, err := fmt.Fprintf(conn, "+ UGFzc3dvcmQ6\r\n"); err != nil {
+					return nil, fmt.Errorf("imap: auth login password prompt: %w", err)
+				}
+				passB64, err := rd.ReadString('\n')
+				if err != nil {
+					return nil, fmt.Errorf("imap: auth login password: %w", err)
+				}
+				passB64 = strings.TrimRight(passB64, "\r\n")
+				passBytes, decErr := base64.StdEncoding.DecodeString(passB64)
+				if decErr != nil {
+					fmt.Fprintf(conn, "%s BAD Invalid base64\r\n", tag)
+					continue
+				}
+				// Re-encode as PLAIN for backend replay: \0authcid\0passwd
+				plainB64 := base64.StdEncoding.EncodeToString(
+					append([]byte("\x00"+username+"\x00"), passBytes...),
+				)
+				return &preamble{
+					username:  username,
+					authLines: []string{fmt.Sprintf("%s AUTHENTICATE PLAIN %s\r\n", tag, plainB64)},
+					cmdTag:    tag,
+				}, nil
+			default:
 				fmt.Fprintf(conn, "%s NO Unsupported mechanism\r\n", tag)
 				continue
 			}
-			var b64 string
-			if len(fields) >= 4 {
-				b64 = fields[3]
-			} else {
-				if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
-					return nil, fmt.Errorf("imap: send challenge: %w", err)
-				}
-				resp, err := rd.ReadString('\n')
-				if err != nil {
-					return nil, fmt.Errorf("imap: read auth: %w", err)
-				}
-				b64 = strings.TrimRight(resp, "\r\n")
-			}
-			username, err := decodePlainUsername(b64)
-			if err != nil {
-				fmt.Fprintf(conn, "%s BAD Invalid SASL encoding\r\n", tag)
-				continue
-			}
-			return &preamble{
-				username:  username,
-				authLines: []string{fmt.Sprintf("%s AUTHENTICATE PLAIN %s\r\n", tag, b64)},
-				cmdTag:    tag,
-			}, nil
 		default:
 			fmt.Fprintf(conn, "%s BAD Not permitted before authentication\r\n", tag)
 		}
@@ -155,7 +196,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 		switch {
 		case upper == "CAPA":
 			capa := "+OK\r\nUSER\r\nSASL PLAIN\r\n"
-			if extTLS == nil {
+			if extTLS != nil {
 				capa += "STLS\r\n"
 			}
 			capa += ".\r\n"
@@ -179,6 +220,37 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 			rd = bufio.NewReaderSize(conn, 4096)
 			extTLS = nil
 			username = ""
+		case strings.HasPrefix(upper, "AUTH"):
+			fields := strings.Fields(line)
+			if len(fields) < 2 || !strings.EqualFold(fields[1], "PLAIN") {
+				fmt.Fprintf(conn, "-ERR Unknown authentication mechanism\r\n")
+				continue
+			}
+			var b64 string
+			if len(fields) >= 3 {
+				b64 = fields[2]
+			} else {
+				if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
+					return nil, fmt.Errorf("pop3: auth plain challenge: %w", err)
+				}
+				resp, err := rd.ReadString('\n')
+				if err != nil {
+					return nil, fmt.Errorf("pop3: auth plain response: %w", err)
+				}
+				b64 = strings.TrimRight(resp, "\r\n")
+			}
+			user, pass, decErr := decodePlainCreds(b64)
+			if decErr != nil {
+				fmt.Fprintf(conn, "-ERR Invalid authentication\r\n")
+				continue
+			}
+			return &preamble{
+				username: user,
+				authLines: []string{
+					fmt.Sprintf("USER %s\r\n", user),
+					fmt.Sprintf("PASS %s\r\n", pass),
+				},
+			}, nil
 		case strings.HasPrefix(upper, "USER "):
 			username = strings.TrimSpace(line[5:])
 			fmt.Fprintf(conn, "+OK\r\n")
@@ -341,22 +413,28 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 	}
 }
 
-// decodePlainUsername extracts authcid from a SASL PLAIN base64 payload.
+// decodePlainCreds extracts authcid and passwd from a SASL PLAIN base64 payload.
 // Wire format: [authzid] NUL authcid NUL passwd
-func decodePlainUsername(b64str string) (string, error) {
-	data, err := base64.StdEncoding.DecodeString(b64str)
-	if err != nil {
-		return "", fmt.Errorf("base64: %w", err)
+func decodePlainCreds(b64str string) (username, password string, err error) {
+	data, decErr := base64.StdEncoding.DecodeString(b64str)
+	if decErr != nil {
+		return "", "", fmt.Errorf("base64: %w", decErr)
 	}
 	parts := bytes.SplitN(data, []byte{0}, 3)
 	if len(parts) != 3 {
-		return "", fmt.Errorf("PLAIN: expected 3 NUL-separated parts")
+		return "", "", fmt.Errorf("PLAIN: expected 3 NUL-separated parts")
 	}
 	authcid := string(parts[1])
 	if authcid == "" {
-		return "", fmt.Errorf("PLAIN: empty authcid")
+		return "", "", fmt.Errorf("PLAIN: empty authcid")
 	}
-	return authcid, nil
+	return authcid, string(parts[2]), nil
+}
+
+// decodePlainUsername extracts only the authcid from a SASL PLAIN base64 payload.
+func decodePlainUsername(b64str string) (string, error) {
+	u, _, err := decodePlainCreds(b64str)
+	return u, err
 }
 
 func stripQuotes(s string) string {
