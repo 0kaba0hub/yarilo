@@ -70,6 +70,10 @@ type Options struct {
 	UserExpire   time.Duration // how long a user→backend mapping lives; default 900s
 	PingInterval time.Duration // idle time before sending PING; default 30s
 	PingTimeout  time.Duration // time to wait for PONG before closing; default 10s
+	// PeerTLS, LocalIP, LocalPort are used when adding peers via AddPeer.
+	PeerTLS   *tls.Config
+	LocalIP   string
+	LocalPort int
 }
 
 func (o *Options) userExpire() time.Duration {
@@ -128,6 +132,13 @@ type Server struct {
 	// Incremented when biProxy starts, decremented when it returns.
 	sessionsMu sync.Mutex
 	sessions   map[string]int
+
+	// peers tracks dynamically managed director-peer connections.
+	peersMu    sync.RWMutex
+	peerCancel map[string]context.CancelFunc
+	peerTLS    *tls.Config
+	localIP    string
+	localPort  int
 }
 
 // New creates a director server with an empty ring and default options.
@@ -138,13 +149,59 @@ func New() *Server {
 // NewWithOptions creates a director server with custom options.
 func NewWithOptions(opts Options) *Server {
 	return &Server{
-		ring:      ring.New(),
-		opts:      opts,
-		userDir:   NewUserDir(opts.userExpire()),
-		overrides: make(map[string]string),
-		clients:   make(map[*client]struct{}),
-		sessions:  make(map[string]int),
+		ring:       ring.New(),
+		opts:       opts,
+		userDir:    NewUserDir(opts.userExpire()),
+		overrides:  make(map[string]string),
+		clients:    make(map[*client]struct{}),
+		sessions:   make(map[string]int),
+		peerCancel: make(map[string]context.CancelFunc),
+		peerTLS:    opts.PeerTLS,
+		localIP:    opts.LocalIP,
+		localPort:  opts.LocalPort,
 	}
+}
+
+// SetPeerDialConfig sets TLS and local identity used when dialling peers via AddPeer.
+func (s *Server) SetPeerDialConfig(tlsCfg *tls.Config, localIP string, localPort int) {
+	s.peerTLS = tlsCfg
+	s.localIP = localIP
+	s.localPort = localPort
+}
+
+// AddPeer starts a persistent dial loop to peer director addr.
+// The loop runs until ctx is cancelled or RemovePeer is called.
+func (s *Server) AddPeer(ctx context.Context, addr string) {
+	s.peersMu.Lock()
+	defer s.peersMu.Unlock()
+	if _, ok := s.peerCancel[addr]; ok {
+		return
+	}
+	pCtx, cancel := context.WithCancel(ctx)
+	s.peerCancel[addr] = cancel
+	pd := NewPeerDialer(s, nil, s.peerTLS, s.localIP, s.localPort)
+	go pd.RunPeer(pCtx, addr)
+}
+
+// RemovePeer cancels the dial loop for addr.
+func (s *Server) RemovePeer(addr string) {
+	s.peersMu.Lock()
+	defer s.peersMu.Unlock()
+	if cancel, ok := s.peerCancel[addr]; ok {
+		cancel()
+		delete(s.peerCancel, addr)
+	}
+}
+
+// ListPeers returns the addresses of all currently managed peers.
+func (s *Server) ListPeers() []string {
+	s.peersMu.RLock()
+	defer s.peersMu.RUnlock()
+	out := make([]string, 0, len(s.peerCancel))
+	for addr := range s.peerCancel {
+		out = append(out, addr)
+	}
+	return out
 }
 
 // sessionOpen increments the exact session counter for backendIP+protocol.
