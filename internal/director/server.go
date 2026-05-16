@@ -256,7 +256,23 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Co
 	if err != nil {
 		return fmt.Errorf("director: listen %s: %w", addr, err)
 	}
+	go s.purgeLoop(ctx)
 	return s.listenOn(ctx, ln)
+}
+
+// purgeLoop periodically removes expired userDir entries.
+func (s *Server) purgeLoop(ctx context.Context) {
+	interval := s.opts.userExpire()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.userDir.Purge()
+		}
+	}
 }
 
 func (s *Server) listenOn(ctx context.Context, ln net.Listener) error {
@@ -465,6 +481,21 @@ func (s *Server) handleLookup(c *client, fields []string) {
 			t := s.backendTag(host)
 			_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, t))
 			return
+		}
+	}
+
+	// Sticky routing: honour an existing userDir entry if the backend is still Up
+	// and matches the requested tag. Refreshes TTL so active users stay pinned.
+	if e := s.userDir.Get(user); e != nil && !e.Weak {
+		host, portStr, splitErr := net.SplitHostPort(e.Host)
+		if splitErr == nil {
+			if existing := s.ring.GetBackend(host); existing != nil && existing.Up {
+				if len(fields) < 4 || existing.Tag == tag {
+					s.userDir.Set(user, e.Host, false) // refresh TTL
+					_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, existing.Tag))
+					return
+				}
+			}
 		}
 	}
 

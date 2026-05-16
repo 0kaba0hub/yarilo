@@ -125,6 +125,19 @@ func (r *Ring) Tags() []string {
 	return out
 }
 
+// GetBackend returns a copy of the Backend registered for ip, or nil if not found.
+// Includes backends that are currently Down.
+func (r *Ring) GetBackend(ip string) *Backend {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	b := r.backends[ip]
+	if b == nil {
+		return nil
+	}
+	cp := *b
+	return &cp
+}
+
 // LookupBackend returns a copy of the Backend for the given username.
 // Returns nil if the ring is empty or the backend is not found.
 func (r *Ring) LookupBackend(username string) *Backend {
