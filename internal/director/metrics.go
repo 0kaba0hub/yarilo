@@ -1,8 +1,8 @@
 package director
 
 import (
-	"net"
 	"strconv"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -10,33 +10,59 @@ import (
 
 var (
 	// backendInfo carries per-backend state. Value is always 1; status label
-	// carries the state: "up" | "flush" | "down".
+	// carries the state: "up" | "flush".
 	backendInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "yarilo",
 		Subsystem: "director",
 		Name:      "backend_info",
-		Help:      "Backend ring membership and status (1 = present, status label = up|flush|down).",
+		Help:      "Backend ring membership and status (1 = present, status label = up|flush).",
 	}, []string{"ip", "port", "tag", "status"})
 
-	// backendSessions is an approximate count of active users routed to each
-	// backend, derived from the userDir TTL window. Exact counts require
-	// SESSION-OPEN/SESSION-CLOSE tracking (future work).
+	// backendSessions is the exact count of active proxied sessions per backend
+	// and client-facing protocol. Incremented when biProxy starts, decremented
+	// when it returns.
 	backendSessions = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "yarilo",
 		Subsystem: "director",
 		Name:      "backend_sessions",
-		Help:      "Approximate number of active user sessions per backend (userDir TTL window).",
-	}, []string{"ip", "port", "tag"},
-	)
+		Help:      "Exact number of active proxied sessions per backend and protocol.",
+	}, []string{"ip", "port", "tag", "protocol"})
 )
 
-// updateMetrics refreshes all backend Prometheus gauges from the current ring
-// and userDir state. Called after every ring mutation and on a periodic tick.
+// sessionKey builds the map key used in Server.sessions.
+// Format: "ip\tprotocol" — tab-separated so neither part can collide.
+func sessionKey(ip, protocol string) string { return ip + "\t" + protocol }
+
+// updateMetrics refreshes all backend Prometheus gauges.
+// Called after every ring mutation and on every session open/close.
 func (s *Server) updateMetrics() {
 	backends := s.ring.Backends()
-	sessions := s.userDir.CountByBackend()
 
-	// Clear old series so removed backends don't linger.
+	s.sessionsMu.Lock()
+	snap := make(map[string]int, len(s.sessions))
+	for k, n := range s.sessions {
+		snap[k] = n
+	}
+	s.sessionsMu.Unlock()
+
+	// Build ip → protocol → count from the snapshot.
+	byIPProto := make(map[string]map[string]int)
+	for key, n := range snap {
+		if n == 0 {
+			continue
+		}
+		parts := strings.SplitN(key, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ip, proto := parts[0], parts[1]
+		if byIPProto[ip] == nil {
+			byIPProto[ip] = make(map[string]int)
+		}
+		byIPProto[ip][proto] += n
+	}
+
+	// Clear old series so removed backends / protocols don't linger.
 	backendInfo.Reset()
 	backendSessions.Reset()
 
@@ -46,11 +72,10 @@ func (s *Server) updateMetrics() {
 		if !b.Up {
 			status = "flush"
 		}
-
 		backendInfo.WithLabelValues(b.IP, portStr, b.Tag, status).Set(1)
 
-		addr := net.JoinHostPort(b.IP, portStr)
-		cnt := float64(sessions[addr])
-		backendSessions.WithLabelValues(b.IP, portStr, b.Tag).Set(cnt)
+		for proto, cnt := range byIPProto[b.IP] {
+			backendSessions.WithLabelValues(b.IP, portStr, b.Tag, proto).Set(float64(cnt))
+		}
 	}
 }

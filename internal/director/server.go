@@ -123,6 +123,11 @@ type Server struct {
 	// clients is the registry of all currently connected clients.
 	clientMu sync.RWMutex
 	clients  map[*client]struct{}
+
+	// sessions is the exact count of active proxied sessions per backend IP.
+	// Incremented when biProxy starts, decremented when it returns.
+	sessionsMu sync.Mutex
+	sessions   map[string]int
 }
 
 // New creates a director server with an empty ring and default options.
@@ -138,7 +143,30 @@ func NewWithOptions(opts Options) *Server {
 		userDir:   NewUserDir(opts.userExpire()),
 		overrides: make(map[string]string),
 		clients:   make(map[*client]struct{}),
+		sessions:  make(map[string]int),
 	}
+}
+
+// sessionOpen increments the exact session counter for backendIP+protocol.
+// Called immediately before biProxy starts.
+func (s *Server) sessionOpen(backendIP, protocol string) {
+	k := sessionKey(backendIP, protocol)
+	s.sessionsMu.Lock()
+	s.sessions[k]++
+	s.sessionsMu.Unlock()
+	s.updateMetrics()
+}
+
+// sessionClose decrements the exact session counter for backendIP+protocol.
+// Called via defer when the proxy handler returns.
+func (s *Server) sessionClose(backendIP, protocol string) {
+	k := sessionKey(backendIP, protocol)
+	s.sessionsMu.Lock()
+	if s.sessions[k] > 0 {
+		s.sessions[k]--
+	}
+	s.sessionsMu.Unlock()
+	s.updateMetrics()
 }
 
 // ListenAndServe starts the director TCP server. When tlsCfg is non-nil the
