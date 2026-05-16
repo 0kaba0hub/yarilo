@@ -256,7 +256,23 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Co
 	if err != nil {
 		return fmt.Errorf("director: listen %s: %w", addr, err)
 	}
+	go s.purgeLoop(ctx)
 	return s.listenOn(ctx, ln)
+}
+
+// purgeLoop periodically removes expired userDir entries.
+func (s *Server) purgeLoop(ctx context.Context) {
+	interval := s.opts.userExpire()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.userDir.Purge()
+		}
+	}
 }
 
 func (s *Server) listenOn(ctx context.Context, ln net.Listener) error {
