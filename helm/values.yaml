@@ -83,6 +83,22 @@ components:
     ##   yarilo-director-1.yarilo-director-headless:9102
     peers: []
 
+    ## HTTP admin API (yarilo-admin CLI target).
+    ## Token is read from the k8s Secret referenced by api.tokenSecret.
+    ## Set tokenSecret.name to enable auth; leave empty to disable (not recommended).
+    api:
+      port: 9103
+      ## k8s Secret that holds the Bearer token.
+      ## The secret must contain a key whose value is the raw token string.
+      tokenSecret:
+        name: ""    # e.g. yarilo-director-api-token
+        key: token
+      ## CIDRs allowed to reach the API. Default: loopback + k8s service/pod CIDRs.
+      allowedNets:
+        - "127.0.0.0/8"
+        - "10.96.0.0/12"
+        - "10.244.0.0/16"
+
     ## yarilo-monitor sidecar — probes backend pods and reports health to the director.
     ## Runs as a sidecar container in the director pod.
     monitor:

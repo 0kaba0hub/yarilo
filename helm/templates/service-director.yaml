@@ -68,6 +68,24 @@ spec:
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
 ---
+## ClusterIP — admin API (yarilo-admin CLI)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-director-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: api
+      port: {{ .Values.components.director.api.port }}
+      targetPort: api
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
+---
 ## ClusterIP — telemetry / health
 apiVersion: v1
 kind: Service
