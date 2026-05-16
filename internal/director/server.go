@@ -468,6 +468,21 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		}
 	}
 
+	// Sticky routing: honour an existing userDir entry if the backend is still Up
+	// and matches the requested tag. Refreshes TTL so active users stay pinned.
+	if e := s.userDir.Get(user); e != nil && !e.Weak {
+		host, portStr, splitErr := net.SplitHostPort(e.Host)
+		if splitErr == nil {
+			if existing := s.ring.GetBackend(host); existing != nil && existing.Up {
+				if len(fields) < 4 || existing.Tag == tag {
+					s.userDir.Set(user, e.Host, false) // refresh TTL
+					_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, existing.Tag))
+					return
+				}
+			}
+		}
+	}
+
 	// Ring lookup. When tag field is present in the LOOKUP command (even ""),
 	// restrict to backends with exactly that tag. When tag field is absent,
 	// use the full ring regardless of backend tags.

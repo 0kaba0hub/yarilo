@@ -710,4 +710,106 @@ func TestLookup_TagRoutesToSubRing(t *testing.T) {
 	}
 }
 
+func TestLookup_StickyRouting(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.1\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+	conn.Write([]byte("BACKEND-UP\t10.0.0.2\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	// First LOOKUP: establishes userDir entry.
+	conn.Write([]byte("LOOKUP\t1\talice@example.com\timap\n"))
+	first := readLine(t, sc)
+	firstParts := strings.Split(first, "\t")
+	if len(firstParts) < 3 || firstParts[0] != "HOST" {
+		t.Fatalf("expected HOST, got %q", first)
+	}
+	firstBackend := firstParts[2]
+
+	// Add a third backend — ring would remap some users.
+	conn.Write([]byte("BACKEND-UP\t10.0.0.3\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	// Subsequent LOOKUPs must return the same backend (sticky).
+	for i := 2; i <= 10; i++ {
+		conn.Write([]byte(fmt.Sprintf("LOOKUP\t%d\talice@example.com\timap\n", i)))
+		line := readLine(t, sc)
+		parts := strings.Split(line, "\t")
+		if len(parts) < 3 || parts[0] != "HOST" {
+			t.Fatalf("iter %d: expected HOST, got %q", i, line)
+		}
+		if parts[2] != firstBackend {
+			t.Errorf("iter %d: sticky routing broken — got %q, want %q", i, parts[2], firstBackend)
+		}
+	}
+}
+
+func TestLookup_StickyRouting_FallsBackWhenBackendDown(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.4\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+	conn.Write([]byte("BACKEND-UP\t10.0.0.5\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	// Establish sticky entry on 10.0.0.4.
+	conn.Write([]byte("BACKEND-DOWN\t10.0.0.5\n"))
+	readLine(t, sc) // OK
+	conn.Write([]byte("LOOKUP\t1\tbob@example.com\timap\n"))
+	line := readLine(t, sc)
+	parts := strings.Split(line, "\t")
+	if parts[0] != "HOST" || parts[2] != "10.0.0.4" {
+		t.Fatalf("expected 10.0.0.4, got %q", line)
+	}
+
+	// Bring 10.0.0.5 back and take 10.0.0.4 down.
+	conn.Write([]byte("BACKEND-UP\t10.0.0.5\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+	conn.Write([]byte("BACKEND-DOWN\t10.0.0.4\n"))
+	readLine(t, sc) // OK
+
+	// Sticky entry points to 10.0.0.4 which is now Down — must fall back to ring.
+	conn.Write([]byte("LOOKUP\t2\tbob@example.com\timap\n"))
+	line = readLine(t, sc)
+	parts = strings.Split(line, "\t")
+	if parts[0] != "HOST" || parts[2] == "10.0.0.4" {
+		t.Errorf("expected fallback to live backend, got %q", line)
+	}
+}
+
+func TestLookup_StickyRouting_WeakEntryUsesRing(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.6\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	conn.Write([]byte("LOOKUP\t1\tcarol@example.com\timap\n"))
+	readLine(t, sc) // HOST
+
+	// Mark entry as weak.
+	conn.Write([]byte("USER-WEAK\tcarol@example.com\n"))
+	readLine(t, sc) // OK
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.7\t993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	// Weak entry must not pin the user — ring decides.
+	// Just verify we get a HOST response (not FAIL) and no panic.
+	conn.Write([]byte("LOOKUP\t2\tcarol@example.com\timap\n"))
+	line := readLine(t, sc)
+	if !strings.HasPrefix(line, "HOST\t2\t") {
+		t.Errorf("expected HOST, got %q", line)
+	}
+}
+
 var _ = fmt.Sprintf
