@@ -1,13 +1,14 @@
 // yarilo-admin is a CLI tool for the yarilo-director HTTP admin API.
+// Designed to run inside the director pod — no flags required in standard deployments.
 //
-// Usage:
+// Environment variables (read automatically, no flags needed):
+//
+//	YARILO_ADMIN_URL   — API base URL (default: http://localhost:9103)
+//	YARILO_ADMIN_TOKEN — Bearer token (fallback: DIRECTOR_API_TOKEN)
+//
+// Usage (override via flags if needed):
 //
 //	yarilo-admin [--url URL] [--token TOKEN] <resource> <action> [args...]
-//
-// Environment variables:
-//
-//	YARILO_ADMIN_URL   — default API base URL (default: http://localhost:9103)
-//	YARILO_ADMIN_TOKEN — default Bearer token
 package main
 
 import (
@@ -32,7 +33,8 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	flag.StringVar(&apiURL, "url", envOr("YARILO_ADMIN_URL", "http://localhost:9103"), "API base URL")
-	flag.StringVar(&apiToken, "token", envOr("YARILO_ADMIN_TOKEN", ""), "Bearer token")
+	// Token: explicit env YARILO_ADMIN_TOKEN, then DIRECTOR_API_TOKEN (same secret as the server).
+	flag.StringVar(&apiToken, "token", envOr("YARILO_ADMIN_TOKEN", envOr("DIRECTOR_API_TOKEN", "")), "Bearer token")
 	flag.Parse()
 
 	args := flag.Args()

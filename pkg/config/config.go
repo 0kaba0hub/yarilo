@@ -335,8 +335,11 @@ func Load(path string) (*Config, error) {
 			PingInterval: 30,
 			PingTimeout:  10,
 			API: DirectorAPIConfig{
-				Listen:      ":9103",
-				AllowedNets: []string{"127.0.0.0/8", "10.0.0.0/8"},
+				Listen: ":9103",
+				// 127.0.0.0/8   — loopback (same-pod CLI)
+				// 10.96.0.0/12  — k8s service CIDR (kubeadm default)
+				// 10.244.0.0/16 — k8s pod CIDR (flannel/kubeadm default)
+				AllowedNets: []string{"127.0.0.0/8", "10.96.0.0/12", "10.244.0.0/16"},
 			},
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
