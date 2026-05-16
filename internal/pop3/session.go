@@ -701,6 +701,11 @@ func (s *session) cmdQuit() {
 		errCount = s.expungeDeleted()
 	}
 
+	// Release dotlock and in-memory lock before sending +OK so the next session
+	// can acquire the lock as soon as it reads our response (not later when the
+	// goroutine unwinds its defers).
+	s.releaseLock()
+
 	if errCount > 0 {
 		s.writeErr(fmt.Sprintf("%d message(s) could not be deleted", errCount))
 	} else {
@@ -778,9 +783,11 @@ func (s *session) releaseLock() {
 	}
 	if s.box != nil {
 		s.box.Close() //nolint:errcheck
+		s.box = nil
 	}
 	if s.idx != nil {
 		s.idx.Close() //nolint:errcheck
+		s.idx = nil
 	}
 }
 

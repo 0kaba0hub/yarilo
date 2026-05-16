@@ -78,6 +78,10 @@ func (u *userMailbox) Delete(folder string) error {
 	return os.RemoveAll(u.folderPath(folder))
 }
 
+func (u *userMailbox) Rename(oldName, newName string) error {
+	return os.Rename(u.folderPath(oldName), u.folderPath(newName))
+}
+
 func (u *userMailbox) Save(folder string, r io.Reader, size int64, flags []string) (string, error) {
 	folderPath := u.folderPath(folder)
 	now := time.Now()

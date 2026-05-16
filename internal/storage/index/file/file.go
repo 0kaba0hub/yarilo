@@ -348,6 +348,16 @@ func (u *userIndex) indexDir(folder string) string {
 	return filepath.Join(u.home, "."+folder)
 }
 
+// RenameFolder renames the on-disk index directory for a folder.
+// Any open IndexFile handles remain valid after the rename (file descriptors
+// survive directory renames on POSIX filesystems).
+func (u *userIndex) RenameFolder(oldName, newName string) error {
+	if err := os.Rename(u.indexDir(oldName), u.indexDir(newName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("fileindex/rename: %w", err)
+	}
+	return nil
+}
+
 // GetPOP3UIDLs reads the pop3.uidl file for the folder.
 // Each line is "<uid>\t<uidl>". Returns empty map when file does not exist.
 func (u *userIndex) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {

@@ -51,6 +51,7 @@ Ring and lifecycle settings for the director process.
 | `ping_timeout` | `10` | Seconds to wait for a PONG before closing the peer connection. |
 | `shutdown.session_grace_period` | `30` | Seconds to wait after SIGTERM before force-closing sessions. |
 | `shutdown.kill_timeout` | `5` | Seconds after grace period before hard exit. |
+| `peers` | `[]` | List of peer director addresses (`"host:port"`) for ring sync. Required when `replicas > 1`. Each director must list all other replicas. |
 
 ---
 

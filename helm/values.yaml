@@ -76,6 +76,13 @@ components:
     #   port: 24
     #   tag: ""
 
+    ## Peer director addresses for ring sync (required when replicas > 1).
+    ## Each entry is "host:port" where port matches directorPort (default 9102).
+    ## With StatefulSet, use headless-service pod DNS:
+    ##   yarilo-director-0.yarilo-director-headless:9102
+    ##   yarilo-director-1.yarilo-director-headless:9102
+    peers: []
+
     service:
       type: LoadBalancer
       annotations: {}

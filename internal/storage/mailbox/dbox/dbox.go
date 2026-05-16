@@ -67,6 +67,13 @@ func (u *userMailbox) Delete(folder string) error {
 	return nil
 }
 
+func (u *userMailbox) Rename(oldName, newName string) error {
+	if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
+		return fmt.Errorf("dbox/rename: %w", err)
+	}
+	return nil
+}
+
 func (u *userMailbox) Save(folder string, r io.Reader, size int64, flags []string) (string, error) {
 	body, err := io.ReadAll(r)
 	if err != nil {

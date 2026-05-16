@@ -55,6 +55,7 @@ func (m *mockMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
 	}
 	return nil, fmt.Errorf("not found: %s", filename)
 }
+func (m *mockMailbox) Rename(_, _ string) error                          { return nil }
 func (m *mockMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
 func (m *mockMailbox) Close() error                                      { return nil }
 
@@ -79,6 +80,7 @@ func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageM
 func (m *mockIndex) ExpungeMessage(_ uint64, _ uint32) error { return nil }
 func (m *mockIndex) NextModSeq(_ uint64) (uint64, error)     { return 1, nil }
 func (m *mockIndex) Keywords(_ uint64) ([]string, error)     { return nil, nil }
+func (m *mockIndex) RenameFolder(_, _ string) error          { return nil }
 func (m *mockIndex) GetPOP3UIDLs(_ uint64) (map[uint32]string, error) {
 	if m.savedUIDLs != nil {
 		return m.savedUIDLs, nil
