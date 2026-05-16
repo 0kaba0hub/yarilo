@@ -62,7 +62,8 @@ func (m *mockMailbox) Close() error                                      { retur
 // mockIndex implements both IndexBackend (OpenUser) and UserIndex (all ops).
 
 type mockIndex struct {
-	msgs []*mailbox.MessageMeta
+	msgs       []*mailbox.MessageMeta
+	savedUIDLs map[uint32]string
 }
 
 func (m *mockIndex) OpenUser(_ *mailbox.UserInfo) mailbox.UserIndex { return m }
@@ -78,7 +79,17 @@ func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageM
 func (m *mockIndex) ExpungeMessage(_ uint64, _ uint32) error { return nil }
 func (m *mockIndex) NextModSeq(_ uint64) (uint64, error)     { return 1, nil }
 func (m *mockIndex) Keywords(_ uint64) ([]string, error)     { return nil, nil }
-func (m *mockIndex) Close() error                            { return nil }
+func (m *mockIndex) GetPOP3UIDLs(_ uint64) (map[uint32]string, error) {
+	if m.savedUIDLs != nil {
+		return m.savedUIDLs, nil
+	}
+	return make(map[uint32]string), nil
+}
+func (m *mockIndex) SavePOP3UIDLs(_ uint64, uidls map[uint32]string) error {
+	m.savedUIDLs = uidls
+	return nil
+}
+func (m *mockIndex) Close() error { return nil }
 
 // ---- test helpers -----------------------------------------------------------
 
@@ -576,4 +587,99 @@ func TestSession_RSET(t *testing.T) {
 	if resp != "+OK 1 100" {
 		t.Fatalf("STAT after RSET: expected '+OK 1 100', got %q", resp)
 	}
+}
+
+func TestSession_SaveUIDL_PersistsAcrossSessions(t *testing.T) {
+	idx := &mockIndex{msgs: []*mailbox.MessageMeta{
+		{UID: 1, Filename: "msg1", Size: 50},
+		{UID: 2, Filename: "msg2", Size: 60},
+	}}
+	opts := newTestOpts(
+		&mockAuth{users: map[string]string{"u": "p"}},
+		&mockMailbox{},
+		idx,
+	)
+	opts.SaveUIDL = true
+
+	// First session: read UIDLs (none saved yet → computed from format).
+	c, r := newPOP3Session(t, opts)
+	login(t, c, r, "u", "p")
+
+	send(t, c, "UIDL")
+	readline(t, r) // +OK
+	line1 := readline(t, r)
+	line2 := readline(t, r)
+	readline(t, r) // dot
+	parts1 := strings.Fields(line1)
+	parts2 := strings.Fields(line2)
+	if len(parts1) != 2 || len(parts2) != 2 {
+		t.Fatalf("unexpected UIDL response: %q %q", line1, line2)
+	}
+	uidl1, uidl2 := parts1[1], parts2[1]
+
+	send(t, c, "QUIT")
+	readline(t, r)
+
+	// Verify that SavePOP3UIDLs was called on the mock index.
+	if len(idx.savedUIDLs) != 2 {
+		t.Fatalf("expected 2 saved UIDLs, got %d", len(idx.savedUIDLs))
+	}
+	if idx.savedUIDLs[1] != uidl1 || idx.savedUIDLs[2] != uidl2 {
+		t.Fatalf("saved UIDLs mismatch: got %v", idx.savedUIDLs)
+	}
+
+	// Second session: UIDLs must be identical (loaded from index).
+	c2, r2 := newPOP3Session(t, opts)
+	login(t, c2, r2, "u", "p")
+
+	send(t, c2, "UIDL")
+	readline(t, r2) // +OK
+	got1 := readline(t, r2)
+	got2 := readline(t, r2)
+	readline(t, r2) // dot
+
+	if !strings.HasSuffix(got1, uidl1) {
+		t.Fatalf("UIDL 1 changed: want suffix %q, got %q", uidl1, got1)
+	}
+	if !strings.HasSuffix(got2, uidl2) {
+		t.Fatalf("UIDL 2 changed: want suffix %q, got %q", uidl2, got2)
+	}
+
+	send(t, c2, "QUIT")
+	readline(t, r2)
+}
+
+func TestSession_LockSession_RejectsConcurrent(t *testing.T) {
+	home := t.TempDir()
+	opts := Options{
+		Auth:        &mockAuth{users: map[string]string{"u": "p"}},
+		Mailbox:     &mockMailbox{},
+		Index:       &mockIndex{},
+		Resolver:    &mailbox.Resolver{Root: home},
+		LockSession: true,
+	}
+
+	// First session: acquires the dotlock.
+	c1, r1 := newPOP3Session(t, opts)
+	login(t, c1, r1, "u", "p")
+
+	// Second session: must be rejected while dotlock is held.
+	c2, r2 := newPOP3Session(t, opts)
+	send(t, c2, "USER u")
+	readline(t, r2) // +OK
+
+	send(t, c2, "PASS p")
+	resp := readline(t, r2)
+	if !strings.HasPrefix(resp, "-ERR") {
+		t.Fatalf("expected -ERR for concurrent session, got %q", resp)
+	}
+
+	// Release the first session; a third session must now succeed.
+	send(t, c1, "QUIT")
+	readline(t, r1)
+
+	c3, r3 := newPOP3Session(t, opts)
+	login(t, c3, r3, "u", "p")
+	send(t, c3, "QUIT")
+	readline(t, r3)
 }

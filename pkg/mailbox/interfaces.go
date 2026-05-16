@@ -99,5 +99,10 @@ type UserIndex interface {
 	ExpungeMessage(folderID uint64, uid uint32) error
 	NextModSeq(folderID uint64) (uint64, error)
 	Keywords(folderID uint64) ([]string, error)
+	// GetPOP3UIDLs loads saved POP3 UIDLs for a folder (uid → uidl string).
+	// Returns an empty map when no saved UIDLs exist yet.
+	GetPOP3UIDLs(folderID uint64) (map[uint32]string, error)
+	// SavePOP3UIDLs persists POP3 UIDLs so subsequent sessions use stable values.
+	SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error
 	Close() error
 }

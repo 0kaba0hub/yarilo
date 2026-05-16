@@ -141,6 +141,8 @@ type POP3ProtocolConfig struct {
 	EnableLast     bool   `koanf:"pop3_enable_last"`
 	DeleteType     string `koanf:"pop3_delete_type"` // expunge | flag
 	DeletedFlag    string `koanf:"pop3_deleted_flag"`
+	SaveUIDL       bool   `koanf:"pop3_save_uidl"`    // persist computed UIDLs to index
+	LockSession    bool   `koanf:"pop3_lock_session"` // dotlock file to prevent IMAP+POP3 conflicts
 }
 
 type SubmissionProtocolConfig struct {

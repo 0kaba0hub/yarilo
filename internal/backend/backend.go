@@ -141,6 +141,8 @@ func New(cfg *config.Config) (*Server, error) {
 			EnableLast:         p.EnableLast,
 			DeleteType:         p.DeleteType,
 			DeletedFlag:        p.DeletedFlag,
+			SaveUIDL:           p.SaveUIDL,
+			LockSession:        p.LockSession,
 			ConnLimit:          connLimiter,
 		})
 	}
