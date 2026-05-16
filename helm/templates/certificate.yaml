@@ -1,26 +1,80 @@
-{{- $cert := .Values.components.director.tls.certificate }}
-{{- $secret := .Values.components.director.tls.secretName }}
-{{- if and $cert.enabled $secret }}
+{{- $imapCert := .Values.components.imapLogin.tls.certificate }}
+{{- $imapSecret := .Values.components.imapLogin.tls.secretName }}
+{{- if and $imapCert.enabled $imapSecret }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ include "yarilo.fullname" . }}-tls
+  name: {{ include "yarilo.fullname" . }}-imap-tls
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "yarilo.labels" . | nindent 4 }}
 spec:
-  secretName: {{ $secret }}
+  secretName: {{ $imapSecret }}
   issuerRef:
-    kind: {{ $cert.issuerRef.kind }}
-    name: {{ $cert.issuerRef.name }}
+    kind: {{ $imapCert.issuerRef.kind }}
+    name: {{ $imapCert.issuerRef.name }}
   dnsNames:
-    {{- range $cert.dnsNames }}
+    {{- range $imapCert.dnsNames }}
     - {{ . | quote }}
     {{- end }}
-  {{- with $cert.duration }}
+  {{- with $imapCert.duration }}
   duration: {{ . }}
   {{- end }}
-  {{- with $cert.renewBefore }}
+  {{- with $imapCert.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
+{{- end }}
+{{- $pop3Cert := .Values.components.pop3Login.tls.certificate }}
+{{- $pop3Secret := .Values.components.pop3Login.tls.secretName }}
+{{- if and $pop3Cert.enabled $pop3Secret }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "yarilo.fullname" . }}-pop3-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $pop3Secret }}
+  issuerRef:
+    kind: {{ $pop3Cert.issuerRef.kind }}
+    name: {{ $pop3Cert.issuerRef.name }}
+  dnsNames:
+    {{- range $pop3Cert.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- with $pop3Cert.duration }}
+  duration: {{ . }}
+  {{- end }}
+  {{- with $pop3Cert.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
+{{- end }}
+{{- $smtpCert := .Values.components.submissionLogin.tls.certificate }}
+{{- $smtpSecret := .Values.components.submissionLogin.tls.secretName }}
+{{- if and $smtpCert.enabled $smtpSecret }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "yarilo.fullname" . }}-smtp-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $smtpSecret }}
+  issuerRef:
+    kind: {{ $smtpCert.issuerRef.kind }}
+    name: {{ $smtpCert.issuerRef.name }}
+  dnsNames:
+    {{- range $smtpCert.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- with $smtpCert.duration }}
+  duration: {{ . }}
+  {{- end }}
+  {{- with $smtpCert.renewBefore }}
   renewBefore: {{ . }}
   {{- end }}
 {{- end }}

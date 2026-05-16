@@ -77,16 +77,6 @@ func main() {
 		}
 	}
 
-	// External TLS (client-facing cert) for IMAPS / POP3S.
-	var extTLSCfg *tls.Config
-	if cfg.General.SSL.TLSCert != "" && cfg.General.SSL.TLSKey != "" {
-		extTLSCfg, err = config.BuildTLSConfig(cfg.General.SSL)
-		if err != nil {
-			slog.Error("external TLS config failed", "err", err)
-			os.Exit(1)
-		}
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -102,7 +92,7 @@ func main() {
 	resolveBackends(ctx, cfg, srv)
 
 	// Start mail protocol proxy listeners.
-	if err := startProxies(ctx, srv, cfg, extTLSCfg, backendTLSCfg); err != nil {
+	if err := startProxies(ctx, srv, cfg, nil, backendTLSCfg); err != nil {
 		slog.Error("proxy startup failed", "err", err)
 		os.Exit(1)
 	}
@@ -178,43 +168,29 @@ func resolveBackends(ctx context.Context, cfg *config.Config, srv *director.Serv
 	}
 }
 
-// startProxies starts one proxy listener per enabled mail-protocol listener.
-func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config, extTLS, backendTLS *tls.Config) error {
+// startProxies starts the LMTP proxy listener on the director.
+// IMAP, POP3, and Submission are no longer proxied here; each has its own
+// dedicated login-pod binary (yarilo-imap-login, yarilo-pop3-login,
+// yarilo-submission-login) that queries the director via LOOKUP.
+func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config, _, backendTLS *tls.Config) error {
+	if !cfg.Services.LMTP.Active() {
+		return nil
+	}
 	haProxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
 	haProxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
-
-	type spec struct {
-		svc      *config.ServiceConfig
-		protocol string
-		tls      *tls.Config
-	}
-	specs := []spec{
-		{cfg.Services.IMAPS, "imaps", extTLS},
-		{cfg.Services.IMAP, "imap", nil},
-		{cfg.Services.POP3S, "pop3s", extTLS},
-		{cfg.Services.POP3, "pop3", nil},
-		{cfg.Services.LMTP, "lmtp", nil},
-	}
-	for _, s := range specs {
-		if s.svc == nil || !s.svc.Enabled {
-			continue
-		}
-		addr := fmt.Sprintf(":%d", s.svc.Port)
-		if err := srv.StartProxy(ctx, director.ProxyConfig{
-			Protocol:           s.protocol,
-			Addr:               addr,
-			ExtTLS:             s.tls,
-			BackendTLS:         backendTLS,
-			BackendPort:        s.svc.Port,
-			HAProxy:            s.svc.HAProxy,
-			HAProxyTimeout:     haProxyTimeout,
-			HAProxyTrustedNets: haProxyNets,
-			XClient:            s.svc.XClient,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	lmtp := cfg.Services.LMTP
+	addr := fmt.Sprintf(":%d", lmtp.Port)
+	return srv.StartProxy(ctx, director.ProxyConfig{
+		Protocol:           "lmtp",
+		Addr:               addr,
+		ExtTLS:             nil,
+		BackendTLS:         backendTLS,
+		BackendPort:        lmtp.Port,
+		HAProxy:            lmtp.HAProxy,
+		HAProxyTimeout:     haProxyTimeout,
+		HAProxyTrustedNets: haProxyNets,
+		XClient:            lmtp.XClient,
+	})
 }
 
 // parseCIDRs parses a list of CIDR strings into *net.IPNet values.

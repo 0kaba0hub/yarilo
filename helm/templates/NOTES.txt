@@ -1,40 +1,61 @@
 yarilo has been deployed to namespace {{ .Release.Namespace }}.
 
-Director service type: {{ .Values.components.director.service.type }}
+Active login pods:
+{{- if .Values.components.imapLogin.enabled }}
+  IMAP login pod:
+  {{- if .Values.components.imapLogin.listeners.imaps.enabled }}
+    IMAPS (TLS):     {{ .Values.components.imapLogin.listeners.imaps.servicePort }}
+  {{- end }}
+  {{- if .Values.components.imapLogin.listeners.imap.enabled }}
+    IMAP (STARTTLS): {{ .Values.components.imapLogin.listeners.imap.servicePort }}
+  {{- end }}
+{{- end }}
+{{- if .Values.components.pop3Login.enabled }}
+  POP3 login pod:
+  {{- if .Values.components.pop3Login.listeners.pop3s.enabled }}
+    POP3S (TLS):     {{ .Values.components.pop3Login.listeners.pop3s.servicePort }}
+  {{- end }}
+  {{- if .Values.components.pop3Login.listeners.pop3.enabled }}
+    POP3 (STARTTLS): {{ .Values.components.pop3Login.listeners.pop3.servicePort }}
+  {{- end }}
+{{- end }}
+{{- if .Values.components.submissionLogin.enabled }}
+  Submission login pod:
+  {{- if .Values.components.submissionLogin.listeners.submissions.enabled }}
+    Submissions (TLS):     {{ .Values.components.submissionLogin.listeners.submissions.servicePort }}
+  {{- end }}
+  {{- if .Values.components.submissionLogin.listeners.submission.enabled }}
+    Submission (STARTTLS): {{ .Values.components.submissionLogin.listeners.submission.servicePort }}
+  {{- end }}
+{{- end }}
 
-Active listeners (director):
-{{- if .Values.components.director.listeners.imaps.enabled }}
-  IMAPS (TLS):      {{ .Values.components.director.listeners.imaps.port }}
-{{- end }}
-{{- if .Values.components.director.listeners.imap.enabled }}
-  IMAP (STARTTLS):  {{ .Values.components.director.listeners.imap.port }}
-{{- end }}
-{{- if .Values.components.director.listeners.pop3s.enabled }}
-  POP3S (TLS):      {{ .Values.components.director.listeners.pop3s.port }}
-{{- end }}
-{{- if .Values.components.director.listeners.pop3.enabled }}
-  POP3 (STARTTLS):  {{ .Values.components.director.listeners.pop3.port }}
-{{- end }}
+Director (LMTP proxy + ring):
 {{- if .Values.components.director.listeners.lmtp.enabled }}
-  LMTP:             {{ .Values.components.director.listeners.lmtp.port }}
+  LMTP: {{ .Values.components.director.listeners.lmtp.port }}
+{{- else }}
+  LMTP listener disabled.
 {{- end }}
 
 Backend components:
 {{- if .Values.components.imap.enabled }}
-  IMAP backend: {{ include "yarilo.fullname" . }}-imap (port 993)
+  IMAP backend: {{ include "yarilo.fullname" . }}-imap
 {{- end }}
 {{- if .Values.components.pop3.enabled }}
-  POP3 backend: {{ include "yarilo.fullname" . }}-pop3 (port 110)
+  POP3 backend: {{ include "yarilo.fullname" . }}-pop3
 {{- end }}
 {{- if .Values.components.lmtp.enabled }}
-  LMTP backend: {{ include "yarilo.fullname" . }}-lmtp (port 24)
+  LMTP backend: {{ include "yarilo.fullname" . }}-lmtp
+{{- end }}
+{{- if .Values.components.submission.enabled }}
+  Submission backend: {{ include "yarilo.fullname" . }}-submission
 {{- end }}
 
 Telemetry: http://<pod>:8080/healthz
 
-{{- if not .Values.components.director.tls.secretName }}
+{{- $anyTLS := coalesce .Values.components.imapLogin.tls.secretName .Values.components.pop3Login.tls.secretName .Values.components.submissionLogin.tls.secretName }}
+{{- if not $anyTLS }}
 
-WARNING: TLS is not configured.
-  Set components.director.tls.secretName to the name of a Secret with tls.crt and tls.key.
+WARNING: TLS is not configured for any login pod.
+  Set components.imapLogin.tls.secretName (and/or pop3Login/submissionLogin) to a Secret with tls.crt and tls.key.
 
 {{- end }}

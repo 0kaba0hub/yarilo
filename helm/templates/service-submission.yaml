@@ -1,5 +1,5 @@
 {{- if .Values.components.submission.enabled }}
-## LoadBalancer — submission (587) and/or submissions (465) for mail clients.
+## ClusterIP — submission backend (receives from yarilo-submission-login pods).
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,7 +8,7 @@ metadata:
   labels:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "submission") | nindent 4 }}
 spec:
-  type: LoadBalancer
+  type: {{ .Values.components.submission.service.type }}
   ports:
     {{- if .Values.components.submission.listeners.submission.enabled }}
     - name: submission

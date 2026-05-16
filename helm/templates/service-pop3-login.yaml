@@ -1,0 +1,49 @@
+{{- if .Values.components.pop3Login.enabled }}
+## LoadBalancer — POP3 mail client connections (POP3S:995 / POP3:110 with STARTTLS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-pop3-login
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "pop3-login") | nindent 4 }}
+  {{- with .Values.components.pop3Login.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.components.pop3Login.service.type }}
+  ports:
+    {{- if .Values.components.pop3Login.listeners.pop3s.enabled }}
+    - name: pop3s
+      port: {{ .Values.components.pop3Login.listeners.pop3s.servicePort }}
+      targetPort: pop3s
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.pop3Login.listeners.pop3.enabled }}
+    - name: pop3
+      port: {{ .Values.components.pop3Login.listeners.pop3.servicePort }}
+      targetPort: pop3
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "pop3-login") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-pop3-login-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "pop3-login") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "pop3-login") | nindent 4 }}
+{{- end }}
