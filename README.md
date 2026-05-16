@@ -253,6 +253,8 @@ yarilo-migrate \
 | [INSTALL.md](INSTALL.md) | End-to-end Kubernetes deploy with cert-manager + Let's Encrypt |
 | [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL backends (SQLite/MySQL/Postgres), password schemes |
 | [docs/SMOKE.md](docs/SMOKE.md) | End-to-end smoke test: AUTH → LMTP → IMAPS/POP3S read |
+| [docs/DIRECTOR.md](docs/DIRECTOR.md) | `director_service`: ring config, peers, HAProxy, XCLIENT, mTLS, Helm values |
+| [docs/MONITOR.md](docs/MONITOR.md) | `yarilo-monitor` sidecar: backend health probes, tag credentials, Helm values, Prometheus metrics |
 
 ---
 

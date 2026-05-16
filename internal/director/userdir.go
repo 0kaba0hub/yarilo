@@ -100,6 +100,21 @@ func (d *UserDir) Snapshot() []UserEntry {
 	return out
 }
 
+// CountByBackend returns the number of non-expired user→backend entries per
+// backend address ("ip:port"). Used for approximate session counts in metrics.
+func (d *UserDir) CountByBackend() map[string]int {
+	now := time.Now()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	counts := make(map[string]int)
+	for _, e := range d.byHash {
+		if now.Before(e.ExpiresAt) {
+			counts[e.Host]++
+		}
+	}
+	return counts
+}
+
 // Purge removes all expired entries.
 func (d *UserDir) Purge() {
 	now := time.Now()

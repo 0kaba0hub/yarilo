@@ -397,6 +397,7 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 	})
 	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), c)
+	s.updateMetrics()
 	_ = c.WriteLine("OK")
 }
 
@@ -411,6 +412,7 @@ func (s *Server) handleBackendDown(c *client, fields []string) {
 	s.ring.RemoveBackend(ip)
 	slog.Info("director: backend down", "ip", ip)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tdown\t%s", ip, tag), c)
+	s.updateMetrics()
 	_ = c.WriteLine("OK")
 }
 
@@ -430,6 +432,7 @@ func (s *Server) handleBackendFlush(c *client, fields []string) {
 	}
 	slog.Info("director: backend flush", "ip", ip)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tflush\t%s", ip, tag), c)
+	s.updateMetrics()
 	_ = c.WriteLine("OK")
 }
 
@@ -530,6 +533,7 @@ func (s *Server) AddBackend(ip string, port int, tag string) {
 	})
 	slog.Info("director: backend registered", "ip", ip, "port", port, "tag", tag)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), nil)
+	s.updateMetrics()
 }
 
 // LookupBackend returns the backend for the given username or nil if ring is empty.
