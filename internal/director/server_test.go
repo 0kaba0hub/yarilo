@@ -552,4 +552,162 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestSessionOpenClose_OK(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("SESSION-OPEN\tsess1\talice@example.com\t10.0.0.1\n"))
+	if got := readLine(t, sc); got != "OK" {
+		t.Fatalf("SESSION-OPEN: expected OK, got %q", got)
+	}
+
+	conn.Write([]byte("SESSION-CLOSE\tsess1\n"))
+	if got := readLine(t, sc); got != "OK" {
+		t.Fatalf("SESSION-CLOSE: expected OK, got %q", got)
+	}
+}
+
+func TestSessionOpen_RegisteredInRegistry(t *testing.T) {
+	srv, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("SESSION-OPEN\tsessX\tbob@example.com\t10.0.0.5\n"))
+	readLine(t, sc) // OK
+
+	srv.sessRecMu.RLock()
+	rec, ok := srv.sessById["sessX"]
+	srv.sessRecMu.RUnlock()
+
+	if !ok || rec.user != "bob@example.com" || rec.backend != "10.0.0.5" {
+		t.Errorf("session not registered correctly: ok=%v rec=%+v", ok, rec)
+	}
+}
+
+func TestSessionClose_RemovesFromRegistry(t *testing.T) {
+	srv, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("SESSION-OPEN\tsessY\tcarol@example.com\t10.0.0.6\n"))
+	readLine(t, sc) // OK
+
+	conn.Write([]byte("SESSION-CLOSE\tsessY\n"))
+	readLine(t, sc) // OK
+
+	srv.sessRecMu.RLock()
+	_, ok := srv.sessById["sessY"]
+	srv.sessRecMu.RUnlock()
+
+	if ok {
+		t.Error("session still in registry after SESSION-CLOSE")
+	}
+}
+
+func TestBackendDown_KicksActiveSessions(t *testing.T) {
+	_, addr := startServer(t)
+
+	// loginConn simulates a login-pod: registers a session then waits for kicks.
+	loginConn, loginSc := dialTest(t, addr)
+	readHandshake(t, loginSc)
+	sendHandshake(t, loginConn)
+
+	// monConn simulates a monitor/health-pod that sends BACKEND-DOWN.
+	monConn, monSc := dialTest(t, addr)
+	readHandshake(t, monSc)
+	sendHandshake(t, monConn)
+
+	// Register backend and session from loginConn.
+	loginConn.Write([]byte("BACKEND-UP\t10.0.0.10\t993\timap\t100\n"))
+	readLine(t, loginSc) // OK (loginConn)
+	// monConn gets RING-CHANGE push — drain it.
+	readLine(t, monSc)
+
+	loginConn.Write([]byte("SESSION-OPEN\tsessZ\tdave@example.com\t10.0.0.10\n"))
+	if got := readLine(t, loginSc); got != "OK" {
+		t.Fatalf("SESSION-OPEN: got %q", got)
+	}
+
+	// Monitor sends BACKEND-DOWN.
+	monConn.Write([]byte("BACKEND-DOWN\t10.0.0.10\n"))
+	// monConn receives OK.
+	if got := readLine(t, monSc); got != "OK" {
+		t.Fatalf("BACKEND-DOWN: got %q", got)
+	}
+
+	// loginConn should receive RING-CHANGE push + USER-KICKED (in any order).
+	// Read two lines and check one is USER-KICKED.
+	lines := []string{readLine(t, loginSc), readLine(t, loginSc)}
+	var kicked bool
+	for _, l := range lines {
+		if l == "USER-KICKED\tdave@example.com" {
+			kicked = true
+		}
+	}
+	if !kicked {
+		t.Errorf("expected USER-KICKED on loginConn, got: %v", lines)
+	}
+}
+
+func TestBackendFlush_KicksActiveSessions(t *testing.T) {
+	_, addr := startServer(t)
+
+	loginConn, loginSc := dialTest(t, addr)
+	readHandshake(t, loginSc)
+	sendHandshake(t, loginConn)
+
+	monConn, monSc := dialTest(t, addr)
+	readHandshake(t, monSc)
+	sendHandshake(t, monConn)
+
+	loginConn.Write([]byte("BACKEND-UP\t10.0.0.11\t993\timap\t100\n"))
+	readLine(t, loginSc)
+	readLine(t, monSc) // RING-CHANGE push
+
+	loginConn.Write([]byte("SESSION-OPEN\tsessF\teve@example.com\t10.0.0.11\n"))
+	readLine(t, loginSc) // OK
+
+	monConn.Write([]byte("BACKEND-FLUSH\t10.0.0.11\n"))
+	if got := readLine(t, monSc); got != "OK" {
+		t.Fatalf("BACKEND-FLUSH: got %q", got)
+	}
+
+	lines := []string{readLine(t, loginSc), readLine(t, loginSc)}
+	var kicked bool
+	for _, l := range lines {
+		if l == "USER-KICKED\teve@example.com" {
+			kicked = true
+		}
+	}
+	if !kicked {
+		t.Errorf("expected USER-KICKED on loginConn after FLUSH, got: %v", lines)
+	}
+}
+
+func TestLookup_TagRoutesToSubRing(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.20\t993\tssd\t100\n"))
+	readLine(t, sc) // OK
+	conn.Write([]byte("BACKEND-UP\t10.0.0.21\t993\thdd\t100\n"))
+	readLine(t, sc) // OK
+
+	// Lookup with tag=hdd must only return 10.0.0.21.
+	for i := 0; i < 20; i++ {
+		conn.Write([]byte(fmt.Sprintf("LOOKUP\t%d\tuser%d@example.com\thdd\n", i, i)))
+		line := readLine(t, sc)
+		parts := strings.Split(line, "\t")
+		if len(parts) < 3 || parts[0] != "HOST" || parts[2] != "10.0.0.21" {
+			t.Errorf("iter %d: expected HOST 10.0.0.21, got %q", i, line)
+		}
+	}
+}
+
 var _ = fmt.Sprintf

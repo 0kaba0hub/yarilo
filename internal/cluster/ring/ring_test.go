@@ -64,6 +64,89 @@ func TestLookup_Distribution(t *testing.T) {
 	}
 }
 
+func TestLookupBackendByTag_IsolatesPool(t *testing.T) {
+	r := New()
+	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
+	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "ssd", Up: true})
+	r.AddBackend(&Backend{IP: "10.0.0.3", Tag: "hdd", Up: true})
+
+	for i := 0; i < 300; i++ {
+		b := r.LookupBackendByTag(fmt.Sprintf("user%d@example.com", i), "hdd")
+		if b == nil {
+			t.Fatal("LookupBackendByTag(hdd): got nil")
+		}
+		if b.IP != "10.0.0.3" {
+			t.Errorf("user%d routed to %q, want 10.0.0.3 (only hdd backend)", i, b.IP)
+		}
+	}
+}
+
+func TestLookupBackendByTag_EmptyTag_UntaggedOnly(t *testing.T) {
+	r := New()
+	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
+	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "", Up: true}) // untagged
+
+	b := r.LookupBackendByTag("alice@example.com", "")
+	if b == nil {
+		t.Fatal("empty tag must route to untagged backends, got nil")
+	}
+	if b.IP != "10.0.0.2" {
+		t.Errorf("empty tag: expected untagged backend 10.0.0.2, got %q", b.IP)
+	}
+}
+
+func TestLookupBackendByTag_EmptyTag_NilWhenNoUntagged(t *testing.T) {
+	r := New()
+	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
+	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "hdd", Up: true})
+
+	b := r.LookupBackendByTag("alice@example.com", "")
+	if b != nil {
+		t.Errorf("empty tag with no untagged backends: want nil, got %+v", b)
+	}
+}
+
+func TestLookupBackendByTag_UnknownTag_Nil(t *testing.T) {
+	r := New()
+	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
+
+	b := r.LookupBackendByTag("alice@example.com", "nonexistent")
+	if b != nil {
+		t.Errorf("unknown tag: want nil, got %+v", b)
+	}
+}
+
+func TestLookupBackendByTag_ConsistentWithinTag(t *testing.T) {
+	r := New()
+	for i := 1; i <= 3; i++ {
+		r.AddBackend(&Backend{IP: fmt.Sprintf("10.0.0.%d", i), Tag: "ssd", Up: true})
+	}
+	r.AddBackend(&Backend{IP: "10.1.0.1", Tag: "hdd", Up: true})
+
+	first := r.LookupBackendByTag("bob@example.com", "ssd")
+	if first == nil {
+		t.Fatal("got nil")
+	}
+	for i := 0; i < 50; i++ {
+		b := r.LookupBackendByTag("bob@example.com", "ssd")
+		if b == nil || b.IP != first.IP {
+			t.Fatalf("inconsistent: iter %d got %v, want %q", i, b, first.IP)
+		}
+	}
+}
+
+func TestTags(t *testing.T) {
+	r := New()
+	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
+	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "hdd", Up: true})
+	r.AddBackend(&Backend{IP: "10.0.0.3", Tag: "ssd", Up: true})
+
+	tags := r.Tags()
+	if len(tags) != 2 {
+		t.Errorf("want 2 tags, got %v", tags)
+	}
+}
+
 func TestRemoveBackend(t *testing.T) {
 	r := New()
 	r.AddBackend(&Backend{IP: "10.0.0.1", Up: true})

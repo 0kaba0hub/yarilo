@@ -207,6 +207,12 @@ func (d *DirectorClient) ReportFlush(ip string) {
 	d.sendRaw(fmt.Sprintf("BACKEND-FLUSH\t%s", ip))
 }
 
+// ReportDown sends BACKEND-DOWN\t{ip} to remove the backend from the ring entirely.
+// Called after the drain timeout expires following a FLUSH.
+func (d *DirectorClient) ReportDown(ip string) {
+	d.sendRaw(fmt.Sprintf("BACKEND-DOWN\t%s", ip))
+}
+
 func (d *DirectorClient) sendRaw(line string) {
 	d.wrMu.Lock()
 	defer d.wrMu.Unlock()

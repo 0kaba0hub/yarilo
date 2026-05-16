@@ -17,7 +17,9 @@
 //	  DONE\n
 //
 //	Client commands:
-//	  LOOKUP\t{id}\t{user}\n
+//	  LOOKUP\t{id}\t{user}\t{tag}\n                  (tag optional; "" = full ring)
+//	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\n
+//	  SESSION-CLOSE\t{id}\n
 //	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\n   (vhosts optional; 0 = 100)
 //	  BACKEND-DOWN\t{ip}\n
 //	  BACKEND-FLUSH\t{ip}\n                          (drain: stop new lookups, keep backend in registry)
@@ -112,6 +114,14 @@ func (c *client) WriteLine(line string) error {
 	return err
 }
 
+// sessionRec tracks one active proxied session reported by a login-pod.
+type sessionRec struct {
+	id      string
+	user    string
+	backend string  // backend IP (without port)
+	cl      *client // which login-pod connection owns this session
+}
+
 // Server is the yarilo-director TCP server.
 type Server struct {
 	ring *ring.Ring
@@ -128,10 +138,15 @@ type Server struct {
 	clientMu sync.RWMutex
 	clients  map[*client]struct{}
 
-	// sessions is the exact count of active proxied sessions per backend IP.
-	// Incremented when biProxy starts, decremented when it returns.
+	// lmtp session counter per backend IP (used for metrics only).
 	sessionsMu sync.Mutex
 	sessions   map[string]int
+
+	// sessRec tracks active proxied sessions reported via SESSION-OPEN/CLOSE.
+	// Director uses this to send USER-KICKED when a backend goes down.
+	sessRecMu sync.RWMutex
+	sessById  map[string]*sessionRec     // sessionID → record
+	sessByBE  map[string]map[string]bool // backendIP → set of sessionIDs
 
 	// peers tracks dynamically managed director-peer connections.
 	peersMu    sync.RWMutex
@@ -155,6 +170,8 @@ func NewWithOptions(opts Options) *Server {
 		overrides:  make(map[string]string),
 		clients:    make(map[*client]struct{}),
 		sessions:   make(map[string]int),
+		sessById:   make(map[string]*sessionRec),
+		sessByBE:   make(map[string]map[string]bool),
 		peerCancel: make(map[string]context.CancelFunc),
 		peerTLS:    opts.PeerTLS,
 		localIP:    opts.LocalIP,
@@ -276,6 +293,7 @@ func (s *Server) removeClient(c *client) {
 	s.clientMu.Lock()
 	delete(s.clients, c)
 	s.clientMu.Unlock()
+	s.removeClientSessions(c)
 }
 
 // broadcast sends an unsolicited line to all connected clients except the one
@@ -346,6 +364,10 @@ func (s *Server) handleConn(conn net.Conn) {
 		switch fields[0] {
 		case "LOOKUP":
 			s.handleLookup(c, fields)
+		case "SESSION-OPEN":
+			s.handleSessionOpen(c, fields)
+		case "SESSION-CLOSE":
+			s.handleSessionClose(c, fields)
 		case "BACKEND-UP":
 			s.handleBackendUp(c, fields)
 		case "BACKEND-DOWN", "HOST-REMOVE":
@@ -418,14 +440,19 @@ func hostLine(b ring.Backend) string {
 		b.IP, b.Port, b.Tag, b.LastUpdownChange, b.LastUpdownChange, b.Hostname)
 }
 
-// handleLookup processes: LOOKUP\t{id}\t{user}
-// Checks admin overrides first, then user directory, then falls back to ring.
+// handleLookup processes: LOOKUP\t{id}\t{user}\t{tag}
+// tag is optional; "" routes over the full ring.
+// Checks admin overrides first, then ring lookup restricted to tag.
 // Response: HOST\t{id}\t{ip}\t{port}\t{tag}
 func (s *Server) handleLookup(c *client, fields []string) {
 	if len(fields) < 3 {
 		return
 	}
 	id, user := fields[1], fields[2]
+	tag := ""
+	if len(fields) >= 4 {
+		tag = fields[3]
+	}
 
 	// Admin override wins everything.
 	s.overrideMu.RLock()
@@ -435,14 +462,21 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	if hasOverride {
 		host, portStr, err := net.SplitHostPort(addr)
 		if err == nil {
-			tag := s.backendTag(host)
-			_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, tag))
+			t := s.backendTag(host)
+			_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, t))
 			return
 		}
 	}
 
-	// Ring lookup.
-	b := s.ring.LookupBackend(user)
+	// Ring lookup. When tag field is present in the LOOKUP command (even ""),
+	// restrict to backends with exactly that tag. When tag field is absent,
+	// use the full ring regardless of backend tags.
+	var b *ring.Backend
+	if len(fields) >= 4 {
+		b = s.ring.LookupBackendByTag(user, tag)
+	} else {
+		b = s.ring.LookupBackend(user)
+	}
 	if b == nil {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=no-backends", id))
 		return
@@ -495,6 +529,7 @@ func (s *Server) handleBackendDown(c *client, fields []string) {
 	ip := fields[1]
 	tag := s.backendTag(ip)
 	s.ring.RemoveBackend(ip)
+	s.kickSessionsForBackend(ip)
 	slog.Info("director: backend down", "ip", ip)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tdown\t%s", ip, tag), c)
 	s.updateMetrics()
@@ -515,6 +550,7 @@ func (s *Server) handleBackendFlush(c *client, fields []string) {
 		_ = c.WriteLine("OK")
 		return
 	}
+	s.kickSessionsForBackend(ip)
 	slog.Info("director: backend flush", "ip", ip)
 	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tflush\t%s", ip, tag), c)
 	s.updateMetrics()
@@ -639,4 +675,75 @@ func (s *Server) backendTag(ip string) string {
 		}
 	}
 	return ""
+}
+
+// handleSessionOpen processes: SESSION-OPEN\t{id}\t{user}\t{backendIP}
+func (s *Server) handleSessionOpen(c *client, fields []string) {
+	if len(fields) < 4 {
+		_ = c.WriteLine("OK")
+		return
+	}
+	rec := &sessionRec{
+		id:      fields[1],
+		user:    fields[2],
+		backend: fields[3],
+		cl:      c,
+	}
+	s.sessRecMu.Lock()
+	s.sessById[rec.id] = rec
+	if s.sessByBE[rec.backend] == nil {
+		s.sessByBE[rec.backend] = make(map[string]bool)
+	}
+	s.sessByBE[rec.backend][rec.id] = true
+	s.sessRecMu.Unlock()
+	_ = c.WriteLine("OK")
+}
+
+// handleSessionClose processes: SESSION-CLOSE\t{id}
+func (s *Server) handleSessionClose(c *client, fields []string) {
+	if len(fields) < 2 {
+		_ = c.WriteLine("OK")
+		return
+	}
+	id := fields[1]
+	s.sessRecMu.Lock()
+	if rec, ok := s.sessById[id]; ok {
+		delete(s.sessById, id)
+		delete(s.sessByBE[rec.backend], id)
+	}
+	s.sessRecMu.Unlock()
+	_ = c.WriteLine("OK")
+}
+
+// kickSessionsForBackend sends USER-KICKED to every login-pod connection that
+// has an active session routed to backendIP, then removes those session records.
+func (s *Server) kickSessionsForBackend(ip string) {
+	s.sessRecMu.Lock()
+	ids := s.sessByBE[ip]
+	recs := make([]*sessionRec, 0, len(ids))
+	for id := range ids {
+		if rec, ok := s.sessById[id]; ok {
+			recs = append(recs, rec)
+			delete(s.sessById, id)
+		}
+	}
+	delete(s.sessByBE, ip)
+	s.sessRecMu.Unlock()
+
+	for _, rec := range recs {
+		_ = rec.cl.WriteLine(fmt.Sprintf("USER-KICKED\t%s", rec.user))
+		slog.Info("director: kicked session", "session", rec.id, "user", rec.user, "backend", ip)
+	}
+}
+
+// removeClientSessions removes all session records owned by a disconnected client.
+func (s *Server) removeClientSessions(c *client) {
+	s.sessRecMu.Lock()
+	defer s.sessRecMu.Unlock()
+	for id, rec := range s.sessById {
+		if rec.cl == c {
+			delete(s.sessById, id)
+			delete(s.sessByBE[rec.backend], id)
+		}
+	}
 }

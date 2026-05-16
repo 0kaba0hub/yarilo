@@ -17,18 +17,23 @@ type BackendMonitor struct {
 
 	consecutiveFails int
 	isDown           bool
+	flushAt          time.Time // when BACKEND-FLUSH was sent; zero if not in drain
 }
 
 func newBackendMonitor(ip string, port int, tag string, cfg *Config, dc *DirectorClient) *BackendMonitor {
 	return &BackendMonitor{ip: ip, port: port, tag: tag, cfg: cfg, dc: dc}
 }
 
-// Run polls until ctx is cancelled.
+// Run polls until ctx is cancelled or the drain timeout expires after a FLUSH.
 func (b *BackendMonitor) Run(ctx context.Context) {
 	log := slog.With("ip", b.ip, "tag", b.tag)
 	log.Info("monitor: starting backend poll")
 
 	b.poll(log) // immediate first check
+	if b.drainExpired(log) {
+		return
+	}
+
 	ticker := time.NewTicker(b.cfg.interval())
 	defer ticker.Stop()
 
@@ -38,8 +43,25 @@ func (b *BackendMonitor) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			b.poll(log)
+			if b.drainExpired(log) {
+				return
+			}
 		}
 	}
+}
+
+// drainExpired reports BACKEND-DOWN and returns true when the drain timeout has
+// elapsed since the last FLUSH. Returns false in all other cases.
+func (b *BackendMonitor) drainExpired(log *slog.Logger) bool {
+	if !b.isDown || b.flushAt.IsZero() {
+		return false
+	}
+	if time.Since(b.flushAt) < b.cfg.drainTimeout() {
+		return false
+	}
+	log.Warn("monitor: drain timeout expired, reporting BACKEND-DOWN")
+	b.dc.ReportDown(b.ip)
+	return true
 }
 
 func (b *BackendMonitor) poll(log *slog.Logger) {
@@ -52,6 +74,7 @@ func (b *BackendMonitor) poll(log *slog.Logger) {
 			log.Info("monitor: backend recovered, reporting UP")
 			b.dc.ReportUp(b.ip, b.port, b.tag)
 			b.isDown = false
+			b.flushAt = time.Time{}
 		}
 		b.consecutiveFails = 0
 		return
@@ -70,6 +93,7 @@ func (b *BackendMonitor) poll(log *slog.Logger) {
 			log.Warn("monitor: backend declared down, reporting FLUSH")
 			b.dc.ReportFlush(b.ip)
 			b.isDown = true
+			b.flushAt = time.Now()
 		}
 	}
 	b.consecutiveFails = 0

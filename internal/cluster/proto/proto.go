@@ -4,6 +4,7 @@ package proto
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -24,13 +25,25 @@ type Conn struct {
 	rd   *bufio.Reader
 }
 
-// Dial connects to a director and performs the client handshake.
-// Reads the server's VERSION+DONE before sending VERSION+ME+DONE.
+// Dial connects to a director over plain TCP and performs the client handshake.
 func Dial(addr, localIP string, localPort int) (*Conn, error) {
 	nc, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
+	return newConn(nc, localIP, localPort)
+}
+
+// DialTLS connects to a director over mTLS and performs the client handshake.
+func DialTLS(addr, localIP string, localPort int, tlsCfg *tls.Config) (*Conn, error) {
+	nc, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, tlsCfg)
+	if err != nil {
+		return nil, err
+	}
+	return newConn(nc, localIP, localPort)
+}
+
+func newConn(nc net.Conn, localIP string, localPort int) (*Conn, error) {
 	c := &Conn{conn: nc, rd: bufio.NewReaderSize(nc, maxLineLen)}
 	if err := c.readServerHandshake(); err != nil {
 		nc.Close()
@@ -73,9 +86,10 @@ type LookupResult struct {
 }
 
 // Lookup asks the director for the backend address for the given username.
+// tag restricts routing to backends with that tag; pass "" for the full ring.
 // Returns LookupResult on success, or an error if no backends are available.
-func (c *Conn) Lookup(id, username string) (LookupResult, error) {
-	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s", id, TabEscape(username))); err != nil {
+func (c *Conn) Lookup(id, username, tag string) (LookupResult, error) {
+	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s\t%s", id, TabEscape(username), tag)); err != nil {
 		return LookupResult{}, fmt.Errorf("director lookup: write: %w", err)
 	}
 	line, err := c.ReadLine()
@@ -105,6 +119,38 @@ func (c *Conn) Lookup(id, username string) (LookupResult, error) {
 	default:
 		return LookupResult{}, fmt.Errorf("director lookup: unknown response: %q", line)
 	}
+}
+
+// SessionOpen registers an active proxied session with the director.
+// sessionID is a login-pod-local unique ID; backendIP is the IP of the backend serving the session.
+// The director uses this to send USER-KICKED when the backend goes down.
+func (c *Conn) SessionOpen(sessionID, username, backendIP string) error {
+	if err := c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s", sessionID, TabEscape(username), backendIP)); err != nil {
+		return fmt.Errorf("director session-open: write: %w", err)
+	}
+	line, err := c.ReadLine()
+	if err != nil {
+		return fmt.Errorf("director session-open: read: %w", err)
+	}
+	if line != "OK" {
+		return fmt.Errorf("director session-open: unexpected response: %q", line)
+	}
+	return nil
+}
+
+// SessionClose unregisters a proxied session from the director.
+func (c *Conn) SessionClose(sessionID string) error {
+	if err := c.WriteLine(fmt.Sprintf("SESSION-CLOSE\t%s", sessionID)); err != nil {
+		return fmt.Errorf("director session-close: write: %w", err)
+	}
+	line, err := c.ReadLine()
+	if err != nil {
+		return fmt.Errorf("director session-close: read: %w", err)
+	}
+	if line != "OK" {
+		return fmt.Errorf("director session-close: unexpected response: %q", line)
+	}
+	return nil
 }
 
 // BackendUp registers or marks a backend as available.
