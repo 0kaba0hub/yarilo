@@ -1,22 +1,167 @@
 ## yarilo Helm chart values
-## Full reference: https://github.com/0kaba0hub/yarilo
 
 image:
   repository: ghcr.io/0kaba0hub/yarilo
-  tag: ""          # defaults to Chart.appVersion
+  tag: ""
   pullPolicy: IfNotPresent
 
 ## -------------------------------------------------------------------
-## Components — each runs as a separate Deployment + Service.
-## All enabled by default (multi-process mode). Set replicas: 0
-## or enabled: false to disable a component.
+## Components
 ## -------------------------------------------------------------------
 components:
-  ## Main mail server: IMAP / POP3 / LMTP / Submission sessions.
-  ## Requires a PVC for mail storage (storage.persistence).
-  yarilo:
+
+  ## Director — front-end proxy.
+  ## Accepts client connections, routes to backend via consistent hash.
+  director:
     enabled: true
     replicas: 1
+
+    ## Internal director protocol (ring management, LOOKUP between directors).
+    directorPort: 9102
+
+    ## Client-facing listeners (same ports as a regular mail server).
+    listeners:
+      imaps:
+        enabled: true
+        port: 993
+        containerPort: 10993
+      imap:
+        enabled: false
+        port: 143
+        containerPort: 10143
+      pop3s:
+        enabled: false
+        port: 995
+        containerPort: 10995
+      pop3:
+        enabled: false
+        port: 110
+        containerPort: 10110
+      lmtp:
+        enabled: false
+        port: 24
+        containerPort: 10024
+
+    ## TLS cert presented to mail clients (IMAPS/POP3S).
+    tls:
+      secretName: ""
+      certificate:
+        enabled: false
+        issuerRef:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        dnsNames: []
+
+    ## mTLS for internal connections (director ↔ auth, director ↔ backend).
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    ## Consistent-hash routing settings.
+    userExpire: 900
+    pingInterval: 30
+    pingTimeout: 10
+
+    ## Static backend list loaded at startup.
+    ## Each entry must match a backend service in the backend namespace.
+    ## tag: optional pool tag to group backends (empty = default pool).
+    backends: []
+    # - host: yarilo-imap.yarilo-backend.svc.cluster.local
+    #   port: 993
+    #   tag: ""
+    # - host: yarilo-pop3.yarilo-backend.svc.cluster.local
+    #   port: 110
+    #   tag: ""
+    # - host: yarilo-lmtp.yarilo-backend.svc.cluster.local
+    #   port: 24
+    #   tag: ""
+
+    service:
+      type: LoadBalancer
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  ## Auth — passdb/userdb chain.
+  auth:
+    enabled: true
+    replicas: 1
+    listen: ":9100"
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    passdb:
+      - driver: sqlite
+        dsn: /var/lib/yarilo/users.db
+        ## passwordQuery: "SELECT password FROM users WHERE username = ?"
+        ## userQuery:     "SELECT home, uid, gid FROM users WHERE username = ?"
+        ## defaultPassScheme: BCRYPT
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  ## Anvil — connection rate limiter. Keep replicas: 1.
+  anvil:
+    enabled: true
+    replicas: 1
+    listen: ":9101"
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  ## IMAP backend — handles sessions proxied from director.
+  ## Director proxies 993→imap:993, 143→imap:143.
+  imap:
+    enabled: true
+    replicas: 1
+
+    listeners:
+      imaps:
+        enabled: true
+        servicePort: 993
+        containerPort: 10993
+      imap:
+        enabled: false
+        servicePort: 143
+        containerPort: 10143
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    storage:
+      mailbox: maildir
+      maildirRoot: /var/mail/vhosts
+      mailHomeTemplate: "%d/%n"
+      index: fileindex
+      persistence:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteMany
+        size: 10Gi
+
     resources:
       requests:
         cpu: 100m
@@ -25,152 +170,115 @@ components:
         cpu: 1000m
         memory: 512Mi
 
-  ## Authentication service — passdb chain.
-  ## Stateless; safe to scale horizontally.
-  auth:
-    enabled: true
-    replicas: 1
-    listen: ":9100"
-    resources:
-      requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
-        memory: 128Mi
-
-  ## Connection rate limiter (anvil).
-  ## Keeps per-user/IP counters in memory — keep replicas: 1.
-  anvil:
-    enabled: true
-    replicas: 1
-    listen: ":9101"
-    resources:
-      requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
-        memory: 128Mi
-
-  ## Consistent-hash router.
-  ## Director-to-director ring sync (Phase B) is not yet implemented —
-  ## keep replicas: 1 until ring sync lands.
-  director:
-    enabled: true
-    replicas: 1
-    listen: ":9102"
-    userExpire: 900      # seconds before user→backend mapping expires
-    pingInterval: 30     # seconds between PING keepalive probes
-    pingTimeout: 10      # seconds to wait for PONG before closing
-    resources:
-      requests:
-        cpu: 50m
-        memory: 32Mi
-      limits:
-        cpu: 200m
-        memory: 128Mi
-
-## -------------------------------------------------------------------
-## Server hostname — used as EHLO banner, Message-ID domain, and the
-## hostname surfaced in Received: headers. Must match the TLS cert SAN.
-## -------------------------------------------------------------------
-hostname: ""
-
-## -------------------------------------------------------------------
-## External TLS (user-facing: IMAPS / Submissions / POP3S)
-## -------------------------------------------------------------------
-tls:
-  ## Name of an existing Secret containing tls.crt and tls.key.
-  ## Required if imaps, submissions, or pop3s is enabled.
-  secretName: ""
-
-  ## Optional cert-manager Certificate to provision the secretName above.
-  certificate:
-    enabled: false
-    issuerRef:
-      kind: ClusterIssuer
-      name: letsencrypt-prod
-    dnsNames: []
-    duration: ""
-    renewBefore: ""
-
-## -------------------------------------------------------------------
-## Internal mTLS (between components: yarilo ↔ auth ↔ anvil ↔ director)
-## When enabled, all inter-component connections use mTLS.
-## Provide a Secret with tls.crt, tls.key, and ca.crt.
-## -------------------------------------------------------------------
-internalTLS:
-  enabled: false
-  secretName: ""   # Secret name; must be in the same namespace
-
-## -------------------------------------------------------------------
-## Services — per-listener toggles (yarilo main component)
-## -------------------------------------------------------------------
-services:
-  ## IMAP over TLS (port 993)
-  imaps:
-    enabled: true
-    port: 993
-    containerPort: 10993
-    disablePlainAuth: false
-
-  ## IMAP with STARTTLS (port 143)
-  imap:
-    enabled: false
-    port: 143
-    containerPort: 10143
-    disablePlainAuth: false
-
-  ## Submission STARTTLS (port 587)
-  submission:
-    enabled: false
-    port: 587
-    containerPort: 10587
-    disablePlainAuth: true
-
-  ## Submission SSL (port 465)
-  submissions:
-    enabled: false
-    port: 465
-    containerPort: 10465
-    disablePlainAuth: true
-
-  ## POP3 with STARTTLS (port 110)
+  ## POP3 backend — director proxies 995→pop3:995, 110→pop3:110.
   pop3:
     enabled: false
-    port: 110
-    containerPort: 10110
+    replicas: 1
 
-  ## POP3 over TLS (port 995)
-  pop3s:
-    enabled: false
-    port: 995
-    containerPort: 10995
+    listeners:
+      pop3s:
+        enabled: true
+        servicePort: 995
+        containerPort: 10995
+      pop3:
+        enabled: false
+        servicePort: 110
+        containerPort: 10110
 
-  ## LMTP local delivery — fronted by external MTA (Postfix etc.).
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    storage:
+      mailbox: maildir
+      maildirRoot: /var/mail/vhosts
+      mailHomeTemplate: "%d/%n"
+      index: fileindex
+      persistence:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteMany
+        size: 10Gi
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  ## LMTP backend — director proxies 24→lmtp:24.
   lmtp:
     enabled: false
-    port: 24
-    containerPort: 10024
+    replicas: 1
+
+    listeners:
+      lmtp:
+        enabled: true
+        servicePort: 24
+        containerPort: 10024
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    storage:
+      mailbox: maildir
+      maildirRoot: /var/mail/vhosts
+      mailHomeTemplate: "%d/%n"
+      index: fileindex
+      persistence:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteMany
+        size: 10Gi
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
 
 ## -------------------------------------------------------------------
-## Protocol tuning (independent of listener)
+## Protocol tuning
 ## -------------------------------------------------------------------
 protocol:
   imap:
-    idleNotifyInterval: 120      # seconds; 0 = disabled
-    maxLineLength: 65536          # bytes
-    idSend: "name *"              # ID pairs; * = default; empty = disabled
+    idleNotifyInterval: 120
+    maxLineLength: 65536
+    idSend: "name *"
     loginGreeting: ""
     logoutFormat: ""
     clientWorkarounds: []
 
+  pop3:
+    noFlagUpdates: false
+    reuseXUIDL: false
+    uidlFormat: "%u.%v"
+    uidlDuplicates: rename
+    enableLast: false
+    deleteType: expunge
+    deletedFlag: ""
+
+  lmtp:
+    loginGreeting: "Yarilo ready."
+    addReceivedHeader: true
+    saveToDetailMailbox: false
+    hdrDeliveryAddress: final
+    verboseReplies: false
+    userConcurrencyLimit: 10
+    readTimeout: 300
+    writeTimeout: 300
+    clientWorkarounds: []
+
   submission:
     hostname: ""
-    maxMessageSize: 41943040      # 40 MiB
+    maxMessageSize: 41943040
     maxLineLength: 4096
-    maxRecipients: 0              # 0 = unlimited
+    maxRecipients: 0
     recipientDelimiter: "+"
     addReceivedHeader: true
     clientWorkarounds: []
@@ -178,47 +286,25 @@ protocol:
       host: ""
       port: 25
       user: ""
-      password: ""                # supports ${ENV_VAR}
-      ssl: "no"                   # no | smtps | starttls
+      password: ""
+      ssl: "no"
       sslVerify: true
       trusted: false
       connectTimeout: 30
       commandTimeout: 300
 
-  lmtp:
-    loginGreeting: "Yarilo ready."
-    addReceivedHeader: true
-    saveToDetailMailbox: false
-    hdrDeliveryAddress: final     # none | final | original
-    verboseReplies: false
-    userConcurrencyLimit: 10      # 0 = unlimited
-    readTimeout: 300
-    writeTimeout: 300
-    clientWorkarounds: []
-
-  pop3:
-    noFlagUpdates: false
-    reuseXUIDL: false
-    uidlFormat: "%u.%v"
-    uidlDuplicates: rename        # allow | rename
-    enableLast: false
-    deleteType: expunge           # expunge | flag
-    deletedFlag: ""
-
 ## -------------------------------------------------------------------
-## General infrastructure (shared across all listeners)
+## General infrastructure
 ## -------------------------------------------------------------------
 general:
   limits:
-    maxUserIPConnections: 10      # 0 = unlimited
-
+    maxUserIPConnections: 10
   haproxy:
     enabled: false
     trustedNets:
       - "127.0.0.1/32"
       - "10.0.0.0/8"
     timeout: 3
-
   xclient:
     enabled: false
     trustedNets:
@@ -226,31 +312,7 @@ general:
       - "10.0.0.0/8"
 
 ## -------------------------------------------------------------------
-## Authentication
-## -------------------------------------------------------------------
-auth:
-  passdb:
-    - driver: sqlite
-      dsn: /var/lib/yarilo/users.db
-
-## -------------------------------------------------------------------
-## Storage (yarilo main component only)
-## -------------------------------------------------------------------
-storage:
-  mailbox: maildir
-  maildirRoot: /var/mail/vhosts
-  mailHomeTemplate: "%d/%n"
-  index: fileindex
-
-  persistence:
-    enabled: true
-    storageClass: ""
-    accessMode: ReadWriteOnce
-    size: 10Gi
-    # existingClaim: ""
-
-## -------------------------------------------------------------------
-## Telemetry
+## Telemetry (:8080 per component pod)
 ## -------------------------------------------------------------------
 telemetry:
   listen: ":8080"
@@ -261,17 +323,7 @@ telemetry:
     labels: {}
 
 ## -------------------------------------------------------------------
-## Kubernetes service (yarilo main — external)
-## -------------------------------------------------------------------
-service:
-  type: LoadBalancer
-  telemetryPort: 8080
-  # loadBalancerIP: ""
-  annotations: {}
-
-## -------------------------------------------------------------------
-## Shared probe / scheduling / security settings
-## Applied to all component Deployments unless overridden per-component.
+## Shared scheduling / security
 ## -------------------------------------------------------------------
 livenessProbe:
   httpGet:
@@ -290,8 +342,8 @@ readinessProbe:
 nodeSelector: {}
 tolerations: []
 affinity: {}
-
 podAnnotations: {}
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
@@ -304,23 +356,8 @@ containerSecurityContext:
     drop: [ALL]
     add: [NET_BIND_SERVICE]
 
-## -------------------------------------------------------------------
-## Log level (also settable via LOG_LEVEL env var)
-## -------------------------------------------------------------------
-logLevel: info   # debug | info | warn | error
+logLevel: info
 
-## -------------------------------------------------------------------
-## Extra environment variables injected into all containers
-## -------------------------------------------------------------------
 extraEnv: []
-# - name: DB_PASSWORD
-#   valueFrom:
-#     secretKeyRef:
-#       name: yarilo-secrets
-#       key: db-password
-
-## -------------------------------------------------------------------
-## Extra volumes / mounts (applied to all Deployments)
-## -------------------------------------------------------------------
 extraVolumes: []
 extraVolumeMounts: []

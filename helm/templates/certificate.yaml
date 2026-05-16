@@ -1,4 +1,6 @@
-{{- if and .Values.tls.certificate.enabled .Values.tls.secretName }}
+{{- $cert := .Values.components.director.tls.certificate }}
+{{- $secret := .Values.components.director.tls.secretName }}
+{{- if and $cert.enabled $secret }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -7,18 +9,18 @@ metadata:
   labels:
     {{- include "yarilo.labels" . | nindent 4 }}
 spec:
-  secretName: {{ .Values.tls.secretName }}
+  secretName: {{ $secret }}
   issuerRef:
-    kind: {{ .Values.tls.certificate.issuerRef.kind }}
-    name: {{ .Values.tls.certificate.issuerRef.name }}
+    kind: {{ $cert.issuerRef.kind }}
+    name: {{ $cert.issuerRef.name }}
   dnsNames:
-    {{- range .Values.tls.certificate.dnsNames }}
+    {{- range $cert.dnsNames }}
     - {{ . | quote }}
     {{- end }}
-  {{- with .Values.tls.certificate.duration }}
+  {{- with $cert.duration }}
   duration: {{ . }}
   {{- end }}
-  {{- with .Values.tls.certificate.renewBefore }}
+  {{- with $cert.renewBefore }}
   renewBefore: {{ . }}
   {{- end }}
 {{- end }}

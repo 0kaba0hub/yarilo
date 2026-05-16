@@ -12,8 +12,9 @@ metadata:
 spec:
   selector:
     matchLabels:
-      {{- include "yarilo.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: telemetry
+      app.kubernetes.io/name: {{ include "yarilo.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/part-of: yarilo
   endpoints:
     - port: telemetry
       path: /metrics

@@ -7,11 +7,11 @@ metadata:
     {{- include "yarilo.labels" . | nindent 4 }}
 data:
   yarilo.yaml: |
-    mode: single
+    mode: cluster
 
     general:
       ssl:
-        {{- if .Values.tls.secretName }}
+        {{- if .Values.components.director.tls.secretName }}
         tls_cert: /etc/yarilo/tls/tls.crt
         tls_key: /etc/yarilo/tls/tls.key
         {{- else }}
@@ -35,48 +35,32 @@ data:
 
     services:
       imaps:
-        enabled: {{ .Values.services.imaps.enabled }}
-        port: {{ .Values.services.imaps.containerPort }}
+        enabled: {{ .Values.components.director.listeners.imaps.enabled }}
+        port: {{ .Values.components.director.listeners.imaps.containerPort }}
         ssl_mode: ssl
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
-        disable_plaintext_auth: {{ .Values.services.imaps.disablePlainAuth }}
       imap:
-        enabled: {{ .Values.services.imap.enabled }}
-        port: {{ .Values.services.imap.containerPort }}
-        ssl_mode: starttls
-        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
-        xclient_protocol: {{ .Values.general.xclient.enabled }}
-        disable_plaintext_auth: {{ .Values.services.imap.disablePlainAuth }}
-      submission:
-        enabled: {{ .Values.services.submission.enabled }}
-        port: {{ .Values.services.submission.containerPort }}
-        ssl_mode: starttls
-        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
-        xclient_protocol: false
-        disable_plaintext_auth: {{ .Values.services.submission.disablePlainAuth }}
-      submissions:
-        enabled: {{ .Values.services.submissions.enabled }}
-        port: {{ .Values.services.submissions.containerPort }}
-        ssl_mode: ssl
-        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
-        xclient_protocol: false
-        disable_plaintext_auth: {{ .Values.services.submissions.disablePlainAuth }}
-      pop3:
-        enabled: {{ .Values.services.pop3.enabled }}
-        port: {{ .Values.services.pop3.containerPort }}
+        enabled: {{ .Values.components.director.listeners.imap.enabled }}
+        port: {{ .Values.components.director.listeners.imap.containerPort }}
         ssl_mode: starttls
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       pop3s:
-        enabled: {{ .Values.services.pop3s.enabled }}
-        port: {{ .Values.services.pop3s.containerPort }}
+        enabled: {{ .Values.components.director.listeners.pop3s.enabled }}
+        port: {{ .Values.components.director.listeners.pop3s.containerPort }}
         ssl_mode: ssl
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
+      pop3:
+        enabled: {{ .Values.components.director.listeners.pop3.enabled }}
+        port: {{ .Values.components.director.listeners.pop3.containerPort }}
+        ssl_mode: starttls
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        xclient_protocol: {{ .Values.general.xclient.enabled }}
       lmtp:
-        enabled: {{ .Values.services.lmtp.enabled }}
-        port: {{ .Values.services.lmtp.containerPort }}
+        enabled: {{ .Values.components.director.listeners.lmtp.enabled }}
+        port: {{ .Values.components.director.listeners.lmtp.containerPort }}
         ssl_mode: "no"
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
@@ -94,31 +78,14 @@ data:
           - {{ . | quote }}
           {{- end }}
         {{- end }}
-
-      submission:
-        hostname: {{ .Values.protocol.submission.hostname | default .Values.hostname | quote }}
-        max_message_size: {{ int64 .Values.protocol.submission.maxMessageSize }}
-        max_line_length: {{ int .Values.protocol.submission.maxLineLength }}
-        max_recipients: {{ .Values.protocol.submission.maxRecipients }}
-        recipient_delimiter: {{ .Values.protocol.submission.recipientDelimiter | quote }}
-        submission_add_received_header: {{ .Values.protocol.submission.addReceivedHeader }}
-        {{- with .Values.protocol.submission.clientWorkarounds }}
-        client_workarounds:
-          {{- range . }}
-          - {{ . | quote }}
-          {{- end }}
-        {{- end }}
-        relay:
-          host: {{ .Values.protocol.submission.relay.host | quote }}
-          port: {{ .Values.protocol.submission.relay.port }}
-          user: {{ .Values.protocol.submission.relay.user | quote }}
-          password: {{ .Values.protocol.submission.relay.password | quote }}
-          ssl: {{ .Values.protocol.submission.relay.ssl | quote }}
-          ssl_verify: {{ .Values.protocol.submission.relay.sslVerify }}
-          trusted: {{ .Values.protocol.submission.relay.trusted }}
-          connect_timeout: {{ .Values.protocol.submission.relay.connectTimeout }}
-          command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
-
+      pop3:
+        pop3_no_flag_updates: {{ .Values.protocol.pop3.noFlagUpdates }}
+        pop3_reuse_xuidl: {{ .Values.protocol.pop3.reuseXUIDL }}
+        pop3_uidl_format: {{ .Values.protocol.pop3.uidlFormat | quote }}
+        pop3_uidl_duplicates: {{ .Values.protocol.pop3.uidlDuplicates | quote }}
+        pop3_enable_last: {{ .Values.protocol.pop3.enableLast }}
+        pop3_delete_type: {{ .Values.protocol.pop3.deleteType | quote }}
+        pop3_deleted_flag: {{ .Values.protocol.pop3.deletedFlag | quote }}
       lmtp:
         login_greeting: {{ .Values.protocol.lmtp.loginGreeting | quote }}
         add_received_header: {{ .Values.protocol.lmtp.addReceivedHeader }}
@@ -134,19 +101,27 @@ data:
           - {{ . | quote }}
           {{- end }}
         {{- end }}
-
-      pop3:
-        pop3_no_flag_updates: {{ .Values.protocol.pop3.noFlagUpdates }}
-        pop3_reuse_xuidl: {{ .Values.protocol.pop3.reuseXUIDL }}
-        pop3_uidl_format: {{ .Values.protocol.pop3.uidlFormat | quote }}
-        pop3_uidl_duplicates: {{ .Values.protocol.pop3.uidlDuplicates | quote }}
-        pop3_enable_last: {{ .Values.protocol.pop3.enableLast }}
-        pop3_delete_type: {{ .Values.protocol.pop3.deleteType | quote }}
-        pop3_deleted_flag: {{ .Values.protocol.pop3.deletedFlag | quote }}
+      submission:
+        hostname: {{ .Values.protocol.submission.hostname | quote }}
+        max_message_size: {{ int64 .Values.protocol.submission.maxMessageSize }}
+        max_line_length: {{ int .Values.protocol.submission.maxLineLength }}
+        max_recipients: {{ .Values.protocol.submission.maxRecipients }}
+        recipient_delimiter: {{ .Values.protocol.submission.recipientDelimiter | quote }}
+        submission_add_received_header: {{ .Values.protocol.submission.addReceivedHeader }}
+        relay:
+          host: {{ .Values.protocol.submission.relay.host | quote }}
+          port: {{ .Values.protocol.submission.relay.port }}
+          user: {{ .Values.protocol.submission.relay.user | quote }}
+          password: {{ .Values.protocol.submission.relay.password | quote }}
+          ssl: {{ .Values.protocol.submission.relay.ssl | quote }}
+          ssl_verify: {{ .Values.protocol.submission.relay.sslVerify }}
+          trusted: {{ .Values.protocol.submission.relay.trusted }}
+          connect_timeout: {{ .Values.protocol.submission.relay.connectTimeout }}
+          command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
 
     auth:
       passdb:
-        {{- range .Values.auth.passdb }}
+        {{- range .Values.components.auth.passdb }}
         - driver: {{ .driver | quote }}
           dsn: {{ .dsn | quote }}
           {{- with .passwordQuery }}
@@ -169,19 +144,24 @@ data:
           {{- end }}
         {{- end }}
 
+    {{- $storage := coalesce .Values.components.imap.storage .Values.components.pop3.storage .Values.components.lmtp.storage }}
+    {{- if $storage }}
     storage:
-      mailbox: {{ .Values.storage.mailbox | quote }}
-      maildir_root: {{ .Values.storage.maildirRoot | quote }}
-      mail_home_template: {{ .Values.storage.mailHomeTemplate | quote }}
-      index: {{ .Values.storage.index | quote }}
+      mailbox: {{ $storage.mailbox | quote }}
+      maildir_root: {{ $storage.maildirRoot | quote }}
+      mail_home_template: {{ $storage.mailHomeTemplate | quote }}
+      index: {{ $storage.index | quote }}
       index_dir: ""
+    {{- end }}
 
     internal_tls:
-      enabled: {{ .Values.internalTLS.enabled }}
-      {{- if .Values.internalTLS.secretName }}
-      cert: /etc/yarilo/tls/tls.crt
-      key: /etc/yarilo/tls/tls.key
-      ca: /etc/yarilo/tls/ca.crt
+      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled }}
+      enabled: {{ $anyTLS }}
+      {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.anvil.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
+      {{- if $tlsSecret }}
+      cert: /etc/yarilo/internal-tls/tls.crt
+      key: /etc/yarilo/internal-tls/tls.key
+      ca: /etc/yarilo/internal-tls/ca.crt
       {{- else }}
       cert: ""
       key: ""
@@ -201,13 +181,21 @@ data:
         kill_timeout: 5
 
     director_service:
-      listen: {{ .Values.components.director.listen | quote }}
+      listen: {{ printf ":%d" (int .Values.components.director.directorPort) | quote }}
       shutdown:
         session_grace_period: 30
         kill_timeout: 5
       user_expire: {{ .Values.components.director.userExpire }}
       ping_interval: {{ .Values.components.director.pingInterval }}
       ping_timeout: {{ .Values.components.director.pingTimeout }}
+      {{- with .Values.components.director.backends }}
+      mail_servers:
+        {{- range . }}
+        - host: {{ .host | quote }}
+          port: {{ .port }}
+          tag: {{ .tag | quote }}
+        {{- end }}
+      {{- end }}
 
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}

@@ -1,0 +1,46 @@
+{{- if .Values.components.imap.enabled }}
+## Headless — IMAP backend pods (director resolves A-records → individual pod IPs)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-imap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "imap") | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    {{- if .Values.components.imap.listeners.imaps.enabled }}
+    - name: imaps
+      port: {{ .Values.components.imap.listeners.imaps.servicePort }}
+      targetPort: imaps
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.imap.listeners.imap.enabled }}
+    - name: imap
+      port: {{ .Values.components.imap.listeners.imap.servicePort }}
+      targetPort: imap
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-imap-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "imap") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap") | nindent 4 }}
+{{- end }}

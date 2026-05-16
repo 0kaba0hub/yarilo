@@ -1,22 +1,22 @@
-{{- if .Values.components.director.enabled }}
+{{- if .Values.components.imap.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "yarilo.fullname" . }}-director
+  name: {{ include "yarilo.fullname" . }}-imap
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "imap") | nindent 4 }}
 spec:
-  replicas: {{ .Values.components.director.replicas }}
+  replicas: {{ .Values.components.imap.replicas }}
   selector:
     matchLabels:
-      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 6 }}
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap") | nindent 6 }}
   strategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 8 }}
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "imap") | nindent 8 }}
       annotations:
         {{- include "yarilo.configChecksum" . | nindent 8 }}
         {{- with .Values.podAnnotations }}
@@ -26,12 +26,12 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: yarilo-director
+        - name: yarilo-imap
           image: {{ include "yarilo.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: YARILO_COMPONENT
-              value: "yarilo-director"
+              value: "yarilo-imap"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
             {{- with .Values.extraEnv }}
@@ -40,32 +40,14 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: director
-              containerPort: {{ .Values.components.director.directorPort }}
-              protocol: TCP
-            {{- if .Values.components.director.listeners.imaps.enabled }}
+            {{- if .Values.components.imap.listeners.imaps.enabled }}
             - name: imaps
-              containerPort: {{ .Values.components.director.listeners.imaps.containerPort }}
+              containerPort: {{ .Values.components.imap.listeners.imaps.containerPort }}
               protocol: TCP
             {{- end }}
-            {{- if .Values.components.director.listeners.imap.enabled }}
+            {{- if .Values.components.imap.listeners.imap.enabled }}
             - name: imap
-              containerPort: {{ .Values.components.director.listeners.imap.containerPort }}
-              protocol: TCP
-            {{- end }}
-            {{- if .Values.components.director.listeners.pop3s.enabled }}
-            - name: pop3s
-              containerPort: {{ .Values.components.director.listeners.pop3s.containerPort }}
-              protocol: TCP
-            {{- end }}
-            {{- if .Values.components.director.listeners.pop3.enabled }}
-            - name: pop3
-              containerPort: {{ .Values.components.director.listeners.pop3.containerPort }}
-              protocol: TCP
-            {{- end }}
-            {{- if .Values.components.director.listeners.lmtp.enabled }}
-            - name: lmtp
-              containerPort: {{ .Values.components.director.listeners.lmtp.containerPort }}
+              containerPort: {{ .Values.components.imap.listeners.imap.containerPort }}
               protocol: TCP
             {{- end }}
             - name: telemetry
@@ -76,15 +58,18 @@ spec:
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
-            {{- toYaml .Values.components.director.resources | nindent 12 }}
+            {{- toYaml .Values.components.imap.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/yarilo
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- include "yarilo.externalTLSMount" .Values.components.director.tls.secretName | nindent 12 }}
-            {{- include "yarilo.internalTLSMount" .Values.components.director.internalTLS | nindent 12 }}
+            {{- if .Values.components.imap.storage.persistence.enabled }}
+            - name: mail
+              mountPath: {{ .Values.components.imap.storage.maildirRoot }}
+            {{- end }}
+            {{- include "yarilo.internalTLSMount" .Values.components.imap.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -94,8 +79,12 @@ spec:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
-        {{- include "yarilo.externalTLSVolume" .Values.components.director.tls.secretName | nindent 8 }}
-        {{- include "yarilo.internalTLSVolume" .Values.components.director.internalTLS | nindent 8 }}
+        {{- if .Values.components.imap.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.imap.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -27,7 +27,7 @@ spec:
   type: ClusterIP
   ports:
     - name: telemetry
-      port: {{ .Values.service.telemetryPort }}
+      port: 8080
       targetPort: telemetry
       protocol: TCP
   selector:

@@ -1,0 +1,46 @@
+{{- if .Values.components.pop3.enabled }}
+## Headless — POP3 backend pods (director resolves A-records → individual pod IPs)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-pop3
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "pop3") | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    {{- if .Values.components.pop3.listeners.pop3s.enabled }}
+    - name: pop3s
+      port: {{ .Values.components.pop3.listeners.pop3s.servicePort }}
+      targetPort: pop3s
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.components.pop3.listeners.pop3.enabled }}
+    - name: pop3
+      port: {{ .Values.components.pop3.listeners.pop3.servicePort }}
+      targetPort: pop3
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "pop3") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-pop3-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "pop3") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "pop3") | nindent 4 }}
+{{- end }}

@@ -58,7 +58,7 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- include "yarilo.internalTLSMount" . | nindent 12 }}
+            {{- include "yarilo.internalTLSMount" .Values.components.anvil.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -68,7 +68,7 @@ spec:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
-        {{- include "yarilo.internalTLSVolume" . | nindent 8 }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.anvil.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
