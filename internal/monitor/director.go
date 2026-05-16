@@ -232,7 +232,9 @@ func parseHostLine(fields []string) *BackendEvent {
 		return nil
 	}
 	var port int
-	fmt.Sscanf(fields[2], "%d", &port)
+	if _, err := fmt.Sscanf(fields[2], "%d", &port); err != nil {
+		return nil
+	}
 	return &BackendEvent{
 		IP:    fields[1],
 		Port:  port,
