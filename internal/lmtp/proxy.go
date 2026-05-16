@@ -9,33 +9,38 @@ import (
 	"time"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
-
-	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
-// proxyRouter resolves recipient usernames to backend LMTP addresses via the
-// director's consistent-hashing ring. Only active on director nodes.
-type proxyRouter struct {
-	ring     *ring.Ring
-	timeout  time.Duration
-	hostname string // LHLO name sent to upstream
+// UserRouter resolves a recipient username to a backend IP address.
+// Implementations consult admin overrides, sticky routing, and the
+// consistent-hash ring in that order.
+type UserRouter interface {
+	RouteUser(username string) (ip string, err error)
 }
 
-func newProxyRouter(hostname string, r *ring.Ring, timeout time.Duration) *proxyRouter {
-	return &proxyRouter{ring: r, timeout: timeout, hostname: hostname}
+// proxyRouter resolves recipient usernames to backend LMTP addresses.
+// Only active on director nodes.
+type proxyRouter struct {
+	router      UserRouter
+	backendPort int
+	timeout     time.Duration
+	hostname    string // LHLO name sent to backend
+}
+
+func newProxyRouter(hostname string, router UserRouter, backendPort int, timeout time.Duration) *proxyRouter {
+	if backendPort == 0 {
+		backendPort = 24
+	}
+	return &proxyRouter{router: router, backendPort: backendPort, timeout: timeout, hostname: hostname}
 }
 
 // route returns the backend TCP address for a recipient username.
 func (p *proxyRouter) route(username string) (string, error) {
-	b := p.ring.LookupBackend(username)
-	if b == nil {
-		return "", fmt.Errorf("lmtp/proxy: no backend available")
+	ip, err := p.router.RouteUser(username)
+	if err != nil {
+		return "", fmt.Errorf("lmtp/proxy: %w", err)
 	}
-	port := b.Port
-	if port == 0 {
-		port = 24
-	}
-	return net.JoinHostPort(b.IP, fmt.Sprint(port)), nil
+	return net.JoinHostPort(ip, fmt.Sprint(p.backendPort)), nil
 }
 
 // proxyResult is the per-recipient outcome from a proxy delivery.

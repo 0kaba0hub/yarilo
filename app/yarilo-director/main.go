@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/internal/director"
+	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
@@ -169,28 +170,44 @@ func resolveBackends(ctx context.Context, cfg *config.Config, srv *director.Serv
 }
 
 // startProxies starts the LMTP proxy listener on the director.
-// IMAP, POP3, and Submission are no longer proxied here; each has its own
-// dedicated login-pod binary (yarilo-imap-login, yarilo-pop3-login,
-// yarilo-submission-login) that queries the director via LOOKUP.
-func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config, _, backendTLS *tls.Config) error {
+// IMAP, POP3, and Submission are handled by dedicated login-pod binaries;
+// LMTP is proxied here with per-recipient fan-out via lmtp.Server.
+func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config, _, _ *tls.Config) error {
 	if !cfg.Services.LMTP.Active() {
 		return nil
 	}
+	svcLMTP := cfg.Services.LMTP
+	addr := fmt.Sprintf(":%d", svcLMTP.Port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("lmtp proxy: listen %s: %w", addr, err)
+	}
+
 	haProxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
 	haProxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
-	lmtp := cfg.Services.LMTP
-	addr := fmt.Sprintf(":%d", lmtp.Port)
-	return srv.StartProxy(ctx, director.ProxyConfig{
-		Protocol:           "lmtp",
-		Addr:               addr,
-		ExtTLS:             nil,
-		BackendTLS:         backendTLS,
-		BackendPort:        lmtp.Port,
-		HAProxy:            lmtp.HAProxy,
+
+	lmtpSrv := lmtp.New(lmtp.Options{
+		Hostname:           cfg.Protocol.Submission.Hostname,
+		Config:             cfg.Protocol.LMTP,
+		Router:             srv,
+		BackendPort:        svcLMTP.Port,
+		ProxyProtocol:      svcLMTP.HAProxy,
 		HAProxyTimeout:     haProxyTimeout,
 		HAProxyTrustedNets: haProxyNets,
-		XClient:            lmtp.XClient,
+		XClient:            svcLMTP.XClient,
 	})
+
+	slog.Info("director: lmtp proxy listening", "addr", addr)
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+	go func() {
+		if err := lmtpSrv.Serve(ln); err != nil {
+			slog.Error("director: lmtp proxy error", "err", err)
+		}
+	}()
+	return nil
 }
 
 // parseCIDRs parses a list of CIDR strings into *net.IPNet values.

@@ -51,17 +51,33 @@ func buildBackendServer(t *testing.T, users ...string) (addr string, mb mailbox.
 	return ln.Addr().String(), mbox, resolver
 }
 
+// ringRouter adapts a *ring.Ring to the UserRouter interface for testing.
+type ringRouter struct {
+	r    *ring.Ring
+	port int // backend LMTP port (used by the caller, not here)
+}
+
+func (rr *ringRouter) RouteUser(username string) (string, error) {
+	b := rr.r.LookupBackend(username)
+	if b == nil {
+		return "", fmt.Errorf("no backend available")
+	}
+	return b.IP, nil
+}
+
 // buildProxyServer starts an LMTP proxy server using a ring built from the
 // given backend addresses.
 func buildProxyServer(t *testing.T, backends ...string) string {
 	t.Helper()
 	r := ring.New()
+	backendPort := 24
 	for _, b := range backends {
 		host, portStr, _ := net.SplitHostPort(b)
 		port := 24
 		if portStr != "" {
 			fmt.Sscanf(portStr, "%d", &port)
 		}
+		backendPort = port
 		r.AddBackend(&ring.Backend{IP: host, Port: port, Up: true})
 	}
 
@@ -73,7 +89,8 @@ func buildProxyServer(t *testing.T, backends ...string) string {
 			WriteTimeout:      5,
 			Proxy:             config.LMTPProxyConfig{Timeout: 5},
 		},
-		Ring: r,
+		Router:      &ringRouter{r: r},
+		BackendPort: backendPort,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -116,7 +133,7 @@ func TestLMTP_Proxy_UnknownRoute(t *testing.T) {
 			WriteTimeout: 5,
 			Proxy:        config.LMTPProxyConfig{Timeout: 5},
 		},
-		Ring: ring.New(), // empty ring
+		Router: &ringRouter{r: ring.New()}, // empty ring
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -143,7 +160,7 @@ func TestProxyRouter_Route_Consistent(t *testing.T) {
 	r.AddBackend(&ring.Backend{IP: "10.0.0.1", Port: 24, Up: true})
 	r.AddBackend(&ring.Backend{IP: "10.0.0.2", Port: 24, Up: true})
 
-	router := newProxyRouter("test", r, 5*time.Second)
+	router := newProxyRouter("test", &ringRouter{r: r}, 24, 5*time.Second)
 
 	// Same username must always resolve to the same backend.
 	addr1, err := router.route("alice@example.com")
