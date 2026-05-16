@@ -221,6 +221,20 @@ data:
           - {{ . | quote }}
           {{- end }}
 
+    login_backend:
+      imap:
+        enabled: {{ .Values.components.imap.loginBackend.enabled }}
+        port: {{ .Values.components.imap.loginBackend.containerPort }}
+        session_addr: {{ .Values.components.imap.loginBackend.sessionAddr | quote }}
+      pop3:
+        enabled: {{ .Values.components.pop3.loginBackend.enabled }}
+        port: {{ .Values.components.pop3.loginBackend.containerPort }}
+        session_addr: {{ .Values.components.pop3.loginBackend.sessionAddr | quote }}
+      submission:
+        enabled: {{ .Values.components.submission.loginBackend.enabled }}
+        port: {{ .Values.components.submission.loginBackend.containerPort }}
+        session_addr: {{ .Values.components.submission.loginBackend.sessionAddr | quote }}
+
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}
 

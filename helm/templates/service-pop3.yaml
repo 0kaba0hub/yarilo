@@ -23,6 +23,12 @@ spec:
       targetPort: pop3
       protocol: TCP
     {{- end }}
+    {{- if .Values.components.pop3.loginBackend.enabled }}
+    - name: pop3-login-be
+      port: {{ .Values.components.pop3.loginBackend.containerPort }}
+      targetPort: pop3-login-be
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "pop3") | nindent 4 }}
 ---

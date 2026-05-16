@@ -23,6 +23,12 @@ spec:
       targetPort: imap
       protocol: TCP
     {{- end }}
+    {{- if .Values.components.imap.loginBackend.enabled }}
+    - name: imap-login-be
+      port: {{ .Values.components.imap.loginBackend.containerPort }}
+      targetPort: imap-login-be
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "imap") | nindent 4 }}
 ---

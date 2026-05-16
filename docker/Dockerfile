@@ -15,8 +15,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-pop3-login         ./app/yarilo-pop3-login         && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-lmtp               ./app/yarilo-lmtp               && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-submission         ./app/yarilo-submission         && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-submission-login   ./app/yarilo-submission-login   && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-migrate            ./app/yarilo-migrate
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-submission-login          ./app/yarilo-submission-login          && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-imap-login-backend       ./app/yarilo-imap-login-backend       && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-pop3-login-backend       ./app/yarilo-pop3-login-backend       && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-submission-login-backend ./app/yarilo-submission-login-backend && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /out/yarilo-migrate                 ./app/yarilo-migrate
 
 FROM alpine:3.23
 # hadolint ignore=DL3018

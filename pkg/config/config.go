@@ -22,9 +22,26 @@ type Config struct {
 	AuthService     AuthServiceConfig     `koanf:"auth_service"`
 	AnvilService    AnvilServiceConfig    `koanf:"anvil_service"`
 	DirectorService DirectorServiceConfig `koanf:"director_service"`
+	LoginBackend    LoginBackendConfig    `koanf:"login_backend"`
 	Storage         StorageConfig         `koanf:"storage"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
+}
+
+// LoginBackendConfig configures the backend login sidecars (one per session pod).
+// Each sidecar accepts connections from frontend login pods, forwards XCLIENT,
+// and proxies to the local session process.
+type LoginBackendConfig struct {
+	IMAP       LoginBackendListener `koanf:"imap"`
+	POP3       LoginBackendListener `koanf:"pop3"`
+	Submission LoginBackendListener `koanf:"submission"`
+}
+
+// LoginBackendListener is the per-protocol sidecar configuration.
+type LoginBackendListener struct {
+	Enabled     bool   `koanf:"enabled"`
+	Port        int    `koanf:"port"`         // port the sidecar listens on (director routes here)
+	SessionAddr string `koanf:"session_addr"` // address of the local session process
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.
@@ -341,6 +358,11 @@ func Load(path string) (*Config, error) {
 				// 10.244.0.0/16 — k8s pod CIDR (flannel/kubeadm default)
 				AllowedNets: []string{"127.0.0.0/8", "10.96.0.0/12", "10.244.0.0/16"},
 			},
+		},
+		LoginBackend: LoginBackendConfig{
+			IMAP:       LoginBackendListener{Port: 11993, SessionAddr: "127.0.0.1:10993"},
+			POP3:       LoginBackendListener{Port: 11995, SessionAddr: "127.0.0.1:10995"},
+			Submission: LoginBackendListener{Port: 11587, SessionAddr: "127.0.0.1:10587"},
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},

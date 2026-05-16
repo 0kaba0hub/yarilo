@@ -73,6 +73,38 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.components.pop3.loginBackend.enabled }}
+        - name: yarilo-pop3-login-backend
+          image: {{ include "yarilo.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-pop3-login-backend"
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: pop3-login-be
+              containerPort: {{ .Values.components.pop3.loginBackend.containerPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.components.pop3.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yarilo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- include "yarilo.internalTLSMount" .Values.components.pop3.internalTLS | nindent 12 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:

@@ -22,6 +22,12 @@ spec:
       targetPort: submissions
       protocol: TCP
     {{- end }}
+    {{- if .Values.components.submission.loginBackend.enabled }}
+    - name: sub-login-be
+      port: {{ .Values.components.submission.loginBackend.containerPort }}
+      targetPort: sub-login-be
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "submission") | nindent 4 }}
 ---

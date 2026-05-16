@@ -74,6 +74,38 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.components.submission.loginBackend.enabled }}
+        - name: yarilo-submission-login-backend
+          image: {{ include "yarilo.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-submission-login-backend"
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: sub-login-be
+              containerPort: {{ .Values.components.submission.loginBackend.containerPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.components.submission.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yarilo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- include "yarilo.internalTLSMount" .Values.components.submission.internalTLS | nindent 12 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:

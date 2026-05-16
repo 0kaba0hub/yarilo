@@ -164,7 +164,8 @@ components:
         memory: 128Mi
 
   ## IMAP backend — handles sessions proxied from director.
-  ## Director proxies 993→imap:993, 143→imap:143.
+  ## When loginBackend is enabled, director routes to the sidecar port (11993)
+  ## instead of connecting directly to the session process.
   imap:
     enabled: true
     replicas: 1
@@ -178,6 +179,14 @@ components:
         enabled: false
         servicePort: 143
         containerPort: 10143
+
+    ## Login sidecar — yarilo-imap-login-backend container in the same pod.
+    ## Accepts connections from yarilo-imap-login frontend pods (via mTLS),
+    ## propagates the real client IP via XCLIENT, and proxies to yarilo-imap.
+    loginBackend:
+      enabled: false
+      containerPort: 11993
+      sessionAddr: "127.0.0.1:10993"
 
     internalTLS:
       enabled: false
@@ -216,6 +225,12 @@ components:
         enabled: false
         servicePort: 110
         containerPort: 10110
+
+    ## Login sidecar — yarilo-pop3-login-backend container in the same pod.
+    loginBackend:
+      enabled: false
+      containerPort: 11995
+      sessionAddr: "127.0.0.1:10995"
 
     internalTLS:
       enabled: false
@@ -289,6 +304,12 @@ components:
         enabled: false
         servicePort: 465
         containerPort: 10465
+
+    ## Login sidecar — yarilo-submission-login-backend container in the same pod.
+    loginBackend:
+      enabled: false
+      containerPort: 11587
+      sessionAddr: "127.0.0.1:10587"
 
     internalTLS:
       enabled: false
