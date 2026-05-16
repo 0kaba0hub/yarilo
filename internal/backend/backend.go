@@ -221,6 +221,116 @@ func New(cfg *config.Config) (*Server, error) {
 	}, nil
 }
 
+// RunIMAP starts the IMAP/IMAPS listeners and telemetry, then blocks until ctx is cancelled.
+func (s *Server) RunIMAP(ctx context.Context) error {
+	go func() {
+		if err := s.telem.ListenAndServe(ctx); err != nil {
+			slog.Error("telemetry: server error", "err", err)
+		}
+	}()
+	s.telem.SetReady(true)
+
+	svcs := s.cfg.Services
+	if s.imap == nil {
+		slog.Warn("imap: no listeners configured")
+		<-ctx.Done()
+		return nil
+	}
+	if svcs.IMAPS.Active() {
+		go func() {
+			if err := s.imap.ListenAndServeTLS(); err != nil {
+				slog.Error("imap: TLS server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+	if svcs.IMAP.Active() {
+		go func() {
+			if err := s.imap.ListenAndServe(); err != nil {
+				slog.Error("imap: plain server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+	<-ctx.Done()
+	return nil
+}
+
+// RunPOP3 starts the POP3/POP3S listeners and telemetry, then blocks until ctx is cancelled.
+func (s *Server) RunPOP3(ctx context.Context) error {
+	go func() {
+		if err := s.telem.ListenAndServe(ctx); err != nil {
+			slog.Error("telemetry: server error", "err", err)
+		}
+	}()
+	s.telem.SetReady(true)
+
+	svcs := s.cfg.Services
+	if s.pop3 == nil {
+		slog.Warn("pop3: no listeners configured")
+		<-ctx.Done()
+		return nil
+	}
+	if svcs.POP3S.Active() {
+		go func() {
+			if err := s.pop3.ListenAndServeTLS(); err != nil {
+				slog.Error("pop3: TLS server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+	if svcs.POP3.Active() {
+		go func() {
+			if err := s.pop3.ListenAndServe(); err != nil {
+				slog.Error("pop3: plain server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
+	<-ctx.Done()
+	return nil
+}
+
+// RunLMTP starts the LMTP listener and telemetry, then blocks until ctx is cancelled.
+func (s *Server) RunLMTP(ctx context.Context) error {
+	go func() {
+		if err := s.telem.ListenAndServe(ctx); err != nil {
+			slog.Error("telemetry: server error", "err", err)
+		}
+	}()
+	s.telem.SetReady(true)
+
+	svcs := s.cfg.Services
+	if s.lmtp == nil || !svcs.LMTP.Active() {
+		slog.Warn("lmtp: no listener configured")
+		<-ctx.Done()
+		return nil
+	}
+	go func() {
+		ln, err := net.Listen("tcp", listenAddr(svcs.LMTP))
+		if err != nil {
+			slog.Error("lmtp: listen error", "err", err)
+			os.Exit(1)
+		}
+		if svcs.LMTP.SSLMode == "ssl" {
+			tlsCfg, err := buildTLS(s.cfg, svcs.LMTP)
+			if err != nil {
+				slog.Error("lmtp: TLS error", "err", err)
+				os.Exit(1)
+			}
+			if tlsCfg != nil {
+				ln = tls.NewListener(ln, tlsCfg)
+			}
+		}
+		if err := s.lmtp.Serve(ln); err != nil {
+			slog.Error("lmtp: server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+	<-ctx.Done()
+	return nil
+}
+
 // Run starts all configured servers and blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	go func() {
