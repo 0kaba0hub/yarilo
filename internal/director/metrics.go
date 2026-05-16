@@ -1,7 +1,6 @@
 package director
 
 import (
-	"net"
 	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,11 +29,17 @@ var (
 	)
 )
 
-// updateMetrics refreshes all backend Prometheus gauges from the current ring
-// and userDir state. Called after every ring mutation and on a periodic tick.
+// updateMetrics refreshes all backend Prometheus gauges.
+// Called after every ring mutation and on every session open/close.
 func (s *Server) updateMetrics() {
 	backends := s.ring.Backends()
-	sessions := s.userDir.CountByBackend()
+
+	s.sessionsMu.Lock()
+	snap := make(map[string]int, len(s.sessions))
+	for ip, n := range s.sessions {
+		snap[ip] = n
+	}
+	s.sessionsMu.Unlock()
 
 	// Clear old series so removed backends don't linger.
 	backendInfo.Reset()
@@ -46,11 +51,7 @@ func (s *Server) updateMetrics() {
 		if !b.Up {
 			status = "flush"
 		}
-
 		backendInfo.WithLabelValues(b.IP, portStr, b.Tag, status).Set(1)
-
-		addr := net.JoinHostPort(b.IP, portStr)
-		cnt := float64(sessions[addr])
-		backendSessions.WithLabelValues(b.IP, portStr, b.Tag).Set(cnt)
+		backendSessions.WithLabelValues(b.IP, portStr, b.Tag).Set(float64(snap[b.IP]))
 	}
 }

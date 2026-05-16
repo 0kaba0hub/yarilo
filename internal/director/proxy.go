@@ -169,6 +169,10 @@ func (s *Server) handleProxyConn(conn net.Conn, cfg ProxyConfig) {
 	conn.SetDeadline(time.Time{})        //nolint:errcheck
 	backendConn.SetDeadline(time.Time{}) //nolint:errcheck
 
+	// Count session exactly: open when biProxy starts, close when it returns.
+	s.sessionOpen(b.IP)
+	defer s.sessionClose(b.IP)
+
 	// Bidirectional proxy for the rest of the session.
 	biProxy(rd, conn, backendRd, backendConn)
 }
