@@ -5,6 +5,15 @@ app/yarilo-migrate/yarilo-migrate
 app/smoketest/smoketest
 app/smoketest-e2e/smoketest-e2e
 
+# Local compiled binaries (root-level dev builds)
+/yarilo-admin
+/yarilo-director
+/yarilo-imap
+/yarilo-lmtp
+/yarilo-monitor
+/yarilo-pop3
+/yarilo-submission
+
 # macOS
 .DS_Store
 
