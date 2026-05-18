@@ -1,0 +1,132 @@
+<svg width="1020" height="540" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+  <defs>
+    <marker id="aa" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#ca8a04"/>
+    </marker>
+    <marker id="ax" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#475569"/>
+    </marker>
+    <marker id="ap" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#0f766e"/>
+    </marker>
+  </defs>
+
+  <rect width="1020" height="540" fill="#f8fafc"/>
+  <text x="510" y="22" text-anchor="middle" fill="#0f172a" font-size="14" font-weight="bold">yarilo — clients / MTA · standalone deployment (full stack)</text>
+
+  <!-- External row: MUA + MTA (direct client connections) -->
+  <rect x="200" y="50" width="400" height="70" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+  <text x="400" y="75" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="bold">client MUA</text>
+  <text x="400" y="93" text-anchor="middle" fill="#475569" font-size="10">Thunderbird · Outlook</text>
+  <text x="400" y="108" text-anchor="middle" fill="#475569" font-size="9">IMAP / POP3 / Submission (TLS)</text>
+
+  <rect x="660" y="50" width="280" height="70" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+  <text x="800" y="75" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="bold">MTA / MX server</text>
+  <text x="800" y="93" text-anchor="middle" fill="#475569" font-size="10">Postfix · Exim · etc.</text>
+  <text x="800" y="108" text-anchor="middle" fill="#475569" font-size="9">LMTP delivery</text>
+
+  <!-- Outer wrapper: standalone deployment -->
+  <rect x="15" y="140" width="990" height="380" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
+  <rect x="820" y="142" width="183" height="24" rx="2" fill="#0f172a"/>
+  <text x="998" y="159" text-anchor="end" fill="#f8fafc" font-size="12" font-weight="bold">standalone deployment</text>
+
+  <!-- MUA → login proxies (TLS terminated here) -->
+  <line x1="280" y1="120" x2="325" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+  <line x1="400" y1="120" x2="510" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+  <line x1="520" y1="120" x2="695" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+
+  <!-- MTA → lmtp -->
+  <line x1="800" y1="120" x2="880" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+
+  <!-- Left sidebar: yarilo-auth + yarilo-anvil -->
+  <rect x="40" y="200" width="180" height="72" rx="5" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
+  <text x="130" y="223" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-auth</text>
+  <text x="130" y="241" text-anchor="middle" fill="#475569" font-size="10">mTLS :9100</text>
+  <text x="130" y="257" text-anchor="middle" fill="#475569" font-size="9">passdb / userdb</text>
+
+  <rect x="40" y="292" width="180" height="72" rx="5" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
+  <text x="130" y="315" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-anvil</text>
+  <text x="130" y="333" text-anchor="middle" fill="#475569" font-size="10">mTLS :9101</text>
+  <text x="130" y="349" text-anchor="middle" fill="#475569" font-size="9">connlimit · CONNECT/DISCONNECT</text>
+
+  <!-- Login proxies row -->
+  <rect x="240" y="182" width="170" height="72" rx="5" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="325" y="205" text-anchor="middle" fill="#2563eb" font-size="11" font-weight="bold">yarilo-imap-login</text>
+  <text x="325" y="223" text-anchor="middle" fill="#475569" font-size="10">:993 / :143</text>
+  <text x="325" y="239" text-anchor="middle" fill="#475569" font-size="9">TLS · preamble · proxy</text>
+
+  <rect x="425" y="182" width="170" height="72" rx="5" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+  <text x="510" y="205" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">yarilo-pop3-login</text>
+  <text x="510" y="223" text-anchor="middle" fill="#475569" font-size="10">:995 / :110</text>
+  <text x="510" y="239" text-anchor="middle" fill="#475569" font-size="9">TLS · preamble · proxy</text>
+
+  <rect x="610" y="182" width="170" height="72" rx="5" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="695" y="205" text-anchor="middle" fill="#7c3aed" font-size="11" font-weight="bold">yarilo-submission-login</text>
+  <text x="695" y="223" text-anchor="middle" fill="#475569" font-size="10">:465 / :587</text>
+  <text x="695" y="239" text-anchor="middle" fill="#475569" font-size="9">TLS · preamble · proxy</text>
+
+  <rect x="795" y="182" width="170" height="72" rx="5" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
+  <text x="880" y="205" text-anchor="middle" fill="#0d9488" font-size="11" font-weight="bold">yarilo-lmtp-login</text>
+  <text x="880" y="223" text-anchor="middle" fill="#475569" font-size="10">:24 (LMTP)</text>
+  <text x="880" y="239" text-anchor="middle" fill="#475569" font-size="9">MTA-facing · proxy</text>
+
+  <!-- Control-plane bus (login → auth/anvil) -->
+  <line x1="325" y1="254" x2="325" y2="282" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="510" y1="254" x2="510" y2="282" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="695" y1="254" x2="695" y2="282" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="880" y1="254" x2="880" y2="282" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="220" y1="282" x2="880" y2="282" stroke="#64748b" stroke-width="2"/>
+  <circle cx="325" cy="282" r="3" fill="#64748b"/>
+  <circle cx="510" cy="282" r="3" fill="#64748b"/>
+  <circle cx="695" cy="282" r="3" fill="#64748b"/>
+  <circle cx="880" cy="282" r="3" fill="#64748b"/>
+  <text x="552" y="275" text-anchor="middle" fill="#475569" font-size="10" font-weight="bold">control plane · mTLS</text>
+
+  <line x1="220" y1="282" x2="220" y2="272" stroke="#ca8a04" stroke-width="1.8" marker-end="url(#aa)"/>
+  <line x1="220" y1="282" x2="220" y2="292" stroke="#ca8a04" stroke-width="1.8" marker-end="url(#aa)"/>
+
+  <!-- Data plane: login → session (fd-pass Unix socket) -->
+  <line x1="325" y1="282" x2="325" y2="320" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="510" y1="282" x2="510" y2="320" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="695" y1="282" x2="695" y2="320" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="880" y1="282" x2="880" y2="320" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <text x="552" y="304" text-anchor="middle" fill="#0f766e" font-size="9" font-style="italic">data plane · fd-pass via Unix socket</text>
+
+  <!-- Sessions row -->
+  <rect x="240" y="322" width="170" height="72" rx="5" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="325" y="345" text-anchor="middle" fill="#1d4ed8" font-size="11" font-weight="bold">yarilo-imap</text>
+  <text x="325" y="363" text-anchor="middle" fill="#475569" font-size="10">IMAP session</text>
+  <text x="325" y="379" text-anchor="middle" fill="#475569" font-size="9">per-user · mailbox · index</text>
+
+  <rect x="425" y="322" width="170" height="72" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="2"/>
+  <text x="510" y="345" text-anchor="middle" fill="#b91c1c" font-size="11" font-weight="bold">yarilo-pop3</text>
+  <text x="510" y="363" text-anchor="middle" fill="#475569" font-size="10">POP3 session</text>
+  <text x="510" y="379" text-anchor="middle" fill="#475569" font-size="9">per-user · mailbox</text>
+
+  <rect x="610" y="322" width="170" height="72" rx="5" fill="#ede9fe" stroke="#6d28d9" stroke-width="2"/>
+  <text x="695" y="345" text-anchor="middle" fill="#6d28d9" font-size="11" font-weight="bold">yarilo-submission</text>
+  <text x="695" y="363" text-anchor="middle" fill="#475569" font-size="10">Submission session</text>
+  <text x="695" y="379" text-anchor="middle" fill="#475569" font-size="9">SMTP submit · DKIM · sieve</text>
+
+  <rect x="795" y="322" width="170" height="72" rx="5" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+  <text x="880" y="345" text-anchor="middle" fill="#0f766e" font-size="11" font-weight="bold">yarilo-lmtp</text>
+  <text x="880" y="363" text-anchor="middle" fill="#475569" font-size="10">LMTP delivery</text>
+  <text x="880" y="379" text-anchor="middle" fill="#475569" font-size="9">deliver → mailbox · sieve</text>
+
+  <!-- Sessions → storage -->
+  <line x1="325" y1="394" x2="325" y2="418" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="510" y1="394" x2="510" y2="418" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="695" y1="394" x2="695" y2="418" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="880" y1="394" x2="880" y2="418" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+
+  <!-- Storage block -->
+  <rect x="240" y="420" width="725" height="80" rx="6" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+  <text x="602" y="442" text-anchor="middle" fill="#0f766e" font-size="12" font-weight="bold">local storage (PVC / NFS)</text>
+  <line x1="602" y1="450" x2="602" y2="495" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="421" y="468" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">mailbox data</text>
+  <text x="421" y="484" text-anchor="middle" fill="#475569" font-size="10">MailboxBackend</text>
+  <text x="421" y="495" text-anchor="middle" fill="#64748b" font-size="9">maildir · dbox</text>
+  <text x="783" y="468" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">index data</text>
+  <text x="783" y="484" text-anchor="middle" fill="#475569" font-size="10">IndexBackend</text>
+  <text x="783" y="495" text-anchor="middle" fill="#64748b" font-size="9">fileindex · sqlite</text>
+</svg>

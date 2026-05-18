@@ -31,11 +31,38 @@ docker/          — Dockerfile
 
 ---
 
+## Infrastructure architecture — головна концепція
+
+**Інфраструктурна архітектура yarilo визначена цими документами/схемами в `docs/`. Це source of truth для будь-яких рішень по deployment, scaling, HA, координації між компонентами:**
+
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — топологія deployment, sizing (per pod, per tag), HA strategy, sharding через tags, обґрунтування рішень
+- **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login-proxies, 3-pod director StatefulSet з peer-sync, monitor sidecars, ring-routing до backend tags
+- **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): 4 окремі StatefulSet-и на протокол (imap/pop3/submission/lmtp) для незалежного scaling, yarilo-locks для cross-pod coordination, shared NFS PV (RWX)
+- **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: повний стек (login + sessions + auth + anvil + storage) для self-contained інсталяцій без director-а
+
+**Правила використання:**
+1. Будь-яка зміна в infrastructure approach (нові поди, зміна scaling-моделі, нові services, зміна координації) **починається з оновлення цих схем + DEPLOYMENT.md**, а не з коду.
+2. Якщо код суперечить схемі — або код виправляється під схему, або схема оновлюється з обґрунтуванням.
+3. При планувані нової функціональності з infrastructure-наслідками — перевір схеми, обговори зміни, оновлюй документ.
+
+**Ключові архітектурні рішення зафіксовані в схемах:**
+- 4 окремих StatefulSet-и на протокол у backend deployment — для independent scaling per protocol
+- `yarilo-auth` + `yarilo-anvil` — shared services (Deployments × 2), один deployment на всю інсталяцію
+- `yarilo-locks` — per backend tag (Deployment × 2), не shared
+- Один NFS PV (RWX) на tag — shared всіма 4 StatefulSet-ами в межах tag-у
+- Director — StatefulSet × 3 з peer-sync, 4 окремі ring-и (по одному на протокол)
+- Sticky routing per-protocol, cross-protocol coordination через `yarilo-locks`
+- TLS terminate + passdb на director, userdb на backend через shared `yarilo-auth`
+
+---
+
 ## Architecture rules
 
-**ARCHITECTURE.md is the single source of truth.** Read it before any implementation work.
-Every decision about processes, UIDs, IPC, storage, and k8s deployment is defined there.
+**ARCHITECTURE.md is the single source of truth for code-level architecture.** Read it before any implementation work.
+Every decision about processes, UIDs, IPC, storage is defined there.
 Code that contradicts ARCHITECTURE.md is wrong — fix the code, not the document.
+
+**Для infrastructure/deployment рівня — see `docs/DEPLOYMENT.md` + SVG-схеми вище.**
 
 Key rules derived from ARCHITECTURE.md:
 

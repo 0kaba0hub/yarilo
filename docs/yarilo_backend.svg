@@ -1,0 +1,158 @@
+<svg width="1020" height="480" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+  <defs>
+    <marker id="ad" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#1d4ed8"/>
+    </marker>
+    <marker id="aa" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#ca8a04"/>
+    </marker>
+    <marker id="al" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#7c2d12"/>
+    </marker>
+    <marker id="ap" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#0f766e"/>
+    </marker>
+  </defs>
+
+  <rect width="1020" height="480" fill="#f8fafc"/>
+  <text x="510" y="22" text-anchor="middle" fill="#0f172a" font-size="14" font-weight="bold">yarilo — backend deployment (behind director, per-protocol StatefulSets)</text>
+
+  <!-- ══════════════════════════════════════════════════
+       External top row: shared services + director
+  ══════════════════════════════════════════════════ -->
+
+  <!-- Shared services (auth + anvil) -->
+  <rect x="20" y="50" width="230" height="80" rx="6" fill="#fffbeb" stroke="#a16207" stroke-width="2"/>
+  <text x="135" y="65" text-anchor="middle" fill="#a16207" font-size="11" font-weight="bold">shared services · mTLS</text>
+  <text x="135" y="74" text-anchor="middle" fill="#a16207" font-size="8">k8s: Deployments × 2</text>
+
+  <rect x="32" y="76" width="100" height="48" rx="4" fill="#fef3c7" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="82" y="93" text-anchor="middle" fill="#ca8a04" font-size="10" font-weight="bold">yarilo-auth</text>
+  <text x="82" y="106" text-anchor="middle" fill="#475569" font-size="8">:9100</text>
+  <text x="82" y="117" text-anchor="middle" fill="#475569" font-size="8">passdb/userdb</text>
+
+  <rect x="138" y="76" width="100" height="48" rx="4" fill="#fef3c7" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="188" y="93" text-anchor="middle" fill="#ca8a04" font-size="10" font-weight="bold">yarilo-anvil</text>
+  <text x="188" y="106" text-anchor="middle" fill="#475569" font-size="8">:9101</text>
+  <text x="188" y="117" text-anchor="middle" fill="#475569" font-size="8">conn/sess limits</text>
+
+  <!-- Director deployment -->
+  <rect x="270" y="50" width="730" height="80" rx="5" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="635" y="72" text-anchor="middle" fill="#1d4ed8" font-size="13" font-weight="bold">director deployment</text>
+  <text x="635" y="86" text-anchor="middle" fill="#1d4ed8" font-size="9">k8s: StatefulSet × 3 · 4 separate rings (one per protocol)</text>
+  <text x="635" y="102" text-anchor="middle" fill="#475569" font-size="10">ring · userDir · TLS terminate · passdb · preamble parse</text>
+  <text x="635" y="117" text-anchor="middle" fill="#475569" font-size="9">proxies plain TCP to backend StatefulSet pod (per-protocol shard)</text>
+
+  <!-- ══════════════════════════════════════════════════
+       Outer wrapper: backend deployment (Helm release per tag)
+  ══════════════════════════════════════════════════ -->
+  <rect x="15" y="150" width="990" height="310" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
+  <rect x="763" y="152" width="240" height="24" rx="2" fill="#0f172a"/>
+  <text x="998" y="169" text-anchor="end" fill="#f8fafc" font-size="11" font-weight="bold">backend deployment · Helm release</text>
+
+  <!-- Director → 4 protocol StatefulSets (plain-TCP, independent rings per protocol) -->
+  <line x1="370" y1="130" x2="270" y2="200" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#ad)"/>
+  <text x="278" y="170" text-anchor="start" fill="#1d4ed8" font-size="10" font-weight="bold">imap (ring_imap)</text>
+  <line x1="450" y1="130" x2="430" y2="200" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#ad)"/>
+  <text x="438" y="170" text-anchor="start" fill="#1d4ed8" font-size="10" font-weight="bold">pop3 (ring_pop3)</text>
+  <line x1="590" y1="130" x2="590" y2="200" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#ad)"/>
+  <text x="598" y="170" text-anchor="start" fill="#1d4ed8" font-size="10" font-weight="bold">sub (ring_sub)</text>
+  <line x1="750" y1="130" x2="750" y2="200" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#ad)"/>
+  <text x="758" y="170" text-anchor="start" fill="#1d4ed8" font-size="10" font-weight="bold">lmtp (ring_lmtp)</text>
+
+  <!-- ══════════════════════════════════════════════════
+       4 окремі StatefulSet-и (per protocol)
+  ══════════════════════════════════════════════════ -->
+
+  <!-- yarilo-imap StatefulSet -->
+  <rect x="200" y="200" width="140" height="95" rx="5" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="270" y="220" text-anchor="middle" fill="#1d4ed8" font-size="12" font-weight="bold">yarilo-imap</text>
+  <text x="270" y="232" text-anchor="middle" fill="#1d4ed8" font-size="8">StatefulSet × N</text>
+  <text x="270" y="246" text-anchor="middle" fill="#475569" font-size="9">IMAP session pool</text>
+  <text x="270" y="260" text-anchor="middle" fill="#475569" font-size="9">goroutines/user</text>
+  <text x="270" y="274" text-anchor="middle" fill="#475569" font-size="9">HPA: conn count</text>
+  <text x="270" y="288" text-anchor="middle" fill="#475569" font-size="9">read mailbox · index</text>
+
+  <!-- yarilo-pop3 StatefulSet -->
+  <rect x="360" y="200" width="140" height="95" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="2"/>
+  <text x="430" y="220" text-anchor="middle" fill="#b91c1c" font-size="12" font-weight="bold">yarilo-pop3</text>
+  <text x="430" y="232" text-anchor="middle" fill="#b91c1c" font-size="8">StatefulSet × M</text>
+  <text x="430" y="246" text-anchor="middle" fill="#475569" font-size="9">POP3 session pool</text>
+  <text x="430" y="260" text-anchor="middle" fill="#475569" font-size="9">goroutines/user</text>
+  <text x="430" y="274" text-anchor="middle" fill="#475569" font-size="9">HPA: poll rate</text>
+  <text x="430" y="288" text-anchor="middle" fill="#475569" font-size="9">read mailbox</text>
+
+  <!-- yarilo-submission StatefulSet -->
+  <rect x="520" y="200" width="140" height="95" rx="5" fill="#ede9fe" stroke="#6d28d9" stroke-width="2"/>
+  <text x="590" y="220" text-anchor="middle" fill="#6d28d9" font-size="12" font-weight="bold">yarilo-submission</text>
+  <text x="590" y="232" text-anchor="middle" fill="#6d28d9" font-size="8">StatefulSet × P</text>
+  <text x="590" y="246" text-anchor="middle" fill="#475569" font-size="9">Submission pool</text>
+  <text x="590" y="260" text-anchor="middle" fill="#475569" font-size="9">SMTP · DKIM</text>
+  <text x="590" y="274" text-anchor="middle" fill="#475569" font-size="9">HPA: outbound rate</text>
+  <text x="590" y="288" text-anchor="middle" fill="#475569" font-size="9">write Sent · sieve</text>
+
+  <!-- yarilo-lmtp StatefulSet -->
+  <rect x="680" y="200" width="140" height="95" rx="5" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+  <text x="750" y="220" text-anchor="middle" fill="#0f766e" font-size="12" font-weight="bold">yarilo-lmtp</text>
+  <text x="750" y="232" text-anchor="middle" fill="#0f766e" font-size="8">StatefulSet × Q</text>
+  <text x="750" y="246" text-anchor="middle" fill="#475569" font-size="9">LMTP delivery pool</text>
+  <text x="750" y="260" text-anchor="middle" fill="#475569" font-size="9">deliver → INBOX</text>
+  <text x="750" y="274" text-anchor="middle" fill="#475569" font-size="9">HPA: delivery queue</text>
+  <text x="750" y="288" text-anchor="middle" fill="#475569" font-size="9">sieve filtering</text>
+
+  <!-- yarilo-locks (per-backend, RIGHT sidebar) -->
+  <rect x="840" y="200" width="160" height="95" rx="5" fill="#fef2f2" stroke="#7c2d12" stroke-width="2"/>
+  <text x="920" y="220" text-anchor="middle" fill="#7c2d12" font-size="12" font-weight="bold">yarilo-locks</text>
+  <text x="920" y="232" text-anchor="middle" fill="#7c2d12" font-size="8">Deployment × 2</text>
+  <text x="920" y="248" text-anchor="middle" fill="#475569" font-size="9">cross-protocol</text>
+  <text x="920" y="260" text-anchor="middle" fill="#475569" font-size="9">cross-pod coord</text>
+  <text x="920" y="274" text-anchor="middle" fill="#475569" font-size="9">mTLS :9104</text>
+  <text x="920" y="288" text-anchor="middle" fill="#475569" font-size="9">X locks · TTL 30s</text>
+
+  <!-- Control-plane bus (StatefulSets → locks + shared services) -->
+  <line x1="270" y1="295" x2="270" y2="310" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="430" y1="295" x2="430" y2="310" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="590" y1="295" x2="590" y2="310" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="750" y1="295" x2="750" y2="310" stroke="#64748b" stroke-width="1.8"/>
+  <line x1="80" y1="310" x2="920" y2="310" stroke="#64748b" stroke-width="2"/>
+  <circle cx="270" cy="310" r="3" fill="#64748b"/>
+  <circle cx="430" cy="310" r="3" fill="#64748b"/>
+  <circle cx="590" cy="310" r="3" fill="#64748b"/>
+  <circle cx="750" cy="310" r="3" fill="#64748b"/>
+  <text x="455" y="327" text-anchor="middle" fill="#475569" font-size="10" font-weight="bold">control plane · mTLS</text>
+
+  <!-- Bus → yarilo-locks (UP, right side, internal) -->
+  <line x1="920" y1="310" x2="920" y2="297" stroke="#7c2d12" stroke-width="1.8" marker-end="url(#al)"/>
+  <text x="912" y="305" text-anchor="end" fill="#7c2d12" font-size="9" font-weight="bold">X locks</text>
+
+  <!-- Bus → yarilo-auth (UP, left side, external) -->
+  <line x1="82" y1="310" x2="82" y2="125" stroke="#ca8a04" stroke-width="1.8" marker-end="url(#aa)"/>
+  <text x="74" y="220" text-anchor="end" fill="#ca8a04" font-size="9" font-weight="bold">userdb</text>
+  <text x="74" y="232" text-anchor="end" fill="#ca8a04" font-size="9" font-weight="bold">lookup</text>
+
+  <!-- Bus → yarilo-anvil (UP, left side, external) -->
+  <line x1="188" y1="310" x2="188" y2="125" stroke="#ca8a04" stroke-width="1.8" marker-end="url(#aa)"/>
+  <text x="180" y="220" text-anchor="end" fill="#ca8a04" font-size="9" font-weight="bold">anvil</text>
+  <text x="180" y="232" text-anchor="end" fill="#ca8a04" font-size="9" font-weight="bold">r/w</text>
+
+  <circle cx="82" cy="310" r="3" fill="#64748b"/>
+  <circle cx="188" cy="310" r="3" fill="#64748b"/>
+
+  <!-- Data plane: StatefulSets → storage -->
+  <line x1="270" y1="310" x2="270" y2="338" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="430" y1="310" x2="430" y2="338" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="590" y1="310" x2="590" y2="338" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="750" y1="310" x2="750" y2="338" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+
+  <!-- Storage block (NFS RWX, shared by all 4 StatefulSets in this tag) -->
+  <rect x="40" y="340" width="940" height="100" rx="6" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+  <text x="510" y="362" text-anchor="middle" fill="#0f766e" font-size="12" font-weight="bold">local storage (NFS PV, RWX)</text>
+  <text x="510" y="376" text-anchor="middle" fill="#475569" font-size="9">shared by all 4 protocol StatefulSets in this tag</text>
+  <line x1="510" y1="384" x2="510" y2="432" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="275" y="402" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">mailbox data</text>
+  <text x="275" y="418" text-anchor="middle" fill="#475569" font-size="10">MailboxBackend</text>
+  <text x="275" y="430" text-anchor="middle" fill="#64748b" font-size="9">maildir · dbox</text>
+  <text x="745" y="402" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">index data</text>
+  <text x="745" y="418" text-anchor="middle" fill="#475569" font-size="10">IndexBackend</text>
+  <text x="745" y="430" text-anchor="middle" fill="#64748b" font-size="9">fileindex · sqlite</text>
+</svg>
