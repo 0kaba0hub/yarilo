@@ -184,6 +184,9 @@ type InternalTLSConfig struct {
 type AnvilServiceConfig struct {
 	Listen   string         `koanf:"listen"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
+	// FailOpen controls login-pod behaviour when yarilo-anvil is unreachable.
+	// true = allow the session; false (default) = reject the session.
+	FailOpen bool `koanf:"fail_open"`
 }
 
 // AuthServiceConfig configures the standalone yarilo-auth process.

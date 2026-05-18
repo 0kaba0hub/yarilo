@@ -1,0 +1,299 @@
+package login
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/0kaba0hub/yarilo/internal/anvil"
+)
+
+// startAnvil starts a real yarilo-anvil server and returns its address.
+func startAnvil(t *testing.T, max int) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	srv := anvil.NewServer(max)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+	return addr
+}
+
+// stubDirector starts a minimal director that always returns backendAddr for any LOOKUP.
+func stubDirector(t *testing.T, backendAddr string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleStubDirector(conn, backendAddr)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func handleStubDirector(conn net.Conn, backendAddr string) {
+	defer conn.Close()
+	rd := bufio.NewReader(conn)
+
+	// Send director handshake.
+	fmt.Fprintf(conn, "VERSION\tyarilo-director\t1\t0\n")
+	fmt.Fprintf(conn, "DONE\n")
+
+	// Read client handshake (VERSION + ME + DONE).
+	for {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if strings.TrimRight(line, "\n") == "DONE" {
+			break
+		}
+	}
+
+	// Process commands.
+	for {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimRight(line, "\n")
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "LOOKUP":
+			// LOOKUP\t{id}\t{user}\t{tag}
+			// Response: HOST\t{id}\t{ip}\t{port}
+			id := fields[1]
+			host, port, _ := net.SplitHostPort(backendAddr)
+			fmt.Fprintf(conn, "HOST\t%s\t%s\t%s\n", id, host, port)
+		}
+	}
+}
+
+// stubIMAPBackend starts a minimal IMAP backend that accepts any LOGIN/AUTHENTICATE.
+func stubIMAPBackend(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleStubIMAPBackend(conn)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func handleStubIMAPBackend(conn net.Conn) {
+	defer conn.Close()
+	rd := bufio.NewReader(conn)
+	fmt.Fprintf(conn, "* OK IMAP4rev1 backend ready\r\n")
+	for {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimRight(line, "\r\n")
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		tag := fields[0]
+		cmd := strings.ToUpper(fields[1])
+		switch cmd {
+		case "XCONN":
+			fmt.Fprintf(conn, "* OK xconn accepted\r\n")
+		case "AUTHENTICATE":
+			fmt.Fprintf(conn, "%s OK authenticated\r\n", tag)
+		case "LOGIN":
+			fmt.Fprintf(conn, "%s OK logged in\r\n", tag)
+		case "LOGOUT":
+			fmt.Fprintf(conn, "* BYE\r\n%s OK bye\r\n", tag)
+			return
+		default:
+			fmt.Fprintf(conn, "%s OK\r\n", tag)
+		}
+	}
+}
+
+func buildAnvilLoginServer(t *testing.T, anvilAddr string, maxConns int) (loginAddr string) {
+	t.Helper()
+	backendAddr := stubIMAPBackend(t)
+	dirAddr := stubDirector(t, backendAddr)
+
+	srv := New(Options{
+		Protocol:      ProtocolIMAP,
+		DirectorAddr:  dirAddr,
+		AnvilAddr:     anvilAddr,
+		AnvilFailOpen: false,
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+	return ln.Addr().String()
+}
+
+func TestLogin_Anvil_AllowsSession(t *testing.T) {
+	anvilAddr := startAnvil(t, 5)
+	loginAddr := buildAnvilLoginServer(t, anvilAddr, 5)
+
+	conn, err := net.DialTimeout("tcp", loginAddr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	rd := bufio.NewReader(conn)
+
+	greeting, _ := rd.ReadString('\n')
+	if !strings.HasPrefix(greeting, "* OK") {
+		t.Fatalf("unexpected greeting: %q", greeting)
+	}
+
+	fmt.Fprintf(conn, "A1 LOGIN alice secret\r\n")
+	resp, _ := rd.ReadString('\n')
+	if !strings.HasPrefix(resp, "A1 OK") {
+		t.Fatalf("expected A1 OK, got: %q", resp)
+	}
+}
+
+func TestLogin_Anvil_RejectsWhenLimitReached(t *testing.T) {
+	anvilAddr := startAnvil(t, 1)
+
+	// Pre-fill the limit for alice@127.0.0.1 by dialling anvil directly.
+	ac, err := anvil.Dial(anvilAddr, nil, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ac.Close()
+	if err := ac.Connect("pre", "alice", "127.0.0.1", "imap"); err != nil {
+		t.Fatalf("pre-fill: %v", err)
+	}
+
+	loginAddr := buildAnvilLoginServer(t, anvilAddr, 1)
+
+	conn, err := net.DialTimeout("tcp", loginAddr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	rd := bufio.NewReader(conn)
+
+	greeting, _ := rd.ReadString('\n')
+	if !strings.HasPrefix(greeting, "* OK") {
+		t.Fatalf("unexpected greeting: %q", greeting)
+	}
+
+	fmt.Fprintf(conn, "A1 LOGIN alice secret\r\n")
+	resp, _ := rd.ReadString('\n')
+	// Expect NO [UNAVAILABLE] too many connections
+	if !strings.HasPrefix(resp, "A1 NO") {
+		t.Fatalf("expected A1 NO (too many connections), got: %q", resp)
+	}
+}
+
+func TestLogin_Anvil_FailOpen_WhenUnreachable(t *testing.T) {
+	backendAddr := stubIMAPBackend(t)
+	dirAddr := stubDirector(t, backendAddr)
+
+	srv := New(Options{
+		Protocol:      ProtocolIMAP,
+		DirectorAddr:  dirAddr,
+		AnvilAddr:     "127.0.0.1:1", // unreachable
+		AnvilFailOpen: true,
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	rd := bufio.NewReader(conn)
+
+	greeting, _ := rd.ReadString('\n')
+	if !strings.HasPrefix(greeting, "* OK") {
+		t.Fatalf("unexpected greeting: %q", greeting)
+	}
+
+	fmt.Fprintf(conn, "A1 LOGIN alice secret\r\n")
+	resp, _ := rd.ReadString('\n')
+	// Fail-open: session should proceed despite anvil being unreachable.
+	if !strings.HasPrefix(resp, "A1 OK") {
+		t.Fatalf("expected A1 OK (fail-open), got: %q", resp)
+	}
+}
+
+func TestLogin_Anvil_FailClosed_WhenUnreachable(t *testing.T) {
+	backendAddr := stubIMAPBackend(t)
+	dirAddr := stubDirector(t, backendAddr)
+
+	srv := New(Options{
+		Protocol:      ProtocolIMAP,
+		DirectorAddr:  dirAddr,
+		AnvilAddr:     "127.0.0.1:1", // unreachable
+		AnvilFailOpen: false,
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	rd := bufio.NewReader(conn)
+
+	greeting, _ := rd.ReadString('\n')
+	if !strings.HasPrefix(greeting, "* OK") {
+		t.Fatalf("unexpected greeting: %q", greeting)
+	}
+
+	fmt.Fprintf(conn, "A1 LOGIN alice secret\r\n")
+	resp, _ := rd.ReadString('\n')
+	if !strings.HasPrefix(resp, "A1 NO") {
+		t.Fatalf("expected A1 NO (fail-closed), got: %q", resp)
+	}
+}
