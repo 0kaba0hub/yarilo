@@ -531,11 +531,13 @@ Every log call uses the base logger — never log without connection/session con
 
 ## Known issues and required fixes
 
-### Cross-process file locking — storage corruption risk
+### Cross-process write coordination — storage corruption risk
 
 **Problem:** `internal/storage/mailbox/maildir` and `internal/storage/index/file` use `sync.Mutex`
 for in-process concurrency. `sync.Mutex` does not protect against concurrent access from separate
-pods (`yarilo-imap` and `yarilo-lmtp`) on the shared NFS/CephFS volume.
+processes (`yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`) — they share storage
+but live in distinct address spaces. Affects both standalone (single pod, 4 processes, one PVC)
+and backend (multi-pod StatefulSets, one NFS RWX) deployments.
 
 | File | Risk |
 |:---|:---|
@@ -544,10 +546,20 @@ pods (`yarilo-imap` and `yarilo-lmtp`) on the shared NFS/CephFS volume.
 
 Raw mail delivery (`rename()` into `new/`) is safe — atomic at OS level.
 
-**Required fix:** Replace `sync.Mutex` with `fcntl` advisory exclusive lock (`syscall.Flock`)
-on `yarilo-uidlist` and index files at every write. NFSv4 and CephFS both support POSIX locking.
+**Required fix:** Route every cross-process write through **`yarilo-locks`** — the single locking
+abstraction in `pkg/locks`. One wire protocol (TAB-delimited, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+§yarilo-locks). Two backends behind it:
 
-**Status:** Not yet implemented. Must be done before multi-process mode ships.
+| Deployment | `yarilo-locks` mode | Backend | Transport |
+|:---|:---|:---|:---|
+| **standalone** | `embedded` | in-memory map (per-pod, ephemeral) | Unix socket `/run/yarilo/locks.sock` |
+| **backend (per tag)** | `remote` | Redis (per-tag, replicaCount=2) | mTLS TCP `:9104` |
+
+In-process goroutine concurrency keeps `sync.Mutex` as a fast-path before any `yarilo-locks` call —
+the two-tier scheme avoids RTT for intra-process contention. `fcntl`/`flock` is not used: it has
+no EVENT channel for IDLE notifications, opaque metrics, and shaky NFS semantics.
+
+**Status:** Not yet implemented. Must be done before standalone or backend ship.
 
 ---
 

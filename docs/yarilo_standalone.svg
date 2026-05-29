@@ -9,6 +9,9 @@
     <marker id="ap" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0,9 3.5,0 7" fill="#0f766e"/>
     </marker>
+    <marker id="al" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#7c2d12"/>
+    </marker>
   </defs>
 
   <rect width="1020" height="540" fill="#f8fafc"/>
@@ -48,6 +51,13 @@
   <text x="130" y="315" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-anvil</text>
   <text x="130" y="333" text-anchor="middle" fill="#475569" font-size="10">mTLS :9101</text>
   <text x="130" y="349" text-anchor="middle" fill="#475569" font-size="9">connlimit · CONNECT/DISCONNECT</text>
+
+  <!-- yarilo-locks (embedded, Unix socket) -->
+  <rect x="40" y="384" width="180" height="72" rx="5" fill="#fef2f2" stroke="#7c2d12" stroke-width="2"/>
+  <text x="130" y="407" text-anchor="middle" fill="#7c2d12" font-size="12" font-weight="bold">yarilo-locks</text>
+  <text x="130" y="423" text-anchor="middle" fill="#475569" font-size="10">embedded · in-memory</text>
+  <text x="130" y="437" text-anchor="middle" fill="#475569" font-size="9">/run/yarilo/locks.sock</text>
+  <text x="130" y="450" text-anchor="middle" fill="#475569" font-size="9">X locks · TTL 30s</text>
 
   <!-- Login proxies row -->
   <rect x="240" y="182" width="170" height="72" rx="5" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
@@ -118,6 +128,10 @@
   <line x1="510" y1="394" x2="510" y2="418" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
   <line x1="695" y1="394" x2="695" y2="418" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
   <line x1="880" y1="394" x2="880" y2="418" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+
+  <!-- Sessions ↔ yarilo-locks (Unix socket, write coordination + IDLE EVENT) -->
+  <line x1="240" y1="358" x2="220" y2="420" stroke="#7c2d12" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#al)"/>
+  <text x="232" y="390" text-anchor="end" fill="#7c2d12" font-size="9" font-weight="bold">X locks · EVENT</text>
 
   <!-- Storage block -->
   <rect x="240" y="420" width="725" height="80" rx="6" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>

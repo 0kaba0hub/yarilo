@@ -126,6 +126,7 @@ Yarilo is a single binary that runs in one of three roles (`mode: proxy | direct
 | yarilo-auth | passdb chain, auth cache, SASL dispatch — TCP+mTLS | ✅ v1.0.0 |
 | yarilo-director | consistent hashing, sticky sessions, failover | planned |
 | yarilo-anvil | connection rate limiting + penalty algorithm | planned |
+| yarilo-locks | cross-process write coordination — embedded (standalone) / remote Redis-backed (backend per tag) | planned |
 | yarilo-dict | Redis / SQLite key-value abstraction | planned |
 | yarilo-admin | control socket (kick, reload, stats) | planned |
 | yarilo-stats | per-user / per-domain connection metrics | planned |
