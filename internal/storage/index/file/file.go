@@ -371,10 +371,33 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 			idx.records = append(idx.records[:i], idx.records[i+1:]...)
 			idx.msgCount--
 			delete(idx.recKeys, uid)
+			// QRESYNC (RFC 7162 §3.2): stamp the expunge with the folder's
+			// freshly-bumped modseq so a later VANISHED (EARLIER) query
+			// can decide whether the client has seen this expunge yet.
+			idx.modseq++
+			rec.modseq = idx.modseq
 			return idx.appendLogRecord(txExpunge, rec)
 		}
 		return nil
 	})
+}
+
+// Vanished returns the UIDs of every message that was expunged with a
+// modseq strictly greater than sinceModSeq. Drives the QRESYNC SELECT
+// (UIDVALIDITY ... ModSeq) and UID FETCH (CHANGEDSINCE N VANISHED)
+// responses (RFC 7162 §3.2 / §3.7). When sinceModSeq is 0 every
+// historical expunge is returned — callers should bound the query
+// against UIDVALIDITY upstream.
+func (u *userIndex) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.scanVanishedSince(sinceModSeq)
 }
 
 func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
@@ -770,6 +793,57 @@ func (idx *IndexFile) readRecords(f *os.File) error {
 		}
 	}
 	return nil
+}
+
+// scanVanishedSince walks the on-disk transaction log and returns every UID
+// that was expunged with a modseq strictly greater than sinceModSeq. Used
+// by the QRESYNC (RFC 7162) Vanished helper — the client's last-known
+// modseq decides which expunges it has already observed.
+func (idx *IndexFile) scanVanishedSince(sinceModSeq uint64) ([]uint32, error) {
+	logPath := idx.path + ".log"
+	f, err := os.Open(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(32, io.SeekStart); err != nil {
+		return nil, nil
+	}
+
+	var out []uint32
+	buf4 := make([]byte, 4)
+	for {
+		if _, err := io.ReadFull(f, buf4); err != nil {
+			break
+		}
+		size := binary.LittleEndian.Uint32(buf4)
+		if size < 8 {
+			break
+		}
+		rec := make([]byte, size-4)
+		if _, err := io.ReadFull(f, rec); err != nil {
+			break
+		}
+		txType := binary.LittleEndian.Uint32(rec[:4])
+		if txType != txExpunge {
+			continue
+		}
+		data := rec[4:]
+		if len(data) < 13 {
+			continue
+		}
+		recModSeq := binary.LittleEndian.Uint64(data[5:])
+		if recModSeq <= sinceModSeq {
+			continue
+		}
+		uid := binary.LittleEndian.Uint32(data[0:])
+		out = append(out, uid)
+	}
+	return out, nil
 }
 
 func (idx *IndexFile) replayLog() error {

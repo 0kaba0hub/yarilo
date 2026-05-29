@@ -95,6 +95,7 @@ func New(opts Options) *Server {
 		imaplib.CapSpecialUse:       {},
 		imaplib.CapCreateSpecialUse: {},
 		imaplib.CapBinary:           {},
+		imaplib.CapQResync:          {},
 	}
 
 	s.srv = imapserver.New(&imapserver.Options{
@@ -336,7 +337,7 @@ func remoteIP(c net.Conn) string {
 	return c.RemoteAddr().String()
 }
 
-func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.SelectData, error) {
+func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.SelectData, error) {
 	exists, err := s.box.FolderExists(name)
 	if err != nil {
 		return nil, err
@@ -355,7 +356,7 @@ func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.Select
 	s.folder = f
 
 	msgs, _ := s.idx.GetMessages(f.ID, mailbox.SeqSet{})
-	return &imaplib.SelectData{
+	data := &imaplib.SelectData{
 		Flags: []imaplib.Flag{
 			imaplib.FlagAnswered, imaplib.FlagFlagged,
 			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
@@ -365,10 +366,37 @@ func (s *session) Select(name string, _ *imaplib.SelectOptions) (*imaplib.Select
 			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
 			imaplib.Flag(`\*`),
 		},
-		NumMessages: uint32(len(msgs)),
-		UIDValidity: f.UIDValidity,
-		UIDNext:     imaplib.UID(f.NextUID),
-	}, nil
+		NumMessages:   uint32(len(msgs)),
+		UIDValidity:   f.UIDValidity,
+		UIDNext:       imaplib.UID(f.NextUID),
+		HighestModSeq: f.HighestModSeq,
+	}
+	// QRESYNC SELECT (RFC 7162 §3.2): when the client supplies (UIDVALIDITY
+	// <v> <last-known-modseq> [<known-uids>]) and the UIDVALIDITY matches,
+	// reply with VANISHED (EARLIER) listing UIDs expunged since the client's
+	// modseq. The KnownUIDs filter narrows the response to UIDs the client
+	// actually remembers; an empty set means "tell me everything".
+	if opts != nil && opts.QResync != nil && opts.QResync.UIDValidity == f.UIDValidity {
+		vanishedUIDs, vErr := s.idx.Vanished(f.ID, opts.QResync.ModSeq)
+		if vErr == nil && len(vanishedUIDs) > 0 {
+			var vset imaplib.UIDSet
+			if len(opts.QResync.KnownUIDs) == 0 {
+				for _, uid := range vanishedUIDs {
+					vset.AddNum(imaplib.UID(uid))
+				}
+			} else {
+				for _, uid := range vanishedUIDs {
+					if opts.QResync.KnownUIDs.Contains(imaplib.UID(uid)) {
+						vset.AddNum(imaplib.UID(uid))
+					}
+				}
+			}
+			if len(vset) > 0 {
+				data.Vanished = vset
+			}
+		}
+	}
+	return data, nil
 }
 
 func (s *session) Unselect() error {
@@ -901,7 +929,28 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	if err != nil {
 		return err
 	}
+	// UID FETCH (CHANGEDSINCE N VANISHED) — RFC 7162 §3.2.10. Emit
+	// VANISHED (EARLIER) for UIDs expunged since the supplied modseq.
+	// VANISHED on a sequence-number FETCH is invalid; the patched lib
+	// rejects that at parse time so we do not need to re-check here.
+	if opts.Vanished && opts.ChangedSince > 0 {
+		vanishedUIDs, vErr := s.idx.Vanished(s.folder.ID, opts.ChangedSince)
+		if vErr == nil && len(vanishedUIDs) > 0 {
+			var vset imaplib.UIDSet
+			for _, uid := range vanishedUIDs {
+				vset.AddNum(imaplib.UID(uid))
+			}
+			if writeErr := w.WriteVanished(vset); writeErr != nil {
+				return writeErr
+			}
+		}
+	}
 	for i, m := range msgs {
+		// CHANGEDSINCE filter — skip messages whose modseq has not moved
+		// past the client's last-known value (RFC 4551 §3.3.1).
+		if opts.ChangedSince > 0 && m.ModSeq <= opts.ChangedSince {
+			continue
+		}
 		seqNum := uint32(i + 1)
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue

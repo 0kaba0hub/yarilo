@@ -974,3 +974,66 @@ func TestBinaryCapAdvertised(t *testing.T) {
 		t.Errorf("missing capability: %s", imap.CapBinary)
 	}
 }
+
+// ---- TestQResync (Phase IMAP-E) -------------------------------------------
+
+func TestQResyncCapAdvertised(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	caps, err := c.Capability().Wait()
+	if err != nil {
+		t.Fatalf("CAPABILITY: %v", err)
+	}
+	if _, ok := caps[imap.CapQResync]; !ok {
+		t.Errorf("missing capability: %s", imap.CapQResync)
+	}
+}
+
+func TestSelectQResyncReturnsVanished(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	body := []byte(testMsg)
+	for i := 0; i < 3; i++ {
+		appendWithFlags(t, c, "INBOX", body)
+	}
+
+	selData, err := c.Select("INBOX", nil).Wait()
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	uidValidity := selData.UIDValidity
+	baselineModSeq := selData.HighestModSeq
+
+	// Expunge UID 2 — mark deleted, EXPUNGE bumps the folder modseq and
+	// stamps the vanish event.
+	uids := imap.UIDSet{}
+	uids.AddNum(imap.UID(2))
+	if err := c.Store(uids, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+		t.Fatalf("STORE: %v", err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		t.Fatalf("EXPUNGE: %v", err)
+	}
+
+	// Drop the selection so SELECT QRESYNC enters from a clean state.
+	if err := c.Unselect().Wait(); err != nil {
+		t.Fatalf("UNSELECT: %v", err)
+	}
+
+	resyncSel, err := c.Select("INBOX", &imap.SelectOptions{
+		QResync: &imap.QResyncOptions{
+			UIDValidity: uidValidity,
+			ModSeq:      baselineModSeq,
+		},
+	}).Wait()
+	if err != nil {
+		t.Fatalf("SELECT QRESYNC: %v", err)
+	}
+	if resyncSel.Vanished == nil {
+		t.Fatal("SELECT QRESYNC produced no Vanished set")
+	}
+	if !resyncSel.Vanished.Contains(imap.UID(2)) {
+		t.Errorf("Vanished missing UID 2; got %v", resyncSel.Vanished)
+	}
+}
