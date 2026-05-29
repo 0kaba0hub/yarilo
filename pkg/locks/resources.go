@@ -28,3 +28,8 @@ func DeliverKey(user, folder string) string { return "deliver:" + user + ":" + f
 // Independent of mailbox keys — Sieve updates do not interleave with mail
 // writes.
 func SieveScriptsKey(user string) string { return "sieve:" + user }
+
+// SubscriptionsKey returns the lock key for a user's mailbox-subscription
+// file (LIST-EXTENDED §SELECT SUBSCRIBED / RETURN SUBSCRIBED). Independent
+// of mailbox keys — subscribe is metadata, never racing with mail writes.
+func SubscriptionsKey(user string) string { return "subs:" + user }

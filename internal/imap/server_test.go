@@ -703,3 +703,108 @@ func TestCapabilitiesIncludeIMAP4rev2Required(t *testing.T) {
 		}
 	}
 }
+
+// ---- TestListExtendedAndSubscribe (Phase IMAP-B) ---------------------------
+
+func TestSubscribePersistsAndAffectsListSelectSubscribed(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// Create a couple of folders so the SUBSCRIBE/UNSUBSCRIBE test has
+	// targets beyond the default INBOX.
+	if err := c.Create("Sent", nil).Wait(); err != nil {
+		t.Fatalf("CREATE Sent: %v", err)
+	}
+	if err := c.Create("Drafts", nil).Wait(); err != nil {
+		t.Fatalf("CREATE Drafts: %v", err)
+	}
+
+	// SUBSCRIBE INBOX + Sent. Drafts stays unsubscribed.
+	if err := c.Subscribe("INBOX").Wait(); err != nil {
+		t.Fatalf("SUBSCRIBE INBOX: %v", err)
+	}
+	if err := c.Subscribe("Sent").Wait(); err != nil {
+		t.Fatalf("SUBSCRIBE Sent: %v", err)
+	}
+
+	// LIST with SELECT SUBSCRIBED filter — only the two subscribed folders.
+	mailboxes, err := c.List("", "*", &imap.ListOptions{SelectSubscribed: true}).Collect()
+	if err != nil {
+		t.Fatalf("LIST SUBSCRIBED: %v", err)
+	}
+	gotSubscribed := make(map[string]bool)
+	for _, mb := range mailboxes {
+		gotSubscribed[mb.Mailbox] = true
+	}
+	for _, want := range []string{"INBOX", "Sent"} {
+		if !gotSubscribed[want] {
+			t.Errorf("LIST SUBSCRIBED missing %q; got %v", want, mailboxes)
+		}
+	}
+	if gotSubscribed["Drafts"] {
+		t.Errorf("LIST SUBSCRIBED should not include unsubscribed Drafts")
+	}
+
+	// UNSUBSCRIBE INBOX, verify the filter view shrinks.
+	if err := c.Unsubscribe("INBOX").Wait(); err != nil {
+		t.Fatalf("UNSUBSCRIBE INBOX: %v", err)
+	}
+	mailboxes, err = c.List("", "*", &imap.ListOptions{SelectSubscribed: true}).Collect()
+	if err != nil {
+		t.Fatalf("LIST SUBSCRIBED #2: %v", err)
+	}
+	for _, mb := range mailboxes {
+		if mb.Mailbox == "INBOX" {
+			t.Errorf("INBOX still listed as subscribed after UNSUBSCRIBE")
+		}
+	}
+}
+
+func TestListReturnSubscribedAndChildren(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	if err := c.Create("Archive", nil).Wait(); err != nil {
+		t.Fatalf("CREATE Archive: %v", err)
+	}
+	if err := c.Subscribe("Archive").Wait(); err != nil {
+		t.Fatalf("SUBSCRIBE Archive: %v", err)
+	}
+
+	mailboxes, err := c.List("", "*", &imap.ListOptions{
+		ReturnSubscribed: true,
+		ReturnChildren:   true,
+	}).Collect()
+	if err != nil {
+		t.Fatalf("LIST RETURN SUBSCRIBED CHILDREN: %v", err)
+	}
+
+	var sawArchive, sawSubscribed, sawChildrenAttr bool
+	for _, mb := range mailboxes {
+		if mb.Mailbox != "Archive" {
+			continue
+		}
+		sawArchive = true
+		for _, attr := range mb.Attrs {
+			switch attr {
+			case imap.MailboxAttrSubscribed:
+				sawSubscribed = true
+			case imap.MailboxAttrHasChildren, imap.MailboxAttrHasNoChildren:
+				// RETURN CHILDREN must yield exactly one of these two.
+				// Maildir does not yet expose nested folders in
+				// ListFolders, so HasNoChildren is the value here, but
+				// the test asserts the broader contract.
+				sawChildrenAttr = true
+			}
+		}
+	}
+	if !sawArchive {
+		t.Fatalf("Archive folder not listed; got %v", mailboxes)
+	}
+	if !sawSubscribed {
+		t.Errorf("Archive missing \\Subscribed attribute")
+	}
+	if !sawChildrenAttr {
+		t.Errorf("Archive missing \\HasChildren / \\HasNoChildren attribute")
+	}
+}
