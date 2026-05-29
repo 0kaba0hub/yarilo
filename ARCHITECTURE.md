@@ -391,6 +391,32 @@ Paths configurable via `values.yaml` — never hardcoded.
 
 ---
 
+## Third-party Go library patches
+
+When yarilo needs a feature from `github.com/emersion/go-imap/v2` (or any
+upstream Go library) that has not yet shipped, we maintain a fork at
+`github.com/0kaba0hub/<lib>` with a two-branch layout:
+
+- **upstream-mirror branch** (e.g. `v2`) — verbatim mirror of upstream.
+  Fast-forward only.
+- **`yarilo-patches`** — mirror + cherry-picked downstream commits. yarilo's
+  `go.mod` `replace` directive pins to a specific commit on this branch.
+
+The fork's `YARILO_PATCHES.md` (default branch view) documents the layout,
+tracking workflow, and exit plan. When upstream merges the original PR, we
+drop the `replace` directive and the patches branch.
+
+**Current pins:**
+
+| Library | Reason | Tracking PR |
+|:---|:---|:---|
+| `github.com/emersion/go-imap/v2` | Server-side CONDSTORE + QRESYNC (RFC 7162) for Phase IMAP-E | [emersion/go-imap#756](https://github.com/emersion/go-imap/pull/756) |
+
+`go.mod` keeps the upstream import path so storage-layer code reads
+naturally; only the `replace` line points elsewhere.
+
+---
+
 ## Storage
 
 Maildir requires shared filesystem for `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`:
