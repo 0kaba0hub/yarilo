@@ -885,3 +885,92 @@ func TestSpecialUseCapAdvertised(t *testing.T) {
 		}
 	}
 }
+
+// ---- TestBinaryDecode (Phase IMAP-D) ---------------------------------------
+
+func TestFetchBinarySectionDecodesBase64(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// base64("Hello, BINARY!\r\n") = "SGVsbG8sIEJJTkFSWSENCg=="
+	raw := "From: a@b\r\n" +
+		"To: c@d\r\n" +
+		"Subject: bin\r\n" +
+		"Content-Transfer-Encoding: base64\r\n" +
+		"\r\n" +
+		"SGVsbG8sIEJJTkFSWSENCg==\r\n"
+	appendWithFlags(t, c, "INBOX", []byte(raw))
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	seq := imap.SeqSet{}
+	seq.AddNum(1)
+	fcmd := c.Fetch(seq, &imap.FetchOptions{
+		BinarySection: []*imap.FetchItemBinarySection{{}},
+	})
+	msgs, err := fcmd.Collect()
+	if err != nil {
+		t.Fatalf("FETCH BINARY[]: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FETCH count: got %d, want 1", len(msgs))
+	}
+	if len(msgs[0].BinarySection) != 1 {
+		t.Fatalf("BinarySection count: got %d, want 1", len(msgs[0].BinarySection))
+	}
+	got := msgs[0].BinarySection[0].Bytes
+	want := "Hello, BINARY!\r\n"
+	if string(got) != want {
+		t.Errorf("BINARY[] body: got %q, want %q", got, want)
+	}
+}
+
+func TestFetchBinarySizeMatchesDecoded(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	raw := "From: a@b\r\n" +
+		"Content-Transfer-Encoding: quoted-printable\r\n" +
+		"\r\n" +
+		"hello=20world\r\n"
+	appendWithFlags(t, c, "INBOX", []byte(raw))
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	seq := imap.SeqSet{}
+	seq.AddNum(1)
+	msgs, err := c.Fetch(seq, &imap.FetchOptions{
+		BinarySectionSize: []*imap.FetchItemBinarySectionSize{{}},
+	}).Collect()
+	if err != nil {
+		t.Fatalf("FETCH BINARY.SIZE[]: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FETCH count: got %d, want 1", len(msgs))
+	}
+	// "hello world\r\n" — 13 bytes after quoted-printable decode.
+	wantSize := uint32(len("hello world\r\n"))
+	if len(msgs[0].BinarySectionSize) != 1 {
+		t.Fatalf("BinarySectionSize count: got %d, want 1", len(msgs[0].BinarySectionSize))
+	}
+	gotSize := msgs[0].BinarySectionSize[0].Size
+	if gotSize != wantSize {
+		t.Errorf("BINARY.SIZE[]: got %d, want %d", gotSize, wantSize)
+	}
+}
+
+func TestBinaryCapAdvertised(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	caps, err := c.Capability().Wait()
+	if err != nil {
+		t.Fatalf("CAPABILITY: %v", err)
+	}
+	if _, ok := caps[imap.CapBinary]; !ok {
+		t.Errorf("missing capability: %s", imap.CapBinary)
+	}
+}

@@ -94,6 +94,7 @@ func New(opts Options) *Server {
 		imaplib.CapListStatus:       {},
 		imaplib.CapSpecialUse:       {},
 		imaplib.CapCreateSpecialUse: {},
+		imaplib.CapBinary:           {},
 	}
 
 	s.srv = imapserver.New(&imapserver.Options{
@@ -939,6 +940,41 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			bw := mw.WriteBodySection(section, int64(len(body)))
 			io.Copy(bw, bytes.NewReader(body)) //nolint:errcheck
 			bw.Close()
+		}
+		// BINARY[] (RFC 3516) — decode Content-Transfer-Encoding (base64,
+		// quoted-printable) so the client gets the raw bytes. Without a
+		// part spec we decode message-level CTE; multipart-walk (BINARY[1])
+		// returns the section unchanged when MIME parsing is non-trivial.
+		for _, section := range opts.BinarySection {
+			if m.Filename == "" {
+				break
+			}
+			rc, ferr := s.box.Fetch(s.folder.Name, m.Filename)
+			if ferr != nil {
+				break
+			}
+			body, _ := io.ReadAll(rc)
+			rc.Close()
+			decoded := decodeBinarySection(body, section.Part)
+			s.statsFetchBody++
+			s.statsFetchBodyB += int64(len(decoded))
+			bw := mw.WriteBinarySection(section, int64(len(decoded)))
+			io.Copy(bw, bytes.NewReader(decoded)) //nolint:errcheck
+			bw.Close()
+		}
+		// BINARY.SIZE[] — same decode, return size only.
+		for _, section := range opts.BinarySectionSize {
+			if m.Filename == "" {
+				break
+			}
+			rc, ferr := s.box.Fetch(s.folder.Name, m.Filename)
+			if ferr != nil {
+				break
+			}
+			body, _ := io.ReadAll(rc)
+			rc.Close()
+			decoded := decodeBinarySection(body, section.Part)
+			mw.WriteBinarySectionSize(section, uint32(len(decoded)))
 		}
 		mw.Close() //nolint:errcheck
 	}
