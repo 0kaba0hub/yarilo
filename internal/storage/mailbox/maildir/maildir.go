@@ -103,9 +103,17 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 	if u.b.locker == nil {
 		return fn()
 	}
+	key := locks.MailboxKey(u.username, folder)
+	// Re-entrancy: if our Locker already holds this resource (an outer
+	// scope took it for a batch — e.g. POP3 QUIT / multi-message IMAP
+	// EXPUNGE), skip the per-call Acquire to avoid the same-owner BUSY
+	// loop that yarilo-locks would otherwise produce.
+	if u.b.locker.HoldsResource(key) {
+		return fn()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	lk, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, folder), u.owner, 30*time.Second)
+	lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("maildir/lock %s: %w", folder, err)
 	}
@@ -161,21 +169,27 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 	if a > b {
 		a, b = b, a
 	}
+	keyA := locks.MailboxKey(u.username, a)
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	lkA, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, a), u.owner, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("maildir/lock %s: %w", a, err)
+	if !u.b.locker.HoldsResource(keyA) {
+		lkA, err := locks.Acquire(ctx, u.b.locker, keyA, u.owner, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("maildir/lock %s: %w", a, err)
+		}
+		defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
 	}
-	defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
 	if a == b {
 		return fn()
 	}
-	lkB, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, b), u.owner, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("maildir/lock %s: %w", b, err)
+	keyB := locks.MailboxKey(u.username, b)
+	if !u.b.locker.HoldsResource(keyB) {
+		lkB, err := locks.Acquire(ctx, u.b.locker, keyB, u.owner, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("maildir/lock %s: %w", b, err)
+		}
+		defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
 	}
-	defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
 	return fn()
 }
 

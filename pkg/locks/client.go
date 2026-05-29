@@ -25,6 +25,11 @@ type Client struct {
 	conn   net.Conn
 	reader *reader
 
+	// holdsMu guards the holds map. Separate from mu so HoldsResource is
+	// safe to call from goroutines that may be inside a roundtrip on mu.
+	holdsMu sync.RWMutex
+	holds   map[string]string // resource → lockID
+
 	closeOnce sync.Once
 	closed    chan struct{}
 }
@@ -71,6 +76,7 @@ func NewClient(ctx context.Context, dial Dialer) (*Client, error) {
 		dial:   dial,
 		conn:   conn,
 		reader: newReader(conn),
+		holds:  make(map[string]string),
 		closed: make(chan struct{}),
 	}
 	if err := c.handshake(); err != nil {
@@ -186,6 +192,9 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 		if len(resp) != 2 {
 			return Lock{}, fmt.Errorf("locks/client: malformed OK response: %w", ErrProtocol)
 		}
+		c.holdsMu.Lock()
+		c.holds[resource] = resp[1]
+		c.holdsMu.Unlock()
 		return Lock{ID: resp[1], Resource: resource, Owner: owner, ExpiresAt: expires}, nil
 	case respBusy:
 		current := ""
@@ -205,6 +214,7 @@ func (c *Client) Unlock(ctx context.Context, lockID string) error {
 	if err != nil {
 		return err
 	}
+	c.dropHoldByID(lockID)
 	if len(resp) == 0 {
 		return fmt.Errorf("locks/client: empty unlock response: %w", ErrProtocol)
 	}
@@ -217,6 +227,29 @@ func (c *Client) Unlock(ctx context.Context, lockID string) error {
 		return fmt.Errorf("locks/client: server error: %s", strings.Join(resp[1:], " "))
 	}
 	return fmt.Errorf("locks/client: unexpected response %v: %w", resp, ErrProtocol)
+}
+
+// HoldsResource implements Locker. Cheap RLock — safe to call from inside
+// any roundtrip without risk of recursion.
+func (c *Client) HoldsResource(resource string) bool {
+	c.holdsMu.RLock()
+	_, ok := c.holds[resource]
+	c.holdsMu.RUnlock()
+	return ok
+}
+
+// dropHoldByID removes whichever resource→ID entry matches the supplied
+// lockID. Called from Unlock; no-op if the ID was not tracked (e.g. NOT_FOUND
+// on a stale ID — the holds map was already cleaned).
+func (c *Client) dropHoldByID(lockID string) {
+	c.holdsMu.Lock()
+	defer c.holdsMu.Unlock()
+	for resource, id := range c.holds {
+		if id == lockID {
+			delete(c.holds, resource)
+			return
+		}
+	}
 }
 
 // Renew implements Locker.
