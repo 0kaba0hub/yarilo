@@ -59,68 +59,125 @@ Anvil об'єднує conn-state (з директора) + session-state (з б�
 
 ## yarilo-locks — design
 
-**Призначення:** координація запису в mailbox/index файли між 4 session-процесами в backend pod-і
-(плюс координація між replicas в межах того ж tag-у — на час failover).
+**Purpose:** coordinate writes to mailbox and index files across the four session processes
+(`yarilo-imap` / `yarilo-pop3` / `yarilo-submission` / `yarilo-lmtp`) — uniformly across every
+deployment shape.
 
-**Чому потрібен:** 4 окремі процеси (`yarilo-imap` / `yarilo-pop3` / `yarilo-submission` / `yarilo-lmtp`) живуть в одному pod-і, кожен зі своїм адресним простором. In-process `sync.Mutex` між ними не працює — це різні процеси.
+**Why needed:** the four binaries live in distinct address spaces. In-process `sync.Mutex` does
+not cross process boundaries. In backend deployments there is the additional dimension of
+coordination between StatefulSet replicas within the same tag (notably during failover).
+
+### Deployment modes — one abstraction, two backends
+
+A single `pkg/locks` API and a single wire protocol, with two implementations behind it.
+Standalone stays self-contained (no Redis dependency); backend gains HA.
+
+| Mode | Standalone | Backend (per tag) |
+|:---|:---|:---|
+| Process | `yarilo-locks --embedded` in the same pod | `Deployment yarilo-locks-<tag>` × 2 |
+| State backend | in-memory map (ephemeral) | Redis (per-tag or shared) |
+| Transport | Unix socket `/run/yarilo/locks.sock` | mTLS TCP `:9104` |
+| HA | none — pod crash restarts the whole stack | 2 replicas behind a ClusterIP Service |
+| RTT (typical) | ~100–300 µs | ~1–2 ms |
+| Wire protocol | identical | identical |
+
+**Embedded mode rationale (standalone):**
+- Self-contained promise — no Redis dependency, no extra deployment, no mTLS certificate plumbing.
+- Lock state lives in the RAM of one process. On crash, every lock is lost; that is acceptable
+  in standalone because all session processes restart with the pod and in-flight operations
+  either retry or fail cleanly.
+- Same wire protocol → same call-site code, same integration tests, same metrics and logs.
+
+**Two-tier locking convention:** `sync.Mutex` inside a process is the fast-path for
+goroutine-level contention (no RTT). `yarilo-locks` is engaged only when a cross-process barrier
+is required (any write to a shared file).
+
+### Configuration
+
+```yaml
+# standalone
+locks:
+  mode: embedded
+  socket: /run/yarilo/locks.sock
+
+# backend
+locks:
+  mode: remote
+  endpoints: ["yarilo-locks.tag-a.svc:9104"]
+  mtls:
+    cert: /etc/yarilo/tls/tls.crt
+    key:  /etc/yarilo/tls/tls.key
+    ca:   /etc/yarilo/tls/ca.crt
+```
 
 ### Lock model
 
-- **Тільки X (exclusive) замки** для запису
-- **Читання — без замків** (storage layer забезпечує консистентний snapshot)
-- TTL-based (auto-release при crash клієнта, типово 30с з renew кожні 10с)
-- Гранулярність: per-mailbox (`mbox:<user>:<папка>`)
+- **Exclusive (X) locks only** for writes.
+- **Reads take no lock** — the storage layer provides a consistent snapshot.
+- TTL-based (auto-release on client crash, typically 30 s with renew every 10 s).
+- Granularity: per-mailbox (`mbox:<user>:<folder>`).
 
-| Операція | Lock |
+| Operation | Lock |
 |:---|:---|
-| IMAP SELECT / FETCH / SEARCH / IDLE | без замка |
-| LIST / LSUB | без замка |
-| IMAP APPEND / EXPUNGE / STORE | X на mailbox |
-| LMTP delivery | X на mailbox |
-| Rename / Delete mailbox | X на mailbox |
-| Sieve script update | X на user-scripts |
+| IMAP SELECT / FETCH / SEARCH / IDLE | none |
+| LIST / LSUB | none |
+| IMAP APPEND / EXPUNGE / STORE | X on mailbox |
+| LMTP delivery | X on mailbox |
+| Rename / Delete mailbox | X on mailbox |
+| Sieve script update | X on user-scripts |
 
-### Wire protocol (TAB-delimited TCP via mTLS, port :9104)
+### Wire protocol — identical across both modes
+
+TAB-delimited, LF-terminated. In remote mode the transport is TCP over mTLS on port `:9104`.
+In embedded mode the identical byte stream runs over the Unix socket `/run/yarilo/locks.sock`
+(no TLS).
 
 ```
 > VERSION\t1\n
 < VERSION\t1\tOK\n
 
-> LOCK\t<ресурс>\t<власник>\t<ttl_ms>\n
-< OK\t<id_замка>\n        # отримав
-< BUSY\t<поточний_власник>\n  # зайнятий
+> LOCK\t<resource>\t<owner>\t<ttl_ms>\n
+< OK\t<lock_id>\n           # acquired
+< BUSY\t<current_owner>\n   # held by someone else
 
-> UNLOCK\t<id_замка>\n
+> UNLOCK\t<lock_id>\n
 < OK\n | NOT_FOUND\n
 
-> RENEW\t<id_замка>\t<новий_ttl>\n
+> RENEW\t<lock_id>\t<new_ttl>\n
 < OK\n | EXPIRED\n
 
-> EVENT\t<resource>\t<event_type>\t<payload>\n  # опціональний emit для зовнішніх consumer-ів
+> EVENT\t<resource>\t<event_type>\t<payload>\n  # optional emit for external consumers
 ```
 
-### Що залишається в session-процесах
+### What stays inside the session processes
 
-- Запис mail data (dbox segments / maildir files)
-- Запис index updates (під X замком на mailbox)
-- UID assignment (під X замком — атомарне читання-збільшення-запис NEXTUID)
-- IDLE notifications publication (через yarilo-locks EVENT channel)
+- Writing raw mail data (dbox segments, maildir files).
+- Writing index updates (under the X lock on the mailbox).
+- UID assignment (under the X lock — atomic read-increment-write of NEXTUID).
+- IDLE notifications published over the `yarilo-locks` EVENT channel.
 
 ### Deadlock prevention
 
-Конвенція в коді: завжди беремо замки в порядку `idx:<user>` → `mbox:<user>:<папка>` → `deliver:<user>:<папка>`.
-Якщо щось зависло — TTL спрацьовує і lock звільняється.
+Code convention: always acquire locks in the order
+`idx:<user>` → `mbox:<user>:<folder>` → `deliver:<user>:<folder>`.
+If anything hangs, the TTL releases the lock automatically.
 
-### Storage backend
+### Storage backend (remote mode only)
 
-Redis (per-backend-deployment, або в межах того ж namespace). Key: `lock:<ресурс>`, Value: `<власник>|<acquired_at>`, TTL: 30с.
-Атомарне взяття через Lua `SET ... NX EX`.
+Redis (per backend deployment, or in the same namespace). Key: `lock:<resource>`,
+Value: `<owner>|<acquired_at>`, TTL: 30 s. Atomic acquisition via Lua `SET ... NX EX`.
 
-### HA
+Embedded mode keeps the same key/value shape in a local `map[string]lockState` with a
+background TTL sweeper — no external dependencies.
 
-- 2 replicas `yarilo-locks` per backend deployment, за ClusterIP Service
-- Stateless (state в Redis)
-- Local Redis OR shared with other components (anvil тощо)
+### HA (remote mode only)
+
+- 2 replicas of `yarilo-locks` per backend deployment, behind a ClusterIP Service.
+- Stateless (state in Redis).
+- Local Redis, or shared with other components (anvil, etc.).
+
+Embedded mode has no HA — state is ephemeral; on pod crash every lock is lost together with
+every session process in the same pod, which is acceptable for standalone.
 
 ---
 

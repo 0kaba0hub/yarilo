@@ -38,7 +38,7 @@ docker/          — Dockerfile
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — топологія deployment, sizing (per pod, per tag), HA strategy, sharding через tags, обґрунтування рішень
 - **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login-proxies, 3-pod director StatefulSet з peer-sync, monitor sidecars, ring-routing до backend tags
 - **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): 4 окремі StatefulSet-и на протокол (imap/pop3/submission/lmtp) для незалежного scaling, yarilo-locks для cross-pod coordination, shared NFS PV (RWX)
-- **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: повний стек (login + sessions + auth + anvil + storage) для self-contained інсталяцій без director-а
+- **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: повний стек (login + sessions + auth + anvil + `yarilo-locks` embedded + storage) для self-contained інсталяцій без director-а
 
 **Правила використання:**
 1. Будь-яка зміна в infrastructure approach (нові поди, зміна scaling-моделі, нові services, зміна координації) **починається з оновлення цих схем + DEPLOYMENT.md**, а не з коду.
@@ -48,7 +48,7 @@ docker/          — Dockerfile
 **Ключові архітектурні рішення зафіксовані в схемах:**
 - 4 окремих StatefulSet-и на протокол у backend deployment — для independent scaling per protocol
 - `yarilo-auth` + `yarilo-anvil` — shared services (Deployments × 2), один deployment на всю інсталяцію
-- `yarilo-locks` — per backend tag (Deployment × 2), не shared
+- `yarilo-locks` — single abstraction for cross-process write coordination. Two modes behind one wire protocol: **embedded** (in-memory, Unix socket) in standalone; **remote** (Redis-backed, mTLS TCP `:9104`, Deployment × 2 per tag) in backend. In-process goroutine concurrency stays on `sync.Mutex` as a two-tier fast-path.
 - Один NFS PV (RWX) на tag — shared всіма 4 StatefulSet-ами в межах tag-у
 - Director — StatefulSet × 3 з peer-sync, 4 окремі ring-и (по одному на протокол)
 - Sticky routing per-protocol, cross-protocol coordination через `yarilo-locks`
@@ -85,6 +85,10 @@ Key rules derived from ARCHITECTURE.md:
 - **Internal protocols** (director, auth, anvil, ipc) are TAB-delimited, LF-terminated,
   with version handshake. See INTERNALS.md for exact wire format.
 - **Each process writes only to its own resources.** No cross-process writes to shared state.
+- **Cross-process write coordination always goes through `yarilo-locks`.** Single `pkg/locks` API,
+  single TAB-delimited wire protocol. Embedded mode (Unix socket, in-memory) in standalone, remote
+  mode (mTLS TCP, Redis) in backend per tag. Never use `fcntl`/`flock`, never bypass with raw `sync.Mutex`
+  across process boundaries. `sync.Mutex` stays only as in-process fast-path before any `yarilo-locks` call.
 
 ---
 
