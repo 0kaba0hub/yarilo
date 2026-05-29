@@ -163,6 +163,28 @@ components:
         cpu: 200m
         memory: 128Mi
 
+  ## yarilo-locks — cross-process write coordinator.
+  ## Every session pod dials this Service to take X locks on
+  ## mbox:<user>:<folder> before mutating maildir / index files.
+  ## State lives in Redis (see top-level redis: section).
+  ## Default 2 replicas for HA — set replicas: 1 for single-node dev.
+  locks:
+    enabled: true
+    replicas: 2
+    listen: ":9104"
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
   ## IMAP backend — handles sessions proxied from director.
   ## Director proxies 993→imap:993, 143→imap:143.
   imap:
@@ -524,6 +546,42 @@ general:
     trustedNets:
       - "127.0.0.1/32"
       - "10.0.0.0/8"
+
+## -------------------------------------------------------------------
+## Redis — state backend for yarilo-locks (and future yarilo-anvil).
+## -------------------------------------------------------------------
+## Bundled (default): a StatefulSet runs in the release, single-replica
+## for single-node clusters. For prod HA either bump replicas + run
+## Sentinel/Cluster externally and point at it via externalUrl.
+##
+## bundled: false disables the StatefulSet + Service templates;
+## externalUrl is then required.
+redis:
+  bundled: true
+  replicas: 1
+  ## image — pulled from the public Redis library on Docker Hub by default.
+  image:
+    repository: redis
+    tag: "7.4-alpine"
+    pullPolicy: IfNotPresent
+  ## persistent volume claim for AOF + dump; required for restart safety.
+  persistence:
+    size: 1Gi
+  storageClass: ""
+
+  ## External Redis (used when bundled: false). Standard go-redis URL.
+  ## Examples:
+  ##   redis://my-redis.prod.svc:6379/0
+  ##   rediss://master.cache.amazonaws.com:6379/0
+  externalUrl: ""
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
 ## -------------------------------------------------------------------
 ## Telemetry (:8080 per component pod)

@@ -191,6 +191,27 @@ data:
         session_grace_period: 30
         kill_timeout: 5
 
+    {{- if .Values.components.locks.enabled }}
+    ## yarilo-locks pod consumes this section. Sessions consume locks_client below.
+    locks_service:
+      mode: remote
+      listen: {{ .Values.components.locks.listen | quote }}
+      {{- if .Values.redis.bundled }}
+      redis: {{ printf "redis://%s-redis.%s.svc:6379/0" (include "yarilo.fullname" .) .Release.Namespace | quote }}
+      {{- else }}
+      redis: {{ .Values.redis.externalUrl | quote }}
+      {{- end }}
+      shutdown:
+        session_grace_period: 30
+        kill_timeout: 5
+
+    ## Every session binary (yarilo-imap / pop3 / submission / lmtp) dials this.
+    locks_client:
+      mode: remote
+      endpoints:
+        - {{ printf "%s-locks.%s.svc:9104" (include "yarilo.fullname" .) .Release.Namespace | quote }}
+    {{- end }}
+
     director_service:
       listen: {{ printf ":%d" (int .Values.components.director.directorPort) | quote }}
       shutdown:
