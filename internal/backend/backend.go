@@ -554,11 +554,9 @@ func (a chainAuth) AuthPlain(username, password string) error {
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
 	switch strings.ToLower(cfg.Mailbox) {
 	case "dbox":
-		// dbox not yet wired through pkg/locks — landing in a follow-up phase.
-		return dbox.New()
+		return dbox.New(dbox.WithLocker(locker))
 	case "mdbox":
-		// mdbox not yet wired through pkg/locks — landing in a follow-up phase.
-		return mdbox.New()
+		return mdbox.New(mdbox.WithLocker(locker))
 	default:
 		return maildir.New(maildir.WithLocker(locker))
 	}
