@@ -3,6 +3,7 @@ package pop3
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/tls"
 	"encoding/base64"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/xclient"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -715,6 +717,45 @@ func (s *session) cmdQuit() {
 }
 
 func (s *session) expungeDeleted() int {
+	if s.srv.opts.Locker != nil && s.userInfo != nil {
+		var errCount int
+		key := locks.MailboxKey(s.userInfo.Username, "INBOX")
+		owner := fmt.Sprintf("yarilo-pop3/%d/%s", os.Getpid(), s.userInfo.Username)
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+		lk, err := locks.Acquire(ctx, s.srv.opts.Locker, key, owner, 30*time.Second)
+		if err != nil {
+			slog.Error("pop3: outer lock failed; falling back to per-message", "err", err)
+			return s.expungeDeletedPerMessage()
+		}
+		defer func() { _ = s.srv.opts.Locker.Unlock(ctx, lk.ID) }()
+		// Inside this scope the storage backends' withMailboxLock will see
+		// HoldsResource and skip re-acquiring — the whole batch runs under
+		// one X lock from cross-process observers' POV.
+		for i, m := range s.msgs {
+			if !s.deleted[i] {
+				continue
+			}
+			if rerr := s.box.Remove("INBOX", m.Filename); rerr != nil {
+				slog.Error("pop3: remove", "uid", m.UID, "err", rerr)
+				errCount++
+				continue
+			}
+			s.idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
+			// Best-effort EXPUNGED EVENT so IMAP IDLE on sibling pods wakes
+			// up. Reuses the same Locker connection that holds the outer
+			// lock — Emit is independent of the active Lock.
+			_ = s.srv.opts.Locker.Emit(ctx, key, locks.EventExpunged, strconv.FormatUint(uint64(m.UID), 10))
+		}
+		return errCount
+	}
+	return s.expungeDeletedPerMessage()
+}
+
+// expungeDeletedPerMessage is the legacy path used when no Locker is wired
+// (single-process dev, tests). Each storage call takes its own X lock — N+M
+// lock cycles per QUIT but per-message atomicity is preserved.
+func (s *session) expungeDeletedPerMessage() int {
 	var errCount int
 	for i, m := range s.msgs {
 		if !s.deleted[i] {

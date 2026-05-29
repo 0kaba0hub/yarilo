@@ -67,6 +67,14 @@ type Locker interface {
 	// IMAP APPEND/EXPUNGE) to notify IDLE subscribers.
 	Emit(ctx context.Context, resource string, t EventType, payload string) error
 
+	// HoldsResource reports whether this client currently holds an active
+	// lock on resource. Storage backends consult it to skip re-acquiring
+	// a lock they already hold via an outer scope — without this, a batch
+	// operation (POP3 QUIT, IMAP-side multi-message Expunge) that takes
+	// one outer X lock and then calls per-message storage methods would
+	// deadlock on its own owner (yarilo-locks is non-reentrant by design).
+	HoldsResource(resource string) bool
+
 	// Close terminates the underlying transport.
 	Close() error
 }

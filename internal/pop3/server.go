@@ -15,6 +15,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -44,6 +45,14 @@ type Options struct {
 	SaveUIDL       bool               // pop3_save_uidl: persist UIDLs to index for stability across rebuilds
 	LockSession    bool               // pop3_lock_session: dotlock file to prevent IMAP+POP3 conflicts
 	ConnLimit      *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
+
+	// Locker is the cross-process write coordinator. When non-nil, the
+	// QUIT-time hard-delete batch runs under a single X lock on
+	// mbox:<user>:INBOX so concurrent IMAP/LMTP writers observe an
+	// atomic before-or-after view across the whole expunge. Nil falls
+	// back to per-message locking via the storage backends (correct but
+	// not batch-atomic).
+	Locker locks.Locker
 }
 
 // Server is the yarilo POP3 server.

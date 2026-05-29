@@ -163,6 +163,7 @@ func New(cfg *config.Config) (*Server, error) {
 			SaveUIDL:           p.SaveUIDL,
 			LockSession:        p.LockSession,
 			ConnLimit:          connLimiter,
+			Locker:             locker,
 		})
 	}
 
