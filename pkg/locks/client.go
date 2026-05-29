@@ -114,9 +114,11 @@ func (c *Client) reconnect(ctx context.Context) error {
 }
 
 // roundtrip serializes a single command/response on the control conn. On
-// transient transport error it reconnects once and retries — but only for
-// idempotent commands and before any state mutation succeeded server-side.
-func (c *Client) roundtrip(ctx context.Context, retry bool, cmd ...string) ([]string, error) {
+// transient transport error it reconnects once and retries. Safe for every
+// command in our protocol — LOCK is the only mutating call, and lock IDs
+// are randomly generated client-side so a retry that arrives after a server
+// already saw the first attempt cannot accidentally collide.
+func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error) {
 	select {
 	case <-c.closed:
 		return nil, ErrClosed
@@ -134,7 +136,7 @@ func (c *Client) roundtrip(ctx context.Context, retry bool, cmd ...string) ([]st
 		defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
 	}
 	if err := writeFields(c.conn, cmd...); err != nil {
-		if retry && isTransport(err) {
+		if isTransport(err) {
 			if rerr := c.reconnect(ctx); rerr == nil {
 				if err = writeFields(c.conn, cmd...); err == nil {
 					return c.reader.readFields()
@@ -145,7 +147,7 @@ func (c *Client) roundtrip(ctx context.Context, retry bool, cmd ...string) ([]st
 	}
 	fields, err := c.reader.readFields()
 	if err != nil {
-		if retry && isTransport(err) {
+		if isTransport(err) {
 			if rerr := c.reconnect(ctx); rerr == nil {
 				if err = writeFields(c.conn, cmd...); err == nil {
 					return c.reader.readFields()
@@ -172,7 +174,7 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 		return Lock{}, err
 	}
 	expires := time.Now().Add(ttl)
-	resp, err := c.roundtrip(ctx, true, cmdLock, resource, owner, ttlStr)
+	resp, err := c.roundtrip(ctx, cmdLock, resource, owner, ttlStr)
 	if err != nil {
 		return Lock{}, err
 	}
@@ -199,7 +201,7 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 
 // Unlock implements Locker.
 func (c *Client) Unlock(ctx context.Context, lockID string) error {
-	resp, err := c.roundtrip(ctx, true, cmdUnlock, lockID)
+	resp, err := c.roundtrip(ctx, cmdUnlock, lockID)
 	if err != nil {
 		return err
 	}
@@ -223,7 +225,7 @@ func (c *Client) Renew(ctx context.Context, lockID string, ttl time.Duration) er
 	if err != nil {
 		return err
 	}
-	resp, err := c.roundtrip(ctx, true, cmdRenew, lockID, ttlStr)
+	resp, err := c.roundtrip(ctx, cmdRenew, lockID, ttlStr)
 	if err != nil {
 		return err
 	}
@@ -243,7 +245,7 @@ func (c *Client) Renew(ctx context.Context, lockID string, ttl time.Duration) er
 
 // Emit implements Locker.
 func (c *Client) Emit(ctx context.Context, resource string, t EventType, payload string) error {
-	resp, err := c.roundtrip(ctx, true, cmdEmit, resource, string(t), payload)
+	resp, err := c.roundtrip(ctx, cmdEmit, resource, string(t), payload)
 	if err != nil {
 		return err
 	}

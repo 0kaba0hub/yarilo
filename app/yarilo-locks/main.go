@@ -72,9 +72,6 @@ func main() {
 	defer cancel()
 
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(
-		promhttp.Handler().(prometheus.Collector),
-	)
 	metrics := locks.NewMetrics(reg, lcfg.Mode)
 
 	backend, backendReady, err := buildBackend(ctx, lcfg)

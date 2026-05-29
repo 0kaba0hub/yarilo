@@ -52,16 +52,9 @@ func NewRedisBackend(rdb redis.UniversalClient, opts ...RedisOption) *RedisBacke
 // lockValue is the stored value: "<resource>|<owner>". Used to enforce
 // owner-checked release/renew (an owner cannot release another owner's lock
 // that happened to take the same ID — even though IDs are random 16-byte,
-// this defends against ID forgery in a multi-tenant deployment).
+// this defends against ID forgery in a multi-tenant deployment). The reverse
+// split is performed server-side in the Lua scripts (string.find on '|').
 func lockValue(resource, owner string) string { return resource + "|" + owner }
-
-func splitValue(v string) (resource, owner string, ok bool) {
-	i := strings.IndexByte(v, '|')
-	if i < 0 {
-		return "", "", false
-	}
-	return v[:i], v[i+1:], true
-}
 
 // resKey for the secondary index "resource → lockID" — ensures one lock per
 // resource at a time. Stored as a sibling key with the same TTL.
