@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -78,11 +79,13 @@ func New(opts Options) *Server {
 		// SASL-IR) — declaring them is enough; go-imap/v2 handles the
 		// protocol mechanics. The rest (ESEARCH, SEARCHRES, STATUS=SIZE)
 		// require semantic implementation in Search/Status below.
-		imaplib.CapESearch:    {},
-		imaplib.CapSearchRes:  {},
-		imaplib.CapEnable:     {},
-		imaplib.CapSASLIR:     {},
-		imaplib.CapStatusSize: {},
+		imaplib.CapESearch:      {},
+		imaplib.CapSearchRes:    {},
+		imaplib.CapEnable:       {},
+		imaplib.CapSASLIR:       {},
+		imaplib.CapStatusSize:   {},
+		imaplib.CapListExtended: {},
+		imaplib.CapListStatus:   {},
 	}
 
 	s.srv = imapserver.New(&imapserver.Options{
@@ -185,6 +188,10 @@ type session struct {
 	// with RETURN SAVE (RFC 5182). Subsequent commands that reference $ get
 	// this set substituted in via go-imap/v2's IsSearchRes detection.
 	savedSearchUIDs imaplib.UIDSet
+
+	// subs persists the SUBSCRIBE/UNSUBSCRIBE state (RFC 9051 + RFC 5258).
+	// Constructed lazily after authentication.
+	subs *subscriptionStore
 
 	statsDeleted    int
 	statsExpunged   int
@@ -297,6 +304,12 @@ func (s *session) Login(username, password string) error {
 	s.userInfo = userInfo
 	s.box = box
 	s.idx = s.srv.opts.Index.OpenUser(userInfo)
+	s.subs = newSubscriptionStore(
+		userInfo.Home,
+		userInfo.Username,
+		fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), userInfo.Username),
+		s.srv.opts.Locker,
+	)
 	return nil
 }
 
@@ -424,10 +437,27 @@ func (s *session) renameInbox(dest string) error {
 	return nil
 }
 
-func (s *session) Subscribe(_ string) error   { return nil }
-func (s *session) Unsubscribe(_ string) error { return nil }
+func (s *session) Subscribe(name string) error {
+	if s.subs == nil {
+		return nil
+	}
+	if err := s.subs.Add(name); err != nil {
+		return fmt.Errorf("imap: subscribe %q: %w", name, err)
+	}
+	return nil
+}
 
-func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, _ *imaplib.ListOptions) error {
+func (s *session) Unsubscribe(name string) error {
+	if s.subs == nil {
+		return nil
+	}
+	if err := s.subs.Remove(name); err != nil {
+		return fmt.Errorf("imap: unsubscribe %q: %w", name, err)
+	}
+	return nil
+}
+
+func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) error {
 	if s.srv.opts.ClientWorkarounds&workaroundTBExtraMailboxSep != 0 {
 		ref = strings.TrimPrefix(ref, "/")
 		for i, p := range patterns {
@@ -438,17 +468,74 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	if err != nil {
 		return err
 	}
+
+	// Snapshot subscriptions once per LIST — every folder's ReturnSubscribed
+	// / SelectSubscribed decision consults the same view, even if a sibling
+	// session SUBSCRIBE'd mid-iteration.
+	var subs map[string]struct{}
+	if s.subs != nil && (opts != nil && (opts.SelectSubscribed || opts.ReturnSubscribed)) {
+		subs, err = s.subs.Snapshot()
+		if err != nil {
+			slog.Warn("imap: subscription snapshot failed", "err", err)
+			subs = make(map[string]struct{})
+		}
+	}
+
 	for _, name := range folders {
 		full := ref + name
 		if !listMatch(full, patterns) {
 			continue
 		}
+		// SELECT SUBSCRIBED — drop folders the user has not subscribed to.
+		// RECURSIVEMATCH refinement (return parent even if only a child is
+		// subscribed) is out of scope for IMAP-B; clients that need it must
+		// LIST without the filter and post-filter on their side.
+		if opts != nil && opts.SelectSubscribed {
+			if _, ok := subs[name]; !ok {
+				continue
+			}
+		}
 		attrs := mailboxAttrs(name, folders, s.srv.opts.ClientWorkarounds)
-		if err := w.WriteList(&imaplib.ListData{Mailbox: full, Delim: '/', Attrs: attrs}); err != nil {
+		// RETURN CHILDREN — annotate \HasChildren / \HasNoChildren.
+		if opts != nil && opts.ReturnChildren {
+			attrs = append(attrs, childrenAttr(name, folders))
+		}
+		// RETURN SUBSCRIBED — annotate \Subscribed when applicable.
+		if opts != nil && opts.ReturnSubscribed {
+			if _, ok := subs[name]; ok {
+				attrs = append(attrs, imaplib.MailboxAttrSubscribed)
+			}
+		}
+		data := &imaplib.ListData{Mailbox: full, Delim: '/', Attrs: attrs}
+		// RETURN STATUS (RFC 5819 / IMAP4rev2) — per-folder Status response
+		// embedded in the LIST reply. Skip on failure rather than abort the
+		// whole LIST.
+		if opts != nil && opts.ReturnStatus != nil {
+			if status, statErr := s.Status(name, opts.ReturnStatus); statErr == nil {
+				data.Status = status
+			}
+		}
+		if err := w.WriteList(data); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// childrenAttr returns \HasChildren when `name` is a prefix of any other
+// listed folder, otherwise \HasNoChildren. Cheap O(n) scan — acceptable
+// because LIST already loaded the slice.
+func childrenAttr(name string, all []string) imaplib.MailboxAttr {
+	prefix := name + "/"
+	for _, other := range all {
+		if other == name {
+			continue
+		}
+		if strings.HasPrefix(other, prefix) {
+			return imaplib.MailboxAttrHasChildren
+		}
+	}
+	return imaplib.MailboxAttrHasNoChildren
 }
 
 func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.StatusData, error) {
