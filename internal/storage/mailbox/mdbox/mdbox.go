@@ -5,6 +5,7 @@ package mdbox
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -32,11 +34,33 @@ const (
 type Backend struct {
 	// rotateThreshold overrides the 10 MB rotation limit in tests.
 	rotateThreshold int64
+	locker          locks.Locker
+}
+
+// Option configures a Backend at construction time.
+type Option func(*Backend)
+
+// WithLocker wires a yarilo-locks client into the backend. Every shared-file
+// write (Save / Remove / Delete / Rename) then takes a cross-process X lock
+// on `mbox:<user>:<folder>` first. Nil disables cross-process locking and
+// keeps the in-process sync.Mutex as the sole guard.
+//
+// NOTE: mdbox's per-handle currentFileID/currentSize and the shared
+// mdbox-storage/m.<id> append-only files still race across processes even
+// with the per-folder lock — that's a cross-folder storage concern outside
+// Phase 2.6's scope. The folder lock here interlocks Save with concurrent
+// Delete/Rename/Remove on the same folder.
+func WithLocker(l locks.Locker) Option {
+	return func(b *Backend) { b.locker = l }
 }
 
 // New creates an mdbox backend.
-func New() *Backend {
-	return &Backend{rotateThreshold: rotateAt}
+func New(opts ...Option) *Backend {
+	b := &Backend{rotateThreshold: rotateAt}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // OpenUser returns a per-session handle bound to u.
@@ -47,18 +71,84 @@ func New() *Backend {
 // diverge after rotation — correct for the current single-backend-per-user
 // deployment; revisit when multi-node delivery is introduced (Phase 5).
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
-	return &userMailbox{b: b, home: u.Home}
+	return &userMailbox{
+		b:        b,
+		home:     u.Home,
+		username: u.Username,
+		owner:    makeOwner(u),
+	}
 }
 
 // userMailbox is a per-session, per-user mdbox storage handle.
 type userMailbox struct {
-	b    *Backend
-	home string
+	b        *Backend
+	home     string
+	username string
+	owner    string
 
 	mu            sync.Mutex
 	currentFileID uint32
 	currentSize   int64
 	initDone      bool
+}
+
+// makeOwner builds the owner string for yarilo-locks BUSY reports.
+// Same convention as maildir/dbox: "<process>/<pid>/<user>".
+func makeOwner(u *mailbox.UserInfo) string {
+	proc := "yarilo"
+	if len(os.Args) > 0 {
+		proc = filepath.Base(os.Args[0])
+	}
+	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
+}
+
+// withMailboxLock runs fn under the per-process Mutex and the cross-process
+// yarilo-locks X lock keyed by folder name. The Mutex is still required to
+// guard currentFileID / currentSize within a single process. Nil locker
+// short-circuits to in-process mutex only.
+func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.b.locker == nil {
+		return fn()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lk, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, folder), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("mdbox/lock %s: %w", folder, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+	return fn()
+}
+
+// withTwoMailboxLocks takes both folder X locks in lexicographic order.
+// Same convention as maildir/dbox so the three backends never deadlock
+// against each other when IMAP RENAME ripples through.
+func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
+	if u.b.locker == nil {
+		return fn()
+	}
+	a, b := folderA, folderB
+	if a > b {
+		a, b = b, a
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lkA, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, a), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("mdbox/lock %s: %w", a, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
+	if a == b {
+		return fn()
+	}
+	lkB, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, b), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("mdbox/lock %s: %w", b, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
+	return fn()
 }
 
 // Init creates the INBOX folder and scans the user's mdbox-storage to resume
@@ -111,17 +201,21 @@ func (u *userMailbox) Create(folder string) error {
 }
 
 func (u *userMailbox) Delete(folder string) error {
-	if err := os.RemoveAll(u.folderPath(folder)); err != nil {
-		return fmt.Errorf("mdbox/delete: %w", err)
-	}
-	return nil
+	return u.withMailboxLock(folder, func() error {
+		if err := os.RemoveAll(u.folderPath(folder)); err != nil {
+			return fmt.Errorf("mdbox/delete: %w", err)
+		}
+		return nil
+	})
 }
 
 func (u *userMailbox) Rename(oldName, newName string) error {
-	if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
-		return fmt.Errorf("mdbox/rename: %w", err)
-	}
-	return nil
+	return u.withTwoMailboxLocks(oldName, newName, func() error {
+		if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
+			return fmt.Errorf("mdbox/rename: %w", err)
+		}
+		return nil
+	})
 }
 
 // Save writes a message into the mdbox storage and appends a map entry.
@@ -148,54 +242,56 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (str
 		return "", fmt.Errorf("mdbox/save: mkdir folder: %w", err)
 	}
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	// Lazy-initialise currentSize from the actual file on first Save after Init.
-	if u.currentSize == 0 && u.initDone {
-		fi, statErr := os.Stat(u.mfilePath(storageDir, u.currentFileID))
-		if statErr == nil {
-			u.currentSize = fi.Size()
+	var token string
+	err = u.withMailboxLock(folder, func() error {
+		// Lazy-initialise currentSize from the actual file on first Save after Init.
+		if u.currentSize == 0 && u.initDone {
+			fi, statErr := os.Stat(u.mfilePath(storageDir, u.currentFileID))
+			if statErr == nil {
+				u.currentSize = fi.Size()
+			}
 		}
-	}
 
-	if u.currentSize > u.b.rotateThreshold {
-		u.currentFileID++
-		u.currentSize = 0
-	}
+		if u.currentSize > u.b.rotateThreshold {
+			u.currentFileID++
+			u.currentSize = 0
+		}
 
-	fileID := u.currentFileID
-	offset := u.currentSize
+		fileID := u.currentFileID
+		offset := u.currentSize
 
-	mpath := u.mfilePath(storageDir, fileID)
-	f, err := os.OpenFile(mpath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return "", fmt.Errorf("mdbox/save: open mfile: %w", err)
-	}
-	if _, err := f.Write(record); err != nil {
-		f.Close()
-		return "", fmt.Errorf("mdbox/save: write record: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("mdbox/save: close mfile: %w", err)
-	}
-	u.currentSize += recLen
+		mpath := u.mfilePath(storageDir, fileID)
+		f, err := os.OpenFile(mpath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			return fmt.Errorf("mdbox/save: open mfile: %w", err)
+		}
+		if _, err := f.Write(record); err != nil {
+			f.Close()
+			return fmt.Errorf("mdbox/save: write record: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("mdbox/save: close mfile: %w", err)
+		}
+		u.currentSize += recLen
 
-	mapLine := fmt.Sprintf("%d %d %d 0\n", fileID, offset, physSize)
-	mapPath := u.mapPath(folder)
-	mf, err := os.OpenFile(mapPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return "", fmt.Errorf("mdbox/save: open dbox.map: %w", err)
-	}
-	if _, err := fmt.Fprint(mf, mapLine); err != nil {
-		mf.Close()
-		return "", fmt.Errorf("mdbox/save: write dbox.map: %w", err)
-	}
-	if err := mf.Close(); err != nil {
-		return "", fmt.Errorf("mdbox/save: close dbox.map: %w", err)
-	}
+		mapLine := fmt.Sprintf("%d %d %d 0\n", fileID, offset, physSize)
+		mapPath := u.mapPath(folder)
+		mf, err := os.OpenFile(mapPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			return fmt.Errorf("mdbox/save: open dbox.map: %w", err)
+		}
+		if _, err := fmt.Fprint(mf, mapLine); err != nil {
+			mf.Close()
+			return fmt.Errorf("mdbox/save: write dbox.map: %w", err)
+		}
+		if err := mf.Close(); err != nil {
+			return fmt.Errorf("mdbox/save: close dbox.map: %w", err)
+		}
 
-	return fmt.Sprintf("%d:%d", fileID, offset), nil
+		token = fmt.Sprintf("%d:%d", fileID, offset)
+		return nil
+	})
+	return token, err
 }
 
 // Fetch opens the message identified by "<file_id>:<offset>" and returns a
@@ -232,31 +328,33 @@ func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
 
 // Remove marks the dbox.map entry for "<file_id>:<offset>" as expunged (lazy delete).
 func (u *userMailbox) Remove(folder, filename string) error {
-	fileID, offset, err := parseFilename(filename)
-	if err != nil {
-		return fmt.Errorf("mdbox/remove: %w", err)
-	}
-
-	mapPath := u.mapPath(folder)
-	lines, err := readMapLines(mapPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("mdbox/remove: read map: %w", err)
-	}
-
-	changed := false
-	for i, rec := range lines {
-		if rec.fileID == fileID && rec.offset == offset && rec.expunged == 0 {
-			lines[i].expunged = 1
-			changed = true
+	return u.withMailboxLock(folder, func() error {
+		fileID, offset, err := parseFilename(filename)
+		if err != nil {
+			return fmt.Errorf("mdbox/remove: %w", err)
 		}
-	}
-	if !changed {
-		return nil
-	}
-	return writeMapLines(mapPath, lines)
+
+		mapPath := u.mapPath(folder)
+		lines, err := readMapLines(mapPath)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("mdbox/remove: read map: %w", err)
+		}
+
+		changed := false
+		for i, rec := range lines {
+			if rec.fileID == fileID && rec.offset == offset && rec.expunged == 0 {
+				lines[i].expunged = 1
+				changed = true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		return writeMapLines(mapPath, lines)
+	})
 }
 
 func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
