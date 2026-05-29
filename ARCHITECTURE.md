@@ -564,8 +564,11 @@ In-process goroutine concurrency keeps `sync.Mutex` as a fast-path before any `y
 the two-tier scheme avoids RTT for intra-process contention. `fcntl`/`flock` is not used: it has
 no EVENT channel for IDLE notifications, opaque metrics, and shaky NFS semantics.
 
-**Status:** `pkg/locks` foundation and `yarilo-locks` binary landed in v1.4.0 (Phase 0). Wiring
-into `internal/storage/*` follows in Phase 1.
+**Status:** `pkg/locks` foundation + `yarilo-locks` binary landed in v1.4.0 (Phase 0).
+`internal/storage/mailbox/maildir` and `internal/storage/index/file` write paths wired
+through `pkg/locks` in v1.5.0 (Phase 1): two-tier mutex + cross-process X lock on
+`mbox:<user>:<folder>`, atomic `AllocateAppend` for UID assignment, integration test
+proving no UID collisions and no uidlist corruption under concurrent two-process writes.
 
 ---
 

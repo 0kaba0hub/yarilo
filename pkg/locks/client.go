@@ -321,6 +321,41 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// Acquire is Lock with blocking semantics: retries on ErrBusy with exponential
+// backoff (1ms → 100ms cap, small jitter) until ctx is cancelled or the lock
+// is taken. Use this when the caller wants "wait until available" — typical
+// for storage write paths where contention is short and bounded.
+//
+// Returns the acquired Lock on success, or the last underlying error
+// (context cancellation or non-busy failure) otherwise.
+func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
+	backoff := time.Millisecond
+	const maxBackoff = 100 * time.Millisecond
+	for {
+		lock, err := l.Lock(ctx, resource, owner, ttl)
+		if err == nil {
+			return lock, nil
+		}
+		if !errors.Is(err, ErrBusy) {
+			return Lock{}, err
+		}
+		// Jitter by ±25% so concurrent retriers do not synchronise.
+		jitter := time.Duration(int64(backoff) / 4)
+		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
+		select {
+		case <-ctx.Done():
+			return Lock{}, ctx.Err()
+		case <-time.After(wait):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
 // WithLock acquires a lock on resource, starts a background renew loop, runs
 // fn while the lock is held, and releases on exit. The renew cadence should
 // be a small fraction of ttl (typically ttl/3).

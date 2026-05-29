@@ -29,12 +29,13 @@ type Server struct {
 
 // NewServer constructs a Server around a Backend. The Backend's lifecycle is
 // owned by the caller — Server.Close does not call backend.Close.
+//
+// A nil metrics argument means "no metrics" — the Metrics methods are
+// nil-safe. Tests and benchmarks that spin up many servers should pass nil
+// to avoid duplicate-registration panics on prometheus.DefaultRegisterer.
 func NewServer(backend Backend, logger *slog.Logger, metrics *Metrics) *Server {
 	if logger == nil {
 		logger = slog.Default()
-	}
-	if metrics == nil {
-		metrics = NewMetrics(nil, "")
 	}
 	return &Server{
 		backend: backend,

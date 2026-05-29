@@ -5,6 +5,7 @@ package file
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -57,8 +59,9 @@ const (
 
 // IndexFile manages the .index file for one mailbox folder.
 type IndexFile struct {
-	mu   sync.Mutex
-	path string
+	mu     sync.Mutex
+	path   string
+	folder string // mailbox folder name; used to build the yarilo-locks key
 
 	indexID      uint32
 	uidValidity  uint32
@@ -88,27 +91,84 @@ type indexRecord struct {
 
 // Backend is the FileIndex IndexBackend factory.
 // It holds no per-user state.
-type Backend struct{}
+type Backend struct {
+	locker locks.Locker
+}
+
+// Option configures a Backend at construction time.
+type Option func(*Backend)
+
+// WithLocker wires a yarilo-locks client into the backend. Every write to
+// the .index / .index.log / pop3.uidl files then takes a cross-process X
+// lock on `mbox:<user>:<folder>` first. A nil Locker disables cross-process
+// locking (single-process tests / dev) and keeps the in-process sync.Mutex
+// as the sole guard.
+func WithLocker(l locks.Locker) Option {
+	return func(b *Backend) { b.locker = l }
+}
 
 // New creates a FileIndex backend.
-func New() *Backend { return &Backend{} }
+func New(opts ...Option) *Backend {
+	b := &Backend{}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
+}
 
 // OpenUser returns a per-session index handle bound to u.
 // The index files are stored under u.Home (one .index file per folder).
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 	return &userIndex{
-		home: u.Home,
-		open: make(map[uint64]*IndexFile),
+		b:        b,
+		home:     u.Home,
+		username: u.Username,
+		owner:    makeOwner(u),
+		open:     make(map[uint64]*IndexFile),
 	}
 }
 
 // userIndex is a per-session, per-user index handle.
 // Folder IDs assigned here are local to this handle.
 type userIndex struct {
-	home string
-	mu   sync.Mutex
-	open map[uint64]*IndexFile
-	next uint64
+	b        *Backend
+	home     string
+	username string
+	owner    string
+	mu       sync.Mutex
+	open     map[uint64]*IndexFile
+	next     uint64
+}
+
+// makeOwner builds the owner string for yarilo-locks BUSY reports.
+// Format: "<process>/<pid>/<user>". See maildir.makeOwner for rationale.
+func makeOwner(u *mailbox.UserInfo) string {
+	proc := "yarilo"
+	if len(os.Args) > 0 {
+		proc = filepath.Base(os.Args[0])
+	}
+	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
+}
+
+// withMailboxLock runs fn under both tiers — first the per-index in-process
+// mutex (cheap), then the cross-process yarilo-locks X lock keyed by folder
+// name. The locker may be nil, in which case fn runs under the in-process
+// mutex only. The caller is responsible for holding any other necessary
+// locks before invoking.
+func (u *userIndex) withMailboxLock(idx *IndexFile, fn func() error) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if u.b.locker == nil {
+		return fn()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lk, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, idx.folder), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("fileindex/lock %s: %w", idx.folder, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+	return fn()
 }
 
 func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
@@ -125,6 +185,7 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 	if err != nil {
 		return nil, err
 	}
+	idx.folder = folder
 	u.open[id] = idx
 
 	f := &mailbox.Folder{
@@ -146,11 +207,11 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", f.ID)
 	}
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	idx.nextUID = f.NextUID
-	idx.msgCount = f.Messages
-	return idx.writeHeader()
+	return u.withMailboxLock(idx, func() error {
+		idx.nextUID = f.NextUID
+		idx.msgCount = f.Messages
+		return idx.writeHeader()
+	})
 }
 
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
@@ -160,44 +221,43 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	kwBits, err := idx.internKeywords(m.Keywords)
-	if err != nil {
-		return err
-	}
-
-	rec := indexRecord{
-		uid:         m.UID,
-		flags:       imapFlagsToIndex(m.Flags),
-		modseq:      m.ModSeq,
-		keywordBits: kwBits,
-	}
-	idx.records = append(idx.records, rec)
-	idx.msgCount++
-	if rec.flags&flagSeen != 0 {
-		idx.seenCount++
-	}
-	if rec.flags&flagDeleted != 0 {
-		idx.deletedCount++
-	}
-	if kwBits != 0 {
-		idx.recKeys[m.UID] = kwBits
-	}
-	if m.Filename != "" {
-		idx.filenames[m.UID] = m.Filename
-		if err := idx.appendNameEntry(m.UID, m.Filename); err != nil {
+	return u.withMailboxLock(idx, func() error {
+		kwBits, err := idx.internKeywords(m.Keywords)
+		if err != nil {
 			return err
 		}
-	}
-	if err := idx.appendLogRecord(txAppend, rec); err != nil {
-		return err
-	}
-	if kwBits != 0 {
-		return idx.appendKeywordUpdateLog(m.UID, kwBits)
-	}
-	return nil
+
+		rec := indexRecord{
+			uid:         m.UID,
+			flags:       imapFlagsToIndex(m.Flags),
+			modseq:      m.ModSeq,
+			keywordBits: kwBits,
+		}
+		idx.records = append(idx.records, rec)
+		idx.msgCount++
+		if rec.flags&flagSeen != 0 {
+			idx.seenCount++
+		}
+		if rec.flags&flagDeleted != 0 {
+			idx.deletedCount++
+		}
+		if kwBits != 0 {
+			idx.recKeys[m.UID] = kwBits
+		}
+		if m.Filename != "" {
+			idx.filenames[m.UID] = m.Filename
+			if err := idx.appendNameEntry(m.UID, m.Filename); err != nil {
+				return err
+			}
+		}
+		if err := idx.appendLogRecord(txAppend, rec); err != nil {
+			return err
+		}
+		if kwBits != 0 {
+			return idx.appendKeywordUpdateLog(m.UID, kwBits)
+		}
+		return nil
+	})
 }
 
 func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
@@ -207,49 +267,48 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	kwBits, err := idx.internKeywords(keywords)
-	if err != nil {
-		return err
-	}
-
-	newFlags := imapFlagsToIndex(flags)
-	for i := range idx.records {
-		if idx.records[i].uid != uid {
-			continue
-		}
-		old := idx.records[i].flags
-		idx.records[i].flags = newFlags
-		idx.records[i].modseq = idx.modseq + 1
-		idx.records[i].keywordBits = kwBits
-		idx.modseq++
-
-		if old&flagSeen != 0 && newFlags&flagSeen == 0 {
-			idx.seenCount--
-		} else if old&flagSeen == 0 && newFlags&flagSeen != 0 {
-			idx.seenCount++
-		}
-		if old&flagDeleted != 0 && newFlags&flagDeleted == 0 {
-			idx.deletedCount--
-		} else if old&flagDeleted == 0 && newFlags&flagDeleted != 0 {
-			idx.deletedCount++
-		}
-		if kwBits != 0 {
-			idx.recKeys[uid] = kwBits
-		} else {
-			delete(idx.recKeys, uid)
-		}
-		if err := idx.appendLogRecord(txFlagUpdate, idx.records[i]); err != nil {
+	return u.withMailboxLock(idx, func() error {
+		kwBits, err := idx.internKeywords(keywords)
+		if err != nil {
 			return err
 		}
-		if kwBits != 0 {
-			return idx.appendKeywordUpdateLog(uid, kwBits)
+
+		newFlags := imapFlagsToIndex(flags)
+		for i := range idx.records {
+			if idx.records[i].uid != uid {
+				continue
+			}
+			old := idx.records[i].flags
+			idx.records[i].flags = newFlags
+			idx.records[i].modseq = idx.modseq + 1
+			idx.records[i].keywordBits = kwBits
+			idx.modseq++
+
+			if old&flagSeen != 0 && newFlags&flagSeen == 0 {
+				idx.seenCount--
+			} else if old&flagSeen == 0 && newFlags&flagSeen != 0 {
+				idx.seenCount++
+			}
+			if old&flagDeleted != 0 && newFlags&flagDeleted == 0 {
+				idx.deletedCount--
+			} else if old&flagDeleted == 0 && newFlags&flagDeleted != 0 {
+				idx.deletedCount++
+			}
+			if kwBits != 0 {
+				idx.recKeys[uid] = kwBits
+			} else {
+				delete(idx.recKeys, uid)
+			}
+			if err := idx.appendLogRecord(txFlagUpdate, idx.records[i]); err != nil {
+				return err
+			}
+			if kwBits != 0 {
+				return idx.appendKeywordUpdateLog(uid, kwBits)
+			}
+			return nil
 		}
 		return nil
-	}
-	return nil
+	})
 }
 
 func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
@@ -284,25 +343,24 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	for i, rec := range idx.records {
-		if rec.uid != uid {
-			continue
+	return u.withMailboxLock(idx, func() error {
+		for i, rec := range idx.records {
+			if rec.uid != uid {
+				continue
+			}
+			if rec.flags&flagSeen != 0 {
+				idx.seenCount--
+			}
+			if rec.flags&flagDeleted != 0 {
+				idx.deletedCount--
+			}
+			idx.records = append(idx.records[:i], idx.records[i+1:]...)
+			idx.msgCount--
+			delete(idx.recKeys, uid)
+			return idx.appendLogRecord(txExpunge, rec)
 		}
-		if rec.flags&flagSeen != 0 {
-			idx.seenCount--
-		}
-		if rec.flags&flagDeleted != 0 {
-			idx.deletedCount--
-		}
-		idx.records = append(idx.records[:i], idx.records[i+1:]...)
-		idx.msgCount--
-		delete(idx.recKeys, uid)
-		return idx.appendLogRecord(txExpunge, rec)
-	}
-	return nil
+		return nil
+	})
 }
 
 func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
@@ -312,10 +370,82 @@ func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
 	if !ok {
 		return 0, fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	idx.modseq++
-	return idx.modseq, nil
+	var ms uint64
+	err := u.withMailboxLock(idx, func() error {
+		idx.modseq++
+		ms = idx.modseq
+		return nil
+	})
+	return ms, err
+}
+
+// AllocateAppend atomically reserves the folder's next UID under the
+// cross-process mailbox lock, stamps it on m, appends the index record, and
+// persists the bumped NextUID in the header. Returns the assigned UID.
+//
+// This is the single-call sequence callers (LMTP delivery, IMAP APPEND) use
+// to avoid the UID-race documented in ARCHITECTURE.md §Known issues. The
+// uidlist append on the maildir side must happen OUTSIDE this call's lock
+// and acquires its own X lock — the assigned UID is already reserved, so
+// the only role of the uidlist lock is to serialise the file write.
+//
+// The header is re-read from disk after the cross-process lock is acquired,
+// so any nextUID bumps committed by other processes since this handle's
+// OpenFolder are observed. Records / keyword cache stay in their last-seen
+// state — full reconciliation belongs at the session boundary (Phase 2).
+func (u *userIndex) AllocateAppend(folderID uint64, m *mailbox.MessageMeta) (uint32, error) {
+	u.mu.Lock()
+	idx, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return 0, fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	var uid uint32
+	err := u.withMailboxLock(idx, func() error {
+		if err := idx.rereadHeaderLocked(); err != nil {
+			return err
+		}
+		uid = idx.nextUID
+		m.UID = uid
+		kwBits, err := idx.internKeywords(m.Keywords)
+		if err != nil {
+			return err
+		}
+		rec := indexRecord{
+			uid:         uid,
+			flags:       imapFlagsToIndex(m.Flags),
+			modseq:      m.ModSeq,
+			keywordBits: kwBits,
+		}
+		idx.records = append(idx.records, rec)
+		idx.msgCount++
+		idx.nextUID = uid + 1
+		if rec.flags&flagSeen != 0 {
+			idx.seenCount++
+		}
+		if rec.flags&flagDeleted != 0 {
+			idx.deletedCount++
+		}
+		if kwBits != 0 {
+			idx.recKeys[uid] = kwBits
+		}
+		if m.Filename != "" {
+			idx.filenames[uid] = m.Filename
+			if err := idx.appendNameEntry(uid, m.Filename); err != nil {
+				return err
+			}
+		}
+		if err := idx.appendLogRecord(txAppend, rec); err != nil {
+			return err
+		}
+		if kwBits != 0 {
+			if err := idx.appendKeywordUpdateLog(uid, kwBits); err != nil {
+				return err
+			}
+		}
+		return idx.writeHeader()
+	})
+	return uid, err
 }
 
 func (u *userIndex) Keywords(folderID uint64) ([]string, error) {
@@ -401,27 +531,29 @@ func (u *userIndex) SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) erro
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	dir := filepath.Dir(idx.path)
-	dst := filepath.Join(dir, "pop3.uidl")
-	tmp := dst + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("pop3.uidl write: %w", err)
-	}
-	bw := bufio.NewWriter(f)
-	for uid, uidl := range uidls {
-		fmt.Fprintf(bw, "%d\t%s\n", uid, uidl) //nolint:errcheck
-	}
-	if err := bw.Flush(); err != nil {
-		f.Close()
-		os.Remove(tmp) //nolint:errcheck
-		return fmt.Errorf("pop3.uidl flush: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp) //nolint:errcheck
-		return fmt.Errorf("pop3.uidl close: %w", err)
-	}
-	return os.Rename(tmp, dst)
+	return u.withMailboxLock(idx, func() error {
+		dir := filepath.Dir(idx.path)
+		dst := filepath.Join(dir, "pop3.uidl")
+		tmp := dst + ".tmp"
+		f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("pop3.uidl write: %w", err)
+		}
+		bw := bufio.NewWriter(f)
+		for uid, uidl := range uidls {
+			fmt.Fprintf(bw, "%d\t%s\n", uid, uidl) //nolint:errcheck
+		}
+		if err := bw.Flush(); err != nil {
+			f.Close()
+			os.Remove(tmp) //nolint:errcheck
+			return fmt.Errorf("pop3.uidl flush: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			os.Remove(tmp) //nolint:errcheck
+			return fmt.Errorf("pop3.uidl close: %w", err)
+		}
+		return os.Rename(tmp, dst)
+	})
 }
 
 // ---- IndexFile low-level ---------------------------------------------------
@@ -505,6 +637,25 @@ func (idx *IndexFile) writeHeader() error {
 	defer f.Close()
 	_, err = f.WriteAt(buf, 0)
 	return err
+}
+
+// rereadHeaderLocked reopens the on-disk .index file and refreshes the
+// header fields (nextUID, msgCount, modseq, etc.) into the in-memory
+// IndexFile. The caller must already hold idx.mu and the cross-process
+// mailbox lock — otherwise the read can race with another writer.
+//
+// Returns nil if the file has not yet been created (initial state); the
+// in-memory fields keep their defaults from initNew.
+func (idx *IndexFile) rereadHeaderLocked() error {
+	f, err := os.Open(idx.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("fileindex: reopen %s: %w", idx.path, err)
+	}
+	defer f.Close()
+	return idx.readHeader(f)
 }
 
 func (idx *IndexFile) readHeader(f *os.File) error {
