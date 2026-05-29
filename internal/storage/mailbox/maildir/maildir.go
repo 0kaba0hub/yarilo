@@ -132,12 +132,51 @@ func (u *userMailbox) Create(folder string) error {
 	return nil
 }
 
+// Delete removes the entire folder tree (cur/new/tmp + uidlist + maildirfolder
+// markers). Under the cross-process X lock so no in-flight delivery / read
+// observes a half-deleted tree.
 func (u *userMailbox) Delete(folder string) error {
-	return os.RemoveAll(u.folderPath(folder))
+	return u.withMailboxLock(folder, func() error {
+		return os.RemoveAll(u.folderPath(folder))
+	})
 }
 
+// Rename renames a folder on disk. Holds the cross-process X lock on BOTH
+// the old and the new name in lexicographic order so two processes calling
+// Rename simultaneously cannot deadlock against each other.
 func (u *userMailbox) Rename(oldName, newName string) error {
-	return os.Rename(u.folderPath(oldName), u.folderPath(newName))
+	return u.withTwoMailboxLocks(oldName, newName, func() error {
+		return os.Rename(u.folderPath(oldName), u.folderPath(newName))
+	})
+}
+
+// withTwoMailboxLocks is the maildir twin of file/file.userIndex.withTwoMailboxLocks.
+// Same lock-ordering convention so the maildir and index sides never
+// deadlock against each other when Rename ripples through both backends.
+func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
+	if u.b.locker == nil {
+		return fn()
+	}
+	a, b := folderA, folderB
+	if a > b {
+		a, b = b, a
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lkA, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, a), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("maildir/lock %s: %w", a, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
+	if a == b {
+		return fn()
+	}
+	lkB, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, b), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("maildir/lock %s: %w", b, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
+	return fn()
 }
 
 func (u *userMailbox) Save(folder string, r io.Reader, size int64, flags []string) (string, error) {
