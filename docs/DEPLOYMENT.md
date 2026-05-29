@@ -102,20 +102,40 @@ only when a cross-process barrier is required (any write to a shared file).
 
 ### Configuration
 
+Two independent sections in `yarilo.yaml`. The yarilo-locks process consumes
+`locks_service`; every session binary (yarilo-imap, yarilo-pop3, yarilo-submission,
+yarilo-lmtp) consumes `locks_client`. mTLS material is shared with the rest of
+the stack via `internal_tls` — no separate keys live under the locks sections.
+
 ```yaml
-# standalone
-locks:
+# k8s production (standalone or backend): yarilo-locks listens on TCP+mTLS,
+# Redis backs the state.
+locks_service:
+  mode: remote
+  listen: ":9104"
+  redis: "redis://redis.yarilo.svc.cluster.local:6379/0"
+
+# session binaries reach yarilo-locks via the ClusterIP Service.
+locks_client:
+  mode: remote
+  endpoints: ["yarilo-locks.yarilo.svc.cluster.local:9104"]
+
+internal_tls:
+  enabled: true
+  cert: /etc/yarilo/tls/tls.crt
+  key:  /etc/yarilo/tls/tls.key
+  ca:   /etc/yarilo/tls/ca.crt
+```
+
+```yaml
+# dev / unit tests / non-k8s CLI runs (single process, no Redis).
+locks_service:
   mode: embedded
   socket: /run/yarilo/locks.sock
 
-# backend
-locks:
-  mode: remote
-  endpoints: ["yarilo-locks.tag-a.svc:9104"]
-  mtls:
-    cert: /etc/yarilo/tls/tls.crt
-    key:  /etc/yarilo/tls/tls.key
-    ca:   /etc/yarilo/tls/ca.crt
+locks_client:
+  mode: embedded
+  socket: /run/yarilo/locks.sock
 ```
 
 ### Lock model

@@ -42,6 +42,7 @@ func main() {
 		slog.Error("backend init failed", "err", err)
 		os.Exit(1)
 	}
+	defer func() { _ = srv.Close() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
