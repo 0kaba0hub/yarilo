@@ -107,6 +107,10 @@ type UserIndex interface {
 	GetMessages(folderID uint64, uids SeqSet) ([]*MessageMeta, error)
 	ExpungeMessage(folderID uint64, uid uint32) error
 	NextModSeq(folderID uint64) (uint64, error)
+	// Vanished returns UIDs expunged from folderID with modseq strictly
+	// greater than sinceModSeq. Drives QRESYNC (RFC 7162) SELECT and
+	// UID FETCH (CHANGEDSINCE N VANISHED) responses.
+	Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error)
 	Keywords(folderID uint64) ([]string, error)
 	// RenameFolder renames oldName to newName in the index.
 	// Called by IMAP RENAME immediately after UserMailbox.Rename succeeds.
