@@ -89,6 +89,12 @@ data:
           - {{ . | quote }}
           {{- end }}
         {{- end }}
+        {{- with .Values.protocol.imap.specialUseDefaults }}
+        imap_special_use_defaults:
+          {{- range $folder, $attr := . }}
+          {{ $folder | quote }}: {{ $attr | quote }}
+          {{- end }}
+        {{- end }}
       pop3:
         pop3_no_flag_updates: {{ .Values.protocol.pop3.noFlagUpdates }}
         pop3_reuse_xuidl: {{ .Values.protocol.pop3.reuseXUIDL }}

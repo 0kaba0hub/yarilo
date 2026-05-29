@@ -123,6 +123,7 @@ func New(cfg *config.Config) (*Server, error) {
 			LogoutFormat:       p.LogoutFormat,
 			ClientWorkarounds:  imapsvr.ParseIMAPWorkarounds(p.ClientWorkarounds),
 			Locker:             locker,
+			SpecialUseDefaults: p.SpecialUseDefaults,
 		})
 	}
 
