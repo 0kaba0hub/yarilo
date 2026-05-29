@@ -5,6 +5,7 @@ package maildir
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -28,31 +30,87 @@ type Backend struct {
 	hostname string
 	pid      int
 	counter  atomic.Uint64
+	locker   locks.Locker
+}
+
+// Option configures a Backend at construction time.
+type Option func(*Backend)
+
+// WithLocker wires a yarilo-locks client into the backend. Every shared-file
+// write then takes a cross-process X lock on `mbox:<user>:<folder>` before
+// mutating the on-disk maildir. A nil Locker disables cross-process locking
+// (single-process tests / dev), keeping the in-process sync.Mutex only.
+func WithLocker(l locks.Locker) Option {
+	return func(b *Backend) { b.locker = l }
 }
 
 // New creates a Maildir backend.
-func New() *Backend {
+func New(opts ...Option) *Backend {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "localhost"
 	}
-	return &Backend{
+	b := &Backend{
 		hostname: hostname,
 		pid:      os.Getpid(),
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // OpenUser returns a per-session handle bound to u. The handle's Home field
 // is used for all path resolution; usernames are never converted to paths here.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
-	return &userMailbox{b: b, home: u.Home}
+	return &userMailbox{
+		b:        b,
+		home:     u.Home,
+		username: u.Username,
+		owner:    makeOwner(u),
+	}
 }
 
 // userMailbox is a per-session, per-user Maildir storage handle.
 type userMailbox struct {
-	b    *Backend
-	home string
-	mu   sync.Mutex // guards uidlist appends
+	b        *Backend
+	home     string
+	username string
+	owner    string     // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
+	mu       sync.Mutex // in-process fast-path; cross-process barrier is b.locker
+}
+
+// makeOwner builds the owner string for yarilo-locks BUSY reports.
+// Format: "<process>/<pid>/<user>". Process is the basename of argv[0]; pid
+// identifies the replica; user disambiguates concurrent sessions for the
+// same mailbox under the same process.
+func makeOwner(u *mailbox.UserInfo) string {
+	proc := "yarilo"
+	if len(os.Args) > 0 {
+		proc = filepath.Base(os.Args[0])
+	}
+	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
+}
+
+// withMailboxLock runs fn under both tiers — first the in-process mutex
+// (cheap, serialises goroutines in this process), then the cross-process
+// yarilo-locks X lock (slow path; only engaged when b.locker is non-nil).
+// The lock TTL is conservatively long enough for any single write op; the
+// context guards against backend unreachability.
+func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.b.locker == nil {
+		return fn()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lk, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, folder), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("maildir/lock %s: %w", folder, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+	return fn()
 }
 
 func (u *userMailbox) Init() error {
@@ -234,23 +292,24 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 
 // AppendUIDEntry adds a new entry to yarilo-uidlist v3.
 // Called after Save() to record the uid → filename mapping.
+// Cross-process serialised through yarilo-locks on the mailbox key — this is
+// the file flagged in ARCHITECTURE.md §Known issues as the UID-race risk.
 func (u *userMailbox) AppendUIDEntry(folder string, uid uint32, filename string) error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	return u.withMailboxLock(folder, func() error {
+		path := u.uidListPath(folder)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
 
-	path := u.uidListPath(folder)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
+		info, _ := f.Stat()
+		if info != nil && info.Size() == 0 {
+			fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
+		}
+		_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
 		return err
-	}
-	defer f.Close()
-
-	info, _ := f.Stat()
-	if info != nil && info.Size() == 0 {
-		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
-	}
-	_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
-	return err
+	})
 }
 
 func (u *userMailbox) Close() error { return nil }
