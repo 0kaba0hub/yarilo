@@ -244,12 +244,19 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (str
 
 	var token string
 	err = u.withMailboxLock(folder, func() error {
-		// Lazy-initialise currentSize from the actual file on first Save after Init.
-		if u.currentSize == 0 && u.initDone {
-			fi, statErr := os.Stat(u.mfilePath(storageDir, u.currentFileID))
-			if statErr == nil {
-				u.currentSize = fi.Size()
-			}
+		// ALWAYS re-stat the current m.<id> under the lock — another process
+		// may have appended since this handle's last Save. Without this, the
+		// offset we record in dbox.map drifts from the physical file size
+		// (the write goes to end-of-file via O_APPEND regardless of our
+		// state), causing the next Fetch via that token to read the wrong
+		// bytes.
+		fi, statErr := os.Stat(u.mfilePath(storageDir, u.currentFileID))
+		if statErr == nil {
+			u.currentSize = fi.Size()
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("mdbox/save: stat mfile: %w", statErr)
+		} else {
+			u.currentSize = 0
 		}
 
 		if u.currentSize > u.b.rotateThreshold {
