@@ -3,6 +3,7 @@ package imap
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -49,6 +51,13 @@ type Options struct {
 	LoginGreeting      string
 	LogoutFormat       string
 	ClientWorkarounds  imapWorkarounds
+
+	// Locker is the cross-process write coordinator. When non-nil, each
+	// successful write (APPEND/COPY/MOVE/STORE/EXPUNGE) emits an EVENT on
+	// the mailbox key so IMAP IDLE sessions on other pods are woken up
+	// without waiting for the heartbeat interval. Nil keeps the legacy
+	// timer-based IDLE behaviour.
+	Locker locks.Locker
 }
 
 // New creates an IMAP server.
@@ -172,6 +181,24 @@ type session struct {
 }
 
 var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
+
+// emitMailboxChange is fire-and-forget — events are advisory wake-ups for
+// subscribed IMAP IDLE sessions on other pods. Errors are logged at debug
+// level and never surfaced to the caller because the authoritative state
+// already lives in the just-written index/uidlist files. A 1-second timeout
+// keeps a sluggish locks server from stalling the IMAP command.
+func (s *session) emitMailboxChange(folder string, eventType locks.EventType, uid uint32) {
+	if s.srv.opts.Locker == nil || s.userInfo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	payload := strconv.FormatUint(uint64(uid), 10)
+	if err := s.srv.opts.Locker.Emit(ctx, locks.MailboxKey(s.userInfo.Username, folder), eventType, payload); err != nil {
+		slog.Debug("imap: emit event failed",
+			"folder", folder, "type", string(eventType), "err", err)
+	}
+}
 
 func (s *session) Close() error {
 	if s.srv.opts.ConnLimit != nil && s.userInfo != nil {
@@ -373,8 +400,10 @@ func (s *session) renameInbox(dest string) error {
 			return fmt.Errorf("imap/rename-inbox append: %w", appendErr)
 		}
 		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
-		s.box.Remove("INBOX", m.Filename)               //nolint:errcheck
-		s.idx.ExpungeMessage(srcFolder.ID, m.UID)       //nolint:errcheck
+		s.emitMailboxChange(dest, locks.EventDelivered, newUID)
+		s.box.Remove("INBOX", m.Filename)         //nolint:errcheck
+		s.idx.ExpungeMessage(srcFolder.ID, m.UID) //nolint:errcheck
+		s.emitMailboxChange("INBOX", locks.EventExpunged, m.UID)
 	}
 	srcFolder.Messages = 0
 	s.idx.SaveFolder(srcFolder) //nolint:errcheck
@@ -473,6 +502,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	}
 
 	s.box.AppendUIDEntry(name, uid, filename) //nolint:errcheck
+	s.emitMailboxChange(name, locks.EventDelivered, uid)
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(uid)}, nil
 }
@@ -481,22 +511,79 @@ func (s *session) Poll(_ *imapserver.UpdateWriter, _ bool) error { return nil }
 
 func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	interval := s.srv.opts.IdleNotifyInterval
-	if interval <= 0 || s.folder == nil {
+	if s.folder == nil {
 		<-stop
 		return nil
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+
+	// Cross-pod event subscription: when another process (LMTP delivery, an
+	// IMAP session on a sibling pod, etc.) writes to this user's folder, we
+	// get an EVENT, refresh the message count from disk, and push the
+	// EXISTS notification immediately — no waiting for the timer.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var events <-chan locks.Event
+	if s.srv.opts.Locker != nil && s.userInfo != nil {
+		ch, err := s.srv.opts.Locker.Subscribe(ctx, locks.MailboxKey(s.userInfo.Username, s.folder.Name))
+		if err != nil {
+			slog.Debug("imap: idle subscribe failed; falling back to timer-only", "err", err)
+		} else {
+			events = ch
+		}
+	}
+
+	// Heartbeat tick — required only when there is no event channel; the
+	// timer is still useful as a liveness signal for misbehaving clients
+	// even when the subscription is up.
+	var tickC <-chan time.Time
+	if interval > 0 {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		tickC = ticker.C
+	}
+
+	if events == nil && tickC == nil {
+		// Locker disabled and no heartbeat configured — purely passive IDLE.
+		<-stop
+		return nil
+	}
+
 	for {
 		select {
 		case <-stop:
 			return nil
-		case <-ticker.C:
+		case _, ok := <-events:
+			if !ok {
+				events = nil // subscription dropped; keep heartbeat going
+				continue
+			}
+			if err := s.refreshIdleCount(w); err != nil {
+				return err
+			}
+		case <-tickC:
 			if err := w.WriteNumMessages(s.folder.Messages); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// refreshIdleCount re-reads the selected folder's message count from the
+// index and writes EXISTS. Used by IDLE after a cross-pod EVENT — the
+// in-memory s.folder.Messages may be stale if another process appended.
+func (s *session) refreshIdleCount(w *imapserver.UpdateWriter) error {
+	if s.folder == nil {
+		return nil
+	}
+	refreshed, err := s.idx.OpenFolder(s.folder.Name, s.folder.UIDValidity)
+	if err != nil {
+		// Best-effort: report what we have. Authoritative state lives on disk
+		// and the next user command will re-read it.
+		return w.WriteNumMessages(s.folder.Messages)
+	}
+	s.folder.Messages = refreshed.Messages
+	return w.WriteNumMessages(refreshed.Messages)
 }
 
 func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) error {
@@ -515,6 +602,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			continue
 		}
 		s.idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
+		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
 		s.statsExpunged++
 		if err := w.WriteExpunge(m.UID); err != nil {
 			return err
@@ -633,6 +721,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 			}
 		}
 		s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
+		s.emitMailboxChange(s.folder.Name, locks.EventChanged, m.UID)
 
 		if !storeFlags.Silent {
 			mw := w.CreateMessage(seqNum)
@@ -696,6 +785,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			return nil, fmt.Errorf("imap/copy append: %w", appendErr)
 		}
 		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
+		s.emitMailboxChange(dest, locks.EventDelivered, newUID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(newUID))
 	}
@@ -772,6 +862,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			return fmt.Errorf("imap/move append: %w", appendErr)
 		}
 		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
+		s.emitMailboxChange(dest, locks.EventDelivered, newUID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(newUID))
 		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename})
@@ -790,6 +881,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		h := hits[i]
 		s.box.Remove(s.folder.Name, h.filename)     //nolint:errcheck
 		s.idx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
+		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, h.srcUID)
 		if err := w.WriteExpunge(h.seqNum); err != nil {
 			return err
 		}

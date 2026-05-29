@@ -122,6 +122,7 @@ func New(cfg *config.Config) (*Server, error) {
 			LoginGreeting:      p.LoginGreeting,
 			LogoutFormat:       p.LogoutFormat,
 			ClientWorkarounds:  imapsvr.ParseIMAPWorkarounds(p.ClientWorkarounds),
+			Locker:             locker,
 		})
 	}
 
@@ -221,6 +222,7 @@ func New(cfg *config.Config) (*Server, error) {
 			XClient:            svcs.LMTP.XClient,
 			XClientTrustedNets: xclientNets,
 			TLSConfig:          lmtpTLS,
+			Locker:             locker,
 		})
 	}
 

@@ -15,6 +15,7 @@ import (
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -44,6 +45,12 @@ type Options struct {
 	Router UserRouter
 	// BackendPort is the LMTP port on backend pods. Default: 24.
 	BackendPort int
+
+	// Locker is the cross-process write coordinator. When non-nil, after a
+	// successful delivery the server emits a `delivered` EVENT on the
+	// mailbox key so subscribed IMAP IDLE sessions on other pods receive
+	// the notification immediately. Nil disables cross-pod notifications.
+	Locker locks.Locker
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -297,7 +304,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		rcptBox := s.opts.Mailbox.OpenUser(userInfo)
 		rcptIdx := s.opts.Index.OpenUser(userInfo)
 		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal
-		err := deliverOne(rcptBox, rcptIdx, folder, bytes.NewReader(msg), int64(len(msg)))
+		err := deliverOne(rcptBox, rcptIdx, folder, bytes.NewReader(msg), int64(len(msg)), s.opts.Locker, username)
 		rcptBox.Close() //nolint:errcheck
 		rcptIdx.Close() //nolint:errcheck
 		if err != nil {

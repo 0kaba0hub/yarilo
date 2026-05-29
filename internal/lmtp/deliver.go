@@ -2,19 +2,28 @@ package lmtp
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// deliverOne saves a single message to a pre-opened UserMailbox/UserIndex pair.
-// The caller is responsible for opening handles via MailboxBackend.OpenUser and
-// IndexBackend.OpenUser (after resolving the recipient's UserInfo), and for
-// calling Init() on the UserMailbox before the first delivery in a session.
+// deliverOne saves a single message into the recipient's folder. The
+// caller opens handles via MailboxBackend.OpenUser + IndexBackend.OpenUser
+// (after resolving the recipient's UserInfo) and calls Init() on the
+// UserMailbox before the first delivery in a session.
+//
+// When locker is non-nil and the delivery succeeds, a `delivered` EVENT
+// is emitted on mbox:<username>:<folder> so any subscribed IMAP IDLE
+// session (in this or any other pod) is woken up. Username is used only
+// to build the lock/event key — the actual mailbox path is resolved
+// upstream via the per-user UserMailbox handle.
 //
 // Phase 4 — userdb lookup for LMTP:
 //
@@ -24,7 +33,7 @@ import (
 //	during delivery (matching Dovecot's lda/lmtp behaviour), add a UserDB
 //	interface (driver: SQL query or dict protocol) and call it here before
 //	OpenUser, passing the resulting home as homeOverride to Resolver.UserInfo.
-func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64) error {
+func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username string) error {
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("lmtp: seek: %w", err)
 	}
@@ -67,8 +76,26 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		return fmt.Errorf("lmtp: uidlist append: %w", err)
 	}
 
+	emitMailboxEvent(locker, username, folder, locks.EventDelivered, uid)
 	slog.Info("lmtp: delivered", "folder", folder, "uid", uid, "size", size)
 	return nil
+}
+
+// emitMailboxEvent is a best-effort fire-and-forget publish. Errors are
+// logged at debug level and never surfaced — events are advisory, the
+// authoritative state lives in the index file. A 1-second timeout avoids
+// blocking a delivery if the locks server is sluggish.
+func emitMailboxEvent(locker locks.Locker, username, folder string, eventType locks.EventType, uid uint32) {
+	if locker == nil || username == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	payload := strconv.FormatUint(uint64(uid), 10)
+	if err := locker.Emit(ctx, locks.MailboxKey(username, folder), eventType, payload); err != nil {
+		slog.Debug("lmtp: emit event failed",
+			"folder", folder, "type", string(eventType), "err", err)
+	}
 }
 
 // stripDetail removes the +detail part from an address: user+tag@domain → user@domain.
