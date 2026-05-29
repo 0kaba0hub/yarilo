@@ -23,6 +23,7 @@ type Config struct {
 	AnvilService    AnvilServiceConfig    `koanf:"anvil_service"`
 	DirectorService DirectorServiceConfig `koanf:"director_service"`
 	LocksService    LocksServiceConfig    `koanf:"locks_service"`
+	LocksClient     LocksClientConfig     `koanf:"locks_client"`
 	Storage         StorageConfig         `koanf:"storage"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
@@ -194,6 +195,17 @@ type AnvilServiceConfig struct {
 type AuthServiceConfig struct {
 	Listen   string         `koanf:"listen"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
+}
+
+// LocksClientConfig configures how session processes (yarilo-imap,
+// yarilo-pop3, yarilo-submission, yarilo-lmtp) connect to a yarilo-locks
+// service. Empty Mode disables cross-process locking — single-process tests
+// and CLI dev runs. Production k8s sets Mode=remote with one or more
+// Endpoints pointing at the yarilo-locks ClusterIP Service.
+type LocksClientConfig struct {
+	Mode      string   `koanf:"mode"`      // remote | embedded | ""
+	Endpoints []string `koanf:"endpoints"` // remote: ["yarilo-locks.svc:9104", ...]
+	Socket    string   `koanf:"socket"`    // embedded: /run/yarilo/locks.sock
 }
 
 // LocksServiceConfig configures the standalone yarilo-locks process.

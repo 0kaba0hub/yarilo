@@ -25,7 +25,9 @@ import (
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 // Server is the yarilo backend (or single-node) server.
@@ -36,6 +38,18 @@ type Server struct {
 	pop3       *pop3svr.Server // nil if neither POP3 nor POP3S is active
 	submission *submsvr.Server // nil if no Submission/Submissions is active
 	lmtp       *lmtp.Server    // nil if LMTP not configured
+	locker     locks.Locker    // cross-process write coordinator; nil = disabled
+}
+
+// Close releases backend resources. Currently this means closing the
+// yarilo-locks client (if any). Idempotent. Session binaries should defer
+// Close after backend.New for clean lock release; without this the locker
+// connection drops on FD reap and the server reclaims locks via TTL (~30s).
+func (s *Server) Close() error {
+	if s.locker != nil {
+		return s.locker.Close()
+	}
+	return nil
 }
 
 // New creates and wires all components according to cfg.
@@ -58,8 +72,12 @@ func New(cfg *config.Config) (*Server, error) {
 		Root:         cfg.Storage.MaildirRoot,
 		HomeTemplate: cfg.Storage.MailHomeTemplate,
 	}
-	mbox := buildMailbox(cfg.Storage)
-	idx := file.New()
+	locker, err := buildLocksClient(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("backend: locks_client: %w", err)
+	}
+	mbox := buildMailbox(cfg.Storage, locker)
+	idx := file.New(file.WithLocker(locker))
 
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
@@ -220,6 +238,7 @@ func New(cfg *config.Config) (*Server, error) {
 		pop3:       pop3Server,
 		submission: smtpServer,
 		lmtp:       lmtpServer,
+		locker:     locker,
 	}, nil
 }
 
@@ -530,14 +549,51 @@ func (a chainAuth) AuthPlain(username, password string) error {
 	return nil
 }
 
-func buildMailbox(cfg config.StorageConfig) mailbox.MailboxBackend {
+func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
 	switch strings.ToLower(cfg.Mailbox) {
 	case "dbox":
+		// dbox not yet wired through pkg/locks — landing in a follow-up phase.
 		return dbox.New()
 	case "mdbox":
+		// mdbox not yet wired through pkg/locks — landing in a follow-up phase.
 		return mdbox.New()
 	default:
-		return maildir.New()
+		return maildir.New(maildir.WithLocker(locker))
+	}
+}
+
+// buildLocksClient constructs a yarilo-locks client per cfg.LocksClient.
+// Returns (nil, nil) when locks are disabled (Mode == ""). The returned
+// Locker must be closed by Server.Close.
+func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
+	lc := cfg.LocksClient
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	switch lc.Mode {
+	case "":
+		return nil, nil
+	case "embedded":
+		if lc.Socket == "" {
+			return nil, fmt.Errorf("locks_client.socket is required for embedded mode")
+		}
+		return locks.NewClient(ctx, locks.DialUnix(lc.Socket))
+	case "remote":
+		if len(lc.Endpoints) == 0 {
+			return nil, fmt.Errorf("locks_client.endpoints must list at least one host:port for remote mode")
+		}
+		var tlsCfg *tls.Config
+		if cfg.InternalTLS.Enabled {
+			t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+			if err != nil {
+				return nil, fmt.Errorf("locks_client mtls: %w", err)
+			}
+			tlsCfg = t
+		}
+		// Single-endpoint connect for now; failover across Endpoints is a
+		// follow-up (custom Dialer iterating the list until first success).
+		return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], tlsCfg))
+	default:
+		return nil, fmt.Errorf("locks_client: unknown mode %q (want remote | embedded | \"\")", lc.Mode)
 	}
 }
 
