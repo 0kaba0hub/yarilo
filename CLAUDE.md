@@ -101,6 +101,17 @@ Key rules derived from ARCHITECTURE.md:
   it cannot scale across pods so it is never the k8s default. Never use `fcntl`/`flock`, never
   bypass with raw `sync.Mutex` across process boundaries. `sync.Mutex` stays only as in-process
   fast-path before any `yarilo-locks` call.
+- **Dovecot feature parity is the North Star.** Every feature that exists in Dovecot is in-scope
+  for yarilo over time — namespaces (personal/shared/public), vdirs (virtual mailboxes), Sieve,
+  ManageSieve, fts (full-text search), replication (dsync), quota, ACL, imap-hibernate,
+  password schemes, etc. "Not in this PR" and "next phase" are acceptable; "out of scope forever"
+  is not. Audit gaps against Dovecot when designing each phase.
+- **Every Dovecot-modelled feature ships with `yarilo.yaml` + Helm `values.yaml` knobs.** Tunables
+  are exposed in `pkg/config/config.go` under the relevant section (`protocol.*` / `auth.*` /
+  `storage.*` / `general.*`) AND in `helm/values.yaml`. Defaults may match Dovecot's defaults
+  but operators must always be able to override. No hard-coded behaviour that is not also a
+  config knob. Match Dovecot's option names where reasonable so `dovecot.conf` → `yarilo.yaml`
+  migration stays mechanical.
 
 ---
 
