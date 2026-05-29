@@ -130,14 +130,19 @@ func (u *userMailbox) Init() error {
 	return nil
 }
 
+// Create provisions the cur/new/tmp triplet for a folder. Under the
+// cross-process X lock so a concurrent Delete cannot tear the half-built
+// tree apart and no sibling Create races on the same folder.
 func (u *userMailbox) Create(folder string) error {
-	base := u.folderPath(folder)
-	for _, sub := range []string{"cur", "new", "tmp"} {
-		if err := os.MkdirAll(filepath.Join(base, sub), 0o700); err != nil {
-			return fmt.Errorf("maildir/create: %w", err)
+	return u.withMailboxLock(folder, func() error {
+		base := u.folderPath(folder)
+		for _, sub := range []string{"cur", "new", "tmp"} {
+			if err := os.MkdirAll(filepath.Join(base, sub), 0o700); err != nil {
+				return fmt.Errorf("maildir/create: %w", err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // Delete removes the entire folder tree (cur/new/tmp + uidlist + maildirfolder
