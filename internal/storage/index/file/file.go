@@ -200,6 +200,12 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 	return f, nil
 }
 
+// SaveFolder persists the in-memory Folder mutations (Messages) back to the
+// on-disk header. NextUID is deliberately NOT taken from f — the only
+// legitimate writer of NextUID is AllocateAppend (under the same X lock),
+// and overwriting from a possibly stale caller snapshot would race-corrupt
+// the counter across processes. The header is re-read from disk under the
+// lock so the persisted NextUID is always the freshest value.
 func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 	u.mu.Lock()
 	idx, ok := u.open[f.ID]
@@ -208,7 +214,9 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 		return fmt.Errorf("fileindex: folder %d not open", f.ID)
 	}
 	return u.withMailboxLock(idx, func() error {
-		idx.nextUID = f.NextUID
+		if err := idx.rereadHeaderLocked(); err != nil {
+			return err
+		}
 		idx.msgCount = f.Messages
 		return idx.writeHeader()
 	})
@@ -478,14 +486,52 @@ func (u *userIndex) indexDir(folder string) string {
 	return filepath.Join(u.home, "."+folder)
 }
 
-// RenameFolder renames the on-disk index directory for a folder.
-// Any open IndexFile handles remain valid after the rename (file descriptors
-// survive directory renames on POSIX filesystems).
+// RenameFolder renames the on-disk index directory for a folder. Any open
+// IndexFile handles remain valid after the rename (file descriptors survive
+// directory renames on POSIX filesystems).
+//
+// Takes the cross-process X lock on BOTH the old and the new folder key in
+// lexicographic order so two processes attempting simultaneous renames
+// cannot deadlock on each other. The rename itself is a single OS-level
+// directory rename — fast and atomic.
 func (u *userIndex) RenameFolder(oldName, newName string) error {
-	if err := os.Rename(u.indexDir(oldName), u.indexDir(newName)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("fileindex/rename: %w", err)
+	return u.withTwoMailboxLocks(oldName, newName, func() error {
+		if err := os.Rename(u.indexDir(oldName), u.indexDir(newName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("fileindex/rename: %w", err)
+		}
+		return nil
+	})
+}
+
+// withTwoMailboxLocks runs fn while holding the cross-process X lock on
+// both folderA and folderB. Locks are acquired in lexicographic order to
+// avoid deadlocks against other writers using the same convention. When
+// the two folder names collapse to the same key, only one lock is held.
+// A nil locker short-circuits to fn directly.
+func (u *userIndex) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
+	if u.b.locker == nil {
+		return fn()
 	}
-	return nil
+	a, b := folderA, folderB
+	if a > b {
+		a, b = b, a
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lkA, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, a), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("fileindex/lock %s: %w", a, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
+	if a == b {
+		return fn()
+	}
+	lkB, err := locks.Acquire(ctx, u.b.locker, locks.MailboxKey(u.username, b), u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("fileindex/lock %s: %w", b, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
+	return fn()
 }
 
 // GetPOP3UIDLs reads the pop3.uidl file for the folder.
