@@ -595,3 +595,111 @@ func uidSetsEqual(a, b []imap.UID) bool {
 	}
 	return true
 }
+
+// ---- TestESearchAndStatusSize (Phase IMAP-A) --------------------------------
+
+func TestSearchESearchReturnOptions(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	body := []byte(testMsg)
+	for i := 0; i < 5; i++ {
+		appendWithFlags(t, c, "INBOX", body)
+	}
+	// Tag UIDs 2 and 4 as Seen so the criteria is non-trivial.
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	for _, uid := range []uint32{2, 4} {
+		us := imap.UIDSet{}
+		us.AddNum(imap.UID(uid))
+		if err := c.Store(us, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close(); err != nil {
+			t.Fatalf("STORE seen: %v", err)
+		}
+	}
+
+	t.Run("RETURN_COUNT_MIN_MAX", func(t *testing.T) {
+		opts := &imap.SearchOptions{ReturnMin: true, ReturnMax: true, ReturnCount: true}
+		data, err := c.UIDSearch(&imap.SearchCriteria{Flag: []imap.Flag{imap.FlagSeen}}, opts).Wait()
+		if err != nil {
+			t.Fatalf("ESEARCH: %v", err)
+		}
+		if data.Count != 2 {
+			t.Errorf("Count: got %d, want 2", data.Count)
+		}
+		if data.Min != 2 {
+			t.Errorf("Min: got %d, want 2", data.Min)
+		}
+		if data.Max != 4 {
+			t.Errorf("Max: got %d, want 4", data.Max)
+		}
+		// RETURN was given without ALL, so .All should be empty.
+		if data.All != nil && len(data.AllUIDs()) > 0 {
+			t.Errorf("All should be empty when RETURN omits ALL; got %v", data.AllUIDs())
+		}
+	})
+
+	// NOTE on RETURN SAVE / $: server-side support is implemented
+	// (substituteSearchRes + savedSearchUIDs in session). go-imap/v2
+	// v2.0.0-beta.8's imapclient.returnSearchOptions omits ReturnSave from
+	// the wire serialisation, so an end-to-end client test would never
+	// emit `RETURN SAVE` and the server-side path stays untested via this
+	// path. Re-enable when upstream ships the client fix (or via a raw
+	// connection test in a follow-up).
+}
+
+func TestStatusSize(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	body := []byte(testMsg)
+	for i := 0; i < 3; i++ {
+		appendWithFlags(t, c, "INBOX", body)
+	}
+
+	data, err := c.Status("INBOX", &imap.StatusOptions{
+		NumMessages: true,
+		Size:        true,
+		NumDeleted:  true,
+	}).Wait()
+	if err != nil {
+		t.Fatalf("STATUS: %v", err)
+	}
+	if data.NumMessages == nil || *data.NumMessages != 3 {
+		t.Errorf("NumMessages: got %v, want 3", data.NumMessages)
+	}
+	if data.Size == nil {
+		t.Fatal("STATUS=SIZE: Size unset")
+	}
+	wantMin := int64(len(body)) * 3
+	if *data.Size < wantMin {
+		t.Errorf("Size: got %d, want >= %d", *data.Size, wantMin)
+	}
+	if data.NumDeleted == nil || *data.NumDeleted != 0 {
+		t.Errorf("NumDeleted: got %v, want 0", data.NumDeleted)
+	}
+}
+
+func TestCapabilitiesIncludeIMAP4rev2Required(t *testing.T) {
+	// go-imap/v2's server advertises IMAP4rev1-extension capabilities only
+	// after auth; CAPABILITY before LOGIN returns the pre-auth set.
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	caps, err := c.Capability().Wait()
+	if err != nil {
+		t.Fatalf("CAPABILITY: %v", err)
+	}
+	wantCaps := []imap.Cap{
+		imap.CapIMAP4rev2,
+		imap.CapESearch,
+		imap.CapSearchRes,
+		imap.CapEnable,
+		imap.CapSASLIR,
+		imap.CapStatusSize,
+	}
+	for _, capName := range wantCaps {
+		if _, ok := caps[capName]; !ok {
+			t.Errorf("missing required IMAP4rev2 capability: %s", capName)
+		}
+	}
+}

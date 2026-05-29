@@ -74,6 +74,15 @@ func New(opts Options) *Server {
 		imaplib.CapNamespace:   {},
 		imaplib.CapUnselect:    {},
 		imaplib.CapLiteralPlus: {},
+		// IMAP4rev2 (RFC 9051) requires these. Some are wire-level (ENABLE,
+		// SASL-IR) — declaring them is enough; go-imap/v2 handles the
+		// protocol mechanics. The rest (ESEARCH, SEARCHRES, STATUS=SIZE)
+		// require semantic implementation in Search/Status below.
+		imaplib.CapESearch:    {},
+		imaplib.CapSearchRes:  {},
+		imaplib.CapEnable:     {},
+		imaplib.CapSASLIR:     {},
+		imaplib.CapStatusSize: {},
 	}
 
 	s.srv = imapserver.New(&imapserver.Options{
@@ -171,6 +180,11 @@ type session struct {
 	idx      mailbox.UserIndex
 	limitIP  string
 	folder   *mailbox.Folder
+
+	// savedSearchUIDs holds the most recent SEARCH result that was issued
+	// with RETURN SAVE (RFC 5182). Subsequent commands that reference $ get
+	// this set substituted in via go-imap/v2's IsSearchRes detection.
+	savedSearchUIDs imaplib.UIDSet
 
 	statsDeleted    int
 	statsExpunged   int
@@ -443,10 +457,30 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 		return nil, err
 	}
 	msgs, _ := s.idx.GetMessages(f.ID, mailbox.SeqSet{})
-	var unseen uint32
+	var (
+		unseen    uint32
+		deleted   uint32
+		totalSize int64
+	)
 	for _, m := range msgs {
 		if !hasFlag(m.Flags, `\Seen`) {
 			unseen++
+		}
+		if hasFlag(m.Flags, `\Deleted`) {
+			deleted++
+		}
+	}
+	// STATUS=SIZE (RFC 8438, also IMAP4rev2 required) — the FileIndex
+	// record does not carry message size; pull it from the maildir/dbox
+	// filename via box.List which extracts the ",S=<phys>" suffix.
+	// Only walked when the client asked for SIZE so the common STATUS
+	// path stays cheap.
+	if opts.Size {
+		boxMsgs, listErr := s.box.List(name)
+		if listErr == nil {
+			for _, bm := range boxMsgs {
+				totalSize += int64(bm.Size)
+			}
 		}
 	}
 	d := &imaplib.StatusData{Mailbox: name}
@@ -462,6 +496,12 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	}
 	if opts.NumUnseen {
 		d.NumUnseen = &unseen
+	}
+	if opts.NumDeleted {
+		d.NumDeleted = &deleted
+	}
+	if opts.Size {
+		d.Size = &totalSize
 	}
 	if opts.HighestModSeq {
 		d.HighestModSeq = f.HighestModSeq
@@ -611,33 +651,124 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	return nil
 }
 
-func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, _ *imaplib.SearchOptions) (*imaplib.SearchData, error) {
+func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, opts *imaplib.SearchOptions) (*imaplib.SearchData, error) {
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
+
+	// SearchRes ($) substitution: when the client passes "$" as a UID set,
+	// go-imap/v2 surfaces it as an imaplib.SearchRes()-tagged entry in
+	// criteria.UID. We swap it for the saved set from the previous RETURN
+	// SAVE so the matcher sees a concrete UID list.
+	criteria = s.substituteSearchRes(criteria)
+
 	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return nil, err
 	}
+
+	// Collect both representations — clients may want UID set OR sequence
+	// numbers via RETURN ALL, while MIN/MAX/COUNT always operate on the
+	// kind requested.
+	var (
+		uidHits  imaplib.UIDSet
+		seqHits  imaplib.SeqSet
+		first    uint32
+		last     uint32
+		hitCount uint32
+	)
+	for i, m := range msgs {
+		seqNum := uint32(i + 1)
+		if !matchesCriteriaSeq(m, seqNum, criteria) {
+			continue
+		}
+		hitCount++
+		var current uint32
+		if kind == imapserver.NumKindUID {
+			current = m.UID
+			uidHits.AddNum(imaplib.UID(m.UID))
+		} else {
+			current = seqNum
+			seqHits.AddNum(seqNum)
+		}
+		if first == 0 || current < first {
+			first = current
+		}
+		if current > last {
+			last = current
+		}
+	}
+
 	data := &imaplib.SearchData{}
-	if kind == imapserver.NumKindUID {
-		var result imaplib.UIDSet
-		for _, m := range msgs {
-			if matchesCriteria(m, criteria) {
-				result.AddNum(imaplib.UID(m.UID))
-			}
+	// ESEARCH RETURN handling. Per RFC 4731: when RETURN is given, only the
+	// requested data items are sent. When RETURN is omitted, send ALL by
+	// default (legacy SEARCH response).
+	wantAll := opts == nil ||
+		(!opts.ReturnMin && !opts.ReturnMax && !opts.ReturnCount && !opts.ReturnAll && !opts.ReturnSave)
+	if wantAll || (opts != nil && opts.ReturnAll) {
+		if kind == imapserver.NumKindUID {
+			data.All = uidHits
+		} else {
+			data.All = seqHits
 		}
-		data.All = result
-	} else {
-		var result imaplib.SeqSet
-		for i, m := range msgs {
-			if matchesCriteria(m, criteria) {
-				result.AddNum(uint32(i + 1))
+	}
+	if opts != nil && opts.ReturnMin {
+		data.Min = first
+	}
+	if opts != nil && opts.ReturnMax {
+		data.Max = last
+	}
+	if opts != nil && opts.ReturnCount {
+		data.Count = hitCount
+	}
+	// SEARCHRES (RFC 5182): RETURN SAVE pins the hit set for later $ refs.
+	// The spec says the saved set is always the UID-typed result; convert
+	// from sequence numbers if SEARCH was issued in sequence-number mode.
+	if opts != nil && opts.ReturnSave {
+		if kind == imapserver.NumKindUID {
+			s.savedSearchUIDs = uidHits
+		} else {
+			// Sequence-number SEARCH still saves UIDs (RFC 5182 §2.1).
+			var saved imaplib.UIDSet
+			for i, m := range msgs {
+				if matchesCriteriaSeq(m, uint32(i+1), criteria) {
+					saved.AddNum(imaplib.UID(m.UID))
+				}
 			}
+			s.savedSearchUIDs = saved
 		}
-		data.All = result
 	}
 	return data, nil
+}
+
+// substituteSearchRes walks criteria.UID looking for the SearchRes ($)
+// marker and replaces it with the in-memory saved set from a previous
+// RETURN SAVE. Returns the original criteria unchanged if no marker is
+// present, so non-$ SEARCH calls pay no cost.
+func (s *session) substituteSearchRes(criteria *imaplib.SearchCriteria) *imaplib.SearchCriteria {
+	if criteria == nil {
+		return criteria
+	}
+	needsSub := false
+	for _, u := range criteria.UID {
+		if imaplib.IsSearchRes(u) {
+			needsSub = true
+			break
+		}
+	}
+	if !needsSub {
+		return criteria
+	}
+	clone := *criteria
+	clone.UID = make([]imaplib.UIDSet, 0, len(criteria.UID))
+	for _, u := range criteria.UID {
+		if imaplib.IsSearchRes(u) {
+			clone.UID = append(clone.UID, s.savedSearchUIDs)
+			continue
+		}
+		clone.UID = append(clone.UID, u)
+	}
+	return &clone
 }
 
 func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *imaplib.FetchOptions) error {
@@ -945,7 +1076,10 @@ func numSetContains(numSet imaplib.NumSet, seqNum uint32, uid imaplib.UID) bool 
 	return false
 }
 
-func matchesCriteria(m *mailbox.MessageMeta, criteria *imaplib.SearchCriteria) bool {
+// matchesCriteriaSeq evaluates a SearchCriteria against a single message.
+// seqNum supplies the message's 1-based sequence number; 0 means "unknown"
+// and any criteria.SeqNum filter then short-circuits to not-matched.
+func matchesCriteriaSeq(m *mailbox.MessageMeta, seqNum uint32, criteria *imaplib.SearchCriteria) bool {
 	if criteria == nil {
 		return true
 	}
@@ -956,6 +1090,18 @@ func matchesCriteria(m *mailbox.MessageMeta, criteria *imaplib.SearchCriteria) b
 	}
 	for _, f := range criteria.NotFlag {
 		if hasFlag(m.Flags, string(f)) {
+			return false
+		}
+	}
+	// Each entry in criteria.UID / criteria.SeqNum is an AND condition (the
+	// message must fall within EVERY listed set). Per RFC 9051 §6.4.4.
+	for _, set := range criteria.UID {
+		if !set.Contains(imaplib.UID(m.UID)) {
+			return false
+		}
+	}
+	for _, set := range criteria.SeqNum {
+		if seqNum == 0 || !set.Contains(seqNum) {
 			return false
 		}
 	}
