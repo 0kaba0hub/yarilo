@@ -45,6 +45,13 @@ func startTestServer(t *testing.T) *imapclient.Client {
 		Index:    idx,
 		Resolver: resolver,
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		SpecialUseDefaults: map[string]string{
+			"Sent":    `\Sent`,
+			"Drafts":  `\Drafts`,
+			"Trash":   `\Trash`,
+			"Junk":    `\Junk`,
+			"Archive": `\Archive`,
+		},
 	}
 	srv := imapserver.New(opts)
 
@@ -806,5 +813,75 @@ func TestListReturnSubscribedAndChildren(t *testing.T) {
 	}
 	if !sawChildrenAttr {
 		t.Errorf("Archive missing \\HasChildren / \\HasNoChildren attribute")
+	}
+}
+
+// ---- TestSpecialUse (Phase IMAP-C) -----------------------------------------
+
+func TestSpecialUseDefaultsAndCreateOverride(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// Defaults from server config (server_test setup uses the production
+	// defaults map). Sent / Drafts / Trash should advertise the matching
+	// special-use attr.
+	for _, folder := range []string{"Sent", "Drafts", "Trash"} {
+		if err := c.Create(folder, nil).Wait(); err != nil {
+			t.Fatalf("CREATE %s: %v", folder, err)
+		}
+	}
+
+	// CREATE with explicit USE — folder name does NOT match a default.
+	if err := c.Create("CustomArchive", &imap.CreateOptions{
+		SpecialUse: []imap.MailboxAttr{imap.MailboxAttrArchive},
+	}).Wait(); err != nil {
+		t.Fatalf("CREATE CustomArchive USE \\Archive: %v", err)
+	}
+
+	mailboxes, err := c.List("", "*", &imap.ListOptions{ReturnSpecialUse: true}).Collect()
+	if err != nil {
+		t.Fatalf("LIST RETURN SPECIAL-USE: %v", err)
+	}
+
+	want := map[string]imap.MailboxAttr{
+		"Sent":          imap.MailboxAttrSent,
+		"Drafts":        imap.MailboxAttrDrafts,
+		"Trash":         imap.MailboxAttrTrash,
+		"CustomArchive": imap.MailboxAttrArchive,
+	}
+	seen := make(map[string]imap.MailboxAttr)
+	for _, mb := range mailboxes {
+		for _, attr := range mb.Attrs {
+			switch attr {
+			case imap.MailboxAttrSent, imap.MailboxAttrDrafts,
+				imap.MailboxAttrTrash, imap.MailboxAttrJunk,
+				imap.MailboxAttrArchive, imap.MailboxAttrAll, imap.MailboxAttrFlagged:
+				seen[mb.Mailbox] = attr
+			}
+		}
+	}
+	for folder, attr := range want {
+		got, ok := seen[folder]
+		if !ok {
+			t.Errorf("%s missing special-use attr (want %s)", folder, attr)
+			continue
+		}
+		if got != attr {
+			t.Errorf("%s: got %s, want %s", folder, got, attr)
+		}
+	}
+}
+
+func TestSpecialUseCapAdvertised(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	caps, err := c.Capability().Wait()
+	if err != nil {
+		t.Fatalf("CAPABILITY: %v", err)
+	}
+	for _, capName := range []imap.Cap{imap.CapSpecialUse, imap.CapCreateSpecialUse} {
+		if _, ok := caps[capName]; !ok {
+			t.Errorf("missing capability: %s", capName)
+		}
 	}
 }

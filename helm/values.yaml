@@ -464,6 +464,17 @@ protocol:
     loginGreeting: ""
     logoutFormat: ""
     clientWorkarounds: []
+    ## RFC 6154 SPECIAL-USE — map a folder name to a special-use attribute
+    ## advertised in LIST replies. Operators can override per deployment;
+    ## per-user CREATE (USE ...) takes precedence at runtime via the
+    ## on-disk special_use file. Mirrors Dovecot's
+    ## namespace.mailbox.special_use convention.
+    specialUseDefaults:
+      Sent: "\\Sent"
+      Drafts: "\\Drafts"
+      Trash: "\\Trash"
+      Junk: "\\Junk"
+      Archive: "\\Archive"
 
   pop3:
     noFlagUpdates: false

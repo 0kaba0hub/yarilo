@@ -59,6 +59,12 @@ type Options struct {
 	// without waiting for the heartbeat interval. Nil keeps the legacy
 	// timer-based IDLE behaviour.
 	Locker locks.Locker
+
+	// SpecialUseDefaults is the folder-name → \Sent/\Drafts/etc. mapping
+	// applied by LIST when the on-disk per-user special_use file does not
+	// override. Driven by protocol.imap.imap_special_use_defaults in
+	// yarilo.yaml.
+	SpecialUseDefaults map[string]string
 }
 
 // New creates an IMAP server.
@@ -79,13 +85,15 @@ func New(opts Options) *Server {
 		// SASL-IR) — declaring them is enough; go-imap/v2 handles the
 		// protocol mechanics. The rest (ESEARCH, SEARCHRES, STATUS=SIZE)
 		// require semantic implementation in Search/Status below.
-		imaplib.CapESearch:      {},
-		imaplib.CapSearchRes:    {},
-		imaplib.CapEnable:       {},
-		imaplib.CapSASLIR:       {},
-		imaplib.CapStatusSize:   {},
-		imaplib.CapListExtended: {},
-		imaplib.CapListStatus:   {},
+		imaplib.CapESearch:          {},
+		imaplib.CapSearchRes:        {},
+		imaplib.CapEnable:           {},
+		imaplib.CapSASLIR:           {},
+		imaplib.CapStatusSize:       {},
+		imaplib.CapListExtended:     {},
+		imaplib.CapListStatus:       {},
+		imaplib.CapSpecialUse:       {},
+		imaplib.CapCreateSpecialUse: {},
 	}
 
 	s.srv = imapserver.New(&imapserver.Options{
@@ -192,6 +200,10 @@ type session struct {
 	// subs persists the SUBSCRIBE/UNSUBSCRIBE state (RFC 9051 + RFC 5258).
 	// Constructed lazily after authentication.
 	subs *subscriptionStore
+
+	// specialUse persists per-user RFC 6154 overrides set via CREATE
+	// (USE ...) and resolves folder→attr for LIST.
+	specialUse *specialUseStore
 
 	statsDeleted    int
 	statsExpunged   int
@@ -304,11 +316,11 @@ func (s *session) Login(username, password string) error {
 	s.userInfo = userInfo
 	s.box = box
 	s.idx = s.srv.opts.Index.OpenUser(userInfo)
-	s.subs = newSubscriptionStore(
-		userInfo.Home,
-		userInfo.Username,
-		fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), userInfo.Username),
-		s.srv.opts.Locker,
+	owner := fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), userInfo.Username)
+	s.subs = newSubscriptionStore(userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker)
+	s.specialUse = newSpecialUseStore(
+		userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker,
+		s.srv.opts.SpecialUseDefaults,
 	)
 	return nil
 }
@@ -363,8 +375,21 @@ func (s *session) Unselect() error {
 	return nil
 }
 
-func (s *session) Create(name string, _ *imaplib.CreateOptions) error {
-	return s.box.Create(name)
+func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
+	if err := s.box.Create(name); err != nil {
+		return err
+	}
+	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr so
+	// subsequent LIST replies advertise it. RFC permits multiple USE attrs
+	// in the request but forbids carrying more than one on the folder; we
+	// honour the first one in the supplied slice and ignore the rest.
+	if opts != nil && len(opts.SpecialUse) > 0 && s.specialUse != nil {
+		if err := s.specialUse.Set(name, opts.SpecialUse[0]); err != nil {
+			slog.Warn("imap: special_use persist failed",
+				"folder", name, "attr", string(opts.SpecialUse[0]), "err", err)
+		}
+	}
+	return nil
 }
 
 func (s *session) Delete(name string) error {
@@ -504,6 +529,15 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		if opts != nil && opts.ReturnSubscribed {
 			if _, ok := subs[name]; ok {
 				attrs = append(attrs, imaplib.MailboxAttrSubscribed)
+			}
+		}
+		// SPECIAL-USE (RFC 6154). The attribute is unconditional metadata
+		// — clients that did not request RETURN SPECIAL-USE still expect
+		// to see \Sent etc. when the folder qualifies. Dovecot advertises
+		// the same way.
+		if s.specialUse != nil {
+			if attr := s.specialUse.Get(name); attr != "" {
+				attrs = append(attrs, attr)
 			}
 		}
 		data := &imaplib.ListData{Mailbox: full, Delim: '/', Attrs: attrs}

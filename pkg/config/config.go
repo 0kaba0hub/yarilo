@@ -133,6 +133,12 @@ type IMAPProtocolConfig struct {
 	LoginGreeting      string   `koanf:"login_greeting"`
 	LogoutFormat       string   `koanf:"imap_logout_format"`
 	ClientWorkarounds  []string `koanf:"client_workarounds"`
+	// SpecialUseDefaults maps a folder name (case-sensitive) to its RFC 6154
+	// special-use attribute. LIST advertises the attr automatically when the
+	// folder name matches. Per-user CREATE (USE ...) overrides win against
+	// these defaults via the on-disk special_use file. Mirrors Dovecot's
+	// namespace.mailbox.special_use convention.
+	SpecialUseDefaults map[string]string `koanf:"imap_special_use_defaults"`
 }
 
 type POP3ProtocolConfig struct {
@@ -308,6 +314,16 @@ func Load(path string) (*Config, error) {
 				IdleNotifyInterval: 120,
 				MaxLineLength:      65536,
 				IDSend:             "name *",
+				// Dovecot-compat conventional special-use mappings.
+				// Operators override via yarilo.yaml; per-user CREATE USE
+				// overrides via the on-disk special_use file.
+				SpecialUseDefaults: map[string]string{
+					"Sent":    `\Sent`,
+					"Drafts":  `\Drafts`,
+					"Trash":   `\Trash`,
+					"Junk":    `\Junk`,
+					"Archive": `\Archive`,
+				},
 			},
 			POP3: POP3ProtocolConfig{
 				UIDLFormat:     "%u.%v",
