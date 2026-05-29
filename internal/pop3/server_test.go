@@ -73,7 +73,10 @@ func (m *mockIndex) OpenFolder(folder string, uv uint32) (*mailbox.Folder, error
 }
 func (m *mockIndex) SaveFolder(_ *mailbox.Folder) error                   { return nil }
 func (m *mockIndex) AppendMessage(_ uint64, _ *mailbox.MessageMeta) error { return nil }
-func (m *mockIndex) UpdateFlags(_ uint64, _ uint32, _, _ []string) error  { return nil }
+func (m *mockIndex) AllocateAppend(_ uint64, _ *mailbox.MessageMeta) (uint32, error) {
+	return 0, nil
+}
+func (m *mockIndex) UpdateFlags(_ uint64, _ uint32, _, _ []string) error { return nil }
 func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return m.msgs, nil
 }

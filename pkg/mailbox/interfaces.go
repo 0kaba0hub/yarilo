@@ -95,6 +95,14 @@ type UserIndex interface {
 	OpenFolder(folder string, uidValidity uint32) (*Folder, error)
 	SaveFolder(f *Folder) error
 	AppendMessage(folderID uint64, m *MessageMeta) error
+	// AllocateAppend atomically reserves the folder's next UID under the
+	// cross-process mailbox lock, stamps it on m, appends the index record,
+	// and persists the bumped NextUID. Returns the assigned UID.
+	//
+	// Callers (LMTP delivery, IMAP APPEND/COPY/MOVE) must prefer this over
+	// the AppendMessage + manual NextUID++ sequence — the latter is
+	// race-prone across processes; see ARCHITECTURE.md §Known issues.
+	AllocateAppend(folderID uint64, m *MessageMeta) (uint32, error)
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
 	GetMessages(folderID uint64, uids SeqSet) ([]*MessageMeta, error)
 	ExpungeMessage(folderID uint64, uid uint32) error

@@ -569,6 +569,9 @@ no EVENT channel for IDLE notifications, opaque metrics, and shaky NFS semantics
 through `pkg/locks` in v1.5.0 (Phase 1): two-tier mutex + cross-process X lock on
 `mbox:<user>:<folder>`, atomic `AllocateAppend` for UID assignment, integration test
 proving no UID collisions and no uidlist corruption under concurrent two-process writes.
+Backend wiring (config-driven `LocksClient` reach into `backend.New`) shipped in v1.6.0
+(Phase 2.1). LMTP delivery and IMAP `APPEND`/`COPY`/`MOVE`/INBOX-rename swapped from
+the race-prone `NextUID++` pattern to `AllocateAppend` in v1.7.0 (Phase 2.2).
 
 ---
 

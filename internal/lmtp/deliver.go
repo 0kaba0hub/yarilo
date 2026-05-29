@@ -52,12 +52,22 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		ModSeq:   modseq,
 		Size:     uint32(size),
 	}
-	if err := idx.AppendMessage(f.ID, meta); err != nil {
+	uid, err := idx.AllocateAppend(f.ID, meta)
+	if err != nil {
 		_ = box.Remove(folder, filename)
-		return fmt.Errorf("lmtp: index append: %w", err)
+		return fmt.Errorf("lmtp: index allocate-append: %w", err)
+	}
+	if err := box.AppendUIDEntry(folder, uid, filename); err != nil {
+		// The index already holds the record under uid; the uidlist entry
+		// is a Dovecot-compat artefact used by Maildir for fast UID lookup.
+		// Leaving it inconsistent would cause subsequent List() to skip the
+		// message. Surface the error so the LMTP transaction reports DEFER
+		// and the upstream retries.
+		_ = box.Remove(folder, filename)
+		return fmt.Errorf("lmtp: uidlist append: %w", err)
 	}
 
-	slog.Info("lmtp: delivered", "folder", folder, "uid", meta.UID, "size", size)
+	slog.Info("lmtp: delivered", "folder", folder, "uid", uid, "size", size)
 	return nil
 }
 
