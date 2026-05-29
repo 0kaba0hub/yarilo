@@ -356,15 +356,11 @@ func (s *session) renameInbox(dest string) error {
 			return fmt.Errorf("imap/rename-inbox read: %w", readErr)
 		}
 		modseq, _ := s.idx.NextModSeq(destFolder.ID)
-		newUID := destFolder.NextUID
-		destFolder.NextUID++
-		destFolder.Messages++
 		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return fmt.Errorf("imap/rename-inbox save: %w", saveErr)
 		}
 		meta := &mailbox.MessageMeta{
-			UID:          newUID,
 			Filename:     newFilename,
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
@@ -372,7 +368,8 @@ func (s *session) renameInbox(dest string) error {
 			Size:         uint32(len(data)),
 			InternalDate: m.InternalDate,
 		}
-		if appendErr := s.idx.AppendMessage(destFolder.ID, meta); appendErr != nil {
+		newUID, appendErr := s.idx.AllocateAppend(destFolder.ID, meta)
+		if appendErr != nil {
 			return fmt.Errorf("imap/rename-inbox append: %w", appendErr)
 		}
 		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
@@ -380,8 +377,7 @@ func (s *session) renameInbox(dest string) error {
 		s.idx.ExpungeMessage(srcFolder.ID, m.UID)       //nolint:errcheck
 	}
 	srcFolder.Messages = 0
-	s.idx.SaveFolder(srcFolder)  //nolint:errcheck
-	s.idx.SaveFolder(destFolder) //nolint:errcheck
+	s.idx.SaveFolder(srcFolder) //nolint:errcheck
 	return nil
 }
 
@@ -464,22 +460,19 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 
 	size := r.Size()
 	modseq, _ := s.idx.NextModSeq(f.ID)
-	uid := f.NextUID
-	f.NextUID++
-	f.Messages++
 
 	filename, err := s.box.Save(name, r, size, flagList)
 	if err != nil {
 		return nil, err
 	}
 
-	meta := &mailbox.MessageMeta{UID: uid, Filename: filename, Flags: flagList, Keywords: kwList, ModSeq: modseq, Size: uint32(size)}
-	if err := s.idx.AppendMessage(f.ID, meta); err != nil {
+	meta := &mailbox.MessageMeta{Filename: filename, Flags: flagList, Keywords: kwList, ModSeq: modseq, Size: uint32(size)}
+	uid, err := s.idx.AllocateAppend(f.ID, meta)
+	if err != nil {
 		return nil, err
 	}
 
 	s.box.AppendUIDEntry(name, uid, filename) //nolint:errcheck
-	s.idx.SaveFolder(f)                       //nolint:errcheck
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(uid)}, nil
 }
@@ -686,15 +679,11 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			return nil, fmt.Errorf("imap/copy read: %w", readErr)
 		}
 		modseq, _ := s.idx.NextModSeq(destFolder.ID)
-		newUID := destFolder.NextUID
-		destFolder.NextUID++
-		destFolder.Messages++
 		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return nil, fmt.Errorf("imap/copy save: %w", saveErr)
 		}
 		meta := &mailbox.MessageMeta{
-			UID:          newUID,
 			Filename:     newFilename,
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
@@ -702,14 +691,14 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			Size:         uint32(len(data)),
 			InternalDate: m.InternalDate,
 		}
-		if appendErr := s.idx.AppendMessage(destFolder.ID, meta); appendErr != nil {
+		newUID, appendErr := s.idx.AllocateAppend(destFolder.ID, meta)
+		if appendErr != nil {
 			return nil, fmt.Errorf("imap/copy append: %w", appendErr)
 		}
 		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(newUID))
 	}
-	s.idx.SaveFolder(destFolder) //nolint:errcheck
 	return &imaplib.CopyData{
 		UIDValidity: destFolder.UIDValidity,
 		SourceUIDs:  srcUIDs,
@@ -766,15 +755,11 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			return fmt.Errorf("imap/move read: %w", readErr)
 		}
 		modseq, _ := s.idx.NextModSeq(destFolder.ID)
-		newUID := destFolder.NextUID
-		destFolder.NextUID++
-		destFolder.Messages++
 		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return fmt.Errorf("imap/move save: %w", saveErr)
 		}
 		meta := &mailbox.MessageMeta{
-			UID:          newUID,
 			Filename:     newFilename,
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
@@ -782,7 +767,8 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			Size:         uint32(len(data)),
 			InternalDate: m.InternalDate,
 		}
-		if appendErr := s.idx.AppendMessage(destFolder.ID, meta); appendErr != nil {
+		newUID, appendErr := s.idx.AllocateAppend(destFolder.ID, meta)
+		if appendErr != nil {
 			return fmt.Errorf("imap/move append: %w", appendErr)
 		}
 		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
@@ -790,7 +776,6 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		dstUIDs.AddNum(imaplib.UID(newUID))
 		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename})
 	}
-	s.idx.SaveFolder(destFolder) //nolint:errcheck
 
 	if err := w.WriteCopyData(&imaplib.CopyData{
 		UIDValidity: destFolder.UIDValidity,
