@@ -48,7 +48,7 @@ docker/          — Dockerfile
 **Ключові архітектурні рішення зафіксовані в схемах:**
 - 4 окремих StatefulSet-и на протокол у backend deployment — для independent scaling per protocol
 - `yarilo-auth` + `yarilo-anvil` — shared services (Deployments × 2), один deployment на всю інсталяцію
-- `yarilo-locks` — single abstraction for cross-process write coordination. Two modes behind one wire protocol: **embedded** (in-memory, Unix socket) in standalone; **remote** (Redis-backed, mTLS TCP `:9104`, Deployment × 2 per tag) in backend. In-process goroutine concurrency stays on `sync.Mutex` as a two-tier fast-path.
+- `yarilo-locks` — single abstraction for cross-process write coordination. **All k8s deployments (standalone and backend) use `remote` mode** — its own Deployment behind a ClusterIP Service, mTLS TCP `:9104`, Redis-backed state. `embedded` mode (in-memory + Unix socket) is reserved for unit tests and non-k8s CLI runs; it is never the production default because Unix sockets cannot cross pods, which breaks any `replicaCount > 1`. In-process goroutine concurrency stays on `sync.Mutex` as a two-tier fast-path.
 - Один NFS PV (RWX) на tag — shared всіма 4 StatefulSet-ами в межах tag-у
 - Director — StatefulSet × 3 з peer-sync, 4 окремі ring-и (по одному на протокол)
 - Sticky routing per-protocol, cross-protocol coordination через `yarilo-locks`
@@ -68,6 +68,15 @@ Key rules derived from ARCHITECTURE.md:
 
 - **Multi-binary, multi-process.** Each component is a separate compiled binary in `app/`.
   Never create a single binary with mode flags. Never put two components in one `main.go`.
+- **Config-not-binary.** Every deployment / scaling / topology change goes through configuration
+  only (`yarilo.yaml` or Helm `values.yaml`). The compiled binaries do not change between shapes:
+  one `yarilo-locks` artefact serves embedded mode (tests / dev CLI) and remote mode (k8s prod);
+  one `yarilo-imap` (and each session binary) serves single-node standalone and sharded backend.
+  No build tags (`//go:build standalone`), no compile-time switches, no runtime `if isStandalone()`
+  branches in code that gate anything beyond reading a config value. Scaling `replicaCount: 1 → N`,
+  switching bundled Redis ↔ external Redis, migrating standalone → backend with director — all
+  values.yaml changes, never code changes. Backends behind interfaces are fine; code-level
+  branching on deployment shape is not.
 - **`exec.Command` only — never `fork()`.** Go runtime + fork = undefined behavior.
 - **Privilege drop via `SysProcAttr.Credential` only.** `syscall.Setuid()` does not work
   in multi-threaded Go. Credential is set at process start, before Go runtime initializes.
@@ -86,9 +95,12 @@ Key rules derived from ARCHITECTURE.md:
   with version handshake. See INTERNALS.md for exact wire format.
 - **Each process writes only to its own resources.** No cross-process writes to shared state.
 - **Cross-process write coordination always goes through `yarilo-locks`.** Single `pkg/locks` API,
-  single TAB-delimited wire protocol. Embedded mode (Unix socket, in-memory) in standalone, remote
-  mode (mTLS TCP, Redis) in backend per tag. Never use `fcntl`/`flock`, never bypass with raw `sync.Mutex`
-  across process boundaries. `sync.Mutex` stays only as in-process fast-path before any `yarilo-locks` call.
+  single TAB-delimited wire protocol. **In every k8s Helm release (standalone or backend) the
+  binary runs in `remote` mode** — its own Deployment, mTLS TCP `:9104`, Redis-backed state.
+  `embedded` mode (Unix socket + in-memory) exists for unit tests and CLI dev runs only;
+  it cannot scale across pods so it is never the k8s default. Never use `fcntl`/`flock`, never
+  bypass with raw `sync.Mutex` across process boundaries. `sync.Mutex` stays only as in-process
+  fast-path before any `yarilo-locks` call.
 
 ---
 

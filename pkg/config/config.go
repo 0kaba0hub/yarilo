@@ -22,6 +22,7 @@ type Config struct {
 	AuthService     AuthServiceConfig     `koanf:"auth_service"`
 	AnvilService    AnvilServiceConfig    `koanf:"anvil_service"`
 	DirectorService DirectorServiceConfig `koanf:"director_service"`
+	LocksService    LocksServiceConfig    `koanf:"locks_service"`
 	Storage         StorageConfig         `koanf:"storage"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
@@ -193,6 +194,20 @@ type AnvilServiceConfig struct {
 type AuthServiceConfig struct {
 	Listen   string         `koanf:"listen"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
+}
+
+// LocksServiceConfig configures the standalone yarilo-locks process.
+// Mode "embedded" runs an in-memory server on a Unix socket (standalone deployment).
+// Mode "remote" runs a Redis-backed server on TCP+mTLS (backend deployment per tag).
+// Empty Mode disables the locks server in this process.
+type LocksServiceConfig struct {
+	Mode          string         `koanf:"mode"`           // embedded | remote | ""
+	Socket        string         `koanf:"socket"`         // embedded: /run/yarilo/locks.sock
+	Listen        string         `koanf:"listen"`         // remote: ":9104"
+	Redis         string         `koanf:"redis"`          // remote: "redis://host:6379/0"
+	KeyPrefix     string         `koanf:"key_prefix"`     // remote: default "yarilo:locks:"
+	ChannelPrefix string         `koanf:"channel_prefix"` // remote: default "yarilo:events:"
+	Shutdown      ShutdownConfig `koanf:"shutdown"`
 }
 
 // MailServerConfig describes one backend mail server the director routes sessions to.

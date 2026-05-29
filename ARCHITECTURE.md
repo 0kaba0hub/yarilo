@@ -548,18 +548,24 @@ Raw mail delivery (`rename()` into `new/`) is safe — atomic at OS level.
 
 **Required fix:** Route every cross-process write through **`yarilo-locks`** — the single locking
 abstraction in `pkg/locks`. One wire protocol (TAB-delimited, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-§yarilo-locks). Two backends behind it:
+§yarilo-locks). Two backends behind one identical wire protocol:
 
-| Deployment | `yarilo-locks` mode | Backend | Transport |
+| Use | `yarilo-locks` mode | Backend | Transport |
 |:---|:---|:---|:---|
-| **standalone** | `embedded` | in-memory map (per-pod, ephemeral) | Unix socket `/run/yarilo/locks.sock` |
-| **backend (per tag)** | `remote` | Redis (per-tag, replicaCount=2) | mTLS TCP `:9104` |
+| **Every k8s Helm release (standalone or backend)** | `remote` | Redis (bundled or external) | mTLS TCP `:9104` |
+| Unit tests / non-k8s CLI dev | `embedded` | in-memory map (ephemeral) | Unix socket |
+
+Production k8s is always remote — Unix sockets cannot cross pods, so embedded mode breaks the
+moment `replicaCount > 1`. Embedded stays in the binary for tests and CLI dev; it is never the
+Helm default. The choice is config-driven (`locks_service.mode`) so the same compiled binary
+serves both — see CLAUDE.md §Config-not-binary.
 
 In-process goroutine concurrency keeps `sync.Mutex` as a fast-path before any `yarilo-locks` call —
 the two-tier scheme avoids RTT for intra-process contention. `fcntl`/`flock` is not used: it has
 no EVENT channel for IDLE notifications, opaque metrics, and shaky NFS semantics.
 
-**Status:** Not yet implemented. Must be done before standalone or backend ship.
+**Status:** `pkg/locks` foundation and `yarilo-locks` binary landed in v1.4.0 (Phase 0). Wiring
+into `internal/storage/*` follows in Phase 1.
 
 ---
 

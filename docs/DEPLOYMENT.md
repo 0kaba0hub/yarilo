@@ -72,27 +72,33 @@ coordination between StatefulSet replicas within the same tag (notably during fa
 ### Deployment modes — one abstraction, two backends
 
 A single `pkg/locks` API and a single wire protocol, with two implementations behind it.
-Standalone stays self-contained (no Redis dependency); backend gains HA.
+**Production k8s always uses remote mode** (Redis-backed, mTLS TCP), regardless of how many
+replicas the deployment runs — this is the only mode that supports horizontal scaling without
+a config or code rework. Embedded mode is reserved for non-k8s use only.
 
-| Mode | Standalone | Backend (per tag) |
+| Mode | Production k8s (standalone or backend) | Dev / CI |
 |:---|:---|:---|
-| Process | `yarilo-locks --embedded` in the same pod | `Deployment yarilo-locks-<tag>` × 2 |
-| State backend | in-memory map (ephemeral) | Redis (per-tag or shared) |
-| Transport | Unix socket `/run/yarilo/locks.sock` | mTLS TCP `:9104` |
-| HA | none — pod crash restarts the whole stack | 2 replicas behind a ClusterIP Service |
-| RTT (typical) | ~100–300 µs | ~1–2 ms |
+| When to use | Every k8s Helm release. Scales from 1 → N replicas via `replicaCount` in values.yaml. | Local CLI runs, unit tests, single-process smoke runs. **Never in k8s.** |
+| Process | `yarilo-locks` as its own Deployment (typically replicaCount=2 for HA). | `yarilo-locks --embedded` co-located in the same process tree. |
+| State backend | Redis (bundled subchart or external). | In-memory map (ephemeral, pod-local). |
+| Transport | mTLS TCP `:9104` reached through a ClusterIP Service. | Unix socket `/run/yarilo/locks.sock`. |
+| HA | 2+ replicas behind the Service; Redis HA via Sentinel/Cluster. | None — state dies with the process. |
+| Scales to N session pods | Yes. All session pods reach the same locks Service and share state via Redis. | No. Unix socket is pod-local and in-memory state is per-process. |
+| RTT (typical) | ~1–2 ms (in-cluster Redis on the same node ~0.5 ms). | ~100–300 µs. |
 | Wire protocol | identical | identical |
 
-**Embedded mode rationale (standalone):**
-- Self-contained promise — no Redis dependency, no extra deployment, no mTLS certificate plumbing.
-- Lock state lives in the RAM of one process. On crash, every lock is lost; that is acceptable
-  in standalone because all session processes restart with the pod and in-flight operations
-  either retry or fail cleanly.
-- Same wire protocol → same call-site code, same integration tests, same metrics and logs.
+**Why embedded is not a k8s option, even at `replicaCount=1`:**
+- Unix-socket coordination is pod-local. Bump `replicaCount: 1 → 2` and the second pod
+  cannot see lock state held by the first — two writers collide on the same NFS file.
+- A scheduled rolling restart of a single replica drops every in-flight lock for ~30 s.
+  Remote mode survives this: clients reconnect to the surviving replica and pick up state
+  from Redis.
+- Operator surprise is the worst kind of incident. The deployment must not silently switch
+  semantics when the operator scales it up. One mode in production, end of story.
 
 **Two-tier locking convention:** `sync.Mutex` inside a process is the fast-path for
-goroutine-level contention (no RTT). `yarilo-locks` is engaged only when a cross-process barrier
-is required (any write to a shared file).
+goroutine-level contention (no RTT). `yarilo-locks` (always remote, in production) is engaged
+only when a cross-process barrier is required (any write to a shared file).
 
 ### Configuration
 
@@ -178,8 +184,60 @@ background TTL sweeper — no external dependencies.
 - Stateless (state in Redis).
 - Local Redis, or shared with other components (anvil, etc.).
 
-Embedded mode has no HA — state is ephemeral; on pod crash every lock is lost together with
-every session process in the same pod, which is acceptable for standalone.
+Embedded mode has no HA — state is ephemeral; on process crash every lock is lost. Acceptable
+for unit tests and CLI dev runs; not used in k8s deployments.
+
+---
+
+## Standalone deployment — single-node k8s, scale-out by replicaCount
+
+The standalone deployment targets a single k8s node, no director, no per-tag sharding. It is
+**built to scale from 1 → N replicas of each component by editing values.yaml** — no rewiring,
+no protocol changes, no code touched. The same pattern carries the operator from a one-pod dev
+cluster to a small multi-replica production setup.
+
+### Components (all as k8s Deployments unless noted)
+
+| Component | Default replicas | Scale by |
+|:---|:---|:---|
+| `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login` | 1 each | `replicaCount` per protocol (login is stateless beyond TLS state) |
+| `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp` | 1 each | `replicaCount` per protocol (coordination via locks) |
+| `yarilo-auth` | 1 | `replicaCount` (stateless; userdb in SQL) |
+| `yarilo-anvil` | 1 | `replicaCount` (state in Redis) |
+| `yarilo-locks` | 2 | `replicaCount` (state in Redis; 2 = HA default) |
+| `redis` | 1 (StatefulSet) | external HA or Sentinel for production |
+
+### Storage
+
+A single `PersistentVolumeClaim` with `accessModes: [ReadWriteMany]` — every session pod mounts
+it at the same path. On single-node clusters this can be backed by `hostPath`, NFS, or a CSI
+RWX provisioner; on multi-node clusters it must be NFS or CephFS.
+
+### Routing
+
+A k8s `Service` per public port (993, 995, 465, 587, 24, 143, 110) load-balances connections
+across the matching login pods. There is **no director** — sessions distribute round-robin (or
+by k8s `Service`'s sessionAffinity setting). Cross-pod write contention is resolved through
+`yarilo-locks`; that adds RTT but stays correct. Once cross-pod contention is a measured
+problem, the upgrade path is a director deployment (separate document); the session and login
+binaries do not change.
+
+### Scale invariants
+
+- **`yarilo-locks` is always remote mode**, even at `replicaCount=1` for every other component.
+  This is what keeps the deployment scalable without rework.
+- **All session processes call the locks Service via mTLS TCP.** Storage code uses
+  `pkg/locks.Locker` only; no compile-time switch on deployment shape.
+- **Storage is RWX from day one.** Switching from RWO to RWX later requires a data migration
+  and a full re-deploy. Doing it up front costs nothing extra.
+
+### Out of scope for standalone
+
+- Per-tag sharding (multiple NFS shares, different user populations on different backends).
+  That belongs to the backend deployment (see `docs/yarilo_backend.svg`).
+- Director-based sticky routing and consistent hashing. Standalone uses k8s `Service`
+  load-balancing; if measured contention warrants it, switch to director without touching
+  the session binaries.
 
 ---
 
