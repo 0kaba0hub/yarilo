@@ -204,10 +204,12 @@ func (u *userMailbox) Init() error {
 }
 
 func (u *userMailbox) Create(folder string) error {
-	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
-		return fmt.Errorf("mdbox/create: %w", err)
-	}
-	return nil
+	return u.withMailboxLock(folder, func() error {
+		if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
+			return fmt.Errorf("mdbox/create: %w", err)
+		}
+		return nil
+	})
 }
 
 func (u *userMailbox) Delete(folder string) error {
