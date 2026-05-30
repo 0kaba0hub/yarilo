@@ -644,3 +644,24 @@ logLevel: info
 extraEnv: []
 extraVolumes: []
 extraVolumeMounts: []
+
+# Named dicts (pkg/dict). Yarilo features (metadata, quota counters, ACL state)
+# look these up by name. Each entry picks a driver (file|redis|sql|memory|fail)
+# and configures it via driver-specific `settings`. See docs/DICT.md for the
+# full reference per driver. The same template renders into yarilo.yaml.
+#
+# Standalone single-pod default uses file driver on the local PVC.
+# Backend multi-pod helm release should override with redis or sql to share
+# state across replicas.
+dicts: {}
+#   metadata:
+#     driver: file
+#     settings:
+#       path: /var/yarilo/dicts/metadata.json
+#   quota:
+#     driver: redis
+#     settings:
+#       addr: yarilo-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+#       db: 0
+#       prefix: "yarilo:quota:"
+#     expire_secs: 86400

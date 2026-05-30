@@ -1,7 +1,16 @@
 # yarilo-admin
 
-Command-line tool for managing `yarilo-director` via the HTTP admin API.
-Runs inside the director pod — no flags required in standard k8s deployments.
+Unified operator CLI for yarilo — the analog of Dovecot's `doveadm`.
+Every subsystem that needs an "ops surface" gains a subcommand here:
+
+| Subsystem | Purpose | Doc |
+|:---|:---|:---|
+| `director` | Manage `yarilo-director` cluster via HTTP admin API | this page |
+| `dict` | Operate on `pkg/dict` KV stores (metadata, quota, ACL state, ...) | [DICT.md](DICT.md) |
+
+Runs inside the director pod for `director` ops — no flags required
+in standard k8s deployments. Runs anywhere with config / driver access
+for `dict` ops.
 
 ---
 

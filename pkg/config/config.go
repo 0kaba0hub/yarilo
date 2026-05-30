@@ -25,8 +25,32 @@ type Config struct {
 	LocksService    LocksServiceConfig    `koanf:"locks_service"`
 	LocksClient     LocksClientConfig     `koanf:"locks_client"`
 	Storage         StorageConfig         `koanf:"storage"`
+	Dicts           map[string]DictConfig `koanf:"dicts"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
+}
+
+// DictConfig declares one named dict instance. The map key in
+// Config.Dicts is the logical name yarilo features reference (e.g.
+// "metadata", "quota_count"); Driver selects the registered
+// pkg/dict driver (file|memory|fail|redis|sql) and Settings carries
+// the driver-specific knobs. The driver decodes Settings at Open
+// time — see each driver's package doc for the schema.
+//
+// Driver-agnostic settings on top of the per-driver map:
+//
+//	expire_secs — default TTL for writes; per-op OpSettings overrides
+//	username    — passed as OpSettings.Username when callers omit it
+//	home_dir    — passed as OpSettings.HomeDir when callers omit it
+//
+// These three are siblings of "driver" / "settings" in the yaml so
+// operators do not have to repeat them in every driver-specific block.
+type DictConfig struct {
+	Driver     string         `koanf:"driver"`
+	Settings   map[string]any `koanf:"settings"`
+	ExpireSecs uint32         `koanf:"expire_secs"`
+	Username   string         `koanf:"username"`
+	HomeDir    string         `koanf:"home_dir"`
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.
