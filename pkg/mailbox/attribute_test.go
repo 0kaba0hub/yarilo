@@ -1,0 +1,94 @@
+package mailbox
+
+import "testing"
+
+func TestParseAttrEntry(t *testing.T) {
+	cases := []struct {
+		in        string
+		wantScope AttrScope
+		wantName  string
+		wantErr   bool
+	}{
+		{"/private/comment", AttrPrivate, "comment", false},
+		{"/shared/admin", AttrShared, "admin", false},
+		{"/private/vendor/yarilo/abc", AttrPrivate, "vendor/yarilo/abc", false},
+		{"comment", 0, "", true},
+		{"/other/foo", 0, "", true},
+		{"", 0, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			scope, name, err := ParseAttrEntry(tc.in)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr=%v", err, tc.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if scope != tc.wantScope {
+				t.Errorf("scope = %v, want %v", scope, tc.wantScope)
+			}
+			if name != tc.wantName {
+				t.Errorf("name = %q, want %q", name, tc.wantName)
+			}
+		})
+	}
+}
+
+func TestAttrKeyRoundtrip(t *testing.T) {
+	guid := [16]byte{0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	priv := AttrKey(AttrPrivate, guid, "comment")
+	shared := AttrKey(AttrShared, guid, "comment")
+
+	wantPriv := "priv/box/deadbeef0102030405060708090a0b0c/comment"
+	wantShared := "shared/box/deadbeef0102030405060708090a0b0c/comment"
+
+	if priv != wantPriv {
+		t.Errorf("private key = %q, want %q", priv, wantPriv)
+	}
+	if shared != wantShared {
+		t.Errorf("shared key = %q, want %q", shared, wantShared)
+	}
+
+	// Same entry name in different scopes must produce different keys.
+	if priv == shared {
+		t.Error("private and shared keys must differ for the same attrName")
+	}
+}
+
+func TestServerAttrKeyVendorPrefix(t *testing.T) {
+	guid := [16]byte{}
+	for i := range guid {
+		guid[i] = byte(i)
+	}
+	srv := ServerAttrKey(AttrPrivate, guid, "comment")
+	mbx := AttrKey(AttrPrivate, guid, "comment")
+	if srv == mbx {
+		t.Fatal("server-scope key must differ from INBOX-scope key with the same attrName")
+	}
+	want := "priv/box/000102030405060708090a0b0c0d0e0f/vendor/yarilo/pvt/server/comment"
+	if srv != want {
+		t.Errorf("server key = %q, want %q", srv, want)
+	}
+}
+
+func TestAttrPrefixIterability(t *testing.T) {
+	guid := [16]byte{}
+	prefix := AttrPrefix(AttrPrivate, guid)
+	key := AttrKey(AttrPrivate, guid, "comment")
+	if got := TrimAttrPrefix(key, prefix); got != "comment" {
+		t.Errorf("trim(%q, %q) = %q, want %q", key, prefix, got, "comment")
+	}
+	if got := TrimAttrPrefix("not-our-key", prefix); got != "" {
+		t.Errorf("trim of non-matching key returned %q, want empty", got)
+	}
+}
+
+func TestFormatAttrEntry(t *testing.T) {
+	if got := FormatAttrEntry(AttrPrivate, "comment"); got != "/private/comment" {
+		t.Errorf("private format: %q", got)
+	}
+	if got := FormatAttrEntry(AttrShared, "admin"); got != "/shared/admin" {
+		t.Errorf("shared format: %q", got)
+	}
+}

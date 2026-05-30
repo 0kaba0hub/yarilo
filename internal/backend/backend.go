@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all" // register all dict drivers
+
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
@@ -25,6 +27,7 @@ import (
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
@@ -79,6 +82,12 @@ func New(cfg *config.Config) (*Server, error) {
 	mbox := buildMailbox(cfg.Storage, locker)
 	idx := file.New(file.WithLocker(locker))
 
+	// ---- dicts ----
+	metadataDict, err := buildDict(cfg.Dicts, "metadata")
+	if err != nil {
+		return nil, fmt.Errorf("backend: dicts.metadata: %w", err)
+	}
+
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
 
@@ -124,6 +133,7 @@ func New(cfg *config.Config) (*Server, error) {
 			ClientWorkarounds:  imapsvr.ParseIMAPWorkarounds(p.ClientWorkarounds),
 			Locker:             locker,
 			SpecialUseDefaults: p.SpecialUseDefaults,
+			MetadataDict:       metadataDict,
 		})
 	}
 
@@ -562,6 +572,27 @@ func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 	default:
 		return maildir.New(maildir.WithLocker(locker))
 	}
+}
+
+// buildDict opens the named dict from cfg.Dicts, returning nil when the
+// entry is absent. The caller decides whether nil is acceptable —
+// IMAP METADATA tolerates a nil dict (the feature degrades to "Metadata
+// storage not configured"); other consumers may require a non-nil
+// result and error out at startup.
+func buildDict(dicts map[string]config.DictConfig, name string) (dict.Dict, error) {
+	cfg, ok := dicts[name]
+	if !ok {
+		return nil, nil
+	}
+	if cfg.Driver == "" {
+		return nil, fmt.Errorf("dict %q has empty driver", name)
+	}
+	d, err := dict.Open(dict.Config{Driver: cfg.Driver, Settings: cfg.Settings})
+	if err != nil {
+		return nil, fmt.Errorf("open dict %q: %w", name, err)
+	}
+	slog.Info("backend: dict opened", "name", name, "driver", cfg.Driver)
+	return d, nil
 }
 
 // buildLocksClient constructs a yarilo-locks client per cfg.LocksClient.

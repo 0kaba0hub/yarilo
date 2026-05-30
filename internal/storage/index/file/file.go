@@ -6,6 +6,7 @@ package file
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -24,7 +25,7 @@ import (
 // Index file magic / version
 const (
 	indexMajor     = 7
-	indexMinor     = 3
+	indexMinor     = 4 // bumped from 3 in v1.19: header bytes 64..79 = folder GUID
 	logMajor       = 1
 	logMinor       = 3
 	baseHeaderSize = 120
@@ -32,6 +33,8 @@ const (
 	modseqExt      = 8 // modseq extension: always present
 	kwExt          = 4 // keyword bitmask extension: 4 bytes = 32 keywords
 	compatFlagsLE  = 0x01
+
+	headerGUIDOffset = 64 // 16 bytes; reserved space after modseq
 
 	maxKeywords = 32
 )
@@ -80,6 +83,7 @@ type IndexFile struct {
 	keywords  []string
 	logF      *os.File
 	modseq    uint64
+	guid      [16]byte // folder GUID; stamped on initNew, lazily generated on migration of pre-v7.4 files
 }
 
 type indexRecord struct {
@@ -202,6 +206,7 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 		Messages:      idx.msgCount,
 		Unseen:        idx.msgCount - idx.seenCount,
 		HighestModSeq: idx.modseq,
+		GUID:          idx.guid,
 	}
 	return f, nil
 }
@@ -678,6 +683,9 @@ func (idx *IndexFile) initNew(uidValidity uint32) (*IndexFile, error) {
 	idx.nextUID = 1
 	idx.modseq = 1
 	idx.recordSize = baseRecordSize + modseqExt
+	if _, err := rand.Read(idx.guid[:]); err != nil {
+		return nil, fmt.Errorf("fileindex: generate folder GUID: %w", err)
+	}
 
 	if err := idx.writeHeader(); err != nil {
 		return nil, err
@@ -710,6 +718,7 @@ func (idx *IndexFile) writeHeader() error {
 	le.PutUint32(buf[48:], idx.logFileTail)
 	le.PutUint32(buf[52:], idx.logFileHead)
 	binary.LittleEndian.PutUint64(buf[56:], idx.modseq)
+	copy(buf[headerGUIDOffset:headerGUIDOffset+16], idx.guid[:])
 
 	f, err := os.OpenFile(idx.path, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
@@ -761,6 +770,16 @@ func (idx *IndexFile) readHeader(f *os.File) error {
 	idx.recordSize = le.Uint32(buf[10:])
 	if idx.recordSize < baseRecordSize+modseqExt {
 		idx.recordSize = baseRecordSize + modseqExt
+	}
+	copy(idx.guid[:], buf[headerGUIDOffset:headerGUIDOffset+16])
+	// Lazy migration from minor v3 (no GUID): zero-GUID means the file
+	// was written by older code. Generate one in memory and let the
+	// next write persist it. Doing it here means every read path that
+	// touches a stale folder upgrades it transparently.
+	if idx.guid == ([16]byte{}) {
+		if _, err := rand.Read(idx.guid[:]); err != nil {
+			return fmt.Errorf("fileindex: backfill folder GUID: %w", err)
+		}
 	}
 	return nil
 }

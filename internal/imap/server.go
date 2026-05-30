@@ -20,6 +20,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -65,6 +66,13 @@ type Options struct {
 	// override. Driven by protocol.imap.imap_special_use_defaults in
 	// yarilo.yaml.
 	SpecialUseDefaults map[string]string
+
+	// MetadataDict backs RFC 5464 METADATA (GETMETADATA / SETMETADATA).
+	// When nil, the server still advertises METADATA / METADATA-SERVER
+	// (the lib needs the caps to parse the commands) but every op
+	// returns "metadata storage disabled". Operators wire this from
+	// cfg.Dicts["metadata"] in yarilo.yaml.
+	MetadataDict dict.Dict
 }
 
 // New creates an IMAP server.
@@ -96,6 +104,11 @@ func New(opts Options) *Server {
 		imaplib.CapCreateSpecialUse: {},
 		imaplib.CapBinary:           {},
 		imaplib.CapQResync:          {},
+		imaplib.CapMetadata:         {},
+		// CapMetadataServer not in opts.Caps: the fork's capability
+		// allow-list does not echo it back, but SessionMetadata's
+		// mailbox=="" path handles server-scope ops anyway, so the
+		// behaviour is preserved without the wire-level cap atom.
 	}
 
 	s.srv = imapserver.New(&imapserver.Options{
@@ -821,11 +834,12 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	// numbers via RETURN ALL, while MIN/MAX/COUNT always operate on the
 	// kind requested.
 	var (
-		uidHits  imaplib.UIDSet
-		seqHits  imaplib.SeqSet
-		first    uint32
-		last     uint32
-		hitCount uint32
+		uidHits    imaplib.UIDSet
+		seqHits    imaplib.SeqSet
+		first      uint32
+		last       uint32
+		hitCount   uint32
+		highestMod uint64 // CONDSTORE MODSEQ across all matched messages
 	)
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
@@ -846,6 +860,9 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		}
 		if current > last {
 			last = current
+		}
+		if m.ModSeq > highestMod {
+			highestMod = m.ModSeq
 		}
 	}
 
@@ -870,6 +887,15 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	}
 	if opts != nil && opts.ReturnCount {
 		data.Count = hitCount
+	}
+	// CONDSTORE — RFC 7162 §3.1.5. When any matched message carries a
+	// modseq, surface the maximum so the client can persist its
+	// "highest-seen modseq" for the folder. Emitted regardless of which
+	// RETURN items were requested (the spec considers MODSEQ implicit
+	// when SEARCH MODSEQ criteria are used, but it is also useful for
+	// non-modseq searches against a CONDSTORE-enabled mailbox).
+	if highestMod > 0 {
+		data.ModSeq = highestMod
 	}
 	// SEARCHRES (RFC 5182): RETURN SAVE pins the hit set for later $ refs.
 	// The spec says the saved set is always the UID-typed result; convert
@@ -1030,7 +1056,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	return nil
 }
 
-func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeFlags *imaplib.StoreFlags, _ *imaplib.StoreOptions) error {
+func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeFlags *imaplib.StoreFlags, opts *imaplib.StoreOptions) error {
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
@@ -1038,9 +1064,25 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	if err != nil {
 		return err
 	}
+
+	// CONDSTORE STORE (UNCHANGEDSINCE N) — RFC 7162 §3.1.3.
+	// Any message whose current modseq is greater than the client's
+	// last-known value is *skipped* (no flag update, no FETCH response).
+	// The list of skipped UIDs is returned as the MODIFIED response code
+	// after STORE completes so the client can re-sync those messages.
+	unchangedSince := uint64(0)
+	if opts != nil {
+		unchangedSince = opts.UnchangedSince
+	}
+	var modifiedUIDs imaplib.UIDSet
+
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
+			continue
+		}
+		if unchangedSince > 0 && m.ModSeq > unchangedSince {
+			modifiedUIDs.AddNum(imaplib.UID(m.UID))
 			continue
 		}
 		current := append(m.Flags, m.Keywords...)
@@ -1060,11 +1102,30 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventChanged, m.UID)
 
+		// Re-read modseq after UpdateFlags so the FETCH response carries
+		// the bumped value (CONDSTORE clients use it to update their
+		// last-known state).
+		newModSeq := m.ModSeq
+		if updated, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{{From: m.UID, To: m.UID}}); err == nil && len(updated) > 0 {
+			newModSeq = updated[0].ModSeq
+		}
+
 		if !storeFlags.Silent {
 			mw := w.CreateMessage(seqNum)
 			mw.WriteFlags(toImapFlags(append(newFlags, newKW...)))
 			mw.WriteUID(imaplib.UID(m.UID))
+			if newModSeq > 0 {
+				mw.WriteModSeq(newModSeq)
+			}
 			mw.Close() //nolint:errcheck
+		}
+	}
+
+	if len(modifiedUIDs) > 0 {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeOK,
+			Code: imaplib.ResponseCode(string(imaplib.ResponseCodeModified) + " " + modifiedUIDs.String()),
+			Text: "Some messages had a modseq greater than the supplied UNCHANGEDSINCE value",
 		}
 	}
 	return nil
@@ -1137,6 +1198,185 @@ func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 	return &imaplib.NamespaceData{
 		Personal: []imaplib.NamespaceDescriptor{{Delim: '/'}},
 	}, nil
+}
+
+// GetMetadata implements RFC 5464 GETMETADATA. mailbox == "" requests
+// server-scope annotations (stored under INBOX's GUID with a vendor
+// prefix so they cannot collide with INBOX's own mailbox attributes).
+// Per RFC 5464, options.Depth controls whether entries below the
+// requested name are included (0 = exact, 1 = direct children,
+// infinity = whole subtree); options.MaxSize lets the server elide
+// entries larger than the supplied byte cap.
+func (s *session) GetMetadata(folder string, entries []string, opts *imaplib.GetMetadataOptions) (*imaplib.GetMetadataData, error) {
+	if s.srv.opts.MetadataDict == nil {
+		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata storage not configured"}
+	}
+	guid, err := s.metadataFolderGUID(folder)
+	if err != nil {
+		return nil, err
+	}
+	depth := imaplib.GetMetadataDepthZero
+	var maxSize *uint32
+	if opts != nil {
+		depth = opts.Depth
+		maxSize = opts.MaxSize
+	}
+	out := map[string]*[]byte{}
+	for _, entry := range entries {
+		scope, attrName, err := mailbox.ParseAttrEntry(entry)
+		if err != nil {
+			return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
+		}
+		if err := s.collectMetadata(folder, guid, scope, attrName, entry, depth, maxSize, out); err != nil {
+			return nil, err
+		}
+	}
+	return &imaplib.GetMetadataData{Mailbox: folder, Entries: out}, nil
+}
+
+// collectMetadata pulls either an exact key or a prefix iteration into out.
+// Depth 0 = the entry itself; Depth 1 = entry + immediate children;
+// Depth Infinity = entry + whole subtree.
+func (s *session) collectMetadata(
+	folder string, guid [16]byte,
+	scope mailbox.AttrScope, attrName, requestedEntry string,
+	depth imaplib.GetMetadataDepth, maxSize *uint32,
+	out map[string]*[]byte,
+) error {
+	ctx := context.Background()
+	ops := s.metadataOps()
+
+	exactKey := s.metadataKey(folder, guid, scope, attrName)
+	exactVals, found, err := s.srv.opts.MetadataDict.Lookup(ctx, ops, exactKey)
+	if err != nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata lookup failed: " + err.Error()}
+	}
+	if found && len(exactVals) > 0 {
+		v := exactVals[0]
+		if maxSize == nil || uint32(len(v)) <= *maxSize {
+			out[requestedEntry] = &v
+		}
+	}
+
+	if depth == imaplib.GetMetadataDepthZero {
+		return nil
+	}
+
+	flags := dict.IterSortByKey
+	if depth == imaplib.GetMetadataDepthInfinity {
+		flags |= dict.IterRecurse
+	}
+	prefix := s.metadataPrefix(folder, guid, scope) + attrName + "/"
+	it, err := s.srv.opts.MetadataDict.Iterate(ctx, ops, prefix, flags)
+	if err != nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata iterate failed: " + err.Error()}
+	}
+	defer it.Close() //nolint:errcheck
+	stripPrefix := s.metadataPrefix(folder, guid, scope)
+	for it.Next() {
+		k := it.Key()
+		vs := it.Values()
+		if len(vs) == 0 {
+			continue
+		}
+		v := vs[0]
+		if maxSize != nil && uint32(len(v)) > *maxSize {
+			continue
+		}
+		entryName := mailbox.TrimAttrPrefix(k, stripPrefix)
+		if entryName == "" {
+			continue
+		}
+		out[mailbox.FormatAttrEntry(scope, entryName)] = &v
+	}
+	return it.Err()
+}
+
+// SetMetadata implements RFC 5464 SETMETADATA. A nil value in entries
+// means "remove that attribute" (per the spec). Server-scope ops use
+// mailbox == "".
+func (s *session) SetMetadata(folder string, entries map[string]*[]byte) error {
+	if s.srv.opts.MetadataDict == nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata storage not configured"}
+	}
+	guid, err := s.metadataFolderGUID(folder)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	tx, err := s.srv.opts.MetadataDict.Begin(ctx, s.metadataOps())
+	if err != nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata begin failed: " + err.Error()}
+	}
+	for entry, value := range entries {
+		scope, attrName, err := mailbox.ParseAttrEntry(entry)
+		if err != nil {
+			_ = tx.Rollback()
+			return &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
+		}
+		key := s.metadataKey(folder, guid, scope, attrName)
+		if value == nil {
+			if err := tx.Unset(key); err != nil {
+				_ = tx.Rollback()
+				return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata unset failed: " + err.Error()}
+			}
+			continue
+		}
+		if err := tx.Set(key, *value); err != nil {
+			_ = tx.Rollback()
+			return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata set failed: " + err.Error()}
+		}
+	}
+	res, err := tx.Commit()
+	if err != nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata commit failed: " + err.Error()}
+	}
+	if res != dict.CommitOK {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata commit returned " + strconv.Itoa(int(res))}
+	}
+	return nil
+}
+
+// metadataFolderGUID resolves the GUID used for keying the requested
+// folder's attributes. Server-scope ops (folder == "") always hash under
+// INBOX's GUID.
+func (s *session) metadataFolderGUID(folder string) ([16]byte, error) {
+	target := folder
+	if target == "" {
+		target = "INBOX"
+	}
+	f, err := s.ensureFolder(target)
+	if err != nil {
+		return [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox lookup failed: " + err.Error()}
+	}
+	if f.GUID == ([16]byte{}) {
+		return [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox missing GUID"}
+	}
+	return f.GUID, nil
+}
+
+func (s *session) metadataKey(folder string, guid [16]byte, scope mailbox.AttrScope, attrName string) string {
+	if folder == "" {
+		return mailbox.ServerAttrKey(scope, guid, attrName)
+	}
+	return mailbox.AttrKey(scope, guid, attrName)
+}
+
+func (s *session) metadataPrefix(folder string, guid [16]byte, scope mailbox.AttrScope) string {
+	if folder == "" {
+		return mailbox.ServerAttrPrefix(scope, guid)
+	}
+	return mailbox.AttrPrefix(scope, guid)
+}
+
+func (s *session) metadataOps() *dict.OpSettings {
+	if s.userInfo == nil {
+		return nil
+	}
+	return &dict.OpSettings{
+		Username: s.userInfo.Username,
+		HomeDir:  s.userInfo.Home,
+	}
 }
 
 func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest string) error {
@@ -1310,6 +1550,16 @@ func matchesCriteriaSeq(m *mailbox.MessageMeta, seqNum uint32, criteria *imaplib
 		if seqNum == 0 || !set.Contains(seqNum) {
 			return false
 		}
+	}
+	// CONDSTORE SEARCH MODSEQ filter — RFC 7162 §3.1.5.
+	// Match only messages whose modseq is >= the supplied value.
+	// MetadataName/MetadataType narrow which attribute's modseq to compare;
+	// per-attribute modseq tracking is future work, so we treat any
+	// criteria.ModSeq as "message-level modseq" and ignore the attribute
+	// qualifier — strictly more permissive (returns extra matches), which
+	// is RFC-acceptable.
+	if criteria.ModSeq != nil && m.ModSeq < criteria.ModSeq.ModSeq {
+		return false
 	}
 	return true
 }

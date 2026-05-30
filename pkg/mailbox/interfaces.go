@@ -28,6 +28,11 @@ type Folder struct {
 	Messages      uint32
 	Unseen        uint32
 	HighestModSeq uint64
+	// GUID is a stable 16-byte identifier stamped at folder creation
+	// time. Survives RENAME (unlike Name). Used as the key namespace
+	// for per-folder metadata in pkg/dict (RFC 5464 METADATA) and as
+	// the rename-stable handle for ACL state, quota counters, etc.
+	GUID [16]byte
 }
 
 // SeqSet is a set of UIDs or sequence numbers (use UID=0 for seq).

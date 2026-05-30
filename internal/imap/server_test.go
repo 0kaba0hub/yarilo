@@ -14,6 +14,8 @@ import (
 	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
+	_ "github.com/0kaba0hub/yarilo/pkg/dict/memory" // register memory dict driver for METADATA tests
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -1035,5 +1037,249 @@ func TestSelectQResyncReturnsVanished(t *testing.T) {
 	}
 	if !resyncSel.Vanished.Contains(imap.UID(2)) {
 		t.Errorf("Vanished missing UID 2; got %v", resyncSel.Vanished)
+	}
+}
+
+// ---- Phase IMAP-F: CONDSTORE write-side ----------------------------------
+
+// startMetadataClient is startAuthClient + a memory-backed metadata dict so
+// METADATA / SETMETADATA round-trip without persistent storage.
+func startMetadataClient(t *testing.T, user, pass string) *imapclient.Client {
+	t.Helper()
+
+	dir := t.TempDir()
+	mb := maildir.New()
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+
+	md, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatalf("open memory dict: %v", err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
+
+	opts := imapserver.Options{
+		Mailbox:      mb,
+		Index:        idx,
+		Resolver:     resolver,
+		Auth:         &stubPassdb{user: user, pass: pass},
+		MetadataDict: md,
+	}
+	srv := imapserver.New(opts)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("net.Dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatalf("WaitGreeting: %v", err)
+	}
+	if err := c.Login(user, pass).Wait(); err != nil {
+		t.Fatalf("Login(%q): %v", user, err)
+	}
+	return c
+}
+
+func TestStoreUnchangedSinceConflictSkipsMessages(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	appendMsg(t, c, "INBOX")
+	appendMsg(t, c, "INBOX")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	// First STORE bumps both messages' modseq above 1.
+	uids := imap.UIDSetNum(1, 2)
+	bump := c.Store(uids, &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagSeen},
+	}, nil)
+	for msg := bump.Next(); msg != nil; msg = bump.Next() {
+		_, _ = msg.Collect()
+	}
+	if err := bump.Close(); err != nil {
+		t.Fatalf("first STORE: %v", err)
+	}
+
+	// Second STORE with UNCHANGEDSINCE 1 must skip both messages
+	// (their modseq is now > 1). The MODIFIED response code is sent on
+	// the OK tag — go-imap's client does not surface response codes on
+	// success, so we verify the behavioural outcome (flag not applied)
+	// rather than parsing the code.
+	cond := c.Store(uids, &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagFlagged},
+	}, &imap.StoreOptions{UnchangedSince: 1})
+	for msg := cond.Next(); msg != nil; msg = cond.Next() {
+		_, _ = msg.Collect()
+	}
+	if err := cond.Close(); err != nil {
+		t.Fatalf("conditional STORE: %v", err)
+	}
+
+	// FETCH to confirm \Flagged was NOT applied to either message.
+	fetch := c.Fetch(uids, &imap.FetchOptions{Flags: true, UID: true})
+	for msg := fetch.Next(); msg != nil; msg = fetch.Next() {
+		buf, err := msg.Collect()
+		if err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		for _, f := range buf.Flags {
+			if f == imap.FlagFlagged {
+				t.Errorf("UID %d unexpectedly has \\Flagged — UNCHANGEDSINCE did not skip it", buf.UID)
+			}
+		}
+	}
+	if err := fetch.Close(); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+}
+
+func TestSearchModSeqInResponse(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	appendMsg(t, c, "INBOX")
+	appendMsg(t, c, "INBOX")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	// Touch one message so its modseq advances strictly above the
+	// rest. The CONDSTORE-on-write MODSEQ assertion below depends on
+	// this divergence.
+	touch := c.Store(imap.UIDSetNum(1), &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagSeen},
+	}, nil)
+	for msg := touch.Next(); msg != nil; msg = touch.Next() {
+		_, _ = msg.Collect()
+	}
+	if err := touch.Close(); err != nil {
+		t.Fatalf("STORE: %v", err)
+	}
+
+	// SEARCH MODSEQ N pushes ReturnModSeq=true server-side per RFC 7162
+	// §3.1.5; without a MODSEQ criterion the lib omits the response
+	// data item even when SearchData.ModSeq is populated. SearchOptions
+	// (with any Return*) forces the server into ESEARCH mode — without
+	// it the legacy SEARCH response shape has no MODSEQ slot at all.
+	criteria := &imap.SearchCriteria{ModSeq: &imap.SearchCriteriaModSeq{ModSeq: 1}}
+	data, err := c.UIDSearch(criteria, &imap.SearchOptions{ReturnAll: true}).Wait()
+	if err != nil {
+		t.Fatalf("SEARCH: %v", err)
+	}
+	if data.ModSeq == 0 {
+		t.Errorf("SEARCH response missing MODSEQ; got %#v", data)
+	}
+}
+
+// ---- Phase IMAP-G: METADATA RFC 5464 ------------------------------------
+
+func TestMetadataCapsAdvertised(t *testing.T) {
+	c := startMetadataClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	caps, err := c.Capability().Wait()
+	if err != nil {
+		t.Fatalf("CAPABILITY: %v", err)
+	}
+	if !caps.Has(imap.CapMetadata) {
+		t.Errorf("CAPABILITY missing METADATA; got %v", caps)
+	}
+	// METADATA-SERVER is not echoed by the fork's capability allow-list
+	// even when opts.Caps lists it; server-scope ops still work through
+	// SessionMetadata's mailbox=="" path.
+}
+
+func TestSetMetadataThenGetMetadataRoundtrip(t *testing.T) {
+	c := startMetadataClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// SETMETADATA on INBOX (mailbox scope).
+	v := []byte("first comment")
+	if err := c.SetMetadata("INBOX", map[string]*[]byte{
+		"/private/comment": &v,
+	}).Wait(); err != nil {
+		t.Fatalf("SETMETADATA INBOX: %v", err)
+	}
+
+	// GETMETADATA INBOX should return the stored value.
+	got, err := c.GetMetadata("INBOX", []string{"/private/comment"}, nil).Wait()
+	if err != nil {
+		t.Fatalf("GETMETADATA INBOX: %v", err)
+	}
+	if got == nil || got.Entries["/private/comment"] == nil {
+		t.Fatalf("GETMETADATA returned no entry; got=%#v", got)
+	}
+	if string(*got.Entries["/private/comment"]) != "first comment" {
+		t.Errorf("value mismatch: got=%q want=%q", *got.Entries["/private/comment"], "first comment")
+	}
+
+	// Server-scope SETMETADATA/GETMETADATA — mailbox name is "".
+	sv := []byte("vendor server data")
+	if err := c.SetMetadata("", map[string]*[]byte{
+		"/private/vendor/yarilo/abc": &sv,
+	}).Wait(); err != nil {
+		t.Fatalf("SETMETADATA server: %v", err)
+	}
+	srv, err := c.GetMetadata("", []string{"/private/vendor/yarilo/abc"}, nil).Wait()
+	if err != nil {
+		t.Fatalf("GETMETADATA server: %v", err)
+	}
+	if srv == nil || srv.Entries["/private/vendor/yarilo/abc"] == nil {
+		t.Fatalf("GETMETADATA server returned no entry; got=%#v", srv)
+	}
+	if string(*srv.Entries["/private/vendor/yarilo/abc"]) != "vendor server data" {
+		t.Errorf("server value mismatch: got=%q want=%q",
+			*srv.Entries["/private/vendor/yarilo/abc"], "vendor server data")
+	}
+}
+
+func TestSetMetadataNilValueRemovesEntry(t *testing.T) {
+	c := startMetadataClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	v := []byte("to be removed")
+	if err := c.SetMetadata("INBOX", map[string]*[]byte{
+		"/private/transient": &v,
+	}).Wait(); err != nil {
+		t.Fatalf("SETMETADATA: %v", err)
+	}
+	if err := c.SetMetadata("INBOX", map[string]*[]byte{
+		"/private/transient": nil,
+	}).Wait(); err != nil {
+		t.Fatalf("SETMETADATA nil: %v", err)
+	}
+	got, err := c.GetMetadata("INBOX", []string{"/private/transient"}, nil).Wait()
+	if err != nil {
+		t.Fatalf("GETMETADATA: %v", err)
+	}
+	if got != nil && got.Entries["/private/transient"] != nil {
+		t.Errorf("entry survived SETMETADATA nil: %v", *got.Entries["/private/transient"])
+	}
+}
+
+func TestGetMetadataWithoutDictReturnsNo(t *testing.T) {
+	// Plain startAuthClient: no MetadataDict in opts. The cap is still
+	// advertised (parser needs it) but every op should be rejected.
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	_, err := c.GetMetadata("INBOX", []string{"/private/comment"}, nil).Wait()
+	if err == nil {
+		t.Fatal("expected error from GETMETADATA when no dict configured")
 	}
 }

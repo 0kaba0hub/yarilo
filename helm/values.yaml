@@ -653,11 +653,15 @@ extraVolumeMounts: []
 # Standalone single-pod default uses file driver on the local PVC.
 # Backend multi-pod helm release should override with redis or sql to share
 # state across replicas.
-dicts: {}
-#   metadata:
-#     driver: file
-#     settings:
-#       path: /var/yarilo/dicts/metadata.json
+dicts:
+  # IMAP METADATA (RFC 5464) state. When omitted, GETMETADATA /
+  # SETMETADATA respond NO "Metadata storage not configured" but the
+  # rest of the server still works. file driver is fine for standalone
+  # single-pod releases; switch to redis or sql for backend multi-pod.
+  metadata:
+    driver: file
+    settings:
+      path: /var/yarilo/dicts/metadata.json
 #   quota:
 #     driver: redis
 #     settings:

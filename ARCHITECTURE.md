@@ -411,6 +411,7 @@ drop the `replace` directive and the patches branch.
 | Library | Reason | Tracking PR |
 |:---|:---|:---|
 | `github.com/emersion/go-imap/v2` | Server-side CONDSTORE + QRESYNC (RFC 7162) for Phase IMAP-E | [emersion/go-imap#756](https://github.com/emersion/go-imap/pull/756) |
+| `github.com/emersion/go-imap/v2` | Server-side METADATA (RFC 5464) for Phase IMAP-G | [emersion/go-imap#717](https://github.com/emersion/go-imap/pull/717) |
 
 `go.mod` keeps the upstream import path so storage-layer code reads
 naturally; only the `replace` line points elsewhere.
