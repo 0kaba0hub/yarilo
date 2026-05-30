@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
-github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260529234235-9678dfa1faa9 h1:mIHohOziSIpS+1D/n5mb+s7b6IP7hTFONDBQgd62FZk=
-github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260529234235-9678dfa1faa9/go.mod h1:dhoFe2Q0PwLrMD7oZw8ODuaD0vLYPe5uj2wcOMnvh48=
+github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260530071923-66ec44019e67 h1:wuPEw+0L8BDOCY/tMQWow79S2tsQFE7kygg/noFvC28=
+github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260530071923-66ec44019e67/go.mod h1:dhoFe2Q0PwLrMD7oZw8ODuaD0vLYPe5uj2wcOMnvh48=
 github.com/0kaba0hub/go-smtp v0.24.1 h1:W+mN6bXgw/pvx0aK6sci0aF1kI9XXpXKwgN3+MMO4lA=
 github.com/0kaba0hub/go-smtp v0.24.1/go.mod h1:/+9AAHQ9tff6WaqgLs0MAlwQ3OzT6jQhqL4x5M5Ee90=
 github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5 h1:IEjq88XO4PuBDcvmjQJcQGg+w+UaafSy8G5Kcb5tBhI=

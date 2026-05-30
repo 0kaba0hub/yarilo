@@ -61,3 +61,4 @@ protocol:
 | URLAUTH | RFC 4467 | Authorised URL for CATENATE/BURL. |
 | SPECIAL-USE | RFC 6154 | `\Sent`, `\Drafts`, `\Trash` folder flags. |
 | ID | RFC 2971 | Server identity advertisement. |
+| METADATA | RFC 5464 | Server and per-mailbox annotations (GETMETADATA / SETMETADATA). State lives in `cfg.Dicts["metadata"]` (`pkg/dict`). Keys: `priv/box/<folder_guid>/<entry>` and `shared/box/<folder_guid>/<entry>`; server-scope entries live under INBOX's GUID with a `vendor/yarilo/pvt/server/` prefix so they cannot collide with INBOX mailbox attributes. |
