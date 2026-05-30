@@ -417,6 +417,111 @@ naturally; only the `replace` line points elsewhere.
 
 ---
 
+## Dict abstraction
+
+`pkg/dict` is yarilo's general key-value store. Every feature that needs
+durable per-user or per-mailbox metadata — RFC 5464 METADATA, quota
+counters, ACL state, sieve script indices, future replication cursors —
+sits on top of this contract instead of inventing its own storage.
+
+A single interface (`Dict` + `Tx` + `Iterator`) is implemented by
+multiple drivers; concrete storage (a local JSON file for standalone,
+Redis for shared cluster state, PostgreSQL for operators who already
+run one) is selected via config, not code. Adding a new dict-backed
+feature does not touch this package.
+
+### Contract
+
+| Surface | Type |
+|:---|:---|
+| `dict.Dict` | `Lookup` / `Iterate` / `Begin` / `ExpireScan` / `Wait` / `Close` / `Name` |
+| `dict.Tx` | `Set` / `Unset` / `AtomicInc` / `Commit` / `Rollback` |
+| `dict.Iterator` | `Next` / `Key` / `Values` / `Err` / `Close` |
+| Constants | `PathPrivate = "priv/"`, `PathShared = "shared/"` reserved key prefixes |
+| Flags | `IterRecurse`, `IterSortByKey`, `IterSortByValue`, `IterNoValue`, `IterExactKey` |
+| Result | `CommitOK`, `CommitNotFound` (atomic-inc on missing key), `CommitFailed`, `CommitWriteUncertain` (remote write race) |
+| Op-settings | `OpSettings.Username` / `HomeDir` / `ExpireSecs` / `NoSlownessWarning` / `HideLogValues` |
+
+Helpers in the same package: `Escape` / `Unescape` for `'/'` and `'%'`
+inside key path components, and `MemoryTx` — a buffered transaction
+for drivers without native atomic multi-key writes.
+
+### Drivers (in-tree)
+
+| Driver pkg | Production-ready | Notes |
+|:---|:---|:---|
+| `pkg/dict/memory` | tests / dev only | in-process map; no persistence; lazy TTL expiry |
+| `pkg/dict/fail` | wiring placeholder | every op returns `ErrFailDriver`; used to wire "feature disabled" |
+| `pkg/dict/file` | standalone deployment | JSON envelope, atomic temp-file + rename, in-process sync.RWMutex; NOT safe across processes |
+| `pkg/dict/redis` | backend k8s deployment | `go-redis/v9`; SET/GET/DEL, MULTI/EXEC tx, INCRBY, EXPIRE, SCAN; prefix-isolated |
+| `pkg/dict/sql` | backend k8s deployment | `database/sql` + `modernc.org/sqlite` (pure Go) + `pgx/v5/stdlib`; per-namespace table with `expires` column + index |
+
+Driver authors implement the three interfaces and call `dict.Register(name, init)`
+from their package's `init()`. The `pkg/dict/drivers/all` package
+blank-imports all in-tree drivers — binaries that want them all just
+`import _ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"`.
+
+### Path expansion
+
+`pkg/dict/varexpand` performs `%`-variable substitution for templated
+path / prefix strings used by dict drivers:
+
+| Verb | Meaning |
+|:---|:---|
+| `%u` | full username (`alice@example.com`) |
+| `%n` | local-part (`alice`) |
+| `%d` | domain (`example.com`); empty when no `@` |
+| `%h` | home dir |
+| `%i` | numeric uid as text |
+| `%%` | literal `%` |
+
+Callers expand templates BEFORE `dict.Open` — Open takes literal paths
+for the file driver and literal prefixes for redis/sql.
+
+### Config
+
+`pkg/config.Config.Dicts` is a `map[string]DictConfig` of named dicts.
+Yarilo features look them up by name (`cfg.Dicts["metadata"]`):
+
+```yaml
+dicts:
+  metadata:
+    driver: file
+    settings:
+      path: "/var/yarilo/dicts/metadata.json"
+
+  quota:
+    driver: redis
+    settings:
+      addr: "yarilo-redis.yarilo.svc.cluster.local:6379"
+      db: 0
+      prefix: "yarilo:quota:"
+    expire_secs: 86400
+```
+
+`expire_secs`, `username`, `home_dir` at the top of a `DictConfig` are
+defaults for `OpSettings` that the caller can override per-op.
+
+### CLI
+
+`yarilo-admin dict <command>` exposes the full surface for ops debugging:
+`lookup`, `iterate`, `set`, `unset`, `atomic-inc`, `expire-scan`,
+`commit-batch` (stdin TAB-delimited script), `drivers`. The dict is
+selected either via `--config PATH --dict NAME` (production config) or
+ad-hoc via `--driver` + repeated `--setting key=value` (debugging). See
+[docs/DICT.md](docs/DICT.md) for the full reference.
+
+### Deferred from this phase
+
+- Standalone dict-server / dict-proxy daemon — yarilo uses redis/sql
+  for cross-pod sharing, so a separate proxy daemon is not currently
+  needed.
+- LDAP / CDB read-only drivers — niche, add when a customer asks.
+- Async callback API — `context.Context` cancellation already covers
+  the cancellation use cases.
+
+---
+
 ## Storage
 
 Maildir requires shared filesystem for `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`:

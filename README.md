@@ -257,7 +257,8 @@ yarilo-migrate \
 | [docs/DIRECTOR.md](docs/DIRECTOR.md) | `director_service`: ring config, peers, HAProxy, XCLIENT, mTLS, Helm values |
 | [docs/MONITOR.md](docs/MONITOR.md) | `yarilo-monitor` sidecar: backend health probes, tag credentials, Helm values, Prometheus metrics |
 | [docs/ADMIN-API.md](docs/ADMIN-API.md) | HTTP admin API: auth, IP whitelist, all endpoints with request/response examples |
-| [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarilo-admin` CLI: all commands, flags, env vars, usage examples |
+| [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarilo-admin` CLI: all subsystems (`director`, `dict`), commands, flags, env vars, usage examples |
+| [docs/DICT.md](docs/DICT.md) | `pkg/dict` KV-store abstraction: drivers (file/redis/sql/memory/fail), YAML schema, `yarilo-admin dict` CLI |
 
 ---
 

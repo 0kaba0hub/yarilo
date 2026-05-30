@@ -20,3 +20,4 @@ app/smoketest-e2e/smoketest-e2e
 # Local-only docs
 INTERNALS.md
 PLAN.md
+PLAN_standalone.md
