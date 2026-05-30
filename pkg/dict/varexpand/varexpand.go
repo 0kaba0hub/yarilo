@@ -1,9 +1,8 @@
-// Package varexpand performs Dovecot-style %-variable substitution.
+// Package varexpand performs %-variable substitution for templated
+// path / prefix strings used by dict drivers.
 //
-// Used by dict drivers that take filesystem paths or remote-key
-// prefixes templated on user identity. The set of variables mirrors
-// the subset of Dovecot's var-expand most commonly seen in
-// dict_db / mail_attribute_dict config:
+// The set of variables is the subset most commonly seen in
+// per-user storage paths:
 //
 //	%u   full username  ("alice@example.com")
 //	%n   local-part     ("alice")
@@ -14,8 +13,8 @@
 //
 // Unknown verbs are passed through verbatim with the leading '%' kept,
 // so a key like "abc%X/def" round-trips unchanged when "%X" is not
-// recognised. This matches Dovecot's permissive expander, which logs
-// a warning but does not fail the lookup.
+// recognised — the expander is permissive by design so future
+// additions don't break old configs.
 package varexpand
 
 import (

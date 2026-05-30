@@ -433,10 +433,7 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 				return dict.CommitFailed, fmt.Errorf("atomic-inc on non-integer at %q", op.Key)
 			}
 			newVal := []byte(strconv.FormatInt(n+op.Delta, 10))
-			upd := fmt.Sprintf(`UPDATE %s SET v = %s WHERE %s`,
-				t.d.table, t.d.placeholder(1), t.d.argsFor("namespace", "k")[len("namespace = ?")-len(t.d.placeholder(1))+1:])
-			// Rebuild query cleanly with correct placeholders 1,2,3.
-			upd = fmt.Sprintf(`UPDATE %s SET v = %s WHERE namespace = %s AND k = %s`,
+			upd := fmt.Sprintf(`UPDATE %s SET v = %s WHERE namespace = %s AND k = %s`,
 				t.d.table, t.d.placeholder(1), t.d.placeholder(2), t.d.placeholder(3))
 			if _, err := t.sqlTx.ExecContext(ctx, upd, newVal, t.d.ns, op.Key); err != nil {
 				t.sqlTx.Rollback() //nolint:errcheck

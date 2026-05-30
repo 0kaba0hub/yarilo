@@ -4,8 +4,6 @@
 // surfaces in code paths that take a dict.Dict, without having to add
 // nil-checks at every call site. Also useful in unit tests that need
 // to exercise driver error paths.
-//
-// Mirrors Dovecot's dict-fail.c.
 package fail
 
 import (

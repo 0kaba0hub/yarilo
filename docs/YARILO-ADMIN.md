@@ -1,7 +1,7 @@
 # yarilo-admin
 
-Unified operator CLI for yarilo — the analog of Dovecot's `doveadm`.
-Every subsystem that needs an "ops surface" gains a subcommand here:
+Unified operator CLI for yarilo. Every subsystem that needs an "ops
+surface" gains a subcommand here:
 
 | Subsystem | Purpose | Doc |
 |:---|:---|:---|

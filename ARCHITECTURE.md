@@ -419,15 +419,16 @@ naturally; only the `replace` line points elsewhere.
 
 ## Dict abstraction
 
-`pkg/dict` is yarilo's general key-value store, modelled 1:1 on Dovecot's
-`lib-dict` (see `dovecot-2.4/src/lib-dict/dict.h`). Every feature that needs
+`pkg/dict` is yarilo's general key-value store. Every feature that needs
 durable per-user or per-mailbox metadata — RFC 5464 METADATA, quota
 counters, ACL state, sieve script indices, future replication cursors —
 sits on top of this contract instead of inventing its own storage.
 
-Why mirror Dovecot: operators who already run Dovecot can re-use their
-dict deployments (Redis, Postgres) with a near-1:1 config mapping, and
-yarilo can grow new dict-backed features without touching this package.
+A single interface (`Dict` + `Tx` + `Iterator`) is implemented by
+multiple drivers; concrete storage (a local JSON file for standalone,
+Redis for shared cluster state, PostgreSQL for operators who already
+run one) is selected via config, not code. Adding a new dict-backed
+feature does not touch this package.
 
 ### Contract
 
@@ -436,15 +437,14 @@ yarilo can grow new dict-backed features without touching this package.
 | `dict.Dict` | `Lookup` / `Iterate` / `Begin` / `ExpireScan` / `Wait` / `Close` / `Name` |
 | `dict.Tx` | `Set` / `Unset` / `AtomicInc` / `Commit` / `Rollback` |
 | `dict.Iterator` | `Next` / `Key` / `Values` / `Err` / `Close` |
-| Constants | `PathPrivate = "priv/"`, `PathShared = "shared/"` (Dovecot DICT_PATH_*) |
+| Constants | `PathPrivate = "priv/"`, `PathShared = "shared/"` reserved key prefixes |
 | Flags | `IterRecurse`, `IterSortByKey`, `IterSortByValue`, `IterNoValue`, `IterExactKey` |
 | Result | `CommitOK`, `CommitNotFound` (atomic-inc on missing key), `CommitFailed`, `CommitWriteUncertain` (remote write race) |
 | Op-settings | `OpSettings.Username` / `HomeDir` / `ExpireSecs` / `NoSlownessWarning` / `HideLogValues` |
 
 Helpers in the same package: `Escape` / `Unescape` for `'/'` and `'%'`
-inside key path components (analog `dict_escape_string`), and
-`MemoryTx` — a buffered transaction for drivers without native atomic
-multi-key writes.
+inside key path components, and `MemoryTx` — a buffered transaction
+for drivers without native atomic multi-key writes.
 
 ### Drivers (in-tree)
 
@@ -463,8 +463,8 @@ blank-imports all in-tree drivers — binaries that want them all just
 
 ### Path expansion
 
-`pkg/dict/varexpand` performs the subset of Dovecot var-expand used by
-dict configs:
+`pkg/dict/varexpand` performs `%`-variable substitution for templated
+path / prefix strings used by dict drivers:
 
 | Verb | Meaning |
 |:---|:---|
@@ -513,12 +513,12 @@ ad-hoc via `--driver` + repeated `--setting key=value` (debugging). See
 
 ### Deferred from this phase
 
-- `dict-proxy` analog (Dovecot's `dict-client.c` + `src/dict/` server)
-  — yarilo uses redis/sql for cross-pod sharing, so a separate proxy
-  daemon is not currently needed.
-- `dict-ldap`, `dict-cdb` — niche, add when a customer asks.
-- Async callback API — `context.Context` cancellation covers the
-  use cases the Dovecot callback model addresses.
+- Standalone dict-server / dict-proxy daemon — yarilo uses redis/sql
+  for cross-pod sharing, so a separate proxy daemon is not currently
+  needed.
+- LDAP / CDB read-only drivers — niche, add when a customer asks.
+- Async callback API — `context.Context` cancellation already covers
+  the cancellation use cases.
 
 ---
 

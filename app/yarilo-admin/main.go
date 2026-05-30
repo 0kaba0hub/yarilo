@@ -1,6 +1,5 @@
-// yarilo-admin is the unified yarilo operator CLI. It is the analog of
-// Dovecot's doveadm — every subsystem that needs an "ops surface" gets a
-// subcommand here.
+// yarilo-admin is the unified yarilo operator CLI. Every subsystem
+// that needs an "ops surface" gets a subcommand here.
 //
 // Subsystems currently wired:
 //
@@ -56,7 +55,7 @@ func dispatch(args []string) error {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, `yarilo-admin — yarilo operator CLI (doveadm analog)
+	fmt.Fprintln(os.Stderr, `yarilo-admin — yarilo operator CLI
 
 Usage:
   yarilo-admin [global-flags] <subsystem> <command> [args...]

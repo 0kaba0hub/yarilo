@@ -22,8 +22,8 @@
 // Transactions: Redis MULTI/EXEC provides atomic execution of
 // queued commands. AtomicInc uses INCRBY on integer values; the
 // CommitNotFound semantics are emulated by checking EXISTS before
-// the MULTI (race-prone but matches Dovecot's contract — Dovecot's
-// own dict-redis driver has the same WATCH/MULTI window).
+// the MULTI (race window is acceptable — concurrent unset on a
+// counter is not a yarilo-supported pattern).
 //
 // TTL: OpSettings.ExpireSecs translates to EXPIRE issued in the same
 // MULTI block as the SET. ExpireScan is a no-op — Redis handles
@@ -313,10 +313,10 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 
 	ctx := context.Background()
 
-	// Pre-check that every atomic-inc target exists. Matches Dovecot's
-	// dict-redis behaviour: missing key → CommitNotFound, no other ops
-	// applied. Race window between EXISTS and MULTI is acceptable —
-	// concurrent unset on a counter is not a yarilo-supported pattern.
+	// Pre-check that every atomic-inc target exists: missing key →
+	// CommitNotFound, no other ops applied. Race window between
+	// EXISTS and MULTI is acceptable — concurrent unset on a counter
+	// is not a yarilo-supported pattern.
 	for _, op := range t.buf.Ops {
 		if op.Kind != dict.OpAtomicInc {
 			continue
@@ -356,7 +356,8 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 		if errors.Is(err, redis.Nil) {
 			return dict.CommitNotFound, nil
 		}
-		// Network errors mid-EXEC → write-uncertain per Dovecot semantics.
+		// Network errors mid-EXEC → write-uncertain: the server may
+		// have applied the EXEC before the connection broke.
 		if isNetworkErr(err) {
 			return dict.CommitWriteUncertain, err
 		}

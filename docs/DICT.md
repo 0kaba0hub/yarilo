@@ -1,9 +1,10 @@
 # Dict — yarilo's key-value abstraction
 
 `pkg/dict` is the general key-value store every yarilo feature that needs
-durable per-user or per-mailbox state sits on top of. It mirrors Dovecot's
-`lib-dict` so operators who already run Dovecot can re-use their dict
-deployments (Redis, Postgres) with near-identical config.
+durable per-user or per-mailbox state sits on top of. A single contract
+(`Dict` + `Tx` + `Iterator`) is satisfied by multiple drivers; the
+choice of driver (`file`, `redis`, `sql`, `memory`, `fail`) is made via
+YAML config, not code.
 
 See [ARCHITECTURE.md §Dict abstraction](../ARCHITECTURE.md#dict-abstraction)
 for the design rationale; this document is the operator reference for

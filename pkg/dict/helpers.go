@@ -6,9 +6,6 @@ import "fmt"
 // native atomic multi-key writes (file, memory). Drivers embed one of
 // these in their concrete Tx type and call Apply at Commit time with
 // a per-driver callback that writes the buffered ops.
-//
-// Mirrors Dovecot's dict-transaction-memory.{c,h} helper, which serves
-// the same purpose for dict-file.
 type MemoryTx struct {
 	Ops []TxOp
 }

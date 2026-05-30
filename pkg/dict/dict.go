@@ -1,18 +1,12 @@
-// Package dict is a Dovecot-compatible key-value store abstraction.
+// Package dict is yarilo's pluggable key-value store abstraction.
 //
-// It mirrors the contract of Dovecot's lib-dict (src/lib-dict/dict.h):
-// pluggable drivers (file, memory, fail, redis, sql, ...), transaction
-// semantics with set/unset/atomic-inc, prefix iteration with sort flags,
-// optional TTL/expire-scan, and per-call user/home operation settings.
-//
-// Why mirror Dovecot: every storage feature in yarilo that needs a
-// general key-value backend (METADATA RFC 5464 mailbox attributes,
-// per-user quota counters, ACL state, sieve script storage indices,
-// future replication cursors) maps cleanly onto this contract.
-// Picking the same contract means yarilo operators who already run
-// Dovecot can re-use their dict deployments (Redis, Postgres) with a
-// 1:1 config mapping, and yarilo can grow new dict-backed features
-// without touching this package.
+// It provides a single contract — Dict + Tx + Iterator — that every
+// feature needing durable per-user or per-mailbox state speaks:
+// METADATA (RFC 5464), quota counters, ACL state, sieve script
+// indices, future replication cursors. Concrete storage choices
+// (a local JSON file for standalone, Redis for shared cluster
+// state, PostgreSQL for operators who already run one) live behind
+// drivers and are selected via config, not code.
 //
 // Driver authors implement the Dict + Tx + Iterator interfaces and
 // register themselves via Register("name", initFunc). Callers obtain
@@ -25,18 +19,16 @@ import (
 	"strings"
 )
 
-// Path prefixes carved out of the key space, matching Dovecot's
-// DICT_PATH_PRIVATE / DICT_PATH_SHARED constants. A dict driver does
-// not interpret these prefixes — they are an application-level
-// convention so that per-user (priv/) and per-shared-resource (shared/)
-// namespaces can co-exist in a single dict instance.
+// Path prefixes reserved at the application level so that per-user
+// (priv/) and per-shared-resource (shared/) namespaces can co-exist
+// in a single dict instance. Drivers do not interpret these prefixes;
+// the convention is enforced by callers.
 const (
 	PathPrivate = "priv/"
 	PathShared  = "shared/"
 )
 
-// IterFlag is a bitmask of options for Dict.Iterate, mirroring
-// Dovecot's enum dict_iterate_flags.
+// IterFlag is a bitmask of options for Dict.Iterate.
 type IterFlag uint32
 
 const (
@@ -58,8 +50,7 @@ const (
 // OpSettings is the per-call context passed to every dict operation.
 // It carries the username and home dir for path expansion (file driver),
 // per-call TTL (drivers that support it), and a few hints used by remote
-// drivers (no-slowness-warning, hide-log-values). Matches Dovecot's
-// struct dict_op_settings.
+// drivers (no-slowness-warning, hide-log-values).
 type OpSettings struct {
 	// Username of the operation's owner. Required by drivers that
 	// scope keys per-user (e.g. file path "%h/.metadata" relies on it).
@@ -80,12 +71,12 @@ type OpSettings struct {
 	HideLogValues bool
 }
 
-// CommitResult is the outcome of Tx.Commit, mirroring Dovecot's
-// dict_commit_ret. A driver returns CommitOK on success, CommitNotFound
-// when atomic-inc targeted a missing key, CommitFailed on a hard error,
-// and CommitWriteUncertain when a remote write could not be confirmed
-// (e.g. network timeout). Callers MAY treat CommitWriteUncertain as
-// success-with-warning depending on their durability requirements.
+// CommitResult is the outcome of Tx.Commit. A driver returns CommitOK
+// on success, CommitNotFound when atomic-inc targeted a missing key,
+// CommitFailed on a hard error, and CommitWriteUncertain when a
+// remote write could not be confirmed (e.g. network timeout). Callers
+// MAY treat CommitWriteUncertain as success-with-warning depending on
+// their durability requirements.
 type CommitResult int
 
 const (
@@ -100,9 +91,9 @@ const (
 // All read methods (Lookup, Iterate) honour context cancellation;
 // drivers that block on I/O MUST return ctx.Err() promptly. Mutations
 // flow through Begin → Tx; there is no direct Set/Unset on Dict by
-// design (matches Dovecot's transaction-only mutation surface). Close
-// releases all driver resources; subsequent calls on a closed Dict
-// return ErrClosed.
+// design — the transaction-only mutation surface keeps drivers'
+// write paths consistent. Close releases all driver resources;
+// subsequent calls on a closed Dict return ErrClosed.
 type Dict interface {
 	// Lookup returns every value bound to key, plus found=true when at
 	// least one value exists. The values slice is nil when found=false.
@@ -186,7 +177,7 @@ type Tx interface {
 
 // Escape converts a string into a value safe to embed in a dict key
 // path component. It percent-encodes '/' and '%' so that downstream
-// path-splitting on '/' is unambiguous. Mirrors dict_escape_string.
+// path-splitting on '/' is unambiguous.
 func Escape(s string) string {
 	if !strings.ContainsAny(s, "/%") {
 		return s
@@ -206,8 +197,8 @@ func Escape(s string) string {
 	return b.String()
 }
 
-// Unescape is the inverse of Escape. Mirrors dict_unescape_string.
-// Invalid percent sequences are passed through verbatim.
+// Unescape is the inverse of Escape. Invalid percent sequences are
+// passed through verbatim.
 func Unescape(s string) string {
 	if !strings.Contains(s, "%") {
 		return s
