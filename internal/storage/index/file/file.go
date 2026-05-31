@@ -322,9 +322,13 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 				return err
 			}
 			if kwBits != 0 {
-				return idx.appendKeywordUpdateLog(uid, kwBits)
+				if err := idx.appendKeywordUpdateLog(uid, kwBits); err != nil {
+					return err
+				}
 			}
-			return nil
+			// Persist the bumped modseq so a follower process
+			// reading the header sees the new high watermark.
+			return idx.writeHeader()
 		}
 		return nil
 	})
@@ -381,7 +385,13 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 			// can decide whether the client has seen this expunge yet.
 			idx.modseq++
 			rec.modseq = idx.modseq
-			return idx.appendLogRecord(txExpunge, rec)
+			if err := idx.appendLogRecord(txExpunge, rec); err != nil {
+				return err
+			}
+			// Persist the bumped modseq so QRESYNC VANISHED queries
+			// from subsequent sessions observe the expunge with the
+			// right cutoff.
+			return idx.writeHeader()
 		}
 		return nil
 	})
@@ -414,9 +424,23 @@ func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
 	}
 	var ms uint64
 	err := u.withMailboxLock(idx, func() error {
+		// Re-read disk header so that a concurrent process that
+		// advanced the modseq is observed. rereadHeaderLocked never
+		// regresses idx.modseq (it takes max of disk and in-memory),
+		// so any in-memory bumps not yet persisted survive.
+		if err := idx.rereadHeaderLocked(); err != nil {
+			return err
+		}
 		idx.modseq++
 		ms = idx.modseq
-		return nil
+		// Persist immediately so a subsequent AllocateAppend in this
+		// or another process sees the bumped value via its own
+		// rereadHeaderLocked. Without this, the in-memory bump would
+		// be lost on the next reread and successive NextModSeq calls
+		// would all return the same value — observed when CONDSTORE
+		// load-test clients (Thunderbird, modern mobile MUAs) start
+		// reporting cache inconsistencies.
+		return idx.writeHeader()
 	})
 	return ms, err
 }
@@ -766,7 +790,13 @@ func (idx *IndexFile) readHeader(f *os.File) error {
 	idx.logFileSeq = le.Uint32(buf[44:])
 	idx.logFileTail = le.Uint32(buf[48:])
 	idx.logFileHead = le.Uint32(buf[52:])
-	idx.modseq = le.Uint64(buf[56:])
+	// modseq is monotonic across the folder's lifetime — never let a
+	// disk re-read regress an in-memory bump that has not yet been
+	// persisted (e.g. UpdateFlags/ExpungeMessage between writeHeader
+	// calls in the same lock window). Take max of disk and current.
+	if disk := le.Uint64(buf[56:]); disk > idx.modseq {
+		idx.modseq = disk
+	}
 	idx.recordSize = le.Uint32(buf[10:])
 	if idx.recordSize < baseRecordSize+modseqExt {
 		idx.recordSize = baseRecordSize + modseqExt
