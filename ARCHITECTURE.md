@@ -523,6 +523,73 @@ ad-hoc via `--driver` + repeated `--setting key=value` (debugging). See
 
 ---
 
+## Namespaces
+
+yarilo follows the IMAP RFC 2342 / RFC 9051 §6.3.10 namespace model
+and the operational shape Dovecot uses for it:
+
+| Class | Wire | What it carries |
+|:---|:---|:---|
+| **Personal** | `("" "/")` | The user's own mailboxes (INBOX + everything created via CREATE). |
+| **Other Users** | `("user/" "/")` | Read/write access to another user's mailboxes, gated by ACL. |
+| **Shared** | `("Shared/" "/")` | Folders shared between groups or all users, gated by ACL. |
+| **Public** (variant of Shared) | `("Public/" "/")` | Folders accessible to every authenticated user. |
+
+Each namespace MAY use its own separator (Dovecot allows it; we follow).
+
+### Phase ordering
+
+| Phase | Delivers |
+|:---|:---|
+| **NS-1a** (current, `v1.20`) | Wire-protocol: `NAMESPACE` response driven by `cfg.Namespaces[]`. Storage routing not changed — only Personal carries real mailboxes. |
+| **NS-1b** | `MailboxBackend.OpenNamespace` + `IndexBackend.OpenNamespace` + per-namespace storage roots + `LIST` cross-namespace traversal + `SELECT` dispatch + METADATA `priv/` per-accessing-user on shared mailboxes. |
+| **ACL-1** | RFC 4314 — required for Shared / Other Users / Public to be actually usable (without it any user reads anyone's stuff). |
+| **NS-3** | Director routing: when accessing `user/alice/*` from bob's session in a multi-pod backend deployment, route the mailbox-access leg of the session to alice's backend pod (cross-pod RPC or namespace-pinned pool). Personal-namespace single-pod standalone works without this. |
+
+### Storage layout (post-NS-1b)
+
+```
+/var/mail/vhosts/<domain>/<user>/        ← personal, per-user (existing)
+  Maildir/
+    .index/
+    cur/ new/ tmp/
+
+/var/yarilo/shared/                      ← shared, one root per install (or per-tag for backend deploy)
+  marketing/
+    announcements/
+      .index/ cur/ new/
+
+/var/yarilo/public/                      ← public, analogous
+  announcements/...
+```
+
+Per-namespace backends are constructed at backend startup, one
+`MailboxBackend` + `IndexBackend` pair per namespace; sessions hold
+the namespace dispatcher and route every mailbox operation through it
+based on the `prefix:` match.
+
+### Quota: owner-paid
+
+When QUOTA-1 lands: storage consumed in `user/alice/INBOX` counts
+against alice's quota, not the accessing user's. Public / Shared
+namespaces use their own system-wide quota root (declared in the
+`quota:` config block).
+
+### What lives in dict
+
+Folder-attached state (METADATA, ACL, replication cursors) is keyed by
+the rename-stable folder GUID (`pkg/mailbox.Folder.GUID`), so RENAME
+within a namespace and folder lifecycle in shared/public namespaces
+do not invalidate any dict keys. METADATA `priv/` entries on shared
+or public folders get an additional per-accessing-user dimension in
+the dict key so users cannot read each other's private annotations
+on a shared folder.
+
+See [docs/NAMESPACE.md](docs/NAMESPACE.md) for the operator-facing
+YAML schema and current limitations.
+
+---
+
 ## Storage
 
 Maildir requires shared filesystem for `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`:

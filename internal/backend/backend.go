@@ -134,6 +134,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Locker:             locker,
 			SpecialUseDefaults: p.SpecialUseDefaults,
 			MetadataDict:       metadataDict,
+			Namespaces:         buildNamespaces(cfg.Namespaces),
 		})
 	}
 
@@ -572,6 +573,52 @@ func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 	default:
 		return maildir.New(maildir.WithLocker(locker))
 	}
+}
+
+// buildNamespaces translates cfg.Namespaces into the wire-protocol
+// shape the IMAP server consumes. An empty slice in => empty slice
+// out; the server applies its built-in single-personal-namespace
+// fallback so pre-v1.20 deployments without a namespaces: block keep
+// working unchanged.
+//
+// Separator defaults to "/" when omitted; non-single-rune values are
+// dropped to "/" with a warning so a misconfigured yaml does not
+// produce a malformed NAMESPACE response.
+func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
+	if len(cfg) == 0 {
+		return nil
+	}
+	out := make([]imapsvr.NamespaceSpec, 0, len(cfg))
+	for i, ns := range cfg {
+		t := strings.ToLower(strings.TrimSpace(ns.Type))
+		var nsType imapsvr.NamespaceType
+		switch t {
+		case "personal":
+			nsType = imapsvr.NamespacePersonal
+		case "other", "other_users":
+			nsType = imapsvr.NamespaceOther
+		case "shared":
+			nsType = imapsvr.NamespaceShared
+		default:
+			slog.Warn("backend: skipping namespace with unknown type",
+				"index", i, "type", ns.Type, "prefix", ns.Prefix)
+			continue
+		}
+		sep := '/'
+		if rs := []rune(ns.Separator); len(rs) == 1 {
+			sep = rs[0]
+		} else if ns.Separator != "" {
+			slog.Warn("backend: namespace separator must be a single character, defaulting to /",
+				"index", i, "separator", ns.Separator)
+		}
+		out = append(out, imapsvr.NamespaceSpec{
+			Type:      nsType,
+			Prefix:    ns.Prefix,
+			Separator: sep,
+			List:      ns.List,
+		})
+	}
+	return out
 }
 
 // buildDict opens the named dict from cfg.Dicts, returning nil when the

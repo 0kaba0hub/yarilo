@@ -73,7 +73,36 @@ type Options struct {
 	// returns "metadata storage disabled". Operators wire this from
 	// cfg.Dicts["metadata"] in yarilo.yaml.
 	MetadataDict dict.Dict
+
+	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC
+	// 9051 §6.3.10). When nil/empty the server falls back to a single
+	// personal namespace with separator "/" — backwards-compatible
+	// with pre-v1.20 single-namespace deployments. Only the wire-
+	// protocol shape is read in this phase; storage routing comes in
+	// NS-1b.
+	Namespaces []NamespaceSpec
 }
+
+// NamespaceSpec is the per-namespace data the IMAP server needs to
+// render NAMESPACE responses. Mirrors the relevant subset of
+// config.NamespaceConfig; kept separate so callers (backend, tests)
+// can construct it without depending on pkg/config.
+type NamespaceSpec struct {
+	Type      NamespaceType
+	Prefix    string
+	Separator rune
+	List      bool
+}
+
+// NamespaceType classifies a namespace into the three slots of the
+// IMAP NAMESPACE response: Personal / Other / Shared.
+type NamespaceType string
+
+const (
+	NamespacePersonal NamespaceType = "personal"
+	NamespaceOther    NamespaceType = "other"
+	NamespaceShared   NamespaceType = "shared"
+)
 
 // New creates an IMAP server.
 func New(opts Options) *Server {
@@ -1195,9 +1224,33 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 }
 
 func (s *session) Namespace() (*imaplib.NamespaceData, error) {
-	return &imaplib.NamespaceData{
-		Personal: []imaplib.NamespaceDescriptor{{Delim: '/'}},
-	}, nil
+	specs := s.srv.opts.Namespaces
+	if len(specs) == 0 {
+		specs = defaultNamespaces
+	}
+	var data imaplib.NamespaceData
+	for _, ns := range specs {
+		if !ns.List {
+			continue
+		}
+		desc := imaplib.NamespaceDescriptor{Prefix: ns.Prefix, Delim: ns.Separator}
+		switch ns.Type {
+		case NamespacePersonal:
+			data.Personal = append(data.Personal, desc)
+		case NamespaceOther:
+			data.Other = append(data.Other, desc)
+		case NamespaceShared:
+			data.Shared = append(data.Shared, desc)
+		}
+	}
+	return &data, nil
+}
+
+// defaultNamespaces is the backwards-compatible fallback applied when
+// Options.Namespaces is empty: a single personal namespace with the
+// "/" separator, matching pre-v1.20 single-namespace behaviour.
+var defaultNamespaces = []NamespaceSpec{
+	{Type: NamespacePersonal, Prefix: "", Separator: '/', List: true},
 }
 
 // GetMetadata implements RFC 5464 GETMETADATA. mailbox == "" requests
