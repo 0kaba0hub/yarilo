@@ -5,7 +5,7 @@ Unified operator CLI for yarilo. Two top-level planes:
 | Plane | Talks to | What | Subcommands |
 |:---|:---|:---|:---|
 | `director` | `yarilo-director` `:9103` | ring / backends / users / peers | `director status / dump / map / backends / users / ring` |
-| `backend` | `yarilo-backend-api` `:9105` | per-backend storage state | `backend dict / acl / quota / folder / user / mailbox` |
+| `backend` | `yarilo-backend-api` `:9105` | per-backend storage state | `backend dict / folder / user / index / subscriptions / specialuse / metadata / who` (acl / quota land in their feature phases) |
 
 Both planes speak JSON over HTTPS with Bearer-token auth.
 See [DIRECTOR-API.md](DIRECTOR-API.md) and [BACKEND-API.md](BACKEND-API.md)

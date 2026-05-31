@@ -8,6 +8,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 
+	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -34,7 +35,7 @@ type nsHandle struct {
 	// pre-v1.21 filename "subscriptions" so upgrades preserve existing
 	// state; shared/public use "subscriptions-<ns>" siblings in the
 	// user's home so each namespace tracks its own SUBSCRIBE state.
-	subs *subscriptionStore
+	subs *subs.Store
 	// userInfo captures who the handle was opened for. Personal uses
 	// the authenticated user's UserInfo; shared/public use a synthetic
 	// UserInfo whose Home is the namespace root.
@@ -138,13 +139,13 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		return nil, fmt.Errorf("mailbox init: %w", err)
 	}
 	idx := s.srv.opts.Index.OpenUser(ui)
-	subs := newSubscriptionStoreFile(ui.Home, subsFile, ui.Username, owner, s.srv.opts.Locker)
+	store := subs.New(ui.Home, subsFile, ui.Username, owner, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,
 		spec:     spec,
 		box:      box,
 		idx:      idx,
-		subs:     subs,
+		subs:     store,
 		userInfo: ui,
 	}, nil
 }

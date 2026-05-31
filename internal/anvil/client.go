@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -99,6 +100,56 @@ func (c *Conn) Disconnect(id, user, ip, service string) error {
 		return fmt.Errorf("anvil/client: unexpected DISCONNECT response: %q", line)
 	}
 	return nil
+}
+
+// WhoFilter narrows the WHO listing. Empty fields match everything.
+type WhoFilter struct {
+	Service string
+	User    string
+}
+
+// Who streams the active session list from the anvil server. The
+// returned slice is empty (not nil) when no sessions match. Errors
+// are transport-level — an empty list with no error means the
+// server returned DONE without any sessions.
+func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
+	args := []string{"WHO"}
+	if f.Service != "" {
+		args = append(args, "service="+f.Service)
+	}
+	if f.User != "" {
+		args = append(args, "user="+f.User)
+	}
+	if _, err := fmt.Fprintln(c.conn, strings.Join(args, "\t")); err != nil {
+		return nil, fmt.Errorf("anvil/client: write WHO: %w", err)
+	}
+	out := make([]SessionInfo, 0, 8)
+	for {
+		line, err := c.rd.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("anvil/client: read WHO response: %w", err)
+		}
+		line = strings.TrimRight(line, "\n")
+		fields := strings.Split(line, "\t")
+		switch fields[0] {
+		case "SESSION":
+			if len(fields) < 6 {
+				continue
+			}
+			ts, _ := strconv.ParseInt(fields[5], 10, 64)
+			out = append(out, SessionInfo{
+				ID:          fields[1],
+				User:        fields[2],
+				IP:          fields[3],
+				Service:     fields[4],
+				ConnectedAt: time.Unix(ts, 0).UTC(),
+			})
+		case "DONE":
+			return out, nil
+		default:
+			return nil, fmt.Errorf("anvil/client: unexpected WHO line: %q", line)
+		}
+	}
 }
 
 // Close closes the underlying TCP connection.

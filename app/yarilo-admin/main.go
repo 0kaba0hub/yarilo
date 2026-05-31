@@ -73,8 +73,22 @@ func dispatchBackend(args []string) error {
 	switch args[0] {
 	case "dict":
 		return dispatchDict(args[1:])
+	case "folder":
+		return dispatchFolder(args[1:])
+	case "user":
+		return dispatchUser(args[1:])
+	case "index":
+		return dispatchIndex(args[1:])
+	case "subscriptions", "subs":
+		return dispatchSubs(args[1:])
+	case "specialuse":
+		return dispatchSpecialUse(args[1:])
+	case "metadata":
+		return dispatchMetadata(args[1:])
+	case "who":
+		return dispatchWho(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict (acl/quota/folder/user/mailbox land in future phases)", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, subscriptions, specialuse, metadata, who (acl/quota land in future phases)", args[0])
 	}
 }
 
