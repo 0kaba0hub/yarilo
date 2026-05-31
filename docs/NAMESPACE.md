@@ -179,4 +179,49 @@ to `true` to expose it to all users.
 | `Other Users` namespace (`user/alice/INBOX`) actually opens alice's mailbox | ACL-1 + NS-3 |
 | Quota debit on writes to `user/alice/*` charges alice (owner-paid) | QUOTA-1 + NS-3 |
 | Director routes `user/alice/*` to alice's backend pod in multi-pod deployments | NS-3 |
-| Mixed storage drivers across namespaces (personal=maildir, shared=mdbox) | future |
+
+## Mixed storage drivers across namespaces
+
+The `location:` URL's driver prefix is honoured per-namespace.
+When a namespace declares a `location:` whose driver differs from
+the globally-configured `cfg.Storage.Mailbox`, yarilo constructs a
+separate `MailboxBackend` instance of the requested driver and
+routes that namespace's ops through it. Namespaces using the same
+non-default driver share their backend instance.
+
+Examples that work out of the box:
+
+```yaml
+storage:
+  mailbox: maildir              # personal default (existing layout)
+
+namespaces:
+  - type: personal
+    prefix: ""
+    separator: "/"
+    list: true
+    # personal inherits maildir from storage.mailbox
+  - type: shared
+    prefix: "Shared/"
+    separator: "/"
+    list: true
+    location: "mdbox:/var/yarilo/shared"   # shared uses mdbox
+  - type: shared
+    prefix: "Public/"
+    separator: "/"
+    list: true
+    location: "dbox:/var/yarilo/public"    # public uses dbox
+```
+
+What it gives you: each namespace gets the storage format best
+suited for its access pattern (e.g. mdbox's coalesced storage for
+high-volume shared folders, maildir's per-message files for
+per-user personal mailboxes that backup tools handle file-by-file).
+
+Constraints:
+- `IndexBackend` is uniform (fileindex) across all namespaces;
+  yarilo does not switch index implementations per namespace.
+- The configured driver in `location:` must be one of
+  `maildir`, `dbox`, `mdbox`. Mismatched / unknown driver names
+  fail at backend startup so a typo does not silently fall back
+  to maildir.

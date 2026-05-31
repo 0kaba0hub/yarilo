@@ -125,9 +125,15 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 	return out, primary, nil
 }
 
-// openHandle wires one namespace's box + idx + subs.
+// openHandle wires one namespace's box + idx + subs. The mailbox
+// backend is chosen from NamespaceMailboxes[spec.Prefix] when an
+// override is present (per-namespace driver mixing, e.g.
+// personal=maildir + shared=mdbox); otherwise falls back to the
+// global Options.Mailbox. The index backend is uniform — fileindex
+// works against any storage driver.
 func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserInfo, owner, subsFile string) (*nsHandle, error) {
-	box := s.srv.opts.Mailbox.OpenUser(ui)
+	mb := s.mailboxBackendFor(spec)
+	box := mb.OpenUser(ui)
 	if err := box.Init(); err != nil {
 		return nil, fmt.Errorf("mailbox init: %w", err)
 	}
@@ -141,6 +147,16 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		subs:     subs,
 		userInfo: ui,
 	}, nil
+}
+
+// mailboxBackendFor returns the per-namespace MailboxBackend, falling
+// back to the global default when no override is registered for
+// spec.Prefix.
+func (s *session) mailboxBackendFor(spec NamespaceSpec) mailbox.MailboxBackend {
+	if override, ok := s.srv.opts.NamespaceMailboxes[spec.Prefix]; ok && override != nil {
+		return override
+	}
+	return s.srv.opts.Mailbox
 }
 
 // nsSlug normalises a namespace spec into a short identifier used for

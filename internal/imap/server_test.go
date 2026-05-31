@@ -1714,3 +1714,125 @@ func TestSharedNamespaceSubscriptionsAreSeparateFile(t *testing.T) {
 		t.Errorf("LIST SUBSCRIBED missing Shared/team: %v", items)
 	}
 }
+
+// ---- Phase NS-1b follow-up: per-namespace driver mixing ------------------
+
+// recordingMailbox wraps a MailboxBackend and records every OpenUser
+// call. Used by per-NS driver-mixing tests to verify that the
+// dispatcher picked the right backend instance per namespace.
+type recordingMailbox struct {
+	inner   mailbox.MailboxBackend
+	label   string
+	opens   []*mailbox.UserInfo
+	openedM sync.Mutex
+}
+
+func (r *recordingMailbox) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	r.openedM.Lock()
+	r.opens = append(r.opens, u)
+	r.openedM.Unlock()
+	return r.inner.OpenUser(u)
+}
+
+func TestPerNamespaceMailboxOverrideRoutesToCorrectBackend(t *testing.T) {
+	// Personal namespace uses a "global" recordingMailbox; Shared
+	// namespace gets its OWN recordingMailbox via NamespaceMailboxes
+	// override. Both wrap maildir under separate t.TempDir() roots.
+	// After CREATE on Shared/team, the shared override must have
+	// recorded the OpenUser, and the global must NOT have recorded
+	// it for that namespace (only for personal).
+	dir := t.TempDir()
+	sharedRoot := t.TempDir()
+	globalRec := &recordingMailbox{inner: maildir.New(), label: "global-personal"}
+	sharedRec := &recordingMailbox{inner: maildir.New(), label: "shared-override"}
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:  globalRec,
+		Index:    idx,
+		Resolver: resolver,
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+		},
+		NamespaceMailboxes: map[string]mailbox.MailboxBackend{
+			"Shared/": sharedRec,
+		},
+	})
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	conn, _ := net.Dial("tcp", ln.Addr().String())
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// At login, both namespaces opened a handle exactly once.
+	if got := len(globalRec.opens); got != 1 {
+		t.Errorf("globalRec opened %d times at login, want 1", got)
+	}
+	if got := len(sharedRec.opens); got != 1 {
+		t.Errorf("sharedRec opened %d times at login, want 1", got)
+	}
+
+	// Personal UserInfo went to globalRec; shared UserInfo (with
+	// Home=sharedRoot) went to sharedRec.
+	if globalRec.opens[0].Home == sharedRoot {
+		t.Errorf("globalRec saw sharedRoot home; routing crossed namespaces")
+	}
+	if sharedRec.opens[0].Home != sharedRoot {
+		t.Errorf("sharedRec home = %q, want %q", sharedRec.opens[0].Home, sharedRoot)
+	}
+}
+
+func TestPerNamespaceNoOverrideFallsBackToGlobal(t *testing.T) {
+	// Shared namespace declared without an override (the operator
+	// kept the global driver). The session must open the shared
+	// handle against the global Mailbox backend.
+	dir := t.TempDir()
+	sharedRoot := t.TempDir()
+	globalRec := &recordingMailbox{inner: maildir.New(), label: "global-only"}
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:  globalRec,
+		Index:    idx,
+		Resolver: resolver,
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+		},
+		// NamespaceMailboxes intentionally nil.
+	})
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	conn, _ := net.Dial("tcp", ln.Addr().String())
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// Global recorded BOTH handles' OpenUser (personal + shared
+	// fall through to the global backend because no override).
+	if got := len(globalRec.opens); got != 2 {
+		t.Errorf("globalRec opened %d times at login, want 2 (personal + shared fallback)", got)
+	}
+}

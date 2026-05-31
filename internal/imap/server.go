@@ -77,10 +77,16 @@ type Options struct {
 	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC
 	// 9051 §6.3.10). When nil/empty the server falls back to a single
 	// personal namespace with separator "/" — backwards-compatible
-	// with pre-v1.20 single-namespace deployments. Only the wire-
-	// protocol shape is read in this phase; storage routing comes in
-	// NS-1b.
+	// with pre-v1.20 single-namespace deployments.
 	Namespaces []NamespaceSpec
+
+	// NamespaceMailboxes (optional) carries per-namespace
+	// MailboxBackend overrides keyed by namespace prefix. When a
+	// namespace has an entry here, openHandle uses it instead of the
+	// global Mailbox backend — letting operators mix storage drivers
+	// across namespaces (e.g. personal=maildir + shared=mdbox).
+	// Personal namespaces always use the global Mailbox backend.
+	NamespaceMailboxes map[string]mailbox.MailboxBackend
 }
 
 // NamespaceSpec is the per-namespace data the IMAP server needs to
