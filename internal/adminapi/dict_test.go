@@ -34,7 +34,12 @@ func memTestServer(t *testing.T, token string) (*httptest.Server, dict.Dict) {
 	return ts, d
 }
 
-func doJSON(t *testing.T, ts *httptest.Server, method, path, token string, body any) (*http.Response, []byte) {
+// doJSON returns (statusCode, body) and closes the response body
+// internally. Returning the raw *http.Response would force callers
+// to remember to Close — and the bodyclose linter would not believe
+// our defer here because the call site looks like leaking. The
+// status-and-body shape is everything every test actually needs.
+func doJSON(t *testing.T, ts *httptest.Server, method, path, token string, body any) (int, []byte) {
 	t.Helper()
 	var br io.Reader
 	if body != nil {
@@ -44,7 +49,7 @@ func doJSON(t *testing.T, ts *httptest.Server, method, path, token string, body 
 		}
 		br = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, ts.URL+path, br)
+	req, err := http.NewRequestWithContext(context.Background(), method, ts.URL+path, br)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -58,16 +63,16 @@ func doJSON(t *testing.T, ts *httptest.Server, method, path, token string, body 
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 	data, _ := io.ReadAll(resp.Body)
-	return resp, data
+	return resp.StatusCode, data
 }
 
 func TestHealthEndpoint(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	resp, data := doJSON(t, ts, http.MethodGet, "/api/admin/health", "", nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, data)
+	status, data := doJSON(t, ts, http.MethodGet, "/api/admin/health", "", nil)
+	if status != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", status, data)
 	}
 	if !strings.Contains(string(data), `"status":"ok"`) {
 		t.Errorf("body = %s, want status:ok", data)
@@ -78,27 +83,27 @@ func TestAuthRejectsMissingOrWrongToken(t *testing.T) {
 	ts, _ := memTestServer(t, "supersecret")
 
 	// No header → 401
-	resp, _ := doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "", nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("missing token: status=%d, want 401", resp.StatusCode)
+	status, _ := doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "", nil)
+	if status != http.StatusUnauthorized {
+		t.Errorf("missing token: status=%d, want 401", status)
 	}
 	// Wrong token → 401
-	resp, _ = doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "wrong", nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("wrong token: status=%d, want 401", resp.StatusCode)
+	status, _ = doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "wrong", nil)
+	if status != http.StatusUnauthorized {
+		t.Errorf("wrong token: status=%d, want 401", status)
 	}
 	// Correct token → 200
-	resp, _ = doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "supersecret", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("good token: status=%d, want 200", resp.StatusCode)
+	status, _ = doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "supersecret", nil)
+	if status != http.StatusOK {
+		t.Errorf("good token: status=%d, want 200", status)
 	}
 }
 
 func TestDictDriversListed(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	resp, data := doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "", nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status %d body %s", resp.StatusCode, data)
+	status, data := doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "", nil)
+	if status != 200 {
+		t.Fatalf("status %d body %s", status, data)
 	}
 	var got struct {
 		Drivers []string `json:"drivers"`
@@ -120,9 +125,9 @@ func TestDictDriversListed(t *testing.T) {
 
 func TestDictExistsKnown(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	resp, data := doJSON(t, ts, http.MethodGet, "/api/admin/dict/test/exists", "", nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status %d body %s", resp.StatusCode, data)
+	status, data := doJSON(t, ts, http.MethodGet, "/api/admin/dict/test/exists", "", nil)
+	if status != 200 {
+		t.Fatalf("status %d body %s", status, data)
 	}
 	var got struct {
 		Name   string `json:"name"`
@@ -150,12 +155,12 @@ func TestDictRoundtripSetLookupUnset(t *testing.T) {
 	ts, _ := memTestServer(t, "")
 
 	// SET
-	resp, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/set", "", map[string]any{
+	status, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/set", "", map[string]any{
 		"key":   "priv/foo",
 		"value": []byte("hello"), // encoding/json emits base64
 	})
-	if resp.StatusCode != 200 {
-		t.Fatalf("set status %d body %s", resp.StatusCode, data)
+	if status != 200 {
+		t.Fatalf("set status %d body %s", status, data)
 	}
 	var setResp struct {
 		Status string `json:"status"`
@@ -166,9 +171,9 @@ func TestDictRoundtripSetLookupUnset(t *testing.T) {
 	}
 
 	// LOOKUP
-	resp, data = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "priv/foo"})
-	if resp.StatusCode != 200 {
-		t.Fatalf("lookup status %d body %s", resp.StatusCode, data)
+	status, data = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "priv/foo"})
+	if status != 200 {
+		t.Fatalf("lookup status %d body %s", status, data)
 	}
 	var lk struct {
 		Found  bool     `json:"found"`
@@ -180,9 +185,9 @@ func TestDictRoundtripSetLookupUnset(t *testing.T) {
 	}
 
 	// UNSET
-	resp, _ = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/unset", "", map[string]any{"key": "priv/foo"})
-	if resp.StatusCode != 200 {
-		t.Fatalf("unset status %d", resp.StatusCode)
+	status, _ = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/unset", "", map[string]any{"key": "priv/foo"})
+	if status != 200 {
+		t.Fatalf("unset status %d", status)
 	}
 	// LOOKUP again — should miss
 	_, data = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "priv/foo"})
@@ -201,12 +206,12 @@ func TestDictAtomicInc(t *testing.T) {
 		"value": []byte("10"),
 	})
 	// Inc by 5
-	resp, _ := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/atomic-inc", "", map[string]any{
+	status, _ := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/atomic-inc", "", map[string]any{
 		"key":   "counter",
 		"delta": 5,
 	})
-	if resp.StatusCode != 200 {
-		t.Fatalf("inc status %d", resp.StatusCode)
+	if status != 200 {
+		t.Fatalf("inc status %d", status)
 	}
 	// Lookup
 	_, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "counter"})
@@ -246,7 +251,7 @@ func TestDictIterateNDJSONStream(t *testing.T) {
 	}
 
 	// IterateRecurse + IterateSortByKey = 1 | 2 = 3
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/admin/dict/test/iterate", bytes.NewReader([]byte(`{"path":"priv/","flags":3}`)))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/admin/dict/test/iterate", bytes.NewReader([]byte(`{"path":"priv/","flags":3}`)))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -285,9 +290,9 @@ func TestDictCommitBatchAtomic(t *testing.T) {
 			{"kind": "atomic-inc", "key": "a", "delta": 10}, // 1 → 11
 		},
 	}
-	resp, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/commit-batch", "", body)
-	if resp.StatusCode != 200 {
-		t.Fatalf("commit-batch status %d body %s", resp.StatusCode, data)
+	status, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/commit-batch", "", body)
+	if status != 200 {
+		t.Fatalf("commit-batch status %d body %s", status, data)
 	}
 	var cr struct {
 		Status string `json:"status"`
@@ -309,8 +314,8 @@ func TestDictCommitBatchAtomic(t *testing.T) {
 
 func TestUnknownDictReturns404(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	resp, _ := doJSON(t, ts, http.MethodPost, "/api/admin/dict/no-such/lookup", "", map[string]string{"key": "x"})
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", resp.StatusCode)
+	status, _ := doJSON(t, ts, http.MethodPost, "/api/admin/dict/no-such/lookup", "", map[string]string{"key": "x"})
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", status)
 	}
 }
