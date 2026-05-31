@@ -7,15 +7,17 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// registerIndexRoutes wires the fileindex inspection surface.
-//
-// Only `dump` is shipped today — it walks an existing folder index
-// and returns every record. Rebuild/optimize are not implemented:
-// they require a per-driver resync routine (different semantics for
-// maildir vs dbox vs mdbox) that the EASY phase deliberately defers.
-// See TODO.md (BACKEND-API index rebuild/optimize).
+// registerIndexRoutes wires the fileindex inspection + mutation
+// surface. `dump` is read-only. `rebuild` regenerates the index
+// from disk via UserMailbox.Scan (driver-specific resync, see
+// Phase BACKEND-API-INDEX-OPS in TODO.md). `optimize` compacts
+// .index.log into the base .index file with no semantic change.
+// mdbox returns "not yet implemented" on rebuild — see Phase
+// MDBOX-PROD-READY.
 func (s *Server) registerIndexRoutes() {
 	s.mux.Handle("POST /api/backend/index/dump", s.middleware(s.handleIndexDump))
+	s.mux.Handle("POST /api/backend/index/rebuild", s.middleware(s.handleIndexRebuild))
+	s.mux.Handle("POST /api/backend/index/optimize", s.middleware(s.handleIndexOptimize))
 }
 
 type indexDumpRequest struct {

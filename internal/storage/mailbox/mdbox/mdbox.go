@@ -469,6 +469,17 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 // AppendUIDEntry is a no-op for mdbox — UIDs are managed exclusively by UserIndex.
 func (u *userMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
 
+// Scan returns ErrNotImplemented. mdbox rebuild requires walking
+// every m.<N> file and parsing per-message headers across the
+// shared multi-message store — significant work that lands in
+// Phase MDBOX-PROD-READY (see TODO.md). Until that phase ships,
+// admin rebuild for mdbox folders returns the same error verbatim
+// so operators get a clear "not yet, see TODO" rather than a
+// silent fail.
+func (u *userMailbox) Scan(_ string) ([]mailbox.ScanRecord, error) {
+	return nil, errors.New("mdbox/scan: not yet implemented; see Phase MDBOX-PROD-READY in TODO.md")
+}
+
 func (u *userMailbox) Close() error { return nil }
 
 // ---- dbox binary format helpers --------------------------------------------

@@ -18,6 +18,7 @@ func (s *Server) registerFolderRoutes() {
 	s.mux.Handle("POST /api/backend/folder/info", s.middleware(s.handleFolderInfo))
 	s.mux.Handle("POST /api/backend/folder/guid", s.middleware(s.handleFolderGUID))
 	s.mux.Handle("POST /api/backend/folder/stats", s.middleware(s.handleFolderStats))
+	s.mux.Handle("POST /api/backend/folder/repair", s.middleware(s.handleFolderRepair))
 }
 
 type folderRequest struct {

@@ -57,6 +57,7 @@ func (m *mockMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
 }
 func (m *mockMailbox) Rename(_, _ string) error                          { return nil }
 func (m *mockMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
+func (m *mockMailbox) Scan(_ string) ([]mailbox.ScanRecord, error)       { return nil, nil }
 func (m *mockMailbox) Close() error                                      { return nil }
 
 // ---- mock index --------------------------------------------------------------
@@ -97,7 +98,9 @@ func (m *mockIndex) SavePOP3UIDLs(_ uint64, uidls map[uint32]string) error {
 	m.savedUIDLs = uidls
 	return nil
 }
-func (m *mockIndex) Close() error { return nil }
+func (m *mockIndex) ResetFolder(_ uint64, _ []*mailbox.MessageMeta) error { return nil }
+func (m *mockIndex) OptimizeIndex(_ uint64) error                         { return nil }
+func (m *mockIndex) Close() error                                         { return nil }
 
 // ---- test helpers -----------------------------------------------------------
 

@@ -42,6 +42,32 @@ type SeqRange struct {
 	From, To uint32 // inclusive; To==0 means '*'
 }
 
+// ScanRecord is one entry produced by UserMailbox.Scan — the raw
+// per-message info a storage driver can reconstruct from disk
+// alone (no help from the index). Used by admin rebuild flows to
+// regenerate the fileindex after corruption or operator request.
+//
+// Fields populated per driver:
+//
+//	maildir: Filename, Size (from "S=" or stat), VSize (from "W="),
+//	         InternalDate (from stat mtime), Flags (parsed from
+//	         the ":2,FLAGS" trailer); GUID stays zero — Maildir
+//	         filenames carry no GUID.
+//	dbox:    Filename, GUID (from "G<hex>\n" trailer line),
+//	         Size+VSize (from "Z<hex>" / "V<hex>"), InternalDate
+//	         (from "R<hex>" Unix epoch); Flags empty — dbox
+//	         delegates flag storage to the index.
+//	mdbox:   not implemented in this phase — driver returns
+//	         "not yet implemented" until Phase MDBOX-PROD-READY.
+type ScanRecord struct {
+	Filename     string
+	GUID         [16]byte
+	Size         uint32
+	VSize        uint32
+	InternalDate time.Time
+	Flags        []string
+}
+
 // MailboxBackend is the per-process factory for user-scoped storage handles.
 // It holds no per-user state; all per-user state lives in UserMailbox.
 //
@@ -80,6 +106,13 @@ type UserMailbox interface {
 	FolderExists(folder string) (bool, error)
 	ListFolders() ([]string, error)
 	AppendUIDEntry(folder string, uid uint32, filename string) error
+	// Scan walks the on-disk representation of folder and yields
+	// every visible message as a ScanRecord. Used by the admin
+	// rebuild flow to regenerate the fileindex independently of
+	// whatever the index currently believes. Returns
+	// (nil, fmt.Errorf("driver/scan: not yet implemented"))
+	// from drivers that have not implemented disk-scan yet.
+	Scan(folder string) ([]ScanRecord, error)
 	Close() error
 }
 
@@ -125,5 +158,17 @@ type UserIndex interface {
 	GetPOP3UIDLs(folderID uint64) (map[uint32]string, error)
 	// SavePOP3UIDLs persists POP3 UIDLs so subsequent sessions use stable values.
 	SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error
+	// ResetFolder atomically replaces the on-disk record set for
+	// folderID with the supplied messages. Preserves UIDVALIDITY
+	// and the folder GUID; bumps NextUID past max(records.UID);
+	// HighestModSeq advances by one so QRESYNC clients invalidate
+	// their caches. Drives the admin rebuild flow. Caller has
+	// already taken the cross-process mailbox lock and made a
+	// .bak of the old base file.
+	ResetFolder(folderID uint64, records []*MessageMeta) error
+	// OptimizeIndex compacts the .index.log overlay into the base
+	// .index file. Returns a no-op nil when there is nothing to
+	// compact. Takes the same X lock as a normal write.
+	OptimizeIndex(folderID uint64) error
 	Close() error
 }
