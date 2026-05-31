@@ -44,16 +44,18 @@ const (
 //	uint8  unused[3]                  offset 33
 //	uint32 unused2                    offset 36
 //
-// NOTE on size: the comment above lists 24+8+1+3+4 = 40 bytes but
-// the spec says LogHeaderMinSize=24 (older) and v1.3 ships 28. To
-// stay safe, this implementation uses a fixed 28-byte header at
-// MAJOR=1 MINOR=3 — the initial_modseq pair is included; the
-// compat_flags + unused tail is encoded but readable from an
-// older 24-byte writer with the missing tail zero-filled.
+// Size: LogHeaderMinSize=24 is the minimum valid hdr_size
+// (anything smaller is corruption). LogHeaderSize=40 is the full
+// MAJOR=1 MINOR=3 footprint with every optional tail field
+// present: 24 base + 8 initial_modseq (v1.1+) + 1 compat_flags +
+// 3 unused + 4 unused2 (v1.2+).
 //
-// See parsing rule: "If [hdr_size] is larger than this struct,
-// ignore any unknown fields. If it's smaller, assume the rest of
-// the fields are 0."
+// Per-spec parsing rule: "If [hdr_size] is larger than this
+// struct, ignore any unknown fields. If it's smaller, assume the
+// rest of the fields are 0." DecodeLogHeader implements both
+// halves — older writers' missing tail is zero-padded; newer
+// writers' extra tail is preserved verbatim via HdrSize so the
+// next Recreate keeps the on-disk size unchanged.
 type LogHeader struct {
 	MajorVersion   uint8
 	MinorVersion   uint8
