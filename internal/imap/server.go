@@ -84,14 +84,22 @@ type Options struct {
 }
 
 // NamespaceSpec is the per-namespace data the IMAP server needs to
-// render NAMESPACE responses. Mirrors the relevant subset of
-// config.NamespaceConfig; kept separate so callers (backend, tests)
-// can construct it without depending on pkg/config.
+// render NAMESPACE responses and route mailbox operations. Mirrors
+// the relevant subset of config.NamespaceConfig; kept separate so
+// callers (backend, tests) can construct it without depending on
+// pkg/config.
+//
+// Location is the storage URL ("maildir:/path") for this namespace.
+// Empty means the namespace is wire-declared but not backed by
+// storage — SELECT etc. on it returns NO. Personal namespaces
+// inherit their storage from cfg.Storage.MailHomeTemplate and may
+// leave Location empty.
 type NamespaceSpec struct {
 	Type      NamespaceType
 	Prefix    string
 	Separator rune
 	List      bool
+	Location  string
 }
 
 // NamespaceType classifies a namespace into the three slots of the
@@ -231,22 +239,43 @@ type session struct {
 	srv      *Server
 	imapConn *imapserver.Conn
 	userInfo *mailbox.UserInfo
-	box      mailbox.UserMailbox
-	idx      mailbox.UserIndex
-	limitIP  string
-	folder   *mailbox.Folder
+	// box / idx / subs are convenience aliases for the personal
+	// namespace handle (== s.primary.box / .idx / .subs). They keep
+	// the pre-NS-1b single-namespace code path readable for the
+	// common case (INBOX + personal folders). Cross-namespace ops
+	// (SELECT under "Shared/", LIST traversal, GETMETADATA on a
+	// shared mailbox) explicitly route through s.dispatch() and use
+	// the resulting handle's box/idx/subs.
+	box  mailbox.UserMailbox
+	idx  mailbox.UserIndex
+	subs *subscriptionStore
+
+	limitIP string
+	folder  *mailbox.Folder
+
+	// namespaces holds the per-namespace storage handles, keyed by
+	// the namespace prefix. The personal namespace always has key "".
+	// Empty / declared-only namespaces (Other Users in NS-1b) are
+	// absent — dispatch() catches them via the wire-spec list.
+	namespaces map[string]*nsHandle
+	// primary is the personal namespace handle; pointer-equal to
+	// namespaces[""].
+	primary *nsHandle
+	// folderNS is the namespace handle for the currently-SELECTed
+	// folder. Captured at SELECT time so folder-bound ops (FETCH,
+	// STORE, EXPUNGE, etc.) route to the right backend without
+	// re-parsing the mailbox name. When nil, s.primary is assumed.
+	folderNS *nsHandle
 
 	// savedSearchUIDs holds the most recent SEARCH result that was issued
 	// with RETURN SAVE (RFC 5182). Subsequent commands that reference $ get
 	// this set substituted in via go-imap/v2's IsSearchRes detection.
 	savedSearchUIDs imaplib.UIDSet
 
-	// subs persists the SUBSCRIBE/UNSUBSCRIBE state (RFC 9051 + RFC 5258).
-	// Constructed lazily after authentication.
-	subs *subscriptionStore
-
 	// specialUse persists per-user RFC 6154 overrides set via CREATE
-	// (USE ...) and resolves folder→attr for LIST.
+	// (USE ...) and resolves folder→attr for LIST. Only personal —
+	// RFC 6154 \Sent/\Drafts/etc. semantics do not extend to shared
+	// or public namespaces.
 	specialUse *specialUseStore
 
 	statsDeleted    int
@@ -255,6 +284,24 @@ type session struct {
 	statsFetchHdrB  int64
 	statsFetchBody  int
 	statsFetchBodyB int64
+}
+
+// folderBox returns the UserMailbox backing s.folder. Returns s.box
+// (personal alias) when no folder is selected or when the selected
+// folder happens to be in the personal namespace.
+func (s *session) folderBox() mailbox.UserMailbox {
+	if s.folderNS != nil {
+		return s.folderNS.box
+	}
+	return s.box
+}
+
+// folderIdx returns the UserIndex backing s.folder.
+func (s *session) folderIdx() mailbox.UserIndex {
+	if s.folderNS != nil {
+		return s.folderNS.idx
+	}
+	return s.idx
 }
 
 var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
@@ -292,12 +339,9 @@ func (s *session) Close() error {
 		})
 		slog.Info("imap: logout", "user", s.userInfo.Username, "stats", msg)
 	}
-	if s.box != nil {
-		s.box.Close() //nolint:errcheck
-	}
-	if s.idx != nil {
-		s.idx.Close() //nolint:errcheck
-	}
+	// closeHandles tears down every per-namespace box+idx; s.box/s.idx
+	// aliases pointed at s.primary so the personal handle is included.
+	s.closeHandles()
 	return nil
 }
 
@@ -348,20 +392,29 @@ func (s *session) Login(username, password string) error {
 		s.limitIP = ip
 	}
 
-	box := s.srv.opts.Mailbox.OpenUser(userInfo)
-	if err := box.Init(); err != nil {
-		slog.Error("imap: mailbox init failed", "user", userInfo.Username, "err", err)
+	s.userInfo = userInfo
+
+	// Open per-namespace handles. The personal handle's Init runs as
+	// part of openHandles; shared/public handles Init their backend
+	// roots so a misconfigured location: errors at login rather than
+	// at first SELECT.
+	handles, primary, err := s.openHandles(userInfo)
+	if err != nil {
+		slog.Error("imap: namespace handle init failed", "user", userInfo.Username, "err", err)
 		if s.srv.opts.ConnLimit != nil {
 			s.srv.opts.ConnLimit.Release(userInfo.Username, s.limitIP)
 		}
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Internal error"}
 	}
+	s.namespaces = handles
+	s.primary = primary
+	// Aliases for the common-case personal-namespace ops; see session
+	// struct doc-comment.
+	s.box = primary.box
+	s.idx = primary.idx
+	s.subs = primary.subs
 
-	s.userInfo = userInfo
-	s.box = box
-	s.idx = s.srv.opts.Index.OpenUser(userInfo)
 	owner := fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), userInfo.Username)
-	s.subs = newSubscriptionStore(userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker)
 	s.specialUse = newSpecialUseStore(
 		userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker,
 		s.srv.opts.SpecialUseDefaults,
@@ -380,7 +433,11 @@ func remoteIP(c net.Conn) string {
 }
 
 func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.SelectData, error) {
-	exists, err := s.box.FolderExists(name)
+	h, rel, err := s.dispatch(name)
+	if err != nil {
+		return nil, err
+	}
+	exists, err := h.box.FolderExists(rel)
 	if err != nil {
 		return nil, err
 	}
@@ -391,13 +448,14 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 			Text: "No such mailbox",
 		}
 	}
-	f, err := s.idx.OpenFolder(name, uint32(time.Now().Unix()))
+	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, err
 	}
 	s.folder = f
+	s.folderNS = h
 
-	msgs, _ := s.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	data := &imaplib.SelectData{
 		Flags: []imaplib.Flag{
 			imaplib.FlagAnswered, imaplib.FlagFlagged,
@@ -419,7 +477,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	// modseq. The KnownUIDs filter narrows the response to UIDs the client
 	// actually remembers; an empty set means "tell me everything".
 	if opts != nil && opts.QResync != nil && opts.QResync.UIDValidity == f.UIDValidity {
-		vanishedUIDs, vErr := s.idx.Vanished(f.ID, opts.QResync.ModSeq)
+		vanishedUIDs, vErr := h.idx.Vanished(f.ID, opts.QResync.ModSeq)
 		if vErr == nil && len(vanishedUIDs) > 0 {
 			var vset imaplib.UIDSet
 			if len(opts.QResync.KnownUIDs) == 0 {
@@ -443,19 +501,26 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 
 func (s *session) Unselect() error {
 	s.folder = nil
+	s.folderNS = nil
 	return nil
 }
 
 func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
-	if err := s.box.Create(name); err != nil {
+	h, rel, err := s.dispatch(name)
+	if err != nil {
+		return err
+	}
+	if err := h.box.Create(rel); err != nil {
 		return err
 	}
 	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr so
 	// subsequent LIST replies advertise it. RFC permits multiple USE attrs
 	// in the request but forbids carrying more than one on the folder; we
 	// honour the first one in the supplied slice and ignore the rest.
-	if opts != nil && len(opts.SpecialUse) > 0 && s.specialUse != nil {
-		if err := s.specialUse.Set(name, opts.SpecialUse[0]); err != nil {
+	// Special-use semantics are personal-namespace-only — shared/public
+	// folders with \Sent/\Drafts would be confusing across users.
+	if opts != nil && len(opts.SpecialUse) > 0 && s.specialUse != nil && h == s.primary {
+		if err := s.specialUse.Set(rel, opts.SpecialUse[0]); err != nil {
 			slog.Warn("imap: special_use persist failed",
 				"folder", name, "attr", string(opts.SpecialUse[0]), "err", err)
 		}
@@ -464,17 +529,35 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 }
 
 func (s *session) Delete(name string) error {
-	return s.box.Delete(name)
+	h, rel, err := s.dispatch(name)
+	if err != nil {
+		return err
+	}
+	return h.box.Delete(rel)
 }
 
 func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) error {
 	if strings.EqualFold(oldName, "INBOX") {
 		return s.renameInbox(newName)
 	}
-	if err := s.box.Rename(oldName, newName); err != nil {
+	hOld, relOld, err := s.dispatch(oldName)
+	if err != nil {
 		return err
 	}
-	return s.idx.RenameFolder(oldName, newName)
+	hNew, relNew, err := s.dispatch(newName)
+	if err != nil {
+		return err
+	}
+	if hOld != hNew {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Text: "RENAME across namespaces is not supported",
+		}
+	}
+	if err := hOld.box.Rename(relOld, relNew); err != nil {
+		return err
+	}
+	return hOld.idx.RenameFolder(relOld, relNew)
 }
 
 // renameInbox implements RFC 3501 §6.3.5 INBOX rename semantics:
@@ -534,20 +617,28 @@ func (s *session) renameInbox(dest string) error {
 }
 
 func (s *session) Subscribe(name string) error {
-	if s.subs == nil {
+	h, rel, err := s.dispatch(name)
+	if err != nil {
+		return err
+	}
+	if h.subs == nil {
 		return nil
 	}
-	if err := s.subs.Add(name); err != nil {
+	if err := h.subs.Add(rel); err != nil {
 		return fmt.Errorf("imap: subscribe %q: %w", name, err)
 	}
 	return nil
 }
 
 func (s *session) Unsubscribe(name string) error {
-	if s.subs == nil {
+	h, rel, err := s.dispatch(name)
+	if err != nil {
+		return err
+	}
+	if h.subs == nil {
 		return nil
 	}
-	if err := s.subs.Remove(name); err != nil {
+	if err := h.subs.Remove(rel); err != nil {
 		return fmt.Errorf("imap: unsubscribe %q: %w", name, err)
 	}
 	return nil
@@ -560,7 +651,54 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 			patterns[i] = strings.TrimPrefix(p, "/")
 		}
 	}
-	folders, err := s.box.ListFolders()
+
+	// Iterate every implemented namespace (personal first, then by
+	// prefix). Each handle's folders are emitted with the namespace
+	// prefix re-attached so the wire-protocol name is the full path
+	// the client sent / would send back.
+	for _, h := range s.orderedHandles() {
+		if err := s.listNamespace(w, h, ref, patterns, opts); err != nil {
+			return err
+		}
+	}
+
+	// Also emit "namespace root" entries for shared/public (\Noselect
+	// \HasChildren) so a top-level LIST returns the namespace as a
+	// visible folder even before any sub-folder exists. Personal's
+	// root is INBOX-based and not emitted separately.
+	for _, spec := range s.namespaceSpecsForList() {
+		if spec.Type == NamespacePersonal || !spec.List {
+			continue
+		}
+		// Skip namespaces with no implemented handle (Other Users
+		// declared-only). Emit a \Noselect entry so clients see the
+		// namespace exists; SELECT under it returns NO.
+		rootName := strings.TrimSuffix(spec.Prefix, string(spec.Separator))
+		if rootName == "" {
+			continue
+		}
+		if !listMatch(rootName, patterns) {
+			continue
+		}
+		attrs := []imaplib.MailboxAttr{
+			imaplib.MailboxAttrNoSelect,
+			imaplib.MailboxAttrHasChildren,
+		}
+		if err := w.WriteList(&imaplib.ListData{
+			Mailbox: rootName,
+			Delim:   spec.Separator,
+			Attrs:   attrs,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listNamespace emits LIST replies for one namespace's folders.
+// Folder names are wire-encoded with the namespace prefix re-attached.
+func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref string, patterns []string, opts *imaplib.ListOptions) error {
+	folders, err := h.box.ListFolders()
 	if err != nil {
 		return err
 	}
@@ -569,16 +707,17 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	// / SelectSubscribed decision consults the same view, even if a sibling
 	// session SUBSCRIBE'd mid-iteration.
 	var subs map[string]struct{}
-	if s.subs != nil && (opts != nil && (opts.SelectSubscribed || opts.ReturnSubscribed)) {
-		subs, err = s.subs.Snapshot()
+	if h.subs != nil && (opts != nil && (opts.SelectSubscribed || opts.ReturnSubscribed)) {
+		subs, err = h.subs.Snapshot()
 		if err != nil {
-			slog.Warn("imap: subscription snapshot failed", "err", err)
+			slog.Warn("imap: subscription snapshot failed", "ns", h.name, "err", err)
 			subs = make(map[string]struct{})
 		}
 	}
 
 	for _, name := range folders {
-		full := ref + name
+		// Wire-protocol name = namespace prefix + namespace-relative name.
+		full := ref + h.fullName(name)
 		if !listMatch(full, patterns) {
 			continue
 		}
@@ -602,21 +741,20 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 				attrs = append(attrs, imaplib.MailboxAttrSubscribed)
 			}
 		}
-		// SPECIAL-USE (RFC 6154). The attribute is unconditional metadata
-		// — clients that did not request RETURN SPECIAL-USE still expect
-		// to see \Sent etc. when the folder qualifies. Dovecot advertises
-		// the same way.
-		if s.specialUse != nil {
+		// SPECIAL-USE (RFC 6154). Only personal namespace has
+		// special-use semantics — \Sent/\Drafts/etc. on a shared
+		// folder is confusing across users.
+		if h == s.primary && s.specialUse != nil {
 			if attr := s.specialUse.Get(name); attr != "" {
 				attrs = append(attrs, attr)
 			}
 		}
-		data := &imaplib.ListData{Mailbox: full, Delim: '/', Attrs: attrs}
+		data := &imaplib.ListData{Mailbox: full, Delim: h.spec.Separator, Attrs: attrs}
 		// RETURN STATUS (RFC 5819 / IMAP4rev2) — per-folder Status response
 		// embedded in the LIST reply. Skip on failure rather than abort the
 		// whole LIST.
 		if opts != nil && opts.ReturnStatus != nil {
-			if status, statErr := s.Status(name, opts.ReturnStatus); statErr == nil {
+			if status, statErr := s.Status(full, opts.ReturnStatus); statErr == nil {
 				data.Status = status
 			}
 		}
@@ -625,6 +763,17 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		}
 	}
 	return nil
+}
+
+// namespaceSpecsForList returns the wire-protocol spec list used for
+// emitting root entries. Falls back to defaultNamespaces when the
+// operator did not configure any.
+func (s *session) namespaceSpecsForList() []NamespaceSpec {
+	specs := s.srv.opts.Namespaces
+	if len(specs) == 0 {
+		specs = defaultNamespaces
+	}
+	return specs
 }
 
 // childrenAttr returns \HasChildren when `name` is a prefix of any other
@@ -644,11 +793,15 @@ func childrenAttr(name string, all []string) imaplib.MailboxAttr {
 }
 
 func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.StatusData, error) {
-	f, err := s.idx.OpenFolder(name, 0)
+	h, rel, err := s.dispatch(name)
 	if err != nil {
 		return nil, err
 	}
-	msgs, _ := s.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	f, err := h.idx.OpenFolder(rel, 0)
+	if err != nil {
+		return nil, err
+	}
+	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	var (
 		unseen    uint32
 		deleted   uint32
@@ -668,7 +821,7 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	// Only walked when the client asked for SIZE so the common STATUS
 	// path stays cheap.
 	if opts.Size {
-		boxMsgs, listErr := s.box.List(name)
+		boxMsgs, listErr := h.box.List(rel)
 		if listErr == nil {
 			for _, bm := range boxMsgs {
 				totalSize += int64(bm.Size)
@@ -702,7 +855,7 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 }
 
 func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.AppendOptions) (*imaplib.AppendData, error) {
-	f, err := s.ensureFolder(name)
+	h, rel, f, err := s.ensureFolderHandle(name)
 	if err != nil {
 		return nil, err
 	}
@@ -720,20 +873,20 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	}
 
 	size := r.Size()
-	modseq, _ := s.idx.NextModSeq(f.ID)
+	modseq, _ := h.idx.NextModSeq(f.ID)
 
-	filename, err := s.box.Save(name, r, size, flagList)
+	filename, err := h.box.Save(rel, r, size, flagList)
 	if err != nil {
 		return nil, err
 	}
 
 	meta := &mailbox.MessageMeta{Filename: filename, Flags: flagList, Keywords: kwList, ModSeq: modseq, Size: uint32(size)}
-	uid, err := s.idx.AllocateAppend(f.ID, meta)
+	uid, err := h.idx.AllocateAppend(f.ID, meta)
 	if err != nil {
 		return nil, err
 	}
 
-	s.box.AppendUIDEntry(name, uid, filename) //nolint:errcheck
+	h.box.AppendUIDEntry(rel, uid, filename) //nolint:errcheck
 	s.emitMailboxChange(name, locks.EventDelivered, uid)
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(uid)}, nil
@@ -808,7 +961,7 @@ func (s *session) refreshIdleCount(w *imapserver.UpdateWriter) error {
 	if s.folder == nil {
 		return nil
 	}
-	refreshed, err := s.idx.OpenFolder(s.folder.Name, s.folder.UIDValidity)
+	refreshed, err := s.folderIdx().OpenFolder(s.folder.Name, s.folder.UIDValidity)
 	if err != nil {
 		// Best-effort: report what we have. Authoritative state lives on disk
 		// and the next user command will re-read it.
@@ -822,7 +975,8 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	idx := s.folderIdx()
+	msgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -833,7 +987,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		if uids != nil && !uids.Contains(imaplib.UID(m.UID)) {
 			continue
 		}
-		s.idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
+		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
 		s.statsExpunged++
 		if err := w.WriteExpunge(m.UID); err != nil {
@@ -854,7 +1008,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	// SAVE so the matcher sees a concrete UID list.
 	criteria = s.substituteSearchRes(criteria)
 
-	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	msgs, err := s.folderIdx().GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return nil, err
 	}
@@ -980,7 +1134,9 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	idx := s.folderIdx()
+	box := s.folderBox()
+	msgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -989,7 +1145,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	// VANISHED on a sequence-number FETCH is invalid; the patched lib
 	// rejects that at parse time so we do not need to re-check here.
 	if opts.Vanished && opts.ChangedSince > 0 {
-		vanishedUIDs, vErr := s.idx.Vanished(s.folder.ID, opts.ChangedSince)
+		vanishedUIDs, vErr := idx.Vanished(s.folder.ID, opts.ChangedSince)
 		if vErr == nil && len(vanishedUIDs) > 0 {
 			var vset imaplib.UIDSet
 			for _, uid := range vanishedUIDs {
@@ -1027,7 +1183,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := s.box.Fetch(s.folder.Name, m.Filename)
+			rc, ferr := box.Fetch(s.folder.Name, m.Filename)
 			if ferr != nil {
 				break
 			}
@@ -1053,7 +1209,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := s.box.Fetch(s.folder.Name, m.Filename)
+			rc, ferr := box.Fetch(s.folder.Name, m.Filename)
 			if ferr != nil {
 				break
 			}
@@ -1071,7 +1227,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := s.box.Fetch(s.folder.Name, m.Filename)
+			rc, ferr := box.Fetch(s.folder.Name, m.Filename)
 			if ferr != nil {
 				break
 			}
@@ -1089,7 +1245,8 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	idx := s.folderIdx()
+	msgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -1128,14 +1285,14 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 				newKW = append(newKW, f)
 			}
 		}
-		s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
+		idx.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventChanged, m.UID)
 
 		// Re-read modseq after UpdateFlags so the FETCH response carries
 		// the bumped value (CONDSTORE clients use it to update their
 		// last-known state).
 		newModSeq := m.ModSeq
-		if updated, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{{From: m.UID, To: m.UID}}); err == nil && len(updated) > 0 {
+		if updated, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{{From: m.UID, To: m.UID}}); err == nil && len(updated) > 0 {
 			newModSeq = updated[0].ModSeq
 		}
 
@@ -1164,18 +1321,20 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	exists, err := s.box.FolderExists(dest)
+	srcIdx := s.folderIdx()
+	srcBox := s.folderBox()
+	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
+	if err != nil {
+		return nil, err
+	}
+	exists, err := destH.box.FolderExists(destRel)
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
 	}
-	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
-	if err != nil {
-		return nil, err
-	}
-	destFolder, err := s.ensureFolder(dest)
+	msgs, err := srcIdx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return nil, err
 	}
@@ -1185,7 +1344,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		rc, fetchErr := s.box.Fetch(s.folder.Name, m.Filename)
+		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("imap/copy fetch: %w", fetchErr)
 		}
@@ -1194,8 +1353,8 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		if readErr != nil {
 			return nil, fmt.Errorf("imap/copy read: %w", readErr)
 		}
-		modseq, _ := s.idx.NextModSeq(destFolder.ID)
-		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
+		modseq, _ := destH.idx.NextModSeq(destFolder.ID)
+		newFilename, saveErr := destH.box.Save(destRel, bytes.NewReader(data), int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return nil, fmt.Errorf("imap/copy save: %w", saveErr)
 		}
@@ -1207,11 +1366,11 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			Size:         uint32(len(data)),
 			InternalDate: m.InternalDate,
 		}
-		newUID, appendErr := s.idx.AllocateAppend(destFolder.ID, meta)
+		newUID, appendErr := destH.idx.AllocateAppend(destFolder.ID, meta)
 		if appendErr != nil {
 			return nil, fmt.Errorf("imap/copy append: %w", appendErr)
 		}
-		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
+		destH.box.AppendUIDEntry(destRel, newUID, newFilename) //nolint:errcheck
 		s.emitMailboxChange(dest, locks.EventDelivered, newUID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(newUID))
@@ -1264,7 +1423,7 @@ func (s *session) GetMetadata(folder string, entries []string, opts *imaplib.Get
 	if s.srv.opts.MetadataDict == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata storage not configured"}
 	}
-	guid, err := s.metadataFolderGUID(folder)
+	h, guid, err := s.metadataResolve(folder)
 	if err != nil {
 		return nil, err
 	}
@@ -1280,7 +1439,7 @@ func (s *session) GetMetadata(folder string, entries []string, opts *imaplib.Get
 		if err != nil {
 			return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
 		}
-		if err := s.collectMetadata(folder, guid, scope, attrName, entry, depth, maxSize, out); err != nil {
+		if err := s.collectMetadata(h, folder, guid, scope, attrName, entry, depth, maxSize, out); err != nil {
 			return nil, err
 		}
 	}
@@ -1291,7 +1450,7 @@ func (s *session) GetMetadata(folder string, entries []string, opts *imaplib.Get
 // Depth 0 = the entry itself; Depth 1 = entry + immediate children;
 // Depth Infinity = entry + whole subtree.
 func (s *session) collectMetadata(
-	folder string, guid [16]byte,
+	h *nsHandle, folder string, guid [16]byte,
 	scope mailbox.AttrScope, attrName, requestedEntry string,
 	depth imaplib.GetMetadataDepth, maxSize *uint32,
 	out map[string]*[]byte,
@@ -1299,7 +1458,7 @@ func (s *session) collectMetadata(
 	ctx := context.Background()
 	ops := s.metadataOps()
 
-	exactKey := s.metadataKey(folder, guid, scope, attrName)
+	exactKey := s.metadataKey(h, folder, guid, scope, attrName)
 	exactVals, found, err := s.srv.opts.MetadataDict.Lookup(ctx, ops, exactKey)
 	if err != nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata lookup failed: " + err.Error()}
@@ -1319,13 +1478,13 @@ func (s *session) collectMetadata(
 	if depth == imaplib.GetMetadataDepthInfinity {
 		flags |= dict.IterRecurse
 	}
-	prefix := s.metadataPrefix(folder, guid, scope) + attrName + "/"
+	prefix := s.metadataPrefix(h, folder, guid, scope) + attrName + "/"
 	it, err := s.srv.opts.MetadataDict.Iterate(ctx, ops, prefix, flags)
 	if err != nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata iterate failed: " + err.Error()}
 	}
 	defer it.Close() //nolint:errcheck
-	stripPrefix := s.metadataPrefix(folder, guid, scope)
+	stripPrefix := s.metadataPrefix(h, folder, guid, scope)
 	for it.Next() {
 		k := it.Key()
 		vs := it.Values()
@@ -1352,7 +1511,7 @@ func (s *session) SetMetadata(folder string, entries map[string]*[]byte) error {
 	if s.srv.opts.MetadataDict == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata storage not configured"}
 	}
-	guid, err := s.metadataFolderGUID(folder)
+	h, guid, err := s.metadataResolve(folder)
 	if err != nil {
 		return err
 	}
@@ -1367,7 +1526,7 @@ func (s *session) SetMetadata(folder string, entries map[string]*[]byte) error {
 			_ = tx.Rollback()
 			return &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
 		}
-		key := s.metadataKey(folder, guid, scope, attrName)
+		key := s.metadataKey(h, folder, guid, scope, attrName)
 		if value == nil {
 			if err := tx.Unset(key); err != nil {
 				_ = tx.Rollback()
@@ -1390,36 +1549,51 @@ func (s *session) SetMetadata(folder string, entries map[string]*[]byte) error {
 	return nil
 }
 
-// metadataFolderGUID resolves the GUID used for keying the requested
-// folder's attributes. Server-scope ops (folder == "") always hash under
-// INBOX's GUID.
-func (s *session) metadataFolderGUID(folder string) ([16]byte, error) {
+// metadataResolve returns the namespace handle and folder GUID used
+// for keying the requested folder's attributes. Server-scope ops
+// (folder == "") hash under the personal INBOX's GUID — server-scope
+// state is per-user, never per-namespace.
+func (s *session) metadataResolve(folder string) (*nsHandle, [16]byte, error) {
 	target := folder
 	if target == "" {
 		target = "INBOX"
 	}
-	f, err := s.ensureFolder(target)
+	h, rel, err := s.dispatch(target)
 	if err != nil {
-		return [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox lookup failed: " + err.Error()}
+		return nil, [16]byte{}, err
+	}
+	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
+	if err != nil {
+		return nil, [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox lookup failed: " + err.Error()}
 	}
 	if f.GUID == ([16]byte{}) {
-		return [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox missing GUID"}
+		return nil, [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox missing GUID"}
 	}
-	return f.GUID, nil
+	return h, f.GUID, nil
 }
 
-func (s *session) metadataKey(folder string, guid [16]byte, scope mailbox.AttrScope, attrName string) string {
+func (s *session) metadataKey(h *nsHandle, folder string, guid [16]byte, scope mailbox.AttrScope, attrName string) string {
 	if folder == "" {
 		return mailbox.ServerAttrKey(scope, guid, attrName)
 	}
-	return mailbox.AttrKey(scope, guid, attrName)
+	if h == nil || h == s.primary {
+		return mailbox.AttrKey(scope, guid, attrName)
+	}
+	// Shared / public namespaces — priv/ keys carry an accessing-user
+	// dimension so users do not see each other's private annotations
+	// on the same shared folder. shared/ keys are global to the
+	// folder regardless of accessing user.
+	return mailbox.SharedAttrKey(scope, guid, s.userInfo.Username, attrName)
 }
 
-func (s *session) metadataPrefix(folder string, guid [16]byte, scope mailbox.AttrScope) string {
+func (s *session) metadataPrefix(h *nsHandle, folder string, guid [16]byte, scope mailbox.AttrScope) string {
 	if folder == "" {
 		return mailbox.ServerAttrPrefix(scope, guid)
 	}
-	return mailbox.AttrPrefix(scope, guid)
+	if h == nil || h == s.primary {
+		return mailbox.AttrPrefix(scope, guid)
+	}
+	return mailbox.SharedAttrPrefix(scope, guid, s.userInfo.Username)
 }
 
 func (s *session) metadataOps() *dict.OpSettings {
@@ -1436,18 +1610,20 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
-	exists, err := s.box.FolderExists(dest)
+	srcIdx := s.folderIdx()
+	srcBox := s.folderBox()
+	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
+	if err != nil {
+		return err
+	}
+	exists, err := destH.box.FolderExists(destRel)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
 	}
-	msgs, err := s.idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
-	if err != nil {
-		return err
-	}
-	destFolder, err := s.ensureFolder(dest)
+	msgs, err := srcIdx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -1465,7 +1641,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		rc, fetchErr := s.box.Fetch(s.folder.Name, m.Filename)
+		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename)
 		if fetchErr != nil {
 			return fmt.Errorf("imap/move fetch: %w", fetchErr)
 		}
@@ -1474,8 +1650,8 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		if readErr != nil {
 			return fmt.Errorf("imap/move read: %w", readErr)
 		}
-		modseq, _ := s.idx.NextModSeq(destFolder.ID)
-		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), int64(len(data)), m.Flags)
+		modseq, _ := destH.idx.NextModSeq(destFolder.ID)
+		newFilename, saveErr := destH.box.Save(destRel, bytes.NewReader(data), int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return fmt.Errorf("imap/move save: %w", saveErr)
 		}
@@ -1487,11 +1663,11 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			Size:         uint32(len(data)),
 			InternalDate: m.InternalDate,
 		}
-		newUID, appendErr := s.idx.AllocateAppend(destFolder.ID, meta)
+		newUID, appendErr := destH.idx.AllocateAppend(destFolder.ID, meta)
 		if appendErr != nil {
 			return fmt.Errorf("imap/move append: %w", appendErr)
 		}
-		s.box.AppendUIDEntry(dest, newUID, newFilename) //nolint:errcheck
+		destH.box.AppendUIDEntry(destRel, newUID, newFilename) //nolint:errcheck
 		s.emitMailboxChange(dest, locks.EventDelivered, newUID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(newUID))
@@ -1509,15 +1685,15 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	// Expunge source in descending seq order (RFC 6851 §3.3).
 	for i := len(hits) - 1; i >= 0; i-- {
 		h := hits[i]
-		s.box.Remove(s.folder.Name, h.filename)     //nolint:errcheck
-		s.idx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
+		srcBox.Remove(s.folder.Name, h.filename)     //nolint:errcheck
+		srcIdx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, h.srcUID)
 		if err := w.WriteExpunge(h.seqNum); err != nil {
 			return err
 		}
 	}
 	s.folder.Messages -= uint32(len(hits))
-	s.idx.SaveFolder(s.folder) //nolint:errcheck
+	srcIdx.SaveFolder(s.folder) //nolint:errcheck
 	return nil
 }
 
@@ -1533,7 +1709,31 @@ func (s *session) ensureFolder(name string) (*mailbox.Folder, error) {
 	if s.folder != nil && s.folder.Name == name {
 		return s.folder, nil
 	}
-	return s.idx.OpenFolder(name, uint32(time.Now().Unix()))
+	h, rel, err := s.dispatch(name)
+	if err != nil {
+		return nil, err
+	}
+	return h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
+}
+
+// ensureFolderHandle is the namespace-aware variant of ensureFolder
+// used by ops that need to know which backend the folder lives on
+// (APPEND, COPY, MOVE, METADATA). Returns the resolved handle, the
+// namespace-relative folder name (already stripped of the prefix),
+// and the opened *Folder.
+func (s *session) ensureFolderHandle(name string) (*nsHandle, string, *mailbox.Folder, error) {
+	h, rel, err := s.dispatch(name)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if s.folder != nil && s.folder.Name == rel && s.folderNS == h {
+		return h, rel, s.folder, nil
+	}
+	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return h, rel, f, nil
 }
 
 func listMatch(name string, patterns []string) bool {

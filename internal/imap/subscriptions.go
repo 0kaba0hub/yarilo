@@ -28,8 +28,18 @@ type subscriptionStore struct {
 }
 
 func newSubscriptionStore(home, username, owner string, locker locks.Locker) *subscriptionStore {
+	return newSubscriptionStoreFile(home, "subscriptions", username, owner, locker)
+}
+
+// newSubscriptionStoreFile is the explicit-filename variant introduced
+// for NS-1b multi-namespace support: each namespace gets its own
+// subscription file in the user's home (subscriptions for personal —
+// preserved verbatim for pre-v1.21 upgrades — and subscriptions-<ns>
+// for shared / public). Personal-only deployments continue to call
+// newSubscriptionStore and read/write the original file.
+func newSubscriptionStoreFile(home, filename, username, owner string, locker locks.Locker) *subscriptionStore {
 	return &subscriptionStore{
-		path:     filepath.Join(home, "subscriptions"),
+		path:     filepath.Join(home, filename),
 		username: username,
 		owner:    owner,
 		locker:   locker,

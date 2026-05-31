@@ -653,13 +653,27 @@ extraVolumeMounts: []
 # Standalone single-pod default uses file driver on the local PVC.
 # Backend multi-pod helm release should override with redis or sql to share
 # state across replicas.
-# IMAP namespaces (RFC 2342 / RFC 9051 §6.3.10). Drives the wire-protocol
-# NAMESPACE response. When omitted (default), yarilo behaves as before
-# v1.20: a single personal namespace with separator "/" is reported.
-# NS-1b will add OpenNamespace storage routing; until then declaring
-# Shared/Other Users namespaces produces a correct NAMESPACE response
-# but SELECT-ing under them returns NO. See docs/NAMESPACE.md for full
-# schema and the post-NS-1a roadmap.
+# IMAP namespaces (RFC 2342 / RFC 9051 §6.3.10).
+#
+# When omitted (default), yarilo runs as personal-only — backwards-
+# compatible with pre-v1.20 deployments.
+#
+# When you declare Shared/Public namespaces, yarilo opens an
+# additional storage handle per namespace and routes SELECT/APPEND/
+# COPY/MOVE/SUBSCRIBE/etc to the right backend based on the prefix.
+# IMPORTANT (pre-ACL-1): with Shared/Public configured, **any
+# authenticated user reads and writes everything under them**.
+# Treat as cooperative-trust until ACL-1 lands.
+#
+# Storage roots referenced by `location:` are the operator's
+# responsibility — mount the PV (NFS/CephFS RWX in multi-pod
+# deployments) at the chosen path; yarilo creates the per-folder
+# maildir tree on the first CREATE / APPEND. Do NOT point shared
+# locations at per-user storage paths.
+#
+# See docs/NAMESPACE.md for full schema, separator semantics,
+# METADATA priv/ per-accessing-user behaviour and the post-NS-1b
+# roadmap (ACL-1, NS-3 cross-pod routing, QUOTA-1 owner-paid).
 namespaces: []
 #   - type: personal              # personal | other | shared
 #     prefix: ""                  # mailbox name prefix; "" reserved for personal
@@ -667,17 +681,18 @@ namespaces: []
 #     list: true                  # show in NAMESPACE response
 #     subscriptions: true
 #     inbox: true                 # owns the magic "INBOX" (set on exactly one)
-#     location: "maildir:%h"      # NS-1b: storage URL (varexpand %u/%h/%n/%d/%i)
+#     # personal inherits storage from cfg.Storage.MailHomeTemplate;
+#     # leave `location:` unset.
 #   - type: shared
 #     prefix: "Shared/"
 #     separator: "/"
 #     list: true
+#     # Absolute path; mount a PV here in multi-pod deployments.
 #     location: "maildir:/var/yarilo/shared"
-#   - type: other
+#   - type: other                 # Other Users — declared-only until ACL-1 + NS-3
 #     prefix: "user/"
 #     separator: "/"
 #     list: true
-#     location: "maildir:%shared_root/%n"
 
 dicts:
   # IMAP METADATA (RFC 5464) state. When omitted, GETMETADATA /

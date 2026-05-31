@@ -9,12 +9,15 @@ yarilo supports the three RFC 9051 namespace classes:
 | **Shared** | `Shared/` | Folders shared between groups of users (or all users), gated by ACL. |
 | **Public** (a variant of Shared) | `Public/` | Folders accessible to every authenticated user. |
 
-This page is the operator reference for **NS-1a** (wire-protocol — `v1.20`).
-NS-1b (storage routing — `OpenNamespace` per-namespace backends) and
-ACL-1 (RFC 4314 access control) ship in subsequent releases. Until those
-land, only Personal carries real mailboxes — Other / Shared / Public can
-be **declared** in config and will appear in the IMAP `NAMESPACE`
-response, but `SELECT`-ing a mailbox under them returns `NO`.
+This page covers **NS-1a** (wire-protocol, `v1.20`) + **NS-1b**
+(storage routing, `v1.21`). With NS-1b shipped, **Personal and
+Shared/Public** mailboxes carry real storage; **Other Users**
+(`user/<owner>/...`) is declared but `SELECT` under that prefix
+returns `NO "Other Users namespace requires ACL-1 + NS-3"`.
+
+ACL-1 (RFC 4314 access control) lands next — before that, **any
+authenticated user reads and writes everything under Shared/Public**.
+Treat shared/public namespaces as cooperative-trust until ACL-1 lands.
 
 ---
 
@@ -104,6 +107,35 @@ namespaces:
 
 ---
 
+## Storage layout
+
+Each namespace's storage is rooted at its `location:`. The operator
+mounts (or pre-creates) the path; yarilo creates the per-folder
+maildir tree on the first `CREATE` / `APPEND`.
+
+```
+/var/mail/vhosts/<domain>/<user>/          ← personal (per-user, existing layout)
+  Maildir/
+    .index
+    cur/  new/  tmp/
+    .Sent/...
+
+/var/yarilo/shared/                        ← shared (one root per install)
+  marketing/
+    announcements/
+      .index
+      cur/  new/
+
+/var/yarilo/public/                        ← public (one root per install)
+  announcements/...
+```
+
+For multi-pod backend deployments the namespace roots must be on
+shared storage (NFS/CephFS RWX) so all replicas see the same shared
+folder tree. The standalone helm chart leaves shared roots **empty by
+default** — operators opt in by populating `cfg.Namespaces` and
+mounting a PV at the chosen `location:`.
+
 ## Quota interaction (NS-1b + QUOTA-1)
 
 Quota is **owner-paid**: storage consumed in `user/alice/INBOX` counts
@@ -123,20 +155,28 @@ to `true` to expose it to all users.
 
 ---
 
-## What does NOT work yet (post-NS-1a)
+## What works in NS-1b (`v1.21`)
+
+| Behaviour | Status |
+|:---|:---|
+| `SELECT Shared/marketing/announcements` opens a mailbox on the shared backend | ✅ |
+| `CREATE Shared/team` lands under the configured `location:` (separate filesystem root) | ✅ |
+| `APPEND` / `FETCH` / `STORE` / `EXPUNGE` / `SEARCH` on shared mailboxes | ✅ |
+| `LIST "" "*"` returns mailboxes from every configured namespace, each row prefixed with its namespace prefix and emitting its own separator | ✅ |
+| `SUBSCRIBE Shared/team` persists to a per-namespace subscription file (`subscriptions-shared`) — separate from `subscriptions` (personal) | ✅ |
+| `COPY` / `MOVE` between personal and shared namespaces | ✅ |
+| `RENAME` within a single namespace | ✅ |
+| `GETMETADATA` / `SETMETADATA` on shared folders, with `/private/*` stored **per accessing user** (SHA-256 hash of username), `/shared/*` global to the folder | ✅ |
+| `SELECT user/alice/INBOX` (Other Users) | `NO "Other Users namespace requires ACL-1 + NS-3"` |
+| `LIST` of `user/*` patterns | returns empty (namespace declared but unimplemented) |
+
+## What does NOT work yet (post-NS-1b)
 
 | Behaviour | Phase that delivers it |
 |:---|:---|
-| `SELECT Shared/marketing/announcements` actually opens a mailbox on the shared backend | NS-1b |
-| `LIST "" "*"` returns mailboxes from across all configured namespaces | NS-1b |
-| Per-namespace storage backend (separate maildir root, possibly a different driver) | NS-1b |
-| `LIST` and `SELECT` enforce per-folder rights | ACL-1 (RFC 4314) |
-| `GETMETADATA` priv/ on a shared mailbox is per-accessing-user | NS-1b |
-| Quota debit on writes to `user/alice/*` charges alice | QUOTA-1 + NS-1b |
-| Director routes `user/alice/*` to alice's backend pod | NS-3 |
-
-Until then, declaring Shared/Other namespaces produces a correct
-`NAMESPACE` response but `SELECT`-ing under them returns
-`NO "No such mailbox"`. Operators who want to stage their full
-namespace topology can do it now — when NS-1b ships, no config change
-is needed beyond filling in `location:` per namespace.
+| `LIST` / `SELECT` enforce per-folder rights (anyone with creds reads/writes Shared/Public) | ACL-1 (RFC 4314) |
+| `RENAME` across namespaces (`Personal/foo` → `Shared/foo`) | declined with `NO`; design TBD |
+| `Other Users` namespace (`user/alice/INBOX`) actually opens alice's mailbox | ACL-1 + NS-3 |
+| Quota debit on writes to `user/alice/*` charges alice (owner-paid) | QUOTA-1 + NS-3 |
+| Director routes `user/alice/*` to alice's backend pod in multi-pod deployments | NS-3 |
+| Mixed storage drivers across namespaces (personal=maildir, shared=mdbox) | future |
