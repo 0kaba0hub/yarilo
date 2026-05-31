@@ -1,0 +1,18 @@
+{{- if .Values.components.backendAPI.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-backend-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "backend-api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: backend-api
+      port: 9105
+      targetPort: backend-api
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "backend-api") | nindent 4 }}
+{{- end }}

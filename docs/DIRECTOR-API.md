@@ -1,7 +1,15 @@
-# yarilo-admin API
+# yarilo-director HTTP admin API
 
-HTTP admin API exposed by `yarilo-director` on port `9103` (default).
-All endpoints require a Bearer token and are restricted by IP whitelist.
+Director-plane admin endpoints exposed by `yarilo-director` on port
+`9103` (default). All require a Bearer token and an IP allow-list.
+
+For the storage-plane admin API (dict / acl / quota / folder),
+see [BACKEND-API.md](BACKEND-API.md) — different binary
+(`yarilo-backend-api`), different port (`:9105`), different token.
+
+Both are reachable from the same `yarilo-admin` CLI — director ops
+via `--url` / `--token`, storage ops via `--backend-url` /
+`--backend-token`.
 
 ---
 

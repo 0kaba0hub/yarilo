@@ -197,6 +197,19 @@ data:
         session_grace_period: 30
         kill_timeout: 5
 
+    {{- if .Values.components.backendAPI.enabled }}
+    ## yarilo-backend-api consumes this section. Token is loaded from
+    ## the Secret at /etc/yarilo/backend-api-token via $BACKEND_API_TOKEN
+    ## env so it never lands in the ConfigMap.
+    backend_api:
+      listen: {{ .Values.components.backendAPI.listen | quote }}
+      token: "${BACKEND_API_TOKEN}"
+      {{- with .Values.components.backendAPI.allowedNets }}
+      allowed_nets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+
     {{- if .Values.components.locks.enabled }}
     ## yarilo-locks pod consumes this section. Sessions consume locks_client below.
     locks_service:

@@ -1,16 +1,15 @@
 # yarilo-admin
 
-Unified operator CLI for yarilo. Every subsystem that needs an "ops
-surface" gains a subcommand here:
+Unified operator CLI for yarilo. Two top-level planes:
 
-| Subsystem | Purpose | Doc |
-|:---|:---|:---|
-| `director` | Manage `yarilo-director` cluster via HTTP admin API | this page |
-| `dict` | Operate on `pkg/dict` KV stores (metadata, quota, ACL state, ...) | [DICT.md](DICT.md) |
+| Plane | Talks to | What | Subcommands |
+|:---|:---|:---|:---|
+| `director` | `yarilo-director` `:9103` | ring / backends / users / peers | `director status / dump / map / backends / users / ring` |
+| `backend` | `yarilo-backend-api` `:9105` | per-backend storage state | `backend dict / acl / quota / folder / user / mailbox` |
 
-Runs inside the director pod for `director` ops — no flags required
-in standard k8s deployments. Runs anywhere with config / driver access
-for `dict` ops.
+Both planes speak JSON over HTTPS with Bearer-token auth.
+See [DIRECTOR-API.md](DIRECTOR-API.md) and [BACKEND-API.md](BACKEND-API.md)
+for the wire references.
 
 ---
 
@@ -33,13 +32,16 @@ The container already has the required environment variables set.
 
 | Variable | Default | Description |
 |:---|:---|:---|
-| `YARILO_ADMIN_URL` | `http://localhost:9103` | API base URL |
-| `YARILO_ADMIN_TOKEN` | — | Bearer token (fallback: `DIRECTOR_API_TOKEN`) |
+| `YARILO_ADMIN_URL` | `http://localhost:9103` | Director API base URL (used by `director` subcommand) |
+| `YARILO_ADMIN_TOKEN` | — | Director Bearer token (fallback: `DIRECTOR_API_TOKEN`) |
+| `YARILO_BACKEND_API_URL` | `http://localhost:9105` | Backend API base URL (used by `backend <service>` subcommands) |
+| `YARILO_BACKEND_API_TOKEN` | — | Backend API Bearer token (fallback: `BACKEND_API_TOKEN`) |
 
-To read the auto-generated token from outside the pod:
+To read the auto-generated tokens from outside the pod:
 
 ```sh
 kubectl get secret yarilo-director-api-token -o jsonpath='{.data.token}' | base64 -d
+kubectl get secret yarilo-backend-api-token   -o jsonpath='{.data.token}' | base64 -d
 ```
 
 ---
@@ -47,13 +49,24 @@ kubectl get secret yarilo-director-api-token -o jsonpath='{.data.token}' | base6
 ## Global flags
 
 ```
-yarilo-admin [--url URL] [--token TOKEN] <resource> <action> [args...]
+yarilo-admin [--url URL] [--token TOKEN] \
+             [--backend-url URL] [--backend-token TOKEN] \
+             <resource> <action> [args...]
 ```
 
-| Flag | Default | Description |
-|:---|:---|:---|
-| `--url` | `$YARILO_ADMIN_URL` or `http://localhost:9103` | API base URL |
-| `--token` | `$YARILO_ADMIN_TOKEN` or `$DIRECTOR_API_TOKEN` | Bearer token |
+| Flag | Default | Used by | Description |
+|:---|:---|:---|:---|
+| `--url` | `$YARILO_ADMIN_URL` or `http://localhost:9103` | `director` | Director API base URL |
+| `--token` | `$YARILO_ADMIN_TOKEN` or `$DIRECTOR_API_TOKEN` | `director` | Director Bearer token |
+| `--backend-url` | `$YARILO_BACKEND_API_URL` or `http://localhost:9105` | `backend <service>` | Backend API base URL |
+| `--backend-token` | `$YARILO_BACKEND_API_TOKEN` or `$BACKEND_API_TOKEN` | `backend <service>` | Backend API Bearer token |
+
+The two URLs are separate by design: director-plane ops (ring,
+backends, users, peers) live on `yarilo-director:9103`; backend-plane
+ops (dict / acl / quota / folder / user / mailbox) live on
+`yarilo-backend-api:9105`. Each binary holds the state its plane
+exposes — director state lives in director's process; backend state
+(NFS + dicts) lives on backend pods.
 
 ---
 

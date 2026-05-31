@@ -590,6 +590,57 @@ YAML schema and current limitations.
 
 ---
 
+## Admin API plane
+
+Operator HTTP admin splits along the two planes whose state it
+exposes:
+
+| Plane | Binary | Port | Surface |
+|:---|:---|:---|:---|
+| **Director** | `yarilo-director` | `:9103` `/api/director/...` | ring / backends / users / peers — routing topology |
+| **Backend**  | `yarilo-backend-api` | `:9105` `/api/backend/<service>/...` | dict (today); acl / quota / folder / user / mailbox (future) |
+
+Both speak JSON over HTTPS with Bearer-token auth + IP allow-list.
+The `yarilo-admin` CLI is a thin HTTP client over both — operator
+runs `yarilo-admin director <command>` or `yarilo-admin backend
+<service> <command>`. Each plane has its own URL + token
+(`--url`/`--token` vs `--backend-url`/`--backend-token`); their
+defaults work out of the box when running inside the respective
+pod.
+
+### Why two binaries
+
+Director state (ring, peers, user-to-backend mapping) lives in
+director's in-memory process state. Backend state (NFS-mounted
+maildir, on-disk indices, dict instances) lives in backend
+session-process pods. In a multi-pod backend deployment **these are
+physically different pods on different nodes** — they cannot share
+one HTTP server. The separation also keeps each plane's lifecycle
+independent (rolling restart of director admin does not touch
+storage ops, and vice versa).
+
+In standalone single-pod deployment both binaries run in the same
+pod; operator still hits the two HTTP endpoints separately. The
+CLI's flag separation makes the routing decision explicit rather
+than magic.
+
+### Future services per plane
+
+Each plane is a registry — services land under it as features
+ship. Director can grow distributed-state services (e.g.
+`/api/director/dict/userdb_cache/...` once director uses dict for
+peer-sync) without changing the CLI shape; the same `dict`
+subcommand sits under both planes when needed.
+
+### Wire reference
+
+[docs/BACKEND-API.md](docs/BACKEND-API.md) — backend-plane
+endpoints (dict surface today; ACL / quota / folder added in
+subsequent phases). [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md)
+— director plane.
+
+---
+
 ## Storage
 
 Maildir requires shared filesystem for `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`:
