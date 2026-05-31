@@ -20,6 +20,8 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
+	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
+	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -254,7 +256,7 @@ type session struct {
 	// the resulting handle's box/idx/subs.
 	box  mailbox.UserMailbox
 	idx  mailbox.UserIndex
-	subs *subscriptionStore
+	subs *subs.Store
 
 	limitIP string
 	folder  *mailbox.Folder
@@ -282,7 +284,7 @@ type session struct {
 	// (USE ...) and resolves folder→attr for LIST. Only personal —
 	// RFC 6154 \Sent/\Drafts/etc. semantics do not extend to shared
 	// or public namespaces.
-	specialUse *specialUseStore
+	specialUse *specialuse.Store
 
 	statsDeleted    int
 	statsExpunged   int
@@ -421,7 +423,7 @@ func (s *session) Login(username, password string) error {
 	s.subs = primary.subs
 
 	owner := fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), userInfo.Username)
-	s.specialUse = newSpecialUseStore(
+	s.specialUse = specialuse.New(
 		userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker,
 		s.srv.opts.SpecialUseDefaults,
 	)

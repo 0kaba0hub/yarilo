@@ -38,7 +38,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // Server is the backend-API HTTP server. Construct with New, then call
@@ -48,17 +51,41 @@ type Server struct {
 	mux  *http.ServeMux
 }
 
-// Options configures Server. Dicts is the live map opened by the
-// host process (backend.New); the server hands out pointers to those
-// objects via lookups keyed by name. Token is the shared admin
-// secret; empty disables auth (test/dev only). AllowedNets, when
-// non-empty, restricts which client IPs may reach the API.
+// Options configures Server.
+//
+// Dicts is the live map opened by the host process; the server
+// hands out pointers to those objects via lookups keyed by name.
+// Mailbox / Index / Resolver / NamespaceMailboxes / Locker /
+// SpecialUseDefaults / MetadataDict / Namespaces are the same shape
+// session binaries already accept — backend-api opens per-user
+// handles on demand from those (see userctx.go) so admin requests
+// reach the same on-disk layout the IMAP path uses.
+//
+// Token is the shared admin secret; empty disables auth (test/dev
+// only). AllowedNets, when non-empty, restricts which client IPs may
+// reach the API.
 type Options struct {
 	Addr        string
 	TLSConfig   *tls.Config
 	Token       string
 	AllowedNets []*net.IPNet
 	Dicts       map[string]dict.Dict
+
+	Mailbox            mailbox.MailboxBackend
+	Index              mailbox.IndexBackend
+	Resolver           *mailbox.Resolver
+	NamespaceMailboxes map[string]mailbox.MailboxBackend
+	Namespaces         []config.NamespaceConfig
+	Locker             locks.Locker
+	SpecialUseDefaults map[string]string
+	MetadataDict       dict.Dict
+
+	// AnvilAddr / AnvilTLS configure backend-api's connection to
+	// yarilo-anvil for the WHO endpoint. Empty Addr disables /who
+	// (returns 501). Same TLS config the rest of internal cluster
+	// traffic uses.
+	AnvilAddr string
+	AnvilTLS  *tls.Config
 }
 
 // New constructs a Server and registers the backend endpoints onto an
@@ -69,6 +96,13 @@ func New(opts Options) *Server {
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 	s.registerHealth()
 	s.registerDictRoutes()
+	s.registerFolderRoutes()
+	s.registerUserRoutes()
+	s.registerIndexRoutes()
+	s.registerSubscriptionRoutes()
+	s.registerSpecialUseRoutes()
+	s.registerMetadataRoutes()
+	s.registerWhoRoutes()
 	return s
 }
 

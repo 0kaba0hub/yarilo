@@ -198,6 +198,319 @@ Errors come back with the matching HTTP status and a JSON body:
 | 500 | driver / I/O error |
 | 503 | dict closed (process shutting down) |
 
+## Folder endpoints
+
+Read-only inspection of mailbox state. Mutating folder ops
+(create / delete / rename / expunge) are deferred — they need
+IMAP-level ACL context and proper event emission to live sessions.
+See `TODO.md`.
+
+Common request body (every folder endpoint accepts it):
+
+```json
+{ "user": "alice@x.com", "folder": "INBOX", "namespace": "personal" }
+```
+
+`namespace` defaults to `personal` when omitted. Other valid values
+are the slugs configured under `namespaces[].prefix` (e.g.
+`shared`, `public`).
+
+### `POST /api/backend/folder/list`
+
+Returns every folder visible in the namespace via the underlying
+storage driver (`UserMailbox.ListFolders`).
+
+```json
+{ "folders": ["INBOX", "Sent", "Trash"] }
+```
+
+CLI: `yarilo-admin backend folder list <user> [--namespace NS]`
+
+### `POST /api/backend/folder/info`
+
+Folder metadata. `guid` is the 16-byte rename-stable identifier
+stamped at folder creation — survives RENAME and is used as the
+ACL/metadata key namespace.
+
+```json
+{
+  "name":           "INBOX",
+  "guid":           "ab12...ef",
+  "uid_validity":   1747000000,
+  "next_uid":       42,
+  "messages":       7,
+  "unseen":         3,
+  "highest_modseq": 19
+}
+```
+
+CLI: `yarilo-admin backend folder info <user> <folder>`
+
+### `POST /api/backend/folder/guid`
+
+Convenience extraction of `guid` from the info payload — useful for
+piping into ACL / METADATA CLIs that need the GUID directly.
+
+```json
+{ "folder": "INBOX", "guid": "ab12...ef" }
+```
+
+CLI: `yarilo-admin backend folder guid <user> <folder>`
+
+### `POST /api/backend/folder/stats`
+
+`folder/info` plus an on-disk rollup (sum of physical message
+sizes from `UserMailbox.List`).
+
+```json
+{
+  "name":            "INBOX",
+  "guid":            "ab12...ef",
+  "uid_validity":    1747000000,
+  "next_uid":        42,
+  "messages":        7,
+  "unseen":          3,
+  "highest_modseq":  19,
+  "size_bytes":      1234567,
+  "on_disk_count":   7
+}
+```
+
+CLI: `yarilo-admin backend folder stats <user> <folder>`
+
+## User endpoints
+
+### `POST /api/backend/user/info`
+
+Returns what backend-api can resolve locally — username, the
+template-resolved home directory, every configured namespace and
+whether its on-disk root exists.
+
+It deliberately does NOT call userdb (uid/gid/quota/etc.); that
+needs a yarilo-auth client which backend-api does not embed yet —
+see `TODO.md` (BACKEND-API auth-aware lookups).
+
+```json
+{
+  "username": "alice@x.com",
+  "home":     "/var/mail/vhosts/x.com/alice",
+  "namespaces": [
+    {
+      "name":     "personal",
+      "type":     "personal",
+      "prefix":   "",
+      "home":     "/var/mail/vhosts/x.com/alice",
+      "location": "",
+      "exists":   true
+    }
+  ]
+}
+```
+
+CLI: `yarilo-admin backend user info <user>`
+
+### `POST /api/backend/user/usage`
+
+Walks every folder in every implemented namespace and reports
+per-folder message + byte totals plus the rollups. Suitable for
+ad-hoc capacity inspection before QUOTA-1 ships.
+
+```json
+{
+  "user": "alice@x.com",
+  "folders": [
+    { "namespace": "personal", "folder": "INBOX", "messages": 7, "size_bytes": 1234567 }
+  ],
+  "total_messages":   7,
+  "total_size_bytes": 1234567
+}
+```
+
+CLI: `yarilo-admin backend user usage <user>`
+
+## Index endpoints
+
+### `POST /api/backend/index/dump`
+
+Walks an existing folder's fileindex and returns every record.
+Use the optional `limit` field to cap the response size.
+
+```json
+// request
+{ "user": "alice@x.com", "folder": "INBOX", "namespace": "personal", "limit": 100 }
+
+// response
+{
+  "folder":         "INBOX",
+  "folder_guid":    "ab12...ef",
+  "uid_validity":   1747000000,
+  "next_uid":       42,
+  "highest_modseq": 19,
+  "truncated":      false,
+  "records": [
+    { "uid": 1, "filename": "1747000000.M...", "flags": ["\\Seen"], "modseq": 5, "size": 1234, "vsize": 1234 }
+  ]
+}
+```
+
+CLI: `yarilo-admin backend index dump <user> <folder> [--limit N]`
+
+Rebuild / optimize endpoints are deferred — they require per-driver
+resync logic (different for maildir vs dbox vs mdbox). See `TODO.md`.
+
+## Subscriptions endpoints
+
+Per-user IMAP SUBSCRIBE state. Reuses
+`internal/userstate/subs.Store` — same on-disk format (sorted folder
+names, tmp+rename atomicity) and the same `locks.SubscriptionsKey`
+as IMAP, so concurrent sessions see admin writes immediately.
+
+| Endpoint | Request | Response |
+|:---|:---|:---|
+| `POST /api/backend/subscriptions/list` | `{user, namespace?}` | `{"subscriptions": [...]}` |
+| `POST /api/backend/subscriptions/add` | `{user, folder, namespace?}` | `{"status": "ok"}` |
+| `POST /api/backend/subscriptions/remove` | `{user, folder, namespace?}` | `{"status": "ok"}` |
+
+CLI: `yarilo-admin backend subscriptions {list|add|remove} <user> [<folder>] [--namespace NS]`
+
+## SpecialUse endpoints
+
+Per-user RFC 6154 special-use overrides. Reuses
+`internal/userstate/specialuse.Store` — same on-disk format and
+the same lock key as IMAP `CREATE (USE ...)`.
+
+Only the personal namespace carries special-use — RFC 6154
+`\Sent` / `\Drafts` / etc. do not extend to shared or public.
+
+| Endpoint | Request | Response |
+|:---|:---|:---|
+| `POST /api/backend/specialuse/list` | `{user}` | `{"overrides": {...}, "defaults": {...}}` |
+| `POST /api/backend/specialuse/get` | `{user, folder}` | `{"folder", "attr", "source": "override"\|"default"\|"none"}` |
+| `POST /api/backend/specialuse/set` | `{user, folder, attr}` | `{"status": "ok"}` |
+| `POST /api/backend/specialuse/delete` | `{user, folder}` | `{"status": "ok"}` |
+
+CLI: `yarilo-admin backend specialuse {list|get|set|delete} <user> [<folder>] [<attr>]`
+
+## Metadata endpoints
+
+RFC 5464 METADATA admin surface backed by the configured `metadata`
+dict (same one IMAP GETMETADATA / SETMETADATA reads/writes). Keys
+follow the GUID-namespaced layout from `pkg/mailbox/attribute.go`,
+so admin writes are visible to the next IMAP round-trip.
+
+Request envelope (every metadata endpoint accepts it):
+
+```json
+{
+  "user":      "alice@x.com",
+  "folder":    "INBOX",
+  "namespace": "personal",
+  "scope":     "private",
+  "entry":     "/private/comment",
+  "value":     "<base64>",
+  "as_user":   "alice@x.com"
+}
+```
+
+- Empty `folder` targets server scope (vendor-prefixed under INBOX's GUID).
+- `scope` is `private` or `shared` for `list`; `get`/`set`/`delete`
+  derive it from the leading `/private/` or `/shared/` in `entry`.
+- `as_user` matters for shared/public folders under `/private/`
+  scope where each user has their own slice; defaults to `user`.
+
+| Endpoint | Notes |
+|:---|:---|
+| `POST /api/backend/metadata/list` | Iterates every entry under the chosen scope; values base64-encoded. |
+| `POST /api/backend/metadata/get` | Returns `{found, value}` for one entry. |
+| `POST /api/backend/metadata/set` | `value` is base64. Wraps a single dict transaction. |
+| `POST /api/backend/metadata/delete` | Unset one entry under one dict transaction. |
+
+CLI: `yarilo-admin backend metadata {list|get|set|delete} <user> [<folder>] --entry /private/<name> [...]`
+
+## Who endpoint
+
+### `POST /api/backend/who`
+
+Active-session listing. Data source is `yarilo-anvil` — backend-api
+dials it per request, runs `WHO`, then closes.
+
+```json
+// request (all fields optional)
+{ "service": "imap", "user": "alice@x.com", "group_by": "user" }
+
+// response (default group_by="user")
+{
+  "total": 2,
+  "groups": [
+    {
+      "user":  "alice@example.com",
+      "total": 1,
+      "sessions": [
+        { "id": "s1", "user": "alice@example.com", "ip": "1.1.1.1", "service": "imap", "connected_at": "2026-05-31T15:00:00Z" }
+      ]
+    }
+  ]
+}
+
+// response when group_by="none"
+{ "total": 2, "sessions": [ ... flat list ... ] }
+```
+
+Filters: `service=imap|pop3|submission|lmtp` and `user=<exact>`.
+
+**What "active" means:** entries register on login-pod `CONNECT`
+and clear on `DISCONNECT`. Caveats — see [TODO.md](../TODO.md):
+
+- LMTP does not go through anvil; LMTP deliveries are not listed.
+- Stale entries can survive a login-pod crash (no TTL / heartbeat yet).
+- Per-folder grouping (currently-SELECTed folder) is not tracked —
+  session binaries do not push folder state into anvil yet.
+
+Returns `501 Not Implemented` when `anvil_service.listen` is empty.
+
+CLI: `yarilo-admin backend who [--protocol IMAP] [--user U] [--group-by user|none]`
+
+### `POST /api/backend/who/count`
+
+Aggregated counts. Same filters as `/who` plus an optional
+breakdown dimension.
+
+```json
+// request
+{ "service": "imap", "user": "alice@x.com", "by": "" }
+
+// response
+{ "total": 1, "service": "imap", "user": "alice@x.com" }
+
+// request — breakdown by protocol
+{ "by": "protocol" }
+
+// response
+{
+  "total":       5,
+  "by_protocol": { "imap": 3, "pop3": 1, "submission": 1 }
+}
+
+// request — breakdown by user
+{ "by": "user" }
+
+// response
+{
+  "total":   5,
+  "by_user": { "alice@x.com": 2, "bob@x.com": 3 }
+}
+```
+
+CLI:
+
+```
+yarilo-admin backend who count                          # global total
+yarilo-admin backend who count imap                     # total for protocol
+yarilo-admin backend who count --user alice@x.com       # total for user
+yarilo-admin backend who count --by protocol            # breakdown by protocol
+yarilo-admin backend who count --by user                # breakdown by user
+```
+
 ## OpSettings shape
 
 Used in the `op` field of every endpoint that mutates or reads
@@ -216,7 +529,10 @@ to no `op` field at all.
 
 | Phase | Adds |
 |:---|:---|
-| OPS-BACKEND-API (this, v1.23) | dict surface above; `yarilo-admin backend dict` CLI as HTTP client |
-| ACL-1 (next) | `POST /api/backend/acl/{user}/{mailbox}/{get,set,delete,my-rights,list-rights,debug}` + `yarilo-admin backend acl` CLI |
-| QUOTA-1 | `POST /api/backend/quota/{user}/{show,set,unset,recalc}` |
-| Folder ops | `POST /api/backend/folder/{user}/{list,info,guid}` for mailbox→GUID lookups |
+| OPS-BACKEND-API (v1.23) | dict surface; `yarilo-admin backend dict` CLI as HTTP client |
+| BACKEND-API-EASY (v1.24, this) | folder / user / index / subscriptions / specialuse / metadata read-write surfaces against the existing storage + dict backends |
+| ACL-1 (next) | `POST /api/backend/acl/{get,set,delete,my-rights,list-rights,debug}` + `yarilo-admin backend acl` CLI |
+| QUOTA-1 | `POST /api/backend/quota/{show,set,unset,recalc}` |
+| BACKEND-API-AUTH | `user info` enriched with uid/gid/userdb fields via yarilo-auth RPC |
+| BACKEND-API-SESSIONS | `who` / `kick` via session-binary RPC; `anvil penalties/connections` |
+| BACKEND-API-WRITE | `folder create/delete/rename/expunge`, `index rebuild/optimize`, `folder repair` once driver-specific resync ships |
