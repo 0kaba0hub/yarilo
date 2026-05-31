@@ -324,3 +324,120 @@ func TestFlagConversion(t *testing.T) {
 		}
 	}
 }
+
+// TestNextModSeqIsMonotonic regresses a pre-fix bug where NextModSeq
+// bumped the in-memory modseq but never persisted to the on-disk
+// header. Because AllocateAppend's rereadHeaderLocked reset the
+// in-memory value to the stale disk value, successive NextModSeq
+// calls all returned the same number → modseqs were not unique
+// across messages, which broke CONDSTORE / QRESYNC client caches
+// under load. The fix persists every modseq bump and the reread
+// keeps the higher of (disk, in-memory).
+func TestNextModSeqIsMonotonic(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, err := b.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("open folder: %v", err)
+	}
+
+	// Sequence: NextModSeq → AllocateAppend → NextModSeq → AllocateAppend.
+	// Pre-fix, both messages ended up with rec.modseq == 2 and the on-disk
+	// header.modseq stayed at 1. Post-fix the values must strictly
+	// increase.
+	var modseqs [4]uint64
+	var uids [2]uint32
+	for i := 0; i < 2; i++ {
+		ms, err := b.NextModSeq(f.ID)
+		if err != nil {
+			t.Fatalf("NextModSeq #%d: %v", i, err)
+		}
+		modseqs[i*2] = ms
+		uid, err := b.AllocateAppend(f.ID, &mailbox.MessageMeta{ModSeq: ms, Flags: []string{}})
+		if err != nil {
+			t.Fatalf("AllocateAppend #%d: %v", i, err)
+		}
+		uids[i] = uid
+
+		// Re-read the message's persisted modseq via GetMessages so the
+		// test exercises the full write-then-read path.
+		msgs, _ := b.GetMessages(f.ID, mailbox.SeqSet{{From: uid, To: uid}})
+		if len(msgs) != 1 {
+			t.Fatalf("GetMessages returned %d msgs, want 1", len(msgs))
+		}
+		modseqs[i*2+1] = msgs[0].ModSeq
+	}
+
+	// First NextModSeq must return strictly less than second NextModSeq.
+	if modseqs[0] >= modseqs[2] {
+		t.Errorf("NextModSeq not monotonic: first=%d second=%d (should grow)", modseqs[0], modseqs[2])
+	}
+	// Each message's persisted modseq must equal the NextModSeq value
+	// the caller passed at AllocateAppend time.
+	if modseqs[1] != modseqs[0] {
+		t.Errorf("msg1 persisted modseq %d != allocated %d", modseqs[1], modseqs[0])
+	}
+	if modseqs[3] != modseqs[2] {
+		t.Errorf("msg2 persisted modseq %d != allocated %d", modseqs[3], modseqs[2])
+	}
+
+	// Folder header high-watermark must reflect the latest allocation
+	// (visible across process restarts).
+	reopened, err := b.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("re-open folder: %v", err)
+	}
+	if reopened.HighestModSeq < modseqs[2] {
+		t.Errorf("header HighestModSeq %d < last allocation %d (persistence regressed)",
+			reopened.HighestModSeq, modseqs[2])
+	}
+}
+
+// TestUpdateFlagsPersistsModSeqBump verifies the second of the three
+// modseq bump sites — UpdateFlags — also persists. Pre-fix, STORE
+// from one session would bump in-memory only and the next reread by
+// another process would revert.
+func TestUpdateFlagsPersistsModSeqBump(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
+
+	ms, _ := b.NextModSeq(f.ID)
+	uid, _ := b.AllocateAppend(f.ID, &mailbox.MessageMeta{ModSeq: ms, Flags: []string{}})
+
+	if err := b.UpdateFlags(f.ID, uid, []string{`\Seen`}, nil); err != nil {
+		t.Fatalf("UpdateFlags: %v", err)
+	}
+
+	// Re-open folder → header modseq must reflect the UpdateFlags bump,
+	// not just the original allocation.
+	reopened, _ := b.OpenFolder("INBOX", 1)
+	if reopened.HighestModSeq <= ms {
+		t.Errorf("UpdateFlags did not persist modseq bump: header=%d, allocation=%d",
+			reopened.HighestModSeq, ms)
+	}
+}
+
+// TestExpungePersistsModSeqBump verifies the third bump site —
+// ExpungeMessage — persists. Without the fix, QRESYNC VANISHED
+// queries from a follower session would not see the expunge with a
+// modseq strictly greater than the last-known watermark.
+func TestExpungePersistsModSeqBump(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
+
+	ms, _ := b.NextModSeq(f.ID)
+	uid, _ := b.AllocateAppend(f.ID, &mailbox.MessageMeta{ModSeq: ms, Flags: []string{}})
+	beforeHeader, _ := b.OpenFolder("INBOX", 1)
+
+	if err := b.ExpungeMessage(f.ID, uid); err != nil {
+		t.Fatalf("ExpungeMessage: %v", err)
+	}
+
+	reopened, _ := b.OpenFolder("INBOX", 1)
+	if reopened.HighestModSeq <= beforeHeader.HighestModSeq {
+		t.Errorf("ExpungeMessage did not persist modseq bump: header=%d, pre-expunge=%d",
+			reopened.HighestModSeq, beforeHeader.HighestModSeq)
+	}
+}
