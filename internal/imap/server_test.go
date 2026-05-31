@@ -1283,3 +1283,132 @@ func TestGetMetadataWithoutDictReturnsNo(t *testing.T) {
 		t.Fatal("expected error from GETMETADATA when no dict configured")
 	}
 }
+
+// ---- Phase NS-1a: NAMESPACE wire format ----------------------------------
+
+// startNamespaceClient is a thin variant of startTestServer that lets a
+// test inject Options.Namespaces.
+func startNamespaceClient(t *testing.T, specs []imapserver.NamespaceSpec) *imapclient.Client {
+	t.Helper()
+	dir := t.TempDir()
+	mb := maildir.New()
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:    mb,
+		Index:      idx,
+		Resolver:   resolver,
+		Auth:       &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Namespaces: specs,
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("net.Dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatalf("WaitGreeting: %v", err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	return c
+}
+
+func TestNamespaceDefaultPersonalOnly(t *testing.T) {
+	// Options.Namespaces nil → built-in personal-only fallback.
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	data, err := c.Namespace().Wait()
+	if err != nil {
+		t.Fatalf("NAMESPACE: %v", err)
+	}
+	if len(data.Personal) != 1 {
+		t.Fatalf("expected 1 personal ns, got %d (%+v)", len(data.Personal), data.Personal)
+	}
+	if data.Personal[0].Prefix != "" || data.Personal[0].Delim != '/' {
+		t.Errorf("personal ns shape: got %+v want {Prefix:\"\" Delim:'/'}", data.Personal[0])
+	}
+	if len(data.Other) != 0 || len(data.Shared) != 0 {
+		t.Errorf("expected Other+Shared empty by default, got Other=%+v Shared=%+v", data.Other, data.Shared)
+	}
+}
+
+func TestNamespaceAllThreeDeclared(t *testing.T) {
+	c := startNamespaceClient(t, []imapserver.NamespaceSpec{
+		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+		{Type: imapserver.NamespaceOther, Prefix: "user/", Separator: '/', List: true},
+		{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true},
+	})
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	data, err := c.Namespace().Wait()
+	if err != nil {
+		t.Fatalf("NAMESPACE: %v", err)
+	}
+	cases := []struct {
+		name      string
+		got, want []imap.NamespaceDescriptor
+	}{
+		{"personal", data.Personal, []imap.NamespaceDescriptor{{Prefix: "", Delim: '/'}}},
+		{"other", data.Other, []imap.NamespaceDescriptor{{Prefix: "user/", Delim: '/'}}},
+		{"shared", data.Shared, []imap.NamespaceDescriptor{{Prefix: "Shared/", Delim: '/'}}},
+	}
+	for _, tc := range cases {
+		if len(tc.got) != 1 || tc.got[0] != tc.want[0] {
+			t.Errorf("%s ns: got %+v want %+v", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+func TestNamespacePerNamespaceSeparator(t *testing.T) {
+	// Dovecot allows different separators per namespace (e.g. "." for
+	// personal, "/" for shared). Verify the wire shape carries each
+	// per-namespace separator verbatim.
+	c := startNamespaceClient(t, []imapserver.NamespaceSpec{
+		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '.', List: true},
+		{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true},
+	})
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	data, err := c.Namespace().Wait()
+	if err != nil {
+		t.Fatalf("NAMESPACE: %v", err)
+	}
+	if data.Personal[0].Delim != '.' {
+		t.Errorf("personal separator: got %q want '.'", data.Personal[0].Delim)
+	}
+	if data.Shared[0].Delim != '/' {
+		t.Errorf("shared separator: got %q want '/'", data.Shared[0].Delim)
+	}
+}
+
+func TestNamespaceListFalseHidesFromResponse(t *testing.T) {
+	// List:false keeps the namespace addressable internally (NS-1b
+	// storage routing will respect this) but it must NOT appear in
+	// the wire-protocol NAMESPACE response.
+	c := startNamespaceClient(t, []imapserver.NamespaceSpec{
+		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+		{Type: imapserver.NamespaceShared, Prefix: "Hidden/", Separator: '/', List: false},
+	})
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	data, err := c.Namespace().Wait()
+	if err != nil {
+		t.Fatalf("NAMESPACE: %v", err)
+	}
+	if len(data.Shared) != 0 {
+		t.Errorf("hidden shared ns leaked into NAMESPACE response: %+v", data.Shared)
+	}
+}

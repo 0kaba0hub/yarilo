@@ -25,6 +25,7 @@ type Config struct {
 	LocksService    LocksServiceConfig    `koanf:"locks_service"`
 	LocksClient     LocksClientConfig     `koanf:"locks_client"`
 	Storage         StorageConfig         `koanf:"storage"`
+	Namespaces      []NamespaceConfig     `koanf:"namespaces"`
 	Dicts           map[string]DictConfig `koanf:"dicts"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
@@ -51,6 +52,61 @@ type DictConfig struct {
 	ExpireSecs uint32         `koanf:"expire_secs"`
 	Username   string         `koanf:"username"`
 	HomeDir    string         `koanf:"home_dir"`
+}
+
+// NamespaceConfig declares one IMAP namespace (RFC 2342 / RFC 9051
+// §6.3.10). The Type field picks which slot of the NAMESPACE response
+// the namespace lands in (personal / other / shared). Multiple
+// namespaces of the same type are allowed and concatenated in
+// declaration order.
+//
+// Storage routing (NS-1b, future PR): Location templates the on-disk
+// path or backend URL for this namespace; the wire-only NS-1a phase
+// shipping in v1.20 reads Type, Prefix, Separator and List only — the
+// other fields are accepted by koanf so operators can stage their
+// full namespace config before the storage layer lands.
+//
+// Defaults applied at backend startup when cfg.Namespaces is empty:
+//
+//	[{ Type: "personal", Prefix: "", Separator: "/", List: true }]
+//
+// — i.e. backwards-compatible with pre-v1.20 single-namespace
+// deployments.
+type NamespaceConfig struct {
+	// Type is one of "personal", "other", "shared". Determines which
+	// slot of the IMAP NAMESPACE response carries this entry.
+	Type string `koanf:"type"`
+	// Prefix is the entry-point name visible to IMAP clients ("",
+	// "Shared/", "user/", "Public/", ...). Empty string is reserved
+	// for the personal namespace.
+	Prefix string `koanf:"prefix"`
+	// Separator is the hierarchy delimiter for this namespace.
+	// Different namespaces MAY use different separators (matches
+	// Dovecot's permissive default).
+	Separator string `koanf:"separator"`
+	// List exposes the namespace in the NAMESPACE response. False
+	// keeps the namespace addressable internally (e.g. for future
+	// per-user shared folders) without advertising it.
+	List bool `koanf:"list"`
+	// Hidden hides matching mailboxes from LIST "" "*" (per-RFC 9051
+	// "no-inferiors / no-children" hints). Reserved for NS-1b — koanf
+	// accepts it now so config does not have to change later.
+	Hidden bool `koanf:"hidden"`
+	// Subscriptions: whether SUBSCRIBE state is tracked for mailboxes
+	// in this namespace. Default true (per-RFC 5258).
+	Subscriptions bool `koanf:"subscriptions"`
+	// Inbox marks the namespace that owns the special "INBOX"
+	// mailbox. MUST be set on exactly one namespace (typically the
+	// first personal namespace). Reserved for NS-1b.
+	Inbox bool `koanf:"inbox"`
+	// Location is the storage URL for this namespace (NS-1b).
+	// Templated via pkg/dict/varexpand (%u, %h, %n, %d). Examples:
+	//   "maildir:%h"                       — per-user personal
+	//   "maildir:/var/yarilo/shared"       — shared
+	//   "maildir:/var/yarilo/public"       — public
+	// Read by NS-1b storage routing; NS-1a accepts it for forward-
+	// compat but does not act on it.
+	Location string `koanf:"location"`
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.

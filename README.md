@@ -247,6 +247,7 @@ yarilo-migrate \
 | [docs/GENERAL.md](docs/GENERAL.md) | `general`: shared SSL, HAProxy, XClient, connection limits |
 | [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config for all 7 listeners |
 | [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE interval, line length, ID, logout format |
+| [docs/NAMESPACE.md](docs/NAMESPACE.md) | IMAP namespaces (RFC 2342 / 9051 §6.3.10): personal / shared / other_users config, separator semantics, phase roadmap (NS-1a wire → NS-1b storage routing → ACL → NS-3 cross-pod) |
 | [docs/SUBMISSION.md](docs/SUBMISSION.md) | `protocol.submission`: hostname, size limits, relay |
 | [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: local delivery, proxy/director mode, HAProxy, XCLIENT, TLS, headers |
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL format, soft-delete, migration |
