@@ -11,6 +11,8 @@ RUN set -eu; \
         yarilo \
         yarilo-auth \
         yarilo-anvil \
+        yarilo-admin \
+        yarilo-admin-api \
         yarilo-director \
         yarilo-imap \
         yarilo-imap-login \

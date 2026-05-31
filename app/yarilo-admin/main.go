@@ -22,6 +22,9 @@ import (
 var (
 	apiURL   string
 	apiToken string
+
+	adminAPIURL   string
+	adminAPIToken string
 )
 
 func main() {
@@ -29,6 +32,8 @@ func main() {
 
 	flag.StringVar(&apiURL, "url", envOr("YARILO_ADMIN_URL", "http://localhost:9103"), "Director API base URL (used by 'director' subcommand)")
 	flag.StringVar(&apiToken, "token", envOr("YARILO_ADMIN_TOKEN", envOr("DIRECTOR_API_TOKEN", "")), "Director API bearer token")
+	flag.StringVar(&adminAPIURL, "admin-url", envOr("YARILO_ADMIN_API_URL", "http://localhost:9105"), "yarilo-admin-api base URL (used by 'dict' / 'acl' / 'quota' subcommands)")
+	flag.StringVar(&adminAPIToken, "admin-token", envOr("YARILO_ADMIN_API_TOKEN", envOr("ADMIN_API_TOKEN", "")), "yarilo-admin-api bearer token")
 	flag.Parse()
 
 	args := flag.Args()

@@ -1,292 +1,223 @@
-# yarilo-admin API
+# yarilo-admin-api — storage-plane HTTP wire reference
 
-HTTP admin API exposed by `yarilo-director` on port `9103` (default).
-All endpoints require a Bearer token and are restricted by IP whitelist.
+The `yarilo-admin-api` binary exposes the operator surface over HTTP
+for storage-plane operations: **dict** (today), **acl** (Phase ACL-1),
+**quota** (Phase QUOTA-1), **folder / user** (future). One instance
+runs per backend tag (or one per standalone deployment).
 
----
+The `yarilo-admin` CLI is a thin HTTP client over this API. Future
+phases route the same wire calls through the director's
+`/api/admin/proxy/<user>/...` when multi-backend deployment lands —
+no CLI change.
 
-## Authentication
-
-Every request must include:
-
-```
-Authorization: Bearer <token>
-```
-
-The token is auto-generated into the k8s Secret `<release>-director-api-token` on first
-Helm install. To read it:
-
-```sh
-kubectl get secret yarilo-director-api-token -o jsonpath='{.data.token}' | base64 -d
-```
-
-To rotate: delete the Secret and run `helm upgrade`.
+For the director's own admin endpoints (ring / backends / users /
+peers) see [DIRECTOR-API.md](DIRECTOR-API.md) — different binary,
+different port, different token.
 
 ---
 
-## IP Whitelist
+## Transport
 
-Default allowed CIDRs (configurable via `components.director.api.allowedNets`):
+- **Protocol:** JSON over HTTPS (matching the existing
+  `/api/director/...` surface)
+- **Auth:** Bearer token in `Authorization: Bearer <token>`. Server
+  reads it from the `ADMIN_API_TOKEN` env var (wired by the chart
+  from a Secret). Empty token disables auth — local dev only
+- **IP allow-list:** when `admin_api.allowed_nets` is set in
+  `yarilo.yaml`, clients outside those CIDRs get `403 forbidden`
+  before the bearer check
+- **mTLS:** when `internal_tls.enabled: true`, the listener is
+  TLS-terminated with the same internal CA the rest of the cluster
+  uses
 
-| CIDR | Purpose |
+## Defaults
+
+| Setting | Default |
 |:---|:---|
-| `127.0.0.0/8` | Loopback — same-pod CLI |
-| `10.96.0.0/12` | k8s service CIDR (kubeadm default) |
-| `10.244.0.0/16` | k8s pod CIDR (flannel/kubeadm default) |
-
----
-
-## CLI
-
-`yarilo-admin` runs inside the director pod and requires no flags — reads URL and token
-from environment automatically:
-
-```sh
-kubectl exec -it <director-pod> -- yarilo-admin director status
-```
-
-Environment variables (set automatically in the container):
-
-| Variable | Default | Description |
-|:---|:---|:---|
-| `YARILO_ADMIN_URL` | `http://localhost:9103` | API base URL |
-| `YARILO_ADMIN_TOKEN` | — | Bearer token (fallback: `DIRECTOR_API_TOKEN`) |
-
----
+| Listen | `:9105` |
+| Auth | Bearer token, mandatory in production |
+| TLS | mTLS in production; plain in dev |
+| Body limit | 1 MiB per request |
+| Iterate timeout | 5 minutes |
+| Other op timeout | 30 seconds |
 
 ## Endpoints
 
-### Status & Diagnostics
+### `GET /api/admin/health`
 
-#### `GET /api/director/status`
+Liveness probe. Returns `200 {"status":"ok"}` whenever the process
+is up. Bypasses payload constraints — usable by k8s probes.
 
-Ring state overview: all backends and peer directors.
+### `GET /api/admin/dict/drivers`
+
+Lists every dict driver registered in this process.
 
 ```json
+{ "drivers": ["fail", "file", "memory", "redis", "sql"] }
+```
+
+### `GET /api/admin/dict/{name}/exists`
+
+Reports whether the named dict is configured on this admin-api.
+
+```json
+{ "name": "metadata", "exists": true }
+```
+
+### `POST /api/admin/dict/{name}/lookup`
+
+```json
+// request
+{ "key": "priv/box/<guid>/comment", "op": { "username": "alice@x.com" } }
+
+// response
+{ "found": true, "values": ["<base64>"] }
+```
+
+`op` (per-call `pkg/dict.OpSettings`) is optional. Multi-value
+drivers return the full list; single-value drivers return a
+one-element array. `found: false` → `values` is omitted/empty.
+
+### `POST /api/admin/dict/{name}/iterate`
+
+Streaming endpoint. Response `Content-Type: application/x-ndjson` —
+one JSON object per line. A `{"error": "..."}` line MAY appear
+mid-stream when iteration fails after some rows have been emitted;
+clients MUST check every line for the `error` key.
+
+```json
+// request
 {
-  "backends": [
-    {"ip": "10.0.0.1", "port": 993, "tag": "ssd", "up": true, "vhosts": 100}
-  ],
-  "peers": ["10.0.0.2:9102"]
+  "path": "priv/box/",
+  "flags": 3,
+  "op": { "username": "alice@x.com" }
 }
+
+// response (NDJSON, one row per line)
+{"key":"priv/box/abc123/comment","values":["<base64>"]}
+{"key":"priv/box/abc123/admin","values":["<base64>"]}
 ```
 
-CLI: `yarilo-admin director status`
+**Flags bitmask** (`pkg/dict.IterFlag`):
 
----
-
-#### `GET /api/director/dump`
-
-Full state dump: backends, active user→backend mappings, peers.
-
-```json
-{
-  "backends": [
-    {"ip": "10.0.0.1", "port": 993, "tag": "ssd", "up": true, "vhosts": 100, "last_updown_change": 1747000000}
-  ],
-  "users": [
-    {"hash": 3141592653, "host": "10.0.0.1:993", "weak": false, "expires_at": 1747001800}
-  ],
-  "peers": ["10.0.0.2:9102"]
-}
-```
-
-CLI: `yarilo-admin director dump`
-
----
-
-#### `GET /api/director/map[?user=USER]`
-
-Without `user` — returns all active user→backend entries from the director's userDir.
-With `user` — performs a live ring lookup for that username.
-
-```json
-// GET /api/director/map?user=alice@example.com
-{"user": "alice@example.com", "backend": "10.0.0.1", "port": 993, "tag": "ssd"}
-
-// GET /api/director/map
-{"users": [{"hash": 3141592653, "host": "10.0.0.1:993", "weak": false}]}
-```
-
-CLI: `yarilo-admin director map [--user alice@example.com]`
-
----
-
-### Backends
-
-#### `GET /api/director/backends`
-
-List all backends currently in the ring.
-
-```json
-{"backends": [...]}
-```
-
-CLI: `yarilo-admin director backends list`
-
----
-
-#### `POST /api/director/backends`
-
-Add a backend to the ring. Broadcasts `RING-CHANGE up` to all connected directors.
-
-```json
-// Request
-{"ip": "10.0.0.3", "port": 993, "tag": "ssd", "vhosts": 100}
-
-// Response
-{"status": "ok"}
-```
-
-CLI: `yarilo-admin director backends add 10.0.0.3 --port 993 --tag ssd`
-
----
-
-#### `PATCH /api/director/backends/{ip}`
-
-Update virtual node weight of an existing backend.
-
-```json
-// Request
-{"vhosts": 200}
-
-// Response
-{"status": "ok"}
-```
-
-CLI: `yarilo-admin director backends update 10.0.0.3 --vhosts 200`
-
----
-
-#### `DELETE /api/director/backends/{ip}`
-
-Remove backend from the ring. Broadcasts `RING-CHANGE down`.
-
-CLI: `yarilo-admin director backends remove 10.0.0.3`
-
----
-
-#### `POST /api/director/backends/{ip}/up`
-
-Mark backend as up (resumes new session routing). Broadcasts `RING-CHANGE up`.
-
-CLI: `yarilo-admin director backends up 10.0.0.3`
-
----
-
-#### `POST /api/director/backends/{ip}/down`
-
-Mark backend as down (flush — stops new routing, keeps in registry). Broadcasts `RING-CHANGE flush`.
-
-CLI: `yarilo-admin director backends down 10.0.0.3`
-
----
-
-#### `POST /api/director/backends/{ip}/flush`
-
-Flush a specific backend or all backends. Use `all` as `{ip}` to flush everything.
-
-```sh
-POST /api/director/backends/10.0.0.3/flush
-POST /api/director/backends/all/flush
-```
-
-CLI: `yarilo-admin director backends flush 10.0.0.3`
-CLI: `yarilo-admin director backends flush all`
-
----
-
-### Users
-
-#### `POST /api/director/users/{user}/move`
-
-Force-assign a user to a specific backend. Overrides consistent-hash routing.
-Broadcasts `USER-MOVED` to all connected directors.
-
-```json
-// Request — either form works:
-{"backend": "10.0.0.1:993"}
-{"ip": "10.0.0.1", "port": 993}
-
-// Response
-{"status": "ok"}
-```
-
-CLI: `yarilo-admin director users move alice@example.com --backend 10.0.0.1:993`
-
----
-
-#### `POST /api/director/users/{user}/kick`
-
-Kick a user — broadcasts `USER-KICKED` to all connected login clients, which terminate
-active sessions for that user.
-
-CLI: `yarilo-admin director users kick alice@example.com`
-
----
-
-### Ring (Director Peers)
-
-#### `GET /api/director/ring`
-
-List all currently managed director peers.
-
-```json
-{"peers": ["10.0.0.2:9102", "10.0.0.3:9102"]}
-```
-
-CLI: `yarilo-admin director ring status`
-
----
-
-#### `POST /api/director/ring`
-
-Dynamically add a peer director. Starts a persistent reconnecting dial loop.
-
-```json
-// Request
-{"addr": "10.0.0.4:9102"}
-
-// Response
-{"status": "ok"}
-```
-
-> **Note:** Dynamic peers are not persisted — they are lost on pod restart.
-> For permanent peers, set `components.director.peers` in Helm values.
-
-CLI: `yarilo-admin director ring add 10.0.0.4:9102`
-
----
-
-#### `DELETE /api/director/ring?addr={addr}`
-
-Remove a peer and cancel its dial loop.
-
-CLI: `yarilo-admin director ring remove 10.0.0.4:9102`
-
----
-
-## Error responses
-
-All errors return JSON with an `error` field and appropriate HTTP status code.
-
-| Code | Meaning |
-|:---|:---|
-| `400` | Invalid request body or missing required field |
-| `401` | Missing or invalid Bearer token |
-| `403` | Client IP not in `allowedNets` |
-| `404` | Backend not found |
-| `503` | No backends available (map lookup) |
-
-```json
-{"error": "backend not found"}
-```
-
----
-
-## Helm values
-
-| Value | Default | Description |
+| Bit | Value | Meaning |
 |:---|:---|:---|
-| `components.director.api.port` | `9103` | API listen port |
-| `components.director.api.allowedNets` | `127.0.0.0/8`, `10.96.0.0/12`, `10.244.0.0/16` | Allowed client CIDRs |
+| 0 | 1 | `Recurse` — descend into sub-hierarchies |
+| 1 | 2 | `SortByKey` |
+| 2 | 4 | `SortByValue` |
+| 3 | 8 | `NoValue` — omit values from rows |
+| 4 | 16 | `ExactKey` — return all values for one exact key (no recursion) |
+
+### `POST /api/admin/dict/{name}/set`
+
+```json
+// request
+{ "key": "priv/foo", "value": "<base64>", "op": {} }
+
+// response
+{ "result": 1, "status": "ok" }
+```
+
+`result` is the raw `pkg/dict.CommitResult` value (`1` = OK,
+`0` = not-found, `-1` = failed, `-2` = write-uncertain). `status`
+is the human-readable mirror used by the CLI.
+
+### `POST /api/admin/dict/{name}/unset`
+
+```json
+// request
+{ "key": "priv/foo", "op": {} }
+
+// response
+{ "result": 1, "status": "ok" }
+```
+
+Unsetting a missing key is not an error — `status: ok`.
+
+### `POST /api/admin/dict/{name}/atomic-inc`
+
+```json
+// request
+{ "key": "priv/quota/storage", "delta": 1024, "op": {} }
+
+// response when key exists
+{ "result": 1, "status": "ok" }
+
+// response when key is missing
+{ "result": 0, "status": "not-found" }
+```
+
+### `POST /api/admin/dict/{name}/expire-scan`
+
+```json
+// request
+{}
+
+// response
+{ "status": "ok" }
+```
+
+Drivers without TTL support are a no-op (still 200).
+
+### `POST /api/admin/dict/{name}/commit-batch`
+
+Multi-op atomic transaction. Returns a single commit result; on
+failure no individual op is applied.
+
+```json
+// request
+{
+  "op": { "username": "alice@x.com" },
+  "ops": [
+    { "kind": "set",        "key": "a", "value": "<base64>" },
+    { "kind": "unset",      "key": "b" },
+    { "kind": "atomic-inc", "key": "counter", "delta": 5 }
+  ]
+}
+
+// response
+{ "result": 1, "status": "ok" }
+```
+
+`kind` is one of `set` / `unset` / `atomic-inc`.
+
+## Error format
+
+Errors come back with the matching HTTP status and a JSON body:
+
+```json
+{ "error": "dict \"no-such\" not configured" }
+```
+
+| Status | Meaning |
+|:---|:---|
+| 400 | bad request body / malformed JSON / unknown driver |
+| 401 | missing or invalid bearer token |
+| 403 | client IP not in `allowed_nets` |
+| 404 | dict name not configured on this admin-api |
+| 500 | driver / I/O error |
+| 503 | dict closed (process shutting down) |
+
+## OpSettings shape
+
+Used in the `op` field of every endpoint that mutates or reads
+per-user state. All fields optional; an empty `op` is equivalent
+to no `op` field at all.
+
+```json
+{
+  "username": "alice@example.com",
+  "home_dir": "/var/mail/vhosts/example.com/alice",
+  "expire_secs": 3600
+}
+```
+
+## Phase roadmap
+
+| Phase | Adds |
+|:---|:---|
+| OPS-ADMIN-API (this, v1.23) | dict surface above; `yarilo-admin dict` CLI as HTTP client |
+| ACL-1 (next) | `POST /api/admin/acl/{user}/{mailbox}/{get,set,delete,my-rights,list-rights,debug}` + `yarilo-admin acl` CLI |
+| QUOTA-1 | `POST /api/admin/quota/{user}/{show,set,unset,recalc}` |
+| Folder ops | `POST /api/admin/folder/{user}/{list,info,guid}` for mailbox→GUID lookups |
+| OPS-ADMIN-PROXY | director's `/api/admin/proxy/{user}/{rest...}` transparently proxies to the right backend's admin-api by ring lookup |

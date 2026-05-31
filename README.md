@@ -257,7 +257,8 @@ yarilo-migrate \
 | [docs/SMOKE.md](docs/SMOKE.md) | End-to-end smoke test: AUTH → LMTP → IMAPS/POP3S read |
 | [docs/DIRECTOR.md](docs/DIRECTOR.md) | `director_service`: ring config, peers, HAProxy, XCLIENT, mTLS, Helm values |
 | [docs/MONITOR.md](docs/MONITOR.md) | `yarilo-monitor` sidecar: backend health probes, tag credentials, Helm values, Prometheus metrics |
-| [docs/ADMIN-API.md](docs/ADMIN-API.md) | HTTP admin API: auth, IP whitelist, all endpoints with request/response examples |
+| [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md) | Director HTTP admin API (ring / backends / users / peers): auth, IP whitelist, endpoints |
+| [docs/ADMIN-API.md](docs/ADMIN-API.md) | Storage-plane HTTP admin API (`yarilo-admin-api` on `:9105`): dict surface today; ACL / quota / folder endpoints landing in subsequent phases |
 | [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarilo-admin` CLI: all subsystems (`director`, `dict`), commands, flags, env vars, usage examples |
 | [docs/DICT.md](docs/DICT.md) | `pkg/dict` KV-store abstraction: drivers (file/redis/sql/memory/fail), YAML schema, `yarilo-admin dict` CLI |
 

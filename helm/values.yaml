@@ -163,6 +163,44 @@ components:
         cpu: 200m
         memory: 128Mi
 
+  ## yarilo-admin-api — storage-plane operator HTTP API.
+  ## Exposes dict / acl (later) / quota (later) / folder / user
+  ## operations consumed by yarilo-admin CLI. Mounts the same
+  ## storage PVC as the session pods + connects to every
+  ## configured dict.
+  ##
+  ## Bearer token auth (auto-generated Secret unless tokenSecret
+  ## is provided). For multi-pod backend cluster, director's
+  ## /api/admin/proxy/<user>/... proxies admin requests to the
+  ## right backend's yarilo-admin-api by user-to-backend mapping.
+  adminAPI:
+    enabled: true
+    replicas: 1
+    listen: ":9105"
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    ## Pre-existing Secret with key "token" holding the bearer
+    ## token. When empty, the chart generates a random token and
+    ## stores it in <release>-admin-api-token. CLI reads from
+    ## YARILO_ADMIN_API_TOKEN env or --admin-token flag.
+    tokenSecret: ""
+
+    ## CIDR allow-list for callers. Empty = allow any IP (token
+    ## auth still applies). Set to your operator subnet for
+    ## defence-in-depth.
+    allowedNets: []
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
   ## yarilo-locks — cross-process write coordinator.
   ## Every session pod dials this Service to take X locks on
   ## mbox:<user>:<folder> before mutating maildir / index files.

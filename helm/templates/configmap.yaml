@@ -197,6 +197,19 @@ data:
         session_grace_period: 30
         kill_timeout: 5
 
+    {{- if .Values.components.adminAPI.enabled }}
+    ## yarilo-admin-api consumes this section. Token is loaded from
+    ## the Secret at /etc/yarilo/admin-api-token via $ADMIN_API_TOKEN
+    ## env so it never lands in the ConfigMap.
+    admin_api:
+      listen: {{ .Values.components.adminAPI.listen | quote }}
+      token: "${ADMIN_API_TOKEN}"
+      {{- with .Values.components.adminAPI.allowedNets }}
+      allowed_nets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+
     {{- if .Values.components.locks.enabled }}
     ## yarilo-locks pod consumes this section. Sessions consume locks_client below.
     locks_service:

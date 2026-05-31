@@ -33,13 +33,16 @@ The container already has the required environment variables set.
 
 | Variable | Default | Description |
 |:---|:---|:---|
-| `YARILO_ADMIN_URL` | `http://localhost:9103` | API base URL |
-| `YARILO_ADMIN_TOKEN` | — | Bearer token (fallback: `DIRECTOR_API_TOKEN`) |
+| `YARILO_ADMIN_URL` | `http://localhost:9103` | Director API base URL (used by `director` subcommand) |
+| `YARILO_ADMIN_TOKEN` | — | Director Bearer token (fallback: `DIRECTOR_API_TOKEN`) |
+| `YARILO_ADMIN_API_URL` | `http://localhost:9105` | Storage admin-api base URL (used by `dict` / `acl` / `quota` subcommands) |
+| `YARILO_ADMIN_API_TOKEN` | — | Storage admin-api Bearer token (fallback: `ADMIN_API_TOKEN`) |
 
-To read the auto-generated token from outside the pod:
+To read the auto-generated tokens from outside the pod:
 
 ```sh
 kubectl get secret yarilo-director-api-token -o jsonpath='{.data.token}' | base64 -d
+kubectl get secret yarilo-admin-api-token   -o jsonpath='{.data.token}' | base64 -d
 ```
 
 ---
@@ -47,13 +50,26 @@ kubectl get secret yarilo-director-api-token -o jsonpath='{.data.token}' | base6
 ## Global flags
 
 ```
-yarilo-admin [--url URL] [--token TOKEN] <resource> <action> [args...]
+yarilo-admin [--url URL] [--token TOKEN] \
+             [--admin-url URL] [--admin-token TOKEN] \
+             <resource> <action> [args...]
 ```
 
-| Flag | Default | Description |
-|:---|:---|:---|
-| `--url` | `$YARILO_ADMIN_URL` or `http://localhost:9103` | API base URL |
-| `--token` | `$YARILO_ADMIN_TOKEN` or `$DIRECTOR_API_TOKEN` | Bearer token |
+| Flag | Default | Used by | Description |
+|:---|:---|:---|:---|
+| `--url` | `$YARILO_ADMIN_URL` or `http://localhost:9103` | `director` | Director API base URL |
+| `--token` | `$YARILO_ADMIN_TOKEN` or `$DIRECTOR_API_TOKEN` | `director` | Director Bearer token |
+| `--admin-url` | `$YARILO_ADMIN_API_URL` or `http://localhost:9105` | `dict` / `acl` / `quota` | Storage admin-api base URL |
+| `--admin-token` | `$YARILO_ADMIN_API_TOKEN` or `$ADMIN_API_TOKEN` | `dict` / `acl` / `quota` | Storage admin-api Bearer token |
+
+The two URLs are separate by design: director-plane ops (ring,
+backends, users, peers) live on `yarilo-director:9103`; storage-plane
+ops (dict / acl / quota / folder) live on `yarilo-admin-api:9105`.
+
+When multi-pod backend deployment lands (Phase OPS-ADMIN-PROXY), the
+director will transparently proxy `--admin-url=$DIRECTOR/api/admin/...`
+to the right backend's admin-api by user-to-backend ring lookup — same
+CLI, no flag changes.
 
 ---
 

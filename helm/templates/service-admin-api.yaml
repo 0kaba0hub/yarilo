@@ -1,0 +1,18 @@
+{{- if .Values.components.adminAPI.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-admin-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "admin-api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: admin-api
+      port: 9105
+      targetPort: admin-api
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "admin-api") | nindent 4 }}
+{{- end }}

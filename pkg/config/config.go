@@ -27,6 +27,7 @@ type Config struct {
 	Storage         StorageConfig         `koanf:"storage"`
 	Namespaces      []NamespaceConfig     `koanf:"namespaces"`
 	Dicts           map[string]DictConfig `koanf:"dicts"`
+	AdminAPI        AdminAPIConfig        `koanf:"admin_api"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
 }
@@ -333,6 +334,16 @@ type DirectorServiceConfig struct {
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
 	Peers        []string           `koanf:"peers"`         // peer director addresses "host:port" for ring sync (replicas > 1)
 	API          DirectorAPIConfig  `koanf:"api"`
+}
+
+// AdminAPIConfig configures the standalone yarilo-admin-api process.
+// One instance runs per backend tag (or one per standalone deployment);
+// in multi-pod backend cluster the director's /api/admin/proxy/...
+// transparently forwards admin requests to the right backend.
+type AdminAPIConfig struct {
+	Listen      string   `koanf:"listen"`       // ":9105" default
+	Token       string   `koanf:"token"`        // Bearer token; supports ${ENV_VAR} via koanf
+	AllowedNets []string `koanf:"allowed_nets"` // CIDRs allowed to call the API
 }
 
 // ShutdownConfig controls graceful shutdown behaviour.

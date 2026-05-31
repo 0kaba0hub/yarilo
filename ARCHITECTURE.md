@@ -590,6 +590,48 @@ YAML schema and current limitations.
 
 ---
 
+## Admin API plane
+
+Operator-facing storage-plane admin (dict / acl / quota / folder
+ops) runs as its own HTTP server: **`yarilo-admin-api`** on
+`:9105`. The `yarilo-admin` CLI is a thin HTTP client; it never
+touches storage or dict directly.
+
+Two admin services live in the cluster:
+
+| Service | Binary | Port | Surface |
+|:---|:---|:---|:---|
+| **Director plane** | `yarilo-director` | `:9103` | ring / backends / users / peers — manage routing topology |
+| **Storage plane** | `yarilo-admin-api` | `:9105` | dict / acl / quota / folder — manage per-user state |
+
+Both speak JSON over HTTPS with Bearer-token auth + IP allow-list.
+
+### Why split
+
+The director plane manages routing — it does not (in backend-cluster
+deployment) have NFS / dict access. The storage plane needs both. A
+single combined surface would couple two unrelated concerns and force
+the director pod to mount user storage just to expose dict ops.
+
+### Single-pod vs multi-pod
+
+| Topology | CLI → Service |
+|:---|:---|
+| **Standalone single-pod** | CLI hits `yarilo-admin-api:9105` directly (and `yarilo-director:9103` for director ops, but no director in true single-pod) |
+| **Multi-pod backend cluster** (post NS-3) | CLI hits `yarilo-director:9103/api/admin/proxy/<user>/...` → director resolves user→backend via ring → proxies to that backend's `yarilo-admin-api:9105`. Same wire format, transparent to the CLI. |
+
+The proxy hop (Phase OPS-ADMIN-PROXY) lands when multi-backend
+deployment lands. Until then `yarilo-admin-api` is reachable directly.
+
+### Wire reference
+
+See [docs/ADMIN-API.md](docs/ADMIN-API.md) for the storage-plane
+endpoints (dict surface today; ACL / quota / folder added in
+subsequent phases). [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md)
+documents the director plane.
+
+---
+
 ## Storage
 
 Maildir requires shared filesystem for `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`:
