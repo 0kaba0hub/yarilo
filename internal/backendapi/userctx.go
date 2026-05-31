@@ -3,11 +3,9 @@ package backendapi
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -128,12 +126,12 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 	return b, nil
 }
 
-// subsFile returns the subscription filename for a namespace bundle.
+// subsFileFor returns the subscription filename for a namespace bundle.
 // Matches the convention used by internal/imap/dispatch.go: personal
 // keeps the bare "subscriptions" filename so an upgrade does not
 // orphan existing state; non-personal namespaces use
 // "subscriptions-<slug>" siblings in their own home.
-func subsFileFor(name string, spec config.NamespaceConfig) string {
+func subsFileFor(spec config.NamespaceConfig) string {
 	if spec.Type == "personal" {
 		return "subscriptions"
 	}
@@ -221,17 +219,6 @@ func (b *nsBundle) folderHome() string { return b.info.Home }
 // for any lock acquired by this admin request. Format mirrors the
 // session owner so operators can correlate.
 func (uc *userContext) lockOwner() string { return uc.owner }
-
-// locker exposes the configured cross-process locker. Returned as-is
-// — callers must respect nil (dev/test mode without yarilo-locks).
-func (s *Server) locker() locks.Locker { return s.opts.Locker }
-
-// homeJoin is a small helper used by callers that need to inspect
-// paths under the per-namespace home (e.g. file existence checks).
-func (b *nsBundle) homeJoin(parts ...string) string {
-	all := append([]string{b.info.Home}, parts...)
-	return filepath.Join(all...)
-}
 
 // dirExists reports whether path is an existing directory.
 func dirExists(path string) bool {

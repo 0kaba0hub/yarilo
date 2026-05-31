@@ -171,7 +171,11 @@ func (s *Server) handleMetadataSet(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "transaction: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	tx.Set(key, raw)
+	if err := tx.Set(key, raw); err != nil {
+		_ = tx.Rollback()
+		apiError(w, "set: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if _, err := tx.Commit(); err != nil {
 		apiError(w, "commit: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -206,7 +210,11 @@ func (s *Server) handleMetadataDelete(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "transaction: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	tx.Unset(key)
+	if err := tx.Unset(key); err != nil {
+		_ = tx.Rollback()
+		apiError(w, "unset: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if _, err := tx.Commit(); err != nil {
 		apiError(w, "commit: "+err.Error(), http.StatusInternalServerError)
 		return
