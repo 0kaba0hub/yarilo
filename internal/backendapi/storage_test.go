@@ -9,6 +9,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/memory"
@@ -341,4 +342,62 @@ func TestIndexDumpEmptyAfterInit(t *testing.T) {
 // os.Stat semantics — returns nil err when path resolves.
 func openIfExists(path string) (any, error) {
 	return dirExists(path), nil
+}
+
+// newMaildirAndIndexAt builds maildir + fileindex backends rooted
+// at `root`, matching the configuration storageTestServer wires.
+// Used by the admin-rebuild tests that need direct backend access
+// to seed and inspect state before / after running the HTTP API.
+func newMaildirAndIndexAt(_ *testing.T, _ string) (mailbox.MailboxBackend, mailbox.IndexBackend) {
+	return maildir.New(), file.New()
+}
+
+// maildirHome mirrors the Resolver template (`%d/%n` joined with
+// root) so tests can deterministically know where a user's mail
+// lives without re-implementing the resolver.
+func maildirHome(root, user string) string {
+	at := -1
+	for i := range user {
+		if user[i] == '@' {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return filepath.Join(root, user)
+	}
+	return filepath.Join(root, user[at+1:], user[:at])
+}
+
+// storageTestServerMdbox is storageTestServer with the mdbox
+// driver wired in instead of maildir. Used to exercise the
+// "not yet implemented" rebuild path without standing up a real
+// mdbox tenant fixture.
+func storageTestServerMdbox(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	root := t.TempDir()
+	mb := mdbox.New()
+	idx := file.New()
+	d, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatalf("open memory dict: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	s := New(Options{
+		Dicts:   map[string]dict.Dict{"metadata": d},
+		Mailbox: mb,
+		Index:   idx,
+		Resolver: &mailbox.Resolver{
+			Root:         root,
+			HomeTemplate: "%d/%n",
+		},
+		Namespaces: []config.NamespaceConfig{
+			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+		},
+		MetadataDict: d,
+	})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts, root
 }

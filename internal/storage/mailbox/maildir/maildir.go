@@ -370,6 +370,61 @@ func (u *userMailbox) AppendUIDEntry(folder string, uid uint32, filename string)
 	})
 }
 
+// Scan walks the on-disk maildir for folder and returns one
+// ScanRecord per message (cur/ + new/). Filenames carry both the
+// flags (parsed) and size (from the optional "S=" infix or, when
+// absent, from os.Stat); InternalDate comes from the file mtime.
+//
+// GUID is left as the zero value — Maildir filenames do not carry
+// a stable per-message GUID; the index keeps that out of band.
+// Caller (rebuild flow) is responsible for preserving the index's
+// GUID assignment for filenames it matches against the old index.
+func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
+	out := make([]mailbox.ScanRecord, 0, 128)
+	for _, sub := range []string{"cur", "new"} {
+		dir := filepath.Join(u.folderPath(folder), sub)
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("maildir/scan: read %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			flags, keywords := decodeFlags(name)
+			phys, virt, hasPhys, _ := parseSizeInfo(name)
+			info, statErr := e.Info()
+			var sz uint32
+			var mtime time.Time
+			switch {
+			case hasPhys:
+				sz = phys
+			case statErr == nil:
+				sz = uint32(info.Size())
+			}
+			if statErr == nil {
+				mtime = info.ModTime()
+			}
+			rec := mailbox.ScanRecord{
+				Filename:     name,
+				Size:         sz,
+				VSize:        virt,
+				InternalDate: mtime,
+				Flags:        append([]string(nil), flags...),
+			}
+			if len(keywords) > 0 {
+				rec.Flags = append(rec.Flags, keywords...)
+			}
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
 func (u *userMailbox) Close() error { return nil }
 
 // ---- uidlist ---------------------------------------------------------------

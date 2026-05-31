@@ -355,8 +355,66 @@ Use the optional `limit` field to cap the response size.
 
 CLI: `yarilo-admin backend index dump <user> <folder> [--limit N]`
 
-Rebuild / optimize endpoints are deferred — they require per-driver
-resync logic (different for maildir vs dbox vs mdbox). See `TODO.md`.
+### `POST /api/backend/index/rebuild`
+
+Regenerates the fileindex for one folder from the on-disk storage
+(driver-specific `Scan`). The new index preserves every UID that
+the old index already knew for the same filename and assigns fresh
+UIDs (from the current `next_uid`) to filenames the index has not
+seen — so client UID caches stay valid for everything they could
+already see.
+
+Driver support:
+
+| Driver | Behaviour |
+|:---|:---|
+| `maildir` | Walks `cur/` + `new/`, parses flags + size from filename. Flags from disk win over the previous index (the filename is the source of truth for maildir). |
+| `dbox` | Walks `u.<seq>` files, reads GUID + size + Received date from the per-file trailer. Flags are left empty in the scan — the rebuild keeps prior index flags. |
+| `mdbox` | Returns `501 Not Implemented` with a pointer to Phase MDBOX-PROD-READY (see `TODO.md`). |
+
+```json
+// request
+{ "user": "alice@x.com", "folder": "INBOX", "namespace": "personal" }
+
+// response
+{
+  "folder":           "INBOX",
+  "folder_guid":      "ab12...ef",
+  "scanned":          42,
+  "uids_preserved":   40,
+  "uids_assigned":    2,
+  "orphans_dropped":  0,
+  "duration_ms":      37
+}
+```
+
+Optional `"reset_uids": true` is rejected with `501` today —
+nuking UIDs forces every client to full resync via UIDVALIDITY
+bump, so the v1 path is `DELETE + CREATE` via IMAP. Will land
+once the design for UIDVALIDITY semantics is locked.
+
+The endpoint takes the cross-process mailbox lock
+(`locks.MailboxKey`) for the whole rebuild so concurrent
+IMAP writers cannot race the snapshot.
+
+CLI: `yarilo-admin backend index rebuild <user> <folder> [--namespace NS]`
+
+### `POST /api/backend/index/optimize`
+
+Compacts the `.index.log` overlay into the base `.index` file.
+No semantic change — records, UIDs, modseq stay identical; only
+the on-disk layout shrinks. Fast no-op when the log already only
+contains its header.
+
+```json
+// request
+{ "user": "alice@x.com", "folder": "INBOX", "namespace": "personal" }
+
+// response
+{ "folder": "INBOX", "duration_ms": 4 }
+```
+
+CLI: `yarilo-admin backend index optimize <user> <folder> [--namespace NS]`
 
 ## Subscriptions endpoints
 

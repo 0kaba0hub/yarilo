@@ -7,12 +7,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -344,6 +347,95 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 
 // AppendUIDEntry is a no-op for sdbox — UIDs are managed exclusively by UserIndex.
 func (u *userMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
+
+// Scan walks the folder directory and yields one ScanRecord per
+// "u.<seq>" file. The dbox per-file trailer carries GUID + size +
+// timestamp; we parse those instead of trusting the index. Flags
+// stay empty — dbox delegates flag storage to the index, so the
+// rebuild flow MUST take flags from the old index when matching
+// filenames, never from this scan.
+func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
+	dir := u.folderPath(folder)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dbox/scan: read %s: %w", dir, err)
+	}
+	out := make([]mailbox.ScanRecord, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "u.") {
+			continue
+		}
+		rec, err := u.scanOne(folder, name)
+		if err != nil {
+			slog.Debug("dbox/scan: skipping bad file", "folder", folder, "file", name, "err", err)
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+// scanOne reads the dbox header (size) + trailer (GUID, dates)
+// for one file. Defensive: malformed files are skipped, not
+// fatal — operator can re-run rebuild after manual cleanup.
+func (u *userMailbox) scanOne(folder, filename string) (mailbox.ScanRecord, error) {
+	p := filepath.Join(u.folderPath(folder), filename)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return mailbox.ScanRecord{}, fmt.Errorf("read: %w", err)
+	}
+	const headerLen = 31
+	if len(data) < headerLen {
+		return mailbox.ScanRecord{}, fmt.Errorf("file too short (%d bytes)", len(data))
+	}
+	var physSize uint32
+	if _, err := fmt.Sscanf(string(data[14:30]), "%x", &physSize); err != nil {
+		return mailbox.ScanRecord{}, fmt.Errorf("parse size: %w", err)
+	}
+	rec := mailbox.ScanRecord{
+		Filename: filename,
+		Size:     physSize,
+		VSize:    physSize,
+	}
+	// Trailer starts after the body. Each line is one metadata
+	// entry: G<guid hex>, R<unix hex>, Z<phys hex>, V<virt hex>.
+	trailerStart := headerLen + int(physSize)
+	if trailerStart < len(data) {
+		trailer := string(data[trailerStart:])
+		for _, line := range strings.Split(trailer, "\n") {
+			if len(line) < 2 {
+				continue
+			}
+			switch line[0] {
+			case 'G':
+				if guidBytes, err := hex.DecodeString(strings.TrimSpace(line[1:])); err == nil && len(guidBytes) == 16 {
+					copy(rec.GUID[:], guidBytes)
+				}
+			case 'R':
+				if v, err := strconv.ParseUint(strings.TrimSpace(line[1:]), 16, 32); err == nil {
+					rec.InternalDate = time.Unix(int64(v), 0).UTC()
+				}
+			case 'V':
+				if v, err := strconv.ParseUint(strings.TrimSpace(line[1:]), 16, 32); err == nil {
+					rec.VSize = uint32(v)
+				}
+			}
+		}
+	}
+	if rec.InternalDate.IsZero() {
+		if st, err := os.Stat(p); err == nil {
+			rec.InternalDate = st.ModTime()
+		}
+	}
+	return rec, nil
+}
 
 func (u *userMailbox) Close() error { return nil }
 

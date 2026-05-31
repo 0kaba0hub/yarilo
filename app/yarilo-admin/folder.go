@@ -19,8 +19,10 @@ func dispatchFolder(args []string) error {
 		return folderGUID(args[1:])
 	case "stats":
 		return folderStats(args[1:])
+	case "repair":
+		return folderRepair(args[1:])
 	default:
-		return fmt.Errorf("unknown folder command %q — available: list, info, guid, stats", args[0])
+		return fmt.Errorf("unknown folder command %q — available: list, info, guid, stats, repair", args[0])
 	}
 }
 
@@ -32,8 +34,13 @@ Commands:
   info   <user> <folder> [--namespace NS]        — folder metadata (GUID, msg count, modseq, ...)
   guid   <user> <folder> [--namespace NS]        — print the rename-stable GUID hex
   stats  <user> <folder> [--namespace NS]        — info plus on-disk size totals
+  repair <user> <folder> [--namespace NS]        — rebuild fileindex from disk + compact log
 
 Namespace defaults to "personal".`)
+}
+
+func folderRepair(args []string) error {
+	return folderSingleFolderCommand("repair", "/api/backend/folder/repair", args)
 }
 
 func folderList(args []string) error {
