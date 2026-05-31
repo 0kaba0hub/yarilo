@@ -1,26 +1,26 @@
-{{- if .Values.components.adminAPI.enabled }}
-{{- $tokenSecret := .Values.components.adminAPI.tokenSecret }}
+{{- if .Values.components.backendAPI.enabled }}
+{{- $tokenSecret := .Values.components.backendAPI.tokenSecret }}
 {{- if eq $tokenSecret "" }}
-{{- $tokenSecret = printf "%s-admin-api-token" (include "yarilo.fullname" .) }}
+{{- $tokenSecret = printf "%s-backend-api-token" (include "yarilo.fullname" .) }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "yarilo.fullname" . }}-admin-api
+  name: {{ include "yarilo.fullname" . }}-backend-api
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "yarilo.componentLabels" (dict "root" . "component" "admin-api") | nindent 4 }}
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "backend-api") | nindent 4 }}
 spec:
-  replicas: {{ .Values.components.adminAPI.replicas }}
+  replicas: {{ .Values.components.backendAPI.replicas }}
   selector:
     matchLabels:
-      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "admin-api") | nindent 6 }}
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "backend-api") | nindent 6 }}
   strategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        {{- include "yarilo.componentLabels" (dict "root" . "component" "admin-api") | nindent 8 }}
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "backend-api") | nindent 8 }}
       annotations:
         {{- include "yarilo.configChecksum" . | nindent 8 }}
         {{- with .Values.podAnnotations }}
@@ -30,15 +30,15 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: yarilo-admin-api
+        - name: yarilo-backend-api
           image: {{ include "yarilo.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: YARILO_COMPONENT
-              value: "yarilo-admin-api"
+              value: "yarilo-backend-api"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
-            - name: ADMIN_API_TOKEN
+            - name: BACKEND_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ $tokenSecret }}
@@ -49,14 +49,14 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: admin-api
+            - name: backend-api
               containerPort: 9105
               protocol: TCP
           livenessProbe:
             httpGet:
               path: /api/admin/health
-              port: admin-api
-              {{- if .Values.components.adminAPI.internalTLS.enabled }}
+              port: backend-api
+              {{- if .Values.components.backendAPI.internalTLS.enabled }}
               scheme: HTTPS
               {{- end }}
             initialDelaySeconds: 5
@@ -64,21 +64,21 @@ spec:
           readinessProbe:
             httpGet:
               path: /api/admin/health
-              port: admin-api
-              {{- if .Values.components.adminAPI.internalTLS.enabled }}
+              port: backend-api
+              {{- if .Values.components.backendAPI.internalTLS.enabled }}
               scheme: HTTPS
               {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.components.adminAPI.resources | nindent 12 }}
+            {{- toYaml .Values.components.backendAPI.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/yarilo
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- include "yarilo.internalTLSMount" .Values.components.adminAPI.internalTLS | nindent 12 }}
+            {{- include "yarilo.internalTLSMount" .Values.components.backendAPI.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -88,7 +88,7 @@ spec:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
-        {{- include "yarilo.internalTLSVolume" .Values.components.adminAPI.internalTLS | nindent 8 }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.backendAPI.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

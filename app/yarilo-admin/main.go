@@ -1,15 +1,21 @@
 // yarilo-admin is the unified yarilo operator CLI. Every subsystem
-// that needs an "ops surface" gets a subcommand here.
+// that needs an "ops surface" lives under a top-level plane:
 //
-// Subsystems currently wired:
+//	director              — talks to yarilo-director's HTTP admin API
+//	  status / dump / map / backends / users / ring
 //
-//	director  — HTTP client for the yarilo-director admin API
-//	dict      — local KV-store ops (pkg/dict) for metadata/quota/ACL/...
+//	backend               — talks to yarilo-backend-api's HTTP admin API
+//	  dict                — pkg/dict KV-store ops
+//	  acl                 — RFC 4314 ACL (Phase ACL-1)
+//	  quota               — RFC 9208 quota (Phase QUOTA-1)
+//	  folder              — mailbox listing / GUID lookup (Phase later)
+//	  user                — userdb queries (Phase later)
+//	  mailbox             — per-folder operations (Phase later)
 //
-// Subsystems are dispatched on the FIRST positional arg, so global flags
-// (--url / --token) come before the subsystem name and apply to whichever
-// subsystem actually uses them (director). Dict subcommands carry their
-// own --config / --dict / --driver / --setting flags after the subsystem.
+// Global flags pick the underlying HTTP endpoint per plane:
+//
+//	--url / --token              → director plane (default :9103)
+//	--backend-url / --backend-token → backend plane (default :9105)
 package main
 
 import (
@@ -23,8 +29,8 @@ var (
 	apiURL   string
 	apiToken string
 
-	adminAPIURL   string
-	adminAPIToken string
+	backendAPIURL   string
+	backendAPIToken string
 )
 
 func main() {
@@ -32,8 +38,8 @@ func main() {
 
 	flag.StringVar(&apiURL, "url", envOr("YARILO_ADMIN_URL", "http://localhost:9103"), "Director API base URL (used by 'director' subcommand)")
 	flag.StringVar(&apiToken, "token", envOr("YARILO_ADMIN_TOKEN", envOr("DIRECTOR_API_TOKEN", "")), "Director API bearer token")
-	flag.StringVar(&adminAPIURL, "admin-url", envOr("YARILO_ADMIN_API_URL", "http://localhost:9105"), "yarilo-admin-api base URL (used by 'dict' / 'acl' / 'quota' subcommands)")
-	flag.StringVar(&adminAPIToken, "admin-token", envOr("YARILO_ADMIN_API_TOKEN", envOr("ADMIN_API_TOKEN", "")), "yarilo-admin-api bearer token")
+	flag.StringVar(&backendAPIURL, "backend-url", envOr("YARILO_BACKEND_API_URL", "http://localhost:9105"), "yarilo-backend-api base URL (used by 'backend ...' subcommands)")
+	flag.StringVar(&backendAPIToken, "backend-token", envOr("YARILO_BACKEND_API_TOKEN", envOr("BACKEND_API_TOKEN", "")), "yarilo-backend-api bearer token")
 	flag.Parse()
 
 	args := flag.Args()
@@ -52,10 +58,23 @@ func dispatch(args []string) error {
 	switch args[0] {
 	case "director":
 		return dispatchDirector(args[1:])
+	case "backend":
+		return dispatchBackend(args[1:])
+	default:
+		return fmt.Errorf("unknown plane %q — available: director, backend", args[0])
+	}
+}
+
+func dispatchBackend(args []string) error {
+	if len(args) == 0 {
+		printBackendUsage()
+		return nil
+	}
+	switch args[0] {
 	case "dict":
 		return dispatchDict(args[1:])
 	default:
-		return fmt.Errorf("unknown subsystem %q — available: director, dict", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict (acl/quota/folder/user/mailbox land in future phases)", args[0])
 	}
 }
 
@@ -63,17 +82,35 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `yarilo-admin — yarilo operator CLI
 
 Usage:
-  yarilo-admin [global-flags] <subsystem> <command> [args...]
+  yarilo-admin [global-flags] <plane> <command> [args...]
 
-Global flags (director only):
-  --url    Director API base URL (env: YARILO_ADMIN_URL, default: http://localhost:9103)
-  --token  Director API bearer token (env: YARILO_ADMIN_TOKEN)
+Global flags:
+  --url            Director API base URL (env: YARILO_ADMIN_URL,  default: http://localhost:9103)
+  --token          Director API bearer token (env: YARILO_ADMIN_TOKEN)
+  --backend-url    Backend API base URL (env: YARILO_BACKEND_API_URL, default: http://localhost:9105)
+  --backend-token  Backend API bearer token (env: YARILO_BACKEND_API_TOKEN)
 
-Subsystems:
+Planes:
   director  — manage the yarilo-director cluster (ring, backends, users, peers)
-  dict      — manage pkg/dict KV stores (lookup, iterate, set, unset, atomic-inc, expire-scan)
+  backend   — manage a backend's storage state (dict; acl/quota/folder/user/mailbox in later phases)
 
-Run 'yarilo-admin <subsystem>' with no command for that subsystem's usage.`)
+Run 'yarilo-admin <plane>' with no command for that plane's usage.`)
+}
+
+func printBackendUsage() {
+	fmt.Fprintln(os.Stderr, `yarilo-admin backend <service> <command>
+
+Services:
+  dict     — pkg/dict KV-store ops (lookup, iterate, set, unset, atomic-inc, expire-scan, commit-batch, drivers, exists)
+
+Phase roadmap (services landing in future PRs):
+  acl      — RFC 4314 access control on mailboxes
+  quota    — RFC 9208 quotas
+  folder   — mailbox listing, GUID lookup, special-use queries
+  user     — userdb queries
+  mailbox  — per-folder ops (delete, rename, recalc-index)
+
+Run 'yarilo-admin backend <service>' with no command for that service's usage.`)
 }
 
 func envOr(key, def string) string {

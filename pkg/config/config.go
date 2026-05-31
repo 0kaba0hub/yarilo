@@ -27,7 +27,7 @@ type Config struct {
 	Storage         StorageConfig         `koanf:"storage"`
 	Namespaces      []NamespaceConfig     `koanf:"namespaces"`
 	Dicts           map[string]DictConfig `koanf:"dicts"`
-	AdminAPI        AdminAPIConfig        `koanf:"admin_api"`
+	BackendAPI      BackendAPIConfig      `koanf:"backend_api"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
 }
@@ -336,11 +336,17 @@ type DirectorServiceConfig struct {
 	API          DirectorAPIConfig  `koanf:"api"`
 }
 
-// AdminAPIConfig configures the standalone yarilo-admin-api process.
-// One instance runs per backend tag (or one per standalone deployment);
-// in multi-pod backend cluster the director's /api/admin/proxy/...
-// transparently forwards admin requests to the right backend.
-type AdminAPIConfig struct {
+// BackendAPIConfig configures the yarilo-backend-api process —
+// the backend-plane HTTP admin surface (dict / acl / quota /
+// folder / user / mailbox / ...). One instance runs per backend
+// tag (or one per standalone deployment, where it serves the
+// single combined session pod).
+//
+// The director-plane HTTP admin (ring / backends / users / peers)
+// is hosted by yarilo-director on its own port; the yarilo-admin
+// CLI surfaces both through nested subcommands (`yarilo-admin
+// director ...` vs `yarilo-admin backend ...`).
+type BackendAPIConfig struct {
 	Listen      string   `koanf:"listen"`       // ":9105" default
 	Token       string   `koanf:"token"`        // Bearer token; supports ${ENV_VAR} via koanf
 	AllowedNets []string `koanf:"allowed_nets"` // CIDRs allowed to call the API

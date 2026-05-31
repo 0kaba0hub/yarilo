@@ -1,14 +1,14 @@
-# yarilo-admin-api — storage-plane HTTP wire reference
+# yarilo-backend-api — backend-plane HTTP wire reference
 
-The `yarilo-admin-api` binary exposes the operator surface over HTTP
-for storage-plane operations: **dict** (today), **acl** (Phase ACL-1),
+The `yarilo-backend-api` binary exposes the operator surface over HTTP
+for backend-plane operations: **dict** (today), **acl** (Phase ACL-1),
 **quota** (Phase QUOTA-1), **folder / user** (future). One instance
 runs per backend tag (or one per standalone deployment).
 
-The `yarilo-admin` CLI is a thin HTTP client over this API. Future
-phases route the same wire calls through the director's
-`/api/admin/proxy/<user>/...` when multi-backend deployment lands —
-no CLI change.
+The `yarilo-admin` CLI is a thin HTTP client over this API; every
+backend-plane subcommand lives under `yarilo-admin backend <service>
+<command>` (`backend dict ...`, future `backend acl ...`,
+`backend quota ...`, etc.).
 
 For the director's own admin endpoints (ring / backends / users /
 peers) see [DIRECTOR-API.md](DIRECTOR-API.md) — different binary,
@@ -21,9 +21,9 @@ different port, different token.
 - **Protocol:** JSON over HTTPS (matching the existing
   `/api/director/...` surface)
 - **Auth:** Bearer token in `Authorization: Bearer <token>`. Server
-  reads it from the `ADMIN_API_TOKEN` env var (wired by the chart
+  reads it from the `BACKEND_API_TOKEN` env var (wired by the chart
   from a Secret). Empty token disables auth — local dev only
-- **IP allow-list:** when `admin_api.allowed_nets` is set in
+- **IP allow-list:** when `backend_api.allowed_nets` is set in
   `yarilo.yaml`, clients outside those CIDRs get `403 forbidden`
   before the bearer check
 - **mTLS:** when `internal_tls.enabled: true`, the listener is
@@ -43,12 +43,12 @@ different port, different token.
 
 ## Endpoints
 
-### `GET /api/admin/health`
+### `GET /api/backend/health`
 
 Liveness probe. Returns `200 {"status":"ok"}` whenever the process
 is up. Bypasses payload constraints — usable by k8s probes.
 
-### `GET /api/admin/dict/drivers`
+### `GET /api/backend/dict/drivers`
 
 Lists every dict driver registered in this process.
 
@@ -56,15 +56,15 @@ Lists every dict driver registered in this process.
 { "drivers": ["fail", "file", "memory", "redis", "sql"] }
 ```
 
-### `GET /api/admin/dict/{name}/exists`
+### `GET /api/backend/dict/{name}/exists`
 
-Reports whether the named dict is configured on this admin-api.
+Reports whether the named dict is configured on this backend-api.
 
 ```json
 { "name": "metadata", "exists": true }
 ```
 
-### `POST /api/admin/dict/{name}/lookup`
+### `POST /api/backend/dict/{name}/lookup`
 
 ```json
 // request
@@ -78,7 +78,7 @@ Reports whether the named dict is configured on this admin-api.
 drivers return the full list; single-value drivers return a
 one-element array. `found: false` → `values` is omitted/empty.
 
-### `POST /api/admin/dict/{name}/iterate`
+### `POST /api/backend/dict/{name}/iterate`
 
 Streaming endpoint. Response `Content-Type: application/x-ndjson` —
 one JSON object per line. A `{"error": "..."}` line MAY appear
@@ -108,7 +108,7 @@ clients MUST check every line for the `error` key.
 | 3 | 8 | `NoValue` — omit values from rows |
 | 4 | 16 | `ExactKey` — return all values for one exact key (no recursion) |
 
-### `POST /api/admin/dict/{name}/set`
+### `POST /api/backend/dict/{name}/set`
 
 ```json
 // request
@@ -122,7 +122,7 @@ clients MUST check every line for the `error` key.
 `0` = not-found, `-1` = failed, `-2` = write-uncertain). `status`
 is the human-readable mirror used by the CLI.
 
-### `POST /api/admin/dict/{name}/unset`
+### `POST /api/backend/dict/{name}/unset`
 
 ```json
 // request
@@ -134,7 +134,7 @@ is the human-readable mirror used by the CLI.
 
 Unsetting a missing key is not an error — `status: ok`.
 
-### `POST /api/admin/dict/{name}/atomic-inc`
+### `POST /api/backend/dict/{name}/atomic-inc`
 
 ```json
 // request
@@ -147,7 +147,7 @@ Unsetting a missing key is not an error — `status: ok`.
 { "result": 0, "status": "not-found" }
 ```
 
-### `POST /api/admin/dict/{name}/expire-scan`
+### `POST /api/backend/dict/{name}/expire-scan`
 
 ```json
 // request
@@ -159,7 +159,7 @@ Unsetting a missing key is not an error — `status: ok`.
 
 Drivers without TTL support are a no-op (still 200).
 
-### `POST /api/admin/dict/{name}/commit-batch`
+### `POST /api/backend/dict/{name}/commit-batch`
 
 Multi-op atomic transaction. Returns a single commit result; on
 failure no individual op is applied.
@@ -194,7 +194,7 @@ Errors come back with the matching HTTP status and a JSON body:
 | 400 | bad request body / malformed JSON / unknown driver |
 | 401 | missing or invalid bearer token |
 | 403 | client IP not in `allowed_nets` |
-| 404 | dict name not configured on this admin-api |
+| 404 | dict name not configured on this backend-api |
 | 500 | driver / I/O error |
 | 503 | dict closed (process shutting down) |
 
@@ -216,8 +216,7 @@ to no `op` field at all.
 
 | Phase | Adds |
 |:---|:---|
-| OPS-ADMIN-API (this, v1.23) | dict surface above; `yarilo-admin dict` CLI as HTTP client |
-| ACL-1 (next) | `POST /api/admin/acl/{user}/{mailbox}/{get,set,delete,my-rights,list-rights,debug}` + `yarilo-admin acl` CLI |
-| QUOTA-1 | `POST /api/admin/quota/{user}/{show,set,unset,recalc}` |
-| Folder ops | `POST /api/admin/folder/{user}/{list,info,guid}` for mailbox→GUID lookups |
-| OPS-ADMIN-PROXY | director's `/api/admin/proxy/{user}/{rest...}` transparently proxies to the right backend's admin-api by ring lookup |
+| OPS-BACKEND-API (this, v1.23) | dict surface above; `yarilo-admin backend dict` CLI as HTTP client |
+| ACL-1 (next) | `POST /api/backend/acl/{user}/{mailbox}/{get,set,delete,my-rights,list-rights,debug}` + `yarilo-admin backend acl` CLI |
+| QUOTA-1 | `POST /api/backend/quota/{user}/{show,set,unset,recalc}` |
+| Folder ops | `POST /api/backend/folder/{user}/{list,info,guid}` for mailbox→GUID lookups |

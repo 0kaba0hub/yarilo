@@ -592,43 +592,52 @@ YAML schema and current limitations.
 
 ## Admin API plane
 
-Operator-facing storage-plane admin (dict / acl / quota / folder
-ops) runs as its own HTTP server: **`yarilo-admin-api`** on
-`:9105`. The `yarilo-admin` CLI is a thin HTTP client; it never
-touches storage or dict directly.
+Operator HTTP admin splits along the two planes whose state it
+exposes:
 
-Two admin services live in the cluster:
-
-| Service | Binary | Port | Surface |
+| Plane | Binary | Port | Surface |
 |:---|:---|:---|:---|
-| **Director plane** | `yarilo-director` | `:9103` | ring / backends / users / peers — manage routing topology |
-| **Storage plane** | `yarilo-admin-api` | `:9105` | dict / acl / quota / folder — manage per-user state |
+| **Director** | `yarilo-director` | `:9103` `/api/director/...` | ring / backends / users / peers — routing topology |
+| **Backend**  | `yarilo-backend-api` | `:9105` `/api/backend/<service>/...` | dict (today); acl / quota / folder / user / mailbox (future) |
 
 Both speak JSON over HTTPS with Bearer-token auth + IP allow-list.
+The `yarilo-admin` CLI is a thin HTTP client over both — operator
+runs `yarilo-admin director <command>` or `yarilo-admin backend
+<service> <command>`. Each plane has its own URL + token
+(`--url`/`--token` vs `--backend-url`/`--backend-token`); their
+defaults work out of the box when running inside the respective
+pod.
 
-### Why split
+### Why two binaries
 
-The director plane manages routing — it does not (in backend-cluster
-deployment) have NFS / dict access. The storage plane needs both. A
-single combined surface would couple two unrelated concerns and force
-the director pod to mount user storage just to expose dict ops.
+Director state (ring, peers, user-to-backend mapping) lives in
+director's in-memory process state. Backend state (NFS-mounted
+maildir, on-disk indices, dict instances) lives in backend
+session-process pods. In a multi-pod backend deployment **these are
+physically different pods on different nodes** — they cannot share
+one HTTP server. The separation also keeps each plane's lifecycle
+independent (rolling restart of director admin does not touch
+storage ops, and vice versa).
 
-### Single-pod vs multi-pod
+In standalone single-pod deployment both binaries run in the same
+pod; operator still hits the two HTTP endpoints separately. The
+CLI's flag separation makes the routing decision explicit rather
+than magic.
 
-| Topology | CLI → Service |
-|:---|:---|
-| **Standalone single-pod** | CLI hits `yarilo-admin-api:9105` directly (and `yarilo-director:9103` for director ops, but no director in true single-pod) |
-| **Multi-pod backend cluster** (post NS-3) | CLI hits `yarilo-director:9103/api/admin/proxy/<user>/...` → director resolves user→backend via ring → proxies to that backend's `yarilo-admin-api:9105`. Same wire format, transparent to the CLI. |
+### Future services per plane
 
-The proxy hop (Phase OPS-ADMIN-PROXY) lands when multi-backend
-deployment lands. Until then `yarilo-admin-api` is reachable directly.
+Each plane is a registry — services land under it as features
+ship. Director can grow distributed-state services (e.g.
+`/api/director/dict/userdb_cache/...` once director uses dict for
+peer-sync) without changing the CLI shape; the same `dict`
+subcommand sits under both planes when needed.
 
 ### Wire reference
 
-See [docs/ADMIN-API.md](docs/ADMIN-API.md) for the storage-plane
+[docs/BACKEND-API.md](docs/BACKEND-API.md) — backend-plane
 endpoints (dict surface today; ACL / quota / folder added in
 subsequent phases). [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md)
-documents the director plane.
+— director plane.
 
 ---
 

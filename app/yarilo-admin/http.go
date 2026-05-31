@@ -23,22 +23,23 @@ func apiDelete(path string) ([]byte, error) {
 	return doRequest(apiURL, apiToken, http.MethodDelete, path, nil)
 }
 
-// adminAPIGet / adminAPIPost talk to the yarilo-admin-api endpoint
-// (dict / acl / quota / folder / user operations). Director endpoint
-// retains the apiURL/apiToken pair for director-specific ops.
-func adminAPIGet(path string) ([]byte, error) {
-	return doRequest(adminAPIURL, adminAPIToken, http.MethodGet, path, nil)
+// backendAPIGet / backendAPIPost talk to the yarilo-backend-api
+// endpoint (dict / acl / quota / folder / user / mailbox).
+// Director-plane ops keep the apiURL/apiToken pair on the existing
+// apiGet/apiPost family.
+func backendAPIGet(path string) ([]byte, error) {
+	return doRequest(backendAPIURL, backendAPIToken, http.MethodGet, path, nil)
 }
 
-func adminAPIPost(path string, body any) ([]byte, error) {
-	return doRequest(adminAPIURL, adminAPIToken, http.MethodPost, path, body)
+func backendAPIPost(path string, body any) ([]byte, error) {
+	return doRequest(backendAPIURL, backendAPIToken, http.MethodPost, path, body)
 }
 
-// adminAPIStream sends a POST and returns the raw response body as
-// an io.ReadCloser so streaming endpoints (NDJSON iterate) can be
-// consumed line-by-line. Caller MUST Close the body.
-func adminAPIStream(path string, body any) (io.ReadCloser, error) {
-	resp, err := doRawRequest(adminAPIURL, adminAPIToken, http.MethodPost, path, body)
+// backendAPIStream sends a POST and returns the raw response body
+// as an io.ReadCloser so streaming endpoints (NDJSON iterate) can
+// be consumed line-by-line. Caller MUST Close the body.
+func backendAPIStream(path string, body any) (io.ReadCloser, error) {
+	resp, err := doRawRequest(backendAPIURL, backendAPIToken, http.MethodPost, path, body)
 	if err != nil {
 		return nil, err
 	}

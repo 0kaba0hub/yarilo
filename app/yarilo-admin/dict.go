@@ -13,21 +13,16 @@ import (
 	"strings"
 )
 
-// Source-of-dict resolution model:
-//
-// `yarilo-admin dict` is a thin HTTP client over the yarilo-admin-api
-// endpoint (--admin-url, default http://localhost:9105 or
-// $YARILO_ADMIN_API_URL). The admin-api process owns the live
-// dict.Dict instances; this CLI never opens dicts directly.
+// `yarilo-admin backend dict` is a thin HTTP client over the
+// yarilo-backend-api endpoint (--backend-url, default
+// http://localhost:9105 or $YARILO_BACKEND_API_URL). The
+// yarilo-backend-api process owns the live dict.Dict instances;
+// this CLI never opens dicts directly.
 //
 // Per-op identity (OpSettings.Username / HomeDir / ExpireSecs) is
 // passed in the request body of every op that needs it. The CLI
 // exposes them via --user / --home / --expire-secs flags so an
 // operator can run a single ad-hoc op without setting environment.
-//
-// Phase OPS-ADMIN-PROXY (future) will let --url point at a director,
-// which transparently proxies /api/admin/... requests to the right
-// backend's yarilo-admin-api based on the user-to-backend ring.
 
 func dispatchDict(args []string) error {
 	if len(args) == 0 {
@@ -86,17 +81,17 @@ func addOpFlags(fs *flag.FlagSet) func() opSettingsWire {
 	}
 }
 
-// dictPath returns "/api/admin/dict/<name>/<suffix>" with the dict
+// dictPath returns "/api/backend/dict/<name>/<suffix>" with the dict
 // name URL-escaped so weird characters in operator names do not
 // corrupt the route.
 func dictPath(name, suffix string) string {
-	return "/api/admin/dict/" + url.PathEscape(name) + "/" + suffix
+	return "/api/backend/dict/" + url.PathEscape(name) + "/" + suffix
 }
 
 // ----- subcommands ---------------------------------------------------------
 
 func cmdDictDrivers() error {
-	return printJSON(adminAPIGet("/api/admin/dict/drivers"))
+	return printJSON(backendAPIGet("/api/backend/dict/drivers"))
 }
 
 func cmdDictExists(args []string) error {
@@ -105,7 +100,7 @@ func cmdDictExists(args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: dict exists NAME")
 	}
-	return printJSON(adminAPIGet("/api/admin/dict/" + url.PathEscape(fs.Arg(0)) + "/exists"))
+	return printJSON(backendAPIGet("/api/backend/dict/" + url.PathEscape(fs.Arg(0)) + "/exists"))
 }
 
 type lookupBody struct {
@@ -120,7 +115,7 @@ func cmdDictLookup(args []string) error {
 	if fs.NArg() != 2 {
 		return fmt.Errorf("usage: dict lookup [op-flags] NAME KEY")
 	}
-	data, err := adminAPIPost(dictPath(fs.Arg(0), "lookup"), lookupBody{
+	data, err := backendAPIPost(dictPath(fs.Arg(0), "lookup"), lookupBody{
 		Key: fs.Arg(1),
 		Op:  resolveOp(),
 	})
@@ -181,7 +176,7 @@ func cmdDictIterate(args []string) error {
 	}
 
 	body := iterateBody{Path: fs.Arg(1), Flags: flagsMask, Op: resolveOp()}
-	stream, err := adminAPIStream(dictPath(fs.Arg(0), "iterate"), body)
+	stream, err := backendAPIStream(dictPath(fs.Arg(0), "iterate"), body)
 	if err != nil {
 		return err
 	}
@@ -257,7 +252,7 @@ func cmdDictSet(args []string) error {
 	default:
 		return fmt.Errorf("usage: dict set [op-flags] NAME KEY VALUE  |  dict set --value-stdin [op-flags] NAME KEY")
 	}
-	return printCommit(adminAPIPost(dictPath(name, "set"), setBody{Key: key, Value: value, Op: resolveOp()}))
+	return printCommit(backendAPIPost(dictPath(name, "set"), setBody{Key: key, Value: value, Op: resolveOp()}))
 }
 
 type unsetBody struct {
@@ -272,7 +267,7 @@ func cmdDictUnset(args []string) error {
 	if fs.NArg() != 2 {
 		return fmt.Errorf("usage: dict unset [op-flags] NAME KEY")
 	}
-	return printCommit(adminAPIPost(dictPath(fs.Arg(0), "unset"), unsetBody{Key: fs.Arg(1), Op: resolveOp()}))
+	return printCommit(backendAPIPost(dictPath(fs.Arg(0), "unset"), unsetBody{Key: fs.Arg(1), Op: resolveOp()}))
 }
 
 type atomicIncBody struct {
@@ -292,7 +287,7 @@ func cmdDictAtomicInc(args []string) error {
 	if err != nil {
 		return fmt.Errorf("DELTA: %w", err)
 	}
-	return printCommit(adminAPIPost(dictPath(fs.Arg(0), "atomic-inc"), atomicIncBody{
+	return printCommit(backendAPIPost(dictPath(fs.Arg(0), "atomic-inc"), atomicIncBody{
 		Key: fs.Arg(1), Delta: delta, Op: resolveOp(),
 	}))
 }
@@ -303,7 +298,7 @@ func cmdDictExpireScan(args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: dict expire-scan NAME")
 	}
-	return printJSON(adminAPIPost(dictPath(fs.Arg(0), "expire-scan"), struct{}{}))
+	return printJSON(backendAPIPost(dictPath(fs.Arg(0), "expire-scan"), struct{}{}))
 }
 
 type batchOpWire struct {
@@ -377,7 +372,7 @@ func cmdDictCommitBatch(args []string) error {
 	if len(body.Ops) == 0 {
 		return fmt.Errorf("no ops parsed from stdin")
 	}
-	return printCommit(adminAPIPost(dictPath(fs.Arg(0), "commit-batch"), body))
+	return printCommit(backendAPIPost(dictPath(fs.Arg(0), "commit-batch"), body))
 }
 
 // ----- helpers --------------------------------------------------------------
@@ -432,12 +427,12 @@ func isPrintable(v []byte) bool {
 }
 
 func printDictUsage() {
-	fmt.Fprintln(os.Stderr, `yarilo-admin dict <command>
+	fmt.Fprintln(os.Stderr, `yarilo-admin backend dict <command>
 
-Talks to yarilo-admin-api (default http://localhost:9105 or
-$YARILO_ADMIN_API_URL). Override per-invocation:
-  --admin-url URL
-  --admin-token TOKEN
+Talks to yarilo-backend-api (default http://localhost:9105 or
+$YARILO_BACKEND_API_URL). Override per-invocation:
+  --backend-url URL
+  --backend-token TOKEN
 
 Per-op identity flags (where applicable):
   --user USER          OpSettings.Username
@@ -445,7 +440,7 @@ Per-op identity flags (where applicable):
   --expire-secs N      OpSettings.ExpireSecs (default TTL for writes)
 
 Commands:
-  drivers                                List dict drivers registered on admin-api
+  drivers                                List dict drivers registered on backend-api
   exists NAME                            Does this dict name resolve to a configured dict?
   lookup [op-flags] NAME KEY             Print value for KEY
   iterate [flags] [op-flags] NAME PATH   List rows (NDJSON streamed)
@@ -459,9 +454,9 @@ Commands:
                                          (set\tKEY\tBASE64, unset\tKEY, atomic-inc\tKEY\tDELTA)
 
 Examples:
-  yarilo-admin dict drivers
-  yarilo-admin dict lookup metadata priv/box/abc123/comment
-  yarilo-admin dict iterate --recurse --sort-key metadata priv/
-  yarilo-admin dict set metadata priv/foo bar
-  yarilo-admin dict atomic-inc quota priv/quota/storage 1024`)
+  yarilo-admin backend dict drivers
+  yarilo-admin backend dict lookup metadata priv/box/abc123/comment
+  yarilo-admin backend dict iterate --recurse --sort-key metadata priv/
+  yarilo-admin backend dict set metadata priv/foo bar
+  yarilo-admin backend dict atomic-inc quota priv/quota/storage 1024`)
 }

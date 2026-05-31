@@ -1,13 +1,13 @@
-// yarilo-admin-api is the storage-plane admin HTTP API.
+// yarilo-backend-api is the backend-plane admin HTTP API.
 //
-// One instance runs per backend tag (or one per standalone deployment).
-// In multi-pod backend cluster the director's /api/admin/proxy/...
-// transparently routes admin requests to the right backend's
-// yarilo-admin-api via the same wire protocol.
+// One instance runs per backend tag (or one per standalone
+// deployment). Operators reach it via the yarilo-admin CLI's
+// `backend` subtree (yarilo-admin backend dict ..., backend acl ...,
+// backend quota ..., etc.).
 //
-// Wire reference: docs/ADMIN-API.md
+// Wire reference: docs/BACKEND-API.md
 //
-// Configuration: admin_api section of yarilo.yaml + dicts section
+// Configuration: backend_api section of yarilo.yaml + dicts section
 // (the live dicts opened here are exposed to operator HTTP clients).
 package main
 
@@ -22,7 +22,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/0kaba0hub/yarilo/internal/adminapi"
+	"github.com/0kaba0hub/yarilo/internal/backendapi"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
@@ -46,11 +46,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	listen := cfg.AdminAPI.Listen
+	listen := cfg.BackendAPI.Listen
 	if listen == "" {
 		listen = ":9105"
 	}
-	slog.Info("yarilo-admin-api starting",
+	slog.Info("yarilo-backend-api starting",
 		"version", version,
 		"listen", listen,
 		"internal_tls", cfg.InternalTLS.Enabled,
@@ -80,30 +80,30 @@ func main() {
 	dicts := map[string]dict.Dict{}
 	for name, dc := range cfg.Dicts {
 		if dc.Driver == "" {
-			slog.Warn("admin-api: skipping dict with empty driver", "name", name)
+			slog.Warn("backend-api: skipping dict with empty driver", "name", name)
 			continue
 		}
 		d, err := dict.Open(dict.Config{Driver: dc.Driver, Settings: dc.Settings})
 		if err != nil {
-			slog.Error("admin-api: open dict failed", "name", name, "driver", dc.Driver, "err", err)
+			slog.Error("backend-api: open dict failed", "name", name, "driver", dc.Driver, "err", err)
 			os.Exit(1)
 		}
 		dicts[name] = d
-		slog.Info("admin-api: opened dict", "name", name, "driver", dc.Driver)
+		slog.Info("backend-api: opened dict", "name", name, "driver", dc.Driver)
 	}
 	defer func() {
 		for name, d := range dicts {
 			if err := d.Close(); err != nil {
-				slog.Warn("admin-api: dict close failed", "name", name, "err", err)
+				slog.Warn("backend-api: dict close failed", "name", name, "err", err)
 			}
 		}
 	}()
 
-	allowedNets := parseCIDRs(cfg.AdminAPI.AllowedNets)
-	srv := adminapi.New(adminapi.Options{
+	allowedNets := parseCIDRs(cfg.BackendAPI.AllowedNets)
+	srv := backendapi.New(backendapi.Options{
 		Addr:        listen,
 		TLSConfig:   tlsCfg,
-		Token:       cfg.AdminAPI.Token,
+		Token:       cfg.BackendAPI.Token,
 		AllowedNets: allowedNets,
 		Dicts:       dicts,
 	})
@@ -112,10 +112,10 @@ func main() {
 	defer cancel()
 
 	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Error("admin-api: serve failed", "err", err)
+		slog.Error("backend-api: serve failed", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("yarilo-admin-api stopped")
+	slog.Info("yarilo-backend-api stopped")
 }
 
 func parseCIDRs(in []string) []*net.IPNet {
@@ -123,7 +123,7 @@ func parseCIDRs(in []string) []*net.IPNet {
 	for _, s := range in {
 		_, n, err := net.ParseCIDR(strings.TrimSpace(s))
 		if err != nil {
-			slog.Warn("admin-api: ignoring bad CIDR", "value", s, "err", err)
+			slog.Warn("backend-api: ignoring bad CIDR", "value", s, "err", err)
 			continue
 		}
 		out = append(out, n)

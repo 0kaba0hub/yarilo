@@ -4,12 +4,12 @@ Director-plane admin endpoints exposed by `yarilo-director` on port
 `9103` (default). All require a Bearer token and an IP allow-list.
 
 For the storage-plane admin API (dict / acl / quota / folder),
-see [ADMIN-API.md](ADMIN-API.md) — different binary
-(`yarilo-admin-api`), different port (`:9105`), different token.
+see [BACKEND-API.md](BACKEND-API.md) — different binary
+(`yarilo-backend-api`), different port (`:9105`), different token.
 
 Both are reachable from the same `yarilo-admin` CLI — director ops
-via `--url` / `--token`, storage ops via `--admin-url` /
-`--admin-token`.
+via `--url` / `--token`, storage ops via `--backend-url` /
+`--backend-token`.
 
 ---
 

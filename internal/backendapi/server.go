@@ -1,11 +1,19 @@
-// Package adminapi is the storage-plane admin HTTP API.
+// Package backendapi is the backend-plane admin HTTP API.
 //
-// It exposes operator endpoints (dict / acl / quota / folder / user)
-// against the local backend's storage and pkg/dict instances. One
-// instance runs per backend tag (or one per standalone deployment);
-// in a multi-pod backend cluster the director's
-// /api/admin/proxy/<user>/... transparently routes admin requests
-// to the correct backend's adminapi via the same wire protocol.
+// It exposes operator endpoints (dict / acl / quota / folder / user /
+// mailbox / ...) against the local backend's storage and pkg/dict
+// instances. One instance runs per backend tag (or one per
+// standalone deployment).
+//
+// Concerns split:
+//
+//	yarilo-director hosts /api/director/...      (ring / backends / users / peers)
+//	yarilo-backend-api hosts /api/backend/<service>/...  (dict / acl / quota / ...)
+//
+// Different binaries because director state lives in director's
+// process memory and backend state (NFS + dicts) lives in backend
+// pods; in multi-pod cluster these are physically separate pods, so
+// they cannot be combined.
 //
 // Wire protocol: JSON over HTTPS. Endpoints mirror the shape of
 // internal/director's existing /api/director/... surface so the
@@ -15,7 +23,7 @@
 // Streaming endpoints (currently dict/iterate) use NDJSON — one
 // JSON object per line — so the CLI can pipeline display without
 // buffering the entire response in memory.
-package adminapi
+package backendapi
 
 import (
 	"context"
@@ -33,7 +41,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 )
 
-// Server is the admin-API HTTP server. Construct with New, then call
+// Server is the backend-API HTTP server. Construct with New, then call
 // Serve (mTLS-terminated TLS listener) or ListenAndServe (plain).
 type Server struct {
 	opts Options
@@ -53,7 +61,7 @@ type Options struct {
 	Dicts       map[string]dict.Dict
 }
 
-// New constructs a Server and registers the admin endpoints onto an
+// New constructs a Server and registers the backend endpoints onto an
 // internal ServeMux. Subsequent Server.routes additions (for ACL,
 // quota, etc.) happen via dedicated wire registration in their own
 // files (acl.go, quota.go); dict.go owns the dict surface.
@@ -70,7 +78,7 @@ func New(opts Options) *Server {
 // underlying server returns.
 func (s *Server) Serve(ctx context.Context) error {
 	if s.opts.Addr == "" {
-		return fmt.Errorf("adminapi: Addr is required")
+		return fmt.Errorf("backendapi: Addr is required")
 	}
 	srv := &http.Server{
 		Addr:              s.opts.Addr,
@@ -106,11 +114,11 @@ func (s *Server) Serve(ctx context.Context) error {
 // the server via httptest.Server without spinning up Serve.
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// registerHealth wires GET /api/admin/health (200 if process is up).
+// registerHealth wires GET /api/backend/health (200 if process is up).
 // Readiness vs liveness is the operator's choice — both share this
 // endpoint for now; per-subsystem readyz come later.
 func (s *Server) registerHealth() {
-	s.mux.Handle("GET /api/admin/health", s.middleware(func(w http.ResponseWriter, _ *http.Request) {
+	s.mux.Handle("GET /api/backend/health", s.middleware(func(w http.ResponseWriter, _ *http.Request) {
 		apiJSON(w, map[string]string{"status": "ok"})
 	}))
 }
@@ -153,7 +161,7 @@ func (s *Server) middleware(next http.HandlerFunc) http.Handler {
 func apiJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Debug("adminapi: encode response", "err", err)
+		slog.Debug("backendapi: encode response", "err", err)
 	}
 }
 

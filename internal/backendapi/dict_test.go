@@ -1,4 +1,4 @@
-package adminapi
+package backendapi
 
 import (
 	"bufio"
@@ -70,7 +70,7 @@ func doJSON(t *testing.T, ts *httptest.Server, method, path, token string, body 
 
 func TestHealthEndpoint(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	status, data := doJSON(t, ts, http.MethodGet, "/api/admin/health", "", nil)
+	status, data := doJSON(t, ts, http.MethodGet, "/api/backend/health", "", nil)
 	if status != 200 {
 		t.Fatalf("status = %d, want 200; body=%s", status, data)
 	}
@@ -83,17 +83,17 @@ func TestAuthRejectsMissingOrWrongToken(t *testing.T) {
 	ts, _ := memTestServer(t, "supersecret")
 
 	// No header → 401
-	status, _ := doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "", nil)
+	status, _ := doJSON(t, ts, http.MethodGet, "/api/backend/dict/drivers", "", nil)
 	if status != http.StatusUnauthorized {
 		t.Errorf("missing token: status=%d, want 401", status)
 	}
 	// Wrong token → 401
-	status, _ = doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "wrong", nil)
+	status, _ = doJSON(t, ts, http.MethodGet, "/api/backend/dict/drivers", "wrong", nil)
 	if status != http.StatusUnauthorized {
 		t.Errorf("wrong token: status=%d, want 401", status)
 	}
 	// Correct token → 200
-	status, _ = doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "supersecret", nil)
+	status, _ = doJSON(t, ts, http.MethodGet, "/api/backend/dict/drivers", "supersecret", nil)
 	if status != http.StatusOK {
 		t.Errorf("good token: status=%d, want 200", status)
 	}
@@ -101,7 +101,7 @@ func TestAuthRejectsMissingOrWrongToken(t *testing.T) {
 
 func TestDictDriversListed(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	status, data := doJSON(t, ts, http.MethodGet, "/api/admin/dict/drivers", "", nil)
+	status, data := doJSON(t, ts, http.MethodGet, "/api/backend/dict/drivers", "", nil)
 	if status != 200 {
 		t.Fatalf("status %d body %s", status, data)
 	}
@@ -125,7 +125,7 @@ func TestDictDriversListed(t *testing.T) {
 
 func TestDictExistsKnown(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	status, data := doJSON(t, ts, http.MethodGet, "/api/admin/dict/test/exists", "", nil)
+	status, data := doJSON(t, ts, http.MethodGet, "/api/backend/dict/test/exists", "", nil)
 	if status != 200 {
 		t.Fatalf("status %d body %s", status, data)
 	}
@@ -141,7 +141,7 @@ func TestDictExistsKnown(t *testing.T) {
 
 func TestDictExistsUnknown(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	_, data := doJSON(t, ts, http.MethodGet, "/api/admin/dict/no-such/exists", "", nil)
+	_, data := doJSON(t, ts, http.MethodGet, "/api/backend/dict/no-such/exists", "", nil)
 	var got struct {
 		Exists bool `json:"exists"`
 	}
@@ -155,7 +155,7 @@ func TestDictRoundtripSetLookupUnset(t *testing.T) {
 	ts, _ := memTestServer(t, "")
 
 	// SET
-	status, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/set", "", map[string]any{
+	status, data := doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/set", "", map[string]any{
 		"key":   "priv/foo",
 		"value": []byte("hello"), // encoding/json emits base64
 	})
@@ -171,7 +171,7 @@ func TestDictRoundtripSetLookupUnset(t *testing.T) {
 	}
 
 	// LOOKUP
-	status, data = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "priv/foo"})
+	status, data = doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/lookup", "", map[string]any{"key": "priv/foo"})
 	if status != 200 {
 		t.Fatalf("lookup status %d body %s", status, data)
 	}
@@ -185,12 +185,12 @@ func TestDictRoundtripSetLookupUnset(t *testing.T) {
 	}
 
 	// UNSET
-	status, _ = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/unset", "", map[string]any{"key": "priv/foo"})
+	status, _ = doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/unset", "", map[string]any{"key": "priv/foo"})
 	if status != 200 {
 		t.Fatalf("unset status %d", status)
 	}
 	// LOOKUP again — should miss
-	_, data = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "priv/foo"})
+	_, data = doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/lookup", "", map[string]any{"key": "priv/foo"})
 	_ = json.Unmarshal(data, &lk)
 	if lk.Found {
 		t.Errorf("key still found after unset: %+v", lk)
@@ -201,12 +201,12 @@ func TestDictAtomicInc(t *testing.T) {
 	ts, _ := memTestServer(t, "")
 
 	// Seed via SET
-	doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/set", "", map[string]any{
+	doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/set", "", map[string]any{
 		"key":   "counter",
 		"value": []byte("10"),
 	})
 	// Inc by 5
-	status, _ := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/atomic-inc", "", map[string]any{
+	status, _ := doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/atomic-inc", "", map[string]any{
 		"key":   "counter",
 		"delta": 5,
 	})
@@ -214,7 +214,7 @@ func TestDictAtomicInc(t *testing.T) {
 		t.Fatalf("inc status %d", status)
 	}
 	// Lookup
-	_, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "counter"})
+	_, data := doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/lookup", "", map[string]any{"key": "counter"})
 	var lk struct {
 		Values [][]byte `json:"values"`
 	}
@@ -226,7 +226,7 @@ func TestDictAtomicInc(t *testing.T) {
 
 func TestDictAtomicIncMissingKeyReturnsNotFound(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	_, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/atomic-inc", "", map[string]any{
+	_, data := doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/atomic-inc", "", map[string]any{
 		"key":   "no-such",
 		"delta": 1,
 	})
@@ -251,7 +251,7 @@ func TestDictIterateNDJSONStream(t *testing.T) {
 	}
 
 	// IterateRecurse + IterateSortByKey = 1 | 2 = 3
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/admin/dict/test/iterate", bytes.NewReader([]byte(`{"path":"priv/","flags":3}`)))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/api/backend/dict/test/iterate", bytes.NewReader([]byte(`{"path":"priv/","flags":3}`)))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -290,7 +290,7 @@ func TestDictCommitBatchAtomic(t *testing.T) {
 			{"kind": "atomic-inc", "key": "a", "delta": 10}, // 1 → 11
 		},
 	}
-	status, data := doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/commit-batch", "", body)
+	status, data := doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/commit-batch", "", body)
 	if status != 200 {
 		t.Fatalf("commit-batch status %d body %s", status, data)
 	}
@@ -302,7 +302,7 @@ func TestDictCommitBatchAtomic(t *testing.T) {
 		t.Errorf("status = %q, want ok", cr.Status)
 	}
 	// Verify final value
-	_, data = doJSON(t, ts, http.MethodPost, "/api/admin/dict/test/lookup", "", map[string]any{"key": "a"})
+	_, data = doJSON(t, ts, http.MethodPost, "/api/backend/dict/test/lookup", "", map[string]any{"key": "a"})
 	var lk struct {
 		Values [][]byte `json:"values"`
 	}
@@ -314,7 +314,7 @@ func TestDictCommitBatchAtomic(t *testing.T) {
 
 func TestUnknownDictReturns404(t *testing.T) {
 	ts, _ := memTestServer(t, "")
-	status, _ := doJSON(t, ts, http.MethodPost, "/api/admin/dict/no-such/lookup", "", map[string]string{"key": "x"})
+	status, _ := doJSON(t, ts, http.MethodPost, "/api/backend/dict/no-such/lookup", "", map[string]string{"key": "x"})
 	if status != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", status)
 	}

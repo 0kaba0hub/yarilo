@@ -163,7 +163,7 @@ components:
         cpu: 200m
         memory: 128Mi
 
-  ## yarilo-admin-api — storage-plane operator HTTP API.
+  ## yarilo-backend-api — storage-plane operator HTTP API.
   ## Exposes dict / acl (later) / quota (later) / folder / user
   ## operations consumed by yarilo-admin CLI. Mounts the same
   ## storage PVC as the session pods + connects to every
@@ -172,8 +172,8 @@ components:
   ## Bearer token auth (auto-generated Secret unless tokenSecret
   ## is provided). For multi-pod backend cluster, director's
   ## /api/admin/proxy/<user>/... proxies admin requests to the
-  ## right backend's yarilo-admin-api by user-to-backend mapping.
-  adminAPI:
+  ## right backend's yarilo-backend-api by user-to-backend mapping.
+  backendAPI:
     enabled: true
     replicas: 1
     listen: ":9105"
@@ -184,8 +184,8 @@ components:
 
     ## Pre-existing Secret with key "token" holding the bearer
     ## token. When empty, the chart generates a random token and
-    ## stores it in <release>-admin-api-token. CLI reads from
-    ## YARILO_ADMIN_API_TOKEN env or --admin-token flag.
+    ## stores it in <release>-backend-api-token. CLI reads from
+    ## YARILO_BACKEND_API_TOKEN env or --backend-token flag.
     tokenSecret: ""
 
     ## CIDR allow-list for callers. Empty = allow any IP (token

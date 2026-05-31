@@ -12,7 +12,7 @@ RUN set -eu; \
         yarilo-auth \
         yarilo-anvil \
         yarilo-admin \
-        yarilo-admin-api \
+        yarilo-backend-api \
         yarilo-director \
         yarilo-imap \
         yarilo-imap-login \

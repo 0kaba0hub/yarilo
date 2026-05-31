@@ -1,4 +1,4 @@
-package adminapi
+package backendapi
 
 import (
 	"context"
@@ -20,16 +20,16 @@ import (
 // Options.Dicts. Wire layouts mirror the pkg/dict contract so the CLI
 // (and any future programmatic admin client) is a thin shim.
 func (s *Server) registerDictRoutes() {
-	s.mux.Handle("GET /api/admin/dict/drivers", s.middleware(s.handleDictDrivers))
-	s.mux.Handle("GET /api/admin/dict/{name}/exists", s.middleware(s.handleDictExists))
+	s.mux.Handle("GET /api/backend/dict/drivers", s.middleware(s.handleDictDrivers))
+	s.mux.Handle("GET /api/backend/dict/{name}/exists", s.middleware(s.handleDictExists))
 
-	s.mux.Handle("POST /api/admin/dict/{name}/lookup", s.middleware(s.handleDictLookup))
-	s.mux.Handle("POST /api/admin/dict/{name}/iterate", s.middleware(s.handleDictIterate))
-	s.mux.Handle("POST /api/admin/dict/{name}/set", s.middleware(s.handleDictSet))
-	s.mux.Handle("POST /api/admin/dict/{name}/unset", s.middleware(s.handleDictUnset))
-	s.mux.Handle("POST /api/admin/dict/{name}/atomic-inc", s.middleware(s.handleDictAtomicInc))
-	s.mux.Handle("POST /api/admin/dict/{name}/expire-scan", s.middleware(s.handleDictExpireScan))
-	s.mux.Handle("POST /api/admin/dict/{name}/commit-batch", s.middleware(s.handleDictCommitBatch))
+	s.mux.Handle("POST /api/backend/dict/{name}/lookup", s.middleware(s.handleDictLookup))
+	s.mux.Handle("POST /api/backend/dict/{name}/iterate", s.middleware(s.handleDictIterate))
+	s.mux.Handle("POST /api/backend/dict/{name}/set", s.middleware(s.handleDictSet))
+	s.mux.Handle("POST /api/backend/dict/{name}/unset", s.middleware(s.handleDictUnset))
+	s.mux.Handle("POST /api/backend/dict/{name}/atomic-inc", s.middleware(s.handleDictAtomicInc))
+	s.mux.Handle("POST /api/backend/dict/{name}/expire-scan", s.middleware(s.handleDictExpireScan))
+	s.mux.Handle("POST /api/backend/dict/{name}/commit-batch", s.middleware(s.handleDictCommitBatch))
 }
 
 // dictByName returns the live dict.Dict for name, or writes a 404
