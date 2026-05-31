@@ -1705,22 +1705,12 @@ func (l *slogLogger) Printf(format string, args ...interface{}) {
 	slog.Error(fmt.Sprintf(format, args...))
 }
 
-func (s *session) ensureFolder(name string) (*mailbox.Folder, error) {
-	if s.folder != nil && s.folder.Name == name {
-		return s.folder, nil
-	}
-	h, rel, err := s.dispatch(name)
-	if err != nil {
-		return nil, err
-	}
-	return h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
-}
-
-// ensureFolderHandle is the namespace-aware variant of ensureFolder
-// used by ops that need to know which backend the folder lives on
-// (APPEND, COPY, MOVE, METADATA). Returns the resolved handle, the
-// namespace-relative folder name (already stripped of the prefix),
-// and the opened *Folder.
+// ensureFolderHandle resolves a wire-protocol mailbox name to its
+// namespace handle, the namespace-relative folder name, and the
+// opened *Folder. Used by ops that need to know which backend the
+// folder lives on (APPEND, COPY, MOVE, METADATA). Re-uses the
+// currently-SELECTed folder when name matches, to avoid re-OpenFolder
+// round-trips inside short-lived ops.
 func (s *session) ensureFolderHandle(name string) (*nsHandle, string, *mailbox.Folder, error) {
 	h, rel, err := s.dispatch(name)
 	if err != nil {
