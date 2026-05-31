@@ -129,18 +129,49 @@ endpoints can reuse the same authorisation + event helpers.
 
 ---
 
-## Backend admin API — index rebuild / optimize, folder repair
+## Phase BACKEND-API-INDEX-OPS — rebuild / optimize / repair
 
-`/api/backend/index/dump` is shipped (read-only). Rebuild,
-optimize and folder repair are not — they require driver-specific
-resync logic: maildir reconstructs the index by scanning
-`cur/new/tmp`; dbox/mdbox have a different on-disk layout where
-orphaned blobs have different semantics. The EASY phase
-deliberately did not invent a one-size-fits-all repair API.
+`/api/backend/index/dump` is shipped (read-only). The mutating
+counterparts — `rebuild`, `optimize`, `folder repair` — are not.
+They require driver-specific resync logic that does not exist on
+any of the three current storage drivers (maildir, dbox, mdbox):
+the storage layer itself can `Save`/`Fetch`/`List`/`Delete`, but
+none of the drivers expose a "scan disk and regenerate index"
+operation.
 
-Unblocked by: design + implement
-`mailbox.UserMailbox.Repair(folder)` per backend, then expose via
-`POST /api/backend/folder/repair` and `POST /api/backend/index/{rebuild,optimize}`.
+Phase order:
+
+1. **Add `mailbox.UserMailbox.Rebuild(folder) (Stats, error)` to
+   the interface.** Implement for each driver:
+   - **maildir**: walk `cur/` + `new/`, parse `:2,FLAGS` from
+     filenames, read existing `yarilo-uidlist` to preserve UIDs.
+   - **dbox**: scan single-message blobs; UIDs live in the
+     per-message header.
+   - **mdbox**: scan multi-message store files; UIDs live in the
+     per-message stream header.
+2. **Add `Optimize(folder)`**. For fileindex this is compacting
+   `.index.log` into the base `.index` file (logic already exists
+   internally, needs an exposed entry-point).
+3. **Add `Repair(folder)`**. Combines rebuild + orphan cleanup +
+   counter resync. Single operator-facing knob for "fix whatever
+   is wrong with this folder".
+4. **Admin API on top**:
+   - `POST /api/backend/index/rebuild`  → `UserMailbox.Rebuild`
+   - `POST /api/backend/index/optimize` → `UserMailbox.Optimize`
+   - `POST /api/backend/folder/repair`  → `UserMailbox.Repair`
+5. **CLI**: `yarilo-admin backend index rebuild <user> <mailbox>`,
+   `... optimize ...`, `yarilo-admin backend folder repair <user> <mailbox>`.
+
+UID semantics: **preserve** by default — `Rebuild` reads
+`yarilo-uidlist` (or the dbox/mdbox per-message header) and keeps
+existing UIDs intact so client UID caches stay valid (matches
+Dovecot's `doveadm force-resync` default). Optional
+`--reset-uids` flag for nuclear re-issue from UID=1; this bumps
+UIDVALIDITY and forces clients to full resync.
+
+Why deferred: per-driver disk-scanner is meaningful per-driver
+work + needs tests against real on-disk fixtures for each format,
+not something to squeeze into BACKEND-API-EASY.
 
 ---
 
