@@ -72,3 +72,41 @@ func TestResolver_UserInfo(t *testing.T) {
 		t.Errorf("Home: got %q", ui.Home)
 	}
 }
+
+func TestParseLocation(t *testing.T) {
+	cases := []struct {
+		name    string
+		loc     string
+		ui      *UserInfo
+		want    Location
+		wantOK  bool
+		wantErr bool
+	}{
+		{"empty returns ok=false", "", nil, Location{}, false, false},
+		{"maildir literal", "maildir:/var/yarilo/shared", nil, Location{Driver: "maildir", Path: "/var/yarilo/shared"}, true, false},
+		{"maildir templated home", "maildir:%h", &UserInfo{Home: "/srv/u/alice"}, Location{Driver: "maildir", Path: "/srv/u/alice"}, true, false},
+		{"maildir templated %d/%n", "maildir:/srv/%d/%n", &UserInfo{Username: "alice@x.io"}, Location{Driver: "maildir", Path: "/srv/x.io/alice"}, true, false},
+		{"dbox accepted (forward-compat)", "dbox:/var/dbox", nil, Location{Driver: "dbox", Path: "/var/dbox"}, true, false},
+		{"mdbox accepted (forward-compat)", "mdbox:/var/mdbox", nil, Location{Driver: "mdbox", Path: "/var/mdbox"}, true, false},
+		{"missing colon errors", "maildir", nil, Location{}, false, true},
+		{"unknown driver errors", "weird:/foo", nil, Location{}, false, true},
+		{"empty path after expansion errors", "maildir:%h", nil, Location{}, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok, err := ParseLocation(tc.loc, tc.ui)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr=%v", err, tc.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if ok != tc.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("Location = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

@@ -27,9 +27,14 @@ type subscriptionStore struct {
 	locker   locks.Locker
 }
 
-func newSubscriptionStore(home, username, owner string, locker locks.Locker) *subscriptionStore {
+// newSubscriptionStoreFile constructs a subscription store rooted at
+// home/<filename>. NS-1b assigns each namespace its own subscription
+// file: personal keeps the pre-v1.21 "subscriptions" filename so
+// upgrades preserve existing state, shared/public use
+// "subscriptions-<ns>" siblings in the same home.
+func newSubscriptionStoreFile(home, filename, username, owner string, locker locks.Locker) *subscriptionStore {
 	return &subscriptionStore{
-		path:     filepath.Join(home, "subscriptions"),
+		path:     filepath.Join(home, filename),
 		username: username,
 		owner:    owner,
 		locker:   locker,

@@ -92,3 +92,68 @@ func TestFormatAttrEntry(t *testing.T) {
 		t.Errorf("shared format: %q", got)
 	}
 }
+
+// SharedAttrKey: shared/public-namespace per-accessing-user keys ----------------
+
+func TestSharedAttrKeyPrivateIsPerUser(t *testing.T) {
+	// Same folder GUID, same attrName, two different accessing users:
+	// the priv/ key must differ so users cannot see each other's
+	// private annotations on a shared folder.
+	guid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	aliceKey := SharedAttrKey(AttrPrivate, guid, "alice@example.com", "comment")
+	bobKey := SharedAttrKey(AttrPrivate, guid, "bob@example.com", "comment")
+	if aliceKey == bobKey {
+		t.Fatalf("private shared keys collided across users: %q", aliceKey)
+	}
+	// Both must include the shared folder's GUID and the "u-" prefix.
+	if !contains(aliceKey, "0102030405060708090a0b0c0d0e0f10/u-") {
+		t.Errorf("alice key shape wrong: %q", aliceKey)
+	}
+}
+
+func TestSharedAttrKeySharedIsGlobal(t *testing.T) {
+	// shared/ scope on a shared folder remains visible to everyone —
+	// the accessing-user dimension is NOT applied.
+	guid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	aliceKey := SharedAttrKey(AttrShared, guid, "alice@example.com", "admin")
+	bobKey := SharedAttrKey(AttrShared, guid, "bob@example.com", "admin")
+	if aliceKey != bobKey {
+		t.Errorf("shared/ scope must be global on shared folder: alice=%q bob=%q", aliceKey, bobKey)
+	}
+}
+
+func TestSharedAttrPrefixMatchesKey(t *testing.T) {
+	// SharedAttrPrefix + attrName must equal SharedAttrKey, so
+	// iterating under the prefix and stripping it returns just the
+	// attr name.
+	guid := [16]byte{0xab, 0xcd}
+	for _, scope := range []AttrScope{AttrPrivate, AttrShared} {
+		key := SharedAttrKey(scope, guid, "alice@example.com", "comment")
+		prefix := SharedAttrPrefix(scope, guid, "alice@example.com")
+		if got := TrimAttrPrefix(key, prefix); got != "comment" {
+			t.Errorf("scope=%v: trim(%q, %q)=%q want=comment", scope, key, prefix, got)
+		}
+	}
+}
+
+func TestSharedAttrKeyHashIsCaseSensitive(t *testing.T) {
+	guid := [16]byte{}
+	upper := SharedAttrKey(AttrPrivate, guid, "Alice@example.com", "x")
+	lower := SharedAttrKey(AttrPrivate, guid, "alice@example.com", "x")
+	if upper == lower {
+		t.Error("user hash must be case-sensitive")
+	}
+}
+
+// helper: simple substring contains (avoids importing strings just for tests)
+func contains(haystack, needle string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

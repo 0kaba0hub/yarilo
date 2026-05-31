@@ -541,8 +541,8 @@ Each namespace MAY use its own separator (Dovecot allows it; we follow).
 
 | Phase | Delivers |
 |:---|:---|
-| **NS-1a** (current, `v1.20`) | Wire-protocol: `NAMESPACE` response driven by `cfg.Namespaces[]`. Storage routing not changed — only Personal carries real mailboxes. |
-| **NS-1b** | `MailboxBackend.OpenNamespace` + `IndexBackend.OpenNamespace` + per-namespace storage roots + `LIST` cross-namespace traversal + `SELECT` dispatch + METADATA `priv/` per-accessing-user on shared mailboxes. |
+| **NS-1a** (`v1.20`) | Wire-protocol: `NAMESPACE` response driven by `cfg.Namespaces[]`. Only Personal carries real mailboxes. |
+| **NS-1b** (`v1.21`, shipped) | Per-namespace storage routing via in-session `nsHandle` dispatch keyed on namespace prefix. Each implemented namespace opens its own `UserMailbox` + `UserIndex` + per-namespace `subscriptions-<ns>` file at login. `LIST` traverses every implemented namespace (personal first, then by prefix). `SELECT`/`STATUS`/`APPEND`/`COPY`/`MOVE`/`SUBSCRIBE` route by prefix. METADATA `/private/*` on shared/public mailboxes embeds a SHA-256 hash of the accessing user in the dict key (`priv/box/<guid>/u-<userhash>/<entry>`) so users do not see each other's private annotations on the same folder; `/shared/*` stays global. Other Users (`user/<owner>/...`) is declared in the wire spec but `SELECT` under it returns `NO`. |
 | **ACL-1** | RFC 4314 — required for Shared / Other Users / Public to be actually usable (without it any user reads anyone's stuff). |
 | **NS-3** | Director routing: when accessing `user/alice/*` from bob's session in a multi-pod backend deployment, route the mailbox-access leg of the session to alice's backend pod (cross-pod RPC or namespace-pinned pool). Personal-namespace single-pod standalone works without this. |
 

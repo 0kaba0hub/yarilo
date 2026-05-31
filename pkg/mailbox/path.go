@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -133,4 +134,53 @@ func splitUser(u string) (local, domain string) {
 		return u[:i], u[i+1:]
 	}
 	return u, ""
+}
+
+// Location is a parsed namespace storage URL: "driver:path".
+// Currently only the "maildir" driver is supported; other drivers
+// (dbox, mdbox) are accepted by the parser for forward-compat but
+// must match the globally configured cfg.Storage.Mailbox driver —
+// per-namespace driver mixing is deferred until backends gain a
+// shared OpenNamespace dispatch.
+type Location struct {
+	Driver string // "maildir", "dbox", "mdbox"
+	Path   string // expanded absolute path (varexpand applied)
+}
+
+// ParseLocation parses "driver:path" into Location. When loc is empty
+// returns (Location{}, false) so callers can detect "namespace not
+// configured for storage" and fall through to NS-1a wire-only mode.
+// Path is %u/%n/%d/%h-expanded against ui — when ui is nil expansion
+// is a no-op (callers without a user context, e.g. system-wide
+// shared/public namespaces, pass nil and ship a literal absolute path).
+func ParseLocation(loc string, ui *UserInfo) (Location, bool, error) {
+	loc = strings.TrimSpace(loc)
+	if loc == "" {
+		return Location{}, false, nil
+	}
+	idx := strings.IndexByte(loc, ':')
+	if idx < 0 {
+		return Location{}, false, fmt.Errorf("mailbox: location %q must be \"driver:path\"", loc)
+	}
+	driver := strings.ToLower(loc[:idx])
+	path := loc[idx+1:]
+	switch driver {
+	case "maildir", "dbox", "mdbox":
+		// recognised
+	default:
+		return Location{}, false, fmt.Errorf("mailbox: unknown storage driver %q in %q", driver, loc)
+	}
+	if ui != nil {
+		path = ExpandVars(path, ui.Username)
+		path = strings.ReplaceAll(path, "%h", ui.Home)
+	} else {
+		// System-wide namespace (shared/public) — strip %h gracefully
+		// so a misconfigured shared namespace doesn't blow up.
+		path = strings.ReplaceAll(path, "%h", "")
+		path = ExpandVars(path, "")
+	}
+	if path == "" {
+		return Location{}, false, fmt.Errorf("mailbox: location %q has empty path after expansion", loc)
+	}
+	return Location{Driver: driver, Path: path}, true, nil
 }

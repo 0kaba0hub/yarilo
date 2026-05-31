@@ -82,6 +82,16 @@ func New(cfg *config.Config) (*Server, error) {
 	mbox := buildMailbox(cfg.Storage, locker)
 	idx := file.New(file.WithLocker(locker))
 
+	// ---- per-namespace mailbox driver overrides ----
+	// Builds a separate MailboxBackend instance per distinct
+	// non-default driver referenced from cfg.Namespaces[*].Location.
+	// Namespaces using the global driver are absent from the map and
+	// resolve at session-open time to the global mbox.
+	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, locker)
+	if err != nil {
+		return nil, fmt.Errorf("backend: namespace mailboxes: %w", err)
+	}
+
 	// ---- dicts ----
 	metadataDict, err := buildDict(cfg.Dicts, "metadata")
 	if err != nil {
@@ -135,6 +145,7 @@ func New(cfg *config.Config) (*Server, error) {
 			SpecialUseDefaults: p.SpecialUseDefaults,
 			MetadataDict:       metadataDict,
 			Namespaces:         buildNamespaces(cfg.Namespaces),
+			NamespaceMailboxes: nsMailboxes,
 		})
 	}
 
@@ -565,7 +576,17 @@ func (a chainAuth) AuthPlain(username, password string) error {
 }
 
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
-	switch strings.ToLower(cfg.Mailbox) {
+	return buildMailboxByDriver(cfg.Mailbox, locker)
+}
+
+// buildMailboxByDriver constructs a MailboxBackend for the named
+// driver. Defaults to maildir for unknown / empty drivers so an
+// operator's typo does not crash startup. Reused by buildMailbox
+// (global default from cfg.Storage.Mailbox) and by
+// buildNamespaceMailboxes (per-namespace override from
+// cfg.Namespaces[*].Location).
+func buildMailboxByDriver(driver string, locker locks.Locker) mailbox.MailboxBackend {
+	switch strings.ToLower(driver) {
 	case "dbox":
 		return dbox.New(dbox.WithLocker(locker))
 	case "mdbox":
@@ -573,6 +594,58 @@ func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 	default:
 		return maildir.New(maildir.WithLocker(locker))
 	}
+}
+
+// buildNamespaceMailboxes constructs the per-namespace MailboxBackend
+// override map for cfg.Namespaces. A namespace declared with a
+// `location:` URL whose driver prefix differs from cfg.Storage.Mailbox
+// gets its own backend instance; namespaces without a location: or
+// using the same driver as the global default are absent from the map
+// and resolve at session-open time to the global backend.
+//
+// The override map is keyed by namespace prefix (same key the IMAP
+// session dispatcher uses). Same-driver namespaces share their
+// Backend instance to keep the in-memory footprint small.
+func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver string, locker locks.Locker) (map[string]mailbox.MailboxBackend, error) {
+	if len(namespaces) == 0 {
+		return nil, nil
+	}
+	globalDriver = strings.ToLower(globalDriver)
+	if globalDriver == "" {
+		globalDriver = "maildir"
+	}
+	byDriver := make(map[string]mailbox.MailboxBackend) // shared per driver string
+	overrides := map[string]mailbox.MailboxBackend{}
+	for _, ns := range namespaces {
+		if ns.Location == "" {
+			// Personal-style namespace inheriting the global default.
+			continue
+		}
+		loc, ok, err := mailbox.ParseLocation(ns.Location, nil)
+		if err != nil {
+			return nil, fmt.Errorf("namespace %q: %w", ns.Prefix, err)
+		}
+		if !ok {
+			continue
+		}
+		drv := strings.ToLower(loc.Driver)
+		if drv == globalDriver {
+			// Same driver as global default — no override needed; the
+			// session opens against the global Mailbox backend.
+			continue
+		}
+		b, exists := byDriver[drv]
+		if !exists {
+			b = buildMailboxByDriver(drv, locker)
+			byDriver[drv] = b
+			slog.Info("backend: per-namespace mailbox backend built", "driver", drv, "ns", ns.Prefix)
+		}
+		overrides[ns.Prefix] = b
+	}
+	if len(overrides) == 0 {
+		return nil, nil
+	}
+	return overrides, nil
 }
 
 // buildNamespaces translates cfg.Namespaces into the wire-protocol
@@ -616,6 +689,7 @@ func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
 			Prefix:    ns.Prefix,
 			Separator: sep,
 			List:      ns.List,
+			Location:  ns.Location,
 		})
 	}
 	return out

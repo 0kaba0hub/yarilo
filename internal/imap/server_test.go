@@ -2,7 +2,9 @@ package imap_test
 
 import (
 	"fmt"
+	"io/fs"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1410,5 +1412,427 @@ func TestNamespaceListFalseHidesFromResponse(t *testing.T) {
 	}
 	if len(data.Shared) != 0 {
 		t.Errorf("hidden shared ns leaked into NAMESPACE response: %+v", data.Shared)
+	}
+}
+
+// ---- Phase NS-1b: per-namespace storage routing --------------------------
+
+// startSharedClient starts an IMAP server with a personal namespace at
+// the user's home and a shared namespace at a separate filesystem
+// root, returns a logged-in client. The shared root is allocated under
+// t.TempDir() so concurrent tests do not clash.
+func startSharedClient(t *testing.T, user, pass string) (*imapclient.Client, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	sharedRoot := t.TempDir()
+
+	mb := maildir.New()
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+
+	md, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatalf("open memory dict: %v", err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
+
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:      mb,
+		Index:        idx,
+		Resolver:     resolver,
+		Auth:         &stubPassdb{user: user, pass: pass},
+		MetadataDict: md,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+			{Type: imapserver.NamespaceOther, Prefix: "user/", Separator: '/', List: true},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("net.Dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatalf("WaitGreeting: %v", err)
+	}
+	if err := c.Login(user, pass).Wait(); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	return c, sharedRoot
+}
+
+func TestSharedNamespaceCreateSelectAppendFetch(t *testing.T) {
+	c, _ := startSharedClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	const sharedFolder = "Shared/marketing/announcements"
+	if err := c.Create(sharedFolder, nil).Wait(); err != nil {
+		t.Fatalf("CREATE %q: %v", sharedFolder, err)
+	}
+	if _, err := c.Select(sharedFolder, nil).Wait(); err != nil {
+		t.Fatalf("SELECT %q: %v", sharedFolder, err)
+	}
+	body := []byte("From: a@b\r\nTo: c@d\r\nSubject: shared\r\n\r\nHello shared\r\n")
+	ac := c.Append(sharedFolder, int64(len(body)), nil)
+	if _, err := ac.Write(body); err != nil {
+		t.Fatalf("append write: %v", err)
+	}
+	if err := ac.Close(); err != nil {
+		t.Fatalf("append close: %v", err)
+	}
+	if _, err := ac.Wait(); err != nil {
+		t.Fatalf("append wait: %v", err)
+	}
+
+	// Re-SELECT to refresh message count, then FETCH the body.
+	data, err := c.Select(sharedFolder, nil).Wait()
+	if err != nil {
+		t.Fatalf("re-SELECT: %v", err)
+	}
+	if data.NumMessages != 1 {
+		t.Fatalf("expected 1 message in shared folder, got %d", data.NumMessages)
+	}
+	msgs, err := c.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{
+		BodySection: []*imap.FetchItemBodySection{{}},
+	}).Collect()
+	if err != nil {
+		t.Fatalf("FETCH: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].BodySection) == 0 {
+		t.Fatalf("unexpected fetch result: %#v", msgs)
+	}
+	if !strings.Contains(string(msgs[0].BodySection[0].Bytes), "Hello shared") {
+		t.Errorf("body mismatch: %q", msgs[0].BodySection[0].Bytes)
+	}
+}
+
+func TestSharedNamespaceStorageLivesOnSharedRoot(t *testing.T) {
+	// Verify the shared folder is created under sharedRoot, NOT under
+	// the per-user personal home. Personal namespace must not see it.
+	c, sharedRoot := startSharedClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	const sharedFolder = "Shared/team"
+	if err := c.Create(sharedFolder, nil).Wait(); err != nil {
+		t.Fatalf("CREATE: %v", err)
+	}
+
+	// Walk sharedRoot and confirm at least one ".team" maildir-style
+	// directory was created (maildir backend uses dot-prefixed names
+	// for sub-folders).
+	found := false
+	walkErr := filepath.WalkDir(sharedRoot, func(path string, d fs.DirEntry, _ error) error {
+		if d != nil && d.IsDir() && strings.HasSuffix(d.Name(), "team") {
+			found = true
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk shared root: %v", walkErr)
+	}
+	if !found {
+		t.Errorf("shared folder not created under sharedRoot=%s", sharedRoot)
+	}
+}
+
+func TestListCrossNamespaceReturnsBothPersonalAndShared(t *testing.T) {
+	c, _ := startSharedClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	appendMsg(t, c, "INBOX") // ensures personal has INBOX as a real folder
+	if err := c.Create("Shared/projects", nil).Wait(); err != nil {
+		t.Fatalf("CREATE Shared/projects: %v", err)
+	}
+
+	items, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		t.Fatalf("LIST: %v", err)
+	}
+	names := map[string]bool{}
+	for _, m := range items {
+		names[m.Mailbox] = true
+	}
+	if !names["INBOX"] {
+		t.Errorf("LIST missing INBOX; got=%v", names)
+	}
+	if !names["Shared/projects"] {
+		t.Errorf("LIST missing Shared/projects; got=%v", names)
+	}
+}
+
+func TestOtherUsersSelectReturnsNotImplemented(t *testing.T) {
+	c, _ := startSharedClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	_, err := c.Select("user/alice/INBOX", nil).Wait()
+	if err == nil {
+		t.Fatal("SELECT user/alice/INBOX should be rejected until ACL-1 + NS-3 land")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "other users") {
+		t.Errorf("error text should mention Other Users: %v", err)
+	}
+}
+
+func TestSharedMetadataPrivIsPerAccessingUser(t *testing.T) {
+	// alice and bob both write a /private/comment on the same shared
+	// folder; each must see their own value and NOT the other's.
+	dir := t.TempDir()
+	sharedRoot := t.TempDir()
+	mb := maildir.New()
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	md, _ := dict.Open(dict.Config{Driver: "memory"})
+	t.Cleanup(func() { _ = md.Close() })
+
+	// Two-user passdb backed by a tiny map so both alice and bob auth.
+	auth := &mapPassdb{users: map[string]string{
+		"alice@test.com": "pw",
+		"bob@test.com":   "pw",
+	}}
+
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:      mb,
+		Index:        idx,
+		Resolver:     resolver,
+		Auth:         auth,
+		MetadataDict: md,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+		},
+	})
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	dialAndLogin := func(t *testing.T, user string) *imapclient.Client {
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		c := imapclient.New(conn, nil)
+		if err := c.WaitGreeting(); err != nil {
+			t.Fatalf("greeting: %v", err)
+		}
+		if err := c.Login(user, "pw").Wait(); err != nil {
+			t.Fatalf("login %q: %v", user, err)
+		}
+		return c
+	}
+
+	// Alice creates the shared folder + writes her private comment.
+	alice := dialAndLogin(t, "alice@test.com")
+	if err := alice.Create("Shared/projects", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE: %v", err)
+	}
+	aliceVal := []byte("alice's private notes")
+	if err := alice.SetMetadata("Shared/projects", map[string]*[]byte{
+		"/private/comment": &aliceVal,
+	}).Wait(); err != nil {
+		t.Fatalf("alice SETMETADATA: %v", err)
+	}
+
+	// Bob (separate session, same shared folder) writes his own.
+	bob := dialAndLogin(t, "bob@test.com")
+	bobVal := []byte("bob's private notes")
+	if err := bob.SetMetadata("Shared/projects", map[string]*[]byte{
+		"/private/comment": &bobVal,
+	}).Wait(); err != nil {
+		t.Fatalf("bob SETMETADATA: %v", err)
+	}
+
+	// Alice reads back HER value; bob reads back HIS.
+	got, err := alice.GetMetadata("Shared/projects", []string{"/private/comment"}, nil).Wait()
+	if err != nil {
+		t.Fatalf("alice GETMETADATA: %v", err)
+	}
+	if got == nil || got.Entries["/private/comment"] == nil ||
+		string(*got.Entries["/private/comment"]) != "alice's private notes" {
+		t.Errorf("alice saw wrong value: %#v", got)
+	}
+	got, err = bob.GetMetadata("Shared/projects", []string{"/private/comment"}, nil).Wait()
+	if err != nil {
+		t.Fatalf("bob GETMETADATA: %v", err)
+	}
+	if got == nil || got.Entries["/private/comment"] == nil ||
+		string(*got.Entries["/private/comment"]) != "bob's private notes" {
+		t.Errorf("bob saw wrong value: %#v", got)
+	}
+
+	_ = alice.Logout().Wait()
+	_ = bob.Logout().Wait()
+}
+
+// mapPassdb is a multi-user variant of stubPassdb for shared-metadata tests.
+type mapPassdb struct{ users map[string]string }
+
+func (m *mapPassdb) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
+	if want, ok := m.users[username]; ok && want == password {
+		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username}, nil
+	}
+	return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
+}
+
+func TestSharedNamespaceSubscriptionsAreSeparateFile(t *testing.T) {
+	// Subscribing to a shared folder must NOT add it to the personal
+	// subscriptions file; the namespace dispatch routes the SUBSCRIBE
+	// to the shared handle's own subs store.
+	c, _ := startSharedClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	if err := c.Create("Shared/team", nil).Wait(); err != nil {
+		t.Fatalf("CREATE: %v", err)
+	}
+	if err := c.Subscribe("Shared/team").Wait(); err != nil {
+		t.Fatalf("SUBSCRIBE: %v", err)
+	}
+	// LIST SUBSCRIBED should return Shared/team; personal subscription
+	// state is unaffected (verified indirectly — INBOX not in list).
+	items, err := c.List("", "*", &imap.ListOptions{SelectSubscribed: true}).Collect()
+	if err != nil {
+		t.Fatalf("LIST SUBSCRIBED: %v", err)
+	}
+	var sawShared bool
+	for _, m := range items {
+		if m.Mailbox == "Shared/team" {
+			sawShared = true
+		}
+	}
+	if !sawShared {
+		t.Errorf("LIST SUBSCRIBED missing Shared/team: %v", items)
+	}
+}
+
+// ---- Phase NS-1b follow-up: per-namespace driver mixing ------------------
+
+// recordingMailbox wraps a MailboxBackend and records every OpenUser
+// call. Used by per-NS driver-mixing tests to verify that the
+// dispatcher picked the right backend instance per namespace.
+type recordingMailbox struct {
+	inner   mailbox.MailboxBackend
+	label   string
+	opens   []*mailbox.UserInfo
+	openedM sync.Mutex
+}
+
+func (r *recordingMailbox) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	r.openedM.Lock()
+	r.opens = append(r.opens, u)
+	r.openedM.Unlock()
+	return r.inner.OpenUser(u)
+}
+
+func TestPerNamespaceMailboxOverrideRoutesToCorrectBackend(t *testing.T) {
+	// Personal namespace uses a "global" recordingMailbox; Shared
+	// namespace gets its OWN recordingMailbox via NamespaceMailboxes
+	// override. Both wrap maildir under separate t.TempDir() roots.
+	// After CREATE on Shared/team, the shared override must have
+	// recorded the OpenUser, and the global must NOT have recorded
+	// it for that namespace (only for personal).
+	dir := t.TempDir()
+	sharedRoot := t.TempDir()
+	globalRec := &recordingMailbox{inner: maildir.New(), label: "global-personal"}
+	sharedRec := &recordingMailbox{inner: maildir.New(), label: "shared-override"}
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:  globalRec,
+		Index:    idx,
+		Resolver: resolver,
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+		},
+		NamespaceMailboxes: map[string]mailbox.MailboxBackend{
+			"Shared/": sharedRec,
+		},
+	})
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	conn, _ := net.Dial("tcp", ln.Addr().String())
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// At login, both namespaces opened a handle exactly once.
+	if got := len(globalRec.opens); got != 1 {
+		t.Errorf("globalRec opened %d times at login, want 1", got)
+	}
+	if got := len(sharedRec.opens); got != 1 {
+		t.Errorf("sharedRec opened %d times at login, want 1", got)
+	}
+
+	// Personal UserInfo went to globalRec; shared UserInfo (with
+	// Home=sharedRoot) went to sharedRec.
+	if globalRec.opens[0].Home == sharedRoot {
+		t.Errorf("globalRec saw sharedRoot home; routing crossed namespaces")
+	}
+	if sharedRec.opens[0].Home != sharedRoot {
+		t.Errorf("sharedRec home = %q, want %q", sharedRec.opens[0].Home, sharedRoot)
+	}
+}
+
+func TestPerNamespaceNoOverrideFallsBackToGlobal(t *testing.T) {
+	// Shared namespace declared without an override (the operator
+	// kept the global driver). The session must open the shared
+	// handle against the global Mailbox backend.
+	dir := t.TempDir()
+	sharedRoot := t.TempDir()
+	globalRec := &recordingMailbox{inner: maildir.New(), label: "global-only"}
+	idx := file.New()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:  globalRec,
+		Index:    idx,
+		Resolver: resolver,
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+		},
+		// NamespaceMailboxes intentionally nil.
+	})
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+
+	conn, _ := net.Dial("tcp", ln.Addr().String())
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	// Global recorded BOTH handles' OpenUser (personal + shared
+	// fall through to the global backend because no override).
+	if got := len(globalRec.opens); got != 2 {
+		t.Errorf("globalRec opened %d times at login, want 2 (personal + shared fallback)", got)
 	}
 }
