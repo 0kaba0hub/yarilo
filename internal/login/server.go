@@ -22,6 +22,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
+	"github.com/0kaba0hub/yarilo/internal/xclient"
 )
 
 // Protocol identifies the mail protocol handled by the login pod.
@@ -293,9 +294,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	// Forward real client IP to backend via protocol-specific XCLIENT.
+	// Forward real client IP + anvil session id to backend via
+	// protocol-specific XCLIENT. The backend uses SESSION= to
+	// push SELECT events to anvil for the correct session id.
 	if clientIP != "" {
-		if err := forwardXClient(backendConn, backendRd, s.opts.Protocol, clientIP, pre.ehloLine); err != nil {
+		if err := forwardXClient(backendConn, backendRd, s.opts.Protocol, clientIP, pre.ehloLine, sessID); err != nil {
 			slog.Debug("login: xclient forward", "proto", s.opts.Protocol, "clientIP", clientIP, "err", err)
 			return
 		}
@@ -506,24 +509,30 @@ func discardGreeting(rd *bufio.Reader, p Protocol) error {
 
 // forwardXClient sends real client IP to backend via protocol-specific XCLIENT.
 // For Submission it also replays the EHLO after XCLIENT resets the session.
-func forwardXClient(conn net.Conn, rd *bufio.Reader, p Protocol, clientIP, ehloLine string) error {
+// sessID is the anvil session identifier the login pod has just registered;
+// the backend uses it to push SELECT events for the right session.
+func forwardXClient(conn net.Conn, rd *bufio.Reader, p Protocol, clientIP, ehloLine, sessID string) error {
+	sessAttr := ""
+	if sessID != "" {
+		sessAttr = " SESSION=" + xclient.EncodeXText(sessID)
+	}
 	switch p {
 	case ProtocolIMAP, ProtocolIMAPS:
-		if _, err := fmt.Fprintf(conn, "XCONN XCLIENT ADDR=%s\r\n", clientIP); err != nil {
+		if _, err := fmt.Fprintf(conn, "XCONN XCLIENT ADDR=%s%s\r\n", clientIP, sessAttr); err != nil {
 			return fmt.Errorf("xclient imap send: %w", err)
 		}
 		if _, err := rd.ReadString('\n'); err != nil {
 			return fmt.Errorf("xclient imap ack: %w", err)
 		}
 	case ProtocolPOP3, ProtocolPOP3S:
-		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s\r\n", clientIP); err != nil {
+		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s\r\n", clientIP, sessAttr); err != nil {
 			return fmt.Errorf("xclient pop3 send: %w", err)
 		}
 		if _, err := rd.ReadString('\n'); err != nil {
 			return fmt.Errorf("xclient pop3 ack: %w", err)
 		}
 	case ProtocolSubmission, ProtocolSubmissions:
-		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s\r\n", clientIP); err != nil {
+		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s\r\n", clientIP, sessAttr); err != nil {
 			return fmt.Errorf("xclient smtp send: %w", err)
 		}
 		if _, err := rd.ReadString('\n'); err != nil {

@@ -29,8 +29,9 @@ import (
 
 // Server is the yarilo IMAP server.
 type Server struct {
-	srv  *imapserver.Server
-	opts Options
+	srv         *imapserver.Server
+	opts        Options
+	anvilClient *imapAnvilClient
 }
 
 // Options configures the IMAP server.
@@ -89,6 +90,14 @@ type Options struct {
 	// across namespaces (e.g. personal=maildir + shared=mdbox).
 	// Personal namespaces always use the global Mailbox backend.
 	NamespaceMailboxes map[string]mailbox.MailboxBackend
+
+	// AnvilAddr is the yarilo-anvil server address. When non-empty
+	// and the session arrived with XCLIENT SESSION=<id>, each
+	// SELECT / EXAMINE / UNSELECT pushes a SELECT command to anvil
+	// so `who` can render the currently-SELECTed folder.
+	AnvilAddr string
+	// AnvilTLS optionally wraps the anvil dialer with mTLS.
+	AnvilTLS *tls.Config
 }
 
 // NamespaceSpec is the per-namespace data the IMAP server needs to
@@ -122,7 +131,10 @@ const (
 
 // New creates an IMAP server.
 func New(opts Options) *Server {
-	s := &Server{opts: opts}
+	s := &Server{
+		opts:        opts,
+		anvilClient: newImapAnvilClient(opts.AnvilAddr, opts.AnvilTLS),
+	}
 
 	caps := imaplib.CapSet{
 		imaplib.CapIMAP4rev1:   {},
@@ -462,6 +474,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	}
 	s.folder = f
 	s.folderNS = h
+	s.pushAnvilSelect(name)
 
 	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	data := &imaplib.SelectData{
@@ -510,6 +523,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 func (s *session) Unselect() error {
 	s.folder = nil
 	s.folderNS = nil
+	s.pushAnvilSelect("")
 	return nil
 }
 
