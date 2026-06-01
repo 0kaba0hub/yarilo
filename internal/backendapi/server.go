@@ -99,6 +99,7 @@ func New(opts Options) *Server {
 	s.registerFolderRoutes()
 	s.registerUserRoutes()
 	s.registerIndexRoutes()
+	s.registerMdboxRoutes()
 	s.registerSubscriptionRoutes()
 	s.registerSpecialUseRoutes()
 	s.registerMetadataRoutes()
