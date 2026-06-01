@@ -15,12 +15,15 @@
 //	  LOOKUP\t{user}\t{service}\n          ← 1.2 (LMTP cluster-wide accounting)
 //	  HEARTBEAT\t{id}\n                    ← 1.3 (renew session TTL)
 //	  SELECT\t{id}\t{folder}\n             ← 1.4 (IMAP currently-SELECTed folder)
+//	  SUBSCRIBE\t{channel}\n               ← 1.5 (pub/sub for operational events)
+//	  EMIT\t{channel}\t{payload}\n         ← 1.5
 //
 //	Server responses:
 //	  OK\t{id}\n
 //	  FAIL\t{id}\treason=too-many-connections\n
 //	  COUNT\t{n}\n                          ← LOOKUP reply
 //	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\t{folder}\n
+//	  EVENT\t{channel}\t{payload}\n         ← server push to subscribers
 //	  DONE\n
 //
 // WHO replies with one SESSION line per matching active session,
@@ -36,6 +39,8 @@
 //   - 1.1 → 1.2: LOOKUP command
 //   - 1.2 → 1.3: HEARTBEAT command + TTL/sweeper
 //   - 1.3 → 1.4: SELECT command + folder field in SESSION reply
+//   - 1.4 → 1.5: SUBSCRIBE / EMIT / EVENT for operational pub-sub
+//     (kick events ride this channel)
 //
 // Older clients ignore unknown commands entirely.
 package anvil
@@ -57,7 +62,7 @@ import (
 const (
 	protoName = "yarilo-anvil"
 	majorVer  = 1
-	minorVer  = 4
+	minorVer  = 5
 )
 
 // DefaultSessionTTL is how long an anvil session lives without a
@@ -103,6 +108,20 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*SessionInfo // id → session
+
+	// subsMu protects the subs map. Held during EMIT broadcast
+	// AND during SUBSCRIBE add — keep handler hot path short
+	// (no I/O under the lock).
+	subsMu sync.Mutex
+	subs   map[string][]chan<- subEvent // channel name → subscriber outboxes
+}
+
+// subEvent is one server-side push pending write to a subscriber
+// conn. Kept tiny so EMIT can fan out under a lock without
+// blocking on slow consumers (each outbox is buffered).
+type subEvent struct {
+	channel string
+	payload string
 }
 
 // ServerOption configures a Server at construction time.
@@ -129,6 +148,7 @@ func NewServer(max int, opts ...ServerOption) *Server {
 		sessionTTL:    DefaultSessionTTL,
 		sweepInterval: DefaultSweepInterval,
 		sessions:      make(map[string]*SessionInfo),
+		subs:          make(map[string][]chan<- subEvent),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -221,6 +241,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleHeartbeat(conn, fields)
 		case "SELECT":
 			s.handleSelect(conn, fields)
+		case "EMIT":
+			s.handleEmit(conn, fields)
+		case "SUBSCRIBE":
+			// SUBSCRIBE takes over the connection for server→client
+			// pushes; handleSubscribe blocks until the conn closes
+			// or the subscriber's outbox drops. Returning from
+			// handleConn after it ends is correct — the for-loop
+			// above would just re-read EOF anyway.
+			s.handleSubscribe(conn, fields)
+			return
 		}
 	}
 }
@@ -411,6 +441,106 @@ func (s *Server) sweepStaleSessions(now time.Time) {
 	s.mu.Unlock()
 	for _, r := range dropped {
 		s.limiter.Release(r.user, r.ip)
+	}
+}
+
+// subscriberOutboxSize bounds the per-subscriber pending-event
+// buffer. EMIT under the broadcast lock drops events (and the
+// subscriber connection) when the outbox fills — slow subscribers
+// must not stall fast publishers.
+const subscriberOutboxSize = 64
+
+// handleEmit processes: EMIT\t{channel}\t{payload}\n
+//
+// Broadcasts to every subscriber currently listening on {channel}.
+// Reply OK\n after the broadcast — emit is not transactional
+// (subscribers may drop on slow consumer), so OK means "queued
+// for delivery", not "received".
+func (s *Server) handleEmit(conn net.Conn, fields []string) {
+	if len(fields) < 3 {
+		return
+	}
+	channel, payload := fields[1], fields[2]
+	ev := subEvent{channel: channel, payload: payload}
+
+	s.subsMu.Lock()
+	outboxes := append([]chan<- subEvent(nil), s.subs[channel]...)
+	s.subsMu.Unlock()
+	for _, box := range outboxes {
+		select {
+		case box <- ev:
+		default:
+			// Slow subscriber — drop. Subscriber goroutine
+			// notices the next outbox close and disconnects.
+		}
+	}
+	fmt.Fprintf(conn, "OK\n")
+}
+
+// handleSubscribe processes: SUBSCRIBE\t{channel}\n
+//
+// Registers the connection as a subscriber on channel, replies
+// OK\n once, then pushes EVENT\t{channel}\t{payload}\n lines
+// from a per-subscriber outbox until the conn drops or the
+// outbox closes (server shutdown). One conn = one channel —
+// callers wanting multiple channels open multiple conns.
+//
+// A small reader goroutine runs alongside the writer so a
+// client-side close of the conn (ctx cancel on Subscribe)
+// surfaces as a read error and unwinds this handler, instead of
+// blocking forever on `range outbox`.
+func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
+	if len(fields) < 2 {
+		return
+	}
+	channel := fields[1]
+	outbox := make(chan subEvent, subscriberOutboxSize)
+
+	s.subsMu.Lock()
+	s.subs[channel] = append(s.subs[channel], outbox)
+	s.subsMu.Unlock()
+	defer func() {
+		s.subsMu.Lock()
+		list := s.subs[channel]
+		for i, ch := range list {
+			if ch == outbox {
+				s.subs[channel] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		s.subsMu.Unlock()
+	}()
+
+	if _, err := fmt.Fprintf(conn, "OK\n"); err != nil {
+		return
+	}
+
+	// Reader half: detect client disconnect. When Read errors
+	// (EOF / closed pipe), close `done` so the writer half
+	// stops waiting on `outbox`.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case ev, ok := <-outbox:
+			if !ok {
+				return
+			}
+			if _, err := fmt.Fprintf(conn, "EVENT\t%s\t%s\n", ev.channel, ev.payload); err != nil {
+				return
+			}
+		case <-done:
+			return
+		}
 	}
 }
 

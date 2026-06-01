@@ -145,6 +145,7 @@ func (s *Server) Serve(ln net.Listener) error {
 			ReadHeaderTimeout: timeout,
 		}
 	}
+	s.startKickSubscriber(context.Background())
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -468,6 +469,73 @@ func (s *Server) kickUser(username string) {
 		slog.Info("login: kicking session", "user", username, "session", sess.id)
 		sess.backendConn.Close()
 	}
+}
+
+// kickSession closes the backend connection of the session with
+// the given id, regardless of which user owns it. Returns true
+// when a matching session was found and closed. Silently no-ops
+// when nothing matches — kick events are broadcast to every pod
+// and only the owner reacts.
+func (s *Server) kickSession(id string) bool {
+	s.sessMu.RLock()
+	var target *liveSession
+	var user string
+findLoop:
+	for u, list := range s.sessions {
+		for _, sess := range list {
+			if sess.id == id {
+				target = sess
+				user = u
+				break findLoop
+			}
+		}
+	}
+	s.sessMu.RUnlock()
+	if target == nil {
+		return false
+	}
+	slog.Info("login: kicking session by id", "user", user, "session", id)
+	target.backendConn.Close()
+	return true
+}
+
+// kickChannel is the anvil pub/sub channel this login pod
+// subscribes to. Keyed per-protocol so each login binary only
+// wakes up for relevant events. Event payload is the session id.
+func (s *Server) kickChannel() string {
+	return "kick:" + string(s.opts.Protocol)
+}
+
+// startKickSubscriber dials anvil on a dedicated connection and
+// drives kickSession from incoming EVENT lines for the
+// per-protocol kick channel. No-op when AnvilAddr is unset
+// (single-process dev runs). The goroutine exits when ctx is
+// cancelled or the underlying conn errors out — Serve restart
+// re-subscribes.
+func (s *Server) startKickSubscriber(ctx context.Context) {
+	if s.opts.AnvilAddr == "" {
+		return
+	}
+	channel := s.kickChannel()
+	ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+	if err != nil {
+		slog.Error("login: kick subscribe dial failed", "addr", s.opts.AnvilAddr, "err", err)
+		return
+	}
+	ch, err := ac.Subscribe(ctx, channel)
+	if err != nil {
+		ac.Close()
+		slog.Error("login: kick subscribe failed", "channel", channel, "err", err)
+		return
+	}
+	go func() {
+		defer ac.Close()
+		for sessID := range ch {
+			if !s.kickSession(sessID) {
+				slog.Debug("login: kick event ignored (no match)", "session", sessID)
+			}
+		}
+	}()
 }
 
 func dialBackend(addr string, tlsCfg *tls.Config) (net.Conn, error) {

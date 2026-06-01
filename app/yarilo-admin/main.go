@@ -89,8 +89,10 @@ func dispatchBackend(args []string) error {
 		return dispatchMetadata(args[1:])
 	case "who":
 		return dispatchWho(args[1:])
+	case "sessions":
+		return dispatchSessions(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, who (acl/quota land in future phases)", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, who, sessions (acl/quota land in future phases)", args[0])
 	}
 }
 

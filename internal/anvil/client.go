@@ -236,6 +236,76 @@ func (c *Conn) Lookup(user, service string) (int, error) {
 // Close closes the underlying TCP connection.
 func (c *Conn) Close() { c.conn.Close() }
 
+// Emit publishes an event on the named channel. Subscribers
+// listening on the same channel receive a push asynchronously.
+// Returns nil on the server's OK ack; transport errors propagate.
+//
+// EMIT is fire-and-forget from a delivery standpoint — the server
+// does not block on slow subscribers, so OK means "queued", not
+// "received by every subscriber".
+func (c *Conn) Emit(channel, payload string) error {
+	if _, err := fmt.Fprintf(c.conn, "EMIT\t%s\t%s\n", channel, payload); err != nil {
+		return fmt.Errorf("anvil/client: write EMIT: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("anvil/client: read EMIT response: %w", err)
+	}
+	if strings.TrimRight(line, "\n") != "OK" {
+		return fmt.Errorf("anvil/client: unexpected EMIT response: %q", line)
+	}
+	return nil
+}
+
+// Subscribe takes over this connection as a server→client push
+// channel for `channel`. The returned chan of payloads receives
+// one entry per EVENT line from the server, and closes when ctx
+// is cancelled or the underlying conn errors out.
+//
+// IMPORTANT: SUBSCRIBE makes the connection unusable for any
+// other command afterwards — open a dedicated conn for each
+// subscription. Caller should not call Close() before ctx is
+// cancelled; the subscriber goroutine owns the conn lifecycle.
+func (c *Conn) Subscribe(ctx context.Context, channel string) (<-chan string, error) {
+	if _, err := fmt.Fprintf(c.conn, "SUBSCRIBE\t%s\n", channel); err != nil {
+		return nil, fmt.Errorf("anvil/client: write SUBSCRIBE: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("anvil/client: read SUBSCRIBE ack: %w", err)
+	}
+	if strings.TrimRight(line, "\n") != "OK" {
+		return nil, fmt.Errorf("anvil/client: unexpected SUBSCRIBE ack: %q", line)
+	}
+	out := make(chan string, 16)
+	// ctx-cancel closer: closing the conn forces ReadString to
+	// return immediately, which lets the reader goroutine exit
+	// and close `out`.
+	go func() {
+		<-ctx.Done()
+		_ = c.conn.Close()
+	}()
+	go func() {
+		defer close(out)
+		for {
+			line, err := c.rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			fields := strings.Split(strings.TrimRight(line, "\n"), "\t")
+			if len(fields) < 3 || fields[0] != "EVENT" {
+				continue
+			}
+			select {
+			case out <- fields[2]:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
 // HeartbeatLoop is the recommended client-side renew pattern.
 // It fires Heartbeat(id) every `interval` until ctx is cancelled
 // or the underlying conn errors out. interval should be set to

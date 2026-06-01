@@ -11,11 +11,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
+	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -69,6 +71,15 @@ type Server struct {
 	srv    *goSmtp.Server
 	opts   Options
 	router *proxyRouter // non-nil when proxy mode is active
+
+	// sessions tracks active MTA→backend connections so a kick
+	// event from backend-api can find and close the matching
+	// MTA conn. Keyed by every anvil session id this session
+	// holds — one MTA connection can carry several RCPT, each
+	// with its own id; any of those ids resolves back to the
+	// same connection.
+	sessMu   sync.Mutex
+	sessions map[string]*session
 }
 
 // New creates an LMTP server from Options.
@@ -82,8 +93,8 @@ func New(opts Options) *Server {
 		router = newProxyRouter(opts.Hostname, opts.Router, opts.BackendPort, timeout)
 	}
 
-	s := &Server{opts: opts, router: router}
-	be := &backend{opts: opts, router: router}
+	s := &Server{opts: opts, router: router, sessions: make(map[string]*session)}
+	be := &backend{opts: opts, router: router, srv: s}
 
 	srv := goSmtp.NewServer(be)
 	srv.Domain = opts.Hostname
@@ -121,6 +132,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	if wa := parseWorkarounds(s.opts.Config.ClientWorkarounds); wa != 0 {
 		ln = &lmtpWorkaroundListener{Listener: ln, workarounds: wa}
 	}
+	s.startKickSubscriber(context.Background())
 	return s.srv.Serve(ln)
 }
 
@@ -150,20 +162,23 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 type backend struct {
 	opts   Options
 	router *proxyRouter
+	srv    *Server
 }
 
 func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 	peerIP := ""
+	var mtaConn net.Conn
 	if c != nil {
-		if addr := c.Conn().RemoteAddr(); addr != nil {
-			if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+		mtaConn = c.Conn()
+		if mtaConn != nil {
+			if host, _, err := net.SplitHostPort(mtaConn.RemoteAddr().String()); err == nil {
 				peerIP = host
 			} else {
-				peerIP = addr.String()
+				peerIP = mtaConn.RemoteAddr().String()
 			}
 		}
 	}
-	return &session{opts: b.opts, router: b.router, peerIP: peerIP}, nil
+	return &session{opts: b.opts, router: b.router, srv: b.srv, peerIP: peerIP, mtaConn: mtaConn}, nil
 }
 
 // ---- session ----------------------------------------------------------------
@@ -171,7 +186,9 @@ func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 type session struct {
 	opts       Options
 	router     *proxyRouter
-	peerIP     string // upstream MTA IP, captured at NewSession
+	srv        *Server  // back-reference so reserveDelivery can register for kick
+	peerIP     string   // upstream MTA IP, captured at NewSession
+	mtaConn    net.Conn // raw TCP conn from the upstream MTA; closed on kick
 	from       string
 	rcpts      []string            // local recipients
 	proxyRcpts map[string][]string // backend addr → []rcpt (proxy mode)
@@ -265,6 +282,7 @@ func (s *session) rcptLocal(to string) error {
 				s.rcptAnvilIDs = make(map[string]string)
 			}
 			s.rcptAnvilIDs[to] = id
+			s.srv.registerSession(id, s)
 		}
 	}
 	s.rcpts = append(s.rcpts, to)
@@ -392,6 +410,7 @@ func (s *session) Reset() {
 	// SMTP standard lets a client RSET mid-transaction; without
 	// this we'd leak slots until session Logout fires.
 	s.anvilConn.releaseAll()
+	s.srv.unregisterSessionIDs(s.rcptAnvilIDs)
 	s.rcptAnvilIDs = nil
 	s.from = ""
 	s.rcpts = nil
@@ -402,6 +421,80 @@ func (s *session) Logout() error {
 	// Final cleanup — DATA never arrived (or arrived and Reset
 	// already cleared the map; releaseAll is idempotent).
 	s.anvilConn.releaseAll()
+	s.srv.unregisterSessionIDs(s.rcptAnvilIDs)
 	s.rcptAnvilIDs = nil
 	return nil
+}
+
+// ---- kick infrastructure -----------------------------------------------------
+
+// registerSession adds id → session to the server map so a
+// matching kick event can find and close the MTA connection.
+// One MTA connection may register several ids (one per RCPT);
+// any of them resolves back to the same session.
+func (s *Server) registerSession(id string, sess *session) {
+	if s == nil {
+		return
+	}
+	s.sessMu.Lock()
+	s.sessions[id] = sess
+	s.sessMu.Unlock()
+}
+
+// unregisterSessionIDs drops every entry whose key is in ids.
+// Called on session.Reset / Logout so the map does not leak
+// per-RCPT keys after the MTA transaction ends.
+func (s *Server) unregisterSessionIDs(ids map[string]string) {
+	if s == nil || len(ids) == 0 {
+		return
+	}
+	s.sessMu.Lock()
+	for _, id := range ids {
+		delete(s.sessions, id)
+	}
+	s.sessMu.Unlock()
+}
+
+// kickSession closes the MTA connection of the session with the
+// given id. Returns true when a matching session was found.
+// Kick events are broadcast across every LMTP pod; only the owner
+// reacts.
+func (s *Server) kickSession(id string) bool {
+	s.sessMu.Lock()
+	sess, ok := s.sessions[id]
+	s.sessMu.Unlock()
+	if !ok || sess == nil || sess.mtaConn == nil {
+		return false
+	}
+	slog.Info("lmtp: kicking MTA conn by session id", "session", id, "peer", sess.peerIP)
+	_ = sess.mtaConn.Close()
+	return true
+}
+
+// startKickSubscriber dials anvil on a dedicated conn and drives
+// kickSession from EVENT lines on the "kick:lmtp" channel. No-op
+// when AnvilAddr is unset (single-pod dev runs).
+func (s *Server) startKickSubscriber(ctx context.Context) {
+	if s.opts.AnvilAddr == "" {
+		return
+	}
+	ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+	if err != nil {
+		slog.Error("lmtp: kick subscribe dial failed", "addr", s.opts.AnvilAddr, "err", err)
+		return
+	}
+	ch, err := ac.Subscribe(ctx, "kick:lmtp")
+	if err != nil {
+		ac.Close()
+		slog.Error("lmtp: kick subscribe failed", "err", err)
+		return
+	}
+	go func() {
+		defer ac.Close()
+		for sessID := range ch {
+			if !s.kickSession(sessID) {
+				slog.Debug("lmtp: kick event ignored (no match)", "session", sessID)
+			}
+		}
+	}()
 }
