@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -339,6 +340,30 @@ func (c *Client) Emit(ctx context.Context, resource string, t EventType, payload
 		return fmt.Errorf("locks/client: unexpected emit response %v: %w", resp, ErrProtocol)
 	}
 	return nil
+}
+
+// IncrementCounter implements Locker. Atomically adds delta to the
+// counter at key and returns the post-increment value. Sent over
+// the shared control conn, so concurrent callers serialise through
+// c.mu — the backend itself is still race-free for cross-process
+// callers because the underlying store (Redis INCRBY or
+// MemoryBackend mutex) is atomic.
+func (c *Client) IncrementCounter(ctx context.Context, key string, delta int64) (int64, error) {
+	resp, err := c.roundtrip(ctx, cmdCounterInc, key, strconv.FormatInt(delta, 10))
+	if err != nil {
+		return 0, err
+	}
+	if len(resp) < 2 || resp[0] != respOK {
+		if len(resp) > 0 && resp[0] == respError {
+			return 0, fmt.Errorf("locks/client: counter inc: %s", strings.Join(resp[1:], " "))
+		}
+		return 0, fmt.Errorf("locks/client: unexpected counter response %v: %w", resp, ErrProtocol)
+	}
+	v, err := strconv.ParseInt(resp[1], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("locks/client: parse counter value %q: %w", resp[1], err)
+	}
+	return v, nil
 }
 
 // Subscribe implements Locker. Opens a dedicated connection for the

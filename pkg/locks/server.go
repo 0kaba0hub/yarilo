@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -136,6 +137,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		case cmdSubscribe:
 			s.handleSubscribe(ctx, conn, fields, peer)
 			return // subscribe takes over the conn
+		case cmdCounterInc:
+			s.handleCounterInc(ctx, conn, fields, peer)
 		default:
 			_ = writeFields(conn, respError, "unknown_command")
 		}
@@ -221,6 +224,29 @@ func (s *Server) handleRenew(ctx context.Context, w io.Writer, fields []string, 
 		return
 	}
 	_ = writeFields(w, respOK)
+}
+
+// handleCounterInc processes COUNTER-INC\t<key>\t<delta>\n and
+// replies OK\t<new_value>\n. delta may be negative (callers can
+// reset a counter via two INCRs around its current value); zero
+// deltas are still valid and act as a no-op read.
+func (s *Server) handleCounterInc(ctx context.Context, w io.Writer, fields []string, peer string) {
+	if len(fields) != 3 {
+		_ = writeFields(w, respError, "bad_counter_inc")
+		return
+	}
+	delta, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		_ = writeFields(w, respError, "bad_delta")
+		return
+	}
+	v, err := s.backend.IncrementCounter(ctx, fields[1], delta)
+	if err != nil {
+		s.logger.Error("locks: counter inc failed", "peer", peer, "key", fields[1], "err", err)
+		_ = writeFields(w, respError, "internal")
+		return
+	}
+	_ = writeFields(w, respOK, strconv.FormatInt(v, 10))
 }
 
 func (s *Server) handleEmit(ctx context.Context, w io.Writer, fields []string, peer string) {

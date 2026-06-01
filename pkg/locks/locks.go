@@ -75,6 +75,17 @@ type Locker interface {
 	// deadlock on its own owner (yarilo-locks is non-reentrant by design).
 	HoldsResource(resource string) bool
 
+	// IncrementCounter atomically adds delta to the persistent counter
+	// at key and returns the post-increment value. Used for shared
+	// monotonic counters that must survive process restart and stay
+	// race-free across pods — e.g. mdbox next_file_id allocation.
+	//
+	// Counters are independent of lock state: they share no key space
+	// with Lock resources and are not affected by TTL sweeping.
+	// First reference auto-initialises the counter to 0 before
+	// applying delta.
+	IncrementCounter(ctx context.Context, key string, delta int64) (int64, error)
+
 	// Close terminates the underlying transport.
 	Close() error
 }
@@ -121,6 +132,12 @@ type Backend interface {
 	// Subscribe returns a channel for all events on resource. The returned
 	// cancel function must be called to release backend resources.
 	Subscribe(ctx context.Context, resource string) (<-chan Event, func(), error)
+
+	// IncrementCounter atomically adds delta to the persistent counter
+	// at key and returns the new value. Missing keys are auto-initialised
+	// to 0 before applying delta. Counter state is independent of the
+	// lock state: same backend, separate key namespace, no TTL.
+	IncrementCounter(ctx context.Context, key string, delta int64) (int64, error)
 
 	// Close shuts the backend down — closes Redis pool, stops sweepers, etc.
 	Close() error
