@@ -1,0 +1,273 @@
+package acl
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sync"
+	"testing"
+
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+)
+
+func TestStore_GetMissingFileReturnsNil(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	got, err := s.Get("INBOX")
+	if err != nil {
+		t.Fatalf("Get on missing file: %v", err)
+	}
+	if got != nil {
+		t.Errorf("missing file should yield nil ACL, got %+v", got)
+	}
+}
+
+func TestStore_SetGetRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	in := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: mailbox.MustParseRights("lrs")},
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "mallory"}, Rights: mailbox.MustParseRights("lrwa"), Negative: true},
+	}
+	if err := s.Set("INBOX", in); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	got, err := s.Get("INBOX")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Stored order is canonical (Sorted) — owner first, then user= alphabetically,
+	// with positive entries before negative for the same identifier.
+	want := in.Sorted()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-trip mismatch\n got=%+v\nwant=%+v", got, want)
+	}
+}
+
+func TestStore_PathLayoutMirrorsFileindex(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	tests := []struct {
+		folder, wantSuffix string
+	}{
+		{"INBOX", filepath.Join("INBOX", FileName)},
+		{"Sent", filepath.Join(".Sent", FileName)},
+		{"Lists/announce", filepath.Join(".Lists/announce", FileName)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.folder, func(t *testing.T) {
+			got := s.Path(tc.folder)
+			want := filepath.Join(home, tc.wantSuffix)
+			if got != want {
+				t.Errorf("Path(%q) = %q, want %q", tc.folder, got, want)
+			}
+		})
+	}
+}
+
+func TestStore_SetCreatesParentDir(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	acl := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
+	}
+	if err := s.Set("Nested/folder/path", acl); err != nil {
+		t.Fatalf("Set with missing parent dir: %v", err)
+	}
+	expected := filepath.Join(home, ".Nested/folder/path", FileName)
+	if _, err := os.Stat(expected); err != nil {
+		t.Errorf("file not created at %s: %v", expected, err)
+	}
+}
+
+func TestStore_SetIsAtomic_NoTmpLeak(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	acl := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
+	}
+	if err := s.Set("INBOX", acl); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(home, "INBOX"))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".tmp" {
+			t.Errorf("leftover tmp file: %s", e.Name())
+		}
+	}
+}
+
+func TestStore_SetReplacesPriorContent(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	first := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: mailbox.MustParseRights("lrs")},
+	}
+	second := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"}, Rights: mailbox.MustParseRights("lr")},
+	}
+	if err := s.Set("INBOX", first); err != nil {
+		t.Fatalf("Set first: %v", err)
+	}
+	if err := s.Set("INBOX", second); err != nil {
+		t.Fatalf("Set second: %v", err)
+	}
+	got, err := s.Get("INBOX")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(got, second.Sorted()) {
+		t.Errorf("Set did not replace prior content\n got=%+v\nwant=%+v", got, second.Sorted())
+	}
+}
+
+func TestStore_RemoveIdempotent(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Remove("INBOX"); err != nil {
+		t.Errorf("Remove on missing file should be nil, got %v", err)
+	}
+	acl := mailbox.ACL{{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights}}
+	if err := s.Set("INBOX", acl); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := s.Remove("INBOX"); err != nil {
+		t.Fatalf("Remove on existing file: %v", err)
+	}
+	if got, _ := s.Get("INBOX"); got != nil {
+		t.Errorf("Get after Remove should be nil, got %+v", got)
+	}
+	if err := s.Remove("INBOX"); err != nil {
+		t.Errorf("second Remove should be nil, got %v", err)
+	}
+}
+
+func TestStore_UpdateReadModifyWrite(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	prior := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: mailbox.MustParseRights("lrs")},
+	}
+	if err := s.Set("INBOX", prior); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	err := s.Update("INBOX", func(cur mailbox.ACL) (mailbox.ACL, error) {
+		if len(cur) != 1 || cur[0].Identifier.Name != "bob" {
+			t.Errorf("Update fn received unexpected current: %+v", cur)
+		}
+		cur = append(cur, mailbox.Entry{
+			Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"},
+			Rights:     mailbox.MustParseRights("lr"),
+		})
+		return cur, nil
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ := s.Get("INBOX")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries after Update, got %d: %+v", len(got), got)
+	}
+}
+
+func TestStore_UpdateNilReturnPreservesFile(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	prior := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
+	}
+	if err := s.Set("INBOX", prior); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	err := s.Update("INBOX", func(_ mailbox.ACL) (mailbox.ACL, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ := s.Get("INBOX")
+	if !reflect.DeepEqual(got, prior.Sorted()) {
+		t.Errorf("nil-return should leave file untouched, got %+v", got)
+	}
+}
+
+func TestStore_UpdatePropagatesError(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	sentinel := errors.New("user error")
+	err := s.Update("INBOX", func(_ mailbox.ACL) (mailbox.ACL, error) {
+		return nil, sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected sentinel error, got %v", err)
+	}
+}
+
+func TestStore_ConcurrentUpdatesWithoutLockerDoNotPanic(t *testing.T) {
+	// No locker = single-process test; sync.Mutex inside the Store is
+	// not enforced, so concurrent writers race on file writes. The
+	// test asserts only that no panic occurs and the final file is
+	// parseable — verifying the lock-acquired path is the locks-
+	// integration suite, not this unit test.
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = s.Set("INBOX", mailbox.ACL{
+				{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
+				{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "u"}, Rights: mailbox.MustParseRights("lr")},
+			})
+		}(i)
+	}
+	wg.Wait()
+	got, err := s.Get("INBOX")
+	if err != nil {
+		t.Fatalf("Get after concurrent writes: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 entries after concurrent writes, got %d", len(got))
+	}
+}
+
+func TestStore_FilePermissions(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	acl := mailbox.ACL{{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights}}
+	if err := s.Set("INBOX", acl); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	st, err := os.Stat(s.Path("INBOX"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	// 0o600: ACL contains identifiers / rights of other users — keep it
+	// to the mail-owner uid only.
+	if mode := st.Mode().Perm(); mode != 0o600 {
+		t.Errorf("file perm = %o, want 0o600", mode)
+	}
+}
+
+func TestStore_ParseErrorAnnotatesPath(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "INBOX")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	bad := filepath.Join(dir, FileName)
+	if err := os.WriteFile(bad, []byte("user=eve INVALID-RIGHTS\n"), 0o600); err != nil {
+		t.Fatalf("seed bad file: %v", err)
+	}
+	s := New(home, "alice", "test", nil)
+	_, err := s.Get("INBOX")
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+}

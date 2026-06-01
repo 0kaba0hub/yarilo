@@ -259,6 +259,19 @@ type IMAPProtocolConfig struct {
 	// these defaults via the on-disk special_use file. Mirrors Dovecot's
 	// namespace.mailbox.special_use convention.
 	SpecialUseDefaults map[string]string `koanf:"imap_special_use_defaults"`
+	// ACL toggles RFC 4314 server-side ACL: GETACL / SETACL / DELETEACL
+	// / MYRIGHTS / LISTRIGHTS. When acl.enabled = false the IMAP server
+	// returns NO("ACL extension disabled by operator") on every ACL
+	// command. Storage is the per-mailbox `yarilo-acl` file in the
+	// folder's index directory.
+	ACL ACLConfig `koanf:"acl"`
+}
+
+// ACLConfig groups RFC 4314 ACL knobs. PR ACL-1/C ships a single
+// enabled flag; richer policy (default ACL, group= resolution, mode
+// for negative entries, etc.) lands in later ACL phases.
+type ACLConfig struct {
+	Enabled bool `koanf:"enabled"`
 }
 
 type POP3ProtocolConfig struct {

@@ -144,6 +144,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Locker:             locker,
 			SpecialUseDefaults: p.SpecialUseDefaults,
 			MetadataDict:       metadataDict,
+			ACLEnabled:         p.ACL.Enabled,
 			Namespaces:         buildNamespaces(cfg.Namespaces),
 			NamespaceMailboxes: nsMailboxes,
 		})

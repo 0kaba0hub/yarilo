@@ -182,6 +182,12 @@ protocol:
     imap_idle_notify_interval: 120
     imap_max_line_length: 65536
     imap_id_send: "name *"
+    acl:
+      # RFC 4314 server-side ACL (GETACL/SETACL/DELETEACL/MYRIGHTS/LISTRIGHTS).
+      # Storage = per-mailbox `yarilo-acl` file next to `yarilo.index*`.
+      # When false, ACL commands return NO; the capability is still
+      # advertised because go-imap detects it via interface assertion.
+      enabled: false
   submission:
     hostname: mail.example.com
     max_message_size: 41943040
