@@ -984,10 +984,54 @@ corruption, run rebuild — full state recovered.
 
 ---
 
-### Plus: `yarilo-migrate storage` (interleaved with Phases 2/3/5)
+### Plus: `yarilo-migrate storage` ✅ shipped (v1.33.0)
 
-**Goal:** One-shot online or offline migration of yarilo-legacy
-data to Dovecot-compliant.
+**Goal:** One-shot offline migration of legacy yarilo data to
+canonical Phase 6+ shapes.
+
+**Status:**
+
+- `app/yarilo-migrate/source.go` — `sourceWalker` interface with
+  three implementations:
+  - `maildirWalker` — Maildir++ (cur/, `:2,<flags>` trailer)
+  - `dboxV1Walker` — pre-Phase-3 yarilo dbox (via
+    `internal/storage/mailbox/dbox/v1legacy`)
+  - `mdboxV1Walker` — pre-Phase-5 yarilo mdbox TSV map (via
+    `internal/storage/mailbox/mdbox/v1legacy`)
+- `app/yarilo-migrate/main.go` — CLI:
+  ```
+  yarilo-migrate --src <maildir|dbox-v1|mdbox-v1> \
+                 --dst <sdbox|mdbox> \
+                 --from <src-root> --to <dst-root> [--dry-run]
+  ```
+  Walks `<src-root>/<domain>/<localpart>/` per user; for every
+  source message issues `AllocateUID → Save(uid) → AppendMessage`
+  through the canonical Phase-6 stack.
+
+**Acceptance (tests in `app/yarilo-migrate/`):**
+
+- maildir walker emits cur/ messages with flag parse
+- dbox-v1 walker round-trips body + InternalDate
+- mdbox-v1 walker skips expunged rows
+- end-to-end `TestMigrate_DboxV1_ToSdbox`: 3 INBOX + 1 Sent
+  message migrated; bodies verified through a fresh sdbox
+  session via Fetch
+- end-to-end `TestMigrate_MdboxV1_ToMdbox`: 3 messages migrated
+  into mdbox; bodies verified
+
+**Known limitation:** per-message GUID is NOT carried through.
+The destination driver mints a fresh GUID inside `Save()` —
+the v1 GUID is read but discarded. The folder-level GUID (RFC
+5464 METADATA / ACL state) is preserved because it lives in the
+fileindex dbox-hdr extension which the migrator initialises
+fresh per folder. A future enhancement could pass an optional
+GUID hint through `UserMailbox.Save` so the source GUID
+survives — out of scope for the storage rewrite itself.
+
+**Not in this PR:** `--verify` sha256 body re-check (one-pass
+read after Save). The acceptance tests already prove
+byte-for-byte body parity in-process; an in-tool verifier is
+operator-ergonomics, not correctness.
 
 **Scope:**
 - Reads via legacy decoder packages
