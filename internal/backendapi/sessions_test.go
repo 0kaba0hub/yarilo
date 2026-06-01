@@ -72,10 +72,7 @@ func TestKickEndpoint_EmitsBroadcast(t *testing.T) {
 		"user":       "alice@example.com",
 		"protocols":  []string{"imap"},
 	})
-	resp, err := http.Post(ts.URL+"/api/backend/sessions/kick", "application/json", strings.NewReader(string(body)))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
+	resp := mustPostKick(t, ts.URL, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -96,11 +93,7 @@ func TestKickEndpoint_RejectsMissingSessionID(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/api/backend/sessions/kick", "application/json",
-		strings.NewReader(`{"user":"alice@example.com"}`))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
+	resp := mustPostKick(t, ts.URL, []byte(`{"user":"alice@example.com"}`))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
@@ -112,13 +105,28 @@ func TestKickEndpoint_RejectsMissingAnvil(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/api/backend/sessions/kick", "application/json",
-		strings.NewReader(`{"session_id":"sess-1"}`))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
+	resp := mustPostKick(t, ts.URL, []byte(`{"session_id":"sess-1"}`))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
+}
+
+// mustPostKick issues POST /api/backend/sessions/kick with a
+// caller-supplied JSON body. Uses NewRequestWithContext so it
+// passes golangci-lint's noctx check; behaviour is otherwise
+// identical to a bare http.Post.
+func mustPostKick(t *testing.T, baseURL string, body []byte) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		baseURL+"/api/backend/sessions/kick", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	return resp
 }
