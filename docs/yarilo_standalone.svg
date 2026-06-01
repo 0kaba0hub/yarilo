@@ -33,10 +33,10 @@
   <text x="440" y="94" text-anchor="middle" fill="#475569" font-size="10">Thunderbird · Outlook</text>
   <text x="440" y="108" text-anchor="middle" fill="#475569" font-size="9">IMAP · POP3 · Submission (TLS)</text>
 
-  <rect x="680" y="55" width="280" height="65" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
-  <text x="820" y="78" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="bold">MTA / MX server</text>
-  <text x="820" y="94" text-anchor="middle" fill="#475569" font-size="10">Postfix · Exim · etc.</text>
-  <text x="820" y="108" text-anchor="middle" fill="#475569" font-size="9">LMTP delivery</text>
+  <rect x="800" y="55" width="280" height="65" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+  <text x="940" y="78" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="bold">MTA / MX server</text>
+  <text x="940" y="94" text-anchor="middle" fill="#475569" font-size="10">Postfix · Exim · etc.</text>
+  <text x="940" y="108" text-anchor="middle" fill="#475569" font-size="9">LMTP delivery</text>
 
   <!-- ══════════════════════════════════════════════════
        Outer Helm release wrapper
@@ -49,7 +49,10 @@
   <line x1="320" y1="120" x2="320" y2="194" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
   <line x1="450" y1="120" x2="520" y2="194" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
   <line x1="560" y1="120" x2="720" y2="194" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
-  <line x1="820" y1="120" x2="920" y2="194" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+  <!-- MTA → yarilo-lmtp direct (no login proxy, SMTP envelope auth) -->
+  <line x1="942" y1="120" x2="942" y2="332" stroke="#0d9488" stroke-width="2" marker-end="url(#ax)"/>
+  <text x="952" y="220" fill="#0d9488" font-size="10" font-weight="bold">LMTP :24 · direct to yarilo-lmtp</text>
+  <text x="952" y="234" fill="#475569" font-size="9">no login proxy · SMTP envelope auth</text>
 
   <!-- ══════════════════════════════════════════════════
        Left sidebar: shared services + bundled Redis
@@ -105,21 +108,15 @@
   <text x="737" y="254" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · SASL · proxy</text>
   <text x="737" y="266" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-submission-login.svc</text>
 
-  <rect x="845" y="194" width="195" height="76" rx="5" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
-  <text x="942" y="214" text-anchor="middle" fill="#0d9488" font-size="12" font-weight="bold">yarilo-lmtp-login</text>
-  <text x="942" y="228" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="942" y="241" text-anchor="middle" fill="#475569" font-size="9">:24 LMTP · STARTTLS optional</text>
-  <text x="942" y="254" text-anchor="middle" fill="#475569" font-size="9">MTA-facing · auth + proxy</text>
-  <text x="942" y="266" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-lmtp-login.svc</text>
-
   <!-- ══════════════════════════════════════════════════
        login → session arrows (mTLS TCP, NOT fd-pass)
+       — only 3 protocols have a login proxy; LMTP runs MTA-direct
+         and is drawn straight from the MTA box above.
   ══════════════════════════════════════════════════ -->
   <line x1="327" y1="270" x2="327" y2="332" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
   <line x1="532" y1="270" x2="532" y2="332" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
   <line x1="737" y1="270" x2="737" y2="332" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
-  <line x1="942" y1="270" x2="942" y2="332" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
-  <text x="635" y="293" text-anchor="middle" fill="#1d4ed8" font-size="10" font-weight="bold">mTLS TCP · auth preamble · plain-byte proxy (via ClusterIP Service DNS — separate pods, no fd-pass)</text>
+  <text x="532" y="293" text-anchor="middle" fill="#1d4ed8" font-size="10" font-weight="bold">mTLS TCP · auth preamble · plain-byte proxy (via ClusterIP Service DNS — separate pods, no fd-pass)</text>
 
   <!-- ══════════════════════════════════════════════════
        Session processes row
