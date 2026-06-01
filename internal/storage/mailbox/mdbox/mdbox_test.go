@@ -100,7 +100,7 @@ func TestSave_Fetch_Roundtrip(t *testing.T) {
 	for _, tc := range saveFetchCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := strings.NewReader(tc.body)
-			filename, err := box.Save("INBOX", r, int64(len(tc.body)), tc.flags)
+			filename, err := box.Save("INBOX", r, 1, int64(len(tc.body)), tc.flags)
 			if err != nil {
 				t.Fatalf("Save: %v", err)
 			}
@@ -134,7 +134,7 @@ func TestRemove(t *testing.T) {
 	}
 
 	body := "From: x@y.com\r\n\r\nHello\r\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestList_WithExpunged(t *testing.T) {
 	}
 	filenames := make([]string, len(bodies))
 	for i, body := range bodies {
-		fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+		fn, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 		if err != nil {
 			t.Fatalf("Save[%d]: %v", i, err)
 		}
@@ -280,13 +280,13 @@ func TestRotation(t *testing.T) {
 	}
 
 	body1 := "From: a\r\n\r\nSmall message\r\n"
-	fn1, err := box.Save("INBOX", strings.NewReader(body1), int64(len(body1)), nil)
+	fn1, err := box.Save("INBOX", strings.NewReader(body1), 1, int64(len(body1)), nil)
 	if err != nil {
 		t.Fatalf("Save1: %v", err)
 	}
 
 	body2 := "From: b\r\n\r\nSecond message\r\n"
-	fn2, err := box.Save("INBOX", strings.NewReader(body2), int64(len(body2)), nil)
+	fn2, err := box.Save("INBOX", strings.NewReader(body2), 1, int64(len(body2)), nil)
 	if err != nil {
 		t.Fatalf("Save2: %v", err)
 	}
@@ -332,10 +332,10 @@ func TestNew_ResumesFileID(t *testing.T) {
 	}
 	body := "From: a\r\n\r\nMsg\r\n"
 	// Force two files by saving twice with tiny threshold.
-	if _, err := box1.Save("INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
+	if _, err := box1.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := box1.Save("INBOX", strings.NewReader(body), int64(len(body)), nil); err != nil {
+	if _, err := box1.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil); err != nil {
 		t.Fatal(err)
 	}
 	highID := box1.currentFileID
@@ -371,7 +371,7 @@ func TestConcurrentSave(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			body := strings.Repeat("x", i+1)
-			fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+			fn, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 			if err != nil {
 				t.Errorf("Save goroutine %d: %v", i, err)
 				return
@@ -429,7 +429,7 @@ func TestRotationAndMapIntegrity(t *testing.T) {
 	var saved []string
 	for i := 0; i < n; i++ {
 		body := strings.Repeat("y", 20) // exceeds threshold → rotates each time
-		fn, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+		fn, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 		if err != nil {
 			t.Fatalf("Save[%d]: %v", i, err)
 		}

@@ -44,16 +44,16 @@ func TestHoldsResourceSkipsInnerAcquire(t *testing.T) {
 	}
 
 	// Stage one message under per-call locks (normal write path).
-	filename, err := mb.Save("INBOX", strings.NewReader("body"), 4, nil)
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	uid, err := idx.AllocateAppend(folder.ID, &mailbox.MessageMeta{Filename: filename})
+	uid, err := idx.AllocateUID(folder.ID)
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
-	if err := mb.AppendUIDEntry("INBOX", uid, filename); err != nil {
-		t.Fatalf("uidlist: %v", err)
+	filename, err := mb.Save("INBOX", strings.NewReader("body"), uid, 4, nil)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{UID: uid, Filename: filename}); err != nil {
+		t.Fatalf("append: %v", err)
 	}
 
 	// Take an outer X lock — same Locker, same key.

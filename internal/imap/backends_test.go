@@ -10,7 +10,7 @@ import (
 
 	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -61,7 +61,7 @@ type backendFactory struct {
 }
 
 func dboxBackend(_ *testing.T) mailbox.MailboxBackend {
-	return dbox.New()
+	return dboxv2.New()
 }
 
 func mdboxBackend(_ *testing.T) mailbox.MailboxBackend {

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -165,7 +165,7 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			},
 			wantPrefixes: []string{"Shared/"},
 			wantTypeForPrefix: map[string]any{
-				"Shared/": (*dbox.Backend)(nil),
+				"Shared/": (*dboxv2.Backend)(nil),
 			},
 		},
 		{
@@ -217,9 +217,9 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 					if _, ok := gotV.(*mdbox.Backend); !ok {
 						t.Errorf("override %q: got %T, want *mdbox.Backend", p, gotV)
 					}
-				case *dbox.Backend:
-					if _, ok := gotV.(*dbox.Backend); !ok {
-						t.Errorf("override %q: got %T, want *dbox.Backend", p, gotV)
+				case *dboxv2.Backend:
+					if _, ok := gotV.(*dboxv2.Backend); !ok {
+						t.Errorf("override %q: got %T, want *dboxv2.Backend", p, gotV)
 					}
 				}
 			}

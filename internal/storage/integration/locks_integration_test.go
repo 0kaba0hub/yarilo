@@ -138,19 +138,8 @@ func TestTwoProcessAppendNoUIDCollision(t *testing.T) {
 			go func(pid, gid int) {
 				defer wg.Done()
 				for k := 0; k < appendsPerGor; k++ {
-					// 1. Save the message file to maildir (no UID yet).
-					content := strings.NewReader("hello from p" +
-						strconv.Itoa(pid) + ":g" + strconv.Itoa(gid) + ":k" + strconv.Itoa(k))
-					filename, err := mb.Save("INBOX", content, 0, nil)
-					if err != nil {
-						errCh <- err
-						return
-					}
-					// 2. Atomically allocate UID + append index entry.
-					uid, err := allocateAppend(idx, folder.ID, &mailbox.MessageMeta{
-						Filename: filename,
-						Flags:    []string{},
-					})
+					// 1. Allocate the next UID through the index lock.
+					uid, err := idx.AllocateUID(folder.ID)
 					if err != nil {
 						errCh <- err
 						return
@@ -160,8 +149,21 @@ func TestTwoProcessAppendNoUIDCollision(t *testing.T) {
 						errCh <- &dupErr{uid: uid}
 						return
 					}
-					// 3. Append to maildir uidlist (own lock).
-					if err := mb.AppendUIDEntry("INBOX", uid, filename); err != nil {
+					// 2. Save the message file under the allocated UID
+					//    (maildir writes uidlist inline; sdbox renames to u.<uid>).
+					content := strings.NewReader("hello from p" +
+						strconv.Itoa(pid) + ":g" + strconv.Itoa(gid) + ":k" + strconv.Itoa(k))
+					filename, err := mb.Save("INBOX", content, uid, 0, nil)
+					if err != nil {
+						errCh <- err
+						return
+					}
+					// 3. Record the meta under the same lock.
+					if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
+						UID:      uid,
+						Filename: filename,
+						Flags:    []string{},
+					}); err != nil {
 						errCh <- err
 						return
 					}
@@ -213,16 +215,6 @@ func TestTwoProcessAppendNoUIDCollision(t *testing.T) {
 	if len(uidsSeen) != totalAppends {
 		t.Fatalf("uidlist count: got %d, want %d", len(uidsSeen), totalAppends)
 	}
-}
-
-// allocateAppend dispatches to the file-backend's AllocateAppend if the
-// concrete type exposes it. mailbox.UserIndex does not yet carry the method
-// (Phase 1 keeps the interface narrow — the broader rollout lands in Phase 2).
-func allocateAppend(idx mailbox.UserIndex, folderID uint64, m *mailbox.MessageMeta) (uint32, error) {
-	type allocator interface {
-		AllocateAppend(uint64, *mailbox.MessageMeta) (uint32, error)
-	}
-	return idx.(allocator).AllocateAppend(folderID, m)
 }
 
 type dupErr struct{ uid uint32 }

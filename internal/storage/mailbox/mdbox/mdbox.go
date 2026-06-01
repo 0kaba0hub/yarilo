@@ -232,7 +232,7 @@ func (u *userMailbox) Rename(oldName, newName string) error {
 
 // Save writes a message into the mdbox storage and appends a map entry.
 // Returns "<file_id>:<offset>" as the filename token.
-func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (string, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return "", fmt.Errorf("mdbox/save: read body: %w", err)
@@ -465,9 +465,6 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 	}
 	return folders, nil
 }
-
-// AppendUIDEntry is a no-op for mdbox — UIDs are managed exclusively by UserIndex.
-func (u *userMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
 
 // Scan returns ErrNotImplemented. mdbox rebuild requires walking
 // every m.<N> file and parsing per-message headers across the

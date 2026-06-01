@@ -44,7 +44,7 @@ func (m *mockMailbox) FolderExists(_ string) (bool, error)              { return
 func (m *mockMailbox) ListFolders() ([]string, error)                   { return []string{"INBOX"}, nil }
 func (m *mockMailbox) List(_ string) ([]*mailbox.MessageMeta, error)    { return nil, nil }
 func (m *mockMailbox) Remove(_, _ string) error                         { return nil }
-func (m *mockMailbox) Save(_ string, _ io.Reader, _ int64, _ []string) (string, error) {
+func (m *mockMailbox) Save(_ string, _ io.Reader, _ uint32, _ int64, _ []string) (string, error) {
 	return "", nil
 }
 func (m *mockMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
@@ -55,10 +55,9 @@ func (m *mockMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
 	}
 	return nil, fmt.Errorf("not found: %s", filename)
 }
-func (m *mockMailbox) Rename(_, _ string) error                          { return nil }
-func (m *mockMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
-func (m *mockMailbox) Scan(_ string) ([]mailbox.ScanRecord, error)       { return nil, nil }
-func (m *mockMailbox) Close() error                                      { return nil }
+func (m *mockMailbox) Rename(_, _ string) error                    { return nil }
+func (m *mockMailbox) Scan(_ string) ([]mailbox.ScanRecord, error) { return nil, nil }
+func (m *mockMailbox) Close() error                                { return nil }
 
 // ---- mock index --------------------------------------------------------------
 // mockIndex implements both IndexBackend (OpenUser) and UserIndex (all ops).
@@ -74,10 +73,8 @@ func (m *mockIndex) OpenFolder(folder string, uv uint32) (*mailbox.Folder, error
 }
 func (m *mockIndex) SaveFolder(_ *mailbox.Folder) error                   { return nil }
 func (m *mockIndex) AppendMessage(_ uint64, _ *mailbox.MessageMeta) error { return nil }
-func (m *mockIndex) AllocateAppend(_ uint64, _ *mailbox.MessageMeta) (uint32, error) {
-	return 0, nil
-}
-func (m *mockIndex) UpdateFlags(_ uint64, _ uint32, _, _ []string) error { return nil }
+func (m *mockIndex) AllocateUID(_ uint64) (uint32, error)                 { return 0, nil }
+func (m *mockIndex) UpdateFlags(_ uint64, _ uint32, _, _ []string) error  { return nil }
 func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return m.msgs, nil
 }

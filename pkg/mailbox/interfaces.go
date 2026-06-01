@@ -89,9 +89,18 @@ type MailboxBackend interface {
 // structure. Callers that open a handle but never call Init will see errors from
 // the underlying filesystem operations.
 //
-// AppendUIDEntry records the uid→filename mapping used by the Maildir uidlist
-// (yarilo-uidlist v3). Backends that do not need a separate uidlist (dbox, mdbox)
-// implement this as a no-op — UIDs are managed exclusively by UserIndex.
+// Save takes the assigned UID as a parameter. Drivers that encode the UID in
+// the on-disk filename (sdbox: u.<uid>; mdbox: map_uid bookkeeping) use it
+// directly; Maildir ignores the UID for its filename but writes the
+// uid→filename mapping into the dovecot-uidlist sidecar inline. The canonical
+// caller flow is:
+//
+//	uid     := idx.AllocateUID(folderID)
+//	filename := box.Save(folder, r, uid, size, flags)
+//	idx.AppendMessage(folderID, &MessageMeta{UID: uid, Filename: filename, ...})
+//
+// If Save fails after AllocateUID, the UID is burnt (matches Dovecot's
+// behaviour — the index simply skips the hole on next scan).
 //
 // Close releases any open file descriptors held by the handle.
 type UserMailbox interface {
@@ -99,13 +108,12 @@ type UserMailbox interface {
 	Create(folder string) error
 	Delete(folder string) error
 	Rename(oldName, newName string) error
-	Save(folder string, r io.Reader, size int64, flags []string) (string, error)
+	Save(folder string, r io.Reader, uid uint32, size int64, flags []string) (string, error)
 	Fetch(folder, filename string) (io.ReadCloser, error)
 	Remove(folder, filename string) error
 	List(folder string) ([]*MessageMeta, error)
 	FolderExists(folder string) (bool, error)
 	ListFolders() ([]string, error)
-	AppendUIDEntry(folder string, uid uint32, filename string) error
 	// Scan walks the on-disk representation of folder and yields
 	// every visible message as a ScanRecord. Used by the admin
 	// rebuild flow to regenerate the fileindex independently of
@@ -133,14 +141,14 @@ type UserIndex interface {
 	OpenFolder(folder string, uidValidity uint32) (*Folder, error)
 	SaveFolder(f *Folder) error
 	AppendMessage(folderID uint64, m *MessageMeta) error
-	// AllocateAppend atomically reserves the folder's next UID under the
-	// cross-process mailbox lock, stamps it on m, appends the index record,
-	// and persists the bumped NextUID. Returns the assigned UID.
+	// AllocateUID atomically reserves and persists the folder's next UID
+	// under the cross-process mailbox lock. The caller passes the UID to
+	// UserMailbox.Save, then records the full MessageMeta via AppendMessage.
 	//
-	// Callers (LMTP delivery, IMAP APPEND/COPY/MOVE) must prefer this over
-	// the AppendMessage + manual NextUID++ sequence — the latter is
-	// race-prone across processes; see ARCHITECTURE.md §Known issues.
-	AllocateAppend(folderID uint64, m *MessageMeta) (uint32, error)
+	// If the caller fails between AllocateUID and AppendMessage the UID
+	// is burnt — matches Dovecot's "uid hole" tolerance. Periodic rebuild
+	// reconciles state by scanning the on-disk tree.
+	AllocateUID(folderID uint64) (uint32, error)
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
 	GetMessages(folderID uint64, uids SeqSet) ([]*MessageMeta, error)
 	ExpungeMessage(folderID uint64, uid uint32) error

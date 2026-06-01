@@ -39,41 +39,30 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 	}
 	data, _ := io.ReadAll(r)
 
-	filename, err := box.Save(folder, bytes.NewReader(data), size, nil)
+	f, err := idx.OpenFolder(folder, 0)
+	if err != nil {
+		return fmt.Errorf("lmtp: open index: %w", err)
+	}
+	uid, err := idx.AllocateUID(f.ID)
+	if err != nil {
+		return fmt.Errorf("lmtp: allocate UID: %w", err)
+	}
+	modseq, err := idx.NextModSeq(f.ID)
+	if err != nil {
+		return fmt.Errorf("lmtp: modseq: %w", err)
+	}
+	filename, err := box.Save(folder, bytes.NewReader(data), uid, size, nil)
 	if err != nil {
 		return fmt.Errorf("lmtp: save: %w", err)
 	}
-
-	f, err := idx.OpenFolder(folder, 0)
-	if err != nil {
-		_ = box.Remove(folder, filename)
-		return fmt.Errorf("lmtp: open index: %w", err)
-	}
-
-	modseq, err := idx.NextModSeq(f.ID)
-	if err != nil {
-		_ = box.Remove(folder, filename)
-		return fmt.Errorf("lmtp: modseq: %w", err)
-	}
-
-	meta := &mailbox.MessageMeta{
+	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
+		UID:      uid,
 		Filename: filename,
 		ModSeq:   modseq,
 		Size:     uint32(size),
-	}
-	uid, err := idx.AllocateAppend(f.ID, meta)
-	if err != nil {
+	}); err != nil {
 		_ = box.Remove(folder, filename)
-		return fmt.Errorf("lmtp: index allocate-append: %w", err)
-	}
-	if err := box.AppendUIDEntry(folder, uid, filename); err != nil {
-		// The index already holds the record under uid; the uidlist entry
-		// is a Dovecot-compat artefact used by Maildir for fast UID lookup.
-		// Leaving it inconsistent would cause subsequent List() to skip the
-		// message. Surface the error so the LMTP transaction reports DEFER
-		// and the upstream retries.
-		_ = box.Remove(folder, filename)
-		return fmt.Errorf("lmtp: uidlist append: %w", err)
+		return fmt.Errorf("lmtp: index append: %w", err)
 	}
 
 	emitMailboxEvent(locker, username, folder, locks.EventDelivered, uid)

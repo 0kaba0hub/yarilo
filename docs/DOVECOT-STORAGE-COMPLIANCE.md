@@ -719,7 +719,7 @@ is readable by `pkg/mailindex` round-trip and by Dovecot's
 
 ---
 
-### Phase 3 — `dboxv2` shared format + sdbox rewrite ✅ shipped (v1.28.0)
+### Phase 3 — `dboxv2` shared format + sdbox rewrite ✅ shipped (v1.28.0 + v1.29.0 consumer switch)
 
 **Goal:** Replace `internal/storage/mailbox/dbox` with a
 Dovecot-compliant single-message dbox driver.
@@ -727,17 +727,32 @@ Dovecot-compliant single-message dbox driver.
 **Status:** Driver landed at `internal/storage/mailbox/dboxv2/`
 with full Dovecot file format (file header line + 32-byte
 `dbox_message_header` + body + metadata block with
-G/R/Z/V/P/O/B/X keys). Two-phase save (`Save` → `.temp.*` file,
-`AssignUID(folder, tempName, uid) → u.<UID>`) implements the
-crash-safe publish. Optional `Copy(srcFolder, srcFilename,
-dstFolder) (tempName, error)` uses `link(2)` for O(1) IMAP COPY.
+G/R/Z/V/P/O/B/X keys). Atomic publish: `Save(folder, r, uid, …)`
+writes `.temp.*` then renames to `u.<uid>` under the mailbox X
+lock — no orphan temp on crash, no separate AssignUID call.
+`Copy(srcFolder, srcFilename, dstFolder, dstUID)` uses `link(2)`
+for O(1) IMAP COPY directly into the destination's final name.
 Folder layout `<home>/sdbox/mailboxes/<folder>/dbox-Mails/` and
 per-user `<home>/sdbox/control/dovecot-uidvalidity` materialised
 in `Init()`. Legacy reader at
 `internal/storage/mailbox/dbox/v1legacy/` for the migrator.
-Consumer switch (yarilo-imap/pop3/lmtp/submission) is the next
-PR; the old `internal/storage/mailbox/dbox` package stays in
-tree until then.
+
+**v1.29.0 follow-up — interface refactor:**
+- `UserMailbox.Save` accepts a UID parameter; `AppendUIDEntry`
+  removed from the interface (maildir writes its `dovecot-uidlist`
+  sidecar inline inside Save, sdbox renames in Save, mdbox ignores)
+- `UserIndex.AllocateAppend` split into `AllocateUID(folderID)` +
+  `AppendMessage(folderID, meta)` — UID is allocated **before**
+  the message body is written. Crash between allocate and append
+  burns the UID (matches Dovecot semantics)
+- Session sequence: `uid := idx.AllocateUID(folderID); filename :=
+  box.Save(folder, r, uid, size, flags); idx.AppendMessage(folderID,
+  meta)`
+- Old `internal/storage/mailbox/dbox` package deleted (v1legacy
+  reader stays at `internal/storage/mailbox/dbox/v1legacy/` for
+  the migrator)
+- Backend factory accepts `sdbox` as canonical driver name; `dbox`
+  remains as an alias for ops migrating from older configs
 
 **Scope:**
 - `internal/storage/mailbox/dboxv2/` containing the shared
