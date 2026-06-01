@@ -129,137 +129,28 @@ endpoints can reuse the same authorisation + event helpers.
 
 ---
 
-## Phase BACKEND-API-INDEX-OPS — rebuild / optimize / repair (maildir + dbox)
+## mdbox — alt-storage + GUID lookup index (deferred from MDBOX-PROD-READY)
 
-`/api/backend/index/dump` is shipped (read-only). The mutating
-counterparts — `rebuild`, `optimize`, `folder repair` — are not.
-They require driver-specific resync logic that does not exist on
-any storage driver: the storage layer can `Save`/`Fetch`/`List`/
-`Delete`, but none expose a "scan disk and regenerate index"
-operation.
+The Phase-6 mdbox stack is production-ready for typical tenants:
+purge, rebuild, refcount-based O(1) COPY, binary map.index, and
+multi-process Save contention are all covered. Two enhancements
+remain for the heavier deployment tiers:
 
-This phase covers **maildir** and **dbox** only. `mdbox` rebuild
-lands in Phase MDBOX-PROD-READY together with the other gaps that
-block mdbox from real production use.
+1. **Alt-storage tiering.** Dovecot can migrate cold `m.<N>` files
+   to slower / cheaper backing storage (the `mdbox-alt/` tree).
+   yarilo has no such tiering — every body lives on the primary
+   PVC. Useful once mailbox sizes outgrow the SSD budget. Needs
+   per-message age detection (received-date from the dbox
+   trailer), a background mover, and a Helm values knob for the
+   alt-storage mount. Estimate: ~300 lines + values.yaml + tests.
 
-Phase order:
-
-1. **Add `mailbox.UserMailbox.Rebuild(folder) (Stats, error)` to
-   the interface.** Implement for each driver shipped here:
-   - **maildir**: walk `cur/` + `new/`, parse `:2,FLAGS` from
-     filenames, read existing `yarilo-uidlist` to preserve UIDs.
-   - **dbox**: scan single-message blobs; UID lives in the
-     filename (`u.<N>`).
-   - **mdbox**: returns `not yet implemented`; lands in
-     Phase MDBOX-PROD-READY.
-2. **Add `Optimize(folder)`**. For fileindex this is compacting
-   `.index.log` into the base `.index` file (logic already exists
-   internally, needs an exposed entry-point).
-3. **Add `Repair(folder)`**. Combines rebuild + orphan cleanup +
-   counter resync. Single operator-facing knob for "fix whatever
-   is wrong with this folder".
-4. **Admin API on top**:
-   - `POST /api/backend/index/rebuild`  → `UserMailbox.Rebuild`
-   - `POST /api/backend/index/optimize` → `UserMailbox.Optimize`
-   - `POST /api/backend/folder/repair`  → `UserMailbox.Repair`
-5. **CLI**: `yarilo-admin backend index rebuild <user> <mailbox>`,
-   `... optimize ...`, `yarilo-admin backend folder repair <user> <mailbox>`.
-
-UID semantics: **preserve** by default — `Rebuild` reads
-`yarilo-uidlist` (maildir) or the per-message header (dbox) and
-keeps existing UIDs intact so client UID caches stay valid
-(matches Dovecot's `doveadm force-resync` default). Optional
-`--reset-uids` flag for nuclear re-issue from UID=1; this bumps
-UIDVALIDITY and forces clients to full resync.
-
----
-
-## Phase MDBOX-PROD-READY — make mdbox safe to enable in production
-
-mdbox today (`internal/storage/mailbox/mdbox/mdbox.go`) handles
-Save / Fetch / Remove / List on single-process happy paths and
-its unit tests pass. It is NOT production-safe in the current
-shape — the gaps below must close before any mdbox deployment
-beyond dev / staging.
-
-### Critical — block production
-
-1. **Purge / compaction (disk space recovery).** `Remove()` is
-   lazy: it only flips `expunged=1` in `dbox.map`; the message
-   bytes stay in `m.<N>` forever. There is no compaction routine.
-   A busy mailbox grows `mdbox-storage/` to the sum of every
-   message ever delivered, not current usage — disk fills in
-   weeks. Need a `Purge()` method that rewrites `m.<N>` dropping
-   expunged records and updates `dbox.map` offsets, plus a
-   background trigger (Dovecot kicks compaction when expunged
-   ratio crosses a threshold). Add admin endpoint
-   `POST /api/backend/mdbox/purge` and CLI
-   `yarilo-admin backend mdbox purge <user> [<folder>]`.
-   Estimate: ~500–700 lines.
-
-2. **Crash recovery — orphan record detection in `Rebuild()`.**
-   Save writes the record to `m.<N>` first, then appends a line
-   to `dbox.map`. A crash between the two leaves bytes in
-   `m.<N>` invisible to any future fetch. mdbox needs a rebuild
-   that scans every `m.<N>` (parse magic + size + GUID from
-   headers), reconciles against `dbox.map`, and re-adds orphans
-   (or expunges if the user wanted them gone — record the
-   intent first). maildir avoids this via the `tmp/` → `new/`
-   rename pattern; mdbox has no equivalent. Estimate: ~300–400
-   lines.
-
-3. **Persisted `next_file_id` + atomic allocation.** The current
-   `currentFileID` lives in process memory; on rotation each
-   process does `currentFileID++`. Re-stat under the per-mailbox
-   lock protects byte writes but not file-id assignment across
-   process restarts — after a pod restart the same fileID can be
-   issued twice. Need a persisted `next_file_id` on disk (or a
-   counter resource in `yarilo-locks`) so allocation is
-   process-restart-safe. Estimate: ~150 lines + possibly a small
-   `yarilo-locks` API addition.
-
-4. **Multi-process integration tests for concurrent writes.**
-   `mdbox_test.go` is single-process only. We have no test
-   coverage for `yarilo-imap` and `yarilo-lmtp` writing the same
-   folder simultaneously — exactly the scenario where rotation
-   races, dbox.map append interleaving, and the orphan-on-crash
-   edge cases bite. Estimate: ~200 lines, fixtures included.
-
-### Important — close before scaling mdbox tenants
-
-5. **Cross-folder GUID / refcount map for O(1) COPY.** IMAP
-   COPY between folders today reads the full record and writes
-   it again at a new offset, duplicating bytes. Dovecot mdbox
-   keeps a global `dovecot.map.index` that maps
-   `(file_id, offset) → refcount` so COPY is O(1) — one new
-   entry pointing at the same bytes. Adding this is a format
-   change: per-record refcount field + global map index +
-   purge that respects refcount before reclaiming bytes.
-   Estimate: ~700 lines + format migration.
-
-6. **Binary `dbox.map` instead of text TSV.**
-   `writeMapLines` truncates and rewrites the entire file on
-   any change (`mdbox.go:538`). For a 100k-message folder every
-   Remove rewrites megabytes. Dovecot uses a binary index with
-   O(1) update. Estimate: ~400 lines.
-
-7. **Alt-storage support.** Dovecot can migrate old `m.<N>`
-   files to slower / cheaper storage. yarilo has no such
-   tiering. Estimate: ~300 lines + Helm values.
-
-8. **GUID lookup index.** Fetch-by-GUID currently means scanning
-   every `m.<N>` until a match. Dovecot indexes GUIDs in the
-   global map. Estimate: ~200 lines on top of (5).
-
-### Why deferred together
-
-Items 1–4 are the minimum to enable mdbox in any production at
-all. 5–8 are the minimum to enable it for non-trivial tenants.
-None of this is squeezable into BACKEND-API-INDEX-OPS — that
-phase deliberately ships rebuild for the two drivers (maildir,
-dbox) that are already production-safe; mdbox stays
-`not implemented` on the rebuild endpoint until this phase
-closes the gaps.
+2. **GUID lookup index.** Fetch-by-GUID currently means scanning
+   every `m.<N>` until a match (driver-level — IMAP exposes UID,
+   not GUID, so the gap surfaces only through rebuild + ACL flows
+   that key on GUID). Dovecot indexes GUIDs in the global map as
+   an additional extension; the mdboxmap package can add a
+   "guid" ext alongside the existing "map" + "ref" extensions
+   without breaking on-disk compatibility. Estimate: ~200 lines.
 
 ---
 
@@ -312,4 +203,4 @@ architecture is fully proven in production.
 ## FTS — full-text search (Phase FTS-1)
 
 Indexer + SEARCH BODY/TEXT optimisation. Big phase, no current
-demand.
+ETA.
