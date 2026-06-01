@@ -95,6 +95,7 @@ type whoSession struct {
 	IP          string `json:"ip"`
 	Service     string `json:"service"`
 	ConnectedAt string `json:"connected_at"`
+	Folder      string `json:"folder,omitempty"`
 }
 
 // userGroup aggregates every active session belonging to one user
@@ -104,6 +105,7 @@ type userGroup struct {
 	count     int
 	protocols []string
 	ips       []string
+	folders   []string
 	since     string
 }
 
@@ -129,6 +131,9 @@ func renderWhoTable(w io.Writer, body []byte) error {
 		g.count++
 		g.protocols = append(g.protocols, s.Service)
 		g.ips = append(g.ips, s.IP)
+		if s.Folder != "" {
+			g.folders = append(g.folders, s.Folder)
+		}
 		if s.ConnectedAt < g.since {
 			g.since = s.ConnectedAt
 		}
@@ -140,11 +145,11 @@ func renderWhoTable(w io.Writer, body []byte) error {
 	sort.Strings(users)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "USER\tCOUNT\tPROTOCOLS\tIPS\tSINCE")
+	fmt.Fprintln(tw, "USER\tCOUNT\tPROTOCOLS\tIPS\tFOLDERS\tSINCE")
 	for _, u := range users {
 		g := groups[u]
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n",
-			g.user, g.count, joinUnique(g.protocols), joinUnique(g.ips), g.since)
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n",
+			g.user, g.count, joinUnique(g.protocols), joinUnique(g.ips), joinUnique(g.folders), g.since)
 	}
 	tw.Flush()
 	fmt.Fprintf(w, "\nTotal: %d sessions, %d users\n", resp.Total, len(groups))

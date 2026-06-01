@@ -5,7 +5,7 @@
 // Protocol (TAB-delimited, LF-terminated):
 //
 //	Server → Client handshake:
-//	  VERSION\tyarilo-anvil\t1\t3\n
+//	  VERSION\tyarilo-anvil\t1\t4\n
 //	  DONE\n
 //
 //	Client commands:
@@ -14,12 +14,13 @@
 //	  WHO[\tservice={s}][\tuser={u}]\n
 //	  LOOKUP\t{user}\t{service}\n          ← 1.2 (LMTP cluster-wide accounting)
 //	  HEARTBEAT\t{id}\n                    ← 1.3 (renew session TTL)
+//	  SELECT\t{id}\t{folder}\n             ← 1.4 (IMAP currently-SELECTed folder)
 //
 //	Server responses:
 //	  OK\t{id}\n
 //	  FAIL\t{id}\treason=too-many-connections\n
 //	  COUNT\t{n}\n                          ← LOOKUP reply
-//	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\n
+//	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\t{folder}\n
 //	  DONE\n
 //
 // WHO replies with one SESSION line per matching active session,
@@ -34,6 +35,7 @@
 //   - 1.0 → 1.1: WHO command
 //   - 1.1 → 1.2: LOOKUP command
 //   - 1.2 → 1.3: HEARTBEAT command + TTL/sweeper
+//   - 1.3 → 1.4: SELECT command + folder field in SESSION reply
 //
 // Older clients ignore unknown commands entirely.
 package anvil
@@ -55,7 +57,7 @@ import (
 const (
 	protoName = "yarilo-anvil"
 	majorVer  = 1
-	minorVer  = 3
+	minorVer  = 4
 )
 
 // DefaultSessionTTL is how long an anvil session lives without a
@@ -80,6 +82,11 @@ type SessionInfo struct {
 	IP          string
 	Service     string
 	ConnectedAt time.Time
+	// Folder is the currently-SELECTed IMAP mailbox name (empty
+	// for non-IMAP services or sessions that have not yet sent
+	// SELECT). Updated via the SELECT wire command and surfaced
+	// in WHO output.
+	Folder string
 	// lastSeen is the most recent heartbeat (or CONNECT) timestamp.
 	// Unexported because callers should not depend on it — the
 	// sweeper owns reaping. Wire format never surfaces it.
@@ -212,6 +219,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleLookup(conn, fields)
 		case "HEARTBEAT":
 			s.handleHeartbeat(conn, fields)
+		case "SELECT":
+			s.handleSelect(conn, fields)
 		}
 	}
 }
@@ -277,8 +286,8 @@ func (s *Server) handleWho(conn net.Conn, args []string) {
 		if v, ok := filter["user"]; ok && v != sess.User {
 			continue
 		}
-		fmt.Fprintf(conn, "SESSION\t%s\t%s\t%s\t%s\t%d\n",
-			sess.ID, sess.User, sess.IP, sess.Service, sess.ConnectedAt.Unix())
+		fmt.Fprintf(conn, "SESSION\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			sess.ID, sess.User, sess.IP, sess.Service, sess.ConnectedAt.Unix(), sess.Folder)
 	}
 	fmt.Fprintln(conn, "DONE")
 }
@@ -331,6 +340,32 @@ func (s *Server) handleHeartbeat(conn net.Conn, fields []string) {
 	sess, ok := s.sessions[id]
 	if ok {
 		sess.lastSeen = time.Now().UTC()
+	}
+	s.mu.Unlock()
+	if !ok {
+		fmt.Fprintf(conn, "OK\t%s\treason=unknown\n", id)
+		return
+	}
+	fmt.Fprintf(conn, "OK\t%s\n", id)
+}
+
+// handleSelect processes: SELECT\t{id}\t{folder}\n
+//
+// Sets the session's currently-SELECTed folder. Empty folder is
+// the UNSELECT signal — clears the field so WHO renders the
+// session as authenticated-but-not-in-a-folder. Unknown id is
+// silently ignored: the session may already have been reaped
+// (the IMAP client driving the SELECT will notice on its next
+// command and recover).
+func (s *Server) handleSelect(conn net.Conn, fields []string) {
+	if len(fields) < 3 {
+		return
+	}
+	id, folder := fields[1], fields[2]
+	s.mu.Lock()
+	sess, ok := s.sessions[id]
+	if ok {
+		sess.Folder = folder
 	}
 	s.mu.Unlock()
 	if !ok {

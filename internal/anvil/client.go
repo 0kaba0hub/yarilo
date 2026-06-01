@@ -138,12 +138,20 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 				continue
 			}
 			ts, _ := strconv.ParseInt(fields[5], 10, 64)
+			// Folder is the 1.4 addition; tolerate its absence
+			// so a 1.3 server (or pre-SELECT session) still
+			// parses cleanly.
+			var folder string
+			if len(fields) >= 7 {
+				folder = fields[6]
+			}
 			out = append(out, SessionInfo{
 				ID:          fields[1],
 				User:        fields[2],
 				IP:          fields[3],
 				Service:     fields[4],
 				ConnectedAt: time.Unix(ts, 0).UTC(),
+				Folder:      folder,
 			})
 		case "DONE":
 			return out, nil
@@ -176,6 +184,29 @@ func (c *Conn) Heartbeat(id string) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// Select tells the anvil server which IMAP mailbox the session
+// is currently SELECTed in. Empty folder means UNSELECT.
+//
+// Best-effort: returns nil for unknown session (the server's
+// reason=unknown reply is expected when the session was reaped),
+// and surfaces only transport errors. Callers are not expected
+// to alter their flow based on the result.
+func (c *Conn) Select(id, folder string) error {
+	if _, err := fmt.Fprintf(c.conn, "SELECT\t%s\t%s\n", id, folder); err != nil {
+		return fmt.Errorf("anvil/client: write SELECT: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("anvil/client: read SELECT response: %w", err)
+	}
+	line = strings.TrimRight(line, "\n")
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 || fields[0] != "OK" {
+		return fmt.Errorf("anvil/client: unexpected SELECT response: %q", line)
+	}
+	return nil
 }
 
 // Lookup asks the server how many active sessions exist for

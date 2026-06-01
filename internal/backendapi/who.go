@@ -32,6 +32,9 @@ type whoSessionOut struct {
 	IP          string `json:"ip"`
 	Service     string `json:"service"`
 	ConnectedAt string `json:"connected_at"`
+	// Folder is the currently-SELECTed IMAP mailbox, empty when
+	// the session has not SELECTed yet or the service is not IMAP.
+	Folder string `json:"folder,omitempty"`
 }
 
 type whoGroupOut struct {
@@ -182,6 +185,7 @@ func formatSession(s anvil.SessionInfo) whoSessionOut {
 		IP:          s.IP,
 		Service:     s.Service,
 		ConnectedAt: s.ConnectedAt.UTC().Format(time.RFC3339),
+		Folder:      s.Folder,
 	}
 }
 

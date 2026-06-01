@@ -47,19 +47,6 @@ for our threat model.
 
 ---
 
-## Anvil — currently-SELECTed folder
-
-`who` groups by user (== mailbox owner). It does NOT show the
-folder a session has SELECTed because that state lives in
-`internal/imap.session` and is never pushed out.
-
-Unblocked by: session binaries push `SELECT\t<sess-id>\t<folder>`
-to anvil on every IMAP SELECT/UNSELECT/EXAMINE; anvil stores it
-on the SessionInfo; `who` returns it. Cost: every SELECT touches
-anvil. Probably fine — SELECT is infrequent.
-
----
-
 ## Backend admin API — folder write ops
 
 `/api/backend/folder/{create,delete,rename,expunge}` are not

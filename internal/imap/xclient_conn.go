@@ -42,6 +42,12 @@ type xclientImapConn struct {
 
 	mu         sync.RWMutex
 	remoteAddr net.Addr
+	// sessionID is the anvil session identifier forwarded by the
+	// login pod via the XCLIENT SESSION= attribute. Captured when
+	// the trusted peer sends XCLIENT; surfaced to the IMAP session
+	// via the SessionIDProvider interface so it can push SELECT
+	// events back to anvil.
+	sessionID string
 }
 
 func newXClientImapConn(c net.Conn, trustedNets []*net.IPNet) *xclientImapConn {
@@ -130,14 +136,27 @@ func (c *xclientImapConn) handleXClient(line string) {
 	// line: "tag XCLIENT ADDR=x.x.x.x [...]" — strip tag to get "XCLIENT …"
 	_, rest, _ := strings.Cut(line, " ")
 	attrs, err := xclient.Parse(rest)
-	if err != nil || attrs.Addr == "" {
-		return
-	}
-	ip := net.ParseIP(attrs.Addr)
-	if ip == nil {
+	if err != nil {
 		return
 	}
 	c.mu.Lock()
-	c.remoteAddr = &net.TCPAddr{IP: ip}
+	if attrs.Addr != "" {
+		if ip := net.ParseIP(attrs.Addr); ip != nil {
+			c.remoteAddr = &net.TCPAddr{IP: ip}
+		}
+	}
+	if attrs.Session != "" {
+		c.sessionID = attrs.Session
+	}
 	c.mu.Unlock()
+}
+
+// SessionID returns the anvil session identifier forwarded via
+// XCLIENT SESSION=. Empty when no XCLIENT arrived or the attr
+// was absent. Used by the IMAP session to push SELECT events
+// back to anvil under the correct session id.
+func (c *xclientImapConn) SessionID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sessionID
 }
