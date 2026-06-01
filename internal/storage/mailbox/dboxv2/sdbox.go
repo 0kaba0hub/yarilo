@@ -1,0 +1,680 @@
+package dboxv2
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+)
+
+// Directory layout constants — values pinned by the canonical
+// reader. Changing them breaks Dovecot drop-in compatibility.
+const (
+	sdboxRoot         = "sdbox"
+	mailboxesDir      = "mailboxes"
+	dboxMailsDir      = "dbox-Mails"
+	controlDir        = "control"
+	uidvalidityFile   = "dovecot-uidvalidity"
+	temporaryPrefix   = ".temp."
+	sdboxMailPrefix   = "u."
+	uidvalidityFormat = "%08x" // 8 hex digits, lowercase
+)
+
+// Backend is the sdbox MailboxBackend factory. Like the other
+// drivers, per-user state lives in UserMailbox.
+type Backend struct {
+	hostname string
+	pid      int
+	tmpSeq   atomic.Uint64 // per-process counter for unique .temp.* names
+	locker   locks.Locker
+}
+
+// Option configures a Backend at construction time.
+type Option func(*Backend)
+
+// WithLocker wires a yarilo-locks client into the backend. Every
+// folder-mutating call (Save, Rename, Delete, Remove, AssignUID,
+// Copy) takes the cross-process X lock on
+// locks.MailboxKey(user, folder) before mutating the on-disk
+// tree. A nil Locker keeps the in-process sync.Mutex as the only
+// barrier — never safe in production.
+func WithLocker(l locks.Locker) Option {
+	return func(b *Backend) { b.locker = l }
+}
+
+// New constructs an sdbox Backend.
+func New(opts ...Option) *Backend {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "localhost"
+	}
+	b := &Backend{hostname: host, pid: os.Getpid()}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
+}
+
+// OpenUser returns a per-session handle bound to u.
+func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	return &userMailbox{
+		b:        b,
+		home:     u.Home,
+		username: u.Username,
+		owner:    makeOwner(u),
+	}
+}
+
+// userMailbox is a per-session sdbox storage handle.
+type userMailbox struct {
+	b        *Backend
+	home     string
+	username string
+	owner    string
+	mu       sync.Mutex
+}
+
+func makeOwner(u *mailbox.UserInfo) string {
+	proc := "yarilo"
+	if len(os.Args) > 0 {
+		proc = filepath.Base(os.Args[0])
+	}
+	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
+}
+
+// withMailboxLock runs fn under the per-process Mutex + the
+// cross-process X lock on locks.MailboxKey(user, folder). The
+// HoldsResource short-circuit is preserved here for the POP3 QUIT
+// re-entrancy pattern; goroutine-local tracking inside pkg/locks
+// keeps concurrent peers from racing through it.
+func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.b.locker == nil {
+		return fn()
+	}
+	key := locks.MailboxKey(u.username, folder)
+	if u.b.locker.HoldsResource(key) {
+		return fn()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("sdbox/lock %s: %w", folder, err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+	return fn()
+}
+
+// ---- Init / Create / Delete / Rename --------------------------
+
+// Init materialises the per-user tree (control/, mailboxes/INBOX/
+// dbox-Mails/) and seeds dovecot-uidvalidity if not present.
+func (u *userMailbox) Init() error {
+	if err := os.MkdirAll(u.controlPath(), 0o700); err != nil {
+		return fmt.Errorf("sdbox/init: control: %w", err)
+	}
+	if err := os.MkdirAll(u.folderPath("INBOX"), 0o700); err != nil {
+		return fmt.Errorf("sdbox/init: INBOX: %w", err)
+	}
+	if err := u.ensureUIDValidity(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureUIDValidity creates control/dovecot-uidvalidity with the
+// current unix timestamp on first run. Subsequent runs see the
+// file and skip — the value never decreases.
+func (u *userMailbox) ensureUIDValidity() error {
+	path := u.uidValidityPath()
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("sdbox/uidvalidity: stat: %w", err)
+	}
+	tmp := path + ".tmp"
+	body := fmt.Sprintf(uidvalidityFormat, uint32(time.Now().Unix()))
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		return fmt.Errorf("sdbox/uidvalidity: write tmp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sdbox/uidvalidity: rename: %w", err)
+	}
+	return nil
+}
+
+// UIDValidity returns the per-user uidvalidity stamp, reading
+// (and lazy-initialising) the control file as needed. Exposed for
+// callers that need to seed a folder's index at create time.
+func (u *userMailbox) UIDValidity() (uint32, error) {
+	if err := u.ensureUIDValidity(); err != nil {
+		return 0, err
+	}
+	body, err := os.ReadFile(u.uidValidityPath())
+	if err != nil {
+		return 0, fmt.Errorf("sdbox/uidvalidity: read: %w", err)
+	}
+	var v uint32
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(body)), "%x", &v); err != nil {
+		return 0, fmt.Errorf("sdbox/uidvalidity: parse %q: %w", body, err)
+	}
+	return v, nil
+}
+
+func (u *userMailbox) Create(folder string) error {
+	return u.withMailboxLock(folder, func() error {
+		if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
+			return fmt.Errorf("sdbox/create: %w", err)
+		}
+		return nil
+	})
+}
+
+func (u *userMailbox) Delete(folder string) error {
+	return u.withMailboxLock(folder, func() error {
+		if err := os.RemoveAll(u.folderPath(folder)); err != nil {
+			return fmt.Errorf("sdbox/delete: %w", err)
+		}
+		return nil
+	})
+}
+
+func (u *userMailbox) Rename(oldName, newName string) error {
+	return u.withTwoMailboxLocks(oldName, newName, func() error {
+		if err := os.MkdirAll(filepath.Dir(u.folderPath(newName)), 0o700); err != nil {
+			return fmt.Errorf("sdbox/rename: mkdir: %w", err)
+		}
+		if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
+			return fmt.Errorf("sdbox/rename %s → %s: %w", oldName, newName, err)
+		}
+		return nil
+	})
+}
+
+// withTwoMailboxLocks takes both per-folder X locks in
+// lexicographic order. Matches the maildir / mdbox convention so
+// renames cannot deadlock against concurrent writers.
+func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
+	if u.b.locker == nil {
+		return fn()
+	}
+	a, b := folderA, folderB
+	if a > b {
+		a, b = b, a
+	}
+	keyA := locks.MailboxKey(u.username, a)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	if !u.b.locker.HoldsResource(keyA) {
+		lkA, err := locks.Acquire(ctx, u.b.locker, keyA, u.owner, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("sdbox/lock %s: %w", a, err)
+		}
+		defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
+	}
+	if a == b {
+		return fn()
+	}
+	keyB := locks.MailboxKey(u.username, b)
+	if !u.b.locker.HoldsResource(keyB) {
+		lkB, err := locks.Acquire(ctx, u.b.locker, keyB, u.owner, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("sdbox/lock %s: %w", b, err)
+		}
+		defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
+	}
+	return fn()
+}
+
+// ---- Save (two-phase) ---------------------------------------
+
+// Save streams r into a fresh .temp.* file in the folder's
+// dbox-Mails directory. Returns the temp file's basename — caller
+// MUST then call AssignUID with the allocated UID to publish it
+// under its final u.<UID> name. A crash between Save and AssignUID
+// leaves only the temp file on disk; it ages out via periodic
+// orphan cleanup.
+//
+// size is the wire-level body size; the on-disk physical_size in
+// the metadata block is taken from the actual bytes written
+// (post-CRLF normalisation). flags are ignored — sdbox delegates
+// flag storage to the index.
+func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (string, error) {
+	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
+		return "", fmt.Errorf("sdbox/save: mkdir: %w", err)
+	}
+
+	body, err := readBodyCRLF(r)
+	if err != nil {
+		return "", fmt.Errorf("sdbox/save: read body: %w", err)
+	}
+	physSize := uint32(len(body))
+	virtSize := physSize // sdbox identity until cache/fts extends meanings
+
+	tempName := u.makeTempName()
+	tempPath := filepath.Join(u.folderPath(folder), tempName)
+
+	guid := randomGUID()
+	now := uint32(time.Now().Unix())
+
+	var buf bytes.Buffer
+	buf.Write(encodeFileHeaderLine(now))
+	buf.Write(encodeMessageHeader(messageHeader{Size: uint64(physSize)}))
+	buf.Write(body)
+	buf.Write(encodeMetadataBlock([]metadataEntry{
+		{Key: metaKeyGUID, Value: guidHex(guid)},
+		{Key: metaKeyReceived, Value: fmt.Sprintf("%x", now)},
+		// Z (physical size) only emitted when physSize differs from
+		// the size already in the message header; identity case
+		// omits it per the spec to save a few bytes.
+		{Key: metaKeyVirtualSize, Value: fmt.Sprintf("%x", virtSize)},
+	}))
+
+	err = u.withMailboxLock(folder, func() error {
+		f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return fmt.Errorf("sdbox/save: create %s: %w", tempPath, err)
+		}
+		if _, err := f.Write(buf.Bytes()); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tempPath)
+			return fmt.Errorf("sdbox/save: write: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			_ = os.Remove(tempPath)
+			return fmt.Errorf("sdbox/save: close: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return tempName, nil
+}
+
+// AssignUID renames the .temp.* file at tempName to its final
+// u.<UID> name. Returns the new basename. Idempotent: a second
+// call after the rename succeeded becomes a no-op (we look up the
+// target by UID first).
+//
+// Implements the optional Assigner interface so callers can do
+// type-assertion when their MailboxBackend supports two-phase
+// save (sdbox does; maildir does not).
+func (u *userMailbox) AssignUID(folder, tempName string, uid uint32) (string, error) {
+	if uid == 0 {
+		return "", fmt.Errorf("sdbox/assign: UID 0 invalid")
+	}
+	finalName := fmt.Sprintf("%s%d", sdboxMailPrefix, uid)
+	var resultName string
+	err := u.withMailboxLock(folder, func() error {
+		dir := u.folderPath(folder)
+		tempPath := filepath.Join(dir, tempName)
+		finalPath := filepath.Join(dir, finalName)
+		if _, err := os.Stat(finalPath); err == nil {
+			// Idempotent path — already renamed by an earlier
+			// attempt. Drop the temp if it's still hanging
+			// around.
+			_ = os.Remove(tempPath)
+			resultName = finalName
+			return nil
+		}
+		if err := os.Rename(tempPath, finalPath); err != nil {
+			return fmt.Errorf("sdbox/assign: rename %s → %s: %w", tempPath, finalPath, err)
+		}
+		resultName = finalName
+		return nil
+	})
+	return resultName, err
+}
+
+// AppendUIDEntry is the no-op sdbox needs to satisfy the
+// MailboxBackend contract. sdbox encodes the UID in the filename
+// (set by AssignUID), so there is nothing to record in a sidecar.
+func (u *userMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
+
+// ---- Fetch / Remove / Copy ----------------------------------
+
+// Fetch returns an io.ReadCloser positioned at the start of the
+// message body. The caller MUST Close. Metadata + file header are
+// skipped; only the raw bytes between message_header end and
+// metadata_magic_post are surfaced.
+func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
+	path := filepath.Join(u.folderPath(folder), filename)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("sdbox/fetch: open %s: %w", path, err)
+	}
+	br := bufio.NewReader(f)
+	if _, err := br.ReadBytes('\n'); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sdbox/fetch: read file header: %w", err)
+	}
+	hdrBuf := make([]byte, messageHeaderSize)
+	if _, err := io.ReadFull(br, hdrBuf); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sdbox/fetch: read message header: %w", err)
+	}
+	mh, err := decodeMessageHeader(hdrBuf)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sdbox/fetch: %w", err)
+	}
+	bodyBytes := make([]byte, mh.Size)
+	if _, err := io.ReadFull(br, bodyBytes); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sdbox/fetch: read body: %w", err)
+	}
+	_ = f.Close()
+	return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+}
+
+// Remove unlinks the message file. Idempotent: removing a missing
+// file is not an error.
+func (u *userMailbox) Remove(folder, filename string) error {
+	return u.withMailboxLock(folder, func() error {
+		path := filepath.Join(u.folderPath(folder), filename)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("sdbox/remove: %w", err)
+		}
+		return nil
+	})
+}
+
+// Copy hardlinks srcFilename from srcFolder into dstFolder under
+// a fresh .temp.* name. Returns that temp name — caller follows
+// up with AssignUID to publish it under its final u.<UID> in the
+// destination. Hardlinking gives O(1) IMAP COPY semantics: the
+// inode is shared, only the directory entry changes. Implements
+// the Copyable optional interface.
+func (u *userMailbox) Copy(srcFolder, srcFilename, dstFolder string) (string, error) {
+	if err := os.MkdirAll(u.folderPath(dstFolder), 0o700); err != nil {
+		return "", fmt.Errorf("sdbox/copy: mkdir dst: %w", err)
+	}
+	tempName := u.makeTempName()
+	srcPath := filepath.Join(u.folderPath(srcFolder), srcFilename)
+	dstPath := filepath.Join(u.folderPath(dstFolder), tempName)
+	err := u.withTwoMailboxLocks(srcFolder, dstFolder, func() error {
+		if err := os.Link(srcPath, dstPath); err != nil {
+			return fmt.Errorf("sdbox/copy: link %s → %s: %w", srcPath, dstPath, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return tempName, nil
+}
+
+// ---- List / FolderExists / ListFolders ---------------------
+
+func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
+	entries, err := os.ReadDir(u.folderPath(folder))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sdbox/list: %w", err)
+	}
+	out := make([]*mailbox.MessageMeta, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), sdboxMailPrefix) {
+			continue
+		}
+		uid64, err := strconv.ParseUint(strings.TrimPrefix(e.Name(), sdboxMailPrefix), 10, 32)
+		if err != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, &mailbox.MessageMeta{
+			UID:          uint32(uid64),
+			Filename:     e.Name(),
+			Size:         uint32(info.Size()),
+			InternalDate: info.ModTime(),
+		})
+	}
+	return out, nil
+}
+
+func (u *userMailbox) FolderExists(folder string) (bool, error) {
+	_, err := os.Stat(u.folderPath(folder))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// ListFolders walks mailboxes/ and surfaces every dir that owns
+// a dbox-Mails subdirectory. INBOX is reported even when only the
+// mailbox root exists (matches the canonical reader's behaviour).
+func (u *userMailbox) ListFolders() ([]string, error) {
+	root := u.mailboxesRoot()
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sdbox/listfolders: %w", err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		mailDir := filepath.Join(root, e.Name(), dboxMailsDir)
+		if _, err := os.Stat(mailDir); err == nil {
+			out = append(out, e.Name())
+		}
+	}
+	return out, nil
+}
+
+// ---- Scan (rebuild contract) --------------------------------
+
+// Scan returns one ScanRecord per u.<UID> file in folder. The UID
+// is parsed from the filename; GUID and InternalDate come from
+// the on-disk metadata block. Used by the admin rebuild flow when
+// the fileindex was lost — the canonical reader can recover state
+// from filenames alone because the UID is in there.
+func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
+	dir := u.folderPath(folder)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sdbox/scan: %w", err)
+	}
+	out := make([]mailbox.ScanRecord, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), sdboxMailPrefix) {
+			continue
+		}
+		uid64, err := strconv.ParseUint(strings.TrimPrefix(e.Name(), sdboxMailPrefix), 10, 32)
+		if err != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		rec := mailbox.ScanRecord{
+			Filename:     e.Name(),
+			Size:         uint32(info.Size()),
+			InternalDate: info.ModTime(),
+		}
+		// Best-effort metadata pull: open the file, skip past
+		// header+body, parse the trailer. Errors are non-fatal
+		// — we still surface the filename so the index can
+		// preserve the UID even when the body is corrupt.
+		if guid, vsize, when, err := readMetadata(filepath.Join(dir, e.Name())); err == nil {
+			rec.GUID = guid
+			if vsize > 0 {
+				rec.VSize = vsize
+			}
+			if !when.IsZero() {
+				rec.InternalDate = when
+			}
+		}
+		_ = uid64
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+// Close releases per-session state. sdbox holds no long-lived
+// resources beyond the OS file descriptors that Fetch returns
+// (caller closes those), so Close is a no-op.
+func (u *userMailbox) Close() error { return nil }
+
+// ---- helpers -------------------------------------------------
+
+func (u *userMailbox) sdboxRoot() string   { return filepath.Join(u.home, sdboxRoot) }
+func (u *userMailbox) controlPath() string { return filepath.Join(u.sdboxRoot(), controlDir) }
+func (u *userMailbox) uidValidityPath() string {
+	return filepath.Join(u.controlPath(), uidvalidityFile)
+}
+func (u *userMailbox) mailboxesRoot() string {
+	return filepath.Join(u.sdboxRoot(), mailboxesDir)
+}
+func (u *userMailbox) folderPath(folder string) string {
+	return filepath.Join(u.mailboxesRoot(), folder, dboxMailsDir)
+}
+
+// makeTempName returns ".temp.<sec>.P<pid>Q<seq>M<usec>.<host>"
+// matching the canonical pre-publish naming.
+func (u *userMailbox) makeTempName() string {
+	now := time.Now()
+	return fmt.Sprintf("%s%d.P%dQ%dM%d.%s",
+		temporaryPrefix, now.Unix(), u.b.pid, u.b.tmpSeq.Add(1), now.Nanosecond()/1000, u.b.hostname)
+}
+
+// readBodyCRLF reads r fully and ensures every line is
+// CRLF-terminated, matching the canonical reader's pre-write
+// normalisation. Input already in CRLF is preserved as-is.
+func readBodyCRLF(r io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	// Fast path: already CRLF — count by scanning a sample,
+	// upgrade if the document mixes line endings.
+	if !needsCRLFNormalisation(raw) {
+		return raw, nil
+	}
+	out := make([]byte, 0, len(raw)+len(raw)/16)
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c == '\n' && (i == 0 || raw[i-1] != '\r') {
+			out = append(out, '\r', '\n')
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func needsCRLFNormalisation(b []byte) bool {
+	for i, c := range b {
+		if c == '\n' && (i == 0 || b[i-1] != '\r') {
+			return true
+		}
+	}
+	return false
+}
+
+// readMetadata opens path, walks past file-header line + message
+// header + body, and returns the GUID + virtual size + received
+// timestamp parsed from the trailer block. Errors propagate
+// verbatim; callers treat them as "metadata unrecoverable" and
+// fall back to filesystem-derived state.
+func readMetadata(path string) ([16]byte, uint32, time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return [16]byte{}, 0, time.Time{}, err
+	}
+	defer f.Close()
+	br := bufio.NewReader(f)
+	if _, err := br.ReadBytes('\n'); err != nil {
+		return [16]byte{}, 0, time.Time{}, err
+	}
+	hdrBuf := make([]byte, messageHeaderSize)
+	if _, err := io.ReadFull(br, hdrBuf); err != nil {
+		return [16]byte{}, 0, time.Time{}, err
+	}
+	mh, err := decodeMessageHeader(hdrBuf)
+	if err != nil {
+		return [16]byte{}, 0, time.Time{}, err
+	}
+	if _, err := br.Discard(int(mh.Size)); err != nil {
+		return [16]byte{}, 0, time.Time{}, err
+	}
+	entries, err := decodeMetadataBlock(br)
+	if err != nil {
+		return [16]byte{}, 0, time.Time{}, err
+	}
+	var guid [16]byte
+	var vsize uint32
+	var when time.Time
+	for _, e := range entries {
+		switch e.Key {
+		case metaKeyGUID:
+			if raw, derr := hexDecode(e.Value); derr == nil && len(raw) == 16 {
+				copy(guid[:], raw)
+			}
+		case metaKeyVirtualSize:
+			if v, derr := strconv.ParseUint(strings.TrimSpace(e.Value), 16, 32); derr == nil {
+				vsize = uint32(v)
+			}
+		case metaKeyReceived:
+			if v, derr := strconv.ParseInt(strings.TrimSpace(e.Value), 16, 64); derr == nil {
+				when = time.Unix(v, 0).UTC()
+			}
+		}
+	}
+	return guid, vsize, when, nil
+}
+
+// hexDecode is a slim wrapper that returns ErrUnexpectedEOF when
+// the input is the empty string — convenient for the metadata
+// parse paths that treat empty strings as "field absent".
+func hexDecode(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, io.ErrUnexpectedEOF
+	}
+	out := make([]byte, len(s)/2)
+	for i := 0; i < len(s)/2; i++ {
+		var v byte
+		_, err := fmt.Sscanf(s[i*2:i*2+2], "%02x", &v)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func randomGUID() [16]byte {
+	var g [16]byte
+	_, _ = rand.Read(g[:])
+	return g
+}

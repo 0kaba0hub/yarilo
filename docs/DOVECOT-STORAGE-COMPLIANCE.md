@@ -719,10 +719,25 @@ is readable by `pkg/mailindex` round-trip and by Dovecot's
 
 ---
 
-### Phase 3 — `dboxv2` shared format + sdbox rewrite
+### Phase 3 — `dboxv2` shared format + sdbox rewrite ✅ shipped (v1.28.0)
 
 **Goal:** Replace `internal/storage/mailbox/dbox` with a
 Dovecot-compliant single-message dbox driver.
+
+**Status:** Driver landed at `internal/storage/mailbox/dboxv2/`
+with full Dovecot file format (file header line + 32-byte
+`dbox_message_header` + body + metadata block with
+G/R/Z/V/P/O/B/X keys). Two-phase save (`Save` → `.temp.*` file,
+`AssignUID(folder, tempName, uid) → u.<UID>`) implements the
+crash-safe publish. Optional `Copy(srcFolder, srcFilename,
+dstFolder) (tempName, error)` uses `link(2)` for O(1) IMAP COPY.
+Folder layout `<home>/sdbox/mailboxes/<folder>/dbox-Mails/` and
+per-user `<home>/sdbox/control/dovecot-uidvalidity` materialised
+in `Init()`. Legacy reader at
+`internal/storage/mailbox/dbox/v1legacy/` for the migrator.
+Consumer switch (yarilo-imap/pop3/lmtp/submission) is the next
+PR; the old `internal/storage/mailbox/dbox` package stays in
+tree until then.
 
 **Scope:**
 - `internal/storage/mailbox/dboxv2/` containing the shared
