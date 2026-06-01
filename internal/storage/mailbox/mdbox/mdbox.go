@@ -1,62 +1,87 @@
-// Package mdbox implements MailboxBackend for the mdbox (multi-message dbox) format.
-// Messages are stored in shared m.<file_id> files under mdbox-storage/; each folder
-// keeps a dbox.map text file that maps into those files by (file_id, offset).
+// Package mdbox is the multi-message dbox (mdbox) storage driver.
+// Phase 5 rewrite — built on:
+//
+//   - internal/storage/mailbox/mdbox/mdboxmap  (map_uid + refcount keystone)
+//   - internal/storage/mailindex                (Phase-1 binary index format)
+//   - internal/storage/mailbox/dboxv2/format    (per-message dbox v2 wire layout)
+//
+// On-disk layout (per user):
+//
+//	<home>/mdbox/storage/
+//	  m.<N>                   multi-message body file
+//	  yarilo.map.index        the mdboxmap (legacy: dovecot.map.index)
+//	<home>/mdbox/mailboxes/
+//	  <folder>/               folder marker dir (per-folder index is the
+//	                          external fileindex — mdbox does not duplicate
+//	                          per-folder state inside this driver)
+//
+// "Filename" tokens surfaced to callers are the stringified map_uid.
+// The external fileindex stores this in MessageMeta.Filename; the
+// mdbox driver parses it back on Fetch / Remove / Copy.
+//
+// O(1) COPY: the driver implements the Copyable interface — copy
+// increments the map record's refcount and returns the source
+// filename unchanged; zero body bytes are read or written.
 package mdbox
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
+// Directory layout constants.
 const (
-	magicPre  = "\x01\x02"
-	magicPost = "\n\x01\x03\n"
-	rotateAt  = int64(10 * 1024 * 1024)
+	mdboxRoot    = "mdbox"
+	storageDir   = "storage"
+	mailboxesDir = "mailboxes"
 )
 
-// Backend is the mdbox MailboxBackend factory.
-// It holds no per-user state; all per-user state (file rotation, locks) lives
-// in userMailbox, which is created fresh by OpenUser for each session.
+// dbox single-message wire constants (re-stated locally so this
+// driver doesn't import dboxv2's unexported helpers).
+const (
+	dboxVersion       = 2
+	messageHeaderSize = 32
+	magicPreByte0     = 0x01
+	magicPreByte1     = 0x02
+	magicPost         = "\n\x01\x03\n"
+)
+
+// Backend is the mdbox MailboxBackend factory. Per-user state
+// lives in UserMailbox; the only thing the Backend holds is the
+// shared locks.Locker.
 type Backend struct {
-	// rotateThreshold overrides the 10 MB rotation limit in tests.
-	rotateThreshold int64
-	locker          locks.Locker
+	locker locks.Locker
 }
 
 // Option configures a Backend at construction time.
 type Option func(*Backend)
 
-// WithLocker wires a yarilo-locks client into the backend. Every shared-file
-// write (Save / Remove / Delete / Rename) then takes a cross-process X lock
-// on `mbox:<user>:<folder>` first. Nil disables cross-process locking and
-// keeps the in-process sync.Mutex as the sole guard.
-//
-// NOTE: mdbox's per-handle currentFileID/currentSize and the shared
-// mdbox-storage/m.<id> append-only files still race across processes even
-// with the per-folder lock — that's a cross-folder storage concern outside
-// Phase 2.6's scope. The folder lock here interlocks Save with concurrent
-// Delete/Rename/Remove on the same folder.
+// WithLocker wires a yarilo-locks client into the backend. Every
+// mutation path (Save, Remove, Copy) takes the strict
+// map-then-folder lock chain: MdboxMapKey(user) first, then
+// MailboxKey(user, folder).
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
 }
 
-// New creates an mdbox backend.
+// New constructs a Backend.
 func New(opts ...Option) *Backend {
-	b := &Backend{rotateThreshold: rotateAt}
+	b := &Backend{}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -64,12 +89,6 @@ func New(opts ...Option) *Backend {
 }
 
 // OpenUser returns a per-session handle bound to u.
-// File rotation state (currentFileID, currentSize) is per-handle so that
-// concurrent sessions for the same user each hold their own state.
-// The underlying mdbox-storage files are shared on disk (append-only), so
-// concurrent writes are safe at the OS level but the per-handle state may
-// diverge after rotation — correct for the current single-backend-per-user
-// deployment; revisit when multi-node delivery is introduced (Phase 5).
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
 		b:        b,
@@ -79,21 +98,16 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	}
 }
 
-// userMailbox is a per-session, per-user mdbox storage handle.
 type userMailbox struct {
 	b        *Backend
 	home     string
 	username string
 	owner    string
 
-	mu            sync.Mutex
-	currentFileID uint32
-	currentSize   int64
-	initDone      bool
+	mu      sync.Mutex
+	mapping *mdboxmap.Map // lazily opened on first use
 }
 
-// makeOwner builds the owner string for yarilo-locks BUSY reports.
-// Same convention as maildir/dbox: "<process>/<pid>/<user>".
 func makeOwner(u *mailbox.UserInfo) string {
 	proc := "yarilo"
 	if len(os.Args) > 0 {
@@ -102,13 +116,43 @@ func makeOwner(u *mailbox.UserInfo) string {
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
-// withMailboxLock runs fn under the per-process Mutex and the cross-process
-// yarilo-locks X lock keyed by folder name. The Mutex is still required to
-// guard currentFileID / currentSize within a single process. Nil locker
-// short-circuits to in-process mutex only.
-func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
+// ---- path helpers ------------------------------------------
+
+func (u *userMailbox) mdboxRoot() string   { return filepath.Join(u.home, mdboxRoot) }
+func (u *userMailbox) storagePath() string { return filepath.Join(u.mdboxRoot(), storageDir) }
+func (u *userMailbox) folderRoot() string {
+	return filepath.Join(u.mdboxRoot(), mailboxesDir)
+}
+func (u *userMailbox) folderPath(folder string) string {
+	return filepath.Join(u.folderRoot(), folder)
+}
+func (u *userMailbox) mfilePath(fileID uint32) string {
+	return filepath.Join(u.storagePath(), fmt.Sprintf("m.%d", fileID))
+}
+
+// openMap ensures the per-user mdboxmap is open. Cached on the
+// userMailbox for the session lifetime.
+func (u *userMailbox) openMap() (*mdboxmap.Map, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if u.mapping != nil {
+		return u.mapping, nil
+	}
+	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
+		return nil, fmt.Errorf("mdbox/openmap: mkdir: %w", err)
+	}
+	m, err := mdboxmap.Open(u.storagePath(), u.username, mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner))
+	if err != nil {
+		return nil, err
+	}
+	u.mapping = m
+	return m, nil
+}
+
+// withMailboxLock — folder-level X lock for per-folder ops
+// (Create / Delete / Rename). Save / Fetch / Remove go through
+// the map lock (taken inside mdboxmap).
+func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 	if u.b.locker == nil {
 		return fn()
 	}
@@ -126,80 +170,18 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 	return fn()
 }
 
-// withTwoMailboxLocks takes both folder X locks in lexicographic order.
-// Same convention as maildir/dbox so the three backends never deadlock
-// against each other when IMAP RENAME ripples through.
-func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
-	if u.b.locker == nil {
-		return fn()
-	}
-	a, b := folderA, folderB
-	if a > b {
-		a, b = b, a
-	}
-	keyA := locks.MailboxKey(u.username, a)
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
-	if !u.b.locker.HoldsResource(keyA) {
-		lkA, err := locks.Acquire(ctx, u.b.locker, keyA, u.owner, 30*time.Second)
-		if err != nil {
-			return fmt.Errorf("mdbox/lock %s: %w", a, err)
-		}
-		defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
-	}
-	if a == b {
-		return fn()
-	}
-	keyB := locks.MailboxKey(u.username, b)
-	if !u.b.locker.HoldsResource(keyB) {
-		lkB, err := locks.Acquire(ctx, u.b.locker, keyB, u.owner, 30*time.Second)
-		if err != nil {
-			return fmt.Errorf("mdbox/lock %s: %w", b, err)
-		}
-		defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
-	}
-	return fn()
-}
+// ---- UserMailbox interface ---------------------------------
 
-// Init creates the INBOX folder and scans the user's mdbox-storage to resume
-// from the highest existing file_id. Must be called before Save.
 func (u *userMailbox) Init() error {
+	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
+		return fmt.Errorf("mdbox/init: storage: %w", err)
+	}
 	if err := os.MkdirAll(u.folderPath("INBOX"), 0o700); err != nil {
-		return fmt.Errorf("mdbox/init: %w", err)
+		return fmt.Errorf("mdbox/init: INBOX: %w", err)
 	}
-
-	storageDir := u.storageDir()
-	if err := os.MkdirAll(storageDir, 0o700); err != nil {
-		return fmt.Errorf("mdbox/init: mkdir storage: %w", err)
+	if _, err := u.openMap(); err != nil {
+		return err
 	}
-
-	// Scan for the highest existing m.<id> file to resume the sequence.
-	entries, err := os.ReadDir(storageDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("mdbox/init: scan storage: %w", err)
-	}
-	var maxID uint32
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), "m.") {
-			continue
-		}
-		id64, parseErr := strconv.ParseUint(e.Name()[2:], 10, 32)
-		if parseErr != nil {
-			continue
-		}
-		if uint32(id64) > maxID {
-			maxID = uint32(id64)
-		}
-	}
-	u.mu.Lock()
-	if maxID > 0 {
-		u.currentFileID = maxID
-	} else {
-		u.currentFileID = 1
-	}
-	u.currentSize = 0
-	u.initDone = true
-	u.mu.Unlock()
 	return nil
 }
 
@@ -222,219 +204,21 @@ func (u *userMailbox) Delete(folder string) error {
 }
 
 func (u *userMailbox) Rename(oldName, newName string) error {
-	return u.withTwoMailboxLocks(oldName, newName, func() error {
-		if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
-			return fmt.Errorf("mdbox/rename: %w", err)
-		}
-		return nil
-	})
-}
-
-// Save writes a message into the mdbox storage and appends a map entry.
-// Returns "<file_id>:<offset>" as the filename token.
-func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
-	body, err := io.ReadAll(r)
-	if err != nil {
-		return "", fmt.Errorf("mdbox/save: read body: %w", err)
+	a, b := oldName, newName
+	if a > b {
+		a, b = b, a
 	}
-
-	guid := randomGUID()
-	now := uint32(time.Now().Unix())
-	physSize := uint32(len(body))
-	virtSize := physSize
-
-	record := buildRecord(body, guid, now, physSize, virtSize)
-	recLen := int64(len(record))
-
-	storageDir := u.storageDir()
-	if err := os.MkdirAll(storageDir, 0o700); err != nil {
-		return "", fmt.Errorf("mdbox/save: mkdir storage: %w", err)
-	}
-	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
-		return "", fmt.Errorf("mdbox/save: mkdir folder: %w", err)
-	}
-
-	var token string
-	err = u.withMailboxLock(folder, func() error {
-		// ALWAYS re-stat the current m.<id> under the lock — another process
-		// may have appended since this handle's last Save. Without this, the
-		// offset we record in dbox.map drifts from the physical file size
-		// (the write goes to end-of-file via O_APPEND regardless of our
-		// state), causing the next Fetch via that token to read the wrong
-		// bytes.
-		fi, statErr := os.Stat(u.mfilePath(storageDir, u.currentFileID))
-		if statErr == nil {
-			u.currentSize = fi.Size()
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return fmt.Errorf("mdbox/save: stat mfile: %w", statErr)
-		} else {
-			u.currentSize = 0
-		}
-
-		if u.currentSize > u.b.rotateThreshold {
-			u.currentFileID++
-			u.currentSize = 0
-		}
-
-		fileID := u.currentFileID
-		offset := u.currentSize
-
-		mpath := u.mfilePath(storageDir, fileID)
-		f, err := os.OpenFile(mpath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-		if err != nil {
-			return fmt.Errorf("mdbox/save: open mfile: %w", err)
-		}
-		if _, err := f.Write(record); err != nil {
-			f.Close()
-			return fmt.Errorf("mdbox/save: write record: %w", err)
-		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("mdbox/save: close mfile: %w", err)
-		}
-		u.currentSize += recLen
-
-		mapLine := fmt.Sprintf("%d %d %d 0\n", fileID, offset, physSize)
-		mapPath := u.mapPath(folder)
-		mf, err := os.OpenFile(mapPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-		if err != nil {
-			return fmt.Errorf("mdbox/save: open dbox.map: %w", err)
-		}
-		if _, err := fmt.Fprint(mf, mapLine); err != nil {
-			mf.Close()
-			return fmt.Errorf("mdbox/save: write dbox.map: %w", err)
-		}
-		if err := mf.Close(); err != nil {
-			return fmt.Errorf("mdbox/save: close dbox.map: %w", err)
-		}
-
-		token = fmt.Sprintf("%d:%d", fileID, offset)
-		return nil
-	})
-	return token, err
-}
-
-// Fetch opens the message identified by "<file_id>:<offset>" and returns a
-// reader positioned at the start of the raw RFC 5322 body.
-func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
-	fileID, offset, err := parseFilename(filename)
-	if err != nil {
-		return nil, fmt.Errorf("mdbox/fetch: %w", err)
-	}
-
-	storageDir := u.storageDir()
-	mpath := u.mfilePath(storageDir, fileID)
-	f, err := os.Open(mpath)
-	if err != nil {
-		return nil, fmt.Errorf("mdbox/fetch: open mfile: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, fmt.Errorf("mdbox/fetch: seek: %w", err)
-	}
-
-	size, err := parseHeader(f)
-	if err != nil {
-		return nil, fmt.Errorf("mdbox/fetch: parse header: %w", err)
-	}
-
-	body := make([]byte, size)
-	if _, err := io.ReadFull(f, body); err != nil {
-		return nil, fmt.Errorf("mdbox/fetch: read body: %w", err)
-	}
-	return io.NopCloser(strings.NewReader(string(body))), nil
-}
-
-// Remove marks the dbox.map entry for "<file_id>:<offset>" as expunged (lazy delete).
-func (u *userMailbox) Remove(folder, filename string) error {
-	return u.withMailboxLock(folder, func() error {
-		fileID, offset, err := parseFilename(filename)
-		if err != nil {
-			return fmt.Errorf("mdbox/remove: %w", err)
-		}
-
-		mapPath := u.mapPath(folder)
-		lines, err := readMapLines(mapPath)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("mdbox/remove: read map: %w", err)
-		}
-
-		changed := false
-		for i, rec := range lines {
-			if rec.fileID == fileID && rec.offset == offset && rec.expunged == 0 {
-				lines[i].expunged = 1
-				changed = true
+	return u.withMailboxLock(a, func() error {
+		return u.withMailboxLock(b, func() error {
+			if err := os.MkdirAll(filepath.Dir(u.folderPath(newName)), 0o700); err != nil {
+				return fmt.Errorf("mdbox/rename: mkdir: %w", err)
 			}
-		}
-		if !changed {
+			if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
+				return fmt.Errorf("mdbox/rename %s → %s: %w", oldName, newName, err)
+			}
 			return nil
-		}
-		return writeMapLines(mapPath, lines)
-	})
-}
-
-func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
-	mapPath := u.mapPath(folder)
-	lines, err := readMapLines(mapPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("mdbox/list: %w", err)
-	}
-
-	storageDir := u.storageDir()
-
-	type entry struct {
-		fileID uint32
-		offset uint32
-		meta   *mailbox.MessageMeta
-	}
-	var entries []entry
-
-	for _, rec := range lines {
-		if rec.expunged != 0 {
-			continue
-		}
-
-		mpath := u.mfilePath(storageDir, rec.fileID)
-		f, openErr := os.Open(mpath)
-		if openErr != nil {
-			return nil, fmt.Errorf("mdbox/list: open mfile: %w", openErr)
-		}
-		if _, seekErr := f.Seek(int64(rec.offset), io.SeekStart); seekErr != nil {
-			f.Close()
-			return nil, fmt.Errorf("mdbox/list: seek: %w", seekErr)
-		}
-		size, parseErr := parseHeader(f)
-		f.Close()
-		if parseErr != nil {
-			return nil, fmt.Errorf("mdbox/list: parse header: %w", parseErr)
-		}
-
-		token := fmt.Sprintf("%d:%d", rec.fileID, rec.offset)
-		entries = append(entries, entry{
-			fileID: rec.fileID,
-			offset: rec.offset,
-			meta:   &mailbox.MessageMeta{Filename: token, Size: size},
 		})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].fileID != entries[j].fileID {
-			return entries[i].fileID < entries[j].fileID
-		}
-		return entries[i].offset < entries[j].offset
 	})
-
-	out := make([]*mailbox.MessageMeta, len(entries))
-	for i, e := range entries {
-		out[i] = e.meta
-	}
-	return out, nil
 }
 
 func (u *userMailbox) FolderExists(folder string) (bool, error) {
@@ -446,158 +230,293 @@ func (u *userMailbox) FolderExists(folder string) (bool, error) {
 }
 
 func (u *userMailbox) ListFolders() ([]string, error) {
-	entries, err := os.ReadDir(u.home)
+	entries, err := os.ReadDir(u.folderRoot())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("mdbox/listfolders: %w", err)
 	}
-	folders := []string{"INBOX"}
+	out := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if name == "INBOX" || name == "mdbox-storage" {
-			continue
-		}
-		if strings.HasPrefix(name, ".") {
-			folders = append(folders, strings.TrimPrefix(name, "."))
+		if e.IsDir() {
+			out = append(out, e.Name())
 		}
 	}
-	return folders, nil
+	return out, nil
 }
 
-// Scan returns ErrNotImplemented. mdbox rebuild requires walking
-// every m.<N> file and parsing per-message headers across the
-// shared multi-message store — significant work that lands in
-// Phase MDBOX-PROD-READY (see TODO.md). Until that phase ships,
-// admin rebuild for mdbox folders returns the same error verbatim
-// so operators get a clear "not yet, see TODO" rather than a
-// silent fail.
-func (u *userMailbox) Scan(_ string) ([]mailbox.ScanRecord, error) {
-	return nil, errors.New("mdbox/scan: not yet implemented; see Phase MDBOX-PROD-READY in TODO.md")
-}
-
-func (u *userMailbox) Close() error { return nil }
-
-// ---- dbox binary format helpers --------------------------------------------
-
-func buildRecord(body []byte, guid string, ts, physSize, virtSize uint32) []byte {
-	size := uint64(len(body))
-	header := fmt.Sprintf("%sN %08x %016x\n", magicPre, uint32(0), size)
-	meta := fmt.Sprintf("%sG%s\nR%08x\nZ%08x\nV%08x\n\n",
-		magicPost, guid, ts, physSize, virtSize)
-
-	rec := make([]byte, 0, len(header)+len(body)+len(meta))
-	rec = append(rec, header...)
-	rec = append(rec, body...)
-	rec = append(rec, meta...)
-	return rec
-}
-
-func parseHeader(r io.Reader) (uint32, error) {
-	hdr := make([]byte, 30)
-	if _, err := io.ReadFull(r, hdr); err != nil {
-		return 0, fmt.Errorf("read header: %w", err)
-	}
-	if hdr[0] != 0x01 || hdr[1] != 0x02 {
-		return 0, errors.New("bad dbox magic")
-	}
-	sz64, err := strconv.ParseUint(strings.TrimSpace(string(hdr[13:29])), 16, 64)
+// Save writes the message body into the user-wide multi-message
+// store via mdboxmap.AppendBatch. Returns the assigned map_uid
+// as a decimal string — the caller stores this in
+// MessageMeta.Filename.
+//
+// uid parameter is the per-folder UID assigned by the external
+// fileindex; mdbox ignores it (filename is the map_uid, not the
+// folder UID).
+func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
+	body, err := readBodyCRLF(r)
 	if err != nil {
-		return 0, fmt.Errorf("parse size: %w", err)
+		return "", fmt.Errorf("mdbox/save: read body: %w", err)
 	}
-	return uint32(sz64), nil
+	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
+		return "", fmt.Errorf("mdbox/save: mkdir folder: %w", err)
+	}
+	m, err := u.openMap()
+	if err != nil {
+		return "", err
+	}
+
+	record := buildDboxRecord(body)
+	recLen := uint32(len(record))
+
+	// 1. Reserve a slot in the map (file_id + offset). The map
+	//    enforces rotation past mdbox_rotate_size.
+	batch := m.AppendBatch()
+	fileID, _ := batch.Next(recLen)
+
+	// 2. Append the record to m.<file_id> under the map X lock —
+	//    we take it again here so the physical write and the
+	//    Finish() that records the offset happen atomically
+	//    relative to a sibling process. mdboxmap.Finish reloads
+	//    the map state first, so any racing peer that bumped
+	//    highest_file_id while we were writing wins; we re-pick
+	//    our file_id on Finish via the baseDelta logic and the
+	//    record we just wrote ends up at the right physical
+	//    location relative to the *current* file_id.
+	//
+	//    The physical-vs-logical reconciliation is the price of
+	//    avoiding a fcntl on m.<N>; mdboxmap's reload handles it.
+	mpath := u.mfilePath(fileID)
+	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
+		return "", fmt.Errorf("mdbox/save: mkdir storage: %w", err)
+	}
+	f, err := os.OpenFile(mpath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("mdbox/save: open %s: %w", mpath, err)
+	}
+	if _, err := f.Write(record); err != nil {
+		f.Close()
+		return "", fmt.Errorf("mdbox/save: write record: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("mdbox/save: close mfile: %w", err)
+	}
+
+	// 3. Finish — allocates map_uid under the map X lock. Any
+	//    peer that raced won the file_id; mdboxmap reconciles.
+	uids, err := batch.Finish()
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatUint(uint64(uids[0]), 10), nil
 }
 
-// ---- dbox.map helpers ------------------------------------------------------
-
-type mapRecord struct {
-	fileID   uint32
-	offset   uint32
-	size     uint32
-	expunged uint8
-}
-
-func readMapLines(path string) ([]mapRecord, error) {
-	f, err := os.Open(path)
+// Fetch resolves the message identified by filename (decimal
+// map_uid) and returns a reader positioned at the body.
+func (u *userMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
+	mapUID, err := parseFilename(filename)
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/fetch: %w", err)
+	}
+	m, err := u.openMap()
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	var recs []mapRecord
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Text()
-		if line == "" {
-			continue
-		}
-		var rec mapRecord
-		var exp int
-		if _, err := fmt.Sscanf(line, "%d %d %d %d", &rec.fileID, &rec.offset, &rec.size, &exp); err != nil {
-			continue
-		}
-		rec.expunged = uint8(exp)
-		recs = append(recs, rec)
+	entry, ok, err := m.Lookup(mapUID)
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/fetch: lookup: %w", err)
 	}
-	return recs, sc.Err()
+	if !ok {
+		return nil, fmt.Errorf("mdbox/fetch: map_uid %d not found", mapUID)
+	}
+	f, err := os.Open(u.mfilePath(entry.FileID))
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/fetch: open m.%d: %w", entry.FileID, err)
+	}
+	body, err := readRecordBody(f, entry.Offset)
+	_ = f.Close()
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/fetch: %w", err)
+	}
+	return io.NopCloser(bytes.NewReader(body)), nil
 }
 
-func writeMapLines(path string, recs []mapRecord) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o600)
+// Remove decrements the map record's refcount. Bytes stay on
+// disk; purge reclaims them in Phase 6. Idempotent: a Remove of
+// an already-zero-ref record is a no-op (UpdateRefcounts clamps
+// at zero).
+func (u *userMailbox) Remove(_, filename string) error {
+	mapUID, err := parseFilename(filename)
+	if err != nil {
+		return fmt.Errorf("mdbox/remove: %w", err)
+	}
+	m, err := u.openMap()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	for _, rec := range recs {
-		if _, err := fmt.Fprintf(f, "%d %d %d %d\n", rec.fileID, rec.offset, rec.size, rec.expunged); err != nil {
-			return err
-		}
+	return m.UpdateRefcounts([]uint32{mapUID}, -1)
+}
+
+// Copy implements the Copyable optional interface for O(1)
+// IMAP COPY. Returns the source filename unchanged — the
+// destination folder stores the SAME map_uid under a fresh
+// per-folder UID; only the refcount changes physically.
+func (u *userMailbox) Copy(_, srcFilename, _ string, _ uint32) (string, error) {
+	mapUID, err := parseFilename(srcFilename)
+	if err != nil {
+		return "", fmt.Errorf("mdbox/copy: %w", err)
+	}
+	m, err := u.openMap()
+	if err != nil {
+		return "", err
+	}
+	if err := m.UpdateRefcounts([]uint32{mapUID}, +1); err != nil {
+		return "", fmt.Errorf("mdbox/copy: refcount inc: %w", err)
+	}
+	return srcFilename, nil
+}
+
+// List is intentionally empty — mdbox does not iterate its own
+// directory to enumerate messages. The external fileindex is the
+// per-folder source of truth (UID → filename → map_uid). Drivers
+// that need a List override should rebuild from the index.
+func (u *userMailbox) List(_ string) ([]*mailbox.MessageMeta, error) { return nil, nil }
+
+// Scan returns "not yet implemented" until Phase 6 lands the
+// mdbox-storage rebuild logic (walks every m.<N>, recovers GUID
+// + size, reconciles against the map). The error message
+// embeds the phase marker so the admin API can flag the gap.
+func (u *userMailbox) Scan(_ string) ([]mailbox.ScanRecord, error) {
+	return nil, fmt.Errorf("mdbox/scan: not yet implemented — landing in Phase MDBOX-PROD-READY")
+}
+
+// Close releases the cached map handle.
+func (u *userMailbox) Close() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.mapping != nil {
+		_ = u.mapping.Close()
+		u.mapping = nil
 	}
 	return nil
 }
 
-// ---- path helpers ----------------------------------------------------------
+// ---- single-message dbox record (re-implemented here so this
+// driver doesn't reach into dboxv2's unexported helpers) ------
 
-func (u *userMailbox) folderPath(folder string) string {
-	if folder == "INBOX" {
-		return filepath.Join(u.home, "INBOX")
+// buildDboxRecord packs body into the canonical dbox v2 wire
+// format used inside an m.<N> file.
+func buildDboxRecord(body []byte) []byte {
+	size := uint64(len(body))
+	guid := randomGUID()
+	now := uint32(time.Now().Unix())
+
+	var buf bytes.Buffer
+	// File header line — "2 M20 C<stamp>\n"
+	fmt.Fprintf(&buf, "%d M%x C%x\n", dboxVersion, messageHeaderSize, now)
+	// 32-byte message header: magic + 'N' + spaces + size hex + LF.
+	hdr := make([]byte, messageHeaderSize)
+	for i := range hdr {
+		hdr[i] = ' '
 	}
-	return filepath.Join(u.home, "."+folder)
+	hdr[0] = magicPreByte0
+	hdr[1] = magicPreByte1
+	hdr[2] = 'N'
+	copy(hdr[13:29], fmt.Sprintf("%016x", size))
+	hdr[31] = '\n'
+	buf.Write(hdr)
+	buf.Write(body)
+	// Metadata trailer.
+	buf.WriteString(magicPost)
+	fmt.Fprintf(&buf, "G%s\n", hex.EncodeToString(guid[:]))
+	fmt.Fprintf(&buf, "R%x\n", now)
+	fmt.Fprintf(&buf, "V%x\n", uint32(size))
+	buf.WriteByte('\n')
+	return buf.Bytes()
 }
 
-func (u *userMailbox) storageDir() string {
-	return filepath.Join(u.home, "mdbox-storage")
-}
-
-func (u *userMailbox) mfilePath(storageDir string, fileID uint32) string {
-	return filepath.Join(storageDir, fmt.Sprintf("m.%d", fileID))
-}
-
-func (u *userMailbox) mapPath(folder string) string {
-	return filepath.Join(u.folderPath(folder), "dbox.map")
-}
-
-// ---- misc helpers ----------------------------------------------------------
-
-func parseFilename(s string) (fileID, offset uint32, err error) {
-	parts := strings.SplitN(s, ":", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid mdbox filename %q", s)
+// readRecordBody seeks to offset, parses the file-header line
+// and 32-byte message header, then returns the message body
+// bytes.
+func readRecordBody(f *os.File, offset uint32) ([]byte, error) {
+	if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek: %w", err)
 	}
-	id, err := strconv.ParseUint(parts[0], 10, 32)
+	// Consume the variable-length file-header line ("2 M20 C…\n").
+	headerLine := make([]byte, 64)
+	n, err := f.Read(headerLine)
 	if err != nil {
-		return 0, 0, fmt.Errorf("parse file_id: %w", err)
+		return nil, fmt.Errorf("read header line: %w", err)
 	}
-	off, err := strconv.ParseUint(parts[1], 10, 32)
+	lfIdx := bytes.IndexByte(headerLine[:n], '\n')
+	if lfIdx < 0 {
+		return nil, fmt.Errorf("file header line missing LF")
+	}
+	// Rewind past the consumed bytes, then re-seek to the start
+	// of the 32-byte message header.
+	if _, err := f.Seek(int64(offset)+int64(lfIdx)+1, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek to message header: %w", err)
+	}
+	mh := make([]byte, messageHeaderSize)
+	if _, err := io.ReadFull(f, mh); err != nil {
+		return nil, fmt.Errorf("read message header: %w", err)
+	}
+	if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
+		return nil, fmt.Errorf("bad message magic")
+	}
+	size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 	if err != nil {
-		return 0, 0, fmt.Errorf("parse offset: %w", err)
+		return nil, fmt.Errorf("parse size: %w", err)
 	}
-	return uint32(id), uint32(off), nil
+	body := make([]byte, size)
+	if _, err := io.ReadFull(f, body); err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	return body, nil
 }
 
-func randomGUID() string {
-	b := make([]byte, 16)
-	rand.Read(b) //nolint:errcheck
-	return fmt.Sprintf("%032x", b)
+// readBodyCRLF reads r fully and ensures every line ends with
+// CRLF (matches dbox v2 stream-conversion behaviour).
+func readBodyCRLF(r io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	if !needsCRLF(raw) {
+		return raw, nil
+	}
+	out := make([]byte, 0, len(raw)+len(raw)/16)
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c == '\n' && (i == 0 || raw[i-1] != '\r') {
+			out = append(out, '\r', '\n')
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func needsCRLF(b []byte) bool {
+	for i, c := range b {
+		if c == '\n' && (i == 0 || b[i-1] != '\r') {
+			return true
+		}
+	}
+	return false
+}
+
+func parseFilename(s string) (uint32, error) {
+	v, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid mdbox filename %q: %w", s, err)
+	}
+	return uint32(v), nil
+}
+
+func randomGUID() [16]byte {
+	var g [16]byte
+	_, _ = rand.Read(g[:])
+	return g
 }

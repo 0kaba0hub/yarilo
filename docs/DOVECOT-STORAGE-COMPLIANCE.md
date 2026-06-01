@@ -844,11 +844,48 @@ contention.
 
 ---
 
-### Phase 5 — mdbox driver rewrite
+### Phase 5 — mdbox driver rewrite ✅ shipped (v1.31.0)
 
 **Goal:** Replace `internal/storage/mailbox/mdbox` with a
-Dovecot-compliant multi-message driver on top of `mdboxmap` +
-`dboxv2` + `pkg/mailindex`.
+multi-message driver on top of `mdboxmap` + dbox v2 message
+format.
+
+**Status:** Driver landed. Filename token surfaced to callers is
+the stringified `map_uid`; the external fileindex stores it in
+`MessageMeta.Filename`. Layout:
+
+  - `<home>/mdbox/storage/m.<N>`         — multi-message body files
+  - `<home>/mdbox/storage/yarilo.map.index` — mdboxmap (legacy
+    `dovecot.map.index` auto-renamed at first Open)
+  - `<home>/mdbox/mailboxes/<folder>/`   — folder marker dir
+
+Save flow uses `mdboxmap.AppendBatch`: reserve `(file_id,
+offset)` → write canonical dbox v2 record to `m.<file_id>` →
+Finish allocates the `map_uid` under the map X lock. The
+record body is the same wire format Phase 3 sdbox writes:
+file-header line + 32-byte message header + body + metadata
+trailer with G/R/V keys.
+
+O(1) IMAP COPY: the driver exposes the optional `Copyable`
+interface — Copy increments the source map record's refcount and
+returns the source filename unchanged. Zero body bytes are read
+or written. The destination folder stores the SAME map_uid under
+a fresh per-folder UID in the external fileindex.
+
+Remove decrements refcount (clamps at zero — purge in Phase 6
+reclaims the bytes). List returns nil — per-folder enumeration
+is the external fileindex's job; mdbox.List would be either
+redundant (folder UIDs already there) or a leaky abstraction
+(global map records leaking through a per-folder API).
+
+Scan returns "not yet implemented — landing in Phase
+MDBOX-PROD-READY"; the admin rebuild flow still surfaces the
+501 with the documented phase marker.
+
+The pre-Phase-5 yarilo mdbox driver is removed; a read-only
+v1legacy reader at `internal/storage/mailbox/mdbox/v1legacy/`
+exposes the data the future yarilo-migrate tool needs (folder +
+map enumerations + per-message body decoder).
 
 **Scope:**
 - New driver at `internal/storage/mailbox/mdbox/` (overwriting
