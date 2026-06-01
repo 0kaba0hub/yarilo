@@ -5,6 +5,7 @@ package lmtp
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -224,6 +225,24 @@ func (s *session) rcptLocal(to string) error {
 			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Mailbox provisioning failed"}
 		}
 		slog.Info("lmtp: provisioned mailbox", "user", user)
+	}
+
+	// Per-(IP, mailbox) rate limit (cluster-wide via
+	// pkg/locks COUNTER-INC). Counter unavailable is non-fatal —
+	// log + accept so a locks outage cannot block delivery.
+	if rl := s.opts.Config.RateLimit; rl.Enabled && s.opts.Locker != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := checkRecipientRate(ctx, s.opts.Locker, s.peerIP, to,
+			rl.PerRecipientBurst, rl.PerRecipientWindowSeconds)
+		cancel()
+		if errors.Is(err, ErrRateLimited) {
+			slog.Warn("lmtp: recipient rate limit exceeded", "ip", s.peerIP, "rcpt", to,
+				"burst", rl.PerRecipientBurst, "window_seconds", rl.PerRecipientWindowSeconds)
+			return &goSmtp.SMTPError{Code: 421, EnhancedCode: goSmtp.EnhancedCode{4, 7, 0}, Message: "Rate limit exceeded for recipient"}
+		}
+		if err != nil {
+			slog.Warn("lmtp: rate-limit counter unavailable, accepting", "ip", s.peerIP, "rcpt", to, "err", err)
+		}
 	}
 
 	// Cluster-wide concurrency check (Dovecot lmtp-local.c:282).

@@ -201,6 +201,41 @@ type LMTPProtocolConfig struct {
 	ClientWorkarounds []string `koanf:"client_workarounds"`
 	// Proxy configures LMTP proxy mode (director → backend routing).
 	Proxy LMTPProxyConfig `koanf:"proxy"`
+	// RateLimit caps deliveries per (sender IP, recipient mailbox)
+	// pair within a sliding time window. Defends a specific
+	// mailbox from one specific source flooding it. Off by default
+	// — opt-in to avoid surprising existing deployments; turn on
+	// for any internet-facing LMTP listener.
+	RateLimit LMTPRateLimitConfig `koanf:"rate_limit"`
+}
+
+// LMTPRateLimitConfig configures the per-(IP, mailbox) token
+// bucket enforced at RCPT TO. Counters live in yarilo-locks
+// (COUNTER-INC primitive) so the limit is cluster-wide, not
+// per-pod.
+//
+// Defaults are tuned for typical legitimate traffic: 100 RCPT
+// for the same (sender IP, recipient mailbox) pair per 60s. A
+// regular client sends 1-10 messages per minute even on spike;
+// mailing list relays fan-out across recipients (and usually
+// across source IPs), so the same (IP, mailbox) pair past 100/min
+// is reliably abuse and not legitimate volume.
+//
+// Operators who run unusual workloads (e.g. a single relay that
+// genuinely pumps >100 delivery attempts per minute into one
+// recipient) raise the burst, widen the window, or set
+// `enabled: false` outright.
+type LMTPRateLimitConfig struct {
+	// Enabled gates the entire check. Default: true.
+	Enabled bool `koanf:"enabled"`
+	// PerRecipientBurst is the max deliveries allowed per
+	// (sender IP, recipient mailbox) pair inside one window
+	// before further RCPT TO commands receive 421 4.7.0.
+	// Default: 100.
+	PerRecipientBurst int `koanf:"per_recipient_burst"`
+	// PerRecipientWindowSeconds is the sliding window width.
+	// Default: 60.
+	PerRecipientWindowSeconds int `koanf:"per_recipient_window_seconds"`
 }
 
 // LMTPProxyConfig holds LMTP proxy settings used on director nodes.
@@ -451,6 +486,11 @@ func Load(path string) (*Config, error) {
 				ReadTimeout:          300,
 				WriteTimeout:         300,
 				UserConcurrencyLimit: 10,
+				RateLimit: LMTPRateLimitConfig{
+					Enabled:                   true,
+					PerRecipientBurst:         100,
+					PerRecipientWindowSeconds: 60,
+				},
 			},
 		},
 		InternalTLS: InternalTLSConfig{

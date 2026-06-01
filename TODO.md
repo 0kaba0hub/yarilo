@@ -36,17 +36,6 @@ dial it on `POST /api/backend/sessions/kick`.
 
 ---
 
-## Anvil — per-source-IP token bucket (follow-up from LMTP-PARITY-ANVIL)
-
-Even with cluster-wide per-recipient LMTP concurrency in place,
-a sender can fan out across millions of recipients. Add a `RATE`
-command on anvil keyed by peer IP with a configurable burst +
-rate; LMTP rejects deliveries past the budget with `421 4.7.0`.
-Dovecot itself does not ship this — optional but worth adding
-for our threat model.
-
----
-
 ## Backend admin API — folder write ops
 
 `/api/backend/folder/{create,delete,rename,expunge}` are not
