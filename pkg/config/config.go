@@ -187,7 +187,11 @@ type LMTPProtocolConfig struct {
 	HdrDeliveryAddress string `koanf:"hdr_delivery_address"`
 	// VerboseReplies includes diagnostic details in error responses. Default: false.
 	VerboseReplies bool `koanf:"verbose_replies"`
-	// UserConcurrencyLimit is the max concurrent deliveries per user (0 = unlimited). Default: 0.
+	// UserConcurrencyLimit is the max concurrent deliveries per user enforced
+	// cluster-wide via yarilo-anvil at RCPT TO. Default: 10 (matches Dovecot).
+	// Value 0 is a hard configuration error — operators that genuinely want
+	// no limit MUST set -1 ("unlimited"), so a missing or zeroed config can
+	// never silently turn off the DoS guard.
 	UserConcurrencyLimit int `koanf:"user_concurrency_limit"`
 	// ReadTimeout is the per-command read timeout in seconds. Default: 300.
 	ReadTimeout int `koanf:"read_timeout"`
@@ -441,11 +445,12 @@ func Load(path string) (*Config, error) {
 				},
 			},
 			LMTP: LMTPProtocolConfig{
-				LoginGreeting:      "Yarilo ready.",
-				AddReceivedHeader:  true,
-				HdrDeliveryAddress: "final",
-				ReadTimeout:        300,
-				WriteTimeout:       300,
+				LoginGreeting:        "Yarilo ready.",
+				AddReceivedHeader:    true,
+				HdrDeliveryAddress:   "final",
+				ReadTimeout:          300,
+				WriteTimeout:         300,
+				UserConcurrencyLimit: 10,
 			},
 		},
 		InternalTLS: InternalTLSConfig{
@@ -503,6 +508,13 @@ func (cfg *Config) validate() error {
 		if cfg.InternalTLS.Cert == "" || cfg.InternalTLS.Key == "" || cfg.InternalTLS.CA == "" {
 			return fmt.Errorf("config: internal_tls.enabled is true but cert/key/ca are not set")
 		}
+	}
+	// Mirror Dovecot lmtp-settings.c:215 — a 0 value silently disables the
+	// per-user concurrency guard, which is a multi-tenant footgun. Force
+	// operators to pick: leave default (10), set a positive integer, or
+	// -1 for "unlimited".
+	if cfg.Services.LMTP.Active() && cfg.Protocol.LMTP.UserConcurrencyLimit == 0 {
+		return fmt.Errorf(`config: lmtp.user_concurrency_limit must not be 0 (did you mean "unlimited" via -1?)`)
 	}
 	return nil
 }

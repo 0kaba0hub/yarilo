@@ -1,27 +1,36 @@
 // Package anvil implements the yarilo-anvil TCP+mTLS connection-accounting server.
-// Login pods call it to enforce mail_max_userip_connections across the cluster.
+// Login pods call it to enforce mail_max_userip_connections across the cluster;
+// LMTP backend pods call it to enforce lmtp_user_concurrency_limit.
 //
 // Protocol (TAB-delimited, LF-terminated):
 //
 //	Server → Client handshake:
-//	  VERSION\tyarilo-anvil\t1\t1\n
+//	  VERSION\tyarilo-anvil\t1\t2\n
 //	  DONE\n
 //
 //	Client commands:
 //	  CONNECT\t{id}\t{user}\t{ip}\t{service}\n
 //	  DISCONNECT\t{id}\t{user}\t{ip}\t{service}\n
 //	  WHO[\tservice={s}][\tuser={u}]\n
+//	  LOOKUP\t{user}\t{service}\n          ← 1.2 (LMTP cluster-wide accounting)
 //
 //	Server responses:
 //	  OK\t{id}\n
 //	  FAIL\t{id}\treason=too-many-connections\n
+//	  COUNT\t{n}\n                          ← LOOKUP reply
 //	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\n
 //	  DONE\n
 //
 // WHO replies with one SESSION line per matching active session,
 // then DONE. The optional service= / user= tokens narrow the list.
-// Minor protocol version bumped 1.0 → 1.1 when WHO landed; older
-// clients ignore the unknown command entirely.
+// LOOKUP replies with a single COUNT line carrying the live count
+// of (user, service) pairs.
+//
+// Minor protocol version bumps:
+//   - 1.0 → 1.1: WHO command
+//   - 1.1 → 1.2: LOOKUP command
+//
+// Older clients ignore unknown commands entirely.
 package anvil
 
 import (
@@ -41,7 +50,7 @@ import (
 const (
 	protoName = "yarilo-anvil"
 	majorVer  = 1
-	minorVer  = 1
+	minorVer  = 2
 )
 
 // SessionInfo is one tracked client connection. Exported so the
@@ -150,6 +159,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleDisconnect(conn, fields)
 		case "WHO":
 			s.handleWho(conn, fields[1:])
+		case "LOOKUP":
+			s.handleLookup(conn, fields)
 		}
 	}
 }
@@ -217,6 +228,37 @@ func (s *Server) handleWho(conn net.Conn, args []string) {
 			sess.ID, sess.User, sess.IP, sess.Service, sess.ConnectedAt.Unix())
 	}
 	fmt.Fprintln(conn, "DONE")
+}
+
+// handleLookup processes: LOOKUP\t{user}\t{service}
+//
+// Replies with a single line: COUNT\t{n}\n where n is the live
+// number of sessions matching (user, service). Used by LMTP at
+// RCPT TO to enforce lmtp_user_concurrency_limit cluster-wide.
+//
+// Missing service is treated as "any service" — practically this
+// means an LMTP delivery counter without a service filter, which
+// is over-counting but never under-counting. Real callers always
+// supply both.
+func (s *Server) handleLookup(conn net.Conn, fields []string) {
+	if len(fields) < 3 {
+		fmt.Fprintf(conn, "COUNT\t0\n")
+		return
+	}
+	user, service := fields[1], fields[2]
+	count := 0
+	s.mu.Lock()
+	for _, sess := range s.sessions {
+		if sess.User != user {
+			continue
+		}
+		if service != "" && !strings.EqualFold(sess.Service, service) {
+			continue
+		}
+		count++
+	}
+	s.mu.Unlock()
+	fmt.Fprintf(conn, "COUNT\t%d\n", count)
 }
 
 func parseFilter(args []string) map[string]string {

@@ -6,6 +6,7 @@ package lmtp
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -51,14 +52,22 @@ type Options struct {
 	// mailbox key so subscribed IMAP IDLE sessions on other pods receive
 	// the notification immediately. Nil disables cross-pod notifications.
 	Locker locks.Locker
+
+	// AnvilAddr is the yarilo-anvil server address. When non-empty the
+	// LMTP backend issues LOOKUP + CONNECT per RCPT TO to enforce
+	// lmtp_user_concurrency_limit cluster-wide. Empty disables anvil
+	// integration (single-pod dev / unit-test path); the per-recipient
+	// concurrency check then falls back to "no limit, just deliver".
+	AnvilAddr string
+	// AnvilTLS optionally wraps the anvil dialer with mTLS.
+	AnvilTLS *tls.Config
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
 type Server struct {
-	srv     *goSmtp.Server
-	opts    Options
-	router  *proxyRouter   // non-nil when proxy mode is active
-	userSem *userSemaphore // non-nil when UserConcurrencyLimit > 0
+	srv    *goSmtp.Server
+	opts   Options
+	router *proxyRouter // non-nil when proxy mode is active
 }
 
 // New creates an LMTP server from Options.
@@ -72,13 +81,8 @@ func New(opts Options) *Server {
 		router = newProxyRouter(opts.Hostname, opts.Router, opts.BackendPort, timeout)
 	}
 
-	var userSem *userSemaphore
-	if opts.Config.UserConcurrencyLimit > 0 {
-		userSem = newUserSemaphore(opts.Config.UserConcurrencyLimit)
-	}
-
-	s := &Server{opts: opts, router: router, userSem: userSem}
-	be := &backend{opts: opts, router: router, userSem: userSem}
+	s := &Server{opts: opts, router: router}
+	be := &backend{opts: opts, router: router}
 
 	srv := goSmtp.NewServer(be)
 	srv.Domain = opts.Hostname
@@ -143,13 +147,22 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 // ---- backend ----------------------------------------------------------------
 
 type backend struct {
-	opts    Options
-	router  *proxyRouter
-	userSem *userSemaphore
+	opts   Options
+	router *proxyRouter
 }
 
-func (b *backend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
-	return &session{opts: b.opts, router: b.router, userSem: b.userSem}, nil
+func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
+	peerIP := ""
+	if c != nil {
+		if addr := c.Conn().RemoteAddr(); addr != nil {
+			if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+				peerIP = host
+			} else {
+				peerIP = addr.String()
+			}
+		}
+	}
+	return &session{opts: b.opts, router: b.router, peerIP: peerIP}, nil
 }
 
 // ---- session ----------------------------------------------------------------
@@ -157,10 +170,20 @@ func (b *backend) NewSession(_ *goSmtp.Conn) (goSmtp.Session, error) {
 type session struct {
 	opts       Options
 	router     *proxyRouter
-	userSem    *userSemaphore
+	peerIP     string // upstream MTA IP, captured at NewSession
 	from       string
 	rcpts      []string            // local recipients
 	proxyRcpts map[string][]string // backend addr → []rcpt (proxy mode)
+
+	// anvilConn is the active connection to yarilo-anvil for
+	// this LMTP session. Opened lazily on the first local RCPT,
+	// closed in Logout. Nil when AnvilAddr is unset (single-pod
+	// dev mode / unit tests).
+	anvilConn *anvilSessionClient
+	// rcptAnvilIDs maps RCPT TO address → anvil session id so
+	// LMTPData / Reset / Logout can DISCONNECT the matching
+	// entry once delivery completes (success or failure).
+	rcptAnvilIDs map[string]string
 }
 
 func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
@@ -201,6 +224,29 @@ func (s *session) rcptLocal(to string) error {
 			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Mailbox provisioning failed"}
 		}
 		slog.Info("lmtp: provisioned mailbox", "user", user)
+	}
+
+	// Cluster-wide concurrency check (Dovecot lmtp-local.c:282).
+	// Lazy-init the anvil session client on first RCPT. Anvil
+	// unreachable is non-fatal — log + deliver without the limit,
+	// matching Dovecot's tolerance when the anvil socket is gone.
+	if s.opts.AnvilAddr != "" {
+		if s.anvilConn == nil {
+			s.anvilConn = newAnvilSessionClient(s.opts.AnvilAddr, s.opts.AnvilTLS,
+				s.opts.Config.UserConcurrencyLimit, s.peerIP)
+		}
+		id, err := s.anvilConn.reserveDelivery(user)
+		if errors.Is(err, ErrTooManyConcurrent) {
+			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Too many concurrent deliveries for user"}
+		}
+		if err != nil {
+			slog.Warn("lmtp: anvil unavailable, accepting without cluster limit", "user", user, "err", err)
+		} else {
+			if s.rcptAnvilIDs == nil {
+				s.rcptAnvilIDs = make(map[string]string)
+			}
+			s.rcptAnvilIDs[to] = id
+		}
 	}
 	s.rcpts = append(s.rcpts, to)
 	return nil
@@ -276,7 +322,11 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		}
 	}
 
-	// Local recipients: deliver directly.
+	// Local recipients: deliver directly. The cluster-wide
+	// concurrency check (lmtp_user_concurrency_limit) already
+	// fired at RCPT TO via anvil reserveDelivery; here we just
+	// deliver and DISCONNECT the matching anvil entry on the way
+	// out (success or failure).
 	for _, rcpt := range s.rcpts {
 		deliverRcpt := rcpt
 		if !s.opts.Config.SaveToDetailMailbox {
@@ -284,16 +334,6 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		}
 
 		msg := s.prependHeaders(data, rcpt, deliverRcpt)
-
-		if s.userSem != nil {
-			user, _, _ := resolveMailbox(deliverRcpt)
-			if !s.userSem.acquire(user) {
-				slog.Warn("lmtp: user concurrency limit reached", "user", user)
-				status.SetStatus(rcpt, &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 4, 5}, Message: "Too many concurrent deliveries"})
-				continue
-			}
-			defer s.userSem.release(user) //nolint:gocritic
-		}
 
 		username, folder, _ := resolveMailbox(deliverRcpt)
 		resolver := s.opts.Resolver
@@ -317,15 +357,32 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		} else {
 			slog.Info("lmtp: delivered", "rcpt", rcpt, "size", len(msg))
 		}
+		// Release the anvil reservation regardless of outcome.
+		// Any leftover entries get swept by releaseAll in Logout.
+		if id, ok := s.rcptAnvilIDs[rcpt]; ok {
+			s.anvilConn.releaseDelivery(id)
+			delete(s.rcptAnvilIDs, rcpt)
+		}
 		status.SetStatus(rcpt, err)
 	}
 	return nil
 }
 
 func (s *session) Reset() {
+	// Release every still-outstanding anvil reservation. The
+	// SMTP standard lets a client RSET mid-transaction; without
+	// this we'd leak slots until session Logout fires.
+	s.anvilConn.releaseAll()
+	s.rcptAnvilIDs = nil
 	s.from = ""
 	s.rcpts = nil
 	s.proxyRcpts = nil
 }
 
-func (s *session) Logout() error { return nil }
+func (s *session) Logout() error {
+	// Final cleanup — DATA never arrived (or arrived and Reset
+	// already cleared the map; releaseAll is idempotent).
+	s.anvilConn.releaseAll()
+	s.rcptAnvilIDs = nil
+	return nil
+}

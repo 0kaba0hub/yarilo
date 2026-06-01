@@ -92,23 +92,6 @@ func TestLMTP_HdrDeliveryAddress_None(t *testing.T) {
 	checkDirNoHeader(t, fs.maildirCur, "Delivered-To")
 }
 
-func TestLMTP_UserConcurrencyLimit(t *testing.T) {
-	sem := newUserSemaphore(1)
-	user := "alice@example.com"
-
-	if !sem.acquire(user) {
-		t.Fatal("first acquire should succeed")
-	}
-	if sem.acquire(user) {
-		t.Fatal("second acquire should fail when limit=1")
-	}
-	sem.release(user)
-	if !sem.acquire(user) {
-		t.Fatal("acquire after release should succeed")
-	}
-	sem.release(user)
-}
-
 func TestParseWorkarounds(t *testing.T) {
 	cases := []struct {
 		input []string

@@ -247,6 +247,7 @@ func New(cfg *config.Config) (*Server, error) {
 			XClientTrustedNets: xclientNets,
 			TLSConfig:          lmtpTLS,
 			Locker:             locker,
+			AnvilAddr:          cfg.AnvilService.Listen,
 		})
 	}
 
