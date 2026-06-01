@@ -49,57 +49,14 @@ the server; or (b) push-style accounting where session binaries
 
 ---
 
-## Phase LMTP-PARITY-ANVIL — close LMTP DoS gap to Dovecot parity (CRITICAL, blocks production)
+## Anvil — per-source-IP token bucket (follow-up from LMTP-PARITY-ANVIL)
 
-The current LMTP path is materially weaker than Dovecot's
-defaults. Verified against `dovecot-2.4/src/lmtp/`:
-
-| Behaviour | Dovecot | yarilo today |
-|:---|:---|:---|
-| `lmtp_user_concurrency_limit` default | **10** | **0 = unlimited** |
-| `0` allowed in config | **No (hard error)** | Yes (silently disables) |
-| Cluster-wide concurrency | Yes (anvil LOOKUP per RCPT) | No (per-pod semaphore only) |
-| LMTP visible in `who` | Yes (`service_name = "lmtp"`) | No |
-| Anvil registration on RCPT | Yes (`master_service_anvil_connect`) | No |
-
-Trivially DoS-able today: a malicious or misconfigured sender that
-opens parallel deliveries against one or many recipients overruns
-the per-pod semaphore (×N pods worth of parallelism), the
-yarilo-locks queue, NFS inode pressure and disk space — all
-silently, with zero operator visibility.
-
-Unblocked by, matching Dovecot wire-for-wire:
-
-1. **Anvil LOOKUP command.** Add `LOOKUP\t<user>\t<service>` →
-   `OK\t<count>\n` so a client can read the cluster-wide active
-   count for a (user, service) pair before deciding to accept.
-2. **LMTP integration at RCPT TO.** `yarilo-lmtp` issues LOOKUP
-   for the recipient, compares against
-   `lmtp_user_concurrency_limit`, then `anvil.Connect` (already
-   wired). Drop the per-pod `userSemaphore` once anvil owns
-   accounting — single source of truth.
-3. **Disconnect on every termination path.** `anvil.Disconnect`
-   on DATA-end / RSET / connection drop / transaction failure.
-   Mirrors Dovecot's `lmtp_local_rcpt_anvil_disconnect`.
-4. **Config defaults change.** `UserConcurrencyLimit` defaults to
-   10. `0` becomes a hard validation error (`"did you mean
-   unlimited?"`) — exact mirror of Dovecot's check at
-   `src/lmtp/lmtp-settings.c:215`.
-5. **`who --protocol lmtp` now lists active deliveries.** Falls
-   out for free once step 2 lands.
-6. **Per-source-IP token bucket (follow-up, not blocking).** Even
-   with cluster-wide per-recipient limit, a sender can fan out
-   across 1M recipients. Add `RATE\t<ip>` on anvil keyed by peer
-   IP with a configurable burst+rate. Optional in v1; Dovecot
-   itself does not ship this — but worth adding for our threat
-   model.
-
-Why deferred from BACKEND-API-EASY: this is a wire-protocol change
-to anvil (new LOOKUP command), an LMTP rework, a config default
-change, and per-step tests — meaningful scope on its own. Belongs
-in its own PR with a focused review.
-
-**MUST** ship before any multi-tenant production deployment.
+Even with cluster-wide per-recipient LMTP concurrency in place,
+a sender can fan out across millions of recipients. Add a `RATE`
+command on anvil keyed by peer IP with a configurable burst +
+rate; LMTP rejects deliveries past the budget with `421 4.7.0`.
+Dovecot itself does not ship this — optional but worth adding
+for our threat model.
 
 ---
 

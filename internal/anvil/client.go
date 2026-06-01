@@ -152,6 +152,30 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 	}
 }
 
+// Lookup asks the server how many active sessions exist for
+// (user, service). Returns 0 when no sessions match. Used by
+// LMTP at RCPT TO to enforce lmtp_user_concurrency_limit
+// cluster-wide before issuing Connect.
+func (c *Conn) Lookup(user, service string) (int, error) {
+	if _, err := fmt.Fprintf(c.conn, "LOOKUP\t%s\t%s\n", user, service); err != nil {
+		return 0, fmt.Errorf("anvil/client: write LOOKUP: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return 0, fmt.Errorf("anvil/client: read LOOKUP response: %w", err)
+	}
+	line = strings.TrimRight(line, "\n")
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 || fields[0] != "COUNT" {
+		return 0, fmt.Errorf("anvil/client: unexpected LOOKUP response: %q", line)
+	}
+	n, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, fmt.Errorf("anvil/client: bad LOOKUP count %q: %w", fields[1], err)
+	}
+	return n, nil
+}
+
 // Close closes the underlying TCP connection.
 func (c *Conn) Close() { c.conn.Close() }
 
