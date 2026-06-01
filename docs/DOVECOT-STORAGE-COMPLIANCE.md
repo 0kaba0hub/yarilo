@@ -780,10 +780,43 @@ UID is in the filename).
 
 ---
 
-### Phase 4 — `mdboxmap` package
+### Phase 4 — `mdboxmap` package ✅ shipped (v1.30.0)
 
 **Goal:** Implement Dovecot's `mdbox-map.c` in Go using
 `pkg/mailindex`.
+
+**Status:** Package landed at
+`internal/storage/mailbox/mdbox/mdboxmap/`. Drop-in compatible
+with Dovecot 2.4 `dovecot.map.index` on-disk format:
+- "map" extension — 12 B per record `(file_id, offset, size)`,
+  4 B header `highest_file_id`
+- "ref" extension — 2 B uint16 refcount per record
+- `Record.UID` column is the canonical `map_uid`
+
+Public surface:
+- `Open(path, username, WithLocker(...))` — opens or creates
+- `AppendBatch().Next(size) → (file_id, offset)` + `Finish()
+  → []map_uid` — reserves a strictly-increasing UID range under
+  the cross-process map X lock (`locks.MdboxMapKey(user)`),
+  rolls to a new `m.<N>` when the cumulative offset would
+  exceed `mdbox_rotate_size` (2 MiB default).
+- `Lookup(map_uid)` / `LookupMany([]uid)` — O(1)
+- `UpdateRefcounts(uids, delta)` — clamps at 0/0xFFFF; missing
+  UIDs surface as errors (caller bug)
+- `GetZeroRefFiles()` / `CompactGarbage()` — for purge driver
+  discovery
+- `RecordsInFile(file_id)` — every entry living in one m.<N>
+- `AppendMove(moved, expunged)` — atomic rewrite of physical
+  pointers + expunge of zero-ref records (purge primitive)
+
+Lock plumbing follows the strict **map-then-folder** order
+documented in §4.2: `MdboxMapKey(user)` first, then
+`MailboxKey(user, folder)`. Per-process `sync.Mutex` is the
+fast-path; cross-process serialisation routes through
+`locks.Acquire` with the standard 30s TTL.
+
+Phase 5 (mdbox driver rewrite) consumes this package; nothing in
+the codebase imports it yet beyond its own tests.
 
 **Scope:**
 - `internal/storage/mailbox/mdbox/mdboxmap/` package.

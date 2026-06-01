@@ -25,7 +25,7 @@ func TestInitCreatesLayout(t *testing.T) {
 	_, _, home := newTestUser(t)
 	for _, p := range []string{
 		filepath.Join(home, "sdbox", "control"),
-		filepath.Join(home, "sdbox", "control", "dovecot-uidvalidity"),
+		filepath.Join(home, "sdbox", "control", "yarilo-uidvalidity"),
 		filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails"),
 	} {
 		if _, err := os.Stat(p); err != nil {

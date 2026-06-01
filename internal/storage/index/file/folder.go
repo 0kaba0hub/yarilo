@@ -27,7 +27,7 @@ import (
 // operator can roll back manually if needed.
 func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
 	indexDir := u.indexDir(folder)
-	indexPath := indexDir + "/dovecot.index"
+	indexPath := indexPathFor(indexDir)
 
 	// Dedup: reuse an already-open folderState for the same
 	// (user, folder) so consecutive OpenFolder calls in the same
@@ -47,6 +47,9 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("fileindex/openfolder: mkdir: %w", err)
+	}
+	if err := migrateLegacyFilenames(indexDir); err != nil {
+		return nil, err
 	}
 
 	fs := &folderState{

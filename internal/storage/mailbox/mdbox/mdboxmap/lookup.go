@@ -1,0 +1,70 @@
+package mdboxmap
+
+import (
+	"fmt"
+
+	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
+)
+
+// Lookup resolves one map_uid to its on-disk location and current
+// refcount. Returns (entry, true, nil) on success, (_, false, nil)
+// when the UID is not present. Reads under m.mu only — no
+// cross-process lock — the caller may see a brief stale view
+// when a sibling process appends concurrently, but never a torn
+// record (mailindex Recreate is atomic .tmp+rename).
+func (m *Map) Lookup(mapUID uint32) (MapEntry, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lookupLocked(mapUID)
+}
+
+func (m *Map) lookupLocked(mapUID uint32) (MapEntry, bool, error) {
+	if m.byMapUID == nil {
+		return MapEntry{}, false, nil
+	}
+	idx, ok := m.byMapUID[mapUID]
+	if !ok {
+		return MapEntry{}, false, nil
+	}
+	rec := m.f.Records[idx]
+	entry, err := recordToEntry(rec)
+	if err != nil {
+		return MapEntry{}, false, err
+	}
+	return entry, true, nil
+}
+
+// LookupMany resolves a batch of map_uids in a single lock hop.
+// Returns one MapEntry per requested UID; entries that did not
+// resolve carry UID=0. The result slice mirrors the input order.
+func (m *Map) LookupMany(mapUIDs []uint32) ([]MapEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MapEntry, len(mapUIDs))
+	for i, uid := range mapUIDs {
+		e, ok, err := m.lookupLocked(uid)
+		if err != nil {
+			return nil, fmt.Errorf("mdboxmap/lookup uid=%d: %w", uid, err)
+		}
+		if ok {
+			out[i] = e
+		}
+	}
+	return out, nil
+}
+
+// recordToEntry unpacks a mailindex Record into the typed
+// MapEntry surfaced through the Map API.
+func recordToEntry(rec *mailindex.Record) (MapEntry, error) {
+	fileID, offset, size, err := decodeMapExt(rec.Ext[extMap])
+	if err != nil {
+		return MapEntry{}, fmt.Errorf("decode map ext: %w", err)
+	}
+	return MapEntry{
+		UID:      rec.UID,
+		FileID:   fileID,
+		Offset:   offset,
+		Size:     size,
+		RefCount: decodeRefExt(rec.Ext[extRef]),
+	}, nil
+}

@@ -220,8 +220,8 @@ cluster to a small multi-replica production setup.
 
 | Component | Default replicas | Scale by |
 |:---|:---|:---|
-| `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login` | 1 each | `replicaCount` per protocol (login is stateless beyond TLS state) |
-| `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp` | 1 each | `replicaCount` per protocol (coordination via locks) |
+| `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login` | 1 each | `replicaCount` per protocol (login is stateless beyond TLS state) |
+| `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp` | 1 each | `replicaCount` per protocol (coordination via locks); `yarilo-lmtp` is MTA-facing and has no login proxy — its Service is reached directly by upstream MTAs |
 | `yarilo-auth` | 1 | `replicaCount` (stateless; userdb in SQL) |
 | `yarilo-anvil` | 1 | `replicaCount` (state in Redis) |
 | `yarilo-locks` | 2 | `replicaCount` (state in Redis; 2 = HA default) |
@@ -235,8 +235,10 @@ RWX provisioner; on multi-node clusters it must be NFS or CephFS.
 
 ### Routing
 
-A k8s `Service` per public port (993, 995, 465, 587, 24, 143, 110) load-balances connections
-across the matching login pods. There is **no director** — sessions distribute round-robin (or
+A k8s `Service` per public port (993, 995, 465, 587, 143, 110) load-balances connections
+across the matching login pods. Port `24` is a `Service` in front of `yarilo-lmtp` directly —
+LMTP is MTA-facing and authenticates via the SMTP envelope, so no separate login proxy.
+There is **no director** — sessions distribute round-robin (or
 by k8s `Service`'s sessionAffinity setting). Cross-pod write contention is resolved through
 `yarilo-locks`; that adds RTT but stays correct. Once cross-pod contention is a measured
 problem, the upgrade path is a director deployment (separate document); the session and login
