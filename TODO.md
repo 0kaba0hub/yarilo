@@ -36,19 +36,6 @@ dial it on `POST /api/backend/sessions/kick`.
 
 ---
 
-## Anvil — session TTL / heartbeat to avoid stale entries
-
-`yarilo-anvil` registers sessions on CONNECT and drops them on
-DISCONNECT. If a login pod crashes, DISCONNECT never fires and the
-entry leaks until anvil restarts. `who` then over-reports.
-
-Unblocked by: either (a) a TTL field set at CONNECT, refreshed by
-periodic HEARTBEAT from login, swept by a background goroutine on
-the server; or (b) push-style accounting where session binaries
-(not login) keep the registration alive via keepalives.
-
----
-
 ## Anvil — per-source-IP token bucket (follow-up from LMTP-PARITY-ANVIL)
 
 Even with cluster-wide per-recipient LMTP concurrency in place,

@@ -225,7 +225,22 @@ func (s *Server) handleConn(conn net.Conn) {
 					return
 				}
 			} else {
+				// Anvil registration succeeded — kick off a
+				// background HEARTBEAT loop so a crashed login
+				// pod cannot leak this session past the
+				// server-side TTL.
+				hbCtx, hbCancel := context.WithCancel(context.Background())
+				hbDone := make(chan struct{})
+				go func() {
+					defer close(hbDone)
+					interval := anvil.DefaultSessionTTL / 3
+					if err := ac.HeartbeatLoop(hbCtx, sessID, interval, nil); err != nil {
+						slog.Debug("login: anvil heartbeat loop", "err", err)
+					}
+				}()
 				defer func() {
+					hbCancel()
+					<-hbDone
 					if err := ac.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
 						slog.Debug("login: anvil disconnect", "err", err)
 					}

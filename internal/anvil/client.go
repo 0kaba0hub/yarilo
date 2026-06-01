@@ -2,6 +2,7 @@ package anvil
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -152,6 +153,31 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 	}
 }
 
+// Heartbeat extends the TTL of an active session on the anvil
+// server. Returns (true, nil) on hit, (false, nil) when the
+// server reports `reason=unknown` (caller should re-issue
+// Connect), or an error on transport failure.
+func (c *Conn) Heartbeat(id string) (bool, error) {
+	if _, err := fmt.Fprintf(c.conn, "HEARTBEAT\t%s\n", id); err != nil {
+		return false, fmt.Errorf("anvil/client: write HEARTBEAT: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("anvil/client: read HEARTBEAT response: %w", err)
+	}
+	line = strings.TrimRight(line, "\n")
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 || fields[0] != "OK" {
+		return false, fmt.Errorf("anvil/client: unexpected HEARTBEAT response: %q", line)
+	}
+	for _, f := range fields[2:] {
+		if f == "reason=unknown" {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // Lookup asks the server how many active sessions exist for
 // (user, service). Returns 0 when no sessions match. Used by
 // LMTP at RCPT TO to enforce lmtp_user_concurrency_limit
@@ -178,6 +204,44 @@ func (c *Conn) Lookup(user, service string) (int, error) {
 
 // Close closes the underlying TCP connection.
 func (c *Conn) Close() { c.conn.Close() }
+
+// HeartbeatLoop is the recommended client-side renew pattern.
+// It fires Heartbeat(id) every `interval` until ctx is cancelled
+// or the underlying conn errors out. interval should be set to
+// roughly TTL/3 so a single missed beat does not reap the
+// session (DefaultSessionTTL / 3 ≈ 30s for the default config).
+//
+// On unknown-session response the loop logs a warning via the
+// provided logger and exits — the caller is responsible for
+// reconnecting + re-issuing CONNECT if it wants to keep the
+// session registered.
+//
+// The returned error is non-nil only on a transport failure;
+// graceful ctx cancellation returns nil.
+func (c *Conn) HeartbeatLoop(ctx context.Context, id string, interval time.Duration, onUnknown func()) error {
+	if interval <= 0 {
+		return fmt.Errorf("anvil/client: heartbeat interval must be > 0")
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			ok, err := c.Heartbeat(id)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				if onUnknown != nil {
+					onUnknown()
+				}
+				return nil
+			}
+		}
+	}
+}
 
 // ErrTooManyConns is returned by Connect when the anvil server responds FAIL
 // with reason=too-many-connections.
