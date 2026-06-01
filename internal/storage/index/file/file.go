@@ -136,6 +136,14 @@ func (u *userIndex) indexDir(folder string) string {
 // withFolderLock runs fn under the cross-process index lock for
 // the supplied folder state. When no locker is wired (tests),
 // fn runs unguarded.
+//
+// The HoldsResource() shortcut is preserved here so the POP3 QUIT
+// pattern (outer caller takes the lock then drives per-message
+// storage calls that touch the same key) does not deadlock against
+// itself. The cross-goroutine race that arises when two goroutines
+// on the same locks client see each other's holds-map state is a
+// known limitation tracked in TODO.md and will be fixed by
+// goroutine-local re-entrancy in a pkg/locks follow-up.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()

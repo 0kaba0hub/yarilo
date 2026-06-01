@@ -313,8 +313,7 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 // fileindex.
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
-		_, err := fs.appendLocked(m)
-		if err != nil {
+		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
 		return fs.flush(true)
@@ -347,30 +346,30 @@ func (u *userIndex) AllocateAppend(folderID uint64, m *mailbox.MessageMeta) (uin
 // that (bumping the folder high-watermark only if needed so it
 // never goes backwards). When m.ModSeq is zero we bump the
 // counter ourselves and write the new value into m.
-func (fs *folderState) appendLocked(m *mailbox.MessageMeta) (uint32, error) {
+func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if m.UID == 0 {
-		return 0, fmt.Errorf("fileindex/append: UID=0 (use AllocateAppend instead)")
+		return fmt.Errorf("fileindex/append: UID=0 (use AllocateAppend instead)")
 	}
 	var modseq uint64
 	if m.ModSeq != 0 {
 		modseq = m.ModSeq
 		if err := fs.advanceModSeqAtLeast(modseq); err != nil {
-			return 0, err
+			return err
 		}
 	} else {
 		var err error
 		modseq, err = fs.bumpModSeqHeader()
 		if err != nil {
-			return 0, err
+			return err
 		}
 	}
 	kwBits, kwReg, err := keywordsBitmaskFor(fs.keywords, m.Keywords)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	fs.keywords = kwReg
 	if err := fs.persistKeywordRegistry(); err != nil {
-		return 0, err
+		return err
 	}
 	rec := &mailindex.Record{
 		UID:   m.UID,
@@ -395,7 +394,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) (uint32, error) {
 		fs.file.Header.NextUID = m.UID + 1
 	}
 	m.ModSeq = modseq
-	return m.UID, nil
+	return nil
 }
 
 // allocateLocked is the in-memory half of AllocateAppend.
@@ -405,7 +404,7 @@ func (fs *folderState) allocateLocked(m *mailbox.MessageMeta) (uint32, error) {
 		uid = 1
 	}
 	m.UID = uid
-	if _, err := fs.appendLocked(m); err != nil {
+	if err := fs.appendLocked(m); err != nil {
 		return 0, err
 	}
 	return uid, nil

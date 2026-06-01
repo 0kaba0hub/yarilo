@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -27,8 +28,16 @@ type Client struct {
 
 	// holdsMu guards the holds map. Separate from mu so HoldsResource is
 	// safe to call from goroutines that may be inside a roundtrip on mu.
+	//
+	// Holds are tracked per-goroutine — re-entrancy applies only when
+	// the same goroutine that took the lock makes the inner call. A
+	// concurrent goroutine on the same client sees an empty holds map
+	// for itself and goes through normal Acquire (which will hit
+	// ErrBusy and retry until the holder releases). This prevents the
+	// "two goroutines share a client → both skip Acquire" race that
+	// global holds tracking allowed.
 	holdsMu sync.RWMutex
-	holds   map[string]string // resource → lockID
+	holds   map[uint64]map[string]string // goID → resource → lockID
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -76,7 +85,7 @@ func NewClient(ctx context.Context, dial Dialer) (*Client, error) {
 		dial:   dial,
 		conn:   conn,
 		reader: newReader(conn),
-		holds:  make(map[string]string),
+		holds:  make(map[uint64]map[string]string),
 		closed: make(chan struct{}),
 	}
 	if err := c.handshake(); err != nil {
@@ -192,8 +201,12 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 		if len(resp) != 2 {
 			return Lock{}, fmt.Errorf("locks/client: malformed OK response: %w", ErrProtocol)
 		}
+		gid := goID()
 		c.holdsMu.Lock()
-		c.holds[resource] = resp[1]
+		if c.holds[gid] == nil {
+			c.holds[gid] = make(map[string]string)
+		}
+		c.holds[gid][resource] = resp[1]
 		c.holdsMu.Unlock()
 		return Lock{ID: resp[1], Resource: resource, Owner: owner, ExpiresAt: expires}, nil
 	case respBusy:
@@ -230,26 +243,66 @@ func (c *Client) Unlock(ctx context.Context, lockID string) error {
 }
 
 // HoldsResource implements Locker. Cheap RLock — safe to call from inside
-// any roundtrip without risk of recursion.
+// any roundtrip without risk of recursion. Returns true only when the
+// CALLING goroutine itself has Acquired this resource; concurrent
+// goroutines on the same client see false and go through normal Acquire.
 func (c *Client) HoldsResource(resource string) bool {
+	gid := goID()
 	c.holdsMu.RLock()
-	_, ok := c.holds[resource]
-	c.holdsMu.RUnlock()
-	return ok
+	defer c.holdsMu.RUnlock()
+	if m, ok := c.holds[gid]; ok {
+		_, has := m[resource]
+		return has
+	}
+	return false
 }
 
 // dropHoldByID removes whichever resource→ID entry matches the supplied
-// lockID. Called from Unlock; no-op if the ID was not tracked (e.g. NOT_FOUND
-// on a stale ID — the holds map was already cleaned).
+// lockID for the calling goroutine. Called from Unlock; no-op if the ID
+// was not tracked (e.g. NOT_FOUND on a stale ID — the holds map was
+// already cleaned).
 func (c *Client) dropHoldByID(lockID string) {
+	gid := goID()
 	c.holdsMu.Lock()
 	defer c.holdsMu.Unlock()
-	for resource, id := range c.holds {
+	m, ok := c.holds[gid]
+	if !ok {
+		return
+	}
+	for resource, id := range m {
 		if id == lockID {
-			delete(c.holds, resource)
+			delete(m, resource)
+			if len(m) == 0 {
+				delete(c.holds, gid)
+			}
 			return
 		}
 	}
+}
+
+// goID returns the current goroutine's ID by parsing the
+// runtime.Stack header. Cheap (one stack-frame copy + a short scan),
+// portable, and gives a stable per-goroutine identifier without
+// depending on runtime internals.
+//
+// Used to track lock ownership per goroutine so re-entrancy
+// (HoldsResource short-circuit) applies only to the goroutine that
+// took the lock, not to concurrent peers on the same Client.
+func goID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	// Header is "goroutine 12345 [...]"; skip "goroutine ".
+	if n < 10 {
+		return 0
+	}
+	var id uint64
+	for _, b := range buf[10:n] {
+		if b < '0' || b > '9' {
+			break
+		}
+		id = id*10 + uint64(b-'0')
+	}
+	return id
 }
 
 // Renew implements Locker.
