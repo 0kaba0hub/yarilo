@@ -61,14 +61,15 @@ func WithOwner(s string) Option {
 	return func(m *Map) { m.owner = s }
 }
 
-// Open opens (or creates) the dovecot.map.index file at path.
-// username is the user identifier the cross-process map lock is
-// keyed on (see locks.MdboxMapKey). On a brand-new file the two
-// canonical extensions ("map" + "ref") are introduced and the
-// file is flushed atomically.
-func Open(path, username string, opts ...Option) (*Map, error) {
+// Open opens (or creates) the per-user mdbox map at dir. The
+// canonical filename is MapIndexFileName ("yarilo.map.index").
+// On first open we also probe for LegacyMapIndexFileName
+// ("dovecot.map.index") and migrate it in place — see
+// loadOrInit. username is the cross-process map-lock key (see
+// locks.MdboxMapKey).
+func Open(dir, username string, opts ...Option) (*Map, error) {
 	m := &Map{
-		path:     path,
+		path:     filepath.Join(dir, MapIndexFileName),
 		username: username,
 	}
 	for _, opt := range opts {
@@ -81,7 +82,7 @@ func Open(path, username string, opts ...Option) (*Map, error) {
 		}
 		m.owner = fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), username)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mdboxmap/open: mkdir: %w", err)
 	}
 	if err := m.loadOrInit(); err != nil {
@@ -100,16 +101,27 @@ func (m *Map) Close() error {
 }
 
 // loadOrInit reads the file from disk or, when it does not yet
-// exist, creates a fresh map.index with the canonical extensions.
+// exist, creates a fresh map index with the canonical extensions.
+//
+// Migration path: if the yarilo-native file is absent but a
+// legacy file is found in the same directory, we rename it into
+// place atomically. From that point on, only the yarilo-native
+// file is read or written.
 func (m *Map) loadOrInit() error {
-	st, err := os.Stat(m.path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return m.createFresh()
-	case err != nil:
+	if _, err := os.Stat(m.path); errors.Is(err, os.ErrNotExist) {
+		legacy := filepath.Join(filepath.Dir(m.path), LegacyMapIndexFileName)
+		if _, lerr := os.Stat(legacy); lerr == nil {
+			if err := os.Rename(legacy, m.path); err != nil {
+				return fmt.Errorf("mdboxmap/load: migrate legacy %s: %w", legacy, err)
+			}
+		} else if !errors.Is(lerr, os.ErrNotExist) {
+			return fmt.Errorf("mdboxmap/load: legacy stat: %w", lerr)
+		} else {
+			return m.createFresh()
+		}
+	} else if err != nil {
 		return fmt.Errorf("mdboxmap/load: stat: %w", err)
 	}
-	_ = st
 	f, err := mailindex.Open(m.path)
 	if err != nil {
 		return fmt.Errorf("mdboxmap/load: open: %w", err)

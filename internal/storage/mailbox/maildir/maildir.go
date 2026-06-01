@@ -255,6 +255,9 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 // appendUIDListLocked appends one entry to the yarilo-uidlist v3
 // sidecar. Caller MUST hold the mailbox X lock.
 func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string) error {
+	if err := u.migrateLegacyUIDList(folder); err != nil {
+		return err
+	}
 	path := u.uidListPath(folder)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
@@ -443,11 +446,42 @@ func (u *userMailbox) Close() error { return nil }
 
 // ---- uidlist ---------------------------------------------------------------
 
+// On-disk filenames. UIDListFileName is what we write; the
+// legacy canonical name is renamed in place on first access so
+// subsequent runs see only the yarilo file.
+const (
+	UIDListFileName       = "yarilo-uidlist"
+	LegacyUIDListFileName = "dovecot-uidlist"
+)
+
 func (u *userMailbox) uidListPath(folder string) string {
-	return filepath.Join(u.folderPath(folder), "yarilo-uidlist")
+	return filepath.Join(u.folderPath(folder), UIDListFileName)
+}
+
+// migrateLegacyUIDList renames dovecot-uidlist → yarilo-uidlist
+// if the yarilo-named file is absent. Idempotent.
+func (u *userMailbox) migrateLegacyUIDList(folder string) error {
+	dst := u.uidListPath(folder)
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	src := filepath.Join(u.folderPath(folder), LegacyUIDListFileName)
+	if _, err := os.Stat(src); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("maildir: legacy uidlist stat: %w", err)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return fmt.Errorf("maildir: legacy uidlist rename: %w", err)
+	}
+	return nil
 }
 
 func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
+	if err := u.migrateLegacyUIDList(folder); err != nil {
+		return nil, err
+	}
 	path := u.uidListPath(folder)
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {

@@ -20,14 +20,16 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// Directory layout constants — values pinned by the canonical
-// reader. Changing them breaks Dovecot drop-in compatibility.
+// Directory layout constants — values pinned by the wire spec.
+// Changing them breaks the in-place format the rest of the
+// storage layer depends on.
 const (
 	sdboxRoot         = "sdbox"
 	mailboxesDir      = "mailboxes"
 	dboxMailsDir      = "dbox-Mails"
 	controlDir        = "control"
-	uidvalidityFile   = "dovecot-uidvalidity"
+	uidvalidityFile   = "yarilo-uidvalidity"
+	legacyUIDValidity = "dovecot-uidvalidity"
 	temporaryPrefix   = ".temp."
 	sdboxMailPrefix   = "u."
 	uidvalidityFormat = "%08x" // 8 hex digits, lowercase
@@ -137,15 +139,27 @@ func (u *userMailbox) Init() error {
 	return nil
 }
 
-// ensureUIDValidity creates control/dovecot-uidvalidity with the
-// current unix timestamp on first run. Subsequent runs see the
-// file and skip — the value never decreases.
+// ensureUIDValidity creates control/yarilo-uidvalidity with the
+// current unix timestamp on first run. If a legacy
+// control/dovecot-uidvalidity exists from a canonical install,
+// it is renamed in place instead of seeding a fresh value — the
+// uidvalidity stamp must never decrease across the migration.
+// Subsequent runs see the file and skip.
 func (u *userMailbox) ensureUIDValidity() error {
 	path := u.uidValidityPath()
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("sdbox/uidvalidity: stat: %w", err)
+	}
+	legacy := filepath.Join(u.controlPath(), legacyUIDValidity)
+	if _, err := os.Stat(legacy); err == nil {
+		if rerr := os.Rename(legacy, path); rerr != nil {
+			return fmt.Errorf("sdbox/uidvalidity: legacy rename: %w", rerr)
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("sdbox/uidvalidity: legacy stat: %w", err)
 	}
 	tmp := path + ".tmp"
 	body := fmt.Sprintf(uidvalidityFormat, uint32(time.Now().Unix()))

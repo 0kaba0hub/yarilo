@@ -34,9 +34,9 @@ type pendingEntry struct {
 	size   uint32
 }
 
-// rotateSize mirrors Dovecot's mdbox_rotate_size default — 2 MiB.
-// When the latest m.<N> physical file exceeds this, the next
-// Next() call rolls to a fresh file_id.
+// rotateSize is the per-m.<N> physical-file size cap before
+// the next Next() call rolls to a fresh file_id. 2 MiB matches
+// the canonical mdbox_rotate_size default.
 const rotateSize uint32 = 2 * 1024 * 1024
 
 // AppendBatch begins a new save batch. The returned batch is

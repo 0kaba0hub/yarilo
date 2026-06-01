@@ -1,6 +1,6 @@
-// Package mdboxmap implements Dovecot's `dovecot.map.index` — the
-// global per-user multi-message dbox map. It is the keystone of
-// the mdbox storage model:
+// Package mdboxmap implements the global per-user multi-message
+// dbox map (on-disk file: `dovecot.map.index`). It is the
+// keystone of the mdbox storage model:
 //
 //   - one binary mailindex file shared by every folder in the
 //     user's mdbox tree
@@ -21,7 +21,7 @@
 // driver rewrite. It is intentionally storage-driver-agnostic:
 // nothing here knows about folder layout or per-folder indexes.
 //
-// Wire layout (Dovecot 2.4 — `dovecot.map.index`):
+// Wire layout — see INTERNALS.md §map for the byte-level spec:
 //
 //	header     standard mailindex header
 //	exts       "map" (12 B per-record, 4 B header for highest_file_id)

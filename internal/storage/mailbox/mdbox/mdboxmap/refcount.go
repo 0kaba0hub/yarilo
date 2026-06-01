@@ -15,10 +15,10 @@ import (
 // non-existent map_uid is always a caller bug (stale folder
 // record pointing at a purged map entry).
 //
-// A refcount that would go negative is clamped at 0 — matches
-// Dovecot's behaviour and prevents underflow on double-expunge
-// from sloppy callers. Callers should not rely on the clamp;
-// audit the call site if it triggers.
+// A refcount that would go negative is clamped at 0 to prevent
+// underflow on double-expunge from sloppy callers. Callers
+// should not rely on the clamp; audit the call site if it
+// triggers.
 func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 	if len(mapUIDs) == 0 {
 		return nil

@@ -1,6 +1,7 @@
 package mdboxmap
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -9,13 +10,12 @@ import (
 func openTestMap(t *testing.T) (*Map, string) {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "dovecot.map.index")
-	m, err := Open(path, "alice@example.com")
+	m, err := Open(dir, "alice@example.com")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	return m, path
+	return m, dir
 }
 
 func TestOpenCreatesFreshMap(t *testing.T) {
@@ -105,13 +105,13 @@ func TestLookupRoundTrip(t *testing.T) {
 }
 
 func TestLookupSurvivesReopen(t *testing.T) {
-	m, path := openTestMap(t)
+	m, dir := openTestMap(t)
 	b := m.AppendBatch()
 	b.Next(123)
 	uids, _ := b.Finish()
 	_ = m.Close()
 
-	m2, err := Open(path, "alice@example.com")
+	m2, err := Open(dir, "alice@example.com")
 	if err != nil {
 		t.Fatalf("re-Open: %v", err)
 	}
@@ -125,6 +125,56 @@ func TestLookupSurvivesReopen(t *testing.T) {
 	}
 	if m2.NextMapUID() != 2 {
 		t.Errorf("NextMapUID after reopen = %d, want 2", m2.NextMapUID())
+	}
+}
+
+// TestOpenMigratesLegacyFile verifies the one-shot import flow:
+// when only the legacy-named file is present at Open() time, we
+// rename it in place and the next reopen sees only the
+// yarilo-native file.
+func TestOpenMigratesLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Seed: bring up a map under the yarilo name, write a few
+	// records, close. Then rename the file back to its legacy
+	// name to simulate a fresh import from a canonical tree.
+	seed, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("seed Open: %v", err)
+	}
+	b := seed.AppendBatch()
+	b.Next(10)
+	b.Next(20)
+	want, err := b.Finish()
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	_ = seed.Close()
+
+	yariloPath := filepath.Join(dir, MapIndexFileName)
+	legacyPath := filepath.Join(dir, LegacyMapIndexFileName)
+	if err := os.Rename(yariloPath, legacyPath); err != nil {
+		t.Fatalf("rename to legacy: %v", err)
+	}
+
+	// Re-Open: should pick up the legacy file, migrate it, and
+	// read every record back.
+	m, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("Open after legacy seed: %v", err)
+	}
+	defer m.Close()
+
+	if _, err := os.Stat(yariloPath); err != nil {
+		t.Errorf("yarilo-native file not present after migration: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Errorf("legacy file still on disk after migration: %v", err)
+	}
+	for _, uid := range want {
+		if _, ok, err := m.Lookup(uid); err != nil || !ok {
+			t.Errorf("Lookup(%d) after migrate: ok=%v err=%v", uid, ok, err)
+		}
 	}
 }
 

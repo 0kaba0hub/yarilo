@@ -329,7 +329,51 @@ func generateGUID() [16]byte {
 }
 
 // namesPath is the .names sidecar path for an index directory.
-func namesPath(indexDir string) string { return filepath.Join(indexDir, "dovecot.index.names") }
+// On-disk filenames. yarilo writes under the yarilo-native names;
+// legacy canonical names are read once at OpenFolder time and
+// renamed in place so subsequent runs see only yarilo files.
+const (
+	IndexFileName            = "yarilo.index"
+	IndexLogFileName         = "yarilo.index.log"
+	IndexNamesFileName       = "yarilo.index.names"
+	LegacyIndexFileName      = "dovecot.index"
+	LegacyIndexLogFileName   = "dovecot.index.log"
+	LegacyIndexNamesFileName = "dovecot.index.names"
+)
+
+func indexPathFor(indexDir string) string { return filepath.Join(indexDir, IndexFileName) }
+func namesPath(indexDir string) string    { return filepath.Join(indexDir, IndexNamesFileName) }
+
+// migrateLegacyFilenames promotes legacy canonical filenames in
+// indexDir to their yarilo-native equivalents. Atomic per-file
+// rename. Idempotent: skips files whose yarilo-native counterpart
+// already exists (the operator may have run a previous migration).
+// Returns an error only on a partial rename — never on absence of
+// the legacy file.
+func migrateLegacyFilenames(indexDir string) error {
+	pairs := []struct{ legacy, native string }{
+		{LegacyIndexFileName, IndexFileName},
+		{LegacyIndexLogFileName, IndexLogFileName},
+		{LegacyIndexNamesFileName, IndexNamesFileName},
+	}
+	for _, p := range pairs {
+		legacyPath := filepath.Join(indexDir, p.legacy)
+		nativePath := filepath.Join(indexDir, p.native)
+		if _, err := os.Stat(nativePath); err == nil {
+			continue
+		}
+		if _, err := os.Stat(legacyPath); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("fileindex/migrate: stat %s: %w", legacyPath, err)
+		}
+		if err := os.Rename(legacyPath, nativePath); err != nil {
+			return fmt.Errorf("fileindex/migrate: rename %s → %s: %w", legacyPath, nativePath, err)
+		}
+	}
+	return nil
+}
 
 // loadNames reads the .names sidecar into a UID→filename map.
 // Missing file = empty map (not an error). Format is TSV:

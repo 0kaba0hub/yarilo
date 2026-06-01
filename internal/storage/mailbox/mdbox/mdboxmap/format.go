@@ -7,9 +7,18 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
 )
 
-// Extension names and on-disk sizes match Dovecot's canonical
-// dovecot.map.index. Renaming or resizing these breaks drop-in
-// compatibility with files produced by doveadm.
+// On-disk filenames. The yarilo-native name is what we write;
+// the legacy name is read once at Open() time and the file is
+// atomically renamed to the yarilo-native name, so subsequent
+// runs see only the yarilo file.
+const (
+	MapIndexFileName       = "yarilo.map.index"
+	LegacyMapIndexFileName = "dovecot.map.index"
+)
+
+// Extension names and on-disk sizes are pinned by the wire
+// spec (INTERNALS.md §map). Renaming or resizing breaks the
+// in-place format the rest of the storage layer depends on.
 const (
 	// extMap holds {file_id, offset, size} per record.
 	extMap     = "map"
