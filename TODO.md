@@ -110,3 +110,29 @@ architecture is fully proven in production.
 
 Indexer + SEARCH BODY/TEXT optimisation. Big phase, no current
 ETA.
+
+---
+
+## mail_control_path — split control state from mail storage
+
+Dovecot's `mail_control_path` setting puts control files
+(`dovecot.index*`, `dovecot-acl`, `subscriptions`, …) into a
+separate directory from the message bodies. Used when storage is
+read-only / object-backed / on a different volume than control
+state.
+
+In yarilo today everything (`yarilo.index*`, soon `yarilo-acl`,
+subscriptions) lives next to the message bodies under the per-folder
+`indexDir`. Adding this knob means:
+
+- `pkg/config`: new `storage.control_path` template (per-namespace
+  override), defaulting to "" (= same as mail_location)
+- `internal/storage/index/file`: indexDir computation splits into
+  `mailDir` (bodies) + `controlDir` (index/ACL/subscriptions)
+- Backends touching control-only files (fileindex, ACL backend,
+  subscriptions store) read/write from controlDir, not mailDir
+- Helm `values.yaml`: `storage.controlPath` value + matching PVC
+  wiring (separate PV when split is requested)
+
+No current ETA. Track here so it does not silently re-emerge as a
+scope question every time we add a new control file.
