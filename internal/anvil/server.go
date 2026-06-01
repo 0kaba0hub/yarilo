@@ -5,7 +5,7 @@
 // Protocol (TAB-delimited, LF-terminated):
 //
 //	Server → Client handshake:
-//	  VERSION\tyarilo-anvil\t1\t2\n
+//	  VERSION\tyarilo-anvil\t1\t3\n
 //	  DONE\n
 //
 //	Client commands:
@@ -13,6 +13,7 @@
 //	  DISCONNECT\t{id}\t{user}\t{ip}\t{service}\n
 //	  WHO[\tservice={s}][\tuser={u}]\n
 //	  LOOKUP\t{user}\t{service}\n          ← 1.2 (LMTP cluster-wide accounting)
+//	  HEARTBEAT\t{id}\n                    ← 1.3 (renew session TTL)
 //
 //	Server responses:
 //	  OK\t{id}\n
@@ -24,11 +25,15 @@
 // WHO replies with one SESSION line per matching active session,
 // then DONE. The optional service= / user= tokens narrow the list.
 // LOOKUP replies with a single COUNT line carrying the live count
-// of (user, service) pairs.
+// of (user, service) pairs. HEARTBEAT extends a session's TTL by
+// SessionTTL — login pods refresh their registrations on a timer
+// so a crashed pod doesn't leak entries forever; a background
+// sweeper drops sessions that miss their refresh window.
 //
 // Minor protocol version bumps:
 //   - 1.0 → 1.1: WHO command
 //   - 1.1 → 1.2: LOOKUP command
+//   - 1.2 → 1.3: HEARTBEAT command + TTL/sweeper
 //
 // Older clients ignore unknown commands entirely.
 package anvil
@@ -50,8 +55,22 @@ import (
 const (
 	protoName = "yarilo-anvil"
 	majorVer  = 1
-	minorVer  = 2
+	minorVer  = 3
 )
+
+// DefaultSessionTTL is how long an anvil session lives without a
+// HEARTBEAT. Login pods refresh on a timer significantly shorter
+// than this so a brief network hiccup never reaps a live session.
+// 90 seconds = three 30-second heartbeats budgeted before drop —
+// matches the staleness window Dovecot uses for its master process
+// heartbeat.
+const DefaultSessionTTL = 90 * time.Second
+
+// DefaultSweepInterval is how often the background goroutine
+// walks the session map to drop stale entries. Tighter than TTL
+// so a leaked session is gone within `TTL + interval` of the
+// pod crash, not `2 * TTL`.
+const DefaultSweepInterval = 15 * time.Second
 
 // SessionInfo is one tracked client connection. Exported so the
 // client package can return parsed WHO rows directly.
@@ -61,6 +80,10 @@ type SessionInfo struct {
 	IP          string
 	Service     string
 	ConnectedAt time.Time
+	// lastSeen is the most recent heartbeat (or CONNECT) timestamp.
+	// Unexported because callers should not depend on it — the
+	// sweeper owns reaping. Wire format never surfaces it.
+	lastSeen time.Time
 }
 
 // Server is the yarilo-anvil TCP server. It wraps a connlimit.Limiter and
@@ -68,17 +91,42 @@ type SessionInfo struct {
 type Server struct {
 	limiter *connlimit.Limiter
 
+	sessionTTL    time.Duration
+	sweepInterval time.Duration
+
 	mu       sync.Mutex
 	sessions map[string]*SessionInfo // id → session
 }
 
+// ServerOption configures a Server at construction time.
+type ServerOption func(*Server)
+
+// WithSessionTTL overrides DefaultSessionTTL — how long a
+// session lives between heartbeats. Tests use a short TTL so
+// the sweeper can be exercised in subsecond time.
+func WithSessionTTL(d time.Duration) ServerOption {
+	return func(s *Server) { s.sessionTTL = d }
+}
+
+// WithSweepInterval overrides DefaultSweepInterval — how often
+// the background sweeper drops stale sessions.
+func WithSweepInterval(d time.Duration) ServerOption {
+	return func(s *Server) { s.sweepInterval = d }
+}
+
 // NewServer creates an anvil server with the given per-user@IP connection limit.
 // max ≤ 0 means unlimited (server still runs but always returns OK).
-func NewServer(max int) *Server {
-	return &Server{
-		limiter:  connlimit.New(max),
-		sessions: make(map[string]*SessionInfo),
+func NewServer(max int, opts ...ServerOption) *Server {
+	s := &Server{
+		limiter:       connlimit.New(max),
+		sessionTTL:    DefaultSessionTTL,
+		sweepInterval: DefaultSweepInterval,
+		sessions:      make(map[string]*SessionInfo),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Sessions returns a snapshot of every tracked session. Used by
@@ -114,6 +162,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Co
 		<-ctx.Done()
 		ln.Close()
 	}()
+	go s.sweepLoop(ctx)
 
 	for {
 		conn, err := ln.Accept()
@@ -161,6 +210,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleWho(conn, fields[1:])
 		case "LOOKUP":
 			s.handleLookup(conn, fields)
+		case "HEARTBEAT":
+			s.handleHeartbeat(conn, fields)
 		}
 	}
 }
@@ -180,13 +231,15 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) {
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
 		return
 	}
+	now := time.Now().UTC()
 	s.mu.Lock()
 	s.sessions[id] = &SessionInfo{
 		ID:          id,
 		User:        user,
 		IP:          ip,
 		Service:     service,
-		ConnectedAt: time.Now().UTC(),
+		ConnectedAt: now,
+		lastSeen:    now,
 	}
 	s.mu.Unlock()
 	fmt.Fprintf(conn, "OK\t%s\n", id)
@@ -259,6 +312,71 @@ func (s *Server) handleLookup(conn net.Conn, fields []string) {
 	}
 	s.mu.Unlock()
 	fmt.Fprintf(conn, "COUNT\t%d\n", count)
+}
+
+// handleHeartbeat processes: HEARTBEAT\t{id}\n
+//
+// Bumps the session's lastSeen so the sweeper does not reap it.
+// Replies OK\t{id}\n on hit, OK\t{id}\treason=unknown\n on miss —
+// the unknown case lets a login pod detect its registration was
+// already reaped and reissue CONNECT. Unknown ID is NOT a hard
+// error: the pod is operating on stale information and recovers
+// by reconnecting.
+func (s *Server) handleHeartbeat(conn net.Conn, fields []string) {
+	if len(fields) < 2 {
+		return
+	}
+	id := fields[1]
+	s.mu.Lock()
+	sess, ok := s.sessions[id]
+	if ok {
+		sess.lastSeen = time.Now().UTC()
+	}
+	s.mu.Unlock()
+	if !ok {
+		fmt.Fprintf(conn, "OK\t%s\treason=unknown\n", id)
+		return
+	}
+	fmt.Fprintf(conn, "OK\t%s\n", id)
+}
+
+// sweepLoop periodically drops sessions whose lastSeen is older
+// than the configured TTL and releases their connection-limit
+// slot. Stops when ctx is cancelled (server shutdown).
+//
+// Reaped sessions are gone from `who`, from LOOKUP counts, and
+// their slot is free for the next CONNECT — exactly the
+// behaviour a real DISCONNECT would have produced.
+func (s *Server) sweepLoop(ctx context.Context) {
+	t := time.NewTicker(s.sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.sweepStaleSessions(time.Now().UTC())
+		}
+	}
+}
+
+// sweepStaleSessions is the unit-testable inner of sweepLoop:
+// pass an explicit now so tests can fast-forward without sleeping.
+func (s *Server) sweepStaleSessions(now time.Time) {
+	cutoff := now.Add(-s.sessionTTL)
+	s.mu.Lock()
+	type reap struct{ user, ip string }
+	var dropped []reap
+	for id, sess := range s.sessions {
+		if sess.lastSeen.Before(cutoff) {
+			dropped = append(dropped, reap{user: sess.User, ip: sess.IP})
+			delete(s.sessions, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, r := range dropped {
+		s.limiter.Release(r.user, r.ip)
+	}
 }
 
 func parseFilter(args []string) map[string]string {
