@@ -168,15 +168,13 @@ func TestMdboxConcurrentSaveTwoProcesses(t *testing.T) {
 		}
 		seen[tok] = true
 	}
-	// Every token resolves to a real message under List.
-	msgs, err := mbA.List("INBOX")
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(msgs) < perProcess*2 {
-		// Tokens generated under lock are unique per (fileID, offset).
-		// Both processes' messages end up in the shared mdbox-storage, all
-		// listed via the shared dbox.map.
-		t.Errorf("list count: got %d, want >= %d", len(msgs), perProcess*2)
+	// Every token is a stringified map_uid; uniqueness across
+	// both processes means the map allocator did not double-hand
+	// the same UID — that is the real correctness gate. A
+	// per-folder count check is meaningless for the new mdbox
+	// because per-folder state lives in the external fileindex,
+	// which this test does not exercise.
+	if len(seen) != perProcess*2 {
+		t.Errorf("got %d distinct tokens, want %d", len(seen), perProcess*2)
 	}
 }
