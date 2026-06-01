@@ -32,7 +32,7 @@ Commands:
   rebuild  <user> <folder> [--namespace NS]
         Scan the on-disk storage and regenerate the fileindex,
         preserving UIDs for filenames already known to the index.
-        mdbox returns 501 Not Implemented — see Phase MDBOX-PROD-READY.
+        Works for every driver (maildir / sdbox / mdbox).
 
   optimize <user> <folder> [--namespace NS]
         Compact the .index.log overlay into the base .index file.

@@ -917,9 +917,51 @@ test with 2+ yarilo-imap pods saving to same user).
 
 ---
 
-### Phase 6 — mdbox purge + rebuild
+### Phase 6 — mdbox purge + rebuild ✅ shipped (v1.32.0)
 
 **Goal:** Reclaim disk after expunge; recover from map corruption.
+
+**Status:**
+
+- `internal/storage/mailbox/mdbox/purge.go` — `(*userMailbox).Purge()`
+  walks `mdboxmap.GetZeroRefFiles()`, for each candidate either
+  `AppendMove(nil, deadUIDs)` + `unlink m.<N>` (all-zero case) or
+  compacts live records into a fresh `m.<AllocFileID()>` then
+  `AppendMove(moved, deadUIDs)` + `unlink` old m.<N>. map_uid is
+  preserved across the move so per-folder indexes need zero I/O.
+  Returns `PurgeStats{FilesScanned, FilesRewritten, FilesUnlinked,
+  RecordsKept, RecordsExpunged, BytesReclaimed}`.
+- `internal/storage/mailbox/mdbox/rebuild.go` — `Scan()` walks
+  every `m.<N>` in the storage tree, parses each canonical dbox
+  v2 record (file-header + 32-byte message header + body +
+  metadata trailer), recovers GUID + size + received timestamp,
+  and pairs the physical offset with the current map via
+  `RecordsInFile` to surface the map_uid as `ScanRecord.Filename`.
+  The admin rebuild endpoint now succeeds for mdbox folders — the
+  501 sentinel is gone.
+- `POST /api/backend/mdbox/purge` — surface in `internal/backendapi/mdbox.go`.
+  Type-asserts the user's MailboxBackend to a `Purger` interface;
+  non-mdbox drivers return 400 with the driver mismatch surfaced.
+- `yarilo-admin backend mdbox purge <user> [--namespace NS]` —
+  CLI wrapper at `app/yarilo-admin/mdbox.go`.
+
+**Phase 4 bug fix bundled:** the original `mdboxmap.AppendBatch.Next`
+returned a batch-relative offset, which collided across multiple
+single-item batches in the same `m.<N>`. Phase 6 introduces
+`Map.AppendRecord(fileID, offset, size) → map_uid` (single record)
+and `Map.AppendRecords([]RecordLayout) → []map_uid` (batch);
+mdbox.Save stats the m.<N> handle for the actual EOF and calls
+AppendRecord with the physical offset. AppendBatch.Next stays for
+the Phase 4 tests but is no longer the driver's primary API.
+
+**Acceptance tests covered:** all-zero-ref unlink, partial-live
+compact with reclaimed-bytes assertion, Scan round-trips every
+saved message with map_uid pairing, Scan-after-purge reflects the
+compaction.
+
+**Not in this PR:** automatic purge trigger (cron / threshold).
+Operator-driven via `yarilo-admin backend mdbox purge` for now;
+periodic worker is the next ergonomics improvement.
 
 **Scope:**
 - `internal/storage/mailbox/mdbox/purge.go` — implementation of

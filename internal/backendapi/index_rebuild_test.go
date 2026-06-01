@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -110,9 +109,9 @@ func TestRebuildPreservesUIDsForKnownFilenames(t *testing.T) {
 	}
 }
 
-// TestRebuildMdboxReturns501 confirms the explicit deferral path
-// returns 501 with a hint pointing operators at the right TODO.
-func TestRebuildMdboxReturns501(t *testing.T) {
+// TestRebuildMdboxWorks confirms the mdbox rebuild path now
+// succeeds — Phase 6 wired UserMailbox.Scan for mdbox.
+func TestRebuildMdboxWorks(t *testing.T) {
 	ts, _ := storageTestServerMdbox(t)
 	const user = "alice@example.com"
 
@@ -122,11 +121,8 @@ func TestRebuildMdboxReturns501(t *testing.T) {
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/index/rebuild", "",
 		map[string]any{"user": user, "folder": "INBOX"})
-	if status != http.StatusNotImplemented {
-		t.Fatalf("status=%d want 501; body=%s", status, body)
-	}
-	if !strings.Contains(string(body), "MDBOX-PROD-READY") {
-		t.Errorf("body=%s want pointer to MDBOX-PROD-READY", body)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", status, body)
 	}
 }
 

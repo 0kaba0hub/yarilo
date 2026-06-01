@@ -246,14 +246,33 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 	return out, nil
 }
 
+// rotateThreshold is the per-m.<N> size cap before Save rolls
+// to a fresh file_id. Matches mdbox_rotate_size default (2 MiB).
+const rotateThreshold uint32 = 2 * 1024 * 1024
+
 // Save writes the message body into the user-wide multi-message
-// store via mdboxmap.AppendBatch. Returns the assigned map_uid
-// as a decimal string — the caller stores this in
-// MessageMeta.Filename.
+// store and records the location in the mdboxmap. Returns the
+// assigned map_uid as a decimal string — the caller stores this
+// in MessageMeta.Filename.
+//
+// Flow:
+//
+//  1. Build the dbox v2 record bytes.
+//  2. Pick a destination m.<file_id>: current highest_file_id
+//     unless adding `len(record)` to its size would exceed
+//     rotateThreshold; in that case AllocFileID under the map
+//     X lock to claim a fresh id atomically.
+//  3. Open the m.<file_id> with O_APPEND, write the record,
+//     capture the offset (file size before write).
+//  4. AppendRecord(file_id, offset, size) under the map X lock
+//     to allocate a fresh map_uid and persist the pointer.
+//
+// The folder-level lock is NOT taken here — concurrency between
+// Save peers is serialised by the map X lock alone.
 //
 // uid parameter is the per-folder UID assigned by the external
-// fileindex; mdbox ignores it (filename is the map_uid, not the
-// folder UID).
+// fileindex; mdbox ignores it (filename is map_uid, not the
+// per-folder UID).
 func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
 	body, err := readBodyCRLF(r)
 	if err != nil {
@@ -261,6 +280,9 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	}
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return "", fmt.Errorf("mdbox/save: mkdir folder: %w", err)
+	}
+	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
+		return "", fmt.Errorf("mdbox/save: mkdir storage: %w", err)
 	}
 	m, err := u.openMap()
 	if err != nil {
@@ -270,46 +292,47 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	record := buildDboxRecord(body)
 	recLen := uint32(len(record))
 
-	// 1. Reserve a slot in the map (file_id + offset). The map
-	//    enforces rotation past mdbox_rotate_size.
-	batch := m.AppendBatch()
-	fileID, _ := batch.Next(recLen)
+	fileID := m.HighestFileID()
+	if fileID == 0 {
+		fileID = 1
+	}
+	curSize, _ := u.fileSize(u.mfilePath(fileID))
+	if uint32(curSize)+recLen > rotateThreshold {
+		fileID, err = m.AllocFileID()
+		if err != nil {
+			return "", fmt.Errorf("mdbox/save: alloc file id: %w", err)
+		}
+		curSize = 0
+	}
 
-	// 2. Append the record to m.<file_id> under the map X lock —
-	//    we take it again here so the physical write and the
-	//    Finish() that records the offset happen atomically
-	//    relative to a sibling process. mdboxmap.Finish reloads
-	//    the map state first, so any racing peer that bumped
-	//    highest_file_id while we were writing wins; we re-pick
-	//    our file_id on Finish via the baseDelta logic and the
-	//    record we just wrote ends up at the right physical
-	//    location relative to the *current* file_id.
-	//
-	//    The physical-vs-logical reconciliation is the price of
-	//    avoiding a fcntl on m.<N>; mdboxmap's reload handles it.
-	mpath := u.mfilePath(fileID)
-	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
-		return "", fmt.Errorf("mdbox/save: mkdir storage: %w", err)
-	}
-	f, err := os.OpenFile(mpath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(u.mfilePath(fileID), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
-		return "", fmt.Errorf("mdbox/save: open %s: %w", mpath, err)
+		return "", fmt.Errorf("mdbox/save: open m.%d: %w", fileID, err)
 	}
+	// Re-stat under the file handle to nail down the offset we
+	// actually wrote at. O_APPEND guarantees the bytes land at
+	// the post-stat size, even if another process appended
+	// between our stat() and the OpenFile().
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return "", fmt.Errorf("mdbox/save: stat handle: %w", err)
+	}
+	offset := uint32(st.Size())
 	if _, err := f.Write(record); err != nil {
 		f.Close()
 		return "", fmt.Errorf("mdbox/save: write record: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("mdbox/save: close mfile: %w", err)
+		return "", fmt.Errorf("mdbox/save: close m.%d: %w", fileID, err)
 	}
 
-	// 3. Finish — allocates map_uid under the map X lock. Any
-	//    peer that raced won the file_id; mdboxmap reconciles.
-	uids, err := batch.Finish()
+	mapUID, err := m.AppendRecord(fileID, offset, recLen)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("mdbox/save: map append: %w", err)
 	}
-	return strconv.FormatUint(uint64(uids[0]), 10), nil
+	_ = curSize
+	return strconv.FormatUint(uint64(mapUID), 10), nil
 }
 
 // Fetch resolves the message identified by filename (decimal
@@ -383,12 +406,16 @@ func (u *userMailbox) Copy(_, srcFilename, _ string, _ uint32) (string, error) {
 // that need a List override should rebuild from the index.
 func (u *userMailbox) List(_ string) ([]*mailbox.MessageMeta, error) { return nil, nil }
 
-// Scan returns "not yet implemented" until Phase 6 lands the
-// mdbox-storage rebuild logic (walks every m.<N>, recovers GUID
-// + size, reconciles against the map). The error message
-// embeds the phase marker so the admin API can flag the gap.
+// Scan walks every m.<N> physical file under the user's mdbox
+// storage and yields one ScanRecord per stored message. The
+// folder argument is ignored — mdbox storage is folder-agnostic,
+// the per-folder fileindex is the source of truth for which
+// folder owns each map_uid. Caller (admin rebuild) pairs this
+// output with per-folder records to rebuild state.
+//
+// See rebuild.go (scanStorage / scanMFile) for implementation.
 func (u *userMailbox) Scan(_ string) ([]mailbox.ScanRecord, error) {
-	return nil, fmt.Errorf("mdbox/scan: not yet implemented — landing in Phase MDBOX-PROD-READY")
+	return u.scanStorage()
 }
 
 // Close releases the cached map handle.

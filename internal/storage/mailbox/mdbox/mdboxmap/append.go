@@ -45,6 +45,96 @@ func (m *Map) AppendBatch() *AppendBatch {
 	return &AppendBatch{m: m}
 }
 
+// AppendRecord allocates a fresh map_uid for one record under
+// the map X lock. The caller has already written the record to
+// m.<fileID> at offset and now needs the index to learn about
+// it. Returns the assigned map_uid.
+//
+// fileID + offset must reflect the actual on-disk layout; this
+// method does no validation. Use AllocFileID first if a fresh
+// physical file is needed.
+func (m *Map) AppendRecord(fileID, offset, size uint32) (uint32, error) {
+	uids, err := m.AppendRecords([]RecordLayout{{FileID: fileID, Offset: offset, Size: size}})
+	if err != nil {
+		return 0, err
+	}
+	return uids[0], nil
+}
+
+// RecordLayout is one (file_id, offset, size) tuple passed to
+// AppendRecords. The caller has already written the body at this
+// location; the map only records the pointer + assigns a map_uid.
+type RecordLayout struct {
+	FileID uint32
+	Offset uint32
+	Size   uint32
+}
+
+// AppendRecords is the batch variant of AppendRecord — same
+// semantics, one cross-process lock hop for all entries. Returns
+// the assigned map_uids in input order. Bumps highest_file_id
+// to max(input.FileID, current) so later calls won't re-pick a
+// file_id already in use.
+func (m *Map) AppendRecords(layouts []RecordLayout) ([]uint32, error) {
+	if len(layouts) == 0 {
+		return nil, nil
+	}
+	out := make([]uint32, len(layouts))
+	err := m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		for i, l := range layouts {
+			mapUID := m.nextMapUID
+			rec := &mailindex.Record{
+				UID: mapUID,
+				Ext: map[string][]byte{
+					extMap: encodeMapExt(l.FileID, l.Offset, l.Size),
+					extRef: encodeRefExt(1),
+				},
+			}
+			m.f.Records = append(m.f.Records, rec)
+			m.byMapUID[mapUID] = len(m.f.Records) - 1
+			m.nextMapUID++
+			if l.FileID > m.highestFileID {
+				m.highestFileID = l.FileID
+			}
+			out[i] = mapUID
+		}
+		return m.flushLocked()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AllocFileID reserves and persists a fresh m.<N> physical
+// file_id under the map X lock. Used by purge / rebuild to write
+// compacted bodies into a known-unique file_id; concurrent
+// AppendBatch peers see the bumped highest_file_id and route
+// their next Save into an even higher id.
+//
+// The caller is responsible for actually creating the
+// m.<returned id> file on disk; AllocFileID only updates the
+// in-index counter.
+func (m *Map) AllocFileID() (uint32, error) {
+	var assigned uint32
+	err := m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		next := m.highestFileID + 1
+		if next == 0 {
+			next = 1
+		}
+		m.highestFileID = next
+		assigned = next
+		return m.flushLocked()
+	})
+	return assigned, err
+}
+
 // Next reserves a (file_id, offset) for one message of `size`
 // bytes. The first Next call in a batch picks file_id =
 // highestFileID (or 1 if zero) and offset = current size of that

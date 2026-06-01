@@ -203,9 +203,5 @@ func TestFolderOps(t *testing.T) {
 	}
 }
 
-func TestScanNotImplemented(t *testing.T) {
-	mb, _ := newTestUser(t)
-	if _, err := mb.Scan("INBOX"); err == nil {
-		t.Fatal("Scan should return not-implemented error")
-	}
-}
+// Scan implementation lands in Phase 6 — covered by
+// purge_test.go and rebuild_test.go.

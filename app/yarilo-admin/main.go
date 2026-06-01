@@ -79,6 +79,8 @@ func dispatchBackend(args []string) error {
 		return dispatchUser(args[1:])
 	case "index":
 		return dispatchIndex(args[1:])
+	case "mdbox":
+		return dispatchMdbox(args[1:])
 	case "subscriptions", "subs":
 		return dispatchSubs(args[1:])
 	case "specialuse":
@@ -88,7 +90,7 @@ func dispatchBackend(args []string) error {
 	case "who":
 		return dispatchWho(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, subscriptions, specialuse, metadata, who (acl/quota land in future phases)", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, who (acl/quota land in future phases)", args[0])
 	}
 }
 
