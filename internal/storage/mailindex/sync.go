@@ -5,10 +5,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
+
+// tmpSeq is a process-wide atomic counter used to disambiguate
+// .tmp.<pid>.<seq> filenames. Per-process PID is not enough when
+// multiple Recreate callers in the same Go process run
+// concurrently (one userIndex per simulated process in
+// integration tests, both with same PID).
+var tmpSeq atomic.Uint64
 
 // RecreateInput bundles everything Recreate needs in one struct
 // so call sites stay readable. All fields except Header and Path
@@ -78,7 +86,7 @@ func Recreate(in RecreateInput) (backupPath string, err error) {
 			in.Header.HeaderSize, expectedHeaderSize, ErrCorrupted)
 	}
 
-	tmpPath := fmt.Sprintf("%s.tmp.%d", in.Path, os.Getpid())
+	tmpPath := fmt.Sprintf("%s.tmp.%d.%d", in.Path, os.Getpid(), tmpSeq.Add(1))
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("mailindex/recreate: open tmp: %w", err)

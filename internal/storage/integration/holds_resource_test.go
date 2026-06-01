@@ -71,23 +71,22 @@ func TestHoldsResourceSkipsInnerAcquire(t *testing.T) {
 
 	// Storage call MUST short-circuit through HoldsResource. If it instead
 	// tried to Acquire, it would hit ErrBusy and Acquire's retry loop would
-	// run until the 35-second timeout — well past this deadline.
-	done := make(chan struct{})
-	go func() {
-		if err := mb.Remove("INBOX", filename); err != nil {
-			t.Errorf("inner remove (should skip lock and succeed): %v", err)
-		}
-		if err := idx.ExpungeMessage(folder.ID, uid); err != nil {
-			t.Errorf("inner expunge (should skip lock and succeed): %v", err)
-		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Sub-second: re-entrancy short-circuit worked.
-	case <-time.After(2 * time.Second):
-		t.Fatal("inner storage calls timed out — HoldsResource skip is not engaging")
+	// run until the 35-second timeout. HoldsResource is per-goroutine, so
+	// the inner calls run on the SAME goroutine as the outer Lock —
+	// matching POP3 QUIT's shape (outer caller + inner storage methods are
+	// synchronous on one goroutine). We bracket the inner calls with a
+	// wall-clock deadline so a regression (Acquire actually firing and
+	// blocking on ErrBusy) surfaces as a clear test failure rather than a
+	// CI-killing 30-second hang.
+	start := time.Now()
+	if err := mb.Remove("INBOX", filename); err != nil {
+		t.Errorf("inner remove (should skip lock and succeed): %v", err)
+	}
+	if err := idx.ExpungeMessage(folder.ID, uid); err != nil {
+		t.Errorf("inner expunge (should skip lock and succeed): %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("inner storage calls took %v — HoldsResource skip not engaging", elapsed)
 	}
 
 	// After releasing the outer lock, HoldsResource flips back to false.
