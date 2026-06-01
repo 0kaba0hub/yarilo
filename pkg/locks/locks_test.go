@@ -31,6 +31,7 @@ func runSuite(t *testing.T, name string, factory lockerFactory) {
 		t.Run("UnlockUnknown", func(t *testing.T) { testUnlockUnknown(t, factory) })
 		t.Run("Subscribe", func(t *testing.T) { testSubscribe(t, factory) })
 		t.Run("ResourceKeyOrdering", func(t *testing.T) { testResourceKeys(t, factory) })
+		t.Run("Counter", func(t *testing.T) { testCounter(t, factory) })
 	})
 }
 
@@ -150,6 +151,70 @@ func testResourceKeys(t *testing.T, factory lockerFactory) {
 		t.Fatalf("deliver lock: %v", err)
 	}
 	_ = l.Unlock(ctx, dl.ID)
+}
+
+// testCounter exercises IncrementCounter across the backend
+// behind the wire: monotonic increments from zero, positive +
+// negative deltas, independent keys, and concurrent contention
+// (parallel goroutines see no lost updates, sum matches expected).
+func testCounter(t *testing.T, factory lockerFactory) {
+	l, cleanup := factory(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cases := []struct {
+		key   string
+		delta int64
+		want  int64
+	}{
+		{"mdbox-fileid:alice", 1, 1},
+		{"mdbox-fileid:alice", 1, 2},
+		{"mdbox-fileid:alice", 5, 7},
+		{"mdbox-fileid:alice", -2, 5},
+		{"mdbox-fileid:bob", 1, 1}, // independent key starts at 0
+		{"mdbox-fileid:bob", 0, 1}, // zero-delta is a read
+	}
+	for _, c := range cases {
+		got, err := l.IncrementCounter(ctx, c.key, c.delta)
+		if err != nil {
+			t.Fatalf("IncrementCounter(%q, %d): %v", c.key, c.delta, err)
+		}
+		if got != c.want {
+			t.Errorf("IncrementCounter(%q, %d) = %d, want %d", c.key, c.delta, got, c.want)
+		}
+	}
+
+	// Concurrent stress: N goroutines each +1 → final value must
+	// equal the previous value + N (no lost updates).
+	const goroutines = 32
+	const incsPer = 25
+	base, err := l.IncrementCounter(ctx, "stress", 0)
+	if err != nil {
+		t.Fatalf("baseline read: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < incsPer; j++ {
+				if _, err := l.IncrementCounter(ctx, "stress", 1); err != nil {
+					t.Errorf("stress incr: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	final, err := l.IncrementCounter(ctx, "stress", 0)
+	if err != nil {
+		t.Fatalf("final read: %v", err)
+	}
+	expected := base + int64(goroutines*incsPer)
+	if final != expected {
+		t.Errorf("stress final = %d, want %d (lost updates?)", final, expected)
+	}
 }
 
 // --- factories ------------------------------------------------------------

@@ -252,6 +252,25 @@ func (b *RedisBackend) Subscribe(ctx context.Context, resource string) (<-chan E
 	return out, cancel, nil
 }
 
+// IncrementCounter implements Backend via INCRBY. Missing keys
+// are initialised to 0 by Redis automatically before applying
+// delta. Counter keys live under "<keyPrefix>counter:<key>" so
+// they never collide with lock state keys.
+func (b *RedisBackend) IncrementCounter(ctx context.Context, key string, delta int64) (int64, error) {
+	if key == "" {
+		return 0, fmt.Errorf("locks/redis: counter key must be non-empty")
+	}
+	v, err := b.rdb.IncrBy(ctx, b.counterKey(key), delta).Result()
+	if err != nil {
+		return 0, fmt.Errorf("locks/redis: counter incr %s: %w", key, err)
+	}
+	return v, nil
+}
+
+func (b *RedisBackend) counterKey(key string) string {
+	return b.keyPrefix + "counter:" + key
+}
+
 // Close implements Backend. Closes the wrapped Redis client.
 func (b *RedisBackend) Close() error {
 	if err := b.rdb.Close(); err != nil && !errors.Is(err, redis.ErrClosed) {

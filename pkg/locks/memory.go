@@ -18,6 +18,7 @@ type MemoryBackend struct {
 	locks    map[string]*memLock                // by lockID
 	byRes    map[string]string                  // resource → lockID
 	subs     map[string]map[chan Event]struct{} // resource → subscribers
+	counters map[string]int64                   // persistent atomic counters by key
 	sweepInt time.Duration
 	now      func() time.Time
 	stopOnce sync.Once
@@ -55,6 +56,7 @@ func NewMemoryBackend(opts ...MemoryBackendOption) *MemoryBackend {
 		locks:    make(map[string]*memLock),
 		byRes:    make(map[string]string),
 		subs:     make(map[string]map[chan Event]struct{}),
+		counters: make(map[string]int64),
 		sweepInt: 100 * time.Millisecond,
 		now:      time.Now,
 		stop:     make(chan struct{}),
@@ -161,6 +163,19 @@ func (b *MemoryBackend) Subscribe(_ context.Context, resource string) (<-chan Ev
 		close(ch)
 	}
 	return ch, cancel, nil
+}
+
+// IncrementCounter implements Backend. Auto-initialises missing
+// keys to 0 before applying delta. Counter state is independent
+// of the lock state and is not touched by the TTL sweeper.
+func (b *MemoryBackend) IncrementCounter(_ context.Context, key string, delta int64) (int64, error) {
+	if key == "" {
+		return 0, fmt.Errorf("locks/memory: counter key must be non-empty")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.counters[key] += delta
+	return b.counters[key], nil
 }
 
 // Close implements Backend. Idempotent.

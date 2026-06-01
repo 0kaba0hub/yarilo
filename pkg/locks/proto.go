@@ -31,16 +31,24 @@ import (
 //	> SUBSCRIBE\t<resource>\n
 //	< OK\n                                               — server then streams EVENT lines
 //	< EVENT\t<resource>\t<event_type>\t<payload>\n       — async, until SUBSCRIBE conn closes
+//
+//	> COUNTER-INC\t<key>\t<delta>\n
+//	< OK\t<new_value>\n                                  — atomic increment, returns the post-increment value
+//
+// COUNTER-INC keeps protocolVersion at "1": older servers reply
+// ERROR\tunknown_command, which clients translate into an
+// "unsupported wire op" error rather than a protocol break.
 const protocolVersion = "1"
 
 // Commands sent by the client.
 const (
-	cmdVersion   = "VERSION"
-	cmdLock      = "LOCK"
-	cmdUnlock    = "UNLOCK"
-	cmdRenew     = "RENEW"
-	cmdEmit      = "EMIT"
-	cmdSubscribe = "SUBSCRIBE"
+	cmdVersion    = "VERSION"
+	cmdLock       = "LOCK"
+	cmdUnlock     = "UNLOCK"
+	cmdRenew      = "RENEW"
+	cmdEmit       = "EMIT"
+	cmdSubscribe  = "SUBSCRIBE"
+	cmdCounterInc = "COUNTER-INC"
 )
 
 // Responses sent by the server.
