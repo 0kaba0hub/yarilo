@@ -216,16 +216,20 @@ func newAdminUserContext(t *testing.T, _ any, root, user string) (*adminUserCont
 
 func (a *adminUserContext) deliver(t *testing.T, body string) {
 	t.Helper()
-	filename, err := a.box.Save("INBOX", io.NopCloser(bytes.NewBufferString(body)), int64(len(body)), nil)
+	uid, err := a.idx.AllocateUID(a.folder.ID)
+	if err != nil {
+		t.Fatalf("allocateUID: %v", err)
+	}
+	filename, err := a.box.Save("INBOX", io.NopCloser(bytes.NewBufferString(body)), uid, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	meta := &mailbox.MessageMeta{Filename: filename, Size: uint32(len(body))}
-	if _, err := a.idx.AllocateAppend(a.folder.ID, meta); err != nil {
-		t.Fatalf("allocateAppend: %v", err)
-	}
-	if err := a.box.AppendUIDEntry("INBOX", meta.UID, filename); err != nil {
-		t.Fatalf("appendUIDEntry: %v", err)
+	if err := a.idx.AppendMessage(a.folder.ID, &mailbox.MessageMeta{
+		UID:      uid,
+		Filename: filename,
+		Size:     uint32(len(body)),
+	}); err != nil {
+		t.Fatalf("appendMessage: %v", err)
 	}
 }
 

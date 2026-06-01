@@ -88,7 +88,7 @@ func TestSave_Fetch_Remove(t *testing.T) {
 	}
 
 	body := "From: test@example.com\r\nSubject: Test\r\n\r\nHello\r\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), []string{`\Seen`})
+	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), []string{`\Seen`})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -174,66 +174,58 @@ func TestListFolders(t *testing.T) {
 	}
 }
 
-func TestAppendUIDEntry_HeaderFormat(t *testing.T) {
+// TestSave_AppendsUIDList verifies Save inlines the uid→filename
+// entry into the dovecot-uidlist v3 sidecar. Replaces the old
+// standalone AppendUIDEntry contract (removed when two-phase Save
+// landed).
+func TestSave_AppendsUIDList(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	box.Init() //nolint:errcheck
 
-	if err := box.AppendUIDEntry("INBOX", 1, "msg1:2,S"); err != nil {
-		t.Fatalf("AppendUIDEntry: %v", err)
+	body := "m"
+	f1, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), []string{`\Seen`})
+	if err != nil {
+		t.Fatalf("Save uid=1: %v", err)
 	}
-	if err := box.AppendUIDEntry("INBOX", 2, "msg2:2,"); err != nil {
-		t.Fatalf("AppendUIDEntry: %v", err)
+	f2, err := box.Save("INBOX", strings.NewReader(body), 2, int64(len(body)), nil)
+	if err != nil {
+		t.Fatalf("Save uid=2: %v", err)
 	}
 
 	path := box.uidListPath("INBOX")
-	f, err := os.Open(path)
+	fp, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open uidlist: %v", err)
 	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-
-	// First line must be v3 header starting with "3 V"
+	defer fp.Close()
+	sc := bufio.NewScanner(fp)
 	if !sc.Scan() {
 		t.Fatal("uidlist is empty")
 	}
 	header := sc.Text()
-	if !strings.HasPrefix(header, "3 V") {
-		t.Errorf("header line %q does not start with '3 V'", header)
+	if !strings.HasPrefix(header, "3 V") || !strings.Contains(header, " N") || !strings.Contains(header, " G") {
+		t.Errorf("header drift: %q", header)
 	}
-	if !strings.Contains(header, " N") {
-		t.Errorf("header line %q missing N<nextuid>", header)
-	}
-	if !strings.Contains(header, " G") {
-		t.Errorf("header line %q missing G<guid>", header)
-	}
-
-	// Remaining lines: "uid :filename"
 	want := []struct {
 		uid      string
 		filename string
 	}{
-		{"1", "msg1:2,S"},
-		{"2", "msg2:2,"},
+		{"1", f1},
+		{"2", f2},
 	}
 	for i, w := range want {
 		if !sc.Scan() {
 			t.Fatalf("line %d missing", i+1)
 		}
 		line := sc.Text()
-		// format: "uid :filename" — separator is " :" (space+colon)
 		sep := strings.Index(line, " :")
 		if sep < 0 {
 			t.Fatalf("line %d %q has no ' :' separator", i+1, line)
 		}
 		gotFilename := line[sep+2:]
 		parts := strings.Fields(line[:sep])
-		if len(parts) == 0 {
-			t.Fatalf("line %d %q has no uid field", i+1, line)
-		}
-		if parts[0] != w.uid {
-			t.Errorf("line %d uid = %q, want %q", i+1, parts[0], w.uid)
+		if len(parts) == 0 || parts[0] != w.uid {
+			t.Errorf("line %d uid = %q, want %q", i+1, parts, w.uid)
 		}
 		if gotFilename != w.filename {
 			t.Errorf("line %d filename = %q, want %q", i+1, gotFilename, w.filename)
@@ -276,7 +268,7 @@ func TestSave_VSize_PureCRLF(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "From: a@b\r\n\r\nhello\r\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +292,7 @@ func TestSave_VSize_PureLF(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "From: a@b\n\nhello\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +313,7 @@ func TestSave_VSize_MixedLineEndings(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "header: ok\r\nbare-lf-after\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +329,7 @@ func TestList_PopulatesSizesFromFilename(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "From: a@b\n\nhello\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,35 +384,25 @@ func TestUIDListRoundtrip(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	box.Init() //nolint:errcheck
 
-	entries := []struct {
-		uid      uint32
-		filename string
-	}{
-		{1, "aaa.bbb:2,S"},
-		{2, "ccc.ddd:2,FS"},
-		{3, "eee.fff:2,"},
-	}
-	for _, e := range entries {
-		if err := box.AppendUIDEntry("INBOX", e.uid, e.filename); err != nil {
-			t.Fatalf("AppendUIDEntry uid=%d: %v", e.uid, err)
+	saved := make(map[string]uint32)
+	for _, uid := range []uint32{1, 2, 3} {
+		fn, err := box.Save("INBOX", strings.NewReader("m"), uid, 1, nil)
+		if err != nil {
+			t.Fatalf("Save uid=%d: %v", uid, err)
 		}
+		saved[fn] = uid
 	}
 
 	m, err := box.readUIDList("INBOX")
 	if err != nil {
 		t.Fatalf("readUIDList: %v", err)
 	}
-	if len(m) != len(entries) {
-		t.Fatalf("readUIDList returned %d entries, want %d", len(m), len(entries))
+	if len(m) != len(saved) {
+		t.Fatalf("readUIDList returned %d entries, want %d", len(m), len(saved))
 	}
-	for _, e := range entries {
-		uid, ok := m[e.filename]
-		if !ok {
-			t.Errorf("filename %q not found in uidlist", e.filename)
-			continue
-		}
-		if uid != e.uid {
-			t.Errorf("filename %q: uid = %d, want %d", e.filename, uid, e.uid)
+	for fn, wantUID := range saved {
+		if uid, ok := m[fn]; !ok || uid != wantUID {
+			t.Errorf("filename %q: got (uid=%d, ok=%v), want uid=%d", fn, uid, ok, wantUID)
 		}
 	}
 }

@@ -1,17 +1,17 @@
-// yarilo-migrate converts a Maildir tree to dbox or mdbox format in-place.
-// Usage: yarilo-migrate --from /var/mail/vhosts --to /var/mail/dbox --format dbox|mdbox [--dry-run]
+// yarilo-migrate converts a Maildir tree to sdbox or mdbox format in-place.
+// Usage: yarilo-migrate --from /var/mail/vhosts --to /var/mail/sdbox --format sdbox|mdbox [--dry-run]
 package main
 
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -19,7 +19,7 @@ import (
 var (
 	flagFrom   = flag.String("from", "", "source Maildir root (required)")
 	flagTo     = flag.String("to", "", "destination root (required)")
-	flagFormat = flag.String("format", "dbox", "output format: dbox or mdbox")
+	flagFormat = flag.String("format", "sdbox", "output format: sdbox or mdbox (alias: dbox=sdbox)")
 	flagDry    = flag.Bool("dry-run", false, "print actions without writing")
 )
 
@@ -28,22 +28,22 @@ func main() {
 	flag.Parse()
 
 	if *flagFrom == "" || *flagTo == "" {
-		fmt.Fprintln(os.Stderr, "usage: yarilo-migrate --from <src> --to <dst> --format dbox|mdbox")
+		fmt.Fprintln(os.Stderr, "usage: yarilo-migrate --from <src> --to <dst> --format sdbox|mdbox")
 		os.Exit(1)
 	}
 
-	var backend mailbox.MailboxBackend
+	var box mailbox.MailboxBackend
 	switch strings.ToLower(*flagFormat) {
-	case "dbox":
-		backend = dbox.New()
+	case "sdbox", "dbox":
+		box = dboxv2.New()
 	case "mdbox":
-		backend = mdbox.New()
+		box = mdbox.New()
 	default:
 		slog.Error("unknown format", "format", *flagFormat)
 		os.Exit(1)
 	}
+	idx := file.New()
 
-	// Resolver maps each username to its destination home: <dst>/<domain>/<local>.
 	resolver := &mailbox.Resolver{
 		Root:         *flagTo,
 		HomeTemplate: "%d/%n",
@@ -54,14 +54,13 @@ func main() {
 		if err != nil {
 			return err
 		}
-		// Detect user dirs at depth 2: <root>/<domain>/<localpart>/
 		rel, _ := filepath.Rel(*flagFrom, path)
 		parts := strings.Split(filepath.ToSlash(rel), "/")
 		if len(parts) != 2 || !d.IsDir() {
 			return nil
 		}
 		user := parts[1] + "@" + parts[0]
-		m, s, err := migrateUser(*flagFrom, backend, resolver, user)
+		m, s, err := migrateUser(*flagFrom, box, idx, resolver, user)
 		migrated += m
 		skipped += s
 		return err
@@ -73,19 +72,18 @@ func main() {
 	slog.Info("migration complete", "migrated", migrated, "skipped", skipped)
 }
 
-// migrateUser walks all maildir folders for one user.
-func migrateUser(srcRoot string, backend mailbox.MailboxBackend, resolver *mailbox.Resolver, user string) (migrated, skipped int, _ error) {
+func migrateUser(srcRoot string, boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, user string) (migrated, skipped int, _ error) {
 	userPath := userDir(srcRoot, user)
-
 	info := resolver.UserInfo(user, "")
-	box := backend.OpenUser(info)
+	box := boxBE.OpenUser(info)
 	defer box.Close() //nolint:errcheck
+	idx := idxBE.OpenUser(info)
+	defer idx.Close() //nolint:errcheck
 
 	if err := box.Init(); err != nil {
 		return 0, 0, fmt.Errorf("migrate: init %s: %w", user, err)
 	}
 
-	// Collect folders: INBOX + any .FolderName dirs
 	entries, err := os.ReadDir(userPath)
 	if err != nil {
 		return 0, 0, fmt.Errorf("migrate: readdir %s: %w", user, err)
@@ -110,7 +108,7 @@ func migrateUser(srcRoot string, backend mailbox.MailboxBackend, resolver *mailb
 				return migrated, skipped, fmt.Errorf("migrate: create %s/%s: %w", user, f.name, err)
 			}
 		}
-		m, s, err := migrateFolder(box, user, f.name, f.path)
+		m, s, err := migrateFolder(box, idx, user, f.name, f.path)
 		migrated += m
 		skipped += s
 		if err != nil {
@@ -120,8 +118,7 @@ func migrateUser(srcRoot string, backend mailbox.MailboxBackend, resolver *mailb
 	return migrated, skipped, nil
 }
 
-// migrateFolder copies all messages from a maildir cur/ directory.
-func migrateFolder(box mailbox.UserMailbox, user, folder, folderPath string) (migrated, skipped int, _ error) {
+func migrateFolder(box mailbox.UserMailbox, idx mailbox.UserIndex, user, folder, folderPath string) (migrated, skipped int, _ error) {
 	curPath := filepath.Join(folderPath, "cur")
 	entries, err := os.ReadDir(curPath)
 	if err != nil {
@@ -129,6 +126,11 @@ func migrateFolder(box mailbox.UserMailbox, user, folder, folderPath string) (mi
 			return 0, 0, nil
 		}
 		return 0, 0, fmt.Errorf("migrate: readdir cur %s/%s: %w", user, folder, err)
+	}
+
+	folderMeta, err := idx.OpenFolder(folder, uint32(os.Getpid()))
+	if err != nil {
+		return 0, 0, fmt.Errorf("migrate: openfolder %s/%s: %w", user, folder, err)
 	}
 
 	for _, e := range entries {
@@ -158,18 +160,30 @@ func migrateFolder(box mailbox.UserMailbox, user, folder, folderPath string) (mi
 			continue
 		}
 
-		_, saveErr := box.Save(folder, f, info.Size(), flags)
+		uid, allocErr := idx.AllocateUID(folderMeta.ID)
+		if allocErr != nil {
+			f.Close()
+			return migrated, skipped, fmt.Errorf("migrate: allocate %s/%s/%s: %w", user, folder, e.Name(), allocErr)
+		}
+		filename, saveErr := box.Save(folder, f, uid, info.Size(), flags)
 		f.Close()
 		if saveErr != nil {
 			return migrated, skipped, fmt.Errorf("migrate: save %s/%s/%s: %w", user, folder, e.Name(), saveErr)
 		}
-		slog.Info("migrated", "user", user, "folder", folder, "file", e.Name())
+		if err := idx.AppendMessage(folderMeta.ID, &mailbox.MessageMeta{
+			UID:      uid,
+			Filename: filename,
+			Flags:    flags,
+			Size:     uint32(info.Size()),
+		}); err != nil {
+			return migrated, skipped, fmt.Errorf("migrate: append %s/%s/%s: %w", user, folder, e.Name(), err)
+		}
+		slog.Info("migrated", "user", user, "folder", folder, "file", e.Name(), "uid", uid)
 		migrated++
 	}
 	return migrated, skipped, nil
 }
 
-// userDir returns the maildir root for user@domain → <root>/domain/user.
 func userDir(root, user string) string {
 	if at := strings.LastIndex(user, "@"); at >= 0 {
 		return filepath.Join(root, user[at+1:], user[:at])
@@ -177,7 +191,6 @@ func userDir(root, user string) string {
 	return filepath.Join(root, user)
 }
 
-// maildirFlags parses Maildir flag chars from filename ":2,<flags>".
 func maildirFlags(filename string) []string {
 	idx := strings.Index(filename, ":2,")
 	if idx < 0 {
@@ -200,7 +213,3 @@ func maildirFlags(filename string) []string {
 	}
 	return flags
 }
-
-// migrateFolder uses box.Save which accepts io.Reader, but Save signature needs
-// an io.Reader not io.ReadSeeker — the file handle satisfies io.Reader.
-var _ io.Reader = (*os.File)(nil)

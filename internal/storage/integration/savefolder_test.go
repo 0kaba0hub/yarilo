@@ -64,35 +64,38 @@ func TestSaveFolderDoesNotOverwriteFreshNextUID(t *testing.T) {
 
 	// Process A appends 3 messages — disk NextUID is now 4.
 	for i := 0; i < 3; i++ {
-		filename, err := mbA.Save("INBOX", strings.NewReader("body"), 0, nil)
-		if err != nil {
-			t.Fatalf("save A %d: %v", i, err)
-		}
-		uid, err := ixA.AllocateAppend(folderA.ID, &mailbox.MessageMeta{Filename: filename})
+		uid, err := ixA.AllocateUID(folderA.ID)
 		if err != nil {
 			t.Fatalf("allocate A %d: %v", i, err)
 		}
-		if err := mbA.AppendUIDEntry("INBOX", uid, filename); err != nil {
-			t.Fatalf("uidlist A %d: %v", i, err)
+		filename, err := mbA.Save("INBOX", strings.NewReader("body"), uid, 0, nil)
+		if err != nil {
+			t.Fatalf("save A %d: %v", i, err)
+		}
+		if err := ixA.AppendMessage(folderA.ID, &mailbox.MessageMeta{UID: uid, Filename: filename}); err != nil {
+			t.Fatalf("append A %d: %v", i, err)
 		}
 	}
 
 	// Process B persists its stale snapshot. folderB.NextUID is still 1 here
 	// (B has not seen A's writes). Without the fix this would clobber disk
-	// to NextUID=1 and the next A.AllocateAppend would re-hand-out UID=1.
+	// to NextUID=1 and the next A.AllocateUID would re-hand-out UID=1.
 	folderB.Messages = 7 // any value the caller actually owns
 	if err := ixB.SaveFolder(folderB); err != nil {
 		t.Fatalf("save folder B: %v", err)
 	}
 
 	// Process A appends one more — must get UID 4, not 1.
-	filename, err := mbA.Save("INBOX", strings.NewReader("after-save"), 0, nil)
+	uid, err := ixA.AllocateUID(folderA.ID)
+	if err != nil {
+		t.Fatalf("allocate A post: %v", err)
+	}
+	filename, err := mbA.Save("INBOX", strings.NewReader("after-save"), uid, 0, nil)
 	if err != nil {
 		t.Fatalf("save A post: %v", err)
 	}
-	uid, err := ixA.AllocateAppend(folderA.ID, &mailbox.MessageMeta{Filename: filename})
-	if err != nil {
-		t.Fatalf("allocate A post: %v", err)
+	if err := ixA.AppendMessage(folderA.ID, &mailbox.MessageMeta{UID: uid, Filename: filename}); err != nil {
+		t.Fatalf("append A post: %v", err)
 	}
 	if uid != 4 {
 		t.Fatalf("NextUID corruption: A got UID=%d after B's stale SaveFolder, want 4", uid)

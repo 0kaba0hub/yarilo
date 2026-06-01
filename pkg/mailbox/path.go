@@ -143,7 +143,7 @@ func splitUser(u string) (local, domain string) {
 // per-namespace driver mixing is deferred until backends gain a
 // shared OpenNamespace dispatch.
 type Location struct {
-	Driver string // "maildir", "dbox", "mdbox"
+	Driver string // "maildir", "sdbox" (alias: "dbox"), "mdbox"
 	Path   string // expanded absolute path (varexpand applied)
 }
 
@@ -165,7 +165,7 @@ func ParseLocation(loc string, ui *UserInfo) (Location, bool, error) {
 	driver := strings.ToLower(loc[:idx])
 	path := loc[idx+1:]
 	switch driver {
-	case "maildir", "dbox", "mdbox":
+	case "maildir", "sdbox", "dbox", "mdbox":
 		// recognised
 	default:
 		return Location{}, false, fmt.Errorf("mailbox: unknown storage driver %q in %q", driver, loc)

@@ -27,7 +27,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/backendapi"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -176,8 +176,8 @@ func openDicts(specs map[string]config.DictConfig) map[string]dict.Dict {
 
 func buildMailbox(driver string, locker locks.Locker) mailbox.MailboxBackend {
 	switch strings.ToLower(driver) {
-	case "dbox":
-		return dbox.New(dbox.WithLocker(locker))
+	case "sdbox", "dbox":
+		return dboxv2.New(dboxv2.WithLocker(locker))
 	case "mdbox":
 		return mdbox.New(mdbox.WithLocker(locker))
 	default:

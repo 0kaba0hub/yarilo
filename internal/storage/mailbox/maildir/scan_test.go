@@ -19,7 +19,7 @@ func TestScanReturnsRecordsForDeliveredMessages(t *testing.T) {
 
 	// Deliver three messages with different flags so the scan
 	// must parse each filename trailer correctly.
-	for _, msg := range []struct {
+	for i, msg := range []struct {
 		body  string
 		flags []string
 	}{
@@ -27,8 +27,9 @@ func TestScanReturnsRecordsForDeliveredMessages(t *testing.T) {
 		{"second body bytes", nil},
 		{"third", []string{`\Seen`, `\Flagged`}},
 	} {
+		uid := uint32(i + 1)
 		_, err := box.Save("INBOX", io.NopCloser(bytes.NewBufferString(msg.body)),
-			int64(len(msg.body)), msg.flags)
+			uid, int64(len(msg.body)), msg.flags)
 		if err != nil {
 			t.Fatalf("save: %v", err)
 		}

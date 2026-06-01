@@ -353,9 +353,12 @@ func TestNextModSeqIsMonotonic(t *testing.T) {
 			t.Fatalf("NextModSeq #%d: %v", i, err)
 		}
 		modseqs[i*2] = ms
-		uid, err := b.AllocateAppend(f.ID, &mailbox.MessageMeta{ModSeq: ms, Flags: []string{}})
+		uid, err := b.AllocateUID(f.ID)
 		if err != nil {
-			t.Fatalf("AllocateAppend #%d: %v", i, err)
+			t.Fatalf("AllocateUID #%d: %v", i, err)
+		}
+		if err := b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}}); err != nil {
+			t.Fatalf("AppendMessage #%d: %v", i, err)
 		}
 		uids[i] = uid
 
@@ -403,7 +406,8 @@ func TestUpdateFlagsPersistsModSeqBump(t *testing.T) {
 	f, _ := b.OpenFolder("INBOX", 1)
 
 	ms, _ := b.NextModSeq(f.ID)
-	uid, _ := b.AllocateAppend(f.ID, &mailbox.MessageMeta{ModSeq: ms, Flags: []string{}})
+	uid, _ := b.AllocateUID(f.ID)
+	_ = b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}})
 
 	if err := b.UpdateFlags(f.ID, uid, []string{`\Seen`}, nil); err != nil {
 		t.Fatalf("UpdateFlags: %v", err)
@@ -428,7 +432,8 @@ func TestExpungePersistsModSeqBump(t *testing.T) {
 	f, _ := b.OpenFolder("INBOX", 1)
 
 	ms, _ := b.NextModSeq(f.ID)
-	uid, _ := b.AllocateAppend(f.ID, &mailbox.MessageMeta{ModSeq: ms, Flags: []string{}})
+	uid, _ := b.AllocateUID(f.ID)
+	_ = b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}})
 	beforeHeader, _ := b.OpenFolder("INBOX", 1)
 
 	if err := b.ExpungeMessage(f.ID, uid); err != nil {

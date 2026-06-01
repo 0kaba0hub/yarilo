@@ -198,7 +198,16 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 	return fn()
 }
 
-func (u *userMailbox) Save(folder string, r io.Reader, size int64, flags []string) (string, error) {
+// Save streams r into tmp/ then atomically renames into cur/.
+// uid is the value returned by UserIndex.AllocateUID on this
+// folder — Maildir does not encode it in the filename, but the
+// uid→filename mapping is appended to the dovecot-uidlist sidecar
+// inline so subsequent List() / Fetch() can resolve UIDs without
+// a separate AppendUIDEntry call.
+func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, error) {
+	if uid == 0 {
+		return "", fmt.Errorf("maildir: UID 0 invalid (call UserIndex.AllocateUID first)")
+	}
 	folderPath := u.folderPath(folder)
 	now := time.Now()
 	seq := u.b.counter.Add(1)
@@ -225,12 +234,39 @@ func (u *userMailbox) Save(folder string, r io.Reader, size int64, flags []strin
 	// Dovecot filename convention: append ,S=<phys>,W=<virt> before :2,<flags>
 	// so List() can return both sizes without reading the file body.
 	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
-	dstPath := filepath.Join(folderPath, "cur", finalName)
-	if err := os.Rename(tmpPath, dstPath); err != nil {
-		os.Remove(tmpPath)
-		return "", fmt.Errorf("maildir: rename to cur: %w", err)
+
+	if err := u.withMailboxLock(folder, func() error {
+		dstPath := filepath.Join(folderPath, "cur", finalName)
+		if err := os.Rename(tmpPath, dstPath); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("maildir: rename to cur: %w", err)
+		}
+		if err := u.appendUIDListLocked(folder, uid, finalName); err != nil {
+			_ = os.Remove(dstPath)
+			return fmt.Errorf("maildir: uidlist: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return "", err
 	}
 	return finalName, nil
+}
+
+// appendUIDListLocked appends one entry to the yarilo-uidlist v3
+// sidecar. Caller MUST hold the mailbox X lock.
+func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string) error {
+	path := u.uidListPath(folder)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, _ := f.Stat()
+	if info != nil && info.Size() == 0 {
+		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
+	}
+	_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
+	return err
 }
 
 // sizeCounter is an io.Writer that records bytes written and the number of LF
@@ -346,28 +382,6 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 		}
 	}
 	return folders, nil
-}
-
-// AppendUIDEntry adds a new entry to yarilo-uidlist v3.
-// Called after Save() to record the uid → filename mapping.
-// Cross-process serialised through yarilo-locks on the mailbox key — this is
-// the file flagged in ARCHITECTURE.md §Known issues as the UID-race risk.
-func (u *userMailbox) AppendUIDEntry(folder string, uid uint32, filename string) error {
-	return u.withMailboxLock(folder, func() error {
-		path := u.uidListPath(folder)
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		info, _ := f.Stat()
-		if info != nil && info.Size() == 0 {
-			fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
-		}
-		_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
-		return err
-	})
 }
 
 // Scan walks the on-disk maildir for folder and returns one

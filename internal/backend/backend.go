@@ -20,7 +20,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
@@ -587,8 +587,8 @@ func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 // cfg.Namespaces[*].Location).
 func buildMailboxByDriver(driver string, locker locks.Locker) mailbox.MailboxBackend {
 	switch strings.ToLower(driver) {
-	case "dbox":
-		return dbox.New(dbox.WithLocker(locker))
+	case "sdbox", "dbox":
+		return dboxv2.New(dboxv2.WithLocker(locker))
 	case "mdbox":
 		return mdbox.New(mdbox.WithLocker(locker))
 	default:

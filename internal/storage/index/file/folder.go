@@ -307,10 +307,8 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 }
 
 // AppendMessage records m as a new on-disk record. The caller is
-// expected to have already assigned m.UID via AllocateAppend or
-// via an external authority (Dovecot mdbox-style map_uid). Use
-// AllocateAppend when the assignment must come from this
-// fileindex.
+// expected to have already assigned m.UID via AllocateUID or via
+// an external authority (Dovecot mdbox-style map_uid).
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
 		if err := fs.appendLocked(m); err != nil {
@@ -320,20 +318,24 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 	})
 }
 
-// AllocateAppend allocates a fresh UID from the folder's NextUID
-// counter, stamps it onto m, persists the record and advances
-// NextUID. Returns the assigned UID. Atomic vs concurrent
-// AllocateAppend on the same folder (one cross-process lock
-// covers the read-modify-write window).
-func (u *userIndex) AllocateAppend(folderID uint64, m *mailbox.MessageMeta) (uint32, error) {
+// AllocateUID reserves and persists the folder's next UID. The
+// caller then passes the UID to UserMailbox.Save and follows up
+// with AppendMessage to record the meta. On crash between
+// AllocateUID and AppendMessage the UID is burnt — periodic
+// rebuild reconciles by scanning the on-disk tree.
+//
+// Atomic vs concurrent AllocateUID on the same folder: one
+// cross-process lock covers the read-modify-write window.
+func (u *userIndex) AllocateUID(folderID uint64) (uint32, error) {
 	var assigned uint32
 	err := u.withFolder(folderID, func(fs *folderState) error {
-		uid, err := fs.allocateLocked(m)
-		if err != nil {
-			return err
+		uid := fs.file.Header.NextUID
+		if uid == 0 {
+			uid = 1
 		}
+		fs.file.Header.NextUID = uid + 1
 		assigned = uid
-		return fs.flush(true)
+		return fs.flush(false)
 	})
 	return assigned, err
 }
@@ -348,7 +350,7 @@ func (u *userIndex) AllocateAppend(folderID uint64, m *mailbox.MessageMeta) (uin
 // counter ourselves and write the new value into m.
 func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if m.UID == 0 {
-		return fmt.Errorf("fileindex/append: UID=0 (use AllocateAppend instead)")
+		return fmt.Errorf("fileindex/append: UID=0 (use AllocateUID first)")
 	}
 	var modseq uint64
 	if m.ModSeq != 0 {
@@ -395,19 +397,6 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	}
 	m.ModSeq = modseq
 	return nil
-}
-
-// allocateLocked is the in-memory half of AllocateAppend.
-func (fs *folderState) allocateLocked(m *mailbox.MessageMeta) (uint32, error) {
-	uid := fs.file.Header.NextUID
-	if uid == 0 {
-		uid = 1
-	}
-	m.UID = uid
-	if err := fs.appendLocked(m); err != nil {
-		return 0, err
-	}
-	return uid, nil
 }
 
 // UpdateFlags replaces the flag set + keyword set for one UID.

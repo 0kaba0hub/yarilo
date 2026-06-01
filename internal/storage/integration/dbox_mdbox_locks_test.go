@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -75,15 +75,14 @@ func TestDboxConcurrentSaveAndDelete(t *testing.T) {
 	home := t.TempDir()
 	user := &mailbox.UserInfo{Username: "alice@example.com", Home: home}
 
-	mbA := dbox.New(dbox.WithLocker(dial())).OpenUser(user)
-	mbB := dbox.New(dbox.WithLocker(dial())).OpenUser(user)
+	mbA := dboxv2.New(dboxv2.WithLocker(dial())).OpenUser(user)
+	mbB := dboxv2.New(dboxv2.WithLocker(dial())).OpenUser(user)
 	if err := mbA.Init(); err != nil {
 		t.Fatalf("init A: %v", err)
 	}
 	if err := mbB.Init(); err != nil {
 		t.Fatalf("init B: %v", err)
 	}
-	// Pre-create the folder so Delete has something to act on.
 	if err := mbA.Create("Stress"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -91,12 +90,15 @@ func TestDboxConcurrentSaveAndDelete(t *testing.T) {
 	const iterations = 30
 	var wg sync.WaitGroup
 	wg.Add(2)
+	// A writes UID 1..iterations into the sdbox tree; B periodically
+	// drops the whole folder. The contestants never deadlock and the
+	// locks server returns every Lock/Unlock cleanly — the test
+	// passes if no panic / stale-fd error surfaces.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			// Re-create on each iteration to recover from sibling's Delete.
 			_ = mbA.Create("Stress")
-			_, _ = mbA.Save("Stress", strings.NewReader("hello"), 5, nil)
+			_, _ = mbA.Save("Stress", strings.NewReader("hello"), uint32(i+1), 5, nil)
 		}
 	}()
 	go func() {
@@ -107,10 +109,6 @@ func TestDboxConcurrentSaveAndDelete(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Final state — recreate so a List succeeds. No correctness assertion
-	// beyond "the contestants never crashed and the locks server returned
-	// every Lock/Unlock cleanly" — the absence of panics, deadlocks, or
-	// stale file-handle errors is the proof.
 	_ = mbA.Create("Stress")
 }
 
@@ -136,10 +134,12 @@ func TestMdboxConcurrentSaveTwoProcesses(t *testing.T) {
 	tokens := make(chan string, perProcess*2)
 	var wg sync.WaitGroup
 	wg.Add(2)
+	// mdbox derives its token from (file_id, offset), not the UID
+	// parameter, so any non-zero placeholder works for this test.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < perProcess; i++ {
-			tok, err := mbA.Save("INBOX", strings.NewReader("from-A"), 6, nil)
+			tok, err := mbA.Save("INBOX", strings.NewReader("from-A"), uint32(i+1), 6, nil)
 			if err != nil {
 				t.Errorf("save A %d: %v", i, err)
 				return
@@ -150,7 +150,7 @@ func TestMdboxConcurrentSaveTwoProcesses(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < perProcess; i++ {
-			tok, err := mbB.Save("INBOX", strings.NewReader("from-B"), 6, nil)
+			tok, err := mbB.Save("INBOX", strings.NewReader("from-B"), uint32(perProcess+i+1), 6, nil)
 			if err != nil {
 				t.Errorf("save B %d: %v", i, err)
 				return

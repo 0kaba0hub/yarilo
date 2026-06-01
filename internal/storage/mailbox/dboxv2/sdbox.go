@@ -242,20 +242,22 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 	return fn()
 }
 
-// ---- Save (two-phase) ---------------------------------------
+// ---- Save (atomic publish) ----------------------------------
 
-// Save streams r into a fresh .temp.* file in the folder's
-// dbox-Mails directory. Returns the temp file's basename — caller
-// MUST then call AssignUID with the allocated UID to publish it
-// under its final u.<UID> name. A crash between Save and AssignUID
-// leaves only the temp file on disk; it ages out via periodic
-// orphan cleanup.
+// Save streams r into a fresh .temp.* file then renames it to
+// u.<uid> atomically under the mailbox lock. The two-phase write
+// gives crash safety: a partial body never appears under its
+// final UID-derived name. Returns the final basename — caller
+// then records it in the index via UserIndex.AppendMessage.
 //
-// size is the wire-level body size; the on-disk physical_size in
-// the metadata block is taken from the actual bytes written
-// (post-CRLF normalisation). flags are ignored — sdbox delegates
-// flag storage to the index.
-func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (string, error) {
+// uid must be the value returned by UserIndex.AllocateUID for
+// this folder. size is the wire-level body size; on-disk physical
+// size comes from actual bytes written (post-CRLF normalisation).
+// flags are ignored — sdbox delegates flag storage to the index.
+func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, _ []string) (string, error) {
+	if uid == 0 {
+		return "", fmt.Errorf("sdbox/save: UID 0 invalid (call UserIndex.AllocateUID first)")
+	}
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return "", fmt.Errorf("sdbox/save: mkdir: %w", err)
 	}
@@ -268,7 +270,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (str
 	virtSize := physSize // sdbox identity until cache/fts extends meanings
 
 	tempName := u.makeTempName()
-	tempPath := filepath.Join(u.folderPath(folder), tempName)
+	finalName := fmt.Sprintf("%s%d", sdboxMailPrefix, uid)
 
 	guid := randomGUID()
 	now := uint32(time.Now().Unix())
@@ -280,13 +282,14 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (str
 	buf.Write(encodeMetadataBlock([]metadataEntry{
 		{Key: metaKeyGUID, Value: guidHex(guid)},
 		{Key: metaKeyReceived, Value: fmt.Sprintf("%x", now)},
-		// Z (physical size) only emitted when physSize differs from
-		// the size already in the message header; identity case
-		// omits it per the spec to save a few bytes.
 		{Key: metaKeyVirtualSize, Value: fmt.Sprintf("%x", virtSize)},
 	}))
 
 	err = u.withMailboxLock(folder, func() error {
+		dir := u.folderPath(folder)
+		tempPath := filepath.Join(dir, tempName)
+		finalPath := filepath.Join(dir, finalName)
+
 		f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return fmt.Errorf("sdbox/save: create %s: %w", tempPath, err)
@@ -300,53 +303,17 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ int64, _ []string) (str
 			_ = os.Remove(tempPath)
 			return fmt.Errorf("sdbox/save: close: %w", err)
 		}
+		if err := os.Rename(tempPath, finalPath); err != nil {
+			_ = os.Remove(tempPath)
+			return fmt.Errorf("sdbox/save: rename %s → %s: %w", tempPath, finalPath, err)
+		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	return tempName, nil
+	return finalName, nil
 }
-
-// AssignUID renames the .temp.* file at tempName to its final
-// u.<UID> name. Returns the new basename. Idempotent: a second
-// call after the rename succeeded becomes a no-op (we look up the
-// target by UID first).
-//
-// Implements the optional Assigner interface so callers can do
-// type-assertion when their MailboxBackend supports two-phase
-// save (sdbox does; maildir does not).
-func (u *userMailbox) AssignUID(folder, tempName string, uid uint32) (string, error) {
-	if uid == 0 {
-		return "", fmt.Errorf("sdbox/assign: UID 0 invalid")
-	}
-	finalName := fmt.Sprintf("%s%d", sdboxMailPrefix, uid)
-	var resultName string
-	err := u.withMailboxLock(folder, func() error {
-		dir := u.folderPath(folder)
-		tempPath := filepath.Join(dir, tempName)
-		finalPath := filepath.Join(dir, finalName)
-		if _, err := os.Stat(finalPath); err == nil {
-			// Idempotent path — already renamed by an earlier
-			// attempt. Drop the temp if it's still hanging
-			// around.
-			_ = os.Remove(tempPath)
-			resultName = finalName
-			return nil
-		}
-		if err := os.Rename(tempPath, finalPath); err != nil {
-			return fmt.Errorf("sdbox/assign: rename %s → %s: %w", tempPath, finalPath, err)
-		}
-		resultName = finalName
-		return nil
-	})
-	return resultName, err
-}
-
-// AppendUIDEntry is the no-op sdbox needs to satisfy the
-// MailboxBackend contract. sdbox encodes the UID in the filename
-// (set by AssignUID), so there is nothing to record in a sidecar.
-func (u *userMailbox) AppendUIDEntry(_ string, _ uint32, _ string) error { return nil }
 
 // ---- Fetch / Remove / Copy ----------------------------------
 
@@ -397,18 +364,24 @@ func (u *userMailbox) Remove(folder, filename string) error {
 }
 
 // Copy hardlinks srcFilename from srcFolder into dstFolder under
-// a fresh .temp.* name. Returns that temp name — caller follows
-// up with AssignUID to publish it under its final u.<UID> in the
-// destination. Hardlinking gives O(1) IMAP COPY semantics: the
-// inode is shared, only the directory entry changes. Implements
-// the Copyable optional interface.
-func (u *userMailbox) Copy(srcFolder, srcFilename, dstFolder string) (string, error) {
+// the destination's u.<dstUID> name. Hardlinking gives O(1) IMAP
+// COPY semantics: the inode is shared, only the directory entry
+// changes. The destination UID must have been allocated via
+// UserIndex.AllocateUID on dstFolder before calling Copy.
+//
+// Optional API — used by IMAP COPY when the backend type-asserts
+// for Copyable. Falls back to read+Save through the generic path
+// when the backend does not implement it.
+func (u *userMailbox) Copy(srcFolder, srcFilename, dstFolder string, dstUID uint32) (string, error) {
+	if dstUID == 0 {
+		return "", fmt.Errorf("sdbox/copy: dstUID 0 invalid")
+	}
 	if err := os.MkdirAll(u.folderPath(dstFolder), 0o700); err != nil {
 		return "", fmt.Errorf("sdbox/copy: mkdir dst: %w", err)
 	}
-	tempName := u.makeTempName()
+	finalName := fmt.Sprintf("%s%d", sdboxMailPrefix, dstUID)
 	srcPath := filepath.Join(u.folderPath(srcFolder), srcFilename)
-	dstPath := filepath.Join(u.folderPath(dstFolder), tempName)
+	dstPath := filepath.Join(u.folderPath(dstFolder), finalName)
 	err := u.withTwoMailboxLocks(srcFolder, dstFolder, func() error {
 		if err := os.Link(srcPath, dstPath); err != nil {
 			return fmt.Errorf("sdbox/copy: link %s → %s: %w", srcPath, dstPath, err)
@@ -418,7 +391,7 @@ func (u *userMailbox) Copy(srcFolder, srcFilename, dstFolder string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return tempName, nil
+	return finalName, nil
 }
 
 // ---- List / FolderExists / ListFolders ---------------------

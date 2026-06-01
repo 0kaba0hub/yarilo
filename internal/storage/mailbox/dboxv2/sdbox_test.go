@@ -50,35 +50,30 @@ func TestUIDValidityStable(t *testing.T) {
 	}
 }
 
-func TestSaveAssignFetchRoundTrip(t *testing.T) {
+func TestSaveFetchRoundTrip(t *testing.T) {
 	_, mb, home := newTestUser(t)
 	body := "From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\nbody bytes\r\n"
 
-	temp, err := mb.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+	name, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if !strings.HasPrefix(temp, ".temp.") {
-		t.Errorf("temp name %q should start with .temp.", temp)
+	if name != "u.7" {
+		t.Errorf("final name = %q, want u.7", name)
 	}
-	tempPath := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails", temp)
-	if _, err := os.Stat(tempPath); err != nil {
-		t.Fatalf("temp file not on disk: %v", err)
+	finalPath := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails", name)
+	if _, err := os.Stat(finalPath); err != nil {
+		t.Fatalf("final file not on disk: %v", err)
 	}
-
-	u := mb.(*userMailbox)
-	final, err := u.AssignUID("INBOX", temp, 7)
-	if err != nil {
-		t.Fatalf("assign: %v", err)
-	}
-	if final != "u.7" {
-		t.Errorf("final name = %q, want u.7", final)
-	}
-	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
-		t.Errorf("temp file still on disk after rename")
+	// No stray .temp.* must remain after Save returns.
+	entries, _ := os.ReadDir(filepath.Dir(finalPath))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".temp.") {
+			t.Errorf("orphan temp file after Save: %s", e.Name())
+		}
 	}
 
-	rc, err := mb.Fetch("INBOX", final)
+	rc, err := mb.Fetch("INBOX", name)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -92,19 +87,21 @@ func TestSaveAssignFetchRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsZeroUID(t *testing.T) {
+	_, mb, _ := newTestUser(t)
+	if _, err := mb.Save("INBOX", strings.NewReader("x"), 0, 1, nil); err == nil {
+		t.Fatal("expected error on UID=0, got nil")
+	}
+}
+
 func TestSaveCRLFNormalisation(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	lf := "line one\nline two\n"
-	temp, err := mb.Save("INBOX", strings.NewReader(lf), int64(len(lf)), nil)
+	name, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	u := mb.(*userMailbox)
-	final, err := u.AssignUID("INBOX", temp, 1)
-	if err != nil {
-		t.Fatalf("assign: %v", err)
-	}
-	rc, err := mb.Fetch("INBOX", final)
+	rc, err := mb.Fetch("INBOX", name)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -119,51 +116,28 @@ func TestSaveCRLFNormalisation(t *testing.T) {
 	}
 }
 
-func TestAssignUIDIdempotent(t *testing.T) {
-	_, mb, _ := newTestUser(t)
-	temp, err := mb.Save("INBOX", strings.NewReader("x"), 1, nil)
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	u := mb.(*userMailbox)
-	if _, err := u.AssignUID("INBOX", temp, 5); err != nil {
-		t.Fatalf("first assign: %v", err)
-	}
-	if _, err := u.AssignUID("INBOX", temp, 5); err != nil {
-		t.Errorf("second assign should be no-op: %v", err)
-	}
-}
-
 func TestCopyHardlinks(t *testing.T) {
 	_, mb, home := newTestUser(t)
-	temp, err := mb.Save("INBOX", strings.NewReader("payload"), 7, nil)
+	src, err := mb.Save("INBOX", strings.NewReader("payload"), 3, 7, nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
-	}
-	u := mb.(*userMailbox)
-	src, err := u.AssignUID("INBOX", temp, 3)
-	if err != nil {
-		t.Fatalf("assign: %v", err)
 	}
 	if err := mb.Create("Sent"); err != nil {
 		t.Fatalf("create dest folder: %v", err)
 	}
-	dstTemp, err := u.Copy("INBOX", src, "Sent")
+	u := mb.(*userMailbox)
+	dst, err := u.Copy("INBOX", src, "Sent", 1)
 	if err != nil {
 		t.Fatalf("copy: %v", err)
 	}
-	if !strings.HasPrefix(dstTemp, ".temp.") {
-		t.Errorf("copied temp name %q should start with .temp.", dstTemp)
-	}
-	dstFinal, err := u.AssignUID("Sent", dstTemp, 1)
-	if err != nil {
-		t.Fatalf("assign dst: %v", err)
+	if dst != "u.1" {
+		t.Errorf("copy dst name = %q, want u.1", dst)
 	}
 	srcInfo, err := os.Stat(filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails", src))
 	if err != nil {
 		t.Fatalf("stat src: %v", err)
 	}
-	dstInfo, err := os.Stat(filepath.Join(home, "sdbox", "mailboxes", "Sent", "dbox-Mails", dstFinal))
+	dstInfo, err := os.Stat(filepath.Join(home, "sdbox", "mailboxes", "Sent", "dbox-Mails", dst))
 	if err != nil {
 		t.Fatalf("stat dst: %v", err)
 	}
@@ -181,15 +155,9 @@ func TestRemoveIdempotent(t *testing.T) {
 
 func TestListAndFolderOps(t *testing.T) {
 	_, mb, _ := newTestUser(t)
-	u := mb.(*userMailbox)
-	for i, uid := range []uint32{1, 2, 3} {
-		t.Logf("save %d", i)
-		temp, err := mb.Save("INBOX", strings.NewReader("msg"), 3, nil)
-		if err != nil {
-			t.Fatalf("save: %v", err)
-		}
-		if _, err := u.AssignUID("INBOX", temp, uid); err != nil {
-			t.Fatalf("assign: %v", err)
+	for _, uid := range []uint32{1, 2, 3} {
+		if _, err := mb.Save("INBOX", strings.NewReader("msg"), uid, 3, nil); err != nil {
+			t.Fatalf("save uid=%d: %v", uid, err)
 		}
 	}
 	msgs, err := mb.List("INBOX")
@@ -249,14 +217,13 @@ func TestListAndFolderOps(t *testing.T) {
 
 func TestScanRecoversGUIDAndSize(t *testing.T) {
 	_, mb, _ := newTestUser(t)
-	u := mb.(*userMailbox)
 	body := "hello world"
-	temp, err := mb.Save("INBOX", strings.NewReader(body), int64(len(body)), nil)
+	name, err := mb.Save("INBOX", strings.NewReader(body), 42, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if _, err := u.AssignUID("INBOX", temp, 42); err != nil {
-		t.Fatalf("assign: %v", err)
+	if name != "u.42" {
+		t.Errorf("save name = %q, want u.42", name)
 	}
 
 	recs, err := mb.Scan("INBOX")
@@ -282,17 +249,8 @@ func TestScanRecoversGUIDAndSize(t *testing.T) {
 	}
 }
 
-func TestAppendUIDEntryNoOp(t *testing.T) {
-	_, mb, _ := newTestUser(t)
-	if err := mb.AppendUIDEntry("INBOX", 1, "u.1"); err != nil {
-		t.Errorf("AppendUIDEntry should be no-op, got: %v", err)
-	}
-}
-
 func TestListFoldersIgnoresLooseDirs(t *testing.T) {
 	_, mb, home := newTestUser(t)
-	// Touch a stray directory that should NOT be reported as a folder
-	// (no dbox-Mails subdirectory).
 	stray := filepath.Join(home, "sdbox", "mailboxes", "stray")
 	if err := os.MkdirAll(stray, 0o700); err != nil {
 		t.Fatal(err)
