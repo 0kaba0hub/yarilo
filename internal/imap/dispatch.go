@@ -8,6 +8,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 
+	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -36,6 +37,12 @@ type nsHandle struct {
 	// state; shared/public use "subscriptions-<ns>" siblings in the
 	// user's home so each namespace tracks its own SUBSCRIBE state.
 	subs *subs.Store
+	// acl is the per-namespace ACL store backed by yarilo-acl files
+	// inside each folder's index dir. Created at openHandle time; the
+	// SessionACL implementation dispatches GETACL/SETACL/DELETEACL/
+	// MYRIGHTS/LISTRIGHTS through it. Stays nil only for declared-only
+	// namespaces (no backend, no ACL state to manage).
+	acl *acl.Store
 	// userInfo captures who the handle was opened for. Personal uses
 	// the authenticated user's UserInfo; shared/public use a synthetic
 	// UserInfo whose Home is the namespace root.
@@ -140,12 +147,14 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 	}
 	idx := s.srv.opts.Index.OpenUser(ui)
 	store := subs.New(ui.Home, subsFile, ui.Username, owner, s.srv.opts.Locker)
+	aclStore := acl.New(ui.Home, ui.Username, owner, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,
 		spec:     spec,
 		box:      box,
 		idx:      idx,
 		subs:     store,
+		acl:      aclStore,
 		userInfo: ui,
 	}, nil
 }

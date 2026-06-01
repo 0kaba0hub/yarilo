@@ -121,16 +121,24 @@ func makeOwner(u *mailbox.UserInfo) string {
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
-// indexDir returns the per-folder directory holding
-// dovecot.index + dovecot.index.log + names sidecar + pop3.uidl.
-// Layout: <home>/INBOX/ for INBOX; <home>/.<folder>/ for others
-// (Maildir convention; the dbox/mdbox drivers use the same layout
-// for now — Phase 3 will move sdbox to dbox-Mails/ subdir).
-func (u *userIndex) indexDir(folder string) string {
+// IndexDirFor returns the per-folder directory layout this backend
+// uses given a user home root: <home>/INBOX/ for INBOX, <home>/.<folder>/
+// for others (Maildir convention; dbox/mdbox drivers piggyback on the
+// same layout — Phase 3 will move sdbox to dbox-Mails/ subdir).
+//
+// Exposed because callers outside this package (notably
+// internal/userstate/acl) also place control-state sidecars in this
+// directory and must agree on the path. Keep this function as the
+// single source of truth.
+func IndexDirFor(home, folder string) string {
 	if folder == "INBOX" {
-		return filepath.Join(u.home, "INBOX")
+		return filepath.Join(home, "INBOX")
 	}
-	return filepath.Join(u.home, "."+folder)
+	return filepath.Join(home, "."+folder)
+}
+
+func (u *userIndex) indexDir(folder string) string {
+	return IndexDirFor(u.home, folder)
 }
 
 // withFolderLock runs fn under the cross-process index lock for

@@ -77,6 +77,15 @@ type Options struct {
 	// cfg.Dicts["metadata"] in yarilo.yaml.
 	MetadataDict dict.Dict
 
+	// ACLEnabled exposes RFC 4314 server-side ACL (GETACL / SETACL /
+	// DELETEACL / MYRIGHTS / LISTRIGHTS) when true. Storage is the
+	// per-mailbox `yarilo-acl` file in each folder's index directory
+	// — no extra backend wiring required. When false, the SessionACL
+	// methods on *session return NO("ACL extension disabled by
+	// operator"); the capability is still advertised since go-imap
+	// detects it via interface assertion.
+	ACLEnabled bool
+
 	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC
 	// 9051 §6.3.10). When nil/empty the server falls back to a single
 	// personal namespace with separator "/" — backwards-compatible
