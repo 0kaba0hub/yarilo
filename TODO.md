@@ -22,20 +22,6 @@ userdb fields.
 
 ---
 
-## Backend admin API — session control (kick)
-
-`yarilo-admin backend who` lists sessions (via anvil) but there is
-no `kick` to terminate them. Kicking requires reaching the session
-process that owns the TCP conn (`yarilo-imap`, `yarilo-pop3`,
-`yarilo-submission`), which currently has no admin RPC inbound.
-
-Unblocked by: add a tiny admin Unix socket on each session binary
-(`/var/run/yarilo/<svc>-admin.sock`) speaking a one-shot TAB
-protocol `KICK\t<sess-id>\n` → close that conn. Wire backend-api to
-dial it on `POST /api/backend/sessions/kick`.
-
----
-
 ## Backend admin API — folder write ops
 
 `/api/backend/folder/{create,delete,rename,expunge}` are not
