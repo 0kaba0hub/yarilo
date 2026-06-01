@@ -55,4 +55,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260530071923-66ec44019e67
+replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260601223000-13d725a0659d
