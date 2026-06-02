@@ -172,6 +172,49 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
+// TestAuthenticate_PopulatesFieldsBag verifies the Phase AUTH-2
+// PR 1 wire-prep work: the SQL passdb now writes its result into
+// AuthResponse.Fields in parallel with the typed Home / MailLoc
+// members. handleAuth's buildAuthOK prefers the bag when present,
+// so this assertion is the regression guard for the new wire path.
+func TestAuthenticate_PopulatesFieldsBag(t *testing.T) {
+	p, dsn := openTestDB(t)
+	insertUser(t, dsn, "alice", "secret", 1)
+
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec(
+		`UPDATE yarilo_users SET home = ?, mail = ? WHERE username = ?`,
+		"/h/alice", "maildir:/m/alice", "alice")
+	if err != nil {
+		t.Fatalf("update mail/home: %v", err)
+	}
+
+	resp, err := p.Authenticate("alice", "secret", "")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if resp == nil || resp.Result != protocol.AuthOK {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if resp.Fields == nil {
+		t.Fatal("expected Fields bag to be populated")
+	}
+	for _, kv := range []struct{ k, want string }{
+		{"user", "alice"},
+		{"home", "/h/alice"},
+		{"mail", "maildir:/m/alice"},
+	} {
+		got, ok := resp.Fields.Get(kv.k)
+		if !ok || got != kv.want {
+			t.Errorf("Fields[%q] = %q,%v; want %q,true", kv.k, got, ok, kv.want)
+		}
+	}
+}
+
 func TestNew_InvalidDSN(t *testing.T) {
 	_, err := authsql.New(authsql.Config{Driver: "sqlite", DSN: "/nonexistent/path/to/users.db"})
 	if err == nil {
