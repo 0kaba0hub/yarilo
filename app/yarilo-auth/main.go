@@ -112,10 +112,16 @@ func main() {
 		combinedUserdb = protocol.UserdbChain(userdbs)
 	}
 
+	authCache := protocol.NewCache(
+		cfg.Auth.Cache.SizeBytes,
+		time.Duration(cfg.Auth.Cache.TTLSeconds)*time.Second,
+		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
+	)
 	srvOpts := []protocol.ServerOption{
 		protocol.WithUserdb(combinedUserdb),
 		protocol.WithFailureDelay(time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second),
 		protocol.WithInternalFailureDelay(time.Duration(cfg.Auth.InternalFailureDelayMs) * time.Millisecond),
+		protocol.WithCache(authCache),
 	}
 	if cfg.Auth.MasterUsers.Enabled {
 		var masterdbs []protocol.Passdb
@@ -158,7 +164,9 @@ func main() {
 	// master_listen is unset; that keeps single-binary dev / smoke
 	// runs free of an extra bind that nothing consumes.
 	if cfg.AuthService.MasterListen != "" {
-		master := protocol.NewMasterServer(combinedUserdb)
+		master := protocol.NewMasterServer(combinedUserdb,
+			protocol.WithMasterCache(authCache),
+		)
 		slog.Info("yarilo-auth master listener", "addr", cfg.AuthService.MasterListen)
 		go func() {
 			if err := master.ListenAndServe(ctx, cfg.AuthService.MasterListen, tlsCfg); err != nil {

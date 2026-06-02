@@ -73,7 +73,14 @@ func main() {
 		dbs = append(dbs, db)
 	}
 
-	authOpts := []protocol.AuthenticatorOption{}
+	authCache := protocol.NewCache(
+		cfg.Auth.Cache.SizeBytes,
+		time.Duration(cfg.Auth.Cache.TTLSeconds)*time.Second,
+		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
+	)
+	authOpts := []protocol.AuthenticatorOption{
+		protocol.WithAuthenticatorCache(authCache),
+	}
 	if cfg.Auth.MasterUsers.Enabled {
 		var masterdbs []protocol.Passdb
 		for _, entry := range cfg.Auth.MasterUsers.Masterdb {

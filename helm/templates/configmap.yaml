@@ -139,6 +139,10 @@ data:
     auth:
       failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
       internal_failure_delay_ms: {{ .Values.components.auth.internalFailureDelayMs | default 2000 }}
+      cache:
+        size_bytes: {{ .Values.components.auth.cache.sizeBytes | default 0 }}
+        ttl_seconds: {{ .Values.components.auth.cache.ttlSeconds | default 1800 }}
+        negative_ttl_seconds: {{ .Values.components.auth.cache.negativeTTLSeconds | default 1800 }}
       passdb:
         {{- range .Values.components.auth.passdb }}
         - driver: {{ .driver | quote }}

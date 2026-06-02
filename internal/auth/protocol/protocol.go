@@ -183,6 +183,18 @@ func WithAuthenticatorMasterUsers(enabled bool) AuthenticatorOption {
 	return func(a *chainAuthenticator) { a.masterUsersEnabled = enabled }
 }
 
+// WithAuthenticatorCache attaches an auth cache. When set, every
+// Authenticate / AuthenticateMaster call first consults the cache
+// (key = `<service>\t<username>`) and short-circuits on hit.
+// Misses run the full chain and seed the cache with the result.
+// Nil cache = caching disabled (every call goes to the chain).
+//
+// The cache is keyed by the passdb-side username; in a master-user
+// flow the master and target produce independent cache entries.
+func WithAuthenticatorCache(c *Cache) AuthenticatorOption {
+	return func(a *chainAuthenticator) { a.cache = c }
+}
+
 // NewAuthenticator wraps one or more Passdb drivers into the
 // session-friendly Authenticator surface. Optionally attach a
 // userdb via WithAuthenticatorUserdb so the bag returned by every
@@ -229,9 +241,20 @@ type chainAuthenticator struct {
 	masterdb            []Passdb
 	masterUserSeparator string
 	masterUsersEnabled  bool
+	cache               *Cache
 }
 
 func (c *chainAuthenticator) Authenticate(username, password, service string) (*AuthResponse, error) {
+	// Cache lookup — positive hit verifies the supplied password
+	// against the stored HMAC and short-circuits the chain.
+	// Negative hit short-circuits without password check: a
+	// previously-failed lookup is authoritative for the neg-TTL
+	// window.
+	key := MakeCacheKey(service, username)
+	if entry, ok := c.cache.Lookup(key, password); ok {
+		return responseFromCache(username, entry), nil
+	}
+
 	req := &Request{
 		Username: username,
 		Password: password,
@@ -239,6 +262,15 @@ func (c *chainAuthenticator) Authenticate(username, password, service string) (*
 		Fields:   NewFields(),
 	}
 	result, err := RunAuth(c.chain, c.userdb, req)
+
+	// Seed the cache on definitive answers. TempFail is not
+	// cached — the next attempt should retry the chain so a
+	// transient backend outage does not lock users out for the
+	// neg-TTL window.
+	if err == nil && (result == ResultOK || result == ResultFail) {
+		c.cache.Insert(key, username, password, result, req.Fields)
+	}
+
 	resp := &AuthResponse{
 		Result: authResultFromChain(result),
 		Fields: req.Fields,
@@ -255,6 +287,32 @@ func (c *chainAuthenticator) Authenticate(username, password, service string) (*
 		resp.MailLoc = v
 	}
 	return resp, err
+}
+
+// responseFromCache rebuilds the AuthResponse from a cached
+// CacheEntry. Username/Home/MailLoc are pulled from the bag
+// (matching the chain's natural population) so a cache hit is
+// byte-identical to a fresh chain run for the same input.
+func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
+	resp := &AuthResponse{
+		Result: authResultFromChain(entry.Result),
+		Fields: entry.Fields,
+	}
+	if entry.Fields != nil {
+		if v, ok := entry.Fields.Get("user"); ok {
+			resp.Username = v
+		}
+		if v, ok := entry.Fields.Get("home"); ok {
+			resp.Home = v
+		}
+		if v, ok := entry.Fields.Get("mail"); ok {
+			resp.MailLoc = v
+		}
+	}
+	if resp.Username == "" {
+		resp.Username = reqUser
+	}
+	return resp
 }
 
 // AuthenticateMaster implements MasterAuthenticator. Routing
@@ -287,6 +345,19 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 	if target == "" || target == master {
 		return c.Authenticate(master, password, service)
 	}
+
+	// Master-flow caching: key the cache by (service, master,
+	// target) tuple so each (master impersonating target) pair
+	// caches independently. Cached under the master's name for
+	// selective flush — revoking a master's privileges then
+	// `auth cache flush <master>` evicts every impersonation
+	// entry in one sweep. Stale-privilege risk is bounded by the
+	// configured TTL plus the audit log.
+	mkey := MakeCacheKey(service, "M:"+master+"\t"+target)
+	if entry, ok := c.cache.Lookup(mkey, password); ok {
+		return responseFromCache(target, entry), nil
+	}
+
 	req := &Request{
 		Username: master,
 		Password: password,
@@ -294,6 +365,14 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 		Fields:   NewFields(),
 	}
 	result, err := RunMasterAuth(c.chain, Chain(c.masterdb), c.userdb, target, req)
+
+	if err == nil && (result == ResultOK || result == ResultFail) {
+		// Cache under master's name (not target) for selective
+		// flush — admin revoking a master's privileges flushes
+		// by master, and all their impersonation cache entries
+		// drop in one sweep.
+		c.cache.Insert(mkey, master, password, result, req.Fields)
+	}
 	resp := &AuthResponse{
 		Result: authResultFromChain(result),
 		Fields: req.Fields,
@@ -317,14 +396,12 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 // from a userdb.Lookup. Prefetch detection: when the chain has
 // already populated any userdb_-prefixed key (an SQL passdb that
 // SELECT-ed userdb columns in the same query), userdb.Lookup is
-// skipped (mirrors Dovecot's userdb-prefetch driver behaviour).
+// skipped — the passdb effectively did the work.
 //
 // userdb errors and misses do NOT downgrade ResultOK — passdb is
 // authoritative for the auth decision. They surface in server-side
-// logs only; the response carries passdb-only fields. The
-// rationale matches Dovecot: a temporary userdb outage should not
-// reject a verified user since the wire response also doubles as
-// the only credential check.
+// logs only; the response carries passdb-only fields. A transient
+// userdb outage must not reject an already-verified user.
 //
 // Allocates req.Fields when the caller passed nil so the userdb
 // writer never trips a nil-pointer.
@@ -389,20 +466,19 @@ func writeUserdbFields(f *Fields, ui *UserInfo) {
 //
 // req.Username MUST be the master when the function is called.
 // On success, req.Fields is mutated: `master_user` is overwritten
-// with the master's username (Dovecot semantics — same field name
-// is reused on the wire for audit), `original_user` + `login_user`
-// + `user` are set to target, and req.Username is updated to
-// target so any downstream consumer reading the struct sees the
+// with the master's username (echoed on the wire OK reply for
+// audit), `original_user` + `login_user` + `user` are set to
+// target, and req.Username is updated to target so any
+// downstream consumer reading the struct sees the
 // post-impersonation identity.
 //
-// Authorisation model (matches Dovecot's two equivalent paths):
+// Authorisation model (two equivalent paths):
 //
 //  1. masterdb chain (if non-empty) authenticates the master
 //     with its own password. ResultOK → impersonation allowed.
 //  2. Otherwise the main passdb chain authenticates the master;
 //     the result must carry `master_user=yes` (truthy per the
-//     reserved-field bool spelling) — that's the per-user master
-//     flag Dovecot's `auth_master_user_passdb` mode uses.
+//     reserved-field bool spelling) — a per-user master flag.
 //
 // On either failure (no masterdb hit AND no `master_user=yes`
 // flag from passdb) the request is rejected with ResultFail.
@@ -572,6 +648,7 @@ type Server struct {
 	masterUsersEnabled   bool
 	failureDelay         time.Duration
 	internalFailureDelay time.Duration
+	cache                *Cache
 	connUID              atomic.Uint64
 	pid                  int
 	cookie               string
@@ -595,18 +672,17 @@ func WithUserdb(u Userdb) ServerOption {
 // set and differs from authid) authenticate the authid against
 // the masterdb first; if absent or not configured, the request
 // falls through to the regular passdb and looks for a
-// `master_user=yes` field on the result (Dovecot's per-user master
-// flag — see auth/auth-request-fields.c). Either mechanism grants
-// the impersonation.
+// `master_user=yes` field on the result (per-user master flag).
+// Either mechanism grants the impersonation.
 func WithMasterdb(passdbs []Passdb) ServerOption {
 	return func(s *Server) { s.masterdb = passdbs }
 }
 
-// WithMasterUserSeparator enables Dovecot's `target<sep>master`
+// WithMasterUserSeparator enables the `target<sep>master`
 // workaround for SASL PLAIN clients that cannot supply authzid
-// in the standard third-field position. Typical value is `*`
-// (Dovecot's `auth_master_user_separator` default). Empty
-// disables the workaround — only RFC 4616 authzid is honoured.
+// in the standard third-field position. Typical value is `*`.
+// Empty disables the workaround — only RFC 4616 authzid is
+// honoured.
 func WithMasterUserSeparator(sep string) ServerOption {
 	return func(s *Server) { s.masterUserSeparator = sep }
 }
@@ -626,7 +702,6 @@ func WithMasterUsers(enabled bool) ServerOption {
 // client-visible auth failures (wrong password, unknown user,
 // malformed SASL). The reply is held back by d before writing
 // to the wire. Zero disables the delay (mostly for tests).
-// Mirrors Dovecot's `auth_failure_delay`.
 func WithFailureDelay(d time.Duration) ServerOption {
 	return func(s *Server) { s.failureDelay = d }
 }
@@ -635,10 +710,23 @@ func WithFailureDelay(d time.Duration) ServerOption {
 // failure is internal (passdb backend down, SQL refused, etc).
 // Separate from WithFailureDelay because operators often want
 // internal-error delays shorter than user-facing ones (the user
-// will likely retry and another full failure_delay would amplify
-// outage symptoms). Mirrors Dovecot's `auth_internal_failure_delay`.
+// will likely retry and another full failure delay would amplify
+// outage symptoms).
 func WithInternalFailureDelay(d time.Duration) ServerOption {
 	return func(s *Server) { s.internalFailureDelay = d }
+}
+
+// WithCache attaches an auth cache. handleAuth consults it
+// before running the passdb chain — positive hit verifies the
+// supplied password against the stored HMAC, negative hit
+// short-circuits without password check. Misses run the chain
+// and seed the cache with the result.
+//
+// Nil cache disables caching. Pass the same *Cache instance to
+// WithMasterCache on the matching MasterServer to expose
+// CACHE-FLUSH for selective eviction.
+func WithCache(c *Cache) ServerOption {
+	return func(s *Server) { s.cache = c }
 }
 
 // NewServer creates an auth server with the given passdb chain.
@@ -758,12 +846,11 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		fmt.Fprintf(conn, "FAIL\t%s\treason=bad-credentials\n", id)
 		return
 	}
-	// Master-user separator workaround (RFC 4616 §2.1 doesn't cover
-	// this case; Dovecot's `auth_master_user_separator` does):
-	// clients that can't supply authzid encode it as
-	// `target<sep>master` inside the authid field. Only honoured
-	// when master-users are enabled AND no authzid was given AND
-	// a separator is configured.
+	// Master-user separator workaround (RFC 4616 §2.1 doesn't
+	// cover this case): clients that can't supply authzid encode
+	// it as `target<sep>master` inside the authid field. Only
+	// honoured when master-users are enabled AND no authzid was
+	// given AND a separator is configured.
 	//
 	// When master-users are disabled at the server level, BOTH
 	// the authzid and the separator workaround are ignored — the
@@ -877,6 +964,27 @@ func buildAuthOK(id string, res *AuthResponse) string {
 // RunMasterAuth: masterdb / passdb master_user flag → switch
 // identity → userdb for target.
 func (s *Server) authenticate(target, master, password, service string) (*AuthResponse, error) {
+	// Cache key shape mirrors chainAuthenticator so the in-process
+	// and wire paths stay interchangeable for the same input.
+	// Regular flow: `<service>\t<user>`. Master flow: prefixed
+	// with `M:` and the target appended so each (master, target)
+	// pair caches independently.
+	var key, cacheUser string
+	if target != "" && target != master {
+		key = MakeCacheKey(service, "M:"+master+"\t"+target)
+		cacheUser = master
+	} else {
+		key = MakeCacheKey(service, master)
+		cacheUser = master
+	}
+	if entry, ok := s.cache.Lookup(key, password); ok {
+		retUser := master
+		if target != "" {
+			retUser = target
+		}
+		return responseFromCache(retUser, entry), nil
+	}
+
 	req := &Request{
 		Username: master,
 		Password: password,
@@ -892,6 +1000,11 @@ func (s *Server) authenticate(target, master, password, service string) (*AuthRe
 	} else {
 		result, err = RunAuth(Chain(s.passdbs), s.userdb, req)
 	}
+
+	if err == nil && (result == ResultOK || result == ResultFail) {
+		s.cache.Insert(key, cacheUser, password, result, req.Fields)
+	}
+
 	resp := &AuthResponse{
 		Result: authResultFromChain(result),
 		Fields: req.Fields,
@@ -945,10 +1058,9 @@ func parsePlain(mech, resp string) (authzid, authid, password string, ok bool) {
 // some mobile clients). Returns ("", authid) when sep is empty or
 // not found — authid passes through unchanged.
 //
-// Mirrors Dovecot's `auth_master_user_separator` (default `*`)
-// from auth/auth-request-fields.c: a SASL response of the form
-// `\0target*master\0password` is equivalent to the standards-
-// compliant `target\0master\0password`.
+// A SASL response of the form `\0target*master\0password` is
+// equivalent to the standards-compliant
+// `target\0master\0password`.
 func SplitMasterFromAuthid(authid, sep string) (master, target string) {
 	if sep == "" {
 		return authid, ""

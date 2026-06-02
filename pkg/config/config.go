@@ -431,7 +431,7 @@ type ShutdownConfig struct {
 type AuthConfig struct {
 	Passdb []PassdbEntry `koanf:"passdb"`
 
-	// MasterUsers groups Dovecot-style master-user impersonation
+	// MasterUsers groups master-user impersonation
 	// settings. Disabled by default — distinct SASL PLAIN authzid
 	// is rejected by every protocol entry point (IMAP, POP3,
 	// Submission, wire yarilo-auth) until Enabled is flipped to
@@ -447,25 +447,52 @@ type AuthConfig struct {
 	// attacker cannot use timing to enumerate users or distinguish
 	// "user exists, wrong password" from "user does not exist".
 	//
-	// Dovecot default: 2 (seconds). Set to 0 to disable (mainly
-	// for test speed — production should always have it >0).
-	// Mirrors Dovecot's `auth_failure_delay`.
+	// Default 2 (seconds). Set to 0 to disable (mainly for test
+	// speed — production should always have it >0).
 	FailureDelaySeconds int `koanf:"failure_delay"`
 
 	// InternalFailureDelayMs is the matching delay for INTERNAL
 	// failures — passdb backend down, SQL connection refused, etc.
 	// Separate knob because internal failures often retry and the
 	// operator may want a shorter back-off than the user-facing
-	// FailureDelay. Mirrors Dovecot's `auth_internal_failure_delay`
-	// (default 2000ms).
+	// FailureDelay. Default 2000ms.
 	InternalFailureDelayMs int `koanf:"internal_failure_delay_ms"`
+
+	// Cache groups passdb / userdb cache settings. Disabled by
+	// default (SizeBytes=0).
+	Cache AuthCacheConfig `koanf:"cache"`
+}
+
+// AuthCacheConfig configures the in-process auth cache (LRU
+// bytes-bounded). Positive entries hold successful credentials
+// verified against the stored HMAC of the password; negative
+// entries hold failed lookups (unknown user, wrong password).
+// Set SizeBytes>0 to enable.
+type AuthCacheConfig struct {
+	// SizeBytes caps total payload weight (approximate — includes
+	// key + bag + per-entry overhead). 0 disables caching.
+	SizeBytes int64 `koanf:"size_bytes"`
+
+	// TTLSeconds is the lifetime of a positive (successful) entry.
+	// Default 1800 (30m). Kept tight because yarilo lacks
+	// automatic flush hooks from user-management tooling yet
+	// (see AUTH-7 backlog), so a shorter window limits staleness
+	// exposure for password rotation / user deletion.
+	TTLSeconds int `koanf:"ttl_seconds"`
+
+	// NegativeTTLSeconds is the lifetime of a negative (failed)
+	// entry. Default 1800 (30m). Cache poisoning by wrong-password
+	// retries is already prevented at the cache layer (see
+	// Cache.Insert anti-poisoning guard); this TTL governs only
+	// genuinely-unknown-user entries.
+	NegativeTTLSeconds int `koanf:"negative_ttl_seconds"`
 }
 
 // MasterUsersConfig configures the master-user impersonation
 // surface. Master-user lets a privileged account log into another
 // user's mailbox by sending a SASL PLAIN response with the
-// target's identity in authzid. See INTERNALS / Dovecot's
-// `auth_master_user_*` family for the wire model.
+// target's identity in authzid. See INTERNALS.md for the wire
+// model.
 type MasterUsersConfig struct {
 	// Enabled is the top-level opt-in. While false, distinct
 	// SASL PLAIN authzid is rejected unconditionally — the wire
@@ -483,8 +510,7 @@ type MasterUsersConfig struct {
 	//
 	// Independently of Masterdb, any regular Passdb entry can flag
 	// individual rows as masters by returning `master_user=yes` in
-	// the result fields. Both mechanisms coexist (see Dovecot's
-	// auth_master_user_passdb).
+	// the result fields. Both mechanisms coexist.
 	Masterdb []PassdbEntry `koanf:"masterdb"`
 
 	// Separator enables the `target<sep>master` SASL PLAIN
@@ -493,8 +519,7 @@ type MasterUsersConfig struct {
 	// authid `alice*admin` then routes as if authzid had been
 	// `alice` and authid had been `admin`. Empty disables the
 	// workaround entirely — only RFC 4616 authzid is honoured.
-	// Default `*` matches Dovecot's `auth_master_user_separator`,
-	// but only takes effect when Enabled is true.
+	// Default `*` — only takes effect when Enabled is true.
 	Separator string `koanf:"separator"`
 }
 
@@ -612,15 +637,23 @@ func Load(path string) (*Config, error) {
 		},
 		Auth: AuthConfig{
 			// MasterUsers is opt-in (Enabled defaults to false).
-			// Separator matches Dovecot's default but stays inert
-			// until Enabled is flipped explicitly.
+			// Separator stays inert until Enabled is flipped
+			// explicitly.
 			MasterUsers: MasterUsersConfig{
 				Separator: "*",
 			},
-			// Dovecot defaults: 2s for client-visible failures,
-			// 2000ms for internal-failure delays.
+			// 2s for client-visible failures, 2000ms for internal.
 			FailureDelaySeconds:    2,
 			InternalFailureDelayMs: 2000,
+			// Cache off by default — operators opt in by setting
+			// auth.cache.size_bytes>0. TTLs are 30m to keep
+			// password-change / user-delete staleness windows
+			// tight in environments without explicit cache
+			// flushes from user-management tooling.
+			Cache: AuthCacheConfig{
+				TTLSeconds:         1800,
+				NegativeTTLSeconds: 1800,
+			},
 		},
 		DirectorService: DirectorServiceConfig{
 			Listen: ":9102",

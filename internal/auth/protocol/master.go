@@ -37,9 +37,23 @@ const (
 // material today; splitting is a future operational knob.
 type MasterServer struct {
 	userdb  Userdb
+	cache   *Cache
 	connUID atomic.Uint64
 	pid     int
 	cookie  string
+}
+
+// MasterServerOption tunes a NewMasterServer construction.
+type MasterServerOption func(*MasterServer)
+
+// WithMasterCache attaches the auth cache that the master
+// protocol's CACHE-FLUSH verb operates on. Pass the same *Cache
+// instance the client-protocol Server received via WithCache so
+// flushing through the admin socket actually empties the cache
+// servicing login pods. Nil cache means CACHE-FLUSH responds
+// FAIL.
+func WithMasterCache(c *Cache) MasterServerOption {
+	return func(s *MasterServer) { s.cache = c }
 }
 
 // NewMasterServer constructs a MasterServer rooted at the given
@@ -51,14 +65,18 @@ type MasterServer struct {
 // NOTFOUND, LIST will respond FAIL. Useful for deployments that
 // expose only the wire surface (e.g. for connectivity checks)
 // without configured backends.
-func NewMasterServer(userdb Userdb) *MasterServer {
+func NewMasterServer(userdb Userdb, opts ...MasterServerOption) *MasterServer {
 	cookie := make([]byte, 16)
 	rand.Read(cookie) //nolint:errcheck
-	return &MasterServer{
+	s := &MasterServer{
 		userdb: userdb,
 		pid:    os.Getpid(),
 		cookie: hex.EncodeToString(cookie),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // ListenAndServe accepts connections until ctx is cancelled. When
@@ -146,6 +164,8 @@ func (s *MasterServer) handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "FAIL\t%s\treason=PASS not implemented (Phase AUTH-2)\n", id)
 		case "LIST":
 			s.handleList(conn, fields)
+		case "CACHE-FLUSH":
+			s.handleCacheFlush(conn, fields)
 		default:
 			id := parseID(fields)
 			fmt.Fprintf(conn, "FAIL\t%s\treason=unknown command %q\n", id, fields[0])
@@ -211,6 +231,32 @@ func (s *MasterServer) handleList(conn net.Conn, fields []string) {
 		fmt.Fprintf(conn, "LIST\t%s\t%s\n", id, u)
 	}
 	fmt.Fprintf(conn, "DONE\t%s\n", id)
+}
+
+// handleCacheFlush evicts cache entries matching the supplied
+// user-masks. Wire shape:
+//
+//	CACHE-FLUSH <id>                  → full flush
+//	CACHE-FLUSH <id> <mask> [<mask>…] → selective flush
+//
+// Responds `OK <id> <count>` with the number of entries removed,
+// or `FAIL <id> reason=no cache configured` when the server was
+// constructed without WithMasterCache.
+//
+// Admin CLI: `yarilo-admin auth cache flush [<user-mask>…]`.
+func (s *MasterServer) handleCacheFlush(conn net.Conn, fields []string) {
+	id := parseID(fields)
+	if s.cache == nil {
+		fmt.Fprintf(conn, "FAIL\t%s\treason=no cache configured\n", id)
+		return
+	}
+	var n uint32
+	if len(fields) <= 2 {
+		n = s.cache.Clear()
+	} else {
+		n = s.cache.ClearByUserMask(fields[2:])
+	}
+	fmt.Fprintf(conn, "OK\t%s\t%d\n", id, n)
 }
 
 // parseID extracts the request id from a command frame. Returns
