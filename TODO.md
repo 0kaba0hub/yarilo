@@ -66,6 +66,17 @@ Dovecot's `auth-cache.c` shape), cache-key with var substitution
 Per-IP penalty / rate-limit via `internal/anvil` (`COUNTER-INC`
 primitives are already in place), IPv6 masked to /48.
 
+**Timing-leak fix (carve-out, lands here):** today an unknown
+username short-circuits before any password check while a known
+one runs the full bcrypt / sha512-crypt path — an attacker that
+measures wall-clock auth latency can enumerate which usernames
+exist. Mitigation is Dovecot's constant-time fake-compare: on
+`ResultNext` (user unknown in this driver) the SQL passdb runs a
+no-op password check against a dummy hash so the timing envelope
+matches the verified path. Add a benchmark assertion that the two
+paths' p50 latency stays within a small ratio so regressions
+surface in CI.
+
 See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-4.
 
 ---
