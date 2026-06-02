@@ -1,0 +1,290 @@
+package backendapi
+
+import (
+	"fmt"
+	"net/http"
+	"sort"
+
+	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+)
+
+// registerACLRoutes wires the RFC 4314 ACL admin surface. Reuses
+// internal/userstate/acl.Store — same on-disk format (yarilo-acl
+// per-mailbox + yarilo-acl-list namespace-wide index) and the same
+// locks as the IMAP SETACL / DELETEACL paths, so concurrent IMAP
+// sessions see admin writes immediately.
+//
+// Endpoints:
+//
+//	POST /api/backend/acl/list    — every mailbox with an explicit ACL
+//	POST /api/backend/acl/get     — parsed ACL for one mailbox
+//	POST /api/backend/acl/set     — replace ACL for one mailbox
+//	POST /api/backend/acl/delete  — drop ACL for one mailbox
+//	POST /api/backend/acl/rebuild — reseed namespace-wide index from
+//	                                per-mailbox files (folders arg
+//	                                supplied by caller)
+func (s *Server) registerACLRoutes() {
+	s.mux.Handle("POST /api/backend/acl/list", s.middleware(s.handleACLList))
+	s.mux.Handle("POST /api/backend/acl/get", s.middleware(s.handleACLGet))
+	s.mux.Handle("POST /api/backend/acl/set", s.middleware(s.handleACLSet))
+	s.mux.Handle("POST /api/backend/acl/delete", s.middleware(s.handleACLDelete))
+	s.mux.Handle("POST /api/backend/acl/rebuild", s.middleware(s.handleACLRebuild))
+}
+
+// aclRequest is the common request body for the admin endpoints.
+// Folder is required by get / set / delete; ignored by list. ACL is
+// required by set. Folders is required by rebuild.
+type aclRequest struct {
+	User      string         `json:"user"`
+	Namespace string         `json:"namespace"`
+	Folder    string         `json:"folder"`
+	ACL       []aclEntryJSON `json:"acl,omitempty"`
+	Folders   []string       `json:"folders,omitempty"`
+}
+
+// aclEntryJSON is the wire-format representation of a single ACL
+// entry. Identifier carries the leading '-' for negatives so JSON
+// stays symmetric with the on-disk format; the API layer splits it
+// out into the Negative flag before persisting.
+type aclEntryJSON struct {
+	Identifier string `json:"identifier"`
+	Rights     string `json:"rights"`
+	Negative   bool   `json:"negative,omitempty"`
+}
+
+func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
+	store, _, err := s.openACLStore(w, r)
+	if err != nil {
+		return
+	}
+	entries, err := store.ListSnapshot()
+	if err != nil {
+		apiError(w, "list snapshot: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, map[string]any{"entries": entriesToJSON(entries)})
+}
+
+func (s *Server) handleACLGet(w http.ResponseWriter, r *http.Request) {
+	store, req, err := s.openACLStore(w, r)
+	if err != nil {
+		return
+	}
+	if req.Folder == "" {
+		apiError(w, "folder required", http.StatusBadRequest)
+		return
+	}
+	parsed, err := store.Get(req.Folder)
+	if err != nil {
+		apiError(w, "get: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, map[string]any{
+		"folder": req.Folder,
+		"acl":    aclToJSON(parsed),
+	})
+}
+
+func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
+	store, req, err := s.openACLStore(w, r)
+	if err != nil {
+		return
+	}
+	if req.Folder == "" {
+		apiError(w, "folder required", http.StatusBadRequest)
+		return
+	}
+	parsed, err := jsonToACL(req.ACL)
+	if err != nil {
+		apiError(w, "acl: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := store.Set(req.Folder, parsed); err != nil {
+		apiError(w, "set: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleACLDelete(w http.ResponseWriter, r *http.Request) {
+	store, req, err := s.openACLStore(w, r)
+	if err != nil {
+		return
+	}
+	if req.Folder == "" {
+		apiError(w, "folder required", http.StatusBadRequest)
+		return
+	}
+	if err := store.Remove(req.Folder); err != nil {
+		apiError(w, "delete: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
+	store, req, err := s.openACLStore(w, r)
+	if err != nil {
+		return
+	}
+	if len(req.Folders) == 0 {
+		apiError(w, "folders required", http.StatusBadRequest)
+		return
+	}
+	err = store.ListRebuild(req.Folders, func(folder string) (mailbox.ACL, error) {
+		acl, err := store.Get(folder)
+		if err != nil {
+			return nil, err
+		}
+		return acl, nil
+	})
+	if err != nil {
+		apiError(w, "rebuild: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, map[string]any{
+		"status":  "ok",
+		"folders": len(req.Folders),
+	})
+}
+
+// openACLStore decodes the common request body, resolves the
+// per-namespace bundle, and returns the acl.Store. Mirrors
+// openSubsStore / openSpecialUseStore in this package.
+func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Store, *aclRequest, error) {
+	var req aclRequest
+	if !decodeJSON(w, r, &req) {
+		return nil, nil, errDecode
+	}
+	if req.User == "" {
+		apiError(w, errUserRequired.Error(), http.StatusBadRequest)
+		return nil, nil, errUserRequired
+	}
+	uc, err := s.openUserContext(req.User)
+	if err != nil {
+		apiError(w, err.Error(), http.StatusBadRequest)
+		return nil, nil, err
+	}
+	defer uc.Close()
+
+	nsName := req.Namespace
+	if nsName == "" {
+		nsName = "personal"
+	}
+	bundle, err := uc.ns(s, nsName)
+	if err != nil {
+		apiError(w, err.Error(), http.StatusBadRequest)
+		return nil, nil, err
+	}
+	store := acl.New(bundle.folderHome(), uc.info.Username, uc.lockOwner(), s.opts.Locker)
+	return store, &req, nil
+}
+
+// aclToJSON / jsonToACL bridge the in-memory ACL representation and
+// the API wire format. The on-disk Negative flag is surfaced on the
+// wire as a '-' prefix on the identifier so a get → set round-trip
+// preserves type without an extra negative field on every entry.
+
+func aclToJSON(acl mailbox.ACL) []aclEntryJSON {
+	out := make([]aclEntryJSON, 0, len(acl))
+	for _, e := range acl {
+		id := e.Identifier.String()
+		if e.Negative {
+			id = "-" + id
+		}
+		out = append(out, aclEntryJSON{
+			Identifier: id,
+			Rights:     e.Rights.String(),
+			Negative:   e.Negative,
+		})
+	}
+	return out
+}
+
+func jsonToACL(in []aclEntryJSON) (mailbox.ACL, error) {
+	out := make(mailbox.ACL, 0, len(in))
+	for _, e := range in {
+		idStr := e.Identifier
+		negative := e.Negative
+		if len(idStr) > 0 && idStr[0] == '-' {
+			negative = true
+			idStr = idStr[1:]
+		}
+		id, err := parseAdminIdentifier(idStr)
+		if err != nil {
+			return nil, err
+		}
+		rights, err := mailbox.ParseRights(e.Rights)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mailbox.Entry{
+			Identifier: id,
+			Rights:     rights,
+			Negative:   negative,
+		})
+	}
+	return out, nil
+}
+
+// parseAdminIdentifier accepts the disk-canonical forms (anyone /
+// authenticated / owner / user= / group= / group-override=) AND a
+// bare username (same convention as the IMAP wire bridge in
+// internal/imap.identifierFromIMAP) — admins typing
+// `bob@example.com` should not have to remember the `user=` prefix
+// every time.
+func parseAdminIdentifier(s string) (mailbox.Identifier, error) {
+	switch s {
+	case "anyone":
+		return mailbox.Identifier{Type: mailbox.IDAnyone}, nil
+	case "authenticated":
+		return mailbox.Identifier{Type: mailbox.IDAuthenticated}, nil
+	case "owner":
+		return mailbox.Identifier{Type: mailbox.IDOwner}, nil
+	}
+	if len(s) == 0 {
+		return mailbox.Identifier{}, fmt.Errorf("backendapi/acl: empty identifier")
+	}
+	// Disk-canonical prefixed forms go through ParseIdentifier so
+	// validation and Name extraction stay in one place.
+	if hasAnyPrefix(s, "user=", "group=", "group-override=") {
+		return mailbox.ParseIdentifier(s)
+	}
+	return mailbox.Identifier{Type: mailbox.IDUser, Name: s}, nil
+}
+
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if len(s) >= len(p) && s[:len(p)] == p {
+			return true
+		}
+	}
+	return false
+}
+
+// entriesToJSON serialises a yarilo-acl-list snapshot for the wire,
+// sorted by (mailbox, identifier) so the response is deterministic
+// across calls.
+func entriesToJSON(in []acl.ListEntry) []map[string]any {
+	sort.SliceStable(in, func(i, j int) bool {
+		if in[i].Mailbox != in[j].Mailbox {
+			return in[i].Mailbox < in[j].Mailbox
+		}
+		return in[i].Identifier.String() < in[j].Identifier.String()
+	})
+	out := make([]map[string]any, 0, len(in))
+	for _, e := range in {
+		id := e.Identifier.String()
+		if e.Negative {
+			id = "-" + id
+		}
+		out = append(out, map[string]any{
+			"mailbox":    e.Mailbox,
+			"identifier": id,
+			"rights":     e.Rights.String(),
+			"negative":   e.Negative,
+		})
+	}
+	return out
+}

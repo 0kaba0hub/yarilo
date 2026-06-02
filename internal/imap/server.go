@@ -573,7 +573,18 @@ func (s *session) Delete(name string) error {
 	if err := s.requireRight(h, rel, mailbox.RightDeleteMailbox); err != nil {
 		return err
 	}
-	return h.box.Delete(rel)
+	if err := h.box.Delete(rel); err != nil {
+		return err
+	}
+	// Drop any explicit ACL state — file + namespace-wide index.
+	// Errors are non-fatal (mailbox is already gone); log and
+	// proceed so the client sees a clean DELETE result.
+	if h.acl != nil {
+		if err := h.acl.Remove(rel); err != nil {
+			slog.Warn("imap: acl remove after DELETE failed", "folder", name, "err", err)
+		}
+	}
+	return nil
 }
 
 func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) error {
@@ -607,7 +618,19 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 	if err := hOld.box.Rename(relOld, relNew); err != nil {
 		return err
 	}
-	return hOld.idx.RenameFolder(relOld, relNew)
+	if err := hOld.idx.RenameFolder(relOld, relNew); err != nil {
+		return err
+	}
+	// Move the per-mailbox yarilo-acl file (if any) and rewrite the
+	// namespace-wide index entries. Errors are non-fatal — the
+	// mailbox itself has moved; we log and keep the IMAP response
+	// successful so clients are not blocked by a stale index.
+	if hOld.acl != nil {
+		if err := hOld.acl.Rename(relOld, relNew); err != nil {
+			slog.Warn("imap: acl rename failed", "from", oldName, "to", newName, "err", err)
+		}
+	}
+	return nil
 }
 
 // renameInbox implements RFC 3501 §6.3.5 INBOX rename semantics:

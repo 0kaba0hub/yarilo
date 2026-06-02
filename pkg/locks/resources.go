@@ -40,3 +40,12 @@ func SieveScriptsKey(user string) string { return "sieve:" + user }
 // file (LIST-EXTENDED §SELECT SUBSCRIBED / RETURN SUBSCRIBED). Independent
 // of mailbox keys — subscribe is metadata, never racing with mail writes.
 func SubscriptionsKey(user string) string { return "subs:" + user }
+
+// ACLListKey returns the lock key for the per-namespace yarilo-acl-list
+// global index — one file per namespace-root that mirrors which
+// mailboxes have explicit ACLs. Scoped by home directory rather than
+// username so two users accessing the same shared-namespace root
+// serialise their index updates against each other. Independent of
+// MailboxKey: per-mailbox ACL writes take MailboxKey, then briefly
+// take ACLListKey to splice their change into the index.
+func ACLListKey(home string) string { return "acllist:" + home }
