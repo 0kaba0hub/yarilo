@@ -6,19 +6,23 @@ import (
 	"sort"
 )
 
-// registerFolderRoutes wires the folder admin surface — purely
-// read-only operations against fileindex + the storage driver.
+// registerFolderRoutes wires the folder admin surface. Reads
+// (list / info / guid / stats / repair) live here; mutating ops
+// (create / delete / rename / expunge) live in folder_write.go but
+// share the same /api/backend/folder/ prefix.
 //
-// Mutating folder ops (create/delete/rename/expunge) are deferred to
-// a later phase: they need IMAP-level ACL context, proper event
-// emission to active sessions, and per-protocol lock semantics that
-// the admin path does not yet model. See TODO.md.
+// Mutating ops bypass ACL — the admin plane is already gated by
+// the bearer token, AllowedNets, and mTLS, mirroring Dovecot's
+// `doveadm mailbox` model. The ACL store is still maintained
+// (yarilo-acl files moved on rename, dropped on delete) so an
+// admin DELETE leaves no orphaned ACL state behind.
 func (s *Server) registerFolderRoutes() {
 	s.mux.Handle("POST /api/backend/folder/list", s.middleware(s.handleFolderList))
 	s.mux.Handle("POST /api/backend/folder/info", s.middleware(s.handleFolderInfo))
 	s.mux.Handle("POST /api/backend/folder/guid", s.middleware(s.handleFolderGUID))
 	s.mux.Handle("POST /api/backend/folder/stats", s.middleware(s.handleFolderStats))
 	s.mux.Handle("POST /api/backend/folder/repair", s.middleware(s.handleFolderRepair))
+	s.registerFolderWriteRoutes()
 }
 
 type folderRequest struct {
