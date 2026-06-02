@@ -1,5 +1,11 @@
 package protocol
 
+import (
+	"sort"
+	"strconv"
+	"strings"
+)
+
 // UserInfo carries the full set of user fields a userdb lookup can
 // return. Modelled after Dovecot 2.4's auth-fields plus the reserved
 // field names every userdb driver writes (auth-fields.c,
@@ -181,4 +187,129 @@ func (c UserdbChain) Lookup(username string) (*UserInfo, error) {
 // suitable filter) simply does not implement it.
 type UserdbIterator interface {
 	Iterate() ([]string, error)
+}
+
+// VisitFields calls fn for every non-zero typed field on UserInfo
+// in canonical order. Internal-only fields (Password, CertName,
+// PolicyResponse) are NEVER passed to fn — callers that serialise
+// to a wire / bag get them stripped by construction.
+//
+// Lists are emitted as a single comma-joined value; booleans are
+// emitted only when true (value "yes"); numbers are decimal-rendered.
+// Forward fields emit with the `forward_` prefix; Extra entries
+// emit verbatim. Forward and Extra are iterated in lexicographic
+// key order so two callers serialising the same UserInfo produce
+// byte-identical output.
+//
+// Shared by master.go's marshalUserInfo (no prefix, tab-joined
+// wire form) and protocol.go's writeUserdbFields (`userdb_` prefix,
+// Fields-bag form) so the field surface stays in lockstep.
+func (ui *UserInfo) VisitFields(fn func(key, value string)) {
+	if ui == nil {
+		return
+	}
+
+	str := func(k, v string) {
+		if v != "" {
+			fn(k, v)
+		}
+	}
+	num := func(k string, v uint64) {
+		if v != 0 {
+			fn(k, formatUint(v))
+		}
+	}
+	signed := func(k string, v int) {
+		if v != 0 {
+			fn(k, formatInt(v))
+		}
+	}
+	yes := func(k string, v bool) {
+		if v {
+			fn(k, "yes")
+		}
+	}
+	list := func(k string, v []string) {
+		if len(v) > 0 {
+			fn(k, joinCSV(v))
+		}
+	}
+
+	str("original_user", ui.OriginalUser)
+	str("master_user", ui.MasterUser)
+	str("login_user", ui.LoginUser)
+
+	num("uid", uint64(ui.UID))
+	num("gid", uint64(ui.GID))
+	str("home", ui.Home)
+	str("chroot", ui.Chroot)
+	str("system_groups_user", ui.SystemGroupsUser)
+	list("groups", ui.Groups)
+	yes("client_cert_present", ui.ClientCertPresent)
+
+	str("mail", ui.MailLocation)
+	num("mail_uid", uint64(ui.MailUID))
+	num("mail_gid", uint64(ui.MailGID))
+	str("mailbox_format", ui.MailboxFormat)
+	str("mail_attribute_dict", ui.MailAttributeDict)
+
+	list("quota_rule", ui.QuotaRules)
+	str("quota_over_flag", ui.QuotaOverFlag)
+
+	list("allow_nets", ui.AllowNets)
+
+	yes("nologin", ui.NoLogin)
+	yes("nodelay", ui.NoDelay)
+	yes("noauthenticate", ui.NoAuthenticate)
+	yes("pass_expired", ui.PassExpired)
+	yes("nopassword", ui.NoPassword)
+
+	yes("proxy", ui.Proxy)
+	yes("proxy_maybe", ui.ProxyMaybe)
+	str("host", ui.Host)
+	signed("port", ui.Port)
+	str("destuser", ui.DestUser)
+	str("proxy_mech", ui.ProxyMech)
+	signed("proxy_timeout", ui.ProxyTimeout)
+	yes("proxy_redirect_reauth", ui.ProxyRedirectReauth)
+	yes("proxy_nopipelining", ui.ProxyNoPipelining)
+	str("ssl", ui.SSL)
+	yes("starttls", ui.StartTLS)
+
+	signed("mail_max_userip_connections", ui.MailMaxUserIPConnections)
+	signed("mail_max_user_connections", ui.MailMaxUserConnections)
+
+	str("service", ui.Service)
+	str("local_name", ui.LocalName)
+
+	for _, k := range sortedMapKeys(ui.Forward) {
+		fn("forward_"+k, ui.Forward[k])
+	}
+	for _, k := range sortedMapKeys(ui.Extra) {
+		fn(k, ui.Extra[k])
+	}
+}
+
+// formatUint / formatInt / joinCSV / sortedMapKeys are tiny
+// dependency-free helpers shared by VisitFields and the master /
+// client wire serialisers. Live here (not in a separate utils
+// file) because each is exactly one usage pattern and inlining
+// them would bloat each call site.
+
+func formatUint(v uint64) string { return strconv.FormatUint(v, 10) }
+
+func formatInt(v int) string { return strconv.Itoa(v) }
+
+func joinCSV(v []string) string { return strings.Join(v, ",") }
+
+func sortedMapKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

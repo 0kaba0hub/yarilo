@@ -62,7 +62,18 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: auth: %w", err)
 	}
-	authChain := protocol.NewAuthenticator(passdbs...)
+	// Build a userdb chain alongside passdbs — backend (standalone)
+	// runs both phases in-process so the IMAP/POP3/Submission
+	// session paths see userdb_* fields in the auth response.
+	userdbs, err := buildUserdbs(cfg.Auth.Passdb)
+	if err != nil {
+		return nil, fmt.Errorf("backend: userdb: %w", err)
+	}
+	var userdbChain protocol.Userdb
+	if len(userdbs) > 0 {
+		userdbChain = protocol.UserdbChain(userdbs)
+	}
+	authChain := protocol.NewAuthenticator(passdbs, protocol.WithAuthenticatorUserdb(userdbChain))
 
 	// ---- storage ----
 	if cfg.Storage.MaildirRoot == "" {
@@ -777,6 +788,35 @@ func buildPassdbs(entries []config.PassdbEntry) ([]protocol.Passdb, error) {
 			dbs = append(dbs, db)
 		default:
 			return nil, fmt.Errorf("unknown passdb driver: %s", e.Driver)
+		}
+	}
+	return dbs, nil
+}
+
+// buildUserdbs mirrors buildPassdbs but constructs userdb drivers
+// against the same per-entry DSN. Operators almost always serve
+// both roles from one row set, so the userdb chain is opened
+// lazily alongside the passdb chain in the same loop. AUTH-2 PR 3
+// uses the resulting chain to enrich passdb success responses with
+// userdb_* fields.
+func buildUserdbs(entries []config.PassdbEntry) ([]protocol.Userdb, error) {
+	var dbs []protocol.Userdb
+	for _, e := range entries {
+		switch strings.ToLower(e.Driver) {
+		case "sqlite", "mysql", "postgres":
+			u, err := authsql.NewUserdb(authsql.Config{
+				Driver:       e.Driver,
+				DSN:          e.DSN,
+				UserQuery:    e.UserQuery,
+				IterateQuery: e.IterateQuery,
+				SkipSchema:   e.SkipSchema,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("userdb %s: %w", e.Driver, err)
+			}
+			dbs = append(dbs, u)
+		default:
+			return nil, fmt.Errorf("unknown userdb driver: %s", e.Driver)
 		}
 	}
 	return dbs, nil

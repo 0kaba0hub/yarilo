@@ -104,7 +104,7 @@ func main() {
 		DisablePlainAuth: primary.DisablePlainAuth,
 		TLSConfig:        extTLS,
 		Config:           cfg.Protocol.Submission,
-		Auth:             chainAuth{protocol.NewAuthenticator(dbs...)},
+		Auth:             chainAuth{protocol.NewAuthenticator(dbs)},
 		Proxy:            relay,
 	})
 

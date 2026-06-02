@@ -95,7 +95,24 @@ func main() {
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
-	srv := protocol.NewServer(dbs)
+	// Build a userdb chain shared by both the client-protocol
+	// server (RunAuth enriches successful passdb with userdb_*
+	// fields — Phase AUTH-2 PR 3) and the master-protocol server
+	// (USER / LIST handlers). One backend, two consumers, no
+	// duplicated config.
+	var combinedUserdb protocol.Userdb
+	switch len(userdbs) {
+	case 0:
+		// No backends — every userdb-side surface returns NOTFOUND;
+		// passdb-only auth still works because RunAuth no-ops the
+		// enrichment branch when userdb is nil.
+	case 1:
+		combinedUserdb = userdbs[0]
+	default:
+		combinedUserdb = protocol.UserdbChain(userdbs)
+	}
+
+	srv := protocol.NewServer(dbs, protocol.WithUserdb(combinedUserdb))
 	errCh := make(chan error, 2)
 	go func() {
 		if err := srv.ListenAndServe(ctx, cfg.AuthService.Listen, tlsCfg); err != nil {
@@ -107,18 +124,7 @@ func main() {
 	// master_listen is unset; that keeps single-binary dev / smoke
 	// runs free of an extra bind that nothing consumes.
 	if cfg.AuthService.MasterListen != "" {
-		var masterUserdb protocol.Userdb
-		switch len(userdbs) {
-		case 0:
-			// No backends configured — master server still runs so
-			// operators can sanity-check connectivity; every USER
-			// call returns NOTFOUND.
-		case 1:
-			masterUserdb = userdbs[0]
-		default:
-			masterUserdb = protocol.UserdbChain(userdbs)
-		}
-		master := protocol.NewMasterServer(masterUserdb)
+		master := protocol.NewMasterServer(combinedUserdb)
 		slog.Info("yarilo-auth master listener", "addr", cfg.AuthService.MasterListen)
 		go func() {
 			if err := master.ListenAndServe(ctx, cfg.AuthService.MasterListen, tlsCfg); err != nil {

@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -119,24 +120,45 @@ type Authenticator interface {
 	Authenticate(username, password, service string) (*AuthResponse, error)
 }
 
-// NewAuthenticator wraps one or more Passdb drivers into the
-// session-friendly Authenticator surface. Internally builds a
-// Chain on every call so a caller passing a single driver gets
-// the chain's Snapshot/Rollback isolation for free.
-func NewAuthenticator(passdbs ...Passdb) Authenticator {
-	return chainAuthenticator{Chain(passdbs)}
+// AuthenticatorOption tunes a NewAuthenticator construction.
+type AuthenticatorOption func(*chainAuthenticator)
+
+// WithAuthenticatorUserdb attaches a userdb backend to the
+// Authenticator. When set, a successful passdb result is enriched
+// with the userdb lookup (with prefetch detection — see RunAuth).
+// The userdb fields land in the response bag with the `userdb_`
+// prefix so the caller can distinguish passdb-only fields from
+// userdb-enriched ones.
+func WithAuthenticatorUserdb(u Userdb) AuthenticatorOption {
+	return func(a *chainAuthenticator) { a.userdb = u }
 }
 
-type chainAuthenticator struct{ chain Chain }
+// NewAuthenticator wraps one or more Passdb drivers into the
+// session-friendly Authenticator surface. Optionally attach a
+// userdb via WithAuthenticatorUserdb so the bag returned by every
+// successful Authenticate also carries userdb_* fields the
+// session path needs for mail-storage setup.
+func NewAuthenticator(passdbs []Passdb, opts ...AuthenticatorOption) Authenticator {
+	a := &chainAuthenticator{chain: Chain(passdbs)}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
 
-func (c chainAuthenticator) Authenticate(username, password, service string) (*AuthResponse, error) {
+type chainAuthenticator struct {
+	chain  Chain
+	userdb Userdb
+}
+
+func (c *chainAuthenticator) Authenticate(username, password, service string) (*AuthResponse, error) {
 	req := &Request{
 		Username: username,
 		Password: password,
 		Service:  service,
 		Fields:   NewFields(),
 	}
-	result, err := c.chain.Authenticate(req)
+	result, err := RunAuth(c.chain, c.userdb, req)
 	resp := &AuthResponse{
 		Result: authResultFromChain(result),
 		Fields: req.Fields,
@@ -153,6 +175,77 @@ func (c chainAuthenticator) Authenticate(username, password, service string) (*A
 		resp.MailLoc = v
 	}
 	return resp, err
+}
+
+// RunAuth executes the passdb chain and — on ResultOK with a
+// userdb configured — also fills the bag with userdb_* fields
+// from a userdb.Lookup. Prefetch detection: when the chain has
+// already populated any userdb_-prefixed key (an SQL passdb that
+// SELECT-ed userdb columns in the same query), userdb.Lookup is
+// skipped (mirrors Dovecot's userdb-prefetch driver behaviour).
+//
+// userdb errors and misses do NOT downgrade ResultOK — passdb is
+// authoritative for the auth decision. They surface in server-side
+// logs only; the response carries passdb-only fields. The
+// rationale matches Dovecot: a temporary userdb outage should not
+// reject a verified user since the wire response also doubles as
+// the only credential check.
+//
+// Allocates req.Fields when the caller passed nil so the userdb
+// writer never trips a nil-pointer.
+func RunAuth(chain Chain, userdb Userdb, req *Request) (Result, error) {
+	if req.Fields == nil {
+		req.Fields = NewFields()
+	}
+	result, err := chain.Authenticate(req)
+	if result != ResultOK || userdb == nil {
+		return result, err
+	}
+	if hasUserdbFields(req.Fields) {
+		return result, err
+	}
+	info, ulerr := userdb.Lookup(req.Username)
+	if ulerr != nil {
+		slog.Warn("auth/protocol: userdb lookup failed after passdb OK",
+			"user", req.Username, "err", ulerr)
+		return result, err
+	}
+	if info == nil {
+		slog.Warn("auth/protocol: userdb miss for passdb-verified user",
+			"user", req.Username)
+		return result, err
+	}
+	writeUserdbFields(req.Fields, info)
+	return result, err
+}
+
+// hasUserdbFields reports whether the bag already carries at
+// least one userdb_-prefixed key — the marker for a prefetched
+// userdb result that a downstream userdb.Lookup must not overwrite.
+func hasUserdbFields(f *Fields) bool {
+	if f == nil {
+		return false
+	}
+	var found bool
+	f.Each(func(k, _ string) bool {
+		if strings.HasPrefix(k, "userdb_") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// writeUserdbFields visits every populated UserInfo field and
+// writes it into f with the `userdb_` prefix. Internal-only
+// fields (Password, CertName, PolicyResponse) are stripped at
+// VisitFields construction, so they cannot leak even when a
+// buggy backend populates them.
+func writeUserdbFields(f *Fields, ui *UserInfo) {
+	ui.VisitFields(func(k, v string) {
+		f.Set("userdb_"+k, v)
+	})
 }
 
 // Chain composes multiple Passdb backends with first-hit-wins
@@ -204,23 +297,44 @@ func authResultFromChain(r Result) AuthResult {
 	}
 }
 
-// Server is the yarilo-auth UNIX-socket server.
+// Server is the yarilo-auth TCP+mTLS server. Holds the passdb
+// chain plus an optional userdb that enriches successful auth
+// responses with userdb_* fields (Phase AUTH-2 PR 3).
 type Server struct {
 	passdbs []Passdb
+	userdb  Userdb
 	connUID atomic.Uint64
 	pid     int
 	cookie  string
 }
 
-// NewServer creates a new auth server with the given passdb chain.
-func NewServer(passdbs []Passdb) *Server {
+// ServerOption tunes a NewServer construction.
+type ServerOption func(*Server)
+
+// WithUserdb attaches a userdb backend to the Server. When set,
+// every successful passdb result is enriched with userdb fields
+// (with prefetch detection — see RunAuth). The userdb fields land
+// in the response with the `userdb_` prefix preserved on the wire,
+// so login pods can use them to set up the mail session without a
+// separate master-protocol round-trip.
+func WithUserdb(u Userdb) ServerOption {
+	return func(s *Server) { s.userdb = u }
+}
+
+// NewServer creates an auth server with the given passdb chain.
+// Optional userdb is attached via WithUserdb.
+func NewServer(passdbs []Passdb, opts ...ServerOption) *Server {
 	cookie := make([]byte, 16)
 	rand.Read(cookie) //nolint:errcheck
-	return &Server{
+	s := &Server{
 		passdbs: passdbs,
 		pid:     os.Getpid(),
 		cookie:  hex.EncodeToString(cookie),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // ListenAndServe starts the auth TCP server. When tlsCfg is non-nil the
@@ -387,7 +501,7 @@ func (s *Server) authenticate(username, password, service string) (*AuthResponse
 		Service:  service,
 		Fields:   NewFields(),
 	}
-	result, err := Chain(s.passdbs).Authenticate(req)
+	result, err := RunAuth(Chain(s.passdbs), s.userdb, req)
 	resp := &AuthResponse{
 		Result: authResultFromChain(result),
 		Fields: req.Fields,
