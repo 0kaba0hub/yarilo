@@ -337,6 +337,54 @@ func (acl ACL) String() string {
 	return b.String()
 }
 
+// Effective resolves the effective rights an authenticated user has
+// on this mailbox's stored ACL, without inheritance and without
+// group resolution — both of those land in PR E.
+//
+// Semantics (PR D scope):
+//   - isOwner == true: returns FullRights regardless of stored
+//     entries (Dovecot personal-namespace auto-grant).
+//   - else: union of positive entries whose Identifier matches the
+//     accessing user — anyone, authenticated, user=<user> — minus
+//     negative entries matching the same identifiers (RFC 4314 §3.5).
+//
+// Group / group-override / explicit owner identifiers are ignored
+// in PR D; PR E adds the full Dovecot resolution (group lookup +
+// owner identifier match + ancestor inheritance).
+//
+// A nil ACL with isOwner == false yields the empty rights set — no
+// implicit grant for non-owners is the RFC 4314 default.
+func (acl ACL) Effective(user string, isOwner bool) Rights {
+	if isOwner {
+		return FullRights
+	}
+	var positive, negative Rights
+	for _, e := range acl {
+		if !matchesAccessor(e.Identifier, user) {
+			continue
+		}
+		if e.Negative {
+			negative = negative.Add(e.Rights)
+		} else {
+			positive = positive.Add(e.Rights)
+		}
+	}
+	return positive.Remove(negative)
+}
+
+// matchesAccessor reports whether id matches an authenticated user
+// accessing the mailbox. Only the PR-D-scope identifier types match;
+// group= / group-override= / explicit owner are ignored here.
+func matchesAccessor(id Identifier, user string) bool {
+	switch id.Type {
+	case IDAnyone, IDAuthenticated:
+		return true
+	case IDUser:
+		return id.Name == user
+	}
+	return false
+}
+
 // Sorted returns a copy with entries in deterministic order:
 // identifiers grouped by Type (anyone, authenticated, owner, user=,
 // group=, group-override=) and then alphabetically by Name; within

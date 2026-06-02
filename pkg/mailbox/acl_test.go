@@ -322,6 +322,117 @@ func TestACL_Sorted(t *testing.T) {
 	}
 }
 
+func TestACL_Effective(t *testing.T) {
+	owner := MustParseRights("lrswipkxtea")
+	tests := []struct {
+		name    string
+		acl     ACL
+		user    string
+		isOwner bool
+		want    Rights
+	}{
+		{
+			name: "owner gets everything regardless of entries",
+			acl:  ACL{{Identifier: Identifier{Type: IDUser, Name: "alice"}, Rights: "lr"}},
+			user: "alice", isOwner: true,
+			want: owner,
+		},
+		{
+			name: "owner on empty ACL still gets everything",
+			acl:  nil,
+			user: "alice", isOwner: true,
+			want: owner,
+		},
+		{
+			name: "non-owner with no entries gets nothing",
+			acl:  ACL{{Identifier: Identifier{Type: IDUser, Name: "alice"}, Rights: "lr"}},
+			user: "bob", isOwner: false,
+			want: "",
+		},
+		{
+			name: "non-owner explicit user=<self>",
+			acl:  ACL{{Identifier: Identifier{Type: IDUser, Name: "bob"}, Rights: "lrws"}},
+			user: "bob", isOwner: false,
+			want: "lrsw",
+		},
+		{
+			name: "non-owner anyone + user= merged",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDAnyone}, Rights: "l"},
+				{Identifier: Identifier{Type: IDUser, Name: "bob"}, Rights: "rs"},
+			},
+			user: "bob", isOwner: false,
+			want: "lrs",
+		},
+		{
+			name: "non-owner authenticated grants",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDAuthenticated}, Rights: "lr"},
+			},
+			user: "bob", isOwner: false,
+			want: "lr",
+		},
+		{
+			name: "negative subtracts from positive",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDAnyone}, Rights: "lrs"},
+				{Identifier: Identifier{Type: IDAnyone}, Rights: "s", Negative: true},
+			},
+			user: "bob", isOwner: false,
+			want: "lr",
+		},
+		{
+			name: "negative user= subtracts from positive anyone",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDAnyone}, Rights: "lrs"},
+				{Identifier: Identifier{Type: IDUser, Name: "bob"}, Rights: "r", Negative: true},
+			},
+			user: "bob", isOwner: false,
+			want: "ls",
+		},
+		{
+			name: "negative alone yields empty",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDUser, Name: "bob"}, Rights: "r", Negative: true},
+			},
+			user: "bob", isOwner: false,
+			want: "",
+		},
+		{
+			name: "group= ignored in PR D",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDGroup, Name: "staff"}, Rights: "lr"},
+			},
+			user: "bob", isOwner: false,
+			want: "",
+		},
+		{
+			name: "explicit owner identifier ignored for non-owner",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDOwner}, Rights: "lr"},
+			},
+			user: "bob", isOwner: false,
+			want: "",
+		},
+		{
+			name: "user= for someone else does not match",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDUser, Name: "alice"}, Rights: "lrws"},
+			},
+			user: "bob", isOwner: false,
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.acl.Effective(tc.user, tc.isOwner)
+			if got != tc.want {
+				t.Errorf("Effective = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseACL_ReadErrorWrapped(t *testing.T) {
 	r := &errReader{err: io.ErrUnexpectedEOF}
 	_, err := ParseACL(r)

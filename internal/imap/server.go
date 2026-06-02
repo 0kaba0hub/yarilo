@@ -477,6 +477,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 			Text: "No such mailbox",
 		}
 	}
+	if err := s.requireRight(h, rel, mailbox.RightRead); err != nil {
+		return nil, err
+	}
 	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, err
@@ -831,6 +834,9 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireRight(h, rel, mailbox.RightRead); err != nil {
+		return nil, err
+	}
 	f, err := h.idx.OpenFolder(rel, 0)
 	if err != nil {
 		return nil, err
@@ -891,6 +897,9 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.AppendOptions) (*imaplib.AppendData, error) {
 	h, rel, f, err := s.ensureFolderHandle(name)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireRight(h, rel, insertRight(h.spec)); err != nil {
 		return nil, err
 	}
 
@@ -1011,6 +1020,9 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
+	if err := s.requireRightOnSelected(mailbox.RightExpunge); err != nil {
+		return err
+	}
 	idx := s.folderIdx()
 	msgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
@@ -1036,6 +1048,9 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, opts *imaplib.SearchOptions) (*imaplib.SearchData, error) {
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
+	}
+	if err := s.requireRightOnSelected(mailbox.RightRead); err != nil {
+		return nil, err
 	}
 
 	// SearchRes ($) substitution: when the client passes "$" as a UID set,
@@ -1170,6 +1185,9 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
+	if err := s.requireRightOnSelected(mailbox.RightRead); err != nil {
+		return err
+	}
 	idx := s.folderIdx()
 	box := s.folderBox()
 	msgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
@@ -1281,6 +1299,11 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
+	if storeFlags != nil {
+		if err := s.requireAllRightsOnSelected(storeFlagRights(storeFlags.Flags)); err != nil {
+			return err
+		}
+	}
 	idx := s.folderIdx()
 	msgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
@@ -1357,6 +1380,9 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
+	if err := s.requireRightOnSelected(mailbox.RightRead); err != nil {
+		return nil, err
+	}
 	srcIdx := s.folderIdx()
 	srcBox := s.folderBox()
 	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
@@ -1369,6 +1395,9 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	}
 	if !exists {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+	}
+	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
+		return nil, err
 	}
 	msgs, err := srcIdx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
@@ -1649,6 +1678,14 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
+	// MOVE = COPY + STORE \Deleted + EXPUNGE on the source, so the
+	// caller must hold r on the source (to read the message), t (to
+	// delete it), and e (to expunge it); plus i/p on the destination.
+	if err := s.requireAllRightsOnSelected([]rune{
+		mailbox.RightRead, mailbox.RightDeleteMessage, mailbox.RightExpunge,
+	}); err != nil {
+		return err
+	}
 	srcIdx := s.folderIdx()
 	srcBox := s.folderBox()
 	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
@@ -1661,6 +1698,9 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	}
 	if !exists {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+	}
+	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
+		return err
 	}
 	msgs, err := srcIdx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
