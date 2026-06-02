@@ -62,7 +62,7 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: auth: %w", err)
 	}
-	authChain := protocol.Chain(passdbs)
+	authChain := protocol.NewAuthenticator(passdbs...)
 
 	// ---- storage ----
 	if cfg.Storage.MaildirRoot == "" {
@@ -563,8 +563,12 @@ func parseCIDRs(cidrs []string) []*net.IPNet {
 	return nets
 }
 
-// chainAuth adapts protocol.Chain to smtp.Authenticator.
-type chainAuth struct{ c protocol.Chain }
+// chainAuth adapts protocol.Authenticator to smtp.Authenticator.
+// The wrapper exists because go-smtp's Authenticator surface speaks
+// (username, password) → error rather than the richer
+// AuthResponse / Fields shape; here we discard everything except
+// the "did the chain accept these credentials" decision.
+type chainAuth struct{ c protocol.Authenticator }
 
 func (a chainAuth) AuthPlain(username, password string) error {
 	resp, err := a.c.Authenticate(username, password, "smtp")

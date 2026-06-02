@@ -64,109 +64,44 @@ func TestAuthenticate(t *testing.T) {
 	insertUser(t, dsn, "eve", "{SHA512-CRYPT}"+shaHash, 1)
 
 	cases := []struct {
-		name       string
-		username   string
-		password   string
-		wantNil    bool
-		wantResult protocol.AuthResult
-		wantUser   string
+		name     string
+		username string
+		password string
+		want     protocol.Result
+		wantUser string
 	}{
-		{
-			name:       "valid user correct password",
-			username:   "alice",
-			password:   "secret",
-			wantNil:    false,
-			wantResult: protocol.AuthOK,
-			wantUser:   "alice",
-		},
-		{
-			name:       "valid user wrong password",
-			username:   "alice",
-			password:   "wrong",
-			wantNil:    false,
-			wantResult: protocol.AuthFail,
-		},
-		{
-			name:     "unknown user returns nil",
-			username: "nobody",
-			password: "pass",
-			wantNil:  true,
-		},
-		{
-			name:       "disabled user",
-			username:   "disabled",
-			password:   "anypass",
-			wantNil:    false,
-			wantResult: protocol.AuthFail,
-		},
-		{
-			name:       "PLAIN prefix stored password correct",
-			username:   "bob",
-			password:   "p@ssw0rd",
-			wantNil:    false,
-			wantResult: protocol.AuthOK,
-			wantUser:   "bob",
-		},
-		{
-			name:       "plain stored password no prefix correct",
-			username:   "charlie",
-			password:   "plainpass",
-			wantNil:    false,
-			wantResult: protocol.AuthOK,
-			wantUser:   "charlie",
-		},
-		{
-			name:       "bcrypt stored correct",
-			username:   "dave",
-			password:   "bcryptpass",
-			wantNil:    false,
-			wantResult: protocol.AuthOK,
-			wantUser:   "dave",
-		},
-		{
-			name:       "bcrypt stored wrong",
-			username:   "dave",
-			password:   "wrong",
-			wantNil:    false,
-			wantResult: protocol.AuthFail,
-		},
-		{
-			name:       "sha512-crypt stored correct",
-			username:   "eve",
-			password:   "shapass",
-			wantNil:    false,
-			wantResult: protocol.AuthOK,
-			wantUser:   "eve",
-		},
-		{
-			name:       "sha512-crypt stored wrong",
-			username:   "eve",
-			password:   "wrong",
-			wantNil:    false,
-			wantResult: protocol.AuthFail,
-		},
+		{name: "valid user correct password", username: "alice", password: "secret", want: protocol.ResultOK, wantUser: "alice"},
+		{name: "valid user wrong password", username: "alice", password: "wrong", want: protocol.ResultFail},
+		{name: "unknown user returns Next", username: "nobody", password: "pass", want: protocol.ResultNext},
+		{name: "disabled user", username: "disabled", password: "anypass", want: protocol.ResultFail},
+		{name: "PLAIN prefix stored password correct", username: "bob", password: "p@ssw0rd", want: protocol.ResultOK, wantUser: "bob"},
+		{name: "plain stored password no prefix correct", username: "charlie", password: "plainpass", want: protocol.ResultOK, wantUser: "charlie"},
+		{name: "bcrypt stored correct", username: "dave", password: "bcryptpass", want: protocol.ResultOK, wantUser: "dave"},
+		{name: "bcrypt stored wrong", username: "dave", password: "wrong", want: protocol.ResultFail},
+		{name: "sha512-crypt stored correct", username: "eve", password: "shapass", want: protocol.ResultOK, wantUser: "eve"},
+		{name: "sha512-crypt stored wrong", username: "eve", password: "wrong", want: protocol.ResultFail},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := p.Authenticate(tc.username, tc.password, "imap")
+			req := &protocol.Request{
+				Username: tc.username,
+				Password: tc.password,
+				Service:  "imap",
+				Fields:   protocol.NewFields(),
+			}
+			got, err := p.Authenticate(req)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if tc.wantNil {
-				if resp != nil {
-					t.Fatalf("expected nil response, got %+v", resp)
+			if got != tc.want {
+				t.Fatalf("result: got %v, want %v", got, tc.want)
+			}
+			if tc.wantUser != "" {
+				v, ok := req.Fields.Get("user")
+				if !ok || v != tc.wantUser {
+					t.Fatalf("Fields[user] = %q,%v; want %q,true", v, ok, tc.wantUser)
 				}
-				return
-			}
-			if resp == nil {
-				t.Fatal("expected non-nil response, got nil")
-			}
-			if resp.Result != tc.wantResult {
-				t.Fatalf("result: got %v, want %v", resp.Result, tc.wantResult)
-			}
-			if tc.wantUser != "" && resp.Username != tc.wantUser {
-				t.Fatalf("username: got %q, want %q", resp.Username, tc.wantUser)
 			}
 		})
 	}
@@ -193,24 +128,26 @@ func TestAuthenticate_PopulatesFieldsBag(t *testing.T) {
 		t.Fatalf("update mail/home: %v", err)
 	}
 
-	resp, err := p.Authenticate("alice", "secret", "")
+	req := &protocol.Request{
+		Username: "alice",
+		Password: "secret",
+		Fields:   protocol.NewFields(),
+	}
+	got, err := p.Authenticate(req)
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if resp == nil || resp.Result != protocol.AuthOK {
-		t.Fatalf("resp = %+v", resp)
-	}
-	if resp.Fields == nil {
-		t.Fatal("expected Fields bag to be populated")
+	if got != protocol.ResultOK {
+		t.Fatalf("Result = %v, want ResultOK", got)
 	}
 	for _, kv := range []struct{ k, want string }{
 		{"user", "alice"},
 		{"home", "/h/alice"},
 		{"mail", "maildir:/m/alice"},
 	} {
-		got, ok := resp.Fields.Get(kv.k)
-		if !ok || got != kv.want {
-			t.Errorf("Fields[%q] = %q,%v; want %q,true", kv.k, got, ok, kv.want)
+		v, ok := req.Fields.Get(kv.k)
+		if !ok || v != kv.want {
+			t.Errorf("Fields[%q] = %q,%v; want %q,true", kv.k, v, ok, kv.want)
 		}
 	}
 }
@@ -276,17 +213,29 @@ func runDriverSmoke(t *testing.T, driver, dsn, insertParam string) {
 		_, _ = db.Exec(`DELETE FROM yarilo_users WHERE username = 'smoketest@example.com'`)
 	})
 
-	resp, err := p.Authenticate("smoketest@example.com", "smokepass", "imap")
+	req := &protocol.Request{
+		Username: "smoketest@example.com",
+		Password: "smokepass",
+		Service:  "imap",
+		Fields:   protocol.NewFields(),
+	}
+	got, err := p.Authenticate(req)
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if resp == nil || resp.Result != protocol.AuthOK {
-		t.Fatalf("expected AuthOK, got %+v", resp)
+	if got != protocol.ResultOK {
+		t.Fatalf("expected ResultOK, got %v", got)
 	}
 
-	resp, _ = p.Authenticate("smoketest@example.com", "wrong", "imap")
-	if resp == nil || resp.Result != protocol.AuthFail {
-		t.Fatalf("expected AuthFail for wrong password, got %+v", resp)
+	bad := &protocol.Request{
+		Username: "smoketest@example.com",
+		Password: "wrong",
+		Service:  "imap",
+		Fields:   protocol.NewFields(),
+	}
+	got, _ = p.Authenticate(bad)
+	if got != protocol.ResultFail {
+		t.Fatalf("expected ResultFail for wrong password, got %v", got)
 	}
 }
 
