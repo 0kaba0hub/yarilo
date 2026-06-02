@@ -149,7 +149,7 @@ func (c *Cache) Lookup(key, password string) (*CacheEntry, bool) {
 		c.misses++
 		return nil, false
 	}
-	e := el.Value.(*CacheEntry)
+	e := el.Value.(*CacheEntry) //nolint:errcheck // map+LRU only ever hold *CacheEntry
 	if time.Now().After(e.expires) {
 		c.removeElement(el)
 		c.misses++
@@ -214,7 +214,7 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 		// cache a key that previously authenticated. The first-
 		// time-failed (unknown user) path still seeds correctly
 		// because there's no prior entry.
-		existing := el.Value.(*CacheEntry)
+		existing := el.Value.(*CacheEntry) //nolint:errcheck // map+LRU only ever hold *CacheEntry
 		if result == ResultFail && existing.Result == ResultOK {
 			return
 		}
@@ -256,7 +256,7 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 // removeElement removes el from both indices and adjusts curSize.
 // Caller must hold the mutex.
 func (c *Cache) removeElement(el *list.Element) {
-	e := el.Value.(*CacheEntry)
+	e := el.Value.(*CacheEntry) //nolint:errcheck // map+LRU only ever hold *CacheEntry
 	// Find key by linear scan; we keep the key in the entries
 	// map only, so reuse it from there to avoid storing on entry.
 	for k, v := range c.entries {
@@ -316,7 +316,7 @@ func (c *Cache) ClearByUserMask(masks []string) uint32 {
 
 	var removed uint32
 	for k, el := range c.entries {
-		e := el.Value.(*CacheEntry)
+		e := el.Value.(*CacheEntry) //nolint:errcheck // map+LRU only ever hold *CacheEntry
 		for _, m := range masks {
 			if userMaskMatch(m, e.username) {
 				c.curSize -= estimateEntrySize(k, e)

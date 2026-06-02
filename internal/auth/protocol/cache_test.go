@@ -263,7 +263,7 @@ func TestCache_PasswordMACDoesNotLeakPlain(t *testing.T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	el := c.entries[MakeCacheKey("imap", "alice")]
-	e := el.Value.(*CacheEntry)
+	e := el.Value.(*CacheEntry) //nolint:errcheck // test-internal access
 	if string(e.pwdMAC) == pwd {
 		t.Errorf("password stored as plain: %q", e.pwdMAC)
 	}
