@@ -278,6 +278,106 @@ sizes from `UserMailbox.List`).
 
 CLI: `yarilo-admin backend folder stats <user> <folder>`
 
+### `POST /api/backend/folder/create`
+
+Creates a new folder under the named namespace. When `special_use`
+is set AND the namespace is `personal`, the folder is registered
+with that RFC 6154 attribute via the special-use store so a
+subsequent `LIST` surfaces it (matches the IMAP CREATE-SPECIAL-USE
+flow). 409 when the folder already exists.
+
+```json
+{
+  "user":        "alice@x.com",
+  "folder":      "Archive",
+  "namespace":   "personal",
+  "special_use": "\\Archive"
+}
+```
+
+Response (200):
+
+```json
+{ "status": "ok" }
+```
+
+When the folder is created but `special_use` registration fails,
+the response is 200 with a `special_use_error` field — the folder
+exists, the operator just needs to follow up to set the attr.
+
+**Authorisation:** admin path — bypasses ACL. See the security
+note at the top of this document; backend-api is gated by
+`Token`, `AllowedNets`, and mTLS.
+
+CLI: `yarilo-admin backend folder create <user> <folder> [--namespace NS] [--special-use ATTR]`
+
+### `POST /api/backend/folder/delete`
+
+Removes a folder, its index state, and any `yarilo-acl` file +
+namespace-wide list entries pointing at it. The mailbox blob
+storage handles the on-disk teardown; per-mailbox ACL cleanup is
+non-fatal — when it fails the operation still returns 200 with a
+warning logged so the admin can correlate.
+
+```json
+{ "user": "alice@x.com", "folder": "Old", "namespace": "personal" }
+```
+
+Response (200): `{ "status": "ok" }`. 404 on missing folder.
+
+CLI: `yarilo-admin backend folder delete <user> <folder> [--namespace NS]`
+
+### `POST /api/backend/folder/rename`
+
+Renames a folder within one namespace (cross-namespace rename is
+not supported). The `yarilo-acl` file is moved across index dirs
+and the namespace-wide index entries are rewritten. INBOX cannot
+be renamed via backend-api (Dovecot-style move-messages semantics
+not implemented here yet).
+
+```json
+{
+  "user":       "alice@x.com",
+  "old_folder": "Drafts",
+  "new_folder": "OldDrafts",
+  "namespace":  "personal"
+}
+```
+
+Response (200): `{ "status": "ok" }`. 404 on missing source, 409 on
+destination conflict, 400 when `old_folder == "INBOX"`.
+
+CLI: `yarilo-admin backend folder rename <user> <old> <new> [--namespace NS]`
+
+### `POST /api/backend/folder/expunge`
+
+Removes every message currently flagged `\Deleted` from a folder
+(matches the IMAP EXPUNGE semantic). When `uids` is set, only
+those specific UIDs are considered (matches UID EXPUNGE / UIDPLUS).
+Returns the expunged UID list plus the count.
+
+```json
+{
+  "user":      "alice@x.com",
+  "folder":    "Trash",
+  "namespace": "personal",
+  "uids":      [42, 43]
+}
+```
+
+Response (200):
+
+```json
+{ "status": "ok", "expunged": [42, 43], "count": 2 }
+```
+
+404 on missing folder. Per-message removal errors are logged at
+Warn and the operation continues with the next message — partial
+expunge is surfaced via the returned `expunged` list (count may be
+smaller than requested).
+
+CLI: `yarilo-admin backend folder expunge <user> <folder> [--namespace NS] [--uids 1,2,3]`
+
 ## User endpoints
 
 ### `POST /api/backend/user/info`
