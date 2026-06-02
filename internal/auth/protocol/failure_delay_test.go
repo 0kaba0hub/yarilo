@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -140,24 +139,6 @@ func TestWire_FailureDelay_Zero_NoSleep(t *testing.T) {
 	if elapsed >= 100*time.Millisecond {
 		t.Errorf("zero delay still slept (%v)", elapsed)
 	}
-}
-
-// scanHandshakeAndLine reads the handshake then the next line and
-// returns it. Used to verify ordering — handshake should come
-// before the FAIL delay starts, not be delayed itself.
-func scanHandshakeAndLine(t *testing.T, sc *bufio.Scanner) (handshakeLines int, line string) {
-	t.Helper()
-	for sc.Scan() {
-		ln := sc.Text()
-		handshakeLines++
-		if ln == "DONE" {
-			break
-		}
-	}
-	if !sc.Scan() {
-		t.Fatalf("no reply line: %v", sc.Err())
-	}
-	return handshakeLines, sc.Text()
 }
 
 // TestWire_FailureDelay_HandshakeNotDelayed — the VERSION/MECH/
