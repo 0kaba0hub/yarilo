@@ -199,6 +199,17 @@ components:
     ## defence-in-depth.
     allowedNets: []
 
+    ## yarilo-auth master-protocol address. When set, backend-api
+    ## dials at startup via pkg/authclient and:
+    ##   - enriches /api/backend/user/info with a `userdb` block
+    ##     (uid, gid, groups, quota_rule, allow_nets, ...) plus a
+    ##     `userdb_status` field ("ok" / "not_found" / "error")
+    ##   - serves /api/backend/user/iterate
+    ## Empty disables both surfaces — handy for dev / smoke runs.
+    ## In a standard Helm release this is the in-cluster service:
+    ##   "<release>-auth:9102"
+    authMasterAddr: ""
+
     resources:
       requests:
         cpu: 50m

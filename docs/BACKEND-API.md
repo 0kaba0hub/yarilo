@@ -284,11 +284,12 @@ CLI: `yarilo-admin backend folder stats <user> <folder>`
 
 Returns what backend-api can resolve locally — username, the
 template-resolved home directory, every configured namespace and
-whether its on-disk root exists.
+whether its on-disk root exists — plus the userdb block when
+`backend_api.auth_master_addr` is configured (Phase AUTH-1).
 
-It deliberately does NOT call userdb (uid/gid/quota/etc.); that
-needs a yarilo-auth client which backend-api does not embed yet —
-see `TODO.md` (BACKEND-API auth-aware lookups).
+The userdb block is rendered as a nested object so the local view
+is never mixed with the auth-side view; `userdb_status` carries the
+terminal state of the call (`"ok"` / `"not_found"` / `"error"`).
 
 ```json
 {
@@ -303,11 +304,46 @@ see `TODO.md` (BACKEND-API auth-aware lookups).
       "location": "",
       "exists":   true
     }
-  ]
+  ],
+  "userdb_status": "ok",
+  "userdb": {
+    "uid":           1001,
+    "gid":           1001,
+    "home":          "/var/mail/vhosts/x.com/alice",
+    "mail_location": "maildir:~/Maildir",
+    "groups":        ["staff", "mail"],
+    "quota_rule":    ["*:storage=5G"],
+    "allow_nets":    ["10.0.0.0/8"],
+    "extra":         { "tier": "gold" }
+  }
 }
 ```
 
+When `auth_master_addr` is unset, the `userdb` and `userdb_status`
+keys are absent — admin tools that only care about the local view
+get the pre-AUTH-1 response shape unchanged. When the master-protocol
+call fails (auth down, network), the response still returns 200 with
+`userdb_status: "error"` and the `userdb` key set to `null`, so admin
+tooling that values the local view is not blocked by auth-side
+flakiness.
+
 CLI: `yarilo-admin backend user info <user>`
+
+### `POST /api/backend/user/iterate`
+
+Enumerates every username the yarilo-auth userdb backend can
+surface. Thin wrapper over `pkg/authclient`'s `IterateUsers`; the
+response is a sorted username array.
+
+```json
+{ "users": ["alice@x.com", "bob@x.com", "carol@x.com"] }
+```
+
+Returns 503 when `backend_api.auth_master_addr` is unset (no userdb
+to enumerate); returns 502 when the master-protocol call fails
+(reason text in the JSON `error` field).
+
+CLI: `yarilo-admin backend user iterate`
 
 ### `POST /api/backend/user/usage`
 

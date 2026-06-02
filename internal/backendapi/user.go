@@ -1,27 +1,27 @@
 package backendapi
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 
+	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // registerUserRoutes wires the user admin surface.
 //
-// `info` returns what backend-api can resolve locally (home,
-// configured namespaces, per-namespace existence). It deliberately
-// does NOT call userdb — that requires a yarilo-auth client which
-// backend-api does not currently embed. See TODO.md (BACKEND-API
-// auth-aware lookups) for the follow-up.
-//
-// `usage` walks every folder in every implemented namespace, sums
-// per-message sizes via UserMailbox.List, and returns a per-folder
-// breakdown plus the rollup totals. Suitable for ad-hoc capacity
-// inspection before QUOTA-1 ships.
+//	info     local view (home, namespaces, per-namespace existence)
+//	         plus the userdb block when AuthClient is configured.
+//	usage    per-folder size + rollup, independent of userdb.
+//	iterate  thin wrapper over pkg/authclient.Client.IterateUsers;
+//	         503 when AuthClient is not configured.
 func (s *Server) registerUserRoutes() {
 	s.mux.Handle("POST /api/backend/user/info", s.middleware(s.handleUserInfo))
 	s.mux.Handle("POST /api/backend/user/usage", s.middleware(s.handleUserUsage))
+	s.mux.Handle("POST /api/backend/user/iterate", s.middleware(s.handleUserIterate))
 }
 
 type userRequest struct {
@@ -77,11 +77,164 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 			Exists: dirExists(uc.info.Home),
 		})
 	}
-	apiJSON(w, map[string]any{
+	resp := map[string]any{
 		"username":   uc.info.Username,
 		"home":       uc.info.Home,
 		"namespaces": nsEntries,
-	})
+	}
+	if s.opts.AuthClient != nil {
+		userdb, status := s.lookupUserdb(r, req.User)
+		resp["userdb"] = userdb
+		resp["userdb_status"] = status
+	}
+	apiJSON(w, resp)
+}
+
+// userdbStatus enumerates the three terminal states the /user/info
+// userdb enrichment block surfaces. Callers see "ok" with a non-nil
+// userdb object on hit, "not_found" with userdb=null on miss, and
+// "error" with userdb=null when the master-protocol call itself
+// failed — the HTTP response stays 200 in every case so admin
+// tooling that prizes the local view (namespaces, home) is not
+// blocked by auth-side flakiness.
+const (
+	userdbStatusOK       = "ok"
+	userdbStatusNotFound = "not_found"
+	userdbStatusError    = "error"
+)
+
+// lookupUserdb runs the master-protocol USER call and converts the
+// typed UserInfo into the snake_case JSON shape /user/info exposes.
+// Errors are logged + reported as userdb_status="error" rather than
+// surfaced as 5xx; the local view is still useful when auth is down.
+func (s *Server) lookupUserdb(r *http.Request, username string) (any, string) {
+	info, err := s.opts.AuthClient.Userdb(r.Context(), username)
+	if err != nil {
+		if errors.Is(err, authclient.ErrClosed) {
+			slog.Warn("backendapi/user: authclient closed",
+				"user", username, "err", err)
+		} else {
+			slog.Warn("backendapi/user: userdb lookup failed",
+				"user", username, "err", err)
+		}
+		return nil, userdbStatusError
+	}
+	if info == nil {
+		return nil, userdbStatusNotFound
+	}
+	return userInfoToJSON(info), userdbStatusOK
+}
+
+// userInfoToJSON renders a protocol.UserInfo as the wire-friendly
+// snake_case JSON object /user/info exposes. Zero-valued fields are
+// omitted so the response stays compact — clients iterate over the
+// keys that are present rather than special-casing the zero default.
+// Sensitive fields (Password, CertName, PolicyResponse) are already
+// stripped by the master-protocol wire serialiser before they cross
+// the network, but we drop them defensively here too in case a
+// future caller hands us an internally-populated UserInfo.
+func userInfoToJSON(info *protocol.UserInfo) map[string]any {
+	out := map[string]any{}
+	setStr := func(k, v string) {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	setInt := func(k string, v int) {
+		if v != 0 {
+			out[k] = v
+		}
+	}
+	setUint32 := func(k string, v uint32) {
+		if v != 0 {
+			out[k] = v
+		}
+	}
+	setBool := func(k string, v bool) {
+		if v {
+			out[k] = v
+		}
+	}
+	setList := func(k string, v []string) {
+		if len(v) > 0 {
+			out[k] = v
+		}
+	}
+
+	setStr("original_user", info.OriginalUser)
+	setStr("master_user", info.MasterUser)
+	setStr("login_user", info.LoginUser)
+
+	setUint32("uid", info.UID)
+	setUint32("gid", info.GID)
+	setStr("home", info.Home)
+	setStr("chroot", info.Chroot)
+	setStr("system_groups_user", info.SystemGroupsUser)
+	setList("groups", info.Groups)
+	setBool("client_cert_present", info.ClientCertPresent)
+
+	setStr("mail_location", info.MailLocation)
+	setUint32("mail_uid", info.MailUID)
+	setUint32("mail_gid", info.MailGID)
+	setStr("mailbox_format", info.MailboxFormat)
+	setStr("mail_attribute_dict", info.MailAttributeDict)
+
+	setList("quota_rule", info.QuotaRules)
+	setStr("quota_over_flag", info.QuotaOverFlag)
+
+	setList("allow_nets", info.AllowNets)
+
+	setBool("nologin", info.NoLogin)
+	setBool("nodelay", info.NoDelay)
+	setBool("noauthenticate", info.NoAuthenticate)
+	setBool("pass_expired", info.PassExpired)
+	setBool("nopassword", info.NoPassword)
+
+	setBool("proxy", info.Proxy)
+	setBool("proxy_maybe", info.ProxyMaybe)
+	setStr("host", info.Host)
+	setInt("port", info.Port)
+	setStr("destuser", info.DestUser)
+	setStr("proxy_mech", info.ProxyMech)
+	setInt("proxy_timeout", info.ProxyTimeout)
+	setBool("proxy_redirect_reauth", info.ProxyRedirectReauth)
+	setBool("proxy_nopipelining", info.ProxyNoPipelining)
+	setStr("ssl", info.SSL)
+	setBool("starttls", info.StartTLS)
+
+	setInt("mail_max_userip_connections", info.MailMaxUserIPConnections)
+	setInt("mail_max_user_connections", info.MailMaxUserConnections)
+
+	setStr("service", info.Service)
+	setStr("local_name", info.LocalName)
+
+	if len(info.Forward) > 0 {
+		out["forward"] = info.Forward
+	}
+	if len(info.Extra) > 0 {
+		out["extra"] = info.Extra
+	}
+	return out
+}
+
+// handleUserIterate streams every userdb-known username back as a
+// sorted JSON array. 503 when AuthClient is not configured (no
+// fallback enumeration source on backend-api alone — the caller is
+// asked to point a yarilo-auth at AuthMasterAddr).
+func (s *Server) handleUserIterate(w http.ResponseWriter, r *http.Request) {
+	if s.opts.AuthClient == nil {
+		apiError(w, "user/iterate requires backend_api.auth_master_addr (Phase AUTH-1 wiring)",
+			http.StatusServiceUnavailable)
+		return
+	}
+	users, err := s.opts.AuthClient.IterateUsers(r.Context())
+	if err != nil {
+		slog.Warn("backendapi/user: iterate failed", "err", err)
+		apiError(w, "iterate: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	sort.Strings(users)
+	apiJSON(w, map[string]any{"users": users})
 }
 
 type usageFolder struct {
