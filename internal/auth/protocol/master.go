@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -226,107 +225,17 @@ func parseID(fields []string) string {
 }
 
 // marshalUserInfo serialises a UserInfo into the tab-separated
-// key=value wire form. Zero-valued fields are skipped (Dovecot
-// auth-fields convention). Internal-only fields (Password,
-// CertName, PolicyResponse) are stripped UNCONDITIONALLY so a
-// password-less master-protocol consumer can never observe
-// credentials even if a buggy Userdb backend populates them.
-//
-// Lists are comma-joined; booleans emit `key=yes` only when true;
-// maps spread as one pair per entry (Forward keys gain the
-// `forward_` prefix; Extra emits as-is).
+// key=value wire form. Internal-only fields are stripped by
+// UserInfo.VisitFields construction (see userdb.go); this function
+// just tab-joins the visited (key, escaped-value) pairs.
 func marshalUserInfo(ui *UserInfo) string {
 	if ui == nil {
 		return ""
 	}
 	var parts []string
-	add := func(k, v string) {
-		if v == "" {
-			return
-		}
+	ui.VisitFields(func(k, v string) {
 		parts = append(parts, k+"="+escapeValue(v))
-	}
-	addInt := func(k string, v int) {
-		if v == 0 {
-			return
-		}
-		parts = append(parts, k+"="+strconv.Itoa(v))
-	}
-	addUint32 := func(k string, v uint32) {
-		if v == 0 {
-			return
-		}
-		parts = append(parts, k+"="+strconv.FormatUint(uint64(v), 10))
-	}
-	addBool := func(k string, v bool) {
-		if !v {
-			return
-		}
-		parts = append(parts, k+"=yes")
-	}
-	addList := func(k string, v []string) {
-		if len(v) == 0 {
-			return
-		}
-		parts = append(parts, k+"="+escapeValue(strings.Join(v, ",")))
-	}
-
-	add("original_user", ui.OriginalUser)
-	add("master_user", ui.MasterUser)
-	add("login_user", ui.LoginUser)
-
-	addUint32("uid", ui.UID)
-	addUint32("gid", ui.GID)
-	add("home", ui.Home)
-	add("chroot", ui.Chroot)
-	add("system_groups_user", ui.SystemGroupsUser)
-	addList("groups", ui.Groups)
-	addBool("client_cert_present", ui.ClientCertPresent)
-
-	add("mail", ui.MailLocation)
-	addUint32("mail_uid", ui.MailUID)
-	addUint32("mail_gid", ui.MailGID)
-	add("mailbox_format", ui.MailboxFormat)
-	add("mail_attribute_dict", ui.MailAttributeDict)
-
-	addList("quota_rule", ui.QuotaRules)
-	add("quota_over_flag", ui.QuotaOverFlag)
-
-	addList("allow_nets", ui.AllowNets)
-
-	addBool("nologin", ui.NoLogin)
-	addBool("nodelay", ui.NoDelay)
-	addBool("noauthenticate", ui.NoAuthenticate)
-	addBool("pass_expired", ui.PassExpired)
-	addBool("nopassword", ui.NoPassword)
-
-	addBool("proxy", ui.Proxy)
-	addBool("proxy_maybe", ui.ProxyMaybe)
-	add("host", ui.Host)
-	addInt("port", ui.Port)
-	add("destuser", ui.DestUser)
-	add("proxy_mech", ui.ProxyMech)
-	addInt("proxy_timeout", ui.ProxyTimeout)
-	addBool("proxy_redirect_reauth", ui.ProxyRedirectReauth)
-	addBool("proxy_nopipelining", ui.ProxyNoPipelining)
-	add("ssl", ui.SSL)
-	addBool("starttls", ui.StartTLS)
-
-	addInt("mail_max_userip_connections", ui.MailMaxUserIPConnections)
-	addInt("mail_max_user_connections", ui.MailMaxUserConnections)
-
-	add("service", ui.Service)
-	add("local_name", ui.LocalName)
-
-	// Forward + Extra get deterministic key order so two processes
-	// serialising the same UserInfo produce byte-identical wire bytes.
-	for _, k := range sortedKeys(ui.Forward) {
-		parts = append(parts, "forward_"+k+"="+escapeValue(ui.Forward[k]))
-	}
-	for _, k := range sortedKeys(ui.Extra) {
-		parts = append(parts, k+"="+escapeValue(ui.Extra[k]))
-	}
-
+	})
 	return strings.Join(parts, "\t")
 }
 
@@ -361,23 +270,7 @@ func escapeValue(v string) string {
 // the code know which context applies.
 func escapeReason(v string) string { return escapeValue(v) }
 
-// sortedKeys returns the keys of m in lexicographic order — the
-// canonical key order the wire serialiser uses for map fields so
-// two processes produce byte-identical bytes for the same UserInfo.
-func sortedKeys(m map[string]string) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	// inline insertion sort — len(m) is typically small (single-digit)
-	// so the constant beats sort.Strings's overhead.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
-	return out
-}
+// Map iteration order for Forward / Extra now goes through
+// sortedMapKeys in userdb.go (used by both this file's
+// marshalUserInfo and the writeUserdbFields helper protocol.go
+// adds in PR 3); the old inline insertion-sort version is gone.
