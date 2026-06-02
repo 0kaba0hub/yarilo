@@ -100,10 +100,17 @@ func (s *Store) Get(folder string) (mailbox.ACL, error) {
 // order via ACL.Sorted(). Empty acl results in an empty file (zero
 // bytes), not file removal — use Remove for that. Atomic via
 // tmp+rename inside the folder's index dir.
+//
+// After the per-mailbox file write succeeds, the yarilo-acl-list
+// namespace-wide index is updated in the same call so LIST
+// optimisations see the change without a separate rebuild.
 func (s *Store) Set(folder string, acl mailbox.ACL) error {
-	return s.withLock(folder, func() error {
+	if err := s.withLock(folder, func() error {
 		return s.writeAtomicLocked(folder, acl)
-	})
+	}); err != nil {
+		return err
+	}
+	return s.ListUpdate(folder, acl)
 }
 
 // EffectiveFor resolves the user's effective rights on folder,
@@ -170,14 +177,65 @@ func lastSepIndex(s string, sep byte) int {
 // is not an error. Used by ACL admin paths that want to drop a
 // mailbox back to "no explicit ACL" — after which EffectiveFor
 // resumes walking ancestors for the inherited ACL.
+//
+// Also drops every yarilo-acl-list entry for this mailbox so the
+// namespace-wide index stays consistent.
 func (s *Store) Remove(folder string) error {
-	return s.withLock(folder, func() error {
+	if err := s.withLock(folder, func() error {
 		path := s.Path(folder)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("userstate/acl: remove %s: %w", path, err)
 		}
 		return nil
+	}); err != nil {
+		return err
+	}
+	return s.ListRemove(folder)
+}
+
+// Rename moves the per-mailbox yarilo-acl file from oldFolder's
+// index dir to newFolder's, and rewrites every yarilo-acl-list
+// entry pointing at oldFolder to point at newFolder. Called from
+// the IMAP RENAME handler so the index stays consistent across the
+// structural change. Missing source file is a no-op (mailbox had
+// no explicit ACL); the index rewrite still runs in case the
+// caller previously seeded entries out-of-band.
+//
+// Both per-folder locks are taken in lexicographic order to mirror
+// fileindex.withTwoFolderLocks so two RENAMEs cannot deadlock
+// against each other.
+func (s *Store) Rename(oldFolder, newFolder string) error {
+	first, second := oldFolder, newFolder
+	if first > second {
+		first, second = second, first
+	}
+	err := s.withLock(first, func() error {
+		return s.withLock(second, func() error {
+			oldPath := s.Path(oldFolder)
+			info, err := os.Stat(oldPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return fmt.Errorf("userstate/acl: rename stat %s: %w", oldPath, err)
+			}
+			if info.IsDir() {
+				return fmt.Errorf("userstate/acl: rename %s: source is a directory", oldPath)
+			}
+			newPath := s.Path(newFolder)
+			if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+				return fmt.Errorf("userstate/acl: rename mkdir %s: %w", filepath.Dir(newPath), err)
+			}
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return fmt.Errorf("userstate/acl: rename %s → %s: %w", oldPath, newPath, err)
+			}
+			return nil
+		})
 	})
+	if err != nil {
+		return err
+	}
+	return s.ListRename(oldFolder, newFolder)
 }
 
 // Update applies fn under the folder lock — fn receives the current

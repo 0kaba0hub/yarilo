@@ -103,6 +103,7 @@ func New(opts Options) *Server {
 	s.registerSubscriptionRoutes()
 	s.registerSpecialUseRoutes()
 	s.registerMetadataRoutes()
+	s.registerACLRoutes()
 	s.registerWhoRoutes()
 	s.registerSessionRoutes()
 	return s

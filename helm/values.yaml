@@ -514,13 +514,17 @@ protocol:
       Junk: "\\Junk"
       Archive: "\\Archive"
     ## RFC 4314 server-side ACL — GETACL / SETACL / DELETEACL / MYRIGHTS
-    ## / LISTRIGHTS. Storage is a per-mailbox `yarilo-acl` file alongside
-    ## each folder's `yarilo.index*`. When disabled, every ACL command
-    ## returns NO("ACL extension disabled by operator"); the capability
-    ## stays advertised because go-imap detects it via interface
-    ## assertion. Full evaluation semantics (inheritance, owner detect,
-    ## negative-rights merge, enforcement on core ops) land in later
-    ## ACL phases.
+    ## / LISTRIGHTS plus enforcement on SELECT / APPEND / COPY / MOVE
+    ## / STORE / EXPUNGE / CREATE / DELETE / RENAME / STATUS. Storage
+    ## is a per-mailbox `yarilo-acl` file alongside each folder's
+    ## `yarilo.index*`; a namespace-wide `yarilo-acl-list` index
+    ## mirrors which mailboxes have an explicit ACL for LIST
+    ## optimisation. Admin surface lives at
+    ## `yarilo-backend-api /api/backend/acl/*` and `yarilo-admin
+    ## backend acl <command>`. When disabled, every ACL command
+    ## returns NO("ACL extension disabled by operator"); the
+    ## capability stays advertised because go-imap detects it via
+    ## interface assertion.
     acl:
       enabled: false
 
