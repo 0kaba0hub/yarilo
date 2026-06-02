@@ -217,6 +217,12 @@ func (s *session) finishAuth(authzid, username, password string) {
 	}
 	res, err := s.authenticate(authzid, username, password)
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
+		// Timing-leak mitigation: hold the -ERR reply for the
+		// configured delay so unknown-user / wrong-password
+		// surface in the same wall-clock time.
+		if d := s.srv.opts.FailureDelay; d > 0 {
+			time.Sleep(d)
+		}
 		slog.Info("pop3: auth failed", "user", username, "remoteIP", s.remoteIP)
 		s.writeErr("authentication failed")
 		return
@@ -285,7 +291,13 @@ func (s *session) finishAuth(authzid, username, password string) {
 		s.lockKey = ""
 		return
 	}
-	slog.Info("pop3: login", "user", userInfo.Username, "messages", len(s.msgs))
+	master, _ := res.Fields.Get("master_user")
+	slog.Info("pop3: login",
+		"user", userInfo.Username,
+		"master_user", master,
+		"remoteIP", s.remoteIP,
+		"messages", len(s.msgs),
+	)
 	s.state = stateTrans
 	s.ok(fmt.Sprintf("logged in, %d messages", len(s.msgs)))
 }

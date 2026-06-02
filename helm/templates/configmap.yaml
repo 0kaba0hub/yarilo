@@ -137,6 +137,8 @@ data:
           command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
 
     auth:
+      failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
+      internal_failure_delay_ms: {{ .Values.components.auth.internalFailureDelayMs | default 2000 }}
       passdb:
         {{- range .Values.components.auth.passdb }}
         - driver: {{ .driver | quote }}

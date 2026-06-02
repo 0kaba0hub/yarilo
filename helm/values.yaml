@@ -143,6 +143,21 @@ components:
         ## userQuery:     "SELECT home, uid, gid FROM users WHERE username = ?"
         ## defaultPassScheme: BCRYPT
 
+    ## failureDelay — timing-leak mitigation. Every failed auth
+    ## reply (wrong password, unknown user, malformed SASL) is
+    ## held back this many seconds before surfacing to the client
+    ## so unknown-user and wrong-password paths return in the same
+    ## wall-clock time. Default 2s mirrors Dovecot's
+    ## `auth_failure_delay`. Set to 0 to disable (tests only —
+    ## production should keep >0).
+    failureDelay: 2
+    ## internalFailureDelayMs — separate delay for INTERNAL
+    ## failures (passdb backend down, SQL refused). Mirrors
+    ## Dovecot's `auth_internal_failure_delay`. Typically shorter
+    ## than failureDelay so a passdb outage does not amplify
+    ## into user-facing latency.
+    internalFailureDelayMs: 2000
+
     ## masterUsers — Dovecot-style master-user impersonation
     ## (SASL PLAIN authzid). OPT-IN, disabled by default. While
     ## `enabled: false` the IMAP / POP3 / Submission / wire

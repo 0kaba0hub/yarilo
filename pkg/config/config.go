@@ -438,6 +438,27 @@ type AuthConfig struct {
 	// true. When disabled, all other fields in this group are
 	// ignored even if populated.
 	MasterUsers MasterUsersConfig `koanf:"master_users"`
+
+	// FailureDelaySeconds is the timing-leak mitigation: every
+	// failed auth reply (wrong password, unknown user, malformed
+	// SASL response) is held back this many seconds before
+	// surfacing to the client. The delay equalises response time
+	// across success / fail / unknown-user code paths so an
+	// attacker cannot use timing to enumerate users or distinguish
+	// "user exists, wrong password" from "user does not exist".
+	//
+	// Dovecot default: 2 (seconds). Set to 0 to disable (mainly
+	// for test speed — production should always have it >0).
+	// Mirrors Dovecot's `auth_failure_delay`.
+	FailureDelaySeconds int `koanf:"failure_delay"`
+
+	// InternalFailureDelayMs is the matching delay for INTERNAL
+	// failures — passdb backend down, SQL connection refused, etc.
+	// Separate knob because internal failures often retry and the
+	// operator may want a shorter back-off than the user-facing
+	// FailureDelay. Mirrors Dovecot's `auth_internal_failure_delay`
+	// (default 2000ms).
+	InternalFailureDelayMs int `koanf:"internal_failure_delay_ms"`
 }
 
 // MasterUsersConfig configures the master-user impersonation
@@ -596,6 +617,10 @@ func Load(path string) (*Config, error) {
 			MasterUsers: MasterUsersConfig{
 				Separator: "*",
 			},
+			// Dovecot defaults: 2s for client-visible failures,
+			// 2000ms for internal-failure delays.
+			FailureDelaySeconds:    2,
+			InternalFailureDelayMs: 2000,
 		},
 		DirectorService: DirectorServiceConfig{
 			Listen: ":9102",

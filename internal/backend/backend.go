@@ -172,6 +172,7 @@ func New(cfg *config.Config) (*Server, error) {
 			ACLEnabled:         p.ACL.Enabled,
 			Namespaces:         buildNamespaces(cfg.Namespaces),
 			NamespaceMailboxes: nsMailboxes,
+			FailureDelay:       time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
 		})
 	}
 
@@ -213,6 +214,7 @@ func New(cfg *config.Config) (*Server, error) {
 			LockSession:        p.LockSession,
 			ConnLimit:          connLimiter,
 			Locker:             locker,
+			FailureDelay:       time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
 		})
 	}
 
@@ -246,6 +248,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Config:           cfg.Protocol.Submission,
 			Auth:             chainAuth{authChain},
 			Proxy:            submissionProxy,
+			FailureDelay:     time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
 		})
 	}
 
