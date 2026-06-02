@@ -1,6 +1,9 @@
 package protocol
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Fields is an ordered key/value bag that carries the result of a
 // passdb (and, eventually, userdb) lookup through the auth pipeline.
@@ -82,6 +85,35 @@ func (f *Fields) Rollback(snap *Snapshot) {
 	for k, v := range snap.idx {
 		f.idx[k] = v
 	}
+}
+
+// SetValidated parses value through the reserved-field registry
+// before storing. When key matches a known reserved name (or
+// `userdb_<base>` where base is reserved), the validator returns
+// the canonical form and that goes into the bag. Unknown keys
+// (including everything `forward_*`-prefixed and anything not in
+// the registry) pass through verbatim — same behaviour as Set.
+//
+// Returns a non-nil error when validation fails; the bag is NOT
+// mutated in that case so callers can retry / surface the parse
+// error without rolling back. Intended for admin / wire-side
+// callers that ingest arbitrary input; driver-side passdb code
+// keeps using Set (the driver knows its own schema).
+func (f *Fields) SetValidated(key, value string) error {
+	base := key
+	if rest, ok := strings.CutPrefix(key, "userdb_"); ok {
+		base = rest
+	}
+	if v, ok := reservedValidators[base]; ok {
+		canonical, err := v(value)
+		if err != nil {
+			return fmt.Errorf("auth/protocol: field %q: %w", key, err)
+		}
+		f.Set(key, canonical)
+		return nil
+	}
+	f.Set(key, value)
+	return nil
 }
 
 // Set adds or overwrites a key. Stable: rewriting a key keeps its
