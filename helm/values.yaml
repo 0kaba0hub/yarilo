@@ -158,6 +158,19 @@ components:
     ## into user-facing latency.
     internalFailureDelayMs: 2000
 
+    ## cache — in-process auth cache (LRU, bytes-bounded).
+    ## OPT-IN, disabled by default (sizeBytes: 0). Stores
+    ## HMAC-ed passwords (never plain) keyed by
+    ## `<service>\t<username>`. Positive entries hold the
+    ## verified credential and bag; negative entries short-
+    ## circuit failed lookups for the NegativeTTL window. Evict
+    ## selectively via `yarilo-admin auth cache flush
+    ## [user-mask...]`.
+    cache:
+      sizeBytes: 0
+      ttlSeconds: 1800
+      negativeTTLSeconds: 1800
+
     ## masterUsers — Dovecot-style master-user impersonation
     ## (SASL PLAIN authzid). OPT-IN, disabled by default. While
     ## `enabled: false` the IMAP / POP3 / Submission / wire

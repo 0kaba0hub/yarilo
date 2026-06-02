@@ -73,8 +73,14 @@ func New(cfg *config.Config) (*Server, error) {
 	if len(userdbs) > 0 {
 		userdbChain = protocol.UserdbChain(userdbs)
 	}
+	authCache := protocol.NewCache(
+		cfg.Auth.Cache.SizeBytes,
+		time.Duration(cfg.Auth.Cache.TTLSeconds)*time.Second,
+		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
+	)
 	authOpts := []protocol.AuthenticatorOption{
 		protocol.WithAuthenticatorUserdb(userdbChain),
+		protocol.WithAuthenticatorCache(authCache),
 	}
 	if cfg.Auth.MasterUsers.Enabled {
 		masterdbs, err := buildPassdbs(cfg.Auth.MasterUsers.Masterdb)

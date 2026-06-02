@@ -40,6 +40,10 @@ func main() {
 	flag.StringVar(&apiToken, "token", envOr("YARILO_ADMIN_TOKEN", envOr("DIRECTOR_API_TOKEN", "")), "Director API bearer token")
 	flag.StringVar(&backendAPIURL, "backend-url", envOr("YARILO_BACKEND_API_URL", "http://localhost:9105"), "yarilo-backend-api base URL (used by 'backend ...' subcommands)")
 	flag.StringVar(&backendAPIToken, "backend-token", envOr("YARILO_BACKEND_API_TOKEN", envOr("BACKEND_API_TOKEN", "")), "yarilo-backend-api bearer token")
+	flag.StringVar(&authAddr, "auth-addr", envOr("YARILO_AUTH_ADDR", "localhost:9102"), "yarilo-auth master socket (used by 'auth ...' subcommands)")
+	flag.StringVar(&authCert, "auth-cert", envOr("YARILO_AUTH_CERT", ""), "mTLS client cert for auth-master socket")
+	flag.StringVar(&authKey, "auth-key", envOr("YARILO_AUTH_KEY", ""), "mTLS client key for auth-master socket")
+	flag.StringVar(&authCA, "auth-ca", envOr("YARILO_AUTH_CA", ""), "CA bundle that signs the auth-master server cert")
 	flag.Parse()
 
 	args := flag.Args()
@@ -60,8 +64,10 @@ func dispatch(args []string) error {
 		return dispatchDirector(args[1:])
 	case "backend":
 		return dispatchBackend(args[1:])
+	case "auth":
+		return dispatchAuth(args[1:])
 	default:
-		return fmt.Errorf("unknown plane %q — available: director, backend", args[0])
+		return fmt.Errorf("unknown plane %q — available: director, backend, auth", args[0])
 	}
 }
 

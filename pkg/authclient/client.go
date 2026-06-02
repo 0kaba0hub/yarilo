@@ -238,6 +238,49 @@ func (c *Client) IterateUsers(ctx context.Context) ([]string, error) {
 	}
 }
 
+// CacheFlush invokes the master-protocol CACHE-FLUSH verb. Empty
+// masks slice triggers a full flush; otherwise each mask is sent
+// as an additional tab-separated argument and yarilo-auth evicts
+// every entry whose stored username matches any mask (glob
+// syntax: `*` = any run, `?` = one char).
+//
+// Returns the count of evicted entries reported by the server.
+// Used by `yarilo-admin auth cache flush [mask…]`.
+func (c *Client) CacheFlush(ctx context.Context, masks []string) (uint32, error) {
+	if c.closed.Load() {
+		return 0, ErrClosed
+	}
+	id := c.allocID()
+	cmd := "CACHE-FLUSH\t" + id
+	for _, m := range masks {
+		cmd += "\t" + m
+	}
+	cmd += "\n"
+	resp, err := c.exchange(ctx, cmd)
+	if err != nil {
+		return 0, err
+	}
+	parts := strings.Split(resp, "\t")
+	if len(parts) < 2 || parts[1] != id {
+		return 0, fmt.Errorf("authclient: CACHE-FLUSH response for unexpected id: %q", resp)
+	}
+	switch parts[0] {
+	case "OK":
+		if len(parts) < 3 {
+			return 0, fmt.Errorf("authclient: CACHE-FLUSH OK without count: %q", resp)
+		}
+		n, perr := strconv.ParseUint(parts[2], 10, 32)
+		if perr != nil {
+			return 0, fmt.Errorf("authclient: CACHE-FLUSH count parse: %w", perr)
+		}
+		return uint32(n), nil
+	case "FAIL":
+		return 0, fmt.Errorf("authclient: CACHE-FLUSH: %s", failReason(parts))
+	default:
+		return 0, fmt.Errorf("authclient: unexpected CACHE-FLUSH frame: %q", resp)
+	}
+}
+
 // exchange writes a single-line request under c.mu and reads the
 // matching single-line response. Used by USER and PASS — LIST has
 // its own multi-line loop above.
