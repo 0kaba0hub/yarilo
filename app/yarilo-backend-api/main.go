@@ -30,6 +30,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
@@ -128,6 +129,30 @@ func main() {
 		}
 	}
 
+	// Dial yarilo-auth's master-protocol listener when configured.
+	// Empty AuthMasterAddr keeps the legacy single-binary / smoke
+	// flow alive — handleUserInfo skips userdb enrichment and
+	// /api/backend/user/iterate returns 503.
+	var authcl *authclient.Client
+	if cfg.BackendAPI.AuthMasterAddr != "" {
+		var authTLS *tls.Config
+		if cfg.InternalTLS.Enabled {
+			authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+			if err != nil {
+				slog.Error("backend-api: auth mtls client config failed", "err", err)
+				os.Exit(1)
+			}
+		}
+		authcl, err = authclient.Dial(cfg.BackendAPI.AuthMasterAddr, authTLS)
+		if err != nil {
+			slog.Error("backend-api: authclient dial",
+				"addr", cfg.BackendAPI.AuthMasterAddr, "err", err)
+			os.Exit(1)
+		}
+		defer func() { _ = authcl.Close() }()
+		slog.Info("backend-api: authclient connected", "addr", cfg.BackendAPI.AuthMasterAddr)
+	}
+
 	srv := backendapi.New(backendapi.Options{
 		Addr:               listen,
 		TLSConfig:          tlsCfg,
@@ -144,6 +169,7 @@ func main() {
 		MetadataDict:       dicts["metadata"],
 		AnvilAddr:          cfg.AnvilService.Listen,
 		AnvilTLS:           anvilTLS,
+		AuthClient:         authcl,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

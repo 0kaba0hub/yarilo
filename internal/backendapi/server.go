@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -86,6 +87,14 @@ type Options struct {
 	// traffic uses.
 	AnvilAddr string
 	AnvilTLS  *tls.Config
+
+	// AuthClient is the live yarilo-auth master-protocol client,
+	// dialled at startup from BackendAPIConfig.AuthMasterAddr.
+	// When nil, /api/backend/user/info skips the userdb-enrichment
+	// block and /api/backend/user/iterate returns 503. main.go
+	// owns the lifecycle (Close on shutdown); the Server only
+	// reads through it.
+	AuthClient *authclient.Client
 }
 
 // New constructs a Server and registers the backend endpoints onto an

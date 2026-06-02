@@ -410,6 +410,16 @@ type BackendAPIConfig struct {
 	Listen      string   `koanf:"listen"`       // ":9105" default
 	Token       string   `koanf:"token"`        // Bearer token; supports ${ENV_VAR} via koanf
 	AllowedNets []string `koanf:"allowed_nets"` // CIDRs allowed to call the API
+
+	// AuthMasterAddr is the yarilo-auth master-protocol listener
+	// (typically the same `yarilo-auth.<release>:9102` the
+	// auth_service.master_listen config exposes). When non-empty,
+	// yarilo-backend-api dials it at startup via pkg/authclient and
+	// enriches `/api/backend/user/info` with userdb fields plus
+	// serves `/api/backend/user/iterate`. Empty disables both
+	// surfaces — useful for dev / smoke runs that have no
+	// yarilo-auth instance to talk to.
+	AuthMasterAddr string `koanf:"auth_master_addr"`
 }
 
 // ShutdownConfig controls graceful shutdown behaviour.
