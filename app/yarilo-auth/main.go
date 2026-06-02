@@ -112,7 +112,37 @@ func main() {
 		combinedUserdb = protocol.UserdbChain(userdbs)
 	}
 
-	srv := protocol.NewServer(dbs, protocol.WithUserdb(combinedUserdb))
+	srvOpts := []protocol.ServerOption{protocol.WithUserdb(combinedUserdb)}
+	if cfg.Auth.MasterUsers.Enabled {
+		var masterdbs []protocol.Passdb
+		for _, entry := range cfg.Auth.MasterUsers.Masterdb {
+			sqlCfg := authsql.Config{
+				Driver:            entry.Driver,
+				DSN:               entry.DSN,
+				PasswordQuery:     entry.PasswordQuery,
+				UserQuery:         entry.UserQuery,
+				IterateQuery:      entry.IterateQuery,
+				DefaultPassScheme: entry.DefaultPassScheme,
+				SkipSchema:        entry.SkipSchema,
+			}
+			db, err := authsql.New(sqlCfg)
+			if err != nil {
+				slog.Error("masterdb init failed", "driver", entry.Driver, "err", err)
+				os.Exit(1)
+			}
+			masterdbs = append(masterdbs, db)
+		}
+		srvOpts = append(srvOpts,
+			protocol.WithMasterUsers(true),
+			protocol.WithMasterdb(masterdbs),
+			protocol.WithMasterUserSeparator(cfg.Auth.MasterUsers.Separator),
+		)
+		slog.Info("yarilo-auth master users enabled",
+			"masterdb_drivers", len(masterdbs),
+			"separator", cfg.Auth.MasterUsers.Separator,
+		)
+	}
+	srv := protocol.NewServer(dbs, srvOpts...)
 	errCh := make(chan error, 2)
 	go func() {
 		if err := srv.ListenAndServe(ctx, cfg.AuthService.Listen, tlsCfg); err != nil {

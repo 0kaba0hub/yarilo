@@ -143,6 +143,37 @@ components:
         ## userQuery:     "SELECT home, uid, gid FROM users WHERE username = ?"
         ## defaultPassScheme: BCRYPT
 
+    ## masterUsers — Dovecot-style master-user impersonation
+    ## (SASL PLAIN authzid). OPT-IN, disabled by default. While
+    ## `enabled: false` the IMAP / POP3 / Submission / wire
+    ## yarilo-auth code paths drop the authzid before consulting
+    ## the chain — distinct authzid produces an opaque auth
+    ## failure indistinguishable from a wrong password.
+    ##
+    ## Set `enabled: true` to allow EITHER of these admin paths:
+    ##   1. A dedicated `masterdb` chain (entries below) whose
+    ##      rows are unconditionally allowed to impersonate any
+    ##      target. Independent SQL store; same query syntax as
+    ##      the regular `passdb`.
+    ##   2. A regular `passdb` row that returns the extra field
+    ##      `master_user=yes` from its passwordQuery. That row
+    ##      is then allowed to impersonate any target — useful
+    ##      when admins and end-users share one user table.
+    ##
+    ## `separator` enables the legacy `target<sep>master` SASL
+    ## workaround for clients that cannot supply authzid (older
+    ## Outlook, some mobile MUAs). Empty disables the workaround
+    ## even when `enabled: true`. `*` matches Dovecot's default
+    ## `auth_master_user_separator`.
+    masterUsers:
+      enabled: false
+      separator: "*"
+      masterdb: []
+        ## - driver: sqlite
+        ##   dsn: /var/lib/yarilo/masters.db
+        ##   passwordQuery: "SELECT password FROM masters WHERE username = ?"
+        ##   defaultPassScheme: BCRYPT
+
     resources:
       requests:
         cpu: 50m

@@ -73,6 +73,32 @@ func main() {
 		dbs = append(dbs, db)
 	}
 
+	authOpts := []protocol.AuthenticatorOption{}
+	if cfg.Auth.MasterUsers.Enabled {
+		var masterdbs []protocol.Passdb
+		for _, entry := range cfg.Auth.MasterUsers.Masterdb {
+			db, err := authsql.New(authsql.Config{
+				Driver:            entry.Driver,
+				DSN:               entry.DSN,
+				PasswordQuery:     entry.PasswordQuery,
+				UserQuery:         entry.UserQuery,
+				IterateQuery:      entry.IterateQuery,
+				DefaultPassScheme: entry.DefaultPassScheme,
+				SkipSchema:        entry.SkipSchema,
+			})
+			if err != nil {
+				slog.Error("masterdb init failed", "driver", entry.Driver, "err", err)
+				os.Exit(1)
+			}
+			masterdbs = append(masterdbs, db)
+		}
+		authOpts = append(authOpts,
+			protocol.WithAuthenticatorMasterUsers(true),
+			protocol.WithAuthenticatorMasterdb(masterdbs),
+			protocol.WithAuthenticatorMasterUserSeparator(cfg.Auth.MasterUsers.Separator),
+		)
+	}
+
 	// ---- relay proxy ----
 	var relay *submproxy.Submission
 	if cfg.Protocol.Submission.Relay.Host != "" {
@@ -104,7 +130,7 @@ func main() {
 		DisablePlainAuth: primary.DisablePlainAuth,
 		TLSConfig:        extTLS,
 		Config:           cfg.Protocol.Submission,
-		Auth:             chainAuth{protocol.NewAuthenticator(dbs)},
+		Auth:             chainAuth{protocol.NewAuthenticator(dbs, authOpts...)},
 		Proxy:            relay,
 	})
 
@@ -160,6 +186,26 @@ type chainAuth struct{ c protocol.Authenticator }
 
 func (a chainAuth) AuthPlain(username, password string) error {
 	resp, err := a.c.Authenticate(username, password, "smtp")
+	if err != nil {
+		return fmt.Errorf("smtp/auth: %w", err)
+	}
+	if resp == nil || resp.Result != protocol.AuthOK {
+		return fmt.Errorf("smtp/auth: authentication failed")
+	}
+	return nil
+}
+
+// AuthPlainMaster forwards SASL PLAIN responses carrying a
+// non-empty authzid through the master-user flow. When the
+// wrapped chain does not implement protocol.MasterAuthenticator
+// (master-users disabled in config) the call fails opaquely so
+// the wire reply matches a wrong-password rejection.
+func (a chainAuth) AuthPlainMaster(authzid, authid, password string) error {
+	master, ok := a.c.(protocol.MasterAuthenticator)
+	if !ok {
+		return fmt.Errorf("smtp/auth: authentication failed")
+	}
+	resp, err := master.AuthenticateMaster(authzid, authid, password, "smtp")
 	if err != nil {
 		return fmt.Errorf("smtp/auth: %w", err)
 	}
