@@ -124,7 +124,13 @@ components:
   auth:
     enabled: true
     replicas: 1
+    ## listen — client protocol (login pods speak here).
     listen: ":9100"
+    ## masterListen — Dovecot-style master protocol for password-less
+    ## userdb lookups (USER / LIST) used by yarilo-backend-api admin
+    ## endpoints and CLI tooling. Empty disables; the binary then only
+    ## opens the client listener.
+    masterListen: ":9102"
 
     internalTLS:
       enabled: false
