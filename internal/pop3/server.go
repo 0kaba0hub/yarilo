@@ -27,7 +27,7 @@ type Options struct {
 	Mailbox            mailbox.MailboxBackend
 	Index              mailbox.IndexBackend
 	Resolver           *mailbox.Resolver
-	Auth               protocol.Passdb
+	Auth               protocol.Authenticator
 	ProxyProtocol      bool
 	HAProxyTimeout     time.Duration
 	HAProxyTrustedNets []*net.IPNet

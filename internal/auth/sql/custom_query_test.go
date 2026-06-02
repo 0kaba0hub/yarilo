@@ -67,34 +67,40 @@ func TestCustomPasswordQuery(t *testing.T) {
 	cases := []struct {
 		name, user, pass string
 		wantNil          bool
-		wantResult       protocol.AuthResult
+		wantResult       protocol.Result
 		wantHome         string
 	}{
-		{"alice ok", "alice@example.com", "wonderland", false, protocol.AuthOK, "/srv/alice"},
-		{"alice wrong pass", "alice@example.com", "wrong", false, protocol.AuthFail, ""},
-		{"disabled rejected", "disabled@example.com", "any", false, protocol.AuthFail, ""},
-		{"unknown returns nil", "nobody@example.com", "x", true, 0, ""},
+		{"alice ok", "alice@example.com", "wonderland", false, protocol.ResultOK, "/srv/alice"},
+		{"alice wrong pass", "alice@example.com", "wrong", false, protocol.ResultFail, ""},
+		{"disabled rejected", "disabled@example.com", "any", false, protocol.ResultFail, ""},
+		{"unknown returns Next", "nobody@example.com", "x", true, protocol.ResultNext, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := p.Authenticate(tc.user, tc.pass, "imap")
+			req := &protocol.Request{
+				Username: tc.user,
+				Password: tc.pass,
+				Service:  "imap",
+				Fields:   protocol.NewFields(),
+			}
+			got, err := p.Authenticate(req)
 			if err != nil {
 				t.Fatalf("Authenticate: %v", err)
 			}
 			if tc.wantNil {
-				if resp != nil {
-					t.Fatalf("expected nil, got %+v", resp)
+				if got != protocol.ResultNext {
+					t.Fatalf("expected ResultNext for unknown, got %v", got)
 				}
 				return
 			}
-			if resp == nil {
-				t.Fatal("expected non-nil response")
+			if got != tc.wantResult {
+				t.Errorf("result %v, want %v", got, tc.wantResult)
 			}
-			if resp.Result != tc.wantResult {
-				t.Errorf("result %v, want %v", resp.Result, tc.wantResult)
-			}
-			if tc.wantHome != "" && resp.Home != tc.wantHome {
-				t.Errorf("home %q, want %q", resp.Home, tc.wantHome)
+			if tc.wantHome != "" {
+				v, _ := req.Fields.Get("home")
+				if v != tc.wantHome {
+					t.Errorf("home %q, want %q", v, tc.wantHome)
+				}
 			}
 		})
 	}
@@ -117,18 +123,24 @@ func TestCustomUserQueryOverridesPasswdHomeAndMail(t *testing.T) {
 	}
 	t.Cleanup(func() { p.Close() })
 
-	resp, err := p.Authenticate("alice@example.com", "wonderland", "imap")
+	req := &protocol.Request{
+		Username: "alice@example.com",
+		Password: "wonderland",
+		Service:  "imap",
+		Fields:   protocol.NewFields(),
+	}
+	got, err := p.Authenticate(req)
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if resp == nil || resp.Result != protocol.AuthOK {
-		t.Fatalf("expected AuthOK, got %+v", resp)
+	if got != protocol.ResultOK {
+		t.Fatalf("expected ResultOK, got %v", got)
 	}
-	if resp.Home != "/srv/alice" {
-		t.Errorf("home: got %q, want /srv/alice", resp.Home)
+	if v, _ := req.Fields.Get("home"); v != "/srv/alice" {
+		t.Errorf("home: got %q, want /srv/alice", v)
 	}
-	if resp.MailLoc != "maildir:/srv/alice/Maildir" {
-		t.Errorf("mail: got %q, want maildir:/srv/alice/Maildir", resp.MailLoc)
+	if v, _ := req.Fields.Get("mail"); v != "maildir:/srv/alice/Maildir" {
+		t.Errorf("mail: got %q, want maildir:/srv/alice/Maildir", v)
 	}
 }
 
@@ -217,8 +229,14 @@ func TestDefaultPassScheme_BcryptForBareHash(t *testing.T) {
 	}
 	t.Cleanup(func() { p.Close() })
 
-	resp, _ := p.Authenticate("carol@example.com", "literalpass", "imap")
-	if resp == nil || resp.Result != protocol.AuthOK {
-		t.Fatalf("expected AuthOK with default_pass_scheme=PLAIN, got %+v", resp)
+	req := &protocol.Request{
+		Username: "carol@example.com",
+		Password: "literalpass",
+		Service:  "imap",
+		Fields:   protocol.NewFields(),
+	}
+	got, _ := p.Authenticate(req)
+	if got != protocol.ResultOK {
+		t.Fatalf("expected ResultOK with default_pass_scheme=PLAIN, got %v", got)
 	}
 }

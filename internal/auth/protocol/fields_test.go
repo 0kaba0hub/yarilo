@@ -183,6 +183,111 @@ func TestFields_WireFormPreservesInsertionOrder(t *testing.T) {
 	}
 }
 
+func TestFields_SnapshotRollback(t *testing.T) {
+	f := NewFields()
+	f.Set("user", "alice")
+	f.Set("home", "/h/alice")
+	snap := f.Snapshot()
+
+	// Mutations after snapshot — Set/Delete a mix.
+	f.Set("home", "/h/alice-modified")
+	f.Set("mail", "maildir:/m/alice")
+	f.Delete("user")
+
+	f.Rollback(snap)
+	if v, _ := f.Get("user"); v != "alice" {
+		t.Errorf("user after rollback = %q, want alice", v)
+	}
+	if v, _ := f.Get("home"); v != "/h/alice" {
+		t.Errorf("home after rollback = %q, want /h/alice (modification undone)", v)
+	}
+	if f.Has("mail") {
+		t.Error("mail still present after rollback (post-snapshot insert should be gone)")
+	}
+	if f.Len() != 2 {
+		t.Errorf("Len after rollback = %d, want 2", f.Len())
+	}
+}
+
+func TestFields_SnapshotIsIsolated(t *testing.T) {
+	// The snapshot must capture state by VALUE — subsequent
+	// mutation on the bag cannot mutate the snapshot's payload.
+	f := NewFields()
+	f.Set("home", "/initial")
+	snap := f.Snapshot()
+
+	f.Set("home", "/changed")
+	f.Set("mail", "maildir:/m")
+
+	// snap still describes the pre-mutation state when used to
+	// rollback a SECOND, distinct bag.
+	f2 := NewFields()
+	f2.Set("temp", "data")
+	f2.Rollback(snap)
+	if v, _ := f2.Get("home"); v != "/initial" {
+		t.Errorf("f2 home after rollback to snap = %q", v)
+	}
+	if f2.Has("temp") {
+		t.Error("f2 temp survived rollback")
+	}
+}
+
+func TestFields_SnapshotEmpty(t *testing.T) {
+	f := NewFields()
+	snap := f.Snapshot()
+	f.Set("home", "/h")
+	f.Set("mail", "maildir:/m")
+	f.Rollback(snap)
+	if f.Len() != 0 {
+		t.Errorf("empty-snap rollback Len = %d, want 0", f.Len())
+	}
+}
+
+func TestFields_SnapshotNilSafe(t *testing.T) {
+	var f *Fields
+	if snap := f.Snapshot(); snap != nil {
+		t.Errorf("nil bag Snapshot = %v, want nil", snap)
+	}
+	// Rollback on nil bag, nil snap — should not panic.
+	f.Rollback(nil)
+	f2 := NewFields()
+	f2.Rollback(nil) // no-op
+	f2.Set("k", "v")
+	f2.Rollback(nil) // still no-op even with state
+	if v, _ := f2.Get("k"); v != "v" {
+		t.Error("Rollback(nil) discarded existing state")
+	}
+}
+
+func TestFields_RollbackPreservesInsertionOrder(t *testing.T) {
+	// After rollback, Each must yield keys in the SAME order they
+	// were in at snapshot time — even after intervening reorderings
+	// via Delete + reinsert.
+	f := NewFields()
+	for _, k := range []string{"a", "b", "c", "d"} {
+		f.Set(k, k)
+	}
+	snap := f.Snapshot()
+
+	f.Delete("b")
+	f.Delete("d")
+	f.Set("e", "e")
+	f.Set("b", "b-prime")
+	f.Rollback(snap)
+
+	var keys []string
+	f.Each(func(k, _ string) bool { keys = append(keys, k); return true })
+	want := []string{"a", "b", "c", "d"}
+	if len(keys) != len(want) {
+		t.Fatalf("post-rollback len = %d, want %d", len(keys), len(want))
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Errorf("[%d] = %q, want %q", i, keys[i], want[i])
+		}
+	}
+}
+
 func TestBuildAuthOK_FallbackTypedFields(t *testing.T) {
 	res := &AuthResponse{
 		Result:   AuthOK,

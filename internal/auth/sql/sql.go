@@ -112,54 +112,55 @@ func New(c Config) (*Passdb, error) {
 	}, nil
 }
 
-// Authenticate checks username/password against the SQL store. Returns nil
-// (not found) to continue the passdb chain. The password_query must SELECT
-// columns in this order: password, home, mail, enabled. Use SQL `AS` aliases
-// to map an existing schema.
-func (p *Passdb) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
-	query, args := substituteVars(p.driver, p.passwordQuery, username)
+// Authenticate verifies req.Username / req.Password against the SQL
+// store and writes user fields directly into req.Fields when the
+// lookup succeeds. Phase AUTH-2 PR 2 wire — drivers no longer
+// allocate their own AuthResponse; the Chain owns the bag and the
+// Result enum drives chain control flow.
+//
+// Outcomes:
+//
+//	ResultNext       — row not found in this database; chain falls through
+//	ResultTempFail   — backend / query error (the error return carries
+//	                    the underlying cause for the server-side log)
+//	ResultFail       — user found but disabled OR password mismatch
+//	ResultOK         — verified; req.Fields populated with user / home / mail
+//
+// The optional UserQuery runs after the password check to enrich
+// home / mail with userdb-style data (matches the pre-refactor
+// behaviour exactly).
+func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
+	query, args := substituteVars(p.driver, p.passwordQuery, req.Username)
 
 	var storedPass, home, mailLoc string
 	var enabled int
 	err := p.db.QueryRowContext(context.Background(), query, args...).
 		Scan(&storedPass, &home, &mailLoc, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil // pass to next passdb
+		return protocol.ResultNext, nil
 	}
 	if err != nil {
-		return &protocol.AuthResponse{Result: protocol.AuthTempFail}, err
+		return protocol.ResultTempFail, err
 	}
 	if enabled == 0 {
-		return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
+		return protocol.ResultFail, nil
 	}
-	if !checkPasswordWithDefault(storedPass, password, p.defaultScheme) {
-		return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
-	}
-	resp := &protocol.AuthResponse{
-		Result:   protocol.AuthOK,
-		Username: username,
-		Home:     home,
-		MailLoc:  mailLoc,
+	if !checkPasswordWithDefault(storedPass, req.Password, p.defaultScheme) {
+		return protocol.ResultFail, nil
 	}
 	if p.userQuery != "" {
-		if h, m, err := p.lookupUser(username); err == nil {
-			resp.Home, resp.MailLoc = h, m
+		if h, m, err := p.lookupUser(req.Username); err == nil {
+			home, mailLoc = h, m
 		}
 	}
-	// Phase AUTH-2 PR 1: also populate the Fields bag so the wire
-	// emitter (handleAuth → buildAuthOK) can switch over to the
-	// bag-based path. The typed Home / MailLoc fields stay
-	// populated in parallel for byte-compat with anything that
-	// reads them directly until PR 2's Passdb interface swap.
-	resp.Fields = protocol.NewFields()
-	resp.Fields.Set("user", username)
-	if resp.Home != "" {
-		resp.Fields.Set("home", resp.Home)
+	req.Fields.Set("user", req.Username)
+	if home != "" {
+		req.Fields.Set("home", home)
 	}
-	if resp.MailLoc != "" {
-		resp.Fields.Set("mail", resp.MailLoc)
+	if mailLoc != "" {
+		req.Fields.Set("mail", mailLoc)
 	}
-	return resp, nil
+	return protocol.ResultOK, nil
 }
 
 // LookupUser runs the optional user_query and returns the userdb fields.

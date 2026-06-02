@@ -104,7 +104,7 @@ func main() {
 		DisablePlainAuth: primary.DisablePlainAuth,
 		TLSConfig:        extTLS,
 		Config:           cfg.Protocol.Submission,
-		Auth:             chainAuth{protocol.Chain(dbs)},
+		Auth:             chainAuth{protocol.NewAuthenticator(dbs...)},
 		Proxy:            relay,
 	})
 
@@ -151,8 +151,12 @@ func main() {
 	slog.Info("yarilo-submission stopped")
 }
 
-// chainAuth adapts protocol.Chain to submission.Authenticator.
-type chainAuth struct{ c protocol.Chain }
+// chainAuth adapts protocol.Authenticator to submission.Authenticator.
+// go-smtp's auth surface speaks (username, password) → error rather
+// than the richer AuthResponse / Fields shape; this wrapper discards
+// everything except the "did the chain accept these credentials"
+// decision.
+type chainAuth struct{ c protocol.Authenticator }
 
 func (a chainAuth) AuthPlain(username, password string) error {
 	resp, err := a.c.Authenticate(username, password, "smtp")

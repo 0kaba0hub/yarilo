@@ -33,6 +33,57 @@ type Fields struct {
 // NewFields constructs an empty bag.
 func NewFields() *Fields { return &Fields{idx: make(map[string]int)} }
 
+// Snapshot captures the bag's current state so it can be restored
+// later via Rollback. Used by Chain to isolate each passdb's
+// mutations: snapshot before the call, rollback on ResultNext so
+// the next driver sees a clean slate. The snapshot is read-only —
+// every mutating method on Fields is safe to call between
+// Snapshot and Rollback / discard.
+//
+// Snapshot is O(n) in the current bag size (copies the keys, vals
+// and idx maps); chain depth + bag size are both bounded by config
+// so the cost stays trivial.
+type Snapshot struct {
+	keys []string
+	vals []string
+	idx  map[string]int
+}
+
+// Snapshot captures the bag's state. Returns nil for a nil bag
+// (Rollback is also nil-safe) so callers can use the pair without
+// pre-allocation when the bag is optional.
+func (f *Fields) Snapshot() *Snapshot {
+	if f == nil {
+		return nil
+	}
+	keys := make([]string, len(f.keys))
+	copy(keys, f.keys)
+	vals := make([]string, len(f.vals))
+	copy(vals, f.vals)
+	idx := make(map[string]int, len(f.idx))
+	for k, v := range f.idx {
+		idx[k] = v
+	}
+	return &Snapshot{keys: keys, vals: vals, idx: idx}
+}
+
+// Rollback restores the bag to the state captured by snap. Calling
+// Rollback with a nil snap is a no-op so callers do not need to
+// branch on Snapshot returning nil.
+func (f *Fields) Rollback(snap *Snapshot) {
+	if f == nil || snap == nil {
+		return
+	}
+	f.keys = append(f.keys[:0], snap.keys...)
+	f.vals = append(f.vals[:0], snap.vals...)
+	for k := range f.idx {
+		delete(f.idx, k)
+	}
+	for k, v := range snap.idx {
+		f.idx[k] = v
+	}
+}
+
 // Set adds or overwrites a key. Stable: rewriting a key keeps its
 // original insertion-order position so the wire serialisation does
 // not flip mid-stream.

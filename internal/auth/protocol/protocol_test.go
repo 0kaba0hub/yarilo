@@ -10,86 +10,226 @@ import (
 	"time"
 )
 
-// stubPassdb is a test passdb that returns a preset result.
+// stubPassdb is a chain-control fake: returns a preset Result +
+// error, optionally mutating req.Fields beforehand. Used to drive
+// Chain through every branch without standing up a real SQL store.
 type stubPassdb struct {
-	res *AuthResponse
-	err error
+	result Result
+	err    error
+	setBag func(f *Fields)
 }
 
-func (s *stubPassdb) Authenticate(_, _, _ string) (*AuthResponse, error) {
-	return s.res, s.err
+func (s *stubPassdb) Authenticate(req *Request) (Result, error) {
+	if s.setBag != nil {
+		s.setBag(req.Fields)
+	}
+	return s.result, s.err
 }
 
-func TestChain_FirstWins(t *testing.T) {
-	ok := &stubPassdb{res: &AuthResponse{Result: AuthOK, Username: "alice"}}
-	never := &stubPassdb{res: &AuthResponse{Result: AuthFail}}
-	chain := Chain{ok, never}
-
-	res, err := chain.Authenticate("alice", "pass", "imap")
+func TestChain_FirstWinsKeepsMutations(t *testing.T) {
+	ok := &stubPassdb{
+		result: ResultOK,
+		setBag: func(f *Fields) {
+			f.Set("user", "alice")
+			f.Set("home", "/mail/alice")
+		},
+	}
+	never := &stubPassdb{
+		result: ResultOK,
+		setBag: func(f *Fields) {
+			t.Errorf("second driver invoked after first returned OK")
+		},
+	}
+	req := &Request{Username: "alice", Password: "pass", Service: "imap", Fields: NewFields()}
+	got, err := Chain{ok, never}.Authenticate(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Result != AuthOK || res.Username != "alice" {
-		t.Fatalf("got %+v", res)
+	if got != ResultOK {
+		t.Errorf("Result = %v, want ResultOK", got)
+	}
+	if v, _ := req.Fields.Get("home"); v != "/mail/alice" {
+		t.Errorf("home = %q, want /mail/alice", v)
 	}
 }
 
-func TestChain_SkipNil(t *testing.T) {
-	// First passdb returns nil (unknown user) → chain must try second.
-	skip := &stubPassdb{res: nil}
-	ok := &stubPassdb{res: &AuthResponse{Result: AuthOK, Username: "bob"}}
-	chain := Chain{skip, ok}
+func TestChain_SkipNextRollsBackPartialMutation(t *testing.T) {
+	// First driver writes some fields then returns ResultNext —
+	// Chain must Rollback those mutations so the second driver
+	// (and any caller) sees a clean bag.
+	noisy := &stubPassdb{
+		result: ResultNext,
+		setBag: func(f *Fields) {
+			f.Set("home", "/wrong-home")
+			f.Set("mail", "wrong-mail")
+		},
+	}
+	ok := &stubPassdb{
+		result: ResultOK,
+		setBag: func(f *Fields) {
+			if v, _ := f.Get("home"); v != "" {
+				t.Errorf("second driver saw rolled-back home=%q", v)
+			}
+			f.Set("user", "bob")
+			f.Set("home", "/mail/bob")
+		},
+	}
+	req := &Request{Username: "bob", Password: "pass", Service: "imap", Fields: NewFields()}
+	got, _ := Chain{noisy, ok}.Authenticate(req)
+	if got != ResultOK {
+		t.Errorf("Result = %v, want ResultOK", got)
+	}
+	if v, _ := req.Fields.Get("home"); v != "/mail/bob" {
+		t.Errorf("home = %q, want /mail/bob", v)
+	}
+}
 
-	res, err := chain.Authenticate("bob", "pass", "imap")
+func TestChain_AllNextReturnsFail(t *testing.T) {
+	req := &Request{Username: "nobody", Password: "p", Fields: NewFields()}
+	got, err := Chain{
+		&stubPassdb{result: ResultNext},
+		&stubPassdb{result: ResultNext},
+	}.Authenticate(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Result != AuthOK {
-		t.Fatalf("got %+v", res)
+	if got != ResultFail {
+		t.Errorf("Result = %v, want ResultFail (chain exhaust)", got)
 	}
 }
 
-func TestChain_AllUnknown_ReturnsFail(t *testing.T) {
-	chain := Chain{
-		&stubPassdb{res: nil},
-		&stubPassdb{res: nil},
+func TestChain_TempFailStopsChainAndRollsBack(t *testing.T) {
+	fail := &stubPassdb{
+		result: ResultTempFail,
+		err:    fmt.Errorf("db connection refused"),
+		setBag: func(f *Fields) {
+			f.Set("home", "/should-be-rolled-back")
+		},
 	}
-	res, err := chain.Authenticate("nobody", "pass", "imap")
-	if err != nil {
-		t.Fatal(err)
+	never := &stubPassdb{
+		result: ResultOK,
+		setBag: func(f *Fields) {
+			t.Errorf("second driver invoked after first TempFailed")
+		},
 	}
-	if res.Result != AuthFail {
-		t.Fatalf("expected AuthFail, got %+v", res)
+	req := &Request{Username: "x", Password: "p", Fields: NewFields()}
+	got, err := Chain{fail, never}.Authenticate(req)
+	if got != ResultTempFail {
+		t.Errorf("Result = %v, want ResultTempFail", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "db connection refused") {
+		t.Errorf("error not propagated: %v", err)
+	}
+	if req.Fields.Has("home") {
+		t.Errorf("TempFail driver's mutations not rolled back: %+v", req.Fields)
 	}
 }
 
-func TestChain_TempFailStopsChain(t *testing.T) {
-	fail := &stubPassdb{res: &AuthResponse{Result: AuthTempFail}}
-	never := &stubPassdb{res: &AuthResponse{Result: AuthOK, Username: "x"}}
-	chain := Chain{fail, never}
-
-	res, _ := chain.Authenticate("x", "pass", "imap")
-	if res.Result != AuthTempFail {
-		t.Fatalf("expected TempFail propagation, got %+v", res)
+func TestChain_FailStopsChainKeepsMutations(t *testing.T) {
+	// Distinct from TempFail: Fail means "credentials wrong /
+	// disabled" — the driver KNOWS the user, just rejects the
+	// password. Mutations stay (e.g. for audit logs) and the
+	// chain stops.
+	fail := &stubPassdb{
+		result: ResultFail,
+		setBag: func(f *Fields) {
+			f.Set("user", "alice")
+		},
+	}
+	never := &stubPassdb{
+		result: ResultOK,
+		setBag: func(f *Fields) {
+			t.Errorf("second driver invoked after first ResultFail")
+		},
+	}
+	req := &Request{Username: "alice", Password: "wrong", Fields: NewFields()}
+	got, _ := Chain{fail, never}.Authenticate(req)
+	if got != ResultFail {
+		t.Errorf("Result = %v, want ResultFail", got)
+	}
+	if v, _ := req.Fields.Get("user"); v != "alice" {
+		t.Errorf("ResultFail driver's mutations dropped: user=%q", v)
 	}
 }
 
 func TestChain_Empty(t *testing.T) {
-	chain := Chain{}
-	res, err := chain.Authenticate("x", "pass", "imap")
-	if err != nil || res.Result != AuthFail {
-		t.Fatalf("empty chain should return AuthFail without error, got res=%+v err=%v", res, err)
+	req := &Request{Username: "x", Fields: NewFields()}
+	got, err := Chain{}.Authenticate(req)
+	if err != nil || got != ResultFail {
+		t.Fatalf("empty chain should return ResultFail, got %v err=%v", got, err)
 	}
 }
 
-// credPassdb accepts only a fixed username+password pair.
+func TestChain_AllocatesFieldsWhenNil(t *testing.T) {
+	// Defensive: a caller that forgets to pre-allocate Fields
+	// gets a working bag rather than a nil-pointer panic.
+	mutator := &stubPassdb{
+		result: ResultOK,
+		setBag: func(f *Fields) {
+			if f == nil {
+				t.Error("driver saw nil Fields")
+				return
+			}
+			f.Set("user", "alice")
+		},
+	}
+	req := &Request{Username: "alice"}
+	got, _ := Chain{mutator}.Authenticate(req)
+	if got != ResultOK {
+		t.Errorf("Result = %v, want ResultOK", got)
+	}
+	if req.Fields == nil {
+		t.Fatal("Chain did not allocate Fields")
+	}
+	if v, _ := req.Fields.Get("user"); v != "alice" {
+		t.Errorf("user = %q, want alice", v)
+	}
+}
+
+func TestNewAuthenticator_WrapsChainIntoLegacyShape(t *testing.T) {
+	// The Authenticator wrapper is what session-side callers
+	// (IMAP/POP3/Submission) use — projects the chain-internal
+	// (Result, error) onto the wire-shaped (*AuthResponse, error).
+	a := NewAuthenticator(&stubPassdb{
+		result: ResultOK,
+		setBag: func(f *Fields) {
+			f.Set("user", "carol")
+			f.Set("home", "/mail/carol")
+			f.Set("mail", "maildir:/m/carol")
+		},
+	})
+	resp, err := a.Authenticate("carol", "pw", "imap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Result != AuthOK {
+		t.Errorf("Result = %v, want AuthOK", resp.Result)
+	}
+	if resp.Username != "carol" {
+		t.Errorf("Username = %q, want carol", resp.Username)
+	}
+	if resp.Home != "/mail/carol" {
+		t.Errorf("Home = %q, want /mail/carol", resp.Home)
+	}
+	if resp.MailLoc != "maildir:/m/carol" {
+		t.Errorf("MailLoc = %q, want maildir:/m/carol", resp.MailLoc)
+	}
+	if resp.Fields == nil {
+		t.Fatal("Fields bag dropped on Authenticator projection")
+	}
+}
+
+// credPassdb accepts only a fixed username+password pair. Migrated
+// to the new Passdb interface for use by server-side tests.
 type credPassdb struct{ user, pass string }
 
-func (c *credPassdb) Authenticate(username, password, _ string) (*AuthResponse, error) {
-	if username == c.user && password == c.pass {
-		return &AuthResponse{Result: AuthOK, Username: username, Home: "/mail/" + username}, nil
+func (c *credPassdb) Authenticate(req *Request) (Result, error) {
+	if req.Username == c.user && req.Password == c.pass {
+		req.Fields.Set("user", req.Username)
+		req.Fields.Set("home", "/mail/"+req.Username)
+		return ResultOK, nil
 	}
-	return nil, nil
+	return ResultNext, nil
 }
 
 func freeAddr(t *testing.T) string {
