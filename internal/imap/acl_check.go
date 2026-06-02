@@ -47,8 +47,18 @@ func insertRight(spec NamespaceSpec) rune {
 	return mailbox.RightPost
 }
 
-// requireRight loads the ACL for folder under h and returns nil when
-// the accessing user holds right, or a NO/NOPERM error otherwise.
+// effectiveRights resolves the accessing user's effective rights on
+// folder under h, walking ancestors when no explicit ACL is present
+// (Dovecot first-ancestor-with-explicit-ACL — see
+// internal/userstate/acl.Store.EffectiveFor). The namespace's
+// hierarchy separator drives the walk; sep == 0 disables it.
+func (s *session) effectiveRights(h *nsHandle, folder string) (mailbox.Rights, error) {
+	return h.acl.EffectiveFor(folder, s.userInfo.Username, s.isOwner(h), byte(h.spec.Separator))
+}
+
+// requireRight loads the effective ACL for folder under h (with
+// inheritance walk through ancestors) and returns nil when the
+// accessing user holds right, or a NO/NOPERM error otherwise.
 // Errors from the ACL store (parse / I/O) surface as NO with the
 // underlying message — they are not silently treated as "denied" so
 // operators can debug from the client transcript.
@@ -59,14 +69,13 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	if s.isOwner(h) {
 		return nil
 	}
-	acl, err := h.acl.Get(folder)
+	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
 		return &imaplib.Error{
 			Type: imaplib.StatusResponseTypeNo,
 			Text: "ACL read failed: " + err.Error(),
 		}
 	}
-	effective := acl.Effective(s.userInfo.Username, false)
 	if effective.Has(right) {
 		return nil
 	}
@@ -87,20 +96,60 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 	if len(rights) == 0 {
 		return nil
 	}
-	acl, err := h.acl.Get(folder)
+	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
 		return &imaplib.Error{
 			Type: imaplib.StatusResponseTypeNo,
 			Text: "ACL read failed: " + err.Error(),
 		}
 	}
-	effective := acl.Effective(s.userInfo.Username, false)
 	for _, r := range rights {
 		if !effective.Has(r) {
 			return aclDenied(r)
 		}
 	}
 	return nil
+}
+
+// requireRightOnParent enforces a right on the parent of folder —
+// CREATE / RENAME (destination side) require 'k' on the parent
+// mailbox rather than on the folder itself (which does not yet
+// exist). The parent is computed by stripping the trailing
+// segment after the namespace separator; if there is no separator
+// in folder, the parent is the namespace root (which has no
+// explicit ACL → EffectiveFor falls through to empty, denying
+// the non-owner).
+func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) error {
+	if !s.srv.opts.ACLEnabled {
+		return nil
+	}
+	if s.isOwner(h) {
+		return nil
+	}
+	parent := parentFolder(folder, byte(h.spec.Separator))
+	if parent == "" {
+		// No parent — top-level CREATE / RENAME-destination requires
+		// 'k' on the namespace root. We have no representation for
+		// the root's ACL today; deny for non-owners. (Owner short-
+		// circuited above.)
+		return aclDenied(right)
+	}
+	return s.requireRight(h, parent, right)
+}
+
+// parentFolder returns folder with its last segment stripped, or
+// "" when folder has no separator. Mirrors lastSepIndex in
+// internal/userstate/acl.
+func parentFolder(folder string, sep byte) string {
+	if sep == 0 {
+		return ""
+	}
+	for i := len(folder) - 1; i >= 0; i-- {
+		if folder[i] == sep {
+			return folder[:i]
+		}
+	}
+	return ""
 }
 
 // requireRightOnSelected enforces right on the currently-SELECTed
