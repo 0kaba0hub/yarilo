@@ -45,6 +45,12 @@ type Options struct {
 	SaveUIDL       bool               // pop3_save_uidl: persist UIDLs to index for stability across rebuilds
 	LockSession    bool               // pop3_lock_session: dotlock file to prevent IMAP+POP3 conflicts
 	ConnLimit      *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
+	// FailureDelay holds the goroutine for this duration before
+	// surfacing an auth-failure to the client. Mirrors Dovecot's
+	// auth_failure_delay — equalises wall-clock between every
+	// failure cause so the wire timing carries no info about
+	// whether the user exists. Zero disables.
+	FailureDelay time.Duration
 
 	// Locker is the cross-process write coordinator. When non-nil, the
 	// QUIT-time hard-delete batch runs under a single X lock on

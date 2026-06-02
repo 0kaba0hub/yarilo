@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -564,14 +565,16 @@ func authResultFromChain(r Result) AuthResult {
 // optional masterdb chain + separator for master-user
 // impersonation (Phase AUTH-3).
 type Server struct {
-	passdbs             []Passdb
-	userdb              Userdb
-	masterdb            []Passdb
-	masterUserSeparator string
-	masterUsersEnabled  bool
-	connUID             atomic.Uint64
-	pid                 int
-	cookie              string
+	passdbs              []Passdb
+	userdb               Userdb
+	masterdb             []Passdb
+	masterUserSeparator  string
+	masterUsersEnabled   bool
+	failureDelay         time.Duration
+	internalFailureDelay time.Duration
+	connUID              atomic.Uint64
+	pid                  int
+	cookie               string
 }
 
 // ServerOption tunes a NewServer construction.
@@ -617,6 +620,25 @@ func WithMasterUserSeparator(sep string) ServerOption {
 // master flow at the wire level.
 func WithMasterUsers(enabled bool) ServerOption {
 	return func(s *Server) { s.masterUsersEnabled = enabled }
+}
+
+// WithFailureDelay sets the timing-leak mitigation delay for
+// client-visible auth failures (wrong password, unknown user,
+// malformed SASL). The reply is held back by d before writing
+// to the wire. Zero disables the delay (mostly for tests).
+// Mirrors Dovecot's `auth_failure_delay`.
+func WithFailureDelay(d time.Duration) ServerOption {
+	return func(s *Server) { s.failureDelay = d }
+}
+
+// WithInternalFailureDelay sets the delay applied when the
+// failure is internal (passdb backend down, SQL refused, etc).
+// Separate from WithFailureDelay because operators often want
+// internal-error delays shorter than user-facing ones (the user
+// will likely retry and another full failure_delay would amplify
+// outage symptoms). Mirrors Dovecot's `auth_internal_failure_delay`.
+func WithInternalFailureDelay(d time.Duration) ServerOption {
+	return func(s *Server) { s.internalFailureDelay = d }
 }
 
 // NewServer creates an auth server with the given passdb chain.
@@ -762,16 +784,53 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 
 	res, err := s.authenticate(target, master, password, service)
 	if err != nil || res == nil || res.Result != AuthOK {
-		if err != nil || (res != nil && res.Result == AuthTempFail) {
+		// Timing-leak mitigation: hold the FAIL reply for a
+		// configured duration so unknown-user / wrong-password /
+		// malformed-SASL paths all surface in the same wall-clock
+		// time. Internal failures use a separate (typically
+		// shorter) delay so a passdb outage doesn't amplify into
+		// user-facing latency.
+		isInternal := err != nil || (res != nil && res.Result == AuthTempFail)
+		delay := s.failureDelay
+		if isInternal {
+			delay = s.internalFailureDelay
+		}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		if isInternal {
 			fmt.Fprintf(conn, "FAIL\t%s\ttemp_fail\n", id)
 		} else {
 			fmt.Fprintf(conn, "FAIL\t%s\n", id)
 		}
+		// Audit log on failure — kept server-side only; the wire
+		// reply already stripped any reason text so the attacker
+		// cannot distinguish unknown-user from wrong-password
+		// through the protocol. Logs ARE allowed to be specific
+		// because they don't reach the client.
+		slog.Info("auth: fail",
+			"service", service,
+			"user", master,
+			"master_user_target", target,
+			"err", err,
+		)
 		return
 	}
 
 	reply := buildAuthOK(id, res)
 	fmt.Fprintln(conn, reply)
+
+	// Audit log on success. master_user is empty for a regular
+	// login, set to the master's identity on impersonation.
+	var loggedMaster string
+	if res.Fields != nil {
+		loggedMaster, _ = res.Fields.Get("master_user")
+	}
+	slog.Info("auth: ok",
+		"service", service,
+		"user", res.Username,
+		"master_user", loggedMaster,
+	)
 }
 
 // buildAuthOK renders the OK response. When res.Fields is set, the

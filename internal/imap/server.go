@@ -58,6 +58,11 @@ type Options struct {
 	LogoutFormat       string
 	ClientWorkarounds  imapWorkarounds
 
+	// FailureDelay is the timing-leak mitigation hold applied
+	// before returning an auth-failure error to the client.
+	// Mirrors Dovecot's auth_failure_delay. Zero disables.
+	FailureDelay time.Duration
+
 	// Locker is the cross-process write coordinator. When non-nil, each
 	// successful write (APPEND/COPY/MOVE/STORE/EXPUNGE) emits an EVENT on
 	// the mailbox key so IMAP IDLE sessions on other pods are woken up
@@ -404,9 +409,21 @@ func formatLogoutMsg(format string, vars map[string]string) string {
 func (s *session) Login(username, password string) error {
 	res, err := s.srv.opts.Auth.Authenticate(username, password, "imap")
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
+		s.delayFailure()
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Invalid credentials"}
 	}
 	return s.completeLogin(res)
+}
+
+// delayFailure holds the calling goroutine for opts.FailureDelay
+// before letting an auth-failure surface to the client. Mirrors
+// Dovecot's auth_failure_delay — equalises wall-clock between
+// success and every failure-cause so the wire timing carries no
+// information about whether the user exists.
+func (s *session) delayFailure() {
+	if d := s.srv.opts.FailureDelay; d > 0 {
+		time.Sleep(d)
+	}
 }
 
 // AuthenticateMechanisms advertises the SASL mechanisms our session
@@ -449,16 +466,19 @@ func (s *session) authenticatePlainSASL(authzid, authid, password string) error 
 	if authzid == "" || authzid == authid {
 		res, err := s.srv.opts.Auth.Authenticate(authid, password, "imap")
 		if err != nil || res == nil || res.Result != protocol.AuthOK {
+			s.delayFailure()
 			return invalid
 		}
 		return s.completeLogin(res)
 	}
 	master, ok := s.srv.opts.Auth.(protocol.MasterAuthenticator)
 	if !ok {
+		s.delayFailure()
 		return invalid
 	}
 	res, err := master.AuthenticateMaster(authzid, authid, password, "imap")
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
+		s.delayFailure()
 		return invalid
 	}
 	return s.completeLogin(res)
@@ -505,6 +525,18 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	s.specialUse = specialuse.New(
 		userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker,
 		s.srv.opts.SpecialUseDefaults,
+	)
+
+	// Audit log. master_user is non-empty only on the impersonation
+	// path (AUTH-3); mirrors Dovecot's per-event `master_user=`
+	// field that surfaces in every subsequent log line for the
+	// session. Always emitted for ALL logins so SIEM can correlate
+	// regular and master-user sessions through one log shape.
+	master, _ := res.Fields.Get("master_user")
+	slog.Info("imap: login",
+		"user", userInfo.Username,
+		"master_user", master,
+		"remoteIP", remoteIP(s.imapConn.NetConn()),
 	)
 	return nil
 }

@@ -112,7 +112,11 @@ func main() {
 		combinedUserdb = protocol.UserdbChain(userdbs)
 	}
 
-	srvOpts := []protocol.ServerOption{protocol.WithUserdb(combinedUserdb)}
+	srvOpts := []protocol.ServerOption{
+		protocol.WithUserdb(combinedUserdb),
+		protocol.WithFailureDelay(time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second),
+		protocol.WithInternalFailureDelay(time.Duration(cfg.Auth.InternalFailureDelayMs) * time.Millisecond),
+	}
 	if cfg.Auth.MasterUsers.Enabled {
 		var masterdbs []protocol.Passdb
 		for _, entry := range cfg.Auth.MasterUsers.Masterdb {

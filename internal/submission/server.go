@@ -52,6 +52,13 @@ type Options struct {
 	Config config.SubmissionProtocolConfig
 	Auth   Authenticator
 	Proxy  *proxy.Submission
+
+	// FailureDelay holds the goroutine for this duration before
+	// surfacing an auth-failure to the client. Mirrors Dovecot's
+	// auth_failure_delay so unknown-user / wrong-password / non-
+	// master-backend-with-authzid all return in the same wall-
+	// clock time. Zero disables.
+	FailureDelay time.Duration
 }
 
 // Server is the submission server (port 587 / 465).
@@ -240,15 +247,45 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 // AUTH PLAIN. Empty authzid (or authzid == authid) takes the
 // regular path; a distinct authzid routes through
 // MasterAuthenticator when supported, else fails opaquely.
+//
+// Emits an audit log on success — `master_user` is empty for a
+// regular login, set to the master's identity on impersonation
+// (mirrors Dovecot's per-event `master_user=` field).
 func (s *session) authPlainSASL(authzid, authid, password string) error {
+	target := authid
+	master := ""
+	var err error
 	if authzid == "" || authzid == authid {
-		return s.srv.opts.Auth.AuthPlain(authid, password)
+		err = s.srv.opts.Auth.AuthPlain(authid, password)
+	} else if m, ok := s.srv.opts.Auth.(MasterAuthenticator); ok {
+		err = m.AuthPlainMaster(authzid, authid, password)
+		if err == nil {
+			target = authzid
+			master = authid
+		}
+	} else {
+		err = goSmtp.ErrAuthFailed
 	}
-	master, ok := s.srv.opts.Auth.(MasterAuthenticator)
-	if !ok {
-		return goSmtp.ErrAuthFailed
+	if err != nil {
+		// Timing-leak mitigation. Mirrors Dovecot's
+		// auth_failure_delay — same wall-clock for every failure
+		// cause (wrong password, unknown user, non-master backend
+		// with authzid, etc).
+		if d := s.srv.opts.FailureDelay; d > 0 {
+			time.Sleep(d)
+		}
+		slog.Info("submission: auth failed",
+			"user", authid,
+			"remoteIP", connRemoteIP(s.conn).String(),
+		)
+		return err
 	}
-	return master.AuthPlainMaster(authzid, authid, password)
+	slog.Info("submission: login",
+		"user", target,
+		"master_user", master,
+		"remoteIP", connRemoteIP(s.conn).String(),
+	)
+	return nil
 }
 
 // ---- helpers ------------------------------------------------------------
