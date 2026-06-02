@@ -255,6 +255,157 @@ func TestStore_FilePermissions(t *testing.T) {
 	}
 }
 
+func TestStore_EffectiveForOwnerShortCircuits(t *testing.T) {
+	// Owner gets FullRights regardless of any stored entries — and
+	// without reading anything from disk. Seed a non-owner-denying
+	// ACL on the leaf to prove the owner path skips the load.
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Set("Lists/news", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: "lr"},
+	}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/news", "alice", true, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != mailbox.FullRights {
+		t.Errorf("owner got %q, want FullRights", got)
+	}
+}
+
+func TestStore_EffectiveForLeafACLWins(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	// Parent grants r only; leaf grants lrws. First-hit-wins → leaf.
+	if err := s.Set("Lists", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "r"},
+	}); err != nil {
+		t.Fatalf("Set parent: %v", err)
+	}
+	if err := s.Set("Lists/news", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrws"},
+	}); err != nil {
+		t.Fatalf("Set leaf: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "lrsw" {
+		t.Errorf("got %q, want lrsw (leaf-wins)", got)
+	}
+}
+
+func TestStore_EffectiveForInheritsFromParent(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	// Parent has explicit ACL; leaf has none → inherits.
+	if err := s.Set("Lists", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lr"},
+	}); err != nil {
+		t.Fatalf("Set parent: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "lr" {
+		t.Errorf("got %q, want lr (inherited)", got)
+	}
+}
+
+func TestStore_EffectiveForInheritsAcrossMultipleLevels(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	// Three-deep folder; only the top has an ACL.
+	if err := s.Set("Lists", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
+	}); err != nil {
+		t.Fatalf("Set top: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/news/2026", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "l" {
+		t.Errorf("got %q, want l (inherited from top)", got)
+	}
+}
+
+func TestStore_EffectiveForNoACLAnywhereYieldsEmpty(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (no ACL on path)", got)
+	}
+}
+
+func TestStore_EffectiveForLeafOverridesParentEvenWhenLeafIsRestrictive(t *testing.T) {
+	// First-hit-wins: a leaf ACL that denies (even by being empty
+	// for this user) overrides a permissive parent.
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Set("Lists", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "lr"},
+	}); err != nil {
+		t.Fatalf("Set parent: %v", err)
+	}
+	// Leaf has an ACL, but it has no entry for bob and no anyone-grant.
+	if err := s.Set("Lists/private", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: "lrws"},
+	}); err != nil {
+		t.Fatalf("Set leaf: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/private", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (leaf overrides parent)", got)
+	}
+}
+
+func TestStore_EffectiveForNegativeInInheritedACL(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Set("Lists", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "lrs"},
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "s", Negative: true},
+	}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "lr" {
+		t.Errorf("got %q, want lr (anyone lrs minus negative s for bob)", got)
+	}
+}
+
+func TestStore_EffectiveForZeroSepDisablesWalk(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Set("Lists", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lr"},
+	}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/news", "bob", false, 0)
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (sep=0 disables ancestor walk)", got)
+	}
+}
+
 func TestStore_ParseErrorAnnotatesPath(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, "INBOX")

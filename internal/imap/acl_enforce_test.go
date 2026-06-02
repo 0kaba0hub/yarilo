@@ -417,6 +417,162 @@ func TestACLEnforce_CopyNeedsInsertOnDest(t *testing.T) {
 	}
 }
 
+func TestACLEnforce_InheritsFromParent(t *testing.T) {
+	// Grant bob 'r' on alice's INBOX → bob can also SELECT
+	// INBOX/Subfolder via inheritance (no explicit ACL on the
+	// child, walk hits parent).
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("INBOX/News", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE INBOX/News: %v", err)
+	}
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
+
+	b := dial("bob")
+	if _, err := b.Select("Shared/INBOX/News", nil).Wait(); err != nil {
+		t.Errorf("peer SELECT inheriting 'r' from parent: %v", err)
+	}
+}
+
+func TestACLEnforce_LeafACLOverridesInheritedParent(t *testing.T) {
+	// Parent grants 'lr'; leaf has its own ACL that does NOT grant
+	// bob anything → bob is denied on the leaf even though the
+	// parent would grant.
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("INBOX/Private", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE INBOX/Private: %v", err)
+	}
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
+	seedACL(t, aliceHome, "INBOX/Private", "user=alice lrswipkxtea\n")
+
+	b := dial("bob")
+	_, err := b.Select("Shared/INBOX/Private", nil).Wait()
+	if err == nil {
+		t.Error("peer SELECT on leaf with restrictive ACL should fail (leaf wins)")
+	}
+}
+
+func TestACLEnforce_CreateNeedsKOnParent(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// Bob has lr on alice's INBOX — read but not create.
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
+
+	b := dial("bob")
+	err := b.Create("Shared/INBOX/Hijack", nil).Wait()
+	if err == nil {
+		t.Fatal("peer CREATE without 'k' on parent should fail")
+	}
+	if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	}
+}
+
+func TestACLEnforce_CreateAllowedWithKOnParent(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	seedACL(t, aliceHome, "INBOX", "user=bob lrk\n")
+
+	b := dial("bob")
+	if err := b.Create("Shared/INBOX/Box", nil).Wait(); err != nil {
+		t.Errorf("peer CREATE with 'k' on parent: %v", err)
+	}
+}
+
+func TestACLEnforce_DeleteNeedsX(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("INBOX/Temp", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE INBOX/Temp: %v", err)
+	}
+	// Bob can SELECT (inherits 'lr') but cannot DELETE — needs 'x'.
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
+
+	b := dial("bob")
+	err := b.Delete("Shared/INBOX/Temp").Wait()
+	if err == nil {
+		t.Fatal("peer DELETE without 'x' should fail")
+	}
+	if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	}
+}
+
+func TestACLEnforce_DeleteAllowedWithX(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("INBOX/Temp", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE INBOX/Temp: %v", err)
+	}
+	// 'x' on parent inherits to children.
+	seedACL(t, aliceHome, "INBOX", "user=bob lrx\n")
+
+	b := dial("bob")
+	if err := b.Delete("Shared/INBOX/Temp").Wait(); err != nil {
+		t.Errorf("peer DELETE with 'x': %v", err)
+	}
+}
+
+func TestACLEnforce_RenameNeedsXOnSourceAndKOnDestParent(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("INBOX/Source", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE INBOX/Source: %v", err)
+	}
+	// Bob has only 'lr' — RENAME should fail at the 'x' check.
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
+
+	b := dial("bob")
+	err := b.Rename("Shared/INBOX/Source", "Shared/INBOX/Renamed", nil).Wait()
+	if err == nil {
+		t.Fatal("peer RENAME without 'x' should fail")
+	}
+	if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	}
+}
+
+func TestACLEnforce_RenameAllowedWithBothRights(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("INBOX/Source", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE INBOX/Source: %v", err)
+	}
+	// 'x' (for source delete) + 'k' (for dest-parent create), both
+	// inherited from the parent ACL.
+	seedACL(t, aliceHome, "INBOX", "user=bob lrxk\n")
+
+	b := dial("bob")
+	if err := b.Rename("Shared/INBOX/Source", "Shared/INBOX/Renamed", nil).Wait(); err != nil {
+		t.Errorf("peer RENAME with x+k: %v", err)
+	}
+}
+
 func TestACLEnforce_StatusNeedsRead(t *testing.T) {
 	aliceHome, dial := enforceServerWithShared(t)
 	a := dial("alice")

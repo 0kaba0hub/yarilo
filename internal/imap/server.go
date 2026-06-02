@@ -544,6 +544,9 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := s.requireRightOnParent(h, rel, mailbox.RightCreate); err != nil {
+		return err
+	}
 	if err := h.box.Create(rel); err != nil {
 		return err
 	}
@@ -567,6 +570,9 @@ func (s *session) Delete(name string) error {
 	if err != nil {
 		return err
 	}
+	if err := s.requireRight(h, rel, mailbox.RightDeleteMailbox); err != nil {
+		return err
+	}
 	return h.box.Delete(rel)
 }
 
@@ -587,6 +593,16 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 			Type: imaplib.StatusResponseTypeNo,
 			Text: "RENAME across namespaces is not supported",
 		}
+	}
+	// RENAME requires DELETE on the source mailbox plus CREATE on
+	// the destination's parent — matches Dovecot acl-mailbox.c
+	// rename semantics and lets shared-mailbox admin grant move
+	// rights without granting blanket delete.
+	if err := s.requireRight(hOld, relOld, mailbox.RightDeleteMailbox); err != nil {
+		return err
+	}
+	if err := s.requireRightOnParent(hNew, relNew, mailbox.RightCreate); err != nil {
+		return err
 	}
 	if err := hOld.box.Rename(relOld, relNew); err != nil {
 		return err

@@ -106,10 +106,70 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 	})
 }
 
+// EffectiveFor resolves the user's effective rights on folder,
+// walking ancestors until an explicit yarilo-acl file is found
+// (Dovecot's first-ancestor-with-explicit-ACL semantics, see
+// dovecot-2.4/src/plugins/acl/acl-backend-vfile.c:195-213).
+//
+//   - isOwner == true: returns FullRights immediately without I/O.
+//   - else: read folder's ACL. If present, return its Effective.
+//     If absent, strip the last segment off folder and retry,
+//     repeating until the parent split yields nothing. If no ACL
+//     was ever found, returns the empty rights set.
+//
+// sep is the namespace's hierarchy separator (typically '/' for
+// personal namespaces; the caller passes h.spec.Separator). When
+// sep is the zero byte the walk is disabled and only folder itself
+// is consulted — useful for tests and namespaces that explicitly
+// opt out of inheritance.
+//
+// Inheritance is "first hit wins": once a parent with an ACL file
+// is found, that file's positive / negative balance determines the
+// rights. ACLs from deeper ancestors are not merged in. This matches
+// Dovecot; the alternative (full-chain merge) breaks the principle
+// of locality for shared-mailbox admin who expects setting one ACL
+// to fully override the inherited one.
+func (s *Store) EffectiveFor(folder, user string, isOwner bool, sep byte) (mailbox.Rights, error) {
+	if isOwner {
+		return mailbox.FullRights, nil
+	}
+	cur := folder
+	for {
+		acl, err := s.Get(cur)
+		if err != nil {
+			return "", err
+		}
+		if acl != nil {
+			return acl.Effective(user, false), nil
+		}
+		if sep == 0 {
+			return "", nil
+		}
+		idx := lastSepIndex(cur, sep)
+		if idx < 0 {
+			return "", nil
+		}
+		cur = cur[:idx]
+	}
+}
+
+// lastSepIndex returns the byte index of the last occurrence of sep
+// in s, or -1 when none is present. Stripped out into its own helper
+// so the caller can swap separators (Dovecot supports '/' and '.')
+// without restating the bytes import surface.
+func lastSepIndex(s string, sep byte) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == sep {
+			return i
+		}
+	}
+	return -1
+}
+
 // Remove deletes the yarilo-acl file. Idempotent — a missing file
 // is not an error. Used by ACL admin paths that want to drop a
-// mailbox back to "no explicit ACL" (== inherit-from-ancestor when
-// PR E lands).
+// mailbox back to "no explicit ACL" — after which EffectiveFor
+// resumes walking ancestors for the inherited ACL.
 func (s *Store) Remove(folder string) error {
 	return s.withLock(folder, func() error {
 		path := s.Path(folder)
