@@ -34,6 +34,14 @@ const (
 )
 
 // AuthResponse is the final response sent back to the client session.
+//
+// Phase AUTH-2 PR 1 adds Fields alongside the legacy typed members.
+// When a passdb populates Fields, handleAuth emits the OK reply
+// from the bag (with prefix gating: auth_* stripped, userdb_*
+// passed through). When Fields is nil the typed fallback path runs
+// — that's the pre-AUTH-2 wire shape, byte-compatible for the
+// existing SQL passdb until PR 2 swaps the Passdb interface to
+// take a shared Fields instance directly.
 type AuthResponse struct {
 	Result   AuthResult
 	Username string
@@ -42,6 +50,12 @@ type AuthResponse struct {
 	Proxy    bool
 	Host     string
 	Port     int
+
+	// Fields carries the passdb result as a key/value bag with
+	// prefix-derived scoping (see fields.go). Populated by passdb
+	// implementations that opt into Phase AUTH-2's wire surface;
+	// nil falls back to the typed-fields wire path.
+	Fields *Fields
 }
 
 // Passdb is the interface that passdb backends implement.
@@ -199,14 +213,42 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		return
 	}
 
+	reply := buildAuthOK(id, res)
+	fmt.Fprintln(conn, reply)
+}
+
+// buildAuthOK renders the OK response. When res.Fields is set, the
+// reply is emitted from the bag with prefix gating — auth_* entries
+// are stripped, userdb_* entries are passed through verbatim, the
+// rest land as `key=value` tokens. When Fields is nil, the legacy
+// typed-fields path runs so pre-AUTH-2 SQL passdbs see no wire
+// change.
+//
+// Phase AUTH-2 PR 2 will switch the SQL passdb to populate Fields
+// directly and drop the typed-fields fallback; this function is
+// the single place that needs to change at that point.
+func buildAuthOK(id string, res *AuthResponse) string {
 	reply := fmt.Sprintf("OK\t%s\tuser=%s", id, res.Username)
+	if res.Fields != nil && res.Fields.Len() > 0 {
+		for _, tok := range res.Fields.WireForm() {
+			if strings.HasPrefix(tok, "user=") {
+				// res.Username already emitted; the bag carrying
+				// `user=` is the authoritative source if it
+				// disagrees, but suppressing the second emission
+				// keeps the wire well-formed.
+				continue
+			}
+			reply += "\t" + tok
+		}
+		return reply
+	}
 	if res.Home != "" {
 		reply += "\thome=" + res.Home
 	}
 	if res.MailLoc != "" {
 		reply += "\tmail=" + res.MailLoc
 	}
-	fmt.Fprintln(conn, reply)
+	return reply
 }
 
 func (s *Server) authenticate(username, password, service string) (*AuthResponse, error) {

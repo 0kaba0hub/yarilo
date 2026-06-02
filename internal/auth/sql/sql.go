@@ -146,6 +146,19 @@ func (p *Passdb) Authenticate(username, password, _ string) (*protocol.AuthRespo
 			resp.Home, resp.MailLoc = h, m
 		}
 	}
+	// Phase AUTH-2 PR 1: also populate the Fields bag so the wire
+	// emitter (handleAuth → buildAuthOK) can switch over to the
+	// bag-based path. The typed Home / MailLoc fields stay
+	// populated in parallel for byte-compat with anything that
+	// reads them directly until PR 2's Passdb interface swap.
+	resp.Fields = protocol.NewFields()
+	resp.Fields.Set("user", username)
+	if resp.Home != "" {
+		resp.Fields.Set("home", resp.Home)
+	}
+	if resp.MailLoc != "" {
+		resp.Fields.Set("mail", resp.MailLoc)
+	}
 	return resp, nil
 }
 
