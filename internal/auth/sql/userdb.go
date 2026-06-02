@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 )
@@ -183,167 +182,12 @@ func stringify(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
-// assignField populates the matching typed UserInfo field for known
-// column names, mirroring Dovecot's reserved auth-fields names
-// (auth-request.c / userdb-passwd.c). Unknown columns spill into
-// UserInfo.Extra so a richer operator schema does not lose data.
-// Lists (groups, allow_nets, quota_rule) accept comma-separated
-// values; quota_rule may also be passed once per row by repeating
-// the column under different aliases — both are merged here.
-//
-//nolint:gocyclo // long but each branch is one line of assignment
+// assignField is a thin pass-through to protocol.AssignField so the
+// SQL row scanner shares the column-name → UserInfo-field mapping
+// with pkg/authclient (which sees the same names as `key=value`
+// tokens on the master-protocol wire). Kept here so the call-site
+// reads clearly in context; if it ever needs SQL-specific tweaks,
+// they wrap the protocol helper here.
 func assignField(info *protocol.UserInfo, col, val string) error {
-	switch strings.ToLower(col) {
-	case "username", "user":
-		info.Username = val
-	case "original_user":
-		info.OriginalUser = val
-	case "master_user":
-		info.MasterUser = val
-	case "login_user":
-		info.LoginUser = val
-	case "uid":
-		n, err := strconv.ParseUint(val, 10, 32)
-		if err != nil {
-			return err
-		}
-		info.UID = uint32(n)
-	case "gid":
-		n, err := strconv.ParseUint(val, 10, 32)
-		if err != nil {
-			return err
-		}
-		info.GID = uint32(n)
-	case "home":
-		info.Home = val
-	case "chroot":
-		info.Chroot = val
-	case "system_groups_user":
-		info.SystemGroupsUser = val
-	case "groups":
-		info.Groups = splitCSV(val)
-	case "client_cert_present":
-		info.ClientCertPresent = isTruthy(val)
-	case "mail", "mail_location":
-		info.MailLocation = val
-	case "mail_uid":
-		n, err := strconv.ParseUint(val, 10, 32)
-		if err != nil {
-			return err
-		}
-		info.MailUID = uint32(n)
-	case "mail_gid":
-		n, err := strconv.ParseUint(val, 10, 32)
-		if err != nil {
-			return err
-		}
-		info.MailGID = uint32(n)
-	case "mailbox_format":
-		info.MailboxFormat = val
-	case "mail_attribute_dict":
-		info.MailAttributeDict = val
-	case "quota_rule":
-		info.QuotaRules = append(info.QuotaRules, splitCSV(val)...)
-	case "quota_over_flag":
-		info.QuotaOverFlag = val
-	case "allow_nets":
-		info.AllowNets = splitCSV(val)
-	case "nologin":
-		info.NoLogin = isTruthy(val)
-	case "nodelay":
-		info.NoDelay = isTruthy(val)
-	case "noauthenticate":
-		info.NoAuthenticate = isTruthy(val)
-	case "pass_expired":
-		info.PassExpired = isTruthy(val)
-	case "nopassword":
-		info.NoPassword = isTruthy(val)
-	case "proxy":
-		info.Proxy = isTruthy(val)
-	case "proxy_maybe":
-		info.ProxyMaybe = isTruthy(val)
-	case "host":
-		info.Host = val
-	case "port":
-		n, err := strconv.Atoi(val)
-		if err != nil {
-			return err
-		}
-		info.Port = n
-	case "destuser":
-		info.DestUser = val
-	case "proxy_mech":
-		info.ProxyMech = val
-	case "proxy_timeout":
-		n, err := strconv.Atoi(val)
-		if err != nil {
-			return err
-		}
-		info.ProxyTimeout = n
-	case "proxy_redirect_reauth":
-		info.ProxyRedirectReauth = isTruthy(val)
-	case "proxy_nopipelining":
-		info.ProxyNoPipelining = isTruthy(val)
-	case "ssl":
-		info.SSL = val
-	case "starttls":
-		info.StartTLS = isTruthy(val)
-	case "mail_max_userip_connections":
-		n, err := strconv.Atoi(val)
-		if err != nil {
-			return err
-		}
-		info.MailMaxUserIPConnections = n
-	case "mail_max_user_connections":
-		n, err := strconv.Atoi(val)
-		if err != nil {
-			return err
-		}
-		info.MailMaxUserConnections = n
-	case "service":
-		info.Service = val
-	case "local_name":
-		info.LocalName = val
-	case "password":
-		info.Password = val
-	case "enabled":
-		// Filter column from default query — semantic is `WHERE
-		// enabled = 1` clause, not a UserInfo field.
-	default:
-		if strings.HasPrefix(strings.ToLower(col), "forward_") {
-			if info.Forward == nil {
-				info.Forward = map[string]string{}
-			}
-			info.Forward[strings.TrimPrefix(strings.ToLower(col), "forward_")] = val
-			return nil
-		}
-		if info.Extra == nil {
-			info.Extra = map[string]string{}
-		}
-		info.Extra[col] = val
-	}
-	return nil
-}
-
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func isTruthy(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "1", "yes", "y", "true", "t", "on":
-		return true
-	}
-	return false
+	return protocol.AssignField(info, col, val)
 }
