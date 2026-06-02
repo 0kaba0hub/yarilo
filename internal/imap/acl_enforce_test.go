@@ -573,6 +573,69 @@ func TestACLEnforce_RenameAllowedWithBothRights(t *testing.T) {
 	}
 }
 
+func TestACLEnforce_TopLevelCreateNeedsRootK(t *testing.T) {
+	// Bob tries CREATE "Shared/NewTop" — the namespace-relative name
+	// is "NewTop" with no separator, so the parent is the namespace
+	// root. Without a root ACL grant, the request must NOPERM even
+	// for a non-owner that has rights on other mailboxes.
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// Give bob lots of rights on INBOX so the failure mode is
+	// definitely the missing root grant, not some other denial.
+	seedACL(t, aliceHome, "INBOX", "user=bob lrwsipkxtea\n")
+
+	b := dial("bob")
+	err := b.Create("Shared/NewTop", nil).Wait()
+	if err == nil {
+		t.Fatal("peer top-level CREATE without root 'k' should fail")
+	}
+	if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	}
+}
+
+func TestACLEnforce_TopLevelCreateAllowedWithRootK(t *testing.T) {
+	// Seed a yarilo-acl at the namespace root granting bob 'k'.
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// Root ACL = <home>/yarilo-acl (no subdir).
+	if err := os.WriteFile(filepath.Join(aliceHome, "yarilo-acl"), []byte("user=bob k\n"), 0o600); err != nil {
+		t.Fatalf("seed root ACL: %v", err)
+	}
+
+	b := dial("bob")
+	if err := b.Create("Shared/NewTop", nil).Wait(); err != nil {
+		t.Errorf("peer top-level CREATE with root 'k': %v", err)
+	}
+}
+
+func TestACLEnforce_TopLevelSelectInheritsFromRoot(t *testing.T) {
+	// Root grants 'r'; bob can SELECT a top-level mailbox without
+	// its own ACL by inheritance.
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("PublicBox", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE PublicBox: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aliceHome, "yarilo-acl"), []byte("user=bob lr\n"), 0o600); err != nil {
+		t.Fatalf("seed root ACL: %v", err)
+	}
+
+	b := dial("bob")
+	if _, err := b.Select("Shared/PublicBox", nil).Wait(); err != nil {
+		t.Errorf("peer SELECT inheriting 'r' from root: %v", err)
+	}
+}
+
 func TestACLEnforce_StatusNeedsRead(t *testing.T) {
 	aliceHome, dial := enforceServerWithShared(t)
 	a := dial("alice")

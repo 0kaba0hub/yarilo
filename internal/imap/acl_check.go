@@ -114,11 +114,11 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 // requireRightOnParent enforces a right on the parent of folder —
 // CREATE / RENAME (destination side) require 'k' on the parent
 // mailbox rather than on the folder itself (which does not yet
-// exist). The parent is computed by stripping the trailing
-// segment after the namespace separator; if there is no separator
-// in folder, the parent is the namespace root (which has no
-// explicit ACL → EffectiveFor falls through to empty, denying
-// the non-owner).
+// exist). The parent is computed by stripping the trailing segment
+// after the namespace separator; if folder has no separator, the
+// parent is the empty string addressing the namespace-root ACL
+// (<home>/yarilo-acl) — non-owners need an explicit grant there to
+// create top-level mailboxes.
 func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) error {
 	if !s.srv.opts.ACLEnabled {
 		return nil
@@ -127,13 +127,6 @@ func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) e
 		return nil
 	}
 	parent := parentFolder(folder, byte(h.spec.Separator))
-	if parent == "" {
-		// No parent — top-level CREATE / RENAME-destination requires
-		// 'k' on the namespace root. We have no representation for
-		// the root's ACL today; deny for non-owners. (Owner short-
-		// circuited above.)
-		return aclDenied(right)
-	}
 	return s.requireRight(h, parent, right)
 }
 

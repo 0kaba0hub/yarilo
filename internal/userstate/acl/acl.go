@@ -120,9 +120,10 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 //
 //   - isOwner == true: returns FullRights immediately without I/O.
 //   - else: read folder's ACL. If present, return its Effective.
-//     If absent, strip the last segment off folder and retry,
-//     repeating until the parent split yields nothing. If no ACL
-//     was ever found, returns the empty rights set.
+//     If absent, strip the last segment off folder and retry. After
+//     all segments are stripped, take one final pass at the
+//     namespace-root ACL (folder = ""). If no ACL was ever found,
+//     returns the empty rights set.
 //
 // sep is the namespace's hierarchy separator (typically '/' for
 // personal namespaces; the caller passes h.spec.Separator). When
@@ -130,17 +131,18 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 // is consulted — useful for tests and namespaces that explicitly
 // opt out of inheritance.
 //
-// Inheritance is "first hit wins": once a parent with an ACL file
-// is found, that file's positive / negative balance determines the
-// rights. ACLs from deeper ancestors are not merged in. This matches
-// Dovecot; the alternative (full-chain merge) breaks the principle
-// of locality for shared-mailbox admin who expects setting one ACL
-// to fully override the inherited one.
+// Inheritance is "first hit wins": once an ancestor with an ACL
+// file is found, that file's positive / negative balance determines
+// the rights. ACLs from deeper ancestors (including the root) are
+// not merged in. This matches Dovecot; the alternative (full-chain
+// merge) breaks the principle of locality for shared-mailbox admin
+// who expects setting one ACL to fully override the inherited one.
 func (s *Store) EffectiveFor(folder, user string, isOwner bool, sep byte) (mailbox.Rights, error) {
 	if isOwner {
 		return mailbox.FullRights, nil
 	}
 	cur := folder
+	rootTried := false
 	for {
 		acl, err := s.Get(cur)
 		if err != nil {
@@ -149,12 +151,19 @@ func (s *Store) EffectiveFor(folder, user string, isOwner bool, sep byte) (mailb
 		if acl != nil {
 			return acl.Effective(user, false), nil
 		}
+		if cur == "" {
+			rootTried = true
+		}
 		if sep == 0 {
 			return "", nil
 		}
 		idx := lastSepIndex(cur, sep)
 		if idx < 0 {
-			return "", nil
+			if rootTried {
+				return "", nil
+			}
+			cur = ""
+			continue
 		}
 		cur = cur[:idx]
 	}
