@@ -202,6 +202,10 @@ auth:
 # Listen address and mTLS cert paths used by the yarilo-auth binary.
 auth_service:
   listen: ":9100"
+  # master_listen — Dovecot-style master protocol for password-less
+  # userdb lookups (USER / LIST). Consumed by yarilo-backend-api admin
+  # endpoints and CLI tooling. Empty disables.
+  master_listen: ":9102"
   mtls:
     cert: /etc/yarilo/tls/tls.crt
     key:  /etc/yarilo/tls/tls.key

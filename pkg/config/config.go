@@ -331,9 +331,17 @@ type AnvilServiceConfig struct {
 }
 
 // AuthServiceConfig configures the standalone yarilo-auth process.
+//
+// Listen is the client-protocol address (login pods speak this);
+// MasterListen, when non-empty, opens the password-less master
+// protocol on a separate listener for admin tooling and
+// yarilo-backend-api userdb lookups. Both listeners share the
+// global InternalTLS material — splitting trust domains is a
+// future operational knob, not in Phase AUTH-1.
 type AuthServiceConfig struct {
-	Listen   string         `koanf:"listen"`
-	Shutdown ShutdownConfig `koanf:"shutdown"`
+	Listen       string         `koanf:"listen"`
+	MasterListen string         `koanf:"master_listen"`
+	Shutdown     ShutdownConfig `koanf:"shutdown"`
 }
 
 // LocksClientConfig configures how session processes (yarilo-imap,

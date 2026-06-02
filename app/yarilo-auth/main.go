@@ -47,8 +47,9 @@ func main() {
 	)
 
 	var dbs []protocol.Passdb
+	var userdbs []protocol.Userdb
 	for _, entry := range cfg.Auth.Passdb {
-		db, err := authsql.New(authsql.Config{
+		sqlCfg := authsql.Config{
 			Driver:            entry.Driver,
 			DSN:               entry.DSN,
 			PasswordQuery:     entry.PasswordQuery,
@@ -56,12 +57,24 @@ func main() {
 			IterateQuery:      entry.IterateQuery,
 			DefaultPassScheme: entry.DefaultPassScheme,
 			SkipSchema:        entry.SkipSchema,
-		})
+		}
+		db, err := authsql.New(sqlCfg)
 		if err != nil {
 			slog.Error("passdb init failed", "driver", entry.Driver, "err", err)
 			os.Exit(1)
 		}
 		dbs = append(dbs, db)
+		// Each passdb entry that ships its own UserQuery /
+		// IterateQuery is also exposed as a userdb. Backend-api
+		// admin lookups and the master-protocol LIST command run
+		// off the same DSN — operators almost always want both
+		// roles served by the same SQL row set.
+		userdb, err := authsql.NewUserdb(sqlCfg)
+		if err != nil {
+			slog.Error("userdb init failed", "driver", entry.Driver, "err", err)
+			os.Exit(1)
+		}
+		userdbs = append(userdbs, userdb)
 	}
 
 	var tlsCfg *tls.Config
@@ -83,13 +96,36 @@ func main() {
 	go runTelemetry(cfg.Telemetry.Listen)
 
 	srv := protocol.NewServer(dbs)
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		if err := srv.ListenAndServe(ctx, cfg.AuthService.Listen, tlsCfg); err != nil {
 			errCh <- err
 		}
-		close(errCh)
 	}()
+
+	// Master protocol — userdb-only lookups + LIST. Skipped when
+	// master_listen is unset; that keeps single-binary dev / smoke
+	// runs free of an extra bind that nothing consumes.
+	if cfg.AuthService.MasterListen != "" {
+		var masterUserdb protocol.Userdb
+		switch len(userdbs) {
+		case 0:
+			// No backends configured — master server still runs so
+			// operators can sanity-check connectivity; every USER
+			// call returns NOTFOUND.
+		case 1:
+			masterUserdb = userdbs[0]
+		default:
+			masterUserdb = protocol.UserdbChain(userdbs)
+		}
+		master := protocol.NewMasterServer(masterUserdb)
+		slog.Info("yarilo-auth master listener", "addr", cfg.AuthService.MasterListen)
+		go func() {
+			if err := master.ListenAndServe(ctx, cfg.AuthService.MasterListen, tlsCfg); err != nil {
+				errCh <- err
+			}
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
