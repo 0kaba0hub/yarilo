@@ -389,6 +389,117 @@ func TestStore_EffectiveForNegativeInInheritedACL(t *testing.T) {
 	}
 }
 
+func TestStore_PathEmptyFolderIsNamespaceRoot(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	got := s.Path("")
+	want := filepath.Join(home, FileName)
+	if got != want {
+		t.Errorf("Path(\"\") = %q, want %q (namespace-root file)", got, want)
+	}
+}
+
+func TestStore_SetGetRootACL(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	in := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrk"},
+	}
+	if err := s.Set("", in); err != nil {
+		t.Fatalf("Set root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, FileName)); err != nil {
+		t.Errorf("root file not created: %v", err)
+	}
+	got, err := s.Get("")
+	if err != nil {
+		t.Fatalf("Get root: %v", err)
+	}
+	if !reflect.DeepEqual(got, in.Sorted()) {
+		t.Errorf("root round-trip mismatch\n got=%+v\nwant=%+v", got, in.Sorted())
+	}
+}
+
+func TestStore_EffectiveForFallsThroughToRoot(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	// Only the namespace root has an ACL; leaf has none.
+	if err := s.Set("", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrk"},
+	}); err != nil {
+		t.Fatalf("Set root: %v", err)
+	}
+	got, err := s.EffectiveFor("TopLevel", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "lrk" {
+		t.Errorf("got %q, want lrk (inherited from root)", got)
+	}
+}
+
+func TestStore_EffectiveForFallsThroughToRootFromDeep(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Set("", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
+	}); err != nil {
+		t.Fatalf("Set root: %v", err)
+	}
+	got, err := s.EffectiveFor("Lists/news/2026", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "l" {
+		t.Errorf("got %q, want l (inherited from root through 3 levels)", got)
+	}
+}
+
+func TestStore_EffectiveForLeafBeatsRoot(t *testing.T) {
+	// Same first-hit-wins rule: an explicit ACL on the leaf fully
+	// overrides the root's ACL, no merge.
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Set("", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "lr"},
+	}); err != nil {
+		t.Fatalf("Set root: %v", err)
+	}
+	// Leaf grants nothing to bob.
+	if err := s.Set("Leaf", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: mailbox.FullRights},
+	}); err != nil {
+		t.Fatalf("Set leaf: %v", err)
+	}
+	got, err := s.EffectiveFor("Leaf", "bob", false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (leaf overrides root)", got)
+	}
+}
+
+func TestStore_EffectiveForZeroSepStillTriesRoot(t *testing.T) {
+	// With sep=0 the walk is disabled, so the namespace-root fall-
+	// through must NOT fire either — only the explicit folder is
+	// consulted. Mirrors the "no inheritance" opt-out.
+	home := t.TempDir()
+	s := New(home, "alice", "test", nil)
+	if err := s.Set("", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
+	}); err != nil {
+		t.Fatalf("Set root: %v", err)
+	}
+	got, err := s.EffectiveFor("Leaf", "bob", false, 0)
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (sep=0 disables root fall-through too)", got)
+	}
+}
+
 func TestStore_EffectiveForZeroSepDisablesWalk(t *testing.T) {
 	home := t.TempDir()
 	s := New(home, "alice", "test", nil)

@@ -84,8 +84,7 @@ in personal namespace.
 
 ## ACL — gaps deferred from Phase ACL-1
 
-Items intentionally scoped out of PRs C/D/E and not yet covered by
-the upcoming F (admin CLI + API + optional dovecot-acl-list):
+Items intentionally scoped out of Phase ACL-1 and not yet picked up:
 
 1. **Group identifier resolution.** `group=<name>` and
    `group-override=<name>` ACL entries parse and persist correctly,
@@ -111,19 +110,9 @@ the upcoming F (admin CLI + API + optional dovecot-acl-list):
    per-shared-mailbox owner mapping. Dovecot keeps this via the
    `mail_storage` owner field.
 
-3. **Namespace-root ACL.** `CREATE Foo` at the top of a namespace
-   (no separator in the name) currently denies non-owners with a
-   hardcoded "no representation for root's ACL today" branch in
-   `internal/imap/acl_check.go:requireRightOnParent`. To support
-   top-level CREATE for non-owners we need to read the namespace
-   root's own `yarilo-acl` file (path = `<home>/yarilo-acl` for
-   personal; namespace-location-root/yarilo-acl for shared/public).
-   The Store helper exists; only the path mapping for the root
-   case is missing.
-
 Each item is small in isolation but touches a different subsystem
-(auth chain, namespace ownership model, root-ACL path mapping).
-Pull them in a future ACL-EXT phase when concrete demand surfaces.
+(auth chain, namespace ownership model). Pull them in a future
+ACL-EXT phase when concrete demand surfaces.
 
 ---
 
