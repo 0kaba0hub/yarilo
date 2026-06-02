@@ -45,6 +45,22 @@ func (n *nonIteratorUserdb) Lookup(username string) (*UserInfo, error) {
 
 // startMaster spins a MasterServer on a random local port and returns
 // the dialer. Cleanup teardown is registered with t.
+//
+// Port-allocation pattern (mirrors authclient/client_test.go and
+// backendapi/userdb_test.go): bind a probe listener, capture its
+// address, CLOSE the probe BEFORE starting the server goroutine,
+// then race the server's own ListenAndServe against any other
+// process that might steal the freed port. The wait loop below
+// covers the loopback race window.
+//
+// The bug this comment-block warns against: an earlier version of
+// this helper started the server goroutine BEFORE closing the
+// probe ln. Under load (self-hosted CI runner saturated), the
+// scheduler could run the goroutine first, observe the probe ln
+// still holding the port, fail ListenAndServe silently (the
+// errcheck nolint above lets it die), and leave nothing listening.
+// Subsequent dial() then failed with "connection refused" and the
+// test (TestMaster_PipelinedRequestsSerialiseInOrder) flaked.
 func startMaster(t *testing.T, userdb Userdb) func() (net.Conn, *bufio.Reader) {
 	t.Helper()
 	srv := NewMasterServer(userdb)
@@ -52,15 +68,11 @@ func startMaster(t *testing.T, userdb Userdb) func() (net.Conn, *bufio.Reader) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go srv.ListenAndServe(ctx, ln.Addr().String(), nil) //nolint:errcheck
-	// The MasterServer above re-opens its own listener at the addr we
-	// pass; close the probe listener so the port is free for the
-	// server to bind. Two binds on the same port serialise — the
-	// loopback racing window is microseconds, but acceptable for a
-	// unit test.
 	addr := ln.Addr().String()
 	ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
 
 	// Wait briefly for the real listener to come up.
 	deadline := time.Now().Add(time.Second)
