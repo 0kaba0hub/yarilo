@@ -430,6 +430,51 @@ type ShutdownConfig struct {
 
 type AuthConfig struct {
 	Passdb []PassdbEntry `koanf:"passdb"`
+
+	// MasterUsers groups Dovecot-style master-user impersonation
+	// settings. Disabled by default — distinct SASL PLAIN authzid
+	// is rejected by every protocol entry point (IMAP, POP3,
+	// Submission, wire yarilo-auth) until Enabled is flipped to
+	// true. When disabled, all other fields in this group are
+	// ignored even if populated.
+	MasterUsers MasterUsersConfig `koanf:"master_users"`
+}
+
+// MasterUsersConfig configures the master-user impersonation
+// surface. Master-user lets a privileged account log into another
+// user's mailbox by sending a SASL PLAIN response with the
+// target's identity in authzid. See INTERNALS / Dovecot's
+// `auth_master_user_*` family for the wire model.
+type MasterUsersConfig struct {
+	// Enabled is the top-level opt-in. While false, distinct
+	// SASL PLAIN authzid is rejected unconditionally — the wire
+	// reply is indistinguishable from a wrong-password rejection.
+	// Default: false.
+	Enabled bool `koanf:"enabled"`
+
+	// Masterdb is the dedicated master-user chain. Entries share
+	// the PassdbEntry shape (same SQL drivers, same query syntax)
+	// but are only consulted when a SASL PLAIN client sends a
+	// distinct authzid — i.e. requests to impersonate another user.
+	// A masterdb hit (correct master password) grants impersonation;
+	// the regular Passdb chain then runs against the TARGET to
+	// fetch their profile.
+	//
+	// Independently of Masterdb, any regular Passdb entry can flag
+	// individual rows as masters by returning `master_user=yes` in
+	// the result fields. Both mechanisms coexist (see Dovecot's
+	// auth_master_user_passdb).
+	Masterdb []PassdbEntry `koanf:"masterdb"`
+
+	// Separator enables the `target<sep>master` SASL PLAIN
+	// workaround for legacy clients that cannot supply authzid
+	// (older Outlook, some mobile MUAs). The SASL response
+	// authid `alice*admin` then routes as if authzid had been
+	// `alice` and authid had been `admin`. Empty disables the
+	// workaround entirely — only RFC 4616 authzid is honoured.
+	// Default `*` matches Dovecot's `auth_master_user_separator`,
+	// but only takes effect when Enabled is true.
+	Separator string `koanf:"separator"`
 }
 
 type PassdbEntry struct {
@@ -542,6 +587,14 @@ func Load(path string) (*Config, error) {
 			Shutdown: ShutdownConfig{
 				SessionGracePeriod: 30,
 				KillTimeout:        5,
+			},
+		},
+		Auth: AuthConfig{
+			// MasterUsers is opt-in (Enabled defaults to false).
+			// Separator matches Dovecot's default but stays inert
+			// until Enabled is flipped explicitly.
+			MasterUsers: MasterUsersConfig{
+				Separator: "*",
 			},
 		},
 		DirectorService: DirectorServiceConfig{
@@ -657,6 +710,9 @@ func expandEnv(cfg *Config) {
 	cfg.Protocol.Submission.Relay.Password = expand(cfg.Protocol.Submission.Relay.Password)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
+	}
+	for i := range cfg.Auth.MasterUsers.Masterdb {
+		cfg.Auth.MasterUsers.Masterdb[i].DSN = expand(cfg.Auth.MasterUsers.Masterdb[i].DSN)
 	}
 }
 

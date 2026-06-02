@@ -153,7 +153,7 @@ func (s *session) cmdPass(arg string) {
 	}
 	username := s.pendingUser
 	s.pendingUser = ""
-	s.finishAuth(username, arg)
+	s.finishAuth("", username, arg)
 }
 
 // cmdSASLAuth implements POP3 SASL (RFC 5034): "AUTH PLAIN [<base64-init>]".
@@ -198,18 +198,24 @@ func (s *session) cmdSASLAuth(arg string) {
 		s.writeErr("invalid PLAIN response")
 		return
 	}
-	// fields[0]=authzid (ignored), fields[1]=username, fields[2]=password
-	s.finishAuth(fields[1], fields[2])
+	// fields[0]=authzid (master-user target), fields[1]=authid
+	// (master), fields[2]=password. Empty authzid OR
+	// authzid==authid falls through finishAuth to the regular
+	// Authenticate path.
+	s.finishAuth(fields[0], fields[1], fields[2])
 }
 
 // finishAuth authenticates, resolves UserInfo, opens storage handles, and
 // loads the mailbox. Used by both PASS (after USER) and AUTH PLAIN.
-func (s *session) finishAuth(username, password string) {
+// authzid carries the master-user impersonation target (RFC 4616);
+// USER/PASS path passes "" since the legacy command has no authzid
+// surface.
+func (s *session) finishAuth(authzid, username, password string) {
 	if s.srv.opts.DisablePlainAuth && !s.onTLS {
 		s.writeErr("plaintext authentication disabled, use STLS first")
 		return
 	}
-	res, err := s.srv.opts.Auth.Authenticate(username, password, "pop3")
+	res, err := s.authenticate(authzid, username, password)
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		slog.Info("pop3: auth failed", "user", username, "remoteIP", s.remoteIP)
 		s.writeErr("authentication failed")
@@ -282,6 +288,22 @@ func (s *session) finishAuth(username, password string) {
 	slog.Info("pop3: login", "user", userInfo.Username, "messages", len(s.msgs))
 	s.state = stateTrans
 	s.ok(fmt.Sprintf("logged in, %d messages", len(s.msgs)))
+}
+
+// authenticate dispatches to MasterAuthenticator when authzid is
+// set and the backend supports it; otherwise falls back to the
+// regular Authenticator surface. Reject distinct authzid against a
+// non-master backend with an opaque AuthFail so the wire reply
+// stays indistinguishable from a wrong-password rejection.
+func (s *session) authenticate(authzid, username, password string) (*protocol.AuthResponse, error) {
+	if authzid == "" || authzid == username {
+		return s.srv.opts.Auth.Authenticate(username, password, "pop3")
+	}
+	master, ok := s.srv.opts.Auth.(protocol.MasterAuthenticator)
+	if !ok {
+		return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
+	}
+	return master.AuthenticateMaster(authzid, username, password, "pop3")
 }
 
 func (s *session) loadMailbox() error {

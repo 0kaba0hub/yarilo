@@ -73,7 +73,21 @@ func New(cfg *config.Config) (*Server, error) {
 	if len(userdbs) > 0 {
 		userdbChain = protocol.UserdbChain(userdbs)
 	}
-	authChain := protocol.NewAuthenticator(passdbs, protocol.WithAuthenticatorUserdb(userdbChain))
+	authOpts := []protocol.AuthenticatorOption{
+		protocol.WithAuthenticatorUserdb(userdbChain),
+	}
+	if cfg.Auth.MasterUsers.Enabled {
+		masterdbs, err := buildPassdbs(cfg.Auth.MasterUsers.Masterdb)
+		if err != nil {
+			return nil, fmt.Errorf("backend: masterdb: %w", err)
+		}
+		authOpts = append(authOpts,
+			protocol.WithAuthenticatorMasterUsers(true),
+			protocol.WithAuthenticatorMasterdb(masterdbs),
+			protocol.WithAuthenticatorMasterUserSeparator(cfg.Auth.MasterUsers.Separator),
+		)
+	}
+	authChain := protocol.NewAuthenticator(passdbs, authOpts...)
 
 	// ---- storage ----
 	if cfg.Storage.MaildirRoot == "" {
@@ -583,6 +597,27 @@ type chainAuth struct{ c protocol.Authenticator }
 
 func (a chainAuth) AuthPlain(username, password string) error {
 	resp, err := a.c.Authenticate(username, password, "smtp")
+	if err != nil {
+		return fmt.Errorf("smtp/auth: %w", err)
+	}
+	if resp == nil || resp.Result != protocol.AuthOK {
+		return fmt.Errorf("smtp/auth: authentication failed")
+	}
+	return nil
+}
+
+// AuthPlainMaster forwards a SASL PLAIN response carrying an
+// authzid to the underlying protocol chain via
+// MasterAuthenticator. When the underlying chain does not
+// implement MasterAuthenticator (e.g. a test stub or a driver
+// that pre-dates AUTH-3) the call fails opaquely — the wire
+// reply stays indistinguishable from a wrong-password rejection.
+func (a chainAuth) AuthPlainMaster(authzid, authid, password string) error {
+	master, ok := a.c.(protocol.MasterAuthenticator)
+	if !ok {
+		return fmt.Errorf("smtp/auth: authentication failed")
+	}
+	resp, err := master.AuthenticateMaster(authzid, authid, password, "smtp")
 	if err != nil {
 		return fmt.Errorf("smtp/auth: %w", err)
 	}

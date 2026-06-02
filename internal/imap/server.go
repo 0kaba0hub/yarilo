@@ -16,6 +16,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/emersion/go-sasl"
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
@@ -405,7 +406,70 @@ func (s *session) Login(username, password string) error {
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Invalid credentials"}
 	}
+	return s.completeLogin(res)
+}
 
+// AuthenticateMechanisms advertises the SASL mechanisms our session
+// implements itself (overriding go-imap's built-in PLAIN handler).
+// Currently only PLAIN — needed so an authzid in the SASL response
+// reaches our master-user flow instead of being rejected by go-imap's
+// default "identity must equal username" guard.
+func (s *session) AuthenticateMechanisms() []string {
+	return []string{sasl.Plain}
+}
+
+// Authenticate returns the SASL server for the requested mechanism.
+// Custom PLAIN handler is used when the configured Authenticator
+// implements protocol.MasterAuthenticator — otherwise we delegate
+// the response shape (no authzid) to the standard Login path so
+// stubs / non-master backends keep working.
+func (s *session) Authenticate(mech string) (sasl.Server, error) {
+	if mech != sasl.Plain {
+		return nil, &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Text: "SASL mechanism not supported",
+		}
+	}
+	return sasl.NewPlainServer(s.authenticatePlainSASL), nil
+}
+
+// authenticatePlainSASL is the PlainAuthenticator callback used by
+// our SessionSASL handler. authzid carries the impersonation target
+// (Dovecot's master-user model); empty / equal-to-authid disables
+// impersonation and falls back to the regular login path.
+//
+// When the configured Authenticator does not implement
+// MasterAuthenticator, a non-empty distinct authzid is rejected
+// (same opacity as the wire FAIL — no detail given to the client).
+func (s *session) authenticatePlainSASL(authzid, authid, password string) error {
+	invalid := &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Text: "Invalid credentials",
+	}
+	if authzid == "" || authzid == authid {
+		res, err := s.srv.opts.Auth.Authenticate(authid, password, "imap")
+		if err != nil || res == nil || res.Result != protocol.AuthOK {
+			return invalid
+		}
+		return s.completeLogin(res)
+	}
+	master, ok := s.srv.opts.Auth.(protocol.MasterAuthenticator)
+	if !ok {
+		return invalid
+	}
+	res, err := master.AuthenticateMaster(authzid, authid, password, "imap")
+	if err != nil || res == nil || res.Result != protocol.AuthOK {
+		return invalid
+	}
+	return s.completeLogin(res)
+}
+
+// completeLogin runs the post-auth session setup shared between the
+// IMAP LOGIN command path and the AUTHENTICATE PLAIN SASL path.
+// res carries the resolved username (target, for master flows) and
+// the userdb-enriched fields needed to open the per-namespace
+// storage handles.
+func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	resolver := s.srv.opts.Resolver
 	if resolver == nil {
 		resolver = &mailbox.Resolver{}
@@ -423,10 +487,6 @@ func (s *session) Login(username, password string) error {
 
 	s.userInfo = userInfo
 
-	// Open per-namespace handles. The personal handle's Init runs as
-	// part of openHandles; shared/public handles Init their backend
-	// roots so a misconfigured location: errors at login rather than
-	// at first SELECT.
 	handles, primary, err := s.openHandles(userInfo)
 	if err != nil {
 		slog.Error("imap: namespace handle init failed", "user", userInfo.Username, "err", err)
@@ -437,8 +497,6 @@ func (s *session) Login(username, password string) error {
 	}
 	s.namespaces = handles
 	s.primary = primary
-	// Aliases for the common-case personal-namespace ops; see session
-	// struct doc-comment.
 	s.box = primary.box
 	s.idx = primary.idx
 	s.subs = primary.subs

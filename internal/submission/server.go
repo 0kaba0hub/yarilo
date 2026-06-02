@@ -25,6 +25,17 @@ type Authenticator interface {
 	AuthPlain(username, password string) error
 }
 
+// MasterAuthenticator extends Authenticator with the SASL PLAIN
+// authzid surface — i.e. Dovecot's master-user impersonation
+// model exposed on the submission port. Adapters that only
+// implement Authenticator (the AuthPlain-only surface) keep
+// working unchanged; the session-level SASL hook type-asserts
+// into MasterAuthenticator to decide whether to honour a
+// distinct authzid.
+type MasterAuthenticator interface {
+	AuthPlainMaster(authzid, authid, password string) error
+}
+
 // Options configures the submission server.
 type Options struct {
 	// Infrastructure (per-listener; set by backend from ServiceConfig).
@@ -209,19 +220,35 @@ func (s *session) AuthMechanisms() []string {
 	return []string{sasl.Plain, sasl.Login}
 }
 
-// Auth returns a sasl.Server for the requested mechanism.
+// Auth returns a sasl.Server for the requested mechanism. The
+// PLAIN handler honours authzid via MasterAuthenticator when the
+// backend supports it; LOGIN has no authzid surface (RFC limit)
+// so it always dispatches to plain AuthPlain.
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	switch mech {
 	case sasl.Plain:
-		return sasl.NewPlainServer(func(_, username, password string) error {
-			return s.srv.opts.Auth.AuthPlain(username, password)
-		}), nil
+		return sasl.NewPlainServer(s.authPlainSASL), nil
 	case sasl.Login:
 		return newLoginServer(func(username, password string) error {
 			return s.srv.opts.Auth.AuthPlain(username, password)
 		}), nil
 	}
 	return nil, goSmtp.ErrAuthUnknownMechanism
+}
+
+// authPlainSASL is the PlainAuthenticator callback for SMTP
+// AUTH PLAIN. Empty authzid (or authzid == authid) takes the
+// regular path; a distinct authzid routes through
+// MasterAuthenticator when supported, else fails opaquely.
+func (s *session) authPlainSASL(authzid, authid, password string) error {
+	if authzid == "" || authzid == authid {
+		return s.srv.opts.Auth.AuthPlain(authid, password)
+	}
+	master, ok := s.srv.opts.Auth.(MasterAuthenticator)
+	if !ok {
+		return goSmtp.ErrAuthFailed
+	}
+	return master.AuthPlainMaster(authzid, authid, password)
 }
 
 // ---- helpers ------------------------------------------------------------

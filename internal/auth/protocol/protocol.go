@@ -120,6 +120,26 @@ type Authenticator interface {
 	Authenticate(username, password, service string) (*AuthResponse, error)
 }
 
+// MasterAuthenticator extends Authenticator with the SASL PLAIN
+// authzid surface — i.e. master-user impersonation. Session-level
+// callers (IMAP / POP3 / Submission) type-assert opts.Auth into
+// this interface to decide whether to honour authzid; backends
+// that only implement Authenticator (or stub test doubles) keep
+// working unchanged but fall back to "authzid must equal authid"
+// behaviour at the SASL layer.
+//
+//   - authzid — target identity the caller wants to log in AS.
+//     When empty (or equal to authid), this is a regular login and
+//     callers should typically dispatch via Authenticate instead.
+//   - authid  — the user supplying the password (the master in
+//     an impersonation request).
+//   - password — the master's password.
+//   - service — login service tag (imap / pop3 / submission /
+//     lmtp). Logged + forwarded to the chain unmodified.
+type MasterAuthenticator interface {
+	AuthenticateMaster(authzid, authid, password, service string) (*AuthResponse, error)
+}
+
 // AuthenticatorOption tunes a NewAuthenticator construction.
 type AuthenticatorOption func(*chainAuthenticator)
 
@@ -133,22 +153,81 @@ func WithAuthenticatorUserdb(u Userdb) AuthenticatorOption {
 	return func(a *chainAuthenticator) { a.userdb = u }
 }
 
+// WithAuthenticatorMasterdb attaches a dedicated masterdb chain.
+// Mirrors WithMasterdb on the wire Server: AuthenticateMaster
+// consults this chain first, falling through to the main passdb's
+// per-user `master_user=yes` flag only when no masterdb entry
+// knows the master.
+func WithAuthenticatorMasterdb(passdbs []Passdb) AuthenticatorOption {
+	return func(a *chainAuthenticator) { a.masterdb = passdbs }
+}
+
+// WithAuthenticatorMasterUserSeparator enables the
+// `target<sep>master` SASL workaround for legacy clients that
+// cannot send authzid. Empty disables it. Mirrors
+// WithMasterUserSeparator on the wire Server.
+func WithAuthenticatorMasterUserSeparator(sep string) AuthenticatorOption {
+	return func(a *chainAuthenticator) { a.masterUserSeparator = sep }
+}
+
+// WithAuthenticatorMasterUsers flips the top-level master-user
+// opt-in. When false (the default), NewAuthenticator returns an
+// Authenticator-only wrapper — type-asserts to
+// MasterAuthenticator at every protocol entry point fail, so any
+// distinct SASL PLAIN authzid is rejected before the chain is
+// consulted. When true, the chainAuthenticator's
+// AuthenticateMaster method is exposed and the masterdb /
+// separator options take effect.
+func WithAuthenticatorMasterUsers(enabled bool) AuthenticatorOption {
+	return func(a *chainAuthenticator) { a.masterUsersEnabled = enabled }
+}
+
 // NewAuthenticator wraps one or more Passdb drivers into the
 // session-friendly Authenticator surface. Optionally attach a
 // userdb via WithAuthenticatorUserdb so the bag returned by every
 // successful Authenticate also carries userdb_* fields the
 // session path needs for mail-storage setup.
+//
+// Master-user impersonation is opt-in via
+// WithAuthenticatorMasterUsers(true). When disabled (the default)
+// the returned Authenticator deliberately does NOT implement
+// MasterAuthenticator — so session-level type assertions in
+// IMAP/POP3/Submission fail and any distinct SASL PLAIN authzid
+// is rejected. Operators must explicitly flip the toggle (and
+// configure masterdb / separator) to enable the feature.
 func NewAuthenticator(passdbs []Passdb, opts ...AuthenticatorOption) Authenticator {
 	a := &chainAuthenticator{chain: Chain(passdbs)}
 	for _, opt := range opts {
 		opt(a)
 	}
+	if !a.masterUsersEnabled {
+		// Hide AuthenticateMaster behind a wrapper that exposes
+		// only the Authenticator surface. This makes the
+		// type-assert in session.Auth(PLAIN) fail cleanly.
+		return &plainOnlyAuthenticator{inner: a}
+	}
 	return a
 }
 
+// plainOnlyAuthenticator wraps chainAuthenticator to hide its
+// AuthenticateMaster method when master-users are disabled.
+// Implements Authenticator but NOT MasterAuthenticator on
+// purpose — Go method-set lookup walks the embedded type and
+// would expose AuthenticateMaster if we just embedded the inner
+// pointer, so the field is named and the wrapper redeclares
+// only the methods it wants to expose.
+type plainOnlyAuthenticator struct{ inner *chainAuthenticator }
+
+func (p *plainOnlyAuthenticator) Authenticate(username, password, service string) (*AuthResponse, error) {
+	return p.inner.Authenticate(username, password, service)
+}
+
 type chainAuthenticator struct {
-	chain  Chain
-	userdb Userdb
+	chain               Chain
+	userdb              Userdb
+	masterdb            []Passdb
+	masterUserSeparator string
+	masterUsersEnabled  bool
 }
 
 func (c *chainAuthenticator) Authenticate(username, password, service string) (*AuthResponse, error) {
@@ -167,6 +246,61 @@ func (c *chainAuthenticator) Authenticate(username, password, service string) (*
 		resp.Username = v
 	} else {
 		resp.Username = username
+	}
+	if v, ok := req.Fields.Get("home"); ok {
+		resp.Home = v
+	}
+	if v, ok := req.Fields.Get("mail"); ok {
+		resp.MailLoc = v
+	}
+	return resp, err
+}
+
+// AuthenticateMaster implements MasterAuthenticator. Routing
+// matches the wire Server.authenticate:
+//   - authzid empty (no impersonation) → RunAuth path.
+//   - authzid set and == authid → caller asked to log in as self;
+//     treat as regular login (RFC 4616 permits this).
+//   - authzid set and != authid → RunMasterAuth path.
+//
+// The `target<sep>master` separator workaround is applied when
+// authzid is empty AND masterUserSeparator is non-empty.
+func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, service string) (*AuthResponse, error) {
+	// Defence-in-depth: even if a caller obtains the
+	// chainAuthenticator directly (bypassing the wrapper
+	// NewAuthenticator hands out when master-users are disabled),
+	// honour the toggle here too. Distinct authzid against a
+	// disabled chain is treated as a regular login of the
+	// AUTHID — the safe fallback that never grants impersonation.
+	if !c.masterUsersEnabled {
+		return c.Authenticate(authid, password, service)
+	}
+	target := authzid
+	master := authid
+	if target == "" && c.masterUserSeparator != "" {
+		if m, t := SplitMasterFromAuthid(authid, c.masterUserSeparator); t != "" {
+			master = m
+			target = t
+		}
+	}
+	if target == "" || target == master {
+		return c.Authenticate(master, password, service)
+	}
+	req := &Request{
+		Username: master,
+		Password: password,
+		Service:  service,
+		Fields:   NewFields(),
+	}
+	result, err := RunMasterAuth(c.chain, Chain(c.masterdb), c.userdb, target, req)
+	resp := &AuthResponse{
+		Result: authResultFromChain(result),
+		Fields: req.Fields,
+	}
+	if v, ok := req.Fields.Get("user"); ok {
+		resp.Username = v
+	} else {
+		resp.Username = req.Username
 	}
 	if v, ok := req.Fields.Get("home"); ok {
 		resp.Home = v
@@ -248,6 +382,133 @@ func writeUserdbFields(f *Fields, ui *UserInfo) {
 	})
 }
 
+// RunMasterAuth handles a master-user impersonation request:
+// the master's password is verified, the request switches
+// identity to target, and userdb runs against target.
+//
+// req.Username MUST be the master when the function is called.
+// On success, req.Fields is mutated: `master_user` is overwritten
+// with the master's username (Dovecot semantics — same field name
+// is reused on the wire for audit), `original_user` + `login_user`
+// + `user` are set to target, and req.Username is updated to
+// target so any downstream consumer reading the struct sees the
+// post-impersonation identity.
+//
+// Authorisation model (matches Dovecot's two equivalent paths):
+//
+//  1. masterdb chain (if non-empty) authenticates the master
+//     with its own password. ResultOK → impersonation allowed.
+//  2. Otherwise the main passdb chain authenticates the master;
+//     the result must carry `master_user=yes` (truthy per the
+//     reserved-field bool spelling) — that's the per-user master
+//     flag Dovecot's `auth_master_user_passdb` mode uses.
+//
+// On either failure (no masterdb hit AND no `master_user=yes`
+// flag from passdb) the request is rejected with ResultFail.
+// req.Fields is rolled back to the pre-call snapshot so the
+// caller sees an empty bag, not the master's verified passdb
+// fields leaking into a failed impersonation response.
+//
+// userdb runs for TARGET, not for the master. Errors / misses
+// behave like in RunAuth — they do not downgrade ResultOK.
+func RunMasterAuth(passdbs, masterdb Chain, userdb Userdb, target string, req *Request) (Result, error) {
+	if req.Fields == nil {
+		req.Fields = NewFields()
+	}
+	preSnap := req.Fields.Snapshot()
+
+	// Phase 1: try the dedicated masterdb chain. Walked
+	// per-driver (not via Chain.Authenticate) because the
+	// distinction matters here:
+	//   - any driver returns ResultOK → impersonation allowed.
+	//   - any driver returns ResultFail → STOP, do not fall
+	//     through to the main passdb. The driver knows the
+	//     master and rejected the password; falling through
+	//     would let the same master succeed via its per-user
+	//     `master_user=yes` flag in passdb on the wrong
+	//     password.
+	//   - all drivers return ResultNext → masterdb does not
+	//     know this user; fall through to the per-user flag
+	//     in the main passdb.
+	// Chain.Authenticate collapses Next-exhaust and explicit
+	// Fail into the same ResultFail, which would break the
+	// "stop on Fail, fall through on all-Next" contract above.
+	masterOK := false
+	if len(masterdb) > 0 {
+		for _, db := range masterdb {
+			snap := req.Fields.Snapshot()
+			result, err := db.Authenticate(req)
+			if err != nil {
+				req.Fields.Rollback(preSnap)
+				return ResultTempFail, err
+			}
+			switch result {
+			case ResultOK:
+				masterOK = true
+			case ResultFail:
+				req.Fields.Rollback(preSnap)
+				return ResultFail, nil
+			case ResultTempFail:
+				req.Fields.Rollback(preSnap)
+				return ResultTempFail, err
+			case ResultNext:
+				req.Fields.Rollback(snap)
+				continue
+			}
+			break
+		}
+	}
+
+	// Phase 2: per-user `master_user=yes` flag in main passdb.
+	// Only consulted when masterdb did not authoritatively
+	// reject (Next, or no masterdb configured).
+	if !masterOK {
+		snap := req.Fields.Snapshot()
+		result, err := passdbs.Authenticate(req)
+		if err != nil {
+			req.Fields.Rollback(preSnap)
+			return ResultTempFail, err
+		}
+		if result == ResultOK {
+			if v, _ := req.Fields.Get("master_user"); IsTruthy(v) {
+				masterOK = true
+			}
+		}
+		if !masterOK {
+			req.Fields.Rollback(snap)
+		}
+	}
+
+	if !masterOK {
+		req.Fields.Rollback(preSnap)
+		return ResultFail, nil
+	}
+
+	// Master authenticated. Switch identity to target.
+	masterName := req.Username
+	req.Username = target
+	req.Fields.Set("master_user", masterName)
+	req.Fields.Set("original_user", target)
+	req.Fields.Set("login_user", target)
+	req.Fields.Set("user", target)
+
+	// userdb lookup for TARGET — not the master.
+	if userdb != nil && !hasUserdbFields(req.Fields) {
+		info, ulerr := userdb.Lookup(target)
+		if ulerr != nil {
+			slog.Warn("auth/protocol: userdb lookup for master target failed",
+				"master", masterName, "target", target, "err", ulerr)
+		} else if info == nil {
+			slog.Warn("auth/protocol: userdb miss for master target",
+				"master", masterName, "target", target)
+		} else {
+			writeUserdbFields(req.Fields, info)
+		}
+	}
+
+	return ResultOK, nil
+}
+
 // Chain composes multiple Passdb backends with first-hit-wins
 // semantics. Each entry runs under a per-entry Fields.Snapshot so
 // a driver's partial mutations are rolled back on ResultNext.
@@ -299,13 +560,18 @@ func authResultFromChain(r Result) AuthResult {
 
 // Server is the yarilo-auth TCP+mTLS server. Holds the passdb
 // chain plus an optional userdb that enriches successful auth
-// responses with userdb_* fields (Phase AUTH-2 PR 3).
+// responses with userdb_* fields (Phase AUTH-2 PR 3) plus an
+// optional masterdb chain + separator for master-user
+// impersonation (Phase AUTH-3).
 type Server struct {
-	passdbs []Passdb
-	userdb  Userdb
-	connUID atomic.Uint64
-	pid     int
-	cookie  string
+	passdbs             []Passdb
+	userdb              Userdb
+	masterdb            []Passdb
+	masterUserSeparator string
+	masterUsersEnabled  bool
+	connUID             atomic.Uint64
+	pid                 int
+	cookie              string
 }
 
 // ServerOption tunes a NewServer construction.
@@ -319,6 +585,38 @@ type ServerOption func(*Server)
 // separate master-protocol round-trip.
 func WithUserdb(u Userdb) ServerOption {
 	return func(s *Server) { s.userdb = u }
+}
+
+// WithMasterdb attaches a dedicated masterdb chain. Master-user
+// impersonation requests (PLAIN SASL responses where authzid is
+// set and differs from authid) authenticate the authid against
+// the masterdb first; if absent or not configured, the request
+// falls through to the regular passdb and looks for a
+// `master_user=yes` field on the result (Dovecot's per-user master
+// flag — see auth/auth-request-fields.c). Either mechanism grants
+// the impersonation.
+func WithMasterdb(passdbs []Passdb) ServerOption {
+	return func(s *Server) { s.masterdb = passdbs }
+}
+
+// WithMasterUserSeparator enables Dovecot's `target<sep>master`
+// workaround for SASL PLAIN clients that cannot supply authzid
+// in the standard third-field position. Typical value is `*`
+// (Dovecot's `auth_master_user_separator` default). Empty
+// disables the workaround — only RFC 4616 authzid is honoured.
+func WithMasterUserSeparator(sep string) ServerOption {
+	return func(s *Server) { s.masterUserSeparator = sep }
+}
+
+// WithMasterUsers is the top-level opt-in for master-user
+// impersonation on the wire AUTH path. While false (the default)
+// handleAuth ignores any SASL PLAIN authzid the client sends
+// AND skips the separator workaround — every request routes
+// through the regular passdb chain, indistinguishable from a
+// build without master support. Set to true to expose the
+// master flow at the wire level.
+func WithMasterUsers(enabled bool) ServerOption {
+	return func(s *Server) { s.masterUsersEnabled = enabled }
 }
 
 // NewServer creates an auth server with the given passdb chain.
@@ -433,13 +731,36 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	}
 	_ = service
 
-	username, password, ok := parsePlain(mech, resp)
+	authzid, authid, password, ok := parsePlain(mech, resp)
 	if !ok {
 		fmt.Fprintf(conn, "FAIL\t%s\treason=bad-credentials\n", id)
 		return
 	}
+	// Master-user separator workaround (RFC 4616 §2.1 doesn't cover
+	// this case; Dovecot's `auth_master_user_separator` does):
+	// clients that can't supply authzid encode it as
+	// `target<sep>master` inside the authid field. Only honoured
+	// when master-users are enabled AND no authzid was given AND
+	// a separator is configured.
+	//
+	// When master-users are disabled at the server level, BOTH
+	// the authzid and the separator workaround are ignored — the
+	// request routes through the regular passdb chain as if the
+	// client had sent a plain `authid\0password` PLAIN response.
+	// Indistinguishable from a build without master support.
+	target := ""
+	master := authid
+	if s.masterUsersEnabled {
+		target = authzid
+		if target == "" && s.masterUserSeparator != "" {
+			if m, t := SplitMasterFromAuthid(authid, s.masterUserSeparator); t != "" {
+				master = m
+				target = t
+			}
+		}
+	}
 
-	res, err := s.authenticate(username, password, service)
+	res, err := s.authenticate(target, master, password, service)
 	if err != nil || res == nil || res.Result != AuthOK {
 		if err != nil || (res != nil && res.Result == AuthTempFail) {
 			fmt.Fprintf(conn, "FAIL\t%s\ttemp_fail\n", id)
@@ -487,21 +808,31 @@ func buildAuthOK(id string, res *AuthResponse) string {
 	return reply
 }
 
-// authenticate runs the configured passdb chain against the
+// authenticate runs the configured auth chains against the
 // supplied credentials and projects the chain-internal Result onto
 // the wire-shaped AuthResponse handleAuth knows how to serialise.
-// All bag fields the chain accumulated land on resp.Fields; the
-// typed Username / Home / MailLoc members are mirrored from the
-// bag so the pre-PR-2 buildAuthOK fallback path stays usable for
-// any future caller that bypasses the bag.
-func (s *Server) authenticate(username, password, service string) (*AuthResponse, error) {
+//
+// When target is empty (no impersonation) the call goes through
+// RunAuth: passdb chain → userdb enrich. When target is non-empty
+// and ≠ master (impersonation request) the call routes through
+// RunMasterAuth: masterdb / passdb master_user flag → switch
+// identity → userdb for target.
+func (s *Server) authenticate(target, master, password, service string) (*AuthResponse, error) {
 	req := &Request{
-		Username: username,
+		Username: master,
 		Password: password,
 		Service:  service,
 		Fields:   NewFields(),
 	}
-	result, err := RunAuth(Chain(s.passdbs), s.userdb, req)
+	var (
+		result Result
+		err    error
+	)
+	if target != "" && target != master {
+		result, err = RunMasterAuth(Chain(s.passdbs), Chain(s.masterdb), s.userdb, target, req)
+	} else {
+		result, err = RunAuth(Chain(s.passdbs), s.userdb, req)
+	}
 	resp := &AuthResponse{
 		Result: authResultFromChain(result),
 		Fields: req.Fields,
@@ -509,7 +840,7 @@ func (s *Server) authenticate(username, password, service string) (*AuthResponse
 	if v, ok := req.Fields.Get("user"); ok {
 		resp.Username = v
 	} else {
-		resp.Username = username
+		resp.Username = req.Username
 	}
 	if v, ok := req.Fields.Get("home"); ok {
 		resp.Home = v
@@ -520,17 +851,58 @@ func (s *Server) authenticate(username, password, service string) (*AuthResponse
 	return resp, err
 }
 
-// parsePlain decodes PLAIN SASL or treats resp as "user\0pass" (LOGIN).
-func parsePlain(mech, resp string) (username, password string, ok bool) {
-	// PLAIN: authzid\0authid\0passwd (base64 already decoded by client field)
+// parsePlain decodes a SASL PLAIN response (RFC 4616) into its
+// three logical fields. The wire format is
+// `authzid\0authid\0passwd` — base64 already decoded by the
+// caller (yarilo-auth's AUTH command transports the response
+// pre-decoded inside the `resp=` field).
+//
+//   - authzid — the user the caller wants to log in AS. When
+//     non-empty and different from authid, this is a master-user
+//     impersonation request — see RunMasterAuth.
+//   - authid  — the user supplying the password (the master in
+//     an impersonation request, the regular user otherwise).
+//   - password — the master's / user's password.
+//
+// LOGIN mech (legacy) does not carry authzid; both the two-field
+// and three-field PLAIN shapes are accepted so a client that
+// elides the empty leading authzid still works.
+func parsePlain(mech, resp string) (authzid, authid, password string, ok bool) {
 	if mech == "PLAIN" || mech == "LOGIN" {
 		parts := strings.SplitN(resp, "\x00", 3)
 		if len(parts) == 3 {
-			return parts[1], parts[2], true
+			return parts[0], parts[1], parts[2], true
 		}
 		if len(parts) == 2 {
-			return parts[0], parts[1], true
+			return "", parts[0], parts[1], true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
+}
+
+// SplitMasterFromAuthid extracts a (master, target) pair from an
+// authid that uses the `target<sep>master` workaround for clients
+// that cannot supply authzid in the PLAIN response (older Outlook,
+// some mobile clients). Returns ("", authid) when sep is empty or
+// not found — authid passes through unchanged.
+//
+// Mirrors Dovecot's `auth_master_user_separator` (default `*`)
+// from auth/auth-request-fields.c: a SASL response of the form
+// `\0target*master\0password` is equivalent to the standards-
+// compliant `target\0master\0password`.
+func SplitMasterFromAuthid(authid, sep string) (master, target string) {
+	if sep == "" {
+		return authid, ""
+	}
+	idx := strings.Index(authid, sep)
+	if idx < 0 {
+		return authid, ""
+	}
+	target = authid[:idx]
+	master = authid[idx+len(sep):]
+	if target == "" || master == "" {
+		// Bare separator or empty side — treat as no split.
+		return authid, ""
+	}
+	return master, target
 }

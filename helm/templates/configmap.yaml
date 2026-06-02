@@ -160,6 +160,32 @@ data:
           skip_schema: true
           {{- end }}
         {{- end }}
+      master_users:
+        enabled: {{ .Values.components.auth.masterUsers.enabled | default false }}
+        separator: {{ .Values.components.auth.masterUsers.separator | default "*" | quote }}
+        masterdb:
+          {{- range (.Values.components.auth.masterUsers.masterdb | default list) }}
+          - driver: {{ .driver | quote }}
+            dsn: {{ .dsn | quote }}
+            {{- with .passwordQuery }}
+            password_query: |
+              {{- . | nindent 14 }}
+            {{- end }}
+            {{- with .userQuery }}
+            user_query: |
+              {{- . | nindent 14 }}
+            {{- end }}
+            {{- with .iterateQuery }}
+            iterate_query: |
+              {{- . | nindent 14 }}
+            {{- end }}
+            {{- with .defaultPassScheme }}
+            default_pass_scheme: {{ . | quote }}
+            {{- end }}
+            {{- if .skipSchema }}
+            skip_schema: true
+            {{- end }}
+          {{- end }}
 
     {{- $storage := coalesce .Values.components.imap.storage .Values.components.pop3.storage .Values.components.lmtp.storage }}
     {{- if $storage }}
