@@ -40,13 +40,17 @@ func dispatchAuth(args []string) error {
 }
 
 // cmdAuthSCRAMVerifier reads a plain password (from --password or
-// stdin) and prints a {SCRAM-SHA-256} verifier blob suitable for
-// dropping into the SQL `password` column. The plain password
+// stdin) and prints a {SCRAM-SHA-<mech>} verifier blob suitable
+// for dropping into the SQL `password` column. The plain password
 // never crosses any network boundary — derivation runs locally.
 //
 // Usage:
 //
-//	yarilo-admin auth scram-verifier [--iterations N] [--password X]
+//	yarilo-admin auth scram-verifier [--mech sha256|sha1] [--iterations N] [--password X]
+//
+// --mech defaults to sha256 (preferred for new deployments). sha1
+// is provided for legacy clients (older Thunderbird, Apple Mail
+// fallback) that only speak SCRAM-SHA-1.
 //
 // When --password is omitted, the command reads one line from
 // stdin (with prompt suppression so terminal echo can be
@@ -54,6 +58,7 @@ func dispatchAuth(args []string) error {
 // `stty -echo; yarilo-admin auth scram-verifier; stty echo`).
 func cmdAuthSCRAMVerifier(args []string) error {
 	fs := flag.NewFlagSet("scram-verifier", flag.ContinueOnError)
+	mech := fs.String("mech", "sha256", "digest family: sha256 (default) | sha1 (legacy)")
 	iterations := fs.Int("iterations", 0, "PBKDF2 iteration count (0 = library default: 600000)")
 	password := fs.String("password", "", "plain password (omit to read from stdin)")
 	if err := fs.Parse(args); err != nil {
@@ -68,11 +73,25 @@ func cmdAuthSCRAMVerifier(args []string) error {
 	if plain == "" {
 		return errors.New("empty password")
 	}
-	creds, err := sasl.GenerateScramSha256Credentials(plain, *iterations)
+	var (
+		creds  *sasl.ScramCredentials
+		scheme string
+		err    error
+	)
+	switch strings.ToLower(*mech) {
+	case "sha256", "scram-sha-256":
+		creds, err = sasl.GenerateScramSha256Credentials(plain, *iterations)
+		scheme = "SCRAM-SHA-256"
+	case "sha1", "scram-sha-1":
+		creds, err = sasl.GenerateScramSha1Credentials(plain, *iterations)
+		scheme = "SCRAM-SHA-1"
+	default:
+		return fmt.Errorf("unknown --mech %q (want sha256 or sha1)", *mech)
+	}
 	if err != nil {
 		return err
 	}
-	fmt.Printf("{SCRAM-SHA-256}%s\n", sasl.EncodeScramCredentials(creds))
+	fmt.Printf("{%s}%s\n", scheme, sasl.EncodeScramCredentials(creds))
 	return nil
 }
 
@@ -152,8 +171,8 @@ func printAuthUsage() {
 
 Commands:
   cache flush [<user-mask> ...]  evict auth-cache entries matching the mask(s); no mask = full flush
-  scram-verifier [--iterations N] [--password X]
-                                 derive a {SCRAM-SHA-256} verifier blob for the SQL password column
+  scram-verifier [--mech sha256|sha1] [--iterations N] [--password X]
+                                 derive a {SCRAM-SHA-256} (default) or {SCRAM-SHA-1} verifier blob for the SQL password column
 
 Auth-plane flags:
   --auth-addr  yarilo-auth master socket (env: YARILO_AUTH_ADDR, default: localhost:9102)

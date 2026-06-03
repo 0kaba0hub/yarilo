@@ -47,6 +47,13 @@ type SCRAMSha256LookupAuthenticator interface {
 	LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error)
 }
 
+// SCRAMSha1LookupAuthenticator is the SHA-1 counterpart of
+// SCRAMSha256LookupAuthenticator. Same type-assertion pattern
+// gates SCRAM-SHA-1 / SCRAM-SHA-1-PLUS advertisement.
+type SCRAMSha1LookupAuthenticator interface {
+	LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error)
+}
+
 // Options configures the submission server.
 type Options struct {
 	// Infrastructure (per-listener; set by backend from ServiceConfig).
@@ -252,6 +259,12 @@ func (s *session) AuthMechanisms() []string {
 			out = append(out, sasl.ScramSha256Plus)
 		}
 	}
+	if _, ok := s.srv.opts.Auth.(SCRAMSha1LookupAuthenticator); ok {
+		out = append(out, sasl.ScramSha1)
+		if s.tlsExporter() != nil {
+			out = append(out, sasl.ScramSha1Plus)
+		}
+	}
 	return out
 }
 
@@ -266,6 +279,15 @@ type scramLookupShim struct {
 
 func (s scramLookupShim) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
 	return s.a.LookupSCRAMSha256(username)
+}
+
+// scramSha1LookupShim mirrors scramLookupShim for the SHA-1 family.
+type scramSha1LookupShim struct {
+	a SCRAMSha1LookupAuthenticator
+}
+
+func (s scramSha1LookupShim) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error) {
+	return s.a.LookupSCRAMSha1(username)
 }
 
 // completeSCRAMLogin is the OnSuccess hook for the session's
@@ -341,6 +363,22 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 			return nil, goSmtp.ErrAuthUnknownMechanism
 		}
 		return scram.NewSha256Plus(scramLookupShim{lookup}, cb, s.completeSCRAMLogin), nil
+	case sasl.ScramSha1:
+		lookup, ok := s.srv.opts.Auth.(SCRAMSha1LookupAuthenticator)
+		if !ok {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		return scram.NewSha1(scramSha1LookupShim{lookup}, s.completeSCRAMLogin), nil
+	case sasl.ScramSha1Plus:
+		lookup, ok := s.srv.opts.Auth.(SCRAMSha1LookupAuthenticator)
+		if !ok {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		cb := s.tlsExporter()
+		if cb == nil {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		return scram.NewSha1Plus(scramSha1LookupShim{lookup}, cb, s.completeSCRAMLogin), nil
 	}
 	return nil, goSmtp.ErrAuthUnknownMechanism
 }

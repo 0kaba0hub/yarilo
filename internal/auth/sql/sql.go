@@ -187,6 +187,17 @@ func (p *Passdb) LookupUser(username string) (home, mailLoc string, err error) {
 // exchange completes with a uniform auth-failed outcome and an
 // attacker cannot enumerate users.
 func (p *Passdb) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
+	return p.lookupSCRAM(username, ParseSCRAMSha256Credentials)
+}
+
+// LookupSCRAMSha1 satisfies protocol.SCRAMSha1Lookup. SHA-1
+// counterpart of LookupSCRAMSha256 — uses the same password_query
+// path; only the verifier-blob scheme prefix differs.
+func (p *Passdb) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error) {
+	return p.lookupSCRAM(username, ParseSCRAMSha1Credentials)
+}
+
+func (p *Passdb) lookupSCRAM(username string, parse func(string) (*sasl.ScramCredentials, bool)) (*sasl.ScramCredentials, error) {
 	query, args := substituteVars(p.driver, p.passwordQuery, username)
 	var storedPass, home, mailLoc string
 	var enabled int
@@ -202,7 +213,7 @@ func (p *Passdb) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, err
 	if enabled == 0 {
 		return nil, nil
 	}
-	creds, ok := ParseSCRAMSha256Credentials(storedPass)
+	creds, ok := parse(storedPass)
 	if !ok {
 		return nil, nil
 	}

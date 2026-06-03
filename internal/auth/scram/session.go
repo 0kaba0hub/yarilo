@@ -66,6 +66,31 @@ func NewSha256Plus(lookup protocol.SCRAMSha256Lookup, cbData []byte, onSuccess f
 	return s
 }
 
+// NewSha1 builds the SHA-1 session adapter. Same shape as
+// NewSha256 — only the digest family of the underlying SASL
+// server (and the lookup interface) differs.
+func NewSha1(lookup protocol.SCRAMSha1Lookup, onSuccess func(string) error) *Session {
+	s := &Session{OnSuccess: onSuccess}
+	s.inner = sasl.NewScramSha1Server(func(user string) (*sasl.ScramCredentials, error) {
+		s.User = user
+		return lookup.LookupSCRAMSha1(user)
+	})
+	return s
+}
+
+// NewSha1Plus is the channel-bound SHA-1 variant.
+func NewSha1Plus(lookup protocol.SCRAMSha1Lookup, cbData []byte, onSuccess func(string) error) *Session {
+	s := &Session{OnSuccess: onSuccess}
+	s.inner = sasl.NewScramSha1PlusServer(
+		func(user string) (*sasl.ScramCredentials, error) {
+			s.User = user
+			return lookup.LookupSCRAMSha1(user)
+		},
+		sasl.ScramServerOptions{ChannelBindingData: cbData},
+	)
+	return s
+}
+
 // Next satisfies sasl.Server. Delegates to the underlying SCRAM
 // server and runs OnSuccess after a clean done=true.
 func (s *Session) Next(response []byte) (challenge []byte, done bool, err error) {

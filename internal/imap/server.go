@@ -456,6 +456,12 @@ func (s *session) AuthenticateMechanisms() []string {
 			out = append(out, sasl.ScramSha256Plus)
 		}
 	}
+	if _, ok := s.srv.opts.Auth.(protocol.SCRAMSha1Lookup); ok {
+		out = append(out, sasl.ScramSha1)
+		if s.tlsExporter() != nil {
+			out = append(out, sasl.ScramSha1Plus)
+		}
+	}
 	return out
 }
 
@@ -504,6 +510,29 @@ func (s *session) Authenticate(mech string) (sasl.Server, error) {
 			}
 		}
 		return scram.NewSha256Plus(lookup, cb, s.completeSCRAMLogin), nil
+	case sasl.ScramSha1:
+		lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha1Lookup)
+		if !ok {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo, Text: "SASL mechanism not supported",
+			}
+		}
+		return scram.NewSha1(lookup, s.completeSCRAMLogin), nil
+	case sasl.ScramSha1Plus:
+		lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha1Lookup)
+		if !ok {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo, Text: "SASL mechanism not supported",
+			}
+		}
+		cb := s.tlsExporter()
+		if cb == nil {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Text: "Channel binding unavailable",
+			}
+		}
+		return scram.NewSha1Plus(lookup, cb, s.completeSCRAMLogin), nil
 	}
 	return nil, &imaplib.Error{
 		Type: imaplib.StatusResponseTypeNo,
