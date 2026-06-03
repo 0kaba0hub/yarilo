@@ -236,7 +236,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	case sasl.Plain:
 		return sasl.NewPlainServer(s.authPlainSASL), nil
 	case sasl.Login:
-		return newLoginServer(func(username, password string) error {
+		return sasl.NewLoginServer(func(username, password string) error {
 			return s.srv.opts.Auth.AuthPlain(username, password)
 		}), nil
 	}
