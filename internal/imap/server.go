@@ -21,6 +21,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/0kaba0hub/yarilo/internal/auth/scram"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
 	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
@@ -437,12 +438,23 @@ func (s *session) delayFailure() {
 
 // AuthenticateMechanisms advertises the SASL mechanisms our session
 // implements itself (overriding go-imap's built-in PLAIN handler).
-// PLAIN is unconditional; OAUTHBEARER lights up when the operator
-// configured at least one OAuth provider — see Options.OAuth2Enabled.
+// PLAIN is unconditional; OAUTHBEARER lights up when an OAuth
+// provider is configured; SCRAM-SHA-256 + SCRAM-SHA-256-PLUS light
+// up when the configured Authenticator implements
+// SCRAMSha256Lookup (i.e. at least one passdb carries SCRAM
+// verifiers). The PLUS variant additionally requires the
+// connection to be over TLS 1.3+ so the RFC 9266 exporter is
+// available.
 func (s *session) AuthenticateMechanisms() []string {
 	out := []string{sasl.Plain}
 	if s.srv.opts.OAuth2Enabled {
 		out = append(out, sasl.OAuthBearer)
+	}
+	if _, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup); ok {
+		out = append(out, sasl.ScramSha256)
+		if s.tlsExporter() != nil {
+			out = append(out, sasl.ScramSha256Plus)
+		}
 	}
 	return out
 }
@@ -453,7 +465,10 @@ func (s *session) AuthenticateMechanisms() []string {
 // the response shape (no authzid) to the standard Login path so
 // stubs / non-master backends keep working. OAUTHBEARER routes the
 // bearer token through the regular Authenticator surface (the OAuth
-// passdb downstream extracts the token from req.Password).
+// passdb downstream extracts the token from req.Password). SCRAM
+// variants route through the SCRAMSha256Lookup interface — the
+// verifier never crosses the wire and no plain password is ever
+// compared.
 func (s *session) Authenticate(mech string) (sasl.Server, error) {
 	switch mech {
 	case sasl.Plain:
@@ -466,11 +481,69 @@ func (s *session) Authenticate(mech string) (sasl.Server, error) {
 			}
 		}
 		return oauth2.NewOAuthBearerSASLServer(s.authenticateOAuthBearer), nil
+	case sasl.ScramSha256:
+		lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup)
+		if !ok {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo, Text: "SASL mechanism not supported",
+			}
+		}
+		return scram.NewSha256(lookup, s.completeSCRAMLogin), nil
+	case sasl.ScramSha256Plus:
+		lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup)
+		if !ok {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo, Text: "SASL mechanism not supported",
+			}
+		}
+		cb := s.tlsExporter()
+		if cb == nil {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Text: "Channel binding unavailable",
+			}
+		}
+		return scram.NewSha256Plus(lookup, cb, s.completeSCRAMLogin), nil
 	}
 	return nil, &imaplib.Error{
 		Type: imaplib.StatusResponseTypeNo,
 		Text: "SASL mechanism not supported",
 	}
+}
+
+// completeSCRAMLogin is the OnSuccess hook for SCRAM session
+// adapters. The SCRAM SASL server has already verified the user
+// (via stored StoredKey + ClientProof); here we run the regular
+// post-auth setup so the IMAP session lands fully initialised.
+func (s *session) completeSCRAMLogin(username string) error {
+	return s.completeLogin(&protocol.AuthResponse{
+		Result:   protocol.AuthOK,
+		Username: username,
+	})
+}
+
+// tlsExporter returns the RFC 9266 TLS exporter output for the
+// session's underlying TLS connection, or nil when the conn is
+// not TLS 1.3+. The 32-byte exporter is the channel-binding
+// material for SCRAM-SHA-256-PLUS.
+func (s *session) tlsExporter() []byte {
+	netConn := s.imapConn.NetConn()
+	if netConn == nil {
+		return nil
+	}
+	tc, ok := netConn.(*tls.Conn)
+	if !ok {
+		return nil
+	}
+	state := tc.ConnectionState()
+	if state.Version < tls.VersionTLS13 {
+		return nil
+	}
+	out, err := state.ExportKeyingMaterial("EXPORTER-Channel-Binding", nil, 32)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // authenticateOAuthBearer is the OAuthBearerAuthenticator callback

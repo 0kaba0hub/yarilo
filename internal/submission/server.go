@@ -17,6 +17,7 @@ import (
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
+	"github.com/0kaba0hub/yarilo/internal/auth/scram"
 	"github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
@@ -35,6 +36,15 @@ type Authenticator interface {
 // distinct authzid.
 type MasterAuthenticator interface {
 	AuthPlainMaster(authzid, authid, password string) error
+}
+
+// SCRAMSha256LookupAuthenticator exposes per-user SCRAM-SHA-256
+// verifiers to the session-layer SASL mech. The submission
+// session type-asserts opts.Auth into this interface to decide
+// whether to advertise SCRAM-SHA-256 / SCRAM-SHA-256-PLUS in
+// EHLO's AUTH= extension.
+type SCRAMSha256LookupAuthenticator interface {
+	LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error)
 }
 
 // Options configures the submission server.
@@ -236,6 +246,63 @@ func (s *session) AuthMechanisms() []string {
 	if s.srv.opts.OAuth2Enabled {
 		out = append(out, sasl.OAuthBearer)
 	}
+	if _, ok := s.srv.opts.Auth.(SCRAMSha256LookupAuthenticator); ok {
+		out = append(out, sasl.ScramSha256)
+		if s.tlsExporter() != nil {
+			out = append(out, sasl.ScramSha256Plus)
+		}
+	}
+	return out
+}
+
+// scramLookupShim adapts the submission-side
+// SCRAMSha256LookupAuthenticator to the protocol-side
+// SCRAMSha256Lookup that scram.NewSha256 expects. One method,
+// one delegation — the indirection keeps the protocol package
+// out of the submission package's public interface set.
+type scramLookupShim struct {
+	a SCRAMSha256LookupAuthenticator
+}
+
+func (s scramLookupShim) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
+	return s.a.LookupSCRAMSha256(username)
+}
+
+// completeSCRAMLogin is the OnSuccess hook for the session's
+// SCRAM adapter. The SCRAM exchange has verified the user; we
+// only need to record that the session is authenticated.
+// AuthPlain is the existing surface go-smtp uses to mark the
+// session authenticated; calling it with empty password keeps
+// the surface uniform across all SASL mechs — the chainAuth
+// adapter on the backend recognises this path as "already
+// SCRAM-verified, no further check".
+func (s *session) completeSCRAMLogin(_ string) error {
+	// SCRAM success means the SCRAM SASL server already verified
+	// the credential. go-smtp uses the session's authenticated
+	// state to gate MAIL FROM; the framework flips that bit
+	// automatically once Auth's sasl.Server returns done=true
+	// with no error.
+	return nil
+}
+
+// tlsExporter returns the 32-byte RFC 9266 channel-binding
+// material derived from the underlying TLS conn, or nil when the
+// connection is not TLS 1.3+.
+func (s *session) tlsExporter() []byte {
+	if s.conn == nil {
+		return nil
+	}
+	state, ok := s.conn.TLSConnectionState()
+	if !ok {
+		return nil
+	}
+	if state.Version < tls.VersionTLS13 {
+		return nil
+	}
+	out, err := state.ExportKeyingMaterial("EXPORTER-Channel-Binding", nil, 32)
+	if err != nil {
+		return nil
+	}
 	return out
 }
 
@@ -258,6 +325,22 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 			return nil, goSmtp.ErrAuthUnknownMechanism
 		}
 		return oauth2.NewOAuthBearerSASLServer(s.authOAuthBearerSASL), nil
+	case sasl.ScramSha256:
+		lookup, ok := s.srv.opts.Auth.(SCRAMSha256LookupAuthenticator)
+		if !ok {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		return scram.NewSha256(scramLookupShim{lookup}, s.completeSCRAMLogin), nil
+	case sasl.ScramSha256Plus:
+		lookup, ok := s.srv.opts.Auth.(SCRAMSha256LookupAuthenticator)
+		if !ok {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		cb := s.tlsExporter()
+		if cb == nil {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		return scram.NewSha256Plus(scramLookupShim{lookup}, cb, s.completeSCRAMLogin), nil
 	}
 	return nil, goSmtp.ErrAuthUnknownMechanism
 }

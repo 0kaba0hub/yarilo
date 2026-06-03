@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/emersion/go-sasl"
+
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
@@ -170,6 +172,41 @@ func (p *Passdb) LookupUser(username string) (home, mailLoc string, err error) {
 		return "", "", errors.New("auth/sql: user_query not configured")
 	}
 	return p.lookupUser(username)
+}
+
+// LookupSCRAMSha256 satisfies protocol.SCRAMSha256Lookup. The SQL
+// passdb runs its configured password_query, recognises the
+// `{SCRAM-SHA-256}` scheme prefix on the password column, and
+// returns the parsed ScramCredentials so the SCRAM-SHA-256 SASL
+// mechanism can drive challenge-response without ever seeing a
+// plain password.
+//
+// Returns (nil, nil) for any of: user unknown / user disabled /
+// stored password not a SCRAM-SHA-256 verifier. The session-side
+// SCRAM server treats nil as "fabricate a fake verifier" so the
+// exchange completes with a uniform auth-failed outcome and an
+// attacker cannot enumerate users.
+func (p *Passdb) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
+	query, args := substituteVars(p.driver, p.passwordQuery, username)
+	var storedPass, home, mailLoc string
+	var enabled int
+	err := p.db.QueryRowContext(context.Background(), query, args...).
+		Scan(&storedPass, &home, &mailLoc, &enabled)
+	_, _ = home, mailLoc
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if enabled == 0 {
+		return nil, nil
+	}
+	creds, ok := ParseSCRAMSha256Credentials(storedPass)
+	if !ok {
+		return nil, nil
+	}
+	return creds, nil
 }
 
 func (p *Passdb) lookupUser(username string) (home, mailLoc string, err error) {

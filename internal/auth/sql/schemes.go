@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/GehirnInc/crypt/sha512_crypt"
+	"github.com/emersion/go-sasl"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -23,6 +24,11 @@ func checkPassword(stored, input string) bool {
 //   - {PLAIN} / {CLEARTEXT} — literal comparison (dev only)
 //   - {BCRYPT} / {BLF-CRYPT} — golang.org/x/crypto/bcrypt
 //   - {SHA512-CRYPT} — Linux crypt(3) SHA-512 ($6$salt$hash)
+//   - {SCRAM-SHA-256} — re-derive StoredKey from input + stored
+//     iter/salt and constant-time compare. The same verifier blob
+//     drives both this PLAIN-path verify AND the SCRAM-SHA-256
+//     SASL challenge-response (see ParseSCRAMSha256Credentials),
+//     so operators store one column for both flows.
 //
 // Crypt(3) autodetection applies even without a prefix: $2a$/$2b$/$2y$ →
 // BCRYPT, $6$ → SHA512-CRYPT.
@@ -35,8 +41,42 @@ func checkPasswordWithDefault(stored, input, defaultScheme string) bool {
 		return bcrypt.CompareHashAndPassword([]byte(hash), []byte(input)) == nil
 	case "SHA512-CRYPT":
 		return sha512_crypt.New().Verify(hash, []byte(input)) == nil
+	case "SCRAM-SHA-256":
+		return verifyScramSha256Plain(hash, input)
 	}
 	return false
+}
+
+// verifyScramSha256Plain re-derives the StoredKey for the
+// supplied plain password using the iter+salt from the stored
+// blob, then constant-time compares against the stored
+// StoredKey. Used so PLAIN/LOGIN auth keeps working against a
+// {SCRAM-SHA-256} column — operators store one verifier, two
+// auth paths use it.
+func verifyScramSha256Plain(blob, plaintext string) bool {
+	creds, err := sasl.DecodeScramCredentials(blob)
+	if err != nil {
+		return false
+	}
+	derived := sasl.DeriveScramSha256Credentials(plaintext, creds.Salt, creds.Iterations)
+	return subtle.ConstantTimeCompare(derived.StoredKey, creds.StoredKey) == 1
+}
+
+// ParseSCRAMSha256Credentials extracts the SCRAM verifier from a
+// stored password column carrying the `{SCRAM-SHA-256}` scheme.
+// Returns (nil, false) when the value does not carry that scheme
+// or the blob is malformed — callers use the falsy outcome to
+// mean "this user does not have a SCRAM verifier".
+func ParseSCRAMSha256Credentials(stored string) (*sasl.ScramCredentials, bool) {
+	scheme, blob := splitScheme(stored)
+	if scheme != "SCRAM-SHA-256" {
+		return nil, false
+	}
+	creds, err := sasl.DecodeScramCredentials(blob)
+	if err != nil {
+		return nil, false
+	}
+	return creds, true
 }
 
 func splitScheme(stored string) (scheme, hash string) {
