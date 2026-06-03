@@ -29,6 +29,10 @@ func checkPassword(stored, input string) bool {
 //     drives both this PLAIN-path verify AND the SCRAM-SHA-256
 //     SASL challenge-response (see ParseSCRAMSha256Credentials),
 //     so operators store one column for both flows.
+//   - {SCRAM-SHA-1} — same dual-use shape as SCRAM-SHA-256 but
+//     with the SHA-1 digest. Provided for legacy clients only
+//     (older Thunderbird, Apple Mail fallback); new deployments
+//     should provision SCRAM-SHA-256.
 //
 // Crypt(3) autodetection applies even without a prefix: $2a$/$2b$/$2y$ →
 // BCRYPT, $6$ → SHA512-CRYPT.
@@ -43,6 +47,8 @@ func checkPasswordWithDefault(stored, input, defaultScheme string) bool {
 		return sha512_crypt.New().Verify(hash, []byte(input)) == nil
 	case "SCRAM-SHA-256":
 		return verifyScramSha256Plain(hash, input)
+	case "SCRAM-SHA-1":
+		return verifyScramSha1Plain(hash, input)
 	}
 	return false
 }
@@ -68,8 +74,18 @@ func verifyScramSha256Plain(blob, plaintext string) bool {
 // or the blob is malformed — callers use the falsy outcome to
 // mean "this user does not have a SCRAM verifier".
 func ParseSCRAMSha256Credentials(stored string) (*sasl.ScramCredentials, bool) {
+	return parseSCRAMCredentials(stored, "SCRAM-SHA-256")
+}
+
+// ParseSCRAMSha1Credentials is the SHA-1 counterpart used by the
+// passdb to satisfy LookupSCRAMSha1.
+func ParseSCRAMSha1Credentials(stored string) (*sasl.ScramCredentials, bool) {
+	return parseSCRAMCredentials(stored, "SCRAM-SHA-1")
+}
+
+func parseSCRAMCredentials(stored, want string) (*sasl.ScramCredentials, bool) {
 	scheme, blob := splitScheme(stored)
-	if scheme != "SCRAM-SHA-256" {
+	if scheme != want {
 		return nil, false
 	}
 	creds, err := sasl.DecodeScramCredentials(blob)
@@ -77,6 +93,17 @@ func ParseSCRAMSha256Credentials(stored string) (*sasl.ScramCredentials, bool) {
 		return nil, false
 	}
 	return creds, true
+}
+
+// verifyScramSha1Plain mirrors verifyScramSha256Plain for the
+// SHA-1 verifier family.
+func verifyScramSha1Plain(blob, plaintext string) bool {
+	creds, err := sasl.DecodeScramCredentials(blob)
+	if err != nil {
+		return false
+	}
+	derived := sasl.DeriveScramSha1Credentials(plaintext, creds.Salt, creds.Iterations)
+	return subtle.ConstantTimeCompare(derived.StoredKey, creds.StoredKey) == 1
 }
 
 func splitScheme(stored string) (scheme, hash string) {

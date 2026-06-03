@@ -170,6 +170,16 @@ type SCRAMSha256Lookup interface {
 	LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error)
 }
 
+// SCRAMSha1Lookup is the SHA-1 counterpart of SCRAMSha256Lookup.
+// Same semantics, same (creds, nil) / (nil, nil) / (nil, err)
+// contract; only the digest family of the returned verifier
+// differs. Provided for compatibility with legacy clients that
+// only speak SCRAM-SHA-1 — new deployments should provision
+// SCRAM-SHA-256 verifiers instead.
+type SCRAMSha1Lookup interface {
+	LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error)
+}
+
 // AuthenticatorOption tunes a NewAuthenticator construction.
 type AuthenticatorOption func(*chainAuthenticator)
 
@@ -270,6 +280,11 @@ func (p *plainOnlyAuthenticator) Authenticate(username, password, service string
 // impersonation — disabling one must not disable the other.
 func (p *plainOnlyAuthenticator) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
 	return p.inner.LookupSCRAMSha256(username)
+}
+
+// LookupSCRAMSha1 is the SHA-1 counterpart of LookupSCRAMSha256.
+func (p *plainOnlyAuthenticator) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error) {
+	return p.inner.LookupSCRAMSha1(username)
 }
 
 type chainAuthenticator struct {
@@ -378,6 +393,27 @@ func (c *chainAuthenticator) LookupSCRAMSha256(username string) (*sasl.ScramCred
 			continue
 		}
 		creds, err := lookup.LookupSCRAMSha256(username)
+		if err != nil {
+			return nil, err
+		}
+		if creds != nil {
+			return creds, nil
+		}
+	}
+	return nil, nil
+}
+
+// LookupSCRAMSha1 mirrors LookupSCRAMSha256 for the SHA-1 family.
+// Independent of SHA-256 — a passdb may carry SCRAM-SHA-256 for
+// one user and SCRAM-SHA-1 for another, and the chain walks both
+// without coupling.
+func (c *chainAuthenticator) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error) {
+	for _, db := range c.chain {
+		lookup, ok := db.(SCRAMSha1Lookup)
+		if !ok {
+			continue
+		}
+		creds, err := lookup.LookupSCRAMSha1(username)
 		if err != nil {
 			return nil, err
 		}

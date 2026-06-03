@@ -667,6 +667,15 @@ func (a chainAuth) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, e
 	return lookup.LookupSCRAMSha256(username)
 }
 
+// LookupSCRAMSha1 is the SHA-1 counterpart of LookupSCRAMSha256.
+func (a chainAuth) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error) {
+	lookup, ok := a.c.(protocol.SCRAMSha1Lookup)
+	if !ok {
+		return nil, nil
+	}
+	return lookup.LookupSCRAMSha1(username)
+}
+
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
 	return buildMailboxByDriver(cfg.Mailbox, locker)
 }

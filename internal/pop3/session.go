@@ -180,22 +180,59 @@ func (s *session) cmdSASLAuth(arg string) {
 		}
 		s.handleSASLOAuthBearer(parts)
 	case "SCRAM-SHA-256":
-		s.handleSASLScram(parts, false)
+		s.handleSASLScram(parts, false, s.scramSha256Builder())
 	case "SCRAM-SHA-256-PLUS":
-		s.handleSASLScram(parts, true)
+		s.handleSASLScram(parts, true, s.scramSha256Builder())
+	case "SCRAM-SHA-1":
+		s.handleSASLScram(parts, false, s.scramSha1Builder())
+	case "SCRAM-SHA-1-PLUS":
+		s.handleSASLScram(parts, true, s.scramSha1Builder())
 	default:
 		s.writeErr("unsupported mechanism")
 	}
 }
 
-// handleSASLScram — AUTH SCRAM-SHA-256 / SCRAM-SHA-256-PLUS
+// scramBuilder captures the per-digest-family wiring so the
+// shared handleSASLScram path does not need to know whether it is
+// dispatching the SHA-256 or SHA-1 mech.
+type scramBuilder struct {
+	supported bool
+	nonPlus   func(onSuccess func(string) error) *scram.Session
+	plus      func(cb []byte, onSuccess func(string) error) *scram.Session
+}
+
+func (s *session) scramSha256Builder() scramBuilder {
+	lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup)
+	if !ok {
+		return scramBuilder{}
+	}
+	return scramBuilder{
+		supported: true,
+		nonPlus:   func(f func(string) error) *scram.Session { return scram.NewSha256(lookup, f) },
+		plus:      func(cb []byte, f func(string) error) *scram.Session { return scram.NewSha256Plus(lookup, cb, f) },
+	}
+}
+
+func (s *session) scramSha1Builder() scramBuilder {
+	lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha1Lookup)
+	if !ok {
+		return scramBuilder{}
+	}
+	return scramBuilder{
+		supported: true,
+		nonPlus:   func(f func(string) error) *scram.Session { return scram.NewSha1(lookup, f) },
+		plus:      func(cb []byte, f func(string) error) *scram.Session { return scram.NewSha1Plus(lookup, cb, f) },
+	}
+}
+
+// handleSASLScram — AUTH SCRAM-SHA-{1,256} / SCRAM-SHA-{1,256}-PLUS
 // (RFC 5802 / RFC 7677). Multi-round: client-first → server-
 // first → client-final → server-final. Uses the shared SCRAM
 // session adapter from internal/auth/scram so the success hook
-// runs through the regular completeAuthenticated path.
-func (s *session) handleSASLScram(parts []string, plus bool) {
-	lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup)
-	if !ok {
+// runs through the regular completeAuthenticated path. Digest
+// family is wired in via the supplied scramBuilder.
+func (s *session) handleSASLScram(parts []string, plus bool, b scramBuilder) {
+	if !b.supported {
 		s.writeErr("unsupported mechanism")
 		return
 	}
@@ -221,9 +258,9 @@ func (s *session) handleSASLScram(parts []string, plus bool) {
 	}
 	var saslSrv *scram.Session
 	if plus {
-		saslSrv = scram.NewSha256Plus(lookup, cb, onSuccess)
+		saslSrv = b.plus(cb, onSuccess)
 	} else {
-		saslSrv = scram.NewSha256(lookup, onSuccess)
+		saslSrv = b.nonPlus(onSuccess)
 	}
 
 	if err := s.driveSASL(parts, saslSrv); err != nil {

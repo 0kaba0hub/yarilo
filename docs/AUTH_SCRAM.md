@@ -1,4 +1,4 @@
-# SCRAM-SHA-256 and SCRAM-SHA-256-PLUS
+# SCRAM family (SHA-256 and SHA-1, each with optional PLUS)
 
 `yarilo-auth` supports the Salted Challenge Response Authentication
 Mechanism family (RFC 5802 / RFC 7677) as a SASL mechanism in IMAP,
@@ -11,6 +11,23 @@ The PLUS variant adds **channel binding** (RFC 9266 `tls-exporter`)
 so a successful auth additionally proves the client is on the
 same TLS session — defeating MITM proxies that terminate TLS at
 the attacker.
+
+## Supported mechanisms
+
+| Mechanism | RFC | Use |
+|:---|:---|:---|
+| `SCRAM-SHA-256` | RFC 7677 | **Default for new deployments.** PBKDF2-HMAC-SHA-256 ladder. |
+| `SCRAM-SHA-256-PLUS` | RFC 7677 + RFC 9266 | SHA-256 + channel binding via TLS exporter. |
+| `SCRAM-SHA-1` | RFC 5802 | Compatibility with legacy clients (older Thunderbird builds, Apple Mail fallback). PBKDF2-HMAC-SHA-1 ladder. |
+| `SCRAM-SHA-1-PLUS` | RFC 5802 + RFC 9266 | SHA-1 + channel binding. |
+
+SHA-1 is **not deprecated for SCRAM** — the HMAC construction is
+not broken by SHA-1 collision attacks the way digital signatures
+are. It is provided strictly for client compatibility; new
+deployments should provision SHA-256 verifiers. The two digest
+families are independent — a single user may carry one or the
+other (but only one verifier blob per user; clients negotiate
+the strongest mech the server advertises).
 
 ## When to enable
 
@@ -33,16 +50,19 @@ user.
 ## Storage format
 
 Each SCRAM-enabled user's `password` column carries a Dovecot-
-compatible blob:
+compatible blob — the inner shape is identical across the
+SHA-256 and SHA-1 families; only the scheme prefix differs:
 
 ```
 {SCRAM-SHA-256}<iterations>,<base64-salt>,<base64-stored-key>,<base64-server-key>
+{SCRAM-SHA-1}<iterations>,<base64-salt>,<base64-stored-key>,<base64-server-key>
 ```
 
 Example:
 
 ```
 {SCRAM-SHA-256}600000,gJ4oG0RpUmMrzFQ9PAGUng==,...,...
+{SCRAM-SHA-1}600000,gJ4oG0RpUmMrzFQ9PAGUng==,...,...
 ```
 
 The fields:
@@ -77,11 +97,20 @@ columns per protocol.
 ```sh
 yarilo-admin auth scram-verifier --password 'hunter2'
 # → {SCRAM-SHA-256}600000,…
+
+yarilo-admin auth scram-verifier --mech sha1 --password 'hunter2'
+# → {SCRAM-SHA-1}600000,…
 ```
 
+`--mech` defaults to `sha256`. Use `sha1` only when a target
+client cannot speak SHA-256.
+
 `--iterations N` overrides the default 600 000 (2023 OWASP
-recommendation for SHA-256-based PBKDF2). Anything below 4096 is
-clamped up so a typo cannot land a weak verifier in the database.
+recommendation for SHA-256-based PBKDF2; the same default applies
+to SHA-1 because the iteration count is what carries the
+compute-cost — the digest choice is fixed by the mech). Anything
+below 4096 is clamped up so a typo cannot land a weak verifier in
+the database.
 
 Omit `--password` to read it from stdin (one line).
 
@@ -91,19 +120,28 @@ they just don't get SCRAM advertisement.
 
 ## Mechanism advertisement
 
-`yarilo` advertises SCRAM only when at least one configured
-passdb exposes verifiers. The discovery happens at session-setup
-time per connection:
+`yarilo` advertises each SCRAM mech only when at least one
+configured passdb exposes verifiers in that digest family. The
+type assertion is per-family:
 
-- **IMAP** — `AUTH=SCRAM-SHA-256` (and `AUTH=SCRAM-SHA-256-PLUS`
-  over TLS 1.3+) appear in the `CAPABILITY` reply.
-- **POP3** — `CAPA` lists `SASL SCRAM-SHA-256 [SCRAM-SHA-256-PLUS]`.
-- **Submission (SMTP)** — EHLO's `AUTH` extension lists the
-  mech(s) alongside `PLAIN LOGIN`.
+- `SCRAM-SHA-256` / `SCRAM-SHA-256-PLUS` light up when the
+  Authenticator implements `SCRAMSha256Lookup`.
+- `SCRAM-SHA-1` / `SCRAM-SHA-1-PLUS` light up when the
+  Authenticator implements `SCRAMSha1Lookup`.
 
-The PLUS variant is gated on the TLS state having the RFC 9266
-exporter available (TLS 1.3+ over a real `*tls.Conn`). Plain TCP
-or TLS 1.2 sessions advertise SCRAM-SHA-256 only.
+A deployment that provisions only SHA-256 verifiers never
+advertises the SHA-1 mechs, and vice versa. Discovery happens
+at session-setup time per connection:
+
+- **IMAP** — matching mechs appear in the `CAPABILITY` reply.
+- **POP3** — `CAPA` lists them after `SASL`.
+- **Submission (SMTP)** — EHLO's `AUTH` extension lists them
+  alongside `PLAIN LOGIN`.
+
+The `-PLUS` variants are additionally gated on the TLS state
+having the RFC 9266 exporter available (TLS 1.3+ over a real
+`*tls.Conn`). Plain TCP or TLS 1.2 sessions advertise only the
+non-PLUS mechs.
 
 ## Wire shape (RFC 5802 §5)
 
@@ -123,11 +161,14 @@ authentication without a second round-trip.
 
 ## Channel binding policy
 
-- **SCRAM-SHA-256** (non-PLUS): client MUST send `n,,` or
-  `y,,`. `p=…` is rejected because the client should have
-  picked the PLUS mechanism if it has channel binding.
-- **SCRAM-SHA-256-PLUS**: client MUST send `p=tls-exporter,,`.
-  `n,,` and `y,,` are downgrade attempts and rejected.
+Identical for both digest families:
+
+- **Non-PLUS** (`SCRAM-SHA-256`, `SCRAM-SHA-1`): client MUST send
+  `n,,` or `y,,`. `p=…` is rejected because the client should
+  have picked the PLUS mechanism if it has channel binding.
+- **PLUS** (`SCRAM-SHA-256-PLUS`, `SCRAM-SHA-1-PLUS`): client
+  MUST send `p=tls-exporter,,`. `n,,` and `y,,` are downgrade
+  attempts and rejected.
 
 The `y,,` value lets a TLS client SIGNAL that it knows about
 channel binding (so a wiretap attacker can be detected by a
