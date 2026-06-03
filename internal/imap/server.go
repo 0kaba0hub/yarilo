@@ -449,6 +449,7 @@ func (s *session) AuthenticateMechanisms() []string {
 	out := []string{sasl.Plain}
 	if s.srv.opts.OAuth2Enabled {
 		out = append(out, sasl.OAuthBearer)
+		out = append(out, sasl.XOAuth2)
 	}
 	if _, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup); ok {
 		out = append(out, sasl.ScramSha256)
@@ -487,6 +488,14 @@ func (s *session) Authenticate(mech string) (sasl.Server, error) {
 			}
 		}
 		return oauth2.NewOAuthBearerSASLServer(s.authenticateOAuthBearer), nil
+	case sasl.XOAuth2:
+		if !s.srv.opts.OAuth2Enabled {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Text: "SASL mechanism not supported",
+			}
+		}
+		return oauth2.NewXOAuth2SASLServer(s.authenticateXOAuth2), nil
 	case sasl.ScramSha256:
 		lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup)
 		if !ok {
@@ -582,6 +591,26 @@ func (s *session) tlsExporter() []byte {
 // (Username, Token) into the chain's Authenticate(user, password,
 // service) call and surface a Bearer JSON error on rejection.
 func (s *session) authenticateOAuthBearer(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
+	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap")
+	if err != nil || res == nil || res.Result != protocol.AuthOK {
+		s.delayFailure()
+		return &sasl.OAuthBearerError{
+			Status:  "invalid_token",
+			Schemes: "bearer",
+		}
+	}
+	if err := s.completeLogin(res); err != nil {
+		return &sasl.OAuthBearerError{
+			Status:  "invalid_token",
+			Schemes: "bearer",
+		}
+	}
+	return nil
+}
+
+// authenticateXOAuth2 is the XOAUTH2 callback. Same token
+// validation path as OAUTHBEARER — only the wire format differs.
+func (s *session) authenticateXOAuth2(opts sasl.XOAuth2Options) *sasl.OAuthBearerError {
 	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap")
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		s.delayFailure()
