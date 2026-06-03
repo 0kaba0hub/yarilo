@@ -143,6 +143,20 @@ data:
         size_bytes: {{ .Values.components.auth.cache.sizeBytes | default 0 }}
         ttl_seconds: {{ .Values.components.auth.cache.ttlSeconds | default 1800 }}
         negative_ttl_seconds: {{ .Values.components.auth.cache.negativeTTLSeconds | default 1800 }}
+      penalty:
+        enabled: {{ .Values.components.auth.penalty.enabled | default false }}
+      policy:
+        url: {{ .Values.components.auth.policy.url | default "" | quote }}
+        api_header: {{ .Values.components.auth.policy.apiHeader | default "" | quote }}
+        hash_mech: {{ .Values.components.auth.policy.hashMech | default "sha256" | quote }}
+        hash_nonce: {{ .Values.components.auth.policy.hashNonce | default "" | quote }}
+        hash_truncate_bits: {{ .Values.components.auth.policy.hashTruncateBits | default 12 }}
+        timeout_ms: {{ .Values.components.auth.policy.timeoutMs | default 5000 }}
+        reject_on_fail: {{ .Values.components.auth.policy.rejectOnFail | default false }}
+        log_only: {{ .Values.components.auth.policy.logOnly | default false }}
+        check_before: {{ .Values.components.auth.policy.checkBefore | default true }}
+        check_after: {{ .Values.components.auth.policy.checkAfter | default true }}
+        report_after: {{ .Values.components.auth.policy.reportAfter | default true }}
       passdb:
         {{- range .Values.components.auth.passdb }}
         - driver: {{ .driver | quote }}

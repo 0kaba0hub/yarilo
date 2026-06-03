@@ -171,6 +171,41 @@ components:
       ttlSeconds: 1800
       negativeTTLSeconds: 1800
 
+    ## penalty — cross-pod IP-bound auth-fail backoff. OPT-IN.
+    ## Every failed auth from a given client IP increments the
+    ## counter in the anvil service; subsequent attempts from that
+    ## IP sleep PenaltyToSecs(count) seconds before the chain runs
+    ## (exponential 0/2/4/8/15 cap). Successful auth resets the
+    ## counter to 0. Master-user flows are exempt.
+    ##
+    ## Requires the anvil service to be reachable.
+    penalty:
+      enabled: false
+
+    ## policy — wforce-compatible HTTP policy-server hook. URL=""
+    ## disables. When set, every login attempt POSTs JSON to the
+    ## policy server which can allow / reject / tarpit the request.
+    ## See docs/AUTH_POLICY.md for the wire format and a wforce
+    ## configuration example.
+    ##
+    ## hashNonce is REQUIRED when url is set — it salts the pwhash
+    ## field so two deployments don't share the same hash space.
+    ## Default hash is truncated to 12 bits (4096 buckets) so the
+    ## policy server can group attempts without seeing real
+    ## passwords.
+    policy:
+      url: ""
+      apiHeader: ""
+      hashMech: sha256
+      hashNonce: ""
+      hashTruncateBits: 12
+      timeoutMs: 5000
+      rejectOnFail: false
+      logOnly: false
+      checkBefore: true
+      checkAfter: true
+      reportAfter: true
+
     ## masterUsers — Dovecot-style master-user impersonation
     ## (SASL PLAIN authzid). OPT-IN, disabled by default. While
     ## `enabled: false` the IMAP / POP3 / Submission / wire
