@@ -157,6 +157,64 @@ data:
         check_before: {{ .Values.components.auth.policy.checkBefore | default true }}
         check_after: {{ .Values.components.auth.policy.checkAfter | default true }}
         report_after: {{ .Values.components.auth.policy.reportAfter | default true }}
+      oauth2:
+        {{- range (.Values.components.auth.oauth2 | default list) }}
+        - mode: {{ .mode | quote }}
+          {{- with .jwks_url }}
+          jwks_url: {{ . | quote }}
+          {{- end }}
+          {{- with .introspection_url }}
+          introspection_url: {{ . | quote }}
+          {{- end }}
+          {{- with .tokeninfo_url }}
+          tokeninfo_url: {{ . | quote }}
+          {{- end }}
+          {{- with .issuer_url }}
+          issuer_url: {{ . | quote }}
+          {{- end }}
+          {{- with .introspection_mode }}
+          introspection_mode: {{ . | quote }}
+          {{- end }}
+          {{- if .prefer_introspection }}
+          prefer_introspection: true
+          {{- end }}
+          {{- with .client_id }}
+          client_id: {{ . | quote }}
+          {{- end }}
+          {{- with .client_secret }}
+          client_secret: {{ . | quote }}
+          {{- end }}
+          {{- with .issuers }}
+          issuers: {{ . | toJson }}
+          {{- end }}
+          {{- with .audience }}
+          audience: {{ . | quote }}
+          {{- end }}
+          {{- with .scopes }}
+          scopes: {{ . | toJson }}
+          {{- end }}
+          {{- with .username_attribute }}
+          username_attribute: {{ . | quote }}
+          {{- end }}
+          {{- with .username_validation_format }}
+          username_validation_format: {{ . | quote }}
+          {{- end }}
+          {{- with .active_attribute }}
+          active_attribute: {{ . | quote }}
+          {{- end }}
+          {{- with .active_value }}
+          active_value: {{ . | quote }}
+          {{- end }}
+          {{- with .extra_fields }}
+          extra_fields: {{ . | toJson }}
+          {{- end }}
+          {{- with .token_expire_grace_seconds }}
+          token_expire_grace_seconds: {{ . }}
+          {{- end }}
+          {{- with .http_timeout_ms }}
+          http_timeout_ms: {{ . }}
+          {{- end }}
+        {{- end }}
       passdb:
         {{- range .Values.components.auth.passdb }}
         - driver: {{ .driver | quote }}
