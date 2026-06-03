@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/policy"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
@@ -77,6 +78,19 @@ func main() {
 			os.Exit(1)
 		}
 		userdbs = append(userdbs, userdb)
+	}
+
+	// OAuth2 passdbs join the chain ahead of SQL so an OAUTHBEARER
+	// login resolves through the validator before SQL ever sees
+	// the bearer token as a plaintext "password".
+	if len(cfg.Auth.OAuth2) > 0 {
+		oauth2pdbs, err := oauth2.BuildPassdbs(context.Background(), cfg.Auth.OAuth2)
+		if err != nil {
+			slog.Error("oauth2 init failed", "err", err)
+			os.Exit(1)
+		}
+		dbs = append(oauth2pdbs, dbs...)
+		slog.Info("yarilo-auth oauth2 providers wired", "count", len(oauth2pdbs))
 	}
 
 	var tlsCfg *tls.Config

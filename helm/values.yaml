@@ -182,6 +182,41 @@ components:
     penalty:
       enabled: false
 
+    ## oauth2 — OAuth 2.0 bearer-token providers. Each entry
+    ## becomes a passdb that participates in the auth chain (placed
+    ## AHEAD of SQL so an OAUTHBEARER login resolves through the
+    ## validator before SQL ever sees the bearer token as a
+    ## plaintext password). Empty list disables OAUTHBEARER.
+    ##
+    ## See docs/AUTH_OAUTH2.md for the wire spec, configuration
+    ## reference, and worked examples for Google Workspace,
+    ## Microsoft 365, and Keycloak / Authelia.
+    ##
+    ## Four validation modes:
+    ##   - local         — JWT verify against jwks_url (recommended)
+    ##   - introspection — RFC 7662 endpoint
+    ##   - tokeninfo     — Google-style endpoint
+    ##   - discovery     — auto-resolve via OIDC discovery (issuer_url)
+    oauth2: []
+      # - mode: discovery
+      #   issuer_url: https://accounts.google.com
+      #   audience: <your-google-oauth-client-id>
+      #   scopes: [openid, email]
+      #   username_attribute: email
+      #   username_validation_format: "%Lu"
+      #   extra_fields: [sub, hd]
+      # - mode: local
+      #   jwks_url: https://login.microsoftonline.com/common/discovery/keys
+      #   issuers: ["https://login.microsoftonline.com/<tenant-id>/v2.0"]
+      #   audience: <your-azure-app-id>
+      #   username_attribute: preferred_username
+      # - mode: introspection
+      #   introspection_url: https://keycloak.internal/realms/yarilo/protocol/openid-connect/token/introspect
+      #   introspection_mode: post
+      #   client_id: yarilo-auth
+      #   client_secret: change-me
+      #   username_attribute: email
+
     ## policy — wforce-compatible HTTP policy-server hook. URL=""
     ## disables. When set, every login attempt POSTs JSON to the
     ## policy server which can allow / reject / tarpit the request.

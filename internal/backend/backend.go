@@ -13,6 +13,7 @@ import (
 
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all" // register all dict drivers
 
+	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
@@ -61,6 +62,17 @@ func New(cfg *config.Config) (*Server, error) {
 	passdbs, err := buildPassdbs(cfg.Auth.Passdb)
 	if err != nil {
 		return nil, fmt.Errorf("backend: auth: %w", err)
+	}
+	// OAuth2 passdbs join the chain ahead of SQL so an OAUTHBEARER
+	// login resolves locally before SQL ever sees the bearer token
+	// as a plaintext "password". When no providers are configured
+	// this is a no-op and the chain stays SQL-only.
+	if len(cfg.Auth.OAuth2) > 0 {
+		oauth2pdbs, err := oauth2.BuildPassdbs(context.Background(), cfg.Auth.OAuth2)
+		if err != nil {
+			return nil, fmt.Errorf("backend: oauth2: %w", err)
+		}
+		passdbs = append(oauth2pdbs, passdbs...)
 	}
 	// Build a userdb chain alongside passdbs — backend (standalone)
 	// runs both phases in-process so the IMAP/POP3/Submission

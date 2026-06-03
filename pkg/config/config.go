@@ -471,6 +471,104 @@ type AuthConfig struct {
 	// Policy groups the external HTTP policy-server hook (wforce-
 	// compatible). URL="" disables.
 	Policy AuthPolicyConfig `koanf:"policy"`
+
+	// OAuth2 is the list of configured OAuth providers. Each entry
+	// builds one passdb that participates in the chain alongside
+	// the SQL passdbs in Passdb. Empty list disables the
+	// OAUTHBEARER SASL mechanism.
+	OAuth2 []OAuth2Entry `koanf:"oauth2"`
+}
+
+// OAuth2Mode picks the validation transport.
+type OAuth2Mode string
+
+const (
+	// OAuth2ModeLocalJWT verifies the bearer token's signature
+	// locally against a cached JWKS.
+	OAuth2ModeLocalJWT OAuth2Mode = "local"
+	// OAuth2ModeIntrospection calls an RFC 7662 introspection
+	// endpoint. Transport sub-mode picks the request shape.
+	OAuth2ModeIntrospection OAuth2Mode = "introspection"
+	// OAuth2ModeTokeninfo calls a Google-style tokeninfo endpoint.
+	OAuth2ModeTokeninfo OAuth2Mode = "tokeninfo"
+	// OAuth2ModeDiscovery auto-resolves jwks_uri /
+	// introspection_endpoint from the IdP's OIDC discovery
+	// document at `<issuer>/.well-known/openid-configuration`.
+	OAuth2ModeDiscovery OAuth2Mode = "discovery"
+)
+
+// OAuth2Entry configures one OAuth provider. The required fields
+// depend on Mode:
+//
+//   - local         → JWKSURL
+//   - introspection → IntrospectionURL (+ ClientID/ClientSecret)
+//   - tokeninfo     → TokeninfoURL
+//   - discovery     → IssuerURL
+//
+// Username / Issuers / Audience / Scope / Active / Grace fields
+// apply across modes.
+type OAuth2Entry struct {
+	// Mode picks the validation transport. REQUIRED.
+	Mode OAuth2Mode `koanf:"mode"`
+
+	// Endpoints — one of these must be set, per Mode.
+	JWKSURL          string `koanf:"jwks_url"`
+	IntrospectionURL string `koanf:"introspection_url"`
+	TokeninfoURL     string `koanf:"tokeninfo_url"`
+	IssuerURL        string `koanf:"issuer_url"`
+
+	// IntrospectionMode controls the introspection request shape.
+	// One of "post" (default — RFC 7662), "auth", "get".
+	IntrospectionMode string `koanf:"introspection_mode"`
+
+	// PreferIntrospection (discovery mode only) — when true,
+	// prefers the introspection endpoint over JWKS when both are
+	// advertised in the discovery document.
+	PreferIntrospection bool `koanf:"prefer_introspection"`
+
+	// ClientID / ClientSecret authenticate the introspection call
+	// itself. Ignored in JWKS and tokeninfo modes.
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+
+	// Issuers is the allow-list of `iss` claim values. Empty =
+	// no check (any signed token from a key in JWKS passes).
+	// In discovery mode the document's iss is auto-added.
+	Issuers []string `koanf:"issuers"`
+
+	// Audience is the required `aud` claim. Empty = no check.
+	Audience string `koanf:"audience"`
+
+	// Scopes lists scopes every token MUST carry. Empty = no
+	// check.
+	Scopes []string `koanf:"scopes"`
+
+	// UsernameAttribute is the response/claim name resolving to
+	// the mail user. Default "email".
+	UsernameAttribute string `koanf:"username_attribute"`
+
+	// UsernameValidationFormat is the template applied to the
+	// SASL authzid before comparing to the username claim.
+	// Default "%{user}" (identity). Supports %u, %{user}, %Lu,
+	// %n, %Ln, %d, %Ld.
+	UsernameValidationFormat string `koanf:"username_validation_format"`
+
+	// ActiveAttribute / ActiveValue — optional check. The claim
+	// named by ActiveAttribute must be present (and equal
+	// ActiveValue if non-empty) for the login to succeed.
+	ActiveAttribute string `koanf:"active_attribute"`
+	ActiveValue     string `koanf:"active_value"`
+
+	// ExtraFields are the claim names that get projected back
+	// onto the auth response as userdb_<claim> fields.
+	ExtraFields []string `koanf:"extra_fields"`
+
+	// TokenExpireGraceSeconds tolerates clock skew. Default 60.
+	TokenExpireGraceSeconds int `koanf:"token_expire_grace_seconds"`
+
+	// HTTPTimeoutMs caps the validation round-trip (introspection
+	// / tokeninfo / discovery / JWKS-refresh). Default 5000.
+	HTTPTimeoutMs int `koanf:"http_timeout_ms"`
 }
 
 // AuthPenaltyConfig configures cross-pod IP-bound auth backoff.
