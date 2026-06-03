@@ -173,17 +173,7 @@ Deferred — no priority; standalone deployment must work first.
 
 Items intentionally scoped out of Phase ACL-1 and not yet picked up:
 
-1. **Group identifier resolution.** `group=<name>` and
-   `group-override=<name>` ACL entries parse and persist correctly,
-   but `mailbox.ACL.Effective` ignores them when computing rights
-   for an authenticated user. Resolving requires a yarilo-side
-   group → users lookup. Dovecot reads this from userdb (`groups=`
-   extra field) or from a static `passwd_groups` map; yarilo has
-   neither plumbing today. Adding this means: (a) extend the
-   `protocol/auth` UserdbResponse with a `Groups []string` slice,
-   (b) thread groups into `*session.userInfo`, (c) extend
-   `Effective` to accept a `groups []string` arg and match
-   `group=` / `group-override=` entries against it. RFC 4314 §2.2.
+1. **Group identifier resolution.** ✅ Shipped in #174. `userdb groups=` → `AuthResponse.Groups` → `userInfo.Groups` → `ACL.Effective(user, groups, isOwner)` with group= union + group-override= replace semantics.
 
 2. **Owner-identifier match for shared / public namespaces.** PR D
    defines `isOwner` as "this is the personal namespace" — true for
