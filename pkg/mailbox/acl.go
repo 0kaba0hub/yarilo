@@ -338,51 +338,91 @@ func (acl ACL) String() string {
 }
 
 // Effective resolves the effective rights an authenticated user has
-// on this mailbox's stored ACL, without inheritance and without
-// group resolution — both of those land in PR E.
+// on this mailbox's stored ACL.
 //
-// Semantics (PR D scope):
+// Semantics (RFC 4314 §3.5):
 //   - isOwner == true: returns FullRights regardless of stored
 //     entries (Dovecot personal-namespace auto-grant).
 //   - else: union of positive entries whose Identifier matches the
-//     accessing user — anyone, authenticated, user=<user> — minus
-//     negative entries matching the same identifiers (RFC 4314 §3.5).
+//     accessing user — anyone, authenticated, user=<user>,
+//     group=<g> (when <g> is in groups), group-override=<g> — minus
+//     negative entries matching the same identifiers.
 //
-// Group / group-override / explicit owner identifiers are ignored
-// in PR D; PR E adds the full Dovecot resolution (group lookup +
-// owner identifier match + ancestor inheritance).
+// groups is the list of supplementary groups the user belongs to,
+// sourced from the userdb `groups=` extra field. Pass nil or empty
+// when no group membership is configured — group= entries have no
+// effect.
+//
+// Identifier type priority (higher tier replaces lower when matched):
+//  1. anyone / authenticated / group= → base tier
+//  2. user= → replaces if any user= entry matches
+//  3. group-override= → replaces if any group-override= matches
 //
 // A nil ACL with isOwner == false yields the empty rights set — no
 // implicit grant for non-owners is the RFC 4314 default.
-func (acl ACL) Effective(user string, isOwner bool) Rights {
+func (acl ACL) Effective(user string, groups []string, isOwner bool) Rights {
 	if isOwner {
 		return FullRights
 	}
-	var positive, negative Rights
+
+	groupSet := makeGroupSet(groups)
+
+	// Base tier: union of anyone, authenticated, group=, user= entries
+	// (RFC 4314 §3.5 — all matching identifiers contribute).
+	var basePos, baseNeg Rights
+	// Override tier: group-override= entries. When any match, the
+	// override result REPLACES the base result — giving admins a way
+	// to grant rights that override per-user restrictions.
+	var overridePos, overrideNeg Rights
+	var hasOverride bool
+
 	for _, e := range acl {
-		if !matchesAccessor(e.Identifier, user) {
+		var matches bool
+		switch e.Identifier.Type {
+		case IDAnyone, IDAuthenticated:
+			matches = true
+		case IDUser:
+			matches = e.Identifier.Name == user
+		case IDGroup:
+			matches = groupSet[e.Identifier.Name]
+		case IDGroupOverride:
+			matches = groupSet[e.Identifier.Name]
+		}
+		if !matches {
 			continue
 		}
-		if e.Negative {
-			negative = negative.Add(e.Rights)
+		if e.Identifier.Type == IDGroupOverride {
+			hasOverride = true
+			if e.Negative {
+				overrideNeg = overrideNeg.Add(e.Rights)
+			} else {
+				overridePos = overridePos.Add(e.Rights)
+			}
 		} else {
-			positive = positive.Add(e.Rights)
+			if e.Negative {
+				baseNeg = baseNeg.Add(e.Rights)
+			} else {
+				basePos = basePos.Add(e.Rights)
+			}
 		}
 	}
-	return positive.Remove(negative)
+
+	if hasOverride {
+		return overridePos.Remove(overrideNeg)
+	}
+	return basePos.Remove(baseNeg)
 }
 
-// matchesAccessor reports whether id matches an authenticated user
-// accessing the mailbox. Only the PR-D-scope identifier types match;
-// group= / group-override= / explicit owner are ignored here.
-func matchesAccessor(id Identifier, user string) bool {
-	switch id.Type {
-	case IDAnyone, IDAuthenticated:
-		return true
-	case IDUser:
-		return id.Name == user
+// makeGroupSet builds a fast-lookup set from a groups slice.
+func makeGroupSet(groups []string) map[string]bool {
+	if len(groups) == 0 {
+		return nil
 	}
-	return false
+	s := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		s[g] = true
+	}
+	return s
 }
 
 // Sorted returns a copy with entries in deterministic order:

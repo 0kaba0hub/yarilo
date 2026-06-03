@@ -137,7 +137,7 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 // not merged in. This matches Dovecot; the alternative (full-chain
 // merge) breaks the principle of locality for shared-mailbox admin
 // who expects setting one ACL to fully override the inherited one.
-func (s *Store) EffectiveFor(folder, user string, isOwner bool, sep byte) (mailbox.Rights, error) {
+func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool, sep byte) (mailbox.Rights, error) {
 	if isOwner {
 		return mailbox.FullRights, nil
 	}
@@ -149,7 +149,7 @@ func (s *Store) EffectiveFor(folder, user string, isOwner bool, sep byte) (mailb
 			return "", err
 		}
 		if acl != nil {
-			return acl.Effective(user, false), nil
+			return acl.Effective(user, groups, false), nil
 		}
 		if cur == "" {
 			rootTried = true

@@ -673,6 +673,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		resolver = &mailbox.Resolver{}
 	}
 	userInfo := resolver.UserInfo(res.Username, res.Home)
+	userInfo.Groups = res.Groups
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())

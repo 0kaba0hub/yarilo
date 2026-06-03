@@ -504,6 +504,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 		resolver = &mailbox.Resolver{}
 	}
 	userInfo := resolver.UserInfo(res.Username, res.Home)
+	userInfo.Groups = res.Groups
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := s.remoteIP.String()

@@ -399,7 +399,7 @@ func TestACL_Effective(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "group= ignored in PR D",
+			name: "group= without membership has no effect",
 			acl: ACL{
 				{Identifier: Identifier{Type: IDGroup, Name: "staff"}, Rights: "lr"},
 			},
@@ -425,7 +425,97 @@ func TestACL_Effective(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.acl.Effective(tc.user, tc.isOwner)
+			got := tc.acl.Effective(tc.user, nil, tc.isOwner)
+			if got != tc.want {
+				t.Errorf("Effective = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestACL_Effective_Groups(t *testing.T) {
+	tests := []struct {
+		name    string
+		acl     ACL
+		user    string
+		groups  []string
+		isOwner bool
+		want    Rights
+	}{
+		{
+			name: "group= matches when user is a member",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDGroup, Name: "staff"}, Rights: "lr"},
+			},
+			user: "bob", groups: []string{"staff"},
+			want: "lr",
+		},
+		{
+			name: "group= no effect when not a member",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDGroup, Name: "staff"}, Rights: "lr"},
+			},
+			user: "bob", groups: []string{"other"},
+			want: "",
+		},
+		{
+			name: "group= merges with anyone",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDAnyone}, Rights: "l"},
+				{Identifier: Identifier{Type: IDGroup, Name: "staff"}, Rights: "rs"},
+			},
+			user: "bob", groups: []string{"staff"},
+			want: "lrs",
+		},
+		{
+			name: "negative group= subtracts from positive anyone",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDAnyone}, Rights: "lrs"},
+				{Identifier: Identifier{Type: IDGroup, Name: "restricted"}, Rights: "s", Negative: true},
+			},
+			user: "bob", groups: []string{"restricted"},
+			want: "lr",
+		},
+		{
+			name: "group-override= replaces base when member",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDUser, Name: "bob"}, Rights: "l"},
+				{Identifier: Identifier{Type: IDGroupOverride, Name: "admins"}, Rights: "lrswipkxtea"},
+			},
+			user: "bob", groups: []string{"admins"},
+			want: "lrswipkxtea",
+		},
+		{
+			name: "group-override= no effect when not a member",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDUser, Name: "bob"}, Rights: "lr"},
+				{Identifier: Identifier{Type: IDGroupOverride, Name: "admins"}, Rights: "lrswipkxtea"},
+			},
+			user: "bob", groups: nil,
+			want: "lr",
+		},
+		{
+			name: "multiple groups all contribute",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDGroup, Name: "readers"}, Rights: "lr"},
+				{Identifier: Identifier{Type: IDGroup, Name: "writers"}, Rights: "sw"},
+			},
+			user: "bob", groups: []string{"readers", "writers"},
+			want: "lrsw",
+		},
+		{
+			name: "group-override replaces even when base has more rights",
+			acl: ACL{
+				{Identifier: Identifier{Type: IDAnyone}, Rights: "lrswipkxtea"},
+				{Identifier: Identifier{Type: IDGroupOverride, Name: "readonly"}, Rights: "lr"},
+			},
+			user: "bob", groups: []string{"readonly"},
+			want: "lr",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.acl.Effective(tc.user, tc.groups, tc.isOwner)
 			if got != tc.want {
 				t.Errorf("Effective = %q, want %q", got, tc.want)
 			}
