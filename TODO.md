@@ -155,13 +155,7 @@ remain for the heavier deployment tiers:
 
 1. **Alt-storage tiering.** ✅ Shipped in #172. `storage.mdbox_alt_storage_path` config + `yarilo-admin backend mdbox altmove` CLI. See docs/MDBOX_ALT.md.
 
-2. **GUID lookup index.** Fetch-by-GUID currently means scanning
-   every `m.<N>` until a match (driver-level — IMAP exposes UID,
-   not GUID, so the gap surfaces only through rebuild + ACL flows
-   that key on GUID). Dovecot indexes GUIDs in the global map as
-   an additional extension; the mdboxmap package can add a
-   "guid" ext alongside the existing "map" + "ref" extensions
-   without breaking on-disk compatibility. Estimate: ~200 lines.
+2. **GUID lookup index.** ✅ Shipped in #173. `"guid"` extension in `yarilo.map.index`, `Map.LookupByGUID()`, GUID preserved across purge/altmove, rebuild dual-strategy matching (GUID-first → offset fallback).
 
 ---
 
