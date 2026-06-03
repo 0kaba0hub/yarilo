@@ -191,6 +191,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Namespaces:         buildNamespaces(cfg.Namespaces),
 			NamespaceMailboxes: nsMailboxes,
 			FailureDelay:       time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
+			OAuth2Enabled:      len(cfg.Auth.OAuth2) > 0,
 		})
 	}
 
@@ -233,6 +234,7 @@ func New(cfg *config.Config) (*Server, error) {
 			ConnLimit:          connLimiter,
 			Locker:             locker,
 			FailureDelay:       time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
+			OAuth2Enabled:      len(cfg.Auth.OAuth2) > 0,
 		})
 	}
 
@@ -267,6 +269,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Auth:             chainAuth{authChain},
 			Proxy:            submissionProxy,
 			FailureDelay:     time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
+			OAuth2Enabled:    len(cfg.Auth.OAuth2) > 0,
 		})
 	}
 

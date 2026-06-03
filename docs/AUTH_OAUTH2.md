@@ -72,8 +72,42 @@ n,a=alice@example.com,\x01host=mail.example.com\x01port=993\x01auth=Bearer <toke
 The server validates the token per the configured provider and
 either replies with the SASL success indicator or a JSON failure
 descriptor (`{"status":"invalid_token","schemes":"bearer"}`).
-`yarilo-auth` delegates the wire layer to `github.com/0kaba0hub/go-sasl`
-(forked from upstream) and runs validation in `internal/auth/oauth2`.
+
+### Mechanism advertisement
+
+`OAUTHBEARER` is added to the SASL capability list on every
+protocol that supports it:
+
+- **IMAP** — included in `AUTH=OAUTHBEARER` of `CAPABILITY`
+- **POP3** — `AUTH OAUTHBEARER` accepted; `CAPA` lists `SASL OAUTHBEARER`
+- **Submission (SMTP)** — `AUTH OAUTHBEARER` appears in the EHLO `AUTH` extension
+
+Advertisement is gated by `auth.oauth2` being non-empty: a
+deployment that configures no OAuth providers does NOT advertise
+OAUTHBEARER, so a client never picks a mechanism the server
+cannot validate.
+
+### Fast-fail on rejection
+
+RFC 7628 §3.2.3 mandates a two-round failure handshake — the
+server returns the JSON error blob with `done=false`, the client
+acknowledges with a 0x01 dummy byte, and the server then closes
+the SASL exchange. Real-world Go clients (`go-imap`,
+`go-smtp` `imapclient`) skip the dummy step: their `saslClient.Next`
+returns the error immediately and the protocol-layer loop
+unwinds, leaving the server blocked on a read that never
+arrives until the IMAP idle timeout (5+ minutes).
+
+Yarilo's OAUTHBEARER server returns `done=true` on the first
+rejection. The JSON error blob is still surfaced as the final
+challenge so the client sees the proper RFC 7628 failure
+descriptor; the protocol read on the server side completes
+immediately rather than hanging.
+
+This is a deliberate deviation from the spec's failure
+choreography. Compliant clients that DO send the 0x01 dummy will
+see the SASL exchange close one round-trip earlier than they
+expect, but no client we've tested misbehaves on this.
 
 ## Worked examples
 
@@ -204,3 +238,47 @@ mixes OAuth and legacy SQL accounts handles both with one chain.
 - `token_expire_grace_seconds: 60` covers normal clock skew. Set
   higher (300+) when the IdP and the auth pod are in different
   data centres with poor NTP discipline.
+
+## Client smoke-test recipes
+
+Acquire a bearer token from the IdP (Google: `oauth2l fetch`;
+Azure: `az account get-access-token`; Keycloak: `kcadm.sh` or
+direct token endpoint POST). Then:
+
+### `swaks` (Submission)
+
+```sh
+TOKEN="$(oauth2l fetch --scope='https://mail.google.com/' …)"
+swaks --server mail.yarilo.example:587 \
+      --tls --tls-verify \
+      --auth OAUTHBEARER --auth-user alice@example.com \
+      --auth-password "$TOKEN" \
+      --from alice@example.com --to bob@example.com
+```
+
+### `openssl s_client` + raw SASL (IMAP / POP3)
+
+```sh
+TOKEN="…"
+PAYLOAD=$(printf 'n,a=alice@example.com,\1auth=Bearer %s\1\1' "$TOKEN" | base64 -w0)
+
+# IMAP
+openssl s_client -quiet -connect mail.yarilo.example:993 <<EOF
+a1 AUTHENTICATE OAUTHBEARER $PAYLOAD
+a2 SELECT INBOX
+a3 LOGOUT
+EOF
+
+# POP3
+openssl s_client -quiet -connect mail.yarilo.example:995 <<EOF
+AUTH OAUTHBEARER $PAYLOAD
+STAT
+QUIT
+EOF
+```
+
+### Thunderbird
+
+Settings → Account → Authentication method → **OAuth2**. On the
+first connection Thunderbird opens the IdP's consent page;
+subsequent reconnects refresh the access token automatically.

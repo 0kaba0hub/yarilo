@@ -140,6 +140,7 @@ func main() {
 		Auth:             chainAuth{protocol.NewAuthenticator(dbs, authOpts...)},
 		Proxy:            relay,
 		FailureDelay:     time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
+		OAuth2Enabled:    len(cfg.Auth.OAuth2) > 0,
 	})
 
 	go runTelemetry(cfg.Telemetry.Listen)
