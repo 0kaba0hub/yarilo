@@ -1010,20 +1010,23 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		Username: master, Password: password, RemoteIP: remoteIP,
 		Service: service,
 	}
-	policyRejected := false
 	if s.policy != nil && s.policyMode.CheckBefore && target == "" {
 		d, perr := s.policy.CheckBefore(context.Background(), policyReq)
 		if perr != nil {
 			slog.Warn("auth: policy CheckBefore error", "err", perr)
 		}
 		if d.Reject {
-			policyRejected = true
 			slog.Info("auth: policy rejected pre-chain",
 				"service", service, "user", master, "msg", d.Message)
 			if s.failureDelay > 0 {
 				time.Sleep(s.failureDelay)
 			}
 			fmt.Fprintf(conn, "FAIL\t%s\n", id)
+			// Pre-chain reject IS the result — report it so the
+			// policy server's telemetry sees its own decision.
+			if s.policy != nil && s.policyMode.ReportAfter {
+				go s.policy.ReportAfter(context.Background(), policyReq, false, true)
+			}
 			return
 		}
 		if d.TarpitSecs > 0 {
@@ -1083,8 +1086,10 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 			"err", err,
 		)
 		// Policy report on fail too — telemetry needs both sides.
+		// policy_reject=false here: any policy-reject path
+		// early-returns above with its own ReportAfter call.
 		if s.policy != nil && s.policyMode.ReportAfter && target == "" {
-			go s.policy.ReportAfter(context.Background(), policyReq, false, policyRejected)
+			go s.policy.ReportAfter(context.Background(), policyReq, false, false)
 		}
 		return
 	}
@@ -1100,7 +1105,6 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 			slog.Warn("auth: policy CheckAfter error", "err", perr)
 		}
 		if d.Reject {
-			policyRejected = true
 			slog.Info("auth: policy rejected post-chain",
 				"service", service, "user", res.Username, "msg", d.Message)
 			if s.failureDelay > 0 {
@@ -1136,9 +1140,10 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 
 	// Policy report (fire-and-forget post-decision telemetry).
 	// Goroutine so the wire reply is not blocked on the report
-	// HTTP round-trip.
+	// HTTP round-trip. policy_reject=false: any policy-reject
+	// path early-returns above with its own ReportAfter call.
 	if s.policy != nil && s.policyMode.ReportAfter && target == "" {
-		go s.policy.ReportAfter(context.Background(), policyReq, true, policyRejected)
+		go s.policy.ReportAfter(context.Background(), policyReq, true, false)
 	}
 }
 
