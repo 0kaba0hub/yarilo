@@ -63,9 +63,10 @@ const (
 
 // Backend is the mdbox MailboxBackend factory. Per-user state
 // lives in UserMailbox; the only thing the Backend holds is the
-// shared locks.Locker.
+// shared locks.Locker and the optional alt-storage path template.
 type Backend struct {
-	locker locks.Locker
+	locker         locks.Locker
+	altStorageTmpl string // Dovecot mail_alt_path equivalent; "" = disabled
 }
 
 // Option configures a Backend at construction time.
@@ -77,6 +78,15 @@ type Option func(*Backend)
 // MailboxKey(user, folder).
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
+}
+
+// WithAltStorage sets the base path template for the cold-storage
+// tier. Supports %u/%n/%d/%Lu/%Ln/%Ld — same expansion as
+// mail_home_template. Empty string disables alt storage.
+//
+// Example: "/mnt/cold/%d/%n" — mirrors Dovecot's mail_alt_path.
+func WithAltStorage(tmpl string) Option {
+	return func(b *Backend) { b.altStorageTmpl = tmpl }
 }
 
 // New constructs a Backend.
@@ -91,18 +101,20 @@ func New(opts ...Option) *Backend {
 // OpenUser returns a per-session handle bound to u.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
-		b:        b,
-		home:     u.Home,
-		username: u.Username,
-		owner:    makeOwner(u),
+		b:           b,
+		home:        u.Home,
+		username:    u.Username,
+		owner:       makeOwner(u),
+		altBasePath: expandAltPath(b.altStorageTmpl, u.Username),
 	}
 }
 
 type userMailbox struct {
-	b        *Backend
-	home     string
-	username string
-	owner    string
+	b           *Backend
+	home        string
+	username    string
+	owner       string
+	altBasePath string // expanded alt root + "/mdbox"; "" = disabled
 
 	mu      sync.Mutex
 	mapping *mdboxmap.Map // lazily opened on first use
@@ -128,6 +140,39 @@ func (u *userMailbox) folderPath(folder string) string {
 }
 func (u *userMailbox) mfilePath(fileID uint32) string {
 	return filepath.Join(u.storagePath(), fmt.Sprintf("m.%d", fileID))
+}
+
+// AltEnabled reports whether alt storage is configured for this user.
+func (u *userMailbox) AltEnabled() bool { return u.altBasePath != "" }
+
+// altStoragePath returns the alt-storage directory for m.<N> files.
+// Mirrors primary storagePath() but rooted at altBasePath.
+func (u *userMailbox) altStoragePath() string {
+	return filepath.Join(u.altBasePath, storageDir)
+}
+
+// mfileAltPath returns the alt-storage path for m.<fileID>.
+func (u *userMailbox) mfileAltPath(fileID uint32) string {
+	return filepath.Join(u.altStoragePath(), fmt.Sprintf("m.%d", fileID))
+}
+
+// expandAltPath expands a Dovecot-style path template (%u, %n, %d,
+// %Lu, %Ln, %Ld) against a username ("localpart@domain").
+// Returns "" when tmpl is empty (alt storage disabled).
+func expandAltPath(tmpl, username string) string {
+	if tmpl == "" {
+		return ""
+	}
+	local, domain, _ := strings.Cut(username, "@")
+	r := strings.NewReplacer(
+		"%u", username,
+		"%Lu", strings.ToLower(username),
+		"%n", local,
+		"%Ln", strings.ToLower(local),
+		"%d", domain,
+		"%Ld", strings.ToLower(domain),
+	)
+	return r.Replace(tmpl)
 }
 
 // openMap ensures the per-user mdboxmap is open. Cached on the
@@ -353,9 +398,18 @@ func (u *userMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
 	if !ok {
 		return nil, fmt.Errorf("mdbox/fetch: map_uid %d not found", mapUID)
 	}
-	f, err := os.Open(u.mfilePath(entry.FileID))
-	if err != nil {
-		return nil, fmt.Errorf("mdbox/fetch: open m.%d: %w", entry.FileID, err)
+	f, ferr := os.Open(u.mfilePath(entry.FileID))
+	if ferr != nil {
+		// Transparent fallback: if the primary file is absent and alt
+		// storage is configured, the message may have been moved there
+		// by a previous altmove run. Mirrors dbox_file_open() in
+		// Dovecot (dbox-file.c:169–199).
+		if errors.Is(ferr, os.ErrNotExist) && u.AltEnabled() {
+			f, ferr = os.Open(u.mfileAltPath(entry.FileID))
+		}
+		if ferr != nil {
+			return nil, fmt.Errorf("mdbox/fetch: open m.%d: %w", entry.FileID, ferr)
+		}
 	}
 	body, err := readRecordBody(f, entry.Offset)
 	_ = f.Close()

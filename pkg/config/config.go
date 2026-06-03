@@ -707,6 +707,12 @@ type StorageConfig struct {
 	MailHomeTemplate string `koanf:"mail_home_template"`
 	Index            string `koanf:"index"`
 	IndexDir         string `koanf:"index_dir"`
+	// MdboxAltStoragePath is the base directory for the mdbox alt
+	// (cold) storage tier. Supports the same %u/%n/%d/%Lu/%Ln/%Ld
+	// template variables as mail_home_template. Empty disables alt
+	// storage (default). Mirrors Dovecot's mail_alt_path setting.
+	// Example: /mnt/cold/%d/%n
+	MdboxAltStoragePath string `koanf:"mdbox_alt_storage_path"`
 }
 
 type TelemetryConfig struct {

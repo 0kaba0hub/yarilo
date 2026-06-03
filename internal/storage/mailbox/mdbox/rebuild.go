@@ -147,6 +147,83 @@ type scanRecord struct {
 	physicalOffset uint32
 }
 
+// physRecord carries the minimal per-dbox-record info that the alt-
+// move scanner needs: byte offset within the file and InternalDate
+// from the R trailer field. Used by scanMFileForAlt.
+type physRecord struct {
+	offset       uint32
+	internalDate time.Time
+}
+
+// scanMFileForAlt reads the dbox v2 records in the file at path and
+// returns one physRecord per message — only the physical offset and
+// InternalDate (from the R trailer field). Path may point to either
+// a primary or an alt-tier m.<N> file.
+func scanMFileForAlt(path string) ([]physRecord, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat: %w", err)
+	}
+	total := uint32(st.Size())
+
+	var out []physRecord
+	pos := uint32(0)
+	for pos < total {
+		if _, err := f.Seek(int64(pos), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek %d: %w", pos, err)
+		}
+		headerLine := make([]byte, 64)
+		n, err := f.Read(headerLine)
+		if err != nil {
+			return nil, fmt.Errorf("read header line @%d: %w", pos, err)
+		}
+		lfIdx := -1
+		for i := 0; i < n; i++ {
+			if headerLine[i] == '\n' {
+				lfIdx = i
+				break
+			}
+		}
+		if lfIdx < 0 {
+			return nil, fmt.Errorf("file header line missing LF @%d", pos)
+		}
+		bodyStart := pos + uint32(lfIdx) + 1
+		if _, err := f.Seek(int64(bodyStart), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek msg header @%d: %w", bodyStart, err)
+		}
+		mh := make([]byte, messageHeaderSize)
+		if _, err := io.ReadFull(f, mh); err != nil {
+			return nil, fmt.Errorf("read msg header @%d: %w", bodyStart, err)
+		}
+		if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
+			return nil, fmt.Errorf("bad magic @%d", bodyStart)
+		}
+		size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse size @%d: %w", bodyStart, err)
+		}
+		bodyEnd := bodyStart + messageHeaderSize + uint32(size)
+		if bodyEnd > total {
+			return nil, fmt.Errorf("body @%d exceeds file size", bodyStart)
+		}
+		if _, err := f.Seek(int64(bodyEnd), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek trailer: %w", err)
+		}
+		trailerEnd, parsed, err := scanTrailer(f, total-bodyEnd)
+		if err != nil {
+			return nil, fmt.Errorf("trailer @%d: %w", bodyEnd, err)
+		}
+		out = append(out, physRecord{offset: pos, internalDate: parsed.internalDate})
+		pos = bodyEnd + trailerEnd
+	}
+	return out, nil
+}
+
 // scanMFile walks one m.<N> file from offset 0 to EOF, parsing
 // each canonical dbox v2 record and emitting a scanRecord per
 // message. Corrupt records short-circuit the walk so we don't

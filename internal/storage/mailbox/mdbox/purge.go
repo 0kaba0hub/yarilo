@@ -157,6 +157,49 @@ func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxma
 	return out, nil
 }
 
+// compactRecordsToTier is the tier-aware variant of compactRecords.
+// It reads live records from srcPath and writes them into dstPath
+// (which may be in a different storage tier), using dstFileID as
+// the new file_id in the returned MovedRecord slice. Unlike
+// compactRecords, src and dst paths are supplied directly by the
+// caller — this allows cross-tier copies (primary → alt and vice
+// versa).
+func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID uint32, live []mdboxmap.MapEntry) ([]mdboxmap.MovedRecord, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/altmove: open src %s: %w", srcPath, err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/altmove: create dst %s: %w", dstPath, err)
+	}
+	defer dst.Close()
+
+	out := make([]mdboxmap.MovedRecord, 0, len(live))
+	for _, e := range live {
+		body, err := readRecordBody(src, e.Offset)
+		if err != nil {
+			return nil, fmt.Errorf("mdbox/altmove: read uid=%d: %w", e.UID, err)
+		}
+		offset, err := appendRecordToFile(dst, body)
+		if err != nil {
+			return nil, fmt.Errorf("mdbox/altmove: write uid=%d: %w", e.UID, err)
+		}
+		out = append(out, mdboxmap.MovedRecord{
+			UID:    e.UID,
+			FileID: dstFileID,
+			Offset: offset,
+			Size:   e.Size,
+		})
+	}
+	if err := dst.Sync(); err != nil {
+		return nil, fmt.Errorf("mdbox/altmove: fsync %s: %w", dstPath, err)
+	}
+	return out, nil
+}
+
 // appendRecordToFile rebuilds a canonical dbox v2 record around
 // body (file-header + 32-byte message header + body + metadata
 // trailer) and writes it at the current end-of-file. Returns the

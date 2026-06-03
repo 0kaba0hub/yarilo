@@ -394,6 +394,7 @@ components:
       maildirRoot: /var/mail/vhosts
       mailHomeTemplate: "%d/%n"
       index: fileindex
+      ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
       persistence:
         enabled: true
         storageClass: ""
