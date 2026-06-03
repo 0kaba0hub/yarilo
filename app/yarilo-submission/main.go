@@ -17,6 +17,7 @@ import (
 
 	"net/http"
 
+	"github.com/emersion/go-sasl"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
@@ -222,6 +223,17 @@ func (a chainAuth) AuthPlainMaster(authzid, authid, password string) error {
 		return fmt.Errorf("smtp/auth: authentication failed")
 	}
 	return nil
+}
+
+// LookupSCRAMSha256 forwards the lookup to the underlying chain.
+// Returning (nil, nil) when the chain has no SCRAM support keeps
+// EHLO advertisement gated correctly.
+func (a chainAuth) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
+	lookup, ok := a.c.(protocol.SCRAMSha256Lookup)
+	if !ok {
+		return nil, nil
+	}
+	return lookup.LookupSCRAMSha256(username)
 }
 
 func parseCIDRs(ss []string) []*net.IPNet {

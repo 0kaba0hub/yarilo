@@ -24,6 +24,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/0kaba0hub/yarilo/internal/auth/scram"
 	"github.com/0kaba0hub/yarilo/internal/xclient"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -178,8 +179,143 @@ func (s *session) cmdSASLAuth(arg string) {
 			return
 		}
 		s.handleSASLOAuthBearer(parts)
+	case "SCRAM-SHA-256":
+		s.handleSASLScram(parts, false)
+	case "SCRAM-SHA-256-PLUS":
+		s.handleSASLScram(parts, true)
 	default:
 		s.writeErr("unsupported mechanism")
+	}
+}
+
+// handleSASLScram — AUTH SCRAM-SHA-256 / SCRAM-SHA-256-PLUS
+// (RFC 5802 / RFC 7677). Multi-round: client-first → server-
+// first → client-final → server-final. Uses the shared SCRAM
+// session adapter from internal/auth/scram so the success hook
+// runs through the regular completeAuthenticated path.
+func (s *session) handleSASLScram(parts []string, plus bool) {
+	lookup, ok := s.srv.opts.Auth.(protocol.SCRAMSha256Lookup)
+	if !ok {
+		s.writeErr("unsupported mechanism")
+		return
+	}
+	var cb []byte
+	if plus {
+		cb = s.tlsExporter()
+		if cb == nil {
+			s.writeErr("channel binding unavailable")
+			return
+		}
+	}
+
+	// Capture the SCRAM-verified username via the OnSuccess hook
+	// so the post-success path can run completeAuthenticated.
+	var (
+		verifiedUser string
+		completed    bool
+	)
+	onSuccess := func(user string) error {
+		verifiedUser = user
+		completed = true
+		return nil
+	}
+	var saslSrv *scram.Session
+	if plus {
+		saslSrv = scram.NewSha256Plus(lookup, cb, onSuccess)
+	} else {
+		saslSrv = scram.NewSha256(lookup, onSuccess)
+	}
+
+	if err := s.driveSASL(parts, saslSrv); err != nil {
+		if d := s.srv.opts.FailureDelay; d > 0 {
+			time.Sleep(d)
+		}
+		s.writeErr("authentication failed")
+		return
+	}
+	if !completed {
+		// driveSASL exited cleanly without the underlying server
+		// reporting done=true with no err — defensive fall-through.
+		s.writeErr("authentication failed")
+		return
+	}
+	s.completeAuthenticated(&protocol.AuthResponse{
+		Result:   protocol.AuthOK,
+		Username: verifiedUser,
+	})
+}
+
+// tlsExporter returns the 32-byte RFC 9266 channel-binding
+// material derived from the underlying TLS conn. Returns nil
+// for non-TLS or pre-TLS-1.3 connections.
+func (s *session) tlsExporter() []byte {
+	netConn := s.conn
+	tc, ok := netConn.(*tls.Conn)
+	if !ok {
+		return nil
+	}
+	state := tc.ConnectionState()
+	if state.Version < tls.VersionTLS13 {
+		return nil
+	}
+	out, err := state.ExportKeyingMaterial("EXPORTER-Channel-Binding", nil, 32)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// driveSASL runs the multi-round SASL exchange. The initial
+// response (when supplied via the AUTH line's second token) is
+// fed to srv.Next first; otherwise an empty initial response is
+// passed. For each non-final challenge the driver writes a
+// `+ <base64>` continuation line and reads the next client
+// line. Returns nil on done=true with no error; any error from
+// the SASL server bubbles up.
+func (s *session) driveSASL(parts []string, srv sasl.Server) error {
+	var resp []byte
+	// Initial response (optional in POP3 SASL).
+	if len(parts) == 2 {
+		decoded, err := base64.StdEncoding.DecodeString(parts[1])
+		if err != nil {
+			return err
+		}
+		resp = decoded
+	} else {
+		fmt.Fprintf(s.conn, "+ \r\n")
+	}
+	for {
+		challenge, done, err := srv.Next(resp)
+		if err != nil {
+			return err
+		}
+		if done {
+			// On success the underlying SCRAM server returns the
+			// final v=ServerSignature challenge. POP3 has no
+			// way to deliver post-success SASL data, so we
+			// surface the +OK without it — clients that depend
+			// on ServerSignature verification (rare in POP3)
+			// fall back to the no-server-sig codepath.
+			_ = challenge
+			fmt.Fprintf(s.conn, "+OK authenticated\r\n")
+			return nil
+		}
+		// Continuation — emit + <base64-challenge>, read next.
+		fmt.Fprintf(s.conn, "+ %s\r\n",
+			base64.StdEncoding.EncodeToString(challenge))
+		line, err := s.br.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "*" {
+			return fmt.Errorf("authentication cancelled")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(line)
+		if err != nil {
+			return err
+		}
+		resp = decoded
 	}
 }
 
@@ -286,7 +422,15 @@ func (s *session) finishAuth(authzid, username, password string) {
 		s.writeErr("authentication failed")
 		return
 	}
+	s.completeAuthenticated(res)
+}
 
+// completeAuthenticated runs the post-verify session setup
+// (resolve userInfo, acquire connection limit + mailbox lock,
+// open backends, load mailbox, write +OK). Shared between the
+// password-verifying finishAuth path and the SCRAM SASL path
+// where the credential is already verified by the mechanism.
+func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 	resolver := s.srv.opts.Resolver
 	if resolver == nil {
 		resolver = &mailbox.Resolver{}

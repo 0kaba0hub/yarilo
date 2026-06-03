@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/emersion/go-sasl"
 )
 
 const (
@@ -141,6 +143,33 @@ type MasterAuthenticator interface {
 	AuthenticateMaster(authzid, authid, password, service string) (*AuthResponse, error)
 }
 
+// SCRAMSha256Lookup exposes per-user SCRAM-SHA-256 verifiers to
+// the session-layer SASL mech. Implementing this interface on the
+// configured Authenticator (and on individual passdbs that carry
+// verifiers in their backing store) lights up SCRAM-SHA-256 and
+// SCRAM-SHA-256-PLUS advertisement in IMAP / POP3 / Submission.
+//
+// LookupSCRAMSha256 returns:
+//
+//   - (creds, nil)  — user exists and has a SCRAM-SHA-256 verifier.
+//     The SASL mech drives challenge-response from
+//     the returned StoredKey / ServerKey without
+//     ever seeing a plain password.
+//   - (nil, nil)    — user unknown OR stored credential is not a
+//     SCRAM verifier. The SASL mech fabricates a
+//     fake verifier so the exchange completes with
+//     a uniform auth-failed outcome and an attacker
+//     cannot probe for user existence via timing.
+//   - (nil, err)    — transient backend error. The session
+//     surfaces this as temp_fail.
+//
+// Verifiers are produced by `yarilo-admin auth scram-verifier`
+// (or any tool that emits the
+// `{SCRAM-SHA-256}iter,salt,stored,server` blob).
+type SCRAMSha256Lookup interface {
+	LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error)
+}
+
 // AuthenticatorOption tunes a NewAuthenticator construction.
 type AuthenticatorOption func(*chainAuthenticator)
 
@@ -235,6 +264,14 @@ func (p *plainOnlyAuthenticator) Authenticate(username, password, service string
 	return p.inner.Authenticate(username, password, service)
 }
 
+// LookupSCRAMSha256 forwards the SCRAM lookup so the wrapper
+// (returned when master-users are disabled) still exposes
+// SCRAM-SHA-256 support. SCRAM is orthogonal to master-user
+// impersonation — disabling one must not disable the other.
+func (p *plainOnlyAuthenticator) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
+	return p.inner.LookupSCRAMSha256(username)
+}
+
 type chainAuthenticator struct {
 	chain               Chain
 	userdb              Userdb
@@ -322,6 +359,35 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 //     treat as regular login (RFC 4616 permits this).
 //   - authzid set and != authid → RunMasterAuth path.
 //
+// LookupSCRAMSha256 walks the passdb chain and returns the first
+// SCRAM-SHA-256 verifier any chain entry exposes. A passdb that
+// does not implement SCRAMSha256Lookup is silently skipped — the
+// chain stays mixed-mode (SQL passdbs with PLAIN columns coexist
+// with SQL passdbs carrying SCRAM verifiers; only the latter
+// contribute to SCRAM authentication).
+//
+// Returns (nil, nil) when no chain entry has a verifier for the
+// user — the session-side SASL server then fabricates a fake
+// verifier so the SCRAM exchange completes with a uniform
+// auth-failed outcome (defence against user-enumeration via
+// timing). Backend errors propagate.
+func (c *chainAuthenticator) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
+	for _, db := range c.chain {
+		lookup, ok := db.(SCRAMSha256Lookup)
+		if !ok {
+			continue
+		}
+		creds, err := lookup.LookupSCRAMSha256(username)
+		if err != nil {
+			return nil, err
+		}
+		if creds != nil {
+			return creds, nil
+		}
+	}
+	return nil, nil
+}
+
 // The `target<sep>master` separator workaround is applied when
 // authzid is empty AND masterUserSeparator is non-empty.
 func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, service string) (*AuthResponse, error) {

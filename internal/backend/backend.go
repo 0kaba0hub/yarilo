@@ -13,6 +13,8 @@ import (
 
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all" // register all dict drivers
 
+	"github.com/emersion/go-sasl"
+
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
@@ -649,6 +651,20 @@ func (a chainAuth) AuthPlainMaster(authzid, authid, password string) error {
 		return fmt.Errorf("smtp/auth: authentication failed")
 	}
 	return nil
+}
+
+// LookupSCRAMSha256 satisfies submission.SCRAMSha256LookupAuthenticator
+// by forwarding to the underlying protocol chain. Returns
+// (nil, nil) when the chain does not expose SCRAM verifiers,
+// which the submission session interprets as "do not advertise
+// SCRAM mechs in EHLO" so a deployment without verifiers never
+// surfaces a mech it cannot serve.
+func (a chainAuth) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
+	lookup, ok := a.c.(protocol.SCRAMSha256Lookup)
+	if !ok {
+		return nil, nil
+	}
+	return lookup.LookupSCRAMSha256(username)
 }
 
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
