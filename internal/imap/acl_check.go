@@ -49,11 +49,11 @@ func insertRight(spec NamespaceSpec) rune {
 
 // effectiveRights resolves the accessing user's effective rights on
 // folder under h, walking ancestors when no explicit ACL is present
-// (Dovecot first-ancestor-with-explicit-ACL — see
+// (first-ancestor-with-explicit-ACL walk — see
 // internal/userstate/acl.Store.EffectiveFor). The namespace's
 // hierarchy separator drives the walk; sep == 0 disables it.
 func (s *session) effectiveRights(h *nsHandle, folder string) (mailbox.Rights, error) {
-	return h.acl.EffectiveFor(folder, s.userInfo.Username, s.isOwner(h), byte(h.spec.Separator))
+	return h.acl.EffectiveFor(folder, s.userInfo.Username, s.userInfo.Groups, s.isOwner(h), byte(h.spec.Separator))
 }
 
 // requireRight loads the effective ACL for folder under h (with

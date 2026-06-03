@@ -26,6 +26,13 @@ type UserInfo struct {
 	// template expanded against the username. See Resolver.
 	Home string
 
+	// Groups is the list of supplementary groups the user belongs to,
+	// sourced from the userdb `groups=` extra field (comma-separated).
+	// ACL evaluation matches these against `group=<name>` and
+	// `group-override=<name>` entries. Empty when not configured —
+	// group= ACL entries have no effect in that case.
+	Groups []string
+
 	// Phase 3 — filesystem ownership (needed when yarilo runs as root
 	// and drops privileges per-user, like Dovecot's deliver agent):
 	// UID uint32

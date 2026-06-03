@@ -266,7 +266,7 @@ func TestStore_EffectiveForOwnerShortCircuits(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news", "alice", true, '/')
+	got, err := s.EffectiveFor("Lists/news", "alice", nil, true, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestStore_EffectiveForLeafACLWins(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set leaf: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	got, err := s.EffectiveFor("Lists/news", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestStore_EffectiveForInheritsFromParent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set parent: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	got, err := s.EffectiveFor("Lists/news", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestStore_EffectiveForInheritsAcrossMultipleLevels(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set top: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news/2026", "bob", false, '/')
+	got, err := s.EffectiveFor("Lists/news/2026", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestStore_EffectiveForInheritsAcrossMultipleLevels(t *testing.T) {
 func TestStore_EffectiveForNoACLAnywhereYieldsEmpty(t *testing.T) {
 	home := t.TempDir()
 	s := New(home, "alice", "test", nil)
-	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	got, err := s.EffectiveFor("Lists/news", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestStore_EffectiveForLeafOverridesParentEvenWhenLeafIsRestrictive(t *testi
 	}); err != nil {
 		t.Fatalf("Set leaf: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/private", "bob", false, '/')
+	got, err := s.EffectiveFor("Lists/private", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestStore_EffectiveForNegativeInInheritedACL(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news", "bob", false, '/')
+	got, err := s.EffectiveFor("Lists/news", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestStore_EffectiveForFallsThroughToRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set root: %v", err)
 	}
-	got, err := s.EffectiveFor("TopLevel", "bob", false, '/')
+	got, err := s.EffectiveFor("TopLevel", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestStore_EffectiveForFallsThroughToRootFromDeep(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set root: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news/2026", "bob", false, '/')
+	got, err := s.EffectiveFor("Lists/news/2026", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestStore_EffectiveForLeafBeatsRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set leaf: %v", err)
 	}
-	got, err := s.EffectiveFor("Leaf", "bob", false, '/')
+	got, err := s.EffectiveFor("Leaf", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestStore_EffectiveForZeroSepStillTriesRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set root: %v", err)
 	}
-	got, err := s.EffectiveFor("Leaf", "bob", false, 0)
+	got, err := s.EffectiveFor("Leaf", "bob", nil, false, 0)
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestStore_EffectiveForZeroSepDisablesWalk(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news", "bob", false, 0)
+	got, err := s.EffectiveFor("Lists/news", "bob", nil, false, 0)
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}

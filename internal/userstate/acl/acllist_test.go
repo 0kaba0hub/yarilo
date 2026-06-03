@@ -192,7 +192,7 @@ func TestList_LookupAppliesEffectiveSemantics(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set D: %v", err)
 	}
-	visible, err := s.ListLookup("bob")
+	visible, err := s.ListLookup("bob", nil)
 	if err != nil {
 		t.Fatalf("ListLookup: %v", err)
 	}

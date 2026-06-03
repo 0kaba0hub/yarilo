@@ -70,7 +70,7 @@ func (s *Store) ListSnapshot() ([]ListEntry, error) {
 // Owner short-circuit is the caller's job (an owner sees everything
 // in their personal namespace whether or not the index lists it);
 // ListLookup is the strictly non-owner path.
-func (s *Store) ListLookup(user string) (map[string]struct{}, error) {
+func (s *Store) ListLookup(user string, groups []string) (map[string]struct{}, error) {
 	entries, err := s.ListSnapshot()
 	if err != nil {
 		return nil, err
@@ -88,7 +88,7 @@ func (s *Store) ListLookup(user string) (map[string]struct{}, error) {
 	}
 	out := map[string]struct{}{}
 	for mbox, acl := range byBox {
-		if acl.Effective(user, false).Has(mailbox.RightLookup) {
+		if acl.Effective(user, groups, false).Has(mailbox.RightLookup) {
 			out[mbox] = struct{}{}
 		}
 	}

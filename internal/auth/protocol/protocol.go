@@ -51,9 +51,14 @@ type AuthResponse struct {
 	Username string
 	Home     string
 	MailLoc  string
-	Proxy    bool
-	Host     string
-	Port     int
+	// Groups is the list of supplementary groups the user belongs to,
+	// sourced from the userdb `groups=` extra field. Used by ACL
+	// evaluation to match `group=` and `group-override=` entries.
+	// Empty when not configured — group= ACL entries have no effect.
+	Groups []string
+	Proxy  bool
+	Host   string
+	Port   int
 
 	// Fields carries the passdb result as a key/value bag with
 	// prefix-derived scoping (see fields.go). Populated by passdb
@@ -338,6 +343,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service string) (*
 	if v, ok := req.Fields.Get("mail"); ok {
 		resp.MailLoc = v
 	}
+	resp.Groups = extractGroups(req.Fields)
 	return resp, err
 }
 
@@ -360,6 +366,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		if v, ok := entry.Fields.Get("mail"); ok {
 			resp.MailLoc = v
 		}
+		resp.Groups = extractGroups(entry.Fields)
 	}
 	if resp.Username == "" {
 		resp.Username = reqUser
@@ -1280,7 +1287,27 @@ func buildAuthOK(id string, res *AuthResponse) string {
 	if res.MailLoc != "" {
 		reply += "\tmail=" + res.MailLoc
 	}
+	if len(res.Groups) > 0 {
+		reply += "\tgroups=" + strings.Join(res.Groups, ",")
+	}
 	return reply
+}
+
+// extractGroups reads the supplementary groups from an auth Fields
+// bag. The userdb path stores them as "userdb_groups=a,b,c"; the
+// passdb direct path (pre-AUTH-2 SQL or static) stores them as
+// "groups=a,b,c". Both are accepted.
+func extractGroups(f *Fields) []string {
+	if f == nil {
+		return nil
+	}
+	if v, ok := f.Get("userdb_groups"); ok && v != "" {
+		return SplitCSV(v)
+	}
+	if v, ok := f.Get("groups"); ok && v != "" {
+		return SplitCSV(v)
+	}
+	return nil
 }
 
 // authenticate runs the configured auth chains against the
