@@ -175,21 +175,16 @@ Items intentionally scoped out of Phase ACL-1 and not yet picked up:
 
 1. **Group identifier resolution.** ✅ Shipped in #174. `userdb groups=` → `AuthResponse.Groups` → `userInfo.Groups` → `ACL.Effective(user, groups, isOwner)` with group= union + group-override= replace semantics.
 
-2. **Owner-identifier match for shared / public namespaces.** PR D
-   defines `isOwner` as "this is the personal namespace" — true for
-   the authenticated user against their own home, false everywhere
-   else. The dovecot `owner` identifier should also match when a
-   user accesses a mailbox under a shared namespace whose
-   filesystem owner is themselves (e.g. shared/alice/foo accessed
-   by alice). Today `owner` entries on shared mailboxes match no
-   one. Resolving needs a notion of "this shared mailbox is owned
-   by user X", derived from the namespace's location path or a
-   per-shared-mailbox owner mapping. Dovecot keeps this via the
-   `mail_storage` owner field.
-
 Each item is small in isolation but touches a different subsystem
 (auth chain, namespace ownership model). Pull them in a future
 ACL-EXT phase when concrete demand surfaces.
+
+Note: the "owner identifier for shared namespaces" item was removed —
+yarilo's current behaviour (`isOwner=false` for all non-private
+namespaces) matches the reference implementation exactly: it explicitly
+forces `backend->owner = FALSE` for any non-private namespace
+(acl-backend.c:80), so `owner` entries in shared-namespace ACL files
+are intentionally inert.
 
 ---
 
