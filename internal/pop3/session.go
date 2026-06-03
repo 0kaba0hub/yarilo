@@ -505,6 +505,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 	}
 	userInfo := resolver.UserInfo(res.Username, res.Home)
 	userInfo.Groups = res.Groups
+	userInfo.QuotaRules = res.QuotaRules
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := s.remoteIP.String()

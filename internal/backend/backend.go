@@ -142,6 +142,10 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: dicts.metadata: %w", err)
 	}
+	quotaDict, err := buildDict(cfg.Dicts, "quota")
+	if err != nil {
+		return nil, fmt.Errorf("backend: dicts.quota: %w", err)
+	}
 
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
@@ -189,6 +193,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Locker:             locker,
 			SpecialUseDefaults: p.SpecialUseDefaults,
 			MetadataDict:       metadataDict,
+			QuotaDict:          quotaDict,
 			ACLEnabled:         p.ACL.Enabled,
 			Namespaces:         buildNamespaces(cfg.Namespaces),
 			NamespaceMailboxes: nsMailboxes,

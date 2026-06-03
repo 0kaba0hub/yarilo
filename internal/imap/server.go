@@ -93,6 +93,13 @@ type Options struct {
 	// cfg.Dicts["metadata"] in yarilo.yaml.
 	MetadataDict dict.Dict
 
+	// QuotaDict backs RFC 9208 QUOTA (GETQUOTAROOT / GETQUOTA). When
+	// non-nil, the server advertises the QUOTA capability, enforces
+	// storage limits on APPEND/COPY/MOVE, and updates per-user counters
+	// (priv/quota/storage, priv/quota/messages) atomically. Nil disables
+	// quota entirely. Operators wire this from cfg.Dicts["quota"].
+	QuotaDict dict.Dict
+
 	// ACLEnabled exposes RFC 4314 server-side ACL (GETACL / SETACL /
 	// DELETEACL / MYRIGHTS / LISTRIGHTS) when true. Storage is the
 	// per-mailbox `yarilo-acl` file in each folder's index directory
@@ -674,6 +681,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	}
 	userInfo := resolver.UserInfo(res.Username, res.Home)
 	userInfo.Groups = res.Groups
+	userInfo.QuotaRules = res.QuotaRules
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())
@@ -1224,6 +1232,12 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	}
 
 	size := r.Size()
+
+	// Enforce quota before allocating UID so the slot isn't wasted.
+	if err := s.quotaCheckAppend(context.Background(), size); err != nil {
+		return nil, err
+	}
+
 	uid, err := h.idx.AllocateUID(f.ID)
 	if err != nil {
 		return nil, fmt.Errorf("imap/append allocate: %w", err)
@@ -1240,6 +1254,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		_ = h.box.Remove(rel, filename)
 		return nil, fmt.Errorf("imap/append record: %w", err)
 	}
+	s.quotaAdd(context.Background(), size, 1)
 	s.emitMailboxChange(name, locks.EventDelivered, uid)
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(uid)}, nil
@@ -1346,6 +1361,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
 		s.statsExpunged++
+		s.quotaAdd(context.Background(), -int64(m.Size), -1)
 		if err := w.WriteExpunge(m.UID); err != nil {
 			return err
 		}
