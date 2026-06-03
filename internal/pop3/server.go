@@ -52,6 +52,12 @@ type Options struct {
 	// whether the user exists. Zero disables.
 	FailureDelay time.Duration
 
+	// OAuth2Enabled flips advertisement and acceptance of the
+	// OAUTHBEARER SASL mechanism. Set by the wiring when at least
+	// one OAuth provider is configured; otherwise OAUTHBEARER is
+	// invisible to the client.
+	OAuth2Enabled bool
+
 	// Locker is the cross-process write coordinator. When non-nil, the
 	// QUIT-time hard-delete batch runs under a single X lock on
 	// mbox:<user>:INBOX so concurrent IMAP/LMTP writers observe an

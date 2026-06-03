@@ -19,6 +19,7 @@ import (
 	"github.com/emersion/go-sasl"
 	proxyproto "github.com/pires/go-proxyproto"
 
+	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
@@ -62,6 +63,14 @@ type Options struct {
 	// before returning an auth-failure error to the client.
 	// Mirrors Dovecot's auth_failure_delay. Zero disables.
 	FailureDelay time.Duration
+
+	// OAuth2Enabled flips advertisement of the OAUTHBEARER SASL
+	// mechanism in the AuthenticateMechanisms reply. Set by the
+	// backend / yarilo-auth wiring when at least one OAuth provider
+	// is configured under auth.oauth2; otherwise the mech stays
+	// off the wire so a client never sees it advertised against a
+	// deployment that cannot validate tokens.
+	OAuth2Enabled bool
 
 	// Locker is the cross-process write coordinator. When non-nil, each
 	// successful write (APPEND/COPY/MOVE/STORE/EXPUNGE) emits an EVENT on
@@ -428,26 +437,64 @@ func (s *session) delayFailure() {
 
 // AuthenticateMechanisms advertises the SASL mechanisms our session
 // implements itself (overriding go-imap's built-in PLAIN handler).
-// Currently only PLAIN — needed so an authzid in the SASL response
-// reaches our master-user flow instead of being rejected by go-imap's
-// default "identity must equal username" guard.
+// PLAIN is unconditional; OAUTHBEARER lights up when the operator
+// configured at least one OAuth provider — see Options.OAuth2Enabled.
 func (s *session) AuthenticateMechanisms() []string {
-	return []string{sasl.Plain}
+	out := []string{sasl.Plain}
+	if s.srv.opts.OAuth2Enabled {
+		out = append(out, sasl.OAuthBearer)
+	}
+	return out
 }
 
 // Authenticate returns the SASL server for the requested mechanism.
 // Custom PLAIN handler is used when the configured Authenticator
 // implements protocol.MasterAuthenticator — otherwise we delegate
 // the response shape (no authzid) to the standard Login path so
-// stubs / non-master backends keep working.
+// stubs / non-master backends keep working. OAUTHBEARER routes the
+// bearer token through the regular Authenticator surface (the OAuth
+// passdb downstream extracts the token from req.Password).
 func (s *session) Authenticate(mech string) (sasl.Server, error) {
-	if mech != sasl.Plain {
-		return nil, &imaplib.Error{
-			Type: imaplib.StatusResponseTypeNo,
-			Text: "SASL mechanism not supported",
+	switch mech {
+	case sasl.Plain:
+		return sasl.NewPlainServer(s.authenticatePlainSASL), nil
+	case sasl.OAuthBearer:
+		if !s.srv.opts.OAuth2Enabled {
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Text: "SASL mechanism not supported",
+			}
+		}
+		return oauth2.NewOAuthBearerSASLServer(s.authenticateOAuthBearer), nil
+	}
+	return nil, &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Text: "SASL mechanism not supported",
+	}
+}
+
+// authenticateOAuthBearer is the OAuthBearerAuthenticator callback
+// invoked by go-sasl after it has parsed the GS2 envelope. Wire-
+// shape concerns (gs2-header parsing, RFC 7628 JSON error blob on
+// failure) live entirely inside go-sasl; here we only translate
+// (Username, Token) into the chain's Authenticate(user, password,
+// service) call and surface a Bearer JSON error on rejection.
+func (s *session) authenticateOAuthBearer(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
+	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap")
+	if err != nil || res == nil || res.Result != protocol.AuthOK {
+		s.delayFailure()
+		return &sasl.OAuthBearerError{
+			Status:  "invalid_token",
+			Schemes: "bearer",
 		}
 	}
-	return sasl.NewPlainServer(s.authenticatePlainSASL), nil
+	if err := s.completeLogin(res); err != nil {
+		return &sasl.OAuthBearerError{
+			Status:  "invalid_token",
+			Schemes: "bearer",
+		}
+	}
+	return nil
 }
 
 // authenticatePlainSASL is the PlainAuthenticator callback used by

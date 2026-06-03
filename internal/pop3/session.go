@@ -20,6 +20,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/emersion/go-sasl"
+
+	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/xclient"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -156,7 +159,9 @@ func (s *session) cmdPass(arg string) {
 	s.finishAuth("", username, arg)
 }
 
-// cmdSASLAuth implements POP3 SASL (RFC 5034): "AUTH PLAIN [<base64-init>]".
+// cmdSASLAuth implements POP3 SASL (RFC 5034): "AUTH <mech>
+// [<base64-init>]". Supported mechanisms: PLAIN (always),
+// OAUTHBEARER (when at least one OAuth provider is configured).
 func (s *session) cmdSASLAuth(arg string) {
 	parts := strings.SplitN(arg, " ", 2)
 	if len(parts) == 0 || parts[0] == "" {
@@ -164,29 +169,32 @@ func (s *session) cmdSASLAuth(arg string) {
 		return
 	}
 	mech := strings.ToUpper(parts[0])
-	if mech != "PLAIN" {
+	switch mech {
+	case "PLAIN":
+		s.handleSASLPlain(parts)
+	case "OAUTHBEARER":
+		if !s.srv.opts.OAuth2Enabled {
+			s.writeErr("unsupported mechanism")
+			return
+		}
+		s.handleSASLOAuthBearer(parts)
+	default:
 		s.writeErr("unsupported mechanism")
-		return
 	}
+}
+
+// handleSASLPlain — the historical AUTH PLAIN path. Reads the
+// initial response (or prompts for it), decodes, validates the
+// NUL-separated authzid/authid/password tuple and dispatches via
+// finishAuth.
+func (s *session) handleSASLPlain(parts []string) {
 	if s.srv.opts.DisablePlainAuth && !s.onTLS {
 		s.writeErr("plaintext authentication disabled, use STLS first")
 		return
 	}
-
-	var payload string
-	if len(parts) == 2 {
-		payload = parts[1]
-	} else {
-		fmt.Fprintf(s.conn, "+ \r\n")
-		line, err := s.br.ReadString('\n')
-		if err != nil {
-			return
-		}
-		payload = strings.TrimRight(line, "\r\n")
-		if payload == "*" {
-			s.writeErr("authentication cancelled")
-			return
-		}
+	payload, ok := s.readSASLPayload(parts)
+	if !ok {
+		return
 	}
 	decoded, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
@@ -198,11 +206,62 @@ func (s *session) cmdSASLAuth(arg string) {
 		s.writeErr("invalid PLAIN response")
 		return
 	}
-	// fields[0]=authzid (master-user target), fields[1]=authid
-	// (master), fields[2]=password. Empty authzid OR
-	// authzid==authid falls through finishAuth to the regular
-	// Authenticate path.
+	// fields[0]=authzid, fields[1]=authid, fields[2]=password.
 	s.finishAuth(fields[0], fields[1], fields[2])
+}
+
+// handleSASLOAuthBearer — AUTH OAUTHBEARER (RFC 7628). Reads the
+// initial response, decodes, feeds it to a go-sasl OAUTHBEARER
+// server which extracts the bearer token from the GS2 envelope
+// and invokes our callback. Wire-shape concerns (GS2 parsing, JSON
+// error blob on failure) live entirely in go-sasl.
+func (s *session) handleSASLOAuthBearer(parts []string) {
+	payload, ok := s.readSASLPayload(parts)
+	if !ok {
+		return
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		s.writeErr("invalid base64")
+		return
+	}
+	srv := oauth2.NewOAuthBearerSASLServer(func(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
+		s.finishAuth("", opts.Username, opts.Token)
+		return nil
+	})
+	if _, _, err := srv.Next(decoded); err != nil {
+		// go-sasl's OAUTHBEARER server returns errors only on
+		// malformed input — never for backend rejection (those
+		// surface via the callback's *OAuthBearerError, but
+		// finishAuth already wrote the wire reply).
+		if d := s.srv.opts.FailureDelay; d > 0 {
+			time.Sleep(d)
+		}
+		s.writeErr("invalid OAUTHBEARER response")
+		return
+	}
+	// finishAuth wrote +OK/-ERR; nothing else for us to do.
+}
+
+// readSASLPayload returns the base64 SASL initial response. When
+// the AUTH line carries no second token, prompts the client with
+// "+\r\n" and reads the response line. Returns ok=false after
+// writing the appropriate error reply.
+func (s *session) readSASLPayload(parts []string) (string, bool) {
+	if len(parts) == 2 {
+		return parts[1], true
+	}
+	fmt.Fprintf(s.conn, "+ \r\n")
+	line, err := s.br.ReadString('\n')
+	if err != nil {
+		return "", false
+	}
+	payload := strings.TrimRight(line, "\r\n")
+	if payload == "*" {
+		s.writeErr("authentication cancelled")
+		return "", false
+	}
+	return payload, true
 }
 
 // finishAuth authenticates, resolves UserInfo, opens storage handles, and

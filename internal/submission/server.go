@@ -16,6 +16,7 @@ import (
 	"github.com/emersion/go-sasl"
 	proxyproto "github.com/pires/go-proxyproto"
 
+	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
@@ -59,6 +60,11 @@ type Options struct {
 	// master-backend-with-authzid all return in the same wall-
 	// clock time. Zero disables.
 	FailureDelay time.Duration
+
+	// OAuth2Enabled flips advertisement and acceptance of the
+	// OAUTHBEARER SASL mechanism. Set by the wiring when at least
+	// one OAuth provider is configured under auth.oauth2.
+	OAuth2Enabled bool
 }
 
 // Server is the submission server (port 587 / 465).
@@ -223,14 +229,22 @@ func (s *session) receivedHeader() string {
 // AuthMechanisms advertises supported SASL mechanisms.
 // PLAIN: single-line base64 of \0user\0pass (RFC 4616).
 // LOGIN: interactive, two server prompts (legacy — Outlook, some Android MUAs).
+// OAUTHBEARER (RFC 7628): advertised only when an OAuth provider
+// is configured under auth.oauth2.
 func (s *session) AuthMechanisms() []string {
-	return []string{sasl.Plain, sasl.Login}
+	out := []string{sasl.Plain, sasl.Login}
+	if s.srv.opts.OAuth2Enabled {
+		out = append(out, sasl.OAuthBearer)
+	}
+	return out
 }
 
 // Auth returns a sasl.Server for the requested mechanism. The
 // PLAIN handler honours authzid via MasterAuthenticator when the
 // backend supports it; LOGIN has no authzid surface (RFC limit)
-// so it always dispatches to plain AuthPlain.
+// so it always dispatches to plain AuthPlain. OAUTHBEARER routes
+// the bearer token through the regular AuthPlain surface; the
+// OAuth passdb downstream extracts the token from req.Password.
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	switch mech {
 	case sasl.Plain:
@@ -239,8 +253,40 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		return sasl.NewLoginServer(func(username, password string) error {
 			return s.srv.opts.Auth.AuthPlain(username, password)
 		}), nil
+	case sasl.OAuthBearer:
+		if !s.srv.opts.OAuth2Enabled {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		return oauth2.NewOAuthBearerSASLServer(s.authOAuthBearerSASL), nil
 	}
 	return nil, goSmtp.ErrAuthUnknownMechanism
+}
+
+// authOAuthBearerSASL is the OAuthBearerAuthenticator callback.
+// go-sasl has already parsed the GS2 envelope; we translate
+// (Username, Token) into the AuthPlain surface (token-as-
+// password) so the OAuth passdb downstream sees it.
+func (s *session) authOAuthBearerSASL(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
+	if err := s.srv.opts.Auth.AuthPlain(opts.Username, opts.Token); err != nil {
+		if d := s.srv.opts.FailureDelay; d > 0 {
+			time.Sleep(d)
+		}
+		slog.Info("submission: auth failed",
+			"user", opts.Username,
+			"mech", "OAUTHBEARER",
+			"remoteIP", connRemoteIP(s.conn).String(),
+		)
+		return &sasl.OAuthBearerError{
+			Status:  "invalid_token",
+			Schemes: "bearer",
+		}
+	}
+	slog.Info("submission: login",
+		"user", opts.Username,
+		"mech", "OAUTHBEARER",
+		"remoteIP", connRemoteIP(s.conn).String(),
+	)
+	return nil
 }
 
 // authPlainSASL is the PlainAuthenticator callback for SMTP
