@@ -33,6 +33,11 @@ type UserInfo struct {
 	// group= ACL entries have no effect in that case.
 	Groups []string
 
+	// QuotaRules is the list of per-user quota rules sourced from the
+	// userdb `quota_rule=` extra field. Format: `*:storage=5G` or
+	// `*:messages=100000`. Empty means no quota limit.
+	QuotaRules []string
+
 	// Phase 3 — filesystem ownership (needed when yarilo runs as root
 	// and drops privileges per-user, like Dovecot's deliver agent):
 	// UID uint32

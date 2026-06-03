@@ -80,6 +80,7 @@ type Options struct {
 	Locker             locks.Locker
 	SpecialUseDefaults map[string]string
 	MetadataDict       dict.Dict
+	QuotaDict          dict.Dict
 
 	// AnvilAddr / AnvilTLS configure backend-api's connection to
 	// yarilo-anvil for the WHO endpoint. Empty Addr disables /who
@@ -113,6 +114,7 @@ func New(opts Options) *Server {
 	s.registerSpecialUseRoutes()
 	s.registerMetadataRoutes()
 	s.registerACLRoutes()
+	s.registerQuotaRoutes()
 	s.registerWhoRoutes()
 	s.registerSessionRoutes()
 	return s

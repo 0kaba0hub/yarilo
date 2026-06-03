@@ -56,9 +56,13 @@ type AuthResponse struct {
 	// evaluation to match `group=` and `group-override=` entries.
 	// Empty when not configured — group= ACL entries have no effect.
 	Groups []string
-	Proxy  bool
-	Host   string
-	Port   int
+
+	// QuotaRules is the list of per-user quota rules sourced from the
+	// userdb `quota_rule=` extra field. Format: `*:storage=5G`.
+	QuotaRules []string
+	Proxy      bool
+	Host       string
+	Port       int
 
 	// Fields carries the passdb result as a key/value bag with
 	// prefix-derived scoping (see fields.go). Populated by passdb
@@ -344,6 +348,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service string) (*
 		resp.MailLoc = v
 	}
 	resp.Groups = extractGroups(req.Fields)
+	resp.QuotaRules = extractQuotaRules(req.Fields)
 	return resp, err
 }
 
@@ -367,6 +372,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 			resp.MailLoc = v
 		}
 		resp.Groups = extractGroups(entry.Fields)
+		resp.QuotaRules = extractQuotaRules(entry.Fields)
 	}
 	if resp.Username == "" {
 		resp.Username = reqUser
@@ -1290,6 +1296,9 @@ func buildAuthOK(id string, res *AuthResponse) string {
 	if len(res.Groups) > 0 {
 		reply += "\tgroups=" + strings.Join(res.Groups, ",")
 	}
+	if len(res.QuotaRules) > 0 {
+		reply += "\tquota_rule=" + strings.Join(res.QuotaRules, ",")
+	}
 	return reply
 }
 
@@ -1305,6 +1314,22 @@ func extractGroups(f *Fields) []string {
 		return SplitCSV(v)
 	}
 	if v, ok := f.Get("groups"); ok && v != "" {
+		return SplitCSV(v)
+	}
+	return nil
+}
+
+// extractQuotaRules reads quota_rule entries from the Fields bag.
+// The userdb serialises multiple quota_rule= values joined by comma
+// under "userdb_quota_rule"; the passdb direct path uses "quota_rule".
+func extractQuotaRules(f *Fields) []string {
+	if f == nil {
+		return nil
+	}
+	if v, ok := f.Get("userdb_quota_rule"); ok && v != "" {
+		return SplitCSV(v)
+	}
+	if v, ok := f.Get("quota_rule"); ok && v != "" {
 		return SplitCSV(v)
 	}
 	return nil
