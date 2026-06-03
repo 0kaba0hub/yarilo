@@ -649,6 +649,10 @@ type Server struct {
 	failureDelay         time.Duration
 	internalFailureDelay time.Duration
 	cache                *Cache
+	penalty              PenaltyStore
+	penaltyToSecs        PenaltyToSecsFunc
+	policy               PolicyChecker
+	policyMode           PolicyMode
 	connUID              atomic.Uint64
 	pid                  int
 	cookie               string
@@ -714,6 +718,99 @@ func WithFailureDelay(d time.Duration) ServerOption {
 // outage symptoms).
 func WithInternalFailureDelay(d time.Duration) ServerOption {
 	return func(s *Server) { s.internalFailureDelay = d }
+}
+
+// PolicyChecker is the policy-server hook surface the wire
+// Server consults around the chain run. Implemented by
+// *policy.Client (auth/policy package); tests can plug stubs.
+//
+// Decision shape lives here so protocol does not import the
+// policy package — single-direction dependency keeps the build
+// graph clean.
+type PolicyChecker interface {
+	CheckBefore(ctx context.Context, req PolicyRequest) (PolicyDecision, error)
+	CheckAfter(ctx context.Context, req PolicyRequest, success, policyReject bool) (PolicyDecision, error)
+	ReportAfter(ctx context.Context, req PolicyRequest, success, policyReject bool)
+}
+
+// PolicyRequest is the input to a policy call. Mirror of the
+// shape policy.Client accepts; defined here so the wire Server
+// can call without the policy package import.
+type PolicyRequest struct {
+	Username  string
+	Password  string
+	RemoteIP  string
+	Service   string
+	DeviceID  string
+	SessionID string
+	TLS       bool
+	FailType  string
+}
+
+// PolicyDecision is the parsed verdict. Continue=true means
+// proceed; Reject=true means refuse; TarpitSecs>0 means sleep
+// that many seconds then continue.
+type PolicyDecision struct {
+	Continue   bool
+	Reject     bool
+	TarpitSecs int
+	Message    string
+}
+
+// PolicyMode controls which lifecycle hooks fire. CheckBefore
+// runs pre-passdb (block the chain on policy refusal);
+// CheckAfter runs post-passdb with the outcome known
+// (downgrade-success-to-fail use case); ReportAfter is
+// fire-and-forget telemetry.
+type PolicyMode struct {
+	CheckBefore bool
+	CheckAfter  bool
+	ReportAfter bool
+}
+
+// WithPolicy attaches a policy-server hook. The mode controls
+// which lifecycle calls fire. Nil checker disables every hook.
+func WithPolicy(checker PolicyChecker, mode PolicyMode) ServerOption {
+	return func(s *Server) {
+		s.policy = checker
+		s.policyMode = mode
+	}
+}
+
+// PenaltyStore is the cross-process auth-fail backoff store the
+// wire Server consults pre-passdb. Implemented by *anvil.Conn so
+// every yarilo-auth pod shares the same counters; tests can plug
+// in a stub. Nil-safe at the call sites — Lookup returns 0 and
+// Update is a no-op when the store is not configured.
+type PenaltyStore interface {
+	PenaltyLookup(ip string) (int, error)
+	PenaltyUpdate(ip string, count int) error
+}
+
+// PenaltyToSecsFunc maps the penalty counter returned by
+// PenaltyStore.Lookup to the sleep duration applied before the
+// chain runs. Caller-supplied so a deployment can tune the
+// exponential curve without recompiling protocol — typical
+// implementations: anvil.PenaltyToSecs (2/4/8/15 cap),
+// linear, or capped-linear. Nil falls back to no-sleep.
+type PenaltyToSecsFunc func(count int) int
+
+// WithPenalty attaches a cross-process penalty store. When set,
+// handleAuth runs the following dance for every request:
+//
+//  1. Lookup penalty for the remote IP, sleep
+//     toSecs(count) seconds (timing-leak protection equalises
+//     fast/slow paths regardless of penalty).
+//  2. Run the chain.
+//  3. On fail → Update(ip, count+1). On success → Update(ip, 0).
+//
+// Nil store disables; nil toSecs disables the sleep but still
+// records counters (useful for telemetry without enforcement).
+func WithPenalty(store PenaltyStore, toSecs PenaltyToSecsFunc) ServerOption {
+	return func(s *Server) {
+		s.penalty = store
+		s.penaltyToSecs = toSecs
+	}
 }
 
 // WithCache attaches an auth cache. handleAuth consults it
@@ -823,6 +920,20 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
+// connRemoteIP extracts the client IP from a net.Conn.
+// Returns "" when the remote address is missing or non-TCP
+// (loopback unix-socket harnesses, mock conns in tests).
+func connRemoteIP(conn net.Conn) string {
+	addr := conn.RemoteAddr()
+	if addr == nil {
+		return ""
+	}
+	if tcp, ok := addr.(*net.TCPAddr); ok {
+		return tcp.IP.String()
+	}
+	return ""
+}
+
 func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		return
@@ -869,7 +980,80 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		}
 	}
 
+	// Auth-penalty pre-check: look up the client IP's current
+	// fail-counter, sleep the mapped seconds, then run the chain.
+	// Master-user flows are exempt — admin sessions should never
+	// be tarpitted (matches the policy-server exemption).
+	remoteIP := connRemoteIP(conn)
+	penaltyCount := 0
+	if s.penalty != nil && remoteIP != "" && target == "" {
+		n, perr := s.penalty.PenaltyLookup(remoteIP)
+		if perr != nil {
+			slog.Warn("auth: penalty lookup failed", "ip", remoteIP, "err", perr)
+		} else {
+			penaltyCount = n
+			if s.penaltyToSecs != nil {
+				if secs := s.penaltyToSecs(n); secs > 0 {
+					time.Sleep(time.Duration(secs) * time.Second)
+				}
+			}
+		}
+	}
+
+	// Policy-server pre-check (check_before_auth). Master flows
+	// are exempt (admin sessions bypass policy decisions). On
+	// Reject → opaque FAIL like wrong-password. On TarpitSecs →
+	// sleep then continue to the chain. Errors honour the
+	// policy client's RejectOnFail setting internally; here we
+	// only see the resulting Decision.
+	policyReq := PolicyRequest{
+		Username: master, Password: password, RemoteIP: remoteIP,
+		Service: service,
+	}
+	if s.policy != nil && s.policyMode.CheckBefore && target == "" {
+		d, perr := s.policy.CheckBefore(context.Background(), policyReq)
+		if perr != nil {
+			slog.Warn("auth: policy CheckBefore error", "err", perr)
+		}
+		if d.Reject {
+			slog.Info("auth: policy rejected pre-chain",
+				"service", service, "user", master, "msg", d.Message)
+			if s.failureDelay > 0 {
+				time.Sleep(s.failureDelay)
+			}
+			fmt.Fprintf(conn, "FAIL\t%s\n", id)
+			// Pre-chain reject IS the result — report it so the
+			// policy server's telemetry sees its own decision.
+			if s.policy != nil && s.policyMode.ReportAfter {
+				go s.policy.ReportAfter(context.Background(), policyReq, false, true)
+			}
+			return
+		}
+		if d.TarpitSecs > 0 {
+			time.Sleep(time.Duration(d.TarpitSecs) * time.Second)
+		}
+	}
+
 	res, err := s.authenticate(target, master, password, service)
+
+	// Penalty update: success resets to 0; client-visible failure
+	// increments by 1 (capped server-side). Internal failures
+	// (temp_fail) do NOT update the counter — a passdb outage is
+	// not the client's fault and shouldn't lock them out when the
+	// backend comes back. Master flows still don't update.
+	if s.penalty != nil && remoteIP != "" && target == "" {
+		switch {
+		case err == nil && res != nil && res.Result == AuthOK:
+			if uerr := s.penalty.PenaltyUpdate(remoteIP, 0); uerr != nil {
+				slog.Warn("auth: penalty reset failed", "ip", remoteIP, "err", uerr)
+			}
+		case err == nil && res != nil && res.Result == AuthFail:
+			if uerr := s.penalty.PenaltyUpdate(remoteIP, penaltyCount+1); uerr != nil {
+				slog.Warn("auth: penalty increment failed", "ip", remoteIP, "err", uerr)
+			}
+		}
+	}
+
 	if err != nil || res == nil || res.Result != AuthOK {
 		// Timing-leak mitigation: hold the FAIL reply for a
 		// configured duration so unknown-user / wrong-password /
@@ -901,7 +1085,42 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 			"master_user_target", target,
 			"err", err,
 		)
+		// Policy report on fail too — telemetry needs both sides.
+		// policy_reject=false here: any policy-reject path
+		// early-returns above with its own ReportAfter call.
+		if s.policy != nil && s.policyMode.ReportAfter && target == "" {
+			go s.policy.ReportAfter(context.Background(), policyReq, false, false)
+		}
 		return
+	}
+
+	// Policy-server post-chain check (check_after_auth). The
+	// policy server now has the success outcome; it may downgrade
+	// to fail (e.g. account-takeover detection). Master flows
+	// exempt as before. Errors stay non-fatal — CheckAfter's own
+	// failover-decision honours RejectOnFail.
+	if s.policy != nil && s.policyMode.CheckAfter && target == "" {
+		d, perr := s.policy.CheckAfter(context.Background(), policyReq, true, false)
+		if perr != nil {
+			slog.Warn("auth: policy CheckAfter error", "err", perr)
+		}
+		if d.Reject {
+			slog.Info("auth: policy rejected post-chain",
+				"service", service, "user", res.Username, "msg", d.Message)
+			if s.failureDelay > 0 {
+				time.Sleep(s.failureDelay)
+			}
+			fmt.Fprintf(conn, "FAIL\t%s\n", id)
+			// Report this as a failed login for downstream
+			// analytics even though the chain accepted.
+			if s.policyMode.ReportAfter {
+				go s.policy.ReportAfter(context.Background(), policyReq, false, true)
+			}
+			return
+		}
+		if d.TarpitSecs > 0 {
+			time.Sleep(time.Duration(d.TarpitSecs) * time.Second)
+		}
 	}
 
 	reply := buildAuthOK(id, res)
@@ -918,6 +1137,14 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		"user", res.Username,
 		"master_user", loggedMaster,
 	)
+
+	// Policy report (fire-and-forget post-decision telemetry).
+	// Goroutine so the wire reply is not blocked on the report
+	// HTTP round-trip. policy_reject=false: any policy-reject
+	// path early-returns above with its own ReportAfter call.
+	if s.policy != nil && s.policyMode.ReportAfter && target == "" {
+		go s.policy.ReportAfter(context.Background(), policyReq, true, false)
+	}
 }
 
 // buildAuthOK renders the OK response. When res.Fields is set, the

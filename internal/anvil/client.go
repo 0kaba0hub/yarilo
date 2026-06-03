@@ -233,6 +233,52 @@ func (c *Conn) Lookup(user, service string) (int, error) {
 	return n, nil
 }
 
+// PenaltyLookup asks the server for the current auth-penalty
+// counter for the supplied client IP. Returns 0 when no entry
+// exists or the entry has decayed past the penalty timeout.
+//
+// Used by yarilo-auth BEFORE running the passdb chain: the
+// returned count is passed to PenaltyToSecs and the caller sleeps
+// that long so a single attacker IP pays exponential cost per
+// failed attempt regardless of which auth pod they land on.
+func (c *Conn) PenaltyLookup(ip string) (int, error) {
+	if _, err := fmt.Fprintf(c.conn, "PENALTY-LOOKUP\t%s\n", ip); err != nil {
+		return 0, fmt.Errorf("anvil/client: write PENALTY-LOOKUP: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return 0, fmt.Errorf("anvil/client: read PENALTY-LOOKUP response: %w", err)
+	}
+	line = strings.TrimRight(line, "\n")
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 || fields[0] != "PENALTY" {
+		return 0, fmt.Errorf("anvil/client: unexpected PENALTY-LOOKUP response: %q", line)
+	}
+	n, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, fmt.Errorf("anvil/client: bad PENALTY count %q: %w", fields[1], err)
+	}
+	return n, nil
+}
+
+// PenaltyUpdate sets the auth-penalty counter for the supplied
+// client IP. Count is clamped server-side to [0, MaxPenalty];
+// count==0 deletes the entry (auth success resets backoff).
+// Callers use count+1 on every fail, count=0 on every success.
+func (c *Conn) PenaltyUpdate(ip string, count int) error {
+	if _, err := fmt.Fprintf(c.conn, "PENALTY-UPDATE\t%s\t%d\n", ip, count); err != nil {
+		return fmt.Errorf("anvil/client: write PENALTY-UPDATE: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("anvil/client: read PENALTY-UPDATE response: %w", err)
+	}
+	if strings.TrimRight(line, "\n") != "OK" {
+		return fmt.Errorf("anvil/client: unexpected PENALTY-UPDATE response: %q", line)
+	}
+	return nil
+}
+
 // Close closes the underlying TCP connection.
 func (c *Conn) Close() { c.conn.Close() }
 

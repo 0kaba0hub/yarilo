@@ -461,6 +461,76 @@ type AuthConfig struct {
 	// Cache groups passdb / userdb cache settings. Disabled by
 	// default (SizeBytes=0).
 	Cache AuthCacheConfig `koanf:"cache"`
+
+	// Penalty groups the cross-pod IP-bound auth-fail backoff.
+	// Opt-in: Enabled=false skips both Lookup and Update entirely
+	// (every auth runs at full speed regardless of prior fails).
+	// When enabled, requires the anvil service to be reachable.
+	Penalty AuthPenaltyConfig `koanf:"penalty"`
+
+	// Policy groups the external HTTP policy-server hook (wforce-
+	// compatible). URL="" disables.
+	Policy AuthPolicyConfig `koanf:"policy"`
+}
+
+// AuthPenaltyConfig configures cross-pod IP-bound auth backoff.
+// State lives in the anvil service so a single attacker IP pays
+// the exponential cost across every auth pod they land on.
+type AuthPenaltyConfig struct {
+	// Enabled toggles the feature. Default false.
+	Enabled bool `koanf:"enabled"`
+}
+
+// AuthPolicyConfig configures the external HTTP policy-server
+// hook. URL="" disables the feature.
+type AuthPolicyConfig struct {
+	// URL is the policy endpoint. Empty disables the hook.
+	URL string `koanf:"url"`
+
+	// APIHeader is added to every request. Two formats:
+	//   "Key: value"  → custom header
+	//   "value"       → X-API-Key: value
+	APIHeader string `koanf:"api_header"`
+
+	// HashMech is the digest for the pwhash field. "sha256"
+	// (default) or "sha512". Must match the policy server's
+	// configured hash.
+	HashMech string `koanf:"hash_mech"`
+
+	// HashNonce is the per-deployment salt. REQUIRED when URL is
+	// set; empty nonce is rejected at startup so two deployments
+	// don't share pwhash space.
+	HashNonce string `koanf:"hash_nonce"`
+
+	// HashTruncateBits caps the MSB bits of the digest. Default
+	// 12 (4096 buckets — useful for rate-limit patterns, useless
+	// for password recovery). 0 means no truncation.
+	HashTruncateBits uint `koanf:"hash_truncate_bits"`
+
+	// TimeoutMs is the HTTP round-trip cap. Default 5000ms.
+	TimeoutMs int `koanf:"timeout_ms"`
+
+	// RejectOnFail flips fail-open to fail-closed: when true and
+	// the policy server is unreachable / returns malformed JSON,
+	// the auth attempt is rejected. Default false (fail-open).
+	RejectOnFail bool `koanf:"reject_on_fail"`
+
+	// LogOnly: when true, the client still calls the server and
+	// logs decisions, but the decision is NOT enforced — used
+	// for shadow-mode rollout before flipping the switch.
+	LogOnly bool `koanf:"log_only"`
+
+	// CheckBefore: POST ?command=allow BEFORE the chain runs.
+	// Default true.
+	CheckBefore bool `koanf:"check_before"`
+
+	// CheckAfter: POST ?command=allow AFTER the chain result is
+	// known. Default true.
+	CheckAfter bool `koanf:"check_after"`
+
+	// ReportAfter: POST ?command=report fire-and-forget after
+	// every decision. Default true.
+	ReportAfter bool `koanf:"report_after"`
 }
 
 // AuthCacheConfig configures the in-process auth cache (LRU
@@ -653,6 +723,14 @@ func Load(path string) (*Config, error) {
 			Cache: AuthCacheConfig{
 				TTLSeconds:         1800,
 				NegativeTTLSeconds: 1800,
+			},
+			Policy: AuthPolicyConfig{
+				HashMech:         "sha256",
+				HashTruncateBits: 12,
+				TimeoutMs:        5000,
+				CheckBefore:      true,
+				CheckAfter:       true,
+				ReportAfter:      true,
 			},
 		},
 		DirectorService: DirectorServiceConfig{

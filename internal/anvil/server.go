@@ -5,7 +5,7 @@
 // Protocol (TAB-delimited, LF-terminated):
 //
 //	Server → Client handshake:
-//	  VERSION\tyarilo-anvil\t1\t4\n
+//	  VERSION\tyarilo-anvil\t1\t6\n
 //	  DONE\n
 //
 //	Client commands:
@@ -17,11 +17,14 @@
 //	  SELECT\t{id}\t{folder}\n             ← 1.4 (IMAP currently-SELECTed folder)
 //	  SUBSCRIBE\t{channel}\n               ← 1.5 (pub/sub for operational events)
 //	  EMIT\t{channel}\t{payload}\n         ← 1.5
+//	  PENALTY-LOOKUP\t{ip}\n               ← 1.6 (auth-penalty IP backoff)
+//	  PENALTY-UPDATE\t{ip}\t{count}\n      ← 1.6
 //
 //	Server responses:
 //	  OK\t{id}\n
 //	  FAIL\t{id}\treason=too-many-connections\n
 //	  COUNT\t{n}\n                          ← LOOKUP reply
+//	  PENALTY\t{count}\n                    ← PENALTY-LOOKUP reply
 //	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\t{folder}\n
 //	  EVENT\t{channel}\t{payload}\n         ← server push to subscribers
 //	  DONE\n
@@ -41,6 +44,11 @@
 //   - 1.3 → 1.4: SELECT command + folder field in SESSION reply
 //   - 1.4 → 1.5: SUBSCRIBE / EMIT / EVENT for operational pub-sub
 //     (kick events ride this channel)
+//   - 1.5 → 1.6: PENALTY-LOOKUP / PENALTY-UPDATE for IP-bound auth
+//     backoff (yarilo-auth dials anvil pre-passdb to look up the
+//     current penalty for the client IP, sleeps the mapped seconds,
+//     then runs the chain; on fail increments the counter, on OK
+//     resets it).
 //
 // Older clients ignore unknown commands entirely.
 package anvil
@@ -52,6 +60,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,8 +71,41 @@ import (
 const (
 	protoName = "yarilo-anvil"
 	majorVer  = 1
-	minorVer  = 5
+	minorVer  = 6
 )
+
+// DefaultPenaltyDecay is how long a penalty entry survives after
+// its last update before the sweeper drops it. Matches the
+// AUTH_PENALTY_TIMEOUT formula: 2 + 4 + 8 + 15 = 29s — once an
+// IP's worst-case backoff chain has fully played out, the entry
+// is stale and can be evicted so a returning attacker starts
+// fresh-clean rather than re-amplifying a years-old slot.
+const DefaultPenaltyDecay = 29 * time.Second
+
+// MaxPenalty caps the per-IP backoff counter. Above this the
+// PenaltyToSecs mapping plateaus at the maximum sleep — extra
+// fails simply keep the counter at the cap until decay.
+const MaxPenalty = 4
+
+// PenaltyToSecs maps a penalty counter to the sleep duration
+// applied BEFORE the next auth attempt from that IP. Cumulative
+// budget for 4 successive fails is 2+4+8+15 = 29 seconds; after
+// that the cap holds. Returns 0 for counter 0 so the first
+// attempt from a clean IP is never slowed.
+func PenaltyToSecs(count int) int {
+	switch {
+	case count <= 0:
+		return 0
+	case count == 1:
+		return 2
+	case count == 2:
+		return 4
+	case count == 3:
+		return 8
+	default:
+		return 15
+	}
+}
 
 // DefaultSessionTTL is how long an anvil session lives without a
 // HEARTBEAT. Login pods refresh on a timer significantly shorter
@@ -105,15 +147,32 @@ type Server struct {
 
 	sessionTTL    time.Duration
 	sweepInterval time.Duration
+	penaltyDecay  time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*SessionInfo // id → session
+
+	// penalties is the per-IP auth-fail backoff store.
+	// Sweep-cleared when an entry sits unchanged for penaltyDecay
+	// so a long-quiet attacker doesn't lock themselves out forever
+	// (and so an honest user behind shared NAT eventually clears).
+	penaltyMu sync.Mutex
+	penalties map[string]*penaltyEntry
 
 	// subsMu protects the subs map. Held during EMIT broadcast
 	// AND during SUBSCRIBE add — keep handler hot path short
 	// (no I/O under the lock).
 	subsMu sync.Mutex
 	subs   map[string][]chan<- subEvent // channel name → subscriber outboxes
+}
+
+// penaltyEntry is the per-IP auth-fail counter. Updated atomically
+// under Server.penaltyMu; touched by handlePenaltyLookup (read) and
+// handlePenaltyUpdate (write). Sweep drops entries whose
+// lastUpdate is older than penaltyDecay.
+type penaltyEntry struct {
+	count      int
+	lastUpdate time.Time
 }
 
 // subEvent is one server-side push pending write to a subscriber
@@ -140,6 +199,13 @@ func WithSweepInterval(d time.Duration) ServerOption {
 	return func(s *Server) { s.sweepInterval = d }
 }
 
+// WithPenaltyDecay overrides DefaultPenaltyDecay — how long a
+// penalty entry survives after its last update before the
+// sweeper drops it.
+func WithPenaltyDecay(d time.Duration) ServerOption {
+	return func(s *Server) { s.penaltyDecay = d }
+}
+
 // NewServer creates an anvil server with the given per-user@IP connection limit.
 // max ≤ 0 means unlimited (server still runs but always returns OK).
 func NewServer(max int, opts ...ServerOption) *Server {
@@ -147,7 +213,9 @@ func NewServer(max int, opts ...ServerOption) *Server {
 		limiter:       connlimit.New(max),
 		sessionTTL:    DefaultSessionTTL,
 		sweepInterval: DefaultSweepInterval,
+		penaltyDecay:  DefaultPenaltyDecay,
 		sessions:      make(map[string]*SessionInfo),
+		penalties:     make(map[string]*penaltyEntry),
 		subs:          make(map[string][]chan<- subEvent),
 	}
 	for _, opt := range opts {
@@ -243,6 +311,10 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleSelect(conn, fields)
 		case "EMIT":
 			s.handleEmit(conn, fields)
+		case "PENALTY-LOOKUP":
+			s.handlePenaltyLookup(conn, fields)
+		case "PENALTY-UPDATE":
+			s.handlePenaltyUpdate(conn, fields)
 		case "SUBSCRIBE":
 			// SUBSCRIBE takes over the connection for server→client
 			// pushes; handleSubscribe blocks until the conn closes
@@ -420,7 +492,9 @@ func (s *Server) sweepLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.sweepStaleSessions(time.Now().UTC())
+			now := time.Now().UTC()
+			s.sweepStaleSessions(now)
+			s.sweepStalePenalties(now)
 		}
 	}
 }
@@ -442,6 +516,75 @@ func (s *Server) sweepStaleSessions(now time.Time) {
 	for _, r := range dropped {
 		s.limiter.Release(r.user, r.ip)
 	}
+}
+
+// sweepStalePenalties drops every penalty entry whose last
+// update is older than penaltyDecay. Inner of sweepLoop — takes
+// `now` so tests can fast-forward.
+func (s *Server) sweepStalePenalties(now time.Time) {
+	cutoff := now.Add(-s.penaltyDecay)
+	s.penaltyMu.Lock()
+	defer s.penaltyMu.Unlock()
+	for ip, e := range s.penalties {
+		if e.lastUpdate.Before(cutoff) {
+			delete(s.penalties, ip)
+		}
+	}
+}
+
+// handlePenaltyLookup processes: PENALTY-LOOKUP\t{ip}
+// Replies: PENALTY\t{count}\n where count is 0 when no entry
+// exists or the entry has expired (lazy eviction on read).
+func (s *Server) handlePenaltyLookup(conn net.Conn, fields []string) {
+	if len(fields) < 2 {
+		fmt.Fprintf(conn, "PENALTY\t0\n")
+		return
+	}
+	ip := fields[1]
+	s.penaltyMu.Lock()
+	defer s.penaltyMu.Unlock()
+	e, ok := s.penalties[ip]
+	if !ok {
+		fmt.Fprintf(conn, "PENALTY\t0\n")
+		return
+	}
+	if time.Since(e.lastUpdate) > s.penaltyDecay {
+		delete(s.penalties, ip)
+		fmt.Fprintf(conn, "PENALTY\t0\n")
+		return
+	}
+	fmt.Fprintf(conn, "PENALTY\t%d\n", e.count)
+}
+
+// handlePenaltyUpdate processes: PENALTY-UPDATE\t{ip}\t{count}
+// Replies: OK\n. Count is clamped to [0, MaxPenalty]. Count 0
+// deletes the entry (matches the auth-success reset path: no
+// reason to keep a zero counter around).
+func (s *Server) handlePenaltyUpdate(conn net.Conn, fields []string) {
+	if len(fields) < 3 {
+		fmt.Fprintf(conn, "OK\n")
+		return
+	}
+	ip := fields[1]
+	count, err := strconv.Atoi(fields[2])
+	if err != nil {
+		fmt.Fprintf(conn, "OK\n")
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	if count > MaxPenalty {
+		count = MaxPenalty
+	}
+	s.penaltyMu.Lock()
+	defer s.penaltyMu.Unlock()
+	if count == 0 {
+		delete(s.penalties, ip)
+	} else {
+		s.penalties[ip] = &penaltyEntry{count: count, lastUpdate: time.Now().UTC()}
+	}
+	fmt.Fprintf(conn, "OK\n")
 }
 
 // subscriberOutboxSize bounds the per-subscriber pending-event

@@ -16,6 +16,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/auth/policy"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -122,6 +124,57 @@ func main() {
 		protocol.WithFailureDelay(time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second),
 		protocol.WithInternalFailureDelay(time.Duration(cfg.Auth.InternalFailureDelayMs) * time.Millisecond),
 		protocol.WithCache(authCache),
+	}
+
+	// Auth-penalty: dial the anvil service and route Lookup/Update
+	// through it. Connection failure at startup → fatal (operator
+	// asked for the feature). Per-request anvil errors are
+	// non-fatal and log-only — Server falls back to no-tarpit.
+	if cfg.Auth.Penalty.Enabled {
+		if cfg.AnvilService.Listen == "" {
+			slog.Error("auth.penalty.enabled requires anvil_service.listen")
+			os.Exit(1)
+		}
+		penaltyConn, err := anvil.Dial(cfg.AnvilService.Listen, tlsCfg, 5*time.Second)
+		if err != nil {
+			slog.Error("anvil dial for penalty", "addr", cfg.AnvilService.Listen, "err", err)
+			os.Exit(1)
+		}
+		srvOpts = append(srvOpts,
+			protocol.WithPenalty(penaltyConn, anvil.PenaltyToSecs),
+		)
+		slog.Info("yarilo-auth penalty enabled", "anvil", cfg.AnvilService.Listen)
+	}
+
+	// Policy server: HTTP hook into wforce or equivalent. URL=""
+	// disables.
+	if cfg.Auth.Policy.URL != "" {
+		pc, err := policy.New(policy.Config{
+			URL:              cfg.Auth.Policy.URL,
+			APIHeader:        cfg.Auth.Policy.APIHeader,
+			HashMech:         cfg.Auth.Policy.HashMech,
+			HashNonce:        cfg.Auth.Policy.HashNonce,
+			HashTruncateBits: cfg.Auth.Policy.HashTruncateBits,
+			Timeout:          time.Duration(cfg.Auth.Policy.TimeoutMs) * time.Millisecond,
+			RejectOnFail:     cfg.Auth.Policy.RejectOnFail,
+			LogOnly:          cfg.Auth.Policy.LogOnly,
+		})
+		if err != nil {
+			slog.Error("policy client init", "err", err)
+			os.Exit(1)
+		}
+		srvOpts = append(srvOpts,
+			protocol.WithPolicy(policy.ProtocolAdapter{C: pc}, protocol.PolicyMode{
+				CheckBefore: cfg.Auth.Policy.CheckBefore,
+				CheckAfter:  cfg.Auth.Policy.CheckAfter,
+				ReportAfter: cfg.Auth.Policy.ReportAfter,
+			}),
+		)
+		slog.Info("yarilo-auth policy enabled",
+			"url", cfg.Auth.Policy.URL,
+			"reject_on_fail", cfg.Auth.Policy.RejectOnFail,
+			"log_only", cfg.Auth.Policy.LogOnly,
+		)
 	}
 	if cfg.Auth.MasterUsers.Enabled {
 		var masterdbs []protocol.Passdb
