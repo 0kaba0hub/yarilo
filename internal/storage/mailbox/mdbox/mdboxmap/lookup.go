@@ -53,6 +53,31 @@ func (m *Map) LookupMany(mapUIDs []uint32) ([]MapEntry, error) {
 	return out, nil
 }
 
+// LookupByGUID finds the map_uid for a 128-bit message GUID. Used
+// by the rebuild path as the preferred matching strategy: more
+// robust than offset matching because GUIDs survive file compaction.
+// Returns (entry, true, nil) on success; (_, false, nil) when no
+// record carries that GUID (e.g. pre-GUID records have zero GUIDs).
+// A zero GUID argument always returns false to prevent accidental
+// mass-matches against pre-GUID records.
+func (m *Map) LookupByGUID(guid [16]byte) (MapEntry, bool, error) {
+	if guid == ([16]byte{}) {
+		return MapEntry{}, false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, rec := range m.f.Records {
+		if decodeGUIDExt(rec.Ext[extGUID]) == guid {
+			entry, err := recordToEntry(rec)
+			if err != nil {
+				return MapEntry{}, false, err
+			}
+			return entry, true, nil
+		}
+	}
+	return MapEntry{}, false, nil
+}
+
 // recordToEntry unpacks a mailindex Record into the typed
 // MapEntry surfaced through the Map API.
 func recordToEntry(rec *mailindex.Record) (MapEntry, error) {
@@ -66,5 +91,6 @@ func recordToEntry(rec *mailindex.Record) (MapEntry, error) {
 		Offset:   offset,
 		Size:     size,
 		RefCount: decodeRefExt(rec.Ext[extRef]),
+		GUID:     decodeGUIDExt(rec.Ext[extGUID]),
 	}, nil
 }

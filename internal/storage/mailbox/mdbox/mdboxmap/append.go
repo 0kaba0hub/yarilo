@@ -32,6 +32,7 @@ type pendingEntry struct {
 	fileID uint32
 	offset uint32
 	size   uint32
+	guid   [16]byte
 }
 
 // rotateSize is the per-m.<N> physical-file size cap before
@@ -48,26 +49,26 @@ func (m *Map) AppendBatch() *AppendBatch {
 // AppendRecord allocates a fresh map_uid for one record under
 // the map X lock. The caller has already written the record to
 // m.<fileID> at offset and now needs the index to learn about
-// it. Returns the assigned map_uid.
-//
-// fileID + offset must reflect the actual on-disk layout; this
-// method does no validation. Use AllocFileID first if a fresh
-// physical file is needed.
-func (m *Map) AppendRecord(fileID, offset, size uint32) (uint32, error) {
-	uids, err := m.AppendRecords([]RecordLayout{{FileID: fileID, Offset: offset, Size: size}})
+// it. guid must match the GUID written into the dbox trailer.
+// Returns the assigned map_uid.
+func (m *Map) AppendRecord(fileID, offset, size uint32, guid [16]byte) (uint32, error) {
+	uids, err := m.AppendRecords([]RecordLayout{{FileID: fileID, Offset: offset, Size: size, GUID: guid}})
 	if err != nil {
 		return 0, err
 	}
 	return uids[0], nil
 }
 
-// RecordLayout is one (file_id, offset, size) tuple passed to
+// RecordLayout is one (file_id, offset, size, guid) tuple passed to
 // AppendRecords. The caller has already written the body at this
-// location; the map only records the pointer + assigns a map_uid.
+// location; the map records the pointer + GUID and assigns a map_uid.
+// GUID must be the same 128-bit value written into the dbox trailer
+// so rebuild can pair physical records with map entries via GUID match.
 type RecordLayout struct {
 	FileID uint32
 	Offset uint32
 	Size   uint32
+	GUID   [16]byte
 }
 
 // AppendRecords is the batch variant of AppendRecord — same
@@ -89,8 +90,9 @@ func (m *Map) AppendRecords(layouts []RecordLayout) ([]uint32, error) {
 			rec := &mailindex.Record{
 				UID: mapUID,
 				Ext: map[string][]byte{
-					extMap: encodeMapExt(l.FileID, l.Offset, l.Size),
-					extRef: encodeRefExt(1),
+					extMap:  encodeMapExt(l.FileID, l.Offset, l.Size),
+					extRef:  encodeRefExt(1),
+					extGUID: encodeGUIDExt(l.GUID),
 				},
 			}
 			m.f.Records = append(m.f.Records, rec)
@@ -169,8 +171,21 @@ func (b *AppendBatch) Next(size uint32) (fileID, offset uint32) {
 		fileID: fileID,
 		offset: offset,
 		size:   size,
+		// guid is set by SetLastGUID after the caller writes the body.
 	})
 	return fileID, offset
+}
+
+// SetLastGUID records the GUID for the most recently reserved slot
+// (the slot returned by the last Next call). Must be called after
+// Next and before the next Next or Finish. The GUID is the same
+// 128-bit value written into the dbox trailer so rebuild can pair
+// physical records with map entries via GUID match.
+func (b *AppendBatch) SetLastGUID(guid [16]byte) {
+	if len(b.pending) == 0 {
+		return
+	}
+	b.pending[len(b.pending)-1].guid = guid
 }
 
 // Finish takes the cross-process map lock, assigns map_uids,
@@ -227,8 +242,9 @@ func (b *AppendBatch) Finish() ([]uint32, error) {
 			rec := &mailindex.Record{
 				UID: mapUID,
 				Ext: map[string][]byte{
-					extMap: encodeMapExt(fileID, p.offset, p.size),
-					extRef: encodeRefExt(1),
+					extMap:  encodeMapExt(fileID, p.offset, p.size),
+					extRef:  encodeRefExt(1),
+					extGUID: encodeGUIDExt(p.guid),
 				},
 			}
 			b.m.f.Records = append(b.m.f.Records, rec)
