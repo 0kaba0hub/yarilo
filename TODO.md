@@ -153,13 +153,7 @@ purge, rebuild, refcount-based O(1) COPY, binary map.index, and
 multi-process Save contention are all covered. Two enhancements
 remain for the heavier deployment tiers:
 
-1. **Alt-storage tiering.** Dovecot can migrate cold `m.<N>` files
-   to slower / cheaper backing storage (the `mdbox-alt/` tree).
-   yarilo has no such tiering — every body lives on the primary
-   PVC. Useful once mailbox sizes outgrow the SSD budget. Needs
-   per-message age detection (received-date from the dbox
-   trailer), a background mover, and a Helm values knob for the
-   alt-storage mount. Estimate: ~300 lines + values.yaml + tests.
+1. **Alt-storage tiering.** ✅ Shipped in #172. `storage.mdbox_alt_storage_path` config + `yarilo-admin backend mdbox altmove` CLI. See docs/MDBOX_ALT.md.
 
 2. **GUID lookup index.** Fetch-by-GUID currently means scanning
    every `m.<N>` until a match (driver-level — IMAP exposes UID,

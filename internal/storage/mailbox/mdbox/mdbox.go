@@ -334,7 +334,8 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		return "", err
 	}
 
-	record := buildDboxRecord(body)
+	guid := randomGUID()
+	record := buildDboxRecord(body, guid)
 	recLen := uint32(len(record))
 
 	fileID := m.HighestFileID()
@@ -372,7 +373,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		return "", fmt.Errorf("mdbox/save: close m.%d: %w", fileID, err)
 	}
 
-	mapUID, err := m.AppendRecord(fileID, offset, recLen)
+	mapUID, err := m.AppendRecord(fileID, offset, recLen, guid)
 	if err != nil {
 		return "", fmt.Errorf("mdbox/save: map append: %w", err)
 	}
@@ -486,11 +487,14 @@ func (u *userMailbox) Close() error {
 // ---- single-message dbox record (re-implemented here so this
 // driver doesn't reach into dboxv2's unexported helpers) ------
 
-// buildDboxRecord packs body into the canonical dbox v2 wire
-// format used inside an m.<N> file.
-func buildDboxRecord(body []byte) []byte {
+// buildDboxRecord packs body into the canonical dbox v2 wire format
+// used inside an m.<N> file. guid is embedded in the metadata
+// trailer (G field). Callers that are saving a NEW message should
+// supply a freshly-generated random GUID; callers compacting an
+// EXISTING record (purge, altmove) must supply the original GUID
+// from the source trailer so message identity is preserved.
+func buildDboxRecord(body []byte, guid [16]byte) []byte {
 	size := uint64(len(body))
-	guid := randomGUID()
 	now := uint32(time.Now().Unix())
 
 	var buf bytes.Buffer
@@ -555,6 +559,50 @@ func readRecordBody(f *os.File, offset uint32) ([]byte, error) {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	return body, nil
+}
+
+// readRecordBodyAndTrailer reads both the message body and the
+// metadata trailer in a single sequential pass over the file. It
+// returns the body bytes and the GUID parsed from the G trailer
+// field. Use this in compaction paths so the original GUID is
+// preserved in the destination record — minting a fresh GUID would
+// break per-message identity across purge/altmove cycles.
+func readRecordBodyAndTrailer(f *os.File, offset uint32) (body []byte, guid [16]byte, err error) {
+	if _, err = f.Seek(int64(offset), io.SeekStart); err != nil {
+		return nil, guid, fmt.Errorf("seek: %w", err)
+	}
+	// Consume variable-length file-header line.
+	headerLine := make([]byte, 64)
+	n, err := f.Read(headerLine)
+	if err != nil {
+		return nil, guid, fmt.Errorf("read header line: %w", err)
+	}
+	lfIdx := bytes.IndexByte(headerLine[:n], '\n')
+	if lfIdx < 0 {
+		return nil, guid, fmt.Errorf("file header line missing LF")
+	}
+	// Seek to 32-byte message header.
+	if _, err = f.Seek(int64(offset)+int64(lfIdx)+1, io.SeekStart); err != nil {
+		return nil, guid, fmt.Errorf("seek to message header: %w", err)
+	}
+	mh := make([]byte, messageHeaderSize)
+	if _, err = io.ReadFull(f, mh); err != nil {
+		return nil, guid, fmt.Errorf("read message header: %w", err)
+	}
+	if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
+		return nil, guid, fmt.Errorf("bad message magic")
+	}
+	size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
+	if err != nil {
+		return nil, guid, fmt.Errorf("parse size: %w", err)
+	}
+	body = make([]byte, size)
+	if _, err = io.ReadFull(f, body); err != nil {
+		return nil, guid, fmt.Errorf("read body: %w", err)
+	}
+	// File position is now at the start of the trailer — parse it.
+	_, parsed, _ := scanTrailer(f, 4096)
+	return body, parsed.guid, nil
 }
 
 // readBodyCRLF reads r fully and ensures every line ends with

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -118,26 +119,57 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/scan: m.%d: %w", fileID, err)
 		}
-		for _, r := range recs {
-			if m != nil {
-				// Resolve map_uid by (file_id, offset). Without
-				// a back-pointer in the dbox metadata we walk the
-				// map's records-in-file list. The list is small
-				// (capped by mdbox_rotate_size / typical msg
-				// size) so this is fast enough at rebuild scale.
-				if mapped, err := m.RecordsInFile(fileID); err == nil {
-					for _, e := range mapped {
-						if e.Offset == r.physicalOffset {
-							r.scan.Filename = strconv.FormatUint(uint64(e.UID), 10)
-							break
-						}
-					}
-				}
+		if m != nil {
+			if mapRecs, err := m.RecordsInFile(fileID); err == nil {
+				resolveMapFilenames(recs, mapRecs)
 			}
+		}
+		for _, r := range recs {
 			out = append(out, r.scan)
 		}
 	}
 	return out, nil
+}
+
+// resolveMapFilenames pairs physical scan records with map entries
+// to populate Filename (= stringified map_uid). Two strategies are
+// tried in order, mirroring Dovecot's rebuild logic:
+//
+//  1. GUID match — the GUID from the dbox trailer is compared
+//     against the GUID in the map entry (when the map carries one).
+//     Robust against offset shifts from partial file corruption.
+//  2. Offset match — fallback for map entries without a stored GUID
+//     (records written before GUID indexing was introduced).
+//
+// Records that match via neither strategy keep an empty Filename;
+// the rebuild flow treats them as orphaned and rescans per-folder
+// fileindexes.
+func resolveMapFilenames(recs []scanRecord, mapEntries []mdboxmap.MapEntry) {
+	type guidKey = [16]byte
+	guidToUID := make(map[guidKey]uint32, len(mapEntries))
+	offsetToUID := make(map[uint32]uint32, len(mapEntries))
+	for _, e := range mapEntries {
+		if e.GUID != (guidKey{}) {
+			guidToUID[e.GUID] = e.UID
+		}
+		offsetToUID[e.Offset] = e.UID
+	}
+	for i := range recs {
+		if recs[i].scan.Filename != "" {
+			continue
+		}
+		// Strategy 1: GUID match.
+		if recs[i].scan.GUID != (guidKey{}) {
+			if uid, ok := guidToUID[recs[i].scan.GUID]; ok {
+				recs[i].scan.Filename = strconv.FormatUint(uint64(uid), 10)
+				continue
+			}
+		}
+		// Strategy 2: offset match.
+		if uid, ok := offsetToUID[recs[i].physicalOffset]; ok {
+			recs[i].scan.Filename = strconv.FormatUint(uint64(uid), 10)
+		}
+	}
 }
 
 // scanRecord wraps a ScanRecord with its physical offset so

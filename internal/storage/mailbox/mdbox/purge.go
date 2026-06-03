@@ -115,10 +115,13 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 	return stats, nil
 }
 
-// compactRecords reads each live record's body from src m.<id>
-// and appends it to dst m.<id>, producing the MovedRecord slice
-// AppendMove needs. Bodies are streamed one at a time — the
-// driver never holds all live records in memory at once.
+// compactRecords reads each live record's body (and original GUID)
+// from src m.<id> and appends them to dst m.<id>, producing the
+// MovedRecord slice AppendMove needs. The original GUID from the
+// dbox trailer is preserved in the destination record — minting a
+// fresh GUID would break message identity across purge cycles and
+// diverge from Dovecot's mdbox_purge_save_msg behaviour which
+// copies metadata verbatim.
 func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxmap.MapEntry) ([]mdboxmap.MovedRecord, error) {
 	srcPath := u.mfilePath(srcFileID)
 	src, err := os.Open(srcPath)
@@ -136,11 +139,11 @@ func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxma
 
 	out := make([]mdboxmap.MovedRecord, 0, len(live))
 	for _, e := range live {
-		body, err := readRecordBody(src, e.Offset)
+		body, guid, err := readRecordBodyAndTrailer(src, e.Offset)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/purge: read uid=%d: %w", e.UID, err)
 		}
-		offset, err := appendRecordToFile(dst, body)
+		offset, err := appendRecordToFile(dst, body, guid)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/purge: write uid=%d: %w", e.UID, err)
 		}
@@ -149,6 +152,7 @@ func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxma
 			FileID: dstFileID,
 			Offset: offset,
 			Size:   e.Size,
+			GUID:   guid,
 		})
 	}
 	if err := dst.Sync(); err != nil {
@@ -179,11 +183,11 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 
 	out := make([]mdboxmap.MovedRecord, 0, len(live))
 	for _, e := range live {
-		body, err := readRecordBody(src, e.Offset)
+		body, guid, err := readRecordBodyAndTrailer(src, e.Offset)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/altmove: read uid=%d: %w", e.UID, err)
 		}
-		offset, err := appendRecordToFile(dst, body)
+		offset, err := appendRecordToFile(dst, body, guid)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/altmove: write uid=%d: %w", e.UID, err)
 		}
@@ -192,6 +196,7 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 			FileID: dstFileID,
 			Offset: offset,
 			Size:   e.Size,
+			GUID:   guid,
 		})
 	}
 	if err := dst.Sync(); err != nil {
@@ -200,22 +205,20 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 	return out, nil
 }
 
-// appendRecordToFile rebuilds a canonical dbox v2 record around
-// body (file-header + 32-byte message header + body + metadata
-// trailer) and writes it at the current end-of-file. Returns the
-// offset at which the record's file-header line starts. The
-// metadata trailer is regenerated (new R timestamp, new G GUID
-// derived from body hash would require parsing the source's
-// trailer — instead we mint a fresh GUID because the original
-// is not visible to the purge path; folder-level GUID
-// continuity is unaffected because folders identify messages
-// by map_uid, not message GUID).
-func appendRecordToFile(dst *os.File, body []byte) (uint32, error) {
+// appendRecordToFile writes a canonical dbox v2 record at the
+// current end-of-file. guid must be the original GUID from the
+// source trailer — preserved verbatim so message identity
+// survives compaction (mirrors Dovecot mdbox_purge_save_msg which
+// copies metadata verbatim). The R timestamp is refreshed because
+// it reflects when the record was last stored, not the mail
+// internalDate (same as Dovecot behaviour). Returns the byte
+// offset at which the record starts.
+func appendRecordToFile(dst *os.File, body []byte, guid [16]byte) (uint32, error) {
 	pos, err := dst.Seek(0, io.SeekEnd)
 	if err != nil {
 		return 0, err
 	}
-	rec := buildDboxRecord(body)
+	rec := buildDboxRecord(body, guid)
 	if _, err := dst.Write(rec); err != nil {
 		return 0, err
 	}

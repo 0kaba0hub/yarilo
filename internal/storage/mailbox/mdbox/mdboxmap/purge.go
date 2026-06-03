@@ -8,11 +8,14 @@ import (
 // from an old m.<file_id> into a fresh one. The original map_uid
 // is preserved so every per-folder index that references it
 // stays valid; only the physical {file_id, offset} change.
+// GUID must carry the original message GUID (from the dbox trailer)
+// so the index remains queryable by GUID after compaction.
 type MovedRecord struct {
-	UID    uint32 // map_uid, unchanged
-	FileID uint32 // new file_id
-	Offset uint32 // new offset
-	Size   uint32 // unchanged
+	UID    uint32   // map_uid, unchanged
+	FileID uint32   // new file_id
+	Offset uint32   // new offset
+	Size   uint32   // unchanged
+	GUID   [16]byte // original message GUID; zero for pre-GUID records
 }
 
 // AppendMove is the purge-driver primitive. It atomically:
@@ -37,7 +40,7 @@ func (m *Map) AppendMove(moved []MovedRecord, expunged []uint32) error {
 		if err := m.reloadLocked(); err != nil {
 			return err
 		}
-		// 1) Rewrite physical pointers for moved records.
+		// 1) Rewrite physical pointers and GUID for moved records.
 		for _, mv := range moved {
 			idx, ok := m.byMapUID[mv.UID]
 			if !ok {
@@ -45,6 +48,9 @@ func (m *Map) AppendMove(moved []MovedRecord, expunged []uint32) error {
 			}
 			rec := m.f.Records[idx]
 			rec.Ext[extMap] = encodeMapExt(mv.FileID, mv.Offset, mv.Size)
+			if mv.GUID != ([16]byte{}) {
+				rec.Ext[extGUID] = encodeGUIDExt(mv.GUID)
+			}
 			if mv.FileID > m.highestFileID {
 				m.highestFileID = mv.FileID
 			}

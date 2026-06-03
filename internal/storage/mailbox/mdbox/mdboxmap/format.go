@@ -29,6 +29,16 @@ const (
 	extRef     = "ref"
 	extRefSize = 2
 
+	// extGUID holds the 128-bit message GUID per record. Mirrors
+	// Dovecot's per-mailbox "guid" extension (guid.h:GUID_128_SIZE).
+	// Stored in the global map so rebuild can pair physical m.<N>
+	// records with map_uids via GUID match (strategy 1) rather
+	// than the less-robust offset match (strategy 2). Records
+	// written before GUID indexing carry zero GUIDs — the rebuild
+	// path falls back to offset matching for those.
+	extGUID     = "guid"
+	extGUIDSize = 16 // 128-bit
+
 	// mapHeaderSize is the size of the extension-header data for
 	// the "map" extension. It stores highest_file_id (uint32).
 	mapHeaderSize = 4
@@ -42,6 +52,7 @@ type MapEntry struct {
 	Offset   uint32
 	Size     uint32
 	RefCount uint16
+	GUID     [16]byte // 128-bit message GUID; zero for pre-GUID records
 }
 
 // encodeMapExt packs (file_id, offset, size) into the 12-byte
@@ -100,9 +111,29 @@ func decodeMapHeader(b []byte) uint32 {
 	return binary.LittleEndian.Uint32(b)
 }
 
-// defaultExtensions returns the two extensions every map.index
+// encodeGUIDExt packs a 128-bit GUID into the 16-byte per-record
+// blob for the "guid" extension.
+func encodeGUIDExt(guid [16]byte) []byte {
+	b := make([]byte, extGUIDSize)
+	copy(b, guid[:])
+	return b
+}
+
+// decodeGUIDExt is the inverse of encodeGUIDExt. Short or missing
+// data returns a zero GUID (pre-GUID records).
+func decodeGUIDExt(b []byte) [16]byte {
+	var g [16]byte
+	if len(b) >= extGUIDSize {
+		copy(g[:], b[:extGUIDSize])
+	}
+	return g
+}
+
+// defaultExtensions returns the three extensions every map.index
 // file must carry. Used by Open when the file does not yet exist
-// and the caller is creating it from scratch.
+// and the caller is creating it from scratch. Extension order
+// matches descending RecordAlign so ComputeRecordLayout packs
+// them without padding: map(align=4), ref(align=2), guid(align=1).
 func defaultExtensions(highestFileID uint32) []mailindex.Extension {
 	return []mailindex.Extension{
 		{
@@ -117,6 +148,12 @@ func defaultExtensions(highestFileID uint32) []mailindex.Extension {
 			HdrSize:     0,
 			RecordSize:  extRefSize,
 			RecordAlign: 2,
+		},
+		{
+			Name:        extGUID,
+			HdrSize:     0,
+			RecordSize:  extGUIDSize,
+			RecordAlign: 1,
 		},
 	}
 }
