@@ -15,6 +15,13 @@ import (
 // callers do not have to import go-sasl directly.
 type SASLAuthenticator func(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError
 
+// XOAuth2SASLAuthenticator is the XOAUTH2 callback. Receives the
+// (Username, Token) pair extracted from the client's initial
+// response; returns nil on success or a *sasl.OAuthBearerError
+// on rejection. The same token validator used by OAUTHBEARER is
+// expected downstream — only the wire format differs.
+type XOAuth2SASLAuthenticator func(opts sasl.XOAuth2Options) *sasl.OAuthBearerError
+
 // NewOAuthBearerSASLServer returns an OAUTHBEARER server with
 // fast-fail semantics: on authenticator rejection the server
 // returns done=true on the first call rather than entering the
@@ -76,6 +83,47 @@ func (s *fastFailOAuthBearerServer) Next(response []byte) ([]byte, bool, error) 
 }
 
 var errFastFailDone = errors.New("sasl/oauthbearer: Next called after done")
+
+// NewXOAuth2SASLServer returns an XOAUTH2 SASL server with the
+// same fast-fail semantics as NewOAuthBearerSASLServer. The go-
+// sasl fork's ParseXOAuth2Initial handles wire decoding; this
+// wrapper maps the result into the session-layer authenticator
+// and returns done=true immediately on both success and failure.
+func NewXOAuth2SASLServer(auth XOAuth2SASLAuthenticator) sasl.Server {
+	return &fastFailXOAuth2Server{authenticate: auth}
+}
+
+type fastFailXOAuth2Server struct {
+	done         bool
+	authenticate XOAuth2SASLAuthenticator
+}
+
+func (s *fastFailXOAuth2Server) Next(response []byte) ([]byte, bool, error) {
+	if s.done {
+		return nil, true, errors.New("sasl/xoauth2: Next called after done")
+	}
+	if response == nil {
+		return []byte{}, false, nil
+	}
+	s.done = true
+
+	opts, err := sasl.ParseXOAuth2Initial(response)
+	if err != nil {
+		blob, _ := json.Marshal(sasl.OAuthBearerError{
+			Status:  "invalid_request",
+			Schemes: "bearer",
+		})
+		return blob, true, err
+	}
+	if authzErr := s.authenticate(opts); authzErr != nil {
+		blob, jerr := json.Marshal(authzErr)
+		if jerr != nil {
+			return nil, true, jerr
+		}
+		return blob, true, authzErr
+	}
+	return nil, true, nil
+}
 
 // parseOAuthBearerInitial extracts (gs2-flag, authzid, key=value
 // pairs) from the OAUTHBEARER initial response. Returns

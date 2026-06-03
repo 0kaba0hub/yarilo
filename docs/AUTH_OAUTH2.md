@@ -1,9 +1,13 @@
-# OAuth 2.0 / OAUTHBEARER Integration
+# OAuth 2.0 / OAUTHBEARER + XOAUTH2 Integration
 
 `yarilo-auth` validates OAuth 2.0 bearer tokens for the SASL
-**OAUTHBEARER** mechanism (RFC 7628) and exposes them as a passdb so
-OAuth logins flow through the same chain machinery as SQL logins
-(cache, penalty, policy, audit log — all work unchanged).
+**OAUTHBEARER** (RFC 7628) and **XOAUTH2** (Google/Microsoft legacy
+extension) mechanisms and exposes them as a passdb so OAuth logins
+flow through the same chain machinery as SQL logins (cache, penalty,
+policy, audit log — all work unchanged).
+
+Both mechanisms share the same token validator. The only difference
+is the wire format of the client's initial response.
 
 ## When to enable
 
@@ -61,7 +65,9 @@ selected), `introspection_mode` picks the transport:
 | `auth` | POST with `Authorization: Bearer <token>` header, empty body |
 | `get` | GET `<url>?token=<token>` |
 
-## Wire shape (SASL OAUTHBEARER, RFC 7628)
+## Wire shapes
+
+### OAUTHBEARER (RFC 7628, recommended)
 
 Client sends a GS2-wrapped bearer token in the initial response:
 
@@ -69,22 +75,43 @@ Client sends a GS2-wrapped bearer token in the initial response:
 n,a=alice@example.com,\x01host=mail.example.com\x01port=993\x01auth=Bearer <token>\x01\x01
 ```
 
-The server validates the token per the configured provider and
-either replies with the SASL success indicator or a JSON failure
-descriptor (`{"status":"invalid_token","schemes":"bearer"}`).
+Fields are separated by `\x01` (ASCII SOH). The `host=` and
+`port=` fields are optional; field order is flexible.
+
+### XOAUTH2 (Google/Microsoft legacy)
+
+Client sends a simpler format — no GS2 header, no host/port:
+
+```
+user=alice@example.com\x01auth=Bearer <token>\x01\x01
+```
+
+Fields are `\x01`-separated. The `Bearer ` prefix on `auth=` is
+case-insensitive. XOAUTH2 does not support channel binding.
+
+**When to use XOAUTH2:** Legacy Outlook configurations, older
+Android mail apps, and some older Thunderbird OAuth setups that
+advertise XOAUTH2 instead of OAUTHBEARER. New clients should
+prefer OAUTHBEARER. Both mechanisms hit the same token validator
+— there is no difference in security posture once a TLS session
+is established.
+
+Both mechanisms validate the token per the configured provider and
+either succeed or return a JSON failure descriptor
+(`{"status":"invalid_token","schemes":"bearer"}`).
 
 ### Mechanism advertisement
 
-`OAUTHBEARER` is added to the SASL capability list on every
-protocol that supports it:
+Both `OAUTHBEARER` and `XOAUTH2` are added to the SASL capability
+list on every protocol that supports them:
 
-- **IMAP** — included in `AUTH=OAUTHBEARER` of `CAPABILITY`
-- **POP3** — `AUTH OAUTHBEARER` accepted; `CAPA` lists `SASL OAUTHBEARER`
-- **Submission (SMTP)** — `AUTH OAUTHBEARER` appears in the EHLO `AUTH` extension
+- **IMAP** — `AUTH=OAUTHBEARER` and `AUTH=XOAUTH2` in `CAPABILITY`
+- **POP3** — `CAPA` lists `SASL OAUTHBEARER XOAUTH2`
+- **Submission (SMTP)** — EHLO `AUTH` extension lists both
 
 Advertisement is gated by `auth.oauth2` being non-empty: a
 deployment that configures no OAuth providers does NOT advertise
-OAUTHBEARER, so a client never picks a mechanism the server
+either mechanism, so a client never picks a mech the server
 cannot validate.
 
 ### Fast-fail on rejection

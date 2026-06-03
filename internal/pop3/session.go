@@ -179,6 +179,12 @@ func (s *session) cmdSASLAuth(arg string) {
 			return
 		}
 		s.handleSASLOAuthBearer(parts)
+	case "XOAUTH2":
+		if !s.srv.opts.OAuth2Enabled {
+			s.writeErr("unsupported mechanism")
+			return
+		}
+		s.handleSASLXOAuth2(parts)
 	case "SCRAM-SHA-256":
 		s.handleSASLScram(parts, false, s.scramSha256Builder())
 	case "SCRAM-SHA-256-PLUS":
@@ -414,6 +420,31 @@ func (s *session) handleSASLOAuthBearer(parts []string) {
 		return
 	}
 	// finishAuth wrote +OK/-ERR; nothing else for us to do.
+}
+
+// handleSASLXOAuth2 mirrors handleSASLOAuthBearer for the XOAUTH2
+// wire format (user=X\x01auth=Bearer T\x01\x01, no GS2 envelope).
+func (s *session) handleSASLXOAuth2(parts []string) {
+	payload, ok := s.readSASLPayload(parts)
+	if !ok {
+		return
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		s.writeErr("invalid base64")
+		return
+	}
+	srv := oauth2.NewXOAuth2SASLServer(func(opts sasl.XOAuth2Options) *sasl.OAuthBearerError {
+		s.finishAuth("", opts.Username, opts.Token)
+		return nil
+	})
+	if _, _, err := srv.Next(decoded); err != nil {
+		if d := s.srv.opts.FailureDelay; d > 0 {
+			time.Sleep(d)
+		}
+		s.writeErr("invalid XOAUTH2 response")
+		return
+	}
 }
 
 // readSASLPayload returns the base64 SASL initial response. When

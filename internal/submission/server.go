@@ -252,6 +252,7 @@ func (s *session) AuthMechanisms() []string {
 	out := []string{sasl.Plain, sasl.Login}
 	if s.srv.opts.OAuth2Enabled {
 		out = append(out, sasl.OAuthBearer)
+		out = append(out, sasl.XOAuth2)
 	}
 	if _, ok := s.srv.opts.Auth.(SCRAMSha256LookupAuthenticator); ok {
 		out = append(out, sasl.ScramSha256)
@@ -347,6 +348,11 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 			return nil, goSmtp.ErrAuthUnknownMechanism
 		}
 		return oauth2.NewOAuthBearerSASLServer(s.authOAuthBearerSASL), nil
+	case sasl.XOAuth2:
+		if !s.srv.opts.OAuth2Enabled {
+			return nil, goSmtp.ErrAuthUnknownMechanism
+		}
+		return oauth2.NewXOAuth2SASLServer(s.authXOAuth2SASL), nil
 	case sasl.ScramSha256:
 		lookup, ok := s.srv.opts.Auth.(SCRAMSha256LookupAuthenticator)
 		if !ok {
@@ -405,6 +411,32 @@ func (s *session) authOAuthBearerSASL(opts sasl.OAuthBearerOptions) *sasl.OAuthB
 	slog.Info("submission: login",
 		"user", opts.Username,
 		"mech", "OAUTHBEARER",
+		"remoteIP", connRemoteIP(s.conn).String(),
+	)
+	return nil
+}
+
+// authXOAuth2SASL mirrors authOAuthBearerSASL for the XOAUTH2
+// wire format. Same token validation path — only the struct
+// type carrying (Username, Token) differs.
+func (s *session) authXOAuth2SASL(opts sasl.XOAuth2Options) *sasl.OAuthBearerError {
+	if err := s.srv.opts.Auth.AuthPlain(opts.Username, opts.Token); err != nil {
+		if d := s.srv.opts.FailureDelay; d > 0 {
+			time.Sleep(d)
+		}
+		slog.Info("submission: auth failed",
+			"user", opts.Username,
+			"mech", "XOAUTH2",
+			"remoteIP", connRemoteIP(s.conn).String(),
+		)
+		return &sasl.OAuthBearerError{
+			Status:  "invalid_token",
+			Schemes: "bearer",
+		}
+	}
+	slog.Info("submission: login",
+		"user", opts.Username,
+		"mech", "XOAUTH2",
 		"remoteIP", connRemoteIP(s.conn).String(),
 	)
 	return nil
