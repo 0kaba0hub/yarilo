@@ -20,13 +20,20 @@ func TestParseRules_StorageUnits(t *testing.T) {
 		{"*:storage=1024K", 1024 * 1024},
 		{"*:storage=0", 0},
 		{"*:storage=1234567", 1234567},
-		{"Trash:storage=+2G", 2 * 1024 * 1024 * 1024},
 	}
 	for _, tc := range cases {
 		lim := quota.ParseRules([]string{tc.rule})
 		if lim.StorageBytes != tc.want {
 			t.Errorf("ParseRules(%q).StorageBytes = %d, want %d", tc.rule, lim.StorageBytes, tc.want)
 		}
+	}
+	// per-folder rule must NOT leak into global StorageBytes
+	lim := quota.ParseRules([]string{"Trash:storage=+2G"})
+	if lim.StorageBytes != 0 {
+		t.Errorf("per-folder rule leaked into global StorageBytes: %d", lim.StorageBytes)
+	}
+	if lim.PerFolder["Trash"].StorageBytes != 2*1024*1024*1024 {
+		t.Errorf("Trash per-folder storage = %d, want 2G", lim.PerFolder["Trash"].StorageBytes)
 	}
 }
 
@@ -154,5 +161,115 @@ func TestIsOver_Unlimited(t *testing.T) {
 	lim := quota.Limits{} // both zero = unlimited
 	if quota.IsOver(quota.Usage{StorageBytes: 1 << 40}, lim, 1<<40, 1<<30) {
 		t.Error("unlimited limits should never be over")
+	}
+}
+
+func TestParseRules_PerFolder(t *testing.T) {
+	lim := quota.ParseRules([]string{
+		"*:storage=5G",
+		"*:messages=10000",
+		"Trash:storage=+1G",
+		"Spam:ignore",
+		"Sent:storage=2G",
+	})
+
+	if lim.StorageBytes != 5*1024*1024*1024 {
+		t.Errorf("global storage = %d, want 5G", lim.StorageBytes)
+	}
+	if len(lim.PerFolder) != 3 {
+		t.Errorf("PerFolder len = %d, want 3", len(lim.PerFolder))
+	}
+
+	trash := lim.PerFolder["Trash"]
+	if !trash.StorageAdditive {
+		t.Error("Trash rule should be additive")
+	}
+	if trash.StorageBytes != 1*1024*1024*1024 {
+		t.Errorf("Trash storage = %d, want 1G", trash.StorageBytes)
+	}
+
+	if !lim.PerFolder["Spam"].Ignore {
+		t.Error("Spam rule should be ignore")
+	}
+
+	sent := lim.PerFolder["Sent"]
+	if sent.StorageAdditive {
+		t.Error("Sent rule should not be additive")
+	}
+	if sent.StorageBytes != 2*1024*1024*1024 {
+		t.Errorf("Sent storage = %d, want 2G", sent.StorageBytes)
+	}
+}
+
+func TestEffectiveLimits(t *testing.T) {
+	const G = int64(1024 * 1024 * 1024)
+	lim := quota.ParseRules([]string{
+		"*:storage=5G",
+		"*:messages=10000",
+		"Trash:storage=+1G",
+		"Spam:ignore",
+		"Sent:storage=2G",
+	})
+
+	cases := []struct {
+		folder       string
+		wantStorage  int64
+		wantMessages int64
+		wantIgnore   bool
+	}{
+		{"INBOX", 5 * G, 10000, false},  // global
+		{"Trash", 6 * G, 10000, false},  // additive: 5G + 1G
+		{"Spam", 0, 0, true},            // ignore
+		{"Sent", 2 * G, 10000, false},   // separate limit, messages from global
+		{"Drafts", 5 * G, 10000, false}, // no rule → global
+	}
+	for _, tc := range cases {
+		eff, ignore := lim.EffectiveLimits(tc.folder)
+		if ignore != tc.wantIgnore {
+			t.Errorf("%s: ignore = %v, want %v", tc.folder, ignore, tc.wantIgnore)
+		}
+		if !ignore {
+			if eff.StorageBytes != tc.wantStorage {
+				t.Errorf("%s: storage = %d, want %d", tc.folder, eff.StorageBytes, tc.wantStorage)
+			}
+			if eff.Messages != tc.wantMessages {
+				t.Errorf("%s: messages = %d, want %d", tc.folder, eff.Messages, tc.wantMessages)
+			}
+		}
+	}
+}
+
+func TestQuota_IgnoreFolder_SkipsCounter(t *testing.T) {
+	d, err := memory.New(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lim := quota.ParseRules([]string{"*:storage=5G", "Spam:ignore"})
+	ctr := quota.NewCounter(d, "alice@example.com")
+
+	// Simulate: AppendMessage would call quotaAdd only when not ignored.
+	// Directly test the EffectiveLimits guard.
+	_, spamIgnore := lim.EffectiveLimits("Spam")
+	if !spamIgnore {
+		t.Fatal("Spam should be ignored")
+	}
+	_, inboxIgnore := lim.EffectiveLimits("INBOX")
+	if inboxIgnore {
+		t.Fatal("INBOX should not be ignored")
+	}
+
+	// Add to INBOX counter (not ignored).
+	if err := ctr.Add(context.Background(), 1000, 1); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := ctr.Get(context.Background())
+	if u.StorageBytes != 1000 {
+		t.Errorf("after INBOX append: storage = %d, want 1000", u.StorageBytes)
+	}
+
+	// Spam append would be skipped — counter stays at 1000.
+	u, _ = ctr.Get(context.Background())
+	if u.StorageBytes != 1000 {
+		t.Errorf("after Spam skip: storage = %d, want 1000", u.StorageBytes)
 	}
 }

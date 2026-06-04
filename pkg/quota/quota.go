@@ -43,25 +43,67 @@ const (
 	RootName = "User quota"
 )
 
+// FolderRule holds per-folder quota overrides parsed from a rule like
+// "Trash:storage=+1G" or "Spam:ignore".
+type FolderRule struct {
+	StorageBytes     int64
+	StorageAdditive  bool // true when value was prefixed with +
+	Messages         int64
+	MessagesAdditive bool
+	Ignore           bool // messages in this folder don't count toward quota
+}
+
 // Limits carries the resolved per-user storage and message-count limits
 // derived from the UserInfo.QuotaRules list. Zero means unlimited.
 type Limits struct {
 	StorageBytes int64 // 0 = unlimited
 	Messages     int64 // 0 = unlimited
+	PerFolder    map[string]FolderRule
+}
+
+// EffectiveLimits returns the limits that apply when operating on folder.
+// The second return value is true when the folder is configured as
+// "ignore" — in that case the first value is zero and the caller must
+// skip both quota enforcement and counter updates for this folder.
+//
+// For additive rules (+N) the effective limit is global + per-folder N.
+// For non-additive rules the per-folder value replaces the global one.
+// Exact folder name match only; no glob patterns yet.
+func (l Limits) EffectiveLimits(folder string) (Limits, bool) {
+	rule, ok := l.PerFolder[folder]
+	if !ok {
+		return l, false
+	}
+	if rule.Ignore {
+		return Limits{}, true
+	}
+	eff := Limits{StorageBytes: l.StorageBytes, Messages: l.Messages}
+	if rule.StorageBytes > 0 {
+		if rule.StorageAdditive {
+			eff.StorageBytes = l.StorageBytes + rule.StorageBytes
+		} else {
+			eff.StorageBytes = rule.StorageBytes
+		}
+	}
+	if rule.Messages > 0 {
+		if rule.MessagesAdditive {
+			eff.Messages = l.Messages + rule.Messages
+		} else {
+			eff.Messages = rule.Messages
+		}
+	}
+	return eff, false
 }
 
 // ParseRules parses a slice of quota rule strings in the format
 // `[<mailbox>:]<resource>=<limit>` and returns the aggregate Limits.
-// Only `*` (wildcard) storage and message rules are currently
-// evaluated — per-folder overrides (e.g. `Trash:storage=+1G`) are
-// recorded but not yet enforced per folder (QUOTA-1 scope covers the
-// global limit only).
 //
 // Rule examples:
 //
-//	"*:storage=5G"       → 5 GiB storage limit for all folders
-//	"*:messages=100000"  → 100 000 message limit
-//	"*:storage=0"        → no storage limit
+//	"*:storage=5G"        → 5 GiB global storage limit
+//	"*:messages=100000"   → 100 000 global message limit
+//	"Trash:storage=+1G"   → Trash gets global + 1 GiB headroom
+//	"Spam:ignore"         → Spam messages don't count toward quota
 func ParseRules(rules []string) Limits {
 	var out Limits
 	for _, r := range rules {
@@ -71,24 +113,58 @@ func ParseRules(rules []string) Limits {
 }
 
 func parseRule(rule string, out *Limits) {
-	// Strip optional mailbox prefix ("*:" or "Trash:" etc.).
+	folder := "*"
 	spec := rule
 	if idx := strings.Index(rule, ":"); idx >= 0 {
+		folder = strings.TrimSpace(rule[:idx])
 		spec = rule[idx+1:]
 	}
-	// spec is now "storage=5G" or "messages=100000" etc.
+	spec = strings.TrimSpace(spec)
+
+	// "ignore" directive: folder messages don't count toward quota.
+	if strings.EqualFold(spec, "ignore") {
+		if folder != "*" {
+			fr := out.PerFolder[folder]
+			fr.Ignore = true
+			if out.PerFolder == nil {
+				out.PerFolder = make(map[string]FolderRule)
+			}
+			out.PerFolder[folder] = fr
+		}
+		return
+	}
+
 	eqIdx := strings.IndexByte(spec, '=')
 	if eqIdx < 0 {
 		return
 	}
 	key := strings.ToLower(strings.TrimSpace(spec[:eqIdx]))
 	val := strings.TrimSpace(spec[eqIdx+1:])
+	additive := strings.HasPrefix(val, "+")
+
+	if folder == "*" {
+		switch key {
+		case "storage", "bytes":
+			out.StorageBytes = parseSize(val)
+		case "messages", "message":
+			out.Messages = parseCount(val)
+		}
+		return
+	}
+
+	if out.PerFolder == nil {
+		out.PerFolder = make(map[string]FolderRule)
+	}
+	fr := out.PerFolder[folder]
 	switch key {
 	case "storage", "bytes":
-		out.StorageBytes = parseSize(val)
+		fr.StorageBytes = parseSize(val)
+		fr.StorageAdditive = additive
 	case "messages", "message":
-		out.Messages = parseCount(val)
+		fr.Messages = parseCount(val)
+		fr.MessagesAdditive = additive
 	}
+	out.PerFolder[folder] = fr
 }
 
 // parseSize converts a human-readable size like "5G", "500M", "1T"

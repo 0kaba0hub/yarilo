@@ -1234,7 +1234,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	size := r.Size()
 
 	// Enforce quota before allocating UID so the slot isn't wasted.
-	if err := s.quotaCheckAppend(context.Background(), size); err != nil {
+	if err := s.quotaCheckAppend(context.Background(), name, size); err != nil {
 		return nil, err
 	}
 

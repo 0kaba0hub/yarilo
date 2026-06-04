@@ -149,8 +149,8 @@ func New(cfg *config.Config) (*Server, error) {
 
 	idxOpts := []file.Option{file.WithLocker(locker)}
 	if quotaDict != nil {
-		idxOpts = append(idxOpts, file.WithQuotaCounter(func(username string) *quota.Counter {
-			return quota.NewCounter(quotaDict, username)
+		idxOpts = append(idxOpts, file.WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
+			return quota.NewCounter(quotaDict, u.Username), quota.ParseRules(u.QuotaRules)
 		}))
 	}
 	idx := file.New(idxOpts...)

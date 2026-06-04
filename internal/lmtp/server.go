@@ -390,9 +390,10 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 
 		if s.opts.QuotaDict != nil {
 			lim := quota.ParseRules(userInfo.QuotaRules)
-			if lim.StorageBytes > 0 || lim.Messages > 0 {
+			effLim, ignore := lim.EffectiveLimits(folder)
+			if !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
 				ctr := quota.NewCounter(s.opts.QuotaDict, username)
-				if u, cerr := ctr.Get(context.Background()); cerr == nil && quota.IsOver(u, lim, int64(len(msg)), 1) {
+				if u, cerr := ctr.Get(context.Background()); cerr == nil && quota.IsOver(u, effLim, int64(len(msg)), 1) {
 					slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
 					if id, ok := s.rcptAnvilIDs[rcpt]; ok {
 						s.anvilConn.releaseDelivery(id)
