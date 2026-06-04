@@ -481,6 +481,35 @@ components:
         cpu: 500m
         memory: 256Mi
 
+  ## Postfix policy service — quota enforcement before message queuing.
+  ## Postfix config: check_policy_service inet:[<ClusterIP>]:12340
+  quotaStatus:
+    enabled: false
+    replicas: 1
+    servicePort: 12340
+    containerPort: 12340
+
+    ## defaultQuotaRules mirror yarilo.yaml quota_rule format.
+    ## Applied to every recipient; per-user rules require userdb lookup (future phase).
+    defaultQuotaRules: []
+    #  - "*:storage=5G"
+    #  - "*:messages=100000"
+    #  - "Trash:storage=+1G"
+    #  - "Spam:ignore"
+
+    ## aliasDict is the name of a dict in the dicts: map that resolves
+    ## virtual aliases (source → destination). Empty = disabled.
+    aliasDict: ""
+    aliasMaxHops: 5
+
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+
   ## Submission backend — accepts mail from submission-login pods, relays to upstream MTA.
   ## ClusterIP only; mail clients connect to yarilo-submission-login (LoadBalancer).
   submission:
