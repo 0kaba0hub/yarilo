@@ -103,19 +103,6 @@ func buildQuotaData(u quota.Usage, lim quota.Limits) imaplib.QuotaData {
 	return qd
 }
 
-// quotaAdd increments the quota counters after a successful save.
-// Errors are logged but not returned — quota counter drift is
-// recoverable via admin recalc; never block a successful save.
-func (s *session) quotaAdd(ctx context.Context, bytes, messages int64) {
-	if !s.quotaEnabled() || s.userInfo == nil {
-		return
-	}
-	if err := s.quotaCounter().Add(ctx, bytes, messages); err != nil {
-		slog.Warn("imap: quota counter update failed",
-			"user", s.userInfo.Username, "bytes", bytes, "messages", messages, "err", err)
-	}
-}
-
 // quotaCheckAppend returns an IMAP error if the user is over quota
 // for the given message size. Nil means the append is allowed.
 func (s *session) quotaCheckAppend(ctx context.Context, bytes int64) error {

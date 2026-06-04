@@ -34,6 +34,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Server is the yarilo backend (or single-node) server.
@@ -125,7 +126,6 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("backend: locks_client: %w", err)
 	}
 	mbox := buildMailbox(cfg.Storage, locker)
-	idx := file.New(file.WithLocker(locker))
 
 	// ---- per-namespace mailbox driver overrides ----
 	// Builds a separate MailboxBackend instance per distinct
@@ -146,6 +146,14 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: dicts.quota: %w", err)
 	}
+
+	idxOpts := []file.Option{file.WithLocker(locker)}
+	if quotaDict != nil {
+		idxOpts = append(idxOpts, file.WithQuotaCounter(func(username string) *quota.Counter {
+			return quota.NewCounter(quotaDict, username)
+		}))
+	}
+	idx := file.New(idxOpts...)
 
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
@@ -304,6 +312,7 @@ func New(cfg *config.Config) (*Server, error) {
 			XClientTrustedNets: xclientNets,
 			TLSConfig:          lmtpTLS,
 			Locker:             locker,
+			QuotaDict:          quotaDict,
 			AnvilAddr:          cfg.AnvilService.Listen,
 		})
 	}

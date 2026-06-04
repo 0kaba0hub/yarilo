@@ -1,10 +1,12 @@
 package file
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"sort"
 	"time"
@@ -52,11 +54,13 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 		return nil, err
 	}
 
+	names, sizes := loadNames(indexDir)
 	fs := &folderState{
 		folder:    folder,
 		indexDir:  indexDir,
 		indexPath: indexPath,
-		filenames: loadNames(indexDir),
+		filenames: names,
+		sizes:     sizes,
 	}
 	if err := u.loadOrInit(fs, uidValidity); err != nil {
 		return nil, err
@@ -247,7 +251,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 		return fmt.Errorf("fileindex/flush: recreate: %w", err)
 	}
 	if wholeNames {
-		if err := saveNames(fs.indexDir, fs.filenames); err != nil {
+		if err := saveNames(fs.indexDir, fs.filenames, fs.sizes); err != nil {
 			return err
 		}
 	}
@@ -293,7 +297,7 @@ func (fs *folderState) reload() error {
 	if err := fs.refreshExtState(); err != nil {
 		return err
 	}
-	fs.filenames = loadNames(fs.indexDir)
+	fs.filenames, fs.sizes = loadNames(fs.indexDir)
 	return nil
 }
 
@@ -313,12 +317,28 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 // expected to have already assigned m.UID via AllocateUID or via
 // an external authority (Dovecot mdbox-style map_uid).
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
-	return u.withFolder(folderID, func(fs *folderState) error {
+	if err := u.withFolder(folderID, func(fs *folderState) error {
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
 		return fs.flush(true)
-	})
+	}); err != nil {
+		return err
+	}
+	u.quotaAdd(int64(m.Size), 1)
+	return nil
+}
+
+// quotaAdd adjusts the user's quota counter. Errors are logged but
+// never returned — counter drift is recoverable via admin recalc.
+func (u *userIndex) quotaAdd(bytes, messages int64) {
+	if u.counter == nil {
+		return
+	}
+	if err := u.counter.Add(context.Background(), bytes, messages); err != nil {
+		slog.Warn("fileindex: quota counter update failed",
+			"user", u.username, "bytes", bytes, "messages", messages, "err", err)
+	}
 }
 
 // AllocateUID reserves and persists the folder's next UID. The
@@ -395,6 +415,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if m.Filename != "" {
 		fs.filenames[m.UID] = m.Filename
 	}
+	fs.sizes[m.UID] = m.Size
 	if m.UID >= fs.file.Header.NextUID {
 		fs.file.Header.NextUID = m.UID + 1
 	}
@@ -453,7 +474,8 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 // in-memory state, then Recreates the .index file. Vanished
 // later reads those log entries to satisfy QRESYNC.
 func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
-	return u.withFolder(folderID, func(fs *folderState) error {
+	var expungedSize uint32
+	if err := u.withFolder(folderID, func(fs *folderState) error {
 		modseq, err := fs.bumpModSeqHeader()
 		if err != nil {
 			return err
@@ -469,6 +491,7 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 			return nil // already expunged — idempotent
 		}
 		rec := fs.file.Records[idx]
+		expungedSize = fs.sizes[uid]
 		if rec.Flags&mailindex.FlagSeen != 0 {
 			fs.file.Header.SeenMessagesCount--
 		}
@@ -478,6 +501,7 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 		fs.file.Records = append(fs.file.Records[:idx], fs.file.Records[idx+1:]...)
 		fs.file.Header.MessagesCount--
 		delete(fs.filenames, uid)
+		delete(fs.sizes, uid)
 
 		// Persist expunge in the log so QRESYNC.Vanished can
 		// report it. We use TxTypeExpungeGUID; the GUID is the
@@ -487,7 +511,11 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 			return fmt.Errorf("fileindex/expunge: log: %w", err)
 		}
 		return fs.flush(true)
-	})
+	}); err != nil {
+		return err
+	}
+	u.quotaAdd(-int64(expungedSize), -1)
+	return nil
 }
 
 // GetMessages returns every record whose UID falls in uids.
@@ -505,6 +533,7 @@ func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbo
 				UID:      rec.UID,
 				Filename: fs.filenames[rec.UID],
 				Flags:    indexFlagsToIMAP(uint8(rec.Flags)),
+				Size:     fs.sizes[rec.UID],
 			}
 			if data, ok := rec.Ext[extNameModSeq]; ok {
 				meta.ModSeq = decodeModseqRec(data)
@@ -579,6 +608,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 		}
 		fs.file.Records = fs.file.Records[:0]
 		fs.filenames = make(map[uint32]string)
+		fs.sizes = make(map[uint32]uint32)
 		fs.file.Header.MessagesCount = 0
 		fs.file.Header.SeenMessagesCount = 0
 		fs.file.Header.DeletedMessagesCount = 0
@@ -612,6 +642,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 			if m.Filename != "" {
 				fs.filenames[m.UID] = m.Filename
 			}
+			fs.sizes[m.UID] = m.Size
 			if m.UID > maxUID {
 				maxUID = m.UID
 			}
@@ -696,6 +727,7 @@ func (fs *folderState) adoptLegacy(snap legacySnapshot) error {
 		return err
 	}
 	fs.filenames = snap.Filenames
+	fs.sizes = make(map[uint32]uint32)
 	return nil
 }
 
