@@ -69,7 +69,12 @@ spec:
           configMap:
             name: {{ include "yarilo.fullname" . }}
         - name: varlib
+          {{- if .Values.components.auth.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-auth
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         - name: tmp
           emptyDir: {}
         {{- include "yarilo.internalTLSVolume" .Values.components.auth.internalTLS | nindent 8 }}

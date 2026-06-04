@@ -1,0 +1,18 @@
+{{- if and .Values.components.auth.enabled .Values.components.auth.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "yarilo.fullname" . }}-auth
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.components.auth.persistence.storageClass }}
+  storageClassName: {{ .Values.components.auth.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.components.auth.persistence.size }}
+{{- end }}

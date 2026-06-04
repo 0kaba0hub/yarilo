@@ -1,0 +1,100 @@
+## yarilo — microk8s standalone deployment
+##
+## Prerequisites (run once on the server):
+##   microk8s enable dns
+##   microk8s enable hostpath-storage
+##   microk8s enable cert-manager
+##   microk8s enable metallb:SERVER_IP-SERVER_IP   # use your server's IP
+##
+## Apply self-signed ClusterIssuer:
+##   microk8s kubectl apply -f k8s/clusterissuer-selfsigned.yaml
+##
+## Install:
+##   microk8s helm3 upgrade --install yarilo ./helm \
+##     -f helm_values/values-microk8s.yaml \
+##     --set hostname=YOUR_HOSTNAME_OR_IP \
+##     -n yarilo --create-namespace
+##
+## Add first user:
+##   microk8s kubectl exec -n yarilo deploy/yarilo-auth -- \
+##     yarilo-admin backend user add alice@example.com --password secret
+##
+## Run smoke test:
+##   microk8s kubectl run smoketest --rm -it --restart=Never \
+##     --image=ghcr.io/0kaba0hub/yarilo \
+##     -- yarilo-smoketest --imap yarilo-imap-login:993
+
+hostname: mail.example.com   # replace with server IP or hostname
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  pullPolicy: Always
+
+logLevel: info
+
+tls:
+  secretName: yarilo-tls
+  certificate:
+    enabled: true
+    issuerRef:
+      kind: ClusterIssuer
+      name: selfsigned
+    dnsNames:
+      - mail.example.com    # must match hostname above
+
+service:
+  type: LoadBalancer
+
+## All standard mail ports enabled.
+services:
+  imaps:       { enabled: true,  port: 993,  disablePlainAuth: false }
+  imap:        { enabled: true,  port: 143,  disablePlainAuth: false }
+  submissions: { enabled: true,  port: 465,  disablePlainAuth: true }
+  submission:  { enabled: true,  port: 587,  disablePlainAuth: true }
+  pop3s:       { enabled: true,  port: 995 }
+  pop3:        { enabled: true,  port: 110 }
+  lmtp:        { enabled: true,  port: 24 }
+
+protocol:
+  imap:
+    idleNotifyInterval: 120
+    maxLineLength: 65536
+  lmtp:
+    addReceivedHeader: true
+    hdrDeliveryAddress: final
+  submission:
+    addReceivedHeader: true
+    maxMessageSize: 41943040
+    recipientDelimiter: "+"
+
+## SQLite auth — no external DB needed.
+## Table yarilo_users is auto-created on first run.
+components:
+  auth:
+    passdb:
+      - driver: sqlite
+        dsn: /var/lib/yarilo/users.db
+        defaultPassScheme: BCRYPT
+    persistence:
+      enabled: true
+      storageClass: microk8s-hostpath
+      size: 1Gi
+
+## Mail storage on microk8s-hostpath PVC.
+storage:
+  mailbox: maildir
+  maildirRoot: /var/mail/vhosts
+  index: fileindex
+  persistence:
+    enabled: true
+    storageClass: microk8s-hostpath
+    accessMode: ReadWriteOnce
+    size: 20Gi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

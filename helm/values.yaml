@@ -150,6 +150,14 @@ components:
     ## wall-clock time. Default 2s mirrors Dovecot's
     ## `auth_failure_delay`. Set to 0 to disable (tests only —
     ## production should keep >0).
+    ## persistence — when SQLite passdb is used, the DB lives at the dsn
+    ## path inside /var/lib/yarilo. Enable to back it with a PVC so it
+    ## survives pod restarts.
+    persistence:
+      enabled: false
+      storageClass: ""
+      size: 1Gi
+
     failureDelay: 2
     ## internalFailureDelayMs — separate delay for INTERNAL
     ## failures (passdb backend down, SQL refused). Mirrors

@@ -1,4 +1,4 @@
-<svg width="1120" height="760" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+<svg width="1120" height="880" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
   <defs>
     <marker id="aa" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0,9 3.5,0 7" fill="#ca8a04"/>
@@ -18,9 +18,12 @@
     <marker id="ar" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0,9 3.5,0 7" fill="#b91c1c"/>
     </marker>
+    <marker id="aq" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,9 3.5,0 7" fill="#0d9488"/>
+    </marker>
   </defs>
 
-  <rect width="1120" height="760" fill="#f8fafc"/>
+  <rect width="1120" height="880" fill="#f8fafc"/>
 
   <text x="560" y="22" text-anchor="middle" fill="#0f172a" font-size="14" font-weight="bold">yarilo — standalone Helm release · single-node k8s · independent Deployments per component</text>
   <text x="560" y="38" text-anchor="middle" fill="#475569" font-size="10">no director · each component has its own replicaCount · all coordination via ClusterIP Services + mTLS</text>
@@ -33,172 +36,194 @@
   <text x="440" y="94" text-anchor="middle" fill="#475569" font-size="10">Thunderbird · Outlook</text>
   <text x="440" y="108" text-anchor="middle" fill="#475569" font-size="9">IMAP · POP3 · Submission (TLS)</text>
 
-  <rect x="800" y="55" width="280" height="65" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
-  <text x="940" y="78" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="bold">MTA / MX server</text>
-  <text x="940" y="94" text-anchor="middle" fill="#475569" font-size="10">Postfix · Exim · etc.</text>
-  <text x="940" y="108" text-anchor="middle" fill="#475569" font-size="9">LMTP delivery</text>
+  <rect x="800" y="55" width="280" height="75" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+  <text x="940" y="76" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="bold">MTA / MX server</text>
+  <text x="940" y="90" text-anchor="middle" fill="#475569" font-size="10">Postfix · Exim · etc.</text>
+  <text x="940" y="104" text-anchor="middle" fill="#475569" font-size="9">LMTP :24 · SASL AUTH :12345</text>
+  <text x="940" y="118" text-anchor="middle" fill="#475569" font-size="9">quota policy :12340</text>
 
   <!-- ══════════════════════════════════════════════════
        Outer Helm release wrapper
   ══════════════════════════════════════════════════ -->
-  <rect x="15" y="140" width="1090" height="600" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
-  <rect x="780" y="142" width="323" height="24" rx="2" fill="#0f172a"/>
-  <text x="1098" y="159" text-anchor="end" fill="#f8fafc" font-size="11" font-weight="bold">Helm release: yarilo-standalone (one chart, many Deployments)</text>
+  <rect x="15" y="150" width="1090" height="710" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
+  <rect x="780" y="152" width="323" height="24" rx="2" fill="#0f172a"/>
+  <text x="1098" y="169" text-anchor="end" fill="#f8fafc" font-size="11" font-weight="bold">Helm release: yarilo-standalone (one chart, many Deployments)</text>
 
   <!-- MUA → login proxies arrows -->
-  <line x1="320" y1="120" x2="320" y2="194" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
-  <line x1="450" y1="120" x2="520" y2="194" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
-  <line x1="560" y1="120" x2="720" y2="194" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
-  <!-- MTA → yarilo-lmtp direct (no login proxy, SMTP envelope auth) -->
-  <line x1="942" y1="120" x2="942" y2="332" stroke="#0d9488" stroke-width="2" marker-end="url(#ax)"/>
-  <text x="952" y="220" fill="#0d9488" font-size="10" font-weight="bold">LMTP :24 · direct to yarilo-lmtp</text>
-  <text x="952" y="234" fill="#475569" font-size="9">no login proxy · SMTP envelope auth</text>
+  <line x1="320" y1="120" x2="320" y2="204" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+  <line x1="450" y1="120" x2="520" y2="204" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+  <line x1="560" y1="120" x2="720" y2="204" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+
+  <!-- MTA → yarilo-lmtp (LMTP direct) -->
+  <line x1="942" y1="130" x2="942" y2="342" stroke="#0d9488" stroke-width="2" marker-end="url(#ax)"/>
+  <text x="952" y="230" fill="#0d9488" font-size="10" font-weight="bold">LMTP :24</text>
+  <text x="952" y="244" fill="#475569" font-size="9">direct · no login proxy</text>
+
+  <!-- MTA → yarilo-auth (SASL AUTH :12345) -->
+  <line x1="800" y1="88" x2="212" y2="218" stroke="#ca8a04" stroke-width="1.8" stroke-dasharray="6,3" marker-end="url(#aa)"/>
+  <text x="470" y="168" text-anchor="middle" fill="#ca8a04" font-size="9" font-weight="bold">SASL AUTH :12345</text>
+
+  <!-- MTA → yarilo-quota-status (policy check :12340) -->
+  <line x1="800" y1="110" x2="212" y2="505" stroke="#0d9488" stroke-width="1.8" stroke-dasharray="6,3" marker-end="url(#aq)"/>
+  <text x="480" y="380" text-anchor="middle" fill="#0d9488" font-size="9" font-weight="bold">policy :12340</text>
 
   <!-- ══════════════════════════════════════════════════
-       Left sidebar: shared services + bundled Redis
+       Left sidebar: shared services + bundled Redis + quota-status
   ══════════════════════════════════════════════════ -->
-  <rect x="30" y="194" width="180" height="62" rx="5" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
-  <text x="120" y="213" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-auth</text>
-  <text x="120" y="227" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="120" y="240" text-anchor="middle" fill="#475569" font-size="9">mTLS :9100 · passdb / userdb</text>
-  <text x="120" y="252" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP Service · yarilo-auth.svc</text>
+  <rect x="30" y="204" width="180" height="62" rx="5" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
+  <text x="120" y="223" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-auth</text>
+  <text x="120" y="237" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="120" y="250" text-anchor="middle" fill="#475569" font-size="9">mTLS :9100 · passdb / userdb</text>
+  <text x="120" y="262" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP · yarilo-auth.svc</text>
+  <text x="120" y="272" text-anchor="middle" fill="#94a3b8" font-size="8">SASL socket :12345 (Postfix)</text>
 
-  <rect x="30" y="266" width="180" height="62" rx="5" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
-  <text x="120" y="285" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-anvil</text>
-  <text x="120" y="299" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="120" y="312" text-anchor="middle" fill="#475569" font-size="9">mTLS :9101 · conn/sess limits</text>
-  <text x="120" y="324" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP Service · yarilo-anvil.svc</text>
+  <rect x="30" y="276" width="180" height="62" rx="5" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
+  <text x="120" y="295" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-anvil</text>
+  <text x="120" y="309" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="120" y="322" text-anchor="middle" fill="#475569" font-size="9">mTLS :9101 · conn/sess limits</text>
+  <text x="120" y="334" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP · yarilo-anvil.svc</text>
 
-  <rect x="30" y="338" width="180" height="62" rx="5" fill="#fef2f2" stroke="#7c2d12" stroke-width="2"/>
-  <text x="120" y="357" text-anchor="middle" fill="#7c2d12" font-size="12" font-weight="bold">yarilo-locks</text>
-  <text x="120" y="371" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N (HA≥2)</text>
-  <text x="120" y="384" text-anchor="middle" fill="#475569" font-size="9">mTLS :9104 · X locks · EVENT</text>
-  <text x="120" y="396" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP Service · yarilo-locks.svc</text>
+  <rect x="30" y="348" width="180" height="62" rx="5" fill="#fef2f2" stroke="#7c2d12" stroke-width="2"/>
+  <text x="120" y="367" text-anchor="middle" fill="#7c2d12" font-size="12" font-weight="bold">yarilo-locks</text>
+  <text x="120" y="381" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N (HA≥2)</text>
+  <text x="120" y="394" text-anchor="middle" fill="#475569" font-size="9">mTLS :9104 · X locks · EVENT</text>
+  <text x="120" y="406" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP · yarilo-locks.svc</text>
 
-  <rect x="30" y="410" width="180" height="62" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="2" stroke-dasharray="6,3"/>
-  <text x="120" y="429" text-anchor="middle" fill="#b91c1c" font-size="12" font-weight="bold">redis</text>
-  <text x="120" y="443" text-anchor="middle" fill="#475569" font-size="9">StatefulSet · bundled subchart</text>
-  <text x="120" y="456" text-anchor="middle" fill="#475569" font-size="9">state backend for locks + anvil</text>
-  <text x="120" y="468" text-anchor="middle" fill="#94a3b8" font-size="8">swap for external managed Redis</text>
+  <rect x="30" y="420" width="180" height="62" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="120" y="439" text-anchor="middle" fill="#b91c1c" font-size="12" font-weight="bold">redis</text>
+  <text x="120" y="453" text-anchor="middle" fill="#475569" font-size="9">StatefulSet · bundled subchart</text>
+  <text x="120" y="466" text-anchor="middle" fill="#475569" font-size="9">state backend for locks + anvil</text>
+  <text x="120" y="478" text-anchor="middle" fill="#94a3b8" font-size="8">swap for external managed Redis</text>
 
-  <!-- locks → redis (state store) -->
-  <line x1="120" y1="400" x2="120" y2="410" stroke="#b91c1c" stroke-width="1.5"/>
+  <!-- locks → redis -->
+  <line x1="120" y1="410" x2="120" y2="420" stroke="#b91c1c" stroke-width="1.5"/>
+
+  <rect x="30" y="492" width="180" height="68" rx="5" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+  <text x="120" y="511" text-anchor="middle" fill="#0f766e" font-size="12" font-weight="bold">yarilo-quota-status</text>
+  <text x="120" y="525" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="120" y="538" text-anchor="middle" fill="#475569" font-size="9">Postfix policy protocol · :12340</text>
+  <text x="120" y="550" text-anchor="middle" fill="#475569" font-size="9">quota dict lookup · alias resolve</text>
+  <text x="120" y="560" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP · yarilo-quota-status.svc</text>
+
+  <!-- quota-status → redis (quota dict read) -->
+  <line x1="120" y1="482" x2="120" y2="492" stroke="#0f766e" stroke-width="1.5" stroke-dasharray="4,2"/>
 
   <!-- ══════════════════════════════════════════════════
-       Login proxies row (separate Deployments per protocol)
+       Login proxies row
   ══════════════════════════════════════════════════ -->
-  <rect x="230" y="194" width="195" height="76" rx="5" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
-  <text x="327" y="214" text-anchor="middle" fill="#2563eb" font-size="12" font-weight="bold">yarilo-imap-login</text>
-  <text x="327" y="228" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="327" y="241" text-anchor="middle" fill="#475569" font-size="9">:993 (TLS) · :143 (STARTTLS)</text>
-  <text x="327" y="254" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · SASL · proxy</text>
-  <text x="327" y="266" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-imap-login.svc</text>
+  <rect x="230" y="204" width="195" height="76" rx="5" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="327" y="224" text-anchor="middle" fill="#2563eb" font-size="12" font-weight="bold">yarilo-imap-login</text>
+  <text x="327" y="238" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="327" y="251" text-anchor="middle" fill="#475569" font-size="9">:993 (TLS) · :143 (STARTTLS)</text>
+  <text x="327" y="264" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · SASL · proxy</text>
+  <text x="327" y="276" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-imap-login.svc</text>
 
-  <rect x="435" y="194" width="195" height="76" rx="5" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
-  <text x="532" y="214" text-anchor="middle" fill="#dc2626" font-size="12" font-weight="bold">yarilo-pop3-login</text>
-  <text x="532" y="228" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="532" y="241" text-anchor="middle" fill="#475569" font-size="9">:995 (TLS) · :110 (STLS)</text>
-  <text x="532" y="254" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · SASL · proxy</text>
-  <text x="532" y="266" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-pop3-login.svc</text>
+  <rect x="435" y="204" width="195" height="76" rx="5" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+  <text x="532" y="224" text-anchor="middle" fill="#dc2626" font-size="12" font-weight="bold">yarilo-pop3-login</text>
+  <text x="532" y="238" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="532" y="251" text-anchor="middle" fill="#475569" font-size="9">:995 (TLS) · :110 (STLS)</text>
+  <text x="532" y="264" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · SASL · proxy</text>
+  <text x="532" y="276" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-pop3-login.svc</text>
 
-  <rect x="640" y="194" width="195" height="76" rx="5" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
-  <text x="737" y="214" text-anchor="middle" fill="#7c3aed" font-size="12" font-weight="bold">yarilo-submission-login</text>
-  <text x="737" y="228" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="737" y="241" text-anchor="middle" fill="#475569" font-size="9">:465 (TLS) · :587 (STARTTLS)</text>
-  <text x="737" y="254" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · SASL · proxy</text>
-  <text x="737" y="266" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-submission-login.svc</text>
+  <rect x="640" y="204" width="195" height="76" rx="5" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="737" y="224" text-anchor="middle" fill="#7c3aed" font-size="12" font-weight="bold">yarilo-submission-login</text>
+  <text x="737" y="238" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="737" y="251" text-anchor="middle" fill="#475569" font-size="9">:465 (TLS) · :587 (STARTTLS)</text>
+  <text x="737" y="264" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · SASL · proxy</text>
+  <text x="737" y="276" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-submission-login.svc</text>
 
-  <!-- ══════════════════════════════════════════════════
-       login → session arrows (mTLS TCP, NOT fd-pass)
-       — only 3 protocols have a login proxy; LMTP runs MTA-direct
-         and is drawn straight from the MTA box above.
-  ══════════════════════════════════════════════════ -->
-  <line x1="327" y1="270" x2="327" y2="332" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
-  <line x1="532" y1="270" x2="532" y2="332" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
-  <line x1="737" y1="270" x2="737" y2="332" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
-  <text x="532" y="293" text-anchor="middle" fill="#1d4ed8" font-size="10" font-weight="bold">mTLS TCP · auth preamble · plain-byte proxy (via ClusterIP Service DNS — separate pods, no fd-pass)</text>
+  <!-- login → session arrows -->
+  <line x1="327" y1="280" x2="327" y2="342" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
+  <line x1="532" y1="280" x2="532" y2="342" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
+  <line x1="737" y1="280" x2="737" y2="342" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ad)"/>
+  <text x="532" y="303" text-anchor="middle" fill="#1d4ed8" font-size="10" font-weight="bold">mTLS TCP · auth preamble · plain-byte proxy (ClusterIP Service DNS — separate pods, no fd-pass)</text>
 
   <!-- ══════════════════════════════════════════════════
        Session processes row
   ══════════════════════════════════════════════════ -->
-  <rect x="230" y="332" width="195" height="76" rx="5" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
-  <text x="327" y="352" text-anchor="middle" fill="#1d4ed8" font-size="12" font-weight="bold">yarilo-imap</text>
-  <text x="327" y="366" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="327" y="379" text-anchor="middle" fill="#475569" font-size="9">IMAP session · goroutines/user</text>
-  <text x="327" y="392" text-anchor="middle" fill="#475569" font-size="9">scales by conn count</text>
-  <text x="327" y="404" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-imap.svc</text>
+  <rect x="230" y="342" width="195" height="76" rx="5" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="327" y="362" text-anchor="middle" fill="#1d4ed8" font-size="12" font-weight="bold">yarilo-imap</text>
+  <text x="327" y="376" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="327" y="389" text-anchor="middle" fill="#475569" font-size="9">IMAP session · goroutines/user</text>
+  <text x="327" y="402" text-anchor="middle" fill="#475569" font-size="9">scales by conn count</text>
+  <text x="327" y="414" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-imap.svc</text>
 
-  <rect x="435" y="332" width="195" height="76" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="2"/>
-  <text x="532" y="352" text-anchor="middle" fill="#b91c1c" font-size="12" font-weight="bold">yarilo-pop3</text>
-  <text x="532" y="366" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="532" y="379" text-anchor="middle" fill="#475569" font-size="9">POP3 session · goroutines/user</text>
-  <text x="532" y="392" text-anchor="middle" fill="#475569" font-size="9">scales by poll rate</text>
-  <text x="532" y="404" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-pop3.svc</text>
+  <rect x="435" y="342" width="195" height="76" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="2"/>
+  <text x="532" y="362" text-anchor="middle" fill="#b91c1c" font-size="12" font-weight="bold">yarilo-pop3</text>
+  <text x="532" y="376" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="532" y="389" text-anchor="middle" fill="#475569" font-size="9">POP3 session · goroutines/user</text>
+  <text x="532" y="402" text-anchor="middle" fill="#475569" font-size="9">scales by poll rate</text>
+  <text x="532" y="414" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-pop3.svc</text>
 
-  <rect x="640" y="332" width="195" height="76" rx="5" fill="#ede9fe" stroke="#6d28d9" stroke-width="2"/>
-  <text x="737" y="352" text-anchor="middle" fill="#6d28d9" font-size="12" font-weight="bold">yarilo-submission</text>
-  <text x="737" y="366" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="737" y="379" text-anchor="middle" fill="#475569" font-size="9">SMTP submit · DKIM · sieve</text>
-  <text x="737" y="392" text-anchor="middle" fill="#475569" font-size="9">scales by outbound rate</text>
-  <text x="737" y="404" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-submission.svc</text>
+  <rect x="640" y="342" width="195" height="76" rx="5" fill="#ede9fe" stroke="#6d28d9" stroke-width="2"/>
+  <text x="737" y="362" text-anchor="middle" fill="#6d28d9" font-size="12" font-weight="bold">yarilo-submission</text>
+  <text x="737" y="376" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="737" y="389" text-anchor="middle" fill="#475569" font-size="9">SMTP submit · relay to upstream</text>
+  <text x="737" y="402" text-anchor="middle" fill="#475569" font-size="9">scales by outbound rate</text>
+  <text x="737" y="414" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-submission.svc</text>
 
-  <rect x="845" y="332" width="195" height="76" rx="5" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
-  <text x="942" y="352" text-anchor="middle" fill="#0f766e" font-size="12" font-weight="bold">yarilo-lmtp</text>
-  <text x="942" y="366" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
-  <text x="942" y="379" text-anchor="middle" fill="#475569" font-size="9">LMTP delivery · sieve filter</text>
-  <text x="942" y="392" text-anchor="middle" fill="#475569" font-size="9">scales by delivery queue</text>
-  <text x="942" y="404" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-lmtp.svc</text>
+  <rect x="845" y="342" width="195" height="76" rx="5" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+  <text x="942" y="362" text-anchor="middle" fill="#0f766e" font-size="12" font-weight="bold">yarilo-lmtp</text>
+  <text x="942" y="376" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
+  <text x="942" y="389" text-anchor="middle" fill="#475569" font-size="9">LMTP delivery · sieve filter</text>
+  <text x="942" y="402" text-anchor="middle" fill="#475569" font-size="9">scales by delivery queue</text>
+  <text x="942" y="414" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-lmtp.svc</text>
 
   <!-- ══════════════════════════════════════════════════
-       Control-plane bus (sessions/logins ↔ auth/anvil/locks)
+       Control-plane bus
   ══════════════════════════════════════════════════ -->
-  <line x1="327" y1="408" x2="327" y2="435" stroke="#64748b" stroke-width="1.5"/>
-  <line x1="532" y1="408" x2="532" y2="435" stroke="#64748b" stroke-width="1.5"/>
-  <line x1="737" y1="408" x2="737" y2="435" stroke="#64748b" stroke-width="1.5"/>
-  <line x1="942" y1="408" x2="942" y2="435" stroke="#64748b" stroke-width="1.5"/>
-  <line x1="210" y1="435" x2="942" y2="435" stroke="#64748b" stroke-width="2"/>
-  <circle cx="327" cy="435" r="3" fill="#64748b"/>
-  <circle cx="532" cy="435" r="3" fill="#64748b"/>
-  <circle cx="737" cy="435" r="3" fill="#64748b"/>
-  <circle cx="942" cy="435" r="3" fill="#64748b"/>
-  <circle cx="210" cy="435" r="3" fill="#64748b"/>
-  <text x="635" y="452" text-anchor="middle" fill="#475569" font-size="10" font-weight="bold">control plane · mTLS over ClusterIP Service DNS</text>
-  <text x="635" y="464" text-anchor="middle" fill="#94a3b8" font-size="9">sessions → yarilo-locks (X locks · EVENT) · sessions → yarilo-auth (userdb) · logins → yarilo-anvil (rate-limit) · logins → yarilo-auth (passdb)</text>
+  <line x1="327" y1="418" x2="327" y2="445" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="532" y1="418" x2="532" y2="445" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="737" y1="418" x2="737" y2="445" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="942" y1="418" x2="942" y2="445" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="210" y1="445" x2="942" y2="445" stroke="#64748b" stroke-width="2"/>
+  <circle cx="327" cy="445" r="3" fill="#64748b"/>
+  <circle cx="532" cy="445" r="3" fill="#64748b"/>
+  <circle cx="737" cy="445" r="3" fill="#64748b"/>
+  <circle cx="942" cy="445" r="3" fill="#64748b"/>
+  <circle cx="210" cy="445" r="3" fill="#64748b"/>
+  <text x="635" y="462" text-anchor="middle" fill="#475569" font-size="10" font-weight="bold">control plane · mTLS over ClusterIP Service DNS</text>
+  <text x="635" y="474" text-anchor="middle" fill="#94a3b8" font-size="9">sessions → yarilo-locks (X locks · EVENT) · sessions → yarilo-auth (userdb) · logins → yarilo-anvil (rate-limit) · logins → yarilo-auth (passdb)</text>
 
-  <!-- bus → auth (left edge of sidebar) -->
-  <line x1="210" y1="435" x2="210" y2="225" stroke="#ca8a04" stroke-width="1.5" marker-end="url(#aa)"/>
-  <line x1="210" y1="435" x2="210" y2="297" stroke="#ca8a04" stroke-width="1.5" marker-end="url(#aa)"/>
-  <line x1="210" y1="435" x2="210" y2="369" stroke="#7c2d12" stroke-width="1.5" marker-end="url(#al)"/>
+  <!-- bus → auth/anvil/locks -->
+  <line x1="210" y1="445" x2="210" y2="235" stroke="#ca8a04" stroke-width="1.5" marker-end="url(#aa)"/>
+  <line x1="210" y1="445" x2="210" y2="307" stroke="#ca8a04" stroke-width="1.5" marker-end="url(#aa)"/>
+  <line x1="210" y1="445" x2="210" y2="379" stroke="#7c2d12" stroke-width="1.5" marker-end="url(#al)"/>
 
   <!-- ══════════════════════════════════════════════════
        Data plane: session writes → PVC (RWX)
   ══════════════════════════════════════════════════ -->
-  <line x1="327" y1="464" x2="327" y2="488" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
-  <line x1="532" y1="464" x2="532" y2="488" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
-  <line x1="737" y1="464" x2="737" y2="488" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
-  <line x1="942" y1="464" x2="942" y2="488" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="327" y1="474" x2="327" y2="500" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="532" y1="474" x2="532" y2="500" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="737" y1="474" x2="737" y2="500" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <line x1="942" y1="474" x2="942" y2="500" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
 
-  <!-- Storage block — RWX PVC shared by all session pods -->
-  <rect x="30" y="490" width="1060" height="100" rx="6" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
-  <text x="560" y="512" text-anchor="middle" fill="#0f766e" font-size="13" font-weight="bold">PersistentVolumeClaim · ReadWriteMany (NFS · CephFS · hostPath on single node)</text>
-  <text x="560" y="526" text-anchor="middle" fill="#475569" font-size="10">shared by every session pod · cross-pod write coordination via yarilo-locks</text>
-  <line x1="560" y1="538" x2="560" y2="582" stroke="#cbd5e1" stroke-width="1"/>
-  <text x="290" y="555" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">mailbox data</text>
-  <text x="290" y="569" text-anchor="middle" fill="#475569" font-size="9">pkg/mailbox · MailboxBackend</text>
-  <text x="290" y="581" text-anchor="middle" fill="#64748b" font-size="9">maildir · dbox · mdbox</text>
-  <text x="830" y="555" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">index data</text>
-  <text x="830" y="569" text-anchor="middle" fill="#475569" font-size="9">pkg/mailbox · IndexBackend</text>
-  <text x="830" y="581" text-anchor="middle" fill="#64748b" font-size="9">fileindex · sqlite</text>
+  <!-- Storage block -->
+  <rect x="230" y="500" width="810" height="100" rx="6" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+  <text x="635" y="522" text-anchor="middle" fill="#0f766e" font-size="13" font-weight="bold">PersistentVolumeClaim · ReadWriteMany (NFS · CephFS · hostPath on single node)</text>
+  <text x="635" y="536" text-anchor="middle" fill="#475569" font-size="10">shared by every session pod · cross-pod write coordination via yarilo-locks</text>
+  <line x1="635" y1="548" x2="635" y2="592" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="432" y="562" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">mailbox data</text>
+  <text x="432" y="576" text-anchor="middle" fill="#475569" font-size="9">pkg/mailbox · MailboxBackend</text>
+  <text x="432" y="588" text-anchor="middle" fill="#64748b" font-size="9">maildir · dbox · mdbox</text>
+  <text x="838" y="562" text-anchor="middle" fill="#475569" font-size="11" font-weight="bold">index data</text>
+  <text x="838" y="576" text-anchor="middle" fill="#475569" font-size="9">pkg/mailbox · IndexBackend</text>
+  <text x="838" y="588" text-anchor="middle" fill="#64748b" font-size="9">fileindex · sqlite</text>
 
   <!-- ══════════════════════════════════════════════════
        Footer legend
   ══════════════════════════════════════════════════ -->
-  <rect x="30" y="610" width="1060" height="120" rx="6" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
-  <text x="40" y="628" fill="#0f172a" font-size="11" font-weight="bold">Scaling model</text>
-  <text x="40" y="644" fill="#475569" font-size="10">• Every box above is its own k8s Deployment (or StatefulSet for redis). Bump replicaCount in values.yaml per component — no rewiring.</text>
-  <text x="40" y="658" fill="#475569" font-size="10">• login pods and session pods are SEPARATE Deployments. Connect via mTLS TCP + auth preamble through ClusterIP Service DNS — not Unix-socket fd-pass.</text>
-  <text x="40" y="672" fill="#475569" font-size="10">• yarilo-locks scales independently (default 2 for HA). State in Redis means N session pods see one consistent view.</text>
-  <text x="40" y="686" fill="#475569" font-size="10">• PVC must be ReadWriteMany — even on a single node, multiple session pods mount the same volume. hostPath / NFS / CephFS all valid; storageClass in values.yaml.</text>
-  <text x="40" y="700" fill="#475569" font-size="10">• Redis is bundled by default (StatefulSet subchart). For HA point at external managed Redis (Sentinel / Cluster) by overriding the connection URL.</text>
-  <text x="40" y="714" fill="#475569" font-size="10">• No director, no per-tag sharding. Cross-pod write contention handled by yarilo-locks. Upgrade path to backend deployment (with director) does not touch session binaries.</text>
+  <rect x="30" y="620" width="1060" height="230" rx="6" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="40" y="638" fill="#0f172a" font-size="11" font-weight="bold">Scaling model</text>
+  <text x="40" y="654" fill="#475569" font-size="10">• Every box is its own k8s Deployment (or StatefulSet for redis). Bump replicaCount per component — no rewiring.</text>
+  <text x="40" y="668" fill="#475569" font-size="10">• login pods and session pods are SEPARATE Deployments. Connect via mTLS TCP + auth preamble through ClusterIP Service DNS — not Unix-socket fd-pass.</text>
+  <text x="40" y="682" fill="#475569" font-size="10">• yarilo-locks scales independently (default 2 for HA). State in Redis means N session pods see one consistent view.</text>
+  <text x="40" y="696" fill="#475569" font-size="10">• PVC must be ReadWriteMany — even on a single node, multiple session pods mount the same volume. hostPath / NFS / CephFS all valid; storageClass in values.yaml.</text>
+  <text x="40" y="710" fill="#475569" font-size="10">• Redis is bundled by default (StatefulSet subchart). For HA point at external managed Redis (Sentinel / Cluster) by overriding the connection URL.</text>
+  <text x="40" y="724" fill="#475569" font-size="10">• No director, no per-tag sharding. Cross-pod write contention handled by yarilo-locks. Upgrade path to backend deployment (with director) does not touch session binaries.</text>
+  <text x="40" y="742" fill="#0f172a" font-size="11" font-weight="bold">Postfix integration</text>
+  <text x="40" y="758" fill="#475569" font-size="10">• SASL AUTH: smtpd_sasl_type=dovecot · smtpd_sasl_path=inet:[yarilo-auth.svc]:12345 — Postfix authenticates SMTP submission users via yarilo-auth.</text>
+  <text x="40" y="772" fill="#475569" font-size="10">• Quota policy: check_policy_service inet:[yarilo-quota-status.svc]:12340 — rejects delivery to over-quota recipients before Postfix queues the message.</text>
+  <text x="40" y="786" fill="#475569" font-size="10">• Virtual alias resolution: configure alias_dict in quota_status.yaml pointing at the same SQL DB — yarilo-quota-status resolves aliases before quota check.</text>
+  <text x="40" y="800" fill="#475569" font-size="10">• LMTP: smtpd_lmtp_... or lmtp_destination_recipient_limit — Postfix delivers accepted mail via LMTP :24 directly to yarilo-lmtp (no login proxy needed).</text>
 </svg>
