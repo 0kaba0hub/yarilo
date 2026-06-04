@@ -1,0 +1,18 @@
+{{- if .Values.components.quotaStatus.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-quota-status
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "quota-status") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: policy
+      port: {{ .Values.components.quotaStatus.servicePort }}
+      targetPort: policy
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "quota-status") | nindent 4 }}
+{{- end }}

@@ -365,6 +365,21 @@ data:
           - {{ . | quote }}
           {{- end }}
 
+    {{- if .Values.components.quotaStatus.enabled }}
+    quota_status:
+      listen: {{ printf ":%d" (int .Values.components.quotaStatus.containerPort) | quote }}
+      {{- with .Values.components.quotaStatus.defaultQuotaRules }}
+      default_quota_rules:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.components.quotaStatus.aliasDict }}
+      alias_dict: {{ .Values.components.quotaStatus.aliasDict | quote }}
+      alias_max_hops: {{ .Values.components.quotaStatus.aliasMaxHops }}
+      {{- end }}
+    {{- end }}
+
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}
 

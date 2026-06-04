@@ -23,6 +23,7 @@ RUN set -eu; \
         yarilo-submission-login \
         yarilo-locks \
         yarilo-migrate \
+        yarilo-quota-status \
     ; do \
         go build -ldflags="-s -w" -trimpath -o "/out/$cmd" "./app/$cmd"; \
     done
