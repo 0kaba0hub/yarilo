@@ -139,6 +139,124 @@ func TestPolicyCheck_NoQuotaDict(t *testing.T) {
 	}
 }
 
+func setAlias(t *testing.T, d dict.Dict, src, dst string) {
+	t.Helper()
+	tx, err := d.Begin(context.Background(), &dict.OpSettings{})
+	if err != nil {
+		t.Fatalf("alias begin: %v", err)
+	}
+	if err := tx.Set(src, []byte(dst)); err != nil {
+		t.Fatalf("alias set: %v", err)
+	}
+	if _, err := tx.Commit(); err != nil {
+		t.Fatalf("alias commit: %v", err)
+	}
+}
+
+func TestAliasResolution_DirectAlias(t *testing.T) {
+	quotaD := newMemDict(t)
+	aliasD := newMemDict(t)
+	lim := quota.ParseRules([]string{"*:storage=1K"})
+
+	ctr := quota.NewCounter(quotaD, "alice@example.com")
+	_ = ctr.Add(context.Background(), 2048, 10)
+
+	setAlias(t, aliasD, "info@example.com", "alice@example.com")
+
+	addr := startServer(t, quotastatus.Options{
+		QuotaDict: quotaD,
+		AliasDict: aliasD,
+		Limits:    lim,
+	})
+
+	action := policyCheck(t, addr, map[string]string{
+		"request":   "smtpd_access_policy",
+		"recipient": "info@example.com",
+		"size":      "100",
+	})
+	if !strings.HasPrefix(action, "REJECT 452") {
+		t.Errorf("alias resolved to over-quota alice: want REJECT 452, got %q", action)
+	}
+}
+
+func TestAliasResolution_ChainedAlias(t *testing.T) {
+	quotaD := newMemDict(t)
+	aliasD := newMemDict(t)
+	lim := quota.ParseRules([]string{"*:storage=1K"})
+
+	// sales@ → info@ → alice@ (2-hop chain)
+	ctr := quota.NewCounter(quotaD, "alice@example.com")
+	_ = ctr.Add(context.Background(), 2048, 10)
+
+	setAlias(t, aliasD, "sales@example.com", "info@example.com")
+	setAlias(t, aliasD, "info@example.com", "alice@example.com")
+
+	addr := startServer(t, quotastatus.Options{
+		QuotaDict:    quotaD,
+		AliasDict:    aliasD,
+		AliasMaxHops: 5,
+		Limits:       lim,
+	})
+
+	action := policyCheck(t, addr, map[string]string{
+		"request":   "smtpd_access_policy",
+		"recipient": "sales@example.com",
+		"size":      "100",
+	})
+	if !strings.HasPrefix(action, "REJECT 452") {
+		t.Errorf("chained alias: want REJECT 452, got %q", action)
+	}
+}
+
+func TestAliasResolution_DetailStrippedForLookup(t *testing.T) {
+	quotaD := newMemDict(t)
+	aliasD := newMemDict(t)
+	lim := quota.ParseRules([]string{"*:storage=1K"})
+
+	ctr := quota.NewCounter(quotaD, "alice@example.com")
+	_ = ctr.Add(context.Background(), 2048, 10)
+
+	// Alias table has bare address, no detail variant.
+	setAlias(t, aliasD, "info@example.com", "alice@example.com")
+
+	addr := startServer(t, quotastatus.Options{
+		QuotaDict: quotaD,
+		AliasDict: aliasD,
+		Limits:    lim,
+	})
+
+	// Postfix sends info+newsletter@example.com — detail stripped for alias lookup.
+	action := policyCheck(t, addr, map[string]string{
+		"request":   "smtpd_access_policy",
+		"recipient": "info+newsletter@example.com",
+		"size":      "100",
+	})
+	if !strings.HasPrefix(action, "REJECT 452") {
+		t.Errorf("detail+alias: want REJECT 452, got %q", action)
+	}
+}
+
+func TestAliasResolution_NoAlias_FallsBackToDirect(t *testing.T) {
+	quotaD := newMemDict(t)
+	aliasD := newMemDict(t)
+	lim := quota.ParseRules([]string{"*:storage=10M"})
+
+	addr := startServer(t, quotastatus.Options{
+		QuotaDict: quotaD,
+		AliasDict: aliasD,
+		Limits:    lim,
+	})
+
+	action := policyCheck(t, addr, map[string]string{
+		"request":   "smtpd_access_policy",
+		"recipient": "bob@example.com",
+		"size":      "100",
+	})
+	if action != "DUNNO" {
+		t.Errorf("no alias, under quota: want DUNNO, got %q", action)
+	}
+}
+
 func TestPolicyCheck_MultipleRequestsPerConn(t *testing.T) {
 	d := newMemDict(t)
 	lim := quota.ParseRules([]string{"*:storage=10M"})

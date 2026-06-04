@@ -26,6 +26,12 @@ type Options struct {
 	// Limits are the site-wide quota limits applied to every recipient.
 	// Per-user limits require a userdb lookup (future phase).
 	Limits quota.Limits
+	// AliasDict resolves virtual aliases before quota lookup. The dict
+	// key is the recipient address; the value is the destination address.
+	// Nil disables alias resolution.
+	AliasDict dict.Dict
+	// AliasMaxHops is the maximum alias chain depth. Default: 5.
+	AliasMaxHops int
 }
 
 // Server is the Postfix policy server.
@@ -88,13 +94,17 @@ func (s *Server) handleConn(conn net.Conn) {
 
 // check evaluates the Postfix policy request and returns the action string.
 func (s *Server) check(attrs map[string]string) string {
-	recipient := strings.TrimSpace(attrs["recipient"])
-	if recipient == "" {
+	rawRecipient := strings.TrimSpace(attrs["recipient"])
+	if rawRecipient == "" {
 		return "DUNNO"
 	}
 
-	username := extractUsername(recipient)
-	folder := extractFolder(recipient)
+	// Resolve through alias chain. Folder is always derived from the
+	// original recipient's detail part (e.g. alice+Spam@ → folder=Spam)
+	// so that per-folder ignore rules apply correctly.
+	folder := extractFolder(rawRecipient)
+	resolved := s.resolveAlias(context.Background(), rawRecipient)
+	username := extractUsername(resolved)
 
 	if s.opts.QuotaDict == nil {
 		return "DUNNO"
@@ -157,4 +167,61 @@ func extractFolder(addr string) string {
 		}
 	}
 	return "INBOX"
+}
+
+// resolveAlias walks the alias chain for addr and returns the final
+// mailbox address. Resolution order per hop:
+//  1. Exact lookup of current address (e.g. "info@example.com")
+//  2. If current has a detail part and exact lookup missed, retry
+//     without the detail (e.g. "alice+tag@example.com" → "alice@example.com")
+//
+// Catch-all (@domain) and multiple-hop chains are handled by the
+// configured SQL query — the server just iterates until stable.
+// Returns addr unchanged when AliasDict is nil or the address is not found.
+func (s *Server) resolveAlias(ctx context.Context, addr string) string {
+	if s.opts.AliasDict == nil {
+		return addr
+	}
+	maxHops := s.opts.AliasMaxHops
+	if maxHops <= 0 {
+		maxHops = 5
+	}
+	seen := make(map[string]struct{}, maxHops+1)
+	current := addr
+	for i := 0; i < maxHops; i++ {
+		if _, dup := seen[current]; dup {
+			break
+		}
+		seen[current] = struct{}{}
+
+		if dest, ok := s.lookupAlias(ctx, current); ok {
+			current = dest
+			continue
+		}
+		// If current has a detail part, retry with the bare address.
+		if bare := extractUsername(current); bare != current {
+			if dest, ok := s.lookupAlias(ctx, bare); ok {
+				current = dest
+				continue
+			}
+		}
+		break
+	}
+	return current
+}
+
+func (s *Server) lookupAlias(ctx context.Context, addr string) (string, bool) {
+	vs, found, err := s.opts.AliasDict.Lookup(ctx, &dict.OpSettings{}, addr)
+	if err != nil {
+		slog.Debug("quotastatus: alias lookup error", "addr", addr, "err", err)
+		return "", false
+	}
+	if !found || len(vs) == 0 {
+		return "", false
+	}
+	dest := strings.TrimSpace(string(vs[0]))
+	if dest == "" || dest == addr {
+		return "", false
+	}
+	return dest, true
 }

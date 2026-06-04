@@ -55,9 +55,23 @@ func main() {
 	qs := cfg.QuotaStatus
 	limits := quota.ParseRules(qs.DefaultQuotaRules)
 
+	var aliasDict dict.Dict
+	if qs.AliasDict != "" {
+		aliasDict, err = openDict(cfg.Dicts, qs.AliasDict)
+		if err != nil {
+			slog.Error("alias dict init failed", "name", qs.AliasDict, "err", err)
+			os.Exit(1)
+		}
+		if aliasDict == nil {
+			slog.Warn("alias_dict configured but not found in dicts", "name", qs.AliasDict)
+		}
+	}
+
 	srv := quotastatus.New(quotastatus.Options{
-		QuotaDict: quotaDict,
-		Limits:    limits,
+		QuotaDict:    quotaDict,
+		Limits:       limits,
+		AliasDict:    aliasDict,
+		AliasMaxHops: qs.AliasMaxHops,
 	})
 
 	listen := qs.Listen
@@ -74,6 +88,8 @@ func main() {
 		"version", version,
 		"listen", listen,
 		"quota_dict_configured", quotaDict != nil,
+		"alias_dict_configured", aliasDict != nil,
+		"alias_max_hops", qs.AliasMaxHops,
 		"default_rules", qs.DefaultQuotaRules,
 	)
 

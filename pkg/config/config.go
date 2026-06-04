@@ -332,6 +332,19 @@ type QuotaStatusConfig struct {
 	// per-user rules are available (userdb lookup not yet wired in this phase).
 	// Format matches yarilo.yaml quota_rule: ["*:storage=5G", "Trash:storage=+1G"].
 	DefaultQuotaRules []string `koanf:"default_quota_rules"`
+	// AliasDict is the name of a dict defined in the top-level dicts: map
+	// that resolves virtual aliases. The dict key is the recipient address
+	// and the returned value is the destination address. Empty = disabled.
+	//
+	// Example SQL dict query for virtual + catch-all:
+	//   SELECT destination FROM virtual_aliases
+	//   WHERE source = '%k'
+	//      OR source = CONCAT('@', SUBSTRING_INDEX('%k','@',-1))
+	//   ORDER BY LENGTH(source) DESC LIMIT 1
+	AliasDict string `koanf:"alias_dict"`
+	// AliasMaxHops limits alias chain depth to prevent infinite loops.
+	// Default: 5
+	AliasMaxHops int `koanf:"alias_max_hops"`
 }
 
 // AnvilServiceConfig configures the standalone yarilo-anvil process.
