@@ -1,11 +1,15 @@
 package file
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/dict/memory"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 const (
@@ -445,4 +449,87 @@ func TestExpungePersistsModSeqBump(t *testing.T) {
 		t.Errorf("ExpungeMessage did not persist modseq bump: header=%d, pre-expunge=%d",
 			reopened.HighestModSeq, beforeHeader.HighestModSeq)
 	}
+}
+
+func newMemDict(t *testing.T) dict.Dict {
+	t.Helper()
+	d, err := memory.New(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatalf("memory dict: %v", err)
+	}
+	return d
+}
+
+func TestSize_RoundtripAndReopen(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
+
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "a", Size: 1234}) //nolint:errcheck
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 2, Filename: "b", Size: 5678}) //nolint:errcheck
+	b.Close()                                                                      //nolint:errcheck
+
+	b2 := openIdx(dir, testUser)
+	f2, _ := b2.OpenFolder("INBOX", 1)
+	msgs, err := b2.GetMessages(f2.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 messages, got %d", len(msgs))
+	}
+	for _, m := range msgs {
+		var want uint32
+		switch m.UID {
+		case 1:
+			want = 1234
+		case 2:
+			want = 5678
+		}
+		if m.Size != want {
+			t.Errorf("UID %d: Size = %d, want %d", m.UID, m.Size, want)
+		}
+	}
+	b2.Close() //nolint:errcheck
+}
+
+func TestQuota_CounterTracking(t *testing.T) {
+	d := newMemDict(t)
+	dir := t.TempDir()
+
+	home := testHome(dir, testUser)
+	b := New(WithQuotaCounter(func(username string) *quota.Counter {
+		return quota.NewCounter(d, username)
+	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userIndex)
+
+	f, _ := b.OpenFolder("INBOX", 1)
+
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Size: 1000}) //nolint:errcheck
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 2, Size: 2000}) //nolint:errcheck
+
+	ctr := quota.NewCounter(d, testUser)
+	u, err := ctr.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.StorageBytes != 3000 {
+		t.Errorf("after 2 appends: StorageBytes = %d, want 3000", u.StorageBytes)
+	}
+	if u.Messages != 2 {
+		t.Errorf("after 2 appends: Messages = %d, want 2", u.Messages)
+	}
+
+	b.ExpungeMessage(f.ID, 1) //nolint:errcheck
+
+	u, err = ctr.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.StorageBytes != 2000 {
+		t.Errorf("after expunge uid=1: StorageBytes = %d, want 2000", u.StorageBytes)
+	}
+	if u.Messages != 1 {
+		t.Errorf("after expunge uid=1: Messages = %d, want 1", u.Messages)
+	}
+	b.Close() //nolint:errcheck
 }

@@ -19,8 +19,10 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Options configures the LMTP server.
@@ -55,6 +57,13 @@ type Options struct {
 	// mailbox key so subscribed IMAP IDLE sessions on other pods receive
 	// the notification immediately. Nil disables cross-pod notifications.
 	Locker locks.Locker
+
+	// QuotaDict is the dict backend for per-user quota counters. When
+	// non-nil, delivery is rejected with 452 4.2.2 "Mailbox full" if the
+	// recipient's quota_rules limit would be exceeded. Nil disables the
+	// check (quota enforcement still runs at the index layer, but LMTP
+	// cannot return a pre-flight 452 without this).
+	QuotaDict dict.Dict
 
 	// AnvilAddr is the yarilo-anvil server address. When non-empty the
 	// LMTP backend issues LOOKUP + CONNECT per RCPT TO to enforce
@@ -378,6 +387,26 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			resolver = &mailbox.Resolver{}
 		}
 		userInfo := resolver.UserInfo(username, "")
+
+		if s.opts.QuotaDict != nil {
+			lim := quota.ParseRules(userInfo.QuotaRules)
+			if lim.StorageBytes > 0 || lim.Messages > 0 {
+				ctr := quota.NewCounter(s.opts.QuotaDict, username)
+				if u, cerr := ctr.Get(context.Background()); cerr == nil && quota.IsOver(u, lim, int64(len(msg)), 1) {
+					slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
+					if id, ok := s.rcptAnvilIDs[rcpt]; ok {
+						s.anvilConn.releaseDelivery(id)
+						delete(s.rcptAnvilIDs, rcpt)
+					}
+					status.SetStatus(rcpt, &goSmtp.SMTPError{
+						Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2},
+						Message: "Mailbox full",
+					})
+					continue
+				}
+			}
+		}
+
 		rcptBox := s.opts.Mailbox.OpenUser(userInfo)
 		rcptIdx := s.opts.Index.OpenUser(userInfo)
 		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal

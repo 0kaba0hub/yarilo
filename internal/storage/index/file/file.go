@@ -31,13 +31,15 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Backend is the per-process factory for fileindex handles. It
 // holds only process-wide state; per-user state lives in
 // userIndex (created by OpenUser).
 type Backend struct {
-	locker locks.Locker
+	locker  locks.Locker
+	quotaFn func(username string) *quota.Counter
 }
 
 // Option configures a Backend at construction time.
@@ -50,6 +52,14 @@ type Option func(*Backend)
 // safe in production.
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
+}
+
+// WithQuotaCounter wires a per-user quota counter factory into the
+// backend. When set, AppendMessage increments and ExpungeMessage
+// decrements the user's quota counter automatically, covering all
+// protocols (IMAP, LMTP, POP3) without per-protocol tracking.
+func WithQuotaCounter(fn func(username string) *quota.Counter) Option {
+	return func(b *Backend) { b.quotaFn = fn }
 }
 
 // New constructs a Backend.
@@ -65,13 +75,17 @@ func New(opts ...Option) *Backend {
 // methods take no user/path parameter — UserInfo is captured at
 // open time (Dovecot mail_storage pattern).
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
-	return &userIndex{
+	ui := &userIndex{
 		b:        b,
 		home:     u.Home,
 		username: u.Username,
 		owner:    makeOwner(u),
 		open:     make(map[uint64]*folderState),
 	}
+	if b.quotaFn != nil {
+		ui.counter = b.quotaFn(u.Username)
+	}
+	return ui
 }
 
 // userIndex is the per-user, per-session UserIndex implementation.
@@ -82,6 +96,7 @@ type userIndex struct {
 	home     string
 	username string
 	owner    string
+	counter  *quota.Counter
 
 	mu    sync.Mutex
 	next  uint64                  // monotonic per-session folder ID counter
@@ -106,6 +121,7 @@ type folderState struct {
 	file      *mailindex.File // the wire-format snapshot
 	keywords  keywordsHdr     // parsed keyword name registry
 	filenames map[uint32]string
+	sizes     map[uint32]uint32 // UID → message size in bytes, stored in .names sidecar
 
 	// dboxHdr is the folder GUID + flags from the dbox-hdr ext.
 	hdr dboxHdr
@@ -383,42 +399,48 @@ func migrateLegacyFilenames(indexDir string) error {
 	return nil
 }
 
-// loadNames reads the .names sidecar into a UID→filename map.
-// Missing file = empty map (not an error). Format is TSV:
+// loadNames reads the .names sidecar into UID→filename and
+// UID→size maps. Missing file = empty maps (not an error).
+// Format is TSV with 2 or 3 columns:
 //
-//	<uid>\t<filename>\n
-//
-// Phase 2 keeps this as a yarilo-only sidecar; Phase 3 drops it
-// for sdbox (UID is the filename), Phase 5 drops it for mdbox
-// (map_uid replaces filenames altogether).
-func loadNames(indexDir string) map[uint32]string {
-	out := map[uint32]string{}
+//	<uid>\t<filename>\n               (legacy — size treated as 0)
+//	<uid>\t<filename>\t<size_bytes>\n (current)
+func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32) {
+	names := map[uint32]string{}
+	sizes := map[uint32]uint32{}
 	f, err := os.Open(namesPath(indexDir))
 	if err != nil {
-		return out
+		return names, sizes
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
-		tab := strings.IndexByte(line, '\t')
-		if tab < 0 {
+		tab1 := strings.IndexByte(line, '\t')
+		if tab1 < 0 {
 			continue
 		}
-		uid64, err := strconv.ParseUint(line[:tab], 10, 32)
+		uid64, err := strconv.ParseUint(line[:tab1], 10, 32)
 		if err != nil {
 			continue
 		}
-		out[uint32(uid64)] = line[tab+1:]
+		uid := uint32(uid64)
+		rest := line[tab1+1:]
+		if tab2 := strings.IndexByte(rest, '\t'); tab2 >= 0 {
+			names[uid] = rest[:tab2]
+			if sz, err := strconv.ParseUint(rest[tab2+1:], 10, 32); err == nil {
+				sizes[uid] = uint32(sz)
+			}
+		} else {
+			names[uid] = rest
+		}
 	}
-	return out
+	return names, sizes
 }
 
-// saveNames rewrites the .names sidecar atomically (.tmp +
-// rename). Called from inside Recreate flush so concurrent
-// readers always see a consistent view paired with the .index
-// they just wrote.
-func saveNames(indexDir string, names map[uint32]string) error {
+// saveNames rewrites the .names sidecar atomically (.tmp + rename).
+// Each line: <uid>\t<filename>\t<size_bytes>\n
+func saveNames(indexDir string, names map[uint32]string, sizes map[uint32]uint32) error {
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/names: mkdir: %w", err)
 	}
@@ -428,9 +450,18 @@ func saveNames(indexDir string, names map[uint32]string) error {
 	if err != nil {
 		return fmt.Errorf("fileindex/names: open tmp: %w", err)
 	}
+	// Collect all UIDs from both maps so messages with no filename
+	// (but a known size) are still persisted.
+	all := make(map[uint32]struct{}, len(names))
+	for uid := range names {
+		all[uid] = struct{}{}
+	}
+	for uid := range sizes {
+		all[uid] = struct{}{}
+	}
 	bw := bufio.NewWriter(f)
-	for uid, name := range names {
-		fmt.Fprintf(bw, "%d\t%s\n", uid, name) //nolint:errcheck
+	for uid := range all {
+		fmt.Fprintf(bw, "%d\t%s\t%d\n", uid, names[uid], sizes[uid]) //nolint:errcheck
 	}
 	if err := bw.Flush(); err != nil {
 		_ = f.Close()

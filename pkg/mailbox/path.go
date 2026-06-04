@@ -75,6 +75,11 @@ type Resolver struct {
 	// HomeTemplate is the Dovecot-style template for users with no userdb
 	// override. Default: "%d/%n" (virtual hosting layout).
 	HomeTemplate string
+
+	// DefaultQuotaRules are applied to every UserInfo produced by this
+	// Resolver when the userdb lookup provides no per-user override.
+	// Mirrors Dovecot's quota_rule setting at the global level.
+	DefaultQuotaRules []string
 }
 
 // Resolve returns the absolute home directory for a user. An empty
@@ -98,8 +103,9 @@ func (r *Resolver) Resolve(username, homeOverride string) string {
 // supplied username + userdb override.
 func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	return &UserInfo{
-		Username: username,
-		Home:     r.Resolve(username, homeOverride),
+		Username:   username,
+		Home:       r.Resolve(username, homeOverride),
+		QuotaRules: r.DefaultQuotaRules,
 	}
 }
 

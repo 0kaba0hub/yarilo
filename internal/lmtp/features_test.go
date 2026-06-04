@@ -2,6 +2,7 @@ package lmtp
 
 import (
 	"bufio"
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,7 +12,10 @@ import (
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/dict/memory"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 type featureServer struct {
@@ -181,5 +185,65 @@ func checkFileNoHeader(t *testing.T, path, header string) {
 		if strings.HasPrefix(strings.ToLower(line), prefix) {
 			t.Fatalf("unexpected header %q in %s: %q", header, path, line)
 		}
+	}
+}
+
+func newTestMemDict(t *testing.T) dict.Dict {
+	t.Helper()
+	d, err := memory.New(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatalf("memory dict: %v", err)
+	}
+	return d
+}
+
+func TestLMTP_QuotaEnforcement_452(t *testing.T) {
+	dir := t.TempDir()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	d := newTestMemDict(t)
+	idx := fileindex.New(fileindex.WithQuotaCounter(func(username string) *quota.Counter {
+		return quota.NewCounter(d, username)
+	}))
+
+	box := mb.OpenUser(resolver.UserInfo("alice@example.com", ""))
+	if err := box.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	box.Close() //nolint:errcheck
+
+	// Pre-fill quota counter so alice is already at her 1-byte limit.
+	ctr := quota.NewCounter(d, "alice@example.com")
+	if err := ctr.Add(context.Background(), 100, 1); err != nil {
+		t.Fatalf("pre-fill quota: %v", err)
+	}
+
+	userInfo := resolver.UserInfo("alice@example.com", "")
+	userInfo.QuotaRules = []string{"*:storage=100"}
+
+	srv := New(Options{
+		Hostname:  "lmtp.test",
+		Config:    config.LMTPProtocolConfig{ReadTimeout: 5, WriteTimeout: 5},
+		Mailbox:   mb,
+		Index:     idx,
+		QuotaDict: d,
+		Resolver: &mailbox.Resolver{
+			Root:              dir,
+			HomeTemplate:      "%d/%n",
+			DefaultQuotaRules: []string{"*:storage=100"},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() { _ = srv.Serve(ln) }()
+
+	conn, sc := dialLMTP(t, ln.Addr().String())
+	sendLHLO(t, conn, sc)
+	resp := deliver(t, conn, sc, "sender@external.com", "alice@example.com", testMsg)
+	if len(resp) == 0 || !strings.HasPrefix(resp[0], "452") {
+		t.Fatalf("expected 452 Mailbox full, got: %v", resp)
 	}
 }

@@ -1254,7 +1254,6 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		_ = h.box.Remove(rel, filename)
 		return nil, fmt.Errorf("imap/append record: %w", err)
 	}
-	s.quotaAdd(context.Background(), size, 1)
 	s.emitMailboxChange(name, locks.EventDelivered, uid)
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(uid)}, nil
@@ -1361,7 +1360,6 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
 		s.statsExpunged++
-		s.quotaAdd(context.Background(), -int64(m.Size), -1)
 		if err := w.WriteExpunge(m.UID); err != nil {
 			return err
 		}
