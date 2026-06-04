@@ -202,8 +202,8 @@ func TestLMTP_QuotaEnforcement_452(t *testing.T) {
 	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
 	mb := maildir.New()
 	d := newTestMemDict(t)
-	idx := fileindex.New(fileindex.WithQuotaCounter(func(username string) *quota.Counter {
-		return quota.NewCounter(d, username)
+	idx := fileindex.New(fileindex.WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
+		return quota.NewCounter(d, u.Username), quota.Limits{}
 	}))
 
 	box := mb.OpenUser(resolver.UserInfo("alice@example.com", ""))

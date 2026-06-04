@@ -104,13 +104,18 @@ func buildQuotaData(u quota.Usage, lim quota.Limits) imaplib.QuotaData {
 }
 
 // quotaCheckAppend returns an IMAP error if the user is over quota
-// for the given message size. Nil means the append is allowed.
-func (s *session) quotaCheckAppend(ctx context.Context, bytes int64) error {
+// for the given message size in the target folder. Nil means allowed.
+// Per-folder rules (additive limits, ignore) are applied before the check.
+func (s *session) quotaCheckAppend(ctx context.Context, folder string, bytes int64) error {
 	if !s.quotaEnabled() || s.userInfo == nil {
 		return nil
 	}
 	lim := s.quotaLimits()
-	if lim.StorageBytes == 0 && lim.Messages == 0 {
+	effLim, ignore := lim.EffectiveLimits(folder)
+	if ignore {
+		return nil
+	}
+	if effLim.StorageBytes == 0 && effLim.Messages == 0 {
 		return nil
 	}
 	ctr := s.quotaCounter()
@@ -118,7 +123,7 @@ func (s *session) quotaCheckAppend(ctx context.Context, bytes int64) error {
 	if err != nil {
 		return nil // fail-open: don't block on dict error
 	}
-	if quota.IsOver(u, lim, bytes, 1) {
+	if quota.IsOver(u, effLim, bytes, 1) {
 		return &imaplib.Error{
 			Type: imaplib.StatusResponseTypeNo,
 			Code: imaplib.ResponseCode("OVERQUOTA"),

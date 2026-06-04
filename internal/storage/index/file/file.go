@@ -39,7 +39,7 @@ import (
 // userIndex (created by OpenUser).
 type Backend struct {
 	locker  locks.Locker
-	quotaFn func(username string) *quota.Counter
+	quotaFn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits)
 }
 
 // Option configures a Backend at construction time.
@@ -55,10 +55,10 @@ func WithLocker(l locks.Locker) Option {
 }
 
 // WithQuotaCounter wires a per-user quota counter factory into the
-// backend. When set, AppendMessage increments and ExpungeMessage
-// decrements the user's quota counter automatically, covering all
-// protocols (IMAP, LMTP, POP3) without per-protocol tracking.
-func WithQuotaCounter(fn func(username string) *quota.Counter) Option {
+// backend. The factory receives the full UserInfo so it can return
+// both the counter and the parsed per-user limits (needed for
+// per-folder ignore/additive rules at the index layer).
+func WithQuotaCounter(fn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits)) Option {
 	return func(b *Backend) { b.quotaFn = fn }
 }
 
@@ -83,7 +83,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 		open:     make(map[uint64]*folderState),
 	}
 	if b.quotaFn != nil {
-		ui.counter = b.quotaFn(u.Username)
+		ui.counter, ui.limits = b.quotaFn(u)
 	}
 	return ui
 }
@@ -97,6 +97,7 @@ type userIndex struct {
 	username string
 	owner    string
 	counter  *quota.Counter
+	limits   quota.Limits
 
 	mu    sync.Mutex
 	next  uint64                  // monotonic per-session folder ID counter

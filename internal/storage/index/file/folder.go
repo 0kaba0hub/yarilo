@@ -317,7 +317,9 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 // expected to have already assigned m.UID via AllocateUID or via
 // an external authority (Dovecot mdbox-style map_uid).
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
+	var folder string
 	if err := u.withFolder(folderID, func(fs *folderState) error {
+		folder = fs.folder
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
@@ -325,19 +327,23 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 	}); err != nil {
 		return err
 	}
-	u.quotaAdd(int64(m.Size), 1)
+	u.quotaAdd(folder, int64(m.Size), 1)
 	return nil
 }
 
-// quotaAdd adjusts the user's quota counter. Errors are logged but
-// never returned — counter drift is recoverable via admin recalc.
-func (u *userIndex) quotaAdd(bytes, messages int64) {
+// quotaAdd adjusts the user's quota counter for the given folder.
+// Skips the update when the folder is configured as "ignore".
+// Errors are logged but never returned — drift is recoverable via admin recalc.
+func (u *userIndex) quotaAdd(folder string, bytes, messages int64) {
 	if u.counter == nil {
+		return
+	}
+	if _, ignore := u.limits.EffectiveLimits(folder); ignore {
 		return
 	}
 	if err := u.counter.Add(context.Background(), bytes, messages); err != nil {
 		slog.Warn("fileindex: quota counter update failed",
-			"user", u.username, "bytes", bytes, "messages", messages, "err", err)
+			"user", u.username, "folder", folder, "bytes", bytes, "messages", messages, "err", err)
 	}
 }
 
@@ -475,7 +481,9 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 // later reads those log entries to satisfy QRESYNC.
 func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 	var expungedSize uint32
+	var expungedFolder string
 	if err := u.withFolder(folderID, func(fs *folderState) error {
+		expungedFolder = fs.folder
 		modseq, err := fs.bumpModSeqHeader()
 		if err != nil {
 			return err
@@ -514,7 +522,7 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 	}); err != nil {
 		return err
 	}
-	u.quotaAdd(-int64(expungedSize), -1)
+	u.quotaAdd(expungedFolder, -int64(expungedSize), -1)
 	return nil
 }
 
