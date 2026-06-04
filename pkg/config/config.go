@@ -28,6 +28,7 @@ type Config struct {
 	Namespaces      []NamespaceConfig     `koanf:"namespaces"`
 	Dicts           map[string]DictConfig `koanf:"dicts"`
 	BackendAPI      BackendAPIConfig      `koanf:"backend_api"`
+	QuotaStatus     QuotaStatusConfig     `koanf:"quota_status"`
 	Telemetry       TelemetryConfig       `koanf:"telemetry"`
 	Log             LogConfig             `koanf:"log"`
 }
@@ -319,6 +320,31 @@ type InternalTLSConfig struct {
 	Cert    string `koanf:"cert"`
 	Key     string `koanf:"key"`
 	CA      string `koanf:"ca"`
+}
+
+// QuotaStatusConfig configures the yarilo-quota-status Postfix policy service.
+type QuotaStatusConfig struct {
+	// Listen is the TCP address the policy service binds to.
+	// Postfix connects here via check_policy_service.
+	// Default: ":12340"
+	Listen string `koanf:"listen"`
+	// DefaultQuotaRules are the site-wide quota limits applied when no
+	// per-user rules are available (userdb lookup not yet wired in this phase).
+	// Format matches yarilo.yaml quota_rule: ["*:storage=5G", "Trash:storage=+1G"].
+	DefaultQuotaRules []string `koanf:"default_quota_rules"`
+	// AliasDict is the name of a dict defined in the top-level dicts: map
+	// that resolves virtual aliases. The dict key is the recipient address
+	// and the returned value is the destination address. Empty = disabled.
+	//
+	// Example SQL dict query for virtual + catch-all:
+	//   SELECT destination FROM virtual_aliases
+	//   WHERE source = '%k'
+	//      OR source = CONCAT('@', SUBSTRING_INDEX('%k','@',-1))
+	//   ORDER BY LENGTH(source) DESC LIMIT 1
+	AliasDict string `koanf:"alias_dict"`
+	// AliasMaxHops limits alias chain depth to prevent infinite loops.
+	// Default: 5
+	AliasMaxHops int `koanf:"alias_max_hops"`
 }
 
 // AnvilServiceConfig configures the standalone yarilo-anvil process.
@@ -854,8 +880,9 @@ func Load(path string) (*Config, error) {
 				AllowedNets: []string{"127.0.0.0/8", "10.96.0.0/12", "10.244.0.0/16"},
 			},
 		},
-		Telemetry: TelemetryConfig{Listen: ":8080"},
-		Log:       LogConfig{Level: "info"},
+		QuotaStatus: QuotaStatusConfig{Listen: ":12340"},
+		Telemetry:   TelemetryConfig{Listen: ":8080"},
+		Log:         LogConfig{Level: "info"},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, err
