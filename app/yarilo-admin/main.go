@@ -99,8 +99,10 @@ func dispatchBackend(args []string) error {
 		return dispatchWho(args[1:])
 	case "sessions":
 		return dispatchSessions(args[1:])
+	case "quota":
+		return dispatchQuota(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions (quota lands in a future phase)", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota", args[0])
 	}
 }
 
@@ -127,14 +129,18 @@ func printBackendUsage() {
 	fmt.Fprintln(os.Stderr, `yarilo-admin backend <service> <command>
 
 Services:
-  dict     — pkg/dict KV-store ops (lookup, iterate, set, unset, atomic-inc, expire-scan, commit-batch, drivers, exists)
-
-Phase roadmap (services landing in future PRs):
-  acl      — RFC 4314 access control on mailboxes
-  quota    — RFC 9208 quotas
-  folder   — mailbox listing, GUID lookup, special-use queries
-  user     — userdb queries
-  mailbox  — per-folder ops (delete, rename, recalc-index)
+  dict          — pkg/dict KV-store ops (lookup, iterate, set, unset, atomic-inc, expire-scan, commit-batch, drivers, exists)
+  acl           — RFC 4314 access control on mailboxes
+  quota         — RFC 9208 quota counters (show, recalc, set)
+  folder        — mailbox listing, GUID lookup, special-use queries
+  user          — userdb queries
+  index         — fileindex ops
+  mdbox         — mdbox map ops
+  subscriptions — IMAP SUBSCRIBE state
+  specialuse    — special-use annotations
+  metadata      — IMAP METADATA (RFC 5464)
+  who           — active session listing
+  sessions      — session management (kick)
 
 Run 'yarilo-admin backend <service>' with no command for that service's usage.`)
 }
