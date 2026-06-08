@@ -387,18 +387,16 @@ func (s *Server) RunPOP3(ctx context.Context) error {
 	}
 	if svcs.POP3S.Active() {
 		go func() {
-			if err := s.pop3.ListenAndServeTLS(); err != nil {
-				slog.Error("pop3: TLS server error", "err", err)
-				os.Exit(1)
-			}
+			err := s.pop3.ListenAndServeTLS()
+			slog.Error("pop3: TLS server error", "err", err)
+			os.Exit(1)
 		}()
 	}
 	if svcs.POP3.Active() {
 		go func() {
-			if err := s.pop3.ListenAndServe(); err != nil {
-				slog.Error("pop3: plain server error", "err", err)
-				os.Exit(1)
-			}
+			err := s.pop3.ListenAndServe()
+			slog.Error("pop3: plain server error", "err", err)
+			os.Exit(1)
 		}()
 	}
 	<-ctx.Done()
@@ -480,18 +478,16 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.pop3 != nil {
 		if svcs.POP3S.Active() {
 			go func() {
-				if err := s.pop3.ListenAndServeTLS(); err != nil {
-					slog.Error("pop3: TLS server error", "err", err)
-					os.Exit(1)
-				}
+				err := s.pop3.ListenAndServeTLS()
+				slog.Error("pop3: TLS server error", "err", err)
+				os.Exit(1)
 			}()
 		}
 		if svcs.POP3.Active() {
 			go func() {
-				if err := s.pop3.ListenAndServe(); err != nil {
-					slog.Error("pop3: plain server error", "err", err)
-					os.Exit(1)
-				}
+				err := s.pop3.ListenAndServe()
+				slog.Error("pop3: plain server error", "err", err)
+				os.Exit(1)
 			}()
 		}
 	}
