@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[rules.allowlists]]
+description = "IMAP/SMTP AUTH= capability strings in protocol documentation"
+regexTarget = "match"
+regexes = ['^AUTH=SCRAM-SHA-']
+paths = ['docs/.*\.md']
