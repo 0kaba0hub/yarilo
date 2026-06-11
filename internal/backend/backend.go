@@ -846,17 +846,16 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 		if len(lc.Endpoints) == 0 {
 			return nil, fmt.Errorf("locks_client.endpoints must list at least one host:port for remote mode")
 		}
-		var tlsCfg *tls.Config
 		if cfg.InternalTLS.Enabled {
-			t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+			tlsCfg, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
 			if err != nil {
 				return nil, fmt.Errorf("locks_client mtls: %w", err)
 			}
-			tlsCfg = t
+			return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], tlsCfg))
 		}
 		// Single-endpoint connect for now; failover across Endpoints is a
 		// follow-up (custom Dialer iterating the list until first success).
-		return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], tlsCfg))
+		return locks.NewClient(ctx, locks.DialTCP(lc.Endpoints[0]))
 	default:
 		return nil, fmt.Errorf("locks_client: unknown mode %q (want remote | embedded | \"\")", lc.Mode)
 	}
