@@ -67,18 +67,23 @@ protocol:
     maxMessageSize: 41943040
     recipientDelimiter: "+"
 
-## SQLite auth — no external DB needed.
-## Table yarilo_users is auto-created on first run.
+## MySQL auth — bundled StatefulSet, PVC on microk8s-hostpath.
+## yarilo_users table is auto-created by yarilo-auth on first start.
+## Set a real password via: --set mysql.password=<your-password>
+mysql:
+  bundled: true
+  storageClass: microk8s-hostpath
+  persistence:
+    size: 2Gi
+
 components:
   auth:
     passdb:
-      - driver: sqlite
-        dsn: /var/lib/yarilo/users.db
+      - driver: mysql
+        dsn: "${YARILO_DB_DSN}"
         defaultPassScheme: BCRYPT
     persistence:
-      enabled: true
-      storageClass: microk8s-hostpath
-      size: 1Gi
+      enabled: false
 
 ## Mail storage on microk8s-hostpath PVC.
 storage:
