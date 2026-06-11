@@ -3,7 +3,7 @@
 ## Pre-reqs:
 ##   1. cert-manager + ClusterIssuer "letsencrypt-prod" in the cluster.
 ##   2. DNS A/AAAA for mail-sb.seconddns.com pointing at the LB IP.
-##   3. Postgres + schema in yarilo-sb namespace (apply postgres-sandbox.yaml first).
+##   3. MySQL in yarilo-sb namespace (apply mysql-sandbox.yaml first).
 ##
 ## Install:
 ##   helm upgrade --install yarilo ./helm \
@@ -18,86 +18,102 @@ image:
 
 logLevel: debug
 
-tls:
-  secretName: yarilo-tls
-  certificate:
-    enabled: true
-    issuerRef:
-      kind: ClusterIssuer
-      name: letsencrypt-prod
-    dnsNames:
-      - mail-sb.seconddns.com
-
-services:
-  imaps:       { enabled: true,  port: 993, disablePlainAuth: false }
-  imap:        { enabled: true,  port: 143, disablePlainAuth: false }
-  submission:  { enabled: true,  port: 587, disablePlainAuth: true }
-  submissions: { enabled: true,  port: 465, disablePlainAuth: true }
-  pop3:        { enabled: true,  port: 110 }
-  pop3s:       { enabled: true,  port: 995 }
-  lmtp:        { enabled: true,  port: 24 }
+service:
+  type: LoadBalancer
 
 protocol:
-  submission:
-    addReceivedHeader: true
-    maxMessageSize: 41943040
-    recipientDelimiter: "+"
-  lmtp:
-    addReceivedHeader: true
-    hdrDeliveryAddress: final
   imap:
     idleNotifyInterval: 120
     maxLineLength: 65536
+  lmtp:
+    addReceivedHeader: true
+    hdrDeliveryAddress: final
 
-## Single `users` table created by postgres-sandbox.yaml's init.sql.
-## passwordQuery handles authentication (returns only what's needed for
-## auth — password + active flag, home/mail intentionally blank).
-## userQuery handles userdb lookup post-auth.
-##
-## skipSchema=true tells yarilo not to attempt CREATE TABLE on its own
-## (it would otherwise target the built-in yarilo_users table).
-auth:
-  passdb:
-    - driver: postgres
-      dsn: "${DB_DSN}"
-      skipSchema: true
-      defaultPassScheme: BCRYPT
-      passwordQuery: |
-        SELECT password,
-               '' AS home,
-               '' AS mail,
-               CASE WHEN active THEN 1 ELSE 0 END AS enabled
-        FROM users
-        WHERE username = LOWER(%u)
-      userQuery: |
-        SELECT home, mail_path
-        FROM users
-        WHERE username = LOWER(%u)
-      iterateQuery: |
-        SELECT username
-        FROM users
-        WHERE active = TRUE
-        ORDER BY username
+## External MySQL — managed by mysql-sandbox.yaml; bundled StatefulSet disabled.
+mysql:
+  bundled: false
 
+## DSN injected from the yarilo-mysql Secret created by mysql-sandbox.yaml.
 extraEnv:
-  - name: DB_DSN
+  - name: YARILO_DB_DSN
     valueFrom:
       secretKeyRef:
-        name: yarilo-postgres
+        name: yarilo-mysql
         key: dsn
 
-storage:
-  mailbox: maildir
-  maildirRoot: /var/mail/vhosts
-  index: fileindex
-  persistence:
+components:
+  ## IMAP login — TLS terminator on :993 (IMAPS) / :143 (STARTTLS).
+  ## Creates yarilo-tls Secret via cert-manager.
+  imapLogin:
     enabled: true
-    accessMode: ReadWriteOnce
-    size: 5Gi
+    tls:
+      secretName: yarilo-tls
+      certificate:
+        enabled: true
+        issuerRef:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        dnsNames:
+          - mail-sb.seconddns.com
+    listeners:
+      imaps:
+        enabled: true
+      imap:
+        enabled: true
 
-service:
-  type: LoadBalancer
-  annotations: {}
+  ## POP3 login — TLS terminator on :995 (POP3S) / :110 (STLS).
+  ## Reuses yarilo-tls Secret from imapLogin.
+  pop3Login:
+    enabled: true
+    tls:
+      secretName: yarilo-tls
+    listeners:
+      pop3s:
+        enabled: true
+      pop3:
+        enabled: true
+
+  auth:
+    passdb:
+      - driver: mysql
+        dsn: "${YARILO_DB_DSN}"
+        defaultPassScheme: BCRYPT
+        ## Custom users table created by mysql-sandbox.yaml.
+        ## skipSchema prevents yarilo-auth from creating its own yarilo_users table.
+        skipSchema: true
+        passwordQuery: |
+          SELECT password,
+                 '' AS home,
+                 '' AS mail,
+                 active AS enabled
+          FROM users
+          WHERE username = LOWER(%u)
+        userQuery: |
+          SELECT home, mail_path
+          FROM users
+          WHERE username = LOWER(%u)
+        iterateQuery: |
+          SELECT username
+          FROM users
+          WHERE active = 1
+          ORDER BY username
+
+  ## IMAP session pod.
+  ## PVC yarilo-mail is created from this component's persistence config.
+  imap:
+    storage:
+      persistence:
+        enabled: true
+        accessMode: ReadWriteOnce
+        size: 5Gi
+
+  ## POP3 session pod.
+  pop3:
+    enabled: true
+
+  ## LMTP — inbound delivery from MTA, no login proxy.
+  lmtp:
+    enabled: true
 
 resources:
   requests:

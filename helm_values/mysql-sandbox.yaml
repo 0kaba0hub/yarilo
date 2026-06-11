@@ -1,0 +1,165 @@
+# Stand-alone MySQL for yarilo sandbox with split passdb/userdb schema.
+# Sits alongside the yarilo Release in namespace yarilo-sb.
+#
+# Apply BEFORE the yarilo helm install so the DSN secret + tables exist.
+#
+#   kubectl apply -f helm_values/mysql-sandbox.yaml
+#
+# Resets are easy: kubectl delete -f .../mysql-sandbox.yaml; PVC is then
+# garbage-collected.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yarilo-sb
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: yarilo-mysql
+  namespace: yarilo-sb
+type: Opaque
+stringData:
+  # Yarilo passdb DSN — inject into yarilo pods via extraEnv referencing this secret.
+  dsn: "yarilo:sandbox-secret@tcp(yarilo-mysql:3306)/yarilo?parseTime=true&charset=utf8mb4"
+  # MySQL entrypoint env vars — used by the StatefulSet to initialise the DB.
+  MYSQL_DATABASE: "yarilo"
+  MYSQL_USER: "yarilo"
+  MYSQL_PASSWORD: "sandbox-secret"
+  MYSQL_ROOT_PASSWORD: "sandbox-secret"
+---
+# Schema mounted into /docker-entrypoint-initdb.d/. MySQL runs every .sql
+# file in alphabetical order on the FIRST startup only (data dir must be
+# empty). Deleting the PVC re-applies it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yarilo-mysql-init
+  namespace: yarilo-sb
+data:
+  01-schema.sql: |
+    USE yarilo;
+
+    -- Single users table covering both passdb (password / active) and
+    -- userdb (home / mail_path / quota / allow_nets / director_tag).
+    -- values-sandbox.yaml splits the SELECT into passwordQuery + userQuery
+    -- so the same yarilo wiring works against multi-table production schemas.
+    --
+    -- password column holds Dovecot-style "{SCHEME}hash". Supported schemes:
+    -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
+    --
+    -- Read-status per column (yarilo HEAD):
+    --   username, password, active       → used now (passwordQuery)
+    --   home, mail_path                  → returned in userdb response but
+    --                                       maildir backend currently derives
+    --                                       the path from the username anyway
+    --   mailbox_format, quota_bytes,
+    --   allow_nets, director_tag,
+    --   display_name, last_login_at      → forward-compat, not yet read by
+    --                                       yarilo (quota engine, director,
+    --                                       login ACL — future phases)
+    CREATE TABLE IF NOT EXISTS users (
+        username       VARCHAR(254)  NOT NULL,
+        password       VARCHAR(255)  NOT NULL,             -- enough for {BCRYPT}/{SHA512-CRYPT} + headroom
+        active         TINYINT(1)    NOT NULL DEFAULT 1,
+
+        -- userdb / storage
+        home           VARCHAR(255)  NOT NULL DEFAULT '',  -- Maildir base override
+        mailbox_format VARCHAR(16)   NOT NULL DEFAULT '',  -- '' | maildir | dbox | mdbox
+        mail_path      VARCHAR(255)  NOT NULL DEFAULT '',  -- absolute path; '' = derived from username
+        quota_bytes    BIGINT        NOT NULL DEFAULT 0,   -- 0 = unlimited
+
+        -- access control / routing
+        allow_nets     VARCHAR(512)  NOT NULL DEFAULT '',  -- comma-separated CIDRs; '' = no restriction
+        director_tag   VARCHAR(64)   NOT NULL DEFAULT '',  -- routing tag for yarilo-director (Phase 5)
+
+        -- ops / display
+        display_name   VARCHAR(255)  NOT NULL DEFAULT '',
+        last_login_at  TIMESTAMP     NULL     DEFAULT NULL,
+
+        -- audit (updated_at maintained via ON UPDATE, no trigger needed)
+        created_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+        PRIMARY KEY (username),
+        CONSTRAINT chk_username_lower CHECK (username = LOWER(username))
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    -- Index for iterate_query (active-user listing).
+    CREATE INDEX IF NOT EXISTS users_active_idx ON users (active);
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yarilo-mysql
+  namespace: yarilo-sb
+  labels:
+    app: yarilo-mysql
+spec:
+  clusterIP: None
+  ports:
+    - port: 3306
+      name: mysql
+  selector:
+    app: yarilo-mysql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: yarilo-mysql
+  namespace: yarilo-sb
+spec:
+  serviceName: yarilo-mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: yarilo-mysql
+  template:
+    metadata:
+      labels:
+        app: yarilo-mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          ports:
+            - containerPort: 3306
+              name: mysql
+          envFrom:
+            - secretRef:
+                name: yarilo-mysql
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "mysqladmin ping -h localhost -u root --password=\"$MYSQL_ROOT_PASSWORD\" --silent 2>/dev/null"
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: init
+          configMap:
+            name: yarilo-mysql-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
