@@ -40,53 +40,35 @@ data:
   01-schema.sql: |
     USE yarilo;
 
-    -- Single users table covering both passdb (password / active) and
-    -- userdb (home / mail_path / quota / allow_nets / director_tag).
-    -- values-sandbox.yaml splits the SELECT into passwordQuery + userQuery
-    -- so the same yarilo wiring works against multi-table production schemas.
-    --
-    -- password column holds Dovecot-style "{SCHEME}hash". Supported schemes:
-    -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
-    --
-    -- Read-status per column (yarilo HEAD):
-    --   username, password, active       → used now (passwordQuery)
-    --   home, mail_path                  → returned in userdb response but
-    --                                       maildir backend currently derives
-    --                                       the path from the username anyway
-    --   mailbox_format, quota_bytes,
-    --   allow_nets, director_tag,
-    --   display_name, last_login_at      → forward-compat, not yet read by
-    --                                       yarilo (quota engine, director,
-    --                                       login ACL — future phases)
-    CREATE TABLE IF NOT EXISTS users (
-        username       VARCHAR(254)  NOT NULL,
-        password       VARCHAR(255)  NOT NULL,             -- enough for {BCRYPT}/{SHA512-CRYPT} + headroom
-        active         TINYINT(1)    NOT NULL DEFAULT 1,
+    -- PostfixAdmin-compatible mailbox table.
+    -- values-sandbox.yaml queries this table via passwordQuery / userQuery / iterateQuery.
+    CREATE TABLE IF NOT EXISTS mailbox (
+        username   VARCHAR(255)  NOT NULL,
+        password   VARCHAR(255)  NOT NULL,
+        active     TINYINT(1)    NOT NULL DEFAULT 1,
 
-        -- userdb / storage
-        home           VARCHAR(255)  NOT NULL DEFAULT '',  -- Maildir base override
-        mailbox_format VARCHAR(16)   NOT NULL DEFAULT '',  -- '' | maildir | dbox | mdbox
-        mail_path      VARCHAR(255)  NOT NULL DEFAULT '',  -- absolute path; '' = derived from username
-        quota_bytes    BIGINT        NOT NULL DEFAULT 0,   -- 0 = unlimited
+        -- userdb / storage (used by values-sandbox.yaml userQuery)
+        home       VARCHAR(255)  NOT NULL DEFAULT '',   -- base home dir (e.g. /var/mail/vhosts)
+        mpath      VARCHAR(255)  NOT NULL DEFAULT '',   -- sub-path appended to home
+        mbtype     VARCHAR(255)  NOT NULL DEFAULT '',   -- mailbox type prefix (e.g. maildir:)
+        maildir    VARCHAR(255)  NOT NULL DEFAULT '',   -- relative maildir path inside home+mpath
+        codepage   VARCHAR(255)  NOT NULL DEFAULT '',   -- charset label (legacy; unused in yarilo)
+        quota      BIGINT        NOT NULL DEFAULT 0,    -- bytes; 0 = unlimited
 
-        -- access control / routing
-        allow_nets     VARCHAR(512)  NOT NULL DEFAULT '',  -- comma-separated CIDRs; '' = no restriction
-        director_tag   VARCHAR(64)   NOT NULL DEFAULT '',  -- routing tag for yarilo-director (Phase 5)
+        -- access control
+        allow_nets TEXT          NOT NULL DEFAULT '',   -- comma-separated CIDRs; '' = no restriction
 
-        -- ops / display
-        display_name   VARCHAR(255)  NOT NULL DEFAULT '',
-        last_login_at  TIMESTAMP     NULL     DEFAULT NULL,
+        -- routing
+        domain     VARCHAR(255)  NOT NULL DEFAULT '',
 
-        -- audit (updated_at maintained via ON UPDATE, no trigger needed)
-        created_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        -- ops
+        created    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        modified   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-        PRIMARY KEY (username),
-        CONSTRAINT chk_username_lower CHECK (username = LOWER(username))
+        PRIMARY KEY (username)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-    -- Index for iterate_query (active-user listing).
-    CREATE INDEX IF NOT EXISTS users_active_idx ON users (active);
+    CREATE INDEX IF NOT EXISTS mailbox_active_idx ON mailbox (active);
 ---
 apiVersion: v1
 kind: Service
