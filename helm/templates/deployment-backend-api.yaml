@@ -54,7 +54,7 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /api/admin/health
+              path: /api/backend/health
               port: backend-api
               {{- if .Values.components.backendAPI.internalTLS.enabled }}
               scheme: HTTPS
@@ -63,7 +63,7 @@ spec:
             periodSeconds: 30
           readinessProbe:
             httpGet:
-              path: /api/admin/health
+              path: /api/backend/health
               port: backend-api
               {{- if .Values.components.backendAPI.internalTLS.enabled }}
               scheme: HTTPS
