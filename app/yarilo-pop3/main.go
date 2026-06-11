@@ -37,6 +37,15 @@ func main() {
 		"telemetry", cfg.Telemetry.Listen,
 	)
 
+	// POP3 session binary — TLS is terminated at yarilo-pop3-login.
+	// Disable TLS-requiring and unrelated service listeners.
+	cfg.Services.IMAPS = nil
+	cfg.Services.IMAP = nil
+	cfg.Services.POP3S = nil
+	cfg.Services.LMTP = nil
+	cfg.Services.Submission = nil
+	cfg.Services.Submissions = nil
+
 	srv, err := backend.New(cfg)
 	if err != nil {
 		slog.Error("backend init failed", "err", err)
