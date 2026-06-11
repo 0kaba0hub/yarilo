@@ -38,6 +38,15 @@ func main() {
 		"telemetry", cfg.Telemetry.Listen,
 	)
 
+	// LMTP session binary — disable all non-LMTP services so backend.New
+	// does not try to start IMAP/POP3/Submission listeners or load their TLS certs.
+	cfg.Services.IMAPS = nil
+	cfg.Services.IMAP = nil
+	cfg.Services.POP3S = nil
+	cfg.Services.POP3 = nil
+	cfg.Services.Submission = nil
+	cfg.Services.Submissions = nil
+
 	srv, err := backend.New(cfg)
 	if err != nil {
 		slog.Error("backend init failed", "err", err)

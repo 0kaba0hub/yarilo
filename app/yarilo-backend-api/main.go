@@ -266,15 +266,14 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 		if len(lc.Endpoints) == 0 {
 			return nil, fmt.Errorf("locks_client.endpoints must have at least one entry for remote mode")
 		}
-		var tlsCfg *tls.Config
 		if cfg.InternalTLS.Enabled {
-			t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+			tlsCfg, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
 			if err != nil {
 				return nil, fmt.Errorf("locks_client mtls: %w", err)
 			}
-			tlsCfg = t
+			return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], tlsCfg))
 		}
-		return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], tlsCfg))
+		return locks.NewClient(ctx, locks.DialTCP(lc.Endpoints[0]))
 	default:
 		return nil, fmt.Errorf("locks_client: unknown mode %q", lc.Mode)
 	}
