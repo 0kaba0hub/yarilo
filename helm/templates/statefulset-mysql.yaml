@@ -31,28 +31,21 @@ spec:
           readinessProbe:
             exec:
               command:
-                - mysqladmin
-                - ping
-                - -h
-                - localhost
-                - -u
-                - root
-                - --password=$(MYSQL_ROOT_PASSWORD)
-            initialDelaySeconds: 10
-            periodSeconds: 10
+                - /bin/sh
+                - -c
+                - "mysqladmin ping -h localhost -u root --password=\"$MYSQL_ROOT_PASSWORD\" --silent 2>/dev/null"
+            initialDelaySeconds: 60
+            periodSeconds: 15
             timeoutSeconds: 5
+            failureThreshold: 6
           livenessProbe:
             exec:
               command:
-                - mysqladmin
-                - ping
-                - -h
-                - localhost
-                - -u
-                - root
-                - --password=$(MYSQL_ROOT_PASSWORD)
-            initialDelaySeconds: 30
-            periodSeconds: 15
+                - /bin/sh
+                - -c
+                - "mysqladmin ping -h localhost -u root --password=\"$MYSQL_ROOT_PASSWORD\" --silent 2>/dev/null"
+            initialDelaySeconds: 120
+            periodSeconds: 30
             timeoutSeconds: 5
           resources:
             {{- toYaml .Values.mysql.resources | nindent 12 }}

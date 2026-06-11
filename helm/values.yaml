@@ -13,7 +13,7 @@ components:
   ## Director — front-end proxy.
   ## Accepts client connections, routes to backend via consistent hash.
   director:
-    enabled: true
+    enabled: false
     replicas: 1
 
     ## Internal director protocol (ring management, LOOKUP between directors).
@@ -137,11 +137,18 @@ components:
       secretName: ""
 
     passdb:
-      - driver: sqlite
-        dsn: /var/lib/yarilo/users.db
-        ## passwordQuery: "SELECT password FROM users WHERE username = ?"
-        ## userQuery:     "SELECT home, uid, gid FROM users WHERE username = ?"
-        ## defaultPassScheme: BCRYPT
+      - driver: mysql
+        dsn: "${YARILO_DB_DSN}"
+        defaultPassScheme: BCRYPT
+        ## Custom queries (optional — leave empty to use the auto-created yarilo_users schema).
+        ## passwordQuery: |
+        ##   SELECT password, '' AS home, '' AS mail, active AS enabled
+        ##   FROM users WHERE username = LOWER(%u)
+        ## userQuery: |
+        ##   SELECT home, mail_path FROM users WHERE username = LOWER(%u)
+        ## iterateQuery: |
+        ##   SELECT username FROM users WHERE active = 1 ORDER BY username
+        ## skipSchema: true   # set when using a custom table instead of yarilo_users
 
     ## failureDelay — timing-leak mitigation. Every failed auth
     ## reply (wrong password, unknown user, malformed SASL) is
@@ -150,9 +157,7 @@ components:
     ## wall-clock time. Default 2s mirrors Dovecot's
     ## `auth_failure_delay`. Set to 0 to disable (tests only —
     ## production should keep >0).
-    ## persistence — when SQLite passdb is used, the DB lives at the dsn
-    ## path inside /var/lib/yarilo. Enable to back it with a PVC so it
-    ## survives pod restarts.
+    ## persistence — SQLite fallback only; not used when mysql.bundled=true.
     persistence:
       enabled: false
       storageClass: ""
@@ -846,7 +851,7 @@ redis:
 ##       dsn: "${YARILO_DB_DSN}"
 ## -------------------------------------------------------------------
 mysql:
-  bundled: false
+  bundled: true
   image:
     repository: mysql
     tag: "8.4"

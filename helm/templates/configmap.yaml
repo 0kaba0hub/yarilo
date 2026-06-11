@@ -60,8 +60,13 @@ data:
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       lmtp:
+        {{- if .Values.components.director.enabled }}
         enabled: {{ .Values.components.director.listeners.lmtp.enabled }}
         port: {{ .Values.components.director.listeners.lmtp.containerPort }}
+        {{- else }}
+        enabled: {{ .Values.components.lmtp.listeners.lmtp.enabled }}
+        port: {{ .Values.components.lmtp.listeners.lmtp.containerPort }}
+        {{- end }}
         ssl_mode: "no"
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
