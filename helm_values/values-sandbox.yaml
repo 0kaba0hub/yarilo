@@ -78,24 +78,24 @@ components:
       - driver: mysql
         dsn: "${YARILO_DB_DSN}"
         defaultPassScheme: BCRYPT
-        ## Custom users table created by mysql-sandbox.yaml.
-        ## skipSchema prevents yarilo-auth from creating its own yarilo_users table.
+        ## PostfixAdmin mailbox table — skipSchema prevents yarilo-auth from
+        ## creating its own yarilo_users table.
         skipSchema: true
         passwordQuery: |
-          SELECT password,
-                 '' AS home,
-                 '' AS mail,
-                 active AS enabled
-          FROM users
-          WHERE username = LOWER(%u)
+          SELECT password, allow_nets
+          FROM mailbox
+          WHERE username = '%u' AND active = '1'
         userQuery: |
-          SELECT home, mail_path
-          FROM users
-          WHERE username = LOWER(%u)
+          SELECT 89 AS uid,
+                 89 AS gid,
+                 CONCAT(home, mpath) AS home,
+                 CONCAT('*:bytes=', quota) AS quota_rule
+          FROM mailbox
+          WHERE username = '%u'
         iterateQuery: |
           SELECT username
-          FROM users
-          WHERE active = 1
+          FROM mailbox
+          WHERE active = '1'
           ORDER BY username
 
   ## IMAP session pod.
