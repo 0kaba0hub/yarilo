@@ -59,6 +59,7 @@ jobs:
 
       - name: Run Trivy — filesystem scan (deps + config)
         uses: aquasecurity/trivy-action@v0.36.0
+        if: always()
         with:
           scan-type: fs
           scan-ref: .
