@@ -291,6 +291,9 @@ data:
 
     auth_service:
       listen: {{ .Values.components.auth.listen | quote }}
+      {{- if .Values.components.auth.masterListen }}
+      master_listen: {{ .Values.components.auth.masterListen | quote }}
+      {{- end }}
       shutdown:
         session_grace_period: 30
         kill_timeout: 5
@@ -308,6 +311,11 @@ data:
     backend_api:
       listen: {{ .Values.components.backendAPI.listen | quote }}
       token: "${BACKEND_API_TOKEN}"
+      {{- if .Values.components.backendAPI.authMasterAddr }}
+      auth_master_addr: {{ .Values.components.backendAPI.authMasterAddr | quote }}
+      {{- else if .Values.components.auth.masterListen }}
+      auth_master_addr: {{ printf "%s-auth.%s.svc:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
+      {{- end }}
       {{- with .Values.components.backendAPI.allowedNets }}
       allowed_nets:
         {{- toYaml . | nindent 8 }}
