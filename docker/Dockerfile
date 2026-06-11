@@ -29,8 +29,8 @@ RUN set -eu; \
     done
 
 FROM alpine:3.24
-# hadolint ignore=DL3018
-RUN apk add --no-cache ca-certificates tzdata
+# hadolint ignore=DL3018,DL3019
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /out/ /usr/local/bin/
 COPY docker/entrypoint.sh /entrypoint.sh
