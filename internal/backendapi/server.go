@@ -163,12 +163,11 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) Handler() http.Handler { return s.mux }
 
 // registerHealth wires GET /api/backend/health (200 if process is up).
-// Readiness vs liveness is the operator's choice — both share this
-// endpoint for now; per-subsystem readyz come later.
+// No auth — must be reachable by Kubernetes liveness/readiness probes.
 func (s *Server) registerHealth() {
-	s.mux.Handle("GET /api/backend/health", s.middleware(func(w http.ResponseWriter, _ *http.Request) {
+	s.mux.HandleFunc("GET /api/backend/health", func(w http.ResponseWriter, _ *http.Request) {
 		apiJSON(w, map[string]string{"status": "ok"})
-	}))
+	})
 }
 
 // middleware chains the IP allow-list and bearer-token checks. Use
