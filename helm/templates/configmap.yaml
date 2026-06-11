@@ -310,6 +310,21 @@ data:
         session_grace_period: 30
         kill_timeout: 5
 
+    {{- if .Values.components.imapLogin.enabled }}
+    imap_login_service:
+      backend_addr: {{ .Values.components.imapLogin.backendAddr | quote }}
+    {{- end }}
+
+    {{- if .Values.components.pop3Login.enabled }}
+    pop3_login_service:
+      backend_addr: {{ .Values.components.pop3Login.backendAddr | quote }}
+    {{- end }}
+
+    {{- if .Values.components.submissionLogin.enabled }}
+    submission_login_service:
+      backend_addr: {{ .Values.components.submissionLogin.backendAddr | quote }}
+    {{- end }}
+
     {{- if .Values.components.backendAPI.enabled }}
     ## yarilo-backend-api consumes this section. Token is loaded from
     ## the Secret at /etc/yarilo/backend-api-token via $BACKEND_API_TOKEN

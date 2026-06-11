@@ -96,6 +96,7 @@ func main() {
 		srv := login.New(login.Options{
 			Protocol:       login.ProtocolPOP3S,
 			DirectorAddr:   dirAddr,
+			BackendAddr:    cfg.POP3LoginService.BackendAddr,
 			DirectorTLS:    intTLS,
 			LocalIP:        localIP,
 			BackendTLS:     intTLS,
@@ -127,6 +128,7 @@ func main() {
 		srv := login.New(login.Options{
 			Protocol:       login.ProtocolPOP3,
 			DirectorAddr:   dirAddr,
+			BackendAddr:    cfg.POP3LoginService.BackendAddr,
 			DirectorTLS:    intTLS,
 			LocalIP:        localIP,
 			BackendTLS:     intTLS,
