@@ -28,7 +28,7 @@ RUN set -eu; \
         go build -ldflags="-s -w" -trimpath -o "/out/$cmd" "./app/$cmd"; \
     done
 
-FROM alpine:3.23
+FROM alpine:3.24
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates tzdata
 
