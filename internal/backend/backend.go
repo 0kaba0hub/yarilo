@@ -313,7 +313,7 @@ func New(cfg *config.Config) (*Server, error) {
 			TLSConfig:          lmtpTLS,
 			Locker:             locker,
 			QuotaDict:          quotaDict,
-			AnvilAddr:          cfg.AnvilService.Listen,
+			AnvilAddr:          cfg.AnvilService.ClientAddr(),
 		})
 	}
 

@@ -60,6 +60,11 @@ components:
         enabled: true
       imap:
         enabled: true
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/loadBalancerIPs: "10.50.83.250"
+        metallb.universe.tf/allow-shared-ip: "yarilo-mail"
 
   ## POP3 login — TLS terminator on :995 (POP3S) / :110 (STLS).
   ## Reuses yarilo-tls Secret from imapLogin.
@@ -72,6 +77,11 @@ components:
         enabled: true
       pop3:
         enabled: true
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/loadBalancerIPs: "10.50.83.250"
+        metallb.universe.tf/allow-shared-ip: "yarilo-mail"
 
   auth:
     passdb:

@@ -121,7 +121,7 @@ func main() {
 	}
 
 	var anvilTLS *tls.Config
-	if cfg.InternalTLS.Enabled && cfg.AnvilService.Listen != "" {
+	if cfg.InternalTLS.Enabled && cfg.AnvilService.ClientAddr() != "" {
 		anvilTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
 		if err != nil {
 			slog.Error("backend-api: anvil mtls client config failed", "err", err)
@@ -168,7 +168,7 @@ func main() {
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
 		MetadataDict:       dicts["metadata"],
 		QuotaDict:          dicts["quota"],
-		AnvilAddr:          cfg.AnvilService.Listen,
+		AnvilAddr:          cfg.AnvilService.ClientAddr(),
 		AnvilTLS:           anvilTLS,
 		AuthClient:         authcl,
 	})

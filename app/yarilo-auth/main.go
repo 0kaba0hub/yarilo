@@ -149,15 +149,15 @@ func main() {
 			slog.Error("auth.penalty.enabled requires anvil_service.listen")
 			os.Exit(1)
 		}
-		penaltyConn, err := anvil.Dial(cfg.AnvilService.Listen, tlsCfg, 5*time.Second)
+		penaltyConn, err := anvil.Dial(cfg.AnvilService.ClientAddr(), tlsCfg, 5*time.Second)
 		if err != nil {
-			slog.Error("anvil dial for penalty", "addr", cfg.AnvilService.Listen, "err", err)
+			slog.Error("anvil dial for penalty", "addr", cfg.AnvilService.ClientAddr(), "err", err)
 			os.Exit(1)
 		}
 		srvOpts = append(srvOpts,
 			protocol.WithPenalty(penaltyConn, anvil.PenaltyToSecs),
 		)
-		slog.Info("yarilo-auth penalty enabled", "anvil", cfg.AnvilService.Listen)
+		slog.Info("yarilo-auth penalty enabled", "anvil", cfg.AnvilService.ClientAddr())
 	}
 
 	// Policy server: HTTP hook into wforce or equivalent. URL=""

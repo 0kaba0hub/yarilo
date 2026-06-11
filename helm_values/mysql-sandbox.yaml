@@ -56,7 +56,7 @@ data:
         quota      BIGINT        NOT NULL DEFAULT 0,    -- bytes; 0 = unlimited
 
         -- access control
-        allow_nets TEXT          NOT NULL DEFAULT '',   -- comma-separated CIDRs; '' = no restriction
+        allow_nets VARCHAR(1024) NOT NULL DEFAULT '',   -- comma-separated CIDRs; '' = no restriction
 
         -- routing
         domain     VARCHAR(255)  NOT NULL DEFAULT '',
