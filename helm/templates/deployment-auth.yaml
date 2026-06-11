@@ -43,6 +43,11 @@ spec:
             - name: auth
               containerPort: 9100
               protocol: TCP
+            {{- if .Values.components.auth.masterListen }}
+            - name: auth-master
+              containerPort: 9102
+              protocol: TCP
+            {{- end }}
             - name: telemetry
               containerPort: 8080
               protocol: TCP

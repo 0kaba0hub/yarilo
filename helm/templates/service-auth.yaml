@@ -13,6 +13,12 @@ spec:
       port: 9100
       targetPort: auth
       protocol: TCP
+    {{- if .Values.components.auth.masterListen }}
+    - name: auth-master
+      port: 9102
+      targetPort: auth-master
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "auth") | nindent 4 }}
 ---
