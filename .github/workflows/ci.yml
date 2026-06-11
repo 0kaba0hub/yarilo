@@ -126,6 +126,7 @@ jobs:
             IS_RELEASE=true
           fi
           echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${APP_VERSION}" >> "$GITHUB_OUTPUT"
           echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -148,7 +149,7 @@ jobs:
           tags: |
             type=sha,prefix=,format=short
             type=raw,value=latest
-            type=raw,value=${{ steps.version.outputs.tag }},enable=${{ steps.version.outputs.is_release == 'true' }}
+            type=raw,value=${{ steps.version.outputs.image_tag }},enable=${{ steps.version.outputs.is_release == 'true' }}
 
       - name: Build and push
         uses: docker/build-push-action@v7.2.0
@@ -190,5 +191,5 @@ jobs:
           package-name: yarilo
           package-type: container
           min-versions-to-keep: 10
-          ignore-versions: '^v\d+\.\d+\.\d+$'
+          ignore-versions: '^\d+\.\d+\.\d+$'
           token: ${{ secrets.GITHUB_TOKEN }}
