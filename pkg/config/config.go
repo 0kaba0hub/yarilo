@@ -349,11 +349,23 @@ type QuotaStatusConfig struct {
 
 // AnvilServiceConfig configures the standalone yarilo-anvil process.
 type AnvilServiceConfig struct {
-	Listen   string         `koanf:"listen"`
+	Listen string `koanf:"listen"`
+	// Addr is the address login pods use to dial yarilo-anvil.
+	// Defaults to Listen when empty (single-process / dev mode).
+	// In k8s set to the ClusterIP service DNS, e.g. "yarilo-anvil:9101".
+	Addr     string         `koanf:"addr"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
 	// FailOpen controls login-pod behaviour when yarilo-anvil is unreachable.
 	// true = allow the session; false (default) = reject the session.
 	FailOpen bool `koanf:"fail_open"`
+}
+
+// ClientAddr returns the address login pods use to dial yarilo-anvil.
+func (c AnvilServiceConfig) ClientAddr() string {
+	if c.Addr != "" {
+		return c.Addr
+	}
+	return c.Listen
 }
 
 // AuthServiceConfig configures the standalone yarilo-auth process.

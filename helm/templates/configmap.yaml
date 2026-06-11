@@ -305,6 +305,7 @@ data:
 
     anvil_service:
       listen: {{ .Values.components.anvil.listen | quote }}
+      addr: {{ printf "%s-anvil%s" (include "yarilo.fullname" .) .Values.components.anvil.listen | quote }}
       shutdown:
         session_grace_period: 30
         kill_timeout: 5
