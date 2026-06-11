@@ -60,6 +60,18 @@ func DialUnix(path string) Dialer {
 	}
 }
 
+// DialTCP returns a Dialer for remote mode over plain TCP (no TLS).
+func DialTCP(addr string) Dialer {
+	return func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		c, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("locks/client: dial tcp %q: %w", addr, err)
+		}
+		return c, nil
+	}
+}
+
 // DialTLS returns a Dialer for remote mode (mTLS TCP).
 func DialTLS(addr string, tlsCfg *tls.Config) Dialer {
 	return func(ctx context.Context) (net.Conn, error) {
