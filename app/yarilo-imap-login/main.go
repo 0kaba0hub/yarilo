@@ -96,6 +96,7 @@ func main() {
 		srv := login.New(login.Options{
 			Protocol:       login.ProtocolIMAPS,
 			DirectorAddr:   dirAddr,
+			BackendAddr:    cfg.IMAPLoginService.BackendAddr,
 			DirectorTLS:    intTLS,
 			LocalIP:        localIP,
 			BackendTLS:     intTLS,
@@ -127,6 +128,7 @@ func main() {
 		srv := login.New(login.Options{
 			Protocol:       login.ProtocolIMAP,
 			DirectorAddr:   dirAddr,
+			BackendAddr:    cfg.IMAPLoginService.BackendAddr,
 			DirectorTLS:    intTLS,
 			LocalIP:        localIP,
 			BackendTLS:     intTLS,

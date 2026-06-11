@@ -96,6 +96,7 @@ func main() {
 		srv := login.New(login.Options{
 			Protocol:       login.ProtocolSubmissions,
 			DirectorAddr:   dirAddr,
+			BackendAddr:    cfg.SubmissionLoginSvc.BackendAddr,
 			DirectorTLS:    intTLS,
 			LocalIP:        localIP,
 			BackendTLS:     intTLS,
@@ -127,6 +128,7 @@ func main() {
 		srv := login.New(login.Options{
 			Protocol:       login.ProtocolSubmission,
 			DirectorAddr:   dirAddr,
+			BackendAddr:    cfg.SubmissionLoginSvc.BackendAddr,
 			DirectorTLS:    intTLS,
 			LocalIP:        localIP,
 			BackendTLS:     intTLS,

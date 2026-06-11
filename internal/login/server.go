@@ -44,10 +44,15 @@ type Options struct {
 	// Tag restricts director LOOKUP to backends with this tag. "" = full ring.
 	Tag string
 	// DirectorAddr is the host:port of yarilo-director (e.g. "yarilo-director:9102").
+	// Ignored when BackendAddr is set.
 	DirectorAddr string
 	// DirectorTLS is the mTLS config for connecting to yarilo-director.
 	// Nil means plain TCP.
 	DirectorTLS *tls.Config
+	// BackendAddr bypasses director LOOKUP entirely and routes every session to
+	// this fixed address (e.g. "yarilo-imap:143" in standalone deployments).
+	// When set, DirectorAddr and Tag are not used.
+	BackendAddr string
 	// LocalIP is the pod IP used in the ME handshake with the director.
 	LocalIP string
 	// BackendPort is the containerPort on backend pods.
@@ -185,12 +190,18 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	// Director LOOKUP: find the backend pod for this user.
-	backendAddr, err := s.directorLookup(pre.username)
-	if err != nil {
-		slog.Warn("login: director lookup failed", "proto", s.opts.Protocol, "user", pre.username, "err", err)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "backend unavailable")
-		return
+	// Find backend address: fixed addr (standalone) or director LOOKUP (director mode).
+	var backendAddr string
+	if s.opts.BackendAddr != "" {
+		backendAddr = s.opts.BackendAddr
+	} else {
+		var err error
+		backendAddr, err = s.directorLookup(pre.username)
+		if err != nil {
+			slog.Warn("login: director lookup failed", "proto", s.opts.Protocol, "user", pre.username, "err", err)
+			writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "backend unavailable")
+			return
+		}
 	}
 
 	slog.Info("login: session routed",

@@ -13,24 +13,27 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode            string                `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
-	General         GeneralConfig         `koanf:"general"`
-	Services        ServicesConfig        `koanf:"services"`
-	Protocol        ProtocolConfig        `koanf:"protocol"`
-	Auth            AuthConfig            `koanf:"auth"`
-	InternalTLS     InternalTLSConfig     `koanf:"internal_tls"`
-	AuthService     AuthServiceConfig     `koanf:"auth_service"`
-	AnvilService    AnvilServiceConfig    `koanf:"anvil_service"`
-	DirectorService DirectorServiceConfig `koanf:"director_service"`
-	LocksService    LocksServiceConfig    `koanf:"locks_service"`
-	LocksClient     LocksClientConfig     `koanf:"locks_client"`
-	Storage         StorageConfig         `koanf:"storage"`
-	Namespaces      []NamespaceConfig     `koanf:"namespaces"`
-	Dicts           map[string]DictConfig `koanf:"dicts"`
-	BackendAPI      BackendAPIConfig      `koanf:"backend_api"`
-	QuotaStatus     QuotaStatusConfig     `koanf:"quota_status"`
-	Telemetry       TelemetryConfig       `koanf:"telemetry"`
-	Log             LogConfig             `koanf:"log"`
+	Mode               string                       `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	General            GeneralConfig                `koanf:"general"`
+	Services           ServicesConfig               `koanf:"services"`
+	Protocol           ProtocolConfig               `koanf:"protocol"`
+	Auth               AuthConfig                   `koanf:"auth"`
+	InternalTLS        InternalTLSConfig            `koanf:"internal_tls"`
+	AuthService        AuthServiceConfig            `koanf:"auth_service"`
+	AnvilService       AnvilServiceConfig           `koanf:"anvil_service"`
+	DirectorService    DirectorServiceConfig        `koanf:"director_service"`
+	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
+	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
+	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
+	LocksService       LocksServiceConfig           `koanf:"locks_service"`
+	LocksClient        LocksClientConfig            `koanf:"locks_client"`
+	Storage            StorageConfig                `koanf:"storage"`
+	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
+	Dicts              map[string]DictConfig        `koanf:"dicts"`
+	BackendAPI         BackendAPIConfig             `koanf:"backend_api"`
+	QuotaStatus        QuotaStatusConfig            `koanf:"quota_status"`
+	Telemetry          TelemetryConfig              `koanf:"telemetry"`
+	Log                LogConfig                    `koanf:"log"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -432,6 +435,24 @@ type DirectorServiceConfig struct {
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
 	Peers        []string           `koanf:"peers"`         // peer director addresses "host:port" for ring sync (replicas > 1)
 	API          DirectorAPIConfig  `koanf:"api"`
+}
+
+// IMAPLoginServiceConfig configures the yarilo-imap-login proxy.
+// BackendAddr, when set, bypasses director LOOKUP and routes every
+// session directly to this address (standalone k8s deployments).
+// Leave empty in director deployments.
+type IMAPLoginServiceConfig struct {
+	BackendAddr string `koanf:"backend_addr"`
+}
+
+// POP3LoginServiceConfig mirrors IMAPLoginServiceConfig for the POP3 proxy.
+type POP3LoginServiceConfig struct {
+	BackendAddr string `koanf:"backend_addr"`
+}
+
+// SubmissionLoginServiceConfig mirrors IMAPLoginServiceConfig for the Submission proxy.
+type SubmissionLoginServiceConfig struct {
+	BackendAddr string `koanf:"backend_addr"`
 }
 
 // BackendAPIConfig configures the yarilo-backend-api process —

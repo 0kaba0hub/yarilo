@@ -588,6 +588,11 @@ components:
       enabled: false
       secretName: ""
 
+    ## backendAddr bypasses director LOOKUP for standalone deployments.
+    ## Set to "<release>-imap:<port>" (plain) or "<release>-imap:<tls-port>" (mTLS).
+    ## Leave empty in director deployments — LOOKUP is used instead.
+    backendAddr: ""
+
     service:
       type: LoadBalancer
       annotations: {}
@@ -628,6 +633,11 @@ components:
       enabled: false
       secretName: ""
 
+    ## backendAddr bypasses director LOOKUP for standalone deployments.
+    ## Set to "<release>-pop3:<port>" (plain) or "<release>-pop3:<tls-port>" (mTLS).
+    ## Leave empty in director deployments — LOOKUP is used instead.
+    backendAddr: ""
+
     service:
       type: LoadBalancer
       annotations: {}
@@ -667,6 +677,11 @@ components:
     internalTLS:
       enabled: false
       secretName: ""
+
+    ## backendAddr bypasses director LOOKUP for standalone deployments.
+    ## Set to "<release>-submission:<port>" (plain) or "<release>-submission:<tls-port>" (mTLS).
+    ## Leave empty in director deployments — LOOKUP is used instead.
+    backendAddr: ""
 
     service:
       type: LoadBalancer
