@@ -831,6 +831,43 @@ redis:
       memory: 256Mi
 
 ## -------------------------------------------------------------------
+## MySQL — bundled passdb/userdb backend (optional).
+##
+## bundled: true  → spins up a MySQL 8.4 StatefulSet + ClusterIP Service
+##                  in the release namespace. yarilo-auth auto-creates the
+##                  yarilo_users table on first start (no manual init SQL).
+## bundled: false → no StatefulSet; configure components.auth.passdb[].dsn
+##                  directly in your values override.
+##
+## The DSN is stored in a Secret (<release>-mysql) and injected into
+## yarilo-auth as YARILO_DB_DSN. Reference it in passdb config:
+##   components.auth.passdb:
+##     - driver: mysql
+##       dsn: "${YARILO_DB_DSN}"
+## -------------------------------------------------------------------
+mysql:
+  bundled: false
+  image:
+    repository: mysql
+    tag: "8.4"
+    pullPolicy: IfNotPresent
+  db: yarilo
+  user: yarilo
+  ## password — required when bundled: true. Use --set mysql.password=... or
+  ## a values override file. Never commit a real password here.
+  password: ""
+  storageClass: ""
+  persistence:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+## -------------------------------------------------------------------
 ## Telemetry (:8080 per component pod)
 ## -------------------------------------------------------------------
 telemetry:
