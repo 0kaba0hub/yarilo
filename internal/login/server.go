@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
+	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/xclient"
 )
@@ -77,6 +79,13 @@ type Options struct {
 	// AnvilFailOpen controls what happens when yarilo-anvil is unreachable.
 	// true = allow the session (fail open); false = reject the session (fail closed).
 	AnvilFailOpen bool
+
+	// AuthAddr is the host:port of yarilo-auth (e.g. "yarilo-auth:9100").
+	// Required: if empty every login attempt is rejected with a temporary error.
+	AuthAddr string
+	// AuthTLS is the mTLS config for connecting to yarilo-auth.
+	// Nil means plain TCP.
+	AuthTLS *tls.Config
 
 	// HAProxy enables PROXY protocol v1/v2 header reading from trusted upstreams.
 	HAProxy        bool
@@ -182,11 +191,50 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	rd := bufio.NewReaderSize(conn, 4096)
 
-	// Extract preamble: handle pre-auth protocol exchange with mail client.
-	// Returns username (for director LOOKUP) and authLines (to replay to backend).
+	// Extract preamble: speak the protocol pre-auth exchange to collect credentials.
 	pre, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS)
 	if err != nil {
 		slog.Debug("login: preamble", "proto", s.opts.Protocol, "remote", remote, "err", err)
+		return
+	}
+
+	// Generate session ID early — passed to yarilo-auth so penalty tracking
+	// associates the correct anvil session with the authenticated user.
+	sessID := fmt.Sprintf("%d", s.sessID.Add(1))
+
+	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
+	if s.opts.AuthAddr == "" {
+		slog.Error("login: auth_addr not configured")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+		return
+	}
+	authCl, err := authclient.Dial(s.opts.AuthAddr, s.opts.AuthTLS)
+	if err != nil {
+		slog.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+		return
+	}
+	defer authCl.Close()
+
+	authResult, err := authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
+	if errors.Is(err, authclient.ErrTempFail) {
+		slog.Warn("login: auth temp fail", "user", pre.username)
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+		return
+	}
+	if err != nil {
+		slog.Info("login: auth failed", "user", pre.username, "remote", remote)
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "authentication failed")
+		return
+	}
+	if authResult.Nologin {
+		slog.Info("login: nologin", "user", pre.username)
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "login disabled")
+		return
+	}
+	if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
+		slog.Info("login: ip not in allow_nets", "user", pre.username, "ip", clientIP)
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "login from this IP is not allowed")
 		return
 	}
 
@@ -204,15 +252,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}
 
-	slog.Info("login: session routed",
-		"proto", s.opts.Protocol,
-		"user", pre.username,
-		"remote", remote,
-		"backend", backendAddr,
-	)
-
 	// Anvil connection limit check.
-	sessID := fmt.Sprintf("%d", s.sessID.Add(1))
 	if s.opts.AnvilAddr != "" {
 		ac, aerr := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 0)
 		if aerr != nil {
@@ -238,10 +278,6 @@ func (s *Server) handleConn(conn net.Conn) {
 					return
 				}
 			} else {
-				// Anvil registration succeeded — kick off a
-				// background HEARTBEAT loop so a crashed login
-				// pod cannot leak this session past the
-				// server-side TTL.
 				hbCtx, hbCancel := context.WithCancel(context.Background())
 				hbDone := make(chan struct{})
 				go func() {
@@ -306,47 +342,23 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	// Forward real client IP + anvil session id to backend via
-	// protocol-specific XCLIENT. The backend uses SESSION= to
-	// push SELECT events to anvil for the correct session id.
-	if clientIP != "" {
-		if err := forwardXClient(backendConn, backendRd, s.opts.Protocol, clientIP, pre.ehloLine, sessID); err != nil {
-			slog.Debug("login: xclient forward", "proto", s.opts.Protocol, "clientIP", clientIP, "err", err)
-			return
-		}
-	}
-
-	// Replay auth command(s) to backend so it can authenticate the session.
-	for _, line := range pre.authLines {
-		if _, err := io.WriteString(backendConn, line); err != nil {
-			slog.Debug("login: replay auth", "err", err)
-			return
-		}
-	}
-
-	// Discard backend responses to commands the login pod already answered (POP3 USER).
-	if err := syncAfterReplay(backendRd, s.opts.Protocol); err != nil {
-		slog.Debug("login: sync after replay", "err", err)
+	// Forward real client IP, session ID, authenticated username, and session token
+	// to the backend via protocol-specific XCLIENT. The backend validates the token
+	// with yarilo-auth VERIFY and enters pre-authenticated state.
+	if err := forwardXClient(backendConn, backendRd, s.opts.Protocol, clientIP, pre.ehloLine, sessID, pre.username, authResult.Token); err != nil {
+		slog.Debug("login: xclient forward", "proto", s.opts.Protocol, "clientIP", clientIP, "err", err)
 		return
 	}
 
-	// For Submission: relay backend's AUTH response (235 / 5xx) to the client,
-	// then TCP-proxy from MAIL FROM onwards.
-	if isSubmission(s.opts.Protocol) {
-		line, err := backendRd.ReadString('\n')
-		if err != nil {
-			slog.Debug("login: read submission auth response", "err", err)
-			return
-		}
-		if _, err := io.WriteString(conn, line); err != nil {
-			slog.Debug("login: forward submission auth response", "err", err)
-			return
-		}
-		if len(line) < 3 || line[0] != '2' {
-			slog.Debug("login: submission auth rejected by backend", "resp", line)
-			return
-		}
-	}
+	slog.Info("login: session routed",
+		"proto", s.opts.Protocol,
+		"user", pre.username,
+		"remote", remote,
+		"backend", backendAddr,
+	)
+
+	// Auth is confirmed — tell the client before entering proxy mode.
+	writeProtoAuthOK(conn, s.opts.Protocol, pre.cmdTag)
 
 	conn.SetDeadline(time.Time{})        //nolint:errcheck
 	backendConn.SetDeadline(time.Time{}) //nolint:errcheck
@@ -586,32 +598,46 @@ func discardGreeting(rd *bufio.Reader, p Protocol) error {
 	return nil
 }
 
-// forwardXClient sends real client IP to backend via protocol-specific XCLIENT.
-// For Submission it also replays the EHLO after XCLIENT resets the session.
-// sessID is the anvil session identifier the login pod has just registered;
-// the backend uses it to push SELECT events for the right session.
-func forwardXClient(conn net.Conn, rd *bufio.Reader, p Protocol, clientIP, ehloLine, sessID string) error {
-	sessAttr := ""
+// forwardXClient sends real client IP, session ID, authenticated username, and session
+// token to the backend via protocol-specific XCLIENT. For Submission it also replays
+// the EHLO after XCLIENT resets the session.
+func forwardXClient(conn net.Conn, rd *bufio.Reader, p Protocol, clientIP, ehloLine, sessID, username, token string) error {
+	extra := ""
 	if sessID != "" {
-		sessAttr = " SESSION=" + xclient.EncodeXText(sessID)
+		extra += " SESSION=" + xclient.EncodeXText(sessID)
+	}
+	if token != "" {
+		extra += " TOKEN=" + xclient.EncodeXText(token)
 	}
 	switch p {
 	case ProtocolIMAP, ProtocolIMAPS:
-		if _, err := fmt.Fprintf(conn, "XCONN XCLIENT ADDR=%s%s\r\n", clientIP, sessAttr); err != nil {
+		userAttr := ""
+		if username != "" {
+			userAttr = " USER=" + xclient.EncodeXText(username)
+		}
+		if _, err := fmt.Fprintf(conn, "XCONN XCLIENT ADDR=%s%s%s\r\n", clientIP, extra, userAttr); err != nil {
 			return fmt.Errorf("xclient imap send: %w", err)
 		}
 		if _, err := rd.ReadString('\n'); err != nil {
 			return fmt.Errorf("xclient imap ack: %w", err)
 		}
 	case ProtocolPOP3, ProtocolPOP3S:
-		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s\r\n", clientIP, sessAttr); err != nil {
+		userAttr := ""
+		if username != "" {
+			userAttr = " USER=" + xclient.EncodeXText(username)
+		}
+		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s%s\r\n", clientIP, extra, userAttr); err != nil {
 			return fmt.Errorf("xclient pop3 send: %w", err)
 		}
 		if _, err := rd.ReadString('\n'); err != nil {
 			return fmt.Errorf("xclient pop3 ack: %w", err)
 		}
 	case ProtocolSubmission, ProtocolSubmissions:
-		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s\r\n", clientIP, sessAttr); err != nil {
+		loginAttr := ""
+		if username != "" {
+			loginAttr = " LOGIN=" + xclient.EncodeXText(username)
+		}
+		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s%s\r\n", clientIP, extra, loginAttr); err != nil {
 			return fmt.Errorf("xclient smtp send: %w", err)
 		}
 		if _, err := rd.ReadString('\n'); err != nil {
@@ -638,14 +664,40 @@ func forwardXClient(conn net.Conn, rd *bufio.Reader, p Protocol, clientIP, ehloL
 	return nil
 }
 
-// syncAfterReplay discards backend responses to replayed commands that the login
-// pod already answered to the client (POP3 USER response).
-func syncAfterReplay(rd *bufio.Reader, p Protocol) error {
-	if p == ProtocolPOP3 || p == ProtocolPOP3S {
-		_, err := rd.ReadString('\n')
-		return err
+// checkAllowNets reports whether clientIP is contained in any of the comma-separated
+// CIDR ranges from the allow_nets= field returned by yarilo-auth.
+func checkAllowNets(clientIP, allowNets string) bool {
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
+		return false
 	}
-	return nil
+	for _, cidr := range strings.Split(allowNets, ",") {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeProtoAuthOK sends the protocol-specific authentication-success response to
+// the client. Called after yarilo-auth confirms credentials and the backend is ready.
+func writeProtoAuthOK(conn net.Conn, p Protocol, tag string) {
+	switch p {
+	case ProtocolIMAP, ProtocolIMAPS:
+		fmt.Fprintf(conn, "%s OK Logged in\r\n", tag) //nolint:errcheck
+	case ProtocolPOP3, ProtocolPOP3S:
+		fmt.Fprintf(conn, "+OK Logged in\r\n") //nolint:errcheck
+	case ProtocolSubmission, ProtocolSubmissions:
+		fmt.Fprintf(conn, "235 2.7.0 Authentication successful\r\n") //nolint:errcheck
+	}
 }
 
 // biProxy copies data bidirectionally until either side closes.

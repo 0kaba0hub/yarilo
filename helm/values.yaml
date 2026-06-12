@@ -126,6 +126,10 @@ components:
     replicas: 1
     ## listen — client protocol (login pods speak here).
     listen: ":9100"
+    ## addr — address login pods dial to reach yarilo-auth.
+    ## Defaults to listen when empty (single-process / dev mode).
+    ## In k8s set to the ClusterIP service DNS, e.g. "<release>-auth:9100".
+    addr: ""
     ## masterListen — Dovecot-style master protocol for password-less
     ## userdb lookups (USER / LIST) used by yarilo-backend-api admin
     ## endpoints and CLI tooling. Empty disables; the binary then only

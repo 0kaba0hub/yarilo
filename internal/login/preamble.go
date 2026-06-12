@@ -13,10 +13,10 @@ import (
 
 // preamble holds what the login pod learned from the pre-auth protocol exchange.
 type preamble struct {
-	username  string   // for director LOOKUP
-	authLines []string // lines to replay to backend (verbatim, CRLF-terminated)
-	ehloLine  string   // SMTP EHLO line replayed after XCLIENT reset (submission only)
-	cmdTag    string   // IMAP command tag; empty for POP3/Submission
+	username string // for director LOOKUP and yarilo-auth AUTH
+	password string // credential to pass to yarilo-auth AUTH
+	ehloLine string // SMTP EHLO line replayed after XCLIENT reset (submission only)
+	cmdTag   string // IMAP command tag; empty for POP3/Submission
 }
 
 // extractPreamble dispatches to the protocol-specific handler.
@@ -96,10 +96,14 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 				continue
 			}
 			username := stripQuotes(fields[2])
+			password := ""
+			if len(fields) >= 4 {
+				password = stripQuotes(fields[3])
+			}
 			return &preamble{
-				username:  username,
-				authLines: []string{line + "\r\n"},
-				cmdTag:    tag,
+				username: username,
+				password: password,
+				cmdTag:   tag,
 			}, nil
 		case "AUTHENTICATE":
 			if len(fields) < 3 {
@@ -121,15 +125,15 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 					}
 					b64 = strings.TrimRight(resp, "\r\n")
 				}
-				username, err := decodePlainUsername(b64)
+				username, password, err := decodePlainCreds(b64)
 				if err != nil {
 					fmt.Fprintf(conn, "%s BAD Invalid SASL encoding\r\n", tag)
 					continue
 				}
 				return &preamble{
-					username:  username,
-					authLines: []string{fmt.Sprintf("%s AUTHENTICATE PLAIN %s\r\n", tag, b64)},
-					cmdTag:    tag,
+					username: username,
+					password: password,
+					cmdTag:   tag,
 				}, nil
 			case "LOGIN":
 				// Two-step: server prompts for username, then password.
@@ -160,14 +164,10 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 					fmt.Fprintf(conn, "%s BAD Invalid base64\r\n", tag)
 					continue
 				}
-				// Re-encode as PLAIN for backend replay: \0authcid\0passwd
-				plainB64 := base64.StdEncoding.EncodeToString(
-					append([]byte("\x00"+username+"\x00"), passBytes...),
-				)
 				return &preamble{
-					username:  username,
-					authLines: []string{fmt.Sprintf("%s AUTHENTICATE PLAIN %s\r\n", tag, plainB64)},
-					cmdTag:    tag,
+					username: username,
+					password: string(passBytes),
+					cmdTag:   tag,
 				}, nil
 			default:
 				fmt.Fprintf(conn, "%s NO Unsupported mechanism\r\n", tag)
@@ -247,10 +247,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 			}
 			return &preamble{
 				username: user,
-				authLines: []string{
-					fmt.Sprintf("USER %s\r\n", user),
-					fmt.Sprintf("PASS %s\r\n", pass),
-				},
+				password: pass,
 			}, nil
 		case strings.HasPrefix(upper, "USER "):
 			username = strings.TrimSpace(line[5:])
@@ -262,10 +259,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 			}
 			return &preamble{
 				username: username,
-				authLines: []string{
-					fmt.Sprintf("USER %s\r\n", username),
-					line + "\r\n",
-				},
+				password: strings.TrimSpace(line[5:]),
 			}, nil
 		default:
 			fmt.Fprintf(conn, "-ERR Unknown command\r\n")
@@ -357,15 +351,15 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 			}
 			b64 = strings.TrimRight(resp, "\r\n")
 		}
-		username, err := decodePlainUsername(b64)
+		username, password, err := decodePlainCreds(b64)
 		if err != nil {
 			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n")
 			return nil, fmt.Errorf("smtp: plain decode: %w", err)
 		}
 		return &preamble{
-			username:  username,
-			authLines: []string{fmt.Sprintf("AUTH PLAIN %s\r\n", b64)},
-			ehloLine:  ehloLine,
+			username: username,
+			password: password,
+			ehloLine: ehloLine,
 		}, nil
 
 	case "LOGIN":
@@ -398,14 +392,10 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n")
 			return nil, fmt.Errorf("smtp: login password decode: %w", err)
 		}
-		// Re-encode as PLAIN for backend replay: authzid\0authcid\0passwd
-		plainB64 := base64.StdEncoding.EncodeToString(
-			append([]byte("\x00"+username+"\x00"), passBytes...),
-		)
 		return &preamble{
-			username:  username,
-			authLines: []string{fmt.Sprintf("AUTH PLAIN %s\r\n", plainB64)},
-			ehloLine:  ehloLine,
+			username: username,
+			password: string(passBytes),
+			ehloLine: ehloLine,
 		}, nil
 
 	default:

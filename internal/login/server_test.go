@@ -62,8 +62,8 @@ func TestExtractIMAPPreamble_Login(t *testing.T) {
 	if got.cmdTag != "A1" {
 		t.Errorf("cmdTag = %q, want %q", got.cmdTag, "A1")
 	}
-	if len(got.authLines) != 1 || !strings.Contains(got.authLines[0], "LOGIN alice") {
-		t.Errorf("authLines = %v, want LOGIN alice", got.authLines)
+	if got.password != "secret123" {
+		t.Errorf("password = %q, want %q", got.password, "secret123")
 	}
 }
 
@@ -94,6 +94,9 @@ func TestExtractIMAPPreamble_AuthenticatePlain(t *testing.T) {
 	if got.cmdTag != "B1" {
 		t.Errorf("cmdTag = %q, want %q", got.cmdTag, "B1")
 	}
+	if got.password != "pass" {
+		t.Errorf("password = %q, want %q", got.password, "pass")
+	}
 }
 
 func TestExtractPOP3Preamble(t *testing.T) {
@@ -121,14 +124,8 @@ func TestExtractPOP3Preamble(t *testing.T) {
 	if got.username != "bob" {
 		t.Errorf("username = %q, want %q", got.username, "bob")
 	}
-	if len(got.authLines) != 2 {
-		t.Fatalf("authLines len = %d, want 2", len(got.authLines))
-	}
-	if !strings.HasPrefix(got.authLines[0], "USER bob") {
-		t.Errorf("authLines[0] = %q", got.authLines[0])
-	}
-	if !strings.HasPrefix(got.authLines[1], "PASS secret") {
-		t.Errorf("authLines[1] = %q", got.authLines[1])
+	if got.password != "secret" {
+		t.Errorf("password = %q, want %q", got.password, "secret")
 	}
 }
 
@@ -165,8 +162,8 @@ func TestExtractSubmissionPreamble_Plain(t *testing.T) {
 	if got.username != "carol" {
 		t.Errorf("username = %q, want %q", got.username, "carol")
 	}
-	if len(got.authLines) != 1 || !strings.Contains(got.authLines[0], "AUTH PLAIN") {
-		t.Errorf("authLines = %v", got.authLines)
+	if got.password != "pass" {
+		t.Errorf("password = %q, want %q", got.password, "pass")
 	}
 	if !strings.Contains(got.ehloLine, "client.example.com") {
 		t.Errorf("ehloLine = %q", got.ehloLine)
@@ -216,9 +213,8 @@ func TestExtractIMAPPreamble_AuthenticateLogin(t *testing.T) {
 	if got.cmdTag != "C1" {
 		t.Errorf("cmdTag = %q, want %q", got.cmdTag, "C1")
 	}
-	// Backend gets AUTHENTICATE PLAIN (re-encoded from LOGIN credentials).
-	if len(got.authLines) != 1 || !strings.Contains(got.authLines[0], "AUTHENTICATE PLAIN") {
-		t.Errorf("authLines = %v, want AUTHENTICATE PLAIN", got.authLines)
+	if got.password != "secret" {
+		t.Errorf("password = %q, want %q", got.password, "secret")
 	}
 }
 
@@ -344,14 +340,8 @@ func TestExtractPOP3Preamble_AuthPlain(t *testing.T) {
 			if got.username != tc.wantUser {
 				t.Errorf("username = %q, want %q", got.username, tc.wantUser)
 			}
-			if len(got.authLines) != 2 {
-				t.Fatalf("authLines len = %d, want 2", len(got.authLines))
-			}
-			if !strings.HasPrefix(got.authLines[0], "USER "+tc.wantUser) {
-				t.Errorf("authLines[0] = %q", got.authLines[0])
-			}
-			if !strings.HasPrefix(got.authLines[1], "PASS "+tc.wantPass) {
-				t.Errorf("authLines[1] = %q", got.authLines[1])
+			if got.password != tc.wantPass {
+				t.Errorf("password = %q, want %q", got.password, tc.wantPass)
 			}
 		})
 	}

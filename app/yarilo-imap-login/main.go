@@ -101,6 +101,8 @@ func main() {
 			LocalIP:        localIP,
 			BackendTLS:     intTLS,
 			ExtTLS:         extTLS,
+			AuthAddr:       cfg.AuthService.ClientAddr(),
+			AuthTLS:        intTLS,
 			AnvilAddr:      cfg.AnvilService.ClientAddr(),
 			AnvilTLS:       intTLS,
 			AnvilFailOpen:  cfg.AnvilService.FailOpen,
