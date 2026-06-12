@@ -261,18 +261,29 @@ stern -l app.kubernetes.io/part-of=yarilo
 ```
 client ──TLS:993──► yarilo-imap-login (dovenull)
                         │ TLS handshake
-                        │ SASL auth ──mTLS──► yarilo-auth :9100
+                        │ speak IMAP pre-auth (CAPABILITY / AUTHENTICATE / LOGIN)
+                        │ collect username + password from client
+                        │ AUTH request ──mTLS──► yarilo-auth :9100
+                        │   passdb chain, brute-force penalty via yarilo-anvil
+                        │   → returns session token (64-char hex, one-time, TTL 60s)
+                        │ check nologin / allow_nets from auth response
+                        │ routing ──mTLS──► yarilo-director :9102
+                        │   → returns yarilo-imap pod address
                         │ conn limit ──mTLS──► yarilo-anvil :9101
-                        │ routing   ──mTLS──► yarilo-director :9102
-                        │                      → returns yarilo-imap pod address
-                        │ FAIL → close
+                        │ FAIL → send NO to client, close
                         │ OK:
+                        │   send tag OK to client
                         │   dial yarilo-imap pod :10993 (plain TCP, internal ClusterIP)
+                        │   XCONN XCLIENT ADDR=<clientIP> SESSION=<id> TOKEN=<tok> USER=<user>
                         │   goroutine: proxy TLS conn ↔ TCP conn
                         │
                     yarilo-imap (yarilo uid)
                         │ accepts plain TCP from imap-login
-                        │ goroutine per connection
+                        │ receives XCONN XCLIENT preamble (ADDR/SESSION/TOKEN/USER)
+                        │ VERIFY request ──mTLS──► yarilo-auth :9100  [PR 3]
+                        │   → validates token, gets username; token consumed (one-time)
+                        │ enters pre-authenticated IMAP state (no passdb call)
+                        │ runs userdb in-process (SQL/LDAP)
                         │ maildir access via RWX PVC
                         │ on disconnect → goroutine exits
                         │
@@ -316,10 +327,11 @@ Plain TCP — лише на data plane між director-проксі і backend-p
 
 | From | To | Transport | Protocol |
 |:---|:---|:---|:---|
-| `*-login` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited (INTERNALS.md §3) |
-| `*-login` | `yarilo-anvil` | mTLS TCP :9101 | TAB-delimited |
-| `*-login` | `yarilo-director` | mTLS TCP :9102 | TAB-delimited (INTERNALS.md §2) |
-| `*-login` | `yarilo-imap/pop3/submission` | plain TCP ClusterIP | raw protocol bytes (proxy) |
+| `*-login` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited AUTH (passdb + token issuance) |
+| `*-login` | `yarilo-anvil` | mTLS TCP :9101 | TAB-delimited (connection counting) |
+| `*-login` | `yarilo-director` | mTLS TCP :9102 | TAB-delimited LOOKUP |
+| `*-login` | `yarilo-imap/pop3/submission` | plain TCP ClusterIP | XCLIENT preamble (ADDR/SESSION/TOKEN/USER), then raw protocol bytes (proxy) |
+| `yarilo-imap/pop3/submission` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited VERIFY (token validation → pre-auth, PR 3) |
 | `yarilo-director` | `yarilo-lmtp` | plain TCP ClusterIP | raw LMTP bytes (proxy) |
 | `yarilo-monitor` (sidecar) | backend `/healthz` of each StatefulSet pod | mTLS HTTP | health polling (rebalance ring on failures) |
 | `yarilo-lmtp` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited |

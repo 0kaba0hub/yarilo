@@ -1,6 +1,6 @@
 // Package pop3 implements a POP3 server (RFC 1939).
 // Supports POP3S (port 995), STARTTLS (port 110), HAProxy PROXY protocol,
-// and XCLIENT from trusted relay infrastructure.
+// and yarilo login-pod preamble for pre-authenticated sessions.
 package pop3
 
 import (
@@ -15,6 +15,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
+	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -31,9 +32,11 @@ type Options struct {
 	ProxyProtocol      bool
 	HAProxyTimeout     time.Duration
 	HAProxyTrustedNets []*net.IPNet
-	XClient            bool
-	XClientTrustedNets []*net.IPNet
-	DisablePlainAuth   bool // reject USER/PASS without TLS
+	// AuthAddr is the host:port of yarilo-auth used by the PreambleListener to
+	// verify session tokens forwarded by login pods.
+	AuthAddr         string
+	AuthTLS          *tls.Config
+	DisablePlainAuth bool // reject USER/PASS without TLS
 	// POP3-specific behaviour (Dovecot parity)
 	NoFlagUpdates  bool               // pop3_no_flag_updates: skip \Seen on RETR
 	ReuseXUIDL     bool               // pop3_reuse_xuidl: use X-UIDL header (migration)
@@ -104,7 +107,7 @@ func (s *Server) ListenAndServe() error {
 
 // Serve accepts connections on the given listener.
 func (s *Server) Serve(ln net.Listener) error {
-	ln = s.wrapProxy(ln)
+	ln = s.wrapListeners(ln)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -114,19 +117,22 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 }
 
-func (s *Server) wrapProxy(ln net.Listener) net.Listener {
-	if !s.opts.ProxyProtocol {
-		return ln
+func (s *Server) wrapListeners(ln net.Listener) net.Listener {
+	if s.opts.ProxyProtocol {
+		timeout := s.opts.HAProxyTimeout
+		if timeout == 0 {
+			timeout = 3 * time.Second
+		}
+		ln = &proxyproto.Listener{
+			Listener:          ln,
+			ReadHeaderTimeout: timeout,
+			Policy:            proxyPolicy(s.opts.HAProxyTrustedNets),
+		}
 	}
-	timeout := s.opts.HAProxyTimeout
-	if timeout == 0 {
-		timeout = 3 * time.Second
+	if s.opts.AuthAddr != "" {
+		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS}
 	}
-	return &proxyproto.Listener{
-		Listener:          ln,
-		ReadHeaderTimeout: timeout,
-		Policy:            proxyPolicy(s.opts.HAProxyTrustedNets),
-	}
+	return ln
 }
 
 // tryLock acquires an exclusive per-user session lock.

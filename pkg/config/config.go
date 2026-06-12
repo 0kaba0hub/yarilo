@@ -380,9 +380,21 @@ func (c AnvilServiceConfig) ClientAddr() string {
 // global InternalTLS material — splitting trust domains is a
 // future operational knob, not in Phase AUTH-1.
 type AuthServiceConfig struct {
-	Listen       string         `koanf:"listen"`
+	Listen string `koanf:"listen"`
+	// Addr is the address login pods use to dial yarilo-auth.
+	// Defaults to Listen when empty (single-process / dev mode).
+	// In k8s set to the ClusterIP service DNS, e.g. "yarilo-auth:9100".
+	Addr         string         `koanf:"addr"`
 	MasterListen string         `koanf:"master_listen"`
 	Shutdown     ShutdownConfig `koanf:"shutdown"`
+}
+
+// ClientAddr returns the address login pods use to dial yarilo-auth.
+func (c AuthServiceConfig) ClientAddr() string {
+	if c.Addr != "" {
+		return c.Addr
+	}
+	return c.Listen
 }
 
 // LocksClientConfig configures how session processes (yarilo-imap,

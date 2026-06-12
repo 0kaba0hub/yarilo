@@ -25,7 +25,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/auth/scram"
-	"github.com/0kaba0hub/yarilo/internal/xclient"
+	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -41,15 +41,17 @@ const (
 	stateAuth  pop3State = iota
 	stateTrans           // authenticated, mailbox open
 	stateDone
+	statePreAuth // preamble received; mailbox setup pending
 )
 
 type session struct {
-	srv      *Server
-	conn     net.Conn
-	br       *bufio.Reader
-	state    pop3State
-	onTLS    bool
-	remoteIP net.IP // updated by XCLIENT
+	srv         *Server
+	conn        net.Conn
+	br          *bufio.Reader
+	state       pop3State
+	onTLS       bool
+	remoteIP    net.IP // real client IP; overridden by PreambleConn.RemoteAddr
+	preAuthUser string // username from preamble; consumed in serve()
 
 	// set after successful login
 	lockKey         string
@@ -74,13 +76,18 @@ func (s *Server) newSession(conn net.Conn) *session {
 	if tcp, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
 		ip = tcp.IP
 	}
-	return &session{
+	sess := &session{
 		srv:      s,
 		conn:     conn,
-		br:       bufio.NewReader(conn),
+		br:       bufio.NewReaderSize(conn, 4096),
 		state:    stateAuth,
 		remoteIP: ip,
 	}
+	if pc, ok := conn.(*loginproto.PreambleConn); ok {
+		sess.preAuthUser = pc.Username
+		sess.state = statePreAuth
+	}
+	return sess
 }
 
 func (s *session) serve() {
@@ -89,6 +96,14 @@ func (s *session) serve() {
 
 	s.setDeadline()
 	s.ok("yarilo POP3 server ready")
+
+	if s.state == statePreAuth {
+		// Login pod has already authenticated the user and discards this
+		// greeting. Set up the mailbox without sending an extra wire response.
+		if !s.completePreAuth() {
+			return
+		}
+	}
 
 	for s.state != stateDone {
 		line, err := s.readLine()
@@ -134,8 +149,6 @@ func (s *session) handleAuth(cmd, arg string) {
 		s.state = stateDone
 	case "STLS":
 		s.cmdSTLS()
-	case "XCLIENT":
-		s.cmdXClient(arg)
 	default:
 		s.badCmd()
 	}
@@ -499,6 +512,31 @@ func (s *session) finishAuth(authzid, username, password string) {
 // password-verifying finishAuth path and the SCRAM SASL path
 // where the credential is already verified by the mechanism.
 func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
+	if !s.setupSession(res) {
+		return
+	}
+	s.state = stateTrans
+	s.ok(fmt.Sprintf("logged in, %d messages", len(s.msgs)))
+}
+
+// completePreAuth sets up the session for a login-pod pre-authenticated
+// connection. Identical to setupSession but sends no wire response — the
+// login pod has already told the client "+OK Logged in" and will discard
+// the backend greeting. Returns false when setup fails (caller closes conn).
+func (s *session) completePreAuth() bool {
+	res := &protocol.AuthResponse{Result: protocol.AuthOK, Username: s.preAuthUser}
+	ok := s.setupSession(res)
+	if ok {
+		s.state = stateTrans
+	}
+	return ok
+}
+
+// setupSession resolves UserInfo, acquires limits/locks, opens storage handles,
+// and loads the mailbox. On failure it writes an error to the wire (for the
+// normal auth path) and returns false. For preAuth callers, the error line is
+// never seen by the client — the connection just closes.
+func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	resolver := s.srv.opts.Resolver
 	if resolver == nil {
 		resolver = &mailbox.Resolver{}
@@ -512,7 +550,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 		if !lim.Acquire(userInfo.Username, ip) {
 			slog.Warn("pop3: connection limit reached", "user", userInfo.Username, "ip", ip)
 			s.writeErr("too many simultaneous connections")
-			return
+			return false
 		}
 		s.limitIP = ip
 	}
@@ -523,7 +561,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 			s.limitIP = ""
 		}
 		s.writeErr("mailbox already in use, try again later")
-		return
+		return false
 	}
 	s.lockKey = userInfo.Username
 
@@ -539,7 +577,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 			s.limitIP = ""
 		}
 		s.writeErr("internal error")
-		return
+		return false
 	}
 
 	// Dotlock is acquired after Init so the home directory exists on disk.
@@ -551,7 +589,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 			s.limitIP = ""
 		}
 		s.writeErr("mailbox already in use, try again later")
-		return
+		return false
 	}
 
 	s.userInfo = userInfo
@@ -562,7 +600,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 		s.writeErr("internal error")
 		s.srv.unlock(s.lockKey)
 		s.lockKey = ""
-		return
+		return false
 	}
 	master, _ := res.Fields.Get("master_user")
 	slog.Info("pop3: login",
@@ -571,8 +609,7 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 		"remoteIP", s.remoteIP,
 		"messages", len(s.msgs),
 	)
-	s.state = stateTrans
-	s.ok(fmt.Sprintf("logged in, %d messages", len(s.msgs)))
+	return true
 }
 
 // authenticate dispatches to MasterAuthenticator when authzid is
@@ -768,33 +805,6 @@ func (s *session) cmdSTLS() {
 	s.br = bufio.NewReader(tlsConn)
 	s.onTLS = true
 	s.pendingUser = "" // RFC 2595 §4: reset state after TLS upgrade
-}
-
-func (s *session) cmdXClient(arg string) {
-	if !s.srv.opts.XClient || !s.isTrusted() {
-		s.ok("XCLIENT ignored")
-		return
-	}
-	attrs, err := xclient.Parse("XCLIENT " + arg)
-	if err == nil && attrs.Addr != "" {
-		if ip := net.ParseIP(attrs.Addr); ip != nil {
-			s.remoteIP = ip
-		}
-	}
-	s.ok("XCLIENT accepted")
-}
-
-func (s *session) isTrusted() bool {
-	nets := s.srv.opts.XClientTrustedNets
-	if len(nets) == 0 {
-		return false
-	}
-	for _, n := range nets {
-		if n.Contains(s.remoteIP) {
-			return true
-		}
-	}
-	return false
 }
 
 // ---- TRANSACTION state -----------------------------------------------------
