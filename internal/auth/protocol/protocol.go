@@ -1105,6 +1105,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 
 	authzid, authid, password, ok := parsePlain(mech, resp)
 	if !ok {
+		slog.Debug("auth: bad SASL response format", "id", id, "mech", mech)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=bad-credentials\n", id)
 		return
 	}
