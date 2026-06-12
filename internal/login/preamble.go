@@ -100,14 +100,10 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 			rd = bufio.NewReaderSize(conn, 4096)
 			extTLS = nil // prevent another STARTTLS offer
 		case "LOGIN":
-			if len(fields) < 4 {
+			username, password, ok := parseIMAPLoginArgs(line)
+			if !ok {
 				fmt.Fprintf(conn, "%s BAD LOGIN requires username and password\r\n", tag)
 				continue
-			}
-			username := stripQuotes(fields[2])
-			password := ""
-			if len(fields) >= 4 {
-				password = stripQuotes(fields[3])
 			}
 			return &preamble{
 				username: username,
@@ -125,6 +121,11 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 				if len(fields) >= 4 {
 					b64 = fields[3]
 				} else {
+					b64 = ""
+				}
+				// "=" means empty initial response (RFC 4959) — treat as no initial
+				// response and request the client to send credentials.
+				if b64 == "" || b64 == "=" {
 					if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
 						return nil, fmt.Errorf("imap: send challenge: %w", err)
 					}
@@ -205,7 +206,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 
 		switch {
 		case upper == "CAPA":
-			capa := "+OK\r\nUSER\r\nSASL PLAIN\r\n"
+			capa := "+OK\r\nCAPA\r\nTOP\r\nUIDL\r\nRESP-CODES\r\nPIPELINING\r\nAUTH-RESP-CODE\r\nUSER\r\nSASL PLAIN LOGIN\r\n"
 			if extTLS != nil {
 				capa += "STLS\r\n"
 			}
@@ -442,4 +443,60 @@ func stripQuotes(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// parseIMAPLoginArgs parses username and password from an IMAP LOGIN command
+// line, correctly handling RFC 3501 quoted strings (passwords with spaces).
+func parseIMAPLoginArgs(line string) (username, password string, ok bool) {
+	s := line
+	// skip tag
+	i := strings.IndexByte(s, ' ')
+	if i < 0 {
+		return
+	}
+	s = strings.TrimLeft(s[i:], " ")
+	// skip "LOGIN"
+	i = strings.IndexByte(s, ' ')
+	if i < 0 {
+		return
+	}
+	s = strings.TrimLeft(s[i:], " ")
+	username, s, ok = readIMAPString(s)
+	if !ok {
+		return
+	}
+	s = strings.TrimLeft(s, " ")
+	password, _, ok = readIMAPString(s)
+	return
+}
+
+// readIMAPString reads one IMAP astring (atom or quoted string) from s,
+// returning the value and the remaining input.
+func readIMAPString(s string) (val, rest string, ok bool) {
+	if s == "" {
+		return
+	}
+	if s[0] == '"' {
+		var buf strings.Builder
+		i := 1
+		for i < len(s) {
+			if s[i] == '\\' && i+1 < len(s) {
+				buf.WriteByte(s[i+1])
+				i += 2
+				continue
+			}
+			if s[i] == '"' {
+				return buf.String(), s[i+1:], true
+			}
+			buf.WriteByte(s[i])
+			i++
+		}
+		return // unterminated quoted string
+	}
+	// atom: read until whitespace
+	i := strings.IndexAny(s, " \t\r\n")
+	if i < 0 {
+		return s, "", true
+	}
+	return s[:i], s[i:], true
 }
