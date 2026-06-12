@@ -296,6 +296,11 @@ data:
 
     auth_service:
       listen: {{ .Values.components.auth.listen | quote }}
+      {{- if .Values.components.auth.addr }}
+      addr: {{ .Values.components.auth.addr | quote }}
+      {{- else }}
+      addr: {{ printf "%s-auth.%s.svc:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.listen) | quote }}
+      {{- end }}
       {{- if .Values.components.auth.masterListen }}
       master_listen: {{ .Values.components.auth.masterListen | quote }}
       {{- end }}

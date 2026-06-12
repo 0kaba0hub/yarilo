@@ -12,6 +12,50 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 )
 
+// startStubAuth starts a minimal yarilo-auth server that always returns OK.
+func startStubAuth(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleStubAuth(conn)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func handleStubAuth(conn net.Conn) {
+	defer conn.Close()
+	rd := bufio.NewReader(conn)
+	fmt.Fprintf(conn, "VERSION\t1\t0\n")
+	for {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimRight(line, "\r\n")
+		fields := strings.SplitN(line, "\t", 4)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "VERSION":
+			// already sent ours; ignore client's VERSION
+		case "AUTH":
+			id := fields[1]
+			fmt.Fprintf(conn, "OK\t%s\tuser=alice\ttoken=stubtoken1234567890123456789012345678901234567890123456789012\n", id)
+		}
+	}
+}
+
 // startAnvil starts a real yarilo-anvil server and returns its address.
 func startAnvil(t *testing.T, max int) string {
 	t.Helper()
@@ -129,11 +173,8 @@ func handleStubIMAPBackend(conn net.Conn) {
 		cmd := strings.ToUpper(fields[1])
 		switch cmd {
 		case "XCONN":
+			// XCONN XCLIENT ADDR=... SESSION=... TOKEN=... USER=...
 			fmt.Fprintf(conn, "* OK xconn accepted\r\n")
-		case "AUTHENTICATE":
-			fmt.Fprintf(conn, "%s OK authenticated\r\n", tag)
-		case "LOGIN":
-			fmt.Fprintf(conn, "%s OK logged in\r\n", tag)
 		case "LOGOUT":
 			fmt.Fprintf(conn, "* BYE\r\n%s OK bye\r\n", tag)
 			return
@@ -147,12 +188,14 @@ func buildAnvilLoginServer(t *testing.T, anvilAddr string, maxConns int) (loginA
 	t.Helper()
 	backendAddr := stubIMAPBackend(t)
 	dirAddr := stubDirector(t, backendAddr)
+	authAddr := startStubAuth(t)
 
 	srv := New(Options{
 		Protocol:      ProtocolIMAP,
 		DirectorAddr:  dirAddr,
 		AnvilAddr:     anvilAddr,
 		AnvilFailOpen: false,
+		AuthAddr:      authAddr,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -226,12 +269,14 @@ func TestLogin_Anvil_RejectsWhenLimitReached(t *testing.T) {
 func TestLogin_Anvil_FailOpen_WhenUnreachable(t *testing.T) {
 	backendAddr := stubIMAPBackend(t)
 	dirAddr := stubDirector(t, backendAddr)
+	authAddr := startStubAuth(t)
 
 	srv := New(Options{
 		Protocol:      ProtocolIMAP,
 		DirectorAddr:  dirAddr,
 		AnvilAddr:     "127.0.0.1:1", // unreachable
 		AnvilFailOpen: true,
+		AuthAddr:      authAddr,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -264,12 +309,14 @@ func TestLogin_Anvil_FailOpen_WhenUnreachable(t *testing.T) {
 func TestLogin_Anvil_FailClosed_WhenUnreachable(t *testing.T) {
 	backendAddr := stubIMAPBackend(t)
 	dirAddr := stubDirector(t, backendAddr)
+	authAddr := startStubAuth(t)
 
 	srv := New(Options{
 		Protocol:      ProtocolIMAP,
 		DirectorAddr:  dirAddr,
 		AnvilAddr:     "127.0.0.1:1", // unreachable
 		AnvilFailOpen: false,
+		AuthAddr:      authAddr,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

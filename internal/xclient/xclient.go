@@ -15,7 +15,9 @@ type Attrs struct {
 	Addr     string // client IP
 	Port     string // client port
 	Helo     string // client HELO/EHLO domain
-	Login    string // authenticated login name
+	Login    string // authenticated login name (SMTP compat: LOGIN=)
+	User     string // authenticated username in login→backend preamble (USER=)
+	Token    string // one-time session token from yarilo-auth (TOKEN=)
 	Session  string // session ID
 	TTL      string // hop count remaining
 	Forward  string // base64-encoded forward data
@@ -104,6 +106,10 @@ func Parse(line string) (Attrs, error) {
 			a.Helo = val
 		case "LOGIN":
 			a.Login = val
+		case "USER":
+			a.User = val
+		case "TOKEN":
+			a.Token = val
 		case "SESSION":
 			a.Session = val
 		case "TTL":
@@ -129,6 +135,8 @@ func Format(a Attrs) []string {
 		{"PORT", a.Port},
 		{"HELO", a.Helo},
 		{"LOGIN", a.Login},
+		{"USER", a.User},
+		{"TOKEN", a.Token},
 		{"SESSION", a.Session},
 		{"TTL", a.TTL},
 		{"FORWARD", a.Forward},
