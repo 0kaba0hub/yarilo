@@ -21,6 +21,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/policy"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
+	"github.com/0kaba0hub/yarilo/pkg/authtoken"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
@@ -133,7 +134,12 @@ func main() {
 		time.Duration(cfg.Auth.Cache.TTLSeconds)*time.Second,
 		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
 	)
+
+	tokenStore := authtoken.New(time.Duration(cfg.Auth.Token.TTLSeconds) * time.Second)
+	defer tokenStore.Close()
+
 	srvOpts := []protocol.ServerOption{
+		protocol.WithTokenStore(tokenStore),
 		protocol.WithUserdb(combinedUserdb),
 		protocol.WithFailureDelay(time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second),
 		protocol.WithInternalFailureDelay(time.Duration(cfg.Auth.InternalFailureDelayMs) * time.Millisecond),

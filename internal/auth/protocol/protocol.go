@@ -774,6 +774,7 @@ type Server struct {
 	penaltyToSecs        PenaltyToSecsFunc
 	policy               PolicyChecker
 	policyMode           PolicyMode
+	tokenStore           TokenStore
 	connUID              atomic.Uint64
 	pid                  int
 	cookie               string
@@ -916,6 +917,22 @@ type PenaltyStore interface {
 // linear, or capped-linear. Nil falls back to no-sleep.
 type PenaltyToSecsFunc func(count int) int
 
+// TokenStore is implemented by authtoken.Store. Abstracted as an interface
+// so tests can provide a stub without importing the concrete package.
+type TokenStore interface {
+	Issue(username, sessionID string) (string, error)
+	Validate(tok string) (username, sessionID string, ok bool)
+}
+
+// WithTokenStore attaches the session token store. When set, every successful
+// AUTH response carries a "token=<hex>" field that the backend must present
+// via VERIFY before entering authenticated state. When nil, no token is issued
+// and the VERIFY command always returns FAIL (standalone / test deployments
+// that do not need the token handshake).
+func WithTokenStore(ts TokenStore) ServerOption {
+	return func(s *Server) { s.tokenStore = ts }
+}
+
 // WithPenalty attaches a cross-process penalty store. When set,
 // handleAuth runs the following dance for every request:
 //
@@ -1033,6 +1050,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			// client pid — ignore for now
 		case "AUTH":
 			s.handleAuth(conn, fields)
+		case "VERIFY":
+			s.handleVerify(conn, fields)
 		case "CONT":
 			// SASL continuation — not needed for PLAIN
 		case "CANCEL":
@@ -1062,16 +1081,27 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	id := fields[1]
 	mech := fields[2]
 
-	var service, resp string
+	var service, resp, ripAttr, sessionID string
 	for _, f := range fields[3:] {
-		if strings.HasPrefix(f, "service=") {
+		switch {
+		case strings.HasPrefix(f, "service="):
 			service = strings.TrimPrefix(f, "service=")
-		}
-		if strings.HasPrefix(f, "resp=") {
+		case strings.HasPrefix(f, "resp="):
 			resp = strings.TrimPrefix(f, "resp=")
+		case strings.HasPrefix(f, "rip="):
+			ripAttr = strings.TrimPrefix(f, "rip=")
+		case strings.HasPrefix(f, "session="):
+			sessionID = strings.TrimPrefix(f, "session=")
 		}
 	}
 	_ = service
+
+	// rip= carries the actual mail-client IP forwarded by the login pod.
+	// Use it for penalty tracking instead of the TCP peer (login pod) IP.
+	remoteIP := ripAttr
+	if remoteIP == "" {
+		remoteIP = connRemoteIP(conn)
+	}
 
 	authzid, authid, password, ok := parsePlain(mech, resp)
 	if !ok {
@@ -1105,7 +1135,6 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	// fail-counter, sleep the mapped seconds, then run the chain.
 	// Master-user flows are exempt — admin sessions should never
 	// be tarpitted (matches the policy-server exemption).
-	remoteIP := connRemoteIP(conn)
 	penaltyCount := 0
 	if s.penalty != nil && remoteIP != "" && target == "" {
 		n, perr := s.penalty.PenaltyLookup(remoteIP)
@@ -1245,6 +1274,13 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	}
 
 	reply := buildAuthOK(id, res)
+	if s.tokenStore != nil && sessionID != "" {
+		if tok, terr := s.tokenStore.Issue(res.Username, sessionID); terr == nil {
+			reply += "\ttoken=" + tok
+		} else {
+			slog.Warn("auth: token issue failed", "err", terr)
+		}
+	}
 	fmt.Fprintln(conn, reply)
 
 	// Audit log on success. master_user is empty for a regular
@@ -1266,6 +1302,39 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	if s.policy != nil && s.policyMode.ReportAfter && target == "" {
 		go s.policy.ReportAfter(context.Background(), policyReq, true, false)
 	}
+}
+
+// handleVerify processes a VERIFY command from a backend pod.
+//
+// Wire format:
+//
+//	VERIFY\t<id>\t<token>\n
+//	→ OK\t<id>\tuser=<username>\tsession=<sessionID>\n
+//	→ FAIL\t<id>\n
+//
+// The token is one-time: a second VERIFY with the same token always returns
+// FAIL regardless of TTL.
+func (s *Server) handleVerify(conn net.Conn, fields []string) {
+	if len(fields) < 3 {
+		if len(fields) >= 2 {
+			fmt.Fprintf(conn, "FAIL\t%s\treason=bad-request\n", fields[1])
+		}
+		return
+	}
+	id := fields[1]
+	tok := fields[2]
+	if s.tokenStore == nil {
+		fmt.Fprintf(conn, "FAIL\t%s\treason=not-configured\n", id)
+		return
+	}
+	username, sessionID, ok := s.tokenStore.Validate(tok)
+	if !ok {
+		slog.Info("auth: verify failed", "id", id)
+		fmt.Fprintf(conn, "FAIL\t%s\n", id)
+		return
+	}
+	slog.Info("auth: verify ok", "user", username, "session", sessionID)
+	fmt.Fprintf(conn, "OK\t%s\tuser=%s\tsession=%s\n", id, username, sessionID)
 }
 
 // buildAuthOK renders the OK response. When res.Fields is set, the

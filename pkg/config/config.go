@@ -527,6 +527,11 @@ type AuthConfig struct {
 	// When enabled, requires the anvil service to be reachable.
 	Penalty AuthPenaltyConfig `koanf:"penalty"`
 
+	// Token configures the one-time session token issued by yarilo-auth
+	// after a successful passdb check and consumed by the backend to
+	// enter authenticated state without re-running passdb.
+	Token AuthTokenConfig `koanf:"token"`
+
 	// Policy groups the external HTTP policy-server hook (wforce-
 	// compatible). URL="" disables.
 	Policy AuthPolicyConfig `koanf:"policy"`
@@ -636,6 +641,16 @@ type OAuth2Entry struct {
 type AuthPenaltyConfig struct {
 	// Enabled toggles the feature. Default false.
 	Enabled bool `koanf:"enabled"`
+}
+
+// AuthTokenConfig configures the one-time session token that yarilo-auth
+// issues after a successful passdb and that the backend consumes via VERIFY
+// to enter authenticated state without replaying credentials.
+type AuthTokenConfig struct {
+	// TTLSeconds is how long the token remains valid for the backend to
+	// consume. Default 60 s — enough for the login pod to forward it and
+	// the backend to call VERIFY within the same connection setup.
+	TTLSeconds int `koanf:"ttl_seconds"`
 }
 
 // AuthPolicyConfig configures the external HTTP policy-server
@@ -886,6 +901,9 @@ func Load(path string) (*Config, error) {
 			Cache: AuthCacheConfig{
 				TTLSeconds:         1800,
 				NegativeTTLSeconds: 1800,
+			},
+			Token: AuthTokenConfig{
+				TTLSeconds: 60,
 			},
 			Policy: AuthPolicyConfig{
 				HashMech:         "sha256",
