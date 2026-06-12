@@ -37,7 +37,7 @@ func TestExtractIMAPPreamble_Login(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractIMAPPreamble(srv, rd, nil)
+		p, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -73,7 +73,7 @@ func TestExtractIMAPPreamble_AuthenticatePlain(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractIMAPPreamble(srv, rd, nil)
+		p, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -105,7 +105,7 @@ func TestExtractPOP3Preamble(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractPOP3Preamble(srv, rd, nil)
+		p, err := extractPOP3Preamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -135,7 +135,7 @@ func TestExtractSubmissionPreamble_Plain(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractSubmissionPreamble(srv, rd, nil)
+		p, err := extractSubmissionPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -176,7 +176,7 @@ func TestExtractIMAPPreamble_AuthenticateLogin(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractIMAPPreamble(srv, rd, nil)
+		p, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -234,7 +234,7 @@ func TestExtractIMAPPreamble_StarttlsAdvertised(t *testing.T) {
 			go func() {
 				defer close(done)
 				rd := bufio.NewReader(srv)
-				extractIMAPPreamble(srv, rd, tc.tlsCfg) //nolint:errcheck
+				extractIMAPPreamble(srv, rd, tc.tlsCfg, Options{}) //nolint:errcheck
 			}()
 
 			crd := bufio.NewReader(cli)
@@ -268,7 +268,7 @@ func TestExtractIMAPPreamble_StarttlsUnavailable(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		rd := bufio.NewReader(srv)
-		_, err := extractIMAPPreamble(srv, rd, nil)
+		_, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		errCh <- err
 	}()
 
@@ -318,7 +318,7 @@ func TestExtractPOP3Preamble_AuthPlain(t *testing.T) {
 			var got *preamble
 			go func() {
 				rd := bufio.NewReader(srv)
-				p, err := extractPOP3Preamble(srv, rd, nil)
+				p, err := extractPOP3Preamble(srv, rd, nil, Options{})
 				got = p
 				errCh <- err
 			}()
@@ -363,7 +363,7 @@ func TestExtractPOP3Preamble_StlsAdvertised(t *testing.T) {
 			go func() {
 				defer close(done)
 				rd := bufio.NewReader(srv)
-				extractPOP3Preamble(srv, rd, tc.tlsCfg) //nolint:errcheck
+				extractPOP3Preamble(srv, rd, tc.tlsCfg, Options{}) //nolint:errcheck
 			}()
 
 			crd := bufio.NewReader(cli)

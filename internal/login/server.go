@@ -87,6 +87,13 @@ type Options struct {
 	// Nil means plain TCP.
 	AuthTLS *tls.Config
 
+	// OAuth2Enabled advertises and accepts OAUTHBEARER and XOAUTH2 mechanisms.
+	// Mirrors cfg.Auth.OAuth2 being non-empty.
+	OAuth2Enabled bool
+	// DisablePlainAuth suppresses PLAIN and LOGIN from pre-TLS capability
+	// advertisements. After STARTTLS/implicit-TLS they are always offered.
+	DisablePlainAuth bool
+
 	// HAProxy enables PROXY protocol v1/v2 header reading from trusted upstreams.
 	HAProxy        bool
 	HAProxyTimeout time.Duration
@@ -192,7 +199,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	rd := bufio.NewReaderSize(conn, 4096)
 
 	// Extract preamble: speak the protocol pre-auth exchange to collect credentials.
-	pre, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS)
+	pre, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS, s.opts)
 	if err != nil {
 		slog.Debug("login: preamble", "proto", s.opts.Protocol, "remote", remote, "err", err)
 		return
