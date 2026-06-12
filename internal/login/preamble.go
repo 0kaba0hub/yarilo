@@ -438,13 +438,6 @@ func decodePlainUsername(b64str string) (string, error) {
 	return u, err
 }
 
-func stripQuotes(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
 // parseIMAPLoginArgs parses username and password from an IMAP LOGIN command
 // line, correctly handling RFC 3501 quoted strings (passwords with spaces).
 func parseIMAPLoginArgs(line string) (username, password string, ok bool) {
