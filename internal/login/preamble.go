@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -107,8 +108,8 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 			rd = bufio.NewReaderSize(conn, 4096)
 			extTLS = nil // prevent another STARTTLS offer
 		case "LOGIN":
-			username, password, ok := parseIMAPLoginArgs(line)
-			if !ok {
+			username, password, loginErr := parseIMAPLoginArgs(line, rd, conn)
+			if loginErr != nil {
 				fmt.Fprintf(conn, "%s BAD LOGIN requires username and password\r\n", tag)
 				continue
 			}
@@ -460,35 +461,72 @@ func decodePlainUsername(b64str string) (string, error) {
 }
 
 // parseIMAPLoginArgs parses username and password from an IMAP LOGIN command
-// line, correctly handling RFC 3501 quoted strings (passwords with spaces).
-func parseIMAPLoginArgs(line string) (username, password string, ok bool) {
+// line, handling RFC 3501 quoted strings, atoms, and synchronizing /
+// non-synchronizing literals ({N}, {N+}, {N-}).
+func parseIMAPLoginArgs(line string, rd *bufio.Reader, conn net.Conn) (username, password string, err error) {
 	s := line
-	// skip tag
 	i := strings.IndexByte(s, ' ')
 	if i < 0 {
-		return
+		return "", "", fmt.Errorf("imap/login: missing tag")
 	}
 	s = strings.TrimLeft(s[i:], " ")
-	// skip "LOGIN"
 	i = strings.IndexByte(s, ' ')
 	if i < 0 {
-		return
+		return "", "", fmt.Errorf("imap/login: missing command")
 	}
 	s = strings.TrimLeft(s[i:], " ")
-	username, s, ok = readIMAPString(s)
-	if !ok {
+
+	username, s, err = readIMAPString(s, rd, conn)
+	if err != nil {
 		return
 	}
 	s = strings.TrimLeft(s, " ")
-	password, _, ok = readIMAPString(s)
+	if s == "" {
+		// username was a literal — password follows on the next read
+		var next string
+		next, err = rd.ReadString('\n')
+		if err != nil {
+			return "", "", fmt.Errorf("imap/login: read password segment: %w", err)
+		}
+		s = strings.TrimLeft(strings.TrimRight(next, "\r\n"), " ")
+	}
+	password, _, err = readIMAPString(s, rd, conn)
 	return
 }
 
-// readIMAPString reads one IMAP astring (atom or quoted string) from s,
-// returning the value and the remaining input.
-func readIMAPString(s string) (val, rest string, ok bool) {
+// readIMAPString reads one IMAP string token (quoted string, literal, or atom)
+// from s. Literals cause reads from rd; synchronizing literals send a
+// continuation response on conn before reading. Returns the value, the
+// remaining inline text, and any I/O error.
+func readIMAPString(s string, rd *bufio.Reader, conn net.Conn) (val, rest string, err error) {
 	if s == "" {
-		return
+		return "", "", fmt.Errorf("imap/login: expected string token, got empty")
+	}
+	if s[0] == '{' {
+		end := strings.IndexByte(s, '}')
+		if end < 0 {
+			return "", "", fmt.Errorf("imap/login: malformed literal")
+		}
+		sizeStr := s[1:end]
+		sync := true
+		if strings.HasSuffix(sizeStr, "+") || strings.HasSuffix(sizeStr, "-") {
+			sizeStr = sizeStr[:len(sizeStr)-1]
+			sync = false
+		}
+		n, parseErr := strconv.Atoi(sizeStr)
+		if parseErr != nil || n < 0 || n > 65536 {
+			return "", "", fmt.Errorf("imap/login: literal size invalid: %q", s[1:end])
+		}
+		if sync {
+			if _, werr := fmt.Fprintf(conn, "+ go ahead\r\n"); werr != nil {
+				return "", "", fmt.Errorf("imap/login: send continuation: %w", werr)
+			}
+		}
+		buf := make([]byte, n)
+		if _, ioErr := io.ReadFull(rd, buf); ioErr != nil {
+			return "", "", fmt.Errorf("imap/login: read literal: %w", ioErr)
+		}
+		return string(buf), s[end+1:], nil
 	}
 	if s[0] == '"' {
 		var buf strings.Builder
@@ -500,17 +538,17 @@ func readIMAPString(s string) (val, rest string, ok bool) {
 				continue
 			}
 			if s[i] == '"' {
-				return buf.String(), s[i+1:], true
+				return buf.String(), s[i+1:], nil
 			}
 			buf.WriteByte(s[i])
 			i++
 		}
-		return // unterminated quoted string
+		return "", "", fmt.Errorf("imap/login: unterminated quoted string")
 	}
 	// atom: read until whitespace
 	i := strings.IndexAny(s, " \t\r\n")
 	if i < 0 {
-		return s, "", true
+		return s, "", nil
 	}
-	return s[:i], s[i:], true
+	return s[:i], s[i:], nil
 }
