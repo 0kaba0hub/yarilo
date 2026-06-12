@@ -81,6 +81,10 @@ type Request struct {
 	Username string
 	Password string
 	Service  string
+	// RemoteIP is the client IP string (no port). Empty when the IP is
+	// unavailable (in-process chain, loopback test harnesses). Passdb
+	// drivers that enforce allow_nets MUST skip the check when empty.
+	RemoteIP string
 
 	// Fields is the chain-wide bag that accumulates passdb output.
 	// Driver implementations MAY assume non-nil; the canonical
@@ -1149,7 +1153,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		}
 	}
 
-	res, err := s.authenticate(target, master, password, service)
+	res, err := s.authenticate(target, master, password, service, remoteIP)
 
 	// Penalty update: success resets to 0; client-visible failure
 	// increments by 1 (capped server-side). Internal failures
@@ -1344,7 +1348,7 @@ func extractQuotaRules(f *Fields) []string {
 // and ≠ master (impersonation request) the call routes through
 // RunMasterAuth: masterdb / passdb master_user flag → switch
 // identity → userdb for target.
-func (s *Server) authenticate(target, master, password, service string) (*AuthResponse, error) {
+func (s *Server) authenticate(target, master, password, service, remoteIP string) (*AuthResponse, error) {
 	// Cache key shape mirrors chainAuthenticator so the in-process
 	// and wire paths stay interchangeable for the same input.
 	// Regular flow: `<service>\t<user>`. Master flow: prefixed
@@ -1370,6 +1374,7 @@ func (s *Server) authenticate(target, master, password, service string) (*AuthRe
 		Username: master,
 		Password: password,
 		Service:  service,
+		RemoteIP: remoteIP,
 		Fields:   NewFields(),
 	}
 	var (
