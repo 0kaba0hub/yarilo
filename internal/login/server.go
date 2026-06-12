@@ -207,7 +207,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	slog.Info("login: session routed",
 		"proto", s.opts.Protocol,
 		"user", pre.username,
-		"remote", remote,
+		"remote", clientIP,
 		"backend", backendAddr,
 	)
 
