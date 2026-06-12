@@ -11,6 +11,17 @@ import (
 	"strings"
 )
 
+// imapPreAuthCaps returns the IMAP capability string for the pre-auth state.
+// extTLS is non-nil when STARTTLS is available (plain listener).
+func imapPreAuthCaps(extTLS *tls.Config) string {
+	caps := "IMAP4rev2 IMAP4rev1 SASL-IR LITERAL- ID"
+	if extTLS != nil {
+		caps += " STARTTLS"
+	}
+	caps += " AUTH=PLAIN AUTH=LOGIN"
+	return caps
+}
+
 // preamble holds what the login pod learned from the pre-auth protocol exchange.
 type preamble struct {
 	username string // for director LOOKUP and yarilo-auth AUTH
@@ -38,7 +49,8 @@ func extractPreamble(conn net.Conn, rd *bufio.Reader, p Protocol, extTLS *tls.Co
 // extractIMAPPreamble speaks minimal IMAP until the client authenticates.
 // Handles: CAPABILITY, ID, NOOP, LOGOUT, STARTTLS, LOGIN, AUTHENTICATE PLAIN.
 func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*preamble, error) {
-	if _, err := fmt.Fprintf(conn, "* OK Yarilo Login ready\r\n"); err != nil {
+	caps := imapPreAuthCaps(extTLS)
+	if _, err := fmt.Fprintf(conn, "* OK [CAPABILITY %s] Yarilo Login ready\r\n", caps); err != nil {
 		return nil, fmt.Errorf("imap: send greeting: %w", err)
 	}
 
@@ -60,12 +72,9 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 
 		switch cmd {
 		case "CAPABILITY":
-			caps := "IMAP4rev1 IMAP4rev2 AUTH=PLAIN AUTH=LOGIN"
-			if extTLS != nil {
-				caps += " STARTTLS"
-			}
-			fmt.Fprintf(conn, "* CAPABILITY %s\r\n", caps)
-			fmt.Fprintf(conn, "%s OK CAPABILITY\r\n", tag)
+			c := imapPreAuthCaps(extTLS)
+			fmt.Fprintf(conn, "* CAPABILITY %s\r\n", c)
+			fmt.Fprintf(conn, "%s OK [CAPABILITY %s] CAPABILITY\r\n", tag, c)
 		case "ID":
 			fmt.Fprintf(conn, "* ID NIL\r\n")
 			fmt.Fprintf(conn, "%s OK ID\r\n", tag)
