@@ -117,12 +117,23 @@ func (c *Client) handshake() error {
 	if err := c.writeLine("VERSION\t1\t0"); err != nil {
 		return err
 	}
-	line, err := c.readLine()
-	if err != nil {
-		return fmt.Errorf("auth/client: handshake read: %w", err)
+	gotVersion := false
+	for {
+		line, err := c.readLine()
+		if err != nil {
+			return fmt.Errorf("auth/client: handshake read: %w", err)
+		}
+		if strings.HasPrefix(line, "VERSION\t") {
+			gotVersion = true
+			continue
+		}
+		if line == "DONE" {
+			break
+		}
+		// MECH, SPID, CUID, COOKIE — skip
 	}
-	if !strings.HasPrefix(line, "VERSION\t") {
-		return fmt.Errorf("auth/client: unexpected handshake response: %q", line)
+	if !gotVersion {
+		return fmt.Errorf("auth/client: handshake: no VERSION received")
 	}
 	return nil
 }

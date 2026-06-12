@@ -27,6 +27,8 @@ func stubAuthServer(t *testing.T, handle func(conn net.Conn, rd *bufio.Reader)) 
 				defer c.Close()
 				rd := bufio.NewReader(c)
 				fmt.Fprintf(c, "VERSION\t1\t0\n")
+				fmt.Fprintf(c, "MECH\tPLAIN\n")
+				fmt.Fprintf(c, "DONE\n")
 				handle(c, rd)
 			}()
 		}
