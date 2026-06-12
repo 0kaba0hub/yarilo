@@ -25,6 +25,7 @@ import (
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 var version = "dev"
@@ -125,16 +126,26 @@ func main() {
 	}
 
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
-	xclientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
+
+	authAddr := cfg.AuthService.ClientAddr()
+	var authTLS *tls.Config
+	if cfg.InternalTLS.Enabled {
+		t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+		if err != nil {
+			slog.Error("auth_service mtls config failed", "err", err)
+			os.Exit(1)
+		}
+		authTLS = t
+	}
 
 	primary := firstActive(svcs.Submission, svcs.Submissions)
 	srv := submsvr.New(submsvr.Options{
 		HAProxy:          primary.HAProxy,
 		HAProxyTimeout:   haproxyTimeout,
 		HAProxyNets:      haproxyNets,
-		XClient:          primary.XClient,
-		XClientNets:      xclientNets,
+		AuthAddr:         authAddr,
+		AuthTLS:          authTLS,
 		DisablePlainAuth: primary.DisablePlainAuth,
 		TLSConfig:        extTLS,
 		Config:           cfg.Protocol.Submission,

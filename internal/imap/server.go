@@ -23,6 +23,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/auth/scram"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
+	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
 	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
@@ -49,8 +50,11 @@ type Options struct {
 	ProxyProtocol      bool
 	HAProxyTimeout     time.Duration
 	HAProxyTrustedNets []*net.IPNet
-	XClient            bool
-	XClientTrustedNets []*net.IPNet
+	// AuthAddr is the host:port of yarilo-auth used by the PreambleListener to
+	// verify session tokens forwarded by login pods. When set, connections must
+	// carry a valid YARILO preamble; plain connections are rejected.
+	AuthAddr           string
+	AuthTLS            *tls.Config
 	DisablePlainAuth   bool
 	IdleNotifyInterval time.Duration
 	MaxLineLength      int
@@ -250,8 +254,8 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 	if s.opts.MaxLineLength > 0 {
 		ln = &maxLineLenListener{Listener: ln, limit: s.opts.MaxLineLength}
 	}
-	if s.opts.XClient {
-		ln = &xclientImapListener{Listener: ln, trustedNets: s.opts.XClientTrustedNets}
+	if s.opts.AuthAddr != "" {
+		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS}
 	}
 	if s.opts.LoginGreeting != "" {
 		ln = &greetingListener{Listener: ln, greeting: s.opts.LoginGreeting}
@@ -282,6 +286,15 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 
 func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 	sess := &session{srv: s, imapConn: c}
+	if pc, ok := c.NetConn().(*loginproto.PreambleConn); ok {
+		if err := sess.completeLogin(&protocol.AuthResponse{
+			Result:   protocol.AuthOK,
+			Username: pc.Username,
+		}); err != nil {
+			return nil, nil, err
+		}
+		return sess, &imapserver.GreetingData{PreAuth: true}, nil
+	}
 	return sess, &imapserver.GreetingData{PreAuth: false}, nil
 }
 

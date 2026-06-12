@@ -24,7 +24,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
-	"github.com/0kaba0hub/yarilo/internal/xclient"
+	"github.com/0kaba0hub/yarilo/internal/loginproto"
 )
 
 // Protocol identifies the mail protocol handled by the login pod.
@@ -336,18 +336,47 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	backendRd := bufio.NewReaderSize(backendConn, 4096)
 
-	// Discard backend's own greeting; client already received the login-pod greeting.
+	// Send preamble to backend before its protocol greeting.
+	// The backend's PreambleListener reads this line and calls yarilo-auth VERIFY.
+	pre2 := loginproto.Preamble{
+		Addr:      clientIP,
+		SessionID: sessID,
+		User:      pre.username,
+		Token:     authResult.Token,
+		Helo:      pre.ehloLine,
+	}
+	if _, err := io.WriteString(backendConn, pre2.Format()); err != nil {
+		slog.Debug("login: send preamble", "err", err)
+		return
+	}
+
+	// Discard backend's greeting (sent after preamble is processed).
 	if err := discardGreeting(backendRd, s.opts.Protocol); err != nil {
 		slog.Debug("login: discard greeting", "err", err)
 		return
 	}
 
-	// Forward real client IP, session ID, authenticated username, and session token
-	// to the backend via protocol-specific XCLIENT. The backend validates the token
-	// with yarilo-auth VERIFY and enters pre-authenticated state.
-	if err := forwardXClient(backendConn, backendRd, s.opts.Protocol, clientIP, pre.ehloLine, sessID, pre.username, authResult.Token); err != nil {
-		slog.Debug("login: xclient forward", "proto", s.opts.Protocol, "clientIP", clientIP, "err", err)
-		return
+	// For SMTP submission: send EHLO so the backend's state machine has a HELO
+	// domain before the client (in biProxy) sends MAIL FROM.
+	if isSubmission(s.opts.Protocol) {
+		ehlo := pre.ehloLine
+		if ehlo == "" {
+			ehlo = "EHLO yarilo-submission-login\r\n"
+		}
+		if _, err := io.WriteString(backendConn, ehlo); err != nil {
+			slog.Debug("login: smtp ehlo send", "err", err)
+			return
+		}
+		for {
+			line, err := backendRd.ReadString('\n')
+			if err != nil {
+				slog.Debug("login: smtp ehlo resp", "err", err)
+				return
+			}
+			if len(line) >= 4 && line[3] != '-' {
+				break
+			}
+		}
 	}
 
 	slog.Info("login: session routed",
@@ -592,72 +621,6 @@ func discardGreeting(rd *bufio.Reader, p Protocol) error {
 			}
 			if len(line) < 4 || line[3] != '-' {
 				return nil
-			}
-		}
-	}
-	return nil
-}
-
-// forwardXClient sends real client IP, session ID, authenticated username, and session
-// token to the backend via protocol-specific XCLIENT. For Submission it also replays
-// the EHLO after XCLIENT resets the session.
-func forwardXClient(conn net.Conn, rd *bufio.Reader, p Protocol, clientIP, ehloLine, sessID, username, token string) error {
-	extra := ""
-	if sessID != "" {
-		extra += " SESSION=" + xclient.EncodeXText(sessID)
-	}
-	if token != "" {
-		extra += " TOKEN=" + xclient.EncodeXText(token)
-	}
-	switch p {
-	case ProtocolIMAP, ProtocolIMAPS:
-		userAttr := ""
-		if username != "" {
-			userAttr = " USER=" + xclient.EncodeXText(username)
-		}
-		if _, err := fmt.Fprintf(conn, "XCONN XCLIENT ADDR=%s%s%s\r\n", clientIP, extra, userAttr); err != nil {
-			return fmt.Errorf("xclient imap send: %w", err)
-		}
-		if _, err := rd.ReadString('\n'); err != nil {
-			return fmt.Errorf("xclient imap ack: %w", err)
-		}
-	case ProtocolPOP3, ProtocolPOP3S:
-		userAttr := ""
-		if username != "" {
-			userAttr = " USER=" + xclient.EncodeXText(username)
-		}
-		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s%s\r\n", clientIP, extra, userAttr); err != nil {
-			return fmt.Errorf("xclient pop3 send: %w", err)
-		}
-		if _, err := rd.ReadString('\n'); err != nil {
-			return fmt.Errorf("xclient pop3 ack: %w", err)
-		}
-	case ProtocolSubmission, ProtocolSubmissions:
-		loginAttr := ""
-		if username != "" {
-			loginAttr = " LOGIN=" + xclient.EncodeXText(username)
-		}
-		if _, err := fmt.Fprintf(conn, "XCLIENT ADDR=%s%s%s\r\n", clientIP, extra, loginAttr); err != nil {
-			return fmt.Errorf("xclient smtp send: %w", err)
-		}
-		if _, err := rd.ReadString('\n'); err != nil {
-			return fmt.Errorf("xclient smtp ack: %w", err)
-		}
-		// XCLIENT resets SMTP session; re-send EHLO so the backend can advertise capabilities.
-		if ehloLine == "" {
-			ehloLine = "EHLO yarilo-submission-login\r\n"
-		}
-		if _, err := io.WriteString(conn, ehloLine); err != nil {
-			return fmt.Errorf("xclient smtp ehlo send: %w", err)
-		}
-		// Discard multi-line EHLO response (250-... lines).
-		for {
-			line, err := rd.ReadString('\n')
-			if err != nil {
-				return fmt.Errorf("xclient smtp ehlo resp: %w", err)
-			}
-			if len(line) >= 4 && line[3] != '-' {
-				break
 			}
 		}
 	}

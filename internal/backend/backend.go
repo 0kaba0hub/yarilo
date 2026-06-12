@@ -158,10 +158,20 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
 
-	// ---- HAProxy / XClient shared nets ----
+	// ---- HAProxy shared nets ----
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
-	xclientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
+	// LMTP keeps XCLIENT for MTA integration (Postfix → LMTP); login pods use preamble.
+	lmtpXClientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
+	authAddr := cfg.AuthService.ClientAddr()
+	var authTLS *tls.Config
+	if cfg.InternalTLS.Enabled {
+		t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+		if err != nil {
+			return nil, fmt.Errorf("backend: auth_service mtls: %w", err)
+		}
+		authTLS = t
+	}
 
 	// ---- IMAP ----
 	var imapServer *imapsvr.Server
@@ -188,8 +198,8 @@ func New(cfg *config.Config) (*Server, error) {
 			ProxyProtocol:      primary.HAProxy,
 			HAProxyTimeout:     haproxyTimeout,
 			HAProxyTrustedNets: haproxyNets,
-			XClient:            primary.XClient,
-			XClientTrustedNets: xclientNets,
+			AuthAddr:           authAddr,
+			AuthTLS:            authTLS,
 			DisablePlainAuth:   primary.DisablePlainAuth,
 			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
 			MaxLineLength:      p.MaxLineLength,
@@ -234,8 +244,8 @@ func New(cfg *config.Config) (*Server, error) {
 			ProxyProtocol:      primary.HAProxy,
 			HAProxyTimeout:     haproxyTimeout,
 			HAProxyTrustedNets: haproxyNets,
-			XClient:            primary.XClient,
-			XClientTrustedNets: xclientNets,
+			AuthAddr:           authAddr,
+			AuthTLS:            authTLS,
 			DisablePlainAuth:   primary.DisablePlainAuth,
 			NoFlagUpdates:      p.NoFlagUpdates,
 			ReuseXUIDL:         p.ReuseXUIDL,
@@ -276,8 +286,8 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxy:          primary.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
 			HAProxyNets:      haproxyNets,
-			XClient:          primary.XClient,
-			XClientNets:      xclientNets,
+			AuthAddr:         authAddr,
+			AuthTLS:          authTLS,
 			DisablePlainAuth: primary.DisablePlainAuth,
 			TLSConfig:        submissionTLS,
 			Config:           cfg.Protocol.Submission,
@@ -309,7 +319,7 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxyTimeout:     haproxyTimeout,
 			HAProxyTrustedNets: haproxyNets,
 			XClient:            svcs.LMTP.XClient,
-			XClientTrustedNets: xclientNets,
+			XClientTrustedNets: lmtpXClientNets,
 			TLSConfig:          lmtpTLS,
 			Locker:             locker,
 			QuotaDict:          quotaDict,

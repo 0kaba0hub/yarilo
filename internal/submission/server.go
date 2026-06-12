@@ -18,6 +18,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/scram"
+	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
@@ -57,11 +58,13 @@ type SCRAMSha1LookupAuthenticator interface {
 // Options configures the submission server.
 type Options struct {
 	// Infrastructure (per-listener; set by backend from ServiceConfig).
-	HAProxy          bool
-	HAProxyTimeout   time.Duration
-	HAProxyNets      []*net.IPNet
-	XClient          bool
-	XClientNets      []*net.IPNet
+	HAProxy        bool
+	HAProxyTimeout time.Duration
+	HAProxyNets    []*net.IPNet
+	// AuthAddr is the host:port of yarilo-auth used by the PreambleListener to
+	// verify session tokens forwarded by login pods.
+	AuthAddr         string
+	AuthTLS          *tls.Config
 	DisablePlainAuth bool
 	// TLSConfig enables STARTTLS on plain-text listeners (port 587).
 	// For implicit TLS (port 465) the listener is wrapped in Serve(_, tlsCfg).
@@ -130,8 +133,8 @@ func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
 			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
 	}
-	if s.opts.XClient {
-		ln = &xclientListener{Listener: ln, trustedNets: s.opts.XClientNets}
+	if s.opts.AuthAddr != "" {
+		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS}
 	}
 	return s.subSrv.Serve(ln)
 }
@@ -167,13 +170,18 @@ type backend struct{ srv *Server }
 
 func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 	remoteIP := connRemoteIP(c)
-	return &session{srv: b.srv, conn: c, remoteIP: remoteIP}, nil
+	username := ""
+	if pc, ok := c.Conn().(*loginproto.PreambleConn); ok {
+		username = pc.Username
+	}
+	return &session{srv: b.srv, conn: c, remoteIP: remoteIP, username: username}, nil
 }
 
 type session struct {
 	srv      *Server
 	conn     *goSmtp.Conn
 	remoteIP net.IP
+	username string // set from preamble for pre-authenticated sessions
 	from     string
 	rcpts    []string
 }
