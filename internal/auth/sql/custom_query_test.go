@@ -56,7 +56,7 @@ func TestCustomPasswordQuery(t *testing.T) {
 		Driver:     "sqlite",
 		DSN:        dsn,
 		SkipSchema: true,
-		PasswordQuery: `SELECT pw_hash, maildir, mail_path, active
+		PasswordQuery: `SELECT pw_hash AS password, maildir AS home, mail_path AS mail, active AS enabled
 		                FROM mailbox_users WHERE email = %u`,
 	})
 	if err != nil {
@@ -113,10 +113,10 @@ func TestCustomUserQueryOverridesPasswdHomeAndMail(t *testing.T) {
 		Driver:     "sqlite",
 		DSN:        dsn,
 		SkipSchema: true,
-		PasswordQuery: `SELECT pw_hash, '' AS home, '' AS mail, active
+		PasswordQuery: `SELECT pw_hash AS password, '' AS home, '' AS mail, active AS enabled
 		                FROM mailbox_users WHERE email = %u`,
 		// Separate userdb query fills home/mail from the same table.
-		UserQuery: `SELECT maildir, mail_path FROM mailbox_users WHERE email = %u`,
+		UserQuery: `SELECT maildir AS home, mail_path AS mail FROM mailbox_users WHERE email = %u`,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +221,7 @@ func TestDefaultPassScheme_BcryptForBareHash(t *testing.T) {
 		Driver:            "sqlite",
 		DSN:               dsn,
 		SkipSchema:        true,
-		PasswordQuery:     `SELECT pw, '' AS home, '' AS mail, active FROM users WHERE email = %u`,
+		PasswordQuery:     `SELECT pw AS password, '' AS home, '' AS mail, active AS enabled FROM users WHERE email = %u`,
 		DefaultPassScheme: "PLAIN",
 	})
 	if err != nil {
@@ -238,5 +238,58 @@ func TestDefaultPassScheme_BcryptForBareHash(t *testing.T) {
 	got, _ := p.Authenticate(req)
 	if got != protocol.ResultOK {
 		t.Fatalf("expected ResultOK with default_pass_scheme=PLAIN, got %v", got)
+	}
+}
+
+func TestAllowNets_Enforcement(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "nets.db")
+	db, _ := sql.Open("sqlite", dsn)
+	db.Exec(`CREATE TABLE users (email TEXT PRIMARY KEY, pw TEXT, nets TEXT, active INTEGER DEFAULT 1)`)
+	db.Exec(`INSERT INTO users VALUES ('alice@example.com', '{PLAIN}secret', '10.0.0.0/8,192.168.1.0/24', 1)`)
+	db.Exec(`INSERT INTO users VALUES ('bob@example.com',   '{PLAIN}secret', '', 1)`)
+	db.Close()
+
+	p, err := authsql.New(authsql.Config{
+		Driver:     "sqlite",
+		DSN:        dsn,
+		SkipSchema: true,
+		PasswordQuery: `SELECT pw AS password, nets AS allow_nets, active AS enabled
+		                FROM users WHERE email = %u`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	cases := []struct {
+		name     string
+		user     string
+		remoteIP string
+		want     protocol.Result
+	}{
+		{"alice allowed CIDR", "alice@example.com", "10.1.2.3", protocol.ResultOK},
+		{"alice blocked IP", "alice@example.com", "8.8.8.8", protocol.ResultFail},
+		{"alice second CIDR boundary", "alice@example.com", "192.168.1.255", protocol.ResultOK},
+		{"alice outside second CIDR", "alice@example.com", "192.168.2.1", protocol.ResultFail},
+		{"bob empty nets always OK", "bob@example.com", "8.8.8.8", protocol.ResultOK},
+		{"empty remoteIP skips check", "alice@example.com", "", protocol.ResultOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &protocol.Request{
+				Username: tc.user,
+				Password: "secret",
+				Service:  "imap",
+				RemoteIP: tc.remoteIP,
+				Fields:   protocol.NewFields(),
+			}
+			got, err := p.Authenticate(req)
+			if err != nil {
+				t.Fatalf("Authenticate: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("result %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

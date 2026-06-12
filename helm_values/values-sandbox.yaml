@@ -12,8 +12,16 @@
 
 hostname: mail-sb.seconddns.com
 
+## Enable XCLIENT so session pods accept real-client-IP forwarding from login pods.
+general:
+  xclient:
+    enabled: true
+    trustedNets:
+      - "10.0.0.0/8"
+
 image:
   repository: ghcr.io/0kaba0hub/yarilo
+  tag: latest
   pullPolicy: Always
 
 logLevel: debug
@@ -60,7 +68,7 @@ components:
         enabled: true
       imap:
         enabled: true
-    backendAddr: "yarilo-imap:143"
+    backendAddr: "yarilo-imap:10143"
     service:
       type: LoadBalancer
       annotations:
@@ -78,7 +86,7 @@ components:
         enabled: true
       pop3:
         enabled: true
-    backendAddr: "yarilo-pop3:110"
+    backendAddr: "yarilo-pop3:10110"
     service:
       type: LoadBalancer
       annotations:
@@ -92,16 +100,16 @@ components:
         defaultPassScheme: BCRYPT
         ## PostfixAdmin mailbox table — skipSchema prevents yarilo-auth from
         ## creating its own yarilo_users table.
+        ## Columns matched by name — only "password" is required.
+        ## "enabled" maps to PostfixAdmin's "active"; absent columns default active.
         skipSchema: true
         passwordQuery: |
-          SELECT password, allow_nets
+          SELECT password, active AS enabled
           FROM mailbox
-          WHERE username = '%u' AND active = '1'
+          WHERE username = '%u'
         userQuery: |
-          SELECT 89 AS uid,
-                 89 AS gid,
-                 CONCAT(home, mpath) AS home,
-                 CONCAT('*:bytes=', quota) AS quota_rule
+          SELECT CONCAT(home, mpath) AS home,
+                 CONCAT('maildir:', home, mpath) AS mail
           FROM mailbox
           WHERE username = '%u'
         iterateQuery: |
@@ -113,6 +121,9 @@ components:
   ## IMAP session pod.
   ## PVC yarilo-mail is created from this component's persistence config.
   imap:
+    listeners:
+      imap:
+        enabled: true
     storage:
       persistence:
         enabled: true
@@ -122,6 +133,9 @@ components:
   ## POP3 session pod.
   pop3:
     enabled: true
+    listeners:
+      pop3:
+        enabled: true
 
   ## LMTP — inbound delivery from MTA, no login proxy.
   lmtp:

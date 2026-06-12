@@ -9,6 +9,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 
 	"github.com/emersion/go-sasl"
 
@@ -49,8 +51,10 @@ const (
 )
 
 // Default queries used when Config doesn't override them. They target the
-// built-in yarilo_users schema. Column order in the SELECT is the contract:
-// password, home, mail, enabled.
+// built-in yarilo_users schema. Results are matched by column name, not
+// position — operators may alias arbitrary columns: pw_hash AS password.
+// Required: password. Optional: home, mail, enabled (defaults to active
+// when absent, so a WHERE active=1 guard in the query is equally valid).
 const (
 	defaultPasswordQuery = `SELECT password, home, mail, enabled FROM yarilo_users WHERE username = %u`
 	defaultUserQuery     = `SELECT home, mail FROM yarilo_users WHERE username = %u AND enabled = 1`
@@ -128,39 +132,72 @@ func New(c Config) (*Passdb, error) {
 //	ResultFail       — user found but disabled OR password mismatch
 //	ResultOK         — verified; req.Fields populated with user / home / mail
 //
-// The optional UserQuery runs after the password check to enrich
-// home / mail with userdb-style data (matches the pre-refactor
-// behaviour exactly).
+// Columns are matched by name, not position. Only "password" is required;
+// "home", "mail", and "enabled" are optional. When "enabled" is absent the
+// row is treated as active — callers may use a WHERE active=1 guard instead.
+// The optional UserQuery runs after the password check to enrich home/mail.
 func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 	query, args := substituteVars(p.driver, p.passwordQuery, req.Username)
 
-	var storedPass, home, mailLoc string
-	var enabled int
-	err := p.db.QueryRowContext(context.Background(), query, args...).
-		Scan(&storedPass, &home, &mailLoc, &enabled)
+	row, err := scanRowByName(p.db, query, args...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.ResultNext, nil
 	}
 	if err != nil {
 		return protocol.ResultTempFail, err
 	}
-	if enabled == 0 {
+
+	storedPass := row["password"]
+	if storedPass == "" {
+		return protocol.ResultTempFail, fmt.Errorf("auth/sql: password_query returned no 'password' column for %q", req.Username)
+	}
+
+	if v, ok := row["enabled"]; ok && !protocol.IsTruthy(v) {
 		return protocol.ResultFail, nil
 	}
+
 	if !checkPasswordWithDefault(storedPass, req.Password, p.defaultScheme) {
 		return protocol.ResultFail, nil
 	}
-	if p.userQuery != "" {
-		if h, m, err := p.lookupUser(req.Username); err == nil {
-			home, mailLoc = h, m
+
+	if nets := protocol.SplitCSV(row["allow_nets"]); len(nets) > 0 {
+		if !ipInAllowNets(req.RemoteIP, nets) {
+			slog.Warn("auth/sql: allow_nets rejected login",
+				"user", req.Username,
+				"remote_ip", req.RemoteIP,
+				"allow_nets", row["allow_nets"],
+			)
+			return protocol.ResultFail, nil
 		}
 	}
+
+	home := row["home"]
+	mailLoc := row["mail"]
+	if p.userQuery != "" {
+		if h, m, err := p.lookupUser(req.Username); err == nil {
+			if h != "" {
+				home = h
+			}
+			if m != "" {
+				mailLoc = m
+			}
+		}
+	}
+
 	req.Fields.Set("user", req.Username)
 	if home != "" {
 		req.Fields.Set("home", home)
 	}
 	if mailLoc != "" {
 		req.Fields.Set("mail", mailLoc)
+	}
+	// Forward all extra passdb fields (allow_nets, proxy, nologin, …) so the
+	// auth protocol layer can enforce them without passdb-specific knowledge.
+	skipCols := map[string]bool{"password": true, "enabled": true, "home": true, "mail": true}
+	for k, v := range row {
+		if !skipCols[k] && v != "" {
+			req.Fields.Set(k, v)
+		}
 	}
 	return protocol.ResultOK, nil
 }
@@ -199,18 +236,18 @@ func (p *Passdb) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error
 
 func (p *Passdb) lookupSCRAM(username string, parse func(string) (*sasl.ScramCredentials, bool)) (*sasl.ScramCredentials, error) {
 	query, args := substituteVars(p.driver, p.passwordQuery, username)
-	var storedPass, home, mailLoc string
-	var enabled int
-	err := p.db.QueryRowContext(context.Background(), query, args...).
-		Scan(&storedPass, &home, &mailLoc, &enabled)
-	_, _ = home, mailLoc
+	row, err := scanRowByName(p.db, query, args...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if enabled == 0 {
+	if v, ok := row["enabled"]; ok && !protocol.IsTruthy(v) {
+		return nil, nil
+	}
+	storedPass := row["password"]
+	if storedPass == "" {
 		return nil, nil
 	}
 	creds, ok := parse(storedPass)
@@ -222,8 +259,74 @@ func (p *Passdb) lookupSCRAM(username string, parse func(string) (*sasl.ScramCre
 
 func (p *Passdb) lookupUser(username string) (home, mailLoc string, err error) {
 	query, args := substituteVars(p.driver, p.userQuery, username)
-	err = p.db.QueryRowContext(context.Background(), query, args...).Scan(&home, &mailLoc)
-	return home, mailLoc, err
+	row, err := scanRowByName(p.db, query, args...)
+	if err != nil {
+		return "", "", err
+	}
+	return row["home"], row["mail"], nil
+}
+
+// ipInAllowNets reports whether remoteIP is covered by any entry in nets.
+// Entries may be CIDR (10.0.0.0/8) or a bare IP treated as /32 or /128.
+// Returns true when nets is empty or remoteIP is empty (check not possible).
+func ipInAllowNets(remoteIP string, nets []string) bool {
+	if remoteIP == "" {
+		return true
+	}
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return true
+	}
+	for _, entry := range nets {
+		if _, cidr, err := net.ParseCIDR(entry); err == nil {
+			if cidr.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if bare := net.ParseIP(entry); bare != nil && bare.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// scanRowByName executes query+args and returns the first row as a
+// column-name → string map. Uses stringify (defined in userdb.go, same
+// package) so integer/bool columns are normalised to strings. Returns
+// sql.ErrNoRows when the query produces no rows.
+func scanRowByName(db *sql.DB, query string, args ...any) (map[string]string, error) {
+	rows, err := db.QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, sql.ErrNoRows
+	}
+
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(cols))
+	for i, col := range cols {
+		result[col] = stringify(vals[i])
+	}
+	return result, rows.Err()
 }
 
 // Iterate runs the iterate_query and returns the list of usernames.
