@@ -13,12 +13,19 @@ import (
 
 // imapPreAuthCaps returns the IMAP capability string for the pre-auth state.
 // extTLS is non-nil when STARTTLS is available (plain listener).
-func imapPreAuthCaps(extTLS *tls.Config) string {
+func imapPreAuthCaps(extTLS *tls.Config, opts Options) string {
 	caps := "IMAP4rev2 IMAP4rev1 SASL-IR LITERAL- ID"
 	if extTLS != nil {
 		caps += " STARTTLS"
 	}
-	caps += " AUTH=PLAIN AUTH=LOGIN"
+	// Plain-text mechanisms: suppressed on unencrypted connections when
+	// DisablePlainAuth is set; always offered once TLS is established.
+	if !opts.DisablePlainAuth || extTLS == nil {
+		caps += " AUTH=PLAIN AUTH=LOGIN"
+	}
+	if opts.OAuth2Enabled {
+		caps += " AUTH=OAUTHBEARER AUTH=XOAUTH2"
+	}
 	return caps
 }
 
@@ -33,23 +40,23 @@ type preamble struct {
 // extractPreamble dispatches to the protocol-specific handler.
 // extTLS is non-nil when the login pod already upgraded to implicit TLS;
 // it is passed to the STARTTLS handler so STARTTLS is only offered on plain listeners.
-func extractPreamble(conn net.Conn, rd *bufio.Reader, p Protocol, extTLS *tls.Config) (*preamble, error) {
+func extractPreamble(conn net.Conn, rd *bufio.Reader, p Protocol, extTLS *tls.Config, opts Options) (*preamble, error) {
 	switch p {
 	case ProtocolIMAP, ProtocolIMAPS:
-		return extractIMAPPreamble(conn, rd, extTLS)
+		return extractIMAPPreamble(conn, rd, extTLS, opts)
 	case ProtocolPOP3, ProtocolPOP3S:
-		return extractPOP3Preamble(conn, rd, extTLS)
+		return extractPOP3Preamble(conn, rd, extTLS, opts)
 	case ProtocolSubmission, ProtocolSubmissions:
-		return extractSubmissionPreamble(conn, rd, extTLS)
+		return extractSubmissionPreamble(conn, rd, extTLS, opts)
 	default:
 		return nil, fmt.Errorf("preamble: unknown protocol %q", p)
 	}
 }
 
 // extractIMAPPreamble speaks minimal IMAP until the client authenticates.
-// Handles: CAPABILITY, ID, NOOP, LOGOUT, STARTTLS, LOGIN, AUTHENTICATE PLAIN.
-func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*preamble, error) {
-	caps := imapPreAuthCaps(extTLS)
+// Handles: CAPABILITY, ID, NOOP, LOGOUT, STARTTLS, LOGIN, AUTHENTICATE PLAIN/LOGIN, OAUTHBEARER, XOAUTH2.
+func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, error) {
+	caps := imapPreAuthCaps(extTLS, opts)
 	if _, err := fmt.Fprintf(conn, "* OK [CAPABILITY %s] Yarilo Login ready\r\n", caps); err != nil {
 		return nil, fmt.Errorf("imap: send greeting: %w", err)
 	}
@@ -72,7 +79,7 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 
 		switch cmd {
 		case "CAPABILITY":
-			c := imapPreAuthCaps(extTLS)
+			c := imapPreAuthCaps(extTLS, opts)
 			fmt.Fprintf(conn, "* CAPABILITY %s\r\n", c)
 			fmt.Fprintf(conn, "%s OK [CAPABILITY %s] CAPABILITY\r\n", tag, c)
 		case "ID":
@@ -190,7 +197,7 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 }
 
 // extractPOP3Preamble speaks minimal POP3 until USER+PASS are received.
-func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*preamble, error) {
+func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, error) {
 	if _, err := fmt.Fprintf(conn, "+OK Yarilo Login ready\r\n"); err != nil {
 		return nil, fmt.Errorf("pop3: send greeting: %w", err)
 	}
@@ -206,9 +213,15 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 
 		switch {
 		case upper == "CAPA":
-			capa := "+OK\r\nCAPA\r\nTOP\r\nUIDL\r\nRESP-CODES\r\nPIPELINING\r\nAUTH-RESP-CODE\r\nUSER\r\nSASL PLAIN LOGIN\r\n"
+			capa := "+OK\r\nCAPA\r\nTOP\r\nUIDL\r\nRESP-CODES\r\nPIPELINING\r\nAUTH-RESP-CODE\r\n"
 			if extTLS != nil {
 				capa += "STLS\r\n"
+			}
+			if !opts.DisablePlainAuth || extTLS == nil {
+				capa += "USER\r\nSASL PLAIN LOGIN\r\n"
+			}
+			if opts.OAuth2Enabled {
+				capa += "SASL OAUTHBEARER XOAUTH2\r\n"
 			}
 			capa += ".\r\n"
 			fmt.Fprint(conn, capa)
@@ -279,7 +292,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*
 
 // extractSubmissionPreamble speaks minimal SMTP until AUTH PLAIN/LOGIN completes.
 // extTLS is used for STARTTLS on port 587; nil on port 465 (already TLS).
-func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config) (*preamble, error) {
+func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, error) {
 	if _, err := fmt.Fprintf(conn, "220 Yarilo Login ready\r\n"); err != nil {
 		return nil, fmt.Errorf("smtp: send greeting: %w", err)
 	}
@@ -302,7 +315,15 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 			if extTLS != nil && !tlsDone {
 				caps += "250-STARTTLS\r\n"
 			}
-			caps += "250-AUTH PLAIN LOGIN\r\n"
+			if !opts.DisablePlainAuth || extTLS == nil || tlsDone {
+				caps += "250-AUTH PLAIN LOGIN"
+				if opts.OAuth2Enabled {
+					caps += " OAUTHBEARER XOAUTH2"
+				}
+				caps += "\r\n"
+			} else if opts.OAuth2Enabled {
+				caps += "250-AUTH OAUTHBEARER XOAUTH2\r\n"
+			}
 			caps += "250 8BITMIME\r\n"
 			if _, err := io.WriteString(conn, caps); err != nil {
 				return nil, fmt.Errorf("smtp: send ehlo resp: %w", err)

@@ -200,7 +200,6 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxyTrustedNets: haproxyNets,
 			AuthAddr:           authAddr,
 			AuthTLS:            authTLS,
-			DisablePlainAuth:   primary.DisablePlainAuth,
 			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
 			MaxLineLength:      p.MaxLineLength,
 			ConnLimit:          connLimiter,
@@ -216,7 +215,6 @@ func New(cfg *config.Config) (*Server, error) {
 			Namespaces:         buildNamespaces(cfg.Namespaces),
 			NamespaceMailboxes: nsMailboxes,
 			FailureDelay:       time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
-			OAuth2Enabled:      len(cfg.Auth.OAuth2) > 0,
 		})
 	}
 
@@ -246,7 +244,6 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxyTrustedNets: haproxyNets,
 			AuthAddr:           authAddr,
 			AuthTLS:            authTLS,
-			DisablePlainAuth:   primary.DisablePlainAuth,
 			NoFlagUpdates:      p.NoFlagUpdates,
 			ReuseXUIDL:         p.ReuseXUIDL,
 			UIDLFormat:         p.UIDLFormat,
@@ -259,7 +256,6 @@ func New(cfg *config.Config) (*Server, error) {
 			ConnLimit:          connLimiter,
 			Locker:             locker,
 			FailureDelay:       time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
-			OAuth2Enabled:      len(cfg.Auth.OAuth2) > 0,
 		})
 	}
 
@@ -283,18 +279,16 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 
 		smtpServer = submsvr.New(submsvr.Options{
-			HAProxy:          primary.HAProxy,
-			HAProxyTimeout:   haproxyTimeout,
-			HAProxyNets:      haproxyNets,
-			AuthAddr:         authAddr,
-			AuthTLS:          authTLS,
-			DisablePlainAuth: primary.DisablePlainAuth,
-			TLSConfig:        submissionTLS,
-			Config:           cfg.Protocol.Submission,
-			Auth:             chainAuth{authChain},
-			Proxy:            submissionProxy,
-			FailureDelay:     time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
-			OAuth2Enabled:    len(cfg.Auth.OAuth2) > 0,
+			HAProxy:        primary.HAProxy,
+			HAProxyTimeout: haproxyTimeout,
+			HAProxyNets:    haproxyNets,
+			AuthAddr:       authAddr,
+			AuthTLS:        authTLS,
+			TLSConfig:      submissionTLS,
+			Config:         cfg.Protocol.Submission,
+			Auth:           chainAuth{authChain},
+			Proxy:          submissionProxy,
+			FailureDelay:   time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
 		})
 	}
 
