@@ -82,7 +82,7 @@ func enforceServer(t *testing.T) (aliceDir string, dial func(user string) *imapc
 
 type enforcePassdb struct{ users map[string]string }
 
-func (p *enforcePassdb) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
+func (p *enforcePassdb) Authenticate(username, password, _, _ string) (*protocol.AuthResponse, error) {
 	if want, ok := p.users[username]; ok && want == password {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username}, nil
 	}

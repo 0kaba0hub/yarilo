@@ -21,7 +21,7 @@ import (
 // depend on the unexported stubPassdb sitting beside server_test.go.
 type aclPassdb struct{ user, pass string }
 
-func (a *aclPassdb) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
+func (a *aclPassdb) Authenticate(username, password, _, _ string) (*protocol.AuthResponse, error) {
 	if username == a.user && password == a.pass {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username}, nil
 	}

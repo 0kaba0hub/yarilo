@@ -133,7 +133,7 @@ type Passdb interface {
 // internal Result back onto a wire-shaped AuthResponse so the
 // caller does not need to know about Request / Result.
 type Authenticator interface {
-	Authenticate(username, password, service string) (*AuthResponse, error)
+	Authenticate(username, password, service, remoteIP string) (*AuthResponse, error)
 }
 
 // MasterAuthenticator extends Authenticator with the SASL PLAIN
@@ -153,7 +153,7 @@ type Authenticator interface {
 //   - service — login service tag (imap / pop3 / submission /
 //     lmtp). Logged + forwarded to the chain unmodified.
 type MasterAuthenticator interface {
-	AuthenticateMaster(authzid, authid, password, service string) (*AuthResponse, error)
+	AuthenticateMaster(authzid, authid, password, service, remoteIP string) (*AuthResponse, error)
 }
 
 // SCRAMSha256Lookup exposes per-user SCRAM-SHA-256 verifiers to
@@ -283,8 +283,8 @@ func NewAuthenticator(passdbs []Passdb, opts ...AuthenticatorOption) Authenticat
 // only the methods it wants to expose.
 type plainOnlyAuthenticator struct{ inner *chainAuthenticator }
 
-func (p *plainOnlyAuthenticator) Authenticate(username, password, service string) (*AuthResponse, error) {
-	return p.inner.Authenticate(username, password, service)
+func (p *plainOnlyAuthenticator) Authenticate(username, password, service, remoteIP string) (*AuthResponse, error) {
+	return p.inner.Authenticate(username, password, service, remoteIP)
 }
 
 // LookupSCRAMSha256 forwards the SCRAM lookup so the wrapper
@@ -309,7 +309,7 @@ type chainAuthenticator struct {
 	cache               *Cache
 }
 
-func (c *chainAuthenticator) Authenticate(username, password, service string) (*AuthResponse, error) {
+func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP string) (*AuthResponse, error) {
 	// Cache lookup — positive hit verifies the supplied password
 	// against the stored HMAC and short-circuits the chain.
 	// Negative hit short-circuits without password check: a
@@ -324,6 +324,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service string) (*
 		Username: username,
 		Password: password,
 		Service:  service,
+		RemoteIP: remoteIP,
 		Fields:   NewFields(),
 	}
 	result, err := RunAuth(c.chain, c.userdb, req)
@@ -443,7 +444,7 @@ func (c *chainAuthenticator) LookupSCRAMSha1(username string) (*sasl.ScramCreden
 
 // The `target<sep>master` separator workaround is applied when
 // authzid is empty AND masterUserSeparator is non-empty.
-func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, service string) (*AuthResponse, error) {
+func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, service, remoteIP string) (*AuthResponse, error) {
 	// Defence-in-depth: even if a caller obtains the
 	// chainAuthenticator directly (bypassing the wrapper
 	// NewAuthenticator hands out when master-users are disabled),
@@ -451,7 +452,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 	// disabled chain is treated as a regular login of the
 	// AUTHID — the safe fallback that never grants impersonation.
 	if !c.masterUsersEnabled {
-		return c.Authenticate(authid, password, service)
+		return c.Authenticate(authid, password, service, remoteIP)
 	}
 	target := authzid
 	master := authid
@@ -462,7 +463,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 		}
 	}
 	if target == "" || target == master {
-		return c.Authenticate(master, password, service)
+		return c.Authenticate(master, password, service, remoteIP)
 	}
 
 	// Master-flow caching: key the cache by (service, master,
@@ -481,6 +482,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 		Username: master,
 		Password: password,
 		Service:  service,
+		RemoteIP: remoteIP,
 		Fields:   NewFields(),
 	}
 	result, err := RunMasterAuth(c.chain, Chain(c.masterdb), c.userdb, target, req)
