@@ -195,6 +195,16 @@ components:
     penalty:
       enabled: false
 
+    ## token — one-time session token issued after successful passdb.
+    ## The login pod forwards the token to the backend (XCLIENT TOKEN=);
+    ## the backend calls yarilo-auth VERIFY to consume it and enter
+    ## authenticated state without replaying credentials.
+    token:
+      ## ttlSeconds — how long the token is valid for the backend to
+      ## consume. Must be larger than the login→backend roundtrip time.
+      ## Default 60 s is generous; lower to 10-15 s in production.
+      ttlSeconds: 60
+
     ## oauth2 — OAuth 2.0 bearer-token providers. Each entry
     ## becomes a passdb that participates in the auth chain (placed
     ## AHEAD of SQL so an OAUTHBEARER login resolves through the
