@@ -76,6 +76,10 @@ func (c *Client) Authenticate(username, password, service, remoteIP, sessionID s
 	sb.WriteString("\tuser=")
 	sb.WriteString(username)
 	sb.WriteString("\tresp=")
+	// SASL PLAIN: NUL + authid + NUL + password
+	sb.WriteString("\x00")
+	sb.WriteString(username)
+	sb.WriteString("\x00")
 	sb.WriteString(password)
 	if service != "" {
 		sb.WriteString("\tservice=")
