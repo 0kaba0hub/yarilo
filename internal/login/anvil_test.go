@@ -36,6 +36,8 @@ func handleStubAuth(conn net.Conn) {
 	defer conn.Close()
 	rd := bufio.NewReader(conn)
 	fmt.Fprintf(conn, "VERSION\t1\t0\n")
+	fmt.Fprintf(conn, "MECH\tPLAIN\n")
+	fmt.Fprintf(conn, "DONE\n")
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
