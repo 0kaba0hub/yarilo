@@ -198,7 +198,7 @@ func TestNewAuthenticator_WrapsChainIntoLegacyShape(t *testing.T) {
 			f.Set("mail", "maildir:/m/carol")
 		},
 	}})
-	resp, err := a.Authenticate("carol", "pw", "imap")
+	resp, err := a.Authenticate("carol", "pw", "imap", "")
 	if err != nil {
 		t.Fatal(err)
 	}

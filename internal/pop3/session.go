@@ -581,14 +581,15 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 // non-master backend with an opaque AuthFail so the wire reply
 // stays indistinguishable from a wrong-password rejection.
 func (s *session) authenticate(authzid, username, password string) (*protocol.AuthResponse, error) {
+	ip := s.remoteIP.String()
 	if authzid == "" || authzid == username {
-		return s.srv.opts.Auth.Authenticate(username, password, "pop3")
+		return s.srv.opts.Auth.Authenticate(username, password, "pop3", ip)
 	}
 	master, ok := s.srv.opts.Auth.(protocol.MasterAuthenticator)
 	if !ok {
 		return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 	}
-	return master.AuthenticateMaster(authzid, username, password, "pop3")
+	return master.AuthenticateMaster(authzid, username, password, "pop3", ip)
 }
 
 func (s *session) loadMailbox() error {

@@ -809,7 +809,7 @@ func TestAuthenticator_MasterUsersDisabledByDefault(t *testing.T) {
 		t.Errorf("NewAuthenticator surfaces MasterAuthenticator while disabled")
 	}
 	// And Authenticate itself still works for regular logins.
-	res, err := auth.Authenticate("alice", "secret", "imap")
+	res, err := auth.Authenticate("alice", "secret", "imap", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,7 +830,7 @@ func TestAuthenticator_MasterUsersEnabledSurfaces(t *testing.T) {
 	if !ok {
 		t.Fatalf("NewAuthenticator hides MasterAuthenticator while enabled")
 	}
-	res, err := master.AuthenticateMaster("alice", "admin", "masterpass", "imap")
+	res, err := master.AuthenticateMaster("alice", "admin", "masterpass", "imap", "")
 	if err != nil {
 		t.Fatal(err)
 	}

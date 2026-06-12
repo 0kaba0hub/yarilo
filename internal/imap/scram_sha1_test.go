@@ -29,7 +29,7 @@ type scramSha1Auth struct {
 	creds *sasl.ScramCredentials
 }
 
-func (a *scramSha1Auth) Authenticate(_, _, _ string) (*protocol.AuthResponse, error) {
+func (a *scramSha1Auth) Authenticate(_, _, _, _ string) (*protocol.AuthResponse, error) {
 	return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 }
 

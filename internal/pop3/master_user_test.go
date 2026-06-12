@@ -18,14 +18,14 @@ type masterMockAuth struct {
 	allowedTarget map[string]bool
 }
 
-func (m *masterMockAuth) Authenticate(user, pass, _ string) (*protocol.AuthResponse, error) {
+func (m *masterMockAuth) Authenticate(user, pass, _, _ string) (*protocol.AuthResponse, error) {
 	if expected, ok := m.users[user]; ok && expected == pass {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: user}, nil
 	}
 	return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 }
 
-func (m *masterMockAuth) AuthenticateMaster(authzid, authid, password, _ string) (*protocol.AuthResponse, error) {
+func (m *masterMockAuth) AuthenticateMaster(authzid, authid, password, _, _ string) (*protocol.AuthResponse, error) {
 	if authid != m.masterUser || password != m.masterPass {
 		return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 	}

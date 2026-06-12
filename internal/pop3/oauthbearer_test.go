@@ -14,7 +14,7 @@ type oauthBearerAuth struct {
 	user, token string
 }
 
-func (a *oauthBearerAuth) Authenticate(user, pass, _ string) (*protocol.AuthResponse, error) {
+func (a *oauthBearerAuth) Authenticate(user, pass, _, _ string) (*protocol.AuthResponse, error) {
 	if user == a.user && pass == a.token {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: user}, nil
 	}

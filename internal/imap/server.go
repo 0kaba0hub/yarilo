@@ -424,7 +424,7 @@ func formatLogoutMsg(format string, vars map[string]string) string {
 }
 
 func (s *session) Login(username, password string) error {
-	res, err := s.srv.opts.Auth.Authenticate(username, password, "imap")
+	res, err := s.srv.opts.Auth.Authenticate(username, password, "imap", remoteIP(s.imapConn.NetConn()))
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		s.delayFailure()
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Invalid credentials"}
@@ -598,7 +598,7 @@ func (s *session) tlsExporter() []byte {
 // (Username, Token) into the chain's Authenticate(user, password,
 // service) call and surface a Bearer JSON error on rejection.
 func (s *session) authenticateOAuthBearer(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
-	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap")
+	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap", remoteIP(s.imapConn.NetConn()))
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		s.delayFailure()
 		return &sasl.OAuthBearerError{
@@ -618,7 +618,7 @@ func (s *session) authenticateOAuthBearer(opts sasl.OAuthBearerOptions) *sasl.OA
 // authenticateXOAuth2 is the XOAUTH2 callback. Same token
 // validation path as OAUTHBEARER — only the wire format differs.
 func (s *session) authenticateXOAuth2(opts sasl.XOAuth2Options) *sasl.OAuthBearerError {
-	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap")
+	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap", remoteIP(s.imapConn.NetConn()))
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		s.delayFailure()
 		return &sasl.OAuthBearerError{
@@ -648,8 +648,9 @@ func (s *session) authenticatePlainSASL(authzid, authid, password string) error 
 		Type: imaplib.StatusResponseTypeNo,
 		Text: "Invalid credentials",
 	}
+	ip := remoteIP(s.imapConn.NetConn())
 	if authzid == "" || authzid == authid {
-		res, err := s.srv.opts.Auth.Authenticate(authid, password, "imap")
+		res, err := s.srv.opts.Auth.Authenticate(authid, password, "imap", ip)
 		if err != nil || res == nil || res.Result != protocol.AuthOK {
 			s.delayFailure()
 			return invalid
@@ -661,7 +662,7 @@ func (s *session) authenticatePlainSASL(authzid, authid, password string) error 
 		s.delayFailure()
 		return invalid
 	}
-	res, err := master.AuthenticateMaster(authzid, authid, password, "imap")
+	res, err := master.AuthenticateMaster(authzid, authid, password, "imap", ip)
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		s.delayFailure()
 		return invalid

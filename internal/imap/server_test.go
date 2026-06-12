@@ -27,7 +27,7 @@ type stubPassdb struct {
 	pass string
 }
 
-func (s *stubPassdb) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
+func (s *stubPassdb) Authenticate(username, password, _, _ string) (*protocol.AuthResponse, error) {
 	if username == s.user && password == s.pass {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username}, nil
 	}
@@ -1678,7 +1678,7 @@ func TestSharedMetadataPrivIsPerAccessingUser(t *testing.T) {
 // mapPassdb is a multi-user variant of stubPassdb for shared-metadata tests.
 type mapPassdb struct{ users map[string]string }
 
-func (m *mapPassdb) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
+func (m *mapPassdb) Authenticate(username, password, _, _ string) (*protocol.AuthResponse, error) {
 	if want, ok := m.users[username]; ok && want == password {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username}, nil
 	}

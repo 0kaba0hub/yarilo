@@ -21,7 +21,7 @@ type mockAuth struct {
 	users map[string]string // username → password
 }
 
-func (m *mockAuth) Authenticate(user, pass, _ string) (*protocol.AuthResponse, error) {
+func (m *mockAuth) Authenticate(user, pass, _, _ string) (*protocol.AuthResponse, error) {
 	if expected, ok := m.users[user]; ok && expected == pass {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: user}, nil
 	}

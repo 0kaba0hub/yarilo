@@ -31,7 +31,7 @@ type scramAuth struct {
 	creds *sasl.ScramCredentials
 }
 
-func (a *scramAuth) Authenticate(_, _, _ string) (*protocol.AuthResponse, error) {
+func (a *scramAuth) Authenticate(_, _, _, _ string) (*protocol.AuthResponse, error) {
 	return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 }
 

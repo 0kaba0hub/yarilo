@@ -23,7 +23,7 @@ type masterAuth struct {
 	targets                  map[string]bool
 }
 
-func (m *masterAuth) Authenticate(username, password, _ string) (*protocol.AuthResponse, error) {
+func (m *masterAuth) Authenticate(username, password, _, _ string) (*protocol.AuthResponse, error) {
 	if username == m.regularUser && password == m.regularPass {
 		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username}, nil
 	}
@@ -33,7 +33,7 @@ func (m *masterAuth) Authenticate(username, password, _ string) (*protocol.AuthR
 	return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 }
 
-func (m *masterAuth) AuthenticateMaster(authzid, authid, password, _ string) (*protocol.AuthResponse, error) {
+func (m *masterAuth) AuthenticateMaster(authzid, authid, password, _, _ string) (*protocol.AuthResponse, error) {
 	if authid != m.masterUser || password != m.masterPass {
 		return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 	}

@@ -632,7 +632,7 @@ func parseCIDRs(cidrs []string) []*net.IPNet {
 type chainAuth struct{ c protocol.Authenticator }
 
 func (a chainAuth) AuthPlain(username, password string) error {
-	resp, err := a.c.Authenticate(username, password, "smtp")
+	resp, err := a.c.Authenticate(username, password, "smtp", "")
 	if err != nil {
 		return fmt.Errorf("smtp/auth: %w", err)
 	}
@@ -653,7 +653,7 @@ func (a chainAuth) AuthPlainMaster(authzid, authid, password string) error {
 	if !ok {
 		return fmt.Errorf("smtp/auth: authentication failed")
 	}
-	resp, err := master.AuthenticateMaster(authzid, authid, password, "smtp")
+	resp, err := master.AuthenticateMaster(authzid, authid, password, "smtp", "")
 	if err != nil {
 		return fmt.Errorf("smtp/auth: %w", err)
 	}

@@ -104,18 +104,18 @@ components:
         ## "enabled" maps to PostfixAdmin's "active"; absent columns default active.
         skipSchema: true
         passwordQuery: |
-          SELECT password, active AS enabled
+          SELECT password, active AS enabled, allow_nets
           FROM mailbox
-          WHERE username = '%u'
+          WHERE username = %u
         userQuery: |
           SELECT CONCAT(home, mpath) AS home,
                  CONCAT('maildir:', home, mpath) AS mail
           FROM mailbox
-          WHERE username = '%u'
+          WHERE username = %u
         iterateQuery: |
           SELECT username
           FROM mailbox
-          WHERE active = '1'
+          WHERE active = 1
           ORDER BY username
 
   ## IMAP session pod.
