@@ -24,13 +24,32 @@ Goroutines vs fork:
 ### director deployment
 Routes user connections to backends through a **consistent-hashing ring**.
 Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-proxy`), 3 director processes (with monitor sidecars), peer-sync ring.
-This is where **TLS terminate + passdb auth + preamble write** happens.
+This is where **TLS terminate + passdb auth + allow_nets enforcement** happens.
+
+**Login pod auth flow:**
+1. Accept TLS connection from client.
+2. Extract real client IP from HAProxy PROXY protocol header or raw TCP RemoteAddr.
+3. Parse the IMAP/POP3/SMTP AUTHENTICATE or LOGIN command to obtain credentials.
+4. Call **yarilo-auth** (`AUTH` command) — passdb chain runs there; receives `token=` on success.
+   `allow_nets` and `nologin` are enforced in the login pod using the real client IP.
+5. On failure: send `NO Invalid credentials` to the client. Backend is never contacted.
+6. On success: send proto-specific auth OK to the client, then dial the backend and send:
+   ```
+   YARILO\tADDR=<real-client-ip>\tSESSION=<anvil-id>\tUSER=<username>\tTOKEN=<64hex>\n
+   ```
+7. Backend reads the preamble, calls yarilo-auth `VERIFY token` to confirm the session,
+   and enters pre-authenticated state. No passdb round-trip on the backend side.
 
 ### backend deployment (one per tag = one per NFS shard)
 Handles authenticated mail sessions, reading and writing mail + index data to NFS.
 Contains: 4 session processes (`yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`) plus `yarilo-locks` for write coordination.
-**Login proxies are not needed inside the backend** — it accepts plain TCP from the director with auth state in the preamble.
-Userdb lookups go through the shared `yarilo-auth`.
+**Login proxies are not needed inside the backend** — it accepts plain TCP from the director
+with auth state in the YARILO preamble.
+
+Backend auth logic:
+- Login pod sends `YARILO\tADDR=...\tSESSION=...\tUSER=...\tTOKEN=...\n` before any protocol exchange.
+- Backend's `PreambleListener` reads the preamble, calls yarilo-auth VERIFY, enters pre-authenticated state.
+- LMTP keeps XCLIENT for MTA integration (Postfix → LMTP); login-pod paths always use the YARILO preamble.
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
@@ -388,7 +407,7 @@ Each with its own NFS PV and its own `yarilo-locks` service.
 **Tag assignment:** a separate user → tag map (admin-defined or hash-based shard).
 
 1. Client → director's login proxy (TLS terminate).
-2. Director: passdb via `yarilo-auth`, userdb as well.
+2. Login proxy: passdb in-process (auth only: password + allow_nets), then userdb for home/mail. Backend receives user info via extended XCLIENT, skips passdb/userdb.
 3. Director: determines the user's tag; the ring maps user → pod.
 4. Director connects directly to the pod via stable DNS (headless Service).
 5. Passes auth state in the preamble, proxies plain TCP.
