@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // pipePair returns two connected net.Conns (server-side, client-side).
@@ -391,6 +392,86 @@ func TestExtractPOP3Preamble_StlsAdvertised(t *testing.T) {
 			}
 			cli.Close()
 			<-done
+		})
+	}
+}
+
+func TestExtractIMAPPreamble_LoginLiterals(t *testing.T) {
+	// Synchronizing literal {N}: server sends "+ go ahead" before client sends data.
+	// We interleave writes and reads to follow the protocol correctly.
+	t.Run("synchronizing literals", func(t *testing.T) {
+		srv, cli := pipePair(t)
+		cli.SetDeadline(time.Now().Add(3 * time.Second))
+		errCh := make(chan error, 1)
+		var got *preamble
+		go func() {
+			rd := bufio.NewReader(srv)
+			p, err := extractIMAPPreamble(srv, rd, nil, Options{})
+			got = p
+			errCh <- err
+		}()
+		crd := bufio.NewReader(cli)
+		crd.ReadString('\n') // greeting
+
+		cli.Write([]byte("A1 LOGIN {5}\r\n"))
+		cont, _ := crd.ReadString('\n')
+		if !strings.HasPrefix(cont, "+") {
+			t.Fatalf("expected continuation, got %q", cont)
+		}
+		cli.Write([]byte("alice {6}\r\n"))
+		cont, _ = crd.ReadString('\n')
+		if !strings.HasPrefix(cont, "+") {
+			t.Fatalf("expected continuation, got %q", cont)
+		}
+		cli.Write([]byte("passwd\r\n"))
+
+		if err := <-errCh; err != nil {
+			t.Fatalf("extractIMAPPreamble: %v", err)
+		}
+		if got.username != "alice" {
+			t.Errorf("username = %q, want alice", got.username)
+		}
+		if got.password != "passwd" {
+			t.Errorf("password = %q, want passwd", got.password)
+		}
+	})
+
+	// Non-synchronizing literals {N+} and {N-}: client sends data immediately
+	// without waiting for "+ go ahead". Write everything in one shot.
+	nonsync := []struct {
+		name  string
+		input string
+	}{
+		{"LITERAL+", "A1 LOGIN {5+}\r\nalice {11+}\r\nsecret pw!!\r\n"},
+		{"LITERAL-", "A1 LOGIN {5-}\r\nalice {11-}\r\nsecret pw!!\r\n"},
+		{"literal username, quoted password", "A1 LOGIN {5-}\r\nalice \"secret pw!!\"\r\n"},
+	}
+	for _, tc := range nonsync {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cli := pipePair(t)
+			cli.SetDeadline(time.Now().Add(3 * time.Second))
+			errCh := make(chan error, 1)
+			var got *preamble
+			go func() {
+				rd := bufio.NewReader(srv)
+				p, err := extractIMAPPreamble(srv, rd, nil, Options{})
+				got = p
+				errCh <- err
+			}()
+			crd := bufio.NewReader(cli)
+			crd.ReadString('\n') // greeting
+
+			cli.Write([]byte(tc.input))
+
+			if err := <-errCh; err != nil {
+				t.Fatalf("extractIMAPPreamble: %v", err)
+			}
+			if got.username != "alice" {
+				t.Errorf("username = %q, want alice", got.username)
+			}
+			if got.password != "secret pw!!" {
+				t.Errorf("password = %q, want %q", got.password, "secret pw!!")
+			}
 		})
 	}
 }
