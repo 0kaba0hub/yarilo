@@ -353,15 +353,19 @@ func (s *Server) handleConn(conn net.Conn) {
 		Helo:      pre.ehloLine,
 	}
 	if _, err := io.WriteString(backendConn, pre2.Format()); err != nil {
-		slog.Debug("login: send preamble", "err", err)
+		slog.Error("login: send preamble", "err", err)
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 
 	// Read backend greeting; for IMAP extract post-auth capabilities to
 	// include in the tagged OK response sent to the client.
+	// If the backend closes the connection (e.g. token VERIFY failed) we must
+	// tell the client rather than silently dropping the TCP connection.
 	backendCaps, err := readBackendGreeting(backendRd, s.opts.Protocol)
 	if err != nil {
-		slog.Debug("login: read backend greeting", "err", err)
+		slog.Error("login: backend rejected session", "user", pre.username, "err", err)
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 
@@ -373,13 +377,15 @@ func (s *Server) handleConn(conn net.Conn) {
 			ehlo = "EHLO yarilo-submission-login\r\n"
 		}
 		if _, err := io.WriteString(backendConn, ehlo); err != nil {
-			slog.Debug("login: smtp ehlo send", "err", err)
+			slog.Error("login: smtp ehlo send", "err", err)
+			writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 			return
 		}
 		for {
 			line, err := backendRd.ReadString('\n')
 			if err != nil {
-				slog.Debug("login: smtp ehlo resp", "err", err)
+				slog.Error("login: smtp ehlo resp", "err", err)
+				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 				return
 			}
 			if len(line) >= 4 && line[3] != '-' {
