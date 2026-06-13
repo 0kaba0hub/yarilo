@@ -52,6 +52,7 @@ type session struct {
 	onTLS       bool
 	remoteIP    net.IP // real client IP; overridden by PreambleConn.RemoteAddr
 	preAuthUser string // username from preamble; consumed in serve()
+	sid         string // cross-service correlation ID from login-proxy
 
 	// set after successful login
 	lockKey         string
@@ -85,6 +86,7 @@ func (s *Server) newSession(conn net.Conn) *session {
 	}
 	if pc, ok := conn.(*loginproto.PreambleConn); ok {
 		sess.preAuthUser = pc.Username
+		sess.sid = pc.SessionID
 		sess.state = statePreAuth
 	}
 	return sess
@@ -604,6 +606,7 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	}
 	master, _ := res.Fields.Get("master_user")
 	slog.Info("pop3: login",
+		"sid", s.sid,
 		"user", userInfo.Username,
 		"master_user", master,
 		"remoteIP", s.remoteIP,

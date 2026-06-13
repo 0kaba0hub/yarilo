@@ -171,10 +171,12 @@ type backend struct{ srv *Server }
 func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 	remoteIP := connRemoteIP(c)
 	username := ""
+	sid := ""
 	if pc, ok := c.Conn().(*loginproto.PreambleConn); ok {
 		username = pc.Username
+		sid = pc.SessionID
 	}
-	return &session{srv: b.srv, conn: c, remoteIP: remoteIP, username: username}, nil
+	return &session{srv: b.srv, conn: c, remoteIP: remoteIP, username: username, sid: sid}, nil
 }
 
 type session struct {
@@ -182,6 +184,7 @@ type session struct {
 	conn     *goSmtp.Conn
 	remoteIP net.IP
 	username string // set from preamble for pre-authenticated sessions
+	sid      string // cross-service correlation ID from login-proxy
 	from     string
 	rcpts    []string
 }
@@ -221,10 +224,10 @@ func (s *session) Data(r io.Reader) error {
 		body = append([]byte(s.receivedHeader()), data...)
 	}
 	if err := p.Send(s.from, s.rcpts, bytes.NewReader(body), s.remoteIP); err != nil {
-		slog.Info("submission: proxy rejected", "from", s.from, "err", err)
+		slog.Info("submission: proxy rejected", "sid", s.sid, "from", s.from, "err", err)
 		return err
 	}
-	slog.Info("submission: proxied", "from", s.from, "rcpts", s.rcpts, "size", len(body))
+	slog.Info("submission: proxied", "sid", s.sid, "from", s.from, "rcpts", s.rcpts, "size", len(body))
 	return nil
 }
 
@@ -417,6 +420,7 @@ func (s *session) authOAuthBearerSASL(opts sasl.OAuthBearerOptions) *sasl.OAuthB
 		}
 	}
 	slog.Info("submission: login",
+		"sid", s.sid,
 		"user", opts.Username,
 		"mech", "OAUTHBEARER",
 		"remoteIP", connRemoteIP(s.conn).String(),
@@ -443,6 +447,7 @@ func (s *session) authXOAuth2SASL(opts sasl.XOAuth2Options) *sasl.OAuthBearerErr
 		}
 	}
 	slog.Info("submission: login",
+		"sid", s.sid,
 		"user", opts.Username,
 		"mech", "XOAUTH2",
 		"remoteIP", connRemoteIP(s.conn).String(),
@@ -488,6 +493,7 @@ func (s *session) authPlainSASL(authzid, authid, password string) error {
 		return err
 	}
 	slog.Info("submission: login",
+		"sid", s.sid,
 		"user", target,
 		"master_user", master,
 		"remoteIP", connRemoteIP(s.conn).String(),

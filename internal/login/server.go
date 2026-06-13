@@ -8,6 +8,7 @@ package login
 import (
 	"bufio"
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -137,11 +138,18 @@ func (w *watchConn) pong() {
 	_ = w.c.WriteLine("PONG")
 }
 
+// newSessionID returns a cryptographically random 16-hex-character session
+// identifier that is unique across all login-proxy pods and restarts.
+func newSessionID() string {
+	var b [8]byte
+	_, _ = crand.Read(b[:])
+	return fmt.Sprintf("%x", b[:])
+}
+
 // Server is the login proxy server.
 type Server struct {
-	opts   Options
-	reqID  atomic.Uint64
-	sessID atomic.Uint64
+	opts  Options
+	reqID atomic.Uint64
 
 	sessMu   sync.RWMutex
 	sessions map[string][]*liveSession // username → active sessions
@@ -213,17 +221,18 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	// Generate session ID early — passed to yarilo-auth so penalty tracking
 	// associates the correct anvil session with the authenticated user.
-	sessID := fmt.Sprintf("%d", s.sessID.Add(1))
+	sessID := newSessionID()
+	log := slog.With("sid", sessID, "proto", string(s.opts.Protocol), "remote", remote)
 
 	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 	if s.opts.AuthAddr == "" {
-		slog.Error("login: auth_addr not configured")
+		log.Error("login: auth_addr not configured")
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 	authCl, err := authclient.Dial(s.opts.AuthAddr, s.opts.AuthTLS)
 	if err != nil {
-		slog.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
+		log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
@@ -241,7 +250,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		var aerr error
 		authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
 		if errors.Is(aerr, authclient.ErrTempFail) {
-			slog.Warn("login: auth temp fail", "user", pre.username)
+			log.Warn("login: auth temp fail", "user", pre.username)
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 			return
 		}
@@ -249,14 +258,14 @@ func (s *Server) handleConn(conn net.Conn) {
 		authFailed := aerr != nil
 		if aerr == nil {
 			if authResult.Nologin {
-				slog.Info("login: nologin", "user", pre.username)
+				log.Info("login: nologin", "user", pre.username)
 				authFailed = true
 			} else if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
-				slog.Info("login: ip not in allow_nets", "user", pre.username, "ip", clientIP)
+				log.Info("login: ip not in allow_nets", "user", pre.username)
 				authFailed = true
 			}
 		} else {
-			slog.Info("login: auth failed", "user", pre.username, "remote", remote)
+			log.Info("login: auth failed", "user", pre.username)
 		}
 
 		if !authFailed {
@@ -265,22 +274,18 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		failures++
 		if failures >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
-			// Untagged BYE / protocol-specific equivalent; no tag on the final failure.
 			writeProtoError(authConn, s.opts.Protocol, "", imapCodeAuthenticationFail, "Too many failed authentications")
 			return
 		}
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
 
-		// Re-enter the command loop without re-sending the greeting.
-		// If the connection is still plain TCP, re-offer STARTTLS so the client
-		// can upgrade before the next attempt.
 		var retryExtTLS *tls.Config
 		if _, ok := authConn.(*tls.Conn); !ok {
 			retryExtTLS = s.opts.StarttlsTLS
 		}
 		pre, authConn, authRd, err = continueAuth(authConn, authRd, retryExtTLS, s.opts.Protocol, s.opts)
 		if err != nil {
-			slog.Debug("login: preamble retry", "proto", s.opts.Protocol, "remote", remote, "err", err)
+			log.Debug("login: preamble retry", "err", err)
 			return
 		}
 	}
@@ -293,7 +298,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		var err error
 		backendAddr, err = s.directorLookup(pre.username)
 		if err != nil {
-			slog.Warn("login: director lookup failed", "proto", s.opts.Protocol, "user", pre.username, "err", err)
+			log.Warn("login: director lookup failed", "user", pre.username, "err", err)
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
 			return
 		}
@@ -303,7 +308,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	if s.opts.AnvilAddr != "" {
 		ac, aerr := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 0)
 		if aerr != nil {
-			slog.Error("login: anvil dial failed", "addr", s.opts.AnvilAddr, "err", aerr)
+			log.Error("login: anvil dial failed", "addr", s.opts.AnvilAddr, "err", aerr)
 			if !s.opts.AnvilFailOpen {
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 				return
@@ -313,13 +318,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			cerr := ac.Connect(sessID, pre.username, clientIP, svc)
 			if cerr == anvil.ErrTooManyConns {
 				ac.Close()
-				slog.Warn("login: too many connections", "user", pre.username, "ip", clientIP)
+				log.Warn("login: too many connections", "user", pre.username)
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
 				return
 			}
 			if cerr != nil {
 				ac.Close()
-				slog.Error("login: anvil connect failed", "err", cerr)
+				log.Error("login: anvil connect failed", "err", cerr)
 				if !s.opts.AnvilFailOpen {
 					writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 					return
@@ -331,14 +336,14 @@ func (s *Server) handleConn(conn net.Conn) {
 					defer close(hbDone)
 					interval := anvil.DefaultSessionTTL / 3
 					if err := ac.HeartbeatLoop(hbCtx, sessID, interval, nil); err != nil {
-						slog.Debug("login: anvil heartbeat loop", "err", err)
+						log.Debug("login: anvil heartbeat loop", "err", err)
 					}
 				}()
 				defer func() {
 					hbCancel()
 					<-hbDone
 					if err := ac.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
-						slog.Debug("login: anvil disconnect", "err", err)
+						log.Debug("login: anvil disconnect", "err", err)
 					}
 					ac.Close()
 				}()
@@ -349,7 +354,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Dial backend pod.
 	backendConn, err := dialBackend(backendAddr, s.opts.BackendTLS)
 	if err != nil {
-		slog.Error("login: dial backend", "addr", backendAddr, "err", err)
+		log.Error("login: dial backend", "addr", backendAddr, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
 		return
 	}
@@ -393,7 +398,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		Helo:      pre.ehloLine,
 	}
 	if _, err := io.WriteString(backendConn, pre2.Format()); err != nil {
-		slog.Error("login: send preamble", "err", err)
+		log.Error("login: send preamble", "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
@@ -404,7 +409,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	// tell the client rather than silently dropping the TCP connection.
 	backendCaps, err := readBackendGreeting(backendRd, s.opts.Protocol)
 	if err != nil {
-		slog.Error("login: backend rejected session", "user", pre.username, "err", err)
+		log.Error("login: backend rejected session", "user", pre.username, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
@@ -417,14 +422,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			ehlo = "EHLO yarilo-submission-login\r\n"
 		}
 		if _, err := io.WriteString(backendConn, ehlo); err != nil {
-			slog.Error("login: smtp ehlo send", "err", err)
+			log.Error("login: smtp ehlo send", "err", err)
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 			return
 		}
 		for {
 			line, err := backendRd.ReadString('\n')
 			if err != nil {
-				slog.Error("login: smtp ehlo resp", "err", err)
+				log.Error("login: smtp ehlo resp", "err", err)
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 				return
 			}
@@ -434,12 +439,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}
 
-	slog.Info("login: session routed",
-		"proto", s.opts.Protocol,
-		"user", pre.username,
-		"remote", remote,
-		"backend", backendAddr,
-	)
+	log.Info("login: session routed", "user", pre.username, "backend", backendAddr)
 
 	// Auth is confirmed — tell the client before entering proxy mode.
 	writeProtoAuthOK(authConn, s.opts.Protocol, pre.cmdTag, backendCaps)
