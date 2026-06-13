@@ -59,6 +59,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -339,6 +340,7 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) {
 	}
 	id, user, ip, service := fields[1], fields[2], fields[3], fields[4]
 	if !s.limiter.Acquire(user, ip) {
+		slog.Warn("anvil: too many connections", "sid", id, "user", user, "ip", ip, "service", service)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
 		return
 	}
@@ -353,6 +355,7 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) {
 		lastSeen:    now,
 	}
 	s.mu.Unlock()
+	slog.Debug("anvil: connect", "sid", id, "user", user, "ip", ip, "service", service)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 }
 
@@ -366,6 +369,7 @@ func (s *Server) handleDisconnect(conn net.Conn, fields []string) {
 	s.mu.Lock()
 	delete(s.sessions, id)
 	s.mu.Unlock()
+	slog.Debug("anvil: disconnect", "sid", id, "user", user, "ip", ip)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 }
 

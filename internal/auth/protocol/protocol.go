@@ -1231,6 +1231,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		// through the protocol. Logs ARE allowed to be specific
 		// because they don't reach the client.
 		slog.Info("auth: fail",
+			"sid", sessionID,
 			"service", service,
 			"user", master,
 			"master_user_target", target,
@@ -1291,6 +1292,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		loggedMaster, _ = res.Fields.Get("master_user")
 	}
 	slog.Info("auth: ok",
+		"sid", sessionID,
 		"service", service,
 		"user", res.Username,
 		"master_user", loggedMaster,

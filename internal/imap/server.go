@@ -287,6 +287,7 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 	sess := &session{srv: s, imapConn: c}
 	if pc := unwrapPreambleConn(c.NetConn()); pc != nil {
+		sess.sid = pc.SessionID
 		if err := sess.completeLogin(&protocol.AuthResponse{
 			Result:   protocol.AuthOK,
 			Username: pc.Username,
@@ -322,6 +323,7 @@ type session struct {
 	srv      *Server
 	imapConn *imapserver.Conn
 	userInfo *mailbox.UserInfo
+	sid      string // cross-service correlation ID from login-proxy
 	// box / idx / subs are convenience aliases for the personal
 	// namespace handle (== s.primary.box / .idx / .subs). They keep
 	// the pre-NS-1b single-namespace code path readable for the
@@ -420,7 +422,7 @@ func (s *session) Close() error {
 			"fetch_body_count": strconv.Itoa(s.statsFetchBody),
 			"fetch_body_bytes": strconv.FormatInt(s.statsFetchBodyB, 10),
 		})
-		slog.Info("imap: logout", "user", s.userInfo.Username, "stats", msg)
+		slog.Info("imap: logout", "sid", s.sid, "user", s.userInfo.Username, "stats", msg)
 	}
 	// closeHandles tears down every per-namespace box+idx; s.box/s.idx
 	// aliases pointed at s.primary so the personal handle is included.
@@ -753,6 +755,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	// regular and master-user sessions through one log shape.
 	master, _ := res.Fields.Get("master_user")
 	slog.Info("imap: login",
+		"sid", s.sid,
 		"user", userInfo.Username,
 		"master_user", master,
 		"remoteIP", remoteIP(s.imapConn.NetConn()),
