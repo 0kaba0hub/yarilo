@@ -30,6 +30,8 @@ type greetingConn struct {
 	done        bool
 }
 
+func (c *greetingConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *greetingConn) Write(b []byte) (int, error) {
 	if !c.done {
 		s := string(b)

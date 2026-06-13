@@ -45,6 +45,8 @@ type idImapConn struct {
 	serverResp []byte
 }
 
+func (c *idImapConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *idImapConn) Read(b []byte) (int, error) {
 	for {
 		if len(c.pending) > 0 {

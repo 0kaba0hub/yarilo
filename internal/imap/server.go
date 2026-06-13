@@ -286,7 +286,7 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 
 func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 	sess := &session{srv: s, imapConn: c}
-	if pc, ok := c.NetConn().(*loginproto.PreambleConn); ok {
+	if pc := unwrapPreambleConn(c.NetConn()); pc != nil {
 		if err := sess.completeLogin(&protocol.AuthResponse{
 			Result:   protocol.AuthOK,
 			Username: pc.Username,
@@ -296,6 +296,24 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 		return sess, &imapserver.GreetingData{PreAuth: true}, nil
 	}
 	return sess, &imapserver.GreetingData{PreAuth: false}, nil
+}
+
+// unwrapPreambleConn walks the net.Conn wrapper chain looking for a
+// *loginproto.PreambleConn. Wrapper types (greetingConn, idImapConn) expose
+// Unwrap() net.Conn so they can be peeled off transparently.
+func unwrapPreambleConn(c net.Conn) *loginproto.PreambleConn {
+	type unwrapper interface{ Unwrap() net.Conn }
+	for c != nil {
+		if pc, ok := c.(*loginproto.PreambleConn); ok {
+			return pc
+		}
+		uw, ok := c.(unwrapper)
+		if !ok {
+			return nil
+		}
+		c = uw.Unwrap()
+	}
+	return nil
 }
 
 // ---- session ---------------------------------------------------------------
