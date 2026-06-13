@@ -23,7 +23,7 @@ var version = "dev"
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: logLevel(),
-	})))
+	})).With("service", "monitor"))
 
 	cfgPath := os.Getenv("MONITOR_CONFIG")
 	if cfgPath == "" {

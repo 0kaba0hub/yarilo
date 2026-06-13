@@ -237,17 +237,18 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(60 * time.Second)) //nolint:errcheck
 
-	remote := conn.RemoteAddr().String()
-	clientIP, _, err := net.SplitHostPort(remote)
+	remoteAddr := conn.RemoteAddr().String()
+	clientIP, remotePort, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		clientIP = remote
+		clientIP = remoteAddr
+		remotePort = ""
 	}
 
 	// Implicit-TLS upgrade (IMAPS / POP3S / Submissions).
 	if s.opts.ExtTLS != nil {
 		tlsConn := tls.Server(conn, s.opts.ExtTLS)
 		if err := tlsConn.Handshake(); err != nil {
-			slog.Debug("login: tls handshake", "proto", s.opts.Protocol, "remote", remote, "err", err)
+			slog.Debug("login: tls handshake", "proto", s.opts.Protocol, "remote_ip", clientIP, "remote_port", remotePort, "err", err)
 			return
 		}
 		conn = tlsConn
@@ -259,14 +260,14 @@ func (s *Server) handleConn(conn net.Conn) {
 	// authConn/authRd may be TLS-upgraded from the original conn/rd if STARTTLS happened.
 	pre, authConn, authRd, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS, s.opts)
 	if err != nil {
-		slog.Debug("login: preamble", "proto", s.opts.Protocol, "remote", remote, "err", err)
+		slog.Debug("login: preamble", "proto", s.opts.Protocol, "remote_ip", clientIP, "remote_port", remotePort, "err", err)
 		return
 	}
 
 	// Generate session ID early — passed to yarilo-auth so penalty tracking
 	// associates the correct anvil session with the authenticated user.
 	sessID := s.newSessionID()
-	log := slog.With("sid", sessID, "proto", string(s.opts.Protocol), "remote", remote)
+	log := slog.With("sid", sessID, "proto", string(s.opts.Protocol), "remote_ip", clientIP, "remote_port", remotePort)
 
 	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 	if s.opts.AuthAddr == "" {

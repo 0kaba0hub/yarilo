@@ -22,7 +22,7 @@ func debugf(msg string, args ...any) {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "yarilo"))
 
 	cfgPath := flag.String("config", "config/yarilo.yaml", "path to config file")
 	flag.Parse()
@@ -31,7 +31,7 @@ func main() {
 	if debug {
 		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
-		})))
+		})).With("service", "yarilo"))
 	}
 
 	debugf("starting", "config", *cfgPath)
