@@ -212,13 +212,13 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 	if s.opts.AuthAddr == "" {
 		slog.Error("login: auth_addr not configured")
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 	authCl, err := authclient.Dial(s.opts.AuthAddr, s.opts.AuthTLS)
 	if err != nil {
 		slog.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 	defer authCl.Close()
@@ -226,22 +226,22 @@ func (s *Server) handleConn(conn net.Conn) {
 	authResult, err := authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
 	if errors.Is(err, authclient.ErrTempFail) {
 		slog.Warn("login: auth temp fail", "user", pre.username)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 	if err != nil {
 		slog.Info("login: auth failed", "user", pre.username, "remote", remote)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "authentication failed")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
 		return
 	}
 	if authResult.Nologin {
 		slog.Info("login: nologin", "user", pre.username)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "login disabled")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
 		return
 	}
 	if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
 		slog.Info("login: ip not in allow_nets", "user", pre.username, "ip", clientIP)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "login from this IP is not allowed")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
 		return
 	}
 
@@ -254,7 +254,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		backendAddr, err = s.directorLookup(pre.username)
 		if err != nil {
 			slog.Warn("login: director lookup failed", "proto", s.opts.Protocol, "user", pre.username, "err", err)
-			writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "backend unavailable")
+			writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
 			return
 		}
 	}
@@ -265,7 +265,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		if aerr != nil {
 			slog.Error("login: anvil dial failed", "addr", s.opts.AnvilAddr, "err", aerr)
 			if !s.opts.AnvilFailOpen {
-				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 				return
 			}
 		} else {
@@ -274,14 +274,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			if cerr == anvil.ErrTooManyConns {
 				ac.Close()
 				slog.Warn("login: too many connections", "user", pre.username, "ip", clientIP)
-				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "too many connections")
+				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
 				return
 			}
 			if cerr != nil {
 				ac.Close()
 				slog.Error("login: anvil connect failed", "err", cerr)
 				if !s.opts.AnvilFailOpen {
-					writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "service temporarily unavailable")
+					writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 					return
 				}
 			} else {
@@ -310,7 +310,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	backendConn, err := dialBackend(backendAddr, s.opts.BackendTLS)
 	if err != nil {
 		slog.Error("login: dial backend", "addr", backendAddr, "err", err)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, "backend unavailable")
+		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
 		return
 	}
 	defer backendConn.Close()
@@ -716,11 +716,18 @@ func halfClose(w io.Writer) {
 	}
 }
 
-func writeProtoError(conn net.Conn, p Protocol, tag, msg string) {
+// IMAP response codes (RFC 5530) used in NO responses.
+const (
+	imapCodeUnavailable        = "UNAVAILABLE"
+	imapCodeAuthenticationFail = "AUTHENTICATIONFAILED"
+	imapCodeLimit              = "LIMIT"
+)
+
+func writeProtoError(conn net.Conn, p Protocol, tag, imapCode, msg string) {
 	switch p {
 	case ProtocolIMAP, ProtocolIMAPS:
 		if tag != "" {
-			fmt.Fprintf(conn, "%s NO [UNAVAILABLE] %s\r\n", tag, msg) //nolint:errcheck
+			fmt.Fprintf(conn, "%s NO [%s] %s\r\n", tag, imapCode, msg) //nolint:errcheck
 		} else {
 			fmt.Fprintf(conn, "* BYE %s\r\n", msg) //nolint:errcheck
 		}
