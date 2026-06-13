@@ -20,7 +20,7 @@ var version = "dev"
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: logLevel(),
-	})))
+	})).With("service", "imap"))
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
