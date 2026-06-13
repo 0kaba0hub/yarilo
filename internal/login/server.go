@@ -87,6 +87,11 @@ type Options struct {
 	// Nil means plain TCP.
 	AuthTLS *tls.Config
 
+	// AuthMaxAttempts is the maximum number of failed authentication
+	// attempts allowed on a single connection before the server sends
+	// BYE and closes. 0 means use the default (3). Mirrors cfg.Auth.MaxAttempts.
+	AuthMaxAttempts int
+
 	// OAuth2Enabled advertises and accepts OAUTHBEARER and XOAUTH2 mechanisms.
 	// Mirrors cfg.Auth.OAuth2 being non-empty.
 	OAuth2Enabled bool
@@ -227,7 +232,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Auth retry loop: keep the connection open after a bad-password failure,
 	// matching Dovecot behaviour. Up to maxAuthAttempts attempts; after the last
 	// one send an untagged BYE (IMAP) / -ERR (POP3) and close.
-	const maxAuthAttempts = 3
+	maxAuthAttempts := s.opts.AuthMaxAttempts
+	if maxAuthAttempts <= 0 {
+		maxAuthAttempts = 3
+	}
 	var authResult *authclient.AuthResult
 	for failures := 0; ; {
 		var aerr error
