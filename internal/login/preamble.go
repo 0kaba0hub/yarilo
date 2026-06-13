@@ -39,9 +39,10 @@ type preamble struct {
 }
 
 // extractPreamble dispatches to the protocol-specific handler.
-// extTLS is non-nil when the login pod already upgraded to implicit TLS;
-// it is passed to the STARTTLS handler so STARTTLS is only offered on plain listeners.
-func extractPreamble(conn net.Conn, rd *bufio.Reader, p Protocol, extTLS *tls.Config, opts Options) (*preamble, error) {
+// Returns the preamble and the (possibly TLS-upgraded) conn and rd — STARTTLS
+// inside the handler replaces the plain conn, so callers must use the returned
+// values for all subsequent writes to the client.
+func extractPreamble(conn net.Conn, rd *bufio.Reader, p Protocol, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	switch p {
 	case ProtocolIMAP, ProtocolIMAPS:
 		return extractIMAPPreamble(conn, rd, extTLS, opts)
@@ -50,22 +51,28 @@ func extractPreamble(conn net.Conn, rd *bufio.Reader, p Protocol, extTLS *tls.Co
 	case ProtocolSubmission, ProtocolSubmissions:
 		return extractSubmissionPreamble(conn, rd, extTLS, opts)
 	default:
-		return nil, fmt.Errorf("preamble: unknown protocol %q", p)
+		return nil, conn, rd, fmt.Errorf("preamble: unknown protocol %q", p)
 	}
 }
 
-// extractIMAPPreamble speaks minimal IMAP until the client authenticates.
-// Handles: CAPABILITY, ID, NOOP, LOGOUT, STARTTLS, LOGIN, AUTHENTICATE PLAIN/LOGIN, OAUTHBEARER, XOAUTH2.
-func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, error) {
+// extractIMAPPreamble sends the greeting then enters the auth command loop.
+func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	caps := imapPreAuthCaps(extTLS, opts)
 	if _, err := fmt.Fprintf(conn, "* OK [CAPABILITY %s] Yarilo Login ready\r\n", caps); err != nil {
-		return nil, fmt.Errorf("imap: send greeting: %w", err)
+		return nil, conn, rd, fmt.Errorf("imap: send greeting: %w", err)
 	}
+	return imapCommandLoop(conn, rd, extTLS, opts)
+}
 
+// imapCommandLoop handles IMAP commands until the client sends credentials.
+// Does NOT send the greeting — call extractIMAPPreamble for the initial exchange
+// or continueAuth for retry after a failed authentication.
+// Returns the updated conn and rd (may be TLS-upgraded if STARTTLS was performed).
+func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("imap: read: %w", err)
+			return nil, conn, rd, fmt.Errorf("imap: read: %w", err)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
@@ -81,46 +88,45 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 		switch cmd {
 		case "CAPABILITY":
 			c := imapPreAuthCaps(extTLS, opts)
-			fmt.Fprintf(conn, "* CAPABILITY %s\r\n", c)
-			fmt.Fprintf(conn, "%s OK [CAPABILITY %s] CAPABILITY\r\n", tag, c)
+			fmt.Fprintf(conn, "* CAPABILITY %s\r\n", c)                       //nolint:errcheck
+			fmt.Fprintf(conn, "%s OK [CAPABILITY %s] CAPABILITY\r\n", tag, c) //nolint:errcheck
 		case "ID":
-			fmt.Fprintf(conn, "* ID NIL\r\n")
-			fmt.Fprintf(conn, "%s OK ID\r\n", tag)
+			fmt.Fprintf(conn, "* ID NIL\r\n")      //nolint:errcheck
+			fmt.Fprintf(conn, "%s OK ID\r\n", tag) //nolint:errcheck
 		case "NOOP":
-			fmt.Fprintf(conn, "%s OK NOOP\r\n", tag)
+			fmt.Fprintf(conn, "%s OK NOOP\r\n", tag) //nolint:errcheck
 		case "LOGOUT":
-			fmt.Fprintf(conn, "* BYE Logging out\r\n")
-			fmt.Fprintf(conn, "%s OK LOGOUT\r\n", tag)
-			return nil, fmt.Errorf("imap: client logged out before auth")
+			fmt.Fprintf(conn, "* BYE Logging out\r\n") //nolint:errcheck
+			fmt.Fprintf(conn, "%s OK LOGOUT\r\n", tag) //nolint:errcheck
+			return nil, conn, rd, fmt.Errorf("imap: client logged out before auth")
 		case "STARTTLS":
 			if extTLS == nil {
 				// RFC 3501 §6.2.1 and RFC 9051 §6.2.1: BAD when TLS is not available.
-				fmt.Fprintf(conn, "%s BAD STARTTLS not available\r\n", tag)
+				fmt.Fprintf(conn, "%s BAD STARTTLS not available\r\n", tag) //nolint:errcheck
 				continue
 			}
-			fmt.Fprintf(conn, "%s OK Begin TLS negotiation\r\n", tag)
+			fmt.Fprintf(conn, "%s OK Begin TLS negotiation\r\n", tag) //nolint:errcheck
 			tlsConn := tls.Server(conn, extTLS)
 			if err := tlsConn.Handshake(); err != nil {
-				return nil, fmt.Errorf("imap: STARTTLS handshake: %w", err)
+				return nil, conn, rd, fmt.Errorf("imap: STARTTLS handshake: %w", err)
 			}
-			// Replace conn and rd with TLS-upgraded versions.
 			conn = tlsConn
 			rd = bufio.NewReaderSize(conn, 4096)
 			extTLS = nil // prevent another STARTTLS offer
 		case "LOGIN":
 			username, password, loginErr := parseIMAPLoginArgs(line, rd, conn)
 			if loginErr != nil {
-				fmt.Fprintf(conn, "%s BAD LOGIN requires username and password\r\n", tag)
+				fmt.Fprintf(conn, "%s BAD LOGIN requires username and password\r\n", tag) //nolint:errcheck
 				continue
 			}
 			return &preamble{
 				username: username,
 				password: password,
 				cmdTag:   tag,
-			}, nil
+			}, conn, rd, nil
 		case "AUTHENTICATE":
 			if len(fields) < 3 {
-				fmt.Fprintf(conn, "%s BAD AUTHENTICATE requires mechanism\r\n", tag)
+				fmt.Fprintf(conn, "%s BAD AUTHENTICATE requires mechanism\r\n", tag) //nolint:errcheck
 				continue
 			}
 			switch strings.ToUpper(fields[2]) {
@@ -128,86 +134,90 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 				var b64 string
 				if len(fields) >= 4 {
 					b64 = fields[3]
-				} else {
-					b64 = ""
 				}
 				// "=" means empty initial response (RFC 4959) — treat as no initial
 				// response and request the client to send credentials.
 				if b64 == "" || b64 == "=" {
 					if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
-						return nil, fmt.Errorf("imap: send challenge: %w", err)
+						return nil, conn, rd, fmt.Errorf("imap: send challenge: %w", err)
 					}
 					resp, err := rd.ReadString('\n')
 					if err != nil {
-						return nil, fmt.Errorf("imap: read auth: %w", err)
+						return nil, conn, rd, fmt.Errorf("imap: read auth: %w", err)
 					}
 					b64 = strings.TrimRight(resp, "\r\n")
 				}
 				username, password, err := decodePlainCreds(b64)
 				if err != nil {
-					fmt.Fprintf(conn, "%s BAD Invalid SASL encoding\r\n", tag)
+					fmt.Fprintf(conn, "%s BAD Invalid SASL encoding\r\n", tag) //nolint:errcheck
 					continue
 				}
 				return &preamble{
 					username: username,
 					password: password,
 					cmdTag:   tag,
-				}, nil
+				}, conn, rd, nil
 			case "LOGIN":
 				// Two-step: server prompts for username, then password.
 				if _, err := fmt.Fprintf(conn, "+ VXNlcm5hbWU6\r\n"); err != nil {
-					return nil, fmt.Errorf("imap: auth login username prompt: %w", err)
+					return nil, conn, rd, fmt.Errorf("imap: auth login username prompt: %w", err)
 				}
 				userB64, err := rd.ReadString('\n')
 				if err != nil {
-					return nil, fmt.Errorf("imap: auth login username: %w", err)
+					return nil, conn, rd, fmt.Errorf("imap: auth login username: %w", err)
 				}
 				userB64 = strings.TrimRight(userB64, "\r\n")
 				userBytes, decErr := base64.StdEncoding.DecodeString(userB64)
 				if decErr != nil {
-					fmt.Fprintf(conn, "%s BAD Invalid base64\r\n", tag)
+					fmt.Fprintf(conn, "%s BAD Invalid base64\r\n", tag) //nolint:errcheck
 					continue
 				}
 				username := string(userBytes)
 				if _, err := fmt.Fprintf(conn, "+ UGFzc3dvcmQ6\r\n"); err != nil {
-					return nil, fmt.Errorf("imap: auth login password prompt: %w", err)
+					return nil, conn, rd, fmt.Errorf("imap: auth login password prompt: %w", err)
 				}
 				passB64, err := rd.ReadString('\n')
 				if err != nil {
-					return nil, fmt.Errorf("imap: auth login password: %w", err)
+					return nil, conn, rd, fmt.Errorf("imap: auth login password: %w", err)
 				}
 				passB64 = strings.TrimRight(passB64, "\r\n")
 				passBytes, decErr := base64.StdEncoding.DecodeString(passB64)
 				if decErr != nil {
-					fmt.Fprintf(conn, "%s BAD Invalid base64\r\n", tag)
+					fmt.Fprintf(conn, "%s BAD Invalid base64\r\n", tag) //nolint:errcheck
 					continue
 				}
 				return &preamble{
 					username: username,
 					password: string(passBytes),
 					cmdTag:   tag,
-				}, nil
+				}, conn, rd, nil
 			default:
-				fmt.Fprintf(conn, "%s NO Unsupported mechanism\r\n", tag)
+				fmt.Fprintf(conn, "%s NO Unsupported mechanism\r\n", tag) //nolint:errcheck
 				continue
 			}
 		default:
-			fmt.Fprintf(conn, "%s BAD Not permitted before authentication\r\n", tag)
+			fmt.Fprintf(conn, "%s BAD Not permitted before authentication\r\n", tag) //nolint:errcheck
 		}
 	}
 }
 
-// extractPOP3Preamble speaks minimal POP3 until USER+PASS are received.
-func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, error) {
+// extractPOP3Preamble sends the greeting then enters the auth command loop.
+func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	if _, err := fmt.Fprintf(conn, "+OK Yarilo Login ready\r\n"); err != nil {
-		return nil, fmt.Errorf("pop3: send greeting: %w", err)
+		return nil, conn, rd, fmt.Errorf("pop3: send greeting: %w", err)
 	}
+	return pop3CommandLoop(conn, rd, extTLS, opts)
+}
 
+// pop3CommandLoop handles POP3 commands until USER+PASS or AUTH PLAIN are received.
+// Does NOT send the greeting — call extractPOP3Preamble for the initial exchange
+// or continueAuth for retry after a failed authentication.
+func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	var username string
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("pop3: read: %w", err)
+			return nil, conn, rd, fmt.Errorf("pop3: read: %w", err)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		upper := strings.ToUpper(line)
@@ -225,21 +235,21 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 				capa += "SASL OAUTHBEARER XOAUTH2\r\n"
 			}
 			capa += ".\r\n"
-			fmt.Fprint(conn, capa)
+			fmt.Fprint(conn, capa) //nolint:errcheck
 		case upper == "NOOP":
-			fmt.Fprintf(conn, "+OK\r\n")
+			fmt.Fprintf(conn, "+OK\r\n") //nolint:errcheck
 		case upper == "QUIT":
-			fmt.Fprintf(conn, "+OK Goodbye\r\n")
-			return nil, fmt.Errorf("pop3: client quit before auth")
+			fmt.Fprintf(conn, "+OK Goodbye\r\n") //nolint:errcheck
+			return nil, conn, rd, fmt.Errorf("pop3: client quit before auth")
 		case upper == "STLS":
 			if extTLS == nil {
-				fmt.Fprintf(conn, "-ERR TLS not available\r\n")
+				fmt.Fprintf(conn, "-ERR TLS not available\r\n") //nolint:errcheck
 				continue
 			}
-			fmt.Fprintf(conn, "+OK Begin TLS\r\n")
+			fmt.Fprintf(conn, "+OK Begin TLS\r\n") //nolint:errcheck
 			tlsConn := tls.Server(conn, extTLS)
 			if err := tlsConn.Handshake(); err != nil {
-				return nil, fmt.Errorf("pop3: STLS handshake: %w", err)
+				return nil, conn, rd, fmt.Errorf("pop3: STLS handshake: %w", err)
 			}
 			conn = tlsConn
 			rd = bufio.NewReaderSize(conn, 4096)
@@ -248,7 +258,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 		case strings.HasPrefix(upper, "AUTH"):
 			fields := strings.Fields(line)
 			if len(fields) < 2 || !strings.EqualFold(fields[1], "PLAIN") {
-				fmt.Fprintf(conn, "-ERR Unknown authentication mechanism\r\n")
+				fmt.Fprintf(conn, "-ERR Unknown authentication mechanism\r\n") //nolint:errcheck
 				continue
 			}
 			var b64 string
@@ -256,46 +266,61 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 				b64 = fields[2]
 			} else {
 				if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
-					return nil, fmt.Errorf("pop3: auth plain challenge: %w", err)
+					return nil, conn, rd, fmt.Errorf("pop3: auth plain challenge: %w", err)
 				}
 				resp, err := rd.ReadString('\n')
 				if err != nil {
-					return nil, fmt.Errorf("pop3: auth plain response: %w", err)
+					return nil, conn, rd, fmt.Errorf("pop3: auth plain response: %w", err)
 				}
 				b64 = strings.TrimRight(resp, "\r\n")
 			}
 			user, pass, decErr := decodePlainCreds(b64)
 			if decErr != nil {
-				fmt.Fprintf(conn, "-ERR Invalid authentication\r\n")
+				fmt.Fprintf(conn, "-ERR Invalid authentication\r\n") //nolint:errcheck
 				continue
 			}
 			return &preamble{
 				username: user,
 				password: pass,
-			}, nil
+			}, conn, rd, nil
 		case strings.HasPrefix(upper, "USER "):
 			username = strings.TrimSpace(line[5:])
-			fmt.Fprintf(conn, "+OK\r\n")
+			fmt.Fprintf(conn, "+OK\r\n") //nolint:errcheck
 		case strings.HasPrefix(upper, "PASS "):
 			if username == "" {
-				fmt.Fprintf(conn, "-ERR No USER given\r\n")
+				fmt.Fprintf(conn, "-ERR No USER given\r\n") //nolint:errcheck
 				continue
 			}
 			return &preamble{
 				username: username,
 				password: strings.TrimSpace(line[5:]),
-			}, nil
+			}, conn, rd, nil
 		default:
-			fmt.Fprintf(conn, "-ERR Unknown command\r\n")
+			fmt.Fprintf(conn, "-ERR Unknown command\r\n") //nolint:errcheck
 		}
+	}
+}
+
+// continueAuth re-enters the protocol command loop after a failed authentication
+// without re-sending the greeting. Used to keep the connection alive for retries.
+// STARTTLS is re-offered when extTLS is non-nil (i.e. the connection is still plain).
+func continueAuth(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, p Protocol, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
+	switch p {
+	case ProtocolIMAP, ProtocolIMAPS:
+		return imapCommandLoop(conn, rd, extTLS, opts)
+	case ProtocolPOP3, ProtocolPOP3S:
+		return pop3CommandLoop(conn, rd, extTLS, opts)
+	default:
+		return nil, conn, rd, fmt.Errorf("login: continueAuth: non-retriable protocol %q", p)
 	}
 }
 
 // extractSubmissionPreamble speaks minimal SMTP until AUTH PLAIN/LOGIN completes.
 // extTLS is used for STARTTLS on port 587; nil on port 465 (already TLS).
-func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, error) {
+// Returns the updated conn and rd (may be TLS-upgraded after STARTTLS).
+func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	if _, err := fmt.Fprintf(conn, "220 Yarilo Login ready\r\n"); err != nil {
-		return nil, fmt.Errorf("smtp: send greeting: %w", err)
+		return nil, conn, rd, fmt.Errorf("smtp: send greeting: %w", err)
 	}
 
 	var ehloLine string
@@ -304,7 +329,7 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("smtp: read: %w", err)
+			return nil, conn, rd, fmt.Errorf("smtp: read: %w", err)
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
 		upper := strings.ToUpper(trimmed)
@@ -327,33 +352,37 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 			}
 			caps += "250 8BITMIME\r\n"
 			if _, err := io.WriteString(conn, caps); err != nil {
-				return nil, fmt.Errorf("smtp: send ehlo resp: %w", err)
+				return nil, conn, rd, fmt.Errorf("smtp: send ehlo resp: %w", err)
 			}
 		case upper == "STARTTLS":
 			if extTLS == nil || tlsDone {
-				fmt.Fprintf(conn, "454 TLS not available\r\n")
+				fmt.Fprintf(conn, "454 TLS not available\r\n") //nolint:errcheck
 				continue
 			}
-			fmt.Fprintf(conn, "220 Ready to start TLS\r\n")
+			fmt.Fprintf(conn, "220 Ready to start TLS\r\n") //nolint:errcheck
 			tlsConn := tls.Server(conn, extTLS)
 			if err := tlsConn.Handshake(); err != nil {
-				return nil, fmt.Errorf("smtp: STARTTLS handshake: %w", err)
+				return nil, conn, rd, fmt.Errorf("smtp: STARTTLS handshake: %w", err)
 			}
 			conn = tlsConn
 			rd = bufio.NewReaderSize(conn, 4096)
 			tlsDone = true
 			ehloLine = "" // must re-EHLO after STARTTLS
 		case strings.HasPrefix(upper, "AUTH "):
-			return handleSMTPAuth(conn, rd, trimmed, ehloLine)
+			pre, err := handleSMTPAuth(conn, rd, trimmed, ehloLine)
+			if err != nil {
+				return nil, conn, rd, err
+			}
+			return pre, conn, rd, nil
 		case upper == "QUIT":
-			fmt.Fprintf(conn, "221 Bye\r\n")
-			return nil, fmt.Errorf("smtp: client quit before auth")
+			fmt.Fprintf(conn, "221 Bye\r\n") //nolint:errcheck
+			return nil, conn, rd, fmt.Errorf("smtp: client quit before auth")
 		case upper == "NOOP":
-			fmt.Fprintf(conn, "250 OK\r\n")
+			fmt.Fprintf(conn, "250 OK\r\n") //nolint:errcheck
 		case upper == "RSET":
-			fmt.Fprintf(conn, "250 OK\r\n")
+			fmt.Fprintf(conn, "250 OK\r\n") //nolint:errcheck
 		default:
-			fmt.Fprintf(conn, "503 5.5.1 AUTH required\r\n")
+			fmt.Fprintf(conn, "503 5.5.1 AUTH required\r\n") //nolint:errcheck
 		}
 	}
 }
@@ -362,7 +391,7 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*preamble, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
-		fmt.Fprintf(conn, "501 5.5.4 Syntax error\r\n")
+		fmt.Fprintf(conn, "501 5.5.4 Syntax error\r\n") //nolint:errcheck
 		return nil, fmt.Errorf("smtp: malformed AUTH")
 	}
 	mech := strings.ToUpper(fields[1])
@@ -385,7 +414,7 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 		}
 		username, password, err := decodePlainCreds(b64)
 		if err != nil {
-			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n")
+			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n") //nolint:errcheck
 			return nil, fmt.Errorf("smtp: plain decode: %w", err)
 		}
 		return &preamble{
@@ -406,7 +435,7 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 		userB64 = strings.TrimRight(userB64, "\r\n")
 		userBytes, err := base64.StdEncoding.DecodeString(userB64)
 		if err != nil {
-			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n")
+			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n") //nolint:errcheck
 			return nil, fmt.Errorf("smtp: login username decode: %w", err)
 		}
 		username := string(userBytes)
@@ -421,7 +450,7 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 		passB64 = strings.TrimRight(passB64, "\r\n")
 		passBytes, err := base64.StdEncoding.DecodeString(passB64)
 		if err != nil {
-			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n")
+			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n") //nolint:errcheck
 			return nil, fmt.Errorf("smtp: login password decode: %w", err)
 		}
 		return &preamble{
@@ -431,7 +460,7 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 		}, nil
 
 	default:
-		fmt.Fprintf(conn, "504 5.7.4 Authentication mechanism not supported\r\n")
+		fmt.Fprintf(conn, "504 5.7.4 Authentication mechanism not supported\r\n") //nolint:errcheck
 		return nil, fmt.Errorf("smtp: unsupported auth mechanism %q", mech)
 	}
 }
