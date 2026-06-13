@@ -138,18 +138,38 @@ func (w *watchConn) pong() {
 	_ = w.c.WriteLine("PONG")
 }
 
-// newSessionID returns a cryptographically random 16-hex-character session
-// identifier that is unique across all login-proxy pods and restarts.
-func newSessionID() string {
-	var b [8]byte
-	_, _ = crand.Read(b[:])
-	return fmt.Sprintf("%x", b[:])
+// sessionIDAlphabet is the 52-character set used by Postfix long queue IDs:
+// digits 0-9, uppercase consonants B-Z, lowercase consonants b-z.
+// Vowels (AEIOUaeiou) are excluded to avoid confusion when read aloud.
+// 'z' (index 51) serves as the separator between the time and sequence
+// parts; the sequence is encoded in the first 51 characters only so that
+// 'z' never appears inside it, making the split unambiguous.
+const sessionIDAlphabet = "0123456789BCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz"
+
+// encodeSessionPart encodes n in the given alphabet, left-padding with
+// alphabet[0] to at least minLen characters.
+func encodeSessionPart(n uint64, alphabet string, minLen int) string {
+	base := uint64(len(alphabet))
+	var buf [20]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = alphabet[n%base]
+		n /= base
+	}
+	for len(buf)-pos < minLen {
+		pos--
+		buf[pos] = alphabet[0]
+	}
+	return string(buf[pos:])
 }
 
 // Server is the login proxy server.
 type Server struct {
-	opts  Options
-	reqID atomic.Uint64
+	opts    Options
+	reqID   atomic.Uint64
+	sessSeq atomic.Uint64
+	seed    string // 4 base51 chars, random per Server instance
 
 	sessMu   sync.RWMutex
 	sessions map[string][]*liveSession // username → active sessions
@@ -158,10 +178,34 @@ type Server struct {
 	watch   *watchConn // persistent director connection for push notifications
 }
 
+// newSessionID returns a Postfix-style long queue ID:
+//
+//	{base52(secs, ≥6)}{base52(usec, 4)}z{seed(4)}{base51(seq, ≥1)}
+//
+// The 4-char seed is random per Server instance (generated in New) so IDs
+// are unique across pods even when secs+usec+seq coincide.
+// Time parts use the full 52-char alphabet; seed and seq use the first 51
+// chars so 'z' remains an unambiguous time/suffix separator.
+func (s *Server) newSessionID() string {
+	now := time.Now()
+	secs := uint64(now.Unix())
+	usec := uint64(now.Nanosecond() / 1000)
+	seq := s.sessSeq.Add(1)
+	return encodeSessionPart(secs, sessionIDAlphabet, 6) +
+		encodeSessionPart(usec, sessionIDAlphabet, 4) +
+		"z" +
+		s.seed +
+		encodeSessionPart(seq, sessionIDAlphabet[:51], 1)
+}
+
 // New creates a Server.
 func New(opts Options) *Server {
+	var b [3]byte
+	_, _ = crand.Read(b[:])
+	seed := uint64(b[0])<<16 | uint64(b[1])<<8 | uint64(b[2])
 	return &Server{
 		opts:     opts,
+		seed:     encodeSessionPart(seed, sessionIDAlphabet[:51], 4),
 		sessions: make(map[string][]*liveSession),
 	}
 }
@@ -221,7 +265,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	// Generate session ID early — passed to yarilo-auth so penalty tracking
 	// associates the correct anvil session with the authenticated user.
-	sessID := newSessionID()
+	sessID := s.newSessionID()
 	log := slog.With("sid", sessID, "proto", string(s.opts.Protocol), "remote", remote)
 
 	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
