@@ -103,6 +103,7 @@ func main() {
 			ExtTLS:           extTLS,
 			AuthAddr:         cfg.AuthService.ClientAddr(),
 			AuthTLS:          intTLS,
+			AuthMaxAttempts:  cfg.Auth.MaxAttempts,
 			OAuth2Enabled:    len(cfg.Auth.OAuth2) > 0,
 			DisablePlainAuth: svcs.IMAPS.DisablePlainAuth,
 			AnvilAddr:        cfg.AnvilService.ClientAddr(),

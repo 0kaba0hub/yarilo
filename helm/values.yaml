@@ -167,6 +167,10 @@ components:
       storageClass: ""
       size: 1Gi
 
+    ## maxAttempts — number of failed auth attempts allowed on a single
+    ## connection before the server sends BYE and closes (IMAP/POP3).
+    ## Mirrors Dovecot's `auth_max_attempts`. Default 3.
+    maxAttempts: 3
     failureDelay: 2
     ## internalFailureDelayMs — separate delay for INTERNAL
     ## failures (passdb backend down, SQL refused). Mirrors

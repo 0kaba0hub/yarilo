@@ -510,6 +510,12 @@ type AuthConfig struct {
 	// ignored even if populated.
 	MasterUsers MasterUsersConfig `koanf:"master_users"`
 
+	// MaxAttempts is the number of authentication attempts a client may
+	// make on a single connection before the server sends BYE / -ERR and
+	// closes. Applies to IMAP and POP3; SMTP submission always closes after
+	// the first failure. Matches Dovecot auth_max_attempts. Default 3.
+	MaxAttempts int `koanf:"max_attempts"`
+
 	// FailureDelaySeconds is the timing-leak mitigation: every
 	// failed auth reply (wrong password, unknown user, malformed
 	// SASL response) is held back this many seconds before
@@ -902,6 +908,7 @@ func Load(path string) (*Config, error) {
 			MasterUsers: MasterUsersConfig{
 				Separator: "*",
 			},
+			MaxAttempts: 3,
 			// 2s for client-visible failures, 2000ms for internal.
 			FailureDelaySeconds:    2,
 			InternalFailureDelayMs: 2000,

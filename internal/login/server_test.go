@@ -38,7 +38,7 @@ func TestExtractIMAPPreamble_Login(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractIMAPPreamble(srv, rd, nil, Options{})
+		p, _, _, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -74,7 +74,7 @@ func TestExtractIMAPPreamble_AuthenticatePlain(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractIMAPPreamble(srv, rd, nil, Options{})
+		p, _, _, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -106,7 +106,7 @@ func TestExtractPOP3Preamble(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractPOP3Preamble(srv, rd, nil, Options{})
+		p, _, _, err := extractPOP3Preamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -136,7 +136,7 @@ func TestExtractSubmissionPreamble_Plain(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractSubmissionPreamble(srv, rd, nil, Options{})
+		p, _, _, err := extractSubmissionPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -177,7 +177,7 @@ func TestExtractIMAPPreamble_AuthenticateLogin(t *testing.T) {
 	var got *preamble
 	go func() {
 		rd := bufio.NewReader(srv)
-		p, err := extractIMAPPreamble(srv, rd, nil, Options{})
+		p, _, _, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		got = p
 		errCh <- err
 	}()
@@ -269,7 +269,7 @@ func TestExtractIMAPPreamble_StarttlsUnavailable(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		rd := bufio.NewReader(srv)
-		_, err := extractIMAPPreamble(srv, rd, nil, Options{})
+		_, _, _, err := extractIMAPPreamble(srv, rd, nil, Options{})
 		errCh <- err
 	}()
 
@@ -319,7 +319,7 @@ func TestExtractPOP3Preamble_AuthPlain(t *testing.T) {
 			var got *preamble
 			go func() {
 				rd := bufio.NewReader(srv)
-				p, err := extractPOP3Preamble(srv, rd, nil, Options{})
+				p, _, _, err := extractPOP3Preamble(srv, rd, nil, Options{})
 				got = p
 				errCh <- err
 			}()
@@ -406,7 +406,7 @@ func TestExtractIMAPPreamble_LoginLiterals(t *testing.T) {
 		var got *preamble
 		go func() {
 			rd := bufio.NewReader(srv)
-			p, err := extractIMAPPreamble(srv, rd, nil, Options{})
+			p, _, _, err := extractIMAPPreamble(srv, rd, nil, Options{})
 			got = p
 			errCh <- err
 		}()
@@ -454,7 +454,7 @@ func TestExtractIMAPPreamble_LoginLiterals(t *testing.T) {
 			var got *preamble
 			go func() {
 				rd := bufio.NewReader(srv)
-				p, err := extractIMAPPreamble(srv, rd, nil, Options{})
+				p, _, _, err := extractIMAPPreamble(srv, rd, nil, Options{})
 				got = p
 				errCh <- err
 			}()
@@ -473,6 +473,56 @@ func TestExtractIMAPPreamble_LoginLiterals(t *testing.T) {
 				t.Errorf("password = %q, want %q", got.password, "secret pw!!")
 			}
 		})
+	}
+}
+
+func TestIMAPAuthRetry(t *testing.T) {
+	// continueAuth must re-enter the command loop without sending another greeting.
+	// Three failed attempts should each return a preamble for the caller to check.
+	srv, cli := pipePair(t)
+	cli.SetDeadline(time.Now().Add(3 * time.Second))
+
+	results := make(chan *preamble, 3)
+	errs := make(chan error, 3)
+	go func() {
+		rd := bufio.NewReader(srv)
+		// First attempt (with greeting).
+		p, c, r, err := extractIMAPPreamble(srv, rd, nil, Options{})
+		results <- p
+		errs <- err
+		if err != nil {
+			return
+		}
+		// Simulate auth failure: re-enter without greeting.
+		p, c, r, err = continueAuth(c, r, nil, ProtocolIMAP, Options{})
+		results <- p
+		errs <- err
+		if err != nil {
+			return
+		}
+		// Second retry.
+		p, _, _, err = continueAuth(c, r, nil, ProtocolIMAP, Options{})
+		results <- p
+		errs <- err
+	}()
+
+	crd := bufio.NewReader(cli)
+
+	// Only one greeting expected.
+	greeting, _ := crd.ReadString('\n')
+	if !strings.HasPrefix(greeting, "* OK") {
+		t.Fatalf("expected greeting, got %q", greeting)
+	}
+
+	for i, user := range []string{"bad1", "bad2", "good"} {
+		cli.Write([]byte("A" + string(rune('1'+i)) + " LOGIN " + user + " pass\r\n"))
+		p := <-results
+		if err := <-errs; err != nil {
+			t.Fatalf("attempt %d: unexpected error: %v", i+1, err)
+		}
+		if p.username != user {
+			t.Errorf("attempt %d: username = %q, want %q", i+1, p.username, user)
+		}
 	}
 }
 

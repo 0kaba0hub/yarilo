@@ -87,6 +87,11 @@ type Options struct {
 	// Nil means plain TCP.
 	AuthTLS *tls.Config
 
+	// AuthMaxAttempts is the maximum number of failed authentication
+	// attempts allowed on a single connection before the server sends
+	// BYE and closes. 0 means use the default (3). Mirrors cfg.Auth.MaxAttempts.
+	AuthMaxAttempts int
+
 	// OAuth2Enabled advertises and accepts OAUTHBEARER and XOAUTH2 mechanisms.
 	// Mirrors cfg.Auth.OAuth2 being non-empty.
 	OAuth2Enabled bool
@@ -199,7 +204,8 @@ func (s *Server) handleConn(conn net.Conn) {
 	rd := bufio.NewReaderSize(conn, 4096)
 
 	// Extract preamble: speak the protocol pre-auth exchange to collect credentials.
-	pre, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS, s.opts)
+	// authConn/authRd may be TLS-upgraded from the original conn/rd if STARTTLS happened.
+	pre, authConn, authRd, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS, s.opts)
 	if err != nil {
 		slog.Debug("login: preamble", "proto", s.opts.Protocol, "remote", remote, "err", err)
 		return
@@ -212,37 +218,71 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 	if s.opts.AuthAddr == "" {
 		slog.Error("login: auth_addr not configured")
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 	authCl, err := authclient.Dial(s.opts.AuthAddr, s.opts.AuthTLS)
 	if err != nil {
 		slog.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 	defer authCl.Close()
 
-	authResult, err := authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
-	if errors.Is(err, authclient.ErrTempFail) {
-		slog.Warn("login: auth temp fail", "user", pre.username)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-		return
+	// Auth retry loop: keep the connection open after a bad-password failure,
+	// matching Dovecot behaviour. Up to maxAuthAttempts attempts; after the last
+	// one send an untagged BYE (IMAP) / -ERR (POP3) and close.
+	maxAuthAttempts := s.opts.AuthMaxAttempts
+	if maxAuthAttempts <= 0 {
+		maxAuthAttempts = 3
 	}
-	if err != nil {
-		slog.Info("login: auth failed", "user", pre.username, "remote", remote)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
-		return
-	}
-	if authResult.Nologin {
-		slog.Info("login: nologin", "user", pre.username)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
-		return
-	}
-	if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
-		slog.Info("login: ip not in allow_nets", "user", pre.username, "ip", clientIP)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
-		return
+	var authResult *authclient.AuthResult
+	for failures := 0; ; {
+		var aerr error
+		authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
+		if errors.Is(aerr, authclient.ErrTempFail) {
+			slog.Warn("login: auth temp fail", "user", pre.username)
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+			return
+		}
+
+		authFailed := aerr != nil
+		if aerr == nil {
+			if authResult.Nologin {
+				slog.Info("login: nologin", "user", pre.username)
+				authFailed = true
+			} else if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
+				slog.Info("login: ip not in allow_nets", "user", pre.username, "ip", clientIP)
+				authFailed = true
+			}
+		} else {
+			slog.Info("login: auth failed", "user", pre.username, "remote", remote)
+		}
+
+		if !authFailed {
+			break
+		}
+
+		failures++
+		if failures >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
+			// Untagged BYE / protocol-specific equivalent; no tag on the final failure.
+			writeProtoError(authConn, s.opts.Protocol, "", imapCodeAuthenticationFail, "Too many failed authentications")
+			return
+		}
+		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
+
+		// Re-enter the command loop without re-sending the greeting.
+		// If the connection is still plain TCP, re-offer STARTTLS so the client
+		// can upgrade before the next attempt.
+		var retryExtTLS *tls.Config
+		if _, ok := authConn.(*tls.Conn); !ok {
+			retryExtTLS = s.opts.StarttlsTLS
+		}
+		pre, authConn, authRd, err = continueAuth(authConn, authRd, retryExtTLS, s.opts.Protocol, s.opts)
+		if err != nil {
+			slog.Debug("login: preamble retry", "proto", s.opts.Protocol, "remote", remote, "err", err)
+			return
+		}
 	}
 
 	// Find backend address: fixed addr (standalone) or director LOOKUP (director mode).
@@ -254,7 +294,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		backendAddr, err = s.directorLookup(pre.username)
 		if err != nil {
 			slog.Warn("login: director lookup failed", "proto", s.opts.Protocol, "user", pre.username, "err", err)
-			writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
 			return
 		}
 	}
@@ -265,7 +305,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		if aerr != nil {
 			slog.Error("login: anvil dial failed", "addr", s.opts.AnvilAddr, "err", aerr)
 			if !s.opts.AnvilFailOpen {
-				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 				return
 			}
 		} else {
@@ -274,14 +314,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			if cerr == anvil.ErrTooManyConns {
 				ac.Close()
 				slog.Warn("login: too many connections", "user", pre.username, "ip", clientIP)
-				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
 				return
 			}
 			if cerr != nil {
 				ac.Close()
 				slog.Error("login: anvil connect failed", "err", cerr)
 				if !s.opts.AnvilFailOpen {
-					writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+					writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 					return
 				}
 			} else {
@@ -310,7 +350,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	backendConn, err := dialBackend(backendAddr, s.opts.BackendTLS)
 	if err != nil {
 		slog.Error("login: dial backend", "addr", backendAddr, "err", err)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
+		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
 		return
 	}
 	defer backendConn.Close()
@@ -354,7 +394,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	if _, err := io.WriteString(backendConn, pre2.Format()); err != nil {
 		slog.Error("login: send preamble", "err", err)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 
@@ -365,7 +405,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	backendCaps, err := readBackendGreeting(backendRd, s.opts.Protocol)
 	if err != nil {
 		slog.Error("login: backend rejected session", "user", pre.username, "err", err)
-		writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 		return
 	}
 
@@ -378,14 +418,14 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		if _, err := io.WriteString(backendConn, ehlo); err != nil {
 			slog.Error("login: smtp ehlo send", "err", err)
-			writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 			return
 		}
 		for {
 			line, err := backendRd.ReadString('\n')
 			if err != nil {
 				slog.Error("login: smtp ehlo resp", "err", err)
-				writeProtoError(conn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 				return
 			}
 			if len(line) >= 4 && line[3] != '-' {
@@ -402,12 +442,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	)
 
 	// Auth is confirmed — tell the client before entering proxy mode.
-	writeProtoAuthOK(conn, s.opts.Protocol, pre.cmdTag, backendCaps)
+	writeProtoAuthOK(authConn, s.opts.Protocol, pre.cmdTag, backendCaps)
 
-	conn.SetDeadline(time.Time{})        //nolint:errcheck
+	authConn.SetDeadline(time.Time{})    //nolint:errcheck
 	backendConn.SetDeadline(time.Time{}) //nolint:errcheck
 
-	biProxy(rd, conn, backendRd, backendConn)
+	biProxy(authRd, authConn, backendRd, backendConn)
 }
 
 // directorLookup dials yarilo-director, issues a LOOKUP restricted to s.opts.Tag,
@@ -746,6 +786,12 @@ func writeProtoError(conn net.Conn, p Protocol, tag, imapCode, msg string) {
 
 func isSubmission(p Protocol) bool {
 	return p == ProtocolSubmission || p == ProtocolSubmissions
+}
+
+// isRetriableProtocol reports whether the protocol keeps the connection open
+// after a failed authentication attempt (IMAP and POP3 do; SMTP closes).
+func isRetriableProtocol(p Protocol) bool {
+	return p == ProtocolIMAP || p == ProtocolIMAPS || p == ProtocolPOP3 || p == ProtocolPOP3S
 }
 
 // anvilService maps a login Protocol to the service name used in the anvil protocol.
