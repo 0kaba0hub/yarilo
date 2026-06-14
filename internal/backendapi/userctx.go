@@ -215,6 +215,15 @@ func slugFor(spec config.NamespaceConfig) string {
 // user-state files (subscriptions, special_use).
 func (b *nsBundle) folderHome() string { return b.info.Home }
 
+// folderIndexRoot returns the root for per-folder index files (yarilo.index*,
+// yarilo-acl). When INDEX= is configured this differs from folderHome.
+func (b *nsBundle) folderIndexRoot() string {
+	if b.info.IndexDir != "" {
+		return b.info.IndexDir
+	}
+	return b.info.Home
+}
+
 // lockOwner is the identifier shown to yarilo-locks in BUSY reports
 // for any lock acquired by this admin request. Format mirrors the
 // session owner so operators can correlate.

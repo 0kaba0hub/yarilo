@@ -167,3 +167,39 @@ func TestResolverDefaultVolatileDirWithHome(t *testing.T) {
 		t.Errorf("VolatileDir = %q, want %q", ui.VolatileDir, want)
 	}
 }
+
+func TestResolverDefaultIndexDir(t *testing.T) {
+	r := &Resolver{
+		Root:            "/mail",
+		HomeTemplate:    "%d/%n",
+		DefaultIndexDir: "/var/index/%d/%n",
+	}
+	ui := r.UserInfo("alice@example.com", "")
+	want := "/var/index/example.com/alice"
+	if ui.IndexDir != want {
+		t.Errorf("IndexDir = %q, want %q", ui.IndexDir, want)
+	}
+}
+
+func TestResolverDefaultIndexDirWithHome(t *testing.T) {
+	r := &Resolver{
+		Root:            "/mail",
+		HomeTemplate:    "%d/%n",
+		DefaultIndexDir: "/var/index/%h",
+	}
+	ui := r.UserInfo("bob@test.com", "")
+	want := "/var/index/" + ui.Home
+	if ui.IndexDir != want {
+		t.Errorf("IndexDir = %q, want %q", ui.IndexDir, want)
+	}
+}
+
+func TestParseMailLocationModsIndex(t *testing.T) {
+	mods := ParseMailLocationMods("maildir:~/Maildir:INDEX=/srv/idx/%u:VOLATILEDIR=/tmp/v")
+	if mods["INDEX"] != "/srv/idx/%u" {
+		t.Errorf("INDEX = %q, want /srv/idx/%%u", mods["INDEX"])
+	}
+	if mods["VOLATILEDIR"] != "/tmp/v" {
+		t.Errorf("VOLATILEDIR = %q, want /tmp/v", mods["VOLATILEDIR"])
+	}
+}

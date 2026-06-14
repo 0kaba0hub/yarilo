@@ -430,6 +430,7 @@ components:
       mailHomeTemplate: "%d/%n"
       index: fileindex
       ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
+      ## indexDir: "/var/yarilo-index/%d/%n"        # separate index tree (e.g. faster local disk)
       ## volatileDir: "/run/yarilo-volatile/%d/%n"  # local tmpfs for index tmp files (NFS deployments)
       persistence:
         enabled: true
@@ -469,6 +470,7 @@ components:
       maildirRoot: /var/mail/vhosts
       mailHomeTemplate: "%d/%n"
       index: fileindex
+      ## indexDir: "/var/yarilo-index/%d/%n"
       ## volatileDir: "/run/yarilo-volatile/%d/%n"
       persistence:
         enabled: true
@@ -504,6 +506,7 @@ components:
       maildirRoot: /var/mail/vhosts
       mailHomeTemplate: "%d/%n"
       index: fileindex
+      ## indexDir: "/var/yarilo-index/%d/%n"
       ## volatileDir: "/run/yarilo-volatile/%d/%n"
       persistence:
         enabled: true

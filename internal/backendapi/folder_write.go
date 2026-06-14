@@ -343,6 +343,7 @@ func hasDeletedFlag(flags []string) bool {
 func (s *Server) dropFolderACL(bundle *nsBundle, folder string) error {
 	store := acl.New(
 		bundle.folderHome(),
+		bundle.folderIndexRoot(),
 		bundle.info.Username,
 		"backendapi/folder.delete",
 		s.opts.Locker,
@@ -355,6 +356,7 @@ func (s *Server) dropFolderACL(bundle *nsBundle, folder string) error {
 func (s *Server) renameFolderACL(bundle *nsBundle, oldFolder, newFolder string) error {
 	store := acl.New(
 		bundle.folderHome(),
+		bundle.folderIndexRoot(),
 		bundle.info.Username,
 		"backendapi/folder.rename",
 		s.opts.Locker,

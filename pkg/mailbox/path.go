@@ -33,6 +33,13 @@ type UserInfo struct {
 	// time this field is populated.
 	VolatileDir string
 
+	// IndexDir, when non-empty, redirects all per-folder index files
+	// (yarilo.index*, yarilo-acl) to a separate directory tree. The
+	// mailbox data (Maildir cur/new/tmp) stays under Home; only index
+	// state moves. Mirrors Dovecot's INDEX= mail-location modifier.
+	// Template vars (%u/%n/%d/%h) are already expanded.
+	IndexDir string
+
 	// Groups is the list of supplementary groups the user belongs to,
 	// sourced from the userdb `groups=` extra field (comma-separated).
 	// ACL evaluation matches these against `group=<name>` and
@@ -99,6 +106,12 @@ type Resolver struct {
 	// (default). Mirrors Dovecot's VOLATILEDIR mail-location modifier at
 	// the global config level.
 	DefaultVolatileDir string
+
+	// DefaultIndexDir is the cluster-wide INDEX= template applied when no
+	// per-user override arrives from userdb. Supports %u/%n/%d/%h. Empty
+	// keeps index files co-located with the mailbox (default). Mirrors
+	// Dovecot's INDEX= mail-location modifier at the global config level.
+	DefaultIndexDir string
 }
 
 // Resolve returns the absolute home directory for a user. An empty
@@ -132,6 +145,10 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	if r.DefaultVolatileDir != "" {
 		vd := strings.ReplaceAll(r.DefaultVolatileDir, "%h", home)
 		ui.VolatileDir = ExpandVars(vd, username)
+	}
+	if r.DefaultIndexDir != "" {
+		id := strings.ReplaceAll(r.DefaultIndexDir, "%h", home)
+		ui.IndexDir = ExpandVars(id, username)
 	}
 	return ui
 }

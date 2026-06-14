@@ -67,6 +67,12 @@ type AuthResponse struct {
 	// home after auth completes.
 	VolatileDir string
 
+	// IndexDir is the INDEX= modifier from the mail location (or direct
+	// index_dir= userdb field). Carries the raw template string
+	// (%u/%n/%d/%h unexpanded). When set, per-folder index files live
+	// here instead of co-located with the mailbox under Home.
+	IndexDir string
+
 	Proxy bool
 	Host  string
 	Port  int
@@ -362,6 +368,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	resp.Groups = extractGroups(req.Fields)
 	resp.QuotaRules = extractQuotaRules(req.Fields)
 	resp.VolatileDir = extractVolatileDir(req.Fields)
+	resp.IndexDir = extractIndexDir(req.Fields)
 	return resp, err
 }
 
@@ -387,6 +394,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		resp.Groups = extractGroups(entry.Fields)
 		resp.QuotaRules = extractQuotaRules(entry.Fields)
 		resp.VolatileDir = extractVolatileDir(entry.Fields)
+		resp.IndexDir = extractIndexDir(entry.Fields)
 	}
 	if resp.Username == "" {
 		resp.Username = reqUser
@@ -519,6 +527,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 		resp.MailLoc = v
 	}
 	resp.VolatileDir = extractVolatileDir(req.Fields)
+	resp.IndexDir = extractIndexDir(req.Fields)
 	return resp, err
 }
 
@@ -1441,6 +1450,28 @@ func extractVolatileDir(f *Fields) string {
 		if v, ok := f.Get(key); ok && v != "" {
 			if vd := parseMailLocationMod(v, "VOLATILEDIR"); vd != "" {
 				return vd
+			}
+		}
+	}
+	return ""
+}
+
+// extractIndexDir reads the INDEX= value from the Fields bag.
+// Priority: explicit index_dir= field → INDEX= modifier inside the
+// mail= location string. Returns the raw template (not yet expanded).
+func extractIndexDir(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	for _, key := range []string{"userdb_index_dir", "index_dir"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			return v
+		}
+	}
+	for _, key := range []string{"userdb_mail", "mail"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			if id := parseMailLocationMod(v, "INDEX"); id != "" {
+				return id
 			}
 		}
 	}
