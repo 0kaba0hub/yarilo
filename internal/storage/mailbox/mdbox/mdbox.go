@@ -105,8 +105,18 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		home:        u.Home,
 		username:    u.Username,
 		owner:       makeOwner(u),
-		altBasePath: expandAltPath(b.altStorageTmpl, u.Username),
+		altBasePath: resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
 	}
+}
+
+// resolveAltBase returns the expanded alt storage root for a user.
+// perUser (from UserInfo.AltDir, already fully expanded) takes priority
+// over the backend-level template so per-user userdb overrides work.
+func resolveAltBase(perUser, tmpl, username string) string {
+	if perUser != "" {
+		return perUser
+	}
+	return expandAltPath(tmpl, username)
 }
 
 type userMailbox struct {

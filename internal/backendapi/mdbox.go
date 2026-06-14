@@ -128,7 +128,7 @@ func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !am.AltEnabled() {
-		apiError(w, "altmove: alt storage not configured (set storage.mdbox_alt_storage_path)", http.StatusBadRequest)
+		apiError(w, "altmove: alt storage not configured (set storage.alt_dir or storage.mdbox_alt_storage_path)", http.StatusBadRequest)
 		return
 	}
 

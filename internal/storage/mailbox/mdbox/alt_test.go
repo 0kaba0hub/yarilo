@@ -184,6 +184,45 @@ func TestAltMove_DisabledReturnsError(t *testing.T) {
 	}
 }
 
+// TestAltMove_PerUserAltDir verifies that UserInfo.AltDir (per-user
+// path from userdb/auth) is honoured even when the Backend has no
+// WithAltStorage template set. This is the storage.alt_dir config path.
+func TestAltMove_PerUserAltDir(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	altDir := filepath.Join(base, "cold") // simulates UserInfo.AltDir already expanded
+
+	b := New() // no WithAltStorage — template empty
+	u := b.OpenUser(&mailbox.UserInfo{
+		Username: "alice@example.com",
+		Home:     home,
+		AltDir:   altDir,
+	}).(*userMailbox)
+	if err := u.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if !u.AltEnabled() {
+		t.Fatal("AltEnabled() = false, want true when UserInfo.AltDir is set")
+	}
+
+	body := "From: x@example.com\r\nSubject: cold\r\n\r\nbody\r\n"
+	file := testSaveMsg(t, u, body)
+
+	stats, err := u.AltMove(AltMoveQuery{Before: time.Now().Add(time.Second)})
+	if err != nil {
+		t.Fatalf("AltMove: %v", err)
+	}
+	if stats.Moved != 1 {
+		t.Errorf("Moved = %d, want 1", stats.Moved)
+	}
+
+	// Message still fetchable from alt tier.
+	got := testFetchBody(t, u, file)
+	if !bytes.Contains([]byte(got), []byte("body")) {
+		t.Errorf("body after altmove = %q, want original body", got)
+	}
+}
+
 // TestExpandAltPath verifies template expansion for the common cases.
 func TestExpandAltPath(t *testing.T) {
 	cases := []struct {
