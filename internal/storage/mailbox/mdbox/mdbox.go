@@ -394,9 +394,12 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	return strconv.FormatUint(uint64(mapUID), 10), nil
 }
 
-// Fetch resolves the message identified by filename (decimal
-// map_uid) and returns a reader positioned at the body.
-func (u *userMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
+// Fetch resolves the message identified by filename (decimal map_uid)
+// and returns a reader positioned at the body. altTier is the hint
+// from MessageMeta.AltTier (persisted as FlagBackend in the index):
+// when true the driver opens the alt-storage path directly, avoiding
+// a wasted primary open() syscall for cold-tier messages.
+func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, error) {
 	mapUID, err := parseFilename(filename)
 	if err != nil {
 		return nil, fmt.Errorf("mdbox/fetch: %w", err)
@@ -412,14 +415,29 @@ func (u *userMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
 	if !ok {
 		return nil, fmt.Errorf("mdbox/fetch: map_uid %d not found", mapUID)
 	}
-	f, ferr := os.Open(u.mfilePath(entry.FileID))
+
+	primary := u.mfilePath(entry.FileID)
+	alt := u.mfileAltPath(entry.FileID)
+
+	// Fast path: index flag tells us the tier — open alt directly.
+	if altTier && u.AltEnabled() {
+		if f, ferr := os.Open(alt); ferr == nil {
+			body, berr := readRecordBody(f, entry.Offset)
+			_ = f.Close()
+			if berr != nil {
+				return nil, fmt.Errorf("mdbox/fetch: %w", berr)
+			}
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+		// Flag stale (incomplete altmove) — fall through to primary.
+	}
+
+	f, ferr := os.Open(primary)
 	if ferr != nil {
-		// Transparent fallback: if the primary file is absent and alt
-		// storage is configured, the message may have been moved there
-		// by a previous altmove run. Mirrors dbox_file_open() in
-		// Dovecot (dbox-file.c:169–199).
+		// Safety fallback: flag may lag reality if altmove ran before the
+		// index was updated. Try alt before giving up.
 		if errors.Is(ferr, os.ErrNotExist) && u.AltEnabled() {
-			f, ferr = os.Open(u.mfileAltPath(entry.FileID))
+			f, ferr = os.Open(alt)
 		}
 		if ferr != nil {
 			return nil, fmt.Errorf("mdbox/fetch: open m.%d: %w", entry.FileID, ferr)

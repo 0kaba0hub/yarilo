@@ -988,7 +988,7 @@ func (s *session) renameInbox(dest string) error {
 		return err
 	}
 	for _, m := range msgs {
-		rc, fetchErr := s.box.Fetch("INBOX", m.Filename)
+		rc, fetchErr := s.box.Fetch("INBOX", m.Filename, m.AltTier)
 		if fetchErr != nil {
 			return fmt.Errorf("imap/rename-inbox fetch: %w", fetchErr)
 		}
@@ -1648,14 +1648,14 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteModSeq(m.ModSeq)
 		}
 		if opts.Envelope && m.Filename != "" {
-			if rc, ferr := box.Fetch(s.folder.Name, m.Filename); ferr == nil {
+			if rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier); ferr == nil {
 				hdr, _ := textproto.ReadHeader(bufio.NewReader(rc))
 				rc.Close()
 				mw.WriteEnvelope(imapserver.ExtractEnvelope(hdr))
 			}
 		}
 		if opts.BodyStructure != nil && m.Filename != "" {
-			if rc, ferr := box.Fetch(s.folder.Name, m.Filename); ferr == nil {
+			if rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier); ferr == nil {
 				bs := imapserver.ExtractBodyStructure(rc)
 				rc.Close()
 				mw.WriteBodyStructure(bs)
@@ -1665,7 +1665,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := box.Fetch(s.folder.Name, m.Filename)
+			rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier)
 			if ferr != nil {
 				break
 			}
@@ -1691,7 +1691,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := box.Fetch(s.folder.Name, m.Filename)
+			rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier)
 			if ferr != nil {
 				break
 			}
@@ -1709,7 +1709,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := box.Fetch(s.folder.Name, m.Filename)
+			rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier)
 			if ferr != nil {
 				break
 			}
@@ -1837,7 +1837,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename)
+		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("imap/copy fetch: %w", fetchErr)
 		}
@@ -2148,7 +2148,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename)
+		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
 		if fetchErr != nil {
 			return fmt.Errorf("imap/move fetch: %w", fetchErr)
 		}

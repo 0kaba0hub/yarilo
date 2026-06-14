@@ -1,6 +1,8 @@
 package backendapi
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -147,6 +149,17 @@ func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "altmove: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Update AltTier flag in every folder's fileindex so subsequent
+	// Fetch() calls can skip the primary open() syscall. withMailboxLock
+	// is already taken inside UserIndex.SetAltTier (via withFolder).
+	if len(stats.MovedFilenames) > 0 {
+		if flagErr := s.setAltTierAllFolders(bundle, stats.MovedFilenames, !req.Reverse); flagErr != nil {
+			slog.Warn("altmove: failed to update alt-tier index flags",
+				"user", req.User, "moved", len(stats.MovedFilenames), "err", flagErr)
+		}
+	}
+
 	apiJSON(w, mdboxAltMoveResponse{
 		Candidates:    stats.Candidates,
 		Moved:         stats.Moved,
@@ -154,4 +167,30 @@ func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 		FilesUnlinked: stats.FilesUnlinked,
 		BytesMoved:    stats.BytesMoved,
 	})
+}
+
+// setAltTierAllFolders iterates every mailbox folder and calls
+// SetAltTier on each so the AltTier index flag stays in sync with the
+// physical location of the m.<N> files after an altmove run.
+func (s *Server) setAltTierAllFolders(bundle *nsBundle, filenames []string, altTier bool) error {
+	folders, err := bundle.box.ListFolders()
+	if err != nil {
+		return fmt.Errorf("altmove/flag: list folders: %w", err)
+	}
+	var firstErr error
+	for _, folder := range folders {
+		f, ferr := bundle.idx.OpenFolder(folder, 0)
+		if ferr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("altmove/flag: open %q: %w", folder, ferr)
+			}
+			continue
+		}
+		if serr := bundle.idx.SetAltTier(f.ID, filenames, altTier); serr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("altmove/flag: set tier %q: %w", folder, serr)
+			}
+		}
+	}
+	return firstErr
 }

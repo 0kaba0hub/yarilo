@@ -39,7 +39,7 @@ func testSaveMsg(t *testing.T, u *userMailbox, body string) string {
 
 func testFetchBody(t *testing.T, u *userMailbox, filename string) string {
 	t.Helper()
-	rc, err := u.Fetch("INBOX", filename)
+	rc, err := u.Fetch("INBOX", filename, false)
 	if err != nil {
 		t.Fatalf("Fetch %q: %v", filename, err)
 	}
@@ -220,6 +220,40 @@ func TestAltMove_PerUserAltDir(t *testing.T) {
 	got := testFetchBody(t, u, file)
 	if !bytes.Contains([]byte(got), []byte("body")) {
 		t.Errorf("body after altmove = %q, want original body", got)
+	}
+}
+
+// TestAltMove_MovedFilenamesAndDirectFetch verifies that:
+//  1. AltMoveStats.MovedFilenames contains the decimal map_uid strings of
+//     every relocated message so callers can update the fileindex flag.
+//  2. Fetch with altTier=true opens the alt path directly (1 syscall path)
+//     without needing the primary fallback.
+func TestAltMove_MovedFilenamesAndDirectFetch(t *testing.T) {
+	_, u, _ := altTestBackend(t)
+
+	body := "From: x@example.com\r\nSubject: s\r\n\r\nbody\r\n"
+	file := testSaveMsg(t, u, body)
+
+	stats, err := u.AltMove(AltMoveQuery{Before: time.Now().Add(time.Second)})
+	if err != nil {
+		t.Fatalf("AltMove: %v", err)
+	}
+	if stats.Moved != 1 {
+		t.Fatalf("Moved = %d, want 1", stats.Moved)
+	}
+	if len(stats.MovedFilenames) != 1 || stats.MovedFilenames[0] != file {
+		t.Errorf("MovedFilenames = %v, want [%q]", stats.MovedFilenames, file)
+	}
+
+	// Direct alt-tier fetch (altTier=true) must succeed without primary fallback.
+	rc, err := u.Fetch("INBOX", file, true)
+	if err != nil {
+		t.Fatalf("Fetch(altTier=true): %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if !bytes.Contains(got, []byte("body")) {
+		t.Errorf("body via altTier=true = %q, want original body", got)
 	}
 }
 

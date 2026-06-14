@@ -41,6 +41,11 @@ type AltMoveStats struct {
 	FilesUnlinked int
 	// BytesMoved is the approximate byte volume relocated.
 	BytesMoved int64
+	// MovedFilenames is the set of Filenames (decimal map_uid strings)
+	// that were physically relocated. The caller uses this to update the
+	// AltTier flag in the fileindex so Fetch can skip primary open()
+	// syscalls for cold-tier messages.
+	MovedFilenames []string
 }
 
 // AltMove is the yarilo equivalent of `doveadm altmove`. It:
@@ -158,6 +163,9 @@ func (u *userMailbox) AltMove(q AltMoveQuery) (AltMoveStats, error) {
 			stats.FilesCreated++
 			stats.FilesUnlinked++
 			stats.BytesMoved += sz
+			for _, e := range moved {
+				stats.MovedFilenames = append(stats.MovedFilenames, fmt.Sprintf("%d", e.UID))
+			}
 			continue
 		}
 
@@ -195,6 +203,9 @@ func (u *userMailbox) AltMove(q AltMoveQuery) (AltMoveStats, error) {
 			return stats, fmt.Errorf("mdbox/altmove: unlink m.%d: %w", srcFileID, err)
 		}
 		stats.Moved += len(movedRecords)
+		for _, e := range movedRecords {
+			stats.MovedFilenames = append(stats.MovedFilenames, fmt.Sprintf("%d", e.UID))
+		}
 		stats.FilesCreated += 2
 		stats.FilesUnlinked++
 		stats.BytesMoved += sz

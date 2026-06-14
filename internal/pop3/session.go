@@ -707,7 +707,7 @@ func (s *session) computeUIDLs(saved map[uint32]string) {
 
 // readXUIDL reads the X-UIDL header from the raw message file.
 func (s *session) readXUIDL(m *mailbox.MessageMeta) string {
-	rc, err := s.box.Fetch("INBOX", m.Filename)
+	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
 	if err != nil {
 		return ""
 	}
@@ -889,7 +889,7 @@ func (s *session) cmdRetr(arg string) {
 		return
 	}
 	m := s.msgs[idx]
-	rc, err := s.box.Fetch("INBOX", m.Filename)
+	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
 	if err != nil {
 		slog.Error("pop3: fetch", "uid", m.UID, "err", err)
 		s.writeErr("unable to fetch message")
@@ -958,7 +958,7 @@ func (s *session) cmdTop(arg string) {
 		return
 	}
 	m := s.msgs[idx]
-	rc, err := s.box.Fetch("INBOX", m.Filename)
+	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
 	if err != nil {
 		s.writeErr("unable to fetch message")
 		return

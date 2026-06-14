@@ -93,7 +93,7 @@ func TestPurgeCompactsLiveRecords(t *testing.T) {
 
 	// Surviving filenames still Fetch to the original bodies —
 	// map_uid is preserved across the move.
-	rc, err := mb.Fetch("INBOX", names[0])
+	rc, err := mb.Fetch("INBOX", names[0], false)
 	if err != nil {
 		t.Fatalf("Fetch kept[0]: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestPurgeCompactsLiveRecords(t *testing.T) {
 	if string(got) != "keep one" {
 		t.Errorf("body drift on kept[0]: %q", got)
 	}
-	rc, err = mb.Fetch("INBOX", names[2])
+	rc, err = mb.Fetch("INBOX", names[2], false)
 	if err != nil {
 		t.Fatalf("Fetch kept[2]: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestPurgeCompactsLiveRecords(t *testing.T) {
 	}
 
 	// Expunged map_uid must be gone.
-	if _, err := mb.Fetch("INBOX", names[1]); err == nil {
+	if _, err := mb.Fetch("INBOX", names[1], false); err == nil {
 		t.Error("Fetch of expunged uid should fail")
 	}
 }

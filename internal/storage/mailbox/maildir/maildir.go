@@ -296,7 +296,7 @@ func (c *sizeCounter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
+func (u *userMailbox) Fetch(folder, filename string, _ bool) (io.ReadCloser, error) {
 	p := filepath.Join(u.folderPath(folder), "cur", filename)
 	f, err := os.Open(p)
 	if err != nil {
