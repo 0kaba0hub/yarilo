@@ -462,7 +462,7 @@ func fanOutOne(backendAddr, hostname, from, rcpt string, data []byte, pre loginp
 // extension (user+folder@domain → user@domain), and returns the canonical
 // user@domain string that yarilo-auth and the mailbox backend expect.
 func rcptUsername(to string) string {
-	to = strings.TrimSpace(strings.Trim(to, "<>"))
+	to = strings.Trim(strings.TrimSpace(to), "<>")
 	at := strings.LastIndex(to, "@")
 	if at < 0 {
 		return ""
