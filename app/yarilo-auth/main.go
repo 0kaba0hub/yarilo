@@ -250,17 +250,6 @@ func main() {
 		}()
 	}
 
-	// SASL listener — plain TCP, no mTLS. Postfix connects here using
-	// smtpd_sasl_type=dovecot, smtpd_sasl_path=inet:[yarilo-auth]:12345.
-	if cfg.AuthService.SASLListen != "" {
-		slog.Info("yarilo-auth SASL listener", "addr", cfg.AuthService.SASLListen)
-		go func() {
-			if err := srv.ListenAndServe(ctx, cfg.AuthService.SASLListen, nil); err != nil {
-				errCh <- err
-			}
-		}()
-	}
-
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 

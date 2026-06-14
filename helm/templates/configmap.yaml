@@ -448,6 +448,30 @@ data:
           - {{ . | quote }}
           {{- end }}
 
+    {{- if .Values.components.saslLogin.enabled }}
+    sasl_login:
+      listen: {{ printf ":%d" (int .Values.components.saslLogin.containerPort) | quote }}
+      {{- if .Values.components.saslLogin.authAddr }}
+      auth_addr: {{ .Values.components.saslLogin.authAddr | quote }}
+      {{- end }}
+      {{- with .Values.components.saslLogin.trustedNets }}
+      trusted_nets:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      haproxy_protocol: {{ .Values.components.saslLogin.haproxy }}
+      {{- if .Values.components.saslLogin.haproxy }}
+      haproxy_timeout: {{ .Values.components.saslLogin.haproxyTimeout }}
+      {{- with .Values.components.saslLogin.haproxyNets }}
+      haproxy_trusted_nets:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- end }}
+    {{- end }}
+
     {{- if .Values.components.quotaStatus.enabled }}
     quota_status:
       listen: {{ printf ":%d" (int .Values.components.quotaStatus.containerPort) | quote }}

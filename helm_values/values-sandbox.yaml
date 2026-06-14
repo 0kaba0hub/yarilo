@@ -160,6 +160,14 @@ components:
   lmtp:
     enabled: true
 
+  saslLogin:
+    enabled: true
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
+        metallb.universe.tf/allow-shared-ip: "yarilo-mail"
+
   quotaStatus:
     enabled: true
     authMasterAddr: "yarilo-auth:9102"

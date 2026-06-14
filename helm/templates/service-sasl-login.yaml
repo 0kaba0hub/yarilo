@@ -1,0 +1,22 @@
+{{- if .Values.components.saslLogin.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-sasl-login
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "sasl-login") | nindent 4 }}
+  {{- with .Values.components.saslLogin.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.components.saslLogin.service.type | default "ClusterIP" }}
+  ports:
+    - name: sasl
+      port: {{ .Values.components.saslLogin.servicePort }}
+      targetPort: sasl
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "sasl-login") | nindent 4 }}
+{{- end }}
