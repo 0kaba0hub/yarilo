@@ -59,6 +59,6 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260603230815-bec13433ef90
+replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260614084911-43abe771f55c
 
 replace github.com/emersion/go-sasl => github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f

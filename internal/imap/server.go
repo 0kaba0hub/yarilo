@@ -197,11 +197,15 @@ func New(opts Options) *Server {
 		imaplib.CapCreateSpecialUse: {},
 		imaplib.CapBinary:           {},
 		imaplib.CapQResync:          {},
-		imaplib.CapMetadata:         {},
-		// CapMetadataServer not in opts.Caps: the fork's capability
-		// allow-list does not echo it back, but SessionMetadata's
-		// mailbox=="" path handles server-scope ops anyway, so the
-		// behaviour is preserved without the wire-level cap atom.
+	}
+	if opts.MetadataDict != nil {
+		caps[imaplib.CapMetadata] = struct{}{}
+	}
+	if opts.ACLEnabled {
+		caps[imaplib.CapACL] = struct{}{}
+	}
+	if opts.QuotaDict != nil {
+		caps[imaplib.CapQuota] = struct{}{}
 	}
 
 	s.srv = imapserver.New(&imapserver.Options{
