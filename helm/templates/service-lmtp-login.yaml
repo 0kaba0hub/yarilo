@@ -7,12 +7,12 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "lmtp-login") | nindent 4 }}
-  {{- with .Values.components.lmtpLogin.service.annotations }}
+  {{- with ((.Values.components.lmtpLogin.service | default dict).annotations) }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.components.lmtpLogin.service.type }}
+  type: {{ (.Values.components.lmtpLogin.service | default dict).type | default "ClusterIP" }}
   ports:
     {{- if .Values.components.lmtpLogin.listeners.lmtp.enabled }}
     - name: lmtp
