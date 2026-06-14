@@ -825,7 +825,15 @@ func writeProtoError(conn net.Conn, p Protocol, tag, imapCode, msg string) {
 			fmt.Fprintf(conn, "* BYE %s\r\n", msg) //nolint:errcheck
 		}
 	case ProtocolPOP3, ProtocolPOP3S:
-		fmt.Fprintf(conn, "-ERR %s\r\n", msg) //nolint:errcheck
+		// RFC 3206: map error class to [AUTH] / [SYS/TEMP] response codes.
+		switch imapCode {
+		case imapCodeAuthenticationFail:
+			fmt.Fprintf(conn, "-ERR [AUTH] %s\r\n", msg) //nolint:errcheck
+		case imapCodeUnavailable:
+			fmt.Fprintf(conn, "-ERR [SYS/TEMP] %s\r\n", msg) //nolint:errcheck
+		default:
+			fmt.Fprintf(conn, "-ERR %s\r\n", msg) //nolint:errcheck
+		}
 	case ProtocolSubmission, ProtocolSubmissions:
 		fmt.Fprintf(conn, "421 4.3.0 %s\r\n", msg) //nolint:errcheck
 	}

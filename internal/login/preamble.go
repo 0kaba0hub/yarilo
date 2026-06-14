@@ -209,7 +209,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 	return pop3CommandLoop(conn, rd, extTLS, opts)
 }
 
-// pop3CommandLoop handles POP3 commands until USER+PASS or AUTH PLAIN are received.
+// pop3CommandLoop handles POP3 commands until USER+PASS or AUTH PLAIN/LOGIN are received.
 // Does NOT send the greeting — call extractPOP3Preamble for the initial exchange
 // or continueAuth for retry after a failed authentication.
 func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
@@ -257,32 +257,61 @@ func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 			username = ""
 		case strings.HasPrefix(upper, "AUTH"):
 			fields := strings.Fields(line)
-			if len(fields) < 2 || !strings.EqualFold(fields[1], "PLAIN") {
+			if len(fields) < 2 {
 				fmt.Fprintf(conn, "-ERR Unknown authentication mechanism\r\n") //nolint:errcheck
 				continue
 			}
-			var b64 string
-			if len(fields) >= 3 {
-				b64 = fields[2]
-			} else {
-				if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
-					return nil, conn, rd, fmt.Errorf("pop3: auth plain challenge: %w", err)
+			switch strings.ToUpper(fields[1]) {
+			case "PLAIN":
+				var b64 string
+				if len(fields) >= 3 {
+					b64 = fields[2]
+				} else {
+					if _, err := fmt.Fprintf(conn, "+ \r\n"); err != nil {
+						return nil, conn, rd, fmt.Errorf("pop3: auth plain challenge: %w", err)
+					}
+					resp, err := rd.ReadString('\n')
+					if err != nil {
+						return nil, conn, rd, fmt.Errorf("pop3: auth plain response: %w", err)
+					}
+					b64 = strings.TrimRight(resp, "\r\n")
 				}
-				resp, err := rd.ReadString('\n')
+				user, pass, decErr := decodePlainCreds(b64)
+				if decErr != nil {
+					fmt.Fprintf(conn, "-ERR Invalid authentication\r\n") //nolint:errcheck
+					continue
+				}
+				return &preamble{username: user, password: pass}, conn, rd, nil
+			case "LOGIN":
+				if _, err := fmt.Fprintf(conn, "+ VXNlcm5hbWU6\r\n"); err != nil {
+					return nil, conn, rd, fmt.Errorf("pop3: auth login username prompt: %w", err)
+				}
+				userB64, err := rd.ReadString('\n')
 				if err != nil {
-					return nil, conn, rd, fmt.Errorf("pop3: auth plain response: %w", err)
+					return nil, conn, rd, fmt.Errorf("pop3: auth login username: %w", err)
 				}
-				b64 = strings.TrimRight(resp, "\r\n")
-			}
-			user, pass, decErr := decodePlainCreds(b64)
-			if decErr != nil {
-				fmt.Fprintf(conn, "-ERR Invalid authentication\r\n") //nolint:errcheck
+				userBytes, decErr := base64.StdEncoding.DecodeString(strings.TrimRight(userB64, "\r\n"))
+				if decErr != nil {
+					fmt.Fprintf(conn, "-ERR Invalid base64\r\n") //nolint:errcheck
+					continue
+				}
+				if _, err := fmt.Fprintf(conn, "+ UGFzc3dvcmQ6\r\n"); err != nil {
+					return nil, conn, rd, fmt.Errorf("pop3: auth login password prompt: %w", err)
+				}
+				passB64, err := rd.ReadString('\n')
+				if err != nil {
+					return nil, conn, rd, fmt.Errorf("pop3: auth login password: %w", err)
+				}
+				passBytes, decErr := base64.StdEncoding.DecodeString(strings.TrimRight(passB64, "\r\n"))
+				if decErr != nil {
+					fmt.Fprintf(conn, "-ERR Invalid base64\r\n") //nolint:errcheck
+					continue
+				}
+				return &preamble{username: string(userBytes), password: string(passBytes)}, conn, rd, nil
+			default:
+				fmt.Fprintf(conn, "-ERR Unknown authentication mechanism\r\n") //nolint:errcheck
 				continue
 			}
-			return &preamble{
-				username: user,
-				password: pass,
-			}, conn, rd, nil
 		case strings.HasPrefix(upper, "USER "):
 			username = strings.TrimSpace(line[5:])
 			fmt.Fprintf(conn, "+OK\r\n") //nolint:errcheck
