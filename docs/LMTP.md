@@ -134,18 +134,21 @@ The backend listens only for preamble connections from `yarilo-lmtp-login`. MTAs
 
 ## `lmtp_login_service`
 
-Configuration for `yarilo-lmtp-login`:
+Configuration for `yarilo-lmtp-login`. Set either `backend_addr` (standalone) or `director_addr` (director mode).
 
 | Key | Default | Description |
 |:---|:---|:---|
-| `lmtp_login_service.backend_addr` | — | Address of the `yarilo-lmtp` backend (e.g. `yarilo-lmtp.yarilo.svc.cluster.local:24`). Required. |
+| `backend_addr` | — | Fixed address of `yarilo-lmtp` backend. Used in standalone mode. |
+| `director_addr` | — | Address of `yarilo-director` for per-recipient LOOKUP. Takes priority over `backend_addr`. |
+| `director_tag` | `""` | Restrict LOOKUP to backends with this tag. Empty = full ring. |
+| `backend_port` | `0` | Override the port in the LOOKUP result. `0` = use the result address as-is. |
+
+**Standalone mode:**
 
 ```yaml
 lmtp_login_service:
   backend_addr: "yarilo-lmtp.yarilo.svc.cluster.local:24"
 ```
-
-Enable the component in Helm values:
 
 ```yaml
 components:
@@ -154,30 +157,27 @@ components:
     backendAddr: "yarilo-lmtp.yarilo.svc.cluster.local:24"
 ```
 
+**Director mode:**
+
+```yaml
+lmtp_login_service:
+  director_addr: "yarilo-director.yarilo.svc.cluster.local:9101"
+  director_tag: "prod"
+  backend_port: 10024
+```
+
+```yaml
+components:
+  lmtpLogin:
+    enabled: true
+    directorAddr: "yarilo-director.yarilo.svc.cluster.local:9101"
+    directorTag: "prod"
+    backendPort: 10024
+```
+
 Postfix `main.cf`:
 
 ```
 mailbox_transport = lmtp:inet:[yarilo-lmtp-login.yarilo.svc.cluster.local]:24
 ```
-
----
-
-## Example: director proxy mode (yarilo-lmtp inside director)
-
-```yaml
-services:
-  lmtp:
-    enabled: true
-    port: 24
-    ssl_mode: no
-
-protocol:
-  lmtp:
-    proxy:
-      timeout: 60
-```
-
-In director mode, `yarilo-lmtp-login` points its `backend_addr` at the director's LMTP proxy
-service. The director routes each recipient via consistent hashing; failed backends return `451`
-and the MTA retries later.
 

@@ -23,6 +23,7 @@ import (
 	goSmtp "github.com/0kaba0hub/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
 )
@@ -33,10 +34,24 @@ type Options struct {
 	// the backend (on the forwarded LHLO).
 	Hostname string
 
-	// BackendAddr is the TCP address of the LMTP backend.
+	// BackendAddr is the TCP address of the LMTP backend used in standalone
+	// mode. Ignored when DirectorAddr is set.
 	BackendAddr string
 	// BackendTimeout caps each backend dial and transaction. Default: 300s.
 	BackendTimeout time.Duration
+
+	// DirectorAddr is the yarilo-director address for per-recipient LOOKUP.
+	// When set, each RCPT TO triggers a LOOKUP to resolve the backend pod
+	// address; BackendAddr is ignored.
+	DirectorAddr string
+	// DirectorTLS is the mTLS config for connecting to yarilo-director.
+	DirectorTLS *tls.Config
+	// DirectorTag restricts LOOKUP to backends with this tag. "" = full ring.
+	DirectorTag string
+	// BackendPort overrides the port in the LOOKUP result. 0 = use as-is.
+	BackendPort int
+	// LocalIP is sent in the ME handshake with yarilo-director.
+	LocalIP string
 
 	// AuthMasterAddr is the yarilo-auth master-protocol address used to issue
 	// SESSION tokens. Required for token issuance.
@@ -95,8 +110,12 @@ func New(opts Options) *Server {
 
 // Serve accepts LMTP connections on ln until it is closed.
 func (s *Server) Serve(ln net.Listener) error {
+	mode := s.opts.BackendAddr
+	if s.opts.DirectorAddr != "" {
+		mode = "director:" + s.opts.DirectorAddr
+	}
 	slog.Info("lmtplogin: listening", "addr", ln.Addr().String(),
-		"backend", s.opts.BackendAddr,
+		"backend", mode,
 		"anvil", s.opts.AnvilAddr != "",
 	)
 	return s.srv.Serve(ln)
@@ -123,10 +142,11 @@ func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 // ---- session ----------------------------------------------------------------
 
 type rcptEntry struct {
-	to       string // original RCPT TO value
-	username string // canonical user@domain (no plus-detail)
-	anvilID  string // anvil session handle (empty if anvil skipped)
-	token    string // one-time session token from yarilo-auth
+	to          string // original RCPT TO value
+	username    string // canonical user@domain (no plus-detail)
+	anvilID     string // anvil session handle (empty if anvil skipped)
+	token       string // one-time session token from yarilo-auth
+	backendAddr string // resolved backend address (per-recipient in director mode)
 }
 
 type session struct {
@@ -158,6 +178,13 @@ func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
 		return &goSmtp.SMTPError{Code: 501, EnhancedCode: goSmtp.EnhancedCode{5, 1, 3}, Message: "Bad recipient address"}
 	}
 
+	// Resolve backend address before reserving any resources.
+	backendAddr, err := s.resolveBackend(username)
+	if err != nil {
+		slog.Error("lmtplogin: backend lookup failed", "user", username, "err", err)
+		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 4, 0}, Message: "Backend routing error"}
+	}
+
 	// Anvil CONNECT: register delivery and optionally gate concurrency.
 	anvilID, err := s.anvilConnect(username)
 	if errors.Is(err, ErrTooManyConcurrent) {
@@ -165,7 +192,6 @@ func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
 	}
 	if err != nil {
 		slog.Warn("lmtplogin: anvil unavailable, accepting without cluster limit", "user", username, "err", err)
-		// Non-fatal — deliver without concurrency tracking.
 	}
 
 	// Issue a session token for this recipient.
@@ -178,7 +204,7 @@ func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary auth error"}
 	}
 
-	s.rcpts = append(s.rcpts, rcptEntry{to: to, username: username, anvilID: anvilID, token: tok})
+	s.rcpts = append(s.rcpts, rcptEntry{to: to, username: username, anvilID: anvilID, token: tok, backendAddr: backendAddr})
 	return nil
 }
 
@@ -209,7 +235,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				User:      e.username,
 				Token:     e.token,
 			}
-			rerr := fanOutOne(s.opts.BackendAddr, s.opts.Hostname, s.from, e.to, data, pre, s.opts.BackendTimeout)
+			rerr := fanOutOne(e.backendAddr, s.opts.Hostname, s.from, e.to, data, pre, s.opts.BackendTimeout)
 			if rerr == nil {
 				slog.Info("lmtplogin: delivered", "rcpt", e.to, "size", len(data))
 			} else {
@@ -334,6 +360,50 @@ func (s *session) issueToken(username, anvilID string) (string, error) {
 		return "", fmt.Errorf("lmtplogin/auth: IssueSession: %w", err)
 	}
 	return tok, nil
+}
+
+// ---- director / backend resolution ------------------------------------------
+
+// resolveBackend returns the backend address for the given username.
+// In standalone mode (BackendAddr set) it returns opts.BackendAddr directly.
+// In director mode (DirectorAddr set) it performs a per-recipient LOOKUP.
+func (s *session) resolveBackend(username string) (string, error) {
+	if s.opts.DirectorAddr == "" {
+		return s.opts.BackendAddr, nil
+	}
+	return s.directorLookup(username)
+}
+
+// directorLookup dials yarilo-director, sends a LOOKUP for username, and
+// returns the resolved backend address. BackendPort overrides the port in
+// the LOOKUP result when set.
+func (s *session) directorLookup(username string) (string, error) {
+	var dc *proto.Conn
+	var err error
+	if s.opts.DirectorTLS != nil {
+		dc, err = proto.DialTLS(s.opts.DirectorAddr, s.opts.LocalIP, 0, s.opts.DirectorTLS)
+	} else {
+		dc, err = proto.Dial(s.opts.DirectorAddr, s.opts.LocalIP, 0)
+	}
+	if err != nil {
+		return "", fmt.Errorf("lmtplogin/director: dial: %w", err)
+	}
+	defer dc.Close()
+
+	res, err := dc.Lookup("", username, s.opts.DirectorTag)
+	if err != nil {
+		return "", fmt.Errorf("lmtplogin/director: lookup %s: %w", username, err)
+	}
+
+	addr := res.Addr
+	if s.opts.BackendPort != 0 {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			host = addr
+		}
+		addr = fmt.Sprintf("%s:%d", host, s.opts.BackendPort)
+	}
+	return addr, nil
 }
 
 // ---- backend fan-out --------------------------------------------------------

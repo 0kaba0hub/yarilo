@@ -730,10 +730,16 @@ components:
       enabled: false
       secretName: ""
 
-    ## backendAddr is the address of the yarilo-lmtp backend that receives
-    ## preamble-authenticated connections. Required when lmtpLogin is enabled.
+    ## Standalone mode: fixed backend address (set either this or directorAddr).
     ## Typically "<release>-lmtp:<containerPort>" within the cluster.
     backendAddr: ""
+
+    ## Director mode: per-recipient LOOKUP via yarilo-director (set either this or backendAddr).
+    directorAddr: ""
+    ## directorTag restricts LOOKUP to backends with this tag. Empty = full ring.
+    directorTag: ""
+    ## backendPort overrides the port in the director LOOKUP result. 0 = use result as-is.
+    backendPort: 0
 
     service:
       type: ClusterIP

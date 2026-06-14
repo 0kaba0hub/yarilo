@@ -473,10 +473,18 @@ type SubmissionLoginServiceConfig struct {
 }
 
 // LMTPLoginServiceConfig configures the yarilo-lmtp-login proxy.
-// BackendAddr is the address of the LMTP backend that lmtp-login fans
-// out to — one TCP connection per recipient, each with its own preamble.
 type LMTPLoginServiceConfig struct {
+	// BackendAddr is used in standalone mode: fixed address of the yarilo-lmtp
+	// backend. Ignored when DirectorAddr is set.
 	BackendAddr string `koanf:"backend_addr"`
+
+	// DirectorAddr enables director mode: per-recipient LOOKUP via yarilo-director.
+	// When set, BackendAddr is ignored and each RCPT TO triggers a LOOKUP request.
+	DirectorAddr string `koanf:"director_addr"`
+	// DirectorTag restricts LOOKUP to backends carrying this tag. Empty = full ring.
+	DirectorTag string `koanf:"director_tag"`
+	// BackendPort overrides the port returned by a director LOOKUP. 0 = use as-is.
+	BackendPort int `koanf:"backend_port"`
 }
 
 // BackendAPIConfig configures the yarilo-backend-api process —

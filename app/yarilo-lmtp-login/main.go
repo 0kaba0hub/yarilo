@@ -43,15 +43,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	backendAddr := cfg.LMTPLoginService.BackendAddr
-	if backendAddr == "" {
-		slog.Error("lmtp_login_service.backend_addr must be set")
+	lmtpCfg := cfg.LMTPLoginService
+	if lmtpCfg.BackendAddr == "" && lmtpCfg.DirectorAddr == "" {
+		slog.Error("lmtp_login_service: set either backend_addr (standalone) or director_addr (director mode)")
 		os.Exit(1)
 	}
 
+	mode := lmtpCfg.BackendAddr
+	if lmtpCfg.DirectorAddr != "" {
+		mode = "director:" + lmtpCfg.DirectorAddr
+	}
 	slog.Info("yarilo-lmtp-login starting",
 		"version", build.Version,
-		"backend", backendAddr,
+		"backend", mode,
 		"telemetry", cfg.Telemetry.Listen,
 	)
 
@@ -75,7 +79,12 @@ func main() {
 
 	opts := lmtplogin.Options{
 		Hostname:         hostname,
-		BackendAddr:      backendAddr,
+		BackendAddr:      lmtpCfg.BackendAddr,
+		DirectorAddr:     lmtpCfg.DirectorAddr,
+		DirectorTLS:      intTLS,
+		DirectorTag:      lmtpCfg.DirectorTag,
+		BackendPort:      lmtpCfg.BackendPort,
+		LocalIP:          os.Getenv("POD_IP"),
 		AuthMasterAddr:   cfg.AuthService.MasterAddr,
 		AuthMasterTLS:    intTLS,
 		AnvilAddr:        cfg.AnvilService.ClientAddr(),
