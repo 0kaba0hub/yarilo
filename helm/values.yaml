@@ -239,6 +239,13 @@ components:
       ## consume. Must be larger than the login→backend roundtrip time.
       ## Default 60 s is generous; lower to 10-15 s in production.
       ttlSeconds: 60
+      ## backend — token store implementation.
+      ## "memory": in-process (single auth pod only).
+      ## "redis": Redis-backed, safe for replicaCount > 1.
+      backend: memory
+      ## redisAddr — Redis URL used when backend=redis.
+      ## Format: redis://[password@]host:port/db
+      redisAddr: ""
 
     ## oauth2 — OAuth 2.0 bearer-token providers. Each entry
     ## becomes a passdb that participates in the auth chain (placed

@@ -271,6 +271,12 @@ data:
             skip_schema: true
             {{- end }}
           {{- end }}
+      token:
+        ttl_seconds: {{ .Values.components.auth.token.ttlSeconds | default 60 }}
+        backend: {{ .Values.components.auth.token.backend | default "memory" | quote }}
+        {{- with .Values.components.auth.token.redisAddr }}
+        redis_addr: {{ . | quote }}
+        {{- end }}
 
     {{- $storage := .Values.storage }}
     {{- if $storage }}
