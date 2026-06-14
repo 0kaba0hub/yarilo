@@ -76,11 +76,12 @@ func New(opts ...Option) *Backend {
 // open time (Dovecot mail_storage pattern).
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 	ui := &userIndex{
-		b:        b,
-		home:     u.Home,
-		username: u.Username,
-		owner:    makeOwner(u),
-		open:     make(map[uint64]*folderState),
+		b:           b,
+		home:        u.Home,
+		volatileDir: u.VolatileDir,
+		username:    u.Username,
+		owner:       makeOwner(u),
+		open:        make(map[uint64]*folderState),
 	}
 	if b.quotaFn != nil {
 		ui.counter, ui.limits = b.quotaFn(u)
@@ -92,12 +93,13 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 // Each (user, folder) pair gets a folderState lazily on first
 // OpenFolder call; subsequent OpenFolder reuses cached state.
 type userIndex struct {
-	b        *Backend
-	home     string
-	username string
-	owner    string
-	counter  *quota.Counter
-	limits   quota.Limits
+	b           *Backend
+	home        string
+	volatileDir string // base volatile dir (empty = disabled)
+	username    string
+	owner       string
+	counter     *quota.Counter
+	limits      quota.Limits
 
 	mu    sync.Mutex
 	next  uint64                  // monotonic per-session folder ID counter
@@ -115,9 +117,10 @@ type userIndex struct {
 type folderState struct {
 	mu sync.Mutex
 
-	folder    string // mailbox folder name (e.g. "INBOX", "Sent")
-	indexDir  string // <home>/<folder-relative>/
-	indexPath string // <indexDir>/dovecot.index
+	folder      string // mailbox folder name (e.g. "INBOX", "Sent")
+	indexDir    string // <home>/<folder-relative>/
+	indexPath   string // <indexDir>/dovecot.index
+	volatileDir string // local dir for tmp files (empty = same as indexDir)
 
 	file      *mailindex.File // the wire-format snapshot
 	keywords  keywordsHdr     // parsed keyword name registry
@@ -156,6 +159,15 @@ func IndexDirFor(home, folder string) string {
 
 func (u *userIndex) indexDir(folder string) string {
 	return IndexDirFor(u.home, folder)
+}
+
+// folderVolatileDir returns the per-folder volatile directory when
+// volatileDir is configured, or "" when disabled.
+func (u *userIndex) folderVolatileDir(folder string) string {
+	if u.volatileDir == "" {
+		return ""
+	}
+	return IndexDirFor(u.volatileDir, folder)
 }
 
 // withFolderLock runs fn under the cross-process index lock for

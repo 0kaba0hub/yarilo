@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -198,3 +199,59 @@ func TestWithSyncLockNilLocker(t *testing.T) {
 // must pass the Counter/Acquire/Renew/Subscribe contract). Here
 // we only confirm the nil-locker fast path and the deterministic
 // key derivation — anything more belongs in the consumer's tests.
+
+func TestRecreateTmpDir(t *testing.T) {
+	indexDir := t.TempDir()
+	volatileDir := t.TempDir() // simulates a separate FS (different dir = different path)
+
+	path := filepath.Join(indexDir, "test.index")
+	f, err := NewFile(1, nil)
+	if err != nil {
+		t.Fatalf("NewFile: %v", err)
+	}
+	in := f.ToRecreateInput(path)
+	in.TmpDir = volatileDir
+
+	if _, err := Recreate(in); err != nil {
+		t.Fatalf("Recreate with TmpDir: %v", err)
+	}
+
+	// Target index must exist and be readable.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("index not written: %v", err)
+	}
+
+	// No leftover tmp or stage files in either dir.
+	for _, dir := range []string{indexDir, volatileDir} {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if e.Name() != "test.index" && (filepath.Ext(e.Name()) == ".tmp" ||
+				contains(e.Name(), ".tmp.") || contains(e.Name(), ".stage.")) {
+				t.Errorf("leftover file in %s: %s", dir, e.Name())
+			}
+		}
+	}
+
+	// Index must be round-trip readable.
+	fh, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open index: %v", err)
+	}
+	defer fh.Close()
+	if _, err := Read(fh); err != nil {
+		t.Fatalf("Read after TmpDir Recreate: %v", err)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
+}
+
+func containsStr(s, sub string) bool {
+	for i := range s {
+		if i+len(sub) <= len(s) && s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

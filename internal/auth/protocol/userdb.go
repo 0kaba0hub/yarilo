@@ -64,6 +64,12 @@ type UserInfo struct {
 	MailboxFormat     string // maildir | sdbox | mdbox
 	MailAttributeDict string // dict URL for RFC 5464 METADATA
 
+	// VolatileDir is the VOLATILEDIR modifier extracted from MailLocation
+	// (or set directly via the `volatile_dir` userdb extra field). Carries
+	// the raw template string (%u/%n/%d/%h not yet expanded) so callers
+	// can expand it against the resolved home after userdb completes.
+	VolatileDir string
+
 	// ---- Quota ------------------------------------------------
 
 	// QuotaRules is the list of per-user quota rules (Dovecot
@@ -248,6 +254,7 @@ func (ui *UserInfo) VisitFields(fn func(key, value string)) {
 	yes("client_cert_present", ui.ClientCertPresent)
 
 	str("mail", ui.MailLocation)
+	str("volatile_dir", ui.VolatileDir)
 	num("mail_uid", uint64(ui.MailUID))
 	num("mail_gid", uint64(ui.MailGID))
 	str("mailbox_format", ui.MailboxFormat)

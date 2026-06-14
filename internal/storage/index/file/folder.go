@@ -56,11 +56,12 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 
 	names, sizes := loadNames(indexDir)
 	fs := &folderState{
-		folder:    folder,
-		indexDir:  indexDir,
-		indexPath: indexPath,
-		filenames: names,
-		sizes:     sizes,
+		folder:      folder,
+		indexDir:    indexDir,
+		indexPath:   indexPath,
+		volatileDir: u.folderVolatileDir(folder),
+		filenames:   names,
+		sizes:       sizes,
 	}
 	if err := u.loadOrInit(fs, uidValidity); err != nil {
 		return nil, err
@@ -247,7 +248,14 @@ func (fs *folderState) flush(wholeNames bool) error {
 	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/flush: mkdir: %w", err)
 	}
-	if _, err := mailindex.Recreate(fs.file.ToRecreateInput(fs.indexPath)); err != nil {
+	ri := fs.file.ToRecreateInput(fs.indexPath)
+	if fs.volatileDir != "" {
+		if err := os.MkdirAll(fs.volatileDir, 0o700); err != nil {
+			return fmt.Errorf("fileindex/flush: mkdir volatile: %w", err)
+		}
+		ri.TmpDir = fs.volatileDir
+	}
+	if _, err := mailindex.Recreate(ri); err != nil {
 		return fmt.Errorf("fileindex/flush: recreate: %w", err)
 	}
 	if wholeNames {

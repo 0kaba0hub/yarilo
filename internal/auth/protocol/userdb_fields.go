@@ -54,8 +54,13 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.Groups = append(info.Groups, SplitCSV(value)...)
 	case "client_cert_present":
 		info.ClientCertPresent = IsTruthy(value)
+	case "volatile_dir":
+		info.VolatileDir = value
 	case "mail", "mail_location":
 		info.MailLocation = value
+		if vd := parseMailLocationMod(value, "VOLATILEDIR"); vd != "" {
+			info.VolatileDir = vd
+		}
 	case "mail_uid":
 		n, err := strconv.ParseUint(value, 10, 32)
 		if err != nil {
@@ -260,4 +265,20 @@ func ParseUserInfo(tokens []string) (*UserInfo, error) {
 		}
 	}
 	return info, nil
+}
+
+// parseMailLocationMod extracts the value of a named modifier from a
+// Dovecot mail location string of the form "driver:path:KEY1=v1:KEY2=v2".
+// The lookup is case-insensitive. Returns "" when the modifier is absent.
+func parseMailLocationMod(loc, mod string) string {
+	parts := strings.Split(loc, ":")
+	mod = strings.ToUpper(mod)
+	for _, p := range parts[2:] {
+		if eq := strings.IndexByte(p, '='); eq >= 0 {
+			if strings.ToUpper(p[:eq]) == mod {
+				return p[eq+1:]
+			}
+		}
+	}
+	return ""
 }

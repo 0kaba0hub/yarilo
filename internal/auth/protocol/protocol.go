@@ -60,9 +60,16 @@ type AuthResponse struct {
 	// QuotaRules is the list of per-user quota rules sourced from the
 	// userdb `quota_rule=` extra field. Format: `*:storage=5G`.
 	QuotaRules []string
-	Proxy      bool
-	Host       string
-	Port       int
+
+	// VolatileDir is the VOLATILEDIR modifier from the mail location (or
+	// direct volatile_dir= userdb field). Carries the raw template string
+	// (%u/%n/%d/%h unexpanded) — callers expand it against the resolved
+	// home after auth completes.
+	VolatileDir string
+
+	Proxy bool
+	Host  string
+	Port  int
 
 	// Fields carries the passdb result as a key/value bag with
 	// prefix-derived scoping (see fields.go). Populated by passdb
@@ -354,6 +361,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	}
 	resp.Groups = extractGroups(req.Fields)
 	resp.QuotaRules = extractQuotaRules(req.Fields)
+	resp.VolatileDir = extractVolatileDir(req.Fields)
 	return resp, err
 }
 
@@ -378,6 +386,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		}
 		resp.Groups = extractGroups(entry.Fields)
 		resp.QuotaRules = extractQuotaRules(entry.Fields)
+		resp.VolatileDir = extractVolatileDir(entry.Fields)
 	}
 	if resp.Username == "" {
 		resp.Username = reqUser
@@ -509,6 +518,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 	if v, ok := req.Fields.Get("mail"); ok {
 		resp.MailLoc = v
 	}
+	resp.VolatileDir = extractVolatileDir(req.Fields)
 	return resp, err
 }
 
@@ -1413,6 +1423,28 @@ func extractQuotaRules(f *Fields) []string {
 		return SplitCSV(v)
 	}
 	return nil
+}
+
+// extractVolatileDir reads the VOLATILEDIR value from the Fields bag.
+// Priority: explicit volatile_dir= field → VOLATILEDIR= modifier inside
+// the mail= location string. Returns the raw template (not yet expanded).
+func extractVolatileDir(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	for _, key := range []string{"userdb_volatile_dir", "volatile_dir"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			return v
+		}
+	}
+	for _, key := range []string{"userdb_mail", "mail"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			if vd := parseMailLocationMod(v, "VOLATILEDIR"); vd != "" {
+				return vd
+			}
+		}
+	}
+	return ""
 }
 
 // authenticate runs the configured auth chains against the
