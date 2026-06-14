@@ -390,7 +390,11 @@ type AuthServiceConfig struct {
 	// MasterAddr is the address backend services use to dial the
 	// yarilo-auth master protocol for userdb lookups (USER command).
 	// Defaults to empty (userdb checks disabled) when not set.
-	MasterAddr string         `koanf:"master_addr"`
+	MasterAddr string `koanf:"master_addr"`
+	// SASLListen, when non-empty, opens a plain-TCP listener for the Dovecot
+	// auth client protocol without mTLS — intended for Postfix
+	// (smtpd_sasl_type=dovecot, smtpd_sasl_path=inet:[yarilo-auth]:12345).
+	SASLListen string         `koanf:"sasl_listen"`
 	Shutdown   ShutdownConfig `koanf:"shutdown"`
 }
 
