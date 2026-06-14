@@ -143,6 +143,10 @@ components:
           WHERE active = 1
           ORDER BY username
 
+    token:
+      backend: redis
+      redisAddr: "redis://yarilo-redis.yarilo-sb.svc:6379/0"
+
   ## IMAP session pod.
   imap:
     listeners:

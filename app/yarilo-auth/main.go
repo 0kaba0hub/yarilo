@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
@@ -136,8 +137,8 @@ func main() {
 		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
 	)
 
-	tokenStore := authtoken.New(time.Duration(cfg.Auth.Token.TTLSeconds) * time.Second)
-	defer tokenStore.Close()
+	tokenStore, tokenClose := buildTokenStore(cfg.Auth.Token)
+	defer tokenClose()
 
 	srvOpts := []protocol.ServerOption{
 		protocol.WithTokenStore(tokenStore),
@@ -283,6 +284,29 @@ func runTelemetry(addr string) {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		slog.Error("telemetry server failed", "err", err)
 	}
+}
+
+// buildTokenStore creates the appropriate TokenStore based on config and returns
+// it along with a cleanup function. The caller must invoke cleanup on exit.
+func buildTokenStore(cfg config.AuthTokenConfig) (protocol.TokenStore, func()) {
+	ttl := time.Duration(cfg.TTLSeconds) * time.Second
+	if cfg.Backend == "redis" {
+		if cfg.RedisAddr == "" {
+			slog.Error("auth.token.backend=redis requires auth.token.redis_addr")
+			os.Exit(1)
+		}
+		opt, err := redis.ParseURL(cfg.RedisAddr)
+		if err != nil {
+			slog.Error("auth.token.redis_addr invalid", "err", err)
+			os.Exit(1)
+		}
+		rdb := redis.NewClient(opt)
+		slog.Info("auth: token store backend=redis", "addr", cfg.RedisAddr)
+		return authtoken.NewRedis(rdb, ttl), func() { rdb.Close() }
+	}
+	slog.Info("auth: token store backend=memory")
+	s := authtoken.New(ttl)
+	return s, s.Close
 }
 
 func logLevel() slog.Level {

@@ -721,6 +721,12 @@ type AuthTokenConfig struct {
 	// consume. Default 60 s — enough for the login pod to forward it and
 	// the backend to call VERIFY within the same connection setup.
 	TTLSeconds int `koanf:"ttl_seconds"`
+	// Backend selects the token store implementation: "memory" (default,
+	// single-pod only) or "redis" (multi-replica safe).
+	Backend string `koanf:"backend"`
+	// RedisAddr is a Redis URL used when Backend="redis".
+	// Format: redis://[password@]host:port/db
+	RedisAddr string `koanf:"redis_addr"`
 }
 
 // AuthPolicyConfig configures the external HTTP policy-server
@@ -999,6 +1005,7 @@ func Load(path string) (*Config, error) {
 			},
 			Token: AuthTokenConfig{
 				TTLSeconds: 60,
+				Backend:    "memory",
 			},
 			Policy: AuthPolicyConfig{
 				HashMech:         "sha256",

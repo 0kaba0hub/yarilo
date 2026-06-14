@@ -4,50 +4,69 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/0kaba0hub/yarilo/pkg/authtoken"
 )
 
-func TestIssueValidate(t *testing.T) {
-	s := authtoken.New(5 * time.Second)
-	defer s.Close()
-
-	tok, err := s.Issue("alice@example.com", "sess-1", "imap")
-	if err != nil {
-		t.Fatalf("Issue: %v", err)
-	}
-	if len(tok) != 64 {
-		t.Fatalf("token length: got %d, want 64", len(tok))
-	}
-
-	u, sid, svc, ok := s.Validate(tok)
-	if !ok {
-		t.Fatal("Validate: expected ok=true")
-	}
-	if u != "alice@example.com" {
-		t.Errorf("username: got %q, want %q", u, "alice@example.com")
-	}
-	if sid != "sess-1" {
-		t.Errorf("sessionID: got %q, want %q", sid, "sess-1")
-	}
-	if svc != "imap" {
-		t.Errorf("service: got %q, want %q", svc, "imap")
-	}
+// store is the subset of both Store and RedisStore that tests exercise.
+type store interface {
+	Issue(username, sessionID, service string) (string, error)
+	Validate(tok string) (username, sessionID, service string, ok bool)
+	Close()
 }
 
-func TestOneTimeUse(t *testing.T) {
-	s := authtoken.New(5 * time.Second)
-	defer s.Close()
+func runSuite(t *testing.T, s store) {
+	t.Helper()
 
-	tok, _ := s.Issue("bob@example.com", "sess-2", "imap")
-	s.Validate(tok) // consume
+	t.Run("IssueValidate", func(t *testing.T) {
+		tok, err := s.Issue("alice@example.com", "sess-1", "imap")
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		if len(tok) != 64 {
+			t.Fatalf("token length: got %d, want 64", len(tok))
+		}
+		u, sid, svc, ok := s.Validate(tok)
+		if !ok {
+			t.Fatal("Validate: expected ok=true")
+		}
+		if u != "alice@example.com" {
+			t.Errorf("username: got %q, want alice@example.com", u)
+		}
+		if sid != "sess-1" {
+			t.Errorf("sessionID: got %q, want sess-1", sid)
+		}
+		if svc != "imap" {
+			t.Errorf("service: got %q, want imap", svc)
+		}
+	})
 
-	_, _, _, ok := s.Validate(tok)
-	if ok {
-		t.Fatal("second Validate should return ok=false (one-time use)")
-	}
+	t.Run("OneTimeUse", func(t *testing.T) {
+		tok, _ := s.Issue("bob@example.com", "sess-2", "imap")
+		s.Validate(tok) // consume
+		_, _, _, ok := s.Validate(tok)
+		if ok {
+			t.Fatal("second Validate should return ok=false (one-time use)")
+		}
+	})
+
+	t.Run("UnknownToken", func(t *testing.T) {
+		_, _, _, ok := s.Validate("0000000000000000000000000000000000000000000000000000000000000000")
+		if ok {
+			t.Fatal("unknown token should return ok=false")
+		}
+	})
 }
 
-func TestExpired(t *testing.T) {
+func TestMemoryStore(t *testing.T) {
+	s := authtoken.New(5 * time.Second)
+	defer s.Close()
+	runSuite(t, s)
+}
+
+func TestMemoryStore_Expired(t *testing.T) {
 	s := authtoken.New(10 * time.Millisecond)
 	defer s.Close()
 
@@ -60,12 +79,28 @@ func TestExpired(t *testing.T) {
 	}
 }
 
-func TestUnknownToken(t *testing.T) {
-	s := authtoken.New(5 * time.Second)
-	defer s.Close()
+func TestRedisStore(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rdb.Close() })
 
-	_, _, _, ok := s.Validate("0000000000000000000000000000000000000000000000000000000000000000")
+	s := authtoken.NewRedis(rdb, 5*time.Second)
+	defer s.Close()
+	runSuite(t, s)
+}
+
+func TestRedisStore_Expired(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rdb.Close() })
+
+	s := authtoken.NewRedis(rdb, time.Second)
+	tok, _ := s.Issue("dave@example.com", "sess-4", "smtp")
+
+	mr.FastForward(2 * time.Second)
+
+	_, _, _, ok := s.Validate(tok)
 	if ok {
-		t.Fatal("unknown token should return ok=false")
+		t.Fatal("expired token should return ok=false")
 	}
 }
