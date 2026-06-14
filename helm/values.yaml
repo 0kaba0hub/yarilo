@@ -6,6 +6,28 @@ image:
   pullPolicy: IfNotPresent
 
 ## -------------------------------------------------------------------
+## Storage (shared across all session components)
+## -------------------------------------------------------------------
+## These settings apply to every yarilo session component (imap, pop3,
+## lmtp). When a userdb lookup returns explicit per-user values
+## (volatile_dir=, index_dir=, control_dir= or modifiers in the mail=
+## location string), those take priority over these cluster-wide defaults.
+storage:
+  mailbox: maildir
+  maildirRoot: /var/mail/vhosts
+  mailHomeTemplate: "%d/%n"
+  index: fileindex
+  ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
+  ## indexDir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
+  ## controlDir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files
+  ## volatileDir: "/run/yarilo-volatile/%d/%n" # local tmpfs for index tmp files (NFS deployments)
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessMode: ReadWriteMany
+    size: 10Gi
+
+## -------------------------------------------------------------------
 ## Components
 ## -------------------------------------------------------------------
 components:
@@ -424,20 +446,6 @@ components:
       enabled: false
       secretName: ""
 
-    storage:
-      mailbox: maildir
-      maildirRoot: /var/mail/vhosts
-      mailHomeTemplate: "%d/%n"
-      index: fileindex
-      ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
-      ## indexDir: "/var/yarilo-index/%d/%n"        # separate index tree (e.g. faster local disk)
-      ## volatileDir: "/run/yarilo-volatile/%d/%n"  # local tmpfs for index tmp files (NFS deployments)
-      persistence:
-        enabled: true
-        storageClass: ""
-        accessMode: ReadWriteMany
-        size: 10Gi
-
     resources:
       requests:
         cpu: 100m
@@ -465,19 +473,6 @@ components:
       enabled: false
       secretName: ""
 
-    storage:
-      mailbox: maildir
-      maildirRoot: /var/mail/vhosts
-      mailHomeTemplate: "%d/%n"
-      index: fileindex
-      ## indexDir: "/var/yarilo-index/%d/%n"
-      ## volatileDir: "/run/yarilo-volatile/%d/%n"
-      persistence:
-        enabled: true
-        storageClass: ""
-        accessMode: ReadWriteMany
-        size: 10Gi
-
     resources:
       requests:
         cpu: 50m
@@ -500,19 +495,6 @@ components:
     internalTLS:
       enabled: false
       secretName: ""
-
-    storage:
-      mailbox: maildir
-      maildirRoot: /var/mail/vhosts
-      mailHomeTemplate: "%d/%n"
-      index: fileindex
-      ## indexDir: "/var/yarilo-index/%d/%n"
-      ## volatileDir: "/run/yarilo-volatile/%d/%n"
-      persistence:
-        enabled: true
-        storageClass: ""
-        accessMode: ReadWriteMany
-        size: 10Gi
 
     resources:
       requests:

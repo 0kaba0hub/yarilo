@@ -73,6 +73,13 @@ type AuthResponse struct {
 	// here instead of co-located with the mailbox under Home.
 	IndexDir string
 
+	// ControlDir is the CONTROL= modifier from the mail location (or direct
+	// control_dir= userdb field). Carries the raw template string
+	// (%u/%n/%d/%h unexpanded). When set, per-folder control files
+	// (yarilo-uidlist, subscriptions) live here instead of co-located
+	// with the mailbox under Home.
+	ControlDir string
+
 	Proxy bool
 	Host  string
 	Port  int
@@ -369,6 +376,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	resp.QuotaRules = extractQuotaRules(req.Fields)
 	resp.VolatileDir = extractVolatileDir(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
+	resp.ControlDir = extractControlDir(req.Fields)
 	return resp, err
 }
 
@@ -395,6 +403,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		resp.QuotaRules = extractQuotaRules(entry.Fields)
 		resp.VolatileDir = extractVolatileDir(entry.Fields)
 		resp.IndexDir = extractIndexDir(entry.Fields)
+		resp.ControlDir = extractControlDir(entry.Fields)
 	}
 	if resp.Username == "" {
 		resp.Username = reqUser
@@ -528,6 +537,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 	}
 	resp.VolatileDir = extractVolatileDir(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
+	resp.ControlDir = extractControlDir(req.Fields)
 	return resp, err
 }
 
@@ -1472,6 +1482,28 @@ func extractIndexDir(f *Fields) string {
 		if v, ok := f.Get(key); ok && v != "" {
 			if id := parseMailLocationMod(v, "INDEX"); id != "" {
 				return id
+			}
+		}
+	}
+	return ""
+}
+
+// extractControlDir reads the CONTROL= value from the Fields bag.
+// Priority: explicit control_dir= field → CONTROL= modifier inside
+// the mail= location string. Returns the raw template (not yet expanded).
+func extractControlDir(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	for _, key := range []string{"userdb_control_dir", "control_dir"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			return v
+		}
+	}
+	for _, key := range []string{"userdb_mail", "mail"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			if cd := parseMailLocationMod(v, "CONTROL"); cd != "" {
+				return cd
 			}
 		}
 	}

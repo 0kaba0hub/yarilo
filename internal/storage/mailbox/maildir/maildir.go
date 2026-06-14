@@ -64,20 +64,22 @@ func New(opts ...Option) *Backend {
 // is used for all path resolution; usernames are never converted to paths here.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
-		b:        b,
-		home:     u.Home,
-		username: u.Username,
-		owner:    makeOwner(u),
+		b:          b,
+		home:       u.Home,
+		controlDir: u.ControlDir,
+		username:   u.Username,
+		owner:      makeOwner(u),
 	}
 }
 
 // userMailbox is a per-session, per-user Maildir storage handle.
 type userMailbox struct {
-	b        *Backend
-	home     string
-	username string
-	owner    string     // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
-	mu       sync.Mutex // in-process fast-path; cross-process barrier is b.locker
+	b          *Backend
+	home       string
+	controlDir string // CONTROL= override root (empty = co-located with home)
+	username   string
+	owner      string     // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
+	mu         sync.Mutex // in-process fast-path; cross-process barrier is b.locker
 }
 
 // makeOwner builds the owner string for yarilo-locks BUSY reports.
@@ -457,7 +459,7 @@ const (
 )
 
 func (u *userMailbox) uidListPath(folder string) string {
-	return filepath.Join(u.folderPath(folder), UIDListFileName)
+	return filepath.Join(u.controlFolderPath(folder), UIDListFileName)
 }
 
 // migrateLegacyUIDList renames dovecot-uidlist → yarilo-uidlist
@@ -526,6 +528,20 @@ func (u *userMailbox) folderPath(folder string) string {
 		return filepath.Join(u.home, "INBOX")
 	}
 	return filepath.Join(u.home, "."+folder)
+}
+
+// controlFolderPath returns the directory for per-folder control files
+// (yarilo-uidlist). When CONTROL= is configured, it uses controlDir as
+// the root; otherwise mirrors folderPath under home.
+func (u *userMailbox) controlFolderPath(folder string) string {
+	root := u.home
+	if u.controlDir != "" {
+		root = u.controlDir
+	}
+	if folder == "INBOX" {
+		return filepath.Join(root, "INBOX")
+	}
+	return filepath.Join(root, "."+folder)
 }
 
 // ---- flag helpers ----------------------------------------------------------

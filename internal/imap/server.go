@@ -731,6 +731,10 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		id := strings.ReplaceAll(res.IndexDir, "%h", userInfo.Home)
 		userInfo.IndexDir = mailbox.ExpandVars(id, res.Username)
 	}
+	if res.ControlDir != "" {
+		cd := strings.ReplaceAll(res.ControlDir, "%h", userInfo.Home)
+		userInfo.ControlDir = mailbox.ExpandVars(cd, res.Username)
+	}
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())

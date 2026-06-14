@@ -12,6 +12,13 @@
 
 hostname: mail-sb.seconddns.com
 
+storage:
+  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 5Gi
+
 ## Enable XCLIENT so session pods accept real-client-IP forwarding from login pods.
 general:
   xclient:
@@ -137,17 +144,10 @@ components:
           ORDER BY username
 
   ## IMAP session pod.
-  ## PVC yarilo-mail is created from this component's persistence config.
   imap:
     listeners:
       imap:
         enabled: true
-    storage:
-      volatileDir: "/tmp/yarilo-volatile/%d/%n"
-      persistence:
-        enabled: true
-        accessMode: ReadWriteOnce
-        size: 5Gi
 
   ## POP3 session pod.
   pop3:

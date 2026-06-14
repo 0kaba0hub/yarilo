@@ -58,13 +58,27 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.VolatileDir = value
 	case "index_dir":
 		info.IndexDir = value
+	case "control_dir":
+		info.ControlDir = value
 	case "mail", "mail_location":
 		info.MailLocation = value
-		if vd := parseMailLocationMod(value, "VOLATILEDIR"); vd != "" {
-			info.VolatileDir = vd
+		// Explicit userdb fields (volatile_dir=, index_dir=, control_dir=)
+		// take priority over modifiers embedded in the mail location string.
+		// Only apply a modifier when the explicit field has not been set.
+		if info.VolatileDir == "" {
+			if vd := parseMailLocationMod(value, "VOLATILEDIR"); vd != "" {
+				info.VolatileDir = vd
+			}
 		}
-		if id := parseMailLocationMod(value, "INDEX"); id != "" {
-			info.IndexDir = id
+		if info.IndexDir == "" {
+			if id := parseMailLocationMod(value, "INDEX"); id != "" {
+				info.IndexDir = id
+			}
+		}
+		if info.ControlDir == "" {
+			if cd := parseMailLocationMod(value, "CONTROL"); cd != "" {
+				info.ControlDir = cd
+			}
 		}
 	case "mail_uid":
 		n, err := strconv.ParseUint(value, 10, 32)

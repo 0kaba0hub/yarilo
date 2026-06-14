@@ -123,6 +123,7 @@ func New(cfg *config.Config) (*Server, error) {
 		HomeTemplate:       cfg.Storage.MailHomeTemplate,
 		DefaultVolatileDir: cfg.Storage.VolatileDir,
 		DefaultIndexDir:    cfg.Storage.IndexDir,
+		DefaultControlDir:  cfg.Storage.ControlDir,
 	}
 	locker, err := buildLocksClient(cfg)
 	if err != nil {
@@ -343,6 +344,10 @@ func New(cfg *config.Config) (*Server, error) {
 				if ui.IndexDir != "" {
 					id := strings.ReplaceAll(ui.IndexDir, "%h", mbi.Home)
 					mbi.IndexDir = mailbox.ExpandVars(id, username)
+				}
+				if ui.ControlDir != "" {
+					cd := strings.ReplaceAll(ui.ControlDir, "%h", mbi.Home)
+					mbi.ControlDir = mailbox.ExpandVars(cd, username)
 				}
 				return mbi, nil
 			}
