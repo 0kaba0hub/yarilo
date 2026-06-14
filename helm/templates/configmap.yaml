@@ -100,6 +100,8 @@ data:
           {{ $folder | quote }}: {{ $attr | quote }}
           {{- end }}
         {{- end }}
+        acl:
+          enabled: {{ .Values.protocol.imap.acl.enabled }}
       pop3:
         pop3_no_flag_updates: {{ .Values.protocol.pop3.noFlagUpdates }}
         pop3_reuse_xuidl: {{ .Values.protocol.pop3.reuseXUIDL }}
@@ -278,6 +280,23 @@ data:
       mail_home_template: {{ $storage.mailHomeTemplate | quote }}
       index: {{ $storage.index | quote }}
       index_dir: ""
+    {{- end }}
+
+    {{- with .Values.dicts }}
+    dicts:
+      {{- range $name, $d := . }}
+      {{ $name }}:
+        driver: {{ $d.driver | quote }}
+        {{- with $d.settings }}
+        settings:
+          {{- range $k, $v := . }}
+          {{ $k }}: {{ $v | toJson }}
+          {{- end }}
+        {{- end }}
+        {{- if $d.expire_secs }}
+        expire_secs: {{ $d.expire_secs }}
+        {{- end }}
+      {{- end }}
     {{- end }}
 
     internal_tls:
