@@ -1295,8 +1295,13 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	if err != nil {
 		return nil, err
 	}
+	internalDate := time.Now()
+	if opts != nil && !opts.Time.IsZero() {
+		internalDate = opts.Time
+	}
 	if err := h.idx.AppendMessage(f.ID, &mailbox.MessageMeta{
 		UID: uid, Filename: filename, Flags: flagList, Keywords: kwList, ModSeq: modseq, Size: uint32(size),
+		InternalDate: internalDate,
 	}); err != nil {
 		_ = h.box.Remove(rel, filename)
 		return nil, fmt.Errorf("imap/append record: %w", err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
 )
@@ -12,10 +13,36 @@ import (
 // Extension names match the canonical wire spec. These are the
 // exact strings the on-disk EXT_INTRO record carries.
 const (
-	extNameDboxHdr  = "dbox-hdr"
-	extNameModSeq   = "modseq"
-	extNameKeywords = "keywords"
+	extNameDboxHdr      = "dbox-hdr"
+	extNameModSeq       = "modseq"
+	extNameKeywords     = "keywords"
+	extNameInternalDate = "idate"
 )
+
+// idate extension layout (0 bytes header, 4 bytes per-record):
+//
+//	per-record:
+//	  uint32 unix_time  // seconds since epoch; 0 = unknown
+const idateRecSize = 4
+
+func encodeIdateRec(t time.Time) []byte {
+	out := make([]byte, idateRecSize)
+	if !t.IsZero() {
+		binary.LittleEndian.PutUint32(out, uint32(t.Unix()))
+	}
+	return out
+}
+
+func decodeIdateRec(b []byte) time.Time {
+	if len(b) < idateRecSize {
+		return time.Time{}
+	}
+	unix := binary.LittleEndian.Uint32(b)
+	if unix == 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(unix), 0).UTC()
+}
 
 // dbox-hdr extension layout (24 bytes header, 0 per-record):
 //
@@ -272,6 +299,14 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 			HdrSize:     4, // count=0, no entries
 			HdrData:     encodeKeywordsHdr(keywordsHdr{}),
 			RecordSize:  keywordsRecSize,
+			RecordAlign: 4,
+			ResetID:     uidValidity,
+		},
+		{
+			Name:        extNameInternalDate,
+			HdrSize:     0,
+			HdrData:     nil,
+			RecordSize:  idateRecSize,
 			RecordAlign: 4,
 			ResetID:     uidValidity,
 		},
