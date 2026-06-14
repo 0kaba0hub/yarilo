@@ -162,7 +162,7 @@ components:
 
   quotaStatus:
     enabled: true
-    authMasterAddr: "yarilo-auth:9101"
+    authMasterAddr: "yarilo-auth:9102"
     service:
       type: LoadBalancer
       annotations:
