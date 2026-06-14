@@ -8,154 +8,55 @@ Items get removed only when the corresponding work merges to `main`.
 
 ---
 
-## Phase AUTH-1 — userdb foundation (NEXT — unblocks the current stream)
+## yarilo-sasl-login — окремий зовнішній бінар для SASL
 
-Adds a `Userdb` interface, a master-protocol wire (`USER` / `PASS` /
-`LIST`) on a separate mTLS socket, `pkg/authclient` (Go client that
-speaks both client and master protocols), and a SQL userdb driver
-parallel to the existing SQL passdb. Wires `authclient` into
-`yarilo-backend-api/main.go` so the admin-API can finally do
-password-less user lookups.
+Сьогодні `yarilo-imap-login` та `yarilo-pop3-login` мають прямий доступ до
+Unix-сокету `yarilo-auth` і самостійно ведуть SASL-переговори. Це порушує
+принцип мінімального доступу: TLS-термінатор не повинен знати нічого про
+внутрішній auth-сокет.
 
-**Why first:** unblocks "Backend admin API — auth-aware user lookups"
-and "Backend admin API — folder write ops" (both below) which are
-otherwise stuck. Smallest auth-side step that closes the current
-operational gap.
+Завдання: виділити SASL-переговори в окремий бінар `yarilo-sasl-login`, який:
 
-See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-1 for the
-detailed item list. Out of scope: master users, cache, penalty,
-policy, extra SASL mechs, extra passdb/userdb drivers — those are
-their own phases (AUTH-2 .. AUTH-7) below.
+- є єдиним зовнішнім процесом, що має доступ до `yarilo-auth`;
+- приймає підключення від login-процесів через внутрішній протокол
+  (аналогічно до того, як `yarilo-imap-login` вже передає fd до `yarilo-imap`
+  через SCM_RIGHTS);
+- повертає login-процесу лише результат аутентифікації (`OK` / `FAIL` +
+  `UserInfo`), не відкриваючи сокет `yarilo-auth` назовні.
 
----
-
-## Phase AUTH-2 — extra fields + prefetch
-
-Replaces the fixed-field `AuthResponse` with an `auth_fields`-style
-bag (Dovecot's design): key/value with a flags mask (hidden,
-changed, userdb), `userdb_*=` / `auth_*=` prefix gating on the wire,
-passdb → userdb prefetch short-circuit, snapshot/rollback at
-chain-fallthrough, reserved fields (uid, gid, quota_rule, allow_nets,
-nodelay, nologin, system_groups_user) with parsing tests.
-
-Not currently blocking any consumer; pull when the rigid
-`AuthResponse` struct starts hurting (typically when AUTH-3 lands and
-needs `master_user`/`original_user`, or when AUTH-7 adds drivers that
-return new fields).
-
-See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-2.
+Login-процеси (`yarilo-imap-login`, `yarilo-pop3-login`, майбутній
+`yarilo-submission-login`) стають «сліпими» до auth — вони знають лише адресу
+`yarilo-sasl-login`.
 
 ---
 
-## Phase AUTH-3 — master users
+## Phase AUTH-5 — additional SASL mechanisms
 
-`master=<masteruser>` in `AUTH`, a separate masterdb chain, two-stage
-flow (passdb verifies the master password → masterdb authorises the
-target → `request.user` switches to the target), echo `master=` in
-the `OK` response for audit visibility.
+Currently shipped: PLAIN, OAUTHBEARER, XOAUTH2, SCRAM-SHA-256 (+PLUS),
+SCRAM-SHA-1 (+PLUS).
 
-See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-3.
+Still missing, by demand order:
+`EXTERNAL` → `CRAM-MD5` → `GSSAPI`.
 
----
-
-## Phase AUTH-4 — cache + penalty
-
-In-memory LRU cache with positive-TTL + negative-TTL (port of
-Dovecot's `auth-cache.c` shape), cache-key with var substitution
-(`%u`/`%n`/`%d`/`%r`), `CACHE-FLUSH` command on the master socket.
-Per-IP penalty / rate-limit via `internal/anvil` (`COUNTER-INC`
-primitives are already in place), IPv6 masked to /48.
-
-**Timing-leak fix (carve-out, lands here):** today an unknown
-username short-circuits before any password check while a known
-one runs the full bcrypt / sha512-crypt path — an attacker that
-measures wall-clock auth latency can enumerate which usernames
-exist. Mitigation is Dovecot's constant-time fake-compare: on
-`ResultNext` (user unknown in this driver) the SQL passdb runs a
-no-op password check against a dummy hash so the timing envelope
-matches the verified path. Add a benchmark assertion that the two
-paths' p50 latency stays within a small ratio so regressions
-surface in CI.
-
-See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-4.
-
----
-
-## Phase AUTH-5 — additional SASL mechs
-
-Mini-phases under one umbrella, by demand order:
-`EXTERNAL` → `OAUTHBEARER` → `SCRAM-SHA-256` (+`-PLUS` channel
-binding) → `CRAM-MD5` → `GSSAPI`. Each one its own PR with a
-`mechanisms: [...]` config knob.
+Each mechanism ships as its own PR with a `mechanisms: [...]` config
+knob. `go-sasl` fork (`0kaba0hub/go-sasl`) already has server-side
+SCRAM/XOAUTH2/CRAM-MD5/DIGEST-MD5 on `yarilo-patches` — pick up from
+there for CRAM-MD5.
 
 See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-5.
 
 ---
 
-## Phase AUTH-6 — policy HTTP + worker pool
-
-Async outbound POST to a configurable policy URL with JSON payload
-(per Dovecot `auth-policy.c`); blocking worker pool for slow passdbs
-(PAM, LDAP).
-
-Low priority — not blocking anything. Pull when concrete need
-surfaces.
-
-See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-6.
-
----
-
 ## Phase AUTH-7 — additional passdb / userdb drivers
 
-By operator demand: `passwd-file`, `ldap`, `lua`, `pam`, `static`,
-`imap`. Order driven by ticket pressure, not pre-decided.
+Currently shipped: SQL (sqlite/mysql/postgres) + OAuth2.
+
+Still missing, by operator demand order:
+`passwd-file` → `ldap` → `pam` → `lua` → `static` → `imap`.
+
+Order driven by ticket pressure, not pre-decided.
 
 See [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) §Phase AUTH-7.
-
----
-
-## Backend admin API — auth-aware user lookups
-
-`/api/backend/user/info` today returns only what `backendapi` can
-resolve locally: username, template-derived home, and per-namespace
-existence. It does NOT call userdb — uid/gid/quota_rule/acl_groups
-/director_tag/etc. are unavailable.
-
-Blocked on: **Phase AUTH-1** above (Dovecot-style userdb-lookup
-wire + `pkg/authclient`). yarilo-auth has no userdb-only lookup
-today — see [docs/AUTH_REVIEW.md](docs/AUTH_REVIEW.md) for why.
-
-After AUTH-1 lands: wire `authclient` into
-`yarilo-backend-api/main.go` and enrich `handleUserInfo` with the
-userdb fields exposed by AUTH-1's `UserInfo`.
-
----
-
-## Backend admin API — folder write ops
-
-`/api/backend/folder/{create,delete,rename,expunge}` are not
-shipped. The IMAP path already does these correctly under ACL and
-event-log discipline; the admin path would need the same wiring
-(ACL check, event emission to IDLE sessions on other pods, lock
-acquire).
-
-Phase ACL-1 has landed, so the ACL piece is solved. Remaining
-blocker: **Phase AUTH-1** for the admin path to know who the caller
-is acting on behalf of (userdb lookup for the target user's
-namespace ownership + lock owner string).
-
----
-
-## mdbox — alt-storage + GUID lookup index (deferred from MDBOX-PROD-READY)
-
-The Phase-6 mdbox stack is production-ready for typical tenants:
-purge, rebuild, refcount-based O(1) COPY, binary map.index, and
-multi-process Save contention are all covered. Two enhancements
-remain for the heavier deployment tiers:
-
-1. **Alt-storage tiering.** ✅ Shipped in #172. `storage.mdbox_alt_storage_path` config + `yarilo-admin backend mdbox altmove` CLI. See docs/MDBOX_ALT.md.
-
-2. **GUID lookup index.** ✅ Shipped in #173. `"guid"` extension in `yarilo.map.index`, `Map.LookupByGUID()`, GUID preserved across purge/altmove, rebuild dual-strategy matching (GUID-first → offset fallback).
 
 ---
 
@@ -166,34 +67,6 @@ Sketch lives in
 mailbox backend behind the existing `pkg/mailbox` interface, plus
 the design references already captured (Stalwart, Apache James).
 Deferred — no priority; standalone deployment must work first.
-
----
-
-## ACL — gaps deferred from Phase ACL-1
-
-Items intentionally scoped out of Phase ACL-1 and not yet picked up:
-
-1. **Group identifier resolution.** ✅ Shipped in #174. `userdb groups=` → `AuthResponse.Groups` → `userInfo.Groups` → `ACL.Effective(user, groups, isOwner)` with group= union + group-override= replace semantics.
-
-Each item is small in isolation but touches a different subsystem
-(auth chain, namespace ownership model). Pull them in a future
-ACL-EXT phase when concrete demand surfaces.
-
-Note: the "owner identifier for shared namespaces" item was removed —
-yarilo's current behaviour (`isOwner=false` for all non-private
-namespaces) matches the reference implementation exactly: it explicitly
-forces `backend->owner = FALSE` for any non-private namespace
-(acl-backend.c:80), so `owner` entries in shared-namespace ACL files
-are intentionally inert.
-
----
-
-## Quota — RFC 9208 (Phase QUOTA-1)
-
-Owner-paid model. Counters via `pkg/dict`. `GETQUOTAROOT` /
-`SETQUOTA` IMAP commands + `/api/backend/quota/...` admin surface.
-Depends on per-user storage accounting which `user/usage` already
-walks today.
 
 ---
 
@@ -217,28 +90,3 @@ architecture is fully proven in production.
 Indexer + SEARCH BODY/TEXT optimisation. Big phase, no current
 ETA.
 
----
-
-## mail_control_path — split control state from mail storage
-
-Dovecot's `mail_control_path` setting puts control files
-(`dovecot.index*`, `dovecot-acl`, `subscriptions`, …) into a
-separate directory from the message bodies. Used when storage is
-read-only / object-backed / on a different volume than control
-state.
-
-In yarilo today everything (`yarilo.index*`, soon `yarilo-acl`,
-subscriptions) lives next to the message bodies under the per-folder
-`indexDir`. Adding this knob means:
-
-- `pkg/config`: new `storage.control_path` template (per-namespace
-  override), defaulting to "" (= same as mail_location)
-- `internal/storage/index/file`: indexDir computation splits into
-  `mailDir` (bodies) + `controlDir` (index/ACL/subscriptions)
-- Backends touching control-only files (fileindex, ACL backend,
-  subscriptions store) read/write from controlDir, not mailDir
-- Helm `values.yaml`: `storage.controlPath` value + matching PVC
-  wiring (separate PV when split is requested)
-
-No current ETA. Track here so it does not silently re-emerge as a
-scope question every time we add a new control file.
