@@ -108,7 +108,7 @@ func (s *Server) openSubsStore(w http.ResponseWriter, r *http.Request) (*subs.St
 		return nil, "", err
 	}
 	store := subs.New(
-		bundle.folderHome(),
+		bundle.folderControlRoot(),
 		subsFileFor(bundle.spec),
 		uc.info.Username,
 		uc.lockOwner(),

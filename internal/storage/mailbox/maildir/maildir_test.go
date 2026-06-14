@@ -24,6 +24,43 @@ func newBox(t *testing.T, user string) (*userMailbox, string) {
 	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userMailbox), root
 }
 
+func TestUIDListPath_DefaultsToHome(t *testing.T) {
+	box, root := newBox(t, "u@x.com")
+	home := testHome(root, "u@x.com")
+	got := box.uidListPath("INBOX")
+	want := filepath.Join(home, "INBOX", UIDListFileName)
+	if got != want {
+		t.Errorf("uidListPath(INBOX) = %q, want %q", got, want)
+	}
+	got = box.uidListPath("Sent")
+	want = filepath.Join(home, ".Sent", UIDListFileName)
+	if got != want {
+		t.Errorf("uidListPath(Sent) = %q, want %q", got, want)
+	}
+}
+
+func TestUIDListPath_UsesControlDir(t *testing.T) {
+	root := t.TempDir()
+	home := testHome(root, "u@x.com")
+	ctrlRoot := t.TempDir()
+	box := New().OpenUser(&mailbox.UserInfo{
+		Username:   "u@x.com",
+		Home:       home,
+		ControlDir: ctrlRoot,
+	}).(*userMailbox)
+
+	got := box.uidListPath("INBOX")
+	want := filepath.Join(ctrlRoot, "INBOX", UIDListFileName)
+	if got != want {
+		t.Errorf("uidListPath(INBOX) = %q, want %q", got, want)
+	}
+	got = box.uidListPath("Drafts")
+	want = filepath.Join(ctrlRoot, ".Drafts", UIDListFileName)
+	if got != want {
+		t.Errorf("uidListPath(Drafts) = %q, want %q", got, want)
+	}
+}
+
 var encodeFlagsTests = []struct {
 	flags []string
 	want  string

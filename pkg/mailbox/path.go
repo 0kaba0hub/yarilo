@@ -40,6 +40,13 @@ type UserInfo struct {
 	// Template vars (%u/%n/%d/%h) are already expanded.
 	IndexDir string
 
+	// ControlDir, when non-empty, redirects per-folder control files
+	// (yarilo-uidlist, subscriptions) to a separate directory tree.
+	// The mailbox data and index files are unaffected. Mirrors Dovecot's
+	// CONTROL= mail-location modifier.
+	// Template vars (%u/%n/%d/%h) are already expanded.
+	ControlDir string
+
 	// Groups is the list of supplementary groups the user belongs to,
 	// sourced from the userdb `groups=` extra field (comma-separated).
 	// ACL evaluation matches these against `group=<name>` and
@@ -112,6 +119,13 @@ type Resolver struct {
 	// keeps index files co-located with the mailbox (default). Mirrors
 	// Dovecot's INDEX= mail-location modifier at the global config level.
 	DefaultIndexDir string
+
+	// DefaultControlDir is the cluster-wide CONTROL= template applied when
+	// no per-user override arrives from userdb. Supports %u/%n/%d/%h.
+	// Empty keeps control files co-located with the mailbox (default).
+	// Mirrors Dovecot's CONTROL= mail-location modifier at the global
+	// config level.
+	DefaultControlDir string
 }
 
 // Resolve returns the absolute home directory for a user. An empty
@@ -149,6 +163,10 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	if r.DefaultIndexDir != "" {
 		id := strings.ReplaceAll(r.DefaultIndexDir, "%h", home)
 		ui.IndexDir = ExpandVars(id, username)
+	}
+	if r.DefaultControlDir != "" {
+		cd := strings.ReplaceAll(r.DefaultControlDir, "%h", home)
+		ui.ControlDir = ExpandVars(cd, username)
 	}
 	return ui
 }

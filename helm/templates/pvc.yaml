@@ -1,7 +1,4 @@
-{{- $imap := .Values.components.imap }}
-{{- $pop3 := .Values.components.pop3 }}
-{{- $lmtp := .Values.components.lmtp }}
-{{- $p := coalesce (and $imap.enabled $imap.storage.persistence.enabled | ternary $imap.storage.persistence nil) (and $pop3.enabled $pop3.storage.persistence.enabled | ternary $pop3.storage.persistence nil) (and $lmtp.enabled $lmtp.storage.persistence.enabled | ternary $lmtp.storage.persistence nil) }}
+{{- $p := .Values.storage.persistence }}
 {{- if $p }}
 apiVersion: v1
 kind: PersistentVolumeClaim

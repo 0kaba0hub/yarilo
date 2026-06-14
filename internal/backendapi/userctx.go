@@ -224,6 +224,16 @@ func (b *nsBundle) folderIndexRoot() string {
 	return b.info.Home
 }
 
+// folderControlRoot returns the root for per-folder control files
+// (yarilo-uidlist, subscriptions). When CONTROL= is configured this
+// differs from folderHome.
+func (b *nsBundle) folderControlRoot() string {
+	if b.info.ControlDir != "" {
+		return b.info.ControlDir
+	}
+	return b.info.Home
+}
+
 // lockOwner is the identifier shown to yarilo-locks in BUSY reports
 // for any lock acquired by this admin request. Format mirrors the
 // session owner so operators can correlate.

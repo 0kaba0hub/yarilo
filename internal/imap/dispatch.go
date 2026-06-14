@@ -146,7 +146,11 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		return nil, fmt.Errorf("mailbox init: %w", err)
 	}
 	idx := s.srv.opts.Index.OpenUser(ui)
-	store := subs.New(ui.Home, subsFile, ui.Username, owner, s.srv.opts.Locker)
+	subsRoot := ui.Home
+	if ui.ControlDir != "" {
+		subsRoot = ui.ControlDir
+	}
+	store := subs.New(subsRoot, subsFile, ui.Username, owner, s.srv.opts.Locker)
 	aclStore := acl.New(ui.Home, ui.IndexDir, ui.Username, owner, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,

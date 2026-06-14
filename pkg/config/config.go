@@ -837,6 +837,14 @@ type StorageConfig struct {
 	// Mirrors Dovecot's VOLATILEDIR mail-location modifier.
 	// Example: /run/yarilo-volatile/%d/%n
 	VolatileDir string `koanf:"volatile_dir"`
+
+	// ControlDir is the cluster-wide CONTROL= template. When set,
+	// per-folder control files (yarilo-uidlist, subscriptions) are
+	// stored here instead of co-located with the mailbox data under
+	// home. Supports %u/%n/%d/%h template variables.
+	// Mirrors Dovecot's CONTROL= mail-location modifier.
+	// Example: /var/yarilo-control/%d/%n
+	ControlDir string `koanf:"control_dir"`
 }
 
 type TelemetryConfig struct {

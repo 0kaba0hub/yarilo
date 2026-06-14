@@ -272,7 +272,7 @@ data:
             {{- end }}
           {{- end }}
 
-    {{- $storage := coalesce .Values.components.imap.storage .Values.components.pop3.storage .Values.components.lmtp.storage }}
+    {{- $storage := .Values.storage }}
     {{- if $storage }}
     storage:
       mailbox: {{ $storage.mailbox | quote }}
@@ -281,6 +281,9 @@ data:
       index: {{ $storage.index | quote }}
       {{- if $storage.indexDir }}
       index_dir: {{ $storage.indexDir | quote }}
+      {{- end }}
+      {{- if $storage.controlDir }}
+      control_dir: {{ $storage.controlDir | quote }}
       {{- end }}
       {{- if $storage.volatileDir }}
       volatile_dir: {{ $storage.volatileDir | quote }}

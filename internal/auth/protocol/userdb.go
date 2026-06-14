@@ -77,6 +77,13 @@ type UserInfo struct {
 	// co-located with the mailbox data under Home.
 	IndexDir string
 
+	// ControlDir is the CONTROL= modifier extracted from MailLocation (or
+	// set directly via the `control_dir` userdb extra field). Carries the
+	// raw template string (%u/%n/%d/%h not yet expanded). When set,
+	// per-folder control files (yarilo-uidlist, subscriptions) are stored
+	// here instead of co-located with the mailbox data under Home.
+	ControlDir string
+
 	// ---- Quota ------------------------------------------------
 
 	// QuotaRules is the list of per-user quota rules (Dovecot
@@ -263,6 +270,7 @@ func (ui *UserInfo) VisitFields(fn func(key, value string)) {
 	str("mail", ui.MailLocation)
 	str("volatile_dir", ui.VolatileDir)
 	str("index_dir", ui.IndexDir)
+	str("control_dir", ui.ControlDir)
 	num("mail_uid", uint64(ui.MailUID))
 	num("mail_gid", uint64(ui.MailGID))
 	str("mailbox_format", ui.MailboxFormat)

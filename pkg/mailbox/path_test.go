@@ -203,3 +203,39 @@ func TestParseMailLocationModsIndex(t *testing.T) {
 		t.Errorf("VOLATILEDIR = %q, want /tmp/v", mods["VOLATILEDIR"])
 	}
 }
+
+func TestResolverDefaultControlDir(t *testing.T) {
+	r := &Resolver{
+		Root:              "/mail",
+		HomeTemplate:      "%d/%n",
+		DefaultControlDir: "/var/control/%d/%n",
+	}
+	ui := r.UserInfo("alice@example.com", "")
+	want := "/var/control/example.com/alice"
+	if ui.ControlDir != want {
+		t.Errorf("ControlDir = %q, want %q", ui.ControlDir, want)
+	}
+}
+
+func TestResolverDefaultControlDirWithHome(t *testing.T) {
+	r := &Resolver{
+		Root:              "/mail",
+		HomeTemplate:      "%d/%n",
+		DefaultControlDir: "/var/control/%h",
+	}
+	ui := r.UserInfo("bob@test.com", "")
+	want := "/var/control/" + ui.Home
+	if ui.ControlDir != want {
+		t.Errorf("ControlDir = %q, want %q", ui.ControlDir, want)
+	}
+}
+
+func TestParseMailLocationModsControl(t *testing.T) {
+	mods := ParseMailLocationMods("maildir:~/Maildir:CONTROL=/srv/ctrl/%u:INDEX=/srv/idx")
+	if mods["CONTROL"] != "/srv/ctrl/%u" {
+		t.Errorf("CONTROL = %q, want /srv/ctrl/%%u", mods["CONTROL"])
+	}
+	if mods["INDEX"] != "/srv/idx" {
+		t.Errorf("INDEX = %q, want /srv/idx", mods["INDEX"])
+	}
+}
