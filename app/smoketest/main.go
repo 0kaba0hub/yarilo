@@ -29,6 +29,8 @@ var (
 	flagTelemetry     = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
 	flagTimeout       = flag.Duration("timeout", 10*time.Second, "per-check timeout")
 	flagInsecure      = flag.Bool("insecure", false, "skip TLS certificate verification")
+	flagSMTPMX        = flag.Bool("smtp-mx", false, "check SMTP MX EHLO (port -smtp-mx-port)")
+	flagSMTPSub       = flag.Bool("smtp-sub", false, "check SMTP submission EHLO+STARTTLS (port -smtp-sub-port)")
 	flagProxyProtocol = flag.Bool("proxy-protocol", false, "send HAProxy PROXY header before SMTP banner")
 	flagXClient       = flag.Bool("xclient", false, "check that MX port advertises XCLIENT in EHLO")
 	flagPOP3S         = flag.Bool("pop3s", false, "check POP3S greeting and CAPA")
@@ -51,10 +53,20 @@ func main() {
 		{"telemetry /healthz", checkHealth},
 		{"telemetry /readyz", checkReady},
 		{"imap CAPABILITY", checkIMAP},
-		{"smtp MX EHLO", checkSMTPMX},
-		{"smtp submission EHLO+STARTTLS", checkSMTPSubmission},
 	}
 
+	if *flagSMTPMX {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"smtp MX EHLO", checkSMTPMX})
+	}
+	if *flagSMTPSub {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"smtp submission EHLO+STARTTLS", checkSMTPSubmission})
+	}
 	if *flagProxyProtocol {
 		checks = append(checks, struct {
 			name string
