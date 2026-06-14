@@ -1584,6 +1584,15 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 		}
 	}
+	// RFC 3501 §6.4.5 — BODY[] without .PEEK implicitly sets \Seen.
+	// Compute once per FETCH command (it's a property of the request, not each message).
+	markSeen := false
+	for _, sec := range opts.BodySection {
+		if !sec.Peek {
+			markSeen = true
+			break
+		}
+	}
 	for i, m := range msgs {
 		// CHANGEDSINCE filter — skip messages whose modseq has not moved
 		// past the client's last-known value (RFC 4551 §3.3.1).
@@ -1595,7 +1604,19 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			continue
 		}
 		mw := w.CreateMessage(seqNum)
-		if opts.Flags {
+		// Implicit \Seen: update index before writing FLAGS so the response
+		// carries the new flag set (whether or not the client asked for FLAGS).
+		seenJustSet := false
+		if markSeen && !hasFlag(m.Flags, `\Seen`) {
+			newFlags := append([]string(nil), m.Flags...)
+			newFlags = append(newFlags, `\Seen`)
+			if uerr := idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); uerr == nil {
+				m.Flags = newFlags
+				seenJustSet = true
+				s.emitMailboxChange(s.folder.Name, locks.EventChanged, m.UID)
+			}
+		}
+		if opts.Flags || seenJustSet {
 			mw.WriteFlags(toImapFlags(append(m.Flags, m.Keywords...)))
 		}
 		if opts.UID {
@@ -1607,11 +1628,21 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		if opts.RFC822Size {
 			mw.WriteRFC822Size(int64(m.Size))
 		}
+		if opts.ModSeq && m.ModSeq > 0 {
+			mw.WriteModSeq(m.ModSeq)
+		}
 		if opts.Envelope && m.Filename != "" {
 			if rc, ferr := box.Fetch(s.folder.Name, m.Filename); ferr == nil {
 				hdr, _ := textproto.ReadHeader(bufio.NewReader(rc))
 				rc.Close()
 				mw.WriteEnvelope(imapserver.ExtractEnvelope(hdr))
+			}
+		}
+		if opts.BodyStructure != nil && m.Filename != "" {
+			if rc, ferr := box.Fetch(s.folder.Name, m.Filename); ferr == nil {
+				bs := imapserver.ExtractBodyStructure(rc)
+				rc.Close()
+				mw.WriteBodyStructure(bs)
 			}
 		}
 		for _, section := range opts.BodySection {
