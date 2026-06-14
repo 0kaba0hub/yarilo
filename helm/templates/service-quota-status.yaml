@@ -6,8 +6,12 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "quota-status") | nindent 4 }}
+  {{- with .Values.components.quotaStatus.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.components.quotaStatus.service.type | default "ClusterIP" }}
   ports:
     - name: policy
       port: {{ .Values.components.quotaStatus.servicePort }}

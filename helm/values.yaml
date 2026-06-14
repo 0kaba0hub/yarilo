@@ -532,6 +532,10 @@ components:
     ## Example: "yarilo-auth:9101"
     authMasterAddr: ""
 
+    service:
+      type: ClusterIP
+      annotations: {}
+
     resources:
       requests:
         cpu: 10m

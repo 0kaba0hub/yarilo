@@ -47,13 +47,16 @@ case "$YARILO_COMPONENT" in
   yarilo-migrate)
     exec /usr/local/bin/yarilo-migrate "$@"
     ;;
+  yarilo-quota-status)
+    exec /usr/local/bin/yarilo-quota-status
+    ;;
   *)
     echo "Unknown YARILO_COMPONENT: '${YARILO_COMPONENT}'"
     echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-backend-api, yarilo-locks, yarilo-director,"
     echo "           yarilo-imap, yarilo-imap-login,"
     echo "           yarilo-pop3, yarilo-pop3-login,"
     echo "           yarilo-lmtp, yarilo-lmtp-login, yarilo-submission, yarilo-submission-login,"
-    echo "           yarilo-migrate"
+    echo "           yarilo-migrate, yarilo-quota-status"
     exit 1
     ;;
 esac
