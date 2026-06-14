@@ -26,6 +26,7 @@ import (
 	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
 // Protocol identifies the mail protocol handled by the login pod.
@@ -80,6 +81,9 @@ type Options struct {
 	// AnvilFailOpen controls what happens when yarilo-anvil is unreachable.
 	// true = allow the session (fail open); false = reject the session (fail closed).
 	AnvilFailOpen bool
+	// DialRetries is the number of attempts (with exponential backoff) when
+	// dialling external dependencies at startup. 0 or 1 means a single attempt.
+	DialRetries int
 
 	// AuthAddr is the host:port of yarilo-auth (e.g. "yarilo-auth:9100").
 	// Required: if empty every login attempt is rejected with a temporary error.
@@ -671,9 +675,18 @@ func (s *Server) startKickSubscriber(ctx context.Context) {
 		return
 	}
 	channel := s.kickChannel()
-	ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+	attempts := s.opts.DialRetries
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var ac *anvil.Conn
+	err := retry.Do(ctx, attempts, time.Second, func() error {
+		var e error
+		ac, e = anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+		return e
+	})
 	if err != nil {
-		slog.Error("login: kick subscribe dial failed", "addr", s.opts.AnvilAddr, "err", err)
+		slog.Error("login: kick subscribe dial failed", "addr", s.opts.AnvilAddr, "attempts", attempts, "err", err)
 		return
 	}
 	ch, err := ac.Subscribe(ctx, channel)

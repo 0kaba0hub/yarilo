@@ -93,3 +93,49 @@ Call with component internalTLS config: (dict "enabled" true "secretName" "...")
   readOnly: true
 {{- end }}
 {{- end }}
+
+{{/*
+Init container that blocks until a TCP host:port accepts connections.
+Call: (dict "name" "wait-foo" "host" "hostname" "port" "6379" "image" "busybox:1.36")
+*/}}
+{{- define "yarilo.initWaitTCP" -}}
+- name: {{ .name }}
+  image: {{ .image }}
+  command:
+    - sh
+    - -c
+    - until nc -z {{ .host | quote }} {{ .port }}; do echo "waiting for {{ .host }}:{{ .port }}"; sleep 2; done
+  securityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop: ["ALL"]
+{{- end }}
+
+{{/*
+Redis hostname for init-container TCP probe.
+Bundled → internal ClusterIP DNS; external → parsed from redis.externalUrl.
+*/}}
+{{- define "yarilo.redisInitHost" -}}
+{{- if .Values.redis.bundled -}}
+{{- printf "%s-redis.%s.svc" (include "yarilo.fullname" .) .Release.Namespace -}}
+{{- else -}}
+{{- $u := urlParse .Values.redis.externalUrl -}}
+{{- index (splitList ":" $u.host) 0 -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Redis port for init-container TCP probe.
+*/}}
+{{- define "yarilo.redisInitPort" -}}
+{{- if .Values.redis.bundled -}}
+6379
+{{- else -}}
+{{- $u := urlParse .Values.redis.externalUrl -}}
+{{- index (splitList ":" $u.host) 1 -}}
+{{- end -}}
+{{- end }}
