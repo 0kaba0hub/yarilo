@@ -80,6 +80,12 @@ type AuthResponse struct {
 	// with the mailbox under Home.
 	ControlDir string
 
+	// AltDir is the ALT= modifier from the mail location (or direct
+	// alt_dir= userdb field). Carries the raw template string
+	// (%u/%n/%d/%h unexpanded). When set, cold-tiered messages live
+	// under AltDir; reads check both primary and alt tiers.
+	AltDir string
+
 	Proxy bool
 	Host  string
 	Port  int
@@ -377,6 +383,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	resp.VolatileDir = extractVolatileDir(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
+	resp.AltDir = extractAltDir(req.Fields)
 	return resp, err
 }
 
@@ -404,6 +411,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		resp.VolatileDir = extractVolatileDir(entry.Fields)
 		resp.IndexDir = extractIndexDir(entry.Fields)
 		resp.ControlDir = extractControlDir(entry.Fields)
+		resp.AltDir = extractAltDir(entry.Fields)
 	}
 	if resp.Username == "" {
 		resp.Username = reqUser
@@ -538,6 +546,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 	resp.VolatileDir = extractVolatileDir(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
+	resp.AltDir = extractAltDir(req.Fields)
 	return resp, err
 }
 
@@ -1504,6 +1513,28 @@ func extractControlDir(f *Fields) string {
 		if v, ok := f.Get(key); ok && v != "" {
 			if cd := parseMailLocationMod(v, "CONTROL"); cd != "" {
 				return cd
+			}
+		}
+	}
+	return ""
+}
+
+// extractAltDir reads the ALT= value from the Fields bag.
+// Priority: explicit alt_dir= field → ALT= modifier inside the
+// mail= location string. Returns the raw template (not yet expanded).
+func extractAltDir(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	for _, key := range []string{"userdb_alt_dir", "alt_dir"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			return v
+		}
+	}
+	for _, key := range []string{"userdb_mail", "mail"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			if ad := parseMailLocationMod(v, "ALT"); ad != "" {
+				return ad
 			}
 		}
 	}

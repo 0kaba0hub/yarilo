@@ -60,6 +60,8 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.IndexDir = value
 	case "control_dir":
 		info.ControlDir = value
+	case "alt_dir":
+		info.AltDir = value
 	case "mail", "mail_location":
 		info.MailLocation = value
 		// Explicit userdb fields (volatile_dir=, index_dir=, control_dir=)
@@ -78,6 +80,11 @@ func AssignField(info *UserInfo, key, value string) error {
 		if info.ControlDir == "" {
 			if cd := parseMailLocationMod(value, "CONTROL"); cd != "" {
 				info.ControlDir = cd
+			}
+		}
+		if info.AltDir == "" {
+			if ad := parseMailLocationMod(value, "ALT"); ad != "" {
+				info.AltDir = ad
 			}
 		}
 	case "mail_uid":

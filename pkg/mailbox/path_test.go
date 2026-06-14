@@ -239,3 +239,39 @@ func TestParseMailLocationModsControl(t *testing.T) {
 		t.Errorf("INDEX = %q, want /srv/idx", mods["INDEX"])
 	}
 }
+
+func TestResolverDefaultAltDir(t *testing.T) {
+	r := &Resolver{
+		Root:          "/mail",
+		HomeTemplate:  "%d/%n",
+		DefaultAltDir: "/mnt/cold/%d/%n",
+	}
+	ui := r.UserInfo("alice@example.com", "")
+	want := "/mnt/cold/example.com/alice"
+	if ui.AltDir != want {
+		t.Errorf("AltDir = %q, want %q", ui.AltDir, want)
+	}
+}
+
+func TestResolverDefaultAltDirWithHome(t *testing.T) {
+	r := &Resolver{
+		Root:          "/mail",
+		HomeTemplate:  "%d/%n",
+		DefaultAltDir: "/mnt/cold/%h",
+	}
+	ui := r.UserInfo("bob@test.com", "")
+	want := "/mnt/cold/" + ui.Home
+	if ui.AltDir != want {
+		t.Errorf("AltDir = %q, want %q", ui.AltDir, want)
+	}
+}
+
+func TestParseMailLocationModsAlt(t *testing.T) {
+	mods := ParseMailLocationMods("maildir:~/Maildir:ALT=/mnt/cold/%u:INDEX=/srv/idx")
+	if mods["ALT"] != "/mnt/cold/%u" {
+		t.Errorf("ALT = %q, want /mnt/cold/%%u", mods["ALT"])
+	}
+	if mods["INDEX"] != "/srv/idx" {
+		t.Errorf("INDEX = %q, want /srv/idx", mods["INDEX"])
+	}
+}

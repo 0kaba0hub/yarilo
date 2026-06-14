@@ -845,6 +845,14 @@ type StorageConfig struct {
 	// Mirrors Dovecot's CONTROL= mail-location modifier.
 	// Example: /var/yarilo-control/%d/%n
 	ControlDir string `koanf:"control_dir"`
+
+	// AltDir is the cluster-wide ALT= template. When set, enables
+	// two-tier maildir storage: messages cold-tiered via altmove
+	// live here; reads check both primary (home) and alt tiers.
+	// Supports %u/%n/%d/%h template variables.
+	// Mirrors Dovecot's ALT= mail-location modifier.
+	// Example: /mnt/cold/%d/%n
+	AltDir string `koanf:"alt_dir"`
 }
 
 type TelemetryConfig struct {

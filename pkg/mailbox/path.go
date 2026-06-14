@@ -47,6 +47,13 @@ type UserInfo struct {
 	// Template vars (%u/%n/%d/%h) are already expanded.
 	ControlDir string
 
+	// AltDir, when non-empty, enables two-tier maildir storage. Messages
+	// that have been cold-tiered (via altmove) live under AltDir instead
+	// of Home. Reads check both primary (Home) and alt; writes always go
+	// to the primary tier. Mirrors Dovecot's ALT= mail-location modifier.
+	// Template vars (%u/%n/%d/%h) are already expanded.
+	AltDir string
+
 	// Groups is the list of supplementary groups the user belongs to,
 	// sourced from the userdb `groups=` extra field (comma-separated).
 	// ACL evaluation matches these against `group=<name>` and
@@ -126,6 +133,12 @@ type Resolver struct {
 	// Mirrors Dovecot's CONTROL= mail-location modifier at the global
 	// config level.
 	DefaultControlDir string
+
+	// DefaultAltDir is the cluster-wide ALT= template applied when no
+	// per-user override arrives from userdb. Supports %u/%n/%d/%h.
+	// Empty disables two-tier storage (default). Mirrors Dovecot's
+	// ALT= mail-location modifier at the global config level.
+	DefaultAltDir string
 }
 
 // Resolve returns the absolute home directory for a user. An empty
@@ -167,6 +180,10 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	if r.DefaultControlDir != "" {
 		cd := strings.ReplaceAll(r.DefaultControlDir, "%h", home)
 		ui.ControlDir = ExpandVars(cd, username)
+	}
+	if r.DefaultAltDir != "" {
+		ad := strings.ReplaceAll(r.DefaultAltDir, "%h", home)
+		ui.AltDir = ExpandVars(ad, username)
 	}
 	return ui
 }

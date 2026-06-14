@@ -57,10 +57,10 @@ func TestAssignField_ControlDirPriority_MailFirst(t *testing.T) {
 	}
 }
 
-// All three modifiers extracted together from mail=.
+// All four modifiers extracted together from mail=.
 func TestAssignField_MailLocationExtractsAllMods(t *testing.T) {
 	var info UserInfo
-	loc := "maildir:~/Maildir:VOLATILEDIR=/tmp/v:INDEX=/idx/%u:CONTROL=/ctrl/%u"
+	loc := "maildir:~/Maildir:VOLATILEDIR=/tmp/v:INDEX=/idx/%u:CONTROL=/ctrl/%u:ALT=/cold/%u"
 	if err := AssignField(&info, "mail", loc); err != nil {
 		t.Fatalf("AssignField: %v", err)
 	}
@@ -72,5 +72,43 @@ func TestAssignField_MailLocationExtractsAllMods(t *testing.T) {
 	}
 	if info.ControlDir != "/ctrl/%u" {
 		t.Errorf("ControlDir = %q, want /ctrl/%%u", info.ControlDir)
+	}
+	if info.AltDir != "/cold/%u" {
+		t.Errorf("AltDir = %q, want /cold/%%u", info.AltDir)
+	}
+}
+
+func TestAssignField_AltDir(t *testing.T) {
+	var info UserInfo
+	if err := AssignField(&info, "alt_dir", "/mnt/cold/alice"); err != nil {
+		t.Fatalf("AssignField: %v", err)
+	}
+	if info.AltDir != "/mnt/cold/alice" {
+		t.Errorf("AltDir = %q, want /mnt/cold/alice", info.AltDir)
+	}
+}
+
+func TestAssignField_MailLocationExtractsAlt(t *testing.T) {
+	var info UserInfo
+	if err := AssignField(&info, "mail", "maildir:~/Maildir:ALT=/mnt/cold/%u"); err != nil {
+		t.Fatalf("AssignField: %v", err)
+	}
+	if info.AltDir != "/mnt/cold/%u" {
+		t.Errorf("AltDir = %q, want /mnt/cold/%%u", info.AltDir)
+	}
+}
+
+func TestAssignField_AltDirPriority(t *testing.T) {
+	var info UserInfo
+	// explicit alt_dir= arrives first
+	if err := AssignField(&info, "alt_dir", "/explicit/cold"); err != nil {
+		t.Fatalf("AssignField alt_dir: %v", err)
+	}
+	// mail= with ALT= modifier — must be ignored
+	if err := AssignField(&info, "mail", "maildir:~/Maildir:ALT=/from-mail/cold"); err != nil {
+		t.Fatalf("AssignField mail: %v", err)
+	}
+	if info.AltDir != "/explicit/cold" {
+		t.Errorf("AltDir = %q, want /explicit/cold (explicit wins)", info.AltDir)
 	}
 }

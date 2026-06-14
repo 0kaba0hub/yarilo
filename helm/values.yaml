@@ -21,6 +21,7 @@ storage:
   ## indexDir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
   ## controlDir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files
   ## volatileDir: "/run/yarilo-volatile/%d/%n" # local tmpfs for index tmp files (NFS deployments)
+  ## altDir: "/mnt/cold/%d/%n"               # cold-tier alt storage root (two-tier maildir)
   persistence:
     enabled: true
     storageClass: ""

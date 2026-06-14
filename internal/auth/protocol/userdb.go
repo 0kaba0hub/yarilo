@@ -84,6 +84,13 @@ type UserInfo struct {
 	// here instead of co-located with the mailbox data under Home.
 	ControlDir string
 
+	// AltDir is the ALT= modifier extracted from MailLocation (or set
+	// directly via the `alt_dir` userdb extra field). Carries the raw
+	// template string (%u/%n/%d/%h not yet expanded). When set, messages
+	// that have been cold-tiered live under AltDir; reads check both
+	// primary (Home) and alt tiers.
+	AltDir string
+
 	// ---- Quota ------------------------------------------------
 
 	// QuotaRules is the list of per-user quota rules (Dovecot
@@ -271,6 +278,7 @@ func (ui *UserInfo) VisitFields(fn func(key, value string)) {
 	str("volatile_dir", ui.VolatileDir)
 	str("index_dir", ui.IndexDir)
 	str("control_dir", ui.ControlDir)
+	str("alt_dir", ui.AltDir)
 	num("mail_uid", uint64(ui.MailUID))
 	num("mail_gid", uint64(ui.MailGID))
 	str("mailbox_format", ui.MailboxFormat)
