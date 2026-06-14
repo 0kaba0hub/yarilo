@@ -1247,6 +1247,10 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if opts.HighestModSeq {
 		d.HighestModSeq = f.HighestModSeq
 	}
+	if opts.NumRecent {
+		var n uint32 // RECENT tracking not implemented; RFC 9051 permits 0
+		d.NumRecent = &n
+	}
 	return d, nil
 }
 
