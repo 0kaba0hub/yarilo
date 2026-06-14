@@ -1916,3 +1916,112 @@ func TestFetchInternalDate(t *testing.T) {
 		t.Errorf("InternalDate: got %v, want %v", got, want)
 	}
 }
+
+func TestFetchBodyStructure(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	raw := []byte("From: a@b\r\nSubject: bs test\r\nContent-Type: text/plain; charset=us-ascii\r\n\r\nHello.\r\n")
+	appendWithFlags(t, c, "INBOX", raw)
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	seq := imap.SeqSet{}
+	seq.AddNum(1)
+	msgs, err := c.Fetch(seq, &imap.FetchOptions{BodyStructure: &imap.FetchItemBodyStructure{}}).Collect()
+	if err != nil {
+		t.Fatalf("FETCH BODYSTRUCTURE: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FETCH count: got %d, want 1", len(msgs))
+	}
+	if msgs[0].BodyStructure == nil {
+		t.Fatal("BODYSTRUCTURE is nil")
+	}
+	sp, ok := msgs[0].BodyStructure.(*imap.BodyStructureSinglePart)
+	if !ok {
+		t.Fatalf("expected *BodyStructureSinglePart, got %T", msgs[0].BodyStructure)
+	}
+	if sp.Type != "text" || sp.Subtype != "plain" {
+		t.Errorf("MediaType: got %q/%q, want text/plain", sp.Type, sp.Subtype)
+	}
+}
+
+func TestFetchModSeq(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	raw := []byte("From: a@b\r\nSubject: modseq test\r\n\r\nHello.\r\n")
+	appendWithFlags(t, c, "INBOX", raw)
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	seq := imap.SeqSet{}
+	seq.AddNum(1)
+	msgs, err := c.Fetch(seq, &imap.FetchOptions{ModSeq: true}).Collect()
+	if err != nil {
+		t.Fatalf("FETCH MODSEQ: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FETCH count: got %d, want 1", len(msgs))
+	}
+	if msgs[0].ModSeq == 0 {
+		t.Error("ModSeq is 0, expected > 0")
+	}
+}
+
+func TestFetchBodyNonPeekSetsSeen(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	raw := []byte("From: a@b\r\nSubject: seen test\r\n\r\nHello.\r\n")
+	appendWithFlags(t, c, "INBOX", raw) // no \Seen flag
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	// FETCH BODY[] (not BODY.PEEK[]) — must implicitly set \Seen.
+	seq := imap.SeqSet{}
+	seq.AddNum(1)
+	msgs, err := c.Fetch(seq, &imap.FetchOptions{
+		Flags:       true,
+		BodySection: []*imap.FetchItemBodySection{{}},
+	}).Collect()
+	if err != nil {
+		t.Fatalf("FETCH BODY[]: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FETCH count: got %d, want 1", len(msgs))
+	}
+	hasSeen := false
+	for _, f := range msgs[0].Flags {
+		if f == imap.FlagSeen {
+			hasSeen = true
+			break
+		}
+	}
+	if !hasSeen {
+		t.Errorf("\\Seen not set after BODY[] fetch; flags: %v", msgs[0].Flags)
+	}
+
+	// Second FETCH — \Seen must persist in the index.
+	msgs2, err := c.Fetch(seq, &imap.FetchOptions{Flags: true}).Collect()
+	if err != nil {
+		t.Fatalf("second FETCH FLAGS: %v", err)
+	}
+	hasSeen2 := false
+	for _, f := range msgs2[0].Flags {
+		if f == imap.FlagSeen {
+			hasSeen2 = true
+			break
+		}
+	}
+	if !hasSeen2 {
+		t.Errorf("\\Seen lost after index re-read; flags: %v", msgs2[0].Flags)
+	}
+}
