@@ -25,8 +25,8 @@ storage:
   persistence:
     enabled: true
     storageClass: ""
-    accessMode: ReadWriteOnce
-    size: 5Gi
+    accessMode: ReadWriteMany
+    size: 10Gi
 
 ## -------------------------------------------------------------------
 ## Components
