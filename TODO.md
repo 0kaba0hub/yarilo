@@ -30,6 +30,28 @@ Login-процеси (`yarilo-imap-login`, `yarilo-pop3-login`, майбутні
 
 ---
 
+## yarilo-quota-status — per-user quota limits via userdb lookup
+
+`yarilo-quota-status` (Postfix policy service, port 12340) is implemented and
+deployed. Currently it enforces only `defaultQuotaRules` — cluster-wide limits
+applied to every recipient. Per-user limits (individual `quota_rule` values
+stored in userdb) are not yet wired in.
+
+Pending (`internal/quotastatus/server.go:27`):
+
+- Wire `pkg/authclient` master-protocol into `yarilo-quota-status` so it can
+  call userdb `USER` lookup for the recipient address.
+- Replace (or supplement) `defaultQuotaRules` with per-user `quota_rule` from
+  the `AuthResponse.Fields` bag (`quota_rule` reserved field, already parsed
+  by AUTH-2).
+- Expose `quotaStatus.authAddr` in `helm/values.yaml` + `quotaStatus.yaml`
+  config section so the service knows where `yarilo-auth` master socket is.
+
+Blocked on: nothing new — AUTH-1 (master protocol + userdb) is already
+implemented; this is purely wiring it into quota-status.
+
+---
+
 ## Phase AUTH-5 — additional SASL mechanisms
 
 Currently shipped: PLAIN, OAUTHBEARER, XOAUTH2, SCRAM-SHA-256 (+PLUS),
