@@ -49,7 +49,7 @@ func startTestAnvil(t *testing.T) string {
 // to a second client is now 1, release brings it back to 0.
 func TestAnvilSessionClient_ReserveAndRelease(t *testing.T) {
 	addr := startTestAnvil(t)
-	c := newAnvilSessionClient(addr, nil, 10, "10.0.0.1")
+	c := newAnvilSessionClient(addr, 10, "10.0.0.1")
 	defer c.releaseAll()
 
 	id, err := c.reserveDelivery("alice@example.com")
@@ -105,7 +105,7 @@ func TestAnvilSessionClient_RejectsAtLimit(t *testing.T) {
 
 	// Now a session client with limit=2 tries to reserve — count
 	// is already 2, so ErrTooManyConcurrent.
-	c := newAnvilSessionClient(addr, nil, 2, "10.0.0.3")
+	c := newAnvilSessionClient(addr, 2, "10.0.0.3")
 	defer c.releaseAll()
 	if _, err := c.reserveDelivery("bob@example.com"); err != ErrTooManyConcurrent {
 		t.Fatalf("reserve at limit: got %v, want ErrTooManyConcurrent", err)
@@ -123,7 +123,7 @@ func TestAnvilSessionClient_RejectsAtLimit(t *testing.T) {
 // delivery — but does not gate on LOOKUP.
 func TestAnvilSessionClient_UnlimitedSkipsLookup(t *testing.T) {
 	addr := startTestAnvil(t)
-	c := newAnvilSessionClient(addr, nil, -1, "10.0.0.4")
+	c := newAnvilSessionClient(addr, -1, "10.0.0.4")
 	defer c.releaseAll()
 
 	for i := 0; i < 50; i++ {
@@ -144,7 +144,7 @@ func TestAnvilSessionClient_UnlimitedSkipsLookup(t *testing.T) {
 // outstanding entry, and a second call is a safe no-op.
 func TestAnvilSessionClient_ReleaseAllIdempotent(t *testing.T) {
 	addr := startTestAnvil(t)
-	c := newAnvilSessionClient(addr, nil, 10, "10.0.0.5")
+	c := newAnvilSessionClient(addr, 10, "10.0.0.5")
 	for _, u := range []string{"u1@x", "u2@x", "u3@x"} {
 		if _, err := c.reserveDelivery(u); err != nil {
 			t.Fatalf("reserve %s: %v", u, err)
@@ -168,7 +168,7 @@ func TestAnvilSessionClient_ReleaseAllIdempotent(t *testing.T) {
 // reserve returns ErrAnvilUnavailable so the caller can downgrade
 // to best-effort delivery (matches Dovecot's tolerance).
 func TestAnvilSessionClient_UnreachableDowngrades(t *testing.T) {
-	c := newAnvilSessionClient("127.0.0.1:1", nil, 10, "10.0.0.6")
+	c := newAnvilSessionClient("127.0.0.1:1", 10, "10.0.0.6")
 	defer c.releaseAll()
 	_, err := c.reserveDelivery("alice@example.com")
 	if err == nil {

@@ -92,7 +92,7 @@ services:
     ssl_mode: ssl
 ```
 
-### LMTP local delivery (backend node)
+### LMTP backend node (yarilo-lmtp)
 
 ```yaml
 services:
@@ -100,10 +100,9 @@ services:
     enabled: true
     port: 24
     ssl_mode: no
-    xclient_protocol: true
 ```
 
-See [LMTP.md](LMTP.md) for protocol-level settings and proxy/director mode.
+Accepts preamble connections from `yarilo-lmtp-login` only. See [LMTP.md](LMTP.md) for architecture and `lmtp_login_service` config.
 
 ---
 

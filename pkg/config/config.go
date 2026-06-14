@@ -25,6 +25,7 @@ type Config struct {
 	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
 	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
 	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
+	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
 	LocksService       LocksServiceConfig           `koanf:"locks_service"`
 	LocksClient        LocksClientConfig            `koanf:"locks_client"`
 	Storage            StorageConfig                `koanf:"storage"`
@@ -384,9 +385,13 @@ type AuthServiceConfig struct {
 	// Addr is the address login pods use to dial yarilo-auth.
 	// Defaults to Listen when empty (single-process / dev mode).
 	// In k8s set to the ClusterIP service DNS, e.g. "yarilo-auth:9100".
-	Addr         string         `koanf:"addr"`
-	MasterListen string         `koanf:"master_listen"`
-	Shutdown     ShutdownConfig `koanf:"shutdown"`
+	Addr         string `koanf:"addr"`
+	MasterListen string `koanf:"master_listen"`
+	// MasterAddr is the address backend services use to dial the
+	// yarilo-auth master protocol for userdb lookups (USER command).
+	// Defaults to empty (userdb checks disabled) when not set.
+	MasterAddr string         `koanf:"master_addr"`
+	Shutdown   ShutdownConfig `koanf:"shutdown"`
 }
 
 // ClientAddr returns the address login pods use to dial yarilo-auth.
@@ -465,6 +470,21 @@ type POP3LoginServiceConfig struct {
 // SubmissionLoginServiceConfig mirrors IMAPLoginServiceConfig for the Submission proxy.
 type SubmissionLoginServiceConfig struct {
 	BackendAddr string `koanf:"backend_addr"`
+}
+
+// LMTPLoginServiceConfig configures the yarilo-lmtp-login proxy.
+type LMTPLoginServiceConfig struct {
+	// BackendAddr is used in standalone mode: fixed address of the yarilo-lmtp
+	// backend. Ignored when DirectorAddr is set.
+	BackendAddr string `koanf:"backend_addr"`
+
+	// DirectorAddr enables director mode: per-recipient LOOKUP via yarilo-director.
+	// When set, BackendAddr is ignored and each RCPT TO triggers a LOOKUP request.
+	DirectorAddr string `koanf:"director_addr"`
+	// DirectorTag restricts LOOKUP to backends carrying this tag. Empty = full ring.
+	DirectorTag string `koanf:"director_tag"`
+	// BackendPort overrides the port returned by a director LOOKUP. 0 = use as-is.
+	BackendPort int `koanf:"backend_port"`
 }
 
 // BackendAPIConfig configures the yarilo-backend-api process —

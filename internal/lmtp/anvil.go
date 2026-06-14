@@ -2,7 +2,6 @@ package lmtp
 
 import (
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -26,7 +25,6 @@ import (
 // behaviour is the former, matching Dovecot's tolerance.
 type anvilSessionClient struct {
 	addr    string
-	tls     *tls.Config
 	limit   int    // SoT for the cluster-wide concurrency check; -1 = unlimited
 	service string // "lmtp"
 	peerIP  string
@@ -60,10 +58,9 @@ var ErrTooManyConcurrent = errors.New("lmtp: too many concurrent deliveries for 
 
 // newAnvilSessionClient wires a session client; the connection
 // is not opened until the first reserveDelivery call.
-func newAnvilSessionClient(addr string, tlsCfg *tls.Config, limit int, peerIP string) *anvilSessionClient {
+func newAnvilSessionClient(addr string, limit int, peerIP string) *anvilSessionClient {
 	return &anvilSessionClient{
 		addr:    addr,
-		tls:     tlsCfg,
 		limit:   limit,
 		service: "lmtp",
 		peerIP:  peerIP,
@@ -161,7 +158,7 @@ func (c *anvilSessionClient) dialLocked() error {
 	if c.dialErr != nil {
 		return c.dialErr
 	}
-	conn, err := anvil.Dial(c.addr, c.tls, 5*time.Second)
+	conn, err := anvil.Dial(c.addr, nil, 5*time.Second)
 	if err != nil {
 		c.dialErr = fmt.Errorf("%w: %v", ErrAnvilUnavailable, err)
 		return c.dialErr

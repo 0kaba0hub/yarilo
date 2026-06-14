@@ -322,6 +322,7 @@ data:
       {{- end }}
       {{- if .Values.components.auth.masterListen }}
       master_listen: {{ .Values.components.auth.masterListen | quote }}
+      master_addr: {{ printf "%s-auth.%s.svc:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
       {{- end }}
       shutdown:
         session_grace_period: 30
@@ -347,6 +348,21 @@ data:
     {{- if .Values.components.submissionLogin.enabled }}
     submission_login_service:
       backend_addr: {{ .Values.components.submissionLogin.backendAddr | quote }}
+    {{- end }}
+
+    {{- if .Values.components.lmtpLogin.enabled }}
+    lmtp_login_service:
+      {{- if .Values.components.lmtpLogin.directorAddr }}
+      director_addr: {{ .Values.components.lmtpLogin.directorAddr | quote }}
+      {{- if .Values.components.lmtpLogin.directorTag }}
+      director_tag: {{ .Values.components.lmtpLogin.directorTag | quote }}
+      {{- end }}
+      {{- if .Values.components.lmtpLogin.backendPort }}
+      backend_port: {{ .Values.components.lmtpLogin.backendPort }}
+      {{- end }}
+      {{- else }}
+      backend_addr: {{ .Values.components.lmtpLogin.backendAddr | quote }}
+      {{- end }}
     {{- end }}
 
     {{- if .Values.components.backendAPI.enabled }}

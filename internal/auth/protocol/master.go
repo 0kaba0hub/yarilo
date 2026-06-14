@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -36,11 +37,12 @@ const (
 // socket), and different evolution cadence. The two share mTLS
 // material today; splitting is a future operational knob.
 type MasterServer struct {
-	userdb  Userdb
-	cache   *Cache
-	connUID atomic.Uint64
-	pid     int
-	cookie  string
+	userdb     Userdb
+	cache      *Cache
+	tokenStore TokenStore
+	connUID    atomic.Uint64
+	pid        int
+	cookie     string
 }
 
 // MasterServerOption tunes a NewMasterServer construction.
@@ -54,6 +56,14 @@ type MasterServerOption func(*MasterServer)
 // FAIL.
 func WithMasterCache(c *Cache) MasterServerOption {
 	return func(s *MasterServer) { s.cache = c }
+}
+
+// WithMasterTokenStore attaches the shared token store. When set, the
+// SESSION command issues tokens that the client-protocol VERIFY command
+// can validate (both Server and MasterServer must receive the same
+// TokenStore instance). When nil, SESSION responds FAIL.
+func WithMasterTokenStore(ts TokenStore) MasterServerOption {
+	return func(s *MasterServer) { s.tokenStore = ts }
 }
 
 // NewMasterServer constructs a MasterServer rooted at the given
@@ -155,6 +165,8 @@ func (s *MasterServer) handleConn(conn net.Conn) {
 			// Client pid notice — informational, no reply.
 		case "USER":
 			s.handleUser(conn, fields)
+		case "SESSION":
+			s.handleSession(conn, fields)
 		case "PASS":
 			// Phase AUTH-1 PR 2 declares PASS in the wire surface
 			// so pkg/authclient can ship the full method set;
@@ -257,6 +269,44 @@ func (s *MasterServer) handleCacheFlush(conn net.Conn, fields []string) {
 		n = s.cache.ClearByUserMask(fields[2:])
 	}
 	fmt.Fprintf(conn, "OK\t%s\t%d\n", id, n)
+}
+
+// handleSession issues a session token for the given username without
+// passdb verification. Only callable over the master listener — the
+// TOKEN issued here can only be consumed by VERIFY on the client
+// listener. Wire shape:
+//
+//	SESSION <id> user=<username> sid=<anvil-session-id> ip=<mta-ip>
+//	→ OK <id> token=<tok>
+//	→ FAIL <id> reason=...
+func (s *MasterServer) handleSession(conn net.Conn, fields []string) {
+	id := parseID(fields)
+	if s.tokenStore == nil {
+		fmt.Fprintf(conn, "FAIL\t%s\treason=token store not configured\n", id)
+		return
+	}
+	var username, sid, ip string
+	for _, f := range fields[2:] {
+		switch {
+		case strings.HasPrefix(f, "user="):
+			username = strings.TrimPrefix(f, "user=")
+		case strings.HasPrefix(f, "sid="):
+			sid = strings.TrimPrefix(f, "sid=")
+		case strings.HasPrefix(f, "ip="):
+			ip = strings.TrimPrefix(f, "ip=")
+		}
+	}
+	if username == "" {
+		fmt.Fprintf(conn, "FAIL\t%s\treason=user required\n", id)
+		return
+	}
+	tok, err := s.tokenStore.Issue(username, sid, "lmtp")
+	if err != nil {
+		fmt.Fprintf(conn, "FAIL\t%s\treason=%s\n", id, escapeReason(err.Error()))
+		return
+	}
+	slog.Info("auth/master: session issued", "user", username, "sid", sid, "ip", ip)
+	fmt.Fprintf(conn, "OK\t%s\ttoken=%s\n", id, tok)
 }
 
 // parseID extracts the request id from a command frame. Returns

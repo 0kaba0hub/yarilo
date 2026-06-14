@@ -134,7 +134,7 @@ func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
 		}
 	}
 	if s.opts.AuthAddr != "" {
-		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS}
+		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "smtp"}
 	}
 	return s.subSrv.Serve(ln)
 }

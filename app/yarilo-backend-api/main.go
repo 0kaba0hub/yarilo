@@ -31,6 +31,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
@@ -39,7 +40,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -61,7 +62,7 @@ func main() {
 		listen = ":9105"
 	}
 	slog.Info("yarilo-backend-api starting",
-		"version", version,
+		"version", build.Version,
 		"listen", listen,
 		"internal_tls", cfg.InternalTLS.Enabled,
 		"dicts", len(cfg.Dicts),

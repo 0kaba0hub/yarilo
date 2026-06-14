@@ -546,6 +546,7 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	userInfo := resolver.UserInfo(res.Username, res.Home)
 	userInfo.Groups = res.Groups
 	userInfo.QuotaRules = res.QuotaRules
+	userInfo.SessionID = s.sid
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := s.remoteIP.String()

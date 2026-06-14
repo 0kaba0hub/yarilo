@@ -21,12 +21,13 @@ import (
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
 
 	"github.com/0kaba0hub/yarilo/internal/quotastatus"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -85,7 +86,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-quota-status starting",
-		"version", version,
+		"version", build.Version,
 		"listen", listen,
 		"quota_dict_configured", quotaDict != nil,
 		"alias_dict_configured", aliasDict != nil,

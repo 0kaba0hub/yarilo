@@ -8,7 +8,7 @@ Dovecot C. A single process (e.g. `yarilo-imap`) serves N user sessions through 
 
 **Multi-binary, multi-process** (per CLAUDE.md):
 - 4 separate binaries in the session role: `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`
-- 4 separate binaries in the proxy role (director): `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-proxy`
+- 4 separate binaries in the proxy role (director): `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`
 - Each is a distinct process with its own address space
 - Coordination between session processes within a backend deployment goes through `yarilo-locks`
 
@@ -23,7 +23,7 @@ Goroutines vs fork:
 
 ### director deployment
 Routes user connections to backends through a **consistent-hashing ring**.
-Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-proxy`), 3 director processes (with monitor sidecars), peer-sync ring.
+Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`), 3 director processes (with monitor sidecars), peer-sync ring.
 This is where **TLS terminate + passdb auth + allow_nets enforcement** happens.
 
 **Login pod auth flow:**
@@ -48,8 +48,8 @@ with auth state in the YARILO preamble.
 
 Backend auth logic:
 - Login pod sends `YARILO\tADDR=...\tSESSION=...\tUSER=...\tTOKEN=...\n` before any protocol exchange.
-- Backend's `PreambleListener` reads the preamble, calls yarilo-auth VERIFY, enters pre-authenticated state.
-- LMTP keeps XCLIENT for MTA integration (Postfix → LMTP); login-pod paths always use the YARILO preamble.
+- Backend's `PreambleListener` reads the preamble, calls yarilo-auth VERIFY (`service=` field enforced), enters pre-authenticated state.
+- All 4 backends accept only preamble connections — no XCLIENT, no HAProxy on the backend side. LMTP preamble originates from `yarilo-lmtp-login`.
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
@@ -66,15 +66,17 @@ Backend auth logic:
 
 | Writer | What it writes |
 |:---|:---|
-| director's login proxies | CONNECT/DISCONNECT events (pre-auth connection tracking, per-IP rate limit) |
-| backend's session processes | SESSION_START / SESSION_END (post-auth, active mail sessions) |
+| director's login proxies (imap/pop3/submission) | CONNECT/DISCONNECT events (pre-auth connection tracking, per-IP rate limit) |
+| `yarilo-lmtp-login` | CONNECT/DISCONNECT per recipient (per-user delivery rate tracking) |
+| backend's session processes (imap/pop3/submission) | SESSION_START / SESSION_END (post-auth, active mail sessions) |
 
 | Reader | When and why |
 |:---|:---|
 | director's login proxies | Before admitting a new connection — enforce per-user/per-IP limits on connections + sessions |
+| `yarilo-lmtp-login` | Per RCPT TO — enforce per-user delivery concurrency limits before fan-out |
 
-Anvil merges conn-state (from the director) with session-state (from the backend) — both written
-from different places, read from a single place (the login proxy).
+Anvil merges conn-state (from the director / lmtp-login) with session-state (from the backends) — written
+from different processes, read from a single place (the login proxy).
 
 ---
 
@@ -240,7 +242,8 @@ cluster to a small multi-replica production setup.
 | Component | Default replicas | Scale by |
 |:---|:---|:---|
 | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login` | 1 each | `replicaCount` per protocol (login is stateless beyond TLS state) |
-| `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp` | 1 each | `replicaCount` per protocol (coordination via locks); `yarilo-lmtp` is MTA-facing and has no login proxy — its Service is reached directly by upstream MTAs |
+| `yarilo-lmtp-login` | 0 (disabled by default) | `components.lmtpLogin.enabled: true` in values.yaml; MTA-facing LMTP proxy — anvil CONNECT per recipient, SESSION token, preamble fan-out |
+| `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp` | 1 each | `replicaCount` per protocol (coordination via locks) |
 | `yarilo-auth` | 1 | `replicaCount` (stateless; userdb in SQL) |
 | `yarilo-anvil` | 1 | `replicaCount` (state in Redis) |
 | `yarilo-locks` | 2 | `replicaCount` (state in Redis; 2 = HA default) |
@@ -255,8 +258,8 @@ RWX provisioner; on multi-node clusters it must be NFS or CephFS.
 ### Routing
 
 A k8s `Service` per public port (993, 995, 465, 587, 143, 110) load-balances connections
-across the matching login pods. Port `24` is a `Service` in front of `yarilo-lmtp` directly —
-LMTP is MTA-facing and authenticates via the SMTP envelope, so no separate login proxy.
+across the matching login pods. Port `24` is a `Service` in front of `yarilo-lmtp-login`
+(when enabled) which fans out per-recipient preamble connections to `yarilo-lmtp` backends.
 There is **no director** — sessions distribute round-robin (or
 by k8s `Service`'s sessionAffinity setting). Cross-pod write contention is resolved through
 `yarilo-locks`; that adds RTT but stays correct. Once cross-pod contention is a measured
@@ -299,7 +302,7 @@ helm/yarilo-backend       → backend pool (one release per tag = per NFS shard,
 ### yarilo-director
 - `StatefulSet yarilo-director` — replicaCount=3 (peer-sync ring).
 - 2 containers per pod: `yarilo-director` + `yarilo-monitor` (sidecar).
-- 4 login-proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-proxy`) — in separate containers or under a master-supervised process tree.
+- 4 login-proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`) — in separate containers or under a master-supervised process tree.
 - ClusterIP Service — public entry point: :993/:995/:587/:24.
 - Headless Service — for peer-sync DNS.
 

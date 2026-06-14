@@ -13,10 +13,11 @@ import (
 	"time"
 )
 
-// Sentinel errors returned by Authenticate and Verify.
+// Sentinel errors returned by Authenticate, Verify, and LookupUser.
 var (
-	ErrAuthFailed = errors.New("auth/client: authentication failed")
-	ErrTempFail   = errors.New("auth/client: temporary backend failure")
+	ErrAuthFailed   = errors.New("auth/client: authentication failed")
+	ErrTempFail     = errors.New("auth/client: temporary backend failure")
+	ErrUserNotFound = errors.New("auth/client: user not found")
 )
 
 // AuthResult carries the fields from a successful AUTH OK response.
@@ -100,14 +101,48 @@ func (c *Client) Authenticate(username, password, service, remoteIP, sessionID s
 	return c.readAuthResponse(id)
 }
 
-// Verify sends a VERIFY command and returns the username and session ID bound
-// to the token. Returns ErrAuthFailed when the token is unknown or expired.
-func (c *Client) Verify(token string) (username, sessionID string, err error) {
+// LookupUser sends a USER command to yarilo-auth and returns whether the user
+// exists in the userdb. Returns ErrUserNotFound when the user is unknown,
+// ErrTempFail on a transient backend error.
+func (c *Client) LookupUser(username string) (bool, error) {
+	c.seq++
+	id := fmt.Sprintf("%d", c.seq)
+
+	if err := c.writeLine(fmt.Sprintf("USER\t%s\t%s", id, username)); err != nil {
+		return false, err
+	}
+	line, err := c.readLine()
+	if err != nil {
+		return false, err
+	}
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 {
+		return false, fmt.Errorf("auth/client: malformed USER response: %q", line)
+	}
+	if fields[1] != id {
+		return false, fmt.Errorf("auth/client: USER id mismatch: got %q want %q", fields[1], id)
+	}
+	switch fields[0] {
+	case "USER":
+		return true, nil
+	case "NOTFOUND":
+		return false, ErrUserNotFound
+	case "FAIL":
+		return false, ErrTempFail
+	default:
+		return false, fmt.Errorf("auth/client: unknown USER response verb %q", fields[0])
+	}
+}
+
+// Verify sends a VERIFY command and returns the username, session ID, and
+// service bound to the token. Returns ErrAuthFailed when the token is unknown
+// or expired.
+func (c *Client) Verify(token string) (username, sessionID, service string, err error) {
 	c.seq++
 	id := fmt.Sprintf("%d", c.seq)
 
 	if err := c.writeLine(fmt.Sprintf("VERIFY\t%s\t%s", id, token)); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	return c.readVerifyResponse(id)
 }
@@ -194,33 +229,35 @@ func (c *Client) readAuthResponse(id string) (*AuthResult, error) {
 	}
 }
 
-func (c *Client) readVerifyResponse(id string) (string, string, error) {
+func (c *Client) readVerifyResponse(id string) (string, string, string, error) {
 	line, err := c.readLine()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 {
-		return "", "", fmt.Errorf("auth/client: malformed verify response: %q", line)
+		return "", "", "", fmt.Errorf("auth/client: malformed verify response: %q", line)
 	}
 	if fields[1] != id {
-		return "", "", fmt.Errorf("auth/client: verify id mismatch: got %q want %q", fields[1], id)
+		return "", "", "", fmt.Errorf("auth/client: verify id mismatch: got %q want %q", fields[1], id)
 	}
 	switch fields[0] {
 	case "OK":
-		var username, sessionID string
+		var username, sessionID, service string
 		for _, f := range fields[2:] {
 			switch {
 			case strings.HasPrefix(f, "user="):
 				username = f[len("user="):]
 			case strings.HasPrefix(f, "session="):
 				sessionID = f[len("session="):]
+			case strings.HasPrefix(f, "service="):
+				service = f[len("service="):]
 			}
 		}
-		return username, sessionID, nil
+		return username, sessionID, service, nil
 	case "FAIL":
-		return "", "", ErrAuthFailed
+		return "", "", "", ErrAuthFailed
 	default:
-		return "", "", fmt.Errorf("auth/client: unknown verify verb %q", fields[0])
+		return "", "", "", fmt.Errorf("auth/client: unknown verify verb %q", fields[0])
 	}
 }

@@ -1,12 +1,21 @@
 # LMTP configuration
 
-LMTP (RFC 2033) is the Local Mail Transfer Protocol used for final delivery from an external MTA (Postfix, Exim, etc.) into the yarilo mailbox. It operates on port 24 or a Unix socket and returns per-recipient status codes, making it a drop-in replacement for SMTP-based local delivery.
+LMTP (RFC 2033) is the Local Mail Transfer Protocol used for final delivery from an external MTA (Postfix, Exim, etc.) into the yarilo mailbox. It operates on port 24 and returns per-recipient status codes, making it a drop-in replacement for SMTP-based local delivery.
 
-| Service key | Port | Role |
-|:---|:---|:---|
-| `lmtp` | `24` | Local delivery — receives from MTA, delivers to mailboxes. No AUTH. Loopback only. |
+## Architecture
 
-See [SERVICES.md](SERVICES.md) for listener-level settings (`port`, `ssl_mode`, `haproxy_protocol`, `xclient_protocol`).
+yarilo's LMTP stack is split into two components:
+
+| Binary | Role |
+|:---|:---|
+| `yarilo-lmtp-login` | MTA-facing proxy. Accepts one LMTP session from the MTA, tracks each recipient in anvil (`CONNECT`), issues a service-scoped SESSION token per recipient via yarilo-auth master protocol, then at DATA time fans out one preamble TCP connection to `yarilo-lmtp` per recipient. |
+| `yarilo-lmtp` | Backend delivery. Accepts preamble connections (`YARILO\t...TOKEN=...\n`), verifies the token with yarilo-auth (`VERIFY`, `service=lmtp` enforced), and delivers to the mailbox. No XCLIENT, no HAProxy, no direct anvil access. |
+
+**Why fan-out?** Each recipient may hash to a different backend pod (in director mode). A single multi-recipient DATA payload is split per recipient so each backend receives exactly the messages it is responsible for. Per-recipient status codes are merged and returned to the MTA.
+
+**Token scoping.** SESSION tokens are issued with `service=lmtp`. The `yarilo-lmtp` `PreambleListener` rejects tokens issued for any other service (imap, pop3, smtp), preventing cross-service replay.
+
+See [SERVICES.md](SERVICES.md) for listener-level settings (`port`, `ssl_mode`).
 
 ---
 
@@ -96,16 +105,14 @@ services:
   lmtp:
     enabled: true
     port: 24
-    ssl_mode: no             # no | starttls | ssl
-    haproxy_protocol: true   # extract real IP from HAProxy PROXY header
-    xclient_protocol: true   # accept XCLIENT from Postfix (real client IP + hostname)
+    ssl_mode: no    # no | starttls | ssl
 ```
 
-HAProxy and XCLIENT trusted nets come from `general.haproxy` and `general.xclient` respectively (see [GENERAL.md](GENERAL.md)).
+The real client IP and recipient identity are carried in the YARILO preamble from `yarilo-lmtp-login`; no HAProxy or XCLIENT handling on the backend.
 
 ---
 
-## Example: local delivery (backend node)
+## Example: backend node (yarilo-lmtp)
 
 ```yaml
 services:
@@ -113,8 +120,6 @@ services:
     enabled: true
     port: 24
     ssl_mode: no
-    haproxy_protocol: false
-    xclient_protocol: true
 
 protocol:
   lmtp:
@@ -125,48 +130,54 @@ protocol:
     write_timeout: 300
 ```
 
+The backend listens only for preamble connections from `yarilo-lmtp-login`. MTAs connect to `yarilo-lmtp-login`, not directly to this port.
+
+## `lmtp_login_service`
+
+Configuration for `yarilo-lmtp-login`. Set either `backend_addr` (standalone) or `director_addr` (director mode).
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `backend_addr` | — | Fixed address of `yarilo-lmtp` backend. Used in standalone mode. |
+| `director_addr` | — | Address of `yarilo-director` for per-recipient LOOKUP. Takes priority over `backend_addr`. |
+| `director_tag` | `""` | Restrict LOOKUP to backends with this tag. Empty = full ring. |
+| `backend_port` | `0` | Override the port in the LOOKUP result. `0` = use the result address as-is. |
+
+**Standalone mode:**
+
+```yaml
+lmtp_login_service:
+  backend_addr: "yarilo-lmtp.yarilo.svc.cluster.local:24"
+```
+
+```yaml
+components:
+  lmtpLogin:
+    enabled: true
+    backendAddr: "yarilo-lmtp.yarilo.svc.cluster.local:24"
+```
+
+**Director mode:**
+
+```yaml
+lmtp_login_service:
+  director_addr: "yarilo-director.yarilo.svc.cluster.local:9101"
+  director_tag: "prod"
+  backend_port: 10024
+```
+
+```yaml
+components:
+  lmtpLogin:
+    enabled: true
+    directorAddr: "yarilo-director.yarilo.svc.cluster.local:9101"
+    directorTag: "prod"
+    backendPort: 10024
+```
+
 Postfix `main.cf`:
 
 ```
-mailbox_transport = lmtp:inet:localhost:24
+mailbox_transport = lmtp:inet:[yarilo-lmtp-login.yarilo.svc.cluster.local]:24
 ```
 
----
-
-## Example: director proxy node
-
-```yaml
-services:
-  lmtp:
-    enabled: true
-    port: 24
-    ssl_mode: no
-
-protocol:
-  lmtp:
-    proxy:
-      timeout: 60
-```
-
-Backends are taken from the director's ring (configured in `general` settings). The director routes each recipient via consistent hashing; failed backends return `451` and the MTA retries later.
-
----
-
-## Example: LMTP over STARTTLS with HAProxy
-
-```yaml
-services:
-  lmtp:
-    enabled: true
-    port: 24
-    ssl_mode: starttls
-    haproxy_protocol: true
-
-general:
-  ssl:
-    tls_cert: /etc/ssl/yarilo/cert.pem
-    tls_key:  /etc/ssl/yarilo/key.pem
-  haproxy:
-    trusted_nets: ["127.0.0.1/32", "10.0.0.0/8"]
-    timeout: 3
-```

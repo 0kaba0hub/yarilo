@@ -160,6 +160,8 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.image_tag }}
 
       - name: Generate release notes
         if: steps.version.outputs.is_release == 'true'

@@ -29,6 +29,7 @@ import (
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
+	authclient "github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -161,8 +162,6 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- HAProxy shared nets ----
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
-	// LMTP keeps XCLIENT for MTA integration (Postfix → LMTP); login pods use preamble.
-	lmtpXClientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
 	authAddr := cfg.AuthService.ClientAddr()
 	var authTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
@@ -303,22 +302,42 @@ func New(cfg *config.Config) (*Server, error) {
 			}
 			lmtpTLS = t
 		}
-		lmtpServer = lmtp.New(lmtp.Options{
-			Hostname:           cfg.Protocol.Submission.Hostname,
-			Config:             cfg.Protocol.LMTP,
-			Mailbox:            mbox,
-			Index:              idx,
-			Resolver:           resolver,
-			ProxyProtocol:      svcs.LMTP.HAProxy,
-			HAProxyTimeout:     haproxyTimeout,
-			HAProxyTrustedNets: haproxyNets,
-			XClient:            svcs.LMTP.XClient,
-			XClientTrustedNets: lmtpXClientNets,
-			TLSConfig:          lmtpTLS,
-			Locker:             locker,
-			QuotaDict:          quotaDict,
-			AnvilAddr:          cfg.AnvilService.ClientAddr(),
-		})
+		lmtpOpts := lmtp.Options{
+			Hostname:  cfg.Protocol.Submission.Hostname,
+			Config:    cfg.Protocol.LMTP,
+			Mailbox:   mbox,
+			Index:     idx,
+			Resolver:  resolver,
+			TLSConfig: lmtpTLS,
+			Locker:    locker,
+			QuotaDict: quotaDict,
+			AuthAddr:  authAddr,
+			AuthTLS:   authTLS,
+		}
+		if addr := cfg.AuthService.MasterAddr; addr != "" {
+			ac, err := authclient.Dial(addr, nil)
+			if err != nil {
+				return nil, fmt.Errorf("backend: lmtp userdb dial %s: %w", addr, err)
+			}
+			lmtpResolver := lmtpOpts.Resolver
+			if lmtpResolver == nil {
+				lmtpResolver = &mailbox.Resolver{}
+			}
+			lmtpOpts.UserdbLookup = func(ctx context.Context, username string) (*mailbox.UserInfo, error) {
+				ui, err := ac.Userdb(ctx, username)
+				if err != nil {
+					return nil, err
+				}
+				if ui == nil {
+					return nil, nil
+				}
+				mbi := lmtpResolver.UserInfo(username, ui.Home)
+				mbi.Groups = ui.Groups
+				mbi.QuotaRules = ui.QuotaRules
+				return mbi, nil
+			}
+		}
+		lmtpServer = lmtp.New(lmtpOpts)
 	}
 
 	// ---- telemetry ----
