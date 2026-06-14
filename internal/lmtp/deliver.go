@@ -56,10 +56,11 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		return fmt.Errorf("lmtp: save: %w", err)
 	}
 	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
-		UID:      uid,
-		Filename: filename,
-		ModSeq:   modseq,
-		Size:     uint32(size),
+		UID:          uid,
+		Filename:     filename,
+		ModSeq:       modseq,
+		Size:         uint32(size),
+		InternalDate: time.Now(),
 	}); err != nil {
 		_ = box.Remove(folder, filename)
 		return fmt.Errorf("lmtp: index append: %w", err)

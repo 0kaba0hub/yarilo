@@ -406,8 +406,9 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 		UID:   m.UID,
 		Flags: mailindex.MailFlag(imapFlagsToIndex(m.Flags)),
 		Ext: map[string][]byte{
-			extNameModSeq:   encodeModseqRec(modseq),
-			extNameKeywords: encodeKeywordsRec(kwBits),
+			extNameModSeq:       encodeModseqRec(modseq),
+			extNameKeywords:     encodeKeywordsRec(kwBits),
+			extNameInternalDate: encodeIdateRec(m.InternalDate),
 		},
 	}
 	fs.file.Records = append(fs.file.Records, rec)
@@ -548,6 +549,9 @@ func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbo
 			}
 			if data, ok := rec.Ext[extNameKeywords]; ok {
 				meta.Keywords = keywordsFromBitmask(fs.keywords, decodeKeywordsRec(data))
+			}
+			if data, ok := rec.Ext[extNameInternalDate]; ok {
+				meta.InternalDate = decodeIdateRec(data)
 			}
 			out = append(out, meta)
 		}

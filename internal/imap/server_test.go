@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -1834,5 +1835,84 @@ func TestPerNamespaceNoOverrideFallsBackToGlobal(t *testing.T) {
 	// fall through to the global backend because no override).
 	if got := len(globalRec.opens); got != 2 {
 		t.Errorf("globalRec opened %d times at login, want 2 (personal + shared fallback)", got)
+	}
+}
+
+func TestFetchEnvelope(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	raw := "From: Alice <alice@example.com>\r\n" +
+		"To: Bob <bob@example.com>\r\n" +
+		"Subject: Hello envelope\r\n" +
+		"Message-Id: <test-envelope-123@example.com>\r\n" +
+		"\r\n" +
+		"Body text.\r\n"
+	appendWithFlags(t, c, "INBOX", []byte(raw))
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	seq := imap.SeqSet{}
+	seq.AddNum(1)
+	msgs, err := c.Fetch(seq, &imap.FetchOptions{Envelope: true}).Collect()
+	if err != nil {
+		t.Fatalf("FETCH ENVELOPE: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FETCH count: got %d, want 1", len(msgs))
+	}
+	env := msgs[0].Envelope
+	if env == nil {
+		t.Fatal("ENVELOPE is nil")
+	}
+	if env.Subject != "Hello envelope" {
+		t.Errorf("Subject: got %q, want %q", env.Subject, "Hello envelope")
+	}
+	if len(env.From) == 0 {
+		t.Fatal("From list is empty")
+	}
+	if got := env.From[0].Addr(); got != "alice@example.com" {
+		t.Errorf("From addr: got %q, want %q", got, "alice@example.com")
+	}
+	if env.MessageID != "test-envelope-123@example.com" {
+		t.Errorf("MessageID: got %q, want %q", env.MessageID, "test-envelope-123@example.com")
+	}
+}
+
+func TestFetchInternalDate(t *testing.T) {
+	c := startAuthClient(t, "user@test.com", "testpass")
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	want := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	raw := []byte("From: a@b\r\nSubject: idate test\r\n\r\nHello.\r\n")
+	ac := c.Append("INBOX", int64(len(raw)), &imap.AppendOptions{Time: want})
+	if _, err := ac.Write(raw); err != nil {
+		t.Fatalf("Append write: %v", err)
+	}
+	if err := ac.Close(); err != nil {
+		t.Fatalf("Append close: %v", err)
+	}
+	if _, err := ac.Wait(); err != nil {
+		t.Fatalf("Append wait: %v", err)
+	}
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+
+	seq := imap.SeqSet{}
+	seq.AddNum(1)
+	msgs, err := c.Fetch(seq, &imap.FetchOptions{InternalDate: true}).Collect()
+	if err != nil {
+		t.Fatalf("FETCH INTERNALDATE: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("FETCH count: got %d, want 1", len(msgs))
+	}
+	got := msgs[0].InternalDate.UTC()
+	if !got.Equal(want) {
+		t.Errorf("InternalDate: got %v, want %v", got, want)
 	}
 }
