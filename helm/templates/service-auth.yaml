@@ -19,6 +19,12 @@ spec:
       targetPort: auth-master
       protocol: TCP
     {{- end }}
+    {{- if .Values.components.auth.saslListen }}
+    - name: auth-sasl
+      port: {{ trimPrefix ":" .Values.components.auth.saslListen | int }}
+      targetPort: auth-sasl
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "auth") | nindent 4 }}
 ---

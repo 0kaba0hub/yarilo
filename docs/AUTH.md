@@ -203,6 +203,41 @@ auth:
 
 ---
 
+## Postfix SASL integration (`auth_service.sasl_listen`)
+
+`yarilo-auth` can expose the Dovecot auth client protocol on a second, plain-TCP listener for Postfix `smtpd_sasl_type=dovecot`. The main listener (`:9100`) uses mTLS and is reserved for yarilo login pods; the SASL listener is plain TCP so Postfix can connect without certificates.
+
+| Key | Default | Description |
+|:---|:---|:---|
+| `auth_service.sasl_listen` | `""` | Address for the Postfix SASL listener. Empty = disabled. Recommended: `:12345`. |
+
+```yaml
+auth_service:
+  listen: ":9100"
+  sasl_listen: ":12345"
+```
+
+Helm:
+
+```yaml
+components:
+  auth:
+    saslListen: ":12345"
+```
+
+Postfix `main.cf`:
+
+```
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = inet:[yarilo-auth.<namespace>.svc]:12345
+smtpd_sasl_auth_enable = yes
+smtpd_sasl_security_options = noanonymous
+```
+
+The Kubernetes Service exposes the configured port on the `yarilo-auth` ClusterIP automatically when `saslListen` is non-empty — no manual service patch needed.
+
+---
+
 ## Testing
 
 Unit tests for the SQL passdb cover SQLite end-to-end (via `t.TempDir()`). MySQL and PostgreSQL smoke tests are opt-in via env vars and skipped otherwise:

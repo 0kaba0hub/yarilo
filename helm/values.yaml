@@ -135,6 +135,10 @@ components:
     ## endpoints and CLI tooling. Empty disables; the binary then only
     ## opens the client listener.
     masterListen: ":9102"
+    ## saslListen — plain-TCP listener for Postfix SASL auth
+    ## (smtpd_sasl_type=dovecot, smtpd_sasl_path=inet:[yarilo-auth]:12345).
+    ## Empty disables the listener.
+    saslListen: ""
 
     internalTLS:
       enabled: false

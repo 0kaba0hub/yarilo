@@ -55,6 +55,11 @@ spec:
               containerPort: 9102
               protocol: TCP
             {{- end }}
+            {{- if .Values.components.auth.saslListen }}
+            - name: auth-sasl
+              containerPort: {{ trimPrefix ":" .Values.components.auth.saslListen | int }}
+              protocol: TCP
+            {{- end }}
             - name: telemetry
               containerPort: 8080
               protocol: TCP
