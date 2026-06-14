@@ -8,6 +8,28 @@ Items get removed only when the corresponding work merges to `main`.
 
 ---
 
+## yarilo-sasl-login — окремий зовнішній бінар для SASL
+
+Сьогодні `yarilo-imap-login` та `yarilo-pop3-login` мають прямий доступ до
+Unix-сокету `yarilo-auth` і самостійно ведуть SASL-переговори. Це порушує
+принцип мінімального доступу: TLS-термінатор не повинен знати нічого про
+внутрішній auth-сокет.
+
+Завдання: виділити SASL-переговори в окремий бінар `yarilo-sasl-login`, який:
+
+- є єдиним зовнішнім процесом, що має доступ до `yarilo-auth`;
+- приймає підключення від login-процесів через внутрішній протокол
+  (аналогічно до того, як `yarilo-imap-login` вже передає fd до `yarilo-imap`
+  через SCM_RIGHTS);
+- повертає login-процесу лише результат аутентифікації (`OK` / `FAIL` +
+  `UserInfo`), не відкриваючи сокет `yarilo-auth` назовні.
+
+Login-процеси (`yarilo-imap-login`, `yarilo-pop3-login`, майбутній
+`yarilo-submission-login`) стають «сліпими» до auth — вони знають лише адресу
+`yarilo-sasl-login`.
+
+---
+
 ## Phase AUTH-5 — additional SASL mechanisms
 
 Currently shipped: PLAIN, OAUTHBEARER, XOAUTH2, SCRAM-SHA-256 (+PLUS),
