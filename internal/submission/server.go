@@ -224,10 +224,10 @@ func (s *session) Data(r io.Reader) error {
 		body = append([]byte(s.receivedHeader()), data...)
 	}
 	if err := p.Send(s.from, s.rcpts, bytes.NewReader(body), s.remoteIP); err != nil {
-		slog.Info("submission: proxy rejected", "sid", s.sid, "from", s.from, "err", err)
+		slog.Info("submission: proxy rejected", "sid", s.sid, "from", s.from, "err", err, "result", "fail")
 		return err
 	}
-	slog.Info("submission: proxied", "sid", s.sid, "from", s.from, "rcpts", s.rcpts, "size", len(body))
+	slog.Info("submission: proxied", "sid", s.sid, "from", s.from, "rcpts", s.rcpts, "size", len(body), "result", "ok")
 	return nil
 }
 
@@ -410,9 +410,11 @@ func (s *session) authOAuthBearerSASL(opts sasl.OAuthBearerOptions) *sasl.OAuthB
 			time.Sleep(d)
 		}
 		slog.Info("submission: auth failed",
+			"sid", s.sid,
 			"user", opts.Username,
 			"mech", "OAUTHBEARER",
 			"remoteIP", connRemoteIP(s.conn).String(),
+			"result", "fail",
 		)
 		return &sasl.OAuthBearerError{
 			Status:  "invalid_token",
@@ -424,6 +426,7 @@ func (s *session) authOAuthBearerSASL(opts sasl.OAuthBearerOptions) *sasl.OAuthB
 		"user", opts.Username,
 		"mech", "OAUTHBEARER",
 		"remoteIP", connRemoteIP(s.conn).String(),
+		"result", "ok",
 	)
 	return nil
 }
@@ -437,9 +440,11 @@ func (s *session) authXOAuth2SASL(opts sasl.XOAuth2Options) *sasl.OAuthBearerErr
 			time.Sleep(d)
 		}
 		slog.Info("submission: auth failed",
+			"sid", s.sid,
 			"user", opts.Username,
 			"mech", "XOAUTH2",
 			"remoteIP", connRemoteIP(s.conn).String(),
+			"result", "fail",
 		)
 		return &sasl.OAuthBearerError{
 			Status:  "invalid_token",
@@ -451,6 +456,7 @@ func (s *session) authXOAuth2SASL(opts sasl.XOAuth2Options) *sasl.OAuthBearerErr
 		"user", opts.Username,
 		"mech", "XOAUTH2",
 		"remoteIP", connRemoteIP(s.conn).String(),
+		"result", "ok",
 	)
 	return nil
 }
@@ -487,8 +493,10 @@ func (s *session) authPlainSASL(authzid, authid, password string) error {
 			time.Sleep(d)
 		}
 		slog.Info("submission: auth failed",
+			"sid", s.sid,
 			"user", authid,
 			"remoteIP", connRemoteIP(s.conn).String(),
+			"result", "fail",
 		)
 		return err
 	}
@@ -497,6 +505,7 @@ func (s *session) authPlainSASL(authzid, authid, password string) error {
 		"user", target,
 		"master_user", master,
 		"remoteIP", connRemoteIP(s.conn).String(),
+		"result", "ok",
 	)
 	return nil
 }

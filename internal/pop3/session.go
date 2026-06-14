@@ -501,7 +501,7 @@ func (s *session) finishAuth(authzid, username, password string) {
 		if d := s.srv.opts.FailureDelay; d > 0 {
 			time.Sleep(d)
 		}
-		slog.Info("pop3: auth failed", "user", username, "remoteIP", s.remoteIP)
+		slog.Info("pop3: auth failed", "sid", s.sid, "user", username, "remoteIP", s.remoteIP, "result", "fail")
 		s.writeErr("authentication failed")
 		return
 	}
@@ -550,7 +550,7 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := s.remoteIP.String()
 		if !lim.Acquire(userInfo.Username, ip) {
-			slog.Warn("pop3: connection limit reached", "user", userInfo.Username, "ip", ip)
+			slog.Warn("pop3: connection limit reached", "sid", s.sid, "user", userInfo.Username, "ip", ip, "result", "fail")
 			s.writeErr("too many simultaneous connections")
 			return false
 		}
@@ -611,6 +611,7 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 		"master_user", master,
 		"remoteIP", s.remoteIP,
 		"messages", len(s.msgs),
+		"result", "ok",
 	)
 	return true
 }

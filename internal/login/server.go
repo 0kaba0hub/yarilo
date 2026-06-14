@@ -244,11 +244,15 @@ func (s *Server) handleConn(conn net.Conn) {
 		remotePort = ""
 	}
 
+	sessID := s.newSessionID()
+	log := slog.With("sid", sessID, "proto", string(s.opts.Protocol), "remote_ip", clientIP, "remote_port", remotePort)
+	log.Info("login: connect")
+
 	// Implicit-TLS upgrade (IMAPS / POP3S / Submissions).
 	if s.opts.ExtTLS != nil {
 		tlsConn := tls.Server(conn, s.opts.ExtTLS)
 		if err := tlsConn.Handshake(); err != nil {
-			slog.Debug("login: tls handshake", "proto", s.opts.Protocol, "remote_ip", clientIP, "remote_port", remotePort, "err", err)
+			log.Debug("login: tls handshake", "err", err)
 			return
 		}
 		conn = tlsConn
@@ -260,14 +264,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	// authConn/authRd may be TLS-upgraded from the original conn/rd if STARTTLS happened.
 	pre, authConn, authRd, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS, s.opts)
 	if err != nil {
-		slog.Debug("login: preamble", "proto", s.opts.Protocol, "remote_ip", clientIP, "remote_port", remotePort, "err", err)
+		log.Debug("login: preamble", "err", err)
 		return
 	}
-
-	// Generate session ID early — passed to yarilo-auth so penalty tracking
-	// associates the correct anvil session with the authenticated user.
-	sessID := s.newSessionID()
-	log := slog.With("sid", sessID, "proto", string(s.opts.Protocol), "remote_ip", clientIP, "remote_port", remotePort)
 
 	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 	if s.opts.AuthAddr == "" {
@@ -291,11 +290,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		maxAuthAttempts = 3
 	}
 	var authResult *authclient.AuthResult
-	for failures := 0; ; {
+	for attempt := 1; ; attempt++ {
 		var aerr error
 		authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
 		if errors.Is(aerr, authclient.ErrTempFail) {
-			log.Warn("login: auth temp fail", "user", pre.username)
+			log.Warn("login: auth temp fail", "user", pre.username, "result", "fail")
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 			return
 		}
@@ -303,22 +302,22 @@ func (s *Server) handleConn(conn net.Conn) {
 		authFailed := aerr != nil
 		if aerr == nil {
 			if authResult.Nologin {
-				log.Info("login: nologin", "user", pre.username)
+				log.Info("login: auth", "user", pre.username, "result", "fail", "reason", "nologin", "attempt", attempt)
 				authFailed = true
 			} else if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
-				log.Info("login: ip not in allow_nets", "user", pre.username)
+				log.Info("login: auth", "user", pre.username, "result", "fail", "reason", "ip_not_in_allow_nets", "attempt", attempt)
 				authFailed = true
 			}
 		} else {
-			log.Info("login: auth failed", "user", pre.username)
+			log.Info("login: auth", "user", pre.username, "result", "fail", "attempt", attempt)
 		}
 
 		if !authFailed {
+			log.Info("login: auth", "user", pre.username, "result", "ok", "attempt", attempt)
 			break
 		}
 
-		failures++
-		if failures >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
+		if attempt >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
 			writeProtoError(authConn, s.opts.Protocol, "", imapCodeAuthenticationFail, "Too many failed authentications")
 			return
 		}
@@ -333,6 +332,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			log.Debug("login: preamble retry", "err", err)
 			return
 		}
+		log.Info("login: auth retry", "user", pre.username, "attempt", attempt+1)
 	}
 
 	// Find backend address: fixed addr (standalone) or director LOOKUP (director mode).
@@ -363,7 +363,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			cerr := ac.Connect(sessID, pre.username, clientIP, svc)
 			if cerr == anvil.ErrTooManyConns {
 				ac.Close()
-				log.Warn("login: too many connections", "user", pre.username)
+				log.Warn("login: anvil", "user", pre.username, "result", "fail", "reason", "too_many_connections")
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
 				return
 			}
@@ -375,6 +375,7 @@ func (s *Server) handleConn(conn net.Conn) {
 					return
 				}
 			} else {
+				log.Info("login: anvil", "user", pre.username, "result", "ok")
 				hbCtx, hbCancel := context.WithCancel(context.Background())
 				hbDone := make(chan struct{})
 				go func() {
@@ -484,7 +485,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}
 
-	log.Info("login: session routed", "user", pre.username, "backend", backendAddr)
+	log.Info("login: session routed", "user", pre.username, "backend", backendAddr, "result", "ok")
 
 	// Auth is confirmed — tell the client before entering proxy mode.
 	writeProtoAuthOK(authConn, s.opts.Protocol, pre.cmdTag, backendCaps)
@@ -493,6 +494,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	backendConn.SetDeadline(time.Time{}) //nolint:errcheck
 
 	biProxy(authRd, authConn, backendRd, backendConn)
+	log.Info("login: disconnect", "user", pre.username)
 }
 
 // directorLookup dials yarilo-director, issues a LOOKUP restricted to s.opts.Tag,

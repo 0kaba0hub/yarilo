@@ -1168,7 +1168,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		}
 		if d.Reject {
 			slog.Info("auth: policy rejected pre-chain",
-				"service", service, "user", master, "msg", d.Message)
+				"sid", sessionID, "proto", service, "user", master, "msg", d.Message, "result", "fail")
 			if s.failureDelay > 0 {
 				time.Sleep(s.failureDelay)
 			}
@@ -1232,10 +1232,11 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		// because they don't reach the client.
 		slog.Info("auth: fail",
 			"sid", sessionID,
-			"service", service,
+			"proto", service,
 			"user", master,
 			"master_user_target", target,
 			"err", err,
+			"result", "fail",
 		)
 		// Policy report on fail too — telemetry needs both sides.
 		// policy_reject=false here: any policy-reject path
@@ -1258,7 +1259,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		}
 		if d.Reject {
 			slog.Info("auth: policy rejected post-chain",
-				"service", service, "user", res.Username, "msg", d.Message)
+				"sid", sessionID, "proto", service, "user", res.Username, "msg", d.Message, "result", "fail")
 			if s.failureDelay > 0 {
 				time.Sleep(s.failureDelay)
 			}
@@ -1293,9 +1294,10 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	}
 	slog.Info("auth: ok",
 		"sid", sessionID,
-		"service", service,
+		"proto", service,
 		"user", res.Username,
 		"master_user", loggedMaster,
+		"result", "ok",
 	)
 
 	// Policy report (fire-and-forget post-decision telemetry).
