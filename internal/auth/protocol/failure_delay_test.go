@@ -100,7 +100,7 @@ func TestWire_InternalFailureDelay_AppliesOnTempFail(t *testing.T) {
 		t.Fatalf("no reply: %v", sc.Err())
 	}
 	elapsed := time.Since(t0)
-	if !strings.HasPrefix(sc.Text(), "FAIL\t62\ttemp_fail") {
+	if !strings.HasPrefix(sc.Text(), "FAIL\t62\tcode=temp_fail") {
 		t.Fatalf("unexpected reply: %q", sc.Text())
 	}
 	if elapsed < 120*time.Millisecond {

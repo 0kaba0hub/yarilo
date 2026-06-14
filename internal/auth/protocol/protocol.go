@@ -22,10 +22,9 @@ import (
 )
 
 const (
-	protoName = "yarilo-auth"
-	majorVer  = 1
-	minorVer  = 0
-	maxLine   = 16384
+	majorVer = 1
+	minorVer = 1
+	maxLine  = 16384
 )
 
 // AuthResult is the outcome of a single authentication attempt.
@@ -1062,9 +1061,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	rd := bufio.NewReaderSize(conn, maxLine)
 
 	// Server → Client handshake
-	fmt.Fprintf(conn, "VERSION\t%s\t%d\t%d\n", protoName, majorVer, minorVer)
-	fmt.Fprintf(conn, "MECH\tPLAIN\t\n")
-	fmt.Fprintf(conn, "MECH\tLOGIN\t\n")
+	fmt.Fprintf(conn, "VERSION\t%d\t%d\n", majorVer, minorVer)
+	fmt.Fprintf(conn, "MECH\tPLAIN\tplaintext\n")
+	fmt.Fprintf(conn, "MECH\tLOGIN\tplaintext\n")
 	fmt.Fprintf(conn, "SPID\t%d\n", s.pid)
 	fmt.Fprintf(conn, "CUID\t%d\n", cuid)
 	fmt.Fprintf(conn, "COOKIE\t%s\n", s.cookie)
@@ -1259,7 +1258,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 			time.Sleep(delay)
 		}
 		if isInternal {
-			fmt.Fprintf(conn, "FAIL\t%s\ttemp_fail\n", id)
+			fmt.Fprintf(conn, "FAIL\t%s\tcode=temp_fail\n", id)
 		} else {
 			fmt.Fprintf(conn, "FAIL\t%s\n", id)
 		}
