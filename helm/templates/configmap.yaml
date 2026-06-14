@@ -461,6 +461,9 @@ data:
       alias_dict: {{ .Values.components.quotaStatus.aliasDict | quote }}
       alias_max_hops: {{ .Values.components.quotaStatus.aliasMaxHops }}
       {{- end }}
+      {{- if .Values.components.quotaStatus.authMasterAddr }}
+      auth_master_addr: {{ .Values.components.quotaStatus.authMasterAddr | quote }}
+      {{- end }}
     {{- end }}
 
     telemetry:

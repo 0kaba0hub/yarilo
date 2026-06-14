@@ -349,6 +349,10 @@ type QuotaStatusConfig struct {
 	// AliasMaxHops limits alias chain depth to prevent infinite loops.
 	// Default: 5
 	AliasMaxHops int `koanf:"alias_max_hops"`
+	// AuthMasterAddr is the yarilo-auth master-protocol listener address
+	// used for per-user userdb lookups (quota_rule fields). When empty,
+	// per-user quota rules are disabled and only DefaultQuotaRules apply.
+	AuthMasterAddr string `koanf:"auth_master_addr"`
 }
 
 // AnvilServiceConfig configures the standalone yarilo-anvil process.

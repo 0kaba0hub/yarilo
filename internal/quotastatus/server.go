@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
@@ -23,9 +24,15 @@ import (
 type Options struct {
 	// QuotaDict is the dict backend holding per-user quota counters.
 	QuotaDict dict.Dict
-	// Limits are the site-wide quota limits applied to every recipient.
-	// Per-user limits require a userdb lookup (future phase).
+	// Limits are the site-wide quota limits applied when no per-user
+	// quota_rule fields are available from userdb (AuthClient fallback).
 	Limits quota.Limits
+	// AuthClient enables per-user quota rules via a userdb lookup.
+	// When non-nil, check() calls Userdb() for the recipient and uses
+	// the returned quota_rule fields; Limits acts as a fallback when the
+	// lookup fails or the user has no quota_rule entries.
+	// Nil disables per-user lookups — only Limits applies.
+	AuthClient *authclient.Client
 	// AliasDict resolves virtual aliases before quota lookup. The dict
 	// key is the recipient address; the value is the destination address.
 	// Nil disables alias resolution.
@@ -110,7 +117,19 @@ func (s *Server) check(attrs map[string]string) string {
 		return "DUNNO"
 	}
 
-	effLim, ignore := s.opts.Limits.EffectiveLimits(folder)
+	// Resolve effective limits: per-user quota_rule from userdb takes
+	// priority; site-wide Limits apply when the lookup is unconfigured,
+	// fails, or the user has no quota_rule entries.
+	limits := s.opts.Limits
+	if s.opts.AuthClient != nil {
+		if ui, err := s.opts.AuthClient.Userdb(context.Background(), username); err != nil {
+			slog.Warn("quotastatus: userdb lookup failed", "user", username, "err", err)
+		} else if ui != nil && len(ui.QuotaRules) > 0 {
+			limits = quota.ParseRules(ui.QuotaRules)
+		}
+	}
+
+	effLim, ignore := limits.EffectiveLimits(folder)
 	if ignore || (effLim.StorageBytes == 0 && effLim.Messages == 0) {
 		return "DUNNO"
 	}
@@ -131,7 +150,8 @@ func (s *Server) check(attrs map[string]string) string {
 		slog.Info("quotastatus: reject over-quota",
 			"user", username, "folder", folder,
 			"storage_bytes", u.StorageBytes, "messages", u.Messages,
-			"limit_bytes", effLim.StorageBytes, "msg_size", msgSize)
+			"limit_bytes", effLim.StorageBytes, "msg_size", msgSize,
+			"per_user_rules", s.opts.AuthClient != nil)
 		return "REJECT 452 4.2.2 Mailbox full"
 	}
 	return "DUNNO"
