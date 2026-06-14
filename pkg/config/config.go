@@ -33,6 +33,7 @@ type Config struct {
 	Dicts              map[string]DictConfig        `koanf:"dicts"`
 	BackendAPI         BackendAPIConfig             `koanf:"backend_api"`
 	QuotaStatus        QuotaStatusConfig            `koanf:"quota_status"`
+	SASLLogin          SASLLoginConfig              `koanf:"sasl_login"`
 	Telemetry          TelemetryConfig              `koanf:"telemetry"`
 	Log                LogConfig                    `koanf:"log"`
 }
@@ -355,6 +356,33 @@ type QuotaStatusConfig struct {
 	AuthMasterAddr string `koanf:"auth_master_addr"`
 }
 
+// SASLLoginConfig configures the yarilo-sasl-login binary.
+// yarilo-sasl-login listens for plain-TCP connections from Postfix (Dovecot
+// auth client protocol, smtpd_sasl_type=dovecot) and proxies each session to
+// yarilo-auth, optionally wrapping the upstream connection with mTLS.
+// This keeps the yarilo-auth socket internal — Postfix has no direct access.
+type SASLLoginConfig struct {
+	// Listen is the TCP address Postfix connects to.
+	// Postfix: smtpd_sasl_path = inet:<host>:<port>
+	// Default: ":12325"
+	Listen string `koanf:"listen"`
+	// AuthAddr is the yarilo-auth client-protocol address to dial.
+	// Defaults to auth_service.addr when empty.
+	AuthAddr string `koanf:"auth_addr"`
+	// TrustedNets lists CIDR ranges allowed to connect.
+	// Empty = allow all (not recommended in production).
+	TrustedNets []string `koanf:"trusted_nets"`
+	// HAProxy enables PROXY protocol v1/v2 header parsing.
+	// When true, conn.RemoteAddr() reflects the upstream's real address.
+	HAProxy bool `koanf:"haproxy_protocol"`
+	// HAProxyTimeout is the read deadline for the PROXY header (seconds).
+	HAProxyTimeout int `koanf:"haproxy_timeout"`
+	// HAProxyNets lists CIDRs whose PROXY header is trusted.
+	// Connections outside these ranges have their PROXY header ignored.
+	HAProxyNets []string       `koanf:"haproxy_trusted_nets"`
+	Shutdown    ShutdownConfig `koanf:"shutdown"`
+}
+
 // AnvilServiceConfig configures the standalone yarilo-anvil process.
 type AnvilServiceConfig struct {
 	Listen string `koanf:"listen"`
@@ -394,11 +422,7 @@ type AuthServiceConfig struct {
 	// MasterAddr is the address backend services use to dial the
 	// yarilo-auth master protocol for userdb lookups (USER command).
 	// Defaults to empty (userdb checks disabled) when not set.
-	MasterAddr string `koanf:"master_addr"`
-	// SASLListen, when non-empty, opens a plain-TCP listener for the Dovecot
-	// auth client protocol without mTLS — intended for Postfix
-	// (smtpd_sasl_type=dovecot, smtpd_sasl_path=inet:[yarilo-auth]:12345).
-	SASLListen string         `koanf:"sasl_listen"`
+	MasterAddr string         `koanf:"master_addr"`
 	Shutdown   ShutdownConfig `koanf:"shutdown"`
 }
 
@@ -1003,8 +1027,12 @@ func Load(path string) (*Config, error) {
 			},
 		},
 		QuotaStatus: QuotaStatusConfig{Listen: ":12340"},
-		Telemetry:   TelemetryConfig{Listen: ":8080"},
-		Log:         LogConfig{Level: "info"},
+		SASLLogin: SASLLoginConfig{
+			Listen:         ":12325",
+			HAProxyTimeout: 3,
+		},
+		Telemetry: TelemetryConfig{Listen: ":8080"},
+		Log:       LogConfig{Level: "info"},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, err

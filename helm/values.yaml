@@ -505,6 +505,42 @@ components:
         cpu: 500m
         memory: 256Mi
 
+  ## Postfix SASL proxy — delegates smtpd_sasl_type=dovecot authentication to yarilo-auth.
+  ## Postfix config: smtpd_sasl_path = inet:<host>:12325
+  ## Postfix has no direct access to yarilo-auth; yarilo-sasl-login proxies each session.
+  saslLogin:
+    enabled: false
+    replicas: 1
+    servicePort: 12325
+    containerPort: 12325
+
+    ## authAddr overrides the yarilo-auth dial address.
+    ## Defaults to auth_service.addr from the shared config.
+    authAddr: ""
+
+    ## trustedNets lists CIDRs allowed to connect. Empty = allow all.
+    trustedNets: []
+    #  - "10.0.0.0/8"
+
+    ## haproxy enables PROXY protocol v1/v2 on the listener.
+    haproxy: false
+    haproxyTimeout: 3
+    ## haproxyNets lists CIDRs whose PROXY header is trusted.
+    haproxyNets: []
+    #  - "10.0.0.0/8"
+
+    service:
+      type: ClusterIP
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+
   ## Postfix policy service — quota enforcement before message queuing.
   ## Postfix config: check_policy_service inet:[<ClusterIP>]:12340
   quotaStatus:

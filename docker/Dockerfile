@@ -27,6 +27,7 @@ RUN set -eu; \
         yarilo-locks \
         yarilo-migrate \
         yarilo-quota-status \
+        yarilo-sasl-login \
     ; do \
         go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
             -trimpath -o "/out/$cmd" "./app/$cmd"; \
