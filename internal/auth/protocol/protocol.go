@@ -1168,7 +1168,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		}
 		if d.Reject {
 			slog.Info("auth: policy rejected pre-chain",
-				"service", service, "user", master, "msg", d.Message)
+				"proto", service, "user", master, "msg", d.Message)
 			if s.failureDelay > 0 {
 				time.Sleep(s.failureDelay)
 			}
@@ -1232,7 +1232,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		// because they don't reach the client.
 		slog.Info("auth: fail",
 			"sid", sessionID,
-			"service", service,
+			"proto", service,
 			"user", master,
 			"master_user_target", target,
 			"err", err,
@@ -1258,7 +1258,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		}
 		if d.Reject {
 			slog.Info("auth: policy rejected post-chain",
-				"service", service, "user", res.Username, "msg", d.Message)
+				"proto", service, "user", res.Username, "msg", d.Message)
 			if s.failureDelay > 0 {
 				time.Sleep(s.failureDelay)
 			}
@@ -1293,7 +1293,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	}
 	slog.Info("auth: ok",
 		"sid", sessionID,
-		"service", service,
+		"proto", service,
 		"user", res.Username,
 		"master_user", loggedMaster,
 	)

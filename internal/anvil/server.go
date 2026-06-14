@@ -340,7 +340,7 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) {
 	}
 	id, user, ip, service := fields[1], fields[2], fields[3], fields[4]
 	if !s.limiter.Acquire(user, ip) {
-		slog.Warn("anvil: too many connections", "sid", id, "user", user, "ip", ip, "service", service)
+		slog.Warn("anvil: too many connections", "sid", id, "user", user, "ip", ip, "proto", service)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
 		return
 	}
@@ -355,7 +355,7 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) {
 		lastSeen:    now,
 	}
 	s.mu.Unlock()
-	slog.Debug("anvil: connect", "sid", id, "user", user, "ip", ip, "service", service)
+	slog.Debug("anvil: connect", "sid", id, "user", user, "ip", ip, "proto", service)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 }
 
