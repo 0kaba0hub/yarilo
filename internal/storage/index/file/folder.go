@@ -410,9 +410,13 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if err := fs.persistKeywordRegistry(); err != nil {
 		return err
 	}
+	flags := mailindex.MailFlag(imapFlagsToIndex(m.Flags))
+	if m.AltTier {
+		flags |= mailindex.FlagBackend
+	}
 	rec := &mailindex.Record{
 		UID:   m.UID,
-		Flags: mailindex.MailFlag(imapFlagsToIndex(m.Flags)),
+		Flags: flags,
 		Ext: map[string][]byte{
 			extNameModSeq:       encodeModseqRec(modseq),
 			extNameKeywords:     encodeKeywordsRec(kwBits),
@@ -461,6 +465,9 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 			}
 			oldSeen := rec.Flags&mailindex.FlagSeen != 0
 			oldDel := rec.Flags&mailindex.FlagDeleted != 0
+			// Preserve the backend-private AltTier bit — IMAP STORE must
+			// not clear a tier marker it knows nothing about.
+			newFlags |= rec.Flags & mailindex.FlagBackend
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
 			rec.Ext[extNameKeywords] = encodeKeywordsRec(kwBits)
@@ -551,6 +558,7 @@ func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbo
 				Filename: fs.filenames[rec.UID],
 				Flags:    indexFlagsToIMAP(uint8(rec.Flags)),
 				Size:     fs.sizes[rec.UID],
+				AltTier:  rec.Flags&mailindex.FlagBackend != 0,
 			}
 			if data, ok := rec.Ext[extNameModSeq]; ok {
 				meta.ModSeq = decodeModseqRec(data)
@@ -674,6 +682,42 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 			return err
 		}
 		return fs.flush(true)
+	})
+}
+
+// SetAltTier sets or clears FlagBackend on every record whose Filename
+// is in the filenames set. Called after mdbox AltMove physically
+// relocates m.<N> files so subsequent Fetch calls skip the primary
+// open() syscall for cold-tier messages.
+func (u *userIndex) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
+	if len(filenames) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(filenames))
+	for _, f := range filenames {
+		set[f] = struct{}{}
+	}
+	return u.withFolder(folderID, func(fs *folderState) error {
+		changed := false
+		for _, rec := range fs.file.Records {
+			fn := fs.filenames[rec.UID]
+			if _, ok := set[fn]; !ok {
+				continue
+			}
+			before := rec.Flags
+			if altTier {
+				rec.Flags |= mailindex.FlagBackend
+			} else {
+				rec.Flags &^= mailindex.FlagBackend
+			}
+			if rec.Flags != before {
+				changed = true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		return fs.flush(false)
 	})
 }
 

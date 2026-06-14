@@ -73,7 +73,7 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 		}
 	}
 
-	rc, err := mb.Fetch("INBOX", name)
+	rc, err := mb.Fetch("INBOX", name, false)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestSaveCRLFNormalisation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	rc, err := mb.Fetch("INBOX", name)
+	rc, err := mb.Fetch("INBOX", name, false)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}

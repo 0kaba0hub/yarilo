@@ -136,7 +136,7 @@ func TestSave_Fetch_Remove(t *testing.T) {
 		t.Errorf("filename %q should contain ,S= and ,W= size annotations", filename)
 	}
 
-	rc, err := box.Fetch("INBOX", filename)
+	rc, err := box.Fetch("INBOX", filename, false)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}

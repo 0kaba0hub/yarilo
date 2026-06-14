@@ -187,7 +187,7 @@ func TestGUIDInRebuildScan(t *testing.T) {
 	}
 
 	// fetchedBody must still be readable.
-	rc, err := u.Fetch("INBOX", filename)
+	rc, err := u.Fetch("INBOX", filename, false)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}

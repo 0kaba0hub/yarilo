@@ -47,7 +47,7 @@ func (m *mockMailbox) Remove(_, _ string) error                         { return
 func (m *mockMailbox) Save(_ string, _ io.Reader, _ uint32, _ int64, _ []string) (string, error) {
 	return "", nil
 }
-func (m *mockMailbox) Fetch(_, filename string) (io.ReadCloser, error) {
+func (m *mockMailbox) Fetch(_, filename string, _ bool) (io.ReadCloser, error) {
 	if m.bodies != nil {
 		if b, ok := m.bodies[filename]; ok {
 			return io.NopCloser(bytes.NewReader(b)), nil
@@ -97,6 +97,7 @@ func (m *mockIndex) SavePOP3UIDLs(_ uint64, uidls map[uint32]string) error {
 }
 func (m *mockIndex) ResetFolder(_ uint64, _ []*mailbox.MessageMeta) error { return nil }
 func (m *mockIndex) OptimizeIndex(_ uint64) error                         { return nil }
+func (m *mockIndex) SetAltTier(_ uint64, _ []string, _ bool) error        { return nil }
 func (m *mockIndex) Close() error                                         { return nil }
 
 // ---- test helpers -----------------------------------------------------------

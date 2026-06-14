@@ -17,6 +17,11 @@ type MessageMeta struct {
 	InternalDate time.Time
 	GUID         [16]byte
 	CacheOffset  uint32
+	// AltTier is true when the message body resides in alt (cold) storage.
+	// Stored as FlagBackend (0x40) in the on-disk index record so Fetch()
+	// can open the correct tier without a wasted primary-tier syscall.
+	// Only meaningful for mdbox; other drivers ignore it.
+	AltTier bool
 }
 
 // Folder holds index-level folder metadata.
@@ -109,7 +114,11 @@ type UserMailbox interface {
 	Delete(folder string) error
 	Rename(oldName, newName string) error
 	Save(folder string, r io.Reader, uid uint32, size int64, flags []string) (string, error)
-	Fetch(folder, filename string) (io.ReadCloser, error)
+	// Fetch returns a reader for the message body. altTier hints that the
+	// message lives in alt (cold) storage so the driver can open it directly
+	// without trying the primary path first. The hint is set from
+	// MessageMeta.AltTier which is persisted in the index as FlagBackend.
+	Fetch(folder, filename string, altTier bool) (io.ReadCloser, error)
 	Remove(folder, filename string) error
 	List(folder string) ([]*MessageMeta, error)
 	FolderExists(folder string) (bool, error)
@@ -150,6 +159,12 @@ type UserIndex interface {
 	// reconciles state by scanning the on-disk tree.
 	AllocateUID(folderID uint64) (uint32, error)
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
+	// SetAltTier sets or clears the AltTier marker (FlagBackend) for every
+	// message in folderID whose Filename matches one of the supplied names.
+	// Called by the altmove API after physically relocating mdbox m.<N> files
+	// so subsequent Fetch calls can skip the primary-tier open() attempt.
+	// Operates under the cross-process mailbox lock for the folder.
+	SetAltTier(folderID uint64, filenames []string, altTier bool) error
 	GetMessages(folderID uint64, uids SeqSet) ([]*MessageMeta, error)
 	ExpungeMessage(folderID uint64, uid uint32) error
 	NextModSeq(folderID uint64) (uint64, error)

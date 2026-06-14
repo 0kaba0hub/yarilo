@@ -338,7 +338,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, _ []
 // message body. The caller MUST Close. Metadata + file header are
 // skipped; only the raw bytes between message_header end and
 // metadata_magic_post are surfaced.
-func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
+func (u *userMailbox) Fetch(folder, filename string, _ bool) (io.ReadCloser, error) {
 	path := filepath.Join(u.folderPath(folder), filename)
 	f, err := os.Open(path)
 	if err != nil {

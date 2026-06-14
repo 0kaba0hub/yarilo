@@ -46,7 +46,7 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 	if name != "1" {
 		t.Errorf("first save filename = %q, want \"1\"", name)
 	}
-	rc, err := mb.Fetch("INBOX", name)
+	rc, err := mb.Fetch("INBOX", name, false)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSaveCRLFNormalisation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	rc, err := mb.Fetch("INBOX", name)
+	rc, err := mb.Fetch("INBOX", name, false)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestCopyIsRefcountOnly(t *testing.T) {
 
 	// Both source and dest names fetch to the same body.
 	for _, n := range []string{srcName, dstName} {
-		rc, err := mb.Fetch("Sent", n)
+		rc, err := mb.Fetch("Sent", n, false)
 		if err != nil {
 			t.Fatalf("fetch %q: %v", n, err)
 		}
