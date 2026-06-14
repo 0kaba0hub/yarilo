@@ -184,18 +184,11 @@ func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config,
 		return fmt.Errorf("lmtp proxy: listen %s: %w", addr, err)
 	}
 
-	haProxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
-	haProxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
-
 	lmtpSrv := lmtp.New(lmtp.Options{
-		Hostname:           cfg.Protocol.Submission.Hostname,
-		Config:             cfg.Protocol.LMTP,
-		Router:             srv,
-		BackendPort:        svcLMTP.Port,
-		ProxyProtocol:      svcLMTP.HAProxy,
-		HAProxyTimeout:     haProxyTimeout,
-		HAProxyTrustedNets: haProxyNets,
-		XClient:            svcLMTP.XClient,
+		Hostname:    cfg.Protocol.Submission.Hostname,
+		Config:      cfg.Protocol.LMTP,
+		Router:      srv,
+		BackendPort: svcLMTP.Port,
 	})
 
 	slog.Info("director: lmtp proxy listening", "addr", addr)

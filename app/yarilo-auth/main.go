@@ -240,6 +240,7 @@ func main() {
 	if cfg.AuthService.MasterListen != "" {
 		master := protocol.NewMasterServer(combinedUserdb,
 			protocol.WithMasterCache(authCache),
+			protocol.WithMasterTokenStore(tokenStore),
 		)
 		slog.Info("yarilo-auth master listener", "addr", cfg.AuthService.MasterListen)
 		go func() {

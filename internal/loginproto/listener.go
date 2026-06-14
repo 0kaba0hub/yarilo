@@ -21,6 +21,7 @@ type PreambleConn struct {
 	net.Conn
 	Username  string
 	SessionID string
+	Service   string
 	Helo      string
 	realAddr  net.Addr
 	br        *bufio.Reader
@@ -37,10 +38,16 @@ func (c *PreambleConn) Read(b []byte) (int, error) { return c.br.Read(b) }
 // each incoming connection, calls yarilo-auth VERIFY to validate the session
 // token, and returns a *PreambleConn. Connections that fail preamble reading or
 // token verification are closed and skipped (Accept loops to the next connection).
+//
+// When ExpectedService is non-empty, the service returned by VERIFY must match
+// it exactly; mismatches are treated as token verification failures and logged.
+// This prevents LMTP session tokens from being replayed on IMAP backends and
+// vice-versa.
 type PreambleListener struct {
 	net.Listener
-	AuthAddr string
-	AuthTLS  *tls.Config
+	AuthAddr        string
+	AuthTLS         *tls.Config
+	ExpectedService string
 }
 
 const preambleReadTimeout = 5 * time.Second
@@ -80,12 +87,15 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	}
 	defer authCl.Close()
 
-	username, sessionID, err := authCl.Verify(pre.Token)
+	username, sessionID, service, err := authCl.Verify(pre.Token)
 	if err != nil {
 		return nil, fmt.Errorf("token verify: %w", err)
 	}
 	if username == "" {
 		return nil, fmt.Errorf("token verify: empty username")
+	}
+	if l.ExpectedService != "" && service != l.ExpectedService {
+		return nil, fmt.Errorf("token verify: service mismatch: got %q want %q", service, l.ExpectedService)
 	}
 
 	var realAddr net.Addr = c.RemoteAddr()
@@ -101,6 +111,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		Conn:      c,
 		Username:  username,
 		SessionID: pre.SessionID,
+		Service:   service,
 		Helo:      pre.Helo,
 		realAddr:  realAddr,
 		br:        br,

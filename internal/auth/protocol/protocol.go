@@ -920,8 +920,8 @@ type PenaltyToSecsFunc func(count int) int
 // TokenStore is implemented by authtoken.Store. Abstracted as an interface
 // so tests can provide a stub without importing the concrete package.
 type TokenStore interface {
-	Issue(username, sessionID string) (string, error)
-	Validate(tok string) (username, sessionID string, ok bool)
+	Issue(username, sessionID, service string) (string, error)
+	Validate(tok string) (username, sessionID, service string, ok bool)
 }
 
 // WithTokenStore attaches the session token store. When set, every successful
@@ -1278,7 +1278,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 
 	reply := buildAuthOK(id, res)
 	if s.tokenStore != nil && sessionID != "" {
-		if tok, terr := s.tokenStore.Issue(res.Username, sessionID); terr == nil {
+		if tok, terr := s.tokenStore.Issue(res.Username, sessionID, service); terr == nil {
 			reply += "\ttoken=" + tok
 		} else {
 			slog.Warn("auth: token issue failed", "err", terr)
@@ -1332,14 +1332,14 @@ func (s *Server) handleVerify(conn net.Conn, fields []string) {
 		fmt.Fprintf(conn, "FAIL\t%s\treason=not-configured\n", id)
 		return
 	}
-	username, sessionID, ok := s.tokenStore.Validate(tok)
+	username, sessionID, service, ok := s.tokenStore.Validate(tok)
 	if !ok {
 		slog.Info("auth: verify failed", "id", id)
 		fmt.Fprintf(conn, "FAIL\t%s\n", id)
 		return
 	}
 	slog.Info("auth: verify ok", "user", username, "session", sessionID)
-	fmt.Fprintf(conn, "OK\t%s\tuser=%s\tsession=%s\n", id, username, sessionID)
+	fmt.Fprintf(conn, "OK\t%s\tuser=%s\tsession=%s\tservice=%s\n", id, username, sessionID, service)
 }
 
 // buildAuthOK renders the OK response. When res.Fields is set, the

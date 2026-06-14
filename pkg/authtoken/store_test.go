@@ -11,7 +11,7 @@ func TestIssueValidate(t *testing.T) {
 	s := authtoken.New(5 * time.Second)
 	defer s.Close()
 
-	tok, err := s.Issue("alice@example.com", "sess-1")
+	tok, err := s.Issue("alice@example.com", "sess-1", "imap")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestIssueValidate(t *testing.T) {
 		t.Fatalf("token length: got %d, want 64", len(tok))
 	}
 
-	u, sid, ok := s.Validate(tok)
+	u, sid, svc, ok := s.Validate(tok)
 	if !ok {
 		t.Fatal("Validate: expected ok=true")
 	}
@@ -29,16 +29,19 @@ func TestIssueValidate(t *testing.T) {
 	if sid != "sess-1" {
 		t.Errorf("sessionID: got %q, want %q", sid, "sess-1")
 	}
+	if svc != "imap" {
+		t.Errorf("service: got %q, want %q", svc, "imap")
+	}
 }
 
 func TestOneTimeUse(t *testing.T) {
 	s := authtoken.New(5 * time.Second)
 	defer s.Close()
 
-	tok, _ := s.Issue("bob@example.com", "sess-2")
+	tok, _ := s.Issue("bob@example.com", "sess-2", "imap")
 	s.Validate(tok) // consume
 
-	_, _, ok := s.Validate(tok)
+	_, _, _, ok := s.Validate(tok)
 	if ok {
 		t.Fatal("second Validate should return ok=false (one-time use)")
 	}
@@ -48,10 +51,10 @@ func TestExpired(t *testing.T) {
 	s := authtoken.New(10 * time.Millisecond)
 	defer s.Close()
 
-	tok, _ := s.Issue("carol@example.com", "sess-3")
+	tok, _ := s.Issue("carol@example.com", "sess-3", "imap")
 	time.Sleep(20 * time.Millisecond)
 
-	_, _, ok := s.Validate(tok)
+	_, _, _, ok := s.Validate(tok)
 	if ok {
 		t.Fatal("expired token should return ok=false")
 	}
@@ -61,7 +64,7 @@ func TestUnknownToken(t *testing.T) {
 	s := authtoken.New(5 * time.Second)
 	defer s.Close()
 
-	_, _, ok := s.Validate("0000000000000000000000000000000000000000000000000000000000000000")
+	_, _, _, ok := s.Validate("0000000000000000000000000000000000000000000000000000000000000000")
 	if ok {
 		t.Fatal("unknown token should return ok=false")
 	}

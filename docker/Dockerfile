@@ -21,6 +21,7 @@ RUN set -eu; \
         yarilo-pop3 \
         yarilo-pop3-login \
         yarilo-lmtp \
+        yarilo-lmtp-login \
         yarilo-submission \
         yarilo-submission-login \
         yarilo-locks \

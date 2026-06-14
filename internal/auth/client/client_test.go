@@ -167,7 +167,7 @@ func TestVerify_OK(t *testing.T) {
 			}
 			if fields[0] == "VERIFY" {
 				id := fields[1]
-				fmt.Fprintf(conn, "OK\t%s\tuser=alice\tsession=sess42\n", id)
+				fmt.Fprintf(conn, "OK\t%s\tuser=alice\tsession=sess42\tservice=imap\n", id)
 				return
 			}
 		}
@@ -179,7 +179,7 @@ func TestVerify_OK(t *testing.T) {
 	}
 	defer c.Close()
 
-	username, sessionID, err := c.Verify("sometoken")
+	username, sessionID, service, err := c.Verify("sometoken")
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -188,6 +188,9 @@ func TestVerify_OK(t *testing.T) {
 	}
 	if sessionID != "sess42" {
 		t.Errorf("sessionID = %q, want %q", sessionID, "sess42")
+	}
+	if service != "imap" {
+		t.Errorf("service = %q, want %q", service, "imap")
 	}
 }
 
@@ -216,7 +219,7 @@ func TestVerify_Fail(t *testing.T) {
 	}
 	defer c.Close()
 
-	_, _, err = c.Verify("badtoken")
+	_, _, _, err = c.Verify("badtoken")
 	if err != ErrAuthFailed {
 		t.Errorf("err = %v, want ErrAuthFailed", err)
 	}

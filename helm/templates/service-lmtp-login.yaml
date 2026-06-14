@@ -1,0 +1,43 @@
+{{- if .Values.components.lmtpLogin.enabled }}
+## ClusterIP — LMTP connections from MTA (Postfix → lmtp-login → lmtp backend).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-lmtp-login
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "lmtp-login") | nindent 4 }}
+  {{- with .Values.components.lmtpLogin.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.components.lmtpLogin.service.type }}
+  ports:
+    {{- if .Values.components.lmtpLogin.listeners.lmtp.enabled }}
+    - name: lmtp
+      port: {{ .Values.components.lmtpLogin.listeners.lmtp.servicePort }}
+      targetPort: lmtp
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "lmtp-login") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-lmtp-login-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "lmtp-login") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "lmtp-login") | nindent 4 }}
+{{- end }}

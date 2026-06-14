@@ -281,6 +281,43 @@ func (c *Client) CacheFlush(ctx context.Context, masks []string) (uint32, error)
 	}
 }
 
+// IssueSession sends a SESSION command to the master listener and returns the
+// one-time token bound to username. The token is scoped to the "lmtp" service
+// and must be consumed by a VERIFY call on the client listener within the
+// token TTL.
+//
+// sid is the anvil session ID already registered for this delivery; ip is the
+// originating MTA address (both are recorded in the audit log but do not affect
+// token validity).
+func (c *Client) IssueSession(ctx context.Context, username, sid, ip string) (string, error) {
+	if c.closed.Load() {
+		return "", ErrClosed
+	}
+	id := c.allocID()
+	cmd := fmt.Sprintf("SESSION\t%s\tuser=%s\tsid=%s\tip=%s\n", id, username, sid, ip)
+	resp, err := c.exchange(ctx, cmd)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(resp, "\t")
+	if len(parts) < 2 || parts[1] != id {
+		return "", fmt.Errorf("authclient: SESSION response for unexpected id: %q", resp)
+	}
+	switch parts[0] {
+	case "OK":
+		for _, p := range parts[2:] {
+			if strings.HasPrefix(p, "token=") {
+				return strings.TrimPrefix(p, "token="), nil
+			}
+		}
+		return "", fmt.Errorf("authclient: SESSION OK missing token field: %q", resp)
+	case "FAIL":
+		return "", fmt.Errorf("authclient: SESSION %s: %s", username, failReason(parts))
+	default:
+		return "", fmt.Errorf("authclient: unexpected SESSION frame: %q", resp)
+	}
+}
+
 // exchange writes a single-line request under c.mu and reads the
 // matching single-line response. Used by USER and PASS — LIST has
 // its own multi-line loop above.

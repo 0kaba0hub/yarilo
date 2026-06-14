@@ -259,7 +259,7 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 		ln = &maxLineLenListener{Listener: ln, limit: s.opts.MaxLineLength}
 	}
 	if s.opts.AuthAddr != "" {
-		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS}
+		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "imap"}
 	}
 	if s.opts.LoginGreeting != "" {
 		ln = &greetingListener{Listener: ln, greeting: s.opts.LoginGreeting}

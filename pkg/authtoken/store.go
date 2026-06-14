@@ -26,6 +26,7 @@ const defaultTTL = 60 * time.Second
 type entry struct {
 	username  string
 	sessionID string
+	service   string
 	expiresAt time.Time
 }
 
@@ -61,9 +62,9 @@ func (s *Store) Close() {
 	close(s.done)
 }
 
-// Issue generates a token bound to username and sessionID. The caller must
-// propagate the token to the backend before the TTL elapses.
-func (s *Store) Issue(username, sessionID string) (string, error) {
+// Issue generates a token bound to username, sessionID, and service. The caller
+// must propagate the token to the backend before the TTL elapses.
+func (s *Store) Issue(username, sessionID, service string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -73,15 +74,16 @@ func (s *Store) Issue(username, sessionID string) (string, error) {
 	s.entries[tok] = &entry{
 		username:  username,
 		sessionID: sessionID,
+		service:   service,
 		expiresAt: time.Now().Add(s.ttl),
 	}
 	s.mu.Unlock()
 	return tok, nil
 }
 
-// Validate consumes tok and returns the associated username and sessionID.
-// Returns ("", "", false) when the token is unknown, already used, or expired.
-func (s *Store) Validate(tok string) (username, sessionID string, ok bool) {
+// Validate consumes tok and returns the associated username, sessionID, and service.
+// Returns ("", "", "", false) when the token is unknown, already used, or expired.
+func (s *Store) Validate(tok string) (username, sessionID, service string, ok bool) {
 	s.mu.Lock()
 	e, exists := s.entries[tok]
 	if exists {
@@ -89,9 +91,9 @@ func (s *Store) Validate(tok string) (username, sessionID string, ok bool) {
 	}
 	s.mu.Unlock()
 	if !exists || time.Now().After(e.expiresAt) {
-		return "", "", false
+		return "", "", "", false
 	}
-	return e.username, e.sessionID, true
+	return e.username, e.sessionID, e.service, true
 }
 
 func (s *Store) sweep() {

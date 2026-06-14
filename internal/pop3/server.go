@@ -130,7 +130,7 @@ func (s *Server) wrapListeners(ln net.Listener) net.Listener {
 		}
 	}
 	if s.opts.AuthAddr != "" {
-		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS}
+		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "pop3"}
 	}
 	return ln
 }

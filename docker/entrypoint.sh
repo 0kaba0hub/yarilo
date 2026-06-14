@@ -35,6 +35,9 @@ case "$YARILO_COMPONENT" in
   yarilo-lmtp)
     exec /usr/local/bin/yarilo-lmtp
     ;;
+  yarilo-lmtp-login)
+    exec /usr/local/bin/yarilo-lmtp-login
+    ;;
   yarilo-submission)
     exec /usr/local/bin/yarilo-submission
     ;;
@@ -49,7 +52,7 @@ case "$YARILO_COMPONENT" in
     echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-backend-api, yarilo-locks, yarilo-director,"
     echo "           yarilo-imap, yarilo-imap-login,"
     echo "           yarilo-pop3, yarilo-pop3-login,"
-    echo "           yarilo-lmtp, yarilo-submission, yarilo-submission-login,"
+    echo "           yarilo-lmtp, yarilo-lmtp-login, yarilo-submission, yarilo-submission-login,"
     echo "           yarilo-migrate"
     exit 1
     ;;

@@ -162,8 +162,6 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- HAProxy shared nets ----
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
-	// LMTP keeps XCLIENT for MTA integration (Postfix → LMTP); login pods use preamble.
-	lmtpXClientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
 	authAddr := cfg.AuthService.ClientAddr()
 	var authTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
@@ -305,20 +303,16 @@ func New(cfg *config.Config) (*Server, error) {
 			lmtpTLS = t
 		}
 		lmtpOpts := lmtp.Options{
-			Hostname:           cfg.Protocol.Submission.Hostname,
-			Config:             cfg.Protocol.LMTP,
-			Mailbox:            mbox,
-			Index:              idx,
-			Resolver:           resolver,
-			ProxyProtocol:      svcs.LMTP.HAProxy,
-			HAProxyTimeout:     haproxyTimeout,
-			HAProxyTrustedNets: haproxyNets,
-			XClient:            svcs.LMTP.XClient,
-			XClientTrustedNets: lmtpXClientNets,
-			TLSConfig:          lmtpTLS,
-			Locker:             locker,
-			QuotaDict:          quotaDict,
-			AnvilAddr:          cfg.AnvilService.ClientAddr(),
+			Hostname:  cfg.Protocol.Submission.Hostname,
+			Config:    cfg.Protocol.LMTP,
+			Mailbox:   mbox,
+			Index:     idx,
+			Resolver:  resolver,
+			TLSConfig: lmtpTLS,
+			Locker:    locker,
+			QuotaDict: quotaDict,
+			AuthAddr:  authAddr,
+			AuthTLS:   authTLS,
 		}
 		if addr := cfg.AuthService.MasterAddr; addr != "" {
 			ac, err := authclient.Dial(addr, nil)

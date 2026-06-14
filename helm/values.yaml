@@ -713,6 +713,40 @@ components:
         cpu: 200m
         memory: 128Mi
 
+  ## LMTP login pod — MTA-facing LMTP proxy with per-recipient anvil CONNECT
+  ## and yarilo-auth SESSION token issuance. Fans out one backend connection
+  ## per recipient, each with a YARILO preamble.
+  lmtpLogin:
+    enabled: false
+    replicas: 1
+
+    listeners:
+      lmtp:
+        enabled: true
+        servicePort: 24
+        containerPort: 10024
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    ## backendAddr is the address of the yarilo-lmtp backend that receives
+    ## preamble-authenticated connections. Required when lmtpLogin is enabled.
+    ## Typically "<release>-lmtp:<containerPort>" within the cluster.
+    backendAddr: ""
+
+    service:
+      type: ClusterIP
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
 ## -------------------------------------------------------------------
 ## Protocol tuning
 ## -------------------------------------------------------------------

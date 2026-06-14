@@ -25,6 +25,7 @@ type Config struct {
 	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
 	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
 	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
+	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
 	LocksService       LocksServiceConfig           `koanf:"locks_service"`
 	LocksClient        LocksClientConfig            `koanf:"locks_client"`
 	Storage            StorageConfig                `koanf:"storage"`
@@ -468,6 +469,13 @@ type POP3LoginServiceConfig struct {
 
 // SubmissionLoginServiceConfig mirrors IMAPLoginServiceConfig for the Submission proxy.
 type SubmissionLoginServiceConfig struct {
+	BackendAddr string `koanf:"backend_addr"`
+}
+
+// LMTPLoginServiceConfig configures the yarilo-lmtp-login proxy.
+// BackendAddr is the address of the LMTP backend that lmtp-login fans
+// out to — one TCP connection per recipient, each with its own preamble.
+type LMTPLoginServiceConfig struct {
 	BackendAddr string `koanf:"backend_addr"`
 }
 
