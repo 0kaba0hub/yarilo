@@ -2,6 +2,7 @@
 package imap
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -16,6 +17,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/emersion/go-message/textproto"
 	"github.com/emersion/go-sasl"
 	proxyproto "github.com/pires/go-proxyproto"
 
@@ -1599,6 +1601,13 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		}
 		if opts.RFC822Size {
 			mw.WriteRFC822Size(int64(m.Size))
+		}
+		if opts.Envelope && m.Filename != "" {
+			if rc, ferr := box.Fetch(s.folder.Name, m.Filename); ferr == nil {
+				hdr, _ := textproto.ReadHeader(bufio.NewReader(rc))
+				rc.Close()
+				mw.WriteEnvelope(imapserver.ExtractEnvelope(hdr))
+			}
 		}
 		for _, section := range opts.BodySection {
 			if m.Filename == "" {
