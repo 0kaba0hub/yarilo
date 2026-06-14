@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,9 +22,11 @@ import (
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
 
 	"github.com/0kaba0hub/yarilo/internal/quotastatus"
+	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/mtls"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
@@ -68,9 +71,29 @@ func main() {
 		}
 	}
 
+	var authcl *authclient.Client
+	if qs.AuthMasterAddr != "" {
+		var authTLS *tls.Config
+		if cfg.InternalTLS.Enabled {
+			authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+			if err != nil {
+				slog.Error("quota-status: auth mtls config failed", "err", err)
+				os.Exit(1)
+			}
+		}
+		authcl, err = authclient.Dial(qs.AuthMasterAddr, authTLS)
+		if err != nil {
+			slog.Error("quota-status: authclient dial failed", "addr", qs.AuthMasterAddr, "err", err)
+			os.Exit(1)
+		}
+		defer func() { _ = authcl.Close() }()
+		slog.Info("quota-status: authclient connected", "addr", qs.AuthMasterAddr)
+	}
+
 	srv := quotastatus.New(quotastatus.Options{
 		QuotaDict:    quotaDict,
 		Limits:       limits,
+		AuthClient:   authcl,
 		AliasDict:    aliasDict,
 		AliasMaxHops: qs.AliasMaxHops,
 	})

@@ -526,6 +526,12 @@ components:
     aliasDict: ""
     aliasMaxHops: 5
 
+    ## authMasterAddr is the yarilo-auth master-protocol listener address
+    ## used for per-user quota_rule lookups via userdb. When set, per-user
+    ## rules override defaultQuotaRules; defaultQuotaRules remain as fallback.
+    ## Example: "yarilo-auth:9101"
+    authMasterAddr: ""
+
     resources:
       requests:
         cpu: 10m
