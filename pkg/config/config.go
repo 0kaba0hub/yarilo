@@ -122,6 +122,9 @@ type GeneralConfig struct {
 	HAProxy HAProxyConfig `koanf:"haproxy"`
 	XClient XClientConfig `koanf:"xclient"`
 	Limits  LimitsConfig  `koanf:"limits"`
+	// StartupDialRetries is the maximum number of dial attempts when connecting
+	// to external dependencies (anvil, Redis) at startup. Default 3.
+	StartupDialRetries int `koanf:"startup_dial_retries"`
 }
 
 type SSLConfig struct {
@@ -912,8 +915,9 @@ func Load(path string) (*Config, error) {
 				Timeout:     3,
 				TrustedNets: defaultTrustedNets,
 			},
-			XClient: XClientConfig{TrustedNets: defaultTrustedNets},
-			Limits:  LimitsConfig{MaxUserIPConnections: 10},
+			XClient:            XClientConfig{TrustedNets: defaultTrustedNets},
+			Limits:             LimitsConfig{MaxUserIPConnections: 10},
+			StartupDialRetries: 3,
 		},
 		Protocol: ProtocolConfig{
 			IMAP: IMAPProtocolConfig{

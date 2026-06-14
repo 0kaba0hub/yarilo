@@ -35,6 +35,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
 // version is stamped at build time via -ldflags="-X main.version=<tag>".
@@ -73,7 +74,7 @@ func main() {
 	reg := prometheus.NewRegistry()
 	metrics := locks.NewMetrics(reg, lcfg.Mode)
 
-	backend, backendReady, err := buildBackend(ctx, lcfg)
+	backend, backendReady, err := buildBackend(ctx, lcfg, cfg.General.StartupDialRetries)
 	if err != nil {
 		slog.Error("backend init failed", "err", err, "mode", lcfg.Mode)
 		os.Exit(1)
@@ -126,7 +127,7 @@ func main() {
 // buildBackend instantiates the state backend for the configured mode.
 // The returned readiness function reports whether the backend is presently
 // usable; /readyz consults it on each request.
-func buildBackend(ctx context.Context, lcfg config.LocksServiceConfig) (locks.Backend, func() bool, error) {
+func buildBackend(ctx context.Context, lcfg config.LocksServiceConfig, dialRetries int) (locks.Backend, func() bool, error) {
 	switch lcfg.Mode {
 	case "embedded":
 		b := locks.NewMemoryBackend()
@@ -141,7 +142,11 @@ func buildBackend(ctx context.Context, lcfg config.LocksServiceConfig) (locks.Ba
 			return nil, nil, fmt.Errorf("parse redis url: %w", err)
 		}
 		rdb := redis.NewClient(opts)
-		if err := rdb.Ping(ctx).Err(); err != nil {
+		if err := retry.Do(ctx, dialRetries, time.Second, func() error {
+			pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
+			defer pcancel()
+			return rdb.Ping(pctx).Err()
+		}); err != nil {
 			_ = rdb.Close()
 			return nil, nil, fmt.Errorf("redis ping: %w", err)
 		}

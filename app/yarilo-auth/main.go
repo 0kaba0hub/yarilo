@@ -26,6 +26,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
 // version is stamped at build time via -ldflags="-X main.version=<tag>".
@@ -137,7 +138,7 @@ func main() {
 		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
 	)
 
-	tokenStore, tokenClose := buildTokenStore(cfg.Auth.Token)
+	tokenStore, tokenClose := buildTokenStore(cfg.Auth.Token, cfg.General.StartupDialRetries)
 	defer tokenClose()
 
 	srvOpts := []protocol.ServerOption{
@@ -288,7 +289,7 @@ func runTelemetry(addr string) {
 
 // buildTokenStore creates the appropriate TokenStore based on config and returns
 // it along with a cleanup function. The caller must invoke cleanup on exit.
-func buildTokenStore(cfg config.AuthTokenConfig) (protocol.TokenStore, func()) {
+func buildTokenStore(cfg config.AuthTokenConfig, dialRetries int) (protocol.TokenStore, func()) {
 	ttl := time.Duration(cfg.TTLSeconds) * time.Second
 	if cfg.Backend == "redis" {
 		if cfg.RedisAddr == "" {
@@ -301,6 +302,14 @@ func buildTokenStore(cfg config.AuthTokenConfig) (protocol.TokenStore, func()) {
 			os.Exit(1)
 		}
 		rdb := redis.NewClient(opt)
+		if err := retry.Do(context.Background(), dialRetries, time.Second, func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return rdb.Ping(ctx).Err()
+		}); err != nil {
+			slog.Error("auth: redis ping failed", "addr", cfg.RedisAddr, "err", err)
+			os.Exit(1)
+		}
 		slog.Info("auth: token store backend=redis", "addr", cfg.RedisAddr)
 		return authtoken.NewRedis(rdb, ttl), func() { rdb.Close() }
 	}

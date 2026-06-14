@@ -33,6 +33,7 @@ data:
           {{- end }}
       limits:
         mail_max_userip_connections: {{ .Values.general.limits.maxUserIPConnections }}
+      startup_dial_retries: {{ .Values.general.startupDialRetries | default 3 }}
 
     services:
       imaps:

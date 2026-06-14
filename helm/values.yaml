@@ -880,6 +880,12 @@ protocol:
 ## General infrastructure
 ## -------------------------------------------------------------------
 general:
+  ## startupDialRetries — number of dial attempts (with exponential backoff)
+  ## when connecting to external dependencies at startup (anvil, Redis).
+  ## Prevents permanent loss of functionality on rolling restarts when a
+  ## dependency pod is not yet ready. Default 3.
+  startupDialRetries: 3
+
   limits:
     ## Maximum simultaneous IMAP/POP3 connections from a single IP address.
     maxUserIPConnections: 10
