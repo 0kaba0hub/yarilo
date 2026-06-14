@@ -12,11 +12,14 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/internal/sasllogin"
 	"github.com/0kaba0hub/yarilo/pkg/build"
@@ -77,6 +80,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	telemetryAddr := cfg.Telemetry.Listen
+	go runTelemetry(telemetryAddr)
+
 	slog.Info("yarilo-sasl-login starting",
 		"version", build.Version,
 		"listen", listen,
@@ -84,6 +90,7 @@ func main() {
 		"auth_tls", authTLS != nil,
 		"trusted_nets", sl.TrustedNets,
 		"haproxy", sl.HAProxy,
+		"telemetry", telemetryAddr,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -95,6 +102,20 @@ func main() {
 	}
 
 	slog.Info("yarilo-sasl-login stopped")
+}
+
+func runTelemetry(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.Handle("/metrics", promhttp.Handler())
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		slog.Error("telemetry server failed", "err", err)
+	}
 }
 
 func parseCIDRs(ss []string) []*net.IPNet {

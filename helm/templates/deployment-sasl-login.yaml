@@ -43,16 +43,13 @@ spec:
             - name: sasl
               containerPort: {{ .Values.components.saslLogin.containerPort }}
               protocol: TCP
+            - name: telemetry
+              containerPort: 8080
+              protocol: TCP
           livenessProbe:
-            tcpSocket:
-              port: sasl
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
-            tcpSocket:
-              port: sasl
-            initialDelaySeconds: 2
-            periodSeconds: 5
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.components.saslLogin.resources | nindent 12 }}
           volumeMounts:
