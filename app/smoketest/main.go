@@ -25,12 +25,14 @@ var (
 	flagPOP3SPort     = flag.String("pop3s-port", "995", "POP3S port")
 	flagSMTPMXPort    = flag.String("smtp-mx-port", "25", "SMTP MX port")
 	flagSMTPSubPort   = flag.String("smtp-sub-port", "587", "SMTP submission port")
+	flagLMTPLoginPort = flag.String("lmtp-login-port", "24", "yarilo-lmtp-login port")
 	flagTelemetry     = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
 	flagTimeout       = flag.Duration("timeout", 10*time.Second, "per-check timeout")
 	flagInsecure      = flag.Bool("insecure", false, "skip TLS certificate verification")
 	flagProxyProtocol = flag.Bool("proxy-protocol", false, "send HAProxy PROXY header before SMTP banner")
 	flagXClient       = flag.Bool("xclient", false, "check that MX port advertises XCLIENT in EHLO")
 	flagPOP3S         = flag.Bool("pop3s", false, "check POP3S greeting and CAPA")
+	flagLMTPLogin     = flag.Bool("lmtp-login", false, "check yarilo-lmtp-login LHLO greeting (port -lmtp-login-port)")
 )
 
 type result struct {
@@ -70,6 +72,12 @@ func main() {
 			name string
 			fn   func() error
 		}{"pop3s CAPA", checkPOP3S})
+	}
+	if *flagLMTPLogin {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"lmtp-login LHLO", checkLMTPLogin})
 	}
 
 	var failures []result
@@ -207,6 +215,53 @@ func checkPOP3S() error {
 	}
 	if !foundUSER {
 		return fmt.Errorf("CAPA missing USER capability")
+	}
+
+	fmt.Fprintf(conn, "QUIT\r\n")
+	return nil
+}
+
+// ---- LMTP login (port 24) ------------------------------------------------
+
+// checkLMTPLogin connects to yarilo-lmtp-login, verifies the 220 banner,
+// sends LHLO, and expects a 250 multi-line response with at least one known
+// LMTP extension before quitting cleanly.
+func checkLMTPLogin() error {
+	addr := net.JoinHostPort(*flagHost, *flagLMTPLoginPort)
+	dialer := &net.Dialer{Timeout: *flagTimeout}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+
+	banner, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("read banner: %w", err)
+	}
+	if !strings.HasPrefix(banner, "220") {
+		return fmt.Errorf("unexpected banner: %q", banner)
+	}
+
+	fmt.Fprintf(conn, "LHLO smoketest\r\n")
+	gotOK := false
+	for {
+		line, err := readLine(conn)
+		if err != nil {
+			return fmt.Errorf("LHLO read: %w", err)
+		}
+		if strings.HasPrefix(line, "250-") || strings.HasPrefix(line, "250 ") {
+			gotOK = true
+			if strings.HasPrefix(line, "250 ") {
+				break
+			}
+			continue
+		}
+		return fmt.Errorf("LHLO unexpected response: %q", line)
+	}
+	if !gotOK {
+		return fmt.Errorf("LHLO: no 250 response received")
 	}
 
 	fmt.Fprintf(conn, "QUIT\r\n")
