@@ -56,10 +56,15 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.ClientCertPresent = IsTruthy(value)
 	case "volatile_dir":
 		info.VolatileDir = value
+	case "index_dir":
+		info.IndexDir = value
 	case "mail", "mail_location":
 		info.MailLocation = value
 		if vd := parseMailLocationMod(value, "VOLATILEDIR"); vd != "" {
 			info.VolatileDir = vd
+		}
+		if id := parseMailLocationMod(value, "INDEX"); id != "" {
+			info.IndexDir = id
 		}
 	case "mail_uid":
 		n, err := strconv.ParseUint(value, 10, 32)

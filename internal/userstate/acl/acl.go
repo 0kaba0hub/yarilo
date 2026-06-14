@@ -40,9 +40,11 @@ const FileName = "yarilo-acl"
 // name relative to the namespace root (same convention as
 // mailbox.UserMailbox).
 type Store struct {
-	// home is the namespace root used to derive per-folder dir paths
-	// via file.IndexDirFor.
+	// home is the namespace root for mailbox data.
 	home string
+	// indexRoot is where per-folder index files live. Equals home when
+	// no INDEX= redirect is configured.
+	indexRoot string
 	// username is whose lock-key is acquired on every write. For
 	// shared/public namespaces this is the accessing user — the
 	// MailboxKey is per-(user, folder), so concurrent writes from
@@ -60,12 +62,19 @@ type Store struct {
 // set to the namespace location), the accessing username, the
 // owner string for diagnostics, and the cluster locker (may be nil
 // for tests / single-process dev runs).
-func New(home, username, owner string, locker locks.Locker) *Store {
+// New constructs a Store. indexRoot is the root directory for index
+// files (yarilo.index*, yarilo-acl); pass ui.IndexDir when INDEX= is
+// configured, or ui.Home to keep files co-located with the mailbox.
+func New(home, indexRoot, username, owner string, locker locks.Locker) *Store {
+	if indexRoot == "" {
+		indexRoot = home
+	}
 	return &Store{
-		home:     home,
-		username: username,
-		owner:    owner,
-		locker:   locker,
+		home:      home,
+		indexRoot: indexRoot,
+		username:  username,
+		owner:     owner,
+		locker:    locker,
 	}
 }
 
@@ -73,7 +82,7 @@ func New(home, username, owner string, locker locks.Locker) *Store {
 // callers (admin CLI, integration tests) can locate the file without
 // re-deriving the layout.
 func (s *Store) Path(folder string) string {
-	return filepath.Join(file.IndexDirFor(s.home, folder), FileName)
+	return filepath.Join(file.IndexDirFor(s.indexRoot, folder), FileName)
 }
 
 // Get returns the parsed ACL for folder. When the file does not
@@ -287,7 +296,7 @@ func (s *Store) loadLocked(folder string) (mailbox.ACL, error) {
 }
 
 func (s *Store) writeAtomicLocked(folder string, acl mailbox.ACL) error {
-	dir := file.IndexDirFor(s.home, folder)
+	dir := file.IndexDirFor(s.indexRoot, folder)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("userstate/acl: mkdir %s: %w", dir, err)
 	}

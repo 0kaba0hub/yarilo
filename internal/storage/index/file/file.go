@@ -79,6 +79,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 		b:           b,
 		home:        u.Home,
 		volatileDir: u.VolatileDir,
+		indexRoot:   u.IndexDir,
 		username:    u.Username,
 		owner:       makeOwner(u),
 		open:        make(map[uint64]*folderState),
@@ -96,6 +97,7 @@ type userIndex struct {
 	b           *Backend
 	home        string
 	volatileDir string // base volatile dir (empty = disabled)
+	indexRoot   string // INDEX= override root (empty = co-located with home)
 	username    string
 	owner       string
 	counter     *quota.Counter
@@ -158,6 +160,9 @@ func IndexDirFor(home, folder string) string {
 }
 
 func (u *userIndex) indexDir(folder string) string {
+	if u.indexRoot != "" {
+		return IndexDirFor(u.indexRoot, folder)
+	}
 	return IndexDirFor(u.home, folder)
 }
 
