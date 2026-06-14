@@ -15,6 +15,7 @@ import (
 
 	"github.com/emersion/go-sasl"
 
+	"github.com/0kaba0hub/yarilo/internal/auth/client"
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
@@ -303,7 +304,7 @@ func New(cfg *config.Config) (*Server, error) {
 			}
 			lmtpTLS = t
 		}
-		lmtpServer = lmtp.New(lmtp.Options{
+		lmtpOpts := lmtp.Options{
 			Hostname:           cfg.Protocol.Submission.Hostname,
 			Config:             cfg.Protocol.LMTP,
 			Mailbox:            mbox,
@@ -318,7 +319,21 @@ func New(cfg *config.Config) (*Server, error) {
 			Locker:             locker,
 			QuotaDict:          quotaDict,
 			AnvilAddr:          cfg.AnvilService.ClientAddr(),
-		})
+		}
+		if addr := cfg.AuthService.MasterAddr; addr != "" {
+			ac, err := client.Dial(addr, nil)
+			if err != nil {
+				return nil, fmt.Errorf("backend: lmtp userdb dial %s: %w", addr, err)
+			}
+			lmtpOpts.UserChecker = func(ctx context.Context, username string) (bool, error) {
+				ok, err := ac.LookupUser(username)
+				if err != nil {
+					return false, err
+				}
+				return ok, nil
+			}
+		}
+		lmtpServer = lmtp.New(lmtpOpts)
 	}
 
 	// ---- telemetry ----

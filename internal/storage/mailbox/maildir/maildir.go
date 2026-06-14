@@ -81,13 +81,15 @@ type userMailbox struct {
 }
 
 // makeOwner builds the owner string for yarilo-locks BUSY reports.
-// Format: "<process>/<pid>/<user>". Process is the basename of argv[0]; pid
-// identifies the replica; user disambiguates concurrent sessions for the
-// same mailbox under the same process.
+// Format: "<process>/<pid>/<user>[/<sid>]". The optional session ID
+// disambiguates concurrent sessions for the same user.
 func makeOwner(u *mailbox.UserInfo) string {
 	proc := "yarilo"
 	if len(os.Args) > 0 {
 		proc = filepath.Base(os.Args[0])
+	}
+	if u.SessionID != "" {
+		return fmt.Sprintf("%s/%d/%s/%s", proc, os.Getpid(), u.Username, u.SessionID)
 	}
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }

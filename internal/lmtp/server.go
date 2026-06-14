@@ -58,6 +58,12 @@ type Options struct {
 	// the notification immediately. Nil disables cross-pod notifications.
 	Locker locks.Locker
 
+	// UserChecker verifies that a recipient exists in the userdb before
+	// accepting RCPT TO. When non-nil, rcptLocal calls it and returns 550
+	// for unknown users instead of auto-provisioning their mailbox.
+	// When nil (unit tests / director-only nodes) the check is skipped.
+	UserChecker func(ctx context.Context, username string) (bool, error)
+
 	// QuotaDict is the dict backend for per-user quota counters. When
 	// non-nil, delivery is rejected with 452 4.2.2 "Mailbox full" if the
 	// recipient's quota_rules limit would be exceeded. Nil disables the
@@ -238,14 +244,26 @@ func (s *session) rcptLocal(to string) error {
 	box := s.opts.Mailbox.OpenUser(userInfo)
 	defer box.Close() //nolint:errcheck
 
+	// Verify the recipient exists in the userdb before touching the filesystem.
+	if s.opts.UserChecker != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ok, cherr := s.opts.UserChecker(ctx, user)
+		cancel()
+		if cherr != nil {
+			slog.Error("lmtp: userdb lookup failed", "user", user, "err", cherr)
+			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary user lookup error"}
+		}
+		if !ok {
+			return &goSmtp.SMTPError{Code: 550, EnhancedCode: goSmtp.EnhancedCode{5, 1, 1}, Message: "No such user here"}
+		}
+	}
+
 	exists, err := box.FolderExists("INBOX")
 	if err != nil {
-		slog.Error("lmtp: user lookup failed", "user", user, "err", err)
+		slog.Error("lmtp: mailbox check failed", "user", user, "err", err)
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary user lookup error"}
 	}
 	if !exists {
-		// Auto-provision: LMTP is internal — the upstream MTA already vetted
-		// the recipient. Create INBOX on first delivery (Dovecot LMTP parity).
 		if err := box.Init(); err != nil {
 			slog.Error("lmtp: auto-provision failed", "user", user, "err", err)
 			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Mailbox provisioning failed"}

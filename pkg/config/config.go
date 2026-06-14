@@ -384,9 +384,13 @@ type AuthServiceConfig struct {
 	// Addr is the address login pods use to dial yarilo-auth.
 	// Defaults to Listen when empty (single-process / dev mode).
 	// In k8s set to the ClusterIP service DNS, e.g. "yarilo-auth:9100".
-	Addr         string         `koanf:"addr"`
-	MasterListen string         `koanf:"master_listen"`
-	Shutdown     ShutdownConfig `koanf:"shutdown"`
+	Addr         string `koanf:"addr"`
+	MasterListen string `koanf:"master_listen"`
+	// MasterAddr is the address backend services use to dial the
+	// yarilo-auth master protocol for userdb lookups (USER command).
+	// Defaults to empty (userdb checks disabled) when not set.
+	MasterAddr string         `koanf:"master_addr"`
+	Shutdown   ShutdownConfig `koanf:"shutdown"`
 }
 
 // ClientAddr returns the address login pods use to dial yarilo-auth.

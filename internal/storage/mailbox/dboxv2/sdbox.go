@@ -94,6 +94,9 @@ func makeOwner(u *mailbox.UserInfo) string {
 	if len(os.Args) > 0 {
 		proc = filepath.Base(os.Args[0])
 	}
+	if u.SessionID != "" {
+		return fmt.Sprintf("%s/%d/%s/%s", proc, os.Getpid(), u.Username, u.SessionID)
+	}
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 

@@ -22,11 +22,12 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/director"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -44,7 +45,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-director starting",
-		"version", version,
+		"version", build.Version,
 		"listen", cfg.DirectorService.Listen,
 		"telemetry", cfg.Telemetry.Listen,
 		"internal_tls", cfg.InternalTLS.Enabled,

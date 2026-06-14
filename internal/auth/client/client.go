@@ -13,10 +13,11 @@ import (
 	"time"
 )
 
-// Sentinel errors returned by Authenticate and Verify.
+// Sentinel errors returned by Authenticate, Verify, and LookupUser.
 var (
-	ErrAuthFailed = errors.New("auth/client: authentication failed")
-	ErrTempFail   = errors.New("auth/client: temporary backend failure")
+	ErrAuthFailed   = errors.New("auth/client: authentication failed")
+	ErrTempFail     = errors.New("auth/client: temporary backend failure")
+	ErrUserNotFound = errors.New("auth/client: user not found")
 )
 
 // AuthResult carries the fields from a successful AUTH OK response.
@@ -98,6 +99,39 @@ func (c *Client) Authenticate(username, password, service, remoteIP, sessionID s
 		return nil, err
 	}
 	return c.readAuthResponse(id)
+}
+
+// LookupUser sends a USER command to yarilo-auth and returns whether the user
+// exists in the userdb. Returns ErrUserNotFound when the user is unknown,
+// ErrTempFail on a transient backend error.
+func (c *Client) LookupUser(username string) (bool, error) {
+	c.seq++
+	id := fmt.Sprintf("%d", c.seq)
+
+	if err := c.writeLine(fmt.Sprintf("USER\t%s\t%s", id, username)); err != nil {
+		return false, err
+	}
+	line, err := c.readLine()
+	if err != nil {
+		return false, err
+	}
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 {
+		return false, fmt.Errorf("auth/client: malformed USER response: %q", line)
+	}
+	if fields[1] != id {
+		return false, fmt.Errorf("auth/client: USER id mismatch: got %q want %q", fields[1], id)
+	}
+	switch fields[0] {
+	case "USER":
+		return true, nil
+	case "NOTFOUND":
+		return false, ErrUserNotFound
+	case "FAIL":
+		return false, ErrTempFail
+	default:
+		return false, fmt.Errorf("auth/client: unknown USER response verb %q", fields[0])
+	}
 }
 
 // Verify sends a VERIFY command and returns the username and session ID bound

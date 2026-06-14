@@ -24,11 +24,12 @@ import (
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -52,7 +53,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-submission starting",
-		"version", version,
+		"version", build.Version,
 		"telemetry", cfg.Telemetry.Listen,
 	)
 

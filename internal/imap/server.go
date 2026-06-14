@@ -720,6 +720,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	userInfo := resolver.UserInfo(res.Username, res.Home)
 	userInfo.Groups = res.Groups
 	userInfo.QuotaRules = res.QuotaRules
+	userInfo.SessionID = s.sid
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())

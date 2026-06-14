@@ -38,6 +38,11 @@ type UserInfo struct {
 	// `*:messages=100000`. Empty means no quota limit.
 	QuotaRules []string
 
+	// SessionID is the IMAP/POP3 session identifier assigned by the login
+	// proxy. Included in the yarilo-locks owner string for BUSY diagnostics.
+	// Empty for LMTP and other non-session contexts.
+	SessionID string
+
 	// Phase 3 — filesystem ownership (needed when yarilo runs as root
 	// and drops privileges per-user, like Dovecot's deliver agent):
 	// UID uint32

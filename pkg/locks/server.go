@@ -174,10 +174,12 @@ func (s *Server) handleLock(ctx context.Context, w io.Writer, fields []string, p
 	switch {
 	case err == nil:
 		s.metrics.observeAcquire(dur, "ok")
+		s.logger.Debug("locks: acquired", "peer", peer, "resource", resource, "owner", owner, "id", id, "dur_ms", dur*1000)
 		_ = writeFields(w, respOK, id)
 	case errors.Is(err, ErrBusy):
 		s.metrics.observeAcquire(dur, "busy")
 		s.metrics.incBusy()
+		s.logger.Debug("locks: busy", "peer", peer, "resource", resource, "owner", owner, "held_by", current)
 		_ = writeFields(w, respBusy, current)
 	default:
 		s.metrics.observeAcquire(dur, "error")
@@ -191,7 +193,8 @@ func (s *Server) handleUnlock(ctx context.Context, w io.Writer, fields []string,
 		_ = writeFields(w, respError, "bad_unlock")
 		return
 	}
-	if err := s.backend.Release(ctx, fields[1]); err != nil {
+	lockID := fields[1]
+	if err := s.backend.Release(ctx, lockID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			_ = writeFields(w, respNotFound)
 			return
@@ -200,6 +203,7 @@ func (s *Server) handleUnlock(ctx context.Context, w io.Writer, fields []string,
 		_ = writeFields(w, respError, "internal")
 		return
 	}
+	s.logger.Debug("locks: released", "peer", peer, "id", lockID)
 	_ = writeFields(w, respOK)
 }
 
@@ -213,7 +217,8 @@ func (s *Server) handleRenew(ctx context.Context, w io.Writer, fields []string, 
 		_ = writeFields(w, respError, "bad_ttl")
 		return
 	}
-	if err := s.backend.Renew(ctx, fields[1], ttl); err != nil {
+	lockID := fields[1]
+	if err := s.backend.Renew(ctx, lockID, ttl); err != nil {
 		if errors.Is(err, ErrExpired) {
 			s.metrics.incRenewFailed()
 			_ = writeFields(w, respExpired)
@@ -223,6 +228,7 @@ func (s *Server) handleRenew(ctx context.Context, w io.Writer, fields []string, 
 		_ = writeFields(w, respError, "internal")
 		return
 	}
+	s.logger.Debug("locks: renewed", "peer", peer, "id", lockID)
 	_ = writeFields(w, respOK)
 }
 

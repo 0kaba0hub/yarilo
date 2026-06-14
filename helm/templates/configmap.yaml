@@ -322,6 +322,7 @@ data:
       {{- end }}
       {{- if .Values.components.auth.masterListen }}
       master_listen: {{ .Values.components.auth.masterListen | quote }}
+      master_addr: {{ printf "%s-auth.%s.svc:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
       {{- end }}
       shutdown:
         session_grace_period: 30

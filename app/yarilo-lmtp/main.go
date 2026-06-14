@@ -13,10 +13,11 @@ import (
 	"syscall"
 
 	"github.com/0kaba0hub/yarilo/internal/backend"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -34,7 +35,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-lmtp starting",
-		"version", version,
+		"version", build.Version,
 		"telemetry", cfg.Telemetry.Listen,
 	)
 

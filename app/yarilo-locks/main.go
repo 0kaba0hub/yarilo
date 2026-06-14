@@ -31,13 +31,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 // version is stamped at build time via -ldflags="-X main.version=<tag>".
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -61,7 +62,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-locks starting",
-		"version", version,
+		"version", build.Version,
 		"mode", lcfg.Mode,
 		"telemetry", cfg.Telemetry.Listen,
 	)

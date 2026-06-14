@@ -17,11 +17,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -39,7 +40,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-anvil starting",
-		"version", version,
+		"version", build.Version,
 		"listen", cfg.AnvilService.Listen,
 		"telemetry", cfg.Telemetry.Listen,
 		"max_userip_connections", cfg.General.Limits.MaxUserIPConnections,

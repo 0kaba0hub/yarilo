@@ -1,5 +1,7 @@
 FROM golang:1.26-alpine AS builder
 
+ARG BUILD_VERSION=dev
+
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -25,7 +27,8 @@ RUN set -eu; \
         yarilo-migrate \
         yarilo-quota-status \
     ; do \
-        go build -ldflags="-s -w" -trimpath -o "/out/$cmd" "./app/$cmd"; \
+        go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
+            -trimpath -o "/out/$cmd" "./app/$cmd"; \
     done
 
 FROM alpine:3.24

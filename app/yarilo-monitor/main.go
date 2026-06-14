@@ -16,9 +16,10 @@ import (
 	"github.com/knadh/koanf/v2"
 
 	"github.com/0kaba0hub/yarilo/internal/monitor"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 )
 
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -37,7 +38,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-monitor starting",
-		"version", version,
+		"version", build.Version,
 		"director", cfg.DirectorAddr,
 		"tags", len(cfg.Tags),
 		"interval", cfg.Interval,

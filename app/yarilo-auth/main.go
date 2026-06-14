@@ -22,12 +22,13 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/pkg/authtoken"
+	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 // version is stamped at build time via -ldflags="-X main.version=<tag>".
-var version = "dev"
+// version is set via pkg/build; kept for vet compatibility
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	slog.Info("yarilo-auth starting",
-		"version", version,
+		"version", build.Version,
 		"listen", cfg.AuthService.Listen,
 		"telemetry", cfg.Telemetry.Listen,
 	)
