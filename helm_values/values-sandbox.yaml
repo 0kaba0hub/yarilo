@@ -33,9 +33,27 @@ protocol:
   imap:
     idleNotifyInterval: 120
     maxLineLength: 65536
+    acl:
+      enabled: true
   lmtp:
     addReceivedHeader: true
     hdrDeliveryAddress: final
+
+dicts:
+  metadata:
+    driver: redis
+    settings:
+      addr: yarilo-redis.yarilo-sb.svc:6379
+      db: 0
+      prefix: "yarilo:metadata:"
+      path: null
+  quota:
+    driver: redis
+    settings:
+      addr: yarilo-redis.yarilo-sb.svc:6379
+      db: 0
+      prefix: "yarilo:quota:"
+    expire_secs: 86400
 
 ## External MySQL — managed by mysql-sandbox.yaml; bundled StatefulSet disabled.
 mysql:

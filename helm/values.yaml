@@ -744,9 +744,8 @@ protocol:
     ## optimisation. Admin surface lives at
     ## `yarilo-backend-api /api/backend/acl/*` and `yarilo-admin
     ## backend acl <command>`. When disabled, every ACL command
-    ## returns NO("ACL extension disabled by operator"); the
-    ## capability stays advertised because go-imap detects it via
-    ## interface assertion.
+    ## returns NO("ACL extension disabled by operator") and ACL is
+    ## absent from the CAPABILITY response.
     acl:
       enabled: false
 
