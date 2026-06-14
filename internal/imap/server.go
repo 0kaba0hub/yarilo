@@ -720,7 +720,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())
 		if !lim.Acquire(userInfo.Username, ip) {
-			slog.Warn("imap: connection limit reached", "user", userInfo.Username, "ip", ip)
+			slog.Warn("imap: connection limit reached", "sid", s.sid, "user", userInfo.Username, "ip", ip, "result", "fail")
 			return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Too many simultaneous connections"}
 		}
 		s.limitIP = ip
@@ -759,6 +759,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		"user", userInfo.Username,
 		"master_user", master,
 		"remoteIP", remoteIP(s.imapConn.NetConn()),
+		"result", "ok",
 	)
 	return nil
 }
