@@ -58,11 +58,11 @@ type Options struct {
 	// the notification immediately. Nil disables cross-pod notifications.
 	Locker locks.Locker
 
-	// UserChecker verifies that a recipient exists in the userdb before
-	// accepting RCPT TO. When non-nil, rcptLocal calls it and returns 550
-	// for unknown users instead of auto-provisioning their mailbox.
+	// UserdbLookup fetches per-user storage config from the userdb before
+	// accepting RCPT TO. Returning (nil, nil) means user not found → 550.
+	// Returning (nil, err) means transient failure → 451.
 	// When nil (unit tests / director-only nodes) the check is skipped.
-	UserChecker func(ctx context.Context, username string) (bool, error)
+	UserdbLookup func(ctx context.Context, username string) (*mailbox.UserInfo, error)
 
 	// QuotaDict is the dict backend for per-user quota counters. When
 	// non-nil, delivery is rejected with 452 4.2.2 "Mailbox full" if the
@@ -208,6 +208,10 @@ type session struct {
 	rcpts      []string            // local recipients
 	proxyRcpts map[string][]string // backend addr → []rcpt (proxy mode)
 
+	// rcptUserInfo caches per-recipient UserInfo fetched at RCPT TO time
+	// so LMTPData can use correct Home and QuotaRules without re-querying.
+	rcptUserInfo map[string]*mailbox.UserInfo
+
 	// anvilConn is the active connection to yarilo-anvil for
 	// this LMTP session. Opened lazily on the first local RCPT,
 	// closed in Logout. Nil when AnvilAddr is unset (single-pod
@@ -240,21 +244,46 @@ func (s *session) rcptLocal(to string) error {
 	if resolver == nil {
 		resolver = &mailbox.Resolver{}
 	}
-	userInfo := resolver.UserInfo(user, "")
-	box := s.opts.Mailbox.OpenUser(userInfo)
-	defer box.Close() //nolint:errcheck
 
-	// Verify the recipient exists in the userdb before touching the filesystem.
-	if s.opts.UserChecker != nil {
+	// Userdb lookup: verify recipient exists and get per-user storage config.
+	// Done before opening the mailbox so Home and QuotaRules are correct.
+	var userInfo *mailbox.UserInfo
+	if s.opts.UserdbLookup != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		ok, cherr := s.opts.UserChecker(ctx, user)
+		ui, cherr := s.opts.UserdbLookup(ctx, user)
 		cancel()
 		if cherr != nil {
 			slog.Error("lmtp: userdb lookup failed", "user", user, "err", cherr)
 			return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary user lookup error"}
 		}
-		if !ok {
+		if ui == nil {
 			return &goSmtp.SMTPError{Code: 550, EnhancedCode: goSmtp.EnhancedCode{5, 1, 1}, Message: "No such user here"}
+		}
+		userInfo = ui
+	} else {
+		userInfo = resolver.UserInfo(user, "")
+	}
+	if s.rcptUserInfo == nil {
+		s.rcptUserInfo = make(map[string]*mailbox.UserInfo)
+	}
+	s.rcptUserInfo[to] = userInfo
+
+	box := s.opts.Mailbox.OpenUser(userInfo)
+	defer box.Close() //nolint:errcheck
+
+	// RCPT-time quota pre-check: reject immediately if already over quota.
+	if s.opts.QuotaDict != nil && len(userInfo.QuotaRules) > 0 {
+		lim := quota.ParseRules(userInfo.QuotaRules)
+		effLim, ignore := lim.EffectiveLimits("INBOX")
+		if !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
+			ctr := quota.NewCounter(s.opts.QuotaDict, user)
+			ctxQ, cancelQ := context.WithTimeout(context.Background(), 2*time.Second)
+			u, cerr := ctr.Get(ctxQ)
+			cancelQ()
+			if cerr == nil && quota.IsOver(u, effLim, 0, 0) {
+				slog.Warn("lmtp: rcpt rejected: mailbox full", "user", user)
+				return &goSmtp.SMTPError{Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2}, Message: "Mailbox full"}
+			}
 		}
 	}
 
@@ -400,11 +429,14 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		msg := s.prependHeaders(data, rcpt, deliverRcpt)
 
 		username, folder, _ := resolveMailbox(deliverRcpt)
-		resolver := s.opts.Resolver
-		if resolver == nil {
-			resolver = &mailbox.Resolver{}
+		userInfo := s.rcptUserInfo[rcpt]
+		if userInfo == nil {
+			resolver := s.opts.Resolver
+			if resolver == nil {
+				resolver = &mailbox.Resolver{}
+			}
+			userInfo = resolver.UserInfo(username, "")
 		}
-		userInfo := resolver.UserInfo(username, "")
 
 		if s.opts.QuotaDict != nil {
 			lim := quota.ParseRules(userInfo.QuotaRules)
@@ -463,6 +495,7 @@ func (s *session) Reset() {
 	s.from = ""
 	s.rcpts = nil
 	s.proxyRcpts = nil
+	s.rcptUserInfo = nil
 }
 
 func (s *session) Logout() error {

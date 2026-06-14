@@ -15,7 +15,6 @@ import (
 
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/client"
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
@@ -30,6 +29,7 @@ import (
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
+	authclient "github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -321,16 +321,26 @@ func New(cfg *config.Config) (*Server, error) {
 			AnvilAddr:          cfg.AnvilService.ClientAddr(),
 		}
 		if addr := cfg.AuthService.MasterAddr; addr != "" {
-			ac, err := client.Dial(addr, nil)
+			ac, err := authclient.Dial(addr, nil)
 			if err != nil {
 				return nil, fmt.Errorf("backend: lmtp userdb dial %s: %w", addr, err)
 			}
-			lmtpOpts.UserChecker = func(ctx context.Context, username string) (bool, error) {
-				ok, err := ac.LookupUser(username)
+			lmtpResolver := lmtpOpts.Resolver
+			if lmtpResolver == nil {
+				lmtpResolver = &mailbox.Resolver{}
+			}
+			lmtpOpts.UserdbLookup = func(ctx context.Context, username string) (*mailbox.UserInfo, error) {
+				ui, err := ac.Userdb(ctx, username)
 				if err != nil {
-					return false, err
+					return nil, err
 				}
-				return ok, nil
+				if ui == nil {
+					return nil, nil
+				}
+				mbi := lmtpResolver.UserInfo(username, ui.Home)
+				mbi.Groups = ui.Groups
+				mbi.QuotaRules = ui.QuotaRules
+				return mbi, nil
 			}
 		}
 		lmtpServer = lmtp.New(lmtpOpts)
