@@ -119,8 +119,9 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.Storage.MailHomeTemplate = "%d/%n"
 	}
 	resolver := &mailbox.Resolver{
-		Root:         cfg.Storage.MaildirRoot,
-		HomeTemplate: cfg.Storage.MailHomeTemplate,
+		Root:               cfg.Storage.MaildirRoot,
+		HomeTemplate:       cfg.Storage.MailHomeTemplate,
+		DefaultVolatileDir: cfg.Storage.VolatileDir,
 	}
 	locker, err := buildLocksClient(cfg)
 	if err != nil {
@@ -334,6 +335,10 @@ func New(cfg *config.Config) (*Server, error) {
 				mbi := lmtpResolver.UserInfo(username, ui.Home)
 				mbi.Groups = ui.Groups
 				mbi.QuotaRules = ui.QuotaRules
+				if ui.VolatileDir != "" {
+					vd := strings.ReplaceAll(ui.VolatileDir, "%h", mbi.Home)
+					mbi.VolatileDir = mailbox.ExpandVars(vd, username)
+				}
 				return mbi, nil
 			}
 		}

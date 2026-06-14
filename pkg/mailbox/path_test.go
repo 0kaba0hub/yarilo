@@ -110,3 +110,60 @@ func TestParseLocation(t *testing.T) {
 		})
 	}
 }
+
+func TestParseMailLocationMods(t *testing.T) {
+	cases := []struct {
+		name string
+		loc  string
+		want map[string]string
+	}{
+		{"no modifiers", "maildir:~/Maildir", nil},
+		{"driver only", "maildir", nil},
+		{"VOLATILEDIR", "maildir:~/Maildir:VOLATILEDIR=/tmp/v/%u", map[string]string{"VOLATILEDIR": "/tmp/v/%u"}},
+		{"multiple mods", "maildir:~/Maildir:VOLATILEDIR=/tmp/v:INDEX=/tmp/idx", map[string]string{"VOLATILEDIR": "/tmp/v", "INDEX": "/tmp/idx"}},
+		{"lowercase key normalised", "maildir:~/Maildir:volatiledir=/tmp/v", map[string]string{"VOLATILEDIR": "/tmp/v"}},
+		{"mod without value skipped", "maildir:~/Maildir:NOVALUE", map[string]string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseMailLocationMods(tc.loc)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			for k, wantV := range tc.want {
+				if gotV, ok := got[k]; !ok || gotV != wantV {
+					t.Errorf("mod[%q]: got %q (ok=%v), want %q", k, gotV, ok, wantV)
+				}
+			}
+		})
+	}
+}
+
+func TestResolverDefaultVolatileDir(t *testing.T) {
+	r := &Resolver{
+		Root:               "/mail",
+		HomeTemplate:       "%d/%n",
+		DefaultVolatileDir: "/run/volatile/%d/%n",
+	}
+	ui := r.UserInfo("alice@example.com", "")
+	want := "/run/volatile/example.com/alice"
+	if ui.VolatileDir != want {
+		t.Errorf("VolatileDir = %q, want %q", ui.VolatileDir, want)
+	}
+}
+
+func TestResolverDefaultVolatileDirWithHome(t *testing.T) {
+	r := &Resolver{
+		Root:               "/mail",
+		HomeTemplate:       "%d/%n",
+		DefaultVolatileDir: "/run/volatile/%h",
+	}
+	ui := r.UserInfo("bob@test.com", "")
+	want := "/run/volatile/" + ui.Home
+	if ui.VolatileDir != want {
+		t.Errorf("VolatileDir = %q, want %q", ui.VolatileDir, want)
+	}
+}

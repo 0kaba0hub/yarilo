@@ -143,6 +143,7 @@ components:
       imap:
         enabled: true
     storage:
+      volatileDir: "/tmp/yarilo-volatile/%d/%n"
       persistence:
         enabled: true
         accessMode: ReadWriteOnce

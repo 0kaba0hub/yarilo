@@ -26,6 +26,13 @@ type UserInfo struct {
 	// template expanded against the username. See Resolver.
 	Home string
 
+	// VolatileDir, when non-empty, redirects volatile index artefacts
+	// (Recreate tmp files) to a local path instead of the NFS-backed
+	// index directory. Mirrors Dovecot's VOLATILEDIR mail-location
+	// modifier. Template vars (%u/%n/%d/%h) are already expanded by the
+	// time this field is populated.
+	VolatileDir string
+
 	// Groups is the list of supplementary groups the user belongs to,
 	// sourced from the userdb `groups=` extra field (comma-separated).
 	// ACL evaluation matches these against `group=<name>` and
@@ -85,6 +92,13 @@ type Resolver struct {
 	// Resolver when the userdb lookup provides no per-user override.
 	// Mirrors Dovecot's quota_rule setting at the global level.
 	DefaultQuotaRules []string
+
+	// DefaultVolatileDir is the cluster-wide VOLATILEDIR template applied
+	// when no per-user override arrives from userdb. Supports the same
+	// %u/%n/%d/%h variables as HomeTemplate. Empty disables volatile dir
+	// (default). Mirrors Dovecot's VOLATILEDIR mail-location modifier at
+	// the global config level.
+	DefaultVolatileDir string
 }
 
 // Resolve returns the absolute home directory for a user. An empty
@@ -105,13 +119,40 @@ func (r *Resolver) Resolve(username, homeOverride string) string {
 }
 
 // UserInfo builds a fully-resolved UserInfo by running Resolve against the
-// supplied username + userdb override.
+// supplied username + userdb override. DefaultVolatileDir (if set) is
+// expanded with %u/%n/%d/%h variables and stored in VolatileDir; per-user
+// overrides can overwrite this field after the call returns.
 func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
-	return &UserInfo{
+	home := r.Resolve(username, homeOverride)
+	ui := &UserInfo{
 		Username:   username,
-		Home:       r.Resolve(username, homeOverride),
+		Home:       home,
 		QuotaRules: r.DefaultQuotaRules,
 	}
+	if r.DefaultVolatileDir != "" {
+		vd := strings.ReplaceAll(r.DefaultVolatileDir, "%h", home)
+		ui.VolatileDir = ExpandVars(vd, username)
+	}
+	return ui
+}
+
+// ParseMailLocationMods parses the modifier section of a Dovecot mail
+// location string of the form "driver:path:KEY1=v1:KEY2=v2". Returns a
+// map of uppercase modifier keys to their raw (unexpanded) values.
+// Returns nil when the string has fewer than three colon-separated segments
+// (i.e. no modifiers present).
+func ParseMailLocationMods(loc string) map[string]string {
+	parts := strings.Split(loc, ":")
+	if len(parts) < 3 {
+		return nil
+	}
+	mods := make(map[string]string, len(parts)-2)
+	for _, p := range parts[2:] {
+		if eq := strings.IndexByte(p, '='); eq >= 0 {
+			mods[strings.ToUpper(p[:eq])] = p[eq+1:]
+		}
+	}
+	return mods
 }
 
 // ExpandVars rewrites Dovecot %-variables against a username.

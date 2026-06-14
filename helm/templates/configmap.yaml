@@ -280,6 +280,9 @@ data:
       mail_home_template: {{ $storage.mailHomeTemplate | quote }}
       index: {{ $storage.index | quote }}
       index_dir: ""
+      {{- if $storage.volatileDir }}
+      volatile_dir: {{ $storage.volatileDir | quote }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.dicts }}

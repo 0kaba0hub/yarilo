@@ -829,6 +829,14 @@ type StorageConfig struct {
 	// storage (default). Mirrors Dovecot's mail_alt_path setting.
 	// Example: /mnt/cold/%d/%n
 	MdboxAltStoragePath string `koanf:"mdbox_alt_storage_path"`
+
+	// VolatileDir is the cluster-wide VOLATILEDIR template. When set,
+	// the fileindex Recreate tmp file is written here (typically a
+	// local tmpfs) and then copied to NFS, keeping the expensive fsync
+	// off the NFS path. Supports %u/%n/%d/%h template variables.
+	// Mirrors Dovecot's VOLATILEDIR mail-location modifier.
+	// Example: /run/yarilo-volatile/%d/%n
+	VolatileDir string `koanf:"volatile_dir"`
 }
 
 type TelemetryConfig struct {

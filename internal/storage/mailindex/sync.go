@@ -3,6 +3,7 @@ package mailindex
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -48,6 +49,12 @@ type RecreateInput struct {
 	Records    []*Record
 	KeepBackup bool
 	Fsync      bool
+	// TmpDir, when non-empty, redirects the write-side tmp file to a
+	// separate directory (e.g. a local tmpfs). The fsync cost then
+	// lands on local storage instead of NFS. After the tmp is closed
+	// the file is copied to a staging path next to the target and
+	// renamed into place atomically — no cross-device rename occurs.
+	TmpDir string
 }
 
 // Recreate writes the base index file at Path atomically: open
@@ -86,7 +93,12 @@ func Recreate(in RecreateInput) (backupPath string, err error) {
 			in.Header.HeaderSize, expectedHeaderSize, ErrCorrupted)
 	}
 
-	tmpPath := fmt.Sprintf("%s.tmp.%d.%d", in.Path, os.Getpid(), tmpSeq.Add(1))
+	var tmpPath string
+	if in.TmpDir != "" {
+		tmpPath = filepath.Join(in.TmpDir, filepath.Base(in.Path)+fmt.Sprintf(".tmp.%d.%d", os.Getpid(), tmpSeq.Add(1)))
+	} else {
+		tmpPath = fmt.Sprintf("%s.tmp.%d.%d", in.Path, os.Getpid(), tmpSeq.Add(1))
+	}
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("mailindex/recreate: open tmp: %w", err)
@@ -132,22 +144,56 @@ func Recreate(in RecreateInput) (backupPath string, err error) {
 		return "", fmt.Errorf("mailindex/recreate: close: %w", err)
 	}
 
+	// When TmpDir is set the tmp lives on a different filesystem; copy it
+	// to a staging path next to the target so the final rename is atomic
+	// and same-device.
+	commitPath := tmpPath
+	if in.TmpDir != "" {
+		stagePath := fmt.Sprintf("%s.stage.%d.%d", in.Path, os.Getpid(), tmpSeq.Add(1))
+		if err := copyTmp(tmpPath, stagePath); err != nil {
+			_ = os.Remove(tmpPath)
+			return "", fmt.Errorf("mailindex/recreate: cross-device stage: %w", err)
+		}
+		_ = os.Remove(tmpPath)
+		commitPath = stagePath
+	}
+
 	if in.KeepBackup {
 		backupPath = in.Path + ".backup"
 		// Remove a stale backup so Link doesn't fail with EEXIST.
 		_ = os.Remove(backupPath)
 		if _, statErr := os.Stat(in.Path); statErr == nil {
 			if err := os.Link(in.Path, backupPath); err != nil {
-				_ = os.Remove(tmpPath)
+				_ = os.Remove(commitPath)
 				return "", fmt.Errorf("mailindex/recreate: hardlink backup: %w", err)
 			}
 		}
 	}
-	if err := os.Rename(tmpPath, in.Path); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := os.Rename(commitPath, in.Path); err != nil {
+		_ = os.Remove(commitPath)
 		return "", fmt.Errorf("mailindex/recreate: rename: %w", err)
 	}
 	return backupPath, nil
+}
+
+// copyTmp copies src to dst with mode 0o600. Used when the tmp file lives on
+// a different filesystem than the target and os.Rename would fail with EXDEV.
+func copyTmp(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	return out.Close()
 }
 
 // SyncLockKey returns the locks resource key for a given index
