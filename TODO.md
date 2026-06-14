@@ -8,25 +8,27 @@ Items get removed only when the corresponding work merges to `main`.
 
 ---
 
-## yarilo-sasl-login — окремий зовнішній бінар для SASL
+## yarilo-sasl-login — Dovecot SASL proxy for Postfix
 
-Сьогодні `yarilo-imap-login` та `yarilo-pop3-login` мають прямий доступ до
-Unix-сокету `yarilo-auth` і самостійно ведуть SASL-переговори. Це порушує
-принцип мінімального доступу: TLS-термінатор не повинен знати нічого про
-внутрішній auth-сокет.
+Postfix supports delegating SMTP AUTH to a Dovecot SASL service
+(`smtpd_sasl_type = dovecot`, `smtpd_sasl_path = private/auth`). This lets
+Postfix authenticate submission clients via yarilo-auth without direct access
+to the internal auth socket.
 
-Завдання: виділити SASL-переговори в окремий бінар `yarilo-sasl-login`, який:
+Implement `yarilo-sasl-login` — a dedicated binary that:
 
-- є єдиним зовнішнім процесом, що має доступ до `yarilo-auth`;
-- приймає підключення від login-процесів через внутрішній протокол
-  (аналогічно до того, як `yarilo-imap-login` вже передає fd до `yarilo-imap`
-  через SCM_RIGHTS);
-- повертає login-процесу лише результат аутентифікації (`OK` / `FAIL` +
-  `UserInfo`), не відкриваючи сокет `yarilo-auth` назовні.
+- implements the Dovecot SASL client protocol (Unix socket or TCP, equivalent
+  to Dovecot's `service auth { socket listen { client { ... } } }`);
+- receives AUTH requests from Postfix and proxies them to `yarilo-auth`;
+- returns only `OK` / `FAIL` to Postfix — Postfix has no visibility into the
+  yarilo-auth socket.
 
-Login-процеси (`yarilo-imap-login`, `yarilo-pop3-login`, майбутній
-`yarilo-submission-login`) стають «сліпими» до auth — вони знають лише адресу
-`yarilo-sasl-login`.
+`auth_service.sasl_listen` config field already exists in
+`pkg/config/config.go` (`SASLListen`) but is not wired to any binary.
+
+Helm: new Deployment `yarilo-sasl-login` + `components.saslLogin` section in
+`values.yaml`. Unix socket mode: mounted in the same PV as Postfix. TCP mode:
+for k8s deployments where Postfix runs as a separate pod.
 
 ---
 
@@ -35,20 +37,19 @@ Login-процеси (`yarilo-imap-login`, `yarilo-pop3-login`, майбутні
 `yarilo-quota-status` (Postfix policy service, port 12340) is implemented and
 deployed. Currently it enforces only `defaultQuotaRules` — cluster-wide limits
 applied to every recipient. Per-user limits (individual `quota_rule` values
-stored in userdb) are not yet wired in.
+stored in userdb) are not yet wired in (`internal/quotastatus/server.go:27`).
 
-Pending (`internal/quotastatus/server.go:27`):
+Remaining work:
 
-- Wire `pkg/authclient` master-protocol into `yarilo-quota-status` so it can
-  call userdb `USER` lookup for the recipient address.
-- Replace (or supplement) `defaultQuotaRules` with per-user `quota_rule` from
-  the `AuthResponse.Fields` bag (`quota_rule` reserved field, already parsed
-  by AUTH-2).
-- Expose `quotaStatus.authAddr` in `helm/values.yaml` + `quotaStatus.yaml`
-  config section so the service knows where `yarilo-auth` master socket is.
+- Wire `pkg/authclient` master protocol into `yarilo-quota-status` to call a
+  userdb `USER` lookup for the recipient address.
+- Replace (or supplement) `defaultQuotaRules` with the per-user `quota_rule`
+  field from `AuthResponse.Fields` (reserved field, already parsed by AUTH-2).
+- Expose `quotaStatus.authAddr` / `quotaStatus.masterAddr` in `helm/values.yaml`
+  and the `quotaStatus` config section.
 
-Blocked on: nothing new — AUTH-1 (master protocol + userdb) is already
-implemented; this is purely wiring it into quota-status.
+Not blocked — AUTH-1 master protocol and userdb are already implemented; this
+is purely wiring them into `yarilo-quota-status`.
 
 ---
 
