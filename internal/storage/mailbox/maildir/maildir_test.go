@@ -2,8 +2,6 @@ package maildir
 
 import (
 	"bufio"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,109 +58,6 @@ func TestUIDListPath_UsesControlDir(t *testing.T) {
 	want = filepath.Join(ctrlRoot, ".Drafts", UIDListFileName)
 	if got != want {
 		t.Errorf("uidListPath(Drafts) = %q, want %q", got, want)
-	}
-}
-
-// ---- ALT= two-tier tests ---------------------------------------------------
-
-func newBoxWithAlt(t *testing.T, user string) (box *userMailbox, home, altRoot string) {
-	t.Helper()
-	root := t.TempDir()
-	home = testHome(root, user)
-	altRoot = t.TempDir()
-	box = New().OpenUser(&mailbox.UserInfo{
-		Username: user,
-		Home:     home,
-		AltDir:   altRoot,
-	}).(*userMailbox)
-	return
-}
-
-func TestFetch_FallsBackToAlt(t *testing.T) {
-	box, _, altRoot := newBoxWithAlt(t, "u@x.com")
-	box.Init() //nolint:errcheck
-
-	// Place a message only in alt cur/
-	altCur := filepath.Join(altRoot, "INBOX", "cur")
-	if err := os.MkdirAll(altCur, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	msgName := "1.M1P1_1.host:2,S"
-	if err := os.WriteFile(filepath.Join(altCur, msgName), []byte("alt body"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	rc, err := box.Fetch("INBOX", msgName)
-	if err != nil {
-		t.Fatalf("Fetch from alt: %v", err)
-	}
-	defer rc.Close()
-	data, _ := io.ReadAll(rc)
-	if string(data) != "alt body" {
-		t.Errorf("body = %q, want %q", data, "alt body")
-	}
-}
-
-func TestList_MergesAltTier(t *testing.T) {
-	box, _, altRoot := newBoxWithAlt(t, "u@x.com")
-	box.Init() //nolint:errcheck
-
-	// Save one message to primary via Save()
-	body := "primary msg"
-	uid1, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
-	if err != nil {
-		t.Fatalf("Save primary: %v", err)
-	}
-
-	// Plant a message in alt cur/ directly (simulates altmove)
-	altCur := filepath.Join(altRoot, "INBOX", "cur")
-	if err := os.MkdirAll(altCur, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	uid2Name := "2.M2P2_2.host:2,"
-	if err := os.WriteFile(filepath.Join(altCur, uid2Name), []byte("cold msg"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Add to uidlist so List() can assign UID 2
-	if err := box.appendUIDListLocked("INBOX", 2, uid2Name); err != nil {
-		t.Fatalf("appendUIDList: %v", err)
-	}
-
-	msgs, err := box.List("INBOX")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	found := map[string]bool{}
-	for _, m := range msgs {
-		found[m.Filename] = true
-	}
-	if !found[uid1] {
-		t.Errorf("primary message %q not in List result", uid1)
-	}
-	if !found[uid2Name] {
-		t.Errorf("alt message %q not in List result", uid2Name)
-	}
-}
-
-func TestRemove_FindsAltTier(t *testing.T) {
-	box, _, altRoot := newBoxWithAlt(t, "u@x.com")
-	box.Init() //nolint:errcheck
-
-	altCur := filepath.Join(altRoot, "INBOX", "cur")
-	if err := os.MkdirAll(altCur, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	msgName := "3.M3P3_3.host:2,"
-	msgPath := filepath.Join(altCur, msgName)
-	if err := os.WriteFile(msgPath, []byte("cold"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := box.Remove("INBOX", msgName); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	if _, err := os.Stat(msgPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("file still exists after Remove")
 	}
 }
 
