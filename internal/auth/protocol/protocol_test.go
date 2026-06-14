@@ -450,7 +450,7 @@ func TestListenAndServe_Handshake(t *testing.T) {
 
 	sc := bufio.NewScanner(conn)
 	hs := readHandshake(t, sc)
-	if !strings.Contains(hs, "VERSION\tyarilo-auth") {
+	if !strings.Contains(hs, "VERSION\t1\t") {
 		t.Errorf("missing VERSION line in handshake: %q", hs)
 	}
 	if !strings.Contains(hs, "DONE") {
