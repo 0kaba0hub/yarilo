@@ -77,17 +77,17 @@ func main() {
 		if cfg.InternalTLS.Enabled {
 			authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
 			if err != nil {
-				slog.Error("quota-status: auth mtls config failed", "err", err)
+				slog.Error("auth mtls config failed", "err", err)
 				os.Exit(1)
 			}
 		}
 		authcl, err = authclient.Dial(qs.AuthMasterAddr, authTLS)
 		if err != nil {
-			slog.Error("quota-status: authclient dial failed", "addr", qs.AuthMasterAddr, "err", err)
+			slog.Error("authclient dial failed", "addr", qs.AuthMasterAddr, "err", err)
 			os.Exit(1)
 		}
 		defer func() { _ = authcl.Close() }()
-		slog.Info("quota-status: authclient connected", "addr", qs.AuthMasterAddr)
+		slog.Info("authclient connected", "addr", qs.AuthMasterAddr)
 	}
 
 	srv := quotastatus.New(quotastatus.Options{
@@ -115,6 +115,7 @@ func main() {
 		"alias_dict_configured", aliasDict != nil,
 		"alias_max_hops", qs.AliasMaxHops,
 		"default_rules", qs.DefaultQuotaRules,
+		"per_user_rules_configured", authcl != nil,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
