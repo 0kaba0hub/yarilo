@@ -67,6 +67,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		b:          b,
 		home:       u.Home,
 		controlDir: u.ControlDir,
+		altDir:     u.AltDir,
 		username:   u.Username,
 		owner:      makeOwner(u),
 	}
@@ -77,6 +78,7 @@ type userMailbox struct {
 	b          *Backend
 	home       string
 	controlDir string // CONTROL= override root (empty = co-located with home)
+	altDir     string // ALT= cold-tier root (empty = single-tier)
 	username   string
 	owner      string     // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
 	mu         sync.Mutex // in-process fast-path; cross-process barrier is b.locker
@@ -299,6 +301,15 @@ func (c *sizeCounter) Write(p []byte) (int, error) {
 func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
 	p := filepath.Join(u.folderPath(folder), "cur", filename)
 	f, err := os.Open(p)
+	if err == nil {
+		return f, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) || u.altDir == "" {
+		return nil, fmt.Errorf("maildir: fetch %s: %w", filename, err)
+	}
+	// primary miss — try alt tier
+	p = filepath.Join(u.altFolderPath(folder), "cur", filename)
+	f, err = os.Open(p)
 	if err != nil {
 		return nil, fmt.Errorf("maildir: fetch %s: %w", filename, err)
 	}
@@ -308,14 +319,24 @@ func (u *userMailbox) Fetch(folder, filename string) (io.ReadCloser, error) {
 func (u *userMailbox) Remove(folder, filename string) error {
 	p := filepath.Join(u.folderPath(folder), "cur", filename)
 	err := os.Remove(p)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if u.altDir == "" {
+		return nil
+	}
+	// not in primary — try alt tier
+	p = filepath.Join(u.altFolderPath(folder), "cur", filename)
+	err = os.Remove(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return err
 }
 
-func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
-	dir := filepath.Join(u.folderPath(folder), "cur")
+// listCurEntries reads the cur/ directory of a folder path and returns
+// message metadata keyed by filename. Returns nil on ErrNotExist.
+func listCurEntries(dir string) (map[string]*mailbox.MessageMeta, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -323,13 +344,7 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 		}
 		return nil, err
 	}
-
-	uidMap, err := u.readUIDList(folder)
-	if err != nil {
-		return nil, err
-	}
-
-	var msgs []*mailbox.MessageMeta
+	m := make(map[string]*mailbox.MessageMeta, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -346,15 +361,48 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 				sz = uint32(info.Size())
 			}
 		}
-		uid := uidMap[name]
-		msgs = append(msgs, &mailbox.MessageMeta{
-			UID:      uid,
+		m[name] = &mailbox.MessageMeta{
 			Filename: name,
 			Flags:    flags,
 			Keywords: keywords,
 			Size:     sz,
 			VSize:    virt,
-		})
+		}
+	}
+	return m, nil
+}
+
+func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
+	primary, err := listCurEntries(filepath.Join(u.folderPath(folder), "cur"))
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge alt-tier entries; primary takes precedence on name collision.
+	if u.altDir != "" {
+		alt, err := listCurEntries(filepath.Join(u.altFolderPath(folder), "cur"))
+		if err != nil {
+			return nil, err
+		}
+		for name, meta := range alt {
+			if _, exists := primary[name]; !exists {
+				if primary == nil {
+					primary = make(map[string]*mailbox.MessageMeta)
+				}
+				primary[name] = meta
+			}
+		}
+	}
+
+	uidMap, err := u.readUIDList(folder)
+	if err != nil {
+		return nil, err
+	}
+
+	msgs := make([]*mailbox.MessageMeta, 0, len(primary))
+	for name, meta := range primary {
+		meta.UID = uidMap[name]
+		msgs = append(msgs, meta)
 	}
 	sort.Slice(msgs, func(i, j int) bool {
 		return msgs[i].UID < msgs[j].UID
@@ -364,24 +412,40 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 
 func (u *userMailbox) FolderExists(folder string) (bool, error) {
 	_, err := os.Stat(u.folderPath(folder))
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if u.altDir == "" {
+		return false, nil
+	}
+	_, err = os.Stat(u.altFolderPath(folder))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-func (u *userMailbox) ListFolders() ([]string, error) {
-	entries, err := os.ReadDir(u.home)
+// collectFolderNames scans a maildir root and returns the folder
+// names it contains (INBOX included). Returns nil on ErrNotExist.
+func collectFolderNames(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	folders := []string{"INBOX"}
+	var folders []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		name := e.Name()
 		if name == "INBOX" {
+			folders = append(folders, "INBOX")
 			continue
 		}
 		if strings.HasPrefix(name, ".") {
@@ -389,6 +453,42 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 		}
 	}
 	return folders, nil
+}
+
+func (u *userMailbox) ListFolders() ([]string, error) {
+	primary, err := collectFolderNames(u.home)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool, len(primary)+1)
+	result := make([]string, 0, len(primary)+1)
+	// INBOX always present first
+	seen["INBOX"] = true
+	result = append(result, "INBOX")
+	for _, f := range primary {
+		if f == "INBOX" {
+			continue
+		}
+		if !seen[f] {
+			seen[f] = true
+			result = append(result, f)
+		}
+	}
+
+	if u.altDir != "" {
+		alt, err := collectFolderNames(u.altDir)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range alt {
+			if !seen[f] {
+				seen[f] = true
+				result = append(result, f)
+			}
+		}
+	}
+	return result, nil
 }
 
 // Scan walks the on-disk maildir for folder and returns one
@@ -401,46 +501,57 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 // Caller (rebuild flow) is responsible for preserving the index's
 // GUID assignment for filenames it matches against the old index.
 func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
+	roots := []string{u.folderPath(folder)}
+	if u.altDir != "" {
+		roots = append(roots, u.altFolderPath(folder))
+	}
+	seen := make(map[string]bool)
 	out := make([]mailbox.ScanRecord, 0, 128)
-	for _, sub := range []string{"cur", "new"} {
-		dir := filepath.Join(u.folderPath(folder), sub)
-		entries, err := os.ReadDir(dir)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("maildir/scan: read %s: %w", dir, err)
-		}
-		for _, e := range entries {
-			if e.IsDir() {
+	for _, root := range roots {
+		for _, sub := range []string{"cur", "new"} {
+			dir := filepath.Join(root, sub)
+			entries, err := os.ReadDir(dir)
+			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			name := e.Name()
-			flags, keywords := decodeFlags(name)
-			phys, virt, hasPhys, _ := parseSizeInfo(name)
-			info, statErr := e.Info()
-			var sz uint32
-			var mtime time.Time
-			switch {
-			case hasPhys:
-				sz = phys
-			case statErr == nil:
-				sz = uint32(info.Size())
+			if err != nil {
+				return nil, fmt.Errorf("maildir/scan: read %s: %w", dir, err)
 			}
-			if statErr == nil {
-				mtime = info.ModTime()
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if seen[name] {
+					continue // primary takes precedence
+				}
+				seen[name] = true
+				flags, keywords := decodeFlags(name)
+				phys, virt, hasPhys, _ := parseSizeInfo(name)
+				info, statErr := e.Info()
+				var sz uint32
+				var mtime time.Time
+				switch {
+				case hasPhys:
+					sz = phys
+				case statErr == nil:
+					sz = uint32(info.Size())
+				}
+				if statErr == nil {
+					mtime = info.ModTime()
+				}
+				rec := mailbox.ScanRecord{
+					Filename:     name,
+					Size:         sz,
+					VSize:        virt,
+					InternalDate: mtime,
+					Flags:        append([]string(nil), flags...),
+				}
+				if len(keywords) > 0 {
+					rec.Flags = append(rec.Flags, keywords...)
+				}
+				out = append(out, rec)
 			}
-			rec := mailbox.ScanRecord{
-				Filename:     name,
-				Size:         sz,
-				VSize:        virt,
-				InternalDate: mtime,
-				Flags:        append([]string(nil), flags...),
-			}
-			if len(keywords) > 0 {
-				rec.Flags = append(rec.Flags, keywords...)
-			}
-			out = append(out, rec)
 		}
 	}
 	return out, nil
@@ -542,6 +653,15 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 		return filepath.Join(root, "INBOX")
 	}
 	return filepath.Join(root, "."+folder)
+}
+
+// altFolderPath returns the cold-tier directory for a folder under altDir.
+// Mirrors the same naming convention as folderPath.
+func (u *userMailbox) altFolderPath(folder string) string {
+	if folder == "INBOX" {
+		return filepath.Join(u.altDir, "INBOX")
+	}
+	return filepath.Join(u.altDir, "."+folder)
 }
 
 // ---- flag helpers ----------------------------------------------------------

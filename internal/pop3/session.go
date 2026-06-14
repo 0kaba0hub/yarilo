@@ -559,6 +559,10 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 		cd := strings.ReplaceAll(res.ControlDir, "%h", userInfo.Home)
 		userInfo.ControlDir = mailbox.ExpandVars(cd, res.Username)
 	}
+	if res.AltDir != "" {
+		ad := strings.ReplaceAll(res.AltDir, "%h", userInfo.Home)
+		userInfo.AltDir = mailbox.ExpandVars(ad, res.Username)
+	}
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := s.remoteIP.String()

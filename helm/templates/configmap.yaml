@@ -288,6 +288,9 @@ data:
       {{- if $storage.volatileDir }}
       volatile_dir: {{ $storage.volatileDir | quote }}
       {{- end }}
+      {{- if $storage.altDir }}
+      alt_dir: {{ $storage.altDir | quote }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.dicts }}
