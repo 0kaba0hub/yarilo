@@ -104,6 +104,9 @@ type Options struct {
 	// DisablePlainAuth suppresses PLAIN and LOGIN from pre-TLS capability
 	// advertisements. After STARTTLS/implicit-TLS they are always offered.
 	DisablePlainAuth bool
+	// SieveExtensions is the space-joined list of supported Sieve extensions
+	// advertised in the ManageSieve SIEVE capability line.
+	SieveExtensions string
 
 	// HAProxy enables PROXY protocol v1/v2 header reading from trusted upstreams.
 	HAProxy        bool
