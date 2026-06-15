@@ -25,6 +25,9 @@ func manageSieveGreeting(conn net.Conn, extTLS *tls.Config, opts Options) error 
 			return err
 		}
 	}
+	if _, err := fmt.Fprintf(conn, "%q %q\r\n", "NOTIFY", "mailto"); err != nil {
+		return err
+	}
 	if mechs != "" {
 		if _, err := fmt.Fprintf(conn, "%q %q\r\n", "SASL", mechs); err != nil {
 			return err
@@ -53,10 +56,19 @@ func extractManageSievePreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Con
 }
 
 func manageSieveCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
+	maxInvalid := opts.SieveMaxInvalidCmds
+	if maxInvalid <= 0 {
+		maxInvalid = 3
+	}
+	invalidCmds := 0
 	for {
 		cmd, err := msReadAtom(rd)
 		if err != nil {
 			return nil, conn, rd, fmt.Errorf("managesieve: read command: %w", err)
+		}
+		if cmd == "" {
+			msSkipLine(rd)
+			continue
 		}
 		switch strings.ToUpper(cmd) {
 		case "CAPABILITY":
@@ -99,6 +111,11 @@ func manageSieveCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config,
 			return nil, conn, rd, fmt.Errorf("managesieve: client logged out before auth")
 		default:
 			msSkipLine(rd)
+			invalidCmds++
+			if invalidCmds >= maxInvalid {
+				fmt.Fprintf(conn, "BYE \"Too many invalid MANAGESIEVE commands.\"\r\n") //nolint:errcheck
+				return nil, conn, rd, fmt.Errorf("managesieve: too many invalid commands")
+			}
 			fmt.Fprintf(conn, "NO \"Unknown command: %s\"\r\n", cmd) //nolint:errcheck
 		}
 	}

@@ -157,6 +157,7 @@ data:
           command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
       managesieve:
         max_script_size: {{ (.Values.protocol.managesieve | default dict).maxScriptSize | default 65536 }}
+        max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).maxInvalidCommands | default 3 }}
 
     sieve:
       {{- $sieve := (.Values.sieve | default dict) }}

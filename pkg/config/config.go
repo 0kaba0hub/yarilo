@@ -541,6 +541,9 @@ type ManageSieveProtocolConfig struct {
 	// MaxScriptSize is the maximum size in bytes of a single Sieve script.
 	// Default: 65536.
 	MaxScriptSize int `koanf:"max_script_size"`
+	// MaxInvalidCommands is the number of unrecognised pre-auth commands
+	// after which the server sends BYE and closes the connection. Default: 3.
+	MaxInvalidCommands int `koanf:"max_invalid_commands"`
 }
 
 // LMTPLoginServiceConfig configures the yarilo-lmtp-login proxy.

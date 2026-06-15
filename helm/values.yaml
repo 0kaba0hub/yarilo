@@ -940,6 +940,7 @@ protocol:
 
   managesieve:
     maxScriptSize: 65536
+    maxInvalidCommands: 3
 
 ## -------------------------------------------------------------------
 ## Sieve mail filtering

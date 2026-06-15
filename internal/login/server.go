@@ -107,6 +107,9 @@ type Options struct {
 	// SieveExtensions is the space-joined list of supported Sieve extensions
 	// advertised in the ManageSieve SIEVE capability line.
 	SieveExtensions string
+	// SieveMaxInvalidCmds is the number of unrecognised pre-auth commands
+	// after which the server disconnects with BYE.
+	SieveMaxInvalidCmds int
 
 	// HAProxy enables PROXY protocol v1/v2 header reading from trusted upstreams.
 	HAProxy        bool
