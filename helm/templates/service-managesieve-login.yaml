@@ -1,4 +1,4 @@
-{{- if .Values.components.manageSieveLogin.enabled }}
+{{- if ((.Values.components.manageSieveLogin | default dict).enabled) }}
 ## ClusterIP — ManageSieve connections from mail clients (port 4190, STARTTLS).
 apiVersion: v1
 kind: Service
