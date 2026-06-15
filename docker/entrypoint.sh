@@ -53,13 +53,20 @@ case "$YARILO_COMPONENT" in
   yarilo-sasl-login)
     exec /usr/local/bin/yarilo-sasl-login
     ;;
+  yarilo-managesieve)
+    exec /usr/local/bin/yarilo-managesieve
+    ;;
+  yarilo-managesieve-login)
+    exec /usr/local/bin/yarilo-managesieve-login
+    ;;
   *)
     echo "Unknown YARILO_COMPONENT: '${YARILO_COMPONENT}'"
     echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-backend-api, yarilo-locks, yarilo-director,"
     echo "           yarilo-imap, yarilo-imap-login,"
     echo "           yarilo-pop3, yarilo-pop3-login,"
     echo "           yarilo-lmtp, yarilo-lmtp-login, yarilo-submission, yarilo-submission-login,"
-    echo "           yarilo-migrate, yarilo-quota-status, yarilo-sasl-login"
+    echo "           yarilo-migrate, yarilo-quota-status, yarilo-sasl-login,"
+    echo "           yarilo-managesieve, yarilo-managesieve-login"
     exit 1
     ;;
 esac
