@@ -3,6 +3,7 @@ package login
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -14,10 +15,15 @@ import (
 func manageSieveGreeting(conn net.Conn, extTLS *tls.Config, opts Options) error {
 	var mechs string
 	if !opts.DisablePlainAuth || extTLS == nil {
-		mechs = "PLAIN"
+		mechs = "PLAIN LOGIN"
 	}
 	if _, err := fmt.Fprintf(conn, "%q %q\r\n", "IMPLEMENTATION", "yarilo ManageSieve"); err != nil {
 		return err
+	}
+	if opts.SieveExtensions != "" {
+		if _, err := fmt.Fprintf(conn, "%q %q\r\n", "SIEVE", opts.SieveExtensions); err != nil {
+			return err
+		}
 	}
 	if mechs != "" {
 		if _, err := fmt.Fprintf(conn, "%q %q\r\n", "SASL", mechs); err != nil {
@@ -135,6 +141,8 @@ func msHandleAuthenticate(conn net.Conn, rd *bufio.Reader) (*preamble, error) {
 	switch mech {
 	case "PLAIN":
 		return msHandlePlain(conn, rd, initResp)
+	case "LOGIN":
+		return msHandleLogin(conn, rd)
 	default:
 		fmt.Fprintf(conn, "NO \"Unsupported mechanism.\"\r\n") //nolint:errcheck
 		return nil, nil
@@ -162,6 +170,39 @@ func msHandlePlain(conn net.Conn, rd *bufio.Reader, initResp []byte) (*preamble,
 		return nil, nil
 	}
 	return &preamble{username: username, password: password}, nil
+}
+
+func msHandleLogin(conn net.Conn, rd *bufio.Reader) (*preamble, error) {
+	// Challenge 1: username
+	if _, err := fmt.Fprintf(conn, "%q\r\n", base64.StdEncoding.EncodeToString([]byte("Username:"))); err != nil {
+		return nil, fmt.Errorf("managesieve: login challenge: %w", err)
+	}
+	userB64, err := msReadLastArg(rd, conn)
+	if err != nil {
+		fmt.Fprintf(conn, "NO \"Bad username.\"\r\n") //nolint:errcheck
+		return nil, nil
+	}
+	username, err := base64.StdEncoding.DecodeString(string(userB64))
+	if err != nil {
+		fmt.Fprintf(conn, "NO (AUTHENTICATIONFAILED) \"Invalid credentials.\"\r\n") //nolint:errcheck
+		return nil, nil
+	}
+
+	// Challenge 2: password
+	if _, err := fmt.Fprintf(conn, "%q\r\n", base64.StdEncoding.EncodeToString([]byte("Password:"))); err != nil {
+		return nil, fmt.Errorf("managesieve: login challenge: %w", err)
+	}
+	passB64, err := msReadLastArg(rd, conn)
+	if err != nil {
+		fmt.Fprintf(conn, "NO \"Bad password.\"\r\n") //nolint:errcheck
+		return nil, nil
+	}
+	password, err := base64.StdEncoding.DecodeString(string(passB64))
+	if err != nil {
+		fmt.Fprintf(conn, "NO (AUTHENTICATIONFAILED) \"Invalid credentials.\"\r\n") //nolint:errcheck
+		return nil, nil
+	}
+	return &preamble{username: string(username), password: string(password)}, nil
 }
 
 // msReadAtom reads a ManageSieve command token (up to whitespace or EOL).

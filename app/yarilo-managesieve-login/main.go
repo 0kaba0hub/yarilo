@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/internal/login"
+	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
@@ -96,6 +97,7 @@ func main() {
 		AuthTLS:          intTLS,
 		AuthMaxAttempts:  cfg.Auth.MaxAttempts,
 		DisablePlainAuth: svcs.ManageSieve.DisablePlainAuth,
+		SieveExtensions:  strings.Join(sieve.SupportedExtensions, " "),
 		AnvilAddr:        cfg.AnvilService.ClientAddr(),
 		AnvilTLS:         intTLS,
 		AnvilFailOpen:    cfg.AnvilService.FailOpen,
