@@ -50,6 +50,8 @@ func extractPreamble(conn net.Conn, rd *bufio.Reader, p Protocol, extTLS *tls.Co
 		return extractPOP3Preamble(conn, rd, extTLS, opts)
 	case ProtocolSubmission, ProtocolSubmissions:
 		return extractSubmissionPreamble(conn, rd, extTLS, opts)
+	case ProtocolManageSieve:
+		return extractManageSievePreamble(conn, rd, extTLS, opts)
 	default:
 		return nil, conn, rd, fmt.Errorf("preamble: unknown protocol %q", p)
 	}
@@ -339,6 +341,8 @@ func continueAuth(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, p Protoco
 		return imapCommandLoop(conn, rd, extTLS, opts)
 	case ProtocolPOP3, ProtocolPOP3S:
 		return pop3CommandLoop(conn, rd, extTLS, opts)
+	case ProtocolManageSieve:
+		return manageSieveCommandLoop(conn, rd, extTLS, opts)
 	default:
 		return nil, conn, rd, fmt.Errorf("login: continueAuth: non-retriable protocol %q", p)
 	}

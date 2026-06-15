@@ -1,0 +1,38 @@
+{{- if .Values.components.manageSieve.enabled }}
+## Headless — ManageSieve backend pods (internal, reached by the login pod).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-managesieve
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "managesieve") | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: managesieve
+      port: {{ .Values.components.manageSieve.listeners.managesieve.servicePort }}
+      targetPort: managesieve
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "managesieve") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-managesieve-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "managesieve") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "managesieve") | nindent 4 }}
+{{- end }}

@@ -45,6 +45,20 @@ services:
     enabled: true
     port: 24
     ssl_mode: "no"
+  managesieve:
+    enabled: true
+    port: 4190
+    ssl_mode: starttls
+  managesieve_be:
+    enabled: false
+    port: 14190
+    ssl_mode: "no"
+
+sieve:
+  enabled: false
+  max_script_size: 65536
+  max_redirects: 32
+  vacation_enabled: true
 
 protocol:
   imap:
@@ -61,6 +75,8 @@ protocol:
     login_greeting: "Yarilo smoke ready."
     add_received_header: true
     hdr_delivery_address: final
+  managesieve:
+    max_script_size: 65536
 
 auth:
   passdb:

@@ -39,6 +39,7 @@ const (
 	ProtocolPOP3S       Protocol = "pop3s"
 	ProtocolSubmission  Protocol = "submission"
 	ProtocolSubmissions Protocol = "submissions"
+	ProtocolManageSieve Protocol = "managesieve"
 )
 
 // Options configures the login proxy Server.
@@ -752,6 +753,17 @@ func readBackendGreeting(rd *bufio.Reader, p Protocol) (caps string, err error) 
 				return "", nil
 			}
 		}
+	case ProtocolManageSieve:
+		// Consume the backend's pre-auth greeting (capability lines + OK).
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return "", err
+			}
+			if strings.HasPrefix(line, "OK") {
+				return "", nil
+			}
+		}
 	}
 	return "", nil
 }
@@ -795,6 +807,8 @@ func writeProtoAuthOK(conn net.Conn, p Protocol, tag, caps string) {
 		fmt.Fprintf(conn, "+OK Logged in\r\n") //nolint:errcheck
 	case ProtocolSubmission, ProtocolSubmissions:
 		fmt.Fprintf(conn, "235 2.7.0 Authentication successful\r\n") //nolint:errcheck
+	case ProtocolManageSieve:
+		fmt.Fprintf(conn, "OK \"Logged in.\"\r\n") //nolint:errcheck
 	}
 }
 
@@ -849,6 +863,13 @@ func writeProtoError(conn net.Conn, p Protocol, tag, imapCode, msg string) {
 		}
 	case ProtocolSubmission, ProtocolSubmissions:
 		fmt.Fprintf(conn, "421 4.3.0 %s\r\n", msg) //nolint:errcheck
+	case ProtocolManageSieve:
+		switch imapCode {
+		case imapCodeAuthenticationFail:
+			fmt.Fprintf(conn, "NO (AUTHENTICATIONFAILED) %q\r\n", msg) //nolint:errcheck
+		default:
+			fmt.Fprintf(conn, "BYE %q\r\n", msg) //nolint:errcheck
+		}
 	}
 }
 
@@ -859,7 +880,9 @@ func isSubmission(p Protocol) bool {
 // isRetriableProtocol reports whether the protocol keeps the connection open
 // after a failed authentication attempt (IMAP and POP3 do; SMTP closes).
 func isRetriableProtocol(p Protocol) bool {
-	return p == ProtocolIMAP || p == ProtocolIMAPS || p == ProtocolPOP3 || p == ProtocolPOP3S
+	return p == ProtocolIMAP || p == ProtocolIMAPS ||
+		p == ProtocolPOP3 || p == ProtocolPOP3S ||
+		p == ProtocolManageSieve
 }
 
 // anvilService maps a login Protocol to the service name used in the anvil protocol.
@@ -869,6 +892,8 @@ func anvilService(p Protocol) string {
 		return "pop3"
 	case ProtocolSubmission, ProtocolSubmissions:
 		return "smtp"
+	case ProtocolManageSieve:
+		return "managesieve"
 	default:
 		return "imap"
 	}
