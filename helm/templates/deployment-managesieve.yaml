@@ -1,0 +1,96 @@
+{{- if .Values.components.manageSieve.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "yarilo.fullname" . }}-managesieve
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "managesieve") | nindent 4 }}
+spec:
+  replicas: {{ .Values.components.manageSieve.replicas }}
+  selector:
+    matchLabels:
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "managesieve") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "managesieve") | nindent 8 }}
+      annotations:
+        {{- include "yarilo.configChecksum" . | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: yarilo-managesieve
+          image: {{ include "yarilo.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-managesieve"
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: managesieve
+              containerPort: {{ .Values.components.manageSieve.listeners.managesieve.containerPort }}
+              protocol: TCP
+            - name: telemetry
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.components.manageSieve.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yarilo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.storage.persistence.enabled }}
+            - name: mail
+              mountPath: {{ .Values.storage.maildirRoot }}
+            {{- end }}
+            {{- include "yarilo.internalTLSMount" .Values.components.manageSieve.internalTLS | nindent 12 }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "yarilo.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.manageSieve.internalTLS | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

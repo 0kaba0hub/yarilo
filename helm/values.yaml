@@ -799,6 +799,65 @@ components:
         cpu: 200m
         memory: 128Mi
 
+  ## ManageSieve backend — RFC 5804 Sieve script management (internal, port 14190).
+  manageSieve:
+    enabled: false
+    replicas: 1
+
+    listeners:
+      managesieve:
+        enabled: true
+        servicePort: 14190
+        containerPort: 14190
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  ## ManageSieve login pod — RFC 5804 client-facing proxy (port 4190, STARTTLS).
+  manageSieveLogin:
+    enabled: false
+    replicas: 1
+
+    listeners:
+      managesieve:
+        enabled: true
+        servicePort: 4190
+        containerPort: 14190
+        disablePlainAuth: false
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    ## Standalone mode: fixed backend address.
+    ## Typically "<release>-managesieve:<containerPort>" within the cluster.
+    backendAddr: ""
+
+    haProxy: false
+    haProxyTimeout: 3
+    haProxyNets: []
+
+    service:
+      type: ClusterIP
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
 ## -------------------------------------------------------------------
 ## Protocol tuning
 ## -------------------------------------------------------------------
@@ -875,6 +934,18 @@ protocol:
       trusted: false
       connectTimeout: 30
       commandTimeout: 300
+
+  managesieve:
+    maxScriptSize: 65536
+
+## -------------------------------------------------------------------
+## Sieve mail filtering
+## -------------------------------------------------------------------
+sieve:
+  enabled: false
+  maxScriptSize: 65536
+  maxRedirects: 32
+  vacationEnabled: true
 
 ## -------------------------------------------------------------------
 ## General infrastructure

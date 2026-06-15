@@ -81,6 +81,16 @@ data:
         port: {{ .Values.components.submissionLogin.listeners.submissions.containerPort }}
         ssl_mode: ssl
         disable_plaintext_auth: true
+      managesieve:
+        enabled: {{ .Values.components.manageSieveLogin.listeners.managesieve.enabled }}
+        port: {{ .Values.components.manageSieveLogin.listeners.managesieve.containerPort }}
+        ssl_mode: starttls
+        disable_plaintext_auth: {{ .Values.components.manageSieveLogin.listeners.managesieve.disablePlainAuth | default false }}
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+      managesieve_be:
+        enabled: {{ .Values.components.manageSieve.listeners.managesieve.enabled }}
+        port: {{ .Values.components.manageSieve.listeners.managesieve.containerPort }}
+        ssl_mode: "no"
 
     protocol:
       imap:
@@ -143,6 +153,14 @@ data:
           trusted: {{ .Values.protocol.submission.relay.trusted }}
           connect_timeout: {{ .Values.protocol.submission.relay.connectTimeout }}
           command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
+      managesieve:
+        max_script_size: {{ .Values.protocol.managesieve.maxScriptSize }}
+
+    sieve:
+      enabled: {{ .Values.sieve.enabled }}
+      max_script_size: {{ .Values.sieve.maxScriptSize }}
+      max_redirects: {{ .Values.sieve.maxRedirects }}
+      vacation_enabled: {{ .Values.sieve.vacationEnabled }}
 
     auth:
       failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
@@ -318,7 +336,7 @@ data:
     {{- end }}
 
     internal_tls:
-      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled }}
+      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled .Values.components.manageSieve.internalTLS.enabled .Values.components.manageSieveLogin.internalTLS.enabled }}
       enabled: {{ $anyTLS }}
       {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.anvil.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
       {{- if $tlsSecret }}
@@ -383,6 +401,21 @@ data:
       {{- end }}
       {{- else }}
       backend_addr: {{ .Values.components.lmtpLogin.backendAddr | quote }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.components.manageSieveLogin.enabled }}
+    managesieve_login_service:
+      backend_addr: {{ .Values.components.manageSieveLogin.backendAddr | quote }}
+      {{- if .Values.components.manageSieveLogin.haProxy }}
+      haproxy_protocol: true
+      haproxy_timeout: {{ .Values.components.manageSieveLogin.haProxyTimeout }}
+      {{- with .Values.components.manageSieveLogin.haProxyNets }}
+      haproxy_trusted_nets:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
       {{- end }}
     {{- end }}
 

@@ -4,6 +4,8 @@ github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260614084911-43abe771f55c h1:n
 github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260614084911-43abe771f55c/go.mod h1:dhoFe2Q0PwLrMD7oZw8ODuaD0vLYPe5uj2wcOMnvh48=
 github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f h1:h/57H2GGT5mZ5wJ7r5FwpWkO7RAaKVQtrgTT2Bmxzws=
 github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f/go.mod h1:OrcngXZxc5yyDuG4NezpzTmY19Ln8JoDKoQqzHd4Tao=
+github.com/0kaba0hub/go-sieve v0.0.0-20260615103043-d84c7700556b h1:FxwtvoEYSCe3zqg8U7fwkr23vd++ZsdjhmU6lr4m3ks=
+github.com/0kaba0hub/go-sieve v0.0.0-20260615103043-d84c7700556b/go.mod h1:osl9Lk7E2uvGHKyrcuTgQ3AQmQcJAd0dR2PDPNmI7ew=
 github.com/0kaba0hub/go-smtp v0.24.1 h1:W+mN6bXgw/pvx0aK6sci0aF1kI9XXpXKwgN3+MMO4lA=
 github.com/0kaba0hub/go-smtp v0.24.1/go.mod h1:/+9AAHQ9tff6WaqgLs0MAlwQ3OzT6jQhqL4x5M5Ee90=
 github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5 h1:IEjq88XO4PuBDcvmjQJcQGg+w+UaafSy8G5Kcb5tBhI=
@@ -336,3 +338,5 @@ modernc.org/strutil v1.2.1 h1:UneZBkQA+DX2Rp35KcM69cSsNES9ly8mQWD71HKlOA0=
 modernc.org/strutil v1.2.1/go.mod h1:EHkiggD70koQxjVdSBM3JKM7k6L0FbGE5eymy9i3B9A=
 modernc.org/token v1.1.0 h1:Xl7Ap9dKaEs5kLoOQeQmPWevfnk/DM5qcLcYlA8ys6Y=
 modernc.org/token v1.1.0/go.mod h1:UGzOrNV1mAFSEB63lOFHIpNRUVMvYTc6yu1SMY/XTDM=
+rsc.io/binaryregexp v0.2.0 h1:HfqmD5MEmC0zvwBuF187nq9mdnXjXsSivRiXN7SmRkE=
+rsc.io/binaryregexp v0.2.0/go.mod h1:qTv7/COck+e2FymRvadv62gMdZztPaShugOCi3I+8D8=

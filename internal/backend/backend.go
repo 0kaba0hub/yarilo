@@ -21,7 +21,9 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	mssvr "github.com/0kaba0hub/yarilo/internal/managesieve"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
+	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
@@ -40,20 +42,23 @@ import (
 
 // Server is the yarilo backend (or single-node) server.
 type Server struct {
-	cfg        *config.Config
-	telem      *telemetry.Server
-	imap       *imapsvr.Server // nil if neither IMAP nor IMAPS is active
-	pop3       *pop3svr.Server // nil if neither POP3 nor POP3S is active
-	submission *submsvr.Server // nil if no Submission/Submissions is active
-	lmtp       *lmtp.Server    // nil if LMTP not configured
-	locker     locks.Locker    // cross-process write coordinator; nil = disabled
+	cfg         *config.Config
+	telem       *telemetry.Server
+	imap        *imapsvr.Server // nil if neither IMAP nor IMAPS is active
+	pop3        *pop3svr.Server // nil if neither POP3 nor POP3S is active
+	submission  *submsvr.Server // nil if no Submission/Submissions is active
+	lmtp        *lmtp.Server    // nil if LMTP not configured
+	managesieve *mssvr.Server   // nil if ManageSieve not configured
+	sieveDict   dict.Dict       // shared between LMTP engine and ManageSieve
+	locker      locks.Locker    // cross-process write coordinator; nil = disabled
 }
 
-// Close releases backend resources. Currently this means closing the
-// yarilo-locks client (if any). Idempotent. Session binaries should defer
-// Close after backend.New for clean lock release; without this the locker
-// connection drops on FD reap and the server reclaims locks via TTL (~30s).
+// Close releases backend resources. Session binaries should defer Close after
+// backend.New for clean lock and dict release.
 func (s *Server) Close() error {
+	if s.sieveDict != nil {
+		_ = s.sieveDict.Close()
+	}
 	if s.locker != nil {
 		return s.locker.Close()
 	}
@@ -151,7 +156,6 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: dicts.quota: %w", err)
 	}
-
 	idxOpts := []file.Option{file.WithLocker(locker)}
 	if quotaDict != nil {
 		idxOpts = append(idxOpts, file.WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
@@ -176,9 +180,22 @@ func New(cfg *config.Config) (*Server, error) {
 		authTLS = t
 	}
 
+	// ---- sieve ----
+	svcs := cfg.Services
+	var sieveDict dict.Dict
+	if cfg.Sieve.Enabled || svcs.ManageSieveBE.Active() {
+		sieveDict, err = buildDict(cfg.Dicts, "sieve_scripts")
+		if err != nil {
+			return nil, fmt.Errorf("backend: dicts.sieve_scripts: %w", err)
+		}
+	}
+	var sieveEngine *sieve.Engine
+	if cfg.Sieve.Enabled && sieveDict != nil {
+		sieveEngine = sieve.New(cfg.Sieve, sieveDict)
+	}
+
 	// ---- IMAP ----
 	var imapServer *imapsvr.Server
-	svcs := cfg.Services
 	if svcs.IMAP.Active() || svcs.IMAPS.Active() {
 		primary := firstActive(svcs.IMAPS, svcs.IMAP)
 		var imapTLS *tls.Config
@@ -307,16 +324,17 @@ func New(cfg *config.Config) (*Server, error) {
 			lmtpTLS = t
 		}
 		lmtpOpts := lmtp.Options{
-			Hostname:  cfg.Protocol.Submission.Hostname,
-			Config:    cfg.Protocol.LMTP,
-			Mailbox:   mbox,
-			Index:     idx,
-			Resolver:  resolver,
-			TLSConfig: lmtpTLS,
-			Locker:    locker,
-			QuotaDict: quotaDict,
-			AuthAddr:  authAddr,
-			AuthTLS:   authTLS,
+			Hostname:    cfg.Protocol.Submission.Hostname,
+			Config:      cfg.Protocol.LMTP,
+			Mailbox:     mbox,
+			Index:       idx,
+			Resolver:    resolver,
+			TLSConfig:   lmtpTLS,
+			Locker:      locker,
+			QuotaDict:   quotaDict,
+			AuthAddr:    authAddr,
+			AuthTLS:     authTLS,
+			SieveEngine: sieveEngine,
 		}
 		if addr := cfg.AuthService.MasterAddr; addr != "" {
 			ac, err := authclient.Dial(addr, nil)
@@ -360,6 +378,18 @@ func New(cfg *config.Config) (*Server, error) {
 		lmtpServer = lmtp.New(lmtpOpts)
 	}
 
+	// ---- ManageSieve ----
+	var msServer *mssvr.Server
+	if svcs.ManageSieveBE.Active() {
+		msServer = mssvr.New(mssvr.Options{
+			Dict:     sieveDict,
+			Resolver: resolver,
+			Config:   cfg.Protocol.ManageSieve,
+			AuthAddr: authAddr,
+			AuthTLS:  authTLS,
+		})
+	}
+
 	// ---- telemetry ----
 	telemAddr := cfg.Telemetry.Listen
 	if telemAddr == "" {
@@ -368,13 +398,15 @@ func New(cfg *config.Config) (*Server, error) {
 	telem := telemetry.New(telemAddr)
 
 	return &Server{
-		cfg:        cfg,
-		telem:      telem,
-		imap:       imapServer,
-		pop3:       pop3Server,
-		submission: smtpServer,
-		lmtp:       lmtpServer,
-		locker:     locker,
+		cfg:         cfg,
+		telem:       telem,
+		imap:        imapServer,
+		pop3:        pop3Server,
+		submission:  smtpServer,
+		lmtp:        lmtpServer,
+		managesieve: msServer,
+		sieveDict:   sieveDict,
+		locker:      locker,
 	}, nil
 }
 
@@ -479,6 +511,37 @@ func (s *Server) RunLMTP(ctx context.Context) error {
 		}
 		if err := s.lmtp.Serve(ln); err != nil {
 			slog.Error("lmtp: server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+	<-ctx.Done()
+	return nil
+}
+
+// RunManageSieve starts the ManageSieve backend listener and telemetry,
+// then blocks until ctx is cancelled.
+func (s *Server) RunManageSieve(ctx context.Context) error {
+	go func() {
+		if err := s.telem.ListenAndServe(ctx); err != nil {
+			slog.Error("telemetry: server error", "err", err)
+		}
+	}()
+	s.telem.SetReady(true)
+
+	svcs := s.cfg.Services
+	if s.managesieve == nil || !svcs.ManageSieveBE.Active() {
+		slog.Warn("managesieve: no listener configured")
+		<-ctx.Done()
+		return nil
+	}
+	go func() {
+		ln, err := net.Listen("tcp", listenAddr(svcs.ManageSieveBE))
+		if err != nil {
+			slog.Error("managesieve: listen error", "err", err)
+			os.Exit(1)
+		}
+		if err := s.managesieve.ServeManageSieve(ctx, ln); err != nil {
+			slog.Error("managesieve: server error", "err", err)
 			os.Exit(1)
 		}
 	}()
