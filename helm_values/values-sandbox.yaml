@@ -45,6 +45,14 @@ protocol:
   lmtp:
     addReceivedHeader: true
     hdrDeliveryAddress: final
+  managesieve:
+    maxScriptSize: 65536
+
+sieve:
+  enabled: true
+  maxScriptSize: 65536
+  maxRedirects: 32
+  vacationEnabled: true
 
 dicts:
   metadata:
@@ -175,6 +183,25 @@ components:
   quotaStatus:
     enabled: true
     authMasterAddr: "yarilo-auth:9102"
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
+        metallb.universe.tf/allow-shared-ip: "yarilo-mail"
+
+  ## ManageSieve backend — internal, not exposed outside cluster.
+  manageSieve:
+    enabled: true
+
+  ## ManageSieve login pod — client-facing on :4190 STARTTLS.
+  manageSieveLogin:
+    enabled: true
+    backendAddr: "yarilo-managesieve:14190"
+    tls:
+      secretName: yarilo-tls
+    listeners:
+      managesieve:
+        enabled: true
     service:
       type: LoadBalancer
       annotations:

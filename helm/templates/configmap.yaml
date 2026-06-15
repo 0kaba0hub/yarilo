@@ -156,13 +156,14 @@ data:
           connect_timeout: {{ .Values.protocol.submission.relay.connectTimeout }}
           command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
       managesieve:
-        max_script_size: {{ .Values.protocol.managesieve.maxScriptSize }}
+        max_script_size: {{ (.Values.protocol.managesieve | default dict).maxScriptSize | default 65536 }}
 
     sieve:
-      enabled: {{ .Values.sieve.enabled }}
-      max_script_size: {{ .Values.sieve.maxScriptSize }}
-      max_redirects: {{ .Values.sieve.maxRedirects }}
-      vacation_enabled: {{ .Values.sieve.vacationEnabled }}
+      {{- $sieve := (.Values.sieve | default dict) }}
+      enabled: {{ $sieve.enabled | default false }}
+      max_script_size: {{ $sieve.maxScriptSize | default 65536 }}
+      max_redirects: {{ $sieve.maxRedirects | default 32 }}
+      vacation_enabled: {{ $sieve.vacationEnabled | default true }}
 
     auth:
       failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
@@ -341,7 +342,7 @@ data:
       {{- $msTLSEnabled := ((.Values.components.manageSieve | default dict).internalTLS | default dict).enabled }}
       {{- $msLoginTLSEnabled := ((.Values.components.manageSieveLogin | default dict).internalTLS | default dict).enabled }}
       {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $msTLSEnabled $msLoginTLSEnabled }}
-      enabled: {{ $anyTLS }}
+      enabled: {{ $anyTLS | default false }}
       {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.anvil.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
       {{- if $tlsSecret }}
       cert: /etc/yarilo/internal-tls/tls.crt
