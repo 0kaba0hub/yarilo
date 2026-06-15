@@ -342,7 +342,7 @@ data:
       {{- $msTLSEnabled := ((.Values.components.manageSieve | default dict).internalTLS | default dict).enabled }}
       {{- $msLoginTLSEnabled := ((.Values.components.manageSieveLogin | default dict).internalTLS | default dict).enabled }}
       {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $msTLSEnabled $msLoginTLSEnabled }}
-      enabled: {{ $anyTLS }}
+      enabled: {{ $anyTLS | default false }}
       {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.anvil.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
       {{- if $tlsSecret }}
       cert: /etc/yarilo/internal-tls/tls.crt
