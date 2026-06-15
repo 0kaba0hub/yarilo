@@ -81,15 +81,17 @@ data:
         port: {{ .Values.components.submissionLogin.listeners.submissions.containerPort }}
         ssl_mode: ssl
         disable_plaintext_auth: true
+      {{- $msLoginL := (((.Values.components.manageSieveLogin | default dict).listeners | default dict).managesieve | default dict) }}
       managesieve:
-        enabled: {{ .Values.components.manageSieveLogin.listeners.managesieve.enabled }}
-        port: {{ .Values.components.manageSieveLogin.listeners.managesieve.containerPort }}
+        enabled: {{ $msLoginL.enabled | default false }}
+        port: {{ $msLoginL.containerPort | default 4190 }}
         ssl_mode: starttls
-        disable_plaintext_auth: {{ .Values.components.manageSieveLogin.listeners.managesieve.disablePlainAuth | default false }}
+        disable_plaintext_auth: {{ $msLoginL.disablePlainAuth | default false }}
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+      {{- $msL := (((.Values.components.manageSieve | default dict).listeners | default dict).managesieve | default dict) }}
       managesieve_be:
-        enabled: {{ .Values.components.manageSieve.listeners.managesieve.enabled }}
-        port: {{ .Values.components.manageSieve.listeners.managesieve.containerPort }}
+        enabled: {{ $msL.enabled | default false }}
+        port: {{ $msL.containerPort | default 14190 }}
         ssl_mode: "no"
 
     protocol:
@@ -336,7 +338,9 @@ data:
     {{- end }}
 
     internal_tls:
-      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled .Values.components.manageSieve.internalTLS.enabled .Values.components.manageSieveLogin.internalTLS.enabled }}
+      {{- $msTLSEnabled := ((.Values.components.manageSieve | default dict).internalTLS | default dict).enabled }}
+      {{- $msLoginTLSEnabled := ((.Values.components.manageSieveLogin | default dict).internalTLS | default dict).enabled }}
+      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $msTLSEnabled $msLoginTLSEnabled }}
       enabled: {{ $anyTLS }}
       {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.anvil.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
       {{- if $tlsSecret }}
@@ -404,7 +408,7 @@ data:
       {{- end }}
     {{- end }}
 
-    {{- if .Values.components.manageSieveLogin.enabled }}
+    {{- if ((.Values.components.manageSieveLogin | default dict).enabled) }}
     managesieve_login_service:
       backend_addr: {{ .Values.components.manageSieveLogin.backendAddr | quote }}
       {{- if .Values.components.manageSieveLogin.haProxy }}
