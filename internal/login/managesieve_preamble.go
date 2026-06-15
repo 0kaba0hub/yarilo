@@ -134,14 +134,14 @@ func msHandleAuthenticate(conn net.Conn, rd *bufio.Reader, opts Options) (*pream
 
 	switch mech {
 	case "PLAIN":
-		return msHandlePlain(conn, rd, initResp, opts)
+		return msHandlePlain(conn, rd, initResp)
 	default:
 		fmt.Fprintf(conn, "NO \"Unsupported mechanism.\"\r\n") //nolint:errcheck
 		return nil, nil
 	}
 }
 
-func msHandlePlain(conn net.Conn, rd *bufio.Reader, initResp []byte, opts Options) (*preamble, error) {
+func msHandlePlain(conn net.Conn, rd *bufio.Reader, initResp []byte) (*preamble, error) {
 	var b64 string
 	if initResp != nil {
 		b64 = string(initResp)
@@ -303,9 +303,6 @@ func msReadLiteral(rd *bufio.Reader, conn net.Conn, isLast bool) ([]byte, error)
 	data := make([]byte, size)
 	if _, err := io.ReadFull(rd, data); err != nil {
 		return nil, fmt.Errorf("managesieve: literal body: %w", err)
-	}
-	if isLast && !sync {
-		// Non-synchronizing literal as last arg — no extra CRLF to skip.
 	}
 	return data, nil
 }
