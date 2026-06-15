@@ -978,7 +978,7 @@ mysql:
   bundled: true
   image:
     repository: mysql
-    tag: "8.4"
+    tag: "9.7"
     pullPolicy: IfNotPresent
   db: yarilo
   user: yarilo
