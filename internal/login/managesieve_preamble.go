@@ -59,7 +59,7 @@ func manageSieveCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config,
 				return nil, conn, rd, err
 			}
 		case "AUTHENTICATE":
-			pre, err := msHandleAuthenticate(conn, rd, opts)
+			pre, err := msHandleAuthenticate(conn, rd)
 			if err != nil {
 				return nil, conn, rd, err
 			}
@@ -100,7 +100,7 @@ func manageSieveCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config,
 
 // msHandleAuthenticate processes AUTHENTICATE mechanism [initial-response].
 // Returns a non-nil *preamble on success; nil on auth failure (caller retries).
-func msHandleAuthenticate(conn net.Conn, rd *bufio.Reader, opts Options) (*preamble, error) {
+func msHandleAuthenticate(conn net.Conn, rd *bufio.Reader) (*preamble, error) {
 	mechBytes, err := msReadString(rd, conn)
 	if err != nil {
 		msSkipLine(rd)
@@ -220,7 +220,7 @@ func msReadString(rd *bufio.Reader, conn net.Conn) ([]byte, error) {
 	case '"':
 		return msReadQuoted(rd)
 	case '{':
-		return msReadLiteral(rd, conn, false)
+		return msReadLiteral(rd, conn)
 	default:
 		_ = rd.UnreadByte()
 		return nil, fmt.Errorf("managesieve: expected string, got %q", rune(b))
@@ -244,7 +244,7 @@ func msReadLastArg(rd *bufio.Reader, conn net.Conn) ([]byte, error) {
 		msSkipLine(rd)
 		return data, nil
 	case '{':
-		return msReadLiteral(rd, conn, true)
+		return msReadLiteral(rd, conn)
 	default:
 		_ = rd.UnreadByte()
 		return nil, fmt.Errorf("managesieve: expected string, got %q", rune(b))
@@ -273,7 +273,7 @@ func msReadQuoted(rd *bufio.Reader) ([]byte, error) {
 	}
 }
 
-func msReadLiteral(rd *bufio.Reader, conn net.Conn, isLast bool) ([]byte, error) {
+func msReadLiteral(rd *bufio.Reader, conn net.Conn) ([]byte, error) {
 	// '{' already consumed.
 	var sizeBuf strings.Builder
 	sync := true
