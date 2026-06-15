@@ -1,4 +1,4 @@
-{{- if .Values.components.manageSieve.enabled }}
+{{- if ((.Values.components.manageSieve | default dict).enabled) }}
 ## Headless — ManageSieve backend pods (internal, reached by the login pod).
 apiVersion: v1
 kind: Service
