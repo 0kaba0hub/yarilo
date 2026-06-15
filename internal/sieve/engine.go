@@ -26,6 +26,12 @@ func New(cfg config.SieveConfig, d dict.Dict) *Engine {
 	return &Engine{cfg: cfg, dict: d}
 }
 
+// InitUser seeds the default yarilo.sieve script for a user on first delivery.
+// No-op when the user already has an active script configured.
+func (e *Engine) InitUser(ctx context.Context, username, homeDir string) error {
+	return InitUser(ctx, e.dict, username, homeDir)
+}
+
 // FilterOptions holds the per-message context passed to Filter.
 type FilterOptions struct {
 	Username string

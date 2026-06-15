@@ -16,6 +16,7 @@ import (
 	goSmtp "github.com/0kaba0hub/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -67,6 +68,11 @@ type Options struct {
 	AuthAddr string
 	// AuthTLS optionally wraps the auth-client dialer with mTLS.
 	AuthTLS *tls.Config
+
+	// SieveEngine executes per-user Sieve scripts during local delivery.
+	// When nil, Sieve filtering is disabled and all messages are delivered
+	// to the default folder (INBOX or user+folder addressing).
+	SieveEngine *sieve.Engine
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -371,22 +377,74 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		rcptBox := s.opts.Mailbox.OpenUser(userInfo)
 		rcptIdx := s.opts.Index.OpenUser(userInfo)
 		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal
-		err := deliverOne(rcptBox, rcptIdx, folder, bytes.NewReader(msg), int64(len(msg)), s.opts.Locker, username)
+
+		deliveries := []sieve.Delivery{{Folder: folder}}
+		if s.opts.SieveEngine != nil {
+			fopts := sieve.FilterOptions{
+				Username: username,
+				HomeDir:  userInfo.Home,
+				EnvFrom:  s.from,
+				EnvTo:    rcpt,
+				MsgRaw:   msg,
+				FolderExists: func(_ context.Context, f string) (bool, error) {
+					return rcptBox.FolderExists(f)
+				},
+			}
+			result, ferr := s.opts.SieveEngine.Filter(context.Background(), fopts)
+			if ferr != nil {
+				slog.Error("lmtp: sieve filter error, using implicit keep", "rcpt", rcpt, "err", ferr)
+			} else if result == nil {
+				if ierr := s.opts.SieveEngine.InitUser(context.Background(), username, userInfo.Home); ierr != nil {
+					slog.Warn("lmtp: sieve init user", "user", username, "err", ierr)
+				}
+			} else if result.Reject != nil {
+				rcptBox.Close() //nolint:errcheck
+				rcptIdx.Close() //nolint:errcheck
+				code, enh := sieveRejectCode(result.Reject)
+				slog.Info("lmtp: sieve rejected", "rcpt", rcpt, "reason", result.Reject.Reason)
+				status.SetStatus(rcpt, &goSmtp.SMTPError{Code: code, EnhancedCode: enh, Message: result.Reject.Reason})
+				continue
+			} else if len(result.Deliveries) == 0 {
+				rcptBox.Close() //nolint:errcheck
+				rcptIdx.Close() //nolint:errcheck
+				slog.Info("lmtp: sieve discard", "rcpt", rcpt)
+				status.SetStatus(rcpt, nil)
+				continue
+			} else {
+				if len(result.Redirects) > 0 {
+					slog.Info("lmtp: sieve redirect deferred (Phase 2)", "rcpt", rcpt, "count", len(result.Redirects))
+				}
+				if len(result.VacationReplies) > 0 {
+					slog.Info("lmtp: sieve vacation deferred (Phase 2)", "rcpt", rcpt, "count", len(result.VacationReplies))
+				}
+				deliveries = result.Deliveries
+			}
+		}
+
+		var deliverErr error
+		for _, d := range deliveries {
+			if err := deliverOne(rcptBox, rcptIdx, d.Folder, bytes.NewReader(msg), int64(len(msg)), s.opts.Locker, username, d.Flags); err != nil {
+				deliverErr = err
+				break
+			}
+		}
 		rcptBox.Close() //nolint:errcheck
 		rcptIdx.Close() //nolint:errcheck
-		if err != nil {
-			slog.Error("lmtp: delivery failed", "rcpt", rcpt, "err", err)
+		if deliverErr != nil {
+			slog.Error("lmtp: delivery failed", "rcpt", rcpt, "err", deliverErr)
 			if s.opts.Config.VerboseReplies {
-				err = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: err.Error()}
+				deliverErr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: deliverErr.Error()}
 			} else {
-				err = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Local delivery failed"}
+				deliverErr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Local delivery failed"}
 			}
-		} else {
-			slog.Info("lmtp: delivered", "rcpt", rcpt, "size", len(msg))
 		}
-		status.SetStatus(rcpt, err)
+		status.SetStatus(rcpt, deliverErr)
 	}
 	return nil
+}
+
+func sieveRejectCode(r *sieve.RejectErr) (int, goSmtp.EnhancedCode) {
+	return 550, goSmtp.EnhancedCode{5, 7, 1}
 }
 
 func (s *session) Reset() {

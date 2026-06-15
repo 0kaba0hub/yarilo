@@ -33,7 +33,7 @@ import (
 //	during delivery (matching Dovecot's lda/lmtp behaviour), add a UserDB
 //	interface (driver: SQL query or dict protocol) and call it here before
 //	OpenUser, passing the resulting home as homeOverride to Resolver.UserInfo.
-func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username string) error {
+func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username string, flags []string) error {
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("lmtp: seek: %w", err)
 	}
@@ -51,7 +51,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 	if err != nil {
 		return fmt.Errorf("lmtp: modseq: %w", err)
 	}
-	filename, err := box.Save(folder, bytes.NewReader(data), uid, size, nil)
+	filename, err := box.Save(folder, bytes.NewReader(data), uid, size, flags)
 	if err != nil {
 		return fmt.Errorf("lmtp: save: %w", err)
 	}
