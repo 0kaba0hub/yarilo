@@ -834,6 +834,9 @@ components:
         containerPort: 14190
         disablePlainAuth: false
 
+    tls:
+      secretName: ""
+
     internalTLS:
       enabled: false
       secretName: ""
