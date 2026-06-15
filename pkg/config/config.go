@@ -13,29 +13,43 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode               string                       `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
-	General            GeneralConfig                `koanf:"general"`
-	Services           ServicesConfig               `koanf:"services"`
-	Protocol           ProtocolConfig               `koanf:"protocol"`
-	Auth               AuthConfig                   `koanf:"auth"`
-	InternalTLS        InternalTLSConfig            `koanf:"internal_tls"`
-	AuthService        AuthServiceConfig            `koanf:"auth_service"`
-	AnvilService       AnvilServiceConfig           `koanf:"anvil_service"`
-	DirectorService    DirectorServiceConfig        `koanf:"director_service"`
-	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
-	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
-	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
-	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
-	LocksService       LocksServiceConfig           `koanf:"locks_service"`
-	LocksClient        LocksClientConfig            `koanf:"locks_client"`
-	Storage            StorageConfig                `koanf:"storage"`
-	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
-	Dicts              map[string]DictConfig        `koanf:"dicts"`
-	BackendAPI         BackendAPIConfig             `koanf:"backend_api"`
-	QuotaStatus        QuotaStatusConfig            `koanf:"quota_status"`
-	SASLLogin          SASLLoginConfig              `koanf:"sasl_login"`
-	Telemetry          TelemetryConfig              `koanf:"telemetry"`
-	Log                LogConfig                    `koanf:"log"`
+	Mode                    string                        `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	General                 GeneralConfig                 `koanf:"general"`
+	Services                ServicesConfig                `koanf:"services"`
+	Protocol                ProtocolConfig                `koanf:"protocol"`
+	Auth                    AuthConfig                    `koanf:"auth"`
+	InternalTLS             InternalTLSConfig             `koanf:"internal_tls"`
+	AuthService             AuthServiceConfig             `koanf:"auth_service"`
+	AnvilService            AnvilServiceConfig            `koanf:"anvil_service"`
+	DirectorService         DirectorServiceConfig         `koanf:"director_service"`
+	IMAPLoginService        IMAPLoginServiceConfig        `koanf:"imap_login_service"`
+	POP3LoginService        POP3LoginServiceConfig        `koanf:"pop3_login_service"`
+	SubmissionLoginSvc      SubmissionLoginServiceConfig  `koanf:"submission_login_service"`
+	LMTPLoginService        LMTPLoginServiceConfig        `koanf:"lmtp_login_service"`
+	LocksService            LocksServiceConfig            `koanf:"locks_service"`
+	LocksClient             LocksClientConfig             `koanf:"locks_client"`
+	Storage                 StorageConfig                 `koanf:"storage"`
+	Namespaces              []NamespaceConfig             `koanf:"namespaces"`
+	Dicts                   map[string]DictConfig         `koanf:"dicts"`
+	BackendAPI              BackendAPIConfig              `koanf:"backend_api"`
+	QuotaStatus             QuotaStatusConfig             `koanf:"quota_status"`
+	SASLLogin               SASLLoginConfig               `koanf:"sasl_login"`
+	Sieve                   SieveConfig                   `koanf:"sieve"`
+	ManageSieveLoginService ManageSieveLoginServiceConfig `koanf:"managesieve_login_service"`
+	Telemetry               TelemetryConfig               `koanf:"telemetry"`
+	Log                     LogConfig                     `koanf:"log"`
+}
+
+// SieveConfig controls per-user Sieve email filtering (RFC 5228) in the LMTP delivery path.
+type SieveConfig struct {
+	// Enabled activates Sieve script execution during LMTP delivery.
+	Enabled bool `koanf:"enabled"`
+	// MaxScriptSize is the maximum compiled script size in bytes. Default: 65536.
+	MaxScriptSize int `koanf:"max_script_size"`
+	// MaxRedirects is the maximum number of redirect actions per message. Default: 32.
+	MaxRedirects int `koanf:"max_redirects"`
+	// VacationEnabled permits the vacation extension (RFC 5230). Default: true.
+	VacationEnabled bool `koanf:"vacation_enabled"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -168,21 +182,24 @@ func (s *ServiceConfig) Active() bool { return s != nil && s.Enabled }
 // ServicesConfig holds per-listener configuration.
 // Nil pointer = listener not started.
 type ServicesConfig struct {
-	IMAP        *ServiceConfig `koanf:"imap"`        // port 143, STARTTLS
-	IMAPS       *ServiceConfig `koanf:"imaps"`       // port 993, SSL
-	Submission  *ServiceConfig `koanf:"submission"`  // port 587, STARTTLS outbound
-	Submissions *ServiceConfig `koanf:"submissions"` // port 465, SSL outbound
-	POP3        *ServiceConfig `koanf:"pop3"`        // port 110, STARTTLS
-	POP3S       *ServiceConfig `koanf:"pop3s"`       // port 995, SSL
-	LMTP        *ServiceConfig `koanf:"lmtp"`        // port 24, local delivery (no auth, loopback only)
+	IMAP          *ServiceConfig `koanf:"imap"`           // port 143, STARTTLS
+	IMAPS         *ServiceConfig `koanf:"imaps"`          // port 993, SSL
+	Submission    *ServiceConfig `koanf:"submission"`     // port 587, STARTTLS outbound
+	Submissions   *ServiceConfig `koanf:"submissions"`    // port 465, SSL outbound
+	POP3          *ServiceConfig `koanf:"pop3"`           // port 110, STARTTLS
+	POP3S         *ServiceConfig `koanf:"pop3s"`          // port 995, SSL
+	LMTP          *ServiceConfig `koanf:"lmtp"`           // port 24, local delivery (no auth, loopback only)
+	ManageSieve   *ServiceConfig `koanf:"managesieve"`    // port 4190, STARTTLS (login pod)
+	ManageSieveBE *ServiceConfig `koanf:"managesieve_be"` // ManageSieve backend (internal)
 }
 
 // ProtocolConfig holds protocol-level behaviour settings, independent of listener.
 type ProtocolConfig struct {
-	IMAP       IMAPProtocolConfig       `koanf:"imap"`
-	POP3       POP3ProtocolConfig       `koanf:"pop3"`
-	Submission SubmissionProtocolConfig `koanf:"submission"`
-	LMTP       LMTPProtocolConfig       `koanf:"lmtp"`
+	IMAP        IMAPProtocolConfig        `koanf:"imap"`
+	POP3        POP3ProtocolConfig        `koanf:"pop3"`
+	Submission  SubmissionProtocolConfig  `koanf:"submission"`
+	LMTP        LMTPProtocolConfig        `koanf:"lmtp"`
+	ManageSieve ManageSieveProtocolConfig `koanf:"managesieve"`
 }
 
 type LMTPProtocolConfig struct {
@@ -505,6 +522,25 @@ type POP3LoginServiceConfig struct {
 // SubmissionLoginServiceConfig mirrors IMAPLoginServiceConfig for the Submission proxy.
 type SubmissionLoginServiceConfig struct {
 	BackendAddr string `koanf:"backend_addr"`
+}
+
+// ManageSieveLoginServiceConfig configures the yarilo-managesieve-login proxy (RFC 5804).
+type ManageSieveLoginServiceConfig struct {
+	// BackendAddr is the fixed address of the yarilo-managesieve backend.
+	BackendAddr string `koanf:"backend_addr"`
+	// HAProxy enables PROXY protocol v1/v2 header parsing.
+	HAProxy bool `koanf:"haproxy_protocol"`
+	// HAProxyTimeout is the read deadline for the PROXY header in seconds.
+	HAProxyTimeout int `koanf:"haproxy_timeout"`
+	// HAProxyNets lists CIDRs whose PROXY header is trusted.
+	HAProxyNets []string `koanf:"haproxy_trusted_nets"`
+}
+
+// ManageSieveProtocolConfig holds ManageSieve protocol-level behaviour settings.
+type ManageSieveProtocolConfig struct {
+	// MaxScriptSize is the maximum size in bytes of a single Sieve script.
+	// Default: 65536.
+	MaxScriptSize int `koanf:"max_script_size"`
 }
 
 // LMTPLoginServiceConfig configures the yarilo-lmtp-login proxy.
