@@ -6,8 +6,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -15,26 +17,31 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 var (
-	flagHost          = flag.String("host", "localhost", "yarilo hostname")
-	flagIMAPSPort     = flag.String("imap-port", "993", "IMAPS port")
-	flagPOP3SPort     = flag.String("pop3s-port", "995", "POP3S port")
-	flagSMTPMXPort    = flag.String("smtp-mx-port", "25", "SMTP MX port")
-	flagSMTPSubPort   = flag.String("smtp-sub-port", "587", "SMTP submission port")
-	flagLMTPLoginPort = flag.String("lmtp-login-port", "24", "yarilo-lmtp-login port")
-	flagTelemetry     = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
-	flagTimeout       = flag.Duration("timeout", 10*time.Second, "per-check timeout")
-	flagInsecure      = flag.Bool("insecure", false, "skip TLS certificate verification")
-	flagSMTPMX        = flag.Bool("smtp-mx", false, "check SMTP MX EHLO (port -smtp-mx-port)")
-	flagSMTPSub       = flag.Bool("smtp-sub", false, "check SMTP submission EHLO+STARTTLS (port -smtp-sub-port)")
-	flagProxyProtocol = flag.Bool("proxy-protocol", false, "send HAProxy PROXY header before SMTP banner")
-	flagXClient       = flag.Bool("xclient", false, "check that MX port advertises XCLIENT in EHLO")
-	flagPOP3S         = flag.Bool("pop3s", false, "check POP3S greeting and CAPA")
-	flagLMTPLogin     = flag.Bool("lmtp-login", false, "check yarilo-lmtp-login LHLO greeting (port -lmtp-login-port)")
+	flagHost            = flag.String("host", "localhost", "yarilo hostname")
+	flagIMAPSPort       = flag.String("imap-port", "993", "IMAPS port")
+	flagPOP3SPort       = flag.String("pop3s-port", "995", "POP3S port")
+	flagSMTPMXPort      = flag.String("smtp-mx-port", "25", "SMTP MX port")
+	flagSMTPSubPort     = flag.String("smtp-sub-port", "587", "SMTP submission port")
+	flagLMTPLoginPort   = flag.String("lmtp-login-port", "24", "yarilo-lmtp-login port")
+	flagManageSievePort = flag.String("managesieve-port", "4190", "ManageSieve port")
+	flagManageSieveUser = flag.String("managesieve-user", "", "ManageSieve PLAIN auth username")
+	flagManageSievePass = flag.String("managesieve-pass", "", "ManageSieve PLAIN auth password")
+	flagTelemetry       = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
+	flagTimeout         = flag.Duration("timeout", 10*time.Second, "per-check timeout")
+	flagInsecure        = flag.Bool("insecure", false, "skip TLS certificate verification")
+	flagSMTPMX          = flag.Bool("smtp-mx", false, "check SMTP MX EHLO (port -smtp-mx-port)")
+	flagSMTPSub         = flag.Bool("smtp-sub", false, "check SMTP submission EHLO+STARTTLS (port -smtp-sub-port)")
+	flagProxyProtocol   = flag.Bool("proxy-protocol", false, "send HAProxy PROXY header before SMTP banner")
+	flagXClient         = flag.Bool("xclient", false, "check that MX port advertises XCLIENT in EHLO")
+	flagPOP3S           = flag.Bool("pop3s", false, "check POP3S greeting and CAPA")
+	flagLMTPLogin       = flag.Bool("lmtp-login", false, "check yarilo-lmtp-login LHLO greeting (port -lmtp-login-port)")
+	flagManageSieve     = flag.Bool("managesieve", false, "check ManageSieve auth + script CRUD (port -managesieve-port)")
 )
 
 type result struct {
@@ -90,6 +97,12 @@ func main() {
 			name string
 			fn   func() error
 		}{"lmtp-login LHLO", checkLMTPLogin})
+	}
+	if *flagManageSieve {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"managesieve auth+CRUD", checkManageSieve})
 	}
 
 	var failures []result
@@ -448,6 +461,141 @@ func smtpEHLO(conn net.Conn) (map[string]bool, error) {
 
 func smtpQuit(conn net.Conn) {
 	fmt.Fprintf(conn, "QUIT\r\n")
+}
+
+// ---- ManageSieve (RFC 5804, port 4190) -----------------------------------
+
+// checkManageSieve connects to the ManageSieve login proxy, authenticates via
+// PLAIN, then runs a full script CRUD cycle: LISTSCRIPTS → PUTSCRIPT →
+// GETSCRIPT → SETACTIVE → deactivate → DELETESCRIPT → LOGOUT.
+func checkManageSieve() error {
+	if *flagManageSieveUser == "" {
+		return fmt.Errorf("-managesieve-user is required for ManageSieve check")
+	}
+
+	addr := net.JoinHostPort(*flagHost, *flagManageSievePort)
+	dialer := &net.Dialer{Timeout: *flagTimeout}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+
+	// Drain pre-auth capability block until the first OK line.
+	if err := msieveDrainUntilOK(conn); err != nil {
+		return fmt.Errorf("pre-auth capabilities: %w", err)
+	}
+
+	// AUTHENTICATE PLAIN — base64("\0user\0pass").
+	creds := base64.StdEncoding.EncodeToString(
+		[]byte("\x00" + *flagManageSieveUser + "\x00" + *flagManageSievePass),
+	)
+	fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", creds)
+
+	// Login proxy responds OK, then proxies to backend which sends another capability block + OK.
+	if err := msieveDrainUntilOK(conn); err != nil {
+		return fmt.Errorf("AUTHENTICATE: %w", err)
+	}
+	// Drain backend post-auth greeting.
+	if err := msieveDrainUntilOK(conn); err != nil {
+		return fmt.Errorf("post-auth greeting: %w", err)
+	}
+
+	// LISTSCRIPTS
+	fmt.Fprintf(conn, "LISTSCRIPTS\r\n")
+	if err := msieveDrainUntilOK(conn); err != nil {
+		return fmt.Errorf("LISTSCRIPTS: %w", err)
+	}
+
+	// PUTSCRIPT — non-synchronising literal ({N+}) so no continuation needed.
+	const scriptName = "smoke-check.sieve"
+	const scriptBody = "keep;\n"
+	fmt.Fprintf(conn, "PUTSCRIPT %q {%d+}\r\n%s", scriptName, len(scriptBody), scriptBody)
+	line, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("PUTSCRIPT response: %w", err)
+	}
+	if !strings.HasPrefix(line, "OK") {
+		return fmt.Errorf("PUTSCRIPT failed: %q", line)
+	}
+
+	// GETSCRIPT — server responds with {N}\r\n<data>\r\nOK ...
+	fmt.Fprintf(conn, "GETSCRIPT %q\r\n", scriptName)
+	litHdr, err := readLine(conn)
+	if err != nil {
+		return fmt.Errorf("GETSCRIPT literal header: %w", err)
+	}
+	if !strings.HasPrefix(litHdr, "{") {
+		return fmt.Errorf("GETSCRIPT unexpected: %q", litHdr)
+	}
+	sizeStr := strings.TrimSuffix(strings.TrimPrefix(litHdr, "{"), "}")
+	size, err := strconv.Atoi(strings.TrimSpace(sizeStr))
+	if err != nil {
+		return fmt.Errorf("GETSCRIPT literal size %q: %w", litHdr, err)
+	}
+	got := make([]byte, size)
+	if _, err := io.ReadFull(conn, got); err != nil {
+		return fmt.Errorf("GETSCRIPT body: %w", err)
+	}
+	if !bytes.Equal(got, []byte(scriptBody)) {
+		return fmt.Errorf("GETSCRIPT content mismatch: got %q want %q", got, scriptBody)
+	}
+	// Drain trailing CRLF + OK line.
+	if err := msieveDrainUntilOK(conn); err != nil {
+		return fmt.Errorf("GETSCRIPT trailing: %w", err)
+	}
+
+	// SETACTIVE — activate the script.
+	fmt.Fprintf(conn, "SETACTIVE %q\r\n", scriptName)
+	line, err = readLine(conn)
+	if err != nil {
+		return fmt.Errorf("SETACTIVE response: %w", err)
+	}
+	if !strings.HasPrefix(line, "OK") {
+		return fmt.Errorf("SETACTIVE failed: %q", line)
+	}
+
+	// SETACTIVE "" — deactivate so we can delete.
+	fmt.Fprintf(conn, "SETACTIVE \"\"\r\n")
+	line, err = readLine(conn)
+	if err != nil {
+		return fmt.Errorf("SETACTIVE deactivate response: %w", err)
+	}
+	if !strings.HasPrefix(line, "OK") {
+		return fmt.Errorf("SETACTIVE deactivate failed: %q", line)
+	}
+
+	// DELETESCRIPT
+	fmt.Fprintf(conn, "DELETESCRIPT %q\r\n", scriptName)
+	line, err = readLine(conn)
+	if err != nil {
+		return fmt.Errorf("DELETESCRIPT response: %w", err)
+	}
+	if !strings.HasPrefix(line, "OK") {
+		return fmt.Errorf("DELETESCRIPT failed: %q", line)
+	}
+
+	// LOGOUT
+	fmt.Fprintf(conn, "LOGOUT\r\n")
+	return nil
+}
+
+// msieveDrainUntilOK reads and discards ManageSieve response lines until a
+// line starting with "OK" is found. Returns an error if "NO" or "BYE" is seen.
+func msieveDrainUntilOK(conn net.Conn) error {
+	for {
+		line, err := readLine(conn)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(line, "OK") {
+			return nil
+		}
+		if strings.HasPrefix(line, "NO") || strings.HasPrefix(line, "BYE") {
+			return fmt.Errorf("server error: %q", line)
+		}
+	}
 }
 
 // ---- low-level -----------------------------------------------------------
