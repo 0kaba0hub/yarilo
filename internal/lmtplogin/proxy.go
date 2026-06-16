@@ -250,7 +250,11 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	for res := range results {
 		var smtpErr error
 		if res.err != nil {
-			smtpErr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Delivery failed"}
+			if smtp, ok := res.err.(*goSmtp.SMTPError); ok {
+				smtpErr = smtp
+			} else {
+				smtpErr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Delivery failed"}
+			}
 		}
 		status.SetStatus(res.to, smtpErr)
 	}
