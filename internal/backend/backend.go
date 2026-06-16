@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all" // register all dict drivers
@@ -341,14 +342,36 @@ func New(cfg *config.Config) (*Server, error) {
 			if err != nil {
 				return nil, fmt.Errorf("backend: lmtp userdb dial %s: %w", addr, err)
 			}
+			var acMu sync.Mutex
 			lmtpResolver := lmtpOpts.Resolver
 			if lmtpResolver == nil {
 				lmtpResolver = &mailbox.Resolver{}
 			}
 			lmtpOpts.UserdbLookup = func(ctx context.Context, username string) (*mailbox.UserInfo, error) {
-				ui, err := ac.Userdb(ctx, username)
+				acMu.Lock()
+				cur := ac
+				acMu.Unlock()
+
+				ui, err := cur.Userdb(ctx, username)
 				if err != nil {
-					return nil, err
+					acMu.Lock()
+					if ac == cur {
+						_ = ac.Close()
+						fresh, dialErr := authclient.Dial(addr, nil)
+						if dialErr != nil {
+							acMu.Unlock()
+							slog.Warn("lmtp: userdb auth reconnect failed", "addr", addr, "err", dialErr)
+							return nil, err
+						}
+						ac = fresh
+						slog.Info("lmtp: userdb auth reconnected", "addr", addr)
+					}
+					cur = ac
+					acMu.Unlock()
+					ui, err = cur.Userdb(ctx, username)
+					if err != nil {
+						return nil, err
+					}
 				}
 				if ui == nil {
 					return nil, nil
