@@ -1,16 +1,9 @@
-// Package sasllogin implements a Dovecot auth-client protocol proxy for
-// Postfix SASL authentication.
+// Package sasllogin proxies Postfix SASL authentication to yarilo-auth.
 //
 // Postfix connects via plain TCP (no mTLS), yarilo-sasl-login dials
-// yarilo-auth with mTLS and forwards each session. The Dovecot auth client
+// yarilo-auth with mTLS and forwards each session. The yarilo-auth wire
 // protocol is line-based so line-by-line forwarding is used to enable
 // structured logging of auth events and rip= extraction.
-//
-// Postfix configuration:
-//
-//	smtpd_sasl_type         = dovecot
-//	smtpd_sasl_path         = inet:<host>:12325
-//	smtpd_sasl_auth_enable  = yes
 package sasllogin
 
 import (
