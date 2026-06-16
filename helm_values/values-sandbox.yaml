@@ -213,6 +213,11 @@ components:
         metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
         metallb.universe.tf/allow-shared-ip: "yarilo-mail"
 
+mail:
+  submissionHost: "relay-fwd.yarilo-relay.svc.cluster.local:587"
+  submissionSSL: "starttls"
+  submissionAuthSecret: "sieve-smtp-auth"
+
 resources:
   requests:
     cpu: 100m
