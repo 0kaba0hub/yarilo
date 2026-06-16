@@ -10,7 +10,7 @@ require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-message v0.18.2
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
-	github.com/foxcpp/go-sieve v0.0.0-00010101000000-000000000000
+	github.com/foxcpp/go-sieve v0.0.0-20260523221512-9ae51b269e52
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.10.0
@@ -55,7 +55,7 @@ require (
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	modernc.org/libc v1.73.0 // indirect
+	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	rsc.io/binaryregexp v0.2.0 // indirect

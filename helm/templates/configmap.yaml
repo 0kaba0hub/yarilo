@@ -360,11 +360,11 @@ data:
       {{- if .Values.components.auth.addr }}
       addr: {{ .Values.components.auth.addr | quote }}
       {{- else }}
-      addr: {{ printf "%s-auth.%s.svc:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.listen) | quote }}
+      addr: {{ printf "%s-auth.%s.svc.cluster.local:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.listen) | quote }}
       {{- end }}
       {{- if .Values.components.auth.masterListen }}
       master_listen: {{ .Values.components.auth.masterListen | quote }}
-      master_addr: {{ printf "%s-auth.%s.svc:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
+      master_addr: {{ printf "%s-auth.%s.svc.cluster.local:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
       {{- end }}
       {{- if .Values.components.auth.saslListen }}
       sasl_listen: {{ .Values.components.auth.saslListen | quote }}
@@ -435,7 +435,7 @@ data:
       {{- if .Values.components.backendAPI.authMasterAddr }}
       auth_master_addr: {{ .Values.components.backendAPI.authMasterAddr | quote }}
       {{- else if .Values.components.auth.masterListen }}
-      auth_master_addr: {{ printf "%s-auth.%s.svc:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
+      auth_master_addr: {{ printf "%s-auth.%s.svc.cluster.local:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
       {{- end }}
       {{- with .Values.components.backendAPI.allowedNets }}
       allowed_nets:
@@ -449,7 +449,7 @@ data:
       mode: remote
       listen: {{ .Values.components.locks.listen | quote }}
       {{- if .Values.redis.bundled }}
-      redis: {{ printf "redis://%s-redis.%s.svc:6379/0" (include "yarilo.fullname" .) .Release.Namespace | quote }}
+      redis: {{ printf "redis://%s-redis.%s.svc.cluster.local:6379/0" (include "yarilo.fullname" .) .Release.Namespace | quote }}
       {{- else }}
       redis: {{ .Values.redis.externalUrl | quote }}
       {{- end }}
@@ -461,7 +461,7 @@ data:
     locks_client:
       mode: remote
       endpoints:
-        - {{ printf "%s-locks.%s.svc:9104" (include "yarilo.fullname" .) .Release.Namespace | quote }}
+        - {{ printf "%s-locks.%s.svc.cluster.local:9104" (include "yarilo.fullname" .) .Release.Namespace | quote }}
     {{- end }}
 
     director_service:

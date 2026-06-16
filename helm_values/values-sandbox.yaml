@@ -58,14 +58,14 @@ dicts:
   metadata:
     driver: redis
     settings:
-      addr: yarilo-redis.yarilo-sb.svc:6379
+      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
       db: 0
       prefix: "yarilo:metadata:"
       path: null
   quota:
     driver: redis
     settings:
-      addr: yarilo-redis.yarilo-sb.svc:6379
+      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
       db: 0
       prefix: "yarilo:quota:"
     expire_secs: 86400
@@ -153,7 +153,7 @@ components:
 
     token:
       backend: redis
-      redisAddr: "redis://yarilo-redis.yarilo-sb.svc:6379/0"
+      redisAddr: "redis://yarilo-redis.yarilo-sb.svc.cluster.local:6379/0"
 
   ## IMAP session pod.
   imap:
@@ -168,9 +168,14 @@ components:
       pop3:
         enabled: true
 
-  ## LMTP — inbound delivery from MTA, no login proxy.
+  ## LMTP backend — receives preamble-wrapped connections from lmtp-login.
   lmtp:
     enabled: true
+
+  ## LMTP login proxy — MTA-facing, plain LMTP, no preamble required.
+  lmtpLogin:
+    enabled: true
+    backendAddr: "yarilo-lmtp:10024"
 
   saslLogin:
     enabled: true
