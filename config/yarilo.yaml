@@ -59,6 +59,10 @@ sieve:
   max_script_size: 65536
   max_redirects: 32
   vacation_enabled: true
+  submission_host: ""
+  submission_ssl: "no"
+  submission_timeout: 30
+  submission_auth_secret: ""
 
 protocol:
   imap:

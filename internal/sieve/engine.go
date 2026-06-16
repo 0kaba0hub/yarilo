@@ -17,13 +17,20 @@ import (
 
 // Engine executes Sieve scripts during LMTP delivery.
 type Engine struct {
-	cfg  config.SieveConfig
-	dict dict.Dict
+	cfg    config.SieveConfig
+	dict   dict.Dict
+	sender *Sender
 }
 
 // New creates a Sieve Engine backed by the given dict for script storage.
+// When cfg.SubmissionHost is non-empty, outbound mail for redirect and
+// vacation actions is dispatched via an SMTP client to that host.
 func New(cfg config.SieveConfig, d dict.Dict) *Engine {
-	return &Engine{cfg: cfg, dict: d}
+	var s *Sender
+	if cfg.SubmissionHost != "" {
+		s = newSender(cfg)
+	}
+	return &Engine{cfg: cfg, dict: d, sender: s}
 }
 
 // InitUser seeds the default yarilo.sieve script for a user on first delivery.
@@ -89,7 +96,22 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 		return nil, fmt.Errorf("sieve/engine: execute: %w", err)
 	}
 
-	return buildResult(d), nil
+	result := buildResult(d)
+
+	if e.sender != nil {
+		for _, r := range result.Redirects {
+			if err := e.sender.sendRedirect(ctx, opts.EnvFrom, r.Address, opts.MsgRaw); err != nil {
+				slog.Error("sieve: redirect failed", "user", opts.Username, "to", r.Address, "err", err)
+			}
+		}
+		for _, resp := range result.VacationReplies {
+			if err := e.sender.sendVacation(ctx, e.dict, opts, hdr, resp); err != nil {
+				slog.Error("sieve: vacation failed", "user", opts.Username, "err", err)
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // parseHeaders parses RFC 2822 headers from a raw message.
@@ -150,7 +172,6 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 			})
 		case interp.ActionRedirect:
 			if a.ListName != "" {
-				// extlists list-redirect deferred to Phase 2.
 				continue
 			}
 			result.Redirects = append(result.Redirects, Redirect{

@@ -411,12 +411,6 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				status.SetStatus(rcpt, nil)
 				continue
 			} else {
-				if len(result.Redirects) > 0 {
-					slog.Info("lmtp: sieve redirect deferred (Phase 2)", "rcpt", rcpt, "count", len(result.Redirects))
-				}
-				if len(result.VacationReplies) > 0 {
-					slog.Info("lmtp: sieve vacation deferred (Phase 2)", "rcpt", rcpt, "count", len(result.VacationReplies))
-				}
 				deliveries = result.Deliveries
 			}
 		}
