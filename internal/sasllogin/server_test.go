@@ -51,7 +51,7 @@ func (fa *fakeAuth) run() {
 func (fa *fakeAuth) handle(conn net.Conn) {
 	defer conn.Close()
 
-	// Send Dovecot auth client protocol handshake.
+	// Send yarilo-auth protocol handshake.
 	fmt.Fprintf(conn, "VERSION\tyarilo-auth\t1\t0\n")
 	fmt.Fprintf(conn, "MECH\tPLAIN\tplaintext\n")
 	fmt.Fprintf(conn, "MECH\tLOGIN\tplaintext\n")

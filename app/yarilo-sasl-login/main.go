@@ -1,10 +1,4 @@
 // yarilo-sasl-login proxies Postfix SASL authentication to yarilo-auth.
-//
-// Postfix configuration example:
-//
-//	smtpd_sasl_type        = dovecot
-//	smtpd_sasl_path        = inet:<yarilo-sasl-login-host>:12325
-//	smtpd_sasl_auth_enable = yes
 package main
 
 import (
