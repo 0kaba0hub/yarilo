@@ -109,6 +109,11 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 				slog.Error("sieve: vacation failed", "user", opts.Username, "err", err)
 			}
 		}
+		for _, n := range result.Notifications {
+			if err := e.sender.sendNotify(ctx, opts, n); err != nil {
+				slog.Error("sieve: notify failed", "user", opts.Username, "method", n.Method, "err", err)
+			}
+		}
 	}
 
 	return result, nil
@@ -178,6 +183,8 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 				Address: a.Address,
 				Copy:    a.Copy,
 			})
+		case interp.ActionNotify:
+			result.Notifications = append(result.Notifications, a)
 		}
 	}
 

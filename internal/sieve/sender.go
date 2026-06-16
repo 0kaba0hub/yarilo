@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/textproto"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -207,4 +208,59 @@ func isMailingList(hdr textproto.MIMEHeader) bool {
 func isAutoSubmitted(hdr textproto.MIMEHeader) bool {
 	v := strings.ToLower(strings.TrimSpace(hdr.Get("Auto-Submitted")))
 	return v != "" && v != "no"
+}
+
+// sendNotify dispatches an RFC 5435 enotify action.
+// Only the mailto: method is sent via SMTP; other methods are logged and dropped.
+func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.ActionNotify) error {
+	_ = ctx
+	if !strings.HasPrefix(strings.ToLower(n.Method), "mailto:") {
+		slog.Warn("sieve/sender: unsupported notify method, dropped", "method", n.Method, "user", opts.Username)
+		return nil
+	}
+
+	u, err := url.Parse(n.Method)
+	if err != nil {
+		return fmt.Errorf("sieve/sender: parse mailto URI %q: %w", n.Method, err)
+	}
+	recipient := u.Opaque
+	if recipient == "" {
+		return fmt.Errorf("sieve/sender: mailto URI has no recipient: %q", n.Method)
+	}
+
+	q := u.Query()
+	subject := q.Get("subject")
+	if subject == "" {
+		subject = "Notification"
+	}
+	body := n.Message
+	if body == "" {
+		body = q.Get("body")
+	}
+
+	from := opts.EnvTo
+	if from == "" {
+		from = n.From
+	}
+
+	msg := buildNotifyMessage(from, recipient, subject, body)
+	if err := s.submit("", []string{recipient}, bytes.NewReader(msg)); err != nil {
+		return fmt.Errorf("sieve/sender: notify send to %s: %w", recipient, err)
+	}
+	return nil
+}
+
+// buildNotifyMessage constructs a minimal RFC 5435 notification email.
+func buildNotifyMessage(from, to, subject, body string) []byte {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "From: %s\r\n", from)
+	fmt.Fprintf(&b, "To: %s\r\n", to)
+	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	b.WriteString("Auto-Submitted: auto-generated\r\n")
+	b.WriteString("X-Auto-Response-Suppress: All\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	b.WriteString("\r\n")
+	b.WriteString(body)
+	return b.Bytes()
 }

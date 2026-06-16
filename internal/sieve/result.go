@@ -41,4 +41,7 @@ type FilterResult struct {
 	Redirects []Redirect
 	// VacationReplies lists auto-replies the script wants sent.
 	VacationReplies []interp.VacationResponse
+	// Notifications lists enotify actions (RFC 5435).
+	// Only mailto: method is dispatched; other methods are logged and dropped.
+	Notifications []interp.ActionNotify
 }

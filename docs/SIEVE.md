@@ -19,8 +19,7 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 | `submission_host` | string | `""` | Upstream MTA for outbound mail (`host[:port]`, default port 25). Empty = redirect and vacation are silently dropped |
 | `submission_ssl` | string | `"no"` | Transport security: `no` \| `smtps` \| `starttls` |
 | `submission_timeout` | int | `30` | Connect and command timeout in seconds |
-| `submission_user` | string | `""` | SMTP AUTH username. Supports `${ENV_VAR}` expansion |
-| `submission_password` | string | `""` | SMTP AUTH password. Supports `${ENV_VAR}` expansion |
+| `submission_auth_secret` | string | `""` | Name of a Kubernetes Secret containing `user` and `password` keys for SMTP AUTH. Leave empty for unauthenticated relay |
 
 ### Helm `values.yaml` — top-level `sieve:` section
 
@@ -50,6 +49,29 @@ Vacation replies are skipped when:
 - The sender address is empty or `<>`.
 - The message has a `List-Id` header or `Precedence: bulk/list/junk`.
 - The message has `Auto-Submitted:` set to any value other than `no`.
+
+### Notifications (RFC 5435 `enotify`)
+
+The `notify` extension (RFC 5435) allows scripts to send notifications via an external method URI. Yarilo supports the `mailto:` method — the notification is sent as an email via the same `submission_host` as redirect and vacation.
+
+```sieve
+require ["notify"];
+notify :message "New mail arrived" "mailto:admin@example.com";
+```
+
+The `mailto:` URI may include `subject` and `body` query parameters:
+
+```
+mailto:admin@example.com?subject=Alert&body=You+have+mail
+```
+
+- **From**: the delivery envelope recipient (your mailbox address).
+- **Subject**: from the URI `subject=` parameter; defaults to `Notification` if absent.
+- **Body**: `ActionNotify.Message` (`:message` argument in the script), or URI `body=` parameter if the script provides no message.
+- **Envelope-from**: `<>` (null) to prevent mail loops.
+- **Auto-Submitted**: `auto-generated`.
+
+Methods other than `mailto:` (e.g. `xmpp:`, `sms:`) are logged at `WARN` level and silently dropped.
 
 ### Kubernetes secret for SMTP AUTH
 
