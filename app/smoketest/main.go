@@ -493,13 +493,8 @@ func checkManageSieve() error {
 	)
 	fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", creds)
 
-	// Login proxy responds OK, then proxies to backend which sends another capability block + OK.
 	if err := msieveDrainUntilOK(conn); err != nil {
 		return fmt.Errorf("AUTHENTICATE: %w", err)
-	}
-	// Drain backend post-auth greeting.
-	if err := msieveDrainUntilOK(conn); err != nil {
-		return fmt.Errorf("post-auth greeting: %w", err)
 	}
 
 	// LISTSCRIPTS
