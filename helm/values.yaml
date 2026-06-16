@@ -1195,3 +1195,10 @@ dicts:
 #       db: 0
 #       prefix: "yarilo:quota:"
 #     expire_secs: 86400
+#   # Required when sieve.enabled=true or manageSieve is enabled.
+#   sieve_scripts:
+#     driver: redis
+#     settings:
+#       addr: yarilo-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+#       db: 0
+#       prefix: "yarilo:sieve:"

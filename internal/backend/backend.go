@@ -189,6 +189,9 @@ func New(cfg *config.Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("backend: dicts.sieve_scripts: %w", err)
 		}
+		if sieveDict == nil {
+			return nil, fmt.Errorf("backend: dicts.sieve_scripts is required when sieve or managesieve is enabled")
+		}
 	}
 	var sieveEngine *sieve.Engine
 	if cfg.Sieve.Enabled && sieveDict != nil {
