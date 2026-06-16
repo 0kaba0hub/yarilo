@@ -69,6 +69,12 @@ dicts:
       db: 0
       prefix: "yarilo:quota:"
     expire_secs: 86400
+  sieve_scripts:
+    driver: redis
+    settings:
+      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
+      db: 0
+      prefix: "yarilo:sieve:"
 
 ## External MySQL — managed by mysql-sandbox.yaml; bundled StatefulSet disabled.
 mysql:
