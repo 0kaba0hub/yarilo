@@ -33,7 +33,7 @@ func newSender(cfg config.SieveConfig) *Sender {
 
 // sendRedirect forwards the original message to addr with the original envelope-from.
 func (s *Sender) sendRedirect(ctx context.Context, envFrom, addr string, raw []byte) error {
-	return s.submit(envFrom, []string{addr}, bytes.NewReader(raw))
+	return s.submit(ctx, envFrom, []string{addr}, bytes.NewReader(raw))
 }
 
 // sendVacation sends an RFC 5230 auto-reply to the original sender, after
@@ -73,7 +73,7 @@ func (s *Sender) sendVacation(
 	msg := buildVacationReply(from, sender, resp.Subject, resp.Body)
 
 	// Envelope-from is null to prevent mail loops (RFC 5230 §4.5).
-	if err := s.submit("", []string{sender}, bytes.NewReader(msg)); err != nil {
+	if err := s.submit(ctx, "", []string{sender}, bytes.NewReader(msg)); err != nil {
 		return fmt.Errorf("sieve/sender: vacation send: %w", err)
 	}
 
@@ -83,8 +83,8 @@ func (s *Sender) sendVacation(
 	return nil
 }
 
-func (s *Sender) submit(from string, to []string, body *bytes.Reader) error {
-	c, err := s.dial()
+func (s *Sender) submit(ctx context.Context, from string, to []string, body *bytes.Reader) error {
+	c, err := s.dial(ctx)
 	if err != nil {
 		return fmt.Errorf("sieve/sender: dial %s: %w", s.cfg.SubmissionHost, err)
 	}
@@ -107,7 +107,7 @@ func (s *Sender) submit(from string, to []string, body *bytes.Reader) error {
 	return nil
 }
 
-func (s *Sender) dial() (*goSmtp.Client, error) {
+func (s *Sender) dial(ctx context.Context) (*goSmtp.Client, error) {
 	host, port, err := net.SplitHostPort(s.cfg.SubmissionHost)
 	if err != nil {
 		// No port — use default 25.
@@ -115,22 +115,22 @@ func (s *Sender) dial() (*goSmtp.Client, error) {
 		port = "25"
 	}
 	addr := net.JoinHostPort(host, port)
-	ct := s.connectTimeout()
+	nd := &net.Dialer{Timeout: s.connectTimeout()}
 
 	var c *goSmtp.Client
 	switch strings.ToLower(s.cfg.SubmissionSSL) {
 	case "smtps", "submissions":
 		d := &tls.Dialer{
-			NetDialer: &net.Dialer{Timeout: ct},
+			NetDialer: nd,
 			Config:    &tls.Config{ServerName: host}, //nolint:gosec
 		}
-		conn, err := d.Dial("tcp", addr)
+		conn, err := d.DialContext(ctx, "tcp", addr)
 		if err != nil {
 			return nil, err
 		}
 		c = goSmtp.NewClient(conn)
 	case "starttls":
-		conn, err := net.DialTimeout("tcp", addr, ct)
+		conn, err := nd.DialContext(ctx, "tcp", addr)
 		if err != nil {
 			return nil, err
 		}
@@ -140,7 +140,7 @@ func (s *Sender) dial() (*goSmtp.Client, error) {
 			return nil, err
 		}
 	default:
-		conn, err := net.DialTimeout("tcp", addr, ct)
+		conn, err := nd.DialContext(ctx, "tcp", addr)
 		if err != nil {
 			return nil, err
 		}
@@ -213,7 +213,6 @@ func isAutoSubmitted(hdr textproto.MIMEHeader) bool {
 // sendNotify dispatches an RFC 5435 enotify action.
 // Only the mailto: method is sent via SMTP; other methods are logged and dropped.
 func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.ActionNotify) error {
-	_ = ctx
 	if !strings.HasPrefix(strings.ToLower(n.Method), "mailto:") {
 		slog.Warn("sieve/sender: unsupported notify method, dropped", "method", n.Method, "user", opts.Username)
 		return nil
@@ -244,7 +243,7 @@ func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.Ac
 	}
 
 	msg := buildNotifyMessage(from, recipient, subject, body)
-	if err := s.submit("", []string{recipient}, bytes.NewReader(msg)); err != nil {
+	if err := s.submit(ctx, "", []string{recipient}, bytes.NewReader(msg)); err != nil {
 		return fmt.Errorf("sieve/sender: notify send to %s: %w", recipient, err)
 	}
 	return nil
