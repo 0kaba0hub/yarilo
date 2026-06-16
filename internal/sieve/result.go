@@ -11,7 +11,6 @@ type Delivery struct {
 }
 
 // Redirect is a forward-to-address action produced by a Sieve script.
-// Requires SMTP relay — collected by Filter but not executed until Phase 2.
 type Redirect struct {
 	Address string
 	Copy    bool // :copy — message also delivered to primary folder
@@ -39,9 +38,10 @@ type FilterResult struct {
 	// Reject is non-nil when the script requested message rejection.
 	Reject *RejectErr
 	// Redirects lists addresses to forward the message to.
-	// Requires SMTP relay (Phase 2) — collected but not acted upon yet.
 	Redirects []Redirect
 	// VacationReplies lists auto-replies the script wants sent.
-	// Requires SMTP relay (Phase 2) — collected but not acted upon yet.
 	VacationReplies []interp.VacationResponse
+	// Notifications lists enotify actions (RFC 5435).
+	// Only mailto: method is dispatched; other methods are logged and dropped.
+	Notifications []interp.ActionNotify
 }

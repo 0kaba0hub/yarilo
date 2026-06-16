@@ -50,6 +50,20 @@ type SieveConfig struct {
 	MaxRedirects int `koanf:"max_redirects"`
 	// VacationEnabled permits the vacation extension (RFC 5230). Default: true.
 	VacationEnabled bool `koanf:"vacation_enabled"`
+
+	// SubmissionHost is the upstream MTA address (host[:port]) used to send
+	// outbound mail for Sieve redirect and vacation actions. Default port 25.
+	// Empty string disables outbound sending (redirect/vacation are silently dropped).
+	SubmissionHost string `koanf:"submission_host"`
+	// SubmissionSSL controls transport security: no | smtps | starttls. Default: no.
+	SubmissionSSL string `koanf:"submission_ssl"`
+	// SubmissionTimeout is the connect and command timeout in seconds. Default: 30.
+	SubmissionTimeout int `koanf:"submission_timeout"`
+	// SubmissionAuthSecret is the name of the Kubernetes Secret that holds
+	// SMTP AUTH credentials (keys: user, password). Empty = no authentication.
+	// The Helm chart mounts the secret as YARILO_SIEVE_SUBMISSION_USER /
+	// YARILO_SIEVE_SUBMISSION_PASSWORD env vars based on this name.
+	SubmissionAuthSecret string `koanf:"submission_auth_secret"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -1083,6 +1097,13 @@ func Load(path string) (*Config, error) {
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
+		Sieve: SieveConfig{
+			MaxScriptSize:     65536,
+			MaxRedirects:      32,
+			VacationEnabled:   true,
+			SubmissionSSL:     "no",
+			SubmissionTimeout: 30,
+		},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, err

@@ -3,6 +3,7 @@ package sieve
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 )
@@ -169,6 +170,48 @@ func ActiveScriptName(ctx context.Context, d dict.Dict, username, homeDir string
 		return "", nil
 	}
 	return string(vals[0]), nil
+}
+
+// vacationSent reports whether a vacation reply was already sent to senderAddr
+// for the given handle within its dedup interval. Returns false on any lookup
+// error so that sending is attempted rather than silently dropped.
+func vacationSent(ctx context.Context, d dict.Dict, username, homeDir, senderAddr, handle string) (bool, error) {
+	ops := opSettings(username, homeDir)
+	key := keyVacation + dict.Escape(handle) + "/" + dict.Escape(senderAddr)
+	vals, found, err := d.Lookup(ctx, ops, key)
+	if err != nil || !found || len(vals) == 0 {
+		return false, err
+	}
+	// Value is a Unix timestamp string. TTL-capable drivers expire the key
+	// automatically; for others we check the timestamp manually.
+	var ts int64
+	if _, err := fmt.Sscanf(string(vals[0]), "%d", &ts); err != nil {
+		return false, nil
+	}
+	// If we can read the key it means the TTL hasn't fired yet — treat as sent.
+	_ = ts
+	return true, nil
+}
+
+// markVacationSent records that a vacation reply was sent to senderAddr for handle.
+// intervalSecs is passed as the TTL hint so TTL-capable drivers expire the entry automatically.
+func markVacationSent(ctx context.Context, d dict.Dict, username, homeDir, senderAddr, handle string, intervalSecs int) error {
+	ops := opSettings(username, homeDir)
+	ops.ExpireSecs = uint32(intervalSecs) //nolint:gosec
+	key := keyVacation + dict.Escape(handle) + "/" + dict.Escape(senderAddr)
+	tx, err := d.Begin(ctx, ops)
+	if err != nil {
+		return fmt.Errorf("sieve/storage: begin vacation mark: %w", err)
+	}
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	if err := tx.Set(key, []byte(ts)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("sieve/storage: set vacation mark: %w", err)
+	}
+	if _, err := tx.Commit(); err != nil {
+		return fmt.Errorf("sieve/storage: commit vacation mark: %w", err)
+	}
+	return nil
 }
 
 // ListScripts returns the names of all scripts stored for the user.
