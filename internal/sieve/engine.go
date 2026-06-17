@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/textproto"
+	"sync"
 
 	gosieve "github.com/foxcpp/go-sieve"
 	"github.com/foxcpp/go-sieve/interp"
@@ -17,9 +18,10 @@ import (
 
 // Engine executes Sieve scripts during LMTP delivery.
 type Engine struct {
-	cfg    config.SieveConfig
-	dict   dict.Dict
-	sender *Sender
+	cfg         config.SieveConfig
+	dict        dict.Dict
+	sender      *Sender
+	dupTrackers sync.Map // username → *interp.MemoryDuplicateTracker
 }
 
 // New creates a Sieve Engine backed by the given dict for script storage.
@@ -92,6 +94,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 	}
 
 	d := gosieve.NewRuntimeData(script, pol, env, msg)
+	d.DuplicateTracker = e.dupTracker(opts.Username)
 	if err := script.Execute(ctx, d); err != nil {
 		return nil, fmt.Errorf("sieve/engine: execute: %w", err)
 	}
@@ -193,4 +196,9 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 	}
 
 	return result
+}
+
+func (e *Engine) dupTracker(username string) *interp.MemoryDuplicateTracker {
+	v, _ := e.dupTrackers.LoadOrStore(username, interp.NewMemoryDuplicateTracker())
+	return v.(*interp.MemoryDuplicateTracker)
 }
