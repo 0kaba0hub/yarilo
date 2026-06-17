@@ -1454,6 +1454,9 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		return nil, err
 	}
 
+	needsBody := len(criteria.Header) > 0 || len(criteria.Body) > 0 || len(criteria.Text) > 0 ||
+		!criteria.SentSince.IsZero() || !criteria.SentBefore.IsZero() || searchNeedsBodyRecurse(criteria.Not, criteria.Or)
+
 	// Collect both representations — clients may want UID set OR sequence
 	// numbers via RETURN ALL, while MIN/MAX/COUNT always operate on the
 	// kind requested.
@@ -1467,7 +1470,34 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	)
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
-		if !matchesCriteriaSeq(m, seqNum, criteria) {
+
+		var rawMsg []byte
+		if needsBody && m.Filename != "" {
+			if rc, err := s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier); err == nil {
+				rawMsg, _ = io.ReadAll(rc)
+				rc.Close()
+			}
+		}
+
+		imapFlags := make([]imaplib.Flag, len(m.Flags)+len(m.Keywords))
+		for j, f := range m.Flags {
+			imapFlags[j] = imaplib.Flag(f)
+		}
+		for j, k := range m.Keywords {
+			imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
+		}
+
+		if !imapserver.MatchMessage(seqNum, imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, rawMsg, criteria) {
+			continue
+		}
+
+		// CONDSTORE SEARCH MODSEQ filter — RFC 7162 §3.1.5.
+		// MetadataName/MetadataType narrow which attribute's modseq to compare;
+		// per-attribute modseq tracking is future work, so we treat any
+		// criteria.ModSeq as "message-level modseq" and ignore the attribute
+		// qualifier — strictly more permissive (returns extra matches), which
+		// is RFC-acceptable.
+		if criteria.ModSeq != nil && m.ModSeq < criteria.ModSeq.ModSeq {
 			continue
 		}
 		hitCount++
@@ -1531,7 +1561,21 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 			// Sequence-number SEARCH still saves UIDs (RFC 5182 §2.1).
 			var saved imaplib.UIDSet
 			for i, m := range msgs {
-				if matchesCriteriaSeq(m, uint32(i+1), criteria) {
+				var raw []byte
+				if needsBody && m.Filename != "" {
+					if rc, err := s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier); err == nil {
+						raw, _ = io.ReadAll(rc)
+						rc.Close()
+					}
+				}
+				imapFlags := make([]imaplib.Flag, len(m.Flags)+len(m.Keywords))
+				for j, f := range m.Flags {
+					imapFlags[j] = imaplib.Flag(f)
+				}
+				for j, k := range m.Keywords {
+					imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
+				}
+				if imapserver.MatchMessage(uint32(i+1), imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, raw, criteria) {
 					saved.AddNum(imaplib.UID(m.UID))
 				}
 			}
@@ -2275,46 +2319,26 @@ func numSetContains(numSet imaplib.NumSet, seqNum uint32, uid imaplib.UID) bool 
 	return false
 }
 
-// matchesCriteriaSeq evaluates a SearchCriteria against a single message.
-// seqNum supplies the message's 1-based sequence number; 0 means "unknown"
-// and any criteria.SeqNum filter then short-circuits to not-matched.
-func matchesCriteriaSeq(m *mailbox.MessageMeta, seqNum uint32, criteria *imaplib.SearchCriteria) bool {
-	if criteria == nil {
-		return true
-	}
-	for _, f := range criteria.Flag {
-		if !hasFlag(m.Flags, string(f)) {
-			return false
+// searchNeedsBodyRecurse reports whether any criteria in the Not/Or lists
+// requires the raw message body (Header, Body, Text, SentSince, SentBefore).
+func searchNeedsBodyRecurse(not []imaplib.SearchCriteria, or [][2]imaplib.SearchCriteria) bool {
+	for i := range not {
+		if searchCriteriaHasBody(&not[i]) {
+			return true
 		}
 	}
-	for _, f := range criteria.NotFlag {
-		if hasFlag(m.Flags, string(f)) {
-			return false
+	for i := range or {
+		if searchCriteriaHasBody(&or[i][0]) || searchCriteriaHasBody(&or[i][1]) {
+			return true
 		}
 	}
-	// Each entry in criteria.UID / criteria.SeqNum is an AND condition (the
-	// message must fall within EVERY listed set). Per RFC 9051 §6.4.4.
-	for _, set := range criteria.UID {
-		if !set.Contains(imaplib.UID(m.UID)) {
-			return false
-		}
-	}
-	for _, set := range criteria.SeqNum {
-		if seqNum == 0 || !set.Contains(seqNum) {
-			return false
-		}
-	}
-	// CONDSTORE SEARCH MODSEQ filter — RFC 7162 §3.1.5.
-	// Match only messages whose modseq is >= the supplied value.
-	// MetadataName/MetadataType narrow which attribute's modseq to compare;
-	// per-attribute modseq tracking is future work, so we treat any
-	// criteria.ModSeq as "message-level modseq" and ignore the attribute
-	// qualifier — strictly more permissive (returns extra matches), which
-	// is RFC-acceptable.
-	if criteria.ModSeq != nil && m.ModSeq < criteria.ModSeq.ModSeq {
-		return false
-	}
-	return true
+	return false
+}
+
+func searchCriteriaHasBody(c *imaplib.SearchCriteria) bool {
+	return len(c.Header) > 0 || len(c.Body) > 0 || len(c.Text) > 0 ||
+		!c.SentSince.IsZero() || !c.SentBefore.IsZero() ||
+		searchNeedsBodyRecurse(c.Not, c.Or)
 }
 
 func applyStoreFlags(current []string, store *imaplib.StoreFlags) []string {
