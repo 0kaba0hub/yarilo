@@ -34,16 +34,16 @@ spec:
               value: "yarilo-lmtp"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
-            {{- if (.Values.sieve | default dict).submissionAuthSecret }}
+            {{- with ((.Values.sieve | default dict).submission | default dict).authSecret }}
             - name: YARILO_SIEVE_SUBMISSION_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.sieve.submissionAuthSecret }}
+                  name: {{ . }}
                   key: user
             - name: YARILO_SIEVE_SUBMISSION_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.sieve.submissionAuthSecret }}
+                  name: {{ . }}
                   key: password
             {{- end }}
             {{- with .Values.extraEnv }}

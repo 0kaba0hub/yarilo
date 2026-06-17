@@ -161,14 +161,15 @@ data:
 
     sieve:
       {{- $sieve := (.Values.sieve | default dict) }}
+      {{- $sub := ($sieve.submission | default dict) }}
       enabled: {{ $sieve.enabled | default false }}
       max_script_size: {{ $sieve.maxScriptSize | default 65536 }}
       max_redirects: {{ $sieve.maxRedirects | default 32 }}
       vacation_enabled: {{ $sieve.vacationEnabled | default true }}
-      submission_host: {{ $sieve.submissionHost | default "" | quote }}
-      submission_ssl: {{ $sieve.submissionSSL | default "no" | quote }}
-      submission_timeout: {{ $sieve.submissionTimeout | default 30 }}
-      submission_auth_secret: {{ $sieve.submissionAuthSecret | default "" | quote }}
+      submission_host: {{ $sub.host | default "" | quote }}
+      submission_ssl: {{ $sub.ssl | default "no" | quote }}
+      submission_timeout: {{ $sub.timeout | default 30 }}
+      submission_auth_secret: {{ $sub.authSecret | default "" | quote }}
 
     auth:
       failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
