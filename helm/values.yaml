@@ -947,6 +947,9 @@ protocol:
 ## -------------------------------------------------------------------
 sieve:
   enabled: false
+  ## defaultName is the reserved script name used as the active-pointer entry point.
+  ## Corresponds to Dovecot's sieve_default_name. Default: "yarilo".
+  defaultName: "yarilo"
   maxScriptSize: 65536
   maxRedirects: 32
   vacationEnabled: true
@@ -955,6 +958,11 @@ sieve:
     ssl: "no"
     timeout: 30
     authSecret: ""
+  ## globalBefore / globalAfter: ordered lists of absolute paths to .sieve files
+  ## executed before / after each user's active script. Admin-defined rules.
+  ## Files must be present on the pod filesystem (e.g. via ConfigMap volume mount).
+  globalBefore: []
+  globalAfter: []
 
 ## -------------------------------------------------------------------
 ## General infrastructure
@@ -1196,10 +1204,11 @@ dicts:
 #       db: 0
 #       prefix: "yarilo:quota:"
 #     expire_secs: 86400
-#   # Required when sieve.enabled=true or manageSieve is enabled.
-#   sieve_scripts:
+#   # Optional: vacation dedup tracking (sieve vacation extension).
+#   # Scripts are stored on the filesystem; this dict is only for vacation dedup.
+#   sieve_vacation:
 #     driver: redis
 #     settings:
 #       addr: yarilo-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
 #       db: 0
-#       prefix: "yarilo:sieve:"
+#       prefix: "yarilo:sieve:vacation:%u:"
