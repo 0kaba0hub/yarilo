@@ -50,16 +50,12 @@ type Server struct {
 	submission  *submsvr.Server // nil if no Submission/Submissions is active
 	lmtp        *lmtp.Server    // nil if LMTP not configured
 	managesieve *mssvr.Server   // nil if ManageSieve not configured
-	sieveDict   dict.Dict       // shared between LMTP engine and ManageSieve
 	locker      locks.Locker    // cross-process write coordinator; nil = disabled
 }
 
 // Close releases backend resources. Session binaries should defer Close after
 // backend.New for clean lock and dict release.
 func (s *Server) Close() error {
-	if s.sieveDict != nil {
-		_ = s.sieveDict.Close()
-	}
 	if s.locker != nil {
 		return s.locker.Close()
 	}
@@ -183,19 +179,9 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// ---- sieve ----
 	svcs := cfg.Services
-	var sieveDict dict.Dict
-	if cfg.Sieve.Enabled || svcs.ManageSieveBE.Active() {
-		sieveDict, err = buildDict(cfg.Dicts, "sieve_scripts")
-		if err != nil {
-			return nil, fmt.Errorf("backend: dicts.sieve_scripts: %w", err)
-		}
-		if sieveDict == nil {
-			return nil, fmt.Errorf("backend: dicts.sieve_scripts is required when sieve or managesieve is enabled")
-		}
-	}
 	var sieveEngine *sieve.Engine
-	if cfg.Sieve.Enabled && sieveDict != nil {
-		sieveEngine = sieve.New(cfg.Sieve, sieveDict)
+	if cfg.Sieve.Enabled {
+		sieveEngine = sieve.New(cfg.Sieve, locker)
 	}
 
 	// ---- IMAP ----
@@ -408,11 +394,12 @@ func New(cfg *config.Config) (*Server, error) {
 	var msServer *mssvr.Server
 	if svcs.ManageSieveBE.Active() {
 		msServer = mssvr.New(mssvr.Options{
-			Dict:     sieveDict,
-			Resolver: resolver,
-			Config:   cfg.Protocol.ManageSieve,
-			AuthAddr: authAddr,
-			AuthTLS:  authTLS,
+			Locker:      locker,
+			DefaultName: cfg.Sieve.DefaultName,
+			Resolver:    resolver,
+			Config:      cfg.Protocol.ManageSieve,
+			AuthAddr:    authAddr,
+			AuthTLS:     authTLS,
 		})
 	}
 
@@ -431,7 +418,6 @@ func New(cfg *config.Config) (*Server, error) {
 		submission:  smtpServer,
 		lmtp:        lmtpServer,
 		managesieve: msServer,
-		sieveDict:   sieveDict,
 		locker:      locker,
 	}, nil
 }

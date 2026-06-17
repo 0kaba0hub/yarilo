@@ -50,6 +50,7 @@ protocol:
 
 sieve:
   enabled: true
+  defaultName: "yarilo"
   maxScriptSize: 65536
   maxRedirects: 32
   vacationEnabled: true
@@ -57,6 +58,8 @@ sieve:
     host: "relay-fwd.yarilo-relay.svc.cluster.local:25"
     ssl: "no"
     authSecret: "sieve-smtp-auth"
+  globalBefore: []
+  globalAfter: []
 
 dicts:
   metadata:
@@ -73,12 +76,12 @@ dicts:
       db: 0
       prefix: "yarilo:quota:"
     expire_secs: 86400
-  sieve_scripts:
+  sieve_vacation:
     driver: redis
     settings:
       addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
       db: 0
-      prefix: "yarilo:sieve:"
+      prefix: "yarilo:sieve:vacation:%u:"
 
 ## External MySQL — managed by mysql-sandbox.yaml; bundled StatefulSet disabled.
 mysql:

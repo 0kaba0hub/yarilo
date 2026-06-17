@@ -1,234 +1,122 @@
 package sieve
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
 
-const (
-	keyActive   = dict.PathPrivate + "sieve/active"
-	keyScript   = dict.PathPrivate + "sieve/script/"
-	keyVacation = dict.PathPrivate + "sieve/vacation/"
-)
-
-// DefaultScriptName is the name given to the initial Sieve script created for a user.
-const DefaultScriptName = "yarilo.sieve"
-
-// DefaultScriptBody is the content of the initial script (keep = deliver normally).
+// DefaultScriptBody is the content written by FsInitUser on first delivery.
 const DefaultScriptBody = "keep;\n"
 
-func opSettings(username, homeDir string) *dict.OpSettings {
-	return &dict.OpSettings{Username: username, HomeDir: homeDir}
+const (
+	vacationFileName = ".yarilo.sieve-vacation"
+	vacationVersion  = uint32(1)
+)
+
+func vacationFilePath(homeDir string) string {
+	return filepath.Join(homeDir, vacationFileName)
 }
 
-// loadActiveScript returns the source of the currently active script and its name.
-// Returns (nil, "", nil) when no active script is configured.
-func loadActiveScript(ctx context.Context, d dict.Dict, username, homeDir string) (src []byte, name string, err error) {
-	ops := opSettings(username, homeDir)
-
-	vals, found, err := d.Lookup(ctx, ops, keyActive)
-	if err != nil {
-		return nil, "", fmt.Errorf("sieve/storage: lookup active: %w", err)
-	}
-	if !found || len(vals) == 0 {
-		return nil, "", nil
-	}
-	name = string(vals[0])
-
-	vals, found, err = d.Lookup(ctx, ops, keyScript+dict.Escape(name))
-	if err != nil {
-		return nil, "", fmt.Errorf("sieve/storage: lookup script %q: %w", name, err)
-	}
-	if !found || len(vals) == 0 {
-		return nil, "", nil
-	}
-	return vals[0], name, nil
+func vacationID(handle, senderAddr string) string {
+	return handle + "/" + senderAddr
 }
 
-// InitUser writes the default yarilo.sieve script and marks it active if the
-// user has no active script yet. Safe to call on every delivery (no-op when
-// the key already exists).
-func InitUser(ctx context.Context, d dict.Dict, username, homeDir string) error {
-	ops := opSettings(username, homeDir)
-
-	_, found, err := d.Lookup(ctx, ops, keyActive)
-	if err != nil {
-		return fmt.Errorf("sieve/storage: init user check: %w", err)
-	}
-	if found {
-		return nil
-	}
-
-	tx, err := d.Begin(ctx, ops)
-	if err != nil {
-		return fmt.Errorf("sieve/storage: begin init: %w", err)
-	}
-	if err := tx.Set(keyScript+dict.Escape(DefaultScriptName), []byte(DefaultScriptBody)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: set default script: %w", err)
-	}
-	if err := tx.Set(keyActive, []byte(DefaultScriptName)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: set active: %w", err)
-	}
-	if _, err := tx.Commit(); err != nil {
-		return fmt.Errorf("sieve/storage: commit init: %w", err)
-	}
-	return nil
+type vacationRecord struct {
+	expiresAt uint32
+	id        string
 }
 
-// SaveScript writes or overwrites a named script.
-func SaveScript(ctx context.Context, d dict.Dict, username, homeDir, name string, src []byte) error {
-	ops := opSettings(username, homeDir)
-	tx, err := d.Begin(ctx, ops)
+func readVacationRecords(homeDir string) ([]vacationRecord, error) {
+	data, err := os.ReadFile(vacationFilePath(homeDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return fmt.Errorf("sieve/storage: begin save: %w", err)
+		return nil, fmt.Errorf("sieve/vacation: read file: %w", err)
 	}
-	if err := tx.Set(keyScript+dict.Escape(name), src); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: set script %q: %w", name, err)
+	if len(data) < 4 {
+		return nil, nil
 	}
-	if _, err := tx.Commit(); err != nil {
-		return fmt.Errorf("sieve/storage: commit save: %w", err)
+	if binary.LittleEndian.Uint32(data[:4]) != vacationVersion {
+		return nil, nil
 	}
-	return nil
+	data = data[4:]
+	var records []vacationRecord
+	for len(data) >= 8 {
+		exp := binary.LittleEndian.Uint32(data[0:4])
+		idLen := binary.LittleEndian.Uint32(data[4:8])
+		data = data[8:]
+		if uint32(len(data)) < idLen {
+			break
+		}
+		id := string(data[:idLen])
+		data = data[idLen:]
+		records = append(records, vacationRecord{expiresAt: exp, id: id})
+	}
+	return records, nil
 }
 
-// SetActive marks the named script as active.
-func SetActive(ctx context.Context, d dict.Dict, username, homeDir, name string) error {
-	ops := opSettings(username, homeDir)
-	tx, err := d.Begin(ctx, ops)
+func writeVacationRecords(homeDir string, records []vacationRecord) error {
+	var buf bytes.Buffer
+	hdr := make([]byte, 8)
+	binary.LittleEndian.PutUint32(hdr[:4], vacationVersion)
+	buf.Write(hdr[:4])
+	for _, r := range records {
+		idBytes := []byte(r.id)
+		binary.LittleEndian.PutUint32(hdr[0:4], r.expiresAt)
+		binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(idBytes)))
+		buf.Write(hdr[:8])
+		buf.Write(idBytes)
+	}
+	tmp := vacationFilePath(homeDir) + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("sieve/vacation: write tmp: %w", err)
+	}
+	return os.Rename(tmp, vacationFilePath(homeDir))
+}
+
+// vacationSent reports whether a vacation reply was already sent for handle+senderAddr.
+func vacationSent(_ context.Context, homeDir, handle, senderAddr string) (bool, error) {
+	records, err := readVacationRecords(homeDir)
 	if err != nil {
-		return fmt.Errorf("sieve/storage: begin setactive: %w", err)
-	}
-	if err := tx.Set(keyActive, []byte(name)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: set active %q: %w", name, err)
-	}
-	if _, err := tx.Commit(); err != nil {
-		return fmt.Errorf("sieve/storage: commit setactive: %w", err)
-	}
-	return nil
-}
-
-// DeactivateScript removes the active-script pointer (no script = implicit keep).
-func DeactivateScript(ctx context.Context, d dict.Dict, username, homeDir string) error {
-	ops := opSettings(username, homeDir)
-	tx, err := d.Begin(ctx, ops)
-	if err != nil {
-		return fmt.Errorf("sieve/storage: begin deactivate: %w", err)
-	}
-	if err := tx.Unset(keyActive); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: unset active: %w", err)
-	}
-	if _, err := tx.Commit(); err != nil {
-		return fmt.Errorf("sieve/storage: commit deactivate: %w", err)
-	}
-	return nil
-}
-
-// DeleteScript removes a named script. The caller must ensure it is not active.
-func DeleteScript(ctx context.Context, d dict.Dict, username, homeDir, name string) error {
-	ops := opSettings(username, homeDir)
-	tx, err := d.Begin(ctx, ops)
-	if err != nil {
-		return fmt.Errorf("sieve/storage: begin delete: %w", err)
-	}
-	if err := tx.Unset(keyScript + dict.Escape(name)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: unset script %q: %w", name, err)
-	}
-	if _, err := tx.Commit(); err != nil {
-		return fmt.Errorf("sieve/storage: commit delete: %w", err)
-	}
-	return nil
-}
-
-// GetScript retrieves the source of a named script.
-// Returns (nil, false, nil) when the script does not exist.
-func GetScript(ctx context.Context, d dict.Dict, username, homeDir, name string) ([]byte, bool, error) {
-	ops := opSettings(username, homeDir)
-	vals, found, err := d.Lookup(ctx, ops, keyScript+dict.Escape(name))
-	if err != nil || !found || len(vals) == 0 {
-		return nil, found, err
-	}
-	return vals[0], true, nil
-}
-
-// ActiveScriptName returns the name of the currently active script, or "" if none.
-func ActiveScriptName(ctx context.Context, d dict.Dict, username, homeDir string) (string, error) {
-	ops := opSettings(username, homeDir)
-	vals, found, err := d.Lookup(ctx, ops, keyActive)
-	if err != nil {
-		return "", fmt.Errorf("sieve/storage: lookup active: %w", err)
-	}
-	if !found || len(vals) == 0 {
-		return "", nil
-	}
-	return string(vals[0]), nil
-}
-
-// vacationSent reports whether a vacation reply was already sent to senderAddr
-// for the given handle within its dedup interval. Returns false on any lookup
-// error so that sending is attempted rather than silently dropped.
-func vacationSent(ctx context.Context, d dict.Dict, username, homeDir, senderAddr, handle string) (bool, error) {
-	ops := opSettings(username, homeDir)
-	key := keyVacation + dict.Escape(handle) + "/" + dict.Escape(senderAddr)
-	vals, found, err := d.Lookup(ctx, ops, key)
-	if err != nil || !found || len(vals) == 0 {
 		return false, err
 	}
-	// Value is a Unix timestamp string. TTL-capable drivers expire the key
-	// automatically; for others we check the timestamp manually.
-	var ts int64
-	if _, err := fmt.Sscanf(string(vals[0]), "%d", &ts); err != nil {
-		return false, nil
-	}
-	// If we can read the key it means the TTL hasn't fired yet — treat as sent.
-	_ = ts
-	return true, nil
-}
-
-// markVacationSent records that a vacation reply was sent to senderAddr for handle.
-// intervalSecs is passed as the TTL hint so TTL-capable drivers expire the entry automatically.
-func markVacationSent(ctx context.Context, d dict.Dict, username, homeDir, senderAddr, handle string, intervalSecs int) error {
-	ops := opSettings(username, homeDir)
-	ops.ExpireSecs = uint32(intervalSecs) //nolint:gosec
-	key := keyVacation + dict.Escape(handle) + "/" + dict.Escape(senderAddr)
-	tx, err := d.Begin(ctx, ops)
-	if err != nil {
-		return fmt.Errorf("sieve/storage: begin vacation mark: %w", err)
-	}
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	if err := tx.Set(key, []byte(ts)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: set vacation mark: %w", err)
-	}
-	if _, err := tx.Commit(); err != nil {
-		return fmt.Errorf("sieve/storage: commit vacation mark: %w", err)
-	}
-	return nil
-}
-
-// ListScripts returns the names of all scripts stored for the user.
-func ListScripts(ctx context.Context, d dict.Dict, username, homeDir string) ([]string, error) {
-	ops := opSettings(username, homeDir)
-	it, err := d.Iterate(ctx, ops, keyScript, dict.IterNoValue)
-	if err != nil {
-		return nil, fmt.Errorf("sieve/storage: iterate scripts: %w", err)
-	}
-	defer it.Close()
-
-	var names []string
-	for it.Next() {
-		key := it.Key()
-		if len(key) > len(keyScript) {
-			names = append(names, dict.Unescape(key[len(keyScript):]))
+	now := uint32(time.Now().Unix())
+	id := vacationID(handle, senderAddr)
+	for _, r := range records {
+		if r.expiresAt > now && r.id == id {
+			return true, nil
 		}
 	}
-	return names, it.Err()
+	return false, nil
+}
+
+// markVacationSent records a sent vacation reply and evicts expired entries.
+func markVacationSent(ctx context.Context, l locks.Locker, homeDir, handle, senderAddr string, ttlSecs int) error {
+	return withSieveLock(ctx, l, homeDir, func(ctx context.Context) error {
+		records, err := readVacationRecords(homeDir)
+		if err != nil {
+			return err
+		}
+		now := uint32(time.Now().Unix())
+		active := records[:0]
+		for _, r := range records {
+			if r.expiresAt > now {
+				active = append(active, r)
+			}
+		}
+		active = append(active, vacationRecord{
+			expiresAt: now + uint32(ttlSecs), //nolint:gosec
+			id:        vacationID(handle, senderAddr),
+		})
+		return writeVacationRecords(homeDir, active)
+	})
 }

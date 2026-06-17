@@ -64,6 +64,19 @@ type SieveConfig struct {
 	// The Helm chart mounts the secret as YARILO_SIEVE_SUBMISSION_USER /
 	// YARILO_SIEVE_SUBMISSION_PASSWORD env vars based on this name.
 	SubmissionAuthSecret string `koanf:"submission_auth_secret"`
+
+	// DefaultName is the reserved name of the per-user default Sieve script
+	// (the active-pointer entry point). Corresponds to Dovecot's sieve_default_name.
+	// Default: "yarilo".
+	DefaultName string `koanf:"default_name"`
+
+	// GlobalBefore is an ordered list of paths to .sieve script files executed
+	// before the user's active script. Admin-defined rules; applied to every
+	// message regardless of per-user settings.
+	GlobalBefore []string `koanf:"global_before"`
+	// GlobalAfter is an ordered list of paths to .sieve script files executed
+	// after the user's active script.
+	GlobalAfter []string `koanf:"global_after"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -1098,6 +1111,7 @@ func Load(path string) (*Config, error) {
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
 		Sieve: SieveConfig{
+			DefaultName:       "yarilo",
 			MaxScriptSize:     65536,
 			MaxRedirects:      32,
 			VacationEnabled:   true,

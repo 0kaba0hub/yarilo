@@ -9,21 +9,8 @@ import (
 	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/sieve"
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/memory"
 )
 
-func newMemDict(t *testing.T) dict.Dict {
-	t.Helper()
-	d, err := dict.Open(dict.Config{Driver: "memory"})
-	if err != nil {
-		t.Fatalf("open memory dict: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-	return d
-}
-
-// testClient wraps the client side of a net.Pipe() and reads ManageSieve responses.
 type testClient struct {
 	t    *testing.T
 	conn net.Conn
@@ -39,8 +26,7 @@ func (c *testClient) send(line string) {
 	}
 }
 
-// readUntilResult reads lines until it sees OK, NO, or BYE. Returns the full
-// response lines and whether the final status line starts with "OK".
+// readUntilResult reads lines until it sees OK, NO, or BYE.
 func (c *testClient) readUntilResult() (lines []string, ok bool) {
 	c.t.Helper()
 	for {
@@ -59,9 +45,11 @@ func (c *testClient) readUntilResult() (lines []string, ok bool) {
 	}
 }
 
-// runSession starts a session goroutine and returns a testClient connected to it.
-// The greeting is consumed automatically; callers start from the first command.
-func runSession(t *testing.T, d dict.Dict) *testClient {
+func newTestStore() *sieve.ScriptStore {
+	return &sieve.ScriptStore{DefaultName: sieve.FallbackDefaultName, Locker: nil}
+}
+
+func runSession(t *testing.T, store *sieve.ScriptStore, homeDir string) *testClient {
 	t.Helper()
 	client, server := net.Pipe()
 	sess := &session{
@@ -69,8 +57,8 @@ func runSession(t *testing.T, d dict.Dict) *testClient {
 		r:        bufio.NewReader(server),
 		w:        bufio.NewWriter(server),
 		username: "u1@example.com",
-		homeDir:  "/home/u1",
-		dict:     d,
+		homeDir:  homeDir,
+		store:    store,
 		maxSize:  65536,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -79,7 +67,6 @@ func runSession(t *testing.T, d dict.Dict) *testClient {
 
 	tc := &testClient{t: t, conn: client, r: bufio.NewReader(client)}
 	t.Cleanup(tc.close)
-	// Consume the greeting.
 	_, ok := tc.readUntilResult()
 	if !ok {
 		t.Fatal("session greeting returned non-OK")
@@ -89,12 +76,12 @@ func runSession(t *testing.T, d dict.Dict) *testClient {
 
 type sessionCase struct {
 	name  string
-	setup func(ctx context.Context, d dict.Dict)
+	setup func(ctx context.Context, store *sieve.ScriptStore, homeDir string)
 	steps []struct {
 		send    string
 		wantOK  bool
-		wantIn  string // substring expected anywhere in response
-		wantNot string // substring expected absent from response
+		wantIn  string
+		wantNot string
 	}
 }
 
@@ -146,8 +133,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "GETSCRIPT",
-		setup: func(ctx context.Context, d dict.Dict) {
-			_ = sieve.SaveScript(ctx, d, "u1@example.com", "/home/u1", "my.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, homeDir, "my.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -171,8 +158,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "SETACTIVE and LISTSCRIPTS shows ACTIVE",
-		setup: func(ctx context.Context, d dict.Dict) {
-			_ = sieve.SaveScript(ctx, d, "u1@example.com", "/home/u1", "a.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, homeDir, "a.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -186,9 +173,9 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "SETACTIVE empty deactivates",
-		setup: func(ctx context.Context, d dict.Dict) {
-			_ = sieve.SaveScript(ctx, d, "u1@example.com", "/home/u1", "a.sieve", []byte("keep;\n"))
-			_ = sieve.SetActive(context.Background(), d, "u1@example.com", "/home/u1", "a.sieve")
+		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, homeDir, "a.sieve", []byte("keep;\n"))
+			_ = store.SetActive(ctx, homeDir, "a.sieve")
 		},
 		steps: []struct {
 			send    string
@@ -202,8 +189,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "DELETESCRIPT",
-		setup: func(ctx context.Context, d dict.Dict) {
-			_ = sieve.SaveScript(ctx, d, "u1@example.com", "/home/u1", "del.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, homeDir, "del.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -217,9 +204,9 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "DELETESCRIPT active returns error",
-		setup: func(ctx context.Context, d dict.Dict) {
-			_ = sieve.SaveScript(ctx, d, "u1@example.com", "/home/u1", "active.sieve", []byte("keep;\n"))
-			_ = sieve.SetActive(context.Background(), d, "u1@example.com", "/home/u1", "active.sieve")
+		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, homeDir, "active.sieve", []byte("keep;\n"))
+			_ = store.SetActive(ctx, homeDir, "active.sieve")
 		},
 		steps: []struct {
 			send    string
@@ -254,8 +241,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "RENAMESCRIPT",
-		setup: func(ctx context.Context, d dict.Dict) {
-			_ = sieve.SaveScript(ctx, d, "u1@example.com", "/home/u1", "old.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, homeDir, "old.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -269,9 +256,9 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "RENAMESCRIPT active follows",
-		setup: func(ctx context.Context, d dict.Dict) {
-			_ = sieve.SaveScript(ctx, d, "u1@example.com", "/home/u1", "old.sieve", []byte("keep;\n"))
-			_ = sieve.SetActive(context.Background(), d, "u1@example.com", "/home/u1", "old.sieve")
+		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, homeDir, "old.sieve", []byte("keep;\n"))
+			_ = store.SetActive(ctx, homeDir, "old.sieve")
 		},
 		steps: []struct {
 			send    string
@@ -321,11 +308,12 @@ var sessionCases = []sessionCase{
 func TestSession(t *testing.T) {
 	for _, tc := range sessionCases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := newMemDict(t)
+			store := newTestStore()
+			homeDir := t.TempDir()
 			if tc.setup != nil {
-				tc.setup(context.Background(), d)
+				tc.setup(context.Background(), store, homeDir)
 			}
-			c := runSession(t, d)
+			c := runSession(t, store, homeDir)
 			for _, step := range tc.steps {
 				c.send(step.send)
 				lines, ok := c.readUntilResult()
