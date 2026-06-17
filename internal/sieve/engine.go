@@ -199,6 +199,10 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 }
 
 func (e *Engine) dupTracker(username string) *interp.MemoryDuplicateTracker {
-	v, _ := e.dupTrackers.LoadOrStore(username, interp.NewMemoryDuplicateTracker())
-	return v.(*interp.MemoryDuplicateTracker)
+	fresh := interp.NewMemoryDuplicateTracker()
+	v, _ := e.dupTrackers.LoadOrStore(username, fresh)
+	if t, ok := v.(*interp.MemoryDuplicateTracker); ok {
+		return t
+	}
+	return fresh
 }
