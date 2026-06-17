@@ -61,6 +61,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		ModSeq:       modseq,
 		Size:         uint32(size),
 		InternalDate: time.Now(),
+		Flags:        flags,
 	}); err != nil {
 		_ = box.Remove(folder, filename)
 		return fmt.Errorf("lmtp: index append: %w", err)
