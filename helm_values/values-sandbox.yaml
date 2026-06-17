@@ -54,8 +54,8 @@ sieve:
   maxRedirects: 32
   vacationEnabled: true
   submission:
-    host: "relay-fwd.yarilo-relay.svc.cluster.local:587"
-    ssl: "starttls"
+    host: "relay-fwd.yarilo-relay.svc.cluster.local:25"
+    ssl: "no"
     authSecret: "sieve-smtp-auth"
 
 dicts:

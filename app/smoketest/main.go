@@ -42,8 +42,8 @@ var (
 	flagPOP3S           = flag.Bool("pop3s", false, "check POP3S greeting and CAPA")
 	flagLMTPLogin       = flag.Bool("lmtp-login", false, "check yarilo-lmtp-login LHLO greeting (port -lmtp-login-port)")
 	flagManageSieve     = flag.Bool("managesieve", false, "check ManageSieve auth + script CRUD (port -managesieve-port)")
-	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via LMTP injection + IMAP verify")
-	flagSieveLMTPPort   = flag.String("sieve-lmtp-port", "24", "LMTP port for Sieve mail injection")
+	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via SMTP injection + IMAP verify")
+	flagSieveSMTPPort   = flag.String("sieve-smtp-port", "25", "SMTP MX port for Sieve mail injection")
 )
 
 type result struct {
