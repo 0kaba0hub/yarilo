@@ -76,16 +76,11 @@ func msieveDeactivateAndDelete(name string) {
 
 // ── SMTP injector (via MX) ────────────────────────────────────────────────
 
-type lmtpResult struct {
-	code     string
-	response string
-}
-
-func lmtpSend(id, from, to, subject, body string) (*lmtpResult, error) {
+func lmtpSend(id, from, to, subject, body string) error {
 	addr := net.JoinHostPort(*flagHost, *flagSieveSMTPPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("connect %s: %w", addr, err)
+		return fmt.Errorf("connect %s: %w", addr, err)
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
@@ -110,39 +105,30 @@ func lmtpSend(id, from, to, subject, body string) (*lmtpResult, error) {
 	}
 
 	if _, err := readResp(); err != nil {
-		return nil, fmt.Errorf("greeting: %w", err)
+		return fmt.Errorf("greeting: %w", err)
 	}
 	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return nil, fmt.Errorf("EHLO: %s %v", resp, err)
+		return fmt.Errorf("EHLO: %s %v", resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
-		return nil, fmt.Errorf("MAIL FROM: %s %v", resp, err)
+		return fmt.Errorf("MAIL FROM: %s %v", resp, err)
 	}
 	if resp, err := cmd("RCPT TO:<" + to + ">"); err != nil {
-		return nil, fmt.Errorf("RCPT TO: %w", err)
+		return fmt.Errorf("RCPT TO: %w", err)
 	} else if !strings.HasPrefix(resp, "250") {
-		code := ""
-		if len(resp) >= 3 {
-			code = resp[:3]
-		}
-		return &lmtpResult{code: code, response: resp}, nil
+		return fmt.Errorf("RCPT TO: %s", resp)
 	}
 	if resp, err := cmd("DATA"); err != nil || !strings.HasPrefix(resp, "354") {
-		return nil, fmt.Errorf("DATA: %s %v", resp, err)
+		return fmt.Errorf("DATA: %s %v", resp, err)
 	}
 	ts := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000")
 	fmt.Fprintf(conn, "Message-ID: <%s>\r\nDate: %s\r\nFrom: <%s>\r\nTo: <%s>\r\nSubject: %s\r\n\r\n%s\r\n.\r\n",
 		id, ts, from, to, subject, body)
-	resp, err := readResp()
-	if err != nil {
-		return nil, fmt.Errorf("end-of-data: %w", err)
+	if _, err := readResp(); err != nil {
+		return fmt.Errorf("end-of-data: %w", err)
 	}
 	cmd("QUIT") //nolint:errcheck
-	code := ""
-	if len(resp) >= 3 {
-		code = resp[:3]
-	}
-	return &lmtpResult{code: code, response: resp}, nil
+	return nil
 }
 
 // ── minimal IMAP4rev1 client ───────────────────────────────────────────────
@@ -249,7 +235,7 @@ func sieveInject(script, from, to, id, subject, body string) error {
 	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
-	_, err := lmtpSend(id, from, to, subject, body)
+	err := lmtpSend(id, from, to, subject, body)
 	return err
 }
 
@@ -345,7 +331,7 @@ func testSieveImap4flags(user, pass, to string) error {
 	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
-	if _, err := lmtpSend(id, "sender@test.invalid", to, "imap4flags test", "body"); err != nil {
+	if err := lmtpSend(id, "sender@test.invalid", to, "imap4flags test", "body"); err != nil {
 		return err
 	}
 	c, err := imapDial()
@@ -467,7 +453,7 @@ func testSieveDuplicate(user, pass, to string) error {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := lmtpSend(fixedID, "sender@test.invalid", to, "dup test", "body"); err != nil {
+		if err := lmtpSend(fixedID, "sender@test.invalid", to, "dup test", "body"); err != nil {
 			return fmt.Errorf("inject %d: %w", i+1, err)
 		}
 	}
