@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -481,28 +480,14 @@ func checkManageSieve() error {
 		return fmt.Errorf("-managesieve-user is required for ManageSieve check")
 	}
 
-	addr := net.JoinHostPort(*flagHost, *flagManageSievePort)
-	dialer := &net.Dialer{Timeout: *flagTimeout}
-	conn, err := dialer.Dial("tcp", addr)
+	conn, err := msieveDial()
 	if err != nil {
-		return fmt.Errorf("connect %s: %w", addr, err)
+		return fmt.Errorf("connect: %w", err)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
 
-	// Drain pre-auth capability block until the first OK line.
-	if err := msieveDrainUntilOK(conn); err != nil {
-		return fmt.Errorf("pre-auth capabilities: %w", err)
-	}
-
-	// AUTHENTICATE PLAIN — base64("\0user\0pass").
-	creds := base64.StdEncoding.EncodeToString(
-		[]byte("\x00" + *flagManageSieveUser + "\x00" + *flagManageSievePass),
-	)
-	fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", creds)
-
-	if err := msieveDrainUntilOK(conn); err != nil {
-		return fmt.Errorf("AUTHENTICATE: %w", err)
+	if err := msieveAuth(conn, *flagManageSieveUser, *flagManageSievePass); err != nil {
+		return err
 	}
 
 	// LISTSCRIPTS

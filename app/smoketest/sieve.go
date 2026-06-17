@@ -10,27 +10,99 @@ import (
 	"time"
 )
 
+// ── ManageSieve connection (STARTTLS-aware) ───────────────────────────────
+
+// msieveDial opens a plain TCP connection to the ManageSieve port, reads the
+// pre-auth capability block, and performs a STARTTLS upgrade when advertised.
+// Returns the (possibly upgraded) connection with the greeting already consumed.
+func msieveDial() (net.Conn, error) {
+	addr := net.JoinHostPort(*flagHost, *flagManageSievePort)
+	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+
+	starttls, err := msieveReadCapabilities(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("capabilities: %w", err)
+	}
+	if !starttls {
+		return conn, nil
+	}
+
+	fmt.Fprintf(conn, "STARTTLS\r\n") //nolint:errcheck
+	line, err := readLine(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("STARTTLS response: %w", err)
+	}
+	if !strings.HasPrefix(line, "OK") {
+		conn.Close()
+		return nil, fmt.Errorf("STARTTLS rejected: %q", line)
+	}
+	tlsCfg := &tls.Config{
+		ServerName:         *flagHost,
+		InsecureSkipVerify: *flagInsecure, //nolint:gosec
+	}
+	tlsConn := tls.Client(conn, tlsCfg)
+	if err := tlsConn.Handshake(); err != nil {
+		tlsConn.Close()
+		return nil, fmt.Errorf("STARTTLS handshake: %w", err)
+	}
+	tlsConn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+	// Re-read post-TLS capabilities.
+	if _, err := msieveReadCapabilities(tlsConn); err != nil {
+		tlsConn.Close()
+		return nil, fmt.Errorf("post-TLS capabilities: %w", err)
+	}
+	return tlsConn, nil
+}
+
+// msieveReadCapabilities reads the ManageSieve capability block until OK.
+// Returns whether STARTTLS was advertised in the block.
+func msieveReadCapabilities(conn net.Conn) (starttls bool, err error) {
+	for {
+		line, err := readLine(conn)
+		if err != nil {
+			return false, err
+		}
+		if strings.HasPrefix(line, "OK") {
+			return starttls, nil
+		}
+		if strings.HasPrefix(line, "NO") || strings.HasPrefix(line, "BYE") {
+			return false, fmt.Errorf("server error: %q", line)
+		}
+		if strings.Contains(line, "STARTTLS") {
+			starttls = true
+		}
+	}
+}
+
+// msieveAuth performs AUTHENTICATE PLAIN on an already-connected (post-greeting) conn.
+func msieveAuth(conn net.Conn, user, pass string) error {
+	creds := base64.StdEncoding.EncodeToString([]byte("\x00" + user + "\x00" + pass))
+	fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", creds) //nolint:errcheck
+	if err := msieveDrainUntilOK(conn); err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	return nil
+}
+
 // ── ManageSieve script management ─────────────────────────────────────────
 
 func msieveSetActive(name, script string) error {
-	addr := net.JoinHostPort(*flagHost, *flagManageSievePort)
-	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
+	conn, err := msieveDial()
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
 
-	if err := msieveDrainUntilOK(conn); err != nil {
-		return fmt.Errorf("pre-auth: %w", err)
+	if err := msieveAuth(conn, *flagManageSieveUser, *flagManageSievePass); err != nil {
+		return err
 	}
-	creds := base64.StdEncoding.EncodeToString(
-		[]byte("\x00" + *flagManageSieveUser + "\x00" + *flagManageSievePass))
-	fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", creds)
-	if err := msieveDrainUntilOK(conn); err != nil {
-		return fmt.Errorf("auth: %w", err)
-	}
-	fmt.Fprintf(conn, "PUTSCRIPT %q {%d+}\r\n%s", name, len(script), script)
+	fmt.Fprintf(conn, "PUTSCRIPT %q {%d+}\r\n%s", name, len(script), script) //nolint:errcheck
 	line, err := readLine(conn)
 	if err != nil {
 		return err
@@ -38,7 +110,7 @@ func msieveSetActive(name, script string) error {
 	if !strings.HasPrefix(line, "OK") {
 		return fmt.Errorf("PUTSCRIPT: %q", line)
 	}
-	fmt.Fprintf(conn, "SETACTIVE %q\r\n", name)
+	fmt.Fprintf(conn, "SETACTIVE %q\r\n", name) //nolint:errcheck
 	line, err = readLine(conn)
 	if err != nil {
 		return err
@@ -46,32 +118,24 @@ func msieveSetActive(name, script string) error {
 	if !strings.HasPrefix(line, "OK") {
 		return fmt.Errorf("SETACTIVE: %q", line)
 	}
-	fmt.Fprintf(conn, "LOGOUT\r\n")
+	fmt.Fprintf(conn, "LOGOUT\r\n") //nolint:errcheck
 	return nil
 }
 
 func msieveDeactivateAndDelete(name string) {
-	addr := net.JoinHostPort(*flagHost, *flagManageSievePort)
-	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
+	conn, err := msieveDial()
 	if err != nil {
 		return
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
-	if err := msieveDrainUntilOK(conn); err != nil {
+	if err := msieveAuth(conn, *flagManageSieveUser, *flagManageSievePass); err != nil {
 		return
 	}
-	creds := base64.StdEncoding.EncodeToString(
-		[]byte("\x00" + *flagManageSieveUser + "\x00" + *flagManageSievePass))
-	fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", creds)
-	if err := msieveDrainUntilOK(conn); err != nil {
-		return
-	}
-	fmt.Fprintf(conn, "SETACTIVE \"\"\r\n")
-	readLine(conn) //nolint:errcheck
-	fmt.Fprintf(conn, "DELETESCRIPT %q\r\n", name)
-	readLine(conn) //nolint:errcheck
-	fmt.Fprintf(conn, "LOGOUT\r\n")
+	fmt.Fprintf(conn, "SETACTIVE \"\"\r\n")        //nolint:errcheck
+	readLine(conn)                                 //nolint:errcheck
+	fmt.Fprintf(conn, "DELETESCRIPT %q\r\n", name) //nolint:errcheck
+	readLine(conn)                                 //nolint:errcheck
+	fmt.Fprintf(conn, "LOGOUT\r\n")                //nolint:errcheck
 }
 
 // ── SMTP injector (via MX) ────────────────────────────────────────────────
@@ -107,8 +171,8 @@ func lmtpSend(id, from, to, subject, body string) error {
 	if _, err := readResp(); err != nil {
 		return fmt.Errorf("greeting: %w", err)
 	}
-	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return fmt.Errorf("EHLO: %s %v", resp, err)
+	if resp, err := cmd("LHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("LHLO: %s %v", resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
 		return fmt.Errorf("MAIL FROM: %s %v", resp, err)
@@ -334,6 +398,7 @@ func testSieveImap4flags(user, pass, to string) error {
 	if err := lmtpSend(id, "sender@test.invalid", to, "imap4flags test", "body"); err != nil {
 		return err
 	}
+	time.Sleep(2 * time.Second)
 	c, err := imapDial()
 	if err != nil {
 		return err
