@@ -245,11 +245,12 @@ func (c *imapClient) deleteFolder(folder string) {
 
 // ── per-test helpers ───────────────────────────────────────────────────────
 
-func sieveInject(script, from, to, id, subject, body string) (*lmtpResult, error) {
+func sieveInject(script, from, to, id, subject, body string) error {
 	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
-		return nil, fmt.Errorf("msieve: %w", err)
+		return fmt.Errorf("msieve: %w", err)
 	}
-	return lmtpSend(id, from, to, subject, body)
+	_, err := lmtpSend(id, from, to, subject, body)
+	return err
 }
 
 func createFolder(user, pass, folder string) error {
@@ -323,7 +324,7 @@ func testSieveFileinto(user, pass, to string) error {
 		return fmt.Errorf("pre-create: %w", err)
 	}
 	script := fmt.Sprintf("require \"fileinto\";\nfileinto %q;\n", folder)
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "fileinto test", "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "fileinto test", "body"); err != nil {
 		return err
 	}
 	return checkFolder(user, pass, folder)
@@ -332,7 +333,7 @@ func testSieveFileinto(user, pass, to string) error {
 func testSieveMailbox(user, pass, to string) error {
 	folder := "sieve-test-mailbox"
 	script := fmt.Sprintf("require [\"fileinto\",\"mailbox\"];\nfileinto :create %q;\n", folder)
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "mailbox:create test", "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "mailbox:create test", "body"); err != nil {
 		return err
 	}
 	return checkFolder(user, pass, folder)
@@ -389,7 +390,7 @@ func testSieveBody(user, pass, to string) error {
 	}
 	token := fmt.Sprintf("XBODY%d", time.Now().UnixNano())
 	script := fmt.Sprintf("require [\"fileinto\",\"body\"];\nif body :contains %q { fileinto %q; }\n", token, folder)
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "body test", token); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "body test", token); err != nil {
 		return err
 	}
 	return checkFolder(user, pass, folder)
@@ -401,7 +402,7 @@ func testSieveEnvelope(user, pass, to string) error {
 		return fmt.Errorf("pre-create: %w", err)
 	}
 	script := fmt.Sprintf("require [\"fileinto\",\"envelope\"];\nif envelope \"to\" %q { fileinto %q; }\n", to, folder)
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "envelope test", "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "envelope test", "body"); err != nil {
 		return err
 	}
 	return checkFolder(user, pass, folder)
@@ -413,7 +414,7 @@ func testSieveVariables(user, pass, to string) error {
 		return fmt.Errorf("pre-create: %w", err)
 	}
 	script := fmt.Sprintf("require [\"fileinto\",\"variables\"];\nset \"f\" %q;\nfileinto \"${f}\";\n", folder)
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "variables test", "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "variables test", "body"); err != nil {
 		return err
 	}
 	return checkFolder(user, pass, folder)
@@ -422,7 +423,7 @@ func testSieveVariables(user, pass, to string) error {
 func testSieveReject(user, pass, to string) error {
 	subject := "reject-" + uniqueID()
 	script := "require \"reject\";\nreject \"smoke test reject\";\n"
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
 	// MX accepts the message (250), yarilo-lmtp rejects it async — message must NOT land in INBOX.
@@ -440,7 +441,7 @@ func testSieveReject(user, pass, to string) error {
 func testSieveEreject(user, pass, to string) error {
 	subject := "ereject-" + uniqueID()
 	script := "require \"ereject\";\nereject \"smoke test ereject\";\n"
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
 	// Same as reject — message must NOT land in INBOX.
@@ -495,7 +496,7 @@ func testSieveRelational(user, pass, to string) error {
 		"require [\"fileinto\",\"relational\"];\n"+
 			"if header :count \"ge\" :comparator \"i;ascii-numeric\" \"Subject\" \"1\" {\n"+
 			"  fileinto %q;\n}\n", folder)
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "relational test", "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "relational test", "body"); err != nil {
 		return err
 	}
 	return checkFolder(user, pass, folder)
@@ -510,7 +511,7 @@ func testSieveDate(user, pass, to string) error {
 		"require [\"fileinto\",\"date\"];\n"+
 			"if date :zone \"+0000\" \"date\" \"year\" \"2026\" {\n"+
 			"  fileinto %q;\n}\n", folder)
-	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "date test", "body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "date test", "body"); err != nil {
 		return err
 	}
 	return checkFolder(user, pass, folder)
@@ -523,7 +524,7 @@ func testSieveEnotify(user, pass, to string) error {
 			"notify \"mailto:%s?subject=%s\";\n"+
 			"keep;\n", to, token)
 	// Keep original in INBOX too; inject with real From so notify fires.
-	if _, err := sieveInject(script, "external@other.test", to, uniqueID(), "enotify trigger", "body"); err != nil {
+	if err := sieveInject(script, "external@other.test", to, uniqueID(), "enotify trigger", "body"); err != nil {
 		return err
 	}
 	// Clean the original trigger message from INBOX.
