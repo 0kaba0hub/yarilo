@@ -280,12 +280,12 @@ func checkFolder(user, pass, folder string) error {
 	if err != nil {
 		return fmt.Errorf("SELECT %q: %w", folder, err)
 	}
-	if exists != 1 {
-		return fmt.Errorf("expected 1 message in %q, got %d", folder, exists)
-	}
 	uids, _ := c.uidSearch("ALL")
 	c.deleteUIDs(uids) //nolint:errcheck
 	c.deleteFolder(folder)
+	if exists != 1 {
+		return fmt.Errorf("expected 1 message in %q, got %d", folder, exists)
+	}
 	return nil
 }
 
