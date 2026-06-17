@@ -64,6 +64,14 @@ type SieveConfig struct {
 	// The Helm chart mounts the secret as YARILO_SIEVE_SUBMISSION_USER /
 	// YARILO_SIEVE_SUBMISSION_PASSWORD env vars based on this name.
 	SubmissionAuthSecret string `koanf:"submission_auth_secret"`
+
+	// GlobalBefore is an ordered list of paths to .sieve script files executed
+	// before the user's active script. Admin-defined rules; applied to every
+	// message regardless of per-user settings.
+	GlobalBefore []string `koanf:"global_before"`
+	// GlobalAfter is an ordered list of paths to .sieve script files executed
+	// after the user's active script.
+	GlobalAfter []string `koanf:"global_after"`
 }
 
 // DictConfig declares one named dict instance. The map key in

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/textproto"
+	"os"
 	"sync"
 
 	gosieve "github.com/foxcpp/go-sieve"
@@ -14,31 +15,59 @@ import (
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
 
 // Engine executes Sieve scripts during LMTP delivery.
 type Engine struct {
-	cfg         config.SieveConfig
-	dict        dict.Dict
-	sender      *Sender
-	dupTrackers sync.Map // username → *interp.MemoryDuplicateTracker
+	cfg             config.SieveConfig
+	locker          locks.Locker
+	vacationFactory *dict.Factory // nil = vacation dedup disabled
+	sender          *Sender
+	dupTrackers     sync.Map // username → *interp.MemoryDuplicateTracker
+	globalBefore    []*gosieve.Script
+	globalAfter     []*gosieve.Script
 }
 
-// New creates a Sieve Engine backed by the given dict for script storage.
-// When cfg.SubmissionHost is non-empty, outbound mail for redirect and
-// vacation actions is dispatched via an SMTP client to that host.
-func New(cfg config.SieveConfig, d dict.Dict) *Engine {
+// New creates a Sieve Engine. locker is used for cross-process write coordination
+// when writing the default yarilo.sieve on first delivery. vacationFactory may be
+// nil to disable vacation dedup tracking.
+func New(cfg config.SieveConfig, locker locks.Locker, vacationFactory *dict.Factory) *Engine {
 	var s *Sender
 	if cfg.SubmissionHost != "" {
 		s = newSender(cfg)
 	}
-	return &Engine{cfg: cfg, dict: d, sender: s}
+	e := &Engine{cfg: cfg, locker: locker, vacationFactory: vacationFactory, sender: s}
+	e.globalBefore = loadGlobalScripts(cfg.GlobalBefore)
+	e.globalAfter = loadGlobalScripts(cfg.GlobalAfter)
+	return e
 }
 
-// InitUser seeds the default yarilo.sieve script for a user on first delivery.
-// No-op when the user already has an active script configured.
+func loadGlobalScripts(paths []string) []*gosieve.Script {
+	if len(paths) == 0 {
+		return nil
+	}
+	opts := gosieve.DefaultOptions()
+	var scripts []*gosieve.Script
+	for _, p := range paths {
+		src, err := os.ReadFile(p)
+		if err != nil {
+			slog.Error("sieve: global script read error", "path", p, "err", err)
+			continue
+		}
+		script, err := gosieve.Load(bytes.NewReader(src), opts)
+		if err != nil {
+			slog.Error("sieve: global script compile error", "path", p, "err", err)
+			continue
+		}
+		scripts = append(scripts, script)
+	}
+	return scripts
+}
+
+// InitUser seeds yarilo.sieve with the default keep script on first delivery.
 func (e *Engine) InitUser(ctx context.Context, username, homeDir string) error {
-	return InitUser(ctx, e.dict, username, homeDir)
+	return FsInitUser(ctx, e.locker, homeDir)
 }
 
 // FilterOptions holds the per-message context passed to Filter.
@@ -55,29 +84,83 @@ type FilterOptions struct {
 	FolderExists func(ctx context.Context, folder string) (bool, error)
 }
 
-// Filter executes the active Sieve script for the user and returns the result.
-// Returns nil when no active script is configured — the caller should apply
-// implicit keep (deliver to INBOX).
+// Filter executes global-before scripts, then the user's active Sieve script,
+// then global-after scripts. Returns nil when no scripts are configured —
+// the caller applies implicit keep (deliver to INBOX).
+// A Reject in any script stops the chain immediately.
 func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult, error) {
-	src, _, err := loadActiveScript(ctx, e.dict, opts.Username, opts.HomeDir)
-	if err != nil {
-		return nil, fmt.Errorf("sieve/engine: load script: %w", err)
-	}
-	if src == nil {
-		return nil, nil
-	}
-
-	sieveOpts := gosieve.DefaultOptions()
-	sieveOpts.Interp.MaxRedirects = e.cfg.MaxRedirects
-
-	script, err := gosieve.Load(bytes.NewReader(src), sieveOpts)
-	if err != nil {
-		slog.Error("sieve: script compile error, falling back to implicit keep",
-			"user", opts.Username, "err", err)
-		return nil, nil
+	var vacDict dict.Dict
+	if e.vacationFactory != nil {
+		var err error
+		vacDict, err = e.vacationFactory.Open(opts.Username, opts.HomeDir)
+		if err != nil {
+			return nil, fmt.Errorf("sieve/engine: open vacation dict: %w", err)
+		}
+		defer vacDict.Close()
 	}
 
 	hdr := parseHeaders(opts.MsgRaw)
+	pol := &policy{
+		maxRedirects: e.cfg.MaxRedirects,
+		folderExists: opts.FolderExists,
+	}
+
+	var merged FilterResult
+	anyScriptRan := len(e.globalBefore) > 0 || len(e.globalAfter) > 0
+
+	for _, script := range e.globalBefore {
+		r, err := e.runScript(ctx, script, opts, hdr, pol, vacDict)
+		if err != nil {
+			return nil, err
+		}
+		if r.Reject != nil {
+			return r, nil
+		}
+		merged.absorb(r)
+	}
+
+	src, _, err := FsLoadActiveScript(opts.HomeDir)
+	if err != nil {
+		return nil, fmt.Errorf("sieve/engine: load script: %w", err)
+	}
+	if src != nil {
+		anyScriptRan = true
+		sieveOpts := gosieve.DefaultOptions()
+		sieveOpts.Interp.MaxRedirects = e.cfg.MaxRedirects
+		script, err := gosieve.Load(bytes.NewReader(src), sieveOpts)
+		if err != nil {
+			slog.Error("sieve: script compile error, skipping user script",
+				"user", opts.Username, "err", err)
+		} else {
+			r, err := e.runScript(ctx, script, opts, hdr, pol, vacDict)
+			if err != nil {
+				return nil, err
+			}
+			if r.Reject != nil {
+				return r, nil
+			}
+			merged.absorb(r)
+		}
+	}
+
+	for _, script := range e.globalAfter {
+		r, err := e.runScript(ctx, script, opts, hdr, pol, vacDict)
+		if err != nil {
+			return nil, err
+		}
+		if r.Reject != nil {
+			return r, nil
+		}
+		merged.absorb(r)
+	}
+
+	if !anyScriptRan {
+		return nil, nil
+	}
+	return &merged, nil
+}
+
+func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts FilterOptions, hdr textproto.MIMEHeader, pol *policy, vacDict dict.Dict) (*FilterResult, error) {
 	msg := interp.MessageStatic{
 		Size:       len(opts.MsgRaw),
 		Header:     hdr,
@@ -88,18 +171,14 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 		To:   opts.EnvTo,
 		Auth: opts.AuthUser,
 	}
-	pol := &policy{
-		maxRedirects: e.cfg.MaxRedirects,
-		folderExists: opts.FolderExists,
-	}
 
-	d := gosieve.NewRuntimeData(script, pol, env, msg)
-	d.DuplicateTracker = e.dupTracker(opts.Username)
-	if err := script.Execute(ctx, d); err != nil {
+	rd := gosieve.NewRuntimeData(script, pol, env, msg)
+	rd.DuplicateTracker = e.dupTracker(opts.Username)
+	if err := script.Execute(ctx, rd); err != nil {
 		return nil, fmt.Errorf("sieve/engine: execute: %w", err)
 	}
 
-	result := buildResult(d)
+	result := buildResult(rd)
 
 	if e.sender != nil {
 		for _, r := range result.Redirects {
@@ -108,7 +187,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 			}
 		}
 		for _, resp := range result.VacationReplies {
-			if err := e.sender.sendVacation(ctx, e.dict, opts, hdr, resp); err != nil {
+			if err := e.sender.sendVacation(ctx, vacDict, opts, hdr, resp); err != nil {
 				slog.Error("sieve: vacation failed", "user", opts.Username, "err", err)
 			}
 		}
@@ -122,21 +201,17 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 	return result, nil
 }
 
-// parseHeaders parses RFC 2822 headers from a raw message.
-// Returns whatever headers were parsed; never returns a hard error.
 func parseHeaders(raw []byte) textproto.MIMEHeader {
 	r := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw)))
 	hdr, _ := r.ReadMIMEHeader()
 	return hdr
 }
 
-// policy implements interp.PolicyReader and interp.MailboxChecker.
 type policy struct {
 	maxRedirects int
 	folderExists func(ctx context.Context, folder string) (bool, error)
 }
 
-// RedirectAllowed implements interp.PolicyReader.
 func (p *policy) RedirectAllowed(_ context.Context, d *interp.RuntimeData, _ string) (bool, error) {
 	count := 0
 	for _, a := range d.AppliedActions {
@@ -147,7 +222,6 @@ func (p *policy) RedirectAllowed(_ context.Context, d *interp.RuntimeData, _ str
 	return count < p.maxRedirects, nil
 }
 
-// MailboxExists implements interp.MailboxChecker (mailboxexists test, RFC 5490).
 func (p *policy) MailboxExists(ctx context.Context, folder string) (bool, error) {
 	if p.folderExists == nil {
 		return false, nil
@@ -157,7 +231,6 @@ func (p *policy) MailboxExists(ctx context.Context, folder string) (bool, error)
 
 func buildResult(d *interp.RuntimeData) *FilterResult {
 	result := &FilterResult{}
-
 	for _, act := range d.AppliedActions {
 		switch a := act.(type) {
 		case interp.ActionReject:
@@ -165,7 +238,6 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 		case interp.ActionEReject:
 			return &FilterResult{Reject: &RejectErr{Enhanced: true, Reason: a.Reason}}
 		case interp.ActionDiscard:
-			// Deliveries stays nil — message is discarded.
 		case interp.ActionFileInto:
 			result.Deliveries = append(result.Deliveries, Delivery{
 				Folder:     a.Mailbox,
@@ -190,12 +262,20 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 			result.Notifications = append(result.Notifications, a)
 		}
 	}
-
 	for _, resp := range d.VacationResponses {
 		result.VacationReplies = append(result.VacationReplies, resp)
 	}
-
 	return result
+}
+
+func (r *FilterResult) absorb(other *FilterResult) {
+	if other == nil {
+		return
+	}
+	r.Deliveries = append(r.Deliveries, other.Deliveries...)
+	r.Redirects = append(r.Redirects, other.Redirects...)
+	r.VacationReplies = append(r.VacationReplies, other.VacationReplies...)
+	r.Notifications = append(r.Notifications, other.Notifications...)
 }
 
 func (e *Engine) dupTracker(username string) *interp.MemoryDuplicateTracker {

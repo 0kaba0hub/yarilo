@@ -9,7 +9,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -20,9 +20,9 @@ type Server struct {
 
 // Options configures the ManageSieve backend server.
 type Options struct {
-	// Dict stores per-user Sieve scripts.
-	Dict dict.Dict
-	// Resolver maps usernames to home directories for dict key construction.
+	// Locker coordinates cross-process writes to script files.
+	Locker locks.Locker
+	// Resolver maps usernames to home directories.
 	Resolver *mailbox.Resolver
 	// Config holds protocol-level tunables (max script size).
 	Config config.ManageSieveProtocolConfig
@@ -89,7 +89,7 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 		w:        bufio.NewWriter(conn),
 		username: username,
 		homeDir:  userInfo.Home,
-		dict:     srv.opts.Dict,
+		locker:   srv.opts.Locker,
 		maxSize:  maxSize,
 	}
 	sess.serve(ctx)
