@@ -74,7 +74,7 @@ func msieveDeactivateAndDelete(name string) {
 	fmt.Fprintf(conn, "LOGOUT\r\n")
 }
 
-// ── LMTP injector ─────────────────────────────────────────────────────────
+// ── SMTP injector (via MX) ────────────────────────────────────────────────
 
 type lmtpResult struct {
 	code     string
@@ -82,7 +82,7 @@ type lmtpResult struct {
 }
 
 func lmtpSend(id, from, to, subject, body string) (*lmtpResult, error) {
-	addr := net.JoinHostPort(*flagHost, *flagSieveLMTPPort)
+	addr := net.JoinHostPort(*flagHost, *flagSieveSMTPPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", addr, err)
@@ -112,8 +112,8 @@ func lmtpSend(id, from, to, subject, body string) (*lmtpResult, error) {
 	if _, err := readResp(); err != nil {
 		return nil, fmt.Errorf("greeting: %w", err)
 	}
-	if resp, err := cmd("LHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return nil, fmt.Errorf("LHLO: %s %v", resp, err)
+	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
+		return nil, fmt.Errorf("EHLO: %s %v", resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
 		return nil, fmt.Errorf("MAIL FROM: %s %v", resp, err)
@@ -419,26 +419,38 @@ func testSieveVariables(user, pass, to string) error {
 	return checkFolder(user, pass, folder)
 }
 
-func testSieveReject(_, _, to string) error {
+func testSieveReject(user, pass, to string) error {
+	subject := "reject-" + uniqueID()
 	script := "require \"reject\";\nreject \"smoke test reject\";\n"
-	r, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "reject test", "body")
+	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+		return err
+	}
+	// MX accepts the message (250), yarilo-lmtp rejects it async — message must NOT land in INBOX.
+	time.Sleep(5 * time.Second)
+	n, err := cleanInboxBySubject(user, pass, subject)
 	if err != nil {
 		return err
 	}
-	if r == nil || len(r.code) == 0 || r.code[0] != '5' {
-		return fmt.Errorf("expected 5xx LMTP response, got %q", r.response)
+	if n > 0 {
+		return fmt.Errorf("reject: message was delivered to INBOX instead of being rejected")
 	}
 	return nil
 }
 
-func testSieveEreject(_, _, to string) error {
+func testSieveEreject(user, pass, to string) error {
+	subject := "ereject-" + uniqueID()
 	script := "require \"ereject\";\nereject \"smoke test ereject\";\n"
-	r, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "ereject test", "body")
+	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+		return err
+	}
+	// Same as reject — message must NOT land in INBOX.
+	time.Sleep(5 * time.Second)
+	n, err := cleanInboxBySubject(user, pass, subject)
 	if err != nil {
 		return err
 	}
-	if r == nil || len(r.code) == 0 || r.code[0] != '5' {
-		return fmt.Errorf("expected 5xx LMTP response, got %q", r.response)
+	if n > 0 {
+		return fmt.Errorf("ereject: message was delivered to INBOX instead of being rejected")
 	}
 	return nil
 }
@@ -511,17 +523,13 @@ func testSieveEnotify(user, pass, to string) error {
 			"notify \"mailto:%s?subject=%s\";\n"+
 			"keep;\n", to, token)
 	// Keep original in INBOX too; inject with real From so notify fires.
-	r, err := sieveInject(script, "external@other.test", to, uniqueID(), "enotify trigger", "body")
-	if err != nil {
+	if _, err := sieveInject(script, "external@other.test", to, uniqueID(), "enotify trigger", "body"); err != nil {
 		return err
-	}
-	if r != nil && r.code[0] == '5' {
-		return fmt.Errorf("LMTP rejected: %s", r.response)
 	}
 	// Clean the original trigger message from INBOX.
 	cleanInboxBySubject(user, pass, "enotify trigger") //nolint:errcheck
 
-	time.Sleep(3 * time.Second) // allow async submission to relay-fwd
+	time.Sleep(10 * time.Second) // allow MX→lmtp→notify→relay-fwd→lmtp delivery chain
 	n, err := cleanInboxBySubject(user, pass, token)
 	if err != nil {
 		return err
