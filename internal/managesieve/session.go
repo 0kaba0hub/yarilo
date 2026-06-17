@@ -96,7 +96,7 @@ func (s *session) handleCapability() {
 	_ = writeOK(s.w, "CAPABILITY completed.")
 }
 
-func (s *session) handleListScripts(ctx context.Context) {
+func (s *session) handleListScripts(_ context.Context) {
 	names, err := s.store.ListScripts(s.homeDir)
 	if err != nil {
 		slog.Error("managesieve: list scripts", "user", s.username, "err", err)
@@ -163,7 +163,7 @@ func (s *session) handlePutScript(ctx context.Context) {
 	_ = writeOK(s.w, "PUTSCRIPT completed.")
 }
 
-func (s *session) handleGetScript(ctx context.Context) {
+func (s *session) handleGetScript(_ context.Context) {
 	name, err := readLastArg(s.r, nil)
 	if err != nil {
 		skipLine(s.r)

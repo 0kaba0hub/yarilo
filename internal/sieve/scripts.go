@@ -49,10 +49,6 @@ func (ss *ScriptStore) namedPath(homeDir, name string) string {
 	return filepath.Join(homeDir, "."+name+sieveExt)
 }
 
-func (ss *ScriptStore) lockResource(homeDir string) string {
-	return "sieve:" + homeDir
-}
-
 func (ss *ScriptStore) withLock(ctx context.Context, homeDir string, fn func(context.Context) error) error {
 	return withSieveLock(ctx, ss.Locker, homeDir, fn)
 }
