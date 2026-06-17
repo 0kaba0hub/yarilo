@@ -417,6 +417,11 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 
 		var deliverErr error
 		for _, d := range deliveries {
+			if d.Create {
+				if err := rcptBox.Create(d.Folder); err != nil {
+					slog.Warn("lmtp: create folder", "folder", d.Folder, "err", err)
+				}
+			}
 			if err := deliverOne(rcptBox, rcptIdx, d.Folder, bytes.NewReader(msg), int64(len(msg)), s.opts.Locker, username, d.Flags); err != nil {
 				deliverErr = err
 				break

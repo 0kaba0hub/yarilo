@@ -42,6 +42,8 @@ var (
 	flagPOP3S           = flag.Bool("pop3s", false, "check POP3S greeting and CAPA")
 	flagLMTPLogin       = flag.Bool("lmtp-login", false, "check yarilo-lmtp-login LHLO greeting (port -lmtp-login-port)")
 	flagManageSieve     = flag.Bool("managesieve", false, "check ManageSieve auth + script CRUD (port -managesieve-port)")
+	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via LMTP injection + IMAP verify")
+	flagSieveLMTPPort   = flag.String("sieve-lmtp-port", "24", "LMTP port for Sieve mail injection")
 )
 
 type result struct {
@@ -103,6 +105,12 @@ func main() {
 			name string
 			fn   func() error
 		}{"managesieve auth+CRUD", checkManageSieve})
+	}
+	if *flagSieve {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"sieve plugins", checkSieve})
 	}
 
 	var failures []result
@@ -493,13 +501,8 @@ func checkManageSieve() error {
 	)
 	fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", creds)
 
-	// Login proxy responds OK, then proxies to backend which sends another capability block + OK.
 	if err := msieveDrainUntilOK(conn); err != nil {
 		return fmt.Errorf("AUTHENTICATE: %w", err)
-	}
-	// Drain backend post-auth greeting.
-	if err := msieveDrainUntilOK(conn); err != nil {
-		return fmt.Errorf("post-auth greeting: %w", err)
 	}
 
 	// LISTSCRIPTS
