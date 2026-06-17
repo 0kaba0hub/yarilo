@@ -8,6 +8,7 @@ import (
 	"net"
 
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -22,6 +23,8 @@ type Server struct {
 type Options struct {
 	// Locker coordinates cross-process writes to script files.
 	Locker locks.Locker
+	// DefaultName is the reserved Sieve script name (sieve.default_name). Default: "yarilo".
+	DefaultName string
 	// Resolver maps usernames to home directories.
 	Resolver *mailbox.Resolver
 	// Config holds protocol-level tunables (max script size).
@@ -83,13 +86,17 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 		maxSize = 64 * 1024
 	}
 
+	defaultName := srv.opts.DefaultName
+	if defaultName == "" {
+		defaultName = sieve.FallbackDefaultName
+	}
 	sess := &session{
 		conn:     conn,
 		r:        bufio.NewReader(conn),
 		w:        bufio.NewWriter(conn),
 		username: username,
 		homeDir:  userInfo.Home,
-		locker:   srv.opts.Locker,
+		store:    &sieve.ScriptStore{DefaultName: defaultName, Locker: srv.opts.Locker},
 		maxSize:  maxSize,
 	}
 	sess.serve(ctx)

@@ -181,12 +181,7 @@ func New(cfg *config.Config) (*Server, error) {
 	svcs := cfg.Services
 	var sieveEngine *sieve.Engine
 	if cfg.Sieve.Enabled {
-		var vacationFactory *dict.Factory
-		if dictCfg, ok := cfg.Dicts["sieve_vacation"]; ok && dictCfg.Driver != "" {
-			vacationFactory = dict.NewFactory(dict.Config{Driver: dictCfg.Driver, Settings: dictCfg.Settings})
-			slog.Info("backend: sieve vacation dict factory", "driver", dictCfg.Driver)
-		}
-		sieveEngine = sieve.New(cfg.Sieve, locker, vacationFactory)
+		sieveEngine = sieve.New(cfg.Sieve, locker)
 	}
 
 	// ---- IMAP ----
@@ -399,11 +394,12 @@ func New(cfg *config.Config) (*Server, error) {
 	var msServer *mssvr.Server
 	if svcs.ManageSieveBE.Active() {
 		msServer = mssvr.New(mssvr.Options{
-			Locker:   locker,
-			Resolver: resolver,
-			Config:   cfg.Protocol.ManageSieve,
-			AuthAddr: authAddr,
-			AuthTLS:  authTLS,
+			Locker:      locker,
+			DefaultName: cfg.Sieve.DefaultName,
+			Resolver:    resolver,
+			Config:      cfg.Protocol.ManageSieve,
+			AuthAddr:    authAddr,
+			AuthTLS:     authTLS,
 		})
 	}
 

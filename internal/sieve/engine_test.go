@@ -13,7 +13,12 @@ func newTestEngine(t *testing.T) *Engine {
 		Enabled:       true,
 		MaxRedirects:  32,
 		MaxScriptSize: 65536,
-	}, nil, nil)
+		DefaultName:   FallbackDefaultName,
+	}, nil)
+}
+
+func newTestStore() *ScriptStore {
+	return &ScriptStore{DefaultName: FallbackDefaultName, Locker: nil}
 }
 
 const testMsg = "From: sender@example.com\r\nTo: user@example.com\r\nSubject: Test\r\n\r\nHello.\r\n"
@@ -30,9 +35,7 @@ func baseOpts(username, homeDir string) FilterOptions {
 
 func TestFilterNoScript(t *testing.T) {
 	e := newTestEngine(t)
-	homeDir := t.TempDir()
-
-	result, err := e.Filter(context.Background(), baseOpts("u1", homeDir))
+	result, err := e.Filter(context.Background(), baseOpts("u1", t.TempDir()))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,13 +46,14 @@ func TestFilterNoScript(t *testing.T) {
 
 func TestFilterKeep(t *testing.T) {
 	e := newTestEngine(t)
+	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
 
-	if err := FsSaveScript(ctx, nil, homeDir, "test", []byte(`keep;`)); err != nil {
+	if err := store.SaveScript(ctx, homeDir, "test", []byte(`keep;`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := FsSetActive(ctx, nil, homeDir, "test"); err != nil {
+	if err := store.SetActive(ctx, homeDir, "test"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,13 +71,14 @@ func TestFilterKeep(t *testing.T) {
 
 func TestFilterDiscard(t *testing.T) {
 	e := newTestEngine(t)
+	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
 
-	if err := FsSaveScript(ctx, nil, homeDir, "test", []byte(`discard;`)); err != nil {
+	if err := store.SaveScript(ctx, homeDir, "test", []byte(`discard;`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := FsSetActive(ctx, nil, homeDir, "test"); err != nil {
+	if err := store.SetActive(ctx, homeDir, "test"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,14 +96,15 @@ func TestFilterDiscard(t *testing.T) {
 
 func TestFilterFileInto(t *testing.T) {
 	e := newTestEngine(t)
+	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
 
 	src := `require "fileinto";` + "\n" + `fileinto "Spam";`
-	if err := FsSaveScript(ctx, nil, homeDir, "test", []byte(src)); err != nil {
+	if err := store.SaveScript(ctx, homeDir, "test", []byte(src)); err != nil {
 		t.Fatal(err)
 	}
-	if err := FsSetActive(ctx, nil, homeDir, "test"); err != nil {
+	if err := store.SetActive(ctx, homeDir, "test"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,14 +122,15 @@ func TestFilterFileInto(t *testing.T) {
 
 func TestFilterReject(t *testing.T) {
 	e := newTestEngine(t)
+	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
 
 	src := `require "reject";` + "\n" + `reject "Unwanted mail.";`
-	if err := FsSaveScript(ctx, nil, homeDir, "test", []byte(src)); err != nil {
+	if err := store.SaveScript(ctx, homeDir, "test", []byte(src)); err != nil {
 		t.Fatal(err)
 	}
-	if err := FsSetActive(ctx, nil, homeDir, "test"); err != nil {
+	if err := store.SetActive(ctx, homeDir, "test"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,15 +151,16 @@ func TestFilterReject(t *testing.T) {
 
 func TestFilterHeaderMatch(t *testing.T) {
 	e := newTestEngine(t)
+	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
 
 	src := `require "fileinto";` + "\n" +
 		`if header :contains "Subject" "Test" { fileinto "TestBox"; }`
-	if err := FsSaveScript(ctx, nil, homeDir, "test", []byte(src)); err != nil {
+	if err := store.SaveScript(ctx, homeDir, "test", []byte(src)); err != nil {
 		t.Fatal(err)
 	}
-	if err := FsSetActive(ctx, nil, homeDir, "test"); err != nil {
+	if err := store.SetActive(ctx, homeDir, "test"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,14 +177,15 @@ func TestFilterHeaderMatch(t *testing.T) {
 }
 
 func TestInitUser(t *testing.T) {
+	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
 
-	if err := FsInitUser(ctx, nil, homeDir); err != nil {
-		t.Fatalf("FsInitUser: %v", err)
+	if err := store.InitUser(ctx, homeDir); err != nil {
+		t.Fatalf("InitUser: %v", err)
 	}
 
-	name, err := FsActiveScriptName(homeDir)
+	name, err := store.ActiveScriptName(homeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,17 +193,15 @@ func TestInitUser(t *testing.T) {
 		t.Fatalf("expected active=\"\" (default, no named script), got %q", name)
 	}
 
-	// Verify that yarilo.sieve exists and contains the default body.
-	src, _, err := FsLoadActiveScript(homeDir)
+	src, _, err := store.LoadActiveScript(homeDir)
 	if err != nil {
-		t.Fatalf("FsLoadActiveScript: %v", err)
+		t.Fatalf("LoadActiveScript: %v", err)
 	}
 	if string(src) != DefaultScriptBody {
 		t.Fatalf("expected %q, got %q", DefaultScriptBody, src)
 	}
 
-	// Second call must be a no-op.
-	if err := FsInitUser(ctx, nil, homeDir); err != nil {
-		t.Fatalf("FsInitUser (second): %v", err)
+	if err := store.InitUser(ctx, homeDir); err != nil {
+		t.Fatalf("InitUser (second): %v", err)
 	}
 }

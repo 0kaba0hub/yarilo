@@ -14,30 +14,35 @@ import (
 	"github.com/foxcpp/go-sieve/interp"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
 
 // Engine executes Sieve scripts during LMTP delivery.
 type Engine struct {
-	cfg             config.SieveConfig
-	locker          locks.Locker
-	vacationFactory *dict.Factory // nil = vacation dedup disabled
-	sender          *Sender
-	dupTrackers     sync.Map // username → *interp.MemoryDuplicateTracker
-	globalBefore    []*gosieve.Script
-	globalAfter     []*gosieve.Script
+	cfg          config.SieveConfig
+	store        *ScriptStore
+	sender       *Sender
+	dupTrackers  sync.Map
+	globalBefore []*gosieve.Script
+	globalAfter  []*gosieve.Script
 }
 
 // New creates a Sieve Engine. locker is used for cross-process write coordination
-// when writing the default yarilo.sieve on first delivery. vacationFactory may be
-// nil to disable vacation dedup tracking.
-func New(cfg config.SieveConfig, locker locks.Locker, vacationFactory *dict.Factory) *Engine {
+// on script files and the vacation dedup file. May be nil for single-process use.
+func New(cfg config.SieveConfig, locker locks.Locker) *Engine {
+	defaultName := cfg.DefaultName
+	if defaultName == "" {
+		defaultName = FallbackDefaultName
+	}
 	var s *Sender
 	if cfg.SubmissionHost != "" {
 		s = newSender(cfg)
 	}
-	e := &Engine{cfg: cfg, locker: locker, vacationFactory: vacationFactory, sender: s}
+	e := &Engine{
+		cfg:    cfg,
+		store:  &ScriptStore{DefaultName: defaultName, Locker: locker},
+		sender: s,
+	}
 	e.globalBefore = loadGlobalScripts(cfg.GlobalBefore)
 	e.globalAfter = loadGlobalScripts(cfg.GlobalAfter)
 	return e
@@ -65,9 +70,9 @@ func loadGlobalScripts(paths []string) []*gosieve.Script {
 	return scripts
 }
 
-// InitUser seeds yarilo.sieve with the default keep script on first delivery.
-func (e *Engine) InitUser(ctx context.Context, username, homeDir string) error {
-	return FsInitUser(ctx, e.locker, homeDir)
+// InitUser seeds the active-script pointer with the default keep script on first delivery.
+func (e *Engine) InitUser(ctx context.Context, _, homeDir string) error {
+	return e.store.InitUser(ctx, homeDir)
 }
 
 // FilterOptions holds the per-message context passed to Filter.
@@ -77,10 +82,8 @@ type FilterOptions struct {
 	EnvFrom  string
 	EnvTo    string
 	AuthUser string
-	// MsgRaw is the complete raw RFC 2822 message (headers + body).
-	MsgRaw []byte
+	MsgRaw   []byte
 	// FolderExists is called by the mailboxexists Sieve test (RFC 5490).
-	// May be nil — the test returns false when not provided.
 	FolderExists func(ctx context.Context, folder string) (bool, error)
 }
 
@@ -89,16 +92,6 @@ type FilterOptions struct {
 // the caller applies implicit keep (deliver to INBOX).
 // A Reject in any script stops the chain immediately.
 func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult, error) {
-	var vacDict dict.Dict
-	if e.vacationFactory != nil {
-		var err error
-		vacDict, err = e.vacationFactory.Open(opts.Username, opts.HomeDir)
-		if err != nil {
-			return nil, fmt.Errorf("sieve/engine: open vacation dict: %w", err)
-		}
-		defer vacDict.Close()
-	}
-
 	hdr := parseHeaders(opts.MsgRaw)
 	pol := &policy{
 		maxRedirects: e.cfg.MaxRedirects,
@@ -109,7 +102,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 	anyScriptRan := len(e.globalBefore) > 0 || len(e.globalAfter) > 0
 
 	for _, script := range e.globalBefore {
-		r, err := e.runScript(ctx, script, opts, hdr, pol, vacDict)
+		r, err := e.runScript(ctx, script, opts, hdr, pol)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +112,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 		merged.absorb(r)
 	}
 
-	src, _, err := FsLoadActiveScript(opts.HomeDir)
+	src, _, err := e.store.LoadActiveScript(opts.HomeDir)
 	if err != nil {
 		return nil, fmt.Errorf("sieve/engine: load script: %w", err)
 	}
@@ -132,7 +125,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 			slog.Error("sieve: script compile error, skipping user script",
 				"user", opts.Username, "err", err)
 		} else {
-			r, err := e.runScript(ctx, script, opts, hdr, pol, vacDict)
+			r, err := e.runScript(ctx, script, opts, hdr, pol)
 			if err != nil {
 				return nil, err
 			}
@@ -144,7 +137,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 	}
 
 	for _, script := range e.globalAfter {
-		r, err := e.runScript(ctx, script, opts, hdr, pol, vacDict)
+		r, err := e.runScript(ctx, script, opts, hdr, pol)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +153,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 	return &merged, nil
 }
 
-func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts FilterOptions, hdr textproto.MIMEHeader, pol *policy, vacDict dict.Dict) (*FilterResult, error) {
+func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts FilterOptions, hdr textproto.MIMEHeader, pol *policy) (*FilterResult, error) {
 	msg := interp.MessageStatic{
 		Size:       len(opts.MsgRaw),
 		Header:     hdr,
@@ -187,7 +180,7 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 			}
 		}
 		for _, resp := range result.VacationReplies {
-			if err := e.sender.sendVacation(ctx, vacDict, opts, hdr, resp); err != nil {
+			if err := e.sender.sendVacation(ctx, e.store.Locker, opts, hdr, resp); err != nil {
 				slog.Error("sieve: vacation failed", "user", opts.Username, "err", err)
 			}
 		}

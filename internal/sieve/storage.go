@@ -1,67 +1,122 @@
 package sieve
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
-
-// DefaultScriptName is the reserved name of the default Sieve entry-point script.
-const DefaultScriptName = "yarilo"
 
 // DefaultScriptBody is the content written by FsInitUser on first delivery.
 const DefaultScriptBody = "keep;\n"
 
-func opSettings(username, homeDir string) *dict.OpSettings {
-	return &dict.OpSettings{Username: username, HomeDir: homeDir}
+const (
+	vacationFileName = ".yarilo.sieve-vacation"
+	vacationVersion  = uint32(1)
+)
+
+func vacationFilePath(homeDir string) string {
+	return filepath.Join(homeDir, vacationFileName)
 }
 
-// vacationSent reports whether a vacation reply was already sent to senderAddr
-// for the given handle within its dedup interval. Returns false on any lookup
-// error so that sending is attempted rather than silently dropped.
-func vacationSent(ctx context.Context, d dict.Dict, username, homeDir, senderAddr, handle string) (bool, error) {
-	if d == nil {
-		return false, nil
+func vacationID(handle, senderAddr string) string {
+	return handle + "/" + senderAddr
+}
+
+type vacationRecord struct {
+	expiresAt uint32
+	id        string
+}
+
+func readVacationRecords(homeDir string) ([]vacationRecord, error) {
+	data, err := os.ReadFile(vacationFilePath(homeDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	ops := opSettings(username, homeDir)
-	key := vacationKey(handle, senderAddr)
-	vals, found, err := d.Lookup(ctx, ops, key)
-	if err != nil || !found || len(vals) == 0 {
+	if err != nil {
+		return nil, fmt.Errorf("sieve/vacation: read file: %w", err)
+	}
+	if len(data) < 4 {
+		return nil, nil
+	}
+	if binary.LittleEndian.Uint32(data[:4]) != vacationVersion {
+		return nil, nil
+	}
+	data = data[4:]
+	var records []vacationRecord
+	for len(data) >= 8 {
+		exp := binary.LittleEndian.Uint32(data[0:4])
+		idLen := binary.LittleEndian.Uint32(data[4:8])
+		data = data[8:]
+		if uint32(len(data)) < idLen {
+			break
+		}
+		id := string(data[:idLen])
+		data = data[idLen:]
+		records = append(records, vacationRecord{expiresAt: exp, id: id})
+	}
+	return records, nil
+}
+
+func writeVacationRecords(homeDir string, records []vacationRecord) error {
+	var buf bytes.Buffer
+	hdr := make([]byte, 8)
+	binary.LittleEndian.PutUint32(hdr[:4], vacationVersion)
+	buf.Write(hdr[:4])
+	for _, r := range records {
+		idBytes := []byte(r.id)
+		binary.LittleEndian.PutUint32(hdr[0:4], r.expiresAt)
+		binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(idBytes)))
+		buf.Write(hdr[:8])
+		buf.Write(idBytes)
+	}
+	tmp := vacationFilePath(homeDir) + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("sieve/vacation: write tmp: %w", err)
+	}
+	return os.Rename(tmp, vacationFilePath(homeDir))
+}
+
+// vacationSent reports whether a vacation reply was already sent for handle+senderAddr.
+func vacationSent(_ context.Context, homeDir, handle, senderAddr string) (bool, error) {
+	records, err := readVacationRecords(homeDir)
+	if err != nil {
 		return false, err
 	}
-	var ts int64
-	if _, err := fmt.Sscanf(string(vals[0]), "%d", &ts); err != nil {
-		return false, nil
+	now := uint32(time.Now().Unix())
+	id := vacationID(handle, senderAddr)
+	for _, r := range records {
+		if r.expiresAt > now && r.id == id {
+			return true, nil
+		}
 	}
-	_ = ts
-	return true, nil
+	return false, nil
 }
 
-// markVacationSent records that a vacation reply was sent to senderAddr for handle.
-func markVacationSent(ctx context.Context, d dict.Dict, username, homeDir, senderAddr, handle string, intervalSecs int) error {
-	if d == nil {
-		return nil
-	}
-	ops := opSettings(username, homeDir)
-	ops.ExpireSecs = uint32(intervalSecs) //nolint:gosec
-	key := vacationKey(handle, senderAddr)
-	tx, err := d.Begin(ctx, ops)
-	if err != nil {
-		return fmt.Errorf("sieve/storage: begin vacation mark: %w", err)
-	}
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	if err := tx.Set(key, []byte(ts)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("sieve/storage: set vacation mark: %w", err)
-	}
-	if _, err := tx.Commit(); err != nil {
-		return fmt.Errorf("sieve/storage: commit vacation mark: %w", err)
-	}
-	return nil
-}
-
-func vacationKey(handle, senderAddr string) string {
-	return dict.PathPrivate + "sieve/vacation/" + dict.Escape(handle) + "/" + dict.Escape(senderAddr)
+// markVacationSent records a sent vacation reply and evicts expired entries.
+func markVacationSent(ctx context.Context, l locks.Locker, homeDir, handle, senderAddr string, ttlSecs int) error {
+	return withSieveLock(ctx, l, homeDir, func(ctx context.Context) error {
+		records, err := readVacationRecords(homeDir)
+		if err != nil {
+			return err
+		}
+		now := uint32(time.Now().Unix())
+		active := records[:0]
+		for _, r := range records {
+			if r.expiresAt > now {
+				active = append(active, r)
+			}
+		}
+		active = append(active, vacationRecord{
+			expiresAt: now + uint32(ttlSecs), //nolint:gosec
+			id:        vacationID(handle, senderAddr),
+		})
+		return writeVacationRecords(homeDir, active)
+	})
 }
