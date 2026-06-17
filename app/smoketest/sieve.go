@@ -243,8 +243,6 @@ func (c *imapClient) deleteFolder(folder string) {
 	c.cmd(fmt.Sprintf("DELETE %q", folder)) //nolint:errcheck
 }
 
-func (c *imapClient) logout() { c.cmd("LOGOUT") } //nolint:errcheck
-
 // ── per-test helpers ───────────────────────────────────────────────────────
 
 func sieveInject(script, from, to, id, subject, body string) (*lmtpResult, error) {
@@ -269,7 +267,7 @@ func createFolder(user, pass, folder string) error {
 	return nil
 }
 
-func checkFolder(user, pass, folder string, wantExists int, cleanup bool) error {
+func checkFolder(user, pass, folder string, cleanup bool) error {
 	c, err := imapDial()
 	if err != nil {
 		return fmt.Errorf("imap dial: %w", err)
@@ -282,8 +280,8 @@ func checkFolder(user, pass, folder string, wantExists int, cleanup bool) error 
 	if err != nil {
 		return fmt.Errorf("SELECT %q: %w", folder, err)
 	}
-	if exists != wantExists {
-		return fmt.Errorf("expected %d message(s) in %q, got %d", wantExists, folder, exists)
+	if exists != 1 {
+		return fmt.Errorf("expected 1 message in %q, got %d", folder, exists)
 	}
 	if cleanup {
 		uids, _ := c.uidSearch("ALL")
@@ -330,7 +328,7 @@ func testSieveFileinto(user, pass, to string) error {
 	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "fileinto test", "body"); err != nil {
 		return err
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveMailbox(user, pass, to string) error {
@@ -339,7 +337,7 @@ func testSieveMailbox(user, pass, to string) error {
 	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "mailbox:create test", "body"); err != nil {
 		return err
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveImap4flags(user, pass, to string) error {
@@ -396,7 +394,7 @@ func testSieveBody(user, pass, to string) error {
 	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "body test", token); err != nil {
 		return err
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveEnvelope(user, pass, to string) error {
@@ -408,7 +406,7 @@ func testSieveEnvelope(user, pass, to string) error {
 	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "envelope test", "body"); err != nil {
 		return err
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveVariables(user, pass, to string) error {
@@ -420,7 +418,7 @@ func testSieveVariables(user, pass, to string) error {
 	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "variables test", "body"); err != nil {
 		return err
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveReject(_, _, to string) error {
@@ -475,7 +473,7 @@ func testSieveDuplicate(user, pass, to string) error {
 		uids, _ := c.uidSearch(fmt.Sprintf("HEADER Message-ID \"<%s>\"", fixedID))
 		c.deleteUIDs(uids) //nolint:errcheck
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveRelational(user, pass, to string) error {
@@ -490,7 +488,7 @@ func testSieveRelational(user, pass, to string) error {
 	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "relational test", "body"); err != nil {
 		return err
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveDate(user, pass, to string) error {
@@ -505,7 +503,7 @@ func testSieveDate(user, pass, to string) error {
 	if _, err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "date test", "body"); err != nil {
 		return err
 	}
-	return checkFolder(user, pass, folder, 1, true)
+	return checkFolder(user, pass, folder, true)
 }
 
 func testSieveEnotify(user, pass, to string) error {
