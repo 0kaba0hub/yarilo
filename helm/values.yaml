@@ -950,10 +950,11 @@ sieve:
   maxScriptSize: 65536
   maxRedirects: 32
   vacationEnabled: true
-  submissionHost: ""
-  submissionSSL: "no"
-  submissionTimeout: 30
-  submissionAuthSecret: ""
+  submission:
+    host: ""
+    ssl: "no"
+    timeout: 30
+    authSecret: ""
 
 ## -------------------------------------------------------------------
 ## General infrastructure
