@@ -175,6 +175,25 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 	return IndexDirFor(u.volatileDir, folder)
 }
 
+// withFolderRO reloads the folder state under the in-process mutex only and
+// runs fn. No distributed lock is acquired — safe for read-only operations
+// because the on-disk fileindex is append-only and a partially-written append
+// cannot produce a torn read at the record boundary.
+func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
+	u.mu.Lock()
+	fs, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if err := fs.reload(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return fn(fs)
+}
+
 // withFolderLock runs fn under the cross-process index lock for
 // the supplied folder state. When no locker is wired (tests),
 // fn runs unguarded.
