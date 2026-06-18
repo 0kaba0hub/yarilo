@@ -146,7 +146,7 @@ Explicit database.initAddr takes priority; falls back to bundled MySQL service.
 Returns empty string when no probe is needed (SQLite, external without initAddr).
 */}}
 {{- define "yarilo.dbInitHost" -}}
-{{- if .Values.database.initAddr -}}
+{{- if (.Values.database | default dict).initAddr -}}
 {{- index (splitList ":" .Values.database.initAddr) 0 -}}
 {{- else if .Values.mysql.bundled -}}
 {{- printf "%s-mysql.%s.svc" (include "yarilo.fullname" .) .Release.Namespace -}}
@@ -157,7 +157,7 @@ Returns empty string when no probe is needed (SQLite, external without initAddr)
 Database port for init-container TCP probe.
 */}}
 {{- define "yarilo.dbInitPort" -}}
-{{- if .Values.database.initAddr -}}
+{{- if (.Values.database | default dict).initAddr -}}
 {{- index (splitList ":" .Values.database.initAddr) 1 -}}
 {{- else if .Values.mysql.bundled -}}
 3306
