@@ -221,16 +221,6 @@ type SCRAMSha1Lookup interface {
 // AuthenticatorOption tunes a NewAuthenticator construction.
 type AuthenticatorOption func(*chainAuthenticator)
 
-// WithAuthenticatorUserdb attaches a userdb backend to the
-// Authenticator. When set, a successful passdb result is enriched
-// with the userdb lookup (with prefetch detection — see RunAuth).
-// The userdb fields land in the response bag with the `userdb_`
-// prefix so the caller can distinguish passdb-only fields from
-// userdb-enriched ones.
-func WithAuthenticatorUserdb(u Userdb) AuthenticatorOption {
-	return func(a *chainAuthenticator) { a.userdb = u }
-}
-
 // WithAuthenticatorMasterdb attaches a dedicated masterdb chain.
 // Mirrors WithMasterdb on the wire Server: AuthenticateMaster
 // consults this chain first, falling through to the main passdb's
@@ -273,10 +263,8 @@ func WithAuthenticatorCache(c *Cache) AuthenticatorOption {
 }
 
 // NewAuthenticator wraps one or more Passdb drivers into the
-// session-friendly Authenticator surface. Optionally attach a
-// userdb via WithAuthenticatorUserdb so the bag returned by every
-// successful Authenticate also carries userdb_* fields the
-// session path needs for mail-storage setup.
+// session-friendly Authenticator surface. Passdb-only: userdb lookups
+// are the session process's responsibility (via the master protocol).
 //
 // Master-user impersonation is opt-in via
 // WithAuthenticatorMasterUsers(true). When disabled (the default)
@@ -327,7 +315,6 @@ func (p *plainOnlyAuthenticator) LookupSCRAMSha1(username string) (*sasl.ScramCr
 
 type chainAuthenticator struct {
 	chain               Chain
-	userdb              Userdb
 	masterdb            []Passdb
 	masterUserSeparator string
 	masterUsersEnabled  bool

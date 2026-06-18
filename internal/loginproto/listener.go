@@ -30,7 +30,19 @@ type PreambleConn struct {
 	// Home is the user's mail home directory from userdb.
 	Home string
 	// MailLoc is the mail_location override from userdb (empty = use global default).
-	MailLoc  string
+	MailLoc string
+	// Groups are the supplementary group names from userdb (used for ACL resolution).
+	Groups []string
+	// QuotaRules are the per-user quota rules from userdb.
+	QuotaRules []string
+	// VolatileDir is the VOLATILEDIR modifier from userdb (empty = use global default).
+	VolatileDir string
+	// IndexDir is the INDEX= modifier from userdb (empty = co-located with mailbox).
+	IndexDir string
+	// ControlDir is the CONTROL= modifier from userdb (empty = co-located with mailbox).
+	ControlDir string
+	// AltDir is the ALT= modifier from userdb (empty = single-tier storage).
+	AltDir   string
 	realAddr net.Addr
 	br       *bufio.Reader
 }
@@ -164,7 +176,8 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		return nil, fmt.Errorf("token verify: service mismatch: got %q want %q", service, l.ExpectedService)
 	}
 
-	var home, mailLoc string
+	var home, mailLoc, volatileDir, indexDir, controlDir, altDir string
+	var groups, quotaRules []string
 	if l.MasterAddr != "" {
 		masterCl, merr := masterclient.Dial(l.MasterAddr, l.MasterTLS)
 		if merr != nil {
@@ -181,6 +194,12 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		}
 		home = ui.Home
 		mailLoc = ui.MailLocation
+		groups = ui.Groups
+		quotaRules = ui.QuotaRules
+		volatileDir = ui.VolatileDir
+		indexDir = ui.IndexDir
+		controlDir = ui.ControlDir
+		altDir = ui.AltDir
 	}
 
 	var realAddr net.Addr = c.RemoteAddr()
@@ -191,14 +210,20 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	}
 
 	return &PreambleConn{
-		Conn:      c,
-		Username:  username,
-		SessionID: sessionID,
-		Service:   service,
-		Helo:      pre.Helo,
-		Home:      home,
-		MailLoc:   mailLoc,
-		realAddr:  realAddr,
-		br:        br,
+		Conn:        c,
+		Username:    username,
+		SessionID:   sessionID,
+		Service:     service,
+		Helo:        pre.Helo,
+		Home:        home,
+		MailLoc:     mailLoc,
+		Groups:      groups,
+		QuotaRules:  quotaRules,
+		VolatileDir: volatileDir,
+		IndexDir:    indexDir,
+		ControlDir:  controlDir,
+		AltDir:      altDir,
+		realAddr:    realAddr,
+		br:          br,
 	}, nil
 }

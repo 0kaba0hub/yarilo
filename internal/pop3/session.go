@@ -45,16 +45,22 @@ const (
 )
 
 type session struct {
-	srv         *Server
-	conn        net.Conn
-	br          *bufio.Reader
-	state       pop3State
-	onTLS       bool
-	remoteIP    net.IP // real client IP; overridden by PreambleConn.RemoteAddr
-	preAuthUser string // username from preamble; consumed in serve()
-	preAuthHome string // userdb-resolved home from preamble
-	preAuthMail string // userdb-resolved mail_location from preamble
-	sid         string // cross-service correlation ID from login-proxy
+	srv                *Server
+	conn               net.Conn
+	br                 *bufio.Reader
+	state              pop3State
+	onTLS              bool
+	remoteIP           net.IP   // real client IP; overridden by PreambleConn.RemoteAddr
+	preAuthUser        string   // username from preamble; consumed in serve()
+	preAuthHome        string   // userdb-resolved home from preamble
+	preAuthMail        string   // userdb-resolved mail_location from preamble
+	preAuthGroups      []string // userdb-resolved groups from preamble
+	preAuthQuotaRules  []string // userdb-resolved quota rules from preamble
+	preAuthVolatileDir string   // userdb-resolved volatile dir from preamble
+	preAuthIndexDir    string   // userdb-resolved index dir from preamble
+	preAuthControlDir  string   // userdb-resolved control dir from preamble
+	preAuthAltDir      string   // userdb-resolved alt dir from preamble
+	sid                string   // cross-service correlation ID from login-proxy
 
 	// set after successful login
 	lockKey         string
@@ -90,6 +96,12 @@ func (s *Server) newSession(conn net.Conn) *session {
 		sess.preAuthUser = pc.Username
 		sess.preAuthHome = pc.Home
 		sess.preAuthMail = pc.MailLoc
+		sess.preAuthGroups = pc.Groups
+		sess.preAuthQuotaRules = pc.QuotaRules
+		sess.preAuthVolatileDir = pc.VolatileDir
+		sess.preAuthIndexDir = pc.IndexDir
+		sess.preAuthControlDir = pc.ControlDir
+		sess.preAuthAltDir = pc.AltDir
 		sess.sid = pc.SessionID
 		sess.state = statePreAuth
 	}
@@ -531,10 +543,16 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 // the backend greeting. Returns false when setup fails (caller closes conn).
 func (s *session) completePreAuth() bool {
 	res := &protocol.AuthResponse{
-		Result:   protocol.AuthOK,
-		Username: s.preAuthUser,
-		Home:     s.preAuthHome,
-		MailLoc:  s.preAuthMail,
+		Result:      protocol.AuthOK,
+		Username:    s.preAuthUser,
+		Home:        s.preAuthHome,
+		MailLoc:     s.preAuthMail,
+		Groups:      s.preAuthGroups,
+		QuotaRules:  s.preAuthQuotaRules,
+		VolatileDir: s.preAuthVolatileDir,
+		IndexDir:    s.preAuthIndexDir,
+		ControlDir:  s.preAuthControlDir,
+		AltDir:      s.preAuthAltDir,
 	}
 	ok := s.setupSession(res)
 	if ok {
