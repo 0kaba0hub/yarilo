@@ -563,32 +563,6 @@ func RunAuth(chain Chain, req *Request) (Result, error) {
 // hasUserdbFields reports whether the bag already carries at
 // least one userdb_-prefixed key — the marker for a prefetched
 // userdb result that a downstream userdb.Lookup must not overwrite.
-func hasUserdbFields(f *Fields) bool {
-	if f == nil {
-		return false
-	}
-	var found bool
-	f.Each(func(k, _ string) bool {
-		if strings.HasPrefix(k, "userdb_") {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-// writeUserdbFields visits every populated UserInfo field and
-// writes it into f with the `userdb_` prefix. Internal-only
-// fields (Password, CertName, PolicyResponse) are stripped at
-// VisitFields construction, so they cannot leak even when a
-// buggy backend populates them.
-func writeUserdbFields(f *Fields, ui *UserInfo) {
-	ui.VisitFields(func(k, v string) {
-		f.Set("userdb_"+k, v)
-	})
-}
-
 // RunMasterAuth handles a master-user impersonation request.
 // req.Username MUST be the master when the function is called.
 // On success req.Fields carries master_user/original_user/user.

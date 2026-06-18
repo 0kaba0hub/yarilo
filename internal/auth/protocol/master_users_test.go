@@ -194,23 +194,6 @@ func TestSplitMasterFromAuthid(t *testing.T) {
 	}
 }
 
-// --- RunMasterAuth core test helpers -----------------------------------
-
-// targetUserdb records the username it was asked to look up and
-// returns a preset UserInfo. Used to confirm RunMasterAuth runs
-// userdb against TARGET, not against the master.
-type targetUserdb struct {
-	wantUser string
-	got      string
-	ret      *UserInfo
-	err      error
-}
-
-func (u *targetUserdb) Lookup(username string) (*UserInfo, error) {
-	u.got = username
-	return u.ret, u.err
-}
-
 // TestRunMasterAuth_MasterdbHitGrantsImpersonation drives the
 // happy path through the dedicated masterdb chain.
 func TestRunMasterAuth_MasterdbHitGrantsImpersonation(t *testing.T) {

@@ -998,32 +998,3 @@ func buildPassdbs(entries []config.PassdbEntry) ([]protocol.Passdb, error) {
 	}
 	return dbs, nil
 }
-
-// buildUserdbs mirrors buildPassdbs but constructs userdb drivers
-// against the same per-entry DSN. Operators almost always serve
-// both roles from one row set, so the userdb chain is opened
-// lazily alongside the passdb chain in the same loop. AUTH-2 PR 3
-// uses the resulting chain to enrich passdb success responses with
-// userdb_* fields.
-func buildUserdbs(entries []config.PassdbEntry) ([]protocol.Userdb, error) {
-	var dbs []protocol.Userdb
-	for _, e := range entries {
-		switch strings.ToLower(e.Driver) {
-		case "sqlite", "mysql", "postgres":
-			u, err := authsql.NewUserdb(authsql.Config{
-				Driver:       e.Driver,
-				DSN:          e.DSN,
-				UserQuery:    e.UserQuery,
-				IterateQuery: e.IterateQuery,
-				SkipSchema:   e.SkipSchema,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("userdb %s: %w", e.Driver, err)
-			}
-			dbs = append(dbs, u)
-		default:
-			return nil, fmt.Errorf("unknown userdb driver: %s", e.Driver)
-		}
-	}
-	return dbs, nil
-}
