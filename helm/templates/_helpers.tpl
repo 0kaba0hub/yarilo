@@ -121,7 +121,7 @@ Bundled → internal ClusterIP DNS; external → parsed from redis.externalUrl.
 */}}
 {{- define "yarilo.redisInitHost" -}}
 {{- if .Values.redis.bundled -}}
-{{- printf "%s-redis.%s.svc" (include "yarilo.fullname" .) .Release.Namespace -}}
+{{- printf "%s-redis.%s.svc.cluster.local" (include "yarilo.fullname" .) .Release.Namespace -}}
 {{- else -}}
 {{- $u := urlParse .Values.redis.externalUrl -}}
 {{- index (splitList ":" $u.host) 0 -}}
@@ -149,7 +149,7 @@ Returns empty string when no probe is needed (SQLite, external without initAddr)
 {{- if (.Values.database | default dict).initAddr -}}
 {{- index (splitList ":" .Values.database.initAddr) 0 -}}
 {{- else if .Values.mysql.bundled -}}
-{{- printf "%s-mysql.%s.svc" (include "yarilo.fullname" .) .Release.Namespace -}}
+{{- printf "%s-mysql.%s.svc.cluster.local" (include "yarilo.fullname" .) .Release.Namespace -}}
 {{- end -}}
 {{- end }}
 
