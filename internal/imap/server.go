@@ -1434,19 +1434,27 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	if err != nil {
 		return err
 	}
-	for _, m := range msgs {
+	// Track the current sequence number separately: each expunged message
+	// shifts all subsequent sequence numbers down by one, so we must adjust
+	// as we go rather than using the static position from GetMessages.
+	seqNum := uint32(len(msgs))
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
 		if !hasFlag(m.Flags, `\Deleted`) {
+			seqNum--
 			continue
 		}
 		if uids != nil && !uids.Contains(imaplib.UID(m.UID)) {
+			seqNum--
 			continue
 		}
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
 		s.statsExpunged++
-		if err := w.WriteExpunge(m.UID); err != nil {
+		if err := w.WriteExpunge(seqNum); err != nil {
 			return err
 		}
+		seqNum--
 	}
 	return nil
 }
