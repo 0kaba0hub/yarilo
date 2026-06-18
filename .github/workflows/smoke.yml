@@ -18,6 +18,9 @@ on:
       insecure:
         description: "Skip TLS cert verification (true/false)"
         default: "false"
+      namespace:
+        description: "k8s namespace to read smoke-creds secret from"
+        default: "yarilo-sb"
 
   workflow_call:
     inputs:
@@ -36,6 +39,9 @@ on:
       insecure:
         type: string
         default: "false"
+      namespace:
+        type: string
+        default: "yarilo-sb"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -57,6 +63,27 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Write kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_SANDBOX }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Read IMAP credentials from k8s secret
+        run: |
+          IMAP_USER=$(kubectl get secret yarilo-smoke-creds \
+            -n "${{ inputs.namespace }}" \
+            -o jsonpath='{.data.user}' | base64 -d)
+          IMAP_PASS=$(kubectl get secret yarilo-smoke-creds \
+            -n "${{ inputs.namespace }}" \
+            -o jsonpath='{.data.password}' | base64 -d)
+          echo "IMAP_USER=$IMAP_USER" >> $GITHUB_ENV
+          echo "::add-mask::$IMAP_PASS"
+          echo "IMAP_PASS=$IMAP_PASS" >> $GITHUB_ENV
+
       - name: Build smoketest
         run: go build -o /tmp/smoketest ./app/smoketest
 
@@ -68,8 +95,19 @@ jobs:
           fi
           /tmp/smoketest \
             -host "${{ inputs.host }}" \
-            -imap-port "${{ inputs.imap_port }}" \
             -telemetry "${{ inputs.telemetry_url }}" \
             -insecure="${{ inputs.insecure }}" \
             -timeout 15s \
             $POP3S_FLAGS
+
+      - name: Run imaptest
+        run: |
+          docker run --rm dovecot/imaptest \
+            host="${{ inputs.host }}" \
+            port="${{ inputs.imap_port }}" \
+            ssl=yes \
+            user="$IMAP_USER" \
+            pass="$IMAP_PASS" \
+            no_pipelining=yes \
+            clients=1 \
+            count=5
