@@ -79,7 +79,7 @@ jobs:
             host="${{ inputs.host }}" \
             port="${{ inputs.imap_port }}" \
             ssl=yes \
-            user="${{ secrets.SMOKE_IMAP_USER }}" \
+            user="${{ vars.SMOKE_IMAP_USER }}" \
             pass="${{ secrets.SMOKE_IMAP_PASS }}" \
             no_pipelining=yes \
             clients=1 \
