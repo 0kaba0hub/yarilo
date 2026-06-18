@@ -20,7 +20,7 @@ import (
 // later phase.
 func (u *userIndex) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {
 	var out map[uint32]string
-	err := u.withFolder(folderID, func(fs *folderState) error {
+	err := u.withFolderRO(folderID, func(fs *folderState) error {
 		path := filepath.Join(fs.indexDir, "pop3.uidl")
 		f, err := os.Open(path)
 		if errors.Is(err, os.ErrNotExist) {

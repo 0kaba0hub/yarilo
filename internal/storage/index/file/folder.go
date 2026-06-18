@@ -548,7 +548,7 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 // order without re-sorting.
 func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	var out []*mailbox.MessageMeta
-	err := u.withFolder(folderID, func(fs *folderState) error {
+	err := u.withFolderRO(folderID, func(fs *folderState) error {
 		for _, rec := range fs.file.Records {
 			if !seqSetContains(uids, rec.UID) {
 				continue
@@ -603,7 +603,7 @@ func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
 // (TxTypeExpunge with multi-UID ranges) lands in Phase 2.5.
 func (u *userIndex) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
 	var out []uint32
-	err := u.withFolder(folderID, func(fs *folderState) error {
+	err := u.withFolderRO(folderID, func(fs *folderState) error {
 		uids, err := scanExpungesSince(fs.indexPath, sinceModSeq)
 		if err != nil {
 			return err
@@ -617,7 +617,7 @@ func (u *userIndex) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, err
 // Keywords returns the current keyword registry.
 func (u *userIndex) Keywords(folderID uint64) ([]string, error) {
 	var out []string
-	err := u.withFolder(folderID, func(fs *folderState) error {
+	err := u.withFolderRO(folderID, func(fs *folderState) error {
 		out = append([]string(nil), fs.keywords.Names...)
 		return nil
 	})
