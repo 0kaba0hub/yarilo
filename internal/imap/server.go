@@ -838,20 +838,23 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	s.pushAnvilSelect(name)
 
 	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	sysFlags := []imaplib.Flag{
+		imaplib.FlagAnswered, imaplib.FlagFlagged,
+		imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
+	}
+	allFlags := sysFlags
+	if kws, err := h.idx.Keywords(f.ID); err == nil {
+		for _, kw := range kws {
+			allFlags = append(allFlags, imaplib.Flag(kw))
+		}
+	}
 	data := &imaplib.SelectData{
-		Flags: []imaplib.Flag{
-			imaplib.FlagAnswered, imaplib.FlagFlagged,
-			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
-		},
-		PermanentFlags: []imaplib.Flag{
-			imaplib.FlagAnswered, imaplib.FlagFlagged,
-			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
-			imaplib.Flag(`\*`),
-		},
-		NumMessages:   uint32(len(msgs)),
-		UIDValidity:   f.UIDValidity,
-		UIDNext:       imaplib.UID(f.NextUID),
-		HighestModSeq: f.HighestModSeq,
+		Flags:          allFlags,
+		PermanentFlags: append(allFlags, imaplib.Flag(`\*`)),
+		NumMessages:    uint32(len(msgs)),
+		UIDValidity:    f.UIDValidity,
+		UIDNext:        imaplib.UID(f.NextUID),
+		HighestModSeq:  f.HighestModSeq,
 	}
 	// QRESYNC SELECT (RFC 7162 §3.2): when the client supplies (UIDVALIDITY
 	// <v> <last-known-modseq> [<known-uids>]) and the UIDVALIDITY matches,
