@@ -68,8 +68,19 @@ jobs:
           fi
           /tmp/smoketest \
             -host "${{ inputs.host }}" \
-            -imap-port "${{ inputs.imap_port }}" \
             -telemetry "${{ inputs.telemetry_url }}" \
             -insecure="${{ inputs.insecure }}" \
             -timeout 15s \
             $POP3S_FLAGS
+
+      - name: Run imaptest
+        run: |
+          docker run --rm dovecot/imaptest \
+            host="${{ inputs.host }}" \
+            port="${{ inputs.imap_port }}" \
+            ssl=yes \
+            user="${{ vars.SMOKE_IMAP_USER }}" \
+            pass="${{ secrets.SMOKE_IMAP_PASS }}" \
+            no_pipelining=yes \
+            clients=1 \
+            count=5

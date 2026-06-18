@@ -1,8 +1,9 @@
 // smoketest verifies a live yarilo deployment.
-// Usage: smoketest -host mail.example.com -imap-port 993 -telemetry http://...:8080
+// Usage: smoketest -host mail.example.com -telemetry http://...:8080
 //
 // Exit 0 = all checks passed.
 // Exit 1 = one or more checks failed (prints failures to stderr).
+// IMAP conformance is covered by imaptest (see smoke.yml).
 package main
 
 import (
@@ -23,7 +24,7 @@ import (
 
 var (
 	flagHost            = flag.String("host", "localhost", "yarilo hostname")
-	flagIMAPSPort       = flag.String("imap-port", "993", "IMAPS port")
+	flagIMAPSPort       = flag.String("imap-port", "993", "IMAPS port (used by sieve verify step)")
 	flagPOP3SPort       = flag.String("pop3s-port", "995", "POP3S port")
 	flagSMTPMXPort      = flag.String("smtp-mx-port", "25", "SMTP MX port")
 	flagSMTPSubPort     = flag.String("smtp-sub-port", "587", "SMTP submission port")
@@ -60,7 +61,6 @@ func main() {
 	}{
 		{"telemetry /healthz", checkHealth},
 		{"telemetry /readyz", checkReady},
-		{"imap CAPABILITY", checkIMAP},
 	}
 
 	if *flagSMTPMX {
@@ -151,52 +151,6 @@ func httpGet(url string) error {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
 	}
-	return nil
-}
-
-// ---- IMAP ----------------------------------------------------------------
-
-func checkIMAP() error {
-	addr := net.JoinHostPort(*flagHost, *flagIMAPSPort)
-	dialer := &net.Dialer{Timeout: *flagTimeout}
-	tlsCfg := &tls.Config{
-		ServerName:         *flagHost,
-		InsecureSkipVerify: *flagInsecure, //nolint:gosec
-	}
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
-	if err != nil {
-		return fmt.Errorf("connect %s: %w", addr, err)
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
-
-	greeting, err := readLine(conn)
-	if err != nil {
-		return fmt.Errorf("read greeting: %w", err)
-	}
-	if !strings.HasPrefix(greeting, "* OK") {
-		return fmt.Errorf("unexpected greeting: %q", greeting)
-	}
-
-	fmt.Fprintf(conn, "A001 CAPABILITY\r\n")
-	for {
-		line, err := readLine(conn)
-		if err != nil {
-			return fmt.Errorf("CAPABILITY read: %w", err)
-		}
-		if strings.HasPrefix(line, "* CAPABILITY") {
-			if !strings.Contains(line, "IMAP4rev1") {
-				return fmt.Errorf("CAPABILITY missing IMAP4rev1: %q", line)
-			}
-		}
-		if strings.HasPrefix(line, "A001 OK") {
-			break
-		}
-		if strings.HasPrefix(line, "A001 BAD") || strings.HasPrefix(line, "A001 NO") {
-			return fmt.Errorf("CAPABILITY command failed: %q", line)
-		}
-	}
-	fmt.Fprintf(conn, "A002 LOGOUT\r\n")
 	return nil
 }
 
