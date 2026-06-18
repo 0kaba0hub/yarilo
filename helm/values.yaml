@@ -15,7 +15,7 @@ image:
 storage:
   mailbox: maildir
   maildirRoot: /var/mail/vhosts
-  mailHomeTemplate: "%d/%n"
+  mailHomeTemplate: "%d/%u"
   index: fileindex
   ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
   ## indexDir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk

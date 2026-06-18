@@ -54,11 +54,11 @@ func TestResolver_Resolve(t *testing.T) {
 }
 
 func TestResolver_DefaultTemplate(t *testing.T) {
-	// HomeTemplate empty must default to "%d/%n".
+	// HomeTemplate empty must default to "%d/%u" (full login address).
 	r := &Resolver{Root: "/root"}
 	got := r.Resolve("alice@example.com", "")
-	if got != "/root/example.com/alice" {
-		t.Errorf("default template: got %q, want /root/example.com/alice", got)
+	if got != "/root/example.com/alice@example.com" {
+		t.Errorf("default template: got %q, want /root/example.com/alice@example.com", got)
 	}
 }
 

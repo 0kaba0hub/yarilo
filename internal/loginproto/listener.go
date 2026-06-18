@@ -2,6 +2,7 @@ package loginproto
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -9,11 +10,13 @@ import (
 	"time"
 
 	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
+	masterclient "github.com/0kaba0hub/yarilo/pkg/authclient"
 )
 
-// PreambleConn wraps a net.Conn after the YARILO preamble has been read.
-// It exposes the preamble fields and overrides RemoteAddr with the real
-// client IP forwarded by the login pod.
+// PreambleConn wraps a net.Conn after the YARILO preamble has been read
+// and the session token has been verified. It exposes preamble fields plus
+// the userdb-resolved storage information, and overrides RemoteAddr with
+// the real client IP forwarded by the login pod.
 //
 // Read is proxied through the buffered reader that was used to read the
 // preamble so no bytes are lost.
@@ -23,8 +26,12 @@ type PreambleConn struct {
 	SessionID string
 	Service   string
 	Helo      string
-	realAddr  net.Addr
-	br        *bufio.Reader
+	// Home is the user's mail home directory from userdb.
+	Home string
+	// MailLoc is the mail_location override from userdb (empty = use global default).
+	MailLoc  string
+	realAddr net.Addr
+	br       *bufio.Reader
 }
 
 // RemoteAddr returns the real client IP forwarded in the preamble.
@@ -36,24 +43,30 @@ func (c *PreambleConn) Read(b []byte) (int, error) { return c.br.Read(b) }
 
 // PreambleListener wraps a net.Listener. Accept reads the YARILO preamble from
 // each incoming connection, calls yarilo-auth VERIFY to validate the session
-// token, and returns a *PreambleConn. Connections that fail preamble reading or
-// token verification are closed and skipped (Accept loops to the next connection).
+// token, then performs a userdb lookup via the master socket to populate
+// storage fields. Returns a *PreambleConn. Connections that fail preamble
+// reading, token verification, or userdb lookup are closed and skipped.
 //
 // When ExpectedService is non-empty, the service returned by VERIFY must match
-// it exactly; mismatches are treated as token verification failures and logged.
-// This prevents LMTP session tokens from being replayed on IMAP backends and
+// it exactly; mismatches prevent LMTP tokens from being replayed on IMAP and
 // vice-versa.
 type PreambleListener struct {
 	net.Listener
-	AuthAddr        string
-	AuthTLS         *tls.Config
+	// AuthAddr is the yarilo-auth login-protocol address for VERIFY.
+	AuthAddr string
+	AuthTLS  *tls.Config
+	// MasterAddr is the yarilo-auth master-protocol address for userdb lookup.
+	MasterAddr string
+	MasterTLS  *tls.Config
+	// ExpectedService, when non-empty, must match the service in the VERIFY response.
 	ExpectedService string
 }
 
 const preambleReadTimeout = 5 * time.Second
 
 // Accept accepts the next connection, reads the YARILO preamble, verifies the
-// session token with yarilo-auth, and returns a *PreambleConn on success.
+// session token with yarilo-auth, looks up the user in userdb via the master
+// socket, and returns a *PreambleConn on success.
 func (l *PreambleListener) Accept() (net.Conn, error) {
 	for {
 		c, err := l.Listener.Accept()
@@ -87,7 +100,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	}
 	defer authCl.Close()
 
-	username, sessionID, service, err := authCl.Verify(pre.Token)
+	username, sessionID, service, err := authCl.Verify(pre.Token, pre.User, pre.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("token verify: %w", err)
 	}
@@ -98,6 +111,25 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		return nil, fmt.Errorf("token verify: service mismatch: got %q want %q", service, l.ExpectedService)
 	}
 
+	var home, mailLoc string
+	if l.MasterAddr != "" {
+		masterCl, merr := masterclient.Dial(l.MasterAddr, l.MasterTLS)
+		if merr != nil {
+			return nil, fmt.Errorf("master dial: %w", merr)
+		}
+		defer masterCl.Close()
+
+		ui, merr := masterCl.Userdb(context.Background(), username)
+		if merr != nil {
+			return nil, fmt.Errorf("userdb lookup: %w", merr)
+		}
+		if ui == nil {
+			return nil, fmt.Errorf("userdb lookup: user not found: %s", username)
+		}
+		home = ui.Home
+		mailLoc = ui.MailLocation
+	}
+
 	var realAddr net.Addr = c.RemoteAddr()
 	if pre.Addr != "" {
 		if ip := net.ParseIP(pre.Addr); ip != nil {
@@ -105,14 +137,14 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		}
 	}
 
-	_ = sessionID // sessionID from preamble and from VERIFY both valid; preamble's is used for anvil events
-
 	return &PreambleConn{
 		Conn:      c,
 		Username:  username,
-		SessionID: pre.SessionID,
+		SessionID: sessionID,
 		Service:   service,
 		Helo:      pre.Helo,
+		Home:      home,
+		MailLoc:   mailLoc,
 		realAddr:  realAddr,
 		br:        br,
 	}, nil

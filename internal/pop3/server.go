@@ -32,10 +32,13 @@ type Options struct {
 	ProxyProtocol      bool
 	HAProxyTimeout     time.Duration
 	HAProxyTrustedNets []*net.IPNet
-	// AuthAddr is the host:port of yarilo-auth used by the PreambleListener to
-	// verify session tokens forwarded by login pods.
-	AuthAddr         string
-	AuthTLS          *tls.Config
+	// AuthAddr is the host:port of yarilo-auth login protocol used by the
+	// PreambleListener to verify session tokens forwarded by login pods.
+	AuthAddr string
+	AuthTLS  *tls.Config
+	// MasterAddr is the host:port of yarilo-auth master protocol for userdb lookups.
+	MasterAddr       string
+	MasterTLS        *tls.Config
 	DisablePlainAuth bool // reject USER/PASS without TLS
 	// POP3-specific behaviour (Dovecot parity)
 	NoFlagUpdates  bool               // pop3_no_flag_updates: skip \Seen on RETR
@@ -130,7 +133,14 @@ func (s *Server) wrapListeners(ln net.Listener) net.Listener {
 		}
 	}
 	if s.opts.AuthAddr != "" {
-		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "pop3"}
+		ln = &loginproto.PreambleListener{
+			Listener:        ln,
+			AuthAddr:        s.opts.AuthAddr,
+			AuthTLS:         s.opts.AuthTLS,
+			MasterAddr:      s.opts.MasterAddr,
+			MasterTLS:       s.opts.MasterTLS,
+			ExpectedService: "pop3",
+		}
 	}
 	return ln
 }

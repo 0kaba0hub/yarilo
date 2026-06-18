@@ -280,10 +280,12 @@ client ──TLS:993──► yarilo-imap-login (dovenull)
                     yarilo-imap (yarilo uid)
                         │ accepts plain TCP from imap-login
                         │ receives XCONN XCLIENT preamble (ADDR/SESSION/TOKEN/USER)
-                        │ VERIFY request ──mTLS──► yarilo-auth :9100  [PR 3]
-                        │   → validates token, gets username; token consumed (one-time)
-                        │ enters pre-authenticated IMAP state (no passdb call)
-                        │ runs userdb in-process (SQL/LDAP)
+                        │ VERIFY(token, user=<username>) ──mTLS──► yarilo-auth :9100
+                        │   → validates token AND checks token was issued to <username>
+                        │   → token consumed (one-time); returns confirmed username
+                        │ USER(username) ──mTLS──► yarilo-auth :9102 (master socket)
+                        │   → userdb lookup: home, mail, quota, groups, …
+                        │ enters pre-authenticated IMAP state
                         │ maildir access via RWX PVC
                         │ on disconnect → goroutine exits
                         │
@@ -320,6 +322,26 @@ NodePort (protected by network policy; not exposed via LoadBalancer).
 
 ---
 
+## Auth architecture rules
+
+**passdb and userdb are strictly separate — never call userdb from the login process.**
+
+```
+login pod   →  AUTH(user, pass)          →  yarilo-auth :9100  (passdb only → token)
+                                                                  ↑ NO userdb here
+backend pod →  VERIFY(token, user=<u>)   →  yarilo-auth :9100  (token + username binding check)
+backend pod →  USER(<username>)          →  yarilo-auth :9102  (master socket → userdb → home/mail/quota/groups)
+```
+
+Rules that must never be violated:
+
+- **Login pods call passdb only.** `RunAuth` must not invoke `userdb.Lookup`. The auth result from a login-side AUTH carries only: `username`, `token`, `nologin`, `allow_nets`. No `home`, no `mail`.
+- **Session pods call userdb.** After VERIFY succeeds, every session binary (imap, pop3, submission, managesieve, lmtp) calls `USER <username>` on the master socket (:9102) to obtain `home`, `mail`, `quota_rule`, `groups`, and any extra fields. This is the only source of storage identity.
+- **VERIFY binds token to username.** The VERIFY command includes the username from the preamble (`VERIFY\t<id>\t<token>\tuser=<u>`). yarilo-auth rejects with FAIL if the token was not issued to that username. This prevents token reuse across users.
+- **`RunAuth` = passdb chain only.** `WithAuthenticatorUserdb` / userdb wiring must not be attached to the login-side authenticator.
+
+---
+
 ## Service communication (mTLS RPC)
 
 Між компонентами використовується **mTLS TCP** через k8s Services (не класичний IPC через pipes/Unix sockets — це RPC).
@@ -327,16 +349,15 @@ Plain TCP — лише на data plane між director-проксі і backend-p
 
 | From | To | Transport | Protocol |
 |:---|:---|:---|:---|
-| `*-login` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited AUTH (passdb + token issuance) |
+| `*-login` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited AUTH — **passdb only** → session token |
 | `*-login` | `yarilo-anvil` | mTLS TCP :9101 | TAB-delimited (connection counting) |
 | `*-login` | `yarilo-director` | mTLS TCP :9102 | TAB-delimited LOOKUP |
 | `*-login` | `yarilo-imap/pop3/submission` | plain TCP ClusterIP | XCLIENT preamble (ADDR/SESSION/TOKEN/USER), then raw protocol bytes (proxy) |
-| `yarilo-imap/pop3/submission` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited VERIFY (token validation → pre-auth, PR 3) |
+| `yarilo-imap/pop3/submission/managesieve` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited VERIFY(token, user=) — token + username binding check |
+| `yarilo-imap/pop3/submission/lmtp/managesieve` | `yarilo-auth` | mTLS TCP :9102 (master) | TAB-delimited USER — **userdb lookup** → home, mail, quota, groups |
 | `yarilo-director` | `yarilo-lmtp` | plain TCP ClusterIP | raw LMTP bytes (proxy) |
 | `yarilo-monitor` (sidecar) | backend `/healthz` of each StatefulSet pod | mTLS HTTP | health polling (rebalance ring on failures) |
-| `yarilo-lmtp` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited |
 | `yarilo-imap/pop3/submission/lmtp` | `yarilo-locks-<tag>` | mTLS TCP :9104 | TAB-delimited (LOCK/UNLOCK/RENEW) |
-| `yarilo-imap/pop3/submission/lmtp` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited (userdb) |
 | `yarilo-imap/pop3/submission/lmtp` | `yarilo-anvil` | mTLS TCP :9101 | TAB-delimited (SESSION events) |
 
 ---

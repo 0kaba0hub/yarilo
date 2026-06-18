@@ -179,7 +179,7 @@ func TestVerify_OK(t *testing.T) {
 	}
 	defer c.Close()
 
-	username, sessionID, service, err := c.Verify("sometoken")
+	username, sessionID, service, err := c.Verify("sometoken", "alice", "sess42")
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestVerify_Fail(t *testing.T) {
 	}
 	defer c.Close()
 
-	_, _, _, err = c.Verify("badtoken")
+	_, _, _, err = c.Verify("badtoken", "", "")
 	if err != ErrAuthFailed {
 		t.Errorf("err = %v, want ErrAuthFailed", err)
 	}
