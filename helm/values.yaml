@@ -1085,6 +1085,16 @@ mysql:
       memory: 512Mi
 
 ## -------------------------------------------------------------------
+## Database init-container probe
+## host:port to wait for before starting auth and locks.
+## Bundled MySQL: auto-derived when left empty.
+## External DB: set explicitly, e.g. "pg.example.com:5432".
+## SQLite or no TCP probe needed: leave empty.
+## -------------------------------------------------------------------
+database:
+  initAddr: ""
+
+## -------------------------------------------------------------------
 ## Telemetry (:8080 per component pod)
 ## -------------------------------------------------------------------
 telemetry:
