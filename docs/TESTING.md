@@ -17,18 +17,13 @@ Trigger `smoke.yml` (`workflow_dispatch`) with:
 | `pop3s_port` | POP3S port (leave empty to skip) |
 | `telemetry_url` | Telemetry base URL, e.g. `http://10.0.0.1:8080` |
 | `insecure` | Skip TLS cert verification (`true`/`false`) |
-| `namespace` | k8s namespace to read `yarilo-smoke-creds` secret from (default `yarilo-sb`) |
 
-Requires GitHub Actions secret `KUBE_CONFIG_SANDBOX` — base64-encoded kubeconfig with read access to the target namespace.
+Requires GitHub Actions repository secrets:
 
-### Create smoke credentials secret
-
-```sh
-kubectl create secret generic yarilo-smoke-creds \
-  --namespace yarilo-sb \
-  --from-literal=user=u1@d00001.test \
-  --from-literal=password='Yarilo!test1'
-```
+| Secret | Value |
+|:---|:---|
+| `SMOKE_IMAP_USER` | IMAP test account, e.g. `u1@d00001.test` |
+| `SMOKE_IMAP_PASS` | IMAP test account password |
 
 ### Run imaptest manually against sandbox
 
