@@ -106,7 +106,7 @@ type Resolver struct {
 	Root string
 
 	// HomeTemplate is the Dovecot-style template for users with no userdb
-	// override. Default: "%d/%n" (virtual hosting layout).
+	// override. Default: "%d/%u" (virtual hosting layout).
 	HomeTemplate string
 
 	// DefaultQuotaRules are applied to every UserInfo produced by this

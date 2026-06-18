@@ -306,10 +306,16 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 	if pc := unwrapPreambleConn(c.NetConn()); pc != nil {
 		sess.sid = pc.SessionID
 		if err := sess.completeLogin(&protocol.AuthResponse{
-			Result:   protocol.AuthOK,
-			Username: pc.Username,
-			Home:     pc.Home,
-			MailLoc:  pc.MailLoc,
+			Result:      protocol.AuthOK,
+			Username:    pc.Username,
+			Home:        pc.Home,
+			MailLoc:     pc.MailLoc,
+			Groups:      pc.Groups,
+			QuotaRules:  pc.QuotaRules,
+			VolatileDir: pc.VolatileDir,
+			IndexDir:    pc.IndexDir,
+			ControlDir:  pc.ControlDir,
+			AltDir:      pc.AltDir,
 		}); err != nil {
 			return nil, nil, err
 		}
