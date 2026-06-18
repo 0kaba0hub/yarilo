@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
@@ -41,11 +42,12 @@ func (c *PreambleConn) RemoteAddr() net.Addr { return c.realAddr }
 // after the preamble line).
 func (c *PreambleConn) Read(b []byte) (int, error) { return c.br.Read(b) }
 
-// PreambleListener wraps a net.Listener. Accept reads the YARILO preamble from
-// each incoming connection, calls yarilo-auth VERIFY to validate the session
-// token, then performs a userdb lookup via the master socket to populate
-// storage fields. Returns a *PreambleConn. Connections that fail preamble
-// reading, token verification, or userdb lookup are closed and skipped.
+// PreambleListener wraps a net.Listener. Each accepted TCP connection is
+// handed to a goroutine that reads the YARILO preamble, verifies the session
+// token with yarilo-auth, and optionally performs a userdb lookup via the
+// master socket. Completed handshakes are delivered through a buffered channel
+// so that multiple handshakes proceed in parallel and Accept never blocks on
+// network I/O.
 //
 // When ExpectedService is non-empty, the service returned by VERIFY must match
 // it exactly; mismatches prevent LMTP tokens from being replayed on IMAP and
@@ -60,28 +62,79 @@ type PreambleListener struct {
 	MasterTLS  *tls.Config
 	// ExpectedService, when non-empty, must match the service in the VERIFY response.
 	ExpectedService string
+
+	startOnce sync.Once
+	ready     chan acceptResult
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
-const preambleReadTimeout = 5 * time.Second
+type acceptResult struct {
+	conn net.Conn
+	err  error
+}
 
-// Accept accepts the next connection, reads the YARILO preamble, verifies the
-// session token with yarilo-auth, looks up the user in userdb via the master
-// socket, and returns a *PreambleConn on success.
-func (l *PreambleListener) Accept() (net.Conn, error) {
+// preambleChanBuf is the number of completed handshakes that can queue before
+// Accept drains them. Sized to absorb a burst of concurrent logins without
+// blocking the handshake goroutines.
+const preambleChanBuf = 64
+
+func (l *PreambleListener) init() {
+	l.ctx, l.cancel = context.WithCancel(context.Background())
+	l.ready = make(chan acceptResult, preambleChanBuf)
+	go l.acceptLoop()
+}
+
+// acceptLoop runs the underlying listener's Accept in a dedicated goroutine
+// and fans each raw connection out to a per-connection handshake goroutine.
+func (l *PreambleListener) acceptLoop() {
 	for {
 		c, err := l.Listener.Accept()
 		if err != nil {
-			return nil, err
+			select {
+			case l.ready <- acceptResult{err: err}:
+			case <-l.ctx.Done():
+			}
+			return
 		}
-		pc, err := l.handshake(c)
-		if err != nil {
-			slog.Debug("loginproto: preamble handshake failed", "remote", c.RemoteAddr(), "err", err)
-			c.Close()
-			continue
-		}
-		return pc, nil
+		go l.doHandshake(c)
 	}
 }
+
+func (l *PreambleListener) doHandshake(c net.Conn) {
+	pc, err := l.handshake(c)
+	if err != nil {
+		slog.Debug("loginproto: preamble handshake failed", "remote", c.RemoteAddr(), "err", err)
+		c.Close()
+		return
+	}
+	select {
+	case l.ready <- acceptResult{conn: pc}:
+	case <-l.ctx.Done():
+		pc.Close()
+	}
+}
+
+// Accept returns the next successfully handshaked connection. It never blocks
+// on network I/O — handshakes proceed in parallel goroutines.
+func (l *PreambleListener) Accept() (net.Conn, error) {
+	l.startOnce.Do(l.init)
+	select {
+	case r := <-l.ready:
+		return r.conn, r.err
+	case <-l.ctx.Done():
+		return nil, net.ErrClosed
+	}
+}
+
+// Close cancels the context (causing any blocked Accept to return) and closes
+// the underlying listener, which unblocks the internal acceptLoop.
+func (l *PreambleListener) Close() error {
+	l.cancel()
+	return l.Listener.Close()
+}
+
+const preambleReadTimeout = 5 * time.Second
 
 func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	c.SetDeadline(time.Now().Add(preambleReadTimeout)) //nolint:errcheck
