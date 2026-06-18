@@ -215,7 +215,7 @@ components:
     ## selectively via `yarilo-admin auth cache flush
     ## [user-mask...]`.
     cache:
-      sizeBytes: 0
+      sizeBytes: 104857600
       ttlSeconds: 1800
       negativeTTLSeconds: 1800
 
@@ -340,10 +340,9 @@ components:
     resources:
       requests:
         cpu: 50m
-        memory: 32Mi
+        memory: 64Mi
       limits:
-        cpu: 200m
-        memory: 128Mi
+        memory: 320Mi
 
   ## Anvil — connection rate limiter. Keep replicas: 1.
   anvil:
