@@ -52,11 +52,15 @@ type Options struct {
 	ProxyProtocol      bool
 	HAProxyTimeout     time.Duration
 	HAProxyTrustedNets []*net.IPNet
-	// AuthAddr is the host:port of yarilo-auth used by the PreambleListener to
-	// verify session tokens forwarded by login pods. When set, connections must
-	// carry a valid YARILO preamble; plain connections are rejected.
-	AuthAddr           string
-	AuthTLS            *tls.Config
+	// AuthAddr is the host:port of yarilo-auth login protocol used by the
+	// PreambleListener to verify session tokens forwarded by login pods.
+	// When set, connections must carry a valid YARILO preamble.
+	AuthAddr string
+	AuthTLS  *tls.Config
+	// MasterAddr is the host:port of yarilo-auth master protocol used by
+	// the PreambleListener to perform userdb lookups after token verification.
+	MasterAddr         string
+	MasterTLS          *tls.Config
 	DisablePlainAuth   bool
 	IdleNotifyInterval time.Duration
 	MaxLineLength      int
@@ -261,7 +265,14 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 		ln = &maxLineLenListener{Listener: ln, limit: s.opts.MaxLineLength}
 	}
 	if s.opts.AuthAddr != "" {
-		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "imap"}
+		ln = &loginproto.PreambleListener{
+			Listener:        ln,
+			AuthAddr:        s.opts.AuthAddr,
+			AuthTLS:         s.opts.AuthTLS,
+			MasterAddr:      s.opts.MasterAddr,
+			MasterTLS:       s.opts.MasterTLS,
+			ExpectedService: "imap",
+		}
 	}
 	if s.opts.LoginGreeting != "" {
 		ln = &greetingListener{Listener: ln, greeting: s.opts.LoginGreeting}
@@ -297,6 +308,8 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 		if err := sess.completeLogin(&protocol.AuthResponse{
 			Result:   protocol.AuthOK,
 			Username: pc.Username,
+			Home:     pc.Home,
+			MailLoc:  pc.MailLoc,
 		}); err != nil {
 			return nil, nil, err
 		}

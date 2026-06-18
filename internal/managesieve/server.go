@@ -29,11 +29,15 @@ type Options struct {
 	Resolver *mailbox.Resolver
 	// Config holds protocol-level tunables (max script size).
 	Config config.ManageSieveProtocolConfig
-	// AuthAddr is the host:port of yarilo-auth used by the PreambleListener
-	// to verify session tokens forwarded by the login pod.
+	// AuthAddr is the host:port of yarilo-auth login protocol used by the
+	// PreambleListener to verify session tokens forwarded by the login pod.
 	AuthAddr string
-	// AuthTLS is the mTLS client config for the yarilo-auth connection.
+	// AuthTLS is the mTLS client config for the yarilo-auth login connection.
 	AuthTLS *tls.Config
+	// MasterAddr is the host:port of yarilo-auth master protocol for userdb lookups.
+	MasterAddr string
+	// MasterTLS is the mTLS client config for the yarilo-auth master connection.
+	MasterTLS *tls.Config
 }
 
 // New creates a ManageSieve server with the given options.
@@ -50,6 +54,8 @@ func (srv *Server) ServeManageSieve(ctx context.Context, ln net.Listener) error 
 			Listener:        ln,
 			AuthAddr:        srv.opts.AuthAddr,
 			AuthTLS:         srv.opts.AuthTLS,
+			MasterAddr:      srv.opts.MasterAddr,
+			MasterTLS:       srv.opts.MasterTLS,
 			ExpectedService: "managesieve",
 		}
 	}
@@ -77,7 +83,7 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 	}
 
 	username := pc.Username
-	userInfo := srv.opts.Resolver.UserInfo(username, "")
+	userInfo := srv.opts.Resolver.UserInfo(username, pc.Home)
 
 	slog.Info("managesieve: session started", "user", username, "session", pc.SessionID)
 

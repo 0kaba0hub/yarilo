@@ -153,7 +153,7 @@ func (r *Resolver) Resolve(username, homeOverride string) string {
 	}
 	tmpl := r.HomeTemplate
 	if tmpl == "" {
-		tmpl = "%d/%n"
+		tmpl = "%d/%u"
 	}
 	return filepath.Join(r.Root, ExpandVars(tmpl, username))
 }

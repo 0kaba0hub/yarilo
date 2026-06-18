@@ -352,7 +352,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 		RemoteIP: remoteIP,
 		Fields:   NewFields(),
 	}
-	result, err := RunAuth(c.chain, c.userdb, req)
+	result, err := RunAuth(c.chain, req)
 
 	// Seed the cache on definitive answers. TempFail is not
 	// cached — the next attempt should retry the chain so a
@@ -518,7 +518,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 		RemoteIP: remoteIP,
 		Fields:   NewFields(),
 	}
-	result, err := RunMasterAuth(c.chain, Chain(c.masterdb), c.userdb, target, req)
+	result, err := RunMasterAuth(c.chain, Chain(c.masterdb), target, req)
 
 	if err == nil && (result == ResultOK || result == ResultFail) {
 		// Cache under master's name (not target) for selective
@@ -549,44 +549,15 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 	return resp, err
 }
 
-// RunAuth executes the passdb chain and — on ResultOK with a
-// userdb configured — also fills the bag with userdb_* fields
-// from a userdb.Lookup. Prefetch detection: when the chain has
-// already populated any userdb_-prefixed key (an SQL passdb that
-// SELECT-ed userdb columns in the same query), userdb.Lookup is
-// skipped — the passdb effectively did the work.
-//
-// userdb errors and misses do NOT downgrade ResultOK — passdb is
-// authoritative for the auth decision. They surface in server-side
-// logs only; the response carries passdb-only fields. A transient
-// userdb outage must not reject an already-verified user.
-//
-// Allocates req.Fields when the caller passed nil so the userdb
-// writer never trips a nil-pointer.
-func RunAuth(chain Chain, userdb Userdb, req *Request) (Result, error) {
+// RunAuth executes the passdb chain. passdb is authoritative for
+// the auth decision; userdb is never called here. Session processes
+// obtain home/mail/quota via a separate USER command on the master
+// socket after a successful VERIFY.
+func RunAuth(chain Chain, req *Request) (Result, error) {
 	if req.Fields == nil {
 		req.Fields = NewFields()
 	}
-	result, err := chain.Authenticate(req)
-	if result != ResultOK || userdb == nil {
-		return result, err
-	}
-	if hasUserdbFields(req.Fields) {
-		return result, err
-	}
-	info, ulerr := userdb.Lookup(req.Username)
-	if ulerr != nil {
-		slog.Warn("auth/protocol: userdb lookup failed after passdb OK",
-			"user", req.Username, "err", ulerr)
-		return result, err
-	}
-	if info == nil {
-		slog.Warn("auth/protocol: userdb miss for passdb-verified user",
-			"user", req.Username)
-		return result, err
-	}
-	writeUserdbFields(req.Fields, info)
-	return result, err
+	return chain.Authenticate(req)
 }
 
 // hasUserdbFields reports whether the bag already carries at
@@ -618,35 +589,12 @@ func writeUserdbFields(f *Fields, ui *UserInfo) {
 	})
 }
 
-// RunMasterAuth handles a master-user impersonation request:
-// the master's password is verified, the request switches
-// identity to target, and userdb runs against target.
-//
+// RunMasterAuth handles a master-user impersonation request.
 // req.Username MUST be the master when the function is called.
-// On success, req.Fields is mutated: `master_user` is overwritten
-// with the master's username (echoed on the wire OK reply for
-// audit), `original_user` + `login_user` + `user` are set to
-// target, and req.Username is updated to target so any
-// downstream consumer reading the struct sees the
-// post-impersonation identity.
-//
-// Authorisation model (two equivalent paths):
-//
-//  1. masterdb chain (if non-empty) authenticates the master
-//     with its own password. ResultOK → impersonation allowed.
-//  2. Otherwise the main passdb chain authenticates the master;
-//     the result must carry `master_user=yes` (truthy per the
-//     reserved-field bool spelling) — a per-user master flag.
-//
-// On either failure (no masterdb hit AND no `master_user=yes`
-// flag from passdb) the request is rejected with ResultFail.
-// req.Fields is rolled back to the pre-call snapshot so the
-// caller sees an empty bag, not the master's verified passdb
-// fields leaking into a failed impersonation response.
-//
-// userdb runs for TARGET, not for the master. Errors / misses
-// behave like in RunAuth — they do not downgrade ResultOK.
-func RunMasterAuth(passdbs, masterdb Chain, userdb Userdb, target string, req *Request) (Result, error) {
+// On success req.Fields carries master_user/original_user/user.
+// userdb is not consulted here — session processes call it via
+// the master socket after VERIFY.
+func RunMasterAuth(passdbs, masterdb Chain, target string, req *Request) (Result, error) {
 	if req.Fields == nil {
 		req.Fields = NewFields()
 	}
@@ -726,20 +674,6 @@ func RunMasterAuth(passdbs, masterdb Chain, userdb Userdb, target string, req *R
 	req.Fields.Set("original_user", target)
 	req.Fields.Set("login_user", target)
 	req.Fields.Set("user", target)
-
-	// userdb lookup for TARGET — not the master.
-	if userdb != nil && !hasUserdbFields(req.Fields) {
-		info, ulerr := userdb.Lookup(target)
-		if ulerr != nil {
-			slog.Warn("auth/protocol: userdb lookup for master target failed",
-				"master", masterName, "target", target, "err", ulerr)
-		} else if info == nil {
-			slog.Warn("auth/protocol: userdb miss for master target",
-				"master", masterName, "target", target)
-		} else {
-			writeUserdbFields(req.Fields, info)
-		}
-	}
 
 	return ResultOK, nil
 }
@@ -1350,12 +1284,12 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 //
 // Wire format:
 //
-//	VERIFY\t<id>\t<token>\n
-//	→ OK\t<id>\tuser=<username>\tsession=<sessionID>\n
+//	VERIFY\t<id>\t<token>\tuser=<username>\tsession=<sessionID>\n
+//	→ OK\t<id>\tuser=<username>\tsession=<sessionID>\tservice=<service>\n
 //	→ FAIL\t<id>\n
 //
-// The token is one-time: a second VERIFY with the same token always returns
-// FAIL regardless of TTL.
+// The token is one-time. user= and session= are verified against the
+// stored token — a mismatch is treated as a FAIL.
 func (s *Server) handleVerify(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		if len(fields) >= 2 {
@@ -1365,13 +1299,34 @@ func (s *Server) handleVerify(conn net.Conn, fields []string) {
 	}
 	id := fields[1]
 	tok := fields[2]
+
+	var claimedUser, claimedSession string
+	for _, f := range fields[3:] {
+		switch {
+		case strings.HasPrefix(f, "user="):
+			claimedUser = f[len("user="):]
+		case strings.HasPrefix(f, "session="):
+			claimedSession = f[len("session="):]
+		}
+	}
+
 	if s.tokenStore == nil {
 		fmt.Fprintf(conn, "FAIL\t%s\treason=not-configured\n", id)
 		return
 	}
 	username, sessionID, service, ok := s.tokenStore.Validate(tok)
 	if !ok {
-		slog.Info("auth: verify failed", "id", id)
+		slog.Info("auth: verify failed: invalid token", "id", id)
+		fmt.Fprintf(conn, "FAIL\t%s\n", id)
+		return
+	}
+	if claimedUser != "" && claimedUser != username {
+		slog.Warn("auth: verify failed: user mismatch", "claimed", claimedUser, "token_user", username)
+		fmt.Fprintf(conn, "FAIL\t%s\n", id)
+		return
+	}
+	if claimedSession != "" && claimedSession != sessionID {
+		slog.Warn("auth: verify failed: session mismatch", "claimed", claimedSession, "token_session", sessionID)
 		fmt.Fprintf(conn, "FAIL\t%s\n", id)
 		return
 	}
@@ -1583,9 +1538,9 @@ func (s *Server) authenticate(target, master, password, service, remoteIP string
 		err    error
 	)
 	if target != "" && target != master {
-		result, err = RunMasterAuth(Chain(s.passdbs), Chain(s.masterdb), s.userdb, target, req)
+		result, err = RunMasterAuth(Chain(s.passdbs), Chain(s.masterdb), target, req)
 	} else {
-		result, err = RunAuth(Chain(s.passdbs), s.userdb, req)
+		result, err = RunAuth(Chain(s.passdbs), req)
 	}
 
 	if err == nil && (result == ResultOK || result == ResultFail) {

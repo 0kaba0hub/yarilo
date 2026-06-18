@@ -135,13 +135,16 @@ func (c *Client) LookupUser(username string) (bool, error) {
 }
 
 // Verify sends a VERIFY command and returns the username, session ID, and
-// service bound to the token. Returns ErrAuthFailed when the token is unknown
-// or expired.
-func (c *Client) Verify(token string) (username, sessionID, service string, err error) {
+// service bound to the token. username and sessionID are sent as binding
+// claims — the server rejects the token if they don't match what was stored
+// at issue time. Returns ErrAuthFailed when the token is unknown, expired,
+// or the claims don't match.
+func (c *Client) Verify(token, username, sessionID string) (string, string, string, error) {
 	c.seq++
 	id := fmt.Sprintf("%d", c.seq)
 
-	if err := c.writeLine(fmt.Sprintf("VERIFY\t%s\t%s", id, token)); err != nil {
+	line := fmt.Sprintf("VERIFY\t%s\t%s\tuser=%s\tsession=%s", id, token, username, sessionID)
+	if err := c.writeLine(line); err != nil {
 		return "", "", "", err
 	}
 	return c.readVerifyResponse(id)

@@ -52,6 +52,8 @@ type session struct {
 	onTLS       bool
 	remoteIP    net.IP // real client IP; overridden by PreambleConn.RemoteAddr
 	preAuthUser string // username from preamble; consumed in serve()
+	preAuthHome string // userdb-resolved home from preamble
+	preAuthMail string // userdb-resolved mail_location from preamble
 	sid         string // cross-service correlation ID from login-proxy
 
 	// set after successful login
@@ -86,6 +88,8 @@ func (s *Server) newSession(conn net.Conn) *session {
 	}
 	if pc, ok := conn.(*loginproto.PreambleConn); ok {
 		sess.preAuthUser = pc.Username
+		sess.preAuthHome = pc.Home
+		sess.preAuthMail = pc.MailLoc
 		sess.sid = pc.SessionID
 		sess.state = statePreAuth
 	}
@@ -526,7 +530,12 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 // login pod has already told the client "+OK Logged in" and will discard
 // the backend greeting. Returns false when setup fails (caller closes conn).
 func (s *session) completePreAuth() bool {
-	res := &protocol.AuthResponse{Result: protocol.AuthOK, Username: s.preAuthUser}
+	res := &protocol.AuthResponse{
+		Result:   protocol.AuthOK,
+		Username: s.preAuthUser,
+		Home:     s.preAuthHome,
+		MailLoc:  s.preAuthMail,
+	}
 	ok := s.setupSession(res)
 	if ok {
 		s.state = stateTrans

@@ -224,16 +224,9 @@ func TestRunMasterAuth_MasterdbHitGrantsImpersonation(t *testing.T) {
 		},
 	}}
 	passdb := Chain{} // not consulted on masterdb hit
-	udb := &targetUserdb{
-		wantUser: "alice",
-		ret: &UserInfo{
-			Username: "alice",
-			Home:     "/mail/alice",
-		},
-	}
 	req := &Request{Username: "admin", Password: "p", Service: "imap", Fields: NewFields()}
 
-	res, err := RunMasterAuth(passdb, masterdb, udb, "alice", req)
+	res, err := RunMasterAuth(passdb, masterdb, "alice", req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,19 +236,12 @@ func TestRunMasterAuth_MasterdbHitGrantsImpersonation(t *testing.T) {
 	if req.Username != "alice" {
 		t.Errorf("req.Username = %q, want alice (switched to target)", req.Username)
 	}
-	if udb.got != "alice" {
-		t.Errorf("userdb looked up %q, want alice", udb.got)
-	}
 	wantSet := map[string]string{
 		"master_user":        "admin",
 		"original_user":      "alice",
 		"login_user":         "alice",
 		"user":               "alice",
 		"master_admin_group": "ops",
-		// VisitFields emits only typed `extras` — Username is the
-		// lookup key, not echoed as userdb_user. `user` (above)
-		// carries the target identity for the wire reply.
-		"userdb_home": "/mail/alice",
 	}
 	for k, v := range wantSet {
 		got, ok := req.Fields.Get(k)
@@ -280,18 +266,15 @@ func TestRunMasterAuth_MasterdbFailRejectsImpersonation(t *testing.T) {
 		result: ResultOK,
 		setBag: func(f *Fields) { f.Set("master_user", "yes") },
 	}}
-	udb := &targetUserdb{}
+	// userdb lookup is now done on session side
 	req := &Request{Username: "admin", Password: "wrong", Fields: NewFields()}
 
-	res, err := RunMasterAuth(passdb, masterdb, udb, "alice", req)
+	res, err := RunMasterAuth(passdb, masterdb, "alice", req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res != ResultFail {
 		t.Errorf("result = %v, want ResultFail", res)
-	}
-	if udb.got != "" {
-		t.Errorf("userdb consulted (%q) on master failure", udb.got)
 	}
 	if req.Username != "admin" {
 		t.Errorf("req.Username = %q, want admin (no switch on fail)", req.Username)
@@ -314,10 +297,10 @@ func TestRunMasterAuth_MasterdbNextFallsThroughToPassdbFlag(t *testing.T) {
 			f.Set("admin_origin", "ldap")
 		},
 	}}
-	udb := &targetUserdb{wantUser: "alice"}
+	// userdb lookup is now done on session side
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, _ := RunMasterAuth(passdb, masterdb, udb, "alice", req)
+	res, _ := RunMasterAuth(passdb, masterdb, "alice", req)
 	if res != ResultOK {
 		t.Fatalf("result = %v, want ResultOK", res)
 	}
@@ -339,10 +322,10 @@ func TestRunMasterAuth_NoMasterdbConfigured(t *testing.T) {
 		result: ResultOK,
 		setBag: func(f *Fields) { f.Set("master_user", "yes") },
 	}}
-	udb := &targetUserdb{}
+	// userdb lookup is now done on session side
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, _ := RunMasterAuth(passdb, nil, udb, "alice", req)
+	res, _ := RunMasterAuth(passdb, nil, "alice", req)
 	if res != ResultOK {
 		t.Fatalf("result = %v, want ResultOK", res)
 	}
@@ -361,10 +344,10 @@ func TestRunMasterAuth_PassdbFlagFalseRejects(t *testing.T) {
 			f.Set("master_user", "no")
 		},
 	}}
-	udb := &targetUserdb{}
+	// userdb lookup is now done on session side
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, _ := RunMasterAuth(passdb, nil, udb, "alice", req)
+	res, _ := RunMasterAuth(passdb, nil, "alice", req)
 	if res != ResultFail {
 		t.Fatalf("result = %v, want ResultFail (no master flag)", res)
 	}
@@ -372,9 +355,6 @@ func TestRunMasterAuth_PassdbFlagFalseRejects(t *testing.T) {
 	// does not leak the master's own profile fields onto the wire.
 	if req.Fields.Len() != 0 {
 		t.Errorf("bag dirty after failed impersonation: %v", req.Fields)
-	}
-	if udb.got != "" {
-		t.Errorf("userdb consulted on failed impersonation")
 	}
 }
 
@@ -387,7 +367,7 @@ func TestRunMasterAuth_PassdbFlagAbsentRejects(t *testing.T) {
 		setBag: func(f *Fields) { f.Set("home", "/mail/admin") },
 	}}
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
-	res, _ := RunMasterAuth(passdb, nil, nil, "alice", req)
+	res, _ := RunMasterAuth(passdb, nil, "alice", req)
 	if res != ResultFail {
 		t.Errorf("result = %v, want ResultFail (no master_user field at all)", res)
 	}
@@ -401,7 +381,7 @@ func TestRunMasterAuth_PassdbFlagAbsentRejects(t *testing.T) {
 func TestRunMasterAuth_PassdbNextRejects(t *testing.T) {
 	passdb := Chain{&stubPassdb{result: ResultNext}}
 	req := &Request{Username: "ghost", Password: "p", Fields: NewFields()}
-	res, _ := RunMasterAuth(passdb, nil, nil, "alice", req)
+	res, _ := RunMasterAuth(passdb, nil, "alice", req)
 	if res != ResultFail {
 		t.Errorf("result = %v, want ResultFail", res)
 	}
@@ -420,7 +400,7 @@ func TestRunMasterAuth_MasterdbErrorPropagatesAsTempFail(t *testing.T) {
 	passdb := Chain{} // never reached
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, err := RunMasterAuth(passdb, masterdb, nil, "alice", req)
+	res, err := RunMasterAuth(passdb, masterdb, "alice", req)
 	if res != ResultTempFail {
 		t.Errorf("result = %v, want ResultTempFail", res)
 	}
@@ -440,7 +420,7 @@ func TestRunMasterAuth_PassdbErrorPropagatesAsTempFail(t *testing.T) {
 	passdb := Chain{&stubPassdb{result: ResultTempFail, err: wantErr}}
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, err := RunMasterAuth(passdb, masterdb, nil, "alice", req)
+	res, err := RunMasterAuth(passdb, masterdb, "alice", req)
 	if res != ResultTempFail {
 		t.Errorf("result = %v, want ResultTempFail", res)
 	}
@@ -455,10 +435,10 @@ func TestRunMasterAuth_PassdbErrorPropagatesAsTempFail(t *testing.T) {
 // but unknown target.
 func TestRunMasterAuth_UserdbMissDoesNotDowngrade(t *testing.T) {
 	masterdb := Chain{&stubPassdb{result: ResultOK}}
-	udb := &targetUserdb{ret: nil} // miss
+	// userdb lookup is now done on session side
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, err := RunMasterAuth(nil, masterdb, udb, "alice", req)
+	res, err := RunMasterAuth(nil, masterdb, "alice", req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,10 +454,10 @@ func TestRunMasterAuth_UserdbMissDoesNotDowngrade(t *testing.T) {
 // backend errors.
 func TestRunMasterAuth_UserdbErrorDoesNotDowngrade(t *testing.T) {
 	masterdb := Chain{&stubPassdb{result: ResultOK}}
-	udb := &targetUserdb{err: errors.New("ldap timeout")}
+	// userdb lookup is now done on session side
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, _ := RunMasterAuth(nil, masterdb, udb, "alice", req)
+	res, _ := RunMasterAuth(nil, masterdb, "alice", req)
 	if res != ResultOK {
 		t.Errorf("result = %v, want ResultOK despite userdb error", res)
 	}
@@ -496,15 +476,12 @@ func TestRunMasterAuth_PrefetchSkipsUserdbLookup(t *testing.T) {
 			f.Set("userdb_uid", "1001")
 		},
 	}}
-	udb := &targetUserdb{}
+	// userdb lookup is now done on session side
 	req := &Request{Username: "admin", Password: "p", Fields: NewFields()}
 
-	res, _ := RunMasterAuth(nil, masterdb, udb, "alice", req)
+	res, _ := RunMasterAuth(nil, masterdb, "alice", req)
 	if res != ResultOK {
 		t.Fatal("expected OK")
-	}
-	if udb.got != "" {
-		t.Errorf("userdb consulted (%q) despite prefetch", udb.got)
 	}
 }
 
@@ -516,7 +493,7 @@ func TestRunMasterAuth_PrefetchSkipsUserdbLookup(t *testing.T) {
 func TestRunMasterAuth_PassdbFailIsAuthoritative(t *testing.T) {
 	passdb := Chain{&stubPassdb{result: ResultFail}}
 	req := &Request{Username: "admin", Password: "wrong", Fields: NewFields()}
-	res, _ := RunMasterAuth(passdb, nil, nil, "alice", req)
+	res, _ := RunMasterAuth(passdb, nil, "alice", req)
 	if res != ResultFail {
 		t.Errorf("result = %v, want ResultFail", res)
 	}
@@ -541,7 +518,7 @@ func TestRunMasterAuth_MasterFieldsNeverLeakOnFail(t *testing.T) {
 		},
 	}
 	req := &Request{Username: "admin", Password: "wrong", Fields: NewFields()}
-	res, _ := RunMasterAuth(Chain{bad}, nil, nil, "alice", req)
+	res, _ := RunMasterAuth(Chain{bad}, nil, "alice", req)
 	if res != ResultFail {
 		t.Fatalf("want ResultFail")
 	}
@@ -621,9 +598,6 @@ func TestWire_MasterUser_Authzid(t *testing.T) {
 	}
 	if !strings.Contains(got, "master_user=admin") {
 		t.Errorf("master_user= missing or wrong on OK reply: %q", got)
-	}
-	if !strings.Contains(got, "userdb_home=/mail/alice") {
-		t.Errorf("userdb fields for target missing: %q", got)
 	}
 }
 
