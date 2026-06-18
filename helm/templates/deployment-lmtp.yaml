@@ -25,6 +25,8 @@ spec:
     spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "yarilo.initWaitTCP" (dict "name" "wait-locks" "host" (printf "%s-locks.%s.svc" (include "yarilo.fullname" .) .Release.Namespace) "port" "9104" "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
       containers:
         - name: yarilo-lmtp
           image: {{ include "yarilo.image" . }}
