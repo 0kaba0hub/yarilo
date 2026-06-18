@@ -139,3 +139,27 @@ Redis port for init-container TCP probe.
 {{- index (splitList ":" $u.host) 1 -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Database hostname for init-container TCP probe.
+Explicit database.initAddr takes priority; falls back to bundled MySQL service.
+Returns empty string when no probe is needed (SQLite, external without initAddr).
+*/}}
+{{- define "yarilo.dbInitHost" -}}
+{{- if .Values.database.initAddr -}}
+{{- index (splitList ":" .Values.database.initAddr) 0 -}}
+{{- else if .Values.mysql.bundled -}}
+{{- printf "%s-mysql.%s.svc" (include "yarilo.fullname" .) .Release.Namespace -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Database port for init-container TCP probe.
+*/}}
+{{- define "yarilo.dbInitPort" -}}
+{{- if .Values.database.initAddr -}}
+{{- index (splitList ":" .Values.database.initAddr) 1 -}}
+{{- else if .Values.mysql.bundled -}}
+3306
+{{- end -}}
+{{- end }}
