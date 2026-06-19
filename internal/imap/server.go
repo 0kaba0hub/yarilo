@@ -1792,7 +1792,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	}
 	idx := s.folderIdx()
 	box := s.folderBox()
-	msgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	backendMsgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
 	}
@@ -1812,6 +1812,42 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 		}
 	}
+
+	// Build a UID→message lookup from the backend so we can resolve by UID
+	// independently of the backend's current sequence numbering.
+	backendByUID := make(map[uint32]*mailbox.MessageMeta, len(backendMsgs))
+	for _, m := range backendMsgs {
+		backendByUID[m.UID] = m
+	}
+
+	// For sequence-number FETCH: iterate knownMsgs (the client's current
+	// seq→UID view). This prevents UID-changed mismatches when another
+	// session has expunged messages and the backend's sequence numbers have
+	// shifted. Messages expunged since the last Poll are silently skipped
+	// here; pollExpunge delivers the EXPUNGE notifications after the tagged
+	// response so the client can reconcile its view.
+	//
+	// For UID FETCH: use the backend's sequence numbering directly — UIDs
+	// are stable identifiers and the client matches by UID, not seq.
+	type fetchEntry struct {
+		seqNum uint32
+		msg    *mailbox.MessageMeta
+	}
+	var fetchList []fetchEntry
+	if _, isUID := numSet.(imaplib.UIDSet); isUID {
+		for i, m := range backendMsgs {
+			fetchList = append(fetchList, fetchEntry{uint32(i + 1), m})
+		}
+	} else {
+		for i, km := range s.knownMsgs {
+			m, ok := backendByUID[km.uid]
+			if !ok {
+				continue
+			}
+			fetchList = append(fetchList, fetchEntry{uint32(i + 1), m})
+		}
+	}
+
 	// RFC 3501 §6.4.5 — BODY[] without .PEEK implicitly sets \Seen.
 	// Compute once per FETCH command (it's a property of the request, not each message).
 	markSeen := false
@@ -1821,13 +1857,14 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			break
 		}
 	}
-	for i, m := range msgs {
+	for _, fe := range fetchList {
+		m := fe.msg
 		// CHANGEDSINCE filter — skip messages whose modseq has not moved
 		// past the client's last-known value (RFC 4551 §3.3.1).
 		if opts.ChangedSince > 0 && m.ModSeq <= opts.ChangedSince {
 			continue
 		}
-		seqNum := uint32(i + 1)
+		seqNum := fe.seqNum
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
