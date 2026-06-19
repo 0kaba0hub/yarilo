@@ -2052,6 +2052,11 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		return err
 	}
 
+	uidToClientSeq := make(map[uint32]uint32, len(s.knownMsgs))
+	for i, km := range s.knownMsgs {
+		uidToClientSeq[km.uid] = uint32(i + 1)
+	}
+
 	// CONDSTORE STORE (UNCHANGEDSINCE N) — RFC 7162 §3.1.3.
 	// Any message whose current modseq is greater than the client's
 	// last-known value is *skipped* (no flag update, no FETCH response).
@@ -2063,8 +2068,11 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	}
 	var modifiedUIDs imaplib.UIDSet
 
-	for i, m := range msgs {
-		seqNum := uint32(i + 1)
+	for _, m := range msgs {
+		seqNum, ok := uidToClientSeq[m.UID]
+		if !ok {
+			continue
+		}
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
@@ -2145,9 +2153,16 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	if err != nil {
 		return nil, err
 	}
+	copyUIDToClientSeq := make(map[uint32]uint32, len(s.knownMsgs))
+	for i, km := range s.knownMsgs {
+		copyUIDToClientSeq[km.uid] = uint32(i + 1)
+	}
 	var srcUIDs, dstUIDs imaplib.UIDSet
-	for i, m := range msgs {
-		seqNum := uint32(i + 1)
+	for _, m := range msgs {
+		seqNum, ok := copyUIDToClientSeq[m.UID]
+		if !ok {
+			continue
+		}
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
@@ -2449,6 +2464,11 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		return err
 	}
 
+	moveUIDToClientSeq := make(map[uint32]uint32, len(s.knownMsgs))
+	for i, km := range s.knownMsgs {
+		moveUIDToClientSeq[km.uid] = uint32(i + 1)
+	}
+
 	type matched struct {
 		seqNum   uint32
 		srcUID   uint32
@@ -2457,8 +2477,11 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	var hits []matched
 	var srcUIDs, dstUIDs imaplib.UIDSet
 
-	for i, m := range msgs {
-		seqNum := uint32(i + 1)
+	for _, m := range msgs {
+		seqNum, ok := moveUIDToClientSeq[m.UID]
+		if !ok {
+			continue
+		}
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
