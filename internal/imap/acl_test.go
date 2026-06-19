@@ -78,7 +78,7 @@ func TestACL_CapabilityAdvertised(t *testing.T) {
 	}
 }
 
-func TestACL_GetEmptyMailboxReturnsEmptyACL(t *testing.T) {
+func TestACL_GetEmptyMailboxReturnsOwnerEntry(t *testing.T) {
 	c := startACLServer(t, true)
 	data, err := c.GetACL("INBOX").Wait()
 	if err != nil {
@@ -87,13 +87,15 @@ func TestACL_GetEmptyMailboxReturnsEmptyACL(t *testing.T) {
 	if data.Mailbox != "INBOX" {
 		t.Errorf("mailbox = %q, want INBOX", data.Mailbox)
 	}
-	if len(data.Rights) != 0 {
-		t.Errorf("expected empty ACL on fresh mailbox, got %+v", data.Rights)
+	alice, _ := imaplib.NewRightsIdentifierUsername("alice@test.com")
+	if got := string(data.Rights[alice]); got != string(mailbox.FullRights) {
+		t.Errorf("owner implicit rights = %q, want %q", got, mailbox.FullRights)
 	}
 }
 
 func TestACL_SetAddGetRoundTrip(t *testing.T) {
 	c := startACLServer(t, true)
+	alice, _ := imaplib.NewRightsIdentifierUsername("alice@test.com")
 	bob, err := imaplib.NewRightsIdentifierUsername("bob@test.com")
 	if err != nil {
 		t.Fatalf("NewRightsIdentifierUsername: %v", err)
@@ -106,7 +108,8 @@ func TestACL_SetAddGetRoundTrip(t *testing.T) {
 		t.Fatalf("GETACL: %v", err)
 	}
 	want := map[imaplib.RightsIdentifier]imaplib.RightSet{
-		bob: imaplib.RightSet("lrsw"), // canonical sort: l,r,s,w
+		alice: imaplib.RightSet(mailbox.FullRights), // implicit owner grant
+		bob:   imaplib.RightSet("lrsw"),             // canonical sort: l,r,s,w
 	}
 	if !reflect.DeepEqual(data.Rights, want) {
 		t.Errorf("ACL = %+v, want %+v", data.Rights, want)
@@ -126,8 +129,9 @@ func TestACL_SetAddModifiesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GETACL: %v", err)
 	}
-	if len(data.Rights) != 1 || string(data.Rights[bob]) != "lrsw" {
-		t.Errorf("expected single bob entry with rights lrsw, got %+v", data.Rights)
+	// owner implicit + bob explicit
+	if len(data.Rights) != 2 || string(data.Rights[bob]) != "lrsw" {
+		t.Errorf("expected owner+bob entries, bob rights lrsw, got %+v", data.Rights)
 	}
 }
 
@@ -141,7 +145,8 @@ func TestACL_SetRemoveSubtracts(t *testing.T) {
 		t.Fatalf("SETACL remove: %v", err)
 	}
 	data, _ := c.GetACL("INBOX").Wait()
-	if len(data.Rights) != 1 || string(data.Rights[bob]) != "lrsw" {
+	// owner implicit + bob explicit
+	if len(data.Rights) != 2 || string(data.Rights[bob]) != "lrsw" {
 		t.Errorf("expected lrsw after remove a, got %+v", data.Rights)
 	}
 }
@@ -156,8 +161,14 @@ func TestACL_SetReplaceEmptyDropsEntry(t *testing.T) {
 		t.Fatalf("SETACL empty: %v", err)
 	}
 	data, _ := c.GetACL("INBOX").Wait()
-	if len(data.Rights) != 0 {
-		t.Errorf("expected empty ACL after replace-empty, got %+v", data.Rights)
+	// bob entry is gone; implicit owner entry remains
+	alice, _ := imaplib.NewRightsIdentifierUsername("alice@test.com")
+	bob2, _ := imaplib.NewRightsIdentifierUsername("bob@test.com")
+	if _, hasBob := data.Rights[bob2]; hasBob {
+		t.Errorf("expected bob entry removed after replace-empty, got %+v", data.Rights)
+	}
+	if got := string(data.Rights[alice]); got != string(mailbox.FullRights) {
+		t.Errorf("owner should still have implicit FullRights, got %q", got)
 	}
 }
 
@@ -183,20 +194,16 @@ func TestACL_DeleteRemovesIdentifier(t *testing.T) {
 	}
 }
 
-func TestACL_MyRightsReturnsExplicitGrant(t *testing.T) {
+func TestACL_MyRightsOwnerGetsFullRights(t *testing.T) {
 	c := startACLServer(t, true)
-	// Owner has no explicit entry → PR C MyRights returns empty.
-	// Grant alice an explicit entry and verify MyRights surfaces it.
-	alice, _ := imaplib.NewRightsIdentifierUsername("alice@test.com")
-	if err := c.SetACL("INBOX", alice, imaplib.RightModificationReplace, imaplib.RightSet("lrswa")).Wait(); err != nil {
-		t.Fatalf("SETACL: %v", err)
-	}
+	// Owner (alice) always gets FullRights from Effective() regardless of
+	// explicit entries — RFC 4314 §4 implicit owner grant.
 	data, err := c.MyRights("INBOX").Wait()
 	if err != nil {
 		t.Fatalf("MYRIGHTS: %v", err)
 	}
-	if got := sortedString(string(data.Rights)); got != "alrsw" {
-		t.Errorf("rights = %q, want alrsw (sorted)", got)
+	if got := sortedString(string(data.Rights)); got != sortedString(string(mailbox.FullRights)) {
+		t.Errorf("owner rights = %q, want %q", got, sortedString(string(mailbox.FullRights)))
 	}
 }
 
@@ -225,8 +232,9 @@ func TestACL_PersistsAcrossSetGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GETACL: %v", err)
 	}
-	if len(data.Rights) != 1 {
-		t.Fatalf("expected persisted entry, got %+v", data.Rights)
+	// owner implicit + bob explicit = 2 entries
+	if len(data.Rights) != 2 {
+		t.Fatalf("expected 2 entries (owner+bob), got %+v", data.Rights)
 	}
 }
 

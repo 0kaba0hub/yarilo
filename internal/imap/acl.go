@@ -185,6 +185,10 @@ func (s *session) adminCheckPRc(h *nsHandle, current mailbox.ACL) error {
 }
 
 // GetACL implements imapserver.SessionACL.
+//
+// Surfaces stored ACL entries. When the namespace owner has no explicit
+// positive entry, an implicit owner=FullRights entry is prepended so
+// that the owner is always visible (mirrors Dovecot GETACL behaviour).
 func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	if err := s.requireACLEnabled(); err != nil {
 		return nil, err
@@ -197,19 +201,35 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	if err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
 	}
+	ownerName := h.userInfo.Username
+	ownerHasExplicit := false
+	for _, e := range stored {
+		if !e.Negative && e.Identifier.Type == mailbox.IDUser && e.Identifier.Name == ownerName {
+			ownerHasExplicit = true
+			break
+		}
+	}
+	entries := aclSurfaceEntries(stored)
+	if !ownerHasExplicit {
+		implicit := imaplib.ACLEntry{
+			Identifier: imaplib.RightsIdentifier(ownerName),
+			Rights:     rightsToIMAP(mailbox.FullRights),
+		}
+		entries = append([]imaplib.ACLEntry{implicit}, entries...)
+	}
 	return &imaplib.GetACLData{
 		Mailbox: folder,
-		ACL:     aclSurfaceEntries(stored),
+		ACL:     entries,
 	}, nil
 }
 
 // MyRights implements imapserver.SessionACL.
 //
-// PR C semantics: return only what an explicit user=<self> entry
-// grants in the on-disk file. No owner auto-grant, no inheritance,
-// no negative-entry merge — those land in PR D/E. Sufficient for
-// owners that have an explicit entry or for clients probing
-// non-owner identifiers.
+// Returns the effective rights for the current user on the named mailbox.
+// The namespace owner always receives FullRights regardless of stored
+// entries (RFC 4314 §4 implicit owner grant). Non-owners receive the
+// union of explicit user= entries; group= / owner / inheritance walk
+// land in PR D/E.
 func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	if err := s.requireACLEnabled(); err != nil {
 		return nil, err
@@ -222,16 +242,8 @@ func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	if err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
 	}
-	var rights mailbox.Rights
-	for _, e := range stored {
-		if e.Negative {
-			continue
-		}
-		if e.Identifier.Type == mailbox.IDUser && e.Identifier.Name == s.userInfo.Username {
-			rights = e.Rights
-			break
-		}
-	}
+	isOwner := s.userInfo.Username == h.userInfo.Username
+	rights := stored.Effective(s.userInfo.Username, s.userInfo.Groups, isOwner)
 	return &imaplib.MyRightsData{
 		Mailbox: folder,
 		Rights:  rightsToIMAP(rights),
