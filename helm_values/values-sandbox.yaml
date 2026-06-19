@@ -155,7 +155,7 @@ components:
           WHERE username = %u
         userQuery: |
           SELECT CONCAT(home, mpath) AS home,
-                 CONCAT('maildir:', home, mpath) AS mail
+                 CONCAT(mbtype, ':', home, mpath) AS mail
           FROM mailbox
           WHERE username = %u
         iterateQuery: |

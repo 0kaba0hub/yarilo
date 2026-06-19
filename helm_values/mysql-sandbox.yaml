@@ -103,13 +103,14 @@ data:
     INSERT IGNORE INTO domain (domain, transport, customer_id, active)
     VALUES ('d00001.test', 'virtual', 'cust-00001', 1);
 
-    INSERT IGNORE INTO mailbox (username, password, mbtype, home, maildir, local_part, domain, active)
+    INSERT IGNORE INTO mailbox (username, password, mbtype, home, mpath, maildir, local_part, domain, active)
     VALUES (
       'u1@d00001.test',
       '{BCRYPT}$2b$12$UoOXiBYyANrxESkUsWJnPOlXF0OYV.cSmlPX/TAzZ8NsIfwYYhH4O',
-      'maildir',
-      '/maildir/',
-      'd00001.test/u1/',
+      'mdbox',
+      '/var/mail/vhosts/',
+      'd00001.test/u1@d00001.test',
+      'mdbox',
       'u1',
       'd00001.test',
       1
