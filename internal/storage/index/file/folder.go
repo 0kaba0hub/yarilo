@@ -397,6 +397,27 @@ func (u *userIndex) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, erro
 	return uid, modseq, err
 }
 
+func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) error {
+	var folder string
+	if err := u.withFolder(folderID, func(fs *folderState) error {
+		folder = fs.folder
+		next := fs.file.Header.NextUID
+		if next == 0 {
+			next = 1
+		}
+		fs.file.Header.NextUID = next + 1
+		m.UID = next
+		if err := fs.appendLocked(m); err != nil {
+			return err
+		}
+		return fs.flush(true)
+	}); err != nil {
+		return err
+	}
+	u.quotaAdd(folder, int64(m.Size), 1)
+	return nil
+}
+
 // appendLocked is the in-memory half of AppendMessage. Caller
 // must hold the folder lock.
 //
