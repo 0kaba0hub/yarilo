@@ -71,10 +71,14 @@ func (m *mockIndex) OpenUser(_ *mailbox.UserInfo) mailbox.UserIndex { return m }
 func (m *mockIndex) OpenFolder(folder string, uv uint32) (*mailbox.Folder, error) {
 	return &mailbox.Folder{ID: 1, Name: folder, UIDValidity: uv}, nil
 }
-func (m *mockIndex) SaveFolder(_ *mailbox.Folder) error                   { return nil }
-func (m *mockIndex) AppendMessage(_ uint64, _ *mailbox.MessageMeta) error { return nil }
-func (m *mockIndex) AllocateUID(_ uint64) (uint32, error)                 { return 0, nil }
-func (m *mockIndex) UpdateFlags(_ uint64, _ uint32, _, _ []string) error  { return nil }
+func (m *mockIndex) SaveFolder(_ *mailbox.Folder) error                     { return nil }
+func (m *mockIndex) AppendMessage(_ uint64, _ *mailbox.MessageMeta) error   { return nil }
+func (m *mockIndex) AllocateUID(_ uint64) (uint32, error)                   { return 0, nil }
+func (m *mockIndex) AllocateUIDWithModSeq(_ uint64) (uint32, uint64, error) { return 0, 0, nil }
+func (m *mockIndex) UpdateFlags(_ uint64, _ uint32, _, _ []string) error    { return nil }
+func (m *mockIndex) UpdateFlagsMulti(_ uint64, _ map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
+	return nil, nil
+}
 func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return m.msgs, nil
 }
