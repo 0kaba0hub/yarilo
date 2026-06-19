@@ -96,6 +96,27 @@ data:
         KEY (password_modified),
         KEY (system_account)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+  02-seed.sql: |
+    USE yarilo;
+
+    INSERT IGNORE INTO domain (domain, transport, customer_id, active)
+    VALUES ('d00001.test', 'virtual', 'cust-00001', 1);
+
+    INSERT IGNORE INTO mailbox (username, password, mbtype, home, maildir, local_part, domain, active)
+    VALUES (
+      'u1@d00001.test',
+      '{BCRYPT}$2b$12$UoOXiBYyANrxESkUsWJnPOlXF0OYV.cSmlPX/TAzZ8NsIfwYYhH4O',
+      'maildir',
+      '/maildir/',
+      'd00001.test/u1/',
+      'u1',
+      'd00001.test',
+      1
+    );
+
+    INSERT IGNORE INTO alias (address, goto, domain, active)
+    VALUES ('u1@d00001.test', 'u1@d00001.test', 'd00001.test', 1);
 ---
 apiVersion: apps/v1
 kind: StatefulSet
