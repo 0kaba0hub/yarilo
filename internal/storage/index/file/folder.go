@@ -377,6 +377,26 @@ func (u *userIndex) AllocateUID(folderID uint64) (uint32, error) {
 	return assigned, err
 }
 
+func (u *userIndex) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, error) {
+	var uid uint32
+	var modseq uint64
+	err := u.withFolder(folderID, func(fs *folderState) error {
+		next := fs.file.Header.NextUID
+		if next == 0 {
+			next = 1
+		}
+		fs.file.Header.NextUID = next + 1
+		uid = next
+		var err error
+		modseq, err = fs.bumpModSeqHeader()
+		if err != nil {
+			return err
+		}
+		return fs.flush(false)
+	})
+	return uid, modseq, err
+}
+
 // appendLocked is the in-memory half of AppendMessage. Caller
 // must hold the folder lock.
 //
@@ -489,6 +509,76 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 		}
 		return fs.flush(false)
 	})
+}
+
+// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a single
+// lock/reload/flush cycle. Each UID gets an individual modseq bump so clients
+// can use CONDSTORE to pinpoint which messages changed. Returns the new modseq
+// per UID; UIDs not found in the index are silently skipped.
+func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
+	result := make(map[uint32]uint64, len(updates))
+	err := u.withFolder(folderID, func(fs *folderState) error {
+		// Collect all unique keyword sets across the batch to register them first.
+		allKWs := make([]string, 0)
+		seen := make(map[string]struct{})
+		for _, upd := range updates {
+			for _, kw := range upd.Keywords {
+				if _, ok := seen[kw]; !ok {
+					seen[kw] = struct{}{}
+					allKWs = append(allKWs, kw)
+				}
+			}
+		}
+		if len(allKWs) > 0 {
+			_, kwReg, err := keywordsBitmaskFor(fs.keywords, allKWs)
+			if err != nil {
+				return err
+			}
+			fs.keywords = kwReg
+			if err := fs.persistKeywordRegistry(); err != nil {
+				return err
+			}
+		}
+
+		for _, rec := range fs.file.Records {
+			upd, ok := updates[rec.UID]
+			if !ok {
+				continue
+			}
+			modseq, err := fs.bumpModSeqHeader()
+			if err != nil {
+				return err
+			}
+			kwBits, _, err := keywordsBitmaskFor(fs.keywords, upd.Keywords)
+			if err != nil {
+				return err
+			}
+			newFlags := mailindex.MailFlag(imapFlagsToIndex(upd.Flags))
+			oldSeen := rec.Flags&mailindex.FlagSeen != 0
+			oldDel := rec.Flags&mailindex.FlagDeleted != 0
+			newFlags |= rec.Flags & mailindex.FlagBackend
+			rec.Flags = newFlags
+			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
+			rec.Ext[extNameKeywords] = encodeKeywordsRec(kwBits)
+			newSeen := newFlags&mailindex.FlagSeen != 0
+			newDel := newFlags&mailindex.FlagDeleted != 0
+			switch {
+			case oldSeen && !newSeen:
+				fs.file.Header.SeenMessagesCount--
+			case !oldSeen && newSeen:
+				fs.file.Header.SeenMessagesCount++
+			}
+			switch {
+			case oldDel && !newDel:
+				fs.file.Header.DeletedMessagesCount--
+			case !oldDel && newDel:
+				fs.file.Header.DeletedMessagesCount++
+			}
+			result[rec.UID] = modseq
+		}
+		return fs.flush(false)
+	})
+	return result, err
 }
 
 // ExpungeMessage removes a record. Writes a TxTypeExpungeGUID
