@@ -363,6 +363,22 @@ type session struct {
 	limitIP string
 	folder  *mailbox.Folder
 
+	// knownMsgs is the server's copy of the client's sequence→message state
+	// for the selected folder. Each entry records uid and modseq; the slice
+	// index+1 is the IMAP sequence number. Populated at SELECT, updated by
+	// Poll, Expunge, and Move. Nil when no folder is selected.
+	knownMsgs []sessionMsg
+	// syncModSeq is the HighestModSeq seen at the last successful full
+	// GetMessages diff. Used as a cheap fast-path: when the index has not
+	// advanced past this value and hasPendingExpunge is false, Poll skips
+	// the GetMessages call entirely.
+	syncModSeq uint64
+	// hasPendingExpunge is set when Poll found expunged UIDs but could not
+	// deliver * EXPUNGE because allowExpunge was false. The flag bypasses
+	// the syncModSeq fast-path on the next Poll call so the expunges are
+	// retried as soon as allowExpunge becomes true.
+	hasPendingExpunge bool
+
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
 	// Empty / declared-only namespaces (Other Users in NS-1b) are
@@ -844,6 +860,12 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	s.pushAnvilSelect(name)
 
 	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	s.knownMsgs = make([]sessionMsg, len(msgs))
+	for i, m := range msgs {
+		s.knownMsgs[i] = sessionMsg{uid: m.UID, modseq: m.ModSeq}
+	}
+	s.syncModSeq = f.HighestModSeq
+	s.hasPendingExpunge = false
 	sysFlags := []imaplib.Flag{
 		imaplib.FlagAnswered, imaplib.FlagFlagged,
 		imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
@@ -893,6 +915,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 func (s *session) Unselect() error {
 	s.folder = nil
 	s.folderNS = nil
+	s.knownMsgs = nil
+	s.syncModSeq = 0
+	s.hasPendingExpunge = false
 	s.pushAnvilSelect("")
 	return nil
 }
@@ -1349,7 +1374,115 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(uid)}, nil
 }
 
-func (s *session) Poll(_ *imapserver.UpdateWriter, _ bool) error { return nil }
+// Poll delivers pending mailbox updates to the client between commands
+// (RFC 3501 §5.2). Three classes of update are handled:
+//
+//   - * N EXPUNGE — UIDs in knownMsgs that are no longer in the index
+//     (expunged by another session). Emitted in descending sequence order
+//     (RFC 3501 §7.4.1). Withheld when allowExpunge is false; hasPendingExpunge
+//     ensures the next allowExpunge=true call retries them.
+//   - * N FETCH (FLAGS ...) — UIDs still present but with a changed modseq,
+//     meaning flags were altered by another session.
+//   - * N EXISTS — new messages appended to the folder since last poll.
+//
+// Fast-path: OpenFolder reads only the folder header (tiny file) to get
+// HighestModSeq. GetMessages (full index scan) is only called when the
+// modseq advanced or there are pending expunges to deliver.
+func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
+	if s.folder == nil || s.knownMsgs == nil {
+		return nil
+	}
+
+	// Cheap modseq check — skip full scan when nothing changed and no
+	// pending expunges are waiting for an allowExpunge=true window.
+	refreshed, err := s.folderIdx().OpenFolder(s.folder.Name, s.folder.UIDValidity)
+	if err != nil {
+		return nil
+	}
+	if refreshed.HighestModSeq == s.syncModSeq && !s.hasPendingExpunge {
+		return nil
+	}
+
+	current, err := s.folderIdx().GetMessages(s.folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		return nil
+	}
+	type curInfo struct {
+		modseq uint64
+		flags  []string
+		kw     []string
+	}
+	curMap := make(map[uint32]curInfo, len(current))
+	for _, m := range current {
+		curMap[m.UID] = curInfo{m.ModSeq, m.Flags, m.Keywords}
+	}
+
+	// Phase 1: expunges — descending seq so each WriteExpungeUID seq number
+	// remains valid as earlier entries are removed from knownMsgs.
+	hadExpunges := false
+	for i := len(s.knownMsgs) - 1; i >= 0; i-- {
+		uid := s.knownMsgs[i].uid
+		if _, exists := curMap[uid]; exists {
+			continue
+		}
+		hadExpunges = true
+		if !allowExpunge {
+			continue
+		}
+		if err := w.WriteExpungeUID(uint32(i+1), imaplib.UID(uid)); err != nil {
+			return err
+		}
+		s.knownMsgs = append(s.knownMsgs[:i], s.knownMsgs[i+1:]...)
+	}
+	s.hasPendingExpunge = hadExpunges && !allowExpunge
+
+	// Phase 2: flag updates — sequence numbers are correct after phase 1
+	// removals (we walked high→low so lower entries were not shifted).
+	for i, km := range s.knownMsgs {
+		ci, exists := curMap[km.uid]
+		if !exists || ci.modseq == km.modseq {
+			continue
+		}
+		allFlags := make([]imaplib.Flag, 0, len(ci.flags)+len(ci.kw))
+		for _, f := range ci.flags {
+			allFlags = append(allFlags, imaplib.Flag(f))
+		}
+		for _, k := range ci.kw {
+			allFlags = append(allFlags, imaplib.Flag(k))
+		}
+		if err := w.WriteMessageFlags(uint32(i+1), imaplib.UID(km.uid), allFlags); err != nil {
+			return err
+		}
+		s.knownMsgs[i].modseq = ci.modseq
+	}
+
+	// Phase 3: new messages — UIDs in current that are not yet in knownMsgs.
+	knownSet := make(map[uint32]struct{}, len(s.knownMsgs))
+	for _, km := range s.knownMsgs {
+		knownSet[km.uid] = struct{}{}
+	}
+	added := 0
+	for _, m := range current {
+		if _, seen := knownSet[m.UID]; seen {
+			continue
+		}
+		s.knownMsgs = append(s.knownMsgs, sessionMsg{uid: m.UID, modseq: m.ModSeq})
+		added++
+	}
+	if added > 0 {
+		if err := w.WriteNumMessages(uint32(len(s.knownMsgs))); err != nil {
+			return err
+		}
+	}
+
+	// Only advance syncModSeq when we have fully delivered all expunges.
+	// If hasPendingExpunge is true, leave syncModSeq unchanged so the next
+	// call (with allowExpunge=true) re-reads the index and retries.
+	if !s.hasPendingExpunge {
+		s.syncModSeq = refreshed.HighestModSeq
+	}
+	return nil
+}
 
 func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	interval := s.srv.opts.IdleNotifyInterval
@@ -1459,6 +1592,11 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		s.statsExpunged++
 		if err := w.WriteExpunge(seqNum); err != nil {
 			return err
+		}
+		// Remove from knownMsgs so Poll does not re-deliver this expunge.
+		kIdx := int(seqNum) - 1
+		if kIdx >= 0 && kIdx < len(s.knownMsgs) {
+			s.knownMsgs = append(s.knownMsgs[:kIdx], s.knownMsgs[kIdx+1:]...)
 		}
 		seqNum--
 	}
@@ -2278,13 +2416,24 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		if err := w.WriteExpunge(h.seqNum); err != nil {
 			return err
 		}
+		kIdx := int(h.seqNum) - 1
+		if kIdx >= 0 && kIdx < len(s.knownMsgs) {
+			s.knownMsgs = append(s.knownMsgs[:kIdx], s.knownMsgs[kIdx+1:]...)
+		}
 	}
 	s.folder.Messages -= uint32(len(hits))
 	srcIdx.SaveFolder(s.folder) //nolint:errcheck
 	return nil
 }
 
-// ---- helpers ---------------------------------------------------------------
+// ---- session message tracker -----------------------------------------------
+
+// sessionMsg is the server's copy of one message's state as last communicated
+// to the IMAP client. The slice position+1 is the RFC 3501 sequence number.
+type sessionMsg struct {
+	uid    uint32
+	modseq uint64
+}
 
 type slogLogger struct{}
 
