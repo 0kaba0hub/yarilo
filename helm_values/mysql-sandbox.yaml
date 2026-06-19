@@ -1,105 +1,125 @@
-# Stand-alone MySQL for yarilo sandbox with split passdb/userdb schema.
-# Sits alongside the yarilo Release in namespace yarilo-sb.
+# Stand-alone MySQL for yarilo sandbox.
+# Lives in namespace: db (separate from yarilo-sb).
 #
-# Apply BEFORE the yarilo helm install so the DSN secret + tables exist.
+# Apply BEFORE the yarilo helm install so tables exist:
 #
 #   kubectl apply -f helm_values/mysql-sandbox.yaml
 #
-# Resets are easy: kubectl delete -f .../mysql-sandbox.yaml; PVC is then
-# garbage-collected.
+# Reset: kubectl delete -f helm_values/mysql-sandbox.yaml
+# PVC is garbage-collected when the namespace is deleted.
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: yarilo-sb
+  name: db
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: yarilo-mysql
-  namespace: yarilo-sb
+  name: mysql
+  namespace: db
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql
+    app.kubernetes.io/component: mysql
 type: Opaque
 stringData:
-  # Yarilo passdb DSN — inject into yarilo pods via extraEnv referencing this secret.
-  dsn: "yarilo:sandbox-secret@tcp(yarilo-mysql:3306)/yarilo?parseTime=true&charset=utf8mb4"
-  # MySQL entrypoint env vars — used by the StatefulSet to initialise the DB.
   MYSQL_DATABASE: "yarilo"
   MYSQL_USER: "yarilo"
   MYSQL_PASSWORD: "sandbox-secret"
-  MYSQL_ROOT_PASSWORD: "sandbox-secret"
+  MYSQL_ROOT_PASSWORD: "sandbox-root-secret"
 ---
-# Schema mounted into /docker-entrypoint-initdb.d/. MySQL runs every .sql
-# file in alphabetical order on the FIRST startup only (data dir must be
-# empty). Deleting the PVC re-applies it.
+# Schema mounted into /docker-entrypoint-initdb.d/.
+# MySQL runs every .sql file on FIRST startup only (empty data dir).
+# Deleting the PVC forces re-apply on next pod start.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: yarilo-mysql-init
-  namespace: yarilo-sb
+  name: mysql-init
+  namespace: db
 data:
   01-schema.sql: |
     USE yarilo;
 
-    -- PostfixAdmin-compatible mailbox table.
-    -- values-sandbox.yaml queries this table via passwordQuery / userQuery / iterateQuery.
-    CREATE TABLE IF NOT EXISTS mailbox (
-        username   VARCHAR(255)  NOT NULL,
-        password   VARCHAR(255)  NOT NULL,
-        active     TINYINT(1)    NOT NULL DEFAULT 1,
-
-        -- userdb / storage (used by values-sandbox.yaml userQuery)
-        home       VARCHAR(255)  NOT NULL DEFAULT '',   -- base home dir (e.g. /var/mail/vhosts)
-        mpath      VARCHAR(255)  NOT NULL DEFAULT '',   -- sub-path appended to home
-        mbtype     VARCHAR(255)  NOT NULL DEFAULT '',   -- mailbox type prefix (e.g. maildir:)
-        maildir    VARCHAR(255)  NOT NULL DEFAULT '',   -- relative maildir path inside home+mpath
-        codepage   VARCHAR(255)  NOT NULL DEFAULT '',   -- charset label (legacy; unused in yarilo)
-        quota      BIGINT        NOT NULL DEFAULT 0,    -- bytes; 0 = unlimited
-
-        -- access control
-        allow_nets VARCHAR(1024) NOT NULL DEFAULT '',   -- comma-separated CIDRs; '' = no restriction
-
-        -- routing
-        domain     VARCHAR(255)  NOT NULL DEFAULT '',
-
-        -- ops
-        created    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        modified   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-        PRIMARY KEY (username)
+    CREATE TABLE IF NOT EXISTS domain (
+        id          BIGINT(20) UNSIGNED  NOT NULL AUTO_INCREMENT,
+        domain      VARCHAR(255)         NOT NULL,
+        transport   VARCHAR(255)         NOT NULL,
+        customer_id VARCHAR(255)         NOT NULL,
+        trial       TINYINT(1)           NOT NULL DEFAULT 0,
+        abuse       TINYINT(1)           NOT NULL DEFAULT 0,
+        active      TINYINT(1)           NOT NULL DEFAULT 1,
+        created     DATETIME             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        modified    DATETIME             NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY (domain),
+        KEY (customer_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-    CREATE INDEX IF NOT EXISTS mailbox_active_idx ON mailbox (active);
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: yarilo-mysql
-  namespace: yarilo-sb
-  labels:
-    app: yarilo-mysql
-spec:
-  clusterIP: None
-  ports:
-    - port: 3306
-      name: mysql
-  selector:
-    app: yarilo-mysql
+    CREATE TABLE IF NOT EXISTS alias (
+        id       BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+        address  VARCHAR(255)        NOT NULL,
+        goto     MEDIUMTEXT          NOT NULL,
+        domain   VARCHAR(255)        NOT NULL,
+        active   TINYINT(1)          NOT NULL DEFAULT 1,
+        created  DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        modified DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY (address),
+        KEY (goto(255)),
+        KEY (domain)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    CREATE TABLE IF NOT EXISTS mailbox (
+        id                BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+        username          VARCHAR(255)        NOT NULL,
+        password          VARCHAR(255)        NOT NULL,
+        mbtype            VARCHAR(255)        NOT NULL DEFAULT 'maildir',
+        home              VARCHAR(255)        NOT NULL DEFAULT '/maildir/',
+        maildir           VARCHAR(255)        NOT NULL,
+        quota             BIGINT(20)          NOT NULL DEFAULT 0,
+        local_part        VARCHAR(255)        NOT NULL,
+        domain            VARCHAR(255)        NOT NULL,
+        abuse             TINYINT(1)              NULL DEFAULT 0,
+        active            TINYINT(1)          NOT NULL DEFAULT 1,
+        allow_nets        TEXT                    NULL,
+        created           DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        modified          DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        password_modified DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        mpath             VARCHAR(255)            NULL DEFAULT '',
+        codepage          VARCHAR(8)          NOT NULL DEFAULT '',
+        system_account    TINYINT(1)          NOT NULL DEFAULT 0,
+        director_tag      VARCHAR(255)            NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY (username),
+        KEY (domain),
+        KEY (password_modified),
+        KEY (system_account)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: yarilo-mysql
-  namespace: yarilo-sb
+  name: mysql
+  namespace: db
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql
+    app.kubernetes.io/component: mysql
 spec:
-  serviceName: yarilo-mysql
+  serviceName: mysql
   replicas: 1
   selector:
     matchLabels:
-      app: yarilo-mysql
+      app.kubernetes.io/name: mysql
+      app.kubernetes.io/instance: mysql
+      app.kubernetes.io/component: mysql
   template:
     metadata:
       labels:
-        app: yarilo-mysql
+        app.kubernetes.io/name: mysql
+        app.kubernetes.io/instance: mysql
+        app.kubernetes.io/component: mysql
     spec:
       containers:
         - name: mysql
@@ -109,23 +129,31 @@ spec:
               name: mysql
           envFrom:
             - secretRef:
-                name: yarilo-mysql
+                name: mysql
           readinessProbe:
             exec:
               command:
                 - /bin/sh
                 - -c
                 - "mysqladmin ping -h localhost -u root --password=\"$MYSQL_ROOT_PASSWORD\" --silent 2>/dev/null"
-            initialDelaySeconds: 20
+            initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "mysqladmin ping -h localhost -u root --password=\"$MYSQL_ROOT_PASSWORD\" --silent 2>/dev/null"
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: 100m
               memory: 256Mi
             limits:
-              cpu: 500m
               memory: 512Mi
           volumeMounts:
             - name: data
@@ -136,7 +164,7 @@ spec:
       volumes:
         - name: init
           configMap:
-            name: yarilo-mysql-init
+            name: mysql-init
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -145,3 +173,24 @@ spec:
         resources:
           requests:
             storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: db
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql
+    app.kubernetes.io/component: mysql
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql
+    app.kubernetes.io/component: mysql
