@@ -170,6 +170,13 @@ type UserIndex interface {
 	// pre-allocates the next modseq value in one lock/reload/flush cycle,
 	// replacing the separate AllocateUID + NextModSeq calls in Append.
 	AllocateUIDWithModSeq(folderID uint64) (uid uint32, modseq uint64, err error)
+	// AllocateAndAppend assigns a UID and records the message in a single
+	// lock/reload/flush cycle — the go-imap appendBytes pattern applied to
+	// persistent storage. m.UID and m.ModSeq are filled in by the call;
+	// all other fields must be set by the caller. m.Filename must already
+	// be known (box.Save completes before this call). Replaces the two-step
+	// AllocateUID(WithModSeq) + AppendMessage pattern that caused APPEND stalls.
+	AllocateAndAppend(folderID uint64, m *MessageMeta) error
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
 	// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a
 	// single lock/reload/flush cycle. Returns the new modseq per UID.

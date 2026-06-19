@@ -58,8 +58,8 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if name != "u.7" {
-		t.Errorf("final name = %q, want u.7", name)
+	if !strings.HasPrefix(name, "u.") {
+		t.Errorf("final name = %q, want u.<guid> prefix", name)
 	}
 	finalPath := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails", name)
 	if _, err := os.Stat(finalPath); err != nil {
@@ -84,13 +84,6 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 	}
 	if string(gotBytes) != body {
 		t.Errorf("fetch body drift:\n got %q\nwant %q", gotBytes, body)
-	}
-}
-
-func TestSaveRejectsZeroUID(t *testing.T) {
-	_, mb, _ := newTestUser(t)
-	if _, err := mb.Save("INBOX", strings.NewReader("x"), 0, 1, nil); err == nil {
-		t.Fatal("expected error on UID=0, got nil")
 	}
 }
 
@@ -167,13 +160,9 @@ func TestListAndFolderOps(t *testing.T) {
 	if len(msgs) != 3 {
 		t.Fatalf("got %d messages, want 3", len(msgs))
 	}
-	seen := map[uint32]bool{}
 	for _, m := range msgs {
-		seen[m.UID] = true
-	}
-	for _, want := range []uint32{1, 2, 3} {
-		if !seen[want] {
-			t.Errorf("missing UID %d in list", want)
+		if !strings.HasPrefix(m.Filename, "u.") {
+			t.Errorf("unexpected filename %q, want u.<guid> prefix", m.Filename)
 		}
 	}
 
@@ -222,8 +211,8 @@ func TestScanRecoversGUIDAndSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if name != "u.42" {
-		t.Errorf("save name = %q, want u.42", name)
+	if !strings.HasPrefix(name, "u.") {
+		t.Errorf("save name = %q, want u.<guid> prefix", name)
 	}
 
 	recs, err := mb.Scan("INBOX")
@@ -234,8 +223,8 @@ func TestScanRecoversGUIDAndSize(t *testing.T) {
 		t.Fatalf("got %d records, want 1", len(recs))
 	}
 	r := recs[0]
-	if r.Filename != "u.42" {
-		t.Errorf("filename = %q, want u.42", r.Filename)
+	if !strings.HasPrefix(r.Filename, "u.") {
+		t.Errorf("filename = %q, want u.<guid> prefix", r.Filename)
 	}
 	var zero [16]byte
 	if r.GUID == zero {

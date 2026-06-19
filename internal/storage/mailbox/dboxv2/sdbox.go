@@ -271,10 +271,7 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // this folder. size is the wire-level body size; on-disk physical
 // size comes from actual bytes written (post-CRLF normalisation).
 // flags are ignored — sdbox delegates flag storage to the index.
-func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, _ []string) (string, error) {
-	if uid == 0 {
-		return "", fmt.Errorf("sdbox/save: UID 0 invalid (call UserIndex.AllocateUID first)")
-	}
+func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return "", fmt.Errorf("sdbox/save: mkdir: %w", err)
 	}
@@ -284,13 +281,11 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, _ []
 		return "", fmt.Errorf("sdbox/save: read body: %w", err)
 	}
 	physSize := uint32(len(body))
-	virtSize := physSize // sdbox identity until cache/fts extends meanings
-
-	tempName := u.makeTempName()
-	finalName := fmt.Sprintf("%s%d", sdboxMailPrefix, uid)
+	virtSize := physSize
 
 	guid := randomGUID()
 	now := uint32(time.Now().Unix())
+	finalName := fmt.Sprintf("%s%s", sdboxMailPrefix, guidHex(guid))
 
 	var buf bytes.Buffer
 	buf.Write(encodeFileHeaderLine(now))
@@ -302,6 +297,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, _ []
 		{Key: metaKeyVirtualSize, Value: fmt.Sprintf("%x", virtSize)},
 	}))
 
+	tempName := u.makeTempName()
 	err = u.withMailboxLock(folder, func() error {
 		dir := u.folderPath(folder)
 		tempPath := filepath.Join(dir, tempName)
@@ -426,10 +422,9 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 		if e.IsDir() || !strings.HasPrefix(e.Name(), sdboxMailPrefix) {
 			continue
 		}
-		uid64, err := strconv.ParseUint(strings.TrimPrefix(e.Name(), sdboxMailPrefix), 10, 32)
-		if err != nil {
-			continue
-		}
+		// Decimal suffix → UID embedded in name (old scheme).
+		// Hex GUID suffix → UID=0; the file index is authoritative.
+		uid64, _ := strconv.ParseUint(strings.TrimPrefix(e.Name(), sdboxMailPrefix), 10, 32)
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -498,10 +493,6 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 		if e.IsDir() || !strings.HasPrefix(e.Name(), sdboxMailPrefix) {
 			continue
 		}
-		uid64, err := strconv.ParseUint(strings.TrimPrefix(e.Name(), sdboxMailPrefix), 10, 32)
-		if err != nil {
-			continue
-		}
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -524,7 +515,6 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 				rec.InternalDate = when
 			}
 		}
-		_ = uid64
 		out = append(out, rec)
 	}
 	return out, nil

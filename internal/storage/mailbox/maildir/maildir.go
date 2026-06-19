@@ -209,9 +209,6 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // inline so subsequent List() / Fetch() can resolve UIDs without
 // a separate AppendUIDEntry call.
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, error) {
-	if uid == 0 {
-		return "", fmt.Errorf("maildir: UID 0 invalid (call UserIndex.AllocateUID first)")
-	}
 	folderPath := u.folderPath(folder)
 	now := time.Now()
 	seq := u.b.counter.Add(1)
@@ -245,9 +242,11 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 			os.Remove(tmpPath)
 			return fmt.Errorf("maildir: rename to cur: %w", err)
 		}
-		if err := u.appendUIDListLocked(folder, uid, finalName); err != nil {
-			_ = os.Remove(dstPath)
-			return fmt.Errorf("maildir: uidlist: %w", err)
+		if uid != 0 {
+			if err := u.appendUIDListLocked(folder, uid, finalName); err != nil {
+				_ = os.Remove(dstPath)
+				return fmt.Errorf("maildir: uidlist: %w", err)
+			}
 		}
 		return nil
 	}); err != nil {
