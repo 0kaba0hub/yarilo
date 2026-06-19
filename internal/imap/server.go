@@ -378,6 +378,10 @@ type session struct {
 	// the syncModSeq fast-path on the next Poll call so the expunges are
 	// retried as soon as allowExpunge becomes true.
 	hasPendingExpunge bool
+	// knownKeywords tracks keyword flags announced to the client in SELECT or
+	// via subsequent * FLAGS responses; used to detect new keywords during Poll.
+	// Nil when no folder is selected.
+	knownKeywords map[string]struct{}
 
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
@@ -871,9 +875,11 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 		imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
 	}
 	allFlags := sysFlags
+	s.knownKeywords = make(map[string]struct{})
 	if kws, err := h.idx.Keywords(f.ID); err == nil {
 		for _, kw := range kws {
 			allFlags = append(allFlags, imaplib.Flag(kw))
+			s.knownKeywords[kw] = struct{}{}
 		}
 	}
 	data := &imaplib.SelectData{
@@ -918,6 +924,7 @@ func (s *session) Unselect() error {
 	s.knownMsgs = nil
 	s.syncModSeq = 0
 	s.hasPendingExpunge = false
+	s.knownKeywords = nil
 	s.pushAnvilSelect("")
 	return nil
 }
@@ -1436,24 +1443,63 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	}
 	s.hasPendingExpunge = hadExpunges && !allowExpunge
 
-	// Phase 2: flag updates — sequence numbers are correct after phase 1
-	// removals (we walked high→low so lower entries were not shifted).
-	for i, km := range s.knownMsgs {
-		ci, exists := curMap[km.uid]
-		if !exists || ci.modseq == km.modseq {
-			continue
+	// Phase 2: flag updates — skipped entirely when hasPendingExpunge is true
+	// because the pre-expunge sequence numbers would be wrong on the client side.
+	if !s.hasPendingExpunge {
+		type flagsUpdate struct {
+			seq uint32
+			uid uint32
+			ci  curInfo
 		}
-		allFlags := make([]imaplib.Flag, 0, len(ci.flags)+len(ci.kw))
-		for _, f := range ci.flags {
-			allFlags = append(allFlags, imaplib.Flag(f))
+		var pending []flagsUpdate
+		newKwSet := make(map[string]struct{})
+		var newKws []string
+		for i, km := range s.knownMsgs {
+			ci, exists := curMap[km.uid]
+			if !exists || ci.modseq == km.modseq {
+				continue
+			}
+			pending = append(pending, flagsUpdate{uint32(i + 1), km.uid, ci})
+			for _, kw := range ci.kw {
+				if _, known := s.knownKeywords[kw]; !known {
+					if _, dup := newKwSet[kw]; !dup {
+						newKws = append(newKws, kw)
+						newKwSet[kw] = struct{}{}
+					}
+				}
+			}
 		}
-		for _, k := range ci.kw {
-			allFlags = append(allFlags, imaplib.Flag(k))
+		if len(newKws) > 0 {
+			sysFlags := []imaplib.Flag{
+				imaplib.FlagAnswered, imaplib.FlagFlagged,
+				imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
+			}
+			mbFlags := make([]imaplib.Flag, len(sysFlags), len(sysFlags)+len(s.knownKeywords)+len(newKws))
+			copy(mbFlags, sysFlags)
+			for kw := range s.knownKeywords {
+				mbFlags = append(mbFlags, imaplib.Flag(kw))
+			}
+			for _, kw := range newKws {
+				mbFlags = append(mbFlags, imaplib.Flag(kw))
+				s.knownKeywords[kw] = struct{}{}
+			}
+			if err := w.WriteMailboxFlags(mbFlags); err != nil {
+				return err
+			}
 		}
-		if err := w.WriteMessageFlags(uint32(i+1), imaplib.UID(km.uid), allFlags); err != nil {
-			return err
+		for _, p := range pending {
+			allFlags := make([]imaplib.Flag, 0, len(p.ci.flags)+len(p.ci.kw))
+			for _, f := range p.ci.flags {
+				allFlags = append(allFlags, imaplib.Flag(f))
+			}
+			for _, k := range p.ci.kw {
+				allFlags = append(allFlags, imaplib.Flag(k))
+			}
+			if err := w.WriteMessageFlags(p.seq, imaplib.UID(p.uid), allFlags); err != nil {
+				return err
+			}
+			s.knownMsgs[p.seq-1].modseq = p.ci.modseq
 		}
-		s.knownMsgs[i].modseq = ci.modseq
 	}
 
 	// Phase 3: new messages — UIDs in current that are not yet in knownMsgs.
