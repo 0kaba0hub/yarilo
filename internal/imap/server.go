@@ -1833,10 +1833,26 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		seqNum uint32
 		msg    *mailbox.MessageMeta
 	}
+	// Build uid→client-seqNum from knownMsgs so both seq-number and UID
+	// FETCH report sequence numbers that match the client's current view.
+	// This avoids "UID changed" errors when another session has expunged
+	// messages and the backend's positions have shifted before the client
+	// received the EXPUNGE notifications.
+	uidToClientSeq := make(map[uint32]uint32, len(s.knownMsgs))
+	for i, km := range s.knownMsgs {
+		uidToClientSeq[km.uid] = uint32(i + 1)
+	}
+
 	var fetchList []fetchEntry
 	if _, isUID := numSet.(imaplib.UIDSet); isUID {
-		for i, m := range backendMsgs {
-			fetchList = append(fetchList, fetchEntry{uint32(i + 1), m})
+		for _, m := range backendMsgs {
+			seqNum, ok := uidToClientSeq[m.UID]
+			if !ok {
+				// New message appended after the pre-OK poll; skip it
+				// — client will learn about it on the next Poll cycle.
+				continue
+			}
+			fetchList = append(fetchList, fetchEntry{seqNum, m})
 		}
 	} else {
 		for i, km := range s.knownMsgs {
