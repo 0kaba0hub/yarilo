@@ -1743,18 +1743,21 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if ferr != nil {
 				break
 			}
-			body, _ := io.ReadAll(rc)
+			extracted := imapserver.ExtractBodySection(rc, section)
 			rc.Close()
+			if extracted == nil {
+				extracted = []byte{}
+			}
 			switch section.Specifier {
 			case imaplib.PartSpecifierHeader, imaplib.PartSpecifierMIME:
 				s.statsFetchHdr++
-				s.statsFetchHdrB += int64(len(body))
+				s.statsFetchHdrB += int64(len(extracted))
 			default:
 				s.statsFetchBody++
-				s.statsFetchBodyB += int64(len(body))
+				s.statsFetchBodyB += int64(len(extracted))
 			}
-			bw := mw.WriteBodySection(section, int64(len(body)))
-			io.Copy(bw, bytes.NewReader(body)) //nolint:errcheck
+			bw := mw.WriteBodySection(section, int64(len(extracted)))
+			io.Copy(bw, bytes.NewReader(extracted)) //nolint:errcheck
 			bw.Close()
 		}
 		// BINARY[] (RFC 3516) — decode Content-Transfer-Encoding (base64,
