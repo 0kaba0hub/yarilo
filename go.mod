@@ -7,7 +7,7 @@ require (
 	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/alicebob/miniredis/v2 v2.38.0
-	github.com/emersion/go-imap/v2 v2.0.0-beta.8.0.20260619114119-79433b1ab32d
+	github.com/emersion/go-imap/v2 v2.0.0-beta.8.0.20260619130347-3c9c07abb669
 	github.com/emersion/go-message v0.18.2
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
 	github.com/foxcpp/go-sieve v0.0.0-20260523221512-9ae51b269e52
@@ -63,6 +63,6 @@ require (
 
 replace github.com/foxcpp/go-sieve => github.com/0kaba0hub/go-sieve v0.0.0-20260615103043-d84c7700556b
 
-replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260619114119-79433b1ab32d
+replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260619130347-3c9c07abb669
 
 replace github.com/emersion/go-sasl => github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f
