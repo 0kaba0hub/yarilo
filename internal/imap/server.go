@@ -1355,11 +1355,10 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		return nil, err
 	}
 
-	uid, err := h.idx.AllocateUID(f.ID)
+	uid, modseq, err := h.idx.AllocateUIDWithModSeq(f.ID)
 	if err != nil {
 		return nil, fmt.Errorf("imap/append allocate: %w", err)
 	}
-	modseq, _ := h.idx.NextModSeq(f.ID)
 
 	filename, err := h.box.Save(rel, r, uid, size, flagList)
 	if err != nil {
@@ -2068,6 +2067,16 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	}
 	var modifiedUIDs imaplib.UIDSet
 
+	// Pass 1: determine which messages to update and compute new flag sets.
+	type pendingStore struct {
+		seqNum   uint32
+		uid      uint32
+		newFlags []string
+		newKW    []string
+	}
+	var pending []pendingStore
+	batchUpdates := make(map[uint32]mailbox.FlagsUpdate)
+
 	for _, m := range msgs {
 		seqNum, ok := uidToClientSeq[m.UID]
 		if !ok {
@@ -2094,23 +2103,31 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 				newKW = append(newKW, f)
 			}
 		}
-		idx.UpdateFlags(s.folder.ID, m.UID, newFlags, newKW) //nolint:errcheck
-		s.emitMailboxChange(s.folder.Name, locks.EventChanged, m.UID)
+		pending = append(pending, pendingStore{seqNum, m.UID, newFlags, newKW})
+		batchUpdates[m.UID] = mailbox.FlagsUpdate{Flags: newFlags, Keywords: newKW}
+	}
 
-		// Re-read modseq after UpdateFlags so the FETCH response carries
-		// the bumped value (CONDSTORE clients use it to update their
-		// last-known state).
-		newModSeq := m.ModSeq
-		if updated, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{{From: m.UID, To: m.UID}}); err == nil && len(updated) > 0 {
-			newModSeq = updated[0].ModSeq
+	// Pass 2: single lock/reload/flush for all flag updates.
+	var newModSeqs map[uint32]uint64
+	if len(batchUpdates) > 0 {
+		var err error
+		newModSeqs, err = idx.UpdateFlagsMulti(s.folder.ID, batchUpdates)
+		if err != nil {
+			return err
 		}
+		for _, p := range pending {
+			s.emitMailboxChange(s.folder.Name, locks.EventChanged, p.uid)
+		}
+	}
 
-		if !storeFlags.Silent {
-			mw := w.CreateMessage(seqNum)
-			mw.WriteFlags(toImapFlags(append(newFlags, newKW...)))
-			mw.WriteUID(imaplib.UID(m.UID))
-			if newModSeq > 0 {
-				mw.WriteModSeq(newModSeq)
+	// Pass 3: send FETCH responses using modseqs returned from the batch.
+	if !storeFlags.Silent {
+		for _, p := range pending {
+			mw := w.CreateMessage(p.seqNum)
+			mw.WriteFlags(toImapFlags(append(p.newFlags, p.newKW...)))
+			mw.WriteUID(imaplib.UID(p.uid))
+			if ms := newModSeqs[p.uid]; ms > 0 {
+				mw.WriteModSeq(ms)
 			}
 			mw.Close() //nolint:errcheck
 		}

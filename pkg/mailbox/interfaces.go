@@ -64,6 +64,14 @@ type SeqRange struct {
 //	         delegates flag storage to the index.
 //	mdbox:   not implemented in this phase — driver returns
 //	         "not yet implemented" until Phase MDBOX-PROD-READY.
+//
+// FlagsUpdate carries the new flag and keyword sets for one message in a
+// batch UpdateFlagsMulti call.
+type FlagsUpdate struct {
+	Flags    []string
+	Keywords []string
+}
+
 type ScanRecord struct {
 	Filename     string
 	GUID         [16]byte
@@ -158,7 +166,14 @@ type UserIndex interface {
 	// is burnt — matches Dovecot's "uid hole" tolerance. Periodic rebuild
 	// reconciles state by scanning the on-disk tree.
 	AllocateUID(folderID uint64) (uint32, error)
+	// AllocateUIDWithModSeq atomically reserves the folder's next UID and
+	// pre-allocates the next modseq value in one lock/reload/flush cycle,
+	// replacing the separate AllocateUID + NextModSeq calls in Append.
+	AllocateUIDWithModSeq(folderID uint64) (uid uint32, modseq uint64, err error)
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
+	// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a
+	// single lock/reload/flush cycle. Returns the new modseq per UID.
+	UpdateFlagsMulti(folderID uint64, updates map[uint32]FlagsUpdate) (map[uint32]uint64, error)
 	// SetAltTier sets or clears the AltTier marker (FlagBackend) for every
 	// message in folderID whose Filename matches one of the supplied names.
 	// Called by the altmove API after physically relocating mdbox m.<N> files
