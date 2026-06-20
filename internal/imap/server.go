@@ -1497,12 +1497,42 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 		knownSet[km.uid] = struct{}{}
 	}
 	added := 0
+	var newKwsFromAppend []string
+	newKwSetFromAppend := make(map[string]struct{})
 	for _, m := range current {
 		if _, seen := knownSet[m.UID]; seen {
 			continue
 		}
 		s.knownMsgs = append(s.knownMsgs, sessionMsg{uid: m.UID, modseq: m.ModSeq})
 		added++
+		for _, kw := range m.Keywords {
+			if _, known := s.knownKeywords[kw]; known {
+				continue
+			}
+			if _, dup := newKwSetFromAppend[kw]; dup {
+				continue
+			}
+			newKwsFromAppend = append(newKwsFromAppend, kw)
+			newKwSetFromAppend[kw] = struct{}{}
+		}
+	}
+	if len(newKwsFromAppend) > 0 {
+		sysFlags := []imaplib.Flag{
+			imaplib.FlagAnswered, imaplib.FlagFlagged,
+			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
+		}
+		mbFlags := make([]imaplib.Flag, len(sysFlags), len(sysFlags)+len(s.knownKeywords)+len(newKwsFromAppend))
+		copy(mbFlags, sysFlags)
+		for kw := range s.knownKeywords {
+			mbFlags = append(mbFlags, imaplib.Flag(kw))
+		}
+		for _, kw := range newKwsFromAppend {
+			mbFlags = append(mbFlags, imaplib.Flag(kw))
+			s.knownKeywords[kw] = struct{}{}
+		}
+		if err := w.WriteMailboxFlags(mbFlags); err != nil {
+			return err
+		}
 	}
 	if added > 0 {
 		if err := w.WriteNumMessages(uint32(len(s.knownMsgs))); err != nil {
