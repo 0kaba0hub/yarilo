@@ -325,6 +325,15 @@ data:
       {{- if $storage.altDir }}
       alt_dir: {{ $storage.altDir | quote }}
       {{- end }}
+      {{- if $storage.indexLogCompactMinBytes }}
+      index_log_compact_min_bytes: {{ $storage.indexLogCompactMinBytes }}
+      {{- end }}
+      {{- if $storage.indexLogCompactMaxBytes }}
+      index_log_compact_max_bytes: {{ $storage.indexLogCompactMaxBytes }}
+      {{- end }}
+      {{- if $storage.indexLogCompactMinAgeSecs }}
+      index_log_compact_min_age_secs: {{ $storage.indexLogCompactMinAgeSecs }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.dicts }}

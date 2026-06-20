@@ -269,6 +269,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 	if st, _ := os.Stat(fs.indexPath); st != nil {
 		fs.baseMod = st.ModTime()
 	}
+	fs.lastFlush = time.Now()
 	return nil
 }
 
@@ -393,7 +394,11 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
-		return fs.flushAppend(fs.file.Records[len(fs.file.Records)-1])
+		if err := fs.flushAppend(fs.file.Records[len(fs.file.Records)-1]); err != nil {
+			return err
+		}
+		u.compactLogIfNeeded(fs)
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -472,7 +477,11 @@ func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) e
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
-		return fs.flushAppend(fs.file.Records[len(fs.file.Records)-1])
+		if err := fs.flushAppend(fs.file.Records[len(fs.file.Records)-1]); err != nil {
+			return err
+		}
+		u.compactLogIfNeeded(fs)
+		return nil
 	}); err != nil {
 		return err
 	}
