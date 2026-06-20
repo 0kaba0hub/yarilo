@@ -40,6 +40,21 @@ import (
 type Backend struct {
 	locker  locks.Locker
 	quotaFn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits)
+
+	// users caches one userIndex per username so all sessions belonging
+	// to the same user share a single in-process index state. Only one
+	// goroutine at a time can hold fs.mu for a given folder, which means
+	// the cross-process Redis mailbox lock is never contended within a
+	// single pod — eliminating the APPEND/STORE stall root cause.
+	usersMu sync.Mutex
+	users   map[string]*refUserIndex
+}
+
+// refUserIndex is the cache entry: a shared userIndex plus a reference
+// count tracking how many active sessions (userHandle values) use it.
+type refUserIndex struct {
+	ui   *userIndex
+	refs int // protected by Backend.usersMu
 }
 
 // Option configures a Backend at construction time.
@@ -64,30 +79,125 @@ func WithQuotaCounter(fn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits
 
 // New constructs a Backend.
 func New(opts ...Option) *Backend {
-	b := &Backend{}
+	b := &Backend{
+		users: make(map[string]*refUserIndex),
+	}
 	for _, opt := range opts {
 		opt(b)
 	}
 	return b
 }
 
-// OpenUser returns a per-session handle bound to u. Handle
-// methods take no user/path parameter — UserInfo is captured at
-// open time (Dovecot mail_storage pattern).
+// OpenUser returns a per-session handle bound to u. All sessions for
+// the same username share one underlying userIndex so they serialise
+// on the per-folder in-process mutex rather than competing for the
+// cross-process Redis mailbox lock.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
-	ui := &userIndex{
-		b:           b,
-		home:        u.Home,
-		volatileDir: u.VolatileDir,
-		indexRoot:   u.IndexDir,
-		username:    u.Username,
-		owner:       makeOwner(u),
-		open:        make(map[uint64]*folderState),
+	b.usersMu.Lock()
+	ref, ok := b.users[u.Username]
+	if !ok {
+		ui := &userIndex{
+			b:           b,
+			home:        u.Home,
+			volatileDir: u.VolatileDir,
+			indexRoot:   u.IndexDir,
+			username:    u.Username,
+			owner:       makeOwner(u),
+			open:        make(map[uint64]*folderState),
+		}
+		if b.quotaFn != nil {
+			ui.counter, ui.limits = b.quotaFn(u)
+		}
+		ref = &refUserIndex{ui: ui}
+		b.users[u.Username] = ref
 	}
-	if b.quotaFn != nil {
-		ui.counter, ui.limits = b.quotaFn(u)
+	ref.refs++
+	b.usersMu.Unlock()
+	return &userHandle{ui: ref.ui, b: b, username: u.Username}
+}
+
+// userHandle is the per-session view into a shared userIndex. It
+// implements mailbox.UserIndex by forwarding all calls to the
+// underlying userIndex. Close() decrements the reference count and
+// evicts the entry when the last session disconnects.
+type userHandle struct {
+	ui       *userIndex
+	b        *Backend
+	username string
+}
+
+func (h *userHandle) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
+	return h.ui.OpenFolder(folder, uidValidity)
+}
+func (h *userHandle) SaveFolder(f *mailbox.Folder) error { return h.ui.SaveFolder(f) }
+func (h *userHandle) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
+	return h.ui.AppendMessage(folderID, m)
+}
+func (h *userHandle) AllocateUID(folderID uint64) (uint32, error) {
+	return h.ui.AllocateUID(folderID)
+}
+func (h *userHandle) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, error) {
+	return h.ui.AllocateUIDWithModSeq(folderID)
+}
+func (h *userHandle) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) error {
+	return h.ui.AllocateAndAppend(folderID, m)
+}
+func (h *userHandle) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return h.ui.UpdateFlags(folderID, uid, flags, keywords)
+}
+func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
+	return h.ui.UpdateFlagsMulti(folderID, updates)
+}
+func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
+	return h.ui.SetAltTier(folderID, filenames, altTier)
+}
+func (h *userHandle) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
+	return h.ui.GetMessages(folderID, uids)
+}
+func (h *userHandle) ExpungeMessage(folderID uint64, uid uint32) error {
+	return h.ui.ExpungeMessage(folderID, uid)
+}
+func (h *userHandle) NextModSeq(folderID uint64) (uint64, error) {
+	return h.ui.NextModSeq(folderID)
+}
+func (h *userHandle) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
+	return h.ui.Vanished(folderID, sinceModSeq)
+}
+func (h *userHandle) Keywords(folderID uint64) ([]string, error) {
+	return h.ui.Keywords(folderID)
+}
+func (h *userHandle) RenameFolder(oldName, newName string) error {
+	return h.ui.RenameFolder(oldName, newName)
+}
+func (h *userHandle) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {
+	return h.ui.GetPOP3UIDLs(folderID)
+}
+func (h *userHandle) SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error {
+	return h.ui.SavePOP3UIDLs(folderID, uidls)
+}
+func (h *userHandle) ResetFolder(folderID uint64, records []*mailbox.MessageMeta) error {
+	return h.ui.ResetFolder(folderID, records)
+}
+func (h *userHandle) OptimizeIndex(folderID uint64) error {
+	return h.ui.OptimizeIndex(folderID)
+}
+
+// Close decrements the session's reference to the shared userIndex.
+// When the last session disconnects the underlying state is cleared
+// and the entry is removed from the cache.
+func (h *userHandle) Close() error {
+	h.b.usersMu.Lock()
+	ref := h.b.users[h.username]
+	if ref != nil {
+		ref.refs--
+		if ref.refs <= 0 {
+			delete(h.b.users, h.username)
+			h.b.usersMu.Unlock()
+			return h.ui.Close()
+		}
 	}
-	return ui
+	h.b.usersMu.Unlock()
+	return nil
 }
 
 // userIndex is the per-user, per-session UserIndex implementation.

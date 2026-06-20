@@ -172,6 +172,9 @@ func TestOpenMigratesDovecotIndexFilename(t *testing.T) {
 	}
 
 	// 3. Fresh OpenUser → must surface the renamed files.
+	// Close the first handle so the cache entry is evicted and the second
+	// OpenUser gets a brand-new userIndex that discovers the legacy names.
+	idx.Close() //nolint:errcheck
 	idx2 := be.OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: dir})
 	if _, err := idx2.OpenFolder("INBOX", 1); err != nil {
 		t.Fatalf("Open after legacy seed: %v", err)
