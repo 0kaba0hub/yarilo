@@ -117,7 +117,7 @@ type userIndex struct {
 // Phase 2.5 will add log-append support so write-heavy workloads
 // don't pay full-file rewrite cost per mutation.
 type folderState struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	folder      string // mailbox folder name (e.g. "INBOX", "Sent")
 	indexDir    string // <home>/<folder-relative>/
@@ -186,11 +186,18 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
+	// Brief exclusive lock to reload on-disk state (another process may
+	// have written since our last flush). Held only for the disk read.
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	if err := fs.reload(); err != nil && !errors.Is(err, os.ErrNotExist) {
+	err := fs.reload()
+	fs.mu.Unlock()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// fn only reads the in-memory snapshot; shared lock allows
+	// concurrent readers without blocking writers.
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
 	return fn(fs)
 }
 
