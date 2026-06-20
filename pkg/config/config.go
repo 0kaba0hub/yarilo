@@ -941,6 +941,22 @@ type StorageConfig struct {
 	// Example: /run/yarilo-volatile/%d/%n
 	VolatileDir string `koanf:"volatile_dir"`
 
+	// IndexLogCompactMinBytes is the minimum .index.log size at which
+	// automatic compaction (flush base + truncate log) may occur.
+	// Compaction only fires when the log is also older than
+	// IndexLogCompactMinAgeSecs (age guard prevents burst storms).
+	// 0 disables compaction entirely. Mirrors Dovecot's
+	// mail_index_log_rotate_min_size (default 32 KiB).
+	IndexLogCompactMinBytes int64 `koanf:"index_log_compact_min_bytes"`
+	// IndexLogCompactMaxBytes forces compaction regardless of log age
+	// when the log exceeds this size. Mirrors Dovecot's
+	// mail_index_log_rotate_max_size (default 1 MiB).
+	IndexLogCompactMaxBytes int64 `koanf:"index_log_compact_max_bytes"`
+	// IndexLogCompactMinAgeSecs is the minimum log age in seconds
+	// before a min-size compaction fires. Mirrors Dovecot's
+	// mail_index_log_rotate_min_age_secs (default 300 s).
+	IndexLogCompactMinAgeSecs int `koanf:"index_log_compact_min_age_secs"`
+
 	// ControlDir is the cluster-wide CONTROL= template. When set,
 	// per-folder control files (yarilo-uidlist, subscriptions) are
 	// stored here instead of co-located with the mailbox data under

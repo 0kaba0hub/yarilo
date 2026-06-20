@@ -142,6 +142,13 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("backend: dicts.quota: %w", err)
 	}
 	idxOpts := []file.Option{file.WithLocker(locker)}
+	if cfg.Storage.IndexLogCompactMinBytes != 0 {
+		idxOpts = append(idxOpts, file.WithLogCompaction(
+			cfg.Storage.IndexLogCompactMinBytes,
+			cfg.Storage.IndexLogCompactMaxBytes,
+			time.Duration(cfg.Storage.IndexLogCompactMinAgeSecs)*time.Second,
+		))
+	}
 	if quotaDict != nil {
 		idxOpts = append(idxOpts, file.WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
 			return quota.NewCounter(quotaDict, u.Username), quota.ParseRules(u.QuotaRules)

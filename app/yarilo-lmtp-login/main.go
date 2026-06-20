@@ -101,10 +101,8 @@ func main() {
 
 	srv := lmtplogin.New(opts)
 	go func() {
-		if err := srv.Serve(ln); err != nil {
-			slog.Error("lmtp-login: server error", "err", err)
-			os.Exit(1)
-		}
+		slog.Error("lmtp-login: server error", "err", srv.Serve(ln))
+		os.Exit(1)
 	}()
 	slog.Info("lmtp-login: listening", "addr", addr)
 

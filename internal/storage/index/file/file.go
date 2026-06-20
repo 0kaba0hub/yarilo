@@ -37,9 +37,19 @@ import (
 // Backend is the per-process factory for fileindex handles. It
 // holds only process-wide state; per-user state lives in
 // userIndex (created by OpenUser).
+const (
+	defaultLogCompactMinBytes   int64 = 32 * 1024   // 32 KiB
+	defaultLogCompactMaxBytes   int64 = 1024 * 1024 // 1 MiB
+	defaultLogCompactMinAgeSecs int   = 300         // 5 min, matches Dovecot
+)
+
 type Backend struct {
 	locker  locks.Locker
 	quotaFn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits)
+
+	logCompactMinBytes int64
+	logCompactMaxBytes int64
+	logCompactMinAge   time.Duration
 
 	// users caches one userIndex per username so all sessions belonging
 	// to the same user share a single in-process index state. Only one
@@ -77,10 +87,25 @@ func WithQuotaCounter(fn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits
 	return func(b *Backend) { b.quotaFn = fn }
 }
 
+// WithLogCompaction configures automatic log compaction thresholds.
+// minBytes / maxBytes mirror Dovecot's mail_index_log_rotate_min_size /
+// mail_index_log_rotate_max_size. minAge mirrors
+// mail_index_log_rotate_min_age_secs. Pass 0 for minBytes to disable.
+func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
+	return func(b *Backend) {
+		b.logCompactMinBytes = minBytes
+		b.logCompactMaxBytes = maxBytes
+		b.logCompactMinAge = minAge
+	}
+}
+
 // New constructs a Backend.
 func New(opts ...Option) *Backend {
 	b := &Backend{
-		users: make(map[string]*refUserIndex),
+		users:              make(map[string]*refUserIndex),
+		logCompactMinBytes: defaultLogCompactMinBytes,
+		logCompactMaxBytes: defaultLogCompactMaxBytes,
+		logCompactMinAge:   time.Duration(defaultLogCompactMinAgeSecs) * time.Second,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -243,11 +268,47 @@ type folderState struct {
 	filenames map[uint32]string
 	sizes     map[uint32]uint32 // UID → message size in bytes, stored in .names sidecar
 
-	logSize int64     // byte count of .index.log after last write/reload
-	baseMod time.Time // mtime of base .index at last full reload
+	logSize   int64     // byte count of .index.log after last write/reload
+	baseMod   time.Time // mtime of base .index at last full reload
+	lastFlush time.Time // wall-clock time of last flush() call (zero = never)
 
 	// dboxHdr is the folder GUID + flags from the dbox-hdr ext.
 	hdr dboxHdr
+}
+
+// compactLogIfNeeded checks whether fs.logSize has crossed the compaction
+// thresholds configured on the Backend and, if so, flushes the base index
+// and resets the log. Errors are non-fatal — the log simply stays larger
+// until the next successful compaction attempt.
+//
+// Mirrors Dovecot's mail_transaction_log_want_rotate() logic:
+//
+//	rotate if logSize > maxBytes
+//	     OR (logSize >= minBytes AND age since lastFlush >= minAge)
+//
+// Caller must hold fs.mu.
+func (u *userIndex) compactLogIfNeeded(fs *folderState) {
+	min := u.b.logCompactMinBytes
+	if min == 0 {
+		return // compaction disabled
+	}
+	max := u.b.logCompactMaxBytes
+	age := u.b.logCompactMinAge
+
+	needCompact := fs.logSize > max ||
+		(fs.logSize >= min && (fs.lastFlush.IsZero() || time.Since(fs.lastFlush) >= age))
+	if !needCompact {
+		return
+	}
+	if err := fs.flush(false); err != nil {
+		slog.Warn("fileindex: log compaction flush failed", "folder", fs.folder, "err", err)
+		return
+	}
+	if err := truncateLog(fs.indexPath, fs.file.Header.IndexID); err != nil {
+		slog.Warn("fileindex: log compaction truncate failed", "folder", fs.folder, "err", err)
+		return
+	}
+	fs.logSize = 0
 }
 
 // makeOwner builds the owner string passed to yarilo-locks BUSY

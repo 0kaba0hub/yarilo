@@ -15,6 +15,8 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
+var errLogIndexIDMismatch = errors.New("fileindex: log IndexID does not match base index")
+
 // OpenFolder opens (or creates) the per-folder index. uidValidity
 // is the IMAP UIDVALIDITY value the caller wants stamped on a
 // fresh folder; on an existing folder it is ignored (the on-disk
@@ -267,6 +269,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 	if st, _ := os.Stat(fs.indexPath); st != nil {
 		fs.baseMod = st.ModTime()
 	}
+	fs.lastFlush = time.Now()
 	return nil
 }
 
@@ -348,10 +351,23 @@ func (fs *folderState) reload() error {
 	// Apply any log entries added since logSize (by another pod or
 	// by our own appends that a concurrent reload must see).
 	if newLogSize > fs.logSize {
-		if err := fs.applyLog(fs.logSize); err != nil {
+		if err := fs.applyLog(fs.logSize); errors.Is(err, errLogIndexIDMismatch) {
+			// Stale log from a previous mailbox at this path — flush the
+			// current base to disk and reset the log so future reads start clean.
+			slog.Warn("fileindex: discarding log with mismatched IndexID, re-flushing base",
+				"folder", fs.folder)
+			if flushErr := fs.flush(false); flushErr != nil {
+				return fmt.Errorf("fileindex/reload: flush after indexid mismatch: %w", flushErr)
+			}
+			if truncErr := truncateLog(fs.indexPath, fs.file.Header.IndexID); truncErr != nil {
+				return fmt.Errorf("fileindex/reload: truncate after indexid mismatch: %w", truncErr)
+			}
+			fs.logSize = 0
+		} else if err != nil {
 			return err
+		} else {
+			fs.logSize = newLogSize
 		}
-		fs.logSize = newLogSize
 	}
 	return nil
 }
@@ -378,7 +394,11 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
-		return fs.flushAppend(fs.file.Records[len(fs.file.Records)-1])
+		if err := fs.flushAppend(fs.file.Records[len(fs.file.Records)-1]); err != nil {
+			return err
+		}
+		u.compactLogIfNeeded(fs)
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -457,7 +477,11 @@ func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) e
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
-		return fs.flushAppend(fs.file.Records[len(fs.file.Records)-1])
+		if err := fs.flushAppend(fs.file.Records[len(fs.file.Records)-1]); err != nil {
+			return err
+		}
+		u.compactLogIfNeeded(fs)
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -1163,11 +1187,16 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 	}
 	defer f.Close()
 
-	if fromOffset == 0 {
-		if _, hdrErr := mailindex.DecodeLogHeader(f); hdrErr != nil {
-			return nil // empty or unreadable log
-		}
-	} else {
+	lh, hdrErr := mailindex.DecodeLogHeader(f)
+	if hdrErr != nil {
+		return nil // empty or unreadable log
+	}
+	if lh.IndexID != fs.file.Header.IndexID {
+		// Log belongs to a different (deleted/recreated) mailbox at this path.
+		// Discard it; caller will flush a fresh base + empty log.
+		return errLogIndexIDMismatch
+	}
+	if fromOffset > 0 {
 		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
 			return fmt.Errorf("fileindex/applylog: seek: %w", err)
 		}
