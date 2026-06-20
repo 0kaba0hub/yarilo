@@ -220,12 +220,16 @@ type userIndex struct {
 }
 
 // folderState is the live in-memory snapshot of one folder's
-// fileindex. Mutations update this struct then call Recreate to
-// flush; Phase 2 deliberately uses pure-Recreate semantics for
-// simplicity, with the log file kept empty (just a header).
+// fileindex. Mutations append a transaction record to .index.log
+// and update fs.file in-memory. The base .index file is only
+// rewritten by flush() (OptimizeIndex / SaveFolder / ResetFolder /
+// createFresh).
 //
-// Phase 2.5 will add log-append support so write-heavy workloads
-// don't pay full-file rewrite cost per mutation.
+// logSize is the log file byte count after the last write or reload;
+// reload() compares it against a fresh stat so it can skip the
+// expensive mailindex.Open when nothing has changed (common case
+// within a single pod). baseMod is the base .index mtime at the last
+// full reload — it changes only when another writer calls flush().
 type folderState struct {
 	mu sync.RWMutex
 
@@ -238,6 +242,9 @@ type folderState struct {
 	keywords  keywordsHdr     // parsed keyword name registry
 	filenames map[uint32]string
 	sizes     map[uint32]uint32 // UID → message size in bytes, stored in .names sidecar
+
+	logSize int64     // byte count of .index.log after last write/reload
+	baseMod time.Time // mtime of base .index at last full reload
 
 	// dboxHdr is the folder GUID + flags from the dbox-hdr ext.
 	hdr dboxHdr
