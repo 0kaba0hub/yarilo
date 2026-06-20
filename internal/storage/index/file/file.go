@@ -231,6 +231,14 @@ type userIndex struct {
 // within a single pod). baseMod is the base .index mtime at the last
 // full reload — it changes only when another writer calls flush().
 type folderState struct {
+	// writeMu serialises Redis-lock acquisition so that only one
+	// goroutine per folder competes for the cross-pod lock at a time.
+	// Held for the full acquire→release cycle; released before mu.
+	writeMu sync.Mutex
+	// mu guards the in-memory snapshot (fs.file, fs.keywords, etc.).
+	// Writers hold it exclusively for reload+mutation (~sub-ms).
+	// Readers (withFolderRO) hold it exclusively only for reload,
+	// then downgrade to a shared lock for the read callback.
 	mu sync.RWMutex
 
 	folder      string // mailbox folder name (e.g. "INBOX", "Sent")
@@ -322,14 +330,24 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 // the supplied folder state. When no locker is wired (tests),
 // fn runs unguarded.
 //
-// Redis lock is acquired BEFORE fs.mu so that concurrent read-only
-// callers (withFolderRO) are not blocked while we wait for a
-// contended cross-pod lock.
+// Lock ordering: writeMu → Redis lock → mu.
 //
-// The HoldsResource() shortcut handles the POP3 QUIT pattern where
-// an outer caller already holds the Redis lock and drives per-message
-// calls that re-enter here — re-acquisition would deadlock.
+// writeMu ensures only one goroutine per folder is in the Redis-lock
+// acquisition phase at a time, preventing a thundering-herd where all
+// N sessions of a user simultaneously hammer yarilo-locks.
+//
+// mu is held only for the actual reload+mutation (~sub-ms), so
+// withFolderRO callers are never blocked for more than that window.
+//
+// HoldsResource() handles the POP3 QUIT pattern: an outer caller
+// acquires the Redis lock directly (not via withFolderLock) and then
+// drives per-message storage calls that re-enter here. In that case
+// writeMu is not held by the outer caller, so the inner call acquires
+// it normally and skips only the Redis lock.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
+	fs.writeMu.Lock()
+	defer fs.writeMu.Unlock()
+
 	if u.b.locker == nil {
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
