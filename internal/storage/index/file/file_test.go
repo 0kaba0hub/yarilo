@@ -26,7 +26,7 @@ func testHome(root, user string) string {
 
 func openIdx(root, user string) *userIndex {
 	home := testHome(root, user)
-	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userIndex)
+	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userHandle).ui
 }
 
 func TestLogReplay(t *testing.T) {
@@ -504,7 +504,7 @@ func TestQuota_IgnoreFolderSkipsCounter(t *testing.T) {
 	}
 	b := New(WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
 		return quota.NewCounter(d, u.Username), lim
-	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userIndex)
+	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
 
 	inbox, _ := b.OpenFolder("INBOX", 1)
 	spam, _ := b.OpenFolder("Spam", 1)
@@ -535,7 +535,7 @@ func TestQuota_AdditiveFolder(t *testing.T) {
 	lim := quota.ParseRules([]string{"*:storage=5G", "Trash:storage=+1G"})
 	b := New(WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
 		return quota.NewCounter(d, u.Username), lim
-	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userIndex)
+	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
 
 	trash, _ := b.OpenFolder("Trash", 1)
 	b.AppendMessage(trash.ID, &mailbox.MessageMeta{UID: 1, Size: uint32(500)}) //nolint:errcheck
@@ -568,7 +568,7 @@ func TestQuota_CounterTracking(t *testing.T) {
 	home := testHome(dir, testUser)
 	b := New(WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
 		return quota.NewCounter(d, u.Username), quota.Limits{}
-	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userIndex)
+	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
 
 	f, _ := b.OpenFolder("INBOX", 1)
 

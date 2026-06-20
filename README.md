@@ -4,8 +4,8 @@
 <td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg" width="180" alt="yarilo logo"/></td>
 <td>
 
-Production-grade IMAP/Submission/LMTP/JMAP mail server written in Go.
-Three-tier cluster (proxy → director → backend), pluggable storage (Maildir / dbox / mdbox / S3), Sieve filtering, full Dovecot 2.3 protocol compatibility.
+Production-grade IMAP / POP3 / LMTP / ManageSieve / Submission mail server written in Go.
+Multi-binary architecture — each protocol component is a separate process. Full Dovecot 2.3 protocol compatibility. Kubernetes-native via Helm.
 
 [![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -20,224 +20,148 @@ Three-tier cluster (proxy → director → backend), pluggable storage (Maildir 
 
 ## Architecture
 
-Yarilo is a single binary that runs in one of three roles (`mode: proxy | director | backend`).
+Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a separate compiled binary — no mode flags, no combined processes. Deployment topology is configured purely through Helm values; the same binaries serve standalone and clustered installations.
 
 ```
   Internet
      |
-     | IMAP / IMAPs / SUBMISSION / POP3 / JMAP
+     | IMAPS :993 / IMAP :143 / POP3S :995 / POP3 :110
+     | LMTP :24 / ManageSieve :4190 / SASL :4190
      v
-+------------------+     +------------------+
-|     PROXY        |     |     PROXY        |  ...N
-|                  |     |                  |
-| TLS termination  |     | TLS termination  |
-| Auth (passdb)    |     | Auth (passdb)    |
-| Route lookup     |     | Route lookup     |
-+--------+---------+     +--------+---------+
-         |  TAB-delimited protocol           |
-         v                                   v
-+------------------------------------------------+
-|                  DIRECTOR                      |
-|                                                |
-| Consistent hashing: user@domain -> backend     |
-| Sticky sessions (one user = one backend)       |
-| Backend registry + health checks              |
-| Failover: reassign on node failure             |
-+--------+----------+----------+----------------+
-         |          |          |
-         v          v          v
-  +----------+ +----------+ +----------+
-  | BACKEND  | | BACKEND  | | BACKEND  |  ...N
-  |          | |          | |          |
-  | IMAP     | | IMAP     | | IMAP     |
-  | POP3     | | POP3     | | POP3     |
-  | JMAP     | | JMAP     | | JMAP     |
-  | Sub/LMTP | | Sub/LMTP | | Sub/LMTP |
-  | Sieve    | | Sieve    | | Sieve    |
-  | Quota    | | Quota    | | Quota    |
-  | ACL      | | ACL      | | ACL      |
-  +----+-----+ +----+-----+ +----+-----+
-       |             |            |
-       v             v            v
-  +-----------+ +-----------+ +-----------+
-  | Mailbox   | | Mailbox   | | Mailbox   |
-  | + Index   | | + Index   | | + Index   |
-  +-----------+ +-----------+ +-----------+
-       |                            |
-       v                            v
-  [Maildir/dbox/mdbox]          [obox -> S3]
-  [FileIndex / SQLite]          [Cassandra]
++------------------------+  +------------------------+
+|  yarilo-imap-login     |  |  yarilo-pop3-login     |  login pods (TLS termination,
+|  yarilo-lmtp-login     |  |  yarilo-managesieve-   |  HAProxy / XCLIENT, passdb,
+|  yarilo-submission-    |  |  login                 |  anvil rate-limit, fd-passing)
+|  login / sasl-login    |  +------------------------+
++------------------------+
+         |  Unix fd-passing (SCM_RIGHTS) after auth
+         v
++------------------------+  +------------------------+
+|  yarilo-imap           |  |  yarilo-pop3           |  session pods (mailbox,
+|  yarilo-lmtp           |  |  yarilo-managesieve    |  index, Sieve execution,
+|  yarilo-submission     |  |  yarilo-backend-api    |  quota, ACL)
++------------------------+  +------------------------+
+         |
+         | cross-process write coordination (TCP mTLS)
+         v
++------------------------+  +------------------------+
+|  yarilo-locks          |  |  yarilo-auth           |  shared services
+|  yarilo-anvil          |  |  Redis (dict / locks)  |
++------------------------+  +------------------------+
+         |
+         | NFS PV (RWX) — shared by all session pods in a tag
+         v
+  [ Mailbox + Index files ]
 ```
 
-**Proxy** — accepts client connections, terminates TLS (SNI per-domain), authenticates via passdb, queries Director for routing, forwards the raw TCP stream to the target backend. Stateless; scale horizontally without limits.
+**Login pods** — terminate TLS (SNI per-domain), authenticate via passdb, enforce per-user connection limits (anvil), pass the raw fd to session pods via SCM_RIGHTS. Stateless; scale independently.
 
-**Director** — consistent-hashing ring (MD5, 100 vhosts/backend). One user always lands on the same backend. Detects failures and reassigns. All intra-cluster traffic uses the TAB-delimited yarilo-director protocol (see [INTERNALS.md](INTERNALS.md) §2).
+**Session pods** — full mail processing: IMAP / POP3 / LMTP / Sieve / Submission / ManageSieve. Each protocol scales as a separate StatefulSet so IMAP can scale independently of LMTP.
 
-**Backend** — full mail server: IMAP, POP3, JMAP, Submission, LMTP, ManageSieve, Sieve execution engine, Quota, ACL, FTS. Speaks natively to the mailbox + index layer.
+**yarilo-auth** — shared passdb chain (MySQL / Postgres / SQLite / LDAP), auth-token cache, SASL dispatch, master protocol for userdb lookups.
+
+**yarilo-locks** — cross-process write coordination. TCP mTLS `:9104`, Redis-backed state. All Kubernetes deployments (standalone and backend) use remote mode — embedded Unix-socket mode is reserved for unit tests and single-process CLI runs.
+
+**yarilo-anvil** — connection rate limiting and penalty tracking. Shared across all login pods.
 
 ---
 
 ## Protocol support
 
-| Protocol | Standard | Extensions |
-|:---|:---|:---|
-| IMAP4rev2 | RFC 9051 | IDLE, MOVE, CONDSTORE, UNSELECT, NAMESPACE, QUOTA, ACL, BINARY, UIDPLUS, SORT, THREAD, ESEARCH, NOTIFY, QRESYNC, URLAUTH, SPECIAL-USE |
-| Submission | RFC 6409 | STARTTLS, AUTH PLAIN, SIZE, PIPELINING, relay to upstream MTA, ALPN matching, configurable `Received:` header |
-| LMTP | RFC 2033 | per-recipient status codes, proxy/director mode, HAProxy, XCLIENT (incl. `DESTADDR`/`DESTPORT`), STARTTLS, Delivered-To header, per-user concurrency limit, client workarounds |
-| POP3 | RFC 1939 | STLS, UIDL, CAPA, XCLIENT |
-| JMAP | RFC 8620, RFC 8621 | HTTP dispatch, WebSocket push (RFC 8887) |
-| ManageSieve | RFC 5804 | full Sieve script management |
-| Sieve | RFC 5228 | fileinto, reject, vacation, notify, include, variables, date, relational, imap4flags, editheader, extlists, vnd.dovecot.* |
-| SASL | — | PLAIN, LOGIN, GSSAPI, SCRAM-SHA-256, XOAUTH2, OAUTHBEARER |
-| TLS | — | SNI, per-domain context reload |
+| Protocol | Standard | Extensions | Status |
+|:---|:---|:---|:---|
+| IMAP4rev2 | RFC 9051 | IDLE, MOVE, CONDSTORE, QRESYNC, UNSELECT, NAMESPACE, QUOTA, ACL, BINARY, UIDPLUS, SORT, THREAD, ESEARCH, NOTIFY, URLAUTH, SPECIAL-USE | ✅ |
+| POP3 | RFC 1939 | STLS, UIDL, CAPA, XCLIENT | ✅ |
+| LMTP | RFC 2033 | per-recipient status, HAProxy, XCLIENT, STARTTLS, `Delivered-To`, Sieve delivery | ✅ |
+| ManageSieve | RFC 5804 | full script management | ✅ |
+| Sieve | RFC 5228 | fileinto, reject, vacation, notify, include, variables, date, relational, imap4flags, editheader, extlists, vnd.dovecot.* | ✅ |
+| Submission | RFC 6409 | STARTTLS, SASL PLAIN, SIZE, PIPELINING, relay to upstream MTA | ✅ |
+| SASL | — | PLAIN, LOGIN, SCRAM-SHA-256, XOAUTH2, OAUTHBEARER, GSSAPI | ✅ |
+| JMAP | RFC 8620/8621 | — | planned |
 
 ---
 
 ## Storage
 
-| Layer | Backend | Notes |
+| Layer | Backend | Status |
 |:---|:---|:---|
-| Mailbox | Maildir | one file per message, local FS |
-| Mailbox | dbox (sdbox) | single-file dbox, local FS |
-| Mailbox | mdbox | multi-message dbox, local FS |
-| Mailbox | obox | S3-compatible object storage via minio-go |
-| Index | FileIndex | custom binary format (`.index` / `.index.log` / `.index.cache`) alongside mailbox |
-| Index | SQLite | dev / small deployments |
-| Index | Cassandra | multi-node / large scale |
-| FTS | built-in tokenizer | snowball stemmer + ICU normalizer |
-| FTS | Solr | HTTP XML bridge |
+| Mailbox | Maildir | ✅ |
+| Mailbox | sdbox (single-file dbox with GUID metadata) | ✅ |
+| Mailbox | mdbox (multi-message dbox, higher density) | ✅ |
+| Mailbox | obox (S3-compatible object storage) | planned |
+| Index | FileIndex (binary mail-index v7.3 wire format, `.index` / `.index.log` / `.index.names`) | ✅ |
 
----
-
-## Deployment modes
-
-| Mode | Process layout | Use case |
-|:---|:---|:---|
-| Single node | proxy + director + backend in one process | dev / small server |
-| Multi-node | separate proxy / director / backend | production |
-| Cloud | proxy + director + backend (obox + Cassandra) | large scale |
+All index mutations go through the cross-process mailbox lock (`yarilo-locks`). Sessions sharing a pod serialise on an in-process `sync.RWMutex` — the Redis lock is only ever contested across pods, not within a single pod.
 
 ---
 
 ## Cluster components
 
-| Component | Role | Status |
+| Binary | Role | Status |
 |:---|:---|:---|
-| yarilo-auth | passdb chain, auth cache, SASL dispatch — TCP+mTLS | ✅ v1.0.0 |
-| yarilo-director | consistent hashing, sticky sessions, failover | planned |
-| yarilo-anvil | connection rate limiting + penalty algorithm | planned |
-| yarilo-locks | cross-process write coordination — embedded (standalone) / remote Redis-backed (backend per tag) | planned |
-| yarilo-dict | Redis / SQLite key-value abstraction | planned |
-| yarilo-admin | control socket (kick, reload, stats) | planned |
-| yarilo-stats | per-user / per-domain connection metrics | planned |
-| imap-hibernate | idle IMAP connection parking via FD-passing | planned |
-| yarilo-indexer | background FTS indexing service | planned |
+| yarilo-imap | IMAP4rev2 session server | ✅ |
+| yarilo-imap-login | IMAPS / IMAP login proxy — TLS termination, passdb, fd-passing | ✅ |
+| yarilo-pop3 | POP3 session server | ✅ |
+| yarilo-pop3-login | POP3S / POP3 login proxy | ✅ |
+| yarilo-lmtp | LMTP delivery server (Sieve, quota) | ✅ |
+| yarilo-lmtp-login | LMTP login proxy — HAProxy, XCLIENT, preamble strip | ✅ |
+| yarilo-managesieve | ManageSieve script management server | ✅ |
+| yarilo-managesieve-login | ManageSieve login proxy — STARTTLS, HAProxy | ✅ |
+| yarilo-submission | Submission relay server | ✅ |
+| yarilo-submission-login | Submission login proxy | ✅ |
+| yarilo-sasl-login | SASL auth socket for Postfix / Exim relay | ✅ |
+| yarilo-auth | Passdb chain, auth cache, SASL dispatch, master userdb | ✅ |
+| yarilo-anvil | Connection rate limiting + penalty | ✅ |
+| yarilo-locks | Cross-process write coordination — Redis-backed, TCP mTLS | ✅ |
+| yarilo-quota-status | Quota policy socket (Postfix quota check) | ✅ |
+| yarilo-backend-api | HTTP admin API (dict, ACL, folder, quota, rebuild) | ✅ |
+| yarilo-admin | CLI control tool — `director` and `backend` planes | ✅ |
+| yarilo-monitor | Backend health sidecar for director ring | ✅ |
+| yarilo-migrate | Offline mailbox migration (Maildir ↔ dbox ↔ mdbox) | ✅ |
+| yarilo-director | Consistent-hashing ring, sticky sessions, failover | planned |
 
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
 Full wire-format specification: [INTERNALS.md](INTERNALS.md).
 
 ---
 
-## Quick start (single-node)
+## Quick start (Helm)
+
+```sh
+# Add the chart (local checkout)
+helm upgrade --install yarilo ./helm \
+  -f helm_values/values-sandbox.yaml \
+  -n yarilo --create-namespace
+```
+
+See [INSTALL.md](INSTALL.md) for a full Kubernetes walkthrough with cert-manager, Let's Encrypt, and an external MySQL passdb.
+
+Minimal `yarilo.yaml` for bare-metal single-node:
 
 ```yaml
-# yarilo.yaml
-mode: single   # proxy | director | backend | single
-
-general:
-  ssl:
-    tls_cert: /etc/ssl/yarilo/cert.pem
-    tls_key:  /etc/ssl/yarilo/key.pem
-  haproxy:
-    trusted_nets: ["127.0.0.1/32", "10.0.0.0/8"]
-    timeout: 3
-  xclient:
-    trusted_nets: ["127.0.0.1/32", "10.0.0.0/8"]
-  limits:
-    mail_max_userip_connections: 10
-
-services:
-  imaps:
-    enabled: true
-    port: 993
-    ssl_mode: ssl
-  imap:
-    enabled: true
-    port: 143
-    ssl_mode: starttls
-    disable_plaintext_auth: true
-  submission:
-    enabled: true
-    port: 587
-    ssl_mode: starttls
-    disable_plaintext_auth: true
-  lmtp:
-    enabled: true
-    port: 24
-    ssl_mode: no
-    xclient_protocol: true
-
-protocol:
-  imap:
-    imap_idle_notify_interval: 120
-    imap_max_line_length: 65536
-    imap_id_send: "name *"
-    acl:
-      # RFC 4314 server-side ACL (GETACL/SETACL/DELETEACL/MYRIGHTS/LISTRIGHTS).
-      # Storage = per-mailbox `yarilo-acl` file next to `yarilo.index*`.
-      # When false, ACL commands return NO; the capability is still
-      # advertised because go-imap detects it via interface assertion.
-      enabled: false
-  submission:
-    hostname: mail.example.com
-    max_message_size: 41943040
-    recipient_delimiter: "+"
+hostname: mail.example.com
 
 auth:
   passdb:
-    - driver: postgres
-      dsn: "${DB_URL}"
-
-# yarilo-auth standalone process (multi-process mode).
-# Listen address and mTLS cert paths used by the yarilo-auth binary.
-auth_service:
-  listen: ":9100"
-  # master_listen — Dovecot-style master protocol for password-less
-  # userdb lookups (USER / LIST). Consumed by yarilo-backend-api admin
-  # endpoints and CLI tooling. Empty disables.
-  master_listen: ":9102"
-  mtls:
-    cert: /etc/yarilo/tls/tls.crt
-    key:  /etc/yarilo/tls/tls.key
-    ca:   /etc/yarilo/tls/ca.crt
-  shutdown:
-    session_grace_period: 30  # seconds to drain sessions on SIGTERM
-    kill_timeout: 5           # seconds before forced exit
+    - driver: mysql
+      dsn: "yarilo:secret@tcp(127.0.0.1:3306)/yarilo"
 
 storage:
-  mailbox: maildir
-  maildir_root: /var/mail/vhosts
-  mail_home_template: "%d/%n"   # %d=domain %n=local %u=full email
+  persistence:
+    enabled: true
+    size: 50Gi
 
-log:
-  level: info
+locks:
+  mode: embedded   # single-node only; use remote in k8s
 ```
 
 ```sh
-yarilo -config yarilo.yaml
+LOG_LEVEL=debug yarilo-imap -config yarilo.yaml
 ```
-
-Set `LOG_LEVEL=debug` to enable verbose protocol tracing without restarting.
 
 ---
 
-## Mailbox backends
-
-| Value | Format | Description |
-|:---|:---|:---|
-| `maildir` | Maildir | one file per message, `cur/` + `new/` + `tmp/` |
-| `dbox` | sdbox | one file per message in dbox wire format (GUID + metadata embedded) |
-| `mdbox` | mdbox | multiple messages per `m.<id>` file, higher density |
+## Mailbox migration
 
 ```sh
 yarilo-migrate \
@@ -252,25 +176,25 @@ yarilo-migrate \
 
 | Document | Contents |
 |:---|:---|
-| [PLAN.md](PLAN.md) | Implementation plan, phases, library strategy, timelines |
-| [INTERNALS.md](INTERNALS.md) | Wire-format specs for all internal protocols (33 sections) |
-| [docs/GENERAL.md](docs/GENERAL.md) | `general`: shared SSL, HAProxy, XClient, connection limits |
-| [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config for all 7 listeners |
-| [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE interval, line length, ID, logout format |
-| [docs/NAMESPACE.md](docs/NAMESPACE.md) | IMAP namespaces (RFC 2342 / 9051 §6.3.10): personal / shared / other_users config, separator semantics, phase roadmap (NS-1a wire → NS-1b storage routing → ACL → NS-3 cross-pod) |
-| [docs/SUBMISSION.md](docs/SUBMISSION.md) | `protocol.submission`: hostname, size limits, relay |
-| [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: local delivery, proxy/director mode, HAProxy, XCLIENT, TLS, headers |
-| [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL format, soft-delete, migration |
-| [docs/JMAP.md](docs/JMAP.md) | JMAP (planned, Phase 5) |
-| [INSTALL.md](INSTALL.md) | End-to-end Kubernetes deploy with cert-manager + Let's Encrypt |
-| [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL backends (SQLite/MySQL/Postgres), password schemes |
-| [docs/SMOKE.md](docs/SMOKE.md) | End-to-end smoke test: AUTH → LMTP → IMAPS/POP3S read |
-| [docs/DIRECTOR.md](docs/DIRECTOR.md) | `director_service`: ring config, peers, HAProxy, XCLIENT, mTLS, Helm values |
-| [docs/MONITOR.md](docs/MONITOR.md) | `yarilo-monitor` sidecar: backend health probes, tag credentials, Helm values, Prometheus metrics |
-| [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md) | Director HTTP admin API (ring / backends / users / peers): auth, IP whitelist, endpoints |
-| [docs/BACKEND-API.md](docs/BACKEND-API.md) | Backend-plane HTTP admin API (`yarilo-backend-api` on `:9105`): `/api/backend/<service>/...` — dict surface today; ACL / quota / folder / user / mailbox in subsequent phases |
-| [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarilo-admin` CLI: two top-level planes (`director`, `backend`), commands, flags, env vars, usage examples |
-| [docs/DICT.md](docs/DICT.md) | `pkg/dict` KV-store abstraction: drivers (file/redis/sql/memory/fail), YAML schema, `yarilo-admin dict` CLI |
+| [PLAN.md](PLAN.md) | Implementation plan, phases, timelines |
+| [INTERNALS.md](INTERNALS.md) | Wire-format specs for all internal protocols |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Code-level architecture, process model, storage contract |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | K8s topology, sizing, HA strategy, sharding via tags |
+| [docs/GENERAL.md](docs/GENERAL.md) | `general`: SSL, HAProxy, XCLIENT, connection limits |
+| [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config |
+| [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE, line length, ACL, NAMESPACE |
+| [docs/NAMESPACE.md](docs/NAMESPACE.md) | IMAP namespaces (RFC 2342 / 9051): personal / shared / other_users |
+| [docs/SUBMISSION.md](docs/SUBMISSION.md) | `protocol.submission`: hostname, size, relay |
+| [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: delivery, HAProxy, XCLIENT, TLS, headers |
+| [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL, soft-delete, migration |
+| [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL backends, password schemes |
+| [docs/SMOKE.md](docs/SMOKE.md) | End-to-end smoke test |
+| [docs/DIRECTOR.md](docs/DIRECTOR.md) | `director_service`: ring, peers, HAProxy, XCLIENT, mTLS |
+| [docs/MONITOR.md](docs/MONITOR.md) | `yarilo-monitor`: health probes, Prometheus metrics |
+| [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md) | Director HTTP admin API |
+| [docs/BACKEND-API.md](docs/BACKEND-API.md) | Backend HTTP admin API |
+| [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarilo-admin` CLI reference |
+| [docs/DICT.md](docs/DICT.md) | `pkg/dict` KV-store abstraction: drivers, YAML schema |
 
 ---
 
