@@ -116,10 +116,8 @@ func main() {
 			HAProxyNets:      haproxyNets,
 		})
 		go func() {
-			if err := srv.Serve(ln); err != nil {
-				slog.Error("imaps-login: server error", "err", err)
-				os.Exit(1)
-			}
+			slog.Error("imaps-login: server error", "err", srv.Serve(ln))
+			os.Exit(1)
 		}()
 		slog.Info("imap-login: listening", "addr", addr, "tls", "implicit")
 	}
@@ -153,10 +151,8 @@ func main() {
 			HAProxyNets:      haproxyNets,
 		})
 		go func() {
-			if err := srv.Serve(ln); err != nil {
-				slog.Error("imap-login: server error", "err", err)
-				os.Exit(1)
-			}
+			slog.Error("imap-login: server error", "err", srv.Serve(ln))
+			os.Exit(1)
 		}()
 		slog.Info("imap-login: listening", "addr", addr, "tls", "starttls")
 	}

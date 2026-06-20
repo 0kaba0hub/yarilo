@@ -116,10 +116,8 @@ func main() {
 			HAProxyNets:      haproxyNets,
 		})
 		go func() {
-			if err := srv.Serve(ln); err != nil {
-				slog.Error("pop3s-login: server error", "err", err)
-				os.Exit(1)
-			}
+			slog.Error("pop3s-login: server error", "err", srv.Serve(ln))
+			os.Exit(1)
 		}()
 		slog.Info("pop3-login: listening", "addr", addr, "tls", "implicit")
 	}
@@ -154,10 +152,8 @@ func main() {
 			HAProxyNets:      haproxyNets,
 		})
 		go func() {
-			if err := srv.Serve(ln); err != nil {
-				slog.Error("pop3-login: server error", "err", err)
-				os.Exit(1)
-			}
+			slog.Error("pop3-login: server error", "err", srv.Serve(ln))
+			os.Exit(1)
 		}()
 		slog.Info("pop3-login: listening", "addr", addr, "tls", "starttls")
 	}

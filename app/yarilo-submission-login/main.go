@@ -116,10 +116,8 @@ func main() {
 			HAProxyNets:      haproxyNets,
 		})
 		go func() {
-			if err := srv.Serve(ln); err != nil {
-				slog.Error("submissions-login: server error", "err", err)
-				os.Exit(1)
-			}
+			slog.Error("submissions-login: server error", "err", srv.Serve(ln))
+			os.Exit(1)
 		}()
 		slog.Info("submission-login: listening", "addr", addr, "tls", "implicit")
 	}
@@ -154,10 +152,8 @@ func main() {
 			HAProxyNets:      haproxyNets,
 		})
 		go func() {
-			if err := srv.Serve(ln); err != nil {
-				slog.Error("submission-login: server error", "err", err)
-				os.Exit(1)
-			}
+			slog.Error("submission-login: server error", "err", srv.Serve(ln))
+			os.Exit(1)
 		}()
 		slog.Info("submission-login: listening", "addr", addr, "tls", "starttls")
 	}
