@@ -121,6 +121,32 @@ Setup: 100 clients, 20 users (u1–u20@d00001.test), port 143, ~90 sec each run.
 
 ---
 
+## v2.0.2 — emit * FLAGS before * EXISTS for APPENDed keywords (#347)
+
+**Дата:** 2026-06-20  
+**Зміни:** Poll Phase 3 тепер сканує keywords нових повідомлень і емітує `* FLAGS` перед `* EXISTS`. Усуває "Keyword used without being in FLAGS" попередження imaptest (RFC 3501 §7.3.2).
+
+**Raw статистика (10-секундні блоки):**
+
+| Блоки | stalled >3s | ms/cmd avg |
+|-------|-------------|------------|
+| 1–5   | 6–15        | 13 ms      |
+| 6–15  | 11–21       | 31 ms      |
+| 16–25 | 8–16        | 38 ms      |
+| 26–35 | 9–28        | 30 ms      |
+| 36–45 | 7–20        | 32 ms      |
+| 46–55 | 9–22        | 27 ms      |
+| 56–65 | 10–28       | 34 ms      |
+| 66–75 | 9–27        | 40 ms      |
+| 76–80 | 14–27       | 34 ms      |
+
+**`Keyword used without being in FLAGS`:** **0** ✅  
+**16s stall messages:** **немає** ✅  
+**errors:** 0 ✅  
+**Висновок:** Keyword-попередження повністю усунені. Stalled >3s в межах попередніх прогонів (sandbox-шум). Наступний баг: #329 (LITERAL+ stall при APPEND).
+
+---
+
 ## Шаблон для наступного запуску
 
 ```
