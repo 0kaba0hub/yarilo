@@ -322,21 +322,23 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 // the supplied folder state. When no locker is wired (tests),
 // fn runs unguarded.
 //
-// The HoldsResource() shortcut is preserved here so the POP3 QUIT
-// pattern (outer caller takes the lock then drives per-message
-// storage calls that touch the same key) does not deadlock against
-// itself. The cross-goroutine race that arises when two goroutines
-// on the same locks client see each other's holds-map state is a
-// known limitation tracked in TODO.md and will be fixed by
-// goroutine-local re-entrancy in a pkg/locks follow-up.
+// Redis lock is acquired BEFORE fs.mu so that concurrent read-only
+// callers (withFolderRO) are not blocked while we wait for a
+// contended cross-pod lock.
+//
+// The HoldsResource() shortcut handles the POP3 QUIT pattern where
+// an outer caller already holds the Redis lock and drives per-message
+// calls that re-enter here — re-acquisition would deadlock.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	if u.b.locker == nil {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
 		return fn()
 	}
 	key := locks.MailboxKey(u.username, fs.folder)
 	if u.b.locker.HoldsResource(key) {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
 		return fn()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
@@ -346,6 +348,8 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 		return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 	}
 	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	return fn()
 }
 
