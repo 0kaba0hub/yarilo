@@ -1,0 +1,44 @@
+## MySQL Helm values for yarilo database deployment.
+## Deploy in a dedicated namespace so it survives yarilo upgrades:
+##
+##   helm repo add bitnami https://charts.bitnami.com/bitnami
+##   kubectl create namespace db
+##   helm install yarilo-mysql bitnami/mysql \
+##     --namespace db \
+##     --values hack/db/mysql-values.yaml \
+##     --set auth.rootPassword=<root-pass> \
+##     --set auth.password=<yarilo-pass>
+##
+## Then create the yarilo-db-creds Secret in the yarilo namespace:
+##
+##   kubectl create secret generic yarilo-db-creds \
+##     --namespace yarilo \
+##     --from-literal=dsn="yarilo:<yarilo-pass>@tcp(yarilo-mysql.db.svc:3306)/yarilo?parseTime=true&charset=utf8mb4"
+##
+## Reference in yarilo values:
+##   database:
+##     secretName: yarilo-db-creds
+##     secretKey: dsn
+##     initAddr: "yarilo-mysql.db.svc:3306"
+
+auth:
+  database: yarilo
+  username: yarilo
+  ## Set via --set auth.password=... — never commit real passwords here.
+  password: ""
+  rootPassword: ""
+
+primary:
+  persistence:
+    enabled: true
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+secondary:
+  replicaCount: 0

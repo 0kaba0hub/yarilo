@@ -28,7 +28,7 @@ storage:
   persistence:
     enabled: true
     storageClass: ""
-    accessMode: ReadWriteMany
+    accessMode: ReadWriteOnce
     size: 10Gi
 
 ## -------------------------------------------------------------------
@@ -1050,50 +1050,40 @@ redis:
       memory: 256Mi
 
 ## -------------------------------------------------------------------
-## MySQL — bundled passdb/userdb backend (optional).
+## Database — external SQL passdb/userdb backend.
 ##
-## bundled: true  → spins up a MySQL 8.4 StatefulSet + ClusterIP Service
-##                  in the release namespace. yarilo-auth auto-creates the
-##                  yarilo_users table on first start (no manual init SQL).
-## bundled: false → no StatefulSet; configure components.auth.passdb[].dsn
-##                  directly in your values override.
+## yarilo does NOT bundle a database. Deploy MySQL or PostgreSQL
+## separately (see hack/db/) and point yarilo at it via one of:
 ##
-## The DSN is stored in a Secret (<release>-mysql) and injected into
-## yarilo-auth as YARILO_DB_DSN. Reference it in passdb config:
+##   Option A — reference an existing Kubernetes Secret:
+##     database:
+##       secretName: yarilo-db-creds   # Secret in the same namespace
+##       secretKey: dsn                # key holding the DSN string
+##       initAddr: "yarilo-mysql.db.svc:3306"
+##
+##   Option B — literal DSN (dev/test only; avoid in production):
+##     database:
+##       dsn: "user:pass@tcp(host:3306)/dbname?parseTime=true&charset=utf8mb4"
+##       initAddr: "host:3306"
+##
+##   Option C — no SQL passdb (SQLite or file-based):
+##     Leave all fields empty and configure components.auth.passdb[] directly.
+##
+## The DSN is injected as YARILO_DB_DSN into every session component.
+## Reference it in passdb config (default in values.yaml):
 ##   components.auth.passdb:
 ##     - driver: mysql
 ##       dsn: "${YARILO_DB_DSN}"
 ## -------------------------------------------------------------------
-mysql:
-  bundled: true
-  image:
-    repository: mysql
-    tag: "8.4"
-    pullPolicy: IfNotPresent
-  db: yarilo
-  user: yarilo
-  ## password — required when bundled: true. Use --set mysql.password=... or
-  ## a values override file. Never commit a real password here.
-  password: ""
-  storageClass: ""
-  persistence:
-    size: 2Gi
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-## -------------------------------------------------------------------
-## Database init-container probe
-## host:port to wait for before starting auth and locks.
-## Bundled MySQL: auto-derived when left empty.
-## External DB: set explicitly, e.g. "pg.example.com:5432".
-## SQLite or no TCP probe needed: leave empty.
-## -------------------------------------------------------------------
 database:
+  ## Kubernetes Secret name containing the DSN (recommended).
+  secretName: ""
+  ## Key inside the Secret that holds the DSN string.
+  secretKey: "dsn"
+  ## Literal DSN — used only when secretName is empty.
+  dsn: ""
+  ## TCP probe address for init-containers. Format: "host:port".
+  ## Example: "yarilo-mysql.db.svc:3306"
   initAddr: ""
 
 ## -------------------------------------------------------------------
