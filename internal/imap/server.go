@@ -838,6 +838,7 @@ func remoteIP(c net.Conn) string {
 }
 
 func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.SelectData, error) {
+	tSelect := time.Now()
 	h, rel, err := s.dispatch(name)
 	if err != nil {
 		return nil, err
@@ -856,25 +857,35 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	if err := s.requireRight(h, rel, mailbox.RightRead); err != nil {
 		return nil, err
 	}
+	tOpen := time.Now()
 	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, err
 	}
+	slog.Debug("imap: select timing open_ms", "folder", rel, "open_ms", time.Since(tOpen).Milliseconds())
 	s.folder = f
 	s.folderNS = h
+	tAnvil := time.Now()
 	s.pushAnvilSelect(name)
+	slog.Debug("imap: select timing anvil_ms", "folder", rel, "anvil_ms", time.Since(tAnvil).Milliseconds())
 
 	// Auto-subscribe the folder on first SELECT so LSUB returns it
 	// without requiring an explicit SUBSCRIBE command from the client.
 	if h.subs != nil {
+		tSubs := time.Now()
 		if subs, snapErr := h.subs.Snapshot(); snapErr == nil {
 			if _, already := subs[rel]; !already {
+				tAdd := time.Now()
 				_ = h.subs.Add(rel)
+				slog.Debug("imap: select timing subs_add_ms", "folder", rel, "add_ms", time.Since(tAdd).Milliseconds())
 			}
 		}
+		slog.Debug("imap: select timing subs_ms", "folder", rel, "subs_ms", time.Since(tSubs).Milliseconds())
 	}
 
+	tGetMsgs := time.Now()
 	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	slog.Debug("imap: select timing getmsgs_ms", "folder", rel, "getmsgs_ms", time.Since(tGetMsgs).Milliseconds(), "total_ms", time.Since(tSelect).Milliseconds())
 	s.knownMsgs = make([]sessionMsg, len(msgs))
 	for i, m := range msgs {
 		s.knownMsgs[i] = sessionMsg{uid: m.UID, modseq: m.ModSeq}
@@ -1169,7 +1180,9 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 // listNamespace emits LIST replies for one namespace's folders.
 // Folder names are wire-encoded with the namespace prefix re-attached.
 func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref string, patterns []string, opts *imaplib.ListOptions) error {
+	tList := time.Now()
 	folders, err := h.box.ListFolders()
+	slog.Debug("imap: list timing listfolders_ms", "listfolders_ms", time.Since(tList).Milliseconds())
 	if err != nil {
 		return err
 	}
@@ -1179,7 +1192,9 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 	// session SUBSCRIBE'd mid-iteration.
 	var subs map[string]struct{}
 	if h.subs != nil && (opts != nil && (opts.SelectSubscribed || opts.ReturnSubscribed)) {
+		tSubs := time.Now()
 		subs, err = h.subs.Snapshot()
+		slog.Debug("imap: list timing subs_ms", "subs_ms", time.Since(tSubs).Milliseconds())
 		if err != nil {
 			slog.Warn("imap: subscription snapshot failed", "ns", h.name, "err", err)
 			subs = make(map[string]struct{})
