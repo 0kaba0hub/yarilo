@@ -666,6 +666,20 @@ func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32) {
 	return names, sizes
 }
 
+// appendName appends a single uid→filename→size entry to the .names sidecar.
+// Used by flushAppend so APPEND is O(1) NFS writes instead of O(N).
+// loadNames handles duplicate UIDs (last entry wins), so this is safe.
+func appendName(indexDir string, uid uint32, filename string, size uint32) error {
+	dst := namesPath(indexDir)
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("fileindex/names: open: %w", err)
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%d\t%s\t%d\n", uid, filename, size)
+	return err
+}
+
 // saveNames rewrites the .names sidecar atomically (.tmp + rename).
 // Each line: <uid>\t<filename>\t<size_bytes>\n
 func saveNames(indexDir string, names map[uint32]string, sizes map[uint32]uint32) error {
