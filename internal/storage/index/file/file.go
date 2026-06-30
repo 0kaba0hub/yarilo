@@ -388,30 +388,36 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 // storage calls that touch the same key) does not deadlock against
 // itself.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
+	// Acquire the distributed lock BEFORE taking fs.mu so that a slow
+	// lock-wait (up to 35 s) does not block concurrent readers that only
+	// need fs.mu.RLock() via withFolderRO.
+	if u.b.locker != nil {
+		key := locks.MailboxKey(u.username, fs.folder)
+		if !u.b.locker.HoldsResource(key) {
+			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			defer cancel()
+			t0 := time.Now()
+			lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
+			if err != nil {
+				return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
+			}
+			lockWait := time.Since(t0)
+			if lockWait > 200*time.Millisecond {
+				slog.Debug("fileindex: slow distributed lock wait",
+					"user", u.username, "folder", fs.folder,
+					"lock_wait_ms", lockWait.Milliseconds())
+			}
+			defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+		}
+	}
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	if u.b.locker == nil {
-		return fn()
-	}
-	key := locks.MailboxKey(u.username, fs.folder)
-	if u.b.locker.HoldsResource(key) {
-		return fn()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
-	t0 := time.Now()
-	lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
-	}
-	lockWait := time.Since(t0)
-	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
 	t1 := time.Now()
-	err = fn()
+	err := fn()
 	if dur := time.Since(t1); dur > 200*time.Millisecond {
 		slog.Debug("fileindex: slow folder lock fn",
 			"user", u.username, "folder", fs.folder,
-			"lock_wait_ms", lockWait.Milliseconds(), "fn_ms", dur.Milliseconds())
+			"fn_ms", dur.Milliseconds())
 	}
 	return err
 }
