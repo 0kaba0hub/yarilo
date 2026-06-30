@@ -513,3 +513,100 @@ func TestReadUIDList_CacheUpdatedAfterAppend(t *testing.T) {
 		t.Errorf("readUIDList fn2 = %d, want 2", m[fn2])
 	}
 }
+
+func TestList_ReadDirCacheHitSkipsReadDir(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
+
+	if _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// First List populates the cache.
+	msgs1, err := box.List("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs1) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs1))
+	}
+
+	c := box.folderCacheFor("INBOX")
+	if c.entries == nil {
+		t.Fatal("readdir cache not populated after first List")
+	}
+
+	// Second List on unchanged folder must use cached entries.
+	cached := c.entries
+	if _, err := box.List("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if &c.entries[0] != &cached[0] {
+		t.Error("second List replaced cached entries — readdir was not skipped")
+	}
+}
+
+func TestList_ReadDirCacheInvalidatedAfterSave(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
+
+	if _, err := box.Save("INBOX", strings.NewReader("msg1"), 1, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.List("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	c := box.folderCacheFor("INBOX")
+	if c.entries == nil {
+		t.Fatal("readdir cache not populated")
+	}
+
+	// Save a second message — must invalidate the cache.
+	if _, err := box.Save("INBOX", strings.NewReader("msg2"), 2, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.entries != nil {
+		t.Error("readdir cache not invalidated after Save")
+	}
+
+	// Next List must return both messages.
+	msgs, err := box.List("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("expected 2 messages after second Save, got %d", len(msgs))
+	}
+}
+
+func TestList_ReadDirCacheInvalidatedAfterRemove(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
+
+	fn, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.List("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	c := box.folderCacheFor("INBOX")
+	if c.entries == nil {
+		t.Fatal("readdir cache not populated")
+	}
+
+	if err := box.Remove("INBOX", fn); err != nil {
+		t.Fatal(err)
+	}
+	if c.entries != nil {
+		t.Error("readdir cache not invalidated after Remove")
+	}
+
+	msgs, err := box.List("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages after Remove, got %d", len(msgs))
+	}
+}
