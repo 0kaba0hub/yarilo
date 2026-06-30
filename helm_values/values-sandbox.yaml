@@ -17,10 +17,12 @@ storage:
   persistence:
     enabled: true
     accessMode: ReadWriteOnce
-    size: 5Gi
+    size: 10Gi
 
 ## Enable XCLIENT so session pods accept real-client-IP forwarding from login pods.
 general:
+  limits:
+    maxUserIPConnections: 50
   xclient:
     enabled: true
     trustedNets:
