@@ -198,6 +198,24 @@ Setup: 100 clients, 20 users (u1–u20@d00001.test), port 143, ~90 sec each run.
 
 ---
 
+## v2.0.5 — 100 users, SHA512-CRYPT (imaptest config change, no code change)
+
+**Date:** 2026-06-30  
+**Changes:** imaptest scaled to `users=1-100` (was 1-20); all 100 users seeded with `{SHA512-CRYPT}`. Result: 1 session/user instead of 5 — per-mailbox lock contention essentially eliminated.
+
+| Block | stalled >3s | ms/cmd avg |
+|-------|-------------|------------|
+| 1     | 42          | 1583 ms    |
+| 2–10  | 0           | 0 ms       |
+| 11    | 25          | 0 ms       |
+
+**16s stall messages:** none ✅  
+**errors:** 0 ✅  
+**Totals:** Logi 100% / List 50% / Stat 50% / Sele 100% / Fetc 100% / Fet2 100% / Stor 50% / Dele 100% / Expu 100% / Appe 100% / Logo 100%  
+**Conclusion:** Stalls dropped to 0 for blocks 2–10. Block 1 spike (42 stalled, 1583 ms avg) is the initial login burst — 100 SHA512-CRYPT verifications in parallel. Block 11 spike (25) is end-of-test logout burst. The dominant stall source was fs.mu lock contention from 5 sessions sharing one mailbox; with 1 session/user it disappears. Residual: List/Stat/Stor at 50% is a separate issue (concurrent flag modification).
+
+---
+
 ## Template for next run
 
 ```
