@@ -2191,9 +2191,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		if err != nil {
 			return err
 		}
-		for _, p := range pending {
-			s.emitMailboxChange(s.folder.Name, locks.EventChanged, p.uid)
-		}
+		s.emitMailboxChange(s.folder.Name, locks.EventChanged, 0)
 	}
 
 	// Pass 3: send FETCH responses using modseqs returned from the batch.
