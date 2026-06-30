@@ -1172,8 +1172,9 @@ func encU32Update(offset uint16, v uint32) []byte {
 		mailindex.EncodeTxHeaderUpdatePayload(mailindex.TxHeaderUpdate{Offset: offset, Data: data}))
 }
 
-// appendMutLog writes pre-encoded tx records to the .index.log file and
-// updates fs.logSize. Caller must hold fs.mu (guaranteed by withFolder).
+// appendMutLog writes pre-encoded tx records to the .index.log file,
+// wrapped in a BOUNDARY record so the group is atomic on recovery.
+// Caller must hold fs.mu (guaranteed by withFolder).
 func (fs *folderState) appendMutLog(records ...[]byte) error {
 	t0 := time.Now()
 	logPath := fs.indexPath + ".log"
@@ -1187,6 +1188,16 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 		if err := hdr.Encode(f); err != nil {
 			return fmt.Errorf("fileindex/mutlog: write header: %w", err)
 		}
+	}
+	// Compute total size: 12-byte BOUNDARY record + all sub-records.
+	subSize := 0
+	for _, rec := range records {
+		subSize += len(rec)
+	}
+	boundary := encLogRec(mailindex.TxTypeBoundary, 0,
+		mailindex.EncodeTxBoundaryPayload(mailindex.TxBoundary{Size: uint32(12 + subSize)}))
+	if _, err := f.Write(boundary); err != nil {
+		return fmt.Errorf("fileindex/mutlog: write boundary: %w", err)
 	}
 	for _, rec := range records {
 		if _, err := f.Write(rec); err != nil {
@@ -1245,8 +1256,19 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 	hdrBuf := make([]byte, 8)
 	appendedMsgs := false
 
+	// committedEnd tracks the file offset after the last complete BOUNDARY.
+	// Used only during full replay (fromOffset==0) to truncate partial tails.
+	var committedEnd int64
+	var filePos int64 // bytes consumed from f since the seek point
+	if fromOffset == 0 {
+		filePos = int64(mailindex.LogHeaderSize)
+	}
+
 	for {
-		if _, err := io.ReadFull(f, hdrBuf); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		recStart := filePos
+		n, err := io.ReadFull(f, hdrBuf)
+		filePos += int64(n)
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			break
 		} else if err != nil {
 			return fmt.Errorf("fileindex/applylog: read hdr: %w", err)
@@ -1260,11 +1282,23 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 			break
 		}
 		payload := make([]byte, payloadLen)
-		if _, err := io.ReadFull(f, payload); err != nil {
+		n, err = io.ReadFull(f, payload)
+		filePos += int64(n)
+		if err != nil {
 			break
 		}
 
 		kind := txHdr.Type.Kind()
+
+		if kind == mailindex.TxTypeBoundary {
+			if len(payload) >= 4 {
+				totalSize := int64(le.Uint32(payload))
+				if fromOffset == 0 {
+					committedEnd = recStart + totalSize
+				}
+			}
+			continue
+		}
 
 		switch {
 		case kind == mailindex.TxTypeModseqUpdate:
@@ -1392,6 +1426,17 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 				hdr.HighestModSeq = maxModseq
 				ext.HdrData = encodeModseqHdr(hdr)
 			}
+		}
+	}
+
+	// Truncate any partial tail after the last complete BOUNDARY.
+	// Only on full replay (fromOffset==0); incremental appends are always complete.
+	if fromOffset == 0 && committedEnd > 0 {
+		logPath := fs.indexPath + ".log"
+		if st, stErr := os.Stat(logPath); stErr == nil && st.Size() > committedEnd {
+			slog.Debug("fileindex: truncating partial log tail",
+				"folder", fs.folder, "file_size", st.Size(), "truncate_to", committedEnd)
+			_ = os.Truncate(logPath, committedEnd)
 		}
 	}
 	return nil
