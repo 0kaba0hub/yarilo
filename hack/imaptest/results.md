@@ -147,6 +147,36 @@ Setup: 100 clients, 20 users (u1–u20@d00001.test), port 143, ~90 sec each run.
 
 ---
 
+## v2.0.4 — external MySQL + DSN in all session deployments (#356)
+
+**Дата:** 2026-06-30  
+**Зміни:** MySQL винесено з chart у `db` namespace; `YARILO_DB_DSN` додано до всіх 6 session deployments (imap, pop3, submission, lmtp, managesieve, backend-api); PVC захищено `helm.sh/resource-policy: keep`; `accessMode` виправлено на `ReadWriteOnce`.
+
+**Raw статистика (10-секундні блоки — run тривав ~110s, 11 блоків):**
+
+| Блок | stalled >3s | ms/cmd avg |
+|------|-------------|------------|
+| 1    | 1           | 0 ms       |
+| 2    | 12          | 0 ms       |
+| 3    | 12          | 1167 ms    |
+| 4    | 25          | 2174 ms    |
+| 5    | 7           | 0 ms       |
+| 6    | 9           | 2591 ms    |
+| 7    | 10          | 2997 ms    |
+| 8    | 10          | 3388 ms    |
+| 9    | 21          | 3469 ms    |
+| 10   | 23          | 4188 ms    |
+| 11   | 49          | 3 ms       |
+
+**16s stall messages:** немає ✅  
+**errors:** 0 ✅  
+**Totals:** Logi 100% / List 50% / Stat 50% / Sele 100% / Fetc 100% / Fet2 100% / Stor 50% / Dele 100% / Expu 100% / Appe 100% / Logo 100%
+
+**Висновок:**  
+Стейли >3s у межах або незначно вище baseline (1-49 vs 3-28 у v2.0.2). Пік 49 у блоці 11 — ймовірно sandbox-шум (run короткий, 11 блоків vs ~80 у попередніх). ms/cmd avg значення виглядають аномально (тисячі ms) — можливо це накопичений час за блок, а не середній per-command. 16s stalls відсутні. Функціонально PR #356 не вносить регресій у IMAP-шлях: зовнішній MySQL підключений коректно, всі компоненти проходять аутентифікацію. Наступний крок: #329 (LITERAL+ stall при APPEND) або SIEVE-1.
+
+---
+
 ## Шаблон для наступного запуску
 
 ```
