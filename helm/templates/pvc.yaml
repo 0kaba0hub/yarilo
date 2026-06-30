@@ -5,6 +5,8 @@ kind: PersistentVolumeClaim
 metadata:
   name: {{ include "yarilo.fullname" . }}-mail
   namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     {{- include "yarilo.labels" . | nindent 4 }}
 spec:

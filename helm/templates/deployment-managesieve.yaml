@@ -28,6 +28,9 @@ spec:
       initContainers:
         {{- include "yarilo.initWaitTCP" (dict "name" "wait-locks" "host" (printf "%s-locks.%s.svc" (include "yarilo.fullname" .) .Release.Namespace) "port" "9104" "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
         {{- include "yarilo.initWaitTCP" (dict "name" "wait-redis" "host" (include "yarilo.redisInitHost" .) "port" (include "yarilo.redisInitPort" .) "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
+        {{- if include "yarilo.dbInitHost" . }}
+        {{- include "yarilo.initWaitTCP" (dict "name" "wait-db" "host" (include "yarilo.dbInitHost" .) "port" (include "yarilo.dbInitPort" .) "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
+        {{- end }}
       containers:
         - name: yarilo-managesieve
           image: {{ include "yarilo.image" . }}
@@ -37,6 +40,7 @@ spec:
               value: "yarilo-managesieve"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            {{- include "yarilo.dbEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

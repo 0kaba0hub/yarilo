@@ -39,13 +39,7 @@ spec:
               value: "yarilo-auth"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
-            {{- if .Values.mysql.bundled }}
-            - name: YARILO_DB_DSN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "yarilo.fullname" . }}-mysql
-                  key: dsn
-            {{- end }}
+            {{- include "yarilo.dbEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

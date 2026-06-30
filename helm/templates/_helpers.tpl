@@ -142,14 +142,11 @@ Redis port for init-container TCP probe.
 
 {{/*
 Database hostname for init-container TCP probe.
-Explicit database.initAddr takes priority; falls back to bundled MySQL service.
-Returns empty string when no probe is needed (SQLite, external without initAddr).
+Set database.initAddr to "host:port" to enable. Returns empty when not set.
 */}}
 {{- define "yarilo.dbInitHost" -}}
 {{- if (.Values.database | default dict).initAddr -}}
 {{- index (splitList ":" .Values.database.initAddr) 0 -}}
-{{- else if .Values.mysql.bundled -}}
-{{- printf "%s-mysql.%s.svc.cluster.local" (include "yarilo.fullname" .) .Release.Namespace -}}
 {{- end -}}
 {{- end }}
 
@@ -159,7 +156,22 @@ Database port for init-container TCP probe.
 {{- define "yarilo.dbInitPort" -}}
 {{- if (.Values.database | default dict).initAddr -}}
 {{- index (splitList ":" .Values.database.initAddr) 1 -}}
-{{- else if .Values.mysql.bundled -}}
-3306
+{{- end -}}
+{{- end }}
+
+{{/*
+YARILO_DB_DSN env block — injects DSN from Secret or literal value.
+Include in any component that reads passdb/userdb from SQL.
+*/}}
+{{- define "yarilo.dbEnv" -}}
+{{- if (.Values.database | default dict).secretName -}}
+- name: YARILO_DB_DSN
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.database.secretName }}
+      key: {{ .Values.database.secretKey | default "dsn" }}
+{{- else if (.Values.database | default dict).dsn -}}
+- name: YARILO_DB_DSN
+  value: {{ .Values.database.dsn | quote }}
 {{- end -}}
 {{- end }}
