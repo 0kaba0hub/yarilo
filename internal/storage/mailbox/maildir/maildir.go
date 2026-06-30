@@ -77,6 +77,8 @@ type folderCache struct {
 	uidMap   map[string]uint32
 	uidMtime time.Time
 	uidSize  int64
+	entries  []os.DirEntry
+	dirMtime time.Time
 }
 
 // userMailbox is a per-session, per-user Maildir storage handle.
@@ -250,6 +252,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 			os.Remove(tmpPath)
 			return fmt.Errorf("maildir: rename to cur: %w", err)
 		}
+		u.folderCacheFor(folder).entries = nil
 		if uid != 0 {
 			if err := u.appendUIDListLocked(folder, uid, finalName); err != nil {
 				_ = os.Remove(dstPath)
@@ -333,17 +336,36 @@ func (u *userMailbox) Remove(folder, filename string) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	u.folderCacheFor(folder).entries = nil
+	return nil
 }
 
 func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 	dir := filepath.Join(u.folderPath(folder), "cur")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+
+	dirFi, statErr := os.Stat(dir)
+	if errors.Is(statErr, os.ErrNotExist) {
+		return nil, nil
+	}
+	if statErr != nil {
+		return nil, statErr
+	}
+
+	c := u.folderCacheFor(folder)
+	var entries []os.DirEntry
+	if c.entries != nil && dirFi.ModTime().Equal(c.dirMtime) {
+		entries = c.entries
+	} else {
+		var err error
+		entries, err = os.ReadDir(dir)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		c.entries = entries
+		c.dirMtime = dirFi.ModTime()
 	}
 
 	uidMap, err := u.readUIDList(folder)
