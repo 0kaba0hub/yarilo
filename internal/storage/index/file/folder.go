@@ -117,6 +117,12 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 		return fmt.Errorf("fileindex/openfolder: open: %w", err)
 	}
 	fs.file = mf
+	if fs.file.Header.UIDValidity == 0 {
+		fs.file.Header.UIDValidity = uint32(time.Now().Unix())
+		if err := fs.flush(true); err != nil {
+			return fmt.Errorf("fileindex/openfolder: fix uidvalidity: %w", err)
+		}
+	}
 	if err := fs.refreshExtState(); err != nil {
 		return err
 	}
