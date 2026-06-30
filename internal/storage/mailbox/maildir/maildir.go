@@ -72,14 +72,22 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	}
 }
 
+// folderCache holds mtime-validated in-memory state for one maildir folder.
+type folderCache struct {
+	uidMap   map[string]uint32
+	uidMtime time.Time
+	uidSize  int64
+}
+
 // userMailbox is a per-session, per-user Maildir storage handle.
 type userMailbox struct {
 	b          *Backend
 	home       string
 	controlDir string // CONTROL= override root (empty = co-located with home)
 	username   string
-	owner      string     // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
-	mu         sync.Mutex // in-process fast-path; cross-process barrier is b.locker
+	owner      string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
+	mu         sync.Mutex              // in-process fast-path; cross-process barrier is b.locker
+	cache      map[string]*folderCache // keyed by folder name; lazy-initialised
 }
 
 // makeOwner builds the owner string for yarilo-locks BUSY reports.
@@ -256,7 +264,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 }
 
 // appendUIDListLocked appends one entry to the yarilo-uidlist v3
-// sidecar. Caller MUST hold the mailbox X lock.
+// sidecar and updates the in-memory cache. Caller MUST hold the mailbox X lock.
 func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string) error {
 	if err := u.migrateLegacyUIDList(folder); err != nil {
 		return err
@@ -272,7 +280,22 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
 	}
 	_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Update the cache inline so the next readUIDList within this session
+	// returns immediately without re-reading the file.
+	if fi, statErr := f.Stat(); statErr == nil {
+		c := u.folderCacheFor(folder)
+		if c.uidMap == nil {
+			c.uidMap = make(map[string]uint32)
+		}
+		c.uidMap[filename] = uid
+		c.uidMtime = fi.ModTime()
+		c.uidSize = fi.Size()
+	}
+	return nil
 }
 
 // sizeCounter is an io.Writer that records bytes written and the number of LF
@@ -486,10 +509,21 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 		return nil, err
 	}
 	path := u.uidListPath(folder)
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
+
+	fi, statErr := os.Stat(path)
+	if errors.Is(statErr, os.ErrNotExist) {
 		return make(map[string]uint32), nil
 	}
+	if statErr != nil {
+		return nil, statErr
+	}
+
+	if c := u.folderCacheFor(folder); c.uidMap != nil &&
+		fi.ModTime().Equal(c.uidMtime) && fi.Size() == c.uidSize {
+		return c.uidMap, nil
+	}
+
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +551,29 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 		}
 		m[filename] = uint32(uid64)
 	}
-	return m, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+
+	c := u.folderCacheFor(folder)
+	c.uidMap = m
+	c.uidMtime = fi.ModTime()
+	c.uidSize = fi.Size()
+	return m, nil
+}
+
+// folderCacheFor returns the folderCache for folder, creating it if needed.
+// Caller must hold u.mu or ensure single-goroutine access.
+func (u *userMailbox) folderCacheFor(folder string) *folderCache {
+	if u.cache == nil {
+		u.cache = make(map[string]*folderCache)
+	}
+	c, ok := u.cache[folder]
+	if !ok {
+		c = &folderCache{}
+		u.cache[folder] = c
+	}
+	return c
 }
 
 // ---- path helpers ----------------------------------------------------------
