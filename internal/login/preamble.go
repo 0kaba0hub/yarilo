@@ -15,7 +15,7 @@ import (
 // imapPreAuthCaps returns the IMAP capability string for the pre-auth state.
 // extTLS is non-nil when STARTTLS is available (plain listener).
 func imapPreAuthCaps(extTLS *tls.Config, opts Options) string {
-	caps := "IMAP4rev2 IMAP4rev1 SASL-IR LITERAL- ID IDLE"
+	caps := "IMAP4rev2 IMAP4rev1 SASL-IR LITERAL+ ID IDLE"
 	if extTLS != nil {
 		caps += " STARTTLS"
 	}
