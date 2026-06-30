@@ -127,6 +127,9 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 // for first-ever OpenFolder and as the fallback after a corrupt
 // file is moved aside.
 func (fs *folderState) createFresh(uidValidity uint32) error {
+	if uidValidity == 0 {
+		uidValidity = uint32(time.Now().Unix())
+	}
 	indexID := uint32(time.Now().Unix())
 	guid := generateGUID()
 	exts := defaultExtensions(uidValidity, guid)
