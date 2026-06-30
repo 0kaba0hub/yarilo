@@ -78,21 +78,12 @@ func (s *Store) Remove(folder string) error {
 	})
 }
 
-// Snapshot returns the current set without holding the lock past the read.
+// Snapshot returns the current set. No distributed lock is acquired:
+// writeAtomic uses tmp+rename so any read sees either the complete old
+// or the complete new file — never a torn write.
 // Callers MUST NOT mutate the returned map.
 func (s *Store) Snapshot() (map[string]struct{}, error) {
-	var (
-		out map[string]struct{}
-		err error
-	)
-	werr := s.withLock(func() error {
-		out, err = s.load()
-		return err
-	})
-	if werr != nil {
-		return nil, werr
-	}
-	return out, nil
+	return s.load()
 }
 
 func (s *Store) load() (map[string]struct{}, error) {
