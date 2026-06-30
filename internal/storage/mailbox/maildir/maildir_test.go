@@ -461,13 +461,10 @@ func TestReadUIDList_CacheHitSkipsDiskRead(t *testing.T) {
 		t.Fatalf("expected 1 entry after first read, got %d", len(m1))
 	}
 
-	// Second call on unchanged file must return the exact same map pointer.
+	// Second call on unchanged file must return from cache.
 	m2, err := box.readUIDList("INBOX")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if &m1 == &m2 {
-		// local vars differ, compare via cache pointer
 	}
 	c := box.folderCacheFor("INBOX")
 	if c.uidMap == nil {
