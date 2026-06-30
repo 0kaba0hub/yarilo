@@ -263,6 +263,46 @@ func TestExtractIMAPPreamble_StarttlsAdvertised(t *testing.T) {
 	}
 }
 
+func TestExtractIMAPPreamble_LiteralPlusAdvertised(t *testing.T) {
+	srv, cli := pipePair(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rd := bufio.NewReader(srv)
+		extractIMAPPreamble(srv, rd, nil, Options{}) //nolint:errcheck
+	}()
+
+	crd := bufio.NewReader(cli)
+	greeting, _ := crd.ReadString('\n')
+	if !strings.Contains(greeting, "LITERAL+") {
+		t.Errorf("greeting does not contain LITERAL+: %q", greeting)
+	}
+	if strings.Contains(greeting, "LITERAL-") {
+		t.Errorf("greeting must not contain LITERAL-: %q", greeting)
+	}
+
+	cli.Write([]byte("X1 CAPABILITY\r\n"))
+	var capLine string
+	for {
+		line, _ := crd.ReadString('\n')
+		if strings.HasPrefix(line, "* CAPABILITY") {
+			capLine = line
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "X1 OK") {
+			break
+		}
+	}
+	if !strings.Contains(capLine, "LITERAL+") {
+		t.Errorf("CAPABILITY response does not contain LITERAL+: %q", capLine)
+	}
+	if strings.Contains(capLine, "LITERAL-") {
+		t.Errorf("CAPABILITY response must not contain LITERAL-: %q", capLine)
+	}
+
+	cli.Close()
+	<-done
+}
+
 func TestExtractIMAPPreamble_StarttlsUnavailable(t *testing.T) {
 	// When StarttlsTLS is nil, sending STARTTLS must return NO (not drop conn).
 	srv, cli := pipePair(t)
