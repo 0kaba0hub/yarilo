@@ -35,13 +35,18 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 
 	// Dedup: reuse an already-open folderState for the same
 	// (user, folder) so consecutive OpenFolder calls in the same
-	// session return the same ID.
+	// session return the same ID. Reload the on-disk state first so
+	// the returned snapshot reflects writes from other sessions/pods.
 	u.mu.Lock()
 	if u.byDir != nil {
 		if id, ok := u.byDir[indexDir]; ok {
-			fs := u.open[id]
 			u.mu.Unlock()
-			snap, err := fs.snapshot(id)
+			var snap *mailbox.Folder
+			err := u.withFolderRO(id, func(fs *folderState) error {
+				var sErr error
+				snap, sErr = fs.snapshot(id)
+				return sErr
+			})
 			return snap, err
 		}
 	}
@@ -117,6 +122,15 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 		return fmt.Errorf("fileindex/openfolder: open: %w", err)
 	}
 	fs.file = mf
+	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
+		fs.baseMod = st.ModTime()
+	}
+	if logSt, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
+		if applyErr := fs.applyLog(0); applyErr != nil && !errors.Is(applyErr, errLogIndexIDMismatch) {
+			return fmt.Errorf("fileindex/openfolder: applylog: %w", applyErr)
+		}
+		fs.logSize = logSt.Size()
+	}
 	if fs.file.Header.UIDValidity == 0 {
 		fs.file.Header.UIDValidity = uint32(time.Now().Unix())
 		if err := fs.flush(true); err != nil {
