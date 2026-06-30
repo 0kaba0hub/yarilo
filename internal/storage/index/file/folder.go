@@ -335,6 +335,12 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 //  3. If the base file changed (after OptimizeIndex), do a full
 //     re-read of base + remaining log.
 func (fs *folderState) reload() error {
+	t0 := time.Now()
+	defer func() {
+		if dur := time.Since(t0); dur > 100*time.Millisecond {
+			slog.Debug("fileindex: slow reload", "folder", fs.folder, "dur_ms", dur.Milliseconds())
+		}
+	}()
 	baseStat, baseErr := os.Stat(fs.indexPath)
 	logStat, _ := os.Stat(fs.indexPath + ".log")
 
@@ -1169,6 +1175,7 @@ func encU32Update(offset uint16, v uint32) []byte {
 // appendMutLog writes pre-encoded tx records to the .index.log file and
 // updates fs.logSize. Caller must hold fs.mu (guaranteed by withFolder).
 func (fs *folderState) appendMutLog(records ...[]byte) error {
+	t0 := time.Now()
 	logPath := fs.indexPath + ".log"
 	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
@@ -1188,6 +1195,9 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 	}
 	if st, _ := f.Stat(); st != nil {
 		fs.logSize = st.Size()
+	}
+	if dur := time.Since(t0); dur > 100*time.Millisecond {
+		slog.Debug("fileindex: slow mutlog write", "folder", fs.folder, "dur_ms", dur.Milliseconds())
 	}
 	return nil
 }

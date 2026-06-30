@@ -399,12 +399,21 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
+	t0 := time.Now()
 	lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 	}
+	lockWait := time.Since(t0)
 	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
-	return fn()
+	t1 := time.Now()
+	err = fn()
+	if dur := time.Since(t1); dur > 200*time.Millisecond {
+		slog.Debug("fileindex: slow folder lock fn",
+			"user", u.username, "folder", fs.folder,
+			"lock_wait_ms", lockWait.Milliseconds(), "fn_ms", dur.Milliseconds())
+	}
+	return err
 }
 
 // withTwoFolderLocks acquires the X locks for folderA and folderB
