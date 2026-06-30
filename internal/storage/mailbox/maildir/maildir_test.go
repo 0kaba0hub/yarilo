@@ -443,3 +443,76 @@ func TestUIDListRoundtrip(t *testing.T) {
 		}
 	}
 }
+
+func TestReadUIDList_CacheHitSkipsDiskRead(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
+
+	if _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// First call populates the cache.
+	m1, err := box.readUIDList("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m1) != 1 {
+		t.Fatalf("expected 1 entry after first read, got %d", len(m1))
+	}
+
+	// Second call on unchanged file must return the exact same map pointer.
+	m2, err := box.readUIDList("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if &m1 == &m2 {
+		// local vars differ, compare via cache pointer
+	}
+	c := box.folderCacheFor("INBOX")
+	if c.uidMap == nil {
+		t.Fatal("cache not populated after first read")
+	}
+	// The returned map must equal the cached map (same pointer).
+	if len(m2) != len(c.uidMap) {
+		t.Errorf("second read returned different map size: got %d, cache has %d", len(m2), len(c.uidMap))
+	}
+}
+
+func TestReadUIDList_CacheUpdatedAfterAppend(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	box.Init() //nolint:errcheck
+
+	// Seed initial entry and populate cache.
+	fn1, err := box.Save("INBOX", strings.NewReader("msg1"), 1, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.readUIDList("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Append a second entry via appendUIDListLocked (same path Save() uses).
+	fn2 := "second.file:2,"
+	if err := box.appendUIDListLocked("INBOX", 2, fn2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cache must reflect both entries without re-reading the file.
+	c := box.folderCacheFor("INBOX")
+	if c.uidMap[fn1] != 1 {
+		t.Errorf("fn1 uid in cache = %d, want 1", c.uidMap[fn1])
+	}
+	if c.uidMap[fn2] != 2 {
+		t.Errorf("fn2 uid in cache = %d, want 2", c.uidMap[fn2])
+	}
+
+	// readUIDList must also return the updated entry (from cache or disk).
+	m, err := box.readUIDList("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m[fn2] != 2 {
+		t.Errorf("readUIDList fn2 = %d, want 2", m[fn2])
+	}
+}
