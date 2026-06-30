@@ -1260,8 +1260,12 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 	// Used only during full replay (fromOffset==0) to truncate partial tails.
 	var committedEnd int64
 	var filePos int64 // bytes consumed from f since the seek point
+	var logFileSize int64
 	if fromOffset == 0 {
 		filePos = int64(mailindex.LogHeaderSize)
+		if st, stErr := f.Stat(); stErr == nil {
+			logFileSize = st.Size()
+		}
 	}
 
 	for {
@@ -1291,10 +1295,12 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 		kind := txHdr.Type.Kind()
 
 		if kind == mailindex.TxTypeBoundary {
-			if len(payload) >= 4 {
-				totalSize := int64(le.Uint32(payload))
-				if fromOffset == 0 {
-					committedEnd = recStart + totalSize
+			if fromOffset == 0 && len(payload) >= 4 {
+				end := recStart + int64(le.Uint32(payload))
+				if logFileSize >= end {
+					committedEnd = end
+				} else {
+					break // partial transaction — stop before applying any sub-records
 				}
 			}
 			continue
