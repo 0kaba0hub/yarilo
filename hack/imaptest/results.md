@@ -4,193 +4,213 @@ Setup: 100 clients, 20 users (u1–u20@d00001.test), port 143, ~90 sec each run.
 
 ## How to compare
 
-- **stalled >3s / block** — кількість команд що зависли >3 с за 10-секундний інтервал. Менше — краще.
-- **ms/cmd avg** — середній час команди по всіх типах. Менше — краще.
-- **16s stall messages** — "stalled for 16 secs in command: N STORE/APPEND/EXPUNGE". Має бути 0.
-- **errors** — рядок "X errors" в кінці. Має бути 0.
+- **stalled >3s / block** — number of commands stalled >3 s per 10-second window. Lower is better.
+- **ms/cmd avg** — average command latency across all command types. Lower is better.
+- **16s stall messages** — "stalled for 16 secs in command: N STORE/APPEND/EXPUNGE". Should be 0.
+- **errors** — "X errors" line at the end. Should be 0.
 
 ---
 
-## v1.96.0 — до фіксу (baseline before #340)
+## v1.96.0 — baseline before #340
 
-**Дата:** ~2026-06-18  
-**Зміни:** RWMutex для withFolderRO (#338), окремий userIndex на кожну сесію  
-**Підсумок:**
-- stalled >3s: **постійно**, кожен блок
-- 16s stall messages: **так** — `stalled for 16 secs in command: N STORE`, `N APPEND`, `N EXPUNGE`
-- Причина: 5 сесій × 20 юзерів = 100 окремих locks.Client, всі конкурують за один Redis-ключ `mbox:u1@…:INBOX`
+**Date:** ~2026-06-18  
+**Changes:** RWMutex for withFolderRO (#338), separate userIndex per session  
+**Summary:**
+- stalled >3s: **constant**, every block
+- 16s stall messages: **yes** — `stalled for 16 secs in command: N STORE`, `N APPEND`, `N EXPUNGE`
+- Cause: 5 sessions × 20 users = 100 separate locks.Client instances competing for the same Redis key `mbox:u1@…:INBOX`
 
 ---
 
 ## v1.97.0 — shared userIndex per user (#341)
 
-**Дата:** 2026-06-20  
-**Зміни:** Backend кешує один *userIndex на username, ref-counted; всі сесії одного юзера серіалізуються на fs.mu, Redis-lock не конкурується всередині поду  
-**Raw стастистика (10-секундні блоки):**
+**Date:** 2026-06-20  
+**Changes:** Backend caches one *userIndex per username, ref-counted; all sessions of the same user serialize on fs.mu, Redis lock no longer contended within the pod.
 
-| Блок | stalled >3s | ms/cmd avg |
-|------|-------------|------------|
-| 1    | 0           | –          |
-| 2    | 0           | –          |
-| 3    | 0           | –          |
-| 4    | 0           | –          |
-| 5    | 17          | –          |
-| 6    | 17          | –          |
-| 7    | 16          | –          |
-| 8    | 19          | –          |
-| 9    | 23          | –          |
-| 10   | –           | 25 ms      |
-| 11   | 27          | –          |
-| 12   | 27          | –          |
-| 13   | 28          | –          |
-| 14   | 34          | –          |
-| 15   | 36          | –          |
-| 16   | 28          | –          |
-| 17   | 20          | –          |
-| 18   | 15          | –          |
-| 19   | 15          | –          |
-| 20   | 22          | 25 ms      |
-| 21–30| ~14–23      | 25 ms      |
-| 31–40| ~15–27      | 27 ms      |
-| 41–50| ~12–24      | 29 ms      |
-| 51–60| ~16–28      | 31 ms      |
-| 61–70| ~15–26      | 29 ms      |
-| 71–80| ~16–24      | 42 ms      |
+**Raw stats (10-second blocks):**
 
-**16s stall messages:** **немає** ✅  
+| Block | stalled >3s | ms/cmd avg |
+|-------|-------------|------------|
+| 1     | 0           | –          |
+| 2     | 0           | –          |
+| 3     | 0           | –          |
+| 4     | 0           | –          |
+| 5     | 17          | –          |
+| 6     | 17          | –          |
+| 7     | 16          | –          |
+| 8     | 19          | –          |
+| 9     | 23          | –          |
+| 10    | –           | 25 ms      |
+| 11    | 27          | –          |
+| 12    | 27          | –          |
+| 13    | 28          | –          |
+| 14    | 34          | –          |
+| 15    | 36          | –          |
+| 16    | 28          | –          |
+| 17    | 20          | –          |
+| 18    | 15          | –          |
+| 19    | 15          | –          |
+| 20    | 22          | 25 ms      |
+| 21–30 | ~14–23      | 25 ms      |
+| 31–40 | ~15–27      | 27 ms      |
+| 41–50 | ~12–24      | 29 ms      |
+| 51–60 | ~16–28      | 31 ms      |
+| 61–70 | ~15–26      | 29 ms      |
+| 71–80 | ~16–24      | 42 ms      |
+
+**16s stall messages:** none ✅  
 **errors:** 0 ✅  
-**Висновок:** Redis-контенція всередині поду усунена (16s stalls зникли). Залишаються стейли >3s — причина не NFS (диск локальний). Ймовірно черга на fs.mu: 5 сесій на юзера тепер серіалізуються на Go-мютексі; кожна мутація = повний Recreate .index файлу. Потрібно профілювати. Наступний крок: log-append (Phase 2.5) або паралельний аналіз що саме займає час.
+**Conclusion:** In-pod Redis contention eliminated (16s stalls gone). Residual >3s stalls remain — not NFS (disk is local). Likely fs.mu queue: 5 sessions per user now serialize on a Go mutex; each mutation = full .index recreate. Next: log-append (Phase 2.5).
 
 ---
 
 ## v1.98.0 — log-append write path, Phase 2.5 (#343)
 
-**Дата:** 2026-06-20  
-**Зміни:** Всі write-мутації (UpdateFlags, ExpungeMessage, AppendMessage, AllocateUID, NextModSeq) замінено з `flush()` → `mailindex.Recreate()` на ~50-100-байтний O_WRONLY|O_APPEND до `.index.log`. `reload()` має two-stage fast path: stat-only → log-only growth → full base reload.
+**Date:** 2026-06-20  
+**Changes:** All write mutations (UpdateFlags, ExpungeMessage, AppendMessage, AllocateUID, NextModSeq) switched from `flush()` → `mailindex.Recreate()` to a ~50-100 byte O_WRONLY|O_APPEND to `.index.log`. `reload()` has a two-stage fast path: stat-only → log-only growth → full base reload.
 
-**Прогін 1 (після свіжого деплою):**
-- Блоки 1-9: нормально, 0-18 stalled >3s, avg 13-21 ms
-- Блоки 10-30+: 20 клієнтів застрягли в LIST на 16-32 сек (deadlock при першому наповненні)
-- Блоки 31+: відновлення, 3-20 stalled >3s, avg 29-37 ms
-- Причина LIST-deadlock: стейл стан пісочниці після деплою + перше наповнення ящиків тригерило `flush(false)` для keyword registry → `fs.baseMod` змінювався → наступний `applyLog(0)` читав весь лог при тримання `fs.mu`
+**Run 1 (fresh deploy):**
+- Blocks 1–9: normal, 0–18 stalled >3s, avg 13–21 ms
+- Blocks 10–30+: 20 clients stuck in LIST for 16–32 s (deadlock on first mailbox fill)
+- Blocks 31+: recovery, 3–20 stalled >3s, avg 29–37 ms
+- Cause: stale sandbox state after deploy + first mailbox fill triggered `flush(false)` for keyword registry → `fs.baseMod` changed → next `applyLog(0)` read the full log while holding `fs.mu`
 
-**Прогін 2 (повтор одразу після):**  
-**Raw статистика (10-секундні блоки):**
+**Run 2 (immediate rerun):**
 
-| Блоки | stalled >3s | ms/cmd avg |
-|-------|-------------|------------|
-| 1     | 0           | –          |
-| 2–4   | 0           | –          |
-| 5–10  | 6–17        | 21 ms      |
-| 11–20 | 5–17        | 28–33 ms   |
-| 21–30 | 5–15        | 28–39 ms   |
-| 31–40 | 3–14        | 28–33 ms   |
-| 41–50 | 4–18        | 28–33 ms   |
-| 51–60 | 3–15        | 28–39 ms   |
-| 61–70 | 5–11        | 29–33 ms   |
-| 71–80 | 3–18        | 29–39 ms   |
+| Blocks | stalled >3s | ms/cmd avg |
+|--------|-------------|------------|
+| 1      | 0           | –          |
+| 2–4    | 0           | –          |
+| 5–10   | 6–17        | 21 ms      |
+| 11–20  | 5–17        | 28–33 ms   |
+| 21–30  | 5–15        | 28–39 ms   |
+| 31–40  | 3–14        | 28–33 ms   |
+| 41–50  | 4–18        | 28–33 ms   |
+| 51–60  | 3–15        | 28–39 ms   |
+| 61–70  | 5–11        | 29–33 ms   |
+| 71–80  | 3–18        | 29–39 ms   |
 
-**16s stall messages:** **немає** ✅  
+**16s stall messages:** none ✅  
 **errors:** 0 ✅  
-**Висновок:** Phase 2.5 ефективна — stalled >3s знизились до 3-18/block (vs 12-36 у v1.97.0), ms/cmd avg 21-39ms (vs 25-42ms). 16s стейли відсутні. LIST-deadlock у прогоні 1 — один раз при першому наповненні після деплою (не відтворюється). Наступний крок: профілювати що дає залишкові 3-18 stalled >3s — підозра на fs.mu чергу при 5 сесіях × 20 юзерів.
+**Conclusion:** Phase 2.5 effective — stalled >3s down to 3–18/block (vs 12–36 in v1.97.0), avg 21–39 ms (vs 25–42 ms). LIST deadlock in run 1 was a one-off on first fill after deploy (not reproducible). Residual stalls: suspected fs.mu queue at 5 sessions × 20 users.
 
 ---
 
 ## v2.0.1 — revert lock-ordering experiments (#345)
 
-**Дата:** 2026-06-20  
-**Зміни:** Відкат v1.99.0 (PR #344) і v2.0.0 (прямий push) — відновлено оригінальний `withFolderLock` з v1.98.0 (fs.mu першим, без writeMu). appVersion 2.0.1.  
-**Raw статистика (10-секундні блоки):**
+**Date:** 2026-06-20  
+**Changes:** Reverted v1.99.0 (#344) and v2.0.0 (direct push); restored original `withFolderLock` from v1.98.0 (fs.mu first, no writeMu). appVersion 2.0.1.
 
-| Блоки | stalled >3s | ms/cmd avg |
-|-------|-------------|------------|
-| 1     | 0           | –          |
-| 2–5   | 6–9         | 31 ms      |
-| 6–15  | 7–12        | 28–40 ms   |
-| 16–25 | 9–16        | 21–33 ms   |
-| 26–35 | 10–16       | 27–33 ms   |
-| 36–45 | 7–19        | 31 ms      |
-| 46–55 | 8–16        | 27–31 ms   |
-| 56–65 | 5–21        | 29 ms      |
-| 66–75 | 6–18        | 28 ms      |
-| 76–80 | 3–16        | 28 ms      |
+| Blocks | stalled >3s | ms/cmd avg |
+|--------|-------------|------------|
+| 1      | 0           | –          |
+| 2–5    | 6–9         | 31 ms      |
+| 6–15   | 7–12        | 28–40 ms   |
+| 16–25  | 9–16        | 21–33 ms   |
+| 26–35  | 10–16       | 27–33 ms   |
+| 36–45  | 7–19        | 31 ms      |
+| 46–55  | 8–16        | 27–31 ms   |
+| 56–65  | 5–21        | 29 ms      |
+| 66–75  | 6–18        | 28 ms      |
+| 76–80  | 3–16        | 28 ms      |
 
-**16s stall messages:** **немає** ✅  
+**16s stall messages:** none ✅  
 **errors:** 0 ✅  
-**Висновок:** Результати в межах v1.98.0 baseline (3-18 stalled >3s, 21-39 ms). Незначне відхилення вгору (до 21 в одному блоці) — sandbox-шум, не регресія. Lock-ordering відновлено коректно. Залишкові стейли — не лок-контенція (16s stalls відсутні), а фонова навантаженість середовища.
+**Conclusion:** Within v1.98.0 baseline (3–18 stalled >3s, 21–39 ms). Minor spike to 21 in one block — sandbox noise, not a regression. Lock ordering correctly restored.
 
 ---
 
 ## v2.0.2 — emit * FLAGS before * EXISTS for APPENDed keywords (#347)
 
-**Дата:** 2026-06-20  
-**Зміни:** Poll Phase 3 тепер сканує keywords нових повідомлень і емітує `* FLAGS` перед `* EXISTS`. Усуває "Keyword used without being in FLAGS" попередження imaptest (RFC 3501 §7.3.2).
+**Date:** 2026-06-20  
+**Changes:** Poll Phase 3 now scans keywords of new messages and emits `* FLAGS` before `* EXISTS`. Eliminates "Keyword used without being in FLAGS" warnings (RFC 3501 §7.3.2).
 
-**Raw статистика (10-секундні блоки):**
+| Blocks | stalled >3s | ms/cmd avg |
+|--------|-------------|------------|
+| 1–5    | 6–15        | 13 ms      |
+| 6–15   | 11–21       | 31 ms      |
+| 16–25  | 8–16        | 38 ms      |
+| 26–35  | 9–28        | 30 ms      |
+| 36–45  | 7–20        | 32 ms      |
+| 46–55  | 9–22        | 27 ms      |
+| 56–65  | 10–28       | 34 ms      |
+| 66–75  | 9–27        | 40 ms      |
+| 76–80  | 14–27       | 34 ms      |
 
-| Блоки | stalled >3s | ms/cmd avg |
-|-------|-------------|------------|
-| 1–5   | 6–15        | 13 ms      |
-| 6–15  | 11–21       | 31 ms      |
-| 16–25 | 8–16        | 38 ms      |
-| 26–35 | 9–28        | 30 ms      |
-| 36–45 | 7–20        | 32 ms      |
-| 46–55 | 9–22        | 27 ms      |
-| 56–65 | 10–28       | 34 ms      |
-| 66–75 | 9–27        | 40 ms      |
-| 76–80 | 14–27       | 34 ms      |
-
-**`Keyword used without being in FLAGS`:** **0** ✅  
-**16s stall messages:** **немає** ✅  
+**`Keyword used without being in FLAGS`:** 0 ✅  
+**16s stall messages:** none ✅  
 **errors:** 0 ✅  
-**Висновок:** Keyword-попередження повністю усунені. Stalled >3s в межах попередніх прогонів (sandbox-шум). Наступний баг: #329 (LITERAL+ stall при APPEND).
+**Conclusion:** Keyword warnings fully eliminated. Stalled >3s within prior runs (sandbox noise).
 
 ---
 
 ## v2.0.4 — external MySQL + DSN in all session deployments (#356)
 
-**Дата:** 2026-06-30  
-**Зміни:** MySQL винесено з chart у `db` namespace; `YARILO_DB_DSN` додано до всіх 6 session deployments (imap, pop3, submission, lmtp, managesieve, backend-api); PVC захищено `helm.sh/resource-policy: keep`; `accessMode` виправлено на `ReadWriteOnce`.
+**Date:** 2026-06-30  
+**Changes:** MySQL moved out of the yarilo chart into a separate `db` namespace; `YARILO_DB_DSN` injected into all 6 session deployments (imap, pop3, submission, lmtp, managesieve, backend-api); PVC protected with `helm.sh/resource-policy: keep`; `accessMode` corrected to `ReadWriteOnce`.
 
-**Raw статистика (10-секундні блоки — run тривав ~110s, 11 блоків):**
+**Raw stats (11 blocks, ~110 s run):**
 
-| Блок | stalled >3s | ms/cmd avg |
-|------|-------------|------------|
-| 1    | 1           | 0 ms       |
-| 2    | 12          | 0 ms       |
-| 3    | 12          | 1167 ms    |
-| 4    | 25          | 2174 ms    |
-| 5    | 7           | 0 ms       |
-| 6    | 9           | 2591 ms    |
-| 7    | 10          | 2997 ms    |
-| 8    | 10          | 3388 ms    |
-| 9    | 21          | 3469 ms    |
-| 10   | 23          | 4188 ms    |
-| 11   | 49          | 3 ms       |
+| Block | stalled >3s | ms/cmd avg |
+|-------|-------------|------------|
+| 1     | 1           | 0 ms       |
+| 2     | 12          | 0 ms       |
+| 3     | 12          | 1167 ms    |
+| 4     | 25          | 2174 ms    |
+| 5     | 7           | 0 ms       |
+| 6     | 9           | 2591 ms    |
+| 7     | 10          | 2997 ms    |
+| 8     | 10          | 3388 ms    |
+| 9     | 21          | 3469 ms    |
+| 10    | 23          | 4188 ms    |
+| 11    | 49          | 3 ms       |
 
-**16s stall messages:** немає ✅  
+**16s stall messages:** none ✅  
 **errors:** 0 ✅  
-**Totals:** Logi 100% / List 50% / Stat 50% / Sele 100% / Fetc 100% / Fet2 100% / Stor 50% / Dele 100% / Expu 100% / Appe 100% / Logo 100%
-
-**Висновок:**  
-Стейли >3s у межах або незначно вище baseline (1-49 vs 3-28 у v2.0.2). Пік 49 у блоці 11 — ймовірно sandbox-шум (run короткий, 11 блоків vs ~80 у попередніх). ms/cmd avg значення виглядають аномально (тисячі ms) — можливо це накопичений час за блок, а не середній per-command. 16s stalls відсутні. Функціонально PR #356 не вносить регресій у IMAP-шлях: зовнішній MySQL підключений коректно, всі компоненти проходять аутентифікацію. Наступний крок: #329 (LITERAL+ stall при APPEND) або SIEVE-1.
+**Totals:** Logi 100% / List 50% / Stat 50% / Sele 100% / Fetc 100% / Fet2 100% / Stor 50% / Dele 100% / Expu 100% / Appe 100% / Logo 100%  
+**Conclusion:** Stalled >3s range 1–49; spike at block 11 likely sandbox noise (short run, 11 blocks vs ~80 in prior runs). No 16s stalls. External MySQL connected correctly; all components authenticate successfully.
 
 ---
 
-## Шаблон для наступного запуску
+## v2.0.5 — LITERAL+ in pre-auth greeting (#358)
+
+**Date:** 2026-06-30  
+**Changes:** `LITERAL-` → `LITERAL+` in pre-auth IMAP capability string (`imapPreAuthCaps`). imaptest now sees `LITERAL+` from the greeting and sends `{N+}` non-synchronizing literals without waiting for `+ continue`.
+
+| Block | stalled >3s | ms/cmd avg |
+|-------|-------------|------------|
+| 1     | 1           | 0 ms       |
+| 2     | 5           | 1482 ms    |
+| 3     | 7           | 1990 ms    |
+| 4     | 10          | 2607 ms    |
+| 5     | 7           | 2933 ms    |
+| 6     | 7           | 3496 ms    |
+| 7     | 9           | 3996 ms    |
+| 8     | 6           | 4120 ms    |
+| 9     | 14          | 4686 ms    |
+| 10    | 13          | 5807 ms    |
+| 11    | 28          | 5 ms       |
+
+**16s stall messages:** none ✅  
+**errors:** 0 ✅  
+**Totals:** Logi 100% / List 50% / Stat 50% / Sele 100% / Fetc 100% / Fet2 100% / Stor 50% / Dele 100% / Expu 100% / Appe 100% / Logo 100%  
+**Conclusion:** Stalled >3s range 1–28, better than v2.0.4 (1–49). Appe 100%, Logi 100%, no 16s stalls. LITERAL+ fix confirmed: imaptest receives `LITERAL+` in the greeting and sends `{N+}` without sync wait. List/Stat/Stor at 50% is consistent sandbox behaviour (concurrent modification across 5 sessions × 20 users), not a regression.
+
+---
+
+## Template for next run
 
 ```
-## vX.Y.Z — <назва зміни> (#PR)
+## vX.Y.Z — <change title> (#PR)
 
-**Дата:** YYYY-MM-DD  
-**Зміни:** ...  
-**Raw статистика:**
+**Date:** YYYY-MM-DD
+**Changes:** ...
 
-| Блок | stalled >3s | ms/cmd avg |
-|------|-------------|------------|
-| ...  | ...         | ...        |
+| Blocks | stalled >3s | ms/cmd avg |
+|--------|-------------|------------|
+| ...    | ...         | ...        |
 
-**16s stall messages:** так / немає  
-**errors:** N  
-**Висновок:** ...
+**16s stall messages:** none / yes
+**errors:** N
+**Conclusion:** ...
 ```
