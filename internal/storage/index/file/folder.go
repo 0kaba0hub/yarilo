@@ -1454,7 +1454,7 @@ func (fs *folderState) flushAppend(rec *mailindex.Record) error {
 	if err != nil {
 		return fmt.Errorf("fileindex/append: encode: %w", err)
 	}
-	if err := saveNames(fs.indexDir, fs.filenames, fs.sizes); err != nil {
+	if err := appendName(fs.indexDir, rec.UID, fs.filenames[rec.UID], fs.sizes[rec.UID]); err != nil {
 		return fmt.Errorf("fileindex/append: names: %w", err)
 	}
 	return fs.appendMutLog(
