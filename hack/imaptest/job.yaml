@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: imaptest
+  namespace: yarilo-sb
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+      - name: copy-mbox
+        image: busybox
+        command: [sh, -c, "cp /cfg/test.mbox /mbox/test.mbox"]
+        volumeMounts:
+        - name: mbox-cfg
+          mountPath: /cfg
+        - name: mbox
+          mountPath: /mbox
+      containers:
+      - name: imaptest
+        image: dovecot/imaptest:latest
+        args:
+        - host=yarilo-imap-login.yarilo-sb.svc.cluster.local
+        - port=143
+        - user=u%d@d00001.test
+        - users=1-100
+        - pass=Yarilo!test1
+        - clients=100
+        - msgs=5000
+        - secs=90
+        - mbox=/mbox/test.mbox
+        volumeMounts:
+        - name: mbox
+          mountPath: /mbox
+      volumes:
+      - name: mbox-cfg
+        configMap:
+          name: imaptest-mbox
+      - name: mbox
+        emptyDir: {}
