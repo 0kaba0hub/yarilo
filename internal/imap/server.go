@@ -863,6 +863,16 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	s.folderNS = h
 	s.pushAnvilSelect(name)
 
+	// Auto-subscribe the folder on first SELECT so LSUB returns it
+	// without requiring an explicit SUBSCRIBE command from the client.
+	if h.subs != nil {
+		if subs, snapErr := h.subs.Snapshot(); snapErr == nil {
+			if _, already := subs[rel]; !already {
+				_ = h.subs.Add(rel)
+			}
+		}
+	}
+
 	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	s.knownMsgs = make([]sessionMsg, len(msgs))
 	for i, m := range msgs {
@@ -2141,6 +2151,14 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	}
 
 	// Pass 3: send FETCH responses using modseqs returned from the batch.
+	// Also update knownMsgs.modseq so the post-command Poll skips these
+	// messages — without this Poll would see modseq changed and emit a
+	// second duplicate * FETCH for every STOREd message.
+	for i := range s.knownMsgs {
+		if ms, ok := newModSeqs[s.knownMsgs[i].uid]; ok {
+			s.knownMsgs[i].modseq = ms
+		}
+	}
 	if !storeFlags.Silent {
 		for _, p := range pending {
 			mw := w.CreateMessage(p.seqNum)
