@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -1375,6 +1376,21 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		_ = h.box.Remove(rel, filename)
 		return nil, fmt.Errorf("imap/append record: %w", err)
 	}
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		if rc, ferr := h.box.Fetch(rel, filename, false); ferr == nil {
+			raw, _ := io.ReadAll(rc)
+			rc.Close()
+			sum := md5.Sum(raw)
+			slog.Debug("imap: append saved",
+				"user", s.userInfo.Username,
+				"folder", rel,
+				"uid", m.UID,
+				"file", filename,
+				"size", len(raw),
+				"md5", fmt.Sprintf("%x", sum),
+			)
+		}
+	}
 	s.emitMailboxChange(name, locks.EventDelivered, m.UID)
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(m.UID)}, nil
@@ -2013,6 +2029,18 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			rc.Close()
 			if extracted == nil {
 				extracted = []byte{}
+			}
+			if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
+				section.Specifier == imaplib.PartSpecifierNone && len(section.Part) == 0 {
+				sum := md5.Sum(extracted)
+				slog.Debug("imap: fetch body[]",
+					"user", s.userInfo.Username,
+					"folder", s.folder.Name,
+					"uid", m.UID,
+					"file", m.Filename,
+					"size", len(extracted),
+					"md5", fmt.Sprintf("%x", sum),
+				)
 			}
 			switch section.Specifier {
 			case imaplib.PartSpecifierHeader, imaplib.PartSpecifierMIME:
