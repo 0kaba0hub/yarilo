@@ -2019,10 +2019,28 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		}
 		for _, section := range opts.BodySection {
 			if m.Filename == "" {
+				if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
+					section.Specifier == imaplib.PartSpecifierNone && len(section.Part) == 0 {
+					slog.Debug("imap: fetch body[] no filename",
+						"user", s.userInfo.Username,
+						"folder", s.folder.Name,
+						"uid", m.UID,
+					)
+				}
 				break
 			}
 			rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier)
 			if ferr != nil {
+				if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
+					section.Specifier == imaplib.PartSpecifierNone && len(section.Part) == 0 {
+					slog.Debug("imap: fetch body[] file error",
+						"user", s.userInfo.Username,
+						"folder", s.folder.Name,
+						"uid", m.UID,
+						"file", m.Filename,
+						"err", ferr,
+					)
+				}
 				break
 			}
 			extracted := imapserver.ExtractBodySection(rc, section)
