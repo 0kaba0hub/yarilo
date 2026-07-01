@@ -344,11 +344,17 @@ func (fs *folderState) reload() error {
 		slog.Debug("fileindex: reload", "folder", fs.folder, "dur_ms", time.Since(t0).Milliseconds())
 	}()
 	baseStat, baseErr := os.Stat(fs.indexPath)
-	logStat, _ := os.Stat(fs.indexPath + ".log")
 
+	// Use fstat on the open FD when available — avoids NFS path resolution.
 	var newLogSize int64
-	if logStat != nil {
-		newLogSize = logStat.Size()
+	if fs.logFD != nil {
+		if st, err := fs.logFD.Stat(); err == nil {
+			newLogSize = st.Size()
+		}
+	} else {
+		if logStat, _ := os.Stat(fs.indexPath + ".log"); logStat != nil {
+			newLogSize = logStat.Size()
+		}
 	}
 
 	var newBaseMod time.Time
