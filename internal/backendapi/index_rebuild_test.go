@@ -180,6 +180,8 @@ type adminUserContext struct {
 	idx     mailbox.UserIndex
 	folder  *mailbox.Folder
 	user    string
+	info    *mailbox.UserInfo
+	root    string
 	cleanup func()
 }
 
@@ -203,6 +205,8 @@ func newAdminUserContext(t *testing.T, _ any, root, user string) (*adminUserCont
 		idx:    u,
 		folder: folder,
 		user:   user,
+		info:   info,
+		root:   root,
 		cleanup: func() {
 			_ = box.Close()
 			_ = u.Close()
@@ -229,31 +233,37 @@ func (a *adminUserContext) deliver(t *testing.T, body string) {
 	}
 }
 
-// indexCount and uidsByFilename re-OpenFolder so they observe the
-// freshest on-disk state — the HTTP rebuild path opens its own
-// handles, so the test's original in-memory index state can diverge.
+// indexCount and uidsByFilename open a fresh userIndex handle each call
+// so they always read the current on-disk state without relying on the
+// mtime-based reload cache of the long-lived uc.idx handle.
 func (a *adminUserContext) indexCount(t *testing.T) int {
 	t.Helper()
-	fresh, err := a.idx.OpenFolder("INBOX", 0)
+	_, idx := newMaildirAndIndexAt(t, a.root)
+	u := idx.OpenUser(a.info)
+	defer func() { _ = u.Close() }()
+	f, err := u.OpenFolder("INBOX", 0)
 	if err != nil {
-		t.Fatalf("reopen folder: %v", err)
+		t.Fatalf("indexCount/open: %v", err)
 	}
-	msgs, err := a.idx.GetMessages(fresh.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	msgs, err := u.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil {
-		t.Fatalf("getMessages: %v", err)
+		t.Fatalf("indexCount/getMessages: %v", err)
 	}
 	return len(msgs)
 }
 
 func (a *adminUserContext) uidsByFilename(t *testing.T) map[string]uint32 {
 	t.Helper()
-	fresh, err := a.idx.OpenFolder("INBOX", 0)
+	_, idx := newMaildirAndIndexAt(t, a.root)
+	u := idx.OpenUser(a.info)
+	defer func() { _ = u.Close() }()
+	f, err := u.OpenFolder("INBOX", 0)
 	if err != nil {
-		t.Fatalf("reopen folder: %v", err)
+		t.Fatalf("uidsByFilename/open: %v", err)
 	}
-	msgs, err := a.idx.GetMessages(fresh.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	msgs, err := u.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil {
-		t.Fatalf("getMessages: %v", err)
+		t.Fatalf("uidsByFilename/getMessages: %v", err)
 	}
 	out := make(map[string]uint32, len(msgs))
 	for _, m := range msgs {
