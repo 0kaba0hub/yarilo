@@ -34,6 +34,7 @@ import (
 //	interface (driver: SQL query or dict protocol) and call it here before
 //	OpenUser, passing the resulting home as homeOverride to Resolver.UserInfo.
 func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username string, flags []string) error {
+	tDeliver := time.Now()
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("lmtp: seek: %w", err)
 	}
@@ -51,10 +52,12 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 	if err != nil {
 		return fmt.Errorf("lmtp: modseq: %w", err)
 	}
+	tSave := time.Now()
 	filename, err := box.Save(folder, bytes.NewReader(data), uid, size, flags)
 	if err != nil {
 		return fmt.Errorf("lmtp: save: %w", err)
 	}
+	tIndex := time.Now()
 	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
 		UID:          uid,
 		Filename:     filename,
@@ -66,7 +69,11 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		_ = box.Remove(folder, filename)
 		return fmt.Errorf("lmtp: index append: %w", err)
 	}
-
+	slog.Debug("lmtp: deliver timing",
+		"folder", folder, "size", size,
+		"save_ms", tIndex.Sub(tSave).Milliseconds(),
+		"index_ms", time.Since(tIndex).Milliseconds(),
+		"total_ms", time.Since(tDeliver).Milliseconds())
 	emitMailboxEvent(locker, username, folder, locks.EventDelivered, uid)
 	slog.Info("lmtp: delivered", "folder", folder, "uid", uid, "size", size)
 	return nil

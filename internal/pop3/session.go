@@ -946,6 +946,7 @@ func (s *session) cmdDele(arg string) {
 }
 
 func (s *session) cmdRset() {
+	tRset := time.Now()
 	if s.srv.opts.EnableLast {
 		for i, seen := range s.seenMsgs {
 			if !seen {
@@ -966,6 +967,7 @@ func (s *session) cmdRset() {
 		s.deleted[i] = false
 	}
 	count, _ := s.countActive()
+	slog.Debug("pop3: rset timing", "total_ms", time.Since(tRset).Milliseconds())
 	s.ok(fmt.Sprintf("maildrop has %d messages", count))
 }
 
@@ -1024,6 +1026,8 @@ func (s *session) cmdLast() {
 
 // cmdQuit applies \Seen flags (unless NoFlagUpdates) and commits deletions.
 func (s *session) cmdQuit() {
+	tQuit := time.Now()
+	var seenCount, deletedCount int
 	if !s.srv.opts.NoFlagUpdates {
 		for i, seen := range s.seenMsgs {
 			if seen && !s.deleted[i] {
@@ -1031,6 +1035,8 @@ func (s *session) cmdQuit() {
 				newFlags := appendFlag(m.Flags, `\Seen`)
 				if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
 					slog.Error("pop3: set seen", "uid", m.UID, "err", err)
+				} else {
+					seenCount++
 				}
 			}
 		}
@@ -1063,9 +1069,16 @@ func (s *session) cmdQuit() {
 			if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
 				slog.Error("pop3: flag deleted", "uid", m.UID, "err", err)
 				errCount++
+			} else {
+				deletedCount++
 			}
 		}
 	} else {
+		for _, del := range s.deleted {
+			if del {
+				deletedCount++
+			}
+		}
 		errCount = s.expungeDeleted()
 	}
 
@@ -1073,6 +1086,11 @@ func (s *session) cmdQuit() {
 	// can acquire the lock as soon as it reads our response (not later when the
 	// goroutine unwinds its defers).
 	s.releaseLock()
+
+	slog.Debug("pop3: quit timing",
+		"user", s.userInfo.Username,
+		"seen_updates", seenCount, "deleted", deletedCount,
+		"total_ms", time.Since(tQuit).Milliseconds())
 
 	if errCount > 0 {
 		s.writeErr(fmt.Sprintf("%d message(s) could not be deleted", errCount))

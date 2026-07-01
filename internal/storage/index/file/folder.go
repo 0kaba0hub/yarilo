@@ -337,9 +337,7 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 func (fs *folderState) reload() error {
 	t0 := time.Now()
 	defer func() {
-		if dur := time.Since(t0); dur > 100*time.Millisecond {
-			slog.Debug("fileindex: slow reload", "folder", fs.folder, "dur_ms", dur.Milliseconds())
-		}
+		slog.Debug("fileindex: reload", "folder", fs.folder, "dur_ms", time.Since(t0).Milliseconds())
 	}()
 	baseStat, baseErr := os.Stat(fs.indexPath)
 	logStat, _ := os.Stat(fs.indexPath + ".log")
