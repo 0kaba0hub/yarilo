@@ -125,11 +125,30 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
 		fs.baseMod = st.ModTime()
 	}
-	if logSt, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
-		if applyErr := fs.applyLog(0); applyErr != nil && !errors.Is(applyErr, errLogIndexIDMismatch) {
+	if _, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
+		if applyErr := fs.applyLog(0); errors.Is(applyErr, errLogIndexIDMismatch) {
+			// Log was written against a different (deleted/recreated) mailbox.
+			// Acquire the distributed lock and reset the log so that concurrent
+			// writers on other pods do not race us while we truncate.
+			if lockErr := u.withFolderLock(fs, func() error {
+				slog.Warn("fileindex: discarding log with mismatched IndexID on open",
+					"folder", fs.folder)
+				fs.closeFDs()
+				if truncErr := truncateLog(fs.indexPath, fs.file.Header.IndexID); truncErr != nil {
+					return fmt.Errorf("fileindex/openfolder: truncate after indexid mismatch: %w", truncErr)
+				}
+				fs.logSize = 0
+				return nil
+			}); lockErr != nil {
+				return lockErr
+			}
+		} else if applyErr != nil {
 			return fmt.Errorf("fileindex/openfolder: applylog: %w", applyErr)
+		} else {
+			if logSt, _ := os.Stat(fs.indexPath + ".log"); logSt != nil {
+				fs.logSize = logSt.Size()
+			}
 		}
-		fs.logSize = logSt.Size()
 	}
 	if fs.file.Header.UIDValidity == 0 {
 		fs.file.Header.UIDValidity = uint32(time.Now().Unix())
@@ -1291,6 +1310,10 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 	var logFileSize int64
 	if fromOffset == 0 {
 		filePos = int64(mailindex.LogHeaderSize)
+		// Start committedEnd at the header so any corrupted record before
+		// the first BOUNDARY causes truncation to a clean stub rather than
+		// leaving the bad bytes in place.
+		committedEnd = int64(mailindex.LogHeaderSize)
 		if st, stErr := f.Stat(); stErr == nil {
 			logFileSize = st.Size()
 		}
