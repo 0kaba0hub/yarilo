@@ -284,6 +284,10 @@ func (fs *folderState) flush(wholeNames bool) error {
 		return fmt.Errorf("fileindex/flush: recreate: %w", err)
 	}
 	if wholeNames {
+		if fs.namesFD != nil {
+			_ = fs.namesFD.Close()
+			fs.namesFD = nil
+		}
 		if err := saveNames(fs.indexDir, fs.filenames, fs.sizes); err != nil {
 			return err
 		}
@@ -936,6 +940,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 		}
 		// Truncate the log so stale TxAppend records don't resurface
 		// when another process replays the log after ResetFolder.
+		fs.closeFDs()
 		if err := truncateLog(fs.indexPath, fs.file.Header.IndexID); err != nil {
 			return err
 		}
@@ -995,6 +1000,7 @@ func (u *userIndex) OptimizeIndex(folderID uint64) error {
 		if err := fs.flush(true); err != nil {
 			return err
 		}
+		fs.closeFDs()
 		if err := truncateLog(fs.indexPath, fs.file.Header.IndexID); err != nil {
 			return err
 		}
@@ -1173,20 +1179,32 @@ func encU32Update(offset uint16, v uint32) []byte {
 // appendMutLog writes pre-encoded tx records to the .index.log file,
 // wrapped in a BOUNDARY record so the group is atomic on recovery.
 // Caller must hold fs.mu (guaranteed by withFolder).
+//
+// fs.logFD is kept open across calls so each append costs one write(2)
+// instead of open+stat+write+close. closeFDs() must be called before any
+// operation that replaces the log file on disk (truncateLog, etc.).
 func (fs *folderState) appendMutLog(records ...[]byte) error {
 	t0 := time.Now()
-	logPath := fs.indexPath + ".log"
-	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return fmt.Errorf("fileindex/mutlog: open: %w", err)
-	}
-	defer f.Close()
-	if st, _ := f.Stat(); st != nil && st.Size() == 0 {
-		hdr := mailindex.NewLogHeader(fs.file.Header.IndexID, 1, uint32(time.Now().Unix()))
-		if err := hdr.Encode(f); err != nil {
-			return fmt.Errorf("fileindex/mutlog: write header: %w", err)
+
+	if fs.logFD == nil {
+		logPath := fs.indexPath + ".log"
+		f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			return fmt.Errorf("fileindex/mutlog: open: %w", err)
 		}
+		st, _ := f.Stat()
+		if st != nil && st.Size() == 0 {
+			hdr := mailindex.NewLogHeader(fs.file.Header.IndexID, 1, uint32(time.Now().Unix()))
+			if err := hdr.Encode(f); err != nil {
+				_ = f.Close()
+				return fmt.Errorf("fileindex/mutlog: write header: %w", err)
+			}
+		} else if st != nil {
+			fs.logSize = st.Size()
+		}
+		fs.logFD = f
 	}
+
 	// Compute total size: 12-byte BOUNDARY record + all sub-records.
 	subSize := 0
 	for _, rec := range records {
@@ -1194,17 +1212,23 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 	}
 	boundary := encLogRec(mailindex.TxTypeBoundary, 0,
 		mailindex.EncodeTxBoundaryPayload(mailindex.TxBoundary{Size: uint32(12 + subSize)}))
-	if _, err := f.Write(boundary); err != nil {
+
+	written := len(boundary)
+	if _, err := fs.logFD.Write(boundary); err != nil {
+		_ = fs.logFD.Close()
+		fs.logFD = nil
 		return fmt.Errorf("fileindex/mutlog: write boundary: %w", err)
 	}
 	for _, rec := range records {
-		if _, err := f.Write(rec); err != nil {
+		if _, err := fs.logFD.Write(rec); err != nil {
+			_ = fs.logFD.Close()
+			fs.logFD = nil
 			return fmt.Errorf("fileindex/mutlog: write: %w", err)
 		}
+		written += len(rec)
 	}
-	if st, _ := f.Stat(); st != nil {
-		fs.logSize = st.Size()
-	}
+	fs.logSize += int64(written)
+
 	if dur := time.Since(t0); dur > 100*time.Millisecond {
 		slog.Debug("fileindex: slow mutlog write", "folder", fs.folder, "dur_ms", dur.Milliseconds())
 	}
@@ -1458,7 +1482,7 @@ func (fs *folderState) flushAppend(rec *mailindex.Record) error {
 	if err != nil {
 		return fmt.Errorf("fileindex/append: encode: %w", err)
 	}
-	if err := appendName(fs.indexDir, rec.UID, fs.filenames[rec.UID], fs.sizes[rec.UID]); err != nil {
+	if err := fs.appendName(rec.UID, fs.filenames[rec.UID], fs.sizes[rec.UID]); err != nil {
 		return fmt.Errorf("fileindex/append: names: %w", err)
 	}
 	return fs.appendMutLog(
