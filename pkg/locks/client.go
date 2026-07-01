@@ -14,21 +14,35 @@ import (
 	"time"
 )
 
+// defaultPoolSize is the number of concurrent control connections per Client.
+// Each connection handles one round-trip at a time; the pool lets goroutines
+// proceed in parallel instead of serialising through a single mutex.
+const defaultPoolSize = 16
+
+// connSlot is one entry in the Client connection pool.
+type connSlot struct {
+	conn   net.Conn
+	reader *reader
+}
+
 // Client is the Locker implementation talking the TAB-delimited wire protocol.
-// One control connection per Client, shared across goroutines via mu. SUBSCRIBE
-// opens a new dedicated connection (returned to caller via the channel).
+// Internally it maintains a pool of control connections so concurrent goroutines
+// do not serialise through a single mutex. SUBSCRIBE opens a dedicated connection
+// per subscription (returned to the caller via a channel).
 //
 // Owner convention: callers should pass "<process>/<pid>/<sessionID>" so the
 // BUSY response identifies the contending peer in logs. Not enforced.
 type Client struct {
-	dial Dialer
+	dial     Dialer
+	poolSize int
 
-	mu     sync.Mutex
-	conn   net.Conn
-	reader *reader
+	// idle is the connection pool: a buffered channel of available slots.
+	// Taking a slot gives exclusive access to its conn; returning it makes it
+	// available again. Cap = poolSize; starts with all-nil conns (lazy connect).
+	idle chan *connSlot
 
-	// holdsMu guards the holds map. Separate from mu so HoldsResource is
-	// safe to call from goroutines that may be inside a roundtrip on mu.
+	// holdsMu guards the holds map. Separate from the pool so HoldsResource is
+	// safe to call from goroutines that may be mid-roundtrip.
 	//
 	// Holds are tracked per-goroutine — re-entrancy applies only when
 	// the same goroutine that took the lock makes the inner call. A
@@ -44,8 +58,22 @@ type Client struct {
 	closed    chan struct{}
 }
 
-// Dialer opens a fresh connection to the locks server. Used for both the
-// control conn at NewClient time and per-subscription conns.
+// ClientOption tunes a Client at construction time.
+type ClientOption func(*Client)
+
+// WithPoolSize overrides the number of concurrent control connections.
+// The default is 16. Larger values reduce mutex contention under high
+// concurrency at the cost of more open TCP connections.
+func WithPoolSize(n int) ClientOption {
+	return func(c *Client) {
+		if n > 0 {
+			c.poolSize = n
+		}
+	}
+}
+
+// Dialer opens a fresh connection to the locks server. Used for both pool
+// slots and per-subscription conns.
 type Dialer func(ctx context.Context) (net.Conn, error)
 
 // DialUnix returns a Dialer for embedded mode (Unix socket).
@@ -87,32 +115,38 @@ func DialTLS(addr string, tlsCfg *tls.Config) Dialer {
 	}
 }
 
-// NewClient opens a control connection and performs the version handshake.
-// The returned Client owns the connection — call Close to release it.
-func NewClient(ctx context.Context, dial Dialer) (*Client, error) {
-	conn, err := dial(ctx)
-	if err != nil {
-		return nil, err
-	}
+// NewClient creates a Client with a lazy-initialised connection pool. The first
+// round-trip on each pool slot establishes the connection and performs the
+// version handshake. Call Close to release all connections.
+func NewClient(ctx context.Context, dial Dialer, opts ...ClientOption) (*Client, error) {
 	c := &Client{
-		dial:   dial,
-		conn:   conn,
-		reader: newReader(conn),
-		holds:  make(map[uint64]map[string]string),
-		closed: make(chan struct{}),
+		dial:     dial,
+		poolSize: defaultPoolSize,
+		holds:    make(map[uint64]map[string]string),
+		closed:   make(chan struct{}),
 	}
-	if err := c.handshake(); err != nil {
-		_ = conn.Close()
+	for _, opt := range opts {
+		opt(c)
+	}
+	c.idle = make(chan *connSlot, c.poolSize)
+	for i := 0; i < c.poolSize; i++ {
+		c.idle <- &connSlot{} // conn == nil → lazy connect on first use
+	}
+	// Verify the server is reachable by connecting one slot eagerly.
+	slot := <-c.idle
+	if err := c.ensureConnected(ctx, slot); err != nil {
+		c.idle <- slot // return before closing so Close() can drain
 		return nil, err
 	}
+	c.idle <- slot
 	return c, nil
 }
 
-func (c *Client) handshake() error {
-	if err := writeFields(c.conn, cmdVersion, protocolVersion); err != nil {
+func (c *Client) handshakeSlot(slot *connSlot) error {
+	if err := writeFields(slot.conn, cmdVersion, protocolVersion); err != nil {
 		return fmt.Errorf("locks/client: send version: %w", err)
 	}
-	fields, err := c.reader.readFields()
+	fields, err := slot.reader.readFields()
 	if err != nil {
 		return fmt.Errorf("locks/client: read version: %w", err)
 	}
@@ -122,26 +156,39 @@ func (c *Client) handshake() error {
 	return nil
 }
 
-// reconnect drops the current conn and opens a new one. Caller holds c.mu.
-func (c *Client) reconnect(ctx context.Context) error {
-	if c.conn != nil {
-		_ = c.conn.Close()
+// ensureConnected opens (or reopens) the connection for a pool slot.
+// Caller holds exclusive access to the slot (taken from the idle channel).
+func (c *Client) ensureConnected(ctx context.Context, slot *connSlot) error {
+	if slot.conn != nil {
+		return nil
 	}
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return err
 	}
-	c.conn = conn
-	c.reader = newReader(conn)
-	if err := c.handshake(); err != nil {
+	slot.conn = conn
+	slot.reader = newReader(conn)
+	if err := c.handshakeSlot(slot); err != nil {
 		_ = conn.Close()
-		c.conn = nil
+		slot.conn = nil
+		slot.reader = nil
 		return err
 	}
 	return nil
 }
 
-// roundtrip serializes a single command/response on the control conn. On
+// reconnectSlot drops the current conn and opens a new one.
+// Caller holds exclusive access to the slot.
+func (c *Client) reconnectSlot(ctx context.Context, slot *connSlot) error {
+	if slot.conn != nil {
+		_ = slot.conn.Close()
+		slot.conn = nil
+		slot.reader = nil
+	}
+	return c.ensureConnected(ctx, slot)
+}
+
+// roundtrip serializes a single command/response on one pool slot. On
 // transient transport error it reconnects once and retries. Safe for every
 // command in our protocol — LOCK is the only mutating call, and lock IDs
 // are randomly generated client-side so a retry that arrives after a server
@@ -152,33 +199,41 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 		return nil, ErrClosed
 	default:
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn == nil {
-		if err := c.reconnect(ctx); err != nil {
-			return nil, fmt.Errorf("locks/client: reconnect: %w", err)
-		}
+
+	// Take an idle slot from the pool (blocks until one is available or ctx fires).
+	var slot *connSlot
+	select {
+	case <-c.closed:
+		return nil, ErrClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case slot = <-c.idle:
+	}
+	defer func() { c.idle <- slot }()
+
+	if err := c.ensureConnected(ctx, slot); err != nil {
+		return nil, fmt.Errorf("locks/client: connect: %w", err)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = c.conn.SetDeadline(deadline)
-		defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
+		_ = slot.conn.SetDeadline(deadline)
+		defer func() { _ = slot.conn.SetDeadline(time.Time{}) }()
 	}
-	if err := writeFields(c.conn, cmd...); err != nil {
+	if err := writeFields(slot.conn, cmd...); err != nil {
 		if isTransport(err) {
-			if rerr := c.reconnect(ctx); rerr == nil {
-				if err = writeFields(c.conn, cmd...); err == nil {
-					return c.reader.readFields()
+			if rerr := c.reconnectSlot(ctx, slot); rerr == nil {
+				if err = writeFields(slot.conn, cmd...); err == nil {
+					return slot.reader.readFields()
 				}
 			}
 		}
 		return nil, fmt.Errorf("locks/client: write: %w", err)
 	}
-	fields, err := c.reader.readFields()
+	fields, err := slot.reader.readFields()
 	if err != nil {
 		if isTransport(err) {
-			if rerr := c.reconnect(ctx); rerr == nil {
-				if err = writeFields(c.conn, cmd...); err == nil {
-					return c.reader.readFields()
+			if rerr := c.reconnectSlot(ctx, slot); rerr == nil {
+				if err = writeFields(slot.conn, cmd...); err == nil {
+					return slot.reader.readFields()
 				}
 			}
 		}
@@ -355,11 +410,8 @@ func (c *Client) Emit(ctx context.Context, resource string, t EventType, payload
 }
 
 // IncrementCounter implements Locker. Atomically adds delta to the
-// counter at key and returns the post-increment value. Sent over
-// the shared control conn, so concurrent callers serialise through
-// c.mu — the backend itself is still race-free for cross-process
-// callers because the underlying store (Redis INCRBY or
-// MemoryBackend mutex) is atomic.
+// counter at key and returns the post-increment value. Sent over a pool
+// slot so concurrent callers do not serialise unnecessarily.
 func (c *Client) IncrementCounter(ctx context.Context, key string, delta int64) (int64, error) {
 	resp, err := c.roundtrip(ctx, cmdCounterInc, key, strconv.FormatInt(delta, 10))
 	if err != nil {
@@ -379,7 +431,7 @@ func (c *Client) IncrementCounter(ctx context.Context, key string, delta int64) 
 }
 
 // Subscribe implements Locker. Opens a dedicated connection for the
-// subscription so it does not block the control conn. The returned channel
+// subscription so it does not consume a pool slot. The returned channel
 // is closed when ctx is cancelled, the conn drops, or the server closes.
 func (c *Client) Subscribe(ctx context.Context, resource string) (<-chan Event, error) {
 	conn, err := c.dial(ctx)
@@ -431,14 +483,23 @@ func (c *Client) Subscribe(ctx context.Context, resource string) (<-chan Event, 
 	return out, nil
 }
 
-// Close implements Locker. Idempotent.
+// Close implements Locker. Idempotent. Closes all pool connections.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.conn != nil {
-			_ = c.conn.Close()
+		// Drain and close all pool slots. Slots that are mid-roundtrip will
+		// be returned to the channel after the goroutine detects the closed
+		// channel; we only close the ones already idle.
+		for i := 0; i < c.poolSize; i++ {
+			select {
+			case slot := <-c.idle:
+				if slot.conn != nil {
+					_ = slot.conn.Close()
+				}
+			default:
+				// slot is in-use; its connection will be abandoned when the
+				// goroutine returns it after noticing c.closed.
+			}
 		}
 	})
 	return nil
