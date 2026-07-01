@@ -31,6 +31,7 @@ type Backend struct {
 	pid      int
 	counter  atomic.Uint64
 	locker   locks.Locker
+	writeSem chan struct{} // nil = unlimited
 }
 
 // Option configures a Backend at construction time.
@@ -42,6 +43,16 @@ type Option func(*Backend)
 // (single-process tests / dev), keeping the in-process sync.Mutex only.
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
+}
+
+// WithMaxConcurrentWrites caps the number of concurrent Save() calls.
+// Use 16-32 for spinning disks, 128-256 for SSDs. 0 means unlimited.
+func WithMaxConcurrentWrites(n int) Option {
+	return func(b *Backend) {
+		if n > 0 {
+			b.writeSem = make(chan struct{}, n)
+		}
+	}
 }
 
 // New creates a Maildir backend.
@@ -219,6 +230,10 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // inline so subsequent List() / Fetch() can resolve UIDs without
 // a separate AppendUIDEntry call.
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, error) {
+	if u.b.writeSem != nil {
+		u.b.writeSem <- struct{}{}
+		defer func() { <-u.b.writeSem }()
+	}
 	folderPath := u.folderPath(folder)
 	now := time.Now()
 	seq := u.b.counter.Add(1)

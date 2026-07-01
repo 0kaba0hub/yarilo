@@ -42,6 +42,7 @@ type Backend struct {
 	pid      int
 	tmpSeq   atomic.Uint64 // per-process counter for unique .temp.* names
 	locker   locks.Locker
+	writeSem chan struct{} // nil = unlimited
 }
 
 // Option configures a Backend at construction time.
@@ -55,6 +56,16 @@ type Option func(*Backend)
 // barrier — never safe in production.
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
+}
+
+// WithMaxConcurrentWrites caps the number of concurrent Save() calls.
+// Use 16-32 for spinning disks, 128-256 for SSDs. 0 means unlimited.
+func WithMaxConcurrentWrites(n int) Option {
+	return func(b *Backend) {
+		if n > 0 {
+			b.writeSem = make(chan struct{}, n)
+		}
+	}
 }
 
 // New constructs an sdbox Backend.
@@ -272,6 +283,10 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // size comes from actual bytes written (post-CRLF normalisation).
 // flags are ignored — sdbox delegates flag storage to the index.
 func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
+	if u.b.writeSem != nil {
+		u.b.writeSem <- struct{}{}
+		defer func() { <-u.b.writeSem }()
+	}
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return "", fmt.Errorf("sdbox/save: mkdir: %w", err)
 	}

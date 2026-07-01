@@ -66,7 +66,8 @@ const (
 // shared locks.Locker and the optional alt-storage path template.
 type Backend struct {
 	locker         locks.Locker
-	altStorageTmpl string // Dovecot mail_alt_path equivalent; "" = disabled
+	altStorageTmpl string        // Dovecot mail_alt_path equivalent; "" = disabled
+	writeSem       chan struct{} // nil = unlimited
 }
 
 // Option configures a Backend at construction time.
@@ -87,6 +88,16 @@ func WithLocker(l locks.Locker) Option {
 // Example: "/mnt/cold/%d/%n" — mirrors Dovecot's mail_alt_path.
 func WithAltStorage(tmpl string) Option {
 	return func(b *Backend) { b.altStorageTmpl = tmpl }
+}
+
+// WithMaxConcurrentWrites caps the number of concurrent Save() calls.
+// Use 16-32 for spinning disks, 128-256 for SSDs. 0 means unlimited.
+func WithMaxConcurrentWrites(n int) Option {
+	return func(b *Backend) {
+		if n > 0 {
+			b.writeSem = make(chan struct{}, n)
+		}
+	}
 }
 
 // New constructs a Backend.
@@ -332,6 +343,10 @@ const rotateThreshold uint32 = 2 * 1024 * 1024
 // fileindex; mdbox ignores it (filename is map_uid, not the
 // per-folder UID).
 func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
+	if u.b.writeSem != nil {
+		u.b.writeSem <- struct{}{}
+		defer func() { <-u.b.writeSem }()
+	}
 	body, err := readBodyCRLF(r)
 	if err != nil {
 		return "", fmt.Errorf("mdbox/save: read body: %w", err)

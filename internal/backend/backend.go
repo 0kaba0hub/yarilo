@@ -127,7 +127,7 @@ func New(cfg *config.Config) (*Server, error) {
 	// non-default driver referenced from cfg.Namespaces[*].Location.
 	// Namespaces using the global driver are absent from the map and
 	// resolve at session-open time to the global mbox.
-	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, cfg.Storage.MdboxAltStoragePath, locker)
+	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, cfg.Storage.MdboxAltStoragePath, locker, cfg.Storage.MaxConcurrentWrites)
 	if err != nil {
 		return nil, fmt.Errorf("backend: namespace mailboxes: %w", err)
 	}
@@ -807,7 +807,7 @@ func (a chainAuth) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, err
 }
 
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
-	return buildMailboxByDriver(cfg.Mailbox, cfg.MdboxAltStoragePath, locker)
+	return buildMailboxByDriver(cfg.Mailbox, cfg.MdboxAltStoragePath, locker, cfg.MaxConcurrentWrites)
 }
 
 // buildMailboxByDriver constructs a MailboxBackend for the named
@@ -816,14 +816,14 @@ func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 // (global default from cfg.Storage.Mailbox) and by
 // buildNamespaceMailboxes (per-namespace override from
 // cfg.Namespaces[*].Location).
-func buildMailboxByDriver(driver, mdboxAltPath string, locker locks.Locker) mailbox.MailboxBackend {
+func buildMailboxByDriver(driver, mdboxAltPath string, locker locks.Locker, maxConcurrentWrites int) mailbox.MailboxBackend {
 	switch strings.ToLower(driver) {
 	case "sdbox", "dbox":
-		return dboxv2.New(dboxv2.WithLocker(locker))
+		return dboxv2.New(dboxv2.WithLocker(locker), dboxv2.WithMaxConcurrentWrites(maxConcurrentWrites))
 	case "mdbox":
-		return mdbox.New(mdbox.WithLocker(locker), mdbox.WithAltStorage(mdboxAltPath))
+		return mdbox.New(mdbox.WithLocker(locker), mdbox.WithAltStorage(mdboxAltPath), mdbox.WithMaxConcurrentWrites(maxConcurrentWrites))
 	default:
-		return maildir.New(maildir.WithLocker(locker))
+		return maildir.New(maildir.WithLocker(locker), maildir.WithMaxConcurrentWrites(maxConcurrentWrites))
 	}
 }
 
@@ -837,7 +837,7 @@ func buildMailboxByDriver(driver, mdboxAltPath string, locker locks.Locker) mail
 // The override map is keyed by namespace prefix (same key the IMAP
 // session dispatcher uses). Same-driver namespaces share their
 // Backend instance to keep the in-memory footprint small.
-func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver, mdboxAltPath string, locker locks.Locker) (map[string]mailbox.MailboxBackend, error) {
+func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver, mdboxAltPath string, locker locks.Locker, maxConcurrentWrites int) (map[string]mailbox.MailboxBackend, error) {
 	if len(namespaces) == 0 {
 		return nil, nil
 	}
@@ -867,7 +867,7 @@ func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver, 
 		}
 		b, exists := byDriver[drv]
 		if !exists {
-			b = buildMailboxByDriver(drv, mdboxAltPath, locker)
+			b = buildMailboxByDriver(drv, mdboxAltPath, locker, maxConcurrentWrites)
 			byDriver[drv] = b
 			slog.Info("backend: per-namespace mailbox backend built", "driver", drv, "ns", ns.Prefix)
 		}

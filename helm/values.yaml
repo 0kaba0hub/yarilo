@@ -25,6 +25,7 @@ storage:
   ## indexLogCompactMinBytes: 32768    # 32 KiB — compact log when >= this size and age >= minAge
   ## indexLogCompactMaxBytes: 1048576  # 1 MiB  — compact unconditionally above this size
   ## indexLogCompactMinAgeSecs: 300    # 5 min  — minimum log age before min-size compaction fires
+  ## maxConcurrentWrites: 0           # 0 = unlimited; tune to storage type: ~32 HDD, ~256 SSD
   persistence:
     enabled: true
     storageClass: ""
