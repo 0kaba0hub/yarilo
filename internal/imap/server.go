@@ -1678,6 +1678,7 @@ func (s *session) refreshIdleCount(w *imapserver.UpdateWriter) error {
 }
 
 func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) error {
+	tExpunge := time.Now()
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
@@ -1693,6 +1694,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	// shifts all subsequent sequence numbers down by one, so we must adjust
 	// as we go rather than using the static position from GetMessages.
 	seqNum := uint32(len(msgs))
+	var expunge_count int
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		if !hasFlag(m.Flags, `\Deleted`) {
@@ -1706,6 +1708,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
 		s.statsExpunged++
+		expunge_count++
 		if err := w.WriteExpunge(seqNum); err != nil {
 			return err
 		}
@@ -1716,6 +1719,9 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		}
 		seqNum--
 	}
+	slog.Debug("imap: expunge timing",
+		"user", s.userInfo.Username, "folder", s.folder.Name,
+		"count", expunge_count, "total_ms", time.Since(tExpunge).Milliseconds())
 	return nil
 }
 
@@ -2259,6 +2265,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 }
 
 func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, error) {
+	tCopy := time.Now()
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
@@ -2290,6 +2297,8 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		copyUIDToClientSeq[km.uid] = uint32(i + 1)
 	}
 	var srcUIDs, dstUIDs imaplib.UIDSet
+	var saveTotalMs, indexTotalMs int64
+	var count int
 	for _, m := range msgs {
 		seqNum, ok := copyUIDToClientSeq[m.UID]
 		if !ok {
@@ -2307,10 +2316,12 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		if readErr != nil {
 			return nil, fmt.Errorf("imap/copy read: %w", readErr)
 		}
+		tSave := time.Now()
 		newFilename, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return nil, fmt.Errorf("imap/copy save: %w", saveErr)
 		}
+		saveTotalMs += time.Since(tSave).Milliseconds()
 		nm := &mailbox.MessageMeta{
 			Filename:     newFilename,
 			Flags:        m.Flags,
@@ -2318,14 +2329,21 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			Size:         uint32(len(data)),
 			InternalDate: m.InternalDate,
 		}
+		tIndex := time.Now()
 		if err := destH.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
 			_ = destH.box.Remove(destRel, newFilename)
 			return nil, fmt.Errorf("imap/copy record: %w", err)
 		}
+		indexTotalMs += time.Since(tIndex).Milliseconds()
+		count++
 		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
 	}
+	slog.Debug("imap: copy timing",
+		"user", s.userInfo.Username, "src", s.folder.Name, "dst", dest,
+		"count", count, "save_ms", saveTotalMs, "index_ms", indexTotalMs,
+		"total_ms", time.Since(tCopy).Milliseconds())
 	return &imaplib.CopyData{
 		UIDValidity: destFolder.UIDValidity,
 		SourceUIDs:  srcUIDs,
@@ -2558,6 +2576,7 @@ func (s *session) metadataOps() *dict.OpSettings {
 }
 
 func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest string) error {
+	tMove := time.Now()
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
@@ -2602,6 +2621,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	}
 	var hits []matched
 	var srcUIDs, dstUIDs imaplib.UIDSet
+	var saveTotalMs, indexTotalMs int64
 
 	for _, m := range msgs {
 		seqNum, ok := moveUIDToClientSeq[m.UID]
@@ -2620,10 +2640,12 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		if readErr != nil {
 			return fmt.Errorf("imap/move read: %w", readErr)
 		}
+		tSave := time.Now()
 		newFilename, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return fmt.Errorf("imap/move save: %w", saveErr)
 		}
+		saveTotalMs += time.Since(tSave).Milliseconds()
 		nm := &mailbox.MessageMeta{
 			Filename:     newFilename,
 			Flags:        m.Flags,
@@ -2631,10 +2653,12 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			Size:         uint32(len(data)),
 			InternalDate: m.InternalDate,
 		}
+		tIndex := time.Now()
 		if err := destH.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
 			_ = destH.box.Remove(destRel, newFilename)
 			return fmt.Errorf("imap/move record: %w", err)
 		}
+		indexTotalMs += time.Since(tIndex).Milliseconds()
 		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
@@ -2665,6 +2689,10 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	}
 	s.folder.Messages -= uint32(len(hits))
 	srcIdx.SaveFolder(s.folder) //nolint:errcheck
+	slog.Debug("imap: move timing",
+		"user", s.userInfo.Username, "src", s.folder.Name, "dst", dest,
+		"count", len(hits), "save_ms", saveTotalMs, "index_ms", indexTotalMs,
+		"total_ms", time.Since(tMove).Milliseconds())
 	return nil
 }
 
