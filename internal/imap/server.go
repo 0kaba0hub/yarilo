@@ -1348,6 +1348,7 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 }
 
 func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.AppendOptions) (*imaplib.AppendData, error) {
+	tAppend := time.Now()
 	h, rel, f, err := s.ensureFolderHandle(name)
 	if err != nil {
 		return nil, err
@@ -1375,10 +1376,12 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		return nil, err
 	}
 
+	tSave := time.Now()
 	filename, err := h.box.Save(rel, r, 0, size, flagList)
 	if err != nil {
 		return nil, err
 	}
+	tIndex := time.Now()
 	internalDate := time.Now()
 	if opts != nil && !opts.Time.IsZero() {
 		internalDate = opts.Time
@@ -1391,6 +1394,13 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		_ = h.box.Remove(rel, filename)
 		return nil, fmt.Errorf("imap/append record: %w", err)
 	}
+	tDone := time.Now()
+	slog.Debug("imap: append timing",
+		"user", s.userInfo.Username, "folder", rel, "size", size,
+		"save_ms", tIndex.Sub(tSave).Milliseconds(),
+		"index_ms", tDone.Sub(tIndex).Milliseconds(),
+		"total_ms", tDone.Sub(tAppend).Milliseconds(),
+	)
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		if rc, ferr := h.box.Fetch(rel, filename, false); ferr == nil {
 			raw, _ := io.ReadAll(rc)
@@ -2128,6 +2138,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 }
 
 func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeFlags *imaplib.StoreFlags, opts *imaplib.StoreOptions) error {
+	tStore := time.Now()
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
@@ -2141,6 +2152,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	if err != nil {
 		return err
 	}
+	tUpdate := time.Now()
 
 	uidToClientSeq := make(map[uint32]uint32, len(s.knownMsgs))
 	for i, km := range s.knownMsgs {
@@ -2208,6 +2220,12 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		}
 		s.emitMailboxChange(s.folder.Name, locks.EventChanged, 0)
 	}
+	slog.Debug("imap: store timing",
+		"user", s.userInfo.Username, "folder", s.folder.Name, "count", len(batchUpdates),
+		"getmsgs_ms", tUpdate.Sub(tStore).Milliseconds(),
+		"update_ms", time.Since(tUpdate).Milliseconds(),
+		"total_ms", time.Since(tStore).Milliseconds(),
+	)
 
 	// Pass 3: send FETCH responses using modseqs returned from the batch.
 	// Also update knownMsgs.modseq so the post-command Poll skips these

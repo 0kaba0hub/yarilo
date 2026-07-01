@@ -402,11 +402,9 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 				return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 			}
 			lockWait := time.Since(t0)
-			if lockWait > 200*time.Millisecond {
-				slog.Debug("fileindex: slow distributed lock wait",
-					"user", u.username, "folder", fs.folder,
-					"lock_wait_ms", lockWait.Milliseconds())
-			}
+			slog.Debug("fileindex: lock wait",
+				"user", u.username, "folder", fs.folder,
+				"lock_wait_ms", lockWait.Milliseconds())
 			defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
 		}
 	}
@@ -414,11 +412,9 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 	defer fs.mu.Unlock()
 	t1 := time.Now()
 	err := fn()
-	if dur := time.Since(t1); dur > 200*time.Millisecond {
-		slog.Debug("fileindex: slow folder lock fn",
-			"user", u.username, "folder", fs.folder,
-			"fn_ms", dur.Milliseconds())
-	}
+	slog.Debug("fileindex: lock fn",
+		"user", u.username, "folder", fs.folder,
+		"fn_ms", time.Since(t1).Milliseconds())
 	return err
 }
 
