@@ -334,6 +334,9 @@ data:
       {{- if $storage.indexLogCompactMinAgeSecs }}
       index_log_compact_min_age_secs: {{ $storage.indexLogCompactMinAgeSecs }}
       {{- end }}
+      {{- if $storage.maxConcurrentWrites }}
+      max_concurrent_writes: {{ $storage.maxConcurrentWrites }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.dicts }}

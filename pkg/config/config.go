@@ -926,6 +926,12 @@ type StorageConfig struct {
 	MailHomeTemplate string `koanf:"mail_home_template"`
 	Index            string `koanf:"index"`
 	IndexDir         string `koanf:"index_dir"`
+
+	// MaxConcurrentWrites caps the number of concurrent box.Save() calls
+	// (message body writes to disk). Tune to match storage throughput:
+	// spinning disks typically benefit from 16-32, SSDs from 128-256.
+	// 0 means unlimited (default for backwards compatibility).
+	MaxConcurrentWrites int `koanf:"max_concurrent_writes"`
 	// MdboxAltStoragePath is the base directory for the mdbox alt
 	// (cold) storage tier. Supports the same %u/%n/%d/%Lu/%Ln/%Ld
 	// template variables as mail_home_template. Empty disables alt
