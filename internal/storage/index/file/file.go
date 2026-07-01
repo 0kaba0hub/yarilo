@@ -272,8 +272,29 @@ type folderState struct {
 	baseMod   time.Time // mtime of base .index at last full reload
 	lastFlush time.Time // wall-clock time of last flush() call (zero = never)
 
+	// logFD and namesFD are kept open across calls so appendMutLog /
+	// appendName each cost one write(2) instead of open+stat+write+close.
+	// Callers must invoke closeFDs() before any operation that replaces
+	// these files on disk (truncateLog, saveNames).
+	logFD   *os.File
+	namesFD *os.File
+
 	// dboxHdr is the folder GUID + flags from the dbox-hdr ext.
 	hdr dboxHdr
+}
+
+// closeFDs closes logFD and namesFD and sets them to nil.
+// Must be called before truncateLog or saveNames replaces the files on disk,
+// and when the folderState is evicted from the open-folder cache.
+func (fs *folderState) closeFDs() {
+	if fs.logFD != nil {
+		_ = fs.logFD.Close()
+		fs.logFD = nil
+	}
+	if fs.namesFD != nil {
+		_ = fs.namesFD.Close()
+		fs.namesFD = nil
+	}
 }
 
 // compactLogIfNeeded checks whether fs.logSize has crossed the compaction
@@ -304,6 +325,7 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 		slog.Warn("fileindex: log compaction flush failed", "folder", fs.folder, "err", err)
 		return
 	}
+	fs.closeFDs()
 	if err := truncateLog(fs.indexPath, fs.file.Header.IndexID); err != nil {
 		slog.Warn("fileindex: log compaction truncate failed", "folder", fs.folder, "err", err)
 		return
@@ -455,10 +477,11 @@ func (u *userIndex) withTwoFolderLocks(folderA, folderB string, fn func() error)
 }
 
 // Close releases every cached folder state. The fileindex itself
-// has no long-lived file descriptors (pure Recreate path), so
-// Close is currently a no-op besides clearing the map.
 func (u *userIndex) Close() error {
 	u.mu.Lock()
+	for _, fs := range u.open {
+		fs.closeFDs()
+	}
 	u.open = nil
 	u.byDir = nil
 	u.mu.Unlock()
@@ -485,6 +508,7 @@ func (u *userIndex) RenameFolder(oldName, newName string) error {
 		u.mu.Lock()
 		for id, fs := range u.open {
 			if fs.folder == oldName {
+				fs.closeFDs()
 				delete(u.open, id)
 			}
 		}
@@ -669,17 +693,24 @@ func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32) {
 }
 
 // appendName appends a single uid→filename→size entry to the .names sidecar.
-// Used by flushAppend so APPEND is O(1) NFS writes instead of O(N).
+// fs.namesFD is kept open across calls so each append costs one write(2).
+// closeFDs() must be called before saveNames replaces the file on disk.
 // loadNames handles duplicate UIDs (last entry wins), so this is safe.
-func appendName(indexDir string, uid uint32, filename string, size uint32) error {
-	dst := namesPath(indexDir)
-	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return fmt.Errorf("fileindex/names: open: %w", err)
+func (fs *folderState) appendName(uid uint32, filename string, size uint32) error {
+	if fs.namesFD == nil {
+		dst := namesPath(fs.indexDir)
+		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			return fmt.Errorf("fileindex/names: open: %w", err)
+		}
+		fs.namesFD = f
 	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "%d\t%s\t%d\n", uid, filename, size)
-	return err
+	if _, err := fmt.Fprintf(fs.namesFD, "%d\t%s\t%d\n", uid, filename, size); err != nil {
+		_ = fs.namesFD.Close()
+		fs.namesFD = nil
+		return fmt.Errorf("fileindex/names: write: %w", err)
+	}
+	return nil
 }
 
 // saveNames rewrites the .names sidecar atomically (.tmp + rename).
