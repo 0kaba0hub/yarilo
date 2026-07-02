@@ -91,6 +91,11 @@ type SieveConfig struct {
 	// ScriptsDictName is the key in Config.Dicts that points to the dict
 	// instance used when ScriptsDriver is "redis". Ignored for "fs".
 	ScriptsDictName string `koanf:"scripts_dict"`
+
+	// Environments is an operator-defined set of key-value pairs exposed to
+	// Sieve scripts via the vnd.yarilo.environment extension as
+	// vnd.yarilo.config.<key> items. Corresponds to Dovecot's sieve_environment.
+	Environments map[string]string `koanf:"sieve_environment"`
 }
 
 // DictConfig declares one named dict instance. The map key in

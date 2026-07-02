@@ -168,6 +168,7 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 
 	rd := gosieve.NewRuntimeData(script, pol, env, msg)
 	rd.DuplicateTracker = e.dupTracker(opts.Username)
+	rd.Env = &yariloEnv{username: opts.Username, configItems: e.cfg.Environments}
 	if err := script.Execute(ctx, rd); err != nil {
 		return nil, fmt.Errorf("sieve/engine: execute: %w", err)
 	}

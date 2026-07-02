@@ -636,6 +636,29 @@ func testSieveDebugLog(user, pass, to string) error {
 	return nil
 }
 
+func testSieveEnvironment(user, pass, to string) error {
+	subject := "env-" + uniqueID()
+	// Test both the environment test and the env. variable namespace.
+	script := `require ["environment","variables","fileinto","vnd.yarilo.environment"];` + "\n" +
+		`if environment :is "vnd.yarilo.username" "` + to + `" {` + "\n" +
+		`  set "mb" "${env.vnd.yarilo.default_mailbox}";` + "\n" +
+		`  fileinto "${mb}";` + "\n" +
+		`} else {` + "\n" +
+		`  fileinto "Junk";` + "\n" +
+		`}` + "\n"
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "environment test body"); err != nil {
+		return err
+	}
+	n, err := cleanInboxBySubject(user, pass, subject)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("vnd.yarilo.environment: message not delivered to INBOX (username item mismatch or env. variable namespace not working)")
+	}
+	return nil
+}
+
 func checkSieve() error {
 	if *flagManageSieveUser == "" {
 		return fmt.Errorf("-managesieve-user is required")
@@ -663,6 +686,7 @@ func checkSieve() error {
 		{"relational", testSieveRelational},
 		{"date", testSieveDate},
 		{"vnd.yarilo.debug", testSieveDebugLog},
+		{"vnd.yarilo.environment", testSieveEnvironment},
 		{"enotify", testSieveEnotify},
 	}
 
