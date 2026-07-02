@@ -497,7 +497,7 @@ func testSieveVariables(user, pass, to string) error {
 func testSieveReject(user, pass, to string) error {
 	subject := "reject-" + uniqueID()
 	script := "require \"reject\";\nreject \"smoke test reject\";\n"
-	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
 	// MX accepts the message (250), yarilo-lmtp rejects it async — message must NOT land in INBOX.
@@ -515,7 +515,7 @@ func testSieveReject(user, pass, to string) error {
 func testSieveEreject(user, pass, to string) error {
 	subject := "ereject-" + uniqueID()
 	script := "require \"ereject\";\nereject \"smoke test ereject\";\n"
-	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
 	// Same as reject — message must NOT land in INBOX.
