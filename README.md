@@ -74,7 +74,7 @@ Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a 
 | POP3 | RFC 1939 | STLS, UIDL, CAPA, XCLIENT | ✅ |
 | LMTP | RFC 2033 | per-recipient status, HAProxy, XCLIENT, STARTTLS, `Delivered-To`, Sieve delivery | ✅ |
 | ManageSieve | RFC 5804 | full script management | ✅ |
-| Sieve | RFC 5228 | fileinto, reject, ereject, envelope, encoded-character, copy, subaddress, variables, relational, body, vacation, vacation-seconds, regex, date, index, editheader, mailbox, duplicate, ihave, special-use, imap4flags, fcc, include, extlists, enotify, environment, spamtest, spamtestplus, virustest, mboxmetadata, servermetadata | ✅ |
+| Sieve | RFC 5228 | fileinto, reject, ereject, envelope, encoded-character, copy, subaddress, variables, relational, body, vacation, vacation-seconds, regex, date, index, editheader, mailbox, duplicate, ihave, special-use, imap4flags, fcc, include, extlists, enotify, environment, spamtest, spamtestplus, virustest, mboxmetadata, servermetadata, vnd.yarilo.debug | ✅ |
 | Submission | RFC 6409 | STARTTLS, SASL PLAIN, SIZE, PIPELINING, relay to upstream MTA | ✅ |
 | SASL | — | PLAIN, LOGIN, SCRAM-SHA-256, XOAUTH2, OAUTHBEARER | ✅ |
 | JMAP | RFC 8620/8621 | — | planned |

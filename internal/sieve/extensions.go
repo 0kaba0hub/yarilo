@@ -14,6 +14,7 @@ var SupportedExtensions = []string{
 	"editheader", "mailbox", "duplicate", "ihave", "special-use",
 	"imap4flags", "fcc", "include", "extlists", "enotify",
 	"spamtest", "spamtestplus", "virustest", "mboxmetadata", "servermetadata",
+	"vnd.yarilo.debug",
 }
 
 // EffectiveExtensions returns the intersection of SupportedExtensions and allowed.

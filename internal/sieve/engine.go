@@ -117,6 +117,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 		anyScriptRan = true
 		sieveOpts := gosieve.DefaultOptions()
 		sieveOpts.Interp.MaxRedirects = e.cfg.MaxRedirects
+		sieveOpts.Interp.DebugLog = makeDebugLogger(opts.HomeDir)
 		script, err := gosieve.Load(bytes.NewReader(src), sieveOpts)
 		if err != nil {
 			slog.Error("sieve: script compile error, skipping user script",
