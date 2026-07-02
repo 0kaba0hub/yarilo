@@ -16,6 +16,25 @@ var SupportedExtensions = []string{
 	"spamtest", "spamtestplus", "virustest", "mboxmetadata", "servermetadata",
 }
 
+// EffectiveExtensions returns the intersection of SupportedExtensions and allowed.
+// When allowed is empty, SupportedExtensions is returned as-is.
+func EffectiveExtensions(allowed []string) []string {
+	if len(allowed) == 0 {
+		return SupportedExtensions
+	}
+	set := make(map[string]struct{}, len(allowed))
+	for _, e := range allowed {
+		set[e] = struct{}{}
+	}
+	out := make([]string, 0, len(allowed))
+	for _, e := range SupportedExtensions {
+		if _, ok := set[e]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // CheckExtensions verifies that every extension required by script is present
 // in the allowed list. Returns an error naming the first forbidden extension.
 // When allowed is empty, all extensions are permitted.
