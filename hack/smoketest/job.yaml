@@ -10,7 +10,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: smoketest
-        image: ghcr.io/0kaba0hub/yarilo:2.0.33
+        image: ghcr.io/0kaba0hub/yarilo:2.0.34
         command:
         - yarilo-smoketest
         args:
@@ -20,5 +20,6 @@ spec:
         - -managesieve
         - -managesieve-user=u1@d00001.test
         - -managesieve-pass=Yarilo!test1
+        - -sieve
         - -insecure
         - -telemetry=

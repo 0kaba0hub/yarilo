@@ -171,8 +171,8 @@ func lmtpSend(id, from, to, subject, body string) error {
 	if _, err := readResp(); err != nil {
 		return fmt.Errorf("greeting: %w", err)
 	}
-	if resp, err := cmd("LHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return fmt.Errorf("LHLO: %s %v", resp, err)
+	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("EHLO: %s %v", resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
 		return fmt.Errorf("MAIL FROM: %s %v", resp, err)
