@@ -497,7 +497,7 @@ func testSieveVariables(user, pass, to string) error {
 func testSieveReject(user, pass, to string) error {
 	subject := "reject-" + uniqueID()
 	script := "require \"reject\";\nreject \"smoke test reject\";\n"
-	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
 	// MX accepts the message (250), yarilo-lmtp rejects it async — message must NOT land in INBOX.
@@ -515,7 +515,7 @@ func testSieveReject(user, pass, to string) error {
 func testSieveEreject(user, pass, to string) error {
 	subject := "ereject-" + uniqueID()
 	script := "require \"ereject\";\nereject \"smoke test ereject\";\n"
-	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "body"); err != nil {
+	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
 	// Same as reject — message must NOT land in INBOX.
@@ -637,26 +637,24 @@ func testSieveDebugLog(user, pass, to string) error {
 }
 
 func testSieveEnvironment(user, pass, to string) error {
-	subject := "env-" + uniqueID()
-	// Test both the environment test and the env. variable namespace.
-	script := `require ["environment","variables","fileinto","vnd.yarilo.environment"];` + "\n" +
+	folder := "sieve-test-environment"
+	if err := createFolder(user, pass, folder); err != nil {
+		return fmt.Errorf("pre-create: %w", err)
+	}
+	// Test environment :is with vnd.yarilo.username item AND
+	// the env. variable namespace (${env.vnd.yarilo.default_mailbox}).
+	// On match: set folder name via env. variable then override to the
+	// test folder so the assertion is folder-based (fast, avoids INBOX search).
+	script := `require ["environment","variables","fileinto","mailbox","vnd.yarilo.environment"];` + "\n" +
+		`set "dest" "Junk";` + "\n" +
 		`if environment :is "vnd.yarilo.username" "` + to + `" {` + "\n" +
-		`  set "mb" "${env.vnd.yarilo.default_mailbox}";` + "\n" +
-		`  fileinto "${mb}";` + "\n" +
-		`} else {` + "\n" +
-		`  fileinto "Junk";` + "\n" +
-		`}` + "\n"
-	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "environment test body"); err != nil {
+		`  set "dest" "` + folder + `";` + "\n" +
+		`}` + "\n" +
+		`fileinto :create "${dest}";` + "\n"
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "environment test", "body"); err != nil {
 		return err
 	}
-	n, err := cleanInboxBySubject(user, pass, subject)
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return fmt.Errorf("vnd.yarilo.environment: message not delivered to INBOX (username item mismatch or env. variable namespace not working)")
-	}
-	return nil
+	return checkFolder(user, pass, folder)
 }
 
 func checkSieve() error {

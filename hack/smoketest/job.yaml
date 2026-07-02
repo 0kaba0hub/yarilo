@@ -5,12 +5,13 @@ metadata:
   namespace: yarilo-sb
 spec:
   ttlSecondsAfterFinished: 600
+  backoffLimit: 0
   template:
     spec:
       restartPolicy: Never
       containers:
       - name: smoketest
-        image: ghcr.io/0kaba0hub/yarilo:2.0.39
+        image: ghcr.io/0kaba0hub/yarilo:2.0.40
         command:
         - yarilo-smoketest
         args:
