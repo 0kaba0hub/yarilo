@@ -5,6 +5,7 @@ metadata:
   namespace: yarilo-sb
 spec:
   ttlSecondsAfterFinished: 600
+  backoffLimit: 0
   template:
     spec:
       restartPolicy: Never
