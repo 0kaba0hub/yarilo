@@ -238,13 +238,17 @@ func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.Ac
 		body = q.Get("body")
 	}
 
+	// Envelope-from: use original sender (matches Dovecot default behavior).
+	// Falls back to <> if original message had null sender.
+	envelopeFrom := opts.EnvFrom
+
 	from := opts.EnvTo
 	if from == "" {
 		from = n.From
 	}
 
 	msg := buildNotifyMessage(from, recipient, subject, body)
-	if err := s.submit(ctx, from, []string{recipient}, bytes.NewReader(msg)); err != nil {
+	if err := s.submit(ctx, envelopeFrom, []string{recipient}, bytes.NewReader(msg)); err != nil {
 		return fmt.Errorf("sieve/sender: notify send to %s: %w", recipient, err)
 	}
 	return nil
