@@ -58,9 +58,18 @@ func main() {
 	checks := []struct {
 		name string
 		fn   func() error
-	}{
-		{"telemetry /healthz", checkHealth},
-		{"telemetry /readyz", checkReady},
+	}{}
+	if *flagTelemetry != "" {
+		checks = append(checks,
+			struct {
+				name string
+				fn   func() error
+			}{"telemetry /healthz", checkHealth},
+			struct {
+				name string
+				fn   func() error
+			}{"telemetry /readyz", checkReady},
+		)
 	}
 
 	if *flagSMTPMX {

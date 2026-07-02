@@ -19,3 +19,4 @@ spec:
         - -managesieve-user=u1@d00001.test
         - -managesieve-pass=Yarilo!test1
         - -insecure
+        - -telemetry=
