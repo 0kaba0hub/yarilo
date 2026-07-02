@@ -363,7 +363,10 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			effLim, ignore := lim.EffectiveLimits(folder)
 			if !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
 				ctr := quota.NewCounter(s.opts.QuotaDict, username)
-				if u, cerr := ctr.Get(context.Background()); cerr == nil && quota.IsOver(u, effLim, int64(len(msg)), 1) {
+				ctxQ, cancelQ := context.WithTimeout(context.Background(), 2*time.Second)
+				u, cerr := ctr.Get(ctxQ)
+				cancelQ()
+				if cerr == nil && quota.IsOver(u, effLim, int64(len(msg)), 1) {
 					slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
 					status.SetStatus(rcpt, &goSmtp.SMTPError{
 						Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2},
