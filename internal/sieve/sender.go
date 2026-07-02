@@ -244,7 +244,7 @@ func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.Ac
 	}
 
 	msg := buildNotifyMessage(from, recipient, subject, body)
-	if err := s.submit(ctx, "", []string{recipient}, bytes.NewReader(msg)); err != nil {
+	if err := s.submit(ctx, from, []string{recipient}, bytes.NewReader(msg)); err != nil {
 		return fmt.Errorf("sieve/sender: notify send to %s: %w", recipient, err)
 	}
 	return nil

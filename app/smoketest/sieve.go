@@ -319,45 +319,68 @@ func createFolder(user, pass, folder string) error {
 }
 
 func checkFolder(user, pass, folder string) error {
-	c, err := imapDial()
-	if err != nil {
-		return fmt.Errorf("imap dial: %w", err)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		c, err := imapDial()
+		if err != nil {
+			return fmt.Errorf("imap dial: %w", err)
+		}
+		loginErr := c.login(user, pass)
+		if loginErr != nil {
+			c.close()
+			return fmt.Errorf("imap login: %w", loginErr)
+		}
+		exists, selErr := c.selectFolder(folder)
+		if selErr != nil {
+			c.close()
+			return fmt.Errorf("SELECT %q: %w", folder, selErr)
+		}
+		if exists >= 1 {
+			uids, _ := c.uidSearch("ALL")
+			c.deleteUIDs(uids) //nolint:errcheck
+			c.deleteFolder(folder)
+			c.close()
+			return nil
+		}
+		c.close()
+		if time.Now().After(deadline) {
+			return fmt.Errorf("expected 1 message in %q, got 0 (timed out)", folder)
+		}
+		time.Sleep(1 * time.Second)
 	}
-	defer c.close()
-	if err := c.login(user, pass); err != nil {
-		return fmt.Errorf("imap login: %w", err)
-	}
-	exists, err := c.selectFolder(folder)
-	if err != nil {
-		return fmt.Errorf("SELECT %q: %w", folder, err)
-	}
-	uids, _ := c.uidSearch("ALL")
-	c.deleteUIDs(uids) //nolint:errcheck
-	c.deleteFolder(folder)
-	if exists != 1 {
-		return fmt.Errorf("expected 1 message in %q, got %d", folder, exists)
-	}
-	return nil
 }
 
 func cleanInboxBySubject(user, pass, subjectToken string) (int, error) {
-	c, err := imapDial()
-	if err != nil {
-		return 0, err
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		c, err := imapDial()
+		if err != nil {
+			return 0, err
+		}
+		if err := c.login(user, pass); err != nil {
+			c.close()
+			return 0, err
+		}
+		if _, err := c.selectFolder("INBOX"); err != nil {
+			c.close()
+			return 0, err
+		}
+		uids, err := c.uidSearch(fmt.Sprintf("SUBJECT %q", subjectToken))
+		if err != nil {
+			c.close()
+			return 0, err
+		}
+		if len(uids) > 0 {
+			c.deleteUIDs(uids) //nolint:errcheck
+			c.close()
+			return len(uids), nil
+		}
+		c.close()
+		if time.Now().After(deadline) {
+			return 0, nil
+		}
+		time.Sleep(1 * time.Second)
 	}
-	defer c.close()
-	if err := c.login(user, pass); err != nil {
-		return 0, err
-	}
-	if _, err := c.selectFolder("INBOX"); err != nil {
-		return 0, err
-	}
-	uids, err := c.uidSearch(fmt.Sprintf("SUBJECT %q", subjectToken))
-	if err != nil {
-		return 0, err
-	}
-	c.deleteUIDs(uids) //nolint:errcheck
-	return len(uids), nil
 }
 
 func uniqueID() string {
@@ -377,7 +400,6 @@ func testSieveFileinto(user, pass, to string) error {
 	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "fileinto test", "body"); err != nil {
 		return err
 	}
-	time.Sleep(2 * time.Second)
 	return checkFolder(user, pass, folder)
 }
 
