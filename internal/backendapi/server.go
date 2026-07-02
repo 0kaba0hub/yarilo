@@ -27,6 +27,7 @@ package backendapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -192,7 +193,8 @@ func (s *Server) middleware(next http.HandlerFunc) http.Handler {
 		}
 		if s.opts.Token != "" {
 			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != s.opts.Token {
+			token := strings.TrimPrefix(auth, "Bearer ")
+			if !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare([]byte(token), []byte(s.opts.Token)) != 1 {
 				apiError(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

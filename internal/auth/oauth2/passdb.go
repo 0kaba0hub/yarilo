@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 )
@@ -90,7 +91,9 @@ func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 		return protocol.ResultNext, nil
 	}
 
-	claims, err := p.cfg.Validator.Validate(context.Background(), token)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	claims, err := p.cfg.Validator.Validate(ctx, token)
 	if err != nil {
 		// Upstream errors are transient; fall through to ResultTempFail
 		// so the operator's failure-delay / penalty kick in correctly.

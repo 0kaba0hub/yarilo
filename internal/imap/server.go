@@ -884,8 +884,11 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	}
 
 	tGetMsgs := time.Now()
-	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	msgs, err := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	slog.Debug("imap: select timing getmsgs_ms", "folder", rel, "getmsgs_ms", time.Since(tGetMsgs).Milliseconds(), "total_ms", time.Since(tSelect).Milliseconds())
+	if err != nil {
+		return nil, fmt.Errorf("imap: select getmsgs %s: %w", rel, err)
+	}
 	s.knownMsgs = make([]sessionMsg, len(msgs))
 	for i, m := range msgs {
 		s.knownMsgs[i] = sessionMsg{uid: m.UID, modseq: m.ModSeq}
@@ -1290,7 +1293,10 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if err != nil {
 		return nil, err
 	}
-	msgs, _ := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	msgs, err := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	if err != nil {
+		return nil, fmt.Errorf("imap: status getmsgs %s: %w", rel, err)
+	}
 	var (
 		unseen    uint32
 		deleted   uint32
