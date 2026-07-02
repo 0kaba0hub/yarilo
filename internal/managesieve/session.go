@@ -30,7 +30,7 @@ type session struct {
 func (s *session) serve(ctx context.Context) {
 	defer s.conn.Close()
 
-	if err := writeCapabilities(s.w, sieve.SupportedExtensions); err != nil {
+	if err := writeCapabilities(s.w, sieve.EffectiveExtensions(s.allowedExtensions)); err != nil {
 		return
 	}
 	if err := writeOK(s.w, "ManageSieve ready."); err != nil {
@@ -93,7 +93,7 @@ func (s *session) serve(ctx context.Context) {
 }
 
 func (s *session) handleCapability() {
-	if err := writeCapabilities(s.w, sieve.SupportedExtensions); err != nil {
+	if err := writeCapabilities(s.w, sieve.EffectiveExtensions(s.allowedExtensions)); err != nil {
 		return
 	}
 	_ = writeOK(s.w, "CAPABILITY completed.")
