@@ -995,6 +995,15 @@ sieve:
     - copy
     - vacation
 
+  ## sieveEnvironment exposes operator-defined key-value pairs to Sieve scripts
+  ## via the vnd.yarilo.environment extension as vnd.yarilo.config.<key> items.
+  ## Corresponds to Dovecot's sieve_environment setting.
+  ## Example:
+  ##   sieveEnvironment:
+  ##     spam-folder: Junk
+  ##     org-name: Acme Corp
+  sieveEnvironment: {}
+
 ## -------------------------------------------------------------------
 ## General infrastructure
 ## -------------------------------------------------------------------

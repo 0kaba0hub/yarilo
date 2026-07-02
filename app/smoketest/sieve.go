@@ -636,6 +636,27 @@ func testSieveDebugLog(user, pass, to string) error {
 	return nil
 }
 
+func testSieveEnvironment(user, pass, to string) error {
+	subject := "env-" + uniqueID()
+	script := `require ["envelope","variables","fileinto","vnd.yarilo.environment"];` + "\n" +
+		`if environment :is "vnd.yarilo.username" "` + to + `" {` + "\n" +
+		`  fileinto "INBOX";` + "\n" +
+		`} else {` + "\n" +
+		`  fileinto "Junk";` + "\n" +
+		`}` + "\n"
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "environment test body"); err != nil {
+		return err
+	}
+	n, err := cleanInboxBySubject(user, pass, subject)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("vnd.yarilo.environment: message not delivered to INBOX (username item mismatch or extension not working)")
+	}
+	return nil
+}
+
 func checkSieve() error {
 	if *flagManageSieveUser == "" {
 		return fmt.Errorf("-managesieve-user is required")
@@ -663,6 +684,7 @@ func checkSieve() error {
 		{"relational", testSieveRelational},
 		{"date", testSieveDate},
 		{"vnd.yarilo.debug", testSieveDebugLog},
+		{"vnd.yarilo.environment", testSieveEnvironment},
 		{"enotify", testSieveEnotify},
 	}
 

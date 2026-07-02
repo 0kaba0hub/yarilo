@@ -178,6 +178,10 @@ data:
       sieve_extensions:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with $sieve.sieveEnvironment }}
+      sieve_environment:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 
     auth:
       failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
