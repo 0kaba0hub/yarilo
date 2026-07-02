@@ -234,7 +234,9 @@ func (s *Server) Serve(ln net.Listener) error {
 			ReadHeaderTimeout: timeout,
 		}
 	}
-	s.startKickSubscriber(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.startKickSubscriber(ctx)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
