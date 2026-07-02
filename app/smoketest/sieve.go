@@ -638,9 +638,11 @@ func testSieveDebugLog(user, pass, to string) error {
 
 func testSieveEnvironment(user, pass, to string) error {
 	subject := "env-" + uniqueID()
-	script := `require ["envelope","variables","fileinto","vnd.yarilo.environment"];` + "\n" +
+	// Test both the environment test and the env. variable namespace.
+	script := `require ["environment","variables","fileinto","vnd.yarilo.environment"];` + "\n" +
 		`if environment :is "vnd.yarilo.username" "` + to + `" {` + "\n" +
-		`  fileinto "INBOX";` + "\n" +
+		`  set "mb" "${env.vnd.yarilo.default_mailbox}";` + "\n" +
+		`  fileinto "${mb}";` + "\n" +
 		`} else {` + "\n" +
 		`  fileinto "Junk";` + "\n" +
 		`}` + "\n"
@@ -652,7 +654,7 @@ func testSieveEnvironment(user, pass, to string) error {
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("vnd.yarilo.environment: message not delivered to INBOX (username item mismatch or extension not working)")
+		return fmt.Errorf("vnd.yarilo.environment: message not delivered to INBOX (username item mismatch or env. variable namespace not working)")
 	}
 	return nil
 }
