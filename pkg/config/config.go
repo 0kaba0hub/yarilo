@@ -77,6 +77,12 @@ type SieveConfig struct {
 	// GlobalAfter is an ordered list of paths to .sieve script files executed
 	// after the user's active script.
 	GlobalAfter []string `koanf:"global_after"`
+
+	// SieveExtensions is the whitelist of Sieve extensions users may declare
+	// with require. Corresponds to Dovecot's sieve_extensions.
+	// Empty slice = allow all extensions (backwards-compatible default).
+	// Non-empty = strict whitelist enforced at PUTSCRIPT and delivery time.
+	SieveExtensions []string `koanf:"sieve_extensions"`
 }
 
 // DictConfig declares one named dict instance. The map key in

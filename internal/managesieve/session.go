@@ -15,13 +15,14 @@ import (
 )
 
 type session struct {
-	conn     net.Conn
-	r        *bufio.Reader
-	w        *bufio.Writer
-	username string
-	homeDir  string
-	store    *sieve.ScriptStore
-	maxSize  int
+	conn              net.Conn
+	r                 *bufio.Reader
+	w                 *bufio.Writer
+	username          string
+	homeDir           string
+	store             *sieve.ScriptStore
+	maxSize           int
+	allowedExtensions []string
 }
 
 func (s *session) serve(ctx context.Context) {
@@ -149,8 +150,13 @@ func (s *session) handlePutScript(ctx context.Context) {
 		return
 	}
 
-	if _, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions()); err != nil {
+	compiled, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions())
+	if err != nil {
 		_ = writeNO(s.w, "", fmt.Sprintf("Script error: %s", strings.TrimSpace(err.Error())))
+		return
+	}
+	if extErr := sieve.CheckExtensions(compiled, s.allowedExtensions); extErr != nil {
+		_ = writeNO(s.w, "FORBIDDEN", strings.Title(extErr.Error())+".")
 		return
 	}
 
@@ -293,8 +299,13 @@ func (s *session) handleCheckScript() {
 		return
 	}
 
-	if _, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions()); err != nil {
+	compiled, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions())
+	if err != nil {
 		_ = writeNO(s.w, "", fmt.Sprintf("Script error: %s", strings.TrimSpace(err.Error())))
+		return
+	}
+	if extErr := sieve.CheckExtensions(compiled, s.allowedExtensions); extErr != nil {
+		_ = writeNO(s.w, "FORBIDDEN", strings.Title(extErr.Error())+".")
 		return
 	}
 	_ = writeOK(s.w, "CHECKSCRIPT completed.")

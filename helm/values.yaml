@@ -434,7 +434,6 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
-        cpu: 200m
         memory: 128Mi
 
   ## IMAP backend — handles sessions proxied from director.
@@ -966,6 +965,28 @@ sieve:
   ## Files must be present on the pod filesystem (e.g. via ConfigMap volume mount).
   globalBefore: []
   globalAfter: []
+  ## sieveExtensions is the whitelist of Sieve extensions users may declare with
+  ## require. Corresponds to Dovecot's sieve_extensions. Empty list = allow all
+  ## (backwards-compatible). Operators who need redirect/vacation/enotify must add
+  ## them explicitly.
+  sieveExtensions:
+    - fileinto
+    - reject
+    - ereject
+    - envelope
+    - encoded-character
+    - variables
+    - relational
+    - subaddress
+    - body
+    - date
+    - index
+    - mailbox
+    - duplicate
+    - imap4flags
+    - spamtest
+    - spamtestplus
+    - virustest
 
 ## -------------------------------------------------------------------
 ## General infrastructure
@@ -1047,7 +1068,6 @@ redis:
       cpu: 50m
       memory: 64Mi
     limits:
-      cpu: 500m
       memory: 256Mi
 
 ## -------------------------------------------------------------------

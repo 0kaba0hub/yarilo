@@ -124,6 +124,9 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 		if err != nil {
 			slog.Error("sieve: script compile error, skipping user script",
 				"user", opts.Username, "err", err)
+		} else if extErr := CheckExtensions(script, e.cfg.SieveExtensions); extErr != nil {
+			slog.Warn("sieve: script uses forbidden extension, skipping",
+				"user", opts.Username, "err", extErr)
 		} else {
 			r, err := e.runScript(ctx, script, opts, hdr, pol)
 			if err != nil {

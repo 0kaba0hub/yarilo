@@ -170,6 +170,10 @@ data:
       submission_ssl: {{ $sub.ssl | default "no" | quote }}
       submission_timeout: {{ $sub.timeout | default 30 }}
       submission_auth_secret: {{ $sub.authSecret | default "" | quote }}
+      {{- with $sieve.sieveExtensions }}
+      sieve_extensions:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 
     auth:
       failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
