@@ -377,6 +377,7 @@ func testSieveFileinto(user, pass, to string) error {
 	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "fileinto test", "body"); err != nil {
 		return err
 	}
+	time.Sleep(2 * time.Second)
 	return checkFolder(user, pass, folder)
 }
 

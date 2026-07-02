@@ -169,6 +169,8 @@ func (s *Sender) commandTimeout() time.Duration {
 // buildVacationReply constructs a minimal RFC 5230 auto-reply message.
 func buildVacationReply(from, to, subject, body string) []byte {
 	var b bytes.Buffer
+	fmt.Fprintf(&b, "Message-ID: <%d.sieve-vacation@yarilo>\r\n", time.Now().UnixNano())
+	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
 	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
@@ -251,6 +253,8 @@ func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.Ac
 // buildNotifyMessage constructs a minimal RFC 5435 notification email.
 func buildNotifyMessage(from, to, subject, body string) []byte {
 	var b bytes.Buffer
+	fmt.Fprintf(&b, "Message-ID: <%d.sieve-notify@yarilo>\r\n", time.Now().UnixNano())
+	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
 	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
