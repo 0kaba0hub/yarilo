@@ -967,7 +967,7 @@ sieve:
   globalAfter: []
   ## sieveExtensions is the whitelist of Sieve extensions users may declare with
   ## require. Corresponds to Dovecot's sieve_extensions. Empty list = allow all
-  ## (backwards-compatible). Operators who need redirect/vacation/enotify must add
+  ## (backwards-compatible). Operators who need enotify/include/extlists must add
   ## them explicitly.
   sieveExtensions:
     - fileinto
@@ -984,9 +984,9 @@ sieve:
     - mailbox
     - duplicate
     - imap4flags
-    - spamtest
-    - spamtestplus
-    - virustest
+    - redirect
+    - copy
+    - vacation
 
 ## -------------------------------------------------------------------
 ## General infrastructure

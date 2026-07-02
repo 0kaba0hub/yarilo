@@ -78,9 +78,9 @@ sieve:
     - mailbox
     - duplicate
     - imap4flags
-    - spamtest
-    - spamtestplus
-    - virustest
+    - redirect
+    - copy
+    - vacation
 
 protocol:
   imap:
