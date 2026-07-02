@@ -10,6 +10,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -32,6 +33,10 @@ type Options struct {
 	// SieveExtensions is the whitelist of permitted Sieve extensions.
 	// Corresponds to sieve.sieve_extensions in yarilo.yaml. Empty = allow all.
 	SieveExtensions []string
+	// ScriptsDriver selects the script storage backend: "fs" (default) or "redis".
+	ScriptsDriver string
+	// ScriptsDict is the dict instance used when ScriptsDriver is "redis".
+	ScriptsDict dict.Dict
 	// AuthAddr is the host:port of yarilo-auth login protocol used by the
 	// PreambleListener to verify session tokens forwarded by the login pod.
 	AuthAddr string
@@ -105,7 +110,7 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 		w:                 bufio.NewWriter(conn),
 		username:          username,
 		homeDir:           userInfo.Home,
-		store:             &sieve.ScriptStore{DefaultName: defaultName, Locker: srv.opts.Locker},
+		store:             sieve.NewScriptStore(srv.opts.ScriptsDriver, defaultName, srv.opts.Locker, srv.opts.ScriptsDict),
 		maxSize:           maxSize,
 		allowedExtensions: srv.opts.SieveExtensions,
 	}

@@ -83,6 +83,14 @@ type SieveConfig struct {
 	// Empty slice = allow all extensions (backwards-compatible default).
 	// Non-empty = strict whitelist enforced at PUTSCRIPT and delivery time.
 	SieveExtensions []string `koanf:"sieve_extensions"`
+
+	// ScriptsDriver selects the script storage backend: "fs" (default) stores
+	// scripts as files in the user's home directory; "redis" uses the dict
+	// instance named by ScriptsDictName.
+	ScriptsDriver string `koanf:"scripts_driver"`
+	// ScriptsDictName is the key in Config.Dicts that points to the dict
+	// instance used when ScriptsDriver is "redis". Ignored for "fs".
+	ScriptsDictName string `koanf:"scripts_dict"`
 }
 
 // DictConfig declares one named dict instance. The map key in

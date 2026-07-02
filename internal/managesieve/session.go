@@ -22,7 +22,7 @@ type session struct {
 	w                 *bufio.Writer
 	username          string
 	homeDir           string
-	store             *sieve.ScriptStore
+	store             sieve.ScriptStore
 	maxSize           int
 	allowedExtensions []string
 }
@@ -99,14 +99,14 @@ func (s *session) handleCapability() {
 	_ = writeOK(s.w, "CAPABILITY completed.")
 }
 
-func (s *session) handleListScripts(_ context.Context) {
-	names, err := s.store.ListScripts(s.homeDir)
+func (s *session) handleListScripts(ctx context.Context) {
+	names, err := s.store.ListScripts(ctx, s.username, s.homeDir)
 	if err != nil {
 		slog.Error("managesieve: list scripts", "user", s.username, "err", err)
 		_ = writeNO(s.w, "", "Server error listing scripts.")
 		return
 	}
-	active, err := s.store.ActiveScriptName(s.homeDir)
+	active, err := s.store.ActiveScriptName(ctx, s.username, s.homeDir)
 	if err != nil {
 		slog.Error("managesieve: active script", "user", s.username, "err", err)
 		_ = writeNO(s.w, "", "Server error reading active script name.")
@@ -147,7 +147,7 @@ func (s *session) handlePutScript(ctx context.Context) {
 	}
 
 	nameStr := string(name)
-	if nameStr == s.store.DefaultName {
+	if nameStr == s.store.DefaultScriptName() {
 		_ = writeNO(s.w, "", "Script name is reserved.")
 		return
 	}
@@ -162,7 +162,7 @@ func (s *session) handlePutScript(ctx context.Context) {
 		return
 	}
 
-	if err := s.store.SaveScript(ctx, s.homeDir, nameStr, src); err != nil {
+	if err := s.store.SaveScript(ctx, s.username, s.homeDir, nameStr, src); err != nil {
 		slog.Error("managesieve: put script", "user", s.username, "script", nameStr, "err", err)
 		_ = writeNO(s.w, "", "Server error storing script.")
 		return
@@ -171,7 +171,7 @@ func (s *session) handlePutScript(ctx context.Context) {
 	_ = writeOK(s.w, "PUTSCRIPT completed.")
 }
 
-func (s *session) handleGetScript(_ context.Context) {
+func (s *session) handleGetScript(ctx context.Context) {
 	name, err := readLastArg(s.r, nil)
 	if err != nil {
 		skipLine(s.r)
@@ -180,7 +180,7 @@ func (s *session) handleGetScript(_ context.Context) {
 	}
 
 	nameStr := string(name)
-	src, found, err := s.store.GetScript(s.homeDir, nameStr)
+	src, found, err := s.store.GetScript(ctx, s.username, s.homeDir, nameStr)
 	if err != nil {
 		slog.Error("managesieve: get script", "user", s.username, "script", nameStr, "err", err)
 		_ = writeNO(s.w, "", "Server error retrieving script.")
@@ -207,7 +207,7 @@ func (s *session) handleSetActive(ctx context.Context) {
 
 	nameStr := string(name)
 	if nameStr == "" {
-		if err := s.store.Deactivate(ctx, s.homeDir); err != nil {
+		if err := s.store.Deactivate(ctx, s.username, s.homeDir); err != nil {
 			slog.Error("managesieve: deactivate", "user", s.username, "err", err)
 			_ = writeNO(s.w, "", "Server error deactivating script.")
 			return
@@ -217,12 +217,12 @@ func (s *session) handleSetActive(ctx context.Context) {
 		return
 	}
 
-	if nameStr == s.store.DefaultName {
+	if nameStr == s.store.DefaultScriptName() {
 		_ = writeNO(s.w, "NONEXISTENT", "Script does not exist.")
 		return
 	}
 
-	_, found, err := s.store.GetScript(s.homeDir, nameStr)
+	_, found, err := s.store.GetScript(ctx, s.username, s.homeDir, nameStr)
 	if err != nil {
 		slog.Error("managesieve: setactive check", "user", s.username, "err", err)
 		_ = writeNO(s.w, "", "Server error.")
@@ -233,7 +233,7 @@ func (s *session) handleSetActive(ctx context.Context) {
 		return
 	}
 
-	if err := s.store.SetActive(ctx, s.homeDir, nameStr); err != nil {
+	if err := s.store.SetActive(ctx, s.username, s.homeDir, nameStr); err != nil {
 		slog.Error("managesieve: set active", "user", s.username, "script", nameStr, "err", err)
 		_ = writeNO(s.w, "", "Server error activating script.")
 		return
@@ -251,12 +251,12 @@ func (s *session) handleDeleteScript(ctx context.Context) {
 	}
 
 	nameStr := string(name)
-	if nameStr == s.store.DefaultName {
+	if nameStr == s.store.DefaultScriptName() {
 		_ = writeNO(s.w, "", "Cannot delete reserved script.")
 		return
 	}
 
-	_, found, err := s.store.GetScript(s.homeDir, nameStr)
+	_, found, err := s.store.GetScript(ctx, s.username, s.homeDir, nameStr)
 	if err != nil {
 		slog.Error("managesieve: delete check", "user", s.username, "err", err)
 		_ = writeNO(s.w, "", "Server error.")
@@ -267,7 +267,7 @@ func (s *session) handleDeleteScript(ctx context.Context) {
 		return
 	}
 
-	active, err := s.store.ActiveScriptName(s.homeDir)
+	active, err := s.store.ActiveScriptName(ctx, s.username, s.homeDir)
 	if err != nil {
 		slog.Error("managesieve: delete active check", "user", s.username, "err", err)
 		_ = writeNO(s.w, "", "Server error.")
@@ -278,7 +278,7 @@ func (s *session) handleDeleteScript(ctx context.Context) {
 		return
 	}
 
-	if err := s.store.DeleteScript(ctx, s.homeDir, nameStr); err != nil {
+	if err := s.store.DeleteScript(ctx, s.username, s.homeDir, nameStr); err != nil {
 		slog.Error("managesieve: delete script", "user", s.username, "script", nameStr, "err", err)
 		_ = writeNO(s.w, "", "Server error deleting script.")
 		return
@@ -329,12 +329,12 @@ func (s *session) handleRenameScript(ctx context.Context) {
 
 	oldStr, newStr := string(oldName), string(newName)
 
-	if oldStr == s.store.DefaultName || newStr == s.store.DefaultName {
+	if oldStr == s.store.DefaultScriptName() || newStr == s.store.DefaultScriptName() {
 		_ = writeNO(s.w, "", "Script name is reserved.")
 		return
 	}
 
-	_, found, err := s.store.GetScript(s.homeDir, oldStr)
+	_, found, err := s.store.GetScript(ctx, s.username, s.homeDir, oldStr)
 	if err != nil {
 		slog.Error("managesieve: rename get", "user", s.username, "err", err)
 		_ = writeNO(s.w, "", "Server error.")
@@ -345,7 +345,7 @@ func (s *session) handleRenameScript(ctx context.Context) {
 		return
 	}
 
-	_, newExists, err := s.store.GetScript(s.homeDir, newStr)
+	_, newExists, err := s.store.GetScript(ctx, s.username, s.homeDir, newStr)
 	if err != nil {
 		_ = writeNO(s.w, "", "Server error.")
 		return
@@ -355,7 +355,7 @@ func (s *session) handleRenameScript(ctx context.Context) {
 		return
 	}
 
-	if err := s.store.RenameScript(ctx, s.homeDir, oldStr, newStr); err != nil {
+	if err := s.store.RenameScript(ctx, s.username, s.homeDir, oldStr, newStr); err != nil {
 		slog.Error("managesieve: rename script", "user", s.username, "old", oldStr, "new", newStr, "err", err)
 		_ = writeNO(s.w, "", "Server error renaming script.")
 		return

@@ -45,11 +45,11 @@ func (c *testClient) readUntilResult() (lines []string, ok bool) {
 	}
 }
 
-func newTestStore() *sieve.ScriptStore {
-	return &sieve.ScriptStore{DefaultName: sieve.FallbackDefaultName, Locker: nil}
+func newTestStore() *sieve.FsScriptStore {
+	return &sieve.FsScriptStore{DefaultName: sieve.FallbackDefaultName, Locker: nil}
 }
 
-func runSession(t *testing.T, store *sieve.ScriptStore, homeDir string) *testClient {
+func runSession(t *testing.T, store *sieve.FsScriptStore, homeDir string) *testClient {
 	t.Helper()
 	client, server := net.Pipe()
 	sess := &session{
@@ -76,7 +76,7 @@ func runSession(t *testing.T, store *sieve.ScriptStore, homeDir string) *testCli
 
 type sessionCase struct {
 	name  string
-	setup func(ctx context.Context, store *sieve.ScriptStore, homeDir string)
+	setup func(ctx context.Context, store *sieve.FsScriptStore, homeDir string)
 	steps []struct {
 		send    string
 		wantOK  bool
@@ -133,8 +133,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "GETSCRIPT",
-		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
-			_ = store.SaveScript(ctx, homeDir, "my.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.FsScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, "u1@example.com", homeDir, "my.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -158,8 +158,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "SETACTIVE and LISTSCRIPTS shows ACTIVE",
-		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
-			_ = store.SaveScript(ctx, homeDir, "a.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.FsScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, "u1@example.com", homeDir, "a.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -173,9 +173,9 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "SETACTIVE empty deactivates",
-		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
-			_ = store.SaveScript(ctx, homeDir, "a.sieve", []byte("keep;\n"))
-			_ = store.SetActive(ctx, homeDir, "a.sieve")
+		setup: func(ctx context.Context, store *sieve.FsScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, "u1@example.com", homeDir, "a.sieve", []byte("keep;\n"))
+			_ = store.SetActive(ctx, "u1@example.com", homeDir, "a.sieve")
 		},
 		steps: []struct {
 			send    string
@@ -189,8 +189,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "DELETESCRIPT",
-		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
-			_ = store.SaveScript(ctx, homeDir, "del.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.FsScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, "u1@example.com", homeDir, "del.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -204,9 +204,9 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "DELETESCRIPT active returns error",
-		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
-			_ = store.SaveScript(ctx, homeDir, "active.sieve", []byte("keep;\n"))
-			_ = store.SetActive(ctx, homeDir, "active.sieve")
+		setup: func(ctx context.Context, store *sieve.FsScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, "u1@example.com", homeDir, "active.sieve", []byte("keep;\n"))
+			_ = store.SetActive(ctx, "u1@example.com", homeDir, "active.sieve")
 		},
 		steps: []struct {
 			send    string
@@ -241,8 +241,8 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "RENAMESCRIPT",
-		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
-			_ = store.SaveScript(ctx, homeDir, "old.sieve", []byte("keep;\n"))
+		setup: func(ctx context.Context, store *sieve.FsScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, "u1@example.com", homeDir, "old.sieve", []byte("keep;\n"))
 		},
 		steps: []struct {
 			send    string
@@ -256,9 +256,9 @@ var sessionCases = []sessionCase{
 	},
 	{
 		name: "RENAMESCRIPT active follows",
-		setup: func(ctx context.Context, store *sieve.ScriptStore, homeDir string) {
-			_ = store.SaveScript(ctx, homeDir, "old.sieve", []byte("keep;\n"))
-			_ = store.SetActive(ctx, homeDir, "old.sieve")
+		setup: func(ctx context.Context, store *sieve.FsScriptStore, homeDir string) {
+			_ = store.SaveScript(ctx, "u1@example.com", homeDir, "old.sieve", []byte("keep;\n"))
+			_ = store.SetActive(ctx, "u1@example.com", homeDir, "old.sieve")
 		},
 		steps: []struct {
 			send    string
