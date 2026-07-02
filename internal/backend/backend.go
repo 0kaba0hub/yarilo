@@ -176,8 +176,12 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- sieve ----
 	svcs := cfg.Services
 	var sieveEngine *sieve.Engine
+	sieveDict, err := buildDict(cfg.Dicts, cfg.Sieve.ScriptsDictName)
+	if err != nil {
+		return nil, fmt.Errorf("backend: sieve dict: %w", err)
+	}
 	if cfg.Sieve.Enabled {
-		sieveEngine = sieve.New(cfg.Sieve, locker)
+		sieveEngine = sieve.New(cfg.Sieve, locker, sieveDict)
 	}
 
 	// ---- IMAP ----
@@ -403,6 +407,8 @@ func New(cfg *config.Config) (*Server, error) {
 			MasterAddr:      masterAddr,
 			MasterTLS:       authTLS,
 			SieveExtensions: cfg.Sieve.SieveExtensions,
+			ScriptsDriver:   cfg.Sieve.ScriptsDriver,
+			ScriptsDict:     sieveDict,
 		})
 	}
 

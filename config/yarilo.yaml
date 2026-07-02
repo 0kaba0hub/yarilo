@@ -55,6 +55,7 @@ services:
     ssl_mode: "no"
 
 sieve:
+  scripts_driver: fs
   enabled: false
   max_script_size: 65536
   max_redirects: 32

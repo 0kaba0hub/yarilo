@@ -14,33 +14,30 @@ import (
 	"github.com/foxcpp/go-sieve/interp"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
 
 // Engine executes Sieve scripts during LMTP delivery.
 type Engine struct {
 	cfg          config.SieveConfig
-	store        *ScriptStore
+	store        ScriptStore
 	sender       *Sender
 	dupTrackers  sync.Map
 	globalBefore []*gosieve.Script
 	globalAfter  []*gosieve.Script
 }
 
-// New creates a Sieve Engine. locker is used for cross-process write coordination
-// on script files and the vacation dedup file. May be nil for single-process use.
-func New(cfg config.SieveConfig, locker locks.Locker) *Engine {
-	defaultName := cfg.DefaultName
-	if defaultName == "" {
-		defaultName = FallbackDefaultName
-	}
+// New creates a Sieve Engine. locker is used for cross-process write coordination.
+// d is the dict instance for the redis scripts driver; ignored when driver is "fs".
+func New(cfg config.SieveConfig, locker locks.Locker, d dict.Dict) *Engine {
 	var s *Sender
 	if cfg.SubmissionHost != "" {
 		s = newSender(cfg)
 	}
 	e := &Engine{
 		cfg:    cfg,
-		store:  &ScriptStore{DefaultName: defaultName, Locker: locker},
+		store:  NewScriptStore(cfg.ScriptsDriver, cfg.DefaultName, locker, d),
 		sender: s,
 	}
 	e.globalBefore = loadGlobalScripts(cfg.GlobalBefore)
@@ -71,8 +68,8 @@ func loadGlobalScripts(paths []string) []*gosieve.Script {
 }
 
 // InitUser seeds the active-script pointer with the default keep script on first delivery.
-func (e *Engine) InitUser(ctx context.Context, _, homeDir string) error {
-	return e.store.InitUser(ctx, homeDir)
+func (e *Engine) InitUser(ctx context.Context, username, homeDir string) error {
+	return e.store.InitUser(ctx, username, homeDir)
 }
 
 // FilterOptions holds the per-message context passed to Filter.
@@ -112,7 +109,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 		merged.absorb(r)
 	}
 
-	src, _, err := e.store.LoadActiveScript(opts.HomeDir)
+	src, _, err := e.store.LoadActiveScript(ctx, opts.Username, opts.HomeDir)
 	if err != nil {
 		return nil, fmt.Errorf("sieve/engine: load script: %w", err)
 	}
@@ -183,7 +180,7 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 			}
 		}
 		for _, resp := range result.VacationReplies {
-			if err := e.sender.sendVacation(ctx, e.store.Locker, opts, hdr, resp); err != nil {
+			if err := e.sender.sendVacation(ctx, e.store, opts, hdr, resp); err != nil {
 				slog.Error("sieve: vacation failed", "user", opts.Username, "err", err)
 			}
 		}

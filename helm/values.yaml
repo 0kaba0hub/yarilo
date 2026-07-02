@@ -949,6 +949,13 @@ protocol:
 ## -------------------------------------------------------------------
 sieve:
   enabled: false
+  ## scriptsDriver selects the script storage backend: "fs" (default, files in user
+  ## home directory) or "redis" (dict backend, requires scriptsDictName to reference
+  ## an entry in dicts:). Use "redis" for multi-pod deployments without shared NFS.
+  scriptsDriver: "fs"
+  ## scriptsDictName is the key in dicts: that points to the dict instance used when
+  ## scriptsDriver is "redis". Ignored for "fs".
+  scriptsDictName: ""
   ## defaultName is the reserved script name used as the active-pointer entry point.
   ## Corresponds to Dovecot's sieve_default_name. Default: "yarilo".
   defaultName: "yarilo"

@@ -163,6 +163,10 @@ data:
       {{- $sieve := (.Values.sieve | default dict) }}
       {{- $sub := ($sieve.submission | default dict) }}
       enabled: {{ $sieve.enabled | default false }}
+      scripts_driver: {{ $sieve.scriptsDriver | default "fs" | quote }}
+      {{- with $sieve.scriptsDictName }}
+      scripts_dict: {{ . | quote }}
+      {{- end }}
       max_script_size: {{ $sieve.maxScriptSize | default 65536 }}
       max_redirects: {{ $sieve.maxRedirects | default 32 }}
       vacation_enabled: {{ $sieve.vacationEnabled | default true }}

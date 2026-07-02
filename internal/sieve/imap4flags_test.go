@@ -10,16 +10,16 @@ import (
 func TestImap4flagsAddflagKeep(t *testing.T) {
 	e := New(config.SieveConfig{
 		Enabled: true, MaxRedirects: 32, MaxScriptSize: 65536, DefaultName: FallbackDefaultName,
-	}, nil)
+	}, nil, nil)
 	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
 
 	script := "require \"imap4flags\";\naddflag \"\\\\Flagged\";\nkeep;\n"
-	if err := store.SaveScript(ctx, homeDir, "test", []byte(script)); err != nil {
+	if err := store.SaveScript(ctx, "u1", homeDir, "test", []byte(script)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetActive(ctx, homeDir, "test"); err != nil {
+	if err := store.SetActive(ctx, "u1", homeDir, "test"); err != nil {
 		t.Fatal(err)
 	}
 

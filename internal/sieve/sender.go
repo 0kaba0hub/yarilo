@@ -18,7 +18,6 @@ import (
 	"github.com/foxcpp/go-sieve/interp"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
 
 // Sender dispatches outbound mail for Sieve redirect and vacation actions
@@ -40,7 +39,7 @@ func (s *Sender) sendRedirect(ctx context.Context, envFrom, addr string, raw []b
 // checking dedup state and RFC 5230 §4.5 skip conditions.
 func (s *Sender) sendVacation(
 	ctx context.Context,
-	l locks.Locker,
+	store ScriptStore,
 	opts FilterOptions,
 	hdr textproto.MIMEHeader,
 	resp interp.VacationResponse,
@@ -57,7 +56,7 @@ func (s *Sender) sendVacation(
 
 	intervalSecs := vacationIntervalSecs(resp)
 
-	sent, err := vacationSent(ctx, opts.HomeDir, resp.Handle, sender)
+	sent, err := store.VacationSent(ctx, opts.Username, opts.HomeDir, resp.Handle, sender)
 	if err != nil {
 		return fmt.Errorf("sieve/sender: vacation dedup lookup: %w", err)
 	}
@@ -77,7 +76,7 @@ func (s *Sender) sendVacation(
 		return fmt.Errorf("sieve/sender: vacation send: %w", err)
 	}
 
-	if err := markVacationSent(ctx, l, opts.HomeDir, resp.Handle, sender, intervalSecs); err != nil {
+	if err := store.MarkVacationSent(ctx, opts.Username, opts.HomeDir, resp.Handle, sender, intervalSecs); err != nil {
 		slog.Warn("sieve/sender: vacation dedup mark failed", "user", opts.Username, "err", err)
 	}
 	return nil
