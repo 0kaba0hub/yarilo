@@ -34,6 +34,8 @@ RUN set -eu; \
         go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
             -trimpath -o "/out/$cmd" "./app/$cmd"; \
     done
+RUN go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
+    -trimpath -o /out/yarilo-smoketest ./app/smoketest
 
 FROM alpine:3.24
 # hadolint ignore=DL3018,DL3019
