@@ -662,8 +662,8 @@ func checkSieve() error {
 		{"duplicate", testSieveDuplicate},
 		{"relational", testSieveRelational},
 		{"date", testSieveDate},
-		{"enotify", testSieveEnotify},
 		{"vnd.yarilo.debug", testSieveDebugLog},
+		{"enotify", testSieveEnotify},
 	}
 
 	var errs []string
