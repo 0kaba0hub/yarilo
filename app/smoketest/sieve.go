@@ -141,7 +141,7 @@ func msieveDeactivateAndDelete(name string) {
 // ── SMTP injector (via MX) ────────────────────────────────────────────────
 
 func lmtpSend(id, from, to, subject, body string) error {
-	addr := net.JoinHostPort(*flagHost, *flagSieveSMTPPort)
+	addr := net.JoinHostPort(smtpHost(), *flagSieveSMTPPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)
@@ -204,8 +204,8 @@ type imapClient struct {
 }
 
 func imapDial() (*imapClient, error) {
-	tlsCfg := &tls.Config{InsecureSkipVerify: *flagInsecure, ServerName: *flagHost} //nolint:gosec
-	addr := net.JoinHostPort(*flagHost, *flagIMAPSPort)
+	tlsCfg := &tls.Config{InsecureSkipVerify: *flagInsecure, ServerName: imapHost()} //nolint:gosec
+	addr := net.JoinHostPort(imapHost(), *flagIMAPSPort)
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: *flagTimeout}, "tcp", addr, tlsCfg)
 	if err != nil {
 		return nil, err

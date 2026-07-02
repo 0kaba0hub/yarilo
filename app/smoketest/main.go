@@ -24,6 +24,8 @@ import (
 
 var (
 	flagHost            = flag.String("host", "localhost", "yarilo hostname")
+	flagIMAPHost        = flag.String("imap-host", "", "IMAP hostname for sieve verify step (defaults to -host)")
+	flagSMTPHost        = flag.String("smtp-host", "", "SMTP hostname for sieve mail injection (defaults to -host)")
 	flagIMAPSPort       = flag.String("imap-port", "993", "IMAPS port (used by sieve verify step)")
 	flagPOP3SPort       = flag.String("pop3s-port", "995", "POP3S port")
 	flagSMTPMXPort      = flag.String("smtp-mx-port", "25", "SMTP MX port")
@@ -49,6 +51,20 @@ var (
 type result struct {
 	name string
 	err  error
+}
+
+func imapHost() string {
+	if *flagIMAPHost != "" {
+		return *flagIMAPHost
+	}
+	return *flagHost
+}
+
+func smtpHost() string {
+	if *flagSMTPHost != "" {
+		return *flagSMTPHost
+	}
+	return *flagHost
 }
 
 func main() {

@@ -10,11 +10,13 @@ spec:
       restartPolicy: Never
       containers:
       - name: smoketest
-        image: ghcr.io/0kaba0hub/yarilo:2.0.32
+        image: ghcr.io/0kaba0hub/yarilo:2.0.33
         command:
         - yarilo-smoketest
         args:
         - -host=yarilo-managesieve-login.yarilo-sb.svc.cluster.local
+        - -imap-host=yarilo-imap-login.yarilo-sb.svc.cluster.local
+        - -smtp-host=relay-mx.yarilo-relay.svc.cluster.local
         - -managesieve
         - -managesieve-user=u1@d00001.test
         - -managesieve-pass=Yarilo!test1

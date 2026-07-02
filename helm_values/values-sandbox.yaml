@@ -27,6 +27,8 @@ general:
     enabled: true
     trustedNets:
       - "10.0.0.0/8"
+  limits:
+    maxUserIPConnections: 0
 
 image:
   repository: ghcr.io/0kaba0hub/yarilo
@@ -62,6 +64,26 @@ sieve:
     authSecret: "sieve-smtp-auth"
   globalBefore: []
   globalAfter: []
+  sieveExtensions:
+    - fileinto
+    - reject
+    - ereject
+    - envelope
+    - encoded-character
+    - variables
+    - relational
+    - subaddress
+    - body
+    - date
+    - index
+    - mailbox
+    - duplicate
+    - imap4flags
+    - redirect
+    - copy
+    - vacation
+    - enotify
+    - vnd.yarilo.debug
 
 dicts:
   metadata:
