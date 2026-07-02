@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	gosieve "github.com/foxcpp/go-sieve"
 
@@ -15,13 +17,14 @@ import (
 )
 
 type session struct {
-	conn     net.Conn
-	r        *bufio.Reader
-	w        *bufio.Writer
-	username string
-	homeDir  string
-	store    *sieve.ScriptStore
-	maxSize  int
+	conn              net.Conn
+	r                 *bufio.Reader
+	w                 *bufio.Writer
+	username          string
+	homeDir           string
+	store             *sieve.ScriptStore
+	maxSize           int
+	allowedExtensions []string
 }
 
 func (s *session) serve(ctx context.Context) {
@@ -149,8 +152,13 @@ func (s *session) handlePutScript(ctx context.Context) {
 		return
 	}
 
-	if _, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions()); err != nil {
+	compiled, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions())
+	if err != nil {
 		_ = writeNO(s.w, "", fmt.Sprintf("Script error: %s", strings.TrimSpace(err.Error())))
+		return
+	}
+	if extErr := sieve.CheckExtensions(compiled, s.allowedExtensions); extErr != nil {
+		_ = writeNO(s.w, "FORBIDDEN", ucFirst(extErr.Error())+".")
 		return
 	}
 
@@ -293,8 +301,13 @@ func (s *session) handleCheckScript() {
 		return
 	}
 
-	if _, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions()); err != nil {
+	compiled, err := gosieve.Load(bytes.NewReader(src), gosieve.DefaultOptions())
+	if err != nil {
 		_ = writeNO(s.w, "", fmt.Sprintf("Script error: %s", strings.TrimSpace(err.Error())))
+		return
+	}
+	if extErr := sieve.CheckExtensions(compiled, s.allowedExtensions); extErr != nil {
+		_ = writeNO(s.w, "FORBIDDEN", ucFirst(extErr.Error())+".")
 		return
 	}
 	_ = writeOK(s.w, "CHECKSCRIPT completed.")
@@ -370,4 +383,12 @@ func (s *session) handleNoop() {
 		return
 	}
 	_ = writeOK(s.w, string(tag))
+}
+
+func ucFirst(s string) string {
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError {
+		return s
+	}
+	return string(unicode.ToUpper(r)) + s[size:]
 }

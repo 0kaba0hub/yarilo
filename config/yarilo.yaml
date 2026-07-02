@@ -63,6 +63,24 @@ sieve:
   submission_ssl: "no"
   submission_timeout: 30
   submission_auth_secret: ""
+  sieve_extensions:
+    - fileinto
+    - reject
+    - ereject
+    - envelope
+    - encoded-character
+    - variables
+    - relational
+    - subaddress
+    - body
+    - date
+    - index
+    - mailbox
+    - duplicate
+    - imap4flags
+    - redirect
+    - copy
+    - vacation
 
 protocol:
   imap:

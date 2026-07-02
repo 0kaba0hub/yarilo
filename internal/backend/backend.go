@@ -394,14 +394,15 @@ func New(cfg *config.Config) (*Server, error) {
 	var msServer *mssvr.Server
 	if svcs.ManageSieveBE.Active() {
 		msServer = mssvr.New(mssvr.Options{
-			Locker:      locker,
-			DefaultName: cfg.Sieve.DefaultName,
-			Resolver:    resolver,
-			Config:      cfg.Protocol.ManageSieve,
-			AuthAddr:    authAddr,
-			AuthTLS:     authTLS,
-			MasterAddr:  masterAddr,
-			MasterTLS:   authTLS,
+			Locker:          locker,
+			DefaultName:     cfg.Sieve.DefaultName,
+			Resolver:        resolver,
+			Config:          cfg.Protocol.ManageSieve,
+			AuthAddr:        authAddr,
+			AuthTLS:         authTLS,
+			MasterAddr:      masterAddr,
+			MasterTLS:       authTLS,
+			SieveExtensions: cfg.Sieve.SieveExtensions,
 		})
 	}
 
