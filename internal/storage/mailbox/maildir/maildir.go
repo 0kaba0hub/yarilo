@@ -257,7 +257,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 	}
 
 	flagStr := encodeFlags(flags)
-	// Dovecot filename convention: append ,S=<phys>,W=<virt> before :2,<flags>
+	// Append ,S=<phys>,W=<virt> before :2,<flags>
 	// so List() can return both sizes without reading the file body.
 	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
 

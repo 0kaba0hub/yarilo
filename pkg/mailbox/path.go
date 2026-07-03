@@ -28,30 +28,27 @@ type UserInfo struct {
 
 	// VolatileDir, when non-empty, redirects volatile index artefacts
 	// (Recreate tmp files) to a local path instead of the NFS-backed
-	// index directory. Mirrors Dovecot's VOLATILEDIR mail-location
-	// modifier. Template vars (%u/%n/%d/%h) are already expanded by the
-	// time this field is populated.
+	// index directory. Template vars (%u/%n/%d/%h) are already expanded
+	// by the time this field is populated.
 	VolatileDir string
 
 	// IndexDir, when non-empty, redirects all per-folder index files
 	// (yarilo.index*, yarilo-acl) to a separate directory tree. The
 	// mailbox data (Maildir cur/new/tmp) stays under Home; only index
-	// state moves. Mirrors Dovecot's INDEX= mail-location modifier.
-	// Template vars (%u/%n/%d/%h) are already expanded.
+	// state moves. Template vars (%u/%n/%d/%h) are already expanded.
 	IndexDir string
 
 	// ControlDir, when non-empty, redirects per-folder control files
 	// (yarilo-uidlist, subscriptions) to a separate directory tree.
-	// The mailbox data and index files are unaffected. Mirrors Dovecot's
-	// CONTROL= mail-location modifier.
+	// The mailbox data and index files are unaffected.
 	// Template vars (%u/%n/%d/%h) are already expanded.
 	ControlDir string
 
 	// AltDir, when non-empty, enables two-tier maildir storage. Messages
 	// that have been cold-tiered (via altmove) live under AltDir instead
 	// of Home. Reads check both primary (Home) and alt; writes always go
-	// to the primary tier. Mirrors Dovecot's ALT= mail-location modifier.
-	// Template vars (%u/%n/%d/%h) are already expanded.
+	// to the primary tier. Template vars (%u/%n/%d/%h) are already
+	// expanded.
 	AltDir string
 
 	// Groups is the list of supplementary groups the user belongs to,
@@ -72,7 +69,7 @@ type UserInfo struct {
 	SessionID string
 
 	// Phase 3 — filesystem ownership (needed when yarilo runs as root
-	// and drops privileges per-user, like Dovecot's deliver agent):
+	// and drops privileges per-user):
 	// UID uint32
 	// GID uint32
 
@@ -91,12 +88,12 @@ type UserInfo struct {
 }
 
 // Resolver maps a username (+ optional userdb override) to an absolute home
-// directory using a Dovecot-style template (%u / %n / %d expansion).
+// directory using a template (%u / %n / %d expansion).
 //
-// Dovecot reference:
+// Default template:
 //
-//	mail_home = /var/mail/vhosts/%d/%n         (defaults shipped here)
-//	mail_location = maildir:~/Maildir          (consumed by storage layer)
+//	mail_home = /var/mail/vhosts/%d/%n
+//	mail_location = maildir:~/Maildir
 //
 // When userdb returns a non-empty home value it overrides the template
 // outright; otherwise the template is expanded and joined with Root.
@@ -105,39 +102,33 @@ type Resolver struct {
 	// from userdb skip Root entirely.
 	Root string
 
-	// HomeTemplate is the Dovecot-style template for users with no userdb
+	// HomeTemplate is the path template for users with no userdb
 	// override. Default: "%d/%u" (virtual hosting layout).
 	HomeTemplate string
 
 	// DefaultQuotaRules are applied to every UserInfo produced by this
 	// Resolver when the userdb lookup provides no per-user override.
-	// Mirrors Dovecot's quota_rule setting at the global level.
 	DefaultQuotaRules []string
 
 	// DefaultVolatileDir is the cluster-wide VOLATILEDIR template applied
 	// when no per-user override arrives from userdb. Supports the same
 	// %u/%n/%d/%h variables as HomeTemplate. Empty disables volatile dir
-	// (default). Mirrors Dovecot's VOLATILEDIR mail-location modifier at
-	// the global config level.
+	// (default).
 	DefaultVolatileDir string
 
 	// DefaultIndexDir is the cluster-wide INDEX= template applied when no
 	// per-user override arrives from userdb. Supports %u/%n/%d/%h. Empty
-	// keeps index files co-located with the mailbox (default). Mirrors
-	// Dovecot's INDEX= mail-location modifier at the global config level.
+	// keeps index files co-located with the mailbox (default).
 	DefaultIndexDir string
 
 	// DefaultControlDir is the cluster-wide CONTROL= template applied when
 	// no per-user override arrives from userdb. Supports %u/%n/%d/%h.
 	// Empty keeps control files co-located with the mailbox (default).
-	// Mirrors Dovecot's CONTROL= mail-location modifier at the global
-	// config level.
 	DefaultControlDir string
 
 	// DefaultAltDir is the cluster-wide ALT= template applied when no
 	// per-user override arrives from userdb. Supports %u/%n/%d/%h.
-	// Empty disables two-tier storage (default). Mirrors Dovecot's
-	// ALT= mail-location modifier at the global config level.
+	// Empty disables two-tier storage (default).
 	DefaultAltDir string
 }
 
@@ -188,7 +179,7 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	return ui
 }
 
-// ParseMailLocationMods parses the modifier section of a Dovecot mail
+// ParseMailLocationMods parses the modifier section of a mail
 // location string of the form "driver:path:KEY1=v1:KEY2=v2". Returns a
 // map of uppercase modifier keys to their raw (unexpanded) values.
 // Returns nil when the string has fewer than three colon-separated segments
@@ -207,7 +198,7 @@ func ParseMailLocationMods(loc string) map[string]string {
 	return mods
 }
 
-// ExpandVars rewrites Dovecot %-variables against a username.
+// ExpandVars rewrites mail_location %-variables against a username.
 //
 //	%u → full username                  (alice@example.com)
 //	%n → local part (before @)          (alice)

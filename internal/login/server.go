@@ -295,9 +295,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	defer authCl.Close()
 
-	// Auth retry loop: keep the connection open after a bad-password failure,
-	// matching Dovecot behaviour. Up to maxAuthAttempts attempts; after the last
-	// one send an untagged BYE (IMAP) / -ERR (POP3) and close.
+	// Auth retry loop: keep the connection open after a bad-password failure.
+	// Up to maxAuthAttempts attempts; after the last one send an untagged
+	// BYE (IMAP) / -ERR (POP3) and close.
 	maxAuthAttempts := s.opts.AuthMaxAttempts
 	if maxAuthAttempts <= 0 {
 		maxAuthAttempts = 3

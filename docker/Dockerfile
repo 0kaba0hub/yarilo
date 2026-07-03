@@ -39,13 +39,17 @@ RUN go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${
 
 FROM alpine:3.24
 # hadolint ignore=DL3018,DL3019
-RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata && \
+    addgroup -g 1000 yarilo && \
+    adduser -u 1000 -G yarilo -s /sbin/nologin -D yarilo
 
 COPY --from=builder /out/ /usr/local/bin/
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
 
 RUN chmod +x /entrypoint.sh
+
+USER yarilo:yarilo
 
 EXPOSE 143 993 465 587 8080
 

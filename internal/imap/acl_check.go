@@ -38,8 +38,7 @@ func (s *session) isOwner(h *nsHandle) bool {
 // §5.1.1): personal → 'i' (insert), shared / public → 'p' (post).
 //
 // Public namespaces typically receive mail via MTA rather than IMAP
-// APPEND, but the right code still differs and is what Dovecot
-// requires here.
+// APPEND, but the right code still differs per RFC 4314 §5.1.1.
 func insertRight(spec NamespaceSpec) rune {
 	if spec.Type == NamespacePersonal {
 		return mailbox.RightInsert
@@ -179,8 +178,7 @@ func aclDenied(right rune) error {
 }
 
 // storeFlagRights maps a STORE flag list onto the set of right codes
-// the call must hold. The mapping follows RFC 4314 §5.1.1 / Dovecot
-// acl-mailbox.c:
+// the call must hold. The mapping follows RFC 4314 §5.1.1:
 //
 //	\Seen           → 's'  (RightWriteSeen)
 //	\Deleted        → 't'  (RightDeleteMessage)

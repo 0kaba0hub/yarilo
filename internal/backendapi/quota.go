@@ -61,7 +61,7 @@ type quotaRecalcResponse struct {
 
 // handleQuotaRecalc scans all folder fileindexes for the user, sums
 // message sizes, and overwrites the dict counters. Use after manual
-// migrations or when counters drift. Mirrors doveadm quota recalc.
+// migrations or when counters drift.
 func (s *Server) handleQuotaRecalc(w http.ResponseWriter, r *http.Request) {
 	if s.opts.QuotaDict == nil {
 		apiError(w, "quota not configured", http.StatusServiceUnavailable)

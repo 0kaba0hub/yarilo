@@ -8,7 +8,7 @@ import (
 
 // yariloEnv implements interp.Env for the vnd.yarilo.environment extension.
 //
-// Exposed items mirror vnd.dovecot.environment:
+// Exposed items:
 //   - vnd.yarilo.username        — full login name (user@domain)
 //   - vnd.yarilo.default-mailbox — always "INBOX"
 //   - vnd.yarilo.config.<key>    — operator-defined key-value pairs from

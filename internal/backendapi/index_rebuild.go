@@ -254,8 +254,7 @@ func (s *Server) optimizeFolder(ctx context.Context, req optimizeRequest) (*opti
 
 // handleFolderRepair runs Rebuild then Optimize back-to-back on
 // one folder under a single per-folder lock. Operator's "one knob
-// to fix whatever is wrong" — same semantics as `doveadm
-// force-resync` followed by index compaction.
+// to fix whatever is wrong" — Rebuild followed by index compaction.
 //
 // Returns a combined stats object so the operator sees what each
 // step did. If Rebuild fails Optimize is skipped and the error

@@ -13,7 +13,7 @@ import (
 // are accepted only on input by ParseRights and immediately expanded
 // — they never appear in canonical output.
 //
-// Letter map mirrors dovecot-2.4/src/plugins/acl/acl-rights.c:15-28.
+// Letter map for the canonical ACL right codes.
 const (
 	RightLookup        = 'l' // visible to LIST/LSUB/SELECT result
 	RightRead          = 'r' // SELECT/EXAMINE/FETCH; \Seen excluded
@@ -146,10 +146,10 @@ func (rs Rights) Remove(other Rights) Rights {
 // String returns the canonical letter string.
 func (rs Rights) String() string { return string(rs) }
 
-// IdentifierType enumerates the six identifier kinds RFC 4314 + Dovecot
-// recognise. Name is meaningful only for IDUser / IDGroup /
-// IDGroupOverride. The zero value IDInvalid is never produced by
-// ParseIdentifier — callers can use it as a sentinel.
+// IdentifierType enumerates the six identifier kinds RFC 4314 defines.
+// Name is meaningful only for IDUser / IDGroup / IDGroupOverride.
+// The zero value IDInvalid is never produced by ParseIdentifier —
+// callers can use it as a sentinel.
 type IdentifierType int
 
 const (
@@ -163,7 +163,7 @@ const (
 )
 
 // Identifier is a parsed ACL identifier — the left side of a
-// dovecot-acl line, without the optional '-' negativity marker.
+// yarilo-acl line, without the optional '-' negativity marker.
 type Identifier struct {
 	Type IdentifierType
 	Name string // user=/group=/group-override= only
@@ -221,7 +221,7 @@ func (id Identifier) String() string {
 	return ""
 }
 
-// Entry is one parsed line of a dovecot-acl file. Negative=true
+// Entry is one parsed line of a yarilo-acl file. Negative=true
 // entries strip Rights at evaluation time rather than granting them
 // (RFC 4314 §3.5). Negatives are kept as separate entries — fold-in
 // happens in the evaluator, not here.
@@ -231,13 +231,12 @@ type Entry struct {
 	Negative   bool
 }
 
-// ParseEntry parses one line of a dovecot-acl file:
+// ParseEntry parses one line of a yarilo-acl file:
 //
 //	[-]<identifier><WS><letters>
 //
 // Whitespace-only and '#'-prefixed lines return (Entry{}, false, nil)
-// — the caller skips them. Trailing comments are not supported, to
-// match dovecot-2.4/src/plugins/acl/acl-backend-vfile.c:187-231.
+// — the caller skips them. Trailing comments are not supported.
 func ParseEntry(line string) (Entry, bool, error) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -272,7 +271,7 @@ func ParseEntry(line string) (Entry, bool, error) {
 
 // String returns the canonical wire/disk encoding of one entry
 // without trailing newline. Empty Rights still serialises with a
-// trailing space so `<id> ` round-trips — Dovecot reads that as
+// trailing space so `<id> ` round-trips — the format treats that as
 // "grant nothing explicitly", which differs from "no entry".
 func (e Entry) String() string {
 	prefix := ""
@@ -321,7 +320,7 @@ func ParseACLString(s string) (ACL, error) {
 	return ParseACL(strings.NewReader(s))
 }
 
-// String returns the full dovecot-acl file encoding — one entry per
+// String returns the full yarilo-acl file encoding — one entry per
 // line, each line LF-terminated. Empty ACL serialises to "" (no
 // trailing newline) so an empty file is distinguishable from a
 // single-empty-entry file.
@@ -342,7 +341,7 @@ func (acl ACL) String() string {
 //
 // Semantics (RFC 4314 §3.5):
 //   - isOwner == true: returns FullRights regardless of stored
-//     entries (Dovecot personal-namespace auto-grant).
+//     entries (personal-namespace owner auto-grant).
 //   - else: union of positive entries whose Identifier matches the
 //     accessing user — anyone, authenticated, user=<user>,
 //     group=<g> (when <g> is in groups), group-override=<g> — minus

@@ -40,7 +40,7 @@ import (
 const (
 	defaultLogCompactMinBytes   int64 = 32 * 1024   // 32 KiB
 	defaultLogCompactMaxBytes   int64 = 1024 * 1024 // 1 MiB
-	defaultLogCompactMinAgeSecs int   = 300         // 5 min, matches Dovecot
+	defaultLogCompactMinAgeSecs int   = 300         // 5 min
 )
 
 type Backend struct {
@@ -88,9 +88,9 @@ func WithQuotaCounter(fn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits
 }
 
 // WithLogCompaction configures automatic log compaction thresholds.
-// minBytes / maxBytes mirror Dovecot's mail_index_log_rotate_min_size /
-// mail_index_log_rotate_max_size. minAge mirrors
-// mail_index_log_rotate_min_age_secs. Pass 0 for minBytes to disable.
+// minBytes / maxBytes control when rotation fires; minAge prevents
+// rotation before the log reaches a minimum age. Pass 0 for minBytes
+// to disable.
 func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
 	return func(b *Backend) {
 		b.logCompactMinBytes = minBytes
@@ -302,7 +302,7 @@ func (fs *folderState) closeFDs() {
 // and resets the log. Errors are non-fatal — the log simply stays larger
 // until the next successful compaction attempt.
 //
-// Mirrors Dovecot's mail_transaction_log_want_rotate() logic:
+// Rotation logic:
 //
 //	rotate if logSize > maxBytes
 //	     OR (logSize >= minBytes AND age since lastFlush >= minAge)

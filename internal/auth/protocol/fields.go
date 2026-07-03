@@ -203,8 +203,7 @@ const (
 	ScopePassdb Scope = iota
 	// ScopeUserdb — fields prefetched by passdb for the userdb
 	// layer. Crosses the client wire as `userdb_key=value` so
-	// login pods can split the response into passdb / userdb
-	// halves the way Dovecot's auth-client does.
+	// login pods can split the response into passdb / userdb halves.
 	ScopeUserdb
 	// ScopeInternal — internal-only metadata. Never crosses the
 	// client wire. Used for state-tracking fields like

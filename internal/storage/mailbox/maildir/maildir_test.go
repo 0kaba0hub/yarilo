@@ -394,7 +394,7 @@ func TestList_LegacyFilename_FallsBackToStat(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	// Drop a legacy-named file (no size annotations) directly into cur/.
-	// User "u@x" lives at <root>/x/u (Dovecot virtual-hosting layout).
+	// User "u@x" lives at <root>/x/u (virtual-hosting layout).
 	cur := filepath.Join(root, "x", "u", "INBOX", "cur")
 	legacy := filepath.Join(cur, "1700000000.M0P0_0.host:2,")
 	body := []byte("legacy body\n")

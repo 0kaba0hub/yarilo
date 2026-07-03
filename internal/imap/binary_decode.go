@@ -18,8 +18,8 @@ import (
 // Part-spec (BINARY[1] / BINARY[1.2] etc.) requires a MIME walk over the
 // message structure. Until that lands the call returns the raw bytes
 // unchanged — clients that supply a part still get a syntactically valid
-// reply rather than an error, matching Dovecot's permissive behaviour
-// when its MIME parser cannot resolve the section.
+// reply rather than an error (permissive fallback when the MIME parser
+// cannot resolve the section).
 func decodeBinarySection(raw []byte, part []int) []byte {
 	if len(part) > 0 {
 		// MIME walk deferred; return body unchanged so the client can

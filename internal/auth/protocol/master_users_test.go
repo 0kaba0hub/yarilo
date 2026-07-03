@@ -114,7 +114,7 @@ func TestParsePlain_AllShapes(t *testing.T) {
 	}
 }
 
-// TestSplitMasterFromAuthid covers Dovecot's separator workaround
+// TestSplitMasterFromAuthid covers the master-user separator workaround
 // for clients that cannot supply an authzid: the third PLAIN field
 // is absent and the master/target identities are packed into the
 // authid as `target<sep>master`.
@@ -176,7 +176,7 @@ func TestSplitMasterFromAuthid(t *testing.T) {
 			wantTarget: "",
 		},
 		{
-			name:       "multiple separators — first wins (Dovecot behaviour)",
+			name:       "multiple separators — first wins",
 			authid:     "alice*ad*min",
 			sep:        "*",
 			wantMaster: "ad*min",
@@ -553,8 +553,8 @@ func dialAndHandshake(t *testing.T, addr string) (net.Conn, *bufio.Scanner) {
 
 // TestWire_MasterUser_Authzid drives the standards-compliant
 // SASL PLAIN encoding: `target\0master\0password`. The OK reply
-// must carry user=target plus `master_user=master` (Dovecot
-// echoes the master's identity on the wire for audit).
+// must carry user=target plus `master_user=master` (the master's
+// identity is echoed on the wire for audit).
 func TestWire_MasterUser_Authzid(t *testing.T) {
 	srv := NewServer(
 		[]Passdb{&credPassdb{"alice", "userpass"}}, // regular passdb knows alice (target userdb backstop)
@@ -584,7 +584,7 @@ func TestWire_MasterUser_Authzid(t *testing.T) {
 	}
 }
 
-// TestWire_MasterUser_Separator drives Dovecot's workaround for
+// TestWire_MasterUser_Separator drives the master-user separator workaround for
 // clients that cannot supply authzid: the SASL response is
 // `\0alice*admin\0masterpass`. WithMasterUserSeparator("*") splits
 // it into (target=alice, master=admin) inside handleAuth.

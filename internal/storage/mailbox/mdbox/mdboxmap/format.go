@@ -29,8 +29,7 @@ const (
 	extRef     = "ref"
 	extRefSize = 2
 
-	// extGUID holds the 128-bit message GUID per record. Mirrors
-	// Dovecot's per-mailbox "guid" extension (guid.h:GUID_128_SIZE).
+	// extGUID holds the 128-bit message GUID (16 bytes) per record.
 	// Stored in the global map so rebuild can pair physical m.<N>
 	// records with map_uids via GUID match (strategy 1) rather
 	// than the less-robust offset match (strategy 2). Records

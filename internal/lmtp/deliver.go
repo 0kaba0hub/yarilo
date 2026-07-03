@@ -30,9 +30,9 @@ import (
 //	Currently the resolver uses only the template (no userdb home override),
 //	because LMTP delivery is unauthenticated and yarilo has no userdb lookup
 //	path for incoming SMTP recipients. To support per-user home overrides
-//	during delivery (matching Dovecot's lda/lmtp behaviour), add a UserDB
-//	interface (driver: SQL query or dict protocol) and call it here before
-//	OpenUser, passing the resulting home as homeOverride to Resolver.UserInfo.
+//	during delivery, add a UserDB interface (driver: SQL query or dict
+//	protocol) and call it here before OpenUser, passing the resulting home
+//	as homeOverride to Resolver.UserInfo.
 func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username, from string, flags []string) error {
 	tDeliver := time.Now()
 	if _, err := r.Seek(0, io.SeekStart); err != nil {

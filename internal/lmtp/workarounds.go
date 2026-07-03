@@ -19,7 +19,7 @@ const (
 )
 
 // parseWorkarounds parses a list of workaround names into a bitmask.
-// Unknown names are silently ignored (matching Dovecot behaviour).
+// Unknown names are silently ignored.
 func parseWorkarounds(list []string) lmtpWorkarounds {
 	var mask lmtpWorkarounds
 	for _, item := range list {

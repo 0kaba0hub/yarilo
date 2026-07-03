@@ -16,6 +16,7 @@ var SupportedExtensions = []string{
 	"spamtest", "spamtestplus", "virustest", "mboxmetadata", "servermetadata",
 	"vnd.yarilo.debug",
 	"vnd.yarilo.environment",
+	"vnd.yarilo.pipe",
 }
 
 // EffectiveExtensions returns the intersection of SupportedExtensions and allowed.

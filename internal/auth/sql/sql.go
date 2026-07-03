@@ -1,7 +1,7 @@
 // Package sql implements SQL passdb/userdb for yarilo-auth.
 // Supports SQLite, MySQL, PostgreSQL via a unified interface, with
-// Dovecot-style customizable queries (password_query / user_query /
-// iterate_query) and %u/%n/%d parameter substitution.
+// customizable queries (password_query / user_query / iterate_query)
+// and %u/%n/%d parameter substitution.
 package sql
 
 import (

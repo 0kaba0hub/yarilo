@@ -10,7 +10,7 @@ require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8.0.20260619144330-06898882abab
 	github.com/emersion/go-message v0.18.2
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
-	github.com/foxcpp/go-sieve v0.0.0-20260523221512-9ae51b269e52
+	github.com/foxcpp/go-sieve v0.0.0-20260703081245-75bf8d082267
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.10.0
@@ -61,7 +61,7 @@ require (
 	rsc.io/binaryregexp v0.2.0 // indirect
 )
 
-replace github.com/foxcpp/go-sieve => github.com/0kaba0hub/go-sieve v0.0.0-20260702222550-3eaabc4c86f4
+replace github.com/foxcpp/go-sieve => github.com/0kaba0hub/go-sieve v0.0.0-20260703081245-75bf8d082267
 
 replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260630151250-af0e5a38f926
 

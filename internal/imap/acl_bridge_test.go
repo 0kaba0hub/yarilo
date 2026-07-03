@@ -52,9 +52,8 @@ func TestBridgeIdentifierFromIMAP(t *testing.T) {
 		{"bare user", imaplib.RightsIdentifier("bob@test.com"), mailbox.Identifier{Type: mailbox.IDUser, Name: "bob@test.com"}},
 		{"dollar-prefixed group", imaplib.RightsIdentifier("$staff"), mailbox.Identifier{Type: mailbox.IDGroup, Name: "staff"}},
 		{"group-override passthrough", imaplib.RightsIdentifier("group-override=admins"), mailbox.Identifier{Type: mailbox.IDGroupOverride, Name: "admins"}},
-		// Bare 'user=' on the wire is treated as a literal username,
-		// matching Dovecot's wire semantics — the `user=` prefix is
-		// disk-only.
+		// Bare 'user=' on the wire is treated as a literal username —
+		// the `user=` prefix is disk-only.
 		{"bare looks-like-user", imaplib.RightsIdentifier("user=carol"), mailbox.Identifier{Type: mailbox.IDUser, Name: "user=carol"}},
 	}
 	for _, tc := range tests {

@@ -66,7 +66,7 @@ const (
 // shared locks.Locker and the optional alt-storage path template.
 type Backend struct {
 	locker         locks.Locker
-	altStorageTmpl string        // Dovecot mail_alt_path equivalent; "" = disabled
+	altStorageTmpl string        // base path template for cold-storage tier; "" = disabled
 	writeSem       chan struct{} // nil = unlimited
 }
 
@@ -85,7 +85,7 @@ func WithLocker(l locks.Locker) Option {
 // tier. Supports %u/%n/%d/%Lu/%Ln/%Ld — same expansion as
 // mail_home_template. Empty string disables alt storage.
 //
-// Example: "/mnt/cold/%d/%n" — mirrors Dovecot's mail_alt_path.
+// Example: "/mnt/cold/%d/%n"
 func WithAltStorage(tmpl string) Option {
 	return func(b *Backend) { b.altStorageTmpl = tmpl }
 }
@@ -180,8 +180,8 @@ func (u *userMailbox) mfileAltPath(fileID uint32) string {
 	return filepath.Join(u.altStoragePath(), fmt.Sprintf("m.%d", fileID))
 }
 
-// expandAltPath expands a Dovecot-style path template (%u, %n, %d,
-// %Lu, %Ln, %Ld) against a username ("localpart@domain").
+// expandAltPath expands a path template (%u, %n, %d, %Lu, %Ln, %Ld)
+// against a username ("localpart@domain").
 // Returns "" when tmpl is empty (alt storage disabled).
 func expandAltPath(tmpl, username string) string {
 	if tmpl == "" {

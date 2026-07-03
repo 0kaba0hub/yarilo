@@ -66,7 +66,7 @@ type SieveConfig struct {
 	SubmissionAuthSecret string `koanf:"submission_auth_secret"`
 
 	// DefaultName is the reserved name of the per-user default Sieve script
-	// (the active-pointer entry point). Corresponds to Dovecot's sieve_default_name.
+	// (the active-pointer entry point). Corresponds to sieve_default_name.
 	// Default: "yarilo".
 	DefaultName string `koanf:"default_name"`
 
@@ -79,7 +79,7 @@ type SieveConfig struct {
 	GlobalAfter []string `koanf:"global_after"`
 
 	// SieveExtensions is the whitelist of Sieve extensions users may declare
-	// with require. Corresponds to Dovecot's sieve_extensions.
+	// with require. Corresponds to sieve_extensions.
 	// Empty slice = allow all extensions (backwards-compatible default).
 	// Non-empty = strict whitelist enforced at PUTSCRIPT and delivery time.
 	SieveExtensions []string `koanf:"sieve_extensions"`
@@ -94,8 +94,24 @@ type SieveConfig struct {
 
 	// Environments is an operator-defined set of key-value pairs exposed to
 	// Sieve scripts via the vnd.yarilo.environment extension as
-	// vnd.yarilo.config.<key> items. Corresponds to Dovecot's sieve_environment.
+	// vnd.yarilo.config.<key> items.
 	Environments map[string]string `koanf:"sieve_environment"`
+
+	// PipeBinDir is the directory where yarilo looks for executables to run
+	// via the vnd.yarilo.pipe action.
+	PipeBinDir string `koanf:"sieve_pipe_bin_dir"`
+
+	// PipeSocketDir is the directory where yarilo looks for Unix sockets to
+	// connect to via the vnd.yarilo.pipe action. Searched before PipeBinDir.
+	PipeSocketDir string `koanf:"sieve_pipe_socket_dir"`
+
+	// PipeExecTimeout is the maximum number of seconds a piped program may
+	// run before being killed.
+	PipeExecTimeout int `koanf:"sieve_pipe_exec_timeout"`
+
+	// PipeInputEOL controls the line ending written to the program's stdin:
+	// "crlf" (default, matches RFC 5322) or "lf".
+	PipeInputEOL string `koanf:"sieve_pipe_input_eol"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -148,8 +164,7 @@ type NamespaceConfig struct {
 	// for the personal namespace.
 	Prefix string `koanf:"prefix"`
 	// Separator is the hierarchy delimiter for this namespace.
-	// Different namespaces MAY use different separators (matches
-	// Dovecot's permissive default).
+	// Different namespaces MAY use different separators.
 	Separator string `koanf:"separator"`
 	// List exposes the namespace in the NAMESPACE response. False
 	// keeps the namespace addressable internally (e.g. for future
@@ -260,7 +275,7 @@ type LMTPProtocolConfig struct {
 	// VerboseReplies includes diagnostic details in error responses. Default: false.
 	VerboseReplies bool `koanf:"verbose_replies"`
 	// UserConcurrencyLimit is the max concurrent deliveries per user enforced
-	// cluster-wide via yarilo-anvil at RCPT TO. Default: 10 (matches Dovecot).
+	// cluster-wide via yarilo-anvil at RCPT TO. Default: 10.
 	// Value 0 is a hard configuration error — operators that genuinely want
 	// no limit MUST set -1 ("unlimited"), so a missing or zeroed config can
 	// never silently turn off the DoS guard.
@@ -328,8 +343,7 @@ type IMAPProtocolConfig struct {
 	// SpecialUseDefaults maps a folder name (case-sensitive) to its RFC 6154
 	// special-use attribute. LIST advertises the attr automatically when the
 	// folder name matches. Per-user CREATE (USE ...) overrides win against
-	// these defaults via the on-disk special_use file. Mirrors Dovecot's
-	// namespace.mailbox.special_use convention.
+	// these defaults via the on-disk special_use file.
 	SpecialUseDefaults map[string]string `koanf:"imap_special_use_defaults"`
 	// ACL toggles RFC 4314 server-side ACL: GETACL / SETACL / DELETEACL
 	// / MYRIGHTS / LISTRIGHTS. When acl.enabled = false the IMAP server
@@ -362,14 +376,14 @@ type SubmissionProtocolConfig struct {
 	Hostname           string      `koanf:"hostname"`
 	MaxMsgSize         int64       `koanf:"max_message_size"`
 	MaxLineLength      int         `koanf:"max_line_length"`
-	MaxRecipients      int         `koanf:"max_recipients"` // 0 = unlimited (Dovecot default)
+	MaxRecipients      int         `koanf:"max_recipients"` // 0 = unlimited
 	RecipientDelimiter string      `koanf:"recipient_delimiter"`
 	Workarounds        []string    `koanf:"client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
 	AddReceivedHeader  bool        `koanf:"submission_add_received_header"`
 	Relay              RelayConfig `koanf:"relay"`
 }
 
-// RelayConfig mirrors Dovecot's submission_relay_* settings.
+// RelayConfig holds SMTP relay settings (submission_relay_* knobs).
 // Host must be non-empty to enable relaying; otherwise submission returns 451.
 type RelayConfig struct {
 	Host           string `koanf:"host"`
@@ -423,8 +437,8 @@ type QuotaStatusConfig struct {
 }
 
 // SASLLoginConfig configures the yarilo-sasl-login binary.
-// yarilo-sasl-login listens for plain-TCP connections from Postfix (Dovecot
-// auth client protocol, smtpd_sasl_type=dovecot) and proxies each session to
+// yarilo-sasl-login listens for plain-TCP connections from Postfix (yarilo
+// SASL auth protocol, smtpd_sasl_type=dovecot) and proxies each session to
 // yarilo-auth, optionally wrapping the upstream connection with mTLS.
 // This keeps the yarilo-auth socket internal — Postfix has no direct access.
 type SASLLoginConfig struct {
@@ -653,7 +667,7 @@ type AuthConfig struct {
 	// MaxAttempts is the number of authentication attempts a client may
 	// make on a single connection before the server sends BYE / -ERR and
 	// closes. Applies to IMAP and POP3; SMTP submission always closes after
-	// the first failure. Matches Dovecot auth_max_attempts. Default 3.
+	// the first failure. Default 3.
 	MaxAttempts int `koanf:"max_attempts"`
 
 	// FailureDelaySeconds is the timing-leak mitigation: every
@@ -954,7 +968,7 @@ type StorageConfig struct {
 	// MdboxAltStoragePath is the base directory for the mdbox alt
 	// (cold) storage tier. Supports the same %u/%n/%d/%Lu/%Ln/%Ld
 	// template variables as mail_home_template. Empty disables alt
-	// storage (default). Mirrors Dovecot's mail_alt_path setting.
+	// storage (default).
 	// Example: /mnt/cold/%d/%n
 	MdboxAltStoragePath string `koanf:"mdbox_alt_storage_path"`
 
@@ -962,7 +976,6 @@ type StorageConfig struct {
 	// the fileindex Recreate tmp file is written here (typically a
 	// local tmpfs) and then copied to NFS, keeping the expensive fsync
 	// off the NFS path. Supports %u/%n/%d/%h template variables.
-	// Mirrors Dovecot's VOLATILEDIR mail-location modifier.
 	// Example: /run/yarilo-volatile/%d/%n
 	VolatileDir string `koanf:"volatile_dir"`
 
@@ -970,23 +983,19 @@ type StorageConfig struct {
 	// automatic compaction (flush base + truncate log) may occur.
 	// Compaction only fires when the log is also older than
 	// IndexLogCompactMinAgeSecs (age guard prevents burst storms).
-	// 0 disables compaction entirely. Mirrors Dovecot's
-	// mail_index_log_rotate_min_size (default 32 KiB).
+	// 0 disables compaction entirely. Default 32 KiB.
 	IndexLogCompactMinBytes int64 `koanf:"index_log_compact_min_bytes"`
 	// IndexLogCompactMaxBytes forces compaction regardless of log age
-	// when the log exceeds this size. Mirrors Dovecot's
-	// mail_index_log_rotate_max_size (default 1 MiB).
+	// when the log exceeds this size. Default 1 MiB.
 	IndexLogCompactMaxBytes int64 `koanf:"index_log_compact_max_bytes"`
 	// IndexLogCompactMinAgeSecs is the minimum log age in seconds
-	// before a min-size compaction fires. Mirrors Dovecot's
-	// mail_index_log_rotate_min_age_secs (default 300 s).
+	// before a min-size compaction fires. Default 300 s.
 	IndexLogCompactMinAgeSecs int `koanf:"index_log_compact_min_age_secs"`
 
 	// ControlDir is the cluster-wide CONTROL= template. When set,
 	// per-folder control files (yarilo-uidlist, subscriptions) are
 	// stored here instead of co-located with the mailbox data under
 	// home. Supports %u/%n/%d/%h template variables.
-	// Mirrors Dovecot's CONTROL= mail-location modifier.
 	// Example: /var/yarilo-control/%d/%n
 	ControlDir string `koanf:"control_dir"`
 
@@ -994,7 +1003,6 @@ type StorageConfig struct {
 	// two-tier maildir storage: messages cold-tiered via altmove
 	// live here; reads check both primary (home) and alt tiers.
 	// Supports %u/%n/%d/%h template variables.
-	// Mirrors Dovecot's ALT= mail-location modifier.
 	// Example: /mnt/cold/%d/%n
 	AltDir string `koanf:"alt_dir"`
 }
@@ -1031,7 +1039,7 @@ func Load(path string) (*Config, error) {
 				IdleNotifyInterval: 120,
 				MaxLineLength:      65536,
 				IDSend:             "name *",
-				// Dovecot-compat conventional special-use mappings.
+				// Conventional special-use mappings.
 				// Operators override via yarilo.yaml; per-user CREATE USE
 				// overrides via the on-disk special_use file.
 				SpecialUseDefaults: map[string]string{
@@ -1158,6 +1166,10 @@ func Load(path string) (*Config, error) {
 			VacationEnabled:   true,
 			SubmissionSSL:     "no",
 			SubmissionTimeout: 30,
+			PipeBinDir:        "/usr/lib/yarilo/sieve-pipe",
+			PipeSocketDir:     "sieve-pipe",
+			PipeExecTimeout:   10,
+			PipeInputEOL:      "crlf",
 		},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {
@@ -1176,10 +1188,10 @@ func (cfg *Config) validate() error {
 			return fmt.Errorf("config: internal_tls.enabled is true but cert/key/ca are not set")
 		}
 	}
-	// Mirror Dovecot lmtp-settings.c:215 — a 0 value silently disables the
-	// per-user concurrency guard, which is a multi-tenant footgun. Force
-	// operators to pick: leave default (10), set a positive integer, or
-	// -1 for "unlimited".
+	// A 0 value silently disables the per-user concurrency guard,
+	// which is a multi-tenant footgun. Force operators to pick:
+	// leave default (10), set a positive integer, or -1 for
+	// "unlimited".
 	if cfg.Services.LMTP.Active() && cfg.Protocol.LMTP.UserConcurrencyLimit == 0 {
 		return fmt.Errorf(`config: lmtp.user_concurrency_limit must not be 0 (did you mean "unlimited" via -1?)`)
 	}

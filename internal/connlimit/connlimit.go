@@ -1,5 +1,5 @@
-// Package connlimit provides per-user@IP connection counting for IMAP/POP3/SMTP.
-// It implements Dovecot's mail_max_userip_connections limit.
+// Package connlimit provides per-user@IP connection counting for IMAP/POP3/SMTP,
+// enforcing the mail_max_userip_connections limit.
 package connlimit
 
 import "sync"

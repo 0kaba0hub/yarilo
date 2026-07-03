@@ -166,7 +166,7 @@ func TestAnvilSessionClient_ReleaseAllIdempotent(t *testing.T) {
 // TestAnvilSessionClient_UnreachableDowngrades covers the
 // resilience path: when AnvilAddr is set but the server is down,
 // reserve returns ErrAnvilUnavailable so the caller can downgrade
-// to best-effort delivery (matches Dovecot's tolerance).
+// to best-effort delivery.
 func TestAnvilSessionClient_UnreachableDowngrades(t *testing.T) {
 	c := newAnvilSessionClient("127.0.0.1:1", 10, "10.0.0.6")
 	defer c.releaseAll()

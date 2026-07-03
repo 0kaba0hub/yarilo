@@ -108,7 +108,7 @@ func TestLMTP_Deliver(t *testing.T) {
 
 func TestLMTP_UnknownRecipient_AutoProvisions(t *testing.T) {
 	// LMTP is trusted (behind an MTA); first delivery for a new recipient
-	// auto-creates the Maildir instead of rejecting. Dovecot LMTP parity.
+	// auto-creates the Maildir instead of rejecting (LMTP trusted-delivery behaviour).
 	addr := buildTestServer(t)
 	conn, sc := dialLMTP(t, addr)
 	sendLHLO(t, conn, sc)

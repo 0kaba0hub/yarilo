@@ -715,7 +715,7 @@ func listenAddr(svc *config.ServiceConfig) string {
 // buildTLS resolves TLS config for a service (merges general.ssl + per-service override)
 // and sets ALPN protocols matching the protocol (IANA RFC 7301 names).
 // Clients sending ALPN must match one of the listed protocols; clients without
-// ALPN are accepted (Dovecot 2.4 semantics).
+// ALPN are accepted.
 func buildTLS(cfg *config.Config, svc *config.ServiceConfig, alpn ...string) (*tls.Config, error) {
 	ssl := cfg.ResolveSSL(svc)
 	if ssl.TLSCert == "" {

@@ -97,11 +97,9 @@ type mdboxAltMoveResponse struct {
 	BytesMoved    int64 `json:"bytes_moved"`
 }
 
-// handleMdboxAltMove is the yarilo equivalent of `doveadm altmove`.
-// It moves messages from primary storage to alt (cold) storage or
-// vice versa (Reverse=true), filtered by InternalDate < Before.
-// Mirrors Dovecot's doveadm-mail-altmove.c flow: mark + purge in
-// one atomic call per file.
+// handleMdboxAltMove moves messages from primary storage to alt (cold)
+// storage or vice versa (Reverse=true), filtered by InternalDate < Before.
+// Performs mark + purge in one atomic call per file.
 func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 	var req mdboxAltMoveRequest
 	if !decodeJSON(w, r, &req) {

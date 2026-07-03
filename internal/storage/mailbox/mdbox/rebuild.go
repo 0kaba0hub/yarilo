@@ -133,7 +133,7 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 
 // resolveMapFilenames pairs physical scan records with map entries
 // to populate Filename (= stringified map_uid). Two strategies are
-// tried in order, mirroring Dovecot's rebuild logic:
+// tried in order:
 //
 //  1. GUID match — the GUID from the dbox trailer is compared
 //     against the GUID in the map entry (when the map carries one).

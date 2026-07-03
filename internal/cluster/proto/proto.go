@@ -209,7 +209,6 @@ func (c *Conn) Close() error {
 }
 
 // TabEscape escapes special characters for TAB-delimited transmission.
-// Mirrors Dovecot str_tabescape.
 func TabEscape(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
