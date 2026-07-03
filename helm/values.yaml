@@ -997,6 +997,7 @@ sieve:
     - environment
     - vnd.yarilo.debug
     - vnd.yarilo.environment
+    - vnd.yarilo.pipe
 
   ## sieveEnvironment exposes operator-defined key-value pairs to Sieve scripts
   ## via the vnd.yarilo.environment extension as vnd.yarilo.config.<key> items.
