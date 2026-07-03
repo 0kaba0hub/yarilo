@@ -40,7 +40,7 @@ type Options struct {
 	MasterAddr       string
 	MasterTLS        *tls.Config
 	DisablePlainAuth bool // reject USER/PASS without TLS
-	// POP3-specific behaviour (Dovecot parity)
+	// POP3-specific behaviour
 	NoFlagUpdates  bool               // pop3_no_flag_updates: skip \Seen on RETR
 	ReuseXUIDL     bool               // pop3_reuse_xuidl: use X-UIDL header (migration)
 	UIDLFormat     string             // pop3_uidl_format: %u=UID %v=UIDValidity %f=filename %g=GUID
@@ -52,10 +52,9 @@ type Options struct {
 	LockSession    bool               // pop3_lock_session: dotlock file to prevent IMAP+POP3 conflicts
 	ConnLimit      *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
 	// FailureDelay holds the goroutine for this duration before
-	// surfacing an auth-failure to the client. Mirrors Dovecot's
-	// auth_failure_delay — equalises wall-clock between every
-	// failure cause so the wire timing carries no info about
-	// whether the user exists. Zero disables.
+	// surfacing an auth-failure to the client. Equalises wall-clock
+	// between every failure cause so the wire timing carries no info
+	// about whether the user exists. Zero disables.
 	FailureDelay time.Duration
 
 	// OAuth2Enabled flips advertisement and acceptance of the

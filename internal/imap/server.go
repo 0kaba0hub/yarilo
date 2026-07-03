@@ -73,7 +73,7 @@ type Options struct {
 
 	// FailureDelay is the timing-leak mitigation hold applied
 	// before returning an auth-failure error to the client.
-	// Mirrors Dovecot's auth_failure_delay. Zero disables.
+	// Zero disables.
 	FailureDelay time.Duration
 
 	// OAuth2Enabled flips advertisement of the OAUTHBEARER SASL
@@ -512,10 +512,9 @@ func (s *session) Login(username, password string) error {
 }
 
 // delayFailure holds the calling goroutine for opts.FailureDelay
-// before letting an auth-failure surface to the client. Mirrors
-// Dovecot's auth_failure_delay — equalises wall-clock between
-// success and every failure-cause so the wire timing carries no
-// information about whether the user exists.
+// before letting an auth-failure surface to the client. Equalises
+// wall-clock between success and every failure-cause so the wire
+// timing carries no information about whether the user exists.
 func (s *session) delayFailure() {
 	if d := s.srv.opts.FailureDelay; d > 0 {
 		time.Sleep(d)
@@ -716,7 +715,7 @@ func (s *session) authenticateXOAuth2(opts sasl.XOAuth2Options) *sasl.OAuthBeare
 
 // authenticatePlainSASL is the PlainAuthenticator callback used by
 // our SessionSASL handler. authzid carries the impersonation target
-// (Dovecot's master-user model); empty / equal-to-authid disables
+// (master-user model); empty / equal-to-authid disables
 // impersonation and falls back to the regular login path.
 //
 // When the configured Authenticator does not implement
@@ -812,10 +811,10 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	)
 
 	// Audit log. master_user is non-empty only on the impersonation
-	// path (AUTH-3); mirrors Dovecot's per-event `master_user=`
-	// field that surfaces in every subsequent log line for the
-	// session. Always emitted for ALL logins so SIEM can correlate
-	// regular and master-user sessions through one log shape.
+	// path (AUTH-3); surfaces as `master_user=` in every subsequent
+	// log line for the session. Always emitted for ALL logins so
+	// SIEM can correlate regular and master-user sessions through
+	// one log shape.
 	master, _ := res.Fields.Get("master_user")
 	slog.Info("imap: login",
 		"sid", s.sid,
@@ -1021,9 +1020,8 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 		}
 	}
 	// RENAME requires DELETE on the source mailbox plus CREATE on
-	// the destination's parent — matches Dovecot acl-mailbox.c
-	// rename semantics and lets shared-mailbox admin grant move
-	// rights without granting blanket delete.
+	// the destination's parent — lets shared-mailbox admin grant
+	// move rights without granting blanket delete.
 	if err := s.requireRight(hOld, relOld, mailbox.RightDeleteMailbox); err != nil {
 		return err
 	}

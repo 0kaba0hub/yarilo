@@ -13,7 +13,7 @@ import (
 )
 
 // buildCustomSchemaDB creates a SQLite DB with a custom-named table to
-// exercise Dovecot-style password_query / user_query / iterate_query and
+// exercise password_query / user_query / iterate_query and
 // AS-aliased columns.
 func buildCustomSchemaDB(t *testing.T) string {
 	t.Helper()

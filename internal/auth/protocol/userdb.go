@@ -7,11 +7,9 @@ import (
 )
 
 // UserInfo carries the full set of user fields a userdb lookup can
-// return. Modelled after Dovecot 2.4's auth-fields plus the reserved
-// field names every userdb driver writes (auth-fields.c,
-// auth-request.c, userdb-passwd.c). The struct is intentionally
-// comprehensive — adding fields later means breaking the protocol
-// surface that pkg/authclient + yarilo-backend-api speak, so the
+// return. The struct is intentionally comprehensive — adding fields
+// later means breaking the protocol surface that pkg/authclient +
+// yarilo-backend-api speak, so the
 // shape is fixed up-front during Phase AUTH-1 and the prefix /
 // snapshot / prefetch semantics in later phases extend BEHAVIOUR
 // without touching DATA shape.
@@ -56,8 +54,7 @@ type UserInfo struct {
 
 	// ---- Mail storage -----------------------------------------
 
-	// MailLocation overrides the global mail_location (Dovecot
-	// `mail` field).
+	// MailLocation overrides the global mail_location.
 	MailLocation      string
 	MailUID           uint32 // distinct from system UID
 	MailGID           uint32 // distinct from system GID
@@ -93,8 +90,8 @@ type UserInfo struct {
 
 	// ---- Quota ------------------------------------------------
 
-	// QuotaRules is the list of per-user quota rules (Dovecot
-	// `quota_rule=` can appear multiple times for nested roots).
+	// QuotaRules is the list of per-user quota rules (`quota_rule=`
+	// may appear multiple times for nested roots).
 	QuotaRules    []string
 	QuotaOverFlag string // operator-set override marker (string sentinel)
 
@@ -190,8 +187,7 @@ type Userdb interface {
 // UserdbChain composes multiple Userdb backends with first-hit-wins
 // semantics, mirroring the Passdb Chain. The first non-nil response
 // from any backend in the chain is returned; an error from any
-// backend short-circuits the chain (matches Dovecot's
-// USERDB_RESULT_INTERNAL_FAILURE — "stop, do not try fallbacks").
+// backend short-circuits the chain ("stop, do not try fallbacks").
 type UserdbChain []Userdb
 
 func (c UserdbChain) Lookup(username string) (*UserInfo, error) {

@@ -12,10 +12,9 @@ import (
 // share the same /api/backend/folder/ prefix.
 //
 // Mutating ops bypass ACL — the admin plane is already gated by
-// the bearer token, AllowedNets, and mTLS, mirroring Dovecot's
-// `doveadm mailbox` model. The ACL store is still maintained
-// (yarilo-acl files moved on rename, dropped on delete) so an
-// admin DELETE leaves no orphaned ACL state behind.
+// the bearer token, AllowedNets, and mTLS. The ACL store is still
+// maintained (yarilo-acl files moved on rename, dropped on delete)
+// so an admin DELETE leaves no orphaned ACL state behind.
 func (s *Server) registerFolderRoutes() {
 	s.mux.Handle("POST /api/backend/folder/list", s.middleware(s.handleFolderList))
 	s.mux.Handle("POST /api/backend/folder/info", s.middleware(s.handleFolderInfo))

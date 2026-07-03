@@ -238,7 +238,7 @@ func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.Ac
 		body = q.Get("body")
 	}
 
-	// Envelope-from: use original sender (matches Dovecot default behavior).
+	// Envelope-from: use original sender (default behavior).
 	// Falls back to <> if original message had null sender.
 	envelopeFrom := opts.EnvFrom
 

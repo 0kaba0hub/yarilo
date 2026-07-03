@@ -10,8 +10,7 @@ import (
 )
 
 // AltMoveQuery filters which messages get moved to (or from) alt
-// storage during an AltMove call. Mirrors doveadm-altmove's
-// search-query surface.
+// storage during an AltMove call.
 type AltMoveQuery struct {
 	// Before moves messages whose InternalDate (R field in the dbox
 	// trailer) is strictly before this time. Zero means "all messages".
@@ -22,7 +21,7 @@ type AltMoveQuery struct {
 	Reverse bool
 
 	// Mailbox restricts the candidate scan to one folder name. Empty
-	// string means "all folders" — matches doveadm altmove's default.
+	// string means "all folders" (default behaviour).
 	// Currently unused in the storage layer (mdbox is folder-agnostic);
 	// reserved for future per-folder policy.
 	Mailbox string
@@ -48,7 +47,7 @@ type AltMoveStats struct {
 	MovedFilenames []string
 }
 
-// AltMove is the yarilo equivalent of `doveadm altmove`. It:
+// AltMove moves messages between primary and alt storage tiers. It:
 //
 //  1. Scans the source-tier storage for m.<N> files.
 //  2. Reads each dbox record's R-field (InternalDate) from the
@@ -62,8 +61,8 @@ type AltMoveStats struct {
 //  5. Unlinks the (now empty or fully-moved) source file.
 //
 // Only map_uids whose refcount equals the number of eligible copies
-// found in the source tier are moved — matching Dovecot's rule that
-// all instances must be marked before physical movement occurs.
+// found in the source tier are moved — all instances must be marked
+// before physical movement occurs.
 // Because yarilo's Copy() preserves the same map_uid across all
 // folders, a refcount==1 message is always self-consistent and the
 // rule simplifies to: eligibility is per-message, not per-folder.

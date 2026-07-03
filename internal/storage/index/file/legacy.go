@@ -32,8 +32,8 @@ import (
 //	offset 44 uint32 log_file_seq
 //	offset 48 uint32 log_file_tail
 //	offset 52 uint32 log_file_head
-//	offset 56 uint64 modseq          ← yarilo-only — straddles two Dovecot fields
-//	offset 64 [16]byte folder_guid   ← yarilo-only — straddles 4 Dovecot fields
+//	offset 56 uint64 modseq          ← yarilo-only — straddles two legacy index fields
+//	offset 64 [16]byte folder_guid   ← yarilo-only — straddles 4 legacy index fields
 //
 // Per-record (17 bytes):
 //
@@ -48,7 +48,7 @@ import (
 const (
 	legacyMinor       = 4
 	legacyRecordSize  = 17
-	legacyHdrOffMagic = 56 // 8-byte modseq lives here in legacy; Dovecot doesn't.
+	legacyHdrOffMagic = 56 // 8-byte modseq lives here in legacy format only.
 	legacyHdrOffGUID  = 64
 )
 

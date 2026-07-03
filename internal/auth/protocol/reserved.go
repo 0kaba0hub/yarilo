@@ -18,7 +18,7 @@ import (
 // field produce byte-identical wire output.
 type Validator func(value string) (string, error)
 
-// reservedValidators is the registry of Dovecot-style typed fields.
+// reservedValidators is the registry of typed auth fields.
 // Keys are the BASE field name; SetValidated unwraps the
 // `userdb_` prefix before lookup so `userdb_uid` validates as
 // `uid`. The `forward_` prefix passes through without validation
@@ -135,8 +135,8 @@ func validateNonEmptyCSV(v string) (string, error) {
 	return strings.Join(parts, ","), nil
 }
 
-// validateSSLEnum accepts the three SSL-mode tokens Dovecot's
-// proxy / namespace settings use: "yes" / "any" / "required".
+// validateSSLEnum accepts the three SSL-mode tokens used by
+// proxy / namespace settings: "yes" / "any" / "required".
 // Case-insensitive on input; lowercase on output.
 func validateSSLEnum(v string) (string, error) {
 	norm := strings.ToLower(strings.TrimSpace(v))

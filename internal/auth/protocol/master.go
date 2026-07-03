@@ -26,10 +26,8 @@ const (
 )
 
 // MasterServer answers password-less userdb lookups and user
-// enumeration over a separate TCP+mTLS listener. Wire-format mirrors
-// Dovecot's auth-master-connection at the shape level (USER / PASS /
-// LIST commands with ID-tracked responses) so admin tooling that
-// already knows the Dovecot dialect maps over without surprises.
+// enumeration over a separate TCP+mTLS listener. Wire format uses
+// USER / PASS / LIST commands with ID-tracked responses.
 //
 // MasterServer is intentionally separate from the client-protocol
 // Server: different audience (admins + backend-api vs login pods),
@@ -336,8 +334,8 @@ func marshalUserInfo(ui *UserInfo) string {
 }
 
 // escapeValue stops tab / newline / NUL bytes in field values from
-// breaking the line-oriented wire framing. Backslash escapes match
-// Dovecot's convention (TAB→`\t`, LF→`\n`, NUL→`\0`, backslash→`\\`).
+// breaking the line-oriented wire framing. Backslash escapes:
+// TAB→`\t`, LF→`\n`, NUL→`\0`, backslash→`\\`.
 func escapeValue(v string) string {
 	if !strings.ContainsAny(v, "\t\n\x00\\") {
 		return v

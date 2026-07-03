@@ -18,8 +18,8 @@ import (
 // values (1 / yes / y / true / t / on, case-insensitive); list
 // fields (Groups, QuotaRules, AllowNets) accept comma-separated
 // values and append, so a caller may invoke AssignField multiple
-// times with the same key to merge entries (Dovecot allows
-// `quota_rule=` to appear repeatedly).
+// times with the same key to merge entries (`quota_rule=` may
+// appear repeatedly).
 //
 //nolint:gocyclo // long but each branch is one line of assignment
 func AssignField(info *UserInfo, key, value string) error {
@@ -229,8 +229,7 @@ func IsTruthy(s string) bool {
 // master-protocol wire into (key, value), undoing the escapes
 // marshalUserInfo applies for TAB / LF / NUL / backslash.
 // Tokens without `=` are treated as bare flags with empty value
-// (mirroring Dovecot — `nodelay` on its own is equivalent to
-// `nodelay=yes`).
+// (`nodelay` on its own is equivalent to `nodelay=yes`).
 func ParseFieldPair(token string) (key, value string) {
 	eq := strings.IndexByte(token, '=')
 	if eq < 0 {
@@ -294,7 +293,7 @@ func ParseUserInfo(tokens []string) (*UserInfo, error) {
 }
 
 // parseMailLocationMod extracts the value of a named modifier from a
-// Dovecot mail location string of the form "driver:path:KEY1=v1:KEY2=v2".
+// mail location string of the form "driver:path:KEY1=v1:KEY2=v2".
 // The lookup is case-insensitive. Returns "" when the modifier is absent.
 func parseMailLocationMod(loc, mod string) string {
 	parts := strings.Split(loc, ":")

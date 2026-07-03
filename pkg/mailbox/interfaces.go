@@ -96,7 +96,7 @@ type MailboxBackend interface {
 }
 
 // UserMailbox is a per-session, per-user storage handle bound to a single UserInfo
-// at creation time. Mirrors Dovecot's struct mail_storage (mail-storage-private.h:138).
+// at creation time.
 //
 // Init MUST be called before any other method — it creates the on-disk directory
 // structure. Callers that open a handle but never call Init will see errors from
@@ -112,8 +112,8 @@ type MailboxBackend interface {
 //	filename := box.Save(folder, r, uid, size, flags)
 //	idx.AppendMessage(folderID, &MessageMeta{UID: uid, Filename: filename, ...})
 //
-// If Save fails after AllocateUID, the UID is burnt (matches Dovecot's
-// behaviour — the index simply skips the hole on next scan).
+// If Save fails after AllocateUID, the UID is burnt — the index
+// simply skips the hole on the next scan.
 //
 // Close releases any open file descriptors held by the handle.
 type UserMailbox interface {
@@ -163,8 +163,8 @@ type UserIndex interface {
 	// UserMailbox.Save, then records the full MessageMeta via AppendMessage.
 	//
 	// If the caller fails between AllocateUID and AppendMessage the UID
-	// is burnt — matches Dovecot's "uid hole" tolerance. Periodic rebuild
-	// reconciles state by scanning the on-disk tree.
+	// is burnt (uid hole). Periodic rebuild reconciles state by scanning
+	// the on-disk tree.
 	AllocateUID(folderID uint64) (uint32, error)
 	// AllocateUIDWithModSeq atomically reserves the folder's next UID and
 	// pre-allocates the next modseq value in one lock/reload/flush cycle,

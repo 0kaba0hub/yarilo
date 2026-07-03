@@ -1,6 +1,6 @@
-// Package dboxv2 is the Dovecot-compliant single-message dbox (sdbox)
-// storage driver, replacing yarilo's pre-Phase-3 internal/storage/
-// mailbox/dbox implementation.
+// Package dboxv2 implements the single-message dbox (sdbox) storage
+// driver, replacing yarilo's pre-Phase-3 internal/storage/mailbox/dbox
+// implementation.
 //
 // On-disk layout:
 //

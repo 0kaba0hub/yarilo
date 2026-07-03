@@ -111,9 +111,7 @@ func PenaltyToSecs(count int) int {
 // DefaultSessionTTL is how long an anvil session lives without a
 // HEARTBEAT. Login pods refresh on a timer significantly shorter
 // than this so a brief network hiccup never reaps a live session.
-// 90 seconds = three 30-second heartbeats budgeted before drop —
-// matches the staleness window Dovecot uses for its master process
-// heartbeat.
+// 90 seconds = three 30-second heartbeats budgeted before drop.
 const DefaultSessionTTL = 90 * time.Second
 
 // DefaultSweepInterval is how often the background goroutine

@@ -191,9 +191,9 @@ func (s *Server) handleFolderRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.EqualFold(req.OldFolder, "INBOX") {
-		// INBOX rename has Dovecot-style move-messages semantics that
-		// the admin path does not yet implement (it would need to
-		// touch every message). Reject with a clear reason rather
+		// INBOX rename has move-messages semantics that the admin path
+		// does not yet implement (it would need to touch every message).
+		// Reject with a clear reason rather
 		// than silently doing the wrong thing.
 		apiError(w, "rename of INBOX is not supported via backend-api", http.StatusBadRequest)
 		return

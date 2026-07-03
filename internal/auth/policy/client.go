@@ -4,11 +4,9 @@
 // compatible HTTP service); the response decides whether to
 // continue, tarpit, or reject the attempt.
 //
-// Wire shape matches Dovecot's auth-policy.c byte-for-byte so an
-// operator can point the same wforce instance at both Dovecot and
-// yarilo deployments without reconfiguration. JSON payload keys,
-// hash algorithm, status semantics, command query-string — all
-// preserved.
+// Wire shape is wforce-compatible: JSON payload keys, hash algorithm,
+// status semantics, and command query-string match the wforce protocol
+// so operators can reuse the same wforce instance across deployments.
 package policy
 
 import (
@@ -30,10 +28,10 @@ import (
 )
 
 // Mode controls which calls the auth path makes to the policy
-// server. Mirrors Dovecot's three orthogonal flags
-// (check_before_auth / check_after_auth / report_after_auth) —
-// any combination is legal; default builds enable check_before
-// + check_after + report_after.
+// server. Three orthogonal flags (check_before_auth /
+// check_after_auth / report_after_auth) — any combination is
+// legal; default builds enable check_before + check_after +
+// report_after.
 type Mode struct {
 	// CheckBefore: POST ?command=allow BEFORE the passdb runs.
 	// A non-zero status<0 from the policy server rejects the
@@ -78,10 +76,10 @@ type Config struct {
 	HashNonce string
 
 	// HashTruncateBits is how many MSB bits of the digest survive
-	// hex-encoding into pwhash. Default 12 (Dovecot default). 12
-	// bits = 4096 buckets — enough for rate-limit patterns,
-	// useless for password recovery. Set 0 for no truncation
-	// (full hash; reveals more about the password set).
+	// hex-encoding into pwhash. Default 12. 12 bits = 4096 buckets
+	// — enough for rate-limit patterns, useless for password
+	// recovery. Set 0 for no truncation (full hash; reveals more
+	// about the password set).
 	HashTruncateBits uint
 
 	// Timeout caps the HTTP round-trip. RejectOnFail decides
@@ -313,7 +311,7 @@ func (c *Client) failoverDecision() Decision {
 }
 
 // buildPayload assembles the JSON body. Key set + order is
-// alphabetic to match Dovecot's payload byte-for-byte.
+// alphabetic to match the wforce wire format.
 func (c *Client) buildPayload(req Request, includeStatus, success, policyReject bool) ([]byte, error) {
 	type field struct {
 		key   string
@@ -369,7 +367,7 @@ func (c *Client) hashPassword(username, password string) string {
 
 // truncateRshiftBits keeps the top `bits` of the input digest by
 // shifting it right (so the leading byte is the most significant
-// chunk). Matches Dovecot's buffer_truncate_rshift_bits.
+// chunk).
 func truncateRshiftBits(b []byte, bits uint) []byte {
 	totalBits := uint(len(b)) * 8
 	if bits >= totalBits {
@@ -388,9 +386,9 @@ func truncateRshiftBits(b []byte, bits uint) []byte {
 	return out
 }
 
-// joinCommand appends `?command=X` or `&command=X` per Dovecot's
-// rule: if the URL ends with `&`, the caller pre-prepared a
-// query-string and we extend it; otherwise we start one.
+// joinCommand appends `?command=X` or `&command=X`: if the URL ends
+// with `&`, the caller pre-prepared a query-string and we extend it;
+// otherwise we start one.
 func joinCommand(url, command string) string {
 	if strings.HasSuffix(url, "&") {
 		return url + "command=" + command

@@ -22,7 +22,7 @@ const (
 )
 
 // FsScriptStore manages per-user Sieve script files stored in the user's home
-// directory. All files are hidden (dot-prefixed), matching Dovecot's convention.
+// directory. All files are hidden (dot-prefixed).
 //
 // Layout:
 //

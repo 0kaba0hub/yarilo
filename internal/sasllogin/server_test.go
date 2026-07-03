@@ -12,7 +12,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/sasllogin"
 )
 
-// fakeAuth is a minimal Dovecot auth server stub.
+// fakeAuth is a minimal yarilo auth server stub.
 // It sends the handshake, then echoes OK for AUTH commands and FAIL otherwise.
 type fakeAuth struct {
 	ln      net.Listener

@@ -26,7 +26,7 @@ var errLogIndexIDMismatch = errors.New("fileindex: log IndexID does not match ba
 //
 // On first open of a yarilo-legacy (pre-Phase-2) .index file,
 // the legacy decoder is invoked to extract the existing records
-// and the index is rewritten atomically as Dovecot-compliant
+// and the index is rewritten atomically in the current format
 // before returning. Migration leaves a .legacy backup so an
 // operator can roll back manually if needed.
 func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
@@ -442,7 +442,7 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 
 // AppendMessage records m as a new on-disk record. The caller is
 // expected to have already assigned m.UID via AllocateUID or via
-// an external authority (Dovecot mdbox-style map_uid).
+// an external authority (mdbox-style map_uid).
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	var folder string
 	if err := u.withFolder(folderID, func(fs *folderState) error {
@@ -1014,7 +1014,7 @@ func (u *userIndex) SetAltTier(folderID uint64, filenames []string, altTier bool
 // In Phase 2 the log file holds only expunge records that
 // Vanished reads; OptimizeIndex truncates them after a successful
 // .index Recreate so future Vanished calls only see post-compact
-// state (matching Dovecot's compaction semantics).
+// state.
 //
 // Caller's expectation: post-OptimizeIndex, Vanished(sinceModSeq)
 // returns empty for every sinceModSeq < currentHighest, because
@@ -1058,7 +1058,7 @@ func (fs *folderState) persistKeywordRegistry() error {
 }
 
 // adoptLegacy populates fs from a legacy-decoded snapshot. The
-// caller calls flush after to materialise the Dovecot format.
+// caller calls flush after to materialise the index format.
 func (fs *folderState) adoptLegacy(snap legacySnapshot) error {
 	exts := defaultExtensions(snap.UIDValidity, snap.MailboxGUID)
 	mf, err := mailindex.NewFile(snap.IndexID, exts)

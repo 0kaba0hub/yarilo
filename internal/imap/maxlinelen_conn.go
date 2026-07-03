@@ -7,7 +7,7 @@ import (
 )
 
 // maxLineLenListener wraps a net.Listener and enforces a per-line byte limit
-// on every accepted connection (imap_max_line_length, Dovecot default 64 KB).
+// on every accepted connection (imap_max_line_length, default 64 KB).
 type maxLineLenListener struct {
 	net.Listener
 	limit int

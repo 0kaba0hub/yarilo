@@ -21,13 +21,13 @@ type Attrs struct {
 	Session  string // session ID
 	TTL      string // hop count remaining
 	Forward  string // base64-encoded forward data
-	DestAddr string // destination IP the client originally connected to (Dovecot 2.4 LMTP: DESTADDR; login-proxy: DESTIP)
+	DestAddr string // destination IP the client originally connected to (LMTP: DESTADDR; login-proxy: DESTIP)
 	DestPort string // destination port the client originally connected to
 }
 
 const unavailable = "[UNAVAILABLE]"
 
-// maxLineLen is the Postfix/Dovecot limit per XCLIENT command (INTERNALS.md §22).
+// maxLineLen is the maximum line length per XCLIENT command (INTERNALS.md §22).
 const maxLineLen = 512
 
 // DecodeXText decodes an xtext-encoded value.

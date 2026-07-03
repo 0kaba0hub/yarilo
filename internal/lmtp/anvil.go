@@ -22,7 +22,7 @@ import (
 // A dial failure short-circuits the limit check (returns
 // ErrAnvilUnavailable) so the LMTP server can decide whether to
 // fall back to "no limit, just deliver" or hard-reject — current
-// behaviour is the former, matching Dovecot's tolerance.
+// behaviour is the former.
 type anvilSessionClient struct {
 	addr    string
 	limit   int    // SoT for the cluster-wide concurrency check; -1 = unlimited
@@ -46,14 +46,13 @@ type anvilEntry struct {
 
 // ErrAnvilUnavailable is returned by the concurrency check when
 // the anvil server cannot be reached. Callers downgrade to
-// best-effort (deliver without the limit) and log a warning —
-// matches Dovecot's behaviour when the anvil socket is missing.
+// best-effort (deliver without the limit) and log a warning.
 var ErrAnvilUnavailable = errors.New("lmtp: anvil unavailable")
 
 // ErrTooManyConcurrent is returned by reserveDelivery when the
 // recipient is at or above lmtp_user_concurrency_limit. The
 // caller surfaces it as `451 4.3.0 Too many concurrent
-// deliveries for user` (Dovecot lmtp-local.c:282-284).
+// deliveries for user`.
 var ErrTooManyConcurrent = errors.New("lmtp: too many concurrent deliveries for user")
 
 // newAnvilSessionClient wires a session client; the connection

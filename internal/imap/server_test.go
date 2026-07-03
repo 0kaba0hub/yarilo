@@ -1376,9 +1376,7 @@ func TestNamespaceAllThreeDeclared(t *testing.T) {
 }
 
 func TestNamespacePerNamespaceSeparator(t *testing.T) {
-	// Dovecot allows different separators per namespace (e.g. "." for
-	// personal, "/" for shared). Verify the wire shape carries each
-	// per-namespace separator verbatim.
+	// Verify the wire shape carries each per-namespace separator verbatim.
 	c := startNamespaceClient(t, []imapserver.NamespaceSpec{
 		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '.', List: true},
 		{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true},

@@ -132,7 +132,7 @@ func TestBuildTLS_ALPNMismatchRejected(t *testing.T) {
 	}
 	conn.Close() //nolint:errcheck
 
-	// No ALPN at all should succeed (Dovecot 2.4 semantics: missing ALPN accepted)
+	// No ALPN at all should succeed (missing ALPN is accepted)
 	clientCfg.NextProtos = nil
 	conn, err = tls.Dial("tcp", ln.Addr().String(), clientCfg)
 	if err != nil {

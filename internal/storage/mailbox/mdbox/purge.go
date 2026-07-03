@@ -119,9 +119,7 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 // from src m.<id> and appends them to dst m.<id>, producing the
 // MovedRecord slice AppendMove needs. The original GUID from the
 // dbox trailer is preserved in the destination record — minting a
-// fresh GUID would break message identity across purge cycles and
-// diverge from Dovecot's mdbox_purge_save_msg behaviour which
-// copies metadata verbatim.
+// fresh GUID would break message identity across purge cycles.
 func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxmap.MapEntry) ([]mdboxmap.MovedRecord, error) {
 	srcPath := u.mfilePath(srcFileID)
 	src, err := os.Open(srcPath)
@@ -208,11 +206,9 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 // appendRecordToFile writes a canonical dbox v2 record at the
 // current end-of-file. guid must be the original GUID from the
 // source trailer — preserved verbatim so message identity
-// survives compaction (mirrors Dovecot mdbox_purge_save_msg which
-// copies metadata verbatim). The R timestamp is refreshed because
-// it reflects when the record was last stored, not the mail
-// internalDate (same as Dovecot behaviour). Returns the byte
-// offset at which the record starts.
+// survives compaction. The R timestamp is refreshed because it
+// reflects when the record was last stored, not the mail
+// internalDate. Returns the byte offset at which the record starts.
 func appendRecordToFile(dst *os.File, body []byte, guid [16]byte) (uint32, error) {
 	pos, err := dst.Seek(0, io.SeekEnd)
 	if err != nil {

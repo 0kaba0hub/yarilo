@@ -29,12 +29,11 @@ type Authenticator interface {
 }
 
 // MasterAuthenticator extends Authenticator with the SASL PLAIN
-// authzid surface — i.e. Dovecot's master-user impersonation
-// model exposed on the submission port. Adapters that only
-// implement Authenticator (the AuthPlain-only surface) keep
-// working unchanged; the session-level SASL hook type-asserts
-// into MasterAuthenticator to decide whether to honour a
-// distinct authzid.
+// authzid surface (master-user impersonation) exposed on the
+// submission port. Adapters that only implement Authenticator (the
+// AuthPlain-only surface) keep working unchanged; the session-level
+// SASL hook type-asserts into MasterAuthenticator to decide whether
+// to honour a distinct authzid.
 type MasterAuthenticator interface {
 	AuthPlainMaster(authzid, authid, password string) error
 }
@@ -75,10 +74,9 @@ type Options struct {
 	Proxy  *proxy.Submission
 
 	// FailureDelay holds the goroutine for this duration before
-	// surfacing an auth-failure to the client. Mirrors Dovecot's
-	// auth_failure_delay so unknown-user / wrong-password / non-
-	// master-backend-with-authzid all return in the same wall-
-	// clock time. Zero disables.
+	// surfacing an auth-failure to the client. Equalises wall-clock
+	// between unknown-user / wrong-password / non-master-backend-
+	// with-authzid so timing carries no signal. Zero disables.
 	FailureDelay time.Duration
 
 	// OAuth2Enabled flips advertisement and acceptance of the
@@ -467,8 +465,7 @@ func (s *session) authXOAuth2SASL(opts sasl.XOAuth2Options) *sasl.OAuthBearerErr
 // MasterAuthenticator when supported, else fails opaquely.
 //
 // Emits an audit log on success — `master_user` is empty for a
-// regular login, set to the master's identity on impersonation
-// (mirrors Dovecot's per-event `master_user=` field).
+// regular login, set to the master's identity on impersonation.
 func (s *session) authPlainSASL(authzid, authid, password string) error {
 	target := authid
 	master := ""
@@ -485,8 +482,7 @@ func (s *session) authPlainSASL(authzid, authid, password string) error {
 		err = goSmtp.ErrAuthFailed
 	}
 	if err != nil {
-		// Timing-leak mitigation. Mirrors Dovecot's
-		// auth_failure_delay — same wall-clock for every failure
+		// Timing-leak mitigation: same wall-clock for every failure
 		// cause (wrong password, unknown user, non-master backend
 		// with authzid, etc).
 		if d := s.srv.opts.FailureDelay; d > 0 {

@@ -1,8 +1,7 @@
 // Package acl persists per-mailbox ACL state in a yarilo-acl file
 // inside the folder's index directory (the same dir holding
-// yarilo.index*). One file per mailbox; on-disk format matches
-// Dovecot's dovecot-acl byte-for-byte so the same parser/encoder
-// in pkg/mailbox serves both reads and writes.
+// yarilo.index*). One file per mailbox; on-disk format is the same
+// ACL line encoding parsed and written by pkg/mailbox.
 //
 // Cross-process correctness comes from pkg/locks via the same
 // MailboxKey the fileindex backend uses for that folder. Read-
@@ -124,8 +123,7 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 
 // EffectiveFor resolves the user's effective rights on folder,
 // walking ancestors until an explicit yarilo-acl file is found
-// (Dovecot's first-ancestor-with-explicit-ACL semantics, see
-// dovecot-2.4/src/plugins/acl/acl-backend-vfile.c:195-213).
+// (first-ancestor-with-explicit-ACL semantics).
 //
 //   - isOwner == true: returns FullRights immediately without I/O.
 //   - else: read folder's ACL. If present, return its Effective.
@@ -143,9 +141,9 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 // Inheritance is "first hit wins": once an ancestor with an ACL
 // file is found, that file's positive / negative balance determines
 // the rights. ACLs from deeper ancestors (including the root) are
-// not merged in. This matches Dovecot; the alternative (full-chain
-// merge) breaks the principle of locality for shared-mailbox admin
-// who expects setting one ACL to fully override the inherited one.
+// not merged in. The alternative (full-chain merge) breaks the
+// principle of locality for shared-mailbox admin who expects
+// setting one ACL to fully override the inherited one.
 func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool, sep byte) (mailbox.Rights, error) {
 	if isOwner {
 		return mailbox.FullRights, nil
@@ -180,8 +178,8 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 
 // lastSepIndex returns the byte index of the last occurrence of sep
 // in s, or -1 when none is present. Stripped out into its own helper
-// so the caller can swap separators (Dovecot supports '/' and '.')
-// without restating the bytes import surface.
+// so the caller can swap separators without restating the bytes import
+// surface.
 func lastSepIndex(s string, sep byte) int {
 	for i := len(s) - 1; i >= 0; i-- {
 		if s[i] == sep {

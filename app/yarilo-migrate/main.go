@@ -1,14 +1,14 @@
 // yarilo-migrate converts a per-user mailbox tree from one
 // storage shape to another. Supported source shapes:
 //
-//	maildir   — Maildir++ with cur/, dovecot-uidlist, etc.
+//	maildir   — Maildir++ with cur/, yarilo-uidlist, etc.
 //	dbox-v1   — pre-Phase-5 yarilo single-message dbox
 //	mdbox-v1  — pre-Phase-5 yarilo multi-message dbox (TSV dbox.map)
 //
 // Supported destination shapes (Phase 6+):
 //
-//	sdbox     — Dovecot-compliant single-message dbox driver
-//	mdbox     — Dovecot-compliant multi-message dbox driver
+//	sdbox     — single-message dbox driver
+//	mdbox     — multi-message dbox driver
 //
 // Usage:
 //

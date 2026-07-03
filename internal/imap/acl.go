@@ -38,9 +38,9 @@ func rightsFromIMAP(rs imaplib.RightSet) (mailbox.Rights, error) {
 }
 
 // identifierToIMAP converts a stored identifier into the wire form
-// surfaced in GETACL responses. The on-disk dovecot-acl format uses
+// surfaced in GETACL responses. The on-disk yarilo-acl format uses
 // `user=` / `group=` / `group-override=` prefixes; the RFC 4314 wire
-// does not. user names are surfaced bare; groups carry Dovecot's
+// does not. user names are surfaced bare; groups carry the
 // `$`-prefix wire convention so a client SETACL round-trip preserves
 // the type without ambiguity against a bare username.
 //
@@ -72,7 +72,7 @@ func identifierToIMAP(id mailbox.Identifier) imaplib.RightsIdentifier {
 // identifier:
 //
 //   - "anyone" / "authenticated" / "owner" — special keywords
-//   - "$<name>" — Dovecot group wire convention → IDGroup
+//   - "$<name>" — group wire convention → IDGroup
 //   - "group-override=<name>" — disk-style passthrough (no RFC form)
 //   - anything else — bare username → IDUser{Name: <value>}
 //
@@ -188,7 +188,7 @@ func (s *session) adminCheckPRc(h *nsHandle, current mailbox.ACL) error {
 //
 // Surfaces stored ACL entries. When the namespace owner has no explicit
 // positive entry, an implicit owner=FullRights entry is prepended so
-// that the owner is always visible (mirrors Dovecot GETACL behaviour).
+// that the owner is always visible in GETACL responses.
 func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	if err := s.requireACLEnabled(); err != nil {
 		return nil, err
@@ -334,8 +334,7 @@ func (s *session) DeleteACL(folder string, identifier imaplib.RightsIdentifier) 
 // applySetACL is the in-memory transform a SETACL command performs
 // on the stored entry set. Identifier matching is by Type+Name; only
 // positive (Negative=false) entries participate — negative entries
-// are untouched, in line with Dovecot's behaviour (negative entries
-// are managed only via the admin file path, not via SETACL).
+// are untouched (managed only via the admin file path, not via SETACL).
 //
 // Replace with empty rights drops the matching positive entry
 // (RFC 4314 §3.1: "If a SETACL is performed with an empty rights
