@@ -198,6 +198,9 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 			} else {
 				return nil, fmt.Errorf("sieve/engine: pipe %q: %w", p.ProgramName, err)
 			}
+		} else if p.Try && !p.Copy {
+			// Successful :try non-copy pipe takes over delivery; cancel implicit keep.
+			result.Deliveries = removeImplicitKeep(result.Deliveries)
 		}
 	}
 
@@ -268,8 +271,9 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 			})
 		case interp.ActionKeep:
 			result.Deliveries = append(result.Deliveries, Delivery{
-				Folder: "INBOX",
-				Flags:  []string(a.Flags),
+				Folder:   "INBOX",
+				Flags:    []string(a.Flags),
+				Implicit: a.Implicit,
 			})
 		case interp.ActionRedirect:
 			if a.ListName != "" {
@@ -305,6 +309,16 @@ func (r *FilterResult) absorb(other *FilterResult) {
 	r.Pipes = append(r.Pipes, other.Pipes...)
 	r.VacationReplies = append(r.VacationReplies, other.VacationReplies...)
 	r.Notifications = append(r.Notifications, other.Notifications...)
+}
+
+func removeImplicitKeep(deliveries []Delivery) []Delivery {
+	out := deliveries[:0]
+	for _, d := range deliveries {
+		if !d.Implicit {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func (e *Engine) dupTracker(username string) *interp.MemoryDuplicateTracker {

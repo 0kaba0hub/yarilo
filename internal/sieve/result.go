@@ -8,6 +8,7 @@ type Delivery struct {
 	Flags      []string
 	Create     bool   // mailbox extension: create folder if absent
 	SpecialUse string // special-use extension: locate by attribute
+	Implicit   bool   // true when this delivery comes from implicit keep (no explicit keep/fileinto)
 }
 
 // Redirect is a forward-to-address action produced by a Sieve script.
