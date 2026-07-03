@@ -74,7 +74,7 @@ spec:
               mountPath: /tmp
             {{- if .Values.storage.persistence.enabled }}
             - name: mail
-              mountPath: {{ .Values.storage.maildirRoot }}
+              mountPath: {{ .Values.storage.maildir_root }}
             {{- end }}
             {{- include "yarilo.internalTLSMount" .Values.components.imap.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}

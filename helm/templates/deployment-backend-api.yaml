@@ -1,5 +1,5 @@
 {{- if .Values.components.backendAPI.enabled }}
-{{- $tokenSecret := .Values.components.backendAPI.tokenSecret }}
+{{- $tokenSecret := .Values.components.backendAPI.token_secret }}
 {{- if eq $tokenSecret "" }}
 {{- $tokenSecret = printf "%s-backend-api-token" (include "yarilo.fullname" .) }}
 {{- end }}
