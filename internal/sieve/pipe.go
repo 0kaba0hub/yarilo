@@ -42,12 +42,13 @@ func (e *pipeExecutor) Pipe(ctx context.Context, programName string, args []stri
 	if e.binDir != "" {
 		binPath := filepath.Join(e.binDir, programName)
 		if fi, err := os.Stat(binPath); err == nil {
-			if !fi.IsDir() && fi.Mode()&0o002 == 0 {
-				return e.pipeBin(ctx, binPath, args, msg)
+			if fi.IsDir() {
+				return fmt.Errorf("pipe: program %q is a directory", programName)
 			}
 			if fi.Mode()&0o002 != 0 {
 				return fmt.Errorf("pipe: program %q is world-writable, refusing to execute", programName)
 			}
+			return e.pipeBin(ctx, binPath, args, msg)
 		}
 	}
 
