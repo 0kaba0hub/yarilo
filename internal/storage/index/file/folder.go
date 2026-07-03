@@ -1238,21 +1238,20 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 	boundary := encLogRec(mailindex.TxTypeBoundary, 0,
 		mailindex.EncodeTxBoundaryPayload(mailindex.TxBoundary{Size: uint32(12 + subSize)}))
 
-	written := len(boundary)
-	if _, err := fs.logFD.Write(boundary); err != nil {
+	// Single write: BOUNDARY + sub-records must land atomically so a concurrent
+	// applyLog(fromOffset=0) on another pod cannot see a BOUNDARY whose payload
+	// is not yet on disk and mistakenly truncate a committed NextUID update.
+	buf := make([]byte, 0, 12+subSize)
+	buf = append(buf, boundary...)
+	for _, rec := range records {
+		buf = append(buf, rec...)
+	}
+	if _, err := fs.logFD.Write(buf); err != nil {
 		_ = fs.logFD.Close()
 		fs.logFD = nil
-		return fmt.Errorf("fileindex/mutlog: write boundary: %w", err)
+		return fmt.Errorf("fileindex/mutlog: write: %w", err)
 	}
-	for _, rec := range records {
-		if _, err := fs.logFD.Write(rec); err != nil {
-			_ = fs.logFD.Close()
-			fs.logFD = nil
-			return fmt.Errorf("fileindex/mutlog: write: %w", err)
-		}
-		written += len(rec)
-	}
-	fs.logSize += int64(written)
+	fs.logSize += int64(len(buf))
 
 	if dur := time.Since(t0); dur > 100*time.Millisecond {
 		slog.Debug("fileindex: slow mutlog write", "folder", fs.folder, "dur_ms", dur.Milliseconds())
