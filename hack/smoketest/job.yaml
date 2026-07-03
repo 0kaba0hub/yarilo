@@ -11,7 +11,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: smoketest
-        image: ghcr.io/0kaba0hub/yarilo:2.0.42
+        image: ghcr.io/0kaba0hub/yarilo:2.0.43
         command:
         - yarilo-smoketest
         args:
