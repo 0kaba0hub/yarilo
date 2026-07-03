@@ -33,7 +33,7 @@ Commands:
         without per-folder I/O.
 
   altmove <user> [--namespace NS] [--before RFC3339] [--reverse]
-        Move messages to alt (cold) storage.
+        Move messages to alt (cold) storage. (yarilo-admin mdbox altmove)
         --before:  only move messages with InternalDate before this
                    RFC3339 timestamp (e.g. 2025-01-01T00:00:00Z).
                    Omit to move all messages.

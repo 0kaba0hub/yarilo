@@ -28,7 +28,7 @@ func printQuotaUsage() {
 
 Commands:
   show   <user>                     — current usage and configured limits
-  recalc <user>                     — rescan all folders and rewrite counters
+  recalc <user>                     — rescan all folders and rewrite counters (yarilo-admin quota recalc)
   set    <user> --bytes N           — override storage counter directly
                  --messages N       — override message counter directly
                  (either or both flags required)
