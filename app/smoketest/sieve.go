@@ -618,15 +618,15 @@ func testSieveEnotify(user, pass, to string) error {
 // ── main sieve check ───────────────────────────────────────────────────────
 
 func testSieveDebugLog(user, pass, to string) error {
-	id := uniqueID()
+	uidnext := inboxUIDNext(user, pass)
 	script := `require ["variables","envelope","vnd.yarilo.debug"];` + "\n" +
 		`if envelope :matches "to" "*" { set "to" "${1}"; }` + "\n" +
 		`debug_log "smoke: delivering to ${to}";` + "\n" +
 		"keep;\n"
-	if err := sieveInject(script, "sender@test.invalid", to, id, "debug_log test", "debug_log test body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "debug_log test", "debug_log test body"); err != nil {
 		return err
 	}
-	return inboxWaitByMsgID(user, pass, id, "debug_log: message was not delivered to INBOX")
+	return inboxWaitByUID(user, pass, uidnext, "debug_log: message was not delivered to INBOX")
 }
 
 func testSieveEnvironment(user, pass, to string) error {
@@ -652,16 +652,16 @@ func testSieveEnvironment(user, pass, to string) error {
 
 // testSievePipe verifies that vnd.yarilo.pipe is advertised and accepted by
 // the Sieve interpreter. The script uses :try so that when no binary exists in
-// the sandbox's sievePipeBinDir the action silently fails and the implicit keep
-// fires, delivering the message to INBOX as normal.
+// the sandbox's sieve_pipe_bin_dir the action silently fails and the implicit
+// keep fires, delivering the message to INBOX as normal.
 func testSievePipe(user, pass, to string) error {
-	id := uniqueID()
+	uidnext := inboxUIDNext(user, pass)
 	script := `require ["vnd.yarilo.pipe"];` + "\n" +
 		`pipe :try "smoketest-noop";` + "\n"
-	if err := sieveInject(script, "sender@test.invalid", to, id, "pipe-try test", "pipe test body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "pipe-try test", "pipe test body"); err != nil {
 		return err
 	}
-	return inboxWaitByMsgID(user, pass, id, "pipe :try: message was not delivered to INBOX after failed pipe")
+	return inboxWaitByUID(user, pass, uidnext, "pipe :try: message was not delivered to INBOX after failed pipe")
 }
 
 // testSieveFilter verifies that vnd.yarilo.filter is accepted by the Sieve
@@ -669,22 +669,23 @@ func testSievePipe(user, pass, to string) error {
 // regardless of whether the program exists in the sandbox, the implicit keep
 // fires and delivers the message to INBOX.
 func testSieveFilter(user, pass, to string) error {
-	id := uniqueID()
+	uidnext := inboxUIDNext(user, pass)
 	script := `require ["vnd.yarilo.filter"];` + "\n" +
 		`if filter "smoketest-noop" {` + "\n" +
 		`  keep;` + "\n" +
 		`} else {` + "\n" +
 		`  keep;` + "\n" +
 		`}` + "\n"
-	if err := sieveInject(script, "sender@test.invalid", to, id, "filter test", "filter test body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "filter test", "filter test body"); err != nil {
 		return err
 	}
-	return inboxWaitByMsgID(user, pass, id, "filter test: message was not delivered to INBOX")
+	return inboxWaitByUID(user, pass, uidnext, "filter test: message was not delivered to INBOX")
 }
 
-// inboxWaitByMsgID polls INBOX for a message with the given Message-ID for up
-// to 30 seconds, deletes it when found, and returns failMsg on timeout.
-func inboxWaitByMsgID(user, pass, msgID, failMsg string) error {
+// inboxWaitByUID polls INBOX for any message with UID >= uidnext for up to
+// 30 seconds. Uses UID range search (needsBody=false) so no per-message NFS
+// reads are required — only the in-memory fileindex is consulted.
+func inboxWaitByUID(user, pass string, uidnext int, failMsg string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		c, err := imapDial()
@@ -699,7 +700,7 @@ func inboxWaitByMsgID(user, pass, msgID, failMsg string) error {
 			c.close()
 			return fmt.Errorf("SELECT INBOX: %w", err)
 		}
-		uids, err := c.uidSearch(fmt.Sprintf("HEADER Message-ID \"<%s>\"", msgID))
+		uids, err := c.uidSearch(fmt.Sprintf("UID %d:*", uidnext))
 		if err != nil {
 			c.close()
 			return fmt.Errorf("UID SEARCH: %w", err)
@@ -715,6 +716,29 @@ func inboxWaitByMsgID(user, pass, msgID, failMsg string) error {
 		}
 		time.Sleep(1 * time.Second)
 	}
+}
+
+// inboxUIDNext returns the UIDNEXT value for INBOX, or 1 on any error.
+func inboxUIDNext(user, pass string) int {
+	c, err := imapDial()
+	if err != nil {
+		return 1
+	}
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return 1
+	}
+	lines, err := c.cmd(`SELECT "INBOX"`)
+	if err != nil {
+		return 1
+	}
+	for _, l := range lines {
+		var n int
+		if _, e := fmt.Sscanf(l, "* OK [UIDNEXT %d]", &n); e == nil {
+			return n
+		}
+	}
+	return 1
 }
 
 func checkSieve() error {
