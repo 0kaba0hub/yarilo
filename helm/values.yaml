@@ -14,18 +14,18 @@ image:
 ## location string), those take priority over these cluster-wide defaults.
 storage:
   mailbox: maildir
-  maildirRoot: /var/mail/vhosts
-  mailHomeTemplate: "%d/%u"
+  maildir_root: /var/mail/vhosts
+  mail_home_template: "%d/%u"
   index: fileindex
   ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
-  ## indexDir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
-  ## controlDir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files
-  ## volatileDir: "/run/yarilo-volatile/%d/%n" # local tmpfs for index tmp files (NFS deployments)
-  ## altDir: "/mnt/cold/%d/%n"               # cold-tier alt storage root (two-tier maildir)
-  ## indexLogCompactMinBytes: 32768    # 32 KiB — compact log when >= this size and age >= minAge
-  ## indexLogCompactMaxBytes: 1048576  # 1 MiB  — compact unconditionally above this size
-  ## indexLogCompactMinAgeSecs: 300    # 5 min  — minimum log age before min-size compaction fires
-  ## maxConcurrentWrites: 0           # 0 = unlimited; tune to storage type: ~32 HDD, ~256 SSD
+  ## index_dir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
+  ## control_dir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files
+  ## volatile_dir: "/run/yarilo-volatile/%d/%n" # local tmpfs for index tmp files (NFS deployments)
+  ## alt_dir: "/mnt/cold/%d/%n"               # cold-tier alt storage root (two-tier maildir)
+  ## index_log_compact_min_bytes: 32768    # 32 KiB — compact log when >= this size and age >= minAge
+  ## index_log_compact_max_bytes: 1048576  # 1 MiB  — compact unconditionally above this size
+  ## index_log_compact_min_age_secs: 300    # 5 min  — minimum log age before min-size compaction fires
+  ## max_concurrent_writes: 0           # 0 = unlimited; tune to storage type: ~32 HDD, ~256 SSD
   persistence:
     enabled: true
     storageClass: ""
@@ -60,9 +60,9 @@ components:
       secretName: ""
 
     ## Consistent-hash routing settings.
-    userExpire: 900
-    pingInterval: 30
-    pingTimeout: 10
+    user_expire: 900
+    ping_interval: 30
+    ping_timeout: 10
 
     ## Static backend list loaded at startup.
     ## Each entry must match a backend service in the backend namespace.
@@ -91,7 +91,7 @@ components:
     api:
       port: 9103
       ## CIDRs allowed to reach the API. Default: loopback + k8s service/pod CIDRs.
-      allowedNets:
+      allowed_nets:
         - "127.0.0.0/8"
         - "10.96.0.0/12"
         - "10.244.0.0/16"
@@ -174,16 +174,16 @@ components:
     passdb:
       - driver: mysql
         dsn: "${YARILO_DB_DSN}"
-        defaultPassScheme: BCRYPT
+        default_pass_scheme: BCRYPT
         ## Custom queries (optional — leave empty to use the auto-created yarilo_users schema).
-        ## passwordQuery: |
+        ## password_query: |
         ##   SELECT password, '' AS home, '' AS mail, active AS enabled
         ##   FROM users WHERE username = LOWER(%u)
-        ## userQuery: |
+        ## user_query: |
         ##   SELECT home, mail_path FROM users WHERE username = LOWER(%u)
-        ## iterateQuery: |
+        ## iterate_query: |
         ##   SELECT username FROM users WHERE active = 1 ORDER BY username
-        ## skipSchema: true   # set when using a custom table instead of yarilo_users
+        ## skip_schema: true   # set when using a custom table instead of yarilo_users
 
     ## failureDelay — timing-leak mitigation. Every failed auth
     ## reply (wrong password, unknown user, malformed SASL) is
@@ -202,13 +202,13 @@ components:
     ## connection before the server sends BYE and closes (IMAP/POP3).
     ## Mirrors Dovecot's `auth_max_attempts`. Default 3.
     maxAttempts: 3
-    failureDelay: 2
-    ## internalFailureDelayMs — separate delay for INTERNAL
+    failure_delay: 2
+    ## internal_failure_delay_ms — separate delay for INTERNAL
     ## failures (passdb backend down, SQL refused). Mirrors
     ## Dovecot's `auth_internal_failure_delay`. Typically shorter
-    ## than failureDelay so a passdb outage does not amplify
+    ## than failure_delay so a passdb outage does not amplify
     ## into user-facing latency.
-    internalFailureDelayMs: 2000
+    internal_failure_delay_ms: 2000
 
     ## cache — in-process auth cache (LRU, bytes-bounded).
     ## OPT-IN, disabled by default (sizeBytes: 0). Stores
@@ -219,9 +219,9 @@ components:
     ## selectively via `yarilo-admin auth cache flush
     ## [user-mask...]`.
     cache:
-      sizeBytes: 104857600
-      ttlSeconds: 1800
-      negativeTTLSeconds: 1800
+      size_bytes: 104857600
+      ttl_seconds: 1800
+      negative_ttl_seconds: 1800
 
     ## penalty — cross-pod IP-bound auth-fail backoff. OPT-IN.
     ## Every failed auth from a given client IP increments the
@@ -239,17 +239,17 @@ components:
     ## the backend calls yarilo-auth VERIFY to consume it and enter
     ## authenticated state without replaying credentials.
     token:
-      ## ttlSeconds — how long the token is valid for the backend to
+      ## ttl_seconds — how long the token is valid for the backend to
       ## consume. Must be larger than the login→backend roundtrip time.
       ## Default 60 s is generous; lower to 10-15 s in production.
-      ttlSeconds: 60
+      ttl_seconds: 60
       ## backend — token store implementation.
       ## "memory": in-process (single auth pod only).
       ## "redis": Redis-backed, safe for replicaCount > 1.
       backend: memory
-      ## redisAddr — Redis URL used when backend=redis.
+      ## redis_addr — Redis URL used when backend=redis.
       ## Format: redis://[password@]host:port/db
-      redisAddr: ""
+      redis_addr: ""
 
     ## oauth2 — OAuth 2.0 bearer-token providers. Each entry
     ## becomes a passdb that participates in the auth chain (placed
@@ -299,16 +299,16 @@ components:
     ## passwords.
     policy:
       url: ""
-      apiHeader: ""
-      hashMech: sha256
-      hashNonce: ""
-      hashTruncateBits: 12
-      timeoutMs: 5000
-      rejectOnFail: false
-      logOnly: false
-      checkBefore: true
-      checkAfter: true
-      reportAfter: true
+      api_header: ""
+      hash_mech: sha256
+      hash_nonce: ""
+      hash_truncate_bits: 12
+      timeout_ms: 5000
+      reject_on_fail: false
+      log_only: false
+      check_before: true
+      check_after: true
+      report_after: true
 
     ## masterUsers — Dovecot-style master-user impersonation
     ## (SASL PLAIN authzid). OPT-IN, disabled by default. While
@@ -332,14 +332,14 @@ components:
     ## Outlook, some mobile MUAs). Empty disables the workaround
     ## even when `enabled: true`. `*` matches Dovecot's default
     ## `auth_master_user_separator`.
-    masterUsers:
+    master_users:
       enabled: false
       separator: "*"
       masterdb: []
         ## - driver: sqlite
         ##   dsn: /var/lib/yarilo/masters.db
-        ##   passwordQuery: "SELECT password FROM masters WHERE username = ?"
-        ##   defaultPassScheme: BCRYPT
+        ##   password_query: "SELECT password FROM masters WHERE username = ?"
+        ##   default_pass_scheme: BCRYPT
 
     resources:
       requests:
@@ -389,12 +389,12 @@ components:
     ## token. When empty, the chart generates a random token and
     ## stores it in <release>-backend-api-token. CLI reads from
     ## YARILO_BACKEND_API_TOKEN env or --backend-token flag.
-    tokenSecret: ""
+    token_secret: ""
 
     ## CIDR allow-list for callers. Empty = allow any IP (token
     ## auth still applies). Set to your operator subnet for
     ## defence-in-depth.
-    allowedNets: []
+    allowed_nets: []
 
     ## yarilo-auth master-protocol address. When set, backend-api
     ## dials at startup via pkg/authclient and:
@@ -405,7 +405,7 @@ components:
     ## Empty disables both surfaces — handy for dev / smoke runs.
     ## In a standard Helm release this is the in-cluster service:
     ##   "<release>-auth:9102"
-    authMasterAddr: ""
+    auth_master_addr: ""
 
     resources:
       requests:
@@ -523,19 +523,19 @@ components:
     servicePort: 12325
     containerPort: 12325
 
-    ## authAddr overrides the yarilo-auth dial address.
+    ## auth_addr overrides the yarilo-auth dial address.
     ## Defaults to auth_service.addr from the shared config.
-    authAddr: ""
+    auth_addr: ""
 
-    ## trustedNets lists CIDRs allowed to connect. Empty = allow all.
-    trustedNets: []
+    ## trusted_nets lists CIDRs allowed to connect. Empty = allow all.
+    trusted_nets: []
     #  - "10.0.0.0/8"
 
     ## haproxy enables PROXY protocol v1/v2 on the listener.
     haproxy: false
-    haproxyTimeout: 3
-    ## haproxyNets lists CIDRs whose PROXY header is trusted.
-    haproxyNets: []
+    haproxy_timeout: 3
+    ## haproxy_nets lists CIDRs whose PROXY header is trusted.
+    haproxy_nets: []
     #  - "10.0.0.0/8"
 
     service:
@@ -558,24 +558,24 @@ components:
     servicePort: 12340
     containerPort: 12340
 
-    ## defaultQuotaRules mirror yarilo.yaml quota_rule format.
+    ## default_quota_rules mirror yarilo.yaml quota_rule format.
     ## Applied to every recipient; per-user rules require userdb lookup (future phase).
-    defaultQuotaRules: []
+    default_quota_rules: []
     #  - "*:storage=5G"
     #  - "*:messages=100000"
     #  - "Trash:storage=+1G"
     #  - "Spam:ignore"
 
-    ## aliasDict is the name of a dict in the dicts: map that resolves
+    ## alias_dict is the name of a dict in the dicts: map that resolves
     ## virtual aliases (source → destination). Empty = disabled.
-    aliasDict: ""
-    aliasMaxHops: 5
+    alias_dict: ""
+    alias_max_hops: 5
 
-    ## authMasterAddr is the yarilo-auth master-protocol listener address
+    ## auth_master_addr is the yarilo-auth master-protocol listener address
     ## used for per-user quota_rule lookups via userdb. When set, per-user
-    ## rules override defaultQuotaRules; defaultQuotaRules remain as fallback.
+    ## rules override default_quota_rules; default_quota_rules remain as fallback.
     ## Example: "yarilo-auth:9101"
-    authMasterAddr: ""
+    auth_master_addr: ""
 
     service:
       type: ClusterIP
@@ -654,10 +654,10 @@ components:
       enabled: false
       secretName: ""
 
-    ## backendAddr bypasses director LOOKUP for standalone deployments.
+    ## backend_addr bypasses director LOOKUP for standalone deployments.
     ## Set to "<release>-imap:<port>" (plain) or "<release>-imap:<tls-port>" (mTLS).
     ## Leave empty in director deployments — LOOKUP is used instead.
-    backendAddr: ""
+    backend_addr: ""
 
     service:
       type: LoadBalancer
@@ -699,10 +699,10 @@ components:
       enabled: false
       secretName: ""
 
-    ## backendAddr bypasses director LOOKUP for standalone deployments.
+    ## backend_addr bypasses director LOOKUP for standalone deployments.
     ## Set to "<release>-pop3:<port>" (plain) or "<release>-pop3:<tls-port>" (mTLS).
     ## Leave empty in director deployments — LOOKUP is used instead.
-    backendAddr: ""
+    backend_addr: ""
 
     service:
       type: LoadBalancer
@@ -744,10 +744,10 @@ components:
       enabled: false
       secretName: ""
 
-    ## backendAddr bypasses director LOOKUP for standalone deployments.
+    ## backend_addr bypasses director LOOKUP for standalone deployments.
     ## Set to "<release>-submission:<port>" (plain) or "<release>-submission:<tls-port>" (mTLS).
     ## Leave empty in director deployments — LOOKUP is used instead.
-    backendAddr: ""
+    backend_addr: ""
 
     service:
       type: LoadBalancer
@@ -778,16 +778,16 @@ components:
       enabled: false
       secretName: ""
 
-    ## Standalone mode: fixed backend address (set either this or directorAddr).
+    ## Standalone mode: fixed backend address (set either this or director_addr).
     ## Typically "<release>-lmtp:<containerPort>" within the cluster.
-    backendAddr: ""
+    backend_addr: ""
 
-    ## Director mode: per-recipient LOOKUP via yarilo-director (set either this or backendAddr).
-    directorAddr: ""
-    ## directorTag restricts LOOKUP to backends with this tag. Empty = full ring.
-    directorTag: ""
-    ## backendPort overrides the port in the director LOOKUP result. 0 = use result as-is.
-    backendPort: 0
+    ## Director mode: per-recipient LOOKUP via yarilo-director (set either this or backend_addr).
+    director_addr: ""
+    ## director_tag restricts LOOKUP to backends with this tag. Empty = full ring.
+    director_tag: ""
+    ## backend_port overrides the port in the director LOOKUP result. 0 = use result as-is.
+    backend_port: 0
 
     service:
       type: ClusterIP
@@ -845,11 +845,11 @@ components:
 
     ## Standalone mode: fixed backend address.
     ## Typically "<release>-managesieve:<containerPort>" within the cluster.
-    backendAddr: ""
+    backend_addr: ""
 
-    haProxy: false
-    haProxyTimeout: 3
-    haProxyNets: []
+    haproxy_protocol: false
+    haproxy_timeout: 3
+    haproxy_nets: []
 
     service:
       type: ClusterIP
@@ -868,18 +868,18 @@ components:
 ## -------------------------------------------------------------------
 protocol:
   imap:
-    idleNotifyInterval: 120
-    maxLineLength: 65536
-    idSend: "name *"
-    loginGreeting: ""
-    logoutFormat: ""
-    clientWorkarounds: []
+    imap_idle_notify_interval: 120
+    imap_max_line_length: 65536
+    imap_id_send: "name *"
+    login_greeting: ""
+    imap_logout_format: ""
+    client_workarounds: []
     ## RFC 6154 SPECIAL-USE — map a folder name to a special-use attribute
     ## advertised in LIST replies. Operators can override per deployment;
     ## per-user CREATE (USE ...) takes precedence at runtime via the
     ## on-disk special_use file. Mirrors Dovecot's
     ## namespace.mailbox.special_use convention.
-    specialUseDefaults:
+    imap_special_use_defaults:
       Sent: "\\Sent"
       Drafts: "\\Drafts"
       Trash: "\\Trash"
@@ -900,49 +900,49 @@ protocol:
       enabled: false
 
   pop3:
-    noFlagUpdates: false
-    reuseXUIDL: false
-    uidlFormat: "%u.%v"
-    uidlDuplicates: rename
-    enableLast: false
-    deleteType: expunge
-    deletedFlag: ""
-    saveUIDL: false     # persist computed UIDLs to index for stability across index rebuilds
-    lockSession: false  # dotlock file in user home to prevent simultaneous IMAP+POP3 access
+    pop3_no_flag_updates: false
+    pop3_reuse_xuidl: false
+    pop3_uidl_format: "%u.%v"
+    pop3_uidl_duplicates: rename
+    pop3_enable_last: false
+    pop3_delete_type: expunge
+    pop3_deleted_flag: ""
+    pop3_save_uidl: false     # persist computed UIDLs to index for stability across index rebuilds
+    pop3_lock_session: false  # dotlock file in user home to prevent simultaneous IMAP+POP3 access
 
   lmtp:
-    loginGreeting: "Yarilo ready."
-    addReceivedHeader: true
-    saveToDetailMailbox: false
-    hdrDeliveryAddress: final
-    verboseReplies: false
-    userConcurrencyLimit: 10
-    readTimeout: 300
-    writeTimeout: 300
-    clientWorkarounds: []
+    login_greeting: "Yarilo ready."
+    add_received_header: true
+    save_to_detail_mailbox: false
+    hdr_delivery_address: final
+    verbose_replies: false
+    user_concurrency_limit: 10
+    read_timeout: 300
+    write_timeout: 300
+    client_workarounds: []
 
   submission:
     hostname: ""
-    maxMessageSize: 41943040
-    maxLineLength: 4096
-    maxRecipients: 0
-    recipientDelimiter: "+"
-    addReceivedHeader: true
-    clientWorkarounds: []
+    max_message_size: 41943040
+    max_line_length: 4096
+    max_recipients: 0
+    recipient_delimiter: "+"
+    add_received_header: true
+    client_workarounds: []
     relay:
       host: ""
       port: 25
       user: ""
       password: ""
       ssl: "no"
-      sslVerify: true
+      ssl_verify: true
       trusted: false
-      connectTimeout: 30
-      commandTimeout: 300
+      connect_timeout: 30
+      command_timeout: 300
 
   managesieve:
-    maxScriptSize: 65536
-    maxInvalidCommands: 3
+    max_script_size: 65536
+    max_invalid_commands: 3
 
 ## -------------------------------------------------------------------
 ## Sieve mail filtering
@@ -952,21 +952,21 @@ sieve:
   ## scriptsDriver selects the script storage backend: "fs" (default, files in user
   ## home directory) or "redis" (dict backend, requires scriptsDictName to reference
   ## an entry in dicts:). Use "redis" for multi-pod deployments without shared NFS.
-  scriptsDriver: "fs"
-  ## scriptsDictName is the key in dicts: that points to the dict instance used when
-  ## scriptsDriver is "redis". Ignored for "fs".
-  scriptsDictName: ""
+  scripts_driver: "fs"
+  ## scripts_dict_name is the key in dicts: that points to the dict instance used when
+  ## scripts_driver is "redis". Ignored for "fs".
+  scripts_dict_name: ""
   ## defaultName is the reserved script name used as the active-pointer entry point.
   ## Corresponds to Dovecot's sieve_default_name. Default: "yarilo".
   defaultName: "yarilo"
-  maxScriptSize: 65536
-  maxRedirects: 32
-  vacationEnabled: true
+  max_script_size: 65536
+  max_redirects: 32
+  vacation_enabled: true
   submission:
     host: ""
     ssl: "no"
     timeout: 30
-    authSecret: ""
+    auth_secret: ""
   ## globalBefore / globalAfter: ordered lists of absolute paths to .sieve files
   ## executed before / after each user's active script. Admin-defined rules.
   ## Files must be present on the pod filesystem (e.g. via ConfigMap volume mount).
@@ -976,7 +976,7 @@ sieve:
   ## require. Corresponds to Dovecot's sieve_extensions. Empty list = allow all
   ## (backwards-compatible). Operators who need enotify/include/extlists must add
   ## them explicitly.
-  sieveExtensions:
+  sieve_extensions:
     - fileinto
     - reject
     - ereject
@@ -1007,7 +1007,7 @@ sieve:
   ##   sieveEnvironment:
   ##     spam-folder: Junk
   ##     org-name: Acme Corp
-  sieveEnvironment: {}
+  sieve_environment: {}
 
   ## vnd.yarilo.pipe — external program execution via Sieve scripts.
   ## Corresponds to Dovecot's sieve_pipe_bin_dir / sieve_pipe_socket_dir /
@@ -1035,11 +1035,11 @@ general:
   ## when connecting to external dependencies at startup (anvil, Redis).
   ## Prevents permanent loss of functionality on rolling restarts when a
   ## dependency pod is not yet ready. Default 3.
-  startupDialRetries: 3
+  startup_dial_retries: 3
 
   limits:
     ## Maximum simultaneous IMAP/POP3 connections from a single IP address.
-    maxUserIPConnections: 10
+    max_user_ip_connections: 10
 
   ## HAProxy PROXY protocol v1/v2 support.
   ## Enable when an upstream load balancer (HAProxy, nginx, AWS NLB with proxy_protocol)
@@ -1055,7 +1055,7 @@ general:
   ## timeout:     Seconds to wait for the PROXY header before rejecting the connection.
   haproxy:
     enabled: false
-    trustedNets:
+    trusted_nets:
       - "127.0.0.1/32"
       - "10.0.0.0/8"
     timeout: 3
@@ -1065,12 +1065,12 @@ general:
   ## (yarilo-imap / yarilo-pop3 / yarilo-lmtp) immediately after connecting, so the
   ## backend session sees the real client IP instead of the director's pod IP.
   ##
-  ## Requires the backend to trust the director's pod CIDR in its own xclient.trustedNets.
-  ## The director itself does not check trustedNets for outgoing XCLIENT — trustedNets here
+  ## Requires the backend to trust the director's pod CIDR in its own xclient.trusted_nets.
+  ## The director itself does not check trusted_nets for outgoing XCLIENT — trusted_nets here
   ## is written into the backend config so it knows which sources to accept XCLIENT from.
   xclient:
     enabled: false
-    trustedNets:
+    trusted_nets:
       - "127.0.0.1/32"
       - "10.0.0.0/8"
 

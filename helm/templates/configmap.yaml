@@ -23,17 +23,17 @@ data:
       haproxy:
         timeout: {{ .Values.general.haproxy.timeout }}
         trusted_nets:
-          {{- range .Values.general.haproxy.trustedNets }}
+          {{- range .Values.general.haproxy.trusted_nets }}
           - {{ . | quote }}
           {{- end }}
       xclient:
         trusted_nets:
-          {{- range .Values.general.xclient.trustedNets }}
+          {{- range .Values.general.xclient.trusted_nets }}
           - {{ . | quote }}
           {{- end }}
       limits:
-        mail_max_userip_connections: {{ .Values.general.limits.maxUserIPConnections }}
-      startup_dial_retries: {{ .Values.general.startupDialRetries | default 3 }}
+        mail_max_userip_connections: {{ .Values.general.limits.max_user_ip_connections }}
+      startup_dial_retries: {{ .Values.general.startup_dial_retries | default 3 }}
 
     services:
       imaps:
@@ -96,18 +96,18 @@ data:
 
     protocol:
       imap:
-        imap_idle_notify_interval: {{ .Values.protocol.imap.idleNotifyInterval }}
-        imap_max_line_length: {{ .Values.protocol.imap.maxLineLength }}
-        imap_id_send: {{ .Values.protocol.imap.idSend | quote }}
-        login_greeting: {{ .Values.protocol.imap.loginGreeting | quote }}
-        imap_logout_format: {{ .Values.protocol.imap.logoutFormat | quote }}
-        {{- with .Values.protocol.imap.clientWorkarounds }}
+        imap_idle_notify_interval: {{ .Values.protocol.imap.imap_idle_notify_interval }}
+        imap_max_line_length: {{ .Values.protocol.imap.imap_max_line_length }}
+        imap_id_send: {{ .Values.protocol.imap.imap_id_send | quote }}
+        login_greeting: {{ .Values.protocol.imap.login_greeting | quote }}
+        imap_logout_format: {{ .Values.protocol.imap.imap_logout_format | quote }}
+        {{- with .Values.protocol.imap.client_workarounds }}
         client_workarounds:
           {{- range . }}
           - {{ . | quote }}
           {{- end }}
         {{- end }}
-        {{- with .Values.protocol.imap.specialUseDefaults }}
+        {{- with .Values.protocol.imap.imap_special_use_defaults }}
         imap_special_use_defaults:
           {{- range $folder, $attr := . }}
           {{ $folder | quote }}: {{ $attr | quote }}
@@ -116,23 +116,23 @@ data:
         acl:
           enabled: {{ .Values.protocol.imap.acl.enabled }}
       pop3:
-        pop3_no_flag_updates: {{ .Values.protocol.pop3.noFlagUpdates }}
-        pop3_reuse_xuidl: {{ .Values.protocol.pop3.reuseXUIDL }}
-        pop3_uidl_format: {{ .Values.protocol.pop3.uidlFormat | quote }}
-        pop3_uidl_duplicates: {{ .Values.protocol.pop3.uidlDuplicates | quote }}
-        pop3_enable_last: {{ .Values.protocol.pop3.enableLast }}
-        pop3_delete_type: {{ .Values.protocol.pop3.deleteType | quote }}
-        pop3_deleted_flag: {{ .Values.protocol.pop3.deletedFlag | quote }}
+        pop3_no_flag_updates: {{ .Values.protocol.pop3.pop3_no_flag_updates }}
+        pop3_reuse_xuidl: {{ .Values.protocol.pop3.pop3_reuse_xuidl }}
+        pop3_uidl_format: {{ .Values.protocol.pop3.pop3_uidl_format | quote }}
+        pop3_uidl_duplicates: {{ .Values.protocol.pop3.pop3_uidl_duplicates | quote }}
+        pop3_enable_last: {{ .Values.protocol.pop3.pop3_enable_last }}
+        pop3_delete_type: {{ .Values.protocol.pop3.pop3_delete_type | quote }}
+        pop3_deleted_flag: {{ .Values.protocol.pop3.pop3_deleted_flag | quote }}
       lmtp:
-        login_greeting: {{ .Values.protocol.lmtp.loginGreeting | quote }}
-        add_received_header: {{ .Values.protocol.lmtp.addReceivedHeader }}
-        save_to_detail_mailbox: {{ .Values.protocol.lmtp.saveToDetailMailbox }}
-        hdr_delivery_address: {{ .Values.protocol.lmtp.hdrDeliveryAddress | quote }}
-        verbose_replies: {{ .Values.protocol.lmtp.verboseReplies }}
-        user_concurrency_limit: {{ .Values.protocol.lmtp.userConcurrencyLimit }}
-        read_timeout: {{ .Values.protocol.lmtp.readTimeout }}
-        write_timeout: {{ .Values.protocol.lmtp.writeTimeout }}
-        {{- with .Values.protocol.lmtp.clientWorkarounds }}
+        login_greeting: {{ .Values.protocol.lmtp.login_greeting | quote }}
+        add_received_header: {{ .Values.protocol.lmtp.add_received_header }}
+        save_to_detail_mailbox: {{ .Values.protocol.lmtp.save_to_detail_mailbox }}
+        hdr_delivery_address: {{ .Values.protocol.lmtp.hdr_delivery_address | quote }}
+        verbose_replies: {{ .Values.protocol.lmtp.verbose_replies }}
+        user_concurrency_limit: {{ .Values.protocol.lmtp.user_concurrency_limit }}
+        read_timeout: {{ .Values.protocol.lmtp.read_timeout }}
+        write_timeout: {{ .Values.protocol.lmtp.write_timeout }}
+        {{- with .Values.protocol.lmtp.client_workarounds }}
         client_workarounds:
           {{- range . }}
           - {{ . | quote }}
@@ -140,45 +140,45 @@ data:
         {{- end }}
       submission:
         hostname: {{ .Values.protocol.submission.hostname | quote }}
-        max_message_size: {{ int64 .Values.protocol.submission.maxMessageSize }}
-        max_line_length: {{ int .Values.protocol.submission.maxLineLength }}
-        max_recipients: {{ .Values.protocol.submission.maxRecipients }}
-        recipient_delimiter: {{ .Values.protocol.submission.recipientDelimiter | quote }}
-        submission_add_received_header: {{ .Values.protocol.submission.addReceivedHeader }}
+        max_message_size: {{ int64 .Values.protocol.submission.max_message_size }}
+        max_line_length: {{ int .Values.protocol.submission.max_line_length }}
+        max_recipients: {{ .Values.protocol.submission.max_recipients }}
+        recipient_delimiter: {{ .Values.protocol.submission.recipient_delimiter | quote }}
+        submission_add_received_header: {{ .Values.protocol.submission.add_received_header }}
         relay:
           host: {{ .Values.protocol.submission.relay.host | quote }}
           port: {{ .Values.protocol.submission.relay.port }}
           user: {{ .Values.protocol.submission.relay.user | quote }}
           password: {{ .Values.protocol.submission.relay.password | quote }}
           ssl: {{ .Values.protocol.submission.relay.ssl | quote }}
-          ssl_verify: {{ .Values.protocol.submission.relay.sslVerify }}
+          ssl_verify: {{ .Values.protocol.submission.relay.ssl_verify }}
           trusted: {{ .Values.protocol.submission.relay.trusted }}
-          connect_timeout: {{ .Values.protocol.submission.relay.connectTimeout }}
-          command_timeout: {{ .Values.protocol.submission.relay.commandTimeout }}
+          connect_timeout: {{ .Values.protocol.submission.relay.connect_timeout }}
+          command_timeout: {{ .Values.protocol.submission.relay.command_timeout }}
       managesieve:
-        max_script_size: {{ (.Values.protocol.managesieve | default dict).maxScriptSize | default 65536 }}
-        max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).maxInvalidCommands | default 3 }}
+        max_script_size: {{ (.Values.protocol.managesieve | default dict).max_script_size | default 65536 }}
+        max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).max_invalid_commands | default 3 }}
 
     sieve:
       {{- $sieve := (.Values.sieve | default dict) }}
       {{- $sub := ($sieve.submission | default dict) }}
       enabled: {{ $sieve.enabled | default false }}
-      scripts_driver: {{ $sieve.scriptsDriver | default "fs" | quote }}
-      {{- with $sieve.scriptsDictName }}
+      scripts_driver: {{ $sieve.scripts_driver | default "fs" | quote }}
+      {{- with $sieve.scripts_dict_name }}
       scripts_dict: {{ . | quote }}
       {{- end }}
-      max_script_size: {{ $sieve.maxScriptSize | default 65536 }}
-      max_redirects: {{ $sieve.maxRedirects | default 32 }}
-      vacation_enabled: {{ $sieve.vacationEnabled | default true }}
+      max_script_size: {{ $sieve.max_script_size | default 65536 }}
+      max_redirects: {{ $sieve.max_redirects | default 32 }}
+      vacation_enabled: {{ $sieve.vacation_enabled | default true }}
       submission_host: {{ $sub.host | default "" | quote }}
       submission_ssl: {{ $sub.ssl | default "no" | quote }}
       submission_timeout: {{ $sub.timeout | default 30 }}
-      submission_auth_secret: {{ $sub.authSecret | default "" | quote }}
-      {{- with $sieve.sieveExtensions }}
+      submission_auth_secret: {{ $sub.auth_secret | default "" | quote }}
+      {{- with $sieve.sieve_extensions }}
       sieve_extensions:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $sieve.sieveEnvironment }}
+      {{- with $sieve.sieve_environment }}
       sieve_environment:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -192,26 +192,26 @@ data:
       sieve_filter_input_eol: {{ index $sieve "sieve_filter_input_eol" | default "crlf" | quote }}
 
     auth:
-      failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}
-      internal_failure_delay_ms: {{ .Values.components.auth.internalFailureDelayMs | default 2000 }}
+      failure_delay: {{ .Values.components.auth.failure_delay | default 2 }}
+      internal_failure_delay_ms: {{ .Values.components.auth.internal_failure_delay_ms | default 2000 }}
       cache:
-        size_bytes: {{ .Values.components.auth.cache.sizeBytes | default 0 }}
-        ttl_seconds: {{ .Values.components.auth.cache.ttlSeconds | default 1800 }}
-        negative_ttl_seconds: {{ .Values.components.auth.cache.negativeTTLSeconds | default 1800 }}
+        size_bytes: {{ .Values.components.auth.cache.size_bytes | default 0 }}
+        ttl_seconds: {{ .Values.components.auth.cache.ttl_seconds | default 1800 }}
+        negative_ttl_seconds: {{ .Values.components.auth.cache.negative_ttl_seconds | default 1800 }}
       penalty:
         enabled: {{ .Values.components.auth.penalty.enabled | default false }}
       policy:
         url: {{ .Values.components.auth.policy.url | default "" | quote }}
-        api_header: {{ .Values.components.auth.policy.apiHeader | default "" | quote }}
-        hash_mech: {{ .Values.components.auth.policy.hashMech | default "sha256" | quote }}
-        hash_nonce: {{ .Values.components.auth.policy.hashNonce | default "" | quote }}
-        hash_truncate_bits: {{ .Values.components.auth.policy.hashTruncateBits | default 12 }}
-        timeout_ms: {{ .Values.components.auth.policy.timeoutMs | default 5000 }}
-        reject_on_fail: {{ .Values.components.auth.policy.rejectOnFail | default false }}
-        log_only: {{ .Values.components.auth.policy.logOnly | default false }}
-        check_before: {{ .Values.components.auth.policy.checkBefore | default true }}
-        check_after: {{ .Values.components.auth.policy.checkAfter | default true }}
-        report_after: {{ .Values.components.auth.policy.reportAfter | default true }}
+        api_header: {{ .Values.components.auth.policy.api_header | default "" | quote }}
+        hash_mech: {{ .Values.components.auth.policy.hash_mech | default "sha256" | quote }}
+        hash_nonce: {{ .Values.components.auth.policy.hash_nonce | default "" | quote }}
+        hash_truncate_bits: {{ .Values.components.auth.policy.hash_truncate_bits | default 12 }}
+        timeout_ms: {{ .Values.components.auth.policy.timeout_ms | default 5000 }}
+        reject_on_fail: {{ .Values.components.auth.policy.reject_on_fail | default false }}
+        log_only: {{ .Values.components.auth.policy.log_only | default false }}
+        check_before: {{ .Values.components.auth.policy.check_before | default true }}
+        check_after: {{ .Values.components.auth.policy.check_after | default true }}
+        report_after: {{ .Values.components.auth.policy.report_after | default true }}
       oauth2:
         {{- range (.Values.components.auth.oauth2 | default list) }}
         - mode: {{ .mode | quote }}
@@ -274,55 +274,55 @@ data:
         {{- range .Values.components.auth.passdb }}
         - driver: {{ .driver | quote }}
           dsn: {{ .dsn | quote }}
-          {{- with .passwordQuery }}
+          {{- with .password_query }}
           password_query: |
             {{- . | nindent 12 }}
           {{- end }}
-          {{- with .userQuery }}
+          {{- with .user_query }}
           user_query: |
             {{- . | nindent 12 }}
           {{- end }}
-          {{- with .iterateQuery }}
+          {{- with .iterate_query }}
           iterate_query: |
             {{- . | nindent 12 }}
           {{- end }}
-          {{- with .defaultPassScheme }}
+          {{- with .default_pass_scheme }}
           default_pass_scheme: {{ . | quote }}
           {{- end }}
-          {{- if .skipSchema }}
+          {{- if .skip_schema }}
           skip_schema: true
           {{- end }}
         {{- end }}
       master_users:
-        enabled: {{ .Values.components.auth.masterUsers.enabled | default false }}
-        separator: {{ .Values.components.auth.masterUsers.separator | default "*" | quote }}
+        enabled: {{ .Values.components.auth.master_users.enabled | default false }}
+        separator: {{ .Values.components.auth.master_users.separator | default "*" | quote }}
         masterdb:
-          {{- range (.Values.components.auth.masterUsers.masterdb | default list) }}
+          {{- range (.Values.components.auth.master_users.masterdb | default list) }}
           - driver: {{ .driver | quote }}
             dsn: {{ .dsn | quote }}
-            {{- with .passwordQuery }}
+            {{- with .password_query }}
             password_query: |
               {{- . | nindent 14 }}
             {{- end }}
-            {{- with .userQuery }}
+            {{- with .user_query }}
             user_query: |
               {{- . | nindent 14 }}
             {{- end }}
-            {{- with .iterateQuery }}
+            {{- with .iterate_query }}
             iterate_query: |
               {{- . | nindent 14 }}
             {{- end }}
-            {{- with .defaultPassScheme }}
+            {{- with .default_pass_scheme }}
             default_pass_scheme: {{ . | quote }}
             {{- end }}
-            {{- if .skipSchema }}
+            {{- if .skip_schema }}
             skip_schema: true
             {{- end }}
           {{- end }}
       token:
-        ttl_seconds: {{ .Values.components.auth.token.ttlSeconds | default 60 }}
+        ttl_seconds: {{ .Values.components.auth.token.ttl_seconds | default 60 }}
         backend: {{ .Values.components.auth.token.backend | default "memory" | quote }}
-        {{- with .Values.components.auth.token.redisAddr }}
+        {{- with .Values.components.auth.token.redis_addr }}
         redis_addr: {{ . | quote }}
         {{- end }}
 
@@ -330,32 +330,32 @@ data:
     {{- if $storage }}
     storage:
       mailbox: {{ $storage.mailbox | quote }}
-      maildir_root: {{ $storage.maildirRoot | quote }}
-      mail_home_template: {{ $storage.mailHomeTemplate | quote }}
+      maildir_root: {{ $storage.maildir_root | quote }}
+      mail_home_template: {{ $storage.mail_home_template | quote }}
       index: {{ $storage.index | quote }}
-      {{- if $storage.indexDir }}
-      index_dir: {{ $storage.indexDir | quote }}
+      {{- if $storage.index_dir }}
+      index_dir: {{ $storage.index_dir | quote }}
       {{- end }}
-      {{- if $storage.controlDir }}
-      control_dir: {{ $storage.controlDir | quote }}
+      {{- if $storage.control_dir }}
+      control_dir: {{ $storage.control_dir | quote }}
       {{- end }}
-      {{- if $storage.volatileDir }}
-      volatile_dir: {{ $storage.volatileDir | quote }}
+      {{- if $storage.volatile_dir }}
+      volatile_dir: {{ $storage.volatile_dir | quote }}
       {{- end }}
-      {{- if $storage.altDir }}
-      alt_dir: {{ $storage.altDir | quote }}
+      {{- if $storage.alt_dir }}
+      alt_dir: {{ $storage.alt_dir | quote }}
       {{- end }}
-      {{- if $storage.indexLogCompactMinBytes }}
-      index_log_compact_min_bytes: {{ $storage.indexLogCompactMinBytes }}
+      {{- if $storage.index_log_compact_min_bytes }}
+      index_log_compact_min_bytes: {{ $storage.index_log_compact_min_bytes }}
       {{- end }}
-      {{- if $storage.indexLogCompactMaxBytes }}
-      index_log_compact_max_bytes: {{ $storage.indexLogCompactMaxBytes }}
+      {{- if $storage.index_log_compact_max_bytes }}
+      index_log_compact_max_bytes: {{ $storage.index_log_compact_max_bytes }}
       {{- end }}
-      {{- if $storage.indexLogCompactMinAgeSecs }}
-      index_log_compact_min_age_secs: {{ $storage.indexLogCompactMinAgeSecs }}
+      {{- if $storage.index_log_compact_min_age_secs }}
+      index_log_compact_min_age_secs: {{ $storage.index_log_compact_min_age_secs }}
       {{- end }}
-      {{- if $storage.maxConcurrentWrites }}
-      max_concurrent_writes: {{ $storage.maxConcurrentWrites }}
+      {{- if $storage.max_concurrent_writes }}
+      max_concurrent_writes: {{ $storage.max_concurrent_writes }}
       {{- end }}
     {{- end }}
 
@@ -419,41 +419,41 @@ data:
 
     {{- if .Values.components.imapLogin.enabled }}
     imap_login_service:
-      backend_addr: {{ .Values.components.imapLogin.backendAddr | quote }}
+      backend_addr: {{ .Values.components.imapLogin.backend_addr | quote }}
     {{- end }}
 
     {{- if .Values.components.pop3Login.enabled }}
     pop3_login_service:
-      backend_addr: {{ .Values.components.pop3Login.backendAddr | quote }}
+      backend_addr: {{ .Values.components.pop3Login.backend_addr | quote }}
     {{- end }}
 
     {{- if .Values.components.submissionLogin.enabled }}
     submission_login_service:
-      backend_addr: {{ .Values.components.submissionLogin.backendAddr | quote }}
+      backend_addr: {{ .Values.components.submissionLogin.backend_addr | quote }}
     {{- end }}
 
     {{- if .Values.components.lmtpLogin.enabled }}
     lmtp_login_service:
-      {{- if .Values.components.lmtpLogin.directorAddr }}
-      director_addr: {{ .Values.components.lmtpLogin.directorAddr | quote }}
-      {{- if .Values.components.lmtpLogin.directorTag }}
-      director_tag: {{ .Values.components.lmtpLogin.directorTag | quote }}
+      {{- if .Values.components.lmtpLogin.director_addr }}
+      director_addr: {{ .Values.components.lmtpLogin.director_addr | quote }}
+      {{- if .Values.components.lmtpLogin.director_tag }}
+      director_tag: {{ .Values.components.lmtpLogin.director_tag | quote }}
       {{- end }}
-      {{- if .Values.components.lmtpLogin.backendPort }}
-      backend_port: {{ .Values.components.lmtpLogin.backendPort }}
+      {{- if .Values.components.lmtpLogin.backend_port }}
+      backend_port: {{ .Values.components.lmtpLogin.backend_port }}
       {{- end }}
       {{- else }}
-      backend_addr: {{ .Values.components.lmtpLogin.backendAddr | quote }}
+      backend_addr: {{ .Values.components.lmtpLogin.backend_addr | quote }}
       {{- end }}
     {{- end }}
 
     {{- if ((.Values.components.manageSieveLogin | default dict).enabled) }}
     managesieve_login_service:
-      backend_addr: {{ .Values.components.manageSieveLogin.backendAddr | quote }}
-      {{- if .Values.components.manageSieveLogin.haProxy }}
+      backend_addr: {{ .Values.components.manageSieveLogin.backend_addr | quote }}
+      {{- if .Values.components.manageSieveLogin.haproxy_protocol }}
       haproxy_protocol: true
-      haproxy_timeout: {{ .Values.components.manageSieveLogin.haProxyTimeout }}
-      {{- with .Values.components.manageSieveLogin.haProxyNets }}
+      haproxy_timeout: {{ .Values.components.manageSieveLogin.haproxy_timeout }}
+      {{- with .Values.components.manageSieveLogin.haproxy_nets }}
       haproxy_trusted_nets:
         {{- range . }}
         - {{ . | quote }}
@@ -469,12 +469,12 @@ data:
     backend_api:
       listen: {{ .Values.components.backendAPI.listen | quote }}
       token: "${BACKEND_API_TOKEN}"
-      {{- if .Values.components.backendAPI.authMasterAddr }}
-      auth_master_addr: {{ .Values.components.backendAPI.authMasterAddr | quote }}
+      {{- if .Values.components.backendAPI.auth_master_addr }}
+      auth_master_addr: {{ .Values.components.backendAPI.auth_master_addr | quote }}
       {{- else if .Values.components.auth.masterListen }}
       auth_master_addr: {{ printf "%s-auth.%s.svc.cluster.local:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
       {{- end }}
-      {{- with .Values.components.backendAPI.allowedNets }}
+      {{- with .Values.components.backendAPI.allowed_nets }}
       allowed_nets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -506,9 +506,9 @@ data:
       shutdown:
         session_grace_period: 30
         kill_timeout: 5
-      user_expire: {{ .Values.components.director.userExpire }}
-      ping_interval: {{ .Values.components.director.pingInterval }}
-      ping_timeout: {{ .Values.components.director.pingTimeout }}
+      user_expire: {{ .Values.components.director.user_expire }}
+      ping_interval: {{ .Values.components.director.ping_interval }}
+      ping_timeout: {{ .Values.components.director.ping_timeout }}
       {{- with .Values.components.director.backends }}
       mail_servers:
         {{- range . }}
@@ -527,17 +527,17 @@ data:
         listen: {{ printf ":%d" (int .Values.components.director.api.port) | quote }}
         token: "${DIRECTOR_API_TOKEN}"
         allowed_nets:
-          {{- range .Values.components.director.api.allowedNets }}
+          {{- range .Values.components.director.api.allowed_nets }}
           - {{ . | quote }}
           {{- end }}
 
     {{- if .Values.components.saslLogin.enabled }}
     sasl_login:
       listen: {{ printf ":%d" (int .Values.components.saslLogin.containerPort) | quote }}
-      {{- if .Values.components.saslLogin.authAddr }}
-      auth_addr: {{ .Values.components.saslLogin.authAddr | quote }}
+      {{- if .Values.components.saslLogin.auth_addr }}
+      auth_addr: {{ .Values.components.saslLogin.auth_addr | quote }}
       {{- end }}
-      {{- with .Values.components.saslLogin.trustedNets }}
+      {{- with .Values.components.saslLogin.trusted_nets }}
       trusted_nets:
         {{- range . }}
         - {{ . | quote }}
@@ -545,8 +545,8 @@ data:
       {{- end }}
       haproxy_protocol: {{ .Values.components.saslLogin.haproxy }}
       {{- if .Values.components.saslLogin.haproxy }}
-      haproxy_timeout: {{ .Values.components.saslLogin.haproxyTimeout }}
-      {{- with .Values.components.saslLogin.haproxyNets }}
+      haproxy_timeout: {{ .Values.components.saslLogin.haproxy_timeout }}
+      {{- with .Values.components.saslLogin.haproxy_nets }}
       haproxy_trusted_nets:
         {{- range . }}
         - {{ . | quote }}
@@ -558,18 +558,18 @@ data:
     {{- if .Values.components.quotaStatus.enabled }}
     quota_status:
       listen: {{ printf ":%d" (int .Values.components.quotaStatus.containerPort) | quote }}
-      {{- with .Values.components.quotaStatus.defaultQuotaRules }}
+      {{- with .Values.components.quotaStatus.default_quota_rules }}
       default_quota_rules:
         {{- range . }}
         - {{ . | quote }}
         {{- end }}
       {{- end }}
-      {{- if .Values.components.quotaStatus.aliasDict }}
-      alias_dict: {{ .Values.components.quotaStatus.aliasDict | quote }}
-      alias_max_hops: {{ .Values.components.quotaStatus.aliasMaxHops }}
+      {{- if .Values.components.quotaStatus.alias_dict }}
+      alias_dict: {{ .Values.components.quotaStatus.alias_dict | quote }}
+      alias_max_hops: {{ .Values.components.quotaStatus.alias_max_hops }}
       {{- end }}
-      {{- if .Values.components.quotaStatus.authMasterAddr }}
-      auth_master_addr: {{ .Values.components.quotaStatus.authMasterAddr | quote }}
+      {{- if .Values.components.quotaStatus.auth_master_addr }}
+      auth_master_addr: {{ .Values.components.quotaStatus.auth_master_addr | quote }}
       {{- end }}
     {{- end }}
 
