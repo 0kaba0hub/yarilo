@@ -662,20 +662,73 @@ func testSieveEnvironment(user, pass, to string) error {
 // the sandbox's sievePipeBinDir the action silently fails and the implicit keep
 // fires, delivering the message to INBOX as normal.
 func testSievePipe(user, pass, to string) error {
-	subject := "pipe-" + uniqueID()
+	// Snapshot UIDNEXT before injection so we can search only new messages.
+	// SEARCH SUBJECT on a large INBOX reads every raw message file from NFS,
+	// which is O(n) and easily exceeds the per-connection timeout.
+	// Searching UID uidnext:* limits the scan to messages delivered after the
+	// snapshot — O(1) in the UID index.
+	uidnext := inboxUIDNext(user, pass)
+
 	script := `require ["vnd.yarilo.pipe"];` + "\n" +
 		`pipe :try "smoketest-noop";` + "\n"
-	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "pipe test body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "pipe-try test", "pipe test body"); err != nil {
 		return err
 	}
-	n, err := cleanInboxBySubject(user, pass, subject)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		c, err := imapDial()
+		if err != nil {
+			return err
+		}
+		if err := c.login(user, pass); err != nil {
+			c.close()
+			return err
+		}
+		if _, err := c.selectFolder("INBOX"); err != nil {
+			c.close()
+			return fmt.Errorf("SELECT INBOX: %w", err)
+		}
+		// UID range search: only messages with UID >= uidnext (i.e. new since snapshot).
+		uids, err := c.uidSearch(fmt.Sprintf("UID %d:*", uidnext))
+		if err != nil {
+			c.close()
+			return fmt.Errorf("UID SEARCH: %w", err)
+		}
+		if len(uids) > 0 {
+			c.deleteUIDs(uids) //nolint:errcheck
+			c.close()
+			return nil
+		}
+		c.close()
+		if time.Now().After(deadline) {
+			return fmt.Errorf("pipe :try: message was not delivered to INBOX after failed pipe")
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// inboxUIDNext returns the UIDNEXT value for INBOX, or 1 on any error.
+func inboxUIDNext(user, pass string) int {
+	c, err := imapDial()
 	if err != nil {
-		return err
+		return 1
 	}
-	if n == 0 {
-		return fmt.Errorf("pipe :try: message was not delivered to INBOX after failed pipe")
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return 1
 	}
-	return nil
+	lines, err := c.cmd(`SELECT "INBOX"`)
+	if err != nil {
+		return 1
+	}
+	for _, l := range lines {
+		var n int
+		if _, e := fmt.Sscanf(l, "* OK [UIDNEXT %d]", &n); e == nil {
+			return n
+		}
+	}
+	return 1
 }
 
 func checkSieve() error {
