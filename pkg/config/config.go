@@ -94,25 +94,23 @@ type SieveConfig struct {
 
 	// Environments is an operator-defined set of key-value pairs exposed to
 	// Sieve scripts via the vnd.yarilo.environment extension as
-	// vnd.yarilo.config.<key> items. Corresponds to Dovecot's sieve_environment.
+	// vnd.yarilo.config.<key> items.
 	Environments map[string]string `koanf:"sieve_environment"`
 
 	// PipeBinDir is the directory where yarilo looks for executables to run
-	// via the vnd.yarilo.pipe action. Corresponds to Dovecot's sieve_pipe_bin_dir.
+	// via the vnd.yarilo.pipe action.
 	PipeBinDir string `koanf:"sieve_pipe_bin_dir"`
 
 	// PipeSocketDir is the directory where yarilo looks for Unix sockets to
 	// connect to via the vnd.yarilo.pipe action. Searched before PipeBinDir.
-	// Corresponds to Dovecot's sieve_pipe_socket_dir.
 	PipeSocketDir string `koanf:"sieve_pipe_socket_dir"`
 
 	// PipeExecTimeout is the maximum number of seconds a piped program may
-	// run before being killed. Corresponds to Dovecot's sieve_pipe_exec_timeout.
+	// run before being killed.
 	PipeExecTimeout int `koanf:"sieve_pipe_exec_timeout"`
 
 	// PipeInputEOL controls the line ending written to the program's stdin:
 	// "crlf" (default, matches RFC 5322) or "lf".
-	// Corresponds to Dovecot's sieve_pipe_input_eol.
 	PipeInputEOL string `koanf:"sieve_pipe_input_eol"`
 }
 

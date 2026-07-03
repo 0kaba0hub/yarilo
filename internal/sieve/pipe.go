@@ -29,7 +29,7 @@ type pipeExecutor struct {
 var _ gosieve.PipeExecutor = (*pipeExecutor)(nil)
 
 func (e *pipeExecutor) Pipe(ctx context.Context, programName string, args []string, msg io.Reader) error {
-	// socket-first, then binary — matches Dovecot behaviour
+	// socket-first, then binary
 	if e.socketDir != "" {
 		socketPath := filepath.Join(e.socketDir, programName)
 		if fi, err := os.Stat(socketPath); err == nil {
