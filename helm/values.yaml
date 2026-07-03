@@ -998,6 +998,7 @@ sieve:
     - vnd.yarilo.debug
     - vnd.yarilo.environment
     - vnd.yarilo.pipe
+    - vnd.yarilo.filter
 
   ## sieveEnvironment exposes operator-defined key-value pairs to Sieve scripts
   ## via the vnd.yarilo.environment extension as vnd.yarilo.config.<key> items.
@@ -1009,16 +1010,22 @@ sieve:
   sieveEnvironment: {}
 
   ## vnd.yarilo.pipe — external program execution via Sieve scripts.
-  ## sievePipeBinDir: directory with executable programs (direct fork).
-  ## sievePipeSocketDir: directory with Unix sockets (searched first).
-  ## sievePipeExecTimeout: max seconds a piped program may run (default 10).
-  ## sievePipeInputEol: line ending sent to program stdin — "crlf" or "lf".
   ## Corresponds to Dovecot's sieve_pipe_bin_dir / sieve_pipe_socket_dir /
   ## sieve_pipe_exec_timeout / sieve_pipe_input_eol settings.
-  sievePipeBinDir: "/usr/lib/yarilo/sieve-pipe"
-  sievePipeSocketDir: "sieve-pipe"
-  sievePipeExecTimeout: 10
-  sievePipeInputEol: "crlf"
+  sieve_pipe_bin_dir: "/usr/lib/yarilo/sieve-pipe"
+  sieve_pipe_socket_dir: "sieve-pipe"
+  sieve_pipe_exec_timeout: 10
+  sieve_pipe_input_eol: "crlf"
+
+  ## vnd.yarilo.filter — message filtering via external programs.
+  ## Programs receive the message on stdin; non-empty stdout replaces the message.
+  ## Empty stdout or non-zero exit = pass-through (message unchanged).
+  ## Corresponds to Dovecot's sieve_filter_bin_dir / sieve_filter_socket_dir /
+  ## sieve_filter_exec_timeout / sieve_filter_input_eol settings.
+  sieve_filter_bin_dir: "/usr/lib/yarilo/sieve-filter"
+  sieve_filter_socket_dir: "sieve-filter"
+  sieve_filter_exec_timeout: 10
+  sieve_filter_input_eol: "crlf"
 
 ## -------------------------------------------------------------------
 ## General infrastructure

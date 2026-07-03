@@ -184,8 +184,27 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 		envelopeFrom: opts.EnvFrom,
 		envelopeTo:   opts.EnvTo,
 	}
+	rd.FilterExecutor = &filterExecutor{
+		binDir:    e.cfg.FilterBinDir,
+		socketDir: e.cfg.FilterSocketDir,
+		timeout: func() time.Duration {
+			if e.cfg.FilterExecTimeout > 0 {
+				return time.Duration(e.cfg.FilterExecTimeout) * time.Second
+			}
+			return 10 * time.Second
+		}(),
+		crlf:         e.cfg.FilterInputEOL != "lf",
+		username:     opts.Username,
+		envelopeFrom: opts.EnvFrom,
+		envelopeTo:   opts.EnvTo,
+	}
 	if err := script.Execute(ctx, rd); err != nil {
 		return nil, fmt.Errorf("sieve/engine: execute: %w", err)
+	}
+
+	if len(rd.FilteredMessage) > 0 {
+		opts.MsgRaw = rd.FilteredMessage
+		slog.Info("sieve: filter substituted message", "user", opts.Username, "bytes", len(opts.MsgRaw))
 	}
 
 	result := buildResult(rd)

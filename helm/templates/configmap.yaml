@@ -182,10 +182,14 @@ data:
       sieve_environment:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      sieve_pipe_bin_dir: {{ $sieve.sievePipeBinDir | default "/usr/lib/yarilo/sieve-pipe" | quote }}
-      sieve_pipe_socket_dir: {{ $sieve.sievePipeSocketDir | default "sieve-pipe" | quote }}
-      sieve_pipe_exec_timeout: {{ $sieve.sievePipeExecTimeout | default 10 }}
-      sieve_pipe_input_eol: {{ $sieve.sievePipeInputEol | default "crlf" | quote }}
+      sieve_pipe_bin_dir: {{ index $sieve "sieve_pipe_bin_dir" | default "/usr/lib/yarilo/sieve-pipe" | quote }}
+      sieve_pipe_socket_dir: {{ index $sieve "sieve_pipe_socket_dir" | default "sieve-pipe" | quote }}
+      sieve_pipe_exec_timeout: {{ index $sieve "sieve_pipe_exec_timeout" | default 10 }}
+      sieve_pipe_input_eol: {{ index $sieve "sieve_pipe_input_eol" | default "crlf" | quote }}
+      sieve_filter_bin_dir: {{ index $sieve "sieve_filter_bin_dir" | default "/usr/lib/yarilo/sieve-filter" | quote }}
+      sieve_filter_socket_dir: {{ index $sieve "sieve_filter_socket_dir" | default "sieve-filter" | quote }}
+      sieve_filter_exec_timeout: {{ index $sieve "sieve_filter_exec_timeout" | default 10 }}
+      sieve_filter_input_eol: {{ index $sieve "sieve_filter_input_eol" | default "crlf" | quote }}
 
     auth:
       failure_delay: {{ .Values.components.auth.failureDelay | default 2 }}

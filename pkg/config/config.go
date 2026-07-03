@@ -112,6 +112,22 @@ type SieveConfig struct {
 	// PipeInputEOL controls the line ending written to the program's stdin:
 	// "crlf" (default, matches RFC 5322) or "lf".
 	PipeInputEOL string `koanf:"sieve_pipe_input_eol"`
+
+	// FilterBinDir is the directory where yarilo looks for executables to run
+	// via the vnd.yarilo.filter action.
+	FilterBinDir string `koanf:"sieve_filter_bin_dir"`
+
+	// FilterSocketDir is the directory where yarilo looks for Unix sockets to
+	// connect to via the vnd.yarilo.filter action. Searched before FilterBinDir.
+	FilterSocketDir string `koanf:"sieve_filter_socket_dir"`
+
+	// FilterExecTimeout is the maximum number of seconds a filter program may
+	// run before being killed.
+	FilterExecTimeout int `koanf:"sieve_filter_exec_timeout"`
+
+	// FilterInputEOL controls the line ending written to the filter program's stdin:
+	// "crlf" (default, matches RFC 5322) or "lf".
+	FilterInputEOL string `koanf:"sieve_filter_input_eol"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -1170,6 +1186,10 @@ func Load(path string) (*Config, error) {
 			PipeSocketDir:     "sieve-pipe",
 			PipeExecTimeout:   10,
 			PipeInputEOL:      "crlf",
+			FilterBinDir:      "/usr/lib/yarilo/sieve-filter",
+			FilterSocketDir:   "sieve-filter",
+			FilterExecTimeout: 10,
+			FilterInputEOL:    "crlf",
 		},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {

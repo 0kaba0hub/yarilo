@@ -708,6 +708,55 @@ func testSievePipe(user, pass, to string) error {
 	}
 }
 
+// testSieveFilter verifies that vnd.yarilo.filter is accepted by the Sieve
+// interpreter. The script uses filter as a test inside an if/else so that
+// regardless of whether the program exists in the sandbox, the implicit keep
+// fires and delivers the message to INBOX.
+func testSieveFilter(user, pass, to string) error {
+	uidnext := inboxUIDNext(user, pass)
+
+	script := `require ["vnd.yarilo.filter"];` + "\n" +
+		`if filter "smoketest-noop" {` + "\n" +
+		`  keep;` + "\n" +
+		`} else {` + "\n" +
+		`  keep;` + "\n" +
+		`}` + "\n"
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "filter test", "filter test body"); err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		c, err := imapDial()
+		if err != nil {
+			return err
+		}
+		if err := c.login(user, pass); err != nil {
+			c.close()
+			return err
+		}
+		if _, err := c.selectFolder("INBOX"); err != nil {
+			c.close()
+			return fmt.Errorf("SELECT INBOX: %w", err)
+		}
+		uids, err := c.uidSearch(fmt.Sprintf("UID %d:*", uidnext))
+		if err != nil {
+			c.close()
+			return fmt.Errorf("UID SEARCH: %w", err)
+		}
+		if len(uids) > 0 {
+			c.deleteUIDs(uids) //nolint:errcheck
+			c.close()
+			return nil
+		}
+		c.close()
+		if time.Now().After(deadline) {
+			return fmt.Errorf("filter test: message was not delivered to INBOX")
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
 // inboxUIDNext returns the UIDNEXT value for INBOX, or 1 on any error.
 func inboxUIDNext(user, pass string) int {
 	c, err := imapDial()
@@ -760,6 +809,7 @@ func checkSieve() error {
 		{"vnd.yarilo.debug", testSieveDebugLog},
 		{"vnd.yarilo.environment", testSieveEnvironment},
 		{"vnd.yarilo.pipe", testSievePipe},
+		{"vnd.yarilo.filter", testSieveFilter},
 		{"enotify", testSieveEnotify},
 	}
 
