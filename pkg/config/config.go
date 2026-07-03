@@ -96,6 +96,24 @@ type SieveConfig struct {
 	// Sieve scripts via the vnd.yarilo.environment extension as
 	// vnd.yarilo.config.<key> items. Corresponds to Dovecot's sieve_environment.
 	Environments map[string]string `koanf:"sieve_environment"`
+
+	// PipeBinDir is the directory where yarilo looks for executables to run
+	// via the vnd.yarilo.pipe action. Corresponds to Dovecot's sieve_pipe_bin_dir.
+	PipeBinDir string `koanf:"sieve_pipe_bin_dir"`
+
+	// PipeSocketDir is the directory where yarilo looks for Unix sockets to
+	// connect to via the vnd.yarilo.pipe action. Searched before PipeBinDir.
+	// Corresponds to Dovecot's sieve_pipe_socket_dir.
+	PipeSocketDir string `koanf:"sieve_pipe_socket_dir"`
+
+	// PipeExecTimeout is the maximum number of seconds a piped program may
+	// run before being killed. Corresponds to Dovecot's sieve_pipe_exec_timeout.
+	PipeExecTimeout int `koanf:"sieve_pipe_exec_timeout"`
+
+	// PipeInputEOL controls the line ending written to the program's stdin:
+	// "crlf" (default, matches RFC 5322) or "lf".
+	// Corresponds to Dovecot's sieve_pipe_input_eol.
+	PipeInputEOL string `koanf:"sieve_pipe_input_eol"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -1158,6 +1176,10 @@ func Load(path string) (*Config, error) {
 			VacationEnabled:   true,
 			SubmissionSSL:     "no",
 			SubmissionTimeout: 30,
+			PipeBinDir:        "/usr/lib/yarilo/sieve-pipe",
+			PipeSocketDir:     "sieve-pipe",
+			PipeExecTimeout:   10,
+			PipeInputEOL:      "crlf",
 		},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {

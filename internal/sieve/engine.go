@@ -9,6 +9,7 @@ import (
 	"net/textproto"
 	"os"
 	"sync"
+	"time"
 
 	gosieve "github.com/foxcpp/go-sieve"
 	"github.com/foxcpp/go-sieve/interp"
@@ -169,11 +170,36 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 	rd := gosieve.NewRuntimeData(script, pol, env, msg)
 	rd.DuplicateTracker = e.dupTracker(opts.Username)
 	rd.Env = &yariloEnv{username: opts.Username, configItems: e.cfg.Environments}
+	rd.PipeExecutor = &pipeExecutor{
+		binDir:    e.cfg.PipeBinDir,
+		socketDir: e.cfg.PipeSocketDir,
+		timeout: func() time.Duration {
+			if e.cfg.PipeExecTimeout > 0 {
+				return time.Duration(e.cfg.PipeExecTimeout) * time.Second
+			}
+			return 10 * time.Second
+		}(),
+		crlf:         e.cfg.PipeInputEOL != "lf",
+		username:     opts.Username,
+		envelopeFrom: opts.EnvFrom,
+		envelopeTo:   opts.EnvTo,
+	}
 	if err := script.Execute(ctx, rd); err != nil {
 		return nil, fmt.Errorf("sieve/engine: execute: %w", err)
 	}
 
 	result := buildResult(rd)
+
+	pe := rd.PipeExecutor
+	for _, p := range result.Pipes {
+		if err := pe.Pipe(ctx, p.ProgramName, p.Args, bytes.NewReader(opts.MsgRaw)); err != nil {
+			if p.Try {
+				slog.Info("sieve: pipe failed (try)", "user", opts.Username, "program", p.ProgramName, "err", err)
+			} else {
+				return nil, fmt.Errorf("sieve/engine: pipe %q: %w", p.ProgramName, err)
+			}
+		}
+	}
 
 	if e.sender != nil {
 		for _, r := range result.Redirects {
@@ -255,6 +281,13 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 			})
 		case interp.ActionNotify:
 			result.Notifications = append(result.Notifications, a)
+		case interp.ActionPipe:
+			result.Pipes = append(result.Pipes, PipeAction{
+				ProgramName: a.ProgramName,
+				Args:        a.Args,
+				Copy:        a.Copy,
+				Try:         a.Try,
+			})
 		}
 	}
 	for _, resp := range d.VacationResponses {
@@ -269,6 +302,7 @@ func (r *FilterResult) absorb(other *FilterResult) {
 	}
 	r.Deliveries = append(r.Deliveries, other.Deliveries...)
 	r.Redirects = append(r.Redirects, other.Redirects...)
+	r.Pipes = append(r.Pipes, other.Pipes...)
 	r.VacationReplies = append(r.VacationReplies, other.VacationReplies...)
 	r.Notifications = append(r.Notifications, other.Notifications...)
 }

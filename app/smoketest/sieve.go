@@ -657,6 +657,27 @@ func testSieveEnvironment(user, pass, to string) error {
 	return checkFolder(user, pass, folder)
 }
 
+// testSievePipe verifies that vnd.yarilo.pipe is advertised and accepted by
+// the Sieve interpreter. The script uses :try so that when no binary exists in
+// the sandbox's sievePipeBinDir the action silently fails and the implicit keep
+// fires, delivering the message to INBOX as normal.
+func testSievePipe(user, pass, to string) error {
+	subject := "pipe-" + uniqueID()
+	script := `require ["vnd.yarilo.pipe"];` + "\n" +
+		`pipe :try "smoketest-noop";` + "\n"
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), subject, "pipe test body"); err != nil {
+		return err
+	}
+	n, err := cleanInboxBySubject(user, pass, subject)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("pipe :try: message was not delivered to INBOX after failed pipe")
+	}
+	return nil
+}
+
 func checkSieve() error {
 	if *flagManageSieveUser == "" {
 		return fmt.Errorf("-managesieve-user is required")
@@ -685,6 +706,7 @@ func checkSieve() error {
 		{"date", testSieveDate},
 		{"vnd.yarilo.debug", testSieveDebugLog},
 		{"vnd.yarilo.environment", testSieveEnvironment},
+		{"vnd.yarilo.pipe", testSievePipe},
 		{"enotify", testSieveEnotify},
 	}
 

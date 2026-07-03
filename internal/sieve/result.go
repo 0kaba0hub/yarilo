@@ -29,6 +29,14 @@ func (e *RejectErr) Error() string {
 	return "reject: " + e.Reason
 }
 
+// PipeAction is a vnd.yarilo.pipe action produced by a Sieve script.
+type PipeAction struct {
+	ProgramName string
+	Args        []string
+	Copy        bool
+	Try         bool
+}
+
 // FilterResult is the outcome of executing a Sieve script against a message.
 // Deliveries and Reject are mutually exclusive.
 type FilterResult struct {
@@ -39,6 +47,8 @@ type FilterResult struct {
 	Reject *RejectErr
 	// Redirects lists addresses to forward the message to.
 	Redirects []Redirect
+	// Pipes lists vnd.yarilo.pipe actions to execute.
+	Pipes []PipeAction
 	// VacationReplies lists auto-replies the script wants sent.
 	VacationReplies []interp.VacationResponse
 	// Notifications lists enotify actions (RFC 5435).

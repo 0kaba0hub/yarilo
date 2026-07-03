@@ -1007,6 +1007,18 @@ sieve:
   ##     org-name: Acme Corp
   sieveEnvironment: {}
 
+  ## vnd.yarilo.pipe — external program execution via Sieve scripts.
+  ## sievePipeBinDir: directory with executable programs (direct fork).
+  ## sievePipeSocketDir: directory with Unix sockets (searched first).
+  ## sievePipeExecTimeout: max seconds a piped program may run (default 10).
+  ## sievePipeInputEol: line ending sent to program stdin — "crlf" or "lf".
+  ## Corresponds to Dovecot's sieve_pipe_bin_dir / sieve_pipe_socket_dir /
+  ## sieve_pipe_exec_timeout / sieve_pipe_input_eol settings.
+  sievePipeBinDir: "/usr/lib/yarilo/sieve-pipe"
+  sievePipeSocketDir: "sieve-pipe"
+  sievePipeExecTimeout: 10
+  sievePipeInputEol: "crlf"
+
 ## -------------------------------------------------------------------
 ## General infrastructure
 ## -------------------------------------------------------------------
