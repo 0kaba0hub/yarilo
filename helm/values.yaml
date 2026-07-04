@@ -1027,6 +1027,14 @@ sieve:
   sieve_filter_exec_timeout: 10
   sieve_filter_input_eol: "crlf"
 
+  ## vnd.yarilo.execute — run programs and capture output into Sieve variables.
+  ## Corresponds to Dovecot's sieve_execute_bin_dir / sieve_execute_socket_dir /
+  ## sieve_execute_exec_timeout / sieve_execute_input_eol settings.
+  sieve_execute_bin_dir: "/usr/lib/yarilo/sieve-execute"
+  sieve_execute_socket_dir: "sieve-execute"
+  sieve_execute_exec_timeout: 10
+  sieve_execute_input_eol: "crlf"
+
 ## -------------------------------------------------------------------
 ## General infrastructure
 ## -------------------------------------------------------------------

@@ -198,6 +198,20 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 		envelopeFrom: opts.EnvFrom,
 		envelopeTo:   opts.EnvTo,
 	}
+	rd.ExecuteExecutor = &executeExecutor{
+		binDir:    e.cfg.ExecuteBinDir,
+		socketDir: e.cfg.ExecuteSocketDir,
+		timeout: func() time.Duration {
+			if e.cfg.ExecuteExecTimeout > 0 {
+				return time.Duration(e.cfg.ExecuteExecTimeout) * time.Second
+			}
+			return 10 * time.Second
+		}(),
+		crlf:         e.cfg.ExecuteInputEOL != "lf",
+		username:     opts.Username,
+		envelopeFrom: opts.EnvFrom,
+		envelopeTo:   opts.EnvTo,
+	}
 	if err := script.Execute(ctx, rd); err != nil {
 		return nil, fmt.Errorf("sieve/engine: execute: %w", err)
 	}

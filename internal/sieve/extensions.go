@@ -17,6 +17,7 @@ var SupportedExtensions = []string{
 	"vnd.yarilo.debug",
 	"vnd.yarilo.environment",
 	"vnd.yarilo.pipe",
+	"vnd.yarilo.execute",
 }
 
 // EffectiveExtensions returns the intersection of SupportedExtensions and allowed.
