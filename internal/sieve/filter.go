@@ -50,7 +50,7 @@ func (e *filterExecutor) Filter(ctx context.Context, programName string, args []
 		}
 	}
 
-	return nil, fmt.Errorf("filter: program %q not found in bin_dir or socket_dir", programName)
+	return nil, nil
 }
 
 func (e *filterExecutor) prepareInput(msg io.Reader) (io.Reader, error) {
