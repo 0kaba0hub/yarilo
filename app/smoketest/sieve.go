@@ -289,6 +289,27 @@ func (c *imapClient) deleteUIDs(uids []string) error {
 	return err
 }
 
+// clearInbox deletes all messages from INBOX so that inboxWaitByUID
+// gets a clean UIDNEXT unaffected by leftover messages from previous tests.
+func clearInbox(user, pass string) {
+	c, err := imapDial()
+	if err != nil {
+		return
+	}
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return
+	}
+	if _, err := c.selectFolder("INBOX"); err != nil {
+		return
+	}
+	uids, err := c.uidSearch("ALL")
+	if err != nil || len(uids) == 0 {
+		return
+	}
+	c.deleteUIDs(uids) //nolint:errcheck
+}
+
 func (c *imapClient) deleteFolder(folder string) {
 	c.cmd(fmt.Sprintf("DELETE %q", folder)) //nolint:errcheck
 }
@@ -405,6 +426,18 @@ func testSieveFileinto(user, pass, to string) error {
 
 func testSieveMailbox(user, pass, to string) error {
 	folder := "sieve-test-mailbox"
+	// Delete the folder if it survived a previous run so :create starts fresh.
+	func() {
+		c, err := imapDial()
+		if err != nil {
+			return
+		}
+		defer c.close()
+		if err := c.login(user, pass); err != nil {
+			return
+		}
+		c.deleteFolder(folder)
+	}()
 	script := fmt.Sprintf("require [\"fileinto\",\"mailbox\"];\nfileinto :create %q;\n", folder)
 	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "mailbox:create test", "body"); err != nil {
 		return err
@@ -655,6 +688,7 @@ func testSieveEnvironment(user, pass, to string) error {
 // the sandbox's sieve_pipe_bin_dir the action silently fails and the implicit
 // keep fires, delivering the message to INBOX as normal.
 func testSievePipe(user, pass, to string) error {
+	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
 	script := `require ["vnd.yarilo.pipe"];` + "\n" +
 		`pipe :try "smoketest-noop";` + "\n"
@@ -669,6 +703,7 @@ func testSievePipe(user, pass, to string) error {
 // regardless of whether the program exists in the sandbox, the implicit keep
 // fires and delivers the message to INBOX.
 func testSieveExecute(user, pass, to string) error {
+	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
 	script := `require ["vnd.yarilo.execute", "variables"];` + "\n" +
 		`set "result" "";` + "\n" +
@@ -688,6 +723,7 @@ func testSieveExecute(user, pass, to string) error {
 // regardless of whether the program exists in the sandbox, the implicit keep
 // fires and delivers the message to INBOX.
 func testSieveFilter(user, pass, to string) error {
+	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
 	script := `require ["vnd.yarilo.filter"];` + "\n" +
 		`if filter "smoketest-noop" {` + "\n" +
