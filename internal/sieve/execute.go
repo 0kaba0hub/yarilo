@@ -51,7 +51,7 @@ func (e *executeExecutor) Execute(ctx context.Context, programName string, args 
 		}
 	}
 
-	return nil, false, fmt.Errorf("execute: program %q not found in bin_dir or socket_dir", programName)
+	return nil, false, nil
 }
 
 func (e *executeExecutor) prepareInput(input io.Reader) (io.Reader, error) {
