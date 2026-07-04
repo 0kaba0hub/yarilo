@@ -21,14 +21,12 @@ storage:
 
 ## Enable XCLIENT so session pods accept real-client-IP forwarding from login pods.
 general:
-  limits:
-    maxUserIPConnections: 50
   xclient:
     enabled: true
-    trustedNets:
+    trusted_nets:
       - "10.0.0.0/8"
   limits:
-    maxUserIPConnections: 0
+    max_user_ip_connections: 0
 
 image:
   repository: ghcr.io/0kaba0hub/yarilo
@@ -42,29 +40,29 @@ service:
 
 protocol:
   imap:
-    idleNotifyInterval: 120
-    maxLineLength: 65536
+    imap_idle_notify_interval: 120
+    imap_max_line_length: 65536
     acl:
       enabled: true
   lmtp:
-    addReceivedHeader: true
-    hdrDeliveryAddress: final
+    add_received_header: true
+    hdr_delivery_address: final
   managesieve:
-    maxScriptSize: 65536
+    max_script_size: 65536
 
 sieve:
   enabled: true
-  defaultName: "yarilo"
-  maxScriptSize: 65536
-  maxRedirects: 32
-  vacationEnabled: true
+  default_name: "yarilo"
+  max_script_size: 65536
+  max_redirects: 32
+  vacation_enabled: true
   submission:
     host: "relay-fwd.yarilo-relay.svc.cluster.local:25"
     ssl: "no"
-    authSecret: "sieve-smtp-auth"
-  globalBefore: []
-  globalAfter: []
-  sieveExtensions:
+    auth_secret: "sieve-smtp-auth"
+  global_before: []
+  global_after: []
+  sieve_extensions:
     - fileinto
     - reject
     - ereject
@@ -84,6 +82,11 @@ sieve:
     - vacation
     - enotify
     - vnd.yarilo.debug
+    - vnd.yarilo.filter
+    - vnd.yarilo.execute
+    - vnd.yarilo.pipe
+    - environment
+    - vnd.yarilo.environment
 
 dicts:
   metadata:
@@ -138,7 +141,7 @@ components:
         enabled: true
       imap:
         enabled: true
-    backendAddr: "yarilo-imap:10143"
+    backend_addr: "yarilo-imap:10143"
     service:
       type: LoadBalancer
       annotations:
@@ -156,7 +159,7 @@ components:
         enabled: true
       pop3:
         enabled: true
-    backendAddr: "yarilo-pop3:10110"
+    backend_addr: "yarilo-pop3:10110"
     service:
       type: LoadBalancer
       annotations:
@@ -167,22 +170,22 @@ components:
     passdb:
       - driver: mysql
         dsn: "${YARILO_DB_DSN}"
-        defaultPassScheme: BCRYPT
-        ## PostfixAdmin mailbox table — skipSchema prevents yarilo-auth from
+        default_pass_scheme: BCRYPT
+        ## PostfixAdmin mailbox table — skip_schema prevents yarilo-auth from
         ## creating its own yarilo_users table.
         ## Columns matched by name — only "password" is required.
         ## "enabled" maps to PostfixAdmin's "active"; absent columns default active.
-        skipSchema: true
-        passwordQuery: |
+        skip_schema: true
+        password_query: |
           SELECT password, active AS enabled, allow_nets
           FROM mailbox
           WHERE username = %u
-        userQuery: |
+        user_query: |
           SELECT CONCAT(home, mpath) AS home,
                  CONCAT(mbtype, ':', home, mpath) AS mail
           FROM mailbox
           WHERE username = %u
-        iterateQuery: |
+        iterate_query: |
           SELECT username
           FROM mailbox
           WHERE active = 1
@@ -190,7 +193,7 @@ components:
 
     token:
       backend: redis
-      redisAddr: "redis://yarilo-redis.yarilo-sb.svc.cluster.local:6379/0"
+      redis_addr: "redis://yarilo-redis.yarilo-sb.svc.cluster.local:6379/0"
 
   ## IMAP session pod.
   imap:
@@ -212,7 +215,7 @@ components:
   ## LMTP login proxy — MTA-facing, plain LMTP, no preamble required.
   lmtpLogin:
     enabled: true
-    backendAddr: "yarilo-lmtp:10024"
+    backend_addr: "yarilo-lmtp:10024"
 
   saslLogin:
     enabled: true
@@ -224,7 +227,7 @@ components:
 
   quotaStatus:
     enabled: true
-    authMasterAddr: "yarilo-auth:9102"
+    auth_master_addr: "yarilo-auth:9102"
     service:
       type: LoadBalancer
       annotations:
@@ -238,7 +241,7 @@ components:
   ## ManageSieve login pod — client-facing on :4190 STARTTLS.
   manageSieveLogin:
     enabled: true
-    backendAddr: "yarilo-managesieve:14190"
+    backend_addr: "yarilo-managesieve:14190"
     tls:
       secretName: yarilo-tls
     listeners:

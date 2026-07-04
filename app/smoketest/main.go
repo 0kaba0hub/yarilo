@@ -137,13 +137,15 @@ func main() {
 		}{"sieve plugins", checkSieve})
 	}
 
+	slog.Info("smoke: start", "total", len(checks))
 	var failures []result
-	for _, c := range checks {
+	for i, c := range checks {
+		slog.Info("smoke: run", "n", i+1, "total", len(checks), "check", c.name)
 		if err := c.fn(); err != nil {
-			slog.Error("FAIL", "check", c.name, "err", err)
+			slog.Error("smoke: FAIL", "n", i+1, "total", len(checks), "check", c.name, "err", err)
 			failures = append(failures, result{c.name, err})
 		} else {
-			slog.Info("OK", "check", c.name)
+			slog.Info("smoke: OK", "n", i+1, "total", len(checks), "check", c.name)
 		}
 	}
 
