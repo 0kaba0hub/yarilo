@@ -213,7 +213,11 @@ func isAutoSubmitted(hdr textproto.MIMEHeader) bool {
 
 // sendNotify dispatches an RFC 5435 enotify action.
 // Only the mailto: method is sent via SMTP; other methods are logged and dropped.
-func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, n interp.ActionNotify) error {
+func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, hdr textproto.MIMEHeader, n interp.ActionNotify) error {
+	// RFC 5435 §2.7: do not send notifications for auto-submitted messages.
+	if isAutoSubmitted(hdr) {
+		return nil
+	}
 	if !strings.HasPrefix(strings.ToLower(n.Method), "mailto:") {
 		slog.Warn("sieve/sender: unsupported notify method, dropped", "method", n.Method, "user", opts.Username)
 		return nil
@@ -262,7 +266,7 @@ func buildNotifyMessage(from, to, subject, body string) []byte {
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
 	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
-	b.WriteString("Auto-Submitted: auto-generated\r\n")
+	b.WriteString("Auto-Submitted: auto-notified\r\n")
 	b.WriteString("X-Auto-Response-Suppress: All\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
