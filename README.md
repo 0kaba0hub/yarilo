@@ -10,7 +10,7 @@ Multi-binary architecture — each protocol component is a separate process. Kub
 [![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo)
-[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)](PLAN.md)
 
 </td>
@@ -200,4 +200,4 @@ yarilo-migrate \
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
