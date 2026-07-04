@@ -27,11 +27,13 @@ import (
 // It holds only process-wide state (hostname, pid, counter).
 // Per-user state lives in userMailbox.
 type Backend struct {
-	hostname string
-	pid      int
-	counter  atomic.Uint64
-	locker   locks.Locker
-	writeSem chan struct{} // nil = unlimited
+	hostname     string
+	pid          int
+	counter      atomic.Uint64
+	locker       locks.Locker
+	writeSem     chan struct{} // nil = unlimited
+	listUTF8     bool          // true = UTF-8 on disk (default); false = modified-UTF-7
+	normalizeNFC bool          // true = NFC-normalise folder names (default)
 }
 
 // Option configures a Backend at construction time.
@@ -55,6 +57,15 @@ func WithMaxConcurrentWrites(n int) Option {
 	}
 }
 
+// WithListUTF8 sets the on-disk folder name encoding.
+// true (default): UTF-8. false: modified-UTF-7 (RFC 3501 §5.1.3) for
+// legacy installations that already store names in that encoding.
+func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
+
+// WithNormalizeNFC enables Unicode NFC normalization of folder names
+// before storage and comparison. Default true.
+func WithNormalizeNFC(v bool) Option { return func(b *Backend) { b.normalizeNFC = v } }
+
 // New creates a Maildir backend.
 func New(opts ...Option) *Backend {
 	hostname, _ := os.Hostname()
@@ -62,8 +73,10 @@ func New(opts ...Option) *Backend {
 		hostname = "localhost"
 	}
 	b := &Backend{
-		hostname: hostname,
-		pid:      os.Getpid(),
+		hostname:     hostname,
+		pid:          os.Getpid(),
+		listUTF8:     true,
+		normalizeNFC: true,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -75,11 +88,13 @@ func New(opts ...Option) *Backend {
 // is used for all path resolution; usernames are never converted to paths here.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
-		b:          b,
-		home:       u.Home,
-		controlDir: u.ControlDir,
-		username:   u.Username,
-		owner:      makeOwner(u),
+		b:            b,
+		home:         u.Home,
+		controlDir:   u.ControlDir,
+		username:     u.Username,
+		owner:        makeOwner(u),
+		listUTF8:     b.listUTF8,
+		normalizeNFC: b.normalizeNFC,
 	}
 }
 
@@ -94,13 +109,15 @@ type folderCache struct {
 
 // userMailbox is a per-session, per-user Maildir storage handle.
 type userMailbox struct {
-	b          *Backend
-	home       string
-	controlDir string // CONTROL= override root (empty = co-located with home)
-	username   string
-	owner      string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
-	mu         sync.Mutex              // in-process fast-path; cross-process barrier is b.locker
-	cache      map[string]*folderCache // keyed by folder name; lazy-initialised
+	b            *Backend
+	home         string
+	controlDir   string // CONTROL= override root (empty = co-located with home)
+	username     string
+	owner        string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
+	listUTF8     bool                    // mirrors Backend.listUTF8
+	normalizeNFC bool                    // mirrors Backend.normalizeNFC
+	mu           sync.Mutex              // in-process fast-path; cross-process barrier is b.locker
+	cache        map[string]*folderCache // keyed by folder name; lazy-initialised
 }
 
 // makeOwner builds the owner string for yarilo-locks BUSY reports.
@@ -443,9 +460,22 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 		if name == "INBOX" {
 			continue
 		}
-		if strings.HasPrefix(name, ".") {
-			folders = append(folders, strings.TrimPrefix(name, "."))
+		if !strings.HasPrefix(name, ".") {
+			continue
 		}
+		disk := strings.TrimPrefix(name, ".")
+		logical := disk
+		if !u.listUTF8 {
+			decoded, decErr := fromModUTF7(disk)
+			if decErr != nil {
+				continue // skip malformed names silently
+			}
+			logical = decoded
+		}
+		if u.normalizeNFC {
+			logical = nfcNormalize(logical)
+		}
+		folders = append(folders, logical)
 	}
 	return folders, nil
 }
@@ -615,11 +645,24 @@ func (u *userMailbox) folderCacheFor(folder string) *folderCache {
 
 // ---- path helpers ----------------------------------------------------------
 
+// folderDiskName converts a logical folder name (UTF-8) to the on-disk
+// directory name component: NFC normalisation then modified-UTF-7 encoding
+// when configured for legacy on-disk encoding.
+func (u *userMailbox) folderDiskName(folder string) string {
+	if u.normalizeNFC {
+		folder = nfcNormalize(folder)
+	}
+	if !u.listUTF8 {
+		folder = toModUTF7(folder)
+	}
+	return folder
+}
+
 func (u *userMailbox) folderPath(folder string) string {
 	if folder == "INBOX" {
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.home, "."+folder)
+	return filepath.Join(u.home, "."+u.folderDiskName(folder))
 }
 
 // controlFolderPath returns the directory for per-folder control files
@@ -633,7 +676,7 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 	if folder == "INBOX" {
 		return filepath.Join(root, "INBOX")
 	}
-	return filepath.Join(root, "."+folder)
+	return filepath.Join(root, "."+u.folderDiskName(folder))
 }
 
 // ---- flag helpers ----------------------------------------------------------

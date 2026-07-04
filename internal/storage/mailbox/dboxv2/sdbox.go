@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -38,11 +39,13 @@ const (
 // Backend is the sdbox MailboxBackend factory. Like the other
 // drivers, per-user state lives in UserMailbox.
 type Backend struct {
-	hostname string
-	pid      int
-	tmpSeq   atomic.Uint64 // per-process counter for unique .temp.* names
-	locker   locks.Locker
-	writeSem chan struct{} // nil = unlimited
+	hostname     string
+	pid          int
+	tmpSeq       atomic.Uint64 // per-process counter for unique .temp.* names
+	locker       locks.Locker
+	writeSem     chan struct{} // nil = unlimited
+	listUTF8     bool
+	normalizeNFC bool
 }
 
 // Option configures a Backend at construction time.
@@ -68,13 +71,20 @@ func WithMaxConcurrentWrites(n int) Option {
 	}
 }
 
+// WithListUTF8 sets the on-disk folder name encoding.
+// true (default): UTF-8. false: modified-UTF-7 (RFC 3501 §5.1.3) for legacy installations.
+func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
+
+// WithNormalizeNFC enables Unicode NFC normalization of folder names. Default true.
+func WithNormalizeNFC(v bool) Option { return func(b *Backend) { b.normalizeNFC = v } }
+
 // New constructs an sdbox Backend.
 func New(opts ...Option) *Backend {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "localhost"
 	}
-	b := &Backend{hostname: host, pid: os.Getpid()}
+	b := &Backend{hostname: host, pid: os.Getpid(), listUTF8: true, normalizeNFC: true}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -84,20 +94,24 @@ func New(opts ...Option) *Backend {
 // OpenUser returns a per-session handle bound to u.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
-		b:        b,
-		home:     u.Home,
-		username: u.Username,
-		owner:    makeOwner(u),
+		b:            b,
+		home:         u.Home,
+		username:     u.Username,
+		owner:        makeOwner(u),
+		listUTF8:     b.listUTF8,
+		normalizeNFC: b.normalizeNFC,
 	}
 }
 
 // userMailbox is a per-session sdbox storage handle.
 type userMailbox struct {
-	b        *Backend
-	home     string
-	username string
-	owner    string
-	mu       sync.Mutex
+	b            *Backend
+	home         string
+	username     string
+	owner        string
+	listUTF8     bool
+	normalizeNFC bool
+	mu           sync.Mutex
 }
 
 func makeOwner(u *mailbox.UserInfo) string {
@@ -480,9 +494,21 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 			continue
 		}
 		mailDir := filepath.Join(root, e.Name(), dboxMailsDir)
-		if _, err := os.Stat(mailDir); err == nil {
-			out = append(out, e.Name())
+		if _, err := os.Stat(mailDir); err != nil {
+			continue
 		}
+		logical := e.Name()
+		if !u.listUTF8 {
+			decoded, decErr := mboxenc.FromModUTF7(logical)
+			if decErr != nil {
+				continue
+			}
+			logical = decoded
+		}
+		if u.normalizeNFC {
+			logical = mboxenc.NFC(logical)
+		}
+		out = append(out, logical)
 	}
 	return out, nil
 }
@@ -550,8 +576,18 @@ func (u *userMailbox) uidValidityPath() string {
 func (u *userMailbox) mailboxesRoot() string {
 	return filepath.Join(u.sdboxRoot(), mailboxesDir)
 }
+func (u *userMailbox) folderDiskName(folder string) string {
+	if u.normalizeNFC {
+		folder = mboxenc.NFC(folder)
+	}
+	if !u.listUTF8 {
+		folder = mboxenc.ToModUTF7(folder)
+	}
+	return folder
+}
+
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.mailboxesRoot(), folder, dboxMailsDir)
+	return filepath.Join(u.mailboxesRoot(), u.folderDiskName(folder), dboxMailsDir)
 }
 
 // makeTempName returns ".temp.<sec>.P<pid>Q<seq>M<usec>.<host>"
