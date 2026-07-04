@@ -413,6 +413,7 @@ const sieveScriptNameConst = "smoke-sieve-plugins"
 // ── plugin tests ───────────────────────────────────────────────────────────
 
 func testSieveFileinto(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-fileinto"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -425,6 +426,7 @@ func testSieveFileinto(user, pass, to string) error {
 }
 
 func testSieveMailbox(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-mailbox"
 	// Delete the folder if it survived a previous run so :create starts fresh.
 	func() {
@@ -446,6 +448,7 @@ func testSieveMailbox(user, pass, to string) error {
 }
 
 func testSieveImap4flags(user, pass, to string) error {
+	clearInbox(user, pass)
 	id := uniqueID()
 	script := "require \"imap4flags\";\naddflag \"\\\\Flagged\";\nkeep;\n"
 	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
@@ -491,6 +494,7 @@ func testSieveImap4flags(user, pass, to string) error {
 }
 
 func testSieveBody(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-body"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -504,6 +508,7 @@ func testSieveBody(user, pass, to string) error {
 }
 
 func testSieveEnvelope(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-envelope"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -516,6 +521,7 @@ func testSieveEnvelope(user, pass, to string) error {
 }
 
 func testSieveVariables(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-variables"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -528,6 +534,7 @@ func testSieveVariables(user, pass, to string) error {
 }
 
 func testSieveReject(user, pass, to string) error {
+	clearInbox(user, pass)
 	subject := "reject-" + uniqueID()
 	script := "require \"reject\";\nreject \"smoke test reject\";\n"
 	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
@@ -546,6 +553,7 @@ func testSieveReject(user, pass, to string) error {
 }
 
 func testSieveEreject(user, pass, to string) error {
+	clearInbox(user, pass)
 	subject := "ereject-" + uniqueID()
 	script := "require \"ereject\";\nereject \"smoke test ereject\";\n"
 	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
@@ -564,6 +572,7 @@ func testSieveEreject(user, pass, to string) error {
 }
 
 func testSieveDuplicate(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-duplicate"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -595,6 +604,7 @@ func testSieveDuplicate(user, pass, to string) error {
 }
 
 func testSieveRelational(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-relational"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -610,6 +620,7 @@ func testSieveRelational(user, pass, to string) error {
 }
 
 func testSieveDate(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-date"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -625,6 +636,7 @@ func testSieveDate(user, pass, to string) error {
 }
 
 func testSieveEnotify(user, pass, to string) error {
+	clearInbox(user, pass)
 	token := fmt.Sprintf("XNOTIFY%d", time.Now().UnixNano())
 	script := fmt.Sprintf(
 		"require \"enotify\";\n"+
@@ -663,6 +675,7 @@ func testSieveDebugLog(user, pass, to string) error {
 }
 
 func testSieveEnvironment(user, pass, to string) error {
+	clearInbox(user, pass)
 	folder := "sieve-test-environment"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
