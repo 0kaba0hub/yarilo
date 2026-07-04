@@ -113,7 +113,7 @@ func FromModUTF7(s string) (string, error) {
 				if lo < 0xDC00 || lo > 0xDFFF {
 					return "", fmt.Errorf("mboxenc: invalid low surrogate %04X in %q", lo, s)
 				}
-				r := rune(0x10000 + (rune(u-0xD800) << 10) + rune(lo-0xDC00))
+				r := 0x10000 + (rune(u-0xD800) << 10) + rune(lo-0xDC00)
 				buf.WriteRune(r)
 				k += 2
 			} else {
