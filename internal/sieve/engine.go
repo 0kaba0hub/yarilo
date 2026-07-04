@@ -249,7 +249,7 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 			}
 		}
 		for _, n := range result.Notifications {
-			if err := e.sender.sendNotify(ctx, opts, n); err != nil {
+			if err := e.sender.sendNotify(ctx, opts, hdr, n); err != nil {
 				slog.Error("sieve: notify failed", "user", opts.Username, "method", n.Method, "err", err)
 			}
 		}
