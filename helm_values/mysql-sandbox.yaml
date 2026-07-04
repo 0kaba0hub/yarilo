@@ -87,7 +87,6 @@ data:
         modified          DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         password_modified DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
         mpath             VARCHAR(255)            NULL DEFAULT '',
-        codepage          VARCHAR(8)          NOT NULL DEFAULT '',
         system_account    TINYINT(1)          NOT NULL DEFAULT 0,
         director_tag      VARCHAR(255)            NULL,
         PRIMARY KEY (id),

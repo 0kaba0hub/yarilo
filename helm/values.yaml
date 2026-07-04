@@ -26,6 +26,8 @@ storage:
   ## index_log_compact_max_bytes: 1048576  # 1 MiB  — compact unconditionally above this size
   ## index_log_compact_min_age_secs: 300    # 5 min  — minimum log age before min-size compaction fires
   ## max_concurrent_writes: 0           # 0 = unlimited; tune to storage type: ~32 HDD, ~256 SSD
+  ## mailbox_list_utf8: true            # true = UTF-8 on disk (default); false = modified-UTF-7 for legacy migrations
+  ## mailbox_list_normalize_to_nfc: true # true = NFC-normalise folder names (default)
   persistence:
     enabled: true
     storageClass: ""

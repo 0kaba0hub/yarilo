@@ -39,6 +39,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -68,6 +69,8 @@ type Backend struct {
 	locker         locks.Locker
 	altStorageTmpl string        // base path template for cold-storage tier; "" = disabled
 	writeSem       chan struct{} // nil = unlimited
+	listUTF8       bool
+	normalizeNFC   bool
 }
 
 // Option configures a Backend at construction time.
@@ -100,9 +103,16 @@ func WithMaxConcurrentWrites(n int) Option {
 	}
 }
 
+// WithListUTF8 sets the on-disk folder name encoding.
+// true (default): UTF-8. false: modified-UTF-7 (RFC 3501 §5.1.3) for legacy installations.
+func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
+
+// WithNormalizeNFC enables Unicode NFC normalization of folder names. Default true.
+func WithNormalizeNFC(v bool) Option { return func(b *Backend) { b.normalizeNFC = v } }
+
 // New constructs a Backend.
 func New(opts ...Option) *Backend {
-	b := &Backend{}
+	b := &Backend{listUTF8: true, normalizeNFC: true}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -112,11 +122,13 @@ func New(opts ...Option) *Backend {
 // OpenUser returns a per-session handle bound to u.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
-		b:           b,
-		home:        u.Home,
-		username:    u.Username,
-		owner:       makeOwner(u),
-		altBasePath: resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
+		b:            b,
+		home:         u.Home,
+		username:     u.Username,
+		owner:        makeOwner(u),
+		altBasePath:  resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
+		listUTF8:     b.listUTF8,
+		normalizeNFC: b.normalizeNFC,
 	}
 }
 
@@ -131,11 +143,13 @@ func resolveAltBase(perUser, tmpl, username string) string {
 }
 
 type userMailbox struct {
-	b           *Backend
-	home        string
-	username    string
-	owner       string
-	altBasePath string // expanded alt root + "/mdbox"; "" = disabled
+	b            *Backend
+	home         string
+	username     string
+	owner        string
+	altBasePath  string // expanded alt root + "/mdbox"; "" = disabled
+	listUTF8     bool
+	normalizeNFC bool
 
 	mu      sync.Mutex
 	mapping *mdboxmap.Map // lazily opened on first use
@@ -159,8 +173,18 @@ func (u *userMailbox) storagePath() string { return filepath.Join(u.mdboxRoot(),
 func (u *userMailbox) folderRoot() string {
 	return filepath.Join(u.mdboxRoot(), mailboxesDir)
 }
+func (u *userMailbox) folderDiskName(folder string) string {
+	if u.normalizeNFC {
+		folder = mboxenc.NFC(folder)
+	}
+	if !u.listUTF8 {
+		folder = mboxenc.ToModUTF7(folder)
+	}
+	return folder
+}
+
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.folderRoot(), folder)
+	return filepath.Join(u.folderRoot(), u.folderDiskName(folder))
 }
 func (u *userMailbox) mfilePath(fileID uint32) string {
 	return filepath.Join(u.storagePath(), fmt.Sprintf("m.%d", fileID))
@@ -308,9 +332,21 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 	}
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
-			out = append(out, e.Name())
+		if !e.IsDir() {
+			continue
 		}
+		logical := e.Name()
+		if !u.listUTF8 {
+			decoded, decErr := mboxenc.FromModUTF7(logical)
+			if decErr != nil {
+				continue
+			}
+			logical = decoded
+		}
+		if u.normalizeNFC {
+			logical = mboxenc.NFC(logical)
+		}
+		out = append(out, logical)
 	}
 	return out, nil
 }

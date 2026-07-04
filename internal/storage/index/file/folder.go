@@ -359,9 +359,6 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 //     re-read of base + remaining log.
 func (fs *folderState) reload() error {
 	t0 := time.Now()
-	defer func() {
-		slog.Debug("fileindex: reload", "folder", fs.folder, "dur_ms", time.Since(t0).Milliseconds())
-	}()
 	baseStat, baseErr := os.Stat(fs.indexPath)
 
 	// Use fstat on the open FD when available — avoids NFS path resolution.
@@ -383,8 +380,20 @@ func (fs *folderState) reload() error {
 
 	// Fast path: nothing on disk changed.
 	if newBaseMod == fs.baseMod && newLogSize == fs.logSize {
+		slog.Debug("fileindex: reload fast-path",
+			"folder", fs.folder,
+			"log_size", fs.logSize,
+			"base_mod", fs.baseMod.UnixNano(),
+			"dur_ms", time.Since(t0).Milliseconds())
 		return nil
 	}
+	slog.Debug("fileindex: reload full",
+		"folder", fs.folder,
+		"new_log_size", newLogSize,
+		"old_log_size", fs.logSize,
+		"new_base_mod", newBaseMod.UnixNano(),
+		"old_base_mod", fs.baseMod.UnixNano(),
+		"dur_ms", time.Since(t0).Milliseconds())
 
 	// Base file changed (or first open) → full reload.
 	if newBaseMod != fs.baseMod || fs.file == nil {

@@ -1037,6 +1037,19 @@ type StorageConfig struct {
 	// Supports %u/%n/%d/%h template variables.
 	// Example: /mnt/cold/%d/%n
 	AltDir string `koanf:"alt_dir"`
+
+	// MailboxListUTF8 controls on-disk folder name encoding.
+	// true (default): folder names are stored as UTF-8 on the filesystem.
+	// false: folder names use modified-UTF-7 (RFC 3501 §5.1.3), needed
+	// only when migrating from a legacy installation that already stores
+	// them in that encoding.
+	MailboxListUTF8 bool `koanf:"mailbox_list_utf8"`
+
+	// MailboxListNormalizeToNFC applies Unicode NFC normalization to folder
+	// names before they are stored or compared. Enabled by default so that
+	// equivalent-but-differently-composed names (e.g. from macOS HFS+) are
+	// treated as the same folder.
+	MailboxListNormalizeToNFC bool `koanf:"mailbox_list_normalize_to_nfc"`
 }
 
 type TelemetryConfig struct {
