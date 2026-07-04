@@ -128,6 +128,22 @@ type SieveConfig struct {
 	// FilterInputEOL controls the line ending written to the filter program's stdin:
 	// "crlf" (default, matches RFC 5322) or "lf".
 	FilterInputEOL string `koanf:"sieve_filter_input_eol"`
+
+	// ExecuteBinDir is the directory where yarilo looks for executables to run
+	// via the vnd.yarilo.execute action.
+	ExecuteBinDir string `koanf:"sieve_execute_bin_dir"`
+
+	// ExecuteSocketDir is the directory where yarilo looks for Unix sockets to
+	// connect to via the vnd.yarilo.execute action. Searched before ExecuteBinDir.
+	ExecuteSocketDir string `koanf:"sieve_execute_socket_dir"`
+
+	// ExecuteExecTimeout is the maximum number of seconds an execute program may
+	// run before being killed.
+	ExecuteExecTimeout int `koanf:"sieve_execute_exec_timeout"`
+
+	// ExecuteInputEOL controls the line ending written to the execute program's stdin:
+	// "crlf" (default, matches RFC 5322) or "lf".
+	ExecuteInputEOL string `koanf:"sieve_execute_input_eol"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -1176,20 +1192,24 @@ func Load(path string) (*Config, error) {
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
 		Sieve: SieveConfig{
-			DefaultName:       "yarilo",
-			MaxScriptSize:     65536,
-			MaxRedirects:      32,
-			VacationEnabled:   true,
-			SubmissionSSL:     "no",
-			SubmissionTimeout: 30,
-			PipeBinDir:        "/usr/lib/yarilo/sieve-pipe",
-			PipeSocketDir:     "sieve-pipe",
-			PipeExecTimeout:   10,
-			PipeInputEOL:      "crlf",
-			FilterBinDir:      "/usr/lib/yarilo/sieve-filter",
-			FilterSocketDir:   "sieve-filter",
-			FilterExecTimeout: 10,
-			FilterInputEOL:    "crlf",
+			DefaultName:        "yarilo",
+			MaxScriptSize:      65536,
+			MaxRedirects:       32,
+			VacationEnabled:    true,
+			SubmissionSSL:      "no",
+			SubmissionTimeout:  30,
+			PipeBinDir:         "/usr/lib/yarilo/sieve-pipe",
+			PipeSocketDir:      "sieve-pipe",
+			PipeExecTimeout:    10,
+			PipeInputEOL:       "crlf",
+			FilterBinDir:       "/usr/lib/yarilo/sieve-filter",
+			FilterSocketDir:    "sieve-filter",
+			FilterExecTimeout:  10,
+			FilterInputEOL:     "crlf",
+			ExecuteBinDir:      "/usr/lib/yarilo/sieve-execute",
+			ExecuteSocketDir:   "sieve-execute",
+			ExecuteExecTimeout: 10,
+			ExecuteInputEOL:    "crlf",
 		},
 	}
 	if err := k.Unmarshal("", cfg); err != nil {

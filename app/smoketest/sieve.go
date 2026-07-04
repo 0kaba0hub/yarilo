@@ -664,6 +664,25 @@ func testSievePipe(user, pass, to string) error {
 	return inboxWaitByUID(user, pass, uidnext, "pipe :try: message was not delivered to INBOX after failed pipe")
 }
 
+// testSieveExecute verifies that vnd.yarilo.execute is accepted by the Sieve
+// interpreter. The script uses execute as a test inside if/else so that
+// regardless of whether the program exists in the sandbox, the implicit keep
+// fires and delivers the message to INBOX.
+func testSieveExecute(user, pass, to string) error {
+	uidnext := inboxUIDNext(user, pass)
+	script := `require ["vnd.yarilo.execute", "variables"];` + "\n" +
+		`set "result" "";` + "\n" +
+		`if execute :input "hello" :output "result" "smoketest-noop" {` + "\n" +
+		`  keep;` + "\n" +
+		`} else {` + "\n" +
+		`  keep;` + "\n" +
+		`}` + "\n"
+	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "execute test", "execute test body"); err != nil {
+		return err
+	}
+	return inboxWaitByUID(user, pass, uidnext, "execute test: message was not delivered to INBOX")
+}
+
 // testSieveFilter verifies that vnd.yarilo.filter is accepted by the Sieve
 // interpreter. The script uses filter as a test inside an if/else so that
 // regardless of whether the program exists in the sandbox, the implicit keep
@@ -771,6 +790,7 @@ func checkSieve() error {
 		{"vnd.yarilo.environment", testSieveEnvironment},
 		{"vnd.yarilo.pipe", testSievePipe},
 		{"vnd.yarilo.filter", testSieveFilter},
+		{"vnd.yarilo.execute", testSieveExecute},
 		{"enotify", testSieveEnotify},
 	}
 
