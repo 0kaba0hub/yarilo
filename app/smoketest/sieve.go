@@ -658,6 +658,7 @@ func testSieveEnotify(user, pass, to string) error {
 	if n == 0 {
 		return fmt.Errorf("no notification email with subject token %q found in INBOX", token)
 	}
+	_ = msieveSetActive(sieveScriptNameConst, "keep;\n")
 	return nil
 }
 
@@ -843,6 +844,8 @@ func checkSieve() error {
 		{"vnd.yarilo.execute", testSieveExecute},
 		{"enotify", testSieveEnotify},
 	}
+
+	_ = msieveSetActive(sieveScriptNameConst, "keep;\n")
 
 	slog.Info("sieve: start", "total", len(tests))
 	var errs []string
