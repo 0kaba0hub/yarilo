@@ -4,8 +4,8 @@ github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260630151250-af0e5a38f926 h1:f
 github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260630151250-af0e5a38f926/go.mod h1:dhoFe2Q0PwLrMD7oZw8ODuaD0vLYPe5uj2wcOMnvh48=
 github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f h1:h/57H2GGT5mZ5wJ7r5FwpWkO7RAaKVQtrgTT2Bmxzws=
 github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f/go.mod h1:OrcngXZxc5yyDuG4NezpzTmY19Ln8JoDKoQqzHd4Tao=
-github.com/0kaba0hub/go-sieve v0.0.0-20260704003144-f43f1fdf4879 h1:HGsny/CH4zPo9mZXC0C9evC17iJZ3VkEg/T5yw0UdsI=
-github.com/0kaba0hub/go-sieve v0.0.0-20260704003144-f43f1fdf4879/go.mod h1:osl9Lk7E2uvGHKyrcuTgQ3AQmQcJAd0dR2PDPNmI7ew=
+github.com/0kaba0hub/go-sieve v0.0.0-20260704010221-43f121c8cb4e h1:whgn+b8hpvubQzHB9SJdeQQ8uBfLrwuwWqb+/18p/mY=
+github.com/0kaba0hub/go-sieve v0.0.0-20260704010221-43f121c8cb4e/go.mod h1:osl9Lk7E2uvGHKyrcuTgQ3AQmQcJAd0dR2PDPNmI7ew=
 github.com/0kaba0hub/go-smtp v0.24.1 h1:W+mN6bXgw/pvx0aK6sci0aF1kI9XXpXKwgN3+MMO4lA=
 github.com/0kaba0hub/go-smtp v0.24.1/go.mod h1:/+9AAHQ9tff6WaqgLs0MAlwQ3OzT6jQhqL4x5M5Ee90=
 github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5 h1:IEjq88XO4PuBDcvmjQJcQGg+w+UaafSy8G5Kcb5tBhI=
