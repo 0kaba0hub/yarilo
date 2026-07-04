@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -843,10 +844,15 @@ func checkSieve() error {
 		{"enotify", testSieveEnotify},
 	}
 
+	slog.Info("sieve: start", "total", len(tests))
 	var errs []string
-	for _, t := range tests {
+	for i, t := range tests {
+		slog.Info("sieve: run", "n", i+1, "total", len(tests), "test", t.name)
 		if err := t.fn(user, pass, to); err != nil {
+			slog.Error("sieve: FAIL", "n", i+1, "total", len(tests), "test", t.name, "err", err)
 			errs = append(errs, fmt.Sprintf("  %s: %v", t.name, err))
+		} else {
+			slog.Info("sieve: OK", "n", i+1, "total", len(tests), "test", t.name)
 		}
 	}
 	if len(errs) > 0 {
