@@ -389,16 +389,8 @@ func New(cfg *config.Config) (*Server, error) {
 					ad := strings.ReplaceAll(ui.AltDir, "%h", mbi.Home)
 					mbi.AltDir = mailbox.ExpandVars(ad, username)
 				}
-				if ui.MailPath != "" {
-					mp := mailbox.ExpandHome(ui.MailPath, mbi.Home)
-					mp = strings.ReplaceAll(mp, "%h", mbi.Home)
-					mbi.MailPath = mailbox.ExpandVars(mp, username)
-				}
-				if ui.InboxPath != "" {
-					ip := mailbox.ExpandHome(ui.InboxPath, mbi.Home)
-					ip = strings.ReplaceAll(ip, "%h", mbi.Home)
-					mbi.InboxPath = mailbox.ExpandVars(ip, username)
-				}
+				mbi.MailPath = ui.MailPath
+				mbi.InboxPath = ui.InboxPath
 				return mbi, nil
 			}
 		}

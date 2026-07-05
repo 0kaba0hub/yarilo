@@ -228,6 +228,12 @@ func main() {
 			"separator", cfg.Auth.MasterUsers.Separator,
 		)
 	}
+	if cfg.Storage.MailPath != "" {
+		srvOpts = append(srvOpts, protocol.WithDefaultMailPath(cfg.Storage.MailPath))
+	}
+	if cfg.Storage.MailInboxPath != "" {
+		srvOpts = append(srvOpts, protocol.WithDefaultInboxPath(cfg.Storage.MailInboxPath))
+	}
 	srv := protocol.NewServer(dbs, srvOpts...)
 	errCh := make(chan error, 3)
 	go func() {
@@ -240,10 +246,17 @@ func main() {
 	// master_listen is unset; that keeps single-binary dev / smoke
 	// runs free of an extra bind that nothing consumes.
 	if cfg.AuthService.MasterListen != "" {
-		master := protocol.NewMasterServer(combinedUserdb,
+		masterOpts := []protocol.MasterServerOption{
 			protocol.WithMasterCache(authCache),
 			protocol.WithMasterTokenStore(tokenStore),
-		)
+		}
+		if cfg.Storage.MailPath != "" {
+			masterOpts = append(masterOpts, protocol.WithMasterDefaultMailPath(cfg.Storage.MailPath))
+		}
+		if cfg.Storage.MailInboxPath != "" {
+			masterOpts = append(masterOpts, protocol.WithMasterDefaultInboxPath(cfg.Storage.MailInboxPath))
+		}
+		master := protocol.NewMasterServer(combinedUserdb, masterOpts...)
 		slog.Info("yarilo-auth master listener", "addr", cfg.AuthService.MasterListen)
 		go func() {
 			if err := master.ListenAndServe(ctx, cfg.AuthService.MasterListen, tlsCfg); err != nil {

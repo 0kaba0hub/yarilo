@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/emersion/go-sasl"
+
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 const (
@@ -727,6 +729,8 @@ type Server struct {
 	connUID              atomic.Uint64
 	pid                  int
 	cookie               string
+	defaultMailPath      string
+	defaultInboxPath     string
 }
 
 // ServerOption tunes a NewServer construction.
@@ -911,6 +915,34 @@ func WithPenalty(store PenaltyStore, toSecs PenaltyToSecsFunc) ServerOption {
 // CACHE-FLUSH for selective eviction.
 func WithCache(c *Cache) ServerOption {
 	return func(s *Server) { s.cache = c }
+}
+
+// WithDefaultMailPath sets the cluster-wide mail_path default applied
+// when the userdb result carries no explicit mail_path. Supports ~/
+// and %u/%n/%d/%h expansion against the resolved home.
+func WithDefaultMailPath(p string) ServerOption {
+	return func(s *Server) { s.defaultMailPath = p }
+}
+
+// WithDefaultInboxPath sets the cluster-wide mail_inbox_path default
+// applied when the userdb result carries no explicit mail_inbox_path.
+func WithDefaultInboxPath(p string) ServerOption {
+	return func(s *Server) { s.defaultInboxPath = p }
+}
+
+// applyMailPathDefaults fills MailPath/InboxPath on resp using the
+// server-wide defaults when the userdb did not supply per-user values.
+func (s *Server) applyMailPathDefaults(resp *AuthResponse) {
+	if resp.MailPath == "" && s.defaultMailPath != "" {
+		mp := mailbox.ExpandHome(s.defaultMailPath, resp.Home)
+		mp = strings.ReplaceAll(mp, "%h", resp.Home)
+		resp.MailPath = mailbox.ExpandVars(mp, resp.Username)
+	}
+	if resp.InboxPath == "" && s.defaultInboxPath != "" {
+		ip := mailbox.ExpandHome(s.defaultInboxPath, resp.Home)
+		ip = strings.ReplaceAll(ip, "%h", resp.Home)
+		resp.InboxPath = mailbox.ExpandVars(ip, resp.Username)
+	}
 }
 
 // NewServer creates an auth server with the given passdb chain.
@@ -1537,7 +1569,9 @@ func (s *Server) authenticate(target, master, password, service, remoteIP string
 		if target != "" {
 			retUser = target
 		}
-		return responseFromCache(retUser, entry), nil
+		resp := responseFromCache(retUser, entry)
+		s.applyMailPathDefaults(resp)
+		return resp, nil
 	}
 
 	req := &Request{
@@ -1576,6 +1610,9 @@ func (s *Server) authenticate(target, master, password, service, remoteIP string
 	if v, ok := req.Fields.Get("mail"); ok {
 		resp.MailLoc = v
 	}
+	resp.MailPath = extractMailPath(req.Fields)
+	resp.InboxPath = extractInboxPath(req.Fields)
+	s.applyMailPathDefaults(resp)
 	return resp, err
 }
 

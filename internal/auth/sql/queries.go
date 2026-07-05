@@ -23,8 +23,15 @@ func substituteVars(driver, query, username string) (string, []any) {
 	sb.Grow(len(query))
 	var args []any
 	pos := 1
+	inQuote := false
 	for i := 0; i < len(query); i++ {
-		if query[i] == '%' && i+1 < len(query) {
+		ch := query[i]
+		if ch == '\'' {
+			inQuote = !inQuote
+			sb.WriteByte(ch)
+			continue
+		}
+		if !inQuote && ch == '%' && i+1 < len(query) {
 			if val, ok := vars[query[i+1]]; ok {
 				args = append(args, val)
 				if driver == "postgres" {
@@ -37,7 +44,7 @@ func substituteVars(driver, query, username string) (string, []any) {
 				continue
 			}
 		}
-		sb.WriteByte(query[i])
+		sb.WriteByte(ch)
 	}
 	return sb.String(), args
 }
