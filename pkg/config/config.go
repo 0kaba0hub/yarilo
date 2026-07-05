@@ -1315,6 +1315,7 @@ func expandEnv(cfg *Config) {
 	expandSvcSSL(cfg.Services.POP3)
 	expandSvcSSL(cfg.Services.POP3S)
 	cfg.DirectorService.API.Token = expand(cfg.DirectorService.API.Token)
+	cfg.BackendAPI.Token = expand(cfg.BackendAPI.Token)
 	cfg.Protocol.Submission.Relay.Password = expand(cfg.Protocol.Submission.Relay.Password)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
