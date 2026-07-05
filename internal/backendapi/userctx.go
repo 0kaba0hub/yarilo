@@ -56,10 +56,15 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 	}
 	ui := resolver.UserInfo(username, "")
 	if s.opts.AuthClient != nil {
-		if pui, err := s.opts.AuthClient.Userdb(context.Background(), username); err == nil {
-			ui.MailPath = pui.MailPath
-			ui.InboxPath = pui.InboxPath
+		pui, err := s.opts.AuthClient.Userdb(context.Background(), username)
+		if err != nil {
+			return nil, fmt.Errorf("backendapi/userctx: userdb lookup: %w", err)
 		}
+		if pui == nil {
+			return nil, fmt.Errorf("backendapi/userctx: user not found: %s", username)
+		}
+		ui.MailPath = pui.MailPath
+		ui.InboxPath = pui.InboxPath
 	}
 	uc := &userContext{
 		username: username,

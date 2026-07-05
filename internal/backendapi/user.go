@@ -87,6 +87,7 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		pui, err := s.opts.AuthClient.Userdb(r.Context(), req.User)
 		switch {
 		case err != nil:
+			slog.Warn("backendapi/user: userdb lookup failed", "user", req.User, "err", err)
 			userdbStatus = userdbStatusError
 		case pui == nil:
 			userdbStatus = userdbStatusNotFound
