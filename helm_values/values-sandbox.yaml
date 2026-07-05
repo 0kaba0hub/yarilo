@@ -182,7 +182,9 @@ components:
           WHERE username = %u
         user_query: |
           SELECT CONCAT(home, mpath) AS home,
-                 CONCAT(mbtype, ':', home, mpath) AS mail
+                 CONCAT(mbtype, ':', home, mpath,
+                        ':INDEX=~/index/',
+                        ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail
           FROM mailbox
           WHERE username = %u
         iterate_query: |

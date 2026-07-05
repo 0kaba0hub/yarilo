@@ -17,6 +17,8 @@ storage:
   maildir_root: /var/mail/vhosts
   mail_home_template: "%d/%u"
   index: fileindex
+  ## mail_path: ""                            # mail storage root (empty = same as home); supports ~/ and %u/%d/%n/%h
+  ## mail_inbox_path: ""                      # INBOX override path (empty = mail_path); supports ~/ and %u/%d/%n/%h
   ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
   ## index_dir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
   ## control_dir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files

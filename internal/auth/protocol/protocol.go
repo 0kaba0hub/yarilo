@@ -85,6 +85,17 @@ type AuthResponse struct {
 	// under AltDir; reads check both primary and alt tiers.
 	AltDir string
 
+	// MailPath is the base path of the mail storage tree (driver:PATH
+	// from mail_location, or the standalone mail_path= userdb field).
+	// Carries the raw template string (%u/%n/%d/%h/~/ unexpanded).
+	// When empty, backends fall back to Home.
+	MailPath string
+
+	// InboxPath overrides INBOX location within the mail tree (from the
+	// mail_inbox_path= userdb field). Carries the raw template string
+	// (%u/%n/%d/%h/~/ unexpanded). When empty, defaults to MailPath.
+	InboxPath string
+
 	Proxy bool
 	Host  string
 	Port  int
@@ -370,6 +381,8 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
 	resp.AltDir = extractAltDir(req.Fields)
+	resp.MailPath = extractMailPath(req.Fields)
+	resp.InboxPath = extractInboxPath(req.Fields)
 	return resp, err
 }
 
@@ -398,6 +411,8 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		resp.IndexDir = extractIndexDir(entry.Fields)
 		resp.ControlDir = extractControlDir(entry.Fields)
 		resp.AltDir = extractAltDir(entry.Fields)
+		resp.MailPath = extractMailPath(entry.Fields)
+		resp.InboxPath = extractInboxPath(entry.Fields)
 	}
 	if resp.Username == "" {
 		resp.Username = reqUser
@@ -533,6 +548,8 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
 	resp.AltDir = extractAltDir(req.Fields)
+	resp.MailPath = extractMailPath(req.Fields)
+	resp.InboxPath = extractInboxPath(req.Fields)
 	return resp, err
 }
 
@@ -1429,6 +1446,42 @@ func extractControlDir(f *Fields) string {
 			if cd := parseMailLocationMod(v, "CONTROL"); cd != "" {
 				return cd
 			}
+		}
+	}
+	return ""
+}
+
+// extractMailPath reads the mail_path value from the Fields bag.
+// Priority: explicit mail_path= field → base path extracted from the
+// mail= location string ("driver:PATH[:modifiers]"). Returns the raw
+// template (not yet expanded).
+func extractMailPath(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	for _, key := range []string{"userdb_mail_path", "mail_path"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			return v
+		}
+	}
+	for _, key := range []string{"userdb_mail", "mail"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			if parts := strings.SplitN(v, ":", 3); len(parts) >= 2 && parts[1] != "" {
+				return parts[1]
+			}
+		}
+	}
+	return ""
+}
+
+// extractInboxPath reads the mail_inbox_path value from the Fields bag.
+func extractInboxPath(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	for _, key := range []string{"userdb_mail_inbox_path", "mail_inbox_path"} {
+		if v, ok := f.Get(key); ok && v != "" {
+			return v
 		}
 	}
 	return ""

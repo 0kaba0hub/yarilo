@@ -317,6 +317,8 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 			IndexDir:    pc.IndexDir,
 			ControlDir:  pc.ControlDir,
 			AltDir:      pc.AltDir,
+			MailPath:    pc.MailPath,
+			InboxPath:   pc.InboxPath,
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -777,6 +779,16 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	if res.AltDir != "" {
 		ad := strings.ReplaceAll(res.AltDir, "%h", userInfo.Home)
 		userInfo.AltDir = mailbox.ExpandVars(ad, res.Username)
+	}
+	if res.MailPath != "" {
+		mp := mailbox.ExpandHome(res.MailPath, userInfo.Home)
+		mp = strings.ReplaceAll(mp, "%h", userInfo.Home)
+		userInfo.MailPath = mailbox.ExpandVars(mp, res.Username)
+	}
+	if res.InboxPath != "" {
+		ip := mailbox.ExpandHome(res.InboxPath, userInfo.Home)
+		ip = strings.ReplaceAll(ip, "%h", userInfo.Home)
+		userInfo.InboxPath = mailbox.ExpandVars(ip, res.Username)
 	}
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
