@@ -42,12 +42,15 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	uc, err := s.openUserContext(req.User)
-	if err != nil {
-		apiError(w, err.Error(), http.StatusBadRequest)
+	if req.User == "" {
+		apiError(w, "backendapi/userctx: user required", http.StatusBadRequest)
 		return
 	}
-	defer uc.Close()
+	resolver := s.opts.Resolver
+	if resolver == nil {
+		resolver = &mailbox.Resolver{}
+	}
+	ui := resolver.UserInfo(req.User, "")
 
 	nsEntries := []userNSEntry{}
 	for _, spec := range s.opts.Namespaces {
@@ -57,8 +60,8 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 			Prefix: spec.Prefix,
 		}
 		if spec.Type == "personal" {
-			entry.Home = uc.info.Home
-			entry.Exists = dirExists(uc.info.Home)
+			entry.Home = ui.Home
+			entry.Exists = dirExists(ui.Home)
 		} else if spec.Location != "" {
 			loc, ok, err := mailbox.ParseLocation(spec.Location, nil)
 			if err == nil && ok {
@@ -73,13 +76,13 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		nsEntries = append(nsEntries, userNSEntry{
 			Name:   "personal",
 			Type:   "personal",
-			Home:   uc.info.Home,
-			Exists: dirExists(uc.info.Home),
+			Home:   ui.Home,
+			Exists: dirExists(ui.Home),
 		})
 	}
 	resp := map[string]any{
-		"username":   uc.info.Username,
-		"home":       uc.info.Home,
+		"username":   ui.Username,
+		"home":       ui.Home,
 		"namespaces": nsEntries,
 	}
 	if s.opts.AuthClient != nil {
