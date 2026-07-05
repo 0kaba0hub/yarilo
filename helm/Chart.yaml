@@ -3,11 +3,7 @@ name: yarilo
 description: Production-grade IMAP/POP3/Submission mail server
 type: application
 version: 1.81.0
-<<<<<<< Updated upstream
-appVersion: "2.0.68"
-=======
-appVersion: "2.0.60"
->>>>>>> Stashed changes
+appVersion: "2.0.69"
 keywords:
   - imap
   - submission

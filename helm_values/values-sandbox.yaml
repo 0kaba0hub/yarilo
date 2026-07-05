@@ -182,9 +182,10 @@ components:
           WHERE username = %u
         user_query: |
           SELECT CONCAT(home, mpath) AS home,
-                 CONCAT(mbtype, ':', home, mpath,
+                 CONCAT(mbtype, ':~/', maildir,
                         ':INDEX=~/index/',
-                        ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail
+                        ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
+                 CONCAT('*:bytes=', quota) AS quota_rule
           FROM mailbox
           WHERE username = %u
         iterate_query: |
