@@ -81,25 +81,39 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	effectiveMailPath := ui.MailPath
 	effectiveInboxPath := ui.InboxPath
 
-	var userdbVal any
-	var userdbStatus string
 	if s.opts.AuthClient != nil {
 		pui, err := s.opts.AuthClient.Userdb(r.Context(), req.User)
 		switch {
 		case err != nil:
 			slog.Warn("backendapi/user: userdb lookup failed", "user", req.User, "err", err)
-			userdbStatus = userdbStatusError
+			apiError(w, "userdb lookup: "+err.Error(), http.StatusServiceUnavailable)
+			return
 		case pui == nil:
-			userdbStatus = userdbStatusNotFound
+			apiError(w, "user not found: "+req.User, http.StatusNotFound)
+			return
 		default:
-			userdbStatus = userdbStatusOK
-			userdbVal = userInfoToJSON(pui)
 			if pui.MailPath != "" {
 				effectiveMailPath = pui.MailPath
 			}
 			if pui.InboxPath != "" {
 				effectiveInboxPath = pui.InboxPath
 			}
+			if effectiveMailPath == "" {
+				effectiveMailPath = ui.Home
+			}
+			if effectiveInboxPath == "" {
+				effectiveInboxPath = effectiveMailPath
+			}
+			resp := map[string]any{
+				"username":        ui.Username,
+				"home":            ui.Home,
+				"mail_path":       effectiveMailPath,
+				"mail_inbox_path": effectiveInboxPath,
+				"namespaces":      nsEntries,
+				"userdb":          userInfoToJSON(pui),
+			}
+			apiJSON(w, resp)
+			return
 		}
 	}
 
@@ -109,18 +123,13 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	if effectiveInboxPath == "" {
 		effectiveInboxPath = effectiveMailPath
 	}
-	resp := map[string]any{
+	apiJSON(w, map[string]any{
 		"username":        ui.Username,
 		"home":            ui.Home,
 		"mail_path":       effectiveMailPath,
 		"mail_inbox_path": effectiveInboxPath,
 		"namespaces":      nsEntries,
-	}
-	if s.opts.AuthClient != nil {
-		resp["userdb"] = userdbVal
-		resp["userdb_status"] = userdbStatus
-	}
-	apiJSON(w, resp)
+	})
 }
 
 // userdbStatus enumerates the three terminal states the /user/info
