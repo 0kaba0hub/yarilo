@@ -40,6 +40,7 @@ spec:
               value: "yarilo-lmtp"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            {{- include "yarilo.adminBackendEnv" . | nindent 12 }}
             {{- include "yarilo.dbEnv" . | nindent 12 }}
             {{- with ((.Values.sieve | default dict).submission | default dict).authSecret }}
             - name: YARILO_SIEVE_SUBMISSION_USER
