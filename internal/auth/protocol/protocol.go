@@ -933,6 +933,9 @@ func WithDefaultInboxPath(p string) ServerOption {
 // applyMailPathDefaults fills MailPath/InboxPath on resp using the
 // server-wide defaults when the userdb did not supply per-user values.
 func (s *Server) applyMailPathDefaults(resp *AuthResponse) {
+	if resp.MailLoc != "" {
+		resp.MailLoc = mailbox.ExpandVars(resp.MailLoc, resp.Username)
+	}
 	if resp.MailPath == "" && s.defaultMailPath != "" {
 		mp := mailbox.ExpandHome(s.defaultMailPath, resp.Home)
 		mp = strings.ReplaceAll(mp, "%h", resp.Home)

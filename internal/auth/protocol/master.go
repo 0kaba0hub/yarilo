@@ -81,6 +81,9 @@ func WithMasterDefaultInboxPath(p string) MasterServerOption {
 }
 
 func (s *MasterServer) applyMailPathDefaults(ui *UserInfo) {
+	if ui.MailLocation != "" {
+		ui.MailLocation = mailbox.ExpandVars(ui.MailLocation, ui.Username)
+	}
 	if ui.MailPath == "" && s.defaultMailPath != "" {
 		mp := mailbox.ExpandHome(s.defaultMailPath, ui.Home)
 		mp = strings.ReplaceAll(mp, "%h", ui.Home)
