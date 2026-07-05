@@ -171,14 +171,19 @@ func TestUserInfo_EnrichedWithUserdb(t *testing.T) {
 	}
 }
 
-func TestUserInfo_UserdbMissReturns404(t *testing.T) {
+func TestUserInfo_UserdbMissReturnsErrorBody(t *testing.T) {
 	udb := &stubIteratorUserdb{users: map[string]*protocol.UserInfo{}}
 	ts, _ := authTestServer(t, udb)
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/user/info", "",
 		map[string]any{"user": "ghost@example.com"})
-	if status != http.StatusNotFound {
+	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
+	}
+	var resp map[string]any
+	decodeJSONBody(t, body, &resp)
+	if _, ok := resp["error"]; !ok {
+		t.Errorf("expected error field in body: %s", body)
 	}
 }
 

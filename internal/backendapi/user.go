@@ -89,7 +89,7 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 			apiError(w, "userdb lookup: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		case pui == nil:
-			apiError(w, "user not found: "+req.User, http.StatusNotFound)
+			apiJSON(w, map[string]any{"error": "user not found: " + req.User})
 			return
 		default:
 			if pui.MailPath != "" {
@@ -131,19 +131,6 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		"namespaces":      nsEntries,
 	})
 }
-
-// userdbStatus enumerates the three terminal states the /user/info
-// userdb enrichment block surfaces. Callers see "ok" with a non-nil
-// userdb object on hit, "not_found" with userdb=null on miss, and
-// "error" with userdb=null when the master-protocol call itself
-// failed — the HTTP response stays 200 in every case so admin
-// tooling that prizes the local view (namespaces, home) is not
-// blocked by auth-side flakiness.
-const (
-	userdbStatusOK       = "ok"
-	userdbStatusNotFound = "not_found"
-	userdbStatusError    = "error"
-)
 
 // userInfoToJSON renders a protocol.UserInfo as the wire-friendly
 // snake_case JSON object /user/info exposes. Zero-valued fields are
