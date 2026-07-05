@@ -16,6 +16,11 @@
 //
 //	--url / --token              → director plane (default :9103)
 //	--backend-url / --backend-token → backend plane (default :9105)
+//
+// When YARILO_ADMIN_TYPE is set the plane is pre-selected and the first
+// CLI argument is the service/command directly (no plane prefix needed):
+//
+//	YARILO_ADMIN_TYPE=backend yarilo-admin user info u1@example.com
 package main
 
 import (
@@ -46,6 +51,25 @@ func main() {
 	flag.StringVar(&authCA, "auth-ca", envOr("YARILO_AUTH_CA", ""), "CA bundle that signs the auth-master server cert")
 	flag.Parse()
 
+	// YARILO_API_URL / YARILO_API_TOKEN override plane-specific vars when set.
+	// They are injected by the Helm chart so every pod is pre-configured.
+	if v := os.Getenv("YARILO_API_URL"); v != "" {
+		switch os.Getenv("YARILO_ADMIN_TYPE") {
+		case "backend":
+			backendAPIURL = v
+		case "director":
+			apiURL = v
+		}
+	}
+	if v := os.Getenv("YARILO_API_TOKEN"); v != "" {
+		switch os.Getenv("YARILO_ADMIN_TYPE") {
+		case "backend":
+			backendAPIToken = v
+		case "director":
+			apiToken = v
+		}
+	}
+
 	args := flag.Args()
 	if len(args) == 0 {
 		printUsage()
@@ -59,6 +83,23 @@ func main() {
 }
 
 func dispatch(args []string) error {
+	// When YARILO_ADMIN_TYPE is set the plane is implicit — first arg is the
+	// service/command directly. Top-level "user" shorthand always delegates to
+	// the backend plane regardless of YARILO_ADMIN_TYPE.
+	adminType := os.Getenv("YARILO_ADMIN_TYPE")
+	if adminType != "" {
+		switch adminType {
+		case "backend":
+			return dispatchBackend(args)
+		case "director":
+			return dispatchDirector(args)
+		case "auth":
+			return dispatchAuth(args)
+		default:
+			return fmt.Errorf("unknown YARILO_ADMIN_TYPE %q — valid values: backend, director, auth", adminType)
+		}
+	}
+
 	switch args[0] {
 	case "director":
 		return dispatchDirector(args[1:])
@@ -66,8 +107,11 @@ func dispatch(args []string) error {
 		return dispatchBackend(args[1:])
 	case "auth":
 		return dispatchAuth(args[1:])
+	case "user":
+		// Top-level shorthand: yarilo-admin user <cmd> — always hits backend plane.
+		return dispatchUser(args[1:])
 	default:
-		return fmt.Errorf("unknown plane %q — available: director, backend, auth", args[0])
+		return fmt.Errorf("unknown plane %q — available: director, backend, auth\n(tip: set YARILO_ADMIN_TYPE=backend to skip the plane prefix)", args[0])
 	}
 }
 
@@ -107,6 +151,24 @@ func dispatchBackend(args []string) error {
 }
 
 func printUsage() {
+	adminType := os.Getenv("YARILO_ADMIN_TYPE")
+	if adminType != "" {
+		fmt.Fprintf(os.Stderr, `yarilo-admin — yarilo operator CLI (plane: %s)
+
+YARILO_ADMIN_TYPE=%s is set — plane prefix is implicit.
+
+Usage:
+  yarilo-admin <service> <command> [args...]
+
+`, adminType, adminType)
+		switch adminType {
+		case "backend":
+			printBackendUsage()
+		case "director":
+			fmt.Fprintln(os.Stderr, "Run 'yarilo-admin status|dump|map|backends|users|ring' directly.")
+		}
+		return
+	}
 	fmt.Fprintln(os.Stderr, `yarilo-admin — yarilo operator CLI
 
 Usage:
@@ -120,7 +182,13 @@ Global flags:
 
 Planes:
   director  — manage the yarilo-director cluster (ring, backends, users, peers)
-  backend   — manage a backend's storage state (dict; acl/quota/folder/user/mailbox in later phases)
+  backend   — manage a backend's storage state (dict, acl, quota, folder, user, ...)
+  auth      — query yarilo-auth userdb/passdb
+
+Shorthand (no plane prefix):
+  user      — alias for 'backend user' (mirrors doveadm user)
+
+Tip: set YARILO_ADMIN_TYPE=backend|director|auth to skip the plane prefix entirely.
 
 Run 'yarilo-admin <plane>' with no command for that plane's usage.`)
 }
