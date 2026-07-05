@@ -11,11 +11,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: smoketest
-<<<<<<< HEAD
-        image: ghcr.io/0kaba0hub/yarilo:2.0.60
-=======
-        image: ghcr.io/0kaba0hub/yarilo:2.0.60
->>>>>>> 8609877 (fix(fileindex): remove stale logFileSize check in applyLog BOUNDARY handling)
+        image: ghcr.io/0kaba0hub/yarilo:2.0.61
         command:
         - yarilo-smoketest
         args:
