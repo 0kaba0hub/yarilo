@@ -184,7 +184,12 @@ components:
         ##   SELECT password, '' AS home, '' AS mail, active AS enabled
         ##   FROM users WHERE username = LOWER(%u)
         ## user_query: |
-        ##   SELECT home, mail_path FROM users WHERE username = LOWER(%u)
+        ##   SELECT CONCAT(home, mpath) AS home,
+        ##          CONCAT(mbtype, ':~/', maildir,
+        ##                 ':INDEX=~/index/',
+        ##                 ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
+        ##          CONCAT('*:bytes=', quota) AS quota_rule
+        ##   FROM mailbox WHERE username = %u
         ## iterate_query: |
         ##   SELECT username FROM users WHERE active = 1 ORDER BY username
         ## skip_schema: true   # set when using a custom table instead of yarilo_users

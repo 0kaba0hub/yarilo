@@ -154,9 +154,6 @@ func TestUserInfo_EnrichedWithUserdb(t *testing.T) {
 	if resp.Username != "alice@example.com" {
 		t.Errorf("username = %q", resp.Username)
 	}
-	if resp.UserdbStatus != "ok" {
-		t.Errorf("userdb_status = %q, want ok", resp.UserdbStatus)
-	}
 	if resp.Userdb == nil {
 		t.Fatalf("userdb block missing")
 	}
@@ -174,33 +171,25 @@ func TestUserInfo_EnrichedWithUserdb(t *testing.T) {
 	}
 }
 
-func TestUserInfo_UserdbMissReturnsNotFoundStatus(t *testing.T) {
+func TestUserInfo_UserdbMissReturnsErrorBody(t *testing.T) {
 	udb := &stubIteratorUserdb{users: map[string]*protocol.UserInfo{}}
 	ts, _ := authTestServer(t, udb)
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/user/info", "",
 		map[string]any{"user": "ghost@example.com"})
-	if status != 200 {
+	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
-	var resp struct {
-		UserdbStatus string `json:"userdb_status"`
-		Userdb       any    `json:"userdb"`
-	}
+	var resp map[string]any
 	decodeJSONBody(t, body, &resp)
-	if resp.UserdbStatus != "not_found" {
-		t.Errorf("userdb_status = %q, want not_found", resp.UserdbStatus)
-	}
-	if resp.Userdb != nil {
-		t.Errorf("userdb = %v, want null for miss", resp.Userdb)
+	if _, ok := resp["error"]; !ok {
+		t.Errorf("expected error field in body: %s", body)
 	}
 }
 
-func TestUserInfo_UserdbErrorDegradesGracefully(t *testing.T) {
+func TestUserInfo_UserdbErrorReturns503(t *testing.T) {
 	// Close the auth conn so the next lookup surfaces ErrClosed.
-	// The handler must return 200 with userdb_status="error" rather
-	// than 5xx — admins still need the local namespace view when
-	// auth is down.
+	// The handler must return 503.
 	udb := &stubIteratorUserdb{users: map[string]*protocol.UserInfo{}}
 	root := t.TempDir()
 	mb := maildir.New()
@@ -232,15 +221,8 @@ func TestUserInfo_UserdbErrorDegradesGracefully(t *testing.T) {
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/user/info", "",
 		map[string]any{"user": "alice@example.com"})
-	if status != 200 {
+	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", status, body)
-	}
-	var resp struct {
-		UserdbStatus string `json:"userdb_status"`
-	}
-	decodeJSONBody(t, body, &resp)
-	if resp.UserdbStatus != "error" {
-		t.Errorf("userdb_status = %q, want error", resp.UserdbStatus)
 	}
 }
 

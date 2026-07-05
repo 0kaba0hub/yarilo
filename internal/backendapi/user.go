@@ -81,25 +81,39 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	effectiveMailPath := ui.MailPath
 	effectiveInboxPath := ui.InboxPath
 
-	var userdbVal any
-	var userdbStatus string
 	if s.opts.AuthClient != nil {
 		pui, err := s.opts.AuthClient.Userdb(r.Context(), req.User)
 		switch {
 		case err != nil:
 			slog.Warn("backendapi/user: userdb lookup failed", "user", req.User, "err", err)
-			userdbStatus = userdbStatusError
+			apiError(w, "userdb lookup: "+err.Error(), http.StatusServiceUnavailable)
+			return
 		case pui == nil:
-			userdbStatus = userdbStatusNotFound
+			apiJSON(w, map[string]any{"error": "user not found: " + req.User})
+			return
 		default:
-			userdbStatus = userdbStatusOK
-			userdbVal = userInfoToJSON(pui)
 			if pui.MailPath != "" {
 				effectiveMailPath = pui.MailPath
 			}
 			if pui.InboxPath != "" {
 				effectiveInboxPath = pui.InboxPath
 			}
+			if effectiveMailPath == "" {
+				effectiveMailPath = ui.Home
+			}
+			if effectiveInboxPath == "" {
+				effectiveInboxPath = effectiveMailPath
+			}
+			resp := map[string]any{
+				"username":        ui.Username,
+				"home":            ui.Home,
+				"mail_path":       effectiveMailPath,
+				"mail_inbox_path": effectiveInboxPath,
+				"namespaces":      nsEntries,
+				"userdb":          userInfoToJSON(pui),
+			}
+			apiJSON(w, resp)
+			return
 		}
 	}
 
@@ -109,32 +123,14 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	if effectiveInboxPath == "" {
 		effectiveInboxPath = effectiveMailPath
 	}
-	resp := map[string]any{
+	apiJSON(w, map[string]any{
 		"username":        ui.Username,
 		"home":            ui.Home,
 		"mail_path":       effectiveMailPath,
 		"mail_inbox_path": effectiveInboxPath,
 		"namespaces":      nsEntries,
-	}
-	if s.opts.AuthClient != nil {
-		resp["userdb"] = userdbVal
-		resp["userdb_status"] = userdbStatus
-	}
-	apiJSON(w, resp)
+	})
 }
-
-// userdbStatus enumerates the three terminal states the /user/info
-// userdb enrichment block surfaces. Callers see "ok" with a non-nil
-// userdb object on hit, "not_found" with userdb=null on miss, and
-// "error" with userdb=null when the master-protocol call itself
-// failed — the HTTP response stays 200 in every case so admin
-// tooling that prizes the local view (namespaces, home) is not
-// blocked by auth-side flakiness.
-const (
-	userdbStatusOK       = "ok"
-	userdbStatusNotFound = "not_found"
-	userdbStatusError    = "error"
-)
 
 // userInfoToJSON renders a protocol.UserInfo as the wire-friendly
 // snake_case JSON object /user/info exposes. Zero-valued fields are
