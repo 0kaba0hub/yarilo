@@ -1,13 +1,11 @@
 package backendapi
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -136,28 +134,6 @@ const (
 	userdbStatusNotFound = "not_found"
 	userdbStatusError    = "error"
 )
-
-// lookupUserdb runs the master-protocol USER call and converts the
-// typed UserInfo into the snake_case JSON shape /user/info exposes.
-// Errors are logged + reported as userdb_status="error" rather than
-// surfaced as 5xx; the local view is still useful when auth is down.
-func (s *Server) lookupUserdb(r *http.Request, username string) (any, string) {
-	info, err := s.opts.AuthClient.Userdb(r.Context(), username)
-	if err != nil {
-		if errors.Is(err, authclient.ErrClosed) {
-			slog.Warn("backendapi/user: authclient closed",
-				"user", username, "err", err)
-		} else {
-			slog.Warn("backendapi/user: userdb lookup failed",
-				"user", username, "err", err)
-		}
-		return nil, userdbStatusError
-	}
-	if info == nil {
-		return nil, userdbStatusNotFound
-	}
-	return userInfoToJSON(info), userdbStatusOK
-}
 
 // userInfoToJSON renders a protocol.UserInfo as the wire-friendly
 // snake_case JSON object /user/info exposes. Zero-valued fields are
