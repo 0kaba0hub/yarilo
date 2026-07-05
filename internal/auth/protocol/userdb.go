@@ -88,6 +88,19 @@ type UserInfo struct {
 	// primary (Home) and alt tiers.
 	AltDir string
 
+	// MailPath is the root of the actual mail storage tree, separate from
+	// Home (which holds Sieve scripts and other metadata). Set via the
+	// `mail_path` userdb extra field, or derived from the base path of
+	// the MailLocation string. Carries the raw template string
+	// (%u/%n/%d/%h/~/ not yet expanded). When empty, backends use Home.
+	MailPath string
+
+	// InboxPath overrides the INBOX location within the mail tree. Set via
+	// the `mail_inbox_path` userdb extra field. Carries the raw template
+	// string (%u/%n/%d/%h/~/ not yet expanded). When empty, defaults to
+	// MailPath (or Home).
+	InboxPath string
+
 	// ---- Quota ------------------------------------------------
 
 	// QuotaRules is the list of per-user quota rules (`quota_rule=`

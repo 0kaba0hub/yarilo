@@ -60,6 +60,8 @@ type session struct {
 	preAuthIndexDir    string   // userdb-resolved index dir from preamble
 	preAuthControlDir  string   // userdb-resolved control dir from preamble
 	preAuthAltDir      string   // userdb-resolved alt dir from preamble
+	preAuthMailPath    string   // userdb-resolved mail root from preamble
+	preAuthInboxPath   string   // userdb-resolved inbox path from preamble
 	sid                string   // cross-service correlation ID from login-proxy
 
 	// set after successful login
@@ -102,6 +104,8 @@ func (s *Server) newSession(conn net.Conn) *session {
 		sess.preAuthIndexDir = pc.IndexDir
 		sess.preAuthControlDir = pc.ControlDir
 		sess.preAuthAltDir = pc.AltDir
+		sess.preAuthMailPath = pc.MailPath
+		sess.preAuthInboxPath = pc.InboxPath
 		sess.sid = pc.SessionID
 		sess.state = statePreAuth
 	}
@@ -553,6 +557,8 @@ func (s *session) completePreAuth() bool {
 		IndexDir:    s.preAuthIndexDir,
 		ControlDir:  s.preAuthControlDir,
 		AltDir:      s.preAuthAltDir,
+		MailPath:    s.preAuthMailPath,
+		InboxPath:   s.preAuthInboxPath,
 	}
 	ok := s.setupSession(res)
 	if ok {
@@ -589,6 +595,16 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	if res.AltDir != "" {
 		ad := strings.ReplaceAll(res.AltDir, "%h", userInfo.Home)
 		userInfo.AltDir = mailbox.ExpandVars(ad, res.Username)
+	}
+	if res.MailPath != "" {
+		mp := mailbox.ExpandHome(res.MailPath, userInfo.Home)
+		mp = strings.ReplaceAll(mp, "%h", userInfo.Home)
+		userInfo.MailPath = mailbox.ExpandVars(mp, res.Username)
+	}
+	if res.InboxPath != "" {
+		ip := mailbox.ExpandHome(res.InboxPath, userInfo.Home)
+		ip = strings.ReplaceAll(ip, "%h", userInfo.Home)
+		userInfo.InboxPath = mailbox.ExpandVars(ip, res.Username)
 	}
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {

@@ -275,3 +275,77 @@ func TestParseMailLocationModsAlt(t *testing.T) {
 		t.Errorf("INDEX = %q, want /srv/idx", mods["INDEX"])
 	}
 }
+
+func TestExpandHome(t *testing.T) {
+	cases := []struct {
+		path, home, want string
+	}{
+		{"~/Maildir", "/var/mail/u", "/var/mail/u/Maildir"},
+		{"~/", "/var/mail/u", "/var/mail/u/"},
+		{"/abs/path", "/var/mail/u", "/abs/path"},
+		{"relative/path", "/var/mail/u", "relative/path"},
+		{"~notslash", "/var/mail/u", "~notslash"},
+	}
+	for _, tc := range cases {
+		got := ExpandHome(tc.path, tc.home)
+		if got != tc.want {
+			t.Errorf("ExpandHome(%q, %q) = %q, want %q", tc.path, tc.home, got, tc.want)
+		}
+	}
+}
+
+func TestExpandVarsHashVar(t *testing.T) {
+	cases := []struct {
+		name           string
+		template, user string
+		want           string
+	}{
+		// %2.256Nu — BE uint32(MD5("u1@d00001.test")[:4]) mod 256, hex-padded to width 2
+		// MD5("u1@d00001.test") = 7c70a897… → 0x7c70a897 mod 256 = 0x97
+		{"2.256Nu known", "%2.256Nu", "u1@d00001.test", "97"},
+		// %1.30Nu — 0x7c70a897 mod 30 = 15 = 0xf
+		{"1.30Nu", "%1.30Nu", "u1@d00001.test", "f"},
+		// unknown var after N — pass through
+		{"unknown N var", "%2.256Nz", "u@x", "%2.256Nz"},
+		// no dot — not a hash var, pass through
+		{"no dot", "%2256Nu", "u@x", "%2256Nu"},
+		// %u still works after hash var
+		{"mixed hash and %u", "%2.256Nu/%u", "u1@d00001.test", "97/u1@d00001.test"},
+		// modulo=0 — invalid, pass through
+		{"zero modulo", "%2.0Nu", "u@x", "%2.0Nu"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExpandVars(tc.template, tc.user)
+			if got != tc.want {
+				t.Errorf("ExpandVars(%q, %q) = %q, want %q", tc.template, tc.user, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolverDefaultMailPath(t *testing.T) {
+	r := &Resolver{
+		Root:            "/mail",
+		HomeTemplate:    "%d/%n",
+		DefaultMailPath: "~/Maildir",
+	}
+	ui := r.UserInfo("alice@example.com", "")
+	want := ui.Home + "/Maildir"
+	if ui.MailPath != want {
+		t.Errorf("MailPath = %q, want %q", ui.MailPath, want)
+	}
+}
+
+func TestResolverDefaultMailPathVars(t *testing.T) {
+	r := &Resolver{
+		Root:            "/mail",
+		HomeTemplate:    "%d/%n",
+		DefaultMailPath: "/store/%d/%n/Maildir",
+	}
+	ui := r.UserInfo("alice@example.com", "")
+	want := "/store/example.com/alice/Maildir"
+	if ui.MailPath != want {
+		t.Errorf("MailPath = %q, want %q", ui.MailPath, want)
+	}
+}

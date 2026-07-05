@@ -1,8 +1,11 @@
 package mailbox
 
 import (
+	"crypto/md5"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -68,6 +71,18 @@ type UserInfo struct {
 	// Empty for LMTP and other non-session contexts.
 	SessionID string
 
+	// MailPath, when non-empty, is the root of the mailbox tree used for
+	// actual mail storage. Separates the mail root from Home (which holds
+	// Sieve scripts and other per-user metadata). When empty, backends
+	// fall back to Home for backward compatibility.
+	// Template vars (%u/%n/%d) and ~/  are already expanded.
+	MailPath string
+
+	// InboxPath, when non-empty, overrides the location of INBOX within
+	// the mailbox tree. Defaults to MailPath (or Home) when empty.
+	// Template vars (%u/%n/%d) and ~/ are already expanded.
+	InboxPath string
+
 	// Phase 3 — filesystem ownership (needed when yarilo runs as root
 	// and drops privileges per-user):
 	// UID uint32
@@ -130,6 +145,11 @@ type Resolver struct {
 	// per-user override arrives from userdb. Supports %u/%n/%d/%h.
 	// Empty disables two-tier storage (default).
 	DefaultAltDir string
+
+	// DefaultMailPath is the cluster-wide mail root template applied when
+	// no per-user mail_path override arrives from userdb. Supports
+	// %u/%n/%d/%h and ~/ expansion. Empty keeps MailPath == Home.
+	DefaultMailPath string
 }
 
 // Resolve returns the absolute home directory for a user. An empty
@@ -176,6 +196,11 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 		ad := strings.ReplaceAll(r.DefaultAltDir, "%h", home)
 		ui.AltDir = ExpandVars(ad, username)
 	}
+	if r.DefaultMailPath != "" {
+		mp := ExpandHome(r.DefaultMailPath, home)
+		mp = strings.ReplaceAll(mp, "%h", home)
+		ui.MailPath = ExpandVars(mp, username)
+	}
 	return ui
 }
 
@@ -198,12 +223,27 @@ func ParseMailLocationMods(loc string) map[string]string {
 	return mods
 }
 
+// ExpandHome replaces a leading "~/" with home + "/". Paths that do not
+// start with "~/" are returned unchanged. Used for mail_path / dir templates
+// that follow the Dovecot ~/… convention.
+func ExpandHome(path, home string) string {
+	if strings.HasPrefix(path, "~/") {
+		return home + path[1:]
+	}
+	return path
+}
+
 // ExpandVars rewrites mail_location %-variables against a username.
 //
 //	%u → full username                  (alice@example.com)
 //	%n → local part (before @)          (alice)
 //	%d → domain    (after @)            (example.com)
 //	%%   → literal %
+//
+//	%<width>.<modulo>N<var> → hash-directory sharding variable.
+//	  MD5(<var>) → first 4 bytes as big-endian uint32 → mod <modulo>
+//	  → zero-padded hex string of length <width>.
+//	  Example: %2.256Nu with "u1@d00001.test" → "76"
 //
 // Unknown sequences pass through unchanged. A bare trailing % is preserved.
 func ExpandVars(template, username string) string {
@@ -217,6 +257,14 @@ func ExpandVars(template, username string) string {
 		if template[i] != '%' || i+1 >= len(template) {
 			b.WriteByte(template[i])
 			continue
+		}
+		// Hash variable: %<width>.<modulo>N<u|n|d>
+		if c := template[i+1]; c >= '1' && c <= '9' {
+			if s, adv, ok := expandHashVar(template[i+1:], username, local, domain); ok {
+				b.WriteString(s)
+				i += adv
+				continue
+			}
 		}
 		switch template[i+1] {
 		case 'u':
@@ -234,6 +282,57 @@ func ExpandVars(template, username string) string {
 		i++
 	}
 	return b.String()
+}
+
+// expandHashVar tries to parse and expand a hash-directory sequence of the
+// form "<width>.<modulo>N<var>" (the leading % has already been consumed by
+// the caller). Returns the expanded string, the number of bytes consumed
+// (not counting the %), and true on success.
+func expandHashVar(s, username, local, domain string) (string, int, bool) {
+	// Parse width digits.
+	j := 0
+	for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+		j++
+	}
+	if j == 0 || j >= len(s) || s[j] != '.' {
+		return "", 0, false
+	}
+	width, _ := strconv.ParseUint(s[:j], 10, 32)
+	j++ // skip '.'
+
+	// Parse modulo digits.
+	k := j
+	for k < len(s) && s[k] >= '0' && s[k] <= '9' {
+		k++
+	}
+	if k == j || k >= len(s) || s[k] != 'N' {
+		return "", 0, false
+	}
+	modulo, _ := strconv.ParseUint(s[j:k], 10, 32)
+	if modulo == 0 {
+		return "", 0, false
+	}
+	k++ // skip 'N'
+
+	if k >= len(s) {
+		return "", 0, false
+	}
+	var subject string
+	switch s[k] {
+	case 'u':
+		subject = username
+	case 'n':
+		subject = local
+	case 'd':
+		subject = domain
+	default:
+		return "", 0, false
+	}
+
+	sum := md5.Sum([]byte(subject))
+	n := binary.BigEndian.Uint32(sum[:4]) % uint32(modulo)
+	result := fmt.Sprintf("%0*x", width, n)
+	return result, k + 1, true // k+1: consumed bytes after the '%'
 }
 
 func splitUser(u string) (local, domain string) {

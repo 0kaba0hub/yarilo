@@ -87,14 +87,27 @@ func New(opts ...Option) *Backend {
 // OpenUser returns a per-session handle bound to u. The handle's Home field
 // is used for all path resolution; usernames are never converted to paths here.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	mailPath := u.Home
+	explicit := false
+	if u.MailPath != "" {
+		mailPath = u.MailPath
+		explicit = true
+	}
+	inboxPath := mailPath
+	if u.InboxPath != "" {
+		inboxPath = u.InboxPath
+	}
 	return &userMailbox{
-		b:            b,
-		home:         u.Home,
-		controlDir:   u.ControlDir,
-		username:     u.Username,
-		owner:        makeOwner(u),
-		listUTF8:     b.listUTF8,
-		normalizeNFC: b.normalizeNFC,
+		b:                b,
+		home:             u.Home,
+		mailPath:         mailPath,
+		inboxPath:        inboxPath,
+		explicitMailPath: explicit,
+		controlDir:       u.ControlDir,
+		username:         u.Username,
+		owner:            makeOwner(u),
+		listUTF8:         b.listUTF8,
+		normalizeNFC:     b.normalizeNFC,
 	}
 }
 
@@ -109,15 +122,18 @@ type folderCache struct {
 
 // userMailbox is a per-session, per-user Maildir storage handle.
 type userMailbox struct {
-	b            *Backend
-	home         string
-	controlDir   string // CONTROL= override root (empty = co-located with home)
-	username     string
-	owner        string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
-	listUTF8     bool                    // mirrors Backend.listUTF8
-	normalizeNFC bool                    // mirrors Backend.normalizeNFC
-	mu           sync.Mutex              // in-process fast-path; cross-process barrier is b.locker
-	cache        map[string]*folderCache // keyed by folder name; lazy-initialised
+	b                *Backend
+	home             string
+	mailPath         string // effective mail storage root; equals home when MailPath is unset
+	inboxPath        string // effective INBOX path; equals mailPath when InboxPath is unset
+	explicitMailPath bool   // true when MailPath was set by userdb (changes INBOX layout)
+	controlDir       string // CONTROL= override root (empty = co-located with home)
+	username         string
+	owner            string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
+	listUTF8         bool                    // mirrors Backend.listUTF8
+	normalizeNFC     bool                    // mirrors Backend.normalizeNFC
+	mu               sync.Mutex              // in-process fast-path; cross-process barrier is b.locker
+	cache            map[string]*folderCache // keyed by folder name; lazy-initialised
 }
 
 // makeOwner builds the owner string for yarilo-locks BUSY reports.
@@ -164,9 +180,20 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 }
 
 func (u *userMailbox) Init() error {
-	for _, sub := range []string{"INBOX/cur", "INBOX/new", "INBOX/tmp"} {
-		if err := os.MkdirAll(filepath.Join(u.home, sub), 0o700); err != nil {
-			return fmt.Errorf("maildir/init: %w", err)
+	if u.explicitMailPath {
+		// With an explicit mail_path the INBOX IS the maildir root —
+		// create cur/new/tmp directly under inboxPath.
+		for _, sub := range []string{"cur", "new", "tmp"} {
+			if err := os.MkdirAll(filepath.Join(u.inboxPath, sub), 0o700); err != nil {
+				return fmt.Errorf("maildir/init: %w", err)
+			}
+		}
+	} else {
+		// Legacy layout: INBOX is a subdirectory of home.
+		for _, sub := range []string{"INBOX/cur", "INBOX/new", "INBOX/tmp"} {
+			if err := os.MkdirAll(filepath.Join(u.home, sub), 0o700); err != nil {
+				return fmt.Errorf("maildir/init: %w", err)
+			}
 		}
 	}
 	return nil
@@ -660,9 +687,12 @@ func (u *userMailbox) folderDiskName(folder string) string {
 
 func (u *userMailbox) folderPath(folder string) string {
 	if folder == "INBOX" {
+		if u.explicitMailPath {
+			return u.inboxPath
+		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.home, "."+u.folderDiskName(folder))
+	return filepath.Join(u.mailPath, "."+u.folderDiskName(folder))
 }
 
 // controlFolderPath returns the directory for per-folder control files

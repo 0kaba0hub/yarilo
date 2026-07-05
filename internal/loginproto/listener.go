@@ -42,9 +42,13 @@ type PreambleConn struct {
 	// ControlDir is the CONTROL= modifier from userdb (empty = co-located with mailbox).
 	ControlDir string
 	// AltDir is the ALT= modifier from userdb (empty = single-tier storage).
-	AltDir   string
-	realAddr net.Addr
-	br       *bufio.Reader
+	AltDir string
+	// MailPath is the base mail storage path from userdb (empty = use Home).
+	MailPath string
+	// InboxPath overrides INBOX location (empty = use MailPath).
+	InboxPath string
+	realAddr  net.Addr
+	br        *bufio.Reader
 }
 
 // RemoteAddr returns the real client IP forwarded in the preamble.
@@ -176,7 +180,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		return nil, fmt.Errorf("token verify: service mismatch: got %q want %q", service, l.ExpectedService)
 	}
 
-	var home, mailLoc, volatileDir, indexDir, controlDir, altDir string
+	var home, mailLoc, volatileDir, indexDir, controlDir, altDir, mailPath, inboxPath string
 	var groups, quotaRules []string
 	if l.MasterAddr != "" {
 		masterCl, merr := masterclient.Dial(l.MasterAddr, l.MasterTLS)
@@ -200,6 +204,8 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		indexDir = ui.IndexDir
 		controlDir = ui.ControlDir
 		altDir = ui.AltDir
+		mailPath = ui.MailPath
+		inboxPath = ui.InboxPath
 	}
 
 	var realAddr net.Addr = c.RemoteAddr()
@@ -223,6 +229,8 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		IndexDir:    indexDir,
 		ControlDir:  controlDir,
 		AltDir:      altDir,
+		MailPath:    mailPath,
+		InboxPath:   inboxPath,
 		realAddr:    realAddr,
 		br:          br,
 	}, nil

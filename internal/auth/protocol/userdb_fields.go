@@ -62,8 +62,19 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.ControlDir = value
 	case "alt_dir":
 		info.AltDir = value
+	case "mail_path":
+		info.MailPath = value
+	case "mail_inbox_path":
+		info.InboxPath = value
 	case "mail", "mail_location":
 		info.MailLocation = value
+		// Extract the base path (driver:PATH[:modifiers]) as MailPath when
+		// mail_path= was not set explicitly as a standalone userdb field.
+		if info.MailPath == "" {
+			if parts := strings.SplitN(value, ":", 3); len(parts) >= 2 && parts[1] != "" {
+				info.MailPath = parts[1]
+			}
+		}
 		// Explicit userdb fields (volatile_dir=, index_dir=, control_dir=)
 		// take priority over modifiers embedded in the mail location string.
 		// Only apply a modifier when the explicit field has not been set.

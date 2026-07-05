@@ -989,6 +989,8 @@ type StorageConfig struct {
 	Mailbox          string `koanf:"mailbox"`
 	MaildirRoot      string `koanf:"maildir_root"`
 	MailHomeTemplate string `koanf:"mail_home_template"`
+	MailPath         string `koanf:"mail_path"`
+	MailInboxPath    string `koanf:"mail_inbox_path"`
 	Index            string `koanf:"index"`
 	IndexDir         string `koanf:"index_dir"`
 

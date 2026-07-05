@@ -115,6 +115,7 @@ func New(cfg *config.Config) (*Server, error) {
 		DefaultIndexDir:    cfg.Storage.IndexDir,
 		DefaultControlDir:  cfg.Storage.ControlDir,
 		DefaultAltDir:      cfg.Storage.AltDir,
+		DefaultMailPath:    cfg.Storage.MailPath,
 	}
 	locker, err := buildLocksClient(cfg)
 	if err != nil {
@@ -387,6 +388,16 @@ func New(cfg *config.Config) (*Server, error) {
 				if ui.AltDir != "" {
 					ad := strings.ReplaceAll(ui.AltDir, "%h", mbi.Home)
 					mbi.AltDir = mailbox.ExpandVars(ad, username)
+				}
+				if ui.MailPath != "" {
+					mp := mailbox.ExpandHome(ui.MailPath, mbi.Home)
+					mp = strings.ReplaceAll(mp, "%h", mbi.Home)
+					mbi.MailPath = mailbox.ExpandVars(mp, username)
+				}
+				if ui.InboxPath != "" {
+					ip := mailbox.ExpandHome(ui.InboxPath, mbi.Home)
+					ip = strings.ReplaceAll(ip, "%h", mbi.Home)
+					mbi.InboxPath = mailbox.ExpandVars(ip, username)
 				}
 				return mbi, nil
 			}

@@ -121,9 +121,13 @@ func New(opts ...Option) *Backend {
 
 // OpenUser returns a per-session handle bound to u.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
+	mailPath := u.Home
+	if u.MailPath != "" {
+		mailPath = u.MailPath
+	}
 	return &userMailbox{
 		b:            b,
-		home:         u.Home,
+		home:         mailPath,
 		username:     u.Username,
 		owner:        makeOwner(u),
 		altBasePath:  resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
