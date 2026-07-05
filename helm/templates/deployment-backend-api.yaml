@@ -84,6 +84,10 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.storage.persistence.enabled }}
+            - name: mail
+              mountPath: {{ .Values.storage.maildir_root }}
+            {{- end }}
             {{- include "yarilo.internalTLSMount" .Values.components.backendAPI.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
@@ -94,6 +98,11 @@ spec:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
         {{- include "yarilo.internalTLSVolume" .Values.components.backendAPI.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

@@ -15,8 +15,23 @@ func dispatchUser(args []string) error {
 	case "iterate", "list":
 		return userIterate(args[1:])
 	default:
+		// Treat bare email-like argument as an implicit "info <user>".
+		if looksLikeUser(args[0]) {
+			return userInfo(args)
+		}
 		return fmt.Errorf("unknown user command %q — available: info, usage, iterate", args[0])
 	}
+}
+
+// looksLikeUser returns true when s is plausibly a username rather than
+// a subcommand name — currently any string containing "@" qualifies.
+func looksLikeUser(s string) bool {
+	for _, c := range s {
+		if c == '@' {
+			return true
+		}
+	}
+	return false
 }
 
 func printUserUsage() {

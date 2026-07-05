@@ -4,7 +4,7 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 ## Supported extensions
 
-`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `notify`, `subaddress`
+`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `notify`, `subaddress`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
 
 ## Configuration
 
@@ -92,6 +92,143 @@ sieve:
   submissionSSL: "starttls"
   submissionAuthSecret: "sieve-smtp-auth"
 ```
+
+## Yarilo-specific extensions
+
+Yarilo ships four proprietary Sieve extensions under the `vnd.yarilo.*` namespace. They must be listed in the `require` statement of any script that uses them.
+
+---
+
+### `vnd.yarilo.debug` — script-level debug logging
+
+Appends timestamped messages to `.yarilo.sieve.log` in the user's home directory. Intended for troubleshooting script logic without touching system logs.
+
+```sieve
+require ["vnd.yarilo.debug"];
+debug_log "fileinto triggered for ${subject}";
+```
+
+The log file is created on first write with mode `0600`. Each line is `<RFC 3339 UTC timestamp>  <message>`. No configuration required.
+
+---
+
+### `vnd.yarilo.environment` — operator-defined environment items
+
+Exposes delivery-time variables to scripts via the standard `environment` test. Built-in items:
+
+| Item name | Value |
+|:----------|:------|
+| `vnd.yarilo.username` | Full login name (`user@domain`) |
+| `vnd.yarilo.default-mailbox` | Always `INBOX` |
+| `vnd.yarilo.config.<key>` | Operator-defined string from `sieve.sieve_environment` |
+
+```sieve
+require ["environment"];
+if environment :is "vnd.yarilo.username" "alice@example.com" {
+    fileinto "VIP";
+}
+```
+
+Operator config in `yarilo.yaml`:
+
+```yaml
+sieve:
+  sieve_environment:
+    tenant: "acme"
+    region: "eu-west-1"
+```
+
+Exposed as `vnd.yarilo.config.tenant` and `vnd.yarilo.config.region`.
+
+---
+
+### `vnd.yarilo.pipe` — pipe message to an external program
+
+Feeds the full RFC 5322 message to an external program. The program receives no output — exit code determines success. Useful for archiving, indexing, or side-effect triggering.
+
+```sieve
+require ["vnd.yarilo.pipe"];
+pipe "archive-mail" ["--folder" "inbox"];
+```
+
+**Program resolution** (tried in order):
+1. Unix socket `<sieve_pipe_socket_dir>/<name>` — if the path is a socket file, yarilo connects and writes the message; socket output is discarded.
+2. Executable `<sieve_pipe_bin_dir>/<name>` — launched as a subprocess.
+
+World-writable executables are refused.
+
+**Environment variables** injected into subprocesses:
+
+| Variable | Value |
+|:---------|:------|
+| `USER` | Delivery recipient login name |
+| `SENDER` | Envelope sender address |
+| `RECIPIENT` | Envelope recipient address |
+| `HOME` | Process home directory |
+| `HOST` | Hostname |
+
+**Configuration** (`yarilo.yaml` / `values.yaml`):
+
+| Key | Default | Description |
+|:----|:--------|:------------|
+| `sieve_pipe_bin_dir` | `/usr/lib/yarilo/sieve-pipe` | Directory of allowed pipe executables |
+| `sieve_pipe_socket_dir` | `sieve-pipe` | Directory of allowed pipe sockets (searched first) |
+| `sieve_pipe_exec_timeout` | `10` | Subprocess timeout in seconds |
+| `sieve_pipe_input_eol` | `crlf` | Line endings written to stdin: `crlf` or `lf` |
+
+---
+
+### `vnd.yarilo.filter` — rewrite message through an external program
+
+Like `pipe`, but the program's stdout replaces the message body. If the program exits non-zero or produces no output, the original message is passed through unchanged.
+
+```sieve
+require ["vnd.yarilo.filter"];
+if filter "add-disclaimer" [] {
+    fileinto "Filtered";
+}
+```
+
+The `filter` action returns `true` if the program exited 0 and produced output. The same program resolution and environment variable rules as `vnd.yarilo.pipe` apply.
+
+**Configuration** (`yarilo.yaml` / `values.yaml`):
+
+| Key | Default | Description |
+|:----|:--------|:------------|
+| `sieve_filter_bin_dir` | `/usr/lib/yarilo/sieve-filter` | Directory of allowed filter executables |
+| `sieve_filter_socket_dir` | `sieve-filter` | Directory of allowed filter sockets (searched first) |
+| `sieve_filter_exec_timeout` | `10` | Subprocess timeout in seconds |
+| `sieve_filter_input_eol` | `crlf` | Line endings written to stdin: `crlf` or `lf` |
+
+---
+
+### `vnd.yarilo.execute` — run a program and capture its output
+
+Runs a program with optional stdin and makes its stdout available to the script. Unlike `pipe`/`filter`, the program does not receive the full message unless the script explicitly passes content. Exit code is exposed as a boolean result.
+
+```sieve
+require ["vnd.yarilo.execute", "variables"];
+if execute :input "check" "quota-check" [] {
+    # exit 0 — quota OK
+} else {
+    reject "Quota exceeded";
+}
+```
+
+The `execute` action returns `true` on exit 0. For Unix socket targets, non-empty output implies success (sockets have no exit code).
+
+The same program resolution and environment variable rules as `vnd.yarilo.pipe` apply.
+
+**Configuration** (`yarilo.yaml` / `values.yaml`):
+
+| Key | Default | Description |
+|:----|:--------|:------------|
+| `sieve_execute_bin_dir` | `/usr/lib/yarilo/sieve-execute` | Directory of allowed execute programs |
+| `sieve_execute_socket_dir` | `sieve-execute` | Directory of allowed execute sockets (searched first) |
+| `sieve_execute_exec_timeout` | `10` | Subprocess timeout in seconds |
+| `sieve_execute_input_eol` | `crlf` | Line endings written to stdin: `crlf` or `lf` |
+
+---
 
 ## Default script
 
