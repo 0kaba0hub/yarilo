@@ -372,6 +372,32 @@ func checkFolder(user, pass, folder string) error {
 	}
 }
 
+// checkAbsentInInbox does a single IMAP SEARCH and returns an error if any
+// message matching subjectToken is found. Used for negative assertions (reject,
+// ereject) where a 30s poll loop is wrong — absence should be confirmed once.
+func checkAbsentInInbox(user, pass, subjectToken string) error {
+	c, err := imapDial()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return err
+	}
+	if _, err := c.selectFolder("INBOX"); err != nil {
+		return err
+	}
+	uids, err := c.uidSearch(fmt.Sprintf("SUBJECT %q", subjectToken))
+	if err != nil {
+		return err
+	}
+	if len(uids) > 0 {
+		c.deleteUIDs(uids) //nolint:errcheck
+		return fmt.Errorf("found %d unexpected message(s) with subject %q in INBOX", len(uids), subjectToken)
+	}
+	return nil
+}
+
 func cleanInboxBySubject(user, pass, subjectToken string) (int, error) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -542,13 +568,10 @@ func testSieveReject(user, pass, to string) error {
 		return err
 	}
 	// MX accepts the message (250), yarilo-lmtp rejects it async — message must NOT land in INBOX.
+	// Single check after a short wait: no poll loop needed for a negative assertion.
 	time.Sleep(5 * time.Second)
-	n, err := cleanInboxBySubject(user, pass, subject)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return fmt.Errorf("reject: message was delivered to INBOX instead of being rejected")
+	if err := checkAbsentInInbox(user, pass, subject); err != nil {
+		return fmt.Errorf("reject: %w", err)
 	}
 	return nil
 }
@@ -560,14 +583,10 @@ func testSieveEreject(user, pass, to string) error {
 	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
-	// Same as reject — message must NOT land in INBOX.
+	// Same as reject — single check after wait, no poll loop.
 	time.Sleep(5 * time.Second)
-	n, err := cleanInboxBySubject(user, pass, subject)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return fmt.Errorf("ereject: message was delivered to INBOX instead of being rejected")
+	if err := checkAbsentInInbox(user, pass, subject); err != nil {
+		return fmt.Errorf("ereject: %w", err)
 	}
 	return nil
 }
