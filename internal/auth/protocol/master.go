@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // Master-protocol constants. Versioned separately from the client
@@ -35,12 +37,14 @@ const (
 // socket), and different evolution cadence. The two share mTLS
 // material today; splitting is a future operational knob.
 type MasterServer struct {
-	userdb     Userdb
-	cache      *Cache
-	tokenStore TokenStore
-	connUID    atomic.Uint64
-	pid        int
-	cookie     string
+	userdb           Userdb
+	cache            *Cache
+	tokenStore       TokenStore
+	connUID          atomic.Uint64
+	pid              int
+	cookie           string
+	defaultMailPath  string
+	defaultInboxPath string
 }
 
 // MasterServerOption tunes a NewMasterServer construction.
@@ -62,6 +66,31 @@ func WithMasterCache(c *Cache) MasterServerOption {
 // TokenStore instance). When nil, SESSION responds FAIL.
 func WithMasterTokenStore(ts TokenStore) MasterServerOption {
 	return func(s *MasterServer) { s.tokenStore = ts }
+}
+
+// WithMasterDefaultMailPath sets the cluster-wide mail_path default
+// applied when the userdb result carries no explicit mail_path.
+func WithMasterDefaultMailPath(p string) MasterServerOption {
+	return func(s *MasterServer) { s.defaultMailPath = p }
+}
+
+// WithMasterDefaultInboxPath sets the cluster-wide mail_inbox_path
+// default applied when the userdb result carries no explicit value.
+func WithMasterDefaultInboxPath(p string) MasterServerOption {
+	return func(s *MasterServer) { s.defaultInboxPath = p }
+}
+
+func (s *MasterServer) applyMailPathDefaults(ui *UserInfo) {
+	if ui.MailPath == "" && s.defaultMailPath != "" {
+		mp := mailbox.ExpandHome(s.defaultMailPath, ui.Home)
+		mp = strings.ReplaceAll(mp, "%h", ui.Home)
+		ui.MailPath = mailbox.ExpandVars(mp, ui.Username)
+	}
+	if ui.InboxPath == "" && s.defaultInboxPath != "" {
+		ip := mailbox.ExpandHome(s.defaultInboxPath, ui.Home)
+		ip = strings.ReplaceAll(ip, "%h", ui.Home)
+		ui.InboxPath = mailbox.ExpandVars(ip, ui.Username)
+	}
 }
 
 // NewMasterServer constructs a MasterServer rooted at the given
@@ -209,6 +238,7 @@ func (s *MasterServer) handleUser(conn net.Conn, fields []string) {
 		fmt.Fprintf(conn, "NOTFOUND\t%s\n", id)
 		return
 	}
+	s.applyMailPathDefaults(ui)
 	out := marshalUserInfo(ui)
 	if out == "" {
 		fmt.Fprintf(conn, "USER\t%s\t%s\n", id, username)

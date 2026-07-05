@@ -80,15 +80,46 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 			Exists: dirExists(ui.Home),
 		})
 	}
+	effectiveMailPath := ui.MailPath
+	effectiveInboxPath := ui.InboxPath
+
+	var userdbVal any
+	var userdbStatus string
+	if s.opts.AuthClient != nil {
+		pui, err := s.opts.AuthClient.Userdb(r.Context(), req.User)
+		switch {
+		case err != nil:
+			userdbStatus = userdbStatusError
+		case pui == nil:
+			userdbStatus = userdbStatusNotFound
+		default:
+			userdbStatus = userdbStatusOK
+			userdbVal = userInfoToJSON(pui)
+			if pui.MailPath != "" {
+				effectiveMailPath = pui.MailPath
+			}
+			if pui.InboxPath != "" {
+				effectiveInboxPath = pui.InboxPath
+			}
+		}
+	}
+
+	if effectiveMailPath == "" {
+		effectiveMailPath = ui.Home
+	}
+	if effectiveInboxPath == "" {
+		effectiveInboxPath = effectiveMailPath
+	}
 	resp := map[string]any{
-		"username":   ui.Username,
-		"home":       ui.Home,
-		"namespaces": nsEntries,
+		"username":        ui.Username,
+		"home":            ui.Home,
+		"mail_path":       effectiveMailPath,
+		"mail_inbox_path": effectiveInboxPath,
+		"namespaces":      nsEntries,
 	}
 	if s.opts.AuthClient != nil {
-		userdb, status := s.lookupUserdb(r, req.User)
-		resp["userdb"] = userdb
-		resp["userdb_status"] = status
+		resp["userdb"] = userdbVal
+		resp["userdb_status"] = userdbStatus
 	}
 	apiJSON(w, resp)
 }
@@ -177,6 +208,8 @@ func userInfoToJSON(info *protocol.UserInfo) map[string]any {
 	setBool("client_cert_present", info.ClientCertPresent)
 
 	setStr("mail_location", info.MailLocation)
+	setStr("mail_path", info.MailPath)
+	setStr("mail_inbox_path", info.InboxPath)
 	setUint32("mail_uid", info.MailUID)
 	setUint32("mail_gid", info.MailGID)
 	setStr("mailbox_format", info.MailboxFormat)

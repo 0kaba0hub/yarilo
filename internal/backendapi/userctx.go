@@ -1,6 +1,7 @@
 package backendapi
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -54,6 +55,12 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 		resolver = &mailbox.Resolver{}
 	}
 	ui := resolver.UserInfo(username, "")
+	if s.opts.AuthClient != nil {
+		if pui, err := s.opts.AuthClient.Userdb(context.Background(), username); err == nil {
+			ui.MailPath = pui.MailPath
+			ui.InboxPath = pui.InboxPath
+		}
+	}
 	uc := &userContext{
 		username: username,
 		info:     ui,
