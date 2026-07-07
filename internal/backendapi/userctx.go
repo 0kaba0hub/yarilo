@@ -48,6 +48,17 @@ type nsBundle struct {
 // missing/unreadable home dir). Shared/public failures are reported
 // per-call via ns().
 func (s *Server) openUserContext(username string) (*userContext, error) {
+	return s.openUserContextInner(username, false)
+}
+
+// openUserContextReadOnly is like openUserContext but skips Init so no
+// directories are created. When the user's home directory does not exist
+// the personal namespace bundle is nil — callers must handle that case.
+func (s *Server) openUserContextReadOnly(username string) (*userContext, error) {
+	return s.openUserContextInner(username, true)
+}
+
+func (s *Server) openUserContextInner(username string, readOnly bool) (*userContext, error) {
 	if username == "" {
 		return nil, fmt.Errorf("backendapi/userctx: user required")
 	}
@@ -121,9 +132,18 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 		personalSpec = config.NamespaceConfig{Type: "personal", Prefix: "", Separator: "/", List: true}
 	}
 	personalMB := s.mailboxForUser(pui)
-	bundle, err := s.openNS(personalSpec, ui, personalMB)
-	if err != nil {
-		return nil, fmt.Errorf("backendapi/userctx: open personal: %w", err)
+	var bundle *nsBundle
+	var err error
+	if readOnly {
+		bundle, err = s.openNSReadOnly(personalSpec, ui, personalMB)
+		if err != nil {
+			return nil, fmt.Errorf("backendapi/userctx: open personal read-only: %w", err)
+		}
+	} else {
+		bundle, err = s.openNS(personalSpec, ui, personalMB)
+		if err != nil {
+			return nil, fmt.Errorf("backendapi/userctx: open personal: %w", err)
+		}
 	}
 	uc.handles["personal"] = bundle
 	return uc, nil
@@ -260,6 +280,22 @@ func (s *Server) mailboxForUser(pui *protocol.UserInfo) mailbox.MailboxBackend {
 // when non-nil (per-user driver selection); nil falls back to the
 // per-namespace or global default. Init runs to materialise the on-disk root.
 func (s *Server) openNS(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb mailbox.MailboxBackend) (*nsBundle, error) {
+	return s.openNSInner(spec, ui, mb, false)
+}
+
+// openNSReadOnly is like openNS but skips Init so no directories are
+// created. Returns (nil, nil) when the home directory does not exist —
+// callers treat that as an empty namespace rather than an error.
+func (s *Server) openNSReadOnly(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb mailbox.MailboxBackend) (*nsBundle, error) {
+	if ui.Home != "" {
+		if _, err := os.Stat(ui.Home); os.IsNotExist(err) {
+			return nil, nil
+		}
+	}
+	return s.openNSInner(spec, ui, mb, true)
+}
+
+func (s *Server) openNSInner(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb mailbox.MailboxBackend, skipInit bool) (*nsBundle, error) {
 	if mb == nil {
 		mb = s.mailboxBackendFor(spec)
 	}
@@ -270,8 +306,10 @@ func (s *Server) openNS(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb ma
 		return nil, fmt.Errorf("backendapi: no index backend wired")
 	}
 	box := mb.OpenUser(ui)
-	if err := box.Init(); err != nil {
-		return nil, fmt.Errorf("mailbox init: %w", err)
+	if !skipInit {
+		if err := box.Init(); err != nil {
+			return nil, fmt.Errorf("mailbox init: %w", err)
+		}
 	}
 	idx := s.opts.Index.OpenUser(ui)
 	bundle := &nsBundle{

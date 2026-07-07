@@ -272,7 +272,7 @@ func (s *Server) handleUserUsage(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	uc, err := s.openUserContext(req.User)
+	uc, err := s.openUserContextReadOnly(req.User)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -284,6 +284,9 @@ func (s *Server) handleUserUsage(w http.ResponseWriter, r *http.Request) {
 	var totalSize uint64
 
 	scanBundle := func(nsSlug string, bundle *nsBundle) {
+		if bundle == nil {
+			return
+		}
 		folders, err := bundle.box.ListFolders()
 		if err != nil {
 			return
