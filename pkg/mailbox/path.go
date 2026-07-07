@@ -349,16 +349,22 @@ func splitUser(u string) (local, domain string) {
 // per-namespace driver mixing is deferred until backends gain a
 // shared OpenNamespace dispatch.
 type Location struct {
-	Driver string // "maildir", "sdbox" (alias: "dbox"), "mdbox"
-	Path   string // expanded absolute path (varexpand applied)
+	Driver      string // "maildir", "sdbox" (alias: "dbox"), "mdbox"
+	Path        string // expanded absolute path (varexpand applied)
+	IndexDir    string // INDEX= modifier, expanded; empty = co-located
+	VolatileDir string // VOLATILEDIR= modifier, expanded; empty = default
+	ControlDir  string // CONTROL= modifier, expanded; empty = co-located
+	AltDir      string // ALT= modifier, expanded; empty = disabled
 }
 
-// ParseLocation parses "driver:path" into Location. When loc is empty
-// returns (Location{}, false) so callers can detect "namespace not
-// configured for storage" and fall through to NS-1a wire-only mode.
-// Path is %u/%n/%d/%h-expanded against ui — when ui is nil expansion
-// is a no-op (callers without a user context, e.g. system-wide
-// shared/public namespaces, pass nil and ship a literal absolute path).
+// ParseLocation parses "driver:path[:KEY=value:...]" into Location.
+// When loc is empty returns (Location{}, false) so callers can detect
+// "namespace not configured for storage" and fall through to NS-1a
+// wire-only mode. Path and option values are %u/%n/%d/%h-expanded
+// against ui — when ui is nil expansion is a no-op (callers without a
+// user context, e.g. system-wide shared/public namespaces, pass nil and
+// ship literal absolute paths). Unknown options are silently ignored for
+// forward compatibility.
 func ParseLocation(loc string, ui *UserInfo) (Location, bool, error) {
 	loc = strings.TrimSpace(loc)
 	if loc == "" {
@@ -369,24 +375,47 @@ func ParseLocation(loc string, ui *UserInfo) (Location, bool, error) {
 		return Location{}, false, fmt.Errorf("mailbox: location %q must be \"driver:path\"", loc)
 	}
 	driver := strings.ToLower(loc[:idx])
-	path := loc[idx+1:]
 	switch driver {
 	case "maildir", "sdbox", "dbox", "mdbox":
 		// recognised
 	default:
 		return Location{}, false, fmt.Errorf("mailbox: unknown storage driver %q in %q", driver, loc)
 	}
-	if ui != nil {
-		path = ExpandVars(path, ui.Username)
-		path = strings.ReplaceAll(path, "%h", ui.Home)
-	} else {
-		// System-wide namespace (shared/public) — strip %h gracefully
-		// so a misconfigured shared namespace doesn't blow up.
-		path = strings.ReplaceAll(path, "%h", "")
-		path = ExpandVars(path, "")
+
+	expand := func(s string) string {
+		if ui != nil {
+			s = ExpandVars(s, ui.Username)
+			return strings.ReplaceAll(s, "%h", ui.Home)
+		}
+		s = strings.ReplaceAll(s, "%h", "")
+		return ExpandVars(s, "")
 	}
+
+	parts := strings.Split(loc[idx+1:], ":")
+	path := expand(parts[0])
 	if path == "" {
 		return Location{}, false, fmt.Errorf("mailbox: location %q has empty path after expansion", loc)
 	}
-	return Location{Driver: driver, Path: path}, true, nil
+
+	out := Location{Driver: driver, Path: path}
+	for _, opt := range parts[1:] {
+		eq := strings.IndexByte(opt, '=')
+		if eq < 0 {
+			continue
+		}
+		key := strings.ToUpper(opt[:eq])
+		val := expand(opt[eq+1:])
+		switch key {
+		case "INDEX":
+			out.IndexDir = val
+		case "VOLATILEDIR":
+			out.VolatileDir = val
+		case "CONTROL":
+			out.ControlDir = val
+		case "ALT":
+			out.AltDir = val
+			// unknown keys are silently ignored
+		}
+	}
+	return out, true, nil
 }
