@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -41,6 +42,10 @@ var ErrClosed = errors.New("authclient: client closed")
 // at a time on the underlying conn, mirroring the server-side
 // per-connection serial-processing guarantee.
 //
+// When the underlying connection breaks (e.g. yarilo-auth restart),
+// the next call transparently redials and retries the operation once.
+// Explicit [Client.Close] disables reconnect permanently.
+//
 // Construct with [Dial] / [DialContext]. Always call [Client.Close]
 // on shutdown so the FIN propagates promptly to the server side and
 // the goroutine watching that conn there returns.
@@ -50,6 +55,9 @@ type Client struct {
 	mu     sync.Mutex
 	nextID atomic.Uint64
 	closed atomic.Bool
+
+	addr   string
+	tlsCfg *tls.Config
 }
 
 // Dial opens a connection to the yarilo-auth master listener at
@@ -86,7 +94,7 @@ func DialContext(ctx context.Context, addr string, tlsCfg *tls.Config) (*Client,
 		_ = tc.SetDeadline(time.Time{})
 		conn = tc
 	}
-	c := &Client{conn: conn, rd: bufio.NewReader(conn)}
+	c := &Client{conn: conn, rd: bufio.NewReader(conn), addr: addr, tlsCfg: tlsCfg}
 	if err := c.consumeHandshake(); err != nil {
 		conn.Close()
 		return nil, err
@@ -201,9 +209,19 @@ func (c *Client) IterateUsers(ctx context.Context) ([]string, error) {
 	if c.closed.Load() {
 		return nil, ErrClosed
 	}
-	id := c.allocID()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	out, err := c.iterateUsersLocked(ctx)
+	if err != nil && !c.closed.Load() && isConnectionError(err) {
+		if rerr := c.redial(); rerr == nil {
+			out, err = c.iterateUsersLocked(ctx)
+		}
+	}
+	return out, err
+}
+
+func (c *Client) iterateUsersLocked(ctx context.Context) ([]string, error) {
+	id := c.allocID()
 	if err := c.applyDeadline(ctx); err != nil {
 		return nil, err
 	}
@@ -319,11 +337,24 @@ func (c *Client) IssueSession(ctx context.Context, username, sid, ip string) (st
 }
 
 // exchange writes a single-line request under c.mu and reads the
-// matching single-line response. Used by USER and PASS — LIST has
-// its own multi-line loop above.
+// matching single-line response. On a connection error it redials
+// once and retries. Used by USER and PASS — LIST has its own
+// multi-line loop above.
 func (c *Client) exchange(ctx context.Context, line string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	resp, err := c.exchangeLocked(ctx, line)
+	if err != nil && !c.closed.Load() && isConnectionError(err) {
+		if rerr := c.redial(); rerr == nil {
+			resp, err = c.exchangeLocked(ctx, line)
+		}
+	}
+	return resp, err
+}
+
+// exchangeLocked performs one write+read pair; c.mu must be held by
+// the caller.
+func (c *Client) exchangeLocked(ctx context.Context, line string) (string, error) {
 	if err := c.applyDeadline(ctx); err != nil {
 		return "", err
 	}
@@ -336,6 +367,53 @@ func (c *Client) exchange(ctx context.Context, line string) (string, error) {
 		return "", fmt.Errorf("authclient: read: %w", err)
 	}
 	return strings.TrimRight(resp, "\r\n"), nil
+}
+
+// redial closes the dead connection and opens a fresh one. Must be
+// called with c.mu held. On success c.conn and c.rd are replaced.
+func (c *Client) redial() error {
+	_ = c.conn.Close()
+	d := net.Dialer{Timeout: defaultDialTimeout}
+	conn, err := d.DialContext(context.Background(), "tcp", c.addr)
+	if err != nil {
+		return fmt.Errorf("authclient: redial %s: %w", c.addr, err)
+	}
+	if c.tlsCfg != nil {
+		tc := tls.Client(conn, c.tlsCfg)
+		if err := tc.HandshakeContext(context.Background()); err != nil {
+			tc.Close()
+			return fmt.Errorf("authclient: redial tls %s: %w", c.addr, err)
+		}
+		conn = tc
+	}
+	c.conn = conn
+	c.rd = bufio.NewReader(conn)
+	if err := c.consumeHandshake(); err != nil {
+		conn.Close()
+		return err
+	}
+	return nil
+}
+
+// isConnectionError reports whether err indicates a broken connection
+// that warrants a reconnect attempt. Context cancellations and
+// network timeouts are excluded — those are caller / server issues,
+// not a dead socket.
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return !opErr.Timeout()
+	}
+	return false
 }
 
 // parseUserResponse handles USER hit / NOTFOUND / FAIL responses
