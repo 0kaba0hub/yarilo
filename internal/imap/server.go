@@ -131,8 +131,16 @@ type Options struct {
 	// namespace has an entry here, openHandle uses it instead of the
 	// global Mailbox backend — letting operators mix storage drivers
 	// across namespaces (e.g. personal=maildir + shared=mdbox).
-	// Personal namespaces always use the global Mailbox backend.
+	// Personal namespaces always use the global Mailbox backend unless
+	// the per-user MailLoc carries a different driver.
 	NamespaceMailboxes map[string]mailbox.MailboxBackend
+
+	// MailboxByDriver (optional) returns a MailboxBackend for the given
+	// driver name ("mdbox", "maildir", "sdbox", …). When non-nil and a
+	// user's mail_location specifies a driver that differs from the
+	// global default, completeLogin calls this factory to select the
+	// correct per-user backend for the personal namespace.
+	MailboxByDriver func(driver string) mailbox.MailboxBackend
 
 	// AnvilAddr is the yarilo-anvil server address. When non-empty
 	// and the session arrived with XCLIENT SESSION=<id>, each
@@ -362,6 +370,12 @@ type session struct {
 	box  mailbox.UserMailbox
 	idx  mailbox.UserIndex
 	subs *subs.Store
+
+	// personalMailbox overrides the global Options.Mailbox for the
+	// personal namespace when the user's mail_location carries a driver
+	// different from the server default (e.g. mdbox user on a maildir
+	// deployment). Set in completeLogin; nil means use the global default.
+	personalMailbox mailbox.MailboxBackend
 
 	limitIP string
 	folder  *mailbox.Folder
@@ -793,6 +807,52 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		ip := mailbox.ExpandHome(res.InboxPath, userInfo.Home)
 		ip = strings.ReplaceAll(ip, "%h", userInfo.Home)
 		userInfo.InboxPath = mailbox.ExpandVars(ip, res.Username)
+	}
+
+	if res.MailLoc != "" {
+		// Populate any empty dir fields from KEY=value modifiers embedded
+		// in mail_location (e.g. "mdbox:~/mdbox:INDEX=~/index:CONTROL=~/ctrl").
+		expand := func(v string) string {
+			v = mailbox.ExpandHome(v, userInfo.Home)
+			return mailbox.ExpandVars(strings.ReplaceAll(v, "%h", userInfo.Home), res.Username)
+		}
+		if c1 := strings.IndexByte(res.MailLoc, ':'); c1 >= 0 {
+			rest := res.MailLoc[c1+1:]
+			if c2 := strings.IndexByte(rest, ':'); c2 >= 0 {
+				for _, mod := range strings.Split(rest[c2+1:], ":") {
+					k, v, ok := strings.Cut(mod, "=")
+					if !ok {
+						continue
+					}
+					switch strings.ToUpper(k) {
+					case "INDEX":
+						if userInfo.IndexDir == "" {
+							userInfo.IndexDir = expand(v)
+						}
+					case "VOLATILEDIR":
+						if userInfo.VolatileDir == "" {
+							userInfo.VolatileDir = expand(v)
+						}
+					case "CONTROL":
+						if userInfo.ControlDir == "" {
+							userInfo.ControlDir = expand(v)
+						}
+					case "ALT":
+						if userInfo.AltDir == "" {
+							userInfo.AltDir = expand(v)
+						}
+					}
+				}
+			}
+		}
+		// Select per-user mailbox backend when the driver in mail_location
+		// differs from the global default.
+		if f := s.srv.opts.MailboxByDriver; f != nil {
+			if colon := strings.IndexByte(res.MailLoc, ':'); colon > 0 {
+				driver := strings.ToLower(res.MailLoc[:colon])
+				s.personalMailbox = f(driver)
+			}
+		}
 	}
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {

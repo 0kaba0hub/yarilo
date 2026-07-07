@@ -198,11 +198,16 @@ func New(cfg *config.Config) (*Server, error) {
 			imapTLS = t
 		}
 		p := cfg.Protocol.IMAP
+		storageCfg := cfg.Storage
 		imapServer = imapsvr.New(imapsvr.Options{
-			Addr:               listenAddr(svcs.IMAPS),
-			AddrPlain:          listenAddr(svcs.IMAP),
-			TLSConfig:          imapTLS,
-			Mailbox:            mbox,
+			Addr:      listenAddr(svcs.IMAPS),
+			AddrPlain: listenAddr(svcs.IMAP),
+			TLSConfig: imapTLS,
+			Mailbox:   mbox,
+			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
+				return buildMailboxByDriver(driver, storageCfg.MdboxAltStoragePath, locker,
+					storageCfg.MaxConcurrentWrites, storageCfg.MailboxListUTF8, storageCfg.MailboxListNormalizeToNFC)
+			},
 			Index:              idx,
 			Resolver:           resolver,
 			Auth:               authChain,
