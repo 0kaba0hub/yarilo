@@ -13,11 +13,13 @@ func (s *Server) registerQuotaRoutes() {
 }
 
 type quotaShowResponse struct {
-	User         string `json:"user"`
-	StorageBytes int64  `json:"storage_bytes"`
-	Messages     int64  `json:"messages"`
-	LimitBytes   int64  `json:"limit_bytes"`    // 0 = unlimited
-	LimitMsgs    int64  `json:"limit_messages"` // 0 = unlimited
+	User           string `json:"user"`
+	StorageValue   int64  `json:"storage_value"`   // used storage in KiB (RFC 9208 STORAGE unit)
+	StorageLimit   int64  `json:"storage_limit"`   // limit in KiB; -1 = unlimited
+	StoragePercent int    `json:"storage_percent"` // 0 when unlimited
+	MessageValue   int64  `json:"message_value"`   // used message count
+	MessageLimit   int64  `json:"message_limit"`   // -1 = unlimited
+	MessagePercent int    `json:"message_percent"` // 0 when unlimited
 }
 
 // handleQuotaShow returns the current usage and configured limits for a user.
@@ -44,12 +46,31 @@ func (s *Server) handleQuotaShow(w http.ResponseWriter, r *http.Request) {
 			limits = quota.ParseRules(pui.QuotaRules)
 		}
 	}
+	storageKiB := quota.StorageBytesToKiB(u.StorageBytes)
+	limitKiB := int64(-1)
+	storagePct := 0
+	if limits.StorageBytes > 0 {
+		limitKiB = int64(quota.StorageBytesToKiB(limits.StorageBytes))
+		if limitKiB > 0 {
+			storagePct = int(int64(storageKiB) * 100 / limitKiB)
+		}
+	}
+	msgLimit := int64(-1)
+	msgPct := 0
+	if limits.Messages > 0 {
+		msgLimit = limits.Messages
+		if msgLimit > 0 {
+			msgPct = int(u.Messages * 100 / msgLimit)
+		}
+	}
 	apiJSON(w, quotaShowResponse{
-		User:         user,
-		StorageBytes: u.StorageBytes,
-		Messages:     u.Messages,
-		LimitBytes:   limits.StorageBytes,
-		LimitMsgs:    limits.Messages,
+		User:           user,
+		StorageValue:   int64(storageKiB),
+		StorageLimit:   limitKiB,
+		StoragePercent: storagePct,
+		MessageValue:   u.Messages,
+		MessageLimit:   msgLimit,
+		MessagePercent: msgPct,
 	})
 }
 
