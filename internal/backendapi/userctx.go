@@ -63,8 +63,28 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 		if pui == nil {
 			return nil, fmt.Errorf("backendapi/userctx: user not found: %s", username)
 		}
-		ui.MailPath = pui.MailPath
-		ui.InboxPath = pui.InboxPath
+		if pui.VolatileDir != "" {
+			vd := mailbox.ExpandHome(pui.VolatileDir, ui.Home)
+			ui.VolatileDir = mailbox.ExpandVars(strings.ReplaceAll(vd, "%h", ui.Home), username)
+		}
+		if pui.IndexDir != "" {
+			id := mailbox.ExpandHome(pui.IndexDir, ui.Home)
+			ui.IndexDir = mailbox.ExpandVars(strings.ReplaceAll(id, "%h", ui.Home), username)
+		}
+		if pui.ControlDir != "" {
+			cd := mailbox.ExpandHome(pui.ControlDir, ui.Home)
+			ui.ControlDir = mailbox.ExpandVars(strings.ReplaceAll(cd, "%h", ui.Home), username)
+		}
+		if pui.AltDir != "" {
+			ad := mailbox.ExpandHome(pui.AltDir, ui.Home)
+			ui.AltDir = mailbox.ExpandVars(strings.ReplaceAll(ad, "%h", ui.Home), username)
+		}
+		if pui.MailPath != "" {
+			ui.MailPath = mailbox.ExpandHome(pui.MailPath, ui.Home)
+		}
+		if pui.InboxPath != "" {
+			ui.InboxPath = mailbox.ExpandHome(pui.InboxPath, ui.Home)
+		}
 	}
 	uc := &userContext{
 		username: username,
