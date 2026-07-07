@@ -37,6 +37,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
@@ -51,6 +52,9 @@ import (
 type Server struct {
 	opts Options
 	mux  *http.ServeMux
+
+	driverCacheMu sync.Mutex
+	driverCache   map[string]mailbox.MailboxBackend
 }
 
 // Options configures Server.
@@ -97,6 +101,36 @@ type Options struct {
 	// owns the lifecycle (Close on shutdown); the Server only
 	// reads through it.
 	AuthClient *authclient.Client
+
+	// MailboxByDriver, when set, constructs a MailboxBackend for a
+	// named driver (e.g. "mdbox", "sdbox"). Used when a per-user
+	// mail_location specifies a different driver than the global
+	// opts.Mailbox. Backends are cached internally; the factory is
+	// only called once per distinct driver string.
+	MailboxByDriver func(driver string) mailbox.MailboxBackend
+}
+
+// mailboxForDriver returns the MailboxBackend for driver, using opts.Mailbox
+// when driver matches the global or when no factory is configured.
+// Results are cached so the factory is called at most once per driver.
+func (s *Server) mailboxForDriver(driver string) mailbox.MailboxBackend {
+	if driver == "" || s.opts.MailboxByDriver == nil {
+		return s.opts.Mailbox
+	}
+	s.driverCacheMu.Lock()
+	defer s.driverCacheMu.Unlock()
+	if mb, ok := s.driverCache[driver]; ok {
+		return mb
+	}
+	mb := s.opts.MailboxByDriver(driver)
+	if mb == nil {
+		return s.opts.Mailbox
+	}
+	if s.driverCache == nil {
+		s.driverCache = make(map[string]mailbox.MailboxBackend)
+	}
+	s.driverCache[driver] = mb
+	return mb
 }
 
 // New constructs a Server and registers the backend endpoints onto an
