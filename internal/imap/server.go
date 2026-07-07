@@ -1620,6 +1620,37 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	return nil
 }
 
+// announceNewKeywords checks keywords against knownKeywords and, if any are
+// new, writes an untagged "* FLAGS (...)" response via w before the caller
+// sends per-message FETCH responses. This satisfies RFC 3501 §7.2.6, which
+// requires the server to announce keyword flags before including them in
+// FETCH data items.
+func (s *session) announceNewKeywords(w *imapserver.FetchWriter, keywords []string) error {
+	var newKws []string
+	for _, kw := range keywords {
+		if _, known := s.knownKeywords[kw]; !known {
+			newKws = append(newKws, kw)
+		}
+	}
+	if len(newKws) == 0 {
+		return nil
+	}
+	sysFlags := []imaplib.Flag{
+		imaplib.FlagAnswered, imaplib.FlagFlagged,
+		imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
+	}
+	mbFlags := make([]imaplib.Flag, len(sysFlags), len(sysFlags)+len(s.knownKeywords)+len(newKws))
+	copy(mbFlags, sysFlags)
+	for kw := range s.knownKeywords {
+		mbFlags = append(mbFlags, imaplib.Flag(kw))
+	}
+	for _, kw := range newKws {
+		mbFlags = append(mbFlags, imaplib.Flag(kw))
+		s.knownKeywords[kw] = struct{}{}
+	}
+	return w.WriteMailboxFlags(mbFlags)
+}
+
 func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	interval := s.srv.opts.IdleNotifyInterval
 	if s.folder == nil {
@@ -2040,6 +2071,9 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 		}
 		if opts.Flags || seenJustSet {
+			if err := s.announceNewKeywords(w, m.Keywords); err != nil {
+				return err
+			}
 			mw.WriteFlags(toImapFlags(append(m.Flags, m.Keywords...)))
 		}
 		if opts.UID {
@@ -2263,6 +2297,20 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		}
 	}
 	if !storeFlags.Silent {
+		// Collect all new keywords across pending messages and announce once.
+		var allNewKWs []string
+		seen := make(map[string]struct{})
+		for _, p := range pending {
+			for _, kw := range p.newKW {
+				if _, dup := seen[kw]; !dup {
+					seen[kw] = struct{}{}
+					allNewKWs = append(allNewKWs, kw)
+				}
+			}
+		}
+		if err := s.announceNewKeywords(w, allNewKWs); err != nil {
+			return err
+		}
 		for _, p := range pending {
 			mw := w.CreateMessage(p.seqNum)
 			mw.WriteFlags(toImapFlags(append(p.newFlags, p.newKW...)))
