@@ -114,57 +114,65 @@ func ParseRules(rules []string) Limits {
 
 func parseRule(rule string, out *Limits) {
 	folder := "*"
-	spec := rule
+	rest := rule
 	if idx := strings.Index(rule, ":"); idx >= 0 {
 		folder = strings.TrimSpace(rule[:idx])
-		spec = rule[idx+1:]
+		rest = rule[idx+1:]
 	}
-	spec = strings.TrimSpace(spec)
 
-	// "ignore" directive: folder messages don't count toward quota.
-	if strings.EqualFold(spec, "ignore") {
-		if folder != "*" {
-			fr := out.PerFolder[folder]
-			fr.Ignore = true
-			if out.PerFolder == nil {
-				out.PerFolder = make(map[string]FolderRule)
-			}
-			out.PerFolder[folder] = fr
+	// A single rule may carry multiple key=value pairs separated by ":".
+	// e.g. "*:bytes=1073741824:messages=100000"
+	for _, spec := range strings.Split(rest, ":") {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
 		}
-		return
-	}
 
-	eqIdx := strings.IndexByte(spec, '=')
-	if eqIdx < 0 {
-		return
-	}
-	key := strings.ToLower(strings.TrimSpace(spec[:eqIdx]))
-	val := strings.TrimSpace(spec[eqIdx+1:])
-	additive := strings.HasPrefix(val, "+")
+		// "ignore" directive: folder messages don't count toward quota.
+		if strings.EqualFold(spec, "ignore") {
+			if folder != "*" {
+				if out.PerFolder == nil {
+					out.PerFolder = make(map[string]FolderRule)
+				}
+				fr := out.PerFolder[folder]
+				fr.Ignore = true
+				out.PerFolder[folder] = fr
+			}
+			continue
+		}
 
-	if folder == "*" {
+		eqIdx := strings.IndexByte(spec, '=')
+		if eqIdx < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(spec[:eqIdx]))
+		val := strings.TrimSpace(spec[eqIdx+1:])
+		additive := strings.HasPrefix(val, "+")
+
+		if folder == "*" {
+			switch key {
+			case "storage", "bytes":
+				out.StorageBytes = parseSize(val)
+			case "messages", "message":
+				out.Messages = parseCount(val)
+			}
+			continue
+		}
+
+		if out.PerFolder == nil {
+			out.PerFolder = make(map[string]FolderRule)
+		}
+		fr := out.PerFolder[folder]
 		switch key {
 		case "storage", "bytes":
-			out.StorageBytes = parseSize(val)
+			fr.StorageBytes = parseSize(val)
+			fr.StorageAdditive = additive
 		case "messages", "message":
-			out.Messages = parseCount(val)
+			fr.Messages = parseCount(val)
+			fr.MessagesAdditive = additive
 		}
-		return
+		out.PerFolder[folder] = fr
 	}
-
-	if out.PerFolder == nil {
-		out.PerFolder = make(map[string]FolderRule)
-	}
-	fr := out.PerFolder[folder]
-	switch key {
-	case "storage", "bytes":
-		fr.StorageBytes = parseSize(val)
-		fr.StorageAdditive = additive
-	case "messages", "message":
-		fr.Messages = parseCount(val)
-		fr.MessagesAdditive = additive
-	}
-	out.PerFolder[folder] = fr
 }
 
 // parseSize converts a human-readable size like "5G", "500M", "1T"
