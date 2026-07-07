@@ -91,6 +91,27 @@ func TestParseLocation(t *testing.T) {
 		{"missing colon errors", "maildir", nil, Location{}, false, true},
 		{"unknown driver errors", "weird:/foo", nil, Location{}, false, true},
 		{"empty path after expansion errors", "maildir:%h", nil, Location{}, false, true},
+		{
+			"options parsed",
+			"maildir:/mail:INDEX=/idx:VOLATILEDIR=/vol:CONTROL=/ctrl:ALT=/alt",
+			nil,
+			Location{Driver: "maildir", Path: "/mail", IndexDir: "/idx", VolatileDir: "/vol", ControlDir: "/ctrl", AltDir: "/alt"},
+			true, false,
+		},
+		{
+			"unknown option ignored",
+			"maildir:/mail:INBOX=/inbox:LAYOUT=fs",
+			nil,
+			Location{Driver: "maildir", Path: "/mail"},
+			true, false,
+		},
+		{
+			"options expanded",
+			"maildir:%h/Maildir:INDEX=%h/index:CONTROL=%h/ctrl",
+			&UserInfo{Home: "/srv/u", Username: "u@x.io"},
+			Location{Driver: "maildir", Path: "/srv/u/Maildir", IndexDir: "/srv/u/index", ControlDir: "/srv/u/ctrl"},
+			true, false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
