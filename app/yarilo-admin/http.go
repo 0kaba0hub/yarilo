@@ -105,3 +105,16 @@ func printJSON(data []byte, err error) error {
 	fmt.Println(buf.String())
 	return nil
 }
+
+// printOutput dispatches to a human renderer when -O human is set,
+// falling back to JSON for commands that have not yet implemented one.
+// humanFn receives the raw response bytes; if nil, JSON is used regardless.
+func printOutput(data []byte, err error, humanFn func([]byte) error) error {
+	if err != nil {
+		return err
+	}
+	if outputFormat == "human" && humanFn != nil {
+		return humanFn(data)
+	}
+	return printJSON(data, nil)
+}

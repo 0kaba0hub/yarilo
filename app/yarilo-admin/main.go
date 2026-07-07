@@ -36,6 +36,8 @@ var (
 
 	backendAPIURL   string
 	backendAPIToken string
+
+	outputFormat string
 )
 
 func main() {
@@ -49,7 +51,15 @@ func main() {
 	flag.StringVar(&authCert, "auth-cert", envOr("YARILO_AUTH_CERT", ""), "mTLS client cert for auth-master socket")
 	flag.StringVar(&authKey, "auth-key", envOr("YARILO_AUTH_KEY", ""), "mTLS client key for auth-master socket")
 	flag.StringVar(&authCA, "auth-ca", envOr("YARILO_AUTH_CA", ""), "CA bundle that signs the auth-master server cert")
+	flag.StringVar(&outputFormat, "O", "human", "Output format: human or json")
 	flag.Parse()
+
+	switch outputFormat {
+	case "human", "json":
+	default:
+		fmt.Fprintf(os.Stderr, "yarilo-admin: unknown output format %q (valid: human, json)\n", outputFormat)
+		os.Exit(1)
+	}
 
 	// YARILO_API_URL / YARILO_API_TOKEN override plane-specific vars when set.
 	// They are injected by the Helm chart so every pod is pre-configured.
@@ -175,6 +185,7 @@ Usage:
   yarilo-admin [global-flags] <plane> <command> [args...]
 
 Global flags:
+  -O human|json    Output format (default: human); human renderers added per command over time
   --url            Director API base URL (env: YARILO_ADMIN_URL,  default: http://localhost:9103)
   --token          Director API bearer token (env: YARILO_ADMIN_TOKEN)
   --backend-url    Backend API base URL (env: YARILO_BACKEND_API_URL, default: http://localhost:9105)
