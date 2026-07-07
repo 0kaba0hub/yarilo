@@ -82,7 +82,7 @@ func humanQuotaShow(data []byte) error {
 	if r.LimitMsgs > 0 {
 		msgPct = int(r.Messages * 100 / r.LimitMsgs)
 	}
-	fmt.Printf("%-12s  %-7s  %12s  %12s  %3d\n", "Quota name", "Type", "Value", "Limit", '%')
+	fmt.Printf("%-12s  %-7s  %12s  %12s  %s\n", "Quota name", "Type", "Value", "Limit", "%")
 	fmt.Printf("%-12s  %-7s  %12d  %12s  %3d\n", "User quota", "STORAGE", r.StorageBytes, limitBytesStr, storagePct)
 	fmt.Printf("%-12s  %-7s  %12d  %12s  %3d\n", "User quota", "MESSAGE", r.Messages, limitMsgsStr, msgPct)
 	return nil
