@@ -183,7 +183,7 @@ components:
         user_query: |
           SELECT CONCAT(home, mpath) AS home,
                  CONCAT(mbtype, ':~/', maildir,
-                        ':INDEX=~/index/',
+                        ':INDEX=~/index',
                         ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
                  CONCAT('*:bytes=', quota) AS quota_rule
           FROM mailbox
