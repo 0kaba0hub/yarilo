@@ -374,23 +374,31 @@ func New(cfg *config.Config) (*Server, error) {
 				mbi.Groups = ui.Groups
 				mbi.QuotaRules = ui.QuotaRules
 				if ui.VolatileDir != "" {
-					vd := strings.ReplaceAll(ui.VolatileDir, "%h", mbi.Home)
+					vd := mailbox.ExpandHome(ui.VolatileDir, mbi.Home)
+					vd = strings.ReplaceAll(vd, "%h", mbi.Home)
 					mbi.VolatileDir = mailbox.ExpandVars(vd, username)
 				}
 				if ui.IndexDir != "" {
-					id := strings.ReplaceAll(ui.IndexDir, "%h", mbi.Home)
+					id := mailbox.ExpandHome(ui.IndexDir, mbi.Home)
+					id = strings.ReplaceAll(id, "%h", mbi.Home)
 					mbi.IndexDir = mailbox.ExpandVars(id, username)
 				}
 				if ui.ControlDir != "" {
-					cd := strings.ReplaceAll(ui.ControlDir, "%h", mbi.Home)
+					cd := mailbox.ExpandHome(ui.ControlDir, mbi.Home)
+					cd = strings.ReplaceAll(cd, "%h", mbi.Home)
 					mbi.ControlDir = mailbox.ExpandVars(cd, username)
 				}
 				if ui.AltDir != "" {
-					ad := strings.ReplaceAll(ui.AltDir, "%h", mbi.Home)
+					ad := mailbox.ExpandHome(ui.AltDir, mbi.Home)
+					ad = strings.ReplaceAll(ad, "%h", mbi.Home)
 					mbi.AltDir = mailbox.ExpandVars(ad, username)
 				}
-				mbi.MailPath = ui.MailPath
-				mbi.InboxPath = ui.InboxPath
+				if ui.MailPath != "" {
+					mbi.MailPath = mailbox.ExpandHome(ui.MailPath, mbi.Home)
+				}
+				if ui.InboxPath != "" {
+					mbi.InboxPath = mailbox.ExpandHome(ui.InboxPath, mbi.Home)
+				}
 				return mbi, nil
 			}
 		}
