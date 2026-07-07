@@ -98,6 +98,13 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 				}
 			}
 		}
+		// Parse INDEX=, VOLATILEDIR=, CONTROLDIR=, ALTDIR= modifiers from
+		// mail_location when the corresponding dedicated fields are absent.
+		// Userdb drivers that bake everything into a single mail_location
+		// string (e.g. SQL with CONCAT) never populate the separate fields.
+		if pui.MailLocation != "" {
+			applyMailLocationMods(pui.MailLocation, ui, username)
+		}
 		if pui.InboxPath != "" {
 			ui.InboxPath = mailbox.ExpandHome(pui.InboxPath, ui.Home)
 		}
@@ -189,6 +196,50 @@ func subsFileFor(spec config.NamespaceConfig) string {
 		slug = strings.ToLower(spec.Type)
 	}
 	return "subscriptions-" + slug
+}
+
+// applyMailLocationMods parses KEY=value modifiers from a mail_location string
+// and fills in ui fields that are still empty. Only called when the userdb
+// driver bakes everything into a single mail_location (no separate fields).
+func applyMailLocationMods(loc string, ui *mailbox.UserInfo, username string) {
+	expand := func(v string) string {
+		v = mailbox.ExpandHome(v, ui.Home)
+		return mailbox.ExpandVars(strings.ReplaceAll(v, "%h", ui.Home), username)
+	}
+	// skip "driver:path" prefix — modifiers start at the third colon-token
+	colon := strings.IndexByte(loc, ':')
+	if colon < 0 {
+		return
+	}
+	rest := loc[colon+1:]
+	colon = strings.IndexByte(rest, ':')
+	if colon < 0 {
+		return
+	}
+	for _, mod := range strings.Split(rest[colon+1:], ":") {
+		key, val, ok := strings.Cut(mod, "=")
+		if !ok {
+			continue
+		}
+		switch strings.ToUpper(key) {
+		case "INDEX":
+			if ui.IndexDir == "" {
+				ui.IndexDir = expand(val)
+			}
+		case "VOLATILEDIR":
+			if ui.VolatileDir == "" {
+				ui.VolatileDir = expand(val)
+			}
+		case "CONTROL":
+			if ui.ControlDir == "" {
+				ui.ControlDir = expand(val)
+			}
+		case "ALT":
+			if ui.AltDir == "" {
+				ui.AltDir = expand(val)
+			}
+		}
+	}
 }
 
 // mailboxForUser returns the MailboxBackend that matches the driver in
