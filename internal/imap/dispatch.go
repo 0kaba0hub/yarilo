@@ -163,12 +163,16 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 	}, nil
 }
 
-// mailboxBackendFor returns the per-namespace MailboxBackend, falling
-// back to the global default when no override is registered for
-// spec.Prefix.
+// mailboxBackendFor returns the per-namespace MailboxBackend. Priority:
+// 1. explicit NamespaceMailboxes override for the prefix
+// 2. per-user personalMailbox (set when mail_location carries a driver)
+// 3. global Options.Mailbox
 func (s *session) mailboxBackendFor(spec NamespaceSpec) mailbox.MailboxBackend {
 	if override, ok := s.srv.opts.NamespaceMailboxes[spec.Prefix]; ok && override != nil {
 		return override
+	}
+	if spec.Type == NamespacePersonal && s.personalMailbox != nil {
+		return s.personalMailbox
 	}
 	return s.srv.opts.Mailbox
 }
