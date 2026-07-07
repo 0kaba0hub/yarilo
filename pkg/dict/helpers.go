@@ -1,6 +1,9 @@
 package dict
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // MemoryTx is a reusable transaction buffer for drivers that lack
 // native atomic multi-key writes (file, memory). Drivers embed one of
@@ -61,6 +64,18 @@ func (o TxOp) FormatOp() string {
 	default:
 		return fmt.Sprintf("unknown-op(kind=%d, key=%q)", o.Kind, o.Key)
 	}
+}
+
+// ScopedKey returns the storage key for a dict operation. Keys under
+// "priv/" are per-user: the username from set is prepended so that
+// two users' priv/quota/storage keys never collide in a shared store.
+// "shared/" keys and any other prefix are returned unchanged.
+// When set is nil or Username is empty the key is returned as-is.
+func ScopedKey(set *OpSettings, key string) string {
+	if set != nil && set.Username != "" && strings.HasPrefix(key, PathPrivate) {
+		return set.Username + "/" + key
+	}
+	return key
 }
 
 // PathMatches reports whether key falls under path according to the

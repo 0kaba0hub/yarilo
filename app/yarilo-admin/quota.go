@@ -68,11 +68,11 @@ func humanQuotaShow(data []byte) error {
 	}
 	limitBytesStr := "-"
 	if r.LimitBytes > 0 {
-		limitBytesStr = fmt.Sprintf("%d", r.LimitBytes)
+		limitBytesStr = formatBytes(r.LimitBytes)
 	}
 	limitMsgsStr := "-"
 	if r.LimitMsgs > 0 {
-		limitMsgsStr = fmt.Sprintf("%d", r.LimitMsgs)
+		limitMsgsStr = formatCount(r.LimitMsgs)
 	}
 	storagePct := 0
 	if r.LimitBytes > 0 {
@@ -83,8 +83,8 @@ func humanQuotaShow(data []byte) error {
 		msgPct = int(r.Messages * 100 / r.LimitMsgs)
 	}
 	fmt.Printf("%-12s  %-7s  %12s  %12s  %s\n", "Quota name", "Type", "Value", "Limit", "%")
-	fmt.Printf("%-12s  %-7s  %12d  %12s  %3d\n", "User quota", "STORAGE", r.StorageBytes, limitBytesStr, storagePct)
-	fmt.Printf("%-12s  %-7s  %12d  %12s  %3d\n", "User quota", "MESSAGE", r.Messages, limitMsgsStr, msgPct)
+	fmt.Printf("%-12s  %-7s  %12s  %12s  %3d\n", "User quota", "STORAGE", formatBytes(r.StorageBytes), limitBytesStr, storagePct)
+	fmt.Printf("%-12s  %-7s  %12s  %12s  %3d\n", "User quota", "MESSAGE", formatCount(r.Messages), limitMsgsStr, msgPct)
 	return nil
 }
 
