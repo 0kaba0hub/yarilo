@@ -51,7 +51,7 @@ func main() {
 	flag.StringVar(&authCert, "auth-cert", envOr("YARILO_AUTH_CERT", ""), "mTLS client cert for auth-master socket")
 	flag.StringVar(&authKey, "auth-key", envOr("YARILO_AUTH_KEY", ""), "mTLS client key for auth-master socket")
 	flag.StringVar(&authCA, "auth-ca", envOr("YARILO_AUTH_CA", ""), "CA bundle that signs the auth-master server cert")
-	flag.StringVar(&outputFormat, "O", "json", "Output format: human or json")
+	flag.StringVar(&outputFormat, "O", "human", "Output format: human or json")
 	flag.Parse()
 
 	switch outputFormat {
@@ -185,7 +185,7 @@ Usage:
   yarilo-admin [global-flags] <plane> <command> [args...]
 
 Global flags:
-  -O human|json    Output format (default: json); human renderers added per command over time
+  -O human|json    Output format (default: human); human renderers added per command over time
   --url            Director API base URL (env: YARILO_ADMIN_URL,  default: http://localhost:9103)
   --token          Director API bearer token (env: YARILO_ADMIN_TOKEN)
   --backend-url    Backend API base URL (env: YARILO_BACKEND_API_URL, default: http://localhost:9105)
