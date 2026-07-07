@@ -697,16 +697,21 @@ func (u *userMailbox) folderPath(folder string) string {
 
 // controlFolderPath returns the directory for per-folder control files
 // (yarilo-uidlist). When CONTROL= is configured, it uses controlDir as
-// the root; otherwise mirrors folderPath under home.
+// the root; otherwise the control files are co-located with the folder.
 func (u *userMailbox) controlFolderPath(folder string) string {
-	root := u.home
 	if u.controlDir != "" {
-		root = u.controlDir
+		if folder == "INBOX" {
+			return filepath.Join(u.controlDir, "INBOX")
+		}
+		return filepath.Join(u.controlDir, "."+u.folderDiskName(folder))
 	}
 	if folder == "INBOX" {
-		return filepath.Join(root, "INBOX")
+		if u.explicitMailPath {
+			return u.inboxPath
+		}
+		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(root, "."+u.folderDiskName(folder))
+	return filepath.Join(u.mailPath, "."+u.folderDiskName(folder))
 }
 
 // ---- flag helpers ----------------------------------------------------------
