@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -93,10 +94,23 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 			if pui.MailPath != "" {
-				effectiveMailPath = pui.MailPath
+				mp := mailbox.ExpandHome(pui.MailPath, ui.Home)
+				effectiveMailPath = mailbox.ExpandVars(strings.ReplaceAll(mp, "%h", ui.Home), req.User)
+			} else if pui.MailLocation != "" {
+				if colon := strings.IndexByte(pui.MailLocation, ':'); colon >= 0 {
+					rest := pui.MailLocation[colon+1:]
+					if next := strings.IndexByte(rest, ':'); next >= 0 {
+						rest = rest[:next]
+					}
+					if rest != "" {
+						mp := mailbox.ExpandHome(rest, ui.Home)
+						effectiveMailPath = mailbox.ExpandVars(strings.ReplaceAll(mp, "%h", ui.Home), req.User)
+					}
+				}
 			}
 			if pui.InboxPath != "" {
-				effectiveInboxPath = pui.InboxPath
+				ip := mailbox.ExpandHome(pui.InboxPath, ui.Home)
+				effectiveInboxPath = mailbox.ExpandVars(strings.ReplaceAll(ip, "%h", ui.Home), req.User)
 			}
 			if effectiveMailPath == "" {
 				effectiveMailPath = ui.Home
