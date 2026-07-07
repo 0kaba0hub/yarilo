@@ -152,6 +152,9 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 // Close releases every opened namespace handle. Always safe to call.
 func (uc *userContext) Close() {
 	for _, h := range uc.handles {
+		if h == nil {
+			continue
+		}
 		if h.box != nil {
 			_ = h.box.Close()
 		}
