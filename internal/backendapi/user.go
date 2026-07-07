@@ -282,18 +282,19 @@ func (s *Server) handleUserUsage(w http.ResponseWriter, r *http.Request) {
 	var rows []usageFolder
 	var totalMsgs uint32
 	var totalSize uint64
-	for _, spec := range s.opts.Namespaces {
-		bundle, err := uc.ns(s, slugFor(spec))
-		if err != nil {
-			continue
-		}
+
+	scanBundle := func(nsSlug string, bundle *nsBundle) {
 		folders, err := bundle.box.ListFolders()
 		if err != nil {
-			continue
+			return
 		}
 		sort.Strings(folders)
 		for _, name := range folders {
-			msgs, err := bundle.box.List(name)
+			f, err := bundle.idx.OpenFolder(name, 0)
+			if err != nil || f == nil {
+				continue
+			}
+			msgs, err := bundle.idx.GetMessages(f.ID, nil)
 			if err != nil {
 				continue
 			}
@@ -302,7 +303,7 @@ func (s *Server) handleUserUsage(w http.ResponseWriter, r *http.Request) {
 				size += uint64(m.Size)
 			}
 			rows = append(rows, usageFolder{
-				Namespace: slugFor(spec),
+				Namespace: nsSlug,
 				Folder:    name,
 				Messages:  uint32(len(msgs)),
 				SizeBytes: size,
@@ -311,31 +312,17 @@ func (s *Server) handleUserUsage(w http.ResponseWriter, r *http.Request) {
 			totalSize += size
 		}
 	}
+
+	for _, spec := range s.opts.Namespaces {
+		bundle, err := uc.ns(s, slugFor(spec))
+		if err != nil {
+			continue
+		}
+		scanBundle(slugFor(spec), bundle)
+	}
 	if len(rows) == 0 {
-		bundle, err := uc.ns(s, "personal")
-		if err == nil {
-			folders, err := bundle.box.ListFolders()
-			if err == nil {
-				sort.Strings(folders)
-				for _, name := range folders {
-					msgs, err := bundle.box.List(name)
-					if err != nil {
-						continue
-					}
-					var size uint64
-					for _, m := range msgs {
-						size += uint64(m.Size)
-					}
-					rows = append(rows, usageFolder{
-						Namespace: "personal",
-						Folder:    name,
-						Messages:  uint32(len(msgs)),
-						SizeBytes: size,
-					})
-					totalMsgs += uint32(len(msgs))
-					totalSize += size
-				}
-			}
+		if bundle, err := uc.ns(s, "personal"); err == nil {
+			scanBundle("personal", bundle)
 		}
 	}
 	apiJSON(w, map[string]any{
