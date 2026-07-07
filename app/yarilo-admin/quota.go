@@ -58,33 +58,27 @@ func quotaShow(args []string) error {
 
 func humanQuotaShow(data []byte) error {
 	var r struct {
-		StorageBytes int64 `json:"storage_bytes"`
-		Messages     int64 `json:"messages"`
-		LimitBytes   int64 `json:"limit_bytes"`
-		LimitMsgs    int64 `json:"limit_messages"`
+		StorageValue   int64 `json:"storage_value"`
+		StorageLimit   int64 `json:"storage_limit"`
+		StoragePercent int   `json:"storage_percent"`
+		MessageValue   int64 `json:"message_value"`
+		MessageLimit   int64 `json:"message_limit"`
+		MessagePercent int   `json:"message_percent"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
-	limitBytesStr := "-"
-	if r.LimitBytes > 0 {
-		limitBytesStr = formatBytes(r.LimitBytes)
+	storageLimitStr := "-"
+	if r.StorageLimit >= 0 {
+		storageLimitStr = formatBytes(r.StorageLimit * 1024)
 	}
-	limitMsgsStr := "-"
-	if r.LimitMsgs > 0 {
-		limitMsgsStr = formatCount(r.LimitMsgs)
-	}
-	storagePct := 0
-	if r.LimitBytes > 0 {
-		storagePct = int(r.StorageBytes * 100 / r.LimitBytes)
-	}
-	msgPct := 0
-	if r.LimitMsgs > 0 {
-		msgPct = int(r.Messages * 100 / r.LimitMsgs)
+	msgLimitStr := "-"
+	if r.MessageLimit >= 0 {
+		msgLimitStr = formatCount(r.MessageLimit)
 	}
 	fmt.Printf("%-12s  %-7s  %12s  %12s  %s\n", "Quota name", "Type", "Value", "Limit", "%")
-	fmt.Printf("%-12s  %-7s  %12s  %12s  %3d\n", "User quota", "STORAGE", formatBytes(r.StorageBytes), limitBytesStr, storagePct)
-	fmt.Printf("%-12s  %-7s  %12s  %12s  %3d\n", "User quota", "MESSAGE", formatCount(r.Messages), limitMsgsStr, msgPct)
+	fmt.Printf("%-12s  %-7s  %12s  %12s  %3d\n", "User quota", "STORAGE", formatBytes(r.StorageValue*1024), storageLimitStr, r.StoragePercent)
+	fmt.Printf("%-12s  %-7s  %12s  %12s  %3d\n", "User quota", "MESSAGE", formatCount(r.MessageValue), msgLimitStr, r.MessagePercent)
 	return nil
 }
 
