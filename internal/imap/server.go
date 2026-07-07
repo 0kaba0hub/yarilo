@@ -765,19 +765,23 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	userInfo.QuotaRules = res.QuotaRules
 	userInfo.SessionID = s.sid
 	if res.VolatileDir != "" {
-		vd := strings.ReplaceAll(res.VolatileDir, "%h", userInfo.Home)
+		vd := mailbox.ExpandHome(res.VolatileDir, userInfo.Home)
+		vd = strings.ReplaceAll(vd, "%h", userInfo.Home)
 		userInfo.VolatileDir = mailbox.ExpandVars(vd, res.Username)
 	}
 	if res.IndexDir != "" {
-		id := strings.ReplaceAll(res.IndexDir, "%h", userInfo.Home)
+		id := mailbox.ExpandHome(res.IndexDir, userInfo.Home)
+		id = strings.ReplaceAll(id, "%h", userInfo.Home)
 		userInfo.IndexDir = mailbox.ExpandVars(id, res.Username)
 	}
 	if res.ControlDir != "" {
-		cd := strings.ReplaceAll(res.ControlDir, "%h", userInfo.Home)
+		cd := mailbox.ExpandHome(res.ControlDir, userInfo.Home)
+		cd = strings.ReplaceAll(cd, "%h", userInfo.Home)
 		userInfo.ControlDir = mailbox.ExpandVars(cd, res.Username)
 	}
 	if res.AltDir != "" {
-		ad := strings.ReplaceAll(res.AltDir, "%h", userInfo.Home)
+		ad := mailbox.ExpandHome(res.AltDir, userInfo.Home)
+		ad = strings.ReplaceAll(ad, "%h", userInfo.Home)
 		userInfo.AltDir = mailbox.ExpandVars(ad, res.Username)
 	}
 	if res.MailPath != "" {
