@@ -105,19 +105,23 @@ func (d *Dict) Close() error {
 	return d.client.Close()
 }
 
-func (d *Dict) key(k string) string { return d.prefix + k }
-func (d *Dict) trim(k string) string {
-	if d.prefix == "" {
-		return k
+func (d *Dict) key(set *dict.OpSettings, k string) string {
+	return d.prefix + dict.ScopedKey(set, k)
+}
+func (d *Dict) trim(set *dict.OpSettings, k string) string {
+	// strip the Redis-level prefix, then the per-user scope prefix if any
+	k = strings.TrimPrefix(k, d.prefix)
+	if set != nil && set.Username != "" {
+		k = strings.TrimPrefix(k, set.Username+"/")
 	}
-	return strings.TrimPrefix(k, d.prefix)
+	return k
 }
 
-func (d *Dict) Lookup(ctx context.Context, _ *dict.OpSettings, key string) ([][]byte, bool, error) {
+func (d *Dict) Lookup(ctx context.Context, set *dict.OpSettings, key string) ([][]byte, bool, error) {
 	if d.closed.Load() {
 		return nil, false, dict.ErrClosed
 	}
-	v, err := d.client.Get(ctx, d.key(key)).Bytes()
+	v, err := d.client.Get(ctx, d.key(set, key)).Bytes()
 	if err == redis.Nil {
 		return nil, false, nil
 	}
@@ -127,7 +131,7 @@ func (d *Dict) Lookup(ctx context.Context, _ *dict.OpSettings, key string) ([][]
 	return [][]byte{v}, true, nil
 }
 
-func (d *Dict) Iterate(ctx context.Context, _ *dict.OpSettings, path string, flags dict.IterFlag) (dict.Iterator, error) {
+func (d *Dict) Iterate(ctx context.Context, set *dict.OpSettings, path string, flags dict.IterFlag) (dict.Iterator, error) {
 	if d.closed.Load() {
 		return nil, dict.ErrClosed
 	}
@@ -136,8 +140,7 @@ func (d *Dict) Iterate(ctx context.Context, _ *dict.OpSettings, path string, fla
 	noValue := flags&dict.IterNoValue != 0
 
 	if exactKey {
-		// Identical-to-Lookup branch wrapped in the iterator shape.
-		vals, found, err := d.Lookup(ctx, nil, path)
+		vals, found, err := d.Lookup(ctx, set, path)
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +156,7 @@ func (d *Dict) Iterate(ctx context.Context, _ *dict.OpSettings, path string, fla
 		return &iterator{rows: rows, idx: -1}, nil
 	}
 
-	pattern := d.key(path) + "*"
+	pattern := d.key(set, path) + "*"
 	var (
 		cursor uint64
 		rows   []iterRow
@@ -164,7 +167,7 @@ func (d *Dict) Iterate(ctx context.Context, _ *dict.OpSettings, path string, fla
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 		for _, full := range batch {
-			k := d.trim(full)
+			k := d.trim(set, full)
 			if !dict.PathMatches(path, k, recurse, false) {
 				continue
 			}
@@ -186,7 +189,6 @@ func (d *Dict) Iterate(ctx context.Context, _ *dict.OpSettings, path string, fla
 		}
 		cursor = next
 	}
-	// Sort flags are applied here for parity with other drivers.
 	applySortFlags(rows, flags)
 	return &iterator{rows: rows, idx: -1}, nil
 }
@@ -196,10 +198,14 @@ func (d *Dict) Begin(_ context.Context, set *dict.OpSettings) (dict.Tx, error) {
 		return nil, dict.ErrClosed
 	}
 	ttl := time.Duration(0)
-	if set != nil && set.ExpireSecs > 0 {
-		ttl = time.Duration(set.ExpireSecs) * time.Second
+	var username string
+	if set != nil {
+		if set.ExpireSecs > 0 {
+			ttl = time.Duration(set.ExpireSecs) * time.Second
+		}
+		username = set.Username
 	}
-	return &tx{d: d, ttl: ttl}, nil
+	return &tx{d: d, ttl: ttl, username: username}, nil
 }
 
 // ----- iterator -----
@@ -266,10 +272,11 @@ func sortByValue(rows []iterRow) {
 // ----- tx -----
 
 type tx struct {
-	d    *Dict
-	buf  dict.MemoryTx
-	ttl  time.Duration
-	done bool
+	d        *Dict
+	buf      dict.MemoryTx
+	ttl      time.Duration
+	username string
+	done     bool
 }
 
 func (t *tx) Set(key string, value []byte) error {
@@ -317,11 +324,12 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 	// CommitNotFound, no other ops applied. Race window between
 	// EXISTS and MULTI is acceptable — concurrent unset on a counter
 	// is not a yarilo-supported pattern.
+	set := &dict.OpSettings{Username: t.username}
 	for _, op := range t.buf.Ops {
 		if op.Kind != dict.OpAtomicInc {
 			continue
 		}
-		n, err := t.d.client.Exists(ctx, t.d.key(op.Key)).Result()
+		n, err := t.d.client.Exists(ctx, t.d.key(set, op.Key)).Result()
 		if err != nil {
 			return dict.CommitFailed, fmt.Errorf("redis exists pre-check: %w", err)
 		}
@@ -332,7 +340,7 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 
 	_, err := t.d.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		for _, op := range t.buf.Ops {
-			full := t.d.key(op.Key)
+			full := t.d.key(set, op.Key)
 			switch op.Kind {
 			case dict.OpSet:
 				if t.ttl > 0 {

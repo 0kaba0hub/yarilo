@@ -20,11 +20,8 @@ type quotaShowResponse struct {
 	LimitMsgs    int64  `json:"limit_messages"` // 0 = unlimited
 }
 
-// handleQuotaShow returns the current usage for a user.
+// handleQuotaShow returns the current usage and configured limits for a user.
 // GET /api/backend/quota/show?user=alice@example.com
-// Limits are 0 (unlimited) unless the auth client can provide
-// the userdb QuotaRules — use yarilo-admin auth passdb to look
-// those up separately if needed.
 func (s *Server) handleQuotaShow(w http.ResponseWriter, r *http.Request) {
 	if s.opts.QuotaDict == nil {
 		apiError(w, "quota not configured (set dicts.quota in yarilo.yaml)", http.StatusServiceUnavailable)
@@ -41,10 +38,18 @@ func (s *Server) handleQuotaShow(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "quota show: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	var limits quota.Limits
+	if s.opts.AuthClient != nil {
+		if pui, err := s.opts.AuthClient.Userdb(r.Context(), user); err == nil && pui != nil {
+			limits = quota.ParseRules(pui.QuotaRules)
+		}
+	}
 	apiJSON(w, quotaShowResponse{
 		User:         user,
 		StorageBytes: u.StorageBytes,
 		Messages:     u.Messages,
+		LimitBytes:   limits.StorageBytes,
+		LimitMsgs:    limits.Messages,
 	})
 }
 
