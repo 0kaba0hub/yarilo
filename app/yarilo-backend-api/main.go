@@ -172,6 +172,9 @@ func main() {
 		AnvilAddr:          cfg.AnvilService.ClientAddr(),
 		AnvilTLS:           anvilTLS,
 		AuthClient:         authcl,
+		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
+			return buildMailbox(driver, locker, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
+		},
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

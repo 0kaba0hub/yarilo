@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -55,8 +56,10 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 		resolver = &mailbox.Resolver{}
 	}
 	ui := resolver.UserInfo(username, "")
+	var pui *protocol.UserInfo
 	if s.opts.AuthClient != nil {
-		pui, err := s.opts.AuthClient.Userdb(context.Background(), username)
+		var err error
+		pui, err = s.opts.AuthClient.Userdb(context.Background(), username)
 		if err != nil {
 			return nil, fmt.Errorf("backendapi/userctx: userdb lookup: %w", err)
 		}
@@ -81,6 +84,19 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 		}
 		if pui.MailPath != "" {
 			ui.MailPath = mailbox.ExpandHome(pui.MailPath, ui.Home)
+		} else if pui.MailLocation != "" {
+			// mail_location = "driver:path[:MODS]" — extract path when
+			// no explicit mail_path field was returned by userdb.
+			if colon := strings.IndexByte(pui.MailLocation, ':'); colon >= 0 {
+				rest := pui.MailLocation[colon+1:]
+				if nextColon := strings.IndexByte(rest, ':'); nextColon >= 0 {
+					rest = rest[:nextColon]
+				}
+				if rest != "" {
+					mp := mailbox.ExpandHome(rest, ui.Home)
+					ui.MailPath = mailbox.ExpandVars(strings.ReplaceAll(mp, "%h", ui.Home), username)
+				}
+			}
 		}
 		if pui.InboxPath != "" {
 			ui.InboxPath = mailbox.ExpandHome(pui.InboxPath, ui.Home)
@@ -97,7 +113,8 @@ func (s *Server) openUserContext(username string) (*userContext, error) {
 	if !ok {
 		personalSpec = config.NamespaceConfig{Type: "personal", Prefix: "", Separator: "/", List: true}
 	}
-	bundle, err := s.openNS(personalSpec, ui)
+	personalMB := s.mailboxForUser(pui)
+	bundle, err := s.openNS(personalSpec, ui, personalMB)
 	if err != nil {
 		return nil, fmt.Errorf("backendapi/userctx: open personal: %w", err)
 	}
@@ -150,7 +167,7 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 		Username: uc.info.Username,
 		Home:     loc.Path,
 	}
-	b, err := s.openNS(spec, nsInfo)
+	b, err := s.openNS(spec, nsInfo, nil)
 	if err != nil {
 		return nil, fmt.Errorf("backendapi/userctx: open %q: %w", name, err)
 	}
@@ -174,11 +191,27 @@ func subsFileFor(spec config.NamespaceConfig) string {
 	return "subscriptions-" + slug
 }
 
-// openNS instantiates one namespace's box+idx using the per-namespace
-// driver override when present, otherwise the global default. Init
-// runs to materialise the on-disk root.
-func (s *Server) openNS(spec config.NamespaceConfig, ui *mailbox.UserInfo) (*nsBundle, error) {
-	mb := s.mailboxBackendFor(spec)
+// mailboxForUser returns the MailboxBackend that matches the driver in
+// pui.MailLocation. Falls back to opts.Mailbox when pui is nil, has no
+// MailLocation, or the factory is not configured.
+func (s *Server) mailboxForUser(pui *protocol.UserInfo) mailbox.MailboxBackend {
+	if pui == nil || pui.MailLocation == "" {
+		return s.opts.Mailbox
+	}
+	colon := strings.IndexByte(pui.MailLocation, ':')
+	if colon < 0 {
+		return s.opts.Mailbox
+	}
+	return s.mailboxForDriver(strings.ToLower(pui.MailLocation[:colon]))
+}
+
+// openNS instantiates one namespace's box+idx. mb overrides the backend
+// when non-nil (per-user driver selection); nil falls back to the
+// per-namespace or global default. Init runs to materialise the on-disk root.
+func (s *Server) openNS(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb mailbox.MailboxBackend) (*nsBundle, error) {
+	if mb == nil {
+		mb = s.mailboxBackendFor(spec)
+	}
 	if mb == nil {
 		return nil, fmt.Errorf("backendapi: no mailbox backend wired")
 	}
