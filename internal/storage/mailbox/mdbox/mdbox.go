@@ -121,9 +121,12 @@ func New(opts ...Option) *Backend {
 
 // OpenUser returns a per-session handle bound to u.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
-	mailPath := u.Home
-	if u.MailPath != "" {
-		mailPath = u.MailPath
+	// Per-driver default: when no mail_path arrives from userdb, default to
+	// <home>/mdbox (Dovecot's mdbox default). The resolved mailPath is the
+	// mdbox root as-is — mdboxRoot() never re-appends a subdir.
+	mailPath := u.MailPath
+	if mailPath == "" {
+		mailPath = filepath.Join(u.Home, mdboxRoot)
 	}
 	return &userMailbox{
 		b:            b,
@@ -172,7 +175,7 @@ func makeOwner(u *mailbox.UserInfo) string {
 
 // ---- path helpers ------------------------------------------
 
-func (u *userMailbox) mdboxRoot() string   { return filepath.Join(u.home, mdboxRoot) }
+func (u *userMailbox) mdboxRoot() string   { return u.home }
 func (u *userMailbox) storagePath() string { return filepath.Join(u.mdboxRoot(), storageDir) }
 func (u *userMailbox) folderRoot() string {
 	return filepath.Join(u.mdboxRoot(), mailboxesDir)
