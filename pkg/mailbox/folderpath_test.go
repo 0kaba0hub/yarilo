@@ -6,7 +6,7 @@ func TestFolderSubpath(t *testing.T) {
 	cases := []struct {
 		driver, folder, disk, want string
 	}{
-		{"maildir", "INBOX", "INBOX", "INBOX"},
+		{"maildir", "INBOX", "INBOX", ""},
 		{"maildir", "Sent", "Sent", ".Sent"},
 		{"", "Sent", "Sent", ".Sent"}, // empty driver defaults to maildir
 		{"mdbox", "INBOX", "INBOX", "mailboxes/INBOX"},

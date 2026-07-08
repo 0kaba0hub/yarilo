@@ -79,9 +79,20 @@ func New(home, mailPath, driver, username, owner string, locker locks.Locker) *S
 
 // Path returns the on-disk yarilo-acl path for folder. Exposed so
 // callers (admin CLI, integration tests) can locate the file without
-// re-deriving the layout.
+// re-deriving the layout. folder == "" is the local per-namespace-root
+// default ACL; for maildir it collides with INBOX and is disabled — see
+// rootDefaultDisabled.
 func (s *Store) Path(folder string) string {
 	return filepath.Join(s.mailRoot, mailbox.FolderSubpath(s.driver, folder, folder), FileName)
+}
+
+// rootDefaultDisabled reports whether the local namespace-root default ACL
+// (folder == "") is unavailable because its path collides with INBOX's — the
+// maildir case, where INBOX is the maildir root. Mirrors Dovecot's
+// acl-backend-vfile.c get_local_dir check. A global ACL (separate configured
+// directory) is the intended source of defaults in that setup.
+func (s *Store) rootDefaultDisabled() bool {
+	return s.Path("") == s.Path("INBOX")
 }
 
 // mailboxesRoot is the PATH_TYPE_MAILBOX root: the mail root for maildir,
@@ -125,6 +136,9 @@ func (s *Store) Get(folder string) (mailbox.ACL, error) {
 // namespace-wide index is updated in the same call so LIST
 // optimisations see the change without a separate rebuild.
 func (s *Store) Set(folder string, acl mailbox.ACL) error {
+	if folder == "" && s.rootDefaultDisabled() {
+		return fmt.Errorf("userstate/acl: namespace-root default ACL unavailable (collides with INBOX); use a global ACL instead")
+	}
 	if err := s.withLock(folder, func() error {
 		return s.writeAtomicLocked(folder, acl)
 	}); err != nil {
@@ -163,6 +177,11 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 	cur := folder
 	rootTried := false
 	for {
+		// The local namespace-root default is disabled when it would collide
+		// with INBOX (maildir): the file there is INBOX's own, not a default.
+		if cur == "" && s.rootDefaultDisabled() {
+			return "", nil
+		}
 		acl, err := s.Get(cur)
 		if err != nil {
 			return "", err
@@ -306,11 +325,12 @@ func (s *Store) loadLocked(folder string) (mailbox.ACL, error) {
 }
 
 func (s *Store) writeAtomicLocked(folder string, acl mailbox.ACL) error {
-	dir := filepath.Join(s.mailRoot, mailbox.FolderSubpath(s.driver, folder, folder))
+	dst := s.Path(folder)
+	dir := filepath.Dir(dst)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("userstate/acl: mkdir %s: %w", dir, err)
 	}
-	tmp := filepath.Join(dir, FileName+".tmp")
+	tmp := dst + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("userstate/acl: create tmp %s: %w", tmp, err)
@@ -325,7 +345,6 @@ func (s *Store) writeAtomicLocked(folder string, acl mailbox.ACL) error {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("userstate/acl: close %s: %w", tmp, err)
 	}
-	dst := filepath.Join(dir, FileName)
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("userstate/acl: rename %s → %s: %w", tmp, dst, err)

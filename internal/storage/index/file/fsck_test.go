@@ -29,7 +29,7 @@ func TestFsckIndexIDMismatch(t *testing.T) {
 	b.Close() //nolint:errcheck
 
 	// Overwrite the .log file with a header that has a different IndexID.
-	logPath := filepath.Join(dir, testHome("", testUser), "INBOX", IndexLogFileName)
+	logPath := filepath.Join(dir, testHome("", testUser), IndexLogFileName)
 	lf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		t.Fatalf("open log for overwrite: %v", err)
@@ -95,7 +95,7 @@ func TestFsckCorruptedLogBeforeBoundary(t *testing.T) {
 
 	// Append a raw corrupted record (not a valid framed size) directly
 	// after the log header — no BOUNDARY precedes it.
-	logPath := filepath.Join(dir, testHome("", testUser), "INBOX", IndexLogFileName)
+	logPath := filepath.Join(dir, testHome("", testUser), IndexLogFileName)
 	lf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatalf("open log: %v", err)

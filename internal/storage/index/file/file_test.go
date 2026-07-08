@@ -47,7 +47,7 @@ func TestIndexDirRootResolution(t *testing.T) {
 			ui := New().OpenUser(&mailbox.UserInfo{
 				Username: "u@x", Home: c.home, MailPath: c.mail, IndexDir: c.index,
 			}).(*userHandle).ui
-			if got := ui.indexDir("INBOX"); got != filepath.Join(c.wantRoot, "INBOX") {
+			if got := ui.indexDir("INBOX"); got != c.wantRoot {
 				t.Errorf("indexDir(INBOX)=%q, want root %q", got, c.wantRoot)
 			}
 			if got := ui.indexDir("Sent"); got != filepath.Join(c.wantRoot, ".Sent") {

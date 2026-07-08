@@ -96,12 +96,7 @@ func (p *enforcePassdb) Authenticate(username, password, _, _ string) (*protocol
 // need owner credentials).
 func seedACL(t *testing.T, aliceHome, folder string, body string) {
 	t.Helper()
-	var dir string
-	if folder == "INBOX" {
-		dir = filepath.Join(aliceHome, "INBOX")
-	} else {
-		dir = filepath.Join(aliceHome, "."+folder)
-	}
+	dir := filepath.Join(aliceHome, mailboxpkg.FolderSubpath("maildir", folder, folder))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -597,44 +592,12 @@ func TestACLEnforce_TopLevelCreateNeedsRootK(t *testing.T) {
 	}
 }
 
-func TestACLEnforce_TopLevelCreateAllowedWithRootK(t *testing.T) {
-	// Seed a yarilo-acl at the namespace root granting bob 'k'.
-	aliceHome, dial := enforceServerWithShared(t)
-	a := dial("alice")
-	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
-		t.Fatalf("alice SELECT INBOX: %v", err)
-	}
-	// Root ACL = <home>/yarilo-acl (no subdir).
-	if err := os.WriteFile(filepath.Join(aliceHome, "yarilo-acl"), []byte("user=bob k\n"), 0o600); err != nil {
-		t.Fatalf("seed root ACL: %v", err)
-	}
-
-	b := dial("bob")
-	if err := b.Create("Shared/NewTop", nil).Wait(); err != nil {
-		t.Errorf("peer top-level CREATE with root 'k': %v", err)
-	}
-}
-
-func TestACLEnforce_TopLevelSelectInheritsFromRoot(t *testing.T) {
-	// Root grants 'r'; bob can SELECT a top-level mailbox without
-	// its own ACL by inheritance.
-	aliceHome, dial := enforceServerWithShared(t)
-	a := dial("alice")
-	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
-		t.Fatalf("alice SELECT INBOX: %v", err)
-	}
-	if err := a.Create("PublicBox", nil).Wait(); err != nil {
-		t.Fatalf("alice CREATE PublicBox: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(aliceHome, "yarilo-acl"), []byte("user=bob lr\n"), 0o600); err != nil {
-		t.Fatalf("seed root ACL: %v", err)
-	}
-
-	b := dial("bob")
-	if _, err := b.Select("Shared/PublicBox", nil).Wait(); err != nil {
-		t.Errorf("peer SELECT inheriting 'r' from root: %v", err)
-	}
-}
+// Namespace-root default ACL grants for maildir were tested here previously,
+// but with INBOX now at the maildir root the local namespace-root default
+// collides with INBOX and is disabled (Dovecot acl-backend-vfile.c). For
+// maildir, root-level defaults come from a global ACL or acl_defaults_from_inbox
+// — deferred features. The root-default mechanism itself is covered on mdbox in
+// internal/userstate/acl (TestStore_EffectiveForFallsThroughToRoot*).
 
 func TestACLEnforce_StatusNeedsRead(t *testing.T) {
 	aliceHome, dial := enforceServerWithShared(t)

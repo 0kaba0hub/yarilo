@@ -16,14 +16,13 @@ import "path/filepath"
 //
 // Layouts:
 //
-//	maildir : INBOX -> "INBOX",  other -> ".<disk>"
+//	maildir : INBOX -> "" (the maildir root),  other -> ".<disk>"
 //	mdbox   : "mailboxes/<disk>"
 //	sdbox   : "mailboxes/<disk>/dbox-Mails"
 //
-// The maildir INBOX index/ACL live in an INBOX/ subdir (a yarilo convention)
-// rather than the maildir root, keeping index and control state out of the
-// cur/new/tmp payload directory. The maildir mailbox backend itself keeps
-// INBOX at the maildir root (message data), so only the sidecar state differs.
+// For maildir, INBOX IS the maildir root: index, ACL and message data all live
+// there (Dovecot places dovecot.index/dovecot-acl in the Maildir root, not a
+// subdir).
 func FolderSubpath(driver, folder, diskName string) string {
 	switch driver {
 	case "mdbox":
@@ -32,7 +31,7 @@ func FolderSubpath(driver, folder, diskName string) string {
 		return filepath.Join(mailboxesSubdir, diskName, dboxMailsSubdir)
 	default: // maildir
 		if folder == "INBOX" {
-			return "INBOX"
+			return ""
 		}
 		return "." + diskName
 	}
