@@ -323,6 +323,7 @@ func New(cfg *config.Config) (*Server, error) {
 			}
 			lmtpTLS = t
 		}
+		lmtpStorageCfg := cfg.Storage
 		lmtpOpts := lmtp.Options{
 			Hostname:    cfg.Protocol.Submission.Hostname,
 			Config:      cfg.Protocol.LMTP,
@@ -335,6 +336,10 @@ func New(cfg *config.Config) (*Server, error) {
 			AuthAddr:    authAddr,
 			AuthTLS:     authTLS,
 			SieveEngine: sieveEngine,
+			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
+				return buildMailboxByDriver(driver, lmtpStorageCfg.MdboxAltStoragePath, locker,
+					lmtpStorageCfg.MaxConcurrentWrites, lmtpStorageCfg.MailboxListUTF8, lmtpStorageCfg.MailboxListNormalizeToNFC)
+			},
 		}
 		if addr := cfg.AuthService.MasterAddr; addr != "" {
 			ac, err := authclient.Dial(addr, nil)
@@ -403,6 +408,11 @@ func New(cfg *config.Config) (*Server, error) {
 				}
 				if ui.InboxPath != "" {
 					mbi.InboxPath = mailbox.ExpandHome(ui.InboxPath, mbi.Home)
+				}
+				if loc := ui.MailLocation; loc != "" {
+					if colon := strings.IndexByte(loc, ':'); colon > 0 {
+						mbi.Driver = strings.ToLower(loc[:colon])
+					}
 				}
 				return mbi, nil
 			}
