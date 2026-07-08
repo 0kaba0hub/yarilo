@@ -115,6 +115,9 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 		// string (e.g. SQL with CONCAT) never populate the separate fields.
 		if pui.MailLocation != "" {
 			applyMailLocationMods(pui.MailLocation, ui, username)
+			if colon := strings.IndexByte(pui.MailLocation, ':'); colon > 0 {
+				ui.Driver = strings.ToLower(pui.MailLocation[:colon])
+			}
 		}
 		if pui.InboxPath != "" {
 			ui.InboxPath = mailbox.ExpandHome(pui.InboxPath, ui.Home)

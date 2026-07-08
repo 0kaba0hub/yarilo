@@ -57,6 +57,27 @@ func TestIndexDirRootResolution(t *testing.T) {
 	}
 }
 
+// TestIndexDirMirrorsDriverLayout locks that the fileindex per-folder dir uses
+// the mailbox driver's layout (mailboxes/<f> for dbox) rooted at the index root.
+func TestIndexDirMirrorsDriverLayout(t *testing.T) {
+	cases := []struct {
+		driver, folder, want string
+	}{
+		{"maildir", "Sent", ".Sent"},
+		{"mdbox", "INBOX", "mailboxes/INBOX"},
+		{"mdbox", "Sent", "mailboxes/Sent"},
+		{"sdbox", "Sent", "mailboxes/Sent/dbox-Mails"},
+	}
+	for _, c := range cases {
+		ui := New().OpenUser(&mailbox.UserInfo{
+			Username: "u@x", Home: "/h", IndexDir: "/idx", Driver: c.driver,
+		}).(*userHandle).ui
+		if got := ui.indexDir(c.folder); got != filepath.Join("/idx", c.want) {
+			t.Errorf("driver %s indexDir(%s)=%q, want /idx/%s", c.driver, c.folder, got, c.want)
+		}
+	}
+}
+
 func TestLogReplay(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)

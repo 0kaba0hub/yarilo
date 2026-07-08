@@ -594,7 +594,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.mailboxesRoot(), u.folderDiskName(folder), dboxMailsDir)
+	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpath("sdbox", folder, u.folderDiskName(folder)))
 }
 
 // makeTempName returns ".temp.<sec>.P<pid>Q<seq>M<usec>.<host>"

@@ -42,7 +42,7 @@ type ListEntry struct {
 
 // ListPath returns the on-disk yarilo-acl-list path for this Store's
 // namespace root.
-func (s *Store) ListPath() string { return filepath.Join(s.home, ListFileName) }
+func (s *Store) ListPath() string { return filepath.Join(s.mailboxesRoot(), ListFileName) }
 
 // ListSnapshot returns every entry in the on-disk index. Missing file
 // returns (nil, nil) — "no mailbox in this namespace has an explicit
@@ -252,8 +252,8 @@ func (s *Store) loadListLocked() ([]ListEntry, error) {
 }
 
 func (s *Store) writeListAtomicLocked(entries []ListEntry) error {
-	if err := os.MkdirAll(s.home, 0o700); err != nil {
-		return fmt.Errorf("userstate/acl: list mkdir %s: %w", s.home, err)
+	if err := os.MkdirAll(s.mailboxesRoot(), 0o700); err != nil {
+		return fmt.Errorf("userstate/acl: list mkdir %s: %w", s.mailboxesRoot(), err)
 	}
 	// Sorted by (mailbox, identifier-canonical, negative) so two
 	// processes produce byte-identical files.
@@ -307,7 +307,7 @@ func (s *Store) withListLock(fn func() error) error {
 	if s.locker == nil {
 		return fn()
 	}
-	key := locks.ACLListKey(s.home)
+	key := locks.ACLListKey(s.mailboxesRoot())
 	if s.locker.HoldsResource(key) {
 		return fn()
 	}

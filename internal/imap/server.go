@@ -845,11 +845,13 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 				}
 			}
 		}
-		// Select per-user mailbox backend when the driver in mail_location
-		// differs from the global default.
-		if f := s.srv.opts.MailboxByDriver; f != nil {
-			if colon := strings.IndexByte(res.MailLoc, ':'); colon > 0 {
-				driver := strings.ToLower(res.MailLoc[:colon])
+		// Record the mail_location driver so the fileindex and ACL pick the
+		// matching per-folder layout, and select the per-user mailbox backend
+		// when that driver differs from the global default.
+		if colon := strings.IndexByte(res.MailLoc, ':'); colon > 0 {
+			driver := strings.ToLower(res.MailLoc[:colon])
+			userInfo.Driver = driver
+			if f := s.srv.opts.MailboxByDriver; f != nil {
 				s.personalMailbox = f(driver)
 			}
 		}

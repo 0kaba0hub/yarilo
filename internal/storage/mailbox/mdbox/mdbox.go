@@ -204,7 +204,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.folderRoot(), u.folderDiskName(folder))
+	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpath("mdbox", folder, u.folderDiskName(folder)))
 }
 func (u *userMailbox) mfilePath(fileID uint32) string {
 	return filepath.Join(u.storagePath(), fmt.Sprintf("m.%d", fileID))

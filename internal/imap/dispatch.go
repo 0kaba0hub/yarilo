@@ -156,7 +156,7 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		subsRoot = ui.ControlDir
 	}
 	store := subs.New(subsRoot, subsFile, ui.Username, owner, s.srv.opts.Locker)
-	aclStore := acl.New(ui.Home, ui.IndexDir, ui.Username, owner, s.srv.opts.Locker)
+	aclStore := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Username, owner, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,
 		spec:     spec,

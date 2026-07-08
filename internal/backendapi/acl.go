@@ -177,7 +177,7 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return nil, nil, err
 	}
-	store := acl.New(bundle.folderHome(), bundle.folderIndexRoot(), uc.info.Username, uc.lockOwner(), s.opts.Locker)
+	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, uc.info.Username, uc.lockOwner(), s.opts.Locker)
 	return store, &req, nil
 }
 
