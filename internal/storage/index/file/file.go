@@ -347,22 +347,6 @@ func makeOwner(u *mailbox.UserInfo) string {
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
-// IndexDirFor returns the per-folder directory layout this backend
-// uses given a user home root: <home>/INBOX/ for INBOX, <home>/.<folder>/
-// for others (Maildir convention; dbox/mdbox drivers piggyback on the
-// same layout — Phase 3 will move sdbox to dbox-Mails/ subdir).
-//
-// Exposed because callers outside this package (notably
-// internal/userstate/acl) also place control-state sidecars in this
-// directory and must agree on the path. Keep this function as the
-// single source of truth.
-func IndexDirFor(home, folder string) string {
-	if folder == "INBOX" {
-		return filepath.Join(home, "INBOX")
-	}
-	return filepath.Join(home, "."+folder)
-}
-
 // indexRootDir resolves the index root: INDEX= (indexRoot) when set,
 // otherwise the mail root (mailPath), falling back to Home. Mirrors
 // Dovecot's PATH_TYPE_INDEX default (mail_index_path or mail_path).
