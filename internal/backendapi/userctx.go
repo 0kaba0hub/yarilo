@@ -388,6 +388,9 @@ func (b *nsBundle) folderControlRoot() string {
 	if b.info.ControlDir != "" {
 		return b.info.ControlDir
 	}
+	if b.info.MailPath != "" {
+		return b.info.MailPath
+	}
 	return b.info.Home
 }
 

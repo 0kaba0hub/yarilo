@@ -146,7 +146,12 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		return nil, fmt.Errorf("mailbox init: %w", err)
 	}
 	idx := s.srv.opts.Index.OpenUser(ui)
+	// Subscriptions live in the control root: mail_control_path (ControlDir)
+	// when set, otherwise the mail root (MailPath), falling back to Home.
 	subsRoot := ui.Home
+	if ui.MailPath != "" {
+		subsRoot = ui.MailPath
+	}
 	if ui.ControlDir != "" {
 		subsRoot = ui.ControlDir
 	}
