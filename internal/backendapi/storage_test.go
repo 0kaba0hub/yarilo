@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -213,6 +214,43 @@ func TestSubscriptionsRoundTrip(t *testing.T) {
 	decodeJSONBody(t, body, &listResp)
 	if len(listResp.Subscriptions) != 1 || listResp.Subscriptions[0] != "INBOX" {
 		t.Errorf("after remove subscriptions=%v want [INBOX]", listResp.Subscriptions)
+	}
+}
+
+// TestSubscriptions_LiveAtMailRoot verifies the subscriptions file is written
+// under the mail root (MailPath) rather than Home when the two differ.
+func TestSubscriptions_LiveAtMailRoot(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	mb := maildir.New()
+	idx := file.New()
+	s := New(Options{
+		Mailbox: mb,
+		Index:   idx,
+		Resolver: &mailbox.Resolver{
+			Root:            root,
+			HomeTemplate:    "%d/%n",
+			DefaultMailPath: "%h/Maildir",
+		},
+		Namespaces: []config.NamespaceConfig{
+			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+		},
+	})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	const user = "alice@example.com"
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/subscriptions/add", "",
+		map[string]any{"user": user, "folder": "INBOX"}); status != 200 {
+		t.Fatalf("add status=%d body=%s", status, body)
+	}
+
+	home := maildirHome(root, user)
+	if _, err := os.Stat(filepath.Join(home, "Maildir", "subscriptions")); err != nil {
+		t.Errorf("subscriptions not at mail root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "subscriptions")); !os.IsNotExist(err) {
+		t.Errorf("subscriptions leaked into Home: err=%v", err)
 	}
 }
 
