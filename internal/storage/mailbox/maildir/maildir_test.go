@@ -24,16 +24,18 @@ func newBox(t *testing.T, user string) (*userMailbox, string) {
 	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userMailbox), root
 }
 
-func TestUIDListPath_DefaultsToHome(t *testing.T) {
+func TestUIDListPath_DefaultsToMaildirRoot(t *testing.T) {
+	// With no mail_path from userdb the driver defaults to <home>/Maildir,
+	// so INBOX is the maildir root and siblings are dotted below it.
 	box, root := newBox(t, "u@x.com")
 	home := testHome(root, "u@x.com")
 	got := box.uidListPath("INBOX")
-	want := filepath.Join(home, "INBOX", UIDListFileName)
+	want := filepath.Join(home, "Maildir", UIDListFileName)
 	if got != want {
 		t.Errorf("uidListPath(INBOX) = %q, want %q", got, want)
 	}
 	got = box.uidListPath("Sent")
-	want = filepath.Join(home, ".Sent", UIDListFileName)
+	want = filepath.Join(home, "Maildir", ".Sent", UIDListFileName)
 	if got != want {
 		t.Errorf("uidListPath(Sent) = %q, want %q", got, want)
 	}
@@ -208,6 +210,34 @@ func TestListFolders(t *testing.T) {
 		if !has(want) {
 			t.Errorf("ListFolders missing %q, got %v", want, folders)
 		}
+	}
+}
+
+// TestListFolders_ExplicitMailPath guards the regression where ListFolders
+// scanned Home while folders were created under a distinct MailPath. With
+// MailPath != Home the two diverge, so listing must read MailPath.
+func TestListFolders_ExplicitMailPath(t *testing.T) {
+	root := t.TempDir()
+	home := testHome(root, "u@x.com")
+	mailPath := filepath.Join(home, "Maildir")
+	box := New().OpenUser(&mailbox.UserInfo{
+		Username: "u@x.com", Home: home, MailPath: mailPath,
+	}).(*userMailbox)
+	box.Init()         //nolint:errcheck
+	box.Create("Sent") //nolint:errcheck
+
+	folders, err := box.ListFolders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range folders {
+		if f == "Sent" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ListFolders missing %q under MailPath, got %v", "Sent", folders)
 	}
 }
 
@@ -390,12 +420,12 @@ func TestList_PopulatesSizesFromFilename(t *testing.T) {
 func TestList_LegacyFilename_FallsBackToStat(t *testing.T) {
 	// Legacy files without ,S= must still produce a non-zero Size by stat().
 	user := "u@x"
-	box, root := newBox(t, user)
+	box, _ := newBox(t, user)
 	box.Init() //nolint:errcheck
 
-	// Drop a legacy-named file (no size annotations) directly into cur/.
-	// User "u@x" lives at <root>/x/u (virtual-hosting layout).
-	cur := filepath.Join(root, "x", "u", "INBOX", "cur")
+	// Drop a legacy-named file (no size annotations) directly into the
+	// INBOX cur/ (the maildir root under the default <home>/Maildir).
+	cur := filepath.Join(box.folderPath("INBOX"), "cur")
 	legacy := filepath.Join(cur, "1700000000.M0P0_0.host:2,")
 	body := []byte("legacy body\n")
 	if err := os.WriteFile(legacy, body, 0o600); err != nil {
