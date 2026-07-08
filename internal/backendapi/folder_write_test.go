@@ -125,8 +125,12 @@ func TestFolderDelete_RemovesACLState(t *testing.T) {
 		map[string]any{"user": user, "folder": "Shared"})
 
 	// Seed a yarilo-acl on the new folder so we can confirm the
-	// delete drops it.
+	// delete drops it. ACL/index state is Home-rooted (independent of the
+	// maildir MailPath), so the per-folder index dir is created here.
 	folderDir := filepath.Join(maildirHome(root, user), ".Shared")
+	if err := os.MkdirAll(folderDir, 0o700); err != nil {
+		t.Fatalf("mkdir index dir: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(folderDir, "yarilo-acl"), []byte("user=bob lr\n"), 0o600); err != nil {
 		t.Fatalf("seed acl: %v", err)
 	}
@@ -207,6 +211,9 @@ func TestFolderRename_MovesACLState(t *testing.T) {
 		map[string]any{"user": user, "folder": "Src"})
 
 	srcDir := filepath.Join(maildirHome(root, user), ".Src")
+	if err := os.MkdirAll(srcDir, 0o700); err != nil {
+		t.Fatalf("mkdir index dir: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(srcDir, "yarilo-acl"), []byte("user=bob lr\n"), 0o600); err != nil {
 		t.Fatalf("seed acl: %v", err)
 	}

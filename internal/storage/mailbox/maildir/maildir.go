@@ -87,12 +87,15 @@ func New(opts ...Option) *Backend {
 // OpenUser returns a per-session handle bound to u. The handle's Home field
 // is used for all path resolution; usernames are never converted to paths here.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
-	mailPath := u.Home
-	explicit := false
-	if u.MailPath != "" {
-		mailPath = u.MailPath
-		explicit = true
+	// Per-driver default: when no mail_path arrives from userdb, default to
+	// <home>/Maildir (Dovecot's maildir default) so INBOX is the maildir root
+	// rather than a home/INBOX subdirectory. The mailbox root is always a
+	// dedicated directory, so the maildir-root INBOX layout always applies.
+	mailPath := u.MailPath
+	if mailPath == "" {
+		mailPath = filepath.Join(u.Home, "Maildir")
 	}
+	explicit := true
 	inboxPath := mailPath
 	if u.InboxPath != "" {
 		inboxPath = u.InboxPath
@@ -474,7 +477,7 @@ func (u *userMailbox) FolderExists(folder string) (bool, error) {
 }
 
 func (u *userMailbox) ListFolders() ([]string, error) {
-	entries, err := os.ReadDir(u.home)
+	entries, err := os.ReadDir(u.mailPath)
 	if err != nil {
 		return nil, err
 	}

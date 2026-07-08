@@ -178,7 +178,9 @@ func TestTwoProcessAppendNoUIDCollision(t *testing.T) {
 	}
 
 	// Verify uidlist contains exactly totalAppends entries, all distinct.
-	uidlistPath := filepath.Join(homeDir, "INBOX", "yarilo-uidlist")
+	// With no mail_path the maildir driver defaults to <home>/Maildir and
+	// INBOX is that root, so the uidlist sidecar lives there.
+	uidlistPath := filepath.Join(homeDir, "Maildir", "yarilo-uidlist")
 	f, err := os.Open(uidlistPath)
 	if err != nil {
 		t.Fatalf("open uidlist: %v", err)

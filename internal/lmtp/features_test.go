@@ -45,7 +45,7 @@ func buildFeatureServer(t *testing.T, cfg config.LMTPProtocolConfig) featureServ
 	go func() { _ = srv.Serve(ln) }()
 	return featureServer{
 		addr:       ln.Addr().String(),
-		maildirCur: filepath.Join(resolver.Resolve("alice@example.com", ""), "INBOX", "cur"),
+		maildirCur: filepath.Join(resolver.Resolve("alice@example.com", ""), "Maildir", "cur"),
 	}
 }
 
