@@ -124,6 +124,8 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 		ui := &userIndex{
 			b:           b,
 			home:        u.Home,
+			mailPath:    u.MailPath,
+			driver:      u.Driver,
 			volatileDir: u.VolatileDir,
 			indexRoot:   u.IndexDir,
 			username:    u.Username,
@@ -231,8 +233,10 @@ func (h *userHandle) Close() error {
 type userIndex struct {
 	b           *Backend
 	home        string
+	mailPath    string // mail root; index co-locates here when INDEX= is unset
+	driver      string // mailbox driver; selects the per-folder layout
 	volatileDir string // base volatile dir (empty = disabled)
-	indexRoot   string // INDEX= override root (empty = co-located with home)
+	indexRoot   string // INDEX= override root (empty = co-located with mail root)
 	username    string
 	owner       string
 	counter     *quota.Counter
@@ -343,27 +347,24 @@ func makeOwner(u *mailbox.UserInfo) string {
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
-// IndexDirFor returns the per-folder directory layout this backend
-// uses given a user home root: <home>/INBOX/ for INBOX, <home>/.<folder>/
-// for others (Maildir convention; dbox/mdbox drivers piggyback on the
-// same layout — Phase 3 will move sdbox to dbox-Mails/ subdir).
-//
-// Exposed because callers outside this package (notably
-// internal/userstate/acl) also place control-state sidecars in this
-// directory and must agree on the path. Keep this function as the
-// single source of truth.
-func IndexDirFor(home, folder string) string {
-	if folder == "INBOX" {
-		return filepath.Join(home, "INBOX")
+// indexRootDir resolves the index root: INDEX= (indexRoot) when set,
+// otherwise the mail root (mailPath), falling back to Home. Mirrors
+// resolves to the index root (INDEX=), else the mail root, else Home.
+func (u *userIndex) indexRootDir() string {
+	root := u.home
+	if u.mailPath != "" {
+		root = u.mailPath
 	}
-	return filepath.Join(home, "."+folder)
+	if u.indexRoot != "" {
+		root = u.indexRoot
+	}
+	return root
 }
 
+// indexDir is the per-folder index directory: the index root joined with the
+// driver's folder sub-layout, so the index mirrors the mailbox tree.
 func (u *userIndex) indexDir(folder string) string {
-	if u.indexRoot != "" {
-		return IndexDirFor(u.indexRoot, folder)
-	}
-	return IndexDirFor(u.home, folder)
+	return filepath.Join(u.indexRootDir(), mailbox.FolderSubpath(u.driver, folder, folder))
 }
 
 // folderVolatileDir returns the per-folder volatile directory when
@@ -372,7 +373,7 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 	if u.volatileDir == "" {
 		return ""
 	}
-	return IndexDirFor(u.volatileDir, folder)
+	return filepath.Join(u.volatileDir, mailbox.FolderSubpath(u.driver, folder, folder))
 }
 
 // withFolderRO reloads the folder state under the in-process mutex only and

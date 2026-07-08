@@ -60,7 +60,7 @@ func TestAutoMigratesLegacyOnOpen(t *testing.T) {
 	// Seed under the legacy filename — Open() must first rename
 	// dovecot.index → yarilo.index, then notice the pre-Phase-2
 	// yarilo wire format inside and migrate to current format.
-	indexPath := filepath.Join(dir, "INBOX", "dovecot.index")
+	indexPath := filepath.Join(dir, "dovecot.index")
 
 	guid := [16]byte{0xab, 0xcd, 0xef, 0x01, 0x02, 0x03, 0x04, 0x05,
 		0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d}
@@ -127,7 +127,7 @@ func TestAutoMigratesLegacyOnOpen(t *testing.T) {
 	// After Open the legacy-named file is gone (renamed in) and
 	// the .legacy backup of the pre-Phase-2 wire format sits next
 	// to the yarilo-native index file.
-	yariloPath := filepath.Join(dir, "INBOX", IndexFileName)
+	yariloPath := filepath.Join(dir, IndexFileName)
 	if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
 		t.Errorf("legacy-named index file still present: %v", err)
 	}
@@ -154,16 +154,16 @@ func TestOpenMigratesDovecotIndexFilename(t *testing.T) {
 	if _, err := idx.OpenFolder("INBOX", 1); err != nil {
 		t.Fatalf("seed Open: %v", err)
 	}
-	yariloPath := filepath.Join(dir, "INBOX", IndexFileName)
-	yariloLog := filepath.Join(dir, "INBOX", IndexLogFileName)
+	yariloPath := filepath.Join(dir, IndexFileName)
+	yariloLog := filepath.Join(dir, IndexLogFileName)
 	if _, err := os.Stat(yariloPath); err != nil {
 		t.Fatalf("seed index missing: %v", err)
 	}
 
 	// 2. Move the yarilo files back to legacy names — as if the
 	//    folder was inherited from a canonical install.
-	legacyPath := filepath.Join(dir, "INBOX", LegacyIndexFileName)
-	legacyLog := filepath.Join(dir, "INBOX", LegacyIndexLogFileName)
+	legacyPath := filepath.Join(dir, LegacyIndexFileName)
+	legacyLog := filepath.Join(dir, LegacyIndexLogFileName)
 	if err := os.Rename(yariloPath, legacyPath); err != nil {
 		t.Fatalf("rename to legacy: %v", err)
 	}

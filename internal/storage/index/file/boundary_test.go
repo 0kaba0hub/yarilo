@@ -23,7 +23,7 @@ func TestBoundaryPartialWriteDiscarded(t *testing.T) {
 	b.Close() //nolint:errcheck
 
 	// Corrupt: append a torn TxHeader (8 bytes claiming size=16, no payload, no BOUNDARY).
-	logPath := filepath.Join(dir, testHome("", testUser), "INBOX", IndexLogFileName)
+	logPath := filepath.Join(dir, testHome("", testUser), IndexLogFileName)
 	lf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatalf("open log: %v", err)
@@ -68,7 +68,7 @@ func TestBoundaryMidTransactionCrashDiscarded(t *testing.T) {
 	// sub-record that would require at least 8 bytes (header) + payload.
 	// BOUNDARY.Size = 12 + 24 = 36, but we only write 4 bytes after the
 	// BOUNDARY, so logFileSize < committedEnd — transaction must be dropped.
-	logPath := filepath.Join(dir, testHome("", testUser), "INBOX", IndexLogFileName)
+	logPath := filepath.Join(dir, testHome("", testUser), IndexLogFileName)
 	lf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatalf("open log: %v", err)

@@ -29,6 +29,55 @@ func openIdx(root, user string) *userIndex {
 	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userHandle).ui
 }
 
+// TestIndexDirRootResolution locks the index-root resolution:
+// index root is INDEX= (IndexDir), else the mail root (MailPath), else Home.
+func TestIndexDirRootResolution(t *testing.T) {
+	cases := []struct {
+		name              string
+		home, mail, index string
+		wantRoot          string
+	}{
+		{"home only", "/h", "", "", "/h"},
+		{"mail root fallback", "/h", "/h/Maildir", "", "/h/Maildir"},
+		{"index overrides mail", "/h", "/h/Maildir", "/idx", "/idx"},
+		{"index over home", "/h", "", "/idx", "/idx"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ui := New().OpenUser(&mailbox.UserInfo{
+				Username: "u@x", Home: c.home, MailPath: c.mail, IndexDir: c.index,
+			}).(*userHandle).ui
+			if got := ui.indexDir("INBOX"); got != c.wantRoot {
+				t.Errorf("indexDir(INBOX)=%q, want root %q", got, c.wantRoot)
+			}
+			if got := ui.indexDir("Sent"); got != filepath.Join(c.wantRoot, ".Sent") {
+				t.Errorf("indexDir(Sent)=%q, want root %q", got, c.wantRoot)
+			}
+		})
+	}
+}
+
+// TestIndexDirMirrorsDriverLayout locks that the fileindex per-folder dir uses
+// the mailbox driver's layout (mailboxes/<f> for dbox) rooted at the index root.
+func TestIndexDirMirrorsDriverLayout(t *testing.T) {
+	cases := []struct {
+		driver, folder, want string
+	}{
+		{"maildir", "Sent", ".Sent"},
+		{"mdbox", "INBOX", "mailboxes/INBOX"},
+		{"mdbox", "Sent", "mailboxes/Sent"},
+		{"sdbox", "Sent", "mailboxes/Sent/dbox-Mails"},
+	}
+	for _, c := range cases {
+		ui := New().OpenUser(&mailbox.UserInfo{
+			Username: "u@x", Home: "/h", IndexDir: "/idx", Driver: c.driver,
+		}).(*userHandle).ui
+		if got := ui.indexDir(c.folder); got != filepath.Join("/idx", c.want) {
+			t.Errorf("driver %s indexDir(%s)=%q, want /idx/%s", c.driver, c.folder, got, c.want)
+		}
+	}
+}
+
 func TestLogReplay(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)

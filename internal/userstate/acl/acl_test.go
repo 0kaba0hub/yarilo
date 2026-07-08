@@ -13,7 +13,7 @@ import (
 
 func TestStore_GetMissingFileReturnsNil(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	got, err := s.Get("INBOX")
 	if err != nil {
 		t.Fatalf("Get on missing file: %v", err)
@@ -25,7 +25,7 @@ func TestStore_GetMissingFileReturnsNil(t *testing.T) {
 
 func TestStore_SetGetRoundTrip(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	in := mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: mailbox.MustParseRights("lrs")},
@@ -48,11 +48,11 @@ func TestStore_SetGetRoundTrip(t *testing.T) {
 
 func TestStore_PathLayoutMirrorsFileindex(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	tests := []struct {
 		folder, wantSuffix string
 	}{
-		{"INBOX", filepath.Join("INBOX", FileName)},
+		{"INBOX", FileName},
 		{"Sent", filepath.Join(".Sent", FileName)},
 		{"Lists/announce", filepath.Join(".Lists/announce", FileName)},
 	}
@@ -69,7 +69,7 @@ func TestStore_PathLayoutMirrorsFileindex(t *testing.T) {
 
 func TestStore_SetCreatesParentDir(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	acl := mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
 	}
@@ -84,14 +84,14 @@ func TestStore_SetCreatesParentDir(t *testing.T) {
 
 func TestStore_SetIsAtomic_NoTmpLeak(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	acl := mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
 	}
 	if err := s.Set("INBOX", acl); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	entries, err := os.ReadDir(filepath.Join(home, "INBOX"))
+	entries, err := os.ReadDir(home)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestStore_SetIsAtomic_NoTmpLeak(t *testing.T) {
 
 func TestStore_SetReplacesPriorContent(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	first := mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: mailbox.MustParseRights("lrs")},
 	}
@@ -128,7 +128,7 @@ func TestStore_SetReplacesPriorContent(t *testing.T) {
 
 func TestStore_RemoveIdempotent(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	if err := s.Remove("INBOX"); err != nil {
 		t.Errorf("Remove on missing file should be nil, got %v", err)
 	}
@@ -149,7 +149,7 @@ func TestStore_RemoveIdempotent(t *testing.T) {
 
 func TestStore_UpdateReadModifyWrite(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	prior := mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: mailbox.MustParseRights("lrs")},
 	}
@@ -177,7 +177,7 @@ func TestStore_UpdateReadModifyWrite(t *testing.T) {
 
 func TestStore_UpdateNilReturnPreservesFile(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	prior := mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights},
 	}
@@ -198,7 +198,7 @@ func TestStore_UpdateNilReturnPreservesFile(t *testing.T) {
 
 func TestStore_UpdatePropagatesError(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	sentinel := errors.New("user error")
 	err := s.Update("INBOX", func(_ mailbox.ACL) (mailbox.ACL, error) {
 		return nil, sentinel
@@ -215,7 +215,7 @@ func TestStore_ConcurrentUpdatesWithoutLockerDoNotPanic(t *testing.T) {
 	// parseable — verifying the lock-acquired path is the locks-
 	// integration suite, not this unit test.
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
@@ -239,7 +239,7 @@ func TestStore_ConcurrentUpdatesWithoutLockerDoNotPanic(t *testing.T) {
 
 func TestStore_FilePermissions(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	acl := mailbox.ACL{{Identifier: mailbox.Identifier{Type: mailbox.IDOwner}, Rights: mailbox.FullRights}}
 	if err := s.Set("INBOX", acl); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -260,7 +260,7 @@ func TestStore_EffectiveForOwnerShortCircuits(t *testing.T) {
 	// without reading anything from disk. Seed a non-owner-denying
 	// ACL on the leaf to prove the owner path skips the load.
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	if err := s.Set("Lists/news", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: "lr"},
 	}); err != nil {
@@ -277,7 +277,7 @@ func TestStore_EffectiveForOwnerShortCircuits(t *testing.T) {
 
 func TestStore_EffectiveForLeafACLWins(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	// Parent grants r only; leaf grants lrws. First-hit-wins → leaf.
 	if err := s.Set("Lists", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "r"},
@@ -300,7 +300,7 @@ func TestStore_EffectiveForLeafACLWins(t *testing.T) {
 
 func TestStore_EffectiveForInheritsFromParent(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	// Parent has explicit ACL; leaf has none → inherits.
 	if err := s.Set("Lists", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lr"},
@@ -318,7 +318,7 @@ func TestStore_EffectiveForInheritsFromParent(t *testing.T) {
 
 func TestStore_EffectiveForInheritsAcrossMultipleLevels(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	// Three-deep folder; only the top has an ACL.
 	if err := s.Set("Lists", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
@@ -336,7 +336,7 @@ func TestStore_EffectiveForInheritsAcrossMultipleLevels(t *testing.T) {
 
 func TestStore_EffectiveForNoACLAnywhereYieldsEmpty(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	got, err := s.EffectiveFor("Lists/news", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
@@ -350,7 +350,7 @@ func TestStore_EffectiveForLeafOverridesParentEvenWhenLeafIsRestrictive(t *testi
 	// First-hit-wins: a leaf ACL that denies (even by being empty
 	// for this user) overrides a permissive parent.
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	if err := s.Set("Lists", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "lr"},
 	}); err != nil {
@@ -373,7 +373,7 @@ func TestStore_EffectiveForLeafOverridesParentEvenWhenLeafIsRestrictive(t *testi
 
 func TestStore_EffectiveForNegativeInInheritedACL(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	if err := s.Set("Lists", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "lrs"},
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "s", Negative: true},
@@ -391,9 +391,11 @@ func TestStore_EffectiveForNegativeInInheritedACL(t *testing.T) {
 
 func TestStore_PathEmptyFolderIsNamespaceRoot(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	// mdbox: the namespace root is mailboxes/, distinct from INBOX, so the
+	// local root default is available (unlike maildir — see the disabled test).
+	s := New(home, "", "mdbox", "alice", "test", nil)
 	got := s.Path("")
-	want := filepath.Join(home, FileName)
+	want := filepath.Join(home, "mailboxes", FileName)
 	if got != want {
 		t.Errorf("Path(\"\") = %q, want %q (namespace-root file)", got, want)
 	}
@@ -401,14 +403,14 @@ func TestStore_PathEmptyFolderIsNamespaceRoot(t *testing.T) {
 
 func TestStore_SetGetRootACL(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "mdbox", "alice", "test", nil)
 	in := mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrk"},
 	}
 	if err := s.Set("", in); err != nil {
 		t.Fatalf("Set root: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, FileName)); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "mailboxes", FileName)); err != nil {
 		t.Errorf("root file not created: %v", err)
 	}
 	got, err := s.Get("")
@@ -422,7 +424,7 @@ func TestStore_SetGetRootACL(t *testing.T) {
 
 func TestStore_EffectiveForFallsThroughToRoot(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "mdbox", "alice", "test", nil)
 	// Only the namespace root has an ACL; leaf has none.
 	if err := s.Set("", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrk"},
@@ -438,9 +440,30 @@ func TestStore_EffectiveForFallsThroughToRoot(t *testing.T) {
 	}
 }
 
+// TestStore_MaildirRootDefaultDisabled asserts that for maildir the local
+// namespace-root default ACL is unavailable — its path is INBOX's own, so
+// Set("") is refused and inheritance never falls through to it; a global ACL is the intended default source in that case.
+func TestStore_MaildirRootDefaultDisabled(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "", "maildir", "alice", "test", nil)
+	err := s.Set("", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
+	})
+	if err == nil {
+		t.Fatal("Set(\"\") should be refused for maildir (collides with INBOX)")
+	}
+	got, err := s.EffectiveFor("TopLevel", "bob", nil, false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (no maildir root default)", got)
+	}
+}
+
 func TestStore_EffectiveForFallsThroughToRootFromDeep(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "mdbox", "alice", "test", nil)
 	if err := s.Set("", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
 	}); err != nil {
@@ -459,7 +482,7 @@ func TestStore_EffectiveForLeafBeatsRoot(t *testing.T) {
 	// Same first-hit-wins rule: an explicit ACL on the leaf fully
 	// overrides the root's ACL, no merge.
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "mdbox", "alice", "test", nil)
 	if err := s.Set("", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "lr"},
 	}); err != nil {
@@ -485,7 +508,7 @@ func TestStore_EffectiveForZeroSepStillTriesRoot(t *testing.T) {
 	// through must NOT fire either — only the explicit folder is
 	// consulted. Mirrors the "no inheritance" opt-out.
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "mdbox", "alice", "test", nil)
 	if err := s.Set("", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
 	}); err != nil {
@@ -502,7 +525,7 @@ func TestStore_EffectiveForZeroSepStillTriesRoot(t *testing.T) {
 
 func TestStore_EffectiveForZeroSepDisablesWalk(t *testing.T) {
 	home := t.TempDir()
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	if err := s.Set("Lists", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lr"},
 	}); err != nil {
@@ -519,25 +542,26 @@ func TestStore_EffectiveForZeroSepDisablesWalk(t *testing.T) {
 
 func TestStore_ParseErrorAnnotatesPath(t *testing.T) {
 	home := t.TempDir()
-	dir := filepath.Join(home, "INBOX")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	bad := filepath.Join(dir, FileName)
+	// maildir INBOX ACL lives in the maildir root.
+	bad := filepath.Join(home, FileName)
 	if err := os.WriteFile(bad, []byte("user=eve INVALID-RIGHTS\n"), 0o600); err != nil {
 		t.Fatalf("seed bad file: %v", err)
 	}
-	s := New(home, "", "alice", "test", nil)
+	s := New(home, "", "", "alice", "test", nil)
 	_, err := s.Get("INBOX")
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
 }
 
-func TestStore_IndexRootSeparatesACLFromHome(t *testing.T) {
+// TestStore_ACLFollowsMailPathNotIndex guards that the yarilo-acl file lives
+// in the mailbox directory (MailPath), not the INDEX root:
+// the ACL lives with the mail data, so INDEX= must not relocate it.
+func TestStore_ACLFollowsMailPathNotIndex(t *testing.T) {
 	home := t.TempDir()
+	mailPath := filepath.Join(home, "Maildir")
 	indexRoot := t.TempDir()
-	s := New(home, indexRoot, "alice", "test", nil)
+	s := New(home, mailPath, "", "alice", "test", nil)
 
 	if err := s.Set("INBOX", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lr"},
@@ -545,14 +569,12 @@ func TestStore_IndexRootSeparatesACLFromHome(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	// ACL file must live under indexRoot, not home.
-	aclPath := filepath.Join(indexRoot, "INBOX", FileName)
-	if _, err := os.Stat(aclPath); err != nil {
-		t.Errorf("yarilo-acl not found under indexRoot: %v", err)
+	// ACL lives in the mailbox dir (maildir INBOX == the maildir root).
+	if _, err := os.Stat(filepath.Join(mailPath, FileName)); err != nil {
+		t.Errorf("yarilo-acl not found under mail root: %v", err)
 	}
-	// Nothing written under home.
-	homePath := filepath.Join(home, "INBOX", FileName)
-	if _, err := os.Stat(homePath); err == nil {
-		t.Errorf("yarilo-acl unexpectedly found under home")
+	// INDEX= must not have pulled it into the index root.
+	if _, err := os.Stat(filepath.Join(indexRoot, FileName)); err == nil {
+		t.Errorf("yarilo-acl leaked into INDEX root")
 	}
 }

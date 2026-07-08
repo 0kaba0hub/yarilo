@@ -35,6 +35,38 @@ func TestInitCreatesLayout(t *testing.T) {
 	}
 }
 
+// TestMapIndexFollowsINDEX verifies the mdbox map index relocates to
+// <INDEX>/storage while the m.* payload stays in the mail root (index_root/storage).
+func TestMapIndexFollowsINDEX(t *testing.T) {
+	home := t.TempDir()
+	indexRoot := t.TempDir()
+	mb := New().OpenUser(&mailbox.UserInfo{
+		Username: "alice@example.com", Home: home, IndexDir: indexRoot,
+	})
+	if err := mb.Init(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	t.Cleanup(func() { _ = mb.Close() })
+
+	body := "From: a@x\r\n\r\nbody\r\n"
+	if _, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// map index follows INDEX=
+	if _, err := os.Stat(filepath.Join(indexRoot, "storage", "yarilo.map.index")); err != nil {
+		t.Errorf("map index not under INDEX root: %v", err)
+	}
+	// m.* payload stays in the mail root
+	if _, err := os.Stat(filepath.Join(home, "mdbox", "storage", "m.1")); err != nil {
+		t.Errorf("m.1 payload not under mail root: %v", err)
+	}
+	// map index must not leak into the mail root
+	if _, err := os.Stat(filepath.Join(home, "mdbox", "storage", "yarilo.map.index")); !os.IsNotExist(err) {
+		t.Errorf("map index leaked into mail root: err=%v", err)
+	}
+}
+
 func TestSaveFetchRoundTrip(t *testing.T) {
 	mb, _ := newTestUser(t)
 	body := "From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\nbody bytes\r\n"

@@ -1,7 +1,7 @@
-// Package acl persists per-mailbox ACL state in a yarilo-acl file
-// inside the folder's index directory (the same dir holding
-// yarilo.index*). One file per mailbox; on-disk format is the same
-// ACL line encoding parsed and written by pkg/mailbox.
+// Package acl persists per-mailbox ACL state in a yarilo-acl file inside the
+// folder's mailbox directory: the ACL lives with the mail data and does NOT
+// follow INDEX=. One file per mailbox; on-disk format is the same ACL line
+// encoding parsed and written by pkg/mailbox.
 //
 // Cross-process correctness comes from pkg/locks via the same
 // MailboxKey the fileindex backend uses for that folder. Read-
@@ -9,14 +9,15 @@
 // same mailbox cannot interleave; pure reads (GETACL/MYRIGHTS)
 // take the same lock briefly to avoid catching a torn file.
 //
-// Layout — folder → file (Maildir-style, mirrors fileindex):
+// Layout — folder → file, rooted at the mail root and using the driver's
+// folder sub-layout via mailbox.FolderSubpath, so the yarilo-acl file sits
+// in the mailbox directory. For maildir:
 //
-//	INBOX           → <home>/INBOX/yarilo-acl
-//	Sent            → <home>/.Sent/yarilo-acl
-//	Lists/announce  → <home>/.Lists/announce/yarilo-acl
+//	INBOX           → <mailroot>/yarilo-acl
+//	Sent            → <mailroot>/.Sent/yarilo-acl
 //
-// IndexDirFor in internal/storage/index/file is the single source
-// of truth for the folder→dir mapping; this package depends on it.
+// mailbox.FolderSubpath is the single source of truth for the folder→dir
+// mapping, shared with the mailbox backends.
 package acl
 
 import (
@@ -26,7 +27,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -39,11 +39,12 @@ const FileName = "yarilo-acl"
 // name relative to the namespace root (same convention as
 // mailbox.UserMailbox).
 type Store struct {
-	// home is the namespace root for mailbox data.
-	home string
-	// indexRoot is where per-folder index files live. Equals home when
-	// no INDEX= redirect is configured.
-	indexRoot string
+	// mailRoot is the mailbox data root (MailPath, else Home). The ACL file
+	// lives in the mailbox directory, so it does NOT follow INDEX=.
+	mailRoot string
+	// driver selects the per-folder folder sub-layout (maildir/mdbox/sdbox)
+	// via mailbox.FolderSubpath, shared with the mailbox backends.
+	driver string
 	// username is whose lock-key is acquired on every write. For
 	// shared/public namespaces this is the accessing user — the
 	// MailboxKey is per-(user, folder), so concurrent writes from
@@ -56,32 +57,51 @@ type Store struct {
 	locker   locks.Locker
 }
 
-// New constructs a Store rooted at home. Pass the per-namespace home
-// (personal: UserInfo.Home; shared/public: synthetic UserInfo.Home
-// set to the namespace location), the accessing username, the
-// owner string for diagnostics, and the cluster locker (may be nil
-// for tests / single-process dev runs).
-// New constructs a Store. indexRoot is the root directory for index
-// files (yarilo.index*, yarilo-acl); pass ui.IndexDir when INDEX= is
-// configured, or ui.Home to keep files co-located with the mailbox.
-func New(home, indexRoot, username, owner string, locker locks.Locker) *Store {
-	if indexRoot == "" {
-		indexRoot = home
+// New constructs a Store. The ACL file lives in the mailbox directory, so
+// the root is mailPath when set, else home (the per-namespace root: personal
+// = UserInfo.Home; shared/public = the namespace location). driver selects
+// the folder sub-layout; locker may be nil for tests / single-process runs.
+func New(home, mailPath, driver, username, owner string, locker locks.Locker) *Store {
+	root := home
+	if mailPath != "" {
+		root = mailPath
 	}
 	return &Store{
-		home:      home,
-		indexRoot: indexRoot,
-		username:  username,
-		owner:     owner,
-		locker:    locker,
+		mailRoot: root,
+		driver:   driver,
+		username: username,
+		owner:    owner,
+		locker:   locker,
 	}
 }
 
 // Path returns the on-disk yarilo-acl path for folder. Exposed so
 // callers (admin CLI, integration tests) can locate the file without
-// re-deriving the layout.
+// re-deriving the layout. folder == "" is the local per-namespace-root
+// default ACL; for maildir it collides with INBOX and is disabled — see
+// rootDefaultDisabled.
 func (s *Store) Path(folder string) string {
-	return filepath.Join(file.IndexDirFor(s.indexRoot, folder), FileName)
+	return filepath.Join(s.mailRoot, mailbox.FolderSubpath(s.driver, folder, folder), FileName)
+}
+
+// rootDefaultDisabled reports whether the local namespace-root default ACL
+// (folder == "") is unavailable because its path collides with INBOX's — the
+// maildir case, where INBOX is the maildir root. A global ACL (separate
+// configured directory) is the intended source of defaults in that setup.
+func (s *Store) rootDefaultDisabled() bool {
+	return s.Path("") == s.Path("INBOX")
+}
+
+// mailboxesRoot is the mailbox-tree root: the mail root for maildir,
+// <mailroot>/mailboxes for dbox drivers. The namespace-wide yarilo-acl-list
+// lives here.
+func (s *Store) mailboxesRoot() string {
+	switch s.driver {
+	case "mdbox", "sdbox", "dbox":
+		return filepath.Join(s.mailRoot, "mailboxes")
+	default:
+		return s.mailRoot
+	}
 }
 
 // Get returns the parsed ACL for folder. When the file does not
@@ -113,6 +133,9 @@ func (s *Store) Get(folder string) (mailbox.ACL, error) {
 // namespace-wide index is updated in the same call so LIST
 // optimisations see the change without a separate rebuild.
 func (s *Store) Set(folder string, acl mailbox.ACL) error {
+	if folder == "" && s.rootDefaultDisabled() {
+		return fmt.Errorf("userstate/acl: namespace-root default ACL unavailable (collides with INBOX); use a global ACL instead")
+	}
 	if err := s.withLock(folder, func() error {
 		return s.writeAtomicLocked(folder, acl)
 	}); err != nil {
@@ -151,6 +174,11 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 	cur := folder
 	rootTried := false
 	for {
+		// The local namespace-root default is disabled when it would collide
+		// with INBOX (maildir): the file there is INBOX's own, not a default.
+		if cur == "" && s.rootDefaultDisabled() {
+			return "", nil
+		}
 		acl, err := s.Get(cur)
 		if err != nil {
 			return "", err
@@ -294,11 +322,12 @@ func (s *Store) loadLocked(folder string) (mailbox.ACL, error) {
 }
 
 func (s *Store) writeAtomicLocked(folder string, acl mailbox.ACL) error {
-	dir := file.IndexDirFor(s.indexRoot, folder)
+	dst := s.Path(folder)
+	dir := filepath.Dir(dst)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("userstate/acl: mkdir %s: %w", dir, err)
 	}
-	tmp := filepath.Join(dir, FileName+".tmp")
+	tmp := dst + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("userstate/acl: create tmp %s: %w", tmp, err)
@@ -313,7 +342,6 @@ func (s *Store) writeAtomicLocked(folder string, acl mailbox.ACL) error {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("userstate/acl: close %s: %w", tmp, err)
 	}
-	dst := filepath.Join(dir, FileName)
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("userstate/acl: rename %s → %s: %w", tmp, dst, err)

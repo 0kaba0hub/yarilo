@@ -115,6 +115,9 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 		// string (e.g. SQL with CONCAT) never populate the separate fields.
 		if pui.MailLocation != "" {
 			applyMailLocationMods(pui.MailLocation, ui, username)
+			if colon := strings.IndexByte(pui.MailLocation, ':'); colon > 0 {
+				ui.Driver = strings.ToLower(pui.MailLocation[:colon])
+			}
 		}
 		if pui.InboxPath != "" {
 			ui.InboxPath = mailbox.ExpandHome(pui.InboxPath, ui.Home)
@@ -371,15 +374,6 @@ func slugFor(spec config.NamespaceConfig) string {
 // folderHome returns the per-namespace home directory used to root
 // user-state files (subscriptions, special_use).
 func (b *nsBundle) folderHome() string { return b.info.Home }
-
-// folderIndexRoot returns the root for per-folder index files (yarilo.index*,
-// yarilo-acl). When INDEX= is configured this differs from folderHome.
-func (b *nsBundle) folderIndexRoot() string {
-	if b.info.IndexDir != "" {
-		return b.info.IndexDir
-	}
-	return b.info.Home
-}
 
 // folderControlRoot returns the root for per-folder control files
 // (yarilo-uidlist, subscriptions). When CONTROL= is configured this
