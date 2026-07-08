@@ -683,6 +683,7 @@ func testSieveEnotify(user, pass, to string) error {
 // ── main sieve check ───────────────────────────────────────────────────────
 
 func testSieveDebugLog(user, pass, to string) error {
+	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
 	script := `require ["variables","envelope","vnd.yarilo.debug"];` + "\n" +
 		`if envelope :matches "to" "*" { set "to" "${1}"; }` + "\n" +
