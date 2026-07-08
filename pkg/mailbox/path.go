@@ -83,6 +83,12 @@ type UserInfo struct {
 	// Template vars (%u/%n/%d) and ~/ are already expanded.
 	InboxPath string
 
+	// Driver, when non-empty, names the mailbox backend driver for this
+	// user ("maildir", "sdbox", "mdbox"). Populated from the driver
+	// prefix of the user's mail_location (e.g. "mdbox:~/mdbox:..." → "mdbox").
+	// Empty means use the globally-configured backend.
+	Driver string
+
 	// Phase 3 — filesystem ownership (needed when yarilo runs as root
 	// and drops privileges per-user):
 	// UID uint32

@@ -73,6 +73,12 @@ type Options struct {
 	// When nil, Sieve filtering is disabled and all messages are delivered
 	// to the default folder (INBOX or user+folder addressing).
 	SieveEngine *sieve.Engine
+
+	// MailboxByDriver, when non-nil, returns a MailboxBackend for the given
+	// driver name. Used to select the correct per-user storage backend when
+	// the user's mail_location specifies a driver that differs from the
+	// global default (e.g. mdbox users on a maildir-default server).
+	MailboxByDriver func(driver string) mailbox.MailboxBackend
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -377,7 +383,11 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			}
 		}
 
-		rcptBox := s.opts.Mailbox.OpenUser(userInfo)
+		mboxBackend := s.opts.Mailbox
+		if f := s.opts.MailboxByDriver; f != nil && userInfo.Driver != "" {
+			mboxBackend = f(userInfo.Driver)
+		}
+		rcptBox := mboxBackend.OpenUser(userInfo)
 		rcptIdx := s.opts.Index.OpenUser(userInfo)
 		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal
 
