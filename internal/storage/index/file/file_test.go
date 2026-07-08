@@ -601,3 +601,85 @@ func TestQuota_CounterTracking(t *testing.T) {
 	}
 	b.Close() //nolint:errcheck
 }
+
+// TestSaveFolderDoesNotCorruptMessagesCount covers the bug where SaveFolder
+// was writing a stale session counter into the on-disk header, causing
+// MessagesCount to drift from the actual record count. After the fix, flush
+// always recounts from fs.file.Records so any drift is healed on the next write.
+func TestSaveFolderDoesNotCorruptMessagesCount(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
+
+	// Append 5 messages.
+	for i := uint32(1); i <= 5; i++ {
+		modseq, _ := b.NextModSeq(f.ID)
+		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, ModSeq: modseq}) //nolint:errcheck
+	}
+
+	// Simulate what the IMAP MOVE handler used to do: set the Folder counter
+	// to a stale/wrong value and call SaveFolder. Before the fix this would
+	// overwrite MessagesCount on disk with the bogus value.
+	staleFolder := &mailbox.Folder{ID: f.ID, Name: "INBOX", Messages: 0}
+	if err := b.SaveFolder(staleFolder); err != nil {
+		t.Fatalf("SaveFolder: %v", err)
+	}
+
+	// Reopen from disk — records must all survive (counter must not corrupt data).
+	b.Close() //nolint:errcheck
+	b2 := openIdx(dir, testUser)
+	f2, _ := b2.OpenFolder("INBOX", 1)
+	msgs, err := b2.GetMessages(f2.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 records, got %d", len(msgs))
+	}
+	// MessagesCount in the header must equal actual record count.
+	if b2.open[f2.ID].file.Header.MessagesCount != 5 {
+		t.Errorf("MessagesCount = %d after SaveFolder with stale counter, want 5",
+			b2.open[f2.ID].file.Header.MessagesCount)
+	}
+	b2.Close() //nolint:errcheck
+}
+
+// TestApplyLogRecountsAfterCorruptedHeaderUpdate verifies that applyLog heals
+// a MessagesCount that was corrupted in a TxTypeHeaderUpdate by recounting
+// from the actual record list rather than trusting the on-disk header counter.
+func TestApplyLogRecountsAfterCorruptedHeaderUpdate(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, _ := b.OpenFolder("INBOX", 1)
+
+	// Append 3 messages and expunge 1.
+	for i := uint32(1); i <= 3; i++ {
+		modseq, _ := b.NextModSeq(f.ID)
+		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, ModSeq: modseq}) //nolint:errcheck
+	}
+	b.ExpungeMessage(f.ID, 2) //nolint:errcheck
+
+	// Compact base file, then reopen.
+	b.OptimizeIndex(f.ID) //nolint:errcheck
+	b.Close()             //nolint:errcheck
+
+	// Re-append to produce a non-empty log.
+	b2 := openIdx(dir, testUser)
+	f2, _ := b2.OpenFolder("INBOX", 1)
+	modseq, _ := b2.NextModSeq(f2.ID)
+	b2.AppendMessage(f2.ID, &mailbox.MessageMeta{UID: 4, ModSeq: modseq}) //nolint:errcheck
+	b2.Close()                                                            //nolint:errcheck
+
+	// Third open: MessagesCount must equal actual record count (2 surviving + 1 new = 3).
+	b3 := openIdx(dir, testUser)
+	f3, _ := b3.OpenFolder("INBOX", 1)
+	msgs, _ := b3.GetMessages(f3.ID, mailbox.SeqSet{})
+	if len(msgs) != 3 {
+		t.Errorf("GetMessages returned %d records, want 3", len(msgs))
+	}
+	if b3.open[f3.ID].file.Header.MessagesCount != 3 {
+		t.Errorf("MessagesCount = %d after log replay, want 3",
+			b3.open[f3.ID].file.Header.MessagesCount)
+	}
+	b3.Close() //nolint:errcheck
+}
