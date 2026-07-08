@@ -293,6 +293,23 @@ func (fs *folderState) flush(wholeNames bool) error {
 		return fmt.Errorf("fileindex/flush: mkdir: %w", err)
 	}
 	ri := fs.file.ToRecreateInput(fs.indexPath)
+	// Recount from actual records so any counter drift (e.g. from a stale
+	// SaveFolder call or a corrupted TxTypeHeaderUpdate) is corrected on every
+	// flush rather than persisted to the next base file.
+	ri.Header.MessagesCount = uint32(len(ri.Records))
+	ri.Header.SeenMessagesCount = 0
+	ri.Header.DeletedMessagesCount = 0
+	for _, rec := range ri.Records {
+		if rec.Flags&mailindex.FlagSeen != 0 {
+			ri.Header.SeenMessagesCount++
+		}
+		if rec.Flags&mailindex.FlagDeleted != 0 {
+			ri.Header.DeletedMessagesCount++
+		}
+	}
+	fs.file.Header.MessagesCount = ri.Header.MessagesCount
+	fs.file.Header.SeenMessagesCount = ri.Header.SeenMessagesCount
+	fs.file.Header.DeletedMessagesCount = ri.Header.DeletedMessagesCount
 	if fs.volatileDir != "" {
 		if err := os.MkdirAll(fs.volatileDir, 0o700); err != nil {
 			return fmt.Errorf("fileindex/flush: mkdir volatile: %w", err)
@@ -444,7 +461,6 @@ func (fs *folderState) reload() error {
 // UpdateFlags / ExpungeMessage).
 func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 	return u.withFolder(f.ID, func(fs *folderState) error {
-		fs.file.Header.MessagesCount = f.Messages
 		return fs.flush(false)
 	})
 }
@@ -1482,6 +1498,21 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 				hdr.HighestModSeq = maxModseq
 				ext.HdrData = encodeModseqHdr(hdr)
 			}
+		}
+	}
+
+	// Recount message counters from actual records so that any drift introduced
+	// by a corrupted TxTypeHeaderUpdate (e.g. from a stale SaveFolder flush) is
+	// corrected in memory immediately after log replay, not only at the next flush.
+	fs.file.Header.MessagesCount = uint32(len(fs.file.Records))
+	fs.file.Header.SeenMessagesCount = 0
+	fs.file.Header.DeletedMessagesCount = 0
+	for _, rec := range fs.file.Records {
+		if rec.Flags&mailindex.FlagSeen != 0 {
+			fs.file.Header.SeenMessagesCount++
+		}
+		if rec.Flags&mailindex.FlagDeleted != 0 {
+			fs.file.Header.DeletedMessagesCount++
 		}
 	}
 
