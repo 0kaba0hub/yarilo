@@ -36,8 +36,7 @@ func TestInitCreatesLayout(t *testing.T) {
 }
 
 // TestMapIndexFollowsINDEX verifies the mdbox map index relocates to
-// <INDEX>/storage while the m.* payload stays in the mail root, mirroring
-// Dovecot mdbox-map.c (map->index_path = index_root/storage).
+// <INDEX>/storage while the m.* payload stays in the mail root (index_root/storage).
 func TestMapIndexFollowsINDEX(t *testing.T) {
 	home := t.TempDir()
 	indexRoot := t.TempDir()

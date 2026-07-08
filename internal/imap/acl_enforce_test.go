@@ -594,7 +594,7 @@ func TestACLEnforce_TopLevelCreateNeedsRootK(t *testing.T) {
 
 // Namespace-root default ACL grants for maildir were tested here previously,
 // but with INBOX now at the maildir root the local namespace-root default
-// collides with INBOX and is disabled (Dovecot acl-backend-vfile.c). For
+// collides with INBOX and is disabled. For
 // maildir, root-level defaults come from a global ACL or acl_defaults_from_inbox
 // — deferred features. The root-default mechanism itself is covered on mdbox in
 // internal/userstate/acl (TestStore_EffectiveForFallsThroughToRoot*).

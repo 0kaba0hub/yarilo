@@ -1,8 +1,7 @@
-// Package acl persists per-mailbox ACL state in a yarilo-acl file
-// inside the folder's mailbox directory (Dovecot PATH_TYPE_MAILBOX —
-// the ACL lives with the mail data and does NOT follow INDEX=). One
-// file per mailbox; on-disk format is the same ACL line encoding
-// parsed and written by pkg/mailbox.
+// Package acl persists per-mailbox ACL state in a yarilo-acl file inside the
+// folder's mailbox directory: the ACL lives with the mail data and does NOT
+// follow INDEX=. One file per mailbox; on-disk format is the same ACL line
+// encoding parsed and written by pkg/mailbox.
 //
 // Cross-process correctness comes from pkg/locks via the same
 // MailboxKey the fileindex backend uses for that folder. Read-
@@ -14,7 +13,7 @@
 // folder sub-layout via mailbox.FolderSubpath, so the yarilo-acl file sits
 // in the mailbox directory. For maildir:
 //
-//	INBOX           → <mailroot>/INBOX/yarilo-acl
+//	INBOX           → <mailroot>/yarilo-acl
 //	Sent            → <mailroot>/.Sent/yarilo-acl
 //
 // mailbox.FolderSubpath is the single source of truth for the folder→dir
@@ -41,8 +40,7 @@ const FileName = "yarilo-acl"
 // mailbox.UserMailbox).
 type Store struct {
 	// mailRoot is the mailbox data root (MailPath, else Home). The ACL file
-	// lives in the mailbox directory (Dovecot PATH_TYPE_MAILBOX), so it does
-	// NOT follow INDEX= — see acl-backend-vfile.h.
+	// lives in the mailbox directory, so it does NOT follow INDEX=.
 	mailRoot string
 	// driver selects the per-folder folder sub-layout (maildir/mdbox/sdbox)
 	// via mailbox.FolderSubpath, shared with the mailbox backends.
@@ -88,16 +86,15 @@ func (s *Store) Path(folder string) string {
 
 // rootDefaultDisabled reports whether the local namespace-root default ACL
 // (folder == "") is unavailable because its path collides with INBOX's — the
-// maildir case, where INBOX is the maildir root. Mirrors Dovecot's
-// acl-backend-vfile.c get_local_dir check. A global ACL (separate configured
-// directory) is the intended source of defaults in that setup.
+// maildir case, where INBOX is the maildir root. A global ACL (separate
+// configured directory) is the intended source of defaults in that setup.
 func (s *Store) rootDefaultDisabled() bool {
 	return s.Path("") == s.Path("INBOX")
 }
 
-// mailboxesRoot is the PATH_TYPE_MAILBOX root: the mail root for maildir,
+// mailboxesRoot is the mailbox-tree root: the mail root for maildir,
 // <mailroot>/mailboxes for dbox drivers. The namespace-wide yarilo-acl-list
-// lives here (Dovecot dovecot-acl-list, name==NULL of PATH_TYPE_MAILBOX).
+// lives here.
 func (s *Store) mailboxesRoot() string {
 	switch s.driver {
 	case "mdbox", "sdbox", "dbox":

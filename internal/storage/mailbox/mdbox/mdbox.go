@@ -122,7 +122,7 @@ func New(opts ...Option) *Backend {
 // OpenUser returns a per-session handle bound to u.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	// Per-driver default: when no mail_path arrives from userdb, default to
-	// <home>/mdbox (Dovecot's mdbox default). The resolved mailPath is the
+	// <home>/mdbox. The resolved mailPath is the
 	// mdbox root as-is — mdboxRoot() never re-appends a subdir.
 	mailPath := u.MailPath
 	if mailPath == "" {
@@ -180,10 +180,9 @@ func makeOwner(u *mailbox.UserInfo) string {
 func (u *userMailbox) mdboxRoot() string   { return u.home }
 func (u *userMailbox) storagePath() string { return filepath.Join(u.mdboxRoot(), storageDir) }
 
-// mapStoragePath is where the mdbox map index (yarilo.map.index) lives.
-// Mirrors Dovecot mdbox-map.c: map->index_path = index_root/storage, so the
-// map index follows INDEX= while the m.* payload stays in mail_path/storage.
-// When INDEX= is unset it collapses back onto storagePath().
+// mapStoragePath is where the mdbox map index (yarilo.map.index) lives: it
+// follows INDEX= (index_root/storage) while the m.* payload stays in
+// mail_path/storage. When INDEX= is unset it collapses back onto storagePath().
 func (u *userMailbox) mapStoragePath() string {
 	if u.indexRoot != "" {
 		return filepath.Join(u.indexRoot, storageDir)

@@ -349,7 +349,7 @@ func makeOwner(u *mailbox.UserInfo) string {
 
 // indexRootDir resolves the index root: INDEX= (indexRoot) when set,
 // otherwise the mail root (mailPath), falling back to Home. Mirrors
-// Dovecot's PATH_TYPE_INDEX default (mail_index_path or mail_path).
+// resolves to the index root (INDEX=), else the mail root, else Home.
 func (u *userIndex) indexRootDir() string {
 	root := u.home
 	if u.mailPath != "" {

@@ -442,9 +442,7 @@ func TestStore_EffectiveForFallsThroughToRoot(t *testing.T) {
 
 // TestStore_MaildirRootDefaultDisabled asserts that for maildir the local
 // namespace-root default ACL is unavailable — its path is INBOX's own, so
-// Set("") is refused and inheritance never falls through to it. Dovecot
-// disables it the same way (acl-backend-vfile.c); a global ACL is the
-// intended default source there.
+// Set("") is refused and inheritance never falls through to it; a global ACL is the intended default source in that case.
 func TestStore_MaildirRootDefaultDisabled(t *testing.T) {
 	home := t.TempDir()
 	s := New(home, "", "maildir", "alice", "test", nil)
@@ -557,8 +555,8 @@ func TestStore_ParseErrorAnnotatesPath(t *testing.T) {
 }
 
 // TestStore_ACLFollowsMailPathNotIndex guards that the yarilo-acl file lives
-// in the mailbox directory (MailPath), not the INDEX root — Dovecot stores it
-// at PATH_TYPE_MAILBOX, so INDEX= must not relocate it.
+// in the mailbox directory (MailPath), not the INDEX root:
+// the ACL lives with the mail data, so INDEX= must not relocate it.
 func TestStore_ACLFollowsMailPathNotIndex(t *testing.T) {
 	home := t.TempDir()
 	mailPath := filepath.Join(home, "Maildir")

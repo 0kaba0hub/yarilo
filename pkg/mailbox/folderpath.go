@@ -5,9 +5,9 @@ import "path/filepath"
 // FolderSubpath returns the per-folder directory for a driver's on-disk
 // layout, relative to a storage root. Rooting the result at the mail root
 // yields the mailbox path; rooting it at the index root yields the index
-// path — the same sub-layout under either root. This mirrors Dovecot's
-// single fs_list_get_path_to builder, so the mailbox and index trees share
-// their folder layout by construction instead of drifting between two
+// path — the same sub-layout under either root. This is the single builder
+// shared by the mailbox backends, the fileindex and the ACL store, so those
+// trees share their folder layout by construction instead of drifting between
 // independent implementations.
 //
 // diskName is the already-encoded folder name (callers apply NFC/modUTF7);
@@ -21,8 +21,7 @@ import "path/filepath"
 //	sdbox   : "mailboxes/<disk>/dbox-Mails"
 //
 // For maildir, INBOX IS the maildir root: index, ACL and message data all live
-// there (Dovecot places dovecot.index/dovecot-acl in the Maildir root, not a
-// subdir).
+// there (no INBOX/ subdir).
 func FolderSubpath(driver, folder, diskName string) string {
 	switch driver {
 	case "mdbox":

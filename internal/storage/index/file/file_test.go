@@ -29,7 +29,7 @@ func openIdx(root, user string) *userIndex {
 	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userHandle).ui
 }
 
-// TestIndexDirRootResolution locks the Dovecot PATH_TYPE_INDEX default:
+// TestIndexDirRootResolution locks the index-root resolution:
 // index root is INDEX= (IndexDir), else the mail root (MailPath), else Home.
 func TestIndexDirRootResolution(t *testing.T) {
 	cases := []struct {

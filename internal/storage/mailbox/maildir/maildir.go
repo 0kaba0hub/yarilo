@@ -88,7 +88,7 @@ func New(opts ...Option) *Backend {
 // is used for all path resolution; usernames are never converted to paths here.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	// Per-driver default: when no mail_path arrives from userdb, default to
-	// <home>/Maildir (Dovecot's maildir default) so INBOX is the maildir root
+	// <home>/Maildir so INBOX is the maildir root
 	// rather than a home/INBOX subdirectory. The mailbox root is always a
 	// dedicated directory, so the maildir-root INBOX layout always applies.
 	mailPath := u.MailPath
