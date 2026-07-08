@@ -19,6 +19,11 @@ import "path/filepath"
 //	maildir : INBOX -> "INBOX",  other -> ".<disk>"
 //	mdbox   : "mailboxes/<disk>"
 //	sdbox   : "mailboxes/<disk>/dbox-Mails"
+//
+// The maildir INBOX index/ACL live in an INBOX/ subdir (a yarilo convention)
+// rather than the maildir root, keeping index and control state out of the
+// cur/new/tmp payload directory. The maildir mailbox backend itself keeps
+// INBOX at the maildir root (message data), so only the sidecar state differs.
 func FolderSubpath(driver, folder, diskName string) string {
 	switch driver {
 	case "mdbox":

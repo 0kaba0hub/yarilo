@@ -695,7 +695,7 @@ func (u *userMailbox) folderPath(folder string) string {
 		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.mailPath, "."+u.folderDiskName(folder))
+	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder)))
 }
 
 // controlFolderPath returns the directory for per-folder control files
