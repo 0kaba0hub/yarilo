@@ -131,6 +131,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
 		b:            b,
 		home:         mailPath,
+		indexRoot:    u.IndexDir,
 		username:     u.Username,
 		owner:        makeOwner(u),
 		altBasePath:  resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
@@ -152,6 +153,7 @@ func resolveAltBase(perUser, tmpl, username string) string {
 type userMailbox struct {
 	b            *Backend
 	home         string
+	indexRoot    string // INDEX= target; "" means co-locate map index with payload
 	username     string
 	owner        string
 	altBasePath  string // expanded alt root + "/mdbox"; "" = disabled
@@ -177,6 +179,17 @@ func makeOwner(u *mailbox.UserInfo) string {
 
 func (u *userMailbox) mdboxRoot() string   { return u.home }
 func (u *userMailbox) storagePath() string { return filepath.Join(u.mdboxRoot(), storageDir) }
+
+// mapStoragePath is where the mdbox map index (yarilo.map.index) lives.
+// Mirrors Dovecot mdbox-map.c: map->index_path = index_root/storage, so the
+// map index follows INDEX= while the m.* payload stays in mail_path/storage.
+// When INDEX= is unset it collapses back onto storagePath().
+func (u *userMailbox) mapStoragePath() string {
+	if u.indexRoot != "" {
+		return filepath.Join(u.indexRoot, storageDir)
+	}
+	return u.storagePath()
+}
 func (u *userMailbox) folderRoot() string {
 	return filepath.Join(u.mdboxRoot(), mailboxesDir)
 }
@@ -238,10 +251,10 @@ func (u *userMailbox) openMap() (*mdboxmap.Map, error) {
 	if u.mapping != nil {
 		return u.mapping, nil
 	}
-	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
+	if err := os.MkdirAll(u.mapStoragePath(), 0o700); err != nil {
 		return nil, fmt.Errorf("mdbox/openmap: mkdir: %w", err)
 	}
-	m, err := mdboxmap.Open(u.storagePath(), u.username, mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner))
+	m, err := mdboxmap.Open(u.mapStoragePath(), u.username, mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner))
 	if err != nil {
 		return nil, err
 	}

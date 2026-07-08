@@ -29,6 +29,34 @@ func openIdx(root, user string) *userIndex {
 	return New().OpenUser(&mailbox.UserInfo{Username: user, Home: home}).(*userHandle).ui
 }
 
+// TestIndexDirRootResolution locks the Dovecot PATH_TYPE_INDEX default:
+// index root is INDEX= (IndexDir), else the mail root (MailPath), else Home.
+func TestIndexDirRootResolution(t *testing.T) {
+	cases := []struct {
+		name              string
+		home, mail, index string
+		wantRoot          string
+	}{
+		{"home only", "/h", "", "", "/h"},
+		{"mail root fallback", "/h", "/h/Maildir", "", "/h/Maildir"},
+		{"index overrides mail", "/h", "/h/Maildir", "/idx", "/idx"},
+		{"index over home", "/h", "", "/idx", "/idx"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ui := New().OpenUser(&mailbox.UserInfo{
+				Username: "u@x", Home: c.home, MailPath: c.mail, IndexDir: c.index,
+			}).(*userHandle).ui
+			if got := ui.indexDir("INBOX"); got != filepath.Join(c.wantRoot, "INBOX") {
+				t.Errorf("indexDir(INBOX)=%q, want root %q", got, c.wantRoot)
+			}
+			if got := ui.indexDir("Sent"); got != filepath.Join(c.wantRoot, ".Sent") {
+				t.Errorf("indexDir(Sent)=%q, want root %q", got, c.wantRoot)
+			}
+		})
+	}
+}
+
 func TestLogReplay(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)

@@ -124,6 +124,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 		ui := &userIndex{
 			b:           b,
 			home:        u.Home,
+			mailPath:    u.MailPath,
 			volatileDir: u.VolatileDir,
 			indexRoot:   u.IndexDir,
 			username:    u.Username,
@@ -231,8 +232,9 @@ func (h *userHandle) Close() error {
 type userIndex struct {
 	b           *Backend
 	home        string
+	mailPath    string // mail root; index co-locates here when INDEX= is unset
 	volatileDir string // base volatile dir (empty = disabled)
-	indexRoot   string // INDEX= override root (empty = co-located with home)
+	indexRoot   string // INDEX= override root (empty = co-located with mail root)
 	username    string
 	owner       string
 	counter     *quota.Counter
@@ -359,11 +361,18 @@ func IndexDirFor(home, folder string) string {
 	return filepath.Join(home, "."+folder)
 }
 
+// indexDir roots the per-folder index at INDEX= (indexRoot) when set,
+// otherwise the mail root (mailPath), falling back to Home. Mirrors
+// Dovecot's PATH_TYPE_INDEX default (mail_index_path or mail_path).
 func (u *userIndex) indexDir(folder string) string {
-	if u.indexRoot != "" {
-		return IndexDirFor(u.indexRoot, folder)
+	root := u.home
+	if u.mailPath != "" {
+		root = u.mailPath
 	}
-	return IndexDirFor(u.home, folder)
+	if u.indexRoot != "" {
+		root = u.indexRoot
+	}
+	return IndexDirFor(root, folder)
 }
 
 // folderVolatileDir returns the per-folder volatile directory when
