@@ -2,6 +2,8 @@ package file
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,6 +77,34 @@ func TestIndexDirMirrorsDriverLayout(t *testing.T) {
 		if got := ui.indexDir(c.folder); got != filepath.Join("/idx", c.want) {
 			t.Errorf("driver %s indexDir(%s)=%q, want /idx/%s", c.driver, c.folder, got, c.want)
 		}
+	}
+}
+
+// TestDeleteFolderRemovesIndexDir locks that DeleteFolder reclaims the
+// per-folder index directory so the index never outlives its mailbox,
+// and that a second call on the already-gone folder is a no-op.
+func TestDeleteFolderRemovesIndexDir(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, err := b.OpenFolder("Sent", 7)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}}) //nolint:errcheck
+
+	fdir := b.indexDir("Sent")
+	if _, err := os.Stat(fdir); err != nil {
+		t.Fatalf("index dir not created: %v", err)
+	}
+	if err := b.DeleteFolder("Sent"); err != nil {
+		t.Fatalf("DeleteFolder: %v", err)
+	}
+	if _, err := os.Stat(fdir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("index dir survived DeleteFolder: stat err=%v", err)
+	}
+	// Idempotent: deleting a folder with no index dir must not error.
+	if err := b.DeleteFolder("Sent"); err != nil {
+		t.Errorf("second DeleteFolder should be no-op, got %v", err)
 	}
 }
 

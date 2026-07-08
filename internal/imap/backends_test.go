@@ -2,6 +2,8 @@ package imap_test
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -292,6 +294,70 @@ func TestIMAPBackends_CreateDelete(t *testing.T) {
 					t.Errorf("Sent still in LIST after DELETE")
 				}
 			}
+		})
+	}
+}
+
+// TestIMAPBackends_DeleteReclaimsIndex verifies DELETE removes the folder's
+// fileindex, not just its mailbox data — otherwise the index directory is
+// orphaned on shared storage after every folder deletion (issue #485).
+func TestIMAPBackends_DeleteReclaimsIndex(t *testing.T) {
+	for _, bf := range backends {
+		bf := bf
+		t.Run(bf.name, func(t *testing.T) {
+			root := t.TempDir()
+			resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
+			opts := imapserver.Options{
+				Mailbox:  bf.new(t),
+				Index:    file.New(),
+				Resolver: resolver,
+				Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+			}
+			srv := imapserver.New(opts)
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("net.Listen: %v", err)
+			}
+			go srv.Serve(ln) //nolint:errcheck
+			t.Cleanup(func() { ln.Close() })
+			conn, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Fatalf("net.Dial: %v", err)
+			}
+			t.Cleanup(func() { conn.Close() })
+			c := imapclient.New(conn, nil)
+			if err := c.WaitGreeting(); err != nil {
+				t.Fatalf("WaitGreeting: %v", err)
+			}
+			if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+				t.Fatalf("Login: %v", err)
+			}
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			if err := c.Create("Sent", nil).Wait(); err != nil {
+				t.Fatalf("CREATE Sent: %v", err)
+			}
+			// SELECT forces the fileindex to materialise the folder's index dir.
+			if _, err := c.Select("Sent", nil).Wait(); err != nil {
+				t.Fatalf("SELECT Sent: %v", err)
+			}
+			if err := c.Unselect().Wait(); err != nil {
+				t.Fatalf("UNSELECT: %v", err)
+			}
+			if err := c.Delete("Sent").Wait(); err != nil {
+				t.Fatalf("DELETE Sent: %v", err)
+			}
+
+			// No yarilo.index* may remain anywhere under a Sent-named path.
+			filepath.Walk(root, func(p string, info os.FileInfo, err error) error { //nolint:errcheck
+				if err != nil || info.IsDir() {
+					return nil
+				}
+				if strings.Contains(p, "Sent") && strings.HasPrefix(info.Name(), "yarilo.index") {
+					t.Errorf("orphan index after DELETE: %s", p)
+				}
+				return nil
+			})
 		})
 	}
 }
