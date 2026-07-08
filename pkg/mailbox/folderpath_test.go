@@ -4,20 +4,27 @@ import "testing"
 
 func TestFolderSubpath(t *testing.T) {
 	cases := []struct {
-		driver, folder, disk, want string
+		driver, folder, disk, sep, want string
 	}{
-		{"maildir", "INBOX", "INBOX", ""},
-		{"maildir", "Sent", "Sent", ".Sent"},
-		{"", "Sent", "Sent", ".Sent"}, // empty driver defaults to maildir
-		{"mdbox", "INBOX", "INBOX", "mailboxes/INBOX"},
-		{"mdbox", "Sent", "Sent", "mailboxes/Sent"},
-		{"sdbox", "INBOX", "INBOX", "mailboxes/INBOX/dbox-Mails"},
-		{"sdbox", "Sent", "Sent", "mailboxes/Sent/dbox-Mails"},
-		{"dbox", "Sent", "Sent", "mailboxes/Sent/dbox-Mails"},
+		// maildir: flat maildir++ layout, "." separates hierarchy.
+		{"maildir", "INBOX", "INBOX", ".", ""},
+		{"maildir", "Sent", "Sent", ".", ".Sent"},
+		{"maildir", "ProjZ.Sub", "ProjZ.Sub", ".", ".ProjZ.Sub"},
+		{"", "ProjZ.Sub", "ProjZ.Sub", ".", ".ProjZ.Sub"}, // empty driver → maildir
+		// maildir with "/" IMAP sep still flattens to dotted on disk.
+		{"maildir", "ProjZ/Sub", "ProjZ/Sub", "/", ".ProjZ.Sub"},
+		// mdbox: nested, "/"-joined.
+		{"mdbox", "INBOX", "INBOX", ".", "mailboxes/INBOX"},
+		{"mdbox", "ProjZ.Sub", "ProjZ.Sub", ".", "mailboxes/ProjZ/Sub"},
+		{"mdbox", "ProjZ/Sub", "ProjZ/Sub", "/", "mailboxes/ProjZ/Sub"},
+		// sdbox: nested + dbox-Mails.
+		{"sdbox", "ProjZ.Sub", "ProjZ.Sub", ".", "mailboxes/ProjZ/Sub/dbox-Mails"},
+		{"dbox", "Sent", "Sent", ".", "mailboxes/Sent/dbox-Mails"},
 	}
 	for _, c := range cases {
-		if got := FolderSubpath(c.driver, c.folder, c.disk); got != c.want {
-			t.Errorf("FolderSubpath(%q,%q,%q)=%q, want %q", c.driver, c.folder, c.disk, got, c.want)
+		if got := FolderSubpath(c.driver, c.folder, c.disk, c.sep); got != c.want {
+			t.Errorf("FolderSubpath(%q,%q,%q,sep=%q)=%q, want %q",
+				c.driver, c.folder, c.disk, c.sep, got, c.want)
 		}
 	}
 }

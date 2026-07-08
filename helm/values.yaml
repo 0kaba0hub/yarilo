@@ -1251,7 +1251,10 @@ extraVolumeMounts: []
 namespaces: []
 #   - type: personal              # personal | other | shared
 #     prefix: ""                  # mailbox name prefix; "" reserved for personal
-#     separator: "/"              # one character; different per-namespace allowed
+#     separator: "."              # one char; default "." (maildir++). dbox/fs
+#                                 # deployments typically use "/". Each backend
+#                                 # converts it to its on-disk layout (maildir
+#                                 # flat ".A.B", dbox nested "mailboxes/A/B").
 #     list: true                  # show in NAMESPACE response
 #     subscriptions: true
 #     inbox: true                 # owns the magic "INBOX" (set on exactly one)
@@ -1259,7 +1262,7 @@ namespaces: []
 #     # leave `location:` unset.
 #   - type: shared
 #     prefix: "Shared/"
-#     separator: "/"
+#     separator: "."
 #     list: true
 #     # Absolute path; mount a PV here in multi-pod deployments.
 #     location: "maildir:/var/yarilo/shared"

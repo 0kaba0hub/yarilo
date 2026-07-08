@@ -241,6 +241,39 @@ func TestListFolders_ExplicitMailPath(t *testing.T) {
 	}
 }
 
+// TestNestedFolderIsFlatMaildirPP verifies a nested folder is stored flat
+// with "." separating levels (maildir++), not as nested subdirectories, and
+// that ListFolders maps it back to the IMAP separator.
+func TestNestedFolderIsFlatMaildirPP(t *testing.T) {
+	root := t.TempDir()
+	home := testHome(root, "u@x.com")
+	mailPath := filepath.Join(home, "Maildir")
+	box := New().OpenUser(&mailbox.UserInfo{
+		Username: "u@x.com", Home: home, MailPath: mailPath, Separator: ".",
+	}).(*userMailbox)
+	box.Init()              //nolint:errcheck
+	box.Create("ProjZ.Sub") //nolint:errcheck
+
+	// Flat on disk: one ".ProjZ.Sub" dir, no nested ".ProjZ/Sub".
+	if _, err := os.Stat(filepath.Join(mailPath, ".ProjZ.Sub", "cur")); err != nil {
+		t.Errorf("flat maildir++ dir missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mailPath, ".ProjZ", "Sub")); !os.IsNotExist(err) {
+		t.Errorf("nested subdir must not exist: err=%v", err)
+	}
+	// Round-trips through LIST as the IMAP name.
+	folders, _ := box.ListFolders()
+	var found bool
+	for _, f := range folders {
+		if f == "ProjZ.Sub" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ListFolders missing ProjZ.Sub, got %v", folders)
+	}
+}
+
 // TestSave_AppendsUIDList verifies Save inlines the uid→filename
 // entry into the dovecot-uidlist v3 sidecar. Replaces the old
 // standalone AppendUIDEntry contract (removed when two-phase Save

@@ -1,6 +1,9 @@
 package mailbox
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // FolderSubpath returns the per-folder directory for a driver's on-disk
 // layout, relative to a storage root. Rooting the result at the mail root
@@ -12,28 +15,49 @@ import "path/filepath"
 //
 // diskName is the already-encoded folder name (callers apply NFC/modUTF7);
 // INBOX is passed through unchanged. folder is the logical name, used only
-// to special-case INBOX.
+// to special-case INBOX. sep is the IMAP hierarchy separator embedded in the
+// name; each driver converts it to its own on-disk separator:
 //
-// Layouts:
+//	maildir : flat, "."-joined  → INBOX -> "",  A<sep>B -> ".A.B"
+//	mdbox   : nested, "/"-joined → "mailboxes/A/B"
+//	sdbox   : nested, "/"-joined → "mailboxes/A/B/dbox-Mails"
 //
-//	maildir : INBOX -> "" (the maildir root),  other -> ".<disk>"
-//	mdbox   : "mailboxes/<disk>"
-//	sdbox   : "mailboxes/<disk>/dbox-Mails"
-//
-// For maildir, INBOX IS the maildir root: index, ACL and message data all live
-// there (no INBOX/ subdir).
-func FolderSubpath(driver, folder, diskName string) string {
+// For maildir, INBOX IS the maildir root (no INBOX/ subdir). An empty sep
+// defaults to "/" so callers that never set one keep the historical layout.
+func FolderSubpath(driver, folder, diskName, sep string) string {
+	if sep == "" {
+		sep = "/"
+	}
 	switch driver {
 	case "mdbox":
-		return filepath.Join(mailboxesSubdir, diskName)
+		return filepath.Join(mailboxesSubdir, toDiskSep(diskName, sep, "/"))
 	case "sdbox", "dbox":
-		return filepath.Join(mailboxesSubdir, diskName, dboxMailsSubdir)
-	default: // maildir
+		return filepath.Join(mailboxesSubdir, toDiskSep(diskName, sep, "/"), dboxMailsSubdir)
+	default: // maildir — maildir++ flat layout, "." separates hierarchy
 		if folder == "INBOX" {
 			return ""
 		}
-		return "." + diskName
+		return "." + toDiskSep(diskName, sep, ".")
 	}
+}
+
+// SepOrDefault returns the IMAP hierarchy separator, defaulting to "/" when
+// unset. Backends store the result so reverse mapping (on-disk → IMAP) never
+// sees an empty separator.
+func SepOrDefault(s string) string {
+	if s == "" {
+		return "/"
+	}
+	return s
+}
+
+// toDiskSep rewrites the IMAP hierarchy separator in name to the driver's
+// on-disk separator. When they already match it is a no-op.
+func toDiskSep(name, imapSep, diskSep string) string {
+	if imapSep == diskSep {
+		return name
+	}
+	return strings.ReplaceAll(name, imapSep, diskSep)
 }
 
 const (

@@ -89,6 +89,12 @@ type UserInfo struct {
 	// Empty means use the globally-configured backend.
 	Driver string
 
+	// Separator is the IMAP hierarchy separator for the namespace this
+	// UserInfo is opened under. Folder names carry it; each backend converts
+	// it to its on-disk separator (maildir "." flat, dbox "/" nested) via
+	// mailbox.FolderSubpath. Empty defaults to "/".
+	Separator string
+
 	// Phase 3 — filesystem ownership (needed when yarilo runs as root
 	// and drops privileges per-user):
 	// UID uint32
@@ -156,6 +162,12 @@ type Resolver struct {
 	// no per-user mail_path override arrives from userdb. Supports
 	// %u/%n/%d/%h and ~/ expansion. Empty keeps MailPath == Home.
 	DefaultMailPath string
+
+	// DefaultSeparator is the IMAP hierarchy separator stamped onto every
+	// UserInfo (personal namespace / LMTP / backend-api). The IMAP session
+	// overrides it per-namespace from the namespace spec. Empty defaults
+	// to "/" at the point of use.
+	DefaultSeparator string
 }
 
 // Resolve returns the absolute home directory for a user. An empty
@@ -185,6 +197,7 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 		Username:   username,
 		Home:       home,
 		QuotaRules: r.DefaultQuotaRules,
+		Separator:  r.DefaultSeparator,
 	}
 	if r.DefaultVolatileDir != "" {
 		vd := strings.ReplaceAll(r.DefaultVolatileDir, "%h", home)

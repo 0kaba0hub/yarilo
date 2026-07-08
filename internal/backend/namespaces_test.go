@@ -47,21 +47,21 @@ func TestBuildNamespaces(t *testing.T) {
 			},
 		},
 		{
-			name: "missing separator defaults to /",
+			name: "missing separator defaults to .",
 			in: []config.NamespaceConfig{
 				{Type: "personal", Prefix: "", List: true},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: true},
 			},
 		},
 		{
-			name: "multi-character separator falls back to / with a warning",
+			name: "multi-character separator falls back to . with a warning",
 			in: []config.NamespaceConfig{
 				{Type: "personal", Prefix: "", Separator: "//", List: true},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: true},
 			},
 		},
 		{

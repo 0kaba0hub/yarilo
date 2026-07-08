@@ -103,6 +103,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	return &userMailbox{
 		b:            b,
 		home:         mailPath,
+		separator:    mailbox.SepOrDefault(u.Separator),
 		username:     u.Username,
 		owner:        makeOwner(u),
 		listUTF8:     b.listUTF8,
@@ -114,6 +115,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 type userMailbox struct {
 	b            *Backend
 	home         string
+	separator    string // IMAP hierarchy separator; converted to "/" on disk (fs nesting)
 	username     string
 	owner        string
 	listUTF8     bool
@@ -594,7 +596,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpath("sdbox", folder, u.folderDiskName(folder)))
+	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpath("sdbox", folder, u.folderDiskName(folder), u.separator))
 }
 
 // makeTempName returns ".temp.<sec>.P<pid>Q<seq>M<usec>.<host>"

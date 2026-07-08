@@ -122,7 +122,7 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 	if primary == nil {
 		// Operator configured no personal namespace — fall back so
 		// existing pre-v1.21 single-namespace clients keep working.
-		fallback := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '/', List: true}
+		fallback := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '.', List: true}
 		h, err := s.openHandle(fallback, "personal", personalUI, owner, "subscriptions")
 		if err != nil {
 			return nil, nil, fmt.Errorf("imap: open fallback personal namespace: %w", err)
@@ -140,6 +140,9 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 // global Options.Mailbox. The index backend is uniform — fileindex
 // works against any storage driver.
 func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserInfo, owner, subsFile string) (*nsHandle, error) {
+	// The backends convert this namespace's IMAP hierarchy separator to their
+	// on-disk separator (maildir "." flat, dbox "/" nested).
+	ui.Separator = string(spec.Separator)
 	mb := s.mailboxBackendFor(spec)
 	box := mb.OpenUser(ui)
 	if err := box.Init(); err != nil {
@@ -156,7 +159,7 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		subsRoot = ui.ControlDir
 	}
 	store := subs.New(subsRoot, subsFile, ui.Username, owner, s.srv.opts.Locker)
-	aclStore := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Username, owner, s.srv.opts.Locker)
+	aclStore := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.Username, owner, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,
 		spec:     spec,

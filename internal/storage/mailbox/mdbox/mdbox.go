@@ -132,6 +132,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		b:            b,
 		home:         mailPath,
 		indexRoot:    u.IndexDir,
+		separator:    mailbox.SepOrDefault(u.Separator),
 		username:     u.Username,
 		owner:        makeOwner(u),
 		altBasePath:  resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
@@ -154,6 +155,7 @@ type userMailbox struct {
 	b            *Backend
 	home         string
 	indexRoot    string // INDEX= target; "" means co-locate map index with payload
+	separator    string // IMAP hierarchy separator; converted to "/" on disk (fs nesting)
 	username     string
 	owner        string
 	altBasePath  string // expanded alt root + "/mdbox"; "" = disabled
@@ -203,7 +205,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpath("mdbox", folder, u.folderDiskName(folder)))
+	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpath("mdbox", folder, u.folderDiskName(folder), u.separator))
 }
 func (u *userMailbox) mfilePath(fileID uint32) string {
 	return filepath.Join(u.storagePath(), fmt.Sprintf("m.%d", fileID))
