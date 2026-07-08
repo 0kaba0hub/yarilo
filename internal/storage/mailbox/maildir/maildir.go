@@ -107,6 +107,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		inboxPath:        inboxPath,
 		explicitMailPath: explicit,
 		controlDir:       u.ControlDir,
+		separator:        mailbox.SepOrDefault(u.Separator),
 		username:         u.Username,
 		owner:            makeOwner(u),
 		listUTF8:         b.listUTF8,
@@ -131,6 +132,7 @@ type userMailbox struct {
 	inboxPath        string // effective INBOX path; equals mailPath when InboxPath is unset
 	explicitMailPath bool   // true when MailPath was set by userdb (changes INBOX layout)
 	controlDir       string // CONTROL= override root (empty = co-located with home)
+	separator        string // IMAP hierarchy separator; converted to "." on disk (maildir++)
 	username         string
 	owner            string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
 	listUTF8         bool                    // mirrors Backend.listUTF8
@@ -505,6 +507,11 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 		if u.normalizeNFC {
 			logical = nfcNormalize(logical)
 		}
+		// maildir++ stores hierarchy flat with "." — map it back to the
+		// namespace's IMAP separator (default no-escape: every "." is a level).
+		if u.separator != "." {
+			logical = strings.ReplaceAll(logical, ".", u.separator)
+		}
 		folders = append(folders, logical)
 	}
 	return folders, nil
@@ -695,18 +702,19 @@ func (u *userMailbox) folderPath(folder string) string {
 		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder)))
+	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator))
 }
 
 // controlFolderPath returns the directory for per-folder control files
 // (yarilo-uidlist). When CONTROL= is configured, it uses controlDir as
 // the root; otherwise the control files are co-located with the folder.
 func (u *userMailbox) controlFolderPath(folder string) string {
+	sub := mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator)
 	if u.controlDir != "" {
 		if folder == "INBOX" {
 			return filepath.Join(u.controlDir, "INBOX")
 		}
-		return filepath.Join(u.controlDir, "."+u.folderDiskName(folder))
+		return filepath.Join(u.controlDir, sub)
 	}
 	if folder == "INBOX" {
 		if u.explicitMailPath {
@@ -714,7 +722,7 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.mailPath, "."+u.folderDiskName(folder))
+	return filepath.Join(u.mailPath, sub)
 }
 
 // ---- flag helpers ----------------------------------------------------------

@@ -45,6 +45,9 @@ type Store struct {
 	// driver selects the per-folder folder sub-layout (maildir/mdbox/sdbox)
 	// via mailbox.FolderSubpath, shared with the mailbox backends.
 	driver string
+	// separator is the IMAP hierarchy separator, converted to the driver's
+	// on-disk separator by mailbox.FolderSubpath.
+	separator string
 	// username is whose lock-key is acquired on every write. For
 	// shared/public namespaces this is the accessing user — the
 	// MailboxKey is per-(user, folder), so concurrent writes from
@@ -61,17 +64,18 @@ type Store struct {
 // the root is mailPath when set, else home (the per-namespace root: personal
 // = UserInfo.Home; shared/public = the namespace location). driver selects
 // the folder sub-layout; locker may be nil for tests / single-process runs.
-func New(home, mailPath, driver, username, owner string, locker locks.Locker) *Store {
+func New(home, mailPath, driver, separator, username, owner string, locker locks.Locker) *Store {
 	root := home
 	if mailPath != "" {
 		root = mailPath
 	}
 	return &Store{
-		mailRoot: root,
-		driver:   driver,
-		username: username,
-		owner:    owner,
-		locker:   locker,
+		mailRoot:  root,
+		driver:    driver,
+		separator: mailbox.SepOrDefault(separator),
+		username:  username,
+		owner:     owner,
+		locker:    locker,
 	}
 }
 
@@ -81,7 +85,7 @@ func New(home, mailPath, driver, username, owner string, locker locks.Locker) *S
 // default ACL; for maildir it collides with INBOX and is disabled — see
 // rootDefaultDisabled.
 func (s *Store) Path(folder string) string {
-	return filepath.Join(s.mailRoot, mailbox.FolderSubpath(s.driver, folder, folder), FileName)
+	return filepath.Join(s.mailRoot, mailbox.FolderSubpath(s.driver, folder, folder, s.separator), FileName)
 }
 
 // rootDefaultDisabled reports whether the local namespace-root default ACL

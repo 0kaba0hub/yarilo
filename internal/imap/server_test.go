@@ -1340,8 +1340,8 @@ func TestNamespaceDefaultPersonalOnly(t *testing.T) {
 	if len(data.Personal) != 1 {
 		t.Fatalf("expected 1 personal ns, got %d (%+v)", len(data.Personal), data.Personal)
 	}
-	if data.Personal[0].Prefix != "" || data.Personal[0].Delim != '/' {
-		t.Errorf("personal ns shape: got %+v want {Prefix:\"\" Delim:'/'}", data.Personal[0])
+	if data.Personal[0].Prefix != "" || data.Personal[0].Delim != '.' {
+		t.Errorf("personal ns shape: got %+v want {Prefix:\"\" Delim:'.'}", data.Personal[0])
 	}
 	if len(data.Other) != 0 || len(data.Shared) != 0 {
 		t.Errorf("expected Other+Shared empty by default, got Other=%+v Shared=%+v", data.Other, data.Shared)

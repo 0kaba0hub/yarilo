@@ -2508,7 +2508,7 @@ func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 // Options.Namespaces is empty: a single personal namespace with the
 // "/" separator, matching pre-v1.20 single-namespace behaviour.
 var defaultNamespaces = []NamespaceSpec{
-	{Type: NamespacePersonal, Prefix: "", Separator: '/', List: true},
+	{Type: NamespacePersonal, Prefix: "", Separator: '.', List: true},
 }
 
 // GetMetadata implements RFC 5464 GETMETADATA. mailbox == "" requests

@@ -116,6 +116,7 @@ func New(cfg *config.Config) (*Server, error) {
 		DefaultControlDir:  cfg.Storage.ControlDir,
 		DefaultAltDir:      cfg.Storage.AltDir,
 		DefaultMailPath:    cfg.Storage.MailPath,
+		DefaultSeparator:   personalSeparator(cfg.Namespaces),
 	}
 	locker, err := buildLocksClient(cfg)
 	if err != nil {
@@ -924,6 +925,18 @@ func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver, 
 // Separator defaults to "/" when omitted; non-single-rune values are
 // dropped to "/" with a warning so a misconfigured yaml does not
 // produce a malformed NAMESPACE response.
+// personalSeparator returns the IMAP hierarchy separator of the personal
+// namespace (default "." — maildir++), used to stamp UserInfo for the LMTP
+// and backend-api paths that have no per-namespace IMAP context.
+func personalSeparator(cfg []config.NamespaceConfig) string {
+	for _, ns := range cfg {
+		if strings.EqualFold(strings.TrimSpace(ns.Type), "personal") && ns.Separator != "" {
+			return ns.Separator
+		}
+	}
+	return "."
+}
+
 func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
 	if len(cfg) == 0 {
 		return nil
@@ -944,11 +957,11 @@ func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
 				"index", i, "type", ns.Type, "prefix", ns.Prefix)
 			continue
 		}
-		sep := '/'
+		sep := '.'
 		if rs := []rune(ns.Separator); len(rs) == 1 {
 			sep = rs[0]
 		} else if ns.Separator != "" {
-			slog.Warn("backend: namespace separator must be a single character, defaulting to /",
+			slog.Warn("backend: namespace separator must be a single character, defaulting to .",
 				"index", i, "separator", ns.Separator)
 		}
 		out = append(out, imapsvr.NamespaceSpec{

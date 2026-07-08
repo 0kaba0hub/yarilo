@@ -96,7 +96,7 @@ func (p *enforcePassdb) Authenticate(username, password, _, _ string) (*protocol
 // need owner credentials).
 func seedACL(t *testing.T, aliceHome, folder string, body string) {
 	t.Helper()
-	dir := filepath.Join(aliceHome, mailboxpkg.FolderSubpath("maildir", folder, folder))
+	dir := filepath.Join(aliceHome, mailboxpkg.FolderSubpath("maildir", folder, folder, "."))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -441,14 +441,14 @@ func TestACLEnforce_LeafACLOverridesInheritedParent(t *testing.T) {
 	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
 		t.Fatalf("alice SELECT INBOX: %v", err)
 	}
-	if err := a.Create("INBOX/Private", nil).Wait(); err != nil {
-		t.Fatalf("alice CREATE INBOX/Private: %v", err)
+	if err := a.Create("INBOX.Private", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE INBOX.Private: %v", err)
 	}
 	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
-	seedACL(t, aliceHome, "INBOX/Private", "user=alice lrswipkxtea\n")
+	seedACL(t, aliceHome, "INBOX.Private", "user=alice lrswipkxtea\n")
 
 	b := dial("bob")
-	_, err := b.Select("Shared/INBOX/Private", nil).Wait()
+	_, err := b.Select("Shared/INBOX.Private", nil).Wait()
 	if err == nil {
 		t.Error("peer SELECT on leaf with restrictive ACL should fail (leaf wins)")
 	}
