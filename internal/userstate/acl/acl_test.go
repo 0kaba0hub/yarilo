@@ -391,11 +391,12 @@ func TestStore_EffectiveForNegativeInInheritedACL(t *testing.T) {
 
 func TestStore_PathEmptyFolderIsNamespaceRoot(t *testing.T) {
 	home := t.TempDir()
-	// mdbox: the namespace root is mailboxes/, distinct from INBOX, so the
-	// local root default is available (unlike maildir — see the disabled test).
+	// mdbox: the namespace root is mailboxes/dbox-Mails, distinct from INBOX,
+	// so the local root default is available (unlike maildir — see the
+	// disabled test).
 	s := New(home, "", "mdbox", "/", "alice", "test", nil)
 	got := s.Path("")
-	want := filepath.Join(home, "mailboxes", FileName)
+	want := filepath.Join(home, "mailboxes", "dbox-Mails", FileName)
 	if got != want {
 		t.Errorf("Path(\"\") = %q, want %q (namespace-root file)", got, want)
 	}
@@ -410,7 +411,7 @@ func TestStore_SetGetRootACL(t *testing.T) {
 	if err := s.Set("", in); err != nil {
 		t.Fatalf("Set root: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "mailboxes", FileName)); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "mailboxes", "dbox-Mails", FileName)); err != nil {
 		t.Errorf("root file not created: %v", err)
 	}
 	got, err := s.Get("")

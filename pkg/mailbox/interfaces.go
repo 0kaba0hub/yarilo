@@ -130,7 +130,10 @@ type UserMailbox interface {
 	Remove(folder, filename string) error
 	List(folder string) ([]*MessageMeta, error)
 	FolderExists(folder string) (bool, error)
-	ListFolders() ([]string, error)
+	// ListFolders returns every folder in the user's personal namespace,
+	// including nested folders (dbox drivers recurse the physical tree) and
+	// \NoSelect containers (FolderEntry.Selectable=false).
+	ListFolders() ([]FolderEntry, error)
 	// Scan walks the on-disk representation of folder and yields
 	// every visible message as a ScanRecord. Used by the admin
 	// rebuild flow to regenerate the fileindex independently of

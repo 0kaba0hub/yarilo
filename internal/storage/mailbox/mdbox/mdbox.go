@@ -50,6 +50,7 @@ const (
 	mdboxRoot    = "mdbox"
 	storageDir   = "storage"
 	mailboxesDir = "mailboxes"
+	dboxMailsDir = "dbox-Mails"
 )
 
 // dbox single-message wire constants (re-stated locally so this
@@ -207,6 +208,13 @@ func (u *userMailbox) folderDiskName(folder string) string {
 func (u *userMailbox) folderPath(folder string) string {
 	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpath("mdbox", folder, u.folderDiskName(folder), u.separator))
 }
+
+// folderDir is the mailbox directory itself (mailboxes/<name>), i.e. folderPath
+// without the trailing dbox-Mails leaf. Delete/Rename operate on this so the
+// whole folder tree moves, not just its dbox-Mails marker.
+func (u *userMailbox) folderDir(folder string) string {
+	return filepath.Dir(u.folderPath(folder))
+}
 func (u *userMailbox) mfilePath(fileID uint32) string {
 	return filepath.Join(u.storagePath(), fmt.Sprintf("m.%d", fileID))
 }
@@ -310,7 +318,7 @@ func (u *userMailbox) Create(folder string) error {
 
 func (u *userMailbox) Delete(folder string) error {
 	return u.withMailboxLock(folder, func() error {
-		if err := os.RemoveAll(u.folderPath(folder)); err != nil {
+		if err := os.RemoveAll(u.folderDir(folder)); err != nil {
 			return fmt.Errorf("mdbox/delete: %w", err)
 		}
 		return nil
@@ -324,10 +332,10 @@ func (u *userMailbox) Rename(oldName, newName string) error {
 	}
 	return u.withMailboxLock(a, func() error {
 		return u.withMailboxLock(b, func() error {
-			if err := os.MkdirAll(filepath.Dir(u.folderPath(newName)), 0o700); err != nil {
+			if err := os.MkdirAll(filepath.Dir(u.folderDir(newName)), 0o700); err != nil {
 				return fmt.Errorf("mdbox/rename: mkdir: %w", err)
 			}
-			if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
+			if err := os.Rename(u.folderDir(oldName), u.folderDir(newName)); err != nil {
 				return fmt.Errorf("mdbox/rename %s → %s: %w", oldName, newName, err)
 			}
 			return nil
@@ -343,33 +351,36 @@ func (u *userMailbox) FolderExists(folder string) (bool, error) {
 	return err == nil, err
 }
 
-func (u *userMailbox) ListFolders() ([]string, error) {
-	entries, err := os.ReadDir(u.folderRoot())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("mdbox/listfolders: %w", err)
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		logical := e.Name()
+func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
+	decode := func(name string) (string, bool) {
+		logical := name
 		if !u.listUTF8 {
-			decoded, decErr := mboxenc.FromModUTF7(logical)
-			if decErr != nil {
-				continue
+			decoded, err := mboxenc.FromModUTF7(name)
+			if err != nil {
+				return "", false
 			}
 			logical = decoded
 		}
 		if u.normalizeNFC {
 			logical = mboxenc.NFC(logical)
 		}
-		out = append(out, logical)
+		return logical, true
 	}
-	return out, nil
+	// A folder is selectable when it owns a dbox-Mails marker dir; a dir that
+	// only holds child folders (an auto-created parent) is a \NoSelect
+	// container. Payloads live in the shared storage/, so the marker dir stays
+	// empty — it exists purely to record that the mailbox is selectable.
+	root := u.folderRoot()
+	isMarker := func(name string) bool { return name == dboxMailsDir }
+	selectable := func(diskRel string) bool {
+		_, err := os.Stat(filepath.Join(root, diskRel, dboxMailsDir))
+		return err == nil
+	}
+	entries, err := mailbox.WalkDboxTree(root, u.separator, decode, isMarker, selectable)
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/listfolders: %w", err)
+	}
+	return entries, nil
 }
 
 // rotateThreshold is the per-m.<N> size cap before Save rolls

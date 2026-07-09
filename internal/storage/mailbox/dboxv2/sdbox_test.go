@@ -180,7 +180,7 @@ func TestListAndFolderOps(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, f := range folders {
-		got[f] = true
+		got[f.Name] = true
 	}
 	if !got["INBOX"] || !got["Sent"] {
 		t.Errorf("ListFolders = %v, want INBOX+Sent", folders)
@@ -269,7 +269,7 @@ func TestListFoldersIgnoresLooseDirs(t *testing.T) {
 		t.Fatalf("listfolders: %v", err)
 	}
 	for _, f := range folders {
-		if f == "stray" {
+		if f.Name == "stray" {
 			t.Errorf("stray dir without dbox-Mails should not appear in folders: %v", folders)
 		}
 	}

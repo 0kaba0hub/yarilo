@@ -118,8 +118,11 @@ func (s *Server) handleQuotaRecalc(w http.ResponseWriter, r *http.Request) {
 	}
 	var totalBytes int64
 	var totalMsgs int64
-	for _, folder := range folders {
-		f, err := bundle.idx.OpenFolder(folder, 0)
+	for _, entry := range folders {
+		if !entry.Selectable {
+			continue
+		}
+		f, err := bundle.idx.OpenFolder(entry.Name, 0)
 		if err != nil || f == nil {
 			continue
 		}

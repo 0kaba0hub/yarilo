@@ -200,7 +200,7 @@ func TestListFolders(t *testing.T) {
 	}
 	has := func(name string) bool {
 		for _, f := range folders {
-			if f == name {
+			if f.Name == name {
 				return true
 			}
 		}
@@ -232,7 +232,7 @@ func TestListFolders_ExplicitMailPath(t *testing.T) {
 	}
 	var found bool
 	for _, f := range folders {
-		if f == "Sent" {
+		if f.Name == "Sent" {
 			found = true
 		}
 	}
@@ -265,7 +265,7 @@ func TestNestedFolderIsFlatMaildirPP(t *testing.T) {
 	folders, _ := box.ListFolders()
 	var found bool
 	for _, f := range folders {
-		if f == "ProjZ.Sub" {
+		if f.Name == "ProjZ.Sub" {
 			found = true
 		}
 	}

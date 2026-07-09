@@ -171,12 +171,16 @@ func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 // SetAltTier on each so the AltTier index flag stays in sync with the
 // physical location of the m.<N> files after an altmove run.
 func (s *Server) setAltTierAllFolders(bundle *nsBundle, filenames []string, altTier bool) error {
-	folders, err := bundle.box.ListFolders()
+	entries, err := bundle.box.ListFolders()
 	if err != nil {
 		return fmt.Errorf("altmove/flag: list folders: %w", err)
 	}
 	var firstErr error
-	for _, folder := range folders {
+	for _, entry := range entries {
+		if !entry.Selectable {
+			continue
+		}
+		folder := entry.Name
 		f, ferr := bundle.idx.OpenFolder(folder, 0)
 		if ferr != nil {
 			if firstErr == nil {

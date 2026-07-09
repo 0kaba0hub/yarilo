@@ -478,12 +478,15 @@ func (u *userMailbox) FolderExists(folder string) (bool, error) {
 	return err == nil, err
 }
 
-func (u *userMailbox) ListFolders() ([]string, error) {
+func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	entries, err := os.ReadDir(u.mailPath)
 	if err != nil {
 		return nil, err
 	}
-	folders := []string{"INBOX"}
+	// maildir++ is a flat namespace: every ".<name>" dir is a selectable
+	// mailbox and hierarchy lives in the dotted name, so there are no
+	// \NoSelect containers to surface.
+	folders := []mailbox.FolderEntry{{Name: "INBOX", Selectable: true}}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -512,7 +515,7 @@ func (u *userMailbox) ListFolders() ([]string, error) {
 		if u.separator != "." {
 			logical = strings.ReplaceAll(logical, ".", u.separator)
 		}
-		folders = append(folders, logical)
+		folders = append(folders, mailbox.FolderEntry{Name: logical, Selectable: true})
 	}
 	return folders, nil
 }

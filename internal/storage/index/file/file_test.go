@@ -66,8 +66,8 @@ func TestIndexDirMirrorsDriverLayout(t *testing.T) {
 		driver, folder, want string
 	}{
 		{"maildir", "Sent", ".Sent"},
-		{"mdbox", "INBOX", "mailboxes/INBOX"},
-		{"mdbox", "Sent", "mailboxes/Sent"},
+		{"mdbox", "INBOX", "mailboxes/INBOX/dbox-Mails"},
+		{"mdbox", "Sent", "mailboxes/Sent/dbox-Mails"},
 		{"sdbox", "Sent", "mailboxes/Sent/dbox-Mails"},
 	}
 	for _, c := range cases {

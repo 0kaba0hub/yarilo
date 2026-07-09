@@ -18,9 +18,14 @@ import (
 // to special-case INBOX. sep is the IMAP hierarchy separator embedded in the
 // name; each driver converts it to its own on-disk separator:
 //
-//	maildir : flat, "."-joined  → INBOX -> "",  A<sep>B -> ".A.B"
-//	mdbox   : nested, "/"-joined → "mailboxes/A/B"
-//	sdbox   : nested, "/"-joined → "mailboxes/A/B/dbox-Mails"
+//	maildir      : flat, "."-joined  → INBOX -> "",  A<sep>B -> ".A.B"
+//	mdbox/sdbox  : nested, "/"-joined → "mailboxes/A/B/dbox-Mails"
+//
+// For the dbox drivers the per-folder dbox-Mails directory is the mailbox
+// marker: its presence makes a directory selectable, its absence marks a
+// \NoSelect parent container. mdbox and sdbox share the layout; they differ
+// only in what the marker dir holds (sdbox: message files; mdbox: nothing —
+// payloads live in the shared storage/, the index is external).
 //
 // For maildir, INBOX IS the maildir root (no INBOX/ subdir). An empty sep
 // defaults to "/" so callers that never set one keep the historical layout.
@@ -29,9 +34,7 @@ func FolderSubpath(driver, folder, diskName, sep string) string {
 		sep = "/"
 	}
 	switch driver {
-	case "mdbox":
-		return filepath.Join(mailboxesSubdir, toDiskSep(diskName, sep, "/"))
-	case "sdbox", "dbox":
+	case "mdbox", "sdbox", "dbox":
 		return filepath.Join(mailboxesSubdir, toDiskSep(diskName, sep, "/"), dboxMailsSubdir)
 	default: // maildir — maildir++ flat layout, "." separates hierarchy
 		if folder == "INBOX" {
