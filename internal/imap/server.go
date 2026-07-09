@@ -120,6 +120,11 @@ type Options struct {
 	// detects it via interface assertion.
 	ACLEnabled bool
 
+	// ACLDefaultsFromInbox makes root-level default ACLs resolve from INBOX
+	// for private/shared namespaces. The dispatcher applies the
+	// namespace-type gate when constructing each namespace's ACL store.
+	ACLDefaultsFromInbox bool
+
 	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC
 	// 9051 §6.3.10). When nil/empty the server falls back to a single
 	// personal namespace with separator "/" — backwards-compatible

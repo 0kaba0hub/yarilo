@@ -48,6 +48,10 @@ type Store struct {
 	// separator is the IMAP hierarchy separator, converted to the driver's
 	// on-disk separator by mailbox.FolderSubpath.
 	separator string
+	// defaultsFromInbox makes the terminal namespace-root default resolve
+	// from INBOX's ACL instead of the (maildir-disabled) folder "" default.
+	// Set only for private/shared namespaces.
+	defaultsFromInbox bool
 	// username is whose lock-key is acquired on every write. For
 	// shared/public namespaces this is the accessing user — the
 	// MailboxKey is per-(user, folder), so concurrent writes from
@@ -63,19 +67,22 @@ type Store struct {
 // New constructs a Store. The ACL file lives in the mailbox directory, so
 // the root is mailPath when set, else home (the per-namespace root: personal
 // = UserInfo.Home; shared/public = the namespace location). driver selects
-// the folder sub-layout; locker may be nil for tests / single-process runs.
-func New(home, mailPath, driver, separator, username, owner string, locker locks.Locker) *Store {
+// the folder sub-layout; defaultsFromInbox makes root-level defaults resolve
+// from INBOX (private/shared namespaces only — the caller applies that gate);
+// locker may be nil for tests / single-process runs.
+func New(home, mailPath, driver, separator, username, owner string, defaultsFromInbox bool, locker locks.Locker) *Store {
 	root := home
 	if mailPath != "" {
 		root = mailPath
 	}
 	return &Store{
-		mailRoot:  root,
-		driver:    driver,
-		separator: mailbox.SepOrDefault(separator),
-		username:  username,
-		owner:     owner,
-		locker:    locker,
+		mailRoot:          root,
+		driver:            driver,
+		separator:         mailbox.SepOrDefault(separator),
+		username:          username,
+		owner:             owner,
+		defaultsFromInbox: defaultsFromInbox,
+		locker:            locker,
 	}
 }
 
@@ -175,14 +182,9 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 	if isOwner {
 		return mailbox.FullRights, nil
 	}
-	cur := folder
-	rootTried := false
-	for {
-		// The local namespace-root default is disabled when it would collide
-		// with INBOX (maildir): the file there is INBOX's own, not a default.
-		if cur == "" && s.rootDefaultDisabled() {
-			return "", nil
-		}
+	// Walk folder and its ancestors (first-hit wins). The synthetic root
+	// "" is handled separately below as the namespace-root default.
+	for cur := folder; cur != ""; {
 		acl, err := s.Get(cur)
 		if err != nil {
 			return "", err
@@ -190,22 +192,42 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 		if acl != nil {
 			return acl.Effective(user, groups, false), nil
 		}
-		if cur == "" {
-			rootTried = true
-		}
+		// sep == 0 disables inheritance: consult folder itself only, no
+		// ancestor walk and no root default.
 		if sep == 0 {
 			return "", nil
 		}
 		idx := lastSepIndex(cur, sep)
 		if idx < 0 {
-			if rootTried {
-				return "", nil
-			}
-			cur = ""
-			continue
+			break
 		}
 		cur = cur[:idx]
 	}
+	return s.rootDefaultEffective(user, groups)
+}
+
+// rootDefaultEffective resolves the namespace-root default ACL. With
+// acl_defaults_from_inbox the default is INBOX's ACL; otherwise it is the
+// local folder-"" default, which is disabled for maildir (collides with
+// INBOX). Returns the empty rights set when no default source applies.
+func (s *Store) rootDefaultEffective(user string, groups []string) (mailbox.Rights, error) {
+	var defFolder string
+	switch {
+	case s.defaultsFromInbox:
+		defFolder = "INBOX"
+	case s.rootDefaultDisabled():
+		return "", nil
+	default:
+		defFolder = ""
+	}
+	acl, err := s.Get(defFolder)
+	if err != nil {
+		return "", err
+	}
+	if acl == nil {
+		return "", nil
+	}
+	return acl.Effective(user, groups, false), nil
 }
 
 // lastSepIndex returns the byte index of the last occurrence of sep

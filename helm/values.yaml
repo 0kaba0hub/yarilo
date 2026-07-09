@@ -907,6 +907,13 @@ protocol:
     ## absent from the CAPABILITY response.
     acl:
       enabled: false
+      ## Root-level default ACLs resolve from INBOX's ACL for private and
+      ## shared namespaces. This is the maildir answer to the namespace
+      ## root == INBOX collision, where the local folder-"" default is
+      ## unavailable: INBOX's ACL becomes the default for sibling folders
+      ## that have no ACL of their own. Mirrors Dovecot
+      ## acl_defaults_from_inbox.
+      defaults_from_inbox: false
 
   pop3:
     pop3_no_flag_updates: false

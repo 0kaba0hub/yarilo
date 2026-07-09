@@ -159,7 +159,10 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		subsRoot = ui.ControlDir
 	}
 	store := subs.New(subsRoot, subsFile, ui.Username, owner, s.srv.opts.Locker)
-	aclStore := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.Username, owner, s.srv.opts.Locker)
+	// acl_defaults_from_inbox applies to private/shared namespaces only.
+	defaultsFromInbox := s.srv.opts.ACLDefaultsFromInbox &&
+		(spec.Type == NamespacePersonal || spec.Type == NamespaceShared)
+	aclStore := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.Username, owner, defaultsFromInbox, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,
 		spec:     spec,
