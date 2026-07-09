@@ -363,33 +363,42 @@ func (acl ACL) Effective(user string, groups []string, isOwner bool) Rights {
 	if isOwner {
 		return FullRights
 	}
+	pos, neg, _ := acl.effectiveMasks(user, groups)
+	return pos.Remove(neg)
+}
 
+// effectiveMasks resolves the tier that applies to the user and returns its
+// positive and negative rights plus whether any entry matched. Effective is
+// pos.Remove(neg); the masks are exposed so a global ACL can be merged onto a
+// local one with the right precedence (see EffectiveWithGlobal).
+func (acl ACL) effectiveMasks(user string, groups []string) (pos, neg Rights, matched bool) {
 	groupSet := makeGroupSet(groups)
 
 	// Base tier: union of anyone, authenticated, group=, user= entries
 	// (RFC 4314 §3.5 — all matching identifiers contribute).
 	var basePos, baseNeg Rights
-	// Override tier: group-override= entries. When any match, the
-	// override result REPLACES the base result — giving admins a way
-	// to grant rights that override per-user restrictions.
+	// Override tier: group-override= entries. When any match, the override
+	// result REPLACES the base result — a way to grant rights that override
+	// per-user restrictions.
 	var overridePos, overrideNeg Rights
 	var hasOverride bool
 
 	for _, e := range acl {
-		var matches bool
+		var isMatch bool
 		switch e.Identifier.Type {
 		case IDAnyone, IDAuthenticated:
-			matches = true
+			isMatch = true
 		case IDUser:
-			matches = e.Identifier.Name == user
+			isMatch = e.Identifier.Name == user
 		case IDGroup:
-			matches = groupSet[e.Identifier.Name]
+			isMatch = groupSet[e.Identifier.Name]
 		case IDGroupOverride:
-			matches = groupSet[e.Identifier.Name]
+			isMatch = groupSet[e.Identifier.Name]
 		}
-		if !matches {
+		if !isMatch {
 			continue
 		}
+		matched = true
 		if e.Identifier.Type == IDGroupOverride {
 			hasOverride = true
 			if e.Negative {
@@ -407,9 +416,27 @@ func (acl ACL) Effective(user string, groups []string, isOwner bool) Rights {
 	}
 
 	if hasOverride {
-		return overridePos.Remove(overrideNeg)
+		return overridePos, overrideNeg, matched
 	}
-	return basePos.Remove(baseNeg)
+	return basePos, baseNeg, matched
+}
+
+// EffectiveWithGlobal resolves rights from a local ACL and a global ACL with
+// the global taking precedence: global positives add on top of the local
+// result and global negatives revoke even locally-granted rights. When any
+// global entry matches the user, local negative rights are reset so they
+// cannot undermine a global grant. The mailbox owner keeps full rights — a
+// global ACL cannot lock the owner out of their own mailbox.
+func EffectiveWithGlobal(local, global ACL, user string, groups []string, isOwner bool) Rights {
+	if isOwner {
+		return FullRights
+	}
+	lpos, lneg, _ := local.effectiveMasks(user, groups)
+	gpos, gneg, gmatched := global.effectiveMasks(user, groups)
+	if gmatched {
+		return lpos.Add(gpos).Remove(gneg)
+	}
+	return lpos.Remove(lneg)
 }
 
 // makeGroupSet builds a fast-lookup set from a groups slice.

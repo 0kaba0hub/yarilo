@@ -914,6 +914,24 @@ protocol:
       ## that have no ACL of their own. Mirrors Dovecot
       ## acl_defaults_from_inbox.
       defaults_from_inbox: false
+      ## Evaluate only the global ACL rules below and ignore the per-mailbox
+      ## yarilo-acl files. Useful for centrally-administered installs.
+      globals_only: false
+      ## Operator-configured global ACL rules, applied across all users and
+      ## merged with each mailbox's own ACL (global takes precedence: global
+      ## grants add, global negatives revoke, and a matching global entry
+      ## resets local negatives). Each rule targets a mailbox name or "*" for
+      ## every mailbox. A leading "-" on rights marks a negative entry.
+      ## Identifiers: anyone | authenticated | owner | user=<name> |
+      ## group=<name> | group-override=<name>.
+      global: []
+      #   - mailbox: "*"
+      #     entries:
+      #       - { identifier: "user=admin@example.com", rights: "lrswipkxtea" }
+      #       - { identifier: "anyone",                  rights: "-lr" }
+      #   - mailbox: "Public/News"
+      #     entries:
+      #       - { identifier: "anyone", rights: "lr" }
 
   pop3:
     pop3_no_flag_updates: false

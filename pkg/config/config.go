@@ -395,6 +395,28 @@ type ACLConfig struct {
 	// namespace-root==INBOX collision, where the local folder-"" default is
 	// unavailable.
 	DefaultsFromInbox bool `koanf:"defaults_from_inbox"`
+	// GlobalsOnly ignores the per-mailbox yarilo-acl files and evaluates only
+	// the global ACL rules below. Useful for centrally-administered setups.
+	GlobalsOnly bool `koanf:"globals_only"`
+	// Global holds operator-configured ACL rules applied across all users
+	// and merged with the per-mailbox ACL (global takes precedence).
+	Global []GlobalACLRule `koanf:"global"`
+}
+
+// GlobalACLRule is one global ACL entry-set scoped to a mailbox name (or the
+// "*" wildcard for every mailbox).
+type GlobalACLRule struct {
+	// Mailbox is the mailbox name this rule applies to, or "*" for all.
+	Mailbox string `koanf:"mailbox"`
+	// Entries are the (identifier, rights) grants; a leading "-" on rights
+	// marks a negative-rights entry.
+	Entries []GlobalACLEntry `koanf:"entries"`
+}
+
+// GlobalACLEntry is one identifier→rights grant within a GlobalACLRule.
+type GlobalACLEntry struct {
+	Identifier string `koanf:"identifier"`
+	Rights     string `koanf:"rights"`
 }
 
 type POP3ProtocolConfig struct {

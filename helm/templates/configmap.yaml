@@ -116,6 +116,18 @@ data:
         acl:
           enabled: {{ .Values.protocol.imap.acl.enabled }}
           defaults_from_inbox: {{ .Values.protocol.imap.acl.defaults_from_inbox | default false }}
+          globals_only: {{ .Values.protocol.imap.acl.globals_only | default false }}
+          {{- with .Values.protocol.imap.acl.global }}
+          global:
+            {{- range . }}
+            - mailbox: {{ .mailbox | default "*" | quote }}
+              entries:
+                {{- range .entries }}
+                - identifier: {{ .identifier | quote }}
+                  rights: {{ .rights | quote }}
+                {{- end }}
+            {{- end }}
+          {{- end }}
       pop3:
         pop3_no_flag_updates: {{ .Values.protocol.pop3.pop3_no_flag_updates }}
         pop3_reuse_xuidl: {{ .Values.protocol.pop3.pop3_reuse_xuidl }}
