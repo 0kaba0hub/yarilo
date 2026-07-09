@@ -27,6 +27,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/scram"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
 	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
@@ -124,6 +125,14 @@ type Options struct {
 	// for private/shared namespaces. The dispatcher applies the
 	// namespace-type gate when constructing each namespace's ACL store.
 	ACLDefaultsFromInbox bool
+
+	// ACLGlobal is the operator-configured global ACL merged into every
+	// mailbox's effective rights (global takes precedence); nil when none.
+	ACLGlobal *acl.Global
+
+	// ACLGlobalsOnly evaluates only the global ACL, ignoring the per-mailbox
+	// yarilo-acl files.
+	ACLGlobalsOnly bool
 
 	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC
 	// 9051 §6.3.10). When nil/empty the server falls back to a single

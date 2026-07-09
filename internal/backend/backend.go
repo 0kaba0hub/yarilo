@@ -32,6 +32,7 @@ import (
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
+	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	authclient "github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
@@ -200,6 +201,10 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		p := cfg.Protocol.IMAP
 		storageCfg := cfg.Storage
+		aclGlobal, err := acl.NewGlobal(cfg.ACL.Global)
+		if err != nil {
+			return nil, fmt.Errorf("backend: acl global: %w", err)
+		}
 		imapServer = imapsvr.New(imapsvr.Options{
 			Addr:      listenAddr(svcs.IMAPS),
 			AddrPlain: listenAddr(svcs.IMAP),
@@ -230,8 +235,10 @@ func New(cfg *config.Config) (*Server, error) {
 			SpecialUseDefaults:   p.SpecialUseDefaults,
 			MetadataDict:         metadataDict,
 			QuotaDict:            quotaDict,
-			ACLEnabled:           p.ACL.Enabled,
-			ACLDefaultsFromInbox: p.ACL.DefaultsFromInbox,
+			ACLEnabled:           cfg.ACL.Enabled,
+			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
+			ACLGlobal:            aclGlobal,
+			ACLGlobalsOnly:       cfg.ACL.GlobalsOnly,
 			Namespaces:           buildNamespaces(cfg.Namespaces),
 			NamespaceMailboxes:   nsMailboxes,
 			FailureDelay:         time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,

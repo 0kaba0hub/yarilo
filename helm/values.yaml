@@ -894,27 +894,6 @@ protocol:
       Trash: "\\Trash"
       Junk: "\\Junk"
       Archive: "\\Archive"
-    ## RFC 4314 server-side ACL — GETACL / SETACL / DELETEACL / MYRIGHTS
-    ## / LISTRIGHTS plus enforcement on SELECT / APPEND / COPY / MOVE
-    ## / STORE / EXPUNGE / CREATE / DELETE / RENAME / STATUS. Storage
-    ## is a per-mailbox `yarilo-acl` file alongside each folder's
-    ## `yarilo.index*`; a namespace-wide `yarilo-acl-list` index
-    ## mirrors which mailboxes have an explicit ACL for LIST
-    ## optimisation. Admin surface lives at
-    ## `yarilo-backend-api /api/backend/acl/*` and `yarilo-admin
-    ## backend acl <command>`. When disabled, every ACL command
-    ## returns NO("ACL extension disabled by operator") and ACL is
-    ## absent from the CAPABILITY response.
-    acl:
-      enabled: false
-      ## Root-level default ACLs resolve from INBOX's ACL for private and
-      ## shared namespaces. This is the maildir answer to the namespace
-      ## root == INBOX collision, where the local folder-"" default is
-      ## unavailable: INBOX's ACL becomes the default for sibling folders
-      ## that have no ACL of their own. Mirrors Dovecot
-      ## acl_defaults_from_inbox.
-      defaults_from_inbox: false
-
   pop3:
     pop3_no_flag_updates: false
     pop3_reuse_xuidl: false
@@ -1255,6 +1234,45 @@ extraVolumeMounts: []
 # See docs/NAMESPACE.md for full schema, separator semantics,
 # METADATA priv/ per-accessing-user behaviour and the post-NS-1b
 # roadmap (ACL-1, NS-3 cross-pod routing, QUOTA-1 owner-paid).
+## RFC 4314 server-side ACL — GETACL / SETACL / DELETEACL / MYRIGHTS
+## / LISTRIGHTS plus enforcement on SELECT / APPEND / COPY / MOVE
+## / STORE / EXPUNGE / CREATE / DELETE / RENAME / STATUS. Storage
+## is a per-mailbox `yarilo-acl` file alongside each folder's
+## `yarilo.index*`; a namespace-wide `yarilo-acl-list` index
+## mirrors which mailboxes have an explicit ACL for LIST
+## optimisation. Admin surface lives at
+## `yarilo-backend-api /api/backend/acl/*` and `yarilo-admin
+## backend acl <command>`. When disabled, every ACL command
+## returns NO("ACL extension disabled by operator") and ACL is
+## absent from the CAPABILITY response.
+acl:
+  enabled: false
+  ## Root-level default ACLs resolve from INBOX's ACL for private and
+  ## shared namespaces. This is the maildir answer to the namespace
+  ## root == INBOX collision, where the local folder-"" default is
+  ## unavailable: INBOX's ACL becomes the default for sibling folders
+  ## that have no ACL of their own. Mirrors Dovecot
+  ## acl_defaults_from_inbox.
+  defaults_from_inbox: false
+  ## Evaluate only the global ACL rules below and ignore the per-mailbox
+  ## yarilo-acl files. Useful for centrally-administered installs.
+  globals_only: false
+  ## Operator-configured global ACL rules, applied across all users and
+  ## merged with each mailbox's own ACL (global takes precedence: global
+  ## grants add, global negatives revoke, and a matching global entry
+  ## resets local negatives). Each rule targets a mailbox name or "*" for
+  ## every mailbox. A leading "-" on rights marks a negative entry.
+  ## Identifiers: anyone | authenticated | owner | user=<name> |
+  ## group=<name> | group-override=<name>.
+  global: []
+  #   - mailbox: "*"
+  #     entries:
+  #       - { identifier: "user=admin@example.com", rights: "lrswipkxtea" }
+  #       - { identifier: "anyone",                  rights: "-lr" }
+  #   - mailbox: "Public/News"
+  #     entries:
+  #       - { identifier: "anyone", rights: "lr" }
+
 namespaces: []
 #   - type: personal              # personal | other | shared
 #     prefix: ""                  # mailbox name prefix; "" reserved for personal

@@ -15,6 +15,8 @@ import (
 	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
+	"github.com/0kaba0hub/yarilo/pkg/config"
 	mailboxpkg "github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -705,5 +707,66 @@ func TestACLEnforce_MaildirNoRootDefaultWithoutFlag(t *testing.T) {
 		t.Fatal("peer SELECT without a root default should fail")
 	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
 		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	}
+}
+
+// TestACLEnforce_GlobalGrant exercises the config-driven global ACL end-to-end:
+// a global rule grants a peer read on every mailbox, so the peer can SELECT a
+// shared folder that has no per-mailbox ACL of its own.
+func TestACLEnforce_GlobalGrant(t *testing.T) {
+	global, err := acl.NewGlobal([]config.GlobalACLRule{
+		{Mailbox: "*", Entries: []config.GlobalACLEntry{{Identifier: "user=bob", Rights: "lr"}}},
+	})
+	if err != nil {
+		t.Fatalf("NewGlobal: %v", err)
+	}
+	root := t.TempDir()
+	resolver := &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"}
+	passdb := &enforcePassdb{users: map[string]string{"alice": "pw", "bob": "pw"}}
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:    maildir.New(),
+		Index:      file.New(),
+		Resolver:   resolver,
+		Auth:       passdb,
+		ACLEnabled: true,
+		ACLGlobal:  global,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+	dial := func(user string) *imapclient.Client {
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		c := imapclient.New(conn, nil)
+		if err := c.WaitGreeting(); err != nil {
+			t.Fatalf("greeting: %v", err)
+		}
+		if err := c.Login(user, "pw").Wait(); err != nil {
+			t.Fatalf("login %s: %v", user, err)
+		}
+		t.Cleanup(func() { c.Logout().Wait() }) //nolint:errcheck
+		return c
+	}
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("Reports", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE Reports: %v", err)
+	}
+	// No per-mailbox ACL seeded anywhere — rights come solely from the global rule.
+	b := dial("bob")
+	if _, err := b.Select("Shared/Reports", nil).Wait(); err != nil {
+		t.Errorf("peer SELECT with global 'r' should succeed: %v", err)
 	}
 }

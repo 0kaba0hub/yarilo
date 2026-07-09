@@ -537,3 +537,35 @@ func TestParseACL_ReadErrorWrapped(t *testing.T) {
 type errReader struct{ err error }
 
 func (e *errReader) Read(_ []byte) (int, error) { return 0, e.err }
+
+func TestACL_EffectiveWithGlobal(t *testing.T) {
+	u := func(name, rights string, neg bool) Entry {
+		return Entry{Identifier: Identifier{Type: IDUser, Name: name}, Rights: MustParseRights(rights), Negative: neg}
+	}
+	anyone := func(rights string, neg bool) Entry {
+		return Entry{Identifier: Identifier{Type: IDAnyone}, Rights: MustParseRights(rights), Negative: neg}
+	}
+	tests := []struct {
+		name          string
+		local, global ACL
+		user          string
+		isOwner       bool
+		want          string
+	}{
+		{"owner wins over any global", ACL{u("bob", "lr", false)}, ACL{anyone("lr", true)}, "bob", true, "lrswipkxtea"},
+		{"global only, no local", nil, ACL{u("bob", "lr", false)}, "bob", false, "lr"},
+		{"local only, global does not match", ACL{u("bob", "lr", false)}, ACL{u("carol", "lrswi", false)}, "bob", false, "lr"},
+		{"global adds on top of local", ACL{u("bob", "lr", false)}, ACL{anyone("i", false)}, "bob", false, "lri"},
+		{"global negative revokes a local grant", ACL{u("bob", "lrs", false)}, ACL{u("bob", "s", true)}, "bob", false, "lr"},
+		{"global matching resets local negative", ACL{anyone("lr", true), u("bob", "lr", false)}, ACL{anyone("i", false)}, "bob", false, "lri"},
+		{"neither local nor global", nil, nil, "bob", false, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EffectiveWithGlobal(tc.local, tc.global, tc.user, nil, tc.isOwner)
+			if got != MustParseRights(tc.want) {
+				t.Errorf("EffectiveWithGlobal = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

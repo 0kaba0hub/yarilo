@@ -52,6 +52,11 @@ type Store struct {
 	// from INBOX's ACL instead of the (maildir-disabled) folder "" default.
 	// Set only for private/shared namespaces.
 	defaultsFromInbox bool
+	// globalsOnly ignores the per-mailbox files and evaluates only global.
+	globalsOnly bool
+	// global is the operator-configured global ACL merged into every
+	// EffectiveFor with global precedence; nil when none.
+	global *Global
 	// username is whose lock-key is acquired on every write. For
 	// shared/public namespaces this is the accessing user — the
 	// MailboxKey is per-(user, folder), so concurrent writes from
@@ -67,10 +72,10 @@ type Store struct {
 // New constructs a Store. The ACL file lives in the mailbox directory, so
 // the root is mailPath when set, else home (the per-namespace root: personal
 // = UserInfo.Home; shared/public = the namespace location). driver selects
-// the folder sub-layout; defaultsFromInbox makes root-level defaults resolve
-// from INBOX (private/shared namespaces only — the caller applies that gate);
-// locker may be nil for tests / single-process runs.
-func New(home, mailPath, driver, separator, username, owner string, defaultsFromInbox bool, locker locks.Locker) *Store {
+// the folder sub-layout; pol carries the operator ACL knobs (root default
+// from INBOX — private/shared only, the caller applies that gate; global ACL;
+// globals-only); locker may be nil for tests / single-process runs.
+func New(home, mailPath, driver, separator, username, owner string, pol Policy, locker locks.Locker) *Store {
 	root := home
 	if mailPath != "" {
 		root = mailPath
@@ -81,7 +86,9 @@ func New(home, mailPath, driver, separator, username, owner string, defaultsFrom
 		separator:         mailbox.SepOrDefault(separator),
 		username:          username,
 		owner:             owner,
-		defaultsFromInbox: defaultsFromInbox,
+		defaultsFromInbox: pol.DefaultsFromInbox,
+		globalsOnly:       pol.GlobalsOnly,
+		global:            pol.Global,
 		locker:            locker,
 	}
 }
@@ -182,20 +189,37 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 	if isOwner {
 		return mailbox.FullRights, nil
 	}
-	// Walk folder and its ancestors (first-hit wins). The synthetic root
-	// "" is handled separately below as the namespace-root default.
-	for cur := folder; cur != ""; {
-		acl, err := s.Get(cur)
+	var localACL mailbox.ACL
+	if !s.globalsOnly {
+		a, err := s.localACLFor(folder, sep)
 		if err != nil {
 			return "", err
 		}
-		if acl != nil {
-			return acl.Effective(user, groups, false), nil
+		localACL = a
+	}
+	globalACL := s.global.For(folder)
+	if localACL == nil && globalACL == nil {
+		return "", nil
+	}
+	return mailbox.EffectiveWithGlobal(localACL, globalACL, user, groups, false), nil
+}
+
+// localACLFor resolves the local per-mailbox ACL that applies to folder: the
+// first ancestor with an explicit ACL (first-hit wins), else the
+// namespace-root default (INBOX with acl_defaults_from_inbox, else the local
+// folder-"" default which is disabled for maildir). Returns nil when none.
+// sep == 0 disables inheritance: only folder itself is consulted.
+func (s *Store) localACLFor(folder string, sep byte) (mailbox.ACL, error) {
+	for cur := folder; cur != ""; {
+		acl, err := s.Get(cur)
+		if err != nil {
+			return nil, err
 		}
-		// sep == 0 disables inheritance: consult folder itself only, no
-		// ancestor walk and no root default.
+		if acl != nil {
+			return acl, nil
+		}
 		if sep == 0 {
-			return "", nil
+			return nil, nil
 		}
 		idx := lastSepIndex(cur, sep)
 		if idx < 0 {
@@ -203,31 +227,24 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 		}
 		cur = cur[:idx]
 	}
-	return s.rootDefaultEffective(user, groups)
+	return s.rootDefaultACL()
 }
 
-// rootDefaultEffective resolves the namespace-root default ACL. With
+// rootDefaultACL loads the namespace-root default ACL. With
 // acl_defaults_from_inbox the default is INBOX's ACL; otherwise it is the
 // local folder-"" default, which is disabled for maildir (collides with
-// INBOX). Returns the empty rights set when no default source applies.
-func (s *Store) rootDefaultEffective(user string, groups []string) (mailbox.Rights, error) {
+// INBOX). Returns nil when no default source applies.
+func (s *Store) rootDefaultACL() (mailbox.ACL, error) {
 	var defFolder string
 	switch {
 	case s.defaultsFromInbox:
 		defFolder = "INBOX"
 	case s.rootDefaultDisabled():
-		return "", nil
+		return nil, nil
 	default:
 		defFolder = ""
 	}
-	acl, err := s.Get(defFolder)
-	if err != nil {
-		return "", err
-	}
-	if acl == nil {
-		return "", nil
-	}
-	return acl.Effective(user, groups, false), nil
+	return s.Get(defFolder)
 }
 
 // lastSepIndex returns the byte index of the last occurrence of sep
