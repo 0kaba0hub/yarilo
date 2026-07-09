@@ -829,3 +829,30 @@ func keysOf(m map[string][]imaplib.MailboxAttr) []string {
 	}
 	return out
 }
+
+// TestACLEnforce_MyRightsUsesInheritance verifies MYRIGHTS resolves the full
+// effective rights (ancestor inheritance), matching enforcement — not just the
+// folder's own ACL file. bob has no ACL on the child, only on the parent.
+func TestACLEnforce_MyRightsUsesInheritance(t *testing.T) {
+	aliceHome, dial := sharedServerDial(t, false)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	for _, f := range []string{"Parent", "Parent.Child"} {
+		if err := a.Create(f, nil).Wait(); err != nil {
+			t.Fatalf("alice CREATE %s: %v", f, err)
+		}
+	}
+	// Grant bob lr on the parent only; the child has no ACL of its own.
+	seedACL(t, aliceHome, "Parent", "user=bob lr\n")
+
+	b := dial("bob")
+	data, err := b.MyRights("Shared/Parent/Child").Wait()
+	if err != nil {
+		t.Fatalf("bob MYRIGHTS: %v", err)
+	}
+	if got := sortedString(string(data.Rights)); got != "lr" {
+		t.Errorf("inherited MYRIGHTS = %q, want lr (from the parent ACL)", got)
+	}
+}
