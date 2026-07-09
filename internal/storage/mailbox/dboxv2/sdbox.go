@@ -239,7 +239,7 @@ func (u *userMailbox) Create(folder string) error {
 
 func (u *userMailbox) Delete(folder string) error {
 	return u.withMailboxLock(folder, func() error {
-		if err := os.RemoveAll(u.folderPath(folder)); err != nil {
+		if err := os.RemoveAll(u.folderDir(folder)); err != nil {
 			return fmt.Errorf("sdbox/delete: %w", err)
 		}
 		return nil
@@ -248,10 +248,10 @@ func (u *userMailbox) Delete(folder string) error {
 
 func (u *userMailbox) Rename(oldName, newName string) error {
 	return u.withTwoMailboxLocks(oldName, newName, func() error {
-		if err := os.MkdirAll(filepath.Dir(u.folderPath(newName)), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(u.folderDir(newName)), 0o700); err != nil {
 			return fmt.Errorf("sdbox/rename: mkdir: %w", err)
 		}
-		if err := os.Rename(u.folderPath(oldName), u.folderPath(newName)); err != nil {
+		if err := os.Rename(u.folderDir(oldName), u.folderDir(newName)); err != nil {
 			return fmt.Errorf("sdbox/rename %s → %s: %w", oldName, newName, err)
 		}
 		return nil
@@ -597,6 +597,13 @@ func (u *userMailbox) folderDiskName(folder string) string {
 
 func (u *userMailbox) folderPath(folder string) string {
 	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpath("sdbox", folder, u.folderDiskName(folder), u.separator))
+}
+
+// folderDir is the mailbox directory itself (mailboxes/<name>), i.e.
+// folderPath without the trailing dbox-Mails leaf. Delete/Rename operate
+// on this so the whole folder tree moves, not just its dbox-Mails payload.
+func (u *userMailbox) folderDir(folder string) string {
+	return filepath.Dir(u.folderPath(folder))
 }
 
 // makeTempName returns ".temp.<sec>.P<pid>Q<seq>M<usec>.<host>"

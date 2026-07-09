@@ -198,6 +198,9 @@ type UserIndex interface {
 	// RenameFolder renames oldName to newName in the index.
 	// Called by IMAP RENAME immediately after UserMailbox.Rename succeeds.
 	RenameFolder(oldName, newName string) error
+	// DeleteFolder removes folder's index state.
+	// Called by IMAP DELETE immediately after UserMailbox.Delete succeeds.
+	DeleteFolder(folder string) error
 	// GetPOP3UIDLs loads saved POP3 UIDLs for a folder (uid → uidl string).
 	// Returns an empty map when no saved UIDLs exist yet.
 	GetPOP3UIDLs(folderID uint64) (map[uint32]string, error)

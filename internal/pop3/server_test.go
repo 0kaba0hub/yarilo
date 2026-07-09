@@ -90,6 +90,7 @@ func (m *mockIndex) Vanished(_ uint64, _ uint64) ([]uint32, error) {
 }
 func (m *mockIndex) Keywords(_ uint64) ([]string, error) { return nil, nil }
 func (m *mockIndex) RenameFolder(_, _ string) error      { return nil }
+func (m *mockIndex) DeleteFolder(_ string) error         { return nil }
 func (m *mockIndex) GetPOP3UIDLs(_ uint64) (map[uint32]string, error) {
 	if m.savedUIDLs != nil {
 		return m.savedUIDLs, nil

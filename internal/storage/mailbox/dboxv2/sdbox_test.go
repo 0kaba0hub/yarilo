@@ -204,6 +204,26 @@ func TestListAndFolderOps(t *testing.T) {
 	}
 }
 
+// TestDeleteRemovesFolderDir locks that Delete removes the whole folder
+// directory (mailboxes/<name>), not just its dbox-Mails leaf — otherwise
+// an empty mailbox shell is left behind on shared storage.
+func TestDeleteRemovesFolderDir(t *testing.T) {
+	_, mb, home := newTestUser(t)
+	if err := mb.Create("Sent"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	folderDir := filepath.Join(home, "sdbox", "mailboxes", "Sent")
+	if _, err := os.Stat(folderDir); err != nil {
+		t.Fatalf("folder dir not created: %v", err)
+	}
+	if err := mb.Delete("Sent"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(folderDir); !os.IsNotExist(err) {
+		t.Errorf("folder dir shell survived Delete: stat err=%v", err)
+	}
+}
+
 func TestScanRecoversGUIDAndSize(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	body := "hello world"

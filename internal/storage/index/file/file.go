@@ -197,6 +197,9 @@ func (h *userHandle) Keywords(folderID uint64) ([]string, error) {
 func (h *userHandle) RenameFolder(oldName, newName string) error {
 	return h.ui.RenameFolder(oldName, newName)
 }
+func (h *userHandle) DeleteFolder(folder string) error {
+	return h.ui.DeleteFolder(folder)
+}
 func (h *userHandle) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {
 	return h.ui.GetPOP3UIDLs(folderID)
 }
@@ -517,6 +520,36 @@ func (u *userIndex) RenameFolder(oldName, newName string) error {
 		}
 		if u.byDir != nil {
 			delete(u.byDir, oldDir)
+		}
+		u.mu.Unlock()
+		return nil
+	})
+}
+
+// DeleteFolder removes the on-disk index directory (and its volatile
+// twin) for folder. Called by IMAP DELETE after UserMailbox.Delete
+// succeeds so the index does not outlive the mailbox it describes.
+// Idempotent: a missing directory is not an error.
+func (u *userIndex) DeleteFolder(folder string) error {
+	return u.withTwoFolderLocks(folder, folder, func() error {
+		dir := u.indexDir(folder)
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("fileindex/delete %s: %w", dir, err)
+		}
+		if vd := u.folderVolatileDir(folder); vd != "" {
+			if err := os.RemoveAll(vd); err != nil {
+				return fmt.Errorf("fileindex/delete volatile %s: %w", vd, err)
+			}
+		}
+		u.mu.Lock()
+		for id, fs := range u.open {
+			if fs.folder == folder {
+				fs.closeFDs()
+				delete(u.open, id)
+			}
+		}
+		if u.byDir != nil {
+			delete(u.byDir, dir)
 		}
 		u.mu.Unlock()
 		return nil

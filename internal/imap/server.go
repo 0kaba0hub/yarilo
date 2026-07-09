@@ -1068,6 +1068,12 @@ func (s *session) Delete(name string) error {
 	if err := h.box.Delete(rel); err != nil {
 		return err
 	}
+	// Drop the folder's index state so it does not outlive the mailbox.
+	// Non-fatal: the mailbox is already gone, so a clean DELETE result
+	// is reported and any orphan index dir is reclaimed on next rebuild.
+	if err := h.idx.DeleteFolder(rel); err != nil {
+		slog.Warn("imap: index delete after DELETE failed", "folder", name, "err", err)
+	}
 	// Drop any explicit ACL state — file + namespace-wide index.
 	// Errors are non-fatal (mailbox is already gone); log and
 	// proceed so the client sees a clean DELETE result.
