@@ -385,11 +385,16 @@ type IMAPProtocolConfig struct {
 	ACL ACLConfig `koanf:"acl"`
 }
 
-// ACLConfig groups RFC 4314 ACL knobs. PR ACL-1/C ships a single
-// enabled flag; richer policy (default ACL, group= resolution, mode
-// for negative entries, etc.) lands in later ACL phases.
+// ACLConfig groups RFC 4314 ACL knobs. Richer policy (global ACL,
+// group= resolution, cache, etc.) lands in later ACL phases (see the ACL
+// parity backlog).
 type ACLConfig struct {
 	Enabled bool `koanf:"enabled"`
+	// DefaultsFromInbox makes root-level default ACLs resolve from INBOX's
+	// ACL for private/shared namespaces. This is the maildir answer to the
+	// namespace-root==INBOX collision, where the local folder-"" default is
+	// unavailable.
+	DefaultsFromInbox bool `koanf:"defaults_from_inbox"`
 }
 
 type POP3ProtocolConfig struct {

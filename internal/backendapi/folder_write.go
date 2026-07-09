@@ -348,6 +348,7 @@ func (s *Server) dropFolderACL(bundle *nsBundle, folder string) error {
 		bundle.info.Separator,
 		bundle.info.Username,
 		"backendapi/folder.delete",
+		false,
 		s.opts.Locker,
 	)
 	return store.Remove(folder)
@@ -363,6 +364,7 @@ func (s *Server) renameFolderACL(bundle *nsBundle, oldFolder, newFolder string) 
 		bundle.info.Separator,
 		bundle.info.Username,
 		"backendapi/folder.rename",
+		false,
 		s.opts.Locker,
 	)
 	return store.Rename(oldFolder, newFolder)

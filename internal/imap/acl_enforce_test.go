@@ -615,3 +615,95 @@ func TestACLEnforce_StatusNeedsRead(t *testing.T) {
 		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
 	}
 }
+
+// sharedServerDial builds the two-user shared-namespace enforce server with an
+// explicit acl_defaults_from_inbox toggle, returning alice's home and a dial
+// factory. Mirrors enforceServerWithShared but parameterises the flag.
+func sharedServerDial(t *testing.T, defaultsFromInbox bool) (aliceHome string, dial func(user string) *imapclient.Client) {
+	t.Helper()
+	root := t.TempDir()
+	resolver := &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"}
+	passdb := &enforcePassdb{users: map[string]string{"alice": "pw", "bob": "pw"}}
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:              maildir.New(),
+		Index:                file.New(),
+		Resolver:             resolver,
+		Auth:                 passdb,
+		ACLEnabled:           true,
+		ACLDefaultsFromInbox: defaultsFromInbox,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice"), List: true},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+	dial = func(user string) *imapclient.Client {
+		t.Helper()
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		c := imapclient.New(conn, nil)
+		if err := c.WaitGreeting(); err != nil {
+			t.Fatalf("WaitGreeting: %v", err)
+		}
+		if err := c.Login(user, "pw").Wait(); err != nil {
+			t.Fatalf("Login(%q): %v", user, err)
+		}
+		t.Cleanup(func() { c.Logout().Wait() }) //nolint:errcheck
+		return c
+	}
+	return filepath.Join(root, "alice"), dial
+}
+
+// TestACLEnforce_MaildirRootDefaultFromInbox exercises acl_defaults_from_inbox
+// end-to-end: with the flag, a peer's rights on a non-INBOX maildir folder that
+// has no ACL of its own are inherited from the owner's INBOX ACL. This is the
+// coverage that was dropped when maildir INBOX moved to the maildir root (the
+// local namespace-root default collides with INBOX and is disabled).
+func TestACLEnforce_MaildirRootDefaultFromInbox(t *testing.T) {
+	aliceHome, dial := sharedServerDial(t, true)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("Projects", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE Projects: %v", err)
+	}
+	// Grant bob read on the *root default* by seeding INBOX's ACL only.
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
+
+	b := dial("bob")
+	// Projects has no ACL of its own → rights come from the INBOX default.
+	if _, err := b.Select("Shared/Projects", nil).Wait(); err != nil {
+		t.Errorf("peer SELECT with INBOX-default 'r' should succeed: %v", err)
+	}
+}
+
+// TestACLEnforce_MaildirNoRootDefaultWithoutFlag is the contrast: without
+// acl_defaults_from_inbox, maildir has no root default source, so the INBOX
+// ACL does not extend to sibling folders and the peer is denied.
+func TestACLEnforce_MaildirNoRootDefaultWithoutFlag(t *testing.T) {
+	aliceHome, dial := sharedServerDial(t, false)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("Projects", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE Projects: %v", err)
+	}
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
+
+	b := dial("bob")
+	if _, err := b.Select("Shared/Projects", nil).Wait(); err == nil {
+		t.Fatal("peer SELECT without a root default should fail")
+	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	}
+}

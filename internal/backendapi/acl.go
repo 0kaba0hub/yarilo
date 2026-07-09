@@ -177,7 +177,9 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return nil, nil, err
 	}
-	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, uc.info.Username, uc.lockOwner(), s.opts.Locker)
+	// Admin surface manages explicit entries, not effective-with-default
+	// resolution, so acl_defaults_from_inbox does not apply here.
+	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, uc.info.Username, uc.lockOwner(), false, s.opts.Locker)
 	return store, &req, nil
 }
 
