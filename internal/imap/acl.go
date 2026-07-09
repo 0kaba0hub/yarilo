@@ -238,12 +238,13 @@ func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	if err != nil {
 		return nil, err
 	}
-	stored, err := h.acl.Get(rel)
+	// Resolve the full effective rights the same way enforcement does —
+	// ancestor inheritance, the global ACL and acl_defaults_from_inbox —
+	// so MYRIGHTS matches what SELECT/APPEND/etc. actually allow.
+	rights, err := h.acl.EffectiveFor(rel, s.userInfo.Username, s.userInfo.Groups, s.isOwner(h), byte(h.spec.Separator))
 	if err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
 	}
-	isOwner := s.userInfo.Username == h.userInfo.Username
-	rights := stored.Effective(s.userInfo.Username, s.userInfo.Groups, isOwner)
 	return &imaplib.MyRightsData{
 		Mailbox: folder,
 		Rights:  rightsToIMAP(rights),
