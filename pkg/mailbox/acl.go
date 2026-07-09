@@ -360,79 +360,133 @@ func (acl ACL) String() string {
 // A nil ACL with isOwner == false yields the empty rights set — no
 // implicit grant for non-owners is the RFC 4314 default.
 func (acl ACL) Effective(user string, groups []string, isOwner bool) Rights {
-	if isOwner {
-		return FullRights
-	}
-	pos, neg, _ := acl.effectiveMasks(user, groups)
+	pos, neg, _ := acl.effectiveMasks(user, groups, isOwner)
 	return pos.Remove(neg)
 }
 
-// effectiveMasks resolves the tier that applies to the user and returns its
-// positive and negative rights plus whether any entry matched. Effective is
-// pos.Remove(neg); the masks are exposed so a global ACL can be merged onto a
-// local one with the right precedence (see EffectiveWithGlobal).
-func (acl ACL) effectiveMasks(user string, groups []string) (pos, neg Rights, matched bool) {
+// Identifier-type precedence tiers, lowest to highest. The most specific
+// matching tier wins and REPLACES the rights of every lower tier (it does not
+// merge with them); only within the group / group-override tiers do multiple
+// matching entries merge. Order per RFC 4314 §3.5 / §6:
+//
+//	anyone < authenticated < group= < owner < user= < group-override=
+const (
+	tierAnyone = iota
+	tierAuthenticated
+	tierGroup
+	tierOwner
+	tierUser
+	tierGroupOverride
+	tierCount
+)
+
+// aclTier maps an identifier type to its precedence tier.
+func aclTier(t IdentifierType) int {
+	switch t {
+	case IDAuthenticated:
+		return tierAuthenticated
+	case IDGroup:
+		return tierGroup
+	case IDOwner:
+		return tierOwner
+	case IDUser:
+		return tierUser
+	case IDGroupOverride:
+		return tierGroupOverride
+	default: // IDAnyone (and IDInvalid, unreachable for stored entries)
+		return tierAnyone
+	}
+}
+
+// effectiveMasks resolves the user's positive and negative right masks by
+// applying every matching entry in ascending tier order:
+//
+//   - A positive entry at a new tier REPLACES the running positive mask;
+//     within the group / group-override tiers positive entries ADD (merge).
+//   - A negative entry only subtracts — it never resets the positive mask —
+//     so a negative user= entry revokes rights without wiping a lower tier's
+//     positive grant; its negative mask REPLACEs at a new tier, ADDs within.
+//   - An owner with no explicit owner-tier entry gets full rights at the owner
+//     tier (a matching user=/group-override= entry can still replace it).
+//
+// Effective is pos.Remove(neg); the masks are exposed so a global ACL can be
+// merged with the right precedence (see EffectiveWithGlobal).
+func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, neg Rights, matched bool) {
 	groupSet := makeGroupSet(groups)
 
-	// Base tier: union of anyone, authenticated, group=, user= entries
-	// (RFC 4314 §3.5 — all matching identifiers contribute).
-	var basePos, baseNeg Rights
-	// Override tier: group-override= entries. When any match, the override
-	// result REPLACES the base result — a way to grant rights that override
-	// per-user restrictions.
-	var overridePos, overrideNeg Rights
-	var hasOverride bool
-
+	type match struct {
+		tier     int
+		rights   Rights
+		negative bool
+	}
+	var matches []match
 	for _, e := range acl {
 		var isMatch bool
 		switch e.Identifier.Type {
 		case IDAnyone, IDAuthenticated:
 			isMatch = true
+		case IDOwner:
+			isMatch = isOwner
 		case IDUser:
 			isMatch = e.Identifier.Name == user
-		case IDGroup:
-			isMatch = groupSet[e.Identifier.Name]
-		case IDGroupOverride:
+		case IDGroup, IDGroupOverride:
 			isMatch = groupSet[e.Identifier.Name]
 		}
 		if !isMatch {
 			continue
 		}
-		matched = true
-		if e.Identifier.Type == IDGroupOverride {
-			hasOverride = true
-			if e.Negative {
-				overrideNeg = overrideNeg.Add(e.Rights)
-			} else {
-				overridePos = overridePos.Add(e.Rights)
-			}
-		} else {
-			if e.Negative {
-				baseNeg = baseNeg.Add(e.Rights)
-			} else {
-				basePos = basePos.Add(e.Rights)
+		matches = append(matches, match{aclTier(e.Identifier.Type), e.Rights, e.Negative})
+	}
+	// Owner default: full positive rights at the owner tier when no explicit
+	// owner-tier entry exists.
+	if isOwner {
+		hasOwnerTier := false
+		for _, m := range matches {
+			if m.tier == tierOwner {
+				hasOwnerTier = true
+				break
 			}
 		}
+		if !hasOwnerTier {
+			matches = append(matches, match{tierOwner, FullRights, false})
+		}
 	}
+	if len(matches) == 0 {
+		return "", "", false
+	}
+	sort.SliceStable(matches, func(i, j int) bool { return matches[i].tier < matches[j].tier })
 
-	if hasOverride {
-		return overridePos, overrideNeg, matched
+	var myPos, myNeg Rights
+	prevTier := -1
+	for _, m := range matches {
+		boundary := m.tier != prevTier
+		if m.negative {
+			if boundary {
+				myNeg = Rights("").Add(m.rights) // REPLACE (canonicalised)
+			} else {
+				myNeg = myNeg.Add(m.rights)
+			}
+		} else {
+			if boundary {
+				myPos = Rights("").Add(m.rights) // REPLACE (canonicalised)
+			} else {
+				myPos = myPos.Add(m.rights)
+			}
+		}
+		prevTier = m.tier
 	}
-	return basePos, baseNeg, matched
+	return myPos, myNeg, true
 }
 
 // EffectiveWithGlobal resolves rights from a local ACL and a global ACL with
 // the global taking precedence: global positives add on top of the local
 // result and global negatives revoke even locally-granted rights. When any
 // global entry matches the user, local negative rights are reset so they
-// cannot undermine a global grant. The mailbox owner keeps full rights — a
-// global ACL cannot lock the owner out of their own mailbox.
+// cannot undermine a global grant. The owner default (full rights) flows
+// through the local masks, and a matching global entry can still override it.
 func EffectiveWithGlobal(local, global ACL, user string, groups []string, isOwner bool) Rights {
-	if isOwner {
-		return FullRights
-	}
-	lpos, lneg, _ := local.effectiveMasks(user, groups)
-	gpos, gneg, gmatched := global.effectiveMasks(user, groups)
+	lpos, lneg, _ := local.effectiveMasks(user, groups, isOwner)
+	gpos, gneg, gmatched := global.effectiveMasks(user, groups, false)
 	if gmatched {
 		return lpos.Add(gpos).Remove(gneg)
 	}
