@@ -33,8 +33,8 @@ func ParseIMAPWorkarounds(list []string) imapWorkarounds {
 }
 
 // isLeaf reports whether name has no children in folders.
-func isLeaf(name string, folders []string) bool {
-	prefix := name + "/"
+func isLeaf(name string, folders []string, sep string) bool {
+	prefix := name + sep
 	for _, f := range folders {
 		if strings.HasPrefix(f, prefix) {
 			return false
@@ -43,9 +43,10 @@ func isLeaf(name string, folders []string) bool {
 	return true
 }
 
-// mailboxAttrs returns the LIST attributes for a folder given active workarounds.
-func mailboxAttrs(name string, folders []string, w imapWorkarounds) []imaplib.MailboxAttr {
-	if w&workaroundTBLSUBFlags != 0 && isLeaf(name, folders) {
+// mailboxAttrs returns the LIST attributes for a folder given active
+// workarounds. sep is the namespace separator embedded in folder names.
+func mailboxAttrs(name string, folders []string, sep string, w imapWorkarounds) []imaplib.MailboxAttr {
+	if w&workaroundTBLSUBFlags != 0 && isLeaf(name, folders, sep) {
 		return []imaplib.MailboxAttr{imaplib.MailboxAttrNoInferiors}
 	}
 	return nil

@@ -485,41 +485,38 @@ func (u *userMailbox) FolderExists(folder string) (bool, error) {
 	return err == nil, err
 }
 
-// ListFolders walks mailboxes/ and surfaces every dir that owns
-// a dbox-Mails subdirectory. INBOX is reported even when only the
-// mailbox root exists (matches the canonical reader's behaviour).
-func (u *userMailbox) ListFolders() ([]string, error) {
+// ListFolders recursively walks mailboxes/ and surfaces every folder in the
+// fs layout, including nested folders. A directory is selectable when it owns
+// a dbox-Mails subdirectory; a directory that only holds child folders (e.g.
+// a parent auto-created for a nested child) is reported as a \NoSelect
+// container. The dbox-Mails leaf is a message store, not a hierarchy child,
+// so the walk neither descends into it nor emits it.
+func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	root := u.mailboxesRoot()
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("sdbox/listfolders: %w", err)
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		mailDir := filepath.Join(root, e.Name(), dboxMailsDir)
-		if _, err := os.Stat(mailDir); err != nil {
-			continue
-		}
-		logical := e.Name()
+	decode := func(name string) (string, bool) {
+		logical := name
 		if !u.listUTF8 {
-			decoded, decErr := mboxenc.FromModUTF7(logical)
-			if decErr != nil {
-				continue
+			decoded, err := mboxenc.FromModUTF7(name)
+			if err != nil {
+				return "", false
 			}
 			logical = decoded
 		}
 		if u.normalizeNFC {
 			logical = mboxenc.NFC(logical)
 		}
-		out = append(out, logical)
+		return logical, true
 	}
-	return out, nil
+	isMarker := func(name string) bool { return name == dboxMailsDir }
+	selectable := func(diskRel string) bool {
+		_, err := os.Stat(filepath.Join(root, diskRel, dboxMailsDir))
+		return err == nil
+	}
+	entries, err := mailbox.WalkDboxTree(root, u.separator, decode, isMarker, selectable)
+	if err != nil {
+		return nil, fmt.Errorf("sdbox/listfolders: %w", err)
+	}
+	return entries, nil
 }
 
 // ---- Scan (rebuild contract) --------------------------------

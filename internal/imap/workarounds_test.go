@@ -38,7 +38,7 @@ func TestIsLeaf(t *testing.T) {
 		{"Trash", true},        // no children
 	}
 	for _, tc := range cases {
-		got := isLeaf(tc.name, folders)
+		got := isLeaf(tc.name, folders, "/")
 		if got != tc.want {
 			t.Errorf("isLeaf(%q) = %v, want %v", tc.name, got, tc.want)
 		}
@@ -49,7 +49,7 @@ func TestMailboxAttrs_TBLSUBFlags(t *testing.T) {
 	folders := []string{"INBOX", "INBOX/Sent", "Trash"}
 
 	// INBOX has children → no NoInferiors
-	attrs := mailboxAttrs("INBOX", folders, workaroundTBLSUBFlags)
+	attrs := mailboxAttrs("INBOX", folders, "/", workaroundTBLSUBFlags)
 	for _, a := range attrs {
 		if a == imaplib.MailboxAttrNoInferiors {
 			t.Error("INBOX should NOT have NoInferiors (it has children)")
@@ -57,7 +57,7 @@ func TestMailboxAttrs_TBLSUBFlags(t *testing.T) {
 	}
 
 	// INBOX/Sent is a leaf → NoInferiors
-	attrs = mailboxAttrs("INBOX/Sent", folders, workaroundTBLSUBFlags)
+	attrs = mailboxAttrs("INBOX/Sent", folders, "/", workaroundTBLSUBFlags)
 	found := false
 	for _, a := range attrs {
 		if a == imaplib.MailboxAttrNoInferiors {
@@ -69,7 +69,7 @@ func TestMailboxAttrs_TBLSUBFlags(t *testing.T) {
 	}
 
 	// workaround disabled → no attrs
-	attrs = mailboxAttrs("Trash", folders, 0)
+	attrs = mailboxAttrs("Trash", folders, "/", 0)
 	if len(attrs) != 0 {
 		t.Errorf("expected no attrs without workaround, got %v", attrs)
 	}

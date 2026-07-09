@@ -1266,11 +1266,17 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 // Folder names are wire-encoded with the namespace prefix re-attached.
 func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref string, patterns []string, opts *imaplib.ListOptions) error {
 	tList := time.Now()
-	folders, err := h.box.ListFolders()
+	entries, err := h.box.ListFolders()
 	slog.Debug("imap: list timing listfolders_ms", "listfolders_ms", time.Since(tList).Milliseconds())
 	if err != nil {
 		return err
 	}
+	// Flat name slice for the O(n) hierarchy helpers (childrenAttr/isLeaf).
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	sep := string(h.spec.Separator)
 
 	// Snapshot subscriptions once per LIST — every folder's ReturnSubscribed
 	// / SelectSubscribed decision consults the same view, even if a sibling
@@ -1286,7 +1292,8 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 		}
 	}
 
-	for _, name := range folders {
+	for _, entry := range entries {
+		name := entry.Name
 		// Wire-protocol name = namespace prefix + namespace-relative name.
 		full := ref + h.fullName(name)
 		if !listMatch(full, patterns) {
@@ -1301,10 +1308,14 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 				continue
 			}
 		}
-		attrs := mailboxAttrs(name, folders, s.srv.opts.ClientWorkarounds)
+		attrs := mailboxAttrs(name, names, sep, s.srv.opts.ClientWorkarounds)
+		// \NoSelect container — a folder that exists only to hold children.
+		if !entry.Selectable {
+			attrs = append(attrs, imaplib.MailboxAttrNoSelect)
+		}
 		// RETURN CHILDREN — annotate \HasChildren / \HasNoChildren.
 		if opts != nil && opts.ReturnChildren {
-			attrs = append(attrs, childrenAttr(name, folders))
+			attrs = append(attrs, childrenAttr(name, names, sep))
 		}
 		// RETURN SUBSCRIBED — annotate \Subscribed when applicable.
 		if opts != nil && opts.ReturnSubscribed {
@@ -1347,11 +1358,12 @@ func (s *session) namespaceSpecsForList() []NamespaceSpec {
 	return specs
 }
 
-// childrenAttr returns \HasChildren when `name` is a prefix of any other
-// listed folder, otherwise \HasNoChildren. Cheap O(n) scan — acceptable
-// because LIST already loaded the slice.
-func childrenAttr(name string, all []string) imaplib.MailboxAttr {
-	prefix := name + "/"
+// childrenAttr returns \HasChildren when `name` is a hierarchy prefix of any
+// other listed folder, otherwise \HasNoChildren. sep is the namespace
+// separator — folder names carry it, not a hard-coded "/". Cheap O(n) scan —
+// acceptable because LIST already loaded the slice.
+func childrenAttr(name string, all []string, sep string) imaplib.MailboxAttr {
+	prefix := name + sep
 	for _, other := range all {
 		if other == name {
 			continue

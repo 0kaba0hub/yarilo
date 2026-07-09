@@ -13,11 +13,10 @@ func TestFolderSubpath(t *testing.T) {
 		{"", "ProjZ.Sub", "ProjZ.Sub", ".", ".ProjZ.Sub"}, // empty driver → maildir
 		// maildir with "/" IMAP sep still flattens to dotted on disk.
 		{"maildir", "ProjZ/Sub", "ProjZ/Sub", "/", ".ProjZ.Sub"},
-		// mdbox: nested, "/"-joined.
-		{"mdbox", "INBOX", "INBOX", ".", "mailboxes/INBOX"},
-		{"mdbox", "ProjZ.Sub", "ProjZ.Sub", ".", "mailboxes/ProjZ/Sub"},
-		{"mdbox", "ProjZ/Sub", "ProjZ/Sub", "/", "mailboxes/ProjZ/Sub"},
-		// sdbox: nested + dbox-Mails.
+		// mdbox/sdbox: nested, "/"-joined, with the dbox-Mails marker leaf.
+		{"mdbox", "INBOX", "INBOX", ".", "mailboxes/INBOX/dbox-Mails"},
+		{"mdbox", "ProjZ.Sub", "ProjZ.Sub", ".", "mailboxes/ProjZ/Sub/dbox-Mails"},
+		{"mdbox", "ProjZ/Sub", "ProjZ/Sub", "/", "mailboxes/ProjZ/Sub/dbox-Mails"},
 		{"sdbox", "ProjZ.Sub", "ProjZ.Sub", ".", "mailboxes/ProjZ/Sub/dbox-Mails"},
 		{"dbox", "Sent", "Sent", ".", "mailboxes/Sent/dbox-Mails"},
 	}

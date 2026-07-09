@@ -216,7 +216,7 @@ func TestFolderOps(t *testing.T) {
 	folders, _ := mb.ListFolders()
 	got := map[string]bool{}
 	for _, f := range folders {
-		got[f] = true
+		got[f.Name] = true
 	}
 	if !got["INBOX"] || !got["Sent"] {
 		t.Errorf("ListFolders = %v, want INBOX+Sent", folders)

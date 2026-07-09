@@ -41,9 +41,11 @@ func (m *mockMailbox) Init() error                                      { return
 func (m *mockMailbox) Create(_ string) error                            { return nil }
 func (m *mockMailbox) Delete(_ string) error                            { return nil }
 func (m *mockMailbox) FolderExists(_ string) (bool, error)              { return true, nil }
-func (m *mockMailbox) ListFolders() ([]string, error)                   { return []string{"INBOX"}, nil }
-func (m *mockMailbox) List(_ string) ([]*mailbox.MessageMeta, error)    { return nil, nil }
-func (m *mockMailbox) Remove(_, _ string) error                         { return nil }
+func (m *mockMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
+	return []mailbox.FolderEntry{{Name: "INBOX", Selectable: true}}, nil
+}
+func (m *mockMailbox) List(_ string) ([]*mailbox.MessageMeta, error) { return nil, nil }
+func (m *mockMailbox) Remove(_, _ string) error                      { return nil }
 func (m *mockMailbox) Save(_ string, _ io.Reader, _ uint32, _ int64, _ []string) (string, error) {
 	return "", nil
 }

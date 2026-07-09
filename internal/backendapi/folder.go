@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"net/http"
 	"sort"
+
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // registerFolderRoutes wires the folder admin surface. Reads
@@ -57,11 +59,12 @@ func (s *Server) handleFolderList(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	names, err := bundle.box.ListFolders()
+	entries, err := bundle.box.ListFolders()
 	if err != nil {
 		apiError(w, "list folders: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	names := mailbox.SelectableNames(entries)
 	sort.Strings(names)
 	apiJSON(w, map[string]any{"folders": names})
 }

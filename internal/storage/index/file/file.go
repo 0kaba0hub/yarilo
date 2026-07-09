@@ -533,7 +533,7 @@ func (u *userIndex) RenameFolder(oldName, newName string) error {
 // empty mailboxes/<name> shell behind.
 func (u *userIndex) folderTreeDir(dir string) string {
 	switch u.driver {
-	case "sdbox", "dbox":
+	case "mdbox", "sdbox", "dbox":
 		return filepath.Dir(dir)
 	}
 	return dir

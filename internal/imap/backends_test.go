@@ -415,6 +415,98 @@ func TestIMAPBackends_Copy(t *testing.T) {
 	}
 }
 
+// TestIMAPBackends_ListNested verifies a nested folder is visible in LIST on
+// every backend — the dbox backends recurse the physical tree instead of
+// reading only the top level (issue #488).
+func TestIMAPBackends_ListNested(t *testing.T) {
+	for _, bf := range backends {
+		bf := bf
+		t.Run(bf.name, func(t *testing.T) {
+			t.Parallel()
+			c := startServerWith(t, bf.new(t))
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			if err := c.Create("Parent", nil).Wait(); err != nil {
+				t.Fatalf("CREATE Parent: %v", err)
+			}
+			if err := c.Create("Parent.Child", nil).Wait(); err != nil {
+				t.Fatalf("CREATE Parent.Child: %v", err)
+			}
+			if _, err := c.Select("Parent.Child", nil).Wait(); err != nil {
+				t.Fatalf("SELECT Parent.Child: %v", err)
+			}
+			if err := c.Unselect().Wait(); err != nil {
+				t.Fatalf("UNSELECT: %v", err)
+			}
+			data, err := c.List("", "*", nil).Collect()
+			if err != nil {
+				t.Fatalf("LIST: %v", err)
+			}
+			seen := map[string]bool{}
+			for _, m := range data {
+				seen[m.Mailbox] = true
+			}
+			for _, want := range []string{"Parent", "Parent.Child"} {
+				if !seen[want] {
+					t.Errorf("%q missing from LIST; got %v", want, seen)
+				}
+			}
+		})
+	}
+}
+
+// TestDboxListNoSelectContainer verifies that a parent auto-created for a
+// nested child (no dbox-Mails of its own) is listed as a \NoSelect container,
+// while the child is selectable — on both dbox backends, which share the
+// mailboxes/<name>/dbox-Mails layout.
+func TestDboxListNoSelectContainer(t *testing.T) {
+	dboxBackends := []backendFactory{{"dbox", dboxBackend}, {"mdbox", mdboxBackend}}
+	for _, bf := range dboxBackends {
+		bf := bf
+		t.Run(bf.name, func(t *testing.T) {
+			t.Parallel()
+			c := startServerWith(t, bf.new(t))
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+			// Create only the leaf; MkdirAll leaves "Only" without dbox-Mails.
+			if err := c.Create("Only.Child", nil).Wait(); err != nil {
+				t.Fatalf("CREATE Only.Child: %v", err)
+			}
+			if _, err := c.Select("Only.Child", nil).Wait(); err != nil {
+				t.Fatalf("SELECT Only.Child: %v", err)
+			}
+			if err := c.Unselect().Wait(); err != nil {
+				t.Fatalf("UNSELECT: %v", err)
+			}
+			data, err := c.List("", "*", nil).Collect()
+			if err != nil {
+				t.Fatalf("LIST: %v", err)
+			}
+			attrs := map[string][]imap.MailboxAttr{}
+			for _, m := range data {
+				attrs[m.Mailbox] = m.Attrs
+			}
+			if _, ok := attrs["Only"]; !ok {
+				t.Fatalf("container \"Only\" missing from LIST; got %v", attrs)
+			}
+			hasNoSelect := func(as []imap.MailboxAttr) bool {
+				for _, a := range as {
+					if a == imap.MailboxAttrNoSelect {
+						return true
+					}
+				}
+				return false
+			}
+			if !hasNoSelect(attrs["Only"]) {
+				t.Errorf("\"Only\" should be \\NoSelect, attrs=%v", attrs["Only"])
+			}
+			if hasNoSelect(attrs["Only.Child"]) {
+				t.Errorf("\"Only.Child\" should be selectable, attrs=%v", attrs["Only.Child"])
+			}
+		})
+	}
+}
+
 // TestIMAPBackends_Move verifies MOVE removes the message from source and adds to dest.
 func TestIMAPBackends_Move(t *testing.T) {
 	for _, bf := range backends {
