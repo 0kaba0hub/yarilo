@@ -106,9 +106,21 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 				continue
 			}
 			subsFile := "subscriptions-" + nsSlug(spec)
+			// loc.Path is the namespace's mailbox store root. Set MailPath
+			// (not just Home) and the driver + modifiers so the mailbox
+			// backend, the fileindex and the ACL store all resolve to the
+			// same root — otherwise the ACL store (which falls back to Home)
+			// and a maildir backend (which falls back to Home/Maildir) would
+			// disagree, and dbox namespaces would get the maildir ACL layout.
 			ui := &mailbox.UserInfo{
-				Username: personalUI.Username,
-				Home:     loc.Path,
+				Username:    personalUI.Username,
+				Home:        loc.Path,
+				MailPath:    loc.Path,
+				Driver:      loc.Driver,
+				IndexDir:    loc.IndexDir,
+				VolatileDir: loc.VolatileDir,
+				ControlDir:  loc.ControlDir,
+				AltDir:      loc.AltDir,
 			}
 			h, err := s.openHandle(spec, nsSlug(spec), ui, owner, subsFile)
 			if err != nil {

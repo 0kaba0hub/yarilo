@@ -201,7 +201,7 @@ func enforceServerWithShared(t *testing.T) (aliceHome string, dial func(user str
 		ACLEnabled: true,
 		Namespaces: []imapserver.NamespaceSpec{
 			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice"), List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
 		},
 	})
 
@@ -230,7 +230,7 @@ func enforceServerWithShared(t *testing.T) (aliceHome string, dial func(user str
 		t.Cleanup(func() { c.Logout().Wait() }) //nolint:errcheck
 		return c
 	}
-	return filepath.Join(root, "alice"), dial
+	return filepath.Join(root, "alice", "Maildir"), dial
 }
 
 func TestACLEnforce_PeerSelectDeniedWithoutRead(t *testing.T) {
@@ -633,7 +633,7 @@ func sharedServerDial(t *testing.T, defaultsFromInbox bool) (aliceHome string, d
 		ACLDefaultsFromInbox: defaultsFromInbox,
 		Namespaces: []imapserver.NamespaceSpec{
 			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice"), List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -659,7 +659,7 @@ func sharedServerDial(t *testing.T, defaultsFromInbox bool) (aliceHome string, d
 		t.Cleanup(func() { c.Logout().Wait() }) //nolint:errcheck
 		return c
 	}
-	return filepath.Join(root, "alice"), dial
+	return filepath.Join(root, "alice", "Maildir"), dial
 }
 
 // TestACLEnforce_MaildirRootDefaultFromInbox exercises acl_defaults_from_inbox
