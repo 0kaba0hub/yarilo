@@ -115,6 +115,7 @@ data:
         {{- end }}
         acl:
           enabled: {{ .Values.protocol.imap.acl.enabled }}
+          defaults_from_inbox: {{ .Values.protocol.imap.acl.defaults_from_inbox | default false }}
       pop3:
         pop3_no_flag_updates: {{ .Values.protocol.pop3.pop3_no_flag_updates }}
         pop3_reuse_xuidl: {{ .Values.protocol.pop3.pop3_reuse_xuidl }}
@@ -325,6 +326,21 @@ data:
         {{- with .Values.components.auth.token.redis_addr }}
         redis_addr: {{ . | quote }}
         {{- end }}
+
+    {{- with .Values.namespaces }}
+    namespaces:
+      {{- range . }}
+      - type: {{ .type | quote }}
+        prefix: {{ .prefix | default "" | quote }}
+        separator: {{ .separator | default "." | quote }}
+        list: {{ .list | default false }}
+        subscriptions: {{ .subscriptions | default false }}
+        inbox: {{ .inbox | default false }}
+        {{- with .location }}
+        location: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
 
     {{- $storage := .Values.storage }}
     {{- if $storage }}
