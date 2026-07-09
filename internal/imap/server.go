@@ -1276,6 +1276,53 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	return nil
 }
 
+// aclVisibleEntries filters folders by the RFC 4314 lookup right for a
+// non-owned namespace. A folder the user has 'l' on is kept unchanged. A
+// folder without 'l' that is an ancestor of a visible one is kept as a
+// \NoSelect container (Selectable=false) so the path to the visible child is
+// navigable; every other no-lookup folder is dropped. On an ACL read error
+// the folder fails closed (hidden). Uses the full EffectiveFor resolution
+// (per-mailbox + inheritance + global + defaults), not the acl-list index.
+func (s *session) aclVisibleEntries(h *nsHandle, entries []mailbox.FolderEntry, sep string) []mailbox.FolderEntry {
+	sepByte := byte(h.spec.Separator)
+	lookup := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		r, err := h.acl.EffectiveFor(e.Name, s.userInfo.Username, s.userInfo.Groups, false, sepByte)
+		if err != nil {
+			slog.Warn("imap: acl list lookup failed", "ns", h.name, "folder", e.Name, "err", err)
+			lookup[e.Name] = false
+			continue
+		}
+		lookup[e.Name] = r.Has(mailbox.RightLookup)
+	}
+	// Mark every ancestor of a visible folder so it can survive as a
+	// \NoSelect placeholder.
+	visibleAncestor := make(map[string]bool)
+	for name, ok := range lookup {
+		if !ok {
+			continue
+		}
+		for sep != "" {
+			i := strings.LastIndex(name, sep)
+			if i < 0 {
+				break
+			}
+			name = name[:i]
+			visibleAncestor[name] = true
+		}
+	}
+	out := make([]mailbox.FolderEntry, 0, len(entries))
+	for _, e := range entries {
+		switch {
+		case lookup[e.Name]:
+			out = append(out, e)
+		case visibleAncestor[e.Name]:
+			out = append(out, mailbox.FolderEntry{Name: e.Name, Selectable: false})
+		}
+	}
+	return out
+}
+
 // listNamespace emits LIST replies for one namespace's folders.
 // Folder names are wire-encoded with the namespace prefix re-attached.
 func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref string, patterns []string, opts *imaplib.ListOptions) error {
@@ -1285,12 +1332,22 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 	if err != nil {
 		return err
 	}
+	sep := string(h.spec.Separator)
+
+	// ACL LIST hiding (RFC 4314 lookup right): in a namespace the user does
+	// not own, drop folders they have no 'l' right on. A no-lookup folder that
+	// is an ancestor of a visible one survives as a \NoSelect container so the
+	// path to the visible child stays navigable. The owner (personal ns) has
+	// full rights, so filtering is skipped there.
+	if s.srv.opts.ACLEnabled && h.acl != nil && !s.isOwner(h) {
+		entries = s.aclVisibleEntries(h, entries, sep)
+	}
+
 	// Flat name slice for the O(n) hierarchy helpers (childrenAttr/isLeaf).
 	names := make([]string, len(entries))
 	for i, e := range entries {
 		names[i] = e.Name
 	}
-	sep := string(h.spec.Separator)
 
 	// Snapshot subscriptions once per LIST — every folder's ReturnSubscribed
 	// / SelectSubscribed decision consults the same view, even if a sibling
