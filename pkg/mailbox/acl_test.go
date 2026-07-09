@@ -332,14 +332,23 @@ func TestACL_Effective(t *testing.T) {
 		want    Rights
 	}{
 		{
-			name: "owner gets everything regardless of entries",
+			// user= (tier 4) is more specific than the owner default (tier 3),
+			// so an explicit user= entry for the owner replaces the default.
+			name: "owner: user= entry for self replaces the owner default",
 			acl:  ACL{{Identifier: Identifier{Type: IDUser, Name: "alice"}, Rights: "lr"}},
 			user: "alice", isOwner: true,
-			want: owner,
+			want: "lr",
 		},
 		{
 			name: "owner on empty ACL still gets everything",
 			acl:  nil,
+			user: "alice", isOwner: true,
+			want: owner,
+		},
+		{
+			// anyone (tier 0) is below the owner default (tier 3) — owner keeps full.
+			name: "owner: anyone entry does not lower the owner default",
+			acl:  ACL{{Identifier: Identifier{Type: IDAnyone}, Rights: "l"}},
 			user: "alice", isOwner: true,
 			want: owner,
 		},
@@ -356,13 +365,14 @@ func TestACL_Effective(t *testing.T) {
 			want: "lrsw",
 		},
 		{
-			name: "non-owner anyone + user= merged",
+			// user= (tier 4) replaces anyone (tier 0), not merges with it.
+			name: "non-owner user= replaces anyone",
 			acl: ACL{
 				{Identifier: Identifier{Type: IDAnyone}, Rights: "l"},
 				{Identifier: Identifier{Type: IDUser, Name: "bob"}, Rights: "rs"},
 			},
 			user: "bob", isOwner: false,
-			want: "lrs",
+			want: "rs",
 		},
 		{
 			name: "non-owner authenticated grants",
@@ -459,13 +469,14 @@ func TestACL_Effective_Groups(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "group= merges with anyone",
+			// group= (tier 2) replaces anyone (tier 0) for a positive grant.
+			name: "group= replaces anyone",
 			acl: ACL{
 				{Identifier: Identifier{Type: IDAnyone}, Rights: "l"},
 				{Identifier: Identifier{Type: IDGroup, Name: "staff"}, Rights: "rs"},
 			},
 			user: "bob", groups: []string{"staff"},
-			want: "lrs",
+			want: "rs",
 		},
 		{
 			name: "negative group= subtracts from positive anyone",
@@ -552,7 +563,8 @@ func TestACL_EffectiveWithGlobal(t *testing.T) {
 		isOwner       bool
 		want          string
 	}{
-		{"owner wins over any global", ACL{u("bob", "lr", false)}, ACL{anyone("lr", true)}, "bob", true, "lrswipkxtea"},
+		{"owner default full when no global matches", nil, nil, "alice", true, "lrswipkxtea"},
+		{"global negative overrides even the owner", ACL{u("bob", "lr", false)}, ACL{anyone("lr", true)}, "bob", true, ""},
 		{"global only, no local", nil, ACL{u("bob", "lr", false)}, "bob", false, "lr"},
 		{"local only, global does not match", ACL{u("bob", "lr", false)}, ACL{u("carol", "lrswi", false)}, "bob", false, "lr"},
 		{"global adds on top of local", ACL{u("bob", "lr", false)}, ACL{anyone("i", false)}, "bob", false, "lri"},
@@ -565,6 +577,37 @@ func TestACL_EffectiveWithGlobal(t *testing.T) {
 			got := EffectiveWithGlobal(tc.local, tc.global, tc.user, nil, tc.isOwner)
 			if got != MustParseRights(tc.want) {
 				t.Errorf("EffectiveWithGlobal = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestACL_EffectiveLadder locks the RFC 4314 identifier specificity ladder:
+// anyone < authenticated < group= < owner < user= < group-override=, where a
+// positive higher tier replaces lower tiers and a negative one only subtracts.
+func TestACL_EffectiveLadder(t *testing.T) {
+	e := func(t IdentifierType, name, rights string, neg bool) Entry {
+		return Entry{Identifier: Identifier{Type: t, Name: name}, Rights: MustParseRights(rights), Negative: neg}
+	}
+	tests := []struct {
+		name    string
+		acl     ACL
+		user    string
+		groups  []string
+		isOwner bool
+		want    string
+	}{
+		{"user= replaces group=", ACL{e(IDGroup, "staff", "lrs", false), e(IDUser, "bob", "l", false)}, "bob", []string{"staff"}, false, "l"},
+		{"group-override= replaces user=", ACL{e(IDUser, "bob", "l", false), e(IDGroupOverride, "admin", "lrswi", false)}, "bob", []string{"admin"}, false, "lrswi"},
+		{"two group= entries merge within their tier", ACL{e(IDGroup, "a", "lr", false), e(IDGroup, "b", "si", false)}, "bob", []string{"a", "b"}, false, "lrsi"},
+		{"negative user= subtracts, keeps anyone's positive", ACL{e(IDAnyone, "", "lrs", false), e(IDUser, "bob", "s", true)}, "bob", nil, false, "lr"},
+		{"group-override= can restrict the owner", ACL{e(IDGroupOverride, "locked", "lr", false)}, "alice", []string{"locked"}, true, "lr"},
+		{"authenticated replaces anyone", ACL{e(IDAnyone, "", "l", false), e(IDAuthenticated, "", "rs", false)}, "bob", nil, false, "rs"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.acl.Effective(tc.user, tc.groups, tc.isOwner); got != MustParseRights(tc.want) {
+				t.Errorf("Effective = %q, want %q", got, tc.want)
 			}
 		})
 	}

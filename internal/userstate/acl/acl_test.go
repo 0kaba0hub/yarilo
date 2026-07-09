@@ -303,23 +303,22 @@ func TestStore_FilePermissions(t *testing.T) {
 	}
 }
 
-func TestStore_EffectiveForOwnerShortCircuits(t *testing.T) {
-	// Owner gets FullRights regardless of any stored entries — and
-	// without reading anything from disk. Seed a non-owner-denying
-	// ACL on the leaf to prove the owner path skips the load.
+func TestStore_EffectiveForOwnerDefault(t *testing.T) {
 	home := t.TempDir()
 	s := New(home, "", "", "/", "alice", "test", Policy{}, nil)
+	// Owner with no ACL gets the owner-default full rights.
+	if got, _ := s.EffectiveFor("Lists/news", "alice", nil, true, '/'); got != mailbox.FullRights {
+		t.Errorf("owner default: got %q, want FullRights", got)
+	}
+	// An explicit user= entry for the owner replaces the owner default —
+	// user= (tier 4) is more specific than the owner tier (3).
 	if err := s.Set("Lists/news", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: "lr"},
 	}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	got, err := s.EffectiveFor("Lists/news", "alice", nil, true, '/')
-	if err != nil {
-		t.Fatalf("EffectiveFor: %v", err)
-	}
-	if got != mailbox.FullRights {
-		t.Errorf("owner got %q, want FullRights", got)
+	if got, _ := s.EffectiveFor("Lists/news", "alice", nil, true, '/'); got != mailbox.MustParseRights("lr") {
+		t.Errorf("owner with user= entry: got %q, want lr", got)
 	}
 }
 
