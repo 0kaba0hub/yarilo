@@ -81,6 +81,34 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	return aclDenied(right)
 }
 
+// requireMetadataAccess gates RFC 5464 mailbox METADATA on the ACL: the
+// accessing user needs the lookup right plus at least one access right
+// (read / write-seen / write / insert / post), matching the acl-attributes
+// rule. Owner and ACL-disabled sessions pass without a lookup.
+func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
+	if !s.srv.opts.ACLEnabled {
+		return nil
+	}
+	if s.isOwner(h) {
+		return nil
+	}
+	effective, err := s.effectiveRights(h, folder)
+	if err != nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
+	}
+	access := effective.Has(mailbox.RightRead) || effective.Has(mailbox.RightWriteSeen) ||
+		effective.Has(mailbox.RightWrite) || effective.Has(mailbox.RightInsert) ||
+		effective.Has(mailbox.RightPost)
+	if effective.Has(mailbox.RightLookup) && access {
+		return nil
+	}
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Code: imaplib.ResponseCodeNoPerm,
+		Text: "Permission denied: METADATA requires the 'l' right plus one of r/s/w/i/p",
+	}
+}
+
 // requireAllRights folds a set of right codes into a single check —
 // every code must be present. Used by STORE which may carry mixed
 // flag categories (\Seen, \Deleted, plus arbitrary keywords mapping

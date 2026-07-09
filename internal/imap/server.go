@@ -2750,6 +2750,14 @@ func (s *session) metadataResolve(folder string) (*nsHandle, [16]byte, error) {
 	if err != nil {
 		return nil, [16]byte{}, err
 	}
+	// RFC 5464 mailbox METADATA is gated by ACL: the accessing user needs
+	// the lookup right plus one access right. Server-scope (folder == "")
+	// has no mailbox to gate. Owner / ACL-disabled short-circuit inside.
+	if folder != "" {
+		if err := s.requireMetadataAccess(h, rel); err != nil {
+			return nil, [16]byte{}, err
+		}
+	}
 	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox lookup failed: " + err.Error()}
