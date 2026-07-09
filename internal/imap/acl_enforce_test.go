@@ -770,3 +770,62 @@ func TestACLEnforce_GlobalGrant(t *testing.T) {
 		t.Errorf("peer SELECT with global 'r' should succeed: %v", err)
 	}
 }
+
+// TestACLEnforce_ListHidesWithoutLookup verifies RFC 4314 LIST hiding: a peer
+// sees only shared folders it has the 'l' right on; a no-lookup folder that is
+// an ancestor of a visible one survives as a \NoSelect placeholder so the path
+// to the visible child stays navigable.
+func TestACLEnforce_ListHidesWithoutLookup(t *testing.T) {
+	aliceHome, dial := sharedServerDial(t, false)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	for _, f := range []string{"Secret", "Public", "Work", "Work.Report"} {
+		if err := a.Create(f, nil).Wait(); err != nil {
+			t.Fatalf("alice CREATE %s: %v", f, err)
+		}
+	}
+	// bob gets lookup on Public and the nested Work.Report only.
+	seedACL(t, aliceHome, "Public", "user=bob lr\n")
+	seedACL(t, aliceHome, "Work.Report", "user=bob lr\n")
+
+	b := dial("bob")
+	data, err := b.List("", "*", nil).Collect()
+	if err != nil {
+		t.Fatalf("bob LIST: %v", err)
+	}
+	seen := map[string][]imaplib.MailboxAttr{}
+	for _, m := range data {
+		seen[m.Mailbox] = m.Attrs
+	}
+	for _, want := range []string{"Shared/Public", "Shared/Work", "Shared/Work/Report"} {
+		if _, ok := seen[want]; !ok {
+			t.Errorf("%q should be visible; got %v", want, keysOf(seen))
+		}
+	}
+	for _, hidden := range []string{"Shared/Secret", "Shared/INBOX"} {
+		if _, ok := seen[hidden]; ok {
+			t.Errorf("%q must be hidden (no lookup right)", hidden)
+		}
+	}
+	hasAttr := func(as []imaplib.MailboxAttr, want imaplib.MailboxAttr) bool {
+		for _, x := range as {
+			if x == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasAttr(seen["Shared/Work"], imaplib.MailboxAttrNoSelect) {
+		t.Errorf("Shared/Work should be a \\NoSelect placeholder, attrs=%v", seen["Shared/Work"])
+	}
+}
+
+func keysOf(m map[string][]imaplib.MailboxAttr) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
