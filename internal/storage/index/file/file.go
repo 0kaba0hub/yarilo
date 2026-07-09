@@ -499,8 +499,8 @@ func (u *userIndex) Close() error {
 // order so concurrent renames + writes do not deadlock.
 func (u *userIndex) RenameFolder(oldName, newName string) error {
 	return u.withTwoFolderLocks(oldName, newName, func() error {
-		oldDir := u.indexDir(oldName)
-		newDir := u.indexDir(newName)
+		oldDir := u.folderTreeDir(u.indexDir(oldName))
+		newDir := u.folderTreeDir(u.indexDir(newName))
 		if _, err := os.Stat(oldDir); errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -519,11 +519,24 @@ func (u *userIndex) RenameFolder(oldName, newName string) error {
 			}
 		}
 		if u.byDir != nil {
-			delete(u.byDir, oldDir)
+			delete(u.byDir, u.indexDir(oldName))
 		}
 		u.mu.Unlock()
 		return nil
 	})
+}
+
+// folderTreeDir is the index subtree owned solely by folder. For dbox
+// drivers indexDir() points at the dbox-Mails leaf, so its parent is the
+// folder dir; other drivers already return the folder dir. Delete/Rename
+// operate on this so the whole subtree is reclaimed/moved, leaving no
+// empty mailboxes/<name> shell behind.
+func (u *userIndex) folderTreeDir(dir string) string {
+	switch u.driver {
+	case "sdbox", "dbox":
+		return filepath.Dir(dir)
+	}
+	return dir
 }
 
 // DeleteFolder removes the on-disk index directory (and its volatile
@@ -532,12 +545,12 @@ func (u *userIndex) RenameFolder(oldName, newName string) error {
 // Idempotent: a missing directory is not an error.
 func (u *userIndex) DeleteFolder(folder string) error {
 	return u.withTwoFolderLocks(folder, folder, func() error {
-		dir := u.indexDir(folder)
+		dir := u.folderTreeDir(u.indexDir(folder))
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("fileindex/delete %s: %w", dir, err)
 		}
 		if vd := u.folderVolatileDir(folder); vd != "" {
-			if err := os.RemoveAll(vd); err != nil {
+			if err := os.RemoveAll(u.folderTreeDir(vd)); err != nil {
 				return fmt.Errorf("fileindex/delete volatile %s: %w", vd, err)
 			}
 		}
@@ -549,7 +562,7 @@ func (u *userIndex) DeleteFolder(folder string) error {
 			}
 		}
 		if u.byDir != nil {
-			delete(u.byDir, dir)
+			delete(u.byDir, u.indexDir(folder))
 		}
 		u.mu.Unlock()
 		return nil

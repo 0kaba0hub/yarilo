@@ -348,13 +348,14 @@ func TestIMAPBackends_DeleteReclaimsIndex(t *testing.T) {
 				t.Fatalf("DELETE Sent: %v", err)
 			}
 
-			// No yarilo.index* may remain anywhere under a Sent-named path.
+			// Nothing named after the folder may remain — neither a
+			// yarilo.index* file nor an empty mailboxes/<name> dir shell.
 			filepath.Walk(root, func(p string, info os.FileInfo, err error) error { //nolint:errcheck
-				if err != nil || info.IsDir() {
+				if err != nil {
 					return nil
 				}
-				if strings.Contains(p, "Sent") && strings.HasPrefix(info.Name(), "yarilo.index") {
-					t.Errorf("orphan index after DELETE: %s", p)
+				if strings.Contains(p, "Sent") {
+					t.Errorf("orphan after DELETE: %s", p)
 				}
 				return nil
 			})

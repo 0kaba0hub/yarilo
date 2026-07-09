@@ -108,6 +108,31 @@ func TestDeleteFolderRemovesIndexDir(t *testing.T) {
 	}
 }
 
+// TestDeleteFolderReclaimsDboxShell locks that DeleteFolder removes the
+// whole folder subtree for dbox drivers, not just the dbox-Mails leaf —
+// otherwise an empty mailboxes/<name> index shell is orphaned.
+func TestDeleteFolderReclaimsDboxShell(t *testing.T) {
+	home := t.TempDir()
+	h := New().OpenUser(&mailbox.UserInfo{Username: testUser, Home: home, Driver: "sdbox"})
+	ui := h.(*userHandle).ui
+	f, err := ui.OpenFolder("Sent", 7)
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}) //nolint:errcheck
+
+	folderDir := filepath.Dir(ui.indexDir("Sent")) // mailboxes/Sent (strip dbox-Mails)
+	if _, err := os.Stat(folderDir); err != nil {
+		t.Fatalf("folder index dir not created: %v", err)
+	}
+	if err := h.DeleteFolder("Sent"); err != nil {
+		t.Fatalf("DeleteFolder: %v", err)
+	}
+	if _, err := os.Stat(folderDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dbox index folder shell survived DeleteFolder: stat err=%v", err)
+	}
+}
+
 func TestLogReplay(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
