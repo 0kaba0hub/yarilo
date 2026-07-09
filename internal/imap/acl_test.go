@@ -207,18 +207,34 @@ func TestACL_MyRightsOwnerGetsFullRights(t *testing.T) {
 	}
 }
 
-func TestACL_ListRightsAllOptional(t *testing.T) {
+func TestACL_ListRights(t *testing.T) {
 	c := startACLServer(t, true)
+
+	// A non-owner identifier: no implied rights, every right individually
+	// grantable (one optional element per right letter).
 	bob, _ := imaplib.NewRightsIdentifierUsername("bob@test.com")
 	data, err := c.ListRights("INBOX", bob).Wait()
 	if err != nil {
-		t.Fatalf("LISTRIGHTS: %v", err)
+		t.Fatalf("LISTRIGHTS bob: %v", err)
 	}
 	if len(data.RequiredRights) != 0 {
-		t.Errorf("required rights = %v, want empty", data.RequiredRights)
+		t.Errorf("bob required rights = %v, want empty", data.RequiredRights)
 	}
-	if len(data.OptionalRights) != 1 || string(data.OptionalRights[0]) != string(imaplib.RightSetAll) {
-		t.Errorf("optional rights = %v, want [RightSetAll]", data.OptionalRights)
+	if len(data.OptionalRights) != len(mailbox.FullRights) {
+		t.Errorf("bob optional rights = %v, want one per right letter", data.OptionalRights)
+	}
+
+	// The owner keyword: all rights are always granted, nothing optional.
+	owner := imaplib.RightsIdentifier("owner")
+	od, err := c.ListRights("INBOX", owner).Wait()
+	if err != nil {
+		t.Fatalf("LISTRIGHTS owner: %v", err)
+	}
+	if sortedString(string(od.RequiredRights)) != sortedString(string(mailbox.FullRights)) {
+		t.Errorf("owner required rights = %q, want all", od.RequiredRights)
+	}
+	if len(od.OptionalRights) != 0 {
+		t.Errorf("owner optional rights = %v, want none", od.OptionalRights)
 	}
 }
 
@@ -254,4 +270,45 @@ func sortedString(s string) string {
 	b := []byte(s)
 	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
 	return string(b)
+}
+
+// TestACL_SetACLNegativeRoundTrip verifies RFC 4314 §3.1 negative-rights
+// entries: a "-<identifier>" SETACL stores a negative entry that coexists with
+// the identifier's positive entry and round-trips through GETACL.
+func TestACL_SetACLNegativeRoundTrip(t *testing.T) {
+	c := startACLServer(t, true)
+	posBob, _ := imaplib.NewRightsIdentifierUsername("bob@test.com")
+	negBob := imaplib.RightsIdentifier("-bob@test.com")
+
+	if err := c.SetACL("INBOX", posBob, imaplib.RightModificationReplace, imaplib.RightSet("lrs")).Wait(); err != nil {
+		t.Fatalf("SETACL positive: %v", err)
+	}
+	if err := c.SetACL("INBOX", negBob, imaplib.RightModificationReplace, imaplib.RightSet("s")).Wait(); err != nil {
+		t.Fatalf("SETACL negative: %v", err)
+	}
+	data, err := c.GetACL("INBOX").Wait()
+	if err != nil {
+		t.Fatalf("GETACL: %v", err)
+	}
+	if got := string(data.Rights[posBob]); got != "lrs" {
+		t.Errorf("positive bob = %q, want lrs", got)
+	}
+	if got := string(data.Rights[negBob]); got != "s" {
+		t.Errorf("negative -bob = %q, want s; full=%+v", got, data.Rights)
+	}
+
+	// DELETEACL of the negative drops only the negative entry.
+	if err := c.DeleteACL("INBOX", negBob).Wait(); err != nil {
+		t.Fatalf("DELETEACL negative: %v", err)
+	}
+	data2, err := c.GetACL("INBOX").Wait()
+	if err != nil {
+		t.Fatalf("GETACL after delete: %v", err)
+	}
+	if _, ok := data2.Rights[negBob]; ok {
+		t.Error("negative entry should be gone after DELETEACL -bob")
+	}
+	if string(data2.Rights[posBob]) != "lrs" {
+		t.Error("positive entry should survive DELETEACL of the negative")
+	}
 }

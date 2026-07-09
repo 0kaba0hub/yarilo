@@ -58,7 +58,7 @@ func TestBridgeIdentifierFromIMAP(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := identifierFromIMAP(tc.in)
+			got, _, err := identifierFromIMAP(tc.in)
 			if err != nil {
 				t.Fatalf("identifierFromIMAP: %v", err)
 			}
@@ -93,19 +93,26 @@ func TestBridgeIdentifierToIMAP(t *testing.T) {
 }
 
 func TestBridgeIdentifierRejectsEmptyGroup(t *testing.T) {
-	if _, err := identifierFromIMAP(imaplib.RightsIdentifier("$")); err == nil {
+	if _, _, err := identifierFromIMAP(imaplib.RightsIdentifier("$")); err == nil {
 		t.Error("expected error on bare '$' group identifier")
 	}
 }
 
-func TestBridgeRejectsNegativeIdentifierOnSet(t *testing.T) {
-	if _, err := identifierFromIMAP(imaplib.RightsIdentifier("-bob")); err == nil {
-		t.Error("expected error on '-' prefixed identifier")
+func TestBridgeNegativeIdentifierParsed(t *testing.T) {
+	id, negative, err := identifierFromIMAP(imaplib.RightsIdentifier("-bob"))
+	if err != nil {
+		t.Fatalf("negative identifier should parse: %v", err)
+	}
+	if !negative {
+		t.Error(`expected negative=true for "-bob"`)
+	}
+	if id.Type != mailbox.IDUser || id.Name != "bob" {
+		t.Errorf("got %+v, want user=bob", id)
 	}
 }
 
 func TestBridgeRejectsEmptyIdentifier(t *testing.T) {
-	if _, err := identifierFromIMAP(imaplib.RightsIdentifier("")); err == nil {
+	if _, _, err := identifierFromIMAP(imaplib.RightsIdentifier("")); err == nil {
 		t.Error("expected error on empty identifier")
 	}
 }
