@@ -12,6 +12,10 @@
 
 hostname: mail-sb.seconddns.com
 
+## ACL is a top-level, protocol-agnostic mail-storage concern.
+acl:
+  enabled: true
+
 storage:
   volatileDir: "/tmp/yarilo-volatile/%d/%n"
   persistence:
@@ -42,8 +46,6 @@ protocol:
   imap:
     imap_idle_notify_interval: 120
     imap_max_line_length: 65536
-    acl:
-      enabled: true
   lmtp:
     add_received_header: true
     hdr_delivery_address: final
