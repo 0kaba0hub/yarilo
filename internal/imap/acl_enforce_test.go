@@ -17,6 +17,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	mailboxpkg "github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
@@ -626,6 +627,11 @@ func sharedServerDial(t *testing.T, defaultsFromInbox bool) (aliceHome string, d
 	root := t.TempDir()
 	resolver := &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"}
 	passdb := &enforcePassdb{users: map[string]string{"alice": "pw", "bob": "pw"}}
+	md, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatalf("open memory dict: %v", err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
 	srv := imapserver.New(imapserver.Options{
 		Mailbox:              maildir.New(),
 		Index:                file.New(),
@@ -633,6 +639,7 @@ func sharedServerDial(t *testing.T, defaultsFromInbox bool) (aliceHome string, d
 		Auth:                 passdb,
 		ACLEnabled:           true,
 		ACLDefaultsFromInbox: defaultsFromInbox,
+		MetadataDict:         md,
 		Namespaces: []imapserver.NamespaceSpec{
 			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
 			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
@@ -854,5 +861,49 @@ func TestACLEnforce_MyRightsUsesInheritance(t *testing.T) {
 	}
 	if got := sortedString(string(data.Rights)); got != "lr" {
 		t.Errorf("inherited MYRIGHTS = %q, want lr (from the parent ACL)", got)
+	}
+}
+
+// TestACLEnforce_MetadataRequiresRights verifies RFC 5464 mailbox METADATA is
+// ACL-gated: a peer needs the 'l' right plus one access right (r/s/w/i/p) to
+// read a shared mailbox's metadata; with no ACL it is denied.
+func TestACLEnforce_MetadataRequiresRights(t *testing.T) {
+	aliceHome, dial := sharedServerDial(t, false)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("Box", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE Box: %v", err)
+	}
+	v := []byte("shared-note")
+	if err := a.SetMetadata("Box", map[string]*[]byte{"/shared/comment": &v}).Wait(); err != nil {
+		t.Fatalf("alice SETMETADATA: %v", err)
+	}
+	a.Logout() //nolint:errcheck
+
+	// bob has no ACL on the shared mailbox → GETMETADATA denied.
+	b := dial("bob")
+	if _, err := b.GetMetadata("Shared/Box", []string{"/shared/comment"}, nil).Wait(); err == nil {
+		t.Fatal("bob GETMETADATA without rights should fail")
+	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	}
+
+	// Grant bob lr → the ACL gate now passes (the metadata command is
+	// accepted rather than denied). Value round-trip across namespaces is a
+	// separate metadata-keying concern, not what this test covers.
+	seedACL(t, aliceHome, "Box", "user=bob lr\n")
+	b2 := dial("bob")
+	if _, err := b2.GetMetadata("Shared/Box", []string{"/shared/comment"}, nil).Wait(); err != nil {
+		t.Errorf("bob GETMETADATA with lr should be permitted: %v", err)
+	}
+	// A peer with only lookup (no access right) is still denied.
+	seedACL(t, aliceHome, "Box", "user=bob l\n")
+	b3 := dial("bob")
+	if _, err := b3.GetMetadata("Shared/Box", []string{"/shared/comment"}, nil).Wait(); err == nil {
+		t.Error("bob GETMETADATA with only 'l' (no r/s/w/i/p) should fail")
+	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
 	}
 }
