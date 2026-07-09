@@ -13,23 +13,27 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode                    string                        `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
-	General                 GeneralConfig                 `koanf:"general"`
-	Services                ServicesConfig                `koanf:"services"`
-	Protocol                ProtocolConfig                `koanf:"protocol"`
-	Auth                    AuthConfig                    `koanf:"auth"`
-	InternalTLS             InternalTLSConfig             `koanf:"internal_tls"`
-	AuthService             AuthServiceConfig             `koanf:"auth_service"`
-	AnvilService            AnvilServiceConfig            `koanf:"anvil_service"`
-	DirectorService         DirectorServiceConfig         `koanf:"director_service"`
-	IMAPLoginService        IMAPLoginServiceConfig        `koanf:"imap_login_service"`
-	POP3LoginService        POP3LoginServiceConfig        `koanf:"pop3_login_service"`
-	SubmissionLoginSvc      SubmissionLoginServiceConfig  `koanf:"submission_login_service"`
-	LMTPLoginService        LMTPLoginServiceConfig        `koanf:"lmtp_login_service"`
-	LocksService            LocksServiceConfig            `koanf:"locks_service"`
-	LocksClient             LocksClientConfig             `koanf:"locks_client"`
-	Storage                 StorageConfig                 `koanf:"storage"`
-	Namespaces              []NamespaceConfig             `koanf:"namespaces"`
+	Mode               string                       `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	General            GeneralConfig                `koanf:"general"`
+	Services           ServicesConfig               `koanf:"services"`
+	Protocol           ProtocolConfig               `koanf:"protocol"`
+	Auth               AuthConfig                   `koanf:"auth"`
+	InternalTLS        InternalTLSConfig            `koanf:"internal_tls"`
+	AuthService        AuthServiceConfig            `koanf:"auth_service"`
+	AnvilService       AnvilServiceConfig           `koanf:"anvil_service"`
+	DirectorService    DirectorServiceConfig        `koanf:"director_service"`
+	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
+	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
+	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
+	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
+	LocksService       LocksServiceConfig           `koanf:"locks_service"`
+	LocksClient        LocksClientConfig            `koanf:"locks_client"`
+	Storage            StorageConfig                `koanf:"storage"`
+	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
+	// ACL is a mail-storage concern shared across protocols (IMAP RFC 4314
+	// commands, and — as enforcement lands — LMTP post/insert, POP3 read),
+	// so it lives at the top level rather than under protocol.imap.
+	ACL                     ACLConfig                     `koanf:"acl"`
 	Dicts                   map[string]DictConfig         `koanf:"dicts"`
 	BackendAPI              BackendAPIConfig              `koanf:"backend_api"`
 	QuotaStatus             QuotaStatusConfig             `koanf:"quota_status"`
@@ -377,12 +381,6 @@ type IMAPProtocolConfig struct {
 	// folder name matches. Per-user CREATE (USE ...) overrides win against
 	// these defaults via the on-disk special_use file.
 	SpecialUseDefaults map[string]string `koanf:"imap_special_use_defaults"`
-	// ACL toggles RFC 4314 server-side ACL: GETACL / SETACL / DELETEACL
-	// / MYRIGHTS / LISTRIGHTS. When acl.enabled = false the IMAP server
-	// returns NO("ACL extension disabled by operator") on every ACL
-	// command. Storage is the per-mailbox `yarilo-acl` file in the
-	// folder's index directory.
-	ACL ACLConfig `koanf:"acl"`
 }
 
 // ACLConfig groups RFC 4314 ACL knobs. Richer policy (global ACL,

@@ -113,21 +113,6 @@ data:
           {{ $folder | quote }}: {{ $attr | quote }}
           {{- end }}
         {{- end }}
-        acl:
-          enabled: {{ .Values.protocol.imap.acl.enabled }}
-          defaults_from_inbox: {{ .Values.protocol.imap.acl.defaults_from_inbox | default false }}
-          globals_only: {{ .Values.protocol.imap.acl.globals_only | default false }}
-          {{- with .Values.protocol.imap.acl.global }}
-          global:
-            {{- range . }}
-            - mailbox: {{ .mailbox | default "*" | quote }}
-              entries:
-                {{- range .entries }}
-                - identifier: {{ .identifier | quote }}
-                  rights: {{ .rights | quote }}
-                {{- end }}
-            {{- end }}
-          {{- end }}
       pop3:
         pop3_no_flag_updates: {{ .Values.protocol.pop3.pop3_no_flag_updates }}
         pop3_reuse_xuidl: {{ .Values.protocol.pop3.pop3_reuse_xuidl }}
@@ -338,6 +323,24 @@ data:
         {{- with .Values.components.auth.token.redis_addr }}
         redis_addr: {{ . | quote }}
         {{- end }}
+
+    {{- with .Values.acl }}
+    acl:
+      enabled: {{ .enabled | default false }}
+      defaults_from_inbox: {{ .defaults_from_inbox | default false }}
+      globals_only: {{ .globals_only | default false }}
+      {{- with .global }}
+      global:
+        {{- range . }}
+        - mailbox: {{ .mailbox | default "*" | quote }}
+          entries:
+            {{- range .entries }}
+            - identifier: {{ .identifier | quote }}
+              rights: {{ .rights | quote }}
+            {{- end }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
 
     {{- with .Values.namespaces }}
     namespaces:

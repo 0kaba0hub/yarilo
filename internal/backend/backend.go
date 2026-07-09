@@ -201,7 +201,7 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		p := cfg.Protocol.IMAP
 		storageCfg := cfg.Storage
-		aclGlobal, err := acl.NewGlobal(p.ACL.Global)
+		aclGlobal, err := acl.NewGlobal(cfg.ACL.Global)
 		if err != nil {
 			return nil, fmt.Errorf("backend: acl global: %w", err)
 		}
@@ -235,10 +235,10 @@ func New(cfg *config.Config) (*Server, error) {
 			SpecialUseDefaults:   p.SpecialUseDefaults,
 			MetadataDict:         metadataDict,
 			QuotaDict:            quotaDict,
-			ACLEnabled:           p.ACL.Enabled,
-			ACLDefaultsFromInbox: p.ACL.DefaultsFromInbox,
+			ACLEnabled:           cfg.ACL.Enabled,
+			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			ACLGlobal:            aclGlobal,
-			ACLGlobalsOnly:       p.ACL.GlobalsOnly,
+			ACLGlobalsOnly:       cfg.ACL.GlobalsOnly,
 			Namespaces:           buildNamespaces(cfg.Namespaces),
 			NamespaceMailboxes:   nsMailboxes,
 			FailureDelay:         time.Duration(cfg.Auth.FailureDelaySeconds) * time.Second,
