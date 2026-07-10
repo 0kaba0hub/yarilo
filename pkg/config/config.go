@@ -225,6 +225,11 @@ type NamespaceConfig struct {
 	// Read by NS-1b storage routing; NS-1a accepts it for forward-
 	// compat but does not act on it.
 	Location string `koanf:"location"`
+	// IgnoreACL bypasses ACL enforcement for this namespace: rights are
+	// not checked and no folders are hidden by lookup right, even when
+	// acl.enabled is true. Useful for a trusted namespace (e.g. an admin
+	// or public root) that should be fully accessible.
+	IgnoreACL bool `koanf:"acl_ignore"`
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.

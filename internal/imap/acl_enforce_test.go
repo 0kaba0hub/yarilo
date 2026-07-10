@@ -907,3 +907,71 @@ func TestACLEnforce_MetadataRequiresRights(t *testing.T) {
 		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
 	}
 }
+
+// TestACLEnforce_IgnoreACLBypasses verifies acl_ignore: a namespace flagged
+// IgnoreACL is fully accessible even when ACL is enabled and the peer has no
+// grant — no NOPERM, no LIST hiding.
+func TestACLEnforce_IgnoreACLBypasses(t *testing.T) {
+	root := t.TempDir()
+	resolver := &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"}
+	passdb := &enforcePassdb{users: map[string]string{"alice": "pw", "bob": "pw"}}
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:    maildir.New(),
+		Index:      file.New(),
+		Resolver:   resolver,
+		Auth:       passdb,
+		ACLEnabled: true,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Open/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true, IgnoreACL: true},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+	dial := func(user string) *imapclient.Client {
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		c := imapclient.New(conn, nil)
+		if err := c.WaitGreeting(); err != nil {
+			t.Fatalf("greeting: %v", err)
+		}
+		if err := c.Login(user, "pw").Wait(); err != nil {
+			t.Fatalf("login %s: %v", user, err)
+		}
+		t.Cleanup(func() { c.Logout().Wait() }) //nolint:errcheck
+		return c
+	}
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("Vault", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE Vault: %v", err)
+	}
+	// bob has NO ACL anywhere, but the Open/ namespace ignores ACL.
+	b := dial("bob")
+	if _, err := b.Select("Open/Vault", nil).Wait(); err != nil {
+		t.Errorf("acl_ignore namespace should be accessible without grants: %v", err)
+	}
+	// And LIST is not hidden — bob sees Vault under Open/.
+	data, err := b.List("", "*", nil).Collect()
+	if err != nil {
+		t.Fatalf("bob LIST: %v", err)
+	}
+	seen := false
+	for _, m := range data {
+		if m.Mailbox == "Open/Vault" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("acl_ignore namespace folder should be visible in LIST")
+	}
+}
