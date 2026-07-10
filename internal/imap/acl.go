@@ -69,43 +69,43 @@ func identifierToIMAP(id mailbox.Identifier) imaplib.RightsIdentifier {
 }
 
 // identifierFromIMAP parses an inbound RightsIdentifier into a stored
-// identifier:
+// identifier plus whether it is a negative-rights entry:
 //
+//   - a leading "-" marks a negative-rights identifier (RFC 4314 §3.1)
 //   - "anyone" / "authenticated" / "owner" — special keywords
 //   - "$<name>" — group wire convention → IDGroup
 //   - "group-override=<name>" — disk-style passthrough (no RFC form)
 //   - anything else — bare username → IDUser{Name: <value>}
-//
-// The '-' negative prefix is reserved for the disk-side and never
-// appears on the SessionACL wire (negative entries are managed via
-// the admin path); reject it up front.
-func identifierFromIMAP(rid imaplib.RightsIdentifier) (mailbox.Identifier, error) {
+func identifierFromIMAP(rid imaplib.RightsIdentifier) (mailbox.Identifier, bool, error) {
 	s := string(rid)
-	if s == "" {
-		return mailbox.Identifier{}, fmt.Errorf("imap/acl: empty identifier")
-	}
+	negative := false
 	if strings.HasPrefix(s, "-") {
-		return mailbox.Identifier{}, fmt.Errorf("imap/acl: negative identifier %q not allowed in SETACL", s)
+		negative = true
+		s = s[1:]
+	}
+	if s == "" {
+		return mailbox.Identifier{}, false, fmt.Errorf("imap/acl: empty identifier")
 	}
 	switch s {
 	case "anyone":
-		return mailbox.Identifier{Type: mailbox.IDAnyone}, nil
+		return mailbox.Identifier{Type: mailbox.IDAnyone}, negative, nil
 	case "authenticated":
-		return mailbox.Identifier{Type: mailbox.IDAuthenticated}, nil
+		return mailbox.Identifier{Type: mailbox.IDAuthenticated}, negative, nil
 	case "owner":
-		return mailbox.Identifier{Type: mailbox.IDOwner}, nil
+		return mailbox.Identifier{Type: mailbox.IDOwner}, negative, nil
 	}
 	if strings.HasPrefix(s, "$") {
 		name := strings.TrimPrefix(s, "$")
 		if name == "" {
-			return mailbox.Identifier{}, fmt.Errorf("imap/acl: empty group identifier")
+			return mailbox.Identifier{}, false, fmt.Errorf("imap/acl: empty group identifier")
 		}
-		return mailbox.Identifier{Type: mailbox.IDGroup, Name: name}, nil
+		return mailbox.Identifier{Type: mailbox.IDGroup, Name: name}, negative, nil
 	}
 	if strings.HasPrefix(s, "group-override=") {
-		return mailbox.ParseIdentifier(s)
+		id, err := mailbox.ParseIdentifier(s)
+		return id, negative, err
 	}
-	return mailbox.Identifier{Type: mailbox.IDUser, Name: s}, nil
+	return mailbox.Identifier{Type: mailbox.IDUser, Name: s}, negative, nil
 }
 
 // aclSurfaceEntries skips negative entries when surfacing the ACL on
@@ -251,12 +251,11 @@ func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	}, nil
 }
 
-// ListRights implements imapserver.SessionACL.
-//
-// PR C returns "no required rights, every right optional" — RFC 4314
-// §3.7 allows this minimal form and the migadu mem-server adopts
-// the same shape. PR D/E may refine when group= identifiers carry
-// implicit required rights.
+// ListRights implements imapserver.SessionACL (RFC 4314 §3.7): the rights that
+// can be granted to identifier on folder. The mailbox owner is always granted
+// every right (required set = all, nothing optional); for any other identifier
+// no right is implied and each standard right is individually grantable
+// (required empty, one optional element per right letter).
 func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier) (*imaplib.ListRightsData, error) {
 	if err := s.requireACLEnabled(); err != nil {
 		return nil, err
@@ -265,17 +264,36 @@ func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier)
 	if err != nil {
 		return nil, err
 	}
+	id, _, err := identifierFromIMAP(identifier)
+	if err != nil {
+		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
+	}
 	// Probe the folder exists by attempting a load — a nil error here
 	// (whether the file exists or not) confirms the mailbox is
 	// reachable in this namespace.
 	if _, err := h.acl.Get(rel); err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
 	}
+	// The mailbox owner (the "owner" keyword, or the owning user of a personal
+	// namespace) implicitly holds all rights.
+	isOwnerID := id.Type == mailbox.IDOwner ||
+		(h.spec.Type == NamespacePersonal && id.Type == mailbox.IDUser && id.Name == s.userInfo.Username)
+	if isOwnerID {
+		return &imaplib.ListRightsData{
+			Mailbox:        folder,
+			Identifier:     identifier,
+			RequiredRights: imaplib.RightSet(mailbox.FullRights),
+		}, nil
+	}
+	optional := make([]imaplib.RightSet, 0, len(mailbox.FullRights))
+	for _, r := range mailbox.FullRights {
+		optional = append(optional, imaplib.RightSet(string(r)))
+	}
 	return &imaplib.ListRightsData{
 		Mailbox:        folder,
 		Identifier:     identifier,
 		RequiredRights: imaplib.RightSet{},
-		OptionalRights: []imaplib.RightSet{imaplib.RightSetAll},
+		OptionalRights: optional,
 	}, nil
 }
 
@@ -288,7 +306,7 @@ func (s *session) SetACL(folder string, identifier imaplib.RightsIdentifier, mod
 	if err != nil {
 		return err
 	}
-	id, err := identifierFromIMAP(identifier)
+	id, negative, err := identifierFromIMAP(identifier)
 	if err != nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
 	}
@@ -303,7 +321,7 @@ func (s *session) SetACL(folder string, identifier imaplib.RightsIdentifier, mod
 		if err := s.adminCheckPRc(h, cur); err != nil {
 			return nil, err
 		}
-		return applySetACL(cur, id, modification, parsed), nil
+		return applySetACL(cur, id, negative, modification, parsed), nil
 	})
 }
 
@@ -317,7 +335,7 @@ func (s *session) DeleteACL(folder string, identifier imaplib.RightsIdentifier) 
 	if err != nil {
 		return err
 	}
-	id, err := identifierFromIMAP(identifier)
+	id, negative, err := identifierFromIMAP(identifier)
 	if err != nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
 	}
@@ -328,25 +346,22 @@ func (s *session) DeleteACL(folder string, identifier imaplib.RightsIdentifier) 
 		if err := s.adminCheckPRc(h, cur); err != nil {
 			return nil, err
 		}
-		return dropIdentifier(cur, id), nil
+		return dropIdentifier(cur, id, negative), nil
 	})
 }
 
-// applySetACL is the in-memory transform a SETACL command performs
-// on the stored entry set. Identifier matching is by Type+Name; only
-// positive (Negative=false) entries participate — negative entries
-// are untouched (managed only via the admin file path, not via SETACL).
+// applySetACL is the in-memory transform a SETACL command performs on the
+// stored entry set. Identifier matching is by Type+Name AND the negative flag,
+// so `SETACL mbox -bob r` (RFC 4314 §3.1 negative rights) modifies bob's
+// negative entry independently of his positive one.
 //
-// Replace with empty rights drops the matching positive entry
-// (RFC 4314 §3.1: "If a SETACL is performed with an empty rights
-// argument, the existing rights are deleted").
-func applySetACL(cur mailbox.ACL, id mailbox.Identifier, mod imaplib.RightModification, rights mailbox.Rights) mailbox.ACL {
+// Replace with empty rights drops the matching entry (RFC 4314 §3.1: "If a
+// SETACL is performed with an empty rights argument, the existing rights are
+// deleted").
+func applySetACL(cur mailbox.ACL, id mailbox.Identifier, negative bool, mod imaplib.RightModification, rights mailbox.Rights) mailbox.ACL {
 	idx := -1
 	for i, e := range cur {
-		if e.Negative {
-			continue
-		}
-		if e.Identifier == id {
+		if e.Negative == negative && e.Identifier == id {
 			idx = i
 			break
 		}
@@ -364,13 +379,13 @@ func applySetACL(cur mailbox.ACL, id mailbox.Identifier, mod imaplib.RightModifi
 			cur[idx].Rights = rights
 			return cur
 		}
-		return append(cur, mailbox.Entry{Identifier: id, Rights: rights})
+		return append(cur, mailbox.Entry{Identifier: id, Rights: rights, Negative: negative})
 	case imaplib.RightModificationAdd:
 		if idx >= 0 {
 			cur[idx].Rights = cur[idx].Rights.Add(rights)
 			return cur
 		}
-		return append(cur, mailbox.Entry{Identifier: id, Rights: rights})
+		return append(cur, mailbox.Entry{Identifier: id, Rights: rights, Negative: negative})
 	case imaplib.RightModificationRemove:
 		if idx >= 0 {
 			cur[idx].Rights = cur[idx].Rights.Remove(rights)
@@ -383,13 +398,13 @@ func applySetACL(cur mailbox.ACL, id mailbox.Identifier, mod imaplib.RightModifi
 	return cur
 }
 
-// dropIdentifier removes every (positive AND negative) entry with the
-// given identifier — DELETEACL drops the identifier entirely per
-// RFC 4314 §3.2.
-func dropIdentifier(cur mailbox.ACL, id mailbox.Identifier) mailbox.ACL {
+// dropIdentifier removes the entry for the given identifier and negativity —
+// DELETEACL of `bob` drops bob's positive entry, `-bob` drops his negative one
+// (RFC 4314 §3.2).
+func dropIdentifier(cur mailbox.ACL, id mailbox.Identifier, negative bool) mailbox.ACL {
 	out := cur[:0]
 	for _, e := range cur {
-		if e.Identifier == id {
+		if e.Negative == negative && e.Identifier == id {
 			continue
 		}
 		out = append(out, e)
