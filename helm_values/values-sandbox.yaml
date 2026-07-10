@@ -16,6 +16,22 @@ hostname: mail-sb.seconddns.com
 acl:
   enabled: true
 
+## Namespaces. Personal owns INBOX (storage from storage.mail_home_template);
+## Public is a shared, non-owner store used to exercise delivery-through-namespaces.
+namespaces:
+  - type: personal
+    prefix: ""
+    separator: "/"
+    list: true
+    subscriptions: true
+    inbox: true
+  - type: public
+    prefix: "Public/"
+    separator: "/"
+    list: true
+    subscriptions: false
+    location: "maildir:/var/mail/vhosts/public"
+
 storage:
   volatileDir: "/tmp/yarilo-volatile/%d/%n"
   persistence:
