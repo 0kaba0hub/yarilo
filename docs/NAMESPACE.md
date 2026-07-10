@@ -66,11 +66,25 @@ namespaces:
     location: "maildir:/var/yarilo/shared"
 
   - type: other                # Dovecot's "Other Users" namespace
-    prefix: "user/"            # so client sees "user/alice/INBOX"
+    prefix: "user/%u/"         # %u ⇒ owner-templated (client sees "user/alice/INBOX")
     separator: "/"
     list: true
-    location: "maildir:%shared_root/%n"   # NS-1b: per-owner directory
+    location: "maildir:%h"     # %h/%u/%n/%d expand against the OWNER (alice)
 ```
+
+### Owner-templated namespaces (NS-2, designed)
+
+When a namespace `prefix` contains an owner variable (`%u`, `%n`, or `%d` — e.g.
+`user/%u/`), the namespace is **owner-templated**: the `%u/%n/%d/%h` variables
+in its `location` expand against the **owner** whose name fills the prefix slot,
+not the logged-in user. Accessing `user/alice/Sent` extracts `owner = alice`,
+looks alice up in the userdb, and resolves `location` against alice's storage.
+The owner's own session has implicit full rights; a peer is gated by the
+owner's ACL. Fixed prefixes (no variable, e.g. `Shared/`, `Public/`) are
+unaffected and resolve to one path for everyone.
+
+This is **single-pod / standalone** in item 3 (#499); cross-pod owner storage
+is NS-3. See [OWNER_SHARED_NS.md](OWNER_SHARED_NS.md) for the full design.
 
 Wire shape (post-AUTHENTICATE):
 
