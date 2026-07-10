@@ -1289,6 +1289,8 @@ namespaces: []
 #     prefix: "Shared/"
 #     separator: "."
 #     list: true
+#     acl_ignore: false           # true = bypass ACL enforcement for this ns
+#                                 # (rights not checked, no lookup-right hiding)
 #     # Absolute path; mount a PV here in multi-pod deployments.
 #     location: "maildir:/var/yarilo/shared"
 #   - type: other                 # Other Users — declared-only until ACL-1 + NS-3

@@ -46,6 +46,13 @@ func insertRight(spec NamespaceSpec) rune {
 	return mailbox.RightPost
 }
 
+// aclEnforced reports whether ACL checks fire for this namespace handle: ACL
+// is enabled server-wide AND the namespace does not carry acl_ignore. When it
+// returns false every require* helper grants access unconditionally.
+func (s *session) aclEnforced(h *nsHandle) bool {
+	return s.srv.opts.ACLEnabled && h != nil && !h.spec.IgnoreACL
+}
+
 // effectiveRights resolves the accessing user's effective rights on
 // folder under h, walking ancestors when no explicit ACL is present
 // (first-ancestor-with-explicit-ACL walk — see
@@ -62,7 +69,7 @@ func (s *session) effectiveRights(h *nsHandle, folder string) (mailbox.Rights, e
 // underlying message — they are not silently treated as "denied" so
 // operators can debug from the client transcript.
 func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
-	if !s.srv.opts.ACLEnabled {
+	if !s.aclEnforced(h) {
 		return nil
 	}
 	if s.isOwner(h) {
@@ -86,7 +93,7 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 // (read / write-seen / write / insert / post), matching the acl-attributes
 // rule. Owner and ACL-disabled sessions pass without a lookup.
 func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
-	if !s.srv.opts.ACLEnabled {
+	if !s.aclEnforced(h) {
 		return nil
 	}
 	if s.isOwner(h) {
@@ -114,7 +121,7 @@ func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
 // flag categories (\Seen, \Deleted, plus arbitrary keywords mapping
 // to s + t + w respectively).
 func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) error {
-	if !s.srv.opts.ACLEnabled {
+	if !s.aclEnforced(h) {
 		return nil
 	}
 	if s.isOwner(h) {
@@ -147,7 +154,7 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 // (<home>/yarilo-acl) — non-owners need an explicit grant there to
 // create top-level mailboxes.
 func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) error {
-	if !s.srv.opts.ACLEnabled {
+	if !s.aclEnforced(h) {
 		return nil
 	}
 	if s.isOwner(h) {

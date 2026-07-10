@@ -978,6 +978,7 @@ func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
 			Separator: sep,
 			List:      ns.List,
 			Location:  ns.Location,
+			IgnoreACL: ns.IgnoreACL,
 		})
 	}
 	return out

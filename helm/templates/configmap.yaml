@@ -351,6 +351,7 @@ data:
         list: {{ .list | default false }}
         subscriptions: {{ .subscriptions | default false }}
         inbox: {{ .inbox | default false }}
+        acl_ignore: {{ .acl_ignore | default false }}
         {{- with .location }}
         location: {{ . | quote }}
         {{- end }}

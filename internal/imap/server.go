@@ -182,6 +182,9 @@ type NamespaceSpec struct {
 	Separator rune
 	List      bool
 	Location  string
+	// IgnoreACL bypasses ACL enforcement for this namespace (rights not
+	// checked, no lookup-right LIST hiding) even when ACL is enabled.
+	IgnoreACL bool
 }
 
 // NamespaceType classifies a namespace into the three slots of the
@@ -1339,7 +1342,7 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 	// is an ancestor of a visible one survives as a \NoSelect container so the
 	// path to the visible child stays navigable. The owner (personal ns) has
 	// full rights, so filtering is skipped there.
-	if s.srv.opts.ACLEnabled && h.acl != nil && !s.isOwner(h) {
+	if s.aclEnforced(h) && h.acl != nil && !s.isOwner(h) {
 		entries = s.aclVisibleEntries(h, entries, sep)
 	}
 
