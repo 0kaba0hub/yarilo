@@ -345,6 +345,7 @@ func New(cfg *config.Config) (*Server, error) {
 			AuthAddr:    authAddr,
 			AuthTLS:     authTLS,
 			SieveEngine: sieveEngine,
+			Namespaces:  cfg.Namespaces,
 			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 				return buildMailboxByDriver(driver, lmtpStorageCfg.MdboxAltStoragePath, locker,
 					lmtpStorageCfg.MaxConcurrentWrites, lmtpStorageCfg.MailboxListUTF8, lmtpStorageCfg.MailboxListNormalizeToNFC)
