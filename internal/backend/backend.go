@@ -333,19 +333,27 @@ func New(cfg *config.Config) (*Server, error) {
 			lmtpTLS = t
 		}
 		lmtpStorageCfg := cfg.Storage
+		lmtpACLGlobal, err := acl.NewGlobal(cfg.ACL.Global)
+		if err != nil {
+			return nil, fmt.Errorf("backend: lmtp acl global: %w", err)
+		}
 		lmtpOpts := lmtp.Options{
-			Hostname:    cfg.Protocol.Submission.Hostname,
-			Config:      cfg.Protocol.LMTP,
-			Mailbox:     mbox,
-			Index:       idx,
-			Resolver:    resolver,
-			TLSConfig:   lmtpTLS,
-			Locker:      locker,
-			QuotaDict:   quotaDict,
-			AuthAddr:    authAddr,
-			AuthTLS:     authTLS,
-			SieveEngine: sieveEngine,
-			Namespaces:  cfg.Namespaces,
+			Hostname:             cfg.Protocol.Submission.Hostname,
+			Config:               cfg.Protocol.LMTP,
+			Mailbox:              mbox,
+			Index:                idx,
+			Resolver:             resolver,
+			TLSConfig:            lmtpTLS,
+			Locker:               locker,
+			QuotaDict:            quotaDict,
+			AuthAddr:             authAddr,
+			AuthTLS:              authTLS,
+			SieveEngine:          sieveEngine,
+			Namespaces:           cfg.Namespaces,
+			ACLEnabled:           cfg.ACL.Enabled,
+			ACLGlobal:            lmtpACLGlobal,
+			ACLGlobalsOnly:       cfg.ACL.GlobalsOnly,
+			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 				return buildMailboxByDriver(driver, lmtpStorageCfg.MdboxAltStoragePath, locker,
 					lmtpStorageCfg.MaxConcurrentWrites, lmtpStorageCfg.MailboxListUTF8, lmtpStorageCfg.MailboxListNormalizeToNFC)

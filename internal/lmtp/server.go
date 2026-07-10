@@ -8,9 +8,11 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/internal/sieve"
+	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -86,6 +89,17 @@ type Options struct {
 	// instead of the recipient's own store. Empty = every delivery lands in
 	// the recipient's personal store (INBOX / +detail).
 	Namespaces []config.NamespaceConfig
+
+	// ACL enforcement for cross-namespace delivery. When ACLEnabled is set,
+	// delivering into a shared / public namespace requires the recipient to
+	// hold the 'p' (post) right on the target folder; a denial falls back to
+	// the recipient's INBOX (implicit keep). Delivery into the recipient's own
+	// personal store never consults the ACL. ACLGlobal / ACLGlobalsOnly /
+	// ACLDefaultsFromInbox mirror the IMAP resolution so both paths agree.
+	ACLEnabled           bool
+	ACLGlobal            *acl.Global
+	ACLGlobalsOnly       bool
+	ACLDefaultsFromInbox bool
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -345,7 +359,12 @@ func (s *session) matchNamespace(folder string) *config.NamespaceConfig {
 // everything else goes to the recipient's own store. Returns the target
 // box/idx, the namespace-relative folder, and a close func for any store this
 // call opened (a no-op for the personal store, which the caller owns).
-func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.UserMailbox, rcptIdx mailbox.UserIndex, folder string) (mailbox.UserMailbox, mailbox.UserIndex, string, func()) {
+//
+// When enforcePost is set, delivery into a shared / public namespace requires
+// the recipient to hold the 'p' (post) right on the target folder; a denial
+// falls back to the recipient's INBOX (implicit keep). The recipient's own
+// personal store is never ACL-checked (IGNORE_ACLS semantics).
+func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.UserMailbox, rcptIdx mailbox.UserIndex, folder string, enforcePost bool) (mailbox.UserMailbox, mailbox.UserIndex, string, func()) {
 	noop := func() {}
 	ns := s.matchNamespace(folder)
 	if ns == nil {
@@ -371,6 +390,12 @@ func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.Use
 		ControlDir:  loc.ControlDir,
 		AltDir:      loc.AltDir,
 		Separator:   ns.Separator,
+		Groups:      userInfo.Groups,
+	}
+	if enforcePost && !s.postAllowed(ui, ns, rel) {
+		slog.Warn("lmtp: post right denied, falling back to INBOX",
+			"rcpt", userInfo.Username, "prefix", ns.Prefix, "folder", rel)
+		return rcptBox, rcptIdx, "INBOX", noop
 	}
 	mb := s.opts.Mailbox
 	if f := s.opts.MailboxByDriver; f != nil && loc.Driver != "" {
@@ -388,6 +413,35 @@ func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.Use
 		box.Close() //nolint:errcheck
 		idx.Close() //nolint:errcheck
 	}
+}
+
+// postAllowed reports whether the recipient holds the 'p' (post) right on the
+// target folder of a shared / public namespace. It mirrors the IMAP ACL
+// resolution (global rules, globals-only, defaults-from-inbox) so both paths
+// agree. ACL read errors fail closed (no post) → the caller falls back to the
+// recipient's INBOX rather than silently delivering past an unreadable ACL.
+func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, rel string) bool {
+	if !s.opts.ACLEnabled {
+		return true
+	}
+	// acl_defaults_from_inbox applies to private / shared namespaces only.
+	defaultsFromInbox := s.opts.ACLDefaultsFromInbox && ns.Type != "public"
+	lockOwner := fmt.Sprintf("yarilo-lmtp/%d/%s", os.Getpid(), ui.Username)
+	store := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.Username, lockOwner, acl.Policy{
+		DefaultsFromInbox: defaultsFromInbox,
+		GlobalsOnly:       s.opts.ACLGlobalsOnly,
+		Global:            s.opts.ACLGlobal,
+	}, s.opts.Locker)
+	var sep byte = '/'
+	if ns.Separator != "" {
+		sep = ns.Separator[0]
+	}
+	rights, err := store.EffectiveFor(rel, ui.Username, ui.Groups, false, sep)
+	if err != nil {
+		slog.Warn("lmtp: post-right ACL read failed, denying", "folder", rel, "err", err)
+		return false
+	}
+	return rights.Has(mailbox.RightPost)
 }
 
 // LMTPData delivers the message and reports per-recipient status via status.SetStatus.
@@ -476,7 +530,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				EnvTo:    rcpt,
 				MsgRaw:   msg,
 				FolderExists: func(_ context.Context, f string) (bool, error) {
-					box, _, rel, closeTarget := s.deliveryTarget(userInfo, rcptBox, rcptIdx, f)
+					box, _, rel, closeTarget := s.deliveryTarget(userInfo, rcptBox, rcptIdx, f, false)
 					defer closeTarget()
 					return box.FolderExists(rel)
 				},
@@ -511,7 +565,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			// Route each delivery through the recipient's namespaces so a
 			// namespace-prefixed target (e.g. Sieve fileinto "Public/News")
 			// lands in that namespace's storage, not the recipient's own store.
-			tBox, tIdx, rel, closeTarget := s.deliveryTarget(userInfo, rcptBox, rcptIdx, d.Folder)
+			tBox, tIdx, rel, closeTarget := s.deliveryTarget(userInfo, rcptBox, rcptIdx, d.Folder, true)
 			if d.Create {
 				if err := tBox.Create(rel); err != nil {
 					slog.Warn("lmtp: create folder", "folder", d.Folder, "err", err)
