@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
 	goSmtp "github.com/0kaba0hub/go-smtp"
@@ -79,6 +80,12 @@ type Options struct {
 	// the user's mail_location specifies a driver that differs from the
 	// global default (e.g. mdbox users on a maildir-default server).
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
+
+	// Namespaces routes a delivery whose target folder carries a namespace
+	// prefix (e.g. "Public/News", "Shared/List") to that namespace's storage
+	// instead of the recipient's own store. Empty = every delivery lands in
+	// the recipient's personal store (INBOX / +detail).
+	Namespaces []config.NamespaceConfig
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -314,6 +321,75 @@ func (s *session) prependHeaders(data []byte, rcpt, finalRcpt string) []byte {
 	return append(hdrs, data...)
 }
 
+// matchNamespace returns the configured namespace whose (non-empty) prefix is
+// the longest prefix of folder, or nil when the folder belongs to the personal
+// store. Longest-prefix match so nested namespaces resolve to the most specific.
+func (s *session) matchNamespace(folder string) *config.NamespaceConfig {
+	var best *config.NamespaceConfig
+	for i := range s.opts.Namespaces {
+		n := &s.opts.Namespaces[i]
+		if n.Prefix == "" || n.Location == "" {
+			continue
+		}
+		if strings.HasPrefix(folder, n.Prefix) {
+			if best == nil || len(n.Prefix) > len(best.Prefix) {
+				best = n
+			}
+		}
+	}
+	return best
+}
+
+// deliveryTarget resolves a delivery folder through the recipient's namespaces.
+// A namespace-prefixed folder routes to that namespace's storage with the prefix stripped;
+// everything else goes to the recipient's own store. Returns the target
+// box/idx, the namespace-relative folder, and a close func for any store this
+// call opened (a no-op for the personal store, which the caller owns).
+func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.UserMailbox, rcptIdx mailbox.UserIndex, folder string) (mailbox.UserMailbox, mailbox.UserIndex, string, func()) {
+	noop := func() {}
+	ns := s.matchNamespace(folder)
+	if ns == nil {
+		return rcptBox, rcptIdx, folder, noop
+	}
+	loc, ok, err := mailbox.ParseLocation(ns.Location, nil)
+	if err != nil || !ok {
+		slog.Warn("lmtp: namespace location parse failed, using personal store",
+			"prefix", ns.Prefix, "location", ns.Location, "err", err)
+		return rcptBox, rcptIdx, folder, noop
+	}
+	rel := strings.TrimPrefix(folder, ns.Prefix)
+	if rel == "" {
+		rel = "INBOX" // delivery to a bare namespace prefix → its INBOX
+	}
+	ui := &mailbox.UserInfo{
+		Username:    userInfo.Username,
+		Home:        loc.Path,
+		MailPath:    loc.Path,
+		Driver:      loc.Driver,
+		IndexDir:    loc.IndexDir,
+		VolatileDir: loc.VolatileDir,
+		ControlDir:  loc.ControlDir,
+		AltDir:      loc.AltDir,
+		Separator:   ns.Separator,
+	}
+	mb := s.opts.Mailbox
+	if f := s.opts.MailboxByDriver; f != nil && loc.Driver != "" {
+		mb = f(loc.Driver)
+	}
+	box := mb.OpenUser(ui)
+	if err := box.Init(); err != nil {
+		slog.Warn("lmtp: namespace store init failed, using personal store",
+			"prefix", ns.Prefix, "err", err)
+		box.Close() //nolint:errcheck
+		return rcptBox, rcptIdx, folder, noop
+	}
+	idx := s.opts.Index.OpenUser(ui)
+	return box, idx, rel, func() {
+		box.Close() //nolint:errcheck
+		idx.Close() //nolint:errcheck
+	}
+}
+
 // LMTPData delivers the message and reports per-recipient status via status.SetStatus.
 func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	data, err := io.ReadAll(r)
@@ -400,7 +476,9 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				EnvTo:    rcpt,
 				MsgRaw:   msg,
 				FolderExists: func(_ context.Context, f string) (bool, error) {
-					return rcptBox.FolderExists(f)
+					box, _, rel, closeTarget := s.deliveryTarget(userInfo, rcptBox, rcptIdx, f)
+					defer closeTarget()
+					return box.FolderExists(rel)
 				},
 			}
 			result, ferr := s.opts.SieveEngine.Filter(context.Background(), fopts)
@@ -430,12 +508,18 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 
 		var deliverErr error
 		for _, d := range deliveries {
+			// Route each delivery through the recipient's namespaces so a
+			// namespace-prefixed target (e.g. Sieve fileinto "Public/News")
+			// lands in that namespace's storage, not the recipient's own store.
+			tBox, tIdx, rel, closeTarget := s.deliveryTarget(userInfo, rcptBox, rcptIdx, d.Folder)
 			if d.Create {
-				if err := rcptBox.Create(d.Folder); err != nil {
+				if err := tBox.Create(rel); err != nil {
 					slog.Warn("lmtp: create folder", "folder", d.Folder, "err", err)
 				}
 			}
-			if err := deliverOne(rcptBox, rcptIdx, d.Folder, bytes.NewReader(msg), int64(len(msg)), s.opts.Locker, username, s.from, d.Flags); err != nil {
+			err := deliverOne(tBox, tIdx, rel, bytes.NewReader(msg), int64(len(msg)), s.opts.Locker, username, s.from, d.Flags)
+			closeTarget()
+			if err != nil {
 				deliverErr = err
 				break
 			}

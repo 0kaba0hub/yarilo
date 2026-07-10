@@ -117,9 +117,19 @@ func New(opts ...Option) *Backend {
 // the same username share one underlying userIndex so they serialise
 // on the per-folder in-process mutex rather than competing for the
 // cross-process Redis mailbox lock.
+// cacheKey identifies a shared userIndex. It is the username combined
+// with every field that determines the on-disk index root, so the same
+// user accessing distinct storage roots (personal vs shared/public
+// namespaces at different locations) gets separate index state instead
+// of colliding on username alone.
+func cacheKey(u *mailbox.UserInfo) string {
+	return strings.Join([]string{u.Username, u.IndexDir, u.MailPath, u.Home, u.Driver}, "\x00")
+}
+
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
+	key := cacheKey(u)
 	b.usersMu.Lock()
-	ref, ok := b.users[u.Username]
+	ref, ok := b.users[key]
 	if !ok {
 		ui := &userIndex{
 			b:           b,
@@ -137,11 +147,11 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			ui.counter, ui.limits = b.quotaFn(u)
 		}
 		ref = &refUserIndex{ui: ui}
-		b.users[u.Username] = ref
+		b.users[key] = ref
 	}
 	ref.refs++
 	b.usersMu.Unlock()
-	return &userHandle{ui: ref.ui, b: b, username: u.Username}
+	return &userHandle{ui: ref.ui, b: b, cacheKey: key}
 }
 
 // userHandle is the per-session view into a shared userIndex. It
@@ -151,7 +161,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 type userHandle struct {
 	ui       *userIndex
 	b        *Backend
-	username string
+	cacheKey string
 }
 
 func (h *userHandle) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
@@ -218,11 +228,11 @@ func (h *userHandle) OptimizeIndex(folderID uint64) error {
 // and the entry is removed from the cache.
 func (h *userHandle) Close() error {
 	h.b.usersMu.Lock()
-	ref := h.b.users[h.username]
+	ref := h.b.users[h.cacheKey]
 	if ref != nil {
 		ref.refs--
 		if ref.refs <= 0 {
-			delete(h.b.users, h.username)
+			delete(h.b.users, h.cacheKey)
 			h.b.usersMu.Unlock()
 			return h.ui.Close()
 		}
