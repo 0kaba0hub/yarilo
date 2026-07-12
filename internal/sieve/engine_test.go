@@ -2,6 +2,7 @@ package sieve
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -239,5 +240,45 @@ foreverypart {
 	}
 	if result == nil || len(result.Deliveries) != 1 || result.Deliveries[0].Folder != "HTML" {
 		t.Fatalf("expected fileinto HTML from foreverypart+mime, got %+v", result)
+	}
+}
+
+func TestFilterMIME_ReplaceRedactsPart(t *testing.T) {
+	e := newTestEngine(t)
+	store := newTestStore()
+	homeDir := t.TempDir()
+	ctx := context.Background()
+
+	script := `require ["foreverypart","mime","replace"];
+foreverypart {
+    if header :mime :subtype "Content-Type" "html" {
+        replace "REDACTED";
+    }
+}`
+	if err := store.SaveScript(ctx, "u1", homeDir, "test", []byte(script)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetActive(ctx, "u1", homeDir, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := baseOpts("u1", homeDir)
+	opts.MsgRaw = []byte("Content-Type: multipart/alternative; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/plain\r\n\r\nplain\r\n" +
+		"--b\r\nContent-Type: text/html\r\n\r\n<p>secret</p>\r\n--b--\r\n")
+
+	result, err := e.Filter(ctx, opts)
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if result.Message == nil {
+		t.Fatal("replace should substitute the delivered message (result.Message)")
+	}
+	out := string(result.Message)
+	if strings.Contains(out, "secret") {
+		t.Errorf("replace should have redacted the html part; got:\n%s", out)
+	}
+	if !strings.Contains(out, "REDACTED") {
+		t.Errorf("expected REDACTED in filtered message:\n%s", out)
 	}
 }

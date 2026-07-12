@@ -4,15 +4,19 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 ## Supported extensions
 
-`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
+`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
 
 `foreverypart` / `mime` / `extracttext` (RFC 5703) provide per-MIME-part
 processing: `foreverypart { … }` walks the parts depth-first (with `break
 [:name]`), `header`/`exists :mime` inspect the current part's headers with the
 `:type` / `:subtype` / `:contenttype` / `:param` / `:anychild` selectors, and
-`extracttext [:first N] var` captures the current part's UTF-8 text into a
-variable. The message-mutating actions `replace` / `enclose`, and `extracttext`
-value-modifiers (`:lower`/`:upper`/…), are a tracked follow-up.
+`extracttext [:first N] [MODIFIER] var` captures the current part's UTF-8 text
+(with the RFC 5229 value modifiers) into a variable. `replace [:mime] [:subject
+s] [:from s] <text>` rewrites the current part (or the whole message outside a
+loop); `enclose [:subject s] [:headers list] <text>` wraps the message in a
+multipart/mixed cover plus the original as `message/rfc822`. A rewritten message
+is delivered in place of the original. Octet-exact preservation of a pre-existing
+`multipart/signed` part across a `replace` is a known limitation.
 
 `spamtest` / `spamtestplus` / `virustest` (RFC 5235) are backed by a configured status header (see `sieve_spamtest_status_header` / `sieve_virustest_status_header` below); with no header configured the tests report "not scanned". `extlists`, `mboxmetadata`, and `servermetadata` are **not** advertised yet — their backing data sources are not wired.
 

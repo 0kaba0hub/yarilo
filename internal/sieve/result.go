@@ -55,4 +55,8 @@ type FilterResult struct {
 	// Notifications lists enotify actions (RFC 5435).
 	// Only mailto: method is dispatched; other methods are logged and dropped.
 	Notifications []interp.ActionNotify
+	// Message is the substituted message bytes when a script rewrote the
+	// message (vnd.yarilo.filter, or RFC 5703 replace / enclose). Nil means the
+	// message is unchanged and the caller should deliver the original.
+	Message []byte
 }

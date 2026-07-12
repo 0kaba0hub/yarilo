@@ -14,7 +14,7 @@ var SupportedExtensions = []string{
 	"editheader", "mailbox", "duplicate", "ihave", "special-use",
 	"imap4flags", "fcc", "include", "enotify",
 	"spamtest", "spamtestplus", "virustest",
-	"foreverypart", "mime", "extracttext",
+	"foreverypart", "mime", "extracttext", "replace", "enclose",
 	"vnd.yarilo.debug",
 	"vnd.yarilo.environment",
 	"vnd.yarilo.pipe",
