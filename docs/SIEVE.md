@@ -80,12 +80,17 @@ Vacation replies are skipped when:
 
 ### Duplicate dedup (RFC 7352)
 
-The `duplicate` test is backed by the dict named `sieve_duplicate` in the
-`dicts:` config, keyed by `priv/<user>/sieve/duplicate/<handle>/<sha256(id)>`
-with the action's TTL. Configure it with `driver: redis` so the dedup window is
-shared **across pods** in a multi-pod backend; with no `sieve_duplicate` dict
-(or a `memory` driver) the state is per-process — fine for single-node but it
-lets a message re-delivered to a different pod slip through.
+The `duplicate` test records tracking IDs with the action's TTL. Two backends:
+
+- **File (default)** — a per-user file in the home directory (name:
+  `sieve_duplicate_file`, default `.yarilo.sieve-duplicate`). The whole
+  check-and-record runs under the per-home Sieve lock, so it is atomic; on
+  shared storage the file is **cross-pod**. This is the default when no
+  `sieve_duplicate` dict is configured.
+- **Dict** — set a dict named `sieve_duplicate` in `dicts:` with `driver: redis`
+  to keep the dedup window in redis (also cross-pod), keyed by
+  `priv/<user>/sieve/duplicate/<handle>/<sha256(id)>`. A `memory` driver is
+  per-process (single-node / tests).
 
 ### Notifications (RFC 5435 `enotify`)
 

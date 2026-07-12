@@ -168,6 +168,7 @@ data:
       sieve_max_script_size: {{ $sieve.sieve_max_script_size | default 65536 }}
       sieve_max_redirects: {{ $sieve.sieve_max_redirects | default 32 }}
       sieve_max_actions: {{ $sieve.sieve_max_actions | default 32 }}
+      sieve_duplicate_file: {{ $sieve.sieve_duplicate_file | default ".yarilo.sieve-duplicate" | quote }}
       sieve_vacation_enabled: {{ $sieve.sieve_vacation_enabled | default true }}
       sieve_spamtest_status_header: {{ $sieve.sieve_spamtest_status_header | default "" | quote }}
       sieve_spamtest_max_value: {{ $sieve.sieve_spamtest_max_value | default 10 }}

@@ -28,7 +28,8 @@ type Engine struct {
 	store        ScriptStore
 	sender       *Sender
 	dupTrackers  sync.Map
-	dupDict      dict.Dict // when non-nil, duplicate dedup is dict-backed (cross-pod with redis)
+	dupDict      dict.Dict    // when non-nil, duplicate dedup is dict-backed (cross-pod with redis)
+	locker       locks.Locker // coordinates the file-backed duplicate dedup
 	globalBefore []*gosieve.Script
 	globalAfter  []*gosieve.Script
 }
@@ -47,6 +48,7 @@ func New(cfg config.SieveConfig, locker locks.Locker, d dict.Dict, dupDict dict.
 		store:   NewScriptStore(cfg.ScriptsDriver, cfg.DefaultName, locker, d),
 		sender:  s,
 		dupDict: dupDict,
+		locker:  locker,
 	}
 	e.globalBefore = loadGlobalScripts(cfg.GlobalBefore)
 	e.globalAfter = loadGlobalScripts(cfg.GlobalAfter)
@@ -181,7 +183,7 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 	}
 
 	rd := gosieve.NewRuntimeData(script, pol, env, msg)
-	rd.DuplicateTracker = e.dupTracker(opts.Username)
+	rd.DuplicateTracker = e.dupTracker(opts.Username, opts.HomeDir)
 	rd.Env = &yariloEnv{username: opts.Username, configItems: e.cfg.Environments}
 	rd.PipeExecutor = &pipeExecutor{
 		binDir:    e.cfg.PipeBinDir,
@@ -453,12 +455,18 @@ func removeImplicitKeep(deliveries []Delivery) []Delivery {
 	return out
 }
 
-// dupTracker returns the duplicate-test backend for a user. With a dict
-// configured (redis = cross-pod), it is dict-backed; otherwise it falls back to
-// a per-process in-memory tracker cached per username.
-func (e *Engine) dupTracker(username string) interp.DuplicateTracker {
+// dupTracker returns the duplicate-test backend for a user. Precedence:
+//   - a configured dict (redis = cross-pod, memory = per-process);
+//   - otherwise a per-user file in the home directory (cross-pod on shared
+//     storage, coordinated by the Sieve lock);
+//   - only when no home directory is available (unit tests) does it fall back
+//     to a per-process in-memory tracker.
+func (e *Engine) dupTracker(username, homeDir string) interp.DuplicateTracker {
 	if e.dupDict != nil {
 		return NewDictDuplicateTracker(e.dupDict, username)
+	}
+	if homeDir != "" {
+		return NewFileDuplicateTracker(homeDir, e.cfg.DuplicateFile, e.locker)
 	}
 	fresh := interp.NewMemoryDuplicateTracker()
 	v, _ := e.dupTrackers.LoadOrStore(username, fresh)
