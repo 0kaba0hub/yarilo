@@ -224,41 +224,65 @@ owner-templated resolution symmetric to the IMAP dispatcher:
 4. POST-right check (item 2, already implemented) with `isOwner` computed from
    the resolved owner: a recipient posting into their *own* templated folder
    skips the check; posting into another owner's folder needs `p`.
-5. On userdb miss / owner on another pod (multi-pod) → fall back to the
-   recipient's INBOX (implicit keep), `Warn`. No mail loss.
+5. On userdb miss / owner on a different farm tag (data on a PV this pod does
+   not mount) → fall back to the recipient's INBOX (implicit keep), `Warn`.
+   No mail loss.
 
 ---
 
 ## 6. Deployment topology impact (NS-3 boundary)
 
-**Single-pod / standalone**: fully works with this design. The owner's storage
-is on the same shared PV, so a userdb lookup + template expansion + local open
-is sufficient. No topology change → **no SVG change for standalone**.
+### Routing model (farms)
 
-**Multi-pod backend (sharded by tag)**: the owner's mailbox may live on a
-**different backend pod** than the accessing session. Opening it locally is
-wrong — writes must land on the owner's pod to preserve the single-writer
-invariant behind `yarilo-locks`. Cross-pod routing to the owner's backend is
-**NS-3** (director-driven), which is **item 4's** phase, not this one.
+The director pins **mailboxes to farms**. A *farm* is a backend or a group of
+backends that share **one storage PV**, identified by a **unique tag**. Every
+mailbox carries a farm tag, and the tag determines **which PV physically holds
+its data**. All access to a mailbox routes only to its farm.
+
+### The one precondition: same farm tag = same PV
+
+For the pod running a session to reach another mailbox, that mailbox's data must
+be **physically reachable** — on the **same PV** the pod mounts. That holds if
+and only if both mailboxes carry the **same farm tag**. This is the single
+discriminator for owner-templated resolution: not "which pod", but **"is the
+owner's mailbox on the same farm (same PV) as this session's mailbox?"** — the
+tags being unique farm identifiers (e.g. `farm-a`, `farm-b`), not user names.
+
+### Same farm tag — resolution is local
+
+When the owner and the accessing mailbox carry the **same farm tag**, the
+owner's data is on a PV the session's pod already mounts. Resolution opens the
+owner's storage directly — userdb lookup of the owner, `location` template
+expansion, an ordinary `nsHandle`. This covers **standalone** and any
+**single-farm backend**. No topology change → **no SVG change**.
+
+### Different farm tag — needs NS-3
+
+When the farm tags differ, the owner's data is on a **different PV** the
+session's pod does **not** mount — it is physically unreachable locally. The
+director cannot move the session there (its own mailbox is pinned to its own
+farm), so just the **owner-access leg** must route to a pod in the farm that
+owns that PV. This cross-farm routing is **NS-3** (director-driven), which is
+**item 4's** phase.
 
 Boundary for item 3:
 
-- Resolve + open owner storage **only when it is local** (same tag/pod / shared
-  PV the session already mounts). This is always true in standalone and in a
-  single-tag backend.
-- When the owner resolves to a different tag/pod (director ring says so),
-  return the existing `NO "... requires NS-3 (cross-pod routing)"` for IMAP and
-  the INBOX implicit-keep fallback for LMTP, until NS-3 lands.
+- Resolve + open owner storage **only when the farm tags match** (data on the
+  same PV the session already mounts). Always true in standalone and single-farm
+  backend.
+- When the owner is on a **different farm tag**, return the existing
+  `NO "... requires NS-3 (cross-pod routing)"` for IMAP and the INBOX
+  implicit-keep fallback for LMTP, until NS-3 lands.
 
 **Schema/doc updates:**
 
 - `docs/DEPLOYMENT.md` + `ARCHITECTURE.md` NS table — clarify that
-  owner-templated resolution is single-pod in item 3; cross-pod is NS-3
+  owner-templated resolution is same-farm in item 3; cross-farm is NS-3
   (item 4). *(Text-only; done alongside this doc.)*
-- `docs/yarilo_backend.svg` — **NS-3 will add** a cross-pod "owner-storage
-  routing" edge (accessing pod → owner's pod, via director). Deferred to the
-  NS-3/item-4 PR so the diagram changes land with the code that implements the
-  edge, rather than depicting an unimplemented path now.
+- `docs/yarilo_backend.svg` — **NS-3 will add** a cross-farm "owner-storage
+  routing" edge (accessing pod → a pod in the owner's farm, via director).
+  Deferred to the NS-3/item-4 PR so the diagram changes land with the code that
+  implements the edge, rather than depicting an unimplemented path now.
 
 ---
 
@@ -267,7 +291,7 @@ Boundary for item 3:
 | Situation | IMAP | LMTP |
 |:---|:---|:---|
 | Owner not in userdb | `NO` (mailbox does not exist) | INBOX implicit keep + `Warn` |
-| Owner storage on another pod (multi-pod) | `NO "requires NS-3"` | INBOX implicit keep + `Warn` |
+| Owner mailbox on a different farm tag (different PV) | `NO "requires NS-3"` | INBOX implicit keep + `Warn` |
 | Owner resolves, peer lacks ACL right | `NO NOPERM` (existing) | INBOX implicit keep (item 2) |
 | Owner == self | personal handle alias | recipient's own store |
 | Malformed / traversal owner segment | userdb miss → `NO` | INBOX implicit keep |
@@ -312,9 +336,10 @@ and 2.
 
 ## 10. Out of scope (tracked elsewhere)
 
-- **Cross-pod owner routing (NS-3)** — item 4; the director leg that makes
-  multi-pod owner access work. This design fails closed (`NO` / implicit keep)
-  until then.
+- **Cross-farm owner routing (NS-3)** — item 4; the director leg that routes the
+  owner-access leg to a pod in the owner's farm when the owner's mailbox is on a
+  different farm tag (different PV). This design fails closed (`NO` / implicit
+  keep) until then.
 - **Per-owner LIST enumeration** (`LIST "" "user/%"` showing every owner you
   can see) — needs the dict-backed share discovery, item 5. This design
   resolves an *explicitly named* owner; it does not enumerate owners.

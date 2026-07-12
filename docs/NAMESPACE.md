@@ -83,8 +83,10 @@ The owner's own session has implicit full rights; a peer is gated by the
 owner's ACL. Fixed prefixes (no variable, e.g. `Shared/`, `Public/`) are
 unaffected and resolve to one path for everyone.
 
-This is **single-pod / standalone** in item 3 (#499); cross-pod owner storage
-is NS-3. See [OWNER_SHARED_NS.md](OWNER_SHARED_NS.md) for the full design.
+This is **same-farm** in item 3 (#499) — the owner is resolved when its mailbox
+carries the same farm tag (same PV) as the session's mailbox (covers standalone
+and single-farm backend). An owner on a **different farm tag** (data on another
+PV) is NS-3. See [OWNER_SHARED_NS.md](OWNER_SHARED_NS.md) for the full design.
 
 Wire shape (post-AUTHENTICATE):
 
