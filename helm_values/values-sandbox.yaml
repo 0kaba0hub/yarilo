@@ -104,6 +104,7 @@ sieve:
     - spamtest
     - spamtestplus
     - virustest
+    - "comparator-i;ascii-numeric"
     - foreverypart
     - mime
     - extracttext
