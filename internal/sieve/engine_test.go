@@ -205,3 +205,39 @@ func TestInitUser(t *testing.T) {
 		t.Fatalf("InitUser (second): %v", err)
 	}
 }
+
+func TestFilterMIME_ForEveryPartMimeExtractText(t *testing.T) {
+	e := newTestEngine(t)
+	store := newTestStore()
+	homeDir := t.TempDir()
+	ctx := context.Background()
+
+	script := `require ["foreverypart","mime","extracttext","variables","fileinto"];
+foreverypart {
+    if header :mime :subtype "Content-Type" "html" {
+        fileinto "HTML";
+    }
+}`
+	if err := store.SaveScript(ctx, "u1", homeDir, "test", []byte(script)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetActive(ctx, "u1", homeDir, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := baseOpts("u1", homeDir)
+	opts.MsgRaw = []byte("Content-Type: multipart/alternative; boundary=b\r\n\r\n" +
+		"--b\r\n" +
+		"Content-Type: text/plain\r\n\r\ntext\r\n" +
+		"--b\r\n" +
+		"Content-Type: text/html\r\n\r\n<p>h</p>\r\n" +
+		"--b--\r\n")
+
+	result, err := e.Filter(ctx, opts)
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if result == nil || len(result.Deliveries) != 1 || result.Deliveries[0].Folder != "HTML" {
+		t.Fatalf("expected fileinto HTML from foreverypart+mime, got %+v", result)
+	}
+}
