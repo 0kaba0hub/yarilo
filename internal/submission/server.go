@@ -12,8 +12,8 @@ import (
 	"net"
 	"time"
 
-	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
+	goSmtp "github.com/emersion/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"

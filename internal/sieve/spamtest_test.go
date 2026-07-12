@@ -16,21 +16,24 @@ func TestNormalizeScore(t *testing.T) {
 	cases := []struct {
 		name       string
 		header     string
-		max, scale float64
+		max        float64
+		percent    bool
+		maxGrade   int
 		wantVal    string
 		wantTested bool
 	}{
-		{"half of max on 0-10", "X-Spam-Score", 10, 10, "5", true},
-		{"percent scale", "X-Spam-Score", 10, 100, "50", true},
-		{"virus 0-5 clean", "X-Virus", 5, 5, "0", true},
-		{"leading float with trailing text", "X-Spam-Trail", 10, 10, "8", true},
-		{"unconfigured header", "", 10, 10, "0", false},
-		{"absent header", "X-Missing", 10, 10, "0", false},
-		{"unparsable value", "X-Spam-Junk", 10, 10, "0", false},
+		// Tested messages grade onto 1..maxGrade; "0" is reserved for untested.
+		{"half of max grades to 6 on 1..10", "X-Spam-Score", 10, false, 10, "6", true},
+		{"percent scale 0..100", "X-Spam-Score", 10, true, 10, "50", true},
+		{"virus clean (raw 0) grades to 1", "X-Virus", 5, false, 5, "1", true},
+		{"leading float with trailing text", "X-Spam-Trail", 10, false, 10, "8", true},
+		{"unconfigured header", "", 10, false, 10, "0", false},
+		{"absent header", "X-Missing", 10, false, 10, "0", false},
+		{"unparsable value", "X-Spam-Junk", 10, false, 10, "0", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			val, tested := normalizeScore(hdr, tc.header, tc.max, tc.scale)
+			val, tested := normalizeScore(hdr, tc.header, tc.max, tc.percent, tc.maxGrade)
 			if val != tc.wantVal || tested != tc.wantTested {
 				t.Errorf("normalizeScore = (%q, %v), want (%q, %v)", val, tested, tc.wantVal, tc.wantTested)
 			}

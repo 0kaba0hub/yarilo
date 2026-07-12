@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	goSmtp "github.com/0kaba0hub/go-smtp"
+	goSmtp "github.com/emersion/go-smtp"
 )
 
 // UserRouter resolves a recipient username to a backend IP address.

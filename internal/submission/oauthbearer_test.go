@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	goSmtp "github.com/0kaba0hub/go-smtp"
 	"github.com/emersion/go-sasl"
+	goSmtp "github.com/emersion/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )

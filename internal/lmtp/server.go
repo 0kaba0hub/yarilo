@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	goSmtp "github.com/0kaba0hub/go-smtp"
+	goSmtp "github.com/emersion/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/internal/sieve"

@@ -3,13 +3,13 @@ module github.com/0kaba0hub/yarilo
 go 1.26.2
 
 require (
-	github.com/0kaba0hub/go-smtp v0.24.1
 	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8.0.20260619144330-06898882abab
 	github.com/emersion/go-message v0.18.2
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
+	github.com/emersion/go-smtp v0.24.0
 	github.com/foxcpp/go-sieve v0.0.0-20260703081245-75bf8d082267
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -31,7 +31,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/emersion/go-smtp v0.24.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -66,3 +65,5 @@ replace github.com/foxcpp/go-sieve => github.com/0kaba0hub/go-sieve v0.0.0-20260
 replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260707092750-5437bf3f085a
 
 replace github.com/emersion/go-sasl => github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f
+
+replace github.com/emersion/go-smtp => github.com/0kaba0hub/go-smtp v0.0.0-20260712165350-106ee832679f
