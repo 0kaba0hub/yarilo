@@ -46,6 +46,14 @@ func (t *FileDuplicateTracker) path() string {
 	return filepath.Join(t.homeDir, t.fileName)
 }
 
+// withLock runs fn while holding a lock scoped to this user's duplicate file
+// only — independent of the sieve-script / vacation lock, so a duplicate check
+// does not serialise against unrelated writes in the same home. Nil locker
+// (unit tests) runs fn directly.
+func (t *FileDuplicateTracker) withLock(ctx context.Context, fn func(context.Context) error) error {
+	return withSieveLock(ctx, t.locker, "sieve-duplicate:"+t.path(), fn)
+}
+
 // duplicateID is the record key: the handle plus a hash of the tracking id, so
 // arbitrary Message-IDs / header values stay bounded on disk.
 func duplicateID(handle, id string) string {
@@ -105,7 +113,7 @@ func (t *FileDuplicateTracker) writeRecords(records []vacationRecord) error {
 func (t *FileDuplicateTracker) IsDuplicate(ctx context.Context, handle, id string, seconds uint32, last bool) (bool, error) {
 	key := duplicateID(handle, id)
 	var dup bool
-	err := withSieveLock(ctx, t.locker, t.homeDir, func(_ context.Context) error {
+	err := t.withLock(ctx, func(_ context.Context) error {
 		records, err := t.readRecords()
 		if err != nil {
 			return err

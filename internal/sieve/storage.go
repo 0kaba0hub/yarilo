@@ -101,7 +101,7 @@ func vacationSent(_ context.Context, homeDir, handle, senderAddr string) (bool, 
 
 // markVacationSent records a sent vacation reply and evicts expired entries.
 func markVacationSent(ctx context.Context, l locks.Locker, homeDir, handle, senderAddr string, ttlSecs int) error {
-	return withSieveLock(ctx, l, homeDir, func(ctx context.Context) error {
+	return withSieveLock(ctx, l, "sieve-vacation:"+vacationFilePath(homeDir), func(ctx context.Context) error {
 		records, err := readVacationRecords(homeDir)
 		if err != nil {
 			return err
