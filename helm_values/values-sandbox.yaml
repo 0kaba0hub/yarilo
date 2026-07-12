@@ -74,6 +74,7 @@ sieve:
   sieve_max_script_size: 65536
   sieve_max_redirects: 32
   sieve_max_actions: 32
+  sieve_duplicate_driver: file
   sieve_vacation_enabled: true
   sieve_submission_host: "relay-fwd.yarilo-relay.svc.cluster.local:25"
   sieve_submission_ssl: "no"

@@ -56,9 +56,12 @@ type SieveConfig struct {
 	// (fileinto, redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
 	// Corresponds to sieve_max_actions. Default: 32.
 	MaxActions int `koanf:"sieve_max_actions"`
-	// DuplicateFile is the name of the per-user file that backs the duplicate
-	// test (RFC 7352) when no sieve_duplicate dict is configured. Stored in the
-	// user's home; on shared storage it makes dedup cross-pod.
+	// DuplicateDriver selects the backend for the duplicate test (RFC 7352):
+	//   file   — per-user file in the home dir (default; cross-pod on shared storage)
+	//   memory — per-process, single-pod only
+	//   redis  — the sieve_duplicate dict (cross-pod)
+	DuplicateDriver string `koanf:"sieve_duplicate_driver"`
+	// DuplicateFile is the name of the home-dir file for DuplicateDriver "file".
 	// Default: ".yarilo.sieve-duplicate".
 	DuplicateFile string `koanf:"sieve_duplicate_file"`
 	// VacationEnabled permits the vacation extension (RFC 5230). Default: true.
@@ -1266,6 +1269,7 @@ func Load(path string) (*Config, error) {
 			MaxScriptSize:      65536,
 			MaxRedirects:       32,
 			MaxActions:         32,
+			DuplicateDriver:    "file",
 			DuplicateFile:      ".yarilo.sieve-duplicate",
 			VacationEnabled:    true,
 			SpamMaxValue:       10,

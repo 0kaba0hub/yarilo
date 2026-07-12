@@ -2,7 +2,10 @@ package sieve
 
 import (
 	"context"
+	"fmt"
 	"testing"
+
+	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
 func TestFileDuplicateTracker(t *testing.T) {
@@ -51,4 +54,29 @@ func TestFileDuplicateTracker_Expiry(t *testing.T) {
 	if dup, _ := tr.IsDuplicate(ctx, "h", "id", 3600, false); dup {
 		t.Fatal("expired entry must not count as duplicate")
 	}
+}
+
+func TestDupTracker_DriverSelection(t *testing.T) {
+	home := t.TempDir()
+	cases := []struct {
+		driver string
+		want   string // type name fragment
+	}{
+		{"file", "*sieve.FileDuplicateTracker"},
+		{"memory", "*interp.MemoryDuplicateTracker"},
+		{"", "*sieve.FileDuplicateTracker"}, // empty defaults to file
+	}
+	for _, tc := range cases {
+		t.Run(tc.driver, func(t *testing.T) {
+			e := &Engine{cfg: config.SieveConfig{DuplicateDriver: tc.driver}}
+			tr := e.dupTracker("u1", home)
+			if got := typeName(tr); got != tc.want {
+				t.Errorf("driver %q → %s, want %s", tc.driver, got, tc.want)
+			}
+		})
+	}
+}
+
+func typeName(v any) string {
+	return fmt.Sprintf("%T", v)
 }

@@ -961,10 +961,12 @@ sieve:
   ## sieve_max_actions caps the total actions a single script may apply (fileinto,
   ## redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
   sieve_max_actions: 32
-  ## sieve_duplicate_file — per-user file (in the user's home) backing the
-  ## duplicate test (RFC 7352) when no `sieve_duplicate` dict is configured. On
-  ## shared storage it is cross-pod. Set a `sieve_duplicate` redis dict instead
-  ## to keep the state in redis.
+  ## duplicate test (RFC 7352) backend:
+  ##   file   — per-user file in the home dir (default; cross-pod on shared storage)
+  ##   memory — per-process, single-pod only
+  ##   redis  — the `sieve_duplicate` dict in dicts: (cross-pod)
+  sieve_duplicate_driver: "file"
+  ## Home-dir file name for sieve_duplicate_driver=file.
   sieve_duplicate_file: ".yarilo.sieve-duplicate"
   sieve_vacation_enabled: true
   ## spamtest / virustest (RFC 5235) status-header sources. Leave the header
