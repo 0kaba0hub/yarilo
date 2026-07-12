@@ -102,6 +102,8 @@ sieve:
     - foreverypart
     - mime
     - extracttext
+    - replace
+    - enclose
     - vnd.yarilo.debug
     - vnd.yarilo.filter
     - vnd.yarilo.execute

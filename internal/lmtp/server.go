@@ -522,6 +522,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal
 
 		deliveries := []sieve.Delivery{{Folder: folder}}
+		deliverMsg := msg
 		if s.opts.SieveEngine != nil {
 			fopts := sieve.FilterOptions{
 				Username: username,
@@ -558,6 +559,9 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			} else {
 				deliveries = result.Deliveries
 			}
+			if result != nil && result.Message != nil {
+				deliverMsg = result.Message
+			}
 		}
 
 		var deliverErr error
@@ -571,7 +575,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					slog.Warn("lmtp: create folder", "folder", d.Folder, "err", err)
 				}
 			}
-			err := deliverOne(tBox, tIdx, rel, bytes.NewReader(msg), int64(len(msg)), s.opts.Locker, username, s.from, d.Flags)
+			err := deliverOne(tBox, tIdx, rel, bytes.NewReader(deliverMsg), int64(len(deliverMsg)), s.opts.Locker, username, s.from, d.Flags)
 			closeTarget()
 			if err != nil {
 				deliverErr = err

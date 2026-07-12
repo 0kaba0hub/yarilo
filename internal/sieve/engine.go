@@ -231,6 +231,9 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 	}
 
 	result := buildResult(rd)
+	if len(rd.FilteredMessage) > 0 {
+		result.Message = rd.FilteredMessage
+	}
 
 	pe := rd.PipeExecutor
 	for _, p := range result.Pipes {
@@ -431,6 +434,9 @@ func (r *FilterResult) absorb(other *FilterResult) {
 	r.Pipes = append(r.Pipes, other.Pipes...)
 	r.VacationReplies = append(r.VacationReplies, other.VacationReplies...)
 	r.Notifications = append(r.Notifications, other.Notifications...)
+	if other.Message != nil {
+		r.Message = other.Message
+	}
 }
 
 func removeImplicitKeep(deliveries []Delivery) []Delivery {
