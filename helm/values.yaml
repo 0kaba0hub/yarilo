@@ -161,7 +161,7 @@ components:
     ## Defaults to listen when empty (single-process / dev mode).
     ## In k8s set to the ClusterIP service DNS, e.g. "<release>-auth:9100".
     addr: ""
-    ## masterListen — Dovecot-style master protocol for password-less
+    ## masterListen — master protocol for password-less
     ## userdb lookups (USER / LIST) used by yarilo-backend-api admin
     ## endpoints and CLI tooling. Empty disables; the binary then only
     ## opens the client listener.
@@ -198,7 +198,7 @@ components:
     ## reply (wrong password, unknown user, malformed SASL) is
     ## held back this many seconds before surfacing to the client
     ## so unknown-user and wrong-password paths return in the same
-    ## wall-clock time. Default 2s mirrors Dovecot's
+    ## wall-clock time. Default 2s. Corresponds to the
     ## `auth_failure_delay`. Set to 0 to disable (tests only —
     ## production should keep >0).
     ## persistence — SQLite fallback only; not used when mysql.bundled=true.
@@ -209,12 +209,12 @@ components:
 
     ## maxAttempts — number of failed auth attempts allowed on a single
     ## connection before the server sends BYE and closes (IMAP/POP3).
-    ## Mirrors Dovecot's `auth_max_attempts`. Default 3.
+    ## Mirrors the `auth_max_attempts`. Default 3.
     maxAttempts: 3
     failure_delay: 2
     ## internal_failure_delay_ms — separate delay for INTERNAL
-    ## failures (passdb backend down, SQL refused). Mirrors
-    ## Dovecot's `auth_internal_failure_delay`. Typically shorter
+    ## failures (passdb backend down, SQL refused). Matches
+    ## the `auth_internal_failure_delay` setting. Typically shorter
     ## than failure_delay so a passdb outage does not amplify
     ## into user-facing latency.
     internal_failure_delay_ms: 2000
@@ -319,7 +319,7 @@ components:
       check_after: true
       report_after: true
 
-    ## masterUsers — Dovecot-style master-user impersonation
+    ## masterUsers — master-user impersonation
     ## (SASL PLAIN authzid). OPT-IN, disabled by default. While
     ## `enabled: false` the IMAP / POP3 / Submission / wire
     ## yarilo-auth code paths drop the authzid before consulting
@@ -339,7 +339,7 @@ components:
     ## `separator` enables the legacy `target<sep>master` SASL
     ## workaround for clients that cannot supply authzid (older
     ## Outlook, some mobile MUAs). Empty disables the workaround
-    ## even when `enabled: true`. `*` matches Dovecot's default
+    ## even when `enabled: true`. `*` matches the default
     ## `auth_master_user_separator`.
     master_users:
       enabled: false
@@ -886,7 +886,7 @@ protocol:
     ## RFC 6154 SPECIAL-USE — map a folder name to a special-use attribute
     ## advertised in LIST replies. Operators can override per deployment;
     ## per-user CREATE (USE ...) takes precedence at runtime via the
-    ## on-disk special_use file. Mirrors Dovecot's
+    ## on-disk special_use file, per the
     ## namespace.mailbox.special_use convention.
     imap_special_use_defaults:
       Sent: "\\Sent"
@@ -951,12 +951,24 @@ sieve:
   ## scripts_dict_name is the key in dicts: that points to the dict instance used when
   ## scripts_driver is "redis". Ignored for "fs".
   scripts_dict_name: ""
-  ## defaultName is the reserved script name used as the active-pointer entry point.
-  ## Corresponds to Dovecot's sieve_default_name. Default: "yarilo".
-  defaultName: "yarilo"
+  ## default_name is the reserved script name used as the active-pointer entry point.
+  ## Corresponds to the sieve_default_name setting. Default: "yarilo".
+  default_name: "yarilo"
   max_script_size: 65536
   max_redirects: 32
+  ## max_actions caps the total actions a single script may apply (fileinto,
+  ## redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
+  ## Corresponds to the sieve_max_actions.
+  max_actions: 32
   vacation_enabled: true
+  ## spamtest / virustest (RFC 5235) status-header sources. Leave the header
+  ## empty to keep the test unbacked (reports "not scanned"). The raw header
+  ## value is normalised against the max_value onto the 0..10 (spam) / 0..5
+  ## (virus) scale. Corresponds to the sieve_{spam,virus}test_*.
+  sieve_spamtest_status_header: ""
+  sieve_spamtest_max_value: 10
+  sieve_virustest_status_header: ""
+  sieve_virustest_max_value: 5
   submission:
     host: ""
     ssl: "no"
@@ -968,7 +980,7 @@ sieve:
   globalBefore: []
   globalAfter: []
   ## sieveExtensions is the whitelist of Sieve extensions users may declare with
-  ## require. Corresponds to Dovecot's sieve_extensions. Empty list = allow all
+  ## require. Corresponds to the sieve_extensions. Empty list = allow all
   ## (backwards-compatible). Operators who need enotify/include/extlists must add
   ## them explicitly.
   sieve_extensions:
@@ -997,7 +1009,7 @@ sieve:
 
   ## sieveEnvironment exposes operator-defined key-value pairs to Sieve scripts
   ## via the vnd.yarilo.environment extension as vnd.yarilo.config.<key> items.
-  ## Corresponds to Dovecot's sieve_environment setting.
+  ## Corresponds to the sieve_environment setting.
   ## Example:
   ##   sieveEnvironment:
   ##     spam-folder: Junk
@@ -1005,7 +1017,7 @@ sieve:
   sieve_environment: {}
 
   ## vnd.yarilo.pipe — external program execution via Sieve scripts.
-  ## Corresponds to Dovecot's sieve_pipe_bin_dir / sieve_pipe_socket_dir /
+  ## Corresponds to the sieve_pipe_bin_dir / sieve_pipe_socket_dir /
   ## sieve_pipe_exec_timeout / sieve_pipe_input_eol settings.
   sieve_pipe_bin_dir: "/usr/lib/yarilo/sieve-pipe"
   sieve_pipe_socket_dir: "sieve-pipe"
@@ -1015,7 +1027,7 @@ sieve:
   ## vnd.yarilo.filter — message filtering via external programs.
   ## Programs receive the message on stdin; non-empty stdout replaces the message.
   ## Empty stdout or non-zero exit = pass-through (message unchanged).
-  ## Corresponds to Dovecot's sieve_filter_bin_dir / sieve_filter_socket_dir /
+  ## Corresponds to the sieve_filter_bin_dir / sieve_filter_socket_dir /
   ## sieve_filter_exec_timeout / sieve_filter_input_eol settings.
   sieve_filter_bin_dir: "/usr/lib/yarilo/sieve-filter"
   sieve_filter_socket_dir: "sieve-filter"
@@ -1023,7 +1035,7 @@ sieve:
   sieve_filter_input_eol: "crlf"
 
   ## vnd.yarilo.execute — run programs and capture output into Sieve variables.
-  ## Corresponds to Dovecot's sieve_execute_bin_dir / sieve_execute_socket_dir /
+  ## Corresponds to the sieve_execute_bin_dir / sieve_execute_socket_dir /
   ## sieve_execute_exec_timeout / sieve_execute_input_eol settings.
   sieve_execute_bin_dir: "/usr/lib/yarilo/sieve-execute"
   sieve_execute_socket_dir: "sieve-execute"
@@ -1251,7 +1263,7 @@ acl:
   ## shared namespaces. This is the maildir answer to the namespace
   ## root == INBOX collision, where the local folder-"" default is
   ## unavailable: INBOX's ACL becomes the default for sibling folders
-  ## that have no ACL of their own. Mirrors Dovecot
+  ## that have no ACL of their own. Corresponds to
   ## acl_defaults_from_inbox.
   defaults_from_inbox: false
   ## Evaluate only the global ACL rules below and ignore the per-mailbox

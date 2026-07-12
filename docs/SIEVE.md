@@ -4,7 +4,9 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 ## Supported extensions
 
-`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `notify`, `subaddress`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
+`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
+
+`spamtest` / `spamtestplus` / `virustest` (RFC 5235) are backed by a configured status header (see `sieve_spamtest_status_header` / `sieve_virustest_status_header` below); with no header configured the tests report "not scanned". `extlists`, `mboxmetadata`, and `servermetadata` are **not** advertised yet — their backing data sources are not wired.
 
 ## Configuration
 
@@ -15,7 +17,12 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 | `enabled` | bool | `false` | Activate Sieve execution on LMTP delivery |
 | `max_script_size` | int | `65536` | Maximum compiled script size in bytes |
 | `max_redirects` | int | `32` | Maximum `redirect` actions per message (RFC 5228 §6.2) |
+| `max_actions` | int | `32` | Maximum total actions per script (`fileinto`/`redirect`/`keep`/...). `0` = unlimited. Guards runaway scripts (`sieve_max_actions`) |
 | `vacation_enabled` | bool | `true` | Permit the `vacation` extension (RFC 5230) |
+| `sieve_spamtest_status_header` | string | `""` | Header carrying the spam score for `spamtest` (RFC 5235), e.g. `X-Spam-Score`. Empty = test reports "not scanned" |
+| `sieve_spamtest_max_value` | float | `10` | Raw header value mapped to the top of the 0..10 (0..100 with `:percent`) scale |
+| `sieve_virustest_status_header` | string | `""` | Header carrying the virus verdict for `virustest` (RFC 5235). Empty = "not scanned" |
+| `sieve_virustest_max_value` | float | `5` | Raw header value mapped to the top of the 0..5 virus scale |
 | `submission_host` | string | `""` | Upstream MTA for outbound mail (`host[:port]`, default port 25). Empty = redirect and vacation are silently dropped |
 | `submission_ssl` | string | `"no"` | Transport security: `no` \| `smtps` \| `starttls` |
 | `submission_timeout` | int | `30` | Connect and command timeout in seconds |
@@ -26,13 +33,18 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 | Key | Default | Description |
 |:----|:--------|:------------|
 | `sieve.enabled` | `false` | Enable Sieve |
-| `sieve.maxScriptSize` | `65536` | Max script size (bytes) |
-| `sieve.maxRedirects` | `32` | Max redirect actions per message |
-| `sieve.vacationEnabled` | `true` | Enable vacation extension |
-| `sieve.submissionHost` | `""` | Upstream MTA address (`host[:port]`) |
-| `sieve.submissionSSL` | `"no"` | TLS mode: `no` / `smtps` / `starttls` |
-| `sieve.submissionTimeout` | `30` | Timeout in seconds |
-| `sieve.submissionAuthSecret` | `""` | Name of a Kubernetes Secret with `user` and `password` keys for SMTP AUTH. Leave empty for unauthenticated relay |
+| `sieve.max_script_size` | `65536` | Max script size (bytes) |
+| `sieve.max_redirects` | `32` | Max redirect actions per message |
+| `sieve.max_actions` | `32` | Max total actions per script (`0` = unlimited) |
+| `sieve.vacation_enabled` | `true` | Enable vacation extension |
+| `sieve.sieve_spamtest_status_header` | `""` | Spam-score header for `spamtest` (empty = unbacked) |
+| `sieve.sieve_spamtest_max_value` | `10` | Top of the spam-score scale |
+| `sieve.sieve_virustest_status_header` | `""` | Virus-verdict header for `virustest` (empty = unbacked) |
+| `sieve.sieve_virustest_max_value` | `5` | Top of the virus-score scale |
+| `sieve.submission.host` | `""` | Upstream MTA address (`host[:port]`) |
+| `sieve.submission.ssl` | `"no"` | TLS mode: `no` / `smtps` / `starttls` |
+| `sieve.submission.timeout` | `30` | Timeout in seconds |
+| `sieve.submission.auth_secret` | `""` | Name of a Kubernetes Secret with `user` and `password` keys for SMTP AUTH. Leave empty for unauthenticated relay |
 
 ## Outbound mail — redirect and vacation
 

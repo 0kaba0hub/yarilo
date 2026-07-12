@@ -161,13 +161,19 @@ data:
       {{- $sieve := (.Values.sieve | default dict) }}
       {{- $sub := ($sieve.submission | default dict) }}
       enabled: {{ $sieve.enabled | default false }}
+      default_name: {{ $sieve.default_name | default "yarilo" | quote }}
       scripts_driver: {{ $sieve.scripts_driver | default "fs" | quote }}
       {{- with $sieve.scripts_dict_name }}
       scripts_dict: {{ . | quote }}
       {{- end }}
       max_script_size: {{ $sieve.max_script_size | default 65536 }}
       max_redirects: {{ $sieve.max_redirects | default 32 }}
+      max_actions: {{ $sieve.max_actions | default 32 }}
       vacation_enabled: {{ $sieve.vacation_enabled | default true }}
+      sieve_spamtest_status_header: {{ $sieve.sieve_spamtest_status_header | default "" | quote }}
+      sieve_spamtest_max_value: {{ $sieve.sieve_spamtest_max_value | default 10 }}
+      sieve_virustest_status_header: {{ $sieve.sieve_virustest_status_header | default "" | quote }}
+      sieve_virustest_max_value: {{ $sieve.sieve_virustest_max_value | default 5 }}
       submission_host: {{ $sub.host | default "" | quote }}
       submission_ssl: {{ $sub.ssl | default "no" | quote }}
       submission_timeout: {{ $sub.timeout | default 30 }}

@@ -52,6 +52,10 @@ type SieveConfig struct {
 	MaxScriptSize int `koanf:"max_script_size"`
 	// MaxRedirects is the maximum number of redirect actions per message. Default: 32.
 	MaxRedirects int `koanf:"max_redirects"`
+	// MaxActions caps the total number of actions a single script may apply
+	// (fileinto, redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
+	// Corresponds to sieve_max_actions. Default: 32.
+	MaxActions int `koanf:"max_actions"`
 	// VacationEnabled permits the vacation extension (RFC 5230). Default: true.
 	VacationEnabled bool `koanf:"vacation_enabled"`
 
@@ -148,6 +152,22 @@ type SieveConfig struct {
 	// ExecuteInputEOL controls the line ending written to the execute program's stdin:
 	// "crlf" (default, matches RFC 5322) or "lf".
 	ExecuteInputEOL string `koanf:"sieve_execute_input_eol"`
+
+	// SpamStatusHeader names the message header carrying the spam score for the
+	// spamtest / spamtestplus extensions (RFC 5235), e.g. "X-Spam-Score". Empty
+	// leaves spamtest unbacked (the test reports "not scanned").
+	// Corresponds to sieve_spamtest_status_header.
+	SpamStatusHeader string `koanf:"sieve_spamtest_status_header"`
+	// SpamMaxValue is the raw header value treated as the top of the scale; the
+	// score is normalised to 1..10 (or 1..100 with :percent). Default: 10.
+	SpamMaxValue float64 `koanf:"sieve_spamtest_max_value"`
+	// VirusStatusHeader names the header carrying the virus verdict for the
+	// virustest extension (RFC 5235). Empty leaves virustest unbacked.
+	// Corresponds to sieve_virustest_status_header.
+	VirusStatusHeader string `koanf:"sieve_virustest_status_header"`
+	// VirusMaxValue is the raw header value treated as the top of the 1..5
+	// virus scale. Default: 5.
+	VirusMaxValue float64 `koanf:"sieve_virustest_max_value"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -1240,7 +1260,10 @@ func Load(path string) (*Config, error) {
 			DefaultName:        "yarilo",
 			MaxScriptSize:      65536,
 			MaxRedirects:       32,
+			MaxActions:         32,
 			VacationEnabled:    true,
+			SpamMaxValue:       10,
+			VirusMaxValue:      5,
 			SubmissionSSL:      "no",
 			SubmissionTimeout:  30,
 			PipeBinDir:         "/usr/lib/yarilo/sieve-pipe",
