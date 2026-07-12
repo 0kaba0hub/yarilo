@@ -961,6 +961,9 @@ sieve:
   ## sieve_max_actions caps the total actions a single script may apply (fileinto,
   ## redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
   sieve_max_actions: 32
+  ## Max tracking period for the duplicate test, seconds (RFC 7352 §7 — a
+  ## larger :seconds is silently clamped). 0 = no limit. Default 7 days.
+  sieve_duplicate_max_period: 604800
   ## duplicate test (RFC 7352) backend:
   ##   file   — per-user file in the home dir (default; cross-pod on shared storage)
   ##   memory — per-process, single-pod only
