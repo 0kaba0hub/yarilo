@@ -91,6 +91,12 @@ chosen by **`sieve_duplicate_driver`**:
 - **`redis`** — the dict named `sieve_duplicate` in `dicts:` (also cross-pod),
   keyed by `priv/<user>/sieve/duplicate/<handle>/<sha256(id)>`.
 
+Defaults follow RFC 7352: the tracking id is the `Message-ID` header (absent →
+the test is false and records nothing); `:header` / `:uniqueid` / `:handle` /
+`:seconds` / `:last` override it. The period defaults to ~7 days and is capped
+at `sieve_duplicate_max_period` (default 7 days; a larger `:seconds` is silently
+clamped; `0` = no limit).
+
 ### Notifications (RFC 5435 `enotify`)
 
 The `notify` extension (RFC 5435) allows scripts to send notifications via an external method URI. Yarilo supports the `mailto:` method — the notification is sent as an email via the same `sieve_submission_host` as redirect and vacation.

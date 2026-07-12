@@ -56,6 +56,10 @@ type SieveConfig struct {
 	// (fileinto, redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
 	// Corresponds to sieve_max_actions. Default: 32.
 	MaxActions int `koanf:"sieve_max_actions"`
+	// DuplicateMaxPeriod caps the duplicate test's tracking period in seconds
+	// (RFC 7352 §7: sites SHOULD impose a maximum; a larger :seconds is silently
+	// clamped). 0 = no limit. Default: 604800 (7 days).
+	DuplicateMaxPeriod int `koanf:"sieve_duplicate_max_period"`
 	// DuplicateDriver selects the backend for the duplicate test (RFC 7352):
 	//   file   — per-user file in the home dir (default; cross-pod on shared storage)
 	//   memory — per-process, single-pod only
@@ -1269,6 +1273,7 @@ func Load(path string) (*Config, error) {
 			MaxScriptSize:      65536,
 			MaxRedirects:       32,
 			MaxActions:         32,
+			DuplicateMaxPeriod: 604800, // 7 days
 			DuplicateDriver:    "file",
 			DuplicateFile:      ".yarilo.sieve-duplicate",
 			VacationEnabled:    true,

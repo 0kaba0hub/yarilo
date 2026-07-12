@@ -461,6 +461,11 @@ func removeImplicitKeep(deliveries []Delivery) []Delivery {
 // driver with no home directory (unit tests) falls back to memory, as does a
 // "redis" driver with no configured dict.
 func (e *Engine) dupTracker(username, homeDir string) interp.DuplicateTracker {
+	inner := e.dupTrackerBackend(username, homeDir)
+	return clampedDuplicateTracker{inner: inner, maxSeconds: uint32(e.cfg.DuplicateMaxPeriod)} //nolint:gosec
+}
+
+func (e *Engine) dupTrackerBackend(username, homeDir string) interp.DuplicateTracker {
 	switch e.cfg.DuplicateDriver {
 	case "redis":
 		if e.dupDict != nil {

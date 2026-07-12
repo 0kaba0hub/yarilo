@@ -148,3 +148,18 @@ func (t *FileDuplicateTracker) IsDuplicate(ctx context.Context, handle, id strin
 }
 
 var _ interp.DuplicateTracker = (*FileDuplicateTracker)(nil)
+
+// clampedDuplicateTracker wraps any DuplicateTracker and caps the tracking
+// period to maxSeconds (RFC 7352 §7: a :seconds over the site maximum is
+// silently substituted). maxSeconds == 0 disables the cap.
+type clampedDuplicateTracker struct {
+	inner      interp.DuplicateTracker
+	maxSeconds uint32
+}
+
+func (c clampedDuplicateTracker) IsDuplicate(ctx context.Context, handle, id string, seconds uint32, last bool) (bool, error) {
+	if c.maxSeconds > 0 && seconds > c.maxSeconds {
+		seconds = c.maxSeconds
+	}
+	return c.inner.IsDuplicate(ctx, handle, id, seconds, last)
+}
