@@ -352,6 +352,7 @@ func New(cfg *config.Config) (*Server, error) {
 			TLSConfig:            lmtpTLS,
 			Locker:               locker,
 			QuotaDict:            quotaDict,
+			MetadataDict:         metadataDict,
 			AuthAddr:             authAddr,
 			AuthTLS:              authTLS,
 			SieveEngine:          sieveEngine,

@@ -866,6 +866,7 @@ func checkSieve() error {
 		{"max_actions", testSieveMaxActions},
 		{"spamtest", testSieveSpamtest},
 		{"mailboxid", testSieveMailboxID},
+		{"metadata", testSieveMetadata},
 		{"imap objectid", testIMAPObjectID},
 	}
 
@@ -1096,6 +1097,48 @@ func extractMailboxID(s string) string {
 		return ""
 	}
 	return rest[:j]
+}
+
+// testSieveMetadata verifies RFC 5490 §4 mboxmetadata + servermetadata: a Sieve
+// script routes on IMAP METADATA annotations set via SETMETADATA. Sets a
+// mailbox-scoped annotation on INBOX and a server-scoped one, then asserts a
+// message keying on both lands in the target folder.
+func testSieveMetadata(user, pass, to string) error {
+	clearInbox(user, pass)
+	folder := "sieve-test-meta"
+	if err := createFolder(user, pass, folder); err != nil {
+		return fmt.Errorf("pre-create: %w", err)
+	}
+
+	c, err := imapDial()
+	if err != nil {
+		return err
+	}
+	if err := c.login(user, pass); err != nil {
+		c.close()
+		return err
+	}
+	if _, err := c.cmd(`SETMETADATA "INBOX" (/private/vnd.yarilo.sievetest "vip")`); err != nil {
+		c.close()
+		return fmt.Errorf("SETMETADATA mailbox: %w", err)
+	}
+	if _, err := c.cmd(`SETMETADATA "" (/shared/vnd.yarilo.sievetest "on")`); err != nil {
+		c.close()
+		return fmt.Errorf("SETMETADATA server: %w", err)
+	}
+	c.close()
+
+	script := "require [\"mboxmetadata\",\"servermetadata\",\"fileinto\"];\n" +
+		"if allof(metadata \"INBOX\" \"/private/vnd.yarilo.sievetest\" \"vip\", " +
+		"servermetadata \"/shared/vnd.yarilo.sievetest\" \"on\") { fileinto \"" + folder + "\"; }\n"
+	if err := msieveSetActive(script); err != nil {
+		return fmt.Errorf("msieve: %w", err)
+	}
+	id := fmt.Sprintf("meta-%d@test", time.Now().UnixNano())
+	if err := lmtpSend(id, "s@test.invalid", to, "metadata", "body"); err != nil {
+		return fmt.Errorf("inject: %w", err)
+	}
+	return checkFolder(user, pass, folder)
 }
 
 // testSieveSpamtest verifies RFC 5235 spamtest against the configured
