@@ -11,7 +11,7 @@ var SupportedExtensions = []string{
 	"fileinto", "reject", "ereject", "envelope", "encoded-character",
 	"variables", "relational", "copy", "subaddress", "environment",
 	"body", "vacation", "vacation-seconds", "regex", "date", "index",
-	"editheader", "mailbox", "duplicate", "ihave", "special-use",
+	"editheader", "mailbox", "duplicate", "ihave", "special-use", "mailboxid",
 	"imap4flags", "fcc", "include", "enotify",
 	"spamtest", "spamtestplus", "virustest",
 	"foreverypart", "mime", "extracttext", "replace", "enclose",

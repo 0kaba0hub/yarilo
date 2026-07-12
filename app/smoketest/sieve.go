@@ -865,6 +865,7 @@ func checkSieve() error {
 		{"foreverypart+mime", testSieveForeverypart},
 		{"max_actions", testSieveMaxActions},
 		{"spamtest", testSieveSpamtest},
+		{"mailboxid", testSieveMailboxID},
 		{"imap objectid", testIMAPObjectID},
 	}
 
@@ -1038,6 +1039,63 @@ func testSieveMaxActions(user, pass, to string) error {
 		return fmt.Errorf("inject: %w", err)
 	}
 	return checkFolder(user, pass, "INBOX") // implicit keep
+}
+
+// testSieveMailboxID verifies RFC 9042: fileinto :mailboxid delivers to the
+// folder carrying the given MAILBOXID rather than the positional fallback.
+func testSieveMailboxID(user, pass, to string) error {
+	clearInbox(user, pass)
+	folder := "sieve-test-mboxid"
+	if err := createFolder(user, pass, folder); err != nil {
+		return fmt.Errorf("pre-create: %w", err)
+	}
+
+	// Read the target folder's server-assigned MAILBOXID from SELECT.
+	c, err := imapDial()
+	if err != nil {
+		return err
+	}
+	if err := c.login(user, pass); err != nil {
+		c.close()
+		return err
+	}
+	sel, err := c.cmd(fmt.Sprintf("SELECT %q", folder))
+	c.close()
+	if err != nil {
+		return fmt.Errorf("SELECT %q: %w", folder, err)
+	}
+	mboxID := extractMailboxID(joined(sel))
+	if mboxID == "" {
+		return fmt.Errorf("SELECT %q missing MAILBOXID: %s", folder, joined(sel))
+	}
+
+	// :mailboxid resolves to `folder`; the "Fallback" positional is a trap —
+	// if resolution failed the message would land there instead.
+	script := "require [\"fileinto\",\"mailboxid\"];\n" +
+		"fileinto :mailboxid \"" + mboxID + "\" \"Fallback\";\n"
+	if err := msieveSetActive(script); err != nil {
+		return fmt.Errorf("msieve: %w", err)
+	}
+	id := fmt.Sprintf("mboxid-%d@test", time.Now().UnixNano())
+	if err := lmtpSend(id, "s@test.invalid", to, "mailboxid", "body"); err != nil {
+		return fmt.Errorf("inject: %w", err)
+	}
+	return checkFolder(user, pass, folder)
+}
+
+// extractMailboxID pulls the objectid out of a `MAILBOXID (<id>)` response code.
+func extractMailboxID(s string) string {
+	const marker = "MAILBOXID ("
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(marker):]
+	j := strings.IndexByte(rest, ')')
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
 }
 
 // testSieveSpamtest verifies RFC 5235 spamtest against the configured

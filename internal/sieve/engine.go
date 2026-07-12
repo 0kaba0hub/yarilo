@@ -92,6 +92,10 @@ type FilterOptions struct {
 	MsgRaw   []byte
 	// FolderExists is called by the mailboxexists Sieve test (RFC 5490).
 	FolderExists func(ctx context.Context, folder string) (bool, error)
+	// MailboxByID resolves a MAILBOXID (RFC 8474 objectid) to the folder name
+	// carrying it. Called by fileinto :mailboxid and mailboxidexists (RFC 9042).
+	// Returns ("", false) when no folder has that id.
+	MailboxByID func(ctx context.Context, id string) (string, bool)
 }
 
 // Filter executes global-before scripts, then the user's active Sieve script,
@@ -103,6 +107,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 	pol := &policy{
 		maxRedirects: e.cfg.MaxRedirects,
 		folderExists: opts.FolderExists,
+		mailboxByID:  opts.MailboxByID,
 		hdr:          hdr,
 		spamHeader:   e.cfg.SpamStatusHeader,
 		spamMax:      e.cfg.SpamMaxValue,
@@ -289,6 +294,7 @@ var _ interp.SpamVirusChecker = (*policy)(nil)
 type policy struct {
 	maxRedirects int
 	folderExists func(ctx context.Context, folder string) (bool, error)
+	mailboxByID  func(ctx context.Context, id string) (string, bool)
 
 	// Spam/virus test backing (RFC 5235). When the configured header is empty
 	// or absent from the message, the test reports "not scanned" (tested=false).
@@ -382,6 +388,16 @@ func (p *policy) MailboxExists(ctx context.Context, folder string) (bool, error)
 		return false, nil
 	}
 	return p.folderExists(ctx, folder)
+}
+
+// MailboxByID implements interp.MailboxIDChecker (RFC 9042): it resolves a
+// MAILBOXID to the folder that carries it, backing fileinto :mailboxid and the
+// mailboxidexists test. Returns ("", false) when unresolved or unavailable.
+func (p *policy) MailboxByID(ctx context.Context, id string) (string, bool) {
+	if p.mailboxByID == nil {
+		return "", false
+	}
+	return p.mailboxByID(ctx, id)
 }
 
 func buildResult(d *interp.RuntimeData) *FilterResult {
