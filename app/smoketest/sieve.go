@@ -93,7 +93,7 @@ func msieveAuth(conn net.Conn, user, pass string) error {
 
 // ── ManageSieve script management ─────────────────────────────────────────
 
-func msieveSetActive(name, script string) error {
+func msieveSetActive(script string) error {
 	conn, err := msieveDial()
 	if err != nil {
 		return err
@@ -103,7 +103,7 @@ func msieveSetActive(name, script string) error {
 	if err := msieveAuth(conn, *flagManageSieveUser, *flagManageSievePass); err != nil {
 		return err
 	}
-	fmt.Fprintf(conn, "PUTSCRIPT %q {%d+}\r\n%s", name, len(script), script) //nolint:errcheck
+	fmt.Fprintf(conn, "PUTSCRIPT %q {%d+}\r\n%s", sieveScriptNameConst, len(script), script) //nolint:errcheck
 	line, err := readLine(conn)
 	if err != nil {
 		return err
@@ -111,7 +111,7 @@ func msieveSetActive(name, script string) error {
 	if !strings.HasPrefix(line, "OK") {
 		return fmt.Errorf("PUTSCRIPT: %q", line)
 	}
-	fmt.Fprintf(conn, "SETACTIVE %q\r\n", name) //nolint:errcheck
+	fmt.Fprintf(conn, "SETACTIVE %q\r\n", sieveScriptNameConst) //nolint:errcheck
 	line, err = readLine(conn)
 	if err != nil {
 		return err
@@ -318,7 +318,7 @@ func (c *imapClient) deleteFolder(folder string) {
 // ── per-test helpers ───────────────────────────────────────────────────────
 
 func sieveInject(script, from, to, id, subject, body string) error {
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	err := lmtpSend(id, from, to, subject, body)
@@ -478,7 +478,7 @@ func testSieveImap4flags(user, pass, to string) error {
 	clearInbox(user, pass)
 	id := uniqueID()
 	script := "require \"imap4flags\";\naddflag \"\\\\Flagged\";\nkeep;\n"
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	if err := lmtpSend(id, "sender@test.invalid", to, "imap4flags test", "body"); err != nil {
@@ -599,7 +599,7 @@ func testSieveDuplicate(user, pass, to string) error {
 	}
 	fixedID := fmt.Sprintf("sieve-dedup-fixed-%d@test", time.Now().UnixNano())
 	script := fmt.Sprintf("require [\"fileinto\",\"duplicate\"];\nif not duplicate { fileinto %q; }\n", folder)
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	for i := 0; i < 2; i++ {
@@ -862,6 +862,10 @@ func checkSieve() error {
 		{"vnd.yarilo.filter", testSieveFilter},
 		{"vnd.yarilo.execute", testSieveExecute},
 		{"enotify", testSieveEnotify},
+		{"foreverypart+mime", testSieveForeverypart},
+		{"max_actions", testSieveMaxActions},
+		{"spamtest", testSieveSpamtest},
+		{"imap objectid", testIMAPObjectID},
 	}
 
 	slog.Info("sieve: start", "total", len(tests))
@@ -879,4 +883,166 @@ func checkSieve() error {
 		return fmt.Errorf("plugin failures:\n%s", strings.Join(errs, "\n"))
 	}
 	return nil
+}
+
+// lmtpSendRaw injects a complete raw message (headers + body) via LMTP, for
+// tests that need custom headers (Content-Type multipart, X-Spam-Score, ...).
+func lmtpSendRaw(from, to, raw string) error {
+	addr := net.JoinHostPort(smtpHost(), *flagSieveSMTPPort)
+	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+	r := bufio.NewReader(conn)
+	readResp := func() (string, error) {
+		var last string
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return "", err
+			}
+			last = strings.TrimRight(line, "\r\n")
+			if len(line) < 4 || line[3] != '-' {
+				return last, nil
+			}
+		}
+	}
+	cmd := func(c string) (string, error) { fmt.Fprintf(conn, "%s\r\n", c); return readResp() }
+	if _, err := readResp(); err != nil {
+		return fmt.Errorf("greeting: %w", err)
+	}
+	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("EHLO: %s %v", resp, err)
+	}
+	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("MAIL FROM: %s %v", resp, err)
+	}
+	if resp, err := cmd("RCPT TO:<" + to + ">"); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("RCPT TO: %s %v", resp, err)
+	}
+	if resp, err := cmd("DATA"); err != nil || !strings.HasPrefix(resp, "354") {
+		return fmt.Errorf("DATA: %s %v", resp, err)
+	}
+	fmt.Fprintf(conn, "%s\r\n.\r\n", raw)
+	if _, err := readResp(); err != nil {
+		return fmt.Errorf("end-of-data: %w", err)
+	}
+	cmd("QUIT") //nolint:errcheck
+	return nil
+}
+
+func joined(lines []string) string { return strings.Join(lines, "\n") }
+
+// testIMAPObjectID verifies RFC 8474: OBJECTID capability, MAILBOXID in SELECT,
+// and EMAILID in FETCH.
+func testIMAPObjectID(user, pass, to string) error {
+	c, err := imapDial()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return err
+	}
+	caps, err := c.cmd("CAPABILITY")
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(joined(caps), "OBJECTID") {
+		return fmt.Errorf("CAPABILITY missing OBJECTID: %s", joined(caps))
+	}
+	sel, err := c.cmd(`SELECT "INBOX"`)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(joined(sel), "MAILBOXID (") {
+		return fmt.Errorf("SELECT INBOX missing MAILBOXID: %s", joined(sel))
+	}
+	id := fmt.Sprintf("objectid-%d@test", time.Now().UnixNano())
+	if err := lmtpSend(id, "s@test.invalid", to, "objectid", "body"); err != nil {
+		return fmt.Errorf("inject: %w", err)
+	}
+	if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
+		return err
+	}
+	uids, _ := c.uidSearch(fmt.Sprintf("HEADER Message-ID \"<%s>\"", id))
+	if len(uids) == 0 {
+		return fmt.Errorf("delivered message not found")
+	}
+	f, err := c.cmd(fmt.Sprintf("UID FETCH %s (EMAILID)", uids[0]))
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(joined(f), "EMAILID (") {
+		return fmt.Errorf("FETCH missing EMAILID: %s", joined(f))
+	}
+	c.deleteUIDs(uids) //nolint:errcheck
+	return nil
+}
+
+// testSieveForeverypart verifies RFC 5703 foreverypart + mime: a multipart
+// message's HTML part routes to a folder.
+func testSieveForeverypart(user, pass, to string) error {
+	clearInbox(user, pass)
+	folder := "sieve-test-mime"
+	if err := createFolder(user, pass, folder); err != nil {
+		return fmt.Errorf("pre-create: %w", err)
+	}
+	script := "require [\"foreverypart\",\"mime\",\"fileinto\"];\n" +
+		"foreverypart { if header :mime :subtype \"Content-Type\" \"html\" { fileinto \"" + folder + "\"; } }\n"
+	if err := msieveSetActive(script); err != nil {
+		return fmt.Errorf("msieve: %w", err)
+	}
+	id := fmt.Sprintf("mime-%d@test", time.Now().UnixNano())
+	raw := "Message-ID: <" + id + ">\r\nFrom: <s@test.invalid>\r\nTo: <" + to + ">\r\nSubject: mime\r\n" +
+		"Content-Type: multipart/alternative; boundary=bb\r\n\r\n" +
+		"--bb\r\nContent-Type: text/plain\r\n\r\nplain\r\n" +
+		"--bb\r\nContent-Type: text/html\r\n\r\n<p>h</p>\r\n--bb--\r\n"
+	if err := lmtpSendRaw("s@test.invalid", to, raw); err != nil {
+		return fmt.Errorf("inject: %w", err)
+	}
+	return checkFolder(user, pass, folder)
+}
+
+// testSieveMaxActions verifies sieve_max_actions: a script exceeding the cap
+// aborts and falls back to implicit keep (INBOX).
+func testSieveMaxActions(user, pass, to string) error {
+	clearInbox(user, pass)
+	var b strings.Builder
+	b.WriteString("require [\"fileinto\",\"mailbox\"];\n")
+	for i := 0; i < 40; i++ { // > default cap 32
+		fmt.Fprintf(&b, "fileinto :create \"MA%d\";\n", i)
+	}
+	if err := msieveSetActive(b.String()); err != nil {
+		return fmt.Errorf("msieve: %w", err)
+	}
+	id := fmt.Sprintf("maxact-%d@test", time.Now().UnixNano())
+	if err := lmtpSend(id, "s@test.invalid", to, "maxactions", "body"); err != nil {
+		return fmt.Errorf("inject: %w", err)
+	}
+	return checkFolder(user, pass, "INBOX") // implicit keep
+}
+
+// testSieveSpamtest verifies RFC 5235 spamtest against the configured
+// status header (requires sieve_spamtest_status_header set).
+func testSieveSpamtest(user, pass, to string) error {
+	clearInbox(user, pass)
+	folder := "sieve-test-spam"
+	if err := createFolder(user, pass, folder); err != nil {
+		return fmt.Errorf("pre-create: %w", err)
+	}
+	script := "require [\"spamtest\",\"relational\",\"comparator-i;ascii-numeric\",\"fileinto\"];\n" +
+		"if spamtest :value \"ge\" :comparator \"i;ascii-numeric\" \"8\" { fileinto \"" + folder + "\"; }\n"
+	if err := msieveSetActive(script); err != nil {
+		return fmt.Errorf("msieve: %w", err)
+	}
+	id := fmt.Sprintf("spam-%d@test", time.Now().UnixNano())
+	raw := "Message-ID: <" + id + ">\r\nFrom: <s@test.invalid>\r\nTo: <" + to + ">\r\nSubject: spam\r\n" +
+		"X-Spam-Score: 9\r\n\r\nbuy now\r\n"
+	if err := lmtpSendRaw("s@test.invalid", to, raw); err != nil {
+		return fmt.Errorf("inject: %w", err)
+	}
+	return checkFolder(user, pass, folder)
 }

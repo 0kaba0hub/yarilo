@@ -1,9 +1,17 @@
 package mailbox
 
 import (
+	"encoding/hex"
 	"io"
 	"time"
 )
+
+// FormatObjectID renders a 16-byte GUID as the RFC 8474 object identifier used
+// for IMAP MAILBOXID / EMAILID (OBJECTID): 32 lowercase hex characters, the
+// same string form other mail servers use for the 128-bit GUID.
+func FormatObjectID(guid [16]byte) string {
+	return hex.EncodeToString(guid[:])
+}
 
 // MessageMeta holds per-message metadata stored in the index.
 type MessageMeta struct {
