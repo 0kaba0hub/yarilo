@@ -15,7 +15,7 @@ func newTestEngine(t *testing.T) *Engine {
 		MaxRedirects:  32,
 		MaxScriptSize: 65536,
 		DefaultName:   FallbackDefaultName,
-	}, nil, nil)
+	}, nil, nil, nil)
 }
 
 func newTestStore() *FsScriptStore {

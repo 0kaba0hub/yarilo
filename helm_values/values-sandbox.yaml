@@ -132,6 +132,12 @@ dicts:
       addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
       db: 0
       prefix: "yarilo:sieve:vacation:%u:"
+  sieve_duplicate:
+    driver: redis
+    settings:
+      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
+      db: 0
+      prefix: "yarilo:sieve:duplicate:%u:"
 
 ## External MySQL — managed by mysql-sandbox.yaml; bundled StatefulSet disabled.
 mysql:

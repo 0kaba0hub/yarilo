@@ -1335,3 +1335,11 @@ dicts:
 #       addr: yarilo-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
 #       db: 0
 #       prefix: "yarilo:sieve:vacation:%u:"
+#   # Optional: duplicate-test dedup (RFC 7352). driver=redis makes the dedup
+#   # window cross-pod; omit (or driver=memory) for per-process behaviour.
+#   sieve_duplicate:
+#     driver: redis
+#     settings:
+#       addr: yarilo-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+#       db: 0
+#       prefix: "yarilo:sieve:duplicate:%u:"
