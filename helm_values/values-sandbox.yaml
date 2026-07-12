@@ -99,6 +99,9 @@ sieve:
     - copy
     - vacation
     - enotify
+    - foreverypart
+    - mime
+    - extracttext
     - vnd.yarilo.debug
     - vnd.yarilo.filter
     - vnd.yarilo.execute
