@@ -28,21 +28,25 @@ type Engine struct {
 	store        ScriptStore
 	sender       *Sender
 	dupTrackers  sync.Map
+	dupDict      dict.Dict // when non-nil, duplicate dedup is dict-backed (cross-pod with redis)
 	globalBefore []*gosieve.Script
 	globalAfter  []*gosieve.Script
 }
 
 // New creates a Sieve Engine. locker is used for cross-process write coordination.
 // d is the dict instance for the redis scripts driver; ignored when driver is "fs".
-func New(cfg config.SieveConfig, locker locks.Locker, d dict.Dict) *Engine {
+// dupDict backs the duplicate test (RFC 7352); nil falls back to per-process
+// in-memory dedup.
+func New(cfg config.SieveConfig, locker locks.Locker, d dict.Dict, dupDict dict.Dict) *Engine {
 	var s *Sender
 	if cfg.SubmissionHost != "" {
 		s = newSender(cfg)
 	}
 	e := &Engine{
-		cfg:    cfg,
-		store:  NewScriptStore(cfg.ScriptsDriver, cfg.DefaultName, locker, d),
-		sender: s,
+		cfg:     cfg,
+		store:   NewScriptStore(cfg.ScriptsDriver, cfg.DefaultName, locker, d),
+		sender:  s,
+		dupDict: dupDict,
 	}
 	e.globalBefore = loadGlobalScripts(cfg.GlobalBefore)
 	e.globalAfter = loadGlobalScripts(cfg.GlobalAfter)
@@ -449,7 +453,13 @@ func removeImplicitKeep(deliveries []Delivery) []Delivery {
 	return out
 }
 
-func (e *Engine) dupTracker(username string) *interp.MemoryDuplicateTracker {
+// dupTracker returns the duplicate-test backend for a user. With a dict
+// configured (redis = cross-pod), it is dict-backed; otherwise it falls back to
+// a per-process in-memory tracker cached per username.
+func (e *Engine) dupTracker(username string) interp.DuplicateTracker {
+	if e.dupDict != nil {
+		return NewDictDuplicateTracker(e.dupDict, username)
+	}
 	fresh := interp.NewMemoryDuplicateTracker()
 	v, _ := e.dupTrackers.LoadOrStore(username, fresh)
 	if t, ok := v.(*interp.MemoryDuplicateTracker); ok {

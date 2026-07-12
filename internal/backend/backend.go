@@ -183,8 +183,14 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: sieve dict: %w", err)
 	}
+	// Dedicated dict for the duplicate test (RFC 7352). driver=redis makes the
+	// dedup window cross-pod; absent/memory keeps per-process behaviour.
+	dupDict, err := buildDict(cfg.Dicts, "sieve_duplicate")
+	if err != nil {
+		return nil, fmt.Errorf("backend: sieve duplicate dict: %w", err)
+	}
 	if cfg.Sieve.Enabled {
-		sieveEngine = sieve.New(cfg.Sieve, locker, sieveDict)
+		sieveEngine = sieve.New(cfg.Sieve, locker, sieveDict, dupDict)
 	}
 
 	// ---- IMAP ----

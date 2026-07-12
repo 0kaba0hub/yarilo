@@ -78,6 +78,15 @@ Vacation replies are skipped when:
 - The message has a `List-Id` header or `Precedence: bulk/list/junk`.
 - The message has `Auto-Submitted:` set to any value other than `no`.
 
+### Duplicate dedup (RFC 7352)
+
+The `duplicate` test is backed by the dict named `sieve_duplicate` in the
+`dicts:` config, keyed by `priv/<user>/sieve/duplicate/<handle>/<sha256(id)>`
+with the action's TTL. Configure it with `driver: redis` so the dedup window is
+shared **across pods** in a multi-pod backend; with no `sieve_duplicate` dict
+(or a `memory` driver) the state is per-process — fine for single-node but it
+lets a message re-delivered to a different pod slip through.
+
 ### Notifications (RFC 5435 `enotify`)
 
 The `notify` extension (RFC 5435) allows scripts to send notifications via an external method URI. Yarilo supports the `mailto:` method — the notification is sent as an email via the same `sieve_submission_host` as redirect and vacation.

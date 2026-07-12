@@ -10,7 +10,7 @@ import (
 func TestImap4flagsAddflagKeep(t *testing.T) {
 	e := New(config.SieveConfig{
 		Enabled: true, MaxRedirects: 32, MaxScriptSize: 65536, DefaultName: FallbackDefaultName,
-	}, nil, nil)
+	}, nil, nil, nil)
 	store := newTestStore()
 	homeDir := t.TempDir()
 	ctx := context.Background()
