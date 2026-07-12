@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/textproto"
 	"os"
 	"strconv"
@@ -290,27 +291,27 @@ type policy struct {
 }
 
 // SpamScore implements interp.SpamVirusChecker: it reads the configured spam
-// header, normalises the raw value against spamMax onto the 0..10 scale
-// (0..100 with :percent), and returns tested=false when the header is
-// unconfigured or absent.
+// header and normalises the raw value against spamMax. A tested message maps
+// onto the graded 1..10 scale (RFC 5235 §2.1 — "0" is reserved for "not
+// tested"); with :percent (spamtestplus) it maps onto 0..100 instead.
 func (p *policy) SpamScore(_ context.Context, percent bool) (string, bool) {
-	scale := 10.0
-	if percent {
-		scale = 100.0
-	}
-	return normalizeScore(p.hdr, p.spamHeader, p.spamMax, scale)
+	return normalizeScore(p.hdr, p.spamHeader, p.spamMax, percent, 10)
 }
 
 // VirusScore implements interp.SpamVirusChecker: it reads the configured virus
-// header, normalised onto the 0..5 scale.
+// header and normalises onto the graded 1..5 scale (RFC 5235 §3.1 — "0" is
+// reserved for "not tested", 1 = clean, 5 = definitely a virus).
 func (p *policy) VirusScore(_ context.Context) (string, bool) {
-	return normalizeScore(p.hdr, p.virusHeader, p.virusMax, 5.0)
+	return normalizeScore(p.hdr, p.virusHeader, p.virusMax, false, 5)
 }
 
 // normalizeScore reads header from hdr, parses its leading numeric value, and
-// maps it onto [0, scale] using max as the top of the raw range. Returns
-// ("0", false) when header is unconfigured, absent, or unparsable.
-func normalizeScore(hdr textproto.MIMEHeader, header string, max, scale float64) (string, bool) {
+// maps the raw/max ratio onto the RFC 5235 scale: a *tested* message grades
+// onto 1..maxGrade (1 = clean, maxGrade = certain), matching Dovecot's
+// `1 + rint(norm*(maxGrade-1))`; with percent it maps onto 0..100. "0" is
+// reserved for "not tested", so an untested / unconfigured / unparsable header
+// returns ("0", false) — never a tested value of 0.
+func normalizeScore(hdr textproto.MIMEHeader, header string, max float64, percent bool, maxGrade int) (string, bool) {
 	if header == "" || hdr == nil {
 		return "0", false
 	}
@@ -323,7 +324,7 @@ func normalizeScore(hdr textproto.MIMEHeader, header string, max, scale float64)
 		return "0", false
 	}
 	if max <= 0 {
-		max = scale
+		max = float64(maxGrade)
 	}
 	ratio := val / max
 	if ratio < 0 {
@@ -332,7 +333,10 @@ func normalizeScore(hdr textproto.MIMEHeader, header string, max, scale float64)
 	if ratio > 1 {
 		ratio = 1
 	}
-	return strconv.Itoa(int(ratio*scale + 0.5)), true
+	if percent {
+		return strconv.Itoa(int(math.Round(ratio * 100))), true
+	}
+	return strconv.Itoa(int(math.Round(1 + ratio*float64(maxGrade-1)))), true
 }
 
 // parseLeadingFloat extracts the leading signed float from s (e.g. "5.3 / 10"
