@@ -93,7 +93,7 @@ func msieveAuth(conn net.Conn, user, pass string) error {
 
 // ── ManageSieve script management ─────────────────────────────────────────
 
-func msieveSetActive(name, script string) error {
+func msieveSetActive(script string) error {
 	conn, err := msieveDial()
 	if err != nil {
 		return err
@@ -103,7 +103,7 @@ func msieveSetActive(name, script string) error {
 	if err := msieveAuth(conn, *flagManageSieveUser, *flagManageSievePass); err != nil {
 		return err
 	}
-	fmt.Fprintf(conn, "PUTSCRIPT %q {%d+}\r\n%s", name, len(script), script) //nolint:errcheck
+	fmt.Fprintf(conn, "PUTSCRIPT %q {%d+}\r\n%s", sieveScriptNameConst, len(script), script) //nolint:errcheck
 	line, err := readLine(conn)
 	if err != nil {
 		return err
@@ -111,7 +111,7 @@ func msieveSetActive(name, script string) error {
 	if !strings.HasPrefix(line, "OK") {
 		return fmt.Errorf("PUTSCRIPT: %q", line)
 	}
-	fmt.Fprintf(conn, "SETACTIVE %q\r\n", name) //nolint:errcheck
+	fmt.Fprintf(conn, "SETACTIVE %q\r\n", sieveScriptNameConst) //nolint:errcheck
 	line, err = readLine(conn)
 	if err != nil {
 		return err
@@ -318,7 +318,7 @@ func (c *imapClient) deleteFolder(folder string) {
 // ── per-test helpers ───────────────────────────────────────────────────────
 
 func sieveInject(script, from, to, id, subject, body string) error {
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	err := lmtpSend(id, from, to, subject, body)
@@ -478,7 +478,7 @@ func testSieveImap4flags(user, pass, to string) error {
 	clearInbox(user, pass)
 	id := uniqueID()
 	script := "require \"imap4flags\";\naddflag \"\\\\Flagged\";\nkeep;\n"
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	if err := lmtpSend(id, "sender@test.invalid", to, "imap4flags test", "body"); err != nil {
@@ -599,7 +599,7 @@ func testSieveDuplicate(user, pass, to string) error {
 	}
 	fixedID := fmt.Sprintf("sieve-dedup-fixed-%d@test", time.Now().UnixNano())
 	script := fmt.Sprintf("require [\"fileinto\",\"duplicate\"];\nif not duplicate { fileinto %q; }\n", folder)
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	for i := 0; i < 2; i++ {
@@ -992,7 +992,7 @@ func testSieveForeverypart(user, pass, to string) error {
 	}
 	script := "require [\"foreverypart\",\"mime\",\"fileinto\"];\n" +
 		"foreverypart { if header :mime :subtype \"Content-Type\" \"html\" { fileinto \"" + folder + "\"; } }\n"
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	id := fmt.Sprintf("mime-%d@test", time.Now().UnixNano())
@@ -1015,7 +1015,7 @@ func testSieveMaxActions(user, pass, to string) error {
 	for i := 0; i < 40; i++ { // > default cap 32
 		fmt.Fprintf(&b, "fileinto :create \"MA%d\";\n", i)
 	}
-	if err := msieveSetActive(sieveScriptNameConst, b.String()); err != nil {
+	if err := msieveSetActive(b.String()); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	id := fmt.Sprintf("maxact-%d@test", time.Now().UnixNano())
@@ -1035,7 +1035,7 @@ func testSieveSpamtest(user, pass, to string) error {
 	}
 	script := "require [\"spamtest\",\"relational\",\"comparator-i;ascii-numeric\",\"fileinto\"];\n" +
 		"if spamtest :value \"ge\" :comparator \"i;ascii-numeric\" \"8\" { fileinto \"" + folder + "\"; }\n"
-	if err := msieveSetActive(sieveScriptNameConst, script); err != nil {
+	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	id := fmt.Sprintf("spam-%d@test", time.Now().UnixNano())
