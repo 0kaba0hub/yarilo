@@ -938,6 +938,13 @@ func joined(lines []string) string { return strings.Join(lines, "\n") }
 // testIMAPObjectID verifies RFC 8474: OBJECTID capability, MAILBOXID in SELECT,
 // and EMAILID in FETCH.
 func testIMAPObjectID(user, pass, to string) error {
+	// Deterministic delivery: empty INBOX + a plain keep script so the message
+	// lands in INBOX regardless of any leftover active script.
+	clearInbox(user, pass)
+	if err := msieveSetActive("keep;\n"); err != nil {
+		return fmt.Errorf("msieve keep: %w", err)
+	}
+
 	c, err := imapDial()
 	if err != nil {
 		return err
@@ -964,10 +971,18 @@ func testIMAPObjectID(user, pass, to string) error {
 	if err := lmtpSend(id, "s@test.invalid", to, "objectid", "body"); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
-	if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
-		return err
+	// Delivery + indexing is async; re-SELECT and search a few times.
+	var uids []string
+	for i := 0; i < 10; i++ {
+		if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
+			return err
+		}
+		uids, _ = c.uidSearch(fmt.Sprintf("HEADER Message-ID \"<%s>\"", id))
+		if len(uids) > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	uids, _ := c.uidSearch(fmt.Sprintf("HEADER Message-ID \"<%s>\"", id))
 	if len(uids) == 0 {
 		return fmt.Errorf("delivered message not found")
 	}
