@@ -95,6 +95,7 @@ sieve:
     - date
     - index
     - mailbox
+    - mailboxid
     - duplicate
     - imap4flags
     - redirect

@@ -364,6 +364,35 @@ func (s *session) matchNamespace(folder string) *config.NamespaceConfig {
 // the recipient to hold the 'p' (post) right on the target folder; a denial
 // falls back to the recipient's INBOX (implicit keep). The recipient's own
 // personal store is never ACL-checked (IGNORE_ACLS semantics).
+// folderByMailboxID resolves a MAILBOXID (RFC 8474 objectid) to the name of the
+// personal-namespace folder carrying it, backing fileinto :mailboxid and
+// mailboxidexists (RFC 9042). It walks the user's selectable folders and matches
+// the requested id against each folder's stable GUID. Returns ("", false) when
+// no folder matches or the folder tree cannot be read.
+func (s *session) folderByMailboxID(rcptBox mailbox.UserMailbox, rcptIdx mailbox.UserIndex, id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	entries, err := rcptBox.ListFolders()
+	if err != nil {
+		slog.Warn("lmtp: mailboxid lookup: list folders failed", "err", err)
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.Selectable {
+			continue
+		}
+		f, err := rcptIdx.OpenFolder(e.Name, 0)
+		if err != nil {
+			continue
+		}
+		if mailbox.FormatObjectID(f.GUID) == id {
+			return e.Name, true
+		}
+	}
+	return "", false
+}
+
 func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.UserMailbox, rcptIdx mailbox.UserIndex, folder string, enforcePost bool) (mailbox.UserMailbox, mailbox.UserIndex, string, func()) {
 	noop := func() {}
 	ns := s.matchNamespace(folder)
@@ -534,6 +563,9 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					box, _, rel, closeTarget := s.deliveryTarget(userInfo, rcptBox, rcptIdx, f, false)
 					defer closeTarget()
 					return box.FolderExists(rel)
+				},
+				MailboxByID: func(_ context.Context, id string) (string, bool) {
+					return s.folderByMailboxID(rcptBox, rcptIdx, id)
 				},
 			}
 			result, ferr := s.opts.SieveEngine.Filter(context.Background(), fopts)

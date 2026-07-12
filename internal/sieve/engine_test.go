@@ -121,6 +121,70 @@ func TestFilterFileInto(t *testing.T) {
 	}
 }
 
+func TestFilterMailboxID(t *testing.T) {
+	tests := []struct {
+		name       string
+		script     string
+		wantFolder string
+	}{
+		{
+			name:       "resolved id wins over fallback",
+			script:     `require ["fileinto", "mailboxid"];` + "\n" + `fileinto :mailboxid "aabbcc" "Fallback";`,
+			wantFolder: "Archive",
+		},
+		{
+			name:       "unresolved id falls back to positional",
+			script:     `require ["fileinto", "mailboxid"];` + "\n" + `fileinto :mailboxid "deadbeef" "Fallback";`,
+			wantFolder: "Fallback",
+		},
+		{
+			name:       "mailboxidexists true takes the branch",
+			script:     `require ["fileinto", "mailboxid"];` + "\n" + `if mailboxidexists "aabbcc" { fileinto "Archive"; } else { fileinto "Fallback"; }`,
+			wantFolder: "Archive",
+		},
+		{
+			name:       "mailboxidexists false takes else",
+			script:     `require ["fileinto", "mailboxid"];` + "\n" + `if mailboxidexists "deadbeef" { fileinto "Archive"; } else { fileinto "Fallback"; }`,
+			wantFolder: "Fallback",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEngine(t)
+			store := newTestStore()
+			homeDir := t.TempDir()
+			ctx := context.Background()
+
+			if err := store.SaveScript(ctx, "u1", homeDir, "test", []byte(tc.script)); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetActive(ctx, "u1", homeDir, "test"); err != nil {
+				t.Fatal(err)
+			}
+
+			opts := baseOpts("u1", homeDir)
+			opts.MailboxByID = func(_ context.Context, id string) (string, bool) {
+				if id == "aabbcc" {
+					return "Archive", true
+				}
+				return "", false
+			}
+
+			result, err := e.Filter(ctx, opts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if len(result.Deliveries) != 1 || result.Deliveries[0].Folder != tc.wantFolder {
+				t.Fatalf("expected %q delivery, got %+v", tc.wantFolder, result.Deliveries)
+			}
+		})
+	}
+}
+
 func TestFilterReject(t *testing.T) {
 	e := newTestEngine(t)
 	store := newTestStore()

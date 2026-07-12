@@ -4,7 +4,7 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 ## Supported extensions
 
-`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
+`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `mailboxid`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
 
 `foreverypart` / `mime` / `extracttext` (RFC 5703) provide per-MIME-part
 processing: `foreverypart { … }` walks the parts depth-first (with `break
@@ -17,6 +17,13 @@ loop); `enclose [:subject s] [:headers list] <text>` wraps the message in a
 multipart/mixed cover plus the original as `message/rfc822`. A rewritten message
 is delivered in place of the original. Octet-exact preservation of a pre-existing
 `multipart/signed` part across a `replace` is a known limitation.
+
+`mailboxid` (RFC 9042) resolves folders by their stable `MAILBOXID` (RFC 8474
+OBJECTID) rather than by name: `fileinto :mailboxid "<id>" "<fallback>"` delivers
+to the folder carrying `<id>` if it still exists, otherwise to the positional
+`<fallback>` mailbox (honouring `:create`); the `mailboxidexists "<id>"...` test
+is true only when every listed id resolves to an accessible folder. Ids survive
+RENAME, so a script keeps targeting the right folder after the user renames it.
 
 `spamtest` / `spamtestplus` / `virustest` (RFC 5235) are backed by a configured status header (see `sieve_spamtest_status_header` / `sieve_virustest_status_header` below); with no header configured the tests report "not scanned". `extlists`, `mboxmetadata`, and `servermetadata` are **not** advertised yet — their backing data sources are not wired.
 
