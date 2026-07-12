@@ -159,25 +159,24 @@ data:
 
     sieve:
       {{- $sieve := (.Values.sieve | default dict) }}
-      {{- $sub := ($sieve.submission | default dict) }}
-      enabled: {{ $sieve.enabled | default false }}
-      default_name: {{ $sieve.default_name | default "yarilo" | quote }}
-      scripts_driver: {{ $sieve.scripts_driver | default "fs" | quote }}
-      {{- with $sieve.scripts_dict_name }}
-      scripts_dict: {{ . | quote }}
+      sieve_enabled: {{ $sieve.sieve_enabled | default false }}
+      sieve_default_name: {{ $sieve.sieve_default_name | default "yarilo" | quote }}
+      sieve_scripts_driver: {{ $sieve.sieve_scripts_driver | default "fs" | quote }}
+      {{- with $sieve.sieve_scripts_dict }}
+      sieve_scripts_dict: {{ . | quote }}
       {{- end }}
-      max_script_size: {{ $sieve.max_script_size | default 65536 }}
-      max_redirects: {{ $sieve.max_redirects | default 32 }}
-      max_actions: {{ $sieve.max_actions | default 32 }}
-      vacation_enabled: {{ $sieve.vacation_enabled | default true }}
+      sieve_max_script_size: {{ $sieve.sieve_max_script_size | default 65536 }}
+      sieve_max_redirects: {{ $sieve.sieve_max_redirects | default 32 }}
+      sieve_max_actions: {{ $sieve.sieve_max_actions | default 32 }}
+      sieve_vacation_enabled: {{ $sieve.sieve_vacation_enabled | default true }}
       sieve_spamtest_status_header: {{ $sieve.sieve_spamtest_status_header | default "" | quote }}
       sieve_spamtest_max_value: {{ $sieve.sieve_spamtest_max_value | default 10 }}
       sieve_virustest_status_header: {{ $sieve.sieve_virustest_status_header | default "" | quote }}
       sieve_virustest_max_value: {{ $sieve.sieve_virustest_max_value | default 5 }}
-      submission_host: {{ $sub.host | default "" | quote }}
-      submission_ssl: {{ $sub.ssl | default "no" | quote }}
-      submission_timeout: {{ $sub.timeout | default 30 }}
-      submission_auth_secret: {{ $sub.auth_secret | default "" | quote }}
+      sieve_submission_host: {{ $sieve.sieve_submission_host | default "" | quote }}
+      sieve_submission_ssl: {{ $sieve.sieve_submission_ssl | default "no" | quote }}
+      sieve_submission_timeout: {{ $sieve.sieve_submission_timeout | default 30 }}
+      sieve_submission_auth_secret: {{ $sieve.sieve_submission_auth_secret | default "" | quote }}
       {{- with $sieve.sieve_extensions }}
       sieve_extensions:
         {{- toYaml . | nindent 8 }}

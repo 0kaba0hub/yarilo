@@ -14,41 +14,45 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 | Key | Type | Default | Description |
 |:----|:-----|:--------|:------------|
-| `enabled` | bool | `false` | Activate Sieve execution on LMTP delivery |
-| `max_script_size` | int | `65536` | Maximum compiled script size in bytes |
-| `max_redirects` | int | `32` | Maximum `redirect` actions per message (RFC 5228 §6.2) |
-| `max_actions` | int | `32` | Maximum total actions per script (`fileinto`/`redirect`/`keep`/...). `0` = unlimited. Guards runaway scripts (`sieve_max_actions`) |
-| `vacation_enabled` | bool | `true` | Permit the `vacation` extension (RFC 5230) |
+| `sieve_enabled` | bool | `false` | Activate Sieve execution on LMTP delivery |
+| `sieve_max_script_size` | int | `65536` | Maximum compiled script size in bytes |
+| `sieve_max_redirects` | int | `32` | Maximum `redirect` actions per message (RFC 5228 §6.2) |
+| `sieve_max_actions` | int | `32` | Maximum total actions per script (`fileinto`/`redirect`/`keep`/...). `0` = unlimited. Guards runaway scripts |
+| `sieve_vacation_enabled` | bool | `true` | Permit the `vacation` extension (RFC 5230) |
 | `sieve_spamtest_status_header` | string | `""` | Header carrying the spam score for `spamtest` (RFC 5235), e.g. `X-Spam-Score`. Empty = test reports "not scanned" |
 | `sieve_spamtest_max_value` | float | `10` | Raw header value mapped to the top of the 0..10 (0..100 with `:percent`) scale |
 | `sieve_virustest_status_header` | string | `""` | Header carrying the virus verdict for `virustest` (RFC 5235). Empty = "not scanned" |
 | `sieve_virustest_max_value` | float | `5` | Raw header value mapped to the top of the 0..5 virus scale |
-| `submission_host` | string | `""` | Upstream MTA for outbound mail (`host[:port]`, default port 25). Empty = redirect and vacation are silently dropped |
-| `submission_ssl` | string | `"no"` | Transport security: `no` \| `smtps` \| `starttls` |
-| `submission_timeout` | int | `30` | Connect and command timeout in seconds |
-| `submission_auth_secret` | string | `""` | Name of a Kubernetes Secret containing `user` and `password` keys for SMTP AUTH. Leave empty for unauthenticated relay |
+| `sieve_submission_host` | string | `""` | Upstream MTA for outbound mail (`host[:port]`, default port 25). Empty = redirect and vacation are silently dropped |
+| `sieve_submission_ssl` | string | `"no"` | Transport security: `no` \| `smtps` \| `starttls` |
+| `sieve_submission_timeout` | int | `30` | Connect and command timeout in seconds |
+| `sieve_submission_auth_secret` | string | `""` | Name of a Kubernetes Secret containing `user` and `password` keys for SMTP AUTH. Leave empty for unauthenticated relay |
+
+All keys keep the `sieve_` prefix even under the `sieve:` section, matching the config koanf tags.
 
 ### Helm `values.yaml` — top-level `sieve:` section
 
+The `values.yaml` keys are identical to the `yarilo.yaml` keys above (same `sieve_` prefix):
+
 | Key | Default | Description |
 |:----|:--------|:------------|
-| `sieve.enabled` | `false` | Enable Sieve |
-| `sieve.max_script_size` | `65536` | Max script size (bytes) |
-| `sieve.max_redirects` | `32` | Max redirect actions per message |
-| `sieve.max_actions` | `32` | Max total actions per script (`0` = unlimited) |
-| `sieve.vacation_enabled` | `true` | Enable vacation extension |
+| `sieve.sieve_enabled` | `false` | Enable Sieve |
+| `sieve.sieve_max_script_size` | `65536` | Max script size (bytes) |
+| `sieve.sieve_max_redirects` | `32` | Max redirect actions per message |
+| `sieve.sieve_max_actions` | `32` | Max total actions per script (`0` = unlimited) |
+| `sieve.sieve_vacation_enabled` | `true` | Enable vacation extension |
 | `sieve.sieve_spamtest_status_header` | `""` | Spam-score header for `spamtest` (empty = unbacked) |
 | `sieve.sieve_spamtest_max_value` | `10` | Top of the spam-score scale |
 | `sieve.sieve_virustest_status_header` | `""` | Virus-verdict header for `virustest` (empty = unbacked) |
 | `sieve.sieve_virustest_max_value` | `5` | Top of the virus-score scale |
-| `sieve.submission.host` | `""` | Upstream MTA address (`host[:port]`) |
-| `sieve.submission.ssl` | `"no"` | TLS mode: `no` / `smtps` / `starttls` |
-| `sieve.submission.timeout` | `30` | Timeout in seconds |
-| `sieve.submission.auth_secret` | `""` | Name of a Kubernetes Secret with `user` and `password` keys for SMTP AUTH. Leave empty for unauthenticated relay |
+| `sieve.sieve_submission_host` | `""` | Upstream MTA address (`host[:port]`) |
+| `sieve.sieve_submission_ssl` | `"no"` | TLS mode: `no` / `smtps` / `starttls` |
+| `sieve.sieve_submission_timeout` | `30` | Timeout in seconds |
+| `sieve.sieve_submission_auth_secret` | `""` | Name of a Kubernetes Secret with `user` and `password` keys for SMTP AUTH. Leave empty for unauthenticated relay |
 
 ## Outbound mail — redirect and vacation
 
-When `submission_host` is configured, yarilo dispatches outbound mail for:
+When `sieve_submission_host` is configured, yarilo dispatches outbound mail for:
 
 - **`redirect`** — forwards the original message verbatim to the redirect address, preserving the original envelope-from (RFC 5228 §4.2).
 - **`vacation`** — sends an RFC 5230 auto-reply to the original sender with a null envelope-from (`<>`) to prevent mail loops.
@@ -64,7 +68,7 @@ Vacation replies are skipped when:
 
 ### Notifications (RFC 5435 `enotify`)
 
-The `notify` extension (RFC 5435) allows scripts to send notifications via an external method URI. Yarilo supports the `mailto:` method — the notification is sent as an email via the same `submission_host` as redirect and vacation.
+The `notify` extension (RFC 5435) allows scripts to send notifications via an external method URI. Yarilo supports the `mailto:` method — the notification is sent as an email via the same `sieve_submission_host` as redirect and vacation.
 
 ```sieve
 require ["notify"];
@@ -99,10 +103,10 @@ Reference it in `values.yaml`:
 
 ```yaml
 sieve:
-  enabled: true
-  submissionHost: "relay.example.com:587"
-  submissionSSL: "starttls"
-  submissionAuthSecret: "sieve-smtp-auth"
+  sieve_enabled: true
+  sieve_submission_host: "relay.example.com:587"
+  sieve_submission_ssl: "starttls"
+  sieve_submission_auth_secret: "sieve-smtp-auth"
 ```
 
 ## Yarilo-specific extensions

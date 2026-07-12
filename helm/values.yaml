@@ -942,44 +942,45 @@ protocol:
 ## -------------------------------------------------------------------
 ## Sieve mail filtering
 ## -------------------------------------------------------------------
+## Every key in this section carries the sieve_ prefix (matching the config
+## koanf tags and Dovecot's verbatim setting names), even under `sieve:`.
 sieve:
-  enabled: false
-  ## scriptsDriver selects the script storage backend: "fs" (default, files in user
-  ## home directory) or "redis" (dict backend, requires scriptsDictName to reference
-  ## an entry in dicts:). Use "redis" for multi-pod deployments without shared NFS.
-  scripts_driver: "fs"
-  ## scripts_dict_name is the key in dicts: that points to the dict instance used when
-  ## scripts_driver is "redis". Ignored for "fs".
-  scripts_dict_name: ""
-  ## default_name is the reserved script name used as the active-pointer entry point.
-  ## Corresponds to the sieve_default_name setting. Default: "yarilo".
-  default_name: "yarilo"
-  max_script_size: 65536
-  max_redirects: 32
-  ## max_actions caps the total actions a single script may apply (fileinto,
+  sieve_enabled: false
+  ## sieve_scripts_driver selects the script storage backend: "fs" (default, files
+  ## in user home) or "redis" (dict backend, requires sieve_scripts_dict to
+  ## reference an entry in dicts:). Use "redis" for multi-pod without shared NFS.
+  sieve_scripts_driver: "fs"
+  ## sieve_scripts_dict is the key in dicts: pointing to the dict instance used
+  ## when sieve_scripts_driver is "redis". Ignored for "fs".
+  sieve_scripts_dict: ""
+  ## sieve_default_name is the reserved script name used as the active-pointer
+  ## entry point. Default: "yarilo".
+  sieve_default_name: "yarilo"
+  sieve_max_script_size: 65536
+  sieve_max_redirects: 32
+  ## sieve_max_actions caps the total actions a single script may apply (fileinto,
   ## redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
-  ## Corresponds to the sieve_max_actions.
-  max_actions: 32
-  vacation_enabled: true
+  sieve_max_actions: 32
+  sieve_vacation_enabled: true
   ## spamtest / virustest (RFC 5235) status-header sources. Leave the header
   ## empty to keep the test unbacked (reports "not scanned"). The raw header
   ## value is normalised against the max_value onto the 0..10 (spam) / 0..5
-  ## (virus) scale. Corresponds to the sieve_{spam,virus}test_*.
+  ## (virus) scale.
   sieve_spamtest_status_header: ""
   sieve_spamtest_max_value: 10
   sieve_virustest_status_header: ""
   sieve_virustest_max_value: 5
-  submission:
-    host: ""
-    ssl: "no"
-    timeout: 30
-    auth_secret: ""
-  ## globalBefore / globalAfter: ordered lists of absolute paths to .sieve files
-  ## executed before / after each user's active script. Admin-defined rules.
+  ## Outbound MTA for redirect / vacation actions.
+  sieve_submission_host: ""
+  sieve_submission_ssl: "no"
+  sieve_submission_timeout: 30
+  sieve_submission_auth_secret: ""
+  ## sieve_global_before / sieve_global_after: ordered lists of absolute paths to
+  ## .sieve files executed before / after each user's active script. Admin-defined.
   ## Files must be present on the pod filesystem (e.g. via ConfigMap volume mount).
-  globalBefore: []
-  globalAfter: []
-  ## sieveExtensions is the whitelist of Sieve extensions users may declare with
+  sieve_global_before: []
+  sieve_global_after: []
+  ## sieve_extensions is the whitelist of Sieve extensions users may declare with
   ## require. Corresponds to the sieve_extensions. Empty list = allow all
   ## (backwards-compatible). Operators who need enotify/include/extlists must add
   ## them explicitly.

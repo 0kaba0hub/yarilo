@@ -69,17 +69,17 @@ protocol:
     max_script_size: 65536
 
 sieve:
-  enabled: true
-  default_name: "yarilo"
-  max_script_size: 65536
-  max_redirects: 32
-  vacation_enabled: true
-  submission:
-    host: "relay-fwd.yarilo-relay.svc.cluster.local:25"
-    ssl: "no"
-    auth_secret: "sieve-smtp-auth"
-  global_before: []
-  global_after: []
+  sieve_enabled: true
+  sieve_default_name: "yarilo"
+  sieve_max_script_size: 65536
+  sieve_max_redirects: 32
+  sieve_max_actions: 32
+  sieve_vacation_enabled: true
+  sieve_submission_host: "relay-fwd.yarilo-relay.svc.cluster.local:25"
+  sieve_submission_ssl: "no"
+  sieve_submission_auth_secret: "sieve-smtp-auth"
+  sieve_global_before: []
+  sieve_global_after: []
   sieve_extensions:
     - fileinto
     - reject
