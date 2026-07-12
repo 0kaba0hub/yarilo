@@ -51,17 +51,22 @@ func (ss *FsScriptStore) namedPath(homeDir, name string) string {
 	return filepath.Join(homeDir, "."+name+sieveExt)
 }
 
+// withLock serialises this user's script-file operations (named scripts + the
+// active-script pointer are interrelated, so they share one per-home key) —
+// scoped to scripts only, independent of vacation / duplicate.
 func (ss *FsScriptStore) withLock(ctx context.Context, homeDir string, fn func(context.Context) error) error {
-	return withSieveLock(ctx, ss.Locker, homeDir, fn)
+	return withSieveLock(ctx, ss.Locker, "sieve-scripts:"+homeDir, fn)
 }
 
-// withSieveLock acquires a per-homeDir Sieve write lock and runs fn.
-// When l is nil (tests, single-process) fn runs without locking.
-func withSieveLock(ctx context.Context, l locks.Locker, homeDir string, fn func(context.Context) error) error {
+// withSieveLock runs fn while holding the yarilo-locks lock named `resource`.
+// When l is nil (tests, single-process) fn runs without locking. Each Sieve
+// file family passes its own resource key so unrelated writes do not block one
+// another.
+func withSieveLock(ctx context.Context, l locks.Locker, resource string, fn func(context.Context) error) error {
 	if l == nil {
 		return fn(ctx)
 	}
-	return locks.WithLock(ctx, l, "sieve:"+homeDir, lockOwner(), sieveLockTTL, sieveLockRenew, fn)
+	return locks.WithLock(ctx, l, resource, lockOwner(), sieveLockTTL, sieveLockRenew, fn)
 }
 
 func (ss *FsScriptStore) ActiveScriptName(_ context.Context, _, homeDir string) (string, error) {

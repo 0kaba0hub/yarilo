@@ -51,10 +51,7 @@ func (t *FileDuplicateTracker) path() string {
 // does not serialise against unrelated writes in the same home. Nil locker
 // (unit tests) runs fn directly.
 func (t *FileDuplicateTracker) withLock(ctx context.Context, fn func(context.Context) error) error {
-	if t.locker == nil {
-		return fn(ctx)
-	}
-	return locks.WithLock(ctx, t.locker, "sieve-duplicate:"+t.path(), lockOwner(), sieveLockTTL, sieveLockRenew, fn)
+	return withSieveLock(ctx, t.locker, "sieve-duplicate:"+t.path(), fn)
 }
 
 // duplicateID is the record key: the handle plus a hash of the tracking id, so
