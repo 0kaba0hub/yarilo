@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	goSmtp "github.com/0kaba0hub/go-smtp"
+	goSmtp "github.com/emersion/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
