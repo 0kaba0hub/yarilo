@@ -15,6 +15,7 @@ var SupportedExtensions = []string{
 	"imap4flags", "fcc", "include", "enotify",
 	"spamtest", "spamtestplus", "virustest",
 	"foreverypart", "mime", "extracttext", "replace", "enclose",
+	"mboxmetadata", "servermetadata",
 	"vnd.yarilo.debug",
 	"vnd.yarilo.environment",
 	"vnd.yarilo.pipe",

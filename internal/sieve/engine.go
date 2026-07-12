@@ -96,6 +96,13 @@ type FilterOptions struct {
 	// carrying it. Called by fileinto :mailboxid and mailboxidexists (RFC 9042).
 	// Returns ("", false) when no folder has that id.
 	MailboxByID func(ctx context.Context, id string) (string, bool)
+	// MailboxMetadata reads an IMAP METADATA annotation (RFC 5464) on a mailbox,
+	// backing the mboxmetadata Sieve tests (RFC 5490 §4). The annotation is the
+	// wire-format entry name (/private/… or /shared/…). ("", false, nil) = absent.
+	MailboxMetadata func(ctx context.Context, mailbox, annotation string) (string, bool, error)
+	// ServerMetadata reads a server-level METADATA annotation, backing the
+	// servermetadata Sieve tests. ("", false, nil) = absent.
+	ServerMetadata func(ctx context.Context, annotation string) (string, bool, error)
 }
 
 // Filter executes global-before scripts, then the user's active Sieve script,
@@ -105,14 +112,16 @@ type FilterOptions struct {
 func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult, error) {
 	hdr := parseHeaders(opts.MsgRaw)
 	pol := &policy{
-		maxRedirects: e.cfg.MaxRedirects,
-		folderExists: opts.FolderExists,
-		mailboxByID:  opts.MailboxByID,
-		hdr:          hdr,
-		spamHeader:   e.cfg.SpamStatusHeader,
-		spamMax:      e.cfg.SpamMaxValue,
-		virusHeader:  e.cfg.VirusStatusHeader,
-		virusMax:     e.cfg.VirusMaxValue,
+		maxRedirects:    e.cfg.MaxRedirects,
+		folderExists:    opts.FolderExists,
+		mailboxByID:     opts.MailboxByID,
+		mailboxMetadata: opts.MailboxMetadata,
+		serverMetadata:  opts.ServerMetadata,
+		hdr:             hdr,
+		spamHeader:      e.cfg.SpamStatusHeader,
+		spamMax:         e.cfg.SpamMaxValue,
+		virusHeader:     e.cfg.VirusStatusHeader,
+		virusMax:        e.cfg.VirusMaxValue,
 	}
 
 	var merged FilterResult
@@ -292,9 +301,11 @@ func parseHeaders(raw []byte) textproto.MIMEHeader {
 var _ interp.SpamVirusChecker = (*policy)(nil)
 
 type policy struct {
-	maxRedirects int
-	folderExists func(ctx context.Context, folder string) (bool, error)
-	mailboxByID  func(ctx context.Context, id string) (string, bool)
+	maxRedirects    int
+	folderExists    func(ctx context.Context, folder string) (bool, error)
+	mailboxByID     func(ctx context.Context, id string) (string, bool)
+	mailboxMetadata func(ctx context.Context, mailbox, annotation string) (string, bool, error)
+	serverMetadata  func(ctx context.Context, annotation string) (string, bool, error)
 
 	// Spam/virus test backing (RFC 5235). When the configured header is empty
 	// or absent from the message, the test reports "not scanned" (tested=false).
@@ -398,6 +409,24 @@ func (p *policy) MailboxByID(ctx context.Context, id string) (string, bool) {
 		return "", false
 	}
 	return p.mailboxByID(ctx, id)
+}
+
+// GetMailboxMetadata implements interp.MetadataChecker (RFC 5490 §4): it reads a
+// mailbox-scoped IMAP METADATA annotation, backing the mboxmetadata tests.
+func (p *policy) GetMailboxMetadata(ctx context.Context, mailbox, annotation string) (string, bool, error) {
+	if p.mailboxMetadata == nil {
+		return "", false, nil
+	}
+	return p.mailboxMetadata(ctx, mailbox, annotation)
+}
+
+// GetServerMetadata implements interp.MetadataChecker (RFC 5490 §4): it reads a
+// server-scoped IMAP METADATA annotation, backing the servermetadata tests.
+func (p *policy) GetServerMetadata(ctx context.Context, annotation string) (string, bool, error) {
+	if p.serverMetadata == nil {
+		return "", false, nil
+	}
+	return p.serverMetadata(ctx, annotation)
 }
 
 func buildResult(d *interp.RuntimeData) *FilterResult {

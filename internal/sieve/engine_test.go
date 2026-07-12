@@ -185,6 +185,85 @@ func TestFilterMailboxID(t *testing.T) {
 	}
 }
 
+func TestFilterMetadata(t *testing.T) {
+	// annotation store: "/private/vip" on Archive = "yes"; server "/shared/policy" = "strict".
+	mailboxMeta := func(_ context.Context, mbox, annotation string) (string, bool, error) {
+		if mbox == "Archive" && annotation == "/private/vip" {
+			return "yes", true, nil
+		}
+		return "", false, nil
+	}
+	serverMeta := func(_ context.Context, annotation string) (string, bool, error) {
+		if annotation == "/shared/policy" {
+			return "strict", true, nil
+		}
+		return "", false, nil
+	}
+
+	tests := []struct {
+		name       string
+		script     string
+		wantFolder string
+	}{
+		{
+			name:       "metadata value match",
+			script:     `require ["mboxmetadata","fileinto"];` + "\n" + `if metadata "Archive" "/private/vip" "yes" { fileinto "Hit"; } else { fileinto "Miss"; }`,
+			wantFolder: "Hit",
+		},
+		{
+			name:       "metadataexists true",
+			script:     `require ["mboxmetadata","fileinto"];` + "\n" + `if metadataexists "Archive" "/private/vip" { fileinto "Hit"; } else { fileinto "Miss"; }`,
+			wantFolder: "Hit",
+		},
+		{
+			name:       "metadataexists false",
+			script:     `require ["mboxmetadata","fileinto"];` + "\n" + `if metadataexists "Archive" "/private/absent" { fileinto "Hit"; } else { fileinto "Miss"; }`,
+			wantFolder: "Miss",
+		},
+		{
+			name:       "servermetadata value match",
+			script:     `require ["servermetadata","fileinto"];` + "\n" + `if servermetadata "/shared/policy" "strict" { fileinto "Hit"; } else { fileinto "Miss"; }`,
+			wantFolder: "Hit",
+		},
+		{
+			name:       "servermetadataexists false",
+			script:     `require ["servermetadata","fileinto"];` + "\n" + `if servermetadataexists "/shared/none" { fileinto "Hit"; } else { fileinto "Miss"; }`,
+			wantFolder: "Miss",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEngine(t)
+			store := newTestStore()
+			homeDir := t.TempDir()
+			ctx := context.Background()
+
+			if err := store.SaveScript(ctx, "u1", homeDir, "test", []byte(tc.script)); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetActive(ctx, "u1", homeDir, "test"); err != nil {
+				t.Fatal(err)
+			}
+
+			opts := baseOpts("u1", homeDir)
+			opts.MailboxMetadata = mailboxMeta
+			opts.ServerMetadata = serverMeta
+
+			result, err := e.Filter(ctx, opts)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if len(result.Deliveries) != 1 || result.Deliveries[0].Folder != tc.wantFolder {
+				t.Fatalf("expected %q delivery, got %+v", tc.wantFolder, result.Deliveries)
+			}
+		})
+	}
+}
+
 func TestFilterReject(t *testing.T) {
 	e := newTestEngine(t)
 	store := newTestStore()

@@ -65,6 +65,11 @@ type Options struct {
 	// cannot return a pre-flight 452 without this).
 	QuotaDict dict.Dict
 
+	// MetadataDict backs the mboxmetadata / servermetadata Sieve tests
+	// (RFC 5490 §4): the same dict IMAP uses for RFC 5464 METADATA. Nil
+	// disables those tests (they report the annotation as absent).
+	MetadataDict dict.Dict
+
 	// AuthAddr is the yarilo-auth client-protocol address used by the
 	// PreambleListener to verify session tokens forwarded by lmtp-login.
 	// When empty, preamble verification is skipped (plain TCP; use only
@@ -393,6 +398,56 @@ func (s *session) folderByMailboxID(rcptBox mailbox.UserMailbox, rcptIdx mailbox
 	return "", false
 }
 
+// mailboxMetadata reads a mailbox-scoped IMAP METADATA annotation (RFC 5464) on
+// mbox for the recipient, backing the mboxmetadata Sieve tests (RFC 5490 §4). It
+// reads the same personal-namespace dict keys the IMAP server writes. Returns
+// ("", false, nil) when the dict is unconfigured, the entry name is malformed,
+// the folder is unknown, or the annotation is absent.
+func (s *session) mailboxMetadata(ctx context.Context, userInfo *mailbox.UserInfo, idx mailbox.UserIndex, mbox, annotation string) (string, bool, error) {
+	if s.opts.MetadataDict == nil {
+		return "", false, nil
+	}
+	scope, attrName, err := mailbox.ParseAttrEntry(annotation)
+	if err != nil {
+		return "", false, nil
+	}
+	f, err := idx.OpenFolder(mbox, 0)
+	if err != nil {
+		return "", false, nil
+	}
+	return s.lookupMetadata(ctx, userInfo, mailbox.AttrKey(scope, f.GUID, attrName))
+}
+
+// serverMetadata reads a server-scoped IMAP METADATA annotation, backing the
+// servermetadata Sieve tests. Server-scope entries live under INBOX's GUID with
+// the vendor prefix, matching the IMAP server's key derivation.
+func (s *session) serverMetadata(ctx context.Context, userInfo *mailbox.UserInfo, idx mailbox.UserIndex, annotation string) (string, bool, error) {
+	if s.opts.MetadataDict == nil {
+		return "", false, nil
+	}
+	scope, attrName, err := mailbox.ParseAttrEntry(annotation)
+	if err != nil {
+		return "", false, nil
+	}
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		return "", false, nil
+	}
+	return s.lookupMetadata(ctx, userInfo, mailbox.ServerAttrKey(scope, f.GUID, attrName))
+}
+
+func (s *session) lookupMetadata(ctx context.Context, userInfo *mailbox.UserInfo, key string) (string, bool, error) {
+	ops := &dict.OpSettings{Username: userInfo.Username, HomeDir: userInfo.Home}
+	vals, found, err := s.opts.MetadataDict.Lookup(ctx, ops, key)
+	if err != nil {
+		return "", false, fmt.Errorf("lmtp/metadata lookup: %w", err)
+	}
+	if !found || len(vals) == 0 {
+		return "", false, nil
+	}
+	return string(vals[0]), true, nil
+}
+
 func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.UserMailbox, rcptIdx mailbox.UserIndex, folder string, enforcePost bool) (mailbox.UserMailbox, mailbox.UserIndex, string, func()) {
 	noop := func() {}
 	ns := s.matchNamespace(folder)
@@ -566,6 +621,12 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				},
 				MailboxByID: func(_ context.Context, id string) (string, bool) {
 					return s.folderByMailboxID(rcptBox, rcptIdx, id)
+				},
+				MailboxMetadata: func(ctx context.Context, mbox, annotation string) (string, bool, error) {
+					return s.mailboxMetadata(ctx, userInfo, rcptIdx, mbox, annotation)
+				},
+				ServerMetadata: func(ctx context.Context, annotation string) (string, bool, error) {
+					return s.serverMetadata(ctx, userInfo, rcptIdx, annotation)
 				},
 			}
 			result, ferr := s.opts.SieveEngine.Filter(context.Background(), fopts)

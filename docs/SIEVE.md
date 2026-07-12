@@ -4,7 +4,7 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 ## Supported extensions
 
-`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `mailboxid`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
+`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `mailboxid`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `mboxmetadata`, `servermetadata`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
 
 `foreverypart` / `mime` / `extracttext` (RFC 5703) provide per-MIME-part
 processing: `foreverypart { … }` walks the parts depth-first (with `break
@@ -25,7 +25,9 @@ to the folder carrying `<id>` if it still exists, otherwise to the positional
 is true only when every listed id resolves to an accessible folder. Ids survive
 RENAME, so a script keeps targeting the right folder after the user renames it.
 
-`spamtest` / `spamtestplus` / `virustest` (RFC 5235) are backed by a configured status header (see `sieve_spamtest_status_header` / `sieve_virustest_status_header` below); with no header configured the tests report "not scanned". `extlists`, `mboxmetadata`, and `servermetadata` are **not** advertised yet — their backing data sources are not wired.
+`spamtest` / `spamtestplus` / `virustest` (RFC 5235) are backed by a configured status header (see `sieve_spamtest_status_header` / `sieve_virustest_status_header` below); with no header configured the tests report "not scanned".
+
+`mboxmetadata` / `servermetadata` (RFC 5490 §4) expose IMAP METADATA (RFC 5464) annotations to scripts: `metadata "<mailbox>" "<entry>" "<value>"` / `metadataexists "<mailbox>" "<entry>"...` read per-mailbox annotations, and `servermetadata "<entry>" "<value>"` / `servermetadataexists "<entry>"...` read server-scoped ones. Entry names are the wire-format `/private/…` or `/shared/…` paths; values come from the same dict the IMAP `GETMETADATA`/`SETMETADATA` commands use, so a script sees exactly what a client set. Delivery-time lookups are scoped to the recipient's personal namespace. `extlists` is **not** advertised yet — its backing data source is not wired.
 
 ## Configuration
 
