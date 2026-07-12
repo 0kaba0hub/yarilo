@@ -227,6 +227,7 @@ func New(opts Options) *Server {
 		imaplib.CapListStatus:       {},
 		imaplib.CapSpecialUse:       {},
 		imaplib.CapCreateSpecialUse: {},
+		imaplib.CapObjectID:         {}, // RFC 8474 — MAILBOXID / EMAILID / THREADID
 		imaplib.CapBinary:           {},
 		imaplib.CapQResync:          {},
 	}
@@ -1008,6 +1009,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 		UIDValidity:    f.UIDValidity,
 		UIDNext:        imaplib.UID(f.NextUID),
 		HighestModSeq:  f.HighestModSeq,
+		MailboxID:      mailbox.FormatObjectID(f.GUID), // RFC 8474 OBJECTID
 	}
 	// QRESYNC SELECT (RFC 7162 §3.2): when the client supplies (UIDVALIDITY
 	// <v> <last-known-modseq> [<known-uids>]) and the UIDVALIDITY matches,
@@ -1517,6 +1519,9 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if opts.NumRecent {
 		var n uint32 // RECENT tracking not implemented; RFC 9051 permits 0
 		d.NumRecent = &n
+	}
+	if opts.MailboxID {
+		d.MailboxID = mailbox.FormatObjectID(f.GUID) // RFC 8474 OBJECTID
 	}
 	return d, nil
 }
@@ -2241,6 +2246,12 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		}
 		if opts.ModSeq && m.ModSeq > 0 {
 			mw.WriteModSeq(m.ModSeq)
+		}
+		if opts.EmailID {
+			mw.WriteEmailID(mailbox.FormatObjectID(m.GUID)) // RFC 8474 OBJECTID
+		}
+		if opts.ThreadID {
+			mw.WriteThreadID("") // no threading -> NIL
 		}
 		if opts.Envelope && m.Filename != "" {
 			if rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier); ferr == nil {
