@@ -28,7 +28,8 @@ type Engine struct {
 	store        ScriptStore
 	sender       *Sender
 	dupTrackers  sync.Map
-	dupDict      dict.Dict // when non-nil, duplicate dedup is dict-backed (cross-pod with redis)
+	dupDict      dict.Dict    // when non-nil, duplicate dedup is dict-backed (cross-pod with redis)
+	locker       locks.Locker // coordinates the file-backed duplicate dedup
 	globalBefore []*gosieve.Script
 	globalAfter  []*gosieve.Script
 }
@@ -47,6 +48,7 @@ func New(cfg config.SieveConfig, locker locks.Locker, d dict.Dict, dupDict dict.
 		store:   NewScriptStore(cfg.ScriptsDriver, cfg.DefaultName, locker, d),
 		sender:  s,
 		dupDict: dupDict,
+		locker:  locker,
 	}
 	e.globalBefore = loadGlobalScripts(cfg.GlobalBefore)
 	e.globalAfter = loadGlobalScripts(cfg.GlobalAfter)
@@ -181,7 +183,7 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 	}
 
 	rd := gosieve.NewRuntimeData(script, pol, env, msg)
-	rd.DuplicateTracker = e.dupTracker(opts.Username)
+	rd.DuplicateTracker = e.dupTracker(opts.Username, opts.HomeDir)
 	rd.Env = &yariloEnv{username: opts.Username, configItems: e.cfg.Environments}
 	rd.PipeExecutor = &pipeExecutor{
 		binDir:    e.cfg.PipeBinDir,
@@ -453,12 +455,24 @@ func removeImplicitKeep(deliveries []Delivery) []Delivery {
 	return out
 }
 
-// dupTracker returns the duplicate-test backend for a user. With a dict
-// configured (redis = cross-pod), it is dict-backed; otherwise it falls back to
-// a per-process in-memory tracker cached per username.
-func (e *Engine) dupTracker(username string) interp.DuplicateTracker {
-	if e.dupDict != nil {
-		return NewDictDuplicateTracker(e.dupDict, username)
+// dupTracker returns the duplicate-test backend for a user, selected by
+// sieve_duplicate_driver: "file" (home-dir file, cross-pod on shared storage),
+// "memory" (per-process), or "redis" (the sieve_duplicate dict). A "file"
+// driver with no home directory (unit tests) falls back to memory, as does a
+// "redis" driver with no configured dict.
+func (e *Engine) dupTracker(username, homeDir string) interp.DuplicateTracker {
+	switch e.cfg.DuplicateDriver {
+	case "redis":
+		if e.dupDict != nil {
+			return NewDictDuplicateTracker(e.dupDict, username)
+		}
+		slog.Warn("sieve: sieve_duplicate_driver=redis but no sieve_duplicate dict; using in-memory dedup", "user", username)
+	case "memory":
+		// handled by the shared fallback below
+	default: // "file" (and empty)
+		if homeDir != "" {
+			return NewFileDuplicateTracker(homeDir, e.cfg.DuplicateFile, e.locker)
+		}
 	}
 	fresh := interp.NewMemoryDuplicateTracker()
 	v, _ := e.dupTrackers.LoadOrStore(username, fresh)
