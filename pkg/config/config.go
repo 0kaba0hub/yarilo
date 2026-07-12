@@ -47,40 +47,44 @@ type Config struct {
 // SieveConfig controls per-user Sieve email filtering (RFC 5228) in the LMTP delivery path.
 type SieveConfig struct {
 	// Enabled activates Sieve script execution during LMTP delivery.
-	Enabled bool `koanf:"enabled"`
+	Enabled bool `koanf:"sieve_enabled"`
 	// MaxScriptSize is the maximum compiled script size in bytes. Default: 65536.
-	MaxScriptSize int `koanf:"max_script_size"`
+	MaxScriptSize int `koanf:"sieve_max_script_size"`
 	// MaxRedirects is the maximum number of redirect actions per message. Default: 32.
-	MaxRedirects int `koanf:"max_redirects"`
+	MaxRedirects int `koanf:"sieve_max_redirects"`
+	// MaxActions caps the total number of actions a single script may apply
+	// (fileinto, redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
+	// Corresponds to sieve_max_actions. Default: 32.
+	MaxActions int `koanf:"sieve_max_actions"`
 	// VacationEnabled permits the vacation extension (RFC 5230). Default: true.
-	VacationEnabled bool `koanf:"vacation_enabled"`
+	VacationEnabled bool `koanf:"sieve_vacation_enabled"`
 
 	// SubmissionHost is the upstream MTA address (host[:port]) used to send
 	// outbound mail for Sieve redirect and vacation actions. Default port 25.
 	// Empty string disables outbound sending (redirect/vacation are silently dropped).
-	SubmissionHost string `koanf:"submission_host"`
+	SubmissionHost string `koanf:"sieve_submission_host"`
 	// SubmissionSSL controls transport security: no | smtps | starttls. Default: no.
-	SubmissionSSL string `koanf:"submission_ssl"`
+	SubmissionSSL string `koanf:"sieve_submission_ssl"`
 	// SubmissionTimeout is the connect and command timeout in seconds. Default: 30.
-	SubmissionTimeout int `koanf:"submission_timeout"`
+	SubmissionTimeout int `koanf:"sieve_submission_timeout"`
 	// SubmissionAuthSecret is the name of the Kubernetes Secret that holds
 	// SMTP AUTH credentials (keys: user, password). Empty = no authentication.
 	// The Helm chart mounts the secret as YARILO_SIEVE_SUBMISSION_USER /
 	// YARILO_SIEVE_SUBMISSION_PASSWORD env vars based on this name.
-	SubmissionAuthSecret string `koanf:"submission_auth_secret"`
+	SubmissionAuthSecret string `koanf:"sieve_submission_auth_secret"`
 
 	// DefaultName is the reserved name of the per-user default Sieve script
 	// (the active-pointer entry point). Corresponds to sieve_default_name.
 	// Default: "yarilo".
-	DefaultName string `koanf:"default_name"`
+	DefaultName string `koanf:"sieve_default_name"`
 
 	// GlobalBefore is an ordered list of paths to .sieve script files executed
 	// before the user's active script. Admin-defined rules; applied to every
 	// message regardless of per-user settings.
-	GlobalBefore []string `koanf:"global_before"`
+	GlobalBefore []string `koanf:"sieve_global_before"`
 	// GlobalAfter is an ordered list of paths to .sieve script files executed
 	// after the user's active script.
-	GlobalAfter []string `koanf:"global_after"`
+	GlobalAfter []string `koanf:"sieve_global_after"`
 
 	// SieveExtensions is the whitelist of Sieve extensions users may declare
 	// with require. Corresponds to sieve_extensions.
@@ -91,10 +95,10 @@ type SieveConfig struct {
 	// ScriptsDriver selects the script storage backend: "fs" (default) stores
 	// scripts as files in the user's home directory; "redis" uses the dict
 	// instance named by ScriptsDictName.
-	ScriptsDriver string `koanf:"scripts_driver"`
+	ScriptsDriver string `koanf:"sieve_scripts_driver"`
 	// ScriptsDictName is the key in Config.Dicts that points to the dict
 	// instance used when ScriptsDriver is "redis". Ignored for "fs".
-	ScriptsDictName string `koanf:"scripts_dict"`
+	ScriptsDictName string `koanf:"sieve_scripts_dict"`
 
 	// Environments is an operator-defined set of key-value pairs exposed to
 	// Sieve scripts via the vnd.yarilo.environment extension as
@@ -148,6 +152,22 @@ type SieveConfig struct {
 	// ExecuteInputEOL controls the line ending written to the execute program's stdin:
 	// "crlf" (default, matches RFC 5322) or "lf".
 	ExecuteInputEOL string `koanf:"sieve_execute_input_eol"`
+
+	// SpamStatusHeader names the message header carrying the spam score for the
+	// spamtest / spamtestplus extensions (RFC 5235), e.g. "X-Spam-Score". Empty
+	// leaves spamtest unbacked (the test reports "not scanned").
+	// Corresponds to sieve_spamtest_status_header.
+	SpamStatusHeader string `koanf:"sieve_spamtest_status_header"`
+	// SpamMaxValue is the raw header value treated as the top of the scale; the
+	// score is normalised to 1..10 (or 1..100 with :percent). Default: 10.
+	SpamMaxValue float64 `koanf:"sieve_spamtest_max_value"`
+	// VirusStatusHeader names the header carrying the virus verdict for the
+	// virustest extension (RFC 5235). Empty leaves virustest unbacked.
+	// Corresponds to sieve_virustest_status_header.
+	VirusStatusHeader string `koanf:"sieve_virustest_status_header"`
+	// VirusMaxValue is the raw header value treated as the top of the 1..5
+	// virus scale. Default: 5.
+	VirusMaxValue float64 `koanf:"sieve_virustest_max_value"`
 }
 
 // DictConfig declares one named dict instance. The map key in
@@ -1240,7 +1260,10 @@ func Load(path string) (*Config, error) {
 			DefaultName:        "yarilo",
 			MaxScriptSize:      65536,
 			MaxRedirects:       32,
+			MaxActions:         32,
 			VacationEnabled:    true,
+			SpamMaxValue:       10,
+			VirusMaxValue:      5,
 			SubmissionSSL:      "no",
 			SubmissionTimeout:  30,
 			PipeBinDir:         "/usr/lib/yarilo/sieve-pipe",

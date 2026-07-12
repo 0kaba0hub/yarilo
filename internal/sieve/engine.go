@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/textproto"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,6 +96,11 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 	pol := &policy{
 		maxRedirects: e.cfg.MaxRedirects,
 		folderExists: opts.FolderExists,
+		hdr:          hdr,
+		spamHeader:   e.cfg.SpamStatusHeader,
+		spamMax:      e.cfg.SpamMaxValue,
+		virusHeader:  e.cfg.VirusStatusHeader,
+		virusMax:     e.cfg.VirusMaxValue,
 	}
 
 	var merged FilterResult
@@ -118,6 +125,7 @@ func (e *Engine) Filter(ctx context.Context, opts FilterOptions) (*FilterResult,
 		anyScriptRan = true
 		sieveOpts := gosieve.DefaultOptions()
 		sieveOpts.Interp.MaxRedirects = e.cfg.MaxRedirects
+		sieveOpts.Interp.MaxActions = e.cfg.MaxActions
 		sieveOpts.Interp.DebugLog = makeDebugLogger(opts.HomeDir)
 		script, err := gosieve.Load(bytes.NewReader(src), sieveOpts)
 		if err != nil {
@@ -264,9 +272,86 @@ func parseHeaders(raw []byte) textproto.MIMEHeader {
 	return hdr
 }
 
+// policy satisfies interp.SpamVirusChecker so the spamtest / virustest
+// extensions resolve against the configured status headers.
+var _ interp.SpamVirusChecker = (*policy)(nil)
+
 type policy struct {
 	maxRedirects int
 	folderExists func(ctx context.Context, folder string) (bool, error)
+
+	// Spam/virus test backing (RFC 5235). When the configured header is empty
+	// or absent from the message, the test reports "not scanned" (tested=false).
+	hdr         textproto.MIMEHeader
+	spamHeader  string
+	spamMax     float64
+	virusHeader string
+	virusMax    float64
+}
+
+// SpamScore implements interp.SpamVirusChecker: it reads the configured spam
+// header, normalises the raw value against spamMax onto the 0..10 scale
+// (0..100 with :percent), and returns tested=false when the header is
+// unconfigured or absent.
+func (p *policy) SpamScore(_ context.Context, percent bool) (string, bool) {
+	scale := 10.0
+	if percent {
+		scale = 100.0
+	}
+	return normalizeScore(p.hdr, p.spamHeader, p.spamMax, scale)
+}
+
+// VirusScore implements interp.SpamVirusChecker: it reads the configured virus
+// header, normalised onto the 0..5 scale.
+func (p *policy) VirusScore(_ context.Context) (string, bool) {
+	return normalizeScore(p.hdr, p.virusHeader, p.virusMax, 5.0)
+}
+
+// normalizeScore reads header from hdr, parses its leading numeric value, and
+// maps it onto [0, scale] using max as the top of the raw range. Returns
+// ("0", false) when header is unconfigured, absent, or unparsable.
+func normalizeScore(hdr textproto.MIMEHeader, header string, max, scale float64) (string, bool) {
+	if header == "" || hdr == nil {
+		return "0", false
+	}
+	raw := hdr.Get(header)
+	if raw == "" {
+		return "0", false
+	}
+	val, err := parseLeadingFloat(raw)
+	if err != nil {
+		return "0", false
+	}
+	if max <= 0 {
+		max = scale
+	}
+	ratio := val / max
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	return strconv.Itoa(int(ratio*scale + 0.5)), true
+}
+
+// parseLeadingFloat extracts the leading signed float from s (e.g. "5.3 / 10"
+// → 5.3), tolerating trailing text that spam scanners append.
+func parseLeadingFloat(s string) (float64, error) {
+	s = strings.TrimSpace(s)
+	end := 0
+	for end < len(s) {
+		c := s[end]
+		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+' {
+			end++
+			continue
+		}
+		break
+	}
+	if end == 0 {
+		return 0, fmt.Errorf("sieve: no numeric prefix in %q", s)
+	}
+	return strconv.ParseFloat(s[:end], 64)
 }
 
 func (p *policy) RedirectAllowed(_ context.Context, d *interp.RuntimeData, _ string) (bool, error) {
