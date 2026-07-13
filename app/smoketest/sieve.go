@@ -1142,16 +1142,17 @@ func testSieveMetadata(user, pass, to string) error {
 	return checkFolder(user, pass, folder)
 }
 
-// testSieveReport verifies vnd.yarilo.report (RFC 5965 ARF): ManageSieve accepts
-// a script requiring the extension, the report action runs during delivery, and
-// implicit keep still delivers the message (report is a side effect and does not
-// cancel keep). The report is submitted to an external target; its ARF structure
-// is covered by the sieve unit tests (TestBuildReportMessage), so this check stays
-// deterministic without depending on the report being routed back into a mailbox.
+// testSieveReport verifies vnd.yarilo.report (RFC 5965 ARF) end to end: the
+// script reports the delivered trigger back to the recipient, so the ARF report
+// routes through submission -> LMTP into INBOX, and we confirm its multipart/report
+// structure. The report is guarded on the trigger's subject so the delivered
+// report (subject "abuse report") does not re-trigger itself into a mail loop.
 func testSieveReport(user, pass, to string) error {
 	clearInbox(user, pass)
 	script := "require [\"vnd.yarilo.report\"];\n" +
-		"report \"abuse\" \"smoke abuse report\" \"reports@example.invalid\";\n"
+		"if header :contains \"subject\" \"report-trigger\" {\n" +
+		"  report \"abuse\" \"smoke abuse report\" \"" + to + "\";\n" +
+		"}\n"
 	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
@@ -1159,7 +1160,46 @@ func testSieveReport(user, pass, to string) error {
 	if err := lmtpSend(id, "s@test.invalid", to, "report-trigger", "body"); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
-	return checkFolder(user, pass, "INBOX") // implicit keep survives the report action
+
+	c, err := imapDial()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return err
+	}
+	// The report is submitted asynchronously and routed back via LMTP. Poll until
+	// a delivered message matches the feedback-report content type (which excludes
+	// the trigger) AND fetches as a valid multipart/report.
+	var found bool
+	for i := 0; i < 30 && !found; i++ {
+		c.conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+		if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
+			return err
+		}
+		uids, _ := c.uidSearch(`HEADER "Content-Type" "feedback-report"`)
+		for _, uid := range uids {
+			hdr, err := c.cmd(fmt.Sprintf("UID FETCH %s (BODY.PEEK[HEADER])", uid))
+			if err != nil {
+				continue
+			}
+			raw := joined(hdr)
+			if strings.Contains(raw, "multipart/report") && strings.Contains(raw, "report-type=feedback-report") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if !found {
+		return fmt.Errorf("no valid ARF report delivered back to INBOX within timeout")
+	}
+	all, _ := c.uidSearch("ALL")
+	c.deleteUIDs(all) //nolint:errcheck
+	return nil
 }
 
 // testSieveSpamtest verifies RFC 5235 spamtest against the configured
