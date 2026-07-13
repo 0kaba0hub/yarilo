@@ -17,7 +17,7 @@ require (
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.5
-	github.com/pires/go-proxyproto v0.14.0
+	github.com/pires/go-proxyproto v0.15.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.21.0
 	golang.org/x/crypto v0.53.0
