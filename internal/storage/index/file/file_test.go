@@ -504,6 +504,52 @@ func TestNextModSeqIsMonotonic(t *testing.T) {
 	}
 }
 
+// TestAppendAdvancesHighestModSeqForCrossHandleReader verifies that a delivered
+// message advances the folder's header HighestModSeq for a *separate* reader that
+// only observes the append through the .index.log. Pre-fix, flushAppend wrote no
+// TxModseqUpdate, so applyLog left the reader's header modseq stale — a delivering
+// LMTP process would leave every other selected IMAP session's HIGHESTMODSEQ
+// unchanged, so the poll-based refresh never surfaced the new UID (SEARCH saw it,
+// FETCH did not).
+func TestAppendAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
+	dir := t.TempDir()
+
+	writer := openIdx(dir, testUser)
+	wf, err := writer.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("writer open folder: %v", err)
+	}
+	ms, err := writer.NextModSeq(wf.ID)
+	if err != nil {
+		t.Fatalf("NextModSeq: %v", err)
+	}
+	uid, err := writer.AllocateUID(wf.ID)
+	if err != nil {
+		t.Fatalf("AllocateUID: %v", err)
+	}
+	if err := writer.AppendMessage(wf.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// Fresh backend/handle = another process. It reloads base + log from disk.
+	reader := openIdx(dir, testUser)
+	rf, err := reader.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("reader open folder: %v", err)
+	}
+	if rf.HighestModSeq < ms {
+		t.Errorf("cross-handle reader HighestModSeq %d < delivered modseq %d (append did not advance header via log)",
+			rf.HighestModSeq, ms)
+	}
+	msgs, err := reader.GetMessages(rf.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatalf("reader GetMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].UID != uid {
+		t.Fatalf("reader GetMessages = %+v, want single uid %d", msgs, uid)
+	}
+}
+
 // TestUpdateFlagsPersistsModSeqBump verifies the second of the three
 // modseq bump sites — UpdateFlags — also persists. Pre-fix, STORE
 // from one session would bump in-memory only and the next reread by

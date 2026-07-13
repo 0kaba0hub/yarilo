@@ -1544,8 +1544,18 @@ func (fs *folderState) flushAppend(rec *mailindex.Record) error {
 	if err := fs.appendName(rec.UID, fs.filenames[rec.UID], fs.sizes[rec.UID]); err != nil {
 		return fmt.Errorf("fileindex/append: names: %w", err)
 	}
+	// Emit a TxModseqUpdate alongside the append so a cross-process reader that
+	// picks up this append via the log advances its header HighestModSeq — applyLog
+	// only raises the header modseq from TxModseqUpdate records, and the append's
+	// own record-level modseq does not feed it. Without this, a delivered message
+	// leaves HighestModSeq stale for other sessions (breaks CONDSTORE HIGHESTMODSEQ
+	// and the IMAP poll-based refresh that adds new UIDs to a selected session).
+	modseq := decodeModseqRec(rec.Ext[extNameModSeq])
 	return fs.appendMutLog(
 		encLogRec(mailindex.TxTypeAppend, 0, appendPayload),
+		encLogRec(mailindex.TxTypeModseqUpdate, 0, mailindex.EncodeTxModseqUpdatePayload([]mailindex.TxModseqUpdate{{
+			UID: rec.UID, ModSeqLow32: uint32(modseq), ModSeqHigh32: uint32(modseq >> 32),
+		}})),
 		encU32Update(28, fs.file.Header.NextUID),
 		encU32Update(32, fs.file.Header.MessagesCount),
 		encU32Update(40, fs.file.Header.SeenMessagesCount),
