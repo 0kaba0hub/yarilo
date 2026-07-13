@@ -1605,7 +1605,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 
 	// imapsieve (RFC 6785): run scripts bound to this mailbox on the APPEND
 	// event; may refile, discard, or reflag the message just stored.
-	s.runImapSieveEvent("APPEND", name, rel, h, f.ID, f.GUID, m.UID, filename, m.AltTier, "")
+	s.runImapSieveEvent("APPEND", name, rel, h, f.ID, f.GUID, m.UID, filename, m.AltTier, "", nil)
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(m.UID)}, nil
 }
@@ -2411,6 +2411,8 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		uid      uint32
 		newFlags []string
 		newKW    []string
+		filename string
+		altTier  bool
 	}
 	var pending []pendingStore
 	batchUpdates := make(map[uint32]mailbox.FlagsUpdate)
@@ -2441,7 +2443,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 				newKW = append(newKW, f)
 			}
 		}
-		pending = append(pending, pendingStore{seqNum, m.UID, newFlags, newKW})
+		pending = append(pending, pendingStore{seqNum, m.UID, newFlags, newKW, m.Filename, m.AltTier})
 		batchUpdates[m.UID] = mailbox.FlagsUpdate{Flags: newFlags, Keywords: newKW}
 	}
 
@@ -2494,6 +2496,23 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 				mw.WriteModSeq(ms)
 			}
 			mw.Close() //nolint:errcheck
+		}
+	}
+
+	// imapsieve (RFC 6785): after the STORE responses are sent, the FLAG cause
+	// fires on the selected mailbox for each message whose flags changed; the
+	// script may refile / discard / reflag it. Gated on a bound script (or
+	// globals) so a bulk STORE with no imapsieve script fetches nothing.
+	if eng := s.srv.opts.SieveEngine; eng != nil && eng.ImapSieveEnabled() && storeFlags != nil && len(pending) > 0 {
+		scriptName := s.imapSieveScriptName(s.folderNS, s.folder.Name, s.folder.GUID)
+		if scriptName != "" || eng.HasImapGlobals() {
+			changed := make([]string, 0, len(storeFlags.Flags))
+			for _, fl := range storeFlags.Flags {
+				changed = append(changed, string(fl))
+			}
+			for _, p := range pending {
+				s.runImapSieveEvent("FLAG", s.folder.Name, s.folder.Name, s.folderNS, s.folder.ID, s.folder.GUID, p.uid, p.filename, p.altTier, "", changed)
+			}
 		}
 	}
 
@@ -2594,7 +2613,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	// landing). Scripts may refile / discard / reflag the copy.
 	if s.srv.opts.SieveEngine != nil {
 		for _, cm := range copied {
-			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, cm.uid, cm.filename, false, s.folder.Name)
+			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, cm.uid, cm.filename, false, s.folder.Name, nil)
 		}
 	}
 	slog.Debug("imap: copy timing",
@@ -2961,7 +2980,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	if s.srv.opts.SieveEngine != nil {
 		src := s.folder.Name
 		for _, h := range hits {
-			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, h.destUID, h.destFile, false, src)
+			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, h.destUID, h.destFile, false, src, nil)
 		}
 	}
 	slog.Debug("imap: move timing",

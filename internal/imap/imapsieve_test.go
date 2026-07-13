@@ -22,6 +22,7 @@ import (
 // imapSieveScript handles both causes so one bound script serves every test.
 const imapSieveScript = `require ["imapsieve", "environment", "fileinto", "mailbox"];
 if environment :is "imap.cause" "COPY" { fileinto :create "Quarantine"; stop; }
+if environment :is "imap.cause" "FLAG" { fileinto :create "Flagged"; stop; }
 if environment :is "imap.cause" "APPEND" { fileinto :create "Archive"; }
 `
 
@@ -122,6 +123,34 @@ func TestImapSieveAppendRefiles(t *testing.T) {
 	}
 	if n := numMessages(t, c, "Archive"); n != 1 {
 		t.Errorf("Archive has %d messages, want 1", n)
+	}
+}
+
+// TestImapSieveFlagRefiles: a script bound to a mailbox refiles a message into
+// Flagged when its flags change via STORE (RFC 6785 FLAG cause).
+func TestImapSieveFlagRefiles(t *testing.T) {
+	c := startImapSieveClient(t)
+
+	// APPEND while INBOX is unbound, so the message stays put.
+	appendTo(t, c, "INBOX")
+	bindImapSieve(t, c, "INBOX")
+
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("SELECT INBOX: %v", err)
+	}
+	storeFlags := &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagSeen}}
+	if err := c.Store(imap.SeqSetNum(1), storeFlags, nil).Close(); err != nil {
+		t.Fatalf("STORE: %v", err)
+	}
+	if err := c.Unselect().Wait(); err != nil {
+		t.Fatalf("UNSELECT: %v", err)
+	}
+
+	if n := numMessages(t, c, "INBOX"); n != 0 {
+		t.Errorf("INBOX has %d messages, want 0 (refiled away by FLAG cause)", n)
+	}
+	if n := numMessages(t, c, "Flagged"); n != 1 {
+		t.Errorf("Flagged has %d messages, want 1", n)
 	}
 }
 
