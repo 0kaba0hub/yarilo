@@ -4,7 +4,7 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 ## Supported extensions
 
-`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `mailboxid`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `mboxmetadata`, `servermetadata`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`
+`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `mailboxid`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `mboxmetadata`, `servermetadata`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`, `vnd.yarilo.report`
 
 `foreverypart` / `mime` / `extracttext` (RFC 5703) provide per-MIME-part
 processing: `foreverypart { … }` walks the parts depth-first (with `break
@@ -283,6 +283,24 @@ The same program resolution and environment variable rules as `vnd.yarilo.pipe` 
 | `sieve_execute_socket_dir` | `sieve-execute` | Directory of allowed execute sockets (searched first) |
 | `sieve_execute_exec_timeout` | `10` | Subprocess timeout in seconds |
 | `sieve_execute_input_eol` | `crlf` | Line endings written to stdin: `crlf` or `lf` |
+
+### `vnd.yarilo.report` — send an ARF abuse report
+
+Generates an [RFC 5965](https://www.rfc-editor.org/rfc/rfc5965) Abuse Reporting Format (ARF) message about the current message and submits it to a target address (via `sieve_submission_host`, the same path as `redirect`/`vacation`). The report is a `multipart/report; report-type=feedback-report` with a human-readable part, a `message/feedback-report` machine part, and the reported message (full, or headers-only with `:headers_only`).
+
+```sieve
+require ["vnd.yarilo.report"];
+report "abuse" "User reported this as spam" "abuse@example.com";
+report :headers_only "not-spam" "False positive" "fbl@example.com";
+```
+
+The `feedback-type` is an RFC 5965 registry token (`abuse`, `fraud`, `not-spam`, …). `report` is a side-effect action: it does **not** cancel implicit keep, so the message is still delivered.
+
+**Configuration** (`yarilo.yaml` / `values.yaml`):
+
+| Key | Default | Description |
+|:----|:--------|:------------|
+| `sieve_report_user_agent` | `yarilo` | `User-Agent` field written into the `message/feedback-report` part |
 
 ---
 

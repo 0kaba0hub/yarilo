@@ -867,6 +867,7 @@ func checkSieve() error {
 		{"spamtest", testSieveSpamtest},
 		{"mailboxid", testSieveMailboxID},
 		{"metadata", testSieveMetadata},
+		{"report", testSieveReport},
 		{"imap objectid", testIMAPObjectID},
 	}
 
@@ -1139,6 +1140,25 @@ func testSieveMetadata(user, pass, to string) error {
 		return fmt.Errorf("inject: %w", err)
 	}
 	return checkFolder(user, pass, folder)
+}
+
+// testSieveReport verifies vnd.yarilo.report (RFC 5965 ARF): ManageSieve accepts
+// a script requiring the extension, and delivery still completes via implicit
+// keep (report is a side-effect that does not cancel keep). The outbound report
+// submission itself is logged-and-dropped on failure, so this stays deterministic
+// without depending on relay routing back into the mailbox.
+func testSieveReport(user, pass, to string) error {
+	clearInbox(user, pass)
+	script := "require [\"vnd.yarilo.report\"];\n" +
+		"report \"abuse\" \"smoke abuse report\" \"reports@example.invalid\";\n"
+	if err := msieveSetActive(script); err != nil {
+		return fmt.Errorf("msieve: %w", err)
+	}
+	id := fmt.Sprintf("report-%d@test", time.Now().UnixNano())
+	if err := lmtpSend(id, "s@test.invalid", to, "report", "body"); err != nil {
+		return fmt.Errorf("inject: %w", err)
+	}
+	return checkFolder(user, pass, "INBOX") // implicit keep survives the report action
 }
 
 // testSieveSpamtest verifies RFC 5235 spamtest against the configured

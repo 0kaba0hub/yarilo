@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/foxcpp/go-sieve/interp"
+
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
@@ -261,6 +263,77 @@ func TestFilterMetadata(t *testing.T) {
 				t.Fatalf("expected %q delivery, got %+v", tc.wantFolder, result.Deliveries)
 			}
 		})
+	}
+}
+
+func TestFilterReport(t *testing.T) {
+	e := newTestEngine(t)
+	store := newTestStore()
+	homeDir := t.TempDir()
+	ctx := context.Background()
+
+	src := `require ["vnd.yarilo.report"];` + "\n" +
+		`report "abuse" "user marked as spam" "abuse@example.com";`
+	if err := store.SaveScript(ctx, "u1", homeDir, "test", []byte(src)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetActive(ctx, "u1", homeDir, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := e.Filter(ctx, baseOpts("u1", homeDir))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Reports) != 1 {
+		t.Fatalf("expected 1 report, got %d", len(result.Reports))
+	}
+	r := result.Reports[0]
+	if r.FeedbackType != "abuse" || r.Target != "abuse@example.com" {
+		t.Fatalf("unexpected report: %+v", r)
+	}
+	// report does not cancel implicit keep — the message still lands in INBOX.
+	var keptInbox bool
+	for _, d := range result.Deliveries {
+		if d.Folder == "INBOX" {
+			keptInbox = true
+		}
+	}
+	if !keptInbox {
+		t.Fatalf("expected implicit keep to INBOX, got %+v", result.Deliveries)
+	}
+}
+
+func TestBuildReportMessage(t *testing.T) {
+	orig := []byte("Subject: hello\r\nFrom: s@ex.com\r\n\r\nbody text\r\n")
+
+	full := string(buildReportMessage("u@ex.com", "abuse@x.com", "yarilo/test", "s@ex.com", "u@ex.com",
+		interp.ActionReport{FeedbackType: "abuse", Message: "spam", Target: "abuse@x.com"}, orig))
+	for _, want := range []string{
+		"multipart/report; report-type=feedback-report",
+		"Content-Type: message/feedback-report",
+		"Feedback-Type: abuse",
+		"User-Agent: yarilo/test",
+		"Original-Mail-From: s@ex.com",
+		"Original-Rcpt-To: u@ex.com",
+		"Content-Type: message/rfc822",
+		"body text",
+	} {
+		if !strings.Contains(full, want) {
+			t.Errorf("full report missing %q", want)
+		}
+	}
+
+	headersOnly := string(buildReportMessage("u@ex.com", "abuse@x.com", "yarilo", "", "",
+		interp.ActionReport{FeedbackType: "not-spam", Message: "fp", Target: "abuse@x.com", HeadersOnly: true}, orig))
+	if !strings.Contains(headersOnly, "Content-Type: text/rfc822-headers") {
+		t.Errorf("headers-only report missing text/rfc822-headers part")
+	}
+	if strings.Contains(headersOnly, "body text") {
+		t.Errorf("headers-only report must not include the body")
 	}
 }
 

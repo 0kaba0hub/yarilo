@@ -285,6 +285,11 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 				slog.Error("sieve: notify failed", "user", opts.Username, "method", n.Method, "err", err)
 			}
 		}
+		for _, rep := range result.Reports {
+			if err := e.sender.sendReport(ctx, opts, rep); err != nil {
+				slog.Error("sieve: report failed", "user", opts.Username, "to", rep.Target, "err", err)
+			}
+		}
 	}
 
 	return result, nil
@@ -461,6 +466,8 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 			})
 		case interp.ActionNotify:
 			result.Notifications = append(result.Notifications, a)
+		case interp.ActionReport:
+			result.Reports = append(result.Reports, a)
 		case interp.ActionPipe:
 			result.Pipes = append(result.Pipes, PipeAction{
 				ProgramName: a.ProgramName,
@@ -485,6 +492,7 @@ func (r *FilterResult) absorb(other *FilterResult) {
 	r.Pipes = append(r.Pipes, other.Pipes...)
 	r.VacationReplies = append(r.VacationReplies, other.VacationReplies...)
 	r.Notifications = append(r.Notifications, other.Notifications...)
+	r.Reports = append(r.Reports, other.Reports...)
 	if other.Message != nil {
 		r.Message = other.Message
 	}

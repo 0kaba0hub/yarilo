@@ -176,6 +176,7 @@ data:
       sieve_spamtest_max_value: {{ $sieve.sieve_spamtest_max_value | default 10 }}
       sieve_virustest_status_header: {{ $sieve.sieve_virustest_status_header | default "" | quote }}
       sieve_virustest_max_value: {{ $sieve.sieve_virustest_max_value | default 5 }}
+      sieve_report_user_agent: {{ $sieve.sieve_report_user_agent | default "yarilo" | quote }}
       sieve_submission_host: {{ $sieve.sieve_submission_host | default "" | quote }}
       sieve_submission_ssl: {{ $sieve.sieve_submission_ssl | default "no" | quote }}
       sieve_submission_timeout: {{ $sieve.sieve_submission_timeout | default 30 }}

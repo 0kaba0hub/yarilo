@@ -117,6 +117,7 @@ sieve:
     - vnd.yarilo.filter
     - vnd.yarilo.execute
     - vnd.yarilo.pipe
+    - vnd.yarilo.report
     - environment
     - vnd.yarilo.environment
 
