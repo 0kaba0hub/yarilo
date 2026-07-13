@@ -9,6 +9,8 @@ type Delivery struct {
 	Create     bool   // mailbox extension: create folder if absent
 	SpecialUse string // special-use extension: locate by attribute
 	Implicit   bool   // true when this delivery comes from implicit keep (no explicit keep/fileinto)
+	FromKeep   bool   // true for a keep action (implicit or explicit); false for fileinto. Lets
+	// imapsieve tell "keep in the event mailbox" apart from fileinto "INBOX".
 }
 
 // Redirect is a forward-to-address action produced by a Sieve script.

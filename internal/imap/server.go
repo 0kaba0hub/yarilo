@@ -27,6 +27,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/scram"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
 	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
@@ -104,6 +105,11 @@ type Options struct {
 	// returns "metadata storage disabled". Operators wire this from
 	// cfg.Dicts["metadata"] in yarilo.yaml.
 	MetadataDict dict.Dict
+
+	// SieveEngine runs imapsieve scripts (RFC 6785) on IMAP events (APPEND,
+	// COPY/MOVE, flag change). Nil disables imapsieve; the engine itself no-ops
+	// unless imapsieve_enabled is set.
+	SieveEngine *sieve.Engine
 
 	// QuotaDict backs RFC 9208 QUOTA (GETQUOTAROOT / GETQUOTA). When
 	// non-nil, the server advertises the QUOTA capability, enforces
@@ -1596,6 +1602,10 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		}
 	}
 	s.emitMailboxChange(name, locks.EventDelivered, m.UID)
+
+	// imapsieve (RFC 6785): run scripts bound to this mailbox on the APPEND
+	// event; may refile, discard, or reflag the message just stored.
+	s.runImapSieveEvent("APPEND", name, rel, h, f.ID, f.GUID, m.UID, filename, m.AltTier, "")
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(m.UID)}, nil
 }
