@@ -98,6 +98,7 @@ sieve:
     - mailboxid
     - mboxmetadata
     - servermetadata
+    - imapsieve
     - duplicate
     - imap4flags
     - redirect

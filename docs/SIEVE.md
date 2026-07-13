@@ -4,7 +4,7 @@ Yarilo implements server-side mail filtering via the Sieve language (RFC 5228). 
 
 ## Supported extensions
 
-`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `mailboxid`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `mboxmetadata`, `servermetadata`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`, `vnd.yarilo.report`
+`fileinto`, `reject`, `ereject`, `vacation`, `vacation-seconds`, `imap4flags`, `copy`, `envelope`, `body`, `date`, `index`, `regex`, `mailbox`, `special-use`, `mailboxid`, `fcc`, `editheader`, `variables`, `include`, `duplicate`, `ihave`, `enotify`, `subaddress`, `spamtest`, `spamtestplus`, `virustest`, `foreverypart`, `mime`, `extracttext`, `replace`, `enclose`, `mboxmetadata`, `servermetadata`, `imapsieve`, `vnd.yarilo.debug`, `vnd.yarilo.environment`, `vnd.yarilo.pipe`, `vnd.yarilo.filter`, `vnd.yarilo.execute`, `vnd.yarilo.report`
 
 `foreverypart` / `mime` / `extracttext` (RFC 5703) provide per-MIME-part
 processing: `foreverypart { … }` walks the parts depth-first (with `break
@@ -26,6 +26,8 @@ is true only when every listed id resolves to an accessible folder. Ids survive
 RENAME, so a script keeps targeting the right folder after the user renames it.
 
 `spamtest` / `spamtestplus` / `virustest` (RFC 5235) are backed by a configured status header (see `sieve_spamtest_status_header` / `sieve_virustest_status_header` below); with no header configured the tests report "not scanned".
+
+`imapsieve` (RFC 6785) runs Sieve scripts on **IMAP events** — message `APPEND`, `COPY`/`MOVE`, and flag change (`STORE`) — not just LMTP delivery. A script is bound to a mailbox through the IMAP METADATA annotation `/shared/imapsieve/script` (`SETMETADATA "<mailbox>" (/shared/imapsieve/script "<name>")`), or server-wide under INBOX; the value names a script in `imapsieve_script_dir`. Admin `imapsieve_global_before` / `imapsieve_global_after` scripts wrap the bound one. Scripts require `["imapsieve", "environment"]` and branch on the event via `environment "imap.cause"` (`APPEND` / `COPY` / `FLAG`); the RFC 6785 items `imap.mailbox`, `imap.email`, `imap.user`, `imap.changedflags` and the vendor `vnd.yarilo.mailbox-from` / `vnd.yarilo.mailbox-to` (COPY source/destination) are also available. (Enable with `imapsieve_enabled`; the IMAP-side event hooks land incrementally — APPEND first.)
 
 `mboxmetadata` / `servermetadata` (RFC 5490 §4) expose IMAP METADATA (RFC 5464) annotations to scripts: `metadata "<mailbox>" "<entry>" "<value>"` / `metadataexists "<mailbox>" "<entry>"...` read per-mailbox annotations, and `servermetadata "<entry>" "<value>"` / `servermetadataexists "<entry>"...` read server-scoped ones. Entry names are the wire-format `/private/…` or `/shared/…` paths; values come from the same dict the IMAP `GETMETADATA`/`SETMETADATA` commands use, so a script sees exactly what a client set. Delivery-time lookups are scoped to the recipient's personal namespace. `extlists` is **not** advertised yet — its backing data source is not wired.
 

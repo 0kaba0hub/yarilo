@@ -189,6 +189,16 @@ data:
       sieve_environment:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      imapsieve_enabled: {{ index $sieve "imapsieve_enabled" | default false }}
+      imapsieve_script_dir: {{ index $sieve "imapsieve_script_dir" | default "" | quote }}
+      {{- with $sieve.imapsieve_global_before }}
+      imapsieve_global_before:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sieve.imapsieve_global_after }}
+      imapsieve_global_after:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       sieve_pipe_bin_dir: {{ index $sieve "sieve_pipe_bin_dir" | default "/usr/lib/yarilo/sieve-pipe" | quote }}
       sieve_pipe_socket_dir: {{ index $sieve "sieve_pipe_socket_dir" | default "sieve-pipe" | quote }}
       sieve_pipe_exec_timeout: {{ index $sieve "sieve_pipe_exec_timeout" | default 10 }}

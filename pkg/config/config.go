@@ -98,6 +98,20 @@ type SieveConfig struct {
 	// after the user's active script.
 	GlobalAfter []string `koanf:"sieve_global_after"`
 
+	// ImapSieveEnabled activates imapsieve (RFC 6785): running Sieve scripts on
+	// IMAP events (message APPEND, COPY/MOVE, flag change). Per-mailbox binding
+	// is via the IMAP METADATA annotation /shared/imapsieve/script (and the
+	// server-wide equivalent under INBOX), not static config.
+	ImapSieveEnabled bool `koanf:"imapsieve_enabled"`
+	// ImapSieveScriptDir is the directory holding the admin-managed scripts a
+	// mailbox's /shared/imapsieve/script annotation names (value "<name>" →
+	// <dir>/<name>.sieve).
+	ImapSieveScriptDir string `koanf:"imapsieve_script_dir"`
+	// ImapSieveGlobalBefore / ImapSieveGlobalAfter are ordered .sieve paths run
+	// before / after the mailbox-bound script on every imapsieve event.
+	ImapSieveGlobalBefore []string `koanf:"imapsieve_global_before"`
+	ImapSieveGlobalAfter  []string `koanf:"imapsieve_global_after"`
+
 	// SieveExtensions is the whitelist of Sieve extensions users may declare
 	// with require. Corresponds to sieve_extensions.
 	// Empty slice = allow all extensions (backwards-compatible default).
