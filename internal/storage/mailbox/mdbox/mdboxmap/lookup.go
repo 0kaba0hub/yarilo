@@ -15,6 +15,15 @@ import (
 func (m *Map) Lookup(mapUID uint32) (MapEntry, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	entry, ok, err := m.lookupLocked(mapUID)
+	if err != nil || ok {
+		return entry, ok, err
+	}
+	// Miss: a sibling process may have appended this map_uid after we cached the
+	// map. Refresh (incremental log replay) and retry before reporting absence.
+	if rerr := m.reloadLocked(); rerr != nil {
+		return MapEntry{}, false, rerr
+	}
 	return m.lookupLocked(mapUID)
 }
 
@@ -41,10 +50,22 @@ func (m *Map) LookupMany(mapUIDs []uint32) ([]MapEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]MapEntry, len(mapUIDs))
+	refreshed := false
 	for i, uid := range mapUIDs {
 		e, ok, err := m.lookupLocked(uid)
 		if err != nil {
 			return nil, fmt.Errorf("mdboxmap/lookup uid=%d: %w", uid, err)
+		}
+		if !ok && !refreshed {
+			// Refresh once on the first miss to pick up a sibling's appends.
+			if rerr := m.reloadLocked(); rerr != nil {
+				return nil, fmt.Errorf("mdboxmap/lookup refresh: %w", rerr)
+			}
+			refreshed = true
+			e, ok, err = m.lookupLocked(uid)
+			if err != nil {
+				return nil, fmt.Errorf("mdboxmap/lookup uid=%d: %w", uid, err)
+			}
 		}
 		if ok {
 			out[i] = e

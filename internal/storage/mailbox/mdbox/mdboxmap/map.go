@@ -43,6 +43,13 @@ type Map struct {
 	// byMapUID indexes records by UID for O(1) Lookup.
 	// Rebuilt on every load/flush.
 	byMapUID map[uint32]int
+
+	// baseMod / logSize track what this handle has applied from disk so
+	// reloadLocked can fast-path when nothing changed and replay only the log
+	// tail a sibling process appended since. baseMod is the base index file's
+	// mtime; logSize is the byte offset of the append log we have replayed.
+	baseMod time.Time
+	logSize int64
 }
 
 // Option configures Map construction.
@@ -127,6 +134,17 @@ func (m *Map) loadOrInit() error {
 		return fmt.Errorf("mdboxmap/load: open: %w", err)
 	}
 	m.f = f
+	if st, serr := os.Stat(m.path); serr == nil {
+		m.baseMod = st.ModTime()
+	}
+	applied, rerr := m.replayLogLocked(0)
+	if errors.Is(rerr, errLogIndexMismatch) {
+		_ = os.Remove(m.logPath())
+		applied = 0
+	} else if rerr != nil {
+		return rerr
+	}
+	m.logSize = applied
 	m.reindex()
 	return nil
 }
@@ -156,17 +174,40 @@ func (m *Map) createFresh() error {
 // cached header counters from m.f. Caller must hold m.mu.
 func (m *Map) reindex() {
 	idx := make(map[uint32]int, len(m.f.Records))
+	var maxUID, maxFileID uint32
 	for i, rec := range m.f.Records {
 		idx[rec.UID] = i
+		if rec.UID > maxUID {
+			maxUID = rec.UID
+		}
+		if data, ok := rec.Ext[extMap]; ok {
+			if fid, _, _, err := decodeMapExt(data); err == nil && fid > maxFileID {
+				maxFileID = fid
+			}
+		}
 	}
 	m.byMapUID = idx
-	m.nextMapUID = m.f.Header.NextUID
-	if m.nextMapUID == 0 {
-		m.nextMapUID = 1
+
+	// Derive the allocation counters from the records too, not just the base
+	// header: log-replayed appends advance them past whatever the base header
+	// (written before those appends) recorded.
+	next := m.f.Header.NextUID
+	if maxUID+1 > next {
+		next = maxUID + 1
 	}
+	if next == 0 {
+		next = 1
+	}
+	m.nextMapUID = next
+
+	hfid := uint32(0)
 	if ext := findExt(m.f.Extensions, extMap); ext != nil {
-		m.highestFileID = decodeMapHeader(ext.HdrData)
+		hfid = decodeMapHeader(ext.HdrData)
 	}
+	if maxFileID > hfid {
+		hfid = maxFileID
+	}
+	m.highestFileID = hfid
 }
 
 // findExt returns a pointer to the named extension in the slice,
@@ -208,6 +249,10 @@ func (m *Map) withMapLock(fn func() error) error {
 
 // flushLocked rewrites the on-disk map.index file from m.f.
 // Caller MUST hold m.mu. Used by every mutation path.
+// flushLocked rewrites the whole base index from m.f and drops the append log —
+// the base now holds the full state, so the log resets to empty. This is the
+// compaction point (and the full-state persist for refcount / purge / file-id
+// allocation). Caller MUST hold m.mu.
 func (m *Map) flushLocked() error {
 	if ext := findExt(m.f.Extensions, extMap); ext != nil {
 		ext.HdrData = encodeMapHeader(m.highestFileID)
@@ -217,20 +262,73 @@ func (m *Map) flushLocked() error {
 	if _, err := mailindex.Recreate(m.f.ToRecreateInput(m.path)); err != nil {
 		return fmt.Errorf("mdboxmap/flush: %w", err)
 	}
+	if err := os.Remove(m.logPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("mdboxmap/flush: remove log: %w", err)
+	}
+	m.logSize = 0
+	if st, err := os.Stat(m.path); err == nil {
+		m.baseMod = st.ModTime()
+	}
 	return nil
 }
 
-// reloadLocked re-reads the on-disk file into m. Used after
-// taking the cross-process lock when a peer may have modified
-// the map; without this, two processes hand out colliding
-// map_uids. Caller MUST hold m.mu and the cross-process lock.
+// reloadLocked refreshes m from disk, incrementally. It re-opens the base only
+// when it changed (compaction / full-state rewrite) and otherwise replays just
+// the append-log tail a sibling process wrote since our last apply — so a peer's
+// deliveries become visible without re-reading the whole map. Caller MUST hold
+// m.mu. Write callers additionally hold the cross-process lock; readers may call
+// it lock-free (a torn log tail is stopped cleanly by replayLogLocked).
 func (m *Map) reloadLocked() error {
-	f, err := mailindex.Open(m.path)
-	if err != nil {
-		return fmt.Errorf("mdboxmap/reload: %w", err)
+	var baseMod time.Time
+	baseStat, baseErr := os.Stat(m.path)
+	if baseStat != nil {
+		baseMod = baseStat.ModTime()
 	}
-	m.f = f
-	m.reindex()
+	var logSize int64
+	if st, _ := os.Stat(m.logPath()); st != nil {
+		logSize = st.Size()
+	}
+
+	// Fast path: nothing changed on disk.
+	if m.f != nil && baseMod.Equal(m.baseMod) && logSize == m.logSize {
+		return nil
+	}
+
+	// Base changed (or first load) → re-open it, then replay the whole log.
+	if m.f == nil || !baseMod.Equal(m.baseMod) {
+		if baseErr != nil {
+			return fmt.Errorf("mdboxmap/reload: %w", baseErr)
+		}
+		f, err := mailindex.Open(m.path)
+		if err != nil {
+			return fmt.Errorf("mdboxmap/reload: %w", err)
+		}
+		m.f = f
+		m.baseMod = baseMod
+		applied, err := m.replayLogLocked(0)
+		if errors.Is(err, errLogIndexMismatch) {
+			// Log left over from a previous map at this path — discard it.
+			_ = os.Remove(m.logPath())
+			m.logSize = 0
+			m.reindex()
+			return nil
+		} else if err != nil {
+			return err
+		}
+		m.logSize = applied
+		m.reindex()
+		return nil
+	}
+
+	// Base unchanged, log grew → replay only the new tail.
+	if logSize > m.logSize {
+		applied, err := m.replayLogLocked(m.logSize)
+		if err != nil && !errors.Is(err, errLogIndexMismatch) {
+			return err
+		}
+		m.logSize = applied
+		m.reindex()
+	}
 	return nil
 }
 

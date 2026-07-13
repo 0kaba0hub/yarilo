@@ -333,3 +333,43 @@ func TestLookupManyPreservesOrder(t *testing.T) {
 		t.Errorf("slot 2: %+v", out[2])
 	}
 }
+
+// TestIncrementalLookupPicksUpSiblingAppend is the map-level guard for the #526
+// mdbox symptom: a handle that has already cached the map must see a message a
+// sibling process delivered — which lands in the append log, not a base rewrite
+// — via refresh-on-miss (mirrors Dovecot's mdbox_map_get_seq).
+func TestIncrementalLookupPicksUpSiblingAppend(t *testing.T) {
+	reader, dir := openTestMap(t)
+
+	// reader caches an empty map.
+	if _, ok, _ := reader.Lookup(1); ok {
+		t.Fatal("expected empty map")
+	}
+
+	// Sibling writer appends (goes to the log incrementally).
+	writer, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("sibling Open: %v", err)
+	}
+	b := writer.AppendBatch()
+	b.Next(4096)
+	uids, err := b.Finish()
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	_ = writer.Close()
+
+	// The base index must be untouched — the append is log-only.
+	if _, serr := os.Stat(dir + "/" + string(MapIndexFileName) + ".log"); serr != nil {
+		t.Fatalf("expected append log to exist: %v", serr)
+	}
+
+	// The already-open reader (stale cache) must resolve the sibling's append.
+	e, ok, err := reader.Lookup(uids[0])
+	if err != nil || !ok {
+		t.Fatalf("reader did not pick up sibling append: ok=%v err=%v", ok, err)
+	}
+	if e.Size != 4096 {
+		t.Errorf("entry drift after incremental replay: %+v", e)
+	}
+}
