@@ -980,6 +980,8 @@ sieve:
   sieve_spamtest_max_value: 10
   sieve_virustest_status_header: ""
   sieve_virustest_max_value: 5
+  ## User-Agent field written into ARF feedback reports (vnd.yarilo.report).
+  sieve_report_user_agent: "yarilo"
   ## Outbound MTA for redirect / vacation actions.
   sieve_submission_host: ""
   sieve_submission_ssl: "no"

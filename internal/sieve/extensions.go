@@ -20,6 +20,7 @@ var SupportedExtensions = []string{
 	"vnd.yarilo.environment",
 	"vnd.yarilo.pipe",
 	"vnd.yarilo.filter",
+	"vnd.yarilo.report",
 	"vnd.yarilo.execute",
 }
 
