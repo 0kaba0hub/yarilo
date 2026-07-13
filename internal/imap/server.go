@@ -2542,6 +2542,11 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	var srcUIDs, dstUIDs imaplib.UIDSet
 	var saveTotalMs, indexTotalMs int64
 	var count int
+	type copiedMsg struct {
+		uid      uint32
+		filename string
+	}
+	var copied []copiedMsg
 	for _, m := range msgs {
 		seqNum, ok := copyUIDToClientSeq[m.UID]
 		if !ok {
@@ -2582,6 +2587,15 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
+		copied = append(copied, copiedMsg{uid: nm.UID, filename: newFilename})
+	}
+	// imapsieve (RFC 6785): COPY cause fires on the destination mailbox for each
+	// copied message, after the copy is recorded (so COPYUID reflects the initial
+	// landing). Scripts may refile / discard / reflag the copy.
+	if s.srv.opts.SieveEngine != nil {
+		for _, cm := range copied {
+			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, cm.uid, cm.filename, false, s.folder.Name)
+		}
 	}
 	slog.Debug("imap: copy timing",
 		"user", s.userInfo.Username, "src", s.folder.Name, "dst", dest,
@@ -2869,6 +2883,8 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		seqNum   uint32
 		srcUID   uint32
 		filename string
+		destUID  uint32
+		destFile string
 	}
 	var hits []matched
 	var srcUIDs, dstUIDs imaplib.UIDSet
@@ -2913,7 +2929,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
-		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename})
+		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename, destUID: nm.UID, destFile: newFilename})
 	}
 
 	if err := w.WriteCopyData(&imaplib.CopyData{
@@ -2940,6 +2956,14 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	}
 	s.folder.Messages -= uint32(len(hits))
 	srcIdx.SaveFolder(s.folder) //nolint:errcheck
+	// imapsieve (RFC 6785): a MOVE lands each message in the destination — the
+	// COPY cause fires there after the move completes; scripts may refile/discard.
+	if s.srv.opts.SieveEngine != nil {
+		src := s.folder.Name
+		for _, h := range hits {
+			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, h.destUID, h.destFile, false, src)
+		}
+	}
 	slog.Debug("imap: move timing",
 		"user", s.userInfo.Username, "src", s.folder.Name, "dst", dest,
 		"count", len(hits), "save_ms", saveTotalMs, "index_ms", indexTotalMs,
