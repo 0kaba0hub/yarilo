@@ -40,7 +40,7 @@ func (s *session) imapSieveScriptName(h *nsHandle, rel string, guid [16]byte) st
 // resulting actions. h/rel/folderID/guid identify the mailbox the event occurred
 // on; uid/filename/altTier the stored message. srcMailbox is the COPY/MOVE source
 // (empty for APPEND).
-func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle, folderID uint64, guid [16]byte, uid uint32, filename string, altTier bool, srcMailbox string) {
+func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle, folderID uint64, guid [16]byte, uid uint32, filename string, altTier bool, srcMailbox string, changedFlags []string) {
 	eng := s.srv.opts.SieveEngine
 	if eng == nil {
 		return
@@ -56,13 +56,14 @@ func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle,
 	rc.Close()
 
 	res, err := eng.RunIMAPEvent(context.Background(), sieve.IMAPEventOptions{
-		Username:   s.userInfo.Username,
-		HomeDir:    s.userInfo.Home,
-		Cause:      cause,
-		Mailbox:    mailboxName,
-		SrcMailbox: srcMailbox,
-		MsgRaw:     raw,
-		ScriptName: scriptName,
+		Username:     s.userInfo.Username,
+		HomeDir:      s.userInfo.Home,
+		Cause:        cause,
+		Mailbox:      mailboxName,
+		SrcMailbox:   srcMailbox,
+		ChangedFlags: changedFlags,
+		MsgRaw:       raw,
+		ScriptName:   scriptName,
 	})
 	if err != nil {
 		slog.Error("imapsieve: run", "user", s.userInfo.Username, "cause", cause, "folder", rel, "err", err)
