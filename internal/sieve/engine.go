@@ -32,6 +32,11 @@ type Engine struct {
 	locker       locks.Locker // coordinates the file-backed duplicate dedup
 	globalBefore []*gosieve.Script
 	globalAfter  []*gosieve.Script
+
+	// imapsieve (RFC 6785) global admin scripts, run before/after the
+	// mailbox-bound script on each IMAP event.
+	imapGlobalBefore []*gosieve.Script
+	imapGlobalAfter  []*gosieve.Script
 }
 
 // New creates a Sieve Engine. locker is used for cross-process write coordination.
@@ -52,6 +57,10 @@ func New(cfg config.SieveConfig, locker locks.Locker, d dict.Dict, dupDict dict.
 	}
 	e.globalBefore = loadGlobalScripts(cfg.GlobalBefore)
 	e.globalAfter = loadGlobalScripts(cfg.GlobalAfter)
+	if cfg.ImapSieveEnabled {
+		e.imapGlobalBefore = loadGlobalScripts(cfg.ImapSieveGlobalBefore)
+		e.imapGlobalAfter = loadGlobalScripts(cfg.ImapSieveGlobalAfter)
+	}
 	return e
 }
 
@@ -103,6 +112,10 @@ type FilterOptions struct {
 	// ServerMetadata reads a server-level METADATA annotation, backing the
 	// servermetadata Sieve tests. ("", false, nil) = absent.
 	ServerMetadata func(ctx context.Context, annotation string) (string, bool, error)
+	// Env overrides the Sieve environment provider for this run. Nil uses the
+	// default vnd.yarilo.environment provider; imapsieve events pass an imapEnv
+	// exposing the RFC 6785 imap.* items.
+	Env interp.Env
 }
 
 // Filter executes global-before scripts, then the user's active Sieve script,
@@ -198,7 +211,11 @@ func (e *Engine) runScript(ctx context.Context, script *gosieve.Script, opts Fil
 
 	rd := gosieve.NewRuntimeData(script, pol, env, msg)
 	rd.DuplicateTracker = e.dupTracker(opts.Username, opts.HomeDir)
-	rd.Env = &yariloEnv{username: opts.Username, configItems: e.cfg.Environments}
+	if opts.Env != nil {
+		rd.Env = opts.Env
+	} else {
+		rd.Env = &yariloEnv{username: opts.Username, configItems: e.cfg.Environments}
+	}
 	rd.PipeExecutor = &pipeExecutor{
 		binDir:    e.cfg.PipeBinDir,
 		socketDir: e.cfg.PipeSocketDir,

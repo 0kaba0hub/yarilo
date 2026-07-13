@@ -943,7 +943,7 @@ protocol:
 ## Sieve mail filtering
 ## -------------------------------------------------------------------
 ## Every key in this section carries the sieve_ prefix (matching the config
-## koanf tags and Dovecot's verbatim setting names), even under `sieve:`.
+## koanf tags), even under `sieve:`.
 sieve:
   sieve_enabled: false
   ## sieve_scripts_driver selects the script storage backend: "fs" (default, files
@@ -992,6 +992,13 @@ sieve:
   ## Files must be present on the pod filesystem (e.g. via ConfigMap volume mount).
   sieve_global_before: []
   sieve_global_after: []
+  ## imapsieve (RFC 6785): run Sieve scripts on IMAP events (APPEND / COPY / FLAG).
+  ## Per-mailbox binding is via the IMAP METADATA annotation /shared/imapsieve/script
+  ## (SETMETADATA), not static config; the value names a script in imapsieve_script_dir.
+  imapsieve_enabled: false
+  imapsieve_script_dir: ""
+  imapsieve_global_before: []
+  imapsieve_global_after: []
   ## sieve_extensions is the whitelist of Sieve extensions users may declare with
   ## require. Corresponds to the sieve_extensions. Empty list = allow all
   ## (backwards-compatible). Operators who need enotify/include/extlists must add
