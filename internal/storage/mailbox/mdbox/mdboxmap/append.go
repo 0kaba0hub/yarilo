@@ -103,7 +103,7 @@ func (m *Map) AppendRecords(layouts []RecordLayout) ([]uint32, error) {
 			}
 			out[i] = mapUID
 		}
-		return m.flushLocked()
+		return m.commitAppendLocked(len(layouts))
 	})
 	if err != nil {
 		return nil, err
@@ -253,7 +253,7 @@ func (b *AppendBatch) Finish() ([]uint32, error) {
 			mapUIDs[i] = mapUID
 		}
 		b.m.highestFileID = maxFileID
-		return b.m.flushLocked()
+		return b.m.commitAppendLocked(len(b.pending))
 	})
 	if err != nil {
 		return nil, err
