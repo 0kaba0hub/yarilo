@@ -1412,6 +1412,16 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 			}
 			for i := 0; i+stride <= len(payload); i += stride {
 				uid := le.Uint32(payload[i:])
+				// The 28-byte form carries the expunge modseq at offset 20. Feed
+				// it into maxModseq so a cross-process reader advances its header
+				// HighestModSeq on an expunge — otherwise a sibling process's
+				// NextModSeq reuses the expunge's modseq for the next delivery,
+				// breaking modseq monotonicity and the poll-based new-mail refresh.
+				if stride == 28 {
+					if ms := le.Uint64(payload[i+20:]); ms > maxModseq {
+						maxModseq = ms
+					}
+				}
 				for j, rec := range fs.file.Records {
 					if rec.UID != uid {
 						continue
