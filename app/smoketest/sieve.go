@@ -1142,23 +1142,62 @@ func testSieveMetadata(user, pass, to string) error {
 	return checkFolder(user, pass, folder)
 }
 
-// testSieveReport verifies vnd.yarilo.report (RFC 5965 ARF): ManageSieve accepts
-// a script requiring the extension, and delivery still completes via implicit
-// keep (report is a side-effect that does not cancel keep). The outbound report
-// submission itself is logged-and-dropped on failure, so this stays deterministic
-// without depending on relay routing back into the mailbox.
+// testSieveReport verifies vnd.yarilo.report (RFC 5965 ARF) end to end: the
+// script reports the delivered message to the recipient itself, so the ARF report
+// loops back through submission -> LMTP into INBOX alongside the kept original.
+// We then locate the report and confirm its multipart/report structure.
 func testSieveReport(user, pass, to string) error {
 	clearInbox(user, pass)
 	script := "require [\"vnd.yarilo.report\"];\n" +
-		"report \"abuse\" \"smoke abuse report\" \"reports@example.invalid\";\n"
+		"report \"abuse\" \"smoke abuse report\" \"" + to + "\";\n"
 	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	id := fmt.Sprintf("report-%d@test", time.Now().UnixNano())
-	if err := lmtpSend(id, "s@test.invalid", to, "report", "body"); err != nil {
+	if err := lmtpSend(id, "s@test.invalid", to, "report-trigger", "body"); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
-	return checkFolder(user, pass, "INBOX") // implicit keep survives the report action
+
+	c, err := imapDial()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return err
+	}
+	// The report is submitted asynchronously and routed back via LMTP; poll.
+	var uids []string
+	for i := 0; i < 20; i++ {
+		if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
+			return err
+		}
+		uids, _ = c.uidSearch(`SUBJECT "abuse report"`)
+		if len(uids) > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if len(uids) == 0 {
+		return fmt.Errorf("ARF report not delivered back to INBOX")
+	}
+	body, err := c.cmd(fmt.Sprintf("UID FETCH %s (BODY.PEEK[])", uids[0]))
+	if err != nil {
+		return err
+	}
+	raw := joined(body)
+	for _, want := range []string{
+		"report-type=feedback-report",
+		"Content-Type: message/feedback-report",
+		"Feedback-Type: abuse",
+	} {
+		if !strings.Contains(raw, want) {
+			return fmt.Errorf("delivered message is not a valid ARF report (missing %q)", want)
+		}
+	}
+	all, _ := c.uidSearch("ALL")
+	c.deleteUIDs(all) //nolint:errcheck
+	return nil
 }
 
 // testSieveSpamtest verifies RFC 5235 spamtest against the configured
