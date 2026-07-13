@@ -240,6 +240,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Locker:               locker,
 			SpecialUseDefaults:   p.SpecialUseDefaults,
 			MetadataDict:         metadataDict,
+			SieveEngine:          sieveEngine,
 			QuotaDict:            quotaDict,
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,

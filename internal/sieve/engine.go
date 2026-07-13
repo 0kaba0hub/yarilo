@@ -472,6 +472,7 @@ func buildResult(d *interp.RuntimeData) *FilterResult {
 				Folder:   "INBOX",
 				Flags:    []string(a.Flags),
 				Implicit: a.Implicit,
+				FromKeep: true,
 			})
 		case interp.ActionRedirect:
 			if a.ListName != "" {
