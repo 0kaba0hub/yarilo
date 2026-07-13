@@ -996,7 +996,17 @@ sieve:
   ## Per-mailbox binding is via the IMAP METADATA annotation /shared/imapsieve/script
   ## (SETMETADATA), not static config; the value names a script in imapsieve_script_dir.
   imapsieve_enabled: false
-  imapsieve_script_dir: ""
+  ## Directory the mailbox-bound scripts live in. When imapsieve_scripts below is
+  ## non-empty, a ConfigMap is rendered and mounted read-only at this path in the
+  ## IMAP pods; otherwise provide the scripts on the pod filesystem yourself.
+  imapsieve_script_dir: "/etc/yarilo/imapsieve"
+  ## Admin scripts, keyed by name (a mailbox's /shared/imapsieve/script annotation
+  ## binds one by "<name>"; the file is <name>.sieve). Example:
+  ##   imapsieve_scripts:
+  ##     report-spam: |
+  ##       require ["imapsieve", "environment", "vnd.yarilo.pipe"];
+  ##       if environment :is "imap.cause" "COPY" { pipe "sa-learn-spam"; }
+  imapsieve_scripts: {}
   imapsieve_global_before: []
   imapsieve_global_after: []
   ## sieve_extensions is the whitelist of Sieve extensions users may declare with

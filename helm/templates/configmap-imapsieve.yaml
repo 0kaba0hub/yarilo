@@ -1,0 +1,17 @@
+{{- if and .Values.sieve.imapsieve_enabled .Values.sieve.imapsieve_scripts .Values.sieve.imapsieve_script_dir }}
+# Admin imapsieve scripts (RFC 6785). Each key <name>.sieve is the script a
+# mailbox's /shared/imapsieve/script METADATA annotation binds to by "<name>".
+# Mounted read-only into the IMAP pods at sieve.imapsieve_script_dir.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yarilo.fullname" . }}-imapsieve-scripts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+data:
+  {{- range $name, $content := .Values.sieve.imapsieve_scripts }}
+  {{ $name }}.sieve: |
+    {{- $content | nindent 4 }}
+  {{- end }}
+{{- end }}
