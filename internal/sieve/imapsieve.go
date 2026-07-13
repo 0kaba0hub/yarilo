@@ -96,6 +96,16 @@ func (e *Engine) RunIMAPEvent(ctx context.Context, opts IMAPEventOptions) (*Filt
 	return &merged, nil
 }
 
+// ImapSieveEnabled reports whether imapsieve is active.
+func (e *Engine) ImapSieveEnabled() bool { return e.cfg.ImapSieveEnabled }
+
+// HasImapGlobals reports whether any admin global-before/after imapsieve script
+// is configured — so a caller can skip per-message work when nothing would run
+// without a mailbox-bound script.
+func (e *Engine) HasImapGlobals() bool {
+	return len(e.imapGlobalBefore) > 0 || len(e.imapGlobalAfter) > 0
+}
+
 // loadImapScript compiles the named admin script from imapsieve_script_dir
 // (<dir>/<name>.sieve). A missing dir or file returns (nil, nil) — the event
 // proceeds with only the global scripts.
