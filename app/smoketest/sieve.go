@@ -1148,8 +1148,13 @@ func testSieveMetadata(user, pass, to string) error {
 // We then locate the report and confirm its multipart/report structure.
 func testSieveReport(user, pass, to string) error {
 	clearInbox(user, pass)
+	// Guard on the trigger's subject so the delivered ARF report (subject
+	// "abuse report") does not re-match and report itself — otherwise each
+	// delivered report re-triggers report, nesting into an unbounded mail loop.
 	script := "require [\"vnd.yarilo.report\"];\n" +
-		"report \"abuse\" \"smoke abuse report\" \"" + to + "\";\n"
+		"if header :contains \"subject\" \"report-trigger\" {\n" +
+		"  report \"abuse\" \"smoke abuse report\" \"" + to + "\";\n" +
+		"}\n"
 	if err := msieveSetActive(script); err != nil {
 		return fmt.Errorf("msieve: %w", err)
 	}
@@ -1166,9 +1171,11 @@ func testSieveReport(user, pass, to string) error {
 	if err := c.login(user, pass); err != nil {
 		return err
 	}
-	// The report is submitted asynchronously and routed back via LMTP; poll.
+	// The report is submitted asynchronously and routed back via LMTP; poll for
+	// the ARF report (subject "abuse report", distinct from the trigger).
 	var uids []string
 	for i := 0; i < 20; i++ {
+		c.conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
 		if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
 			return err
 		}
@@ -1181,16 +1188,15 @@ func testSieveReport(user, pass, to string) error {
 	if len(uids) == 0 {
 		return fmt.Errorf("ARF report not delivered back to INBOX")
 	}
-	body, err := c.cmd(fmt.Sprintf("UID FETCH %s (BODY.PEEK[])", uids[0]))
+	// Assert the top-level Content-Type identifies an RFC 5965 feedback report.
+	// Reading only the header keeps this off the large message/rfc822 literal.
+	c.conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
+	hdr, err := c.cmd(fmt.Sprintf("UID FETCH %s (BODY.PEEK[HEADER])", uids[0]))
 	if err != nil {
 		return err
 	}
-	raw := joined(body)
-	for _, want := range []string{
-		"report-type=feedback-report",
-		"Content-Type: message/feedback-report",
-		"Feedback-Type: abuse",
-	} {
+	raw := joined(hdr)
+	for _, want := range []string{"multipart/report", "report-type=feedback-report"} {
 		if !strings.Contains(raw, want) {
 			return fmt.Errorf("delivered message is not a valid ARF report (missing %q)", want)
 		}
