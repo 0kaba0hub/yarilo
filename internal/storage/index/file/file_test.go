@@ -550,6 +550,47 @@ func TestAppendAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 	}
 }
 
+// TestExpungeAdvancesHighestModSeqForCrossHandleReader verifies that an expunge
+// advances the header HighestModSeq for a separate reader that only observes it
+// through the .index.log. Pre-fix, applyLog read the expunged UID but ignored the
+// expunge modseq carried in the TxExpungeGUID record, so a sibling process's
+// NextModSeq reused that modseq for the next delivery — breaking modseq
+// monotonicity and the poll-based new-mail refresh (#526).
+func TestExpungeAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
+	dir := t.TempDir()
+
+	writer := openIdx(dir, testUser)
+	wf, err := writer.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("writer open folder: %v", err)
+	}
+	ms, err := writer.NextModSeq(wf.ID)
+	if err != nil {
+		t.Fatalf("NextModSeq: %v", err)
+	}
+	uid, err := writer.AllocateUID(wf.ID)
+	if err != nil {
+		t.Fatalf("AllocateUID: %v", err)
+	}
+	if err := writer.AppendMessage(wf.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	// The expunge bumps the modseq strictly past the append's.
+	if err := writer.ExpungeMessage(wf.ID, uid); err != nil {
+		t.Fatalf("ExpungeMessage: %v", err)
+	}
+
+	reader := openIdx(dir, testUser)
+	rf, err := reader.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("reader open folder: %v", err)
+	}
+	if rf.HighestModSeq <= ms {
+		t.Errorf("cross-handle reader HighestModSeq %d <= append modseq %d (expunge modseq not propagated via log)",
+			rf.HighestModSeq, ms)
+	}
+}
+
 // TestUpdateFlagsPersistsModSeqBump verifies the second of the three
 // modseq bump sites — UpdateFlags — also persists. Pre-fix, STORE
 // from one session would bump in-memory only and the next reread by
