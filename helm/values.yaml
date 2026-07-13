@@ -943,7 +943,7 @@ protocol:
 ## Sieve mail filtering
 ## -------------------------------------------------------------------
 ## Every key in this section carries the sieve_ prefix (matching the config
-## koanf tags and Dovecot's verbatim setting names), even under `sieve:`.
+## koanf tags), even under `sieve:`.
 sieve:
   sieve_enabled: false
   ## sieve_scripts_driver selects the script storage backend: "fs" (default, files
