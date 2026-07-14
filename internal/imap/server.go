@@ -1703,8 +1703,8 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	// NOTIFY (RFC 5465): once NOTIFY SET is active the selected mailbox emits
 	// only the events the client re-enabled via SELECTED / SELECTED-DELAYED.
 	// Without NOTIFY, all three are on (default IMAP behavior). A suppressed
-	// expunge is left in knownMsgs (RFC 5465 §5 / Dovecot NO_EXPUNGES) so the
-	// client's sequence view stays consistent until it re-selects.
+	// expunge is left in knownMsgs (RFC 5465 §5) so the client's sequence view
+	// stays consistent until it re-selects.
 	notifyExpunge := !s.notifyActive || s.selExpunge
 	notifyFlags := !s.notifyActive || s.selFlagChange
 	notifyNew := !s.notifyActive || s.selNew
