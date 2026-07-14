@@ -234,6 +234,7 @@ func New(opts Options) *Server {
 		imaplib.CapSpecialUse:       {},
 		imaplib.CapCreateSpecialUse: {},
 		imaplib.CapObjectID:         {}, // RFC 8474 — MAILBOXID / EMAILID / THREADID
+		imaplib.CapNotify:           {}, // RFC 5465 — event notifications
 		imaplib.CapBinary:           {},
 		imaplib.CapQResync:          {},
 	}
@@ -423,6 +424,18 @@ type session struct {
 	// via subsequent * FLAGS responses; used to detect new keywords during Poll.
 	// Nil when no folder is selected.
 	knownKeywords map[string]struct{}
+
+	// notify holds the NOTIFY (RFC 5465) configuration for the selected mailbox.
+	// notifyActive is true once the client issues NOTIFY SET: from then on the
+	// selected mailbox's unsolicited responses are governed by selNew/selExpunge/
+	// selFlagChange (all false unless a SELECTED / SELECTED-DELAYED filter turned
+	// them on). selImmediateExpunge distinguishes SELECTED (immediate expunges)
+	// from SELECTED-DELAYED (deferred). NOTIFY NONE clears notifyActive.
+	notifyActive        bool
+	selNew              bool
+	selExpunge          bool
+	selFlagChange       bool
+	selImmediateExpunge bool
 
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
@@ -1610,6 +1623,40 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(m.UID)}, nil
 }
 
+// Notify configures NOTIFY (RFC 5465) for this session. options == nil is
+// NOTIFY NONE (revert to default behavior). Once NOTIFY SET is issued, the
+// selected mailbox's unsolicited responses are suppressed unless a SELECTED or
+// SELECTED-DELAYED filter re-enables specific events — matching RFC 5465 §5.
+// Non-selected mailbox filters are accepted but not yet acted on (phase 3).
+func (s *session) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOptions) error {
+	s.notifyActive = false
+	s.selNew, s.selExpunge, s.selFlagChange, s.selImmediateExpunge = false, false, false, false
+	if options == nil {
+		return nil
+	}
+	s.notifyActive = true
+	for _, it := range options.Items {
+		if it.MailboxSpec != imaplib.NotifyMailboxSpecSelected &&
+			it.MailboxSpec != imaplib.NotifyMailboxSpecSelectedDelayed {
+			continue
+		}
+		if it.MailboxSpec == imaplib.NotifyMailboxSpecSelected {
+			s.selImmediateExpunge = true
+		}
+		for _, e := range it.Events {
+			switch e {
+			case imaplib.NotifyEventMessageNew:
+				s.selNew = true
+			case imaplib.NotifyEventMessageExpunge:
+				s.selExpunge = true
+			case imaplib.NotifyEventFlagChange:
+				s.selFlagChange = true
+			}
+		}
+	}
+	return nil
+}
+
 // Poll delivers pending mailbox updates to the client between commands
 // (RFC 3501 §5.2). Three classes of update are handled:
 //
@@ -1653,24 +1700,35 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 		curMap[m.UID] = curInfo{m.ModSeq, m.Flags, m.Keywords}
 	}
 
+	// NOTIFY (RFC 5465): once NOTIFY SET is active the selected mailbox emits
+	// only the events the client re-enabled via SELECTED / SELECTED-DELAYED.
+	// Without NOTIFY, all three are on (default IMAP behavior). A suppressed
+	// expunge is left in knownMsgs (RFC 5465 §5 / Dovecot NO_EXPUNGES) so the
+	// client's sequence view stays consistent until it re-selects.
+	notifyExpunge := !s.notifyActive || s.selExpunge
+	notifyFlags := !s.notifyActive || s.selFlagChange
+	notifyNew := !s.notifyActive || s.selNew
+
 	// Phase 1: expunges — descending seq so each WriteExpungeUID seq number
 	// remains valid as earlier entries are removed from knownMsgs.
-	hadExpunges := false
-	for i := len(s.knownMsgs) - 1; i >= 0; i-- {
-		uid := s.knownMsgs[i].uid
-		if _, exists := curMap[uid]; exists {
-			continue
+	if notifyExpunge {
+		hadExpunges := false
+		for i := len(s.knownMsgs) - 1; i >= 0; i-- {
+			uid := s.knownMsgs[i].uid
+			if _, exists := curMap[uid]; exists {
+				continue
+			}
+			hadExpunges = true
+			if !allowExpunge {
+				continue
+			}
+			if err := w.WriteExpungeUID(uint32(i+1), imaplib.UID(uid)); err != nil {
+				return err
+			}
+			s.knownMsgs = append(s.knownMsgs[:i], s.knownMsgs[i+1:]...)
 		}
-		hadExpunges = true
-		if !allowExpunge {
-			continue
-		}
-		if err := w.WriteExpungeUID(uint32(i+1), imaplib.UID(uid)); err != nil {
-			return err
-		}
-		s.knownMsgs = append(s.knownMsgs[:i], s.knownMsgs[i+1:]...)
+		s.hasPendingExpunge = hadExpunges && !allowExpunge
 	}
-	s.hasPendingExpunge = hadExpunges && !allowExpunge
 
 	// Phase 2: flag updates — skipped entirely when hasPendingExpunge is true
 	// because the pre-expunge sequence numbers would be wrong on the client side.
@@ -1698,7 +1756,7 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 				}
 			}
 		}
-		if len(newKws) > 0 {
+		if notifyFlags && len(newKws) > 0 {
 			sysFlags := []imaplib.Flag{
 				imaplib.FlagAnswered, imaplib.FlagFlagged,
 				imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
@@ -1717,6 +1775,12 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 			}
 		}
 		for _, p := range pending {
+			// Advance the known modseq even when suppressing the FETCH, so the
+			// change is not re-detected on the next poll.
+			s.knownMsgs[p.seq-1].modseq = p.ci.modseq
+			if !notifyFlags {
+				continue
+			}
 			allFlags := make([]imaplib.Flag, 0, len(p.ci.flags)+len(p.ci.kw))
 			for _, f := range p.ci.flags {
 				allFlags = append(allFlags, imaplib.Flag(f))
@@ -1727,56 +1791,59 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 			if err := w.WriteMessageFlags(p.seq, imaplib.UID(p.uid), allFlags); err != nil {
 				return err
 			}
-			s.knownMsgs[p.seq-1].modseq = p.ci.modseq
 		}
 	}
 
 	// Phase 3: new messages — UIDs in current that are not yet in knownMsgs.
-	knownSet := make(map[uint32]struct{}, len(s.knownMsgs))
-	for _, km := range s.knownMsgs {
-		knownSet[km.uid] = struct{}{}
-	}
-	added := 0
-	var newKwsFromAppend []string
-	newKwSetFromAppend := make(map[string]struct{})
-	for _, m := range current {
-		if _, seen := knownSet[m.UID]; seen {
-			continue
+	// Suppressed (not added to knownMsgs, no EXISTS) when the client turned
+	// MessageNew off for the selected mailbox; it learns of them on re-select.
+	if notifyNew {
+		knownSet := make(map[uint32]struct{}, len(s.knownMsgs))
+		for _, km := range s.knownMsgs {
+			knownSet[km.uid] = struct{}{}
 		}
-		s.knownMsgs = append(s.knownMsgs, sessionMsg{uid: m.UID, modseq: m.ModSeq})
-		added++
-		for _, kw := range m.Keywords {
-			if _, known := s.knownKeywords[kw]; known {
+		added := 0
+		var newKwsFromAppend []string
+		newKwSetFromAppend := make(map[string]struct{})
+		for _, m := range current {
+			if _, seen := knownSet[m.UID]; seen {
 				continue
 			}
-			if _, dup := newKwSetFromAppend[kw]; dup {
-				continue
+			s.knownMsgs = append(s.knownMsgs, sessionMsg{uid: m.UID, modseq: m.ModSeq})
+			added++
+			for _, kw := range m.Keywords {
+				if _, known := s.knownKeywords[kw]; known {
+					continue
+				}
+				if _, dup := newKwSetFromAppend[kw]; dup {
+					continue
+				}
+				newKwsFromAppend = append(newKwsFromAppend, kw)
+				newKwSetFromAppend[kw] = struct{}{}
 			}
-			newKwsFromAppend = append(newKwsFromAppend, kw)
-			newKwSetFromAppend[kw] = struct{}{}
 		}
-	}
-	if len(newKwsFromAppend) > 0 {
-		sysFlags := []imaplib.Flag{
-			imaplib.FlagAnswered, imaplib.FlagFlagged,
-			imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
+		if len(newKwsFromAppend) > 0 {
+			sysFlags := []imaplib.Flag{
+				imaplib.FlagAnswered, imaplib.FlagFlagged,
+				imaplib.FlagDeleted, imaplib.FlagSeen, imaplib.FlagDraft,
+			}
+			mbFlags := make([]imaplib.Flag, len(sysFlags), len(sysFlags)+len(s.knownKeywords)+len(newKwsFromAppend))
+			copy(mbFlags, sysFlags)
+			for kw := range s.knownKeywords {
+				mbFlags = append(mbFlags, imaplib.Flag(kw))
+			}
+			for _, kw := range newKwsFromAppend {
+				mbFlags = append(mbFlags, imaplib.Flag(kw))
+				s.knownKeywords[kw] = struct{}{}
+			}
+			if err := w.WriteMailboxFlags(mbFlags); err != nil {
+				return err
+			}
 		}
-		mbFlags := make([]imaplib.Flag, len(sysFlags), len(sysFlags)+len(s.knownKeywords)+len(newKwsFromAppend))
-		copy(mbFlags, sysFlags)
-		for kw := range s.knownKeywords {
-			mbFlags = append(mbFlags, imaplib.Flag(kw))
-		}
-		for _, kw := range newKwsFromAppend {
-			mbFlags = append(mbFlags, imaplib.Flag(kw))
-			s.knownKeywords[kw] = struct{}{}
-		}
-		if err := w.WriteMailboxFlags(mbFlags); err != nil {
-			return err
-		}
-	}
-	if added > 0 {
-		if err := w.WriteNumMessages(uint32(len(s.knownMsgs))); err != nil {
-			return err
+		if added > 0 {
+			if err := w.WriteNumMessages(uint32(len(s.knownMsgs))); err != nil {
+				return err
+			}
 		}
 	}
 
