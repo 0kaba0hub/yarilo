@@ -342,6 +342,7 @@ func createFolder(user, pass, folder string) error {
 
 func checkFolder(user, pass, folder string) error {
 	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
 	for {
 		c, err := imapDial()
 		if err != nil {
@@ -353,11 +354,13 @@ func checkFolder(user, pass, folder string) error {
 			return fmt.Errorf("imap login: %w", loginErr)
 		}
 		exists, selErr := c.selectFolder(folder)
-		if selErr != nil {
-			c.close()
-			return fmt.Errorf("SELECT %q: %w", folder, selErr)
-		}
-		if exists >= 1 {
+		switch {
+		case selErr != nil:
+			// fileinto :create is asynchronous: lmtpSend returns once the relay
+			// accepts the message, before delivery+Sieve create the folder. A
+			// SELECT that beats it returns NONEXISTENT — keep polling, don't fail.
+			lastErr = selErr
+		case exists >= 1:
 			uids, _ := c.uidSearch("ALL")
 			c.deleteUIDs(uids) //nolint:errcheck
 			c.deleteFolder(folder)
@@ -366,6 +369,9 @@ func checkFolder(user, pass, folder string) error {
 		}
 		c.close()
 		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("folder %q never became selectable: %w", folder, lastErr)
+			}
 			return fmt.Errorf("expected 1 message in %q, got 0 (timed out)", folder)
 		}
 		time.Sleep(1 * time.Second)
