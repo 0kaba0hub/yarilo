@@ -1,4 +1,4 @@
-package sql
+package scheme
 
 import (
 	"testing"
@@ -30,9 +30,9 @@ func TestSplitScheme(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scheme, hash := splitScheme(tc.input)
+			scheme, hash := Split(tc.input)
 			if scheme != tc.wantScheme || hash != tc.wantHash {
-				t.Errorf("splitScheme(%q) = (%q, %q), want (%q, %q)",
+				t.Errorf("Split(%q) = (%q, %q), want (%q, %q)",
 					tc.input, scheme, hash, tc.wantScheme, tc.wantHash)
 			}
 		})
@@ -51,9 +51,9 @@ func TestCheckPassword_Plain(t *testing.T) {
 		{"rawpass", "other", false},
 	}
 	for _, tc := range cases {
-		got := checkPassword(tc.stored, tc.input)
+		got := Verify(tc.stored, tc.input)
 		if got != tc.want {
-			t.Errorf("checkPassword(%q, %q) = %v, want %v", tc.stored, tc.input, got, tc.want)
+			t.Errorf("Verify(%q, %q) = %v, want %v", tc.stored, tc.input, got, tc.want)
 		}
 	}
 }
@@ -75,7 +75,7 @@ func TestCheckPassword_Bcrypt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := checkPassword(tc.stored, tc.input); got != tc.want {
+			if got := Verify(tc.stored, tc.input); got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
@@ -99,7 +99,7 @@ func TestCheckPassword_SHA512Crypt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := checkPassword(tc.stored, tc.input); got != tc.want {
+			if got := Verify(tc.stored, tc.input); got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
@@ -107,7 +107,28 @@ func TestCheckPassword_SHA512Crypt(t *testing.T) {
 }
 
 func TestCheckPassword_UnknownScheme(t *testing.T) {
-	if checkPassword("{ARGON2}xyz", "topsecret") {
+	if Verify("{ARGON2}xyz", "topsecret") {
 		t.Error("unknown scheme should reject, not match")
+	}
+}
+
+func TestVerifyWithDefault_Crypt(t *testing.T) {
+	// A {SHA512-CRYPT} $6$ hash verified through a "CRYPT" default (the
+	// passwd-file default): the marker resolves the concrete algorithm.
+	c := sha512_crypt.New()
+	hash, err := c.Generate([]byte("topsecret"), []byte("$6$NaClNaCl"))
+	if err != nil {
+		t.Fatalf("sha512_crypt: %v", err)
+	}
+	if !VerifyWithDefault(hash, "topsecret", "CRYPT") {
+		t.Errorf("CRYPT default should verify a bare $6$ hash")
+	}
+	if VerifyWithDefault(hash, "wrong", "CRYPT") {
+		t.Errorf("CRYPT default accepted wrong password")
+	}
+	// An unmarked non-crypt value under CRYPT default is unsupported (DES) and
+	// must not fall back to PLAIN comparison.
+	if VerifyWithDefault("plaintextpw", "plaintextpw", "CRYPT") {
+		t.Errorf("CRYPT default must not PLAIN-compare an unmarked value")
 	}
 }

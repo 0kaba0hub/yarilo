@@ -1084,8 +1084,9 @@ type MasterUsersConfig struct {
 }
 
 type PassdbEntry struct {
-	Driver            string `koanf:"driver"` // sqlite | mysql | postgres
-	DSN               string `koanf:"dsn"`
+	Driver            string `koanf:"driver"`              // sqlite | mysql | postgres | passwd-file
+	DSN               string `koanf:"dsn"`                 // SQL drivers
+	PasswdFile        string `koanf:"passwd_file"`         // passwd-file driver: path to the file
 	PasswordQuery     string `koanf:"password_query"`      // custom SELECT; %u/%n/%d substituted as parameters
 	UserQuery         string `koanf:"user_query"`          // optional userdb lookup; %u/%n/%d substituted
 	IterateQuery      string `koanf:"iterate_query"`       // optional list-users query (admin tooling)
@@ -1442,6 +1443,7 @@ func expandEnv(cfg *Config) {
 	cfg.Protocol.Submission.Relay.Password = expand(cfg.Protocol.Submission.Relay.Password)
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
+		cfg.Auth.Passdb[i].PasswdFile = expand(cfg.Auth.Passdb[i].PasswdFile)
 	}
 	for i := range cfg.Auth.MasterUsers.Masterdb {
 		cfg.Auth.MasterUsers.Masterdb[i].DSN = expand(cfg.Auth.MasterUsers.Masterdb[i].DSN)

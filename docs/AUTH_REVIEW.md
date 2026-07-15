@@ -231,7 +231,7 @@ Low priority, does not block anything. Pull when concrete need surfaces.
 
 By operator demand:
 
-- `passwd-file` — self-hosted simple deployments
+- `passwd-file` — self-hosted simple deployments — **done** (passdb + userdb)
 - `ldap` — enterprise
 - `lua` — escape hatch
 - `pam` — UNIX shell users

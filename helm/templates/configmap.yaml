@@ -290,7 +290,12 @@ data:
       passdb:
         {{- range .Values.components.auth.passdb }}
         - driver: {{ .driver | quote }}
-          dsn: {{ .dsn | quote }}
+          {{- with .dsn }}
+          dsn: {{ . | quote }}
+          {{- end }}
+          {{- with .passwd_file }}
+          passwd_file: {{ . | quote }}
+          {{- end }}
           {{- with .password_query }}
           password_query: |
             {{- . | nindent 12 }}
@@ -316,7 +321,12 @@ data:
         masterdb:
           {{- range (.Values.components.auth.master_users.masterdb | default list) }}
           - driver: {{ .driver | quote }}
-            dsn: {{ .dsn | quote }}
+            {{- with .dsn }}
+            dsn: {{ . | quote }}
+            {{- end }}
+            {{- with .passwd_file }}
+            passwd_file: {{ . | quote }}
+            {{- end }}
             {{- with .password_query }}
             password_query: |
               {{- . | nindent 14 }}

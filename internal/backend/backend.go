@@ -17,8 +17,8 @@ import (
 	"github.com/emersion/go-sasl"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
+	"github.com/0kaba0hub/yarilo/internal/auth/passdbs"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
@@ -1099,26 +1099,6 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 }
 
 func buildPassdbs(entries []config.PassdbEntry) ([]protocol.Passdb, error) {
-	var dbs []protocol.Passdb
-	for _, e := range entries {
-		switch strings.ToLower(e.Driver) {
-		case "sqlite", "mysql", "postgres":
-			db, err := authsql.New(authsql.Config{
-				Driver:            e.Driver,
-				DSN:               e.DSN,
-				PasswordQuery:     e.PasswordQuery,
-				UserQuery:         e.UserQuery,
-				IterateQuery:      e.IterateQuery,
-				DefaultPassScheme: e.DefaultPassScheme,
-				SkipSchema:        e.SkipSchema,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("passdb %s: %w", e.Driver, err)
-			}
-			dbs = append(dbs, db)
-		default:
-			return nil, fmt.Errorf("unknown passdb driver: %s", e.Driver)
-		}
-	}
-	return dbs, nil
+	dbs, _, err := passdbs.Build(entries)
+	return dbs, err
 }
