@@ -1331,14 +1331,14 @@ extraVolumeMounts: []
 quota:
   enabled: false
   ## Quota-root name surfaced in IMAP GETQUOTA / GETQUOTAROOT responses.
-  name: "User quota"
+  quota_name: "User quota"
   ## Text returned when a save is rejected for being over quota
   ## (IMAP OVERQUOTA, LMTP 452, quota-status REJECT).
-  exceeded_message: "Quota exceeded (mailbox for user is full)"
+  quota_exceeded_message: "Quota exceeded (mailbox for user is full)"
   ## Reject any single message larger than this (human size, e.g. "50M").
   ## Empty / "0" = unlimited. Independent of the usage limit; carries a
   ## distinct "exceeds max mail size" rejection text.
-  mail_size: ""
+  quota_mail_size: ""
 
   ## Scale the resolved storage / message limit (limit*pct/100). 100 = no
   ## scaling. Useful to enforce at a fraction of the nominal limit.

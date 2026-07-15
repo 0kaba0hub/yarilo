@@ -22,9 +22,9 @@ acl:
 ## IMAP QUOTA extension exposure (protocol.imap.imap_quota).
 quota:
   enabled: true
-  name: "User quota"
-  exceeded_message: "Quota exceeded (mailbox for user is full)"
-  mail_size: "50M"
+  quota_name: "User quota"
+  quota_exceeded_message: "Quota exceeded (mailbox for user is full)"
+  quota_mail_size: "50M"
 
 ## Namespaces. Personal owns INBOX (storage from storage.mail_home_template);
 ## Public is a shared, non-owner store used to exercise delivery-through-namespaces.

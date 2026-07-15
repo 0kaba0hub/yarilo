@@ -537,13 +537,13 @@ type QuotaConfig struct {
 	Enabled bool `koanf:"enabled"`
 	// Name is the quota-root name surfaced in IMAP GETQUOTA / GETQUOTAROOT.
 	// Empty falls back to "User quota".
-	Name string `koanf:"name"`
+	Name string `koanf:"quota_name"`
 	// ExceededMessage is the text returned when a save is rejected for being
 	// over quota (IMAP OVERQUOTA, LMTP 452, quota-status). Empty uses a default.
-	ExceededMessage string `koanf:"exceeded_message"`
+	ExceededMessage string `koanf:"quota_exceeded_message"`
 	// MailSize rejects any single message larger than this (human size, e.g.
 	// "50M"). Empty / "0" = unlimited. Independent of the usage limit.
-	MailSize string `koanf:"mail_size"`
+	MailSize string `koanf:"quota_mail_size"`
 
 	// StoragePercentage scales the resolved storage limit (limit*pct/100).
 	// Default 100 (no scaling). Must be > 0.

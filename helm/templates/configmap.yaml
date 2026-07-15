@@ -386,14 +386,14 @@ data:
     {{- with .Values.quota }}
     quota:
       enabled: {{ .enabled | default false }}
-      {{- if .name }}
-      name: {{ .name | quote }}
+      {{- if .quota_name }}
+      quota_name: {{ .quota_name | quote }}
       {{- end }}
-      {{- if .exceeded_message }}
-      exceeded_message: {{ .exceeded_message | quote }}
+      {{- if .quota_exceeded_message }}
+      quota_exceeded_message: {{ .quota_exceeded_message | quote }}
       {{- end }}
-      {{- if .mail_size }}
-      mail_size: {{ .mail_size | quote }}
+      {{- if .quota_mail_size }}
+      quota_mail_size: {{ .quota_mail_size | quote }}
       {{- end }}
       {{- if .quota_storage_percentage }}
       quota_storage_percentage: {{ .quota_storage_percentage }}
