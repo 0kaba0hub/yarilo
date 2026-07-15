@@ -61,6 +61,13 @@ type UserInfo struct {
 	// group= ACL entries have no effect in that case.
 	Groups []string
 
+	// ACLUser / ACLGroups override the identity used when evaluating ACLs,
+	// sourced from the acl_user / acl_groups userdb fields. Set typically on a
+	// master-user session so ACL checks resolve as the impersonated ACL
+	// identity. Empty ACLUser means "evaluate as Username / Groups".
+	ACLUser   string
+	ACLGroups []string
+
 	// QuotaRules is the list of per-user quota rules sourced from the
 	// userdb `quota_rule=` extra field. Format: `*:storage=5G` or
 	// `*:messages=100000`. Empty means no quota limit.
@@ -112,6 +119,16 @@ type UserInfo struct {
 	// Storage layer must not use MasterUser for path derivation.
 	// MasterUser string
 	// AuthToken  string
+}
+
+// ACLIdentity returns the (user, groups) pair to evaluate ACLs against: the
+// acl_user / acl_groups override when set (master-user model), otherwise the
+// session's own Username / Groups.
+func (u *UserInfo) ACLIdentity() (string, []string) {
+	if u.ACLUser != "" {
+		return u.ACLUser, u.ACLGroups
+	}
+	return u.Username, u.Groups
 }
 
 // Resolver maps a username (+ optional userdb override) to an absolute home

@@ -59,7 +59,8 @@ func (s *session) aclEnforced(h *nsHandle) bool {
 // internal/userstate/acl.Store.EffectiveFor). The namespace's
 // hierarchy separator drives the walk; sep == 0 disables it.
 func (s *session) effectiveRights(h *nsHandle, folder string) (mailbox.Rights, error) {
-	return h.acl.EffectiveFor(folder, s.userInfo.Username, s.userInfo.Groups, s.isOwner(h), byte(h.spec.Separator))
+	aclUser, aclGroups := s.userInfo.ACLIdentity()
+	return h.acl.EffectiveFor(folder, aclUser, aclGroups, s.isOwner(h), byte(h.spec.Separator))
 }
 
 // requireRight loads the effective ACL for folder under h (with

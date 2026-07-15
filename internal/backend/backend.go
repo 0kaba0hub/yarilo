@@ -410,6 +410,8 @@ func New(cfg *config.Config) (*Server, error) {
 				}
 				mbi := lmtpResolver.UserInfo(username, ui.Home)
 				mbi.Groups = ui.Groups
+				mbi.ACLUser = ui.ACLUser
+				mbi.ACLGroups = ui.ACLGroups
 				mbi.QuotaRules = ui.QuotaRules
 				if ui.VolatileDir != "" {
 					vd := mailbox.ExpandHome(ui.VolatileDir, mbi.Home)
