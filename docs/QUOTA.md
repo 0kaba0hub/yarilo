@@ -114,6 +114,25 @@ Units: `K` (KiB), `M` (MiB), `G` (GiB), `T` (TiB). Plain integer
 is bytes. `0` means unlimited. Multiple rules are comma-joined in
 the SQL column; the last `*:storage=` rule wins.
 
+### Site-wide policy options
+
+These are global `quota:` config (not per-user rules) and layer on top of the
+resolved per-user limits:
+
+| Key | Default | Effect |
+|:----|:--------|:-------|
+| `quota_storage_percentage` | `100` | Scale the storage limit: `limit·pct/100`. |
+| `quota_message_percentage` | `100` | Scale the message-count limit. |
+| `quota_storage_extra` | `` | Byte headroom added to the storage limit after scaling. |
+| `quota_grace` | `10M` | Storage overshoot allowed on **inbound delivery (LMTP/LDA) only** — never interactive IMAP. Lets a nearly-full mailbox accept one more delivery. |
+| `quota_ignore_unlimited` | `false` | Omit the quota root from GETQUOTA/GETQUOTAROOT for unlimited users. |
+| `quota_mailbox_count` | `0` | Cap the number of mailboxes (folders). Enforced at CREATE — `NO [LIMIT] Maximum number of mailboxes reached`. `0` = unlimited. |
+| `quota_mailbox_message_count` | `0` | Cap messages in a single mailbox. Enforced on save — `NO [OVERQUOTA] Too many messages in the mailbox` (LMTP `552`). `0` = unlimited. |
+
+Effective storage limit = `rule_limit · quota_storage_percentage/100 + quota_storage_extra`
+(`+ quota_grace` on LMTP delivery). The scaled limit is what GETQUOTA reports and
+what every enforcement point checks.
+
 ## IMAP wire (RFC 9208)
 
 When `protocol.imap.imap_quota` is on the server advertises:

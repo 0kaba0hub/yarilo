@@ -68,6 +68,9 @@ type Options struct {
 	// QuotaMailSize rejects a single message larger than this many bytes
 	// (0 = unlimited), independent of the usage limit.
 	QuotaMailSize int64
+	// QuotaPolicy carries the site-wide quota tunables. On this inbound-delivery
+	// path storage grace IS applied (LMTP/LDA overshoot).
+	QuotaPolicy quota.Policy
 
 	// MetadataDict backs the mboxmetadata / servermetadata Sieve tests
 	// (RFC 5490 §4): the same dict IMAP uses for RFC 5464 METADATA. Nil
@@ -205,6 +208,20 @@ type session struct {
 	// rcptUserInfo caches per-recipient UserInfo fetched at RCPT TO time
 	// so LMTPData can use correct Home and QuotaRules without re-querying.
 	rcptUserInfo map[string]*mailbox.UserInfo
+}
+
+// folderMessageCount returns folder's current message count from the index
+// (the authoritative count backend). ok is false when the folder is unavailable.
+func folderMessageCount(idx quota.FolderVSizer, folder string) (int64, bool) {
+	f, err := idx.OpenFolder(folder, 0)
+	if err != nil {
+		return 0, false
+	}
+	_, msgs, err := idx.FolderVSize(f.ID)
+	if err != nil {
+		return 0, false
+	}
+	return int64(msgs), true
 }
 
 // quotaExceededMessage is the 452 text for an over-quota delivery.
@@ -606,11 +623,28 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				})
 				continue
 			}
+			// Per-mailbox message-count cap is structural (independent of a
+			// quota_rule): reject when the target folder would reach the limit.
+			if mmc := s.opts.QuotaPolicy.MailboxMessageCount; mmc > 0 {
+				if cur, ok := folderMessageCount(rcptIdx, folder); ok && cur+1 >= mmc {
+					slog.Warn("lmtp: delivery rejected: too many messages in mailbox", "rcpt", rcpt, "user", username, "folder", folder)
+					rcptBox.Close() //nolint:errcheck
+					rcptIdx.Close() //nolint:errcheck
+					status.SetStatus(rcpt, &goSmtp.SMTPError{
+						Code: 552, EnhancedCode: goSmtp.EnhancedCode{5, 2, 2},
+						Message: "Too many messages in the mailbox",
+					})
+					continue
+				}
+			}
 			if lim := quota.ParseRules(userInfo.QuotaRules); len(userInfo.QuotaRules) > 0 {
-				if effLim, ignore := lim.EffectiveLimits(folder); !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
+				effLim, ignore := lim.EffectiveLimits(folder)
+				effLim = s.opts.QuotaPolicy.Scale(effLim)
+				if !ignore && !effLim.Unlimited() {
 					entries, _ := rcptBox.ListFolders()
 					u := quota.CountUsage(rcptIdx, mailbox.SelectableNames(entries), lim)
-					if quota.IsOver(u, effLim, int64(len(msg)), 1) {
+					// Inbound delivery is grace-eligible (LMTP/LDA overshoot).
+					if quota.IsOverWithGrace(u, effLim, int64(len(msg)), 1, s.opts.QuotaPolicy.StorageGrace) {
 						slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
 						rcptBox.Close() //nolint:errcheck
 						rcptIdx.Close() //nolint:errcheck

@@ -51,6 +51,9 @@ type Options struct {
 	// MailSize rejects a single message larger than this many bytes (0 =
 	// unlimited), independent of the usage limit.
 	MailSize int64
+	// Policy carries the site-wide quota tunables. This is a delivery pre-check,
+	// so storage grace IS applied (like LMTP).
+	Policy quota.Policy
 }
 
 // exceededMessage returns the over-quota REJECT text (default "Mailbox full").
@@ -160,7 +163,8 @@ func (s *Server) check(attrs map[string]string) string {
 	}
 
 	effLim, ignore := limits.EffectiveLimits(folder)
-	if ignore || (effLim.StorageBytes == 0 && effLim.Messages == 0) {
+	effLim = s.opts.Policy.Scale(effLim)
+	if ignore || effLim.Unlimited() {
 		return "DUNNO"
 	}
 
@@ -189,7 +193,8 @@ func (s *Server) check(attrs map[string]string) string {
 		return fmt.Sprintf("REJECT 552 5.2.3 Requested allocation size %d exceeds max mail size %d", msgSize, s.opts.MailSize)
 	}
 
-	if quota.IsOver(u, effLim, msgSize, 1) {
+	// quota-status is an inbound-delivery pre-check, so storage grace applies.
+	if quota.IsOverWithGrace(u, effLim, msgSize, 1, s.opts.Policy.StorageGrace) {
 		slog.Info("quotastatus: reject over-quota",
 			"user", username, "folder", folder,
 			"storage_bytes", u.StorageBytes, "messages", u.Messages,

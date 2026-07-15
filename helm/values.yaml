@@ -1340,6 +1340,27 @@ quota:
   ## distinct "exceeds max mail size" rejection text.
   mail_size: ""
 
+  ## Scale the resolved storage / message limit (limit*pct/100). 100 = no
+  ## scaling. Useful to enforce at a fraction of the nominal limit.
+  quota_storage_percentage: 100
+  quota_message_percentage: 100
+  ## Byte headroom added to the storage limit after the percentage scaling
+  ## (human size). Empty / "0" = none.
+  quota_storage_extra: ""
+  ## Storage overshoot allowed past the limit on inbound delivery (LMTP/LDA)
+  ## ONLY — never interactive IMAP. Lets a nearly-full mailbox still accept one
+  ## more delivery. Human size. Default "10M".
+  quota_grace: "10M"
+  ## Omit the quota root from IMAP GETQUOTA/GETQUOTAROOT for users whose limits
+  ## are all unlimited.
+  quota_ignore_unlimited: false
+  ## Cap the number of mailboxes (folders) a user may have. 0 = unlimited.
+  ## Enforced at folder creation.
+  quota_mailbox_count: 0
+  ## Cap the number of messages in a single mailbox. 0 = unlimited. Enforced
+  ## on save (IMAP APPEND/COPY/MOVE, LMTP delivery).
+  quota_mailbox_message_count: 0
+
 acl:
   enabled: false
   ## Root-level default ACLs resolve from INBOX's ACL for private and

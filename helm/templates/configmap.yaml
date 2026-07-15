@@ -395,6 +395,27 @@ data:
       {{- if .mail_size }}
       mail_size: {{ .mail_size | quote }}
       {{- end }}
+      {{- if .quota_storage_percentage }}
+      quota_storage_percentage: {{ .quota_storage_percentage }}
+      {{- end }}
+      {{- if .quota_message_percentage }}
+      quota_message_percentage: {{ .quota_message_percentage }}
+      {{- end }}
+      {{- if .quota_storage_extra }}
+      quota_storage_extra: {{ .quota_storage_extra | quote }}
+      {{- end }}
+      {{- if .quota_grace }}
+      quota_grace: {{ .quota_grace | quote }}
+      {{- end }}
+      {{- if .quota_ignore_unlimited }}
+      quota_ignore_unlimited: true
+      {{- end }}
+      {{- if .quota_mailbox_count }}
+      quota_mailbox_count: {{ .quota_mailbox_count }}
+      {{- end }}
+      {{- if .quota_mailbox_message_count }}
+      quota_mailbox_message_count: {{ .quota_mailbox_message_count }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.namespaces }}
