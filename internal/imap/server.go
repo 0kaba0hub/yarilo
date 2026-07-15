@@ -130,6 +130,10 @@ type Options struct {
 	QuotaPolicy quota.Policy
 	// QuotaWarner runs quota_warning actions. Nil = warnings only log.
 	QuotaWarner *quotawarn.Runner
+	// QuotaClone mirrors usage to external dicts. Nil = disabled.
+	QuotaClone *quota.Clone
+	// QuotaCloneFlushDelay debounces clone writes (one per interval per session).
+	QuotaCloneFlushDelay time.Duration
 
 	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
 	// capability + GETQUOTA / GETQUOTAROOT commands. Client-facing query only —
@@ -474,6 +478,11 @@ type session struct {
 	// used as the "before" side of quota_warning crossing detection.
 	quotaSnap    quota.Usage
 	quotaSnapSet bool
+	// quota_clone debounce state: mirror at most once per flush delay, deferring
+	// the latest usage to a final flush on session close.
+	cloneDirty     bool
+	cloneDirtyUsg  quota.Usage
+	cloneLastFlush time.Time
 
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
@@ -538,10 +547,18 @@ func (s *session) emitMailboxChange(folder string, eventType locks.EventType, ui
 	// clone. Independent of the event bus, so it runs before the Locker guard.
 	if eventType == locks.EventDelivered || eventType == locks.EventExpunged {
 		s.quotaChanged()
-		// Evaluate quota_warning crossings against the fresh post-commit usage.
-		if len(s.srv.opts.QuotaPolicy.Warnings) > 0 && s.quotaSnapSet {
+		// A single fresh post-commit read feeds both quota_warning crossing
+		// detection and the quota_clone mirror.
+		wantWarn := len(s.srv.opts.QuotaPolicy.Warnings) > 0 && s.quotaSnapSet
+		wantClone := s.srv.opts.QuotaClone != nil
+		if wantWarn || wantClone {
 			if after, err := s.countUsage(false); err == nil {
-				s.fireQuotaWarnings(after)
+				if wantWarn {
+					s.fireQuotaWarnings(after)
+				}
+				if wantClone {
+					s.cloneMirror(after)
+				}
 			}
 		}
 	}
@@ -574,6 +591,7 @@ func (s *session) emitMailboxList(eventType locks.EventType, payload string) {
 }
 
 func (s *session) Close() error {
+	s.cloneFlushFinal()
 	s.stopNotifyWatch()
 	if s.srv.opts.ConnLimit != nil && s.userInfo != nil {
 		s.srv.opts.ConnLimit.Release(s.userInfo.Username, s.limitIP)

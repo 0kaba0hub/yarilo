@@ -51,22 +51,37 @@ value is computed from the mailbox index.
 
 Both default off in Helm (`quota.enabled: false`, `protocol.imap.imap_quota: true`).
 
-## quota_clone (external mirror) — separate, optional, not yet built
+## quota_clone (external mirror)
 
-Dovecot's `quota_clone` mirrors the current usage into a dict for **external**
+`quota_clone` mirrors the current usage into external dicts for **external**
 consumers outside the mail server (provisioning DB, dashboard). It is **not**
-part of enforcement (Dovecot's own quota-status opens the mailbox). yarilo will
-add it as an optional feature with a **multi-dict fan-out** (write to SQL + Redis
-in parallel — Dovecot allows only one dict). The `dicts.quota` config is reserved
-for this; nothing reads it in the enforcement path.
+part of enforcement — enforcement always reads the index; yarilo's own
+quota-status opens the mailbox. The mirror is advisory and never the source of
+truth.
 
-## TODO (tracked in #549)
+The trigger matches the reference plugin: on a usage-changing event (save /
+copy / expunge) the session marks the mirror dirty and, at most once per
+`quota_clone_flush_delay` seconds, reads the authoritative count and writes it
+out; a final flush runs on session close. Only **active** users (with an open
+session) are mirrored — there is no full-user sweep.
 
-- **quota_grace** — bounded temporary overshoot (Dovecot `quota_storage_grace`),
-  threaded into `IsOver`.
-- **quota_warning** — threshold events (80 %/95 %) via the locks bus / webhook /
-  Sieve notification.
-- **quota_clone** — the multi-dict external mirror above.
+yarilo's enhancement over the single-dict reference is a **multi-dict fan-out**:
+several targets are written in parallel (e.g. SQL + Redis at once), each
+best-effort — a failing target is logged and never blocks the others or the
+authoritative path.
+
+```yaml
+quota:
+  quota_clone_dicts: [quota_clone_sql, quota_clone_redis]  # names from dicts:
+  quota_clone_flush_delay: 10
+dicts:
+  quota_clone_sql:   { driver: sql,   ... }
+  quota_clone_redis: { driver: redis, ... }
+```
+
+Keys written per user: `priv/quota/storage` (bytes) and `priv/quota/messages`
+(count) — the same layout Dovecot's clone uses, so existing external readers
+work unchanged.
 
 ## Configuration
 

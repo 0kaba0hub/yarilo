@@ -74,6 +74,8 @@ type Options struct {
 	QuotaPolicy quota.Policy
 	// QuotaWarner runs quota_warning actions. Nil = warnings only log.
 	QuotaWarner *quotawarn.Runner
+	// QuotaClone mirrors usage to external dicts after delivery. Nil = disabled.
+	QuotaClone *quota.Clone
 
 	// MetadataDict backs the mboxmetadata / servermetadata Sieve tests
 	// (RFC 5490 §4): the same dict IMAP uses for RFC 5464 METADATA. Nil
@@ -660,9 +662,16 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					// Delivery accepted — fire any quota_warning crossed by this
 					// increment (inbound delivery is an "over" transition).
 					// Warnings track the user-wide limit, not the per-folder one.
-					if len(s.opts.QuotaPolicy.Warnings) > 0 {
+					if len(s.opts.QuotaPolicy.Warnings) > 0 || s.opts.QuotaClone != nil {
 						after := quota.Usage{StorageBytes: u.StorageBytes + int64(len(msg)), Messages: u.Messages + 1}
-						s.opts.QuotaWarner.Fire(username, userInfo.Home, s.opts.QuotaPolicy.Warnings, s.opts.QuotaPolicy.Scale(lim), u, after)
+						if len(s.opts.QuotaPolicy.Warnings) > 0 {
+							s.opts.QuotaWarner.Fire(username, userInfo.Home, s.opts.QuotaPolicy.Warnings, s.opts.QuotaPolicy.Scale(lim), u, after)
+						}
+						if s.opts.QuotaClone != nil {
+							cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+							s.opts.QuotaClone.Write(cctx, username, after)
+							ccancel()
+						}
 					}
 				}
 			}

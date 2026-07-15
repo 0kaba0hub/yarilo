@@ -113,6 +113,36 @@ func (s *session) effectiveLimits(folder string) (quota.Limits, bool) {
 	return s.quotaPolicy().Scale(lim), false
 }
 
+// cloneMirror updates the quota_clone mirror with usage u, debounced: it writes
+// at most once per flush delay and otherwise defers the latest usage to the
+// final flush on session close. Mirrors the reference plugin's 10s flush timer.
+func (s *session) cloneMirror(u quota.Usage) {
+	if s.srv.opts.QuotaClone == nil || s.userInfo == nil {
+		return
+	}
+	if time.Since(s.cloneLastFlush) >= s.srv.opts.QuotaCloneFlushDelay {
+		s.cloneFlush(u)
+		return
+	}
+	s.cloneDirtyUsg, s.cloneDirty = u, true
+}
+
+// cloneFlush writes u to the clone dicts now and resets the debounce state.
+func (s *session) cloneFlush(u quota.Usage) {
+	s.cloneLastFlush = time.Now()
+	s.cloneDirty = false
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.srv.opts.QuotaClone.Write(ctx, s.userInfo.Username, u)
+}
+
+// cloneFlushFinal writes any deferred usage on session close.
+func (s *session) cloneFlushFinal() {
+	if s.srv.opts.QuotaClone != nil && s.cloneDirty && s.userInfo != nil {
+		s.cloneFlush(s.cloneDirtyUsg)
+	}
+}
+
 // GetQuotaRoot implements imapserver.SessionQuota.
 func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 	if !s.quotaExtensionEnabled() {
