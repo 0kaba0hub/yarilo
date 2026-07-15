@@ -16,6 +16,16 @@ hostname: mail-sb.seconddns.com
 acl:
   enabled: true
 
+## Quota engine — count-authoritative enforcement on every save (IMAP
+## APPEND/COPY/MOVE, LMTP delivery, quota-status policy service). Limits come
+## from the userdb quota_rule (see auth.passdb user_query). Independent of the
+## IMAP QUOTA extension exposure (protocol.imap.imap_quota).
+quota:
+  enabled: true
+  name: "User quota"
+  exceeded_message: "Quota exceeded (mailbox for user is full)"
+  mail_size: "50M"
+
 ## Namespaces. Personal owns INBOX (storage from storage.mail_home_template);
 ## Public is a shared, non-owner store used to exercise delivery-through-namespaces.
 namespaces:
@@ -62,6 +72,7 @@ protocol:
   imap:
     imap_idle_notify_interval: 120
     imap_max_line_length: 65536
+    imap_quota: true
   lmtp:
     add_received_header: true
     hdr_delivery_address: final
