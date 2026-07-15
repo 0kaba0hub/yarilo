@@ -2113,6 +2113,10 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	if err != nil {
 		return err
 	}
+	// Capture the pre-expunge usage as the quota_warning "before" baseline right
+	// here — the per-message expunge events below supply "after", so an "under"
+	// crossing fires on a delete-only session regardless of SELECT-time seeding.
+	s.captureQuotaSnap()
 	// Track the current sequence number separately: each expunged message
 	// shifts all subsequent sequence numbers down by one, so we must adjust
 	// as we go rather than using the static position from GetMessages.

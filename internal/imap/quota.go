@@ -120,16 +120,28 @@ func (s *session) evalOverStatus(u quota.Usage) {
 // trusted for the quota_over_status check (mirrors the reference 10s guard).
 const overStatusMaxDelay = 10 * time.Second
 
-// seedQuotaWarnSnap captures a baseline usage snapshot when none exists yet, so
-// a quota_warning "under" crossing fires on a delete-only session (EXPUNGE with
-// no prior save to seed the "before" side). No-op without warnings configured.
-func (s *session) seedQuotaWarnSnap() {
-	if len(s.quotaPolicy().Warnings) == 0 || s.quotaSnapSet {
+// captureQuotaSnap forces the quota_warning "before" baseline to the current
+// usage. Called immediately before a mutating op (expunge) so the crossing
+// detection has a correct pre-op value even on a delete-only session — the
+// SELECT-time seed can miss (usage not yet readable, or the snapshot reset
+// between SELECT and the delete). No-op without warnings configured.
+func (s *session) captureQuotaSnap() {
+	if len(s.quotaPolicy().Warnings) == 0 {
 		return
 	}
 	if u, err := s.countUsage(false); err == nil {
 		s.quotaSnap, s.quotaSnapSet = u, true
 	}
+}
+
+// seedQuotaWarnSnap captures a baseline usage snapshot when none exists yet, so
+// a quota_warning "under" crossing fires on a delete-only session (EXPUNGE with
+// no prior save to seed the "before" side). No-op without warnings configured.
+func (s *session) seedQuotaWarnSnap() {
+	if s.quotaSnapSet {
+		return
+	}
+	s.captureQuotaSnap()
 }
 
 // fireQuotaWarnings evaluates quota_warning crossings for the transition from
