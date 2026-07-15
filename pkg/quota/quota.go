@@ -175,6 +175,11 @@ func parseRule(rule string, out *Limits) {
 	}
 }
 
+// ParseSize converts a human-readable size like "5G", "500M", "1T" or a plain
+// byte count into bytes. "0" or empty means unlimited (0). Exported for config
+// wiring (e.g. quota_mail_size).
+func ParseSize(s string) int64 { return parseSize(s) }
+
 // parseSize converts a human-readable size like "5G", "500M", "1T"
 // or a plain byte count into bytes. "0" or empty means unlimited (0).
 func parseSize(s string) int64 {

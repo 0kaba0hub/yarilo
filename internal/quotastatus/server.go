@@ -43,6 +43,30 @@ type Options struct {
 	AliasDict dict.Dict
 	// AliasMaxHops is the maximum alias chain depth. Default: 5.
 	AliasMaxHops int
+	// RecipientDelimiter separates the address detail used to derive the target
+	// folder (alice+Spam@ → Spam). Default "+".
+	RecipientDelimiter string
+	// ExceededMessage is the REJECT text when over quota. Empty uses a default.
+	ExceededMessage string
+	// MailSize rejects a single message larger than this many bytes (0 =
+	// unlimited), independent of the usage limit.
+	MailSize int64
+}
+
+// exceededMessage returns the over-quota REJECT text (default "Mailbox full").
+func (s *Server) exceededMessage() string {
+	if m := s.opts.ExceededMessage; m != "" {
+		return m
+	}
+	return "Mailbox full"
+}
+
+// recipientDelimiter returns the configured detail separator (default "+").
+func (o Options) recipientDelimiter() byte {
+	if o.RecipientDelimiter != "" {
+		return o.RecipientDelimiter[0]
+	}
+	return '+'
 }
 
 // Server is the Postfix policy server.
@@ -113,9 +137,10 @@ func (s *Server) check(attrs map[string]string) string {
 	// Resolve through alias chain. Folder is always derived from the
 	// original recipient's detail part (e.g. alice+Spam@ → folder=Spam)
 	// so that per-folder ignore rules apply correctly.
-	folder := extractFolder(rawRecipient)
+	delim := s.opts.recipientDelimiter()
+	folder := extractFolder(rawRecipient, delim)
 	resolved := s.resolveAlias(context.Background(), rawRecipient)
-	username := extractUsername(resolved)
+	username := extractUsername(resolved, delim)
 
 	if !s.opts.Enabled || s.opts.UserdbLookup == nil || s.opts.Mailbox == nil || s.opts.Index == nil {
 		return "DUNNO"
@@ -157,43 +182,50 @@ func (s *Server) check(attrs map[string]string) string {
 		msgSize, _ = strconv.ParseInt(sz, 10, 64)
 	}
 
+	// Per-message size cap: distinct text so the sender can tell "too large"
+	// from "mailbox full".
+	if s.opts.MailSize > 0 && msgSize > s.opts.MailSize {
+		slog.Info("quotastatus: reject oversize", "user", username, "msg_size", msgSize, "max", s.opts.MailSize)
+		return fmt.Sprintf("REJECT 552 5.2.3 Requested allocation size %d exceeds max mail size %d", msgSize, s.opts.MailSize)
+	}
+
 	if quota.IsOver(u, effLim, msgSize, 1) {
 		slog.Info("quotastatus: reject over-quota",
 			"user", username, "folder", folder,
 			"storage_bytes", u.StorageBytes, "messages", u.Messages,
 			"limit_bytes", effLim.StorageBytes, "msg_size", msgSize,
 			"per_user_rules", len(ui.QuotaRules) > 0)
-		return "REJECT 452 4.2.2 Mailbox full"
+		return "REJECT 452 4.2.2 " + s.exceededMessage()
 	}
 	return "DUNNO"
 }
 
 // extractUsername strips the detail part from a recipient address:
-// alice+tag@example.com → alice@example.com
-func extractUsername(addr string) string {
+// alice+tag@example.com → alice@example.com (delim is the detail separator).
+func extractUsername(addr string, delim byte) string {
 	addr = strings.Trim(strings.TrimSpace(addr), "<>")
 	at := strings.LastIndexByte(addr, '@')
 	if at < 0 {
 		return addr
 	}
 	local, domain := addr[:at], addr[at+1:]
-	if plus := strings.IndexByte(local, '+'); plus >= 0 {
-		local = local[:plus]
+	if d := strings.IndexByte(local, delim); d >= 0 {
+		local = local[:d]
 	}
 	return local + "@" + domain
 }
 
 // extractFolder returns the delivery folder inferred from the recipient
 // detail part: alice+Sent@example.com → "Sent", alice@example.com → "INBOX".
-func extractFolder(addr string) string {
+func extractFolder(addr string, delim byte) string {
 	addr = strings.Trim(strings.TrimSpace(addr), "<>")
 	at := strings.LastIndexByte(addr, '@')
 	local := addr
 	if at >= 0 {
 		local = addr[:at]
 	}
-	if plus := strings.IndexByte(local, '+'); plus >= 0 {
-		if folder := local[plus+1:]; folder != "" {
+	if d := strings.IndexByte(local, delim); d >= 0 {
+		if folder := local[d+1:]; folder != "" {
 			return folder
 		}
 	}
@@ -230,7 +262,7 @@ func (s *Server) resolveAlias(ctx context.Context, addr string) string {
 			continue
 		}
 		// If current has a detail part, retry with the bare address.
-		if bare := extractUsername(current); bare != current {
+		if bare := extractUsername(current, s.opts.recipientDelimiter()); bare != current {
 			if dest, ok := s.lookupAlias(ctx, bare); ok {
 				current = dest
 				continue

@@ -116,6 +116,13 @@ type Options struct {
 	// rejected with OVERQUOTA when over the user's limit, summed from the index.
 	// Independent of the IMAP QUOTA extension below.
 	QuotaEngine bool
+	// QuotaName is the quota-root name in GETQUOTA responses (default "User quota").
+	QuotaName string
+	// QuotaExceededMessage is the text of the OVERQUOTA rejection.
+	QuotaExceededMessage string
+	// QuotaMailSize rejects a single message larger than this many bytes
+	// (0 = unlimited), independent of the usage limit.
+	QuotaMailSize int64
 
 	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
 	// capability + GETQUOTA / GETQUOTAROOT commands. Client-facing query only —

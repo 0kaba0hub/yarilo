@@ -74,11 +74,20 @@ Two independent toggles (both default off/on per Helm):
 
 ```yaml
 quota:
-  enabled: true        # engine: enforce on every save (APPEND/COPY/MOVE, LMTP, quota-status)
+  enabled: true                    # engine: enforce on every save (APPEND/COPY/MOVE, LMTP, quota-status)
+  name: "User quota"               # quota-root name in GETQUOTA / GETQUOTAROOT
+  exceeded_message: "Quota exceeded (mailbox for user is full)"  # over-quota rejection text
+  mail_size: ""                    # reject any single message larger than this ("50M"); ""/"0" = unlimited
 protocol:
   imap:
     imap_quota: true   # IMAP QUOTA extension: advertise QUOTA + answer GETQUOTA (query only)
 ```
+
+`mail_size` is independent of the usage limit and applies even without a
+per-user `quota_rule`; its rejection carries a distinct "exceeds max mail size"
+text so a client can tell "message too large" from "mailbox full". The
+`quota-status` policy service additionally honours `quota_status.recipient_delimiter`
+(default `+`) when deriving the target folder from the recipient detail part.
 
 No dict is needed — usage is summed from the index. Set a per-user limit in the SQL passdb:
 
@@ -136,10 +145,17 @@ values are raw counts. Limit `0` means unlimited.
 
 ## Enforcement
 
-When a user is over quota, `APPEND` returns:
+When a user is over quota, `APPEND` returns (text from `quota.exceeded_message`):
 
 ```
-NO [OVERQUOTA] Quota exceeded
+NO [OVERQUOTA] Quota exceeded (mailbox for user is full)
+```
+
+A message larger than `quota.mail_size` is rejected regardless of usage with a
+distinct text:
+
+```
+NO [OVERQUOTA] Requested allocation size 1200000 exceeds max mail size 1048576
 ```
 
 The check reads current usage from the index. On a transient read error

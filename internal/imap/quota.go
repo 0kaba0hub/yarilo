@@ -2,6 +2,7 @@ package imap
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -59,6 +60,22 @@ func (s *session) quotaEngineEnabled() bool {
 	return s.srv.opts.QuotaEngine
 }
 
+// quotaName is the quota-root name surfaced to clients (default "User quota").
+func (s *session) quotaName() string {
+	if n := s.srv.opts.QuotaName; n != "" {
+		return n
+	}
+	return quota.RootName
+}
+
+// quotaExceededMessage is the text of an over-quota rejection.
+func (s *session) quotaExceededMessage() string {
+	if m := s.srv.opts.QuotaExceededMessage; m != "" {
+		return m
+	}
+	return "Quota exceeded"
+}
+
 func (s *session) quotaLimits() quota.Limits {
 	if s.userInfo == nil {
 		return quota.Limits{}
@@ -77,10 +94,10 @@ func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
 	}
 	limits := s.quotaLimits()
-	qd := buildQuotaData(u, limits)
+	qd := buildQuotaData(u, limits, s.quotaName())
 	return &imaplib.QuotaRootData{
 		Mailbox: mailbox,
-		Roots:   []string{quota.RootName},
+		Roots:   []string{s.quotaName()},
 		Quotas:  []imaplib.QuotaData{qd},
 	}, nil
 }
@@ -98,15 +115,15 @@ func (s *session) GetQuota(root string) (*imaplib.QuotaData, error) {
 		return &qd, nil
 	}
 	limits := s.quotaLimits()
-	qd := buildQuotaData(u, limits)
+	qd := buildQuotaData(u, limits, s.quotaName())
 	qd.Name = root
 	return &qd, nil
 }
 
 // buildQuotaData constructs the IMAP QuotaData from current usage
 // and resolved limits. STORAGE is in kibibytes per RFC 9208.
-func buildQuotaData(u quota.Usage, lim quota.Limits) imaplib.QuotaData {
-	qd := imaplib.QuotaData{Name: quota.RootName}
+func buildQuotaData(u quota.Usage, lim quota.Limits, name string) imaplib.QuotaData {
+	qd := imaplib.QuotaData{Name: name}
 	storageUsageKiB := quota.StorageBytesToKiB(u.StorageBytes)
 	storageLimitKiB := quota.StorageBytesToKiB(lim.StorageBytes)
 	qd.Resources = append(qd.Resources, imaplib.QuotaResource{
@@ -131,6 +148,16 @@ func (s *session) quotaCheckAppend(_ context.Context, folder string, bytes int64
 	if !s.quotaEngineEnabled() || s.userInfo == nil {
 		return nil
 	}
+	// Per-message size cap is independent of the usage limit and applies even
+	// when no quota_rule is set. Its rejection text is distinct so a client can
+	// tell "message too large" from "mailbox full".
+	if ms := s.srv.opts.QuotaMailSize; ms > 0 && bytes > ms {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCode("OVERQUOTA"),
+			Text: fmt.Sprintf("Requested allocation size %d exceeds max mail size %d", bytes, ms),
+		}
+	}
 	lim := s.quotaLimits()
 	effLim, ignore := lim.EffectiveLimits(folder)
 	if ignore {
@@ -147,7 +174,7 @@ func (s *session) quotaCheckAppend(_ context.Context, folder string, bytes int64
 		return &imaplib.Error{
 			Type: imaplib.StatusResponseTypeNo,
 			Code: imaplib.ResponseCode("OVERQUOTA"),
-			Text: "Quota exceeded",
+			Text: s.quotaExceededMessage(),
 		}
 	}
 	return nil
