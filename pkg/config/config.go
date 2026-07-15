@@ -575,6 +575,14 @@ type QuotaConfig struct {
 	WarningExecTimeout int `koanf:"quota_warning_exec_timeout"`
 	// Warnings are the quota_warning rules.
 	Warnings []QuotaWarning `koanf:"quota_warnings"`
+	// CloneDicts names the dicts (from the top-level dicts: map) that mirror the
+	// authoritative usage. Empty disables cloning. yarilo fans out to all of
+	// them at once (e.g. SQL + Redis). The mirror is advisory, never the source
+	// of truth.
+	CloneDicts []string `koanf:"quota_clone_dicts"`
+	// CloneFlushDelay debounces clone writes: at most one mirror write per this
+	// many seconds per session, plus a final flush on session close. Default 10.
+	CloneFlushDelay int `koanf:"quota_clone_flush_delay"`
 }
 
 // QuotaWarning is one quota_warning rule (fires an action when usage crosses a
@@ -1397,6 +1405,7 @@ func Load(path string) (*Config, error) {
 			StoragePercentage: 100,
 			MessagePercentage: 100,
 			Grace:             "10M",
+			CloneFlushDelay:   10,
 		},
 		SASLLogin: SASLLoginConfig{
 			Listen:         ":12325",
@@ -1532,6 +1541,16 @@ func expandEnv(cfg *Config) {
 	}
 	for i := range cfg.Auth.MasterUsers.Masterdb {
 		cfg.Auth.MasterUsers.Masterdb[i].DSN = expand(cfg.Auth.MasterUsers.Masterdb[i].DSN)
+	}
+	// Dict connection settings (dsn, addr, password, ...) commonly come from a
+	// secret via ${ENV}. Settings is a shared map, so mutating it in place is
+	// visible through cfg.Dicts.
+	for _, dc := range cfg.Dicts {
+		for k, v := range dc.Settings {
+			if s, ok := v.(string); ok {
+				dc.Settings[k] = expand(s)
+			}
+		}
 	}
 }
 

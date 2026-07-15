@@ -88,6 +88,18 @@ func (s *session) quotaPolicy() quota.Policy {
 	return s.srv.opts.QuotaPolicy
 }
 
+// seedQuotaWarnSnap captures a baseline usage snapshot when none exists yet, so
+// a quota_warning "under" crossing fires on a delete-only session (EXPUNGE with
+// no prior save to seed the "before" side). No-op without warnings configured.
+func (s *session) seedQuotaWarnSnap() {
+	if len(s.quotaPolicy().Warnings) == 0 || s.quotaSnapSet {
+		return
+	}
+	if u, err := s.countUsage(false); err == nil {
+		s.quotaSnap, s.quotaSnapSet = u, true
+	}
+}
+
 // fireQuotaWarnings evaluates quota_warning crossings for the transition from
 // the captured pre-op usage snapshot to after, running any matched actions.
 // No-op when no warnings are configured or no snapshot has been captured yet.
@@ -111,6 +123,36 @@ func (s *session) effectiveLimits(folder string) (quota.Limits, bool) {
 		return lim, true
 	}
 	return s.quotaPolicy().Scale(lim), false
+}
+
+// cloneMirror updates the quota_clone mirror with usage u, debounced: it writes
+// at most once per flush delay and otherwise defers the latest usage to the
+// final flush on session close. Mirrors the reference plugin's 10s flush timer.
+func (s *session) cloneMirror(u quota.Usage) {
+	if s.srv.opts.QuotaClone == nil || s.userInfo == nil {
+		return
+	}
+	if time.Since(s.cloneLastFlush) >= s.srv.opts.QuotaCloneFlushDelay {
+		s.cloneFlush(u)
+		return
+	}
+	s.cloneDirtyUsg, s.cloneDirty = u, true
+}
+
+// cloneFlush writes u to the clone dicts now and resets the debounce state.
+func (s *session) cloneFlush(u quota.Usage) {
+	s.cloneLastFlush = time.Now()
+	s.cloneDirty = false
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.srv.opts.QuotaClone.Write(ctx, s.userInfo.Username, u)
+}
+
+// cloneFlushFinal writes any deferred usage on session close.
+func (s *session) cloneFlushFinal() {
+	if s.srv.opts.QuotaClone != nil && s.cloneDirty && s.userInfo != nil {
+		s.cloneFlush(s.cloneDirtyUsg)
+	}
 }
 
 // GetQuotaRoot implements imapserver.SessionQuota.

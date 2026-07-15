@@ -141,8 +141,8 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: dicts.metadata: %w", err)
 	}
-	// dicts.quota is reserved for the future quota_clone external mirror; the
-	// enforcement path reads the index, not a dict.
+	// The quota_clone mirror (built below from quota_clone_dicts) is the only
+	// dict consumer of quota data; the enforcement path reads the index.
 	idxOpts := []file.Option{file.WithLocker(locker)}
 	if cfg.Storage.IndexLogCompactMinBytes != 0 {
 		idxOpts = append(idxOpts, file.WithLogCompaction(
@@ -155,6 +155,25 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// ---- quota_warning action runner (shared by IMAP + LMTP) ----
 	quotaWarner := quotawarn.New(cfg.Quota.WarningBinDir, cfg.Quota.WarningExecTimeout)
+
+	// ---- quota_clone mirror (fan-out to N dicts, shared by IMAP + LMTP) ----
+	var cloneDicts []dict.Dict
+	for _, name := range cfg.Quota.CloneDicts {
+		d, err := buildDict(cfg.Dicts, name)
+		if err != nil {
+			return nil, fmt.Errorf("backend: quota_clone dict %q: %w", name, err)
+		}
+		if d == nil {
+			slog.Warn("quota_clone_dicts references an undefined dict", "name", name)
+			continue
+		}
+		cloneDicts = append(cloneDicts, d)
+	}
+	quotaClone := quota.NewClone(cloneDicts)
+	quotaCloneFlushDelay := time.Duration(cfg.Quota.CloneFlushDelay) * time.Second
+	if quotaCloneFlushDelay <= 0 {
+		quotaCloneFlushDelay = 10 * time.Second
+	}
 
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
@@ -245,6 +264,8 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaMailSize:        quota.ParseSize(cfg.Quota.MailSize),
 			QuotaPolicy:          cfg.Quota.QuotaPolicy(),
 			QuotaWarner:          quotaWarner,
+			QuotaClone:           quotaClone,
+			QuotaCloneFlushDelay: quotaCloneFlushDelay,
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
@@ -361,6 +382,7 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaMailSize:        quota.ParseSize(cfg.Quota.MailSize),
 			QuotaPolicy:          cfg.Quota.QuotaPolicy(),
 			QuotaWarner:          quotaWarner,
+			QuotaClone:           quotaClone,
 			MetadataDict:         metadataDict,
 			AuthAddr:             authAddr,
 			AuthTLS:              authTLS,

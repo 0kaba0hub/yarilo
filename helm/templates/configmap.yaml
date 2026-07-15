@@ -435,6 +435,15 @@ data:
           quota_warning_execute: {{ .quota_warning_execute | quote }}
         {{- end }}
       {{- end }}
+      {{- with .quota_clone_dicts }}
+      quota_clone_dicts:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- if .quota_clone_flush_delay }}
+      quota_clone_flush_delay: {{ .quota_clone_flush_delay }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.namespaces }}

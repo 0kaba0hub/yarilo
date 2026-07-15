@@ -1381,6 +1381,18 @@ quota:
   #    quota_warning_percentage: 90         # % of the user's limit
   #    quota_warning_execute: "warn-user"   # program in quota_warning_bin_dir
 
+  ## quota_clone — mirror the authoritative usage into external dicts (advisory,
+  ## never the source of truth; enforcement always reads the index). Names refer
+  ## to entries in the top-level dicts: map. yarilo fans out to ALL of them at
+  ## once (e.g. SQL + Redis simultaneously). Keys written: priv/quota/storage,
+  ## priv/quota/messages. Empty disables cloning.
+  quota_clone_dicts: []
+  #  - quota_clone_sql
+  #  - quota_clone_redis
+  ## Debounce: at most one mirror write per this many seconds per session, plus
+  ## a final flush on session close. Default 10.
+  quota_clone_flush_delay: 10
+
 acl:
   enabled: false
   ## Root-level default ACLs resolve from INBOX's ACL for private and
