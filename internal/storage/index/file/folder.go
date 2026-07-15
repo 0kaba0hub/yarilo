@@ -29,6 +29,17 @@ var errLogIndexIDMismatch = errors.New("fileindex: log IndexID does not match ba
 // and the index is rewritten atomically in the current format
 // before returning. Migration leaves a .legacy backup so an
 // operator can roll back manually if needed.
+// msgVSize returns the message's virtual (RFC822) size for quota accounting,
+// falling back to the physical size when the backend did not populate VSize
+// (e.g. maildir without a W= field). Quota is a byte total, so a best-available
+// size is better than zero.
+func msgVSize(m *mailbox.MessageMeta) uint32 {
+	if m.VSize != 0 {
+		return m.VSize
+	}
+	return m.Size
+}
+
 func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
 	indexDir := u.indexDir(folder)
 	indexPath := indexPathFor(indexDir)
@@ -159,6 +170,7 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	if err := fs.refreshExtState(); err != nil {
 		return err
 	}
+	fs.recalcVsizeLocked()
 	return ensureLogStub(fs.indexPath, fs.file.Header.IndexID)
 }
 
@@ -205,7 +217,52 @@ func (fs *folderState) refreshExtState() error {
 		}
 		fs.keywords = kw
 	}
+	if ext := findExt(fs.file.Extensions, extNameHdrVsize); ext != nil && len(ext.HdrData) >= hdrVsizeSize {
+		v, err := decodeHdrVsize(ext.HdrData)
+		if err != nil {
+			return fmt.Errorf("fileindex/refresh: hdr-vsize: %w", err)
+		}
+		fs.vsize = v
+	}
 	return nil
+}
+
+// recalcVsizeLocked recomputes the aggregate virtual size from the per-record
+// vsize extension, falling back to the physical size (from the .names sidecar)
+// for records written before the vsize extension existed. Self-heals the
+// cached aggregate after a log replay or legacy import. Caller holds fs.mu.
+func (fs *folderState) recalcVsizeLocked() {
+	var (
+		total  uint64
+		maxUID uint32
+	)
+	for _, rec := range fs.file.Records {
+		v := decodeVsizeRec(rec.Ext[extNameVsize])
+		if v == 0 {
+			v = fs.sizes[rec.UID] // legacy record: best-available physical size
+		}
+		total += uint64(v)
+		if rec.UID > maxUID {
+			maxUID = rec.UID
+		}
+	}
+	fs.vsize = hdrVsize{
+		Vsize:        total,
+		HighestUID:   maxUID,
+		MessageCount: uint32(len(fs.file.Records)),
+	}
+}
+
+// persistVsizeLocked writes the cached aggregate into the hdr-vsize extension
+// header so the next Open trusts it (validated against record count). Caller
+// holds fs.mu.
+func (fs *folderState) persistVsizeLocked() {
+	ext := findExt(fs.file.Extensions, extNameHdrVsize)
+	if ext == nil {
+		return
+	}
+	ext.HdrData = encodeHdrVsize(fs.vsize)
+	ext.HdrSize = uint32(len(ext.HdrData))
 }
 
 // snapshot returns a mailbox.Folder describing the current state.
@@ -292,6 +349,10 @@ func (fs *folderState) flush(wholeNames bool) error {
 	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/flush: mkdir: %w", err)
 	}
+	// Re-derive the vsize aggregate from records (self-heal) and persist it to
+	// the hdr-vsize header, mirroring the message-count recount below.
+	fs.recalcVsizeLocked()
+	fs.persistVsizeLocked()
 	ri := fs.file.ToRecreateInput(fs.indexPath)
 	// Recount from actual records so any counter drift (e.g. from a stale
 	// SaveFolder call or a corrupted TxTypeHeaderUpdate) is corrected on every
@@ -451,6 +512,7 @@ func (fs *folderState) reload() error {
 			fs.logSize = newLogSize
 		}
 	}
+	fs.recalcVsizeLocked()
 	return nil
 }
 
@@ -485,6 +547,18 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 	}
 	u.quotaAdd(folder, int64(m.Size), 1)
 	return nil
+}
+
+// FolderVSize returns the folder's aggregate virtual size and message count
+// from the hdr-vsize cache (kept authoritative via recalcVsizeLocked on load
+// and flush). The index-derived source of truth the count quota backend sums.
+func (u *userIndex) FolderVSize(folderID uint64) (bytes uint64, messages uint32, err error) {
+	err = u.withFolder(folderID, func(fs *folderState) error {
+		bytes = fs.vsize.Vsize
+		messages = fs.vsize.MessageCount
+		return nil
+	})
+	return bytes, messages, err
 }
 
 // quotaAdd adjusts the user's quota counter for the given folder.
@@ -623,6 +697,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 			extNameModSeq:       encodeModseqRec(modseq),
 			extNameKeywords:     encodeKeywordsRec(kwBits),
 			extNameInternalDate: encodeIdateRec(m.InternalDate),
+			extNameVsize:        encodeVsizeRec(msgVSize(m)),
 		},
 	}
 	fs.file.Records = append(fs.file.Records, rec)
@@ -637,6 +712,11 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 		fs.filenames[m.UID] = m.Filename
 	}
 	fs.sizes[m.UID] = m.Size
+	fs.vsize.Vsize += uint64(msgVSize(m))
+	fs.vsize.MessageCount++
+	if m.UID > fs.vsize.HighestUID {
+		fs.vsize.HighestUID = m.UID
+	}
 	if m.UID >= fs.file.Header.NextUID {
 		fs.file.Header.NextUID = m.UID + 1
 	}
@@ -819,8 +899,17 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 		if rec.Flags&mailindex.FlagDeleted != 0 {
 			fs.file.Header.DeletedMessagesCount--
 		}
+		expungedVSize := decodeVsizeRec(rec.Ext[extNameVsize])
 		fs.file.Records = append(fs.file.Records[:idx], fs.file.Records[idx+1:]...)
 		fs.file.Header.MessagesCount--
+		if uint64(expungedVSize) <= fs.vsize.Vsize {
+			fs.vsize.Vsize -= uint64(expungedVSize)
+		} else {
+			fs.vsize.Vsize = 0
+		}
+		if fs.vsize.MessageCount > 0 {
+			fs.vsize.MessageCount--
+		}
 		delete(fs.filenames, uid)
 		delete(fs.sizes, uid)
 
@@ -961,6 +1050,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 				Ext: map[string][]byte{
 					extNameModSeq:   encodeModseqRec(modseq),
 					extNameKeywords: encodeKeywordsRec(kwBits),
+					extNameVsize:    encodeVsizeRec(msgVSize(m)),
 				},
 			}
 			fs.file.Records = append(fs.file.Records, rec)
