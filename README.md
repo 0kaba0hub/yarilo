@@ -11,7 +11,7 @@ Multi-binary architecture — each protocol component is a separate process. Kub
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE)
-[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)](PLAN.md)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-yellow)](PLAN.md)
 
 </td>
 </tr></table>
