@@ -210,8 +210,10 @@ func TestACL_MyRightsOwnerGetsFullRights(t *testing.T) {
 func TestACL_ListRights(t *testing.T) {
 	c := startACLServer(t, true)
 
-	// A non-owner identifier: no implied rights, every right individually
-	// grantable (one optional element per right letter).
+	// RFC 4314 §3.7: no right is implied for any identifier — required set is
+	// always empty, every right (incl. the obsolete c/d compounds) is
+	// individually grantable. Matches the reference implementation's uniform
+	// LISTRIGHTS output for every identifier.
 	bob, _ := imaplib.NewRightsIdentifierUsername("bob@test.com")
 	data, err := c.ListRights("INBOX", bob).Wait()
 	if err != nil {
@@ -220,21 +222,21 @@ func TestACL_ListRights(t *testing.T) {
 	if len(data.RequiredRights) != 0 {
 		t.Errorf("bob required rights = %v, want empty", data.RequiredRights)
 	}
-	if len(data.OptionalRights) != len(mailbox.FullRights) {
-		t.Errorf("bob optional rights = %v, want one per right letter", data.OptionalRights)
+	if len(data.OptionalRights) != 13 {
+		t.Errorf("bob optional rights = %v, want 13 elements (l r w s t p i e k x a c d)", data.OptionalRights)
 	}
 
-	// The owner keyword: all rights are always granted, nothing optional.
+	// The owner keyword gets the same uniform list — no required rights.
 	owner := imaplib.RightsIdentifier("owner")
 	od, err := c.ListRights("INBOX", owner).Wait()
 	if err != nil {
 		t.Fatalf("LISTRIGHTS owner: %v", err)
 	}
-	if sortedString(string(od.RequiredRights)) != sortedString(string(mailbox.FullRights)) {
-		t.Errorf("owner required rights = %q, want all", od.RequiredRights)
+	if len(od.RequiredRights) != 0 {
+		t.Errorf("owner required rights = %q, want empty", od.RequiredRights)
 	}
-	if len(od.OptionalRights) != 0 {
-		t.Errorf("owner optional rights = %v, want none", od.OptionalRights)
+	if len(od.OptionalRights) != 13 {
+		t.Errorf("owner optional rights = %v, want 13 elements (l r w s t p i e k x a c d)", od.OptionalRights)
 	}
 }
 
