@@ -1189,7 +1189,7 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 			slog.Warn("imap: acl rename failed", "from", oldName, "to", newName, "err", err)
 		}
 	}
-	s.emitMailboxList(locks.EventMailboxRename, oldName+"\t"+newName)
+	s.emitMailboxList(locks.EventMailboxRename, oldName+renameSep+newName)
 	return nil
 }
 

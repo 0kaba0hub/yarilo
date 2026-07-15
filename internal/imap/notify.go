@@ -25,6 +25,11 @@ const (
 // notifyDelim is the hierarchy separator reported in NOTIFY LIST responses.
 const notifyDelim = '/'
 
+// renameSep joins the old and new names in a rename event payload. It must be a
+// byte that never appears in a mailbox name and survives the locks wire protocol
+// (which is TAB/LF-framed and rejects those two). NUL satisfies both.
+const renameSep = "\x00"
+
 // notifyStatusOpts is the fixed set of STATUS items reported for non-selected
 // mailbox activity (RFC 5465 §6): enough for a client to detect new/removed
 // mail and resync CONDSTORE state without selecting the mailbox.
@@ -203,7 +208,7 @@ func (n *notifyWatcher) handleListEvent(evt locks.Event) {
 			})
 		}
 	case locks.EventMailboxRename:
-		oldName, newName, ok := strings.Cut(evt.Payload, "\t")
+		oldName, newName, ok := strings.Cut(evt.Payload, renameSep)
 		if !ok {
 			return
 		}
