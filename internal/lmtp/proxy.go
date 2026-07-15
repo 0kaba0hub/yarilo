@@ -5,11 +5,27 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	goSmtp "github.com/emersion/go-smtp"
 )
+
+// stripRcptPrefix removes a leading "<rcpt> " that the backend LMTP server
+// prepends to each per-recipient DATA reply. The login server prepends its own
+// "<rcpt> " when relaying, so without stripping here the address appears twice
+// (e.g. "452 4.2.2 <u@x> <u@x> Mailbox full"). Returns e unchanged when the
+// prefix is absent.
+func stripRcptPrefix(e *goSmtp.SMTPError, rcpt string) *goSmtp.SMTPError {
+	prefix := "<" + rcpt + "> "
+	if e == nil || !strings.HasPrefix(e.Message, prefix) {
+		return e
+	}
+	clone := *e
+	clone.Message = strings.TrimPrefix(e.Message, prefix)
+	return &clone
+}
 
 // UserRouter resolves a recipient username to a backend IP address.
 // Implementations consult admin overrides, sticky routing, and the
@@ -126,7 +142,7 @@ func (p *proxyRouter) proxyForward(addr, from string, rcpts []string, data []byt
 	if lmtpErr, ok := closeErr.(goSmtp.LMTPDataError); ok {
 		for rcpt, smtpErr := range lmtpErr {
 			if i, found := rcptIdx[rcpt]; found {
-				results[i].err = smtpErr
+				results[i].err = stripRcptPrefix(smtpErr, rcpt)
 			}
 		}
 	} else if closeErr != nil {
