@@ -34,6 +34,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Server is the yarilo IMAP server.
@@ -446,6 +447,11 @@ type session struct {
 	// SET requested such a filter. Its activity surfaces as "* STATUS" responses
 	// drained by Poll and Idle.
 	notifyWatch *notifyWatcher
+
+	// quotaCache is a short-lived cache of the index-derived user quota usage,
+	// so a burst of GETQUOTA / APPEND checks does not re-enumerate every folder.
+	quotaCacheUsage quota.Usage
+	quotaCacheAt    time.Time
 
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
