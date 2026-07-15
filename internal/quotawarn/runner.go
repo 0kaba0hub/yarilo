@@ -55,15 +55,47 @@ func (r *Runner) Fire(user, home string, warnings []quota.Warning, limits quota.
 }
 
 func (r *Runner) run(user, home string, w quota.Warning, usage, limit int64) {
-	fields := strings.Fields(w.Execute)
+	r.runProgram(w.Execute, user, home, []string{
+		"QUOTA_WARNING_NAME=" + w.Name,
+		"QUOTA_RESOURCE=" + w.Resource,
+		"QUOTA_THRESHOLD=" + w.Threshold,
+		"QUOTA_PERCENTAGE=" + strconv.Itoa(w.Percentage),
+		"QUOTA_USAGE=" + strconv.FormatInt(usage, 10),
+		"QUOTA_LIMIT=" + strconv.FormatInt(limit, 10),
+	})
+}
+
+// FireOverStatus runs the quota_over_status action when the user's actual
+// over-quota state diverges from the flag carried in userdb. It always logs;
+// the program runs only with a bin dir + execute set. currentFlag is the stale
+// userdb flag, over is the freshly computed real state.
+func (r *Runner) FireOverStatus(user, home, execute, currentFlag string, over bool) {
+	overStr := "no"
+	if over {
+		overStr = "yes"
+	}
+	slog.Info("quota over-status changed", "user", user, "over", over, "flag", currentFlag)
+	if r == nil || execute == "" {
+		return
+	}
+	go r.runProgram(execute, user, home, []string{
+		"QUOTA_OVER_FLAG=" + currentFlag,
+		"QUOTA_OVER=" + overStr,
+	})
+}
+
+// runProgram runs a bin-dir-confined program with a base env (USER/HOME/HOST)
+// plus extra. Best-effort: failures are logged, never surfaced.
+func (r *Runner) runProgram(spec, user, home string, extraEnv []string) {
+	fields := strings.Fields(spec)
 	if len(fields) == 0 {
 		return
 	}
 	prog, args := fields[0], fields[1:]
 	// Resolve strictly within the bin dir — reject any path separator so a
-	// warning config cannot escape it.
+	// config cannot escape it.
 	if strings.ContainsAny(prog, `/\`) {
-		slog.Warn("quota warning execute rejected: program must be a bare name", "name", w.Name, "program", prog)
+		slog.Warn("quota execute rejected: program must be a bare name", "program", prog)
 		return
 	}
 	path := filepath.Join(r.binDir, prog)
@@ -71,20 +103,11 @@ func (r *Runner) run(user, home string, w quota.Warning, usage, limit int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = []string{
-		"USER=" + user,
-		"HOME=" + home,
-		"QUOTA_WARNING_NAME=" + w.Name,
-		"QUOTA_RESOURCE=" + w.Resource,
-		"QUOTA_THRESHOLD=" + w.Threshold,
-		"QUOTA_PERCENTAGE=" + strconv.Itoa(w.Percentage),
-		"QUOTA_USAGE=" + strconv.FormatInt(usage, 10),
-		"QUOTA_LIMIT=" + strconv.FormatInt(limit, 10),
-	}
+	cmd.Env = append([]string{"USER=" + user, "HOME=" + home}, extraEnv...)
 	if host, err := os.Hostname(); err == nil {
 		cmd.Env = append(cmd.Env, "HOST="+host)
 	}
 	if err := cmd.Run(); err != nil {
-		slog.Warn("quota warning execute failed", "name", w.Name, "program", prog, "err", err)
+		slog.Warn("quota execute failed", "program", prog, "err", err)
 	}
 }

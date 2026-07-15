@@ -129,3 +129,50 @@ func TestRegisteredAtInit(t *testing.T) {
 	}
 	t.Errorf("sql driver not registered: %v", dict.Drivers())
 }
+
+// TestPerUserScoping verifies OpSettings.Username scopes keys so two users do
+// not collide on the same rows (regression for the quota_clone SQL target).
+func TestPerUserScoping(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "scope.db")
+	d, err := New(dict.Config{Settings: map[string]any{"driver": "sqlite", "dsn": dbPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close() //nolint:errcheck
+	ctx := context.Background()
+
+	set := func(user, key, val string) {
+		tx, err := d.Begin(ctx, &dict.OpSettings{Username: user})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Set(key, []byte(val)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(user, key string) string {
+		vs, found, err := d.Lookup(ctx, &dict.OpSettings{Username: user}, key)
+		if err != nil || !found || len(vs) == 0 {
+			t.Fatalf("lookup %s/%s: found=%v err=%v", user, key, found, err)
+		}
+		return string(vs[0])
+	}
+
+	const key = "priv/quota/storage"
+	set("u1@x", key, "111")
+	set("u2@x", key, "222") // must NOT overwrite u1's row
+
+	if got := get("u1@x", key); got != "111" {
+		t.Errorf("u1 = %q, want 111 (collision with u2?)", got)
+	}
+	if got := get("u2@x", key); got != "222" {
+		t.Errorf("u2 = %q, want 222", got)
+	}
+	// A different user's key is absent, not the other user's value.
+	if _, found, _ := d.Lookup(ctx, &dict.OpSettings{Username: "ghost@x"}, key); found {
+		t.Errorf("ghost should have no value")
+	}
+}

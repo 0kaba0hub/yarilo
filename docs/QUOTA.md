@@ -177,6 +177,38 @@ rejected) and receives the crossing context via the environment: `USER`,
 `over` crossings fire on save (IMAP APPEND/COPY/MOVE, LMTP delivery); `under`
 crossings fire on the IMAP expunge that drops usage back below the threshold.
 
+## quota_over_status — external over-flag sync
+
+Keeps an external "over quota" flag in sync so an MTA can reject mail to
+over-quota users without querying the mail server. At **login** (IMAP) the actual
+over-quota state is compared to the userdb `quota_over_flag`; on a mismatch a
+program updates the external flag.
+
+```yaml
+quota:
+  quota_warning_bin_dir: "/usr/lib/yarilo/quota-warning"   # shared with warnings
+  quota_over_status_mask: "TRUE"          # wildcard the userdb flag is matched against
+  quota_over_status_lazy_check: false     # true = defer to the first quota op
+  quota_over_status_execute: "sync-flag"  # program in the bin dir
+```
+
+- `quota_over_flag` (userdb) is the stored flag. `flagged` = it is non-empty and
+  matches `quota_over_status_mask` (case-insensitive `*`/`?` glob).
+- `actual` = usage ≥ limit for any resource.
+- On `actual != flagged` the program runs with `USER`, `HOME`, `HOST`,
+  `QUOTA_OVER_FLAG` (the stale value), `QUOTA_OVER` (`yes`/`no`) in the
+  environment. The check runs once per session and only while the userdb flag is
+  still fresh (login within 10 s).
+- Empty `quota_over_status_mask` disables it. Currently wired for IMAP logins
+  (POP3 lacks the usage-count path — a separate task).
+
+## quota_status_nouser
+
+The `yarilo-quota-status` policy service returns `quota_status_nouser` when the
+recipient is unknown in userdb (default `REJECT Unknown user`). A backend lookup
+**error** still fails open (`DUNNO`); set `quota_status_nouser: ""` to accept
+unknown recipients (`DUNNO`) and let a later Postfix restriction decide.
+
 ## IMAP wire (RFC 9208)
 
 When `protocol.imap.imap_quota` is on the server advertises:

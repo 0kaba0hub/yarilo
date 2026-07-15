@@ -54,6 +54,9 @@ type Options struct {
 	// Policy carries the site-wide quota tunables. This is a delivery pre-check,
 	// so storage grace IS applied (like LMTP).
 	Policy quota.Policy
+	// Nouser is the action returned when the recipient is unknown in userdb
+	// (default "REJECT Unknown user"; empty falls back to DUNNO).
+	Nouser string
 }
 
 // exceededMessage returns the over-quota REJECT text (default "Mailbox full").
@@ -151,11 +154,18 @@ func (s *Server) check(attrs map[string]string) string {
 
 	// Resolve the recipient's storage identity + per-user limits.
 	ui, err := s.opts.UserdbLookup(context.Background(), username)
-	if err != nil || ui == nil {
-		if err != nil {
-			slog.Warn("quotastatus: userdb lookup failed", "user", username, "err", err)
+	if err != nil {
+		slog.Warn("quotastatus: userdb lookup failed", "user", username, "err", err)
+		return "DUNNO" // backend error → fail-open
+	}
+	if ui == nil {
+		// Recipient unknown in userdb: return the configured nouser action
+		// (default REJECT Unknown user). Empty opts out to DUNNO.
+		if s.opts.Nouser != "" {
+			slog.Info("quotastatus: reject unknown user", "user", username)
+			return s.opts.Nouser
 		}
-		return "DUNNO" // fail-open
+		return "DUNNO"
 	}
 	limits := s.opts.Limits
 	if len(ui.QuotaRules) > 0 {

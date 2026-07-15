@@ -42,6 +42,11 @@ func (s *session) countUsage(useCache bool) (quota.Usage, error) {
 	u := quota.CountUsage(s.idx, mailbox.SelectableNames(entries), s.quotaLimits())
 	s.quotaCacheUsage = u
 	s.quotaCacheAt = time.Now()
+	// Lazy quota_over_status: reconcile on the first quota operation. evalOverStatus
+	// takes u directly, so there is no re-entry into countUsage.
+	if os := s.quotaPolicy().OverStatus; os.Mask != "" && os.LazyCheck && !s.overStatusChecked {
+		s.evalOverStatus(u)
+	}
 	return u, nil
 }
 
@@ -88,16 +93,55 @@ func (s *session) quotaPolicy() quota.Policy {
 	return s.srv.opts.QuotaPolicy
 }
 
-// seedQuotaWarnSnap captures a baseline usage snapshot when none exists yet, so
-// a quota_warning "under" crossing fires on a delete-only session (EXPUNGE with
-// no prior save to seed the "before" side). No-op without warnings configured.
-func (s *session) seedQuotaWarnSnap() {
-	if len(s.quotaPolicy().Warnings) == 0 || s.quotaSnapSet {
+// evalOverStatus runs the quota_over_status check once per session: compares the
+// actual over-quota state (from usage u) against the flag carried in userdb and,
+// on a mismatch, runs the configured program to update the external flag. Guards
+// match the reference: mask must be set, run once, and only while the userdb
+// flag is still fresh (login within the max delay).
+func (s *session) evalOverStatus(u quota.Usage) {
+	os := s.quotaPolicy().OverStatus
+	if os.Mask == "" || s.overStatusChecked || s.userInfo == nil {
+		return
+	}
+	if time.Since(s.overStatusLoginAt) > overStatusMaxDelay {
+		return // stale userdb flag — do not act on it
+	}
+	s.overStatusChecked = true
+	flagged := s.userInfo.QuotaOverFlag != "" &&
+		quota.WildcardMatchIcase(s.userInfo.QuotaOverFlag, os.Mask)
+	actual := quota.IsOverAny(u, s.quotaPolicy().Scale(s.quotaLimits()))
+	if actual != flagged {
+		s.srv.opts.QuotaWarner.FireOverStatus(
+			s.userInfo.Username, s.userInfo.Home, os.Execute, s.userInfo.QuotaOverFlag, actual)
+	}
+}
+
+// overStatusMaxDelay bounds how long after login the userdb over-flag is still
+// trusted for the quota_over_status check (mirrors the reference 10s guard).
+const overStatusMaxDelay = 10 * time.Second
+
+// captureQuotaSnap forces the quota_warning "before" baseline to the current
+// usage. Called immediately before a mutating op (expunge) so the crossing
+// detection has a correct pre-op value even on a delete-only session — the
+// SELECT-time seed can miss (usage not yet readable, or the snapshot reset
+// between SELECT and the delete). No-op without warnings configured.
+func (s *session) captureQuotaSnap() {
+	if len(s.quotaPolicy().Warnings) == 0 {
 		return
 	}
 	if u, err := s.countUsage(false); err == nil {
 		s.quotaSnap, s.quotaSnapSet = u, true
 	}
+}
+
+// seedQuotaWarnSnap captures a baseline usage snapshot when none exists yet, so
+// a quota_warning "under" crossing fires on a delete-only session (EXPUNGE with
+// no prior save to seed the "before" side). No-op without warnings configured.
+func (s *session) seedQuotaWarnSnap() {
+	if s.quotaSnapSet {
+		return
+	}
+	s.captureQuotaSnap()
 }
 
 // fireQuotaWarnings evaluates quota_warning crossings for the transition from

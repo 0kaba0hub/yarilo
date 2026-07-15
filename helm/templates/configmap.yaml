@@ -444,6 +444,15 @@ data:
       {{- if .quota_clone_flush_delay }}
       quota_clone_flush_delay: {{ .quota_clone_flush_delay }}
       {{- end }}
+      {{- if .quota_over_status_mask }}
+      quota_over_status_mask: {{ .quota_over_status_mask | quote }}
+      {{- end }}
+      {{- if .quota_over_status_lazy_check }}
+      quota_over_status_lazy_check: true
+      {{- end }}
+      {{- if .quota_over_status_execute }}
+      quota_over_status_execute: {{ .quota_over_status_execute | quote }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.namespaces }}
@@ -696,6 +705,9 @@ data:
       listen: {{ printf ":%d" (int .Values.components.quotaStatus.containerPort) | quote }}
       {{- if .Values.components.quotaStatus.recipient_delimiter }}
       recipient_delimiter: {{ .Values.components.quotaStatus.recipient_delimiter | quote }}
+      {{- end }}
+      {{- if hasKey .Values.components.quotaStatus "quota_status_nouser" }}
+      quota_status_nouser: {{ .Values.components.quotaStatus.quota_status_nouser | quote }}
       {{- end }}
       {{- with .Values.components.quotaStatus.default_quota_rules }}
       default_quota_rules:
