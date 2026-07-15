@@ -24,6 +24,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
+	"github.com/0kaba0hub/yarilo/internal/lmtpreply"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
 )
@@ -449,7 +450,9 @@ func fanOutOne(backendAddr, hostname, from, rcpt string, data []byte, pre loginp
 	perRcpt, closeErr := wc.CloseWithLMTPResponse()
 	if lmtpErr, ok := closeErr.(goSmtp.LMTPDataError); ok {
 		if smtpErr, found := lmtpErr[rcpt]; found {
-			return smtpErr
+			// Strip the backend's per-recipient "<rcpt> " prefix; this login
+			// server's handleDataLMTP prepends its own, else it doubles up.
+			return lmtpreply.StripRcptPrefix(smtpErr, rcpt)
 		}
 		return nil
 	}
