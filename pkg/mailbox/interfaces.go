@@ -229,5 +229,9 @@ type UserIndex interface {
 	// .index file. Returns a no-op nil when there is nothing to
 	// compact. Takes the same X lock as a normal write.
 	OptimizeIndex(folderID uint64) error
+	// FolderVSize returns the folder's cached aggregate virtual size and
+	// message count (the hdr-vsize extension). The index-derived source of
+	// truth the count quota backend sums across a user's folders.
+	FolderVSize(folderID uint64) (bytes uint64, messages uint32, err error)
 	Close() error
 }

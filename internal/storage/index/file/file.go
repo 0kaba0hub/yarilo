@@ -192,6 +192,9 @@ func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier boo
 func (h *userHandle) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return h.ui.GetMessages(folderID, uids)
 }
+func (h *userHandle) FolderVSize(folderID uint64) (uint64, uint32, error) {
+	return h.ui.FolderVSize(folderID)
+}
 func (h *userHandle) ExpungeMessage(folderID uint64, uid uint32) error {
 	return h.ui.ExpungeMessage(folderID, uid)
 }
