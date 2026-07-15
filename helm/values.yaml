@@ -1361,6 +1361,26 @@ quota:
   ## on save (IMAP APPEND/COPY/MOVE, LMTP delivery).
   quota_mailbox_message_count: 0
 
+  ## Hide the quota root from IMAP GETQUOTA/GETQUOTAROOT for every user
+  ## (enforcement still applies). Differs from quota_ignore_unlimited, which
+  ## hides only unlimited users.
+  quota_hidden: false
+
+  ## quota_warning — run an action when usage crosses a percentage of the limit.
+  ## The action is a program located in quota_warning_bin_dir (mirrors
+  ## sieve_execute_bin_dir), run best-effort with the crossing context passed
+  ## via env: USER, HOME, HOST, QUOTA_WARNING_NAME, QUOTA_RESOURCE,
+  ## QUOTA_THRESHOLD, QUOTA_PERCENTAGE, QUOTA_USAGE, QUOTA_LIMIT. When no bin dir
+  ## is set the crossing is only logged.
+  quota_warning_bin_dir: ""
+  quota_warning_exec_timeout: 10
+  quota_warnings: []
+  #  - quota_warning_name: "storage90"
+  #    quota_warning_resource: storage      # storage | message
+  #    quota_warning_threshold: over        # over | under
+  #    quota_warning_percentage: 90         # % of the user's limit
+  #    quota_warning_execute: "warn-user"   # program in quota_warning_bin_dir
+
 acl:
   enabled: false
   ## Root-level default ACLs resolve from INBOX's ACL for private and

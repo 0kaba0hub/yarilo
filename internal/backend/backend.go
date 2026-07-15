@@ -24,6 +24,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	mssvr "github.com/0kaba0hub/yarilo/internal/managesieve"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
+	"github.com/0kaba0hub/yarilo/internal/quotawarn"
 	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
@@ -152,6 +153,9 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 	idx := file.New(idxOpts...)
 
+	// ---- quota_warning action runner (shared by IMAP + LMTP) ----
+	quotaWarner := quotawarn.New(cfg.Quota.WarningBinDir, cfg.Quota.WarningExecTimeout)
+
 	// ---- shared connection limiter (IMAP + POP3) ----
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
 
@@ -240,6 +244,7 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaExceededMessage: cfg.Quota.ExceededMessage,
 			QuotaMailSize:        quota.ParseSize(cfg.Quota.MailSize),
 			QuotaPolicy:          cfg.Quota.QuotaPolicy(),
+			QuotaWarner:          quotaWarner,
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
@@ -355,6 +360,7 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaExceededMessage: cfg.Quota.ExceededMessage,
 			QuotaMailSize:        quota.ParseSize(cfg.Quota.MailSize),
 			QuotaPolicy:          cfg.Quota.QuotaPolicy(),
+			QuotaWarner:          quotaWarner,
 			MetadataDict:         metadataDict,
 			AuthAddr:             authAddr,
 			AuthTLS:              authTLS,

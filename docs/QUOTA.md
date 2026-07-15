@@ -128,10 +128,39 @@ resolved per-user limits:
 | `quota_ignore_unlimited` | `false` | Omit the quota root from GETQUOTA/GETQUOTAROOT for unlimited users. |
 | `quota_mailbox_count` | `0` | Cap the number of mailboxes (folders). Enforced at CREATE — `NO [LIMIT] Maximum number of mailboxes reached`. `0` = unlimited. |
 | `quota_mailbox_message_count` | `0` | Cap messages in a single mailbox. Enforced on save — `NO [OVERQUOTA] Too many messages in the mailbox` (LMTP `552`). `0` = unlimited. |
+| `quota_hidden` | `false` | Omit the quota root from GETQUOTA/GETQUOTAROOT for **every** user (enforcement still applies). Broader than `quota_ignore_unlimited`. |
 
 Effective storage limit = `rule_limit · quota_storage_percentage/100 + quota_storage_extra`
 (`+ quota_grace` on LMTP delivery). The scaled limit is what GETQUOTA reports and
 what every enforcement point checks.
+
+### Quota warnings
+
+`quota_warning` runs an action when a user's usage **crosses** a percentage of
+their limit — the same edge-trigger as the reference `quota_warning_match`
+(fires once on the transition, not repeatedly while over). The action is a
+program in `quota_warning_bin_dir` (mirrors `sieve_execute_bin_dir`), run
+best-effort; when no bin dir is set the crossing is only logged.
+
+```yaml
+quota:
+  quota_warning_bin_dir: "/usr/lib/yarilo/quota-warning"
+  quota_warning_exec_timeout: 10
+  quota_warnings:
+    - quota_warning_name: "storage90"
+      quota_warning_resource: storage      # storage | message
+      quota_warning_threshold: over        # over | under
+      quota_warning_percentage: 90         # % of the user's limit
+      quota_warning_execute: "warn-user"   # program name in the bin dir
+```
+
+The program is located by bare name inside the bin dir (a path separator is
+rejected) and receives the crossing context via the environment: `USER`,
+`HOME`, `HOST`, `QUOTA_WARNING_NAME`, `QUOTA_RESOURCE`, `QUOTA_THRESHOLD`,
+`QUOTA_PERCENTAGE`, `QUOTA_USAGE`, `QUOTA_LIMIT`.
+
+`over` crossings fire on save (IMAP APPEND/COPY/MOVE, LMTP delivery); `under`
+crossings fire on the IMAP expunge that drops usage back below the threshold.
 
 ## IMAP wire (RFC 9208)
 

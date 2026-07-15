@@ -565,6 +565,26 @@ type QuotaConfig struct {
 	// MailboxMessageCount caps the number of messages in a single mailbox.
 	// 0 = unlimited. Enforced on save.
 	MailboxMessageCount int64 `koanf:"quota_mailbox_message_count"`
+	// Hidden omits the quota root from IMAP GETQUOTA/GETQUOTAROOT for every user
+	// (enforcement still applies).
+	Hidden bool `koanf:"quota_hidden"`
+	// WarningBinDir is the directory holding quota_warning execute programs.
+	// Empty disables program execution (warnings then only log).
+	WarningBinDir string `koanf:"quota_warning_bin_dir"`
+	// WarningExecTimeout bounds a warning program's runtime in seconds. Default 10.
+	WarningExecTimeout int `koanf:"quota_warning_exec_timeout"`
+	// Warnings are the quota_warning rules.
+	Warnings []QuotaWarning `koanf:"quota_warnings"`
+}
+
+// QuotaWarning is one quota_warning rule (fires an action when usage crosses a
+// percentage of the resource limit).
+type QuotaWarning struct {
+	Name       string `koanf:"quota_warning_name"`
+	Resource   string `koanf:"quota_warning_resource"`   // storage | message
+	Threshold  string `koanf:"quota_warning_threshold"`  // over | under
+	Percentage int    `koanf:"quota_warning_percentage"` // % of the limit
+	Execute    string `koanf:"quota_warning_execute"`    // program (+ args) in the bin dir
 }
 
 // QuotaPolicy builds the runtime quota.Policy from the config, parsing sizes
@@ -578,7 +598,26 @@ func (q QuotaConfig) QuotaPolicy() quota.Policy {
 		IgnoreUnlimited:     q.IgnoreUnlimited,
 		MailboxCount:        q.MailboxCount,
 		MailboxMessageCount: q.MailboxMessageCount,
+		Hidden:              q.Hidden,
+		Warnings:            q.quotaWarnings(),
 	}
+}
+
+func (q QuotaConfig) quotaWarnings() []quota.Warning {
+	if len(q.Warnings) == 0 {
+		return nil
+	}
+	out := make([]quota.Warning, len(q.Warnings))
+	for i, w := range q.Warnings {
+		out[i] = quota.Warning{
+			Name:       w.Name,
+			Resource:   w.Resource,
+			Threshold:  w.Threshold,
+			Percentage: w.Percentage,
+			Execute:    w.Execute,
+		}
+	}
+	return out
 }
 
 // QuotaStatusConfig configures the yarilo-quota-status Postfix policy service.

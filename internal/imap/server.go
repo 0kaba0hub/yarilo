@@ -27,6 +27,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/scram"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/quotawarn"
 	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
@@ -124,9 +125,11 @@ type Options struct {
 	// (0 = unlimited), independent of the usage limit.
 	QuotaMailSize int64
 	// QuotaPolicy carries the site-wide quota tunables (percentage scaling,
-	// storage extra, ignore-unlimited, mailbox-count caps). Grace is not applied
-	// on the interactive IMAP path.
+	// storage extra, ignore-unlimited, mailbox-count caps, hidden, warnings).
+	// Grace is not applied on the interactive IMAP path.
 	QuotaPolicy quota.Policy
+	// QuotaWarner runs quota_warning actions. Nil = warnings only log.
+	QuotaWarner *quotawarn.Runner
 
 	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
 	// capability + GETQUOTA / GETQUOTAROOT commands. Client-facing query only —
@@ -467,6 +470,10 @@ type session struct {
 	// so a burst of GETQUOTA / APPEND checks does not re-enumerate every folder.
 	quotaCacheUsage quota.Usage
 	quotaCacheAt    time.Time
+	// quotaSnap is the usage captured before the last quota-changing operation,
+	// used as the "before" side of quota_warning crossing detection.
+	quotaSnap    quota.Usage
+	quotaSnapSet bool
 
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
@@ -531,6 +538,12 @@ func (s *session) emitMailboxChange(folder string, eventType locks.EventType, ui
 	// clone. Independent of the event bus, so it runs before the Locker guard.
 	if eventType == locks.EventDelivered || eventType == locks.EventExpunged {
 		s.quotaChanged()
+		// Evaluate quota_warning crossings against the fresh post-commit usage.
+		if len(s.srv.opts.QuotaPolicy.Warnings) > 0 && s.quotaSnapSet {
+			if after, err := s.countUsage(false); err == nil {
+				s.fireQuotaWarnings(after)
+			}
+		}
 	}
 	if s.srv.opts.Locker == nil || s.userInfo == nil {
 		return
