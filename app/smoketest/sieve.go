@@ -729,13 +729,16 @@ func testSieveEnvironment(user, pass, to string) error {
 // keep fires, delivering the message to INBOX as normal.
 func testSievePipe(user, pass, to string) error {
 	clearInbox(user, pass)
-	uidnext := inboxUIDNext(user, pass)
+	id := uniqueID()
 	script := `require ["vnd.yarilo.pipe"];` + "\n" +
 		`pipe :try "smoketest-noop";` + "\n"
-	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "pipe-try test", "pipe test body"); err != nil {
+	if err := sieveInject(script, "sender@test.invalid", to, id, "pipe-try test", "pipe test body"); err != nil {
 		return err
 	}
-	return inboxWaitByUID(user, pass, uidnext, "pipe :try: message was not delivered to INBOX after failed pipe")
+	// Match the exact injected message by its unique Message-ID rather than a
+	// UID range: delivery is asynchronous and the range form is sensitive to
+	// unrelated INBOX activity, which made this check flake intermittently.
+	return inboxWaitByID(user, pass, id, "pipe :try: message was not delivered to INBOX after failed pipe")
 }
 
 // testSieveExecute verifies that vnd.yarilo.execute is accepted by the Sieve
@@ -780,6 +783,42 @@ func testSieveFilter(user, pass, to string) error {
 // inboxWaitByUID polls INBOX for any message with UID >= uidnext for up to
 // 30 seconds. Uses UID range search (needsBody=false) so no per-message NFS
 // reads are required — only the in-memory fileindex is consulted.
+// inboxWaitByID polls INBOX until a message carrying the given Message-ID
+// appears, then deletes it. Unlike inboxWaitByUID it identifies the exact
+// injected message, so it is immune to unrelated deliveries racing into INBOX.
+func inboxWaitByID(user, pass, id, failMsg string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		c, err := imapDial()
+		if err != nil {
+			return err
+		}
+		if err := c.login(user, pass); err != nil {
+			c.close()
+			return err
+		}
+		if _, err := c.selectFolder("INBOX"); err != nil {
+			c.close()
+			return fmt.Errorf("SELECT INBOX: %w", err)
+		}
+		uids, err := c.uidSearch(fmt.Sprintf("HEADER Message-ID \"<%s>\"", id))
+		if err != nil {
+			c.close()
+			return fmt.Errorf("UID SEARCH: %w", err)
+		}
+		if len(uids) > 0 {
+			c.deleteUIDs(uids) //nolint:errcheck
+			c.close()
+			return nil
+		}
+		c.close()
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s", failMsg)
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
 func inboxWaitByUID(user, pass string, uidnext int, failMsg string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
