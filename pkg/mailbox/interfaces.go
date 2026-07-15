@@ -233,5 +233,8 @@ type UserIndex interface {
 	// message count (the hdr-vsize extension). The index-derived source of
 	// truth the count quota backend sums across a user's folders.
 	FolderVSize(folderID uint64) (bytes uint64, messages uint32, err error)
+	// RecomputeVSize forces a rebuild of the folder's vsize aggregate from
+	// records and persists it — the admin recovery path for a corrupted count.
+	RecomputeVSize(folderID uint64) error
 	Close() error
 }

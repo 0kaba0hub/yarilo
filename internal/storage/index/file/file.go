@@ -31,7 +31,6 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Backend is the per-process factory for fileindex handles. It
@@ -44,8 +43,7 @@ const (
 )
 
 type Backend struct {
-	locker  locks.Locker
-	quotaFn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits)
+	locker locks.Locker
 
 	logCompactMinBytes int64
 	logCompactMaxBytes int64
@@ -77,14 +75,6 @@ type Option func(*Backend)
 // safe in production.
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
-}
-
-// WithQuotaCounter wires a per-user quota counter factory into the
-// backend. The factory receives the full UserInfo so it can return
-// both the counter and the parsed per-user limits (needed for
-// per-folder ignore/additive rules at the index layer).
-func WithQuotaCounter(fn func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits)) Option {
-	return func(b *Backend) { b.quotaFn = fn }
 }
 
 // WithLogCompaction configures automatic log compaction thresholds.
@@ -143,9 +133,6 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			owner:       makeOwner(u),
 			open:        make(map[uint64]*folderState),
 		}
-		if b.quotaFn != nil {
-			ui.counter, ui.limits = b.quotaFn(u)
-		}
 		ref = &refUserIndex{ui: ui}
 		b.users[key] = ref
 	}
@@ -194,6 +181,9 @@ func (h *userHandle) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailb
 }
 func (h *userHandle) FolderVSize(folderID uint64) (uint64, uint32, error) {
 	return h.ui.FolderVSize(folderID)
+}
+func (h *userHandle) RecomputeVSize(folderID uint64) error {
+	return h.ui.RecomputeVSize(folderID)
 }
 func (h *userHandle) ExpungeMessage(folderID uint64, uid uint32) error {
 	return h.ui.ExpungeMessage(folderID, uid)
@@ -257,8 +247,6 @@ type userIndex struct {
 	indexRoot   string // INDEX= override root (empty = co-located with mail root)
 	username    string
 	owner       string
-	counter     *quota.Counter
-	limits      quota.Limits
 
 	mu    sync.Mutex
 	next  uint64                  // monotonic per-session folder ID counter

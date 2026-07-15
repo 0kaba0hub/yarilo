@@ -112,12 +112,16 @@ type Options struct {
 	// unless imapsieve_enabled is set.
 	SieveEngine *sieve.Engine
 
-	// QuotaDict backs RFC 9208 QUOTA (GETQUOTAROOT / GETQUOTA). When
-	// non-nil, the server advertises the QUOTA capability, enforces
-	// storage limits on APPEND/COPY/MOVE, and updates per-user counters
-	// (priv/quota/storage, priv/quota/messages) atomically. Nil disables
-	// quota entirely. Operators wire this from cfg.Dicts["quota"].
-	QuotaDict dict.Dict
+	// QuotaEngine toggles quota enforcement on saves — APPEND / COPY / MOVE are
+	// rejected with OVERQUOTA when over the user's limit, summed from the index.
+	// Independent of the IMAP QUOTA extension below.
+	QuotaEngine bool
+
+	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
+	// capability + GETQUOTA / GETQUOTAROOT commands. Client-facing query only —
+	// no enforcement. When false the server does not advertise QUOTA and
+	// GETQUOTA returns NO.
+	IMAPQuota bool
 
 	// ACLEnabled exposes RFC 4314 server-side ACL (GETACL / SETACL /
 	// DELETEACL / MYRIGHTS / LISTRIGHTS) when true. Storage is the
@@ -250,7 +254,7 @@ func New(opts Options) *Server {
 	if opts.ACLEnabled {
 		caps[imaplib.CapACL] = struct{}{}
 	}
-	if opts.QuotaDict != nil {
+	if opts.IMAPQuota {
 		caps[imaplib.CapQuota] = struct{}{}
 	}
 
@@ -512,6 +516,11 @@ var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
 // already lives in the just-written index/uidlist files. A 1-second timeout
 // keeps a sluggish locks server from stalling the IMAP command.
 func (s *session) emitMailboxChange(folder string, eventType locks.EventType, uid uint32) {
+	// A delivered/expunged message changes storage usage — refresh the quota
+	// clone. Independent of the event bus, so it runs before the Locker guard.
+	if eventType == locks.EventDelivered || eventType == locks.EventExpunged {
+		s.quotaChanged()
+	}
 	if s.srv.opts.Locker == nil || s.userInfo == nil {
 		return
 	}

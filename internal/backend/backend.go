@@ -39,7 +39,6 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Server is the yarilo backend (or single-node) server.
@@ -140,10 +139,8 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: dicts.metadata: %w", err)
 	}
-	quotaDict, err := buildDict(cfg.Dicts, "quota")
-	if err != nil {
-		return nil, fmt.Errorf("backend: dicts.quota: %w", err)
-	}
+	// dicts.quota is reserved for the future quota_clone external mirror; the
+	// enforcement path reads the index, not a dict.
 	idxOpts := []file.Option{file.WithLocker(locker)}
 	if cfg.Storage.IndexLogCompactMinBytes != 0 {
 		idxOpts = append(idxOpts, file.WithLogCompaction(
@@ -151,11 +148,6 @@ func New(cfg *config.Config) (*Server, error) {
 			cfg.Storage.IndexLogCompactMaxBytes,
 			time.Duration(cfg.Storage.IndexLogCompactMinAgeSecs)*time.Second,
 		))
-	}
-	if quotaDict != nil {
-		idxOpts = append(idxOpts, file.WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
-			return quota.NewCounter(quotaDict, u.Username), quota.ParseRules(u.QuotaRules)
-		}))
 	}
 	idx := file.New(idxOpts...)
 
@@ -241,7 +233,8 @@ func New(cfg *config.Config) (*Server, error) {
 			SpecialUseDefaults:   p.SpecialUseDefaults,
 			MetadataDict:         metadataDict,
 			SieveEngine:          sieveEngine,
-			QuotaDict:            quotaDict,
+			IMAPQuota:            cfg.Protocol.IMAP.IMAPQuota,
+			QuotaEngine:          cfg.Quota.Enabled,
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
@@ -353,7 +346,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Resolver:             resolver,
 			TLSConfig:            lmtpTLS,
 			Locker:               locker,
-			QuotaDict:            quotaDict,
+			QuotaEngine:          cfg.Quota.Enabled,
 			MetadataDict:         metadataDict,
 			AuthAddr:             authAddr,
 			AuthTLS:              authTLS,
@@ -405,46 +398,7 @@ func New(cfg *config.Config) (*Server, error) {
 						return nil, err
 					}
 				}
-				if ui == nil {
-					return nil, nil
-				}
-				mbi := lmtpResolver.UserInfo(username, ui.Home)
-				mbi.Groups = ui.Groups
-				mbi.ACLUser = ui.ACLUser
-				mbi.ACLGroups = ui.ACLGroups
-				mbi.QuotaRules = ui.QuotaRules
-				if ui.VolatileDir != "" {
-					vd := mailbox.ExpandHome(ui.VolatileDir, mbi.Home)
-					vd = strings.ReplaceAll(vd, "%h", mbi.Home)
-					mbi.VolatileDir = mailbox.ExpandVars(vd, username)
-				}
-				if ui.IndexDir != "" {
-					id := mailbox.ExpandHome(ui.IndexDir, mbi.Home)
-					id = strings.ReplaceAll(id, "%h", mbi.Home)
-					mbi.IndexDir = mailbox.ExpandVars(id, username)
-				}
-				if ui.ControlDir != "" {
-					cd := mailbox.ExpandHome(ui.ControlDir, mbi.Home)
-					cd = strings.ReplaceAll(cd, "%h", mbi.Home)
-					mbi.ControlDir = mailbox.ExpandVars(cd, username)
-				}
-				if ui.AltDir != "" {
-					ad := mailbox.ExpandHome(ui.AltDir, mbi.Home)
-					ad = strings.ReplaceAll(ad, "%h", mbi.Home)
-					mbi.AltDir = mailbox.ExpandVars(ad, username)
-				}
-				if ui.MailPath != "" {
-					mbi.MailPath = mailbox.ExpandHome(ui.MailPath, mbi.Home)
-				}
-				if ui.InboxPath != "" {
-					mbi.InboxPath = mailbox.ExpandHome(ui.InboxPath, mbi.Home)
-				}
-				if loc := ui.MailLocation; loc != "" {
-					if colon := strings.IndexByte(loc, ':'); colon > 0 {
-						mbi.Driver = strings.ToLower(loc[:colon])
-					}
-				}
-				return mbi, nil
+				return ResolveUserInfo(lmtpResolver, username, ui), nil
 			}
 		}
 		lmtpServer = lmtp.New(lmtpOpts)
@@ -867,6 +821,84 @@ func (a chainAuth) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, err
 		return nil, nil
 	}
 	return lookup.LookupSCRAMSha1(username)
+}
+
+// ResolveUserInfo maps a userdb protocol.UserInfo to the storage-layer
+// mailbox.UserInfo used to open a user's mailbox + index: it expands the home
+// directory via the resolver and the %h/%u template modifiers, and copies the
+// storage identity (Driver, MailPath, quota rules, dir overrides). Shared by
+// LMTP delivery and the quota-status policy service so both resolve identical
+// paths.
+func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.UserInfo) *mailbox.UserInfo {
+	if ui == nil {
+		return nil
+	}
+	mbi := resolver.UserInfo(username, ui.Home)
+	mbi.Groups = ui.Groups
+	mbi.ACLUser = ui.ACLUser
+	mbi.ACLGroups = ui.ACLGroups
+	mbi.QuotaRules = ui.QuotaRules
+	if ui.VolatileDir != "" {
+		vd := mailbox.ExpandHome(ui.VolatileDir, mbi.Home)
+		vd = strings.ReplaceAll(vd, "%h", mbi.Home)
+		mbi.VolatileDir = mailbox.ExpandVars(vd, username)
+	}
+	if ui.IndexDir != "" {
+		id := mailbox.ExpandHome(ui.IndexDir, mbi.Home)
+		id = strings.ReplaceAll(id, "%h", mbi.Home)
+		mbi.IndexDir = mailbox.ExpandVars(id, username)
+	}
+	if ui.ControlDir != "" {
+		cd := mailbox.ExpandHome(ui.ControlDir, mbi.Home)
+		cd = strings.ReplaceAll(cd, "%h", mbi.Home)
+		mbi.ControlDir = mailbox.ExpandVars(cd, username)
+	}
+	if ui.AltDir != "" {
+		ad := mailbox.ExpandHome(ui.AltDir, mbi.Home)
+		ad = strings.ReplaceAll(ad, "%h", mbi.Home)
+		mbi.AltDir = mailbox.ExpandVars(ad, username)
+	}
+	if ui.MailPath != "" {
+		mbi.MailPath = mailbox.ExpandHome(ui.MailPath, mbi.Home)
+	}
+	if ui.InboxPath != "" {
+		mbi.InboxPath = mailbox.ExpandHome(ui.InboxPath, mbi.Home)
+	}
+	if loc := ui.MailLocation; loc != "" {
+		if colon := strings.IndexByte(loc, ':'); colon > 0 {
+			mbi.Driver = strings.ToLower(loc[:colon])
+		}
+	}
+	return mbi
+}
+
+// BuildMailbox constructs the mailbox backend for a storage config. Exported so
+// standalone binaries (quota-status) build the same backend as the session pods.
+// A nil locker is fine for read-only consumers.
+func BuildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
+	return buildMailbox(cfg, locker)
+}
+
+// BuildResolver builds the storage path resolver from config, applying the same
+// defaults as the session pods.
+func BuildResolver(cfg *config.Config) *mailbox.Resolver {
+	sc := cfg.Storage
+	if sc.MaildirRoot == "" {
+		sc.MaildirRoot = "/var/mail/vhosts"
+	}
+	if sc.MailHomeTemplate == "" {
+		sc.MailHomeTemplate = "%d/%u"
+	}
+	return &mailbox.Resolver{
+		Root:               sc.MaildirRoot,
+		HomeTemplate:       sc.MailHomeTemplate,
+		DefaultVolatileDir: sc.VolatileDir,
+		DefaultIndexDir:    sc.IndexDir,
+		DefaultControlDir:  sc.ControlDir,
+		DefaultAltDir:      sc.AltDir,
+		DefaultMailPath:    sc.MailPath,
+		DefaultSeparator:   personalSeparator(cfg.Namespaces),
+	}
 }
 
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {

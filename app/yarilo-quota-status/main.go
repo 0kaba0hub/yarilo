@@ -21,11 +21,14 @@ import (
 
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
 
+	backendpkg "github.com/0kaba0hub/yarilo/internal/backend"
 	"github.com/0kaba0hub/yarilo/internal/quotastatus"
+	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
@@ -47,14 +50,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	quotaDict, err := openDict(cfg.Dicts, "quota")
-	if err != nil {
-		slog.Error("quota dict init failed", "err", err)
-		os.Exit(1)
-	}
-	if quotaDict == nil {
-		slog.Warn("dicts.quota not configured — all recipients will be allowed")
-	}
+	// Storage access: quota is enforced by summing the recipient's index
+	// aggregate (the count backend), exactly as a delivery agent would — no
+	// dict. Reads need no locker.
+	resolver := backendpkg.BuildResolver(cfg)
+	mbox := backendpkg.BuildMailbox(cfg.Storage, nil)
+	idx := file.New()
 
 	qs := cfg.QuotaStatus
 	limits := quota.ParseRules(qs.DefaultQuotaRules)
@@ -90,10 +91,23 @@ func main() {
 		slog.Info("authclient connected", "addr", qs.AuthMasterAddr)
 	}
 
+	var lookup func(ctx context.Context, username string) (*mailbox.UserInfo, error)
+	if authcl != nil {
+		lookup = func(ctx context.Context, username string) (*mailbox.UserInfo, error) {
+			ui, err := authcl.Userdb(ctx, username)
+			if err != nil {
+				return nil, err
+			}
+			return backendpkg.ResolveUserInfo(resolver, username, ui), nil
+		}
+	}
+
 	srv := quotastatus.New(quotastatus.Options{
-		QuotaDict:    quotaDict,
+		Enabled:      cfg.Quota.Enabled,
 		Limits:       limits,
-		AuthClient:   authcl,
+		UserdbLookup: lookup,
+		Mailbox:      mbox,
+		Index:        idx,
 		AliasDict:    aliasDict,
 		AliasMaxHops: qs.AliasMaxHops,
 	})
@@ -111,7 +125,6 @@ func main() {
 	slog.Info("yarilo-quota-status starting",
 		"version", build.Version,
 		"listen", listen,
-		"quota_dict_configured", quotaDict != nil,
 		"alias_dict_configured", aliasDict != nil,
 		"alias_max_hops", qs.AliasMaxHops,
 		"default_rules", qs.DefaultQuotaRules,

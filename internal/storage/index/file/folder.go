@@ -1,7 +1,6 @@
 package file
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -170,7 +169,7 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	if err := fs.refreshExtState(); err != nil {
 		return err
 	}
-	fs.recalcVsizeLocked()
+	fs.ensureVsizeLocked()
 	return ensureLogStub(fs.indexPath, fs.file.Header.IndexID)
 }
 
@@ -251,6 +250,19 @@ func (fs *folderState) recalcVsizeLocked() {
 		HighestUID:   maxUID,
 		MessageCount: uint32(len(fs.file.Records)),
 	}
+}
+
+// ensureVsizeLocked trusts the persisted aggregate when it still matches the
+// folder's current state and only recomputes when it is stale — the cheap O(1)
+// validity check (highest_uid+1 == uidnext && message_count == messages) the
+// reference count backend uses. Called on the load path so a quota read does
+// not rescan every message. Caller holds fs.mu.
+func (fs *folderState) ensureVsizeLocked() {
+	if fs.vsize.MessageCount == fs.file.Header.MessagesCount &&
+		fs.vsize.HighestUID+1 == fs.file.Header.NextUID {
+		return
+	}
+	fs.recalcVsizeLocked()
 }
 
 // persistVsizeLocked writes the cached aggregate into the hdr-vsize extension
@@ -512,7 +524,7 @@ func (fs *folderState) reload() error {
 			fs.logSize = newLogSize
 		}
 	}
-	fs.recalcVsizeLocked()
+	fs.ensureVsizeLocked()
 	return nil
 }
 
@@ -531,9 +543,7 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 // expected to have already assigned m.UID via AllocateUID or via
 // an external authority (mdbox-style map_uid).
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
-	var folder string
 	if err := u.withFolder(folderID, func(fs *folderState) error {
-		folder = fs.folder
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
@@ -545,7 +555,6 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 	}); err != nil {
 		return err
 	}
-	u.quotaAdd(folder, int64(m.Size), 1)
 	return nil
 }
 
@@ -561,20 +570,15 @@ func (u *userIndex) FolderVSize(folderID uint64) (bytes uint64, messages uint32,
 	return bytes, messages, err
 }
 
-// quotaAdd adjusts the user's quota counter for the given folder.
-// Skips the update when the folder is configured as "ignore".
-// Errors are logged but never returned — drift is recoverable via admin recalc.
-func (u *userIndex) quotaAdd(folder string, bytes, messages int64) {
-	if u.counter == nil {
-		return
-	}
-	if _, ignore := u.limits.EffectiveLimits(folder); ignore {
-		return
-	}
-	if err := u.counter.Add(context.Background(), bytes, messages); err != nil {
-		slog.Warn("fileindex: quota counter update failed",
-			"user", u.username, "folder", folder, "bytes", bytes, "messages", messages, "err", err)
-	}
+// RecomputeVSize forces a full rebuild of the folder's hdr-vsize aggregate from
+// the per-record vsize extension and persists it, bypassing the validity check.
+// The admin recovery path for a corrupted aggregate; normal reads self-heal.
+func (u *userIndex) RecomputeVSize(folderID uint64) error {
+	return u.withFolder(folderID, func(fs *folderState) error {
+		fs.recalcVsizeLocked()
+		fs.persistVsizeLocked()
+		return fs.flush(false)
+	})
 }
 
 // AllocateUID reserves and persists the folder's next UID. The
@@ -620,9 +624,7 @@ func (u *userIndex) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, erro
 }
 
 func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) error {
-	var folder string
 	if err := u.withFolder(folderID, func(fs *folderState) error {
-		folder = fs.folder
 		next := fs.file.Header.NextUID
 		if next == 0 {
 			next = 1
@@ -640,7 +642,6 @@ func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) e
 	}); err != nil {
 		return err
 	}
-	u.quotaAdd(folder, int64(m.Size), 1)
 	return nil
 }
 
@@ -873,10 +874,7 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 // in-memory state, then Recreates the .index file. Vanished
 // later reads those log entries to satisfy QRESYNC.
 func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
-	var expungedSize uint32
-	var expungedFolder string
 	if err := u.withFolder(folderID, func(fs *folderState) error {
-		expungedFolder = fs.folder
 		modseq, err := fs.bumpModSeqHeader()
 		if err != nil {
 			return err
@@ -892,7 +890,6 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 			return nil // already expunged — idempotent
 		}
 		rec := fs.file.Records[idx]
-		expungedSize = fs.sizes[uid]
 		if rec.Flags&mailindex.FlagSeen != 0 {
 			fs.file.Header.SeenMessagesCount--
 		}
@@ -929,7 +926,6 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 	}); err != nil {
 		return err
 	}
-	u.quotaAdd(expungedFolder, -int64(expungedSize), -1)
 	return nil
 }
 

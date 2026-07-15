@@ -9,8 +9,11 @@ import (
 	"testing"
 
 	"github.com/0kaba0hub/yarilo/internal/quotastatus"
+	file "github.com/0kaba0hub/yarilo/internal/storage/index/file"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/dict/memory"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
@@ -65,19 +68,53 @@ func policyCheck(t *testing.T, addr string, attrs map[string]string) string {
 	return ""
 }
 
+// startStorageServer builds a quota-status server backed by real maildir+index
+// storage: each user in userBytes gets one INBOX message of that virtual size,
+// and UserdbLookup returns quotaRules. This mirrors production, where the count
+// backend sums the recipient's index.
+func startStorageServer(t *testing.T, quotaRules []string, aliasD dict.Dict, hops int, userBytes map[string]uint32) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	idx := file.New()
+	for user, b := range userBytes {
+		ui := resolver.UserInfo(user, "")
+		box := mb.OpenUser(ui)
+		_ = box.Init()
+		box.Close() //nolint:errcheck
+		uidx := idx.OpenUser(ui)
+		f, err := uidx.OpenFolder("INBOX", 1)
+		if err != nil {
+			t.Fatalf("open INBOX for %s: %v", user, err)
+		}
+		if b > 0 {
+			if err := uidx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, VSize: b, Size: b}); err != nil {
+				t.Fatalf("append for %s: %v", user, err)
+			}
+		}
+		uidx.Close() //nolint:errcheck
+	}
+	lookup := func(_ context.Context, username string) (*mailbox.UserInfo, error) {
+		mi := resolver.UserInfo(username, "")
+		mi.QuotaRules = quotaRules
+		return mi, nil
+	}
+	return startServer(t, quotastatus.Options{
+		Enabled:      true,
+		Limits:       quota.ParseRules(quotaRules),
+		UserdbLookup: lookup,
+		Mailbox:      mb,
+		Index:        idx,
+		AliasDict:    aliasD,
+		AliasMaxHops: hops,
+	})
+}
+
 func TestPolicyCheck_UnderQuota(t *testing.T) {
-	d := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=10M"})
-	addr := startServer(t, quotastatus.Options{QuotaDict: d, Limits: lim})
-
-	// User has used 1 byte — well under 10M.
-	ctr := quota.NewCounter(d, "alice@example.com")
-	_ = ctr.Add(context.Background(), 1, 1)
-
+	addr := startStorageServer(t, []string{"*:storage=10M"}, nil, 0, map[string]uint32{"alice@example.com": 1})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "alice@example.com",
-		"size":      "1024",
+		"request": "smtpd_access_policy", "recipient": "alice@example.com", "size": "1024",
 	})
 	if action != "DUNNO" {
 		t.Errorf("want DUNNO, got %q", action)
@@ -85,18 +122,9 @@ func TestPolicyCheck_UnderQuota(t *testing.T) {
 }
 
 func TestPolicyCheck_OverQuota(t *testing.T) {
-	d := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=1K"})
-	addr := startServer(t, quotastatus.Options{QuotaDict: d, Limits: lim})
-
-	// Pre-fill to exactly the limit.
-	ctr := quota.NewCounter(d, "alice@example.com")
-	_ = ctr.Add(context.Background(), 1024, 5)
-
+	addr := startStorageServer(t, []string{"*:storage=1K"}, nil, 0, map[string]uint32{"alice@example.com": 1024})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "alice@example.com",
-		"size":      "100",
+		"request": "smtpd_access_policy", "recipient": "alice@example.com", "size": "100",
 	})
 	if !strings.HasPrefix(action, "REJECT 452") {
 		t.Errorf("want REJECT 452, got %q", action)
@@ -104,38 +132,23 @@ func TestPolicyCheck_OverQuota(t *testing.T) {
 }
 
 func TestPolicyCheck_IgnoreFolder(t *testing.T) {
-	d := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=1K", "Spam:ignore"})
-	addr := startServer(t, quotastatus.Options{QuotaDict: d, Limits: lim})
-
-	// Pre-fill past the limit.
-	ctr := quota.NewCounter(d, "alice@example.com")
-	_ = ctr.Add(context.Background(), 2048, 10)
-
-	// Delivery to Spam folder via detail address — must be allowed.
+	addr := startStorageServer(t, []string{"*:storage=1K", "Spam:ignore"}, nil, 0, map[string]uint32{"alice@example.com": 2048})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "alice+Spam@example.com",
-		"size":      "100",
+		"request": "smtpd_access_policy", "recipient": "alice+Spam@example.com", "size": "100",
 	})
 	if action != "DUNNO" {
 		t.Errorf("want DUNNO for ignored folder, got %q", action)
 	}
 }
 
-func TestPolicyCheck_NoQuotaDict(t *testing.T) {
-	addr := startServer(t, quotastatus.Options{
-		QuotaDict: nil,
-		Limits:    quota.ParseRules([]string{"*:storage=1K"}),
-	})
-
+func TestPolicyCheck_NoStorage(t *testing.T) {
+	// No Mailbox/Index/UserdbLookup wired → fail-open.
+	addr := startServer(t, quotastatus.Options{Limits: quota.ParseRules([]string{"*:storage=1K"})})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "alice@example.com",
-		"size":      "9999",
+		"request": "smtpd_access_policy", "recipient": "alice@example.com", "size": "9999",
 	})
 	if action != "DUNNO" {
-		t.Errorf("want DUNNO when no dict, got %q", action)
+		t.Errorf("want DUNNO when no storage, got %q", action)
 	}
 }
 
@@ -154,25 +167,11 @@ func setAlias(t *testing.T, d dict.Dict, src, dst string) {
 }
 
 func TestAliasResolution_DirectAlias(t *testing.T) {
-	quotaD := newMemDict(t)
 	aliasD := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=1K"})
-
-	ctr := quota.NewCounter(quotaD, "alice@example.com")
-	_ = ctr.Add(context.Background(), 2048, 10)
-
 	setAlias(t, aliasD, "info@example.com", "alice@example.com")
-
-	addr := startServer(t, quotastatus.Options{
-		QuotaDict: quotaD,
-		AliasDict: aliasD,
-		Limits:    lim,
-	})
-
+	addr := startStorageServer(t, []string{"*:storage=1K"}, aliasD, 0, map[string]uint32{"alice@example.com": 2048})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "info@example.com",
-		"size":      "100",
+		"request": "smtpd_access_policy", "recipient": "info@example.com", "size": "100",
 	})
 	if !strings.HasPrefix(action, "REJECT 452") {
 		t.Errorf("alias resolved to over-quota alice: want REJECT 452, got %q", action)
@@ -180,28 +179,12 @@ func TestAliasResolution_DirectAlias(t *testing.T) {
 }
 
 func TestAliasResolution_ChainedAlias(t *testing.T) {
-	quotaD := newMemDict(t)
 	aliasD := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=1K"})
-
-	// sales@ → info@ → alice@ (2-hop chain)
-	ctr := quota.NewCounter(quotaD, "alice@example.com")
-	_ = ctr.Add(context.Background(), 2048, 10)
-
 	setAlias(t, aliasD, "sales@example.com", "info@example.com")
 	setAlias(t, aliasD, "info@example.com", "alice@example.com")
-
-	addr := startServer(t, quotastatus.Options{
-		QuotaDict:    quotaD,
-		AliasDict:    aliasD,
-		AliasMaxHops: 5,
-		Limits:       lim,
-	})
-
+	addr := startStorageServer(t, []string{"*:storage=1K"}, aliasD, 5, map[string]uint32{"alice@example.com": 2048})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "sales@example.com",
-		"size":      "100",
+		"request": "smtpd_access_policy", "recipient": "sales@example.com", "size": "100",
 	})
 	if !strings.HasPrefix(action, "REJECT 452") {
 		t.Errorf("chained alias: want REJECT 452, got %q", action)
@@ -209,27 +192,11 @@ func TestAliasResolution_ChainedAlias(t *testing.T) {
 }
 
 func TestAliasResolution_DetailStrippedForLookup(t *testing.T) {
-	quotaD := newMemDict(t)
 	aliasD := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=1K"})
-
-	ctr := quota.NewCounter(quotaD, "alice@example.com")
-	_ = ctr.Add(context.Background(), 2048, 10)
-
-	// Alias table has bare address, no detail variant.
 	setAlias(t, aliasD, "info@example.com", "alice@example.com")
-
-	addr := startServer(t, quotastatus.Options{
-		QuotaDict: quotaD,
-		AliasDict: aliasD,
-		Limits:    lim,
-	})
-
-	// Postfix sends info+newsletter@example.com — detail stripped for alias lookup.
+	addr := startStorageServer(t, []string{"*:storage=1K"}, aliasD, 0, map[string]uint32{"alice@example.com": 2048})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "info+newsletter@example.com",
-		"size":      "100",
+		"request": "smtpd_access_policy", "recipient": "info+newsletter@example.com", "size": "100",
 	})
 	if !strings.HasPrefix(action, "REJECT 452") {
 		t.Errorf("detail+alias: want REJECT 452, got %q", action)
@@ -237,20 +204,10 @@ func TestAliasResolution_DetailStrippedForLookup(t *testing.T) {
 }
 
 func TestAliasResolution_NoAlias_FallsBackToDirect(t *testing.T) {
-	quotaD := newMemDict(t)
 	aliasD := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=10M"})
-
-	addr := startServer(t, quotastatus.Options{
-		QuotaDict: quotaD,
-		AliasDict: aliasD,
-		Limits:    lim,
-	})
-
+	addr := startStorageServer(t, []string{"*:storage=10M"}, aliasD, 0, map[string]uint32{"bob@example.com": 0})
 	action := policyCheck(t, addr, map[string]string{
-		"request":   "smtpd_access_policy",
-		"recipient": "bob@example.com",
-		"size":      "100",
+		"request": "smtpd_access_policy", "recipient": "bob@example.com", "size": "100",
 	})
 	if action != "DUNNO" {
 		t.Errorf("no alias, under quota: want DUNNO, got %q", action)
@@ -258,16 +215,12 @@ func TestAliasResolution_NoAlias_FallsBackToDirect(t *testing.T) {
 }
 
 func TestPolicyCheck_MultipleRequestsPerConn(t *testing.T) {
-	d := newMemDict(t)
-	lim := quota.ParseRules([]string{"*:storage=10M"})
-	addr := startServer(t, quotastatus.Options{QuotaDict: d, Limits: lim})
-
+	addr := startStorageServer(t, []string{"*:storage=10M"}, nil, 0, map[string]uint32{"bob@example.com": 0})
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-
 	sc := bufio.NewScanner(conn)
 	for i := 0; i < 3; i++ {
 		fmt.Fprintf(conn, "request=smtpd_access_policy\nrecipient=bob@example.com\nsize=100\n\n") //nolint:errcheck

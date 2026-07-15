@@ -5,49 +5,82 @@ IMAP QUOTA extension (RFC 9208) and the `pkg/quota` package.
 
 ## Architecture
 
-**Limits** come from the userdb `quota_rule=` extra field and flow
-through the auth chain into the session at login time:
+**Limits** come from the userdb `quota_rule=` extra field:
 
 ```
-userdb quota_rule=*:storage=5G
-  → AuthResponse.QuotaRules
-  → userInfo.QuotaRules
-  → quota.ParseRules(userInfo.QuotaRules)
-  → quota.Limits{StorageBytes: 5*1024^3}
+userdb quota_rule=*:storage=5G → AuthResponse.QuotaRules → userInfo.QuotaRules
+  → quota.ParseRules(...) → quota.Limits{StorageBytes: 5*1024^3}
 ```
 
-**Usage** is tracked as running counters in a configured dict under
-two per-user keys:
+**Usage is the `count` backend — derived from the index, never a stored
+counter.** This mirrors Dovecot 2.4, which *removed* its `dict` quota backend
+(the drift-prone "counter is the source of truth" model); the authoritative
+value is computed from the mailbox index.
 
-| Key | Type | Unit |
-|:----|:-----|:-----|
-| `priv/quota/storage` | int64 string | bytes |
-| `priv/quota/messages` | int64 string | message count |
+- The FileIndex carries two extensions (see INTERNALS.md): a per-record `vsize`
+  (virtual/RFC822 size) and a header `hdr-vsize` aggregate
+  `{vsize, highest_uid, message_count}`.
+- The aggregate is maintained incrementally on append/expunge and **self-heals**:
+  on load it is trusted only while `highest_uid+1 == uidnext && message_count ==
+  messages` (a cheap O(1) validity check, exactly Dovecot's), otherwise it is
+  recomputed from the per-record vsize.
+- `quota.CountUsage(idx, folders, limits)` sums each folder's `FolderVSize`
+  aggregate — the authoritative usage. `ignore` folders are skipped.
 
-Counters are updated at the session level (not inside the storage
-driver) because the session already knows the message size:
+**Every enforcer reads from the index** (no dict in the enforcement path):
 
-- **IMAP APPEND** — quota check before UID allocation; counter
-  incremented after successful `AppendMessage`.
-- **IMAP EXPUNGE** — counter decremented by `MessageMeta.Size`
-  for each expunged message.
+| Path | How usage is read |
+|:---|:---|
+| IMAP GETQUOTA / APPEND enforcement | `session.countUsage` → sum `FolderVSize` (1 s display cache; enforcement fresh) |
+| LMTP delivery | opens the recipient index at delivery time → `CountUsage` |
+| `yarilo-quota-status` (Postfix policy) | a **full mail process**: opens the recipient's mailbox+index → `CountUsage`, exactly like Dovecot's quota-status (`mail_storage_service`). **Not** a dict reader. Needs the mail PV mounted. |
+| `backend-api` /show, /recalc | `CountUsage`; /recalc force-rebuilds each folder's aggregate |
+| POP3 | **nothing** — POP3 never appends, so no enforcement; DELE→expunge decrements the index aggregate automatically |
+
+## Two distinct entities — do not conflate
+
+1. **quota engine** (`quota.enabled`) — the count backend + enforcement on
+   **every save**: IMAP APPEND/COPY/MOVE (OVERQUOTA), LMTP delivery (452), and
+   the quota-status policy service. This mirrors Dovecot's `quota` plugin, whose
+   `quota-storage.c` hooks `mail_save` — the path shared by APPEND and delivery.
+2. **IMAP QUOTA extension** (`protocol.imap.imap_quota`) — RFC 9208
+   `GETQUOTA` / `GETQUOTAROOT` + the `QUOTA` capability. A **client-facing query
+   only, no enforcement** (Dovecot's `imap_quota` plugin registers only the
+   commands). Toggle it independently of the engine — you can enforce without
+   advertising the extension, or advertise it without enforcing.
+
+Both default off in Helm (`quota.enabled: false`, `protocol.imap.imap_quota: true`).
+
+## quota_clone (external mirror) — separate, optional, not yet built
+
+Dovecot's `quota_clone` mirrors the current usage into a dict for **external**
+consumers outside the mail server (provisioning DB, dashboard). It is **not**
+part of enforcement (Dovecot's own quota-status opens the mailbox). yarilo will
+add it as an optional feature with a **multi-dict fan-out** (write to SQL + Redis
+in parallel — Dovecot allows only one dict). The `dicts.quota` config is reserved
+for this; nothing reads it in the enforcement path.
+
+## TODO (tracked in #549)
+
+- **quota_grace** — bounded temporary overshoot (Dovecot `quota_storage_grace`),
+  threaded into `IsOver`.
+- **quota_warning** — threshold events (80 %/95 %) via the locks bus / webhook /
+  Sieve notification.
+- **quota_clone** — the multi-dict external mirror above.
 
 ## Configuration
 
-Enable quota by declaring a `quota` dict in `yarilo.yaml`:
+Two independent toggles (both default off/on per Helm):
 
 ```yaml
-dicts:
-  quota:
-    driver: redis
-    settings:
-      addr: yarilo-redis.yarilo.svc.cluster.local:6379
-      db: 0
-      prefix: "yarilo:quota:"
-    expire_secs: 0   # counters do not expire
+quota:
+  enabled: true        # engine: enforce on every save (APPEND/COPY/MOVE, LMTP, quota-status)
+protocol:
+  imap:
+    imap_quota: true   # IMAP QUOTA extension: advertise QUOTA + answer GETQUOTA (query only)
 ```
 
-Set a per-user limit in the SQL passdb:
+No dict is needed — usage is summed from the index. Set a per-user limit in the SQL passdb:
 
 ```sql
 UPDATE yarilo_users SET quota_rule = '*:storage=5G' WHERE username = 'alice@example.com';
@@ -74,7 +107,7 @@ the SQL column; the last `*:storage=` rule wins.
 
 ## IMAP wire (RFC 9208)
 
-When `dicts.quota` is configured the server advertises:
+When `protocol.imap.imap_quota` is on the server advertises:
 
 ```
 * CAPABILITY ... QUOTA
@@ -109,53 +142,38 @@ When a user is over quota, `APPEND` returns:
 NO [OVERQUOTA] Quota exceeded
 ```
 
-The check is a pre-APPEND read of current usage from the dict.
-On dict error the check is skipped (fail-open) so a transient dict
-outage does not prevent mail delivery.
+The check reads current usage from the index. On a transient read error
+it is skipped (fail-open) so an I/O blip does not block delivery.
 
 ## Admin API
 
 ```sh
-# Show current usage
+# Show current usage (summed from the index)
 yarilo-admin backend quota show alice@example.com
 
-# Rebuild counters from disk (after manual migration or drift)
+# Force-rebuild each folder's aggregate from records, then report
 yarilo-admin backend quota recalc alice@example.com
-
-# Directly set counter values
-yarilo-admin backend quota set alice@example.com --storage-bytes 1073741824 --messages 100
 ```
 
-These call `POST /api/backend/quota/recalc` and related endpoints
-on `yarilo-backend-api`.
+These call `GET /api/backend/quota/show` and `POST /api/backend/quota/recalc`
+on `yarilo-backend-api`. There is no `set` — usage is computed, not stored.
 
 ### Recalc
 
-`recalc` walks all folder fileindexes, sums `MessageMeta.Size` and
-overwrites the dict counters. Run after:
-
-- Manual mailbox migration
-- Counter drift (caused by crashes between Save and counter update)
-- Enabling quota on an existing deployment
-
-```sh
-# k8s CronJob — weekly recalc for all users
-# Loop over users from yarilo-admin backend user iterate
-```
+The index self-heals on load (the O(1) validity check), so `recalc` is only
+needed to force a rebuild after suspected aggregate corruption. It reopens each
+folder, recomputes `hdr-vsize` from the per-record vsize, and returns the sum.
 
 ## Helm
 
 ```yaml
 # values.yaml
-dicts:
-  quota:
-    driver: redis
-    settings:
-      addr: "yarilo-redis.{{ .Release.Namespace }}.svc.cluster.local:6379"
-      db: 0
-      prefix: "yarilo:quota:"
-    expire_secs: 0
+quota:
+  enabled: true        # enforce
+protocol:
+  imap:
+    imap_quota: true   # advertise the QUOTA extension
 ```
 
-Mount a Redis instance (or any supported dict driver) and set
-`quota_rule` in the passdb schema.
+The `yarilo-quota-status` pod mounts the mail PV read-only so it can open
+recipient mailboxes; set `quota_rule` in the passdb schema.
