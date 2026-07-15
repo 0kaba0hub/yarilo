@@ -89,9 +89,27 @@ and resolve mail storage without any database.
 auth:
   passdb:
     - driver: passwd-file
-      passwd_file: /etc/yarilo/passwd
+      passwd_file: /etc/yarilo-passwd/passwd
       default_pass_scheme: CRYPT
 ```
+
+> **Kubernetes note.** Mount the file from a Secret/ConfigMap into its **own**
+> directory — do **not** place it under `/etc/yarilo`, which is already the
+> rendered-config mount. A `subPath` file mounted inside that directory fails
+> with `not a directory` and crash-loops every pod. With the Helm chart, supply
+> the content via `extraVolumes` / `extraVolumeMounts` at a distinct path
+> (e.g. `/etc/yarilo-passwd`) and point `passwd_file` at it:
+>
+> ```yaml
+> extraVolumeMounts:
+>   - name: passwd-file
+>     mountPath: /etc/yarilo-passwd
+>     readOnly: true
+> extraVolumes:
+>   - name: passwd-file
+>     secret:
+>       secretName: yarilo-passwd-file
+> ```
 
 ### File format
 
