@@ -209,7 +209,7 @@ func TestHandleListEvent(t *testing.T) {
 	t.Run("rename carries OLDNAME and re-arms watch", func(t *testing.T) {
 		w := newWatcher(personal, true, false)
 		w.addSub("Old", notifyMaskNew)
-		w.handleListEvent(locks.Event{Type: locks.EventMailboxRename, Payload: "Old\tNew"})
+		w.handleListEvent(locks.Event{Type: locks.EventMailboxRename, Payload: "Old" + renameSep + "New"})
 		if _, ok := w.watch["Old"]; ok {
 			t.Error("old name should be removed")
 		}

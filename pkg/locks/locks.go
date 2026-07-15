@@ -34,7 +34,7 @@ const (
 	// MailboxName / SubscriptionChange reporting to other sessions.
 	EventMailboxCreate      EventType = "mbox-create"      // payload: name
 	EventMailboxDelete      EventType = "mbox-delete"      // payload: name
-	EventMailboxRename      EventType = "mbox-rename"      // payload: old\tnew
+	EventMailboxRename      EventType = "mbox-rename"      // payload: old\x00new
 	EventMailboxSubscribe   EventType = "mbox-subscribe"   // payload: name
 	EventMailboxUnsubscribe EventType = "mbox-unsubscribe" // payload: name
 )
