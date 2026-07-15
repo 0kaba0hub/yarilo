@@ -68,6 +68,10 @@ type AuthResponse struct {
 	// userdb `quota_rule=` extra field. Format: `*:storage=5G`.
 	QuotaRules []string
 
+	// QuotaOverFlag is the userdb `quota_over_flag=` value — the external
+	// "over quota" marker compared against quota_over_status_mask at login.
+	QuotaOverFlag string
+
 	// VolatileDir is the VOLATILEDIR modifier from the mail location (or
 	// direct volatile_dir= userdb field). Carries the raw template string
 	// (%u/%n/%d/%h unexpanded) — callers expand it against the resolved
@@ -387,6 +391,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	resp.ACLUser = extractACLUser(req.Fields)
 	resp.ACLGroups = extractACLGroups(req.Fields)
 	resp.QuotaRules = extractQuotaRules(req.Fields)
+	resp.QuotaOverFlag = extractQuotaOverFlag(req.Fields)
 	resp.VolatileDir = extractVolatileDir(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
@@ -419,6 +424,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		resp.ACLUser = extractACLUser(entry.Fields)
 		resp.ACLGroups = extractACLGroups(entry.Fields)
 		resp.QuotaRules = extractQuotaRules(entry.Fields)
+		resp.QuotaOverFlag = extractQuotaOverFlag(entry.Fields)
 		resp.VolatileDir = extractVolatileDir(entry.Fields)
 		resp.IndexDir = extractIndexDir(entry.Fields)
 		resp.ControlDir = extractControlDir(entry.Fields)
@@ -1394,6 +1400,9 @@ func buildAuthOK(id string, res *AuthResponse) string {
 	if len(res.QuotaRules) > 0 {
 		reply += "\tquota_rule=" + strings.Join(res.QuotaRules, ",")
 	}
+	if res.QuotaOverFlag != "" {
+		reply += "\tquota_over_flag=" + res.QuotaOverFlag
+	}
 	return reply
 }
 
@@ -1456,6 +1465,21 @@ func extractQuotaRules(f *Fields) []string {
 		return SplitCSV(v)
 	}
 	return nil
+}
+
+// extractQuotaOverFlag reads the quota_over_flag value from the Fields bag.
+// Priority: userdb-scoped userdb_quota_over_flag → bare quota_over_flag.
+func extractQuotaOverFlag(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	if v, ok := f.Get("userdb_quota_over_flag"); ok && v != "" {
+		return v
+	}
+	if v, ok := f.Get("quota_over_flag"); ok && v != "" {
+		return v
+	}
+	return ""
 }
 
 // extractVolatileDir reads the VOLATILEDIR value from the Fields bag.

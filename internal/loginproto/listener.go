@@ -35,6 +35,8 @@ type PreambleConn struct {
 	Groups []string
 	// QuotaRules are the per-user quota rules from userdb.
 	QuotaRules []string
+	// QuotaOverFlag is the userdb quota_over_flag value (quota_over_status).
+	QuotaOverFlag string
 	// VolatileDir is the VOLATILEDIR modifier from userdb (empty = use global default).
 	VolatileDir string
 	// IndexDir is the INDEX= modifier from userdb (empty = co-located with mailbox).
@@ -181,6 +183,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	}
 
 	var home, mailLoc, volatileDir, indexDir, controlDir, altDir, mailPath, inboxPath string
+	var quotaOverFlag string
 	var groups, quotaRules []string
 	if l.MasterAddr != "" {
 		masterCl, merr := masterclient.Dial(l.MasterAddr, l.MasterTLS)
@@ -200,6 +203,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		mailLoc = ui.MailLocation
 		groups = ui.Groups
 		quotaRules = ui.QuotaRules
+		quotaOverFlag = ui.QuotaOverFlag
 		volatileDir = ui.VolatileDir
 		indexDir = ui.IndexDir
 		controlDir = ui.ControlDir
@@ -216,22 +220,23 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	}
 
 	return &PreambleConn{
-		Conn:        c,
-		Username:    username,
-		SessionID:   sessionID,
-		Service:     service,
-		Helo:        pre.Helo,
-		Home:        home,
-		MailLoc:     mailLoc,
-		Groups:      groups,
-		QuotaRules:  quotaRules,
-		VolatileDir: volatileDir,
-		IndexDir:    indexDir,
-		ControlDir:  controlDir,
-		AltDir:      altDir,
-		MailPath:    mailPath,
-		InboxPath:   inboxPath,
-		realAddr:    realAddr,
-		br:          br,
+		Conn:          c,
+		Username:      username,
+		SessionID:     sessionID,
+		Service:       service,
+		Helo:          pre.Helo,
+		Home:          home,
+		MailLoc:       mailLoc,
+		Groups:        groups,
+		QuotaRules:    quotaRules,
+		QuotaOverFlag: quotaOverFlag,
+		VolatileDir:   volatileDir,
+		IndexDir:      indexDir,
+		ControlDir:    controlDir,
+		AltDir:        altDir,
+		MailPath:      mailPath,
+		InboxPath:     inboxPath,
+		realAddr:      realAddr,
+		br:            br,
 	}, nil
 }

@@ -368,18 +368,19 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 	if pc := unwrapPreambleConn(c.NetConn()); pc != nil {
 		sess.sid = pc.SessionID
 		if err := sess.completeLogin(&protocol.AuthResponse{
-			Result:      protocol.AuthOK,
-			Username:    pc.Username,
-			Home:        pc.Home,
-			MailLoc:     pc.MailLoc,
-			Groups:      pc.Groups,
-			QuotaRules:  pc.QuotaRules,
-			VolatileDir: pc.VolatileDir,
-			IndexDir:    pc.IndexDir,
-			ControlDir:  pc.ControlDir,
-			AltDir:      pc.AltDir,
-			MailPath:    pc.MailPath,
-			InboxPath:   pc.InboxPath,
+			Result:        protocol.AuthOK,
+			Username:      pc.Username,
+			Home:          pc.Home,
+			MailLoc:       pc.MailLoc,
+			Groups:        pc.Groups,
+			QuotaRules:    pc.QuotaRules,
+			QuotaOverFlag: pc.QuotaOverFlag,
+			VolatileDir:   pc.VolatileDir,
+			IndexDir:      pc.IndexDir,
+			ControlDir:    pc.ControlDir,
+			AltDir:        pc.AltDir,
+			MailPath:      pc.MailPath,
+			InboxPath:     pc.InboxPath,
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -903,6 +904,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	userInfo.ACLUser = res.ACLUser
 	userInfo.ACLGroups = res.ACLGroups
 	userInfo.QuotaRules = res.QuotaRules
+	userInfo.QuotaOverFlag = res.QuotaOverFlag
 	userInfo.SessionID = s.sid
 	if res.VolatileDir != "" {
 		vd := mailbox.ExpandHome(res.VolatileDir, userInfo.Home)
