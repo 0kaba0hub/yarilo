@@ -11,7 +11,7 @@ Multi-binary architecture — each protocol component is a separate process. Kub
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE)
-[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)](PLAN.md)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-yellow)](PLAN.md)
 
 </td>
 </tr></table>
@@ -70,11 +70,11 @@ Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a 
 
 | Protocol | Standard | Extensions | Status |
 |:---|:---|:---|:---|
-| IMAP4rev2 | RFC 9051 | IDLE, MOVE, CONDSTORE, QRESYNC, UNSELECT, NAMESPACE, QUOTA, ACL, BINARY, UIDPLUS, SORT, THREAD, ESEARCH, SPECIAL-USE | ✅ |
+| IMAP4rev2 | RFC 9051 | IDLE, MOVE, CONDSTORE, QRESYNC, UIDPLUS, UNSELECT, NAMESPACE, QUOTA, ACL, BINARY, SORT, THREAD, ESEARCH, NOTIFY, URLAUTH, SPECIAL-USE, ID, OBJECTID, METADATA | ✅ |
 | POP3 | RFC 1939 | STLS, UIDL, CAPA, XCLIENT | ✅ |
 | LMTP | RFC 2033 | per-recipient status, HAProxy, XCLIENT, STARTTLS, `Delivered-To`, Sieve delivery | ✅ |
 | ManageSieve | RFC 5804 | full script management | ✅ |
-| Sieve | RFC 5228 | fileinto, reject, ereject, envelope, encoded-character, copy, subaddress, variables, relational, body, vacation, vacation-seconds, regex, date, index, editheader, mailbox, duplicate, ihave, special-use, imap4flags, fcc, include, extlists, enotify, environment, spamtest, spamtestplus, virustest, mboxmetadata, servermetadata, vnd.yarilo.debug, vnd.yarilo.environment, vnd.yarilo.pipe, vnd.yarilo.filter, vnd.yarilo.execute | ✅ |
+| Sieve | RFC 5228 | fileinto, reject, ereject, envelope, encoded-character, variables, relational, copy, subaddress, environment, body, vacation, vacation-seconds, regex, date, index, editheader, mailbox, mailboxid, duplicate, ihave, special-use, imap4flags, fcc, include, enotify, spamtest, spamtestplus, virustest, foreverypart, mime, extracttext, replace, enclose, mboxmetadata, servermetadata, imapsieve, vnd.yarilo.debug, vnd.yarilo.environment, vnd.yarilo.pipe, vnd.yarilo.filter, vnd.yarilo.report, vnd.yarilo.execute | ✅ |
 | Submission | RFC 6409 | STARTTLS, SASL PLAIN, SIZE, PIPELINING, relay to upstream MTA | ✅ |
 | SASL | — | PLAIN, LOGIN, SCRAM-SHA-256, XOAUTH2, OAUTHBEARER | ✅ |
 | JMAP | RFC 8620/8621 | — | planned |
@@ -182,12 +182,12 @@ yarilo-migrate \
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | K8s topology, sizing, HA strategy, sharding via tags |
 | [docs/GENERAL.md](docs/GENERAL.md) | `general`: SSL, HAProxy, XCLIENT, connection limits |
 | [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config |
-| [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE, line length, ACL, NAMESPACE |
+| [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE, line length, ACL, NAMESPACE, NOTIFY, METADATA, OBJECTID |
 | [docs/NAMESPACE.md](docs/NAMESPACE.md) | IMAP namespaces (RFC 2342 / 9051): personal / shared / other_users |
 | [docs/SUBMISSION.md](docs/SUBMISSION.md) | `protocol.submission`: hostname, size, relay |
 | [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: delivery, HAProxy, XCLIENT, TLS, headers |
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL, soft-delete, migration |
-| [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL backends, password schemes |
+| [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL backends, password schemes, userdb extra fields |
 | [docs/SMOKE.md](docs/SMOKE.md) | End-to-end smoke test |
 | [docs/DIRECTOR.md](docs/DIRECTOR.md) | `director_service`: ring, peers, HAProxy, XCLIENT, mTLS |
 | [docs/MONITOR.md](docs/MONITOR.md) | `yarilo-monitor`: health probes, Prometheus metrics |
