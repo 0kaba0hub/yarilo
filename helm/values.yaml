@@ -203,8 +203,11 @@ components:
       ## key=value; userdb_-prefixed keys populate the userdb (userdb_mail,
       ## userdb_quota_rule, ...). Passwords carry a {SCHEME} prefix or a crypt(3)
       ## marker; unmarked values assume default_pass_scheme (default CRYPT).
+      ## Mount the file into its OWN dir via extraVolumes/extraVolumeMounts —
+      ## NOT under /etc/yarilo (the rendered-config mount); a subPath file there
+      ## fails with "not a directory" and crash-loops the pod.
       # - driver: passwd-file
-      #   passwd_file: /etc/yarilo/passwd
+      #   passwd_file: /etc/yarilo-passwd/passwd
       #   default_pass_scheme: CRYPT
 
       ## static driver — one shared credential + templated fields applied to
