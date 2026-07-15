@@ -57,7 +57,7 @@ protocol:
 | SORT | RFC 5256 | Server-side message sorting. |
 | THREAD | RFC 5256 | Threading by subject / references. |
 | ESEARCH | RFC 4731 | Extended SEARCH with MIN/MAX/COUNT. |
-| NOTIFY | RFC 5465 | Event-based notifications. `NOTIFY SET`/`NONE` parsed with all mailbox filters; the **selected** mailbox honours `SELECTED` / `SELECTED-DELAYED` (MessageNew / MessageExpunge / FlagChange), suppressing the unsolicited responses the client did not request (RFC 5465 §5). Non-selected mailbox filters (PERSONAL / SUBSCRIBED / SUBTREE / MAILBOXES) are accepted but not yet acted on. |
+| NOTIFY | RFC 5465 | Event-based notifications. `NOTIFY SET`/`NONE` parsed with all mailbox filters; the **selected** mailbox honours `SELECTED` / `SELECTED-DELAYED` (MessageNew / MessageExpunge / FlagChange), suppressing the unsolicited responses the client did not request (RFC 5465 §5). **Non-selected** mailbox filters (PERSONAL / INBOXES / SUBSCRIBED / SUBTREE / MAILBOXES) are watched via the `pkg/locks` event bus and their MessageNew / MessageExpunge / FlagChange activity is reported as untagged `* STATUS` (RFC 5465 §6), delivered during IDLE and before the next command's tagged response. The watched set is snapshotted at `NOTIFY SET`; mailboxes created afterwards and mailbox-level events (MailboxName / SubscriptionChange) are not yet reported. |
 | URLAUTH | RFC 4467 | Authorised URL for CATENATE/BURL. |
 | SPECIAL-USE | RFC 6154 | `\Sent`, `\Drafts`, `\Trash` folder flags. |
 | ID | RFC 2971 | Server identity advertisement. |
