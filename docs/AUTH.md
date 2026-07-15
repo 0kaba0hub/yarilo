@@ -124,6 +124,46 @@ bob@example.com:{SHA512-CRYPT}$6$salt$hash
 
 ---
 
+## static passdb
+
+One shared credential and a set of templated fields applied to **every** user.
+Serves both passdb and userdb roles. For tests, single-mailbox installs, and
+proxy front-ends. Because it matches every username it must be placed **last**
+in the chain.
+
+```yaml
+auth:
+  passdb:
+    - driver: sqlite
+      dsn: /var/lib/yarilo/users.db
+    - driver: static            # catch-all — last in the chain
+      static_password: "${YARILO_STATIC_PASSWORD}"
+      default_pass_scheme: BCRYPT
+      fields:
+        userdb_home: "/var/vmail/%d/%n"
+        userdb_mail: "maildir:/var/vmail/%d/%n/Maildir"
+```
+
+| Key | Description |
+|:---|:---|
+| `static_password` | Shared password (`{SCHEME}` prefix or `default_pass_scheme`). `${ENV_VAR}` expanded at startup. |
+| `nopassword` | `true` accepts **any** password — for proxy front-ends where the upstream authenticates. Mutually exclusive with `static_password`. |
+| `fields` | Templated user fields. Values expand `%u` / `%n` / `%d`. `userdb_`-prefixed keys populate the userdb; bare keys are forwarded on the passdb path (`allow_nets`, `proxy`, …). |
+
+Proxy front-end (accept any credential, let the backend verify):
+
+```yaml
+auth:
+  passdb:
+    - driver: static
+      nopassword: true
+      fields:
+        proxy: "y"
+        host: "backend.internal"
+```
+
+---
+
 ## Password schemes
 
 The `password` column accepts a `{SCHEME}hash` prefix. Without a prefix, the format is autodetected from common crypt(3) markers.

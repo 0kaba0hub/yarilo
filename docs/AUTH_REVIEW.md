@@ -235,7 +235,7 @@ By operator demand:
 - `ldap` — enterprise
 - `lua` — escape hatch
 - `pam` — UNIX shell users
-- `static` — tests + single-mailbox setups
+- `static` — tests + single-mailbox setups — **done** (passdb + userdb)
 - `imap` — proxy fallback
 
 ---

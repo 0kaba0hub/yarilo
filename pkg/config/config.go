@@ -1092,6 +1092,11 @@ type PassdbEntry struct {
 	IterateQuery      string `koanf:"iterate_query"`       // optional list-users query (admin tooling)
 	DefaultPassScheme string `koanf:"default_pass_scheme"` // assumed scheme when stored password has no {SCHEME} prefix (default PLAIN)
 	SkipSchema        bool   `koanf:"skip_schema"`         // do not run CREATE TABLE IF NOT EXISTS on startup
+
+	// static driver: one shared credential + templated fields for every user.
+	StaticPassword string            `koanf:"static_password"` // shared password ({SCHEME} or default scheme)
+	Nopassword     bool              `koanf:"nopassword"`      // accept any password (proxy front); requires empty static_password
+	Fields         map[string]string `koanf:"fields"`          // templated fields (%u/%n/%d); userdb_-prefixed → userdb, bare → passdb
 }
 
 type StorageConfig struct {
@@ -1444,6 +1449,7 @@ func expandEnv(cfg *Config) {
 	for i := range cfg.Auth.Passdb {
 		cfg.Auth.Passdb[i].DSN = expand(cfg.Auth.Passdb[i].DSN)
 		cfg.Auth.Passdb[i].PasswdFile = expand(cfg.Auth.Passdb[i].PasswdFile)
+		cfg.Auth.Passdb[i].StaticPassword = expand(cfg.Auth.Passdb[i].StaticPassword)
 	}
 	for i := range cfg.Auth.MasterUsers.Masterdb {
 		cfg.Auth.MasterUsers.Masterdb[i].DSN = expand(cfg.Auth.MasterUsers.Masterdb[i].DSN)

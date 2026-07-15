@@ -207,6 +207,19 @@ components:
       #   passwd_file: /etc/yarilo/passwd
       #   default_pass_scheme: CRYPT
 
+      ## static driver — one shared credential + templated fields applied to
+      ## every user. For tests, single-mailbox installs, and proxy front-ends
+      ## (set nopassword: true to accept any password and let the upstream
+      ## authenticate). Matches every username, so place it LAST in the chain.
+      ## fields values expand %u/%n/%d; userdb_-prefixed keys populate the
+      ## userdb, bare keys are forwarded on the passdb path.
+      # - driver: static
+      #   static_password: "${YARILO_STATIC_PASSWORD}"   # or nopassword: true
+      #   default_pass_scheme: BCRYPT
+      #   fields:
+      #     userdb_home: "/var/vmail/%d/%n"
+      #     userdb_mail: "maildir:/var/vmail/%d/%n/Maildir"
+
     ## failureDelay — timing-leak mitigation. Every failed auth
     ## reply (wrong password, unknown user, malformed SASL) is
     ## held back this many seconds before surfacing to the client

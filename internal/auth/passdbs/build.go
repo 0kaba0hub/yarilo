@@ -11,6 +11,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/passwdfile"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
+	"github.com/0kaba0hub/yarilo/internal/auth/static"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 )
 
@@ -49,6 +50,18 @@ func Build(entries []config.PassdbEntry) (passdbs []protocol.Passdb, userdbs []p
 			})
 			if err != nil {
 				return nil, nil, fmt.Errorf("passdb passwd-file: %w", err)
+			}
+			passdbs = append(passdbs, db)
+			userdbs = append(userdbs, db)
+		case "static":
+			db, err := static.New(static.Config{
+				Password:      e.StaticPassword,
+				Nopassword:    e.Nopassword,
+				DefaultScheme: e.DefaultPassScheme,
+				Fields:        e.Fields,
+			})
+			if err != nil {
+				return nil, nil, fmt.Errorf("passdb static: %w", err)
 			}
 			passdbs = append(passdbs, db)
 			userdbs = append(userdbs, db)
