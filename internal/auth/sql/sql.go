@@ -15,6 +15,7 @@ import (
 	"github.com/emersion/go-sasl"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/0kaba0hub/yarilo/internal/auth/scheme"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver (registered as "pgx")
@@ -156,7 +157,7 @@ func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 		return protocol.ResultFail, nil
 	}
 
-	if !checkPasswordWithDefault(storedPass, req.Password, p.defaultScheme) {
+	if !scheme.VerifyWithDefault(storedPass, req.Password, p.defaultScheme) {
 		return protocol.ResultFail, nil
 	}
 
@@ -224,14 +225,14 @@ func (p *Passdb) LookupUser(username string) (home, mailLoc string, err error) {
 // exchange completes with a uniform auth-failed outcome and an
 // attacker cannot enumerate users.
 func (p *Passdb) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
-	return p.lookupSCRAM(username, ParseSCRAMSha256Credentials)
+	return p.lookupSCRAM(username, scheme.ParseSCRAMSha256Credentials)
 }
 
 // LookupSCRAMSha1 satisfies protocol.SCRAMSha1Lookup. SHA-1
 // counterpart of LookupSCRAMSha256 — uses the same password_query
 // path; only the verifier-blob scheme prefix differs.
 func (p *Passdb) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error) {
-	return p.lookupSCRAM(username, ParseSCRAMSha1Credentials)
+	return p.lookupSCRAM(username, scheme.ParseSCRAMSha1Credentials)
 }
 
 func (p *Passdb) lookupSCRAM(username string, parse func(string) (*sasl.ScramCredentials, bool)) (*sasl.ScramCredentials, error) {

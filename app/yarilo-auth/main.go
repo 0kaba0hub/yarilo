@@ -19,9 +19,9 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
+	"github.com/0kaba0hub/yarilo/internal/auth/passdbs"
 	"github.com/0kaba0hub/yarilo/internal/auth/policy"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/pkg/authtoken"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -53,35 +53,14 @@ func main() {
 		"telemetry", cfg.Telemetry.Listen,
 	)
 
-	var dbs []protocol.Passdb
-	var userdbs []protocol.Userdb
-	for _, entry := range cfg.Auth.Passdb {
-		sqlCfg := authsql.Config{
-			Driver:            entry.Driver,
-			DSN:               entry.DSN,
-			PasswordQuery:     entry.PasswordQuery,
-			UserQuery:         entry.UserQuery,
-			IterateQuery:      entry.IterateQuery,
-			DefaultPassScheme: entry.DefaultPassScheme,
-			SkipSchema:        entry.SkipSchema,
-		}
-		db, err := authsql.New(sqlCfg)
-		if err != nil {
-			slog.Error("passdb init failed", "driver", entry.Driver, "err", err)
-			os.Exit(1)
-		}
-		dbs = append(dbs, db)
-		// Each passdb entry that ships its own UserQuery /
-		// IterateQuery is also exposed as a userdb. Backend-api
-		// admin lookups and the master-protocol LIST command run
-		// off the same DSN — operators almost always want both
-		// roles served by the same SQL row set.
-		userdb, err := authsql.NewUserdb(sqlCfg)
-		if err != nil {
-			slog.Error("userdb init failed", "driver", entry.Driver, "err", err)
-			os.Exit(1)
-		}
-		userdbs = append(userdbs, userdb)
+	// Each passdb entry that can serve userdb lookups (SQL, passwd-file) is
+	// exposed as a userdb too: backend-api admin lookups and the master-protocol
+	// LIST command run off the same backend — operators almost always want both
+	// roles served by the same store.
+	dbs, userdbs, err := passdbs.Build(cfg.Auth.Passdb)
+	if err != nil {
+		slog.Error("passdb init failed", "err", err)
+		os.Exit(1)
 	}
 
 	// OAuth2 passdbs join the chain ahead of SQL so an OAUTHBEARER
@@ -200,23 +179,10 @@ func main() {
 		)
 	}
 	if cfg.Auth.MasterUsers.Enabled {
-		var masterdbs []protocol.Passdb
-		for _, entry := range cfg.Auth.MasterUsers.Masterdb {
-			sqlCfg := authsql.Config{
-				Driver:            entry.Driver,
-				DSN:               entry.DSN,
-				PasswordQuery:     entry.PasswordQuery,
-				UserQuery:         entry.UserQuery,
-				IterateQuery:      entry.IterateQuery,
-				DefaultPassScheme: entry.DefaultPassScheme,
-				SkipSchema:        entry.SkipSchema,
-			}
-			db, err := authsql.New(sqlCfg)
-			if err != nil {
-				slog.Error("masterdb init failed", "driver", entry.Driver, "err", err)
-				os.Exit(1)
-			}
-			masterdbs = append(masterdbs, db)
+		masterdbs, _, err := passdbs.Build(cfg.Auth.MasterUsers.Masterdb)
+		if err != nil {
+			slog.Error("masterdb init failed", "err", err)
+			os.Exit(1)
 		}
 		srvOpts = append(srvOpts,
 			protocol.WithMasterUsers(true),

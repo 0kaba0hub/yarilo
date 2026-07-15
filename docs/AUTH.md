@@ -10,13 +10,14 @@ A list of passdb entries. Each entry has a `driver` and a `dsn`. Order matters �
 
 | Key | Description |
 |:---|:---|
-| `driver` | Backend type: `sqlite` \| `mysql` \| `postgres`. |
-| `dsn` | Driver-specific connection string. `${ENV_VAR}` is expanded at startup. |
-| `password_query` | Optional custom SELECT for authentication. Defaults to the built-in `yarilo_users` schema. See [Custom queries](#custom-queries). |
-| `user_query` | Optional separate userdb lookup (`home`, `mail`). When unset, userdb fields come from `password_query`. |
-| `iterate_query` | Optional list-users query for admin tooling. |
-| `default_pass_scheme` | Assumed scheme when stored password has no `{SCHEME}` prefix and no crypt(3) marker. Default: `PLAIN`. |
-| `skip_schema` | `true` to skip `CREATE TABLE IF NOT EXISTS yarilo_users` on startup — use when connecting to an existing schema. |
+| `driver` | Backend type: `sqlite` \| `mysql` \| `postgres` \| `passwd-file`. |
+| `dsn` | SQL drivers: driver-specific connection string. `${ENV_VAR}` is expanded at startup. |
+| `passwd_file` | `passwd-file` driver: path to the user file. `${ENV_VAR}` is expanded at startup. |
+| `password_query` | SQL: optional custom SELECT for authentication. Defaults to the built-in `yarilo_users` schema. See [Custom queries](#custom-queries). |
+| `user_query` | SQL: optional separate userdb lookup (`home`, `mail`). When unset, userdb fields come from `password_query`. |
+| `iterate_query` | SQL: optional list-users query for admin tooling. |
+| `default_pass_scheme` | Assumed scheme when stored password has no `{SCHEME}` prefix and no crypt(3) marker. Default: `PLAIN` (SQL), `CRYPT` (passwd-file). |
+| `skip_schema` | SQL: `true` to skip `CREATE TABLE IF NOT EXISTS yarilo_users` on startup — use when connecting to an existing schema. |
 
 ```yaml
 auth:
@@ -74,6 +75,91 @@ auth:
   passdb:
     - driver: postgres
       dsn: "postgres://yarilo:${DB_PASSWORD}@db.internal:5432/yarilo?sslmode=require"
+```
+
+---
+
+## passwd-file passdb
+
+A flat, colon-separated user file (classic `/etc/passwd` layout) that serves
+**both** passdb and userdb roles — a self-hosted deployment can authenticate
+and resolve mail storage without any database.
+
+```yaml
+auth:
+  passdb:
+    - driver: passwd-file
+      passwd_file: /etc/yarilo/passwd
+      default_pass_scheme: CRYPT
+```
+
+### File format
+
+One user per line:
+
+```
+user:password:uid:gid:gecos:home:shell:extra_fields
+```
+
+- Only `user` and `password` are required.
+- `uid` / `gid` / `gecos` / `shell` are parsed for layout compatibility but
+  **ignored** — yarilo derives privilege drop from config and storage paths from
+  the home template, not per-user uid/gid.
+- `home` (column 6) populates the userdb `home` field.
+- `extra_fields` (column 8 onward) are space-separated `key=value` pairs.
+  Keys with a `userdb_` prefix populate the userdb (`userdb_mail`,
+  `userdb_quota_rule`, …); bare keys are passdb-side (`allow_nets`, `nologin`, …).
+- Lines that are empty or begin with `#` or `:` are skipped.
+- The file is reloaded automatically when its mtime or size changes.
+
+Passwords carry a `{SCHEME}` prefix or a crypt(3) marker; unmarked values assume
+`default_pass_scheme` (default `CRYPT` = crypt(3) autodetection). The same
+scheme set as the SQL passdb applies, including `{SCRAM-SHA-256}` verifiers.
+
+```
+# comment
+alice@example.com:{BCRYPT}$2b$12$...:1000:1000::/mail/alice::userdb_mail=maildir:~/Maildir userdb_quota_rule=*:storage=2G
+bob@example.com:{SHA512-CRYPT}$6$salt$hash
+```
+
+---
+
+## static passdb
+
+One shared credential and a set of templated fields applied to **every** user.
+Serves both passdb and userdb roles. For tests, single-mailbox installs, and
+proxy front-ends. Because it matches every username it must be placed **last**
+in the chain.
+
+```yaml
+auth:
+  passdb:
+    - driver: sqlite
+      dsn: /var/lib/yarilo/users.db
+    - driver: static            # catch-all — last in the chain
+      static_password: "${YARILO_STATIC_PASSWORD}"
+      default_pass_scheme: BCRYPT
+      fields:
+        userdb_home: "/var/vmail/%d/%n"
+        userdb_mail: "maildir:/var/vmail/%d/%n/Maildir"
+```
+
+| Key | Description |
+|:---|:---|
+| `static_password` | Shared password (`{SCHEME}` prefix or `default_pass_scheme`). `${ENV_VAR}` expanded at startup. |
+| `nopassword` | `true` accepts **any** password — for proxy front-ends where the upstream authenticates. Mutually exclusive with `static_password`. |
+| `fields` | Templated user fields. Values expand `%u` / `%n` / `%d`. `userdb_`-prefixed keys populate the userdb; bare keys are forwarded on the passdb path (`allow_nets`, `proxy`, …). |
+
+Proxy front-end (accept any credential, let the backend verify):
+
+```yaml
+auth:
+  passdb:
+    - driver: static
+      nopassword: true
+      fields:
+        proxy: "y"
+        host: "backend.internal"
 ```
 
 ---

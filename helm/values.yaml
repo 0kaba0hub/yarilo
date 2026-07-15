@@ -194,6 +194,32 @@ components:
         ##   SELECT username FROM users WHERE active = 1 ORDER BY username
         ## skip_schema: true   # set when using a custom table instead of yarilo_users
 
+      ## passwd-file driver — a flat, colon-separated user file (classic
+      ## /etc/passwd layout) that serves both passdb and userdb roles, so a
+      ## self-hosted deployment can run without a database. One line per user:
+      ##   user:password:uid:gid:gecos:home:shell:extra_fields
+      ## Only user + password are required; uid/gid/gecos/shell are parsed for
+      ## layout compatibility but ignored. extra_fields are space-separated
+      ## key=value; userdb_-prefixed keys populate the userdb (userdb_mail,
+      ## userdb_quota_rule, ...). Passwords carry a {SCHEME} prefix or a crypt(3)
+      ## marker; unmarked values assume default_pass_scheme (default CRYPT).
+      # - driver: passwd-file
+      #   passwd_file: /etc/yarilo/passwd
+      #   default_pass_scheme: CRYPT
+
+      ## static driver — one shared credential + templated fields applied to
+      ## every user. For tests, single-mailbox installs, and proxy front-ends
+      ## (set nopassword: true to accept any password and let the upstream
+      ## authenticate). Matches every username, so place it LAST in the chain.
+      ## fields values expand %u/%n/%d; userdb_-prefixed keys populate the
+      ## userdb, bare keys are forwarded on the passdb path.
+      # - driver: static
+      #   static_password: "${YARILO_STATIC_PASSWORD}"   # or nopassword: true
+      #   default_pass_scheme: BCRYPT
+      #   fields:
+      #     userdb_home: "/var/vmail/%d/%n"
+      #     userdb_mail: "maildir:/var/vmail/%d/%n/Maildir"
+
     ## failureDelay — timing-leak mitigation. Every failed auth
     ## reply (wrong password, unknown user, malformed SASL) is
     ## held back this many seconds before surfacing to the client

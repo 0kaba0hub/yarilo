@@ -1,4 +1,4 @@
-package sql
+package scheme
 
 import (
 	"testing"
@@ -16,10 +16,10 @@ func TestSchemes_ScramSha256_PlainPathReDerives(t *testing.T) {
 	}
 	stored := "{SCRAM-SHA-256}" + sasl.EncodeScramCredentials(creds)
 
-	if !checkPassword(stored, "hunter2") {
+	if !Verify(stored, "hunter2") {
 		t.Errorf("correct password rejected by SCRAM re-derive verify")
 	}
-	if checkPassword(stored, "WRONG") {
+	if Verify(stored, "WRONG") {
 		t.Errorf("wrong password accepted by SCRAM verify")
 	}
 }
@@ -34,7 +34,7 @@ func TestSchemes_ScramSha256_MalformedBlobRejects(t *testing.T) {
 		"{SCRAM-SHA-256}-1,QQ==,RR==,SS==",
 	}
 	for _, c := range cases {
-		if checkPassword(c, "anything") {
+		if Verify(c, "anything") {
 			t.Errorf("malformed blob %q accepted", c)
 		}
 	}

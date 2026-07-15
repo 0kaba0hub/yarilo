@@ -46,6 +46,11 @@ var (
 	flagManageSieve     = flag.Bool("managesieve", false, "check ManageSieve auth + script CRUD (port -managesieve-port)")
 	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via SMTP injection + IMAP verify")
 	flagSieveSMTPPort   = flag.String("sieve-smtp-port", "25", "SMTP MX port for Sieve mail injection")
+
+	flagPasswdFileUser = flag.String("passwd-file-user", "", "IMAP username backed by the passwd-file passdb (enables the check)")
+	flagPasswdFilePass = flag.String("passwd-file-pass", "", "password for -passwd-file-user")
+	flagStaticUser     = flag.String("static-user", "", "IMAP username backed by the static passdb (enables the check)")
+	flagStaticPass     = flag.String("static-pass", "", "password for -static-user")
 )
 
 type result struct {
@@ -136,6 +141,22 @@ func main() {
 			fn   func() error
 		}{"sieve plugins", checkSieve})
 	}
+	if *flagPasswdFileUser != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap login (passwd-file passdb)", func() error {
+			return checkIMAPLogin(*flagPasswdFileUser, *flagPasswdFilePass)
+		}})
+	}
+	if *flagStaticUser != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap login (static passdb)", func() error {
+			return checkIMAPLogin(*flagStaticUser, *flagStaticPass)
+		}})
+	}
 
 	slog.Info("smoke: start", "total", len(checks))
 	var failures []result
@@ -156,6 +177,26 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+// ---- IMAP login (passdb drivers) -----------------------------------------
+
+// checkIMAPLogin proves an IMAP LOGIN succeeds for a user served by a specific
+// passdb driver (passwd-file / static). It dials IMAPS, authenticates, and
+// selects INBOX to confirm the userdb resolved a mailbox for the account.
+func checkIMAPLogin(user, pass string) error {
+	c, err := imapDial()
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer c.close()
+	if err := c.login(user, pass); err != nil {
+		return fmt.Errorf("login %q: %w", user, err)
+	}
+	if _, err := c.selectFolder("INBOX"); err != nil {
+		return fmt.Errorf("select INBOX: %w", err)
+	}
+	return nil
 }
 
 // ---- telemetry -----------------------------------------------------------
