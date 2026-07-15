@@ -1065,6 +1065,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	slog.Debug("imap: select timing open_ms", "folder", rel, "open_ms", time.Since(tOpen).Milliseconds())
 	s.folder = f
 	s.folderNS = h
+	// Seed a usage baseline so a quota_warning "under" crossing fires even when
+	// the session only deletes mail (EXPUNGE with no prior save to seed it).
+	s.seedQuotaWarnSnap()
 	tAnvil := time.Now()
 	s.pushAnvilSelect(name)
 	slog.Debug("imap: select timing anvil_ms", "folder", rel, "anvil_ms", time.Since(tAnvil).Milliseconds())

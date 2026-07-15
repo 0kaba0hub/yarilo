@@ -88,6 +88,18 @@ func (s *session) quotaPolicy() quota.Policy {
 	return s.srv.opts.QuotaPolicy
 }
 
+// seedQuotaWarnSnap captures a baseline usage snapshot when none exists yet, so
+// a quota_warning "under" crossing fires on a delete-only session (EXPUNGE with
+// no prior save to seed the "before" side). No-op without warnings configured.
+func (s *session) seedQuotaWarnSnap() {
+	if len(s.quotaPolicy().Warnings) == 0 || s.quotaSnapSet {
+		return
+	}
+	if u, err := s.countUsage(false); err == nil {
+		s.quotaSnap, s.quotaSnapSet = u, true
+	}
+}
+
 // fireQuotaWarnings evaluates quota_warning crossings for the transition from
 // the captured pre-op usage snapshot to after, running any matched actions.
 // No-op when no warnings are configured or no snapshot has been captured yet.
