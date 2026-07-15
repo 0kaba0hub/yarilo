@@ -66,3 +66,48 @@ func TestLimitsUnlimited(t *testing.T) {
 		t.Error("message-limited should not be unlimited")
 	}
 }
+
+func TestMatchWarnings(t *testing.T) {
+	limits := Limits{StorageBytes: 1000, Messages: 100}
+	warns := []Warning{
+		{Name: "s90", Resource: "storage", Threshold: "over", Percentage: 90},
+		{Name: "m90", Resource: "message", Threshold: "over", Percentage: 90},
+		{Name: "s50under", Resource: "storage", Threshold: "under", Percentage: 50},
+	}
+	cases := []struct {
+		name          string
+		before, after Usage
+		want          []string
+	}{
+		{"cross storage 90 over", Usage{StorageBytes: 800}, Usage{StorageBytes: 950}, []string{"s90"}},
+		{"already over, no cross", Usage{StorageBytes: 950}, Usage{StorageBytes: 980}, nil},
+		{"cross message 90 over", Usage{Messages: 80}, Usage{Messages: 95}, []string{"m90"}},
+		{"cross storage under 50", Usage{StorageBytes: 600}, Usage{StorageBytes: 400}, []string{"s50under"}},
+		{"under not crossed", Usage{StorageBytes: 600}, Usage{StorageBytes: 550}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := MatchWarnings(warns, limits, tc.before, tc.after)
+			var names []string
+			for _, w := range got {
+				names = append(names, w.Name)
+			}
+			if len(names) != len(tc.want) {
+				t.Fatalf("fired %v, want %v", names, tc.want)
+			}
+			for i := range names {
+				if names[i] != tc.want[i] {
+					t.Errorf("fired %v, want %v", names, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestMatchWarnings_UnlimitedResourceSkipped(t *testing.T) {
+	// No storage limit → percentage warning has nothing to cross.
+	warns := []Warning{{Name: "s90", Resource: "storage", Threshold: "over", Percentage: 90}}
+	if got := MatchWarnings(warns, Limits{}, Usage{}, Usage{StorageBytes: 1 << 40}); got != nil {
+		t.Errorf("unlimited resource should fire nothing, got %v", got)
+	}
+}

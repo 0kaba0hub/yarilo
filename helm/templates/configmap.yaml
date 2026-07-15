@@ -416,6 +416,25 @@ data:
       {{- if .quota_mailbox_message_count }}
       quota_mailbox_message_count: {{ .quota_mailbox_message_count }}
       {{- end }}
+      {{- if .quota_hidden }}
+      quota_hidden: true
+      {{- end }}
+      {{- if .quota_warning_bin_dir }}
+      quota_warning_bin_dir: {{ .quota_warning_bin_dir | quote }}
+      {{- end }}
+      {{- if .quota_warning_exec_timeout }}
+      quota_warning_exec_timeout: {{ .quota_warning_exec_timeout }}
+      {{- end }}
+      {{- with .quota_warnings }}
+      quota_warnings:
+        {{- range . }}
+        - quota_warning_name: {{ .quota_warning_name | quote }}
+          quota_warning_resource: {{ .quota_warning_resource | default "storage" | quote }}
+          quota_warning_threshold: {{ .quota_warning_threshold | default "over" | quote }}
+          quota_warning_percentage: {{ .quota_warning_percentage | default 90 }}
+          quota_warning_execute: {{ .quota_warning_execute | quote }}
+        {{- end }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.namespaces }}

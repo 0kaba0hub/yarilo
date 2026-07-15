@@ -88,6 +88,20 @@ func (s *session) quotaPolicy() quota.Policy {
 	return s.srv.opts.QuotaPolicy
 }
 
+// fireQuotaWarnings evaluates quota_warning crossings for the transition from
+// the captured pre-op usage snapshot to after, running any matched actions.
+// No-op when no warnings are configured or no snapshot has been captured yet.
+func (s *session) fireQuotaWarnings(after quota.Usage) {
+	pol := s.quotaPolicy()
+	if len(pol.Warnings) == 0 || !s.quotaSnapSet || s.userInfo == nil {
+		return
+	}
+	before := s.quotaSnap
+	s.quotaSnap = after
+	limits := pol.Scale(s.quotaLimits())
+	s.srv.opts.QuotaWarner.Fire(s.userInfo.Username, s.userInfo.Home, pol.Warnings, limits, before, after)
+}
+
 // effectiveLimits resolves the per-folder limits then applies the site policy
 // (percentage scaling + storage extra). Grace is delivery-only and never added
 // on the interactive IMAP path.
@@ -110,8 +124,9 @@ func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
 	}
 	limits := s.quotaPolicy().Scale(s.quotaLimits())
-	// quota_ignore_unlimited: a user with no limits has no quota root.
-	if limits.Unlimited() && s.quotaPolicy().IgnoreUnlimited {
+	// quota_hidden hides the root from every user; quota_ignore_unlimited hides
+	// it only for users whose limits are all unlimited.
+	if s.quotaPolicy().Hidden || (limits.Unlimited() && s.quotaPolicy().IgnoreUnlimited) {
 		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
 	}
 	qd := buildQuotaData(u, limits, s.quotaName())
@@ -135,7 +150,7 @@ func (s *session) GetQuota(root string) (*imaplib.QuotaData, error) {
 		return &qd, nil
 	}
 	limits := s.quotaPolicy().Scale(s.quotaLimits())
-	if limits.Unlimited() && s.quotaPolicy().IgnoreUnlimited {
+	if s.quotaPolicy().Hidden || (limits.Unlimited() && s.quotaPolicy().IgnoreUnlimited) {
 		qd := imaplib.QuotaData{Name: root}
 		return &qd, nil
 	}
@@ -201,6 +216,9 @@ func (s *session) quotaCheckAppend(_ context.Context, folder string, bytes int64
 	if err != nil {
 		return nil // fail-open: don't block on a transient index read error
 	}
+	// Capture the pre-save usage as the "before" side for quota_warning
+	// crossing detection; the post-commit hook supplies "after".
+	s.quotaSnap, s.quotaSnapSet = u, true
 	// Grace is delivery-only; interactive IMAP saves get no overshoot.
 	if quota.IsOver(u, effLim, bytes, 1) {
 		return &imaplib.Error{

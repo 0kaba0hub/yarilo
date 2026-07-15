@@ -1,5 +1,18 @@
 package quota
 
+import "strings"
+
+// Warning is one quota-warning rule: fire its Execute action when usage crosses
+// Percentage of the resource limit in the Threshold direction. Mirrors the
+// quota_warning_* settings.
+type Warning struct {
+	Name       string // identifier (quota_warning_name)
+	Resource   string // "storage" (default) | "message"
+	Threshold  string // "over" (default) | "under"
+	Percentage int    // % of the resource limit; 0 → 100
+	Execute    string // program (+ args) run from the warning bin dir
+}
+
 // Policy carries the site-wide quota tunables that layer on top of the
 // per-user quota_rule limits: percentage scaling, extra headroom, delivery
 // grace, and the structural mailbox-count caps. All are global config (not
@@ -25,6 +38,54 @@ type Policy struct {
 	// MailboxMessageCount caps the number of messages in a single mailbox.
 	// 0 = unlimited. Enforced on save.
 	MailboxMessageCount int64
+	// Hidden omits the quota root from IMAP GETQUOTA/GETQUOTAROOT for every user
+	// (enforcement still applies), regardless of whether limits are set.
+	Hidden bool
+	// Warnings are the quota-warning rules evaluated on each usage change.
+	Warnings []Warning
+}
+
+// MatchWarnings returns the warnings whose configured threshold is crossed by
+// the usage transition before→after under limits. A crossing fires exactly once
+// (before on one side of the warning limit, after on the other) — the same
+// edge-trigger semantics as the quota_warning_match reference.
+func MatchWarnings(warnings []Warning, limits Limits, before, after Usage) []Warning {
+	var fired []Warning
+	for _, w := range warnings {
+		var lim, b, a int64
+		if strings.EqualFold(w.Resource, "message") {
+			lim, b, a = limits.Messages, before.Messages, after.Messages
+		} else {
+			lim, b, a = limits.StorageBytes, before.StorageBytes, after.StorageBytes
+		}
+		if lim <= 0 {
+			continue // unlimited resource has no threshold to cross
+		}
+		p := w.Percentage
+		if p <= 0 {
+			p = 100
+		}
+		warnLimit := lim * int64(p) / 100
+		var crossed bool
+		if strings.EqualFold(w.Threshold, "under") {
+			crossed = b >= warnLimit && a < warnLimit
+		} else {
+			crossed = b < warnLimit && a >= warnLimit
+		}
+		if crossed {
+			fired = append(fired, w)
+		}
+	}
+	return fired
+}
+
+// ResourceUsageLimit returns the usage and limit for the warning's resource,
+// used to populate the executed action's context.
+func (w Warning) ResourceUsageLimit(u Usage, limits Limits) (usage, limit int64) {
+	if strings.EqualFold(w.Resource, "message") {
+		return u.Messages, limits.Messages
+	}
+	return u.StorageBytes, limits.StorageBytes
 }
 
 // Unlimited reports whether the limits impose no storage and no message cap.

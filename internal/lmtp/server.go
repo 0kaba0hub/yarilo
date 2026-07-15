@@ -19,6 +19,7 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/quotawarn"
 	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -71,6 +72,8 @@ type Options struct {
 	// QuotaPolicy carries the site-wide quota tunables. On this inbound-delivery
 	// path storage grace IS applied (LMTP/LDA overshoot).
 	QuotaPolicy quota.Policy
+	// QuotaWarner runs quota_warning actions. Nil = warnings only log.
+	QuotaWarner *quotawarn.Runner
 
 	// MetadataDict backs the mboxmetadata / servermetadata Sieve tests
 	// (RFC 5490 §4): the same dict IMAP uses for RFC 5464 METADATA. Nil
@@ -653,6 +656,13 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 							Message: s.quotaExceededMessage(),
 						})
 						continue
+					}
+					// Delivery accepted — fire any quota_warning crossed by this
+					// increment (inbound delivery is an "over" transition).
+					// Warnings track the user-wide limit, not the per-folder one.
+					if len(s.opts.QuotaPolicy.Warnings) > 0 {
+						after := quota.Usage{StorageBytes: u.StorageBytes + int64(len(msg)), Messages: u.Messages + 1}
+						s.opts.QuotaWarner.Fire(username, userInfo.Home, s.opts.QuotaPolicy.Warnings, s.opts.QuotaPolicy.Scale(lim), u, after)
 					}
 				}
 			}
