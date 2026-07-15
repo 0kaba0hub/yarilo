@@ -436,6 +436,11 @@ type session struct {
 	selExpunge          bool
 	selFlagChange       bool
 	selImmediateExpunge bool
+	// notifyWatch monitors non-selected mailboxes named by PERSONAL / SUBSCRIBED
+	// / SUBTREE / MAILBOXES / INBOXES filters (RFC 5465 §6). Nil unless a NOTIFY
+	// SET requested such a filter. Its activity surfaces as "* STATUS" responses
+	// drained by Poll and Idle.
+	notifyWatch *notifyWatcher
 
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
@@ -509,6 +514,7 @@ func (s *session) emitMailboxChange(folder string, eventType locks.EventType, ui
 }
 
 func (s *session) Close() error {
+	s.stopNotifyWatch()
 	if s.srv.opts.ConnLimit != nil && s.userInfo != nil {
 		s.srv.opts.ConnLimit.Release(s.userInfo.Username, s.limitIP)
 	}
@@ -1631,10 +1637,12 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 func (s *session) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOptions) error {
 	s.notifyActive = false
 	s.selNew, s.selExpunge, s.selFlagChange, s.selImmediateExpunge = false, false, false, false
+	s.stopNotifyWatch()
 	if options == nil {
 		return nil
 	}
 	s.notifyActive = true
+	s.startNotifyWatch(options.Items)
 	for _, it := range options.Items {
 		if it.MailboxSpec != imaplib.NotifyMailboxSpecSelected &&
 			it.MailboxSpec != imaplib.NotifyMailboxSpecSelectedDelayed {
@@ -1672,6 +1680,11 @@ func (s *session) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOpti
 // HighestModSeq. GetMessages (full index scan) is only called when the
 // modseq advanced or there are pending expunges to deliver.
 func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
+	// Non-selected NOTIFY activity is independent of the selected mailbox and
+	// must flush even when nothing is selected.
+	if err := s.drainNotifyStatus(w); err != nil {
+		return err
+	}
 	if s.folder == nil || s.knownMsgs == nil {
 		return nil
 	}
@@ -1889,40 +1902,48 @@ func (s *session) announceNewKeywords(w *imapserver.FetchWriter, keywords []stri
 
 func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	interval := s.srv.opts.IdleNotifyInterval
-	if s.folder == nil {
-		<-stop
-		return nil
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Flush any non-selected NOTIFY activity that queued before IDLE began,
+	// then wake on the watcher's signal for the rest of the IDLE window.
+	if err := s.drainNotifyStatus(w); err != nil {
+		return err
+	}
+	var wake <-chan struct{}
+	if s.notifyWatch != nil {
+		wake = s.notifyWatch.wake
 	}
 
 	// Cross-pod event subscription: when another process (LMTP delivery, an
 	// IMAP session on a sibling pod, etc.) writes to this user's folder, we
 	// get an EVENT, refresh the message count from disk, and push the
-	// EXISTS notification immediately — no waiting for the timer.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	// EXISTS notification immediately — no waiting for the timer. Only the
+	// selected mailbox uses this fast path; non-selected mailboxes go through
+	// the NOTIFY watcher above.
 	var events <-chan locks.Event
-	if s.srv.opts.Locker != nil && s.userInfo != nil {
-		ch, err := s.srv.opts.Locker.Subscribe(ctx, locks.MailboxKey(s.userInfo.Username, s.folder.Name))
-		if err != nil {
-			slog.Debug("imap: idle subscribe failed; falling back to timer-only", "err", err)
-		} else {
-			events = ch
+	var tickC <-chan time.Time
+	if s.folder != nil {
+		if s.srv.opts.Locker != nil && s.userInfo != nil {
+			ch, err := s.srv.opts.Locker.Subscribe(ctx, locks.MailboxKey(s.userInfo.Username, s.folder.Name))
+			if err != nil {
+				slog.Debug("imap: idle subscribe failed; falling back to timer-only", "err", err)
+			} else {
+				events = ch
+			}
+		}
+		// Heartbeat tick — a liveness signal for misbehaving clients, useful
+		// even when the subscription is up.
+		if interval > 0 {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			tickC = ticker.C
 		}
 	}
 
-	// Heartbeat tick — required only when there is no event channel; the
-	// timer is still useful as a liveness signal for misbehaving clients
-	// even when the subscription is up.
-	var tickC <-chan time.Time
-	if interval > 0 {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		tickC = ticker.C
-	}
-
-	if events == nil && tickC == nil {
-		// Locker disabled and no heartbeat configured — purely passive IDLE.
+	if events == nil && tickC == nil && wake == nil {
+		// Nothing to watch — purely passive IDLE.
 		<-stop
 		return nil
 	}
@@ -1931,6 +1952,10 @@ func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 		select {
 		case <-stop:
 			return nil
+		case <-wake:
+			if err := s.drainNotifyStatus(w); err != nil {
+				return err
+			}
 		case _, ok := <-events:
 			if !ok {
 				events = nil // subscription dropped; keep heartbeat going
