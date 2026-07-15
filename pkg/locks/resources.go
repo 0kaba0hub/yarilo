@@ -26,6 +26,12 @@ func MdboxMapKey(user string) string { return "mdboxmap:" + user }
 // Acquire after IndexKey, before DeliverKey.
 func MailboxKey(user, folder string) string { return "mbox:" + user + ":" + folder }
 
+// MailboxListKey returns the event-bus resource for a user's mailbox-list
+// changes (create / delete / rename / subscribe). NOTIFY watchers subscribe to
+// it to learn about mailboxes appearing or disappearing after NOTIFY SET. It is
+// an event channel only, never taken as a lock.
+func MailboxListKey(user string) string { return "mlist:" + user }
+
 // DeliverKey returns the lock key for serialising delivery into a mailbox.
 // Acquire last. LMTP delivery uses this in addition to MailboxKey when the
 // fan-out path needs to serialise per-recipient writes against IMAP STORE.

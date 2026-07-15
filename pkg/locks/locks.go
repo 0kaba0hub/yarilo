@@ -28,6 +28,15 @@ const (
 	EventChanged   EventType = "changed"   // mailbox contents changed
 	EventDelivered EventType = "delivered" // new message arrived (LMTP)
 	EventExpunged  EventType = "expunged"  // message removed
+
+	// Mailbox-list events, published on MailboxListKey (per-user). They carry
+	// the affected mailbox name(s) in the payload and drive NOTIFY (RFC 5465)
+	// MailboxName / SubscriptionChange reporting to other sessions.
+	EventMailboxCreate      EventType = "mbox-create"      // payload: name
+	EventMailboxDelete      EventType = "mbox-delete"      // payload: name
+	EventMailboxRename      EventType = "mbox-rename"      // payload: old\tnew
+	EventMailboxSubscribe   EventType = "mbox-subscribe"   // payload: name
+	EventMailboxUnsubscribe EventType = "mbox-unsubscribe" // payload: name
 )
 
 // Event is a server-emitted notification published on a resource channel.

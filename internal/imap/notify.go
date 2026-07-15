@@ -22,6 +22,9 @@ const (
 	notifyMaskFlag                      // FlagChange   <- locks.EventChanged
 )
 
+// notifyDelim is the hierarchy separator reported in NOTIFY LIST responses.
+const notifyDelim = '/'
+
 // notifyStatusOpts is the fixed set of STATUS items reported for non-selected
 // mailbox activity (RFC 5465 §6): enough for a client to detect new/removed
 // mail and resync CONDSTORE state without selecting the mailbox.
@@ -35,15 +38,32 @@ var notifyStatusOpts = &imaplib.StatusOptions{
 
 // notifyWatcher tracks activity in non-selected mailboxes for an active
 // NOTIFY SET (RFC 5465). It subscribes to each watched folder's locks event
-// key; on a matching event the folder is marked dirty and Idle is woken. The
-// pending set is drained into "* STATUS" responses by Poll (between commands)
-// and Idle (while the client waits).
+// key (message activity -> "* STATUS") and to the user's mailbox-list key
+// (create / delete / rename / subscribe -> dynamic re-evaluation and, when the
+// client asked for MailboxName / SubscriptionChange, "* LIST" responses).
+//
+// The watch set starts from the filters resolved at NOTIFY SET and grows or
+// shrinks as mailboxes appear and disappear. Poll (between commands) and Idle
+// (while the client waits) drain the pending notifications.
 type notifyWatcher struct {
-	mu    sync.Mutex
-	dirty map[string]struct{} // folder names awaiting a STATUS response
-	watch map[string]uint8    // folder name -> requested event mask
-	wake  chan struct{}       // buffered(1) nudge for the Idle loop
-	stop  context.CancelFunc
+	mu         sync.Mutex
+	dirty      map[string]struct{} // folders awaiting a STATUS response
+	watch      map[string]uint8    // folder -> active event mask
+	subscribed map[string]struct{} // folders with a live mbox-key subscription
+	pending    []imaplib.ListData  // queued LIST notifications (RFC 5465 §5)
+
+	// items and the two want* flags are captured at NOTIFY SET and are
+	// immutable afterwards, so they need no lock.
+	items    []imaplib.NotifyItem
+	wantName bool // MailboxName requested (create / delete / rename)
+	wantSub  bool // SubscriptionChange requested (subscribe / unsubscribe)
+
+	wake chan struct{}      // buffered(1) nudge for the Idle loop
+	stop context.CancelFunc // cancels every subscription goroutine
+
+	// addSub subscribes to a folder's mbox event key (once) and OR-s mask into
+	// its watch entry. Set at start so handleListEvent can grow the set.
+	addSub func(folder string, mask uint8)
 }
 
 // mark flags a folder dirty when evt matches its requested mask and nudges Idle.
@@ -66,6 +86,11 @@ func (n *notifyWatcher) mark(folder string, t locks.EventType) {
 	}
 	n.dirty[folder] = struct{}{}
 	n.mu.Unlock()
+	n.nudge()
+}
+
+// nudge signals the Idle loop that work is pending (non-blocking).
+func (n *notifyWatcher) nudge() {
 	select {
 	case n.wake <- struct{}{}:
 	default:
@@ -87,9 +112,133 @@ func (n *notifyWatcher) take() []string {
 	return out
 }
 
-// eventMask folds the requested NOTIFY events into a message-event mask.
-// Mailbox-level events (MailboxName, SubscriptionChange, …) are not handled in
-// this phase and contribute nothing.
+// takeLists returns and clears the queued LIST notifications.
+func (n *notifyWatcher) takeLists() []imaplib.ListData {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.pending) == 0 {
+		return nil
+	}
+	out := n.pending
+	n.pending = nil
+	return out
+}
+
+// queueList enqueues a LIST notification and nudges Idle.
+func (n *notifyWatcher) queueList(data imaplib.ListData) {
+	n.mu.Lock()
+	n.pending = append(n.pending, data)
+	n.mu.Unlock()
+	n.nudge()
+}
+
+// removeWatch stops tracking a folder (deleted or unsubscribed out of scope).
+// The folder's subscription goroutine stays alive but is inert: mark() ignores
+// a zero mask. If the folder reappears, addSub re-arms the mask without a new
+// subscription.
+func (n *notifyWatcher) removeWatch(folder string) {
+	n.mu.Lock()
+	delete(n.watch, folder)
+	delete(n.dirty, folder)
+	n.mu.Unlock()
+}
+
+// matchStaticFilters returns the OR of masks from every non-selected,
+// non-SUBSCRIBED filter that names folder. Used to decide whether a
+// newly-created or renamed mailbox joins the watch set.
+func (n *notifyWatcher) matchStaticFilters(folder string) uint8 {
+	var mask uint8
+	for _, it := range n.items {
+		switch it.MailboxSpec {
+		case imaplib.NotifyMailboxSpecSelected, imaplib.NotifyMailboxSpecSelectedDelayed,
+			imaplib.NotifyMailboxSpecSubscribed:
+			continue
+		case imaplib.NotifyMailboxSpecPersonal:
+			mask |= eventMask(it.Events)
+		case imaplib.NotifyMailboxSpecInboxes:
+			if folder == "INBOX" || strings.HasPrefix(folder, "INBOX/") {
+				mask |= eventMask(it.Events)
+			}
+		default:
+			em := eventMask(it.Events)
+			for _, base := range it.Mailboxes {
+				if folder == base || (it.Subtree && strings.HasPrefix(folder, base+"/")) {
+					mask |= em
+				}
+			}
+		}
+	}
+	return mask
+}
+
+// subscribedMask returns the OR of masks from SUBSCRIBED filters (0 if none).
+func (n *notifyWatcher) subscribedMask() uint8 {
+	var mask uint8
+	for _, it := range n.items {
+		if it.MailboxSpec == imaplib.NotifyMailboxSpecSubscribed {
+			mask |= eventMask(it.Events)
+		}
+	}
+	return mask
+}
+
+// handleListEvent applies a mailbox-list event: it grows/shrinks the watch set
+// and queues LIST notifications when the client requested MailboxName /
+// SubscriptionChange.
+func (n *notifyWatcher) handleListEvent(evt locks.Event) {
+	switch evt.Type {
+	case locks.EventMailboxCreate:
+		if m := n.matchStaticFilters(evt.Payload); m != 0 {
+			n.addSub(evt.Payload, m)
+		}
+		if n.wantName {
+			n.queueList(imaplib.ListData{Mailbox: evt.Payload, Delim: notifyDelim})
+		}
+	case locks.EventMailboxDelete:
+		n.removeWatch(evt.Payload)
+		if n.wantName {
+			n.queueList(imaplib.ListData{
+				Mailbox: evt.Payload, Delim: notifyDelim,
+				Attrs: []imaplib.MailboxAttr{imaplib.MailboxAttrNonExistent},
+			})
+		}
+	case locks.EventMailboxRename:
+		oldName, newName, ok := strings.Cut(evt.Payload, "\t")
+		if !ok {
+			return
+		}
+		n.removeWatch(oldName)
+		if m := n.matchStaticFilters(newName); m != 0 {
+			n.addSub(newName, m)
+		}
+		if n.wantName {
+			n.queueList(imaplib.ListData{Mailbox: newName, Delim: notifyDelim, OldName: oldName})
+		}
+	case locks.EventMailboxSubscribe:
+		if m := n.subscribedMask(); m != 0 {
+			n.addSub(evt.Payload, m)
+		}
+		if n.wantSub {
+			n.queueList(imaplib.ListData{
+				Mailbox: evt.Payload, Delim: notifyDelim,
+				Attrs: []imaplib.MailboxAttr{imaplib.MailboxAttrSubscribed},
+			})
+		}
+	case locks.EventMailboxUnsubscribe:
+		// Drop only when the folder was watched purely because it was
+		// subscribed — a static filter (PERSONAL / SUBTREE / …) keeps it.
+		if n.subscribedMask() != 0 && n.matchStaticFilters(evt.Payload) == 0 {
+			n.removeWatch(evt.Payload)
+		}
+		if n.wantSub {
+			n.queueList(imaplib.ListData{Mailbox: evt.Payload, Delim: notifyDelim})
+		}
+	}
+}
+
+// eventMask folds the requested NOTIFY message events into a mask. Mailbox-level
+// events (MailboxName, SubscriptionChange, …) contribute nothing here — they are
+// tracked separately via wantName / wantSub.
 func eventMask(events []imaplib.NotifyEvent) uint8 {
 	var m uint8
 	for _, e := range events {
@@ -105,34 +254,77 @@ func eventMask(events []imaplib.NotifyEvent) uint8 {
 	return m
 }
 
+// wantsEvent reports whether any non-selected item lists the given event.
+func wantsEvent(items []imaplib.NotifyItem, want imaplib.NotifyEvent) bool {
+	for _, it := range items {
+		switch it.MailboxSpec {
+		case imaplib.NotifyMailboxSpecSelected, imaplib.NotifyMailboxSpecSelectedDelayed:
+			continue
+		}
+		for _, e := range it.Events {
+			if e == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // startNotifyWatch builds the watched-folder set from the non-selected NOTIFY
 // items and launches the subscription goroutines. Any previously running
-// watcher must be stopped first. A no-op when no folder matches or the locker
-// is unavailable (single-node without cross-process events still works for the
-// selected mailbox via Poll).
+// watcher must be stopped first. A no-op when the locker is unavailable or no
+// non-selected filter / mailbox-level event was requested.
 func (s *session) startNotifyWatch(items []imaplib.NotifyItem) {
 	if s.srv.opts.Locker == nil || s.userInfo == nil {
 		return
 	}
-	watch := s.resolveNotifyWatch(items)
-	if len(watch) == 0 {
+	static := s.resolveNotifyWatch(items)
+	wantName := wantsEvent(items, imaplib.NotifyEventMailboxName)
+	wantSub := wantsEvent(items, imaplib.NotifyEventSubscriptionChange)
+	// Something to watch? Either message activity in some mailbox, or a
+	// mailbox-list event class. A message filter with no folders yet still
+	// arms the list watcher so future creates are caught.
+	hasMsgFilter := false
+	for _, it := range items {
+		switch it.MailboxSpec {
+		case imaplib.NotifyMailboxSpecSelected, imaplib.NotifyMailboxSpecSelectedDelayed:
+			continue
+		}
+		if eventMask(it.Events) != 0 {
+			hasMsgFilter = true
+		}
+	}
+	if !hasMsgFilter && !wantName && !wantSub {
 		return
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &notifyWatcher{
-		dirty: make(map[string]struct{}),
-		watch: watch,
-		wake:  make(chan struct{}, 1),
-		stop:  cancel,
+		dirty:      make(map[string]struct{}),
+		watch:      make(map[string]uint8),
+		subscribed: make(map[string]struct{}),
+		items:      items,
+		wantName:   wantName,
+		wantSub:    wantSub,
+		wake:       make(chan struct{}, 1),
+		stop:       cancel,
 	}
-	for folder := range watch {
+	w.addSub = func(folder string, mask uint8) {
+		w.mu.Lock()
+		w.watch[folder] |= mask
+		if _, dup := w.subscribed[folder]; dup {
+			w.mu.Unlock()
+			return
+		}
+		w.subscribed[folder] = struct{}{}
+		w.mu.Unlock()
+
 		ch, err := s.srv.opts.Locker.Subscribe(ctx, locks.MailboxKey(s.userInfo.Username, folder))
 		if err != nil {
 			slog.Debug("imap: notify subscribe failed", "folder", folder, "err", err)
-			continue
+			return
 		}
-		go func(folder string, ch <-chan locks.Event) {
+		go func() {
 			for {
 				select {
 				case <-ctx.Done():
@@ -144,8 +336,33 @@ func (s *session) startNotifyWatch(items []imaplib.NotifyItem) {
 					w.mark(folder, evt.Type)
 				}
 			}
-		}(folder, ch)
+		}()
 	}
+
+	for folder, mask := range static {
+		w.addSub(folder, mask)
+	}
+
+	// Mailbox-list subscription drives dynamic membership and MailboxName /
+	// SubscriptionChange notifications.
+	if listCh, err := s.srv.opts.Locker.Subscribe(ctx, locks.MailboxListKey(s.userInfo.Username)); err != nil {
+		slog.Debug("imap: notify list subscribe failed", "err", err)
+	} else {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case evt, ok := <-listCh:
+					if !ok {
+						return
+					}
+					w.handleListEvent(evt)
+				}
+			}
+		}()
+	}
+
 	s.notifyWatch = w
 }
 
@@ -241,11 +458,18 @@ func descendants(base string, all []string) []string {
 	return out
 }
 
-// drainNotifyStatus flushes pending non-selected mailbox activity as untagged
-// STATUS responses. Called by Poll (between commands) and Idle (while waiting).
+// drainNotifyStatus flushes pending non-selected mailbox activity: first the
+// LIST notifications (RFC 5465 §5), then the STATUS responses (§6). Called by
+// Poll (between commands) and Idle (while waiting).
 func (s *session) drainNotifyStatus(w *imapserver.UpdateWriter) error {
 	if s.notifyWatch == nil {
 		return nil
+	}
+	for _, ld := range s.notifyWatch.takeLists() {
+		data := ld
+		if err := w.WriteList(&data); err != nil {
+			return err
+		}
 	}
 	for _, folder := range s.notifyWatch.take() {
 		data, err := s.Status(folder, notifyStatusOpts)
