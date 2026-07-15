@@ -17,6 +17,8 @@ const (
 	extNameModSeq       = "modseq"
 	extNameKeywords     = "keywords"
 	extNameInternalDate = "idate"
+	extNameHdrVsize     = "hdr-vsize"
+	extNameVsize        = "vsize"
 )
 
 // idate extension layout (0 bytes header, 4 bytes per-record):
@@ -42,6 +44,67 @@ func decodeIdateRec(b []byte) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(int64(unix), 0).UTC()
+}
+
+// hdr-vsize extension layout (16-byte header, 0 per-record). Caches the
+// aggregate virtual size of the folder so quota does not rescan every read.
+// The {HighestUID, MessageCount} pair validates the cache: if it matches the
+// folder's current state the cached Vsize is trusted, otherwise it is
+// recalculated from the per-record vsize extension.
+//
+//	uint64 vsize          // sum of every message's virtual (RFC822) size
+//	uint32 highest_uid    // largest UID folded into vsize
+//	uint32 message_count  // messages folded into vsize
+const (
+	hdrVsizeSize            = 16
+	hdrVsizeOffVsize        = 0
+	hdrVsizeOffHighestUID   = 8
+	hdrVsizeOffMessageCount = 12
+)
+
+type hdrVsize struct {
+	Vsize        uint64
+	HighestUID   uint32
+	MessageCount uint32
+}
+
+func encodeHdrVsize(h hdrVsize) []byte {
+	out := make([]byte, hdrVsizeSize)
+	le := binary.LittleEndian
+	le.PutUint64(out[hdrVsizeOffVsize:], h.Vsize)
+	le.PutUint32(out[hdrVsizeOffHighestUID:], h.HighestUID)
+	le.PutUint32(out[hdrVsizeOffMessageCount:], h.MessageCount)
+	return out
+}
+
+func decodeHdrVsize(b []byte) (hdrVsize, error) {
+	if len(b) < hdrVsizeSize {
+		return hdrVsize{}, fmt.Errorf("fileindex: hdr-vsize too short (%d < %d)", len(b), hdrVsizeSize)
+	}
+	le := binary.LittleEndian
+	return hdrVsize{
+		Vsize:        le.Uint64(b[hdrVsizeOffVsize:]),
+		HighestUID:   le.Uint32(b[hdrVsizeOffHighestUID:]),
+		MessageCount: le.Uint32(b[hdrVsizeOffMessageCount:]),
+	}, nil
+}
+
+// vsize extension layout (0-byte header, 4 bytes per-record): the per-message
+// virtual (RFC822) size. Populated at append from MessageMeta.VSize; summed by
+// the hdr-vsize recalc.
+const vsizeRecSize = 4
+
+func encodeVsizeRec(v uint32) []byte {
+	out := make([]byte, vsizeRecSize)
+	binary.LittleEndian.PutUint32(out, v)
+	return out
+}
+
+func decodeVsizeRec(b []byte) uint32 {
+	if len(b) < vsizeRecSize {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(b)
 }
 
 // dbox-hdr extension layout (24 bytes header, 0 per-record):
@@ -307,6 +370,22 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 			HdrSize:     0,
 			HdrData:     nil,
 			RecordSize:  idateRecSize,
+			RecordAlign: 4,
+			ResetID:     uidValidity,
+		},
+		{
+			Name:        extNameHdrVsize,
+			HdrSize:     hdrVsizeSize,
+			HdrData:     encodeHdrVsize(hdrVsize{}),
+			RecordSize:  0,
+			RecordAlign: 8,
+			ResetID:     uidValidity,
+		},
+		{
+			Name:        extNameVsize,
+			HdrSize:     0,
+			HdrData:     nil,
+			RecordSize:  vsizeRecSize,
 			RecordAlign: 4,
 			ResetID:     uidValidity,
 		},

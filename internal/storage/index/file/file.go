@@ -300,6 +300,12 @@ type folderState struct {
 
 	// dboxHdr is the folder GUID + flags from the dbox-hdr ext.
 	hdr dboxHdr
+
+	// vsize caches the aggregate virtual size from the hdr-vsize ext. Kept in
+	// step with appends/expunges and persisted back to the ext header on flush;
+	// self-heals via recalcVsizeLocked when {HighestUID, MessageCount} drift
+	// from the folder state (e.g. after a legacy import or crash).
+	vsize hdrVsize
 }
 
 // closeFDs closes logFD and namesFD and sets them to nil.

@@ -487,6 +487,15 @@ Record extensions (variable):
   keywords: bitmask of keyword indexes
   modseq:   uint64 per-message modification sequence
   cache:    uint32 offset into .index.cache file
+  vsize:    uint32 per-message virtual (RFC822) size   (record_size=4, align=4)
+
+Header extension "hdr-vsize" (16 bytes, align 8) — aggregate quota cache:
+  vsize:         uint64  sum of every message's virtual size
+  highest_uid:   uint32  largest UID folded into vsize
+  message_count: uint32  messages folded into vsize
+  Validity: trusted while {highest_uid, message_count} match the folder;
+  otherwise recalculated from the per-record vsize extension (falling back
+  to the physical .names size for records predating the extension).
 ```
 
 ### .index.log (Transaction Log)
