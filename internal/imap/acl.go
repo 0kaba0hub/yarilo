@@ -251,11 +251,17 @@ func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	}, nil
 }
 
+// listRightsOptional is the RFC 4314 §3.7 "optional rights" set advertised by
+// LISTRIGHTS: every standard right plus the two obsolete compound rights
+// (c = k+x create, d = e+t delete), each individually grantable. The order
+// mirrors the fixed list a client sees ("" l r w s t p i e k x a c d): no
+// right is ever implied for any identifier, matching how the reference
+// implementation reports LISTRIGHTS uniformly.
+const listRightsOptional = "lrwstpiekxacd"
+
 // ListRights implements imapserver.SessionACL (RFC 4314 §3.7): the rights that
-// can be granted to identifier on folder. The mailbox owner is always granted
-// every right (required set = all, nothing optional); for any other identifier
-// no right is implied and each standard right is individually grantable
-// (required empty, one optional element per right letter).
+// can be granted to identifier on folder. No right is implied for any
+// identifier (required set empty); every right is individually grantable.
 func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier) (*imaplib.ListRightsData, error) {
 	if err := s.requireACLEnabled(); err != nil {
 		return nil, err
@@ -264,8 +270,7 @@ func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier)
 	if err != nil {
 		return nil, err
 	}
-	id, _, err := identifierFromIMAP(identifier)
-	if err != nil {
+	if _, _, err := identifierFromIMAP(identifier); err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
 	}
 	// Probe the folder exists by attempting a load — a nil error here
@@ -274,19 +279,8 @@ func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier)
 	if _, err := h.acl.Get(rel); err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
 	}
-	// The mailbox owner (the "owner" keyword, or the owning user of a personal
-	// namespace) implicitly holds all rights.
-	isOwnerID := id.Type == mailbox.IDOwner ||
-		(h.spec.Type == NamespacePersonal && id.Type == mailbox.IDUser && id.Name == s.userInfo.Username)
-	if isOwnerID {
-		return &imaplib.ListRightsData{
-			Mailbox:        folder,
-			Identifier:     identifier,
-			RequiredRights: imaplib.RightSet(mailbox.FullRights),
-		}, nil
-	}
-	optional := make([]imaplib.RightSet, 0, len(mailbox.FullRights))
-	for _, r := range mailbox.FullRights {
+	optional := make([]imaplib.RightSet, 0, len(listRightsOptional))
+	for _, r := range listRightsOptional {
 		optional = append(optional, imaplib.RightSet(string(r)))
 	}
 	return &imaplib.ListRightsData{
