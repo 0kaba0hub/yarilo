@@ -39,6 +39,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Server is the yarilo backend (or single-node) server.
@@ -235,6 +236,9 @@ func New(cfg *config.Config) (*Server, error) {
 			SieveEngine:          sieveEngine,
 			IMAPQuota:            cfg.Protocol.IMAP.IMAPQuota,
 			QuotaEngine:          cfg.Quota.Enabled,
+			QuotaName:            cfg.Quota.Name,
+			QuotaExceededMessage: cfg.Quota.ExceededMessage,
+			QuotaMailSize:        quota.ParseSize(cfg.Quota.MailSize),
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
@@ -347,6 +351,8 @@ func New(cfg *config.Config) (*Server, error) {
 			TLSConfig:            lmtpTLS,
 			Locker:               locker,
 			QuotaEngine:          cfg.Quota.Enabled,
+			QuotaExceededMessage: cfg.Quota.ExceededMessage,
+			QuotaMailSize:        quota.ParseSize(cfg.Quota.MailSize),
 			MetadataDict:         metadataDict,
 			AuthAddr:             authAddr,
 			AuthTLS:              authTLS,

@@ -361,6 +361,20 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- with .Values.quota }}
+    quota:
+      enabled: {{ .enabled | default false }}
+      {{- if .name }}
+      name: {{ .name | quote }}
+      {{- end }}
+      {{- if .exceeded_message }}
+      exceeded_message: {{ .exceeded_message | quote }}
+      {{- end }}
+      {{- if .mail_size }}
+      mail_size: {{ .mail_size | quote }}
+      {{- end }}
+    {{- end }}
+
     {{- with .Values.namespaces }}
     namespaces:
       {{- range . }}
@@ -609,6 +623,9 @@ data:
     {{- if .Values.components.quotaStatus.enabled }}
     quota_status:
       listen: {{ printf ":%d" (int .Values.components.quotaStatus.containerPort) | quote }}
+      {{- if .Values.components.quotaStatus.recipient_delimiter }}
+      recipient_delimiter: {{ .Values.components.quotaStatus.recipient_delimiter | quote }}
+      {{- end }}
       {{- with .Values.components.quotaStatus.default_quota_rules }}
       default_quota_rules:
         {{- range . }}

@@ -63,6 +63,12 @@ type Options struct {
 	// full". Usage is summed from the recipient's index (count backend).
 	QuotaEngine bool
 
+	// QuotaExceededMessage is the 452 text when a delivery is over quota.
+	QuotaExceededMessage string
+	// QuotaMailSize rejects a single message larger than this many bytes
+	// (0 = unlimited), independent of the usage limit.
+	QuotaMailSize int64
+
 	// MetadataDict backs the mboxmetadata / servermetadata Sieve tests
 	// (RFC 5490 §4): the same dict IMAP uses for RFC 5464 METADATA. Nil
 	// disables those tests (they report the annotation as absent).
@@ -199,6 +205,14 @@ type session struct {
 	// rcptUserInfo caches per-recipient UserInfo fetched at RCPT TO time
 	// so LMTPData can use correct Home and QuotaRules without re-querying.
 	rcptUserInfo map[string]*mailbox.UserInfo
+}
+
+// quotaExceededMessage is the 452 text for an over-quota delivery.
+func (s *session) quotaExceededMessage() string {
+	if m := s.opts.QuotaExceededMessage; m != "" {
+		return m
+	}
+	return "Mailbox full"
 }
 
 func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
@@ -579,19 +593,33 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		// Quota enforcement from the index (authoritative): reject when this
 		// message would push the recipient over their limit. Sums the per-folder
 		// hdr-vsize aggregate — no dict, no drift.
-		if lim := quota.ParseRules(userInfo.QuotaRules); s.opts.QuotaEngine && len(userInfo.QuotaRules) > 0 {
-			if effLim, ignore := lim.EffectiveLimits(folder); !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
-				entries, _ := rcptBox.ListFolders()
-				u := quota.CountUsage(rcptIdx, mailbox.SelectableNames(entries), lim)
-				if quota.IsOver(u, effLim, int64(len(msg)), 1) {
-					slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
-					rcptBox.Close() //nolint:errcheck
-					rcptIdx.Close() //nolint:errcheck
-					status.SetStatus(rcpt, &goSmtp.SMTPError{
-						Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2},
-						Message: "Mailbox full",
-					})
-					continue
+		if s.opts.QuotaEngine {
+			// Per-message size cap applies even without a per-user quota_rule and
+			// carries a distinct text so a client can tell "too large" from "full".
+			if ms := s.opts.QuotaMailSize; ms > 0 && int64(len(msg)) > ms {
+				slog.Warn("lmtp: delivery rejected: message exceeds max mail size", "rcpt", rcpt, "user", username, "size", len(msg), "max", ms)
+				rcptBox.Close() //nolint:errcheck
+				rcptIdx.Close() //nolint:errcheck
+				status.SetStatus(rcpt, &goSmtp.SMTPError{
+					Code: 552, EnhancedCode: goSmtp.EnhancedCode{5, 2, 3},
+					Message: fmt.Sprintf("Requested allocation size %d exceeds max mail size %d", len(msg), ms),
+				})
+				continue
+			}
+			if lim := quota.ParseRules(userInfo.QuotaRules); len(userInfo.QuotaRules) > 0 {
+				if effLim, ignore := lim.EffectiveLimits(folder); !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
+					entries, _ := rcptBox.ListFolders()
+					u := quota.CountUsage(rcptIdx, mailbox.SelectableNames(entries), lim)
+					if quota.IsOver(u, effLim, int64(len(msg)), 1) {
+						slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
+						rcptBox.Close() //nolint:errcheck
+						rcptIdx.Close() //nolint:errcheck
+						status.SetStatus(rcpt, &goSmtp.SMTPError{
+							Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2},
+							Message: s.quotaExceededMessage(),
+						})
+						continue
+					}
 				}
 			}
 		}

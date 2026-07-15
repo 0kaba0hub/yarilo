@@ -580,6 +580,10 @@ components:
     alias_dict: ""
     alias_max_hops: 5
 
+    ## recipient_delimiter separates the address detail used to derive the
+    ## target folder (alice+Spam@ → Spam). Default "+".
+    recipient_delimiter: "+"
+
     ## auth_master_addr is the yarilo-auth master-protocol listener address
     ## used for per-user quota_rule lookups via userdb. When set, per-user
     ## rules override default_quota_rules; default_quota_rules remain as fallback.
@@ -1297,6 +1301,15 @@ extraVolumeMounts: []
 ## Independent of the IMAP QUOTA extension (protocol.imap.imap_quota).
 quota:
   enabled: false
+  ## Quota-root name surfaced in IMAP GETQUOTA / GETQUOTAROOT responses.
+  name: "User quota"
+  ## Text returned when a save is rejected for being over quota
+  ## (IMAP OVERQUOTA, LMTP 452, quota-status REJECT).
+  exceeded_message: "Quota exceeded (mailbox for user is full)"
+  ## Reject any single message larger than this (human size, e.g. "50M").
+  ## Empty / "0" = unlimited. Independent of the usage limit; carries a
+  ## distinct "exceeds max mail size" rejection text.
+  mail_size: ""
 
 acl:
   enabled: false

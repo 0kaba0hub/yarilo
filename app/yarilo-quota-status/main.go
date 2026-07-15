@@ -103,13 +103,16 @@ func main() {
 	}
 
 	srv := quotastatus.New(quotastatus.Options{
-		Enabled:      cfg.Quota.Enabled,
-		Limits:       limits,
-		UserdbLookup: lookup,
-		Mailbox:      mbox,
-		Index:        idx,
-		AliasDict:    aliasDict,
-		AliasMaxHops: qs.AliasMaxHops,
+		Enabled:            cfg.Quota.Enabled,
+		Limits:             limits,
+		UserdbLookup:       lookup,
+		Mailbox:            mbox,
+		Index:              idx,
+		AliasDict:          aliasDict,
+		AliasMaxHops:       qs.AliasMaxHops,
+		RecipientDelimiter: qs.RecipientDelimiter,
+		ExceededMessage:    cfg.Quota.ExceededMessage,
+		MailSize:           quota.ParseSize(cfg.Quota.MailSize),
 	})
 
 	listen := qs.Listen

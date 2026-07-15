@@ -533,6 +533,15 @@ type InternalTLSConfig struct {
 // (protocol.imap.imap_quota), which only exposes the GETQUOTA commands.
 type QuotaConfig struct {
 	Enabled bool `koanf:"enabled"`
+	// Name is the quota-root name surfaced in IMAP GETQUOTA / GETQUOTAROOT.
+	// Empty falls back to "User quota".
+	Name string `koanf:"name"`
+	// ExceededMessage is the text returned when a save is rejected for being
+	// over quota (IMAP OVERQUOTA, LMTP 452, quota-status). Empty uses a default.
+	ExceededMessage string `koanf:"exceeded_message"`
+	// MailSize rejects any single message larger than this (human size, e.g.
+	// "50M"). Empty / "0" = unlimited. Independent of the usage limit.
+	MailSize string `koanf:"mail_size"`
 }
 
 // QuotaStatusConfig configures the yarilo-quota-status Postfix policy service.
@@ -541,6 +550,9 @@ type QuotaStatusConfig struct {
 	// Postfix connects here via check_policy_service.
 	// Default: ":12340"
 	Listen string `koanf:"listen"`
+	// RecipientDelimiter is the address detail separator used to derive the
+	// target folder (alice+Spam@ → Spam). Default "+".
+	RecipientDelimiter string `koanf:"recipient_delimiter"`
 	// DefaultQuotaRules are the site-wide quota limits applied when no
 	// per-user rules are available (userdb lookup not yet wired in this phase).
 	// Format matches yarilo.yaml quota_rule: ["*:storage=5G", "Trash:storage=+1G"].
@@ -1296,7 +1308,11 @@ func Load(path string) (*Config, error) {
 				AllowedNets: []string{"127.0.0.0/8", "10.96.0.0/12", "10.244.0.0/16"},
 			},
 		},
-		QuotaStatus: QuotaStatusConfig{Listen: ":12340"},
+		QuotaStatus: QuotaStatusConfig{Listen: ":12340", RecipientDelimiter: "+"},
+		Quota: QuotaConfig{
+			Name:            "User quota",
+			ExceededMessage: "Quota exceeded (mailbox for user is full)",
+		},
 		SASLLogin: SASLLoginConfig{
 			Listen:         ":12325",
 			HAProxyTimeout: 3,

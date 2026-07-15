@@ -73,6 +73,12 @@ func policyCheck(t *testing.T, addr string, attrs map[string]string) string {
 // and UserdbLookup returns quotaRules. This mirrors production, where the count
 // backend sums the recipient's index.
 func startStorageServer(t *testing.T, quotaRules []string, aliasD dict.Dict, hops int, userBytes map[string]uint32) string {
+	return startStorageServerOpts(t, quotaRules, aliasD, hops, userBytes, nil)
+}
+
+// startStorageServerOpts is startStorageServer with a hook to tweak the final
+// Options (recipient_delimiter, mail_size, exceeded_message, ...).
+func startStorageServerOpts(t *testing.T, quotaRules []string, aliasD dict.Dict, hops int, userBytes map[string]uint32, mutate func(*quotastatus.Options)) string {
 	t.Helper()
 	dir := t.TempDir()
 	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
@@ -100,7 +106,7 @@ func startStorageServer(t *testing.T, quotaRules []string, aliasD dict.Dict, hop
 		mi.QuotaRules = quotaRules
 		return mi, nil
 	}
-	return startServer(t, quotastatus.Options{
+	opts := quotastatus.Options{
 		Enabled:      true,
 		Limits:       quota.ParseRules(quotaRules),
 		UserdbLookup: lookup,
@@ -108,7 +114,61 @@ func startStorageServer(t *testing.T, quotaRules []string, aliasD dict.Dict, hop
 		Index:        idx,
 		AliasDict:    aliasD,
 		AliasMaxHops: hops,
+	}
+	if mutate != nil {
+		mutate(&opts)
+	}
+	return startServer(t, opts)
+}
+
+func TestPolicyCheck_RecipientDelimiter(t *testing.T) {
+	// With delimiter "-", the "-Spam" detail selects the ignored folder so an
+	// otherwise-over-quota user is allowed; "+" is treated as a literal.
+	addr := startStorageServerOpts(t, []string{"*:storage=1K", "Spam:ignore"}, nil, 0,
+		map[string]uint32{"alice@example.com": 2048},
+		func(o *quotastatus.Options) { o.RecipientDelimiter = "-" })
+	if a := policyCheck(t, addr, map[string]string{
+		"request": "smtpd_access_policy", "recipient": "alice-Spam@example.com", "size": "100",
+	}); a != "DUNNO" {
+		t.Errorf("want DUNNO for delimiter-ignored folder, got %q", a)
+	}
+	// "+" is no longer a delimiter, so alice+Spam maps to a different username.
+	if a := policyCheck(t, addr, map[string]string{
+		"request": "smtpd_access_policy", "recipient": "alice+Spam@example.com", "size": "100",
+	}); !strings.HasPrefix(a, "DUNNO") && !strings.HasPrefix(a, "REJECT") {
+		t.Errorf("unexpected action %q", a)
+	}
+}
+
+func TestPolicyCheck_MailSize(t *testing.T) {
+	addr := startStorageServerOpts(t, []string{"*:storage=10M"}, nil, 0,
+		map[string]uint32{"alice@example.com": 1},
+		func(o *quotastatus.Options) { o.MailSize = 500 })
+	// Under the cap → allowed.
+	if a := policyCheck(t, addr, map[string]string{
+		"request": "smtpd_access_policy", "recipient": "alice@example.com", "size": "100",
+	}); a != "DUNNO" {
+		t.Errorf("want DUNNO under mail_size, got %q", a)
+	}
+	// Over the cap → distinct 552 rejection.
+	a := policyCheck(t, addr, map[string]string{
+		"request": "smtpd_access_policy", "recipient": "alice@example.com", "size": "600",
 	})
+	if !strings.HasPrefix(a, "REJECT 552") || !strings.Contains(a, "max mail size") {
+		t.Errorf("want REJECT 552 max mail size, got %q", a)
+	}
+}
+
+func TestPolicyCheck_ExceededMessage(t *testing.T) {
+	addr := startStorageServerOpts(t, []string{"*:storage=1K"}, nil, 0,
+		map[string]uint32{"alice@example.com": 1024},
+		func(o *quotastatus.Options) { o.ExceededMessage = "over the top" })
+	a := policyCheck(t, addr, map[string]string{
+		"request": "smtpd_access_policy", "recipient": "alice@example.com", "size": "100",
+	})
+	if !strings.HasPrefix(a, "REJECT 452") || !strings.Contains(a, "over the top") {
+		t.Errorf("want custom exceeded message, got %q", a)
+	}
 }
 
 func TestPolicyCheck_UnderQuota(t *testing.T) {
