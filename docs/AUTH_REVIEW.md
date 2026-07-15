@@ -232,11 +232,11 @@ Low priority, does not block anything. Pull when concrete need surfaces.
 By operator demand:
 
 - `passwd-file` — self-hosted simple deployments — **done** (passdb + userdb)
-- `ldap` — enterprise
-- `lua` — escape hatch
-- `pam` — UNIX shell users
 - `static` — tests + single-mailbox setups — **done** (passdb + userdb)
-- `imap` — proxy fallback
+- `ldap` — enterprise — backlog (#558)
+- `pam` — UNIX shell users — backlog (#558)
+- `lua` — escape hatch — backlog (#558)
+- `imap` — proxy fallback — backlog (#558)
 
 ---
 
