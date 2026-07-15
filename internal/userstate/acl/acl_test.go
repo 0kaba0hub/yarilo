@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -624,5 +625,60 @@ func TestStore_ACLFollowsMailPathNotIndex(t *testing.T) {
 	// INDEX= must not have pulled it into the index root.
 	if _, err := os.Stat(filepath.Join(indexRoot, FileName)); err == nil {
 		t.Errorf("yarilo-acl leaked into INDEX root")
+	}
+}
+
+// TestStore_CacheTTL verifies acl_cache_ttl: within the TTL a parsed ACL is
+// served from cache even after the file changes underneath; past the TTL the
+// mtime+size re-validation picks up the change; and a local write invalidates
+// immediately.
+func TestStore_CacheTTL(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir, "", "maildir", "/", "alice", "test", Policy{CacheTTL: 30 * time.Second}, nil)
+
+	now := time.Unix(1_700_000_000, 0)
+	s.clock = func() time.Time { return now }
+
+	acl1 := mailbox.ACL{{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lr"}}
+	acl2 := mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrs"},
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"}, Rights: "lrswipkxtea"},
+	}
+	str := func(a mailbox.ACL) string { return a.Sorted().String() }
+
+	if err := s.Set("Work", acl1); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// First read caches acl1.
+	got, err := s.Get("Work")
+	if err != nil || str(got) != str(acl1) {
+		t.Fatalf("initial Get = %q (%v), want acl1", str(got), err)
+	}
+
+	// External change the Store did not make (bypasses invalidation).
+	if err := os.WriteFile(s.Path("Work"), []byte(str(acl2)), 0o600); err != nil {
+		t.Fatalf("external write: %v", err)
+	}
+
+	// Within TTL: the stale cached acl1 is still served.
+	got, _ = s.Get("Work")
+	if str(got) != str(acl1) {
+		t.Errorf("within TTL Get = %q, want cached acl1", str(got))
+	}
+
+	// Past TTL: mtime+size re-validation reloads acl2.
+	now = now.Add(31 * time.Second)
+	got, _ = s.Get("Work")
+	if str(got) != str(acl2) {
+		t.Errorf("post-TTL Get = %q, want reloaded acl2", str(got))
+	}
+
+	// A local write invalidates immediately, even within TTL.
+	if err := s.Set("Work", acl1); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	got, _ = s.Get("Work")
+	if str(got) != str(acl1) {
+		t.Errorf("after local Set Get = %q, want acl1 (invalidated)", str(got))
 	}
 }

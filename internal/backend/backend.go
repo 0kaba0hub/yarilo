@@ -244,6 +244,7 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaDict:            quotaDict,
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
+			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
 			ACLGlobal:            aclGlobal,
 			ACLGlobalsOnly:       cfg.ACL.GlobalsOnly,
 			Namespaces:           buildNamespaces(cfg.Namespaces),
@@ -362,6 +363,7 @@ func New(cfg *config.Config) (*Server, error) {
 			ACLGlobal:            lmtpACLGlobal,
 			ACLGlobalsOnly:       cfg.ACL.GlobalsOnly,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
+			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
 			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 				return buildMailboxByDriver(driver, lmtpStorageCfg.MdboxAltStoragePath, locker,
 					lmtpStorageCfg.MaxConcurrentWrites, lmtpStorageCfg.MailboxListUTF8, lmtpStorageCfg.MailboxListNormalizeToNFC)

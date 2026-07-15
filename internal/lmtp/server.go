@@ -105,6 +105,7 @@ type Options struct {
 	ACLGlobal            *acl.Global
 	ACLGlobalsOnly       bool
 	ACLDefaultsFromInbox bool
+	ACLCacheTTL          time.Duration
 }
 
 // Server is an LMTP server backed by a MailboxBackend and IndexBackend.
@@ -515,6 +516,7 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 		DefaultsFromInbox: defaultsFromInbox,
 		GlobalsOnly:       s.opts.ACLGlobalsOnly,
 		Global:            s.opts.ACLGlobal,
+		CacheTTL:          s.opts.ACLCacheTTL,
 	}, s.opts.Locker)
 	var sep byte = '/'
 	if ns.Separator != "" {
