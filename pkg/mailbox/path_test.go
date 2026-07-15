@@ -370,3 +370,16 @@ func TestResolverDefaultMailPathVars(t *testing.T) {
 		t.Errorf("MailPath = %q, want %q", ui.MailPath, want)
 	}
 }
+
+func TestUserInfo_ACLIdentity(t *testing.T) {
+	// No override: falls back to the session's own identity.
+	base := &UserInfo{Username: "alice", Groups: []string{"g1"}}
+	if u, g := base.ACLIdentity(); u != "alice" || len(g) != 1 || g[0] != "g1" {
+		t.Errorf("default identity = %q %v, want alice [g1]", u, g)
+	}
+	// Override: acl_user / acl_groups win (master-user model).
+	ov := &UserInfo{Username: "master", Groups: []string{"m"}, ACLUser: "bob", ACLGroups: []string{"staff"}}
+	if u, g := ov.ACLIdentity(); u != "bob" || len(g) != 1 || g[0] != "staff" {
+		t.Errorf("override identity = %q %v, want bob [staff]", u, g)
+	}
+}

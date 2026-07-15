@@ -52,6 +52,14 @@ type UserInfo struct {
 	Groups            []string // supplementary group names
 	ClientCertPresent bool     // TLS client cert auth was used
 
+	// ACLUser / ACLGroups override the identity used when evaluating ACLs.
+	// Set via the acl_user / acl_groups userdb fields — typically on a
+	// master-user session so ACL checks resolve as the impersonated ACL
+	// identity rather than the authenticated login. Empty ACLUser means
+	// "evaluate as Username / Groups".
+	ACLUser   string
+	ACLGroups []string
+
 	// ---- Mail storage -----------------------------------------
 
 	// MailLocation overrides the global mail_location.
@@ -282,6 +290,8 @@ func (ui *UserInfo) VisitFields(fn func(key, value string)) {
 	str("system_groups_user", ui.SystemGroupsUser)
 	list("groups", ui.Groups)
 	yes("client_cert_present", ui.ClientCertPresent)
+	str("acl_user", ui.ACLUser)
+	list("acl_groups", ui.ACLGroups)
 
 	str("mail", ui.MailLocation)
 	str("volatile_dir", ui.VolatileDir)

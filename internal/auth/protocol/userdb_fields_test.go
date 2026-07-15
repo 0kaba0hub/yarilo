@@ -112,3 +112,19 @@ func TestAssignField_AltDirPriority(t *testing.T) {
 		t.Errorf("AltDir = %q, want /explicit/cold (explicit wins)", info.AltDir)
 	}
 }
+
+func TestAssignField_ACLUserGroups(t *testing.T) {
+	var info UserInfo
+	if err := AssignField(&info, "acl_user", "shared-admin"); err != nil {
+		t.Fatalf("AssignField acl_user: %v", err)
+	}
+	if err := AssignField(&info, "acl_groups", "staff,ops"); err != nil {
+		t.Fatalf("AssignField acl_groups: %v", err)
+	}
+	if info.ACLUser != "shared-admin" {
+		t.Errorf("ACLUser = %q, want shared-admin", info.ACLUser)
+	}
+	if len(info.ACLGroups) != 2 || info.ACLGroups[0] != "staff" || info.ACLGroups[1] != "ops" {
+		t.Errorf("ACLGroups = %v, want [staff ops]", info.ACLGroups)
+	}
+}

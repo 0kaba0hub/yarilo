@@ -58,6 +58,12 @@ type AuthResponse struct {
 	// Empty when not configured — group= ACL entries have no effect.
 	Groups []string
 
+	// ACLUser / ACLGroups override the identity used when evaluating ACLs,
+	// sourced from the acl_user / acl_groups userdb fields. Empty ACLUser
+	// means "evaluate as Username / Groups".
+	ACLUser   string
+	ACLGroups []string
+
 	// QuotaRules is the list of per-user quota rules sourced from the
 	// userdb `quota_rule=` extra field. Format: `*:storage=5G`.
 	QuotaRules []string
@@ -378,6 +384,8 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 		resp.MailLoc = v
 	}
 	resp.Groups = extractGroups(req.Fields)
+	resp.ACLUser = extractACLUser(req.Fields)
+	resp.ACLGroups = extractACLGroups(req.Fields)
 	resp.QuotaRules = extractQuotaRules(req.Fields)
 	resp.VolatileDir = extractVolatileDir(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
@@ -408,6 +416,8 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 			resp.MailLoc = v
 		}
 		resp.Groups = extractGroups(entry.Fields)
+		resp.ACLUser = extractACLUser(entry.Fields)
+		resp.ACLGroups = extractACLGroups(entry.Fields)
 		resp.QuotaRules = extractQuotaRules(entry.Fields)
 		resp.VolatileDir = extractVolatileDir(entry.Fields)
 		resp.IndexDir = extractIndexDir(entry.Fields)
@@ -1399,6 +1409,34 @@ func extractGroups(f *Fields) []string {
 		return SplitCSV(v)
 	}
 	if v, ok := f.Get("groups"); ok && v != "" {
+		return SplitCSV(v)
+	}
+	return nil
+}
+
+// extractACLUser reads the acl_user override from the Fields bag.
+func extractACLUser(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	if v, ok := f.Get("userdb_acl_user"); ok && v != "" {
+		return v
+	}
+	if v, ok := f.Get("acl_user"); ok && v != "" {
+		return v
+	}
+	return ""
+}
+
+// extractACLGroups reads the acl_groups override from the Fields bag.
+func extractACLGroups(f *Fields) []string {
+	if f == nil {
+		return nil
+	}
+	if v, ok := f.Get("userdb_acl_groups"); ok && v != "" {
+		return SplitCSV(v)
+	}
+	if v, ok := f.Get("acl_groups"); ok && v != "" {
 		return SplitCSV(v)
 	}
 	return nil

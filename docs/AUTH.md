@@ -160,6 +160,99 @@ auth:
 - **`user_query` must return:** `home`, `mail`. Called after a successful auth to fill in mailbox location from an authoritative source.
 - **`iterate_query` must return one column:** `username`.
 
+### Userdb / passdb extra fields
+
+Beyond `home` / `mail`, a lookup may return extra fields — as a SQL column alias, `user_query` output, or an auth-socket `key=value` / `userdb_*` pair — that tune per-user mailbox, access, and proxying behaviour. Unset fields fall back to the global config. Comma-separated fields (`groups`, `acl_groups`, `quota_rule`, `allow_nets`) accept multiple values and merge across repeated assignments. Boolean fields accept `1` / `yes` / `y` / `true` / `t` / `on` (case-insensitive). Unknown keys are preserved in `Extra`; `forward_*` keys populate the proxy forward map.
+
+**Identity**
+
+| Field | Meaning |
+|:---|:---|
+| `username` / `user` | Canonical username (overrides the login for master-user flows). |
+| `original_user` | The login as typed before normalisation. |
+| `master_user` | Master user when the login used master-user syntax. |
+| `login_user` | Login user for delegated lookups (equals `username` otherwise). |
+
+**System identity & groups**
+
+| Field | Meaning |
+|:---|:---|
+| `uid` / `gid` | System user/group id for privilege drop. |
+| `home` | User home directory. |
+| `chroot` | Chroot directory. |
+| `system_groups_user` | Username override for system group lookup. |
+| `groups` | Supplementary group names (comma-separated). Matched against `group=` / `group-override=` ACL entries. |
+| `client_cert_present` | Bool: TLS client-cert auth was used. |
+
+**ACL evaluation**
+
+| Field | Meaning |
+|:---|:---|
+| `acl_user` | Override the identity used when **evaluating ACLs** (Dovecot `acl_user`). Typically set on a master-user session so ACL checks resolve as the impersonated user rather than the login. Empty = evaluate as the login user. |
+| `acl_groups` | Group names (comma-separated) used alongside `acl_user` for ACL evaluation. |
+
+> `acl_user` / `acl_groups` only affect **non-owner** namespaces (shared / public / other-users). A user always has full rights in their own personal namespace regardless of the override.
+
+**Mail storage**
+
+| Field | Meaning |
+|:---|:---|
+| `mail` / `mail_location` | Per-user mail location (`maildir:~/Maildir`, `mdbox:…`), with `:INDEX=`, `:CONTROL=`, `:ALT=`, `:VOLATILEDIR=` modifiers. |
+| `mail_path` | Base mailbox path (derived from `mail` when unset). |
+| `mail_inbox_path` | Explicit INBOX path override. |
+| `volatile_dir` / `index_dir` / `control_dir` / `alt_dir` | Direct overrides for the corresponding mail-location modifier (win over modifiers embedded in `mail`). |
+| `mail_uid` / `mail_gid` | Ownership for mail files, distinct from the system `uid`/`gid`. |
+| `mailbox_format` | `maildir` \| `sdbox` \| `mdbox`. |
+| `mail_attribute_dict` | Dict URL backing RFC 5464 METADATA. |
+
+**Quota**
+
+| Field | Meaning |
+|:---|:---|
+| `quota_rule` | Per-user quota rule, e.g. `*:storage=5G` or `*:messages=100000` (repeatable). |
+| `quota_over_flag` | Value marking the user as over quota. |
+
+**Login control**
+
+| Field | Meaning |
+|:---|:---|
+| `allow_nets` | Allowed source IP/CIDR list (comma-separated); empty = no restriction. |
+| `nologin` | Bool: reject login outright. |
+| `noauthenticate` | Bool: auth disabled for this user. |
+| `nodelay` | Bool: bypass auth-penalty backoff. |
+| `pass_expired` | Bool: password expired, client must reset. |
+| `nopassword` | Bool: accept any password (passdb). |
+| `enabled` | SQL filter column (`WHERE enabled = 1`); not stored as a field. |
+
+**Proxy / director** (see [DIRECTOR.md](DIRECTOR.md))
+
+| Field | Meaning |
+|:---|:---|
+| `proxy` / `proxy_maybe` | Bool: proxy this session (unconditionally / only if remote). |
+| `host` / `port` | Upstream backend address. |
+| `destuser` | Username to present to the upstream. |
+| `proxy_mech` | SASL mechanism for the upstream login. |
+| `proxy_timeout` | Upstream connect timeout (seconds). |
+| `proxy_redirect_reauth` | Bool: re-auth on redirect. |
+| `proxy_nopipelining` | Bool: disable command pipelining to the upstream. |
+| `ssl` / `starttls` | Upstream TLS mode / bool STARTTLS. |
+
+**Connection limits**
+
+| Field | Meaning |
+|:---|:---|
+| `mail_max_userip_connections` | Max concurrent connections per user+IP. |
+| `mail_max_user_connections` | Max concurrent connections per user. |
+
+**Misc**
+
+| Field | Meaning |
+|:---|:---|
+| `service` | Restrict the entry to a named service. |
+| `local_name` | TLS SNI name this entry applies to. |
+| `forward_*` | Arbitrary key forwarded to the proxy backend (populates the forward map). |
+| *(any other key)* | Preserved verbatim in `Extra`. |
+
 ### Example: map an existing schema
 
 ```yaml

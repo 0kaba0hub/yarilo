@@ -52,6 +52,10 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.SystemGroupsUser = value
 	case "groups":
 		info.Groups = append(info.Groups, SplitCSV(value)...)
+	case "acl_user":
+		info.ACLUser = value
+	case "acl_groups":
+		info.ACLGroups = append(info.ACLGroups, SplitCSV(value)...)
 	case "client_cert_present":
 		info.ClientCertPresent = IsTruthy(value)
 	case "volatile_dir":

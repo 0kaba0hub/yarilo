@@ -476,6 +476,8 @@ func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.Use
 		AltDir:      loc.AltDir,
 		Separator:   ns.Separator,
 		Groups:      userInfo.Groups,
+		ACLUser:     userInfo.ACLUser,
+		ACLGroups:   userInfo.ACLGroups,
 	}
 	if enforcePost && !s.postAllowed(ui, ns, rel) {
 		slog.Warn("lmtp: post right denied, falling back to INBOX",
@@ -522,7 +524,8 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 	if ns.Separator != "" {
 		sep = ns.Separator[0]
 	}
-	rights, err := store.EffectiveFor(rel, ui.Username, ui.Groups, false, sep)
+	aclUser, aclGroups := ui.ACLIdentity()
+	rights, err := store.EffectiveFor(rel, aclUser, aclGroups, false, sep)
 	if err != nil {
 		slog.Warn("lmtp: post-right ACL read failed, denying", "folder", rel, "err", err)
 		return false

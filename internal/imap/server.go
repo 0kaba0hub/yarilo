@@ -840,6 +840,8 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	}
 	userInfo := resolver.UserInfo(res.Username, res.Home)
 	userInfo.Groups = res.Groups
+	userInfo.ACLUser = res.ACLUser
+	userInfo.ACLGroups = res.ACLGroups
 	userInfo.QuotaRules = res.QuotaRules
 	userInfo.SessionID = s.sid
 	if res.VolatileDir != "" {
@@ -1341,9 +1343,10 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 // (per-mailbox + inheritance + global + defaults), not the acl-list index.
 func (s *session) aclVisibleEntries(h *nsHandle, entries []mailbox.FolderEntry, sep string) []mailbox.FolderEntry {
 	sepByte := byte(h.spec.Separator)
+	aclUser, aclGroups := s.userInfo.ACLIdentity()
 	lookup := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		r, err := h.acl.EffectiveFor(e.Name, s.userInfo.Username, s.userInfo.Groups, false, sepByte)
+		r, err := h.acl.EffectiveFor(e.Name, aclUser, aclGroups, false, sepByte)
 		if err != nil {
 			slog.Warn("imap: acl list lookup failed", "ns", h.name, "folder", e.Name, "err", err)
 			lookup[e.Name] = false
