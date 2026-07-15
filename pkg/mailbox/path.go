@@ -73,6 +73,11 @@ type UserInfo struct {
 	// `*:messages=100000`. Empty means no quota limit.
 	QuotaRules []string
 
+	// QuotaOverFlag is the userdb `quota_over_flag` value — the external
+	// over-quota flag the quota_over_status check reconciles against actual
+	// usage at login.
+	QuotaOverFlag string
+
 	// SessionID is the IMAP/POP3 session identifier assigned by the login
 	// proxy. Included in the yarilo-locks owner string for BUSY diagnostics.
 	// Empty for LMTP and other non-session contexts.

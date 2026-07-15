@@ -583,6 +583,15 @@ type QuotaConfig struct {
 	// CloneFlushDelay debounces clone writes: at most one mirror write per this
 	// many seconds per session, plus a final flush on session close. Default 10.
 	CloneFlushDelay int `koanf:"quota_clone_flush_delay"`
+	// OverStatusMask is the wildcard the userdb quota_over_flag is matched
+	// against to decide the flagged over state. Empty disables the check.
+	OverStatusMask string `koanf:"quota_over_status_mask"`
+	// OverStatusLazyCheck defers the over-status check from login to the first
+	// quota operation.
+	OverStatusLazyCheck bool `koanf:"quota_over_status_lazy_check"`
+	// OverStatusExecute is the program (+ args) run from quota_warning_bin_dir
+	// when the actual over-quota state diverges from the userdb flag.
+	OverStatusExecute string `koanf:"quota_over_status_execute"`
 }
 
 // QuotaWarning is one quota_warning rule (fires an action when usage crosses a
@@ -608,6 +617,11 @@ func (q QuotaConfig) QuotaPolicy() quota.Policy {
 		MailboxMessageCount: q.MailboxMessageCount,
 		Hidden:              q.Hidden,
 		Warnings:            q.quotaWarnings(),
+		OverStatus: quota.OverStatusPolicy{
+			Mask:      q.OverStatusMask,
+			LazyCheck: q.OverStatusLazyCheck,
+			Execute:   q.OverStatusExecute,
+		},
 	}
 }
 
@@ -637,6 +651,9 @@ type QuotaStatusConfig struct {
 	// RecipientDelimiter is the address detail separator used to derive the
 	// target folder (alice+Spam@ → Spam). Default "+".
 	RecipientDelimiter string `koanf:"recipient_delimiter"`
+	// Nouser is the policy action returned when the recipient is unknown in
+	// userdb. Default "REJECT Unknown user"; empty falls back to DUNNO.
+	Nouser string `koanf:"quota_status_nouser"`
 	// DefaultQuotaRules are the site-wide quota limits applied when no
 	// per-user rules are available (userdb lookup not yet wired in this phase).
 	// Format matches yarilo.yaml quota_rule: ["*:storage=5G", "Trash:storage=+1G"].
@@ -1398,7 +1415,7 @@ func Load(path string) (*Config, error) {
 				AllowedNets: []string{"127.0.0.0/8", "10.96.0.0/12", "10.244.0.0/16"},
 			},
 		},
-		QuotaStatus: QuotaStatusConfig{Listen: ":12340", RecipientDelimiter: "+"},
+		QuotaStatus: QuotaStatusConfig{Listen: ":12340", RecipientDelimiter: "+", Nouser: "REJECT Unknown user"},
 		Quota: QuotaConfig{
 			Name:              "User quota",
 			ExceededMessage:   "Quota exceeded (mailbox for user is full)",

@@ -874,6 +874,7 @@ func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.U
 	mbi.ACLUser = ui.ACLUser
 	mbi.ACLGroups = ui.ACLGroups
 	mbi.QuotaRules = ui.QuotaRules
+	mbi.QuotaOverFlag = ui.QuotaOverFlag
 	if ui.VolatileDir != "" {
 		vd := mailbox.ExpandHome(ui.VolatileDir, mbi.Home)
 		vd = strings.ReplaceAll(vd, "%h", mbi.Home)

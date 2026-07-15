@@ -483,6 +483,9 @@ type session struct {
 	cloneDirty     bool
 	cloneDirtyUsg  quota.Usage
 	cloneLastFlush time.Time
+	// quota_over_status state: run the external over-flag sync once per session.
+	overStatusChecked bool
+	overStatusLoginAt time.Time
 
 	// namespaces holds the per-namespace storage handles, keyed by
 	// the namespace prefix. The personal namespace always has key "".
@@ -1004,6 +1007,15 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	s.box = primary.box
 	s.idx = primary.idx
 	s.subs = primary.subs
+
+	// quota_over_status: reconcile the external over-flag against actual usage at
+	// login (unless lazy, when the first quota op triggers it).
+	s.overStatusLoginAt = time.Now()
+	if os := s.srv.opts.QuotaPolicy.OverStatus; os.Mask != "" && !os.LazyCheck {
+		if u, uerr := s.countUsage(false); uerr == nil {
+			s.evalOverStatus(u)
+		}
+	}
 
 	owner := fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), userInfo.Username)
 	s.specialUse = specialuse.New(

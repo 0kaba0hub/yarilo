@@ -613,6 +613,11 @@ components:
     ## target folder (alice+Spam@ → Spam). Default "+".
     recipient_delimiter: "+"
 
+    ## quota_status_nouser is the policy action returned when the recipient is
+    ## unknown in userdb. Default "REJECT Unknown user"; set "" to fall back to
+    ## DUNNO (accept, let a later Postfix check decide).
+    quota_status_nouser: "REJECT Unknown user"
+
     ## auth_master_addr is the yarilo-auth master-protocol listener address
     ## used for per-user quota_rule lookups via userdb. When set, per-user
     ## rules override default_quota_rules; default_quota_rules remain as fallback.
@@ -1392,6 +1397,17 @@ quota:
   ## Debounce: at most one mirror write per this many seconds per session, plus
   ## a final flush on session close. Default 10.
   quota_clone_flush_delay: 10
+
+  ## quota_over_status — keep an external "over quota" flag in sync. At login
+  ## the actual over-quota state is compared to the userdb quota_over_flag; on a
+  ## mismatch a program (from quota_warning_bin_dir) updates the external flag so
+  ## an MTA can reject mail to over-quota users without querying yarilo.
+  ## mask is the wildcard the userdb flag is matched against (empty = disabled).
+  ## The program receives USER, HOME, HOST, QUOTA_OVER_FLAG (old), QUOTA_OVER
+  ## (yes/no) via env. lazy_check defers from login to the first quota operation.
+  quota_over_status_mask: ""
+  quota_over_status_lazy_check: false
+  quota_over_status_execute: ""   # program name in quota_warning_bin_dir
 
 acl:
   enabled: false

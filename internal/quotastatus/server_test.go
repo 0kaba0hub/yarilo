@@ -295,3 +295,30 @@ func TestPolicyCheck_MultipleRequestsPerConn(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyCheck_Nouser(t *testing.T) {
+	mb := maildir.New()
+	idx := file.New()
+	lookup := func(_ context.Context, _ string) (*mailbox.UserInfo, error) {
+		return nil, nil // recipient unknown in userdb
+	}
+	base := quotastatus.Options{
+		Enabled:      true,
+		Limits:       quota.ParseRules([]string{"*:storage=1K"}),
+		UserdbLookup: lookup,
+		Mailbox:      mb,
+		Index:        idx,
+	}
+	req := map[string]string{"request": "smtpd_access_policy", "recipient": "ghost@example.com", "size": "100"}
+
+	// Configured nouser action is returned for an unknown recipient.
+	b := base
+	b.Nouser = "REJECT Unknown user"
+	if a := policyCheck(t, startServer(t, b), req); !strings.HasPrefix(a, "REJECT") || !strings.Contains(a, "Unknown user") {
+		t.Errorf("want REJECT Unknown user, got %q", a)
+	}
+	// Empty nouser opts out to DUNNO.
+	if a := policyCheck(t, startServer(t, base), req); a != "DUNNO" {
+		t.Errorf("empty nouser should DUNNO, got %q", a)
+	}
+}

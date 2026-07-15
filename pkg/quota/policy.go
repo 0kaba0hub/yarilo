@@ -43,6 +43,8 @@ type Policy struct {
 	Hidden bool
 	// Warnings are the quota-warning rules evaluated on each usage change.
 	Warnings []Warning
+	// OverStatus is the login-time external over-flag sync (quota_over_status).
+	OverStatus OverStatusPolicy
 }
 
 // MatchWarnings returns the warnings whose configured threshold is crossed by
