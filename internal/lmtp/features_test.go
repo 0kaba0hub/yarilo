@@ -2,7 +2,6 @@ package lmtp
 
 import (
 	"bufio"
-	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,10 +11,7 @@ import (
 	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
 	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/dict/memory"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 type featureServer struct {
@@ -187,24 +183,11 @@ func checkFileNoHeader(t *testing.T, path, header string) {
 		}
 	}
 }
-
-func newTestMemDict(t *testing.T) dict.Dict {
-	t.Helper()
-	d, err := memory.New(dict.Config{Driver: "memory"})
-	if err != nil {
-		t.Fatalf("memory dict: %v", err)
-	}
-	return d
-}
-
 func TestLMTP_QuotaEnforcement_452(t *testing.T) {
 	dir := t.TempDir()
 	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
 	mb := maildir.New()
-	d := newTestMemDict(t)
-	idx := fileindex.New(fileindex.WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
-		return quota.NewCounter(d, u.Username), quota.Limits{}
-	}))
+	idx := fileindex.New()
 
 	box := mb.OpenUser(resolver.UserInfo("alice@example.com", ""))
 	if err := box.Init(); err != nil {
@@ -212,25 +195,18 @@ func TestLMTP_QuotaEnforcement_452(t *testing.T) {
 	}
 	box.Close() //nolint:errcheck
 
-	// Pre-fill quota counter so alice is already at her 1-byte limit.
-	ctr := quota.NewCounter(d, "alice@example.com")
-	if err := ctr.Add(context.Background(), 100, 1); err != nil {
-		t.Fatalf("pre-fill quota: %v", err)
-	}
-
-	userInfo := resolver.UserInfo("alice@example.com", "")
-	userInfo.QuotaRules = []string{"*:storage=100"}
-
+	// Quota comes from the index (count backend). A tiny 10-byte limit means the
+	// incoming test message alone exceeds it → 452.
 	srv := New(Options{
-		Hostname:  "lmtp.test",
-		Config:    config.LMTPProtocolConfig{ReadTimeout: 5, WriteTimeout: 5},
-		Mailbox:   mb,
-		Index:     idx,
-		QuotaDict: d,
+		Hostname:    "lmtp.test",
+		Config:      config.LMTPProtocolConfig{ReadTimeout: 5, WriteTimeout: 5},
+		Mailbox:     mb,
+		Index:       idx,
+		QuotaEngine: true,
 		Resolver: &mailbox.Resolver{
 			Root:              dir,
 			HomeTemplate:      "%d/%n",
-			DefaultQuotaRules: []string{"*:storage=100"},
+			DefaultQuotaRules: []string{"*:storage=10"},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

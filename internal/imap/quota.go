@@ -12,6 +12,13 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
+// quotaChanged invalidates the short-lived read cache after a quota-affecting
+// operation (APPEND / COPY / MOVE / EXPUNGE) so the next GETQUOTA re-sums the
+// index. Enforcement already reads fresh.
+func (s *session) quotaChanged() {
+	s.quotaCacheAt = time.Time{}
+}
+
 // quotaCacheTTL bounds how long a GETQUOTA display value is served from the
 // per-session cache before the index is re-summed. Enforcement bypasses it.
 const quotaCacheTTL = time.Second
@@ -31,21 +38,25 @@ func (s *session) countUsage(useCache bool) (quota.Usage, error) {
 	if err != nil {
 		return quota.Usage{}, err
 	}
-	u := quota.CountUsage(s.idx, mailbox.SelectableNames(entries))
+	u := quota.CountUsage(s.idx, mailbox.SelectableNames(entries), s.quotaLimits())
 	s.quotaCacheUsage = u
 	s.quotaCacheAt = time.Now()
 	return u, nil
 }
 
-// Ensure *session implements SessionQuota when QuotaDict is set.
-// The interface assertion is made at runtime via the session cast
-// in go-imap's capability.go — we implement the interface
-// unconditionally so the cast succeeds; quotaEnabled() guards
-// the actual operations.
+// *session implements SessionQuota unconditionally so go-imap's capability.go
+// cast succeeds; quotaExtensionEnabled() gates whether QUOTA is advertised and
+// GETQUOTA answers, quotaEngineEnabled() gates save-time enforcement.
 var _ imapserver.SessionQuota = (*session)(nil)
 
-func (s *session) quotaEnabled() bool {
-	return s.srv.opts.QuotaDict != nil
+// quotaExtensionEnabled gates the IMAP QUOTA extension (GETQUOTA / capability).
+func (s *session) quotaExtensionEnabled() bool {
+	return s.srv.opts.IMAPQuota
+}
+
+// quotaEngineEnabled gates save-time enforcement (APPEND / COPY / MOVE).
+func (s *session) quotaEngineEnabled() bool {
+	return s.srv.opts.QuotaEngine
 }
 
 func (s *session) quotaLimits() quota.Limits {
@@ -57,7 +68,7 @@ func (s *session) quotaLimits() quota.Limits {
 
 // GetQuotaRoot implements imapserver.SessionQuota.
 func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
-	if !s.quotaEnabled() {
+	if !s.quotaExtensionEnabled() {
 		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
 	}
 	u, err := s.countUsage(true)
@@ -76,7 +87,7 @@ func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 
 // GetQuota implements imapserver.SessionQuota.
 func (s *session) GetQuota(root string) (*imaplib.QuotaData, error) {
-	if !s.quotaEnabled() {
+	if !s.quotaExtensionEnabled() {
 		qd := imaplib.QuotaData{Name: root}
 		return &qd, nil
 	}
@@ -117,7 +128,7 @@ func buildQuotaData(u quota.Usage, lim quota.Limits) imaplib.QuotaData {
 // for the given message size in the target folder. Nil means allowed.
 // Per-folder rules (additive limits, ignore) are applied before the check.
 func (s *session) quotaCheckAppend(_ context.Context, folder string, bytes int64) error {
-	if !s.quotaEnabled() || s.userInfo == nil {
+	if !s.quotaEngineEnabled() || s.userInfo == nil {
 		return nil
 	}
 	lim := s.quotaLimits()

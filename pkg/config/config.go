@@ -34,6 +34,7 @@ type Config struct {
 	// commands, and — as enforcement lands — LMTP post/insert, POP3 read),
 	// so it lives at the top level rather than under protocol.imap.
 	ACL                     ACLConfig                     `koanf:"acl"`
+	Quota                   QuotaConfig                   `koanf:"quota"`
 	Dicts                   map[string]DictConfig         `koanf:"dicts"`
 	BackendAPI              BackendAPIConfig              `koanf:"backend_api"`
 	QuotaStatus             QuotaStatusConfig             `koanf:"quota_status"`
@@ -430,6 +431,10 @@ type IMAPProtocolConfig struct {
 	LoginGreeting      string   `koanf:"login_greeting"`
 	LogoutFormat       string   `koanf:"imap_logout_format"`
 	ClientWorkarounds  []string `koanf:"client_workarounds"`
+	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
+	// capability advertisement + GETQUOTA / GETQUOTAROOT. Independent of the
+	// quota engine (enforcement) — a client-facing protocol feature. Default on.
+	IMAPQuota bool `koanf:"imap_quota"`
 	// SpecialUseDefaults maps a folder name (case-sensitive) to its RFC 6154
 	// special-use attribute. LIST advertises the attr automatically when the
 	// folder name matches. Per-user CREATE (USE ...) overrides win against
@@ -520,6 +525,14 @@ type InternalTLSConfig struct {
 	Cert    string `koanf:"cert"`
 	Key     string `koanf:"key"`
 	CA      string `koanf:"ca"`
+}
+
+// QuotaConfig toggles the quota engine: enforcement on every save (IMAP
+// APPEND/COPY/MOVE, LMTP delivery, and the quota-status policy service), summed
+// from the index count backend. Independent of the IMAP QUOTA *extension*
+// (protocol.imap.imap_quota), which only exposes the GETQUOTA commands.
+type QuotaConfig struct {
+	Enabled bool `koanf:"enabled"`
 }
 
 // QuotaStatusConfig configures the yarilo-quota-status Postfix policy service.
@@ -1169,6 +1182,7 @@ func Load(path string) (*Config, error) {
 				IdleNotifyInterval: 120,
 				MaxLineLength:      65536,
 				IDSend:             "name *",
+				IMAPQuota:          true,
 				// Conventional special-use mappings.
 				// Operators override via yarilo.yaml; per-user CREATE USE
 				// overrides via the on-disk special_use file.

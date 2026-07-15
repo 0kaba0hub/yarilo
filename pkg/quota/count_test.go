@@ -38,7 +38,7 @@ func TestCountUsage(t *testing.T) {
 		},
 	}
 	// Missing folder is skipped, not fatal.
-	u := CountUsage(f, []string{"INBOX", "Sent", "Archive", "Ghost"})
+	u := CountUsage(f, []string{"INBOX", "Sent", "Archive", "Ghost"}, Limits{})
 	if u.StorageBytes != 1750 {
 		t.Errorf("StorageBytes = %d, want 1750", u.StorageBytes)
 	}
@@ -47,7 +47,7 @@ func TestCountUsage(t *testing.T) {
 	}
 
 	// Empty folder list yields zero usage.
-	if z := CountUsage(f, nil); z.StorageBytes != 0 || z.Messages != 0 {
+	if z := CountUsage(f, nil, Limits{}); z.StorageBytes != 0 || z.Messages != 0 {
 		t.Errorf("empty = %+v, want zero", z)
 	}
 }

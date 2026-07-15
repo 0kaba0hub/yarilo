@@ -15,24 +15,28 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Options configures the quota-status policy server.
 type Options struct {
-	// QuotaDict is the dict backend holding per-user quota counters.
-	QuotaDict dict.Dict
-	// Limits are the site-wide quota limits applied when no per-user
-	// quota_rule fields are available from userdb (AuthClient fallback).
+	// Enabled is the quota-engine toggle (quota.enabled). When false the
+	// service allows every recipient (DUNNO) without opening any mailbox.
+	Enabled bool
+	// Limits are the site-wide quota limits applied when the recipient has no
+	// per-user quota_rule fields from userdb.
 	Limits quota.Limits
-	// AuthClient enables per-user quota rules via a userdb lookup.
-	// When non-nil, check() calls Userdb() for the recipient and uses
-	// the returned quota_rule fields; Limits acts as a fallback when the
-	// lookup fails or the user has no quota_rule entries.
-	// Nil disables per-user lookups — only Limits applies.
-	AuthClient *authclient.Client
+	// UserdbLookup resolves a username to its storage identity (Home, Driver,
+	// QuotaRules, ...). Required for quota checks: the service opens the
+	// recipient's mailbox + index and sums the authoritative usage, exactly as
+	// a delivery agent would. Nil (or a nil result) fails open (DUNNO).
+	UserdbLookup func(ctx context.Context, username string) (*mailbox.UserInfo, error)
+	// Mailbox / Index open the recipient's storage so the count backend can
+	// sum each folder's aggregate. Nil disables quota checks (fail-open).
+	Mailbox mailbox.MailboxBackend
+	Index   mailbox.IndexBackend
 	// AliasDict resolves virtual aliases before quota lookup. The dict
 	// key is the recipient address; the value is the destination address.
 	// Nil disables alias resolution.
@@ -113,20 +117,21 @@ func (s *Server) check(attrs map[string]string) string {
 	resolved := s.resolveAlias(context.Background(), rawRecipient)
 	username := extractUsername(resolved)
 
-	if s.opts.QuotaDict == nil {
+	if !s.opts.Enabled || s.opts.UserdbLookup == nil || s.opts.Mailbox == nil || s.opts.Index == nil {
 		return "DUNNO"
 	}
 
-	// Resolve effective limits: per-user quota_rule from userdb takes
-	// priority; site-wide Limits apply when the lookup is unconfigured,
-	// fails, or the user has no quota_rule entries.
-	limits := s.opts.Limits
-	if s.opts.AuthClient != nil {
-		if ui, err := s.opts.AuthClient.Userdb(context.Background(), username); err != nil {
+	// Resolve the recipient's storage identity + per-user limits.
+	ui, err := s.opts.UserdbLookup(context.Background(), username)
+	if err != nil || ui == nil {
+		if err != nil {
 			slog.Warn("quotastatus: userdb lookup failed", "user", username, "err", err)
-		} else if ui != nil && len(ui.QuotaRules) > 0 {
-			limits = quota.ParseRules(ui.QuotaRules)
 		}
+		return "DUNNO" // fail-open
+	}
+	limits := s.opts.Limits
+	if len(ui.QuotaRules) > 0 {
+		limits = quota.ParseRules(ui.QuotaRules)
 	}
 
 	effLim, ignore := limits.EffectiveLimits(folder)
@@ -134,12 +139,18 @@ func (s *Server) check(attrs map[string]string) string {
 		return "DUNNO"
 	}
 
-	ctr := quota.NewCounter(s.opts.QuotaDict, username)
-	u, err := ctr.Get(context.Background())
-	if err != nil {
-		slog.Warn("quotastatus: quota lookup failed", "user", username, "err", err)
+	// Open the recipient's storage and sum the authoritative index aggregate —
+	// the count backend, exactly as a delivery agent would.
+	box := s.opts.Mailbox.OpenUser(ui)
+	defer box.Close() //nolint:errcheck
+	idx := s.opts.Index.OpenUser(ui)
+	defer idx.Close() //nolint:errcheck
+	entries, lerr := box.ListFolders()
+	if lerr != nil {
+		slog.Warn("quotastatus: list folders failed", "user", username, "err", lerr)
 		return "DUNNO" // fail-open
 	}
+	u := quota.CountUsage(idx, mailbox.SelectableNames(entries), limits)
 
 	var msgSize int64
 	if sz := strings.TrimSpace(attrs["size"]); sz != "" {
@@ -151,7 +162,7 @@ func (s *Server) check(attrs map[string]string) string {
 			"user", username, "folder", folder,
 			"storage_bytes", u.StorageBytes, "messages", u.Messages,
 			"limit_bytes", effLim.StorageBytes, "msg_size", msgSize,
-			"per_user_rules", s.opts.AuthClient != nil)
+			"per_user_rules", len(ui.QuotaRules) > 0)
 		return "REJECT 452 4.2.2 Mailbox full"
 	}
 	return "DUNNO"

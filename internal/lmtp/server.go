@@ -58,12 +58,10 @@ type Options struct {
 	// When nil (unit tests / director-only nodes) the check is skipped.
 	UserdbLookup func(ctx context.Context, username string) (*mailbox.UserInfo, error)
 
-	// QuotaDict is the dict backend for per-user quota counters. When
-	// non-nil, delivery is rejected with 452 4.2.2 "Mailbox full" if the
-	// recipient's quota_rules limit would be exceeded. Nil disables the
-	// check (quota enforcement still runs at the index layer, but LMTP
-	// cannot return a pre-flight 452 without this).
-	QuotaDict dict.Dict
+	// QuotaEngine enables quota enforcement on delivery: a message that would
+	// push the recipient over their limit is rejected with 452 4.2.2 "Mailbox
+	// full". Usage is summed from the recipient's index (count backend).
+	QuotaEngine bool
 
 	// MetadataDict backs the mboxmetadata / servermetadata Sieve tests
 	// (RFC 5490 §4): the same dict IMAP uses for RFC 5464 METADATA. Nil
@@ -251,21 +249,8 @@ func (s *session) rcptLocal(to string) error {
 	box := s.opts.Mailbox.OpenUser(userInfo)
 	defer box.Close() //nolint:errcheck
 
-	// RCPT-time quota pre-check: reject immediately if already over quota.
-	if s.opts.QuotaDict != nil && len(userInfo.QuotaRules) > 0 {
-		lim := quota.ParseRules(userInfo.QuotaRules)
-		effLim, ignore := lim.EffectiveLimits("INBOX")
-		if !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
-			ctr := quota.NewCounter(s.opts.QuotaDict, user)
-			ctxQ, cancelQ := context.WithTimeout(context.Background(), 2*time.Second)
-			u, cerr := ctr.Get(ctxQ)
-			cancelQ()
-			if cerr == nil && quota.IsOver(u, effLim, 0, 0) {
-				slog.Warn("lmtp: rcpt rejected: mailbox full", "user", user)
-				return &goSmtp.SMTPError{Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2}, Message: "Mailbox full"}
-			}
-		}
-	}
+	// Quota is enforced at delivery time from the index (see LMTPData), the
+	// authoritative source — no RCPT-time dict pre-check.
 
 	exists, err := box.FolderExists("INBOX")
 	if err != nil {
@@ -583,16 +568,25 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			userInfo = resolver.UserInfo(username, "")
 		}
 
-		if s.opts.QuotaDict != nil {
-			lim := quota.ParseRules(userInfo.QuotaRules)
-			effLim, ignore := lim.EffectiveLimits(folder)
-			if !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
-				ctr := quota.NewCounter(s.opts.QuotaDict, username)
-				ctxQ, cancelQ := context.WithTimeout(context.Background(), 2*time.Second)
-				u, cerr := ctr.Get(ctxQ)
-				cancelQ()
-				if cerr == nil && quota.IsOver(u, effLim, int64(len(msg)), 1) {
+		mboxBackend := s.opts.Mailbox
+		if f := s.opts.MailboxByDriver; f != nil && userInfo.Driver != "" {
+			mboxBackend = f(userInfo.Driver)
+		}
+		rcptBox := mboxBackend.OpenUser(userInfo)
+		rcptIdx := s.opts.Index.OpenUser(userInfo)
+		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal
+
+		// Quota enforcement from the index (authoritative): reject when this
+		// message would push the recipient over their limit. Sums the per-folder
+		// hdr-vsize aggregate — no dict, no drift.
+		if lim := quota.ParseRules(userInfo.QuotaRules); s.opts.QuotaEngine && len(userInfo.QuotaRules) > 0 {
+			if effLim, ignore := lim.EffectiveLimits(folder); !ignore && (effLim.StorageBytes > 0 || effLim.Messages > 0) {
+				entries, _ := rcptBox.ListFolders()
+				u := quota.CountUsage(rcptIdx, mailbox.SelectableNames(entries), lim)
+				if quota.IsOver(u, effLim, int64(len(msg)), 1) {
 					slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
+					rcptBox.Close() //nolint:errcheck
+					rcptIdx.Close() //nolint:errcheck
 					status.SetStatus(rcpt, &goSmtp.SMTPError{
 						Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2},
 						Message: "Mailbox full",
@@ -601,14 +595,6 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				}
 			}
 		}
-
-		mboxBackend := s.opts.Mailbox
-		if f := s.opts.MailboxByDriver; f != nil && userInfo.Driver != "" {
-			mboxBackend = f(userInfo.Driver)
-		}
-		rcptBox := mboxBackend.OpenUser(userInfo)
-		rcptIdx := s.opts.Index.OpenUser(userInfo)
-		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal
 
 		deliveries := []sieve.Delivery{{Folder: folder}}
 		deliverMsg := msg

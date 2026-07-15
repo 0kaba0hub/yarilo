@@ -1,15 +1,42 @@
 package backendapi
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 func (s *Server) registerQuotaRoutes() {
 	s.mux.Handle("GET /api/backend/quota/show", s.middleware(s.handleQuotaShow))
 	s.mux.Handle("POST /api/backend/quota/recalc", s.middleware(s.handleQuotaRecalc))
-	s.mux.Handle("POST /api/backend/quota/set", s.middleware(s.handleQuotaSet))
+}
+
+// userCountUsage sums the authoritative index-derived usage across a user's
+// personal-namespace folders (the count backend). Shared by /show and /recalc.
+func (s *Server) userCountUsage(user, namespace string) (quota.Usage, quota.Limits, error) {
+	uc, err := s.openUserContext(user)
+	if err != nil {
+		return quota.Usage{}, quota.Limits{}, err
+	}
+	defer uc.Close()
+	bundle, err := uc.ns(s, namespace)
+	if err != nil {
+		return quota.Usage{}, quota.Limits{}, err
+	}
+	folders, err := bundle.box.ListFolders()
+	if err != nil {
+		return quota.Usage{}, quota.Limits{}, err
+	}
+	var limits quota.Limits
+	if s.opts.AuthClient != nil {
+		if pui, uerr := s.opts.AuthClient.Userdb(context.Background(), user); uerr == nil && pui != nil {
+			limits = quota.ParseRules(pui.QuotaRules)
+		}
+	}
+	return quota.CountUsage(bundle.idx, mailbox.SelectableNames(folders), limits), limits, nil
 }
 
 type quotaShowResponse struct {
@@ -25,26 +52,15 @@ type quotaShowResponse struct {
 // handleQuotaShow returns the current usage and configured limits for a user.
 // GET /api/backend/quota/show?user=alice@example.com
 func (s *Server) handleQuotaShow(w http.ResponseWriter, r *http.Request) {
-	if s.opts.QuotaDict == nil {
-		apiError(w, "quota not configured (set dicts.quota in yarilo.yaml)", http.StatusServiceUnavailable)
-		return
-	}
 	user := r.URL.Query().Get("user")
 	if user == "" {
 		apiError(w, "missing user parameter", http.StatusBadRequest)
 		return
 	}
-	ctr := quota.NewCounter(s.opts.QuotaDict, user)
-	u, err := ctr.Get(r.Context())
+	u, limits, err := s.userCountUsage(user, "")
 	if err != nil {
 		apiError(w, "quota show: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
-	var limits quota.Limits
-	if s.opts.AuthClient != nil {
-		if pui, err := s.opts.AuthClient.Userdb(r.Context(), user); err == nil && pui != nil {
-			limits = quota.ParseRules(pui.QuotaRules)
-		}
 	}
 	storageKiB := quota.StorageBytesToKiB(u.StorageBytes)
 	limitKiB := int64(-1)
@@ -85,14 +101,11 @@ type quotaRecalcResponse struct {
 	Messages     int64  `json:"messages"`
 }
 
-// handleQuotaRecalc scans all folder fileindexes for the user, sums
-// message sizes, and overwrites the dict counters. Use after manual
-// migrations or when counters drift.
+// handleQuotaRecalc returns the authoritative usage summed from the index
+// aggregate (self-healing hdr-vsize). In the count model the index is always
+// the source of truth, so this is a read; it exists for admin verification
+// after migrations.
 func (s *Server) handleQuotaRecalc(w http.ResponseWriter, r *http.Request) {
-	if s.opts.QuotaDict == nil {
-		apiError(w, "quota not configured", http.StatusServiceUnavailable)
-		return
-	}
 	var req quotaRecalcRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -103,92 +116,37 @@ func (s *Server) handleQuotaRecalc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer uc.Close()
-
 	bundle, err := uc.ns(s, req.Namespace)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Walk all folders, sum message sizes from fileindex.
 	folders, err := bundle.box.ListFolders()
 	if err != nil {
 		apiError(w, "recalc: list folders: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	var totalBytes int64
-	var totalMsgs int64
-	for _, entry := range folders {
-		if !entry.Selectable {
+	// Force a rebuild of each folder's aggregate from records, then sum.
+	names := mailbox.SelectableNames(folders)
+	for _, name := range names {
+		f, oerr := bundle.idx.OpenFolder(name, 0)
+		if oerr != nil {
 			continue
 		}
-		f, err := bundle.idx.OpenFolder(entry.Name, 0)
-		if err != nil || f == nil {
-			continue
-		}
-		msgs, err := bundle.idx.GetMessages(f.ID, nil)
-		if err != nil {
-			continue
-		}
-		for _, m := range msgs {
-			totalBytes += int64(m.Size)
-			totalMsgs++
+		if rerr := bundle.idx.RecomputeVSize(f.ID); rerr != nil {
+			slog.Warn("quota recalc: rebuild failed", "user", req.User, "folder", name, "err", rerr)
 		}
 	}
-
-	u := quota.Usage{StorageBytes: totalBytes, Messages: totalMsgs}
-	ctr := quota.NewCounter(s.opts.QuotaDict, req.User)
-	if err := ctr.Set(r.Context(), u); err != nil {
-		apiError(w, "recalc: set counters: "+err.Error(), http.StatusInternalServerError)
-		return
+	var limits quota.Limits
+	if s.opts.AuthClient != nil {
+		if pui, uerr := s.opts.AuthClient.Userdb(context.Background(), req.User); uerr == nil && pui != nil {
+			limits = quota.ParseRules(pui.QuotaRules)
+		}
 	}
+	u := quota.CountUsage(bundle.idx, names, limits)
 	apiJSON(w, quotaRecalcResponse{
 		User:         req.User,
-		StorageBytes: totalBytes,
-		Messages:     totalMsgs,
-	})
-}
-
-type quotaSetRequest struct {
-	User         string `json:"user"`
-	StorageBytes *int64 `json:"storage_bytes,omitempty"`
-	Messages     *int64 `json:"messages,omitempty"`
-}
-
-// handleQuotaSet directly overwrites counter values (admin override).
-// Use when you need to manually adjust counts without a full rescan.
-func (s *Server) handleQuotaSet(w http.ResponseWriter, r *http.Request) {
-	if s.opts.QuotaDict == nil {
-		apiError(w, "quota not configured", http.StatusServiceUnavailable)
-		return
-	}
-	var req quotaSetRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.User == "" {
-		apiError(w, "missing user", http.StatusBadRequest)
-		return
-	}
-	ctr := quota.NewCounter(s.opts.QuotaDict, req.User)
-	cur, err := ctr.Get(r.Context())
-	if err != nil {
-		apiError(w, "quota set: get: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if req.StorageBytes != nil {
-		cur.StorageBytes = *req.StorageBytes
-	}
-	if req.Messages != nil {
-		cur.Messages = *req.Messages
-	}
-	if err := ctr.Set(r.Context(), cur); err != nil {
-		apiError(w, "quota set: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	apiJSON(w, quotaRecalcResponse{
-		User:         req.User,
-		StorageBytes: cur.StorageBytes,
-		Messages:     cur.Messages,
+		StorageBytes: u.StorageBytes,
+		Messages:     u.Messages,
 	})
 }

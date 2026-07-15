@@ -1,17 +1,13 @@
 package file
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/dict/memory"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 const (
@@ -642,15 +638,6 @@ func TestExpungePersistsModSeqBump(t *testing.T) {
 	}
 }
 
-func newMemDict(t *testing.T) dict.Dict {
-	t.Helper()
-	d, err := memory.New(dict.Config{Driver: "memory"})
-	if err != nil {
-		t.Fatalf("memory dict: %v", err)
-	}
-	return d
-}
-
 func TestSize_RoundtripAndReopen(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
@@ -682,115 +669,6 @@ func TestSize_RoundtripAndReopen(t *testing.T) {
 		}
 	}
 	b2.Close() //nolint:errcheck
-}
-
-func TestQuota_IgnoreFolderSkipsCounter(t *testing.T) {
-	d := newMemDict(t)
-	dir := t.TempDir()
-	home := testHome(dir, testUser)
-
-	lim := quota.Limits{}
-	lim.PerFolder = map[string]quota.FolderRule{
-		"Spam": {Ignore: true},
-	}
-	b := New(WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
-		return quota.NewCounter(d, u.Username), lim
-	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
-
-	inbox, _ := b.OpenFolder("INBOX", 1)
-	spam, _ := b.OpenFolder("Spam", 1)
-
-	b.AppendMessage(inbox.ID, &mailbox.MessageMeta{UID: 1, Size: 1000}) //nolint:errcheck
-	b.AppendMessage(spam.ID, &mailbox.MessageMeta{UID: 1, Size: 9999})  //nolint:errcheck — must NOT update counter
-
-	ctr := quota.NewCounter(d, testUser)
-	u, err := ctr.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.StorageBytes != 1000 {
-		t.Errorf("after Spam append (ignored): StorageBytes = %d, want 1000", u.StorageBytes)
-	}
-	if u.Messages != 1 {
-		t.Errorf("after Spam append (ignored): Messages = %d, want 1", u.Messages)
-	}
-	b.Close() //nolint:errcheck
-}
-
-func TestQuota_AdditiveFolder(t *testing.T) {
-	d := newMemDict(t)
-	dir := t.TempDir()
-	home := testHome(dir, testUser)
-
-	const G = int64(1024 * 1024 * 1024)
-	lim := quota.ParseRules([]string{"*:storage=5G", "Trash:storage=+1G"})
-	b := New(WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
-		return quota.NewCounter(d, u.Username), lim
-	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
-
-	trash, _ := b.OpenFolder("Trash", 1)
-	b.AppendMessage(trash.ID, &mailbox.MessageMeta{UID: 1, Size: uint32(500)}) //nolint:errcheck
-
-	// Trash is NOT ignored — counter still increments.
-	ctr := quota.NewCounter(d, testUser)
-	u, err := ctr.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.StorageBytes != 500 {
-		t.Errorf("Trash counter: StorageBytes = %d, want 500", u.StorageBytes)
-	}
-
-	// Effective limit for Trash is 6G (5G + 1G).
-	effLim, ignore := lim.EffectiveLimits("Trash")
-	if ignore {
-		t.Error("Trash should not be ignored")
-	}
-	if effLim.StorageBytes != 6*G {
-		t.Errorf("Trash effective limit = %d, want 6G", effLim.StorageBytes)
-	}
-	b.Close() //nolint:errcheck
-}
-
-func TestQuota_CounterTracking(t *testing.T) {
-	d := newMemDict(t)
-	dir := t.TempDir()
-
-	home := testHome(dir, testUser)
-	b := New(WithQuotaCounter(func(u *mailbox.UserInfo) (*quota.Counter, quota.Limits) {
-		return quota.NewCounter(d, u.Username), quota.Limits{}
-	})).OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
-
-	f, _ := b.OpenFolder("INBOX", 1)
-
-	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Size: 1000}) //nolint:errcheck
-	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 2, Size: 2000}) //nolint:errcheck
-
-	ctr := quota.NewCounter(d, testUser)
-	u, err := ctr.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.StorageBytes != 3000 {
-		t.Errorf("after 2 appends: StorageBytes = %d, want 3000", u.StorageBytes)
-	}
-	if u.Messages != 2 {
-		t.Errorf("after 2 appends: Messages = %d, want 2", u.Messages)
-	}
-
-	b.ExpungeMessage(f.ID, 1) //nolint:errcheck
-
-	u, err = ctr.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.StorageBytes != 2000 {
-		t.Errorf("after expunge uid=1: StorageBytes = %d, want 2000", u.StorageBytes)
-	}
-	if u.Messages != 1 {
-		t.Errorf("after expunge uid=1: Messages = %d, want 1", u.Messages)
-	}
-	b.Close() //nolint:errcheck
 }
 
 // TestSaveFolderDoesNotCorruptMessagesCount covers the bug where SaveFolder

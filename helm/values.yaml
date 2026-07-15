@@ -883,6 +883,10 @@ protocol:
     login_greeting: ""
     imap_logout_format: ""
     client_workarounds: []
+    ## IMAP QUOTA extension (RFC 9208): advertise the QUOTA capability and
+    ## answer GETQUOTA / GETQUOTAROOT. Client-facing query only — enforcement
+    ## is the separate quota engine (quota.enabled). Default on.
+    imap_quota: true
     ## RFC 6154 SPECIAL-USE — map a folder name to a special-use attribute
     ## advertised in LIST replies. Operators can override per deployment;
     ## per-user CREATE (USE ...) takes precedence at runtime via the
@@ -1287,6 +1291,13 @@ extraVolumeMounts: []
 ## backend acl <command>`. When disabled, every ACL command
 ## returns NO("ACL extension disabled by operator") and ACL is
 ## absent from the CAPABILITY response.
+## Quota engine — enforcement on every save (IMAP APPEND/COPY/MOVE, LMTP
+## delivery, quota-status policy service), summed from the index count backend.
+## Limits come from the userdb quota_rule field / quota_status.default_quota_rules.
+## Independent of the IMAP QUOTA extension (protocol.imap.imap_quota).
+quota:
+  enabled: false
+
 acl:
   enabled: false
   ## Root-level default ACLs resolve from INBOX's ACL for private and
