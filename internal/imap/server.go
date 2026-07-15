@@ -513,6 +513,22 @@ func (s *session) emitMailboxChange(folder string, eventType locks.EventType, ui
 	}
 }
 
+// emitMailboxList publishes a mailbox-list event (create / delete / rename /
+// subscribe) on the user's MailboxListKey. Fire-and-forget with the same
+// rationale as emitMailboxChange: the events are advisory NOTIFY wake-ups for
+// sibling sessions; the authoritative state already lives on disk.
+func (s *session) emitMailboxList(eventType locks.EventType, payload string) {
+	if s.srv.opts.Locker == nil || s.userInfo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.srv.opts.Locker.Emit(ctx, locks.MailboxListKey(s.userInfo.Username), eventType, payload); err != nil {
+		slog.Debug("imap: emit list event failed",
+			"type", string(eventType), "payload", payload, "err", err)
+	}
+}
+
 func (s *session) Close() error {
 	s.stopNotifyWatch()
 	if s.srv.opts.ConnLimit != nil && s.userInfo != nil {
@@ -1098,6 +1114,7 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 				"folder", name, "attr", string(opts.SpecialUse[0]), "err", err)
 		}
 	}
+	s.emitMailboxList(locks.EventMailboxCreate, name)
 	return nil
 }
 
@@ -1126,6 +1143,7 @@ func (s *session) Delete(name string) error {
 			slog.Warn("imap: acl remove after DELETE failed", "folder", name, "err", err)
 		}
 	}
+	s.emitMailboxList(locks.EventMailboxDelete, name)
 	return nil
 }
 
@@ -1171,6 +1189,7 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 			slog.Warn("imap: acl rename failed", "from", oldName, "to", newName, "err", err)
 		}
 	}
+	s.emitMailboxList(locks.EventMailboxRename, oldName+"\t"+newName)
 	return nil
 }
 
@@ -1238,6 +1257,7 @@ func (s *session) Subscribe(name string) error {
 	if err := h.subs.Add(rel); err != nil {
 		return fmt.Errorf("imap: subscribe %q: %w", name, err)
 	}
+	s.emitMailboxList(locks.EventMailboxSubscribe, name)
 	return nil
 }
 
@@ -1252,6 +1272,7 @@ func (s *session) Unsubscribe(name string) error {
 	if err := h.subs.Remove(rel); err != nil {
 		return fmt.Errorf("imap: unsubscribe %q: %w", name, err)
 	}
+	s.emitMailboxList(locks.EventMailboxUnsubscribe, name)
 	return nil
 }
 
