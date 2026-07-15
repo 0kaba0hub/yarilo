@@ -3,6 +3,7 @@ package acl
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -18,6 +19,10 @@ type Policy struct {
 	GlobalsOnly bool
 	// Global is the operator-configured global ACL, or nil when none.
 	Global *Global
+	// CacheTTL bounds how long a parsed per-mailbox ACL is trusted before the
+	// file's mtime+size are re-validated (the acl_cache_ttl knob, default 30s).
+	// Zero disables caching — every read hits the filesystem.
+	CacheTTL time.Duration
 }
 
 // Global is the parsed, operator-configured global ACL: rules that apply

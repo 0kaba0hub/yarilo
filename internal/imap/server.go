@@ -140,6 +140,11 @@ type Options struct {
 	// yarilo-acl files.
 	ACLGlobalsOnly bool
 
+	// ACLCacheTTL is how long a parsed per-mailbox ACL is trusted before its
+	// file's mtime+size are re-validated (the acl_cache_ttl knob). Zero disables
+	// caching.
+	ACLCacheTTL time.Duration
+
 	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC
 	// 9051 §6.3.10). When nil/empty the server falls back to a single
 	// personal namespace with separator "/" — backwards-compatible

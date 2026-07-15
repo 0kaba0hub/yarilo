@@ -453,6 +453,10 @@ type ACLConfig struct {
 	// Global holds operator-configured ACL rules applied across all users
 	// and merged with the per-mailbox ACL (global takes precedence).
 	Global []GlobalACLRule `koanf:"global"`
+	// CacheTTL is how long (seconds) a parsed per-mailbox ACL is trusted
+	// before its file's mtime+size are re-validated (the acl_cache_ttl
+	// knob, default 30). 0 disables caching — every right check reads the file.
+	CacheTTL int `koanf:"acl_cache_ttl"`
 }
 
 // GlobalACLRule is one global ACL entry-set scoped to a mailbox name (or the
@@ -1285,6 +1289,7 @@ func Load(path string) (*Config, error) {
 		},
 		Telemetry: TelemetryConfig{Listen: ":8080"},
 		Log:       LogConfig{Level: "info"},
+		ACL:       ACLConfig{CacheTTL: 30},
 		Sieve: SieveConfig{
 			DefaultName:        "yarilo",
 			MaxScriptSize:      65536,

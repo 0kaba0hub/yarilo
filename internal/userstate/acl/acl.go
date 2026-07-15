@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -67,6 +68,24 @@ type Store struct {
 	username string
 	owner    string
 	locker   locks.Locker
+
+	// ttl bounds how long a cached parsed ACL is trusted before its file's
+	// mtime+size are re-validated. Zero disables caching. clock is time.Now,
+	// overridable in tests.
+	ttl     time.Duration
+	clock   func() time.Time
+	cacheMu sync.Mutex
+	cache   map[string]cacheEntry
+}
+
+// cacheEntry is one folder's cached ACL plus the file identity it was parsed
+// from. at is the last time the entry was validated (read or stat-confirmed).
+type cacheEntry struct {
+	acl    mailbox.ACL
+	exists bool
+	mtime  int64
+	size   int64
+	at     time.Time
 }
 
 // New constructs a Store. The ACL file lives in the mailbox directory, so
@@ -80,7 +99,7 @@ func New(home, mailPath, driver, separator, username, owner string, pol Policy, 
 	if mailPath != "" {
 		root = mailPath
 	}
-	return &Store{
+	s := &Store{
 		mailRoot:          root,
 		driver:            driver,
 		separator:         mailbox.SepOrDefault(separator),
@@ -90,7 +109,13 @@ func New(home, mailPath, driver, separator, username, owner string, pol Policy, 
 		globalsOnly:       pol.GlobalsOnly,
 		global:            pol.Global,
 		locker:            locker,
+		ttl:               pol.CacheTTL,
+		clock:             time.Now,
 	}
+	if s.ttl > 0 {
+		s.cache = make(map[string]cacheEntry)
+	}
+	return s
 }
 
 // Path returns the on-disk yarilo-acl path for folder. Exposed so
@@ -128,6 +153,14 @@ func (s *Store) mailboxesRoot() string {
 // first-ancestor-with-explicit-ACL walk) is the caller's job and
 // lives in the evaluator that ships with PR E.
 func (s *Store) Get(folder string) (mailbox.ACL, error) {
+	if s.ttl > 0 {
+		return s.getCached(folder)
+	}
+	return s.getUncached(folder)
+}
+
+// getUncached reads and parses the ACL file under the folder lock.
+func (s *Store) getUncached(folder string) (mailbox.ACL, error) {
 	var (
 		out mailbox.ACL
 		err error
@@ -140,6 +173,67 @@ func (s *Store) Get(folder string) (mailbox.ACL, error) {
 		return nil, werr
 	}
 	return out, nil
+}
+
+// getCached serves ACLs from an in-process cache validated against the file's
+// mtime+size.  Within the TTL the parsed ACL is
+// trusted with no filesystem access; past the TTL a lock-free stat confirms the
+// file is unchanged (cheap) or triggers a reload. Reads are safe without the
+// distributed lock because writes land via atomic tmp+rename.
+func (s *Store) getCached(folder string) (mailbox.ACL, error) {
+	now := s.clock()
+
+	s.cacheMu.Lock()
+	ent, ok := s.cache[folder]
+	s.cacheMu.Unlock()
+	if ok && now.Sub(ent.at) < s.ttl {
+		return ent.acl, nil
+	}
+
+	fi, statErr := os.Stat(s.Path(folder))
+	switch {
+	case statErr != nil && os.IsNotExist(statErr):
+		s.putCache(folder, cacheEntry{exists: false, at: now})
+		return nil, nil
+	case statErr != nil:
+		return nil, fmt.Errorf("userstate/acl: stat %s: %w", s.Path(folder), statErr)
+	}
+
+	if ok && ent.exists && ent.mtime == fi.ModTime().UnixNano() && ent.size == fi.Size() {
+		ent.at = now
+		s.putCache(folder, ent)
+		return ent.acl, nil
+	}
+
+	acl, err := s.getUncached(folder)
+	if err != nil {
+		return nil, err
+	}
+	s.putCache(folder, cacheEntry{
+		acl:    acl,
+		exists: true,
+		mtime:  fi.ModTime().UnixNano(),
+		size:   fi.Size(),
+		at:     now,
+	})
+	return acl, nil
+}
+
+func (s *Store) putCache(folder string, ent cacheEntry) {
+	s.cacheMu.Lock()
+	s.cache[folder] = ent
+	s.cacheMu.Unlock()
+}
+
+// invalidate drops a folder's cache entry after a local write so the next read
+// reloads. Cross-process writes are caught by the mtime+size re-validation.
+func (s *Store) invalidate(folder string) {
+	if s.cache == nil {
+		return
+	}
+	s.cacheMu.Lock()
+	delete(s.cache, folder)
+	s.cacheMu.Unlock()
 }
 
 // Set replaces the on-disk ACL with acl, encoded in canonical sorted
@@ -159,6 +253,7 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 	}); err != nil {
 		return err
 	}
+	s.invalidate(folder)
 	return s.ListUpdate(folder, acl)
 }
 
@@ -276,6 +371,7 @@ func (s *Store) Remove(folder string) error {
 	}); err != nil {
 		return err
 	}
+	s.invalidate(folder)
 	return s.ListRemove(folder)
 }
 
@@ -321,6 +417,8 @@ func (s *Store) Rename(oldFolder, newFolder string) error {
 	if err != nil {
 		return err
 	}
+	s.invalidate(oldFolder)
+	s.invalidate(newFolder)
 	return s.ListRename(oldFolder, newFolder)
 }
 
@@ -330,7 +428,7 @@ func (s *Store) Rename(oldFolder, newFolder string) error {
 // to drop entries, return an empty (non-nil) mailbox.ACL. Used by
 // SETACL / DELETEACL which read-modify-write a single identifier.
 func (s *Store) Update(folder string, fn func(mailbox.ACL) (mailbox.ACL, error)) error {
-	return s.withLock(folder, func() error {
+	err := s.withLock(folder, func() error {
 		current, err := s.loadLocked(folder)
 		if err != nil {
 			return err
@@ -344,6 +442,10 @@ func (s *Store) Update(folder string, fn func(mailbox.ACL) (mailbox.ACL, error))
 		}
 		return s.writeAtomicLocked(folder, next)
 	})
+	if err == nil {
+		s.invalidate(folder)
+	}
+	return err
 }
 
 func (s *Store) loadLocked(folder string) (mailbox.ACL, error) {
