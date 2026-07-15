@@ -1542,6 +1542,16 @@ func expandEnv(cfg *Config) {
 	for i := range cfg.Auth.MasterUsers.Masterdb {
 		cfg.Auth.MasterUsers.Masterdb[i].DSN = expand(cfg.Auth.MasterUsers.Masterdb[i].DSN)
 	}
+	// Dict connection settings (dsn, addr, password, ...) commonly come from a
+	// secret via ${ENV}. Settings is a shared map, so mutating it in place is
+	// visible through cfg.Dicts.
+	for _, dc := range cfg.Dicts {
+		for k, v := range dc.Settings {
+			if s, ok := v.(string); ok {
+				dc.Settings[k] = expand(s)
+			}
+		}
+	}
 }
 
 func expandSvcSSL(svc *ServiceConfig) {

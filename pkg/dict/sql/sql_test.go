@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/0kaba0hub/yarilo/pkg/dict"
@@ -90,6 +91,22 @@ func TestMissingDriverErrors(t *testing.T) {
 	}
 	if _, err := New(dict.Config{Settings: map[string]any{"driver": "sqlite"}}); err == nil {
 		t.Error("missing dsn should error")
+	}
+}
+
+// TestMySQLDriverAccepted verifies mysql is a recognised driver: New must reach
+// the connection stage (ping error against a bogus DSN), not reject the driver
+// name. No live server is contacted.
+func TestMySQLDriverAccepted(t *testing.T) {
+	_, err := New(dict.Config{Settings: map[string]any{
+		"driver": "mysql",
+		"dsn":    "yarilo:bad@tcp(127.0.0.1:0)/nodb",
+	}})
+	if err == nil {
+		t.Fatal("expected a connection error against a bogus DSN")
+	}
+	if strings.Contains(err.Error(), "unknown driver") {
+		t.Errorf("mysql should be a recognised driver, got: %v", err)
 	}
 }
 

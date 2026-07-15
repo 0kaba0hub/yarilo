@@ -25,6 +25,11 @@ quota:
   quota_name: "User quota"
   quota_exceeded_message: "Quota exceeded (mailbox for user is full)"
   quota_mail_size: "50M"
+  ## Mirror usage to Redis + MySQL simultaneously (fan-out), for external readers.
+  quota_clone_dicts:
+    - quota_clone_redis
+    - quota_clone_mysql
+  quota_clone_flush_delay: 10
 
 ## Namespaces. Personal owns INBOX (storage from storage.mail_home_template);
 ## Public is a shared, non-owner store used to exercise delivery-through-namespaces.
@@ -147,13 +152,20 @@ dicts:
       db: 0
       prefix: "yarilo:metadata:"
       path: null
-  quota:
+  ## quota_clone mirror targets — fan-out: usage is written to BOTH at once.
+  ## Advisory mirror only; enforcement always reads the index.
+  quota_clone_redis:
     driver: redis
     settings:
       addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
       db: 0
-      prefix: "yarilo:quota:"
-    expire_secs: 86400
+      prefix: "quota:"
+  quota_clone_mysql:
+    driver: sql
+    settings:
+      driver: mysql
+      dsn: "${YARILO_DB_DSN}"
+      table: quota
   sieve_vacation:
     driver: redis
     settings:

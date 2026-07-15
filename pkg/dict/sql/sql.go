@@ -1,9 +1,10 @@
 // Package sql is a database/sql-backed dict driver.
 //
-// Supports two drivers out of the box, selected via Config.Settings:
+// Supports three drivers out of the box, selected via Config.Settings:
 //
 //	driver: "sqlite"   — modernc.org/sqlite (pure Go, no CGO)
 //	driver: "postgres" — github.com/jackc/pgx/v5/stdlib (pure Go)
+//	driver: "mysql"    — github.com/go-sql-driver/mysql
 //
 // Both are statically compiled in so the choice is runtime-config-only,
 // per yarilo's config-not-binary rule.
@@ -45,6 +46,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 
+	_ "github.com/go-sql-driver/mysql" // mysql driver
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver
 	_ "modernc.org/sqlite"             // sqlite driver
 )
@@ -55,7 +57,7 @@ func init() {
 
 // New constructs an sql dict. Recognised settings:
 //
-//	"driver"     string — "sqlite" | "postgres" (required)
+//	"driver"     string — "sqlite" | "postgres" | "mysql" (required)
 //	"dsn"        string — go-database/sql DSN (required)
 //	"table"      string — table name; default "dict_kv"
 //	"namespace"  string — per-Dict prefix; default ""
@@ -72,8 +74,8 @@ func New(cfg dict.Config) (dict.Dict, error) {
 	if dsn == "" {
 		return nil, errors.New("missing required setting \"dsn\"")
 	}
-	if driver != "sqlite" && driver != "postgres" {
-		return nil, fmt.Errorf("unknown driver %q (supported: sqlite, postgres)", driver)
+	if driver != "sqlite" && driver != "postgres" && driver != "mysql" {
+		return nil, fmt.Errorf("unknown driver %q (supported: sqlite, postgres, mysql)", driver)
 	}
 	table, _ := cfg.Settings["table"].(string)
 	if table == "" {
@@ -106,6 +108,8 @@ func driverName(d string) string {
 		return "pgx" // jackc/pgx/v5/stdlib registers as "pgx"
 	case "sqlite":
 		return "sqlite" // modernc.org/sqlite registers as "sqlite"
+	case "mysql":
+		return "mysql" // go-sql-driver/mysql registers as "mysql"
 	}
 	return d
 }
@@ -141,23 +145,24 @@ func (d *Dict) Close() error {
 }
 
 func (d *Dict) ensureSchema() error {
-	// CREATE TABLE IF NOT EXISTS works on both sqlite and postgres.
-	// BLOB vs BYTEA: sqlite accepts BLOB; postgres needs BYTEA. We
-	// branch on driver to issue the right column type.
-	var blob string
+	// Per-driver column types. BLOB vs BYTEA: sqlite accepts BLOB, postgres
+	// needs BYTEA, mysql accepts BLOB. Key columns: sqlite/postgres take TEXT in
+	// a primary key, but mysql cannot index a TEXT/BLOB column without a length,
+	// so it uses VARCHAR(191) (the utf8mb4 index-length limit).
+	blob, keyType := "BLOB", "TEXT"
 	switch d.driver {
-	case "sqlite":
-		blob = "BLOB"
 	case "postgres":
 		blob = "BYTEA"
+	case "mysql":
+		keyType = "VARCHAR(191)"
 	}
 	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-        namespace TEXT NOT NULL,
-        k TEXT NOT NULL,
+        namespace %s NOT NULL,
+        k %s NOT NULL,
         v %s NOT NULL,
         expires BIGINT,
         PRIMARY KEY (namespace, k)
-    )`, d.table, blob)
+    )`, d.table, keyType, keyType, blob)
 	if _, err := d.db.Exec(ddl); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
@@ -376,6 +381,9 @@ func (d *Dict) upsertQuery() string {
 	case "postgres":
 		return fmt.Sprintf(`INSERT INTO %s (namespace, k, v, expires) VALUES ($1, $2, $3, $4)
             ON CONFLICT (namespace, k) DO UPDATE SET v = EXCLUDED.v, expires = EXCLUDED.expires`, d.table)
+	case "mysql":
+		return fmt.Sprintf(`INSERT INTO %s (namespace, k, v, expires) VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE v = VALUES(v), expires = VALUES(expires)`, d.table)
 	default: // sqlite
 		return fmt.Sprintf(`INSERT INTO %s (namespace, k, v, expires) VALUES (?, ?, ?, ?)
             ON CONFLICT(namespace, k) DO UPDATE SET v = excluded.v, expires = excluded.expires`, d.table)
