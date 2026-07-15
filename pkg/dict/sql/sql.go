@@ -139,6 +139,28 @@ type Dict struct {
 func (d *Dict) Name() string                 { return "sql" }
 func (d *Dict) Wait(_ context.Context) error { return nil }
 
+// scope combines the per-Dict namespace with the per-op username so keys are
+// scoped per user, matching the redis driver (which folds the username into the
+// key). Empty username keeps the bare namespace, so single-user callers are
+// unchanged.
+func (d *Dict) scope(user string) string {
+	if user == "" {
+		return d.ns
+	}
+	if d.ns == "" {
+		return user
+	}
+	return d.ns + "/" + user
+}
+
+// opUser returns the username from op settings, tolerating a nil set.
+func opUser(set *dict.OpSettings) string {
+	if set == nil {
+		return ""
+	}
+	return set.Username
+}
+
 func (d *Dict) Close() error {
 	d.closed.Store(true)
 	return d.db.Close()
@@ -197,14 +219,14 @@ func (d *Dict) argsFor(names ...string) string {
 	return strings.Join(parts, " AND ")
 }
 
-func (d *Dict) Lookup(ctx context.Context, _ *dict.OpSettings, key string) ([][]byte, bool, error) {
+func (d *Dict) Lookup(ctx context.Context, set *dict.OpSettings, key string) ([][]byte, bool, error) {
 	if d.closed.Load() {
 		return nil, false, dict.ErrClosed
 	}
 	q := fmt.Sprintf(`SELECT v, expires FROM %s WHERE %s`, d.table, d.argsFor("namespace", "k"))
 	var v []byte
 	var exp stdsql.NullInt64
-	err := d.db.QueryRowContext(ctx, q, d.ns, key).Scan(&v, &exp)
+	err := d.db.QueryRowContext(ctx, q, d.scope(opUser(set)), key).Scan(&v, &exp)
 	if err == stdsql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -217,10 +239,11 @@ func (d *Dict) Lookup(ctx context.Context, _ *dict.OpSettings, key string) ([][]
 	return [][]byte{v}, true, nil
 }
 
-func (d *Dict) Iterate(ctx context.Context, _ *dict.OpSettings, path string, flags dict.IterFlag) (dict.Iterator, error) {
+func (d *Dict) Iterate(ctx context.Context, set *dict.OpSettings, path string, flags dict.IterFlag) (dict.Iterator, error) {
 	if d.closed.Load() {
 		return nil, dict.ErrClosed
 	}
+	ns := d.scope(opUser(set))
 	recurse := flags&dict.IterRecurse != 0
 	exactKey := flags&dict.IterExactKey != 0
 	noValue := flags&dict.IterNoValue != 0
@@ -232,13 +255,13 @@ func (d *Dict) Iterate(ctx context.Context, _ *dict.OpSettings, path string, fla
 	switch {
 	case exactKey:
 		q = fmt.Sprintf(`SELECT k, v, expires FROM %s WHERE %s`, d.table, d.argsFor("namespace", "k"))
-		args = []any{d.ns, path}
+		args = []any{ns, path}
 	default:
 		// Use LIKE 'prefix%' for prefix iteration (path is a slash-
 		// terminated string). Locally filter for shallow recursion.
 		q = fmt.Sprintf(`SELECT k, v, expires FROM %s WHERE namespace = %s AND k LIKE %s`,
 			d.table, d.placeholder(1), d.placeholder(2))
-		args = []any{d.ns, path + "%"}
+		args = []any{ns, path + "%"}
 	}
 	switch {
 	case sortByKey:
@@ -289,19 +312,25 @@ func (d *Dict) Begin(ctx context.Context, set *dict.OpSettings) (dict.Tx, error)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	expire := int64(0)
-	if set != nil && set.ExpireSecs > 0 {
-		expire = time.Now().Unix() + int64(set.ExpireSecs)
+	user := ""
+	if set != nil {
+		if set.ExpireSecs > 0 {
+			expire = time.Now().Unix() + int64(set.ExpireSecs)
+		}
+		user = set.Username
 	}
-	return &tx{d: d, sqlTx: t, expires: expire}, nil
+	return &tx{d: d, sqlTx: t, expires: expire, ns: d.scope(user)}, nil
 }
 
 func (d *Dict) ExpireScan(ctx context.Context) error {
 	if d.closed.Load() {
 		return dict.ErrClosed
 	}
-	q := fmt.Sprintf(`DELETE FROM %s WHERE namespace = %s AND expires IS NOT NULL AND expires <= %s`,
-		d.table, d.placeholder(1), d.placeholder(2))
-	_, err := d.db.ExecContext(ctx, q, d.ns, time.Now().Unix())
+	// No namespace filter: entries are scoped per user (namespace = ns[/user]),
+	// so an expired row is dropped regardless of its scope — expiry is absolute.
+	q := fmt.Sprintf(`DELETE FROM %s WHERE expires IS NOT NULL AND expires <= %s`,
+		d.table, d.placeholder(1))
+	_, err := d.db.ExecContext(ctx, q, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("expire scan: %w", err)
 	}
@@ -342,6 +371,7 @@ type tx struct {
 	sqlTx   *stdsql.Tx
 	buf     dict.MemoryTx
 	expires int64
+	ns      string // per-user scoped namespace captured at Begin
 	done    bool
 }
 
@@ -410,13 +440,13 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 			} else {
 				exp = nil
 			}
-			if _, err := t.sqlTx.ExecContext(ctx, t.d.upsertQuery(), t.d.ns, op.Key, op.Value, exp); err != nil {
+			if _, err := t.sqlTx.ExecContext(ctx, t.d.upsertQuery(), t.ns, op.Key, op.Value, exp); err != nil {
 				t.sqlTx.Rollback() //nolint:errcheck
 				return dict.CommitFailed, fmt.Errorf("upsert %q: %w", op.Key, err)
 			}
 		case dict.OpUnset:
 			q := fmt.Sprintf(`DELETE FROM %s WHERE %s`, t.d.table, t.d.argsFor("namespace", "k"))
-			if _, err := t.sqlTx.ExecContext(ctx, q, t.d.ns, op.Key); err != nil {
+			if _, err := t.sqlTx.ExecContext(ctx, q, t.ns, op.Key); err != nil {
 				t.sqlTx.Rollback() //nolint:errcheck
 				return dict.CommitFailed, fmt.Errorf("delete %q: %w", op.Key, err)
 			}
@@ -426,7 +456,7 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 			// but CAST(BLOB AS BIGINT) semantics differ across drivers.
 			q := fmt.Sprintf(`SELECT v FROM %s WHERE %s`, t.d.table, t.d.argsFor("namespace", "k"))
 			var cur []byte
-			err := t.sqlTx.QueryRowContext(ctx, q, t.d.ns, op.Key).Scan(&cur)
+			err := t.sqlTx.QueryRowContext(ctx, q, t.ns, op.Key).Scan(&cur)
 			if err == stdsql.ErrNoRows {
 				t.sqlTx.Rollback() //nolint:errcheck
 				return dict.CommitNotFound, nil
@@ -443,7 +473,7 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 			newVal := []byte(strconv.FormatInt(n+op.Delta, 10))
 			upd := fmt.Sprintf(`UPDATE %s SET v = %s WHERE namespace = %s AND k = %s`,
 				t.d.table, t.d.placeholder(1), t.d.placeholder(2), t.d.placeholder(3))
-			if _, err := t.sqlTx.ExecContext(ctx, upd, newVal, t.d.ns, op.Key); err != nil {
+			if _, err := t.sqlTx.ExecContext(ctx, upd, newVal, t.ns, op.Key); err != nil {
 				t.sqlTx.Rollback() //nolint:errcheck
 				return dict.CommitFailed, err
 			}
