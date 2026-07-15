@@ -123,6 +123,10 @@ type Options struct {
 	// QuotaMailSize rejects a single message larger than this many bytes
 	// (0 = unlimited), independent of the usage limit.
 	QuotaMailSize int64
+	// QuotaPolicy carries the site-wide quota tunables (percentage scaling,
+	// storage extra, ignore-unlimited, mailbox-count caps). Grace is not applied
+	// on the interactive IMAP path.
+	QuotaPolicy quota.Policy
 
 	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
 	// capability + GETQUOTA / GETQUOTAROOT commands. Client-facing query only —
@@ -1127,6 +1131,16 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 	}
 	if err := s.requireRightOnParent(h, rel, mailbox.RightCreate); err != nil {
 		return err
+	}
+	// quota_mailbox_count: cap the number of mailboxes a user may have.
+	if lim := s.srv.opts.QuotaPolicy.MailboxCount; lim > 0 {
+		if entries, lerr := h.box.ListFolders(); lerr == nil && int64(len(entries)) >= lim {
+			return &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Code: imaplib.ResponseCode("LIMIT"),
+				Text: "Maximum number of mailboxes reached",
+			}
+		}
 	}
 	if err := h.box.Create(rel); err != nil {
 		return err

@@ -386,14 +386,35 @@ data:
     {{- with .Values.quota }}
     quota:
       enabled: {{ .enabled | default false }}
-      {{- if .name }}
-      name: {{ .name | quote }}
+      {{- if .quota_name }}
+      quota_name: {{ .quota_name | quote }}
       {{- end }}
-      {{- if .exceeded_message }}
-      exceeded_message: {{ .exceeded_message | quote }}
+      {{- if .quota_exceeded_message }}
+      quota_exceeded_message: {{ .quota_exceeded_message | quote }}
       {{- end }}
-      {{- if .mail_size }}
-      mail_size: {{ .mail_size | quote }}
+      {{- if .quota_mail_size }}
+      quota_mail_size: {{ .quota_mail_size | quote }}
+      {{- end }}
+      {{- if .quota_storage_percentage }}
+      quota_storage_percentage: {{ .quota_storage_percentage }}
+      {{- end }}
+      {{- if .quota_message_percentage }}
+      quota_message_percentage: {{ .quota_message_percentage }}
+      {{- end }}
+      {{- if .quota_storage_extra }}
+      quota_storage_extra: {{ .quota_storage_extra | quote }}
+      {{- end }}
+      {{- if .quota_grace }}
+      quota_grace: {{ .quota_grace | quote }}
+      {{- end }}
+      {{- if .quota_ignore_unlimited }}
+      quota_ignore_unlimited: true
+      {{- end }}
+      {{- if .quota_mailbox_count }}
+      quota_mailbox_count: {{ .quota_mailbox_count }}
+      {{- end }}
+      {{- if .quota_mailbox_message_count }}
+      quota_mailbox_message_count: {{ .quota_mailbox_message_count }}
       {{- end }}
     {{- end }}
 

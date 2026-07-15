@@ -327,13 +327,7 @@ func (c *Counter) Set(ctx context.Context, u Usage) error {
 // would exceed the limits. Returns (false, nil) when quota is
 // unlimited (limits.StorageBytes == 0 && limits.Messages == 0).
 func IsOver(u Usage, limits Limits, newBytes, newMsgs int64) bool {
-	if limits.StorageBytes > 0 && u.StorageBytes+newBytes > limits.StorageBytes {
-		return true
-	}
-	if limits.Messages > 0 && u.Messages+newMsgs > limits.Messages {
-		return true
-	}
-	return false
+	return IsOverWithGrace(u, limits, newBytes, newMsgs, 0)
 }
 
 // StorageBytesToKiB converts bytes to the RFC 9208 STORAGE unit

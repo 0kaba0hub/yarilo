@@ -9,6 +9,8 @@ import (
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
 
 // Config is the top-level yarilo configuration.
@@ -535,13 +537,48 @@ type QuotaConfig struct {
 	Enabled bool `koanf:"enabled"`
 	// Name is the quota-root name surfaced in IMAP GETQUOTA / GETQUOTAROOT.
 	// Empty falls back to "User quota".
-	Name string `koanf:"name"`
+	Name string `koanf:"quota_name"`
 	// ExceededMessage is the text returned when a save is rejected for being
 	// over quota (IMAP OVERQUOTA, LMTP 452, quota-status). Empty uses a default.
-	ExceededMessage string `koanf:"exceeded_message"`
+	ExceededMessage string `koanf:"quota_exceeded_message"`
 	// MailSize rejects any single message larger than this (human size, e.g.
 	// "50M"). Empty / "0" = unlimited. Independent of the usage limit.
-	MailSize string `koanf:"mail_size"`
+	MailSize string `koanf:"quota_mail_size"`
+
+	// StoragePercentage scales the resolved storage limit (limit*pct/100).
+	// Default 100 (no scaling). Must be > 0.
+	StoragePercentage int `koanf:"quota_storage_percentage"`
+	// MessagePercentage scales the resolved message-count limit. Default 100.
+	MessagePercentage int `koanf:"quota_message_percentage"`
+	// StorageExtra is byte headroom added to the storage limit after the
+	// percentage scaling (human size). Empty / "0" = none.
+	StorageExtra string `koanf:"quota_storage_extra"`
+	// Grace is the storage overshoot allowed past the limit on inbound delivery
+	// (LMTP/LDA) only — never interactive IMAP (human size). Default "10M".
+	Grace string `koanf:"quota_grace"`
+	// IgnoreUnlimited omits the quota root from IMAP GETQUOTA/GETQUOTAROOT for a
+	// user whose limits are all unlimited.
+	IgnoreUnlimited bool `koanf:"quota_ignore_unlimited"`
+	// MailboxCount caps the number of mailboxes (folders) a user may have.
+	// 0 = unlimited. Enforced at folder creation.
+	MailboxCount int64 `koanf:"quota_mailbox_count"`
+	// MailboxMessageCount caps the number of messages in a single mailbox.
+	// 0 = unlimited. Enforced on save.
+	MailboxMessageCount int64 `koanf:"quota_mailbox_message_count"`
+}
+
+// QuotaPolicy builds the runtime quota.Policy from the config, parsing sizes
+// and applying percentage defaults.
+func (q QuotaConfig) QuotaPolicy() quota.Policy {
+	return quota.Policy{
+		StoragePercentage:   q.StoragePercentage,
+		MessagePercentage:   q.MessagePercentage,
+		StorageExtra:        quota.ParseSize(q.StorageExtra),
+		StorageGrace:        quota.ParseSize(q.Grace),
+		IgnoreUnlimited:     q.IgnoreUnlimited,
+		MailboxCount:        q.MailboxCount,
+		MailboxMessageCount: q.MailboxMessageCount,
+	}
 }
 
 // QuotaStatusConfig configures the yarilo-quota-status Postfix policy service.
@@ -1316,8 +1353,11 @@ func Load(path string) (*Config, error) {
 		},
 		QuotaStatus: QuotaStatusConfig{Listen: ":12340", RecipientDelimiter: "+"},
 		Quota: QuotaConfig{
-			Name:            "User quota",
-			ExceededMessage: "Quota exceeded (mailbox for user is full)",
+			Name:              "User quota",
+			ExceededMessage:   "Quota exceeded (mailbox for user is full)",
+			StoragePercentage: 100,
+			MessagePercentage: 100,
+			Grace:             "10M",
 		},
 		SASLLogin: SASLLoginConfig{
 			Listen:         ":12325",

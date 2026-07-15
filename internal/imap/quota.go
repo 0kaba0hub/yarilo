@@ -83,6 +83,22 @@ func (s *session) quotaLimits() quota.Limits {
 	return quota.ParseRules(s.userInfo.QuotaRules)
 }
 
+// quotaPolicy returns the site-wide quota tunables.
+func (s *session) quotaPolicy() quota.Policy {
+	return s.srv.opts.QuotaPolicy
+}
+
+// effectiveLimits resolves the per-folder limits then applies the site policy
+// (percentage scaling + storage extra). Grace is delivery-only and never added
+// on the interactive IMAP path.
+func (s *session) effectiveLimits(folder string) (quota.Limits, bool) {
+	lim, ignore := s.quotaLimits().EffectiveLimits(folder)
+	if ignore {
+		return lim, true
+	}
+	return s.quotaPolicy().Scale(lim), false
+}
+
 // GetQuotaRoot implements imapserver.SessionQuota.
 func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 	if !s.quotaExtensionEnabled() {
@@ -93,7 +109,11 @@ func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 		slog.Warn("imap: quota get failed", "user", s.userInfo.Username, "err", err)
 		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
 	}
-	limits := s.quotaLimits()
+	limits := s.quotaPolicy().Scale(s.quotaLimits())
+	// quota_ignore_unlimited: a user with no limits has no quota root.
+	if limits.Unlimited() && s.quotaPolicy().IgnoreUnlimited {
+		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
+	}
 	qd := buildQuotaData(u, limits, s.quotaName())
 	return &imaplib.QuotaRootData{
 		Mailbox: mailbox,
@@ -114,7 +134,11 @@ func (s *session) GetQuota(root string) (*imaplib.QuotaData, error) {
 		qd := imaplib.QuotaData{Name: root}
 		return &qd, nil
 	}
-	limits := s.quotaLimits()
+	limits := s.quotaPolicy().Scale(s.quotaLimits())
+	if limits.Unlimited() && s.quotaPolicy().IgnoreUnlimited {
+		qd := imaplib.QuotaData{Name: root}
+		return &qd, nil
+	}
 	qd := buildQuotaData(u, limits, s.quotaName())
 	qd.Name = root
 	return &qd, nil
@@ -158,18 +182,26 @@ func (s *session) quotaCheckAppend(_ context.Context, folder string, bytes int64
 			Text: fmt.Sprintf("Requested allocation size %d exceeds max mail size %d", bytes, ms),
 		}
 	}
-	lim := s.quotaLimits()
-	effLim, ignore := lim.EffectiveLimits(folder)
-	if ignore {
-		return nil
+	// Per-mailbox message-count cap is structural (independent of quota_rule):
+	// reject when the target folder would reach the configured message count.
+	if mmc := s.quotaPolicy().MailboxMessageCount; mmc > 0 {
+		if cur, ok := s.folderMessageCount(folder); ok && cur+1 >= mmc {
+			return &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Code: imaplib.ResponseCode("OVERQUOTA"),
+				Text: "Too many messages in the mailbox",
+			}
+		}
 	}
-	if effLim.StorageBytes == 0 && effLim.Messages == 0 {
+	effLim, ignore := s.effectiveLimits(folder)
+	if ignore || effLim.Unlimited() {
 		return nil
 	}
 	u, err := s.countUsage(false)
 	if err != nil {
 		return nil // fail-open: don't block on a transient index read error
 	}
+	// Grace is delivery-only; interactive IMAP saves get no overshoot.
 	if quota.IsOver(u, effLim, bytes, 1) {
 		return &imaplib.Error{
 			Type: imaplib.StatusResponseTypeNo,
@@ -178,4 +210,22 @@ func (s *session) quotaCheckAppend(_ context.Context, folder string, bytes int64
 		}
 	}
 	return nil
+}
+
+// folderMessageCount returns the current message count of folder from the
+// index (the authoritative count backend). ok is false when the folder or
+// index is unavailable.
+func (s *session) folderMessageCount(folder string) (int64, bool) {
+	if s.box == nil || s.idx == nil {
+		return 0, false
+	}
+	f, err := s.idx.OpenFolder(folder, 0)
+	if err != nil {
+		return 0, false
+	}
+	_, msgs, err := s.idx.FolderVSize(f.ID)
+	if err != nil {
+		return 0, false
+	}
+	return int64(msgs), true
 }

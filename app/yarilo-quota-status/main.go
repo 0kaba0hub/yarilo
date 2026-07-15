@@ -113,6 +113,7 @@ func main() {
 		RecipientDelimiter: qs.RecipientDelimiter,
 		ExceededMessage:    cfg.Quota.ExceededMessage,
 		MailSize:           quota.ParseSize(cfg.Quota.MailSize),
+		Policy:             cfg.Quota.QuotaPolicy(),
 	})
 
 	listen := qs.Listen
