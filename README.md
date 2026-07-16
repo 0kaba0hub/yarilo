@@ -93,6 +93,8 @@ Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a 
 
 All index mutations go through the cross-process mailbox lock (`yarilo-locks`). Sessions sharing a pod serialise on an in-process `sync.RWMutex` — the Redis lock is only ever contested across pods, not within a single pod.
 
+**Maildir sync-on-open** (`storage.maildir_sync_on_select`, default `true`): on SELECT/EXAMINE, STATUS and IDLE the Maildir index is reconciled against `cur/` and `new/`, so a message delivered by an external MDA or moved/renamed by a second MUA appears without an operator rebuild — files in `new/` are migrated to `cur/`, new files gain a UID, vanished files are expunged, and out-of-band flag renames keep their UID. It is gated on a cheap `cur/`+`new/` mtime token, so a quiescent folder costs a single `stat`. Only Maildir honours it; dbox stays index-authoritative.
+
 ---
 
 ## Cluster components

@@ -265,6 +265,7 @@ func New(cfg *config.Config) (*Server, error) {
 			MetadataDict:         metadataDict,
 			SieveEngine:          sieveEngine,
 			IMAPQuota:            cfg.Protocol.IMAP.IMAPQuota,
+			MaildirSyncOnSelect:  cfg.Storage.MaildirSyncOnSelect,
 			QuotaEngine:          cfg.Quota.Enabled,
 			QuotaName:            cfg.Quota.Name,
 			QuotaExceededMessage: cfg.Quota.ExceededMessage,

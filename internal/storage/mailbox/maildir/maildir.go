@@ -577,6 +577,211 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 
 func (u *userMailbox) Close() error { return nil }
 
+// ProactiveScan reports that this driver's on-disk representation may change
+// out of band (MDA delivery into new/, another MUA renaming for flags) so the
+// index must be reconciled by scanning the directory on SELECT. Index-
+// authoritative drivers (dbox) omit this method and self-heal reactively.
+func (u *userMailbox) ProactiveScan() bool { return true }
+
+// maildirBase returns the stable identity of a maildir filename: everything
+// before the ":" info separator. A flag change renames only the ":2,<flags>"
+// trailer, so two names sharing a base are the same message and must keep the
+// same UID. This mirrors how Dovecot keys the uidlist.
+func maildirBase(name string) string {
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
+// moveNewToCurLocked moves every file out of new/ into cur/, appending the
+// ":2," info marker Dovecot uses for a message with no flags. An MDA delivers
+// into new/; maildir sync migrates those files into cur/ so the rest of the
+// driver (Fetch, Remove, List) — which only looks in cur/ — can reach them.
+// Caller holds the mailbox lock.
+func (u *userMailbox) moveNewToCurLocked(folder string) error {
+	base := u.folderPath(folder)
+	newDir := filepath.Join(base, "new")
+	curDir := filepath.Join(base, "cur")
+	entries, err := os.ReadDir(newDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("maildir/sync: read new: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		curName := name
+		if !strings.ContainsRune(name, ':') {
+			curName = name + ":2,"
+		}
+		if err := os.Rename(filepath.Join(newDir, name), filepath.Join(curDir, curName)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // moved by a concurrent sync — fine
+			}
+			return fmt.Errorf("maildir/sync: move new->cur %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// ReconcileIndex brings idx into agreement with the physical maildir under the
+// driver's cross-process mailbox lock. It follows the Dovecot maildir sync
+// model:
+//
+//   - Files in new/ are migrated into cur/ first, so an MDA delivery becomes a
+//     normal, readable message.
+//   - Messages are matched by base name (identity survives a flag rename), so a
+//     second MUA flipping ":2," → ":2,S" keeps the UID.
+//   - New files get a UID via the index's own atomic allocator (no manual
+//     next-UID seed, so a concurrent delivery cannot collide).
+//   - A tracked file that vanished is expunged incrementally, writing a QRESYNC
+//     tombstone; a tracked file renamed out of band has its stored filename (and
+//     the flags now encoded in that name) updated in place.
+//
+// Tracked messages whose on-disk name is unchanged are left untouched — the
+// index stays authoritative for flags yarilo itself set, which never rename the
+// file.
+func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (mailbox.SyncStats, error) {
+	var st mailbox.SyncStats
+	err := u.withMailboxLock(folder.Name, func() error {
+		if err := u.moveNewToCurLocked(folder.Name); err != nil {
+			return err
+		}
+		scanned, err := u.Scan(folder.Name)
+		if err != nil {
+			return fmt.Errorf("maildir/sync: scan: %w", err)
+		}
+		onDisk := make(map[string]*mailbox.ScanRecord, len(scanned))
+		for i := range scanned {
+			if scanned[i].Filename != "" {
+				onDisk[maildirBase(scanned[i].Filename)] = &scanned[i]
+			}
+		}
+
+		existing, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+		if err != nil {
+			return fmt.Errorf("maildir/sync: get messages: %w", err)
+		}
+		tracked := make(map[string]struct{}, len(existing))
+		for _, m := range existing {
+			if m.Filename == "" {
+				continue
+			}
+			base := maildirBase(m.Filename)
+			rec, ok := onDisk[base]
+			if !ok {
+				// File vanished out of band → expunge (tombstone for QRESYNC).
+				if err := idx.ExpungeMessage(folder.ID, m.UID); err != nil {
+					return fmt.Errorf("maildir/sync: expunge %d: %w", m.UID, err)
+				}
+				st.Expunged++
+				continue
+			}
+			tracked[base] = struct{}{}
+			if rec.Filename != m.Filename {
+				// Renamed out of band (a flag change moves the ":2," trailer):
+				// keep the identity, adopt the on-disk flags and repoint the
+				// filename so the message stays reachable.
+				if !sameFlags(rec.Flags, m.Flags) {
+					if err := idx.UpdateFlags(folder.ID, m.UID, rec.Flags, nil); err != nil {
+						return fmt.Errorf("maildir/sync: update flags %d: %w", m.UID, err)
+					}
+				}
+				if err := idx.UpdateFilename(folder.ID, m.UID, rec.Filename); err != nil {
+					return fmt.Errorf("maildir/sync: update filename %d: %w", m.UID, err)
+				}
+				st.Updated++
+			}
+		}
+
+		for i := range scanned {
+			rec := &scanned[i]
+			if rec.Filename == "" {
+				continue
+			}
+			if _, ok := tracked[maildirBase(rec.Filename)]; ok {
+				continue
+			}
+			m := &mailbox.MessageMeta{
+				Filename:     rec.Filename,
+				Size:         rec.Size,
+				VSize:        rec.VSize,
+				InternalDate: rec.InternalDate,
+				Flags:        rec.Flags,
+			}
+			if err := idx.AllocateAndAppend(folder.ID, m); err != nil {
+				return fmt.Errorf("maildir/sync: append %s: %w", rec.Filename, err)
+			}
+			st.Imported++
+		}
+		return nil
+	})
+	st.Changed = st.Imported > 0 || st.Expunged > 0 || st.Updated > 0
+	return st, err
+}
+
+// sameFlags reports whether two flag sets are equal ignoring order.
+func sameFlags(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, f := range a {
+		seen[f]++
+	}
+	for _, f := range b {
+		seen[f]--
+		if seen[f] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// SyncToken returns an opaque token capturing the folder's cur/ and new/
+// directory mtime and size. When it is unchanged since the previous SELECT no
+// message was delivered, removed or renamed, so the caller may skip the
+// reconcile scan and its lock entirely. An empty token (both dirs missing or
+// unstattable) forces the caller to reconcile.
+//
+// A directory whose mtime falls within the current wall-clock second is
+// "dirty": on a filesystem with coarse (1 s) mtime granularity a second change
+// in the same tick would not move the mtime, so the token cannot be trusted
+// for a skip decision. Such a token embeds a per-call nonce so it never
+// matches the cached value, forcing a reconcile until the directory settles a
+// second past its last change. This mirrors the classic maildir same-second
+// dirty-sync rule.
+//
+// Over NFS the client attribute cache can stale a directory mtime; operators
+// that deliver across nodes should keep attribute-cache TTLs short. A stale
+// token only delays visibility until the next changed token, never corrupts.
+func (u *userMailbox) SyncToken(folder string) string {
+	base := u.folderPath(folder)
+	now := time.Now()
+	var b strings.Builder
+	dirty := false
+	for _, sub := range []string{"cur", "new"} {
+		fi, err := os.Stat(filepath.Join(base, sub))
+		if err != nil {
+			continue
+		}
+		mt := fi.ModTime()
+		fmt.Fprintf(&b, "%s=%d/%d;", sub, mt.UnixNano(), fi.Size())
+		if now.Sub(mt) < time.Second {
+			dirty = true
+		}
+	}
+	if dirty {
+		fmt.Fprintf(&b, "dirty=%d", now.UnixNano())
+	}
+	return b.String()
+}
+
 // ---- uidlist ---------------------------------------------------------------
 
 // On-disk filenames. UIDListFileName is what we write; the

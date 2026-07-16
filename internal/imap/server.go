@@ -199,6 +199,13 @@ type Options struct {
 	AnvilAddr string
 	// AnvilTLS optionally wraps the anvil dialer with mTLS.
 	AnvilTLS *tls.Config
+
+	// MaildirSyncOnSelect reconciles the index against the physical mailbox
+	// on SELECT/EXAMINE for drivers whose storage can change out of band
+	// (maildir). When true (the default) messages delivered by an MDA or a
+	// second MUA appear without an operator rebuild. Index-authoritative
+	// drivers (dbox) ignore it — they do not implement ProactiveScan.
+	MaildirSyncOnSelect bool
 }
 
 // NamespaceSpec is the per-namespace data the IMAP server needs to
@@ -435,6 +442,11 @@ type session struct {
 
 	limitIP string
 	folder  *mailbox.Folder
+
+	// maildirSyncTokens caches the last SyncToken seen per folder so a SELECT
+	// on an unchanged maildir skips the reconcile scan and its lock. Keyed by
+	// the namespace-relative folder name.
+	maildirSyncTokens map[string]string
 
 	// knownMsgs is the server's copy of the client's sequence→message state
 	// for the selected folder. Each entry records uid and modseq; the slice
@@ -1080,6 +1092,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 		return nil, err
 	}
 	slog.Debug("imap: select timing open_ms", "folder", rel, "open_ms", time.Since(tOpen).Milliseconds())
+	if refreshed := s.maildirSyncOnSelect(h, rel, f); refreshed != nil {
+		f = refreshed
+	}
 	s.folder = f
 	s.folderNS = h
 	// Seed a usage baseline so a quota_warning "under" crossing fires even when
@@ -1600,6 +1615,9 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if err := s.requireRight(h, rel, mailbox.RightRead); err != nil {
 		return nil, err
 	}
+	// Reconcile out-of-band deliveries so STATUS (a common new-mail probe)
+	// reflects them without a prior SELECT.
+	s.reconcileFolder(h, rel)
 	f, err := h.idx.OpenFolder(rel, 0)
 	if err != nil {
 		return nil, err
@@ -1803,6 +1821,14 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	}
 	if s.folder == nil || s.knownMsgs == nil {
 		return nil
+	}
+
+	// Reconcile out-of-band deliveries into the selected folder so an IDLE /
+	// NOOP client sees new mail. Token-gated, so a quiescent folder costs one
+	// stat. A change bumps HighestModSeq, which the modseq check below picks up
+	// and the diff loop turns into EXISTS / EXPUNGE updates.
+	if s.folderNS != nil {
+		s.reconcileFolder(s.folderNS, s.folder.Name)
 	}
 
 	// Cheap modseq check — skip full scan when nothing changed and no

@@ -1252,6 +1252,13 @@ type StorageConfig struct {
 	Index            string `koanf:"index"`
 	IndexDir         string `koanf:"index_dir"`
 
+	// MaildirSyncOnSelect reconciles the maildir index against the on-disk
+	// cur/ and new/ directories on every SELECT/EXAMINE so messages delivered
+	// or renamed out of band (MDA, another MUA) become visible without an
+	// operator rebuild. Default true. Only the maildir driver honours it;
+	// index-authoritative drivers (dbox) ignore it and self-heal reactively.
+	MaildirSyncOnSelect bool `koanf:"maildir_sync_on_select"`
+
 	// MaxConcurrentWrites caps the number of concurrent box.Save() calls
 	// (message body writes to disk). Tune to match storage throughput:
 	// spinning disks typically benefit from 16-32, SSDs from 128-256.
@@ -1387,6 +1394,9 @@ func Load(path string) (*Config, error) {
 					PerRecipientWindowSeconds: 60,
 				},
 			},
+		},
+		Storage: StorageConfig{
+			MaildirSyncOnSelect: true,
 		},
 		InternalTLS: InternalTLSConfig{
 			Enabled: true,
