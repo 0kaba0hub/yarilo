@@ -313,7 +313,7 @@ Byte-compatible with Dovecot flatcurve on-disk format (per-**mailbox** DBs,
 `substring_search` no; term cap 200 bytes is a constant upstream, not a
 setting). **Build implication:** requires `CGO_ENABLED=1` + libxapian —
 ships as a separate image variant; the default image is Bleve-only. Engine
-selection stays config (`fts: flatcurve`), the variant only widens what is
+selection stays config (`fts_engine: "flatcurve"`), the variant only widens what is
 installable.
 
 ---
@@ -403,33 +403,49 @@ ICU (snowball set; ICU normalizer optional later).
 
 ```yaml
 fts:
-  fts: bleve                        # driver: bleve | flatcurve | "" (off)
+  ## Master switch + explicit engine selection. fts_engine is REQUIRED when
+  ## enabled: there is no implicit default — startup fails fast on a missing
+  ## or unknown engine name, so the active engine is always stated in config.
+  enabled: false
+  fts_engine: ""                    # "bleve" | "flatcurve"
+
+  ## Service topology (yarilo-locks precedent).
+  fts_mode: remote                  # remote (k8s) | embedded (tests/CLI)
+  fts_addr: ""                      # e.g. "yarilo-fts:9106"
+
+  ## Indexing behaviour.
   fts_autoindex: false
   fts_autoindex_max_recent_msgs: 0
+  fts_message_max_size: 0           # 0 = unlimited
+  fts_header_includes: []
+  fts_header_excludes: []
+  fts_commit_limit: 500             # batch size, any engine
+
+  ## Search behaviour.
   fts_search_add_missing: body-search-only
   fts_search_read_fallback: true    # upstream base default is false; see §11
   fts_search_timeout: 30s
   fts_search_strict: false          # RFC substring verification of candidates
-  fts_message_max_size: 0           # 0 = unlimited
-  fts_header_includes: []
-  fts_header_excludes: []
+
+  ## Language chain.
   language_filters: [lowercase, snowball, stopwords]   # default ON
   languages: [en]                   # >1 enables per-body detection (later phase)
-  # decoder (Phase 3):
+
+  ## Decoder (Phase 3).
   fts_decoder_driver: ""            # "" | script | tika
   fts_decoder_script_socket_path: ""
   fts_decoder_tika_url: ""
-  # flatcurve engine (cgo image only):
+
+  ## Engine-specific: bleve (fts_engine: "bleve").
+  fts_bleve_positions: true         # positional data on body/subject (phrase queries)
+
+  ## Engine-specific: flatcurve (fts_engine: "flatcurve"; cgo image only).
   fts_flatcurve_commit_limit: 500
   fts_flatcurve_min_term_size: 2
   fts_flatcurve_optimize_limit: 10
   fts_flatcurve_rotate_count: 5000
   fts_flatcurve_rotate_time: 5000
   fts_flatcurve_substring_search: false
-  # service:
-  mode: remote                      # remote (k8s) | embedded (tests/CLI)
-  addr: ""                          # e.g. "yarilo-fts:9106"
-  commit_limit: 500
 ```
 
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
