@@ -48,10 +48,10 @@ RUN go mod download
 COPY . .
 ARG BUILD_VERSION=dev
 ENV CGO_ENABLED=1 GOOS=linux GOARCH=amd64
-RUN go build -tags flatcurve -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
-    -trimpath -o /out/yarilo-fts ./app/yarilo-fts
-RUN go build -tags flatcurve -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
-    -trimpath -o /out/fts-bench ./app/fts-bench
+RUN for cmd in yarilo-fts fts-bench; do \
+        go build -tags flatcurve -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
+            -trimpath -o "/out/$cmd" "./app/$cmd"; \
+    done
 
 FROM alpine:3.24 AS fts
 # hadolint ignore=DL3018,DL3019
