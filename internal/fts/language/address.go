@@ -25,7 +25,8 @@ func isDomainByte(c byte) bool {
 }
 
 // Address is the streaming e-mail-address tokenizer layered over Generic,
-// mirroring lang-tokenizer-address.c: a complete localpart@domain is emitted
+// following the reference address-tokenizer semantics: a complete
+// localpart@domain is emitted
 // as ONE token (up to maxLen bytes). In index mode all input additionally
 // flows through the parent Generic so the address parts are indexed too; in
 // search mode a complete address is withheld from the parent so a query for
@@ -68,7 +69,7 @@ func (a *Address) emitAddress(emit EmitFunc) error {
 
 // feedParent routes input to the parent tokenizer. In search mode the bytes
 // of an in-progress candidate are buffered so a completed address can be
-// withheld (lang_tokenizer_address_parent_data).
+// withheld so an address query matches only the whole-address token.
 func (a *Address) feedParent(b []byte, emit EmitFunc) error {
 	if a.search {
 		a.hold = append(a.hold, b...)

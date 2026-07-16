@@ -303,11 +303,13 @@ Mirrors 2.4 (no expunge journal) with targeted improvements:
 
 ### 9.1 Xapian / flatcurve — first engine (cgo, FTS-1)
 
-Byte-compatible with Dovecot flatcurve on-disk format (per-**mailbox** DBs,
-`current.###`/`index.###` shards, prefixes `A`/`H`/`B`, docid == UID,
-`flatcurve-lock`) — existing Dovecot installations migrate by pointing yarilo
-at the same index root. Runs inside the `yarilo-fts` service behind the
-engine interface; inherits upstream's `fts_flatcurve_*` settings verbatim
+Follows the flatcurve on-disk layout (per-**mailbox** DBs,
+`current.###`/`index.###` shards, prefixes `A`/`H`/`B`, docid == UID) with
+yarilo's own shard version key (`yarilo.fts-flatcurve`) — there is no direct
+in-place migration path from a Dovecot installation (indexes are rebuilt by
+the indexer), so no cross-product compatibility promise is carried. Runs
+inside the `yarilo-fts` service behind the engine interface; keeps the
+`fts_flatcurve_*` settings verbatim
 (`commit_limit` 500, `min_term_size` 2, `optimize_limit` 10, `rotate_count`
 5000, `rotate_time` 5000 ms, `substring_search` no; term cap 200 bytes is a
 constant upstream, not a setting).

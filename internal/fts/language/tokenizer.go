@@ -1,9 +1,9 @@
 // Package language is the tokenization and filter layer shared by FTS
-// indexing and search — the analogue of Dovecot's lib-language. The generic
-// tokenizer reproduces the reference "simple" algorithm
-// (lang-tokenizer-generic.c): ASCII/Unicode word-break classes, apostrophe
-// continuation, byte-length truncation and base64-run skipping, so an index
-// built by yarilo tokenizes identically to one built by Dovecot.
+// indexing and search. The generic tokenizer reproduces the reference
+// "simple" algorithm — ASCII/Unicode word-break classes, apostrophe
+// continuation, byte-length truncation and base64-run skipping — so indexes
+// tokenize identically to ones built by the reference implementation
+// (traceability in docs/FTS.md).
 package language
 
 import (
@@ -12,15 +12,15 @@ import (
 )
 
 const (
-	// DefaultTokenMaxLen mirrors language_tokenizer_generic token_maxlen.
+	// DefaultTokenMaxLen is the reference generic-tokenizer byte cap.
 	DefaultTokenMaxLen = 30
 	// DefaultAddressMaxLen mirrors the address tokenizer's maxlen.
 	DefaultAddressMaxLen = 250
-	// base64MinRun mirrors LANG_SKIP_BASE64_MIN_CHARS.
+	// base64MinRun is the reference minimum base64 run length.
 	base64MinRun = 50
 )
 
-// asciiWordBreaks mirrors lang_ascii_word_breaks: true = break. Apostrophe
+// asciiWordBreaks is the reference ASCII break table: true = break. Apostrophe
 // (0x27) is not a break — it gets the special continuation treatment below.
 var asciiWordBreaks = [128]bool{}
 
@@ -38,7 +38,7 @@ func isBreakRune(r rune) bool {
 	if r < 0x80 {
 		return asciiWordBreaks[r]
 	}
-	// Mirrors lang_uni_word_break: General Punctuation block plus the
+	// Reference Unicode break rule: General Punctuation block plus the
 	// whitespace / quotation / dash / terminal-punctuation classes.
 	if r >= 0x2000 && r <= 0x206f {
 		return true
@@ -68,7 +68,7 @@ func isBase64Leader(c byte) bool {
 	return false
 }
 
-// skipBase64 mirrors skip_base64: from a token boundary, skip one or more
+// skipBase64 skips likely-base64 noise: from a token boundary, one or more
 // runs of >= base64MinRun base64-alphabet bytes, each preceded by an allowed
 // leader (or the buffer start) and followed by an allowed trailer (or the
 // buffer end). Returns how many leading bytes of data are skippable.
@@ -132,8 +132,7 @@ func (g *Generic) appendTruncated(b []byte) {
 func (g *Generic) emitCurrent(emit EmitFunc) error {
 	b := g.buf
 	if g.untrunc <= g.maxLen {
-		// Trailing apostrophe is dropped unless the token was truncated
-		// (lang_tokenizer_generic_simple_current_token).
+		// Trailing apostrophe is dropped unless the token was truncated.
 		if n := len(b); n > 0 && b[n-1] == '\'' {
 			b = b[:n-1]
 		}

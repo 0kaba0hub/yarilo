@@ -16,29 +16,29 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 
-// On-disk constants, byte-identical to fts-backend-flatcurve-xapian.cc.
+// On-disk format constants (see docs/FTS.md for the format specification).
 const (
 	Label         = "fts-flatcurve"
 	dbPrefix      = "index."
 	currentPrefix = "current."
-	versionKey    = "dovecot.fts-flatcurve"
+	versionKey    = "yarilo.fts-flatcurve"
 	versionValue  = "1"
 
 	allHdrPrefix = "A"
 	boolPrefix   = "B"
 	hdrPrefix    = "H"
 
-	// maxTermBytes mirrors FTS_FLATCURVE_MAX_TERM_SIZE_MAX (glass hard cap
-	// is ~245 bytes; upstream truncates at 200).
+	// maxTermBytes: the glass backend caps terms at ~245 bytes; the format
+	// truncates at 200.
 	maxTermBytes = 200
 
-	// checkpointFile is a yarilo sidecar (not part of the upstream format):
+	// checkpointFile is a yarilo sidecar (not part of the flatcurve format):
 	// the per-mailbox last_indexed_uid + settings checksum. A missing file
-	// on a Dovecot-migrated index falls back to Xapian's get_lastdocid.
+	// on a migrated index falls back to Xapian's get_lastdocid.
 	checkpointFile = "yarilo.checkpoint"
 )
 
-// indexedHeaders mirrors fts_header_want_indexed (fts-api.c:626).
+// indexedHeaders are the header fields that get their own H<NAME> terms.
 var indexedHeaders = map[string]bool{
 	"from": true, "to": true, "cc": true, "bcc": true, "subject": true,
 }
@@ -213,7 +213,7 @@ func (st *mboxState) commitCurrent() error {
 }
 
 // rotate seals the current shard: current.### becomes index.### and the next
-// write opens a fresh current shard (fts_flatcurve_xapian_rotate).
+// write opens a fresh current shard.
 func (st *mboxState) rotate() error {
 	if st.cur == nil {
 		return nil
@@ -262,7 +262,7 @@ func (u *userIndex) Checkpoint(mbox fts.MailboxRef) (uint32, uint32, error) {
 			return lastUID, sum, nil
 		}
 	}
-	// No yarilo checkpoint: a Dovecot-migrated index still knows its highest
+	// No yarilo checkpoint: a migrated index still knows its highest
 	// docid (== UID). Settings checksum 0 forces a rebuild decision upstream.
 	paths, err := shardPaths(st.dir)
 	if err != nil || len(paths) == 0 {
@@ -713,8 +713,7 @@ func (u *userIndex) buildQuery(q fts.Query) (*xQuery, bool, error) {
 			acc.free()
 			return nil, false, err
 		}
-		// One over-approximated arg makes the whole conjunction a maybe
-		// (fts_flatcurve_xapian_run_query semantics).
+		// One over-approximated arg makes the whole conjunction a maybe.
 		maybe = maybe || tMaybe
 		if term.Not {
 			all, aerr := queryMatchAll()

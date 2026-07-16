@@ -183,7 +183,7 @@ func TestCheckpoint(t *testing.T) {
 }
 
 func TestCheckpointMigrationFallback(t *testing.T) {
-	// A Dovecot-built index has no yarilo checkpoint file: last UID must
+	// A migrated index has no yarilo checkpoint file: last UID must
 	// come from Xapian's lastdocid.
 	ui, user := testEngine(t, Options{})
 	indexDoc(t, ui, 17, nil, []string{"legacy"})

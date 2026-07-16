@@ -1,5 +1,5 @@
-// Package flatcurve is the Xapian-backed FTS engine, byte-compatible with
-// Dovecot 2.4's fts-flatcurve on-disk format: a per-mailbox "fts-flatcurve"
+// Package flatcurve is the Xapian-backed FTS engine, on-disk compatible
+// with the flatcurve index format: a per-mailbox "fts-flatcurve"
 // directory of Xapian shards (current.### write shard, index.### sealed
 // shards), docid == IMAP UID, term prefixes A (all headers), H<NAME>
 // (indexed header) and B (header existence). See docs/FTS.md §9.1.

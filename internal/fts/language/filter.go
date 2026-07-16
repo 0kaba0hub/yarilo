@@ -14,8 +14,7 @@ import (
 	"github.com/blevesearch/snowballstem/spanish"
 )
 
-// Filter transforms one token; ok=false drops the token entirely
-// (the lang_filter chain contract).
+// Filter transforms one token; ok=false drops the token entirely.
 type Filter interface {
 	Name() string
 	Apply(token string) (out string, ok bool)

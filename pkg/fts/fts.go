@@ -1,8 +1,8 @@
 // Package fts defines the full-text-search engine contract: the build-key
 // model an indexer feeds documents through, the query/result shapes a lookup
 // speaks, and the per-user index handle engines implement. The interface is
-// isomorphic to Dovecot 2.4's fts_backend_vfuncs so engine behaviour can be
-// checked against the reference implementation. See docs/FTS.md.
+// modelled on the reference count-backend contract so engine behaviour can
+// be checked against it (traceability in docs/FTS.md).
 package fts
 
 import "context"
@@ -51,7 +51,7 @@ type MailboxRef struct {
 }
 
 // Caps declares what an engine supports so the core can adapt query building
-// and the indexing stream (the analogue of fts_backend_flags).
+// and the indexing stream.
 type Caps struct {
 	// Tokenized engines receive one token per BuildMore call and
 	// pre-expanded query tokens (flatcurve model).
@@ -123,7 +123,7 @@ const (
 )
 
 // Word is one search word expanded to its OR-variants (raw, unfiltered,
-// filtered), mirroring fts_backend_dovecot_expand_tokens: a document matches
+// filtered), per the reference query-expansion model: a document matches
 // the word when it matches any variant.
 type Word struct {
 	Variants []string
@@ -163,9 +163,8 @@ type Result struct {
 	Scores   []Score
 }
 
-// MergeScoresAnd folds src into dest for an AND composition, mirroring
-// fts_search_merge_scores_and: UIDs present in both keep the higher score;
-// dest-only UIDs are left as-is (upstream deliberately does not drop them).
+// MergeScoresAnd folds src into dest for an AND composition: UIDs present
+// in both keep the higher score; dest-only UIDs are deliberately left as-is.
 // Both slices must be sorted by UID; dest is modified in place.
 func MergeScoresAnd(dest []Score, src []Score) []Score {
 	di, si := 0, 0
@@ -186,8 +185,8 @@ func MergeScoresAnd(dest []Score, src []Score) []Score {
 	return dest
 }
 
-// MergeScoresOr merges src and dest for an OR composition, mirroring
-// fts_search_merge_scores_or: the union of both, common UIDs keeping the
+// MergeScoresOr merges src and dest for an OR composition: the union of
+// both, common UIDs keeping the
 // higher score. Both inputs must be sorted by UID; returns a new slice.
 func MergeScoresOr(dest []Score, src []Score) []Score {
 	out := make([]Score, 0, len(dest)+len(src))
