@@ -61,17 +61,32 @@ jobs:
         run: go build -o /tmp/smoketest ./app/smoketest
 
       - name: Run smoke checks
+        env:
+          SMOKE_IMAP_USER: ${{ vars.SMOKE_IMAP_USER }}
+          SMOKE_IMAP_PASS: ${{ secrets.SMOKE_IMAP_PASS }}
+          SMOKE_QUOTA_OVER_USER: ${{ vars.SMOKE_QUOTA_OVER_USER }}
+          SMOKE_QUOTA_OVER_PASS: ${{ secrets.SMOKE_QUOTA_OVER_PASS }}
         run: |
           POP3S_FLAGS=""
           if [ -n "${{ inputs.pop3s_port }}" ]; then
             POP3S_FLAGS="-pop3s -pop3s-port ${{ inputs.pop3s_port }}"
           fi
+          # QUOTA + ACL checks reuse the imap login user when it is configured.
+          QUOTA_ACL_FLAGS=""
+          if [ -n "$SMOKE_IMAP_USER" ]; then
+            QUOTA_ACL_FLAGS="-quota-user $SMOKE_IMAP_USER -quota-pass $SMOKE_IMAP_PASS -acl-user $SMOKE_IMAP_USER -acl-pass $SMOKE_IMAP_PASS"
+          fi
+          # Enforcement check only runs when a dedicated over-quota user is set.
+          if [ -n "$SMOKE_QUOTA_OVER_USER" ]; then
+            QUOTA_ACL_FLAGS="$QUOTA_ACL_FLAGS -quota-over-user $SMOKE_QUOTA_OVER_USER -quota-over-pass $SMOKE_QUOTA_OVER_PASS"
+          fi
           /tmp/smoketest \
             -host "${{ inputs.host }}" \
+            -imap-port "${{ inputs.imap_port }}" \
             -telemetry "${{ inputs.telemetry_url }}" \
             -insecure="${{ inputs.insecure }}" \
             -timeout 15s \
-            $POP3S_FLAGS
+            $POP3S_FLAGS $QUOTA_ACL_FLAGS
 
       - name: Run imaptest
         run: |
