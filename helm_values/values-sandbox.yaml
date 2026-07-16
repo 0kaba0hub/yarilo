@@ -3,7 +3,8 @@
 ## Pre-reqs:
 ##   1. cert-manager + ClusterIssuer "letsencrypt-prod" in the cluster.
 ##   2. DNS A/AAAA for mail-sb.seconddns.com pointing at the LB IP.
-##   3. MySQL in yarilo-sb namespace (apply mysql-sandbox.yaml first).
+##   3. MySQL (apply mysql-sandbox.yaml first — namespace: db).
+##   4. Redis (apply redis-sandbox.yaml first — namespace: redis).
 ##
 ## Install:
 ##   helm upgrade --install yarilo ./helm \
@@ -148,7 +149,7 @@ dicts:
   metadata:
     driver: redis
     settings:
-      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
+      addr: redis.redis.svc.cluster.local:6379
       db: 0
       prefix: "yarilo:metadata:"
       path: null
@@ -157,7 +158,7 @@ dicts:
   quota_clone_redis:
     driver: redis
     settings:
-      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
+      addr: redis.redis.svc.cluster.local:6379
       db: 0
       prefix: "quota:"
   quota_clone_mysql:
@@ -169,19 +170,26 @@ dicts:
   sieve_vacation:
     driver: redis
     settings:
-      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
+      addr: redis.redis.svc.cluster.local:6379
       db: 0
       prefix: "yarilo:sieve:vacation:%u:"
   sieve_duplicate:
     driver: redis
     settings:
-      addr: yarilo-redis.yarilo-sb.svc.cluster.local:6379
+      addr: redis.redis.svc.cluster.local:6379
       db: 0
       prefix: "yarilo:sieve:duplicate:%u:"
 
 ## External MySQL — managed by mysql-sandbox.yaml; bundled StatefulSet disabled.
 mysql:
   bundled: false
+
+## External Redis — managed by redis-sandbox.yaml (namespace: redis); the chart's
+## in-namespace Redis StatefulSet is disabled. Consumers (locks state, dicts)
+## point at redis.redis.svc.cluster.local:6379.
+redis:
+  bundled: false
+  externalUrl: "redis://redis.redis.svc.cluster.local:6379/0"
 
 ## DSN injected from the yarilo-mysql Secret created by mysql-sandbox.yaml.
 extraEnv:
@@ -265,7 +273,7 @@ components:
 
     token:
       backend: redis
-      redis_addr: "redis://yarilo-redis.yarilo-sb.svc.cluster.local:6379/0"
+      redis_addr: "redis://redis.redis.svc.cluster.local:6379/0"
 
   ## IMAP session pod.
   imap:
