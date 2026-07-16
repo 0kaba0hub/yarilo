@@ -35,6 +35,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
+	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
@@ -154,6 +155,12 @@ func main() {
 		slog.Info("backend-api: authclient connected", "addr", cfg.BackendAPI.AuthMasterAddr)
 	}
 
+	var ftsClient ftsproto.Client
+	if cfg.FTS.Enabled && cfg.FTS.Mode == "remote" && cfg.FTS.Addr != "" {
+		ftsClient = ftsproto.NewLazy(cfg.FTS.Addr, 10*time.Second)
+		defer ftsClient.Close() //nolint:errcheck
+	}
+
 	srv := backendapi.New(backendapi.Options{
 		Addr:               listen,
 		TLSConfig:          tlsCfg,
@@ -175,6 +182,7 @@ func main() {
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 			return buildMailbox(driver, locker, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
 		},
+		FTSClient: ftsClient,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
