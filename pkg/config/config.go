@@ -29,6 +29,7 @@ type Config struct {
 	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
 	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
 	LocksService       LocksServiceConfig           `koanf:"locks_service"`
+	FTS                FTSConfig                    `koanf:"fts"`
 	LocksClient        LocksClientConfig            `koanf:"locks_client"`
 	Storage            StorageConfig                `koanf:"storage"`
 	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
@@ -766,6 +767,45 @@ type LocksClientConfig struct {
 	Socket    string   `koanf:"socket"`    // embedded: /run/yarilo/locks.sock
 }
 
+// FTSConfig configures full-text search: the engine selection, the
+// yarilo-fts service topology and the indexing/search behaviour. The engine
+// is required when enabled — startup fails fast on a missing or unknown name
+// so the active engine is always stated in config. See docs/FTS.md.
+type FTSConfig struct {
+	Enabled bool `koanf:"enabled"`
+	// Engine selects the active FTS engine: "flatcurve" (Xapian, cgo image)
+	// or "bleve" (a follow-up stream). No implicit default.
+	Engine string `koanf:"fts_engine"`
+
+	// Mode / Addr / Listen follow the locks_service topology model:
+	// remote = a yarilo-fts Deployment, embedded = in-process (tests/CLI).
+	Mode   string `koanf:"fts_mode"`
+	Addr   string `koanf:"fts_addr"`
+	Listen string `koanf:"fts_listen"`
+
+	Autoindex              bool     `koanf:"fts_autoindex"`
+	AutoindexMaxRecentMsgs int      `koanf:"fts_autoindex_max_recent_msgs"`
+	MessageMaxSize         int64    `koanf:"fts_message_max_size"`
+	HeaderIncludes         []string `koanf:"fts_header_includes"`
+	HeaderExcludes         []string `koanf:"fts_header_excludes"`
+	CommitLimit            int      `koanf:"fts_commit_limit"`
+
+	SearchAddMissing   string `koanf:"fts_search_add_missing"`
+	SearchReadFallback bool   `koanf:"fts_search_read_fallback"`
+	SearchTimeoutSecs  int    `koanf:"fts_search_timeout_secs"`
+	SearchStrict       bool   `koanf:"fts_search_strict"`
+
+	Languages       []string `koanf:"languages"`
+	LanguageFilters []string `koanf:"language_filters"`
+
+	FlatcurveCommitLimit     int  `koanf:"fts_flatcurve_commit_limit"`
+	FlatcurveMinTermSize     int  `koanf:"fts_flatcurve_min_term_size"`
+	FlatcurveOptimizeLimit   int  `koanf:"fts_flatcurve_optimize_limit"`
+	FlatcurveRotateCount     int  `koanf:"fts_flatcurve_rotate_count"`
+	FlatcurveRotateTimeMsecs int  `koanf:"fts_flatcurve_rotate_time"`
+	FlatcurveSubstringSearch bool `koanf:"fts_flatcurve_substring_search"`
+}
+
 // LocksServiceConfig configures the standalone yarilo-locks process.
 // Mode "embedded" runs an in-memory server on a Unix socket (standalone deployment).
 // Mode "remote" runs a Redis-backed server on TCP+mTLS (backend deployment per tag).
@@ -1423,6 +1463,22 @@ func Load(path string) (*Config, error) {
 			MessagePercentage: 100,
 			Grace:             "10M",
 			CloneFlushDelay:   10,
+		},
+		FTS: FTSConfig{
+			Mode:               "remote",
+			Listen:             ":9106",
+			CommitLimit:        500,
+			SearchAddMissing:   "body-search-only",
+			SearchReadFallback: true,
+			SearchTimeoutSecs:  30,
+			Languages:          []string{"en"},
+			LanguageFilters:    []string{"lowercase", "snowball", "stopwords"},
+
+			FlatcurveCommitLimit:     500,
+			FlatcurveMinTermSize:     2,
+			FlatcurveOptimizeLimit:   10,
+			FlatcurveRotateCount:     5000,
+			FlatcurveRotateTimeMsecs: 5000,
 		},
 		SASLLogin: SASLLoginConfig{
 			Listen:         ":12325",
