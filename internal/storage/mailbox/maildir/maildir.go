@@ -605,18 +605,35 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 // reconcile scan and its lock entirely. An empty token (both dirs missing or
 // unstattable) forces the caller to reconcile.
 //
+// A directory whose mtime falls within the current wall-clock second is
+// "dirty": on a filesystem with coarse (1 s) mtime granularity a second change
+// in the same tick would not move the mtime, so the token cannot be trusted
+// for a skip decision. Such a token embeds a per-call nonce so it never
+// matches the cached value, forcing a reconcile until the directory settles a
+// second past its last change. This mirrors the classic maildir same-second
+// dirty-sync rule.
+//
 // Over NFS the client attribute cache can stale a directory mtime; operators
 // that deliver across nodes should keep attribute-cache TTLs short. A stale
 // token only delays visibility until the next changed token, never corrupts.
 func (u *userMailbox) SyncToken(folder string) string {
 	base := u.folderPath(folder)
+	now := time.Now()
 	var b strings.Builder
+	dirty := false
 	for _, sub := range []string{"cur", "new"} {
 		fi, err := os.Stat(filepath.Join(base, sub))
 		if err != nil {
 			continue
 		}
-		fmt.Fprintf(&b, "%s=%d/%d;", sub, fi.ModTime().UnixNano(), fi.Size())
+		mt := fi.ModTime()
+		fmt.Fprintf(&b, "%s=%d/%d;", sub, mt.UnixNano(), fi.Size())
+		if now.Sub(mt) < time.Second {
+			dirty = true
+		}
+	}
+	if dirty {
+		fmt.Fprintf(&b, "dirty=%d", now.UnixNano())
 	}
 	return b.String()
 }

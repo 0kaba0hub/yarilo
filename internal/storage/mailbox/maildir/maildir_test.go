@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -674,6 +675,19 @@ func TestList_ReadDirCacheInvalidatedAfterRemove(t *testing.T) {
 	}
 }
 
+// ageFolder backdates the cur/ and new/ mtimes so SyncToken is out of its
+// same-second dirty window — makes the token deterministic regardless of the
+// host filesystem's mtime granularity or the test's wall-clock timing.
+func ageFolder(t *testing.T, box *userMailbox, folder string, mt time.Time) {
+	t.Helper()
+	base := box.folderPath(folder)
+	for _, sub := range []string{"cur", "new"} {
+		if err := os.Chtimes(filepath.Join(base, sub), mt, mt); err != nil {
+			t.Fatalf("chtimes %s: %v", sub, err)
+		}
+	}
+}
+
 func TestSyncTokenChangesOnDelivery(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	if err := box.Init(); err != nil {
@@ -683,18 +697,24 @@ func TestSyncTokenChangesOnDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	old := time.Now().Add(-time.Hour)
+	ageFolder(t, box, "INBOX", old)
+
 	empty := box.SyncToken("INBOX")
 	if empty == "" {
 		t.Fatal("token for an existing empty folder should be non-empty")
 	}
 	if again := box.SyncToken("INBOX"); again != empty {
-		t.Fatalf("token drifted with no change: %q -> %q", empty, again)
+		t.Fatalf("settled token drifted with no change: %q -> %q", empty, again)
 	}
 
 	name, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Backdate again to a distinct settled time so the change is visible purely
+	// through the mtime component, not the dirty nonce.
+	ageFolder(t, box, "INBOX", old.Add(time.Minute))
 	afterAdd := box.SyncToken("INBOX")
 	if afterAdd == empty {
 		t.Fatal("token unchanged after a delivery")
@@ -703,8 +723,27 @@ func TestSyncTokenChangesOnDelivery(t *testing.T) {
 	if err := box.Remove("INBOX", name); err != nil {
 		t.Fatal(err)
 	}
+	ageFolder(t, box, "INBOX", old.Add(2*time.Minute))
 	if box.SyncToken("INBOX") == afterAdd {
 		t.Fatal("token unchanged after a removal")
+	}
+}
+
+// TestSyncTokenDirtyWithinSecond verifies the same-second guard: a folder just
+// modified yields a non-repeating token so the caller cannot wrongly skip a
+// reconcile on a filesystem with coarse mtime granularity.
+func TestSyncTokenDirtyWithinSecond(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	if err := box.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := box.Create("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	// cur/new were just created (mtime ~now), so both reads are dirty and must
+	// differ from each other, forcing a reconcile.
+	if a, b := box.SyncToken("INBOX"), box.SyncToken("INBOX"); a == b {
+		t.Fatalf("dirty token repeated within the same second: %q", a)
 	}
 }
 
