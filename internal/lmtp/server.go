@@ -24,6 +24,8 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
@@ -52,6 +54,13 @@ type Options struct {
 	// mailbox key so subscribed IMAP IDLE sessions on other pods receive
 	// the notification immediately. Nil disables cross-pod notifications.
 	Locker locks.Locker
+
+	// FTSClient, when set with FTSAutoindex, queues an INDEX toward
+	// yarilo-fts after each accepted delivery (write-through autoindex;
+	// best-effort — rescan heals lost hooks).
+	FTSClient    ftsproto.Client
+	FTSAutoindex bool
+	FTSMaxRecent int
 
 	// UserdbLookup fetches per-user storage config from the userdb before
 	// accepting RCPT TO. Returning (nil, nil) means user not found → 550.
@@ -740,12 +749,13 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					slog.Warn("lmtp: create folder", "folder", d.Folder, "err", err)
 				}
 			}
-			err := deliverOne(tBox, tIdx, rel, bytes.NewReader(deliverMsg), int64(len(deliverMsg)), s.opts.Locker, username, s.from, d.Flags)
+			uid, err := deliverOne(tBox, tIdx, rel, bytes.NewReader(deliverMsg), int64(len(deliverMsg)), s.opts.Locker, username, s.from, d.Flags)
 			closeTarget()
 			if err != nil {
 				deliverErr = err
 				break
 			}
+			s.ftsAutoindex(username, rel, uid)
 		}
 		rcptBox.Close() //nolint:errcheck
 		rcptIdx.Close() //nolint:errcheck
@@ -760,6 +770,19 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		status.SetStatus(rcpt, deliverErr)
 	}
 	return nil
+}
+
+// ftsAutoindex is the delivery-time FTS hook: fire-and-forget.
+func (s *session) ftsAutoindex(username, folder string, uid uint32) {
+	if s.opts.FTSClient == nil || !s.opts.FTSAutoindex || uid == 0 {
+		return
+	}
+	client, maxRecent := s.opts.FTSClient, s.opts.FTSMaxRecent
+	go func() {
+		if err := client.Index(username, fts.MailboxRef{Name: folder}, uid, maxRecent); err != nil {
+			slog.Debug("lmtp: fts autoindex failed", "user", username, "folder", folder, "err", err)
+		}
+	}()
 }
 
 func sieveRejectCode(r *sieve.RejectErr) (int, goSmtp.EnhancedCode) {
