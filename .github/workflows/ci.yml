@@ -89,6 +89,16 @@ jobs:
           set -o pipefail
           go test -v ./... 2>&1 | go-junit-report -set-exit-code > /tmp/test-results.xml
 
+      ## The flatcurve FTS engine is cgo + libxapian and only builds with the
+      ## "flatcurve" tag; the runner installs libxapian-dev on demand.
+      - name: Run flatcurve engine tests
+        run: |
+          if ! dpkg -s libxapian-dev >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libxapian-dev
+          fi
+          go test -tags flatcurve ./internal/fts/flatcurve/
+
       - name: Publish test results
         uses: dorny/test-reporter@v3
         if: always()
