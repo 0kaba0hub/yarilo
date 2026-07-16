@@ -37,6 +37,33 @@ RUN set -eu; \
 RUN go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
     -trimpath -o /out/yarilo-smoketest ./app/smoketest
 
+## --- yarilo-fts: the only cgo binary (libxapian). Built in its own stage so
+## the default image stays CGO_ENABLED=0 static; published as the -fts image.
+FROM golang:1.26-alpine AS fts-builder
+# hadolint ignore=DL3018
+RUN apk add --no-cache build-base xapian-core-dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG BUILD_VERSION=dev
+ENV CGO_ENABLED=1 GOOS=linux GOARCH=amd64
+RUN go build -tags flatcurve -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
+    -trimpath -o /out/yarilo-fts ./app/yarilo-fts
+
+FROM alpine:3.24 AS fts
+# hadolint ignore=DL3018,DL3019
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata xapian-core libstdc++ && \
+    addgroup -g 1000 yarilo && \
+    adduser -u 1000 -G yarilo -s /sbin/nologin -D yarilo
+COPY --from=fts-builder /out/yarilo-fts /usr/local/bin/yarilo-fts
+COPY docker/entrypoint.sh /entrypoint.sh
+COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
+RUN chmod +x /entrypoint.sh
+USER yarilo:yarilo
+EXPOSE 9106
+ENTRYPOINT ["/entrypoint.sh"]
+
 FROM alpine:3.24
 # hadolint ignore=DL3018,DL3019
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata && \

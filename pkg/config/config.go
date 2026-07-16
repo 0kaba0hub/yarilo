@@ -782,6 +782,9 @@ type FTSConfig struct {
 	Mode   string `koanf:"fts_mode"`
 	Addr   string `koanf:"fts_addr"`
 	Listen string `koanf:"fts_listen"`
+	// AuthMasterAddr is the yarilo-auth master listener for userdb lookups
+	// (storage identity of the user being indexed). Empty = resolver defaults.
+	AuthMasterAddr string `koanf:"fts_auth_master_addr"`
 
 	Autoindex              bool     `koanf:"fts_autoindex"`
 	AutoindexMaxRecentMsgs int      `koanf:"fts_autoindex_max_recent_msgs"`
