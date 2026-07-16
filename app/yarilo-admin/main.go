@@ -155,8 +155,10 @@ func dispatchBackend(args []string) error {
 		return dispatchSessions(args[1:])
 	case "quota":
 		return dispatchQuota(args[1:])
+	case "fts":
+		return dispatchFTS(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts", args[0])
 	}
 }
 

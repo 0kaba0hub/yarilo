@@ -43,6 +43,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -108,6 +109,10 @@ type Options struct {
 	// opts.Mailbox. Backends are cached internally; the factory is
 	// only called once per distinct driver string.
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
+
+	// FTSClient dials the yarilo-fts service for the operator fts surface
+	// (status / rescan / optimize). Nil disables those endpoints (501).
+	FTSClient ftsproto.Client
 }
 
 // mailboxForDriver returns the MailboxBackend for driver, using opts.Mailbox
@@ -152,6 +157,7 @@ func New(opts Options) *Server {
 	s.registerQuotaRoutes()
 	s.registerWhoRoutes()
 	s.registerSessionRoutes()
+	s.registerFTSRoutes()
 	return s
 }
 
