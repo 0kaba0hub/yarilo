@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/storage/reconcile"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
@@ -576,6 +577,49 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 }
 
 func (u *userMailbox) Close() error { return nil }
+
+// ProactiveScan reports that this driver's on-disk representation may change
+// out of band (MDA delivery into new/, another MUA renaming for flags) so the
+// index must be reconciled by scanning the directory on SELECT. Index-
+// authoritative drivers (dbox) omit this method and self-heal reactively.
+func (u *userMailbox) ProactiveScan() bool { return true }
+
+// ReconcileIndex imports messages that appeared in folder out of band and
+// expunges index records whose file has vanished, all under the driver's
+// cross-process mailbox lock (the same lock domain the admin rebuild uses).
+// The index is authoritative for flags of already-tracked messages; only new
+// and vanished files change the record set.
+func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (reconcile.Stats, error) {
+	var st reconcile.Stats
+	err := u.withMailboxLock(folder.Name, func() error {
+		var e error
+		st, e = reconcile.SyncNew(u, idx, folder)
+		return e
+	})
+	return st, err
+}
+
+// SyncToken returns an opaque token capturing the folder's cur/ and new/
+// directory mtime and size. When it is unchanged since the previous SELECT no
+// message was delivered, removed or renamed, so the caller may skip the
+// reconcile scan and its lock entirely. An empty token (both dirs missing or
+// unstattable) forces the caller to reconcile.
+//
+// Over NFS the client attribute cache can stale a directory mtime; operators
+// that deliver across nodes should keep attribute-cache TTLs short. A stale
+// token only delays visibility until the next changed token, never corrupts.
+func (u *userMailbox) SyncToken(folder string) string {
+	base := u.folderPath(folder)
+	var b strings.Builder
+	for _, sub := range []string{"cur", "new"} {
+		fi, err := os.Stat(filepath.Join(base, sub))
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "%s=%d/%d;", sub, fi.ModTime().UnixNano(), fi.Size())
+	}
+	return b.String()
+}
 
 // ---- uidlist ---------------------------------------------------------------
 

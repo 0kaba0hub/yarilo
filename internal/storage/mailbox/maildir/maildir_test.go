@@ -673,3 +673,44 @@ func TestList_ReadDirCacheInvalidatedAfterRemove(t *testing.T) {
 		t.Errorf("expected 0 messages after Remove, got %d", len(msgs))
 	}
 }
+
+func TestSyncTokenChangesOnDelivery(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	if err := box.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := box.Create("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+
+	empty := box.SyncToken("INBOX")
+	if empty == "" {
+		t.Fatal("token for an existing empty folder should be non-empty")
+	}
+	if again := box.SyncToken("INBOX"); again != empty {
+		t.Fatalf("token drifted with no change: %q -> %q", empty, again)
+	}
+
+	name, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterAdd := box.SyncToken("INBOX")
+	if afterAdd == empty {
+		t.Fatal("token unchanged after a delivery")
+	}
+
+	if err := box.Remove("INBOX", name); err != nil {
+		t.Fatal(err)
+	}
+	if box.SyncToken("INBOX") == afterAdd {
+		t.Fatal("token unchanged after a removal")
+	}
+}
+
+func TestMaildirAdvertisesProactiveScan(t *testing.T) {
+	box, _ := newBox(t, "u@x.com")
+	if !box.ProactiveScan() {
+		t.Fatal("maildir must advertise ProactiveScan")
+	}
+}
