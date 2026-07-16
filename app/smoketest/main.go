@@ -51,6 +51,13 @@ var (
 	flagPasswdFilePass = flag.String("passwd-file-pass", "", "password for -passwd-file-user")
 	flagStaticUser     = flag.String("static-user", "", "IMAP username backed by the static passdb (enables the check)")
 	flagStaticPass     = flag.String("static-pass", "", "password for -static-user")
+
+	flagQuotaUser     = flag.String("quota-user", "", "IMAP username for the QUOTA extension check (enables it)")
+	flagQuotaPass     = flag.String("quota-pass", "", "password for -quota-user")
+	flagQuotaOverUser = flag.String("quota-over-user", "", "IMAP username provisioned over quota, for the enforcement check (enables it)")
+	flagQuotaOverPass = flag.String("quota-over-pass", "", "password for -quota-over-user")
+	flagACLUser       = flag.String("acl-user", "", "IMAP username for the ACL extension check (enables it)")
+	flagACLPass       = flag.String("acl-pass", "", "password for -acl-user")
 )
 
 type result struct {
@@ -155,6 +162,30 @@ func main() {
 			fn   func() error
 		}{"imap login (static passdb)", func() error {
 			return checkIMAPLogin(*flagStaticUser, *flagStaticPass)
+		}})
+	}
+	if *flagQuotaUser != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap QUOTA (GETQUOTA)", func() error {
+			return checkQuota(*flagQuotaUser, *flagQuotaPass)
+		}})
+	}
+	if *flagQuotaOverUser != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap QUOTA enforcement (OVERQUOTA)", func() error {
+			return checkQuotaOver(*flagQuotaOverUser, *flagQuotaOverPass)
+		}})
+	}
+	if *flagACLUser != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap ACL (MYRIGHTS + SETACL round-trip)", func() error {
+			return checkACL(*flagACLUser, *flagACLPass)
 		}})
 	}
 
