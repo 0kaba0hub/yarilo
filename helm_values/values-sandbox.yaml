@@ -32,6 +32,20 @@ quota:
     - quota_clone_mysql
   quota_clone_flush_delay: 10
 
+## Full-text search (FTS-1). The yarilo-fts service (components.fts below) owns
+## the indexes; sessions dial it at fts_addr. fts_auth_master_addr is required
+## so the service resolves each user's home + INDEX=~/index from userdb exactly
+## like the session pods do. Engine: flatcurve (Xapian) — runs the -fts image.
+fts:
+  enabled: true
+  fts_engine: flatcurve
+  fts_mode: remote
+  fts_addr: "yarilo-fts:9106"
+  fts_auth_master_addr: "yarilo-auth:9102"
+  fts_autoindex: true
+  language_filters: [lowercase, snowball, stopwords]
+  languages: [en]
+
 ## Namespaces. Personal owns INBOX (storage from storage.mail_home_template);
 ## Public is a shared, non-owner store used to exercise delivery-through-namespaces.
 namespaces:
@@ -313,6 +327,12 @@ components:
       annotations:
         metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
         metallb.universe.tf/allow-shared-ip: "yarilo-mail"
+
+  ## Full-text search service — sole owner of the FTS indexes (queue + worker
+  ## + LOOKUP). Runs the -fts image variant (the only cgo/libxapian binary);
+  ## Recreate strategy so only one writer ever holds the index files.
+  fts:
+    enabled: true
 
   ## ManageSieve backend — internal, not exposed outside cluster.
   manageSieve:
