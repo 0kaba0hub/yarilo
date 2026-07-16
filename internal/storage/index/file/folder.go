@@ -897,6 +897,14 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 			fs.file.Header.DeletedMessagesCount--
 		}
 		expungedVSize := decodeVsizeRec(rec.Ext[extNameVsize])
+		if expungedVSize == 0 {
+			// Record without the per-record vsize extension (e.g. delivered by
+			// another process and reloaded from disk): fall back to the physical
+			// size, matching recalcVsizeLocked. Otherwise the aggregate is
+			// decremented by 0 and stays stale — a count-authoritative quota read
+			// then over-counts until the next full recompute.
+			expungedVSize = fs.sizes[rec.UID]
+		}
 		fs.file.Records = append(fs.file.Records[:idx], fs.file.Records[idx+1:]...)
 		fs.file.Header.MessagesCount--
 		if uint64(expungedVSize) <= fs.vsize.Vsize {
