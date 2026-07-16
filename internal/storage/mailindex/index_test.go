@@ -255,3 +255,54 @@ func containsStr(s, sub string) bool {
 	}
 	return false
 }
+
+// TestAddHeaderExtension covers the backfill helper used to add a header-only
+// extension to an index that lacks it (#586): HeaderSize must be fixed up so
+// Recreate accepts the file and a reopen finds the extension.
+func TestAddHeaderExtension(t *testing.T) {
+	f, err := NewFile(1717185600, []Extension{
+		{Name: "modseq", HdrSize: 16, HdrData: bytes.Repeat([]byte{0xAA}, 16),
+			RecordSize: 8, RecordAlign: 8, ResetID: 7},
+	})
+	if err != nil {
+		t.Fatalf("NewFile: %v", err)
+	}
+
+	data := bytes.Repeat([]byte{0x42}, 16)
+	if err := f.AddHeaderExtension("hdr-vsize", data, 8, 1); err != nil {
+		t.Fatalf("AddHeaderExtension: %v", err)
+	}
+
+	// Header must now match the encoded extensions, else Recreate rejects it.
+	path := filepath.Join(t.TempDir(), "dovecot.index")
+	if _, err := Recreate(RecreateInput{
+		Path: path, Header: f.Header, Extensions: f.Extensions, Records: f.Records,
+	}); err != nil {
+		t.Fatalf("Recreate after AddHeaderExtension (HeaderSize not fixed up?): %v", err)
+	}
+	ro, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var got *Extension
+	for i := range ro.Extensions {
+		if ro.Extensions[i].Name == "hdr-vsize" {
+			got = &ro.Extensions[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("hdr-vsize extension not persisted")
+	}
+	if !bytes.Equal(got.HdrData, data) {
+		t.Errorf("HdrData = %x, want %x", got.HdrData, data)
+	}
+
+	// Idempotent: a second add is a no-op (no duplicate, no error).
+	before := len(f.Extensions)
+	if err := f.AddHeaderExtension("hdr-vsize", data, 8, 1); err != nil {
+		t.Fatalf("second AddHeaderExtension: %v", err)
+	}
+	if len(f.Extensions) != before {
+		t.Errorf("extension count changed on no-op add: %d -> %d", before, len(f.Extensions))
+	}
+}

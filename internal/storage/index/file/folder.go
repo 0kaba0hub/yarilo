@@ -277,16 +277,12 @@ func (fs *folderState) persistVsizeLocked() {
 	}
 	// Backfill the extension for folders whose base index predates hdr-vsize:
 	// without this the aggregate is never persisted, so every quota read
-	// full-rescans and recalc is a silent no-op. Appending it here lets the
-	// next flush/Recreate write it, after which the O(1) validity check engages.
-	fs.file.Extensions = append(fs.file.Extensions, mailindex.Extension{
-		Name:        extNameHdrVsize,
-		HdrSize:     uint32(len(data)),
-		HdrData:     data,
-		RecordSize:  0,
-		RecordAlign: 8,
-		ResetID:     fs.file.Header.UIDValidity,
-	})
+	// full-rescans and recalc is a silent no-op. AddHeaderExtension also fixes
+	// up Header.HeaderSize so Recreate accepts the file (a plain append does not
+	// — Recreate rejects a header-size mismatch).
+	if err := fs.file.AddHeaderExtension(extNameHdrVsize, data, 8, fs.file.Header.UIDValidity); err != nil {
+		slog.Warn("fileindex: hdr-vsize backfill failed", "folder", fs.folder, "err", err)
+	}
 }
 
 // snapshot returns a mailbox.Folder describing the current state.
