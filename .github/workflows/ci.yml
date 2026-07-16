@@ -90,14 +90,16 @@ jobs:
           go test -v ./... 2>&1 | go-junit-report -set-exit-code > /tmp/test-results.xml
 
       ## The flatcurve FTS engine is cgo + libxapian and only builds with the
-      ## "flatcurve" tag; the runner installs libxapian-dev on demand.
+      ## "flatcurve" tag; the runner installs libxapian-dev / g++ on demand.
+      ## CGO_ENABLED=1 is explicit: without a C toolchain Go silently drops
+      ## the cgo files and the build fails with undefined symbols.
       - name: Run flatcurve engine tests
         run: |
-          if ! dpkg -s libxapian-dev >/dev/null 2>&1; then
+          if ! dpkg -s libxapian-dev >/dev/null 2>&1 || ! command -v g++ >/dev/null; then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq libxapian-dev
+            sudo apt-get install -y -qq libxapian-dev g++
           fi
-          go test -tags flatcurve ./internal/fts/flatcurve/
+          CGO_ENABLED=1 go test -tags flatcurve ./internal/fts/flatcurve/
 
       - name: Publish test results
         uses: dorny/test-reporter@v3
