@@ -1,0 +1,265 @@
+package imap_test
+
+import (
+	"fmt"
+	"net"
+	"sync"
+	"testing"
+	"time"
+
+	imap "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+
+	"github.com/0kaba0hub/yarilo/internal/fts/language"
+	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
+	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
+	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+)
+
+// fakeFTS scripts the client side of the FTS service for session tests.
+type fakeFTS struct {
+	mu        sync.Mutex
+	lookup    fts.Result
+	lookupErr error
+	lastUID   uint32
+	prepends  int
+	expunges  []uint32
+	indexes   []uint32
+	queries   []fts.Query
+}
+
+func (f *fakeFTS) Index(_ string, _ fts.MailboxRef, maxUID uint32, _ int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.indexes = append(f.indexes, maxUID)
+	return nil
+}
+
+func (f *fakeFTS) Prepend(_ string, _ fts.MailboxRef, maxUID uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prepends++
+	f.lastUID = maxUID // catch-up completes on the next Status poll
+	return nil
+}
+
+func (f *fakeFTS) Expunge(_ string, _ fts.MailboxRef, uid uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expunges = append(f.expunges, uid)
+	return nil
+}
+
+func (f *fakeFTS) Lookup(_ string, _ fts.MailboxRef, q fts.Query) (fts.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queries = append(f.queries, q)
+	return f.lookup, f.lookupErr
+}
+
+func (f *fakeFTS) Status(string, fts.MailboxRef) (uint32, uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUID, 1, nil
+}
+
+func (f *fakeFTS) Rescan(string, fts.MailboxRef) error { return nil }
+func (f *fakeFTS) Optimize(string) error               { return nil }
+func (f *fakeFTS) Close() error                        { return nil }
+
+func startFTSTestServer(t *testing.T, fake *fakeFTS, autoindex bool) *imapclient.Client {
+	t.Helper()
+	chain, err := language.NewChain(language.DefaultSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := imapserver.Options{
+		Mailbox:  maildir.New(),
+		Index:    file.New(),
+		Resolver: &mailbox.Resolver{Root: t.TempDir(), HomeTemplate: "%d/%n"},
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		FTS: imapserver.FTSOptions{
+			Client:       fake,
+			Chain:        chain,
+			AddMissing:   "body-search-only",
+			ReadFallback: true,
+			Timeout:      3 * time.Second,
+			Autoindex:    autoindex,
+		},
+	}
+	srv := imapserver.New(opts)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func appendBody(t *testing.T, c *imapclient.Client, body string) {
+	t.Helper()
+	raw := "From: s@x\r\nTo: user@test.com\r\nSubject: m\r\n\r\n" + body + "\r\n"
+	ac := c.Append("INBOX", int64(len(raw)), nil)
+	if _, err := ac.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ac.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ac.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func searchBody(t *testing.T, c *imapclient.Client, term string) []imap.UID {
+	t.Helper()
+	data, err := c.UIDSearch(&imap.SearchCriteria{Body: []string{term}}, nil).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data.AllUIDs()
+}
+
+func TestSearchUsesFTSCandidates(t *testing.T) {
+	// All three messages contain the term, but the (authoritative) FTS
+	// lookup returns only UID 2 — proving the scan was not used.
+	fake := &fakeFTS{lookup: fts.Result{Definite: []uint32{2}}, lastUID: 100}
+	c := startFTSTestServer(t, fake, false)
+	for i := 0; i < 3; i++ {
+		appendBody(t, c, fmt.Sprintf("target payload %d", i))
+	}
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	uids := searchBody(t, c, "target")
+	if len(uids) != 1 || uids[0] != 2 {
+		t.Fatalf("SEARCH BODY = %v, want [2]", uids)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.queries) != 1 || len(fake.queries[0].Terms) != 1 ||
+		fake.queries[0].Terms[0].Field != fts.FieldBody {
+		t.Fatalf("unexpected FTS queries: %+v", fake.queries)
+	}
+}
+
+func TestSearchVerifiesMaybe(t *testing.T) {
+	// Maybe candidates are re-verified against the raw message: UID 1 does
+	// not actually contain the term and must be filtered out.
+	fake := &fakeFTS{lookup: fts.Result{Maybe: []uint32{1, 2}}, lastUID: 100}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "innocent text")
+	appendBody(t, c, "hidden gemstone here")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	uids := searchBody(t, c, "gemstone")
+	if len(uids) != 1 || uids[0] != 2 {
+		t.Fatalf("maybe verification = %v, want [2]", uids)
+	}
+}
+
+func TestSearchFallbackOnFTSError(t *testing.T) {
+	fake := &fakeFTS{lookupErr: fmt.Errorf("boom"), lastUID: 100}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "resilient content")
+	appendBody(t, c, "other stuff")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	// ReadFallback=true: the sequential scan answers correctly.
+	uids := searchBody(t, c, "resilient")
+	if len(uids) != 1 || uids[0] != 1 {
+		t.Fatalf("fallback scan = %v, want [1]", uids)
+	}
+}
+
+func TestSearchOnDemandCatchUp(t *testing.T) {
+	// Index behind (lastUID=0): the session must PREPEND and poll; the fake
+	// completes catch-up on Prepend.
+	fake := &fakeFTS{lookup: fts.Result{Definite: []uint32{1}}}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "latecomer")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	uids := searchBody(t, c, "latecomer")
+	if len(uids) != 1 || uids[0] != 1 {
+		t.Fatalf("catch-up search = %v, want [1]", uids)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.prepends != 1 {
+		t.Fatalf("prepends = %d, want 1", fake.prepends)
+	}
+}
+
+func TestExpungeAndAutoindexHooks(t *testing.T) {
+	fake := &fakeFTS{lastUID: 100}
+	c := startFTSTestServer(t, fake, true)
+	appendBody(t, c, "will vanish")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Store(imap.SeqSetNum(1),
+		&imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		fake.mu.Lock()
+		ok := len(fake.expunges) == 1 && fake.expunges[0] == 1 && len(fake.indexes) >= 1
+		fake.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	t.Fatalf("hooks not fired: expunges=%v indexes=%v", fake.expunges, fake.indexes)
+}
+
+func TestSearchFlagsIntersect(t *testing.T) {
+	// FTS candidates intersect with non-FTS criteria (flags).
+	fake := &fakeFTS{lookup: fts.Result{Definite: []uint32{1, 2}}, lastUID: 100}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "shared token one")
+	appendBody(t, c, "shared token two")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Store(imap.SeqSetNum(2),
+		&imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagFlagged}}, nil).Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := c.UIDSearch(&imap.SearchCriteria{
+		Body: []string{"shared"},
+		Flag: []imap.Flag{imap.FlagFlagged},
+	}, nil).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	uids := data.AllUIDs()
+	if len(uids) != 1 || uids[0] != 2 {
+		t.Fatalf("intersect = %v, want [2]", uids)
+	}
+}

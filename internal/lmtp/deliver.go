@@ -33,29 +33,29 @@ import (
 //	during delivery, add a UserDB interface (driver: SQL query or dict
 //	protocol) and call it here before OpenUser, passing the resulting home
 //	as homeOverride to Resolver.UserInfo.
-func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username, from string, flags []string) error {
+func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username, from string, flags []string) (uint32, error) {
 	tDeliver := time.Now()
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("lmtp: seek: %w", err)
+		return 0, fmt.Errorf("lmtp: seek: %w", err)
 	}
 	data, _ := io.ReadAll(r)
 
 	f, err := idx.OpenFolder(folder, 0)
 	if err != nil {
-		return fmt.Errorf("lmtp: open index: %w", err)
+		return 0, fmt.Errorf("lmtp: open index: %w", err)
 	}
 	uid, err := idx.AllocateUID(f.ID)
 	if err != nil {
-		return fmt.Errorf("lmtp: allocate UID: %w", err)
+		return 0, fmt.Errorf("lmtp: allocate UID: %w", err)
 	}
 	modseq, err := idx.NextModSeq(f.ID)
 	if err != nil {
-		return fmt.Errorf("lmtp: modseq: %w", err)
+		return 0, fmt.Errorf("lmtp: modseq: %w", err)
 	}
 	tSave := time.Now()
 	filename, err := box.Save(folder, bytes.NewReader(data), uid, size, flags)
 	if err != nil {
-		return fmt.Errorf("lmtp: save: %w", err)
+		return 0, fmt.Errorf("lmtp: save: %w", err)
 	}
 	tIndex := time.Now()
 	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
@@ -67,7 +67,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		Flags:        flags,
 	}); err != nil {
 		_ = box.Remove(folder, filename)
-		return fmt.Errorf("lmtp: index append: %w", err)
+		return 0, fmt.Errorf("lmtp: index append: %w", err)
 	}
 	slog.Debug("lmtp: deliver timing",
 		"folder", folder, "size", size,
@@ -76,7 +76,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		"total_ms", time.Since(tDeliver).Milliseconds())
 	emitMailboxEvent(locker, username, folder, locks.EventDelivered, uid)
 	slog.Info("lmtp: delivered", "from", from, "to", username, "folder", folder, "uid", uid, "size", size)
-	return nil
+	return uid, nil
 }
 
 // emitMailboxEvent is a best-effort fire-and-forget publish. Errors are

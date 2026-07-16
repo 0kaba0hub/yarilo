@@ -130,6 +130,8 @@ type Options struct {
 	QuotaPolicy quota.Policy
 	// QuotaWarner runs quota_warning actions. Nil = warnings only log.
 	QuotaWarner *quotawarn.Runner
+	// FTS wires full-text search (docs/FTS.md §11). Zero value disables it.
+	FTS FTSOptions
 	// QuotaClone mirrors usage to external dicts. Nil = disabled.
 	QuotaClone *quota.Clone
 	// QuotaCloneFlushDelay debounces clone writes (one per interval per session).
@@ -550,6 +552,7 @@ func (s *session) emitMailboxChange(folder string, eventType locks.EventType, ui
 	// A delivered/expunged message changes storage usage — refresh the quota
 	// clone. Independent of the event bus, so it runs before the Locker guard.
 	if eventType == locks.EventDelivered || eventType == locks.EventExpunged {
+		s.ftsNotify(folder, eventType == locks.EventExpunged, uid)
 		s.quotaChanged()
 		// A single fresh post-commit read feeds both quota_warning crossing
 		// detection and the quota_clone mirror.
@@ -2176,6 +2179,13 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	needsBody := len(criteria.Header) > 0 || len(criteria.Body) > 0 || len(criteria.Text) > 0 ||
 		!criteria.SentSince.IsZero() || !criteria.SentBefore.IsZero() || searchNeedsBodyRecurse(criteria.Not, criteria.Or)
 
+	// Full-text path: answer Body/Text/Header criteria from the index and
+	// scan only the candidates (docs/FTS.md §11). nil = sequential scan.
+	ftsF, ftsErr := s.prepareFTSSearch(criteria, msgs)
+	if ftsErr != nil {
+		return nil, ftsErr
+	}
+
 	// Collect both representations — clients may want UID set OR sequence
 	// numbers via RETURN ALL, while MIN/MAX/COUNT always operate on the
 	// kind requested.
@@ -2190,8 +2200,19 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
 
+		matchCrit, needRaw := criteria, needsBody
+		if ftsF != nil {
+			if !ftsF.covered[m.UID] {
+				continue
+			}
+			if ftsF.verify[m.UID] {
+				needRaw = true
+			} else {
+				matchCrit, needRaw = ftsF.stripped, ftsF.strippedNeedsBody
+			}
+		}
 		var rawMsg []byte
-		if needsBody && m.Filename != "" {
+		if needRaw && m.Filename != "" {
 			if rc, err := s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier); err == nil {
 				rawMsg, _ = io.ReadAll(rc)
 				rc.Close()
@@ -2206,7 +2227,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 			imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
 		}
 
-		if !imapserver.MatchMessage(seqNum, imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, rawMsg, criteria) {
+		if !imapserver.MatchMessage(seqNum, imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, rawMsg, matchCrit) {
 			continue
 		}
 
@@ -2280,8 +2301,19 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 			// Sequence-number SEARCH still saves UIDs (RFC 5182 §2.1).
 			var saved imaplib.UIDSet
 			for i, m := range msgs {
+				matchCrit, needRaw := criteria, needsBody
+				if ftsF != nil {
+					if !ftsF.covered[m.UID] {
+						continue
+					}
+					if ftsF.verify[m.UID] {
+						needRaw = true
+					} else {
+						matchCrit, needRaw = ftsF.stripped, ftsF.strippedNeedsBody
+					}
+				}
 				var raw []byte
-				if needsBody && m.Filename != "" {
+				if needRaw && m.Filename != "" {
 					if rc, err := s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier); err == nil {
 						raw, _ = io.ReadAll(rc)
 						rc.Close()
@@ -2294,7 +2326,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 				for j, k := range m.Keywords {
 					imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
 				}
-				if imapserver.MatchMessage(uint32(i+1), imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, raw, criteria) {
+				if imapserver.MatchMessage(uint32(i+1), imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, raw, matchCrit) {
 					saved.AddNum(imaplib.UID(m.UID))
 				}
 			}

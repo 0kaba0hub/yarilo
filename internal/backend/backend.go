@@ -20,6 +20,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/passdbs"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
+	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	mssvr "github.com/0kaba0hub/yarilo/internal/managesieve"
@@ -37,6 +38,7 @@ import (
 	authclient "github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
@@ -170,6 +172,11 @@ func New(cfg *config.Config) (*Server, error) {
 		cloneDicts = append(cloneDicts, d)
 	}
 	quotaClone := quota.NewClone(cloneDicts)
+
+	ftsClient, ftsChain, err := buildFTS(cfg)
+	if err != nil {
+		return nil, err
+	}
 	quotaCloneFlushDelay := time.Duration(cfg.Quota.CloneFlushDelay) * time.Second
 	if quotaCloneFlushDelay <= 0 {
 		quotaCloneFlushDelay = 10 * time.Second
@@ -266,6 +273,16 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaWarner:          quotaWarner,
 			QuotaClone:           quotaClone,
 			QuotaCloneFlushDelay: quotaCloneFlushDelay,
+			FTS: imapsvr.FTSOptions{
+				Client:       ftsClient,
+				Chain:        ftsChain,
+				AddMissing:   cfg.FTS.SearchAddMissing,
+				ReadFallback: cfg.FTS.SearchReadFallback,
+				Timeout:      time.Duration(cfg.FTS.SearchTimeoutSecs) * time.Second,
+				Strict:       cfg.FTS.SearchStrict,
+				Autoindex:    cfg.FTS.Autoindex,
+				MaxRecent:    cfg.FTS.AutoindexMaxRecentMsgs,
+			},
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
@@ -383,6 +400,9 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaPolicy:          cfg.Quota.QuotaPolicy(),
 			QuotaWarner:          quotaWarner,
 			QuotaClone:           quotaClone,
+			FTSClient:            ftsClient,
+			FTSAutoindex:         cfg.FTS.Autoindex,
+			FTSMaxRecent:         cfg.FTS.AutoindexMaxRecentMsgs,
 			MetadataDict:         metadataDict,
 			AuthAddr:             authAddr,
 			AuthTLS:              authTLS,
@@ -1127,6 +1147,37 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 	default:
 		return nil, fmt.Errorf("locks_client: unknown mode %q (want remote | embedded | \"\")", lc.Mode)
 	}
+}
+
+// buildFTS wires the session-side FTS client (docs/FTS.md §11). Sessions
+// only ever talk to the yarilo-fts service over the wire — remote mode; the
+// embedded mode is for the service's own tests/CLI.
+func buildFTS(cfg *config.Config) (ftsproto.Client, *language.Chain, error) {
+	fc := cfg.FTS
+	if !fc.Enabled {
+		return nil, nil, nil
+	}
+	if fc.Mode != "remote" {
+		return nil, nil, nil
+	}
+	if fc.Addr == "" {
+		return nil, nil, fmt.Errorf("fts.fts_addr is required in remote mode")
+	}
+	chain, err := language.NewChain(language.Settings{
+		Language: firstLang(fc.Languages),
+		Filters:  fc.LanguageFilters,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("fts language chain: %w", err)
+	}
+	return ftsproto.NewLazy(fc.Addr, 10*time.Second), chain, nil
+}
+
+func firstLang(xs []string) string {
+	if len(xs) > 0 {
+		return xs[0]
+	}
+	return "en"
 }
 
 func buildPassdbs(entries []config.PassdbEntry) ([]protocol.Passdb, error) {
