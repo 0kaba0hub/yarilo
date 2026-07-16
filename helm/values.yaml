@@ -590,6 +590,23 @@ components:
 
   ## Postfix policy service — quota enforcement before message queuing.
   ## Postfix config: check_policy_service inet:[<ClusterIP>]:12340
+  ## Full-text search service — sole owner of the FTS indexes (indexing
+  ## queue + worker + LOOKUP endpoint). Runs the -fts image variant: the
+  ## only cgo binary (libxapian); every other pod stays on the static image.
+  fts:
+    enabled: false
+    replicas: 1
+    port: 9106
+    ## Image tag suffix appended to image.tag (VERSION-fts).
+    imageTagSuffix: "-fts"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
   quotaStatus:
     enabled: false
     replicas: 1
@@ -1333,6 +1350,34 @@ extraVolumeMounts: []
 ## delivery, quota-status policy service), summed from the index count backend.
 ## Limits come from the userdb quota_rule field / quota_status.default_quota_rules.
 ## Independent of the IMAP QUOTA extension (protocol.imap.imap_quota).
+## Full-text search (docs/FTS.md). fts_engine is REQUIRED when enabled —
+## startup fails fast on a missing or unknown engine name.
+fts:
+  enabled: false
+  fts_engine: ""                   # "flatcurve" (fts image) | "bleve" (own stream)
+  fts_mode: remote                 # remote (k8s) | embedded (tests/CLI)
+  fts_addr: ""                     # sessions dial, e.g. "yarilo-fts:9106"
+  fts_listen: ":9106"
+  fts_auth_master_addr: ""         # userdb lookups, e.g. "yarilo-auth:9102"
+  fts_autoindex: false
+  fts_autoindex_max_recent_msgs: 0
+  fts_message_max_size: 0
+  fts_header_includes: []
+  fts_header_excludes: []
+  fts_commit_limit: 500
+  fts_search_add_missing: body-search-only
+  fts_search_read_fallback: true
+  fts_search_timeout_secs: 30
+  fts_search_strict: false
+  languages: [en]
+  language_filters: [lowercase, snowball, stopwords]
+  fts_flatcurve_commit_limit: 500
+  fts_flatcurve_min_term_size: 2
+  fts_flatcurve_optimize_limit: 10
+  fts_flatcurve_rotate_count: 5000
+  fts_flatcurve_rotate_time: 5000
+  fts_flatcurve_substring_search: false
+
 quota:
   enabled: false
   ## Quota-root name surfaced in IMAP GETQUOTA / GETQUOTAROOT responses.

@@ -1,0 +1,94 @@
+{{- if .Values.components.fts.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "yarilo.fullname" . }}-fts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "fts") | nindent 4 }}
+spec:
+  replicas: {{ .Values.components.fts.replicas }}
+  selector:
+    matchLabels:
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "fts") | nindent 6 }}
+  ## Single writer per index: never two fts pods over the same files.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "fts") | nindent 8 }}
+      annotations:
+        {{- include "yarilo.configChecksum" . | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: yarilo-fts
+          ## The -fts image variant: the only cgo binary (libxapian).
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ .Values.components.fts.imageTagSuffix }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-fts"
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: fts
+              containerPort: {{ .Values.components.fts.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yarilo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.storage.persistence.enabled }}
+            - name: mail
+              mountPath: {{ .Values.storage.maildir_root | default "/var/mail/vhosts" }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.components.fts.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "yarilo.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-fts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "fts") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "fts") | nindent 4 }}
+  ports:
+    - name: fts
+      port: {{ .Values.components.fts.port }}
+      targetPort: fts
+      protocol: TCP
+{{- end }}

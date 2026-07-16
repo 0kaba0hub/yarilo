@@ -44,6 +44,9 @@ case "$YARILO_COMPONENT" in
   yarilo-submission-login)
     exec /usr/local/bin/yarilo-submission-login
     ;;
+  yarilo-fts)
+    exec /usr/local/bin/yarilo-fts "$@"
+    ;;
   yarilo-migrate)
     exec /usr/local/bin/yarilo-migrate "$@"
     ;;

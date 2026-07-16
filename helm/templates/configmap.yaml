@@ -383,6 +383,33 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- if $.Values.fts.enabled }}
+    fts:
+      enabled: true
+      fts_engine: {{ $.Values.fts.fts_engine | quote }}
+      fts_mode: {{ $.Values.fts.fts_mode | quote }}
+      fts_addr: {{ $.Values.fts.fts_addr | default (printf "%s-fts:%d" (include "yarilo.fullname" .) (int $.Values.components.fts.port)) | quote }}
+      fts_listen: {{ $.Values.fts.fts_listen | quote }}
+      fts_auth_master_addr: {{ $.Values.fts.fts_auth_master_addr | quote }}
+      fts_autoindex: {{ $.Values.fts.fts_autoindex }}
+      fts_autoindex_max_recent_msgs: {{ $.Values.fts.fts_autoindex_max_recent_msgs }}
+      fts_message_max_size: {{ $.Values.fts.fts_message_max_size }}
+      fts_header_includes: {{ $.Values.fts.fts_header_includes | toJson }}
+      fts_header_excludes: {{ $.Values.fts.fts_header_excludes | toJson }}
+      fts_commit_limit: {{ $.Values.fts.fts_commit_limit }}
+      fts_search_add_missing: {{ $.Values.fts.fts_search_add_missing | quote }}
+      fts_search_read_fallback: {{ $.Values.fts.fts_search_read_fallback }}
+      fts_search_timeout_secs: {{ $.Values.fts.fts_search_timeout_secs }}
+      fts_search_strict: {{ $.Values.fts.fts_search_strict }}
+      languages: {{ $.Values.fts.languages | toJson }}
+      language_filters: {{ $.Values.fts.language_filters | toJson }}
+      fts_flatcurve_commit_limit: {{ $.Values.fts.fts_flatcurve_commit_limit }}
+      fts_flatcurve_min_term_size: {{ $.Values.fts.fts_flatcurve_min_term_size }}
+      fts_flatcurve_optimize_limit: {{ $.Values.fts.fts_flatcurve_optimize_limit }}
+      fts_flatcurve_rotate_count: {{ $.Values.fts.fts_flatcurve_rotate_count }}
+      fts_flatcurve_rotate_time: {{ $.Values.fts.fts_flatcurve_rotate_time }}
+      fts_flatcurve_substring_search: {{ $.Values.fts.fts_flatcurve_substring_search }}
+    {{- end }}
     {{- with .Values.quota }}
     quota:
       enabled: {{ .enabled | default false }}
