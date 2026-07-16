@@ -436,10 +436,10 @@ fts:
   fts_decoder_script_socket_path: ""
   fts_decoder_tika_url: ""
 
-  ## Engine-specific: bleve (fts_engine: "bleve").
-  fts_bleve_positions: true         # positional data on body/subject (phrase queries)
-
   ## Engine-specific: flatcurve (fts_engine: "flatcurve"; cgo image only).
+  ## (bleve has no engine-specific keys: positions on body/subject are always
+  ## on — phrase support is unconditional; index-size impact is measured by
+  ## the Phase-1 benchmark before any knob is considered.)
   fts_flatcurve_commit_limit: 500
   fts_flatcurve_min_term_size: 2
   fts_flatcurve_optimize_limit: 10
