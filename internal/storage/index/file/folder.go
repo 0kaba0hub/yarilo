@@ -269,12 +269,24 @@ func (fs *folderState) ensureVsizeLocked() {
 // header so the next Open trusts it (validated against record count). Caller
 // holds fs.mu.
 func (fs *folderState) persistVsizeLocked() {
-	ext := findExt(fs.file.Extensions, extNameHdrVsize)
-	if ext == nil {
+	data := encodeHdrVsize(fs.vsize)
+	if ext := findExt(fs.file.Extensions, extNameHdrVsize); ext != nil {
+		ext.HdrData = data
+		ext.HdrSize = uint32(len(data))
 		return
 	}
-	ext.HdrData = encodeHdrVsize(fs.vsize)
-	ext.HdrSize = uint32(len(ext.HdrData))
+	// Backfill the extension for folders whose base index predates hdr-vsize:
+	// without this the aggregate is never persisted, so every quota read
+	// full-rescans and recalc is a silent no-op. Appending it here lets the
+	// next flush/Recreate write it, after which the O(1) validity check engages.
+	fs.file.Extensions = append(fs.file.Extensions, mailindex.Extension{
+		Name:        extNameHdrVsize,
+		HdrSize:     uint32(len(data)),
+		HdrData:     data,
+		RecordSize:  0,
+		RecordAlign: 8,
+		ResetID:     fs.file.Header.UIDValidity,
+	})
 }
 
 // snapshot returns a mailbox.Folder describing the current state.
