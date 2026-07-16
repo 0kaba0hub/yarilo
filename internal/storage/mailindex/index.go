@@ -169,6 +169,41 @@ func NewFile(indexID uint32, exts []Extension) (*File, error) {
 	}, nil
 }
 
+// AddHeaderExtension appends a header-only extension (RecordSize 0) and fixes up
+// Header.HeaderSize, Header.RecordSize and Layout so Recreate accepts the file.
+// It is a no-op when an extension with the same name already exists. Used to
+// backfill extensions onto indexes written before that extension existed —
+// simply appending to Extensions is not enough, because Recreate rejects a file
+// whose HeaderSize no longer matches the encoded extension headers.
+func (f *File) AddHeaderExtension(name string, hdrData []byte, recordAlign uint16, resetID uint32) error {
+	for i := range f.Extensions {
+		if f.Extensions[i].Name == name {
+			return nil
+		}
+	}
+	exts := append(append([]Extension(nil), f.Extensions...), Extension{
+		Name:        name,
+		HdrSize:     uint32(len(hdrData)),
+		HdrData:     hdrData,
+		RecordSize:  0,
+		RecordAlign: recordAlign,
+		ResetID:     resetID,
+	})
+	layout, err := ComputeRecordLayout(exts)
+	if err != nil {
+		return err
+	}
+	extBytes, err := EncodeExtHeaders(layout.Extensions)
+	if err != nil {
+		return err
+	}
+	f.Extensions = layout.Extensions
+	f.Layout = layout
+	f.Header.RecordSize = layout.RecordSize
+	f.Header.HeaderSize = uint32(HeaderMinSize) + uint32(len(extBytes))
+	return nil
+}
+
 // ToRecreateInput packages the in-memory file into a
 // RecreateInput ready to pass to Recreate. Convenience for
 // callers that read, mutate, and write back the same file.
