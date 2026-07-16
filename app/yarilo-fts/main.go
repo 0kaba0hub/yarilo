@@ -67,8 +67,11 @@ func main() {
 	}
 
 	svc, err := ftsservice.New(ftsservice.Options{
-		Engine:      engine,
-		Mailbox:     backend.BuildMailbox(cfg.Storage, locker),
+		Engine:  engine,
+		Mailbox: backend.BuildMailbox(cfg.Storage, locker),
+		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
+			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
+		},
 		Index:       file.New(),
 		ResolveUser: userResolver(fc.AuthMasterAddr, resolver),
 		Chain:       chain,
