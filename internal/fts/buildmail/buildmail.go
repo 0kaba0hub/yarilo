@@ -1,5 +1,5 @@
 // Package buildmail turns a raw RFC 5322 message into the FTS build-key
-// stream — the analogue of Dovecot's fts-build-mail.c. It walks the MIME
+// stream. It walks the MIME
 // structure, emits KeyHeader / KeyMIMEHeader for indexable header fields and
 // KeyBodyPart for decoded text parts (HTML converted to text), skips
 // multipart containers and binary parts, and caps the indexed body size.
@@ -97,7 +97,7 @@ func (b *Builder) walkEntity(uid uint32, e *message.Entity, depth int, remaining
 			}
 			if err != nil {
 				// A broken part must not abort the whole message: index what
-				// was readable (fts_build_mail tolerates parser errors).
+				// was readable.
 				return nil
 			}
 			if err := b.walkEntity(uid, part, depth+1, remaining, upd); err != nil {

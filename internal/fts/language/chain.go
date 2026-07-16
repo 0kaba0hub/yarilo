@@ -16,7 +16,7 @@ type Settings struct {
 }
 
 // DefaultSettings mirrors docs/FTS.md: stemming and stopwords on by default —
-// deliberately stronger than Dovecot's empty default filter chain.
+// deliberately stronger than the reference's empty default filter chain.
 func DefaultSettings() Settings {
 	return Settings{
 		Language: "en",
@@ -88,8 +88,8 @@ func (s *IndexSession) Write(p []byte) error { return s.tok.Feed(p, s.emit) }
 // Close flushes the final token.
 func (s *IndexSession) Close() error { return s.tok.Flush(s.emit) }
 
-// ExpandSearch turns one search string into the engine query shape,
-// mirroring fts_backend_dovecot_tokenize_lang / expand_tokens: the string
+// ExpandSearch turns one search string into the engine query shape, per the
+// reference query-expansion model: the string
 // runs through the search-mode tokenizer; each token becomes a Word whose
 // variants are {the whole original string, the tokenized-but-unfiltered
 // token, the filtered token} (deduplicated); a token the filter chain drops
@@ -134,7 +134,7 @@ func appendUnique(dst []string, s string) []string {
 }
 
 // SettingsChecksum is a stable checksum over everything that changes token
-// output — the analogue of Dovecot's fts_index_header settings_checksum. A
+// output. A
 // mismatch against a mailbox checkpoint forces that mailbox's rebuild.
 func (c *Chain) SettingsChecksum() uint32 {
 	h := uint32(2166136261) // FNV-1a

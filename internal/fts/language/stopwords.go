@@ -2,8 +2,7 @@ package language
 
 import "strings"
 
-// stopwordsEN is the Snowball English stopword list — the same list Dovecot's
-// stopwords filter ships for "en".
+// stopwordsEN is the Snowball English stopword list.
 const stopwordsEN = `i me my myself we our ours ourselves you your yours
 yourself yourselves he him his himself she her hers herself it its itself
 they them their theirs themselves what which who whom this that these those
