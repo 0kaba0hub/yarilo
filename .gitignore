@@ -10,9 +10,12 @@ app/smoketest-e2e/smoketest-e2e
 /yarilo-director
 /yarilo-imap
 /yarilo-lmtp
+/yarilo-migrate
 /yarilo-monitor
 /yarilo-pop3
+/yarilo-quota-status
 /yarilo-submission
+/smoketest
 
 # macOS
 .DS_Store
