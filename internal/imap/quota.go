@@ -131,6 +131,10 @@ func (s *session) captureQuotaSnap() {
 	}
 	if u, err := s.countUsage(false); err == nil {
 		s.quotaSnap, s.quotaSnapSet = u, true
+		// DIAG(#570): the "before" baseline captured right before an expunge.
+		slog.Debug("quota warn snap captured", "storage", u.StorageBytes, "messages", u.Messages)
+	} else {
+		slog.Debug("quota warn snap failed", "err", err)
 	}
 }
 
@@ -150,11 +154,27 @@ func (s *session) seedQuotaWarnSnap() {
 func (s *session) fireQuotaWarnings(after quota.Usage) {
 	pol := s.quotaPolicy()
 	if len(pol.Warnings) == 0 || !s.quotaSnapSet || s.userInfo == nil {
+		// DIAG(#570): why an under crossing may not fire on a delete-only session.
+		if len(pol.Warnings) > 0 {
+			user := ""
+			if s.userInfo != nil {
+				user = s.userInfo.Username
+			}
+			slog.Debug("quota warn eval skipped", "user", user,
+				"snapSet", s.quotaSnapSet, "userInfo_nil", s.userInfo == nil,
+				"after_storage", after.StorageBytes, "after_messages", after.Messages)
+		}
 		return
 	}
 	before := s.quotaSnap
 	s.quotaSnap = after
 	limits := pol.Scale(s.quotaLimits())
+	// DIAG(#570): capture before/after so a delete-only under miss can be traced.
+	slog.Debug("quota warn eval", "user", s.userInfo.Username,
+		"before_storage", before.StorageBytes, "after_storage", after.StorageBytes,
+		"before_messages", before.Messages, "after_messages", after.Messages,
+		"limit_storage", limits.StorageBytes, "limit_messages", limits.Messages,
+		"matched", len(quota.MatchWarnings(pol.Warnings, limits, before, after)))
 	s.srv.opts.QuotaWarner.Fire(s.userInfo.Username, s.userInfo.Home, pol.Warnings, limits, before, after)
 }
 
