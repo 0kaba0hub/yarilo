@@ -936,6 +936,15 @@ func BuildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 	return buildMailbox(cfg, locker)
 }
 
+// BuildMailboxByDriver constructs the mailbox backend for a named per-user
+// driver (mdbox / sdbox / maildir), applying the same options the session pods
+// use. Exported so standalone binaries (yarilo-fts) resolve each user's
+// storage format from the userdb mail_location instead of the global default.
+func BuildMailboxByDriver(driver string, cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
+	return buildMailboxByDriver(driver, cfg.MdboxAltStoragePath, locker,
+		cfg.MaxConcurrentWrites, cfg.MailboxListUTF8, cfg.MailboxListNormalizeToNFC)
+}
+
 // BuildResolver builds the storage path resolver from config, applying the same
 // defaults as the session pods.
 func BuildResolver(cfg *config.Config) *mailbox.Resolver {

@@ -33,6 +33,12 @@ type Options struct {
 	// LockMailbox wraps every index write in the cross-process mailbox lock
 	// (pkg/locks; wired by the binary). nil = direct call (unit tests only).
 	LockMailbox func(user, folder string, fn func() error) error
+
+	// MailboxByDriver returns the mailbox backend for a per-user storage
+	// driver (mdbox / sdbox / maildir) when it differs from the global
+	// Mailbox — the userdb mail_location driver, resolved exactly as the
+	// session pods do. nil, or a nil result, falls back to Mailbox.
+	MailboxByDriver func(driver string) mailbox.MailboxBackend
 }
 
 // Service implements ftsproto.Service.
@@ -128,11 +134,23 @@ func (s *Service) handle(user string) (*userHandle, error) {
 	h := &userHandle{
 		info: info,
 		ui:   ui,
-		box:  s.opts.Mailbox.OpenUser(info),
+		box:  s.mailboxFor(info).OpenUser(info),
 		idx:  s.opts.Index.OpenUser(info),
 	}
 	s.users[user] = h
 	return h, nil
+}
+
+// mailboxFor selects the backend matching the user's storage driver, falling
+// back to the global Mailbox when no per-driver factory is wired or the driver
+// is the global default.
+func (s *Service) mailboxFor(info *mailbox.UserInfo) mailbox.MailboxBackend {
+	if info.Driver != "" && s.opts.MailboxByDriver != nil {
+		if mb := s.opts.MailboxByDriver(info.Driver); mb != nil {
+			return mb
+		}
+	}
+	return s.opts.Mailbox
 }
 
 // indexRoot mirrors the fileindex root resolution: INDEX= override → mail
