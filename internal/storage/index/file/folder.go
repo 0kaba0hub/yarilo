@@ -791,6 +791,23 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 	})
 }
 
+// UpdateFilename repoints the stored on-disk filename for a UID. The filename
+// lives only in the .names sidecar (not in the .index/.log records), so this
+// updates the in-memory map and appends a fresh sidecar entry (last write wins
+// on reload). UID/flags/modseq are untouched. No-op when uid is unknown.
+func (u *userIndex) UpdateFilename(folderID uint64, uid uint32, filename string) error {
+	return u.withFolder(folderID, func(fs *folderState) error {
+		if _, ok := fs.filenames[uid]; !ok {
+			return nil
+		}
+		if fs.filenames[uid] == filename {
+			return nil
+		}
+		fs.filenames[uid] = filename
+		return fs.appendName(uid, filename, fs.sizes[uid])
+	})
+}
+
 // UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a single
 // lock/reload/flush cycle. Each UID gets an individual modseq bump so clients
 // can use CONDSTORE to pinpoint which messages changed. Returns the new modseq

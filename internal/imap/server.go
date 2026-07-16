@@ -1615,6 +1615,9 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if err := s.requireRight(h, rel, mailbox.RightRead); err != nil {
 		return nil, err
 	}
+	// Reconcile out-of-band deliveries so STATUS (a common new-mail probe)
+	// reflects them without a prior SELECT.
+	s.reconcileFolder(h, rel)
 	f, err := h.idx.OpenFolder(rel, 0)
 	if err != nil {
 		return nil, err
@@ -1818,6 +1821,14 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	}
 	if s.folder == nil || s.knownMsgs == nil {
 		return nil
+	}
+
+	// Reconcile out-of-band deliveries into the selected folder so an IDLE /
+	// NOOP client sees new mail. Token-gated, so a quiescent folder costs one
+	// stat. A change bumps HighestModSeq, which the modseq check below picks up
+	// and the diff loop turns into EXISTS / EXPUNGE updates.
+	if s.folderNS != nil {
+		s.reconcileFolder(s.folderNS, s.folder.Name)
 	}
 
 	// Cheap modseq check — skip full scan when nothing changed and no

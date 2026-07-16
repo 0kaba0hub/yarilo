@@ -80,6 +80,17 @@ type FlagsUpdate struct {
 	Keywords []string
 }
 
+// SyncStats reports what a proactive index reconcile changed. Imported counts
+// files that gained a UID, Expunged counts index records whose file vanished,
+// Updated counts tracked messages whose on-disk filename was repointed. Changed
+// is false when the folder matched the index exactly and no index write ran.
+type SyncStats struct {
+	Imported int
+	Expunged int
+	Updated  int
+	Changed  bool
+}
+
 type ScanRecord struct {
 	Filename     string
 	GUID         [16]byte
@@ -189,6 +200,12 @@ type UserIndex interface {
 	// AllocateUID(WithModSeq) + AppendMessage pattern that caused APPEND stalls.
 	AllocateAndAppend(folderID uint64, m *MessageMeta) error
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
+	// UpdateFilename repoints the stored on-disk filename for a UID without
+	// touching flags, UID or modseq. Used by maildir sync-on-open when a second
+	// MUA renamed a tracked file out of band (a flag change moves the ":2,"
+	// trailer); the message keeps its identity but must be reachable at its new
+	// name. No-op when uid is unknown.
+	UpdateFilename(folderID uint64, uid uint32, filename string) error
 	// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a
 	// single lock/reload/flush cycle. Returns the new modseq per UID.
 	UpdateFlagsMulti(folderID uint64, updates map[uint32]FlagsUpdate) (map[uint32]uint64, error)
