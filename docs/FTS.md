@@ -1,6 +1,6 @@
 # Full-text search (FTS) — design
 
-Status: **design / plan, revision 2** (issue #250, Phase FTS-1). No code yet —
+Status: **design / plan, revision 3** (issue #250, Phase FTS-1). No code yet —
 this document is the plan of record and is reviewed before implementation.
 
 Full-text indexing of message bodies and headers so that IMAP `SEARCH BODY`,
@@ -8,7 +8,7 @@ Full-text indexing of message bodies and headers so that IMAP `SEARCH BODY`,
 brute-force scan.
 
 **Bar:** not worse than Dovecot 2.4 + fts-flatcurve on any axis, and measurably
-better on the axes listed in §12. Revision 2 is grounded in a full read of the
+better on the axes listed in §12. The design is grounded in a full read of the
 local Dovecot 2.4 source (`src/plugins/fts`, `src/plugins/fts-flatcurve`,
 `src/indexer`, `src/lib-language`) including a limitations audit of flatcurve
 itself; file:line references are given inline.
@@ -17,20 +17,26 @@ itself; file:line references are given inline.
 
 ## 1. Goals
 
-- Answer `SEARCH BODY` / `TEXT` / `HEADER <field>` from a per-user full-text
-  index; fall back to the existing sequential scan when the index is
-  unavailable or a lookup fails.
-- **Pluggable engines** behind one interface: a pure-Go engine (Bleve v2 /
-  scorch) as the default, and a Xapian-backed `flatcurve`-compatible engine as
-  an opt-in for on-disk compatibility with existing Dovecot installations.
+- Answer `SEARCH BODY` / `TEXT` / `HEADER <field>` from a full-text index;
+  fall back to the existing sequential scan when the index is unavailable or a
+  lookup fails.
+- **Pluggable engines** behind one interface. The **first implemented engine is
+  `flatcurve`** (Xapian, byte-compatible with Dovecot's on-disk format — the
+  deliverable issue #250 asks for, and an immediate migration path). A pure-Go
+  engine (Bleve v2 / scorch) is a **separate follow-up stream** (§14) that
+  plugs into the same interface and carries the position-dependent
+  improvements (phrase search) plus its own `fts_bleve_*` keys.
 - **A dedicated `yarilo-fts` service** that owns the indexes — sole writer *and*
   the lookup endpoint — with asynchronous indexing, on-demand catch-up at
   search time, autoindex on delivery, and manual rescan/optimize. Embedded mode
   for tests and single-process CLI runs, remote mode in every k8s deployment —
-  the exact `yarilo-locks` precedent.
+  the exact `yarilo-locks` precedent. A welcome consequence: **cgo/libxapian is
+  confined to the single `yarilo-fts` binary** — every session binary stays
+  pure Go; only the fts Deployment uses the cgo image.
 - Dovecot-compatible configuration key names where they exist, per the
   parity rule.
-- RFC-correct phrase and substring behaviour where flatcurve is not (see §3).
+- RFC-correct substring behaviour where flatcurve is not (see §3); RFC-correct
+  phrase search arrives with the Bleve stream (positions).
 
 ---
 
@@ -119,7 +125,7 @@ as the fallback — nothing regresses. There is no existing FTS code in the tree
   +--------------------------+
   |       yarilo-fts         |   sole owner of the index files:
   |  queue + worker + lookup |   single writer, in-process readers
-  |  engine: bleve|flatcurve |   (embedded mode: linked into the test
+  |  engine: flatcurve|bleve |   (embedded mode: linked into the test
   +--------------------------+    binary — the yarilo-locks pattern)
         |
         v
@@ -231,42 +237,40 @@ folder — fixes L2 without suffix bloat).
 
 ---
 
-## 7. Storage layout — one index per user
+## 7. Storage layout — engine-defined, under the mailbox index root
 
-Departure from flatcurve's per-mailbox DBs (motivated by L5/L9):
+The on-disk layout belongs to the engine; both live under the existing index
+resolution — `UserInfo.IndexDir` (`INDEX=` override) → `MailPath` → `Home`
+(`internal/storage/index/file/file.go:365-380`) — configurable and
+FS-agnostic, as in Dovecot (`MAILBOX_LIST_PATH_TYPE_INDEX`).
+
+**flatcurve (first engine):** byte-compatible with upstream — a
+`fts-flatcurve/` directory per **mailbox** under that mailbox's index dir,
+holding `current.###` / `index.###` Xapian shards, docid == UID, term
+prefixes `A`/`H`/`B`. Existing Dovecot flatcurve indexes are readable as-is.
+
+**Bleve (follow-up stream):** one index per **user**:
 
 ```
 <index-root>/yarilo-fts/          # one Bleve (scorch) index per user
 ```
 
-`<index-root>` follows the existing resolution — `UserInfo.IndexDir`
-(`INDEX=` override) → `MailPath` → `Home`
-(`internal/storage/index/file/file.go:365-380`) — configurable and
-FS-agnostic, as in Dovecot (`MAILBOX_LIST_PATH_TYPE_INDEX`).
+- Document ID = `<folder-guid>:<uid>`; survives folder renames; UIDVALIDITY
+  change invalidates only that mailbox's documents.
+- Fields: `body`/`subject` with positions (phrase-capable); dynamic
+  `hdr_<name>` per header (no pooled-`A`/maybe class, L3); `mailbox` filter
+  field; no stored content.
+- Background segment merging instead of blocking optimize (L6); append-only
+  segments + snapshots for crash consistency (vs `DB_NO_SYNC`, L9); index
+  size gated by the benchmark (§14).
 
-- **Document ID** = `<folder-guid>:<uid>` (folder GUID from the existing
-  index/OBJECTID machinery). Survives folder renames; UIDVALIDITY change
-  invalidates only that mailbox's documents.
-- **Fields**: `body` and `subject` with positions (phrase-capable); dynamic
-  `hdr_<name>` field per header — *every* indexed header gets its own field,
-  eliminating the pooled-`A`/maybe class (L3); `mailbox` (folder GUID) as a
-  filter field; no stored content (index-only) to control size.
-- **Per-mailbox checkpoint** (`last_indexed_uid`, `settings_checksum`) stored
-  in the index metadata — the analogue of Dovecot's `fts` index-header
-  extension; checksum mismatch ⇒ rebuild of that mailbox.
-- **Compaction**: scorch merges segments in background goroutines — no
-  blocking optimize (fixes L6); `Optimize()` is a hint (force-merge) used by
-  `yarilo-admin fts optimize` only.
-- **Crash consistency**: scorch append-only segments + snapshot rollback
-  points — an uncommitted batch is lost, the index stays consistent (vs
-  flatcurve's `DB_NO_SYNC` corruption, L9); the recovery path is re-running
-  from the checkpoint, not a rescan storm.
-- **Size discipline**: positions only on `body`/`subject`; no term vectors on
-  header fields; index size is benchmarked in Phase 1 acceptance (§14) —
-  Xapian glass is more compact, and this is the accepted trade-off to verify.
+**Engine-independent (framework level, applies to both):**
 
-Every write path in `yarilo-fts` takes the user's mailbox lock via `pkg/locks`
-(project rule) around update/rescan/optimize sessions.
+- **Per-mailbox checkpoint** (`last_indexed_uid`, `settings_checksum`) in the
+  engine metadata — the analogue of Dovecot's `fts` index-header extension;
+  checksum mismatch ⇒ rebuild of that mailbox.
+- Every write path in `yarilo-fts` takes the user's mailbox lock via
+  `pkg/locks` (project rule) around update/rescan/optimize sessions.
 
 ---
 
@@ -276,8 +280,10 @@ Mirrors 2.4 (no expunge journal) with targeted improvements:
 
 - **Online expunge**: session pods send `EXPUNGE <user> <folder-guid> <uid>`
   at the same call sites that emit `EventExpunged` today
-  (`internal/imap/server.go:549`, LMTP/sieve discard paths). Point delete by
-  document ID — no shard scanning (fixes L5-expunge).
+  (`internal/imap/server.go:549`, LMTP/sieve discard paths). Bleve: point
+  delete by document ID. flatcurve: our writer keeps a per-shard UID-range
+  map in memory, avoiding upstream's open-every-shard probe (softens
+  L5-expunge even on the compatible format).
 - **Offline reconciliation**: `RESCAN` diffs the index against the mailbox
   (the worker walks the folder's UID list) and — because our engine API takes
   the *present UID set* — deletes exactly the stale documents and indexes
@@ -295,26 +301,35 @@ Mirrors 2.4 (no expunge journal) with targeted improvements:
 
 ## 9. Engines
 
-### 9.1 Bleve v2 / scorch — default (pure Go)
-
-Positions on body/subject (phrase queries), snowball + stopwords by default,
-BM25 scoring, background merging, snapshot rollback. Keeps `CGO_ENABLED=0`
-static Alpine build. bluge was evaluated and rejected (development stalled;
-Bleve v2 is actively maintained by Couchbase).
-
-### 9.2 Xapian / flatcurve — opt-in (cgo)
+### 9.1 Xapian / flatcurve — first engine (cgo, FTS-1)
 
 Byte-compatible with Dovecot flatcurve on-disk format (per-**mailbox** DBs,
 `current.###`/`index.###` shards, prefixes `A`/`H`/`B`, docid == UID,
-`flatcurve-lock`), for migrating existing installations. Runs inside the same
-`yarilo-fts` service behind the same interface; inherits upstream's
-`fts_flatcurve_*` settings verbatim (`commit_limit` 500, `min_term_size` 2,
-`optimize_limit` 10, `rotate_count` 5000, `rotate_time` 5000 ms,
-`substring_search` no; term cap 200 bytes is a constant upstream, not a
-setting). **Build implication:** requires `CGO_ENABLED=1` + libxapian —
-ships as a separate image variant; the default image is Bleve-only. Engine
-selection stays config (`fts: flatcurve`), the variant only widens what is
-installable.
+`flatcurve-lock`) — existing Dovecot installations migrate by pointing yarilo
+at the same index root. Runs inside the `yarilo-fts` service behind the
+engine interface; inherits upstream's `fts_flatcurve_*` settings verbatim
+(`commit_limit` 500, `min_term_size` 2, `optimize_limit` 10, `rotate_count`
+5000, `rotate_time` 5000 ms, `substring_search` no; term cap 200 bytes is a
+constant upstream, not a setting).
+
+**Build implication:** Xapian is C++, so `yarilo-fts` builds with
+`CGO_ENABLED=1` + libxapian. Because the service is the *only* process that
+touches the index (§4), the cgo dependency is confined to this one binary —
+all session binaries keep the pure-Go static build; only the fts Deployment
+uses the cgo image.
+
+Even on the compatible format, the framework carries improvements upstream
+lacks: queued writes (no silent drops, L4), targeted rescan diff (L5), a
+per-shard UID-range map for expunge (§8), write-through delivery indexing
+(§10), and stemming on by default (§6, L8).
+
+### 9.2 Bleve v2 / scorch — separate follow-up stream (pure Go)
+
+Deferred to its own stream (see §14): positions on body/subject (phrase
+queries), BM25 scoring, background merging, snapshot rollback, one index per
+user — plus its own `fts_bleve_*` keys (including the positions knob if the
+size benchmark warrants one). Keeps `CGO_ENABLED=0`. bluge was evaluated and
+rejected (development stalled; Bleve v2 is actively maintained by Couchbase).
 
 ---
 
@@ -376,26 +391,30 @@ In `session.Search` (`internal/imap/server.go:2157`):
 
 ## 12. Where this is better than Dovecot 2.4 + flatcurve
 
-| Axis | flatcurve | yarilo FTS |
-|:--|:--|:--|
-| Phrase search | none (L1), false positives | positional phrase queries on body/subject |
-| Substring / RFC 3501 | prefix-only, or suffix-bloat mode (L2) | prefix by default + `fts_search_strict` candidate verification |
-| Arbitrary-header search | pooled → maybe → re-read all candidates (L3) | per-header fields, definite results |
-| Contention behaviour | 60×1 s lock retry, then silent drop (L4) | queued service, nothing dropped |
-| Expunge | scans all shards (L5) | point delete by doc ID |
-| Rescan | reindex storm above lowest gap (L5) | targeted diff of exact UIDs |
-| Optimize | blocking full compaction (L6) | background segment merging |
-| Crash safety | `DB_NO_SYNC` → corrupt shard (L9) | append-only segments + snapshots, checkpoint replay |
-| Stemming default | off (L8) | snowball + stopwords on |
-| Relevancy | raw weights, unused (L7) | normalized BM25 → RELEVANCY (Phase 2) |
-| Delivery-time indexing | re-reads message from disk | write-through: indexes the in-memory message |
-| DB proliferation | dirs × shards per mailbox (L9) | one index per user |
+The *When* column says which stream delivers the axis: **FTS-1** (framework +
+flatcurve engine) or **Bleve** (the follow-up engine stream).
 
-Known trade-offs (tracked, measured in Phase 1): index size vs Xapian glass
-(positions cost; mitigated by limiting them to body/subject); single-writer
-service is a throughput bottleneck per user (acceptable for mail; sharding by
-user-hash is the scale-out path); language/normalization coverage below full
-ICU (snowball set; ICU normalizer optional later).
+| Axis | flatcurve upstream | yarilo FTS | When |
+|:--|:--|:--|:--|
+| Contention behaviour | 60×1 s lock retry, then silent drop (L4) | queued service, nothing dropped | FTS-1 |
+| Rescan | reindex storm above lowest gap (L5) | targeted diff of exact UIDs | FTS-1 |
+| Expunge | opens every shard to find the UID (L5) | per-shard UID-range map (flatcurve) / point delete by doc ID (Bleve) | FTS-1 / Bleve |
+| Stemming default | off (L8) | snowball + stopwords on | FTS-1 |
+| Substring / RFC 3501 | prefix-only, or suffix-bloat mode (L2) | prefix by default + `fts_search_strict` candidate verification | FTS-2 |
+| Delivery-time indexing | re-reads message from disk | write-through: indexes the in-memory message | FTS-1 |
+| Phrase search | none (L1), false positives | positional phrase queries on body/subject | Bleve |
+| Arbitrary-header search | pooled → maybe → re-read all candidates (L3) | per-header fields, definite results | Bleve |
+| Optimize | blocking full compaction (L6) | background segment merging | Bleve |
+| Crash safety | `DB_NO_SYNC` → corrupt shard (L9) | append-only segments + snapshots, checkpoint replay | Bleve |
+| Relevancy | raw weights, unused (L7) | normalized BM25 → RELEVANCY | FTS-2 |
+| DB proliferation | dirs × shards per mailbox (L9) | one index per user | Bleve |
+
+Known trade-offs (tracked): single-writer service is a throughput bottleneck
+per user (acceptable for mail; user-hash sharding is the scale-out path);
+language/normalization coverage below full ICU (snowball set; ICU normalizer
+optional later); Bleve index size vs Xapian glass is measured by the FTS-1
+benchmark before the Bleve stream starts (positions cost; mitigated by
+limiting them to body/subject).
 
 ---
 
@@ -403,33 +422,49 @@ ICU (snowball set; ICU normalizer optional later).
 
 ```yaml
 fts:
-  fts: bleve                        # driver: bleve | flatcurve | "" (off)
+  ## Master switch + explicit engine selection. fts_engine is REQUIRED when
+  ## enabled: there is no implicit default — startup fails fast on a missing
+  ## or unknown engine name, so the active engine is always stated in config.
+  enabled: false
+  fts_engine: ""                    # "flatcurve" (FTS-1) | "bleve" (arrives with
+                                    # its own stream, together with fts_bleve_* keys)
+
+  ## Service topology (yarilo-locks precedent).
+  fts_mode: remote                  # remote (k8s) | embedded (tests/CLI)
+  fts_addr: ""                      # e.g. "yarilo-fts:9106"
+
+  ## Indexing behaviour.
   fts_autoindex: false
   fts_autoindex_max_recent_msgs: 0
+  fts_message_max_size: 0           # 0 = unlimited
+  fts_header_includes: []
+  fts_header_excludes: []
+  fts_commit_limit: 500             # batch size, any engine
+
+  ## Search behaviour.
   fts_search_add_missing: body-search-only
   fts_search_read_fallback: true    # upstream base default is false; see §11
   fts_search_timeout: 30s
   fts_search_strict: false          # RFC substring verification of candidates
-  fts_message_max_size: 0           # 0 = unlimited
-  fts_header_includes: []
-  fts_header_excludes: []
+
+  ## Language chain.
   language_filters: [lowercase, snowball, stopwords]   # default ON
   languages: [en]                   # >1 enables per-body detection (later phase)
-  # decoder (Phase 3):
+
+  ## Decoder (Phase 3).
   fts_decoder_driver: ""            # "" | script | tika
   fts_decoder_script_socket_path: ""
   fts_decoder_tika_url: ""
-  # flatcurve engine (cgo image only):
+
+  ## Engine-specific: flatcurve (fts_engine: "flatcurve"; the yarilo-fts
+  ## binary links libxapian — cgo confined to the fts Deployment image).
+  ## fts_bleve_* keys arrive with the Bleve stream.
   fts_flatcurve_commit_limit: 500
   fts_flatcurve_min_term_size: 2
   fts_flatcurve_optimize_limit: 10
   fts_flatcurve_rotate_count: 5000
   fts_flatcurve_rotate_time: 5000
   fts_flatcurve_substring_search: false
-  # service:
-  mode: remote                      # remote (k8s) | embedded (tests/CLI)
-  addr: ""                          # e.g. "yarilo-fts:9106"
-  commit_limit: 500
 ```
 
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
@@ -439,19 +474,23 @@ volume). `appVersion` bump ships with each feature slice.
 
 ## 14. Phases
 
-1. **FTS-1** (first code iteration): `pkg/fts` interface + Bleve engine
-   (per-user index, positions, checkpoints) + `internal/fts/buildmail` +
-   `internal/fts/language` + the `yarilo-fts` service (queue, worker, LOOKUP,
-   wire protocol, embedded/remote) + expunge/rescan consistency + SEARCH
-   integration with fallback + write-through LMTP indexing + config/Helm +
-   `yarilo-admin fts` + tests + **index-size and search-latency benchmark**
-   (acceptance gate).
+1. **FTS-1** (first code iteration): `pkg/fts` interface +
+   **flatcurve engine** (Xapian cgo, byte-compatible; cgo confined to the
+   `yarilo-fts` binary) + `internal/fts/buildmail` + `internal/fts/language`
+   (stemming on by default) + the `yarilo-fts` service (queue, worker,
+   LOOKUP, wire protocol, embedded/remote) + expunge/rescan consistency +
+   SEARCH integration with fallback + write-through LMTP indexing +
+   config/Helm + `yarilo-admin fts` + tests + **index-size and
+   search-latency benchmark** (acceptance gate).
 2. **FTS-2**: relevancy surface (`SEARCH RETURN (RELEVANCY)` / fetch special),
    `fts_search_strict`, multi-language detection, ICU normalizer option.
 3. **FTS-3**: attachment decoders (script / Tika) + attachment text dedup by
    content hash.
-4. **FTS-4** (opt-in): Xapian/flatcurve cgo engine + image variant; migration
-   path from existing Dovecot flatcurve indexes.
+4. **Bleve stream** (separate stream, own issue): Bleve v2/scorch engine —
+   per-user index, positional phrase search, background merging, crash-safe
+   segments — plus its `fts_bleve_*` keys (including a positions knob if the
+   size benchmark warrants one) and the default-engine decision revisited
+   with benchmark numbers.
 
 ---
 
@@ -466,7 +505,7 @@ volume). `appVersion` bump ships with each feature slice.
   timeout, autoindex throttle, write-through payload, queue behaviour under
   contention (nothing dropped).
 - **Integration (`internal/imap`)**: APPEND → SEARCH BODY finds; EXPUNGE →
-  gone; phrase query does not false-positive on scattered words; header-field
+  gone; header-field
   search; fallback correctness with FTS off/erroring; multi-pod expunge
   reconciliation via rescan.
 - **Benchmarks (acceptance)**: index size vs corpus size; index throughput;
