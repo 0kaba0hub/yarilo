@@ -493,7 +493,8 @@ volume). `appVersion` bump ships with each feature slice.
    LOOKUP, wire protocol, embedded/remote) + expunge/rescan consistency +
    SEARCH integration with fallback + write-through LMTP indexing +
    config/Helm + `yarilo-admin fts` + tests + **index-size and
-   search-latency benchmark** (acceptance gate).
+   search-latency benchmark** ✅ (acceptance gate — `internal/ftsbench`
+   + `app/fts-bench`).
 2. **FTS-2**: relevancy surface (`SEARCH RETURN (RELEVANCY)` / fetch special),
    `fts_search_strict`, multi-language detection, ICU normalizer option.
 3. **FTS-3**: attachment decoders (script / Tika) + attachment text dedup by
