@@ -1259,6 +1259,13 @@ type StorageConfig struct {
 	// index-authoritative drivers (dbox) ignore it and self-heal reactively.
 	MaildirSyncOnSelect bool `koanf:"maildir_sync_on_select"`
 
+	// DboxReactiveRebuild enables reactive self-heal for sdbox: when a read hits
+	// a missing/corrupt message the folder index is flagged and the next open
+	// expunges the vanished records under the mailbox lock. Default true. Only
+	// dbox honours it; maildir reconciles proactively via maildir_sync_on_select.
+	// (mdbox reactive rebuild is phase 2 — see #594.)
+	DboxReactiveRebuild bool `koanf:"dbox_reactive_rebuild"`
+
 	// MaxConcurrentWrites caps the number of concurrent box.Save() calls
 	// (message body writes to disk). Tune to match storage throughput:
 	// spinning disks typically benefit from 16-32, SSDs from 128-256.
@@ -1397,6 +1404,7 @@ func Load(path string) (*Config, error) {
 		},
 		Storage: StorageConfig{
 			MaildirSyncOnSelect: true,
+			DboxReactiveRebuild: true,
 		},
 		InternalTLS: InternalTLSConfig{
 			Enabled: true,

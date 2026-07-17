@@ -2,9 +2,53 @@ package mailbox
 
 import (
 	"encoding/hex"
+	"errors"
 	"io"
 	"time"
 )
+
+// ErrCorruptStorage is returned (wrapped) by a mailbox driver's read path when a
+// message's backing storage is missing, truncated or malformed — as opposed to a
+// transient I/O error. It is the reactive-rebuild trigger: a caller that reads a
+// message and sees this via errors.Is marks the folder corrupt so the next open
+// rebuilds the index from storage. Transient errors (EIO, timeouts) must NOT be
+// wrapped with it, so a flaky disk does not trigger a mass index reset.
+var ErrCorruptStorage = errors.New("mailbox: corrupt message storage")
+
+// CorruptionMarker is an optional capability of an IndexBackend handle: it
+// persists a per-folder "needs rebuild" marker (the FSCKD header flag) so a
+// missing/corrupt message detected on one read triggers a reactive heal on the
+// next open — possibly in another process. Kept off the core UserIndex
+// interface so alternate index backends and test mocks need not implement it;
+// callers type-assert. The current marker is exposed read-side as Folder.Fsckd.
+type CorruptionMarker interface {
+	// MarkFolderCorrupt sets the marker. Idempotent.
+	MarkFolderCorrupt(folderID uint64) error
+	// ClearFolderCorrupt clears the marker. Called under the mailbox lock right
+	// after the reactive heal, and by the operator rebuild endpoint.
+	ClearFolderCorrupt(folderID uint64) error
+}
+
+// MarkCorruptOnFetchErr flags folder for a reactive heal when err reports
+// corrupt storage (ErrCorruptStorage). It resolves the folder ID via idx and
+// records the marker if idx supports it — a no-op otherwise. Shared by the read
+// paths of every protocol (IMAP, POP3, ManageSieve/imapsieve, FTS) so an
+// sdbox mailbox self-heals no matter which protocol first trips over the bad
+// message. Best-effort: any resolution/marking error is swallowed.
+func MarkCorruptOnFetchErr(idx UserIndex, folder string, err error) {
+	if err == nil || !errors.Is(err, ErrCorruptStorage) {
+		return
+	}
+	cm, ok := idx.(CorruptionMarker)
+	if !ok {
+		return
+	}
+	f, oerr := idx.OpenFolder(folder, 0)
+	if oerr != nil {
+		return
+	}
+	_ = cm.MarkFolderCorrupt(f.ID)
+}
 
 // FormatObjectID renders a 16-byte GUID as the RFC 8474 object identifier used
 // for IMAP MAILBOXID / EMAILID (OBJECTID): 32 lowercase hex characters, the
@@ -46,6 +90,11 @@ type Folder struct {
 	// for per-folder metadata in pkg/dict (RFC 5464 METADATA) and as
 	// the rename-stable handle for ACL state, quota counters, etc.
 	GUID [16]byte
+	// Fsckd is true when the folder index carries the persisted FSCKD marker —
+	// a dbox driver detected a missing/corrupt message and flagged the index
+	// for a rebuild on the next open. The session runs the reactive rebuild and
+	// clears the marker.
+	Fsckd bool
 }
 
 // SeqSet is a set of UIDs or sequence numbers (use UID=0 for seq).

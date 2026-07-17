@@ -49,6 +49,7 @@ func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle,
 
 	rc, err := h.box.Fetch(rel, filename, altTier)
 	if err != nil {
+		s.flagCorruptOnRead(h.idx, folderID, rel, filename, uid, err)
 		slog.Warn("imapsieve: fetch stored message", "user", s.userInfo.Username, "folder", rel, "err", err)
 		return
 	}

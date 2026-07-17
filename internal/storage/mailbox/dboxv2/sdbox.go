@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/storage/idxrebuild"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
@@ -132,6 +133,31 @@ func makeOwner(u *mailbox.UserInfo) string {
 		return fmt.Sprintf("%s/%d/%s/%s", proc, os.Getpid(), u.Username, u.SessionID)
 	}
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
+}
+
+// HealCorruptFolder is the reactive self-heal: under the driver's cross-process
+// mailbox lock it expunges index records whose u.* file has vanished (targeted
+// ExpungeMessage — QRESYNC tombstone + quota decrement, no full ResetFolder and
+// no UID assignment, so it cannot race a concurrent delivery), then clears the
+// FSCKD marker in the SAME lock scope so a marker set by another process between
+// scan and clear is not silently lost. Returns the number of records expunged.
+//
+// Called by the IMAP session when a folder carries the persisted FSCKD marker
+// (a prior read hit a missing/corrupt message).
+func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) (int, error) {
+	var expunged int
+	err := u.withMailboxLock(folder.Name, func() error {
+		var e error
+		expunged, e = idxrebuild.ExpungeMissing(u, idx, folder)
+		if e != nil {
+			return e
+		}
+		if cm, ok := idx.(mailbox.CorruptionMarker); ok {
+			return cm.ClearFolderCorrupt(folder.ID)
+		}
+		return nil
+	})
+	return expunged, err
 }
 
 // withMailboxLock runs fn under the per-process Mutex + the
@@ -376,30 +402,47 @@ func (u *userMailbox) Fetch(folder, filename string, _ bool) (io.ReadCloser, err
 	path := filepath.Join(u.folderPath(folder), filename)
 	f, err := os.Open(path)
 	if err != nil {
+		// A vanished file is corruption (the index still references it); any
+		// other open error (EIO, EACCES) is transient and must not trigger a
+		// rebuild.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("sdbox/fetch: open %s: %w: %w", path, err, mailbox.ErrCorruptStorage)
+		}
 		return nil, fmt.Errorf("sdbox/fetch: open %s: %w", path, err)
 	}
 	br := bufio.NewReader(f)
 	if _, err := br.ReadBytes('\n'); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("sdbox/fetch: read file header: %w", err)
+		return nil, corruptRead("read file header", path, err)
 	}
 	hdrBuf := make([]byte, messageHeaderSize)
 	if _, err := io.ReadFull(br, hdrBuf); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("sdbox/fetch: read message header: %w", err)
+		return nil, corruptRead("read message header", path, err)
 	}
 	mh, err := decodeMessageHeader(hdrBuf)
 	if err != nil {
+		// A malformed header (bad magic/version) is structural corruption.
 		_ = f.Close()
-		return nil, fmt.Errorf("sdbox/fetch: %w", err)
+		return nil, fmt.Errorf("sdbox/fetch %s: %w: %w", path, err, mailbox.ErrCorruptStorage)
 	}
 	bodyBytes := make([]byte, mh.Size)
 	if _, err := io.ReadFull(br, bodyBytes); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("sdbox/fetch: read body: %w", err)
+		return nil, corruptRead("read body", path, err)
 	}
 	_ = f.Close()
 	return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+}
+
+// corruptRead classifies a read error: a truncated file (EOF / unexpected EOF)
+// is corruption; anything else is a transient I/O error that must not trigger a
+// rebuild.
+func corruptRead(op, path string, err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("sdbox/fetch: %s %s: %w: %w", op, path, err, mailbox.ErrCorruptStorage)
+	}
+	return fmt.Errorf("sdbox/fetch: %s %s: %w", op, path, err)
 }
 
 // Remove unlinks the message file. Idempotent: removing a missing

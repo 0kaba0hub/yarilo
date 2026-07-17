@@ -703,6 +703,23 @@ func (s *session) loadMailbox() error {
 		slog.Error("pop3: open folder", "user", s.userInfo.Username, "err", err)
 		return err
 	}
+	// Reactive self-heal: a dbox folder flagged corrupt (by an earlier read on
+	// any protocol) is healed on POP3 login too, so a POP3-only mailbox does not
+	// stay broken waiting for an IMAP SELECT that never comes.
+	if folder.Fsckd {
+		if rb, ok := s.box.(interface {
+			HealCorruptFolder(mailbox.UserIndex, *mailbox.Folder) (int, error)
+		}); ok {
+			if n, herr := rb.HealCorruptFolder(s.idx, folder); herr != nil {
+				slog.Warn("pop3: dbox reactive heal failed", "user", s.userInfo.Username, "err", herr)
+			} else if n > 0 {
+				slog.Info("pop3: dbox reactive heal", "user", s.userInfo.Username, "expunged", n)
+				if refreshed, rerr := s.idx.OpenFolder("INBOX", 0); rerr == nil {
+					folder = refreshed
+				}
+			}
+		}
+	}
 	msgs, err := s.idx.GetMessages(folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		slog.Error("pop3: get messages", "user", s.userInfo.Username, "err", err)
@@ -754,7 +771,7 @@ func (s *session) computeUIDLs(saved map[uint32]string) {
 
 // readXUIDL reads the X-UIDL header from the raw message file.
 func (s *session) readXUIDL(m *mailbox.MessageMeta) string {
-	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
+	rc, err := s.fetchINBOX(m)
 	if err != nil {
 		return ""
 	}
@@ -930,13 +947,23 @@ func (s *session) cmdList(arg string) {
 	s.writeDot()
 }
 
+// fetchINBOX reads a message body and flags the folder for a reactive heal if
+// the read tripped over corrupt sdbox storage (missing/truncated/bad file).
+func (s *session) fetchINBOX(m *mailbox.MessageMeta) (io.ReadCloser, error) {
+	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
+	if err != nil {
+		mailbox.MarkCorruptOnFetchErr(s.idx, "INBOX", err)
+	}
+	return rc, err
+}
+
 func (s *session) cmdRetr(arg string) {
 	idx, ok := s.parseMsgNum(arg)
 	if !ok {
 		return
 	}
 	m := s.msgs[idx]
-	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
+	rc, err := s.fetchINBOX(m)
 	if err != nil {
 		slog.Error("pop3: fetch", "uid", m.UID, "err", err)
 		s.writeErr("unable to fetch message")
@@ -1007,7 +1034,7 @@ func (s *session) cmdTop(arg string) {
 		return
 	}
 	m := s.msgs[idx]
-	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
+	rc, err := s.fetchINBOX(m)
 	if err != nil {
 		s.writeErr("unable to fetch message")
 		return

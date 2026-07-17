@@ -356,6 +356,9 @@ func (s *Service) runIndex(j job) error {
 func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.MessageMeta, upd fts.Update) error {
 	rc, err := h.box.Fetch(mbox.Name, m.Filename, m.AltTier)
 	if err != nil {
+		// A message the FTS indexer cannot read because its sdbox file is gone
+		// flags the folder for a reactive heal on the next open.
+		mailbox.MarkCorruptOnFetchErr(h.idx, mbox.Name, err)
 		return err
 	}
 	defer rc.Close()

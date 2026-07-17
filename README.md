@@ -95,6 +95,8 @@ All index mutations go through the cross-process mailbox lock (`yarilo-locks`). 
 
 **Maildir sync-on-open** (`storage.maildir_sync_on_select`, default `true`): on SELECT/EXAMINE, STATUS and IDLE the Maildir index is reconciled against `cur/` and `new/`, so a message delivered by an external MDA or moved/renamed by a second MUA appears without an operator rebuild — files in `new/` are migrated to `cur/`, new files gain a UID, vanished files are expunged, and out-of-band flag renames keep their UID. It is gated on a cheap `cur/`+`new/` mtime token, so a quiescent folder costs a single `stat`. Only Maildir honours it; dbox stays index-authoritative.
 
+**dbox reactive rebuild** (`storage.dbox_reactive_rebuild`, default `true`): dbox is index-authoritative and does not scan storage on every access, but it self-heals reactively. When an **sdbox** read hits a missing or corrupt message file the folder is flagged (a persisted FSCKD marker in the index header); the next SELECT, STATUS or IDLE poll then heals the index under the mailbox lock — every record whose file has vanished is expunged (with a QRESYNC tombstone), surviving messages keep their UID. Transient I/O errors (EIO, timeouts) do not trigger a heal. (mdbox reactive rebuild is tracked separately as phase 2.)
+
 ---
 
 ## Cluster components
