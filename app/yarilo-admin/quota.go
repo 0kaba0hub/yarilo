@@ -20,7 +20,7 @@ func dispatchQuota(args []string) error {
 	case "set":
 		return quotaSet(args[1:])
 	case "clone":
-		return quotaClone(args[1:])
+		return dispatchQuotaClone(args[1:])
 	default:
 		return fmt.Errorf("unknown quota command %q — available: show, recalc, set, clone", args[0])
 	}
@@ -39,8 +39,6 @@ func dispatchQuotaClone(args []string) error {
 		return fmt.Errorf("unknown quota clone command %q — available: list, get", args[0])
 	}
 }
-
-func quotaClone(args []string) error { return dispatchQuotaClone(args) }
 
 // quotaCloneList prints the configured quota_clone backend names.
 func quotaCloneList(args []string) error {
@@ -83,22 +81,33 @@ func quotaCloneGet(args []string) error {
 
 func humanQuotaCloneGet(data []byte) error {
 	var r struct {
-		Backend      string `json:"backend"`
-		User         string `json:"user"`
-		StorageBytes int64  `json:"storage_bytes"`
-		Messages     int64  `json:"messages"`
-		Found        bool   `json:"found"`
+		Backend       string   `json:"backend"`
+		User          string   `json:"user"`
+		StorageBytes  int64    `json:"storage_bytes"`
+		StorageFound  bool     `json:"storage_found"`
+		Messages      int64    `json:"messages"`
+		MessagesFound bool     `json:"messages_found"`
+		Malformed     []string `json:"malformed"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
-	if !r.Found {
+	if !r.StorageFound && !r.MessagesFound {
 		fmt.Printf("no mirrored usage for %s in %s\n", r.User, r.Backend)
 		return nil
 	}
+	val := func(found bool, s string) string {
+		if !found {
+			return "(absent)"
+		}
+		return s
+	}
 	fmt.Printf("%-20s%-11s%s\n", "Backend", "Type", "Value")
-	fmt.Printf("%-20s%-11s%s\n", r.Backend, "STORAGE", formatBytes(r.StorageBytes))
-	fmt.Printf("%-20s%-11s%s\n", r.Backend, "MESSAGE", formatCount(r.Messages))
+	fmt.Printf("%-20s%-11s%s\n", r.Backend, "STORAGE", val(r.StorageFound, formatBytes(r.StorageBytes)))
+	fmt.Printf("%-20s%-11s%s\n", r.Backend, "MESSAGE", val(r.MessagesFound, formatCount(r.Messages)))
+	for _, k := range r.Malformed {
+		fmt.Printf("! %s holds a non-numeric value in this backend (divergent target)\n", k)
+	}
 	fmt.Println("(mirror value — authoritative usage is `quota show`, summed from the index)")
 	return nil
 }
