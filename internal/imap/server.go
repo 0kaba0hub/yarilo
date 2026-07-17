@@ -456,8 +456,9 @@ type session struct {
 
 	// markedCorrupt records folders this session already flagged FSCKD so a
 	// FETCH over many corrupt messages marks once, not per message. Cleared for
-	// a folder once its reactive heal runs. Keyed by relative folder name.
-	markedCorrupt map[string]bool
+	// a folder once its reactive heal runs. Keyed by folder ID (stable across the
+	// FETCH mark site and the SELECT/STATUS clear site, unlike the folder name).
+	markedCorrupt map[uint64]bool
 
 	// knownMsgs is the server's copy of the client's sequence→message state
 	// for the selected folder. Each entry records uid and modseq; the slice

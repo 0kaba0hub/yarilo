@@ -85,22 +85,26 @@ type StorageWideRebuilder interface {
 // box is the driver that produced err: the marker is only persisted when the
 // driver can actually heal it (CanReactiveHeal), so a driver without a reactive
 // rebuilder never leaves a folder stuck FSCKD.
-func MarkCorruptOnFetchErr(box any, idx UserIndex, folder string, err error) {
+//
+// It returns true only when it actually marked the folder, so a caller can gate
+// its own per-session/per-scan "already flagged" state without duplicating the
+// corruption classification: `if !marked && MarkCorruptOnFetchErr(...) { marked = true }`.
+func MarkCorruptOnFetchErr(box any, idx UserIndex, folder string, err error) bool {
 	if err == nil || !errors.Is(err, ErrCorruptStorage) {
-		return
+		return false
 	}
 	if !CanReactiveHeal(box) {
-		return
+		return false
 	}
 	cm, ok := idx.(CorruptionMarker)
 	if !ok {
-		return
+		return false
 	}
 	f, oerr := idx.OpenFolder(folder, 0)
 	if oerr != nil {
-		return
+		return false
 	}
-	_ = cm.MarkFolderCorrupt(f.ID)
+	return cm.MarkFolderCorrupt(f.ID) == nil
 }
 
 // FormatObjectID renders a 16-byte GUID as the RFC 8474 object identifier used

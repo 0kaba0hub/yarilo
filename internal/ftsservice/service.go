@@ -6,7 +6,6 @@ package ftsservice
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -335,8 +334,7 @@ func (s *Service) runIndex(j job) error {
 				// Flag the folder for a reactive heal once per scan (not per
 				// message): a mailbox full of vanished files must not pay an
 				// OpenFolder+mark for each one.
-				if !marked && errors.Is(err, mailbox.ErrCorruptStorage) && mailbox.CanReactiveHeal(h.box) {
-					mailbox.MarkCorruptOnFetchErr(h.box, h.idx, j.mbox.Name, err)
+				if !marked && mailbox.MarkCorruptOnFetchErr(h.box, h.idx, j.mbox.Name, err) {
 					marked = true
 				}
 			}
