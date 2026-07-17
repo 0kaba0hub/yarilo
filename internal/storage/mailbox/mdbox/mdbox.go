@@ -63,6 +63,13 @@ const (
 	magicPost         = "\n\x01\x03\n"
 )
 
+// errCorruptRecord marks a record whose on-disk bytes are structurally
+// unreadable (bad magic, unparseable size). Fetch maps it — together with a
+// truncated read (io.EOF/ErrUnexpectedEOF) — onto mailbox.ErrCorruptStorage so
+// the reactive rebuild can distinguish real corruption from a transient
+// EIO/EACCES that must NOT trigger a rebuild.
+var errCorruptRecord = errors.New("mdbox: corrupt record")
+
 // Backend is the mdbox MailboxBackend factory. Per-user state
 // lives in UserMailbox; the only thing the Backend holds is the
 // shared locks.Locker and the optional alt-storage path template.
@@ -496,23 +503,25 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 		return nil, fmt.Errorf("mdbox/fetch: lookup: %w", err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("mdbox/fetch: map_uid %d not found", mapUID)
+		// The folder index references a map_uid the map no longer carries — the
+		// map and the fileindex have diverged, which is corruption.
+		return nil, fmt.Errorf("mdbox/fetch: map_uid %d not found: %w", mapUID, mailbox.ErrCorruptStorage)
 	}
 
 	primary := u.mfilePath(entry.FileID)
 	alt := u.mfileAltPath(entry.FileID)
 
-	// Fast path: index flag tells us the tier — open alt directly.
+	// Fast path: index flag tells us the tier — open alt directly. The alt hint
+	// is best-effort: a stale flag or a corrupt alt copy falls through to primary
+	// rather than surfacing as corruption.
 	if altTier && u.AltEnabled() {
 		if f, ferr := os.Open(alt); ferr == nil {
 			body, berr := readRecordBody(f, entry.Offset)
 			_ = f.Close()
-			if berr != nil {
-				return nil, fmt.Errorf("mdbox/fetch: %w", berr)
+			if berr == nil {
+				return io.NopCloser(bytes.NewReader(body)), nil
 			}
-			return io.NopCloser(bytes.NewReader(body)), nil
 		}
-		// Flag stale (incomplete altmove) — fall through to primary.
 	}
 
 	f, ferr := os.Open(primary)
@@ -523,15 +532,31 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 			f, ferr = os.Open(alt)
 		}
 		if ferr != nil {
+			// A vanished m.<N> the map still points at is corruption; any other
+			// open error (EIO, EACCES) is transient and must not rebuild.
+			if errors.Is(ferr, os.ErrNotExist) {
+				return nil, fmt.Errorf("mdbox/fetch: open m.%d: %w: %w", entry.FileID, ferr, mailbox.ErrCorruptStorage)
+			}
 			return nil, fmt.Errorf("mdbox/fetch: open m.%d: %w", entry.FileID, ferr)
 		}
 	}
 	body, err := readRecordBody(f, entry.Offset)
 	_ = f.Close()
 	if err != nil {
-		return nil, fmt.Errorf("mdbox/fetch: %w", err)
+		return nil, corruptFetchErr(entry.FileID, err)
 	}
 	return io.NopCloser(bytes.NewReader(body)), nil
+}
+
+// corruptFetchErr classifies a record-read failure: a truncated read
+// (io.EOF/ErrUnexpectedEOF) or a structurally bad record (errCorruptRecord) is
+// corruption; anything else (EIO, EACCES) is a transient error that must not
+// trigger a reactive rebuild.
+func corruptFetchErr(fileID uint32, err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, errCorruptRecord) {
+		return fmt.Errorf("mdbox/fetch: read m.%d: %w: %w", fileID, err, mailbox.ErrCorruptStorage)
+	}
+	return fmt.Errorf("mdbox/fetch: read m.%d: %w", fileID, err)
 }
 
 // Remove decrements the map record's refcount. Bytes stay on
@@ -662,11 +687,11 @@ func readRecordBody(f *os.File, offset uint32) ([]byte, error) {
 		return nil, fmt.Errorf("read message header: %w", err)
 	}
 	if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
-		return nil, fmt.Errorf("bad message magic")
+		return nil, fmt.Errorf("%w: bad message magic", errCorruptRecord)
 	}
 	size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 	if err != nil {
-		return nil, fmt.Errorf("parse size: %w", err)
+		return nil, fmt.Errorf("%w: parse size: %v", errCorruptRecord, err)
 	}
 	body := make([]byte, size)
 	if _, err := io.ReadFull(f, body); err != nil {

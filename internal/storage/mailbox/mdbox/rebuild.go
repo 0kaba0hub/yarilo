@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,29 +87,51 @@ func scanTrailer(r io.Reader, limit uint32) (uint32, parsedTrailer, error) {
 // scan output with per-folder fileindex records to know which
 // folder each map_uid belongs to.
 func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
-	storageDir := u.storagePath()
-	entries, err := os.ReadDir(storageDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+	// Collect fileID → on-disk path across BOTH tiers. Primary wins when a file
+	// exists in both (a half-finished altmove); an alt-only file is cold-tier
+	// mail that a primary-only scan would silently drop.
+	paths := map[uint32]string{}
+	addDir := func(dir string) error {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasPrefix(name, "m.") {
+				continue
+			}
+			id64, perr := strconv.ParseUint(strings.TrimPrefix(name, "m."), 10, 32)
+			if perr != nil {
+				continue
+			}
+			fid := uint32(id64)
+			if _, seen := paths[fid]; seen {
+				continue // primary added first — keep it over the alt copy.
+			}
+			paths[fid] = filepath.Join(dir, name)
+		}
+		return nil
 	}
-	if err != nil {
+	if err := addDir(u.storagePath()); err != nil {
 		return nil, fmt.Errorf("mdbox/scan: read storage: %w", err)
 	}
+	if u.AltEnabled() {
+		if err := addDir(u.altStoragePath()); err != nil {
+			return nil, fmt.Errorf("mdbox/scan: read alt storage: %w", err)
+		}
+	}
+
 	// Stable order so multi-file scans are deterministic.
-	fileIDs := make([]uint32, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !strings.HasPrefix(name, "m.") {
-			continue
-		}
-		id64, err := strconv.ParseUint(strings.TrimPrefix(name, "m."), 10, 32)
-		if err != nil {
-			continue
-		}
-		fileIDs = append(fileIDs, uint32(id64))
+	fileIDs := make([]uint32, 0, len(paths))
+	for fid := range paths {
+		fileIDs = append(fileIDs, fid)
 	}
 	sort.Slice(fileIDs, func(i, j int) bool { return fileIDs[i] < fileIDs[j] })
 
@@ -115,9 +139,19 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 
 	out := make([]mailbox.ScanRecord, 0, len(fileIDs)*4)
 	for _, fileID := range fileIDs {
-		recs, err := u.scanMFile(fileID)
-		if err != nil {
-			return nil, fmt.Errorf("mdbox/scan: m.%d: %w", fileID, err)
+		recs, serr := u.scanMFileAt(paths[fileID])
+		if serr != nil {
+			// A corrupt record quarantines its file: keep the good prefix and
+			// carry on. A hard open/stat error skips the file entirely. Either
+			// way one bad m.<N> must not abort the whole storage rebuild.
+			if errors.Is(serr, errScanCorrupt) {
+				slog.Warn("mdbox/scan: quarantined corrupt m.<N>, keeping good prefix",
+					"user", u.username, "file", fileID, "kept", len(recs), "err", serr)
+			} else {
+				slog.Warn("mdbox/scan: skipping unreadable m.<N>",
+					"user", u.username, "file", fileID, "err", serr)
+				continue
+			}
 		}
 		if m != nil {
 			if mapRecs, err := m.RecordsInFile(fileID); err == nil {
@@ -256,13 +290,22 @@ func scanMFileForAlt(path string) ([]physRecord, error) {
 	return out, nil
 }
 
-// scanMFile walks one m.<N> file from offset 0 to EOF, parsing
-// each canonical dbox v2 record and emitting a scanRecord per
-// message. Corrupt records short-circuit the walk so we don't
-// silently drop everything behind a bad header — the rebuild
-// flow flags the file for operator review.
-func (u *userMailbox) scanMFile(fileID uint32) ([]scanRecord, error) {
-	f, err := os.Open(u.mfilePath(fileID))
+// errScanCorrupt marks a per-record parse failure inside an m.<N> file. Unlike
+// a hard open/stat error it is recoverable at the scan level: the records parsed
+// up to the bad offset are still valid, so scanMFile returns them alongside this
+// sentinel and scanStorage quarantines the file (logs + keeps the good prefix)
+// instead of aborting the whole storage walk.
+var errScanCorrupt = errors.New("mdbox/scan: corrupt record")
+
+// scanMFile walks one m.<N> file from offset 0 to EOF, parsing each canonical
+// dbox v2 record and emitting a scanRecord per message. A corrupt record cannot
+// be skipped past — its size is what tells us where the next record starts — so
+// the walk stops at the first bad record and returns the good prefix together
+// with errScanCorrupt (the file is quarantined, not silently truncated to zero).
+// A hard open/stat error returns a nil slice and a plain error. path may point
+// at a primary or an alt-tier m.<N> file.
+func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
@@ -277,13 +320,13 @@ func (u *userMailbox) scanMFile(fileID uint32) ([]scanRecord, error) {
 	pos := uint32(0)
 	for pos < total {
 		if _, err := f.Seek(int64(pos), io.SeekStart); err != nil {
-			return nil, fmt.Errorf("seek %d: %w", pos, err)
+			return out, fmt.Errorf("%w: seek %d: %v", errScanCorrupt, pos, err)
 		}
 		// Parse the file-header line (variable length up to LF).
 		headerLine := make([]byte, 64)
 		n, err := f.Read(headerLine)
 		if err != nil {
-			return nil, fmt.Errorf("read header line @%d: %w", pos, err)
+			return out, fmt.Errorf("%w: read header line @%d: %v", errScanCorrupt, pos, err)
 		}
 		lfIdx := -1
 		for i := 0; i < n; i++ {
@@ -293,28 +336,28 @@ func (u *userMailbox) scanMFile(fileID uint32) ([]scanRecord, error) {
 			}
 		}
 		if lfIdx < 0 {
-			return nil, fmt.Errorf("file header line missing LF @%d", pos)
+			return out, fmt.Errorf("%w: file header line missing LF @%d", errScanCorrupt, pos)
 		}
 		bodyStart := pos + uint32(lfIdx) + 1
 		// Read 32-byte message header.
 		if _, err := f.Seek(int64(bodyStart), io.SeekStart); err != nil {
-			return nil, fmt.Errorf("seek msg header @%d: %w", bodyStart, err)
+			return out, fmt.Errorf("%w: seek msg header @%d: %v", errScanCorrupt, bodyStart, err)
 		}
 		mh := make([]byte, messageHeaderSize)
 		if _, err := io.ReadFull(f, mh); err != nil {
-			return nil, fmt.Errorf("read msg header @%d: %w", bodyStart, err)
+			return out, fmt.Errorf("%w: read msg header @%d: %v", errScanCorrupt, bodyStart, err)
 		}
 		if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
-			return nil, fmt.Errorf("bad magic @%d", bodyStart)
+			return out, fmt.Errorf("%w: bad magic @%d", errScanCorrupt, bodyStart)
 		}
 		size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 		if err != nil {
-			return nil, fmt.Errorf("parse size @%d: %w", bodyStart, err)
+			return out, fmt.Errorf("%w: parse size @%d: %v", errScanCorrupt, bodyStart, err)
 		}
 		// Skip body, parse metadata trailer to recover GUID + R.
 		bodyEnd := bodyStart + messageHeaderSize + uint32(size)
 		if bodyEnd > total {
-			return nil, fmt.Errorf("body @%d exceeds file size", bodyStart)
+			return out, fmt.Errorf("%w: body @%d exceeds file size", errScanCorrupt, bodyStart)
 		}
 		rec := scanRecord{
 			scan: mailbox.ScanRecord{
@@ -325,11 +368,11 @@ func (u *userMailbox) scanMFile(fileID uint32) ([]scanRecord, error) {
 		}
 		// Parse trailer: looks like "\n\x01\x03\nG<hex>\nR<hex>\n...\n\n".
 		if _, err := f.Seek(int64(bodyEnd), io.SeekStart); err != nil {
-			return nil, fmt.Errorf("seek trailer: %w", err)
+			return out, fmt.Errorf("%w: seek trailer @%d: %v", errScanCorrupt, bodyEnd, err)
 		}
 		trailerEnd, parsed, err := scanTrailer(f, total-bodyEnd)
 		if err != nil {
-			return nil, fmt.Errorf("trailer @%d: %w", bodyEnd, err)
+			return out, fmt.Errorf("%w: trailer @%d: %v", errScanCorrupt, bodyEnd, err)
 		}
 		rec.scan.GUID = parsed.guid
 		rec.scan.InternalDate = parsed.internalDate
