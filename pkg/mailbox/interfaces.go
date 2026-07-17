@@ -15,6 +15,41 @@ import (
 // wrapped with it, so a flaky disk does not trigger a mass index reset.
 var ErrCorruptStorage = errors.New("mailbox: corrupt message storage")
 
+// CorruptionMarker is an optional capability of an IndexBackend handle: it
+// persists a per-folder "needs rebuild" marker (the FSCKD header flag) so a
+// missing/corrupt message detected on one read triggers a reactive heal on the
+// next open — possibly in another process. Kept off the core UserIndex
+// interface so alternate index backends and test mocks need not implement it;
+// callers type-assert. The current marker is exposed read-side as Folder.Fsckd.
+type CorruptionMarker interface {
+	// MarkFolderCorrupt sets the marker. Idempotent.
+	MarkFolderCorrupt(folderID uint64) error
+	// ClearFolderCorrupt clears the marker. Called under the mailbox lock right
+	// after the reactive heal, and by the operator rebuild endpoint.
+	ClearFolderCorrupt(folderID uint64) error
+}
+
+// MarkCorruptOnFetchErr flags folder for a reactive heal when err reports
+// corrupt storage (ErrCorruptStorage). It resolves the folder ID via idx and
+// records the marker if idx supports it — a no-op otherwise. Shared by the read
+// paths of every protocol (IMAP, POP3, ManageSieve/imapsieve, FTS) so an
+// sdbox mailbox self-heals no matter which protocol first trips over the bad
+// message. Best-effort: any resolution/marking error is swallowed.
+func MarkCorruptOnFetchErr(idx UserIndex, folder string, err error) {
+	if err == nil || !errors.Is(err, ErrCorruptStorage) {
+		return
+	}
+	cm, ok := idx.(CorruptionMarker)
+	if !ok {
+		return
+	}
+	f, oerr := idx.OpenFolder(folder, 0)
+	if oerr != nil {
+		return
+	}
+	_ = cm.MarkFolderCorrupt(f.ID)
+}
+
 // FormatObjectID renders a 16-byte GUID as the RFC 8474 object identifier used
 // for IMAP MAILBOXID / EMAILID (OBJECTID): 32 lowercase hex characters, the
 // same string form other mail servers use for the 128-bit GUID.
@@ -220,13 +255,6 @@ type UserIndex interface {
 	// trailer); the message keeps its identity but must be reachable at its new
 	// name. No-op when uid is unknown.
 	UpdateFilename(folderID uint64, uid uint32, filename string) error
-	// MarkFolderCorrupt persists the FSCKD marker so the next open of folderID
-	// triggers a reactive index rebuild. Called when a dbox driver read hits a
-	// missing or corrupt message. Idempotent.
-	MarkFolderCorrupt(folderID uint64) error
-	// ClearFolderCorrupt clears the FSCKD marker and bumps the rebuild
-	// generation counter. Called after a successful reactive rebuild.
-	ClearFolderCorrupt(folderID uint64) error
 	// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a
 	// single lock/reload/flush cycle. Returns the new modseq per UID.
 	UpdateFlagsMulti(folderID uint64, updates map[uint32]FlagsUpdate) (map[uint32]uint64, error)

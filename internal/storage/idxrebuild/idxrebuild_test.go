@@ -86,3 +86,59 @@ func TestRebuildFolder(t *testing.T) {
 		t.Fatalf("fresh message UID = %v, want 3", byName[fresh])
 	}
 }
+
+// TestExpungeMissing: the reactive heal drops only records whose file vanished,
+// keeps present ones with their UID, and does NOT import an orphan file on disk
+// that the index never knew (that is operator-rebuild territory).
+func TestExpungeMissing(t *testing.T) {
+	root := t.TempDir()
+	const user = "u@x.com"
+	info := &mailbox.UserInfo{Username: user, Home: home(root, user)}
+
+	box := maildir.New().OpenUser(info)
+	if err := box.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := box.Create("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	idx := fileidx.New().OpenUser(info)
+	folder, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keep, err := box.Save("INBOX", strings.NewReader("a\n"), 1, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, err := box.Save("INBOX", strings.NewReader("b\n"), 2, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for uid, n := range map[uint32]string{1: keep, 2: gone} {
+		if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{UID: uid, Filename: n, Size: 2, VSize: 2}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := box.Remove("INBOX", gone); err != nil {
+		t.Fatal(err)
+	}
+	// An orphan appears on disk that the index never saw — must be left alone.
+	if _, err := box.Save("INBOX", strings.NewReader("c\n"), 0, 2, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	folder, _ = idx.OpenFolder("INBOX", 1)
+	n, err := idxrebuild.ExpungeMissing(box, idx, folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expunged = %d, want 1", n)
+	}
+	msgs, _ := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if len(msgs) != 1 || msgs[0].UID != 1 || msgs[0].Filename != keep {
+		t.Fatalf("after heal: %+v, want only UID 1 (%s)", msgs, keep)
+	}
+}

@@ -24,6 +24,48 @@ type Stats struct {
 	OrphansDropped int
 }
 
+// ExpungeMissing is the reactive-heal counterpart to RebuildFolder: it removes
+// only the index records whose backing file is gone from storage, one targeted
+// ExpungeMessage each (which writes a QRESYNC tombstone and decrements the quota
+// aggregate). It never assigns UIDs and never does a full ResetFolder, so it
+// cannot race a concurrent delivery into duplicate UIDs the way a full rebuild
+// can — a message the index does not yet know about is simply left alone rather
+// than imported. Returns the number of records expunged.
+//
+// The caller holds the folder's mailbox lock. Orphan files on disk that the
+// index has never seen are NOT imported here — that is corruption repair, not
+// orphan adoption, which belongs to the operator rebuild.
+func ExpungeMissing(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailbox.Folder) (int, error) {
+	scanned, err := box.Scan(folder.Name)
+	if err != nil {
+		return 0, fmt.Errorf("idxrebuild/scan: %w", err)
+	}
+	present := make(map[string]struct{}, len(scanned))
+	for i := range scanned {
+		if scanned[i].Filename != "" {
+			present[scanned[i].Filename] = struct{}{}
+		}
+	}
+	existing, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		return 0, fmt.Errorf("idxrebuild/get messages: %w", err)
+	}
+	expunged := 0
+	for _, m := range existing {
+		if m.Filename == "" {
+			continue
+		}
+		if _, ok := present[m.Filename]; ok {
+			continue
+		}
+		if err := idx.ExpungeMessage(folder.ID, m.UID); err != nil {
+			return expunged, fmt.Errorf("idxrebuild/expunge %d: %w", m.UID, err)
+		}
+		expunged++
+	}
+	return expunged, nil
+}
+
 // RebuildFolder regenerates idx's record set for folder from the physical
 // storage reported by box.Scan. Files the index already knows keep their UID
 // (and, for dbox, their prior flags/keywords since the driver returns none);

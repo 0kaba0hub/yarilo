@@ -43,8 +43,11 @@ const (
 	// HdrFlagHaveDirty indicates one or more records carry the
 	// per-message MAIL_FLAG_DIRTY backend bit.
 	HdrFlagHaveDirty HeaderFlag = 0x0002
-	// HdrFlagFsckd is set after a fsck rebuild. The next sync
-	// clears it once it has validated the rebuild's output.
+	// HdrFlagFsckd is the persisted "index needs a reactive rebuild" marker.
+	// A dbox driver sets it (via IndexBackend's CorruptionMarker) when a read
+	// hits a missing/corrupt message; the next folder open runs the reactive
+	// heal and clears it. Persisted so the flag survives across the reader
+	// process and the next opener (which may be a different pod).
 	HdrFlagFsckd HeaderFlag = 0x0004
 )
 

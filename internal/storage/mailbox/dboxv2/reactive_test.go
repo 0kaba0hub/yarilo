@@ -44,10 +44,10 @@ func TestFetchCorruptionClassification(t *testing.T) {
 	}
 }
 
-// TestReactiveRebuildDropsVanishedPreservesRest: after a message file vanishes
-// out of band, RebuildFolderIndex reconciles the index — the ghost record is
-// dropped and every surviving message keeps its UID.
-func TestReactiveRebuildDropsVanishedPreservesRest(t *testing.T) {
+// TestReactiveHealDropsVanishedPreservesRest: after a message file vanishes out
+// of band, HealCorruptFolder expunges only the ghost record and every surviving
+// message keeps its UID (no full ResetFolder, no UID reassignment).
+func TestReactiveHealDropsVanishedPreservesRest(t *testing.T) {
 	_, mb, home := newTestUser(t)
 	idx := fileidx.New().OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: home})
 	folder, err := idx.OpenFolder("INBOX", 1)
@@ -75,12 +75,12 @@ func TestReactiveRebuildDropsVanishedPreservesRest(t *testing.T) {
 	}
 
 	rb := mb.(*userMailbox)
-	st, err := rb.RebuildFolderIndex(idx, folder)
+	expunged, err := rb.HealCorruptFolder(idx, folder)
 	if err != nil {
-		t.Fatalf("rebuild: %v", err)
+		t.Fatalf("heal: %v", err)
 	}
-	if st.Scanned != 2 || st.UIDsPreserved != 2 {
-		t.Fatalf("stats = %+v, want scanned=2 preserved=2", st)
+	if expunged != 1 {
+		t.Fatalf("expunged = %d, want 1", expunged)
 	}
 	msgs, _ := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if len(msgs) != 2 {
@@ -109,7 +109,7 @@ func TestFsckdMarkerRoundTrip(t *testing.T) {
 	if fa.Fsckd {
 		t.Fatal("fresh folder should not be flagged")
 	}
-	if err := a.MarkFolderCorrupt(fa.ID); err != nil {
+	if err := a.(mailbox.CorruptionMarker).MarkFolderCorrupt(fa.ID); err != nil {
 		t.Fatal(err)
 	}
 	_ = a.Close()
@@ -123,7 +123,7 @@ func TestFsckdMarkerRoundTrip(t *testing.T) {
 	if !fb.Fsckd {
 		t.Fatal("FSCKD marker did not persist across reopen")
 	}
-	if err := b.ClearFolderCorrupt(fb.ID); err != nil {
+	if err := b.(mailbox.CorruptionMarker).ClearFolderCorrupt(fb.ID); err != nil {
 		t.Fatal(err)
 	}
 	_ = b.Close()

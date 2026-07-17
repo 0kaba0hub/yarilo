@@ -454,6 +454,11 @@ type session struct {
 	// the namespace-relative folder name.
 	maildirSyncTokens map[string]string
 
+	// markedCorrupt records folders this session already flagged FSCKD so a
+	// FETCH over many corrupt messages marks once, not per message. Cleared for
+	// a folder once its reactive heal runs. Keyed by relative folder name.
+	markedCorrupt map[string]bool
+
 	// knownMsgs is the server's copy of the client's sequence→message state
 	// for the selected folder. Each entry records uid and modseq; the slice
 	// index+1 is the IMAP sequence number. Populated at SELECT, updated by
@@ -1101,7 +1106,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	if refreshed := s.maildirSyncOnSelect(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
-	if refreshed := s.dboxRebuildIfCorrupt(h, rel, f); refreshed != nil {
+	if refreshed := s.dboxHealIfCorrupt(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
 	s.folder = f
@@ -1631,6 +1636,10 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if err != nil {
 		return nil, err
 	}
+	// Heal a dbox folder flagged corrupt so STATUS counts exclude ghost records.
+	if refreshed := s.dboxHealIfCorrupt(h, rel, f); refreshed != nil {
+		f = refreshed
+	}
 	msgs, err := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
 	if err != nil {
 		return nil, fmt.Errorf("imap: status getmsgs %s: %w", rel, err)
@@ -1845,6 +1854,14 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	refreshed, err := s.folderIdx().OpenFolder(s.folder.Name, s.folder.UIDValidity)
 	if err != nil {
 		return nil
+	}
+	// Heal a dbox folder flagged corrupt (by this or another session's read) so
+	// an IDLE/NOOP client sees the ghost records expunged. The heal bumps
+	// HighestModSeq, which the diff below turns into EXPUNGE updates.
+	if s.folderNS != nil && refreshed.Fsckd {
+		if r2 := s.dboxHealIfCorrupt(s.folderNS, s.folder.Name, refreshed); r2 != nil {
+			refreshed = r2
+		}
 	}
 	if refreshed.HighestModSeq == s.syncModSeq && !s.hasPendingExpunge {
 		return nil

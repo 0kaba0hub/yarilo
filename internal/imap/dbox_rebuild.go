@@ -5,35 +5,49 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/idxrebuild"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // reactiveRebuilder is implemented by index-authoritative drivers (dbox) that
-// can rebuild a folder index from storage on demand. The trigger is the
-// persisted FSCKD marker, set when a read hit a missing/corrupt message.
+// can self-heal a folder whose index references a missing/corrupt message. The
+// trigger is the persisted FSCKD marker (Folder.Fsckd).
 type reactiveRebuilder interface {
-	RebuildFolderIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (idxrebuild.Stats, error)
+	// HealCorruptFolder expunges index records whose file has vanished and
+	// clears the marker, all under the driver's mailbox lock. Returns the count
+	// expunged.
+	HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) (int, error)
 }
 
 // flagCorruptOnRead persists the folder's FSCKD marker when a read failed
 // because the backing storage is missing/corrupt (never for a transient I/O
-// error). The next SELECT then rebuilds the index. Best-effort: a failure to
-// record the marker is logged, not surfaced to the client.
+// error). The next open then heals the index. Gated per session so a FETCH over
+// N corrupt messages does not pay N lock/log round-trips — one mark suffices,
+// the heal removes every missing record at once. Best-effort.
 func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, folder, filename string, uid uint32, err error) {
 	if err == nil || !errors.Is(err, mailbox.ErrCorruptStorage) {
 		return
 	}
-	if merr := idx.MarkFolderCorrupt(folderID); merr != nil {
+	cm, ok := idx.(mailbox.CorruptionMarker)
+	if !ok {
+		return
+	}
+	if s.markedCorrupt == nil {
+		s.markedCorrupt = make(map[string]bool)
+	}
+	if s.markedCorrupt[folder] {
+		return
+	}
+	if merr := cm.MarkFolderCorrupt(folderID); merr != nil {
 		slog.Warn("imap: mark folder corrupt failed", "folder", folder, "err", merr)
 		return
 	}
-	slog.Warn("imap: corrupt message flagged for reactive rebuild",
+	s.markedCorrupt[folder] = true
+	slog.Warn("imap: corrupt message flagged for reactive heal",
 		"folder", folder, "uid", uid, "file", filename, "err", err)
 }
 
 // fetchSelected reads a message body from the selected folder, flagging the
-// folder for a reactive rebuild if the read tripped over corrupt storage. All
+// folder for a reactive heal if the read tripped over corrupt storage. All
 // selected-folder FETCH body reads go through here so the marker is set no
 // matter which body specifier triggered the read.
 func (s *session) fetchSelected(m *mailbox.MessageMeta) (rc io.ReadCloser, err error) {
@@ -44,10 +58,11 @@ func (s *session) fetchSelected(m *mailbox.MessageMeta) (rc io.ReadCloser, err e
 	return rc, err
 }
 
-// dboxRebuildIfCorrupt runs the reactive rebuild when the folder carries the
-// FSCKD marker and the driver supports it. Returns a refreshed folder handle
-// when a rebuild ran, or nil otherwise. Non-fatal on error.
-func (s *session) dboxRebuildIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) *mailbox.Folder {
+// dboxHealIfCorrupt runs the reactive heal when the folder carries the FSCKD
+// marker and the driver supports it. Returns a refreshed folder handle when a
+// heal ran, or nil otherwise. Non-fatal on error. Used from SELECT, STATUS and
+// Poll/IDLE so a flagged folder heals on whichever the client hits first.
+func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) *mailbox.Folder {
 	if !s.srv.opts.DboxReactiveRebuild || !f.Fsckd {
 		return nil
 	}
@@ -55,20 +70,18 @@ func (s *session) dboxRebuildIfCorrupt(h *nsHandle, rel string, f *mailbox.Folde
 	if !ok {
 		return nil
 	}
-	st, err := rb.RebuildFolderIndex(h.idx, f)
+	expunged, err := rb.HealCorruptFolder(h.idx, f)
 	if err != nil {
-		slog.Warn("imap: dbox reactive rebuild failed", "folder", rel, "err", err)
+		slog.Warn("imap: dbox reactive heal failed", "folder", rel, "err", err)
 		return nil
 	}
-	if err := h.idx.ClearFolderCorrupt(f.ID); err != nil {
-		slog.Warn("imap: clear corrupt marker failed", "folder", rel, "err", err)
-	}
-	slog.Info("imap: dbox reactive rebuild", "folder", rel,
-		"scanned", st.Scanned, "preserved", st.UIDsPreserved,
-		"assigned", st.UIDsAssigned, "dropped", st.OrphansDropped)
+	// The marker is cleared, so drop any per-session mark so a later corruption
+	// re-flags the folder.
+	delete(s.markedCorrupt, rel)
+	slog.Info("imap: dbox reactive heal", "folder", rel, "expunged", expunged)
 	refreshed, err := h.idx.OpenFolder(rel, f.UIDValidity)
 	if err != nil {
-		slog.Warn("imap: reopen after rebuild failed", "folder", rel, "err", err)
+		slog.Warn("imap: reopen after heal failed", "folder", rel, "err", err)
 		return nil
 	}
 	return refreshed

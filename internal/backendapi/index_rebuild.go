@@ -10,6 +10,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/storage/idxrebuild"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // rebuildRequest is the wire body for /api/backend/index/rebuild.
@@ -101,6 +102,14 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 			status = http.StatusNotImplemented
 		}
 		return nil, status, err
+	}
+
+	// An operator rebuild is a superset of the reactive heal, so drop any FSCKD
+	// marker — otherwise the next SELECT would run a redundant reactive heal.
+	if cm, ok := bundle.idx.(mailbox.CorruptionMarker); ok {
+		if err := cm.ClearFolderCorrupt(folder.ID); err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("clear corrupt marker: %w", err)
+		}
 	}
 
 	stats := &rebuildStats{

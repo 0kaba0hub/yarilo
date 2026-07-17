@@ -135,20 +135,29 @@ func makeOwner(u *mailbox.UserInfo) string {
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
-// RebuildFolderIndex regenerates folder's index from the on-disk u.* files
-// under the driver's cross-process mailbox lock. It is the reactive-rebuild
-// counterpart to the operator endpoint: both go through idxrebuild.RebuildFolder
-// so the scan/match/reset logic cannot drift. Called by the IMAP session when a
-// folder carries the persisted FSCKD marker (a prior read hit a missing/corrupt
-// message).
-func (u *userMailbox) RebuildFolderIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (idxrebuild.Stats, error) {
-	var st idxrebuild.Stats
+// HealCorruptFolder is the reactive self-heal: under the driver's cross-process
+// mailbox lock it expunges index records whose u.* file has vanished (targeted
+// ExpungeMessage — QRESYNC tombstone + quota decrement, no full ResetFolder and
+// no UID assignment, so it cannot race a concurrent delivery), then clears the
+// FSCKD marker in the SAME lock scope so a marker set by another process between
+// scan and clear is not silently lost. Returns the number of records expunged.
+//
+// Called by the IMAP session when a folder carries the persisted FSCKD marker
+// (a prior read hit a missing/corrupt message).
+func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) (int, error) {
+	var expunged int
 	err := u.withMailboxLock(folder.Name, func() error {
 		var e error
-		st, e = idxrebuild.RebuildFolder(u, idx, folder)
-		return e
+		expunged, e = idxrebuild.ExpungeMissing(u, idx, folder)
+		if e != nil {
+			return e
+		}
+		if cm, ok := idx.(mailbox.CorruptionMarker); ok {
+			return cm.ClearFolderCorrupt(folder.ID)
+		}
+		return nil
 	})
-	return st, err
+	return expunged, err
 }
 
 // withMailboxLock runs fn under the per-process Mutex + the
