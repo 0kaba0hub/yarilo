@@ -613,10 +613,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			userInfo = resolver.UserInfo(username, "")
 		}
 
-		mboxBackend := s.opts.Mailbox
-		if f := s.opts.MailboxByDriver; f != nil && userInfo.Driver != "" {
-			mboxBackend = f(userInfo.Driver)
-		}
+		mboxBackend := mailbox.SelectPersonalBackend(s.opts.Mailbox, s.opts.MailboxByDriver, userInfo.Driver)
 		rcptBox := mboxBackend.OpenUser(userInfo)
 		rcptIdx := s.opts.Index.OpenUser(userInfo)
 		rcptBox.Init() //nolint:errcheck // idempotent; provisioned in rcptLocal

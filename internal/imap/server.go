@@ -963,51 +963,17 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		userInfo.InboxPath = mailbox.ExpandVars(ip, res.Username)
 	}
 
-	if res.MailLoc != "" {
-		// Populate any empty dir fields from KEY=value modifiers embedded
-		// in mail_location (e.g. "mdbox:~/mdbox:INDEX=~/index:CONTROL=~/ctrl").
-		expand := func(v string) string {
-			v = mailbox.ExpandHome(v, userInfo.Home)
-			return mailbox.ExpandVars(strings.ReplaceAll(v, "%h", userInfo.Home), res.Username)
-		}
-		if c1 := strings.IndexByte(res.MailLoc, ':'); c1 >= 0 {
-			rest := res.MailLoc[c1+1:]
-			if c2 := strings.IndexByte(rest, ':'); c2 >= 0 {
-				for _, mod := range strings.Split(rest[c2+1:], ":") {
-					k, v, ok := strings.Cut(mod, "=")
-					if !ok {
-						continue
-					}
-					switch strings.ToUpper(k) {
-					case "INDEX":
-						if userInfo.IndexDir == "" {
-							userInfo.IndexDir = expand(v)
-						}
-					case "VOLATILEDIR":
-						if userInfo.VolatileDir == "" {
-							userInfo.VolatileDir = expand(v)
-						}
-					case "CONTROL":
-						if userInfo.ControlDir == "" {
-							userInfo.ControlDir = expand(v)
-						}
-					case "ALT":
-						if userInfo.AltDir == "" {
-							userInfo.AltDir = expand(v)
-						}
-					}
-				}
-			}
-		}
-		// Record the mail_location driver so the fileindex and ACL pick the
-		// matching per-folder layout, and select the per-user mailbox backend
-		// when that driver differs from the global default.
-		if colon := strings.IndexByte(res.MailLoc, ':'); colon > 0 {
-			driver := strings.ToLower(res.MailLoc[:colon])
-			userInfo.Driver = driver
-			if f := s.srv.opts.MailboxByDriver; f != nil {
-				s.personalMailbox = f(driver)
-			}
+	// Stamp the per-user driver + INDEX=/CONTROL=/ALT=/VOLATILEDIR= modifiers via
+	// the shared resolver (the same parse POP3 and LMTP use — one implementation,
+	// one gating rule), so the fileindex and ACL pick the matching per-folder
+	// layout. Select the per-user mailbox backend when the driver is recognised;
+	// personalMailbox stays nil for the global driver, so dispatch falls through
+	// to the global backend. An unknown/malformed mail_location logs a warning
+	// and leaves the user on the global backend.
+	mailbox.StampLocation(userInfo, res.MailLoc)
+	if userInfo.Driver != "" {
+		if f := s.srv.opts.MailboxByDriver; f != nil {
+			s.personalMailbox = f(userInfo.Driver)
 		}
 	}
 

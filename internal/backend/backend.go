@@ -927,11 +927,10 @@ func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.U
 	if ui.InboxPath != "" {
 		mbi.InboxPath = mailbox.ExpandHome(ui.InboxPath, mbi.Home)
 	}
-	if loc := ui.MailLocation; loc != "" {
-		if colon := strings.IndexByte(loc, ':'); colon > 0 {
-			mbi.Driver = strings.ToLower(loc[:colon])
-		}
-	}
+	// Stamp the per-user driver + any embedded INDEX=/CONTROL=/ALT=/VOLATILEDIR=
+	// modifiers via the shared resolver (the separate userdb dir fields set above
+	// win). Same parse IMAP/POP3 use, so LMTP and quota-status resolve identically.
+	mailbox.StampLocation(mbi, ui.MailLocation)
 	return mbi
 }
 
