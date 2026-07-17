@@ -11,6 +11,11 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
+// sdbox must satisfy the shared reactive-healer contract so IMAP/POP3/FTS gate
+// corruption marking on it (mailbox.CanReactiveHeal) and drive the heal through
+// one interface rather than per-protocol inline copies.
+var _ mailbox.ReactiveHealer = (*userMailbox)(nil)
+
 // TestFetchCorruptionClassification: a vanished or truncated message file is
 // reported as ErrCorruptStorage (the reactive-rebuild trigger); a healthy file
 // reads fine.
