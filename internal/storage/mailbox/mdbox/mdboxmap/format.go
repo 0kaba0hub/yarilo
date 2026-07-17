@@ -38,9 +38,15 @@ const (
 	extGUID     = "guid"
 	extGUIDSize = 16 // 128-bit
 
-	// mapHeaderSize is the size of the extension-header data for
-	// the "map" extension. It stores highest_file_id (uint32).
-	mapHeaderSize = 4
+	// mapHeaderSize is the size of the extension-header data for the "map"
+	// extension. It stores highest_file_id (uint32) followed by rebuild_count
+	// (uint32) — the storage-wide-rebuild generation counter (#594 Phase 2b),
+	// bumped once per successful rebuild so a concurrent process can tell a heal
+	// already ran. Legacy files carry only the 4-byte highest_file_id; decodeMapHeader
+	// tolerates the short form (rebuild_count reads back 0) and the next flush
+	// grows the header to 8 bytes in place.
+	mapHeaderSize       = 8
+	mapHeaderLegacySize = 4
 )
 
 // MapEntry is one parsed map record. UID is the map_uid; the
@@ -92,22 +98,27 @@ func decodeRefExt(b []byte) uint16 {
 	return binary.LittleEndian.Uint16(b)
 }
 
-// encodeMapHeader packs highest_file_id into the 4-byte ext
+// encodeMapHeader packs highest_file_id + rebuild_count into the 8-byte ext
 // header data for "map".
-func encodeMapHeader(highestFileID uint32) []byte {
+func encodeMapHeader(highestFileID, rebuildCount uint32) []byte {
 	buf := make([]byte, mapHeaderSize)
-	binary.LittleEndian.PutUint32(buf, highestFileID)
+	binary.LittleEndian.PutUint32(buf[0:4], highestFileID)
+	binary.LittleEndian.PutUint32(buf[4:8], rebuildCount)
 	return buf
 }
 
-// decodeMapHeader extracts highest_file_id from the "map"
-// extension's header bytes. A missing or short header is treated
-// as zero so a freshly-initialised file reads back cleanly.
-func decodeMapHeader(b []byte) uint32 {
-	if len(b) < mapHeaderSize {
-		return 0
+// decodeMapHeader extracts highest_file_id and rebuild_count from the "map"
+// extension's header bytes. Both default to zero on a missing header, and a
+// legacy 4-byte header (highest_file_id only) reads rebuild_count back as 0 —
+// backward compatible with files written before the counter existed.
+func decodeMapHeader(b []byte) (highestFileID, rebuildCount uint32) {
+	if len(b) >= 4 {
+		highestFileID = binary.LittleEndian.Uint32(b[0:4])
 	}
-	return binary.LittleEndian.Uint32(b)
+	if len(b) >= mapHeaderSize {
+		rebuildCount = binary.LittleEndian.Uint32(b[4:8])
+	}
+	return highestFileID, rebuildCount
 }
 
 // encodeGUIDExt packs a 128-bit GUID into the 16-byte per-record
@@ -140,7 +151,7 @@ func defaultExtensions(highestFileID uint32) []mailindex.Extension {
 			HdrSize:     mapHeaderSize,
 			RecordSize:  extMapSize,
 			RecordAlign: 4,
-			HdrData:     encodeMapHeader(highestFileID),
+			HdrData:     encodeMapHeader(highestFileID, 0),
 		},
 		{
 			Name:        extRef,

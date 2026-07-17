@@ -129,6 +129,41 @@ func TestRebuildMdboxRejected(t *testing.T) {
 	}
 }
 
+// TestStorageRebuildEndpointMdbox drives the storage-wide rebuild endpoint for
+// mdbox: it must succeed (200) and report a bumped generation counter.
+func TestStorageRebuildEndpointMdbox(t *testing.T) {
+	ts, _ := storageTestServerMdbox(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/index/rebuild-storage", "",
+		map[string]any{"user": user})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", status, body)
+	}
+	var stats struct {
+		RebuildCount int `json:"rebuild_count"`
+	}
+	decodeJSONBody(t, body, &stats)
+	if stats.RebuildCount != 1 {
+		t.Errorf("rebuild_count=%d want 1", stats.RebuildCount)
+	}
+}
+
+// TestStorageRebuildEndpointRejectsNonMdbox verifies the storage-wide endpoint
+// refuses a folder-per-file driver (maildir), which must use per-folder rebuild.
+func TestStorageRebuildEndpointRejectsNonMdbox(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/index/rebuild-storage", "",
+		map[string]any{"user": user})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", status, body)
+	}
+}
+
 // TestOptimizeIsNoopOnEmptyLog walks the empty-log fast-path —
 // optimize on a fresh folder must return 200 with a duration
 // stat, no error.

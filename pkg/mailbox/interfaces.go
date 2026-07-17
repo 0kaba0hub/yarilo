@@ -55,6 +55,26 @@ type FolderAgnosticStorage interface {
 	FolderAgnosticScan() bool
 }
 
+// StorageRebuildStats reports what a storage-wide rebuild did.
+type StorageRebuildStats struct {
+	Scanned        int    // physical messages read from storage
+	FoldersRebuilt int    // per-folder indexes reset
+	Expunged       int    // map records dropped (message vanished from storage)
+	OrphansAdopted int    // messages referenced by no folder, re-filed into INBOX
+	RebuildCount   uint32 // new generation counter after the rebuild
+}
+
+// StorageWideRebuilder is a folder-agnostic driver (mdbox) that can rebuild its
+// whole storage: reconcile the shared map against the physical files, reset
+// every folder index against the surviving messages, adopt orphans into INBOX,
+// and drop map records whose message vanished — all under the storage (map)
+// lock. idx is the user's index backend for the same namespace. Implemented by
+// mdbox; driven by the operator rebuild-storage endpoint and (later) the
+// reactive trigger.
+type StorageWideRebuilder interface {
+	RebuildStorage(idx UserIndex) (StorageRebuildStats, error)
+}
+
 // MarkCorruptOnFetchErr flags folder for a reactive heal when err reports
 // corrupt storage (ErrCorruptStorage). It resolves the folder ID via idx and
 // records the marker if idx supports it — a no-op otherwise. Shared by the read

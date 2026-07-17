@@ -1,6 +1,9 @@
 package mdboxmap
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func TestEncodeDecodeMapExt(t *testing.T) {
 	cases := []struct {
@@ -45,10 +48,23 @@ func TestEncodeDecodeRefExt(t *testing.T) {
 }
 
 func TestEncodeDecodeMapHeader(t *testing.T) {
-	for _, want := range []uint32{0, 1, 0xdeadbeef} {
-		raw := encodeMapHeader(want)
-		if got := decodeMapHeader(raw); got != want {
-			t.Errorf("header round-trip: got %d, want %d", got, want)
+	cases := []struct{ hfid, rebuild uint32 }{
+		{0, 0}, {1, 0}, {0xdeadbeef, 0}, {7, 42}, {0xdeadbeef, 0xcafebabe},
+	}
+	for _, c := range cases {
+		raw := encodeMapHeader(c.hfid, c.rebuild)
+		if len(raw) != mapHeaderSize {
+			t.Fatalf("encoded header %d bytes, want %d", len(raw), mapHeaderSize)
 		}
+		gotH, gotR := decodeMapHeader(raw)
+		if gotH != c.hfid || gotR != c.rebuild {
+			t.Errorf("round-trip: got (%d,%d), want (%d,%d)", gotH, gotR, c.hfid, c.rebuild)
+		}
+	}
+	// A legacy 4-byte header (highest_file_id only) reads rebuild_count back as 0.
+	legacy := make([]byte, mapHeaderLegacySize)
+	binary.LittleEndian.PutUint32(legacy, 99)
+	if h, r := decodeMapHeader(legacy); h != 99 || r != 0 {
+		t.Errorf("legacy 4-byte header: got (%d,%d), want (99,0)", h, r)
 	}
 }
