@@ -180,7 +180,12 @@ dicts:
     settings:
       driver: mysql
       dsn: "${YARILO_DB_DSN}"
-      table: quota
+      ## Mapped mode (#590): each key binds to a column of the operator-owned
+      ## quota(username, bytes, messages) table, so the mirror is a clean
+      ## per-user schema external tooling can query directly.
+      maps:
+        - { key: "priv/quota/storage",  table: quota, username_field: username, value_field: bytes }
+        - { key: "priv/quota/messages", table: quota, username_field: username, value_field: messages }
   sieve_vacation:
     driver: redis
     settings:
