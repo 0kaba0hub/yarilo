@@ -4,14 +4,109 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
+)
+
+// Dovecot-compatible quota_clone keys mirrored into each clone dict.
+const (
+	cloneKeyStorage  = "priv/quota/storage"
+	cloneKeyMessages = "priv/quota/messages"
 )
 
 func (s *Server) registerQuotaRoutes() {
 	s.mux.Handle("GET /api/backend/quota/show", s.middleware(s.handleQuotaShow))
 	s.mux.Handle("POST /api/backend/quota/recalc", s.middleware(s.handleQuotaRecalc))
+	s.mux.Handle("GET /api/backend/quota/clone/list", s.middleware(s.handleQuotaCloneList))
+	s.mux.Handle("GET /api/backend/quota/clone/get", s.middleware(s.handleQuotaCloneGet))
+}
+
+// handleQuotaCloneList returns the configured quota_clone backend names.
+// GET /api/backend/quota/clone/list
+func (s *Server) handleQuotaCloneList(w http.ResponseWriter, _ *http.Request) {
+	backends := make([]string, 0, len(s.opts.QuotaCloneDicts))
+	backends = append(backends, s.opts.QuotaCloneDicts...)
+	apiJSON(w, map[string]any{"backends": backends})
+}
+
+type quotaCloneGetResponse struct {
+	Backend      string `json:"backend"`
+	User         string `json:"user"`
+	StorageBytes int64  `json:"storage_bytes"`
+	Messages     int64  `json:"messages"`
+	Found        bool   `json:"found"`
+}
+
+// handleQuotaCloneGet reads a mailbox's mirrored usage from one clone backend.
+// GET /api/backend/quota/clone/get?backend=<name>&user=<user>
+//
+// backend is restricted to the configured clone list — this is a focused
+// inspection of the quota_clone fan-out, not an arbitrary dict reader (that is
+// `dict get`). The value is an advisory mirror; authoritative usage is
+// /quota/show, summed from the index.
+func (s *Server) handleQuotaCloneGet(w http.ResponseWriter, r *http.Request) {
+	backend := r.URL.Query().Get("backend")
+	user := r.URL.Query().Get("user")
+	if backend == "" || user == "" {
+		apiError(w, "backend and user required", http.StatusBadRequest)
+		return
+	}
+	if !contains(s.opts.QuotaCloneDicts, backend) {
+		apiError(w, "not a configured quota_clone backend: "+backend, http.StatusBadRequest)
+		return
+	}
+	d, ok := s.opts.Dicts[backend]
+	if !ok {
+		apiError(w, "clone dict not open: "+backend, http.StatusInternalServerError)
+		return
+	}
+	set := &dict.OpSettings{Username: user}
+	storage, sFound, err := lookupInt(r.Context(), d, set, cloneKeyStorage)
+	if err != nil {
+		apiError(w, "lookup storage: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	messages, mFound, err := lookupInt(r.Context(), d, set, cloneKeyMessages)
+	if err != nil {
+		apiError(w, "lookup messages: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, quotaCloneGetResponse{
+		Backend:      backend,
+		User:         user,
+		StorageBytes: storage,
+		Messages:     messages,
+		Found:        sFound || mFound,
+	})
+}
+
+// lookupInt reads a per-user dict key and parses its value as a decimal int64.
+// A missing key or NULL value is (0, false, nil).
+func lookupInt(ctx context.Context, d dict.Dict, set *dict.OpSettings, key string) (int64, bool, error) {
+	vals, found, err := d.Lookup(ctx, set, key)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found || len(vals) == 0 {
+		return 0, false, nil
+	}
+	n, perr := strconv.ParseInt(string(vals[0]), 10, 64)
+	if perr != nil {
+		return 0, true, nil // present but non-numeric: report found, value 0
+	}
+	return n, true, nil
+}
+
+func contains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // userCountUsage sums the authoritative index-derived usage across a user's
