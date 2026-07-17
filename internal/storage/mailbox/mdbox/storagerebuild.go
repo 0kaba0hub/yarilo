@@ -61,6 +61,16 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 // blocks new deliveries; a delivery already past box.Save but not yet past its
 // folder append is counted by the phase-2 re-read, so its refcount stays >0.
 //
+// QUIESCENCE REQUIRED. This is an operator repair tool (Dovecot force-resync
+// parity) and must run with delivery to this user quiesced. The delivery path
+// takes the map lock only for box.Save, not for the subsequent folder append, so
+// a delivery whose box.Save committed just before this rebuild took the lock and
+// whose folder append lands after that folder's phase-2 count would have its
+// refcount recomputed to 0 while a folder references it — a later purge could
+// then reclaim live mail. The window is small and the phase-2 re-read shrinks it,
+// but it is not eliminated here; fully closing it needs the delivery folder-append
+// to serialise on the map lock too (a separate hardening of the delivery path).
+//
 // modseq/QRESYNC: ResetFolder stamps a fresh modseq on every surviving record
 // (a modseq storm for QRESYNC clients) and loses VANISHED fidelity for dropped
 // UIDs — the same accepted parity gap as the sdbox reactive heal. FTS may retain

@@ -189,7 +189,7 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 		UnreferencedZeroref: st.UnreferencedZeroref,
 		RebuildCount:        st.RebuildCount,
 		DurationMs:          time.Since(start).Milliseconds(),
-		Note:                "unreferenced messages are set zero-ref for the next purge, not re-filed; orphan restore lands with ORIG_MAILBOX (#594 Phase 2b)",
+		Note:                "run with delivery to this user quiesced (operator repair tool). Unreferenced messages are set zero-ref for the next purge, not re-filed; orphan restore lands with ORIG_MAILBOX (#594 Phase 2b)",
 	})
 }
 

@@ -43,7 +43,8 @@ Commands:
         surviving messages, recompute refcounts from folder references
         (unreferenced -> zero-ref for the next purge; NOT resurrected),
         and drop map records whose message vanished. Refuses on an
-        incomplete scan or an unmounted alt tier.
+        incomplete scan or an unmounted alt tier. Run with delivery to
+        this user quiesced (operator repair tool, like force-resync).
 
   optimize <user> <folder> [--namespace NS]
         Compact the .index.log overlay into the base .index file.
