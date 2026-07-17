@@ -564,6 +564,32 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 }
 
 // LMTPData delivers the message and reports per-recipient status via status.SetStatus.
+// resolveRcptUserInfo returns the UserInfo for a recipient at delivery time.
+// The RCPT-time lookup normally caches it (with UserInfo.Driver stamped via the
+// userdb); on a cache miss it re-runs the userdb lookup so Driver is still set,
+// because the personal-backend selection hangs entirely on that field — a dbox
+// recipient must not fall through to the global (maildir) store. Only when there
+// is no userdb to consult does it fall back to the bare resolver (no per-user
+// driver, so the global backend is correct).
+func (s *session) resolveRcptUserInfo(rcpt, username string) *mailbox.UserInfo {
+	if ui := s.rcptUserInfo[rcpt]; ui != nil {
+		return ui
+	}
+	if s.opts.UserdbLookup != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ui, err := s.opts.UserdbLookup(ctx, username)
+		cancel()
+		if err == nil && ui != nil {
+			return ui
+		}
+	}
+	resolver := s.opts.Resolver
+	if resolver == nil {
+		resolver = &mailbox.Resolver{}
+	}
+	return resolver.UserInfo(username, "")
+}
+
 func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -604,14 +630,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		msg := s.prependHeaders(data, rcpt, deliverRcpt)
 
 		username, folder, _ := resolveMailbox(deliverRcpt)
-		userInfo := s.rcptUserInfo[rcpt]
-		if userInfo == nil {
-			resolver := s.opts.Resolver
-			if resolver == nil {
-				resolver = &mailbox.Resolver{}
-			}
-			userInfo = resolver.UserInfo(username, "")
-		}
+		userInfo := s.resolveRcptUserInfo(rcpt, username)
 
 		mboxBackend := mailbox.SelectPersonalBackend(s.opts.Mailbox, s.opts.MailboxByDriver, userInfo.Driver)
 		rcptBox := mboxBackend.OpenUser(userInfo)
