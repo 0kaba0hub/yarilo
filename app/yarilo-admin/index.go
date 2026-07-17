@@ -15,10 +15,12 @@ func dispatchIndex(args []string) error {
 		return indexDump(args[1:])
 	case "rebuild":
 		return indexRebuild(args[1:])
+	case "rebuild-storage":
+		return indexRebuildStorage(args[1:])
 	case "optimize":
 		return indexOptimize(args[1:])
 	default:
-		return fmt.Errorf("unknown index command %q — available: dump, rebuild, optimize", args[0])
+		return fmt.Errorf("unknown index command %q — available: dump, rebuild, rebuild-storage, optimize", args[0])
 	}
 }
 
@@ -30,9 +32,18 @@ Commands:
         Dump every fileindex record (UID, flags, modseq, size, GUID).
 
   rebuild  <user> <folder> [--namespace NS]
-        Scan the on-disk storage and regenerate the fileindex,
+        Scan the on-disk storage and regenerate ONE folder's fileindex,
         preserving UIDs for filenames already known to the index.
-        Works for every driver (maildir / sdbox / mdbox).
+        For maildir / sdbox. Returns 501 for mdbox — its storage is
+        folder-agnostic, so use rebuild-storage instead.
+
+  rebuild-storage <user> [--namespace NS]
+        Storage-wide rebuild for mdbox: reconcile the shared map against
+        the physical m.<N> files, reset every folder index to the
+        surviving messages, recompute refcounts from folder references
+        (unreferenced -> zero-ref for the next purge; NOT resurrected),
+        and drop map records whose message vanished. Refuses on an
+        incomplete scan or an unmounted alt tier.
 
   optimize <user> <folder> [--namespace NS]
         Compact the .index.log overlay into the base .index file.
@@ -70,6 +81,21 @@ func indexRebuild(args []string) error {
 	return printJSON(backendAPIPost("/api/backend/index/rebuild", map[string]any{
 		"user":      fs.Arg(0),
 		"folder":    fs.Arg(1),
+		"namespace": *ns,
+	}))
+}
+
+func indexRebuildStorage(args []string) error {
+	fs := flag.NewFlagSet("index rebuild-storage", flag.ContinueOnError)
+	ns := fs.String("namespace", "personal", "namespace slug")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: yarilo-admin backend index rebuild-storage <user> [--namespace NS]")
+	}
+	return printJSON(backendAPIPost("/api/backend/index/rebuild-storage", map[string]any{
+		"user":      fs.Arg(0),
 		"namespace": *ns,
 	}))
 }

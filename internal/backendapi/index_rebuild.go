@@ -138,12 +138,13 @@ type storageRebuildRequest struct {
 }
 
 type storageRebuildStats struct {
-	Scanned        int    `json:"scanned"`
-	FoldersRebuilt int    `json:"folders_rebuilt"`
-	Expunged       int    `json:"expunged"`
-	OrphansAdopted int    `json:"orphans_adopted"`
-	RebuildCount   uint32 `json:"rebuild_count"`
-	DurationMs     int64  `json:"duration_ms"`
+	Scanned             int    `json:"scanned"`
+	FoldersRebuilt      int    `json:"folders_rebuilt"`
+	Expunged            int    `json:"expunged"`
+	UnreferencedZeroref int    `json:"unreferenced_zeroref"`
+	RebuildCount        uint32 `json:"rebuild_count"`
+	DurationMs          int64  `json:"duration_ms"`
+	Note                string `json:"note"`
 }
 
 // handleStorageRebuild runs the storage-wide rebuild for a folder-agnostic
@@ -182,12 +183,13 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiJSON(w, storageRebuildStats{
-		Scanned:        st.Scanned,
-		FoldersRebuilt: st.FoldersRebuilt,
-		Expunged:       st.Expunged,
-		OrphansAdopted: st.OrphansAdopted,
-		RebuildCount:   st.RebuildCount,
-		DurationMs:     time.Since(start).Milliseconds(),
+		Scanned:             st.Scanned,
+		FoldersRebuilt:      st.FoldersRebuilt,
+		Expunged:            st.Expunged,
+		UnreferencedZeroref: st.UnreferencedZeroref,
+		RebuildCount:        st.RebuildCount,
+		DurationMs:          time.Since(start).Milliseconds(),
+		Note:                "unreferenced messages are set zero-ref for the next purge, not re-filed; orphan restore lands with ORIG_MAILBOX (#594 Phase 2b)",
 	})
 }
 
