@@ -6,6 +6,7 @@ package ftsservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -321,6 +322,7 @@ func (s *Service) runIndex(j job) error {
 		}
 		indexed := last
 		batch := 0
+		marked := false // FSCKD flagged for this mailbox scan; gate repeat marks
 		for _, m := range msgs {
 			if m.UID <= last || m.UID > j.maxUID {
 				continue
@@ -330,6 +332,13 @@ func (s *Service) runIndex(j job) error {
 				// log and move the checkpoint past it (rescan can revisit).
 				slog.Warn("fts: message skipped",
 					"user", j.user, "folder", j.mbox.Name, "uid", m.UID, "err", err)
+				// Flag the folder for a reactive heal once per scan (not per
+				// message): a mailbox full of vanished files must not pay an
+				// OpenFolder+mark for each one.
+				if !marked && errors.Is(err, mailbox.ErrCorruptStorage) && mailbox.CanReactiveHeal(h.box) {
+					mailbox.MarkCorruptOnFetchErr(h.box, h.idx, j.mbox.Name, err)
+					marked = true
+				}
 			}
 			indexed = m.UID
 			batch++
@@ -356,9 +365,8 @@ func (s *Service) runIndex(j job) error {
 func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.MessageMeta, upd fts.Update) error {
 	rc, err := h.box.Fetch(mbox.Name, m.Filename, m.AltTier)
 	if err != nil {
-		// A message the FTS indexer cannot read because its sdbox file is gone
-		// flags the folder for a reactive heal on the next open.
-		mailbox.MarkCorruptOnFetchErr(h.box, h.idx, mbox.Name, err)
+		// The caller flags the folder for a reactive heal (gated once per scan);
+		// here we just surface the read error.
 		return err
 	}
 	defer rc.Close()

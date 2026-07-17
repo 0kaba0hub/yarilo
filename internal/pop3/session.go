@@ -77,7 +77,8 @@ type session struct {
 	deleted         []bool
 	seenMsgs        []bool // tracks messages fetched via RETR this session
 	uidls           []string
-	lastMsg         int // highest seq number RETR'd (RFC 1460 LAST)
+	lastMsg         int  // highest seq number RETR'd (RFC 1460 LAST)
+	markedCorrupt   bool // INBOX already flagged FSCKD this session; gate repeat marks
 
 	badCmds int
 }
@@ -717,13 +718,12 @@ func (s *session) loadMailbox() error {
 	// any protocol) is healed on POP3 login too, so a POP3-only mailbox does not
 	// stay broken waiting for an IMAP SELECT that never comes.
 	if folder.Fsckd {
-		if rb, ok := s.box.(interface {
-			HealCorruptFolder(mailbox.UserIndex, *mailbox.Folder) (int, error)
-		}); ok {
+		if rb, ok := s.box.(mailbox.ReactiveHealer); ok {
 			if n, herr := rb.HealCorruptFolder(s.idx, folder); herr != nil {
 				slog.Warn("pop3: dbox reactive heal failed", "user", s.userInfo.Username, "err", herr)
 			} else if n > 0 {
 				slog.Info("pop3: dbox reactive heal", "user", s.userInfo.Username, "expunged", n)
+				s.markedCorrupt = false
 				if refreshed, rerr := s.idx.OpenFolder("INBOX", 0); rerr == nil {
 					folder = refreshed
 				}
@@ -961,8 +961,12 @@ func (s *session) cmdList(arg string) {
 // the read tripped over corrupt sdbox storage (missing/truncated/bad file).
 func (s *session) fetchINBOX(m *mailbox.MessageMeta) (io.ReadCloser, error) {
 	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
-	if err != nil {
+	if err != nil && !s.markedCorrupt && errors.Is(err, mailbox.ErrCorruptStorage) && mailbox.CanReactiveHeal(s.box) {
+		// Flag once per session: a RETR loop over a corrupt mailbox must not pay
+		// an OpenFolder+mark per message — the single mark heals every missing
+		// record on the next open.
 		mailbox.MarkCorruptOnFetchErr(s.box, s.idx, "INBOX", err)
+		s.markedCorrupt = true
 	}
 	return rc, err
 }

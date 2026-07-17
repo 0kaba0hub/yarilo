@@ -8,16 +8,6 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// reactiveRebuilder is implemented by index-authoritative drivers (dbox) that
-// can self-heal a folder whose index references a missing/corrupt message. The
-// trigger is the persisted FSCKD marker (Folder.Fsckd).
-type reactiveRebuilder interface {
-	// HealCorruptFolder expunges index records whose file has vanished and
-	// clears the marker, all under the driver's mailbox lock. Returns the count
-	// expunged.
-	HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) (int, error)
-}
-
 // flagCorruptOnRead persists the folder's FSCKD marker when a read failed
 // because the backing storage is missing/corrupt (never for a transient I/O
 // error). The next open then heals the index. Gated per session so a FETCH over
@@ -68,10 +58,18 @@ func (s *session) fetchSelected(m *mailbox.MessageMeta) (rc io.ReadCloser, err e
 // heal ran, or nil otherwise. Non-fatal on error. Used from SELECT, STATUS and
 // Poll/IDLE so a flagged folder heals on whichever the client hits first.
 func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) *mailbox.Folder {
-	if !s.srv.opts.DboxReactiveRebuild || !f.Fsckd {
+	if !s.srv.opts.DboxReactiveRebuild {
 		return nil
 	}
-	rb, ok := h.box.(reactiveRebuilder)
+	if !f.Fsckd {
+		// The folder is clean — possibly because another session already healed
+		// and cleared the marker. Drop our stale per-session flag so a fresh
+		// corruption re-flags this folder instead of being suppressed until the
+		// session ends.
+		delete(s.markedCorrupt, rel)
+		return nil
+	}
+	rb, ok := h.box.(mailbox.ReactiveHealer)
 	if !ok {
 		return nil
 	}
