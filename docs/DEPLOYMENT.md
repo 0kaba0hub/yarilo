@@ -237,6 +237,18 @@ The standalone deployment targets a single k8s node, no director, no per-tag sha
 no protocol changes, no code touched. The same pattern carries the operator from a one-pod dev
 cluster to a small multi-replica production setup.
 
+### Single-host, no Kubernetes — Docker Compose
+
+For local development, evaluation and small self-hosted installs there is a
+**Docker Compose** deployment ([deploy/compose/](../deploy/compose),
+[DOCKER-COMPOSE.md](DOCKER-COMPOSE.md)). It collapses the topology further: the
+whole server runs as **one `yarilo` process** in `mode: single` — every protocol
+plus embedded auth, anvil and locks (in-memory) in-process, no login proxies and
+no `yarilo-locks` service. The minimal profile needs no external dependencies
+(SQLite userdb + local volumes); a `full` profile adds MariaDB and Redis. It is a
+single-host target and is **not** highly available — for HA/scale-out use the
+Helm standalone or backend deployments above.
+
 ### Components (all as k8s Deployments unless noted)
 
 | Component | Default replicas | Scale by |

@@ -74,7 +74,13 @@ COPY --from=fts-builder /out/fts-bench /usr/local/bin/fts-bench
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
 
-RUN chmod +x /entrypoint.sh
+# Pre-create the storage + state dirs owned by the runtime user. A Docker named
+# volume mounted over one of these inherits the image dir's ownership, so the
+# uid-1000 process can write (SQLite userdb, maildir) on first start. Without
+# this the volume is created root:root and the minimal Compose stack crash-loops.
+RUN chmod +x /entrypoint.sh && \
+    mkdir -p /var/lib/yarilo /var/mail/vhosts && \
+    chown yarilo:yarilo /var/lib/yarilo /var/mail/vhosts
 
 USER yarilo:yarilo
 

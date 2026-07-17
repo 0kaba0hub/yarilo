@@ -28,10 +28,10 @@ type Options struct {
 	Mailbox   mailbox.MailboxBackend
 	// MailboxByDriver (optional) returns a MailboxBackend for a given driver
 	// name ("maildir", "sdbox", "mdbox"). When set and the user's mail_location
-	// carries a driver differing from the global default, the session uses it
-	// for the personal mailbox — the POP3 counterpart of the IMAP resolution.
-	// Without it POP3 would read every user through the global Mailbox backend
-	// and see 0 messages for dbox users.
+	// carries a driver, the session uses the returned backend for the personal
+	// mailbox — the POP3 counterpart of the IMAP resolution. Without it POP3
+	// reads every user through the global Mailbox backend and sees 0 messages
+	// for dbox users.
 	MailboxByDriver    func(driver string) mailbox.MailboxBackend
 	Index              mailbox.IndexBackend
 	Resolver           *mailbox.Resolver

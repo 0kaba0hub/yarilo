@@ -118,10 +118,11 @@ that fronts it:
 
 - `curl http://127.0.0.1:8080/healthz` and `/readyz`.
 - IMAP/POP3 greeting via `openssl s_client` (above).
-- The smoke test, run as a one-off against the stack:
+- The smoke test, run as a one-off. The image entrypoint dispatches on
+  `YARILO_COMPONENT`, so override it to run the smoketest binary directly:
   ```sh
-  docker compose run --rm --no-deps yarilo \
-    /usr/local/bin/yarilo-smoketest -host 127.0.0.1 -imap-port 993 \
+  docker compose exec yarilo \
+    yarilo-smoketest -host 127.0.0.1 -imap-port 993 \
     -telemetry http://127.0.0.1:8080 -insecure=true
   ```
 

@@ -19,7 +19,13 @@ services:
   pop3:        { enabled: true,  port: 110,  ssl_mode: starttls, disable_plaintext_auth: false }
   pop3s:       { enabled: true,  port: 995,  ssl_mode: ssl }
   lmtp:        { enabled: true,  port: 24,   ssl_mode: "no" }
-  managesieve: { enabled: true,  port: 4190, ssl_mode: starttls }
+  ## In mode:single ManageSieve is served by the backend listener
+  ## (managesieve_be), not the login-proxy frontend. It is plaintext (TLS
+  ## termination lives in the login proxy, which standalone does not run), so
+  ## it is bound to loopback in docker-compose.yml. Front it with a TLS proxy
+  ## for remote access.
+  managesieve:    { enabled: false }
+  managesieve_be: { enabled: true, port: 4190, ssl_mode: "no" }
 
 protocol:
   submission:
