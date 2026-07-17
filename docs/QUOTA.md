@@ -275,6 +275,27 @@ The index self-heals on load (the O(1) validity check), so `recalc` is only
 needed to force a rebuild after suspected aggregate corruption. It reopens each
 folder, recomputes `hdr-vsize` from the per-record vsize, and returns the sum.
 
+### Inspecting the quota_clone mirror
+
+`quota_clone` mirrors the authoritative usage into one or more external dicts
+(SQL + Redis fan-out). To confirm the fan-out is coherent or debug a divergent
+target:
+
+```sh
+# List the configured clone backends
+yarilo-admin backend quota clone list
+
+# Read what one backend holds for a mailbox (advisory mirror)
+yarilo-admin backend quota clone get quota_clone_mysql alice@example.com
+```
+
+These call `GET /api/backend/quota/clone/list` and
+`GET /api/backend/quota/clone/get?backend=<name>&user=<user>`, which reads
+`priv/quota/storage` + `priv/quota/messages` from that dict, scoped per user.
+`backend` is restricted to the configured clone list — for arbitrary dicts use
+`yarilo-admin backend dict get`. The returned value is an **advisory mirror**;
+the authoritative usage is `quota show`, summed from the index.
+
 ## Helm
 
 ```yaml

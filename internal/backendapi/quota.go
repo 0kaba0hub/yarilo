@@ -4,7 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strconv"
 
+	"github.com/0kaba0hub/yarilo/pkg/dict"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
 )
@@ -12,6 +15,96 @@ import (
 func (s *Server) registerQuotaRoutes() {
 	s.mux.Handle("GET /api/backend/quota/show", s.middleware(s.handleQuotaShow))
 	s.mux.Handle("POST /api/backend/quota/recalc", s.middleware(s.handleQuotaRecalc))
+	s.mux.Handle("GET /api/backend/quota/clone/list", s.middleware(s.handleQuotaCloneList))
+	s.mux.Handle("GET /api/backend/quota/clone/get", s.middleware(s.handleQuotaCloneGet))
+}
+
+// handleQuotaCloneList returns the configured quota_clone backend names.
+// GET /api/backend/quota/clone/list
+func (s *Server) handleQuotaCloneList(w http.ResponseWriter, _ *http.Request) {
+	backends := make([]string, 0, len(s.opts.QuotaCloneDicts))
+	backends = append(backends, s.opts.QuotaCloneDicts...)
+	apiJSON(w, map[string]any{"backends": backends})
+}
+
+type quotaCloneGetResponse struct {
+	Backend       string `json:"backend"`
+	User          string `json:"user"`
+	StorageBytes  int64  `json:"storage_bytes"`
+	StorageFound  bool   `json:"storage_found"`
+	Messages      int64  `json:"messages"`
+	MessagesFound bool   `json:"messages_found"`
+	// Malformed lists any key present in the dict whose value was not a valid
+	// integer — the exact "divergent target" symptom this endpoint exists to
+	// surface, so it must never be silently reported as a legitimate 0.
+	Malformed []string `json:"malformed,omitempty"`
+}
+
+// handleQuotaCloneGet reads a mailbox's mirrored usage from one clone backend.
+// GET /api/backend/quota/clone/get?backend=<name>&user=<user>
+//
+// backend is restricted to the configured clone list — this is a focused
+// inspection of the quota_clone fan-out, not an arbitrary dict reader (that is
+// `dict get`). The value is an advisory mirror; authoritative usage is
+// /quota/show, summed from the index. Storage and messages are reported
+// independently (a partial mirror is a real state) and a non-numeric value is
+// flagged, not silently zeroed.
+func (s *Server) handleQuotaCloneGet(w http.ResponseWriter, r *http.Request) {
+	backend := r.URL.Query().Get("backend")
+	user := r.URL.Query().Get("user")
+	if backend == "" || user == "" {
+		apiError(w, "backend and user required", http.StatusBadRequest)
+		return
+	}
+	if !slices.Contains(s.opts.QuotaCloneDicts, backend) {
+		apiError(w, "not a configured quota_clone backend: "+backend, http.StatusBadRequest)
+		return
+	}
+	d, ok := s.opts.Dicts[backend]
+	if !ok {
+		apiError(w, "clone dict not open: "+backend, http.StatusInternalServerError)
+		return
+	}
+	set := &dict.OpSettings{Username: user}
+	resp := quotaCloneGetResponse{Backend: backend, User: user}
+	for _, kv := range []struct {
+		key string
+		val *int64
+		fnd *bool
+	}{
+		{quota.KeyStorage, &resp.StorageBytes, &resp.StorageFound},
+		{quota.KeyMessages, &resp.Messages, &resp.MessagesFound},
+	} {
+		n, found, malformed, err := lookupInt(r.Context(), d, set, kv.key)
+		if err != nil {
+			apiError(w, "lookup "+kv.key+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		*kv.val, *kv.fnd = n, found
+		if malformed {
+			resp.Malformed = append(resp.Malformed, kv.key)
+		}
+	}
+	apiJSON(w, resp)
+}
+
+// lookupInt reads a per-user dict key and parses its value as a decimal int64.
+// A missing/NULL key is (0, false, false, nil); a present-but-non-numeric value
+// is (0, true, true, nil) so the caller can flag the divergence rather than
+// report a legitimate-looking 0.
+func lookupInt(ctx context.Context, d dict.Dict, set *dict.OpSettings, key string) (value int64, found, malformed bool, err error) {
+	vals, found, err := d.Lookup(ctx, set, key)
+	if err != nil {
+		return 0, false, false, err
+	}
+	if !found || len(vals) == 0 {
+		return 0, false, false, nil
+	}
+	n, perr := strconv.ParseInt(string(vals[0]), 10, 64)
+	if perr != nil {
+		return 0, true, true, nil
+	}
+	return n, true, false, nil
 }
 
 // userCountUsage sums the authoritative index-derived usage across a user's

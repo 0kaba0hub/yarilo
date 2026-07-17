@@ -176,6 +176,7 @@ func main() {
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
 		MetadataDict:       dicts["metadata"],
 		QuotaDict:          dicts["quota"],
+		QuotaCloneDicts:    cfg.Quota.CloneDicts,
 		AnvilAddr:          cfg.AnvilService.ClientAddr(),
 		AnvilTLS:           anvilTLS,
 		AuthClient:         authcl,

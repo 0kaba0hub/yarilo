@@ -19,9 +19,97 @@ func dispatchQuota(args []string) error {
 		return quotaRecalc(args[1:])
 	case "set":
 		return quotaSet(args[1:])
+	case "clone":
+		return dispatchQuotaClone(args[1:])
 	default:
-		return fmt.Errorf("unknown quota command %q — available: show, recalc, set", args[0])
+		return fmt.Errorf("unknown quota command %q — available: show, recalc, set, clone", args[0])
 	}
+}
+
+func dispatchQuotaClone(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: yarilo-admin backend quota clone <list|get> ...")
+	}
+	switch args[0] {
+	case "list":
+		return quotaCloneList(args[1:])
+	case "get":
+		return quotaCloneGet(args[1:])
+	default:
+		return fmt.Errorf("unknown quota clone command %q — available: list, get", args[0])
+	}
+}
+
+// quotaCloneList prints the configured quota_clone backend names.
+func quotaCloneList(args []string) error {
+	fs := flag.NewFlagSet("quota clone list", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	data, err := backendAPIGet("/api/backend/quota/clone/list")
+	return printOutput(data, err, func(data []byte) error {
+		var r struct {
+			Backends []string `json:"backends"`
+		}
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		if len(r.Backends) == 0 {
+			fmt.Println("(no quota_clone backends configured)")
+			return nil
+		}
+		for _, b := range r.Backends {
+			fmt.Println(b)
+		}
+		return nil
+	})
+}
+
+// quotaCloneGet prints the mirrored usage one clone backend holds for a mailbox.
+func quotaCloneGet(args []string) error {
+	fs := flag.NewFlagSet("quota clone get", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("usage: yarilo-admin backend quota clone get <backend> <user>")
+	}
+	data, err := backendAPIGet("/api/backend/quota/clone/get?backend=" +
+		url.QueryEscape(fs.Arg(0)) + "&user=" + url.QueryEscape(fs.Arg(1)))
+	return printOutput(data, err, humanQuotaCloneGet)
+}
+
+func humanQuotaCloneGet(data []byte) error {
+	var r struct {
+		Backend       string   `json:"backend"`
+		User          string   `json:"user"`
+		StorageBytes  int64    `json:"storage_bytes"`
+		StorageFound  bool     `json:"storage_found"`
+		Messages      int64    `json:"messages"`
+		MessagesFound bool     `json:"messages_found"`
+		Malformed     []string `json:"malformed"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	if !r.StorageFound && !r.MessagesFound {
+		fmt.Printf("no mirrored usage for %s in %s\n", r.User, r.Backend)
+		return nil
+	}
+	val := func(found bool, s string) string {
+		if !found {
+			return "(absent)"
+		}
+		return s
+	}
+	fmt.Printf("%-20s%-11s%s\n", "Backend", "Type", "Value")
+	fmt.Printf("%-20s%-11s%s\n", r.Backend, "STORAGE", val(r.StorageFound, formatBytes(r.StorageBytes)))
+	fmt.Printf("%-20s%-11s%s\n", r.Backend, "MESSAGE", val(r.MessagesFound, formatCount(r.Messages)))
+	for _, k := range r.Malformed {
+		fmt.Printf("! %s holds a non-numeric value in this backend (divergent target)\n", k)
+	}
+	fmt.Println("(mirror value — authoritative usage is `quota show`, summed from the index)")
+	return nil
 }
 
 func printQuotaUsage() {
@@ -33,6 +121,9 @@ Commands:
   set    <user> --bytes N           — override storage counter directly
                  --messages N       — override message counter directly
                  (either or both flags required)
+  clone  list                       — configured quota_clone backends
+  clone  get <backend> <user>       — mirrored usage a clone backend holds
+                                      (advisory mirror; 'quota show' is authoritative)
 
 Common flags:
   --namespace NS    namespace slug for recalc; default "personal"

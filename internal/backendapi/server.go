@@ -87,6 +87,10 @@ type Options struct {
 	SpecialUseDefaults map[string]string
 	MetadataDict       dict.Dict
 	QuotaDict          dict.Dict
+	// QuotaCloneDicts names the dicts (subset of Dicts) that quota_clone mirrors
+	// usage into. Exposed read-only via /api/backend/quota/clone/* for operators
+	// to inspect the fan-out. From cfg.Quota.CloneDicts.
+	QuotaCloneDicts []string
 
 	// AnvilAddr / AnvilTLS configure backend-api's connection to
 	// yarilo-anvil for the WHO endpoint. Empty Addr disables /who
