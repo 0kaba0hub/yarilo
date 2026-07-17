@@ -35,7 +35,7 @@ func sessionsKick(args []string) error {
 	fs := flag.NewFlagSet("sessions kick", flag.ContinueOnError)
 	user := fs.String("user", "", "username (advisory, recorded in audit log)")
 	protos := fs.String("protocols", "", "comma-separated protocol filter (default: all)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {

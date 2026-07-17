@@ -64,7 +64,7 @@ func folderRepair(args []string) error {
 func folderList(args []string) error {
 	fs := flag.NewFlagSet("folder list", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -92,7 +92,7 @@ func folderCreate(args []string) error {
 	fs := flag.NewFlagSet("folder create", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
 	specialUse := fs.String("special-use", "", "RFC 6154 special-use attr (e.g. \\Sent, \\Drafts) — personal namespace only")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -112,7 +112,7 @@ func folderCreate(args []string) error {
 func folderDelete(args []string) error {
 	fs := flag.NewFlagSet("folder delete", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -128,7 +128,7 @@ func folderDelete(args []string) error {
 func folderRename(args []string) error {
 	fs := flag.NewFlagSet("folder rename", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 3 {
@@ -146,7 +146,7 @@ func folderExpunge(args []string) error {
 	fs := flag.NewFlagSet("folder expunge", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
 	uidList := fs.String("uids", "", "comma-separated UID set; empty = expunge every \\Deleted message")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -189,7 +189,7 @@ func parseUIDList(s string) ([]uint32, error) {
 func folderSingleFolderCommand(cmd, path string, args []string) error {
 	fs := flag.NewFlagSet("folder "+cmd, flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {

@@ -61,7 +61,7 @@ func cmdAuthSCRAMVerifier(args []string) error {
 	mech := fs.String("mech", "sha256", "digest family: sha256 (default) | sha1 (legacy)")
 	iterations := fs.Int("iterations", 0, "PBKDF2 iteration count (0 = library default: 600000)")
 	password := fs.String("password", "", "plain password (omit to read from stdin)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	plain := *password

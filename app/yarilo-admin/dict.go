@@ -96,7 +96,7 @@ func cmdDictDrivers() error {
 
 func cmdDictExists(args []string) error {
 	fs := flag.NewFlagSet("exists", flag.ExitOnError)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: dict exists NAME")
 	}
@@ -111,7 +111,7 @@ type lookupBody struct {
 func cmdDictLookup(args []string) error {
 	fs := flag.NewFlagSet("lookup", flag.ExitOnError)
 	resolveOp := addOpFlags(fs)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 	if fs.NArg() != 2 {
 		return fmt.Errorf("usage: dict lookup [op-flags] NAME KEY")
 	}
@@ -153,7 +153,7 @@ func cmdDictIterate(args []string) error {
 	sortKey := fs.Bool("sort-key", false, "sort results by key")
 	sortValue := fs.Bool("sort-value", false, "sort results by value")
 	resolveOp := addOpFlags(fs)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 	if fs.NArg() != 2 {
 		return fmt.Errorf("usage: dict iterate [op-flags] [--recurse] [--no-value] [--exact] [--sort-key|--sort-value] NAME PATH")
 	}
@@ -232,7 +232,7 @@ func cmdDictSet(args []string) error {
 	fs := flag.NewFlagSet("set", flag.ExitOnError)
 	stdinValue := fs.Bool("value-stdin", false, "read value from stdin instead of args")
 	resolveOp := addOpFlags(fs)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 
 	var name, key string
 	var value []byte
@@ -263,7 +263,7 @@ type unsetBody struct {
 func cmdDictUnset(args []string) error {
 	fs := flag.NewFlagSet("unset", flag.ExitOnError)
 	resolveOp := addOpFlags(fs)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 	if fs.NArg() != 2 {
 		return fmt.Errorf("usage: dict unset [op-flags] NAME KEY")
 	}
@@ -279,7 +279,7 @@ type atomicIncBody struct {
 func cmdDictAtomicInc(args []string) error {
 	fs := flag.NewFlagSet("atomic-inc", flag.ExitOnError)
 	resolveOp := addOpFlags(fs)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 	if fs.NArg() != 3 {
 		return fmt.Errorf("usage: dict atomic-inc [op-flags] NAME KEY DELTA")
 	}
@@ -294,7 +294,7 @@ func cmdDictAtomicInc(args []string) error {
 
 func cmdDictExpireScan(args []string) error {
 	fs := flag.NewFlagSet("expire-scan", flag.ExitOnError)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: dict expire-scan NAME")
 	}
@@ -325,7 +325,7 @@ type commitBatchBody struct {
 func cmdDictCommitBatch(args []string) error {
 	fs := flag.NewFlagSet("commit-batch", flag.ExitOnError)
 	resolveOp := addOpFlags(fs)
-	fs.Parse(args) //nolint:errcheck
+	parseFlags(fs, args) //nolint:errcheck
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: dict commit-batch [op-flags] NAME < script")
 	}

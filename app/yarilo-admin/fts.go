@@ -30,7 +30,7 @@ func dispatchFTS(args []string) error {
 // "fts status u1 --folder X" would otherwise silently ignore the flags.
 func parseUserArg(fs *flag.FlagSet, args []string) (string, error) {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseFlags(fs, args[1:]); err != nil {
 			return "", err
 		}
 		if fs.NArg() != 0 {
@@ -38,7 +38,7 @@ func parseUserArg(fs *flag.FlagSet, args []string) (string, error) {
 		}
 		return args[0], nil
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return "", err
 	}
 	if fs.NArg() != 1 {

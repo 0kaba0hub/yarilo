@@ -44,7 +44,7 @@ Commands:
 func mdboxPurge(args []string) error {
 	fs := flag.NewFlagSet("mdbox purge", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -61,7 +61,7 @@ func mdboxAltMove(args []string) error {
 	ns := fs.String("namespace", "personal", "namespace slug")
 	before := fs.String("before", "", "RFC3339 cutoff — move messages with InternalDate before this timestamp")
 	reverse := fs.Bool("reverse", false, "move FROM alt storage back to primary")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
