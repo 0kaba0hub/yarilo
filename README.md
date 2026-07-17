@@ -167,8 +167,8 @@ LOG_LEVEL=debug yarilo-imap -config yarilo.yaml
 
 ## Quick start (Docker Compose)
 
-Single-host, no Kubernetes — the whole server as one `yarilo` process
-(`mode: single`), with a SQLite userdb and zero external dependencies:
+Single-host, no Kubernetes — the standalone topology (login proxies + session
+backends + auth/anvil/locks + Redis) on one host, SQLite userdb, one image:
 
 ```sh
 cd deploy/compose
@@ -177,9 +177,8 @@ cp .env.example .env
 docker compose up -d
 ```
 
-The `full` profile (`docker compose --profile full up -d`) adds MariaDB and
-Redis. Full walkthrough — creating users, TLS, DNS/MX, verifying, backups — in
-[docs/DOCKER-COMPOSE.md](docs/DOCKER-COMPOSE.md).
+Full walkthrough — creating users, TLS, MTA (Postfix) integration, verifying,
+backups — in [docs/DOCKER-COMPOSE.md](docs/DOCKER-COMPOSE.md).
 
 ---
 

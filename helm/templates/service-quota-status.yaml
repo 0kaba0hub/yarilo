@@ -19,4 +19,21 @@ spec:
       protocol: TCP
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "quota-status") | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-quota-status-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "quota-status") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "quota-status") | nindent 4 }}
 {{- end }}

@@ -18,5 +18,5 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -days 825 -subj "/CN=$CN" \
   -addext "subjectAltName=DNS:$CN,DNS:localhost,IP:127.0.0.1"
 
-chmod 600 "$DIR/key.pem"
+chmod 644 "$DIR/key.pem"  # readable by the container uid (1000)
 echo "Wrote self-signed cert for CN=$CN to $DIR/{cert,key}.pem"
