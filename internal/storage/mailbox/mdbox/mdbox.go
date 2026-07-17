@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -438,7 +439,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	}
 
 	guid := randomGUID()
-	record := buildDboxRecord(body, guid)
+	record := buildDboxRecord(body, guid, folder)
 	recLen := uint32(len(record))
 
 	fileID := m.HighestFileID()
@@ -640,13 +641,26 @@ func (u *userMailbox) Close() error {
 // ---- single-message dbox record (re-implemented here so this
 // driver doesn't reach into dboxv2's unexported helpers) ------
 
+// metaOrigMailbox is the trailer key for the mailbox a message was originally
+// saved into. A storage-wide rebuild uses it to restore an orphan (a message no
+// folder index references) back to its home folder instead of guessing. It is an
+// append-only key in the line-framed key/value trailer, so an older reader that
+// does not know the key simply skips it — the record size and every prior key's
+// offset are unchanged. See docs.
+const metaOrigMailbox = 'B'
+
 // buildDboxRecord packs body into the canonical dbox v2 wire format
 // used inside an m.<N> file. guid is embedded in the metadata
 // trailer (G field). Callers that are saving a NEW message should
 // supply a freshly-generated random GUID; callers compacting an
 // EXISTING record (purge, altmove) must supply the original GUID
 // from the source trailer so message identity is preserved.
-func buildDboxRecord(body []byte, guid [16]byte) []byte {
+//
+// origMailbox, when non-empty, is written as the metaOrigMailbox trailer key so
+// a rebuild can route an orphaned copy back to its home folder. Compaction must
+// pass the value recovered from the source trailer; a fresh Save passes the
+// destination folder.
+func buildDboxRecord(body []byte, guid [16]byte, origMailbox string) []byte {
 	size := uint64(len(body))
 	now := uint32(time.Now().Unix())
 
@@ -670,6 +684,14 @@ func buildDboxRecord(body []byte, guid [16]byte) []byte {
 	fmt.Fprintf(&buf, "G%s\n", hex.EncodeToString(guid[:]))
 	fmt.Fprintf(&buf, "R%x\n", now)
 	fmt.Fprintf(&buf, "V%x\n", uint32(size))
+	// Original mailbox (append-only; skipped by readers that don't know the key).
+	// A folder name never contains a newline, so line framing is safe. Format
+	// limitation: an empty origMailbox is written as "no tag" (key omitted) and is
+	// therefore indistinguishable from a pre-key record — acceptable because no
+	// Save path ever passes an empty folder name.
+	if origMailbox != "" {
+		fmt.Fprintf(&buf, "%c%s\n", metaOrigMailbox, origMailbox)
+	}
 	buf.WriteByte('\n')
 	return buf.Bytes()
 }
@@ -716,46 +738,54 @@ func readRecordBody(f *os.File, offset uint32) ([]byte, error) {
 
 // readRecordBodyAndTrailer reads both the message body and the
 // metadata trailer in a single sequential pass over the file. It
-// returns the body bytes and the GUID parsed from the G trailer
-// field. Use this in compaction paths so the original GUID is
-// preserved in the destination record — minting a fresh GUID would
-// break per-message identity across purge/altmove cycles.
-func readRecordBodyAndTrailer(f *os.File, offset uint32) (body []byte, guid [16]byte, err error) {
+// returns the body bytes, the GUID and the original mailbox parsed
+// from the trailer. Use this in compaction paths so the original
+// GUID and orig-mailbox are preserved in the destination record —
+// minting a fresh GUID or dropping the orig-mailbox would break
+// per-message identity / orphan routing across purge/altmove cycles.
+func readRecordBodyAndTrailer(f *os.File, offset uint32) (body []byte, guid [16]byte, origMailbox string, err error) {
 	if _, err = f.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, guid, fmt.Errorf("seek: %w", err)
+		return nil, guid, "", fmt.Errorf("seek: %w", err)
 	}
 	// Consume variable-length file-header line.
 	headerLine := make([]byte, 64)
 	n, err := f.Read(headerLine)
 	if err != nil {
-		return nil, guid, fmt.Errorf("read header line: %w", err)
+		return nil, guid, "", fmt.Errorf("read header line: %w", err)
 	}
 	lfIdx := bytes.IndexByte(headerLine[:n], '\n')
 	if lfIdx < 0 {
-		return nil, guid, fmt.Errorf("file header line missing LF")
+		return nil, guid, "", fmt.Errorf("file header line missing LF")
 	}
 	// Seek to 32-byte message header.
 	if _, err = f.Seek(int64(offset)+int64(lfIdx)+1, io.SeekStart); err != nil {
-		return nil, guid, fmt.Errorf("seek to message header: %w", err)
+		return nil, guid, "", fmt.Errorf("seek to message header: %w", err)
 	}
 	mh := make([]byte, messageHeaderSize)
 	if _, err = io.ReadFull(f, mh); err != nil {
-		return nil, guid, fmt.Errorf("read message header: %w", err)
+		return nil, guid, "", fmt.Errorf("read message header: %w", err)
 	}
 	if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
-		return nil, guid, fmt.Errorf("bad message magic")
+		return nil, guid, "", fmt.Errorf("bad message magic")
 	}
 	size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 	if err != nil {
-		return nil, guid, fmt.Errorf("parse size: %w", err)
+		return nil, guid, "", fmt.Errorf("parse size: %w", err)
 	}
 	body = make([]byte, size)
 	if _, err = io.ReadFull(f, body); err != nil {
-		return nil, guid, fmt.Errorf("read body: %w", err)
+		return nil, guid, "", fmt.Errorf("read body: %w", err)
 	}
-	// File position is now at the start of the trailer — parse it.
-	_, parsed, _ := scanTrailer(f, 4096)
-	return body, parsed.guid, nil
+	// File position is now at the start of the trailer — parse it. A parse error
+	// on a compaction read means the destination copy silently loses its GUID and
+	// orig-mailbox (so a future orphan of this message could never be restored) —
+	// log it loudly rather than swallow it.
+	_, parsed, terr := scanTrailer(f, 4096)
+	if terr != nil {
+		slog.Warn("mdbox: trailer parse failed during compaction; GUID/orig-mailbox lost for this copy",
+			"file", f.Name(), "offset", offset, "err", terr)
+	}
+	return body, parsed.guid, parsed.origMailbox, nil
 }
 
 // readBodyCRLF reads r fully and ensures every line ends with

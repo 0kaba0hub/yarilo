@@ -37,7 +37,7 @@ Commands:
         For maildir / sdbox. Returns 501 for mdbox — its storage is
         folder-agnostic, so use rebuild-storage instead.
 
-  rebuild-storage <user> [--namespace NS]
+  rebuild-storage <user> [--namespace NS] [--restore-orphans]
         Storage-wide rebuild for mdbox: reconcile the shared map against
         the physical m.<N> files, reset every folder index to the
         surviving messages, recompute refcounts from folder references
@@ -45,6 +45,9 @@ Commands:
         and drop map records whose message vanished. Refuses on an
         incomplete scan or an unmounted alt tier. Run with delivery to
         this user quiesced (operator repair tool, like force-resync).
+        --restore-orphans re-files unreferenced messages that carry an
+        ORIG_MAILBOX tag back into their home folder (default off, since
+        a tag proves only "was once here", not "is lost").
 
   optimize <user> <folder> [--namespace NS]
         Compact the .index.log overlay into the base .index file.
@@ -89,15 +92,17 @@ func indexRebuild(args []string) error {
 func indexRebuildStorage(args []string) error {
 	fs := flag.NewFlagSet("index rebuild-storage", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
+	restore := fs.Bool("restore-orphans", false, "re-file unreferenced messages with an ORIG_MAILBOX tag back into their home folder (default: leave zero-ref for purge)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend index rebuild-storage <user> [--namespace NS]")
+		return fmt.Errorf("usage: yarilo-admin backend index rebuild-storage <user> [--namespace NS] [--restore-orphans]")
 	}
 	return printJSON(backendAPIPost("/api/backend/index/rebuild-storage", map[string]any{
-		"user":      fs.Arg(0),
-		"namespace": *ns,
+		"user":            fs.Arg(0),
+		"namespace":       *ns,
+		"restore_orphans": *restore,
 	}))
 }
 

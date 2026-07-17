@@ -864,7 +864,15 @@ offset)` → write canonical dbox v2 record to `m.<file_id>` →
 Finish allocates the `map_uid` under the map X lock. The
 record body is the same wire format Phase 3 sdbox writes:
 file-header line + 32-byte message header + body + metadata
-trailer with G/R/V keys.
+trailer with G/R/V keys, plus an optional `B` key (the original
+mailbox the message was saved into). The trailer is an append-only,
+line-framed key/value block terminated by a blank line, so an older
+reader that does not know the `B` key skips it — the record size and
+every prior key's offset are unchanged (verified by a mixed-record
+round-trip test). A storage-wide rebuild uses `B` to route an orphan
+(a message no folder index references) back to its home folder when
+the operator opts in with `restore_orphans` / `--restore-orphans`;
+otherwise unreferenced messages are left zero-ref for the next purge.
 
 O(1) IMAP COPY: the driver exposes the optional `Copyable`
 interface — Copy increments the source map record's refcount and

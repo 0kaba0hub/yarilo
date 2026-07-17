@@ -60,7 +60,8 @@ type StorageRebuildStats struct {
 	Scanned             int    // physical messages read from storage
 	FoldersRebuilt      int    // per-folder indexes reset
 	Expunged            int    // map records dropped (message vanished from storage)
-	UnreferencedZeroref int    // present messages referenced by no folder; refcount reset to 0 for purge (reported, NOT resurrected)
+	UnreferencedZeroref int    // present messages referenced by no folder; refcount reset to 0 for purge (NOT resurrected)
+	OrphansRestored     int    // unreferenced messages re-filed into their ORIG_MAILBOX (only when restoreOrphans is set)
 	RebuildCount        uint32 // new generation counter after the rebuild
 }
 
@@ -73,12 +74,15 @@ type StorageRebuildStats struct {
 // index backend for the same namespace. Implemented by mdbox; driven by the
 // operator rebuild-storage endpoint and (later) the reactive trigger.
 //
-// Orphan RESTORE (re-filing an unreferenced message into a mailbox) is
-// intentionally NOT done here: without ORIG_MAILBOX metadata the rebuild cannot
-// tell genuinely-lost mail from churn/refcount-leak garbage, and blind adoption
-// mass-resurrects deleted mail. It lands with ORIG_MAILBOX in #594 Phase 2b.
+// Orphan RESTORE (re-filing an unreferenced message into a mailbox) happens only
+// when restoreOrphans is set AND the message carries an ORIG_MAILBOX tag, so it
+// is re-filed into its recorded home folder — never blindly adopted. The default
+// (restoreOrphans false) leaves unreferenced messages zero-ref for purge, so a
+// default run is byte-identical to the pre-restore behaviour. Even a tag only
+// proves "was once in this folder", not "is lost", so the resurrection decision
+// stays the operator's, per-request.
 type StorageWideRebuilder interface {
-	RebuildStorage(idx UserIndex) (StorageRebuildStats, error)
+	RebuildStorage(idx UserIndex, restoreOrphans bool) (StorageRebuildStats, error)
 }
 
 // MarkCorruptOnFetchErr flags folder for a reactive heal when err reports
@@ -210,6 +214,11 @@ type ScanRecord struct {
 	VSize        uint32
 	InternalDate time.Time
 	Flags        []string
+	// OrigMailbox is the mailbox a message was originally saved into, recovered
+	// from storage metadata (mdbox trailer). Empty for records written before the
+	// key existed or for drivers that don't store it. A storage-wide rebuild uses
+	// it to restore an orphan to its home folder instead of guessing.
+	OrigMailbox string
 }
 
 // MailboxBackend is the per-process factory for user-scoped storage handles.
