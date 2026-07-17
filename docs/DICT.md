@@ -121,9 +121,10 @@ Settings:
 
 ### sql
 
-Production cluster backend. PostgreSQL or SQLite via `database/sql`.
+Production cluster backend. PostgreSQL, MySQL or SQLite via `database/sql`.
 One row per dict key. Auto-creates the table on first Open. Per-namespace
-to allow multiple dicts in one schema.
+to allow multiple dicts in one schema. See **Mapped mode** below for a
+column-per-key layout (quota_clone).
 
 ```yaml
 dicts:
@@ -140,10 +141,11 @@ Settings:
 
 | Key | Type | Required | Default | Meaning |
 |:---|:---|:---|:---|:---|
-| `driver` | string | yes | — | `sqlite` or `postgres` |
+| `driver` | string | yes | — | `sqlite`, `postgres` or `mysql` |
 | `dsn` | string | yes | — | `database/sql` DSN |
-| `table` | string | no | `dict_kv` | Table name; must match `[A-Za-z0-9_]+` |
-| `namespace` | string | no | `""` | Per-dict key prefix within the shared table |
+| `table` | string | no | `dict_kv` | Table name; must match `[A-Za-z0-9_]+` (generic mode) |
+| `namespace` | string | no | `""` | Per-dict key prefix within the shared table (generic mode) |
+| `maps` | list | no | — | Column bindings; presence enables **mapped mode** (see below) |
 
 Schema (auto-created):
 
@@ -159,6 +161,63 @@ CREATE INDEX dict_kv_expires_idx ON dict_kv(expires) WHERE expires IS NOT NULL;
 ```
 
 `ExpireScan` runs `DELETE FROM dict_kv WHERE namespace = $1 AND expires <= $2`.
+
+#### Mapped mode (column mapping)
+
+By default the sql driver stores every key in the generic `(namespace, k, v)`
+layout, so a quota_clone target writes two rows per user. Setting `maps` switches
+the dict to **mapped mode**: each key binds to a table **column**, producing a
+clean per-user schema an external reader (billing, dashboards) can query
+directly. Keys mapped to the same table share one row (the `username_field` is
+the primary key), so different columns of the same user coexist.
+
+```yaml
+dicts:
+  quota_clone_mysql:
+    driver: sql
+    settings:
+      driver: mysql               # sqlite | postgres | mysql
+      dsn: "${YARILO_DB_DSN}"
+      maps:
+        - { key: "priv/quota/storage",  table: quota, username_field: username, value_field: bytes }
+        - { key: "priv/quota/messages", table: quota, username_field: username, value_field: messages }
+```
+
+The operator owns the table — mapped mode does **not** auto-create it (column
+types are the operator's choice):
+
+```sql
+CREATE TABLE quota (username VARCHAR(255) PRIMARY KEY, bytes BIGINT, messages BIGINT);
+-- one row per user: (u1@d00001.test, 860809, 13)
+```
+
+> **Every column other than `username_field` must be nullable (or carry a
+> `DEFAULT`).** A `Set` inserts only `(username_field, value_field)`, so the
+> first write for a new user leaves sibling columns unset — a `NOT NULL` sibling
+> would reject that insert. `Unset` also relies on the column being nullable.
+
+Mapped mode is validated at startup: `New` runs a `SELECT <value_field> FROM
+<table> LIMIT 0` for every map, so a typo in a table/column name or a forgotten
+`CREATE TABLE` fails at Open rather than silently on the first write. Per-key
+TTL (`expire_secs`) and `ExpireScan` are unavailable in mapped mode (mapped
+columns carry no expiry) and return an error.
+
+Each map entry:
+
+| Field | Required | Meaning |
+|:---|:---|:---|
+| `key` | yes | Dict key to map (matched exactly) |
+| `table` | yes | Target table; must match `[A-Za-z0-9_]+` |
+| `username_field` | yes | Column holding the user (primary key); scoped by `OpSettings.Username` |
+| `value_field` | yes | Column the key's value is written to / read from |
+
+Behaviour in mapped mode:
+
+- **Set** → single-column upsert keyed on `username_field` (`ON DUPLICATE KEY UPDATE` / `ON CONFLICT DO UPDATE`).
+- **Lookup** → `SELECT <value_field> FROM <table> WHERE <username_field> = ?`; a `NULL` column reads as "not found".
+- **Unset** → sets the column to `NULL` (the row is shared by sibling columns and is never deleted).
+- **AtomicInc** / **Iterate** → unsupported (error); quota_clone uses only Set.
+- A username is required; an unmapped key errors.
 
 ---
 

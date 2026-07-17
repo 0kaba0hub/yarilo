@@ -61,10 +61,18 @@ func init() {
 //	"dsn"        string — go-database/sql DSN (required)
 //	"table"      string — table name; default "dict_kv"
 //	"namespace"  string — per-Dict prefix; default ""
+//	"maps"       list   — enables mapped mode (see below); optional
 //
-// The table is auto-created on Open if it does not exist. To opt out
-// of auto-create (e.g. when the schema is managed by a migration tool),
-// pre-create the table; the IF NOT EXISTS guard is idempotent.
+// In the default (generic KV) mode the table is auto-created on Open if it does
+// not exist. To opt out of auto-create (e.g. when the schema is managed by a
+// migration tool), pre-create the table; the IF NOT EXISTS guard is idempotent.
+//
+// When "maps" is present the driver switches to mapped mode: each dict key binds
+// to a table column, so a per-user row carries one column per key
+// (username_field is the primary key). The operator owns the table schema, so no
+// auto-create runs. Each map entry is:
+//
+//	{ key: "priv/quota/storage", table: quota, username_field: username, value_field: bytes }
 func New(cfg dict.Config) (dict.Dict, error) {
 	driver, _ := cfg.Settings["driver"].(string)
 	dsn, _ := cfg.Settings["dsn"].(string)
@@ -86,6 +94,11 @@ func New(cfg dict.Config) (dict.Dict, error) {
 	}
 	ns, _ := cfg.Settings["namespace"].(string)
 
+	maps, err := parseMaps(cfg.Settings["maps"])
+	if err != nil {
+		return nil, err
+	}
+
 	db, err := stdsql.Open(driverName(driver), dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", driver, err)
@@ -94,12 +107,88 @@ func New(cfg dict.Config) (dict.Dict, error) {
 		db.Close() //nolint:errcheck
 		return nil, fmt.Errorf("ping: %w", err)
 	}
-	d := &Dict{db: db, driver: driver, table: table, ns: ns}
-	if err := d.ensureSchema(); err != nil {
+	d := &Dict{db: db, driver: driver, table: table, ns: ns, maps: maps}
+	// Mapped mode: the operator owns the schema (column types are theirs), so
+	// skip auto-create. Generic KV mode manages its own table.
+	if len(maps) == 0 {
+		if err := d.ensureSchema(); err != nil {
+			db.Close() //nolint:errcheck
+			return nil, err
+		}
+	} else if err := d.validateMaps(); err != nil {
 		db.Close() //nolint:errcheck
 		return nil, err
 	}
 	return d, nil
+}
+
+// validateMaps fails fast at Open time when a mapped table/column does not
+// exist, so a typo or a forgotten CREATE TABLE surfaces at startup rather than
+// silently on the first (best-effort) quota_clone write. A LIMIT 0 select never
+// returns rows but still resolves the identifiers.
+func (d *Dict) validateMaps() error {
+	seen := make(map[string]bool, len(d.maps))
+	for key, e := range d.maps {
+		probe := e.table + "." + e.valCol
+		if seen[probe] {
+			continue
+		}
+		seen[probe] = true
+		q := fmt.Sprintf(`SELECT %s FROM %s LIMIT 0`, e.valCol, e.table)
+		if _, err := d.db.Exec(q); err != nil {
+			return fmt.Errorf("mapped schema check for key %q (%s.%s): %w", key, e.table, e.valCol, err)
+		}
+	}
+	return nil
+}
+
+// mapEntry binds a dict key to a table column: writes/reads for the key target
+// value_field in table, scoped by username_field.
+type mapEntry struct {
+	table   string
+	userCol string
+	valCol  string
+}
+
+// parseMaps decodes the "maps" setting into a key→column binding table. A nil
+// setting means generic KV mode (empty result). Every field is required and
+// every identifier is validated so it can be interpolated into SQL safely.
+func parseMaps(raw any) (map[string]mapEntry, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("setting \"maps\" must be a list, got %T", raw)
+	}
+	out := make(map[string]mapEntry, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("maps[%d] must be a mapping, got %T", i, item)
+		}
+		key, _ := m["key"].(string)
+		e := mapEntry{}
+		e.table, _ = m["table"].(string)
+		e.userCol, _ = m["username_field"].(string)
+		e.valCol, _ = m["value_field"].(string)
+		if key == "" {
+			return nil, fmt.Errorf("maps[%d]: missing \"key\"", i)
+		}
+		for name, v := range map[string]string{"table": e.table, "username_field": e.userCol, "value_field": e.valCol} {
+			if v == "" {
+				return nil, fmt.Errorf("maps[%d] (key %q): missing %q", i, key, name)
+			}
+			if !validIdent(v) {
+				return nil, fmt.Errorf("maps[%d] (key %q): %s %q contains invalid characters", i, key, name, v)
+			}
+		}
+		if _, dup := out[key]; dup {
+			return nil, fmt.Errorf("maps[%d]: duplicate key %q", i, key)
+		}
+		out[key] = e
+	}
+	return out, nil
 }
 
 func driverName(d string) string {
@@ -133,8 +222,11 @@ type Dict struct {
 	driver string
 	table  string
 	ns     string
+	maps   map[string]mapEntry // non-empty => mapped mode
 	closed atomic.Bool
 }
+
+func (d *Dict) mapped() bool { return len(d.maps) > 0 }
 
 func (d *Dict) Name() string                 { return "sql" }
 func (d *Dict) Wait(_ context.Context) error { return nil }
@@ -223,6 +315,9 @@ func (d *Dict) Lookup(ctx context.Context, set *dict.OpSettings, key string) ([]
 	if d.closed.Load() {
 		return nil, false, dict.ErrClosed
 	}
+	if d.mapped() {
+		return d.lookupMapped(ctx, set, key)
+	}
 	q := fmt.Sprintf(`SELECT v, expires FROM %s WHERE %s`, d.table, d.argsFor("namespace", "k"))
 	var v []byte
 	var exp stdsql.NullInt64
@@ -239,9 +334,70 @@ func (d *Dict) Lookup(ctx context.Context, set *dict.OpSettings, key string) ([]
 	return [][]byte{v}, true, nil
 }
 
+// mapFor resolves the column binding for a key, or errors if the key is not
+// mapped (mapped mode matches keys exactly).
+func (d *Dict) mapFor(key string) (mapEntry, error) {
+	e, ok := d.maps[key]
+	if !ok {
+		return mapEntry{}, fmt.Errorf("key %q is not mapped", key)
+	}
+	return e, nil
+}
+
+// lookupMapped reads value_field from the mapped table for the op's user. A NULL
+// column reads as "not found", matching the generic driver's missing-key result.
+func (d *Dict) lookupMapped(ctx context.Context, set *dict.OpSettings, key string) ([][]byte, bool, error) {
+	user := opUser(set)
+	if user == "" {
+		return nil, false, errors.New("mapped mode requires a username")
+	}
+	e, err := d.mapFor(key)
+	if err != nil {
+		return nil, false, err
+	}
+	q := fmt.Sprintf(`SELECT %s FROM %s WHERE %s = %s`, e.valCol, e.table, e.userCol, d.placeholder(1))
+	var v stdsql.NullString
+	err = d.db.QueryRowContext(ctx, q, user).Scan(&v)
+	if err == stdsql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("select: %w", err)
+	}
+	if !v.Valid {
+		return nil, false, nil
+	}
+	return [][]byte{[]byte(v.String)}, true, nil
+}
+
+// mappedUpsert returns the driver-specific single-column upsert keyed on the
+// username column, so multiple keys mapped to the same table share one row.
+func (d *Dict) mappedUpsert(e mapEntry) string {
+	switch d.driver {
+	case "postgres":
+		return fmt.Sprintf(`INSERT INTO %s (%s, %s) VALUES ($1, $2)
+            ON CONFLICT (%s) DO UPDATE SET %s = EXCLUDED.%s`,
+			e.table, e.userCol, e.valCol, e.userCol, e.valCol, e.valCol)
+	case "mysql":
+		// VALUES() in ON DUPLICATE KEY UPDATE is deprecated on MySQL 8.0.20+ but
+		// works on MySQL and MariaDB alike; the alias form (AS new) is rejected
+		// by MariaDB, so keep VALUES() while the primary target is MariaDB.
+		return fmt.Sprintf(`INSERT INTO %s (%s, %s) VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE %s = VALUES(%s)`,
+			e.table, e.userCol, e.valCol, e.valCol, e.valCol)
+	default: // sqlite
+		return fmt.Sprintf(`INSERT INTO %s (%s, %s) VALUES (?, ?)
+            ON CONFLICT(%s) DO UPDATE SET %s = excluded.%s`,
+			e.table, e.userCol, e.valCol, e.userCol, e.valCol, e.valCol)
+	}
+}
+
 func (d *Dict) Iterate(ctx context.Context, set *dict.OpSettings, path string, flags dict.IterFlag) (dict.Iterator, error) {
 	if d.closed.Load() {
 		return nil, dict.ErrClosed
+	}
+	if d.mapped() {
+		return nil, errors.New("sql: Iterate is not supported in mapped mode")
 	}
 	ns := d.scope(opUser(set))
 	recurse := flags&dict.IterRecurse != 0
@@ -319,12 +475,17 @@ func (d *Dict) Begin(ctx context.Context, set *dict.OpSettings) (dict.Tx, error)
 		}
 		user = set.Username
 	}
-	return &tx{d: d, sqlTx: t, expires: expire, ns: d.scope(user)}, nil
+	return &tx{d: d, sqlTx: t, expires: expire, ns: d.scope(user), user: user}, nil
 }
 
 func (d *Dict) ExpireScan(ctx context.Context) error {
 	if d.closed.Load() {
 		return dict.ErrClosed
+	}
+	if d.mapped() {
+		// Mapped mode has no generic KV table and no per-row expiry column;
+		// a blind DELETE would hit a non-existent (or unrelated) table.
+		return errors.New("sql: ExpireScan is not supported in mapped mode")
 	}
 	// No namespace filter: entries are scoped per user (namespace = ns[/user]),
 	// so an expired row is dropped regardless of its scope — expiry is absolute.
@@ -371,7 +532,8 @@ type tx struct {
 	sqlTx   *stdsql.Tx
 	buf     dict.MemoryTx
 	expires int64
-	ns      string // per-user scoped namespace captured at Begin
+	ns      string // per-user scoped namespace captured at Begin (generic mode)
+	user    string // raw username captured at Begin (mapped mode)
 	done    bool
 }
 
@@ -431,6 +593,10 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 	}
 	ctx := context.Background()
 
+	if t.d.mapped() {
+		return t.commitMapped(ctx)
+	}
+
 	for _, op := range t.buf.Ops {
 		switch op.Kind {
 		case dict.OpSet:
@@ -480,6 +646,53 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 		}
 	}
 
+	if err := t.sqlTx.Commit(); err != nil {
+		return dict.CommitFailed, fmt.Errorf("commit tx: %w", err)
+	}
+	return dict.CommitOK, nil
+}
+
+// commitMapped applies buffered ops against the mapped columns. Set upserts the
+// value_field for the tx user; Unset clears it to NULL (the row is shared by
+// other mapped columns, so it is never deleted here); AtomicInc is unsupported.
+func (t *tx) commitMapped(ctx context.Context) (dict.CommitResult, error) {
+	if t.user == "" {
+		t.sqlTx.Rollback() //nolint:errcheck
+		return dict.CommitFailed, errors.New("mapped mode requires a username")
+	}
+	if t.expires > 0 {
+		// Mapped columns carry no per-row expiry, so a TTL cannot be honoured or
+		// reaped; fail loudly rather than silently keep rows forever.
+		t.sqlTx.Rollback() //nolint:errcheck
+		return dict.CommitFailed, errors.New("sql: per-key TTL (expire_secs) is not supported in mapped mode")
+	}
+	for _, op := range t.buf.Ops {
+		e, err := t.d.mapFor(op.Key)
+		if err != nil {
+			t.sqlTx.Rollback() //nolint:errcheck
+			return dict.CommitFailed, err
+		}
+		switch op.Kind {
+		case dict.OpSet:
+			// Bind as string, not []byte: pgx encodes []byte as bytea, which a
+			// numeric target column (BIGINT) rejects. Text binds coerce cleanly
+			// on all three drivers.
+			if _, err := t.sqlTx.ExecContext(ctx, t.d.mappedUpsert(e), t.user, string(op.Value)); err != nil {
+				t.sqlTx.Rollback() //nolint:errcheck
+				return dict.CommitFailed, fmt.Errorf("upsert %q: %w", op.Key, err)
+			}
+		case dict.OpUnset:
+			q := fmt.Sprintf(`UPDATE %s SET %s = NULL WHERE %s = %s`,
+				e.table, e.valCol, e.userCol, t.d.placeholder(1))
+			if _, err := t.sqlTx.ExecContext(ctx, q, t.user); err != nil {
+				t.sqlTx.Rollback() //nolint:errcheck
+				return dict.CommitFailed, fmt.Errorf("unset %q: %w", op.Key, err)
+			}
+		case dict.OpAtomicInc:
+			t.sqlTx.Rollback() //nolint:errcheck
+			return dict.CommitFailed, errors.New("sql: AtomicInc is not supported in mapped mode")
+		}
+	}
 	if err := t.sqlTx.Commit(); err != nil {
 		return dict.CommitFailed, fmt.Errorf("commit tx: %w", err)
 	}

@@ -1543,3 +1543,18 @@ dicts:
 #       addr: yarilo-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
 #       db: 0
 #       prefix: "yarilo:sieve:duplicate:%u:"
+#   # Optional: quota_clone SQL target in mapped mode. Each dict key binds to a
+#   # table column, so a quota_clone mirror becomes a clean per-user schema an
+#   # external reader (billing, dashboards) can query directly:
+#   #   CREATE TABLE quota (username VARCHAR(255) PRIMARY KEY, bytes BIGINT, messages BIGINT);
+#   # The operator owns the table (no auto-create in mapped mode). Without "maps"
+#   # the sql driver keeps its generic key/value layout. Reference this name from
+#   # protocol.lmtp.quota_clone_dicts.
+#   quota_clone_mysql:
+#     driver: sql
+#     settings:
+#       driver: mysql
+#       dsn: "${YARILO_DB_DSN}"
+#       maps:
+#         - { key: "priv/quota/storage",  table: quota, username_field: username, value_field: bytes }
+#         - { key: "priv/quota/messages", table: quota, username_field: username, value_field: messages }

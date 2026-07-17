@@ -2,6 +2,7 @@ package sql
 
 import (
 	"context"
+	stdsql "database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -174,5 +175,206 @@ func TestPerUserScoping(t *testing.T) {
 	// A different user's key is absent, not the other user's value.
 	if _, found, _ := d.Lookup(ctx, &dict.OpSettings{Username: "ghost@x"}, key); found {
 		t.Errorf("ghost should have no value")
+	}
+}
+
+// mappedDict opens a sqlite dict in mapped mode and pre-creates the operator-
+// owned quota(username, bytes, messages) table (the per-user column schema from
+// #590). Sibling columns are nullable so a first Set of one key does not trip a
+// NOT NULL constraint on the other.
+func mappedDict(t *testing.T) *Dict {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "mapped.sqlite")
+	// The operator owns the mapped table, and New validates it exists, so create
+	// it up front on a throwaway connection before opening the dict.
+	seed, err := stdsql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	if _, err := seed.Exec(`CREATE TABLE quota (username TEXT PRIMARY KEY, bytes BIGINT, messages BIGINT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	seed.Close() //nolint:errcheck
+
+	d, err := New(dict.Config{Settings: map[string]any{
+		"driver": "sqlite",
+		"dsn":    dbPath,
+		"maps": []any{
+			map[string]any{"key": "priv/quota/storage", "table": "quota", "username_field": "username", "value_field": "bytes"},
+			map[string]any{"key": "priv/quota/messages", "table": "quota", "username_field": "username", "value_field": "messages"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("new mapped dict: %v", err)
+	}
+	return d.(*Dict)
+}
+
+func mappedSet(t *testing.T, d *Dict, user, key, val string) {
+	t.Helper()
+	tx, err := d.Begin(context.Background(), &dict.OpSettings{Username: user})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Set(key, []byte(val)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// TestMappedModeColumns verifies two keys mapped to the same table share one row
+// (one column each), and that Lookup reads the mapped columns back.
+func TestMappedModeColumns(t *testing.T) {
+	d := mappedDict(t)
+	defer d.Close() //nolint:errcheck
+
+	mappedSet(t, d, "u1@x", "priv/quota/storage", "860809")
+	mappedSet(t, d, "u1@x", "priv/quota/messages", "13")
+
+	// Both keys land in the same physical row.
+	var rows int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM quota WHERE username = ?`, "u1@x").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("expected 1 shared row, got %d", rows)
+	}
+
+	if v, _ := mappedGet(t, d, "u1@x", "priv/quota/storage"); v != "860809" {
+		t.Errorf("storage = %q, want 860809", v)
+	}
+	if v, _ := mappedGet(t, d, "u1@x", "priv/quota/messages"); v != "13" {
+		t.Errorf("messages = %q, want 13", v)
+	}
+	// Another user has no row.
+	if _, found := mappedGet(t, d, "ghost@x", "priv/quota/storage"); found {
+		t.Error("ghost should have no mapped value")
+	}
+}
+
+func mappedGet(t *testing.T, d *Dict, user, key string) (string, bool) {
+	t.Helper()
+	vs, found, err := d.Lookup(context.Background(), &dict.OpSettings{Username: user}, key)
+	if err != nil {
+		t.Fatalf("lookup %s/%s: %v", user, key, err)
+	}
+	if !found {
+		return "", false
+	}
+	return string(vs[0]), true
+}
+
+// TestMappedUnsetNullsColumn verifies Unset clears only the mapped column to
+// NULL, leaving the sibling column (and the row) intact.
+func TestMappedUnsetNullsColumn(t *testing.T) {
+	d := mappedDict(t)
+	defer d.Close() //nolint:errcheck
+
+	mappedSet(t, d, "u1@x", "priv/quota/storage", "500")
+	mappedSet(t, d, "u1@x", "priv/quota/messages", "7")
+
+	tx, _ := d.Begin(context.Background(), &dict.OpSettings{Username: "u1@x"})
+	if err := tx.Unset("priv/quota/storage"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(); err != nil {
+		t.Fatalf("commit unset: %v", err)
+	}
+
+	if _, found := mappedGet(t, d, "u1@x", "priv/quota/storage"); found {
+		t.Error("storage should read as not-found after Unset (NULL)")
+	}
+	if v, found := mappedGet(t, d, "u1@x", "priv/quota/messages"); !found || v != "7" {
+		t.Errorf("messages = %q found=%v, want 7 (sibling column intact)", v, found)
+	}
+	// The row is not deleted, just the column nulled.
+	var rows int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM quota WHERE username = ?`, "u1@x").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("row count = %d, want 1 (row must survive column Unset)", rows)
+	}
+}
+
+func TestMappedModeErrors(t *testing.T) {
+	d := mappedDict(t)
+	defer d.Close() //nolint:errcheck
+	ctx := context.Background()
+
+	// Unknown key is rejected (exact match only).
+	if _, _, err := d.Lookup(ctx, &dict.OpSettings{Username: "u1@x"}, "priv/unknown"); err == nil {
+		t.Error("unknown key lookup should error in mapped mode")
+	}
+	// Missing username is rejected.
+	if _, _, err := d.Lookup(ctx, &dict.OpSettings{}, "priv/quota/storage"); err == nil {
+		t.Error("empty username lookup should error in mapped mode")
+	}
+	// AtomicInc is unsupported.
+	tx, _ := d.Begin(ctx, &dict.OpSettings{Username: "u1@x"})
+	_ = tx.AtomicInc("priv/quota/storage", 1)
+	if res, err := tx.Commit(); err == nil || res == dict.CommitOK {
+		t.Errorf("AtomicInc should fail in mapped mode: res=%v err=%v", res, err)
+	}
+	// Iterate is unsupported.
+	if _, err := d.Iterate(ctx, &dict.OpSettings{Username: "u1@x"}, "priv/", 0); err == nil {
+		t.Error("Iterate should error in mapped mode")
+	}
+	// ExpireScan is unsupported (no generic table to sweep in mapped mode).
+	if err := d.ExpireScan(ctx); err == nil {
+		t.Error("ExpireScan should error in mapped mode")
+	}
+	// A non-zero TTL cannot be honoured in mapped mode.
+	ttx, _ := d.Begin(ctx, &dict.OpSettings{Username: "u1@x", ExpireSecs: 60})
+	_ = ttx.Set("priv/quota/storage", []byte("1"))
+	if res, err := ttx.Commit(); err == nil || res == dict.CommitOK {
+		t.Errorf("TTL Set should fail in mapped mode: res=%v err=%v", res, err)
+	}
+}
+
+// TestMappedOpenValidatesSchema verifies New fails fast when a mapped table or
+// column is missing, instead of deferring the error to the first write.
+func TestMappedOpenValidatesSchema(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "novalidate.sqlite")
+	_, err := New(dict.Config{Settings: map[string]any{
+		"driver": "sqlite",
+		"dsn":    dbPath,
+		"maps": []any{
+			map[string]any{"key": "priv/quota/storage", "table": "quota", "username_field": "username", "value_field": "bytes"},
+		},
+	}})
+	// The quota table was never created, so Open must reject.
+	if err == nil {
+		t.Fatal("New should fail when a mapped table does not exist")
+	}
+}
+
+func TestParseMapsValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		maps any
+	}{
+		{"not a list", "nope"},
+		{"item not a mapping", []any{"nope"}},
+		{"missing key", []any{map[string]any{"table": "quota", "username_field": "username", "value_field": "bytes"}}},
+		{"missing value_field", []any{map[string]any{"key": "k", "table": "quota", "username_field": "username"}}},
+		{"invalid table ident", []any{map[string]any{"key": "k", "table": "quota; --", "username_field": "username", "value_field": "bytes"}}},
+		{"duplicate key", []any{
+			map[string]any{"key": "k", "table": "quota", "username_field": "username", "value_field": "bytes"},
+			map[string]any{"key": "k", "table": "quota", "username_field": "username", "value_field": "messages"},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := parseMaps(c.maps); err == nil {
+				t.Errorf("expected parseMaps to reject %s", c.name)
+			}
+		})
+	}
+	// nil => generic KV mode, no error, no maps.
+	if m, err := parseMaps(nil); err != nil || m != nil {
+		t.Errorf("nil maps: m=%v err=%v, want nil,nil", m, err)
 	}
 }
