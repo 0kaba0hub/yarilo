@@ -14,10 +14,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
 
@@ -49,6 +52,10 @@ func main() {
 		slog.Error("config load failed", "err", err, "path", cfgPath)
 		os.Exit(1)
 	}
+
+	// Telemetry (/healthz, /readyz, /metrics) — same as every other component,
+	// so orchestrators health-check quota-status the standard HTTP way.
+	go runTelemetry(cfg.Telemetry.Listen)
 
 	// Storage access: quota is enforced by summing the recipient's index
 	// aggregate (the count backend), exactly as a delivery agent would — no
@@ -145,6 +152,19 @@ func main() {
 	}
 
 	slog.Info("yarilo-quota-status stopped")
+}
+
+func runTelemetry(addr string) {
+	if addr == "" {
+		addr = ":8080"
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.Handle("/metrics", promhttp.Handler())
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		slog.Error("telemetry server failed", "err", err)
+	}
 }
 
 func openDict(dicts map[string]config.DictConfig, name string) (dict.Dict, error) {

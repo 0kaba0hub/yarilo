@@ -45,16 +45,12 @@ spec:
             - name: policy
               containerPort: {{ .Values.components.quotaStatus.containerPort }}
               protocol: TCP
+            - name: telemetry
+              containerPort: 8080
           livenessProbe:
-            tcpSocket:
-              port: policy
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
-            tcpSocket:
-              port: policy
-            initialDelaySeconds: 2
-            periodSeconds: 5
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.components.quotaStatus.resources | nindent 12 }}
           volumeMounts:

@@ -1,72 +1,49 @@
-## yarilo — single-host Docker Compose deployment.
-##
-## Runs the whole mail server as one `yarilo` process in standalone (mode:
-## single): every protocol (IMAP/POP3/LMTP/Submission/ManageSieve) plus embedded
-## auth, anvil and locks in-process. The default (minimal) stack has NO external
-## dependencies — SQLite userdb + local storage volumes.
-##
-##   docker compose up -d                 # minimal: just yarilo
-##   docker compose --profile full up -d  # + redis + mariadb (see docs)
-##
-## See docs/DOCKER-COMPOSE.md for the full setup guide.
+## yarilo — single-host standalone deployment (Docker Compose).
+## Full split topology: login proxies (TLS terminators) in front of session
+## backends, with shared auth / anvil / locks and Redis. One image, one config;
+## each service selects its component via YARILO_COMPONENT. See DOCKER-COMPOSE.md.
 name: yarilo
 
+x-image: &image ghcr.io/0kaba0hub/yarilo:${YARILO_TAG:-latest}
+
+x-health: &health
+  test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+  interval: 15s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
+x-backend: &backend
+  image: *image
+  restart: unless-stopped
+  healthcheck: *health
+  volumes:
+    - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+    - ./tls:/etc/yarilo/tls:ro
+    - mail:/var/mail/vhosts
+  depends_on:
+    yarilo-auth:
+      condition: service_started
+    yarilo-anvil:
+      condition: service_started
+    yarilo-locks:
+      condition: service_started
+
+x-proxy: &proxy
+  image: *image
+  restart: unless-stopped
+  healthcheck: *health
+  volumes:
+    - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+    - ./tls:/etc/yarilo/tls:ro
+  depends_on:
+    yarilo-auth:
+      condition: service_started
+    yarilo-anvil:
+      condition: service_started
+
 services:
-  yarilo:
-    image: ${YARILO_IMAGE:-ghcr.io/0kaba0hub/yarilo}:${YARILO_TAG:-latest}
-    environment:
-      YARILO_COMPONENT: yarilo
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    volumes:
-      - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
-      - ./tls:/etc/yarilo/tls:ro
-      - mail:/var/mail/vhosts        # message + index storage
-      - state:/var/lib/yarilo        # SQLite userdb, sieve scripts, etc.
-    ports:
-      - "${IMAP_PORT:-143}:143"      # IMAP  STARTTLS
-      - "${IMAPS_PORT:-993}:993"     # IMAPS
-      - "${POP3_PORT:-110}:110"      # POP3  STARTTLS
-      - "${POP3S_PORT:-995}:995"     # POP3S
-      - "${SUBMISSION_PORT:-587}:587"     # Submission STARTTLS
-      - "${SUBMISSIONS_PORT:-465}:465"    # Submissions (implicit TLS)
-      # LMTP accepts mail with NO authentication — bound to loopback by default.
-      # Expose it to your MTA only (e.g. set LMTP_BIND=0.0.0.0 and firewall it).
-      - "${LMTP_BIND:-127.0.0.1}:${LMTP_PORT:-24}:24"
-      # ManageSieve (managesieve_be) is plaintext in single mode — loopback only.
-      - "${SIEVE_BIND:-127.0.0.1}:${SIEVE_PORT:-4190}:4190"
-      - "${TELEMETRY_PORT:-8080}:8080"    # /healthz /readyz /metrics
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
-      interval: 15s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-
-  ## --- full profile only: external state backends -------------------------
-  ## Enable by switching the auth passdb to mysql and the dict/quota-clone
-  ## backends to redis in config/yarilo.yaml — see docs/DOCKER-COMPOSE.md.
-
-  mariadb:
-    profiles: ["full"]
-    image: mariadb:11
-    environment:
-      MARIADB_DATABASE: ${DB_NAME:-yarilo}
-      MARIADB_USER: ${DB_USER:-yarilo}
-      MARIADB_PASSWORD: ${DB_PASSWORD:-yarilo-secret}
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root-secret}
-    volumes:
-      - db:/var/lib/mysql
-      - ./initdb:/docker-entrypoint-initdb.d:ro   # schema + seed user
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
   redis:
-    profiles: ["full"]
     image: redis:8.6
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -78,8 +55,160 @@ services:
       retries: 5
     restart: unless-stopped
 
+  yarilo-auth:
+    image: *image
+    environment:
+      YARILO_COMPONENT: yarilo-auth
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    healthcheck: *health
+    volumes:
+      - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+      - state:/var/lib/yarilo
+    restart: unless-stopped
+
+  yarilo-anvil:
+    image: *image
+    environment:
+      YARILO_COMPONENT: yarilo-anvil
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    healthcheck: *health
+    volumes:
+      - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+    restart: unless-stopped
+
+  yarilo-locks:
+    image: *image
+    environment:
+      YARILO_COMPONENT: yarilo-locks
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    healthcheck: *health
+    volumes:
+      - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  yarilo-imap:
+    <<: *backend
+    environment:
+      YARILO_COMPONENT: yarilo-imap
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+
+  yarilo-pop3:
+    <<: *backend
+    environment:
+      YARILO_COMPONENT: yarilo-pop3
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+
+  yarilo-lmtp:
+    <<: *backend
+    environment:
+      YARILO_COMPONENT: yarilo-lmtp
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+
+  yarilo-submission:
+    <<: *backend
+    environment:
+      YARILO_COMPONENT: yarilo-submission
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+
+  yarilo-managesieve:
+    <<: *backend
+    environment:
+      YARILO_COMPONENT: yarilo-managesieve
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+
+  yarilo-imap-login:
+    <<: *proxy
+    environment:
+      YARILO_COMPONENT: yarilo-imap-login
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      yarilo-imap:
+        condition: service_started
+    ports:
+      - "${IMAPS_PORT:-993}:10993"
+      - "${IMAP_PORT:-143}:10143"
+
+  yarilo-pop3-login:
+    <<: *proxy
+    environment:
+      YARILO_COMPONENT: yarilo-pop3-login
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      yarilo-pop3:
+        condition: service_started
+    ports:
+      - "${POP3S_PORT:-995}:10995"
+      - "${POP3_PORT:-110}:10110"
+
+  yarilo-submission-login:
+    <<: *proxy
+    environment:
+      YARILO_COMPONENT: yarilo-submission-login
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      yarilo-submission:
+        condition: service_started
+    ports:
+      - "${SUBMISSION_PORT:-587}:10587"
+      - "${SUBMISSIONS_PORT:-465}:10465"
+
+  yarilo-lmtp-login:
+    <<: *proxy
+    environment:
+      YARILO_COMPONENT: yarilo-lmtp-login
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      yarilo-lmtp:
+        condition: service_started
+    # LMTP is unauthenticated — loopback only by default (LMTP_BIND=0.0.0.0 to expose).
+    ports:
+      - "${LMTP_BIND:-127.0.0.1}:${LMTP_PORT:-24}:10024"
+
+  yarilo-managesieve-login:
+    <<: *proxy
+    environment:
+      YARILO_COMPONENT: yarilo-managesieve-login
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      yarilo-managesieve:
+        condition: service_started
+    ports:
+      - "${SIEVE_PORT:-4190}:14190"
+
+  yarilo-sasl-login:
+    image: *image
+    environment:
+      YARILO_COMPONENT: yarilo-sasl-login
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    healthcheck: *health
+    volumes:
+      - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+    depends_on:
+      yarilo-auth:
+        condition: service_started
+    # Dovecot-style SASL auth socket for a fronting MTA (Postfix smtpd_sasl_type=dovecot).
+    ports:
+      - "${SASL_BIND:-127.0.0.1}:${SASL_PORT:-12325}:12325"
+
+  yarilo-quota-status:
+    image: *image
+    environment:
+      YARILO_COMPONENT: yarilo-quota-status
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    healthcheck: *health
+    volumes:
+      - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+    depends_on:
+      yarilo-auth:
+        condition: service_started
+    # Postfix policy service for RCPT-time quota rejection.
+    ports:
+      - "${QUOTA_STATUS_BIND:-127.0.0.1}:${QUOTA_STATUS_PORT:-12340}:12340"
+
 volumes:
   mail:
   state:
-  db:
   redis:
