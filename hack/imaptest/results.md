@@ -216,6 +216,25 @@ Setup: 100 clients, 20 users (u1–u20@d00001.test), port 143, ~90 sec each run.
 
 ---
 
+## v2.0.170 — unify per-user mail_location resolution (#602/#605)
+
+**Date:** 2026-07-17  
+**Changes:** StampLocation / SelectPersonalBackend resolver unification across IMAP/POP3/LMTP + LMTP cache-miss Driver stamp (#606). Post-deploy regression check on sandbox.
+
+**Config note:** this run used `clients=500 / users=1-100` = **5 sessions/user**, which re-introduces the per-mailbox `fs.mu` contention that the v2.0.5 `1 session/user` setup eliminated. Not a like-for-like comparison with v2.0.5.
+
+| Block  | stalled >3s | ms/cmd avg |
+|--------|-------------|------------|
+| 1–8    | 0           | 0 ms       |
+| tail   | 1           | 0 ms       |
+
+**16s stall messages:** one — client 1051 stalled 59 s on `FETCH … (INTERNALDATE FLAGS)`  
+**errors:** 0  
+**Totals:** Logi 1427 (100%) / List 50% / Stat 50% / Sele 100% / Fetc 100% / Fet2 100% / Stor 50% / Dele 100% / Expu 100% / Appe 100% / Logo 100%  
+**Conclusion:** No functional regression from the resolver unification — smoketest is green twice back-to-back with no concurrent load (24/24 sieve + all checks). Under load the single 59 s FETCH stall is the known 5-sessions-per-mailbox `fs.mu` contention (config-induced, matches the v1.97/v2.0.5 analysis), not a new regression. Concurrent smoke failures during the imaptest window were LMTP delivery-latency timeouts that vanish once the load is removed.
+
+---
+
 ## Template for next run
 
 ```
