@@ -2,6 +2,7 @@ package sql
 
 import (
 	"context"
+	stdsql "database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -178,11 +179,23 @@ func TestPerUserScoping(t *testing.T) {
 }
 
 // mappedDict opens a sqlite dict in mapped mode and pre-creates the operator-
-// owned quota(username, bytes, messages) table, matching the Dovecot-compatible
-// schema from #590.
+// owned quota(username, bytes, messages) table (the per-user column schema from
+// #590). Sibling columns are nullable so a first Set of one key does not trip a
+// NOT NULL constraint on the other.
 func mappedDict(t *testing.T) *Dict {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "mapped.sqlite")
+	// The operator owns the mapped table, and New validates it exists, so create
+	// it up front on a throwaway connection before opening the dict.
+	seed, err := stdsql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	if _, err := seed.Exec(`CREATE TABLE quota (username TEXT PRIMARY KEY, bytes BIGINT, messages BIGINT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	seed.Close() //nolint:errcheck
+
 	d, err := New(dict.Config{Settings: map[string]any{
 		"driver": "sqlite",
 		"dsn":    dbPath,
@@ -194,11 +207,7 @@ func mappedDict(t *testing.T) *Dict {
 	if err != nil {
 		t.Fatalf("new mapped dict: %v", err)
 	}
-	sd := d.(*Dict)
-	if _, err := sd.db.Exec(`CREATE TABLE quota (username TEXT PRIMARY KEY, bytes BIGINT, messages BIGINT)`); err != nil {
-		t.Fatalf("create table: %v", err)
-	}
-	return sd
+	return d.(*Dict)
 }
 
 func mappedSet(t *testing.T, d *Dict, user, key, val string) {
@@ -220,7 +229,6 @@ func mappedSet(t *testing.T, d *Dict, user, key, val string) {
 func TestMappedModeColumns(t *testing.T) {
 	d := mappedDict(t)
 	defer d.Close() //nolint:errcheck
-	ctx := context.Background()
 
 	mappedSet(t, d, "u1@x", "priv/quota/storage", "860809")
 	mappedSet(t, d, "u1@x", "priv/quota/messages", "13")
@@ -234,29 +242,19 @@ func TestMappedModeColumns(t *testing.T) {
 		t.Fatalf("expected 1 shared row, got %d", rows)
 	}
 
-	get := func(key string) (string, bool) {
-		vs, found, err := d.Lookup(ctx, &dict.OpSettings{Username: "u1@x"}, key)
-		if err != nil {
-			t.Fatalf("lookup %s: %v", key, err)
-		}
-		if !found {
-			return "", false
-		}
-		return string(vs[0]), true
-	}
-	if v, _ := get("priv/quota/storage"); v != "860809" {
+	if v, _ := mappedGet(t, d, "u1@x", "priv/quota/storage"); v != "860809" {
 		t.Errorf("storage = %q, want 860809", v)
 	}
-	if v, _ := get("priv/quota/messages"); v != "13" {
+	if v, _ := mappedGet(t, d, "u1@x", "priv/quota/messages"); v != "13" {
 		t.Errorf("messages = %q, want 13", v)
 	}
 	// Another user has no row.
-	if _, found := get2(t, d, "ghost@x", "priv/quota/storage"); found {
+	if _, found := mappedGet(t, d, "ghost@x", "priv/quota/storage"); found {
 		t.Error("ghost should have no mapped value")
 	}
 }
 
-func get2(t *testing.T, d *Dict, user, key string) (string, bool) {
+func mappedGet(t *testing.T, d *Dict, user, key string) (string, bool) {
 	t.Helper()
 	vs, found, err := d.Lookup(context.Background(), &dict.OpSettings{Username: user}, key)
 	if err != nil {
@@ -285,10 +283,10 @@ func TestMappedUnsetNullsColumn(t *testing.T) {
 		t.Fatalf("commit unset: %v", err)
 	}
 
-	if _, found := get2(t, d, "u1@x", "priv/quota/storage"); found {
+	if _, found := mappedGet(t, d, "u1@x", "priv/quota/storage"); found {
 		t.Error("storage should read as not-found after Unset (NULL)")
 	}
-	if v, found := get2(t, d, "u1@x", "priv/quota/messages"); !found || v != "7" {
+	if v, found := mappedGet(t, d, "u1@x", "priv/quota/messages"); !found || v != "7" {
 		t.Errorf("messages = %q found=%v, want 7 (sibling column intact)", v, found)
 	}
 	// The row is not deleted, just the column nulled.
@@ -323,6 +321,33 @@ func TestMappedModeErrors(t *testing.T) {
 	// Iterate is unsupported.
 	if _, err := d.Iterate(ctx, &dict.OpSettings{Username: "u1@x"}, "priv/", 0); err == nil {
 		t.Error("Iterate should error in mapped mode")
+	}
+	// ExpireScan is unsupported (no generic table to sweep in mapped mode).
+	if err := d.ExpireScan(ctx); err == nil {
+		t.Error("ExpireScan should error in mapped mode")
+	}
+	// A non-zero TTL cannot be honoured in mapped mode.
+	ttx, _ := d.Begin(ctx, &dict.OpSettings{Username: "u1@x", ExpireSecs: 60})
+	_ = ttx.Set("priv/quota/storage", []byte("1"))
+	if res, err := ttx.Commit(); err == nil || res == dict.CommitOK {
+		t.Errorf("TTL Set should fail in mapped mode: res=%v err=%v", res, err)
+	}
+}
+
+// TestMappedOpenValidatesSchema verifies New fails fast when a mapped table or
+// column is missing, instead of deferring the error to the first write.
+func TestMappedOpenValidatesSchema(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "novalidate.sqlite")
+	_, err := New(dict.Config{Settings: map[string]any{
+		"driver": "sqlite",
+		"dsn":    dbPath,
+		"maps": []any{
+			map[string]any{"key": "priv/quota/storage", "table": "quota", "username_field": "username", "value_field": "bytes"},
+		},
+	}})
+	// The quota table was never created, so Open must reject.
+	if err == nil {
+		t.Fatal("New should fail when a mapped table does not exist")
 	}
 }
 

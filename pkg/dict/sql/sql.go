@@ -115,8 +115,31 @@ func New(cfg dict.Config) (dict.Dict, error) {
 			db.Close() //nolint:errcheck
 			return nil, err
 		}
+	} else if err := d.validateMaps(); err != nil {
+		db.Close() //nolint:errcheck
+		return nil, err
 	}
 	return d, nil
+}
+
+// validateMaps fails fast at Open time when a mapped table/column does not
+// exist, so a typo or a forgotten CREATE TABLE surfaces at startup rather than
+// silently on the first (best-effort) quota_clone write. A LIMIT 0 select never
+// returns rows but still resolves the identifiers.
+func (d *Dict) validateMaps() error {
+	seen := make(map[string]bool, len(d.maps))
+	for key, e := range d.maps {
+		probe := e.table + "." + e.valCol
+		if seen[probe] {
+			continue
+		}
+		seen[probe] = true
+		q := fmt.Sprintf(`SELECT %s FROM %s LIMIT 0`, e.valCol, e.table)
+		if _, err := d.db.Exec(q); err != nil {
+			return fmt.Errorf("mapped schema check for key %q (%s.%s): %w", key, e.table, e.valCol, err)
+		}
+	}
+	return nil
 }
 
 // mapEntry binds a dict key to a table column: writes/reads for the key target
@@ -356,6 +379,9 @@ func (d *Dict) mappedUpsert(e mapEntry) string {
             ON CONFLICT (%s) DO UPDATE SET %s = EXCLUDED.%s`,
 			e.table, e.userCol, e.valCol, e.userCol, e.valCol, e.valCol)
 	case "mysql":
+		// VALUES() in ON DUPLICATE KEY UPDATE is deprecated on MySQL 8.0.20+ but
+		// works on MySQL and MariaDB alike; the alias form (AS new) is rejected
+		// by MariaDB, so keep VALUES() while the primary target is MariaDB.
 		return fmt.Sprintf(`INSERT INTO %s (%s, %s) VALUES (?, ?)
             ON DUPLICATE KEY UPDATE %s = VALUES(%s)`,
 			e.table, e.userCol, e.valCol, e.valCol, e.valCol)
@@ -455,6 +481,11 @@ func (d *Dict) Begin(ctx context.Context, set *dict.OpSettings) (dict.Tx, error)
 func (d *Dict) ExpireScan(ctx context.Context) error {
 	if d.closed.Load() {
 		return dict.ErrClosed
+	}
+	if d.mapped() {
+		// Mapped mode has no generic KV table and no per-row expiry column;
+		// a blind DELETE would hit a non-existent (or unrelated) table.
+		return errors.New("sql: ExpireScan is not supported in mapped mode")
 	}
 	// No namespace filter: entries are scoped per user (namespace = ns[/user]),
 	// so an expired row is dropped regardless of its scope — expiry is absolute.
@@ -629,6 +660,12 @@ func (t *tx) commitMapped(ctx context.Context) (dict.CommitResult, error) {
 		t.sqlTx.Rollback() //nolint:errcheck
 		return dict.CommitFailed, errors.New("mapped mode requires a username")
 	}
+	if t.expires > 0 {
+		// Mapped columns carry no per-row expiry, so a TTL cannot be honoured or
+		// reaped; fail loudly rather than silently keep rows forever.
+		t.sqlTx.Rollback() //nolint:errcheck
+		return dict.CommitFailed, errors.New("sql: per-key TTL (expire_secs) is not supported in mapped mode")
+	}
 	for _, op := range t.buf.Ops {
 		e, err := t.d.mapFor(op.Key)
 		if err != nil {
@@ -637,7 +674,10 @@ func (t *tx) commitMapped(ctx context.Context) (dict.CommitResult, error) {
 		}
 		switch op.Kind {
 		case dict.OpSet:
-			if _, err := t.sqlTx.ExecContext(ctx, t.d.mappedUpsert(e), t.user, op.Value); err != nil {
+			// Bind as string, not []byte: pgx encodes []byte as bytea, which a
+			// numeric target column (BIGINT) rejects. Text binds coerce cleanly
+			// on all three drivers.
+			if _, err := t.sqlTx.ExecContext(ctx, t.d.mappedUpsert(e), t.user, string(op.Value)); err != nil {
 				t.sqlTx.Rollback() //nolint:errcheck
 				return dict.CommitFailed, fmt.Errorf("upsert %q: %w", op.Key, err)
 			}

@@ -191,6 +191,17 @@ CREATE TABLE quota (username VARCHAR(255) PRIMARY KEY, bytes BIGINT, messages BI
 -- one row per user: (u1@d00001.test, 860809, 13)
 ```
 
+> **Every column other than `username_field` must be nullable (or carry a
+> `DEFAULT`).** A `Set` inserts only `(username_field, value_field)`, so the
+> first write for a new user leaves sibling columns unset — a `NOT NULL` sibling
+> would reject that insert. `Unset` also relies on the column being nullable.
+
+Mapped mode is validated at startup: `New` runs a `SELECT <value_field> FROM
+<table> LIMIT 0` for every map, so a typo in a table/column name or a forgotten
+`CREATE TABLE` fails at Open rather than silently on the first write. Per-key
+TTL (`expire_secs`) and `ExpireScan` are unavailable in mapped mode (mapped
+columns carry no expiry) and return an error.
+
 Each map entry:
 
 | Field | Required | Meaning |
