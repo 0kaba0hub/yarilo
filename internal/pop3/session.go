@@ -567,6 +567,51 @@ func (s *session) completePreAuth() bool {
 	return ok
 }
 
+// resolvePersonalStorage picks the mailbox backend for a user from their
+// mail_location and stamps the parsed driver + storage modifiers onto userInfo,
+// so POP3 reads the same store and per-folder index layout IMAP does. It reuses
+// the shared mailbox.ParseLocation (as LMTP does) rather than re-parsing the
+// prefix by hand.
+//
+// Priority matches IMAP/LMTP: separate userdb fields (already set on userInfo by
+// the caller) win, so an INDEX=/CONTROL=/ALT=/VOLATILEDIR= modifier embedded in
+// mail_location only fills a blank. A malformed or unknown-driver mail_location
+// logs a warning and leaves the global backend with no driver stamp — so a
+// driver typo cannot silently pick a mismatched index layout (review #6).
+func resolvePersonalStorage(global mailbox.MailboxBackend, byDriver func(string) mailbox.MailboxBackend, mailLoc string, userInfo *mailbox.UserInfo) mailbox.MailboxBackend {
+	if mailLoc == "" {
+		return global
+	}
+	loc, ok, err := mailbox.ParseLocation(mailLoc, userInfo)
+	if err != nil {
+		slog.Warn("pop3: mail_location parse failed; using global mailbox backend",
+			"user", userInfo.Username, "mail_location", mailLoc, "err", err)
+		return global
+	}
+	if !ok {
+		return global
+	}
+	userInfo.Driver = loc.Driver
+	if userInfo.IndexDir == "" {
+		userInfo.IndexDir = loc.IndexDir
+	}
+	if userInfo.VolatileDir == "" {
+		userInfo.VolatileDir = loc.VolatileDir
+	}
+	if userInfo.ControlDir == "" {
+		userInfo.ControlDir = loc.ControlDir
+	}
+	if userInfo.AltDir == "" {
+		userInfo.AltDir = loc.AltDir
+	}
+	if byDriver != nil {
+		if b := byDriver(loc.Driver); b != nil {
+			return b
+		}
+	}
+	return global
+}
+
 // setupSession resolves UserInfo, acquires limits/locks, opens storage handles,
 // and loads the mailbox. On failure it writes an error to the wire (for the
 // normal auth path) and returns false. For preAuth callers, the error line is
@@ -631,7 +676,13 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	}
 	s.lockKey = userInfo.Username
 
-	box := s.srv.opts.Mailbox.OpenUser(userInfo)
+	// Honour the per-user mail_location driver (sdbox/mdbox/maildir) exactly as
+	// IMAP does: record it on userInfo so the fileindex picks the matching
+	// per-folder layout, and select the per-user mailbox backend when the driver
+	// differs from the global default. Without this POP3 opens every user
+	// through the global (maildir) backend and reports 0 messages for dbox users.
+	personalBox := resolvePersonalStorage(s.srv.opts.Mailbox, s.srv.opts.MailboxByDriver, res.MailLoc, userInfo)
+	box := personalBox.OpenUser(userInfo)
 	idx := s.srv.opts.Index.OpenUser(userInfo)
 
 	if err := box.Init(); err != nil {

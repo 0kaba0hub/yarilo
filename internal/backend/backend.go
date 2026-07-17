@@ -310,10 +310,14 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		p := cfg.Protocol.POP3
 		pop3Server = pop3svr.New(pop3svr.Options{
-			Addr:               listenAddr(svcs.POP3S),
-			AddrPlain:          listenAddr(svcs.POP3),
-			TLSConfig:          pop3TLS,
-			Mailbox:            mbox,
+			Addr:      listenAddr(svcs.POP3S),
+			AddrPlain: listenAddr(svcs.POP3),
+			TLSConfig: pop3TLS,
+			Mailbox:   mbox,
+			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
+				return buildMailboxByDriver(driver, cfg.Storage.MdboxAltStoragePath, locker,
+					cfg.Storage.MaxConcurrentWrites, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
+			},
 			Index:              idx,
 			Resolver:           resolver,
 			Auth:               authChain,

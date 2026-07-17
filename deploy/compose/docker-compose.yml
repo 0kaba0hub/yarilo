@@ -1,0 +1,85 @@
+## yarilo — single-host Docker Compose deployment.
+##
+## Runs the whole mail server as one `yarilo` process in standalone (mode:
+## single): every protocol (IMAP/POP3/LMTP/Submission/ManageSieve) plus embedded
+## auth, anvil and locks in-process. The default (minimal) stack has NO external
+## dependencies — SQLite userdb + local storage volumes.
+##
+##   docker compose up -d                 # minimal: just yarilo
+##   docker compose --profile full up -d  # + redis + mariadb (see docs)
+##
+## See docs/DOCKER-COMPOSE.md for the full setup guide.
+name: yarilo
+
+services:
+  yarilo:
+    image: ${YARILO_IMAGE:-ghcr.io/0kaba0hub/yarilo}:${YARILO_TAG:-latest}
+    environment:
+      YARILO_COMPONENT: yarilo
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ./config/yarilo.yaml:/etc/yarilo/yarilo.yaml:ro
+      - ./tls:/etc/yarilo/tls:ro
+      - mail:/var/mail/vhosts        # message + index storage
+      - state:/var/lib/yarilo        # SQLite userdb, sieve scripts, etc.
+    ports:
+      - "${IMAP_PORT:-143}:143"      # IMAP  STARTTLS
+      - "${IMAPS_PORT:-993}:993"     # IMAPS
+      - "${POP3_PORT:-110}:110"      # POP3  STARTTLS
+      - "${POP3S_PORT:-995}:995"     # POP3S
+      - "${SUBMISSION_PORT:-587}:587"     # Submission STARTTLS
+      - "${SUBMISSIONS_PORT:-465}:465"    # Submissions (implicit TLS)
+      # LMTP accepts mail with NO authentication — bound to loopback by default.
+      # Expose it to your MTA only (e.g. set LMTP_BIND=0.0.0.0 and firewall it).
+      - "${LMTP_BIND:-127.0.0.1}:${LMTP_PORT:-24}:24"
+      # ManageSieve (managesieve_be) is plaintext in single mode — loopback only.
+      - "${SIEVE_BIND:-127.0.0.1}:${SIEVE_PORT:-4190}:4190"
+      - "${TELEMETRY_PORT:-8080}:8080"    # /healthz /readyz /metrics
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  ## --- full profile only: external state backends -------------------------
+  ## Enable by switching the auth passdb to mysql and the dict/quota-clone
+  ## backends to redis in config/yarilo.yaml — see docs/DOCKER-COMPOSE.md.
+
+  mariadb:
+    profiles: ["full"]
+    image: mariadb:11
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-yarilo}
+      MARIADB_USER: ${DB_USER:-yarilo}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-yarilo-secret}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root-secret}
+    volumes:
+      - db:/var/lib/mysql
+      - ./initdb:/docker-entrypoint-initdb.d:ro   # schema + seed user
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    profiles: ["full"]
+    image: redis:8.6
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  mail:
+  state:
+  db:
+  redis:

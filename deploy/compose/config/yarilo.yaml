@@ -1,0 +1,67 @@
+## yarilo standalone config for the Docker Compose deployment.
+## mode: single runs every protocol + embedded auth/anvil/locks in one process.
+## The minimal stack needs nothing external: SQLite userdb + local storage.
+mode: single
+
+general:
+  ssl:
+    tls_cert: /etc/yarilo/tls/cert.pem
+    tls_key:  /etc/yarilo/tls/key.pem
+    tls_min_version: TLS1.2
+  limits:
+    mail_max_userip_connections: 20
+
+services:
+  imaps:       { enabled: true,  port: 993,  ssl_mode: ssl }
+  imap:        { enabled: true,  port: 143,  ssl_mode: starttls, disable_plaintext_auth: false }
+  submission:  { enabled: true,  port: 587,  ssl_mode: starttls, disable_plaintext_auth: false }
+  submissions: { enabled: true,  port: 465,  ssl_mode: ssl }
+  pop3:        { enabled: true,  port: 110,  ssl_mode: starttls, disable_plaintext_auth: false }
+  pop3s:       { enabled: true,  port: 995,  ssl_mode: ssl }
+  lmtp:        { enabled: true,  port: 24,   ssl_mode: "no" }
+  ## In mode:single ManageSieve is served by the backend listener
+  ## (managesieve_be), not the login-proxy frontend. It is plaintext (TLS
+  ## termination lives in the login proxy, which standalone does not run), so
+  ## it is bound to loopback in docker-compose.yml. Front it with a TLS proxy
+  ## for remote access.
+  managesieve:    { enabled: false }
+  managesieve_be: { enabled: true, port: 4190, ssl_mode: "no" }
+
+protocol:
+  submission:
+    hostname: mail.example.test        # set to your real MX hostname
+    max_message_size: 41943040
+    recipient_delimiter: "+"
+    submission_add_received_header: true
+  lmtp:
+    login_greeting: "Yarilo ready."
+    add_received_header: true
+    hdr_delivery_address: final
+
+auth:
+  passdb:
+    ## Minimal: SQLite userdb, auto-created on first start. Seed users with the
+    ## SQL in docs/DOCKER-COMPOSE.md.
+    - driver: sqlite
+      dsn: /var/lib/yarilo/users.db
+    ## Full profile: swap the block above for MySQL/MariaDB. Queries substitute
+    ## %u (full login), %n (local part) and %d (domain) as bound parameters.
+    # - driver: mysql
+    #   dsn: "yarilo:yarilo-secret@tcp(mariadb:3306)/yarilo"
+    #   password_query: "SELECT password FROM yarilo_users WHERE username = %u AND enabled = 1"
+    #   user_query:     "SELECT home, mail FROM yarilo_users WHERE username = %u"
+
+storage:
+  mailbox: maildir                     # maildir | sdbox | mdbox
+  maildir_root: /var/mail/vhosts
+  mail_home_template: "%d/%u"
+
+## Full profile only — dict / quota-clone backends can point at the redis
+## service (addr: "redis:6379"). See docs/DICT.md and docs/QUOTA.md for the
+## exact keys.
+
+telemetry:
+  listen: ":8080"
+
+log:
+  level: info
