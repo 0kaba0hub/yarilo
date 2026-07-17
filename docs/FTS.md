@@ -323,8 +323,8 @@ setting).
 **Build implication:** Xapian is C++, so `yarilo-fts` builds with
 `CGO_ENABLED=1` + libxapian. Because the service is the *only* process that
 touches the index (§4), the cgo dependency is confined to this one binary —
-all session binaries keep the pure-Go static build; only the fts Deployment
-uses the cgo image. There are no maintained Go bindings for Xapian, so the
+all session binaries keep the pure-Go static build inside the same single
+image. There are no maintained Go bindings for Xapian, so the
 engine ships its own minimal C shim (~250 lines) covering exactly the calls
 it needs.
 

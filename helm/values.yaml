@@ -592,14 +592,12 @@ components:
   ## Postfix policy service — quota enforcement before message queuing.
   ## Postfix config: check_policy_service inet:[<ClusterIP>]:12340
   ## Full-text search service — sole owner of the FTS indexes (indexing
-  ## queue + worker + LOOKUP endpoint). Runs the -fts image variant: the
-  ## only cgo binary (libxapian); every other pod stays on the static image.
+  ## queue + worker + LOOKUP endpoint). Runs yarilo-fts, the only cgo
+  ## binary (libxapian), from the same single image as every other pod.
   fts:
     enabled: false
     replicas: 1
     port: 9106
-    ## Image tag suffix appended to image.tag (VERSION-fts).
-    imageTagSuffix: "-fts"
     resources:
       requests:
         cpu: 100m
