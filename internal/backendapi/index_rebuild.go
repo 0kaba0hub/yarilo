@@ -135,6 +135,10 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 type storageRebuildRequest struct {
 	User      string `json:"user"`
 	Namespace string `json:"namespace"`
+	// RestoreOrphans opts in to re-filing unreferenced messages that carry an
+	// ORIG_MAILBOX tag back into their home folder. Default false: unreferenced
+	// messages are left zero-ref for the next purge, never resurrected.
+	RestoreOrphans bool `json:"restore_orphans"`
 }
 
 type storageRebuildStats struct {
@@ -142,6 +146,7 @@ type storageRebuildStats struct {
 	FoldersRebuilt      int    `json:"folders_rebuilt"`
 	Expunged            int    `json:"expunged"`
 	UnreferencedZeroref int    `json:"unreferenced_zeroref"`
+	OrphansRestored     int    `json:"orphans_restored"`
 	RebuildCount        uint32 `json:"rebuild_count"`
 	DurationMs          int64  `json:"duration_ms"`
 	Note                string `json:"note"`
@@ -177,19 +182,24 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// The rebuild takes the storage (map) lock itself; no folder lock is acquired
 	// here — it is taken per folder inside idx.ResetFolder.
-	st, err := rb.RebuildStorage(bundle.idx)
+	st, err := rb.RebuildStorage(bundle.idx, req.RestoreOrphans)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	note := "run with delivery to this user quiesced (operator repair tool). Unreferenced messages are set zero-ref for the next purge; orphan restore requires restore_orphans=true AND an ORIG_MAILBOX tag"
+	if req.RestoreOrphans {
+		note = "restore_orphans=true: unreferenced messages with an ORIG_MAILBOX tag were re-filed into their home folder; the rest are zero-ref for purge. Run with delivery quiesced"
 	}
 	apiJSON(w, storageRebuildStats{
 		Scanned:             st.Scanned,
 		FoldersRebuilt:      st.FoldersRebuilt,
 		Expunged:            st.Expunged,
 		UnreferencedZeroref: st.UnreferencedZeroref,
+		OrphansRestored:     st.OrphansRestored,
 		RebuildCount:        st.RebuildCount,
 		DurationMs:          time.Since(start).Milliseconds(),
-		Note:                "run with delivery to this user quiesced (operator repair tool). Unreferenced messages are set zero-ref for the next purge, not re-filed; orphan restore lands with ORIG_MAILBOX (#594 Phase 2b)",
+		Note:                note,
 	})
 }
 

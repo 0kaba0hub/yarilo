@@ -137,11 +137,11 @@ func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxma
 
 	out := make([]mdboxmap.MovedRecord, 0, len(live))
 	for _, e := range live {
-		body, guid, err := readRecordBodyAndTrailer(src, e.Offset)
+		body, guid, origMbox, err := readRecordBodyAndTrailer(src, e.Offset)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/purge: read uid=%d: %w", e.UID, err)
 		}
-		offset, err := appendRecordToFile(dst, body, guid)
+		offset, err := appendRecordToFile(dst, body, guid, origMbox)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/purge: write uid=%d: %w", e.UID, err)
 		}
@@ -181,11 +181,11 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 
 	out := make([]mdboxmap.MovedRecord, 0, len(live))
 	for _, e := range live {
-		body, guid, err := readRecordBodyAndTrailer(src, e.Offset)
+		body, guid, origMbox, err := readRecordBodyAndTrailer(src, e.Offset)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/altmove: read uid=%d: %w", e.UID, err)
 		}
-		offset, err := appendRecordToFile(dst, body, guid)
+		offset, err := appendRecordToFile(dst, body, guid, origMbox)
 		if err != nil {
 			return nil, fmt.Errorf("mdbox/altmove: write uid=%d: %w", e.UID, err)
 		}
@@ -209,12 +209,12 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 // survives compaction. The R timestamp is refreshed because it
 // reflects when the record was last stored, not the mail
 // internalDate. Returns the byte offset at which the record starts.
-func appendRecordToFile(dst *os.File, body []byte, guid [16]byte) (uint32, error) {
+func appendRecordToFile(dst *os.File, body []byte, guid [16]byte, origMailbox string) (uint32, error) {
 	pos, err := dst.Seek(0, io.SeekEnd)
 	if err != nil {
 		return 0, err
 	}
-	rec := buildDboxRecord(body, guid)
+	rec := buildDboxRecord(body, guid, origMailbox)
 	if _, err := dst.Write(rec); err != nil {
 		return 0, err
 	}

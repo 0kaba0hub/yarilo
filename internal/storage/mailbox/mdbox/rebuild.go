@@ -23,6 +23,7 @@ import (
 type parsedTrailer struct {
 	guid         [16]byte
 	internalDate time.Time
+	origMailbox  string
 }
 
 // scanTrailer reads a dbox v2 metadata trailer starting at the
@@ -69,6 +70,10 @@ func scanTrailer(r io.Reader, limit uint32) (uint32, parsedTrailer, error) {
 			if v, derr := strconv.ParseUint(val, 16, 32); derr == nil {
 				out.internalDate = time.Unix(int64(v), 0).UTC()
 			}
+		case metaOrigMailbox:
+			// The mailbox name is taken verbatim (not space-trimmed): a folder
+			// name may legitimately contain spaces.
+			out.origMailbox = line[1:]
 		}
 	}
 }
@@ -419,6 +424,7 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 		}
 		rec.scan.GUID = parsed.guid
 		rec.scan.InternalDate = parsed.internalDate
+		rec.scan.OrigMailbox = parsed.origMailbox
 		out = append(out, rec)
 		pos = bodyEnd + trailerEnd
 	}

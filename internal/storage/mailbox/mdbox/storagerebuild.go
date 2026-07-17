@@ -75,7 +75,7 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 // (a modseq storm for QRESYNC clients) and loses VANISHED fidelity for dropped
 // UIDs — the same accepted parity gap as the sdbox reactive heal. FTS may retain
 // ghost documents for expunged map_uids until the next fts rescan.
-func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex) (mailbox.StorageRebuildStats, error) {
+func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool) (mailbox.StorageRebuildStats, error) {
 	var stats mailbox.StorageRebuildStats
 
 	// Alt-mounted guard: a configured-but-unmounted alt tier would make every
@@ -103,14 +103,15 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex) (mailbox.StorageRebu
 		}
 		stats.Scanned = len(scanned)
 
-		present := make(map[string]struct{}, len(scanned))
+		// present maps map_uid → scan record (carries OrigMailbox for restore).
+		present := make(map[string]*mailbox.ScanRecord, len(scanned))
 		presentUIDs := make(map[uint32]bool, len(scanned))
 		for i := range scanned {
 			fn := scanned[i].Filename
 			if fn == "" {
 				continue
 			}
-			present[fn] = struct{}{}
+			present[fn] = &scanned[i]
 			if uid, perr := parseFilename(fn); perr == nil {
 				presentUIDs[uid] = true
 			}
@@ -138,23 +139,43 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex) (mailbox.StorageRebu
 		// folder append landed after its folder's phase-1 reset). This count is
 		// what the refcount is recomputed to.
 		refCount := make(map[uint32]int, len(scanned))
-		for _, fe := range folders {
-			f, oerr := idx.OpenFolder(fe.Name, 0)
-			if oerr != nil {
-				return fmt.Errorf("mdbox/rebuild: reopen %q: %w", fe.Name, oerr)
-			}
-			msgs, gerr := idx.GetMessages(f.ID, allMessages)
-			if gerr != nil {
-				return fmt.Errorf("mdbox/rebuild: reread %q: %w", fe.Name, gerr)
-			}
-			for _, mm := range msgs {
-				if mm.Filename == "" {
-					continue
+		reread := func() error {
+			for _, fe := range folders {
+				f, oerr := idx.OpenFolder(fe.Name, 0)
+				if oerr != nil {
+					return fmt.Errorf("mdbox/rebuild: reopen %q: %w", fe.Name, oerr)
 				}
-				if uid, perr := parseFilename(mm.Filename); perr == nil {
-					refCount[uid]++
+				msgs, gerr := idx.GetMessages(f.ID, allMessages)
+				if gerr != nil {
+					return fmt.Errorf("mdbox/rebuild: reread %q: %w", fe.Name, gerr)
+				}
+				for _, mm := range msgs {
+					if mm.Filename == "" {
+						continue
+					}
+					if uid, perr := parseFilename(mm.Filename); perr == nil {
+						refCount[uid]++
+					}
 				}
 			}
+			return nil
+		}
+		if err := reread(); err != nil {
+			return err
+		}
+
+		// Phase 3 (opt-in): restore orphans that carry an ORIG_MAILBOX tag back to
+		// their home folder. Only tagged AND currently-unreferenced records qualify
+		// — an untagged churn/leak record (the live-sandbox 889 case) is never
+		// re-filed. Restored messages go through AllocateAndAppend, the same path a
+		// normal delivery takes, so the destination folder's vsize/modseq/quota
+		// aggregates are recomputed correctly.
+		if restoreOrphans {
+			restored, rerr := u.restoreTaggedOrphans(idx, present, refCount)
+			if rerr != nil {
+				return rerr
+			}
+			stats.OrphansRestored = restored
 		}
 
 		// Drop map records whose message vanished from storage.
@@ -164,16 +185,16 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex) (mailbox.StorageRebu
 		}
 		stats.Expunged = dropped
 
-		// Recompute refcounts from the actual references: unreferenced records go
-		// to zero-ref so purge reclaims them (never resurrected here).
+		// Recompute refcounts from the actual references (including any just-restored
+		// orphans): unreferenced records go to zero-ref so purge reclaims them.
 		zeroed, rerr := m.SetRefcountsFromReferences(refCount)
 		if rerr != nil {
 			return fmt.Errorf("mdbox/rebuild: recompute refcounts: %w", rerr)
 		}
 		stats.UnreferencedZeroref = zeroed
 		if zeroed > 0 {
-			slog.Warn("mdbox/rebuild: unreferenced messages set zero-ref for purge (NOT resurrected — orphan restore lands with ORIG_MAILBOX)",
-				"user", u.username, "unreferenced", zeroed, "scanned", stats.Scanned)
+			slog.Warn("mdbox/rebuild: unreferenced messages set zero-ref for purge (NOT resurrected)",
+				"user", u.username, "unreferenced", zeroed, "restored", stats.OrphansRestored, "scanned", stats.Scanned)
 		}
 		return nil
 	})
@@ -188,11 +209,76 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex) (mailbox.StorageRebu
 	return stats, nil
 }
 
+// restoreTaggedOrphans re-files every present, currently-unreferenced message
+// that carries an ORIG_MAILBOX tag back into that folder (created if missing),
+// via AllocateAndAppend — the same path a normal delivery takes, so vsize/modseq/
+// quota aggregates stay correct. It bumps refCount for each restored map_uid so
+// the subsequent recompute keeps it referenced. Untagged records are left alone
+// (they become zero-ref for purge). Returns the number restored.
+func (u *userMailbox) restoreTaggedOrphans(idx mailbox.UserIndex, present map[string]*mailbox.ScanRecord, refCount map[uint32]int) (int, error) {
+	// Deterministic order so two runs restore identically.
+	fns := make([]string, 0, len(present))
+	for fn := range present {
+		fns = append(fns, fn)
+	}
+	sort.Strings(fns)
+
+	openFolders := make(map[string]*mailbox.Folder)
+	restored := 0
+	for _, fn := range fns {
+		rec := present[fn]
+		if rec.OrigMailbox == "" {
+			continue // no home recorded — never guess; leave for purge
+		}
+		uid, perr := parseFilename(fn)
+		if perr != nil || refCount[uid] != 0 {
+			continue // only currently-unreferenced records are orphans
+		}
+		target, oerr := u.openOrCreateFolder(idx, rec.OrigMailbox, openFolders)
+		if oerr != nil {
+			return restored, oerr
+		}
+		nm := &mailbox.MessageMeta{
+			Filename:     fn,
+			Size:         rec.Size,
+			VSize:        rec.VSize,
+			InternalDate: rec.InternalDate,
+			GUID:         rec.GUID,
+		}
+		if err := idx.AllocateAndAppend(target.ID, nm); err != nil {
+			return restored, fmt.Errorf("mdbox/rebuild: restore %s into %q: %w", fn, rec.OrigMailbox, err)
+		}
+		refCount[uid]++
+		restored++
+	}
+	return restored, nil
+}
+
+// openOrCreateFolder returns an index handle for name, creating the mailbox
+// (storage dir + index folder) if it does not exist. Handles are cached in the
+// supplied map for the duration of the rebuild.
+func (u *userMailbox) openOrCreateFolder(idx mailbox.UserIndex, name string, cache map[string]*mailbox.Folder) (*mailbox.Folder, error) {
+	if f, ok := cache[name]; ok {
+		return f, nil
+	}
+	if exists, err := u.FolderExists(name); err == nil && !exists {
+		if cerr := u.Create(name); cerr != nil {
+			return nil, fmt.Errorf("mdbox/rebuild: create restore target %q: %w", name, cerr)
+		}
+	}
+	f, err := idx.OpenFolder(name, 0)
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/rebuild: open restore target %q: %w", name, err)
+	}
+	cache[name] = f
+	return f, nil
+}
+
 // resetFolderToPresent rewrites folder f's index to the subset of its current
 // records whose map_uid is still present in the physical scan, dropping the rest
 // (their message vanished). Surviving records keep their UID, flags and other
 // metadata; ResetFolder re-stamps modseq.
-func (u *userMailbox) resetFolderToPresent(idx mailbox.UserIndex, f *mailbox.Folder, present map[string]struct{}) error {
+func (u *userMailbox) resetFolderToPresent(idx mailbox.UserIndex, f *mailbox.Folder, present map[string]*mailbox.ScanRecord) error {
 	existing, err := idx.GetMessages(f.ID, allMessages)
 	if err != nil {
 		return fmt.Errorf("mdbox/rebuild: get messages %q: %w", f.Name, err)
