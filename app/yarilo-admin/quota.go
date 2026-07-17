@@ -137,7 +137,7 @@ show <user>' to inspect per-user rules.`)
 // GET /api/backend/quota/show?user=<user>
 func quotaShow(args []string) error {
 	fs := flag.NewFlagSet("quota show", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -179,7 +179,7 @@ func humanQuotaShow(data []byte) error {
 func quotaRecalc(args []string) error {
 	fs := flag.NewFlagSet("quota recalc", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -246,7 +246,7 @@ func quotaSet(args []string) error {
 	fs := flag.NewFlagSet("quota set", flag.ContinueOnError)
 	bytesFlag := fs.Int64("bytes", -1, "storage bytes to set (omit to keep current)")
 	msgsFlag := fs.Int64("messages", -1, "message count to set (omit to keep current)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {

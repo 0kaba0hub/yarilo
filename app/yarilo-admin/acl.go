@@ -56,7 +56,7 @@ so admin and live IMAP sessions stay consistent.`)
 func aclList(args []string) error {
 	fs := flag.NewFlagSet("acl list", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -71,7 +71,7 @@ func aclList(args []string) error {
 func aclGet(args []string) error {
 	fs := flag.NewFlagSet("acl get", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -92,7 +92,7 @@ func aclGet(args []string) error {
 func aclSet(args []string) error {
 	fs := flag.NewFlagSet("acl set", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 3 {
@@ -119,7 +119,7 @@ func aclSet(args []string) error {
 func aclDelete(args []string) error {
 	fs := flag.NewFlagSet("acl delete", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -152,7 +152,7 @@ func aclDelete(args []string) error {
 func aclRebuild(args []string) error {
 	fs := flag.NewFlagSet("acl rebuild", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {

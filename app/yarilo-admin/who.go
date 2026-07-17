@@ -35,7 +35,7 @@ func whoList(args []string) error {
 	service := fs.String("protocol", "", "filter by service (imap | pop3 | submission | lmtp); empty = all")
 	user := fs.String("user", "", "filter by user")
 	output := fs.String("output", "table", "table | json")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
@@ -66,7 +66,7 @@ func whoCount(args []string) error {
 	user := fs.String("user", "", "filter by user")
 	by := fs.String("by", "", `breakdown dimension: "" (single total), "protocol", or "user"`)
 	output := fs.String("output", "table", "table | json")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	service := ""

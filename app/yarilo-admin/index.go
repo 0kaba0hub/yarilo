@@ -59,7 +59,7 @@ func indexDump(args []string) error {
 	fs := flag.NewFlagSet("index dump", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
 	limit := fs.Int("limit", 0, "max records to return (0 = all)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -76,7 +76,7 @@ func indexDump(args []string) error {
 func indexRebuild(args []string) error {
 	fs := flag.NewFlagSet("index rebuild", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -93,7 +93,7 @@ func indexRebuildStorage(args []string) error {
 	fs := flag.NewFlagSet("index rebuild-storage", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
 	restore := fs.Bool("restore-orphans", false, "re-file unreferenced messages with an ORIG_MAILBOX tag back into their home folder (default: leave zero-ref for purge)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -109,7 +109,7 @@ func indexRebuildStorage(args []string) error {
 func indexOptimize(args []string) error {
 	fs := flag.NewFlagSet("index optimize", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {

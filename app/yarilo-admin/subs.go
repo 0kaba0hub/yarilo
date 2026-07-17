@@ -37,7 +37,7 @@ concurrent sessions see admin writes immediately.`)
 func subsList(args []string) error {
 	fs := flag.NewFlagSet("subs list", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -60,7 +60,7 @@ func subsRemove(args []string) error {
 func subsMutate(cmd, path string, args []string) error {
 	fs := flag.NewFlagSet("subs "+cmd, flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {

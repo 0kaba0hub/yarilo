@@ -20,7 +20,7 @@ func dispatchDirector(args []string) error {
 	case "map":
 		fs := flag.NewFlagSet("map", flag.ExitOnError)
 		user := fs.String("user", "", "username to look up")
-		fs.Parse(args[1:]) //nolint:errcheck
+		parseFlags(fs, args[1:]) //nolint:errcheck
 		path := "/api/director/map"
 		if *user != "" {
 			path += "?user=" + url.QueryEscape(*user)
@@ -49,7 +49,7 @@ func dispatchBackends(args []string) error {
 		port := fs.Int("port", 0, "backend port (required)")
 		tag := fs.String("tag", "", "backend tag")
 		vhosts := fs.Int("vhosts", 0, "virtual nodes (0 = default 100)")
-		fs.Parse(args[1:]) //nolint:errcheck
+		parseFlags(fs, args[1:]) //nolint:errcheck
 		if fs.NArg() == 0 || *port == 0 {
 			return fmt.Errorf("usage: director backends add <ip> --port PORT [--tag TAG] [--vhosts N]")
 		}
@@ -64,7 +64,7 @@ func dispatchBackends(args []string) error {
 	case "update":
 		fs := flag.NewFlagSet("backends update", flag.ExitOnError)
 		vhosts := fs.Int("vhosts", 0, "virtual nodes")
-		fs.Parse(args[1:]) //nolint:errcheck
+		parseFlags(fs, args[1:]) //nolint:errcheck
 		if fs.NArg() == 0 {
 			return fmt.Errorf("usage: director backends update <ip> --vhosts N")
 		}
@@ -99,7 +99,7 @@ func dispatchUsers(args []string) error {
 		backend := fs.String("backend", "", "target backend as ip:port")
 		backendIP := fs.String("ip", "", "target backend IP")
 		backendPort := fs.Int("port", 0, "target backend port")
-		fs.Parse(args[1:]) //nolint:errcheck
+		parseFlags(fs, args[1:]) //nolint:errcheck
 		if fs.NArg() == 0 {
 			return fmt.Errorf("usage: director users move <user> --backend ip:port")
 		}

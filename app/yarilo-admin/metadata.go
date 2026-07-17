@@ -55,7 +55,7 @@ func metadataList(args []string) error {
 	ns := fs.String("namespace", "personal", "namespace slug")
 	scope := fs.String("scope", "private", "private | shared")
 	asUser := fs.String("as-user", "", "accessing user for shared-folder /private/ slice (defaults to <user>)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -79,7 +79,7 @@ func metadataGet(args []string) error {
 	ns := fs.String("namespace", "personal", "namespace slug")
 	entry := fs.String("entry", "", "entry name (e.g. /private/comment)")
 	asUser := fs.String("as-user", "", "accessing user for shared-folder /private/ slice")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 || *entry == "" {
@@ -105,7 +105,7 @@ func metadataSet(args []string) error {
 	value := fs.String("value", "", "literal value (UTF-8)")
 	valueFile := fs.String("value-file", "", "read value bytes from file (use - for stdin)")
 	asUser := fs.String("as-user", "", "accessing user for shared-folder /private/ slice")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 || *entry == "" {
@@ -141,7 +141,7 @@ func metadataDelete(args []string) error {
 	ns := fs.String("namespace", "personal", "namespace slug")
 	entry := fs.String("entry", "", "entry name")
 	asUser := fs.String("as-user", "", "accessing user for shared-folder /private/ slice")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 || *entry == "" {
