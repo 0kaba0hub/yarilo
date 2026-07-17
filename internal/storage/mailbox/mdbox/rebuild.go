@@ -138,19 +138,23 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 	m, _ := u.openMap() // may be nil if map is unrecoverable; we tolerate that.
 
 	out := make([]mailbox.ScanRecord, 0, len(fileIDs)*4)
+	var firstErr error // first per-file fault; scan is incomplete once this is set
 	for _, fileID := range fileIDs {
 		recs, serr := u.scanMFileAt(paths[fileID])
+		// Always keep whatever this file yielded (the good prefix). Whether the
+		// fault was structural (quarantined tail) or transient I/O, the scan is now
+		// an incomplete view of storage — recorded and surfaced below so a
+		// destructive consumer aborts instead of expunging what we failed to read.
 		if serr != nil {
-			// A corrupt record quarantines its file: keep the good prefix and
-			// carry on. A hard open/stat error skips the file entirely. Either
-			// way one bad m.<N> must not abort the whole storage rebuild.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("m.%d: %w", fileID, serr)
+			}
 			if errors.Is(serr, errScanCorrupt) {
 				slog.Warn("mdbox/scan: quarantined corrupt m.<N>, keeping good prefix",
 					"user", u.username, "file", fileID, "kept", len(recs), "err", serr)
 			} else {
-				slog.Warn("mdbox/scan: skipping unreadable m.<N>",
+				slog.Warn("mdbox/scan: unreadable m.<N> (transient I/O), scan is incomplete",
 					"user", u.username, "file", fileID, "err", serr)
-				continue
 			}
 		}
 		if m != nil {
@@ -161,6 +165,12 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 		for _, r := range recs {
 			out = append(out, r.scan)
 		}
+	}
+	if firstErr != nil {
+		// Partial records ARE returned for a partial-aware consumer, but the error
+		// makes idxrebuild.RebuildFolder / ExpungeMissing abort rather than treat
+		// the unread messages as expunged.
+		return out, fmt.Errorf("%w: %w", ErrScanIncomplete, firstErr)
 	}
 	return out, nil
 }
@@ -290,29 +300,61 @@ func scanMFileForAlt(path string) ([]physRecord, error) {
 	return out, nil
 }
 
-// errScanCorrupt marks a per-record parse failure inside an m.<N> file. Unlike
-// a hard open/stat error it is recoverable at the scan level: the records parsed
-// up to the bad offset are still valid, so scanMFile returns them alongside this
-// sentinel and scanStorage quarantines the file (logs + keeps the good prefix)
-// instead of aborting the whole storage walk.
-var errScanCorrupt = errors.New("mdbox/scan: corrupt record")
+// Scan error sentinels. They are distinguished because they demand different
+// handling from a destructive consumer (a per-folder rebuild that expunges
+// records absent from the scan):
+//
+//   - errScanCorrupt — a STRUCTURAL fault (bad magic, missing LF, unparseable
+//     size, truncation): the bytes are genuinely unreadable. The records parsed
+//     before the bad offset are still valid, so scanMFileAt returns them, but the
+//     tail behind the corruption is lost.
+//   - errScanIO — a TRANSIENT I/O fault (EIO, ESTALE on NFS): the bytes may be
+//     perfectly fine, we just could not read them right now. Treating this as
+//     "the message vanished" would delete live mail, so it must abort, never
+//     quarantine-and-drop.
+//
+// Both bubble up through scanStorage as ErrScanIncomplete so a destructive
+// consumer aborts; the split is preserved in the error chain for diagnostics and
+// for a partial-aware storage-wide rebuild (Phase 2b).
+var (
+	errScanCorrupt = errors.New("mdbox/scan: corrupt record")
+	errScanIO      = errors.New("mdbox/scan: I/O error")
 
-// scanMFile walks one m.<N> file from offset 0 to EOF, parsing each canonical
+	// ErrScanIncomplete signals scanStorage could not faithfully enumerate every
+	// stored message (a file was quarantined or unreadable). The returned records
+	// are a best-effort PARTIAL set. A consumer that expunges index records absent
+	// from the scan (idxrebuild.RebuildFolder / ExpungeMissing) MUST treat this as
+	// a hard failure and abort — otherwise it deletes live mail it merely failed
+	// to read. A partial-aware rebuild may use the records together with this
+	// signal.
+	ErrScanIncomplete = errors.New("mdbox/scan: incomplete scan")
+)
+
+// scanReadErr classifies a seek/read failure: a truncated read
+// (io.EOF/ErrUnexpectedEOF) is structural corruption; anything else (EIO,
+// ESTALE) is transient I/O. The cause is preserved in the chain (double %w).
+func scanReadErr(cause error, where string) error {
+	if errors.Is(cause, io.EOF) || errors.Is(cause, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("%w: %s: %w", errScanCorrupt, where, cause)
+	}
+	return fmt.Errorf("%w: %s: %w", errScanIO, where, cause)
+}
+
+// scanMFileAt walks one m.<N> file from offset 0 to EOF, parsing each canonical
 // dbox v2 record and emitting a scanRecord per message. A corrupt record cannot
 // be skipped past — its size is what tells us where the next record starts — so
 // the walk stops at the first bad record and returns the good prefix together
-// with errScanCorrupt (the file is quarantined, not silently truncated to zero).
-// A hard open/stat error returns a nil slice and a plain error. path may point
-// at a primary or an alt-tier m.<N> file.
+// with the classifying error (errScanCorrupt for structural faults, errScanIO
+// for transient I/O). path may point at a primary or an alt-tier m.<N> file.
 func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open: %w", err)
+		return nil, fmt.Errorf("%w: open: %w", errScanIO, err)
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat: %w", err)
+		return nil, fmt.Errorf("%w: stat: %w", errScanIO, err)
 	}
 	total := uint32(st.Size())
 
@@ -320,13 +362,13 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 	pos := uint32(0)
 	for pos < total {
 		if _, err := f.Seek(int64(pos), io.SeekStart); err != nil {
-			return out, fmt.Errorf("%w: seek %d: %v", errScanCorrupt, pos, err)
+			return out, scanReadErr(err, fmt.Sprintf("seek %d", pos))
 		}
 		// Parse the file-header line (variable length up to LF).
 		headerLine := make([]byte, 64)
 		n, err := f.Read(headerLine)
 		if err != nil {
-			return out, fmt.Errorf("%w: read header line @%d: %v", errScanCorrupt, pos, err)
+			return out, scanReadErr(err, fmt.Sprintf("read header line @%d", pos))
 		}
 		lfIdx := -1
 		for i := 0; i < n; i++ {
@@ -341,18 +383,18 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 		bodyStart := pos + uint32(lfIdx) + 1
 		// Read 32-byte message header.
 		if _, err := f.Seek(int64(bodyStart), io.SeekStart); err != nil {
-			return out, fmt.Errorf("%w: seek msg header @%d: %v", errScanCorrupt, bodyStart, err)
+			return out, scanReadErr(err, fmt.Sprintf("seek msg header @%d", bodyStart))
 		}
 		mh := make([]byte, messageHeaderSize)
 		if _, err := io.ReadFull(f, mh); err != nil {
-			return out, fmt.Errorf("%w: read msg header @%d: %v", errScanCorrupt, bodyStart, err)
+			return out, scanReadErr(err, fmt.Sprintf("read msg header @%d", bodyStart))
 		}
 		if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
 			return out, fmt.Errorf("%w: bad magic @%d", errScanCorrupt, bodyStart)
 		}
 		size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 		if err != nil {
-			return out, fmt.Errorf("%w: parse size @%d: %v", errScanCorrupt, bodyStart, err)
+			return out, fmt.Errorf("%w: parse size @%d: %w", errScanCorrupt, bodyStart, err)
 		}
 		// Skip body, parse metadata trailer to recover GUID + R.
 		bodyEnd := bodyStart + messageHeaderSize + uint32(size)
@@ -366,13 +408,14 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 			},
 			physicalOffset: pos,
 		}
-		// Parse trailer: looks like "\n\x01\x03\nG<hex>\nR<hex>\n...\n\n".
+		// Parse trailer: looks like "\n\x01\x03\nG<hex>\nR<hex>\n...\n\n". A broken
+		// trailer is structural — the record framing is lost from here on.
 		if _, err := f.Seek(int64(bodyEnd), io.SeekStart); err != nil {
-			return out, fmt.Errorf("%w: seek trailer @%d: %v", errScanCorrupt, bodyEnd, err)
+			return out, scanReadErr(err, fmt.Sprintf("seek trailer @%d", bodyEnd))
 		}
 		trailerEnd, parsed, err := scanTrailer(f, total-bodyEnd)
 		if err != nil {
-			return out, fmt.Errorf("%w: trailer @%d: %v", errScanCorrupt, bodyEnd, err)
+			return out, fmt.Errorf("%w: trailer @%d: %w", errScanCorrupt, bodyEnd, err)
 		}
 		rec.scan.GUID = parsed.guid
 		rec.scan.InternalDate = parsed.internalDate

@@ -505,6 +505,15 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 	if !ok {
 		// The folder index references a map_uid the map no longer carries — the
 		// map and the fileindex have diverged, which is corruption.
+		//
+		// Benign race caveat: a stale session may FETCH a UID that a concurrent
+		// purge just dropped (Remove only decrements the refcount; purge later
+		// physically removes the zero-ref map record). That surfaces here as a
+		// map miss too. It is rare and self-limiting — the marker is only
+		// persisted for drivers with a reactive healer (mailbox.CanReactiveHeal),
+		// and mdbox has none until #594 Phase 2b, so it cannot yet produce a false
+		// FSCKD on a healthy folder. Phase 2b must reconcile against the purge log
+		// before acting on this signal.
 		return nil, fmt.Errorf("mdbox/fetch: map_uid %d not found: %w", mapUID, mailbox.ErrCorruptStorage)
 	}
 
@@ -607,10 +616,15 @@ func (u *userMailbox) List(_ string) ([]*mailbox.MessageMeta, error) { return ni
 // folder owns each map_uid. Caller (admin rebuild) pairs this
 // output with per-folder records to rebuild state.
 //
-// See rebuild.go (scanStorage / scanMFile) for implementation.
+// See rebuild.go (scanStorage / scanMFileAt) for implementation.
 func (u *userMailbox) Scan(_ string) ([]mailbox.ScanRecord, error) {
 	return u.scanStorage()
 }
+
+// FolderAgnosticScan reports that mdbox Scan is storage-wide, so the per-folder
+// rebuild path must reject it (see mailbox.FolderAgnosticStorage). The correct
+// storage-wide rebuild lands in #594 Phase 2b.
+func (u *userMailbox) FolderAgnosticScan() bool { return true }
 
 // Close releases the cached map handle.
 func (u *userMailbox) Close() error {

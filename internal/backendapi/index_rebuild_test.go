@@ -109,9 +109,12 @@ func TestRebuildPreservesUIDsForKnownFilenames(t *testing.T) {
 	}
 }
 
-// TestRebuildMdboxWorks confirms the mdbox rebuild path now
-// succeeds — Phase 6 wired UserMailbox.Scan for mdbox.
-func TestRebuildMdboxWorks(t *testing.T) {
+// TestRebuildMdboxRejected verifies the per-folder rebuild refuses mdbox: its
+// scan is storage-wide (folder-agnostic), so running RebuildFolder would import
+// every stored message into the target folder with fresh UIDs. The endpoint must
+// return 501 until the storage-wide rebuild lands (#594 Phase 2b), never fall
+// through to the destructive per-folder path.
+func TestRebuildMdboxRejected(t *testing.T) {
 	ts, _ := storageTestServerMdbox(t)
 	const user = "alice@example.com"
 
@@ -121,8 +124,8 @@ func TestRebuildMdboxWorks(t *testing.T) {
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/index/rebuild", "",
 		map[string]any{"user": user, "folder": "INBOX"})
-	if status != http.StatusOK {
-		t.Fatalf("status=%d want 200; body=%s", status, body)
+	if status != http.StatusNotImplemented {
+		t.Fatalf("status=%d want 501; body=%s", status, body)
 	}
 }
 

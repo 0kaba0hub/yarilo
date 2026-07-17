@@ -962,7 +962,7 @@ func (s *session) cmdList(arg string) {
 func (s *session) fetchINBOX(m *mailbox.MessageMeta) (io.ReadCloser, error) {
 	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
 	if err != nil {
-		mailbox.MarkCorruptOnFetchErr(s.idx, "INBOX", err)
+		mailbox.MarkCorruptOnFetchErr(s.box, s.idx, "INBOX", err)
 	}
 	return rc, err
 }

@@ -108,8 +108,13 @@ func TestScanQuarantinesCorruptTail(t *testing.T) {
 	_ = f.Close()
 
 	recs, err := u.scanStorage()
-	if err != nil {
-		t.Fatalf("scanStorage aborted on quarantine: %v", err)
+	// The good prefix survives AND the scan is reported incomplete so a
+	// destructive consumer aborts rather than expunging the unread tail.
+	if !errors.Is(err, ErrScanIncomplete) {
+		t.Fatalf("got err %v, want ErrScanIncomplete", err)
+	}
+	if !errors.Is(err, errScanCorrupt) {
+		t.Fatalf("incomplete cause should chain errScanCorrupt, got %v", err)
 	}
 	if len(recs) != 1 {
 		t.Fatalf("kept %d records, want 1 (good prefix before corruption)", len(recs))
@@ -129,11 +134,34 @@ func TestScanFullyCorruptFileIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	recs, err := u.scanStorage()
-	if err != nil {
-		t.Fatalf("scanStorage aborted: %v", err)
+	if !errors.Is(err, ErrScanIncomplete) {
+		t.Fatalf("got err %v, want ErrScanIncomplete", err)
 	}
 	if len(recs) != 0 {
 		t.Fatalf("got %d records from a fully-corrupt file, want 0", len(recs))
+	}
+}
+
+// TestScanReadErrClassifies verifies a truncated read is structural corruption
+// while any other read failure (EIO/ESTALE) is transient I/O — the split that
+// keeps a flaky disk from being mistaken for vanished mail.
+func TestScanReadErrClassifies(t *testing.T) {
+	if err := scanReadErr(io.ErrUnexpectedEOF, "body"); !errors.Is(err, errScanCorrupt) || errors.Is(err, errScanIO) {
+		t.Errorf("truncation: got %v, want errScanCorrupt (not errScanIO)", err)
+	}
+	if err := scanReadErr(errors.New("input/output error"), "body"); !errors.Is(err, errScanIO) || errors.Is(err, errScanCorrupt) {
+		t.Errorf("EIO: got %v, want errScanIO (not errScanCorrupt)", err)
+	}
+}
+
+// TestMdboxIsFolderAgnostic pins the contract the operator rebuild endpoint
+// relies on to reject mdbox: its scan is storage-wide, so a per-folder rebuild
+// is unsafe.
+func TestMdboxIsFolderAgnostic(t *testing.T) {
+	u := openTestUserMailbox(t, filepath.Join(t.TempDir(), "home"))
+	fa, ok := mailbox.UserMailbox(u).(mailbox.FolderAgnosticStorage)
+	if !ok || !fa.FolderAgnosticScan() {
+		t.Fatalf("mdbox must satisfy FolderAgnosticStorage and report true (ok=%v)", ok)
 	}
 }
 
