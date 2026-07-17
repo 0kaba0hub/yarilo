@@ -930,7 +930,10 @@ func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.U
 	// Stamp the per-user driver + any embedded INDEX=/CONTROL=/ALT=/VOLATILEDIR=
 	// modifiers via the shared resolver (the separate userdb dir fields set above
 	// win). Same parse IMAP/POP3 use, so LMTP and quota-status resolve identically.
-	mailbox.StampLocation(mbi, ui.MailLocation)
+	if err := mailbox.StampLocation(mbi, ui.MailLocation); err != nil {
+		slog.Warn("backend: mail_location parse failed; using global mailbox backend",
+			"user", username, "mail_location", ui.MailLocation, "err", err)
+	}
 	return mbi
 }
 

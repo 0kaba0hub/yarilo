@@ -964,18 +964,15 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	}
 
 	// Stamp the per-user driver + INDEX=/CONTROL=/ALT=/VOLATILEDIR= modifiers via
-	// the shared resolver (the same parse POP3 and LMTP use — one implementation,
-	// one gating rule), so the fileindex and ACL pick the matching per-folder
-	// layout. Select the per-user mailbox backend when the driver is recognised;
-	// personalMailbox stays nil for the global driver, so dispatch falls through
-	// to the global backend. An unknown/malformed mail_location logs a warning
-	// and leaves the user on the global backend.
-	mailbox.StampLocation(userInfo, res.MailLoc)
-	if userInfo.Driver != "" {
-		if f := s.srv.opts.MailboxByDriver; f != nil {
-			s.personalMailbox = f(userInfo.Driver)
-		}
+	// the shared resolver (the same parse POP3 and LMTP use), so the fileindex
+	// and ACL pick the matching per-folder layout. personalMailbox stays nil for
+	// the global driver (SelectPersonalBackend given a nil global), so dispatch
+	// falls through to the global backend.
+	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
+		slog.Warn("imap: mail_location parse failed; using global mailbox backend",
+			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)
 	}
+	s.personalMailbox = mailbox.SelectPersonalBackend(nil, s.srv.opts.MailboxByDriver, userInfo.Driver)
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())

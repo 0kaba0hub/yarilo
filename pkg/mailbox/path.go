@@ -406,6 +406,32 @@ type Location struct {
 // user context, e.g. system-wide shared/public namespaces, pass nil and
 // ship literal absolute paths). Unknown options are silently ignored for
 // forward compatibility.
+// recognisedDriver reports whether name is a storage driver yarilo knows.
+func recognisedDriver(name string) bool {
+	switch name {
+	case "maildir", "sdbox", "dbox", "mdbox":
+		return true
+	default:
+		return false
+	}
+}
+
+// LocationDriver returns the lowercased storage driver named by a mail_location
+// ("mdbox:~/mdbox" → "mdbox") when it is a recognised driver, or "" otherwise.
+// Unlike ParseLocation it does not require a path, so it accepts the bare
+// "driver:" form whose path is derived from the user's home.
+func LocationDriver(loc string) string {
+	idx := strings.IndexByte(strings.TrimSpace(loc), ':')
+	if idx <= 0 {
+		return ""
+	}
+	driver := strings.ToLower(strings.TrimSpace(loc)[:idx])
+	if !recognisedDriver(driver) {
+		return ""
+	}
+	return driver
+}
+
 func ParseLocation(loc string, ui *UserInfo) (Location, bool, error) {
 	loc = strings.TrimSpace(loc)
 	if loc == "" {
@@ -416,10 +442,7 @@ func ParseLocation(loc string, ui *UserInfo) (Location, bool, error) {
 		return Location{}, false, fmt.Errorf("mailbox: location %q must be \"driver:path\"", loc)
 	}
 	driver := strings.ToLower(loc[:idx])
-	switch driver {
-	case "maildir", "sdbox", "dbox", "mdbox":
-		// recognised
-	default:
+	if !recognisedDriver(driver) {
 		return Location{}, false, fmt.Errorf("mailbox: unknown storage driver %q in %q", driver, loc)
 	}
 

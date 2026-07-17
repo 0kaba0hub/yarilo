@@ -636,7 +636,11 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	// per-folder layout, and select the per-user mailbox backend when the driver
 	// differs from the global default. Without this POP3 opens every user
 	// through the global (maildir) backend and reports 0 messages for dbox users.
-	personalBox := mailbox.ResolvePersonalStorage(s.srv.opts.Mailbox, s.srv.opts.MailboxByDriver, res.MailLoc, userInfo)
+	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
+		slog.Warn("pop3: mail_location parse failed; using global mailbox backend",
+			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)
+	}
+	personalBox := mailbox.SelectPersonalBackend(s.srv.opts.Mailbox, s.srv.opts.MailboxByDriver, userInfo.Driver)
 	box := personalBox.OpenUser(userInfo)
 	idx := s.srv.opts.Index.OpenUser(userInfo)
 
