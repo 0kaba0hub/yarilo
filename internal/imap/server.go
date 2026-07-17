@@ -206,6 +206,12 @@ type Options struct {
 	// second MUA appear without an operator rebuild. Index-authoritative
 	// drivers (dbox) ignore it — they do not implement ProactiveScan.
 	MaildirSyncOnSelect bool
+
+	// DboxReactiveRebuild enables the sdbox/mdbox reactive auto-rebuild: when a
+	// read hits a missing/corrupt message the folder is flagged, and the next
+	// SELECT rebuilds its index from storage. Default true. Maildir ignores it
+	// (it reconciles proactively via MaildirSyncOnSelect instead).
+	DboxReactiveRebuild bool
 }
 
 // NamespaceSpec is the per-namespace data the IMAP server needs to
@@ -1093,6 +1099,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	}
 	slog.Debug("imap: select timing open_ms", "folder", rel, "open_ms", time.Since(tOpen).Milliseconds())
 	if refreshed := s.maildirSyncOnSelect(h, rel, f); refreshed != nil {
+		f = refreshed
+	}
+	if refreshed := s.dboxRebuildIfCorrupt(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
 	s.folder = f
@@ -2239,7 +2248,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		}
 		var rawMsg []byte
 		if needRaw && m.Filename != "" {
-			if rc, err := s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier); err == nil {
+			if rc, err := s.fetchSelected(m); err == nil {
 				rawMsg, _ = io.ReadAll(rc)
 				rc.Close()
 			}
@@ -2340,7 +2349,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 				}
 				var raw []byte
 				if needRaw && m.Filename != "" {
-					if rc, err := s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier); err == nil {
+					if rc, err := s.fetchSelected(m); err == nil {
 						raw, _ = io.ReadAll(rc)
 						rc.Close()
 					}
@@ -2400,7 +2409,6 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		return err
 	}
 	idx := s.folderIdx()
-	box := s.folderBox()
 	backendMsgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return err
@@ -2531,14 +2539,14 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteThreadID("") // no threading -> NIL
 		}
 		if opts.Envelope && m.Filename != "" {
-			if rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier); ferr == nil {
+			if rc, ferr := s.fetchSelected(m); ferr == nil {
 				hdr, _ := textproto.ReadHeader(bufio.NewReader(rc))
 				rc.Close()
 				mw.WriteEnvelope(imapserver.ExtractEnvelope(hdr))
 			}
 		}
 		if opts.BodyStructure != nil && m.Filename != "" {
-			if rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier); ferr == nil {
+			if rc, ferr := s.fetchSelected(m); ferr == nil {
 				bs := imapserver.ExtractBodyStructure(rc)
 				rc.Close()
 				mw.WriteBodyStructure(bs)
@@ -2556,7 +2564,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				}
 				break
 			}
-			rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier)
+			rc, ferr := s.fetchSelected(m)
 			if ferr != nil {
 				if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
 					section.Specifier == imaplib.PartSpecifierNone && len(section.Part) == 0 {
@@ -2607,7 +2615,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier)
+			rc, ferr := s.fetchSelected(m)
 			if ferr != nil {
 				break
 			}
@@ -2625,7 +2633,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if m.Filename == "" {
 				break
 			}
-			rc, ferr := box.Fetch(s.folder.Name, m.Filename, m.AltTier)
+			rc, ferr := s.fetchSelected(m)
 			if ferr != nil {
 				break
 			}

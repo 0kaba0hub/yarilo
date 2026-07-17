@@ -174,6 +174,14 @@ func (h *userHandle) UpdateFlags(folderID uint64, uid uint32, flags, keywords []
 func (h *userHandle) UpdateFilename(folderID uint64, uid uint32, filename string) error {
 	return h.ui.UpdateFilename(folderID, uid, filename)
 }
+
+func (h *userHandle) MarkFolderCorrupt(folderID uint64) error {
+	return h.ui.MarkFolderCorrupt(folderID)
+}
+
+func (h *userHandle) ClearFolderCorrupt(folderID uint64) error {
+	return h.ui.ClearFolderCorrupt(folderID)
+}
 func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
 	return h.ui.UpdateFlagsMulti(folderID, updates)
 }

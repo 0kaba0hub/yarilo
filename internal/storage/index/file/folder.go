@@ -306,6 +306,7 @@ func (fs *folderState) snapshot(id uint64) (*mailbox.Folder, error) {
 		Unseen:        unseen,
 		HighestModSeq: highest,
 		GUID:          fs.hdr.MailboxGUID,
+		Fsckd:         fs.file.Header.Flags&mailindex.HdrFlagFsckd != 0,
 	}, nil
 }
 
@@ -805,6 +806,31 @@ func (u *userIndex) UpdateFilename(folderID uint64, uid uint32, filename string)
 		}
 		fs.filenames[uid] = filename
 		return fs.appendName(uid, filename, fs.sizes[uid])
+	})
+}
+
+// MarkFolderCorrupt persists the FSCKD header flag so the next open triggers a
+// reactive rebuild. The flag lives at header offset 20; we set it in memory and
+// append a TxTypeHeaderUpdate so another process picks it up from the log.
+// Idempotent — a no-op when the flag is already set.
+func (u *userIndex) MarkFolderCorrupt(folderID uint64) error {
+	return u.withFolder(folderID, func(fs *folderState) error {
+		if fs.file.Header.Flags&mailindex.HdrFlagFsckd != 0 {
+			return nil
+		}
+		fs.file.Header.Flags |= mailindex.HdrFlagFsckd
+		return fs.appendMutLog(encU32Update(20, uint32(fs.file.Header.Flags)))
+	})
+}
+
+// ClearFolderCorrupt clears the FSCKD marker after a successful rebuild.
+func (u *userIndex) ClearFolderCorrupt(folderID uint64) error {
+	return u.withFolder(folderID, func(fs *folderState) error {
+		if fs.file.Header.Flags&mailindex.HdrFlagFsckd == 0 {
+			return nil
+		}
+		fs.file.Header.Flags &^= mailindex.HdrFlagFsckd
+		return fs.appendMutLog(encU32Update(20, uint32(fs.file.Header.Flags)))
 	})
 }
 
@@ -1572,6 +1598,8 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 				if size == 4 {
 					v := le.Uint32(data)
 					switch offset {
+					case 20:
+						fs.file.Header.Flags = mailindex.HeaderFlag(v)
 					case 28:
 						fs.file.Header.NextUID = v
 					case 32:

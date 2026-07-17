@@ -2,9 +2,18 @@ package mailbox
 
 import (
 	"encoding/hex"
+	"errors"
 	"io"
 	"time"
 )
+
+// ErrCorruptStorage is returned (wrapped) by a mailbox driver's read path when a
+// message's backing storage is missing, truncated or malformed — as opposed to a
+// transient I/O error. It is the reactive-rebuild trigger: a caller that reads a
+// message and sees this via errors.Is marks the folder corrupt so the next open
+// rebuilds the index from storage. Transient errors (EIO, timeouts) must NOT be
+// wrapped with it, so a flaky disk does not trigger a mass index reset.
+var ErrCorruptStorage = errors.New("mailbox: corrupt message storage")
 
 // FormatObjectID renders a 16-byte GUID as the RFC 8474 object identifier used
 // for IMAP MAILBOXID / EMAILID (OBJECTID): 32 lowercase hex characters, the
@@ -46,6 +55,11 @@ type Folder struct {
 	// for per-folder metadata in pkg/dict (RFC 5464 METADATA) and as
 	// the rename-stable handle for ACL state, quota counters, etc.
 	GUID [16]byte
+	// Fsckd is true when the folder index carries the persisted FSCKD marker —
+	// a dbox driver detected a missing/corrupt message and flagged the index
+	// for a rebuild on the next open. The session runs the reactive rebuild and
+	// clears the marker.
+	Fsckd bool
 }
 
 // SeqSet is a set of UIDs or sequence numbers (use UID=0 for seq).
@@ -206,6 +220,13 @@ type UserIndex interface {
 	// trailer); the message keeps its identity but must be reachable at its new
 	// name. No-op when uid is unknown.
 	UpdateFilename(folderID uint64, uid uint32, filename string) error
+	// MarkFolderCorrupt persists the FSCKD marker so the next open of folderID
+	// triggers a reactive index rebuild. Called when a dbox driver read hits a
+	// missing or corrupt message. Idempotent.
+	MarkFolderCorrupt(folderID uint64) error
+	// ClearFolderCorrupt clears the FSCKD marker and bumps the rebuild
+	// generation counter. Called after a successful reactive rebuild.
+	ClearFolderCorrupt(folderID uint64) error
 	// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a
 	// single lock/reload/flush cycle. Returns the new modseq per UID.
 	UpdateFlagsMulti(folderID uint64, updates map[uint32]FlagsUpdate) (map[uint32]uint64, error)

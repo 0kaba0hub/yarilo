@@ -5,12 +5,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/storage/idxrebuild"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // rebuildRequest is the wire body for /api/backend/index/rebuild.
@@ -90,91 +89,29 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 		defer func() { _ = s.opts.Locker.Unlock(context.Background(), lk.ID) }()
 	}
 
-	scanned, scanErr := bundle.box.Scan(req.Folder)
-	if scanErr != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(scanErr.Error(), "not yet implemented") {
-			status = http.StatusNotImplemented
-		}
-		return nil, status, fmt.Errorf("scan: %w", scanErr)
-	}
-
 	folder, err := bundle.idx.OpenFolder(req.Folder, 0)
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("open folder: %w", err)
 	}
-	existing, err := bundle.idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
-	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("get messages: %w", err)
-	}
 
-	byFilename := make(map[string]*mailbox.MessageMeta, len(existing))
-	for _, m := range existing {
-		if m.Filename != "" {
-			byFilename[m.Filename] = m
+	rstats, err := idxrebuild.RebuildFolder(bundle.box, bundle.idx, folder)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not yet implemented") {
+			status = http.StatusNotImplemented
 		}
+		return nil, status, err
 	}
 
 	stats := &rebuildStats{
-		Folder:     folder.Name,
-		FolderGUID: hex.EncodeToString(folder.GUID[:]),
+		Folder:         folder.Name,
+		FolderGUID:     hex.EncodeToString(folder.GUID[:]),
+		Scanned:        rstats.Scanned,
+		UIDsPreserved:  rstats.UIDsPreserved,
+		UIDsAssigned:   rstats.UIDsAssigned,
+		OrphansDropped: rstats.OrphansDropped,
+		DurationMs:     time.Since(start).Milliseconds(),
 	}
-	stats.Scanned = len(scanned)
-
-	nextUID := folder.NextUID
-	if nextUID == 0 {
-		nextUID = 1
-	}
-	rebuilt := make([]*mailbox.MessageMeta, 0, len(scanned))
-	for i := range scanned {
-		rec := &scanned[i]
-		if rec.Filename == "" {
-			stats.OrphansDropped++
-			continue
-		}
-		newMeta := &mailbox.MessageMeta{
-			Filename:     rec.Filename,
-			Size:         rec.Size,
-			VSize:        rec.VSize,
-			InternalDate: rec.InternalDate,
-			GUID:         rec.GUID,
-		}
-		if old, ok := byFilename[rec.Filename]; ok {
-			newMeta.UID = old.UID
-			// Driver-provided flags (maildir) win since the filename
-			// trailer is the source of truth there; dbox returns empty
-			// so the index keeps its prior flag set unchanged.
-			if len(rec.Flags) > 0 {
-				newMeta.Flags = rec.Flags
-				newMeta.Keywords = nil
-			} else {
-				newMeta.Flags = old.Flags
-				newMeta.Keywords = old.Keywords
-			}
-			// Preserve GUID when the driver did not stamp one (maildir).
-			var zero [16]byte
-			if newMeta.GUID == zero {
-				newMeta.GUID = old.GUID
-			}
-			stats.UIDsPreserved++
-		} else {
-			newMeta.UID = nextUID
-			nextUID++
-			newMeta.Flags = rec.Flags
-			stats.UIDsAssigned++
-		}
-		rebuilt = append(rebuilt, newMeta)
-	}
-
-	// Deterministic on-disk order so two consecutive rebuilds with the
-	// same input produce byte-identical .index files (helps diff-based
-	// integrity checks across replicas).
-	sort.Slice(rebuilt, func(i, j int) bool { return rebuilt[i].UID < rebuilt[j].UID })
-
-	if err := bundle.idx.ResetFolder(folder.ID, rebuilt); err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("reset folder: %w", err)
-	}
-	stats.DurationMs = time.Since(start).Milliseconds()
 	return stats, http.StatusOK, nil
 }
 

@@ -18,6 +18,7 @@ storage:
   mail_home_template: "%d/%u"
   index: fileindex
   ## maildir_sync_on_select: true          # reconcile the index with cur/ and new/ on SELECT so MDA/second-MUA deliveries appear without a rebuild (maildir only)
+  ## dbox_reactive_rebuild: true           # sdbox/mdbox: on a missing/corrupt message read, flag the folder and auto-rebuild its index on the next open (dbox only)
   ## mail_path: ""                            # mail storage root (empty = same as home); supports ~/ and %u/%d/%n/%h
   ## mail_inbox_path: ""                      # INBOX override path (empty = mail_path); supports ~/ and %u/%d/%n/%h
   ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
