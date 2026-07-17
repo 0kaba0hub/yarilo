@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -684,7 +685,10 @@ func buildDboxRecord(body []byte, guid [16]byte, origMailbox string) []byte {
 	fmt.Fprintf(&buf, "R%x\n", now)
 	fmt.Fprintf(&buf, "V%x\n", uint32(size))
 	// Original mailbox (append-only; skipped by readers that don't know the key).
-	// A folder name never contains a newline, so line framing is safe.
+	// A folder name never contains a newline, so line framing is safe. Format
+	// limitation: an empty origMailbox is written as "no tag" (key omitted) and is
+	// therefore indistinguishable from a pre-key record — acceptable because no
+	// Save path ever passes an empty folder name.
 	if origMailbox != "" {
 		fmt.Fprintf(&buf, "%c%s\n", metaOrigMailbox, origMailbox)
 	}
@@ -772,8 +776,15 @@ func readRecordBodyAndTrailer(f *os.File, offset uint32) (body []byte, guid [16]
 	if _, err = io.ReadFull(f, body); err != nil {
 		return nil, guid, "", fmt.Errorf("read body: %w", err)
 	}
-	// File position is now at the start of the trailer — parse it.
-	_, parsed, _ := scanTrailer(f, 4096)
+	// File position is now at the start of the trailer — parse it. A parse error
+	// on a compaction read means the destination copy silently loses its GUID and
+	// orig-mailbox (so a future orphan of this message could never be restored) —
+	// log it loudly rather than swallow it.
+	_, parsed, terr := scanTrailer(f, 4096)
+	if terr != nil {
+		slog.Warn("mdbox: trailer parse failed during compaction; GUID/orig-mailbox lost for this copy",
+			"file", f.Name(), "offset", offset, "err", terr)
+	}
 	return body, parsed.guid, parsed.origMailbox, nil
 }
 

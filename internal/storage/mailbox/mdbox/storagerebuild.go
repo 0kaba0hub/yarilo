@@ -62,14 +62,19 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 // folder append is counted by the phase-2 re-read, so its refcount stays >0.
 //
 // QUIESCENCE REQUIRED. This is an operator repair tool (Dovecot force-resync
-// parity) and must run with delivery to this user quiesced. The delivery path
-// takes the map lock only for box.Save, not for the subsequent folder append, so
-// a delivery whose box.Save committed just before this rebuild took the lock and
-// whose folder append lands after that folder's phase-2 count would have its
-// refcount recomputed to 0 while a folder references it — a later purge could
-// then reclaim live mail. The window is small and the phase-2 re-read shrinks it,
-// but it is not eliminated here; fully closing it needs the delivery folder-append
-// to serialise on the map lock too (a separate hardening of the delivery path).
+// parity) and must run with the user's mailboxes quiesced — no concurrent
+// delivery AND no concurrent folder operations (CREATE/DELETE/RENAME). The
+// rebuild holds only the storage (map) lock, not each folder's mailbox lock, so:
+//   - a delivery whose box.Save committed just before this rebuild took the lock
+//     and whose folder append lands after that folder's phase-2 count would have
+//     its refcount recomputed to 0 while a folder references it — a later purge
+//     could then reclaim live mail; and
+//   - with --restore-orphans, a concurrent DELETE of an orphan's ORIG_MAILBOX
+//     folder can race openOrCreateFolder.
+//
+// The windows are small (the phase-2 re-read shrinks the delivery one) but not
+// eliminated here; fully closing them needs the delivery folder-append (and the
+// restore) to serialise on the map lock too — a separate hardening.
 //
 // modseq/QRESYNC: ResetFolder stamps a fresh modseq on every surviving record
 // (a modseq storm for QRESYNC clients) and loses VANISHED fidelity for dropped
@@ -238,6 +243,10 @@ func (u *userMailbox) restoreTaggedOrphans(idx mailbox.UserIndex, present map[st
 		if oerr != nil {
 			return restored, oerr
 		}
+		// Accepted parity gap: a restored orphan comes back with default flags
+		// (unseen, no keywords). Flags live in the fileindex, and an orphan is by
+		// definition a message no index references, so there is no surviving source
+		// for them — the storage trailer carries no flags. Documented in README.
 		nm := &mailbox.MessageMeta{
 			Filename:     fn,
 			Size:         rec.Size,
@@ -261,7 +270,13 @@ func (u *userMailbox) openOrCreateFolder(idx mailbox.UserIndex, name string, cac
 	if f, ok := cache[name]; ok {
 		return f, nil
 	}
-	if exists, err := u.FolderExists(name); err == nil && !exists {
+	exists, err := u.FolderExists(name)
+	if err != nil {
+		// Surface a transient stat failure (EIO/NFS) rather than mistaking it for
+		// "absent" and later failing with a misleading "folder does not exist".
+		return nil, fmt.Errorf("mdbox/rebuild: stat restore target %q: %w", name, err)
+	}
+	if !exists {
 		if cerr := u.Create(name); cerr != nil {
 			return nil, fmt.Errorf("mdbox/rebuild: create restore target %q: %w", name, cerr)
 		}

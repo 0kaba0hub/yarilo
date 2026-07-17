@@ -187,9 +187,9 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	note := "run with delivery to this user quiesced (operator repair tool). Unreferenced messages are set zero-ref for the next purge; orphan restore requires restore_orphans=true AND an ORIG_MAILBOX tag"
+	note := "run with the user's mailboxes quiesced — no concurrent delivery or folder ops (operator repair tool). Unreferenced messages are set zero-ref for the next purge; orphan restore requires restore_orphans=true AND an ORIG_MAILBOX tag"
 	if req.RestoreOrphans {
-		note = "restore_orphans=true: unreferenced messages with an ORIG_MAILBOX tag were re-filed into their home folder; the rest are zero-ref for purge. Run with delivery quiesced"
+		note = "restore_orphans=true: unreferenced messages with an ORIG_MAILBOX tag were re-filed into their home folder (default flags — flags are not recoverable for an orphan); the rest are zero-ref for purge. Run with the user's mailboxes quiesced"
 	}
 	apiJSON(w, storageRebuildStats{
 		Scanned:             st.Scanned,
