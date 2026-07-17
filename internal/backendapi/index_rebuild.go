@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/storage/idxrebuild"
@@ -74,6 +73,15 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 		return nil, http.StatusNotFound, errFolderNotFound
 	}
 
+	// A folder-agnostic driver (mdbox) has a storage-wide Scan: running the
+	// per-folder rebuild would import every stored message into this folder with
+	// fresh UIDs (cross-folder pollution + duplicates). Reject until the
+	// storage-wide rebuild lands (#594 Phase 2b) — never fall through to
+	// RebuildFolder.
+	if fa, ok := bundle.box.(mailbox.FolderAgnosticStorage); ok && fa.FolderAgnosticScan() {
+		return nil, http.StatusNotImplemented, errMdboxRebuildUnsupported
+	}
+
 	start := time.Now()
 
 	// Cross-process lock so concurrent IMAP writers cannot race the
@@ -95,13 +103,11 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 		return nil, http.StatusInternalServerError, fmt.Errorf("open folder: %w", err)
 	}
 
+	// Folder-agnostic drivers were rejected above, so any error here is a genuine
+	// rebuild failure — no "not yet implemented" special-casing.
 	rstats, err := idxrebuild.RebuildFolder(bundle.box, bundle.idx, folder)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "not yet implemented") {
-			status = http.StatusNotImplemented
-		}
-		return nil, status, err
+		return nil, http.StatusInternalServerError, err
 	}
 
 	// An operator rebuild is a superset of the reactive heal, so drop any FSCKD

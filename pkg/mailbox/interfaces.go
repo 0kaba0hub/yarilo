@@ -29,14 +29,47 @@ type CorruptionMarker interface {
 	ClearFolderCorrupt(folderID uint64) error
 }
 
+// ReactiveHealer is an index-authoritative driver that can self-heal a folder
+// whose index references missing/corrupt storage. Only such drivers should ever
+// have a folder flagged FSCKD: marking a driver that cannot heal (mdbox until
+// #594 Phase 2b) would strand the folder corrupt forever with nothing to clear
+// the marker.
+type ReactiveHealer interface {
+	HealCorruptFolder(idx UserIndex, folder *Folder) (int, error)
+}
+
+// CanReactiveHeal reports whether box can self-heal corruption. The corruption
+// marker must be gated on this: flag only what something will later clear.
+func CanReactiveHeal(box any) bool {
+	_, ok := box.(ReactiveHealer)
+	return ok
+}
+
+// FolderAgnosticStorage marks a driver whose Scan enumerates storage-wide (not
+// per-folder) records — mdbox, where messages are shared across folders through
+// the map. A per-folder rebuild (idxrebuild.RebuildFolder) is unsafe for such a
+// driver: it would import every stored message into the target folder with fresh
+// UIDs. These drivers need a dedicated storage-wide rebuild; the operator
+// per-folder endpoint must reject them.
+type FolderAgnosticStorage interface {
+	FolderAgnosticScan() bool
+}
+
 // MarkCorruptOnFetchErr flags folder for a reactive heal when err reports
 // corrupt storage (ErrCorruptStorage). It resolves the folder ID via idx and
 // records the marker if idx supports it — a no-op otherwise. Shared by the read
 // paths of every protocol (IMAP, POP3, ManageSieve/imapsieve, FTS) so an
 // sdbox mailbox self-heals no matter which protocol first trips over the bad
 // message. Best-effort: any resolution/marking error is swallowed.
-func MarkCorruptOnFetchErr(idx UserIndex, folder string, err error) {
+//
+// box is the driver that produced err: the marker is only persisted when the
+// driver can actually heal it (CanReactiveHeal), so a driver without a reactive
+// rebuilder never leaves a folder stuck FSCKD.
+func MarkCorruptOnFetchErr(box any, idx UserIndex, folder string, err error) {
 	if err == nil || !errors.Is(err, ErrCorruptStorage) {
+		return
+	}
+	if !CanReactiveHeal(box) {
 		return
 	}
 	cm, ok := idx.(CorruptionMarker)

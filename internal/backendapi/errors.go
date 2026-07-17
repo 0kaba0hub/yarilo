@@ -13,4 +13,10 @@ var (
 	errUserRequired   = errors.New("user required")
 	errAttrRequired   = errors.New("attr required")
 	errEntryRequired  = errors.New("entry required")
+
+	// errMdboxRebuildUnsupported is returned (501) when the per-folder rebuild is
+	// asked to rebuild a folder-agnostic (mdbox) mailbox: its storage-wide scan
+	// makes per-folder rebuild unsafe. The storage-wide rebuild lands in #594
+	// Phase 2b.
+	errMdboxRebuildUnsupported = errors.New("mdbox per-folder rebuild unsupported (storage-wide scan); storage-wide rebuild lands in #594 Phase 2b")
 )

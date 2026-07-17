@@ -53,7 +53,12 @@ func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, fold
 func (s *session) fetchSelected(m *mailbox.MessageMeta) (rc io.ReadCloser, err error) {
 	rc, err = s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier)
 	if err != nil {
-		s.flagCorruptOnRead(s.folderIdx(), s.folder.ID, s.folder.Name, m.Filename, m.UID, err)
+		// Only flag corruption a driver can actually heal: a driver without a
+		// reactive rebuilder (mdbox until #594 Phase 2b) would otherwise be left
+		// stuck FSCKD with nothing to clear the marker.
+		if mailbox.CanReactiveHeal(s.folderBox()) {
+			s.flagCorruptOnRead(s.folderIdx(), s.folder.ID, s.folder.Name, m.Filename, m.UID, err)
+		}
 	}
 	return rc, err
 }
