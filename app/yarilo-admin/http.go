@@ -46,7 +46,7 @@ func backendAPIStream(path string, body any) (io.ReadCloser, error) {
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(resp.Body)
 		resp.Body.Close() //nolint:errcheck
-		return nil, fmt.Errorf("HTTP %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return nil, apiError(resp, data)
 	}
 	return resp.Body, nil
 }
@@ -62,9 +62,27 @@ func doRequest(baseURL, token, method, path string, body any) ([]byte, error) {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return nil, apiError(resp, data)
 	}
 	return data, nil
+}
+
+// apiError turns a >=400 response into a clean operator-facing error. When the
+// body is the JSON {"error": "..."} envelope the handlers emit, only that
+// message is surfaced (e.g. "not a configured quota_clone backend: metadata")
+// rather than the raw "HTTP 400 Bad Request: {...}". Non-JSON or empty bodies
+// fall back to the HTTP status line so an unexpected response is still diagnosable.
+func apiError(resp *http.Response, body []byte) error {
+	var env struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &env) == nil && env.Error != "" {
+		return fmt.Errorf("%s", env.Error)
+	}
+	if msg := strings.TrimSpace(string(body)); msg != "" {
+		return fmt.Errorf("HTTP %s: %s", resp.Status, msg)
+	}
+	return fmt.Errorf("HTTP %s", resp.Status)
 }
 
 func doRawRequest(baseURL, token, method, path string, body any) (*http.Response, error) {
