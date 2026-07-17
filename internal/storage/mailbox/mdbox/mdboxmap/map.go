@@ -40,6 +40,10 @@ type Map struct {
 	// new m.<N> files.
 	highestFileID uint32
 
+	// rebuildCount is the storage-wide-rebuild generation counter parsed from the
+	// "map" extension header (#594 Phase 2b). Bumped once per successful rebuild.
+	rebuildCount uint32
+
 	// byMapUID indexes records by UID for O(1) Lookup.
 	// Rebuilt on every load/flush.
 	byMapUID map[uint32]int
@@ -202,7 +206,7 @@ func (m *Map) reindex() {
 
 	hfid := uint32(0)
 	if ext := findExt(m.f.Extensions, extMap); ext != nil {
-		hfid = decodeMapHeader(ext.HdrData)
+		hfid, m.rebuildCount = decodeMapHeader(ext.HdrData)
 	}
 	if maxFileID > hfid {
 		hfid = maxFileID
@@ -254,8 +258,8 @@ func (m *Map) withMapLock(fn func() error) error {
 // compaction point (and the full-state persist for refcount / purge / file-id
 // allocation). Caller MUST hold m.mu.
 func (m *Map) flushLocked() error {
-	if ext := findExt(m.f.Extensions, extMap); ext != nil {
-		ext.HdrData = encodeMapHeader(m.highestFileID)
+	if err := m.setMapHeaderLocked(); err != nil {
+		return err
 	}
 	m.f.Header.MessagesCount = uint32(len(m.f.Records))
 	m.f.Header.NextUID = m.nextMapUID
@@ -270,6 +274,53 @@ func (m *Map) flushLocked() error {
 		m.baseMod = st.ModTime()
 	}
 	return nil
+}
+
+// setMapHeaderLocked writes highest_file_id + rebuild_count into the "map"
+// extension header and recomputes Header.HeaderSize/RecordSize so Recreate
+// accepts the file. It also migrates a legacy 4-byte header to 8 bytes in place
+// (growing HdrSize) — mirrors File.AddHeaderExtension's recompute. Idempotent:
+// once the header is 8 bytes, repeated calls re-encode the same size and do not
+// migrate again. Caller MUST hold m.mu.
+func (m *Map) setMapHeaderLocked() error {
+	ext := findExt(m.f.Extensions, extMap)
+	if ext == nil {
+		return fmt.Errorf("mdboxmap/flush: missing %q extension", extMap)
+	}
+	ext.HdrData = encodeMapHeader(m.highestFileID, m.rebuildCount)
+	ext.HdrSize = uint32(len(ext.HdrData)) // 8; grows a legacy 4-byte header
+	layout, err := mailindex.ComputeRecordLayout(m.f.Extensions)
+	if err != nil {
+		return fmt.Errorf("mdboxmap/flush: layout: %w", err)
+	}
+	extBytes, err := mailindex.EncodeExtHeaders(layout.Extensions)
+	if err != nil {
+		return fmt.Errorf("mdboxmap/flush: encode ext headers: %w", err)
+	}
+	m.f.Extensions = layout.Extensions
+	m.f.Layout = layout
+	m.f.Header.RecordSize = layout.RecordSize
+	m.f.Header.HeaderSize = uint32(mailindex.HeaderMinSize) + uint32(len(extBytes))
+	return nil
+}
+
+// RebuildCount returns the persisted storage-wide-rebuild generation counter.
+func (m *Map) RebuildCount() uint32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rebuildCount
+}
+
+// BumpRebuildCount increments and persists the storage-wide-rebuild generation
+// counter under the cross-process map lock. Called once per successful rebuild.
+func (m *Map) BumpRebuildCount() error {
+	return m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		m.rebuildCount++
+		return m.flushLocked()
+	})
 }
 
 // reloadLocked refreshes m from disk, incrementally. It re-opens the base only

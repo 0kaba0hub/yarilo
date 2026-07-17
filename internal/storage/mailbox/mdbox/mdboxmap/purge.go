@@ -84,6 +84,46 @@ func (m *Map) AppendMove(moved []MovedRecord, expunged []uint32) error {
 	})
 }
 
+// ExpungeVanished drops every map record whose map_uid is absent from
+// presentUIDs — the set of map_uids a physical storage scan could actually read.
+// It is the map-side of a storage-wide rebuild: a record the scan could not find
+// points at a message that no longer exists on disk, so its pointer is removed
+// (the message bytes, if any linger, are reclaimed by the next purge). Runs the
+// one-pass drop + byMapUID rebuild + atomic flush under the map X-lock, mirroring
+// AppendMove's expunge path. Returns the number of records dropped.
+//
+// The caller (mdbox storage-wide rebuild) already holds the map lock, so the
+// re-entrant withMapLock keeps the present-set and the drop consistent.
+func (m *Map) ExpungeVanished(presentUIDs map[uint32]bool) (int, error) {
+	dropped := 0
+	err := m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		kept := m.f.Records[:0]
+		for _, rec := range m.f.Records {
+			if presentUIDs[rec.UID] {
+				kept = append(kept, rec)
+				continue
+			}
+			dropped++
+		}
+		if dropped == 0 {
+			return nil
+		}
+		m.f.Records = kept
+		m.byMapUID = make(map[uint32]int, len(m.f.Records))
+		for i, rec := range m.f.Records {
+			m.byMapUID[rec.UID] = i
+		}
+		return m.flushLocked()
+	})
+	if err != nil {
+		return 0, err
+	}
+	return dropped, nil
+}
+
 // CompactGarbage walks the live record set and returns the list
 // of map_uids whose refcount is zero. Convenience for purge
 // drivers that want to enumerate everything that should be

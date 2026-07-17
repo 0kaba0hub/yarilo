@@ -130,6 +130,67 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 	return stats, http.StatusOK, nil
 }
 
+// ---- storage-wide rebuild (mdbox) -----------------------------------------
+
+type storageRebuildRequest struct {
+	User      string `json:"user"`
+	Namespace string `json:"namespace"`
+}
+
+type storageRebuildStats struct {
+	Scanned        int    `json:"scanned"`
+	FoldersRebuilt int    `json:"folders_rebuilt"`
+	Expunged       int    `json:"expunged"`
+	OrphansAdopted int    `json:"orphans_adopted"`
+	RebuildCount   uint32 `json:"rebuild_count"`
+	DurationMs     int64  `json:"duration_ms"`
+}
+
+// handleStorageRebuild runs the storage-wide rebuild for a folder-agnostic
+// driver (mdbox): reconcile the shared map against the physical files, reset
+// every folder index, adopt orphans into INBOX, drop vanished map records. A
+// driver that is not storage-wide is rejected — those use per-folder /rebuild.
+func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
+	var req storageRebuildRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	uc, err := s.openUserContext(req.User)
+	if err != nil {
+		apiError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer uc.Close()
+
+	bundle, err := uc.ns(s, req.Namespace)
+	if err != nil {
+		apiError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rb, ok := bundle.box.(mailbox.StorageWideRebuilder)
+	if !ok {
+		apiError(w, "storage-wide rebuild is only for folder-agnostic drivers (mdbox); use /api/backend/index/rebuild per folder", http.StatusBadRequest)
+		return
+	}
+
+	start := time.Now()
+	// The rebuild takes the storage (map) lock itself; no folder lock is acquired
+	// here — it is taken per folder inside idx.ResetFolder.
+	st, err := rb.RebuildStorage(bundle.idx)
+	if err != nil {
+		apiError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, storageRebuildStats{
+		Scanned:        st.Scanned,
+		FoldersRebuilt: st.FoldersRebuilt,
+		Expunged:       st.Expunged,
+		OrphansAdopted: st.OrphansAdopted,
+		RebuildCount:   st.RebuildCount,
+		DurationMs:     time.Since(start).Milliseconds(),
+	})
+}
+
 // ---- optimize -------------------------------------------------------------
 
 type optimizeRequest struct {

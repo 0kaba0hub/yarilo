@@ -8,15 +8,16 @@ import (
 )
 
 // registerIndexRoutes wires the fileindex inspection + mutation
-// surface. `dump` is read-only. `rebuild` regenerates the index
-// from disk via UserMailbox.Scan (driver-specific resync, see
-// Phase BACKEND-API-INDEX-OPS in TODO.md). `optimize` compacts
-// .index.log into the base .index file with no semantic change.
-// mdbox returns "not yet implemented" on rebuild — see Phase
-// MDBOX-PROD-READY.
+// surface. `dump` is read-only. `rebuild` regenerates ONE folder's index from
+// disk via UserMailbox.Scan (per-folder resync); it rejects folder-agnostic
+// drivers (mdbox) with 501. `rebuild-storage` is the storage-wide rebuild for
+// mdbox (reconcile the shared map, reset every folder, adopt orphans, drop
+// vanished records). `optimize` compacts .index.log into the base .index file
+// with no semantic change.
 func (s *Server) registerIndexRoutes() {
 	s.mux.Handle("POST /api/backend/index/dump", s.middleware(s.handleIndexDump))
 	s.mux.Handle("POST /api/backend/index/rebuild", s.middleware(s.handleIndexRebuild))
+	s.mux.Handle("POST /api/backend/index/rebuild-storage", s.middleware(s.handleStorageRebuild))
 	s.mux.Handle("POST /api/backend/index/optimize", s.middleware(s.handleIndexOptimize))
 }
 
