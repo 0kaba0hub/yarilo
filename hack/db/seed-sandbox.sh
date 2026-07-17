@@ -15,6 +15,11 @@ PLAIN_HASH=$(kubectl --kubeconfig="${KUBECONFIG:-$HOME/.kube/config}" exec -n "$
   openssl passwd -6 'Yarilo!test1')
 HASH="{SHA512-CRYPT}${PLAIN_HASH}"
 
+echo "Ensuring quota_clone mapped table (quota) exists ..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+kubectl --kubeconfig="${KUBECONFIG:-$HOME/.kube/config}" exec -i -n "$DB_NS" "$DB_POD" -- \
+  mysql -u yarilo -psandbox-secret yarilo < "$SCRIPT_DIR/quota-mapped.sql" 2>&1 | grep -v Warning || true
+
 echo "Seeding u1-u100@d00001.test in $DB_NS/$DB_POD ..."
 
 kubectl --kubeconfig="${KUBECONFIG:-$HOME/.kube/config}" exec -n "$DB_NS" "$DB_POD" -- \
