@@ -57,20 +57,26 @@ type FolderAgnosticStorage interface {
 
 // StorageRebuildStats reports what a storage-wide rebuild did.
 type StorageRebuildStats struct {
-	Scanned        int    // physical messages read from storage
-	FoldersRebuilt int    // per-folder indexes reset
-	Expunged       int    // map records dropped (message vanished from storage)
-	OrphansAdopted int    // messages referenced by no folder, re-filed into INBOX
-	RebuildCount   uint32 // new generation counter after the rebuild
+	Scanned             int    // physical messages read from storage
+	FoldersRebuilt      int    // per-folder indexes reset
+	Expunged            int    // map records dropped (message vanished from storage)
+	UnreferencedZeroref int    // present messages referenced by no folder; refcount reset to 0 for purge (reported, NOT resurrected)
+	RebuildCount        uint32 // new generation counter after the rebuild
 }
 
 // StorageWideRebuilder is a folder-agnostic driver (mdbox) that can rebuild its
 // whole storage: reconcile the shared map against the physical files, reset
-// every folder index against the surviving messages, adopt orphans into INBOX,
-// and drop map records whose message vanished — all under the storage (map)
-// lock. idx is the user's index backend for the same namespace. Implemented by
-// mdbox; driven by the operator rebuild-storage endpoint and (later) the
-// reactive trigger.
+// every folder index against the surviving messages, recompute each map record's
+// refcount from the actual folder references (so an unreferenced message becomes
+// zero-ref garbage for the next purge — never resurrected), and drop map records
+// whose message vanished — all under the storage (map) lock. idx is the user's
+// index backend for the same namespace. Implemented by mdbox; driven by the
+// operator rebuild-storage endpoint and (later) the reactive trigger.
+//
+// Orphan RESTORE (re-filing an unreferenced message into a mailbox) is
+// intentionally NOT done here: without ORIG_MAILBOX metadata the rebuild cannot
+// tell genuinely-lost mail from churn/refcount-leak garbage, and blind adoption
+// mass-resurrects deleted mail. It lands with ORIG_MAILBOX in #594 Phase 2b.
 type StorageWideRebuilder interface {
 	RebuildStorage(idx UserIndex) (StorageRebuildStats, error)
 }

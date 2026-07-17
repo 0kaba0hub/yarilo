@@ -60,27 +60,45 @@ func folderCount(t *testing.T, idx mailbox.UserIndex, folder string) int {
 	return len(msgs)
 }
 
-// TestRebuildAdoptsOrphanIntoInbox: a message saved to storage (map record) but
-// referenced by no folder index is adopted into INBOX.
-func TestRebuildAdoptsOrphanIntoInbox(t *testing.T) {
+// TestRebuildZeroRefsUnreferenced: a message saved to storage but referenced by
+// no folder index is NOT resurrected into INBOX — it is reported and its refcount
+// is recomputed to 0 so the next purge reclaims it. The referenced message keeps
+// a non-zero refcount.
+func TestRebuildZeroRefsUnreferenced(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	box, idx := newBoxAndIndex(t, home)
 	deliverMsg(t, box, idx, "INBOX", "referenced message body\r\n")
 
-	// Orphan: written to storage, never appended to any folder index.
-	if _, err := box.Save("INBOX", strings.NewReader("orphan body\r\n"), 0, 12, nil); err != nil {
+	// Unreferenced: written to storage, never appended to any folder index.
+	orphanFn, err := box.Save("INBOX", strings.NewReader("orphan body\r\n"), 0, 12, nil)
+	if err != nil {
 		t.Fatalf("save orphan: %v", err)
 	}
+	orphanUID, _ := parseFilename(orphanFn)
 
 	stats, err := box.RebuildStorage(idx)
 	if err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	if stats.OrphansAdopted != 1 {
-		t.Errorf("orphans adopted = %d, want 1", stats.OrphansAdopted)
+	if stats.UnreferencedZeroref != 1 {
+		t.Errorf("unreferenced zeroref = %d, want 1", stats.UnreferencedZeroref)
 	}
-	if got := folderCount(t, idx, "INBOX"); got != 2 {
-		t.Errorf("INBOX count = %d, want 2 (1 referenced + 1 adopted)", got)
+	// INBOX is NOT grown — no resurrection.
+	if got := folderCount(t, idx, "INBOX"); got != 1 {
+		t.Errorf("INBOX count = %d, want 1 (unreferenced message must not be adopted)", got)
+	}
+	// The unreferenced record is now zero-ref (purge will reclaim it); the
+	// referenced one is not.
+	zeroRef := map[uint32]bool{}
+	m, _ := box.openMap()
+	for _, uid := range m.CompactGarbage() {
+		zeroRef[uid] = true
+	}
+	if !zeroRef[orphanUID] {
+		t.Errorf("unreferenced map_uid %d should be zero-ref after rebuild", orphanUID)
+	}
+	if len(zeroRef) != 1 {
+		t.Errorf("zero-ref count = %d, want 1 (only the unreferenced message)", len(zeroRef))
 	}
 }
 
