@@ -567,6 +567,25 @@ func (s *session) completePreAuth() bool {
 	return ok
 }
 
+// resolvePersonalBox picks the mailbox backend for a user given their
+// mail_location. When mailLoc carries a "driver:" prefix and byDriver returns a
+// backend for it, that per-user backend is used; otherwise the global backend
+// is returned. The second result is the parsed driver name ("" when mailLoc has
+// no driver prefix) so the caller can stamp UserInfo.Driver for the index.
+func resolvePersonalBox(global mailbox.MailboxBackend, byDriver func(string) mailbox.MailboxBackend, mailLoc string) (mailbox.MailboxBackend, string) {
+	colon := strings.IndexByte(mailLoc, ':')
+	if colon <= 0 {
+		return global, ""
+	}
+	driver := strings.ToLower(mailLoc[:colon])
+	if byDriver != nil {
+		if b := byDriver(driver); b != nil {
+			return b, driver
+		}
+	}
+	return global, driver
+}
+
 // setupSession resolves UserInfo, acquires limits/locks, opens storage handles,
 // and loads the mailbox. On failure it writes an error to the wire (for the
 // normal auth path) and returns false. For preAuth callers, the error line is
@@ -631,7 +650,16 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	}
 	s.lockKey = userInfo.Username
 
-	box := s.srv.opts.Mailbox.OpenUser(userInfo)
+	// Honour the per-user mail_location driver (sdbox/mdbox/maildir) exactly as
+	// IMAP does: record it on userInfo so the fileindex picks the matching
+	// per-folder layout, and select the per-user mailbox backend when the driver
+	// differs from the global default. Without this POP3 opens every user
+	// through the global (maildir) backend and reports 0 messages for dbox users.
+	personalBox, driver := resolvePersonalBox(s.srv.opts.Mailbox, s.srv.opts.MailboxByDriver, res.MailLoc)
+	if driver != "" {
+		userInfo.Driver = driver
+	}
+	box := personalBox.OpenUser(userInfo)
 	idx := s.srv.opts.Index.OpenUser(userInfo)
 
 	if err := box.Init(); err != nil {
