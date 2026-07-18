@@ -2160,6 +2160,18 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			seqNum--
 			continue
 		}
+		// Free the underlying storage, then drop the index record — the same pairing
+		// every other removal path in this file uses (renameInbox, UID MOVE). Without
+		// the Remove the message vanishes from the client's view but its bytes leak
+		// forever: maildir/sdbox keep the file, mdbox never decrements the map
+		// refcount so purge can never reclaim it. Storage-first so a crash in the
+		// tiny window leaves a dangling index record the reactive heal expunges,
+		// rather than an unreclaimable orphan. Best-effort: on failure the index is
+		// still expunged and the leak is reclaimable by an operator rebuild + purge.
+		if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
+			slog.Warn("imap: expunge storage remove failed (index still expunged; leak reclaimable by rebuild+purge)",
+				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
+		}
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
 		s.statsExpunged++
