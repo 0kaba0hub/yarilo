@@ -43,6 +43,10 @@ fts:
   fts_addr: "yarilo-fts:9106"
   fts_auth_master_addr: "yarilo-auth:9102"
   fts_autoindex: true
+  # Fail loud in the sandbox: when FTS returns nothing / is unavailable, surface an
+  # IMAP error instead of silently falling back to a sequential scan, so FTS
+  # regressions (e.g. #638) are caught by smoketest instead of being masked.
+  fts_search_read_fallback: false
   language_filters: [lowercase, snowball, stopwords]
   languages: [en]
 
