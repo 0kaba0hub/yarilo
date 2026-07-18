@@ -214,7 +214,12 @@ func appendRecordToFile(dst *os.File, body []byte, guid [16]byte, origMailbox st
 	if err != nil {
 		return 0, err
 	}
-	rec := buildDboxRecord(body, guid, origMailbox)
+	// File-header line only before the first record in the destination file; every
+	// later record starts directly at its message header (real dbox v2 layout).
+	rec := buildDboxMessageRecord(body, guid, origMailbox)
+	if pos == 0 {
+		rec = append(buildDboxFileHeader(), rec...)
+	}
 	if _, err := dst.Write(rec); err != nil {
 		return 0, err
 	}

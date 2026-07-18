@@ -439,8 +439,8 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	}
 
 	guid := randomGUID()
-	record := buildDboxRecord(body, guid, folder)
-	recLen := uint32(len(record))
+	msgRecord := buildDboxMessageRecord(body, guid, folder)
+	recLen := uint32(len(msgRecord))
 
 	fileID := m.HighestFileID()
 	if fileID == 0 {
@@ -469,6 +469,15 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		return "", fmt.Errorf("mdbox/save: stat handle: %w", err)
 	}
 	offset := uint32(st.Size())
+	// The dbox file-header line is a FILE-level header: emit it only when this is
+	// the first record in a brand-new physical file (offset 0). Appended records
+	// start directly at their message header — matching real dbox v2 so a Dovecot
+	// reader parses past the first message.
+	record := msgRecord
+	if offset == 0 {
+		record = append(buildDboxFileHeader(), msgRecord...)
+	}
+	recLen = uint32(len(record))
 	if _, err := f.Write(record); err != nil {
 		f.Close()
 		return "", fmt.Errorf("mdbox/save: write record: %w", err)
@@ -649,24 +658,30 @@ func (u *userMailbox) Close() error {
 // offset are unchanged. See docs.
 const metaOrigMailbox = 'B'
 
-// buildDboxRecord packs body into the canonical dbox v2 wire format
-// used inside an m.<N> file. guid is embedded in the metadata
-// trailer (G field). Callers that are saving a NEW message should
-// supply a freshly-generated random GUID; callers compacting an
-// EXISTING record (purge, altmove) must supply the original GUID
-// from the source trailer so message identity is preserved.
+// buildDboxFileHeader returns the dbox v2 file-header line ("2 M20 C<stamp>\n").
+// It is a FILE-level header, written exactly once at the start of each physical
+// m.<N> file (before its first message), never per message. C is the file
+// creation timestamp.
+func buildDboxFileHeader() []byte {
+	return []byte(fmt.Sprintf("%d M%x C%x\n", dboxVersion, messageHeaderSize, uint32(time.Now().Unix())))
+}
+
+// buildDboxMessageRecord packs body into one canonical dbox v2 message record —
+// the 32-byte message header, the body, and the metadata trailer — WITHOUT the
+// file-header line (that belongs to the file, not the message; see
+// buildDboxFileHeader). guid is embedded in the trailer (G field): a fresh Save
+// mints a random GUID, compaction (purge/altmove) must pass the original GUID
+// from the source trailer so message identity survives.
 //
 // origMailbox, when non-empty, is written as the metaOrigMailbox trailer key so
 // a rebuild can route an orphaned copy back to its home folder. Compaction must
 // pass the value recovered from the source trailer; a fresh Save passes the
 // destination folder.
-func buildDboxRecord(body []byte, guid [16]byte, origMailbox string) []byte {
+func buildDboxMessageRecord(body []byte, guid [16]byte, origMailbox string) []byte {
 	size := uint64(len(body))
 	now := uint32(time.Now().Unix())
 
 	var buf bytes.Buffer
-	// File header line — "2 M20 C<stamp>\n"
-	fmt.Fprintf(&buf, "%d M%x C%x\n", dboxVersion, messageHeaderSize, now)
 	// 32-byte message header: magic + 'N' + spaces + size hex + LF.
 	hdr := make([]byte, messageHeaderSize)
 	for i := range hdr {
@@ -696,26 +711,64 @@ func buildDboxRecord(body []byte, guid [16]byte, origMailbox string) []byte {
 	return buf.Bytes()
 }
 
-// readRecordBody seeks to offset, parses the file-header line
-// and 32-byte message header, then returns the message body
-// bytes.
+// buildDboxRecord builds a file-header line followed by a single message record —
+// i.e. the layout of a physical file that holds exactly one message. Real
+// multi-message files carry the file-header line only once, before the first
+// message (Save/appendRecordToFile emit it conditionally on isNewFile); this
+// helper is retained for the single-record case and for tests that construct the
+// legacy per-record-header layout the self-describing reader still accepts.
+func buildDboxRecord(body []byte, guid [16]byte, origMailbox string) []byte {
+	return append(buildDboxFileHeader(), buildDboxMessageRecord(body, guid, origMailbox)...)
+}
+
+// peekFileHeaderLen reports how many leading bytes of the record window belong to
+// a dbox file-header line, and whether the window is well-formed. A message
+// header always begins with magicPreByte0 (0x01, never an ASCII digit), while a
+// file-header line always begins with the ASCII version digit — so the first byte
+// alone tells them apart:
+//
+//   - skip == 0: the record starts directly at its 32-byte message header (an
+//     appended record in a multi-message file written by the fixed writer).
+//   - skip  > 0: a file-header line of that length precedes the message header
+//     (the first record in a physical file, or every record in a legacy file that
+//     stamped the header per message — both parse identically).
+//
+// ok == false means the window is neither: no leading magic and no LF, i.e. a
+// malformed/corrupt record. window must hold at least the start of the record.
+func peekFileHeaderLen(window []byte) (skip int, ok bool) {
+	if len(window) == 0 {
+		return 0, false
+	}
+	if window[0] == magicPreByte0 {
+		return 0, true
+	}
+	if lf := bytes.IndexByte(window, '\n'); lf >= 0 {
+		return lf + 1, true
+	}
+	return 0, false
+}
+
+// readRecordBody seeks to offset, skips the file-header line if one is present
+// there (only the first record in a physical file carries it; legacy files carry
+// it per record — both are handled), parses the 32-byte message header, then
+// returns the message body bytes.
 func readRecordBody(f *os.File, offset uint32) ([]byte, error) {
 	if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("seek: %w", err)
 	}
-	// Consume the variable-length file-header line ("2 M20 C…\n").
-	headerLine := make([]byte, 64)
-	n, err := f.Read(headerLine)
+	// Peek the record start: a file-header line ("2 M20 C…\n") precedes the message
+	// header only for the file's first record; an appended record starts directly
+	// at the message header.
+	window := make([]byte, 64)
+	n, err := f.Read(window)
 	if err != nil {
-		return nil, fmt.Errorf("read header line: %w", err)
+		return nil, fmt.Errorf("read record start: %w", err)
 	}
-	lfIdx := bytes.IndexByte(headerLine[:n], '\n')
-	if lfIdx < 0 {
-		return nil, fmt.Errorf("file header line missing LF")
+	skip, ok := peekFileHeaderLen(window[:n])
+	if !ok {
+		return nil, fmt.Errorf("%w: malformed record @%d", errCorruptRecord, offset)
 	}
-	// Rewind past the consumed bytes, then re-seek to the start
-	// of the 32-byte message header.
-	if _, err := f.Seek(int64(offset)+int64(lfIdx)+1, io.SeekStart); err != nil {
+	if _, err := f.Seek(int64(offset)+int64(skip), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("seek to message header: %w", err)
 	}
 	mh := make([]byte, messageHeaderSize)
@@ -747,18 +800,18 @@ func readRecordBodyAndTrailer(f *os.File, offset uint32) (body []byte, guid [16]
 	if _, err = f.Seek(int64(offset), io.SeekStart); err != nil {
 		return nil, guid, "", fmt.Errorf("seek: %w", err)
 	}
-	// Consume variable-length file-header line.
-	headerLine := make([]byte, 64)
-	n, err := f.Read(headerLine)
+	// Peek the record start and skip the file-header line only when present.
+	window := make([]byte, 64)
+	n, err := f.Read(window)
 	if err != nil {
-		return nil, guid, "", fmt.Errorf("read header line: %w", err)
+		return nil, guid, "", fmt.Errorf("read record start: %w", err)
 	}
-	lfIdx := bytes.IndexByte(headerLine[:n], '\n')
-	if lfIdx < 0 {
-		return nil, guid, "", fmt.Errorf("file header line missing LF")
+	skip, ok := peekFileHeaderLen(window[:n])
+	if !ok {
+		return nil, guid, "", fmt.Errorf("malformed record @%d", offset)
 	}
 	// Seek to 32-byte message header.
-	if _, err = f.Seek(int64(offset)+int64(lfIdx)+1, io.SeekStart); err != nil {
+	if _, err = f.Seek(int64(offset)+int64(skip), io.SeekStart); err != nil {
 		return nil, guid, "", fmt.Errorf("seek to message header: %w", err)
 	}
 	mh := make([]byte, messageHeaderSize)

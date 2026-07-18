@@ -318,15 +318,18 @@ Dovecot two-layer format (`dbox-file.{c,h}`):
 <empty line "\n">                   metadata terminator
 ```
 
-yarilo skips the ASCII header line entirely and writes a 31-byte
-message header (one byte short of Dovecot's 32 — drops the
-trailing `\n`). The yarilo header pattern is
-`"\x01\x02N %08x %016x\n"` which DOES use the same 8-hex UID slot
-Dovecot has, but writes `00000000` literally instead of leaving 8
-spaces as Dovecot v2 does. INTERNALS.md §8 line 562 documents
-this incorrectly — it claims the UID is in the header, but
-Dovecot v2 specifically leaves that field unused (see
-`dbox_msg_header_fill` at `dbox-file.c:764-774`).
+yarilo mdbox now writes the ASCII file-header line and a 32-byte
+message header matching this layout. Since #622 the file-header
+line is a **file-level** header, emitted exactly once per physical
+`m.<N>` file (before its first message), not once per message — the
+Dovecot layout above, so a real Dovecot instance parses past the
+first message in a multi-message file. The reader is
+**self-describing**: at each record offset it distinguishes a
+file-header line (starts with the ASCII version digit) from a raw
+message header (starts with the `\x01\x02` magic) by the first byte,
+so legacy yarilo stores that stamped the header before every record
+still parse unchanged — no migration needed (same backward-compat
+approach as the `ORIG_MAILBOX` unknown-key skip in #614).
 
 ### 3.3. Body encoding — LF→CRLF
 
@@ -437,6 +440,14 @@ The cross-process `file_id` race the current PR addressed via
 COUNTER-INC doesn't even apply to Dovecot — file_id is assigned
 under the map atomic lock, so no two processes ever pick the
 same id.
+
+> **Note (stale section):** §4.1–§4.2 above describe an earlier mdbox
+> design (per-folder TSV `dbox.map`, `mdbox-storage/`, no refcount)
+> that has since been replaced by a global binary map with per-record
+> refcounts and a storage-wide rebuild. The physical `m.<N>` record
+> format is now the dbox v2 layout of §3.2, with the file-header line
+> written once per file (see #622). A full refresh of §4 is a separate
+> doc-cleanup task.
 
 ### 4.3. COPY / MOVE — the O(1) magic
 
