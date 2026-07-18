@@ -257,6 +257,17 @@ and yarilo's own shard version key (`yarilo.fts-flatcurve`). There is no
 direct in-place migration from other installations — indexes are rebuilt by
 the indexer — so no cross-product on-disk compatibility promise is carried.
 
+The engine opens shards with Xapian `DB_NO_SYNC`, so the wrapper creates and
+**fsyncs each `current.###` directory (and the rename on rotate) itself**
+before handing the path to Xapian — otherwise the directory entry stays
+unflushed and a write can race into a not-yet-durable shard (the "Couldn't
+write new rev file … (No such file or directory)" wedge of #629). On **any**
+engine error the write handle is released (`discardCurrent`) so the next
+update reopens a fresh shard instead of returning a poisoned handle forever;
+the `yarilo-fts` worker additionally evicts and reopens the whole user handle
+when it sees a `DatabaseClosedError`-class fault, so a wedged index self-heals
+without an operator deleting `fts-flatcurve/` on disk.
+
 **Bleve (follow-up stream):** one index per **user**:
 
 ```
@@ -387,7 +398,12 @@ In `session.Search` (`internal/imap/server.go:2157`):
    `fts_search_strict` mode, definite candidates too — by fetching only those
    messages.
 4. Unindexed tail + `fts_search_add_missing` allows → `PREPEND` + bounded
-   wait; on timeout behave per `fts_search_read_fallback`.
+   wait; on timeout behave per `fts_search_read_fallback`. The wait also
+   **gives up early when the checkpoint makes no progress** (a broken FTS
+   backend keeps it flat): ~2s of no movement falls back to the scan rather
+   than blocking the full timeout, so a wedged index never surfaces as a
+   client-visible TCP hang (#629). A genuinely-progressing index keeps the
+   full window.
 5. FTS off / error / fallback → the existing sequential scan (unchanged
    behaviour). The reference defaults its read-fallback to *off*; we default
    **true** because our scan already exists and is correct — no regression by

@@ -122,6 +122,13 @@ func (s *session) prepareFTSSearch(criteria *imaplib.SearchCriteria, msgs []*mai
 		f.covered[uid] = true
 		f.verify[uid] = true
 	}
+	// Visibility diagnostic (#625): how many candidates the FTS index returned for
+	// this search, so a "search finds nothing" case shows whether FTS had no hits
+	// (0 candidates → likely not indexed) vs. hits that later failed re-verify.
+	// Counts only — never the query terms (private mail content).
+	slog.Debug("imap: fts search candidates",
+		"user", user, "folder", mbox.Name,
+		"definite", len(res.Definite), "maybe", len(res.Maybe))
 	return f, nil
 }
 
@@ -149,14 +156,40 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 			timeout = 30 * time.Second
 		}
 		deadline := time.Now().Add(timeout)
+		// Give up early when the index makes NO progress (#629): a broken FTS
+		// backend keeps the checkpoint flat, so waiting the full timeout only makes
+		// the client hang past its own TCP read deadline (a raw i/o timeout instead
+		// of a graceful degrade). A genuinely-progressing index advances the
+		// checkpoint and resets the stall counter, so slow-but-working indexing
+		// still gets the full window. ~2s of no movement → fall back to a scan.
+		const maxStallPolls = 8 // 8 × 250ms ≈ 2s of no movement
+		best := last
+		stalls := 0
+		reason := "timed out"
 		for time.Now().Before(deadline) {
 			time.Sleep(250 * time.Millisecond)
-			if last, _, err = o.Client.Status(user, mbox); err == nil && last >= maxUID {
+			cur, _, serr := o.Client.Status(user, mbox)
+			if serr != nil {
+				reason = "status error"
+				break
+			}
+			last = cur
+			if cur >= maxUID {
 				return false, nil
 			}
+			if cur > best {
+				best = cur
+				stalls = 0
+				continue
+			}
+			stalls++
+			if stalls >= maxStallPolls {
+				reason = "no progress"
+				break
+			}
 		}
-		slog.Warn("imap: fts catch-up timed out", "user", user, "folder", mbox.Name,
-			"indexed", last, "want", maxUID)
+		slog.Warn("imap: fts catch-up giving up, falling back to scan", "user", user, "folder", mbox.Name,
+			"reason", reason, "indexed", last, "want", maxUID)
 	}
 	if o.ReadFallback {
 		return true, nil
@@ -237,6 +270,11 @@ func (s *session) ftsNotify(folderName string, expunged bool, uid uint32) {
 		if err != nil {
 			slog.Debug("imap: fts notify failed",
 				"user", user, "folder", mbox.Name, "expunged", expunged, "err", err)
+			return
 		}
+		// Breadcrumb (#625): confirm the FTS index/expunge notify was sent, so an
+		// indexing gap (message delivered but never handed to FTS) is visible.
+		slog.Debug("imap: fts notify sent",
+			"user", user, "folder", mbox.Name, "uid", uid, "expunged", expunged)
 	}()
 }

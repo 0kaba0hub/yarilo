@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/fts/buildmail"
 	"github.com/0kaba0hub/yarilo/internal/fts/language"
@@ -168,11 +170,15 @@ func indexRoot(info *mailbox.UserInfo) string {
 /* --- ftsproto.Service ------------------------------------------------------ */
 
 func (s *Service) Index(user string, mbox fts.MailboxRef, maxUID uint32, maxRecent int) error {
+	slog.Debug("fts: index job queued", "user", user, "folder", mbox.Name, "guid", mbox.GUID,
+		"uidvalidity", mbox.UIDValidity, "max_uid", maxUID, "max_recent", maxRecent, "priority", false)
 	s.queue.push(job{user: user, mbox: mbox, maxUID: maxUID, maxRecent: maxRecent}, false)
 	return nil
 }
 
 func (s *Service) Prepend(user string, mbox fts.MailboxRef, maxUID uint32) error {
+	slog.Debug("fts: index job queued", "user", user, "folder", mbox.Name, "guid", mbox.GUID,
+		"uidvalidity", mbox.UIDValidity, "max_uid", maxUID, "priority", true)
 	s.queue.push(job{user: user, mbox: mbox, maxUID: maxUID}, true)
 	return nil
 }
@@ -182,9 +188,11 @@ func (s *Service) Expunge(user string, mbox fts.MailboxRef, uid uint32) error {
 	if err != nil {
 		return err
 	}
-	return s.opts.LockMailbox(user, mbox.Name, func() error {
+	err = s.opts.LockMailbox(user, mbox.Name, func() error {
 		return h.ui.Expunge(mbox, uid)
 	})
+	slog.Debug("fts: expunge document", "user", user, "folder", mbox.Name, "uid", uid, "ok", err == nil)
+	return err
 }
 
 func (s *Service) Lookup(user string, mbox fts.MailboxRef, q fts.Query) (fts.Result, error) {
@@ -192,7 +200,14 @@ func (s *Service) Lookup(user string, mbox fts.MailboxRef, q fts.Query) (fts.Res
 	if err != nil {
 		return fts.Result{}, err
 	}
-	return h.ui.Lookup(mbox, q)
+	t0 := time.Now()
+	res, err := h.ui.Lookup(mbox, q)
+	// Term COUNT and result counts only — never the query terms (private content).
+	slog.Debug("fts: lookup executed", "user", user, "folder", mbox.Name,
+		"terms", len(q.Terms), "and_terms", q.AndTerms,
+		"definite", len(res.Definite), "maybe", len(res.Maybe),
+		"dur_ms", time.Since(t0).Milliseconds(), "err", err)
+	return res, err
 }
 
 func (s *Service) Status(user string, mbox fts.MailboxRef) (uint32, uint32, error) {
@@ -200,7 +215,10 @@ func (s *Service) Status(user string, mbox fts.MailboxRef) (uint32, uint32, erro
 	if err != nil {
 		return 0, 0, err
 	}
-	return h.ui.Checkpoint(mbox)
+	last, sum, err := h.ui.Checkpoint(mbox)
+	slog.Debug("fts: status", "user", user, "folder", mbox.Name,
+		"last_indexed_uid", last, "settings_checksum", sum, "err", err)
+	return last, sum, err
 }
 
 func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
@@ -229,6 +247,8 @@ func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
 		}
 		s.queue.push(job{user: user, mbox: mbox, maxUID: maxUID}, false)
 	}
+	slog.Debug("fts: rescan reconciled", "user", user, "folder", mbox.Name,
+		"present", len(present), "missing", len(missing), "max_uid", maxUID, "reindex_queued", len(missing) > 0)
 	return nil
 }
 
@@ -254,7 +274,60 @@ func (s *Service) worker(ctx context.Context) {
 		if err := s.runIndex(j); err != nil {
 			slog.Error("fts: index job failed",
 				"user", j.user, "folder", j.mbox.Name, "err", err)
+			// Recovery (#629): a broken/closed engine handle stays broken for every
+			// subsequent job unless it is reopened. Drop the cached user handle so
+			// the next job re-opens a fresh index — the engine also self-heals its
+			// write shard, but evicting here recovers even a wholesale-poisoned
+			// UserIndex without an operator deleting the on-disk index.
+			if isBrokenEngine(err) {
+				s.evict(j.user)
+				slog.Warn("fts: engine reported a broken index, evicted user handle for reopen",
+					"user", j.user, "folder", j.mbox.Name)
+			}
 		}
+	}
+}
+
+// isBrokenEngine reports whether err indicates the engine's on-disk index or its
+// open handle is in an unusable state — a Xapian DatabaseClosedError, or the
+// rev-file open/write failure that wedges a flatcurve shard (#629). A false
+// positive only costs a handle reopen, so the match is deliberately broad.
+func isBrokenEngine(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, marker := range []string{
+		"DatabaseClosedError",
+		"Database has been closed",
+		"DatabaseOpeningError",
+		"Couldn't write new rev file",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// evict closes and drops the cached handle for user so the next handle() reopens
+// a fresh index. Safe when no handle is cached.
+func (s *Service) evict(user string) {
+	s.mu.Lock()
+	h, ok := s.users[user]
+	if ok {
+		delete(s.users, user)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	_ = h.ui.Close()
+	if h.box != nil {
+		h.box.Close() //nolint:errcheck
+	}
+	if h.idx != nil {
+		h.idx.Close() //nolint:errcheck
 	}
 }
 
@@ -283,11 +356,15 @@ func (s *Service) runIndex(j job) error {
 	if err != nil {
 		return err
 	}
+	tStart := time.Now()
 	checksum := s.opts.Chain.SettingsChecksum()
 	last, storedSum, err := h.ui.Checkpoint(j.mbox)
 	if err != nil {
 		return err
 	}
+	slog.Debug("fts: index run start", "user", j.user, "folder", j.mbox.Name,
+		"checkpoint_uid", last, "target_max_uid", j.maxUID,
+		"stored_checksum", storedSum, "current_checksum", checksum)
 	if last > 0 && storedSum != checksum {
 		// Tokenizer/filter config changed: this mailbox's index no longer
 		// matches query-time tokenization — rebuild it from scratch.
@@ -302,6 +379,8 @@ func (s *Service) runIndex(j job) error {
 		last = 0
 	}
 	if j.maxUID <= last {
+		slog.Debug("fts: index run skipped, already current",
+			"user", j.user, "folder", j.mbox.Name, "checkpoint_uid", last, "target_max_uid", j.maxUID)
 		return nil
 	}
 
@@ -314,7 +393,8 @@ func (s *Service) runIndex(j job) error {
 		return fmt.Errorf("ftsservice: list messages: %w", err)
 	}
 
-	return s.opts.LockMailbox(j.user, j.mbox.Name, func() error {
+	indexedCount, skippedCount := 0, 0
+	err = s.opts.LockMailbox(j.user, j.mbox.Name, func() error {
 		upd, err := h.ui.BeginUpdate(j.mbox)
 		if err != nil {
 			return err
@@ -327,6 +407,7 @@ func (s *Service) runIndex(j job) error {
 				continue
 			}
 			if err := s.indexOne(h, j.mbox, m, upd); err != nil {
+				skippedCount++
 				// One unreadable message must not stall the mailbox forever:
 				// log and move the checkpoint past it (rescan can revisit).
 				slog.Warn("fts: message skipped",
@@ -337,6 +418,8 @@ func (s *Service) runIndex(j job) error {
 				if !marked && mailbox.MarkCorruptOnFetchErr(h.box, h.idx, j.mbox.Name, err) {
 					marked = true
 				}
+			} else {
+				indexedCount++
 			}
 			indexed = m.UID
 			batch++
@@ -358,6 +441,10 @@ func (s *Service) runIndex(j job) error {
 		}
 		return nil
 	})
+	slog.Debug("fts: index run done", "user", j.user, "folder", j.mbox.Name,
+		"messages_in_folder", len(msgs), "indexed", indexedCount, "skipped", skippedCount,
+		"checkpoint_from", last, "dur_ms", time.Since(tStart).Milliseconds(), "err", err)
+	return err
 }
 
 func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.MessageMeta, upd fts.Update) error {
@@ -368,5 +455,12 @@ func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.Messag
 		return err
 	}
 	defer rc.Close()
-	return s.builder.Build(m.UID, io.Reader(rc), upd)
+	if err := s.builder.Build(m.UID, io.Reader(rc), upd); err != nil {
+		return err
+	}
+	// Per-message breadcrumb: which UID/file was fed to the engine (size is the
+	// index-time signal for "was there anything to tokenize"). Metadata only.
+	slog.Debug("fts: message indexed", "folder", mbox.Name, "guid", mbox.GUID,
+		"uid", m.UID, "file", m.Filename, "size", m.Size, "alt_tier", m.AltTier)
+	return nil
 }
