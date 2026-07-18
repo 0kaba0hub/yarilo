@@ -109,6 +109,16 @@ The rebuild **preserves each surviving record's own modseq** across the reset (n
 
 On-disk `m.<N>` files follow the **dbox v2 layout**: the ASCII file-header line (`version M<hdr-size> C<create-stamp>`) is written **once per physical file**, before its first message, then each message is `[32-byte header][body][trailer]`. The reader is self-describing — at each record it tells a file-header line (starts with the ASCII version digit) apart from a raw message header (starts with the `\x01\x02` magic) by the first byte, so a real Dovecot instance parses past the first message in a multi-message file, and legacy yarilo stores that stamped the header before every record still read back unchanged (no migration).
 
+Three Dovecot-parity knobs tune when a new `m.<N>` is rolled and how it is allocated (all under `storage:`, mdbox only):
+
+| Key | Default | Effect |
+|:---|:---|:---|
+| `mdbox_rotate_size` | `10485760` (10 MiB) | Max bytes per `m.<N>` before the next save rolls to a fresh file. `0` selects the 10 MiB default. |
+| `mdbox_rotate_interval` | `0` (disabled) | Seconds; roll the append file once it is older than this, regardless of size. |
+| `mdbox_preallocate_space` | `false` | `fallocate()` the new file to `mdbox_rotate_size` up front (Linux only; a no-op elsewhere). |
+
+The age check reads a **persisted per-file create-time** stored in the map header (not a filesystem `btime`, which is unreliable over NFS), so it survives restarts. Unlike Dovecot it uses a **rolling window** (`now − createTime > interval`) rather than a clock-boundary snap, so "rotate every interval" means the file actually lived at least that long. Preallocation uses `FALLOC_FL_KEEP_SIZE` so the file's logical size still grows from zero as records are appended — reserving blocks without breaking the offset model — and any failure is a non-fatal hint.
+
 The **reactive heal** is retry-bounded per folder per session on the IMAP path: a near-continuous purge/altmove keeps every scan incomplete (the heal aborts rather than mistake a compacted message for a vanished one), so after a few consecutive aborts the session stops auto-retrying that folder — each attempt costs a full storage scan — and logs once, pointing the operator at a rebuild. The counter resets on a successful heal or when another session clears the marker. The **POP3** path carries no such bound: a POP3 session heals at most once, at login, not in a command loop, so it cannot spin; a rapidly reconnecting client during a purge could still reproduce the storm across logins, but POP3 sessions are short and a cross-login bound would need persistent state — an accepted gap.
 
 ---

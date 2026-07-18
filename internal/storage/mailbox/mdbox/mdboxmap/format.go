@@ -39,14 +39,19 @@ const (
 	extGUIDSize = 16 // 128-bit
 
 	// mapHeaderSize is the size of the extension-header data for the "map"
-	// extension. It stores highest_file_id (uint32) followed by rebuild_count
+	// extension. It stores, in order: highest_file_id (uint32), rebuild_count
 	// (uint32) — the storage-wide-rebuild generation counter (#594 Phase 2b),
-	// bumped once per successful rebuild so a concurrent process can tell a heal
-	// already ran. Legacy files carry only the 4-byte highest_file_id; decodeMapHeader
-	// tolerates the short form (rebuild_count reads back 0) and the next flush
-	// grows the header to 8 bytes in place.
-	mapHeaderSize       = 8
-	mapHeaderLegacySize = 4
+	// bumped once per successful rebuild — then create_file_id (uint32) and
+	// create_time (uint64), the id and unix-second creation stamp of the current
+	// append file, used by the mdbox_rotate_interval age check (#623). The
+	// create-time is persisted here (not derived from a filesystem btime, which is
+	// unreliable over NFS) so it survives restarts. Older files are shorter and
+	// decodeMapHeader tolerates them: a 4-byte header (highest_file_id only) reads
+	// the rest back as 0, an 8-byte header adds rebuild_count, and the next flush
+	// grows the header to 20 bytes in place.
+	mapHeaderSize        = 20
+	mapHeaderRebuildSize = 8
+	mapHeaderLegacySize  = 4
 )
 
 // MapEntry is one parsed map record. UID is the map_uid; the
@@ -98,27 +103,34 @@ func decodeRefExt(b []byte) uint16 {
 	return binary.LittleEndian.Uint16(b)
 }
 
-// encodeMapHeader packs highest_file_id + rebuild_count into the 8-byte ext
-// header data for "map".
-func encodeMapHeader(highestFileID, rebuildCount uint32) []byte {
+// encodeMapHeader packs highest_file_id + rebuild_count + create_file_id +
+// create_time into the 20-byte ext header data for "map".
+func encodeMapHeader(highestFileID, rebuildCount, createFileID uint32, createTime uint64) []byte {
 	buf := make([]byte, mapHeaderSize)
 	binary.LittleEndian.PutUint32(buf[0:4], highestFileID)
 	binary.LittleEndian.PutUint32(buf[4:8], rebuildCount)
+	binary.LittleEndian.PutUint32(buf[8:12], createFileID)
+	binary.LittleEndian.PutUint64(buf[12:20], createTime)
 	return buf
 }
 
-// decodeMapHeader extracts highest_file_id and rebuild_count from the "map"
-// extension's header bytes. Both default to zero on a missing header, and a
-// legacy 4-byte header (highest_file_id only) reads rebuild_count back as 0 —
-// backward compatible with files written before the counter existed.
-func decodeMapHeader(b []byte) (highestFileID, rebuildCount uint32) {
+// decodeMapHeader extracts highest_file_id, rebuild_count, and the current append
+// file's create_file_id + create_time from the "map" extension's header bytes.
+// All default to zero on a missing header. A legacy 4-byte header (highest_file_id
+// only) reads the rest back as 0; an 8-byte header adds rebuild_count — backward
+// compatible with files written before each field existed.
+func decodeMapHeader(b []byte) (highestFileID, rebuildCount, createFileID uint32, createTime uint64) {
 	if len(b) >= 4 {
 		highestFileID = binary.LittleEndian.Uint32(b[0:4])
 	}
-	if len(b) >= mapHeaderSize {
+	if len(b) >= mapHeaderRebuildSize {
 		rebuildCount = binary.LittleEndian.Uint32(b[4:8])
 	}
-	return highestFileID, rebuildCount
+	if len(b) >= mapHeaderSize {
+		createFileID = binary.LittleEndian.Uint32(b[8:12])
+		createTime = binary.LittleEndian.Uint64(b[12:20])
+	}
+	return highestFileID, rebuildCount, createFileID, createTime
 }
 
 // encodeGUIDExt packs a 128-bit GUID into the 16-byte per-record
@@ -151,7 +163,7 @@ func defaultExtensions(highestFileID uint32) []mailindex.Extension {
 			HdrSize:     mapHeaderSize,
 			RecordSize:  extMapSize,
 			RecordAlign: 4,
-			HdrData:     encodeMapHeader(highestFileID, 0),
+			HdrData:     encodeMapHeader(highestFileID, 0, 0, 0),
 		},
 		{
 			Name:        extRef,

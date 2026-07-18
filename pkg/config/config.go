@@ -1278,6 +1278,20 @@ type StorageConfig struct {
 	// Example: /mnt/cold/%d/%n
 	MdboxAltStoragePath string `koanf:"mdbox_alt_storage_path"`
 
+	// MdboxRotateSize is the maximum size in bytes of a single m.<N> file before
+	// a new save rolls to a fresh file. 0 uses the default (10 MiB, matching
+	// Dovecot's mdbox_rotate_size).
+	MdboxRotateSize int64 `koanf:"mdbox_rotate_size"`
+	// MdboxRotateInterval rolls the current m.<N> file once it is older than this
+	// many seconds, independent of size. 0 disables age-based rotation (default),
+	// matching Dovecot's mdbox_rotate_interval. Unlike Dovecot, the cutoff is a
+	// rolling window (a file lives at least this long), not a clock-boundary snap.
+	MdboxRotateInterval int `koanf:"mdbox_rotate_interval"`
+	// MdboxPreallocateSpace reserves each new m.<N>'s space up front via
+	// fallocate() (Linux only) instead of growing it write-by-write. Default false,
+	// matching Dovecot's mdbox_preallocate_space.
+	MdboxPreallocateSpace bool `koanf:"mdbox_preallocate_space"`
+
 	// VolatileDir is the cluster-wide VOLATILEDIR template. When set,
 	// the fileindex Recreate tmp file is written here (typically a
 	// local tmpfs) and then copied to NFS, keeping the expensive fsync

@@ -44,6 +44,19 @@ type Map struct {
 	// "map" extension header (#594 Phase 2b). Bumped once per successful rebuild.
 	rebuildCount uint32
 
+	// createFileID / createTime record the id and unix-second creation stamp of
+	// the current append file (the one Save writes into), persisted in the "map"
+	// header for the mdbox_rotate_interval age check (#623). Persisting the stamp
+	// keeps it restart-safe without depending on an unreliable-over-NFS filesystem
+	// btime. Only the current append file's stamp is tracked — an already-rotated
+	// file is never appended to again, so its age no longer matters.
+	createFileID uint32
+	createTime   uint64
+
+	// rotateSize is the per-m.<N> size cap the batch append path enforces. 0 means
+	// the package default (defaultRotateSize).
+	rotateSize uint32
+
 	// byMapUID indexes records by UID for O(1) Lookup.
 	// Rebuilt on every load/flush.
 	byMapUID map[uint32]int
@@ -70,6 +83,24 @@ func WithLocker(l locks.Locker) Option {
 // Defaults to "<process>/<pid>/<user>" when unset.
 func WithOwner(s string) Option {
 	return func(m *Map) { m.owner = s }
+}
+
+// defaultRotateSize is the per-m.<N> size cap when none is configured — the real
+// Dovecot mdbox_rotate_size default (10 MiB).
+const defaultRotateSize uint32 = 10 * 1024 * 1024
+
+// WithRotateSize sets the per-m.<N> size cap the batch append path enforces.
+// 0 selects defaultRotateSize.
+func WithRotateSize(n uint32) Option {
+	return func(m *Map) { m.rotateSize = n }
+}
+
+// rotateSizeOrDefault returns the configured rotate size, or the package default.
+func (m *Map) rotateSizeOrDefault() uint32 {
+	if m.rotateSize == 0 {
+		return defaultRotateSize
+	}
+	return m.rotateSize
 }
 
 // Open opens (or creates) the per-user mdbox map at dir. The
@@ -206,7 +237,7 @@ func (m *Map) reindex() {
 
 	hfid := uint32(0)
 	if ext := findExt(m.f.Extensions, extMap); ext != nil {
-		hfid, m.rebuildCount = decodeMapHeader(ext.HdrData)
+		hfid, m.rebuildCount, m.createFileID, m.createTime = decodeMapHeader(ext.HdrData)
 	}
 	if maxFileID > hfid {
 		hfid = maxFileID
@@ -287,8 +318,8 @@ func (m *Map) setMapHeaderLocked() error {
 	if ext == nil {
 		return fmt.Errorf("mdboxmap/flush: missing %q extension", extMap)
 	}
-	ext.HdrData = encodeMapHeader(m.highestFileID, m.rebuildCount)
-	ext.HdrSize = uint32(len(ext.HdrData)) // 8; grows a legacy 4-byte header
+	ext.HdrData = encodeMapHeader(m.highestFileID, m.rebuildCount, m.createFileID, m.createTime)
+	ext.HdrSize = uint32(len(ext.HdrData)) // 20; grows a legacy 4/8-byte header
 	layout, err := mailindex.ComputeRecordLayout(m.f.Extensions)
 	if err != nil {
 		return fmt.Errorf("mdboxmap/flush: layout: %w", err)
@@ -309,6 +340,39 @@ func (m *Map) RebuildCount() uint32 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.rebuildCount
+}
+
+// CreateTime returns the persisted unix-second creation stamp of file fileID and
+// whether it is known. Only the current append file's stamp is tracked, so this
+// returns ok=false for any other (already-rotated or legacy) file — the caller
+// must then skip the age-based rotation check (a file whose age we cannot prove
+// is never rotated by age, only by size).
+func (m *Map) CreateTime(fileID uint32) (int64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fileID == 0 || fileID != m.createFileID {
+		return 0, false
+	}
+	return int64(m.createTime), true
+}
+
+// RecordFileCreated persists fileID as the current append file with creation
+// stamp ts (unix seconds), under the cross-process map lock. Called once when a
+// new physical m.<N> file is first written (Save's first record, or a compaction
+// destination), so the mdbox_rotate_interval age check has a restart-safe anchor.
+// A no-op when fileID already matches the recorded current file.
+func (m *Map) RecordFileCreated(fileID uint32, ts int64) error {
+	return m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		if m.createFileID == fileID {
+			return nil
+		}
+		m.createFileID = fileID
+		m.createTime = uint64(ts)
+		return m.flushLocked()
+	})
 }
 
 // BumpRebuildCount increments and persists the storage-wide-rebuild generation

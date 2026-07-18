@@ -47,10 +47,10 @@ func saveUntaggedOrphan(t *testing.T, box *userMailbox, body string) string {
 
 // newBoxAndIndex wires a real mdbox box and a real file index over the same
 // home, so the storage-wide rebuild can be exercised end to end.
-func newBoxAndIndex(t *testing.T, home string) (*userMailbox, mailbox.UserIndex) {
+func newBoxAndIndex(t *testing.T, home string, opts ...Option) (*userMailbox, mailbox.UserIndex) {
 	t.Helper()
 	info := &mailbox.UserInfo{Username: "u@x.io", Home: home}
-	box := New().OpenUser(info).(*userMailbox)
+	box := New(opts...).OpenUser(info).(*userMailbox)
 	if err := box.Init(); err != nil {
 		t.Fatalf("box init: %v", err)
 	}
@@ -295,10 +295,11 @@ func TestRebuildDropsDanglingFolderRecord(t *testing.T) {
 // is dropped from BOTH the folder index and the map.
 func TestRebuildExpungesVanishedMapRecord(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
-	box, idx := newBoxAndIndex(t, home)
+	// Small rotate size so the second message rolls into its own m.2 cheaply.
+	box, idx := newBoxAndIndex(t, home, WithRotateSize(4096))
 	deliverMsg(t, box, idx, "INBOX", "stays in m.1\r\n")
-	// A >2 MiB body forces a rotation into m.2, isolating this message.
-	big := "X" + strings.Repeat("y", 2*1024*1024+16)
+	// A body over the 4 KiB rotate size forces a rotation into m.2, isolating it.
+	big := "X" + strings.Repeat("y", 4096+16)
 	deliverMsg(t, box, idx, "INBOX", big)
 
 	// Delete m.2 so its message vanishes from storage.

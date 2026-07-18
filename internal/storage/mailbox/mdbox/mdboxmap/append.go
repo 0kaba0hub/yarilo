@@ -35,11 +35,6 @@ type pendingEntry struct {
 	guid   [16]byte
 }
 
-// rotateSize is the per-m.<N> physical-file size cap before
-// the next Next() call rolls to a fresh file_id. 2 MiB matches
-// the canonical mdbox_rotate_size default.
-const rotateSize uint32 = 2 * 1024 * 1024
-
 // AppendBatch begins a new save batch. The returned batch is
 // goroutine-affine: do not share between goroutines.
 func (m *Map) AppendBatch() *AppendBatch {
@@ -162,7 +157,7 @@ func (b *AppendBatch) Next(size uint32) (fileID, offset uint32) {
 		last := b.pending[len(b.pending)-1]
 		fileID = last.fileID
 		offset = last.offset + last.size
-		if offset+size > rotateSize {
+		if offset+size > b.m.rotateSizeOrDefault() {
 			fileID++
 			offset = 0
 		}
