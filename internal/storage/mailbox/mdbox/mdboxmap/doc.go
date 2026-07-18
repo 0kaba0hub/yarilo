@@ -1,5 +1,5 @@
 // Package mdboxmap implements the global per-user multi-message
-// dbox map (on-disk file: `dovecot.map.index`). It is the
+// dbox map (on-disk file: `yarilo.map.index`). It is the
 // keystone of the mdbox storage model:
 //
 //   - one binary mailindex file shared by every folder in the
