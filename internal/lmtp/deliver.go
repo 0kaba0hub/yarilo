@@ -8,11 +8,18 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
+
+// deliverCallSeq tags each deliverOne call with a process-local, monotonically
+// increasing id so concurrent deliveries racing on the same folder can be told
+// apart in the shared debug log stream (see the "lmtp: uid allocated" /
+// "lmtp: uid committed" breadcrumbs below).
+var deliverCallSeq atomic.Uint64
 
 // deliverOne saves a single message into the recipient's folder. The
 // caller opens handles via MailboxBackend.OpenUser + IndexBackend.OpenUser
@@ -48,6 +55,15 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 	if err != nil {
 		return 0, fmt.Errorf("lmtp: allocate UID: %w", err)
 	}
+	// Breadcrumb for the non-atomic AllocateUID -> Save -> AppendMessage window:
+	// AllocateUID commits and releases the folder lock immediately, so any other
+	// delivery to the same folder can interleave here while this one is still
+	// writing the body (mdbox/sdbox: map lookup + refcount + possible rotation,
+	// measurably slower than maildir's flat-file write). Logged with the uid and
+	// a per-call correlation id so two deliveries racing on the same folder can
+	// be told apart in a shared log stream.
+	callID := deliverCallSeq.Add(1)
+	slog.Debug("lmtp: uid allocated", "user", username, "folder", folder, "uid", uid, "call_id", callID)
 	modseq, err := idx.NextModSeq(f.ID)
 	if err != nil {
 		return 0, fmt.Errorf("lmtp: modseq: %w", err)
@@ -58,6 +74,8 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		return 0, fmt.Errorf("lmtp: save: %w", err)
 	}
 	tIndex := time.Now()
+	slog.Debug("lmtp: body saved, committing index", "user", username, "folder", folder, "uid", uid,
+		"call_id", callID, "filename", filename, "save_ms", tIndex.Sub(tSave).Milliseconds())
 	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
 		UID:          uid,
 		Filename:     filename,
@@ -66,9 +84,12 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		InternalDate: time.Now(),
 		Flags:        flags,
 	}); err != nil {
+		slog.Warn("lmtp: index append failed, rolling back save",
+			"user", username, "folder", folder, "uid", uid, "call_id", callID, "err", err)
 		_ = box.Remove(folder, filename)
 		return 0, fmt.Errorf("lmtp: index append: %w", err)
 	}
+	slog.Debug("lmtp: uid committed", "user", username, "folder", folder, "uid", uid, "call_id", callID)
 	slog.Debug("lmtp: deliver timing",
 		"folder", folder, "size", size,
 		"save_ms", tIndex.Sub(tSave).Milliseconds(),
