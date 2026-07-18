@@ -258,22 +258,16 @@ func scanMFileForAlt(path string) ([]physRecord, error) {
 		if _, err := f.Seek(int64(pos), io.SeekStart); err != nil {
 			return nil, fmt.Errorf("seek %d: %w", pos, err)
 		}
-		headerLine := make([]byte, 64)
-		n, err := f.Read(headerLine)
+		window := make([]byte, 64)
+		n, err := f.Read(window)
 		if err != nil {
-			return nil, fmt.Errorf("read header line @%d: %w", pos, err)
+			return nil, fmt.Errorf("read record start @%d: %w", pos, err)
 		}
-		lfIdx := -1
-		for i := 0; i < n; i++ {
-			if headerLine[i] == '\n' {
-				lfIdx = i
-				break
-			}
+		skip, ok := peekFileHeaderLen(window[:n])
+		if !ok {
+			return nil, fmt.Errorf("malformed record @%d", pos)
 		}
-		if lfIdx < 0 {
-			return nil, fmt.Errorf("file header line missing LF @%d", pos)
-		}
-		bodyStart := pos + uint32(lfIdx) + 1
+		bodyStart := pos + uint32(skip)
 		if _, err := f.Seek(int64(bodyStart), io.SeekStart); err != nil {
 			return nil, fmt.Errorf("seek msg header @%d: %w", bodyStart, err)
 		}
@@ -369,23 +363,18 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 		if _, err := f.Seek(int64(pos), io.SeekStart); err != nil {
 			return out, scanReadErr(err, fmt.Sprintf("seek %d", pos))
 		}
-		// Parse the file-header line (variable length up to LF).
-		headerLine := make([]byte, 64)
-		n, err := f.Read(headerLine)
+		// Peek the record start: skip the file-header line only when present (the
+		// file's first record, or every record in a legacy per-record-header file).
+		window := make([]byte, 64)
+		n, err := f.Read(window)
 		if err != nil {
-			return out, scanReadErr(err, fmt.Sprintf("read header line @%d", pos))
+			return out, scanReadErr(err, fmt.Sprintf("read record start @%d", pos))
 		}
-		lfIdx := -1
-		for i := 0; i < n; i++ {
-			if headerLine[i] == '\n' {
-				lfIdx = i
-				break
-			}
+		skip, ok := peekFileHeaderLen(window[:n])
+		if !ok {
+			return out, fmt.Errorf("%w: malformed record @%d", errScanCorrupt, pos)
 		}
-		if lfIdx < 0 {
-			return out, fmt.Errorf("%w: file header line missing LF @%d", errScanCorrupt, pos)
-		}
-		bodyStart := pos + uint32(lfIdx) + 1
+		bodyStart := pos + uint32(skip)
 		// Read 32-byte message header.
 		if _, err := f.Seek(int64(bodyStart), io.SeekStart); err != nil {
 			return out, scanReadErr(err, fmt.Sprintf("seek msg header @%d", bodyStart))
