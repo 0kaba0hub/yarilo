@@ -111,8 +111,8 @@ storage:
   mailbox: maildir
   maildir_root: /var/mail/vhosts
   # mdbox tuning (only used when mailbox: mdbox):
-  # mdbox_rotate_size: 10485760      # 10 MiB — max bytes per m.<N> before rolling (0 = default 10 MiB)
-  # mdbox_rotate_interval: 0         # seconds — roll the append file once older than this (0 = disabled)
+  # mdbox_rotate_size: 10M           # max size per m.<N> before rolling (10M/1G or raw bytes; 0 = default 10 MiB)
+  # mdbox_rotate_interval: 0         # roll append file once older than this (30s/5m/1h or raw seconds; 0 = disabled)
   # mdbox_preallocate_space: false   # fallocate() new m.<N> up front (Linux only)
 
 telemetry:

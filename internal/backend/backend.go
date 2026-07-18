@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -992,10 +993,30 @@ type mdboxTuning struct {
 func mdboxTuningFrom(sc config.StorageConfig) mdboxTuning {
 	return mdboxTuning{
 		altPath:        sc.MdboxAltStoragePath,
-		rotateSize:     sc.MdboxRotateSize,
-		rotateInterval: sc.MdboxRotateInterval,
+		rotateSize:     quota.ParseSize(sc.MdboxRotateSize),
+		rotateInterval: parseIntervalSeconds(sc.MdboxRotateInterval),
 		preallocate:    sc.MdboxPreallocateSpace,
 	}
+}
+
+// parseIntervalSeconds converts a duration string ("30s", "5m", "1h") or a bare
+// second count ("30") into whole seconds. Empty, "0", or an unparseable value
+// yields 0 (disabled) — the same lenient contract as quota.ParseSize, so a
+// malformed knob degrades to the safe default rather than failing startup.
+func parseIntervalSeconds(s string) int {
+	if s == "" || s == "0" {
+		return 0
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return int(d.Seconds())
+	}
+	return 0
 }
 
 // buildMailboxByDriver constructs a MailboxBackend for the named
