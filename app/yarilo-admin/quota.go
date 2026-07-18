@@ -17,12 +17,10 @@ func dispatchQuota(args []string) error {
 		return quotaShow(args[1:])
 	case "recalc":
 		return quotaRecalc(args[1:])
-	case "set":
-		return quotaSet(args[1:])
 	case "clone":
 		return dispatchQuotaClone(args[1:])
 	default:
-		return fmt.Errorf("unknown quota command %q — available: show, recalc, set, clone", args[0])
+		return fmt.Errorf("unknown quota command %q — available: show, recalc, clone", args[0])
 	}
 }
 
@@ -118,9 +116,6 @@ func printQuotaUsage() {
 Commands:
   show   <user>                     — current usage and configured limits
   recalc <user>                     — rescan all folders and rewrite counters (yarilo-admin quota recalc)
-  set    <user> --bytes N           — override storage counter directly
-                 --messages N       — override message counter directly
-                 (either or both flags required)
   clone  list                       — configured quota_clone backends
   clone  get <backend> <user>       — mirrored usage a clone backend holds
                                       (advisory mirror; 'quota show' is authoritative)
@@ -237,30 +232,4 @@ func formatBytes(b int64) string {
 	default:
 		return fmt.Sprintf("%d B", b)
 	}
-}
-
-// quotaSet directly overwrites one or both quota counters without a
-// full rescan. Useful for manual corrections.
-// POST /api/backend/quota/set
-func quotaSet(args []string) error {
-	fs := flag.NewFlagSet("quota set", flag.ContinueOnError)
-	bytesFlag := fs.Int64("bytes", -1, "storage bytes to set (omit to keep current)")
-	msgsFlag := fs.Int64("messages", -1, "message count to set (omit to keep current)")
-	if err := parseFlags(fs, args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: yarilo-admin backend quota set <user> [--bytes N] [--messages N]")
-	}
-	if *bytesFlag < 0 && *msgsFlag < 0 {
-		return fmt.Errorf("quota set: at least one of --bytes or --messages is required")
-	}
-	body := map[string]any{"user": fs.Arg(0)}
-	if *bytesFlag >= 0 {
-		body["storage_bytes"] = *bytesFlag
-	}
-	if *msgsFlag >= 0 {
-		body["messages"] = *msgsFlag
-	}
-	return printJSON(backendAPIPost("/api/backend/quota/set", body))
 }
