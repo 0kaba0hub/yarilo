@@ -63,9 +63,9 @@ func TestAppendBatchAllocatesUIDs(t *testing.T) {
 func TestAppendBatchRotatesOnSize(t *testing.T) {
 	m, _ := openTestMap(t)
 	b := m.AppendBatch()
-	huge := rotateSize - 100
+	huge := defaultRotateSize - 100
 	f1, _ := b.Next(huge)
-	// Next message would push past rotateSize → file_id rolls.
+	// Next message would push past the rotate size → file_id rolls.
 	f2, o2 := b.Next(200)
 	if f1 != 1 {
 		t.Errorf("first file_id = %d, want 1", f1)
@@ -371,5 +371,33 @@ func TestIncrementalLookupPicksUpSiblingAppend(t *testing.T) {
 	}
 	if e.Size != 4096 {
 		t.Errorf("entry drift after incremental replay: %+v", e)
+	}
+}
+
+// TestCreateTimeSurvivesReopen: the per-file create-time recorded for the current
+// append file is persisted in the map header and reloaded on reopen, so the
+// mdbox_rotate_interval age check keeps working across process restarts.
+func TestCreateTimeSurvivesReopen(t *testing.T) {
+	m, dir := openTestMap(t)
+	const ts int64 = 1_700_000_500
+	if err := m.RecordFileCreated(3, ts); err != nil {
+		t.Fatalf("RecordFileCreated: %v", err)
+	}
+	if got, ok := m.CreateTime(3); !ok || got != ts {
+		t.Fatalf("CreateTime(3) = (%d,%v), want (%d,true)", got, ok, ts)
+	}
+	// A non-current file id is unknown.
+	if _, ok := m.CreateTime(2); ok {
+		t.Errorf("CreateTime(2) should be unknown")
+	}
+	_ = m.Close()
+
+	m2, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = m2.Close() })
+	if got, ok := m2.CreateTime(3); !ok || got != ts {
+		t.Errorf("CreateTime(3) after reopen = (%d,%v), want (%d,true)", got, ok, ts)
 	}
 }

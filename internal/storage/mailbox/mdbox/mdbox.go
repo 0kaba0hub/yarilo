@@ -80,6 +80,27 @@ type Backend struct {
 	writeSem       chan struct{} // nil = unlimited
 	listUTF8       bool
 	normalizeNFC   bool
+
+	// rotateSize is the per-m.<N> size cap before Save rolls to a fresh file_id
+	// (mdbox_rotate_size). 0 selects defaultRotateSize (10 MiB, the Dovecot default).
+	rotateSize uint32
+	// rotateInterval rolls the append file once it is older than this, regardless
+	// of size (mdbox_rotate_interval). 0 disables age-based rotation (the default).
+	rotateInterval time.Duration
+	// preallocate fallocate()s a new m.<N> to rotateSize up front (mdbox_preallocate_space).
+	preallocate bool
+
+	// now returns the current time; nil means time.Now. Injected only by tests to
+	// exercise the age-based rotation deterministically without sleeping.
+	now func() time.Time
+}
+
+// clock returns the backend's time source (time.Now unless a test injected one).
+func (b *Backend) clock() time.Time {
+	if b.now != nil {
+		return b.now()
+	}
+	return time.Now()
 }
 
 // Option configures a Backend at construction time.
@@ -119,6 +140,20 @@ func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 // WithNormalizeNFC enables Unicode NFC normalization of folder names. Default true.
 func WithNormalizeNFC(v bool) Option { return func(b *Backend) { b.normalizeNFC = v } }
 
+// WithRotateSize sets the per-m.<N> size cap (mdbox_rotate_size) before Save rolls
+// to a fresh file_id. 0 selects the Dovecot default (10 MiB).
+func WithRotateSize(n uint32) Option { return func(b *Backend) { b.rotateSize = n } }
+
+// WithRotateInterval rolls the append file once it is older than d
+// (mdbox_rotate_interval), independent of size. 0 disables age-based rotation.
+func WithRotateInterval(d time.Duration) Option {
+	return func(b *Backend) { b.rotateInterval = d }
+}
+
+// WithPreallocate enables fallocate() of a new m.<N> to the rotate size up front
+// (mdbox_preallocate_space). Default false. A no-op on non-Linux builds.
+func WithPreallocate(v bool) Option { return func(b *Backend) { b.preallocate = v } }
+
 // New constructs a Backend.
 func New(opts ...Option) *Backend {
 	b := &Backend{listUTF8: true, normalizeNFC: true}
@@ -126,6 +161,15 @@ func New(opts ...Option) *Backend {
 		opt(b)
 	}
 	return b
+}
+
+// rotateSizeOrDefault returns the configured rotate size, or the Dovecot default
+// (10 MiB) when unset.
+func (b *Backend) rotateSizeOrDefault() uint32 {
+	if b.rotateSize == 0 {
+		return 10 * 1024 * 1024
+	}
+	return b.rotateSize
 }
 
 // OpenUser returns a per-session handle bound to u.
@@ -271,7 +315,9 @@ func (u *userMailbox) openMap() (*mdboxmap.Map, error) {
 	if err := os.MkdirAll(u.mapStoragePath(), 0o700); err != nil {
 		return nil, fmt.Errorf("mdbox/openmap: mkdir: %w", err)
 	}
-	m, err := mdboxmap.Open(u.mapStoragePath(), u.username, mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner))
+	m, err := mdboxmap.Open(u.mapStoragePath(), u.username,
+		mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner),
+		mdboxmap.WithRotateSize(u.b.rotateSize))
 	if err != nil {
 		return nil, err
 	}
@@ -391,10 +437,6 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	return entries, nil
 }
 
-// rotateThreshold is the per-m.<N> size cap before Save rolls
-// to a fresh file_id. Matches mdbox_rotate_size default (2 MiB).
-const rotateThreshold uint32 = 2 * 1024 * 1024
-
 // Save writes the message body into the user-wide multi-message
 // store and records the location in the mdboxmap. Returns the
 // assigned map_uid as a decimal string — the caller stores this
@@ -447,7 +489,19 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		fileID = 1
 	}
 	curSize, _ := u.fileSize(u.mfilePath(fileID))
-	if uint32(curSize)+recLen > rotateThreshold {
+	// Roll to a fresh file_id when appending would exceed the size cap, OR when the
+	// current append file is older than the configured rotate interval. The age
+	// check uses a persisted create-time (not a filesystem btime), and a rolling
+	// window (now - createTime > interval), not Dovecot's boundary-snapped cutoff —
+	// so "rotate every interval" means the file actually lived at least that long.
+	nowT := u.b.clock()
+	rotate := uint32(curSize)+recLen > u.b.rotateSizeOrDefault()
+	if !rotate && u.b.rotateInterval > 0 {
+		if ct, ok := m.CreateTime(fileID); ok && nowT.Sub(time.Unix(ct, 0)) > u.b.rotateInterval {
+			rotate = true
+		}
+	}
+	if rotate {
 		fileID, err = m.AllocFileID()
 		if err != nil {
 			return "", fmt.Errorf("mdbox/save: alloc file id: %w", err)
@@ -476,6 +530,16 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	record := msgRecord
 	if offset == 0 {
 		record = append(buildDboxFileHeader(), msgRecord...)
+		// Anchor the age clock for this file and, if configured, reserve its space
+		// up front. Both are best-effort hints — a failure must not fail the Save.
+		if rerr := m.RecordFileCreated(fileID, nowT.Unix()); rerr != nil {
+			slog.Warn("mdbox: record file create-time failed", "user", u.username, "file_id", fileID, "err", rerr)
+		}
+		if u.b.preallocate {
+			if perr := preallocateFile(f, int64(u.b.rotateSizeOrDefault())); perr != nil {
+				slog.Warn("mdbox: preallocate failed", "user", u.username, "file_id", fileID, "err", perr)
+			}
+		}
 	}
 	recLen = uint32(len(record))
 	if _, err := f.Write(record); err != nil {

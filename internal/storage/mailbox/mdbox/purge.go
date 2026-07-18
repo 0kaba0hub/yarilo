@@ -3,8 +3,10 @@ package mdbox
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 )
@@ -93,6 +95,11 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 		moved, err := u.compactRecords(fileID, newID, live)
 		if err != nil {
 			return stats, err
+		}
+		// Anchor the age clock for the compacted file so mdbox_rotate_interval
+		// applies to it too (best-effort — a failure must not fail the purge).
+		if rerr := m.RecordFileCreated(newID, time.Now().Unix()); rerr != nil {
+			slog.Warn("mdbox: record compacted file create-time failed", "user", u.username, "file_id", newID, "err", rerr)
 		}
 		if err := m.AppendMove(moved, dead); err != nil {
 			return stats, fmt.Errorf("mdbox/purge: append-move file=%d→%d: %w", fileID, newID, err)
