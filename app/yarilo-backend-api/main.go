@@ -27,9 +27,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/backendapi"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailboxbuild"
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -114,9 +112,9 @@ func main() {
 		resolver.HomeTemplate = "%d/%n"
 	}
 
-	mb := buildMailbox(cfg.Storage.Mailbox, locker, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
+	mb := mailboxbuild.ByDriver(cfg.Storage.Mailbox, cfg.Storage, locker)
 	idx := file.New(file.WithLocker(locker))
-	nsOverrides, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, locker, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
+	nsOverrides, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, cfg.Storage, locker)
 	if err != nil {
 		slog.Error("backend-api: namespace mailbox wiring", "err", err)
 		os.Exit(1)
@@ -181,7 +179,7 @@ func main() {
 		AnvilTLS:           anvilTLS,
 		AuthClient:         authcl,
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
-			return buildMailbox(driver, locker, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
+			return mailboxbuild.ByDriver(driver, cfg.Storage, locker)
 		},
 		FTSClient: ftsClient,
 	})
@@ -214,21 +212,7 @@ func openDicts(specs map[string]config.DictConfig) map[string]dict.Dict {
 	return out
 }
 
-func buildMailbox(driver string, locker locks.Locker, listUTF8, normalizeNFC bool) mailbox.MailboxBackend {
-	switch strings.ToLower(driver) {
-	case "sdbox", "dbox":
-		return dboxv2.New(dboxv2.WithLocker(locker),
-			dboxv2.WithListUTF8(listUTF8), dboxv2.WithNormalizeNFC(normalizeNFC))
-	case "mdbox":
-		return mdbox.New(mdbox.WithLocker(locker),
-			mdbox.WithListUTF8(listUTF8), mdbox.WithNormalizeNFC(normalizeNFC))
-	default:
-		return maildir.New(maildir.WithLocker(locker),
-			maildir.WithListUTF8(listUTF8), maildir.WithNormalizeNFC(normalizeNFC))
-	}
-}
-
-func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver string, locker locks.Locker, listUTF8, normalizeNFC bool) (map[string]mailbox.MailboxBackend, error) {
+func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver string, sc config.StorageConfig, locker locks.Locker) (map[string]mailbox.MailboxBackend, error) {
 	if len(namespaces) == 0 {
 		return nil, nil
 	}
@@ -255,7 +239,7 @@ func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver s
 		}
 		b, exists := byDriver[drv]
 		if !exists {
-			b = buildMailbox(drv, locker, listUTF8, normalizeNFC)
+			b = mailboxbuild.ByDriver(drv, sc, locker)
 			byDriver[drv] = b
 		}
 		overrides[ns.Prefix] = b

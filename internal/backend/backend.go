@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,9 +28,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/quotawarn"
 	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/0kaba0hub/yarilo/internal/storage/mailboxbuild"
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
@@ -134,7 +131,7 @@ func New(cfg *config.Config) (*Server, error) {
 	// non-default driver referenced from cfg.Namespaces[*].Location.
 	// Namespaces using the global driver are absent from the map and
 	// resolve at session-open time to the global mbox.
-	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, mdboxTuningFrom(cfg.Storage), locker, cfg.Storage.MaxConcurrentWrites, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
+	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, cfg.Storage, locker)
 	if err != nil {
 		return nil, fmt.Errorf("backend: namespace mailboxes: %w", err)
 	}
@@ -241,8 +238,7 @@ func New(cfg *config.Config) (*Server, error) {
 			TLSConfig: imapTLS,
 			Mailbox:   mbox,
 			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
-				return buildMailboxByDriver(driver, mdboxTuningFrom(storageCfg), locker,
-					storageCfg.MaxConcurrentWrites, storageCfg.MailboxListUTF8, storageCfg.MailboxListNormalizeToNFC)
+				return buildMailboxByDriver(driver, storageCfg, locker)
 			},
 			Index:                idx,
 			Resolver:             resolver,
@@ -316,8 +312,7 @@ func New(cfg *config.Config) (*Server, error) {
 			TLSConfig: pop3TLS,
 			Mailbox:   mbox,
 			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
-				return buildMailboxByDriver(driver, mdboxTuningFrom(cfg.Storage), locker,
-					cfg.Storage.MaxConcurrentWrites, cfg.Storage.MailboxListUTF8, cfg.Storage.MailboxListNormalizeToNFC)
+				return buildMailboxByDriver(driver, cfg.Storage, locker)
 			},
 			Index:              idx,
 			Resolver:           resolver,
@@ -421,8 +416,7 @@ func New(cfg *config.Config) (*Server, error) {
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
 			ACLCacheTTL:          time.Duration(cfg.ACL.CacheTTL) * time.Second,
 			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
-				return buildMailboxByDriver(driver, mdboxTuningFrom(lmtpStorageCfg), locker,
-					lmtpStorageCfg.MaxConcurrentWrites, lmtpStorageCfg.MailboxListUTF8, lmtpStorageCfg.MailboxListNormalizeToNFC)
+				return buildMailboxByDriver(driver, lmtpStorageCfg, locker)
 			},
 		}
 		if addr := cfg.AuthService.MasterAddr; addr != "" {
@@ -950,8 +944,7 @@ func BuildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 // use. Exported so standalone binaries (yarilo-fts) resolve each user's
 // storage format from the userdb mail_location instead of the global default.
 func BuildMailboxByDriver(driver string, cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
-	return buildMailboxByDriver(driver, mdboxTuningFrom(cfg), locker,
-		cfg.MaxConcurrentWrites, cfg.MailboxListUTF8, cfg.MailboxListNormalizeToNFC)
+	return buildMailboxByDriver(driver, cfg, locker)
 }
 
 // BuildResolver builds the storage path resolver from config, applying the same
@@ -977,68 +970,14 @@ func BuildResolver(cfg *config.Config) *mailbox.Resolver {
 }
 
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
-	return buildMailboxByDriver(cfg.Mailbox, mdboxTuningFrom(cfg), locker, cfg.MaxConcurrentWrites, cfg.MailboxListUTF8, cfg.MailboxListNormalizeToNFC)
+	return buildMailboxByDriver(cfg.Mailbox, cfg, locker)
 }
 
-// mdboxTuning bundles the mdbox-specific storage knobs threaded to the mdbox
-// backend, so buildMailboxByDriver's signature does not grow a parameter per
-// knob. Zero values select the mdbox package defaults.
-type mdboxTuning struct {
-	altPath        string
-	rotateSize     int64
-	rotateInterval int // seconds; 0 = disabled
-	preallocate    bool
-}
-
-func mdboxTuningFrom(sc config.StorageConfig) mdboxTuning {
-	return mdboxTuning{
-		altPath:        sc.MdboxAltStoragePath,
-		rotateSize:     quota.ParseSize(sc.MdboxRotateSize),
-		rotateInterval: parseIntervalSeconds(sc.MdboxRotateInterval),
-		preallocate:    sc.MdboxPreallocateSpace,
-	}
-}
-
-// parseIntervalSeconds converts a duration string ("30s", "5m", "1h") or a bare
-// second count ("30") into whole seconds. Empty, "0", or an unparseable value
-// yields 0 (disabled) — the same lenient contract as quota.ParseSize, so a
-// malformed knob degrades to the safe default rather than failing startup.
-func parseIntervalSeconds(s string) int {
-	if s == "" || s == "0" {
-		return 0
-	}
-	if n, err := strconv.Atoi(s); err == nil {
-		if n < 0 {
-			return 0
-		}
-		return n
-	}
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		return int(d.Seconds())
-	}
-	return 0
-}
-
-// buildMailboxByDriver constructs a MailboxBackend for the named
-// driver. Defaults to maildir for unknown / empty drivers so an
-// operator's typo does not crash startup. Reused by buildMailbox
-// (global default from cfg.Storage.Mailbox) and by
-// buildNamespaceMailboxes (per-namespace override from
-// cfg.Namespaces[*].Location).
-func buildMailboxByDriver(driver string, mtune mdboxTuning, locker locks.Locker, maxConcurrentWrites int, listUTF8, normalizeNFC bool) mailbox.MailboxBackend {
-	switch strings.ToLower(driver) {
-	case "sdbox", "dbox":
-		return dboxv2.New(dboxv2.WithLocker(locker), dboxv2.WithMaxConcurrentWrites(maxConcurrentWrites),
-			dboxv2.WithListUTF8(listUTF8), dboxv2.WithNormalizeNFC(normalizeNFC))
-	case "mdbox":
-		return mdbox.New(mdbox.WithLocker(locker), mdbox.WithAltStorage(mtune.altPath), mdbox.WithMaxConcurrentWrites(maxConcurrentWrites),
-			mdbox.WithListUTF8(listUTF8), mdbox.WithNormalizeNFC(normalizeNFC),
-			mdbox.WithRotateSize(uint32(mtune.rotateSize)), mdbox.WithRotateInterval(time.Duration(mtune.rotateInterval)*time.Second),
-			mdbox.WithPreallocate(mtune.preallocate))
-	default:
-		return maildir.New(maildir.WithLocker(locker), maildir.WithMaxConcurrentWrites(maxConcurrentWrites),
-			maildir.WithListUTF8(listUTF8), maildir.WithNormalizeNFC(normalizeNFC))
-	}
+// buildMailboxByDriver constructs a MailboxBackend for the named driver from sc.
+// Thin wrapper over the shared mailboxbuild.ByDriver so every binary builds mdbox
+// (and its tuning) identically — see #639.
+func buildMailboxByDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
+	return mailboxbuild.ByDriver(driver, sc, locker)
 }
 
 // buildNamespaceMailboxes constructs the per-namespace MailboxBackend
@@ -1051,7 +990,7 @@ func buildMailboxByDriver(driver string, mtune mdboxTuning, locker locks.Locker,
 // The override map is keyed by namespace prefix (same key the IMAP
 // session dispatcher uses). Same-driver namespaces share their
 // Backend instance to keep the in-memory footprint small.
-func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver string, mtune mdboxTuning, locker locks.Locker, maxConcurrentWrites int, listUTF8, normalizeNFC bool) (map[string]mailbox.MailboxBackend, error) {
+func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver string, sc config.StorageConfig, locker locks.Locker) (map[string]mailbox.MailboxBackend, error) {
 	if len(namespaces) == 0 {
 		return nil, nil
 	}
@@ -1081,7 +1020,7 @@ func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver s
 		}
 		b, exists := byDriver[drv]
 		if !exists {
-			b = buildMailboxByDriver(drv, mtune, locker, maxConcurrentWrites, listUTF8, normalizeNFC)
+			b = buildMailboxByDriver(drv, sc, locker)
 			byDriver[drv] = b
 			slog.Info("backend: per-namespace mailbox backend built", "driver", drv, "ns", ns.Prefix)
 		}
