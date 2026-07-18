@@ -77,11 +77,14 @@ type Engine interface {
 // UserIndex is the per-user handle. All writes are serialised by the caller
 // (the yarilo-fts service owns the index; pkg/locks guards the directory).
 type UserIndex interface {
-	// Checkpoint returns the per-mailbox indexing checkpoint: the highest
-	// indexed UID and the settings checksum recorded when it was written.
-	// A zero checkpoint means the mailbox was never indexed.
-	Checkpoint(mbox MailboxRef) (lastUID uint32, settingsChecksum uint32, err error)
-	SetCheckpoint(mbox MailboxRef, lastUID, settingsChecksum uint32) error
+	// Checkpoint returns the per-mailbox indexing checkpoint: the highest indexed
+	// UID, the UIDVALIDITY it was recorded under, and the settings checksum. A zero
+	// checkpoint means the mailbox was never indexed; a stored UIDVALIDITY that no
+	// longer matches the mailbox means it was recreated and the checkpoint is stale
+	// (the caller must reset — #638). uidValidity reads back as 0 for legacy
+	// checkpoints written before it was tracked.
+	Checkpoint(mbox MailboxRef) (lastUID, uidValidity, settingsChecksum uint32, err error)
+	SetCheckpoint(mbox MailboxRef, lastUID, uidValidity, settingsChecksum uint32) error
 
 	BeginUpdate(mbox MailboxRef) (Update, error)
 	Expunge(mbox MailboxRef, uid uint32) error

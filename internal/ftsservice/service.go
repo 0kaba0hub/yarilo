@@ -215,9 +215,18 @@ func (s *Service) Status(user string, mbox fts.MailboxRef) (uint32, uint32, erro
 	if err != nil {
 		return 0, 0, err
 	}
-	last, sum, err := h.ui.Checkpoint(mbox)
+	last, storedUIDV, sum, err := h.ui.Checkpoint(mbox)
+	// A checkpoint recorded under a different UIDVALIDITY belongs to a mailbox that
+	// has since been recreated — report "not indexed" (last=0) so the client's
+	// catch-up queues a reindex that resets it, instead of trusting a stale
+	// last_indexed_uid that suppresses indexing of the new low UIDs (#638).
+	staleUIDV := last > 0 && mbox.UIDValidity != 0 && storedUIDV != mbox.UIDValidity
+	if staleUIDV {
+		last = 0
+	}
 	slog.Debug("fts: status", "user", user, "folder", mbox.Name,
-		"last_indexed_uid", last, "settings_checksum", sum, "err", err)
+		"last_indexed_uid", last, "settings_checksum", sum,
+		"stored_uidvalidity", storedUIDV, "mbox_uidvalidity", mbox.UIDValidity, "stale_uidvalidity", staleUIDV, "err", err)
 	return last, sum, err
 }
 
@@ -226,7 +235,7 @@ func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
 	if err != nil {
 		return err
 	}
-	present, maxUID, err := s.presentUIDs(h, mbox)
+	present, maxUID, uidValidity, err := s.presentUIDs(h, mbox)
 	if err != nil {
 		return err
 	}
@@ -242,7 +251,7 @@ func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
 		// The checkpoint may sit above the gaps; reset it so the index walk
 		// revisits the missing range.
 		low := missing[0]
-		if err := h.ui.SetCheckpoint(mbox, low-1, s.opts.Chain.SettingsChecksum()); err != nil {
+		if err := h.ui.SetCheckpoint(mbox, low-1, uidValidity, s.opts.Chain.SettingsChecksum()); err != nil {
 			return err
 		}
 		s.queue.push(job{user: user, mbox: mbox, maxUID: maxUID}, false)
@@ -331,24 +340,23 @@ func (s *Service) evict(user string) {
 	}
 }
 
-func (s *Service) presentUIDs(h *userHandle, mbox fts.MailboxRef) ([]uint32, uint32, error) {
+func (s *Service) presentUIDs(h *userHandle, mbox fts.MailboxRef) (uids []uint32, maxUID, uidValidity uint32, err error) {
 	folder, err := h.idx.OpenFolder(mbox.Name, mbox.UIDValidity)
 	if err != nil {
-		return nil, 0, fmt.Errorf("ftsservice: open folder: %w", err)
+		return nil, 0, 0, fmt.Errorf("ftsservice: open folder: %w", err)
 	}
 	msgs, err := h.idx.GetMessages(folder.ID, mailbox.SeqSet{})
 	if err != nil {
-		return nil, 0, fmt.Errorf("ftsservice: list messages: %w", err)
+		return nil, 0, 0, fmt.Errorf("ftsservice: list messages: %w", err)
 	}
-	uids := make([]uint32, 0, len(msgs))
-	var maxUID uint32
+	uids = make([]uint32, 0, len(msgs))
 	for _, m := range msgs {
 		uids = append(uids, m.UID)
 		if m.UID > maxUID {
 			maxUID = m.UID
 		}
 	}
-	return uids, maxUID, nil
+	return uids, maxUID, folder.UIDValidity, nil
 }
 
 func (s *Service) runIndex(j job) error {
@@ -358,43 +366,59 @@ func (s *Service) runIndex(j job) error {
 	}
 	tStart := time.Now()
 	checksum := s.opts.Chain.SettingsChecksum()
-	last, storedSum, err := h.ui.Checkpoint(j.mbox)
-	if err != nil {
-		return err
-	}
-	slog.Debug("fts: index run start", "user", j.user, "folder", j.mbox.Name,
-		"checkpoint_uid", last, "target_max_uid", j.maxUID,
-		"stored_checksum", storedSum, "current_checksum", checksum)
-	if last > 0 && storedSum != checksum {
-		// Tokenizer/filter config changed: this mailbox's index no longer
-		// matches query-time tokenization — rebuild it from scratch.
-		slog.Info("fts: settings changed, rebuilding mailbox",
-			"user", j.user, "folder", j.mbox.Name)
-		if err := s.opts.LockMailbox(j.user, j.mbox.Name, func() error {
-			_, rerr := h.ui.Rescan(j.mbox, nil) // drop every stale document
-			return rerr
-		}); err != nil {
-			return err
-		}
-		last = 0
-	}
-	if j.maxUID <= last {
-		slog.Debug("fts: index run skipped, already current",
-			"user", j.user, "folder", j.mbox.Name, "checkpoint_uid", last, "target_max_uid", j.maxUID)
-		return nil
-	}
 
+	// Snapshot the folder (outside the lock): its UIDVALIDITY is the authoritative
+	// current value — the Index/autoindex path often sends MailboxRef.UIDValidity=0,
+	// so the checkpoint compare must use the folder's own value, not the job's.
 	folder, err := h.idx.OpenFolder(j.mbox.Name, j.mbox.UIDValidity)
 	if err != nil {
 		return fmt.Errorf("ftsservice: open folder: %w", err)
 	}
+	curUIDV := folder.UIDValidity
 	msgs, err := h.idx.GetMessages(folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return fmt.Errorf("ftsservice: list messages: %w", err)
 	}
 
 	indexedCount, skippedCount := 0, 0
+	// Everything from the checkpoint read through the checkpoint write runs under
+	// the per-mailbox lock (locks.MailboxKey(user, folder)): concurrent index jobs
+	// for the SAME mailbox must not race the read-modify-write of last_indexed_uid
+	// and clobber each other's progress. Different mailboxes/users are keyed
+	// separately and index in parallel.
 	err = s.opts.LockMailbox(j.user, j.mbox.Name, func() error {
+		last, storedUIDV, storedSum, cerr := h.ui.Checkpoint(j.mbox)
+		if cerr != nil {
+			return cerr
+		}
+		// Decide whether the checkpoint is stale and the index must be rebuilt:
+		//  - settings changed: query-time tokenization no longer matches the index;
+		//  - UIDVALIDITY changed: the mailbox was recreated, so the stale
+		//    last_indexed_uid can sit above the new low UIDs and silently suppress
+		//    indexing of every new message (#638).
+		reset := ""
+		if last > 0 && storedSum != checksum {
+			reset = "settings"
+		} else if last > 0 && curUIDV != 0 && storedUIDV != curUIDV {
+			reset = "uidvalidity"
+		}
+		slog.Debug("fts: index run start", "user", j.user, "folder", j.mbox.Name,
+			"checkpoint_uid", last, "target_max_uid", j.maxUID,
+			"stored_checksum", storedSum, "current_checksum", checksum,
+			"stored_uidvalidity", storedUIDV, "current_uidvalidity", curUIDV, "reset", reset)
+		if reset != "" {
+			slog.Info("fts: resetting mailbox index", "user", j.user, "folder", j.mbox.Name, "reason", reset)
+			if _, rerr := h.ui.Rescan(j.mbox, nil); rerr != nil { // drop every stale document
+				return rerr
+			}
+			last = 0
+		}
+		if j.maxUID <= last {
+			slog.Debug("fts: index run skipped, already current",
+				"user", j.user, "folder", j.mbox.Name, "checkpoint_uid", last, "target_max_uid", j.maxUID)
+			return nil
+		}
+
 		upd, err := h.ui.BeginUpdate(j.mbox)
 		if err != nil {
 			return err
@@ -427,7 +451,7 @@ func (s *Service) runIndex(j job) error {
 				if err := upd.Commit(); err != nil {
 					return err
 				}
-				if err := h.ui.SetCheckpoint(j.mbox, indexed, checksum); err != nil {
+				if err := h.ui.SetCheckpoint(j.mbox, indexed, curUIDV, checksum); err != nil {
 					return err
 				}
 				batch = 0
@@ -437,13 +461,13 @@ func (s *Service) runIndex(j job) error {
 			return err
 		}
 		if indexed != last {
-			return h.ui.SetCheckpoint(j.mbox, indexed, checksum)
+			return h.ui.SetCheckpoint(j.mbox, indexed, curUIDV, checksum)
 		}
 		return nil
 	})
 	slog.Debug("fts: index run done", "user", j.user, "folder", j.mbox.Name,
 		"messages_in_folder", len(msgs), "indexed", indexedCount, "skipped", skippedCount,
-		"checkpoint_from", last, "dur_ms", time.Since(tStart).Milliseconds(), "err", err)
+		"dur_ms", time.Since(tStart).Milliseconds(), "err", err)
 	return err
 }
 

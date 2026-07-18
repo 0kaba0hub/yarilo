@@ -169,17 +169,35 @@ func TestExpunge(t *testing.T) {
 
 func TestCheckpoint(t *testing.T) {
 	ui, _ := testEngine(t, Options{})
-	last, sum, err := ui.Checkpoint(inbox)
-	if err != nil || last != 0 || sum != 0 {
-		t.Fatalf("empty checkpoint = %d/%d/%v", last, sum, err)
+	last, uidv, sum, err := ui.Checkpoint(inbox)
+	if err != nil || last != 0 || uidv != 0 || sum != 0 {
+		t.Fatalf("empty checkpoint = %d/%d/%d/%v", last, uidv, sum, err)
 	}
-	if err := ui.SetCheckpoint(inbox, 42, 7); err != nil {
+	if err := ui.SetCheckpoint(inbox, 42, 99, 7); err != nil {
 		t.Fatal(err)
 	}
-	last, sum, err = ui.Checkpoint(inbox)
-	if err != nil || last != 42 || sum != 7 {
-		t.Fatalf("checkpoint = %d/%d/%v, want 42/7", last, sum, err)
+	last, uidv, sum, err = ui.Checkpoint(inbox)
+	if err != nil || last != 42 || uidv != 99 || sum != 7 {
+		t.Fatalf("checkpoint = %d/%d/%d/%v, want 42/99/7", last, uidv, sum, err)
 	}
+}
+
+// TestCheckpointLegacyV1 verifies a v1 checkpoint file ("1 <uid> <sum>") still
+// reads back, with uidvalidity 0 so a UIDVALIDITY mismatch resets it (#638).
+func TestCheckpointLegacyV1(t *testing.T) {
+	ui, user := testEngine(t, Options{})
+	dir := (ui.(*userIndex)).state(inbox).dir
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, checkpointFile), []byte("1 10 7\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	last, uidv, sum, err := ui.Checkpoint(inbox)
+	if err != nil || last != 10 || uidv != 0 || sum != 7 {
+		t.Fatalf("legacy v1 checkpoint = %d/%d/%d/%v, want 10/0/7", last, uidv, sum, err)
+	}
+	_ = user
 }
 
 func TestCheckpointMigrationFallback(t *testing.T) {
@@ -191,9 +209,9 @@ func TestCheckpointMigrationFallback(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, checkpointFile)); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	last, sum, err := ui.Checkpoint(inbox)
-	if err != nil || last != 17 || sum != 0 {
-		t.Fatalf("migration checkpoint = %d/%d/%v, want 17/0", last, sum, err)
+	last, uidv, sum, err := ui.Checkpoint(inbox)
+	if err != nil || last != 17 || uidv != 0 || sum != 0 {
+		t.Fatalf("migration checkpoint = %d/%d/%d/%v, want 17/0/0", last, uidv, sum, err)
 	}
 }
 

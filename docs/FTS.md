@@ -285,8 +285,19 @@ without an operator deleting `fts-flatcurve/` on disk.
 
 **Engine-independent (framework level, applies to both):**
 
-- **Per-mailbox checkpoint** (`last_indexed_uid`, `settings_checksum`) in the
-  engine metadata; checksum mismatch ⇒ rebuild of that mailbox.
+- **Per-mailbox checkpoint** (`last_indexed_uid`, `uidvalidity`, `settings_checksum`)
+  in the engine metadata (flatcurve on-disk file format `2 <uidvalidity> <last_uid>
+  <settings_checksum>`, tolerant of the legacy v1 `1 <last_uid> <settings_checksum>`
+  which reads `uidvalidity` back as 0). A **checksum mismatch** rebuilds the mailbox
+  (tokenizer/filter config changed); a **UIDVALIDITY mismatch** means the mailbox was
+  recreated, so the checkpoint is stale and its `last_indexed_uid` can sit above the
+  new low UIDs — the indexer detects this and rebuilds from scratch rather than
+  silently skipping every new message (#638). The reference gets this for free by
+  co-locating the fts header inside the mailbox's own `dovecot.index` (recreated on
+  UIDVALIDITY change); yarilo's `yarilo-fts` is a separate process that must not write
+  the session-owned fileindex, so it tracks UIDVALIDITY explicitly in its own
+  checkpoint. The checkpoint read-modify-write runs under the per-mailbox lock so
+  concurrent index jobs for one mailbox can't clobber each other's progress.
 - Every write path in `yarilo-fts` takes the user's mailbox lock via
   `pkg/locks` (project rule) around update/rescan/optimize sessions.
 

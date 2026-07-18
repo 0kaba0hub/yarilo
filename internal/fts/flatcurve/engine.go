@@ -300,39 +300,51 @@ func (st *mboxState) closeCurrent() error {
 
 /* --- checkpoints ---------------------------------------------------------- */
 
-func (u *userIndex) Checkpoint(mbox fts.MailboxRef) (uint32, uint32, error) {
+// Checkpoint returns the persisted (last_indexed_uid, uidvalidity, settings
+// checksum). The on-disk file is v2 ("2 <uidvalidity> <last_uid> <checksum>");
+// a legacy v1 file ("1 <last_uid> <checksum>") reads uidvalidity back as 0 so the
+// caller treats it as "unknown" and lets a UIDVALIDITY mismatch reset it (#638).
+func (u *userIndex) Checkpoint(mbox fts.MailboxRef) (lastUID, uidValidity, sum uint32, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	st := u.state(mbox)
-	data, err := os.ReadFile(filepath.Join(st.dir, checkpointFile))
-	if err == nil {
-		var version, lastUID, sum uint32
-		if _, serr := fmt.Sscanf(string(data), "%d %d %d", &version, &lastUID, &sum); serr == nil && version == 1 {
-			return lastUID, sum, nil
+	if data, rerr := os.ReadFile(filepath.Join(st.dir, checkpointFile)); rerr == nil {
+		var version uint32
+		if _, e := fmt.Sscanf(string(data), "%d", &version); e == nil {
+			switch version {
+			case 2:
+				if _, e2 := fmt.Sscanf(string(data), "%d %d %d %d", &version, &uidValidity, &lastUID, &sum); e2 == nil {
+					return lastUID, uidValidity, sum, nil
+				}
+			case 1:
+				if _, e2 := fmt.Sscanf(string(data), "%d %d %d", &version, &lastUID, &sum); e2 == nil {
+					return lastUID, 0, sum, nil
+				}
+			}
 		}
 	}
-	// No yarilo checkpoint: a migrated index still knows its highest
-	// docid (== UID). Settings checksum 0 forces a rebuild decision upstream.
-	paths, err := shardPaths(st.dir)
-	if err != nil || len(paths) == 0 {
-		return 0, 0, nil
+	// No yarilo checkpoint: a migrated index still knows its highest docid
+	// (== UID). Checksum + uidvalidity 0 force a rebuild decision upstream.
+	paths, perr := shardPaths(st.dir)
+	if perr != nil || len(paths) == 0 {
+		return 0, 0, 0, nil
 	}
-	if err := st.commitCurrent(); err != nil {
-		return 0, 0, err
+	if cerr := st.commitCurrent(); cerr != nil {
+		return 0, 0, 0, cerr
 	}
-	db, err := openDBMulti(paths)
-	if err != nil {
-		return 0, 0, err
+	db, derr := openDBMulti(paths)
+	if derr != nil {
+		return 0, 0, 0, derr
 	}
 	defer db.close()
-	last, err := db.lastDocID()
-	if err != nil {
-		return 0, 0, err
+	last, lerr := db.lastDocID()
+	if lerr != nil {
+		return 0, 0, 0, lerr
 	}
-	return last, 0, nil
+	return last, 0, 0, nil
 }
 
-func (u *userIndex) SetCheckpoint(mbox fts.MailboxRef, lastUID, sum uint32) error {
+func (u *userIndex) SetCheckpoint(mbox fts.MailboxRef, lastUID, uidValidity, sum uint32) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	st := u.state(mbox)
@@ -340,7 +352,7 @@ func (u *userIndex) SetCheckpoint(mbox fts.MailboxRef, lastUID, sum uint32) erro
 		return fmt.Errorf("fts/flatcurve: mkdir: %w", err)
 	}
 	tmp := filepath.Join(st.dir, checkpointFile+".tmp")
-	body := fmt.Sprintf("1 %d %d\n", lastUID, sum)
+	body := fmt.Sprintf("2 %d %d %d\n", uidValidity, lastUID, sum)
 	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("fts/flatcurve: checkpoint write: %w", err)
 	}
