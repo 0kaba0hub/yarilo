@@ -2,11 +2,37 @@ package backendapi
 
 import (
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
+
+// ftsExpunge invalidates the FTS documents for the UIDs an index rebuild dropped
+// from folder. Best-effort and session-less (the operator rebuild has no IMAP
+// session): a lost notify heals on the next fts rescan. No-op when no FTS client
+// is configured. The caller holds uc open.
+//
+// One RPC per UID: pkg/fts.Client has no batch Expunge, so a storage-wide rebuild
+// that dropped hundreds of UIDs fans out into that many round-trips. Acceptable
+// for this best-effort operator path; batch this if pkg/fts.Client ever grows a
+// bulk-expunge method.
+func (s *Server) ftsExpunge(uc *userContext, folder string, uids []uint32) {
+	if s.opts.FTSClient == nil || len(uids) == 0 {
+		return
+	}
+	mbox, err := s.ftsMailboxRef(uc, folder)
+	if err != nil {
+		slog.Warn("backendapi: fts expunge resolve failed", "user", uc.info.Username, "folder", folder, "err", err)
+		return
+	}
+	for _, uid := range uids {
+		if err := s.opts.FTSClient.Expunge(uc.info.Username, mbox, uid); err != nil {
+			slog.Warn("backendapi: fts expunge failed", "user", uc.info.Username, "folder", folder, "uid", uid, "err", err)
+		}
+	}
+}
 
 // registerFTSRoutes wires the operator surface for full-text search. Every
 // endpoint dials the yarilo-fts service over ftsproto — backend-api resolves

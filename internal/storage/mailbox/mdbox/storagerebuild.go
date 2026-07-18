@@ -76,10 +76,11 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 // eliminated here; fully closing them needs the delivery folder-append (and the
 // restore) to serialise on the map lock too — a separate hardening.
 //
-// modseq/QRESYNC: ResetFolder stamps a fresh modseq on every surviving record
-// (a modseq storm for QRESYNC clients) and loses VANISHED fidelity for dropped
-// UIDs — the same accepted parity gap as the sdbox reactive heal. FTS may retain
-// ghost documents for expunged map_uids until the next fts rescan.
+// modseq/QRESYNC: ResetFolder now preserves each surviving record's own modseq
+// (no modseq storm for QRESYNC clients); it still loses per-UID VANISHED fidelity
+// for dropped records since the reset rewrites the whole set. The dropped UIDs are
+// returned per folder in StorageRebuildStats.ExpungedUIDs so the operator caller
+// invalidates their FTS documents instead of leaving ghosts until the next rescan.
 func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool) (mailbox.StorageRebuildStats, error) {
 	var stats mailbox.StorageRebuildStats
 
@@ -133,8 +134,15 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 			if oerr != nil {
 				return fmt.Errorf("mdbox/rebuild: open %q: %w", fe.Name, oerr)
 			}
-			if err := u.resetFolderToPresent(idx, f, present); err != nil {
-				return err
+			dropped, rerr := u.resetFolderToPresent(idx, f, present)
+			if rerr != nil {
+				return rerr
+			}
+			if len(dropped) > 0 {
+				if stats.ExpungedUIDs == nil {
+					stats.ExpungedUIDs = make(map[string][]uint32)
+				}
+				stats.ExpungedUIDs[f.Name] = dropped
 			}
 			stats.FoldersRebuilt++
 		}
@@ -291,12 +299,13 @@ func (u *userMailbox) openOrCreateFolder(idx mailbox.UserIndex, name string, cac
 
 // resetFolderToPresent rewrites folder f's index to the subset of its current
 // records whose map_uid is still present in the physical scan, dropping the rest
-// (their message vanished). Surviving records keep their UID, flags and other
-// metadata; ResetFolder re-stamps modseq.
-func (u *userMailbox) resetFolderToPresent(idx mailbox.UserIndex, f *mailbox.Folder, present map[string]*mailbox.ScanRecord) error {
+// (their message vanished). Surviving records keep their UID, flags, modseq and
+// other metadata. Returns the UIDs dropped so the caller can invalidate their
+// FTS documents.
+func (u *userMailbox) resetFolderToPresent(idx mailbox.UserIndex, f *mailbox.Folder, present map[string]*mailbox.ScanRecord) ([]uint32, error) {
 	existing, err := idx.GetMessages(f.ID, allMessages)
 	if err != nil {
-		return fmt.Errorf("mdbox/rebuild: get messages %q: %w", f.Name, err)
+		return nil, fmt.Errorf("mdbox/rebuild: get messages %q: %w", f.Name, err)
 	}
 	rebuilt := make([]*mailbox.MessageMeta, 0, len(existing))
 	for _, mm := range existing {
@@ -309,8 +318,9 @@ func (u *userMailbox) resetFolderToPresent(idx mailbox.UserIndex, f *mailbox.Fol
 		rebuilt = append(rebuilt, mm)
 	}
 	sort.Slice(rebuilt, func(i, j int) bool { return rebuilt[i].UID < rebuilt[j].UID })
-	if err := idx.ResetFolder(f.ID, rebuilt); err != nil {
-		return fmt.Errorf("mdbox/rebuild: reset %q: %w", f.Name, err)
+	expunged, err := idx.ResetFolder(f.ID, rebuilt)
+	if err != nil {
+		return nil, fmt.Errorf("mdbox/rebuild: reset %q: %w", f.Name, err)
 	}
-	return nil
+	return expunged, nil
 }

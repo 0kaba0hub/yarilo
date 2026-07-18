@@ -22,6 +22,9 @@ type Stats struct {
 	UIDsPreserved  int
 	UIDsAssigned   int
 	OrphansDropped int
+	// ExpungedUIDs are the records dropped by the reset (their file vanished),
+	// so the caller can invalidate their FTS documents.
+	ExpungedUIDs []uint32
 }
 
 // ExpungeMissing is the reactive-heal counterpart to RebuildFolder: it removes
@@ -35,10 +38,10 @@ type Stats struct {
 // The caller holds the folder's mailbox lock. Orphan files on disk that the
 // index has never seen are NOT imported here — that is corruption repair, not
 // orphan adoption, which belongs to the operator rebuild.
-func ExpungeMissing(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailbox.Folder) (int, error) {
+func ExpungeMissing(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailbox.Folder) ([]uint32, error) {
 	scanned, err := box.Scan(folder.Name)
 	if err != nil {
-		return 0, fmt.Errorf("idxrebuild/scan: %w", err)
+		return nil, fmt.Errorf("idxrebuild/scan: %w", err)
 	}
 	present := make(map[string]struct{}, len(scanned))
 	for i := range scanned {
@@ -48,9 +51,9 @@ func ExpungeMissing(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mail
 	}
 	existing, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil {
-		return 0, fmt.Errorf("idxrebuild/get messages: %w", err)
+		return nil, fmt.Errorf("idxrebuild/get messages: %w", err)
 	}
-	expunged := 0
+	var expunged []uint32
 	for _, m := range existing {
 		if m.Filename == "" {
 			continue
@@ -61,7 +64,7 @@ func ExpungeMissing(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mail
 		if err := idx.ExpungeMessage(folder.ID, m.UID); err != nil {
 			return expunged, fmt.Errorf("idxrebuild/expunge %d: %w", m.UID, err)
 		}
-		expunged++
+		expunged = append(expunged, m.UID)
 	}
 	return expunged, nil
 }
@@ -116,6 +119,10 @@ func RebuildFolder(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailb
 		}
 		if old, ok := byFilename[rec.Filename]; ok {
 			newMeta.UID = old.UID
+			// Preserve the record's own modseq so a rebuild does not restamp
+			// every surviving message (a QRESYNC modseq storm); a newly assigned
+			// UID keeps modseq 0 and ResetFolder stamps it fresh.
+			newMeta.ModSeq = old.ModSeq
 			// Driver-provided flags (maildir) win since the filename trailer is
 			// the source of truth there; dbox returns empty so the index keeps
 			// its prior flag set unchanged.
@@ -148,8 +155,10 @@ func RebuildFolder(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailb
 	// input produce byte-identical .index files.
 	sort.Slice(rebuilt, func(i, j int) bool { return rebuilt[i].UID < rebuilt[j].UID })
 
-	if err := idx.ResetFolder(folder.ID, rebuilt); err != nil {
+	expunged, err := idx.ResetFolder(folder.ID, rebuilt)
+	if err != nil {
 		return stats, fmt.Errorf("idxrebuild/reset folder: %w", err)
 	}
+	stats.ExpungedUIDs = expunged
 	return stats, nil
 }

@@ -221,7 +221,7 @@ func (h *userHandle) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {
 func (h *userHandle) SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error {
 	return h.ui.SavePOP3UIDLs(folderID, uidls)
 }
-func (h *userHandle) ResetFolder(folderID uint64, records []*mailbox.MessageMeta) error {
+func (h *userHandle) ResetFolder(folderID uint64, records []*mailbox.MessageMeta) ([]uint32, error) {
 	return h.ui.ResetFolder(folderID, records)
 }
 func (h *userHandle) OptimizeIndex(folderID uint64) error {

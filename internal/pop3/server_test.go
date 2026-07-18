@@ -106,10 +106,12 @@ func (m *mockIndex) SavePOP3UIDLs(_ uint64, uidls map[uint32]string) error {
 	m.savedUIDLs = uidls
 	return nil
 }
-func (m *mockIndex) ResetFolder(_ uint64, _ []*mailbox.MessageMeta) error { return nil }
-func (m *mockIndex) OptimizeIndex(_ uint64) error                         { return nil }
-func (m *mockIndex) SetAltTier(_ uint64, _ []string, _ bool) error        { return nil }
-func (m *mockIndex) Close() error                                         { return nil }
+func (m *mockIndex) ResetFolder(_ uint64, _ []*mailbox.MessageMeta) ([]uint32, error) {
+	return nil, nil
+}
+func (m *mockIndex) OptimizeIndex(_ uint64) error                  { return nil }
+func (m *mockIndex) SetAltTier(_ uint64, _ []string, _ bool) error { return nil }
+func (m *mockIndex) Close() error                                  { return nil }
 
 // ---- test helpers -----------------------------------------------------------
 

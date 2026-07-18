@@ -1074,14 +1074,37 @@ func (u *userIndex) Keywords(folderID uint64) ([]string, error) {
 
 // ResetFolder replaces every record with the supplied set. Used
 // by the admin rebuild flow. Preserves UIDValidity + folder GUID
-// + indexID; bumps highest_modseq; sets NextUID past
-// max(records.UID).
-func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta) error {
-	return u.withFolder(folderID, func(fs *folderState) error {
-		modseq, err := fs.bumpModSeqHeader()
+// + indexID; sets NextUID past max(records.UID). Returns the UIDs
+// that were present before the reset but absent after — the records
+// the rebuild dropped, so the caller can invalidate their FTS
+// documents (they are otherwise ghost entries until the next rescan).
+//
+// Per-message modseq is preserved: a surviving record keeps its own
+// ModSeq (no QRESYNC modseq storm on every operator rebuild), and
+// highest_modseq is advanced to the max carried in. Only a record
+// with no modseq (a freshly assigned UID from RebuildFolder) is
+// stamped a fresh value bumped off the header.
+//
+// Trade-off (intentional, sits beside the VANISHED gap below): unlike
+// the old code this no longer unconditionally bumps highest_modseq —
+// advanceModSeqAtLeast is a no-op when nothing was restamped, so a
+// rebuild that changed no record leaves the header untouched. That is
+// correct for QRESYNC (nothing changed, nothing to signal) and is the
+// whole point of preserving modseq, but it drops the former "every
+// ResetFolder increments the header" guarantee.
+func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta) ([]uint32, error) {
+	var expunged []uint32
+	err := u.withFolder(folderID, func(fs *folderState) error {
+		highest, err := fs.highestModSeq()
 		if err != nil {
 			return err
 		}
+		// UIDs present before the reset, to diff against the new set.
+		before := make(map[uint32]struct{}, len(fs.file.Records))
+		for _, rec := range fs.file.Records {
+			before[rec.UID] = struct{}{}
+		}
+
 		fs.file.Records = fs.file.Records[:0]
 		fs.filenames = make(map[uint32]string)
 		fs.sizes = make(map[uint32]uint32)
@@ -1090,6 +1113,9 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 		fs.file.Header.DeletedMessagesCount = 0
 
 		var maxUID uint32
+		fresh := highest     // fresh modseq counter for records that carry none
+		maxModseq := highest // header must reflect the greatest modseq present
+		kept := make(map[uint32]struct{}, len(records))
 		for _, m := range records {
 			if m == nil || m.UID == 0 {
 				continue
@@ -1099,6 +1125,14 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 				return err
 			}
 			fs.keywords = kwReg
+			modseq := m.ModSeq
+			if modseq == 0 {
+				fresh++
+				modseq = fresh
+			}
+			if modseq > maxModseq {
+				maxModseq = modseq
+			}
 			rec := &mailindex.Record{
 				UID:   m.UID,
 				Flags: mailindex.MailFlag(imapFlagsToIndex(m.Flags)),
@@ -1109,6 +1143,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 				},
 			}
 			fs.file.Records = append(fs.file.Records, rec)
+			kept[m.UID] = struct{}{}
 			fs.file.Header.MessagesCount++
 			if rec.Flags&mailindex.FlagSeen != 0 {
 				fs.file.Header.SeenMessagesCount++
@@ -1122,6 +1157,14 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 			fs.sizes[m.UID] = m.Size
 			if m.UID > maxUID {
 				maxUID = m.UID
+			}
+		}
+		if err := fs.advanceModSeqAtLeast(maxModseq); err != nil {
+			return err
+		}
+		for uid := range before {
+			if _, ok := kept[uid]; !ok {
+				expunged = append(expunged, uid)
 			}
 		}
 		if maxUID >= fs.file.Header.NextUID {
@@ -1142,6 +1185,11 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 		fs.logSize = 0
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(expunged, func(i, j int) bool { return expunged[i] < expunged[j] })
+	return expunged, nil
 }
 
 // SetAltTier sets or clears FlagBackend on every record whose Filename

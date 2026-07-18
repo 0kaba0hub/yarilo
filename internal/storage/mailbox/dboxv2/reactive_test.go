@@ -84,8 +84,8 @@ func TestReactiveHealDropsVanishedPreservesRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("heal: %v", err)
 	}
-	if expunged != 1 {
-		t.Fatalf("expunged = %d, want 1", expunged)
+	if len(expunged) != 1 {
+		t.Fatalf("expunged = %d, want 1", len(expunged))
 	}
 	msgs, _ := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if len(msgs) != 2 {
