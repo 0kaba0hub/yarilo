@@ -179,6 +179,20 @@ func (st *mboxState) ensureCurrent() error {
 		curPath = filepath.Join(st.dir,
 			fmt.Sprintf("%s%d", currentPrefix, time.Now().UnixMicro()))
 	}
+	// Create the shard directory ourselves and fsync its parent BEFORE handing the
+	// path to Xapian. Xapian opens the glass DB with DB_NO_SYNC (no directory
+	// fsync), so relying on it to create current.<ts> leaves the directory entry
+	// unflushed — a rotate/rename or restart can then race a write into a
+	// not-yet-durable directory, surfacing as "Couldn't write new rev file:
+	// .../current.<ts>/v.tmp (No such file or directory)" and permanently
+	// wedging the shard (#629). Making + fsyncing the directory first removes that
+	// window.
+	if err := os.MkdirAll(curPath, 0o700); err != nil {
+		return fmt.Errorf("fts/flatcurve: mkdir current shard: %w", err)
+	}
+	if err := syncDir(st.dir); err != nil {
+		return fmt.Errorf("fts/flatcurve: fsync shard parent: %w", err)
+	}
 	w, err := openWDB(curPath)
 	if err != nil {
 		return err
@@ -206,6 +220,7 @@ func (st *mboxState) commitCurrent() error {
 		return nil
 	}
 	if err := st.cur.commit(); err != nil {
+		st.discardCurrent() // reopen on the next pass rather than keep a dead handle (#629)
 		return err
 	}
 	st.pending = 0
@@ -219,6 +234,7 @@ func (st *mboxState) rotate() error {
 		return nil
 	}
 	if err := st.cur.commit(); err != nil {
+		st.discardCurrent() // reopen on the next pass (#629)
 		return err
 	}
 	st.cur.close()
@@ -230,8 +246,41 @@ func (st *mboxState) rotate() error {
 	if err := os.Rename(st.curPath, sealed); err != nil {
 		return fmt.Errorf("fts/flatcurve: rotate: %w", err)
 	}
+	// Make the rename durable before the next ensureCurrent creates a new
+	// current.<ts>: otherwise a restart could leave both the old (unrenamed) and
+	// new shard directory entries unflushed, the state that wedges #629.
+	if err := syncDir(st.dir); err != nil {
+		return fmt.Errorf("fts/flatcurve: fsync after rotate: %w", err)
+	}
 	st.curPath = ""
 	return nil
+}
+
+// syncDir fsyncs a directory so its entries (a freshly created or renamed shard)
+// are durable — needed because the glass DB is opened with DB_NO_SYNC.
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+// discardCurrent force-releases the write shard WITHOUT committing. Called on any
+// engine error so the next ensureCurrent reopens a fresh handle instead of
+// returning the same poisoned one forever — the DatabaseClosedError "sticky
+// handle" of #629. Uncommitted docs are dropped, but the caller returns the error
+// so the ftsservice checkpoint does not advance and those UIDs are re-indexed on
+// the next pass. Best-effort: close errors are ignored (the handle is dead anyway).
+func (st *mboxState) discardCurrent() {
+	if st.cur != nil {
+		st.cur.close()
+		st.cur = nil
+	}
+	st.pending = 0
+	st.curDocs = 0
+	st.curPath = ""
 }
 
 // closeCurrent commits and releases the write shard so other opens (expunge
@@ -428,6 +477,7 @@ func (up *update) flushDocLocked() error {
 		return err
 	}
 	if err := st.cur.replaceDocument(up.uid, up.doc); err != nil {
+		st.discardCurrent() // poisoned shard → reopen on the next pass (#629)
 		return err
 	}
 	up.doc.free()
@@ -438,11 +488,15 @@ func (up *update) flushDocLocked() error {
 	opts := up.ui.eng.opts
 	if st.pending >= opts.CommitLimit {
 		if err := st.commitCurrent(); err != nil {
+			st.discardCurrent()
 			return err
 		}
 	}
 	if st.curDocs >= opts.RotateCount {
-		return st.rotate()
+		if err := st.rotate(); err != nil {
+			st.discardCurrent()
+			return err
+		}
 	}
 	return nil
 }

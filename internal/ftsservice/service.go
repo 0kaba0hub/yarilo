@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -273,7 +274,60 @@ func (s *Service) worker(ctx context.Context) {
 		if err := s.runIndex(j); err != nil {
 			slog.Error("fts: index job failed",
 				"user", j.user, "folder", j.mbox.Name, "err", err)
+			// Recovery (#629): a broken/closed engine handle stays broken for every
+			// subsequent job unless it is reopened. Drop the cached user handle so
+			// the next job re-opens a fresh index — the engine also self-heals its
+			// write shard, but evicting here recovers even a wholesale-poisoned
+			// UserIndex without an operator deleting the on-disk index.
+			if isBrokenEngine(err) {
+				s.evict(j.user)
+				slog.Warn("fts: engine reported a broken index, evicted user handle for reopen",
+					"user", j.user, "folder", j.mbox.Name)
+			}
 		}
+	}
+}
+
+// isBrokenEngine reports whether err indicates the engine's on-disk index or its
+// open handle is in an unusable state — a Xapian DatabaseClosedError, or the
+// rev-file open/write failure that wedges a flatcurve shard (#629). A false
+// positive only costs a handle reopen, so the match is deliberately broad.
+func isBrokenEngine(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, marker := range []string{
+		"DatabaseClosedError",
+		"Database has been closed",
+		"DatabaseOpeningError",
+		"Couldn't write new rev file",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// evict closes and drops the cached handle for user so the next handle() reopens
+// a fresh index. Safe when no handle is cached.
+func (s *Service) evict(user string) {
+	s.mu.Lock()
+	h, ok := s.users[user]
+	if ok {
+		delete(s.users, user)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	_ = h.ui.Close()
+	if h.box != nil {
+		h.box.Close() //nolint:errcheck
+	}
+	if h.idx != nil {
+		h.idx.Close() //nolint:errcheck
 	}
 }
 

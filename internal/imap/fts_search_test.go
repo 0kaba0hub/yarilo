@@ -28,6 +28,9 @@ type fakeFTS struct {
 	expunges  []uint32
 	indexes   []uint32
 	queries   []fts.Query
+	// stuck models a broken FTS backend that never advances its checkpoint, even
+	// after a PREPEND — the #629 failure mode.
+	stuck bool
 }
 
 func (f *fakeFTS) Index(_ string, _ fts.MailboxRef, maxUID uint32, _ int) error {
@@ -41,7 +44,9 @@ func (f *fakeFTS) Prepend(_ string, _ fts.MailboxRef, maxUID uint32) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.prepends++
-	f.lastUID = maxUID // catch-up completes on the next Status poll
+	if !f.stuck {
+		f.lastUID = maxUID // catch-up completes on the next Status poll
+	}
 	return nil
 }
 
@@ -186,6 +191,30 @@ func TestSearchFallbackOnFTSError(t *testing.T) {
 	uids := searchBody(t, c, "resilient")
 	if len(uids) != 1 || uids[0] != 1 {
 		t.Fatalf("fallback scan = %v, want [1]", uids)
+	}
+}
+
+// TestSearchFallsBackWhenFTSStuck: a broken FTS backend that never advances its
+// checkpoint must not make SEARCH hang until the full catch-up timeout (#629).
+// The session detects no index progress and falls back to a sequential scan,
+// which still finds the message — and it happens well before the 3s timeout.
+func TestSearchFallsBackWhenFTSStuck(t *testing.T) {
+	fake := &fakeFTS{stuck: true}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "stuckneedle")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	uids := searchBody(t, c, "stuckneedle")
+	elapsed := time.Since(start)
+	if len(uids) != 1 || uids[0] != 1 {
+		t.Fatalf("fallback search = %v, want [1]", uids)
+	}
+	// No-progress early-exit fires at ~2s (8×250ms); a regression to waiting the
+	// full 3s timeout (or hanging) is what this guards.
+	if elapsed > 2800*time.Millisecond {
+		t.Errorf("search took %v; the no-progress fallback should fire before the 3s timeout", elapsed)
 	}
 }
 
