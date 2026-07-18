@@ -9,7 +9,7 @@
 //
 //	<home>/mdbox/storage/
 //	  m.<N>                   multi-message body file
-//	  yarilo.map.index        the mdboxmap (legacy: dovecot.map.index)
+//	  yarilo.map.index        the mdboxmap (legacy map index)
 //	<home>/mdbox/mailboxes/
 //	  <folder>/               folder marker dir (per-folder index is the
 //	                          external fileindex — mdbox does not duplicate
@@ -82,7 +82,7 @@ type Backend struct {
 	normalizeNFC   bool
 
 	// rotateSize is the per-m.<N> size cap before Save rolls to a fresh file_id
-	// (mdbox_rotate_size). 0 selects defaultRotateSize (10 MiB, the Dovecot default).
+	// (mdbox_rotate_size). 0 selects defaultRotateSize (10 MiB default).
 	rotateSize uint32
 	// rotateInterval rolls the append file once it is older than this, regardless
 	// of size (mdbox_rotate_interval). 0 disables age-based rotation (the default).
@@ -141,7 +141,7 @@ func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 func WithNormalizeNFC(v bool) Option { return func(b *Backend) { b.normalizeNFC = v } }
 
 // WithRotateSize sets the per-m.<N> size cap (mdbox_rotate_size) before Save rolls
-// to a fresh file_id. 0 selects the Dovecot default (10 MiB).
+// to a fresh file_id. 0 selects the default (10 MiB).
 func WithRotateSize(n uint32) Option { return func(b *Backend) { b.rotateSize = n } }
 
 // WithRotateInterval rolls the append file once it is older than d
@@ -163,7 +163,7 @@ func New(opts ...Option) *Backend {
 	return b
 }
 
-// rotateSizeOrDefault returns the configured rotate size, or the Dovecot default
+// rotateSizeOrDefault returns the configured rotate size, or the default
 // (10 MiB) when unset.
 func (b *Backend) rotateSizeOrDefault() uint32 {
 	if b.rotateSize == 0 {
@@ -492,7 +492,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	// Roll to a fresh file_id when appending would exceed the size cap, OR when the
 	// current append file is older than the configured rotate interval. The age
 	// check uses a persisted create-time (not a filesystem btime), and a rolling
-	// window (now - createTime > interval), not Dovecot's boundary-snapped cutoff —
+	// window (now - createTime > interval), not a clock-boundary-snapped cutoff —
 	// so "rotate every interval" means the file actually lived at least that long.
 	nowT := u.b.clock()
 	rotate := uint32(curSize)+recLen > u.b.rotateSizeOrDefault()
@@ -525,7 +525,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	offset := uint32(st.Size())
 	// The dbox file-header line is a FILE-level header: emit it only when this is
 	// the first record in a brand-new physical file (offset 0). Appended records
-	// start directly at their message header — matching real dbox v2 so a Dovecot
+	// start directly at their message header — matching the real dbox v2 layout so an external
 	// reader parses past the first message.
 	record := msgRecord
 	if offset == 0 {

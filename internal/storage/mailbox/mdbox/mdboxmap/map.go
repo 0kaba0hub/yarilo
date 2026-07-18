@@ -14,7 +14,7 @@ import (
 )
 
 // Map is the in-memory + on-disk handle for one user's
-// dovecot.map.index. All mutations route through Map so the
+// map index. All mutations route through Map so the
 // in-process Mutex + cross-process X lock stay coherent.
 //
 // Map is NOT goroutine-safe outside its own methods; share a
@@ -86,7 +86,7 @@ func WithOwner(s string) Option {
 }
 
 // defaultRotateSize is the per-m.<N> size cap when none is configured — the real
-// Dovecot mdbox_rotate_size default (10 MiB).
+// mdbox_rotate_size default (10 MiB).
 const defaultRotateSize uint32 = 10 * 1024 * 1024
 
 // WithRotateSize sets the per-m.<N> size cap the batch append path enforces.
@@ -106,7 +106,7 @@ func (m *Map) rotateSizeOrDefault() uint32 {
 // Open opens (or creates) the per-user mdbox map at dir. The
 // canonical filename is MapIndexFileName ("yarilo.map.index").
 // On first open we also probe for LegacyMapIndexFileName
-// ("dovecot.map.index") and migrate it in place — see
+// (the legacy map filename) and migrate it in place — see
 // loadOrInit. username is the cross-process map-lock key (see
 // locks.MdboxMapKey).
 func Open(dir, username string, opts ...Option) (*Map, error) {

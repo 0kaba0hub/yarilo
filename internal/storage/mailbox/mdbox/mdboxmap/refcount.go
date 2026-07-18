@@ -50,8 +50,8 @@ func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 // SetRefcountsFromReferences rewrites every live map record's refcount to the
 // number of folder references reported in refs (map_uid → reference count),
 // defaulting to 0 for any record not present in refs. This is the map-side of a
-// storage-wide rebuild's "recompute refcounts from actual references" step
-// (Dovecot rebuild_apply_map): after the folder indexes are reconciled, a record
+// storage-wide rebuild's "recompute refcounts from actual references" step:
+// after the folder indexes are reconciled, a record
 // referenced by no folder gets refcount 0 so the next purge reclaims it — no
 // stale refcount>0 lingers to trip the next rebuild, and no unreferenced message
 // is silently resurrected. Returns the number of records set to 0 (the

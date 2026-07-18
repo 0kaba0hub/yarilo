@@ -44,7 +44,7 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 // and drops map records whose message vanished — all under the storage (map)
 // X-lock, then bumps the persisted rebuild generation counter.
 //
-// Refcount recompute (Dovecot rebuild_apply_map parity): after the folder
+// Refcount recompute: after the folder
 // indexes are reconciled, every live map record's refcount is set to the number
 // of folders that reference it. A message referenced by no folder becomes
 // zero-ref, so the next purge reclaims it — no stale refcount>0 lingers to trip
@@ -61,8 +61,7 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 // blocks new deliveries; a delivery already past box.Save but not yet past its
 // folder append is counted by the phase-2 re-read, so its refcount stays >0.
 //
-// QUIESCENCE REQUIRED. This is an operator repair tool (Dovecot force-resync
-// parity) and must run with the user's mailboxes quiesced — no concurrent
+// QUIESCENCE REQUIRED. This is an operator repair tool and must run with the user's mailboxes quiesced — no concurrent
 // delivery AND no concurrent folder operations (CREATE/DELETE/RENAME). The
 // rebuild holds only the storage (map) lock, not each folder's mailbox lock, so:
 //   - a delivery whose box.Save committed just before this rebuild took the lock
@@ -86,7 +85,7 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 
 	// Alt-mounted guard: a configured-but-unmounted alt tier would make every
 	// alt-resident message look vanished and get mass-expunged. Refuse, as
-	// Dovecot's dbox_verify_alt_storage does before a rebuild.
+	// an alt-tier verify does before a rebuild.
 	if u.AltEnabled() {
 		if _, err := os.Stat(u.altStoragePath()); err != nil {
 			return stats, fmt.Errorf("mdbox/rebuild: alt storage %q unavailable, refusing to rebuild (would expunge alt-resident mail): %w", u.altStoragePath(), err)
