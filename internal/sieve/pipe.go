@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -29,6 +30,10 @@ type pipeExecutor struct {
 var _ gosieve.PipeExecutor = (*pipeExecutor)(nil)
 
 func (e *pipeExecutor) Pipe(ctx context.Context, programName string, args []string, msg io.Reader) error {
+	// Breadcrumb (#625): confirm the pipe action fired and for which program, so a
+	// vnd.yarilo.pipe path is traceable from the log. Program name + arg count only
+	// — never the arg values (script-controlled) or the message body.
+	slog.Debug("sieve/pipe: invoked", "user", e.username, "program", programName, "args", len(args))
 	// socket-first, then binary
 	if e.socketDir != "" {
 		socketPath := filepath.Join(e.socketDir, programName)

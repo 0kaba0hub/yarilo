@@ -486,6 +486,10 @@ func (fs *folderState) reload() error {
 			"dur_ms", time.Since(t0).Milliseconds())
 		return nil
 	}
+	recordsBefore := 0
+	if fs.file != nil {
+		recordsBefore = len(fs.file.Records)
+	}
 	slog.Debug("fileindex: reload full",
 		"folder", fs.folder,
 		"new_log_size", newLogSize,
@@ -534,6 +538,15 @@ func (fs *folderState) reload() error {
 		}
 	}
 	fs.ensureVsizeLocked()
+	// Visibility diagnostic (#625): report how the record set changed across the
+	// reload so a "message not visible after delivery" case shows whether the
+	// just-written record was picked up (records_after > records_before) or not.
+	slog.Debug("fileindex: reload applied",
+		"folder", fs.folder,
+		"records_before", recordsBefore,
+		"records_after", len(fs.file.Records),
+		"log_size", fs.logSize,
+		"dur_ms", time.Since(t0).Milliseconds())
 	return nil
 }
 
@@ -1183,6 +1196,14 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 			return err
 		}
 		fs.logSize = 0
+		// Visibility diagnostic (#625): a rebuild/heal replaces the whole record
+		// set, so log how many records it kept vs dropped — the signal for whether
+		// a "missing after rebuild" message was among the dropped UIDs.
+		slog.Debug("fileindex: reset folder",
+			"folder", fs.folder,
+			"records_before", len(before),
+			"records_after", len(fs.file.Records),
+			"dropped", len(expunged))
 		return nil
 	})
 	if err != nil {

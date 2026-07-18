@@ -75,7 +75,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		"index_ms", time.Since(tIndex).Milliseconds(),
 		"total_ms", time.Since(tDeliver).Milliseconds())
 	emitMailboxEvent(locker, username, folder, locks.EventDelivered, uid)
-	slog.Info("lmtp: delivered", "from", from, "to", username, "folder", folder, "uid", uid, "size", size)
+	slog.Info("lmtp: delivered", "from", from, "to", username, "folder", folder, "uid", uid, "file", filename, "size", size)
 	return uid, nil
 }
 

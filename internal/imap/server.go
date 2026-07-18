@@ -2283,6 +2283,30 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		}
 	}
 
+	// Visibility diagnostic (#625): when a search matches nothing, record what was
+	// actually scanned so a delivery→visibility mismatch is readable from the log
+	// alone (folder had records 1..N, search matched 0) rather than re-derived from
+	// lock timings. DEBUG-gated; no message content, only counts and the UID range.
+	if hitCount == 0 {
+		var uidMin, uidMax uint32
+		for _, m := range msgs {
+			if uidMin == 0 || m.UID < uidMin {
+				uidMin = m.UID
+			}
+			if m.UID > uidMax {
+				uidMax = m.UID
+			}
+		}
+		slog.Debug("imap: search matched no messages",
+			"user", s.userInfo.Username,
+			"folder", s.folder.Name,
+			"records_scanned", len(msgs),
+			"uid_min", uidMin,
+			"uid_max", uidMax,
+			"kind", kind,
+		)
+	}
+
 	data := &imaplib.SearchData{}
 	// ESEARCH RETURN handling. Per RFC 4731: when RETURN is given, only the
 	// requested data items are sent. When RETURN is omitted, send ALL by
@@ -2455,6 +2479,15 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if !ok {
 				// New message appended after the pre-OK poll; skip it
 				// — client will learn about it on the next Poll cycle.
+				// Visibility diagnostic (#625): the UID exists in the backend but
+				// not yet in the client's sequence view — a common cause of a
+				// just-delivered message reading as "not found" until the next Poll.
+				slog.Debug("imap: fetch skipped uid absent from client view",
+					"user", s.userInfo.Username,
+					"folder", s.folder.Name,
+					"uid", m.UID,
+					"known_msgs", len(s.knownMsgs),
+				)
 				continue
 			}
 			fetchList = append(fetchList, fetchEntry{seqNum, m})
