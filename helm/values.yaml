@@ -21,7 +21,7 @@ storage:
   ## dbox_reactive_rebuild: true           # sdbox: on a missing/corrupt message read, flag the folder and heal its index (expunge vanished records) on the next open
   ## mail_path: ""                            # mail storage root (empty = same as home); supports ~/ and %u/%d/%n/%h
   ## mail_inbox_path: ""                      # INBOX override path (empty = mail_path); supports ~/ and %u/%d/%n/%h
-  ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
+  ## mdbox_alt_storage_path: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
   ## mdbox_rotate_size: 10M               # max size per m.<N> before rolling (e.g. 10M, 1G, or a raw byte count; 0 = default 10 MiB)
   ## mdbox_rotate_interval: 0             # roll the append file once older than this (e.g. 30s, 5m, 1h, or raw seconds; 0 = disabled)
   ## mdbox_preallocate_space: false       # fallocate() new m.<N> files up front (Linux only)
