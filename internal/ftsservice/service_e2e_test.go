@@ -176,6 +176,49 @@ func TestServiceWireRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUIDValidityResetRebuild reproduces #638: a checkpoint left over from a
+// mailbox that was recreated (different UIDVALIDITY) sits with a last_indexed_uid
+// above the new low UIDs. Without the reset the indexer would skip every new
+// message ("already current") and search would silently return nothing. The fix
+// must detect the UIDVALIDITY mismatch, drop the stale index, and reindex — so a
+// new low-UID message is searchable again.
+func TestUIDValidityResetRebuild(t *testing.T) {
+	svc, box, uidx := newTestService(t)
+	saveMessage(t, box, uidx, 1, "uidvcheck")
+	if err := svc.Index(testUser, testMbox, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitIndexed(t, svc, 1)
+
+	// Forge a stale checkpoint from a DIFFERENT UIDVALIDITY, its last_uid above the
+	// mailbox's current UIDs — the exact post-recreation state that wedges search.
+	h, err := svc.handle(testUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ui.SetCheckpoint(testMbox, 10, 999, svc.opts.Chain.SettingsChecksum()); err != nil {
+		t.Fatal(err)
+	}
+	// Status must report "not indexed" on the UIDVALIDITY mismatch (so catch-up
+	// re-triggers), not the stale last_uid=10.
+	if last, _, serr := svc.Status(testUser, testMbox); serr != nil || last != 0 {
+		t.Fatalf("stale-uidvalidity Status = %d/%v, want 0", last, serr)
+	}
+
+	saveMessage(t, box, uidx, 2, "uidvcheck")
+	if err := svc.Index(testUser, testMbox, 2, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitIndexed(t, svc, 2)
+	res, err := svc.Lookup(testUser, testMbox, lookupWord("uidvcheck"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != 2 {
+		t.Fatalf("after uidvalidity reset = %v, want [1 2] (index rebuilt from scratch)", res.Definite)
+	}
+}
+
 func TestSettingsDriftRebuild(t *testing.T) {
 	svc, box, uidx := newTestService(t)
 	saveMessage(t, box, uidx, 1, "driftcheck")
@@ -190,7 +233,7 @@ func TestSettingsDriftRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.ui.SetCheckpoint(testMbox, 1, 12345); err != nil {
+	if err := h.ui.SetCheckpoint(testMbox, 1, testMbox.UIDValidity, 12345); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Index(testUser, testMbox, 1, 0); err != nil {
