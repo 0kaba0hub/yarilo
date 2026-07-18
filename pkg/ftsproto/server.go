@@ -78,8 +78,10 @@ func dispatch(line string, svc Service) string {
 				return no("malformed INDEX numbers")
 			}
 			if err := svc.Index(user, mbox, maxUID, maxRecent); err != nil {
+				slog.Debug("fts: index failed", "user", user, "folder", mbox.Name, "max_uid", maxUID, "err", err)
 				return no("%v", err)
 			}
+			slog.Debug("fts: indexed", "user", user, "folder", mbox.Name, "max_uid", maxUID, "max_recent", maxRecent)
 			return replyOK
 		case CmdPrepend:
 			if len(f) != 6 {
@@ -90,8 +92,10 @@ func dispatch(line string, svc Service) string {
 				return no("malformed PREPEND uid")
 			}
 			if err := svc.Prepend(user, mbox, maxUID); err != nil {
+				slog.Debug("fts: prepend failed", "user", user, "folder", mbox.Name, "max_uid", maxUID, "err", err)
 				return no("%v", err)
 			}
+			slog.Debug("fts: prepended", "user", user, "folder", mbox.Name, "max_uid", maxUID)
 			return replyOK
 		case CmdExpunge:
 			if len(f) != 6 {
@@ -102,8 +106,10 @@ func dispatch(line string, svc Service) string {
 				return no("malformed EXPUNGE uid")
 			}
 			if err := svc.Expunge(user, mbox, uid); err != nil {
+				slog.Debug("fts: expunge failed", "user", user, "folder", mbox.Name, "uid", uid, "err", err)
 				return no("%v", err)
 			}
+			slog.Debug("fts: expunged", "user", user, "folder", mbox.Name, "uid", uid)
 			return replyOK
 		case CmdLookup:
 			if len(f) != 6 {
@@ -115,8 +121,12 @@ func dispatch(line string, svc Service) string {
 			}
 			res, err := svc.Lookup(user, mbox, q)
 			if err != nil {
+				slog.Debug("fts: lookup failed", "user", user, "folder", mbox.Name, "err", err)
 				return no("%v", err)
 			}
+			// Result counts only — never the query terms (private mail content).
+			slog.Debug("fts: lookup", "user", user, "folder", mbox.Name,
+				"definite", len(res.Definite), "maybe", len(res.Maybe))
 			payload, err := EncodeResult(res)
 			if err != nil {
 				return no("%v", err)
@@ -127,11 +137,14 @@ func dispatch(line string, svc Service) string {
 			if err != nil {
 				return no("%v", err)
 			}
+			slog.Debug("fts: status", "user", user, "folder", mbox.Name, "last_indexed_uid", last, "checksum", sum)
 			return fmt.Sprintf("%s\t%d\t%d", replyOK, last, sum)
 		default: // CmdRescan
 			if err := svc.Rescan(user, mbox); err != nil {
+				slog.Debug("fts: rescan failed", "user", user, "folder", mbox.Name, "err", err)
 				return no("%v", err)
 			}
+			slog.Debug("fts: rescanned", "user", user, "folder", mbox.Name)
 			return replyOK
 		}
 
@@ -142,6 +155,7 @@ func dispatch(line string, svc Service) string {
 		if err := svc.Optimize(f[1]); err != nil {
 			return no("%v", err)
 		}
+		slog.Debug("fts: optimized", "user", f[1])
 		return replyOK
 
 	default:

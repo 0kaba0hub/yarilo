@@ -796,8 +796,12 @@ func (s *session) ftsAutoindex(username, folder string, uid uint32) {
 	client, maxRecent := s.opts.FTSClient, s.opts.FTSMaxRecent
 	go func() {
 		if err := client.Index(username, fts.MailboxRef{Name: folder}, uid, maxRecent); err != nil {
-			slog.Debug("lmtp: fts autoindex failed", "user", username, "folder", folder, "err", err)
+			slog.Debug("lmtp: fts autoindex failed", "user", username, "folder", folder, "uid", uid, "err", err)
+			return
 		}
+		// Breadcrumb (#625): the delivery→index handoff fired, so an indexing gap
+		// (delivered but never queued to FTS) is visible from the lmtp log.
+		slog.Debug("lmtp: fts autoindex queued", "user", username, "folder", folder, "uid", uid, "max_recent", maxRecent)
 	}()
 }
 

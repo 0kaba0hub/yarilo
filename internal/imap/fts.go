@@ -122,6 +122,13 @@ func (s *session) prepareFTSSearch(criteria *imaplib.SearchCriteria, msgs []*mai
 		f.covered[uid] = true
 		f.verify[uid] = true
 	}
+	// Visibility diagnostic (#625): how many candidates the FTS index returned for
+	// this search, so a "search finds nothing" case shows whether FTS had no hits
+	// (0 candidates → likely not indexed) vs. hits that later failed re-verify.
+	// Counts only — never the query terms (private mail content).
+	slog.Debug("imap: fts search candidates",
+		"user", user, "folder", mbox.Name,
+		"definite", len(res.Definite), "maybe", len(res.Maybe))
 	return f, nil
 }
 
@@ -237,6 +244,11 @@ func (s *session) ftsNotify(folderName string, expunged bool, uid uint32) {
 		if err != nil {
 			slog.Debug("imap: fts notify failed",
 				"user", user, "folder", mbox.Name, "expunged", expunged, "err", err)
+			return
 		}
+		// Breadcrumb (#625): confirm the FTS index/expunge notify was sent, so an
+		// indexing gap (message delivered but never handed to FTS) is visible.
+		slog.Debug("imap: fts notify sent",
+			"user", user, "folder", mbox.Name, "uid", uid, "expunged", expunged)
 	}()
 }
