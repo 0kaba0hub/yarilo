@@ -22,8 +22,8 @@ storage:
   ## mail_path: ""                            # mail storage root (empty = same as home); supports ~/ and %u/%d/%n/%h
   ## mail_inbox_path: ""                      # INBOX override path (empty = mail_path); supports ~/ and %u/%d/%n/%h
   ## mdboxAltStoragePath: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
-  ## mdbox_rotate_size: 10485760          # 10 MiB — max bytes per m.<N> before rolling to a new file (0 = default 10 MiB)
-  ## mdbox_rotate_interval: 0             # seconds — roll the append file once older than this, regardless of size (0 = disabled)
+  ## mdbox_rotate_size: 10M               # max size per m.<N> before rolling (e.g. 10M, 1G, or a raw byte count; 0 = default 10 MiB)
+  ## mdbox_rotate_interval: 0             # roll the append file once older than this (e.g. 30s, 5m, 1h, or raw seconds; 0 = disabled)
   ## mdbox_preallocate_space: false       # fallocate() new m.<N> files up front (Linux only)
   ## index_dir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
   ## control_dir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files

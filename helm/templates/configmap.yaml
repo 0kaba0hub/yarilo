@@ -529,6 +529,15 @@ data:
       {{- if $storage.max_concurrent_writes }}
       max_concurrent_writes: {{ $storage.max_concurrent_writes }}
       {{- end }}
+      {{- if $storage.mdbox_rotate_size }}
+      mdbox_rotate_size: {{ $storage.mdbox_rotate_size | quote }}
+      {{- end }}
+      {{- if $storage.mdbox_rotate_interval }}
+      mdbox_rotate_interval: {{ $storage.mdbox_rotate_interval | quote }}
+      {{- end }}
+      {{- if $storage.mdbox_preallocate_space }}
+      mdbox_preallocate_space: {{ $storage.mdbox_preallocate_space }}
+      {{- end }}
     {{- end }}
 
     {{- with .Values.dicts }}
