@@ -49,6 +49,34 @@ func TestHealExpungesVanishedAndClearsMarker(t *testing.T) {
 	}
 }
 
+// TestHealAbortsOnVanishedFileMidScan covers the exact purge/altmove race the PR
+// is about: an m.<N> is still listed by os.ReadDir but os.Open returns ENOENT
+// (the old file was unlinked after the snapshot). A dangling symlink stands in
+// for that timing. scanStorage classifies it as errScanIO → ErrScanIncomplete,
+// so the heal must ABORT — never mistaking a just-compacted message for vanished.
+// This is the errScanIO abort path, distinct from the errScanCorrupt one below.
+func TestHealAbortsOnVanishedFileMidScan(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	box, idx := newBoxAndIndex(t, home)
+	deliverMsg(t, box, idx, "INBOX", "listed but ENOENT on open\r\n")
+
+	p := box.mfilePath(1)
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "does-not-exist"), p); err != nil {
+		t.Fatal(err)
+	}
+
+	f, _ := idx.OpenFolder("INBOX", 0)
+	if _, err := box.HealCorruptFolder(idx, f); err == nil {
+		t.Fatal("heal should abort on an ENOENT-after-listing (purge/altmove race) scan")
+	}
+	if got := folderCount(t, idx, "INBOX"); got != 1 {
+		t.Errorf("INBOX count = %d, want 1 (record must not be expunged on the race)", got)
+	}
+}
+
 // TestHealAbortsOnIncompleteScan: a structurally corrupt m.<N> (the same signal
 // a concurrent purge/altmove race produces) makes the scan incomplete, so the
 // heal ABORTS and expunges nothing — never mistaking an unreadable-right-now

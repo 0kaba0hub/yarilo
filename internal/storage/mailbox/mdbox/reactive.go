@@ -18,6 +18,11 @@ import (
 // it makes the folder readable again without recomputing refcounts or touching
 // other folders, so the quiescence the storage rebuild needs does not apply here.
 //
+// This is an intentional structural mirror of the sdbox HealCorruptFolder (same
+// lock + ExpungeMissing + ClearFolderCorrupt order). Two drivers is below the
+// rule-of-three; if a third dbox driver appears, extract a shared helper instead
+// of a third copy.
+//
 // Concurrency vs purge/altmove: both rewrite an m.<N> by writing the new file
 // first and only then unlinking the old one. If this heal's scan snapshot
 // (os.ReadDir) still lists the old file but opens it after the unlink, the scan
