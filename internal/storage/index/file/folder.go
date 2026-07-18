@@ -566,6 +566,14 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 // an external authority (mdbox-style map_uid).
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	if err := u.withFolder(folderID, func(fs *folderState) error {
+		// Breadcrumb: the pre-allocated UID (from AllocateUID, called separately
+		// and earlier by the caller — see internal/lmtp/deliver.go) is about to be
+		// committed to the index. next_uid_before lets a log reader spot the exact
+		// symptom of a UID-reuse race: a commit whose UID is < next_uid_before
+		// means something else already advanced the counter past it since
+		// AllocateUID ran, and this commit is landing a stale/reused value.
+		slog.Debug("fileindex: committing pre-allocated uid",
+			"user", u.username, "folder", fs.folder, "uid", m.UID, "next_uid_before", fs.file.Header.NextUID)
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
@@ -620,6 +628,11 @@ func (u *userIndex) AllocateUID(folderID uint64) (uint32, error) {
 		}
 		fs.file.Header.NextUID = uid + 1
 		assigned = uid
+		// Pairs with the "fileindex: committing pre-allocated uid" breadcrumb in
+		// AppendMessage — the gap between this log line and that one is exactly
+		// the caller's Save() window (see internal/lmtp/deliver.go), the only
+		// place a concurrent allocation on the same folder could interleave.
+		slog.Debug("fileindex: uid allocated", "user", u.username, "folder", fs.folder, "uid", assigned)
 		return fs.appendMutLog(encU32Update(28, fs.file.Header.NextUID))
 	})
 	return assigned, err
