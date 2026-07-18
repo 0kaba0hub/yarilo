@@ -505,6 +505,9 @@ data:
       maildir_root: {{ $storage.maildir_root | quote }}
       mail_home_template: {{ $storage.mail_home_template | quote }}
       index: {{ $storage.index | quote }}
+      {{- if $storage.mdbox_alt_storage_path }}
+      mdbox_alt_storage_path: {{ $storage.mdbox_alt_storage_path | quote }}
+      {{- end }}
       {{- if $storage.index_dir }}
       index_dir: {{ $storage.index_dir | quote }}
       {{- end }}
