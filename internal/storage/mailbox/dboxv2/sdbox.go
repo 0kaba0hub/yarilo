@@ -140,12 +140,13 @@ func makeOwner(u *mailbox.UserInfo) string {
 // ExpungeMessage — QRESYNC tombstone + quota decrement, no full ResetFolder and
 // no UID assignment, so it cannot race a concurrent delivery), then clears the
 // FSCKD marker in the SAME lock scope so a marker set by another process between
-// scan and clear is not silently lost. Returns the number of records expunged.
+// scan and clear is not silently lost. Returns the UIDs it expunged so the caller
+// can invalidate their FTS documents; len(result) is the heal count.
 //
 // Called by the IMAP session when a folder carries the persisted FSCKD marker
 // (a prior read hit a missing/corrupt message).
-func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) (int, error) {
-	var expunged int
+func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) ([]uint32, error) {
+	var expunged []uint32
 	err := u.withMailboxLock(folder.Name, func() error {
 		var e error
 		expunged, e = idxrebuild.ExpungeMissing(u, idx, folder)

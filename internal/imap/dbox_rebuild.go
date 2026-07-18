@@ -8,6 +8,12 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
+// maxHealAttempts bounds consecutive reactive-heal failures for one folder in one
+// session. Beyond it, a near-continuous purge/altmove is keeping every scan
+// incomplete (heal aborts, folder stays FSCKD); we stop auto-retrying — each retry
+// costs a full storage scan — and log once, pointing the operator at a rebuild.
+const maxHealAttempts = 3
+
 // flagCorruptOnRead persists the folder's FSCKD marker when a read failed
 // because the backing storage is missing/corrupt (never for a transient I/O
 // error). The next open then heals the index. Gated per session so a FETCH over
@@ -70,21 +76,43 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 		// corruption re-flags this folder instead of being suppressed until the
 		// session ends.
 		delete(s.markedCorrupt, f.ID)
+		delete(s.healAttempts, f.ID)
 		return nil
 	}
 	rb, ok := h.box.(mailbox.ReactiveHealer)
 	if !ok {
 		return nil
 	}
+	// Retry-bound: once a folder has failed to heal maxHealAttempts times this
+	// session (a purge/altmove keeps aborting the scan), stop auto-retrying it —
+	// the escalation was already logged on the attempt that hit the bound.
+	if s.healAttempts[f.ID] >= maxHealAttempts {
+		return nil
+	}
 	expunged, err := rb.HealCorruptFolder(h.idx, f)
 	if err != nil {
-		slog.Warn("imap: dbox reactive heal failed", "folder", rel, "err", err)
+		if s.healAttempts == nil {
+			s.healAttempts = make(map[uint64]int)
+		}
+		s.healAttempts[f.ID]++
+		if s.healAttempts[f.ID] >= maxHealAttempts {
+			slog.Warn("imap: dbox reactive heal repeatedly aborted; stopping auto-retry this session — a purge/altmove is likely running, run an operator rebuild if it persists",
+				"folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
+		} else {
+			slog.Warn("imap: dbox reactive heal failed", "folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
+		}
 		return nil
 	}
 	// The marker is cleared, so drop any per-session mark so a later corruption
 	// re-flags the folder.
 	delete(s.markedCorrupt, f.ID)
-	slog.Info("imap: dbox reactive heal", "folder", rel, "expunged", expunged)
+	delete(s.healAttempts, f.ID)
+	// Invalidate FTS documents for the expunged records — the reactive heal path
+	// otherwise leaves ghost documents until the next fts rescan.
+	for _, uid := range expunged {
+		s.ftsNotify(rel, true, uid)
+	}
+	slog.Info("imap: dbox reactive heal", "folder", rel, "expunged", len(expunged))
 	refreshed, err := h.idx.OpenFolder(rel, f.UIDValidity)
 	if err != nil {
 		slog.Warn("imap: reopen after heal failed", "folder", rel, "err", err)

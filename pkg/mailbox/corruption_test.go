@@ -7,7 +7,7 @@ import (
 
 type fakeHealer struct{}
 
-func (fakeHealer) HealCorruptFolder(UserIndex, *Folder) (int, error) { return 0, nil }
+func (fakeHealer) HealCorruptFolder(UserIndex, *Folder) ([]uint32, error) { return nil, nil }
 
 type plainBox struct{}
 

@@ -36,8 +36,8 @@ func TestHealExpungesVanishedAndClearsMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("heal: %v", err)
 	}
-	if expunged != 1 {
-		t.Errorf("expunged = %d, want 1", expunged)
+	if len(expunged) != 1 {
+		t.Errorf("expunged = %d, want 1", len(expunged))
 	}
 	if got := folderCount(t, idx, "INBOX"); got != 0 {
 		t.Errorf("INBOX count = %d, want 0 (vanished record expunged)", got)

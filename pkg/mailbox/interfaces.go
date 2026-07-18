@@ -35,7 +35,10 @@ type CorruptionMarker interface {
 // #594 Phase 2b) would strand the folder corrupt forever with nothing to clear
 // the marker.
 type ReactiveHealer interface {
-	HealCorruptFolder(idx UserIndex, folder *Folder) (int, error)
+	// HealCorruptFolder repairs folder and returns the UIDs it expunged (records
+	// whose backing message vanished), so the caller can invalidate their FTS
+	// documents. len(result) is the heal count.
+	HealCorruptFolder(idx UserIndex, folder *Folder) ([]uint32, error)
 }
 
 // CanReactiveHeal reports whether box can self-heal corruption. The corruption
@@ -63,6 +66,10 @@ type StorageRebuildStats struct {
 	UnreferencedZeroref int    // present messages referenced by no folder; refcount reset to 0 for purge (NOT resurrected)
 	OrphansRestored     int    // unreferenced messages re-filed into their ORIG_MAILBOX (only when restoreOrphans is set)
 	RebuildCount        uint32 // new generation counter after the rebuild
+	// ExpungedUIDs maps folder name → UIDs dropped from that folder's index by
+	// the rebuild, so the operator caller can invalidate their FTS documents
+	// (otherwise ghost entries until the next rescan).
+	ExpungedUIDs map[string][]uint32
 }
 
 // StorageWideRebuilder is a folder-agnostic driver (mdbox) that can rebuild its
@@ -357,12 +364,16 @@ type UserIndex interface {
 	SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error
 	// ResetFolder atomically replaces the on-disk record set for
 	// folderID with the supplied messages. Preserves UIDVALIDITY
-	// and the folder GUID; bumps NextUID past max(records.UID);
-	// HighestModSeq advances by one so QRESYNC clients invalidate
-	// their caches. Drives the admin rebuild flow. Caller has
-	// already taken the cross-process mailbox lock and made a
-	// .bak of the old base file.
-	ResetFolder(folderID uint64, records []*MessageMeta) error
+	// and the folder GUID; bumps NextUID past max(records.UID).
+	// Each surviving record keeps its own ModSeq (no QRESYNC modseq
+	// storm on rebuild); HighestModSeq advances to the greatest
+	// modseq carried in, and a record with no modseq is stamped a
+	// fresh one. Returns the UIDs present before the reset but absent
+	// after — the dropped records, so the caller can invalidate their
+	// FTS documents. Drives the admin rebuild flow. Caller has already
+	// taken the cross-process mailbox lock and made a .bak of the old
+	// base file.
+	ResetFolder(folderID uint64, records []*MessageMeta) ([]uint32, error)
 	// OptimizeIndex compacts the .index.log overlay into the base
 	// .index file. Returns a no-op nil when there is nothing to
 	// compact. Takes the same X lock as a normal write.

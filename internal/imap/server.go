@@ -460,6 +460,13 @@ type session struct {
 	// FETCH mark site and the SELECT/STATUS clear site, unlike the folder name).
 	markedCorrupt map[uint64]bool
 
+	// healAttempts counts consecutive reactive-heal failures per folder in this
+	// session. A near-continuous purge/altmove keeps every scan incomplete, so the
+	// heal aborts and the folder stays FSCKD; after maxHealAttempts we stop auto-
+	// retrying (each attempt costs a full storage scan) until the marker clears.
+	// Reset on a successful heal or when another session clears the marker.
+	healAttempts map[uint64]int
+
 	// knownMsgs is the server's copy of the client's sequence→message state
 	// for the selected folder. Each entry records uid and modseq; the slice
 	// index+1 is the IMAP sequence number. Populated at SELECT, updated by

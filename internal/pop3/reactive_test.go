@@ -17,8 +17,8 @@ type fakeCorruptBox struct{ mailbox.UserMailbox }
 func (fakeCorruptBox) Fetch(string, string, bool) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("file gone: %w", mailbox.ErrCorruptStorage)
 }
-func (fakeCorruptBox) HealCorruptFolder(mailbox.UserIndex, *mailbox.Folder) (int, error) {
-	return 0, nil
+func (fakeCorruptBox) HealCorruptFolder(mailbox.UserIndex, *mailbox.Folder) ([]uint32, error) {
+	return nil, nil
 }
 
 // fakeMarkIdx counts MarkFolderCorrupt calls; OpenFolder returns a stub folder.

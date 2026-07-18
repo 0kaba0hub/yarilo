@@ -37,8 +37,8 @@ import (
 // bad file aside; and the vanished message's map refcount is not decremented
 // here (a leak the next operator rebuild + purge reclaims) — the heal's job is
 // to make the folder readable, not perfect refcount hygiene.
-func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) (int, error) {
-	var expunged int
+func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) ([]uint32, error) {
+	var expunged []uint32
 	err := u.withMailboxLock(folder.Name, func() error {
 		var e error
 		expunged, e = idxrebuild.ExpungeMissing(u, idx, folder)

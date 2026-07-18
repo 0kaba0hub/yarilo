@@ -20,11 +20,22 @@ type fakeFTS struct {
 	status   uint32
 	rescans  []string
 	optimize int
+	expunges []ftsExpungeCall
+}
+
+type ftsExpungeCall struct {
+	Folder string
+	UID    uint32
 }
 
 func (f *fakeFTS) Index(string, fts.MailboxRef, uint32, int) error { return nil }
 func (f *fakeFTS) Prepend(string, fts.MailboxRef, uint32) error    { return nil }
-func (f *fakeFTS) Expunge(string, fts.MailboxRef, uint32) error    { return nil }
+func (f *fakeFTS) Expunge(_ string, m fts.MailboxRef, uid uint32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expunges = append(f.expunges, ftsExpungeCall{Folder: m.Name, UID: uid})
+	return nil
+}
 func (f *fakeFTS) Lookup(string, fts.MailboxRef, fts.Query) (fts.Result, error) {
 	return fts.Result{}, nil
 }
@@ -46,6 +57,55 @@ func (f *fakeFTS) Optimize(string) error {
 	return nil
 }
 func (f *fakeFTS) Close() error { return nil }
+
+// TestFtsExpungeInvalidatesDroppedUIDs: the session-less operator FTS-notify
+// helper invalidates one document per dropped UID, keyed to the folder — the
+// path the operator index rebuild uses so dropped records do not linger as ghost
+// documents until the next rescan.
+func TestFtsExpungeInvalidatesDroppedUIDs(t *testing.T) {
+	root := t.TempDir()
+	d, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	fake := &fakeFTS{}
+	s := New(Options{
+		Dicts:    map[string]dict.Dict{"metadata": d},
+		Mailbox:  maildir.New(),
+		Index:    file.New(),
+		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
+		Namespaces: []config.NamespaceConfig{
+			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+		},
+		MetadataDict: d,
+		FTSClient:    fake,
+	})
+
+	uc, err := s.openUserContext("alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uc.Close()
+
+	s.ftsExpunge(uc, "INBOX", []uint32{5, 9})
+
+	if len(fake.expunges) != 2 {
+		t.Fatalf("expunge calls = %d, want 2", len(fake.expunges))
+	}
+	for _, c := range fake.expunges {
+		if c.Folder != "INBOX" {
+			t.Errorf("expunge folder = %q, want INBOX", c.Folder)
+		}
+	}
+	if fake.expunges[0].UID != 5 || fake.expunges[1].UID != 9 {
+		t.Errorf("expunged UIDs = %v, want [5 9]", fake.expunges)
+	}
+
+	// No FTS client → no-op, no panic.
+	s.opts.FTSClient = nil
+	s.ftsExpunge(uc, "INBOX", []uint32{1})
+}
 
 func ftsTestServer(t *testing.T) (*httptest.Server, *fakeFTS, string) {
 	t.Helper()

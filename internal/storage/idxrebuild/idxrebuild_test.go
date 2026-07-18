@@ -134,8 +134,8 @@ func TestExpungeMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("expunged = %d, want 1", n)
+	if len(n) != 1 {
+		t.Fatalf("expunged = %d, want 1", len(n))
 	}
 	msgs, _ := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if len(msgs) != 1 || msgs[0].UID != 1 || msgs[0].Filename != keep {

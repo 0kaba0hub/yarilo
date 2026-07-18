@@ -118,6 +118,10 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 		}
 	}
 
+	// Invalidate FTS documents for the dropped records — the rebuild path otherwise
+	// leaves ghost documents until the next fts rescan.
+	s.ftsExpunge(uc, folder.Name, rstats.ExpungedUIDs)
+
 	stats := &rebuildStats{
 		Folder:         folder.Name,
 		FolderGUID:     hex.EncodeToString(folder.GUID[:]),
@@ -187,6 +191,12 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Invalidate FTS documents for every record the rebuild dropped, per folder —
+	// otherwise they linger as ghost documents until the next fts rescan.
+	for folderName, uids := range st.ExpungedUIDs {
+		s.ftsExpunge(uc, folderName, uids)
+	}
+
 	note := "run with the user's mailboxes quiesced — no concurrent delivery or folder ops (operator repair tool). Unreferenced messages are set zero-ref for the next purge; orphan restore requires restore_orphans=true AND an ORIG_MAILBOX tag"
 	if req.RestoreOrphans {
 		note = "restore_orphans=true: unreferenced messages with an ORIG_MAILBOX tag were re-filed into their home folder (default flags — flags are not recoverable for an orphan); the rest are zero-ref for purge. Run with the user's mailboxes quiesced"

@@ -38,7 +38,7 @@ func TestRebuildRecoversAfterIndexLoss(t *testing.T) {
 	}
 
 	// Wipe the index by calling ResetFolder with no records.
-	if err := uc.idx.ResetFolder(uc.folder.ID, nil); err != nil {
+	if _, err := uc.idx.ResetFolder(uc.folder.ID, nil); err != nil {
 		t.Fatalf("simulate index loss: %v", err)
 	}
 	if got := uc.indexCount(t); got != 0 {
