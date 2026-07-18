@@ -137,6 +137,17 @@ func (s *session) imapSieveFileInto(name string, raw []byte, flags []string, cre
 		slog.Warn("imapsieve: fileinto record", "folder", name, "err", err)
 		return
 	}
+	// Explicit write confirmation (#625): a sieve fileinto lands a message the same
+	// way LMTP/APPEND do, but previously only logged on error — so a message that
+	// "vanished" could not be told apart from one that was never written. Mirrors
+	// the "imap: append saved" line; no message content, only the write coordinates.
+	slog.Debug("imapsieve: fileinto saved",
+		"user", s.userInfo.Username,
+		"folder", name,
+		"uid", nm.UID,
+		"file", newFilename,
+		"size", nm.Size,
+	)
 	s.emitMailboxChange(name, locks.EventDelivered, nm.UID)
 }
 

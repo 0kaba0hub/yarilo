@@ -255,6 +255,9 @@ func (s *Sender) sendNotify(ctx context.Context, opts FilterOptions, hdr textpro
 	if err := s.submit(ctx, envelopeFrom, []string{recipient}, bytes.NewReader(msg)); err != nil {
 		return fmt.Errorf("sieve/sender: notify send to %s: %w", recipient, err)
 	}
+	// Breadcrumb (#625): confirm the enotify fired. Only the destination address
+	// and user — never the notify method's options (may carry credentials) or body.
+	slog.Debug("sieve/sender: notification sent", "user", opts.Username, "recipient", recipient)
 	return nil
 }
 
