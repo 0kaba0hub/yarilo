@@ -1084,6 +1084,14 @@ func (u *userIndex) Keywords(folderID uint64) ([]string, error) {
 // highest_modseq is advanced to the max carried in. Only a record
 // with no modseq (a freshly assigned UID from RebuildFolder) is
 // stamped a fresh value bumped off the header.
+//
+// Trade-off (intentional, sits beside the VANISHED gap below): unlike
+// the old code this no longer unconditionally bumps highest_modseq —
+// advanceModSeqAtLeast is a no-op when nothing was restamped, so a
+// rebuild that changed no record leaves the header untouched. That is
+// correct for QRESYNC (nothing changed, nothing to signal) and is the
+// whole point of preserving modseq, but it drops the former "every
+// ResetFolder increments the header" guarantee.
 func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta) ([]uint32, error) {
 	var expunged []uint32
 	err := u.withFolder(folderID, func(fs *folderState) error {

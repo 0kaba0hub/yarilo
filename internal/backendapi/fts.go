@@ -13,6 +13,11 @@ import (
 // from folder. Best-effort and session-less (the operator rebuild has no IMAP
 // session): a lost notify heals on the next fts rescan. No-op when no FTS client
 // is configured. The caller holds uc open.
+//
+// One RPC per UID: pkg/fts.Client has no batch Expunge, so a storage-wide rebuild
+// that dropped hundreds of UIDs fans out into that many round-trips. Acceptable
+// for this best-effort operator path; batch this if pkg/fts.Client ever grows a
+// bulk-expunge method.
 func (s *Server) ftsExpunge(uc *userContext, folder string, uids []uint32) {
 	if s.opts.FTSClient == nil || len(uids) == 0 {
 		return

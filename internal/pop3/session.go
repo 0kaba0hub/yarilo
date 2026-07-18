@@ -723,6 +723,13 @@ func (s *session) loadMailbox() error {
 			// invalidated here — a POP3-only heal leaves FTS ghost documents until
 			// the next rescan. The IMAP heal path and the operator rebuild both
 			// notify FTS directly.
+			//
+			// No retry-bound here either (unlike the IMAP path's maxHealAttempts):
+			// a POP3 session heals at most once, at login, not in a SELECT/STATUS/
+			// IDLE loop, so one session cannot spin on incomplete scans. A client
+			// that reconnects rapidly during a near-continuous purge could still
+			// reproduce the scan storm across logins, but POP3 sessions are short
+			// and a cross-login bound would need persistent state — an accepted gap.
 			if expunged, herr := rb.HealCorruptFolder(s.idx, folder); herr != nil {
 				slog.Warn("pop3: dbox reactive heal failed", "user", s.userInfo.Username, "err", herr)
 			} else if len(expunged) > 0 {
