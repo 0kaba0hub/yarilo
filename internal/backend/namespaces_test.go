@@ -187,7 +187,7 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := buildNamespaceMailboxes(tc.namespaces, tc.globalDriver, mdboxTuning{}, nil, 0, true, true)
+			got, err := buildNamespaceMailboxes(tc.namespaces, tc.globalDriver, config.StorageConfig{}, nil)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr=%v", err, tc.wantErr)
 			}
@@ -235,7 +235,7 @@ func TestBuildNamespaceMailboxesSharesPerDriverInstance(t *testing.T) {
 	got, err := buildNamespaceMailboxes([]config.NamespaceConfig{
 		{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "mdbox:/var/a"},
 		{Type: "shared", Prefix: "Public/", Separator: "/", List: true, Location: "mdbox:/var/b"},
-	}, "maildir", mdboxTuning{}, nil, 0, true, true)
+	}, "maildir", config.StorageConfig{}, nil)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
