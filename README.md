@@ -123,6 +123,31 @@ The **reactive heal** is retry-bounded per folder per session on the IMAP path: 
 
 ---
 
+## Full-text search
+
+`SEARCH BODY`, `SEARCH TEXT` and `SEARCH HEADER` are backed by a per-user full-text index instead of a linear message scan.
+
+| Component | Backend | Status |
+|:---|:---|:---|
+| Engine | flatcurve (Xapian, on-disk glass shards) via [`go-xapian`](https://github.com/0kaba0hub/go-xapian) | ✅ |
+| Indexer / lookup service | `yarilo-fts` (sole writer; sessions dial it) | ✅ |
+
+The **`yarilo-fts`** service owns the index end-to-end — indexing *and* lookups — so it is the only process that links libxapian (cgo); every session binary stays pure-Go and sends `LOOKUP` over the internal TAB protocol. Enable it with `fts.enabled` + `fts_engine: flatcurve`; startup fails fast on a missing or unknown engine.
+
+Messages are indexed **write-through at delivery** (the body is already in memory) and via **autoindex** on access; a per-mailbox checkpoint (`last_indexed_uid` + a settings checksum) drives incremental indexing and detects config drift for rebuilds. A UIDVALIDITY change resets the checkpoint so a recreated mailbox re-indexes cleanly. The fts-flatcurve directory lives inside the mailbox's own driver-aware index path, matching where the mailbox index sits (`…/mailboxes/<folder>/dbox-Mails/fts-flatcurve` for mdbox/sdbox). Large mailboxes rotate the index into sealed shards; SEARCH queries each shard and merges, so results stay correct past the rotate threshold. When the index is unavailable, `fts_search_read_fallback` decides whether a query silently falls back to a sequential scan or surfaces a hard error (set `false` to catch regressions loudly).
+
+**Acceptance benchmark** (`app/fts-bench`, synthetic corpus, local Xapian glass shards):
+
+| Corpus | Shards | Index size | Index rate | SEARCH p95 (indexed vs scan) |
+|:---|:---|:---|:---|:---|
+| 5,000 | 1 | 1.59× corpus | 9,654 msg/s | 0.08 ms vs 77.7 ms (**942×**) |
+| 10,000 | 2 | 1.62× corpus | 9,764 msg/s | 0.14 ms vs 149 ms (**1,090×**) |
+| 20,000 | 4 | 1.63× corpus | 10,027 msg/s | 0.23 ms vs 322 ms (**1,410×**) |
+
+Search stays sub-millisecond as the mailbox grows; the linear scan it replaces grows with message count. See `docs/FTS.md` for the full design and the phased roadmap (relevancy / strict-substring / multi-language, then attachment decoders).
+
+---
+
 ## Cluster components
 
 | Binary | Role | Status |
