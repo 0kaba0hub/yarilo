@@ -219,7 +219,21 @@ func (u *userIndex) readBase(fs *folderState) error {
 	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
 		fs.baseMod = st.ModTime()
 	}
-	if _, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
+	// Capture the log's size in THIS single stat, before applyLog reads it, and
+	// use that captured value for fs.logSize below — never a second, later stat.
+	// A second stat taken AFTER applyLog returns can observe a concurrent
+	// writer's append that landed in the gap between the two calls: fs.logSize
+	// would then reflect bytes applyLog never actually read, desyncing it from
+	// fs.file.Header.NextUID. reload()'s fast path trusts newLogSize==fs.logSize
+	// to mean "nothing to re-apply" — with the desync, it wrongly takes the fast
+	// path forever, permanently missing that writer's NextUID update (duplicate
+	// UID allocation under concurrent load). The bytes covered by this one stat
+	// are guaranteed to already be in whatever applyLog(0) reads next, since
+	// nothing shrinks a log; if applyLog happens to see more (a write landed
+	// during the read itself), under-reporting fs.logSize here only costs a
+	// redundant (idempotent) re-apply on the next reload, never lost data.
+	if logSt, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
+		logSizeAtRead := logSt.Size()
 		if applyErr := fs.applyLog(0); errors.Is(applyErr, errLogIndexIDMismatch) {
 			// Log was written against a different (deleted/recreated) mailbox.
 			// Acquire the distributed lock and reset the log so that concurrent
@@ -239,9 +253,7 @@ func (u *userIndex) readBase(fs *folderState) error {
 		} else if applyErr != nil {
 			return fmt.Errorf("fileindex/openfolder: applylog: %w", applyErr)
 		} else {
-			if logSt, _ := os.Stat(fs.indexPath + ".log"); logSt != nil {
-				fs.logSize = logSt.Size()
-			}
+			fs.logSize = logSizeAtRead
 		}
 	}
 	return nil
