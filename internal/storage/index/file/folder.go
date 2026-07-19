@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 	"sort"
 	"time"
 
@@ -177,6 +178,22 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 // for first-ever OpenFolder and as the fallback after a corrupt
 // file is moved aside.
 func (fs *folderState) createFresh(uidValidity uint32) error {
+	// Breadcrumb (#644/#647): this unconditionally resets NextUID to 1. Correct
+	// for a genuinely first-ever OpenFolder or post-corruption fallback; a bug
+	// if ever invoked on a folder whose .index legitimately still exists but a
+	// caller's os.Stat momentarily/incorrectly reported ErrNotExist. Logs the
+	// caller so a live repro can tell "expected first-open" from "unexpected
+	// reset of an established folder" (the latter would show a caller other
+	// than the two documented ones, or a folder already known to have delivered
+	// mail before this run).
+	if pc, _, _, ok := runtime.Caller(1); ok {
+		caller := "unknown"
+		if fn := runtime.FuncForPC(pc); fn != nil {
+			caller = fn.Name()
+		}
+		slog.Warn("fileindex: createFresh resetting NextUID to 1",
+			"folder", fs.folder, "caller", caller, "requested_uidvalidity", uidValidity)
+	}
 	if uidValidity == 0 {
 		uidValidity = uint32(time.Now().Unix())
 	}
@@ -367,6 +384,22 @@ func (fs *folderState) advanceModSeqAtLeast(target uint64) error {
 // parameter so a future incremental-names optimisation can be
 // gated cleanly.
 func (fs *folderState) flush(wholeNames bool) error {
+	// Breadcrumb (#644/#647): flush() is the single choke point that persists
+	// fs.file.Header.NextUID as ground truth and discards the log — if this
+	// value is ever lower than what another process already advanced the
+	// folder to, this is where the regression lands on disk. Logs the caller
+	// (compactLogIfNeeded, SaveFolder, RecomputeVSize, reload's indexid-mismatch
+	// recovery, ...) so a live repro can identify which flush() call actually
+	// wrote the bad value, not just that a reader later observed it.
+	if pc, _, _, ok := runtime.Caller(1); ok {
+		caller := "unknown"
+		if fn := runtime.FuncForPC(pc); fn != nil {
+			caller = fn.Name()
+		}
+		slog.Debug("fileindex: flush persisting header",
+			"folder", fs.folder, "caller", caller, "next_uid", fs.file.Header.NextUID,
+			"messages_count", fs.file.Header.MessagesCount)
+	}
 	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/flush: mkdir: %w", err)
 	}
