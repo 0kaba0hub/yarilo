@@ -640,6 +640,7 @@ func (u *userIndex) Rescan(mbox fts.MailboxRef, present []uint32) ([]uint32, err
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	st := u.state(mbox)
+	slog.Debug("fts/flatcurve: rescan closing current shard", "dir", st.dir, "cur_path", st.curPath)
 	if err := st.closeCurrent(); err != nil {
 		return nil, err
 	}
@@ -720,13 +721,16 @@ func (u *userIndex) Optimize() error {
 }
 
 func optimizeDir(st *mboxState) error {
+	slog.Debug("fts/flatcurve: optimizeDir start", "dir", st.dir, "cur_path_before_close", st.curPath)
 	if err := st.closeCurrent(); err != nil {
 		return err
 	}
 	paths, err := shardPaths(st.dir)
 	if err != nil || len(paths) < 2 {
+		slog.Debug("fts/flatcurve: optimizeDir skip (fewer than 2 shards)", "dir", st.dir, "paths", paths, "err", err)
 		return err
 	}
+	slog.Debug("fts/flatcurve: optimizeDir merging shards", "dir", st.dir, "paths", paths)
 	db, err := xapian.OpenDBMulti(paths)
 	if err != nil {
 		return err
@@ -740,12 +744,14 @@ func optimizeDir(st *mboxState) error {
 		return cerr
 	}
 	for _, p := range paths {
+		slog.Debug("fts/flatcurve: optimizeDir removing merged shard", "dir", st.dir, "path", p)
 		if err := os.RemoveAll(p); err != nil {
 			return fmt.Errorf("fts/flatcurve: optimize cleanup: %w", err)
 		}
 	}
 	sealed := filepath.Join(st.dir,
 		fmt.Sprintf("%s%d", dbPrefix, time.Now().UnixMicro()))
+	slog.Debug("fts/flatcurve: optimizeDir sealing", "dir", st.dir, "from", tmp, "to", sealed)
 	if err := os.Rename(tmp, sealed); err != nil {
 		return fmt.Errorf("fts/flatcurve: optimize rename: %w", err)
 	}
