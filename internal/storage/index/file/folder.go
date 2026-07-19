@@ -460,16 +460,28 @@ func (fs *folderState) reload() error {
 	t0 := time.Now()
 	baseStat, baseErr := os.Stat(fs.indexPath)
 
-	// Use fstat on the open FD when available — avoids NFS path resolution.
+	// Stat the .log by PATH so a replacement is detected by file IDENTITY, not
+	// merely mtime+size — mirroring Dovecot's mail_index_should_recreate
+	// inode+device check. Another process's compaction replaces the log via
+	// truncateLog's .tmp+rename (new inode); a cached fs.logFD left pointing at
+	// the old, now-unlinked inode would otherwise fstat a stale size AND keep
+	// absorbing our own appends into a file nobody else sees, so this session
+	// would flush its stale (lower) header as ground truth and regress the
+	// folder's NextUID under concurrent load (#644).
+	logStat, _ := os.Stat(fs.indexPath + ".log")
 	var newLogSize int64
-	if fs.logFD != nil {
-		if st, err := fs.logFD.Stat(); err == nil {
-			newLogSize = st.Size()
-		}
-	} else {
-		if logStat, _ := os.Stat(fs.indexPath + ".log"); logStat != nil {
-			newLogSize = logStat.Size()
-		}
+	if logStat != nil {
+		newLogSize = logStat.Size()
+	}
+	logReplaced := false
+	if fs.logFD != nil && logStat != nil && !fdMatchesFile(fs.logFD, logStat) {
+		logReplaced = true
+		slog.Warn("fileindex: .log replaced under open fd, dropping stale handle",
+			"folder", fs.folder)
+		// closeFDs also drops namesFD by design: the same compaction that
+		// replaced the log rewrote the .names sidecar via saveNames (.tmp+
+		// rename), so our cached namesFD is stale too. Both reopen lazily.
+		fs.closeFDs()
 	}
 
 	var newBaseMod time.Time
@@ -477,8 +489,11 @@ func (fs *folderState) reload() error {
 		newBaseMod = baseStat.ModTime()
 	}
 
-	// Fast path: nothing on disk changed.
-	if newBaseMod == fs.baseMod && newLogSize == fs.logSize {
+	// Fast path: nothing on disk changed. Never taken when the log was replaced
+	// out from under us — a replacement means a concurrent compaction rewrote
+	// the base too, and its new mtime may coincide with our cached one under a
+	// coarse mtime resolution or NFS attribute caching.
+	if !logReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
 		slog.Debug("fileindex: reload fast-path",
 			"folder", fs.folder,
 			"log_size", fs.logSize,
@@ -498,8 +513,9 @@ func (fs *folderState) reload() error {
 		"old_base_mod", fs.baseMod.UnixNano(),
 		"dur_ms", time.Since(t0).Milliseconds())
 
-	// Base file changed (or first open) → full reload.
-	if newBaseMod != fs.baseMod || fs.file == nil {
+	// Base file changed (or first open, or the log was replaced by a concurrent
+	// compaction that also rewrote the base) → full reload.
+	if newBaseMod != fs.baseMod || fs.file == nil || logReplaced {
 		if baseErr != nil {
 			return fmt.Errorf("fileindex/reload: %w", baseErr)
 		}
