@@ -82,7 +82,7 @@ func TestIndexDirMirrorsDriverLayout(t *testing.T) {
 func TestDeleteFolderRemovesIndexDir(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, err := b.OpenFolder("Sent", 7)
+	f, err := b.OpenFolder("Sent", 7, "")
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestDeleteFolderReclaimsDboxShell(t *testing.T) {
 	home := t.TempDir()
 	h := New().OpenUser(&mailbox.UserInfo{Username: testUser, Home: home, Driver: "sdbox"})
 	ui := h.(*userHandle).ui
-	f, err := ui.OpenFolder("Sent", 7)
+	f, err := ui.OpenFolder("Sent", 7, "")
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestDeleteFolderReclaimsDboxShell(t *testing.T) {
 func TestLogReplay(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 42)
+	f, _ := b.OpenFolder("INBOX", 42, "")
 
 	// Append 3 messages, flag-update one, expunge one.
 	for i := uint32(1); i <= 3; i++ {
@@ -145,7 +145,7 @@ func TestLogReplay(t *testing.T) {
 
 	// Reopen — all state must come from replaying .index.log.
 	b2 := openIdx(dir, testUser)
-	f2, err := b2.OpenFolder("INBOX", 42)
+	f2, err := b2.OpenFolder("INBOX", 42, "")
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestLogReplay(t *testing.T) {
 func TestLogReplay_Keywords(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	modseq, _ := b.NextModSeq(f.ID)
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{ //nolint:errcheck
@@ -196,7 +196,7 @@ func TestLogReplay_Keywords(t *testing.T) {
 	b.Close() //nolint:errcheck
 
 	b2 := openIdx(dir, testUser)
-	f2, _ := b2.OpenFolder("INBOX", 1)
+	f2, _ := b2.OpenFolder("INBOX", 1, "")
 	msgs, _ := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if len(msgs) != 1 {
 		t.Fatalf("after keyword log replay: got %d messages, want 1", len(msgs))
@@ -217,7 +217,7 @@ func TestOpenFolder_CreateAndReopen(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser2)
 
-	f, err := b.OpenFolder("INBOX", 12345)
+	f, err := b.OpenFolder("INBOX", 12345, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestOpenFolder_CreateAndReopen(t *testing.T) {
 
 	// Reopen — must restore header from disk.
 	b2 := openIdx(dir, testUser2)
-	f2, err := b2.OpenFolder("INBOX", 12345)
+	f2, err := b2.OpenFolder("INBOX", 12345, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestOpenFolder_CreateAndReopen(t *testing.T) {
 
 func TestAppendAndGetMessages(t *testing.T) {
 	b := openIdx(t.TempDir(), testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	for i := uint32(1); i <= 5; i++ {
 		modseq, _ := b.NextModSeq(f.ID)
@@ -265,7 +265,7 @@ func TestAppendAndGetMessages(t *testing.T) {
 
 func TestUpdateFlags(t *testing.T) {
 	b := openIdx(t.TempDir(), testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	modseq, _ := b.NextModSeq(f.ID)
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}, ModSeq: modseq}) //nolint:errcheck
@@ -293,7 +293,7 @@ func TestUpdateFlags(t *testing.T) {
 
 func TestExpungeMessage(t *testing.T) {
 	b := openIdx(t.TempDir(), testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	for i := uint32(1); i <= 3; i++ {
 		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Deleted`}}) //nolint:errcheck
@@ -337,7 +337,7 @@ func TestSeqSetContains(t *testing.T) {
 func TestKeywordsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	modseq, _ := b.NextModSeq(f.ID)
 	err := b.AppendMessage(f.ID, &mailbox.MessageMeta{
@@ -372,7 +372,7 @@ func TestKeywordsRoundTrip(t *testing.T) {
 
 	// Verify keywords survive a close+reopen (disk persistence).
 	b2 := openIdx(dir, testUser)
-	f2, _ := b2.OpenFolder("INBOX", 1)
+	f2, _ := b2.OpenFolder("INBOX", 1, "")
 	msgs2, _ := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if len(msgs2) != 1 {
 		t.Fatalf("after reopen: got %d messages, want 1", len(msgs2))
@@ -385,7 +385,7 @@ func TestKeywordsRoundTrip(t *testing.T) {
 
 func TestKeywordsUpdateFlags(t *testing.T) {
 	b := openIdx(t.TempDir(), testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}}) //nolint:errcheck
 
@@ -440,7 +440,7 @@ func TestFlagConversion(t *testing.T) {
 func TestNextModSeqIsMonotonic(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, err := b.OpenFolder("INBOX", 1)
+	f, err := b.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("open folder: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestNextModSeqIsMonotonic(t *testing.T) {
 
 	// Folder header high-watermark must reflect the latest allocation
 	// (visible across process restarts).
-	reopened, err := b.OpenFolder("INBOX", 1)
+	reopened, err := b.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("re-open folder: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestAppendAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 	dir := t.TempDir()
 
 	writer := openIdx(dir, testUser)
-	wf, err := writer.OpenFolder("INBOX", 1)
+	wf, err := writer.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("writer open folder: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestAppendAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 
 	// Fresh backend/handle = another process. It reloads base + log from disk.
 	reader := openIdx(dir, testUser)
-	rf, err := reader.OpenFolder("INBOX", 1)
+	rf, err := reader.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("reader open folder: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestExpungeAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 	dir := t.TempDir()
 
 	writer := openIdx(dir, testUser)
-	wf, err := writer.OpenFolder("INBOX", 1)
+	wf, err := writer.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("writer open folder: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestExpungeAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 	}
 
 	reader := openIdx(dir, testUser)
-	rf, err := reader.OpenFolder("INBOX", 1)
+	rf, err := reader.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("reader open folder: %v", err)
 	}
@@ -594,7 +594,7 @@ func TestExpungeAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 func TestUpdateFlagsPersistsModSeqBump(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	ms, _ := b.NextModSeq(f.ID)
 	uid, _ := b.AllocateUID(f.ID)
@@ -606,7 +606,7 @@ func TestUpdateFlagsPersistsModSeqBump(t *testing.T) {
 
 	// Re-open folder → header modseq must reflect the UpdateFlags bump,
 	// not just the original allocation.
-	reopened, _ := b.OpenFolder("INBOX", 1)
+	reopened, _ := b.OpenFolder("INBOX", 1, "")
 	if reopened.HighestModSeq <= ms {
 		t.Errorf("UpdateFlags did not persist modseq bump: header=%d, allocation=%d",
 			reopened.HighestModSeq, ms)
@@ -620,18 +620,18 @@ func TestUpdateFlagsPersistsModSeqBump(t *testing.T) {
 func TestExpungePersistsModSeqBump(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	ms, _ := b.NextModSeq(f.ID)
 	uid, _ := b.AllocateUID(f.ID)
 	_ = b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}})
-	beforeHeader, _ := b.OpenFolder("INBOX", 1)
+	beforeHeader, _ := b.OpenFolder("INBOX", 1, "")
 
 	if err := b.ExpungeMessage(f.ID, uid); err != nil {
 		t.Fatalf("ExpungeMessage: %v", err)
 	}
 
-	reopened, _ := b.OpenFolder("INBOX", 1)
+	reopened, _ := b.OpenFolder("INBOX", 1, "")
 	if reopened.HighestModSeq <= beforeHeader.HighestModSeq {
 		t.Errorf("ExpungeMessage did not persist modseq bump: header=%d, pre-expunge=%d",
 			reopened.HighestModSeq, beforeHeader.HighestModSeq)
@@ -641,14 +641,14 @@ func TestExpungePersistsModSeqBump(t *testing.T) {
 func TestSize_RoundtripAndReopen(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "a", Size: 1234}) //nolint:errcheck
 	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 2, Filename: "b", Size: 5678}) //nolint:errcheck
 	b.Close()                                                                      //nolint:errcheck
 
 	b2 := openIdx(dir, testUser)
-	f2, _ := b2.OpenFolder("INBOX", 1)
+	f2, _ := b2.OpenFolder("INBOX", 1, "")
 	msgs, err := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if err != nil {
 		t.Fatal(err)
@@ -678,7 +678,7 @@ func TestSize_RoundtripAndReopen(t *testing.T) {
 func TestSaveFolderDoesNotCorruptMessagesCount(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	// Append 5 messages.
 	for i := uint32(1); i <= 5; i++ {
@@ -697,7 +697,7 @@ func TestSaveFolderDoesNotCorruptMessagesCount(t *testing.T) {
 	// Reopen from disk — records must all survive (counter must not corrupt data).
 	b.Close() //nolint:errcheck
 	b2 := openIdx(dir, testUser)
-	f2, _ := b2.OpenFolder("INBOX", 1)
+	f2, _ := b2.OpenFolder("INBOX", 1, "")
 	msgs, err := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if err != nil {
 		t.Fatalf("GetMessages: %v", err)
@@ -719,7 +719,7 @@ func TestSaveFolderDoesNotCorruptMessagesCount(t *testing.T) {
 func TestApplyLogRecountsAfterCorruptedHeaderUpdate(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	// Append 3 messages and expunge 1.
 	for i := uint32(1); i <= 3; i++ {
@@ -734,14 +734,14 @@ func TestApplyLogRecountsAfterCorruptedHeaderUpdate(t *testing.T) {
 
 	// Re-append to produce a non-empty log.
 	b2 := openIdx(dir, testUser)
-	f2, _ := b2.OpenFolder("INBOX", 1)
+	f2, _ := b2.OpenFolder("INBOX", 1, "")
 	modseq, _ := b2.NextModSeq(f2.ID)
 	b2.AppendMessage(f2.ID, &mailbox.MessageMeta{UID: 4, ModSeq: modseq}) //nolint:errcheck
 	b2.Close()                                                            //nolint:errcheck
 
 	// Third open: MessagesCount must equal actual record count (2 surviving + 1 new = 3).
 	b3 := openIdx(dir, testUser)
-	f3, _ := b3.OpenFolder("INBOX", 1)
+	f3, _ := b3.OpenFolder("INBOX", 1, "")
 	msgs, _ := b3.GetMessages(f3.ID, mailbox.SeqSet{})
 	if len(msgs) != 3 {
 		t.Errorf("GetMessages returned %d records, want 3", len(msgs))

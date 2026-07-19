@@ -21,7 +21,7 @@ func TestConcurrentCompactionNoUIDRegression(t *testing.T) {
 
 	// Pod A: create the folder and one message. Leaves a logFD open on inode I1.
 	podA := openIdx(dir, testUser)
-	fa, err := podA.OpenFolder("INBOX", 0)
+	fa, err := podA.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatalf("podA OpenFolder: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestConcurrentCompactionNoUIDRegression(t *testing.T) {
 	// compact — flush() rewrites the base with NextUID=6 and truncateLog
 	// replaces the .log with a fresh inode I2.
 	podB := openIdx(dir, testUser)
-	fb, err := podB.OpenFolder("INBOX", 0)
+	fb, err := podB.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatalf("podB OpenFolder: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestConcurrentCompactionNoUIDRegression(t *testing.T) {
 	}
 
 	reader := openIdx(dir, testUser)
-	fr, err := reader.OpenFolder("INBOX", 0)
+	fr, err := reader.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatalf("reader OpenFolder: %v", err)
 	}

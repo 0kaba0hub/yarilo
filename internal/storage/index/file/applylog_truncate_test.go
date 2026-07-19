@@ -17,7 +17,7 @@ import (
 func TestApplyLogTruncatesGenuineTornTail(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, err := b.OpenFolder("INBOX", 1)
+	f, err := b.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestConcurrentReadersDoNotTruncateLiveAppends(t *testing.T) {
 	dir := t.TempDir()
 
 	writer := openIdx(dir, testUser)
-	wf, err := writer.OpenFolder("INBOX", 1)
+	wf, err := writer.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("writer OpenFolder: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestConcurrentReadersDoNotTruncateLiveAppends(t *testing.T) {
 				default:
 				}
 				reader := openIdx(dir, testUser)
-				rf, err := reader.OpenFolder("INBOX", 1)
+				rf, err := reader.OpenFolder("INBOX", 1, "")
 				if err != nil {
 					t.Errorf("reader OpenFolder: %v", err)
 					return
@@ -140,7 +140,7 @@ func TestConcurrentReadersDoNotTruncateLiveAppends(t *testing.T) {
 	wg.Wait()
 
 	final := openIdx(dir, testUser)
-	ff, err := final.OpenFolder("INBOX", 1)
+	ff, err := final.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatalf("final OpenFolder: %v", err)
 	}

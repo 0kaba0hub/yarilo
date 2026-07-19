@@ -40,7 +40,7 @@ func msgVSize(m *mailbox.MessageMeta) uint32 {
 	return m.Size
 }
 
-func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
+func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string) (*mailbox.Folder, error) {
 	indexDir := u.indexDir(folder)
 	indexPath := indexPathFor(indexDir)
 
@@ -51,7 +51,13 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 	u.mu.Lock()
 	if u.byDir != nil {
 		if id, ok := u.byDir[indexDir]; ok {
+			fsDedup := u.open[id]
 			u.mu.Unlock()
+			if traceID != "" && fsDedup != nil {
+				fsDedup.mu.Lock()
+				fsDedup.traceID = traceID
+				fsDedup.mu.Unlock()
+			}
 			var snap *mailbox.Folder
 			err := u.withFolderRO(id, func(fs *folderState) error {
 				var sErr error
@@ -75,7 +81,7 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 	// not-yet-cached path — the dedup hit above is the cheap, expected case) so
 	// a live repro can catch two different indexDir values for the same folder.
 	slog.Debug("fileindex: openfolder first-open, computing layout",
-		"folder", folder, "driver", u.driver, "index_dir", indexDir)
+		"trace_id", traceID, "folder", folder, "driver", u.driver, "index_dir", indexDir)
 
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("fileindex/openfolder: mkdir: %w", err)
@@ -92,6 +98,7 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 		volatileDir: u.folderVolatileDir(folder),
 		filenames:   names,
 		sizes:       sizes,
+		traceID:     traceID,
 	}
 	if err := u.loadOrInit(fs, uidValidity); err != nil {
 		return nil, err
@@ -126,10 +133,10 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	// path is otherwise only inferable from the absence of a second
 	// createFresh call, not directly observed).
 	if err != nil {
-		slog.Debug("fileindex: loadOrInit stat", "folder", fs.folder,
+		slog.Debug("fileindex: loadOrInit stat", "trace_id", fs.traceID, "folder", fs.folder,
 			"index_path", fs.indexPath, "exists", false, "err", err.Error())
 	} else {
-		slog.Debug("fileindex: loadOrInit stat", "folder", fs.folder,
+		slog.Debug("fileindex: loadOrInit stat", "trace_id", fs.traceID, "folder", fs.folder,
 			"index_path", fs.indexPath, "exists", true, "size", st.Size(), "mod_time", st.ModTime().UnixNano())
 	}
 	switch {
@@ -312,7 +319,7 @@ func (fs *folderState) createFresh(uidValidity uint32) error {
 			caller = fn.Name()
 		}
 		slog.Warn("fileindex: createFresh resetting NextUID to 1",
-			"folder", fs.folder, "caller", caller, "requested_uidvalidity", uidValidity,
+			"trace_id", fs.traceID, "folder", fs.folder, "caller", caller, "requested_uidvalidity", uidValidity,
 			"index_path", fs.indexPath, "index_dir", fs.indexDir)
 	}
 	if uidValidity == 0 {
@@ -518,7 +525,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 			caller = fn.Name()
 		}
 		slog.Debug("fileindex: flush persisting header",
-			"folder", fs.folder, "caller", caller, "next_uid", fs.file.Header.NextUID,
+			"trace_id", fs.traceID, "folder", fs.folder, "caller", caller, "next_uid", fs.file.Header.NextUID,
 			"messages_count", fs.file.Header.MessagesCount)
 	}
 	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
@@ -662,7 +669,7 @@ func (fs *folderState) reload(locked bool) error {
 	// coarse mtime resolution or NFS attribute caching.
 	if !logReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
 		slog.Debug("fileindex: reload fast-path",
-			"folder", fs.folder,
+			"trace_id", fs.traceID, "folder", fs.folder,
 			"locked", locked,
 			"log_size", fs.logSize,
 			"base_mod", fs.baseMod.UnixNano(),
@@ -675,7 +682,7 @@ func (fs *folderState) reload(locked bool) error {
 		recordsBefore = len(fs.file.Records)
 	}
 	slog.Debug("fileindex: reload full",
-		"folder", fs.folder,
+		"trace_id", fs.traceID, "folder", fs.folder,
 		"locked", locked,
 		"new_log_size", newLogSize,
 		"old_log_size", fs.logSize,
@@ -729,7 +736,7 @@ func (fs *folderState) reload(locked bool) error {
 	// reload so a "message not visible after delivery" case shows whether the
 	// just-written record was picked up (records_after > records_before) or not.
 	slog.Debug("fileindex: reload applied",
-		"folder", fs.folder,
+		"trace_id", fs.traceID, "folder", fs.folder,
 		"locked", locked,
 		"records_before", recordsBefore,
 		"records_after", len(fs.file.Records),
@@ -762,7 +769,7 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 		// symptom of a UID-reuse race: a commit whose UID is < next_uid_before
 		// means something else already advanced the counter past it since
 		// AllocateUID ran, and this commit is landing a stale/reused value.
-		slog.Debug("fileindex: committing pre-allocated uid",
+		slog.Debug("fileindex: committing pre-allocated uid", "trace_id", fs.traceID,
 			"user", u.username, "folder", fs.folder, "uid", m.UID, "next_uid_before", fs.file.Header.NextUID)
 		if err := fs.appendLocked(m); err != nil {
 			return err
@@ -822,7 +829,7 @@ func (u *userIndex) AllocateUID(folderID uint64) (uint32, error) {
 		// AppendMessage — the gap between this log line and that one is exactly
 		// the caller's Save() window (see internal/lmtp/deliver.go), the only
 		// place a concurrent allocation on the same folder could interleave.
-		slog.Debug("fileindex: uid allocated", "user", u.username, "folder", fs.folder, "uid", assigned)
+		slog.Debug("fileindex: uid allocated", "trace_id", fs.traceID, "user", u.username, "folder", fs.folder, "uid", assigned)
 		return fs.appendMutLog(encU32Update(28, fs.file.Header.NextUID))
 	})
 	return assigned, err

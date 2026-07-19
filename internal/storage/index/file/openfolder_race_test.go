@@ -105,7 +105,7 @@ func TestOpenFolderConcurrentFirstOpenNoUIDRegression(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < deliveries; i++ {
-			f, err := lmtp.OpenFolder("INBOX", 0)
+			f, err := lmtp.OpenFolder("INBOX", 0, "")
 			if err != nil {
 				t.Errorf("lmtp OpenFolder: %v", err)
 				return
@@ -145,7 +145,7 @@ func TestOpenFolderConcurrentFirstOpenNoUIDRegression(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			conn := newBackend()
-			f, err := conn.OpenFolder("INBOX", 0)
+			f, err := conn.OpenFolder("INBOX", 0, "")
 			if err != nil {
 				t.Errorf("short-lived OpenFolder: %v", err)
 				return
@@ -157,7 +157,7 @@ func TestOpenFolderConcurrentFirstOpenNoUIDRegression(t *testing.T) {
 	wg.Wait()
 
 	final := newBackend()
-	ff, err := final.OpenFolder("INBOX", 0)
+	ff, err := final.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatalf("final OpenFolder: %v", err)
 	}

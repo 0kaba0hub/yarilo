@@ -14,7 +14,7 @@ func TestVsizeAggregate(t *testing.T) {
 	const user = "alice@test.com"
 
 	idx := openIdx(root, user)
-	f, err := idx.OpenFolder("INBOX", 42)
+	f, err := idx.OpenFolder("INBOX", 42, "")
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestVsizeAggregate(t *testing.T) {
 	// Re-open the user (fresh in-memory state): the aggregate must reload from
 	// the persisted header + log, self-healed by recalc from records.
 	idx2 := openIdx(root, user)
-	f2, err := idx2.OpenFolder("INBOX", 42)
+	f2, err := idx2.OpenFolder("INBOX", 42, "")
 	if err != nil {
 		t.Fatalf("reopen OpenFolder: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestVsizeAggregate(t *testing.T) {
 func TestVsizeFallbackToPhysical(t *testing.T) {
 	root := t.TempDir()
 	idx := openIdx(root, "bob@test.com")
-	f, err := idx.OpenFolder("INBOX", 7)
+	f, err := idx.OpenFolder("INBOX", 7, "")
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
