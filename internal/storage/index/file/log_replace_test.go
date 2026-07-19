@@ -66,7 +66,7 @@ func TestConcurrentCompactionNoUIDRegression(t *testing.T) {
 	// Pod A reloads. The stale logFD (I1) must be recognised as replaced,
 	// dropped, and the advanced NextUID picked up from the rewritten base.
 	fsA.mu.Lock()
-	if err := fsA.reload(); err != nil {
+	if err := fsA.reload(true); err != nil {
 		fsA.mu.Unlock()
 		t.Fatalf("podA reload: %v", err)
 	}
