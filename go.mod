@@ -3,6 +3,7 @@ module github.com/0kaba0hub/yarilo
 go 1.26.2
 
 require (
+	github.com/0kaba0hub/go-xapian v0.1.0
 	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/alicebob/miniredis/v2 v2.38.0

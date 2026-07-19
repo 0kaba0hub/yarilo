@@ -10,7 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/internal/fts/xapian"
+	"github.com/0kaba0hub/go-xapian"
+
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 

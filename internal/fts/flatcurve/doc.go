@@ -6,7 +6,7 @@
 //
 // The engine holds only the mail-specific logic (checkpoints, shard rotation,
 // IMAP SEARCH → query mapping); the raw Xapian access goes through the generic
-// internal/fts/xapian binding. It requires cgo + libxapian and is only compiled
+// go-xapian binding (github.com/0kaba0hub/go-xapian). It requires cgo + libxapian and is only compiled
 // with the "flatcurve" build tag; without the tag this package contains no
 // engine so the default pure-Go build is unaffected. Only the yarilo-fts binary
 // is built with the tag.
