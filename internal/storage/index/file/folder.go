@@ -474,13 +474,14 @@ func (fs *folderState) reload() error {
 		newLogSize = logStat.Size()
 	}
 	logReplaced := false
-	if fs.logFD != nil && logStat != nil {
-		if fdStat, err := fs.logFD.Stat(); err == nil && !os.SameFile(logStat, fdStat) {
-			logReplaced = true
-			slog.Warn("fileindex: .log replaced under open fd, dropping stale handle",
-				"folder", fs.folder)
-			fs.closeFDs()
-		}
+	if fs.logFD != nil && logStat != nil && !fdMatchesFile(fs.logFD, logStat) {
+		logReplaced = true
+		slog.Warn("fileindex: .log replaced under open fd, dropping stale handle",
+			"folder", fs.folder)
+		// closeFDs also drops namesFD by design: the same compaction that
+		// replaced the log rewrote the .names sidecar via saveNames (.tmp+
+		// rename), so our cached namesFD is stale too. Both reopen lazily.
+		fs.closeFDs()
 	}
 
 	var newBaseMod time.Time

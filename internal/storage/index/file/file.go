@@ -373,11 +373,27 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	fs.logSize = 0
 }
 
+// fdMatchesFile reports whether f still refers to the same on-disk file
+// (device + inode, via os.SameFile) as fi. Returns false when f is nil or
+// either stat is unavailable — an unprovable identity is treated as "not the
+// same file". Single source of the inode-identity comparison used by reload()
+// and logFileReplaced().
+func fdMatchesFile(f *os.File, fi os.FileInfo) bool {
+	if f == nil || fi == nil {
+		return false
+	}
+	st, err := f.Stat()
+	if err != nil || st == nil {
+		return false
+	}
+	return os.SameFile(fi, st)
+}
+
 // logFileReplaced reports whether the on-disk .log is a different file
-// (inode+device, via os.SameFile) than the one fs.logFD currently holds open —
-// i.e. another process replaced it through truncateLog's rename. Returns false
-// when we hold no fd yet or either stat fails (treat as "not proven replaced").
-// Caller must hold fs.mu.
+// (inode+device) than the one fs.logFD currently holds open — i.e. another
+// process replaced it through truncateLog's rename. Returns false when we hold
+// no fd yet or the path stat fails (treat as "not proven replaced"). Caller
+// must hold fs.mu.
 func (fs *folderState) logFileReplaced() bool {
 	if fs.logFD == nil {
 		return false
@@ -386,11 +402,7 @@ func (fs *folderState) logFileReplaced() bool {
 	if err != nil || logStat == nil {
 		return false
 	}
-	fdStat, err := fs.logFD.Stat()
-	if err != nil || fdStat == nil {
-		return false
-	}
-	return !os.SameFile(logStat, fdStat)
+	return !fdMatchesFile(fs.logFD, logStat)
 }
 
 // makeOwner builds the owner string passed to yarilo-locks BUSY
