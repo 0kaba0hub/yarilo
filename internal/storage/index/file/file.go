@@ -20,12 +20,14 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
@@ -41,6 +43,75 @@ const (
 	defaultLogCompactMaxBytes   int64 = 1024 * 1024 // 1 MiB
 	defaultLogCompactMinAgeSecs int   = 300         // 5 min
 )
+
+// sidecarTmpSeq disambiguates concurrent sidecar-file writers (saveNames,
+// ensureLogStub) the same way mailindex.tmpSeq does for the base index: two
+// callers racing a shared, non-unique "<path>.tmp" name step on each other's
+// file, and the loser's os.Rename fails outright (ENOENT, source already
+// consumed by the winner's rename) instead of just losing an update.
+var sidecarTmpSeq atomic.Uint64
+
+// sidecarTmpPath returns a unique working path for a sidecar rewrite of dst.
+// When volatileDir is set, the tmp file is written there (by design every
+// scratch/tmp write goes to the fast local volatile volume, matching
+// mailindex.Recreate's TmpDir handling) rather than next to dst on the
+// shared mail volume; the caller must then stage it back onto dst's own
+// filesystem before the final rename, since os.Rename cannot cross devices.
+func sidecarTmpPath(dst, volatileDir string) string {
+	suffix := fmt.Sprintf(".tmp.%d.%d", os.Getpid(), sidecarTmpSeq.Add(1))
+	if volatileDir != "" {
+		return filepath.Join(volatileDir, filepath.Base(dst)+suffix)
+	}
+	return dst + suffix
+}
+
+// sidecarStagePath returns a same-filesystem-as-dst staging path, used only
+// when the tmp file was written to a different device (volatileDir set).
+func sidecarStagePath(dst string) string {
+	return fmt.Sprintf("%s.stage.%d.%d", dst, os.Getpid(), sidecarTmpSeq.Add(1))
+}
+
+// sidecarCommit renames tmp onto dst, staging via a same-device copy first
+// when volatileDir put tmp on a different filesystem than dst (os.Rename
+// cannot cross devices). Always cleans up its own scratch files.
+func sidecarCommit(tmp, dst, volatileDir string) error {
+	if volatileDir == "" {
+		if err := os.Rename(tmp, dst); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		return nil
+	}
+	stage := sidecarStagePath(dst)
+	if err := copySidecarTmp(tmp, stage); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Remove(tmp)
+	if err := os.Rename(stage, dst); err != nil {
+		_ = os.Remove(stage)
+		return err
+	}
+	return nil
+}
+
+func copySidecarTmp(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	return out.Close()
+}
 
 type Backend struct {
 	locker locks.Locker
@@ -841,14 +912,21 @@ func (fs *folderState) appendName(uid uint32, filename string, size uint32) erro
 	return nil
 }
 
-// saveNames rewrites the .names sidecar atomically (.tmp + rename).
-// Each line: <uid>\t<filename>\t<size_bytes>\n
-func saveNames(indexDir string, names map[uint32]string, sizes map[uint32]uint32) error {
+// saveNames rewrites the .names sidecar atomically (.tmp + rename). Each
+// line: <uid>\t<filename>\t<size_bytes>\n. volatileDir routes the scratch
+// write to the fast local volume when configured, matching every other
+// sidecar/base rewrite in this package.
+func saveNames(indexDir, volatileDir string, names map[uint32]string, sizes map[uint32]uint32) error {
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/names: mkdir: %w", err)
 	}
+	if volatileDir != "" {
+		if err := os.MkdirAll(volatileDir, 0o700); err != nil {
+			return fmt.Errorf("fileindex/names: mkdir volatile: %w", err)
+		}
+	}
 	dst := namesPath(indexDir)
-	tmp := dst + ".tmp"
+	tmp := sidecarTmpPath(dst, volatileDir)
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("fileindex/names: open tmp: %w", err)
@@ -875,8 +953,7 @@ func saveNames(indexDir string, names map[uint32]string, sizes map[uint32]uint32
 		_ = os.Remove(tmp)
 		return fmt.Errorf("fileindex/names: close: %w", err)
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
+	if err := sidecarCommit(tmp, dst, volatileDir); err != nil {
 		return fmt.Errorf("fileindex/names: rename: %w", err)
 	}
 	return nil
@@ -886,15 +963,21 @@ func saveNames(indexDir string, names map[uint32]string, sizes map[uint32]uint32
 // none exists. Required because the canonical reader fails
 // hard when .index is present but its .log sibling is missing.
 // Pure-Recreate mode never appends to the log, but the file
-// must exist for compat.
-func ensureLogStub(indexPath string, indexID uint32) error {
+// must exist for compat. volatileDir routes the scratch write to the fast
+// local volume when configured, matching every other sidecar/base rewrite.
+func ensureLogStub(indexPath, volatileDir string, indexID uint32) error {
 	logPath := indexPath + ".log"
 	if _, err := os.Stat(logPath); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("fileindex/log stub: stat: %w", err)
 	}
-	tmp := logPath + ".tmp"
+	if volatileDir != "" {
+		if err := os.MkdirAll(volatileDir, 0o700); err != nil {
+			return fmt.Errorf("fileindex/log stub: mkdir volatile: %w", err)
+		}
+	}
+	tmp := sidecarTmpPath(logPath, volatileDir)
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("fileindex/log stub: create: %w", err)
@@ -909,8 +992,7 @@ func ensureLogStub(indexPath string, indexID uint32) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("fileindex/log stub: close: %w", err)
 	}
-	if err := os.Rename(tmp, logPath); err != nil {
-		_ = os.Remove(tmp)
+	if err := sidecarCommit(tmp, logPath, volatileDir); err != nil {
 		return fmt.Errorf("fileindex/log stub: rename: %w", err)
 	}
 	return nil

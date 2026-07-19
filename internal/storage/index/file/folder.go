@@ -110,6 +110,13 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 // loadOrInit populates fs.file by reading the existing .index,
 // migrating from yarilo-legacy format, or creating a fresh file.
 // Caller holds no locks — this runs only once per session-folder.
+//
+// The initial os.Stat is deliberately unlocked (#658): a folder that
+// already exists is the overwhelmingly common case, and taking the
+// cross-process lock on every single OpenFolder would serialize all
+// first-opens against each other for no reason. Only the genuine
+// first-creation branch (ErrNotExist) pays the lock cost — see
+// loadOrInitMissing for why that branch needs it.
 func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	st, err := os.Stat(fs.indexPath)
 	// Breadcrumb (#644/#647): unconditional, every call — not just the
@@ -127,32 +134,83 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	}
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return fs.createFresh(uidValidity)
+		return u.loadOrInitMissing(fs, uidValidity)
 	case err != nil:
 		return fmt.Errorf("fileindex/openfolder: stat: %w", err)
 	}
 	_ = st
+	return u.loadExisting(fs)
+}
 
-	if legacy, isLegacy, err := detectAndDecodeLegacy(fs.indexPath); err != nil {
+// loadOrInitMissing handles loadOrInit's ErrNotExist branch under the
+// folder's cross-process lock (#658). Without this, two OpenFolder calls
+// racing a genuinely-missing index file (e.g. two IMAP connections opening a
+// just-created mailbox, or a short-lived connection racing the folder's very
+// first LMTP delivery) both see ErrNotExist from the unlocked fast-path stat
+// and both call createFresh — the later flush(true) silently resets NextUID
+// to 1, discarding every UID the other side already committed. The lock
+// serializes the two; the re-stat immediately after acquiring it is the
+// actual fix — a loser that blindly called createFresh again after merely
+// waiting for the lock would still stomp the winner's file.
+func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error {
+	return u.withDistLock(fs, func() error {
+		st, err := os.Stat(fs.indexPath)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return fs.createFresh(uidValidity)
+		case err != nil:
+			return fmt.Errorf("fileindex/openfolder: stat (locked recheck): %w", err)
+		}
+		_ = st
+		return u.loadExisting(fs)
+	})
+}
+
+// loadExisting populates fs.file from an index file already confirmed
+// present on disk — the shared tail of loadOrInit's exists-now and
+// won-the-lock-and-someone-else-already-created-it paths.
+func (u *userIndex) loadExisting(fs *folderState) error {
+	if _, isLegacy, err := detectAndDecodeLegacy(fs.indexPath); err != nil {
 		return fmt.Errorf("fileindex/openfolder: legacy probe: %w", err)
 	} else if isLegacy {
-		if err := fs.adoptLegacy(legacy); err != nil {
-			return fmt.Errorf("fileindex/openfolder: adopt legacy: %w", err)
-		}
-		// Migrate atomically: keep the old file as .legacy
-		// backup so an operator can roll back the
-		// auto-migration if something goes wrong.
-		backup := fs.indexPath + ".legacy"
-		_ = os.Remove(backup)
-		if err := os.Link(fs.indexPath, backup); err != nil {
-			debugLog("legacy backup hardlink failed", "err", err)
-		}
-		if err := fs.flush(true); err != nil {
-			return fmt.Errorf("fileindex/openfolder: write migrated: %w", err)
-		}
-		return ensureLogStub(fs.indexPath, fs.file.Header.IndexID)
+		// Legacy migration mutates the index (adopt + flush). When reached via
+		// loadOrInit's unlocked fast path this must not race another opener's
+		// migration of the same file (#658 follow-up): take the folder lock and
+		// re-detect under it — a racer that already migrated wins, and we load
+		// the migrated file instead of re-writing it. Re-entrant via
+		// HoldsResource when the missing-branch already holds the lock.
+		return u.withDistLock(fs, func() error {
+			legacy, stillLegacy, err := detectAndDecodeLegacy(fs.indexPath)
+			if err != nil {
+				return fmt.Errorf("fileindex/openfolder: legacy probe (locked): %w", err)
+			}
+			if !stillLegacy {
+				return u.loadModern(fs)
+			}
+			if err := fs.adoptLegacy(legacy); err != nil {
+				return fmt.Errorf("fileindex/openfolder: adopt legacy: %w", err)
+			}
+			// Migrate atomically: keep the old file as .legacy backup so an
+			// operator can roll back the auto-migration if something goes wrong.
+			backup := fs.indexPath + ".legacy"
+			_ = os.Remove(backup)
+			if err := os.Link(fs.indexPath, backup); err != nil {
+				debugLog("legacy backup hardlink failed", "err", err)
+			}
+			if err := fs.flush(true); err != nil {
+				return fmt.Errorf("fileindex/openfolder: write migrated: %w", err)
+			}
+			return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
+		})
 	}
+	return u.loadModern(fs)
+}
 
+// readBase opens the base .index into fs.file, records its mtime, and replays
+// the .log (resetting a mismatched-IndexID log under the folder lock). Shared
+// by the initial unlocked read and the locked re-read of the UIDVALIDITY fixup
+// so the re-read keeps the log-applied state instead of dropping it.
+func (u *userIndex) readBase(fs *folderState) error {
 	mf, err := mailindex.Open(fs.indexPath)
 	if err != nil {
 		return fmt.Errorf("fileindex/openfolder: open: %w", err)
@@ -161,7 +219,21 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
 		fs.baseMod = st.ModTime()
 	}
-	if _, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
+	// Capture the log's size in THIS single stat, before applyLog reads it, and
+	// use that captured value for fs.logSize below — never a second, later stat.
+	// A second stat taken AFTER applyLog returns can observe a concurrent
+	// writer's append that landed in the gap between the two calls: fs.logSize
+	// would then reflect bytes applyLog never actually read, desyncing it from
+	// fs.file.Header.NextUID. reload()'s fast path trusts newLogSize==fs.logSize
+	// to mean "nothing to re-apply" — with the desync, it wrongly takes the fast
+	// path forever, permanently missing that writer's NextUID update (duplicate
+	// UID allocation under concurrent load). The bytes covered by this one stat
+	// are guaranteed to already be in whatever applyLog(0) reads next, since
+	// nothing shrinks a log; if applyLog happens to see more (a write landed
+	// during the read itself), under-reporting fs.logSize here only costs a
+	// redundant (idempotent) re-apply on the next reload, never lost data.
+	if logSt, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
+		logSizeAtRead := logSt.Size()
 		if applyErr := fs.applyLog(0); errors.Is(applyErr, errLogIndexIDMismatch) {
 			// Log was written against a different (deleted/recreated) mailbox.
 			// Acquire the distributed lock and reset the log so that concurrent
@@ -181,22 +253,45 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 		} else if applyErr != nil {
 			return fmt.Errorf("fileindex/openfolder: applylog: %w", applyErr)
 		} else {
-			if logSt, _ := os.Stat(fs.indexPath + ".log"); logSt != nil {
-				fs.logSize = logSt.Size()
-			}
+			fs.logSize = logSizeAtRead
 		}
 	}
+	return nil
+}
+
+// loadModern populates fs from a modern (non-legacy) index already present on
+// disk, repairing a zero UIDVALIDITY if needed.
+func (u *userIndex) loadModern(fs *folderState) error {
+	if err := u.readBase(fs); err != nil {
+		return err
+	}
 	if fs.file.Header.UIDValidity == 0 {
-		fs.file.Header.UIDValidity = uint32(time.Now().Unix())
-		if err := fs.flush(true); err != nil {
-			return fmt.Errorf("fileindex/openfolder: fix uidvalidity: %w", err)
+		// The UIDVALIDITY repair writes the index (flush). Serialize it against
+		// other openers and re-read under the lock so a racer that already
+		// repaired it wins — otherwise two openers assign different values and
+		// the later flush stomps the earlier one (#658 follow-up). Re-entrant
+		// via HoldsResource.
+		if err := u.withDistLock(fs, func() error {
+			if err := u.readBase(fs); err != nil {
+				return err
+			}
+			if fs.file.Header.UIDValidity != 0 {
+				return nil // a racer already repaired it
+			}
+			fs.file.Header.UIDValidity = uint32(time.Now().Unix())
+			if err := fs.flush(true); err != nil {
+				return fmt.Errorf("fileindex/openfolder: fix uidvalidity: %w", err)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	if err := fs.refreshExtState(); err != nil {
 		return err
 	}
 	fs.ensureVsizeLocked()
-	return ensureLogStub(fs.indexPath, fs.file.Header.IndexID)
+	return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
 }
 
 // createFresh initialises a brand-new folder state — used both
@@ -238,7 +333,7 @@ func (fs *folderState) createFresh(uidValidity uint32) error {
 	if err := fs.flush(true); err != nil {
 		return err
 	}
-	return ensureLogStub(fs.indexPath, indexID)
+	return ensureLogStub(fs.indexPath, fs.volatileDir, indexID)
 }
 
 // refreshExtState re-parses the dbox-hdr and keywords extension
@@ -465,7 +560,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 			_ = fs.namesFD.Close()
 			fs.namesFD = nil
 		}
-		if err := saveNames(fs.indexDir, fs.filenames, fs.sizes); err != nil {
+		if err := saveNames(fs.indexDir, fs.volatileDir, fs.filenames, fs.sizes); err != nil {
 			return err
 		}
 	}
