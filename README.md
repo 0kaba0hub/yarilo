@@ -167,6 +167,7 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 | yarilo-anvil | Connection rate limiting + penalty | ✅ |
 | yarilo-locks | Cross-process write coordination — Redis-backed, TCP mTLS | ✅ |
 | yarilo-quota-status | Quota policy socket (Postfix quota check) | ✅ |
+| yarilo-fts | Full-text search indexer + lookup service (flatcurve/Xapian; sole cgo/libxapian process) | ✅ |
 | yarilo-backend-api | HTTP admin API (dict, ACL, folder, quota, rebuild) | ✅ |
 | yarilo-admin | CLI control tool — `director` and `backend` planes | ✅ |
 | yarilo-monitor | Backend health sidecar for director ring | ✅ |
