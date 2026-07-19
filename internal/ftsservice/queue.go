@@ -51,6 +51,7 @@ func (q *queue) push(j job, front bool) {
 	} else {
 		q.jobs = append(q.jobs, j)
 	}
+	metricQueueDepth.Set(float64(len(q.jobs)))
 	q.cond.Signal()
 }
 
@@ -81,4 +82,11 @@ func (q *queue) close() {
 	q.closed = true
 	q.cond.Broadcast()
 	q.mu.Unlock()
+}
+
+// depth returns the number of pending jobs. Used for the queue-depth metric.
+func (q *queue) depth() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.jobs)
 }

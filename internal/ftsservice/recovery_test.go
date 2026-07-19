@@ -20,8 +20,8 @@ func TestIsBrokenEngine(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := isBrokenEngine(c.err); got != c.want {
-				t.Errorf("isBrokenEngine(%v) = %v, want %v", c.err, got, c.want)
+			if got := brokenEngineReason(c.err) != ""; got != c.want {
+				t.Errorf("brokenEngineReason(%v) present = %v, want %v", c.err, got, c.want)
 			}
 		})
 	}
