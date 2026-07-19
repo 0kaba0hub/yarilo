@@ -170,26 +170,47 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 // present on disk — the shared tail of loadOrInit's exists-now and
 // won-the-lock-and-someone-else-already-created-it paths.
 func (u *userIndex) loadExisting(fs *folderState) error {
-	if legacy, isLegacy, err := detectAndDecodeLegacy(fs.indexPath); err != nil {
+	if _, isLegacy, err := detectAndDecodeLegacy(fs.indexPath); err != nil {
 		return fmt.Errorf("fileindex/openfolder: legacy probe: %w", err)
 	} else if isLegacy {
-		if err := fs.adoptLegacy(legacy); err != nil {
-			return fmt.Errorf("fileindex/openfolder: adopt legacy: %w", err)
-		}
-		// Migrate atomically: keep the old file as .legacy
-		// backup so an operator can roll back the
-		// auto-migration if something goes wrong.
-		backup := fs.indexPath + ".legacy"
-		_ = os.Remove(backup)
-		if err := os.Link(fs.indexPath, backup); err != nil {
-			debugLog("legacy backup hardlink failed", "err", err)
-		}
-		if err := fs.flush(true); err != nil {
-			return fmt.Errorf("fileindex/openfolder: write migrated: %w", err)
-		}
-		return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
+		// Legacy migration mutates the index (adopt + flush). When reached via
+		// loadOrInit's unlocked fast path this must not race another opener's
+		// migration of the same file (#658 follow-up): take the folder lock and
+		// re-detect under it — a racer that already migrated wins, and we load
+		// the migrated file instead of re-writing it. Re-entrant via
+		// HoldsResource when the missing-branch already holds the lock.
+		return u.withDistLock(fs, func() error {
+			legacy, stillLegacy, err := detectAndDecodeLegacy(fs.indexPath)
+			if err != nil {
+				return fmt.Errorf("fileindex/openfolder: legacy probe (locked): %w", err)
+			}
+			if !stillLegacy {
+				return u.loadModern(fs)
+			}
+			if err := fs.adoptLegacy(legacy); err != nil {
+				return fmt.Errorf("fileindex/openfolder: adopt legacy: %w", err)
+			}
+			// Migrate atomically: keep the old file as .legacy backup so an
+			// operator can roll back the auto-migration if something goes wrong.
+			backup := fs.indexPath + ".legacy"
+			_ = os.Remove(backup)
+			if err := os.Link(fs.indexPath, backup); err != nil {
+				debugLog("legacy backup hardlink failed", "err", err)
+			}
+			if err := fs.flush(true); err != nil {
+				return fmt.Errorf("fileindex/openfolder: write migrated: %w", err)
+			}
+			return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
+		})
 	}
+	return u.loadModern(fs)
+}
 
+// readBase opens the base .index into fs.file, records its mtime, and replays
+// the .log (resetting a mismatched-IndexID log under the folder lock). Shared
+// by the initial unlocked read and the locked re-read of the UIDVALIDITY fixup
+// so the re-read keeps the log-applied state instead of dropping it.
+func (u *userIndex) readBase(fs *folderState) error {
 	mf, err := mailindex.Open(fs.indexPath)
 	if err != nil {
 		return fmt.Errorf("fileindex/openfolder: open: %w", err)
@@ -223,10 +244,35 @@ func (u *userIndex) loadExisting(fs *folderState) error {
 			}
 		}
 	}
+	return nil
+}
+
+// loadModern populates fs from a modern (non-legacy) index already present on
+// disk, repairing a zero UIDVALIDITY if needed.
+func (u *userIndex) loadModern(fs *folderState) error {
+	if err := u.readBase(fs); err != nil {
+		return err
+	}
 	if fs.file.Header.UIDValidity == 0 {
-		fs.file.Header.UIDValidity = uint32(time.Now().Unix())
-		if err := fs.flush(true); err != nil {
-			return fmt.Errorf("fileindex/openfolder: fix uidvalidity: %w", err)
+		// The UIDVALIDITY repair writes the index (flush). Serialize it against
+		// other openers and re-read under the lock so a racer that already
+		// repaired it wins — otherwise two openers assign different values and
+		// the later flush stomps the earlier one (#658 follow-up). Re-entrant
+		// via HoldsResource.
+		if err := u.withDistLock(fs, func() error {
+			if err := u.readBase(fs); err != nil {
+				return err
+			}
+			if fs.file.Header.UIDValidity != 0 {
+				return nil // a racer already repaired it
+			}
+			fs.file.Header.UIDValidity = uint32(time.Now().Unix())
+			if err := fs.flush(true); err != nil {
+				return fmt.Errorf("fileindex/openfolder: fix uidvalidity: %w", err)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	if err := fs.refreshExtState(); err != nil {
