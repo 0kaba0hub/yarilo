@@ -110,6 +110,13 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 // loadOrInit populates fs.file by reading the existing .index,
 // migrating from yarilo-legacy format, or creating a fresh file.
 // Caller holds no locks — this runs only once per session-folder.
+//
+// The initial os.Stat is deliberately unlocked (#658): a folder that
+// already exists is the overwhelmingly common case, and taking the
+// cross-process lock on every single OpenFolder would serialize all
+// first-opens against each other for no reason. Only the genuine
+// first-creation branch (ErrNotExist) pays the lock cost — see
+// loadOrInitMissing for why that branch needs it.
 func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	st, err := os.Stat(fs.indexPath)
 	// Breadcrumb (#644/#647): unconditional, every call — not just the
@@ -127,12 +134,42 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	}
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return fs.createFresh(uidValidity)
+		return u.loadOrInitMissing(fs, uidValidity)
 	case err != nil:
 		return fmt.Errorf("fileindex/openfolder: stat: %w", err)
 	}
 	_ = st
+	return u.loadExisting(fs)
+}
 
+// loadOrInitMissing handles loadOrInit's ErrNotExist branch under the
+// folder's cross-process lock (#658). Without this, two OpenFolder calls
+// racing a genuinely-missing index file (e.g. two IMAP connections opening a
+// just-created mailbox, or a short-lived connection racing the folder's very
+// first LMTP delivery) both see ErrNotExist from the unlocked fast-path stat
+// and both call createFresh — the later flush(true) silently resets NextUID
+// to 1, discarding every UID the other side already committed. The lock
+// serializes the two; the re-stat immediately after acquiring it is the
+// actual fix — a loser that blindly called createFresh again after merely
+// waiting for the lock would still stomp the winner's file.
+func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error {
+	return u.withDistLock(fs, func() error {
+		st, err := os.Stat(fs.indexPath)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return fs.createFresh(uidValidity)
+		case err != nil:
+			return fmt.Errorf("fileindex/openfolder: stat (locked recheck): %w", err)
+		}
+		_ = st
+		return u.loadExisting(fs)
+	})
+}
+
+// loadExisting populates fs.file from an index file already confirmed
+// present on disk — the shared tail of loadOrInit's exists-now and
+// won-the-lock-and-someone-else-already-created-it paths.
+func (u *userIndex) loadExisting(fs *folderState) error {
 	if legacy, isLegacy, err := detectAndDecodeLegacy(fs.indexPath); err != nil {
 		return fmt.Errorf("fileindex/openfolder: legacy probe: %w", err)
 	} else if isLegacy {
@@ -150,7 +187,7 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 		if err := fs.flush(true); err != nil {
 			return fmt.Errorf("fileindex/openfolder: write migrated: %w", err)
 		}
-		return ensureLogStub(fs.indexPath, fs.file.Header.IndexID)
+		return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
 	}
 
 	mf, err := mailindex.Open(fs.indexPath)
@@ -196,7 +233,7 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 		return err
 	}
 	fs.ensureVsizeLocked()
-	return ensureLogStub(fs.indexPath, fs.file.Header.IndexID)
+	return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
 }
 
 // createFresh initialises a brand-new folder state — used both
@@ -238,7 +275,7 @@ func (fs *folderState) createFresh(uidValidity uint32) error {
 	if err := fs.flush(true); err != nil {
 		return err
 	}
-	return ensureLogStub(fs.indexPath, indexID)
+	return ensureLogStub(fs.indexPath, fs.volatileDir, indexID)
 }
 
 // refreshExtState re-parses the dbox-hdr and keywords extension
@@ -465,7 +502,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 			_ = fs.namesFD.Close()
 			fs.namesFD = nil
 		}
-		if err := saveNames(fs.indexDir, fs.filenames, fs.sizes); err != nil {
+		if err := saveNames(fs.indexDir, fs.volatileDir, fs.filenames, fs.sizes); err != nil {
 			return err
 		}
 	}
