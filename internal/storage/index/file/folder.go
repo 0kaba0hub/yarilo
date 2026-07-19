@@ -1945,15 +1945,26 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 		}
 	}
 
-	// Truncate any partial tail after the last complete BOUNDARY.
-	// Only on full replay (fromOffset==0); incremental appends are always complete.
-	if fromOffset == 0 && committedEnd > 0 {
+	// Truncate any partial tail after the last complete BOUNDARY. Only on full
+	// replay (fromOffset==0); incremental appends are always complete.
+	//
+	// Compares against filePos — how far THIS read pass actually got, including
+	// any trailing bytes it tried and failed to parse as a complete record —
+	// never a fresh os.Stat. This function commonly runs unlocked (readBase's
+	// fast "folder already exists" path, taken on every new connection opening
+	// an established folder). A concurrent writer's appendMutLog can complete
+	// its own fully-valid, atomic write in the gap between this read loop
+	// hitting EOF and a separate later stat; that stat would then see the
+	// writer's legitimate growth as "beyond what we read" and truncate it away
+	// — silently destroying another process's already-committed record. Using
+	// filePos instead means the truncate decision is a pure function of bytes
+	// THIS call actually read and could not parse, so it can never chop off
+	// data written after this pass finished reading.
+	if fromOffset == 0 && committedEnd > 0 && filePos > committedEnd {
 		logPath := fs.indexPath + ".log"
-		if st, stErr := os.Stat(logPath); stErr == nil && st.Size() > committedEnd {
-			slog.Debug("fileindex: truncating partial log tail",
-				"folder", fs.folder, "file_size", st.Size(), "truncate_to", committedEnd)
-			_ = os.Truncate(logPath, committedEnd)
-		}
+		slog.Debug("fileindex: truncating partial log tail",
+			"folder", fs.folder, "read_size", filePos, "truncate_to", committedEnd)
+		_ = os.Truncate(logPath, committedEnd)
 	}
 	return nil
 }
