@@ -3,11 +3,21 @@ package ftsservice
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 
+// jobSeq generates a per-process monotonic ID for every index job so its
+// full lifecycle (queued -> lock wait -> checkpoint read -> index run ->
+// checkpoint write, possibly spanning several log lines and goroutines) can
+// be grepped as one thread instead of correlated by hand via user+folder+time.
+var jobSeq atomic.Uint64
+
+func nextJobID() uint64 { return jobSeq.Add(1) }
+
 type job struct {
+	id        uint64
 	user      string
 	mbox      fts.MailboxRef
 	maxUID    uint32

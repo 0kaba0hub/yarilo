@@ -172,16 +172,18 @@ func indexRoot(info *mailbox.UserInfo) string {
 /* --- ftsproto.Service ------------------------------------------------------ */
 
 func (s *Service) Index(user string, mbox fts.MailboxRef, maxUID uint32, maxRecent int) error {
-	slog.Debug("fts: index job queued", "user", user, "folder", mbox.Name, "guid", mbox.GUID,
+	id := nextJobID()
+	slog.Debug("fts: index job queued", "job_id", id, "user", user, "folder", mbox.Name, "guid", mbox.GUID,
 		"uidvalidity", mbox.UIDValidity, "max_uid", maxUID, "max_recent", maxRecent, "priority", false)
-	s.queue.push(job{user: user, mbox: mbox, maxUID: maxUID, maxRecent: maxRecent}, false)
+	s.queue.push(job{id: id, user: user, mbox: mbox, maxUID: maxUID, maxRecent: maxRecent}, false)
 	return nil
 }
 
 func (s *Service) Prepend(user string, mbox fts.MailboxRef, maxUID uint32) error {
-	slog.Debug("fts: index job queued", "user", user, "folder", mbox.Name, "guid", mbox.GUID,
+	id := nextJobID()
+	slog.Debug("fts: index job queued", "job_id", id, "user", user, "folder", mbox.Name, "guid", mbox.GUID,
 		"uidvalidity", mbox.UIDValidity, "max_uid", maxUID, "priority", true)
-	s.queue.push(job{user: user, mbox: mbox, maxUID: maxUID}, true)
+	s.queue.push(job{id: id, user: user, mbox: mbox, maxUID: maxUID}, true)
 	return nil
 }
 
@@ -256,7 +258,10 @@ func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
 		if err := h.ui.SetCheckpoint(mbox, low-1, uidValidity, s.opts.Chain.SettingsChecksum()); err != nil {
 			return err
 		}
-		s.queue.push(job{user: user, mbox: mbox, maxUID: maxUID}, false)
+		rid := nextJobID()
+		slog.Debug("fts: index job queued", "job_id", rid, "user", user, "folder", mbox.Name,
+			"uidvalidity", uidValidity, "max_uid", maxUID, "priority", false, "source", "rescan")
+		s.queue.push(job{id: rid, user: user, mbox: mbox, maxUID: maxUID}, false)
 	}
 	slog.Debug("fts: rescan reconciled", "user", user, "folder", mbox.Name,
 		"present", len(present), "missing", len(missing), "max_uid", maxUID, "reindex_queued", len(missing) > 0)
@@ -284,7 +289,7 @@ func (s *Service) worker(ctx context.Context) {
 		}
 		if err := s.runIndex(j); err != nil {
 			slog.Error("fts: index job failed",
-				"user", j.user, "folder", j.mbox.Name, "err", err)
+				"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "err", err)
 			// Recovery (#629): a broken/closed engine handle stays broken for every
 			// subsequent job unless it is reopened. Drop the cached user handle so
 			// the next job re-opens a fresh index — the engine also self-heals its
@@ -404,12 +409,12 @@ func (s *Service) runIndex(j job) error {
 		} else if last > 0 && curUIDV != 0 && storedUIDV != curUIDV {
 			reset = "uidvalidity"
 		}
-		slog.Debug("fts: index run start", "user", j.user, "folder", j.mbox.Name,
+		slog.Debug("fts: index run start", "job_id", j.id, "user", j.user, "folder", j.mbox.Name,
 			"checkpoint_uid", last, "target_max_uid", j.maxUID,
 			"stored_checksum", storedSum, "current_checksum", checksum,
 			"stored_uidvalidity", storedUIDV, "current_uidvalidity", curUIDV, "reset", reset)
 		if reset != "" {
-			slog.Info("fts: resetting mailbox index", "user", j.user, "folder", j.mbox.Name, "reason", reset)
+			slog.Info("fts: resetting mailbox index", "job_id", j.id, "user", j.user, "folder", j.mbox.Name, "reason", reset)
 			if _, rerr := h.ui.Rescan(j.mbox, nil); rerr != nil { // drop every stale document
 				return rerr
 			}
@@ -417,7 +422,7 @@ func (s *Service) runIndex(j job) error {
 		}
 		if j.maxUID <= last {
 			slog.Debug("fts: index run skipped, already current",
-				"user", j.user, "folder", j.mbox.Name, "checkpoint_uid", last, "target_max_uid", j.maxUID)
+				"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "checkpoint_uid", last, "target_max_uid", j.maxUID)
 			return nil
 		}
 
@@ -437,7 +442,7 @@ func (s *Service) runIndex(j job) error {
 				// One unreadable message must not stall the mailbox forever:
 				// log and move the checkpoint past it (rescan can revisit).
 				slog.Warn("fts: message skipped",
-					"user", j.user, "folder", j.mbox.Name, "uid", m.UID, "err", err)
+					"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", m.UID, "err", err)
 				// Flag the folder for a reactive heal once per scan (not per
 				// message): a mailbox full of vanished files must not pay an
 				// OpenFolder+mark for each one.
@@ -467,7 +472,7 @@ func (s *Service) runIndex(j job) error {
 		}
 		return nil
 	})
-	slog.Debug("fts: index run done", "user", j.user, "folder", j.mbox.Name,
+	slog.Debug("fts: index run done", "job_id", j.id, "user", j.user, "folder", j.mbox.Name,
 		"messages_in_folder", len(msgs), "indexed", indexedCount, "skipped", skippedCount,
 		"dur_ms", time.Since(tStart).Milliseconds(), "err", err)
 	return err

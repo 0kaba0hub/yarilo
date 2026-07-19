@@ -171,9 +171,10 @@ func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
 	if _, err := os.Stat(legacy); err != nil {
 		return // no legacy index — fresh mailbox
 	}
+	slog.Debug("fts/flatcurve: legacy dir migration starting", "from", legacy, "to", newDir)
 	if err := os.MkdirAll(filepath.Dir(newDir), 0o700); err != nil {
 		slog.Warn("fts/flatcurve: legacy dir migration: mkdir parent",
-			"to", newDir, "err", err)
+			"from", legacy, "to", newDir, "err", err)
 		return
 	}
 	if err := os.Rename(legacy, newDir); err != nil {
@@ -243,8 +244,10 @@ func (st *mboxState) ensureCurrent() error {
 	if err := syncDir(st.dir); err != nil {
 		return fmt.Errorf("fts/flatcurve: fsync shard parent: %w", err)
 	}
+	slog.Debug("fts/flatcurve: ensureCurrent opening shard", "dir", st.dir, "cur_path", curPath, "fresh", fresh)
 	w, err := xapian.OpenWDB(curPath)
 	if err != nil {
+		slog.Warn("fts/flatcurve: ensureCurrent open failed", "dir", st.dir, "cur_path", curPath, "fresh", fresh, "err", err)
 		return err
 	}
 	if fresh {
@@ -270,6 +273,7 @@ func (st *mboxState) commitCurrent() error {
 		return nil
 	}
 	if err := st.cur.Commit(); err != nil {
+		slog.Warn("fts/flatcurve: commitCurrent failed, discarding handle", "dir", st.dir, "cur_path", st.curPath, "pending", st.pending, "err", err)
 		st.discardCurrent() // reopen on the next pass rather than keep a dead handle (#629)
 		return err
 	}
@@ -284,6 +288,7 @@ func (st *mboxState) rotate() error {
 		return nil
 	}
 	if err := st.cur.Commit(); err != nil {
+		slog.Warn("fts/flatcurve: rotate commit failed, discarding handle", "dir", st.dir, "cur_path", st.curPath, "err", err)
 		st.discardCurrent() // reopen on the next pass (#629)
 		return err
 	}
@@ -293,7 +298,9 @@ func (st *mboxState) rotate() error {
 	st.curDocs = 0
 	sealed := filepath.Join(st.dir,
 		fmt.Sprintf("%s%d", dbPrefix, time.Now().UnixMicro()))
+	slog.Debug("fts/flatcurve: rotating shard", "dir", st.dir, "from", st.curPath, "to", sealed)
 	if err := os.Rename(st.curPath, sealed); err != nil {
+		slog.Warn("fts/flatcurve: rotate rename failed", "dir", st.dir, "from", st.curPath, "to", sealed, "err", err)
 		return fmt.Errorf("fts/flatcurve: rotate: %w", err)
 	}
 	// Make the rename durable before the next ensureCurrent creates a new
