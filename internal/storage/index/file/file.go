@@ -349,6 +349,18 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	if !needCompact {
 		return
 	}
+	// Defence in depth (#644): never flush our in-memory header as ground truth
+	// if the shared log was replaced by another process's compaction since our
+	// last reload — that header could be stale (lower NextUID) and would regress
+	// the folder's UID counter. Under the distributed mailbox lock this must not
+	// happen; if the invariant is ever broken, bail and let the next reload
+	// reconcile from the rewritten base instead. Mirrors Dovecot re-fetching the
+	// index header after a log rotation rather than trusting the earlier one.
+	if fs.logFileReplaced() {
+		slog.Warn("fileindex: skipping compaction, .log replaced since reload", "folder", fs.folder)
+		fs.closeFDs()
+		return
+	}
 	if err := fs.flush(false); err != nil {
 		slog.Warn("fileindex: log compaction flush failed", "folder", fs.folder, "err", err)
 		return
@@ -359,6 +371,26 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 		return
 	}
 	fs.logSize = 0
+}
+
+// logFileReplaced reports whether the on-disk .log is a different file
+// (inode+device, via os.SameFile) than the one fs.logFD currently holds open —
+// i.e. another process replaced it through truncateLog's rename. Returns false
+// when we hold no fd yet or either stat fails (treat as "not proven replaced").
+// Caller must hold fs.mu.
+func (fs *folderState) logFileReplaced() bool {
+	if fs.logFD == nil {
+		return false
+	}
+	logStat, err := os.Stat(fs.indexPath + ".log")
+	if err != nil || logStat == nil {
+		return false
+	}
+	fdStat, err := fs.logFD.Stat()
+	if err != nil || fdStat == nil {
+		return false
+	}
+	return !os.SameFile(logStat, fdStat)
 }
 
 // makeOwner builds the owner string passed to yarilo-locks BUSY
