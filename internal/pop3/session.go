@@ -147,6 +147,13 @@ func (s *session) dispatch(line string) {
 	cmd = strings.ToUpper(strings.TrimSpace(cmd))
 	arg = strings.TrimSpace(arg)
 
+	// arg is deliberately omitted — USER/PASS carry credentials in the clear.
+	user := s.preAuthUser
+	if s.userInfo != nil {
+		user = s.userInfo.Username
+	}
+	slog.Debug("pop3: command", "sid", s.sid, "user", user, "cmd", cmd)
+
 	switch s.state {
 	case stateAuth:
 		s.handleAuth(cmd, arg)

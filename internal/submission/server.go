@@ -188,18 +188,24 @@ type session struct {
 }
 
 func (s *session) Reset() {
+	slog.Debug("submission: command", "sid", s.sid, "cmd", "RSET")
 	s.from = ""
 	s.rcpts = nil
 }
 
-func (s *session) Logout() error { return nil }
+func (s *session) Logout() error {
+	slog.Debug("submission: command", "sid", s.sid, "cmd", "QUIT")
+	return nil
+}
 
 func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
+	slog.Debug("submission: command", "sid", s.sid, "cmd", "MAIL", "from", from)
 	s.from = from
 	return nil
 }
 
 func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
+	slog.Debug("submission: command", "sid", s.sid, "cmd", "RCPT", "to", to)
 	s.rcpts = append(s.rcpts, to)
 	return nil
 }
