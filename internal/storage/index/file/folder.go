@@ -65,6 +65,18 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 	id := u.next
 	u.mu.Unlock()
 
+	// Breadcrumb (#644/#647): the (user, folder) -> indexDir mapping depends on
+	// u.driver via mailbox.FolderSubpath. If this ever computes a DIFFERENT
+	// indexDir for the same logical folder across calls/processes (e.g. a
+	// driver mismatch), OpenFolder's dedup keys on indexDir and registers a
+	// SEPARATE, brand-new folderState — invisible to and disconnected from the
+	// real one holding the folder's actual NextUID history, which then gets
+	// createFresh'd from scratch. Logged at the point of first open (only the
+	// not-yet-cached path — the dedup hit above is the cheap, expected case) so
+	// a live repro can catch two different indexDir values for the same folder.
+	slog.Debug("fileindex: openfolder first-open, computing layout",
+		"folder", folder, "driver", u.driver, "index_dir", indexDir)
+
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("fileindex/openfolder: mkdir: %w", err)
 	}
@@ -192,7 +204,8 @@ func (fs *folderState) createFresh(uidValidity uint32) error {
 			caller = fn.Name()
 		}
 		slog.Warn("fileindex: createFresh resetting NextUID to 1",
-			"folder", fs.folder, "caller", caller, "requested_uidvalidity", uidValidity)
+			"folder", fs.folder, "caller", caller, "requested_uidvalidity", uidValidity,
+			"index_path", fs.indexPath, "index_dir", fs.indexDir)
 	}
 	if uidValidity == 0 {
 		uidValidity = uint32(time.Now().Unix())
