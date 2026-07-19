@@ -444,10 +444,17 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 	return filepath.Join(u.volatileDir, mailbox.FolderSubpath(u.driver, folder, folder, u.separator))
 }
 
-// withFolderRO reloads the folder state under the in-process mutex only and
-// runs fn. No distributed lock is acquired — safe for read-only operations
-// because the on-disk fileindex is append-only and a partially-written append
-// cannot produce a torn read at the record boundary.
+// withFolderRO reloads the folder state, then runs read-only fn against the
+// settled in-memory snapshot under a shared lock.
+//
+// The reload is serialized against writers via the SAME cross-process lock the
+// write path (withFolderLock) takes (#647): an unlocked reload could interleave
+// with another process's lock-holding compaction (flush + truncateLog) and load
+// a torn view into the shared in-memory folderState — which every subsequent,
+// correctly locked write then trusts as a baseline, regressing the folder's
+// NextUID. The distributed lock is held ONLY around reload(); fn then reads the
+// settled snapshot under fs.mu.RLock without holding the exclusive resource, so
+// concurrent readers do not serialize against each other beyond the reload.
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
 	u.mu.Lock()
 	fs, ok := u.open[folderID]
@@ -455,19 +462,11 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	// Brief exclusive lock to reload on-disk state (another process may
-	// have written since our last flush). Held only for the disk read.
-	//
-	// NOTE (#647): this reload is NOT serialized against u.b.locker, the
-	// cross-process distributed lock every write path (withFolderLock) takes
-	// before its own reload. A concurrent, lock-holding compaction on another
-	// process can interleave with this unlocked read and load a torn view into
-	// the shared in-memory folderState — which every subsequent, correctly
-	// locked write then trusts as a baseline. Passing locked=false so the
-	// reload debug breadcrumbs make this window visible in a live repro.
-	fs.mu.Lock()
-	err := fs.reload(false)
-	fs.mu.Unlock()
+	err := u.withDistLock(fs, func() error {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		return fs.reload(true)
+	})
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -487,9 +486,26 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 // storage calls that touch the same key) does not deadlock against
 // itself.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
-	// Acquire the distributed lock BEFORE taking fs.mu so that a slow
-	// lock-wait (up to 35 s) does not block concurrent readers that only
-	// need fs.mu.RLock() via withFolderRO.
+	return u.withDistLock(fs, func() error {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		t1 := time.Now()
+		err := fn()
+		slog.Debug("fileindex: lock fn",
+			"user", u.username, "folder", fs.folder,
+			"fn_ms", time.Since(t1).Milliseconds())
+		return err
+	})
+}
+
+// withDistLock runs fn while holding the cross-process index lock for fs.folder.
+// It acquires the lock BEFORE fn touches fs.mu so a slow lock-wait (up to 35 s)
+// does not block concurrent readers that only need fs.mu.RLock(). The
+// HoldsResource() shortcut keeps it re-entrant: an outer caller that already
+// holds the key (the POP3 QUIT pattern, or withFolderRO nested inside a locked
+// write) runs fn without re-acquiring, so it cannot deadlock against itself.
+// When no locker is wired (tests) fn runs unguarded.
+func (u *userIndex) withDistLock(fs *folderState, fn func() error) error {
 	if u.b.locker != nil {
 		key := locks.MailboxKey(u.username, fs.folder)
 		if !u.b.locker.HoldsResource(key) {
@@ -500,21 +516,13 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 			if err != nil {
 				return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 			}
-			lockWait := time.Since(t0)
 			slog.Debug("fileindex: lock wait",
 				"user", u.username, "folder", fs.folder,
-				"lock_wait_ms", lockWait.Milliseconds())
+				"lock_wait_ms", time.Since(t0).Milliseconds())
 			defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
 		}
 	}
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	t1 := time.Now()
-	err := fn()
-	slog.Debug("fileindex: lock fn",
-		"user", u.username, "folder", fs.folder,
-		"fn_ms", time.Since(t1).Milliseconds())
-	return err
+	return fn()
 }
 
 // withTwoFolderLocks acquires the X locks for folderA and folderB
