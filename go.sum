@@ -8,6 +8,8 @@ github.com/0kaba0hub/go-sieve v0.0.0-20260713145935-39e12c5d4b1f h1:u6b3fcT8S8pl
 github.com/0kaba0hub/go-sieve v0.0.0-20260713145935-39e12c5d4b1f/go.mod h1:osl9Lk7E2uvGHKyrcuTgQ3AQmQcJAd0dR2PDPNmI7ew=
 github.com/0kaba0hub/go-smtp v0.0.0-20260712165350-106ee832679f h1:52cFip7Qheol1FtZKdLkwDJ0LylB/TiWCyLLvW9SdfM=
 github.com/0kaba0hub/go-smtp v0.0.0-20260712165350-106ee832679f/go.mod h1:ZtRRkbTyp2XTHCA+BmyTFTrj8xY4I+b4McvHxCU2gsQ=
+github.com/0kaba0hub/go-xapian v0.1.0 h1:MJyKKDmh13RGw4/ECJLga7NCoSb1LibUg6BK8a5QMrs=
+github.com/0kaba0hub/go-xapian v0.1.0/go.mod h1:CGAxZyJsdWsdOjY0oQPxWwFqGQLlKCFDhUb7BBijMEc=
 github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5 h1:IEjq88XO4PuBDcvmjQJcQGg+w+UaafSy8G5Kcb5tBhI=
 github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5/go.mod h1:exZ0C/1emQJAw5tHOaUDyY1ycttqBAPcxuzf7QbY6ec=
 github.com/MicahParks/jwkset v0.11.0 h1:yc0zG+jCvZpWgFDFmvs8/8jqqVBG9oyIbmBtmjOhoyQ=
