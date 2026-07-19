@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	goSmtp "github.com/emersion/go-smtp"
@@ -204,8 +205,16 @@ func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 			}
 		}
 	}
-	return &session{opts: b.opts, router: b.router, srv: b.srv, peerIP: peerIP, mtaConn: mtaConn}, nil
+	return &session{opts: b.opts, router: b.router, srv: b.srv, peerIP: peerIP, mtaConn: mtaConn, connID: nextConnID()}, nil
 }
+
+// connIDSeq is a per-process monotonic counter identifying one LMTP
+// connection (one upstream MTA session, potentially many MAIL/RCPT/DATA
+// cycles) — distinct from deliverOne's per-delivery call_id, so a
+// connection's full command sequence greps as one thread.
+var connIDSeq atomic.Uint64
+
+func nextConnID() uint64 { return connIDSeq.Add(1) }
 
 // ---- session ----------------------------------------------------------------
 
@@ -222,6 +231,9 @@ type session struct {
 	// rcptUserInfo caches per-recipient UserInfo fetched at RCPT TO time
 	// so LMTPData can use correct Home and QuotaRules without re-querying.
 	rcptUserInfo map[string]*mailbox.UserInfo
+
+	// connID identifies this LMTP connection (see nextConnID).
+	connID uint64
 }
 
 // folderMessageCount returns folder's current message count from the index
@@ -247,11 +259,13 @@ func (s *session) quotaExceededMessage() string {
 }
 
 func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
+	slog.Debug("lmtp: command", "conn_id", s.connID, "cmd", "MAIL", "from", from)
 	s.from = from
 	return nil
 }
 
 func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
+	slog.Debug("lmtp: command", "conn_id", s.connID, "cmd", "RCPT", "to", to)
 	if s.router != nil {
 		return s.rcptProxy(to)
 	}
@@ -591,6 +605,7 @@ func (s *session) resolveRcptUserInfo(rcpt, username string) *mailbox.UserInfo {
 }
 
 func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
+	slog.Debug("lmtp: command", "conn_id", s.connID, "cmd", "DATA", "from", s.from, "rcpts", len(s.rcpts))
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return err
@@ -810,6 +825,7 @@ func sieveRejectCode(r *sieve.RejectErr) (int, goSmtp.EnhancedCode) {
 }
 
 func (s *session) Reset() {
+	slog.Debug("lmtp: command", "conn_id", s.connID, "cmd", "RSET")
 	s.from = ""
 	s.rcpts = nil
 	s.proxyRcpts = nil
@@ -817,5 +833,6 @@ func (s *session) Reset() {
 }
 
 func (s *session) Logout() error {
+	slog.Debug("lmtp: command", "conn_id", s.connID, "cmd", "QUIT")
 	return nil
 }

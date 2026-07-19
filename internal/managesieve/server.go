@@ -113,7 +113,8 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 		store:             sieve.NewScriptStore(srv.opts.ScriptsDriver, defaultName, srv.opts.Locker, srv.opts.ScriptsDict),
 		maxSize:           maxSize,
 		allowedExtensions: srv.opts.SieveExtensions,
+		sid:               pc.SessionID,
 	}
 	sess.serve(ctx)
-	slog.Info("managesieve: session ended", "user", username)
+	slog.Info("managesieve: session ended", "sid", pc.SessionID, "user", username)
 }

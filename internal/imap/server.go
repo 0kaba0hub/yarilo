@@ -678,6 +678,7 @@ func formatLogoutMsg(format string, vars map[string]string) string {
 }
 
 func (s *session) Login(username, password string) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Login")
 	res, err := s.srv.opts.Auth.Authenticate(username, password, "imap", remoteIP(s.imapConn.NetConn()))
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
 		s.delayFailure()
@@ -1049,6 +1050,7 @@ func remoteIP(c net.Conn) string {
 }
 
 func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.SelectData, error) {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Select")
 	tSelect := time.Now()
 	h, rel, err := s.dispatch(name)
 	if err != nil {
@@ -1165,6 +1167,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 }
 
 func (s *session) Unselect() error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Unselect")
 	s.folder = nil
 	s.folderNS = nil
 	s.knownMsgs = nil
@@ -1176,6 +1179,7 @@ func (s *session) Unselect() error {
 }
 
 func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Create")
 	h, rel, err := s.dispatch(name)
 	if err != nil {
 		return err
@@ -1213,6 +1217,7 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 }
 
 func (s *session) Delete(name string) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Delete")
 	h, rel, err := s.dispatch(name)
 	if err != nil {
 		return err
@@ -1242,6 +1247,7 @@ func (s *session) Delete(name string) error {
 }
 
 func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Rename")
 	if strings.EqualFold(oldName, "INBOX") {
 		return s.renameInbox(newName)
 	}
@@ -1341,6 +1347,7 @@ func (s *session) renameInbox(dest string) error {
 }
 
 func (s *session) Subscribe(name string) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Subscribe")
 	h, rel, err := s.dispatch(name)
 	if err != nil {
 		return err
@@ -1356,6 +1363,7 @@ func (s *session) Subscribe(name string) error {
 }
 
 func (s *session) Unsubscribe(name string) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Unsubscribe")
 	h, rel, err := s.dispatch(name)
 	if err != nil {
 		return err
@@ -1371,6 +1379,7 @@ func (s *session) Unsubscribe(name string) error {
 }
 
 func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "List")
 	if s.srv.opts.ClientWorkarounds&workaroundTBExtraMailboxSep != 0 {
 		ref = strings.TrimPrefix(ref, "/")
 		for i, p := range patterns {
@@ -1593,6 +1602,7 @@ func childrenAttr(name string, all []string, sep string) imaplib.MailboxAttr {
 }
 
 func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.StatusData, error) {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Status")
 	h, rel, err := s.dispatch(name)
 	if err != nil {
 		return nil, err
@@ -1675,6 +1685,7 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 }
 
 func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.AppendOptions) (*imaplib.AppendData, error) {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Append")
 	tAppend := time.Now()
 	h, rel, f, err := s.ensureFolderHandle(name)
 	if err != nil {
@@ -1803,6 +1814,7 @@ func (s *session) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOpti
 // HighestModSeq. GetMessages (full index scan) is only called when the
 // modseq advanced or there are pending expunges to deliver.
 func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Poll")
 	// Non-selected NOTIFY activity is independent of the selected mailbox and
 	// must flush even when nothing is selected.
 	if err := s.drainNotifyStatus(w); err != nil {
@@ -2040,6 +2052,7 @@ func (s *session) announceNewKeywords(w *imapserver.FetchWriter, keywords []stri
 }
 
 func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Idle")
 	interval := s.srv.opts.IdleNotifyInterval
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2129,6 +2142,7 @@ func (s *session) refreshIdleCount(w *imapserver.UpdateWriter) error {
 }
 
 func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Expunge")
 	tExpunge := time.Now()
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
@@ -2193,6 +2207,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 }
 
 func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, opts *imaplib.SearchOptions) (*imaplib.SearchData, error) {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Search")
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
@@ -2426,6 +2441,7 @@ func (s *session) substituteSearchRes(criteria *imaplib.SearchCriteria) *imaplib
 }
 
 func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *imaplib.FetchOptions) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Fetch")
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
 	}
@@ -2681,6 +2697,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 }
 
 func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeFlags *imaplib.StoreFlags, opts *imaplib.StoreOptions) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Store")
 	tStore := time.Now()
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
@@ -2835,6 +2852,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 }
 
 func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, error) {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Copy")
 	tCopy := time.Now()
 	if s.folder == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
@@ -2936,6 +2954,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 }
 
 func (s *session) Namespace() (*imaplib.NamespaceData, error) {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Namespace")
 	specs := s.srv.opts.Namespaces
 	if len(specs) == 0 {
 		specs = defaultNamespaces
@@ -2973,6 +2992,7 @@ var defaultNamespaces = []NamespaceSpec{
 // infinity = whole subtree); options.MaxSize lets the server elide
 // entries larger than the supplied byte cap.
 func (s *session) GetMetadata(folder string, entries []string, opts *imaplib.GetMetadataOptions) (*imaplib.GetMetadataData, error) {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "GetMetadata")
 	if s.srv.opts.MetadataDict == nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata storage not configured"}
 	}
@@ -3061,6 +3081,7 @@ func (s *session) collectMetadata(
 // means "remove that attribute" (per the spec). Server-scope ops use
 // mailbox == "".
 func (s *session) SetMetadata(folder string, entries map[string]*[]byte) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "SetMetadata")
 	if s.srv.opts.MetadataDict == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Metadata storage not configured"}
 	}
@@ -3168,6 +3189,7 @@ func (s *session) metadataOps() *dict.OpSettings {
 }
 
 func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest string) error {
+	slog.Debug("imap: command", "sid", s.sid, "cmd", "Move")
 	tMove := time.Now()
 	if s.folder == nil {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "No mailbox selected"}
