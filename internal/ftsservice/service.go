@@ -129,6 +129,8 @@ func (s *Service) handle(user string) (*userHandle, error) {
 	ui, err := s.opts.Engine.OpenUser(context.Background(), fts.UserRef{
 		Username:  user,
 		IndexRoot: indexRoot(info),
+		Driver:    info.Driver,
+		Separator: info.Separator,
 	})
 	if err != nil {
 		return nil, err

@@ -186,7 +186,7 @@ func TestCheckpoint(t *testing.T) {
 // TestCheckpointLegacyV1 verifies a v1 checkpoint file ("1 <uid> <sum>") still
 // reads back, with uidvalidity 0 so a UIDVALIDITY mismatch resets it (#638).
 func TestCheckpointLegacyV1(t *testing.T) {
-	ui, user := testEngine(t, Options{})
+	ui, _ := testEngine(t, Options{})
 	dir := (ui.(*userIndex)).state(inbox).dir
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -198,15 +198,14 @@ func TestCheckpointLegacyV1(t *testing.T) {
 	if err != nil || last != 10 || uidv != 0 || sum != 7 {
 		t.Fatalf("legacy v1 checkpoint = %d/%d/%d/%v, want 10/0/7", last, uidv, sum, err)
 	}
-	_ = user
 }
 
 func TestCheckpointMigrationFallback(t *testing.T) {
 	// A migrated index has no yarilo checkpoint file: last UID must
 	// come from Xapian's lastdocid.
-	ui, user := testEngine(t, Options{})
+	ui, _ := testEngine(t, Options{})
 	indexDoc(t, ui, 17, nil, []string{"legacy"})
-	dir := filepath.Join(user.IndexRoot, inbox.Name, Label)
+	dir := ui.(*userIndex).state(inbox).dir
 	if err := os.Remove(filepath.Join(dir, checkpointFile)); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
@@ -240,11 +239,11 @@ func TestRescanTargeted(t *testing.T) {
 }
 
 func TestRotationAndOptimize(t *testing.T) {
-	ui, user := testEngine(t, Options{RotateCount: 2})
+	ui, _ := testEngine(t, Options{RotateCount: 2})
 	for uid := uint32(1); uid <= 5; uid++ {
 		indexDoc(t, ui, uid, nil, []string{"steady"})
 	}
-	dir := filepath.Join(user.IndexRoot, inbox.Name, Label)
+	dir := ui.(*userIndex).state(inbox).dir
 	sealed, current := countShards(t, dir)
 	if sealed < 2 {
 		t.Fatalf("expected rotation to seal shards: sealed=%d current=%d", sealed, current)
@@ -330,12 +329,12 @@ func TestMinTermSize(t *testing.T) {
 }
 
 func TestVersionMetadataWritten(t *testing.T) {
-	ui, user := testEngine(t, Options{})
+	ui, _ := testEngine(t, Options{})
 	indexDoc(t, ui, 1, nil, []string{"word"})
 	if err := ui.Close(); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(user.IndexRoot, inbox.Name, Label)
+	dir := ui.(*userIndex).state(inbox).dir
 	paths, err := shardPaths(dir)
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no shards: %v", err)
@@ -351,5 +350,70 @@ func TestVersionMetadataWritten(t *testing.T) {
 	}
 	if got != versionValue {
 		t.Fatalf("version metadata = %q, want %q", got, versionValue)
+	}
+}
+
+// TestMailboxDirDriverAware locks the #654 layout: the fts-flatcurve directory
+// is co-located inside the mailbox's driver-aware per-folder index path (the
+// same FolderSubpath layout the fileindex uses), not a flat <root>/<folder>.
+func TestMailboxDirDriverAware(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		driver string
+		want   string
+	}{
+		{"mdbox", filepath.Join(root, "mailboxes", "INBOX", "dbox-Mails", Label)},
+		{"sdbox", filepath.Join(root, "mailboxes", "INBOX", "dbox-Mails", Label)},
+		{"maildir", filepath.Join(root, Label)},
+		{"", filepath.Join(root, Label)}, // empty driver → maildir default
+	}
+	for _, c := range cases {
+		user := fts.UserRef{Username: "u@test", IndexRoot: root, Driver: c.driver}
+		ui, err := New(Options{}).OpenUser(context.Background(), user)
+		if err != nil {
+			t.Fatalf("driver %q: OpenUser: %v", c.driver, err)
+		}
+		got := ui.(*userIndex).state(inbox).dir
+		if got != c.want {
+			t.Errorf("driver %q: dir = %q, want %q", c.driver, got, c.want)
+		}
+	}
+}
+
+// TestLegacyDirMigration verifies the rename-on-open migration: an index sitting
+// at the pre-#654 flat path is relocated in place to the driver-aware path on
+// first access (no reindex, no orphan), and its checkpoint survives the move.
+func TestLegacyDirMigration(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, inbox.Name, Label) // <root>/INBOX/fts-flatcurve
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// v2 checkpoint: "2 <uidvalidity> <last_uid> <checksum>".
+	if err := os.WriteFile(filepath.Join(legacy, checkpointFile), []byte("2 9 5 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	user := fts.UserRef{Username: "u@test", IndexRoot: root, Driver: "mdbox"}
+	ui, err := New(Options{}).OpenUser(context.Background(), user)
+	if err != nil {
+		t.Fatalf("OpenUser: %v", err)
+	}
+
+	// First access triggers the migration.
+	newDir := ui.(*userIndex).state(inbox).dir
+	wantNew := filepath.Join(root, "mailboxes", "INBOX", "dbox-Mails", Label)
+	if newDir != wantNew {
+		t.Fatalf("new dir = %q, want %q", newDir, wantNew)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy dir still present after migration: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(newDir, checkpointFile)); err != nil {
+		t.Errorf("checkpoint not present at new dir: %v", err)
+	}
+	last, uidv, sum, err := ui.Checkpoint(inbox)
+	if err != nil || last != 5 || uidv != 9 || sum != 3 {
+		t.Fatalf("checkpoint after migration = %d/%d/%d/%v, want 5/9/3", last, uidv, sum, err)
 	}
 }

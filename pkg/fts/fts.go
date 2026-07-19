@@ -37,6 +37,13 @@ type UserRef struct {
 	// IndexRoot is the resolved index root (INDEX= override → mail path →
 	// home), under which the engine places its on-disk layout.
 	IndexRoot string
+	// Driver is the user's mailbox storage driver (maildir / mdbox / sdbox).
+	// A path-derived engine uses it so its on-disk layout matches the shared
+	// per-folder index convention instead of a flat folder-name path (#654).
+	Driver string
+	// Separator is the IMAP hierarchy separator, for mapping a folder name to
+	// its on-disk sub-path. Empty is treated as "/".
+	Separator string
 }
 
 // MailboxRef identifies one mailbox within a user's index.
