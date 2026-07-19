@@ -5,6 +5,7 @@ package flatcurve
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/fts/xapian"
 	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
 // On-disk format constants (see docs/FTS.md for the format specification).
@@ -76,11 +78,25 @@ func (o Options) withDefaults() Options {
 		o.RotateTime = 5000 * time.Millisecond
 	}
 	if o.MailboxDir == nil {
+		// Co-locate the fts-flatcurve directory inside the mailbox's own
+		// per-folder index directory (the same driver-aware layout the
+		// fileindex and ACL store share via mailbox.FolderSubpath), then append
+		// the label — e.g. mdbox INBOX → <root>/mailboxes/INBOX/dbox-Mails/
+		// fts-flatcurve. Matches where the real index data lives instead of a
+		// flat <root>/<folder>/fts-flatcurve path (#654).
 		o.MailboxDir = func(user fts.UserRef, mbox fts.MailboxRef) string {
-			return filepath.Join(user.IndexRoot, mbox.Name, Label)
+			sub := mailbox.FolderSubpath(user.Driver, mbox.Name, mbox.Name,
+				mailbox.SepOrDefault(user.Separator))
+			return filepath.Join(user.IndexRoot, sub, Label)
 		}
 	}
 	return o
+}
+
+// legacyMailboxDir is the pre-#654 flat layout (<root>/<folder>/fts-flatcurve).
+// Used only to migrate an existing index to the driver-aware path.
+func legacyMailboxDir(user fts.UserRef, mbox fts.MailboxRef) string {
+	return filepath.Join(user.IndexRoot, mbox.Name, Label)
 }
 
 // Engine implements fts.Engine over Xapian.
@@ -130,10 +146,42 @@ func (u *userIndex) state(mbox fts.MailboxRef) *mboxState {
 	dir := u.eng.opts.MailboxDir(u.user, mbox)
 	st, ok := u.boxes[dir]
 	if !ok {
+		u.migrateLegacyDir(mbox, dir)
 		st = &mboxState{dir: dir}
 		u.boxes[dir] = st
 	}
 	return st
+}
+
+// migrateLegacyDir moves an existing FTS index from the pre-#654 flat path to
+// the driver-aware dir, so switching the resolver relocates the index in place
+// instead of orphaning it and forcing a full reindex. Best-effort: on any
+// failure a fresh index is built at newDir (self-heals via autoindex). The
+// yarilo-fts service is the sole writer, so no cross-process race here. Caller
+// holds u.mu.
+func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
+	legacy := legacyMailboxDir(u.user, mbox)
+	if legacy == newDir {
+		return // resolver already yields the flat path (or a custom override)
+	}
+	if _, err := os.Stat(newDir); err == nil {
+		return // target already present — nothing to migrate
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		return // no legacy index — fresh mailbox
+	}
+	if err := os.MkdirAll(filepath.Dir(newDir), 0o700); err != nil {
+		slog.Warn("fts/flatcurve: legacy dir migration: mkdir parent",
+			"to", newDir, "err", err)
+		return
+	}
+	if err := os.Rename(legacy, newDir); err != nil {
+		slog.Warn("fts/flatcurve: legacy dir migration failed; will reindex fresh",
+			"from", legacy, "to", newDir, "err", err)
+		return
+	}
+	slog.Info("fts/flatcurve: migrated legacy FTS dir to driver-aware path (#654)",
+		"from", legacy, "to", newDir)
 }
 
 func shardPaths(dir string) ([]string, error) {
