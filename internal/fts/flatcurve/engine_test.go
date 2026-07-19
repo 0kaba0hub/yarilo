@@ -418,3 +418,32 @@ func TestLegacyDirMigration(t *testing.T) {
 		t.Fatalf("checkpoint after migration = %d/%d/%d/%v, want 5/9/3", last, uidv, sum, err)
 	}
 }
+
+// TestMultiShardLookupReturnsRealUIDs is the #670 regression: once a mailbox's
+// index rotates into more than one shard, a combined-database search would
+// report Xapian's interleaved external docids instead of the real UIDs. Force
+// rotation (RotateCount 3) so 10 messages span several shards, then assert
+// SEARCH returns the actual injected UIDs.
+func TestMultiShardLookupReturnsRealUIDs(t *testing.T) {
+	ui, _ := testEngine(t, Options{RotateCount: 3})
+	var want []uint32
+	for uid := uint32(1); uid <= 10; uid++ {
+		if uid%2 == 0 {
+			indexDoc(t, ui, uid, nil, []string{"needle"})
+			want = append(want, uid)
+		} else {
+			indexDoc(t, ui, uid, nil, []string{"filler"})
+		}
+	}
+	dir := ui.(*userIndex).state(inbox).dir
+	if sealed, _ := countShards(t, dir); sealed < 2 {
+		t.Fatalf("expected rotation to seal ≥2 shards, got sealed=%d", sealed)
+	}
+	res, err := ui.Lookup(inbox, bodyQuery("needle"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(res.Definite, want) {
+		t.Fatalf("multi-shard lookup = %v, want %v (real UIDs, not interleaved docids)", res.Definite, want)
+	}
+}

@@ -798,30 +798,53 @@ func (u *userIndex) Lookup(mbox fts.MailboxRef, q fts.Query) (fts.Result, error)
 	if len(paths) == 0 {
 		return fts.Result{}, nil
 	}
-	db, err := xapian.OpenDBMulti(paths)
-	if err != nil {
-		return fts.Result{}, err
-	}
-	defer db.Close()
 
 	xq, maybe, err := u.buildQuery(q)
 	if err != nil {
 		return fts.Result{}, err
 	}
 	defer xq.Free()
-	entries, err := db.Search(xq)
-	if err != nil {
-		return fts.Result{}, err
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].DocID < entries[j].DocID })
-	res := fts.Result{}
-	for _, ent := range entries {
-		if maybe {
-			res.Maybe = append(res.Maybe, ent.DocID)
-		} else {
-			res.Definite = append(res.Definite, ent.DocID)
+
+	// Search each shard SEPARATELY and merge, rather than combining them into one
+	// database and searching once (#670). A Xapian database combined from N
+	// sub-databases renumbers matches to an interleaved external docid
+	// ((local-1)*N + i + 1), so a combined search over ≥2 shards would report
+	// mangled ids instead of the real UIDs (docid == UID holds only per shard).
+	// A single-shard search returns the local docid unchanged, i.e. the UID.
+	// The query is immutable and safe to reuse across shards; a UID lives in
+	// exactly one shard, but we merge into a map (keeping the higher weight) to
+	// stay correct even if that ever stops holding.
+	best := make(map[uint32]float64)
+	for _, p := range paths {
+		db, derr := xapian.OpenDBMulti([]string{p})
+		if derr != nil {
+			return fts.Result{}, derr
 		}
-		res.Scores = append(res.Scores, fts.Score{UID: ent.DocID, Value: ent.Weight})
+		entries, serr := db.Search(xq)
+		db.Close()
+		if serr != nil {
+			return fts.Result{}, serr
+		}
+		for _, ent := range entries {
+			if w, ok := best[ent.DocID]; !ok || ent.Weight > w {
+				best[ent.DocID] = ent.Weight
+			}
+		}
+	}
+
+	uids := make([]uint32, 0, len(best))
+	for uid := range best {
+		uids = append(uids, uid)
+	}
+	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+	res := fts.Result{}
+	for _, uid := range uids {
+		if maybe {
+			res.Maybe = append(res.Maybe, uid)
+		} else {
+			res.Definite = append(res.Definite, uid)
+		}
+		res.Scores = append(res.Scores, fts.Score{UID: uid, Value: best[uid]})
 	}
 	return res, nil
 }
