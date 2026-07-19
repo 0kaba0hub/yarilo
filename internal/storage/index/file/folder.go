@@ -160,7 +160,7 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 // actual fix — a loser that blindly called createFresh again after merely
 // waiting for the lock would still stomp the winner's file.
 func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error {
-	return u.withDistLock(fs, func() error {
+	return u.withDistLock(fs, false, func() error {
 		st, err := os.Stat(fs.indexPath)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
@@ -186,7 +186,7 @@ func (u *userIndex) loadExisting(fs *folderState) error {
 		// re-detect under it — a racer that already migrated wins, and we load
 		// the migrated file instead of re-writing it. Re-entrant via
 		// HoldsResource when the missing-branch already holds the lock.
-		return u.withDistLock(fs, func() error {
+		return u.withDistLock(fs, false, func() error {
 			legacy, stillLegacy, err := detectAndDecodeLegacy(fs.indexPath)
 			if err != nil {
 				return fmt.Errorf("fileindex/openfolder: legacy probe (locked): %w", err)
@@ -278,7 +278,7 @@ func (u *userIndex) loadModern(fs *folderState) error {
 		// repaired it wins — otherwise two openers assign different values and
 		// the later flush stomps the earlier one (#658 follow-up). Re-entrant
 		// via HoldsResource.
-		if err := u.withDistLock(fs, func() error {
+		if err := u.withDistLock(fs, false, func() error {
 			if err := u.readBase(fs); err != nil {
 				return err
 			}

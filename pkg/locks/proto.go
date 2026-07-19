@@ -19,6 +19,15 @@ import (
 //	< OK\t<lock_id>\n                                    — acquired
 //	< BUSY\t<current_owner>\n                            — held by someone else
 //
+//	> LOCK-SHARED\t<resource>\t<owner>\t<ttl_ms>\n       — multiple concurrent holders allowed;
+//	< OK\t<lock_id>\n                                      only blocks against a LOCK (exclusive) holder
+//	< BUSY\t<current_owner>\n                            — an exclusive lock is currently held
+//
+//	LOCK-SHARED keeps protocolVersion at "1": older servers reply
+//	ERROR\tunknown_command for it, same fallback as COUNTER-INC below.
+//	UNLOCK/RENEW work unchanged for shared lock IDs — the server tracks
+//	each lock ID's kind (exclusive/shared) internally.
+//
 //	> UNLOCK\t<lock_id>\n
 //	< OK\n | NOT_FOUND\n
 //
@@ -44,6 +53,7 @@ const protocolVersion = "1"
 const (
 	cmdVersion    = "VERSION"
 	cmdLock       = "LOCK"
+	cmdLockShared = "LOCK-SHARED"
 	cmdUnlock     = "UNLOCK"
 	cmdRenew      = "RENEW"
 	cmdEmit       = "EMIT"

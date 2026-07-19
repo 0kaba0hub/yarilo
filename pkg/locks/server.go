@@ -128,6 +128,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		switch fields[0] {
 		case cmdLock:
 			s.handleLock(ctx, conn, fields, peer)
+		case cmdLockShared:
+			s.handleLockShared(ctx, conn, fields, peer)
 		case cmdUnlock:
 			s.handleUnlock(ctx, conn, fields, peer)
 		case cmdRenew:
@@ -184,6 +186,37 @@ func (s *Server) handleLock(ctx context.Context, w io.Writer, fields []string, p
 	default:
 		s.metrics.observeAcquire(dur, "error")
 		s.logger.Error("locks: acquire failed", "peer", peer, "resource", resource, "err", err)
+		_ = writeFields(w, respError, "internal")
+	}
+}
+
+func (s *Server) handleLockShared(ctx context.Context, w io.Writer, fields []string, peer string) {
+	if len(fields) != 4 {
+		_ = writeFields(w, respError, "bad_lock")
+		return
+	}
+	resource, owner := fields[1], fields[2]
+	ttl, err := parseTTL(fields[3])
+	if err != nil {
+		_ = writeFields(w, respError, "bad_ttl")
+		return
+	}
+	start := time.Now()
+	id, current, err := s.backend.AcquireShared(ctx, resource, owner, ttl)
+	dur := time.Since(start).Seconds()
+	switch {
+	case err == nil:
+		s.metrics.observeAcquire(dur, "ok")
+		s.logger.Debug("locks: acquired shared", "peer", peer, "resource", resource, "owner", owner, "id", id, "dur_ms", dur*1000)
+		_ = writeFields(w, respOK, id)
+	case errors.Is(err, ErrBusy):
+		s.metrics.observeAcquire(dur, "busy")
+		s.metrics.incBusy()
+		s.logger.Debug("locks: busy (shared)", "peer", peer, "resource", resource, "owner", owner, "held_by", current)
+		_ = writeFields(w, respBusy, current)
+	default:
+		s.metrics.observeAcquire(dur, "error")
+		s.logger.Error("locks: acquire shared failed", "peer", peer, "resource", resource, "err", err)
 		_ = writeFields(w, respError, "internal")
 	}
 }
