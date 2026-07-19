@@ -112,6 +112,19 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fold
 // Caller holds no locks — this runs only once per session-folder.
 func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	st, err := os.Stat(fs.indexPath)
+	// Breadcrumb (#644/#647): unconditional, every call — not just the
+	// ErrNotExist branch — so a live repro can see the FULL stat-outcome
+	// history for a given index_path across processes (e.g. lmtp seeing it
+	// exist at t0 and imap seeing ErrNotExist at t0+1.4s for the exact same
+	// path is otherwise only inferable from the absence of a second
+	// createFresh call, not directly observed).
+	if err != nil {
+		slog.Debug("fileindex: loadOrInit stat", "folder", fs.folder,
+			"index_path", fs.indexPath, "exists", false, "err", err.Error())
+	} else {
+		slog.Debug("fileindex: loadOrInit stat", "folder", fs.folder,
+			"index_path", fs.indexPath, "exists", true, "size", st.Size(), "mod_time", st.ModTime().UnixNano())
+	}
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return fs.createFresh(uidValidity)
