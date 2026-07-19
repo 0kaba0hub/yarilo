@@ -457,8 +457,16 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	}
 	// Brief exclusive lock to reload on-disk state (another process may
 	// have written since our last flush). Held only for the disk read.
+	//
+	// NOTE (#647): this reload is NOT serialized against u.b.locker, the
+	// cross-process distributed lock every write path (withFolderLock) takes
+	// before its own reload. A concurrent, lock-holding compaction on another
+	// process can interleave with this unlocked read and load a torn view into
+	// the shared in-memory folderState — which every subsequent, correctly
+	// locked write then trusts as a baseline. Passing locked=false so the
+	// reload debug breadcrumbs make this window visible in a live repro.
 	fs.mu.Lock()
-	err := fs.reload()
+	err := fs.reload(false)
 	fs.mu.Unlock()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

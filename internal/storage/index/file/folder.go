@@ -435,7 +435,7 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
 	return u.withFolderLock(fs, func() error {
-		if err := fs.reload(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := fs.reload(true); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return fn(fs)
@@ -456,8 +456,20 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 //
 //  3. If the base file changed (after OptimizeIndex), do a full
 //     re-read of base + remaining log.
-func (fs *folderState) reload() error {
+// reload re-syncs fs from disk. locked reports whether the caller holds the
+// cross-process distributed lock (u.b.locker) for this folder — withFolder
+// (writes) always passes true; withFolderRO (reads) passes false, since it
+// only takes the in-process fs.mu (#647: this makes withFolderRO's reload
+// unserialized against another process's locked compaction, a suspected
+// second trigger for the #644 NextUID-regression class of bug alongside the
+// #645 stale-logFD fix). Logged on every reload so a live repro can show an
+// unlocked reload's NextUID diverging from a concurrent locked writer's.
+func (fs *folderState) reload(locked bool) error {
 	t0 := time.Now()
+	nextUIDBefore := uint32(0)
+	if fs.file != nil {
+		nextUIDBefore = fs.file.Header.NextUID
+	}
 	baseStat, baseErr := os.Stat(fs.indexPath)
 
 	// Stat the .log by PATH so a replacement is detected by file IDENTITY, not
@@ -496,8 +508,10 @@ func (fs *folderState) reload() error {
 	if !logReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
 		slog.Debug("fileindex: reload fast-path",
 			"folder", fs.folder,
+			"locked", locked,
 			"log_size", fs.logSize,
 			"base_mod", fs.baseMod.UnixNano(),
+			"next_uid", nextUIDBefore,
 			"dur_ms", time.Since(t0).Milliseconds())
 		return nil
 	}
@@ -507,10 +521,12 @@ func (fs *folderState) reload() error {
 	}
 	slog.Debug("fileindex: reload full",
 		"folder", fs.folder,
+		"locked", locked,
 		"new_log_size", newLogSize,
 		"old_log_size", fs.logSize,
 		"new_base_mod", newBaseMod.UnixNano(),
 		"old_base_mod", fs.baseMod.UnixNano(),
+		"next_uid_before", nextUIDBefore,
 		"dur_ms", time.Since(t0).Milliseconds())
 
 	// Base file changed (or first open, or the log was replaced by a concurrent
@@ -559,8 +575,11 @@ func (fs *folderState) reload() error {
 	// just-written record was picked up (records_after > records_before) or not.
 	slog.Debug("fileindex: reload applied",
 		"folder", fs.folder,
+		"locked", locked,
 		"records_before", recordsBefore,
 		"records_after", len(fs.file.Records),
+		"next_uid_before", nextUIDBefore,
+		"next_uid_after", fs.file.Header.NextUID,
 		"log_size", fs.logSize,
 		"dur_ms", time.Since(t0).Milliseconds())
 	return nil
