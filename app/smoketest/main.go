@@ -58,6 +58,9 @@ var (
 	flagQuotaOverPass = flag.String("quota-over-pass", "", "password for -quota-over-user")
 	flagACLUser       = flag.String("acl-user", "", "IMAP username for the ACL extension check (enables it)")
 	flagACLPass       = flag.String("acl-pass", "", "password for -acl-user")
+
+	flagFTSUser = flag.String("fts-user", "", "IMAP username for the full-text search check (enables it)")
+	flagFTSPass = flag.String("fts-pass", "", "password for -fts-user")
 )
 
 type result struct {
@@ -186,6 +189,14 @@ func main() {
 			fn   func() error
 		}{"imap ACL (MYRIGHTS + SETACL round-trip)", func() error {
 			return checkACL(*flagACLUser, *flagACLPass)
+		}})
+	}
+	if *flagFTSUser != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap FTS (SEARCH BODY/TEXT/HEADER/FROM)", func() error {
+			return checkFTS(*flagFTSUser, *flagFTSPass)
 		}})
 	}
 
