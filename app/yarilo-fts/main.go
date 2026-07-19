@@ -21,6 +21,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	"github.com/0kaba0hub/yarilo/internal/ftsservice"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
+	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
@@ -97,17 +98,30 @@ func main() {
 		slog.Error("listen failed", "addr", listen, "err", err)
 		os.Exit(1)
 	}
-	slog.Info("yarilo-fts listening", "addr", listen, "engine", engine.Name(), "mode", fc.Mode)
+
+	// Telemetry: /healthz, /readyz, /metrics on the dedicated port (#677).
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	tel := telemetry.New(cfg.Telemetry.Listen)
+	go func() {
+		if err := tel.ListenAndServe(ctx); err != nil {
+			slog.Error("telemetry server failed", "err", err)
+		}
+	}()
+
+	slog.Info("yarilo-fts listening", "addr", listen, "telemetry", cfg.Telemetry.Listen,
+		"engine", engine.Name(), "mode", fc.Mode)
 
 	go func() {
 		if err := ftsproto.Serve(ln, svc); err != nil {
 			slog.Error("serve failed", "err", err)
 		}
 	}()
+	// Ready once the listener is up and the service is serving.
+	tel.SetReady(true)
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	<-ctx.Done()
+	tel.SetReady(false)
 	slog.Info("shutting down")
 	ln.Close() //nolint:errcheck
 	if err := svc.Close(); err != nil {
@@ -157,7 +171,9 @@ func lockMailbox(locker locks.Locker) func(user, folder string, fn func() error)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		t0 := time.Now()
 		lk, err := locker.Lock(ctx, key, owner, 5*time.Minute)
+		ftsservice.ObserveLockWait(time.Since(t0))
 		if err != nil {
 			return fmt.Errorf("fts: lock %s: %w", key, err)
 		}

@@ -44,6 +44,13 @@ spec:
             - name: fts
               containerPort: {{ .Values.components.fts.port }}
               protocol: TCP
+            - name: telemetry
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/yarilo
@@ -89,5 +96,9 @@ spec:
     - name: fts
       port: {{ .Values.components.fts.port }}
       targetPort: fts
+      protocol: TCP
+    - name: telemetry
+      port: 8080
+      targetPort: telemetry
       protocol: TCP
 {{- end }}

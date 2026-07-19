@@ -200,12 +200,20 @@ func (s *Service) Expunge(user string, mbox fts.MailboxRef, uid uint32) error {
 }
 
 func (s *Service) Lookup(user string, mbox fts.MailboxRef, q fts.Query) (fts.Result, error) {
+	metricLookupTotal.Inc()
 	h, err := s.handle(user)
 	if err != nil {
+		metricLookupErrors.Inc()
 		return fts.Result{}, err
 	}
 	t0 := time.Now()
 	res, err := h.ui.Lookup(mbox, q)
+	metricLookupDuration.Observe(time.Since(t0).Seconds())
+	if err != nil {
+		metricLookupErrors.Inc()
+	} else {
+		metricLookupCandidates.Observe(float64(len(res.Definite) + len(res.Maybe)))
+	}
 	// Term COUNT and result counts only — never the query terms (private content).
 	slog.Debug("fts: lookup executed", "user", user, "folder", mbox.Name,
 		"terms", len(q.Terms), "and_terms", q.AndTerms,
@@ -287,7 +295,12 @@ func (s *Service) worker(ctx context.Context) {
 		if !ok {
 			return
 		}
-		if err := s.runIndex(j); err != nil {
+		metricQueueDepth.Set(float64(s.queue.depth()))
+		t0 := time.Now()
+		err := s.runIndex(j)
+		metricIndexDuration.Observe(time.Since(t0).Seconds())
+		if err != nil {
+			metricIndexErrors.Inc()
 			slog.Error("fts: index job failed",
 				"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "err", err)
 			// Recovery (#629): a broken/closed engine handle stays broken for every
@@ -295,35 +308,38 @@ func (s *Service) worker(ctx context.Context) {
 			// the next job re-opens a fresh index — the engine also self-heals its
 			// write shard, but evicting here recovers even a wholesale-poisoned
 			// UserIndex without an operator deleting the on-disk index.
-			if isBrokenEngine(err) {
+			if reason := brokenEngineReason(err); reason != "" {
+				metricRecoveryTotal.WithLabelValues(reason).Inc()
 				s.evict(j.user)
 				slog.Warn("fts: engine reported a broken index, evicted user handle for reopen",
-					"user", j.user, "folder", j.mbox.Name)
+					"user", j.user, "folder", j.mbox.Name, "reason", reason)
 			}
 		}
 	}
 }
 
-// isBrokenEngine reports whether err indicates the engine's on-disk index or its
-// open handle is in an unusable state — a Xapian DatabaseClosedError, or the
-// rev-file open/write failure that wedges a flatcurve shard (#629). A false
-// positive only costs a handle reopen, so the match is deliberately broad.
-func isBrokenEngine(err error) bool {
+// brokenEngineReason returns a bounded label when err indicates the engine's
+// on-disk index or its open handle is unusable — a Xapian DatabaseClosedError,
+// or the rev-file open/write failure that wedges a flatcurve shard (#629) — and
+// "" otherwise. A false positive only costs a handle reopen, so the match is
+// deliberately broad.
+func brokenEngineReason(err error) string {
 	if err == nil {
-		return false
+		return ""
 	}
 	msg := err.Error()
-	for _, marker := range []string{
-		"DatabaseClosedError",
-		"Database has been closed",
-		"DatabaseOpeningError",
-		"Couldn't write new rev file",
+	// Map each marker to a bounded metric label (fts_recovery_total{reason}).
+	for _, m := range []struct{ marker, reason string }{
+		{"DatabaseClosedError", "database_closed"},
+		{"Database has been closed", "database_closed"},
+		{"DatabaseOpeningError", "database_opening"},
+		{"Couldn't write new rev file", "rev_file"},
 	} {
-		if strings.Contains(msg, marker) {
-			return true
+		if strings.Contains(msg, m.marker) {
+			return m.reason
 		}
 	}
-	return false
+	return ""
 }
 
 // evict closes and drops the cached handle for user so the next handle() reopens
@@ -472,6 +488,7 @@ func (s *Service) runIndex(j job) error {
 		}
 		return nil
 	})
+	metricIndexMessages.Add(float64(indexedCount))
 	slog.Debug("fts: index run done", "job_id", j.id, "user", j.user, "folder", j.mbox.Name,
 		"messages_in_folder", len(msgs), "indexed", indexedCount, "skipped", skippedCount,
 		"dur_ms", time.Since(tStart).Milliseconds(), "err", err)
