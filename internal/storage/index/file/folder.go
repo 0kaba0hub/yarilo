@@ -456,6 +456,7 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 //
 //  3. If the base file changed (after OptimizeIndex), do a full
 //     re-read of base + remaining log.
+//
 // reload re-syncs fs from disk. locked reports whether the caller holds the
 // cross-process distributed lock (u.b.locker) for this folder — withFolder
 // (writes) always passes true; withFolderRO (reads) passes false, since it
