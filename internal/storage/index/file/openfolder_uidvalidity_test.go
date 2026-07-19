@@ -16,7 +16,7 @@ func seedZeroUIDValidityIndex(t *testing.T, dir string) {
 	ui := New().OpenUser(&mailbox.UserInfo{
 		Username: testUser, Home: testHome(dir, testUser), Driver: "mdbox",
 	}).(*userHandle).ui
-	if _, err := ui.OpenFolder("INBOX", 7); err != nil {
+	if _, err := ui.OpenFolder("INBOX", 7, ""); err != nil {
 		t.Fatalf("seed OpenFolder: %v", err)
 	}
 	_ = ui.Close()
@@ -47,7 +47,7 @@ func TestOpenFolderRepairsZeroUIDValidity(t *testing.T) {
 		ui := New(WithLocker(newLocker())).OpenUser(&mailbox.UserInfo{
 			Username: testUser, Home: testHome(dir, testUser), Driver: "mdbox",
 		}).(*userHandle).ui
-		f, err := ui.OpenFolder("INBOX", 0)
+		f, err := ui.OpenFolder("INBOX", 0, "")
 		if err != nil {
 			t.Fatalf("OpenFolder: %v", err)
 		}

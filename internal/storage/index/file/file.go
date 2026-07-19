@@ -209,7 +209,9 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 	}
 	ref.refs++
 	b.usersMu.Unlock()
-	return &userHandle{ui: ref.ui, b: b, cacheKey: key}
+	// u.SessionID is the IMAP/POP3 login-proxy correlation ID (empty for LMTP
+	// and other non-session contexts) — see folderState.traceID.
+	return &userHandle{ui: ref.ui, b: b, cacheKey: key, traceID: u.SessionID}
 }
 
 // userHandle is the per-session view into a shared userIndex. It
@@ -220,22 +222,48 @@ type userHandle struct {
 	ui       *userIndex
 	b        *Backend
 	cacheKey string
+	// traceID is this session's correlation ID (see folderState.traceID).
+	traceID string
+}
+
+// stampTrace records this handle's traceID on folderID's folderState (when
+// open) before a call that will log against it, so the resulting log lines
+// attribute to this session instead of whichever session opened the folder.
+// No-op when traceID is empty (e.g. LMTP, or a test backend with no SessionID)
+// or the folder isn't in the open cache (shouldn't happen — the caller already
+// holds a live folderID).
+func (h *userHandle) stampTrace(folderID uint64) {
+	if h.traceID == "" {
+		return
+	}
+	h.ui.mu.Lock()
+	fs, ok := h.ui.open[folderID]
+	h.ui.mu.Unlock()
+	if ok {
+		fs.mu.Lock()
+		fs.traceID = h.traceID
+		fs.mu.Unlock()
+	}
 }
 
 func (h *userHandle) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
-	return h.ui.OpenFolder(folder, uidValidity)
+	return h.ui.OpenFolder(folder, uidValidity, h.traceID)
 }
 func (h *userHandle) SaveFolder(f *mailbox.Folder) error { return h.ui.SaveFolder(f) }
 func (h *userHandle) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
+	h.stampTrace(folderID)
 	return h.ui.AppendMessage(folderID, m)
 }
 func (h *userHandle) AllocateUID(folderID uint64) (uint32, error) {
+	h.stampTrace(folderID)
 	return h.ui.AllocateUID(folderID)
 }
 func (h *userHandle) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, error) {
+	h.stampTrace(folderID)
 	return h.ui.AllocateUIDWithModSeq(folderID)
 }
 func (h *userHandle) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) error {
+	h.stampTrace(folderID)
 	return h.ui.AllocateAndAppend(folderID, m)
 }
 func (h *userHandle) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
@@ -380,6 +408,15 @@ type folderState struct {
 	// self-heals via recalcVsizeLocked when {HighestUID, MessageCount} drift
 	// from the folder state (e.g. after a legacy import or crash).
 	vsize hdrVsize
+
+	// traceID is the calling session's correlation ID (mailbox.UserInfo.SessionID
+	// for IMAP/POP3, empty for LMTP — see userHandle.stampTrace), refreshed by
+	// every userHandle call that touches this folder. userIndex is shared/cached
+	// across concurrent sessions for the same user (Backend.OpenUser), so this is
+	// "whichever session most recently touched this folder" rather than a strict
+	// per-call value — still enough to grep one session's slice of a shared
+	// folder's log lines instead of correlating by hand via user+folder+timestamp.
+	traceID string
 }
 
 // closeFDs closes logFD and namesFD and sets them to nil.

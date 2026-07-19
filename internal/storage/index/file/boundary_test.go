@@ -14,7 +14,7 @@ import (
 func TestBoundaryPartialWriteDiscarded(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 0)
+	f, _ := b.OpenFolder("INBOX", 0, "")
 
 	modseq, _ := b.NextModSeq(f.ID)
 	if err := b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, ModSeq: modseq, Filename: "a.eml", Size: 100}); err != nil {
@@ -36,7 +36,7 @@ func TestBoundaryPartialWriteDiscarded(t *testing.T) {
 
 	// Reopen — torn record must be discarded; original message must survive.
 	b2 := openIdx(dir, testUser)
-	f2, _ := b2.OpenFolder("INBOX", 0)
+	f2, _ := b2.OpenFolder("INBOX", 0, "")
 	msgs, err := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if err != nil {
 		t.Fatalf("GetMessages after corruption: %v", err)
@@ -55,7 +55,7 @@ func TestBoundaryPartialWriteDiscarded(t *testing.T) {
 func TestBoundaryMidTransactionCrashDiscarded(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, _ := b.OpenFolder("INBOX", 0)
+	f, _ := b.OpenFolder("INBOX", 0, "")
 
 	// Write one good message so we have a baseline.
 	modseq, _ := b.NextModSeq(f.ID)
@@ -92,7 +92,7 @@ func TestBoundaryMidTransactionCrashDiscarded(t *testing.T) {
 
 	// Reopen — torn transaction must be discarded; only the original message survives.
 	b2 := openIdx(dir, testUser)
-	f2, _ := b2.OpenFolder("INBOX", 0)
+	f2, _ := b2.OpenFolder("INBOX", 0, "")
 	msgs, err := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if err != nil {
 		t.Fatalf("GetMessages after mid-transaction crash: %v", err)
@@ -110,7 +110,7 @@ func TestBoundaryMidTransactionCrashDiscarded(t *testing.T) {
 func TestBoundaryTwoCompleteGroups(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser2)
-	f, _ := b.OpenFolder("INBOX", 0)
+	f, _ := b.OpenFolder("INBOX", 0, "")
 
 	for i, name := range []string{"a.eml", "b.eml"} {
 		modseq, _ := b.NextModSeq(f.ID)
@@ -123,7 +123,7 @@ func TestBoundaryTwoCompleteGroups(t *testing.T) {
 	b.Close() //nolint:errcheck
 
 	b2 := openIdx(dir, testUser2)
-	f2, _ := b2.OpenFolder("INBOX", 0)
+	f2, _ := b2.OpenFolder("INBOX", 0, "")
 	msgs, _ := b2.GetMessages(f2.ID, mailbox.SeqSet{})
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 messages, got %d", len(msgs))

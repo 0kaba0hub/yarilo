@@ -22,7 +22,7 @@ func TestExpungeVSizeFallbackNoExt(t *testing.T) {
 	// Append a message with no virtual size (VSize=0, Size=0) → per-record vsize
 	// extension decodes to 0.
 	a := openIdx(dir, testUser)
-	fa, err := a.OpenFolder("INBOX", 1)
+	fa, err := a.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestExpungeVSizeFallbackNoExt(t *testing.T) {
 
 	// Reopen: fs.sizes[1]=5000 from the sidecar, record vsize ext still 0.
 	b := openIdx(dir, testUser)
-	fb, err := b.OpenFolder("INBOX", 0)
+	fb, err := b.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

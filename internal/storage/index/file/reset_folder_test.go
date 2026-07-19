@@ -12,7 +12,7 @@ import (
 func TestResetFolderPreservesModSeq(t *testing.T) {
 	b := openIdx(t.TempDir(), testUser)
 	defer b.Close() //nolint:errcheck
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	for i := uint32(1); i <= 3; i++ {
 		modseq, _ := b.NextModSeq(f.ID)
@@ -61,7 +61,7 @@ func TestResetFolderPreservesModSeq(t *testing.T) {
 func TestResetFolderStampsMissingModSeq(t *testing.T) {
 	b := openIdx(t.TempDir(), testUser)
 	defer b.Close() //nolint:errcheck
-	f, _ := b.OpenFolder("INBOX", 1)
+	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	modseq, _ := b.NextModSeq(f.ID)
 	kept := &mailbox.MessageMeta{UID: 1, Filename: filenameFor(1), ModSeq: modseq}

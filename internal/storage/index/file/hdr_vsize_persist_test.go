@@ -52,7 +52,7 @@ func TestHdrVsizeBackfillRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 
 	a := openIdx(dir, testUser)
-	fa, err := a.OpenFolder("INBOX", 1)
+	fa, err := a.OpenFolder("INBOX", 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestHdrVsizeBackfillRoundTrip(t *testing.T) {
 
 	// Reopen and force a flush via recalc — must succeed and persist the ext.
 	b := openIdx(dir, testUser)
-	fb, err := b.OpenFolder("INBOX", 0)
+	fb, err := b.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

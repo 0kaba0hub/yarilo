@@ -15,7 +15,7 @@ import (
 func TestFsckIndexIDMismatch(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	f, err := b.OpenFolder("INBOX", 0)
+	f, err := b.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatalf("initial open: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestFsckIndexIDMismatch(t *testing.T) {
 
 	// Reopen — OpenFolder must detect the mismatch and recover without error.
 	b2 := openIdx(dir, testUser)
-	f2, err := b2.OpenFolder("INBOX", 0)
+	f2, err := b2.OpenFolder("INBOX", 0, "")
 	if err != nil {
 		t.Fatalf("reopen after IndexID mismatch: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestFsckIndexIDMismatch(t *testing.T) {
 func TestFsckCorruptedLogBeforeBoundary(t *testing.T) {
 	dir := t.TempDir()
 	b := openIdx(dir, testUser)
-	if _, err := b.OpenFolder("INBOX", 0); err != nil {
+	if _, err := b.OpenFolder("INBOX", 0, ""); err != nil {
 		t.Fatalf("initial open: %v", err)
 	}
 	b.Close() //nolint:errcheck
@@ -115,7 +115,7 @@ func TestFsckCorruptedLogBeforeBoundary(t *testing.T) {
 
 	// Reopen — the corrupted tail must be truncated back to the stub.
 	b2 := openIdx(dir, testUser)
-	if _, err := b2.OpenFolder("INBOX", 0); err != nil {
+	if _, err := b2.OpenFolder("INBOX", 0, ""); err != nil {
 		t.Fatalf("reopen after corrupted record: %v", err)
 	}
 	b2.Close() //nolint:errcheck
