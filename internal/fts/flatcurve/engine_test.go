@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/0kaba0hub/yarilo/internal/fts/xapian"
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 
@@ -339,12 +340,12 @@ func TestVersionMetadataWritten(t *testing.T) {
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no shards: %v", err)
 	}
-	w, err := openWDB(paths[0])
+	w, err := xapian.OpenWDB(paths[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.close()
-	got, err := w.getMetadata(versionKey)
+	defer w.Close()
+	got, err := w.GetMetadata(versionKey)
 	if err != nil {
 		t.Fatal(err)
 	}

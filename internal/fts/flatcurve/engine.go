@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/0kaba0hub/yarilo/internal/fts/xapian"
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 
@@ -112,7 +113,7 @@ func (e *Engine) OpenUser(_ context.Context, user fts.UserRef) (fts.UserIndex, e
 // sole writer (docs/FTS.md §4), so a plain mutex per user index suffices.
 type mboxState struct {
 	dir     string
-	cur     *xWDB
+	cur     *xapian.WDB
 	curPath string
 	pending int    // uncommitted document updates
 	curDocs uint32 // documents written to the current shard
@@ -193,21 +194,21 @@ func (st *mboxState) ensureCurrent() error {
 	if err := syncDir(st.dir); err != nil {
 		return fmt.Errorf("fts/flatcurve: fsync shard parent: %w", err)
 	}
-	w, err := openWDB(curPath)
+	w, err := xapian.OpenWDB(curPath)
 	if err != nil {
 		return err
 	}
 	if fresh {
-		if err := w.setMetadata(versionKey, versionValue); err != nil {
-			w.close()
+		if err := w.SetMetadata(versionKey, versionValue); err != nil {
+			w.Close()
 			return err
 		}
 	}
 	st.cur = w
 	st.curPath = curPath
-	n, err := w.docCount()
+	n, err := w.DocCount()
 	if err != nil {
-		w.close()
+		w.Close()
 		st.cur = nil
 		return err
 	}
@@ -219,7 +220,7 @@ func (st *mboxState) commitCurrent() error {
 	if st.cur == nil || st.pending == 0 {
 		return nil
 	}
-	if err := st.cur.commit(); err != nil {
+	if err := st.cur.Commit(); err != nil {
 		st.discardCurrent() // reopen on the next pass rather than keep a dead handle (#629)
 		return err
 	}
@@ -233,11 +234,11 @@ func (st *mboxState) rotate() error {
 	if st.cur == nil {
 		return nil
 	}
-	if err := st.cur.commit(); err != nil {
+	if err := st.cur.Commit(); err != nil {
 		st.discardCurrent() // reopen on the next pass (#629)
 		return err
 	}
-	st.cur.close()
+	st.cur.Close()
 	st.cur = nil
 	st.pending = 0
 	st.curDocs = 0
@@ -275,7 +276,7 @@ func syncDir(dir string) error {
 // the next pass. Best-effort: close errors are ignored (the handle is dead anyway).
 func (st *mboxState) discardCurrent() {
 	if st.cur != nil {
-		st.cur.close()
+		st.cur.Close()
 		st.cur = nil
 	}
 	st.pending = 0
@@ -289,8 +290,8 @@ func (st *mboxState) closeCurrent() error {
 	if st.cur == nil {
 		return nil
 	}
-	err := st.cur.commit()
-	st.cur.close()
+	err := st.cur.Commit()
+	st.cur.Close()
 	st.cur = nil
 	st.pending = 0
 	st.curDocs = 0
@@ -332,12 +333,12 @@ func (u *userIndex) Checkpoint(mbox fts.MailboxRef) (lastUID, uidValidity, sum u
 	if cerr := st.commitCurrent(); cerr != nil {
 		return 0, 0, 0, cerr
 	}
-	db, derr := openDBMulti(paths)
+	db, derr := xapian.OpenDBMulti(paths)
 	if derr != nil {
 		return 0, 0, 0, derr
 	}
-	defer db.close()
-	last, lerr := db.lastDocID()
+	defer db.Close()
+	last, lerr := db.LastDocID()
 	if lerr != nil {
 		return 0, 0, 0, lerr
 	}
@@ -375,7 +376,7 @@ type update struct {
 	ui  *userIndex
 	st  *mboxState
 	uid uint32
-	doc *xDoc
+	doc *xapian.Doc
 	key fts.BuildKey
 	// seenBool dedups header-existence terms within one document.
 	seenBool map[string]bool
@@ -393,7 +394,7 @@ func (up *update) SetBuildKey(k fts.BuildKey) (bool, error) {
 		}
 	}
 	if up.doc == nil {
-		up.doc = newDoc()
+		up.doc = xapian.NewDoc()
 		up.seenBool = map[string]bool{}
 		up.uid = k.UID
 	}
@@ -402,7 +403,7 @@ func (up *update) SetBuildKey(k fts.BuildKey) (bool, error) {
 		name := strings.ToLower(k.HdrName)
 		if !up.seenBool[name] {
 			up.seenBool[name] = true
-			if err := up.doc.addBooleanTerm(boolPrefix + name); err != nil {
+			if err := up.doc.AddBooleanTerm(boolPrefix + name); err != nil {
 				return false, err
 			}
 		}
@@ -439,7 +440,7 @@ func normTerm(tok string, minSize int) string {
 func (up *update) addWithSuffixes(prefix, term string, substring bool, minSize int) error {
 	s := term
 	for {
-		if err := up.doc.addTerm(prefix + s); err != nil {
+		if err := up.doc.AddTerm(prefix + s); err != nil {
 			return err
 		}
 		if !substring {
@@ -488,11 +489,11 @@ func (up *update) flushDocLocked() error {
 	if err := st.ensureCurrent(); err != nil {
 		return err
 	}
-	if err := st.cur.replaceDocument(up.uid, up.doc); err != nil {
+	if err := st.cur.ReplaceDocument(up.uid, up.doc); err != nil {
 		st.discardCurrent() // poisoned shard → reopen on the next pass (#629)
 		return err
 	}
-	up.doc.free()
+	up.doc.Free()
 	up.doc = nil
 	up.seenBool = nil
 	st.pending++
@@ -528,7 +529,7 @@ func (up *update) Rollback() error {
 	// Already-flushed documents stay (rescan reconciles); only the pending
 	// document is discarded — the upstream failure semantics.
 	if up.doc != nil {
-		up.doc.free()
+		up.doc.Free()
 		up.doc = nil
 	}
 	return nil
@@ -543,7 +544,7 @@ func (u *userIndex) Expunge(mbox fts.MailboxRef, uid uint32) error {
 	// The open write shard is checked in place; sealed shards are opened
 	// one by one (the upstream per-shard probe).
 	if st.cur != nil {
-		existed, err := st.cur.deleteDocument(uid)
+		existed, err := st.cur.DeleteDocument(uid)
 		if err != nil {
 			return err
 		}
@@ -560,15 +561,15 @@ func (u *userIndex) Expunge(mbox fts.MailboxRef, uid uint32) error {
 		if p == st.curPath && st.cur != nil {
 			continue
 		}
-		w, err := openWDB(p)
+		w, err := xapian.OpenWDB(p)
 		if err != nil {
 			return err
 		}
-		existed, derr := w.deleteDocument(uid)
+		existed, derr := w.DeleteDocument(uid)
 		if derr == nil && existed {
-			derr = w.commit()
+			derr = w.Commit()
 		}
-		w.close()
+		w.Close()
 		if derr != nil {
 			return derr
 		}
@@ -599,12 +600,12 @@ func (u *userIndex) Rescan(mbox fts.MailboxRef, present []uint32) ([]uint32, err
 		sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
 		return missing, nil
 	}
-	db, err := openDBMulti(paths)
+	db, err := xapian.OpenDBMulti(paths)
 	if err != nil {
 		return nil, err
 	}
-	indexed, err := db.docIDs()
-	db.close()
+	indexed, err := db.DocIDs()
+	db.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -619,26 +620,26 @@ func (u *userIndex) Rescan(mbox fts.MailboxRef, present []uint32) ([]uint32, err
 	// Targeted deletes, shard by shard — no delete-above-lowest-gap storm.
 	if len(stale) > 0 {
 		for _, p := range paths {
-			w, werr := openWDB(p)
+			w, werr := xapian.OpenWDB(p)
 			if werr != nil {
 				return nil, werr
 			}
 			changed := false
 			for _, uid := range stale {
-				existed, derr := w.deleteDocument(uid)
+				existed, derr := w.DeleteDocument(uid)
 				if derr != nil {
-					w.close()
+					w.Close()
 					return nil, derr
 				}
 				changed = changed || existed
 			}
 			if changed {
-				if cerr := w.commit(); cerr != nil {
-					w.close()
+				if cerr := w.Commit(); cerr != nil {
+					w.Close()
 					return nil, cerr
 				}
 			}
-			w.close()
+			w.Close()
 		}
 	}
 	var missing []uint32
@@ -670,14 +671,14 @@ func optimizeDir(st *mboxState) error {
 	if err != nil || len(paths) < 2 {
 		return err
 	}
-	db, err := openDBMulti(paths)
+	db, err := xapian.OpenDBMulti(paths)
 	if err != nil {
 		return err
 	}
 	tmp := filepath.Join(st.dir, "optimize")
 	_ = os.RemoveAll(tmp)
-	cerr := db.compact(tmp)
-	db.close()
+	cerr := db.Compact(tmp)
+	db.Close()
 	if cerr != nil {
 		_ = os.RemoveAll(tmp)
 		return cerr
@@ -735,88 +736,88 @@ func (u *userIndex) Lookup(mbox fts.MailboxRef, q fts.Query) (fts.Result, error)
 	if len(paths) == 0 {
 		return fts.Result{}, nil
 	}
-	db, err := openDBMulti(paths)
+	db, err := xapian.OpenDBMulti(paths)
 	if err != nil {
 		return fts.Result{}, err
 	}
-	defer db.close()
+	defer db.Close()
 
 	xq, maybe, err := u.buildQuery(q)
 	if err != nil {
 		return fts.Result{}, err
 	}
-	defer xq.free()
-	entries, err := db.search(xq)
+	defer xq.Free()
+	entries, err := db.Search(xq)
 	if err != nil {
 		return fts.Result{}, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].docid < entries[j].docid })
+	sort.Slice(entries, func(i, j int) bool { return entries[i].DocID < entries[j].DocID })
 	res := fts.Result{}
 	for _, ent := range entries {
 		if maybe {
-			res.Maybe = append(res.Maybe, ent.docid)
+			res.Maybe = append(res.Maybe, ent.DocID)
 		} else {
-			res.Definite = append(res.Definite, ent.docid)
+			res.Definite = append(res.Definite, ent.DocID)
 		}
-		res.Scores = append(res.Scores, fts.Score{UID: ent.docid, Value: ent.weight})
+		res.Scores = append(res.Scores, fts.Score{UID: ent.DocID, Value: ent.Weight})
 	}
 	return res, nil
 }
 
-func (u *userIndex) buildQuery(q fts.Query) (*xQuery, bool, error) {
+func (u *userIndex) buildQuery(q fts.Query) (*xapian.Query, bool, error) {
 	if len(q.Terms) == 0 {
 		return nil, false, fmt.Errorf("fts/flatcurve: empty query")
 	}
-	var acc *xQuery
+	var acc *xapian.Query
 	maybe := false
-	op := opOr
+	op := xapian.OpOR
 	if q.AndTerms {
-		op = opAnd
+		op = xapian.OpAND
 	}
 	for _, term := range q.Terms {
 		tq, tMaybe, err := u.buildTerm(term)
 		if err != nil {
-			acc.free()
+			acc.Free()
 			return nil, false, err
 		}
 		// One over-approximated arg makes the whole conjunction a maybe.
 		maybe = maybe || tMaybe
 		if term.Not {
-			all, aerr := queryMatchAll()
+			all, aerr := xapian.QueryMatchAll()
 			if aerr != nil {
-				tq.free()
-				acc.free()
+				tq.Free()
+				acc.Free()
 				return nil, false, aerr
 			}
-			if tq, err = queryCombine(opAndNot, all, tq); err != nil {
-				acc.free()
+			if tq, err = xapian.QueryCombine(xapian.OpANDNOT, all, tq); err != nil {
+				acc.Free()
 				return nil, false, err
 			}
 		}
 		if acc == nil {
 			acc = tq
-		} else if acc, err = queryCombine(op, acc, tq); err != nil {
+		} else if acc, err = xapian.QueryCombine(op, acc, tq); err != nil {
 			return nil, false, err
 		}
 	}
 	return acc, maybe, nil
 }
 
-func (u *userIndex) buildTerm(t fts.Term) (*xQuery, bool, error) {
+func (u *userIndex) buildTerm(t fts.Term) (*xapian.Query, bool, error) {
 	name := strings.ToLower(t.HdrName)
 	if len(t.Words) == 0 {
 		if t.Field != fts.FieldHeader {
 			return nil, false, fmt.Errorf("fts/flatcurve: empty term")
 		}
 		// HEADER existence probe → the boolean term.
-		q, err := queryTerm(boolPrefix + name)
+		q, err := xapian.QueryTerm(boolPrefix + name)
 		return q, false, err
 	}
 	minSize := u.eng.opts.MinTermSize
-	var acc *xQuery
+	var acc *xapian.Query
 	maybe := false
 	for _, w := range t.Words {
-		var wq *xQuery
+		var wq *xapian.Query
 		for _, v := range w.Variants {
 			v = normTerm(v, 1)
 			if v == "" {
@@ -824,15 +825,15 @@ func (u *userIndex) buildTerm(t fts.Term) (*xQuery, bool, error) {
 			}
 			vq, vMaybe, err := buildVariant(t.Field, name, v, minSize)
 			if err != nil {
-				wq.free()
-				acc.free()
+				wq.Free()
+				acc.Free()
 				return nil, false, err
 			}
 			maybe = maybe || vMaybe
 			if wq == nil {
 				wq = vq
-			} else if wq, err = queryCombine(opOr, wq, vq); err != nil {
-				acc.free()
+			} else if wq, err = xapian.QueryCombine(xapian.OpOR, wq, vq); err != nil {
+				acc.Free()
 				return nil, false, err
 			}
 		}
@@ -842,7 +843,7 @@ func (u *userIndex) buildTerm(t fts.Term) (*xQuery, bool, error) {
 		var err error
 		if acc == nil {
 			acc = wq
-		} else if acc, err = queryCombine(opAnd, acc, wq); err != nil {
+		} else if acc, err = xapian.QueryCombine(xapian.OpAND, acc, wq); err != nil {
 			return nil, false, err
 		}
 	}
@@ -852,31 +853,31 @@ func (u *userIndex) buildTerm(t fts.Term) (*xQuery, bool, error) {
 	return acc, maybe, nil
 }
 
-func buildVariant(field fts.FieldKind, hdrName, v string, minSize int) (*xQuery, bool, error) {
+func buildVariant(field fts.FieldKind, hdrName, v string, minSize int) (*xapian.Query, bool, error) {
 	switch field {
 	case fts.FieldBody:
-		q, err := queryWildcard(v)
+		q, err := xapian.QueryWildcard(v)
 		return q, false, err
 	case fts.FieldText:
-		hq, err := queryWildcard(allHdrPrefix + v)
+		hq, err := xapian.QueryWildcard(allHdrPrefix + v)
 		if err != nil {
 			return nil, false, err
 		}
-		bq, err := queryWildcard(v)
+		bq, err := xapian.QueryWildcard(v)
 		if err != nil {
-			hq.free()
+			hq.Free()
 			return nil, false, err
 		}
-		q, err := queryCombine(opOr, hq, bq)
+		q, err := xapian.QueryCombine(xapian.OpOR, hq, bq)
 		return q, false, err
 	case fts.FieldHeader:
 		if indexedHeaders[hdrName] {
-			q, err := queryWildcard(hdrPrefix + strings.ToUpper(hdrName) + v)
+			q, err := xapian.QueryWildcard(hdrPrefix + strings.ToUpper(hdrName) + v)
 			return q, false, err
 		}
 		// Non-indexed header: only the pooled A prefix knows the term —
 		// an over-approximation the caller must re-verify (maybe).
-		q, err := queryWildcard(allHdrPrefix + v)
+		q, err := xapian.QueryWildcard(allHdrPrefix + v)
 		return q, true, err
 	default:
 		return nil, false, fmt.Errorf("fts/flatcurve: unknown field kind %d", field)
