@@ -354,8 +354,8 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	// last reload — that header could be stale (lower NextUID) and would regress
 	// the folder's UID counter. Under the distributed mailbox lock this must not
 	// happen; if the invariant is ever broken, bail and let the next reload
-	// reconcile from the rewritten base instead. Mirrors Dovecot re-fetching the
-	// index header after a log rotation rather than trusting the earlier one.
+	// reconcile from the rewritten base instead — re-fetching the index header
+	// after a log rotation rather than trusting an earlier snapshot of it.
 	if fs.logFileReplaced() {
 		slog.Warn("fileindex: skipping compaction, .log replaced since reload", "folder", fs.folder)
 		fs.closeFDs()

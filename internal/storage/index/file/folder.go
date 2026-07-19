@@ -461,9 +461,9 @@ func (fs *folderState) reload() error {
 	baseStat, baseErr := os.Stat(fs.indexPath)
 
 	// Stat the .log by PATH so a replacement is detected by file IDENTITY, not
-	// merely mtime+size — mirroring Dovecot's mail_index_should_recreate
-	// inode+device check. Another process's compaction replaces the log via
-	// truncateLog's .tmp+rename (new inode); a cached fs.logFD left pointing at
+	// merely mtime+size — an inode+device identity check. Another process's
+	// compaction replaces the log via truncateLog's .tmp+rename (new inode); a
+	// cached fs.logFD left pointing at
 	// the old, now-unlinked inode would otherwise fstat a stale size AND keep
 	// absorbing our own appends into a file nobody else sees, so this session
 	// would flush its stale (lower) header as ground truth and regress the
