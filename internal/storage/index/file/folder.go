@@ -225,6 +225,7 @@ func (u *userIndex) readBase(fs *folderState) error {
 	fs.file = mf
 	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
 		fs.baseMod = st.ModTime()
+		fs.baseIdent = st
 	}
 	// Capture the log's size in THIS single stat, before applyLog reads it, and
 	// use that captured value for fs.logSize below — never a second, later stat.
@@ -571,9 +572,10 @@ func (fs *folderState) flush(wholeNames bool) error {
 			return err
 		}
 	}
-	// Track base mtime so reload() fast-path fires after this flush.
+	// Track base mtime+identity so reload() fast-path fires after this flush.
 	if st, _ := os.Stat(fs.indexPath); st != nil {
 		fs.baseMod = st.ModTime()
+		fs.baseIdent = st
 	}
 	fs.lastFlush = time.Now()
 	return nil
@@ -663,11 +665,21 @@ func (fs *folderState) reload(locked bool) error {
 		newBaseMod = baseStat.ModTime()
 	}
 
+	// Base identity check (#666, same class as the .log check above): mtime
+	// alone has coarse resolution on some filesystems, so a same-tick replace
+	// of the base .index by a concurrent flush()/Recreate() could share the
+	// cached mtime and be missed. baseReplaced is true only when both sides
+	// are provably known (fs.baseIdent and baseStat non-nil) and differ — an
+	// unprovable identity (first open, stat failure) does NOT force a full
+	// reload here; the mtime comparison below still gates that case as before.
+	baseReplaced := fs.baseIdent != nil && baseStat != nil && !os.SameFile(fs.baseIdent, baseStat)
+
 	// Fast path: nothing on disk changed. Never taken when the log was replaced
 	// out from under us — a replacement means a concurrent compaction rewrote
 	// the base too, and its new mtime may coincide with our cached one under a
-	// coarse mtime resolution or NFS attribute caching.
-	if !logReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
+	// coarse mtime resolution or NFS attribute caching. Same reasoning applies
+	// to baseReplaced directly.
+	if !logReplaced && !baseReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
 		slog.Debug("fileindex: reload fast-path",
 			"trace_id", fs.traceID, "folder", fs.folder,
 			"locked", locked,
@@ -693,7 +705,7 @@ func (fs *folderState) reload(locked bool) error {
 
 	// Base file changed (or first open, or the log was replaced by a concurrent
 	// compaction that also rewrote the base) → full reload.
-	if newBaseMod != fs.baseMod || fs.file == nil || logReplaced {
+	if newBaseMod != fs.baseMod || baseReplaced || fs.file == nil || logReplaced {
 		if baseErr != nil {
 			return fmt.Errorf("fileindex/reload: %w", baseErr)
 		}
@@ -707,6 +719,7 @@ func (fs *folderState) reload(locked bool) error {
 		}
 		fs.filenames, fs.sizes = loadNames(fs.indexDir)
 		fs.baseMod = newBaseMod
+		fs.baseIdent = baseStat
 		fs.logSize = 0 // will be updated by applyLog below
 	}
 
