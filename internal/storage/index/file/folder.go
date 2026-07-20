@@ -225,6 +225,7 @@ func (u *userIndex) readBase(fs *folderState) error {
 	fs.file = mf
 	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
 		fs.baseMod = st.ModTime()
+		fs.baseIdent = st
 	}
 	// Capture the log's size in THIS single stat, before applyLog reads it, and
 	// use that captured value for fs.logSize below — never a second, later stat.
@@ -571,9 +572,10 @@ func (fs *folderState) flush(wholeNames bool) error {
 			return err
 		}
 	}
-	// Track base mtime so reload() fast-path fires after this flush.
+	// Track base mtime+identity so reload() fast-path fires after this flush.
 	if st, _ := os.Stat(fs.indexPath); st != nil {
 		fs.baseMod = st.ModTime()
+		fs.baseIdent = st
 	}
 	fs.lastFlush = time.Now()
 	return nil
@@ -596,7 +598,7 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
 	return u.withFolderLock(fs, func() error {
-		if err := fs.reload(true); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := fs.reload(); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return fn(fs)
@@ -618,15 +620,12 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 //  3. If the base file changed (after OptimizeIndex), do a full
 //     re-read of base + remaining log.
 //
-// reload re-syncs fs from disk. locked reports whether the caller holds the
-// cross-process distributed lock (u.b.locker) for this folder — withFolder
-// (writes) always passes true; withFolderRO (reads) passes false, since it
-// only takes the in-process fs.mu (#647: this makes withFolderRO's reload
-// unserialized against another process's locked compaction, a suspected
-// second trigger for the #644 NextUID-regression class of bug alongside the
-// #645 stale-logFD fix). Logged on every reload so a live repro can show an
-// unlocked reload's NextUID diverging from a concurrent locked writer's.
-func (fs *folderState) reload(locked bool) error {
+// reload re-syncs fs from disk. Callers (withFolder for writes, withFolderRO
+// for reads) always invoke this while holding the cross-process distributed
+// lock for this folder (#647) — exclusive for writers, shared for readers
+// since #671 — so a concurrent locked compaction elsewhere cannot interleave
+// with this reload and leave fs with a torn view.
+func (fs *folderState) reload() error {
 	t0 := time.Now()
 	nextUIDBefore := uint32(0)
 	if fs.file != nil {
@@ -663,14 +662,23 @@ func (fs *folderState) reload(locked bool) error {
 		newBaseMod = baseStat.ModTime()
 	}
 
+	// Base identity check (#666, same class as the .log check above): mtime
+	// alone has coarse resolution on some filesystems, so a same-tick replace
+	// of the base .index by a concurrent flush()/Recreate() could share the
+	// cached mtime and be missed. baseReplaced is true only when both sides
+	// are provably known (fs.baseIdent and baseStat non-nil) and differ — an
+	// unprovable identity (first open, stat failure) does NOT force a full
+	// reload here; the mtime comparison below still gates that case as before.
+	baseReplaced := fs.baseIdent != nil && baseStat != nil && !os.SameFile(fs.baseIdent, baseStat)
+
 	// Fast path: nothing on disk changed. Never taken when the log was replaced
 	// out from under us — a replacement means a concurrent compaction rewrote
 	// the base too, and its new mtime may coincide with our cached one under a
-	// coarse mtime resolution or NFS attribute caching.
-	if !logReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
+	// coarse mtime resolution or NFS attribute caching. Same reasoning applies
+	// to baseReplaced directly.
+	if !logReplaced && !baseReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
 		slog.Debug("fileindex: reload fast-path",
 			"trace_id", fs.traceID, "folder", fs.folder,
-			"locked", locked,
 			"log_size", fs.logSize,
 			"base_mod", fs.baseMod.UnixNano(),
 			"next_uid", nextUIDBefore,
@@ -683,7 +691,6 @@ func (fs *folderState) reload(locked bool) error {
 	}
 	slog.Debug("fileindex: reload full",
 		"trace_id", fs.traceID, "folder", fs.folder,
-		"locked", locked,
 		"new_log_size", newLogSize,
 		"old_log_size", fs.logSize,
 		"new_base_mod", newBaseMod.UnixNano(),
@@ -693,7 +700,7 @@ func (fs *folderState) reload(locked bool) error {
 
 	// Base file changed (or first open, or the log was replaced by a concurrent
 	// compaction that also rewrote the base) → full reload.
-	if newBaseMod != fs.baseMod || fs.file == nil || logReplaced {
+	if newBaseMod != fs.baseMod || baseReplaced || fs.file == nil || logReplaced {
 		if baseErr != nil {
 			return fmt.Errorf("fileindex/reload: %w", baseErr)
 		}
@@ -707,6 +714,7 @@ func (fs *folderState) reload(locked bool) error {
 		}
 		fs.filenames, fs.sizes = loadNames(fs.indexDir)
 		fs.baseMod = newBaseMod
+		fs.baseIdent = baseStat
 		fs.logSize = 0 // will be updated by applyLog below
 	}
 
@@ -737,7 +745,6 @@ func (fs *folderState) reload(locked bool) error {
 	// just-written record was picked up (records_after > records_before) or not.
 	slog.Debug("fileindex: reload applied",
 		"trace_id", fs.traceID, "folder", fs.folder,
-		"locked", locked,
 		"records_before", recordsBefore,
 		"records_after", len(fs.file.Records),
 		"next_uid_before", nextUIDBefore,

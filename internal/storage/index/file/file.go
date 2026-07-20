@@ -389,8 +389,16 @@ type folderState struct {
 	filenames map[uint32]string
 	sizes     map[uint32]uint32 // UID → message size in bytes, stored in .names sidecar
 
-	logSize   int64     // byte count of .index.log after last write/reload
-	baseMod   time.Time // mtime of base .index at last full reload
+	logSize int64     // byte count of .index.log after last write/reload
+	baseMod time.Time // mtime of base .index at last full reload
+	// baseIdent is the os.FileInfo captured at the same moment as baseMod,
+	// compared via os.SameFile (inode+device) rather than mtime alone (#666,
+	// same class as the .log identity check in fdMatchesFile/logFileReplaced):
+	// mtime has coarse resolution on some filesystems, so a same-tick replace
+	// of the base .index by a concurrent flush()/Recreate() elsewhere could
+	// otherwise be missed and reload()'s fast path would wrongly trust a
+	// stale in-memory snapshot.
+	baseIdent os.FileInfo
 	lastFlush time.Time // wall-clock time of last flush() call (zero = never)
 
 	// logFD and namesFD are kept open across calls so appendMutLog /
@@ -576,7 +584,7 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	err := u.withDistLock(fs, true, func() error {
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
-		return fs.reload(true)
+		return fs.reload()
 	})
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
