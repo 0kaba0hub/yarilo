@@ -227,22 +227,20 @@ func (u *userIndex) readBase(fs *folderState) error {
 		fs.baseMod = st.ModTime()
 		fs.baseIdent = st
 	}
-	// Capture the log's size in THIS single stat, before applyLog reads it, and
-	// use that captured value for fs.logSize below — never a second, later stat.
-	// A second stat taken AFTER applyLog returns can observe a concurrent
-	// writer's append that landed in the gap between the two calls: fs.logSize
-	// would then reflect bytes applyLog never actually read, desyncing it from
-	// fs.file.Header.NextUID. reload()'s fast path trusts newLogSize==fs.logSize
-	// to mean "nothing to re-apply" — with the desync, it wrongly takes the fast
-	// path forever, permanently missing that writer's NextUID update (duplicate
-	// UID allocation under concurrent load). The bytes covered by this one stat
-	// are guaranteed to already be in whatever applyLog(0) reads next, since
-	// nothing shrinks a log; if applyLog happens to see more (a write landed
-	// during the read itself), under-reporting fs.logSize here only costs a
-	// redundant (idempotent) re-apply on the next reload, never lost data.
-	if logSt, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
-		logSizeAtRead := logSt.Size()
-		if applyErr := fs.applyLog(0); errors.Is(applyErr, errLogIndexIDMismatch) {
+	// #667: fs.logSize is set from applyLog's OWN return value (the absolute
+	// offset it BOUNDARY-confirmed as applied), never from an external os.Stat
+	// taken before or after the call. A stat taken before the call could be
+	// stale by the time applyLog finishes reading (under-reporting — merely
+	// costs a redundant idempotent re-apply next reload, harmless); a stat
+	// taken after could observe a concurrent writer's append that landed
+	// mid-read and that applyLog itself never actually parsed (over-reporting
+	// — reload()'s fast path would then wrongly trust newLogSize==fs.logSize
+	// forever and permanently miss that writer's update, duplicate-UID class
+	// bug). Trusting only what this call itself verified eliminates both
+	// races at once.
+	if _, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
+		confirmedEnd, applyErr := fs.applyLog(0)
+		if errors.Is(applyErr, errLogIndexIDMismatch) {
 			// Log was written against a different (deleted/recreated) mailbox.
 			// Acquire the distributed lock and reset the log so that concurrent
 			// writers on other pods do not race us while we truncate.
@@ -261,7 +259,7 @@ func (u *userIndex) readBase(fs *folderState) error {
 		} else if applyErr != nil {
 			return fmt.Errorf("fileindex/openfolder: applylog: %w", applyErr)
 		} else {
-			fs.logSize = logSizeAtRead
+			fs.logSize = confirmedEnd
 		}
 	}
 	return nil
@@ -721,7 +719,12 @@ func (fs *folderState) reload() error {
 	// Apply any log entries added since logSize (by another pod or
 	// by our own appends that a concurrent reload must see).
 	if newLogSize > fs.logSize {
-		if err := fs.applyLog(fs.logSize); errors.Is(err, errLogIndexIDMismatch) {
+		// #667: fs.logSize is set from applyLog's own confirmed-applied return
+		// value, not from newLogSize (the pre-call stat) — see readBase's fuller
+		// explanation. If a writer's append landed mid-read, confirmedEnd stops
+		// short of newLogSize; the next reload() naturally re-applies the
+		// remainder instead of this call wrongly claiming it was already seen.
+		if confirmedEnd, err := fs.applyLog(fs.logSize); errors.Is(err, errLogIndexIDMismatch) {
 			// Stale log from a previous mailbox at this path — flush the
 			// current base to disk and reset the log so future reads start clean.
 			slog.Warn("fileindex: discarding log with mismatched IndexID, re-flushing base",
@@ -736,7 +739,7 @@ func (fs *folderState) reload() error {
 		} else if err != nil {
 			return err
 		} else {
-			fs.logSize = newLogSize
+			fs.logSize = confirmedEnd
 		}
 	}
 	fs.ensureVsizeLocked()
@@ -1719,38 +1722,49 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 // applies them to fs.file. Called by reload when the log has grown since
 // the last full base read (cross-pod writes). Caller must hold fs.mu.
 //
+// Returns the absolute file offset applyLog has BOUNDARY-confirmed as fully
+// applied (#667) — never the on-disk file size at any particular stat, before
+// or after the read. This is the only value callers may use to advance
+// fs.logSize: a concurrent writer's append landing mid-read means the true
+// disk size can differ from what this call actually verified and applied in
+// either direction, and only this return value is guaranteed to be a
+// conservative, exact accounting of that. Under-reporting vs. the disk size
+// costs only a redundant (idempotent) re-apply on the next reload; trusting
+// an external stat instead risks fs.logSize claiming bytes this call never
+// parsed, which permanently wedges reload()'s fast path against them.
+//
 // Keywords extension data is NOT updated from log records — that is a
 // known Phase 2.5 limitation; cross-pod keyword visibility requires
 // OptimizeIndex to compact the log into the base file.
-func (fs *folderState) applyLog(fromOffset int64) error {
+func (fs *folderState) applyLog(fromOffset int64) (int64, error) {
 	logPath := fs.indexPath + ".log"
 	f, err := os.Open(logPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return fromOffset, nil
 	}
 	if err != nil {
-		return fmt.Errorf("fileindex/applylog: open: %w", err)
+		return fromOffset, fmt.Errorf("fileindex/applylog: open: %w", err)
 	}
 	defer f.Close()
 
 	lh, hdrErr := mailindex.DecodeLogHeader(f)
 	if hdrErr != nil {
-		return nil // empty or unreadable log
+		return fromOffset, nil // empty or unreadable log
 	}
 	if lh.IndexID != fs.file.Header.IndexID {
 		// Log belongs to a different (deleted/recreated) mailbox at this path.
 		// Discard it; caller will flush a fresh base + empty log.
-		return errLogIndexIDMismatch
+		return fromOffset, errLogIndexIDMismatch
 	}
 	if fromOffset > 0 {
 		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
-			return fmt.Errorf("fileindex/applylog: seek: %w", err)
+			return fromOffset, fmt.Errorf("fileindex/applylog: seek: %w", err)
 		}
 	}
 
 	layout, err := mailindex.ComputeRecordLayout(fs.file.Extensions)
 	if err != nil {
-		return fmt.Errorf("fileindex/applylog: record layout: %w", err)
+		return fromOffset, fmt.Errorf("fileindex/applylog: record layout: %w", err)
 	}
 
 	var maxModseq uint64
@@ -1758,17 +1772,22 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 	hdrBuf := make([]byte, 8)
 	appendedMsgs := false
 
-	// committedEnd tracks the file offset after the last complete BOUNDARY.
-	// Used only during full replay (fromOffset==0) to truncate partial tails.
-	var committedEnd int64
-	var filePos int64 // bytes consumed from f since the seek point
+	// filePos and committedEnd are always ABSOLUTE file offsets (not relative
+	// to fromOffset), so both can be returned/compared directly regardless of
+	// whether this is a full replay or an incremental read. committedEnd
+	// tracks the offset after the last complete BOUNDARY seen during THIS
+	// call — updated on every BOUNDARY, not just on a full replay, so an
+	// incremental read's partial/torn trailing group is also detected and
+	// excluded from the confirmed return value (#667), not just truncated on
+	// the fromOffset==0 path.
+	filePos := fromOffset
 	if fromOffset == 0 {
 		filePos = int64(mailindex.LogHeaderSize)
-		// Start committedEnd at the header so any corrupted record before
-		// the first BOUNDARY causes truncation to a clean stub rather than
-		// leaving the bad bytes in place.
-		committedEnd = int64(mailindex.LogHeaderSize)
 	}
+	// committedEnd starts at filePos: bytes already covered by a previous
+	// confirmed pass (fromOffset>0) or the header (fromOffset==0) are trusted
+	// as a baseline even if this call finds nothing new to confirm.
+	committedEnd := filePos
 
 	for {
 		recStart := filePos
@@ -1777,7 +1796,7 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			break
 		} else if err != nil {
-			return fmt.Errorf("fileindex/applylog: read hdr: %w", err)
+			return committedEnd, fmt.Errorf("fileindex/applylog: read hdr: %w", err)
 		}
 		txHdr, err := mailindex.DecodeTxHeader(hdrBuf)
 		if err != nil {
@@ -1797,7 +1816,7 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 		kind := txHdr.Type.Kind()
 
 		if kind == mailindex.TxTypeBoundary {
-			if fromOffset == 0 && len(payload) >= 4 {
+			if len(payload) >= 4 {
 				committedEnd = recStart + int64(le.Uint32(payload))
 			}
 			continue
@@ -1980,7 +1999,12 @@ func (fs *folderState) applyLog(fromOffset int64) error {
 			"folder", fs.folder, "read_size", filePos, "truncate_to", committedEnd)
 		_ = os.Truncate(logPath, committedEnd)
 	}
-	return nil
+	// Return committedEnd, not filePos: on an incremental read (fromOffset>0)
+	// a torn/partial trailing group is never truncated (a legitimate writer
+	// may still be mid-append at that exact position — see the no-truncate
+	// rationale above), but it must also not be reported as confirmed. The
+	// next reload() naturally retries from this same conservative point.
+	return committedEnd, nil
 }
 
 // flushAppend persists a newly appended record to the log and updates the
