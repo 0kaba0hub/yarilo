@@ -904,6 +904,19 @@ func migrateLegacyFilenames(indexDir string) error {
 			return fmt.Errorf("fileindex/migrate: stat %s: %w", legacyPath, err)
 		}
 		if err := os.Rename(legacyPath, nativePath); err != nil {
+			// #672: a concurrent opener may have already renamed this exact pair
+			// between our two stats above and this call — os.Rename is atomic, so
+			// only one racer's rename actually succeeds, and the loser sees ENOENT
+			// (the legacy path is already gone). Re-check nativePath before
+			// treating this as a real failure: if it now exists, someone else
+			// already completed this migration and there is nothing left to do,
+			// mirroring the double-check pattern from OpenFolder's first-creation
+			// race (#658/#659).
+			if errors.Is(err, os.ErrNotExist) {
+				if _, statErr := os.Stat(nativePath); statErr == nil {
+					continue
+				}
+			}
 			return fmt.Errorf("fileindex/migrate: rename %s → %s: %w", legacyPath, nativePath, err)
 		}
 	}
