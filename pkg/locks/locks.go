@@ -59,6 +59,15 @@ type Locker interface {
 	// Owner field if the resource is already locked.
 	Lock(ctx context.Context, resource, owner string, ttl time.Duration) (Lock, error)
 
+	// LockShared acquires a shared (read) lock on resource for owner (#671).
+	// Multiple owners may hold a shared lock on the same resource at once;
+	// it only blocks against a concurrent exclusive Lock holder, and vice
+	// versa — an exclusive Lock call blocks while any shared lock is held.
+	//
+	// Returns ErrBusy with the current exclusive owner if one is held.
+	// Unlock/Renew work unchanged for a shared lock's ID.
+	LockShared(ctx context.Context, resource, owner string, ttl time.Duration) (Lock, error)
+
 	// Unlock releases a previously acquired lock by ID. Returns ErrNotFound
 	// if the lock has already expired or been released.
 	Unlock(ctx context.Context, lockID string) error
@@ -124,9 +133,17 @@ var (
 // and RedisBackend (Redis Lua SET NX EX) implement it. Server is wire+I/O
 // only — all state lives here.
 type Backend interface {
-	// Acquire attempts to take the lock. Returns the new lock ID on success.
-	// On contention, returns ErrBusy with currentOwner populated.
+	// Acquire attempts to take the exclusive lock. Returns the new lock ID on
+	// success. On contention (an exclusive OR a shared holder already present),
+	// returns ErrBusy with currentOwner populated.
 	Acquire(ctx context.Context, resource, owner string, ttl time.Duration) (lockID string, currentOwner string, err error)
+
+	// AcquireShared attempts to take a shared (read) lock (#671). Multiple
+	// shared holders may coexist on the same resource; it fails with ErrBusy
+	// only when an exclusive lock is currently held. Release/Renew use the
+	// same lock-ID space as Acquire — implementations must track each lock
+	// ID's kind (exclusive/shared) internally so those calls stay symmetric.
+	AcquireShared(ctx context.Context, resource, owner string, ttl time.Duration) (lockID string, currentOwner string, err error)
 
 	// Release deletes the lock. Returns ErrNotFound if the lock does not
 	// exist anymore (expired or already released).

@@ -553,16 +553,19 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 }
 
 // withFolderRO reloads the folder state, then runs read-only fn against the
-// settled in-memory snapshot under a shared lock.
+// settled in-memory snapshot under a shared distributed lock (#671).
 //
-// The reload is serialized against writers via the SAME cross-process lock the
-// write path (withFolderLock) takes (#647): an unlocked reload could interleave
-// with another process's lock-holding compaction (flush + truncateLog) and load
-// a torn view into the shared in-memory folderState — which every subsequent,
-// correctly locked write then trusts as a baseline, regressing the folder's
-// NextUID. The distributed lock is held ONLY around reload(); fn then reads the
-// settled snapshot under fs.mu.RLock without holding the exclusive resource, so
-// concurrent readers do not serialize against each other beyond the reload.
+// The reload is serialized against writers via the same cross-process
+// resource the write path (withFolderLock) takes (#647): an unlocked reload
+// could interleave with another process's lock-holding compaction (flush +
+// truncateLog) and load a torn view into the shared in-memory folderState —
+// which every subsequent, correctly locked write then trusts as a baseline,
+// regressing the folder's NextUID. Since #671, this is a SHARED distributed
+// lock rather than the writer's exclusive one: it still blocks against an
+// in-flight writer (shared and exclusive are mutually exclusive), but
+// concurrent readers no longer serialize against each other. fn then reads
+// the settled snapshot under fs.mu.RLock without holding the distributed
+// resource at all.
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
 	u.mu.Lock()
 	fs, ok := u.open[folderID]
@@ -570,7 +573,7 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	err := u.withDistLock(fs, func() error {
+	err := u.withDistLock(fs, true, func() error {
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
 		return fs.reload(true)
@@ -594,7 +597,7 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 // storage calls that touch the same key) does not deadlock against
 // itself.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
-	return u.withDistLock(fs, func() error {
+	return u.withDistLock(fs, false, func() error {
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
 		t1 := time.Now()
@@ -613,19 +616,29 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 // holds the key (the POP3 QUIT pattern, or withFolderRO nested inside a locked
 // write) runs fn without re-acquiring, so it cannot deadlock against itself.
 // When no locker is wired (tests) fn runs unguarded.
-func (u *userIndex) withDistLock(fs *folderState, fn func() error) error {
+//
+// shared selects a shared (read) lock instead of the default exclusive one
+// (#671) — multiple shared holders may run concurrently, only blocking
+// against an in-flight exclusive writer.
+func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) error {
 	if u.b.locker != nil {
 		key := locks.MailboxKey(u.username, fs.folder)
 		if !u.b.locker.HoldsResource(key) {
 			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 			defer cancel()
 			t0 := time.Now()
-			lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
+			var lk locks.Lock
+			var err error
+			if shared {
+				lk, err = locks.AcquireShared(ctx, u.b.locker, key, u.owner, 30*time.Second)
+			} else {
+				lk, err = locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
+			}
 			if err != nil {
 				return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 			}
 			slog.Debug("fileindex: lock wait",
-				"user", u.username, "folder", fs.folder,
+				"user", u.username, "folder", fs.folder, "shared", shared,
 				"lock_wait_ms", time.Since(t0).Milliseconds())
 			defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
 		}

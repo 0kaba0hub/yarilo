@@ -289,6 +289,45 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 	return Lock{}, fmt.Errorf("locks/client: unexpected response %v: %w", resp, ErrProtocol)
 }
 
+// LockShared implements Locker.
+func (c *Client) LockShared(ctx context.Context, resource, owner string, ttl time.Duration) (Lock, error) {
+	ttlStr, err := formatTTL(ttl)
+	if err != nil {
+		return Lock{}, err
+	}
+	expires := time.Now().Add(ttl)
+	resp, err := c.roundtrip(ctx, cmdLockShared, resource, owner, ttlStr)
+	if err != nil {
+		return Lock{}, err
+	}
+	if len(resp) == 0 {
+		return Lock{}, fmt.Errorf("locks/client: empty lock-shared response: %w", ErrProtocol)
+	}
+	switch resp[0] {
+	case respOK:
+		if len(resp) != 2 {
+			return Lock{}, fmt.Errorf("locks/client: malformed OK response: %w", ErrProtocol)
+		}
+		gid := goID()
+		c.holdsMu.Lock()
+		if c.holds[gid] == nil {
+			c.holds[gid] = make(map[string]string)
+		}
+		c.holds[gid][resource] = resp[1]
+		c.holdsMu.Unlock()
+		return Lock{ID: resp[1], Resource: resource, Owner: owner, ExpiresAt: expires}, nil
+	case respBusy:
+		current := ""
+		if len(resp) > 1 {
+			current = resp[1]
+		}
+		return Lock{Resource: resource, Owner: current}, ErrBusy
+	case respError:
+		return Lock{}, fmt.Errorf("locks/client: server error: %s", strings.Join(resp[1:], " "))
+	}
+	return Lock{}, fmt.Errorf("locks/client: unexpected response %v: %w", resp, ErrProtocol)
+}
+
 // Unlock implements Locker.
 func (c *Client) Unlock(ctx context.Context, lockID string) error {
 	resp, err := c.roundtrip(ctx, cmdUnlock, lockID)
@@ -524,6 +563,38 @@ func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Dur
 			return Lock{}, err
 		}
 		// Jitter by ±25% so concurrent retriers do not synchronise.
+		jitter := time.Duration(int64(backoff) / 4)
+		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
+		select {
+		case <-ctx.Done():
+			return Lock{}, ctx.Err()
+		case <-time.After(wait):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+// AcquireShared is LockShared with blocking semantics: retries on ErrBusy
+// with exponential backoff (1ms → 100ms cap, small jitter) until ctx is
+// cancelled or the shared lock is taken. Mirrors Acquire; use this for
+// read-path callers (#671) that only need to block against an in-flight
+// exclusive writer, not against other concurrent readers.
+func AcquireShared(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
+	backoff := time.Millisecond
+	const maxBackoff = 100 * time.Millisecond
+	for {
+		lock, err := l.LockShared(ctx, resource, owner, ttl)
+		if err == nil {
+			return lock, nil
+		}
+		if !errors.Is(err, ErrBusy) {
+			return Lock{}, err
+		}
 		jitter := time.Duration(int64(backoff) / 4)
 		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
 		select {

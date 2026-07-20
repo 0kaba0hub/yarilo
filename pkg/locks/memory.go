@@ -14,15 +14,16 @@ import (
 // are lost, which is acceptable for standalone where every session process
 // restarts with the pod.
 type MemoryBackend struct {
-	mu       sync.Mutex
-	locks    map[string]*memLock                // by lockID
-	byRes    map[string]string                  // resource → lockID
-	subs     map[string]map[chan Event]struct{} // resource → subscribers
-	counters map[string]int64                   // persistent atomic counters by key
-	sweepInt time.Duration
-	now      func() time.Time
-	stopOnce sync.Once
-	stop     chan struct{}
+	mu        sync.Mutex
+	locks     map[string]*memLock                // by lockID, exclusive AND shared
+	byRes     map[string]string                  // resource → lockID, exclusive holder only
+	sharedRes map[string]map[string]struct{}     // resource → set of shared lockIDs
+	subs      map[string]map[chan Event]struct{} // resource → subscribers
+	counters  map[string]int64                   // persistent atomic counters by key
+	sweepInt  time.Duration
+	now       func() time.Time
+	stopOnce  sync.Once
+	stop      chan struct{}
 }
 
 type memLock struct {
@@ -30,6 +31,7 @@ type memLock struct {
 	Resource  string
 	Owner     string
 	ExpiresAt time.Time
+	Shared    bool
 }
 
 // MemoryBackendOption tunes the backend at construction time.
@@ -53,13 +55,14 @@ func WithNow(now func() time.Time) MemoryBackendOption {
 // subscriber goroutines.
 func NewMemoryBackend(opts ...MemoryBackendOption) *MemoryBackend {
 	b := &MemoryBackend{
-		locks:    make(map[string]*memLock),
-		byRes:    make(map[string]string),
-		subs:     make(map[string]map[chan Event]struct{}),
-		counters: make(map[string]int64),
-		sweepInt: 100 * time.Millisecond,
-		now:      time.Now,
-		stop:     make(chan struct{}),
+		locks:     make(map[string]*memLock),
+		byRes:     make(map[string]string),
+		sharedRes: make(map[string]map[string]struct{}),
+		subs:      make(map[string]map[chan Event]struct{}),
+		counters:  make(map[string]int64),
+		sweepInt:  100 * time.Millisecond,
+		now:       time.Now,
+		stop:      make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -68,8 +71,40 @@ func NewMemoryBackend(opts ...MemoryBackendOption) *MemoryBackend {
 	return b
 }
 
-// Acquire implements Backend.
+// Acquire implements Backend. Fails if the resource has an exclusive
+// holder OR any shared holder — exclusive is exclusive against everyone.
 func (b *MemoryBackend) Acquire(_ context.Context, resource, owner string, ttl time.Duration) (string, string, error) {
+	if resource == "" || owner == "" {
+		return "", "", fmt.Errorf("locks/memory: resource and owner must be non-empty")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.expireLocked()
+	if existing, held := b.byRes[resource]; held {
+		return "", b.locks[existing].Owner, ErrBusy
+	}
+	if shared := b.sharedRes[resource]; len(shared) > 0 {
+		for id := range shared {
+			return "", b.locks[id].Owner, ErrBusy
+		}
+	}
+	id, err := randID()
+	if err != nil {
+		return "", "", fmt.Errorf("locks/memory: generate id: %w", err)
+	}
+	b.locks[id] = &memLock{
+		ID:        id,
+		Resource:  resource,
+		Owner:     owner,
+		ExpiresAt: b.now().Add(ttl),
+	}
+	b.byRes[resource] = id
+	return id, "", nil
+}
+
+// AcquireShared implements Backend. Multiple shared holders may coexist on
+// the same resource; only an exclusive holder blocks it.
+func (b *MemoryBackend) AcquireShared(_ context.Context, resource, owner string, ttl time.Duration) (string, string, error) {
 	if resource == "" || owner == "" {
 		return "", "", fmt.Errorf("locks/memory: resource and owner must be non-empty")
 	}
@@ -88,8 +123,12 @@ func (b *MemoryBackend) Acquire(_ context.Context, resource, owner string, ttl t
 		Resource:  resource,
 		Owner:     owner,
 		ExpiresAt: b.now().Add(ttl),
+		Shared:    true,
 	}
-	b.byRes[resource] = id
+	if b.sharedRes[resource] == nil {
+		b.sharedRes[resource] = make(map[string]struct{})
+	}
+	b.sharedRes[resource][id] = struct{}{}
 	return id, "", nil
 }
 
@@ -103,8 +142,23 @@ func (b *MemoryBackend) Release(_ context.Context, lockID string) error {
 		return ErrNotFound
 	}
 	delete(b.locks, lockID)
-	delete(b.byRes, l.Resource)
+	b.releaseFromIndexLocked(l)
 	return nil
+}
+
+// releaseFromIndexLocked removes l from whichever secondary index
+// (byRes or sharedRes) tracks its kind. Caller holds b.mu.
+func (b *MemoryBackend) releaseFromIndexLocked(l *memLock) {
+	if l.Shared {
+		if set, ok := b.sharedRes[l.Resource]; ok {
+			delete(set, l.ID)
+			if len(set) == 0 {
+				delete(b.sharedRes, l.Resource)
+			}
+		}
+		return
+	}
+	delete(b.byRes, l.Resource)
 }
 
 // Renew implements Backend.
@@ -205,7 +259,7 @@ func (b *MemoryBackend) expireLocked() {
 	for id, l := range b.locks {
 		if !now.Before(l.ExpiresAt) {
 			delete(b.locks, id)
-			delete(b.byRes, l.Resource)
+			b.releaseFromIndexLocked(l)
 		}
 	}
 }

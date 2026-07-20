@@ -32,6 +32,10 @@ func runSuite(t *testing.T, name string, factory lockerFactory) {
 		t.Run("Subscribe", func(t *testing.T) { testSubscribe(t, factory) })
 		t.Run("ResourceKeyOrdering", func(t *testing.T) { testResourceKeys(t, factory) })
 		t.Run("Counter", func(t *testing.T) { testCounter(t, factory) })
+		t.Run("SharedConcurrentReaders", func(t *testing.T) { testSharedConcurrentReaders(t, factory) })
+		t.Run("SharedBlocksExclusive", func(t *testing.T) { testSharedBlocksExclusive(t, factory) })
+		t.Run("ExclusiveBlocksShared", func(t *testing.T) { testExclusiveBlocksShared(t, factory) })
+		t.Run("SharedReleaseUnblocksExclusive", func(t *testing.T) { testSharedReleaseUnblocksExclusive(t, factory) })
 	})
 }
 
@@ -215,6 +219,100 @@ func testCounter(t *testing.T, factory lockerFactory) {
 	if final != expected {
 		t.Errorf("stress final = %d, want %d (lost updates?)", final, expected)
 	}
+}
+
+// testSharedConcurrentReaders (#671) proves multiple shared holders on the
+// same resource coexist — LockShared must not block against another
+// LockShared, only against an exclusive Lock.
+func testSharedConcurrentReaders(t *testing.T, factory lockerFactory) {
+	l, cleanup := factory(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a, err := l.LockShared(ctx, "mbox:eve:INBOX", "reader-A", 5*time.Second)
+	if err != nil {
+		t.Fatalf("shared lock A: %v", err)
+	}
+	defer func() { _ = l.Unlock(context.Background(), a.ID) }()
+	b, err := l.LockShared(ctx, "mbox:eve:INBOX", "reader-B", 5*time.Second)
+	if err != nil {
+		t.Fatalf("shared lock B: %v", err)
+	}
+	defer func() { _ = l.Unlock(context.Background(), b.ID) }()
+	if a.ID == b.ID {
+		t.Fatal("expected distinct lock IDs for concurrent shared holders")
+	}
+}
+
+// testSharedBlocksExclusive proves a live shared holder blocks a concurrent
+// exclusive Lock attempt on the same resource.
+func testSharedBlocksExclusive(t *testing.T, factory lockerFactory) {
+	l, cleanup := factory(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	shared, err := l.LockShared(ctx, "mbox:frank:INBOX", "reader", 5*time.Second)
+	if err != nil {
+		t.Fatalf("shared lock: %v", err)
+	}
+	defer func() { _ = l.Unlock(context.Background(), shared.ID) }()
+	_, err = l.Lock(ctx, "mbox:frank:INBOX", "writer", 5*time.Second)
+	if !errors.Is(err, locks.ErrBusy) {
+		t.Fatalf("expected exclusive Lock to be blocked by a live shared holder, got %v", err)
+	}
+}
+
+// testExclusiveBlocksShared proves a live exclusive holder blocks a
+// concurrent LockShared attempt on the same resource.
+func testExclusiveBlocksShared(t *testing.T, factory lockerFactory) {
+	l, cleanup := factory(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	x, err := l.Lock(ctx, "mbox:grace:INBOX", "writer", 5*time.Second)
+	if err != nil {
+		t.Fatalf("exclusive lock: %v", err)
+	}
+	defer func() { _ = l.Unlock(context.Background(), x.ID) }()
+	_, err = l.LockShared(ctx, "mbox:grace:INBOX", "reader", 5*time.Second)
+	if !errors.Is(err, locks.ErrBusy) {
+		t.Fatalf("expected LockShared to be blocked by a live exclusive holder, got %v", err)
+	}
+}
+
+// testSharedReleaseUnblocksExclusive proves that once every shared holder
+// on a resource releases, a pending exclusive Lock succeeds — the shared
+// index must not leak a stale entry after Unlock.
+func testSharedReleaseUnblocksExclusive(t *testing.T, factory lockerFactory) {
+	l, cleanup := factory(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a, err := l.LockShared(ctx, "mbox:henry:INBOX", "reader-A", 5*time.Second)
+	if err != nil {
+		t.Fatalf("shared lock A: %v", err)
+	}
+	b, err := l.LockShared(ctx, "mbox:henry:INBOX", "reader-B", 5*time.Second)
+	if err != nil {
+		t.Fatalf("shared lock B: %v", err)
+	}
+	if _, err := l.Lock(ctx, "mbox:henry:INBOX", "writer", 5*time.Second); !errors.Is(err, locks.ErrBusy) {
+		t.Fatalf("expected exclusive Lock busy while shared holders live, got %v", err)
+	}
+	if err := l.Unlock(ctx, a.ID); err != nil {
+		t.Fatalf("unlock A: %v", err)
+	}
+	if _, err := l.Lock(ctx, "mbox:henry:INBOX", "writer", 5*time.Second); !errors.Is(err, locks.ErrBusy) {
+		t.Fatalf("expected exclusive Lock still busy with one shared holder remaining, got %v", err)
+	}
+	if err := l.Unlock(ctx, b.ID); err != nil {
+		t.Fatalf("unlock B: %v", err)
+	}
+	x, err := l.Lock(ctx, "mbox:henry:INBOX", "writer", 5*time.Second)
+	if err != nil {
+		t.Fatalf("expected exclusive Lock to succeed once all shared holders released, got %v", err)
+	}
+	_ = l.Unlock(ctx, x.ID)
 }
 
 // --- factories ------------------------------------------------------------

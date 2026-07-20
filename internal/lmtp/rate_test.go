@@ -37,6 +37,9 @@ func (f *fakeLocker) IncrementCounter(_ context.Context, key string, delta int64
 func (f *fakeLocker) Lock(context.Context, string, string, time.Duration) (locks.Lock, error) {
 	panic("not implemented")
 }
+func (f *fakeLocker) LockShared(context.Context, string, string, time.Duration) (locks.Lock, error) {
+	panic("not implemented")
+}
 func (f *fakeLocker) Unlock(context.Context, string) error               { panic("not implemented") }
 func (f *fakeLocker) Renew(context.Context, string, time.Duration) error { panic("not implemented") }
 func (f *fakeLocker) Subscribe(context.Context, string) (<-chan locks.Event, error) {
