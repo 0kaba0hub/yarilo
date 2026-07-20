@@ -55,7 +55,7 @@ func TestApplyLogTruncatesGenuineTornTail(t *testing.T) {
 		fs.mu.Unlock()
 		t.Fatalf("reopen base: %v", err)
 	}
-	applyErr := fs.applyLog(0)
+	_, applyErr := fs.applyLog(0)
 	fs.mu.Unlock()
 	if applyErr != nil {
 		t.Fatalf("applyLog: %v", applyErr)
