@@ -65,7 +65,7 @@ func TestReloadDetectsBaseReplacedUnderSameMtime(t *testing.T) {
 	fsA.mu.Unlock()
 
 	fsA.mu.Lock()
-	if err := fsA.reload(true); err != nil {
+	if err := fsA.reload(); err != nil {
 		fsA.mu.Unlock()
 		t.Fatalf("podA reload: %v", err)
 	}

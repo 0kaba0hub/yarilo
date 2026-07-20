@@ -584,7 +584,7 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	err := u.withDistLock(fs, true, func() error {
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
-		return fs.reload(true)
+		return fs.reload()
 	})
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
