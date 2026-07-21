@@ -1,25 +1,45 @@
 package language
 
-import "strings"
+import (
+	"embed"
+	"fmt"
+	"strings"
+)
 
-// stopwordsEN is the Snowball English stopword list.
-const stopwordsEN = `i me my myself we our ours ourselves you your yours
-yourself yourselves he him his himself she her hers herself it its itself
-they them their theirs themselves what which who whom this that these those
-am is are was were be been being have has had having do does did doing would
-should could ought i'm you're he's she's it's we're they're i've you've
-we've they've i'd you'd he'd she'd we'd they'd i'll you'll he'll she'll
-we'll they'll isn't aren't wasn't weren't hasn't haven't hadn't doesn't
-don't didn't won't wouldn't shan't shouldn't can't cannot couldn't mustn't
-let's that's who's what's here's there's when's where's why's how's a an
-the and but if or because as until while of at by for with about against
-between into through during before after above below to from up down in out
-on off over under again further then once here there when where why how all
-any both each few more most other some such no nor not only own same so
-than too very`
+//go:embed data/stopwords_*.txt
+var stopwordFiles embed.FS
 
-var stopwordLists = map[string]map[string]struct{}{
-	"en": buildStopwords(stopwordsEN),
+// stopwordLists holds one word set per language, built once at package init
+// from the embedded data/stopwords_<lang>.txt files (Snowball project's
+// canonical stopword lists — the same project the snowball stemmers in
+// filter.go come from). Every language filter.go can stem (en/fr/de/it/pt/
+// ru/es) has a matching list here, so configuring any of them with the
+// "stopwords" filter works — see #668 point 3.
+var stopwordLists = mustLoadStopwordLists()
+
+func mustLoadStopwordLists() map[string]map[string]struct{} {
+	entries, err := stopwordFiles.ReadDir("data")
+	if err != nil {
+		panic(fmt.Sprintf("fts/language: read embedded stopwords dir: %v", err))
+	}
+	out := make(map[string]map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		name := entry.Name() // "stopwords_en.txt"
+		lang, ok := strings.CutPrefix(name, "stopwords_")
+		if !ok {
+			continue
+		}
+		lang, ok = strings.CutSuffix(lang, ".txt")
+		if !ok {
+			continue
+		}
+		data, err := stopwordFiles.ReadFile("data/" + name)
+		if err != nil {
+			panic(fmt.Sprintf("fts/language: read embedded %s: %v", name, err))
+		}
+		out[lang] = buildStopwords(string(data))
+	}
+	return out
 }
 
 func buildStopwords(list string) map[string]struct{} {
