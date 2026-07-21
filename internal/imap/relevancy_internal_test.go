@@ -52,6 +52,26 @@ func TestRelevancyScoresNormalization(t *testing.T) {
 			order: []uint32{1, 2, 3},
 			want:  []uint32{1, 1, 100},
 		},
+		{
+			// Review finding: UID 2 has no engine score at all (e.g. matched
+			// only via a stripped non-FTS criterion). A plain map lookup
+			// defaults it to 0.0, which — if it were allowed into the range
+			// calculation — would drag lo down to 0 and compress every real
+			// score toward 100. It must be excluded from lo/hi and floored
+			// to 1 in the output, without altering UID 1/3's genuine scores.
+			name:  "score-less UID excluded from range, floored to 1",
+			raw:   map[uint32]float64{1: 8.0, 3: 10.0}, // UID 2 absent
+			order: []uint32{1, 2, 3},
+			want:  []uint32{1, 1, 100},
+		},
+		{
+			// If EVERY UID lacks a score, there is no range at all — every
+			// output floors to 1 rather than panicking or dividing by zero.
+			name:  "every UID score-less",
+			raw:   map[uint32]float64{},
+			order: []uint32{1, 2, 3},
+			want:  []uint32{1, 1, 1},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

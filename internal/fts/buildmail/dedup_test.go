@@ -2,10 +2,12 @@ package buildmail
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 
+	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 
@@ -176,5 +178,47 @@ func TestDecoderUnsupportedTypeSkips(t *testing.T) {
 		if k.key.Type == fts.KeyBodyPart && k.key.ContentType == "application/pdf" {
 			t.Fatal("decoder declining the content type must not index anything")
 		}
+	}
+}
+
+var errFakeMidRead = fmt.Errorf("fake mid-read failure")
+
+// producePartialThenError simulates a body read that succeeds for the first
+// chunk, then fails genuinely (not the size-cap sentinel) — the scenario a
+// real broken/truncated part reader can hit mid-stream.
+func producePartialThenError(sink func([]byte) error) error {
+	if err := sink([]byte("partial content before failure")); err != nil {
+		return err
+	}
+	return errFakeMidRead
+}
+
+// TestBuildBodyTextPartialReadErrorConsistentAcrossDedup (review finding):
+// a genuine mid-part read error must be tolerated identically whether
+// DedupBodyParts is on or off — both must index the partial text collected
+// before the error, not silently diverge (dedup previously discarded the
+// whole part on any non-cap error, while the non-dedup path always kept
+// whatever had already streamed into the tokenizer).
+func TestBuildBodyTextPartialReadErrorConsistentAcrossDedup(t *testing.T) {
+	for _, dedup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dedup=%v", dedup), func(t *testing.T) {
+			upd := &fakeUpdate{}
+			b := New(Options{DedupBodyParts: dedup}, mustChain(t))
+			set := language.DefaultSettings()
+			chain, err := language.NewChain(set)
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := &buildState{uid: 1, remaining: -1, chain: chain}
+			if dedup {
+				st.seenHashes = make(map[uint64]struct{})
+			}
+			if err := b.buildBodyText(st, "text/plain", producePartialThenError, upd); err != nil {
+				t.Fatalf("buildBodyText: %v", err)
+			}
+			if !hasToken(upd.bodyTokens(), "partial") {
+				t.Fatalf("dedup=%v: partial text before the read error must still be indexed, got %q", dedup, upd.bodyTokens())
+			}
+		})
 	}
 }

@@ -102,30 +102,41 @@ const sampleMaxBytes = 1024
 //
 // Language selection (#668 point 3) needs a text sample BEFORE the real
 // indexing walk starts, since headers are tokenized through the selected
-// chain too — not just body parts. raw is buffered once so it can be parsed
-// twice: a cheap first pass collects a bounded text sample and picks the
-// chain, then a fresh Entity tree (message.Entity bodies are single-use
-// streaming readers) is walked for the actual indexing pass.
+// chain too — not just body parts. That requires parsing the message TWICE
+// (message.Entity bodies are single-use streaming readers, so a second pass
+// needs a fresh Entity tree over buffered bytes), which only actually
+// matters when there is more than one configured language to disambiguate.
+// The (much more common) single-language case skips buffering entirely and
+// streams straight from raw, exactly as before #668 point 3 — a 500MB
+// message must not be fully materialized in memory just because the
+// language package now exists. Multi-language configs do pay the buffering
+// cost (bounded only by the message's own size, not MaxSize — MaxSize caps
+// INDEXED text, not the raw message, and headers past that cap still need
+// parsing), an explicit, disclosed tradeoff of opting into detection.
 func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
-	rawBytes, err := io.ReadAll(raw)
-	if err != nil {
-		return fmt.Errorf("fts/buildmail: read: %w", err)
-	}
-
-	var sample string
-	if b.chain.NeedsDetection() {
-		sample = detectSample(rawBytes)
-	}
-	chain, _ := b.chain.SelectForIndex(sample)
-
-	e, err := message.Read(bytes.NewReader(rawBytes))
-	if err != nil && !message.IsUnknownCharset(err) {
-		return fmt.Errorf("fts/buildmail: parse: %w", err)
-	}
 	remaining := b.opts.MaxSize
 	if remaining <= 0 {
 		remaining = -1 // unlimited
 	}
+
+	var chain *language.Chain
+	var e *message.Entity
+	var err error
+	if b.chain.NeedsDetection() {
+		rawBytes, rerr := io.ReadAll(raw)
+		if rerr != nil {
+			return fmt.Errorf("fts/buildmail: read: %w", rerr)
+		}
+		chain, _ = b.chain.SelectForIndex(detectSample(rawBytes))
+		e, err = message.Read(bytes.NewReader(rawBytes))
+	} else {
+		chain, _ = b.chain.SelectForIndex("")
+		e, err = message.Read(raw)
+	}
+	if err != nil && !message.IsUnknownCharset(err) {
+		return fmt.Errorf("fts/buildmail: parse: %w", err)
+	}
+
 	st := &buildState{uid: uid, remaining: remaining, chain: chain}
 	if b.opts.DedupBodyParts {
 		st.seenHashes = make(map[uint64]struct{})
@@ -361,7 +372,7 @@ func (b *Builder) buildBodyText(st *buildState, contentType string, produce func
 		// below, so a duplicate that gets skipped costs nothing from it.
 		var buf bytes.Buffer
 		limit := st.remaining
-		err := produce(func(p []byte) error {
+		_ = produce(func(p []byte) error {
 			if limit == 0 {
 				return errBodyCap
 			}
@@ -374,10 +385,17 @@ func (b *Builder) buildBodyText(st *buildState, contentType string, produce func
 			buf.Write(p)
 			return nil
 		})
-		if err != nil && err != errBodyCap {
-			return nil // tolerate body read errors mid-part
-		}
+		// A genuine read error mid-part (not just hitting the size cap) is
+		// tolerated the same way the non-dedup branch below tolerates one:
+		// whatever text was collected BEFORE the error still gets hashed and
+		// indexed, rather than discarding the whole part. The two branches
+		// must treat a mid-read failure identically — otherwise the same
+		// message indexes different content purely based on whether
+		// fts_dedup_body_parts is on.
 		text := buf.Bytes()
+		if len(text) == 0 {
+			return nil // nothing readable at all
+		}
 		h := normalizedTextHash(text)
 		if _, dup := st.seenHashes[h]; dup {
 			slog.Debug("fts/buildmail: dedup skipped duplicate body part",
