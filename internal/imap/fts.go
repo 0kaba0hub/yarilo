@@ -53,6 +53,15 @@ type ftsFilter struct {
 	// strippedNeedsBody: the stripped criteria still require the raw
 	// message (sent-date checks).
 	strippedNeedsBody bool
+	// scores holds the engine's native (unnormalized) ranking weight per
+	// UID, when the engine populated fts.Result.Scores (flatcurve does via
+	// the Xapian MSet weight). Nil when the FTS constraint expanded to
+	// nothing indexed (pure-stopword query) or the engine returned none —
+	// callers must fall back to omitting RELEVANCY rather than fabricate a
+	// score. Normalization to the RFC 4731/6203 wire range (min-max, 1-100)
+	// happens once per SEARCH, after the final matched set (FTS ∩ stripped-
+	// criteria ∩ verify) is known — see relevancyScores in server.go.
+	scores map[uint32]float64
 }
 
 // prepareFTSSearch runs the FTS half of a SEARCH. Returns (nil, nil) when
@@ -121,6 +130,12 @@ func (s *session) prepareFTSSearch(criteria *imaplib.SearchCriteria, msgs []*mai
 	for _, uid := range res.Maybe {
 		f.covered[uid] = true
 		f.verify[uid] = true
+	}
+	if len(res.Scores) > 0 {
+		f.scores = make(map[uint32]float64, len(res.Scores))
+		for _, sc := range res.Scores {
+			f.scores[sc.UID] = sc.Value
+		}
 	}
 	// Visibility diagnostic (#625): how many candidates the FTS index returned for
 	// this search, so a "search finds nothing" case shows whether FTS had no hits
@@ -277,4 +292,43 @@ func (s *session) ftsNotify(folderName string, expunged bool, uid uint32) {
 		slog.Debug("imap: fts notify sent",
 			"user", user, "folder", mbox.Name, "uid", uid, "expunged", expunged)
 	}()
+}
+
+// relevancyScores normalizes raw per-UID engine weights to the RFC 4731/6203
+// wire range, in order's enumeration order (one score per matched message,
+// same order as the ESEARCH ALL data item). Verified against the reference
+// implementation's own SEARCH RETURN (RELEVANCY) formula: a plain per-result-
+// set linear min-max scale to integers 1-100 — never 0, floored at 1 — with
+// diff defaulting to 1.0 when every score in the set is equal (avoids a
+// divide-by-zero; a uniform set — every raw score equal to min — then maps
+// to the floor value 1 for every message, since the reference formula has
+// no signal to rank them apart).
+func relevancyScores(raw map[uint32]float64, order []uint32) []uint32 {
+	if len(order) == 0 {
+		return nil
+	}
+	lo, hi := raw[order[0]], raw[order[0]]
+	for _, uid := range order[1:] {
+		v := raw[uid]
+		if v < lo {
+			lo = v
+		}
+		if v > hi {
+			hi = v
+		}
+	}
+	diff := hi - lo
+	if diff == 0 {
+		diff = 1.0
+	}
+	out := make([]uint32, len(order))
+	for i, uid := range order {
+		score := (raw[uid] - lo) / diff * 100
+		if score < 1 {
+			out[i] = 1
+		} else {
+			out[i] = uint32(score)
+		}
+	}
+	return out
 }

@@ -2246,6 +2246,10 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		last       uint32
 		hitCount   uint32
 		highestMod uint64 // CONDSTORE MODSEQ across all matched messages
+		// matchedOrder is every hit's UID in the same ascending enumeration
+		// order as uidHits/seqHits (msgs is already scanned seq-ascending),
+		// used only to build the RELEVANCY list — see relevancyScores below.
+		matchedOrder []uint32
 	)
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
@@ -2291,6 +2295,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 			continue
 		}
 		hitCount++
+		matchedOrder = append(matchedOrder, m.UID)
 		var current uint32
 		if kind == imapserver.NumKindUID {
 			current = m.UID
@@ -2364,6 +2369,16 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	// non-modseq searches against a CONDSTORE-enabled mailbox).
 	if highestMod > 0 {
 		data.ModSeq = highestMod
+	}
+	// RFC 4731/6203 RELEVANCY: only available when FTS actually engaged and
+	// the engine returned scores (Caps.Scoring) — a pure sequential-scan
+	// search, or a query that expanded to nothing indexed (stopwords-only),
+	// has no ranking signal to offer. Per the fork's contract, leaving
+	// data.Relevancy nil simply omits the item from the response rather
+	// than erroring: a client asking for RELEVANCY on an unscored search
+	// still gets its SEARCH results, just without scores.
+	if opts != nil && opts.ReturnRelevancy && ftsF != nil && ftsF.scores != nil {
+		data.Relevancy = relevancyScores(ftsF.scores, matchedOrder)
 	}
 	// SEARCHRES (RFC 5182): RETURN SAVE pins the hit set for later $ refs.
 	// The spec says the saved set is always the UID-typed result; convert

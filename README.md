@@ -125,7 +125,7 @@ The **reactive heal** is retry-bounded per folder per session on the IMAP path: 
 
 ## Full-text search
 
-`SEARCH BODY`, `SEARCH TEXT` and `SEARCH HEADER` are backed by a per-user full-text index instead of a linear message scan.
+`SEARCH BODY`, `SEARCH TEXT` and `SEARCH HEADER` are backed by a per-user full-text index instead of a linear message scan. `SEARCH RETURN (RELEVANCY)` (RFC 4731/6203) surfaces the engine's ranking as scores 1-100, min-max normalized per result set — requires a [`yarilo-patches`](https://github.com/0kaba0hub/go-imap/tree/yarilo-patches) go-imap fork, since upstream has no RELEVANCY support.
 
 | Component | Backend | Status |
 |:---|:---|:---|
