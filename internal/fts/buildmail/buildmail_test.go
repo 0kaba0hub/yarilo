@@ -1,6 +1,7 @@
 package buildmail
 
 import (
+	"io"
 	"strings"
 	"testing"
 
@@ -188,6 +189,46 @@ func TestBodySizeCap(t *testing.T) {
 	}
 	if !hasToken(body, "alpha") {
 		t.Fatalf("capped body should keep leading tokens: %q", body)
+	}
+}
+
+// boundedReader fails the test if more than max bytes are ever read from
+// it — used to prove Build() does not buffer the whole message up front for
+// a single-language config (review finding: an unconditional io.ReadAll
+// would silently defeat MaxSize's memory-bounding purpose for a large
+// message).
+type boundedReader struct {
+	t      *testing.T
+	r      io.Reader
+	max    int64
+	total  int64
+	failed bool
+}
+
+func (b *boundedReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.total += int64(n)
+	if b.total > b.max && !b.failed {
+		b.failed = true
+		b.t.Errorf("read %d bytes, want at most %d — message body was buffered beyond the size cap", b.total, b.max)
+	}
+	return n, err
+}
+
+func TestBuildDoesNotBufferWholeMessageForSingleLanguage(t *testing.T) {
+	const sizeCap = 20
+	hugeBody := strings.Repeat("alpha beta ", 100_000) // ~1.1MB
+	msg := "Subject: cap\r\n\r\n" + hugeBody
+	upd := &fakeUpdate{}
+	// mustChain builds a single-language MultiChain (en only): Build must
+	// take the streaming path, never reading much past the size cap.
+	b := New(Options{MaxSize: sizeCap}, mustChain(t))
+	// Slack accounts for header bytes plus a few internal buffered-reader
+	// chunks (go-message's parser + copyChunks' own 8KiB buffer) — nowhere
+	// near the full ~1.1MB body, which is exactly what this test guards.
+	br := &boundedReader{t: t, r: strings.NewReader(msg), max: 64 * 1024}
+	if err := b.Build(1, br, upd); err != nil {
+		t.Fatal(err)
 	}
 }
 

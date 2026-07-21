@@ -307,19 +307,33 @@ func (s *session) ftsNotify(folderName string, expunged bool, uid uint32) {
 // divide-by-zero; a uniform set — every raw score equal to min — then maps
 // to the floor value 1 for every message, since the reference formula has
 // no signal to rank them apart).
+//
+// order can include UIDs the engine returned no score for (e.g. matched
+// only via a stripped, non-FTS criterion ANDed onto the search) — a plain
+// map lookup would silently default those to 0.0, which then corrupts the
+// whole set's min-max range for every message that DOES have a genuine
+// score (dragging lo down to a fabricated zero, compressing everything
+// else toward the top of the scale). Score-less UIDs are excluded from the
+// lo/hi computation entirely and floored to 1 in the output — "no ranking
+// signal" is not the same claim as "ranked lowest by the engine."
 func relevancyScores(raw map[uint32]float64, order []uint32) []uint32 {
 	if len(order) == 0 {
 		return nil
 	}
-	lo, hi := raw[order[0]], raw[order[0]]
-	for _, uid := range order[1:] {
-		v := raw[uid]
-		if v < lo {
+	var lo, hi float64
+	haveRange := false
+	for _, uid := range order {
+		v, ok := raw[uid]
+		if !ok {
+			continue
+		}
+		if !haveRange || v < lo {
 			lo = v
 		}
-		if v > hi {
+		if !haveRange || v > hi {
 			hi = v
 		}
+		haveRange = true
 	}
 	diff := hi - lo
 	if diff == 0 {
@@ -327,7 +341,12 @@ func relevancyScores(raw map[uint32]float64, order []uint32) []uint32 {
 	}
 	out := make([]uint32, len(order))
 	for i, uid := range order {
-		score := (raw[uid] - lo) / diff * 100
+		v, ok := raw[uid]
+		if !ok || !haveRange {
+			out[i] = 1
+			continue
+		}
+		score := (v - lo) / diff * 100
 		if score < 1 {
 			out[i] = 1
 		} else {
