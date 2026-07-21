@@ -445,7 +445,7 @@ flatcurve engine) or **Bleve** (the follow-up engine stream).
 | Arbitrary-header search | pooled → maybe → re-read all candidates (L3) | per-header fields, definite results | Bleve |
 | Optimize | blocking full compaction (L6) | background segment merging | Bleve |
 | Crash safety | no-fsync → corrupt shard (L9) | append-only segments + snapshots, checkpoint replay | Bleve |
-| Relevancy | raw weights, unused (L7) | normalized BM25 → RELEVANCY | FTS-2 |
+| Relevancy | raw weights, unused (L7) | normalized BM25 → RELEVANCY | FTS-2 ✅ |
 | DB proliferation | dirs × shards per mailbox (L9) | one index per user | Bleve |
 
 Known trade-offs (tracked): single-writer service is a throughput bottleneck
@@ -522,8 +522,12 @@ volume). `appVersion` bump ships with each feature slice.
    config/Helm + `yarilo-admin fts` + tests + **index-size and
    search-latency benchmark** ✅ (acceptance gate — `internal/ftsbench`
    + `app/fts-bench`).
-2. **FTS-2**: relevancy surface (`SEARCH RETURN (RELEVANCY)` / fetch special),
-   `fts_search_strict`, multi-language detection, ICU normalizer option.
+2. **FTS-2**: relevancy surface (`SEARCH RETURN (RELEVANCY)`) ✅ — engine
+   `MSetEntry.Weight` → `fts.Result.Scores` → min-max normalized 1-100 per
+   RFC 4731/6203, parsed/encoded via a `yarilo-patches` fork of go-imap
+   (upstream has no RELEVANCY support at all) + `fts_search_strict` ✅
+   (already wired pre-#668, verified in review) + multi-language detection
+   (not started) + ICU normalizer option (not started).
 3. **FTS-3**: attachment decoders (script / Tika) + attachment text dedup by
    content hash.
 4. **Bleve stream** (separate stream, own issue): Bleve v2/scorch engine —

@@ -292,3 +292,65 @@ func TestSearchFlagsIntersect(t *testing.T) {
 		t.Fatalf("intersect = %v, want [2]", uids)
 	}
 }
+
+// TestSearchRelevancy (#668): SEARCH RETURN (RELEVANCY) surfaces the FTS
+// engine's native scores, min-max normalized to 1-100 in ALL's enumeration
+// order — verified against the reference implementation's own formula.
+func TestSearchRelevancy(t *testing.T) {
+	fake := &fakeFTS{
+		lookup: fts.Result{
+			Definite: []uint32{1, 2, 3},
+			Scores: []fts.Score{
+				{UID: 1, Value: 2.0},  // lowest raw score → floor 1
+				{UID: 2, Value: 6.0},  // midpoint
+				{UID: 3, Value: 10.0}, // highest raw score → 100
+			},
+		},
+		lastUID: 100,
+	}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "relevancy needle one")
+	appendBody(t, c, "relevancy needle two")
+	appendBody(t, c, "relevancy needle three")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := c.UIDSearch(&imap.SearchCriteria{Body: []string{"needle"}},
+		&imap.SearchOptions{ReturnAll: true, ReturnRelevancy: true}).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	uids := data.AllUIDs()
+	if len(uids) != 3 {
+		t.Fatalf("SEARCH hits = %v, want 3 UIDs", uids)
+	}
+	want := []uint32{1, 50, 100}
+	if len(data.Relevancy) != 3 {
+		t.Fatalf("Relevancy = %v, want len 3", data.Relevancy)
+	}
+	for i, w := range want {
+		if data.Relevancy[i] != w {
+			t.Errorf("Relevancy[%d] (uid %d) = %d, want %d", i, uids[i], data.Relevancy[i], w)
+		}
+	}
+}
+
+// TestSearchNoRelevancyWithoutScores: a search that never engaged FTS
+// scoring (sequential-scan fallback) must omit RELEVANCY entirely rather
+// than fabricate scores.
+func TestSearchNoRelevancyWithoutScores(t *testing.T) {
+	fake := &fakeFTS{lookupErr: fmt.Errorf("boom"), lastUID: 100}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "resilient content")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := c.UIDSearch(&imap.SearchCriteria{Body: []string{"resilient"}},
+		&imap.SearchOptions{ReturnAll: true, ReturnRelevancy: true}).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Relevancy) != 0 {
+		t.Errorf("Relevancy = %v, want empty (fallback scan has no scores)", data.Relevancy)
+	}
+}
