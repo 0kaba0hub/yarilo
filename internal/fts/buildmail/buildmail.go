@@ -9,6 +9,7 @@ package buildmail
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -97,22 +98,29 @@ type buildState struct {
 // whole message a second time.
 const sampleMaxBytes = 1024
 
+// detectionPrefixCap bounds how many raw bytes Build reads up front to
+// derive a language-detection sample when multiple languages are
+// configured (#695). The prefix is stitched back onto the rest of the
+// stream via io.MultiReader before the real (single) parse pass, so
+// indexing still sees the whole message — but at most this many bytes are
+// ever held in memory at once, regardless of the message's actual size.
+const detectionPrefixCap = 8192
+
 // Build parses raw and streams the message's indexable parts into upd.
 // The caller owns the update session (commit/rollback).
 //
 // Language selection (#668 point 3) needs a text sample BEFORE the real
 // indexing walk starts, since headers are tokenized through the selected
-// chain too — not just body parts. That requires parsing the message TWICE
-// (message.Entity bodies are single-use streaming readers, so a second pass
-// needs a fresh Entity tree over buffered bytes), which only actually
-// matters when there is more than one configured language to disambiguate.
-// The (much more common) single-language case skips buffering entirely and
-// streams straight from raw, exactly as before #668 point 3 — a 500MB
-// message must not be fully materialized in memory just because the
-// language package now exists. Multi-language configs do pay the buffering
-// cost (bounded only by the message's own size, not MaxSize — MaxSize caps
-// INDEXED text, not the raw message, and headers past that cap still need
-// parsing), an explicit, disclosed tradeoff of opting into detection.
+// chain too — not just body parts. Rather than buffering the whole message
+// to get that sample (#695 — a 500MB message must not be fully
+// materialized just to pick a stemmer), only a bounded prefix
+// (detectionPrefixCap) is read and sampled; a truncated/unparseable prefix
+// simply yields an empty sample, which SelectForIndex already treats as
+// "insufficient data" and falls back to the first configured language —
+// the same outcome as genuinely short text. The prefix is then reattached
+// to the remaining stream for a single real parse + indexing walk. The
+// (much more common) single-language case skips even this bounded read —
+// detection never runs at all, so there is nothing to sample.
 func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 	remaining := b.opts.MaxSize
 	if remaining <= 0 {
@@ -120,19 +128,19 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 	}
 
 	var chain *language.Chain
-	var e *message.Entity
-	var err error
+	reader := raw
 	if b.chain.NeedsDetection() {
-		rawBytes, rerr := io.ReadAll(raw)
-		if rerr != nil {
-			return fmt.Errorf("fts/buildmail: read: %w", rerr)
+		prefix, err := readPrefix(raw, detectionPrefixCap)
+		if err != nil {
+			return fmt.Errorf("fts/buildmail: read: %w", err)
 		}
-		chain, _ = b.chain.SelectForIndex(detectSample(rawBytes))
-		e, err = message.Read(bytes.NewReader(rawBytes))
+		chain, _ = b.chain.SelectForIndex(detectSample(prefix))
+		reader = io.MultiReader(bytes.NewReader(prefix), raw)
 	} else {
 		chain, _ = b.chain.SelectForIndex("")
-		e, err = message.Read(raw)
 	}
+
+	e, err := message.Read(reader)
 	if err != nil && !message.IsUnknownCharset(err) {
 		return fmt.Errorf("fts/buildmail: parse: %w", err)
 	}
@@ -142,6 +150,20 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 		st.seenHashes = make(map[uint64]struct{})
 	}
 	return b.walkEntity(st, e, 0, upd)
+}
+
+// readPrefix reads up to n bytes from r, tolerating a short read at EOF
+// (a message shorter than n bytes is not an error — it just means the
+// entire message became the detection sample). r's read position advances
+// past whatever was consumed; the caller reattaches the remainder via
+// io.MultiReader rather than "unreading" it.
+func readPrefix(r io.Reader, n int) ([]byte, error) {
+	buf := make([]byte, n)
+	read, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buf[:read], nil
 }
 
 // detectSample extracts a bounded, representative text excerpt for language

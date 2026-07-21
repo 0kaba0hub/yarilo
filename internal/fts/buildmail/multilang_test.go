@@ -84,3 +84,30 @@ func TestBuildBothLanguagesIndexCorrectly(t *testing.T) {
 		t.Fatalf("English message not indexed under English (missing 'fox'): %q", tokens)
 	}
 }
+
+// TestBuildMultiLanguageDoesNotBufferWholeMessage (#695): even when
+// detection is needed (multiple configured languages), Build must only
+// buffer a bounded prefix (detectionPrefixCap) for the sample — never the
+// whole message — and must still correctly select the language from that
+// bounded prefix and index the rest via streaming.
+func TestBuildMultiLanguageDoesNotBufferWholeMessage(t *testing.T) {
+	hugePadding := strings.Repeat("x", 2_000_000) // ~2MB, far past detectionPrefixCap
+	msg := germanMsg + hugePadding + "\r\n"
+	upd := &fakeUpdate{}
+	chain := mustMultiChain(t, "en", "de")
+	// A small MaxSize makes the indexing pass itself stop early too (same
+	// cap mechanism TestBuildDoesNotBufferWholeMessageForSingleLanguage
+	// relies on) — isolating this test to what it actually checks: that
+	// DETECTION doesn't buffer the whole message, not just that indexing
+	// eventually stops reading once its own size cap is hit.
+	b := New(Options{MaxSize: 100}, chain)
+
+	br := &boundedReader{t: t, r: strings.NewReader(msg), max: detectionPrefixCap + 64*1024}
+	if err := b.Build(1, br, upd); err != nil {
+		t.Fatal(err)
+	}
+	tokens := upd.bodyTokens()
+	if !hasToken(tokens, "fuch") {
+		t.Fatalf("German message not correctly detected/indexed from a bounded prefix: %q", tokens)
+	}
+}
