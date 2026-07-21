@@ -65,10 +65,7 @@ func main() {
 
 	locker := buildLocker(cfg)
 	resolver := backend.BuildResolver(cfg)
-	chain, err := language.NewChain(language.Settings{
-		Language: firstOr(fc.Languages, "en"),
-		Filters:  fc.LanguageFilters,
-	})
+	chain, err := language.NewMultiChain(languagesOr(fc.Languages, "en"), fc.LanguageFilters, 0, 0)
 	if err != nil {
 		slog.Error("language chain init failed", "err", err)
 		os.Exit(1)
@@ -228,11 +225,13 @@ func buildLocker(cfg *config.Config) locks.Locker {
 	return l
 }
 
-func firstOr(xs []string, def string) string {
+// languagesOr returns xs unchanged when non-empty, or a single-element
+// fallback slice — MultiChain always needs at least one language.
+func languagesOr(xs []string, def string) []string {
 	if len(xs) > 0 {
-		return xs[0]
+		return xs
 	}
-	return def
+	return []string{def}
 }
 
 func logLevel() slog.Level {

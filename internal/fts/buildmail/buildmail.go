@@ -46,15 +46,17 @@ type Options struct {
 	DedupBodyParts bool
 }
 
-// Builder streams messages into an fts.Update through one language chain.
+// Builder streams messages into an fts.Update through a language chain,
+// selected per message (#668 point 3: exactly one auto-detected language at
+// index time, never redundant per-language re-stemming — see MultiChain).
 type Builder struct {
 	opts  Options
-	chain *language.Chain
+	chain *language.MultiChain
 }
 
-// New returns a Builder. The chain is required: the first engine is
-// tokenized, so every part streams through the tokenizer + filters.
-func New(opts Options, chain *language.Chain) *Builder {
+// New returns a Builder. chain is required: the first engine is tokenized,
+// so every part streams through the tokenizer + filters.
+func New(opts Options, chain *language.MultiChain) *Builder {
 	return &Builder{opts: opts, chain: chain}
 }
 
@@ -79,19 +81,44 @@ func (b *Builder) headerIndexable(name string) bool {
 }
 
 // buildState carries per-message state through the MIME walk: the UID being
-// indexed, the remaining body-size budget, and (when DedupBodyParts is on)
-// the set of already-seen normalized body-text hashes for THIS message only
-// — cross-message dedup is out of scope, see Options.DedupBodyParts.
+// indexed, the remaining body-size budget, the language chain selected for
+// THIS message (#668 point 3), and (when DedupBodyParts is on) the set of
+// already-seen normalized body-text hashes for THIS message only —
+// cross-message dedup is out of scope, see Options.DedupBodyParts.
 type buildState struct {
 	uid        uint32
 	remaining  int64
+	chain      *language.Chain
 	seenHashes map[uint64]struct{}
 }
 
+// sampleMaxBytes bounds how much decoded text detectSample collects before
+// stopping — enough for reliable language detection without buffering the
+// whole message a second time.
+const sampleMaxBytes = 1024
+
 // Build parses raw and streams the message's indexable parts into upd.
 // The caller owns the update session (commit/rollback).
+//
+// Language selection (#668 point 3) needs a text sample BEFORE the real
+// indexing walk starts, since headers are tokenized through the selected
+// chain too — not just body parts. raw is buffered once so it can be parsed
+// twice: a cheap first pass collects a bounded text sample and picks the
+// chain, then a fresh Entity tree (message.Entity bodies are single-use
+// streaming readers) is walked for the actual indexing pass.
 func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
-	e, err := message.Read(raw)
+	rawBytes, err := io.ReadAll(raw)
+	if err != nil {
+		return fmt.Errorf("fts/buildmail: read: %w", err)
+	}
+
+	var sample string
+	if b.chain.NeedsDetection() {
+		sample = detectSample(rawBytes)
+	}
+	chain, _ := b.chain.SelectForIndex(sample)
+
+	e, err := message.Read(bytes.NewReader(rawBytes))
 	if err != nil && !message.IsUnknownCharset(err) {
 		return fmt.Errorf("fts/buildmail: parse: %w", err)
 	}
@@ -99,15 +126,84 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 	if remaining <= 0 {
 		remaining = -1 // unlimited
 	}
-	st := &buildState{uid: uid, remaining: remaining}
+	st := &buildState{uid: uid, remaining: remaining, chain: chain}
 	if b.opts.DedupBodyParts {
 		st.seenHashes = make(map[uint64]struct{})
 	}
 	return b.walkEntity(st, e, 0, upd)
 }
 
+// detectSample extracts a bounded, representative text excerpt for language
+// detection: the Subject header plus the start of the first text body part
+// encountered (text/plain preferred as-is; text/html tag-stripped). Parse
+// errors are tolerated — an empty/partial sample just means detectLanguage
+// falls back to the first configured language, the same outcome as
+// genuinely insufficient text.
+func detectSample(rawBytes []byte) string {
+	e, err := message.Read(bytes.NewReader(rawBytes))
+	if err != nil && !message.IsUnknownCharset(err) {
+		return ""
+	}
+	var buf bytes.Buffer
+	if subj, err := e.Header.Text("Subject"); err == nil {
+		buf.WriteString(subj)
+		buf.WriteByte(' ')
+	}
+	sampleTextBody(e, &buf)
+	return buf.String()
+}
+
+// sampleTextBody walks the MIME tree collecting decoded text into buf, up
+// to sampleMaxBytes, stopping as soon as the cap is reached.
+func sampleTextBody(e *message.Entity, buf *bytes.Buffer) {
+	if buf.Len() >= sampleMaxBytes {
+		return
+	}
+	mediaType, _, err := e.Header.ContentType()
+	if err != nil || mediaType == "" {
+		mediaType = "text/plain"
+	}
+	switch {
+	case strings.HasPrefix(mediaType, "multipart/"):
+		mr := e.MultipartReader()
+		if mr == nil {
+			return
+		}
+		for buf.Len() < sampleMaxBytes {
+			part, err := mr.NextPart()
+			if err != nil {
+				return
+			}
+			sampleTextBody(part, buf)
+		}
+	case strings.HasPrefix(mediaType, "message/"):
+		nested, err := message.Read(e.Body)
+		if err != nil && !message.IsUnknownCharset(err) {
+			return
+		}
+		sampleTextBody(nested, buf)
+	case strings.HasPrefix(mediaType, "text/"):
+		sink := func(p []byte) error {
+			remaining := sampleMaxBytes - buf.Len()
+			if remaining <= 0 {
+				return errBodyCap
+			}
+			if len(p) > remaining {
+				p = p[:remaining]
+			}
+			buf.Write(p)
+			return nil
+		}
+		if mediaType == "text/html" {
+			_ = htmlToText(e.Body, sink)
+		} else {
+			_ = copyChunks(e.Body, sink)
+		}
+	}
+}
+
 func (b *Builder) walkEntity(st *buildState, e *message.Entity, depth int, upd fts.Update) error {
-	if err := b.buildHeaders(st.uid, e, depth, upd); err != nil {
+	if err := b.buildHeaders(st, e, depth, upd); err != nil {
 		return err
 	}
 
@@ -148,7 +244,7 @@ func (b *Builder) walkEntity(st *buildState, e *message.Entity, depth int, upd f
 	}
 }
 
-func (b *Builder) buildHeaders(uid uint32, e *message.Entity, depth int, upd fts.Update) error {
+func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd fts.Update) error {
 	keyType := fts.KeyHeader
 	if depth > 0 {
 		keyType = fts.KeyMIMEHeader
@@ -167,7 +263,7 @@ func (b *Builder) buildHeaders(uid uint32, e *message.Entity, depth int, upd fts
 			continue
 		}
 		accept, err := upd.SetBuildKey(fts.BuildKey{
-			UID:     uid,
+			UID:     st.uid,
 			Type:    keyType,
 			HdrName: strings.ToLower(name),
 		})
@@ -179,7 +275,7 @@ func (b *Builder) buildHeaders(uid uint32, e *message.Entity, depth int, upd fts
 		}
 		// A fresh session per field: tokenizer state must not leak between
 		// fields (the reference resets the tokenizer per build key).
-		session := b.chain.NewIndexSession(func(tok string) error {
+		session := st.chain.NewIndexSession(func(tok string) error {
 			return upd.BuildMore([]byte(tok))
 		})
 		if err := session.Write([]byte(value)); err != nil {
@@ -304,7 +400,7 @@ func (b *Builder) buildBodyText(st *buildState, contentType string, produce func
 			return nil
 		}
 		text = capBytes(text)
-		session := b.chain.NewIndexSession(func(tok string) error {
+		session := st.chain.NewIndexSession(func(tok string) error {
 			return upd.BuildMore([]byte(tok))
 		})
 		if werr := session.Write(text); werr != nil {
@@ -325,7 +421,7 @@ func (b *Builder) buildBodyText(st *buildState, contentType string, produce func
 	if !accept {
 		return nil
 	}
-	session := b.chain.NewIndexSession(func(tok string) error {
+	session := st.chain.NewIndexSession(func(tok string) error {
 		return upd.BuildMore([]byte(tok))
 	})
 	sinkErr := produce(func(p []byte) error {

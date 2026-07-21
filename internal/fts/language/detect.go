@@ -1,0 +1,57 @@
+package language
+
+import "github.com/abadojack/whatlanggo"
+
+// minDetectSample is the minimum sample length (in runes) below which
+// detection is considered unreliable, mirroring the reference implementation's
+// SHORT/UNKNOWN fallback (per-message language detection falls back to the
+// first configured language when there isn't enough text to classify).
+// whatlanggo's own trigram model needs a comparable amount of text to
+// produce a stable result; below this we don't even bother calling it.
+const minDetectSample = 10
+
+// detectLanguage restricts detection to candidates (mirroring the reference
+// implementation's language_match_lists — Norwegian bokmål/nynorsk etc. both
+// collapse to their base ISO 639-1 code the same way). Returns ok=false when
+// the sample is too short or the result isn't reliable enough to trust —
+// callers must fall back to the first configured language, never guess.
+func detectLanguage(sample string, candidates []string) (lang string, ok bool) {
+	if len([]rune(sample)) < minDetectSample {
+		return "", false
+	}
+	whitelist := make(map[whatlanggo.Lang]bool, len(candidates))
+	for _, c := range candidates {
+		if wl, found := isoToWhatlang[c]; found {
+			whitelist[wl] = true
+		}
+	}
+	if len(whitelist) == 0 {
+		return "", false
+	}
+	info := whatlanggo.DetectWithOptions(sample, whatlanggo.Options{Whitelist: whitelist})
+	if !info.IsReliable() {
+		return "", false
+	}
+	code := info.Lang.Iso6391()
+	for _, c := range candidates {
+		if c == code {
+			return code, true
+		}
+	}
+	return "", false
+}
+
+// isoToWhatlang maps the ISO 639-1 codes this package's snowball filters
+// support (filter.go) to whatlanggo's Lang enum. Detection is only ever
+// restricted to (and can only ever return) a language this package can
+// actually stem — there is no point detecting a language with no filter
+// chain to apply.
+var isoToWhatlang = map[string]whatlanggo.Lang{
+	"en": whatlanggo.Eng,
+	"fr": whatlanggo.Fra,
+	"de": whatlanggo.Deu,
+	"it": whatlanggo.Ita,
+	"pt": whatlanggo.Por,
+	"ru": whatlanggo.Rus,
+	"es": whatlanggo.Spa,
+}

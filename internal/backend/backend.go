@@ -1150,7 +1150,7 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 // buildFTS wires the session-side FTS client (docs/FTS.md §11). Sessions
 // only ever talk to the yarilo-fts service over the wire — remote mode; the
 // embedded mode is for the service's own tests/CLI.
-func buildFTS(cfg *config.Config) (ftsproto.Client, *language.Chain, error) {
+func buildFTS(cfg *config.Config) (ftsproto.Client, *language.MultiChain, error) {
 	fc := cfg.FTS
 	if !fc.Enabled {
 		return nil, nil, nil
@@ -1161,21 +1161,22 @@ func buildFTS(cfg *config.Config) (ftsproto.Client, *language.Chain, error) {
 	if fc.Addr == "" {
 		return nil, nil, fmt.Errorf("fts.fts_addr is required in remote mode")
 	}
-	chain, err := language.NewChain(language.Settings{
-		Language: firstLang(fc.Languages),
-		Filters:  fc.LanguageFilters,
-	})
+	chain, err := language.NewMultiChain(languagesOrDefault(fc.Languages), fc.LanguageFilters, 0, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fts language chain: %w", err)
 	}
 	return ftsproto.NewLazy(fc.Addr, 10*time.Second), chain, nil
 }
 
-func firstLang(xs []string) string {
+// languagesOrDefault mirrors app/yarilo-fts/main.go's languagesOr: MultiChain
+// always needs at least one language, and the session side's configured set
+// must match the yarilo-fts service's set exactly for query expansion to
+// cover what indexing could have picked.
+func languagesOrDefault(xs []string) []string {
 	if len(xs) > 0 {
-		return xs[0]
+		return xs
 	}
-	return "en"
+	return []string{"en"}
 }
 
 func buildPassdbs(entries []config.PassdbEntry) ([]protocol.Passdb, error) {

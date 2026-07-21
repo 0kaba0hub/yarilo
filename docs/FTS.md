@@ -527,7 +527,19 @@ volume). `appVersion` bump ships with each feature slice.
    RFC 4731/6203, parsed/encoded via a `yarilo-patches` fork of go-imap
    (upstream has no RELEVANCY support at all) + `fts_search_strict` ✅
    (already wired pre-#668, verified in review) + multi-language detection
-   (not started) + ICU normalizer option (not started).
+   ✅ — deliberately ASYMMETRIC design verified against the reference
+   implementation: indexing auto-detects exactly ONE language per message
+   (`internal/fts/language.MultiChain.SelectForIndex`, falling back to the
+   first configured `languages` entry on short/ambiguous text), while
+   search expands every query token through EVERY configured language's
+   stemmer, OR'd together as extra `fts.Word` variants
+   (`MultiChain.ExpandSearch`) — "enough for one of them to match" without
+   knowing which language a given message was detected as. Detection via
+   `github.com/abadojack/whatlanggo`, restricted to the configured
+   `languages` set. Stopword lists (Snowball project) added for all 7
+   stemmed languages (en/fr/de/it/pt/ru/es — previously only `en` had one,
+   which would have hard-errored any other language's `stopwords` filter).
+   ICU normalizer option (not started).
 3. **FTS-3**: attachment decoders (script / Tika) + attachment text dedup by
    content hash.
 4. **Bleve stream** (separate stream, own issue): Bleve v2/scorch engine —

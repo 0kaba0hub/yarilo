@@ -78,7 +78,8 @@ func Run(cfg Config) (Report, error) {
 		metas = append(metas, meta)
 	}
 
-	chain, err := language.NewChain(language.DefaultSettings())
+	set := language.DefaultSettings()
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen)
 	if err != nil {
 		return Report{}, fmt.Errorf("ftsbench: language chain: %w", err)
 	}

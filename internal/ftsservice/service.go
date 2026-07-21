@@ -26,7 +26,7 @@ type Options struct {
 	Index   mailbox.IndexBackend
 	// ResolveUser maps a username to its storage identity (userdb).
 	ResolveUser func(username string) (*mailbox.UserInfo, error)
-	Chain       *language.Chain
+	Chain       *language.MultiChain
 	Build       buildmail.Options
 	// CommitLimit batches engine commits during an index walk (default 500).
 	CommitLimit int

@@ -18,9 +18,13 @@ import (
 // FTS entirely — SEARCH keeps the sequential scan.
 type FTSOptions struct {
 	Client ftsproto.Client
-	// Chain must match the yarilo-fts service's language settings so query
-	// expansion tokenizes exactly like indexing did.
-	Chain *language.Chain
+	// Chain must match the yarilo-fts service's configured language SET
+	// (order-independent) so query expansion covers exactly the languages
+	// indexing could have picked. #668 point 3: query expansion is
+	// deliberately asymmetric from indexing — it fans out through every
+	// configured language, OR'd together, since a query doesn't know which
+	// single language a given message was auto-detected as.
+	Chain *language.MultiChain
 	// AddMissing / ReadFallback / Timeout / Strict — see docs/FTS.md §11.
 	AddMissing   string
 	ReadFallback bool
