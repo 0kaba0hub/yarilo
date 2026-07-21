@@ -18,6 +18,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/backend"
 	"github.com/0kaba0hub/yarilo/internal/fts/buildmail"
+	"github.com/0kaba0hub/yarilo/internal/fts/decoder"
 	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	"github.com/0kaba0hub/yarilo/internal/ftsservice"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
@@ -56,6 +57,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	attDecoder, err := decoder.New(fc)
+	if err != nil {
+		slog.Error("attachment decoder init failed", "err", err)
+		os.Exit(1)
+	}
+
 	locker := buildLocker(cfg)
 	resolver := backend.BuildResolver(cfg)
 	chain, err := language.NewChain(language.Settings{
@@ -80,6 +87,8 @@ func main() {
 			HeaderIncludes: fc.HeaderIncludes,
 			HeaderExcludes: fc.HeaderExcludes,
 			MaxSize:        fc.MessageMaxSize,
+			Decoder:        attDecoder,
+			DedupBodyParts: fc.DedupBodyParts,
 		},
 		CommitLimit: fc.CommitLimit,
 		LockMailbox: lockMailbox(locker),

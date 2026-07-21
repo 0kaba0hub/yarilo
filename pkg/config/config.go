@@ -807,6 +807,37 @@ type FTSConfig struct {
 	FlatcurveRotateCount     int  `koanf:"fts_flatcurve_rotate_count"`
 	FlatcurveRotateTimeMsecs int  `koanf:"fts_flatcurve_rotate_time"`
 	FlatcurveSubstringSearch bool `koanf:"fts_flatcurve_substring_search"`
+
+	// DecoderDriver selects the external attachment-text-extraction backend:
+	// "none" (default — attachments stay unindexed beyond HTML/text parts),
+	// "script" (a yarilo-owned line protocol over DecoderScriptAddr), or
+	// "tika" (HTTP to an Apache Tika server at DecoderTikaURL). See #669.
+	DecoderDriver string `koanf:"fts_decoder_driver"`
+	// DecoderScriptAddr accepts "unix:///path/to.sock" (standalone/embedded,
+	// a co-located decoder process) or "host:port" (k8s/backend, the decoder
+	// runs as its own Deployment/Service) — mirrors pkg/locks' embedded-vs-
+	// remote Dialer split, since a bare socket path doesn't fit a topology
+	// where the decoder isn't co-located with yarilo-fts.
+	DecoderScriptAddr string `koanf:"fts_decoder_script_addr"`
+	// DecoderTikaURL is the base URL of an Apache Tika server, e.g.
+	// "http://tika.yarilo-sb.svc.cluster.local:9998".
+	DecoderTikaURL string `koanf:"fts_decoder_tika_url"`
+	// DecoderMaxSize caps the attachment bytes sent to the decoder per part
+	// (0 = unlimited). Independent of MessageMaxSize, which caps indexed text
+	// AFTER decoding.
+	DecoderMaxSize int64 `koanf:"fts_decoder_max_size"`
+	// DecoderTimeoutSecs bounds a single decode call.
+	DecoderTimeoutSecs int `koanf:"fts_decoder_timeout_secs"`
+
+	// DedupBodyParts skips re-tokenizing a body part whose normalized text
+	// content was already indexed for the SAME message (multipart/alternative
+	// text+html twins, a quoted block repeated within one body). Opt-in:
+	// default false, since the reference implementation has no equivalent and
+	// some operators may not want the extra per-part hashing. Cross-message
+	// dedup is out of scope — it cannot be done without breaking per-message
+	// search correctness (a term's posting list must include every message
+	// that actually contains it). See #669.
+	DedupBodyParts bool `koanf:"fts_dedup_body_parts"`
 }
 
 // LocksServiceConfig configures the standalone yarilo-locks process.
@@ -1514,6 +1545,9 @@ func Load(path string) (*Config, error) {
 			FlatcurveOptimizeLimit:   10,
 			FlatcurveRotateCount:     5000,
 			FlatcurveRotateTimeMsecs: 5000,
+
+			DecoderDriver:      "none",
+			DecoderTimeoutSecs: 30,
 		},
 		SASLLogin: SASLLoginConfig{
 			Listen:         ":12325",

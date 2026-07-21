@@ -146,6 +146,8 @@ Messages are indexed **write-through at delivery** (the body is already in memor
 
 Search stays sub-millisecond as the mailbox grows; the linear scan it replaces grows with message count. See `docs/FTS.md` for the full design and the phased roadmap (relevancy / strict-substring / multi-language, then attachment decoders).
 
+**Attachment text extraction** (`fts_decoder_driver`, opt-in, default `none`): no built-in PDF/office parsing — extraction is delegated to an external `script` decoder (a TAB-delimited line protocol over `fts_decoder_script_addr`, either `unix:///path.sock` for a co-located process or `host:port` for a standalone Deployment/Service) or an Apache Tika server (`fts_decoder_tika_url`). HTML parts are always tag-stripped in-process, independent of the decoder. **Within-message dedup** (`fts_dedup_body_parts`, opt-in, default `false`) skips re-tokenizing a body part whose normalized text was already indexed for the same message — `multipart/alternative` text+html twins, or a quoted block repeated within one body — without buffering or hashing on the default fast path when disabled. Cross-message dedup is out of scope: it cannot be done without breaking per-message search correctness.
+
 ---
 
 ## Cluster components

@@ -1380,6 +1380,17 @@ fts:
   fts_flatcurve_rotate_count: 5000
   fts_flatcurve_rotate_time: 5000
   fts_flatcurve_substring_search: false
+  ## Attachment text extraction (#669): no built-in PDF/office parsing —
+  ## delegates to an external decoder, opt-in per driver.
+  fts_decoder_driver: none           # none | script | tika
+  fts_decoder_script_addr: ""        # "unix:///path/to.sock" or "host:port"
+  fts_decoder_tika_url: ""           # e.g. "http://tika:9998"
+  fts_decoder_max_size: 0            # attachment bytes sent to decoder, 0=unlimited
+  fts_decoder_timeout_secs: 30
+  ## Skip re-tokenizing a body part whose normalized text was already
+  ## indexed for the SAME message (multipart/alternative text+html twins,
+  ## a repeated quoted block). Opt-in — some operators may not want this.
+  fts_dedup_body_parts: false
 
 quota:
   enabled: false

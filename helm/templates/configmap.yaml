@@ -409,6 +409,12 @@ data:
       fts_flatcurve_rotate_count: {{ $.Values.fts.fts_flatcurve_rotate_count }}
       fts_flatcurve_rotate_time: {{ $.Values.fts.fts_flatcurve_rotate_time }}
       fts_flatcurve_substring_search: {{ $.Values.fts.fts_flatcurve_substring_search }}
+      fts_decoder_driver: {{ $.Values.fts.fts_decoder_driver | quote }}
+      fts_decoder_script_addr: {{ $.Values.fts.fts_decoder_script_addr | quote }}
+      fts_decoder_tika_url: {{ $.Values.fts.fts_decoder_tika_url | quote }}
+      fts_decoder_max_size: {{ $.Values.fts.fts_decoder_max_size }}
+      fts_decoder_timeout_secs: {{ $.Values.fts.fts_decoder_timeout_secs }}
+      fts_dedup_body_parts: {{ $.Values.fts.fts_dedup_body_parts }}
     {{- end }}
     {{- with .Values.quota }}
     quota:

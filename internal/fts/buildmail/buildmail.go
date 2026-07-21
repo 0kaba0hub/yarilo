@@ -1,11 +1,14 @@
 // Package buildmail turns a raw RFC 5322 message into the FTS build-key
 // stream. It walks the MIME
 // structure, emits KeyHeader / KeyMIMEHeader for indexable header fields and
-// KeyBodyPart for decoded text parts (HTML converted to text), skips
-// multipart containers and binary parts, and caps the indexed body size.
+// KeyBodyPart for decoded text parts (HTML converted to text, other
+// attachment types routed through an optional external decoder), skips
+// multipart containers, and caps the indexed body size.
 package buildmail
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset"
 
+	"github.com/0kaba0hub/yarilo/internal/fts/decoder"
 	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
@@ -27,6 +31,18 @@ type Options struct {
 	// MaxSize caps the total body bytes fed to the index per message
 	// (fts_message_max_size). 0 = unlimited.
 	MaxSize int64
+
+	// Decoder extracts text from non-text/HTML attachment parts (PDF,
+	// office documents, etc.). Nil = attachments beyond text/HTML stay
+	// unindexed (fts_decoder_driver=none, the default). See #669.
+	Decoder decoder.Decoder
+
+	// DedupBodyParts skips re-tokenizing a body part whose normalized text
+	// content was already indexed for the SAME message — multipart/alternative
+	// text+html twins, or a quoted block repeated within one body. Opt-in
+	// (fts_dedup_body_parts, default false): the extra per-part hashing and
+	// buffering is skipped entirely on the default fast path. See #669.
+	DedupBodyParts bool
 }
 
 // Builder streams messages into an fts.Update through one language chain.
@@ -61,6 +77,16 @@ func (b *Builder) headerIndexable(name string) bool {
 	return !matchHeaderList(name, b.opts.HeaderExcludes)
 }
 
+// buildState carries per-message state through the MIME walk: the UID being
+// indexed, the remaining body-size budget, and (when DedupBodyParts is on)
+// the set of already-seen normalized body-text hashes for THIS message only
+// — cross-message dedup is out of scope, see Options.DedupBodyParts.
+type buildState struct {
+	uid        uint32
+	remaining  int64
+	seenHashes map[uint64]struct{}
+}
+
 // Build parses raw and streams the message's indexable parts into upd.
 // The caller owns the update session (commit/rollback).
 func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
@@ -72,11 +98,15 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 	if remaining <= 0 {
 		remaining = -1 // unlimited
 	}
-	return b.walkEntity(uid, e, 0, &remaining, upd)
+	st := &buildState{uid: uid, remaining: remaining}
+	if b.opts.DedupBodyParts {
+		st.seenHashes = make(map[uint64]struct{})
+	}
+	return b.walkEntity(st, e, 0, upd)
 }
 
-func (b *Builder) walkEntity(uid uint32, e *message.Entity, depth int, remaining *int64, upd fts.Update) error {
-	if err := b.buildHeaders(uid, e, depth, upd); err != nil {
+func (b *Builder) walkEntity(st *buildState, e *message.Entity, depth int, upd fts.Update) error {
+	if err := b.buildHeaders(st.uid, e, depth, upd); err != nil {
 		return err
 	}
 
@@ -100,7 +130,7 @@ func (b *Builder) walkEntity(uid uint32, e *message.Entity, depth int, remaining
 				// was readable.
 				return nil
 			}
-			if err := b.walkEntity(uid, part, depth+1, remaining, upd); err != nil {
+			if err := b.walkEntity(st, part, depth+1, upd); err != nil {
 				return err
 			}
 		}
@@ -109,13 +139,11 @@ func (b *Builder) walkEntity(uid uint32, e *message.Entity, depth int, remaining
 		if err != nil && !message.IsUnknownCharset(err) {
 			return nil
 		}
-		return b.walkEntity(uid, nested, depth+1, remaining, upd)
+		return b.walkEntity(st, nested, depth+1, upd)
 	case strings.HasPrefix(mediaType, "text/"):
-		return b.buildTextBody(uid, e, mediaType, remaining, upd)
+		return b.buildTextBody(st, e, mediaType, upd)
 	default:
-		// Binary parts are skipped until the decoder phase (KeyBodyPartBinary
-		// is only for engines that opt into raw binary).
-		return nil
+		return b.buildDecodedAttachment(st, e, mediaType, upd)
 	}
 }
 
@@ -163,14 +191,123 @@ func (b *Builder) buildHeaders(uid uint32, e *message.Entity, depth int, upd fts
 	return nil
 }
 
-func (b *Builder) buildTextBody(uid uint32, e *message.Entity, mediaType string, remaining *int64, upd fts.Update) error {
-	if *remaining == 0 {
+func (b *Builder) buildTextBody(st *buildState, e *message.Entity, mediaType string, upd fts.Update) error {
+	produce := func(sink func([]byte) error) error {
+		if mediaType == "text/html" {
+			return htmlToText(e.Body, sink)
+		}
+		return copyChunks(e.Body, sink)
+	}
+	return b.buildBodyText(st, mediaType, produce, upd)
+}
+
+// buildDecodedAttachment routes a non-text/HTML part through the configured
+// external decoder (nil Decoder = attachment stays unindexed, unchanged
+// behaviour from before #669). A decoder returning ok=false (unsupported
+// content type/extension) is treated the same as no decoder: skip silently.
+func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, mediaType string, upd fts.Update) error {
+	if b.opts.Decoder == nil {
 		return nil
 	}
+	if st.remaining == 0 {
+		return nil
+	}
+	_, dispParams, _ := e.Header.ContentDisposition()
+	filename := dispParams["filename"]
+
+	text, ok, err := b.opts.Decoder.Decode(context.Background(), mediaType, filename, e.Body)
+	if err != nil || !ok || len(text) == 0 {
+		// A decode failure must not abort the whole message: index what was
+		// otherwise readable and move on, matching the tolerant-of-broken-
+		// parts behaviour used throughout this walk.
+		return nil
+	}
+	produce := func(sink func([]byte) error) error { return sink(text) }
+	return b.buildBodyText(st, mediaType, produce, upd)
+}
+
+// buildBodyText is the shared tail for both text/HTML parts and decoded
+// attachment text: applies the size cap, optionally dedups against this
+// message's already-seen normalized text, and tokenizes into upd.
+//
+// DedupBodyParts is opt-in specifically because it changes the hot path:
+// disabled (default), text streams directly into the tokenizer exactly as
+// before #669 — zero extra buffering, zero extra allocation. Enabled, the
+// part's text must be fully buffered first (bounded by MaxSize) so its
+// normalized hash can be computed and compared before deciding to tokenize.
+func (b *Builder) buildBodyText(st *buildState, contentType string, produce func(sink func([]byte) error) error, upd fts.Update) error {
+	if st.remaining == 0 {
+		return nil
+	}
+
+	capBytes := func(p []byte) []byte {
+		if st.remaining > 0 && int64(len(p)) > st.remaining {
+			p = p[:st.remaining]
+		}
+		if st.remaining > 0 {
+			st.remaining -= int64(len(p))
+		}
+		return p
+	}
+
+	if b.opts.DedupBodyParts {
+		// Buffer and hash BEFORE calling SetBuildKey: a duplicate must never
+		// declare a key at all, only decide-and-discard after reading the
+		// content. The read is bounded by st.remaining as an upper bound (via
+		// a local copy, not yet deducted) purely to cap memory use — the
+		// budget itself is only actually spent once we commit to indexing
+		// below, so a duplicate that gets skipped costs nothing from it.
+		var buf bytes.Buffer
+		limit := st.remaining
+		err := produce(func(p []byte) error {
+			if limit == 0 {
+				return errBodyCap
+			}
+			if limit > 0 && int64(len(p)) > limit {
+				p = p[:limit]
+			}
+			if limit > 0 {
+				limit -= int64(len(p))
+			}
+			buf.Write(p)
+			return nil
+		})
+		if err != nil && err != errBodyCap {
+			return nil // tolerate body read errors mid-part
+		}
+		text := buf.Bytes()
+		h := normalizedTextHash(text)
+		if _, dup := st.seenHashes[h]; dup {
+			return nil // duplicate content already indexed for this message
+		}
+		st.seenHashes[h] = struct{}{}
+
+		accept, err := upd.SetBuildKey(fts.BuildKey{
+			UID:         st.uid,
+			Type:        fts.KeyBodyPart,
+			ContentType: contentType,
+		})
+		if err != nil {
+			return err
+		}
+		if !accept {
+			return nil
+		}
+		text = capBytes(text)
+		session := b.chain.NewIndexSession(func(tok string) error {
+			return upd.BuildMore([]byte(tok))
+		})
+		if werr := session.Write(text); werr != nil {
+			_ = session.Close()
+			return werr
+		}
+		return session.Close()
+	}
+
 	accept, err := upd.SetBuildKey(fts.BuildKey{
-		UID:         uid,
+		UID:         st.uid,
 		Type:        fts.KeyBodyPart,
-		ContentType: mediaType,
+		ContentType: contentType,
 	})
 	if err != nil {
 		return err
@@ -181,26 +318,13 @@ func (b *Builder) buildTextBody(uid uint32, e *message.Entity, mediaType string,
 	session := b.chain.NewIndexSession(func(tok string) error {
 		return upd.BuildMore([]byte(tok))
 	})
-	sink := func(p []byte) error {
-		if *remaining == 0 {
+	sinkErr := produce(func(p []byte) error {
+		if st.remaining == 0 {
 			return errBodyCap
 		}
-		if *remaining > 0 && int64(len(p)) > *remaining {
-			p = p[:*remaining]
-		}
-		if *remaining > 0 {
-			*remaining -= int64(len(p))
-		}
-		return session.Write(p)
-	}
-
-	if mediaType == "text/html" {
-		err = htmlToText(e.Body, sink)
-	} else {
-		err = copyChunks(e.Body, sink)
-	}
-	if err != nil && err != errBodyCap {
-		// Tolerate body read errors mid-part: keep what was indexed.
+		return session.Write(capBytes(p))
+	})
+	if sinkErr != nil && sinkErr != errBodyCap {
 		_ = session.Close()
 		return nil
 	}
