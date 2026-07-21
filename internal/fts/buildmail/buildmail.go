@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"github.com/emersion/go-message"
@@ -220,8 +221,13 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 		// A decode failure must not abort the whole message: index what was
 		// otherwise readable and move on, matching the tolerant-of-broken-
 		// parts behaviour used throughout this walk.
+		slog.Debug("fts/buildmail: decoder skipped attachment",
+			"uid", st.uid, "content_type", mediaType, "filename", filename,
+			"ok", ok, "err", err)
 		return nil
 	}
+	slog.Debug("fts/buildmail: decoder extracted attachment text",
+		"uid", st.uid, "content_type", mediaType, "filename", filename, "text_len", len(text))
 	produce := func(sink func([]byte) error) error { return sink(text) }
 	return b.buildBodyText(st, mediaType, produce, upd)
 }
@@ -278,9 +284,13 @@ func (b *Builder) buildBodyText(st *buildState, contentType string, produce func
 		text := buf.Bytes()
 		h := normalizedTextHash(text)
 		if _, dup := st.seenHashes[h]; dup {
+			slog.Debug("fts/buildmail: dedup skipped duplicate body part",
+				"uid", st.uid, "content_type", contentType, "text_len", len(text))
 			return nil // duplicate content already indexed for this message
 		}
 		st.seenHashes[h] = struct{}{}
+		slog.Debug("fts/buildmail: dedup indexing new body part",
+			"uid", st.uid, "content_type", contentType, "text_len", len(text))
 
 		accept, err := upd.SetBuildKey(fts.BuildKey{
 			UID:         st.uid,
