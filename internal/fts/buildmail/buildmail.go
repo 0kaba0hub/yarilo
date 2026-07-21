@@ -112,7 +112,11 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 		return fmt.Errorf("fts/buildmail: read: %w", err)
 	}
 
-	chain, _ := b.chain.SelectForIndex(detectSample(rawBytes))
+	var sample string
+	if b.chain.NeedsDetection() {
+		sample = detectSample(rawBytes)
+	}
+	chain, _ := b.chain.SelectForIndex(sample)
 
 	e, err := message.Read(bytes.NewReader(rawBytes))
 	if err != nil && !message.IsUnknownCharset(err) {

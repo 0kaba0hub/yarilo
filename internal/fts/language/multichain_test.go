@@ -147,3 +147,20 @@ func TestMultiChainSettingsChecksum(t *testing.T) {
 		t.Error("identical language sets must produce identical checksums")
 	}
 }
+
+func TestMultiChainNeedsDetection(t *testing.T) {
+	single, err := NewMultiChain([]string{"en"}, []string{"lowercase", "snowball", "stopwords"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if single.NeedsDetection() {
+		t.Error("a single configured language must not need detection — callers should skip sampling entirely")
+	}
+	multi, err := NewMultiChain([]string{"en", "de"}, []string{"lowercase", "snowball", "stopwords"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !multi.NeedsDetection() {
+		t.Error("multiple configured languages must need detection")
+	}
+}

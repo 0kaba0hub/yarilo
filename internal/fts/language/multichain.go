@@ -52,6 +52,15 @@ func NewMultiChain(languages []string, filters []string, tokenMaxLen, addressMax
 	return m, nil
 }
 
+// NeedsDetection reports whether SelectForIndex would actually use its
+// sample argument — false when only one language is configured, so callers
+// can skip collecting a sample entirely (detectSample in buildmail does a
+// full extra MIME-walk pass; not worth paying for when the result is
+// always discarded).
+func (m *MultiChain) NeedsDetection() bool {
+	return len(m.chains) > 1
+}
+
 // SelectForIndex picks the single chain a message's index tokens go
 // through. sample should be a representative excerpt of the message (e.g.
 // subject + the start of the body) — enough text for reliable detection,
