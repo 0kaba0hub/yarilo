@@ -1161,7 +1161,7 @@ func buildFTS(cfg *config.Config) (ftsproto.Client, *language.MultiChain, error)
 	if fc.Addr == "" {
 		return nil, nil, fmt.Errorf("fts.fts_addr is required in remote mode")
 	}
-	chain, err := language.NewMultiChain(languagesOrDefault(fc.Languages), fc.LanguageFilters, 0, 0)
+	chain, err := language.NewMultiChain(languagesOrDefault(fc.Languages), fc.LanguageFilters, 0, 0, fc.DetectionMinRunes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fts language chain: %w", err)
 	}

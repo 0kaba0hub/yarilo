@@ -65,7 +65,7 @@ func main() {
 
 	locker := buildLocker(cfg)
 	resolver := backend.BuildResolver(cfg)
-	chain, err := language.NewMultiChain(languagesOr(fc.Languages, "en"), fc.LanguageFilters, 0, 0)
+	chain, err := language.NewMultiChain(languagesOr(fc.Languages, "en"), fc.LanguageFilters, 0, 0, fc.DetectionMinRunes)
 	if err != nil {
 		slog.Error("language chain init failed", "err", err)
 		os.Exit(1)
@@ -81,11 +81,12 @@ func main() {
 		ResolveUser: userResolver(fc.AuthMasterAddr, resolver),
 		Chain:       chain,
 		Build: buildmail.Options{
-			HeaderIncludes: fc.HeaderIncludes,
-			HeaderExcludes: fc.HeaderExcludes,
-			MaxSize:        fc.MessageMaxSize,
-			Decoder:        attDecoder,
-			DedupBodyParts: fc.DedupBodyParts,
+			HeaderIncludes:       fc.HeaderIncludes,
+			HeaderExcludes:       fc.HeaderExcludes,
+			MaxSize:              fc.MessageMaxSize,
+			Decoder:              attDecoder,
+			DedupBodyParts:       fc.DedupBodyParts,
+			DetectionSampleBytes: fc.DetectionSampleBytes,
 		},
 		CommitLimit: fc.CommitLimit,
 		LockMailbox: lockMailbox(locker),

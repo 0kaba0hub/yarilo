@@ -1374,6 +1374,12 @@ fts:
   fts_search_strict: false
   languages: [en]
   language_filters: [lowercase, snowball, stopwords]
+  ## Per-part language detection (#696): how much of each body/attachment
+  ## part's own text is sampled to pick its stemmer, and how much text is
+  ## required before trusting the result. 0 = package defaults. Only
+  ## matters when 2+ languages are configured above.
+  fts_detection_sample_bytes: 0
+  fts_detection_min_runes: 0
   fts_flatcurve_commit_limit: 500
   fts_flatcurve_min_term_size: 2
   fts_flatcurve_optimize_limit: 10

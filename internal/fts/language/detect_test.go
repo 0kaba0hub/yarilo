@@ -35,7 +35,7 @@ func TestDetectLanguage(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lang, ok := detectLanguage(tc.sample, tc.candidates)
+			lang, ok := detectLanguage(tc.sample, tc.candidates, 0)
 			if ok != tc.wantOK {
 				t.Fatalf("detectLanguage() ok = %v, want %v (lang=%q)", ok, tc.wantOK, lang)
 			}

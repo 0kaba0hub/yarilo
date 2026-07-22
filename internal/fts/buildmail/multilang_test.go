@@ -9,7 +9,7 @@ import (
 
 func mustMultiChain(t *testing.T, languages ...string) *language.MultiChain {
 	t.Helper()
-	c, err := language.NewMultiChain(languages, []string{"lowercase", "snowball", "stopwords"}, 0, 0)
+	c, err := language.NewMultiChain(languages, []string{"lowercase", "snowball", "stopwords"}, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,11 +26,11 @@ const germanMsg = "Subject: wetterbericht\r\n" +
 	"\r\n" +
 	"Der schnelle braune Fuchs springt ueber den faulen Hund waehrend die Sonne hell ueber die gruene Wiese scheint heute Morgen.\r\n"
 
-// TestBuildSelectsLanguagePerMessage (#668 point 3) proves detection
+// TestBuildSelectsLanguagePerMessage (#668 point 3, #696) proves detection
 // actually drives indexing: the German message's "Fuchs" (fox) survives
 // German stemming/stopwords, and its English translation "fox" — which
 // WOULD have been stemmed under the English chain — must NOT appear, since
-// this message was indexed under German, not English.
+// this message's one body part was indexed under German, not English.
 func TestBuildSelectsLanguagePerMessage(t *testing.T) {
 	chain := mustMultiChain(t, "en", "de")
 	b := New(Options{}, chain)
@@ -85,24 +85,25 @@ func TestBuildBothLanguagesIndexCorrectly(t *testing.T) {
 	}
 }
 
-// TestBuildMultiLanguageDoesNotBufferWholeMessage (#695): even when
-// detection is needed (multiple configured languages), Build must only
-// buffer a bounded prefix (detectionPrefixCap) for the sample — never the
-// whole message — and must still correctly select the language from that
+// TestBuildMultiLanguageDoesNotBufferWholeMessage (#695, generalized to
+// per-part by #696): even when detection is needed (multiple configured
+// languages), the body part's own detection must only buffer a bounded
+// prefix (defaultDetectionSampleBytes, plus one retry growth step) — never
+// the whole part — and must still correctly select the language from that
 // bounded prefix and index the rest via streaming.
 func TestBuildMultiLanguageDoesNotBufferWholeMessage(t *testing.T) {
-	hugePadding := strings.Repeat("x", 2_000_000) // ~2MB, far past detectionPrefixCap
+	hugePadding := strings.Repeat("x", 2_000_000) // ~2MB, far past the sample cap
 	msg := germanMsg + hugePadding + "\r\n"
 	upd := &fakeUpdate{}
 	chain := mustMultiChain(t, "en", "de")
 	// A small MaxSize makes the indexing pass itself stop early too (same
 	// cap mechanism TestBuildDoesNotBufferWholeMessageForSingleLanguage
 	// relies on) — isolating this test to what it actually checks: that
-	// DETECTION doesn't buffer the whole message, not just that indexing
+	// DETECTION doesn't buffer the whole part, not just that indexing
 	// eventually stops reading once its own size cap is hit.
 	b := New(Options{MaxSize: 100}, chain)
 
-	br := &boundedReader{t: t, r: strings.NewReader(msg), max: detectionPrefixCap + 64*1024}
+	br := &boundedReader{t: t, r: strings.NewReader(msg), max: int64(defaultDetectionSampleBytes*detectionRetryFactor) + 64*1024}
 	if err := b.Build(1, br, upd); err != nil {
 		t.Fatal(err)
 	}

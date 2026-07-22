@@ -488,7 +488,9 @@ fts:
 
   ## Language chain.
   language_filters: [lowercase, snowball, stopwords]   # default ON
-  languages: [en]                   # >1 enables per-body detection (later phase)
+  languages: [en]                   # >1 enables per-part detection (#696)
+  fts_detection_sample_bytes: 0     # 0 = default 1024; bytes sampled per part
+  fts_detection_min_runes: 0        # 0 = default 10; reliability threshold
 
   ## Decoder (Phase 3).
   fts_decoder_driver: ""            # "" | script | tika
@@ -528,18 +530,29 @@ volume). `appVersion` bump ships with each feature slice.
    (upstream has no RELEVANCY support at all) + `fts_search_strict` ✅
    (already wired pre-#668, verified in review) + multi-language detection
    ✅ — deliberately ASYMMETRIC design verified against the reference
-   implementation: indexing auto-detects exactly ONE language per message
-   (`internal/fts/language.MultiChain.SelectForIndex`, falling back to the
-   first configured `languages` entry on short/ambiguous text), while
-   search expands every query token through EVERY configured language's
-   stemmer, OR'd together as extra `fts.Word` variants
-   (`MultiChain.ExpandSearch`) — "enough for one of them to match" without
-   knowing which language a given message was detected as. Detection via
-   `github.com/abadojack/whatlanggo`, restricted to the configured
-   `languages` set. Stopword lists (Snowball project) added for all 7
-   stemmed languages (en/fr/de/it/pt/ru/es — previously only `en` had one,
-   which would have hard-errored any other language's `stopwords` filter).
-   ICU normalizer option (not started).
+   implementation: indexing auto-detects one language per body/attachment
+   PART (`internal/fts/language.MultiChain.SelectForIndex`, called per part
+   by `buildmail`, falling back to the first configured `languages` entry
+   on a short/ambiguous sample after one bounded retry with a larger
+   sample), while search expands every query token through EVERY
+   configured language's stemmer, OR'd together as extra `fts.Word`
+   variants (`MultiChain.ExpandSearch`) — "enough for one of them to
+   match" without knowing which language a given part was detected as.
+   Detection via `github.com/abadojack/whatlanggo`, restricted to the
+   configured `languages` set. Stopword lists (Snowball project) added for
+   all 7 stemmed languages (en/fr/de/it/pt/ru/es — previously only `en` had
+   one, which would have hard-errored any other language's `stopwords`
+   filter). Header values (addresses, message-ids, subjects) are indexed
+   through a dedicated no-stemming "data" chain — lowercase only, never a
+   detected language — since search already matches them via the raw
+   query-token variant `ExpandSearch` always includes (#696, refining the
+   original per-message design from #668 point 3: per-part detection so a
+   quoted reply or attachment in a different language from the rest of the
+   message indexes correctly, plus tunable `fts_detection_sample_bytes` /
+   `fts_detection_min_runes`). This changes indexed tokens vs. the original
+   per-message design, so `detectionAlgoVersion` is mixed into
+   `MultiChain.SettingsChecksum()` to force existing mailboxes through the
+   settings-drift rebuild path. ICU normalizer option (not started).
 3. **FTS-3**: attachment decoders (script / Tika) + attachment text dedup by
    content hash.
 4. **Bleve stream** (separate stream, own issue): Bleve v2/scorch engine —

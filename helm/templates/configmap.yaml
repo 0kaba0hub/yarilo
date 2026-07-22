@@ -403,6 +403,8 @@ data:
       fts_search_strict: {{ $.Values.fts.fts_search_strict }}
       languages: {{ $.Values.fts.languages | toJson }}
       language_filters: {{ $.Values.fts.language_filters | toJson }}
+      fts_detection_sample_bytes: {{ $.Values.fts.fts_detection_sample_bytes }}
+      fts_detection_min_runes: {{ $.Values.fts.fts_detection_min_runes }}
       fts_flatcurve_commit_limit: {{ $.Values.fts.fts_flatcurve_commit_limit }}
       fts_flatcurve_min_term_size: {{ $.Values.fts.fts_flatcurve_min_term_size }}
       fts_flatcurve_optimize_limit: {{ $.Values.fts.fts_flatcurve_optimize_limit }}

@@ -28,7 +28,7 @@ func newTestService(t *testing.T) (*Service, mailbox.UserMailbox, mailbox.UserIn
 	mb := maildir.New()
 	idx := file.New()
 	set := language.DefaultSettings()
-	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen)
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

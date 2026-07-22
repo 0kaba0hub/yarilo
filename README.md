@@ -150,6 +150,8 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 
 **Attachment text extraction** (`fts_decoder_driver`, opt-in, default `none`): no built-in PDF/office parsing — extraction is delegated to an external `script` decoder (a TAB-delimited line protocol over `fts_decoder_script_addr`, either `unix:///path.sock` for a co-located process or `host:port` for a standalone Deployment/Service) or an Apache Tika server (`fts_decoder_tika_url`). HTML parts are always tag-stripped in-process, independent of the decoder. **Within-message dedup** (`fts_dedup_body_parts`, opt-in, default `false`) skips re-tokenizing a body part whose normalized text was already indexed for the same message — `multipart/alternative` text+html twins, or a quoted block repeated within one body — without buffering or hashing on the default fast path when disabled. Cross-message dedup is out of scope: it cannot be done without breaking per-message search correctness.
 
+**Per-part language detection** (`languages`, 2+ entries): each body/attachment part picks its own stemmer from its own text — a German reply quoted inside an English thread, or a French PDF attached to an English message, indexes correctly under its own language instead of the whole message's. Header values (addresses, message-ids, subjects) are never stemmed — they're tokenized and lowercased only, since search already matches them via the raw query-token variant. `fts_detection_sample_bytes` (default 1024) and `fts_detection_min_runes` (default 10) tune how much of a part is sampled and how much text is required before trusting the detector, growing the sample once before falling back to the first configured language.
+
 ---
 
 ## Cluster components

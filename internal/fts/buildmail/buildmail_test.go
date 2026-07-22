@@ -58,7 +58,7 @@ func (f *fakeUpdate) bodyTokens() []string {
 func mustChain(t *testing.T) *language.MultiChain {
 	t.Helper()
 	set := language.DefaultSettings()
-	c, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen)
+	c, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +108,11 @@ func TestBuildMultipart(t *testing.T) {
 	if subj == nil || subj.key.UID != 7 {
 		t.Fatalf("missing subject header key: %+v", upd.keys)
 	}
-	if !hasToken(subj.tokens, "quarter") || !hasToken(subj.tokens, "plan") {
-		t.Fatalf("subject tokens = %q, want stemmed quarter/plan", subj.tokens)
+	// Headers go through dataChain (#696 point 2): lowercase only, never
+	// stemmed — "Quarterly Planning" indexes as-is, not the snowball stems
+	// "quarter"/"plan" the body's own text gets.
+	if !hasToken(subj.tokens, "quarterly") || !hasToken(subj.tokens, "planning") {
+		t.Fatalf("subject tokens = %q, want unstemmed quarterly/planning", subj.tokens)
 	}
 	from := upd.find(fts.KeyHeader, "from")
 	if from == nil || !hasToken(from.tokens, "alice@example.com") {
