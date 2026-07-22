@@ -141,6 +141,11 @@ components:
       rapidRounds: 10
       rapidFailsNeeded: 7
 
+      ## Seconds from BACKEND-FLUSH (drain start) to BACKEND-DOWN (full ring
+      ## removal). Supported by the monitor but previously not rendered
+      ## (#748 item 4).
+      drainTimeout: 60
+
       ## Per-tag monitoring credentials.
       ## The tag is the same label used on backends, users, and storage.
       ## The "" key covers untagged backends.

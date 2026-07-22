@@ -61,13 +61,11 @@ data:
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       lmtp:
-        {{- if .Values.components.director.enabled }}
-        enabled: {{ .Values.components.director.listeners.lmtp.enabled }}
-        port: {{ .Values.components.director.listeners.lmtp.containerPort }}
-        {{- else }}
+        ## Always the lmtp/lmtp-login pods' listener (#748 item 1): the
+        ## director's embedded LMTP proxy has its own key
+        ## (director_service.lmtp_listen) and must never repurpose this block.
         enabled: {{ .Values.components.lmtp.listeners.lmtp.enabled }}
         port: {{ .Values.components.lmtp.listeners.lmtp.containerPort }}
-        {{- end }}
         ssl_mode: "no"
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
@@ -733,7 +731,12 @@ data:
           tag: {{ .tag | quote }}
         {{- end }}
       {{- end }}
+      {{- if .Values.components.director.listeners.lmtp.enabled }}
+      lmtp_listen: {{ printf ":%d" (int .Values.components.director.listeners.lmtp.containerPort) | quote }}
+      {{- end }}
       {{- with .Values.components.director.peers }}
+      ## Static seed override (non-k8s). In-cluster, runtime ring membership
+      ## discovers peers via the -director ClusterIP seed — see #750.
       peers:
         {{- range . }}
         - {{ . | quote }}

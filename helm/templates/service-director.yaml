@@ -1,10 +1,12 @@
 {{- if .Values.components.director.enabled }}
 {{- if .Values.components.director.listeners.lmtp.enabled }}
-## LoadBalancer — LMTP (incoming mail delivery from MX)
+## LoadBalancer — LMTP (incoming mail delivery from MX). Named -director-lmtp
+## (#748 item 3): the plain -director name is the stable ClusterIP login pods
+## dial for LOOKUP, and must not depend on the LMTP listener toggle.
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "yarilo.fullname" . }}-director
+  name: {{ include "yarilo.fullname" . }}-director-lmtp
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
@@ -26,7 +28,29 @@ spec:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
 {{- end }}
 ---
-## ClusterIP — internal director protocol (ring management between directors)
+## Stable ClusterIP — director LOOKUP endpoint for login pods (#748 item 3).
+## This is the address components.*.director_addr should use:
+##   <release>-director:{{ .Values.components.director.directorPort }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-director
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: director
+      port: {{ .Values.components.director.directorPort }}
+      targetPort: director
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
+---
+## Headless — StatefulSet per-pod DNS for peer ring-sync (#748 item 2):
+## <sts-pod>.<release>-director-ring.<ns>.svc resolves only through a
+## headless governing Service.
 apiVersion: v1
 kind: Service
 metadata:
@@ -35,7 +59,8 @@ metadata:
   labels:
     {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
 spec:
-  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
   ports:
     - name: director
       port: {{ .Values.components.director.directorPort }}
