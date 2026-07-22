@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) apiUserMove(w http.ResponseWriter, r *http.Request) {
-	user := r.PathValue("user")
+	user := s.normalizeUser(r.PathValue("user"))
 	var req struct {
 		Backend string `json:"backend"` // "ip:port"
 		IP      string `json:"ip"`
@@ -45,7 +45,7 @@ func (s *Server) apiUserMove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiUserKick(w http.ResponseWriter, r *http.Request) {
-	user := r.PathValue("user")
+	user := s.normalizeUser(r.PathValue("user"))
 	s.broadcast(fmt.Sprintf("USER-KICKED\t%s", user), nil)
 	slog.Info("director API: user kicked", "user", user)
 	apiJSON(w, map[string]string{"status": "ok"})

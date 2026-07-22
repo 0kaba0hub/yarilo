@@ -84,10 +84,12 @@ func main() {
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
+	usernameHashLowercase := cfg.DirectorService.UsernameHashLowercase
 	srv := director.NewWithOptions(director.Options{
-		UserExpire:   time.Duration(cfg.DirectorService.UserExpire) * time.Second,
-		PingInterval: time.Duration(cfg.DirectorService.PingInterval) * time.Second,
-		PingTimeout:  time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
+		UserExpire:            time.Duration(cfg.DirectorService.UserExpire) * time.Second,
+		PingInterval:          time.Duration(cfg.DirectorService.PingInterval) * time.Second,
+		PingTimeout:           time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
+		UsernameHashLowercase: &usernameHashLowercase,
 	})
 
 	// Resolve static backends from config and register them in the ring.

@@ -6,7 +6,7 @@ import (
 )
 
 func TestUserDir_SetGet(t *testing.T) {
-	d := NewUserDir(time.Minute)
+	d := NewUserDir(time.Minute, true)
 	d.Set("alice@example.com", "10.0.0.1:993", false)
 
 	e := d.Get("alice@example.com")
@@ -22,7 +22,7 @@ func TestUserDir_SetGet(t *testing.T) {
 }
 
 func TestUserDir_WeakFlag(t *testing.T) {
-	d := NewUserDir(time.Minute)
+	d := NewUserDir(time.Minute, true)
 	d.Set("bob@example.com", "10.0.0.2:993", true)
 	e := d.Get("bob@example.com")
 	if e == nil || !e.Weak {
@@ -31,7 +31,7 @@ func TestUserDir_WeakFlag(t *testing.T) {
 }
 
 func TestUserDir_Expiry(t *testing.T) {
-	d := NewUserDir(50 * time.Millisecond)
+	d := NewUserDir(50*time.Millisecond, true)
 	d.Set("carol@example.com", "10.0.0.3:993", false)
 
 	time.Sleep(100 * time.Millisecond)
@@ -41,7 +41,7 @@ func TestUserDir_Expiry(t *testing.T) {
 }
 
 func TestUserDir_Delete(t *testing.T) {
-	d := NewUserDir(time.Minute)
+	d := NewUserDir(time.Minute, true)
 	d.Set("dave@example.com", "10.0.0.4:993", false)
 	d.Delete("dave@example.com")
 	if e := d.Get("dave@example.com"); e != nil {
@@ -50,16 +50,45 @@ func TestUserDir_Delete(t *testing.T) {
 }
 
 func TestUserDir_HashConsistency(t *testing.T) {
-	h1 := HashUsername("user@example.com")
-	h2 := HashUsername("user@example.com")
+	h1 := HashUsername("user@example.com", true)
+	h2 := HashUsername("user@example.com", true)
 	if h1 != h2 {
 		t.Errorf("hash not deterministic: %d vs %d", h1, h2)
 	}
 }
 
+// TestUserDir_HashLowercase proves #738: HashUsername with lowercase=true
+// gives the same hash for any spelling of a username, and with
+// lowercase=false the two spellings hash differently (reproducing the bug).
+func TestUserDir_HashLowercase(t *testing.T) {
+	if HashUsername("User@d.test", true) != HashUsername("user@d.test", true) {
+		t.Error("lowercase=true: hashes for different spellings must match")
+	}
+	if HashUsername("User@d.test", false) == HashUsername("user@d.test", false) {
+		t.Error("lowercase=false: hashes for different spellings must NOT match (this reproduces the pre-#738 bug)")
+	}
+}
+
+// TestUserDir_GetSetDelete_CaseInsensitive proves a user stored under one
+// spelling is retrievable and deletable under another, with lowercase=true.
+func TestUserDir_GetSetDelete_CaseInsensitive(t *testing.T) {
+	d := NewUserDir(time.Minute, true)
+	d.Set("User@d.test", "10.0.0.9:993", false)
+
+	e := d.Get("user@d.test")
+	if e == nil || e.Host != "10.0.0.9:993" {
+		t.Fatalf("Get with different spelling: want entry, got %+v", e)
+	}
+
+	d.Delete("USER@D.TEST")
+	if e := d.Get("User@d.test"); e != nil {
+		t.Error("expected nil after delete via a third spelling")
+	}
+}
+
 func TestUserDir_SetByHash(t *testing.T) {
-	d := NewUserDir(time.Minute)
-	h := HashUsername("eve@example.com")
+	d := NewUserDir(time.Minute, true)
+	h := HashUsername("eve@example.com", true)
 	d.SetByHash(h, "10.0.0.5:993", false)
 
 	e := d.GetByHash(h)
@@ -69,7 +98,7 @@ func TestUserDir_SetByHash(t *testing.T) {
 }
 
 func TestUserDir_Purge(t *testing.T) {
-	d := NewUserDir(50 * time.Millisecond)
+	d := NewUserDir(50*time.Millisecond, true)
 	d.Set("a@x.com", "10.0.0.1:993", false)
 	d.Set("b@x.com", "10.0.0.2:993", false)
 
@@ -83,7 +112,7 @@ func TestUserDir_Purge(t *testing.T) {
 }
 
 func TestUserDir_Snapshot(t *testing.T) {
-	d := NewUserDir(time.Minute)
+	d := NewUserDir(time.Minute, true)
 	d.Set("u1@x.com", "10.0.0.1:993", false)
 	d.Set("u2@x.com", "10.0.0.2:993", false)
 

@@ -305,6 +305,44 @@ func TestUserMove_OverridesRing(t *testing.T) {
 	}
 }
 
+// TestUserMove_OverrideCaseInsensitive proves #738: an admin override set
+// under one spelling of a username is honoured (and releasable) under any
+// other spelling, since the default lowercase=true normalizes s.overrides
+// keys at the wire ingress (handleUserMove/handleLookup/handleUserRelease).
+func TestUserMove_OverrideCaseInsensitive(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.16\t10993\timap\t100\n"))
+	readLine(t, sc) // OK
+
+	conn.Write([]byte("USER-MOVE\tAlice@Example.com\t10.0.0.199\t10993\n"))
+	if got := readLine(t, sc); got != "OK" {
+		t.Fatalf("USER-MOVE: expected OK, got %q", got)
+	}
+
+	conn.Write([]byte("LOOKUP\t9\talice@example.com\n"))
+	line := readLine(t, sc)
+	parts := strings.Split(line, "\t")
+	if len(parts) < 4 || parts[0] != "HOST" || parts[2] != "10.0.0.199" {
+		t.Fatalf("LOOKUP with different spelling: expected override HOST 10.0.0.199, got %q", line)
+	}
+
+	conn.Write([]byte("USER-RELEASE\tALICE@EXAMPLE.COM\n"))
+	if got := readLine(t, sc); got != "OK" {
+		t.Fatalf("USER-RELEASE: expected OK, got %q", got)
+	}
+
+	conn.Write([]byte("LOOKUP\t10\talice@example.com\n"))
+	line = readLine(t, sc)
+	parts = strings.Split(line, "\t")
+	if len(parts) < 4 || parts[0] != "HOST" || parts[2] == "10.0.0.199" {
+		t.Errorf("expected ring backend after release via a third spelling, got %q", line)
+	}
+}
+
 func TestUserRelease_FallsBackToRing(t *testing.T) {
 	_, addr := startServer(t)
 	conn, sc := dialTest(t, addr)

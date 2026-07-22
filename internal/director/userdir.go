@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"sync"
 	"time"
+
+	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
 // UserEntry records which backend is serving a user.
@@ -18,29 +20,38 @@ type UserEntry struct {
 // UserDir is a hash-keyed, TTL-expiring user→backend directory.
 // Thread-safe.
 type UserDir struct {
-	mu     sync.RWMutex
-	byHash map[uint32]*UserEntry
-	expire time.Duration
+	mu        sync.RWMutex
+	byHash    map[uint32]*UserEntry
+	expire    time.Duration
+	lowercase bool // #738: lowercase usernames before hashing
 }
 
-// NewUserDir creates a UserDir with the given per-entry TTL.
-func NewUserDir(expire time.Duration) *UserDir {
+// NewUserDir creates a UserDir with the given per-entry TTL. lowercase
+// controls whether usernames are normalized before hashing
+// (director_username_hash_lowercase, #738) — must match the Ring's setting
+// so HashUsername and the ring's own hash never diverge for the same user.
+func NewUserDir(expire time.Duration, lowercase bool) *UserDir {
 	return &UserDir{
-		byHash: make(map[uint32]*UserEntry),
-		expire: expire,
+		byHash:    make(map[uint32]*UserEntry),
+		expire:    expire,
+		lowercase: lowercase,
 	}
 }
 
-// HashUsername returns the MD5-based uint32 hash used to identify users in the
-// director protocol. Matches the ring's userHash function exactly.
-func HashUsername(username string) uint32 {
+// HashUsername returns the MD5-based uint32 hash used to identify users in
+// the director protocol. Matches the ring's userHash exactly given the same
+// lowercase setting — both delegate to ring.NormalizeUsername.
+func HashUsername(username string, lowercase bool) uint32 {
+	if lowercase {
+		username = ring.NormalizeUsername(username)
+	}
 	sum := md5.Sum([]byte(username))
 	return binary.LittleEndian.Uint32(sum[:4])
 }
 
 // Set stores a user→backend mapping and returns the username hash.
 func (d *UserDir) Set(username, host string, weak bool) uint32 {
-	h := HashUsername(username)
+	h := HashUsername(username, d.lowercase)
 	d.SetByHash(h, host, weak)
 	return h
 }
@@ -60,7 +71,7 @@ func (d *UserDir) SetByHash(hash uint32, host string, weak bool) {
 
 // Get returns the entry for username, or nil if not found or expired.
 func (d *UserDir) Get(username string) *UserEntry {
-	return d.GetByHash(HashUsername(username))
+	return d.GetByHash(HashUsername(username, d.lowercase))
 }
 
 // GetByHash returns the entry for hash, or nil if not found or expired.
@@ -76,7 +87,7 @@ func (d *UserDir) GetByHash(hash uint32) *UserEntry {
 
 // Delete removes the entry for username.
 func (d *UserDir) Delete(username string) {
-	d.DeleteByHash(HashUsername(username))
+	d.DeleteByHash(HashUsername(username, d.lowercase))
 }
 
 // DeleteByHash removes the entry for hash.
