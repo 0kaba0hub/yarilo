@@ -122,6 +122,16 @@ type UserInfo struct {
 	// allowed to authenticate from. Empty means no IP restriction.
 	AllowNets []string
 
+	// ---- Director routing ---------------------------------------
+
+	// DirectorTag shards this user to a specific director backend tag
+	// (`director_tag=` extra field, #746). Empty means the login
+	// component's static director_tag (or "" — the untagged pool)
+	// applies instead; a per-user value here always wins. Lets a
+	// single shared login fleet route different users to different
+	// tag-pools without a dedicated login Deployment per tag.
+	DirectorTag string
+
 	// ---- Login control / fail shape ---------------------------
 
 	NoLogin        bool // reject login outright
@@ -307,6 +317,8 @@ func (ui *UserInfo) VisitFields(fn func(key, value string)) {
 	str("quota_over_flag", ui.QuotaOverFlag)
 
 	list("allow_nets", ui.AllowNets)
+
+	str("director_tag", ui.DirectorTag)
 
 	yes("nologin", ui.NoLogin)
 	yes("nodelay", ui.NoDelay)
