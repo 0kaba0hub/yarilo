@@ -54,7 +54,7 @@ type Options struct {
 	MinTermSize     int           // fts_flatcurve_min_term_size (2)
 	OptimizeLimit   int           // fts_flatcurve_optimize_limit (10; 0 = disabled)
 	RotateCount     uint32        // fts_flatcurve_rotate_count (5000)
-	RotateTime      time.Duration // fts_flatcurve_rotate_time (5000ms)
+	RotateTime      time.Duration // fts_flatcurve_rotate_time (5000ms; 0 = disabled)
 	SubstringSearch bool          // fts_flatcurve_substring_search (no)
 
 	// MailboxDir resolves a mailbox's fts-flatcurve directory. The service
@@ -78,9 +78,10 @@ func (o Options) withDefaults() Options {
 	if o.RotateCount == 0 {
 		o.RotateCount = 5000
 	}
-	if o.RotateTime <= 0 {
-		o.RotateTime = 5000 * time.Millisecond
-	}
+	// RotateTime has no default here — 0 means "time-based rotation
+	// disabled" (#724), the same "0 = special" convention OptimizeLimit
+	// uses (#715). The positive default (5000ms) lives in
+	// pkg/config.DefaultConfig() only.
 	if o.MailboxDir == nil {
 		// Co-locate the fts-flatcurve directory inside the mailbox's own
 		// per-folder index directory (the same driver-aware layout the
@@ -170,6 +171,7 @@ func (e *Engine) OpenUser(_ context.Context, user fts.UserRef) (fts.UserIndex, e
 // sole writer (docs/FTS.md §4), so a plain mutex per user index suffices.
 type mboxState struct {
 	dir     string
+	eng     *Engine        // set once at creation; gives commitCurrent access to opts.RotateTime (#724) without threading it through every call site
 	user    fts.UserRef    // set once at creation; identifies the owning user for #715's optimize callback
 	mbox    fts.MailboxRef // set once at creation; identifies this mailbox for #715's optimize callback
 	cur     *xapian.WDB
@@ -191,7 +193,7 @@ func (u *userIndex) state(mbox fts.MailboxRef) *mboxState {
 	if !ok {
 		u.migrateLegacyDir(mbox, dir)
 		cleanStaleOptimizeTmp(dir)
-		st = &mboxState{dir: dir, user: u.user, mbox: mbox}
+		st = &mboxState{dir: dir, eng: u.eng, user: u.user, mbox: mbox}
 		u.boxes[dir] = st
 	}
 	return st
@@ -331,16 +333,35 @@ func (st *mboxState) ensureCurrent() error {
 	return nil
 }
 
+// commitCurrent commits the pending documents in the current write shard.
+// If the commit itself took longer than RotateTime, it also rotates right
+// after (#724): large-document mailboxes with few messages per shard never
+// hit RotateCount, so without this a single shard can accumulate an
+// unbounded amount of slow-to-commit data. This is the single place every
+// caller (the write path's CommitLimit check, an explicit Commit(),
+// Refresh()) goes through, so the time-based trigger applies uniformly
+// without threading RotateTime through each call site.
 func (st *mboxState) commitCurrent() error {
 	if st.cur == nil || st.pending == 0 {
 		return nil
 	}
+	t0 := time.Now()
 	if err := st.cur.Commit(); err != nil {
 		slog.Warn("fts/flatcurve: commitCurrent failed, discarding handle", "dir", st.dir, "cur_path", st.curPath, "pending", st.pending, "err", err)
 		st.discardCurrent() // reopen on the next pass rather than keep a dead handle (#629)
 		return err
 	}
+	dur := time.Since(t0)
 	st.pending = 0
+	if rt := st.eng.opts.RotateTime; rt > 0 && dur >= rt {
+		slog.Debug("fts/flatcurve: commit exceeded rotate_time, rotating",
+			"dir", st.dir, "cur_path", st.curPath, "commit_dur", dur, "rotate_time", rt)
+		if err := st.rotate(); err != nil {
+			st.discardCurrent()
+			return err
+		}
+		st.eng.notifyOptimizeIfNeeded(st) // #715: this seals a shard too
+	}
 	return nil
 }
 
