@@ -931,6 +931,16 @@ type DirectorServiceConfig struct {
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
 	Peers        []string           `koanf:"peers"`         // peer director addresses "host:port" for ring sync (replicas > 1)
 	API          DirectorAPIConfig  `koanf:"api"`
+	// UsernameHashLowercase lowercases usernames before hashing/keying them
+	// for ring routing, sticky assignments and admin overrides (#738).
+	// Matches the reference implementation's default hash template — two
+	// spellings of the same account ("User@d.test" / "user@d.test")
+	// otherwise land on different backends. Default: true. Migration note:
+	// enabling this on an already-running cluster changes hashes for any
+	// mixed-case usernames; their existing sticky entries just expire
+	// naturally via TTL (director_service.user_expire) — no special
+	// migration step is needed.
+	UsernameHashLowercase bool `koanf:"username_hash_lowercase"`
 }
 
 // IMAPLoginServiceConfig configures the yarilo-imap-login proxy.
@@ -1599,9 +1609,10 @@ func Load(path string) (*Config, error) {
 				SessionGracePeriod: 30,
 				KillTimeout:        5,
 			},
-			UserExpire:   900,
-			PingInterval: 30,
-			PingTimeout:  10,
+			UserExpire:            900,
+			PingInterval:          30,
+			PingTimeout:           10,
+			UsernameHashLowercase: true,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// 127.0.0.0/8   — loopback (same-pod CLI)

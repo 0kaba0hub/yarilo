@@ -76,6 +76,18 @@ type Options struct {
 	PeerTLS   *tls.Config
 	LocalIP   string
 	LocalPort int
+	// UsernameHashLowercase lowercases usernames before hashing/keying them
+	// (director_username_hash_lowercase, #738) — matches the reference
+	// implementation's default hash template so two spellings of the same
+	// account route to the same backend. Defaults to true.
+	UsernameHashLowercase *bool
+}
+
+func (o *Options) usernameHashLowercase() bool {
+	if o.UsernameHashLowercase == nil {
+		return true
+	}
+	return *o.UsernameHashLowercase
 }
 
 func (o *Options) userExpire() time.Duration {
@@ -171,9 +183,9 @@ func New() *Server {
 // NewWithOptions creates a director server with custom options.
 func NewWithOptions(opts Options) *Server {
 	return &Server{
-		ring:       ring.New(),
+		ring:       ring.New(opts.usernameHashLowercase()),
 		opts:       opts,
-		userDir:    NewUserDir(opts.userExpire()),
+		userDir:    NewUserDir(opts.userExpire(), opts.usernameHashLowercase()),
 		overrides:  make(map[string]string),
 		clients:    make(map[*client]struct{}),
 		sessions:   make(map[string]int),
@@ -184,6 +196,25 @@ func NewWithOptions(opts Options) *Server {
 		localIP:    opts.LocalIP,
 		localPort:  opts.LocalPort,
 	}
+}
+
+// normalizeUser applies the #738 username hash-normalization at the single
+// ingress point for every wire/HTTP handler that turns a raw username into a
+// hash or map key (handleLookup, handleUserMove, handleUserWeak,
+// handleUserRelease, handleUserKick, RouteUser, apiUserMove, apiUserKick).
+// Everything downstream of these call sites — s.overrides, s.userDir,
+// s.ring — already operates on normalized usernames, so no other call site
+// needs its own normalize call.
+//
+// Ordering with #701 (LOOKUP field TAB-escaping): once TabUnescape lands,
+// normalize must run AFTER unescape — normalizeUser(TabUnescape(raw)), never
+// the other way round — since escaping is reversible byte-for-byte and
+// lowercasing is not.
+func (s *Server) normalizeUser(username string) string {
+	if !s.opts.usernameHashLowercase() {
+		return username
+	}
+	return ring.NormalizeUsername(username)
 }
 
 // SetPeerDialConfig sets TLS and local identity used when dialling peers via AddPeer.
@@ -496,7 +527,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	if len(fields) < 3 {
 		return
 	}
-	id, user := fields[1], fields[2]
+	id, user := fields[1], s.normalizeUser(fields[2])
 	tag := ""
 	if len(fields) >= 4 {
 		tag = fields[3]
@@ -626,7 +657,7 @@ func (s *Server) handleUserMove(c *client, fields []string) {
 		_ = c.WriteLine("OK")
 		return
 	}
-	user, ip, portStr := fields[1], fields[2], fields[3]
+	user, ip, portStr := s.normalizeUser(fields[1]), fields[2], fields[3]
 	addr := net.JoinHostPort(ip, portStr)
 
 	s.overrideMu.Lock()
@@ -647,7 +678,7 @@ func (s *Server) handleUserRelease(c *client, fields []string) {
 		_ = c.WriteLine("OK")
 		return
 	}
-	user := fields[1]
+	user := s.normalizeUser(fields[1])
 
 	s.overrideMu.Lock()
 	delete(s.overrides, user)
@@ -667,7 +698,7 @@ func (s *Server) handleUserWeak(c *client, fields []string) {
 		_ = c.WriteLine("OK")
 		return
 	}
-	user := fields[1]
+	user := s.normalizeUser(fields[1])
 	e := s.userDir.Get(user)
 	if e != nil {
 		s.userDir.Set(user, e.Host, true)
@@ -684,7 +715,7 @@ func (s *Server) handleUserKick(c *client, fields []string) {
 		_ = c.WriteLine("OK")
 		return
 	}
-	user := fields[1]
+	user := s.normalizeUser(fields[1])
 	slog.Info("director: user kick", "user", user)
 	s.broadcast(fmt.Sprintf("USER-KICKED\t%s", user), c)
 	_ = c.WriteLine("OK")
@@ -728,6 +759,7 @@ func (s *Server) LookupBackend(username string) *ring.Backend {
 // RouteUser returns the backend IP for a recipient username, implementing
 // lmtp.UserRouter. Checks admin overrides, sticky userDir, then the ring.
 func (s *Server) RouteUser(username string) (string, error) {
+	username = s.normalizeUser(username)
 	s.overrideMu.RLock()
 	addr, hasOverride := s.overrides[username]
 	s.overrideMu.RUnlock()

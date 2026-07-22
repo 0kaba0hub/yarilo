@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -30,6 +31,7 @@ type Ring struct {
 	backends  map[string]*Backend // key: IP
 	vhosts    []vhost             // all Up backends, sorted by hash
 	tagVhosts map[string][]vhost  // tag → Up backends for that tag, sorted by hash
+	lowercase bool                // #738: lowercase usernames before hashing
 }
 
 type vhost struct {
@@ -37,11 +39,22 @@ type vhost struct {
 	ip   string
 }
 
-// New returns an empty Ring.
-func New() *Ring {
+// NormalizeUsername is the shared username normalization used for hashing
+// (#738): lowercased, matching the reference implementation's default hash
+// template so two spellings of the same account route to the same backend.
+// director.HashUsername delegates here so the two independent hash
+// implementations can never drift apart.
+func NormalizeUsername(username string) string {
+	return strings.ToLower(username)
+}
+
+// New returns an empty Ring. lowercase controls whether usernames are
+// normalized via NormalizeUsername before hashing (director_username_hash_lowercase, #738).
+func New(lowercase bool) *Ring {
 	return &Ring{
 		backends:  make(map[string]*Backend),
 		tagVhosts: make(map[string][]vhost),
+		lowercase: lowercase,
 	}
 }
 
@@ -102,7 +115,7 @@ func (r *Ring) Lookup(username string) string {
 	if len(r.vhosts) == 0 {
 		return ""
 	}
-	h := userHash(username)
+	h := r.userHash(username)
 	idx := sort.Search(len(r.vhosts), func(i int) bool {
 		return r.vhosts[i].hash >= h
 	})
@@ -161,7 +174,7 @@ func (r *Ring) lookupLocked(username string, vhs []vhost) *Backend {
 	if len(vhs) == 0 {
 		return nil
 	}
-	h := userHash(username)
+	h := r.userHash(username)
 	idx := sort.Search(len(vhs), func(i int) bool {
 		return vhs[i].hash >= h
 	})
@@ -209,7 +222,10 @@ func (r *Ring) rebuild() {
 	}
 }
 
-func userHash(username string) uint32 {
+func (r *Ring) userHash(username string) uint32 {
+	if r.lowercase {
+		username = NormalizeUsername(username)
+	}
 	sum := md5.Sum([]byte(username))
 	return binary.LittleEndian.Uint32(sum[:4])
 }

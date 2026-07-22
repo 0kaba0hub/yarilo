@@ -6,14 +6,14 @@ import (
 )
 
 func TestLookup_EmptyRing(t *testing.T) {
-	r := New()
+	r := New(false)
 	if got := r.Lookup("alice@example.com"); got != "" {
 		t.Fatalf("empty ring: want \"\", got %q", got)
 	}
 }
 
 func TestLookup_SingleBackend(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Up: true})
 	got := r.Lookup("alice@example.com")
 	if got != "10.0.0.1" {
@@ -22,7 +22,7 @@ func TestLookup_SingleBackend(t *testing.T) {
 }
 
 func TestLookup_DownBackendExcluded(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Up: false})
 	r.AddBackend(&Backend{IP: "10.0.0.2", Up: true})
 	got := r.Lookup("alice@example.com")
@@ -32,7 +32,7 @@ func TestLookup_DownBackendExcluded(t *testing.T) {
 }
 
 func TestLookup_Consistency(t *testing.T) {
-	r := New()
+	r := New(false)
 	for i := 1; i <= 3; i++ {
 		r.AddBackend(&Backend{IP: fmt.Sprintf("10.0.0.%d", i), Up: true})
 	}
@@ -46,7 +46,7 @@ func TestLookup_Consistency(t *testing.T) {
 }
 
 func TestLookup_Distribution(t *testing.T) {
-	r := New()
+	r := New(false)
 	backends := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 	for _, ip := range backends {
 		r.AddBackend(&Backend{IP: ip, Up: true})
@@ -65,7 +65,7 @@ func TestLookup_Distribution(t *testing.T) {
 }
 
 func TestLookupBackendByTag_IsolatesPool(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "ssd", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.3", Tag: "hdd", Up: true})
@@ -82,7 +82,7 @@ func TestLookupBackendByTag_IsolatesPool(t *testing.T) {
 }
 
 func TestLookupBackendByTag_EmptyTag_UntaggedOnly(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "", Up: true}) // untagged
 
@@ -96,7 +96,7 @@ func TestLookupBackendByTag_EmptyTag_UntaggedOnly(t *testing.T) {
 }
 
 func TestLookupBackendByTag_EmptyTag_NilWhenNoUntagged(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "hdd", Up: true})
 
@@ -107,7 +107,7 @@ func TestLookupBackendByTag_EmptyTag_NilWhenNoUntagged(t *testing.T) {
 }
 
 func TestLookupBackendByTag_UnknownTag_Nil(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
 
 	b := r.LookupBackendByTag("alice@example.com", "nonexistent")
@@ -117,7 +117,7 @@ func TestLookupBackendByTag_UnknownTag_Nil(t *testing.T) {
 }
 
 func TestLookupBackendByTag_ConsistentWithinTag(t *testing.T) {
-	r := New()
+	r := New(false)
 	for i := 1; i <= 3; i++ {
 		r.AddBackend(&Backend{IP: fmt.Sprintf("10.0.0.%d", i), Tag: "ssd", Up: true})
 	}
@@ -136,7 +136,7 @@ func TestLookupBackendByTag_ConsistentWithinTag(t *testing.T) {
 }
 
 func TestTags(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.2", Tag: "hdd", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.3", Tag: "ssd", Up: true})
@@ -148,7 +148,7 @@ func TestTags(t *testing.T) {
 }
 
 func TestRemoveBackend(t *testing.T) {
-	r := New()
+	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Up: true})
 	r.AddBackend(&Backend{IP: "10.0.0.2", Up: true})
 	r.RemoveBackend("10.0.0.1")
@@ -159,4 +159,41 @@ func TestRemoveBackend(t *testing.T) {
 			t.Fatalf("removed backend 10.0.0.1 still returned for user u%d", i)
 		}
 	}
+}
+
+// TestLookup_CaseInsensitiveHash proves #738: with lowercase=true two
+// spellings of the same account hash (and therefore route) identically;
+// with lowercase=false they diverge, reproducing the original bug.
+func TestLookup_CaseInsensitiveHash(t *testing.T) {
+	spellings := []string{"User@d.test", "user@d.test", "USER@D.TEST"}
+
+	t.Run("lowercase=true routes all spellings identically", func(t *testing.T) {
+		r := New(true)
+		for i := 1; i <= 5; i++ {
+			r.AddBackend(&Backend{IP: fmt.Sprintf("10.0.0.%d", i), Up: true})
+		}
+		want := r.Lookup(spellings[0])
+		for _, u := range spellings[1:] {
+			if got := r.Lookup(u); got != want {
+				t.Errorf("Lookup(%q) = %q, want %q (same as Lookup(%q))", u, got, want, spellings[0])
+			}
+		}
+	})
+
+	t.Run("lowercase=false can route spellings differently", func(t *testing.T) {
+		r := New(false)
+		for i := 1; i <= 5; i++ {
+			r.AddBackend(&Backend{IP: fmt.Sprintf("10.0.0.%d", i), Up: true})
+		}
+		diverged := false
+		want := r.Lookup(spellings[0])
+		for _, u := range spellings[1:] {
+			if r.Lookup(u) != want {
+				diverged = true
+			}
+		}
+		if !diverged {
+			t.Skip("chosen spellings happened to collide on this backend set — not a failure, just an uninformative run")
+		}
+	})
 }
