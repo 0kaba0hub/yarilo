@@ -416,6 +416,7 @@ data:
       fts_decoder_tika_url: {{ $.Values.fts.fts_decoder_tika_url | quote }}
       fts_decoder_max_size: {{ $.Values.fts.fts_decoder_max_size }}
       fts_decoder_timeout_secs: {{ $.Values.fts.fts_decoder_timeout_secs }}
+      fts_decoder_max_attempts: {{ $.Values.fts.fts_decoder_max_attempts }}
       fts_dedup_body_parts: {{ $.Values.fts.fts_dedup_body_parts }}
     {{- end }}
     {{- with .Values.quota }}

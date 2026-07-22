@@ -496,6 +496,7 @@ fts:
   fts_decoder_driver: ""            # "" | script | tika
   fts_decoder_script_socket_path: ""
   fts_decoder_tika_url: ""
+  fts_decoder_max_attempts: 0       # tika retry against network/5xx; 0 = default 2
 
   ## Engine-specific: flatcurve (fts_engine: "flatcurve"; the yarilo-fts
   ## binary links libxapian — cgo confined to the fts Deployment image).
@@ -553,8 +554,26 @@ volume). `appVersion` bump ships with each feature slice.
    per-message design, so `detectionAlgoVersion` is mixed into
    `MultiChain.SettingsChecksum()` to force existing mailboxes through the
    settings-drift rebuild path. ICU normalizer option (not started).
-3. **FTS-3**: attachment decoders (script / Tika) + attachment text dedup by
-   content hash.
+3. **FTS-3**: attachment decoders (script / Tika, #669) + within-message
+   attachment text dedup by content hash ✅. Refined by #697: the `script`
+   driver caches an optional `TYPES` supported-types/extensions list
+   (queried once, on its own connection) so unsupported parts are skipped
+   locally instead of dialing DECODE and shipping the attachment bytes for
+   nothing — a decoder that doesn't recognize `TYPES` (ERROR response,
+   connection close, or a read timeout — all three tested) falls back to
+   asking every part, unchanged from before. The `tika` driver now sends
+   the filename via `Content-Disposition`, retries connection errors/5xx
+   (bounded, `fts_decoder_max_attempts`) instead of erroring immediately,
+   and treats 204 as explicitly empty alongside 415/422. A decoder error
+   is now classified: retries exhausted against a transient condition
+   (`decoder.ErrDegraded`) indexes the message without that attachment's
+   text (`fts_decoder_degraded_total`) rather than looping it through
+   autoindex forever for a failure that won't self-heal; any other error
+   (bad config, a permanent 4xx, a script protocol error) aborts the
+   message so autoindex retries it later — previously every decoder error
+   was silently swallowed as a permanent skip, which for a transient Tika
+   outage meant the attachment text was never indexed even after Tika
+   recovered.
 4. **Bleve stream** (separate stream, own issue): Bleve v2/scorch engine —
    per-user index, positional phrase search, background merging, crash-safe
    segments — plus its `fts_bleve_*` keys (including a positions knob if the

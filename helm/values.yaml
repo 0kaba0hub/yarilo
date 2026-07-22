@@ -1393,6 +1393,11 @@ fts:
   fts_decoder_tika_url: ""           # e.g. "http://tika:9998"
   fts_decoder_max_size: 0            # attachment bytes sent to decoder, 0=unlimited
   fts_decoder_timeout_secs: 30
+  ## tika driver retry against transient failures (network errors, 5xx)
+  ## before degrading — indexing the message without the attachment's text
+  ## instead of failing it outright (#697). 0 = default 2 (one retry). Not
+  ## used by the script driver, which has no retry.
+  fts_decoder_max_attempts: 0
   ## Skip re-tokenizing a body part whose normalized text was already
   ## indexed for the SAME message (multipart/alternative text+html twins,
   ## a repeated quoted block). Opt-in — some operators may not want this.

@@ -828,6 +828,12 @@ type FTSConfig struct {
 	DecoderMaxSize int64 `koanf:"fts_decoder_max_size"`
 	// DecoderTimeoutSecs bounds a single decode call.
 	DecoderTimeoutSecs int `koanf:"fts_decoder_timeout_secs"`
+	// DecoderMaxAttempts bounds the tika driver's retry count against
+	// transient failures (network errors, 5xx) before degrading (#697).
+	// 0/unset = 2 (one retry), matching the reference implementation's own
+	// Tika plugin default. Not used by the script driver, which has no
+	// retry — a script error is always a hard failure.
+	DecoderMaxAttempts int `koanf:"fts_decoder_max_attempts"`
 
 	// DedupBodyParts skips re-tokenizing a body part whose normalized text
 	// content was already indexed for the SAME message (multipart/alternative

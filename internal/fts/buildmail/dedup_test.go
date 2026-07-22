@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/0kaba0hub/yarilo/internal/fts/decoder"
 	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
@@ -178,6 +179,54 @@ func TestDecoderUnsupportedTypeSkips(t *testing.T) {
 		if k.key.Type == fts.KeyBodyPart && k.key.ContentType == "application/pdf" {
 			t.Fatal("decoder declining the content type must not index anything")
 		}
+	}
+}
+
+// errDecoder is a test Decoder that always fails with a fixed error, reading
+// the body first (real decoders must be able to, regardless of outcome).
+type errDecoder struct{ err error }
+
+func (d *errDecoder) Decode(_ context.Context, _, _ string, body io.Reader) ([]byte, bool, error) {
+	_, _ = io.Copy(io.Discard, body)
+	return nil, false, d.err
+}
+
+// TestDecoderDegradedErrorSkipsAttachmentWithoutFailingMessage (#697): an
+// error wrapping decoder.ErrDegraded (retries against a transient condition
+// exhausted) must not fail the whole message — the message indexes
+// successfully minus this one attachment's text.
+func TestDecoderDegradedErrorSkipsAttachmentWithoutFailingMessage(t *testing.T) {
+	upd := &fakeUpdate{}
+	b := New(Options{
+		Decoder: &errDecoder{err: fmt.Errorf("fts/decoder/tika: giving up: %w", decoder.ErrDegraded)},
+	}, mustChain(t))
+	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
+		t.Fatalf("Build must not fail on a degraded decoder error: %v", err)
+	}
+	if upd.find(fts.KeyHeader, "subject") == nil {
+		t.Fatal("message must still index otherwise (headers present)")
+	}
+	if !hasToken(upd.bodyTokens(), "attach") && !hasToken(upd.bodyTokens(), "attached") {
+		t.Fatalf("other body parts must still index: %q", upd.bodyTokens())
+	}
+	for _, k := range upd.keys {
+		if k.key.Type == fts.KeyBodyPart && k.key.ContentType == "application/pdf" {
+			t.Fatal("degraded attachment must not be indexed with (nonexistent) text")
+		}
+	}
+}
+
+// TestDecoderHardErrorFailsMessage (#697): any decoder error NOT wrapping
+// ErrDegraded is a hard failure (bad config, permanent 4xx, protocol error)
+// — Build must abort so the caller doesn't commit a silently-incomplete
+// document, letting autoindex retry the whole message later.
+func TestDecoderHardErrorFailsMessage(t *testing.T) {
+	upd := &fakeUpdate{}
+	b := New(Options{
+		Decoder: &errDecoder{err: fmt.Errorf("fts/decoder/tika: unexpected status 400")},
+	}, mustChain(t))
+	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err == nil {
+		t.Fatal("expected Build to fail on a hard decoder error")
 	}
 }
 
