@@ -81,6 +81,18 @@ type Engine interface {
 	Close() error
 }
 
+// OptimizeNotifier is an optional Engine capability (#715): an engine whose
+// on-disk shard/segment count grows unboundedly without periodic compaction
+// (flatcurve) implements it so the service can be told when a mailbox
+// crosses its optimize threshold and should be queued for background
+// optimization. fn is called synchronously from deep inside the engine's
+// write path (flatcurve: under its per-user lock, right after a shard
+// rotation) — it MUST NOT block or perform any compaction itself, only
+// enqueue for a background worker to pick up later.
+type OptimizeNotifier interface {
+	SetOptimizeCallback(fn func(user UserRef, mbox MailboxRef))
+}
+
 // UserIndex is the per-user handle. All writes are serialised by the caller
 // (the yarilo-fts service owns the index; pkg/locks guards the directory).
 type UserIndex interface {
@@ -99,7 +111,14 @@ type UserIndex interface {
 	// documents whose UID is absent and reports which present UIDs are
 	// missing from the index so the caller can reindex exactly those.
 	Rescan(mbox MailboxRef, present []uint32) (missing []uint32, err error)
+	// Optimize compacts every mailbox owned by the user — the whole-user
+	// semantics yarilo-admin fts optimize keeps (#715).
 	Optimize() error
+	// OptimizeMailbox compacts sealed shards for exactly one mailbox — used
+	// by the background auto-optimize queue (#715) so one large mailbox's
+	// compaction doesn't block indexing of a user's other mailboxes, unlike
+	// the whole-user Optimize.
+	OptimizeMailbox(mbox MailboxRef) error
 	// Refresh makes writes committed by earlier updates visible to Lookup.
 	Refresh() error
 

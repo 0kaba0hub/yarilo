@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -51,7 +52,7 @@ var indexedHeaders = map[string]bool{
 type Options struct {
 	CommitLimit     int           // fts_flatcurve_commit_limit (500)
 	MinTermSize     int           // fts_flatcurve_min_term_size (2)
-	OptimizeLimit   int           // fts_flatcurve_optimize_limit (10)
+	OptimizeLimit   int           // fts_flatcurve_optimize_limit (10; 0 = disabled)
 	RotateCount     uint32        // fts_flatcurve_rotate_count (5000)
 	RotateTime      time.Duration // fts_flatcurve_rotate_time (5000ms)
 	SubstringSearch bool          // fts_flatcurve_substring_search (no)
@@ -69,9 +70,11 @@ func (o Options) withDefaults() Options {
 	if o.MinTermSize <= 0 {
 		o.MinTermSize = 2
 	}
-	if o.OptimizeLimit <= 0 {
-		o.OptimizeLimit = 10
-	}
+	// OptimizeLimit has no default here — 0 means "auto-optimize disabled"
+	// (#715), the same "0 = special" convention as MaxSize elsewhere. The
+	// positive default (10) lives in pkg/config.DefaultConfig() only, so a
+	// config layer explicitly setting 0 is respected, not silently
+	// overridden back to a default.
 	if o.RotateCount == 0 {
 		o.RotateCount = 5000
 	}
@@ -103,11 +106,48 @@ func legacyMailboxDir(user fts.UserRef, mbox fts.MailboxRef) string {
 // Engine implements fts.Engine over Xapian.
 type Engine struct {
 	opts Options
+
+	// optimizeCB implements fts.OptimizeNotifier (#715). Set once by the
+	// service during startup, before any indexing begins; stored via
+	// atomic.Pointer so every userIndex's write path (running on its own
+	// goroutine, under its own per-user lock) can read it without a shared
+	// mutex.
+	optimizeCB atomic.Pointer[func(fts.UserRef, fts.MailboxRef)]
 }
 
 // New returns a flatcurve engine.
 func New(opts Options) *Engine {
 	return &Engine{opts: opts.withDefaults()}
+}
+
+// SetOptimizeCallback implements fts.OptimizeNotifier.
+func (e *Engine) SetOptimizeCallback(fn func(user fts.UserRef, mbox fts.MailboxRef)) {
+	e.optimizeCB.Store(&fn)
+}
+
+// notifyOptimizeIfNeeded checks the sealed-shard count right after a
+// rotation and, once it reaches OptimizeLimit, calls the registered
+// callback (#715). Called under the owning userIndex's u.mu — the callback
+// itself must only enqueue and return, never compact, so this stays a fast,
+// bounded check (one os.ReadDir of the mailbox's own shard directory) and
+// doesn't extend how long the write path holds the lock. Firing again on
+// every subsequent rotation while the mailbox is still at/above the limit
+// is expected and harmless: the queue on the receiving end dedups.
+func (e *Engine) notifyOptimizeIfNeeded(st *mboxState) {
+	if e.opts.OptimizeLimit <= 0 {
+		return
+	}
+	cb := e.optimizeCB.Load()
+	if cb == nil {
+		return
+	}
+	paths, err := shardPaths(st.dir)
+	if err != nil {
+		return
+	}
+	if len(paths) >= e.opts.OptimizeLimit {
+		(*cb)(st.user, st.mbox)
+	}
 }
 
 func (e *Engine) Name() string { return "flatcurve" }
@@ -130,6 +170,8 @@ func (e *Engine) OpenUser(_ context.Context, user fts.UserRef) (fts.UserIndex, e
 // sole writer (docs/FTS.md §4), so a plain mutex per user index suffices.
 type mboxState struct {
 	dir     string
+	user    fts.UserRef    // set once at creation; identifies the owning user for #715's optimize callback
+	mbox    fts.MailboxRef // set once at creation; identifies this mailbox for #715's optimize callback
 	cur     *xapian.WDB
 	curPath string
 	pending int    // uncommitted document updates
@@ -148,10 +190,31 @@ func (u *userIndex) state(mbox fts.MailboxRef) *mboxState {
 	st, ok := u.boxes[dir]
 	if !ok {
 		u.migrateLegacyDir(mbox, dir)
-		st = &mboxState{dir: dir}
+		cleanStaleOptimizeTmp(dir)
+		st = &mboxState{dir: dir, user: u.user, mbox: mbox}
 		u.boxes[dir] = st
 	}
 	return st
+}
+
+// cleanStaleOptimizeTmp removes a leftover "optimize" compaction tmp
+// directory from a crash mid-run (#715). optimizeDir already os.RemoveAll()s
+// this same path before starting a fresh Compact, so a stale one is at
+// worst temporary disk usage, never corruption — this just reclaims it
+// proactively the first time the mailbox's directory is touched, since the
+// service has no upfront list of every mailbox to sweep at process start.
+// shardPaths only picks up dbPrefix/currentPrefix directories, so a stale
+// "optimize" dir is never mistaken for a shard in the meantime either way.
+func cleanStaleOptimizeTmp(dir string) {
+	tmp := filepath.Join(dir, "optimize")
+	if _, err := os.Stat(tmp); err != nil {
+		return
+	}
+	if err := os.RemoveAll(tmp); err != nil {
+		slog.Warn("fts/flatcurve: failed to clean stale optimize tmp dir", "dir", tmp, "err", err)
+		return
+	}
+	slog.Info("fts/flatcurve: cleaned stale optimize tmp dir left over from a prior crash", "dir", tmp)
 }
 
 // migrateLegacyDir moves an existing FTS index from the pre-#654 flat path to
@@ -566,6 +629,7 @@ func (up *update) flushDocLocked() error {
 			st.discardCurrent()
 			return err
 		}
+		up.ui.eng.notifyOptimizeIfNeeded(st) // #715
 	}
 	return nil
 }
@@ -720,6 +784,20 @@ func (u *userIndex) Optimize() error {
 	return nil
 }
 
+// OptimizeMailbox compacts sealed shards for exactly one mailbox (#715). It
+// takes the same u.mu as Optimize and every write path, so it can never run
+// concurrently with a manual whole-user Optimize (or another OptimizeMailbox
+// call) against the same userIndex — no separate coordination is needed
+// beyond the mutex already required for correctness. optimizeDir itself is
+// a cheap no-op below 2 shards, so an occasional redundant call (e.g. manual
+// and auto-optimize racing to enqueue/run for the same mailbox) costs
+// nothing.
+func (u *userIndex) OptimizeMailbox(mbox fts.MailboxRef) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return optimizeDir(u.state(mbox))
+}
+
 func optimizeDir(st *mboxState) error {
 	slog.Debug("fts/flatcurve: optimizeDir start", "dir", st.dir, "cur_path_before_close", st.curPath)
 	if err := st.closeCurrent(); err != nil {
@@ -730,6 +808,7 @@ func optimizeDir(st *mboxState) error {
 		slog.Debug("fts/flatcurve: optimizeDir skip (fewer than 2 shards)", "dir", st.dir, "paths", paths, "err", err)
 		return err
 	}
+	t0 := time.Now()
 	slog.Debug("fts/flatcurve: optimizeDir merging shards", "dir", st.dir, "paths", paths)
 	db, err := xapian.OpenDBMulti(paths)
 	if err != nil {
@@ -755,6 +834,10 @@ func optimizeDir(st *mboxState) error {
 	if err := os.Rename(tmp, sealed); err != nil {
 		return fmt.Errorf("fts/flatcurve: optimize rename: %w", err)
 	}
+	metricOptimizeRuns.Inc()
+	metricOptimizeShardsMerged.Add(float64(len(paths)))
+	slog.Info("fts/flatcurve: optimize completed", "user", st.user.Username, "folder", st.mbox.Name,
+		"shards_merged", len(paths), "dur_ms", time.Since(t0).Milliseconds())
 	return nil
 }
 

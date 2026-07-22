@@ -4,6 +4,8 @@ package ftsservice
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -247,5 +249,108 @@ func TestSettingsDriftRebuild(t *testing.T) {
 	}
 	if len(res.Definite) != 1 {
 		t.Fatalf("after drift rebuild = %v, want [1]", res.Definite)
+	}
+}
+
+// countFlatcurveShards mirrors flatcurve's own on-disk shard naming
+// (dbPrefix "index." / currentPrefix "current.") to verify auto-optimize
+// end-to-end from outside the engine package, exactly as an operator
+// inspecting the directory would.
+func countFlatcurveShards(t *testing.T, dir string) (sealed, current int) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0, 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(e.Name(), "index."):
+			sealed++
+		case strings.HasPrefix(e.Name(), "current."):
+			current++
+		}
+	}
+	return sealed, current
+}
+
+// TestServiceAutoOptimize (#715) is the acceptance scenario from the issue:
+// index past the rotate threshold enough times to cross OptimizeLimit, and
+// observe the shard count return to 1 automatically — no yarilo-admin fts
+// optimize call — while SEARCH results stay correct across the transition.
+func TestServiceAutoOptimize(t *testing.T) {
+	root := t.TempDir()
+	resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	idx := file.New()
+	set := language.DefaultSettings()
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := New(Options{
+		Engine:      flatcurve.New(flatcurve.Options{RotateCount: 2, OptimizeLimit: 3}),
+		Mailbox:     mb,
+		Index:       idx,
+		ResolveUser: func(u string) (*mailbox.UserInfo, error) { return resolver.UserInfo(u, ""), nil },
+		Chain:       chain,
+		CommitLimit: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { svc.Close() }) //nolint:errcheck
+
+	info := resolver.UserInfo(testUser, "")
+	box := mb.OpenUser(info)
+	uidx := idx.OpenUser(info)
+	if err := box.Init(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { box.Close(); uidx.Close() }) //nolint:errcheck
+
+	// RotateCount=2, OptimizeLimit=3: 6 messages seal exactly 3 shards,
+	// reaching the auto-optimize threshold.
+	const n = 6
+	for uid := uint32(1); uid <= n; uid++ {
+		saveMessage(t, box, uidx, uid, "steadyword")
+	}
+	if err := svc.Index(testUser, testMbox, n, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitIndexed(t, svc, n)
+
+	sub := mailbox.FolderSubpath(info.Driver, testMbox.Name, testMbox.Name, mailbox.SepOrDefault(info.Separator))
+	dir := filepath.Join(indexRoot(info), sub, flatcurve.Label)
+
+	// The background optimizer runs asynchronously, on its own worker
+	// goroutine — it may well have already collapsed the shards back to 1
+	// by the time waitIndexed returns (indexing and optimizing are
+	// separate queues/workers, so there's no guaranteed ordering between
+	// "checkpoint caught up" and "background optimize finished"). Poll for
+	// the end state rather than asserting an in-between shard count.
+	var sealed int
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if sealed, _ = countFlatcurveShards(t, dir); sealed == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sealed != 1 {
+		t.Fatalf("auto-optimize did not collapse shards back to 1 within the deadline: sealed=%d", sealed)
+	}
+
+	res, err := svc.Lookup(testUser, testMbox, lookupWord("steadyword"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != n {
+		t.Fatalf("lookup after auto-optimize = %v, want %d results", res.Definite, n)
 	}
 }

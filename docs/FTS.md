@@ -394,6 +394,28 @@ STATUS  <user> <folder-guid>                          # last_indexed_uid
   exceeds the limit).
 - **Manual**: `yarilo-admin fts rescan|optimize|status` → backend-api →
   service.
+- **Automatic optimize** (#715): the flatcurve engine implements the
+  optional `fts.OptimizeNotifier` capability — right after a shard
+  rotation, if the mailbox's sealed-shard count has reached
+  `fts_flatcurve_optimize_limit`, it calls back into the service (a fast,
+  non-blocking enqueue only, never compaction work) to push the mailbox
+  onto a dedicated `optimizeQueue`, deduped by `user+mailbox GUID` so
+  repeated rotations at/above the limit don't pile up duplicate work. A
+  single background goroutine drains that queue, calling the engine's
+  per-mailbox `OptimizeMailbox` (as opposed to whole-user `Optimize`) so
+  one large mailbox's compaction never blocks indexing of a user's other
+  mailboxes. Both paths — manual whole-user `Optimize` and the
+  per-mailbox auto-optimize — serialize on the same per-user lock the
+  engine already requires for correctness, so no separate coordination is
+  needed to avoid compacting the same directory twice at once; `optimizeDir`
+  is also a cheap no-op below 2 shards, so an occasional redundant call
+  costs nothing. `fts_flatcurve_optimize_limit: 0` disables auto-optimize
+  entirely (manual only). A leftover `optimize` compaction tmp dir from a
+  crash mid-run is swept lazily, the first time that mailbox's directory is
+  opened (the service has no upfront list of every mailbox to sweep at
+  process start). Observability: `slog.Info` per completed optimize run
+  (user, folder, shards merged, duration) plus `fts_optimize_runs_total` /
+  `fts_optimize_shards_merged_total`.
 
 ---
 
@@ -503,7 +525,7 @@ fts:
   ## fts_bleve_* keys arrive with the Bleve stream.
   fts_flatcurve_commit_limit: 500
   fts_flatcurve_min_term_size: 2
-  fts_flatcurve_optimize_limit: 10
+  fts_flatcurve_optimize_limit: 10  # auto-queues a mailbox at this shard count (#715); 0 disables
   fts_flatcurve_rotate_count: 5000
   fts_flatcurve_rotate_time: 5000
   fts_flatcurve_substring_search: false

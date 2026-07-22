@@ -801,8 +801,15 @@ type FTSConfig struct {
 	Languages       []string `koanf:"languages"`
 	LanguageFilters []string `koanf:"language_filters"`
 
-	FlatcurveCommitLimit     int  `koanf:"fts_flatcurve_commit_limit"`
-	FlatcurveMinTermSize     int  `koanf:"fts_flatcurve_min_term_size"`
+	FlatcurveCommitLimit int `koanf:"fts_flatcurve_commit_limit"`
+	FlatcurveMinTermSize int `koanf:"fts_flatcurve_min_term_size"`
+	// FlatcurveOptimizeLimit queues a mailbox for automatic background
+	// shard compaction once its sealed-shard count reaches this value
+	// (#715), in addition to the manual `yarilo-admin fts optimize`
+	// command. 0 explicitly disables auto-optimize (manual only) — this is
+	// NOT defaulted at the flatcurve.Options layer, only here, so an
+	// operator's explicit 0 is respected rather than silently coerced back
+	// to the default.
 	FlatcurveOptimizeLimit   int  `koanf:"fts_flatcurve_optimize_limit"`
 	FlatcurveRotateCount     int  `koanf:"fts_flatcurve_rotate_count"`
 	FlatcurveRotateTimeMsecs int  `koanf:"fts_flatcurve_rotate_time"`

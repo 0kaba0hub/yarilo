@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/0kaba0hub/go-xapian"
@@ -28,10 +30,17 @@ func testEngine(t *testing.T, opts Options) (fts.UserIndex, fts.UserRef) {
 
 var inbox = fts.MailboxRef{GUID: "g1", Name: "INBOX", UIDValidity: 1}
 
-// indexDoc feeds one message's tokens: subject header + body words.
+// indexDoc feeds one message's tokens (subject header + body words) into
+// inbox. indexDocIn is the general form for tests that need a second
+// mailbox (#715's OptimizeMailbox isolation test).
 func indexDoc(t *testing.T, ui fts.UserIndex, uid uint32, subject []string, body []string) {
 	t.Helper()
-	up, err := ui.BeginUpdate(inbox)
+	indexDocIn(t, ui, inbox, uid, subject, body)
+}
+
+func indexDocIn(t *testing.T, ui fts.UserIndex, mbox fts.MailboxRef, uid uint32, subject []string, body []string) {
+	t.Helper()
+	up, err := ui.BeginUpdate(mbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,6 +296,164 @@ func countShards(t *testing.T, dir string) (sealed, current int) {
 		}
 	}
 	return sealed, current
+}
+
+// TestOptimizeCallbackFiresAtLimit (#715) proves rotate() drives the
+// OptimizeNotifier callback: it stays silent below OptimizeLimit and fires
+// (with the correct mailbox) as soon as the sealed-shard count reaches it.
+func TestOptimizeCallbackFiresAtLimit(t *testing.T) {
+	eng := New(Options{RotateCount: 2, OptimizeLimit: 3})
+	var mu sync.Mutex
+	var calls []fts.MailboxRef
+	eng.SetOptimizeCallback(func(_ fts.UserRef, m fts.MailboxRef) {
+		mu.Lock()
+		calls = append(calls, m)
+		mu.Unlock()
+	})
+	user := fts.UserRef{Username: "u@test", IndexRoot: t.TempDir()}
+	ui, err := eng.OpenUser(context.Background(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ui.Close() }) //nolint:errcheck
+
+	// RotateCount=2: 4 docs seal exactly 2 shards — below OptimizeLimit=3.
+	for uid := uint32(1); uid <= 4; uid++ {
+		indexDoc(t, ui, uid, nil, []string{"x"})
+	}
+	mu.Lock()
+	n := len(calls)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("callback fired %d times before reaching OptimizeLimit (2 sealed shards)", n)
+	}
+
+	// 2 more docs seal a 3rd shard — now at OptimizeLimit.
+	for uid := uint32(5); uid <= 6; uid++ {
+		indexDoc(t, ui, uid, nil, []string{"x"})
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) == 0 {
+		t.Fatal("callback never fired after reaching OptimizeLimit")
+	}
+	if calls[0].GUID != inbox.GUID {
+		t.Fatalf("callback mailbox = %+v, want GUID %q", calls[0], inbox.GUID)
+	}
+}
+
+// TestOptimizeCallbackDisabledWhenLimitZero (#715) proves OptimizeLimit: 0
+// truly disables auto-optimize, rather than withDefaults() silently
+// coercing it back to the positive default (10) the way it used to.
+func TestOptimizeCallbackDisabledWhenLimitZero(t *testing.T) {
+	eng := New(Options{RotateCount: 2, OptimizeLimit: 0})
+	var calls atomic.Int32
+	eng.SetOptimizeCallback(func(fts.UserRef, fts.MailboxRef) { calls.Add(1) })
+	user := fts.UserRef{Username: "u@test", IndexRoot: t.TempDir()}
+	ui, err := eng.OpenUser(context.Background(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ui.Close() }) //nolint:errcheck
+
+	// 30 docs / RotateCount=2 seals 15 shards — well past even the old
+	// (buggy) implicit default of 10, so this decisively catches a
+	// regression back to "0 silently becomes 10" rather than passing by
+	// accident from too few shards.
+	for uid := uint32(1); uid <= 30; uid++ {
+		indexDoc(t, ui, uid, nil, []string{"x"})
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("callback fired %d times with OptimizeLimit=0 (must be disabled)", n)
+	}
+}
+
+// TestOptimizeMailboxIsolatesOtherMailboxes (#715) proves OptimizeMailbox
+// compacts exactly the requested mailbox, leaving a different mailbox's
+// shards untouched — unlike whole-user Optimize.
+func TestOptimizeMailboxIsolatesOtherMailboxes(t *testing.T) {
+	ui, user := testEngine(t, Options{RotateCount: 2})
+	archive := fts.MailboxRef{GUID: "g2", Name: "Archive", UIDValidity: 1}
+
+	for uid := uint32(1); uid <= 4; uid++ {
+		indexDocIn(t, ui, inbox, uid, nil, []string{"steady"})
+		indexDocIn(t, ui, archive, uid, nil, []string{"steady"})
+	}
+	dirInbox := ui.(*userIndex).state(inbox).dir
+	dirArchive := ui.(*userIndex).state(archive).dir
+	sealedInbox, _ := countShards(t, dirInbox)
+	sealedArchive, _ := countShards(t, dirArchive)
+	if sealedInbox < 2 || sealedArchive < 2 {
+		t.Fatalf("expected both mailboxes to have rotated shards: inbox=%d archive=%d", sealedInbox, sealedArchive)
+	}
+
+	if err := ui.OptimizeMailbox(inbox); err != nil {
+		t.Fatal(err)
+	}
+	sealedInbox, _ = countShards(t, dirInbox)
+	sealedArchive, _ = countShards(t, dirArchive)
+	if sealedInbox != 1 {
+		t.Fatalf("inbox not optimized: sealed=%d, want 1", sealedInbox)
+	}
+	if sealedArchive < 2 {
+		t.Fatalf("archive must be untouched by OptimizeMailbox(inbox): sealed=%d", sealedArchive)
+	}
+	_ = user
+}
+
+// TestShardPathsIgnoresOptimizeTmpDir (#715) is the direct safety check
+// behind the lazy-cleanup design: a leftover "optimize" compaction tmp dir
+// must never be mistaken for a shard by shardPaths — otherwise a stale tmp
+// dir left by a crash would corrupt every subsequent Lookup/Optimize, not
+// just waste disk space until the next lazy cleanup.
+func TestShardPathsIgnoresOptimizeTmpDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "optimize"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, dbPrefix+"1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := shardPaths(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range paths {
+		if filepath.Base(p) == "optimize" {
+			t.Fatal("shardPaths must not pick up the optimize tmp dir as a shard")
+		}
+	}
+	if len(paths) != 1 {
+		t.Fatalf("shardPaths = %v, want exactly the one dbPrefix dir", paths)
+	}
+}
+
+// TestCleanStaleOptimizeTmpDir (#715) proves a leftover "optimize" tmp dir
+// from a prior crash is swept the first time the mailbox's directory is
+// touched — the "lazy, on first state() open" substitute for a startup
+// sweep the service has no way to do upfront (no list of every mailbox).
+func TestCleanStaleOptimizeTmpDir(t *testing.T) {
+	user := fts.UserRef{Username: "u@test", IndexRoot: t.TempDir()}
+	ui, err := New(Options{}).OpenUser(context.Background(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ui.Close() }) //nolint:errcheck
+
+	dir := ui.(*userIndex).eng.opts.MailboxDir(user, inbox)
+	tmp := filepath.Join(dir, "optimize")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "junk"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	indexDoc(t, ui, 1, nil, []string{"hi"}) // first touch of this mailbox's state
+
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("stale optimize tmp dir not cleaned: stat err=%v", err)
+	}
 }
 
 func TestSubstringSearch(t *testing.T) {

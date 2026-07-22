@@ -45,9 +45,10 @@ type Options struct {
 
 // Service implements ftsproto.Service.
 type Service struct {
-	opts    Options
-	builder *buildmail.Builder
-	queue   *queue
+	opts          Options
+	builder       *buildmail.Builder
+	queue         *queue
+	optimizeQueue *optimizeQueue
 
 	mu    sync.Mutex
 	users map[string]*userHandle
@@ -80,16 +81,26 @@ func New(opts Options) (*Service, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{
-		opts:    opts,
-		builder: buildmail.New(opts.Build, opts.Chain),
-		queue:   newQueue(),
-		users:   map[string]*userHandle{},
-		stop:    cancel,
+		opts:          opts,
+		builder:       buildmail.New(opts.Build, opts.Chain),
+		queue:         newQueue(),
+		optimizeQueue: newOptimizeQueue(),
+		users:         map[string]*userHandle{},
+		stop:          cancel,
+	}
+	// Wired before any worker starts, so the plain field write inside
+	// SetOptimizeCallback happens-before every goroutine that could read it
+	// (#715) — an engine that doesn't grow shards unboundedly (a future
+	// non-flatcurve driver) simply doesn't implement OptimizeNotifier.
+	if on, ok := opts.Engine.(fts.OptimizeNotifier); ok {
+		on.SetOptimizeCallback(s.enqueueOptimize)
 	}
 	for i := 0; i < opts.Workers; i++ {
 		s.wg.Add(1)
 		go s.worker(ctx)
 	}
+	s.wg.Add(1)
+	go s.optimizeWorker(ctx)
 	return s, nil
 }
 
@@ -97,6 +108,7 @@ func New(opts Options) (*Service, error) {
 func (s *Service) Close() error {
 	s.stop()
 	s.queue.close()
+	s.optimizeQueue.close()
 	s.wg.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -286,6 +298,14 @@ func (s *Service) Optimize(user string) error {
 	})
 }
 
+// enqueueOptimize implements fts.OptimizeNotifier — the engine's write path
+// calls this synchronously (#715) when a mailbox crosses its shard
+// threshold. It must stay fast: optimizeQueue.push only takes its own small
+// mutex and returns, no compaction work happens here.
+func (s *Service) enqueueOptimize(user fts.UserRef, mbox fts.MailboxRef) {
+	s.optimizeQueue.push(user, mbox)
+}
+
 /* --- worker ----------------------------------------------------------------- */
 
 func (s *Service) worker(ctx context.Context) {
@@ -315,6 +335,39 @@ func (s *Service) worker(ctx context.Context) {
 					"user", j.user, "folder", j.mbox.Name, "reason", reason)
 			}
 		}
+	}
+}
+
+// optimizeWorker drains the auto-optimize queue one mailbox at a time
+// (#715): a single dedicated goroutine, separate from the index workers, so
+// a long compaction never blocks indexing of other users/mailboxes.
+func (s *Service) optimizeWorker(ctx context.Context) {
+	defer s.wg.Done()
+	for {
+		j, ok := s.optimizeQueue.pop(ctx)
+		if !ok {
+			return
+		}
+		s.runOptimize(j)
+		// Cleared only after the run finishes (not on pop): a rotation that
+		// happens while this compaction is in flight must be able to queue
+		// a fresh pass afterward, since it wasn't covered by this run.
+		s.optimizeQueue.done(j.user, j.mbox)
+	}
+}
+
+func (s *Service) runOptimize(j optimizeJob) {
+	h, err := s.handle(j.user.Username)
+	if err != nil {
+		slog.Warn("fts: auto-optimize could not open user handle",
+			"user", j.user.Username, "folder", j.mbox.Name, "err", err)
+		return
+	}
+	if err := s.opts.LockMailbox(j.user.Username, j.mbox.Name, func() error {
+		return h.ui.OptimizeMailbox(j.mbox)
+	}); err != nil {
+		slog.Warn("fts: auto-optimize failed",
+			"user", j.user.Username, "folder", j.mbox.Name, "err", err)
 	}
 }
 
