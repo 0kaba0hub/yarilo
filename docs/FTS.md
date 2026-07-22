@@ -382,7 +382,25 @@ STATUS  <user> <folder-guid>                          # last_indexed_uid
 
 - **Worker loop** (INDEX): read checkpoint → walk
   `lastIndexedUID+1 .. max-uid` → fetch message → `buildmail` → engine update
-  stream → batch commit (default 500) → advance checkpoint.
+  stream → batch commit (default 500) → advance checkpoint. Two distinct
+  failure classes get deliberately different handling (#721): a **fetch**
+  failure (unreadable/vanished file) is tolerated — skip, log, advance the
+  checkpoint past it, flag the folder for a reactive heal — "one unreadable
+  message must not stall the mailbox forever". A **build** failure
+  (`buildmail.Build` itself errors — a hard decoder failure per #697, or a
+  genuinely unparseable message) is NOT tolerated the same way: the
+  in-progress engine document for that UID is rolled back (it would
+  otherwise sit half-built until the NEXT message's first build-key flushes
+  it into the shard — the exact bug #721 fixes), whatever was already fully
+  built before it is committed and checkpointed, and the run halts without
+  advancing past the failed UID — so a later index run naturally retries it
+  (e.g. once a decoder config issue is fixed) instead of it being silently,
+  permanently skipped. This deliberately changes behaviour for a genuinely
+  unparseable top-level message, which used to be tolerated like a fetch
+  error — see #721. Every halt logs at Error and increments
+  `fts_index_build_halts_total`, since a deterministic per-document failure
+  keeps halting on the same UID every retry until fixed and must stay
+  visible, not scroll by once and go quiet.
 - **Write-through at delivery** (improvement): LMTP hands the *already
   in-memory* message to `INDEX` as an inline payload variant, so
   delivery-time indexing does not re-read the message from storage.

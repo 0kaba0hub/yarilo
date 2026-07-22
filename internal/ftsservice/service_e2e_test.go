@@ -3,6 +3,9 @@
 package ftsservice
 
 import (
+	"context"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -10,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/0kaba0hub/yarilo/internal/fts/buildmail"
 	"github.com/0kaba0hub/yarilo/internal/fts/flatcurve"
 	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
@@ -60,6 +66,14 @@ func newTestService(t *testing.T) (*Service, mailbox.UserMailbox, mailbox.UserIn
 func saveMessage(t *testing.T, box mailbox.UserMailbox, uidx mailbox.UserIndex, uid uint32, body string) {
 	t.Helper()
 	raw := "From: a@test.com\r\nSubject: note " + body + "\r\n\r\n" + body + "\r\n"
+	saveRawMessage(t, box, uidx, uid, raw)
+}
+
+// saveRawMessage is saveMessage's general form, for #721's regression tests
+// which need to control the exact raw bytes (a broken/malformed message, or
+// one with an attachment part) rather than a plain-text body.
+func saveRawMessage(t *testing.T, box mailbox.UserMailbox, uidx mailbox.UserIndex, uid uint32, raw string) {
+	t.Helper()
 	f, err := uidx.OpenFolder(testMbox.Name, testMbox.UIDValidity)
 	if err != nil {
 		t.Fatal(err)
@@ -352,5 +366,168 @@ func TestServiceAutoOptimize(t *testing.T) {
 	}
 	if len(res.Definite) != n {
 		t.Fatalf("lookup after auto-optimize = %v, want %d results", res.Definite, n)
+	}
+}
+
+// hardFailDecoder always returns a genuine (non-degraded) error for a
+// configured content type — simulating a permanent 4xx or a decoder
+// protocol error (#697's ErrDegraded classification never applies here, so
+// this is exactly the class of failure #721 is about).
+type hardFailDecoder struct{ forContentType string }
+
+func (d *hardFailDecoder) Decode(_ context.Context, contentType, _ string, body io.Reader) ([]byte, bool, error) {
+	_, _ = io.Copy(io.Discard, body)
+	if contentType != d.forContentType {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("hardFailDecoder: permanent failure for %s", contentType)
+}
+
+// brokenAttachmentMsg puts the failing attachment BEFORE the text/plain
+// part: walkEntity aborts the whole multipart walk on the first part
+// error, so only the headers ever reach up.doc before Build() fails —
+// exactly the issue's "headers searchable, body absent" illustration.
+const brokenAttachmentMsg = "From: a@test.com\r\n" +
+	"Subject: gizmoxyzzy\r\n" +
+	"Content-Type: multipart/mixed; boundary=BOUND\r\n" +
+	"\r\n" +
+	"--BOUND\r\n" +
+	"Content-Type: application/pdf\r\n" +
+	"Content-Transfer-Encoding: base64\r\n" +
+	"\r\n" +
+	"JVBERi0xLjQKJcTl8uXrp/Og0MTGCg==\r\n" +
+	"--BOUND\r\n" +
+	"Content-Type: text/plain; charset=utf-8\r\n" +
+	"\r\n" +
+	"never reached body text\r\n" +
+	"--BOUND--\r\n"
+
+// TestIndexHaltsOnBuildFailureWithoutPartialDocument (#721) reproduces the
+// bug directly: a decoder hard failure on UID 2's attachment must not let
+// UID 2's already-built header terms leak into the shard via UID 3's first
+// SetBuildKey flush. The run must halt at UID 2 — UID 1 stays indexed, UID
+// 2 has NOTHING in the index (not even headers), UID 3 is never reached,
+// and the checkpoint sits at UID 1.
+func TestIndexHaltsOnBuildFailureWithoutPartialDocument(t *testing.T) {
+	root := t.TempDir()
+	resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
+	mb := maildir.New()
+	idx := file.New()
+	set := language.DefaultSettings()
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := New(Options{
+		Engine:      flatcurve.New(flatcurve.Options{}),
+		Mailbox:     mb,
+		Index:       idx,
+		ResolveUser: func(u string) (*mailbox.UserInfo, error) { return resolver.UserInfo(u, ""), nil },
+		Chain:       chain,
+		CommitLimit: 10,
+		Build:       buildmail.Options{Decoder: &hardFailDecoder{forContentType: "application/pdf"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { svc.Close() }) //nolint:errcheck
+
+	info := resolver.UserInfo(testUser, "")
+	box := mb.OpenUser(info)
+	uidx := idx.OpenUser(info)
+	if err := box.Init(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { box.Close(); uidx.Close() }) //nolint:errcheck
+
+	saveMessage(t, box, uidx, 1, "firstmessagefine")
+	saveRawMessage(t, box, uidx, 2, brokenAttachmentMsg)
+	saveMessage(t, box, uidx, 3, "thirdmessagenotreached")
+
+	before := testutil.ToFloat64(metricIndexBuildHalts)
+	if err := svc.Index(testUser, testMbox, 3, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// The run halts synchronously inside the worker; wait for the metric
+	// to move rather than assuming a fixed delay.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if testutil.ToFloat64(metricIndexBuildHalts) > before {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := testutil.ToFloat64(metricIndexBuildHalts); got <= before {
+		t.Fatalf("fts_index_build_halts_total did not increment: before=%v after=%v", before, got)
+	}
+
+	last, _, err := svc.Status(testUser, testMbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last != 1 {
+		t.Fatalf("checkpoint = %d, want 1 (must not advance past the halted UID 2)", last)
+	}
+
+	// UID 2's headers must NOT be searchable — Rollback must have discarded
+	// the partial document instead of it leaking into UID 3's flush.
+	res, err := svc.Lookup(testUser, testMbox, fts.Query{
+		Terms:    []fts.Term{{Field: fts.FieldHeader, HdrName: "subject", Words: []fts.Word{{Variants: []string{"gizmoxyzzy"}}}}},
+		AndTerms: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != 0 {
+		t.Fatalf("lookup found UID 2's partial document via its headers: %v, want none", res.Definite)
+	}
+
+	// UID 3 (after the halted UID) must never have been reached either.
+	res, err = svc.Lookup(testUser, testMbox, lookupWord("thirdmessagenotreached"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != 0 {
+		t.Fatalf("UID 3 was indexed despite the run halting on UID 2: %v", res.Definite)
+	}
+}
+
+// TestIndexHaltsOnUnparseableTopLevelMessage (#721) documents a deliberate
+// behavior change: a genuinely unparseable top-level message (not just an
+// unknown charset, which buildmail already tolerates) now HALTS the run
+// instead of being skipped-and-checkpoint-advanced like an unreadable
+// file. This is intentional — see #721's PR description — since by the
+// time an error reaches indexOne from Build() at all, it's already a hard,
+// non-degradable failure (#697), and the previous skip+advance behavior is
+// exactly the bug this issue fixes.
+func TestIndexHaltsOnUnparseableTopLevelMessage(t *testing.T) {
+	svc, box, uidx := newTestService(t)
+	saveMessage(t, box, uidx, 1, "firstmessagefine")
+	saveRawMessage(t, box, uidx, 2, "NoColonHeaderLine\r\n\r\nbroken message body\r\n")
+	saveMessage(t, box, uidx, 3, "thirdmessagenotreached")
+
+	before := testutil.ToFloat64(metricIndexBuildHalts)
+	if err := svc.Index(testUser, testMbox, 3, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if testutil.ToFloat64(metricIndexBuildHalts) > before {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := testutil.ToFloat64(metricIndexBuildHalts); got <= before {
+		t.Fatalf("fts_index_build_halts_total did not increment: before=%v after=%v", before, got)
+	}
+
+	last, _, err := svc.Status(testUser, testMbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last != 1 {
+		t.Fatalf("checkpoint = %d, want 1 — an unparseable top-level message must halt the run, not be silently skipped", last)
 	}
 }
