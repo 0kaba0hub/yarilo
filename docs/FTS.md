@@ -434,6 +434,21 @@ STATUS  <user> <folder-guid>                          # last_indexed_uid
   process start). Observability: `slog.Info` per completed optimize run
   (user, folder, shards merged, duration) plus `fts_optimize_runs_total` /
   `fts_optimize_shards_merged_total`.
+- **Time-based rotation** (#724): `fts_flatcurve_rotate_time` was the same
+  dead-knob class as #715 — accepted by config, defaulted, never read.
+  `commitCurrent` now measures its own commit's wall-clock duration and, if
+  it exceeded `RotateTime`, rotates right after — the reference's own
+  shape: `rotate_count` alone never catches a mailbox with few, large
+  documents whose single commit takes a long time. This is centralized in
+  `commitCurrent` itself (via a `*Engine` back-reference on `mboxState`)
+  rather than threaded through every call site (the write path's
+  `CommitLimit` check, an explicit `Commit()`, `Refresh()`), so the
+  time-based trigger applies uniformly regardless of what triggered the
+  commit; a rotation from this path also runs the same
+  `notifyOptimizeIfNeeded` (#715) a count-based rotation does, since both
+  seal a shard. `fts_flatcurve_rotate_time: 0` disables the time-based
+  trigger (`rotate_count`-only), the same "0 = special, not silently
+  defaulted" convention `fts_flatcurve_optimize_limit` uses.
 
 ---
 
@@ -545,7 +560,7 @@ fts:
   fts_flatcurve_min_term_size: 2
   fts_flatcurve_optimize_limit: 10  # auto-queues a mailbox at this shard count (#715); 0 disables
   fts_flatcurve_rotate_count: 5000
-  fts_flatcurve_rotate_time: 5000
+  fts_flatcurve_rotate_time: 5000  # ms; also rotates on a slow commit (#724); 0 disables
   fts_flatcurve_substring_search: false
 ```
 

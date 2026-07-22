@@ -1390,6 +1390,10 @@ fts:
   ## only) — explicit, not just "unset falls back to a default".
   fts_flatcurve_optimize_limit: 10
   fts_flatcurve_rotate_count: 5000
+  ## Also rotates a shard if its commit took longer than this many ms
+  ## (#724) — bounds commit latency for mailboxes with large documents
+  ## and few messages per shard, which rotate_count alone never catches.
+  ## 0 disables the time-based trigger (rotate_count-only, explicit).
   fts_flatcurve_rotate_time: 5000
   fts_flatcurve_substring_search: false
   ## Attachment text extraction (#669): no built-in PDF/office parsing —

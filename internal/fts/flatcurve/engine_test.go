@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/0kaba0hub/go-xapian"
 
@@ -245,6 +246,36 @@ func TestRescanTargeted(t *testing.T) {
 	// Stale 1 and 4 removed; 2,3,5 intact (no delete-above-gap storm).
 	if !reflect.DeepEqual(res.Definite, []uint32{2, 3, 5}) {
 		t.Fatalf("after rescan = %v, want [2 3 5]", res.Definite)
+	}
+}
+
+// TestRotateTimeTriggersRotationOnSlowCommit (#724) proves commitCurrent
+// rotates when a commit exceeds RotateTime, independent of RotateCount. A
+// tiny RotateTime (1ns) makes ANY real commit exceed it deterministically —
+// no fake clock or artificial sleep needed, no flakiness from actual timing.
+// RotateCount is set far out of reach so only the time-based trigger could
+// possibly cause the rotation seen here.
+func TestRotateTimeTriggersRotationOnSlowCommit(t *testing.T) {
+	ui, _ := testEngine(t, Options{RotateCount: 1000, CommitLimit: 1, RotateTime: time.Nanosecond})
+	indexDoc(t, ui, 1, nil, []string{"alpha"})
+	dir := ui.(*userIndex).state(inbox).dir
+	sealed, current := countShards(t, dir)
+	if sealed < 1 {
+		t.Fatalf("expected a time-based rotation after the commit: sealed=%d current=%d", sealed, current)
+	}
+}
+
+// TestRotateTimeZeroDisablesTimeBasedRotation (#724) proves RotateTime: 0
+// truly disables the time-based trigger, rather than withDefaults()
+// silently coercing it back to the positive default (5000ms) the way
+// OptimizeLimit used to before #715.
+func TestRotateTimeZeroDisablesTimeBasedRotation(t *testing.T) {
+	ui, _ := testEngine(t, Options{RotateCount: 1000, CommitLimit: 1, RotateTime: 0})
+	indexDoc(t, ui, 1, nil, []string{"alpha"})
+	dir := ui.(*userIndex).state(inbox).dir
+	sealed, current := countShards(t, dir)
+	if sealed != 0 || current != 1 {
+		t.Fatalf("expected no rotation with RotateTime=0: sealed=%d current=%d", sealed, current)
 	}
 }
 
