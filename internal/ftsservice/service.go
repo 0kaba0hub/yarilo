@@ -6,6 +6,7 @@ package ftsservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -507,6 +508,24 @@ func (s *Service) runIndex(j job) error {
 				continue
 			}
 			if err := s.indexOne(h, j.mbox, m, upd); err != nil {
+				var buildErr *buildError
+				if errors.As(err, &buildErr) {
+					// A hard buildmail failure must never let a partially
+					// built document flush into the shard on the NEXT
+					// message's first SetBuildKey (#721) — Rollback discards
+					// it. Commit + checkpoint whatever was already fully
+					// built before this UID, then halt: the checkpoint must
+					// not advance past the failed message, so a future
+					// index run (autoindex, delivery, search catch-up)
+					// naturally retries it — e.g. after a decoder config
+					// fix — instead of it being silently, permanently
+					// skipped. This mirrors the reference implementation's
+					// own semantics; see #697 for why anything reaching
+					// this point is already a genuinely hard failure
+					// (retriable decoder errors degrade earlier, without
+					// ever erroring out of Build).
+					return s.haltIndexRunOnBuildFailure(j, h, upd, indexed, curUIDV, checksum, m.UID, buildErr.err)
+				}
 				skippedCount++
 				// One unreadable message must not stall the mailbox forever:
 				// log and move the checkpoint past it (rescan can revisit).
@@ -557,11 +576,53 @@ func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.Messag
 	}
 	defer rc.Close()
 	if err := s.builder.Build(m.UID, io.Reader(rc), upd); err != nil {
-		return err
+		return &buildError{err: err}
 	}
 	// Per-message breadcrumb: which UID/file was fed to the engine (size is the
 	// index-time signal for "was there anything to tokenize"). Metadata only.
 	slog.Debug("fts: message indexed", "folder", mbox.Name, "guid", mbox.GUID,
 		"uid", m.UID, "file", m.Filename, "size", m.Size, "alt_tier", m.AltTier)
 	return nil
+}
+
+// buildError tags an indexOne failure as coming from buildmail's Build (a
+// content/config problem) rather than from Fetch (a storage/read problem)
+// — runIndex treats these very differently (#721): a Build failure halts
+// the run without advancing the checkpoint past it (see
+// haltIndexRunOnBuildFailure), while a Fetch failure keeps the
+// pre-existing skip-and-continue-with-heal tolerance ("one unreadable
+// message must not stall the mailbox forever").
+type buildError struct{ err error }
+
+func (e *buildError) Error() string { return e.err.Error() }
+func (e *buildError) Unwrap() error { return e.err }
+
+// haltIndexRunOnBuildFailure discards the in-progress (partially built)
+// document for the failed UID so it can never leak into a later message's
+// flush (#721), commits and checkpoints whatever was already fully built
+// before it, and halts the run — the checkpoint deliberately does NOT
+// advance past uid, so a future index run (autoindex, delivery, search
+// catch-up) naturally retries it once the underlying cause is fixed.
+//
+// This must stay loud: a deterministic per-document failure (bad decoder
+// config, a permanent 4xx) halts at the exact same UID on every single
+// retry until fixed, so every occurrence — not just the first — logs at
+// Error and bumps metricIndexBuildHalts. A steady-state stuck mailbox must
+// surface as a rising counter and a repeating log line, never a single
+// message that scrolls by once and then goes quiet.
+func (s *Service) haltIndexRunOnBuildFailure(j job, h *userHandle, upd fts.Update, indexed, curUIDV, checksum uint32, uid uint32, buildErr error) error {
+	if rerr := upd.Rollback(); rerr != nil {
+		slog.Error("fts: rollback after build failure also failed",
+			"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", uid, "err", rerr)
+	}
+	if err := upd.Commit(); err != nil {
+		return err
+	}
+	if err := h.ui.SetCheckpoint(j.mbox, indexed, curUIDV, checksum); err != nil {
+		return err
+	}
+	metricIndexBuildHalts.Inc()
+	slog.Error("fts: message build failed, halting mailbox index run without advancing past it",
+		"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", uid, "last_good_uid", indexed, "err", buildErr)
+	return fmt.Errorf("ftsservice: build uid %d: %w", uid, buildErr)
 }
