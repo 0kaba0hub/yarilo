@@ -747,6 +747,16 @@ components:
     ## (the backend's protocol-specific containerPort may differ from what
     ## the director's ring tracks). 0 = use the LOOKUP result port as-is.
     backend_port: 0
+    ## director_tag restricts LOOKUP to backends with this tag (#737).
+    ## "" = the untagged pool, not "any tag" — there is no full-ring mode.
+    ##
+    ## This is the STATIC sharding model: a dedicated login fleet per tag
+    ## pool, each with director_tag set to the pool it serves — use this
+    ## when each tag pool has its own login Service/IP. For the SHARED
+    ## model — one login fleet serving users of every tag, tag resolved
+    ## per-user from the passdb response — see #746 (per-user value wins,
+    ## this static value stays as the fallback for users with no passdb tag).
+    director_tag: ""
 
     service:
       type: LoadBalancer
@@ -798,6 +808,8 @@ components:
     ## backend_port overrides the port in the director LOOKUP result.
     ## 0 = use the LOOKUP result port as-is.
     backend_port: 0
+    ## director_tag — see imapLogin's comment for the tag/pool-topology rule.
+    director_tag: ""
 
     service:
       type: LoadBalancer
@@ -849,6 +861,8 @@ components:
     ## backend_port overrides the port in the director LOOKUP result.
     ## 0 = use the LOOKUP result port as-is.
     backend_port: 0
+    ## director_tag — see imapLogin's comment for the tag/pool-topology rule.
+    director_tag: ""
 
     service:
       type: LoadBalancer
@@ -885,7 +899,15 @@ components:
 
     ## Director mode: per-recipient LOOKUP via yarilo-director (set either this or backend_addr).
     director_addr: ""
-    ## director_tag restricts LOOKUP to backends with this tag. Empty = full ring.
+    ## director_tag restricts LOOKUP to backends with this tag (#737).
+    ## "" = the untagged pool, not "any tag" — there is no full-ring mode.
+    ##
+    ## This is the STATIC sharding model: a dedicated login fleet per tag
+    ## pool, each with director_tag set to the pool it serves — use this
+    ## when each tag pool has its own login Service/IP. For the SHARED
+    ## model — one login fleet serving users of every tag, tag resolved
+    ## per-user from the passdb response — see #746 (per-user value wins,
+    ## this static value stays as the fallback for users with no passdb tag).
     director_tag: ""
     ## backend_port overrides the port in the director LOOKUP result. 0 = use result as-is.
     backend_port: 0
@@ -957,6 +979,8 @@ components:
     ## backend_port overrides the port in the director LOOKUP result.
     ## 0 = use the LOOKUP result port as-is.
     backend_port: 0
+    ## director_tag — see imapLogin's comment for the tag/pool-topology rule.
+    director_tag: ""
 
     haproxy_protocol: false
     haproxy_timeout: 3

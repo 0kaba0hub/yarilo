@@ -46,7 +46,8 @@ const (
 type Options struct {
 	// Protocol is one of the Protocol constants above.
 	Protocol Protocol
-	// Tag restricts director LOOKUP to backends with this tag. "" = full ring.
+	// Tag restricts director LOOKUP to backends with this tag (#737).
+	// "" = the untagged pool, not "any tag" — there is no full-ring mode.
 	Tag string
 	// DirectorAddr is the host:port of yarilo-director (e.g. "yarilo-director:9102").
 	// Ignored when BackendAddr is set.

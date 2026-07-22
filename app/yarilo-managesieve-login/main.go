@@ -104,6 +104,7 @@ func main() {
 		DirectorTLS:         intTLS,
 		BackendAddr:         cfg.ManageSieveLoginService.BackendAddr,
 		BackendPort:         cfg.ManageSieveLoginService.BackendPort,
+		Tag:                 cfg.ManageSieveLoginService.DirectorTag,
 		LocalIP:             localIP,
 		BackendTLS:          intTLS,
 		StarttlsTLS:         extTLS,

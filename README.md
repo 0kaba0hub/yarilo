@@ -189,6 +189,8 @@ Every login proxy (imap/pop3/submission/managesieve/lmtp) routes sessions one of
 
 `director_service.username_hash_lowercase` (default `true`, Helm: `components.director.username_hash_lowercase`) lowercases usernames before they're hashed for ring routing or used as keys for sticky assignments and admin (`USER-MOVE`) overrides (#738) — without it, two spellings of the same account (`User@d.test` / `user@d.test`) can hash to different values and land on different backends, defeating sticky routing. Migration note: enabling this on an already-running cluster changes hashes for mixed-case usernames — their existing sticky entries just expire naturally via `user_expire`, no special migration step is needed.
 
+Every director `LOOKUP` carries a mandatory tag field — there is no full-ring mode (#737): `""` selects the untagged backend pool, not "any tag." Each login component's `director_tag` (Helm: `components.<login>.director_tag`, e.g. `components.imapLogin.director_tag`) restricts that component's lookups to one tag-pool — set this when running a dedicated login fleet per tag pool, per `docs/DEPLOYMENT.md`'s tag-based sharding model. In a deployment with no tags configured at all, every backend is untagged, so the default `director_tag: ""` behaves exactly like the old (buggy) full-ring lookup — untagged/standalone deployments see no behavior change. For a *shared* login fleet serving users of multiple tag-pools, tag must be resolved per-user rather than per-component — tracked separately in #746.
+
 ---
 
 ## Quick start (Helm)

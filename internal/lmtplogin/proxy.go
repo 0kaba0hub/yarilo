@@ -47,7 +47,8 @@ type Options struct {
 	DirectorAddr string
 	// DirectorTLS is the mTLS config for connecting to yarilo-director.
 	DirectorTLS *tls.Config
-	// DirectorTag restricts LOOKUP to backends with this tag. "" = full ring.
+	// DirectorTag restricts LOOKUP to backends with this tag (#737).
+	// "" = the untagged pool, not "any tag" — there is no full-ring mode.
 	DirectorTag string
 	// BackendPort overrides the port in the LOOKUP result. 0 = use as-is.
 	BackendPort int

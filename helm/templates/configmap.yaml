@@ -625,6 +625,7 @@ data:
       backend_addr: {{ .Values.components.imapLogin.backend_addr | quote }}
       director_addr: {{ .Values.components.imapLogin.director_addr | quote }}
       backend_port: {{ .Values.components.imapLogin.backend_port | default 0 }}
+      director_tag: {{ .Values.components.imapLogin.director_tag | quote }}
     {{- end }}
 
     {{- if .Values.components.pop3Login.enabled }}
@@ -632,6 +633,7 @@ data:
       backend_addr: {{ .Values.components.pop3Login.backend_addr | quote }}
       director_addr: {{ .Values.components.pop3Login.director_addr | quote }}
       backend_port: {{ .Values.components.pop3Login.backend_port | default 0 }}
+      director_tag: {{ .Values.components.pop3Login.director_tag | quote }}
     {{- end }}
 
     {{- if .Values.components.submissionLogin.enabled }}
@@ -639,6 +641,7 @@ data:
       backend_addr: {{ .Values.components.submissionLogin.backend_addr | quote }}
       director_addr: {{ .Values.components.submissionLogin.director_addr | quote }}
       backend_port: {{ .Values.components.submissionLogin.backend_port | default 0 }}
+      director_tag: {{ .Values.components.submissionLogin.director_tag | quote }}
     {{- end }}
 
     {{- if .Values.components.lmtpLogin.enabled }}
@@ -661,6 +664,7 @@ data:
       backend_addr: {{ .Values.components.manageSieveLogin.backend_addr | quote }}
       director_addr: {{ .Values.components.manageSieveLogin.director_addr | quote }}
       backend_port: {{ .Values.components.manageSieveLogin.backend_port | default 0 }}
+      director_tag: {{ .Values.components.manageSieveLogin.director_tag | quote }}
       {{- if .Values.components.manageSieveLogin.haproxy_protocol }}
       haproxy_protocol: true
       haproxy_timeout: {{ .Values.components.manageSieveLogin.haproxy_timeout }}

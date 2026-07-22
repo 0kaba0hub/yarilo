@@ -158,6 +158,21 @@ LOOKUP\t<username>\t<tag>\n
 → FAIL\t<reason>\n
 ```
 
+### yarilo's actual LOOKUP tag semantics (#737)
+
+The wire format is `LOOKUP\t{id}\t{user}\t{tag}` (`internal/cluster/proto`) —
+the tag field is **mandatory**, always sent by every client, including when
+a login pod has no tag configured. There is no "full ring, ignore all tags"
+mode in either the reference implementation or yarilo: `""` means the
+*untagged pool* (backends with no tag set), not "any tag." A login pod's
+`director_tag` config (or `login.Options.Tag` / `lmtplogin.Options.DirectorTag`
+in-process) must match the tag of the backend pool it serves — per
+`DEPLOYMENT.md`'s tag-based sharding model, one login Deployment maps to
+exactly one tag-pool. In a deployment with no tags configured at all, every
+backend has tag `""`, so `LOOKUP` with `tag=""` is equivalent to routing
+over the full ring — this is why untagged/standalone deployments see no
+behavior change.
+
 ---
 
 ## 2. yarilo-auth — Authentication Protocol
