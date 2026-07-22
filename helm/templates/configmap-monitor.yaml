@@ -1,0 +1,37 @@
+{{- if and .Values.components.director.enabled .Values.components.director.monitor.enabled }}
+## Config for the yarilo-monitor sidecar (#748 items 2/4): backend health
+## probing that feeds BACKEND-UP/FLUSH/DOWN into the director ring. Without
+## it a backend pod restart leaves the director holding a stale IP until the
+## director itself restarts — treat the sidecar as required in any
+## director deployment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yarilo.fullname" . }}-monitor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "director") | nindent 4 }}
+data:
+  monitor.yaml: |
+    director_addr: "127.0.0.1:{{ .Values.components.director.directorPort }}"
+    interval: {{ .Values.components.director.monitor.interval | default 10 }}
+    timeout: {{ .Values.components.director.monitor.timeout | default 3 }}
+    retry_count: {{ .Values.components.director.monitor.retryCount | default 3 }}
+    rapid_rounds: {{ .Values.components.director.monitor.rapidRounds | default 10 }}
+    rapid_fails_needed: {{ .Values.components.director.monitor.rapidFailsNeeded | default 7 }}
+    drain_timeout: {{ .Values.components.director.monitor.drainTimeout | default 60 }}
+    poll_imap: {{ .Values.components.director.monitor.pollIMAP }}
+    imap_port: {{ .Values.components.director.monitor.imapPort | default 993 }}
+    poll_pop3: {{ .Values.components.director.monitor.pollPOP3 }}
+    pop3_port: {{ .Values.components.director.monitor.pop3Port | default 110 }}
+    poll_lmtp: {{ .Values.components.director.monitor.pollLMTP }}
+    lmtp_port: {{ .Values.components.director.monitor.lmtpPort | default 24 }}
+    {{- with .Values.components.director.monitor.tags }}
+    tags:
+      {{- range $tag, $creds := . }}
+      {{ $tag | quote }}:
+        user: {{ $creds.user | quote }}
+        password: {{ $creds.password | quote }}
+      {{- end }}
+    {{- end }}
+{{- end }}

@@ -176,21 +176,32 @@ func resolveBackends(ctx context.Context, cfg *config.Config, srv *director.Serv
 // IMAP, POP3, and Submission are handled by dedicated login-pod binaries;
 // LMTP is proxied here with per-recipient fan-out via lmtp.Server.
 func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config, _, _ *tls.Config) error {
-	if !cfg.Services.LMTP.Active() {
+	// Gated on director_service.lmtp_listen, NOT the shared services.lmtp
+	// block — that one belongs to the lmtp/lmtp-login pods, and reusing it
+	// here forced deployments to rewrite services.lmtp whenever the
+	// director was enabled, silently breaking lmtp-login (#748 item 1).
+	addr := cfg.DirectorService.LMTPListen
+	if addr == "" {
 		return nil
 	}
-	svcLMTP := cfg.Services.LMTP
-	addr := fmt.Sprintf(":%d", svcLMTP.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("lmtp proxy: listen %s: %w", addr, err)
 	}
 
+	backendPort := cfg.DirectorService.LMTPBackendPort
+	if backendPort == 0 {
+		if _, p, perr := net.SplitHostPort(addr); perr == nil {
+			if n, cerr := strconv.Atoi(p); cerr == nil {
+				backendPort = n
+			}
+		}
+	}
 	lmtpSrv := lmtp.New(lmtp.Options{
 		Hostname:    cfg.Protocol.Submission.Hostname,
 		Config:      cfg.Protocol.LMTP,
 		Router:      srv,
-		BackendPort: svcLMTP.Port,
+		BackendPort: backendPort,
 	})
 
 	slog.Info("director: lmtp proxy listening", "addr", addr)

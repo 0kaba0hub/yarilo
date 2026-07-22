@@ -75,12 +75,40 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.components.director.monitor.enabled }}
+        ## Backend-health monitor sidecar (#748 item 4): probes ring backends
+        ## and feeds BACKEND-UP/FLUSH/DOWN to the local director over
+        ## 127.0.0.1. Without it a backend pod restart leaves the director on
+        ## a stale IP until the director itself restarts.
+        - name: yarilo-monitor
+          image: {{ .Values.components.director.monitor.image | default (include "yarilo.image" .) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["yarilo-monitor"]
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-monitor"
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: MONITOR_CONFIG
+              value: /etc/yarilo-monitor/monitor.yaml
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: monitor-config
+              mountPath: /etc/yarilo-monitor
+              readOnly: true
+        {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.components.director.monitor.enabled }}
+        - name: monitor-config
+          configMap:
+            name: {{ include "yarilo.fullname" . }}-monitor
+        {{- end }}
         {{- include "yarilo.internalTLSVolume" .Values.components.director.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

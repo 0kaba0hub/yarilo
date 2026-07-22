@@ -941,6 +941,18 @@ type DirectorServiceConfig struct {
 	// naturally via TTL (director_service.user_expire) — no special
 	// migration step is needed.
 	UsernameHashLowercase bool `koanf:"username_hash_lowercase"`
+	// LMTPListen enables the director's embedded LMTP proxy (per-recipient
+	// fan-out via ring routing) on this address, e.g. ":10024". Empty =
+	// disabled. This deliberately does NOT reuse the shared services.lmtp
+	// block: that block belongs to the lmtp/lmtp-login pods, and gating the
+	// director proxy on it forced the Helm chart to rewrite services.lmtp
+	// whenever the director was enabled — silently breaking lmtp-login
+	// (#748 item 1).
+	LMTPListen string `koanf:"lmtp_listen"`
+	// LMTPBackendPort is the LMTP port dialed on ring backends by the
+	// embedded proxy. 0 = the port parsed from LMTPListen (the pre-#748
+	// behavior, where both were services.lmtp.port).
+	LMTPBackendPort int `koanf:"lmtp_backend_port"`
 }
 
 // IMAPLoginServiceConfig configures the yarilo-imap-login proxy.
