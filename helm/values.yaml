@@ -1372,10 +1372,44 @@ fts:
   fts_search_read_fallback: true
   fts_search_timeout_secs: 30
   fts_search_strict: false
+  ## Disables FTS SEARCH only, while indexing/autoindex keep running
+  ## unaffected (#726 item 3) — an incident-response knob: "the FTS
+  ## index/engine is misbehaving, stop querying it, don't let the index go
+  ## stale while we investigate." false degrades every SEARCH to the
+  ## sequential scan, as if FTS weren't configured at all. Distinct from
+  ## fts.enabled (all-or-nothing, including indexing).
+  fts_search: true
   ## Supported: en/fr/de/it/pt/ru/es (stemmed) + uk (Ukrainian — no official
   ## Snowball algorithm exists, so it's lowercase + stopwords only, #718).
   languages: [en]
   language_filters: [lowercase, snowball, stopwords]
+  ## Per-language override of language_filters (#726 item 4) — e.g. a
+  ## mixed uk/ru deployment wants uk without "snowball" (no official
+  ## stemmer exists for it, #718) even though the global default has it
+  ## for the other languages. A language absent here uses language_filters
+  ## unchanged; a present language's list is a full replacement, not a
+  ## merge. Every key must also be one of the languages above (typos like
+  ## "ukr" are a startup error). Changing this (including adding/removing
+  ## an override, even to a list identical to the global default) forces
+  ## a reindex for that language, since the override's mere presence is
+  ## part of the settings checksum.
+  fts_language_filters_override: {}
+  # fts_language_filters_override:
+  #   uk: [lowercase, stopwords]
+  #   de: [lowercase, snowball]
+  ## Generic/address tokenizer byte caps (#726 item 1). 0 = package
+  ## defaults (30 / 250) — the most common operator tunings for index
+  ## size vs. long-token searchability.
+  fts_language_tokenizer_generic_token_maxlen: 0
+  fts_language_tokenizer_address_token_maxlen: 0
+  ## Tokenizer algorithm (#726 item 2): "simple" is the only one
+  ## implemented today. "tr29" is a valid reference option but errors
+  ## clearly at startup until it lands (blocked on the Bleve stream) —
+  ## never silently falls back to "simple". wb5a / explicit_prefix are
+  ## TR29-only knobs, also rejected if true for the same reason.
+  fts_language_tokenizer_generic_algorithm: simple
+  fts_language_tokenizer_generic_wb5a: false
+  fts_language_tokenizer_generic_explicit_prefix: false
   ## Per-part language detection (#696): how much of each body/attachment
   ## part's own text is sampled to pick its stemmer, and how much text is
   ## required before trusting the result. 0 = package defaults. Only

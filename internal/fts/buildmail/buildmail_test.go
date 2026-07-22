@@ -58,7 +58,7 @@ func (f *fakeUpdate) bodyTokens() []string {
 func mustChain(t *testing.T) *language.MultiChain {
 	t.Helper()
 	set := language.DefaultSettings()
-	c, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
+	c, err := language.NewMultiChain([]string{set.Language}, set.Filters, nil, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

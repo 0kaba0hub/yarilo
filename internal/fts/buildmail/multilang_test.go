@@ -9,7 +9,7 @@ import (
 
 func mustMultiChain(t *testing.T, languages ...string) *language.MultiChain {
 	t.Helper()
-	c, err := language.NewMultiChain(languages, []string{"lowercase", "snowball", "stopwords"}, 0, 0, 0)
+	c, err := language.NewMultiChain(languages, []string{"lowercase", "snowball", "stopwords"}, nil, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,5 +160,48 @@ func TestBuildRussianStillStemsInMixedUkRuConfig(t *testing.T) {
 	tokens := upd.bodyTokens()
 	if !hasToken(tokens, "книг") {
 		t.Fatalf("Russian message not stemmed (книги -> книг) in a mixed uk/ru config: %q", tokens)
+	}
+}
+
+// TestBuildLanguageFiltersOverride (#726 item 4) is the integration-level
+// proof that a per-language filter override actually reaches buildmail's
+// indexing: with a global filter list that includes "snowball", overriding
+// German to lowercase+stopwords only must index it unstemmed, while
+// English (not overridden) keeps stemming via the same global list.
+func TestBuildLanguageFiltersOverride(t *testing.T) {
+	chain, err := language.NewMultiChain(
+		[]string{"en", "de"},
+		[]string{"lowercase", "snowball", "stopwords"},
+		map[string][]string{"de": {"lowercase", "stopwords"}},
+		0, 0, 0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := New(Options{}, chain)
+
+	// German message: "Fuchs" must survive UNSTEMMED (override drops
+	// snowball) — not the stemmed "fuch" #718's own test expects when
+	// snowball IS in play.
+	upd := &fakeUpdate{}
+	if err := b.Build(1, strings.NewReader(germanMsg), upd); err != nil {
+		t.Fatal(err)
+	}
+	tokens := upd.bodyTokens()
+	if !hasToken(tokens, "fuchs") {
+		t.Fatalf("overridden German message not indexed unstemmed (want lowercase 'fuchs'): %q", tokens)
+	}
+	if hasToken(tokens, "fuch") {
+		t.Fatalf("overridden German message wrongly stemmed despite the override dropping snowball: %q", tokens)
+	}
+
+	// English message: not overridden, still stems via the global list.
+	upd2 := &fakeUpdate{}
+	if err := b.Build(2, strings.NewReader(englishMsg), upd2); err != nil {
+		t.Fatal(err)
+	}
+	tokens2 := upd2.bodyTokens()
+	if !hasToken(tokens2, "fox") {
+		t.Fatalf("non-overridden English message not indexed correctly: %q", tokens2)
 	}
 }

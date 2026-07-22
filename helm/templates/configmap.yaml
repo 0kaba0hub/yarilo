@@ -401,8 +401,18 @@ data:
       fts_search_read_fallback: {{ $.Values.fts.fts_search_read_fallback }}
       fts_search_timeout_secs: {{ $.Values.fts.fts_search_timeout_secs }}
       fts_search_strict: {{ $.Values.fts.fts_search_strict }}
+      fts_search: {{ $.Values.fts.fts_search | default true }}
       languages: {{ $.Values.fts.languages | toJson }}
       language_filters: {{ $.Values.fts.language_filters | toJson }}
+      {{- with $.Values.fts.fts_language_filters_override }}
+      fts_language_filters_override:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      fts_language_tokenizer_generic_token_maxlen: {{ $.Values.fts.fts_language_tokenizer_generic_token_maxlen | default 0 }}
+      fts_language_tokenizer_address_token_maxlen: {{ $.Values.fts.fts_language_tokenizer_address_token_maxlen | default 0 }}
+      fts_language_tokenizer_generic_algorithm: {{ $.Values.fts.fts_language_tokenizer_generic_algorithm | default "simple" | quote }}
+      fts_language_tokenizer_generic_wb5a: {{ $.Values.fts.fts_language_tokenizer_generic_wb5a | default false }}
+      fts_language_tokenizer_generic_explicit_prefix: {{ $.Values.fts.fts_language_tokenizer_generic_explicit_prefix | default false }}
       fts_detection_sample_bytes: {{ $.Values.fts.fts_detection_sample_bytes }}
       fts_detection_min_runes: {{ $.Values.fts.fts_detection_min_runes }}
       fts_flatcurve_commit_limit: {{ $.Values.fts.fts_flatcurve_commit_limit }}

@@ -1,6 +1,10 @@
 package language
 
-import "github.com/0kaba0hub/yarilo/pkg/fts"
+import (
+	"fmt"
+
+	"github.com/0kaba0hub/yarilo/pkg/fts"
+)
 
 // detectionAlgoVersion is mixed into SettingsChecksum whenever the build
 // algorithm itself changes token output for a fixed language configuration
@@ -38,28 +42,61 @@ type MultiChain struct {
 	chains        []*Chain
 	languages     []string // parallel to chains; chains[0]/languages[0] is the fallback
 	minDetectRune int
+	// overridden records which languages had an explicit
+	// fts_language_filters_override entry (#726 item 4), regardless of
+	// whether its resolved filter list actually differs from the global
+	// default — mixed into SettingsChecksum so the override's mere
+	// presence in config is itself a configuration change that forces a
+	// reindex, not just its resolved effect on tokens.
+	overridden map[string]bool
 }
 
-// NewMultiChain builds one Chain per language, sharing the same filter set
-// and token/address limits. languages must be non-empty; the first entry is
-// the fallback used when detection is skipped (single language configured)
-// or unreliable. minDetectRunes overrides the default reliability threshold
+// NewMultiChain builds one Chain per language, sharing the same token/
+// address limits. languages must be non-empty; the first entry is the
+// fallback used when detection is skipped (single language configured) or
+// unreliable. minDetectRunes overrides the default reliability threshold
 // for the sample text handed to TryDetect/SelectForIndex (0 = package
 // default, see defaultMinDetectSample); #696 makes this tunable
 // (fts_detection_min_runes).
-func NewMultiChain(languages []string, filters []string, tokenMaxLen, addressMaxLen, minDetectRunes int) (*MultiChain, error) {
+//
+// filters is the default filter chain for every language; filtersOverride
+// replaces it for specific languages (#726 item 4) — e.g. uk (no Snowball
+// stemmer) shouldn't carry "snowball" even when other configured languages
+// do. A language absent from filtersOverride uses filters unchanged; a
+// present language's list is a full replacement, not a merge. Every
+// filtersOverride key must also name a configured language — an unknown
+// key (a typo like "ukr") is a configuration error, not silently ignored.
+func NewMultiChain(languages []string, filters []string, filtersOverride map[string][]string, tokenMaxLen, addressMaxLen, minDetectRunes int) (*MultiChain, error) {
 	if len(languages) == 0 {
 		languages = []string{"en"}
+	}
+	langSet := make(map[string]bool, len(languages))
+	for _, lang := range languages {
+		langSet[lang] = true
+	}
+	for lang := range filtersOverride {
+		if !langSet[lang] {
+			return nil, fmt.Errorf("fts/language: fts_language_filters_override key %q is not one of the configured languages %v", lang, languages)
+		}
+	}
+	overridden := make(map[string]bool, len(filtersOverride))
+	for lang := range filtersOverride {
+		overridden[lang] = true
 	}
 	m := &MultiChain{
 		chains:        make([]*Chain, 0, len(languages)),
 		languages:     make([]string, 0, len(languages)),
 		minDetectRune: minDetectRunes,
+		overridden:    overridden,
 	}
 	for _, lang := range languages {
+		langFilters := filters
+		if ov, ok := filtersOverride[lang]; ok {
+			langFilters = ov
+		}
 		c, err := NewChain(Settings{
 			Language:      lang,
-			Filters:       filters,
+			Filters:       langFilters,
 			TokenMaxLen:   tokenMaxLen,
 			AddressMaxLen: addressMaxLen,
 		})
@@ -169,8 +206,16 @@ func (m *MultiChain) SettingsChecksum() uint32 {
 		}
 	}
 	mix(detectionAlgoVersion)
-	for _, c := range m.chains {
+	for i, c := range m.chains {
 		mix(c.SettingsChecksum())
+		if m.overridden[m.languages[i]] {
+			// #726 item 4: the override's mere presence in config is part
+			// of the configuration, even when its resolved filter list
+			// happens to match the global default — mixed in independent
+			// of the per-chain checksum above (which only covers the
+			// RESOLVED Filters/Language/limits, not where they came from).
+			mix(0x726)
+		}
 	}
 	return h
 }

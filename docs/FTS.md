@@ -540,12 +540,19 @@ fts:
   fts_search_read_fallback: true    # see §11 — our scan exists, default safe
   fts_search_timeout: 30s
   fts_search_strict: false          # RFC substring verification of candidates
+  fts_search: true                  # false = SEARCH-only degrade, indexing keeps running (#726)
 
   ## Language chain.
   language_filters: [lowercase, snowball, stopwords]   # default ON
   languages: [en]                   # >1 enables per-part detection (#696)
+  fts_language_filters_override: {} # per-language override, e.g. {uk: [lowercase, stopwords]} (#726)
   fts_detection_sample_bytes: 0     # 0 = default 1024; bytes sampled per part
   fts_detection_min_runes: 0        # 0 = default 10; reliability threshold
+  fts_language_tokenizer_generic_token_maxlen: 0   # 0 = default 30 (#726)
+  fts_language_tokenizer_address_token_maxlen: 0   # 0 = default 250 (#726)
+  fts_language_tokenizer_generic_algorithm: simple # tr29 errors at startup, not yet implemented (#726)
+  fts_language_tokenizer_generic_wb5a: false        # TR29-only, errors if true (#726)
+  fts_language_tokenizer_generic_explicit_prefix: false # TR29-only, errors if true (#726)
 
   ## Decoder (Phase 3).
   fts_decoder_driver: ""            # "" | script | tika
@@ -696,6 +703,42 @@ volume). `appVersion` bump ships with each feature slice.
    Items 5 and 7 change indexed header tokens, so `detectionAlgoVersion`
    (mixed into `MultiChain.SettingsChecksum()`) bumped 2→3 to force
    existing mailboxes through the settings-drift rebuild path.
+   **Config parity ✅ (#726)**: four gaps between what's configurable in
+   the reference and what was hard-coded here.
+   1. `fts_language_tokenizer_generic_token_maxlen` /
+      `fts_language_tokenizer_address_token_maxlen` (0 = defaults 30/250)
+      now reach `NewMultiChain` instead of being hard-coded `0, 0` at both
+      call sites (`yarilo-fts` indexing, session-side query expansion).
+   2. `fts_language_tokenizer_generic_algorithm` accepts `simple`
+      (implemented, default) and `tr29` — `tr29` (and its TR29-only
+      companions `fts_language_tokenizer_generic_wb5a` /
+      `..._explicit_prefix`) reject at startup with a clear error via
+      `language.ValidateTokenizerConfig`, rather than silently falling
+      back to `simple` or no-op'ing. Investigated what `explicit_prefix`
+      actually controls (trailing-`*` prefix-search semantics, #725 item
+      4's own investigation): flatcurve already prefix-matches every term
+      unconditionally (its own `Xapian::Query(OP_WILDCARD, ...)` shape),
+      so the knob would have no visible effect even implemented today —
+      real value only appears with a future exact-match backend (Bleve).
+      Deliberately not implemented now; tracked for the Bleve stream.
+   3. **`fts_search`** (default `true`, #726 item 3): disables SEARCH only
+      — `FTSOptions.SearchEnabled` gates `prepareFTSSearch`'s sole
+      `enabled()` check, degrading every SEARCH to the sequential scan as
+      if FTS weren't configured. Indexing/autoindex/write-through don't
+      check this flag at all, so they keep running — an incident-response
+      knob ("the FTS index/engine is misbehaving, stop querying it,
+      don't lose freshness") distinct from `fts.enabled` (all-or-nothing).
+   4. **Per-language filter override** (`fts_language_filters_override`,
+      map, #726 item 4): a language absent from the map uses the global
+      `language_filters` unchanged; a present language's list is a full
+      replacement, not a merge (e.g. `uk` without `snowball` even though
+      the global default has it, for a mixed `uk`/`ru` deployment).
+      `NewMultiChain` validates every override key names a configured
+      language (typos like `ukr` are a startup error, not silently
+      ignored). The override's mere PRESENCE — not just its resolved
+      effect on filters — is mixed into `MultiChain.SettingsChecksum()`,
+      so adding/removing an override (even to a list identical to the
+      global default) forces a reindex for that language.
 3. **FTS-3**: attachment decoders (script / Tika, #669) + within-message
    attachment text dedup by content hash ✅. Refined by #697: the `script`
    driver caches an optional `TYPES` supported-types/extensions list
