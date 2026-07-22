@@ -41,6 +41,7 @@ func TestGenericTokenizer(t *testing.T) {
 		{"leading apostrophe breaks", "'quoted'", []string{"quoted"}},
 		{"double apostrophe splits", "a''b", []string{"a", "b"}},
 		{"unicode right quote as apostrophe", "l’eau", []string{"l'eau"}},
+		{"fullwidth apostrophe (#725 item 3)", "don＇t", []string{"don't"}},
 		{"unicode words", "привіт світ", []string{"привіт", "світ"}},
 		{"unicode dash breaks", "foo—bar", []string{"foo", "bar"}},
 		{"empty", "", nil},
@@ -147,6 +148,44 @@ func TestAddressTokenizerSearch(t *testing.T) {
 	got = tokenizeAddress(t, true, "plain words")
 	if !sameElements(got, []string{"plain", "words"}) {
 		t.Fatalf("search non-address = %q", got)
+	}
+}
+
+// TestAddressTokenizerPhantomAndTrailing (#725 items 1-2) proves an
+// empty-domain candidate ("user@") is dropped as a phantom token instead of
+// being emitted as a junk whole-address token, and that a trailing '-'
+// (like the existing trailing '.') is trimmed from a real domain before
+// the address is validated/emitted.
+func TestAddressTokenizerPhantomAndTrailing(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          string
+		wantAddress string // "" = no whole-address token expected
+	}{
+		{"empty domain phantom dropped (item 1)", "reply to user@ soon", ""},
+		{"trailing hyphen trimmed (item 2)", "see foo@bar.com- now", "foo@bar.com"},
+		{"trailing dot still trimmed (control)", "see foo@bar.com. now", "foo@bar.com"},
+		{"real address unaffected", "see foo@bar.com now", "foo@bar.com"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tokenizeAddress(t, false, tc.in)
+			hasAddr := false
+			for _, tok := range got {
+				if strings.Contains(tok, "@") {
+					hasAddr = true
+					if tc.wantAddress == "" {
+						t.Fatalf("unexpected whole-address token %q in %q, want none", tok, got)
+					}
+					if tok != tc.wantAddress {
+						t.Fatalf("whole-address token = %q, want %q (all: %q)", tok, tc.wantAddress, got)
+					}
+				}
+			}
+			if tc.wantAddress != "" && !hasAddr {
+				t.Fatalf("no whole-address token found in %q, want %q", got, tc.wantAddress)
+			}
+		})
 	}
 }
 

@@ -539,15 +539,11 @@ func (up *update) SetBuildKey(k fts.BuildKey) (bool, error) {
 		up.uid = k.UID
 	}
 	up.key = k
-	if k.Type == fts.KeyHeader || k.Type == fts.KeyMIMEHeader {
-		name := strings.ToLower(k.HdrName)
-		if !up.seenBool[name] {
-			up.seenBool[name] = true
-			if err := up.doc.AddBooleanTerm(boolPrefix + name); err != nil {
-				return false, err
-			}
-		}
-	}
+	// The header-existence boolean term is NOT set here (#725 item 6): the
+	// reference only records header presence together with at least one
+	// >=min_term_size token actually surviving normTerm, so it's set lazily
+	// in BuildMore once we know that's true — HEADER X-Foo "" (a value
+	// that tokenizes to nothing) must not match.
 	return true, nil
 }
 
@@ -611,6 +607,21 @@ func (up *update) BuildMore(data []byte) error {
 			return err
 		}
 		name := strings.ToLower(up.key.HdrName)
+		if name == "" {
+			// The header-NAME-only build key (#725 item 5, empty HdrName)
+			// only ever reaches the A-pool above — it has no per-field
+			// existence signal of its own.
+			return nil
+		}
+		// Header existence (#725 item 6): set lazily here, now that a real
+		// (>=min_term_size) token for THIS field is confirmed, not
+		// proactively in SetBuildKey.
+		if !up.seenBool[name] {
+			up.seenBool[name] = true
+			if err := up.doc.AddBooleanTerm(boolPrefix + name); err != nil {
+				return err
+			}
+		}
 		if indexedHeaders[name] {
 			p := hdrPrefix + strings.ToUpper(name)
 			return up.addWithSuffixes(p, term, opts.SubstringSearch, opts.MinTermSize)

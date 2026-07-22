@@ -651,6 +651,51 @@ volume). `appVersion` bump ships with each feature slice.
    header tokens are guaranteed identical — HEADER criteria route through
    it uniformly (no per-field exception; Subject included, since we don't
    stem it at index time either).
+   **Tokenizer/build small divergences batch ✅ (#725)**: found by the
+   post-#715 audit, seven items fixed against the reference:
+   1. an address with an empty domain (`user@`) was emitted as a phantom
+      whole-address token — `Address.emitAddress` now requires `@` not be
+      the last byte after trimming;
+   2. a trailing `-` (a valid mid-domain atext byte) wasn't trimmed off the
+      end of a collected domain the way trailing `.` already was — same
+      fix, `TrimRight(addr, ".-")`;
+   3. the fullwidth apostrophe U+FF07 wasn't recognized by `isApostrophe`
+      alongside ASCII `'` and U+2019, so e.g. `don＇t` split into `don`+`t`;
+   4. investigated and **not fixed**: the reference strips a trailing `*`
+      from a token because `*` isn't a break character for it, but in our
+      tokenizer `*` already IS a break character (`asciiWordBreaks`), so
+      `foo*` already tokenizes to `foo` — the trailing case is a non-issue
+      here. A narrower residual divergence (`foo*bar` → one token in the
+      reference, `foo`+`bar` for us) is cosmetic (no recall impact, if
+      anything softer) and tracked as a known divergence in #727, not
+      fixed in this PR;
+   5. the header NAME itself wasn't indexed at all (only its value) — the
+      reference feeds the name into the A-pool so `SEARCH TEXT "list-id"`
+      matches by header name. `buildHeaders` now issues a SEPARATE build
+      key with an empty `HdrName` for the name (A-pool only, per
+      `BuildMore`'s `name == ""` guard) — not the same key as the value,
+      which would otherwise make `HEADER List-Id "list-id"` spuriously
+      match its own name;
+   6. the header-existence boolean term (`B<name>`) was set unconditionally
+      in `SetBuildKey`, even when the value produced zero indexable tokens
+      — the reference only records existence together with at least one
+      real (`>=min_term_size`) token. Moved to `BuildMore`, set lazily on
+      the first real token per field, so `HEADER X-Foo ""` (or any
+      all-too-short value) no longer spuriously matches;
+   7. address headers (From/To/Cc/Bcc/Reply-To/Sender) tokenized the
+      already-RFC2047-decoded text as one blob instead of structured
+      address-list parsing. `addressHeaderText` now calls
+      `net/mail.ParseAddressList` on the RAW (still-encoded) bytes — the
+      reference's own order: decoding RFC2047 BEFORE parsing can turn
+      decoded display-name characters (`(`, `[`, `<`) into RFC 5322
+      comment/special delimiters, corrupting the parse. `net/mail` decodes
+      the encoded-word phrase as part of parsing the raw bytes, so
+      parse-raw-then-decode happens in one call; a parse failure falls back
+      to tokenizing the decoded text as-is.
+
+   Items 5 and 7 change indexed header tokens, so `detectionAlgoVersion`
+   (mixed into `MultiChain.SettingsChecksum()`) bumped 2→3 to force
+   existing mailboxes through the settings-drift rebuild path.
 3. **FTS-3**: attachment decoders (script / Tika, #669) + within-message
    attachment text dedup by content hash ✅. Refined by #697: the `script`
    driver caches an optional `TYPES` supported-types/extensions list

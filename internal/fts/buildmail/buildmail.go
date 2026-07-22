@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/mail"
 	"strings"
 
 	"github.com/emersion/go-message"
@@ -312,6 +313,14 @@ func (b *Builder) walkEntity(st *buildState, e *message.Entity, depth int, upd f
 	}
 }
 
+// addressHeaders are the fields whose value is an RFC 5322 address-list —
+// From/To/Cc/Bcc/Reply-To/Sender get structured parsing before tokenization
+// (#725 item 7) instead of tokenizing the raw decoded text as one blob.
+var addressHeaders = map[string]bool{
+	"from": true, "to": true, "cc": true, "bcc": true,
+	"reply-to": true, "sender": true,
+}
+
 func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd fts.Update) error {
 	keyType := fts.KeyHeader
 	if depth > 0 {
@@ -323,13 +332,28 @@ func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd
 		if !b.headerIndexable(name) {
 			continue
 		}
+		raw := fields.Value()
 		value, err := fields.Text()
 		if err != nil {
-			value = fields.Value() // undecodable encoded-word: index raw
+			value = raw // undecodable encoded-word: index raw
 		}
 		if strings.TrimSpace(value) == "" {
 			continue
 		}
+
+		// The header NAME itself gets its own build key with an empty
+		// HdrName (#725 item 5): it lands only in the A-pool (TEXT search
+		// matches by header name, e.g. "list-id"), never in the per-field
+		// H<NAME> pool alongside the value — otherwise HEADER List-Id
+		// "list-id" would spuriously match its own name.
+		if accept, err := upd.SetBuildKey(fts.BuildKey{UID: st.uid, Type: keyType}); err != nil {
+			return err
+		} else if accept {
+			if err := b.writeDataChain(name, upd); err != nil {
+				return err
+			}
+		}
+
 		accept, err := upd.SetBuildKey(fts.BuildKey{
 			UID:     st.uid,
 			Type:    keyType,
@@ -341,21 +365,54 @@ func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd
 		if !accept {
 			continue
 		}
-		// A fresh session per field: tokenizer state must not leak between
-		// fields (the reference resets the tokenizer per build key). Headers
-		// are not language text (#696 point 2) — always dataChain, never a
-		// detected language, regardless of which part surrounds them.
-		session := b.dataChain.NewIndexSession(func(tok string) error {
-			return upd.BuildMore([]byte(tok))
-		})
-		if err := session.Write([]byte(value)); err != nil {
-			return err
+		tokenizeText := value
+		if addressHeaders[strings.ToLower(name)] {
+			tokenizeText = addressHeaderText(raw, value)
 		}
-		if err := session.Close(); err != nil {
+		if err := b.writeDataChain(tokenizeText, upd); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// writeDataChain runs text through a fresh no-stemming data-chain session
+// (#696 point 2 — headers are not language text) into upd. A fresh session
+// per call: tokenizer state must not leak between build keys (the reference
+// resets the tokenizer per build key).
+func (b *Builder) writeDataChain(text string, upd fts.Update) error {
+	session := b.dataChain.NewIndexSession(func(tok string) error {
+		return upd.BuildMore([]byte(tok))
+	})
+	if err := session.Write([]byte(text)); err != nil {
+		return err
+	}
+	return session.Close()
+}
+
+// addressHeaderText re-derives an address-header's tokenizable text via
+// structured RFC 5322 address-list parsing on the RAW (not RFC2047-decoded)
+// bytes (#725 item 7), mirroring the reference's own parse-then-decode
+// order: decoding RFC2047 encoded-words BEFORE parsing can turn decoded
+// display-name characters ('(', '[', '<') into RFC 5322 comment/special
+// delimiters, corrupting the address-list parse. net/mail.ParseAddressList
+// decodes RFC2047 encoded-words in the display name as part of parsing the
+// raw bytes, so parse-raw-then-decode happens in one call. A parse failure
+// (a garbage header) falls back to the already-decoded value as-is —
+// tokenizing something imperfect beats dropping the header.
+func addressHeaderText(raw, decoded string) string {
+	addrs, err := mail.ParseAddressList(raw)
+	if err != nil || len(addrs) == 0 {
+		return decoded
+	}
+	var buf strings.Builder
+	for _, a := range addrs {
+		buf.WriteString(a.Name)
+		buf.WriteByte(' ')
+		buf.WriteString(a.Address)
+		buf.WriteByte(' ')
+	}
+	return buf.String()
 }
 
 func (b *Builder) buildTextBody(st *buildState, e *message.Entity, mediaType string, upd fts.Update) error {

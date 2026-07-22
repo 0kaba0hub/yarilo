@@ -645,3 +645,110 @@ func TestMultiShardLookupReturnsRealUIDs(t *testing.T) {
 		t.Fatalf("multi-shard lookup = %v, want %v (real UIDs, not interleaved docids)", res.Definite, want)
 	}
 }
+
+// TestHeaderExistenceRequiresRealToken (#725 item 6) proves the
+// header-existence boolean term is set only once a real (>=MinTermSize)
+// token is confirmed for that field, not proactively on SetBuildKey: a
+// value that tokenizes to nothing must not satisfy a HEADER existence
+// probe.
+func TestHeaderExistenceRequiresRealToken(t *testing.T) {
+	ui, _ := testEngine(t, Options{MinTermSize: 2})
+	up, err := ui.BeginUpdate(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := up.SetBuildKey(fts.BuildKey{UID: 1, Type: fts.KeyHeader, HdrName: "x-empty"})
+	if err != nil || !ok {
+		t.Fatalf("SetBuildKey: ok=%v err=%v", ok, err)
+	}
+	if err := up.BuildMore([]byte("a")); err != nil { // below MinTermSize=2
+		t.Fatal(err)
+	}
+	ok, err = up.SetBuildKey(fts.BuildKey{UID: 1, Type: fts.KeyHeader, HdrName: "x-real"})
+	if err != nil || !ok {
+		t.Fatalf("SetBuildKey: ok=%v err=%v", ok, err)
+	}
+	if err := up.BuildMore([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := up.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := func(hdr string) []uint32 {
+		t.Helper()
+		res, err := ui.Lookup(inbox, fts.Query{
+			Terms:    []fts.Term{{Field: fts.FieldHeader, HdrName: hdr}},
+			AndTerms: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Definite
+	}
+	if got := probe("x-empty"); len(got) != 0 {
+		t.Fatalf("HEADER x-empty existence probe = %v, want none (zero real tokens)", got)
+	}
+	if got := probe("x-real"); !reflect.DeepEqual(got, []uint32{1}) {
+		t.Fatalf("HEADER x-real existence probe = %v, want [1]", got)
+	}
+}
+
+// TestHeaderNameIndexedSeparately (#725 item 5) proves the header NAME
+// itself is searchable via TEXT (the A-pool), and that it does NOT also
+// satisfy a HEADER <name> VALUE search for that same literal name — the
+// name and the value are indexed under separate build keys.
+func TestHeaderNameIndexedSeparately(t *testing.T) {
+	ui, _ := testEngine(t, Options{})
+	up, err := ui.BeginUpdate(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The header name build key: empty HdrName, per buildmail's contract.
+	ok, err := up.SetBuildKey(fts.BuildKey{UID: 1, Type: fts.KeyHeader})
+	if err != nil || !ok {
+		t.Fatalf("SetBuildKey (name): ok=%v err=%v", ok, err)
+	}
+	if err := up.BuildMore([]byte("list")); err != nil {
+		t.Fatal(err)
+	}
+	if err := up.BuildMore([]byte("id")); err != nil {
+		t.Fatal(err)
+	}
+	// The value build key: a value that shares no words with the name.
+	ok, err = up.SetBuildKey(fts.BuildKey{UID: 1, Type: fts.KeyHeader, HdrName: "list-id"})
+	if err != nil || !ok {
+		t.Fatalf("SetBuildKey (value): ok=%v err=%v", ok, err)
+	}
+	if err := up.BuildMore([]byte("project")); err != nil {
+		t.Fatal(err)
+	}
+	if err := up.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// TEXT "list" matches — the header NAME reached the A-pool.
+	res, err := ui.Lookup(inbox, fts.Query{
+		Terms:    []fts.Term{{Field: fts.FieldText, Words: []fts.Word{{Variants: []string{"list"}}}}},
+		AndTerms: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(res.Definite, []uint32{1}) {
+		t.Fatalf("TEXT %q = %v, want [1] (header name must reach the A-pool)", "list", res.Definite)
+	}
+
+	// HEADER list-id "list" must NOT match — the name's tokens must not
+	// leak into the per-field H<NAME> pool alongside the value.
+	res, err = ui.Lookup(inbox, fts.Query{
+		Terms:    []fts.Term{{Field: fts.FieldHeader, HdrName: "list-id", Words: []fts.Word{{Variants: []string{"list"}}}}},
+		AndTerms: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != 0 {
+		t.Fatalf("HEADER list-id %q = %v, want none (name tokens must not leak into the value pool)", "list", res.Definite)
+	}
+}

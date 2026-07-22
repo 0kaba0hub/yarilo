@@ -2,14 +2,18 @@ package language
 
 import "github.com/0kaba0hub/yarilo/pkg/fts"
 
-// detectionAlgoVersion is mixed into SettingsChecksum whenever the detection
+// detectionAlgoVersion is mixed into SettingsChecksum whenever the build
 // algorithm itself changes token output for a fixed language configuration
 // (not just the configured language set) — #696 moved from one detection
 // per message to one per body/attachment part, which changes which chain
-// individual parts of a mixed-language message end up indexed under. Bump
-// this whenever such a change happens so existing mailboxes reindex via the
-// settings-drift path instead of silently keeping stale tokens.
-const detectionAlgoVersion = 2
+// individual parts of a mixed-language message end up indexed under. #725
+// bumped it again: header NAMEs are now indexed separately (item 5) and
+// address headers (From/To/Cc/Bcc/Reply-To/Sender) get structured
+// address-list parsing before tokenization (item 7) — both change indexed
+// header tokens. Bump this whenever such a change happens so existing
+// mailboxes reindex via the settings-drift path instead of silently
+// keeping stale tokens.
+const detectionAlgoVersion = 3
 
 // MultiChain holds one Chain per configured language and implements the
 // reference implementation's deliberately ASYMMETRIC multi-language design

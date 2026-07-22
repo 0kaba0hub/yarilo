@@ -138,6 +138,57 @@ func TestBuildMultipart(t *testing.T) {
 	}
 }
 
+// TestAddressHeaderStructuredParsing (#725 item 7) proves address headers
+// are parsed via net/mail.ParseAddressList on the RAW bytes before RFC2047
+// decoding, not by tokenizing the already-decoded text as one blob.
+func TestAddressHeaderStructuredParsing(t *testing.T) {
+	tests := []struct {
+		name       string
+		msg        string
+		wantTokens []string // every one of these must be present
+	}{
+		{
+			// The encoded-word decodes to "Support (Team)" — parentheses
+			// that would be misread as RFC 5322 comment delimiters if
+			// decoding happened BEFORE address-list parsing, corrupting or
+			// dropping the address entirely. Parsing the raw (still-
+			// encoded) bytes first avoids that; net/mail.ParseAddressList
+			// decodes the RFC2047 phrase as part of parsing.
+			name: "RFC2047 display name with parens survives parsing",
+			msg: "From: =?utf-8?Q?Support_=28Team=29?= <user@example.com>\r\n" +
+				"Content-Type: text/plain; charset=utf-8\r\n\r\nbody\r\n",
+			wantTokens: []string{"support", "team", "user@example.com"},
+		},
+		{
+			// A header that doesn't parse as a valid address list falls
+			// back to tokenizing the decoded text as-is — imperfect
+			// tokenization beats dropping the header.
+			name: "unparseable address header falls back to decoded text",
+			msg: "From: @@@ garbage @@@\r\n" +
+				"Content-Type: text/plain; charset=utf-8\r\n\r\nbody\r\n",
+			wantTokens: []string{"garbage"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			upd := &fakeUpdate{}
+			b := New(Options{}, mustChain(t))
+			if err := b.Build(1, strings.NewReader(tc.msg), upd); err != nil {
+				t.Fatal(err)
+			}
+			from := upd.find(fts.KeyHeader, "from")
+			if from == nil {
+				t.Fatal("missing from header key")
+			}
+			for _, want := range tc.wantTokens {
+				if !hasToken(from.tokens, want) {
+					t.Fatalf("from tokens = %q, want %q among them", from.tokens, want)
+				}
+			}
+		})
+	}
+}
+
 func TestHeaderIncludeExclude(t *testing.T) {
 	tests := []struct {
 		name     string
