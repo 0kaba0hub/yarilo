@@ -49,7 +49,10 @@ func isBreakRune(r rune) bool {
 }
 
 func isApostrophe(r rune) bool {
-	return r == '\'' || r == 0x2019 // U+2019 normalized to U+0027 on append
+	// U+2019 (right single quotation mark) and U+FF07 (fullwidth
+	// apostrophe, #725 item 3) both get the same continuation treatment as
+	// ASCII '\'' — normalized to U+0027 on append.
+	return r == '\'' || r == 0x2019 || r == 0xFF07
 }
 
 var base64Class = [256]bool{}

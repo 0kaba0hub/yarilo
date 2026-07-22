@@ -58,10 +58,17 @@ func NewAddress(parent *Generic, maxLen int, search bool) *Address {
 }
 
 func (a *Address) emitAddress(emit EmitFunc) error {
-	addr := strings.TrimRight(string(a.word), ".")
+	// Trailing '.' and '-' are stripped (#725 items 1-2): both are valid
+	// mid-domain atext/label bytes the collector accumulates, but neither
+	// can trail a real domain, mirroring the reference's own trimming.
+	addr := strings.TrimRight(string(a.word), ".-")
 	a.word = a.word[:0]
 	a.state = addrNone
-	if len(addr) > a.maxLen || !strings.Contains(addr, "@") {
+	at := strings.IndexByte(addr, '@')
+	// at < 0: no '@' at all. at == len(addr)-1: '@' is the last byte, i.e.
+	// an empty domain after trimming (e.g. "user@", "user@-") — the
+	// reference drops these as phantom tokens, not real addresses.
+	if at < 0 || at == len(addr)-1 || len(addr) > a.maxLen {
 		return nil
 	}
 	return emit(addr)

@@ -797,9 +797,38 @@ type FTSConfig struct {
 	SearchReadFallback bool   `koanf:"fts_search_read_fallback"`
 	SearchTimeoutSecs  int    `koanf:"fts_search_timeout_secs"`
 	SearchStrict       bool   `koanf:"fts_search_strict"`
+	// Search disables FTS SEARCH while indexing keeps running (#726 item
+	// 3) — incident degradation (bad query results, engine misbehaving)
+	// without losing index freshness. Sessions treat Search=false as "no
+	// FTS filter" (sequential scan); autoindex/write-through indexing is
+	// unaffected, since it never checks this flag.
+	Search bool `koanf:"fts_search"`
 
 	Languages       []string `koanf:"languages"`
 	LanguageFilters []string `koanf:"language_filters"`
+	// LanguageFiltersOverride replaces LanguageFilters for specific
+	// languages (#726 item 4) — e.g. a language with no Snowball stemmer
+	// (uk) shouldn't carry "snowball" in its chain even though other
+	// configured languages do. A language absent from this map uses
+	// LanguageFilters unchanged; a present language's list is a full
+	// replacement, not a merge. Every key must also appear in Languages —
+	// validated at chain construction (catches typos like "ukr").
+	LanguageFiltersOverride map[string][]string `koanf:"fts_language_filters_override"`
+	// LanguageTokenMaxLen / LanguageAddressMaxLen (#726 item 1) are the
+	// generic/address tokenizer byte caps, 0 = language package defaults
+	// (30 / 250) — the most common operator tunings for index size vs.
+	// long-token searchability.
+	LanguageTokenMaxLen   int `koanf:"fts_language_tokenizer_generic_token_maxlen"`
+	LanguageAddressMaxLen int `koanf:"fts_language_tokenizer_address_token_maxlen"`
+	// LanguageTokenizerAlgorithm (#726 item 2): "simple" (default, the only
+	// one implemented) or "tr29" — accepted but rejected at startup with a
+	// clear error until the TR29 tokenizer lands (blocked on the Bleve
+	// stream). LanguageTokenizerWB5A / LanguageTokenizerExplicitPrefix are
+	// TR29-only knobs, also accepted-but-rejected-if-true for the same
+	// reason: a silent no-op would be worse than a clear startup error.
+	LanguageTokenizerAlgorithm      string `koanf:"fts_language_tokenizer_generic_algorithm"`
+	LanguageTokenizerWB5A           bool   `koanf:"fts_language_tokenizer_generic_wb5a"`
+	LanguageTokenizerExplicitPrefix bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
 
 	FlatcurveCommitLimit int `koanf:"fts_flatcurve_commit_limit"`
 	FlatcurveMinTermSize int `koanf:"fts_flatcurve_min_term_size"`
@@ -1554,14 +1583,16 @@ func Load(path string) (*Config, error) {
 			CloneFlushDelay:   10,
 		},
 		FTS: FTSConfig{
-			Mode:               "remote",
-			Listen:             ":9106",
-			CommitLimit:        500,
-			SearchAddMissing:   "body-search-only",
-			SearchReadFallback: true,
-			SearchTimeoutSecs:  30,
-			Languages:          []string{"en"},
-			LanguageFilters:    []string{"lowercase", "snowball", "stopwords"},
+			Mode:                       "remote",
+			Listen:                     ":9106",
+			CommitLimit:                500,
+			SearchAddMissing:           "body-search-only",
+			SearchReadFallback:         true,
+			SearchTimeoutSecs:          30,
+			Search:                     true,
+			Languages:                  []string{"en"},
+			LanguageFilters:            []string{"lowercase", "snowball", "stopwords"},
+			LanguageTokenizerAlgorithm: "simple",
 
 			FlatcurveCommitLimit:     500,
 			FlatcurveMinTermSize:     2,

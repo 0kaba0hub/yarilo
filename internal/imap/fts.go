@@ -61,9 +61,17 @@ type FTSOptions struct {
 	// autoindex throttle forwarded to the service.
 	Autoindex bool
 	MaxRecent int
+	// SearchEnabled gates SEARCH only (#726 item 3, fts_search) — false
+	// degrades every SEARCH to the sequential scan (as if FTS weren't
+	// configured) while indexing/autoindex/write-through keep running
+	// unaffected: an incident-response knob for "the FTS index/engine is
+	// misbehaving, stop querying it, but don't let the index go stale
+	// while we investigate." Distinct from fts.enabled (all-or-nothing,
+	// including indexing) at the config layer.
+	SearchEnabled bool
 }
 
-func (o FTSOptions) enabled() bool { return o.Client != nil && o.Chain != nil }
+func (o FTSOptions) enabled() bool { return o.Client != nil && o.Chain != nil && o.SearchEnabled }
 
 // ftsMailboxRef maps the selected folder to the wire mailbox identity.
 func ftsMailboxRef(f *mailbox.Folder) fts.MailboxRef {

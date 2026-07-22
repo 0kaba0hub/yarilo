@@ -273,14 +273,15 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaClone:           quotaClone,
 			QuotaCloneFlushDelay: quotaCloneFlushDelay,
 			FTS: imapsvr.FTSOptions{
-				Client:       ftsClient,
-				Chain:        ftsChain,
-				AddMissing:   cfg.FTS.SearchAddMissing,
-				ReadFallback: cfg.FTS.SearchReadFallback,
-				Timeout:      time.Duration(cfg.FTS.SearchTimeoutSecs) * time.Second,
-				Strict:       cfg.FTS.SearchStrict,
-				Autoindex:    cfg.FTS.Autoindex,
-				MaxRecent:    cfg.FTS.AutoindexMaxRecentMsgs,
+				Client:        ftsClient,
+				Chain:         ftsChain,
+				AddMissing:    cfg.FTS.SearchAddMissing,
+				ReadFallback:  cfg.FTS.SearchReadFallback,
+				Timeout:       time.Duration(cfg.FTS.SearchTimeoutSecs) * time.Second,
+				Strict:        cfg.FTS.SearchStrict,
+				Autoindex:     cfg.FTS.Autoindex,
+				MaxRecent:     cfg.FTS.AutoindexMaxRecentMsgs,
+				SearchEnabled: cfg.FTS.Search,
 			},
 			ACLEnabled:           cfg.ACL.Enabled,
 			ACLDefaultsFromInbox: cfg.ACL.DefaultsFromInbox,
@@ -1161,7 +1162,16 @@ func buildFTS(cfg *config.Config) (ftsproto.Client, *language.MultiChain, error)
 	if fc.Addr == "" {
 		return nil, nil, fmt.Errorf("fts.fts_addr is required in remote mode")
 	}
-	chain, err := language.NewMultiChain(languagesOrDefault(fc.Languages), fc.LanguageFilters, 0, 0, fc.DetectionMinRunes)
+	if err := language.ValidateTokenizerConfig(fc.LanguageTokenizerAlgorithm, fc.LanguageTokenizerWB5A, fc.LanguageTokenizerExplicitPrefix); err != nil {
+		return nil, nil, fmt.Errorf("fts tokenizer config: %w", err)
+	}
+	// The session side must build the IDENTICAL chain set the yarilo-fts
+	// service indexes with (same languages, same per-language filters,
+	// same token/address limits) — otherwise query expansion (#726 item 4:
+	// per-language filter overrides) would diverge from what was actually
+	// indexed.
+	chain, err := language.NewMultiChain(languagesOrDefault(fc.Languages), fc.LanguageFilters, fc.LanguageFiltersOverride,
+		fc.LanguageTokenMaxLen, fc.LanguageAddressMaxLen, fc.DetectionMinRunes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fts language chain: %w", err)
 	}

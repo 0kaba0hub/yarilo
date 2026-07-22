@@ -63,9 +63,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := language.ValidateTokenizerConfig(fc.LanguageTokenizerAlgorithm, fc.LanguageTokenizerWB5A, fc.LanguageTokenizerExplicitPrefix); err != nil {
+		slog.Error("tokenizer config invalid", "err", err)
+		os.Exit(1)
+	}
+
 	locker := buildLocker(cfg)
 	resolver := backend.BuildResolver(cfg)
-	chain, err := language.NewMultiChain(languagesOr(fc.Languages, "en"), fc.LanguageFilters, 0, 0, fc.DetectionMinRunes)
+	chain, err := language.NewMultiChain(languagesOr(fc.Languages, "en"), fc.LanguageFilters, fc.LanguageFiltersOverride,
+		fc.LanguageTokenMaxLen, fc.LanguageAddressMaxLen, fc.DetectionMinRunes)
 	if err != nil {
 		slog.Error("language chain init failed", "err", err)
 		os.Exit(1)

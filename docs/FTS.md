@@ -540,12 +540,19 @@ fts:
   fts_search_read_fallback: true    # see §11 — our scan exists, default safe
   fts_search_timeout: 30s
   fts_search_strict: false          # RFC substring verification of candidates
+  fts_search: true                  # false = SEARCH-only degrade, indexing keeps running (#726)
 
   ## Language chain.
   language_filters: [lowercase, snowball, stopwords]   # default ON
   languages: [en]                   # >1 enables per-part detection (#696)
+  fts_language_filters_override: {} # per-language override, e.g. {uk: [lowercase, stopwords]} (#726)
   fts_detection_sample_bytes: 0     # 0 = default 1024; bytes sampled per part
   fts_detection_min_runes: 0        # 0 = default 10; reliability threshold
+  fts_language_tokenizer_generic_token_maxlen: 0   # 0 = default 30 (#726)
+  fts_language_tokenizer_address_token_maxlen: 0   # 0 = default 250 (#726)
+  fts_language_tokenizer_generic_algorithm: simple # tr29 errors at startup, not yet implemented (#726)
+  fts_language_tokenizer_generic_wb5a: false        # TR29-only, errors if true (#726)
+  fts_language_tokenizer_generic_explicit_prefix: false # TR29-only, errors if true (#726)
 
   ## Decoder (Phase 3).
   fts_decoder_driver: ""            # "" | script | tika
@@ -566,6 +573,81 @@ fts:
 
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
 volume). `appVersion` bump ships with each feature slice.
+
+### Migration notes: `dovecot.conf` → `yarilo.yaml` (#727)
+
+Config keys are named to track the reference's own `fts_flatcurve_*` /
+`fts_*` naming closely, but a few values and shapes need translation, not a
+literal copy:
+
+- **`fts_message_max_size`**: yarilo's `0` means unlimited. The reference
+  rejects a literal `0` at startup and spells "no limit" as the keyword
+  `unlimited` — copying a numeric `0` across from a reference config that
+  actually meant "reject anything over 0 bytes" (not the common case, but
+  possible) would silently flip its meaning; copying the reference's
+  `unlimited` keyword across as literal text would fail to parse here.
+  Translate `unlimited` → `0`, and any other reference value across as
+  the same byte count.
+- **Time values**: the reference uses TIME strings (`"30s"`, `"5s"`, …).
+  yarilo uses bare integers with the unit fixed in the key name —
+  `fts_search_timeout_secs` (seconds), `fts_flatcurve_rotate_time`
+  (milliseconds). Strip the unit suffix and convert if the reference value
+  used a different unit than the yarilo key expects (e.g. reference
+  `"5s"` → yarilo `fts_flatcurve_rotate_time: 5000`, not `5`).
+- **`fts_decoder_driver`**: yarilo's "disabled" value is the literal string
+  `none`; the reference uses an empty string. An empty string here is
+  also accepted as "disabled" (see `decoder.New`), so this is forgiving,
+  but `none` is the canonical yarilo spelling going forward.
+- **`fts_decoder_script_addr`**: a superset of the reference's plain
+  socket-path value — accepts `unix:///path/to.sock` (a bare reference
+  socket path becomes `unix://` + that same path) or `host:port` for a
+  standalone Deployment/Service the reference has no equivalent topology
+  for.
+
+### Known divergences (#727)
+
+Deliberate differences from the reference, kept because the tradeoff was
+evaluated and accepted — not gaps to close silently:
+
+- **Subject is indexed via the no-stemming data chain** (#696), unlike the
+  reference, which stems Subject/Comments/Keywords like body text.
+  Prefix-wildcard search (flatcurve's own `Xapian::Query(OP_WILDCARD, ...)`
+  shape, unconditional on every term) compensates when the query word's
+  stem happens to be a PREFIX of the indexed unstemmed word (e.g. English
+  `run` as a prefix of indexed `running`) — but not when a language's
+  stemming rule doesn't produce a prefix relationship (e.g. Russian
+  `бежать`/`бегу` share no common prefix with their stem; German
+  compounding can move the stem to the middle of the surface form). A
+  Subject search in those languages may miss an inflected form the
+  reference's stemmed index would have caught.
+- **No ICU normalizer yet**: no diacritics folding, so `café` does not
+  match a search for `cafe`. Tracked on the FTS-2 roadmap (§14), not
+  started.
+- **Mid-token `*` tokenizes differently** (#725 item 4's own
+  investigation): the reference treats `*` as a token-continuation
+  character in its generic tokenizer (not a break), so `foo*bar` is one
+  token there; yarilo's tokenizer treats `*` as a break character, so
+  `foo*bar` becomes two tokens (`foo`, `bar`). No practical recall impact
+  — if anything, treating `*` as a break is the softer behavior (it can
+  only ever match MORE, never fewer, real-world messages containing a
+  literal asterisk mid-word) — kept as a known, accepted divergence rather
+  than fixed, since replicating it exactly would need `*` to stop being a
+  break character everywhere, which has its own tokenization
+  consequences elsewhere in the break table.
+- **RELEVANCY excludes score-less UIDs from normalization** (`internal/imap/fts.go`'s
+  `relevancyScores`): a UID matched by a stripped non-FTS criterion but
+  absent from the engine's own score map is floored at `1`, not folded
+  into the min-max range via an implicit `0.0` the way the reference's
+  plain map lookup would — that implicit zero would otherwise drag the
+  whole result set's low end down and compress every genuine score toward
+  100. An improvement over the reference's own behavior, not a gap.
+- **Rescan does targeted deletes against the exact missing-UID list**
+  (`internal/fts/flatcurve/engine.go`'s `Rescan`), rather than the
+  reference's delete-everything-above-the-lowest-missing-UID reindex
+  storm. Also an improvement, already tracked in §12's comparison table
+  (Rescan row) — repeated here since it's the kind of divergence an
+  operator diffing behavior against the reference might otherwise flag
+  as a bug.
 
 ---
 
@@ -651,6 +733,87 @@ volume). `appVersion` bump ships with each feature slice.
    header tokens are guaranteed identical — HEADER criteria route through
    it uniformly (no per-field exception; Subject included, since we don't
    stem it at index time either).
+   **Tokenizer/build small divergences batch ✅ (#725)**: found by the
+   post-#715 audit, seven items fixed against the reference:
+   1. an address with an empty domain (`user@`) was emitted as a phantom
+      whole-address token — `Address.emitAddress` now requires `@` not be
+      the last byte after trimming;
+   2. a trailing `-` (a valid mid-domain atext byte) wasn't trimmed off the
+      end of a collected domain the way trailing `.` already was — same
+      fix, `TrimRight(addr, ".-")`;
+   3. the fullwidth apostrophe U+FF07 wasn't recognized by `isApostrophe`
+      alongside ASCII `'` and U+2019, so e.g. `don＇t` split into `don`+`t`;
+   4. investigated and **not fixed**: the reference strips a trailing `*`
+      from a token because `*` isn't a break character for it, but in our
+      tokenizer `*` already IS a break character (`asciiWordBreaks`), so
+      `foo*` already tokenizes to `foo` — the trailing case is a non-issue
+      here. A narrower residual divergence (`foo*bar` → one token in the
+      reference, `foo`+`bar` for us) is cosmetic (no recall impact, if
+      anything softer) and tracked as a known divergence in #727, not
+      fixed in this PR;
+   5. the header NAME itself wasn't indexed at all (only its value) — the
+      reference feeds the name into the A-pool so `SEARCH TEXT "list-id"`
+      matches by header name. `buildHeaders` now issues a SEPARATE build
+      key with an empty `HdrName` for the name (A-pool only, per
+      `BuildMore`'s `name == ""` guard) — not the same key as the value,
+      which would otherwise make `HEADER List-Id "list-id"` spuriously
+      match its own name;
+   6. the header-existence boolean term (`B<name>`) was set unconditionally
+      in `SetBuildKey`, even when the value produced zero indexable tokens
+      — the reference only records existence together with at least one
+      real (`>=min_term_size`) token. Moved to `BuildMore`, set lazily on
+      the first real token per field, so `HEADER X-Foo ""` (or any
+      all-too-short value) no longer spuriously matches;
+   7. address headers (From/To/Cc/Bcc/Reply-To/Sender) tokenized the
+      already-RFC2047-decoded text as one blob instead of structured
+      address-list parsing. `addressHeaderText` now calls
+      `net/mail.ParseAddressList` on the RAW (still-encoded) bytes — the
+      reference's own order: decoding RFC2047 BEFORE parsing can turn
+      decoded display-name characters (`(`, `[`, `<`) into RFC 5322
+      comment/special delimiters, corrupting the parse. `net/mail` decodes
+      the encoded-word phrase as part of parsing the raw bytes, so
+      parse-raw-then-decode happens in one call; a parse failure falls back
+      to tokenizing the decoded text as-is.
+
+   Items 5 and 7 change indexed header tokens, so `detectionAlgoVersion`
+   (mixed into `MultiChain.SettingsChecksum()`) bumped 2→3 to force
+   existing mailboxes through the settings-drift rebuild path.
+   **Config parity ✅ (#726)**: four gaps between what's configurable in
+   the reference and what was hard-coded here.
+   1. `fts_language_tokenizer_generic_token_maxlen` /
+      `fts_language_tokenizer_address_token_maxlen` (0 = defaults 30/250)
+      now reach `NewMultiChain` instead of being hard-coded `0, 0` at both
+      call sites (`yarilo-fts` indexing, session-side query expansion).
+   2. `fts_language_tokenizer_generic_algorithm` accepts `simple`
+      (implemented, default) and `tr29` — `tr29` (and its TR29-only
+      companions `fts_language_tokenizer_generic_wb5a` /
+      `..._explicit_prefix`) reject at startup with a clear error via
+      `language.ValidateTokenizerConfig`, rather than silently falling
+      back to `simple` or no-op'ing. Investigated what `explicit_prefix`
+      actually controls (trailing-`*` prefix-search semantics, #725 item
+      4's own investigation): flatcurve already prefix-matches every term
+      unconditionally (its own `Xapian::Query(OP_WILDCARD, ...)` shape),
+      so the knob would have no visible effect even implemented today —
+      real value only appears with a future exact-match backend (Bleve).
+      Deliberately not implemented now; tracked for the Bleve stream.
+   3. **`fts_search`** (default `true`, #726 item 3): disables SEARCH only
+      — `FTSOptions.SearchEnabled` gates `prepareFTSSearch`'s sole
+      `enabled()` check, degrading every SEARCH to the sequential scan as
+      if FTS weren't configured. Indexing/autoindex/write-through don't
+      check this flag at all, so they keep running — an incident-response
+      knob ("the FTS index/engine is misbehaving, stop querying it,
+      don't lose freshness") distinct from `fts.enabled` (all-or-nothing).
+   4. **Per-language filter override** (`fts_language_filters_override`,
+      map, #726 item 4): a language absent from the map uses the global
+      `language_filters` unchanged; a present language's list is a full
+      replacement, not a merge (e.g. `uk` without `snowball` even though
+      the global default has it, for a mixed `uk`/`ru` deployment).
+      `NewMultiChain` validates every override key names a configured
+      language (typos like `ukr` are a startup error, not silently
+      ignored). The override's mere PRESENCE — not just its resolved
+      effect on filters — is mixed into `MultiChain.SettingsChecksum()`,
+      so adding/removing an override (even to a list identical to the
+      global default) forces a reindex for that language.
 3. **FTS-3**: attachment decoders (script / Tika, #669) + within-message
    attachment text dedup by content hash ✅. Refined by #697: the `script`
    driver caches an optional `TYPES` supported-types/extensions list

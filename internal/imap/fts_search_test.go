@@ -77,7 +77,7 @@ func (f *fakeFTS) Close() error                        { return nil }
 func startFTSTestServer(t *testing.T, fake *fakeFTS, autoindex bool) *imapclient.Client {
 	t.Helper()
 	set := language.DefaultSettings()
-	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, nil, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,12 +87,13 @@ func startFTSTestServer(t *testing.T, fake *fakeFTS, autoindex bool) *imapclient
 		Resolver: &mailbox.Resolver{Root: t.TempDir(), HomeTemplate: "%d/%n"},
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 		FTS: imapserver.FTSOptions{
-			Client:       fake,
-			Chain:        chain,
-			AddMissing:   "body-search-only",
-			ReadFallback: true,
-			Timeout:      3 * time.Second,
-			Autoindex:    autoindex,
+			Client:        fake,
+			Chain:         chain,
+			AddMissing:    "body-search-only",
+			ReadFallback:  true,
+			Timeout:       3 * time.Second,
+			Autoindex:     autoindex,
+			SearchEnabled: true,
 		},
 	}
 	srv := imapserver.New(opts)
@@ -474,5 +475,67 @@ func TestSearchNoRelevancyWithoutScores(t *testing.T) {
 	}
 	if len(data.Relevancy) != 0 {
 		t.Errorf("Relevancy = %v, want empty (fallback scan has no scores)", data.Relevancy)
+	}
+}
+
+// TestSearchDisabledFallsBackToScanWithoutTouchingFTS (#726 item 3) proves
+// fts_search=false degrades SEARCH to the sequential scan — as if FTS
+// weren't configured at all — without ever calling into the FTS client,
+// while leaving indexing/autoindex untouched (this test only exercises the
+// SEARCH path; Index/Prepend/Expunge don't check SearchEnabled at all, by
+// inspection of prepareFTSSearch's sole use of enabled()).
+func TestSearchDisabledFallsBackToScanWithoutTouchingFTS(t *testing.T) {
+	fake := &fakeFTS{lookup: fts.Result{Definite: []uint32{1, 2, 3}}, lastUID: 100}
+	set := language.DefaultSettings()
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, nil, set.TokenMaxLen, set.AddressMaxLen, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := imapserver.Options{
+		Mailbox:  maildir.New(),
+		Index:    file.New(),
+		Resolver: &mailbox.Resolver{Root: t.TempDir(), HomeTemplate: "%d/%n"},
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		FTS: imapserver.FTSOptions{
+			Client:        fake,
+			Chain:         chain,
+			AddMissing:    "body-search-only",
+			ReadFallback:  true,
+			Timeout:       3 * time.Second,
+			SearchEnabled: false,
+		},
+	}
+	srv := imapserver.New(opts)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	appendBody(t, c, "onlyword payload")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	uids := searchBody(t, c, "onlyword")
+	if len(uids) != 1 || uids[0] != 1 {
+		t.Fatalf("SEARCH BODY with fts_search=false = %v, want [1] via the raw scan", uids)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.queries) != 0 {
+		t.Fatalf("FTS Lookup called %d times, want 0 — fts_search=false must bypass FTS entirely", len(fake.queries))
 	}
 }
