@@ -838,6 +838,16 @@ type FTSConfig struct {
 	// search correctness (a term's posting list must include every message
 	// that actually contains it). See #669.
 	DedupBodyParts bool `koanf:"fts_dedup_body_parts"`
+
+	// DetectionSampleBytes bounds how many raw bytes of each body/attachment
+	// part are read up front to derive its language-detection sample
+	// (0 = buildmail's own default). Only matters with 2+ Languages
+	// configured. See #696.
+	DetectionSampleBytes int `koanf:"fts_detection_sample_bytes"`
+	// DetectionMinRunes overrides the minimum sample length (in runes) below
+	// which detection is considered unreliable and falls back to the first
+	// configured language (0 = language package's own default). See #696.
+	DetectionMinRunes int `koanf:"fts_detection_min_runes"`
 }
 
 // LocksServiceConfig configures the standalone yarilo-locks process.

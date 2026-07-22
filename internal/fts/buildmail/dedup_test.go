@@ -209,11 +209,11 @@ func TestBuildBodyTextPartialReadErrorConsistentAcrossDedup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			st := &buildState{uid: 1, remaining: -1, chain: chain}
+			st := &buildState{uid: 1, remaining: -1}
 			if dedup {
 				st.seenHashes = make(map[uint64]struct{})
 			}
-			if err := b.buildBodyText(st, "text/plain", producePartialThenError, upd); err != nil {
+			if err := b.buildBodyText(st, chain, "text/plain", producePartialThenError, upd); err != nil {
 				t.Fatalf("buildBodyText: %v", err)
 			}
 			if !hasToken(upd.bodyTokens(), "partial") {

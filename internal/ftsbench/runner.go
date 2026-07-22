@@ -79,7 +79,7 @@ func Run(cfg Config) (Report, error) {
 	}
 
 	set := language.DefaultSettings()
-	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen)
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
 		return Report{}, fmt.Errorf("ftsbench: language chain: %w", err)
 	}

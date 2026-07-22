@@ -77,7 +77,7 @@ func (f *fakeFTS) Close() error                        { return nil }
 func startFTSTestServer(t *testing.T, fake *fakeFTS, autoindex bool) *imapclient.Client {
 	t.Helper()
 	set := language.DefaultSettings()
-	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen)
+	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

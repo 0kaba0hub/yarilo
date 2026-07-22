@@ -2,21 +2,27 @@ package language
 
 import "github.com/abadojack/whatlanggo"
 
-// minDetectSample is the minimum sample length (in runes) below which
+// defaultMinDetectSample is the minimum sample length (in runes) below which
 // detection is considered unreliable, mirroring the reference implementation's
-// SHORT/UNKNOWN fallback (per-message language detection falls back to the
+// SHORT/UNKNOWN fallback (per-part language detection falls back to the
 // first configured language when there isn't enough text to classify).
 // whatlanggo's own trigram model needs a comparable amount of text to
-// produce a stable result; below this we don't even bother calling it.
-const minDetectSample = 10
+// produce a stable result; below this we don't even bother calling it. Used
+// when MultiChain wasn't given an explicit override (see NewMultiChain).
+const defaultMinDetectSample = 10
 
 // detectLanguage restricts detection to candidates (mirroring the reference
 // implementation's language_match_lists — Norwegian bokmål/nynorsk etc. both
-// collapse to their base ISO 639-1 code the same way). Returns ok=false when
-// the sample is too short or the result isn't reliable enough to trust —
-// callers must fall back to the first configured language, never guess.
-func detectLanguage(sample string, candidates []string) (lang string, ok bool) {
-	if len([]rune(sample)) < minDetectSample {
+// collapse to their base ISO 639-1 code the same way). minRunes overrides
+// defaultMinDetectSample when > 0 (#696: tunable detection threshold).
+// Returns ok=false when the sample is too short or the result isn't
+// reliable enough to trust — callers must fall back to the first configured
+// language, never guess.
+func detectLanguage(sample string, candidates []string, minRunes int) (lang string, ok bool) {
+	if minRunes <= 0 {
+		minRunes = defaultMinDetectSample
+	}
+	if len([]rune(sample)) < minRunes {
 		return "", false
 	}
 	whitelist := make(map[whatlanggo.Lang]bool, len(candidates))
