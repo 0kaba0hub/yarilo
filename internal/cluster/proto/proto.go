@@ -86,7 +86,9 @@ type LookupResult struct {
 }
 
 // Lookup asks the director for the backend address for the given username.
-// tag restricts routing to backends with that tag; pass "" for the full ring.
+// tag restricts routing to backends with that tag; pass "" for the untagged
+// pool (#737 — there is no full-ring mode; every caller belongs to exactly
+// one tag-pool).
 // Returns LookupResult on success, or an error if no backends are available.
 func (c *Conn) Lookup(id, username, tag string) (LookupResult, error) {
 	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s\t%s", id, TabEscape(username), tag)); err != nil {

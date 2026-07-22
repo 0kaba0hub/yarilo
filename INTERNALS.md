@@ -158,6 +158,21 @@ LOOKUP\t<username>\t<tag>\n
 → FAIL\t<reason>\n
 ```
 
+### yarilo's actual LOOKUP tag semantics (#737)
+
+The wire format is `LOOKUP\t{id}\t{user}\t{tag}` (`internal/cluster/proto`) —
+the tag field is **mandatory**, always sent by every client, including when
+a login pod has no tag configured. There is no "full ring, ignore all tags"
+mode in either the reference implementation or yarilo: `""` means the
+*untagged pool* (backends with no tag set), not "any tag." A login pod's
+`director_tag` config (or `login.Options.Tag` / `lmtplogin.Options.DirectorTag`
+in-process) must match the tag of the backend pool it serves — per
+`DEPLOYMENT.md`'s tag-based sharding model, one login Deployment maps to
+exactly one tag-pool. In a deployment with no tags configured at all, every
+backend has tag `""`, so `LOOKUP` with `tag=""` is equivalent to routing
+over the full ring — this is why untagged/standalone deployments see no
+behavior change.
+
 ---
 
 ## 2. yarilo-auth — Authentication Protocol
@@ -193,7 +208,7 @@ Notes:
 
 ### Server → Client Responses:
 ```
-OK\t<id>\tuser=<username>\t[home=<dir>]\t[mail=<loc>]\t[uid=<n>]\t[gid=<n>]\t[proxy]\t[proxy_maybe]\t[host=<h>]\t[port=<p>]\t[destuser=<u>]\t[pass=<p>]\t[nologin]\t[allow_nets=<cidr,…>]\t[token=<64hex>]\n
+OK\t<id>\tuser=<username>\t[home=<dir>]\t[mail=<loc>]\t[uid=<n>]\t[gid=<n>]\t[proxy]\t[proxy_maybe]\t[host=<h>]\t[port=<p>]\t[destuser=<u>]\t[pass=<p>]\t[nologin]\t[allow_nets=<cidr,…>]\t[director_tag=<tag>]\t[token=<64hex>]\n
 FAIL\t<id>\t[temp_fail]\t[authz_fail]\t[user_disabled]\t[pass_expired]\t[reason=<str>]\n
 CONT\t<id>\t<base64_challenge>\n
 ```
@@ -206,6 +221,7 @@ FAIL\t<id>\t[reason=not-configured|reason=bad-request]\n
 
 - `token=<64hex>` — present in OK when `auth.token.ttl_seconds > 0` AND `session=<id>` was supplied in the AUTH request. 32-byte random value (hex-encoded), valid for one VERIFY call within the configured TTL.
 - `allow_nets=<cidr,…>` — comma-separated CIDR/IP list from passdb. The login pod enforces this before forwarding to the backend.
+- `director_tag=<tag>` (#746) — per-user director backend tag, sourced from a passdb or userdb `director_tag` extra field (SQL: an ordinary column in `password_query` or `user_query` — no driver code change needed, same generic column-forwarding mechanism as `allow_nets`). When present, the login pod's `directorLookup` uses this tag instead of its static `director_tag` config (#737) for that one user's `LOOKUP`. Lets a single shared login fleet route different users to different tag-pools, as opposed to the static model of one dedicated login Deployment per tag-pool. Absent means no per-user override.
 
 ### passdb Chain:
 ```

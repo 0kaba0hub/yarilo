@@ -72,6 +72,13 @@ type AuthResponse struct {
 	// "over quota" marker compared against quota_over_status_mask at login.
 	QuotaOverFlag string
 
+	// DirectorTag is the per-user director backend tag (#746), sourced
+	// from a passdb or userdb `director_tag=` extra field. Empty means
+	// no per-user override — the login component's static director_tag
+	// applies. Lets a shared login fleet route different users to
+	// different tag-pools without a dedicated login Deployment per tag.
+	DirectorTag string
+
 	// VolatileDir is the VOLATILEDIR modifier from the mail location (or
 	// direct volatile_dir= userdb field). Carries the raw template string
 	// (%u/%n/%d/%h unexpanded) — callers expand it against the resolved
@@ -392,6 +399,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	resp.ACLGroups = extractACLGroups(req.Fields)
 	resp.QuotaRules = extractQuotaRules(req.Fields)
 	resp.QuotaOverFlag = extractQuotaOverFlag(req.Fields)
+	resp.DirectorTag = extractDirectorTag(req.Fields)
 	resp.VolatileDir = extractVolatileDir(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
@@ -425,6 +433,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		resp.ACLGroups = extractACLGroups(entry.Fields)
 		resp.QuotaRules = extractQuotaRules(entry.Fields)
 		resp.QuotaOverFlag = extractQuotaOverFlag(entry.Fields)
+		resp.DirectorTag = extractDirectorTag(entry.Fields)
 		resp.VolatileDir = extractVolatileDir(entry.Fields)
 		resp.IndexDir = extractIndexDir(entry.Fields)
 		resp.ControlDir = extractControlDir(entry.Fields)
@@ -1403,6 +1412,9 @@ func buildAuthOK(id string, res *AuthResponse) string {
 	if res.QuotaOverFlag != "" {
 		reply += "\tquota_over_flag=" + res.QuotaOverFlag
 	}
+	if res.DirectorTag != "" {
+		reply += "\tdirector_tag=" + res.DirectorTag
+	}
 	return reply
 }
 
@@ -1477,6 +1489,21 @@ func extractQuotaOverFlag(f *Fields) string {
 		return v
 	}
 	if v, ok := f.Get("quota_over_flag"); ok && v != "" {
+		return v
+	}
+	return ""
+}
+
+// extractDirectorTag reads the director_tag value from the Fields bag.
+// Priority: userdb-scoped userdb_director_tag → bare director_tag.
+func extractDirectorTag(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	if v, ok := f.Get("userdb_director_tag"); ok && v != "" {
+		return v
+	}
+	if v, ok := f.Get("director_tag"); ok && v != "" {
 		return v
 	}
 	return ""

@@ -114,7 +114,7 @@ func TestLookup_NoBackends(t *testing.T) {
 	readHandshake(t, sc)
 	sendHandshake(t, conn)
 
-	conn.Write([]byte("LOOKUP\t1\tuser@example.com\n"))
+	conn.Write([]byte("LOOKUP\t1\tuser@example.com\t\n"))
 	line := readLine(t, sc)
 	if !strings.HasPrefix(line, "FAIL\t1\t") {
 		t.Errorf("expected FAIL, got %q", line)
@@ -132,7 +132,7 @@ func TestLookup_ReturnsHostWithTag(t *testing.T) {
 		t.Fatalf("BACKEND-UP: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t2\tuser@example.com\n"))
+	conn.Write([]byte("LOOKUP\t2\tuser@example.com\timap\n"))
 	line := readLine(t, sc)
 	if !strings.HasPrefix(line, "HOST\t2\t") {
 		t.Fatalf("expected HOST, got %q", line)
@@ -158,7 +158,7 @@ func TestLookup_RecordsUserDir(t *testing.T) {
 	conn.Write([]byte("BACKEND-UP\t10.0.0.1\t993\timap\t100\n"))
 	readLine(t, sc) // OK
 
-	conn.Write([]byte("LOOKUP\t3\talice@example.com\n"))
+	conn.Write([]byte("LOOKUP\t3\talice@example.com\timap\n"))
 	readLine(t, sc) // HOST
 
 	e := srv.userDir.Get("alice@example.com")
@@ -184,7 +184,7 @@ func TestBackendDown_RemovesFromRing(t *testing.T) {
 		t.Fatalf("BACKEND-DOWN: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t4\tuser@example.com\n"))
+	conn.Write([]byte("LOOKUP\t4\tuser@example.com\t\n"))
 	if !strings.HasPrefix(readLine(t, sc), "FAIL\t4\t") {
 		t.Error("expected FAIL after backend removed")
 	}
@@ -204,7 +204,7 @@ func TestHostRemove_AliasForBackendDown(t *testing.T) {
 		t.Fatalf("HOST-REMOVE: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t5\tuser@example.com\n"))
+	conn.Write([]byte("LOOKUP\t5\tuser@example.com\t\n"))
 	if !strings.HasPrefix(readLine(t, sc), "FAIL\t5\t") {
 		t.Error("expected FAIL after HOST-REMOVE")
 	}
@@ -224,7 +224,7 @@ func TestBackendFlush_StopsNewLookups(t *testing.T) {
 		t.Fatalf("BACKEND-FLUSH: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t6\tuser@example.com\n"))
+	conn.Write([]byte("LOOKUP\t6\tuser@example.com\t\n"))
 	if !strings.HasPrefix(readLine(t, sc), "FAIL\t6\t") {
 		t.Error("expected FAIL after flush")
 	}
@@ -297,7 +297,7 @@ func TestUserMove_OverridesRing(t *testing.T) {
 		t.Fatalf("USER-MOVE: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t7\talice@example.com\n"))
+	conn.Write([]byte("LOOKUP\t7\talice@example.com\t\n"))
 	line := readLine(t, sc)
 	parts := strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] != "10.0.0.99" {
@@ -323,7 +323,7 @@ func TestUserMove_OverrideCaseInsensitive(t *testing.T) {
 		t.Fatalf("USER-MOVE: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t9\talice@example.com\n"))
+	conn.Write([]byte("LOOKUP\t9\talice@example.com\timap\n"))
 	line := readLine(t, sc)
 	parts := strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] != "10.0.0.199" {
@@ -335,7 +335,7 @@ func TestUserMove_OverrideCaseInsensitive(t *testing.T) {
 		t.Fatalf("USER-RELEASE: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t10\talice@example.com\n"))
+	conn.Write([]byte("LOOKUP\t10\talice@example.com\timap\n"))
 	line = readLine(t, sc)
 	parts = strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] == "10.0.0.199" {
@@ -360,7 +360,7 @@ func TestUserRelease_FallsBackToRing(t *testing.T) {
 		t.Fatalf("USER-RELEASE: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t8\tbob@example.com\n"))
+	conn.Write([]byte("LOOKUP\t8\tbob@example.com\timap\n"))
 	line := readLine(t, sc)
 	parts := strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] == "10.0.0.99" {
@@ -378,7 +378,7 @@ func TestUserWeak_MarksEntryWeak(t *testing.T) {
 	readLine(t, sc) // OK
 
 	// LOOKUP populates userDir as strong.
-	conn.Write([]byte("LOOKUP\t9\tcarol@example.com\n"))
+	conn.Write([]byte("LOOKUP\t9\tcarol@example.com\timap\n"))
 	readLine(t, sc) // HOST
 
 	e := srv.userDir.Get("carol@example.com")
@@ -394,6 +394,42 @@ func TestUserWeak_MarksEntryWeak(t *testing.T) {
 	e = srv.userDir.Get("carol@example.com")
 	if e == nil || !e.Weak {
 		t.Error("expected Weak=true after USER-WEAK")
+	}
+}
+
+// TestLookup_TagIsolation proves #737: a LOOKUP restricted to tag "a" never
+// sees a backend tagged "b" and vice versa — the wire tag field is
+// mandatory and there is no full-ring fallback.
+func TestLookup_TagIsolation(t *testing.T) {
+	_, addr := startServer(t)
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte("BACKEND-UP\t10.0.0.30\t993\ta\t100\n"))
+	readLine(t, sc) // OK
+	conn.Write([]byte("BACKEND-UP\t10.0.0.31\t993\tb\t100\n"))
+	readLine(t, sc) // OK
+
+	conn.Write([]byte("LOOKUP\t1\tuser@example.com\ta\n"))
+	line := readLine(t, sc)
+	parts := strings.Split(line, "\t")
+	if len(parts) < 5 || parts[0] != "HOST" || parts[2] != "10.0.0.30" || parts[4] != "a" {
+		t.Fatalf("LOOKUP tag=a: expected HOST on 10.0.0.30/a, got %q", line)
+	}
+
+	conn.Write([]byte("LOOKUP\t2\tuser@example.com\tb\n"))
+	line = readLine(t, sc)
+	parts = strings.Split(line, "\t")
+	if len(parts) < 5 || parts[0] != "HOST" || parts[2] != "10.0.0.31" || parts[4] != "b" {
+		t.Fatalf("LOOKUP tag=b: expected HOST on 10.0.0.31/b, got %q", line)
+	}
+
+	// Untagged pool ("") sees neither — there is no full-ring mode.
+	conn.Write([]byte("LOOKUP\t3\tuser@example.com\t\n"))
+	line = readLine(t, sc)
+	if !strings.HasPrefix(line, "FAIL\t3\t") {
+		t.Fatalf("LOOKUP tag=\"\": expected FAIL (no untagged backends), got %q", line)
 	}
 }
 
@@ -478,7 +514,7 @@ func TestPingPong(t *testing.T) {
 	conn.Write([]byte("PONG\n"))
 
 	// After PONG server should stay alive — send a LOOKUP to confirm.
-	conn.Write([]byte("LOOKUP\t1\tuser@example.com\n"))
+	conn.Write([]byte("LOOKUP\t1\tuser@example.com\t\n"))
 	got := readLine(t, sc)
 	if !strings.HasPrefix(got, "FAIL\t1\t") {
 		t.Errorf("expected FAIL (no backends), got %q", got)
@@ -564,7 +600,7 @@ func TestMultipleClients_SharedRing(t *testing.T) {
 	c2, sc2 := dialTest(t, addr)
 	readHandshake(t, sc2)
 	sendHandshake(t, c2)
-	c2.Write([]byte("LOOKUP\t10\tuser@example.com\n"))
+	c2.Write([]byte("LOOKUP\t10\tuser@example.com\timap\n"))
 	if !strings.HasPrefix(readLine(t, sc2), "HOST\t10\t") {
 		t.Error("expected HOST from shared ring")
 	}

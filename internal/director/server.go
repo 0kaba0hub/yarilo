@@ -17,7 +17,7 @@
 //	  DONE\n
 //
 //	Client commands:
-//	  LOOKUP\t{id}\t{user}\t{tag}\n                  (tag optional; "" = full ring)
+//	  LOOKUP\t{id}\t{user}\t{tag}\n                  (tag required; "" = untagged pool, not "any tag")
 //	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\n
 //	  SESSION-CLOSE\t{id}\n
 //	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\n   (vhosts optional; 0 = 100)
@@ -520,18 +520,17 @@ func hostLine(b ring.Backend) string {
 }
 
 // handleLookup processes: LOOKUP\t{id}\t{user}\t{tag}
-// tag is optional; "" routes over the full ring.
+// tag is required; "" restricts to the untagged pool — there is no
+// full-ring mode (#737: a login pod belongs to exactly one tag-pool, per
+// DEPLOYMENT.md's tag-based sharding model).
 // Checks admin overrides first, then ring lookup restricted to tag.
 // Response: HOST\t{id}\t{ip}\t{port}\t{tag}
 func (s *Server) handleLookup(c *client, fields []string) {
-	if len(fields) < 3 {
+	if len(fields) < 4 {
 		return
 	}
 	id, user := fields[1], s.normalizeUser(fields[2])
-	tag := ""
-	if len(fields) >= 4 {
-		tag = fields[3]
-	}
+	tag := fields[3]
 
 	// Admin override wins everything.
 	s.overrideMu.RLock()
@@ -553,7 +552,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		host, portStr, splitErr := net.SplitHostPort(e.Host)
 		if splitErr == nil {
 			if existing := s.ring.GetBackend(host); existing != nil && existing.Up {
-				if len(fields) < 4 || existing.Tag == tag {
+				if existing.Tag == tag {
 					s.userDir.Set(user, e.Host, false) // refresh TTL
 					_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, existing.Tag))
 					return
@@ -562,15 +561,8 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		}
 	}
 
-	// Ring lookup. When tag field is present in the LOOKUP command (even ""),
-	// restrict to backends with exactly that tag. When tag field is absent,
-	// use the full ring regardless of backend tags.
-	var b *ring.Backend
-	if len(fields) >= 4 {
-		b = s.ring.LookupBackendByTag(user, tag)
-	} else {
-		b = s.ring.LookupBackend(user)
-	}
+	// Ring lookup, always restricted to the requested tag ("" = untagged pool).
+	b := s.ring.LookupBackendByTag(user, tag)
 	if b == nil {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=no-backends", id))
 		return

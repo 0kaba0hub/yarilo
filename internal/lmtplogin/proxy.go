@@ -47,7 +47,8 @@ type Options struct {
 	DirectorAddr string
 	// DirectorTLS is the mTLS config for connecting to yarilo-director.
 	DirectorTLS *tls.Config
-	// DirectorTag restricts LOOKUP to backends with this tag. "" = full ring.
+	// DirectorTag restricts LOOKUP to backends with this tag (#737).
+	// "" = the untagged pool, not "any tag" — there is no full-ring mode.
 	DirectorTag string
 	// BackendPort overrides the port in the LOOKUP result. 0 = use as-is.
 	BackendPort int
@@ -346,43 +347,87 @@ func (s *session) anvilDisconnect(id, user string) {
 
 // ---- auth helpers -----------------------------------------------------------
 
+// ensureAuthClient returns the lazily-dialled, session-lifetime yarilo-auth
+// master client, dialling it on first use. Caller must hold s.authMu.
+func (s *session) ensureAuthClient() (*authclient.Client, error) {
+	if s.authCl != nil {
+		return s.authCl, nil
+	}
+	if s.authErr != nil {
+		return nil, s.authErr
+	}
+	c, err := authclient.DialContext(context.Background(), s.opts.AuthMasterAddr, s.opts.AuthMasterTLS)
+	if err != nil {
+		s.authErr = fmt.Errorf("lmtplogin/auth: dial master: %w", err)
+		return nil, s.authErr
+	}
+	s.authCl = c
+	return c, nil
+}
+
 func (s *session) issueToken(username, anvilID string) (string, error) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
-	if s.authCl == nil {
-		if s.authErr != nil {
-			return "", s.authErr
-		}
-		c, err := authclient.DialContext(context.Background(), s.opts.AuthMasterAddr, s.opts.AuthMasterTLS)
-		if err != nil {
-			s.authErr = fmt.Errorf("lmtplogin/auth: dial master: %w", err)
-			return "", s.authErr
-		}
-		s.authCl = c
+	c, err := s.ensureAuthClient()
+	if err != nil {
+		return "", err
 	}
-	tok, err := s.authCl.IssueSession(context.Background(), username, anvilID, s.peerIP)
+	tok, err := c.IssueSession(context.Background(), username, anvilID, s.peerIP)
 	if err != nil {
 		return "", fmt.Errorf("lmtplogin/auth: IssueSession: %w", err)
 	}
 	return tok, nil
 }
 
+// resolveDirectorTag looks up the per-recipient director_tag userdb field
+// (#746) so a shared login fleet can route different users to different
+// tag-pools. Falls back to "" (caller then uses the static opts.DirectorTag)
+// on any lookup failure or when the user carries no override — a tag-lookup
+// miss must never block delivery.
+func (s *session) resolveDirectorTag(username string) string {
+	if s.opts.AuthMasterAddr == "" {
+		return ""
+	}
+	s.authMu.Lock()
+	c, err := s.ensureAuthClient()
+	s.authMu.Unlock()
+	if err != nil {
+		slog.Debug("lmtplogin: director_tag lookup: auth dial failed", "user", username, "err", err)
+		return ""
+	}
+	ui, err := c.Userdb(context.Background(), username)
+	if err != nil {
+		slog.Debug("lmtplogin: director_tag lookup failed", "user", username, "err", err)
+		return ""
+	}
+	if ui == nil {
+		return ""
+	}
+	return ui.DirectorTag
+}
+
 // ---- director / backend resolution ------------------------------------------
 
 // resolveBackend returns the backend address for the given username.
 // In standalone mode (BackendAddr set) it returns opts.BackendAddr directly.
-// In director mode (DirectorAddr set) it performs a per-recipient LOOKUP.
+// In director mode (DirectorAddr set) it performs a per-recipient LOOKUP,
+// restricted to the user's per-user director_tag (#746) when the userdb sets
+// one, falling back to the component's static DirectorTag otherwise.
 func (s *session) resolveBackend(username string) (string, error) {
 	if s.opts.DirectorAddr == "" {
 		return s.opts.BackendAddr, nil
 	}
-	return s.directorLookup(username)
+	tag := s.opts.DirectorTag
+	if userTag := s.resolveDirectorTag(username); userTag != "" {
+		tag = userTag
+	}
+	return s.directorLookup(username, tag)
 }
 
 // directorLookup dials yarilo-director, sends a LOOKUP for username, and
 // returns the resolved backend address. BackendPort overrides the port in
 // the LOOKUP result when set.
-func (s *session) directorLookup(username string) (string, error) {
+func (s *session) directorLookup(username, tag string) (string, error) {
 	var dc *proto.Conn
 	var err error
 	if s.opts.DirectorTLS != nil {
@@ -395,7 +440,7 @@ func (s *session) directorLookup(username string) (string, error) {
 	}
 	defer dc.Close()
 
-	res, err := dc.Lookup("", username, s.opts.DirectorTag)
+	res, err := dc.Lookup("", username, tag)
 	if err != nil {
 		return "", fmt.Errorf("lmtplogin/director: lookup %s: %w", username, err)
 	}

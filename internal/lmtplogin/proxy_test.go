@@ -44,6 +44,35 @@ func TestRcptUsername(t *testing.T) {
 	}
 }
 
+// TestResolveDirectorTag proves #746: a per-user director_tag userdb field
+// overrides the session's static tag; a user with no field, or any lookup
+// failure, falls back to "" so the caller uses the component's static
+// DirectorTag instead.
+func TestResolveDirectorTag(t *testing.T) {
+	authAddr := startTestAuthWithUserdb(t, fakeUserdb{
+		"alice@example.com": {Username: "alice@example.com", DirectorTag: "b"},
+		"bob@example.com":   {Username: "bob@example.com"}, // no override
+	})
+
+	s := &session{opts: Options{AuthMasterAddr: authAddr}}
+
+	if got := s.resolveDirectorTag("alice@example.com"); got != "b" {
+		t.Errorf("alice: resolveDirectorTag = %q, want %q", got, "b")
+	}
+	if got := s.resolveDirectorTag("bob@example.com"); got != "" {
+		t.Errorf("bob (no override): resolveDirectorTag = %q, want %q", got, "")
+	}
+	if got := s.resolveDirectorTag("carol@example.com"); got != "" {
+		t.Errorf("carol (unknown user): resolveDirectorTag = %q, want %q", got, "")
+	}
+
+	// AuthMasterAddr unset — must not attempt a dial, just return "".
+	s2 := &session{opts: Options{}}
+	if got := s2.resolveDirectorTag("alice@example.com"); got != "" {
+		t.Errorf("no AuthMasterAddr: resolveDirectorTag = %q, want %q", got, "")
+	}
+}
+
 // ---- infrastructure ---------------------------------------------------------
 
 // startTestAnvil spins a real yarilo-anvil on a random local port.
@@ -69,6 +98,34 @@ func startTestAuth(t *testing.T) string {
 	t.Helper()
 	store := authtoken.New(30 * time.Second)
 	srv := protocol.NewMasterServer(nil, protocol.WithMasterTokenStore(store))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("auth listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
+	waitForTCP(t, addr)
+	return addr
+}
+
+// fakeUserdb is a minimal in-memory protocol.Userdb for tests that need
+// userdb extra fields (e.g. director_tag, #746) on the USER response.
+type fakeUserdb map[string]*protocol.UserInfo
+
+func (f fakeUserdb) Lookup(username string) (*protocol.UserInfo, error) {
+	return f[username], nil
+}
+
+// startTestAuthWithUserdb is startTestAuth with a userdb attached, so USER
+// lookups (the master protocol's USER command, used by Client.Userdb) hit
+// real data instead of always returning NOTFOUND.
+func startTestAuthWithUserdb(t *testing.T, userdb protocol.Userdb) string {
+	t.Helper()
+	store := authtoken.New(30 * time.Second)
+	srv := protocol.NewMasterServer(userdb, protocol.WithMasterTokenStore(store))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("auth listen: %v", err)

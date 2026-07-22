@@ -124,6 +124,8 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.QuotaOverFlag = value
 	case "allow_nets":
 		info.AllowNets = append(info.AllowNets, SplitCSV(value)...)
+	case "director_tag":
+		info.DirectorTag = value
 	case "nologin":
 		info.NoLogin = IsTruthy(value)
 	case "nodelay":

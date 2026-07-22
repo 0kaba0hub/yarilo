@@ -92,6 +92,42 @@ func TestAuthenticate_OK(t *testing.T) {
 	}
 }
 
+// TestAuthenticate_DirectorTag proves #746: a director_tag= token on the
+// AUTH OK reply lands on AuthResult.DirectorTag.
+func TestAuthenticate_DirectorTag(t *testing.T) {
+	addr := stubAuthServer(t, func(conn net.Conn, rd *bufio.Reader) {
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			fields := strings.SplitN(strings.TrimRight(line, "\r\n"), "\t", 5)
+			if len(fields) < 2 || fields[0] == "VERSION" {
+				continue
+			}
+			if fields[0] == "AUTH" {
+				id := fields[1]
+				fmt.Fprintf(conn, "OK\t%s\tuser=alice\tdirector_tag=b\ttoken=abc123def456\n", id)
+				return
+			}
+		}
+	})
+
+	c, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	res, err := c.Authenticate("alice", "pass", "imap", "1.2.3.4", "sess1")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if res.DirectorTag != "b" {
+		t.Errorf("DirectorTag = %q, want %q", res.DirectorTag, "b")
+	}
+}
+
 func TestAuthenticate_Fail(t *testing.T) {
 	addr := stubAuthServer(t, func(conn net.Conn, rd *bufio.Reader) {
 		for {

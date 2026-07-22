@@ -26,6 +26,10 @@ type AuthResult struct {
 	Nologin   bool
 	AllowNets string
 	Token     string
+	// DirectorTag is the per-user director backend tag (#746), when the
+	// passdb/userdb chain set one. Empty means no per-user override —
+	// the login component's static director_tag config applies.
+	DirectorTag string
 }
 
 // Client is a single persistent connection to yarilo-auth.
@@ -217,6 +221,8 @@ func (c *Client) readAuthResponse(id string) (*AuthResult, error) {
 				res.AllowNets = f[len("allow_nets="):]
 			case strings.HasPrefix(f, "token="):
 				res.Token = f[len("token="):]
+			case strings.HasPrefix(f, "director_tag="):
+				res.DirectorTag = f[len("director_tag="):]
 			}
 		}
 		return res, nil

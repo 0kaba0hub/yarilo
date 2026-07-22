@@ -46,7 +46,8 @@ const (
 type Options struct {
 	// Protocol is one of the Protocol constants above.
 	Protocol Protocol
-	// Tag restricts director LOOKUP to backends with this tag. "" = full ring.
+	// Tag restricts director LOOKUP to backends with this tag (#737).
+	// "" = the untagged pool, not "any tag" — there is no full-ring mode.
 	Tag string
 	// DirectorAddr is the host:port of yarilo-director (e.g. "yarilo-director:9102").
 	// Ignored when BackendAddr is set.
@@ -353,8 +354,15 @@ func (s *Server) handleConn(conn net.Conn) {
 	if s.opts.BackendAddr != "" {
 		backendAddr = s.opts.BackendAddr
 	} else {
+		// Per-user director_tag (#746, from the passdb/userdb response) wins
+		// over the login component's static Tag config — lets a shared
+		// login fleet route different users to different tag-pools.
+		tag := s.opts.Tag
+		if authResult.DirectorTag != "" {
+			tag = authResult.DirectorTag
+		}
 		var err error
-		backendAddr, err = s.directorLookup(pre.username)
+		backendAddr, err = s.directorLookup(pre.username, tag)
 		if err != nil {
 			log.Warn("login: director lookup failed", "user", pre.username, "err", err)
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
@@ -510,9 +518,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	log.Info("login: disconnect", "user", pre.username)
 }
 
-// directorLookup dials yarilo-director, issues a LOOKUP restricted to s.opts.Tag,
+// directorLookup dials yarilo-director, issues a LOOKUP restricted to tag,
 // and returns the backend address.
-func (s *Server) directorLookup(username string) (string, error) {
+func (s *Server) directorLookup(username, tag string) (string, error) {
 	var c *proto.Conn
 	var err error
 	if s.opts.DirectorTLS != nil {
@@ -526,7 +534,7 @@ func (s *Server) directorLookup(username string) (string, error) {
 	defer c.Close()
 
 	id := fmt.Sprintf("%d", s.reqID.Add(1))
-	result, err := c.Lookup(id, username, s.opts.Tag)
+	result, err := c.Lookup(id, username, tag)
 	if err != nil {
 		return "", fmt.Errorf("director lookup: %w", err)
 	}

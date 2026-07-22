@@ -965,6 +965,10 @@ type IMAPLoginServiceConfig struct {
 	// backend's protocol-specific containerPort may differ from what the
 	// director's ring tracks). 0 = use the LOOKUP result port as-is.
 	BackendPort int `koanf:"backend_port"`
+	// DirectorTag restricts LOOKUP to backends carrying this tag (#737).
+	// Must match the tag of the backend pool this login Deployment serves
+	// (DEPLOYMENT.md: one login pod = one tag-pool). "" = the untagged pool.
+	DirectorTag string `koanf:"director_tag"`
 }
 
 // POP3LoginServiceConfig mirrors IMAPLoginServiceConfig for the POP3 proxy.
@@ -972,6 +976,7 @@ type POP3LoginServiceConfig struct {
 	BackendAddr  string `koanf:"backend_addr"`
 	DirectorAddr string `koanf:"director_addr"`
 	BackendPort  int    `koanf:"backend_port"`
+	DirectorTag  string `koanf:"director_tag"`
 }
 
 // SubmissionLoginServiceConfig mirrors IMAPLoginServiceConfig for the Submission proxy.
@@ -979,6 +984,7 @@ type SubmissionLoginServiceConfig struct {
 	BackendAddr  string `koanf:"backend_addr"`
 	DirectorAddr string `koanf:"director_addr"`
 	BackendPort  int    `koanf:"backend_port"`
+	DirectorTag  string `koanf:"director_tag"`
 }
 
 // ManageSieveLoginServiceConfig configures the yarilo-managesieve-login proxy (RFC 5804).
@@ -988,6 +994,7 @@ type ManageSieveLoginServiceConfig struct {
 	// DirectorAddr / BackendPort — see IMAPLoginServiceConfig.
 	DirectorAddr string `koanf:"director_addr"`
 	BackendPort  int    `koanf:"backend_port"`
+	DirectorTag  string `koanf:"director_tag"`
 	// HAProxy enables PROXY protocol v1/v2 header parsing.
 	HAProxy bool `koanf:"haproxy_protocol"`
 	// HAProxyTimeout is the read deadline for the PROXY header in seconds.
@@ -1029,7 +1036,8 @@ type LMTPLoginServiceConfig struct {
 	// DirectorAddr enables director mode: per-recipient LOOKUP via yarilo-director.
 	// When set, BackendAddr is ignored and each RCPT TO triggers a LOOKUP request.
 	DirectorAddr string `koanf:"director_addr"`
-	// DirectorTag restricts LOOKUP to backends carrying this tag. Empty = full ring.
+	// DirectorTag restricts LOOKUP to backends carrying this tag (#737).
+	// "" = the untagged pool, not "any tag" — there is no full-ring mode.
 	DirectorTag string `koanf:"director_tag"`
 	// BackendPort overrides the port returned by a director LOOKUP. 0 = use as-is.
 	BackendPort int `koanf:"backend_port"`
