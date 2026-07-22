@@ -576,6 +576,21 @@ volume). `appVersion` bump ships with each feature slice.
    per-message design, so `detectionAlgoVersion` is mixed into
    `MultiChain.SettingsChecksum()` to force existing mailboxes through the
    settings-drift rebuild path. ICU normalizer option (not started).
+   **Stemmer-less languages ✅ (#718)**: `uk` (Ukrainian) is configurable —
+   there is no official Snowball algorithm for it at all (the reference
+   implementation cannot stem it either), so the `snowball` filter step
+   becomes a no-op passthrough for any language absent from
+   `snowballStemmers` rather than a hard chain-construction error; a
+   stemmer-less language is then defined purely by its other filters
+   (`uk` = lowercase + stopwords, via a canonical open-source list —
+   `internal/fts/language/data/stopwords_uk.txt`, MIT-licensed
+   stopwords-iso). `uk` is also added to `isoToWhatlang` so per-part
+   detection can classify it — critical for `languages: [uk, ru]`, since
+   without detection a Ukrainian part would be indexed under whichever
+   language happens to be `languages[0]`, and Russian's stemmer applied to
+   Ukrainian text produces wrong stems. `Chain.SettingsChecksum()` already
+   mixes in `Language`, so a `uk` chain's checksum differs from `ru`'s with
+   no further change needed.
 3. **FTS-3**: attachment decoders (script / Tika, #669) + within-message
    attachment text dedup by content hash ✅. Refined by #697: the `script`
    driver caches an optional `TYPES` supported-types/extensions list

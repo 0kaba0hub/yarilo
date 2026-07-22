@@ -47,11 +47,16 @@ func detectLanguage(sample string, candidates []string, minRunes int) (lang stri
 	return "", false
 }
 
-// isoToWhatlang maps the ISO 639-1 codes this package's snowball filters
-// support (filter.go) to whatlanggo's Lang enum. Detection is only ever
+// isoToWhatlang maps the ISO 639-1 codes this package can build a filter
+// chain for (filter.go) to whatlanggo's Lang enum. Detection is only ever
 // restricted to (and can only ever return) a language this package can
-// actually stem — there is no point detecting a language with no filter
-// chain to apply.
+// actually configure — there is no point detecting a language with no
+// filter chain to apply. That no longer means "can stem": uk (#718) has no
+// Snowball algorithm at all (passthroughFilter stands in) but is still
+// detectable, since lowercase+stopwords is a real, distinct filter chain —
+// and detecting it is exactly what keeps a uk part from being mis-stemmed
+// under a neighbouring language's chain (e.g. ru) in a mixed-language
+// mailbox.
 var isoToWhatlang = map[string]whatlanggo.Lang{
 	"en": whatlanggo.Eng,
 	"fr": whatlanggo.Fra,
@@ -60,4 +65,5 @@ var isoToWhatlang = map[string]whatlanggo.Lang{
 	"pt": whatlanggo.Por,
 	"ru": whatlanggo.Rus,
 	"es": whatlanggo.Spa,
+	"uk": whatlanggo.Ukr,
 }

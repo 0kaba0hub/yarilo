@@ -200,11 +200,52 @@ func TestChainFilters(t *testing.T) {
 }
 
 func TestChainUnknownConfig(t *testing.T) {
-	if _, err := NewChain(Settings{Language: "xx", Filters: []string{"snowball"}}); err == nil {
-		t.Fatal("expected error for unknown snowball language")
+	// #718: "snowball" on a language with no Snowball algorithm at all
+	// (Ukrainian's whole reason for existing here) is a no-op passthrough,
+	// not an error — chain construction must succeed.
+	if _, err := NewChain(Settings{Language: "xx", Filters: []string{"snowball"}}); err != nil {
+		t.Fatalf("unexpected error building a stemmer-less chain: %v", err)
 	}
 	if _, err := NewChain(Settings{Language: "en", Filters: []string{"bogus"}}); err == nil {
 		t.Fatal("expected error for unknown filter")
+	}
+}
+
+// TestStemmerlessLanguagePassthrough (#718) proves uk gets lowercase +
+// stopwords but never stemming: a Ukrainian word with grammatical endings
+// survives unstemmed (just lowercased), while a configured uk stopword is
+// still dropped exactly like any other language's stopword filter.
+func TestStemmerlessLanguagePassthrough(t *testing.T) {
+	c, err := NewChain(Settings{Language: "uk", Filters: []string{"lowercase", "snowball", "stopwords"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := c.filter("Книги") // "books" — would be stemmed under a real snowball chain
+	if !ok || got != "книги" {
+		t.Fatalf("filter(%q) = %q/%v, want unstemmed lowercase %q", "Книги", got, ok, "книги")
+	}
+	if _, ok := c.filter("що"); ok {
+		t.Fatal(`"що" is a configured uk stopword and must be dropped`)
+	}
+}
+
+// TestSettingsChecksumDistinguishesStemmerlessLanguages (#718) proves a uk
+// chain (passthrough) and a ru chain (real Snowball stemming) — same
+// configured Filters, different Language — get different checksums, so a
+// languages config change is never silently treated as a no-op by the
+// settings-drift rebuild path.
+func TestSettingsChecksumDistinguishesStemmerlessLanguages(t *testing.T) {
+	filters := []string{"lowercase", "snowball", "stopwords"}
+	uk, err := NewChain(Settings{Language: "uk", Filters: filters})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ru, err := NewChain(Settings{Language: "ru", Filters: filters})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uk.SettingsChecksum() == ru.SettingsChecksum() {
+		t.Fatal("uk and ru chains must have different checksums")
 	}
 }
 

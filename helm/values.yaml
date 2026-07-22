@@ -1372,6 +1372,8 @@ fts:
   fts_search_read_fallback: true
   fts_search_timeout_secs: 30
   fts_search_strict: false
+  ## Supported: en/fr/de/it/pt/ru/es (stemmed) + uk (Ukrainian — no official
+  ## Snowball algorithm exists, so it's lowercase + stopwords only, #718).
   languages: [en]
   language_filters: [lowercase, snowball, stopwords]
   ## Per-part language detection (#696): how much of each body/attachment

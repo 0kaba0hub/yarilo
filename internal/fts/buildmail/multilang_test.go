@@ -26,6 +26,16 @@ const germanMsg = "Subject: wetterbericht\r\n" +
 	"\r\n" +
 	"Der schnelle braune Fuchs springt ueber den faulen Hund waehrend die Sonne hell ueber die gruene Wiese scheint heute Morgen.\r\n"
 
+const ukrainianMsg = "Subject: pryvit\r\n" +
+	"Content-Type: text/plain; charset=utf-8\r\n" +
+	"\r\n" +
+	"Доброго дня! Сьогодні чудова погода, і я хочу піти погуляти у парку разом із друзями та випити смачної кави. У мене є цікаві книги.\r\n"
+
+const russianMsg = "Subject: privet\r\n" +
+	"Content-Type: text/plain; charset=utf-8\r\n" +
+	"\r\n" +
+	"Сегодня хорошая погода, и я хочу пойти погулять в парке вместе с друзьями и выпить вкусного кофе. У меня есть интересные книги.\r\n"
+
 // TestBuildSelectsLanguagePerMessage (#668 point 3, #696) proves detection
 // actually drives indexing: the German message's "Fuchs" (fox) survives
 // German stemming/stopwords, and its English translation "fox" — which
@@ -110,5 +120,45 @@ func TestBuildMultiLanguageDoesNotBufferWholeMessage(t *testing.T) {
 	tokens := upd.bodyTokens()
 	if !hasToken(tokens, "fuch") {
 		t.Fatalf("German message not correctly detected/indexed from a bounded prefix: %q", tokens)
+	}
+}
+
+// TestBuildUkrainianIndexedUnstemmed (#718) is the acceptance scenario: in a
+// mixed uk/ru mailbox, a Ukrainian message is detected as uk and indexed
+// WITHOUT stemming (книги stays книги, its exact lowercase form — no
+// Snowball algorithm exists for Ukrainian), never mis-routed to the ru
+// chain, which WOULD have stemmed the same word down to книг.
+func TestBuildUkrainianIndexedUnstemmed(t *testing.T) {
+	chain := mustMultiChain(t, "uk", "ru")
+	b := New(Options{}, chain)
+
+	upd := &fakeUpdate{}
+	if err := b.Build(1, strings.NewReader(ukrainianMsg), upd); err != nil {
+		t.Fatal(err)
+	}
+	tokens := upd.bodyTokens()
+	if !hasToken(tokens, "книги") {
+		t.Fatalf("Ukrainian message not indexed with its unstemmed form 'книги': %q", tokens)
+	}
+	if hasToken(tokens, "книг") {
+		t.Fatalf("Ukrainian message wrongly stemmed (mis-routed to the ru chain): %q", tokens)
+	}
+}
+
+// TestBuildRussianStillStemsInMixedUkRuConfig (#718) is the symmetric
+// check: a Russian message in the same uk/ru config still stems normally
+// (книги -> книг) — adding a stemmer-less language must not degrade an
+// already-working stemmed one.
+func TestBuildRussianStillStemsInMixedUkRuConfig(t *testing.T) {
+	chain := mustMultiChain(t, "uk", "ru")
+	b := New(Options{}, chain)
+
+	upd := &fakeUpdate{}
+	if err := b.Build(1, strings.NewReader(russianMsg), upd); err != nil {
+		t.Fatal(err)
+	}
+	tokens := upd.bodyTokens()
+	if !hasToken(tokens, "книг") {
+		t.Fatalf("Russian message not stemmed (книги -> книг) in a mixed uk/ru config: %q", tokens)
 	}
 }
