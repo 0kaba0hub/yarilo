@@ -109,11 +109,16 @@ func (d *PeerDialer) connectPeer(ctx context.Context, addr string) error {
 		}
 	}
 
-	// Send client handshake.
+	// Send client handshake. PEER (#700) marks this connection as a peer
+	// director replica, not a login proxy — a plain login client's generic
+	// cluster/proto dialer never sends this line — so the accepting side
+	// can stop a peer-originated broadcast (USER-KICKED) from being
+	// relayed back out to peer connections and ping-ponging forever.
 	ts := time.Now().Unix()
 	for _, s := range []string{
 		fmt.Sprintf("VERSION\t%s\t%d\t%d", protoName, majorVer, minorVer),
 		fmt.Sprintf("ME\t%s\t%d\t%d", d.localIP, d.localPort, ts),
+		"PEER\t1",
 		"DONE",
 	} {
 		if _, wErr := fmt.Fprintf(conn, "%s\n", s); wErr != nil {
@@ -246,12 +251,15 @@ func (d *PeerDialer) applyUserMoved(fields []string) {
 }
 
 // applyUserKicked processes: USER-KICKED\t{user}
-// Re-broadcasts to all local login clients so their sessions are terminated.
+// Re-broadcasts to local login clients only (#700) so their sessions are
+// terminated — NOT to other peer connections, which would relay it back
+// out and ping-pong forever in a full-mesh topology (the origin director's
+// own handleUserKick already broadcast directly to every peer).
 func (d *PeerDialer) applyUserKicked(fields []string) {
 	if len(fields) < 2 {
 		return
 	}
 	user := fields[1]
-	d.srv.broadcast(fmt.Sprintf("USER-KICKED\t%s", user), nil)
+	d.srv.broadcastToLogins(fmt.Sprintf("USER-KICKED\t%s", user))
 	slog.Info("director: peer user-kicked, broadcasting locally", "user", user)
 }

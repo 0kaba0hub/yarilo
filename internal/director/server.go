@@ -105,6 +105,13 @@ type client struct {
 	conn   net.Conn
 	mu     sync.Mutex
 	pongCh chan struct{} // receives a token each time PONG is received
+	// isPeer marks a connection as another director replica's PeerDialer
+	// (identified by the "PEER" handshake line, #700) rather than a login
+	// proxy — broadcastToLogins uses this to stop a peer-originated event
+	// from being relayed back out to peer connections, which is what
+	// caused USER-KICKED to ping-pong forever between replicas in a
+	// full-mesh topology.
+	isPeer bool
 }
 
 func (c *client) WriteLine(line string) error {
@@ -325,6 +332,23 @@ func (s *Server) broadcast(line string, exclude *client) {
 	}
 }
 
+// broadcastToLogins sends an unsolicited line to login-proxy clients only,
+// never to peer connections (#700). Used to re-broadcast a peer-originated
+// event locally without relaying it back out to other director replicas —
+// the origin director's own broadcast already reached every peer directly
+// (full-mesh), so a peer relaying it further is exactly the ping-pong loop
+// this method exists to avoid.
+func (s *Server) broadcastToLogins(line string) {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	for c := range s.clients {
+		if c.isPeer {
+			continue
+		}
+		_ = c.WriteLine(line)
+	}
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
@@ -354,8 +378,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			break
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) >= 3 && fields[0] == "ME" {
+		switch {
+		case len(fields) >= 3 && fields[0] == "ME":
 			slog.Debug("director: client identified", "ip", fields[1], "port", fields[2])
+		case fields[0] == "PEER":
+			// Sent only by another director replica's PeerDialer (#700) —
+			// a login proxy's generic cluster/proto dialer never sends
+			// this. Distinguishes a peer connection from a login client
+			// so broadcastToLogins can stop peer-originated events from
+			// ping-ponging back out to other peers.
+			c.isPeer = true
 		}
 	}
 

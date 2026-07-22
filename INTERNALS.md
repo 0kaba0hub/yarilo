@@ -116,6 +116,31 @@ request_timeout       = 30s
 reconnect_retry       = 60s
 ```
 
+### yarilo's actual PeerDialer handshake (full-mesh, not ring)
+
+`internal/director/peer.go`'s implemented handshake is a simplified subset
+of the above (no `DIRECTOR`/`USER`/`OPTIONS`/`SYNC` lines — just enough for
+ring seeding and USER-KICKED/USER-MOVED/RING-CHANGE propagation between a
+full-mesh set of peer addresses, not a ring topology):
+
+```
+VERSION\tyarilo-director\t1\t0\n
+ME\t<ip>\t<port>\t<timestamp>\n
+PEER\t1\n
+DONE\n
+```
+
+`PEER\t1` (#700) marks the connection as another director replica's
+PeerDialer, not a login proxy — a login proxy's generic `cluster/proto`
+dialer never sends it. The accepting server records this per-connection
+(`client.isPeer`) so a peer-originated `USER-KICKED` push is re-broadcast
+to this director's own login clients only (`broadcastToLogins`), never
+relayed back out to other peer connections. Without this, `USER-KICKED`
+ping-pongs forever between directors in a full-mesh topology: each
+replica's own `handleUserKick` already broadcasts directly to every peer,
+so a peer relaying it further is redundant, not required for
+convergence.
+
 ### USER-WEAK Flow (sticky session re-sync):
 1. User nearing TTL expiry → send `USER-WEAK` through ring
 2. All directors mark user weak, forward message

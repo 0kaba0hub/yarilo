@@ -244,3 +244,84 @@ func TestPeerDialer_PingPong(t *testing.T) {
 	}
 	t.Error("did not receive PONG from server")
 }
+
+// dialPlainLoginClient dials addr as a generic login-proxy client (no PEER
+// handshake line) and returns the connection plus a scanner positioned right
+// after the server handshake, ready to read unsolicited pushes.
+func dialPlainLoginClient(t *testing.T, addr string) (net.Conn, *bufio.Scanner) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial %s: %v", addr, err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.SetDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
+	sc := bufio.NewScanner(conn)
+	for sc.Scan() {
+		if sc.Text() == "DONE" {
+			break
+		}
+	}
+	fmt.Fprintf(conn, "VERSION\tyarilo-director\t1\t0\nME\t127.0.0.1\t0\t0\nDONE\n") //nolint:errcheck
+	return conn, sc
+}
+
+// TestUserKicked_DoesNotLoopBetweenMeshedPeers reproduces #700: with a
+// full-mesh pair of directors (A dials B, B dials A), a single USER-KICKED
+// broadcast from A must reach each side's login clients exactly once and
+// must NOT ping-pong forever between the two peer connections.
+func TestUserKicked_DoesNotLoopBetweenMeshedPeers(t *testing.T) {
+	srvA, addrA := startTestDirector(t)
+	srvB, addrB := startTestDirector(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pdA := NewPeerDialer(srvA, []string{addrB}, nil, "127.0.0.1", 0)
+	pdB := NewPeerDialer(srvB, []string{addrA}, nil, "127.0.0.1", 0)
+	pdA.Start(ctx)
+	pdB.Start(ctx)
+	time.Sleep(300 * time.Millisecond) // let both peer handshakes complete
+
+	_, scA := dialPlainLoginClient(t, addrA)
+	_, scB := dialPlainLoginClient(t, addrB)
+
+	// Simulate the ORIGINATING kick landing on A (as handleUserKick would
+	// broadcast it): reaches A's login client directly, and A's peer
+	// connection to/from B relays it once.
+	srvA.broadcast("USER-KICKED\tkick@test.com", nil)
+
+	readKicked := func(sc *bufio.Scanner) bool {
+		for sc.Scan() {
+			if strings.Contains(sc.Text(), "USER-KICKED") && strings.Contains(sc.Text(), "kick@test.com") {
+				return true
+			}
+		}
+		return false
+	}
+	if !readKicked(scA) {
+		t.Fatal("A's login client never received USER-KICKED")
+	}
+	if !readKicked(scB) {
+		t.Fatal("B's login client never received USER-KICKED (peer relay failed)")
+	}
+
+	// Regression check: if this ping-ponged (the #700 bug), B would relay
+	// back to A, A would broadcast again reaching scA a second time, and so
+	// on without bound. Give it a window to loop, then confirm nothing
+	// further arrives at either login client.
+	for _, tc := range []struct {
+		name string
+		sc   *bufio.Scanner
+	}{{"A", scA}, {"B", scB}} {
+		done := make(chan bool, 1)
+		go func() { done <- readKicked(tc.sc) }()
+		select {
+		case got := <-done:
+			if got {
+				t.Fatalf("%s's login client received a SECOND USER-KICKED — peer broadcast loop (#700)", tc.name)
+			}
+		case <-time.After(1 * time.Second):
+			// No further line within the window: the loop did not occur.
+		}
+	}
+}
