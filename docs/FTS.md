@@ -574,6 +574,81 @@ fts:
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
 volume). `appVersion` bump ships with each feature slice.
 
+### Migration notes: `dovecot.conf` → `yarilo.yaml` (#727)
+
+Config keys are named to track the reference's own `fts_flatcurve_*` /
+`fts_*` naming closely, but a few values and shapes need translation, not a
+literal copy:
+
+- **`fts_message_max_size`**: yarilo's `0` means unlimited. The reference
+  rejects a literal `0` at startup and spells "no limit" as the keyword
+  `unlimited` — copying a numeric `0` across from a reference config that
+  actually meant "reject anything over 0 bytes" (not the common case, but
+  possible) would silently flip its meaning; copying the reference's
+  `unlimited` keyword across as literal text would fail to parse here.
+  Translate `unlimited` → `0`, and any other reference value across as
+  the same byte count.
+- **Time values**: the reference uses TIME strings (`"30s"`, `"5s"`, …).
+  yarilo uses bare integers with the unit fixed in the key name —
+  `fts_search_timeout_secs` (seconds), `fts_flatcurve_rotate_time`
+  (milliseconds). Strip the unit suffix and convert if the reference value
+  used a different unit than the yarilo key expects (e.g. reference
+  `"5s"` → yarilo `fts_flatcurve_rotate_time: 5000`, not `5`).
+- **`fts_decoder_driver`**: yarilo's "disabled" value is the literal string
+  `none`; the reference uses an empty string. An empty string here is
+  also accepted as "disabled" (see `decoder.New`), so this is forgiving,
+  but `none` is the canonical yarilo spelling going forward.
+- **`fts_decoder_script_addr`**: a superset of the reference's plain
+  socket-path value — accepts `unix:///path/to.sock` (a bare reference
+  socket path becomes `unix://` + that same path) or `host:port` for a
+  standalone Deployment/Service the reference has no equivalent topology
+  for.
+
+### Known divergences (#727)
+
+Deliberate differences from the reference, kept because the tradeoff was
+evaluated and accepted — not gaps to close silently:
+
+- **Subject is indexed via the no-stemming data chain** (#696), unlike the
+  reference, which stems Subject/Comments/Keywords like body text.
+  Prefix-wildcard search (flatcurve's own `Xapian::Query(OP_WILDCARD, ...)`
+  shape, unconditional on every term) compensates when the query word's
+  stem happens to be a PREFIX of the indexed unstemmed word (e.g. English
+  `run` as a prefix of indexed `running`) — but not when a language's
+  stemming rule doesn't produce a prefix relationship (e.g. Russian
+  `бежать`/`бегу` share no common prefix with their stem; German
+  compounding can move the stem to the middle of the surface form). A
+  Subject search in those languages may miss an inflected form the
+  reference's stemmed index would have caught.
+- **No ICU normalizer yet**: no diacritics folding, so `café` does not
+  match a search for `cafe`. Tracked on the FTS-2 roadmap (§14), not
+  started.
+- **Mid-token `*` tokenizes differently** (#725 item 4's own
+  investigation): the reference treats `*` as a token-continuation
+  character in its generic tokenizer (not a break), so `foo*bar` is one
+  token there; yarilo's tokenizer treats `*` as a break character, so
+  `foo*bar` becomes two tokens (`foo`, `bar`). No practical recall impact
+  — if anything, treating `*` as a break is the softer behavior (it can
+  only ever match MORE, never fewer, real-world messages containing a
+  literal asterisk mid-word) — kept as a known, accepted divergence rather
+  than fixed, since replicating it exactly would need `*` to stop being a
+  break character everywhere, which has its own tokenization
+  consequences elsewhere in the break table.
+- **RELEVANCY excludes score-less UIDs from normalization** (`internal/imap/fts.go`'s
+  `relevancyScores`): a UID matched by a stripped non-FTS criterion but
+  absent from the engine's own score map is floored at `1`, not folded
+  into the min-max range via an implicit `0.0` the way the reference's
+  plain map lookup would — that implicit zero would otherwise drag the
+  whole result set's low end down and compress every genuine score toward
+  100. An improvement over the reference's own behavior, not a gap.
+- **Rescan does targeted deletes against the exact missing-UID list**
+  (`internal/fts/flatcurve/engine.go`'s `Rescan`), rather than the
+  reference's delete-everything-above-the-lowest-missing-UID reindex
+  storm. Also an improvement, already tracked in §12's comparison table
+  (Rescan row) — repeated here since it's the kind of divergence an
+  operator diffing behavior against the reference might otherwise flag
+  as a bug.
+
 ---
 
 ## 14. Phases
