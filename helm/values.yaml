@@ -1382,6 +1382,10 @@ fts:
   fts_detection_min_runes: 0
   fts_flatcurve_commit_limit: 500
   fts_flatcurve_min_term_size: 2
+  ## Queues a mailbox for automatic background shard compaction once its
+  ## sealed-shard count reaches this value (#715), on top of the manual
+  ## `yarilo-admin fts optimize` command. 0 disables auto-optimize (manual
+  ## only) — explicit, not just "unset falls back to a default".
   fts_flatcurve_optimize_limit: 10
   fts_flatcurve_rotate_count: 5000
   fts_flatcurve_rotate_time: 5000

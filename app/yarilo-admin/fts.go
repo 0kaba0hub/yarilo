@@ -55,6 +55,9 @@ Commands:
   rescan   <user> [--folder NAME]   — reconcile the index against the mailbox;
                                        without --folder every folder is rescanned
   optimize <user>                   — compact every index owned by the user
+                                       (mailboxes past fts_flatcurve_optimize_limit
+                                       are also auto-compacted in the background;
+                                       this forces it immediately, whole-user)
 
 All commands reach the yarilo-fts service via yarilo-backend-api. They return
 HTTP 501 when the backend-api has no fts_addr configured.`)
