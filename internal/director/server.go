@@ -259,28 +259,6 @@ func (s *Server) ListPeers() []string {
 	return out
 }
 
-// sessionOpen increments the exact session counter for backendIP+protocol.
-// Called immediately before biProxy starts.
-func (s *Server) sessionOpen(backendIP, protocol string) {
-	k := sessionKey(backendIP, protocol)
-	s.sessionsMu.Lock()
-	s.sessions[k]++
-	s.sessionsMu.Unlock()
-	s.updateMetrics()
-}
-
-// sessionClose decrements the exact session counter for backendIP+protocol.
-// Called via defer when the proxy handler returns.
-func (s *Server) sessionClose(backendIP, protocol string) {
-	k := sessionKey(backendIP, protocol)
-	s.sessionsMu.Lock()
-	if s.sessions[k] > 0 {
-		s.sessions[k]--
-	}
-	s.sessionsMu.Unlock()
-	s.updateMetrics()
-}
-
 // ListenAndServe starts the director TCP server. When tlsCfg is non-nil the
 // listener uses mTLS. Blocks until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {

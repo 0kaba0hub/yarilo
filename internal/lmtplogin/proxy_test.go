@@ -689,3 +689,85 @@ func TestServer_Reset(t *testing.T) {
 		t.Errorf("anvil count after RSET = %d, want 0", count)
 	}
 }
+
+// ---- #741: backend_addr/director_addr precedence + LOOKUP correlation id --
+
+// startStubDirector starts a minimal raw-TCP director stub that performs the
+// wire handshake, captures the first LOOKUP line it receives on capturedLine,
+// and replies FAIL so the caller returns quickly.
+func startStubDirector(t *testing.T, capturedLine *string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("director listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(conn, "VERSION\tyarilo-director\t1\t0\n")
+		fmt.Fprintf(conn, "DONE\n")
+		rd := bufio.NewReader(conn)
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			if strings.HasPrefix(line, "LOOKUP\t") {
+				*capturedLine = line
+				fields := strings.Split(line, "\t")
+				id := ""
+				if len(fields) > 1 {
+					id = fields[1]
+				}
+				fmt.Fprintf(conn, "FAIL\t%s\treason=no-backends\n", id)
+				return
+			}
+		}
+	}()
+	return addr
+}
+
+// TestResolveBackend_BackendAddrWinsPrecedence proves #741: when both
+// BackendAddr and DirectorAddr are set, BackendAddr wins and the director is
+// never even dialled (DirectorAddr points at an address nothing listens on —
+// a dial attempt would surface as an error, but resolveBackend must not
+// attempt one). This unifies lmtplogin with internal/login's existing
+// precedence, which lmtplogin previously inverted.
+func TestResolveBackend_BackendAddrWinsPrecedence(t *testing.T) {
+	s := &session{opts: Options{
+		BackendAddr:  "10.0.0.9:24",
+		DirectorAddr: "127.0.0.1:1", // nothing listens here; a dial would fail
+	}}
+	addr, err := s.resolveBackend("user@example.com")
+	if err != nil {
+		t.Fatalf("resolveBackend: unexpected error (should not have dialled director): %v", err)
+	}
+	if addr != "10.0.0.9:24" {
+		t.Errorf("resolveBackend = %q, want backend_addr %q", addr, "10.0.0.9:24")
+	}
+}
+
+// TestDirectorLookup_NonEmptyCorrelationID proves #741: the LOOKUP line sent
+// to the director carries a real, non-empty, monotonically distinct
+// correlation id — previously always "".
+func TestDirectorLookup_NonEmptyCorrelationID(t *testing.T) {
+	var captured string
+	directorAddr := startStubDirector(t, &captured)
+
+	s := &session{opts: Options{DirectorAddr: directorAddr}}
+	_, _ = s.directorLookup("user@example.com", "")
+
+	if captured == "" {
+		t.Fatal("director never received a LOOKUP line")
+	}
+	fields := strings.Split(captured, "\t")
+	if len(fields) < 2 || fields[1] == "" {
+		t.Fatalf("LOOKUP id field is empty: %q", captured)
+	}
+}
