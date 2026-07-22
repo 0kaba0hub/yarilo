@@ -141,6 +141,127 @@ func searchBody(t *testing.T, c *imapclient.Client, term string) []imap.UID {
 	return data.AllUIDs()
 }
 
+// TestSearchStopwordExpansion (#722) proves a Body criterion whose every
+// token is a stopword matches NOTHING (stopwords were never indexed), not
+// the whole mailbox — including when it's ANDed alongside a criterion that
+// DOES expand to real terms, mirroring the reference implementation's
+// per-arg empty-expansion → match-nothing semantics. The fake's canned
+// Lookup result is deliberately "matches everything" so a regression back
+// to the old covered=allUIDs bug would make these cases pass by accident;
+// asserting fake.Lookup was never called closes that gap.
+func TestSearchStopwordExpansion(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       []string
+		lookup     fts.Result
+		wantUIDs   []imap.UID
+		wantLookup bool
+	}{
+		{
+			// "Matches everything" on purpose: if the empty-expansion bug
+			// regresses, this canned result would leak through instead of
+			// the constraint being caught before Lookup is ever called.
+			name:       "stopword-only matches nothing",
+			body:       []string{"the"},
+			lookup:     fts.Result{Definite: []uint32{1, 2, 3}},
+			wantUIDs:   nil,
+			wantLookup: false,
+		},
+		{
+			name:       "mixed AND with a stopword still matches nothing",
+			body:       []string{"the", "report"},
+			lookup:     fts.Result{Definite: []uint32{1, 2, 3}},
+			wantUIDs:   nil,
+			wantLookup: false,
+		},
+		{
+			name:       "non-stopword query uses FTS normally",
+			body:       []string{"report"},
+			lookup:     fts.Result{Definite: []uint32{2}},
+			wantUIDs:   []imap.UID{2},
+			wantLookup: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeFTS{lookup: tc.lookup, lastUID: 100}
+			c := startFTSTestServer(t, fake, false)
+			for i := 1; i <= 3; i++ {
+				appendBody(t, c, fmt.Sprintf("report payload %d", i))
+			}
+			if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := c.UIDSearch(&imap.SearchCriteria{Body: tc.body}, nil).Wait()
+			if err != nil {
+				t.Fatal(err)
+			}
+			uids := data.AllUIDs()
+			if len(uids) != len(tc.wantUIDs) {
+				t.Fatalf("SEARCH BODY %v = %v, want %v", tc.body, uids, tc.wantUIDs)
+			}
+			for i, want := range tc.wantUIDs {
+				if uids[i] != want {
+					t.Fatalf("SEARCH BODY %v = %v, want %v", tc.body, uids, tc.wantUIDs)
+				}
+			}
+			fake.mu.Lock()
+			called := len(fake.queries) > 0
+			fake.mu.Unlock()
+			if called != tc.wantLookup {
+				t.Fatalf("fake.Lookup called = %v, want %v", called, tc.wantLookup)
+			}
+		})
+	}
+}
+
+// TestSearchHeaderExpansionNotStemmed (#723, search-side counterpart of
+// #696) proves a HEADER search value is expanded through the no-stemming
+// data chain, not the configured language chain: buildmail indexes header
+// values with lowercase-only normalization, so a stemmed query variant
+// (e.g. "running" -> "run") would become a wildcard that false-positive
+// matches an unrelated indexed word sharing the same stem prefix
+// ("runway"). The unstemmed lowercase form must still be present so the
+// query actually matches what was indexed.
+func TestSearchHeaderExpansionNotStemmed(t *testing.T) {
+	fake := &fakeFTS{lookup: fts.Result{Definite: []uint32{1}}, lastUID: 100}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "irrelevant body text")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.UIDSearch(&imap.SearchCriteria{
+		Header: []imap.SearchCriteriaHeaderField{{Key: "Message-Id", Value: "running"}},
+	}, nil).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.queries) != 1 || len(fake.queries[0].Terms) != 1 {
+		t.Fatalf("unexpected FTS queries: %+v", fake.queries)
+	}
+	term := fake.queries[0].Terms[0]
+	if term.Field != fts.FieldHeader {
+		t.Fatalf("term field = %v, want FieldHeader", term.Field)
+	}
+	foundUnstemmed := false
+	for _, w := range term.Words {
+		for _, v := range w.Variants {
+			if v == "run" {
+				t.Fatalf("header query wrongly stemmed %q to a %q variant — would false-positive match e.g. \"runway\": %+v", "running", v, term.Words)
+			}
+			if v == "running" {
+				foundUnstemmed = true
+			}
+		}
+	}
+	if !foundUnstemmed {
+		t.Fatalf("expected an unstemmed %q variant in the header query: %+v", "running", term.Words)
+	}
+}
+
 func TestSearchUsesFTSCandidates(t *testing.T) {
 	// All three messages contain the term, but the (authoritative) FTS
 	// lookup returns only UID 2 — proving the scan was not used.

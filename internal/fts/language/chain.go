@@ -43,6 +43,18 @@ func NewChain(set Settings) (*Chain, error) {
 	return &Chain{set: set, filters: filters}, nil
 }
 
+// NewDataChain returns the "data" chain: normalization only (lowercase), no
+// stemming, no stopwords — for header-like text that is not natural-
+// language content (addresses, message-ids, arbitrary-language subjects).
+// Both indexing (buildmail, #696) and search-side header query expansion
+// (internal/imap, #723) must use exactly this chain — a header token
+// stemmed on the query side but not on the index side produces a wildcard
+// query variant (e.g. "running" -> "run*") that can false-positive match
+// an unrelated indexed word ("runway") sharing the same stem prefix.
+func NewDataChain() (*Chain, error) {
+	return NewChain(Settings{Language: "data", Filters: []string{"lowercase"}})
+}
+
 // filter runs the token through the chain; ok=false means dropped (stopword).
 func (c *Chain) filter(tok string) (string, bool) {
 	for _, f := range c.filters {
