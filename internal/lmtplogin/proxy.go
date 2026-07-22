@@ -18,6 +18,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	goSmtp "github.com/emersion/go-smtp"
@@ -167,6 +168,10 @@ type session struct {
 	authMu  sync.Mutex
 	authCl  *authclient.Client
 	authErr error // sticky dial failure
+
+	// reqID generates the LOOKUP correlation id (#741 — previously sent
+	// empty, unlike internal/login's per-request counter).
+	reqID atomic.Uint64
 }
 
 func (s *session) Mail(from string, _ *goSmtp.MailOptions) error {
@@ -409,13 +414,18 @@ func (s *session) resolveDirectorTag(username string) string {
 // ---- director / backend resolution ------------------------------------------
 
 // resolveBackend returns the backend address for the given username.
-// In standalone mode (BackendAddr set) it returns opts.BackendAddr directly.
-// In director mode (DirectorAddr set) it performs a per-recipient LOOKUP,
-// restricted to the user's per-user director_tag (#746) when the userdb sets
-// one, falling back to the component's static DirectorTag otherwise.
+// BackendAddr (standalone) wins when both BackendAddr and DirectorAddr are
+// set (#741 — unified with internal/login's existing precedence, which
+// lmtplogin previously inverted). In director mode (DirectorAddr set,
+// BackendAddr empty) it performs a per-recipient LOOKUP, restricted to the
+// user's per-user director_tag (#746) when the userdb sets one, falling
+// back to the component's static DirectorTag otherwise.
 func (s *session) resolveBackend(username string) (string, error) {
-	if s.opts.DirectorAddr == "" {
+	if s.opts.BackendAddr != "" {
 		return s.opts.BackendAddr, nil
+	}
+	if s.opts.DirectorAddr == "" {
+		return "", nil
 	}
 	tag := s.opts.DirectorTag
 	if userTag := s.resolveDirectorTag(username); userTag != "" {
@@ -440,7 +450,8 @@ func (s *session) directorLookup(username, tag string) (string, error) {
 	}
 	defer dc.Close()
 
-	res, err := dc.Lookup("", username, tag)
+	id := fmt.Sprintf("%d", s.reqID.Add(1))
+	res, err := dc.Lookup(id, username, tag)
 	if err != nil {
 		return "", fmt.Errorf("lmtplogin/director: lookup %s: %w", username, err)
 	}

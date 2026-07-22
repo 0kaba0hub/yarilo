@@ -897,7 +897,12 @@ components:
     ## Typically "<release>-lmtp:<containerPort>" within the cluster.
     backend_addr: ""
 
-    ## Director mode: per-recipient LOOKUP via yarilo-director (set either this or backend_addr).
+    ## Director mode: per-recipient LOOKUP via yarilo-director (set either this
+    ## or backend_addr). One of the two is required (#735). Precedence when
+    ## BOTH are set: backend_addr wins — see imapLogin's comment for why.
+    ## (#741 — lmtp-login previously inverted this; a deploy that had both set
+    ## must remove backend_addr to keep director routing, or it silently
+    ## switches to the static backend.)
     director_addr: ""
     ## director_tag restricts LOOKUP to backends with this tag (#737).
     ## "" = the untagged pool, not "any tag" — there is no full-ring mode.

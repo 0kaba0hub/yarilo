@@ -185,7 +185,9 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
 Full wire-format specification: [INTERNALS.md](INTERNALS.md).
 
-Every login proxy (imap/pop3/submission/managesieve/lmtp) routes sessions one of two ways: `backend_addr` (standalone, a fixed backend) or `director_addr` (director mode, per-session `LOOKUP` via yarilo-director) — at least one is required, and `backend_addr` wins when both are set (#735). `backend_port` overrides the port a director `LOOKUP` returns when it differs from the backend's protocol-specific containerPort.
+Every login proxy (imap/pop3/submission/managesieve/lmtp) routes sessions one of two ways: `backend_addr` (standalone, a fixed backend) or `director_addr` (director mode, per-session `LOOKUP` via yarilo-director) — at least one is required, and `backend_addr` wins when both are set (#735, unified across all five components including lmtp-login in #741). `backend_port` overrides the port a director `LOOKUP` returns when it differs from the backend's protocol-specific containerPort.
+
+**Migration note (#741):** lmtp-login previously had the *opposite* precedence — `director_addr` won when both were set. If your `lmtpLogin` Helm values set both `backend_addr` and `director_addr`, the login pod now logs a startup warning and silently switches from director routing to the static backend. Remove `backend_addr` from `lmtpLogin` values to keep director routing.
 
 `director_service.username_hash_lowercase` (default `true`, Helm: `components.director.username_hash_lowercase`) lowercases usernames before they're hashed for ring routing or used as keys for sticky assignments and admin (`USER-MOVE`) overrides (#738) — without it, two spellings of the same account (`User@d.test` / `user@d.test`) can hash to different values and land on different backends, defeating sticky routing. Migration note: enabling this on an already-running cluster changes hashes for mixed-case usernames — their existing sticky entries just expire naturally via `user_expire`, no special migration step is needed.
 

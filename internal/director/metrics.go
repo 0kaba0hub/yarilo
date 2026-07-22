@@ -29,12 +29,15 @@ var (
 	}, []string{"ip", "port", "tag", "protocol"})
 )
 
-// sessionKey builds the map key used in Server.sessions.
-// Format: "ip\tprotocol" — tab-separated so neither part can collide.
-func sessionKey(ip, protocol string) string { return ip + "\t" + protocol }
-
 // updateMetrics refreshes all backend Prometheus gauges.
-// Called after every ring mutation and on every session open/close.
+// Called after every ring mutation.
+//
+// backend_sessions (below) is always empty now: its only writers,
+// Server.sessionOpen/sessionClose, lived in the data-path proxy removed in
+// #741 (director is control-plane only — see docs/DEPLOYMENT.md). The gauge
+// and the s.sessions map it reads are left in place rather than removed
+// unilaterally; whether to delete the metric or wire it to real
+// login-pod-reported session counts is a separate decision.
 func (s *Server) updateMetrics() {
 	backends := s.ring.Backends()
 

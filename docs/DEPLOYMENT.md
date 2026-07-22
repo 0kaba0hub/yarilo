@@ -49,7 +49,7 @@ with auth state in the YARILO preamble.
 Backend auth logic:
 - Login pod sends `YARILO\tADDR=...\tSESSION=...\tUSER=...\tTOKEN=...\n` before any protocol exchange.
 - Backend's `PreambleListener` reads the preamble, calls yarilo-auth VERIFY (`service=` field enforced), enters pre-authenticated state.
-- All 4 backends accept only preamble connections — no XCLIENT, no HAProxy on the backend side. LMTP preamble originates from `yarilo-lmtp-login`.
+- All 4 backends accept only the YARILO preamble from login pods (director is control-plane only — it never touches client bytes; #741). Client-IP forwarding into the *login* layer, when needed, is haproxy protocol / native inbound (ID/XCLIENT, #742) / none, chosen per protocol — it never reaches the backend directly. LMTP preamble originates from `yarilo-lmtp-login`.
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
