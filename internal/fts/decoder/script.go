@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,10 +30,28 @@ import (
 //	  or
 //	< SKIP\n                              — content type/extension unsupported
 //	< ERROR\t<message>\n
+//
+// TYPES is an optional extension (#697), queried once per scriptDecoder on
+// its own connection and cached: a supported-types prefilter avoids dialing
+// (and shipping attachment bytes) for parts the decoder would just SKIP
+// anyway.
+//
+//	> TYPES\n
+//	< <content-type>\t<ext>\t<ext>...\n  (repeated, any number of lines)
+//	< \n                                  — empty line terminates the list
+//	  or
+//	< ERROR\t<message>\n                  — TYPES not supported
+//
+// A script that doesn't recognize TYPES at all (a v1 decoder predating
+// #697) may respond with ERROR, close the connection, or simply never
+// respond — all three are treated identically as "prefilter unavailable":
+// fall back to asking per part via DECODE/SKIP, exactly the pre-#697
+// behaviour.
 const (
 	scriptProtocolVersion = "1"
 	scriptCmdVersion      = "VERSION"
 	scriptCmdDecode       = "DECODE"
+	scriptCmdTypes        = "TYPES"
 	scriptRespOK          = "OK"
 	scriptRespSkip        = "SKIP"
 	scriptRespError       = "ERROR"
@@ -41,6 +61,13 @@ type scriptDecoder struct {
 	addr    string
 	timeout time.Duration
 	maxSize int64
+
+	typesOnce sync.Once
+	// supported holds lowercased content-types and extensions (with the
+	// leading dot, e.g. ".pdf") the decoder advertised via TYPES. nil means
+	// the prefilter is unavailable — every part is shipped to DECODE, same
+	// as before #697.
+	supported map[string]bool
 }
 
 func newScriptDecoder(addr string, timeout time.Duration, maxSize int64) *scriptDecoder {
@@ -59,7 +86,86 @@ func (d *scriptDecoder) dial(ctx context.Context) (net.Conn, error) {
 	return dialer.DialContext(ctx, "tcp", d.addr)
 }
 
+// ensureTypesLoaded fetches and caches the TYPES prefilter exactly once per
+// scriptDecoder (#697): concurrent Decode calls during the first fetch block
+// on typesOnce, same as any one-time init.
+func (d *scriptDecoder) ensureTypesLoaded(ctx context.Context) {
+	d.typesOnce.Do(func() {
+		d.supported = d.fetchSupportedTypes(ctx)
+	})
+}
+
+// fetchSupportedTypes queries TYPES on a dedicated connection. Any failure —
+// an explicit ERROR response, the connection dropping, or the dedicated
+// timeout expiring while a v1 script that doesn't recognize TYPES just sits
+// on the connection — returns nil, meaning "prefilter unavailable": Decode
+// falls back to asking per part via DECODE/SKIP, the pre-#697 behaviour.
+func (d *scriptDecoder) fetchSupportedTypes(ctx context.Context) map[string]bool {
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+	conn, err := d.dial(ctx)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+
+	r := bufio.NewReader(conn)
+	if err := writeLine(conn, scriptCmdVersion, "yarilo-fts-decoder", scriptProtocolVersion); err != nil {
+		return nil
+	}
+	hs, err := readFields(r)
+	if err != nil || len(hs) < 3 || hs[0] != scriptCmdVersion || hs[2] != scriptRespOK {
+		return nil
+	}
+	if err := writeLine(conn, scriptCmdTypes); err != nil {
+		return nil
+	}
+
+	types := make(map[string]bool)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return nil // dropped/timed out mid-list: treat the whole fetch as unavailable
+		}
+		line = strings.TrimRight(line, "\n")
+		if line == "" {
+			return types // empty line terminates the list (possibly empty — still a success)
+		}
+		fields := strings.Split(line, "\t")
+		if fields[0] == scriptRespError {
+			return nil
+		}
+		for _, f := range fields {
+			if f != "" {
+				types[strings.ToLower(f)] = true
+			}
+		}
+	}
+}
+
+// typeSupported reports whether the cached TYPES list covers contentType or
+// filename's extension. Only meaningful when d.supported != nil — callers
+// must check that first (nil means "prefilter unavailable", not "nothing
+// supported").
+func (d *scriptDecoder) typeSupported(contentType, filename string) bool {
+	if contentType != "" && d.supported[strings.ToLower(contentType)] {
+		return true
+	}
+	if ext := path.Ext(filename); ext != "" && d.supported[strings.ToLower(ext)] {
+		return true
+	}
+	return false
+}
+
 func (d *scriptDecoder) Decode(ctx context.Context, contentType, filename string, body io.Reader) ([]byte, bool, error) {
+	d.ensureTypesLoaded(ctx)
+	if d.supported != nil && !d.typeSupported(contentType, filename) {
+		return nil, false, nil
+	}
+
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return nil, false, fmt.Errorf("fts/decoder/script: read attachment: %w", err)

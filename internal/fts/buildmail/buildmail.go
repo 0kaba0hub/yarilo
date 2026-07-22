@@ -387,13 +387,32 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 	filename := dispParams["filename"]
 
 	text, ok, err := b.opts.Decoder.Decode(context.Background(), mediaType, filename, e.Body)
-	if err != nil || !ok || len(text) == 0 {
-		// A decode failure must not abort the whole message: index what was
-		// otherwise readable and move on, matching the tolerant-of-broken-
-		// parts behaviour used throughout this walk.
+	if err != nil {
+		if errors.Is(err, decoder.ErrDegraded) {
+			// Retries against a transient condition (network error, 5xx)
+			// were exhausted: index this message without the attachment's
+			// text and move on. The reference implementation's own
+			// "…- ignoring" semantics — a document that fails to extract
+			// does not get a second autoindex pass, since nothing about it
+			// is expected to change on retry beyond the same transient
+			// failure recurring (#697).
+			metricDecoderDegraded.Inc()
+			slog.Info("fts/buildmail: decoder degraded, indexing without attachment text",
+				"uid", st.uid, "content_type", mediaType, "filename", filename, "err", err)
+			return nil
+		}
+		// Any other decoder error is a hard failure (bad config, a
+		// permanent 4xx, a script protocol error): abort this message's
+		// indexing attempt so autoindex retries it later, rather than
+		// committing a silently-incomplete document (#697).
+		return fmt.Errorf("fts/buildmail: decode attachment: %w", err)
+	}
+	if !ok || len(text) == 0 {
+		// Unsupported content type/extension: index what was otherwise
+		// readable and move on, matching the tolerant-of-broken-parts
+		// behaviour used throughout this walk.
 		slog.Debug("fts/buildmail: decoder skipped attachment",
-			"uid", st.uid, "content_type", mediaType, "filename", filename,
-			"ok", ok, "err", err)
+			"uid", st.uid, "content_type", mediaType, "filename", filename)
 		return nil
 	}
 	slog.Debug("fts/buildmail: decoder extracted attachment text",
