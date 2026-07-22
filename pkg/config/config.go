@@ -936,31 +936,68 @@ type DirectorServiceConfig struct {
 // IMAPLoginServiceConfig configures the yarilo-imap-login proxy.
 // BackendAddr, when set, bypasses director LOOKUP and routes every
 // session directly to this address (standalone k8s deployments).
-// Leave empty in director deployments.
+// Leave empty in director deployments — set DirectorAddr instead.
+//
+// Precedence (#735): BackendAddr wins when both are set — an explicit
+// standalone override always takes priority over director mode. This is
+// login.Options' existing behavior (internal/login/server.go), kept
+// unchanged; matches the direction #741 settles on for lmtp-login too.
 type IMAPLoginServiceConfig struct {
 	BackendAddr string `koanf:"backend_addr"`
+	// DirectorAddr enables director mode: per-session LOOKUP via
+	// yarilo-director (e.g. "yarilo-director:9102"). Ignored when
+	// BackendAddr is set. At least one of BackendAddr/DirectorAddr must be
+	// set (#735 — an empty DirectorAddr previously silently fell back to
+	// this process's own DirectorService.Listen, dialing localhost where
+	// no director runs).
+	DirectorAddr string `koanf:"director_addr"`
+	// BackendPort overrides the port returned by a director LOOKUP (the
+	// backend's protocol-specific containerPort may differ from what the
+	// director's ring tracks). 0 = use the LOOKUP result port as-is.
+	BackendPort int `koanf:"backend_port"`
 }
 
 // POP3LoginServiceConfig mirrors IMAPLoginServiceConfig for the POP3 proxy.
 type POP3LoginServiceConfig struct {
-	BackendAddr string `koanf:"backend_addr"`
+	BackendAddr  string `koanf:"backend_addr"`
+	DirectorAddr string `koanf:"director_addr"`
+	BackendPort  int    `koanf:"backend_port"`
 }
 
 // SubmissionLoginServiceConfig mirrors IMAPLoginServiceConfig for the Submission proxy.
 type SubmissionLoginServiceConfig struct {
-	BackendAddr string `koanf:"backend_addr"`
+	BackendAddr  string `koanf:"backend_addr"`
+	DirectorAddr string `koanf:"director_addr"`
+	BackendPort  int    `koanf:"backend_port"`
 }
 
 // ManageSieveLoginServiceConfig configures the yarilo-managesieve-login proxy (RFC 5804).
 type ManageSieveLoginServiceConfig struct {
 	// BackendAddr is the fixed address of the yarilo-managesieve backend.
 	BackendAddr string `koanf:"backend_addr"`
+	// DirectorAddr / BackendPort — see IMAPLoginServiceConfig.
+	DirectorAddr string `koanf:"director_addr"`
+	BackendPort  int    `koanf:"backend_port"`
 	// HAProxy enables PROXY protocol v1/v2 header parsing.
 	HAProxy bool `koanf:"haproxy_protocol"`
 	// HAProxyTimeout is the read deadline for the PROXY header in seconds.
 	HAProxyTimeout int `koanf:"haproxy_timeout"`
 	// HAProxyNets lists CIDRs whose PROXY header is trusted.
 	HAProxyNets []string `koanf:"haproxy_trusted_nets"`
+}
+
+// ValidateBackendOrDirector requires at least one of a login/proxy
+// component's BackendAddr (standalone) or DirectorAddr (director mode) to
+// be set (#735) — an empty DirectorAddr previously let these components
+// silently fall back to this process's own in-process director bind
+// address (DirectorService.Listen), dialing localhost where no director
+// runs, rather than failing loudly at startup. component names the config
+// section in the error message (e.g. "imap_login_service").
+func ValidateBackendOrDirector(component, backendAddr, directorAddr string) error {
+	if backendAddr == "" && directorAddr == "" {
+		return fmt.Errorf("%s: set either backend_addr (standalone) or director_addr (director mode)", component)
+	}
+	return nil
 }
 
 // ManageSieveProtocolConfig holds ManageSieve protocol-level behaviour settings.

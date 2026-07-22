@@ -51,7 +51,8 @@ func main() {
 	slog.Info("yarilo-imap-login starting",
 		"version", build.Version,
 		"telemetry", cfg.Telemetry.Listen,
-		"director", cfg.DirectorService.Listen,
+		"backend_addr", cfg.IMAPLoginService.BackendAddr,
+		"director_addr", cfg.IMAPLoginService.DirectorAddr,
 	)
 
 	// External TLS (client-facing cert) for IMAPS / STARTTLS.
@@ -82,7 +83,18 @@ func main() {
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
 	localIP := os.Getenv("POD_IP")
-	dirAddr := cfg.DirectorService.Listen
+	// dirAddr must be the REMOTE yarilo-director service address
+	// (imap_login_service.director_addr), never cfg.DirectorService.Listen
+	// — that's this process's own in-process director bind address, used
+	// only by standalone deployments that embed the director locally; a
+	// k8s director deployment has no director running in THIS pod at all,
+	// so falling back to it silently dialed localhost where nothing
+	// listens (#735).
+	if err := config.ValidateBackendOrDirector("imap_login_service", cfg.IMAPLoginService.BackendAddr, cfg.IMAPLoginService.DirectorAddr); err != nil {
+		slog.Error("config validation failed", "err", err)
+		os.Exit(1)
+	}
+	dirAddr := cfg.IMAPLoginService.DirectorAddr
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
@@ -98,6 +110,7 @@ func main() {
 			Protocol:         login.ProtocolIMAPS,
 			DirectorAddr:     dirAddr,
 			BackendAddr:      cfg.IMAPLoginService.BackendAddr,
+			BackendPort:      cfg.IMAPLoginService.BackendPort,
 			DirectorTLS:      intTLS,
 			LocalIP:          localIP,
 			BackendTLS:       intTLS,
@@ -134,6 +147,7 @@ func main() {
 			Protocol:         login.ProtocolIMAP,
 			DirectorAddr:     dirAddr,
 			BackendAddr:      cfg.IMAPLoginService.BackendAddr,
+			BackendPort:      cfg.IMAPLoginService.BackendPort,
 			DirectorTLS:      intTLS,
 			LocalIP:          localIP,
 			BackendTLS:       intTLS,

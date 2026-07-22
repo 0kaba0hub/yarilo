@@ -49,6 +49,8 @@ func main() {
 	slog.Info("yarilo-managesieve-login starting",
 		"version", build.Version,
 		"telemetry", cfg.Telemetry.Listen,
+		"backend_addr", cfg.ManageSieveLoginService.BackendAddr,
+		"director_addr", cfg.ManageSieveLoginService.DirectorAddr,
 	)
 
 	// Client-facing TLS for STARTTLS on port 4190.
@@ -78,6 +80,14 @@ func main() {
 
 	haproxyNets := parseCIDRs(cfg.ManageSieveLoginService.HAProxyNets)
 	haproxyTimeout := time.Duration(cfg.ManageSieveLoginService.HAProxyTimeout) * time.Second
+	localIP := os.Getenv("POD_IP")
+	// #735: managesieve-login never wired DirectorAddr at all (BackendAddr
+	// was the only option) — director mode was silently unavailable, not
+	// just misdirected to localhost like the other three logins.
+	if err := config.ValidateBackendOrDirector("managesieve_login_service", cfg.ManageSieveLoginService.BackendAddr, cfg.ManageSieveLoginService.DirectorAddr); err != nil {
+		slog.Error("config validation failed", "err", err)
+		os.Exit(1)
+	}
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
@@ -90,7 +100,11 @@ func main() {
 	}
 	srv := login.New(login.Options{
 		Protocol:            login.ProtocolManageSieve,
+		DirectorAddr:        cfg.ManageSieveLoginService.DirectorAddr,
+		DirectorTLS:         intTLS,
 		BackendAddr:         cfg.ManageSieveLoginService.BackendAddr,
+		BackendPort:         cfg.ManageSieveLoginService.BackendPort,
+		LocalIP:             localIP,
 		BackendTLS:          intTLS,
 		StarttlsTLS:         extTLS,
 		AuthAddr:            cfg.AuthService.ClientAddr(),
