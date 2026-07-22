@@ -2,6 +2,7 @@ package imap
 
 import (
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -13,6 +14,32 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
+
+// headerDataChain expands HEADER search values through the same "data"
+// chain buildmail indexes header values with (#696 index side, #723 search
+// side) — normalization only, no stemming, no stopwords, independent of
+// the configured language(s). A stemmed query variant against an unstemmed
+// indexed header token produces false-positive wildcard matches (e.g.
+// "running" -> "run*" matching an unrelated "runway").
+var headerDataChain = mustHeaderDataChain()
+
+// expander is satisfied by both *language.MultiChain (Body/Text, full
+// language stemming) and *language.Chain (Header, the no-stemming data
+// chain) — buildFTSQuery picks whichever fits the field.
+type expander interface {
+	ExpandSearch(query string) []fts.Word
+}
+
+func mustHeaderDataChain() *language.Chain {
+	c, err := language.NewDataChain()
+	if err != nil {
+		// "lowercase" is a static, language-independent filter — this
+		// cannot fail in practice; a panic here would only mean the filter
+		// chain itself was broken at compile time, not a runtime condition.
+		panic(fmt.Sprintf("imap: header data chain: %v", err))
+	}
+	return c
+}
 
 // FTSOptions wires full-text search into IMAP sessions. Nil Client disables
 // FTS entirely — SEARCH keeps the sequential scan.
@@ -235,8 +262,8 @@ func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *i
 	chain := s.srv.opts.FTS.Chain
 	var terms []fts.Term
 	impossible := false
-	add := func(field fts.FieldKind, hdrName, value string) {
-		words := chain.ExpandSearch(value)
+	add := func(exp expander, field fts.FieldKind, hdrName, value string) {
+		words := exp.ExpandSearch(value)
 		if len(words) == 0 && value != "" {
 			impossible = true
 			return
@@ -248,10 +275,10 @@ func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *i
 		terms = append(terms, t)
 	}
 	for _, v := range criteria.Body {
-		add(fts.FieldBody, "", v)
+		add(chain, fts.FieldBody, "", v)
 	}
 	for _, v := range criteria.Text {
-		add(fts.FieldText, "", v)
+		add(chain, fts.FieldText, "", v)
 	}
 	for _, h := range criteria.Header {
 		if h.Value == "" {
@@ -259,7 +286,12 @@ func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *i
 				HdrName: strings.ToLower(h.Key)})
 			continue
 		}
-		add(fts.FieldHeader, strings.ToLower(h.Key), h.Value)
+		// Headers are not language text (#696 index side, #723 search
+		// side): always the no-stemming data chain, never the configured
+		// language chain, regardless of the header field name — matching
+		// buildmail, which indexes every header uniformly through the same
+		// data chain.
+		add(headerDataChain, fts.FieldHeader, strings.ToLower(h.Key), h.Value)
 	}
 
 	stripped := *criteria

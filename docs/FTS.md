@@ -623,6 +623,19 @@ volume). `appVersion` bump ships with each feature slice.
    terms. This is a definite answer (bypasses `ftsCatchUp`/
    `fts_search_read_fallback` entirely, same as a real Lookup result), not
    an index-unavailable condition.
+   **Header SEARCH no longer stemmed ✅ (#723, search-side of #696)**:
+   `buildFTSQuery` expanded HEADER criteria through the full configured
+   language chain, but buildmail indexes every header value through the
+   no-stemming data chain (#696) — the mismatch meant a query like `HEADER
+   Message-Id running` added a stemmed `run` variant, which became a
+   flatcurve wildcard (`Hmessage-idrun*`) matching an unrelated indexed
+   word sharing the same prefix (e.g. "runway"), as a false DEFINITE hit
+   with no re-verify when `fts_search_strict=false`. `language.NewDataChain()`
+   is now the single shared constructor both buildmail (`New`) and
+   `internal/imap` (`headerDataChain`) call, so index-time and query-time
+   header tokens are guaranteed identical — HEADER criteria route through
+   it uniformly (no per-field exception; Subject included, since we don't
+   stem it at index time either).
 3. **FTS-3**: attachment decoders (script / Tika, #669) + within-message
    attachment text dedup by content hash ✅. Refined by #697: the `script`
    driver caches an optional `TYPES` supported-types/extensions list

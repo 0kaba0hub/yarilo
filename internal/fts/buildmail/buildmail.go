@@ -69,10 +69,11 @@ type Builder struct {
 func New(opts Options, chain *language.MultiChain) *Builder {
 	// dataChain indexes header values (addresses, message-ids, subjects in
 	// arbitrary languages) with normalization only — no stemming, no
-	// stopwords, regardless of the configured language filter set. Search
-	// side already matches these tokens fine: ExpandSearch always keeps the
-	// raw tokenized query term as one of a Word's OR variants (#696 point 2).
-	dataChain, err := language.NewChain(language.Settings{Language: "data", Filters: []string{"lowercase"}})
+	// stopwords, regardless of the configured language filter set.
+	// internal/imap's header query expansion must use the exact same chain
+	// (#723) — a stemmed query variant against an unstemmed indexed token
+	// produces false-positive wildcard matches.
+	dataChain, err := language.NewDataChain()
 	if err != nil {
 		// "lowercase" is a static, language-independent filter — this
 		// cannot fail in practice; a panic here would only mean the filter

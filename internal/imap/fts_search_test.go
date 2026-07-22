@@ -215,6 +215,53 @@ func TestSearchStopwordExpansion(t *testing.T) {
 	}
 }
 
+// TestSearchHeaderExpansionNotStemmed (#723, search-side counterpart of
+// #696) proves a HEADER search value is expanded through the no-stemming
+// data chain, not the configured language chain: buildmail indexes header
+// values with lowercase-only normalization, so a stemmed query variant
+// (e.g. "running" -> "run") would become a wildcard that false-positive
+// matches an unrelated indexed word sharing the same stem prefix
+// ("runway"). The unstemmed lowercase form must still be present so the
+// query actually matches what was indexed.
+func TestSearchHeaderExpansionNotStemmed(t *testing.T) {
+	fake := &fakeFTS{lookup: fts.Result{Definite: []uint32{1}}, lastUID: 100}
+	c := startFTSTestServer(t, fake, false)
+	appendBody(t, c, "irrelevant body text")
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.UIDSearch(&imap.SearchCriteria{
+		Header: []imap.SearchCriteriaHeaderField{{Key: "Message-Id", Value: "running"}},
+	}, nil).Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.queries) != 1 || len(fake.queries[0].Terms) != 1 {
+		t.Fatalf("unexpected FTS queries: %+v", fake.queries)
+	}
+	term := fake.queries[0].Terms[0]
+	if term.Field != fts.FieldHeader {
+		t.Fatalf("term field = %v, want FieldHeader", term.Field)
+	}
+	foundUnstemmed := false
+	for _, w := range term.Words {
+		for _, v := range w.Variants {
+			if v == "run" {
+				t.Fatalf("header query wrongly stemmed %q to a %q variant — would false-positive match e.g. \"runway\": %+v", "running", v, term.Words)
+			}
+			if v == "running" {
+				foundUnstemmed = true
+			}
+		}
+	}
+	if !foundUnstemmed {
+		t.Fatalf("expected an unstemmed %q variant in the header query: %+v", "running", term.Words)
+	}
+}
+
 func TestSearchUsesFTSCandidates(t *testing.T) {
 	// All three messages contain the term, but the (authoritative) FTS
 	// lookup returns only UID 2 — proving the scan was not used.
