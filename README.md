@@ -185,6 +185,8 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
 Full wire-format specification: [INTERNALS.md](INTERNALS.md).
 
+Every login proxy (imap/pop3/submission/managesieve/lmtp) routes sessions one of two ways: `backend_addr` (standalone, a fixed backend) or `director_addr` (director mode, per-session `LOOKUP` via yarilo-director) — at least one is required, and `backend_addr` wins when both are set (#735). `backend_port` overrides the port a director `LOOKUP` returns when it differs from the backend's protocol-specific containerPort.
+
 ---
 
 ## Quick start (Helm)

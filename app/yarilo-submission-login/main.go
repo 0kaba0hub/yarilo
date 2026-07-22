@@ -51,7 +51,8 @@ func main() {
 	slog.Info("yarilo-submission-login starting",
 		"version", build.Version,
 		"telemetry", cfg.Telemetry.Listen,
-		"director", cfg.DirectorService.Listen,
+		"backend_addr", cfg.SubmissionLoginSvc.BackendAddr,
+		"director_addr", cfg.SubmissionLoginSvc.DirectorAddr,
 	)
 
 	// External TLS (client-facing cert) for Submissions / STARTTLS.
@@ -82,7 +83,13 @@ func main() {
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
 	localIP := os.Getenv("POD_IP")
-	dirAddr := cfg.DirectorService.Listen
+	// See yarilo-imap-login/main.go for why this must be the component's
+	// own director_addr, not cfg.DirectorService.Listen (#735).
+	if err := config.ValidateBackendOrDirector("submission_login_service", cfg.SubmissionLoginSvc.BackendAddr, cfg.SubmissionLoginSvc.DirectorAddr); err != nil {
+		slog.Error("config validation failed", "err", err)
+		os.Exit(1)
+	}
+	dirAddr := cfg.SubmissionLoginSvc.DirectorAddr
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
@@ -98,6 +105,7 @@ func main() {
 			Protocol:         login.ProtocolSubmissions,
 			DirectorAddr:     dirAddr,
 			BackendAddr:      cfg.SubmissionLoginSvc.BackendAddr,
+			BackendPort:      cfg.SubmissionLoginSvc.BackendPort,
 			DirectorTLS:      intTLS,
 			LocalIP:          localIP,
 			BackendTLS:       intTLS,
@@ -134,6 +142,7 @@ func main() {
 			Protocol:         login.ProtocolSubmission,
 			DirectorAddr:     dirAddr,
 			BackendAddr:      cfg.SubmissionLoginSvc.BackendAddr,
+			BackendPort:      cfg.SubmissionLoginSvc.BackendPort,
 			DirectorTLS:      intTLS,
 			LocalIP:          localIP,
 			BackendTLS:       intTLS,

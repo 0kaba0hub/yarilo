@@ -721,10 +721,22 @@ components:
       enabled: false
       secretName: ""
 
-    ## backend_addr bypasses director LOOKUP for standalone deployments.
+    ## Standalone mode: fixed backend address (set either this or director_addr).
     ## Set to "<release>-imap:<port>" (plain) or "<release>-imap:<tls-port>" (mTLS).
-    ## Leave empty in director deployments — LOOKUP is used instead.
     backend_addr: ""
+    ## Director mode: per-session LOOKUP via yarilo-director (set either this
+    ## or backend_addr). One of the two is required (#735) — an empty
+    ## director_addr with an empty backend_addr previously dialed localhost
+    ## silently, since it fell back to this process's own in-process
+    ## director bind address rather than failing at startup.
+    ## Precedence when BOTH are set: backend_addr wins (explicit standalone
+    ## override always takes priority over director mode) — matches
+    ## internal/login's existing behavior, unchanged by #735.
+    director_addr: ""
+    ## backend_port overrides the port in the director LOOKUP result
+    ## (the backend's protocol-specific containerPort may differ from what
+    ## the director's ring tracks). 0 = use the LOOKUP result port as-is.
+    backend_port: 0
 
     service:
       type: LoadBalancer
@@ -766,10 +778,16 @@ components:
       enabled: false
       secretName: ""
 
-    ## backend_addr bypasses director LOOKUP for standalone deployments.
+    ## Standalone mode: fixed backend address (set either this or director_addr).
     ## Set to "<release>-pop3:<port>" (plain) or "<release>-pop3:<tls-port>" (mTLS).
-    ## Leave empty in director deployments — LOOKUP is used instead.
     backend_addr: ""
+    ## Director mode: per-session LOOKUP via yarilo-director (set either this
+    ## or backend_addr). One of the two is required (#735). Precedence when
+    ## BOTH are set: backend_addr wins — see imapLogin's comment for why.
+    director_addr: ""
+    ## backend_port overrides the port in the director LOOKUP result.
+    ## 0 = use the LOOKUP result port as-is.
+    backend_port: 0
 
     service:
       type: LoadBalancer
@@ -811,10 +829,16 @@ components:
       enabled: false
       secretName: ""
 
-    ## backend_addr bypasses director LOOKUP for standalone deployments.
+    ## Standalone mode: fixed backend address (set either this or director_addr).
     ## Set to "<release>-submission:<port>" (plain) or "<release>-submission:<tls-port>" (mTLS).
-    ## Leave empty in director deployments — LOOKUP is used instead.
     backend_addr: ""
+    ## Director mode: per-session LOOKUP via yarilo-director (set either this
+    ## or backend_addr). One of the two is required (#735). Precedence when
+    ## BOTH are set: backend_addr wins — see imapLogin's comment for why.
+    director_addr: ""
+    ## backend_port overrides the port in the director LOOKUP result.
+    ## 0 = use the LOOKUP result port as-is.
+    backend_port: 0
 
     service:
       type: LoadBalancer
@@ -910,9 +934,19 @@ components:
       enabled: false
       secretName: ""
 
-    ## Standalone mode: fixed backend address.
+    ## Standalone mode: fixed backend address (set either this or director_addr).
     ## Typically "<release>-managesieve:<containerPort>" within the cluster.
     backend_addr: ""
+    ## Director mode: per-session LOOKUP via yarilo-director (set either this
+    ## or backend_addr). One of the two is required (#735) — previously
+    ## managesieve-login had NO director_addr wiring at all, so director
+    ## mode was silently unavailable (not just misdirected to localhost like
+    ## the other three logins). Precedence when BOTH are set: backend_addr
+    ## wins — see imapLogin's comment for why.
+    director_addr: ""
+    ## backend_port overrides the port in the director LOOKUP result.
+    ## 0 = use the LOOKUP result port as-is.
+    backend_port: 0
 
     haproxy_protocol: false
     haproxy_timeout: 3
