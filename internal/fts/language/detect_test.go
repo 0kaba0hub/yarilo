@@ -45,3 +45,32 @@ func TestDetectLanguage(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectLanguageUkrainianVsRussian (#718) proves uk is detectable at
+// all (isoToWhatlang) and distinguished from its closest neighbour ru —
+// exactly what keeps a Ukrainian part in a mixed uk/ru mailbox from being
+// mis-stemmed under the ru chain.
+func TestDetectLanguageUkrainianVsRussian(t *testing.T) {
+	const ukrainianSample = "Доброго дня! Сьогодні чудова погода, і я хочу піти погуляти у парку разом із друзями та випити смачної кави."
+	const russianSample = "Быстрая коричневая лиса прыгает через ленивую собаку, пока солнце ярко светит над зелёной поляной сегодня утром."
+
+	tests := []struct {
+		name     string
+		sample   string
+		wantLang string
+	}{
+		{"ukrainian recognized", ukrainianSample, "uk"},
+		{"russian recognized", russianSample, "ru"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lang, ok := detectLanguage(tc.sample, []string{"uk", "ru"}, 0)
+			if !ok {
+				t.Fatalf("detectLanguage() ok = false, want true")
+			}
+			if lang != tc.wantLang {
+				t.Errorf("detectLanguage() = %q, want %q", lang, tc.wantLang)
+			}
+		})
+	}
+}
