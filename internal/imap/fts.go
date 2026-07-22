@@ -85,13 +85,19 @@ func (s *session) prepareFTSSearch(criteria *imaplib.SearchCriteria, msgs []*mai
 		return nil, nil
 	}
 
-	query, stripped, strippedNeedsBody := s.buildFTSQuery(criteria)
-	if len(query.Terms) == 0 {
-		// Everything expanded to stopwords: no FTS constraint remains, and
-		// per the indexing model those words were never indexed — the
-		// stripped criteria alone decide.
+	query, stripped, strippedNeedsBody, impossible := s.buildFTSQuery(criteria)
+	if impossible {
+		// At least one Body/Text/Header criterion expanded to nothing (pure
+		// stopwords) — that criterion can never match, since stopwords were
+		// never indexed, so the whole ANDed query is unmatchable regardless
+		// of any other criteria that DID expand to real terms (#722; the
+		// reference implementation's fts-search-args.c does this per-arg —
+		// an empty expansion becomes SEARCH_ALL with an inverted match, not
+		// a dropped constraint). This is a definite answer, not an
+		// index-unavailable condition, so it bypasses ftsCatchUp/fallback
+		// entirely — same as the real Lookup path below.
 		return &ftsFilter{
-			covered:           allUIDs(msgs),
+			covered:           map[uint32]bool{},
 			verify:            map[uint32]bool{},
 			stripped:          stripped,
 			strippedNeedsBody: strippedNeedsBody,
@@ -218,15 +224,21 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 }
 
 // buildFTSQuery converts the top-level Body/Text/Header criteria into the
-// engine query and returns the criteria with those keys stripped. A word
-// that expands to nothing (pure stopwords) was never indexed and imposes no
-// constraint — its criterion is dropped from both sides.
-func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *imaplib.SearchCriteria, bool) {
+// engine query and returns the criteria with those keys stripped, plus
+// impossible=true if ANY criterion's every token expanded to nothing (pure
+// stopwords, #722): stopwords were never indexed, so that ANDed criterion
+// can never match, and the whole query is unmatchable regardless of any
+// other criteria that DID expand to real terms — mirroring the reference
+// implementation's per-arg empty-expansion → match-nothing semantics
+// (fts-search-args.c), not a dropped/vacuous constraint.
+func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *imaplib.SearchCriteria, bool, bool) {
 	chain := s.srv.opts.FTS.Chain
 	var terms []fts.Term
+	impossible := false
 	add := func(field fts.FieldKind, hdrName, value string) {
 		words := chain.ExpandSearch(value)
 		if len(words) == 0 && value != "" {
+			impossible = true
 			return
 		}
 		t := fts.Term{Field: field, HdrName: hdrName, Words: words}
@@ -255,15 +267,7 @@ func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *i
 	stripped.Text = nil
 	stripped.Header = nil
 	needsBody := !stripped.SentSince.IsZero() || !stripped.SentBefore.IsZero()
-	return fts.Query{Terms: terms, AndTerms: true}, &stripped, needsBody
-}
-
-func allUIDs(msgs []*mailbox.MessageMeta) map[uint32]bool {
-	out := make(map[uint32]bool, len(msgs))
-	for _, m := range msgs {
-		out[m.UID] = true
-	}
-	return out
+	return fts.Query{Terms: terms, AndTerms: true}, &stripped, needsBody, impossible
 }
 
 // ftsNotify fires the delivery/expunge hooks toward the yarilo-fts service —

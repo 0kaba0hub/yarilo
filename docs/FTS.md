@@ -609,6 +609,20 @@ volume). `appVersion` bump ships with each feature slice.
    Ukrainian text produces wrong stems. `Chain.SettingsChecksum()` already
    mixes in `Language`, so a `uk` chain's checksum differs from `ru`'s with
    no further change needed.
+   **Stopword-only SEARCH ✅ (#722)**: a Body/Text/Header criterion whose
+   every token expands to nothing (pure stopwords — never indexed) used to
+   be silently dropped as "no constraint", so e.g. `SEARCH BODY "the"`
+   matched the ENTIRE mailbox instead of nothing. Fixed at both the
+   per-criterion level (`buildFTSQuery`'s per-arg expansion now marks the
+   whole query `impossible`, not just drops that one criterion) and at
+   `prepareFTSSearch` (an impossible query returns an empty covered set,
+   not `allUIDs`), matching the reference implementation's own
+   fts-search-args.c: an empty expansion becomes match-nothing, and since
+   criteria are ANDed, one unmatchable criterion makes the whole query
+   unmatchable regardless of any other criteria that DID expand to real
+   terms. This is a definite answer (bypasses `ftsCatchUp`/
+   `fts_search_read_fallback` entirely, same as a real Lookup result), not
+   an index-unavailable condition.
 3. **FTS-3**: attachment decoders (script / Tika, #669) + within-message
    attachment text dedup by content hash ✅. Refined by #697: the `script`
    driver caches an optional `TYPES` supported-types/extensions list
