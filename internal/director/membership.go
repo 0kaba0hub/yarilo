@@ -17,6 +17,7 @@ package director
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -50,13 +51,24 @@ func (m Member) isZero() bool { return m.IP == "" && m.Port == 0 }
 
 func (m Member) equal(o Member) bool { return m.IP == o.IP && m.Port == o.Port }
 
-// less orders members deterministically: IP first (string compare), then
-// port. Every node computes the exact same ordering from the exact same
-// member set, with zero coordination — that determinism is what makes the
-// ring computable locally instead of needing a vote.
+// less orders members deterministically: IP first (by parsed numeric
+// octets, NOT string comparison — "10.0.0.17" < "10.0.0.6" as strings,
+// backwards from the actual numeric address, #754), then port. Every node
+// computes the exact same ordering from the exact same member set, with
+// zero coordination — that determinism is what makes the ring computable
+// locally instead of needing a vote. Falls back to string comparison for
+// an unparseable IP (should never happen in practice) so ordering stays
+// total and deterministic either way.
 func (m Member) less(o Member) bool {
-	if m.IP != o.IP {
-		return m.IP < o.IP
+	a, b := net.ParseIP(m.IP), net.ParseIP(o.IP)
+	if a == nil || b == nil {
+		if m.IP != o.IP {
+			return m.IP < o.IP
+		}
+		return m.Port < o.Port
+	}
+	if c := bytes.Compare(a.To16(), b.To16()); c != 0 {
+		return c < 0
 	}
 	return m.Port < o.Port
 }
@@ -75,21 +87,42 @@ type Membership struct {
 	members []Member          // sorted, includes self once Start has run
 	lastSeq map[string]uint64 // "ip:port" -> highest seq processed (dedup)
 	seq     atomic.Uint64     // this node's own outgoing seq counter
+	// removed is the set of members known to be dead (#754) — a permanent
+	// tombstone, not just a transient absence from the current member
+	// list. Required because DIRECTOR-LIST resync (mergeMembers) unions
+	// snapshots from potentially-stale peers: without a tombstone, a peer
+	// who hasn't yet learned of a death would silently resurrect the
+	// removed member on every reconnect. addMember clears the tombstone
+	// for that (ip,port) — a legitimate fresh authenticated JOIN (or a
+	// relayed DIRECTOR-ADD vouching for one) is trusted to mean exactly
+	// that: this address is alive again, whether it's a rejoin or the
+	// address was reassigned to a genuinely new pod.
+	removed map[Member]struct{}
 
 	rightMu     sync.Mutex
 	rightTarget Member // zero Member{} = no active dial target
 	// dialConn is the connection WE dial out (set by connectRight, managed
-	// by reconcile's dial lifecycle). passiveConn is set only for the N=2
-	// tie-break's passive (higher-sorted) member: it never dials, so the
-	// connection accepted FROM its one neighbor is its only send/receive
-	// path (serveRingConn registers/clears it; reconcile never touches it).
-	// forwardRight prefers dialConn, falling back to passiveConn — this
-	// split exists because a 2→3 membership transition can leave a former
-	// N=2-passive member suddenly needing its OWN dial-out (to its new
-	// right neighbor) while the old accepted connection (still its correct
-	// LEFT neighbor at N=3 too) must keep working right up until then.
+	// by reconcile's dial lifecycle) — reconcile tears it down and redials
+	// when the computed right-neighbor target changes.
+	//
+	// ringConns tracks EVERY currently live ring connection — dialConn plus
+	// every connection accepted from a neighbor that dialed us — for the
+	// life of each connection, independent of dial/accept role. Broadcasting
+	// ring events (broadcastRing) sends to all of ringConns except whichever
+	// one the event just arrived on, matching Dovecot's director_update_send
+	// (skip only the arrival connection; (origin, seq) dedup in
+	// handleEnvelope is what actually stops the flood once it loops back to
+	// its author — see INTERNALS.md). Earlier this repo instead kept a
+	// single "the" forward path (dialConn, falling back to a passiveConn set
+	// only for the N=2 tie-break's passive member) — that role was decided
+	// once, when a connection was accepted, and never revisited as topology
+	// changed on that same still-open connection: a 3→2 shrink could leave a
+	// connection accepted under N=3 rules silently unable to forward
+	// anything at all once its node became the N=2 passive side (#754
+	// follow-up). ringConns has no such role to get stale — connections are
+	// registered/deregistered purely by their own lifetime.
 	dialConn    net.Conn
-	passiveConn net.Conn
+	ringConns   map[net.Conn]struct{}
 	rightCancel context.CancelFunc
 
 	ctx context.Context //nolint:containedctx // reconcile is triggered from accept-time handlers with no request-scoped ctx of their own; stored once at Start like Server's other background loops
@@ -109,6 +142,8 @@ func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, 
 		tlsCfg:     tlsCfg,
 		minMembers: minMembers,
 		lastSeq:    make(map[string]uint64),
+		removed:    make(map[Member]struct{}),
+		ringConns:  make(map[net.Conn]struct{}),
 	}
 }
 
@@ -248,6 +283,13 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 	}
 	members := parseMemberList(fields[1])
 	members = append(members, m.self)
+	if len(fields) >= 3 {
+		for _, mem := range parseMemberList(fields[2]) {
+			m.mu.Lock()
+			m.removed[mem] = struct{}{}
+			m.mu.Unlock()
+		}
+	}
 
 	if _, err := rd.ReadString('\n'); err != nil { // DONE
 		return fmt.Errorf("director/join: read DONE: %w", err)
@@ -311,39 +353,52 @@ func formatMemberList(members []Member) string {
 	return strings.Join(parts, ",")
 }
 
-// setMembers replaces the member set with a deduplicated, sorted copy and
-// triggers a reconcile so the right-neighbor dial matches the new topology.
+// setMembers replaces the member set with a deduplicated, sorted copy,
+// excluding anything in the tombstone set (m.removed) except self (self is
+// never tombstoned against itself). Caller decides whether the result
+// warrants a reconcile.
 func (m *Membership) setMembers(members []Member) {
+	m.mu.Lock()
 	seen := make(map[Member]bool, len(members))
 	uniq := make([]Member, 0, len(members))
 	for _, mem := range members {
 		if seen[mem] {
 			continue
 		}
+		if _, dead := m.removed[mem]; dead && !mem.equal(m.self) {
+			continue
+		}
 		seen[mem] = true
 		uniq = append(uniq, mem)
 	}
 	sort.Slice(uniq, func(i, j int) bool { return uniq[i].less(uniq[j]) })
-
-	m.mu.Lock()
 	m.members = uniq
 	m.mu.Unlock()
 }
 
-// mergeMembers unions incoming with the current member list (self always
-// included) and, if that changes anything, applies it and reconciles. Used
-// for the DIRECTOR-LIST resync exchanged on every ring connection — a
-// plain union rather than a replace, so a snapshot that's simply stale
-// (missing a member we already know about from elsewhere) can't regress us.
-func (m *Membership) mergeMembers(incoming []Member) {
-	current := m.Members()
-	all := append(append([]Member{}, current...), incoming...)
-	all = append(all, m.self)
-
+// mergeMembers unions incoming members and tombstones with this node's own
+// (self always present in the result, never tombstoned) and, if that
+// changes anything, applies it and reconciles. Used for the DIRECTOR-LIST
+// resync exchanged on every ring connection — a plain union rather than a
+// replace, so a snapshot that's simply stale (missing a member or a
+// removal we already know about from elsewhere) can't regress us. The
+// tombstone side of the union is what makes this safe against resurrecting
+// a member some OTHER path already declared dead (#754) — without it, any
+// peer whose own view hadn't caught up yet would silently undo a correct
+// removal on every reconnect.
+func (m *Membership) mergeMembers(incomingMembers, incomingRemoved []Member) {
 	m.mu.Lock()
+	for _, mem := range incomingRemoved {
+		if !mem.equal(m.self) {
+			m.removed[mem] = struct{}{}
+		}
+	}
+	current := append([]Member{}, m.members...)
 	before := len(m.members)
 	m.mu.Unlock()
 
+	all := append(append([]Member{}, current...), incomingMembers...)
+	all = append(all, m.self)
 	m.setMembers(all)
 
 	m.mu.RLock()
@@ -354,8 +409,26 @@ func (m *Membership) mergeMembers(incoming []Member) {
 	}
 }
 
+// removedList returns a snapshot of the tombstone set, for exchange in a
+// DIRECTOR-LIST resync.
+func (m *Membership) removedList() []Member {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Member, 0, len(m.removed))
+	for mem := range m.removed {
+		out = append(out, mem)
+	}
+	return out
+}
+
+// addMember admits mem as live: adds it to the member set (no-op if
+// already present) and clears any tombstone for it — a fresh authenticated
+// JOIN (or a relayed DIRECTOR-ADD vouching for one) is trusted to mean
+// this address is alive now, whether that's a genuine rejoin or the
+// address was reassigned to a new pod (#754).
 func (m *Membership) addMember(mem Member) {
 	m.mu.Lock()
+	delete(m.removed, mem)
 	for _, existing := range m.members {
 		if existing.equal(mem) {
 			m.mu.Unlock()
@@ -367,6 +440,9 @@ func (m *Membership) addMember(mem Member) {
 	m.mu.Unlock()
 }
 
+// removeMember evicts mem from the live member set and tombstones it
+// (#754) so a later DIRECTOR-LIST resync from a peer that hasn't yet
+// learned of the removal can't silently resurrect it.
 func (m *Membership) removeMember(mem Member) {
 	m.mu.Lock()
 	for i, existing := range m.members {
@@ -374,6 +450,9 @@ func (m *Membership) removeMember(mem Member) {
 			m.members = append(m.members[:i], m.members[i+1:]...)
 			break
 		}
+	}
+	if !mem.equal(m.self) {
+		m.removed[mem] = struct{}{}
 	}
 	m.mu.Unlock()
 }
@@ -446,7 +525,7 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	if err := writeLine(conn, "JOIN-OK"); err != nil {
 		return
 	}
-	if err := writeLine(conn, "DIRECTOR-LIST\t"+formatMemberList(existing)); err != nil {
+	if err := writeLine(conn, "DIRECTOR-LIST\t"+formatMemberList(existing)+"\t"+formatMemberList(m.removedList())); err != nil {
 		return
 	}
 	_ = writeLine(conn, "DONE")
@@ -454,10 +533,15 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	slog.Info("director: ring join accepted", "joiner", joiner, "members", len(existing)+1)
 	joinAccepted.Inc()
 
-	// Tell the rest of the ring about the new member, then adopt whatever
-	// right-neighbor change that implies.
-	m.originate("DIRECTOR-ADD", fmt.Sprintf("%s\t%d", joiner.IP, joiner.Port))
+	// Adopt whatever right-neighbor change the new member implies BEFORE
+	// telling the rest of the ring about it (#754) — originate() sends via
+	// whatever connection reconcile() just set up; the other way round,
+	// a topology change here would leave originate() with no connection
+	// to send on at all (this exact ordering bug is why DIRECTOR-REMOVE
+	// silently never reached surviving members after a neighbor's death —
+	// see dialRight).
 	m.reconcile()
+	m.originate("DIRECTOR-ADD", fmt.Sprintf("%s\t%d", joiner.IP, joiner.Port))
 }
 
 func writeLine(conn net.Conn, s string) error {
@@ -532,9 +616,9 @@ func (m *Membership) rightNeighborOf(of Member) (Member, bool) {
 // reconcile recomputes this node's right-neighbor DIAL target and adjusts
 // it to match: tears down a stale dial and starts a new one when the
 // target changed, including down to "no target" at N=1 or the N=2 passive
-// case. Deliberately never touches passiveConn — an N=2 passive member's
-// inbound connection stays valid (and in use) independent of whether this
-// node currently has a dial target of its own; see the field comment.
+// case. Deliberately never touches ringConns — an accepted connection's
+// membership there is tied to its own lifetime, not to this node's current
+// dial target; see the field comment.
 func (m *Membership) reconcile() {
 	target, ok := m.rightNeighbor()
 
@@ -576,7 +660,16 @@ func (m *Membership) reconcile() {
 // instead of going through the dead-declaration path.
 func (m *Membership) dialRight(ctx context.Context, target Member) {
 	const maxAttempts = 3
-	addr := target.String()
+	// current tracks who we're ACTUALLY trying to reach right now — starts
+	// as target, but a CONNECT redirect can point us elsewhere (#754).
+	// Every decision keyed on "who failed" (the still-alive short-circuit,
+	// and the final death declaration) must use current, never the
+	// original target — conflating the two previously meant that
+	// following a redirect toward an already-dead member, then exhausting
+	// retries against IT, would wrongly declare the ORIGINAL (perfectly
+	// alive) target dead instead.
+	current := target
+	addr := current.String()
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if ctx.Err() != nil {
 			return
@@ -584,6 +677,11 @@ func (m *Membership) dialRight(ctx context.Context, target Member) {
 		redirect, err := m.connectRight(ctx, addr)
 		if redirect != "" {
 			addr = redirect
+			if host, portStr, splitErr := net.SplitHostPort(redirect); splitErr == nil {
+				if port, convErr := strconv.Atoi(portStr); convErr == nil {
+					current = Member{IP: host, Port: port}
+				}
+			}
 			attempt = 0 // a redirect is not a failed attempt
 			continue
 		}
@@ -592,7 +690,20 @@ func (m *Membership) dialRight(ctx context.Context, target Member) {
 			// (clean shutdown, e.g. reconcile picked a new target).
 			return
 		}
-		slog.Debug("director: ring dial attempt failed", "target", addr, "attempt", attempt, "err", err)
+		slog.Debug("director: ring dial attempt failed", "self", m.self, "target", addr, "attempt", attempt, "err", err)
+		// Someone else already reported (and propagated) this member's
+		// death — most likely via DIRECTOR-LIST tombstone resync (#754).
+		// Stop retrying a corpse instead of burning the remaining attempts.
+		still := false
+		for _, mem := range m.Members() {
+			if mem.equal(current) {
+				still = true
+				break
+			}
+		}
+		if !still {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -602,10 +713,15 @@ func (m *Membership) dialRight(ctx context.Context, target Member) {
 	if ctx.Err() != nil {
 		return
 	}
-	slog.Warn("director: ring neighbor unreachable, declaring dead", "target", target)
-	m.removeMember(target)
-	m.originate("DIRECTOR-REMOVE", fmt.Sprintf("%s\t%d", target.IP, target.Port))
+	slog.Warn("director: ring neighbor unreachable, declaring dead", "self", m.self, "target", current)
+	m.removeMember(current)
+	// Adopt the new right neighbor before announcing the death — keeps this
+	// node's own dial target current as of the announcement, though
+	// broadcastRing no longer depends on it: any other still-live ring
+	// connection (e.g. an accepted inbound one) carries DIRECTOR-REMOVE
+	// just as well now (#754 follow-up).
 	m.reconcile()
+	m.originate("DIRECTOR-REMOVE", fmt.Sprintf("%s\t%d", current.IP, current.Port))
 }
 
 // connectRight performs one dial+handshake+read-loop against addr. Returns
@@ -651,6 +767,16 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 	for _, s := range []string{
 		fmt.Sprintf("VERSION\t%s\t%d\t%d", protoName, majorVer, minorVer),
 		fmt.Sprintf("ME\t%s\t%d\t%d", m.self.IP, m.self.Port, ts),
+		// MEMBERS, sent before PEER (#754): the acceptor's CONNECT-redirect
+		// decision (triggered by the PEER line, in handleConn) uses its
+		// OWN membership view — without this, a still-3-member acceptor
+		// can redirect the dialer BACK toward a member the dialer already
+		// knows is dead (it's dialing elsewhere precisely because it
+		// detected that death), and the redirect path never reaches the
+		// DIRECTOR-LIST resync that would otherwise fix the acceptor's
+		// stale view — merging the dialer's tombstones first closes that
+		// gap regardless of which way the connection ends up being used.
+		fmt.Sprintf("MEMBERS\t%s\t%s", formatMemberList(m.Members()), formatMemberList(m.removedList())),
 		"PEER\t1",
 		"DONE",
 	} {
@@ -661,12 +787,14 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 
 	m.rightMu.Lock()
 	m.dialConn = conn
+	m.ringConns[conn] = struct{}{}
 	m.rightMu.Unlock()
 	defer func() {
 		m.rightMu.Lock()
 		if m.dialConn == conn {
 			m.dialConn = nil
 		}
+		delete(m.ringConns, conn)
 		m.rightMu.Unlock()
 	}()
 
@@ -675,11 +803,11 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 	// Exchange a full membership snapshot right away (#750 phase 1 fix): a
 	// DIRECTOR-ADD fired between a join being accepted and that acceptor's
 	// own dial to its (possibly just-changed) right neighbor completing
-	// would otherwise race forwardRight's best-effort delivery and vanish
+	// would otherwise race broadcastRing's best-effort delivery and vanish
 	// silently — this connection is brand new either way, so unconditional
 	// resync on connect closes that window regardless of timing, without
 	// needing the full user/backend state snapshot (#750 phase 3).
-	if _, wErr := fmt.Fprintf(conn, "DIRECTOR-LIST\t%s\n", formatMemberList(m.Members())); wErr != nil {
+	if _, wErr := fmt.Fprintf(conn, "DIRECTOR-LIST\t%s\t%s\n", formatMemberList(m.Members()), formatMemberList(m.removedList())); wErr != nil {
 		return "", fmt.Errorf("member snapshot send: %w", wErr)
 	}
 
@@ -700,9 +828,13 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 		case fields[0] == "CONNECT" && len(fields) >= 3:
 			return net.JoinHostPort(fields[1], fields[2]), nil
 		case fields[0] == "DIRECTOR-LIST" && len(fields) >= 2:
-			m.mergeMembers(parseMemberList(fields[1]))
+			removed := ""
+			if len(fields) >= 3 {
+				removed = fields[2]
+			}
+			m.mergeMembers(parseMemberList(fields[1]), parseMemberList(removed))
 		default:
-			m.handleRingLine(fields)
+			m.handleRingLine(fields, conn)
 		}
 	}
 }
@@ -747,21 +879,21 @@ func (m *Membership) originate(kind, payload string) {
 	m.mu.Lock()
 	m.lastSeq[key] = seq
 	m.mu.Unlock()
-	m.forwardRight(fmt.Sprintf("%s\t%s\t%d\t%d\t%s", kind, m.self.IP, m.self.Port, seq, payload))
+	m.broadcastRing(nil, fmt.Sprintf("%s\t%s\t%d\t%d\t%s", kind, m.self.IP, m.self.Port, seq, payload))
 }
 
 // handleRingLine dispatches one line read from a ring connection: every
 // envelope command (DIRECTOR-ADD/REMOVE, RING-CHANGE, USER-MOVED,
 // USER-KICKED) goes through the shared (origin, seq) dedup + apply +
-// forward path. There is no active ring PING loop yet in phase 1 — death
-// detection is read-error-based (see dialRight) — so PING/PONG lines never
-// occur on a ring connection today; #750 phase 4 adds anti-entropy over
-// PING (needs the originating connection threaded through to reply on,
-// unlike the other envelope kinds which always forward via dialConn).
-func (m *Membership) handleRingLine(fields []string) {
+// forward path. arrivalConn is the connection this line was just read from
+// — handleEnvelope needs it to skip re-sending the event back the way it
+// came. There is no active ring PING loop yet in phase 1 — death detection
+// is read-error-based (see dialRight) — so PING/PONG lines never occur on a
+// ring connection today; #750 phase 4 adds anti-entropy over PING.
+func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
 	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED":
-		m.handleEnvelope(fields)
+		m.handleEnvelope(fields, arrivalConn)
 	}
 }
 
@@ -770,13 +902,15 @@ func (m *Membership) handleRingLine(fields []string) {
 // itself, the event has travelled all the way around and is absorbed
 // (applied once already, at origination — never re-applied, never
 // forwarded again). Otherwise, apply locally (unless already seen — a
-// safety net against out-of-order duplicates) and unconditionally forward
-// to the right neighbor. "Unconditionally" matters at N=2: the right
-// connection IS the same connection the event was just received on, so
-// forwarding there is what completes the single round trip back to the
-// origin for it to absorb — there is no separate "don't echo to sender"
-// rule, and adding one would break N=2 entirely.
-func (m *Membership) handleEnvelope(fields []string) {
+// safety net against out-of-order duplicates) and broadcast to every ring
+// connection except the one it just arrived on (broadcastRing) — matching
+// Dovecot's director_update_send skip-arrival rule rather than a fixed
+// "the" forward path. At N=2 the only ring connection IS the arrival
+// connection, so broadcasting sends nowhere and the event simply stops
+// there without needing to bounce back to origin for absorb to apply —
+// origin-absorb only matters once N>=3 gives an event somewhere to travel
+// on beyond whoever it arrived from.
+func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	if len(fields) < 4 {
 		return
 	}
@@ -805,7 +939,7 @@ func (m *Membership) handleEnvelope(fields []string) {
 	m.mu.Unlock()
 
 	m.applyEnvelope(kind, payload)
-	m.forwardRight(strings.Join(fields, "\t"))
+	m.broadcastRing(arrivalConn, strings.Join(fields, "\t"))
 }
 
 func (m *Membership) applyEnvelope(kind string, payload []string) {
@@ -842,23 +976,33 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 	}
 }
 
-// forwardRight writes line to this node's outgoing send path: its own
-// dial-out connection when it has one, otherwise (the N=2 passive member
-// only) the connection accepted from its one neighbor. Best-effort: at
-// N=1, or between a neighbor's death and reconcile picking the next one,
-// there's nowhere to send it — the gap is closed by state snapshot on the
-// next (re)connect (#750 phase 3), not by queuing here.
-func (m *Membership) forwardRight(line string) {
+// broadcastRing writes line to every currently live ring connection except
+// arrivalConn (nil for a locally-originated event, meaning skip nothing).
+// This is the entire forward path — there is no per-role "the" connection
+// to pick, so a connection's dial/accept origin and any topology change
+// during its lifetime are irrelevant to whether it gets this event; see the
+// ringConns field comment for why that replaced the old dialConn/passiveConn
+// split. Best-effort: at N=1, or if ringConns is momentarily empty between a
+// neighbor's death and a new connection completing, there's nowhere to send
+// it — the gap is closed by the DIRECTOR-LIST snapshot exchanged on every
+// (re)connect, not by queuing here. Snapshots the connection set under
+// rightMu and writes outside the lock, with a bounded per-write deadline, so
+// one slow/stuck peer can't stall delivery to the others.
+func (m *Membership) broadcastRing(arrivalConn net.Conn, line string) {
 	m.rightMu.Lock()
-	conn := m.dialConn
-	if conn == nil {
-		conn = m.passiveConn
+	conns := make([]net.Conn, 0, len(m.ringConns))
+	for c := range m.ringConns {
+		if c != arrivalConn {
+			conns = append(conns, c)
+		}
 	}
 	m.rightMu.Unlock()
-	if conn == nil {
-		return
+
+	for _, c := range conns {
+		_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, _ = fmt.Fprintf(c, "%s\n", line)
+		_ = c.SetWriteDeadline(time.Time{})
 	}
-	_, _ = fmt.Fprintf(conn, "%s\n", line)
 }
 
 // ---- accept side: serving an already-accepted ring/PEER connection --------
@@ -866,53 +1010,29 @@ func (m *Membership) forwardRight(line string) {
 // serveRingConn processes an accepted ring connection until it closes. rd
 // is the SAME reader handleConn used for the handshake — reusing it (rather
 // than wrapping conn in a fresh bufio.Reader) is required to not drop any
-// bytes the handshake read already buffered ahead.
-//
-// At N>=3 this connection is purely inbound (our left neighbor dialed us);
-// forwarding an applied event goes out on our OWN separate dial-out
-// connection (m.dialConn, set by connectRight) — never back down this one.
-//
-// At N=2, the lexicographically lower member is the only one who dials
-// (rightNeighbor's tie-break); the higher member never has a dial-out
-// connection of its own, so THIS accepted connection is registered as
-// m.passiveConn for the duration — it is that member's only path in both
-// directions, which is exactly what makes the N=2 single-round-trip
-// origin-absorb behaviour work (see handleEnvelope). Registering it
-// separately from dialConn (rather than reusing the same field) matters
-// across a 2→3 transition: reconcile() only ever manages dialConn, so a
-// former N=2-passive member picking up its own new right-neighbor dial (at
-// N=3) can never accidentally tear down this still-valid inbound
-// connection — see the struct field comment for the full reasoning.
+// bytes the handshake read already buffered ahead. The connection is
+// registered in ringConns for its whole lifetime, regardless of dial/accept
+// role or N=2/N=3+ topology — see the field comment.
 //
 // An accept-side disconnect never declares the peer dead — that's the
 // dialing side's job (dialRight); losing an inbound connection here just
 // means our neighbor will reconnect (or notice on its own dial that we're
 // gone).
 func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Member) {
-	isN2Passive := false
-	if !dialer.isZero() {
-		members := m.Members()
-		if len(members) == 2 && dialer.equal(members[0]) && m.self.equal(members[1]) {
-			isN2Passive = true
-		}
-	}
-	if isN2Passive {
+	_ = dialer // no longer role-gates registration; CONNECT-redirect (checkRedirect) already used it before this call
+	m.rightMu.Lock()
+	m.ringConns[conn] = struct{}{}
+	m.rightMu.Unlock()
+	defer func() {
 		m.rightMu.Lock()
-		m.passiveConn = conn
+		delete(m.ringConns, conn)
 		m.rightMu.Unlock()
-		defer func() {
-			m.rightMu.Lock()
-			if m.passiveConn == conn {
-				m.passiveConn = nil
-			}
-			m.rightMu.Unlock()
-		}()
-	}
+	}()
 
 	// Mirror connectRight's snapshot exchange from this side too, so
 	// convergence after a race doesn't depend on which end happened to
 	// dial — see the comment there for why this resync exists.
-	_, _ = fmt.Fprintf(conn, "DIRECTOR-LIST\t%s\n", formatMemberList(m.Members()))
+	_, _ = fmt.Fprintf(conn, "DIRECTOR-LIST\t%s\t%s\n", formatMemberList(m.Members()), formatMemberList(m.removedList()))
 
 	for {
 		line, err := rd.ReadString('\n')
@@ -925,9 +1045,13 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 			continue
 		}
 		if fields[0] == "DIRECTOR-LIST" && len(fields) >= 2 {
-			m.mergeMembers(parseMemberList(fields[1]))
+			removed := ""
+			if len(fields) >= 3 {
+				removed = fields[2]
+			}
+			m.mergeMembers(parseMemberList(fields[1]), parseMemberList(removed))
 			continue
 		}
-		m.handleRingLine(fields)
+		m.handleRingLine(fields, conn)
 	}
 }

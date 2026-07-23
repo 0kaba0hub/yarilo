@@ -190,3 +190,19 @@ Include in any component that reads passdb/userdb from SQL.
       name: {{ $tokenSecret }}
       key: token
 {{- end }}
+{{/*
+YARILO_ADMIN_URL / YARILO_ADMIN_TOKEN env block for the director admin API.
+Read directly by yarilo-admin's director subcommands regardless of
+YARILO_ADMIN_TYPE (#755) — distinct from yarilo.adminBackendEnv's
+YARILO_API_URL/YARILO_API_TOKEN pair, which is claimed by the backend plane.
+*/}}
+{{- define "yarilo.adminDirectorEnv" -}}
+{{- $tokenSecret := printf "%s-director-api-token" (include "yarilo.fullname" .) }}
+- name: YARILO_ADMIN_URL
+  value: {{ printf "http://%s-director-api:%v" (include "yarilo.fullname" .) .Values.components.director.api.port }}
+- name: YARILO_ADMIN_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ $tokenSecret }}
+      key: token
+{{- end }}
