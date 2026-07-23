@@ -43,9 +43,6 @@ spec:
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
             {{- include "yarilo.adminBackendEnv" . | nindent 12 }}
-            {{- if .Values.components.director.enabled }}
-            {{- include "yarilo.adminDirectorEnv" . | nindent 12 }}
-            {{- end }}
             {{- include "yarilo.dbEnv" . | nindent 12 }}
             - name: BACKEND_API_TOKEN
               valueFrom:

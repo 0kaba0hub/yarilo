@@ -190,22 +190,3 @@ Include in any component that reads passdb/userdb from SQL.
       name: {{ $tokenSecret }}
       key: token
 {{- end }}
-{{/*
-adminDirectorEnv (#755) wires the director admin plane (YARILO_ADMIN_URL /
-YARILO_ADMIN_TOKEN, read directly by yarilo-admin regardless of
-YARILO_ADMIN_TYPE, unlike the generic YARILO_API_URL/TOKEN pair which
-adminBackendEnv already claims for the backend plane) so `yarilo-admin
-director ...` works out of the box from any pod that includes this helper
-— at minimum yarilo-backend-api (the standard admin plane) and the
-director pod's own shell. Only meaningful when the director component is
-enabled; callers should guard inclusion on that themselves.
-*/}}
-{{- define "yarilo.adminDirectorEnv" -}}
-- name: YARILO_ADMIN_URL
-  value: {{ printf "http://%s-director-api:%d" (include "yarilo.fullname" .) (int .Values.components.director.api.port) }}
-- name: YARILO_ADMIN_TOKEN
-  valueFrom:
-    secretKeyRef:
-      name: {{ printf "%s-director-api-token" (include "yarilo.fullname" .) }}
-      key: token
-{{- end }}
