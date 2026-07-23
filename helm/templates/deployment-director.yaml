@@ -48,6 +48,7 @@ spec:
                 secretKeyRef:
                   name: {{ printf "%s-director-ring-secret" (include "yarilo.fullname" .) }}
                   key: secret
+            {{- include "yarilo.adminDirectorEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

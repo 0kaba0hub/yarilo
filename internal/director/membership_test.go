@@ -49,6 +49,67 @@ func startRingNode(t *testing.T, secret string, seeds []string, minMembers int) 
 	return srv, addr
 }
 
+// startKillableRingNode is startRingNode but also returns a kill func that
+// simulates a real pod kill mid-test: cancels this node's own ctx (stopping
+// its dial/accept loops immediately, not just at t.Cleanup) and closes its
+// listener, so other nodes see connection failures exactly like a real
+// `kubectl delete pod` would produce (#754).
+func startKillableRingNode(t *testing.T, secret string, seeds []string, minMembers int) (srv *Server, addr string, kill func()) {
+	t.Helper()
+	srv = NewWithOptions(Options{
+		PingInterval: 24 * time.Hour,
+		RingSecret:   []byte(secret),
+		MinMembers:   minMembers,
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr = ln.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	srv.opts.LocalIP, srv.opts.LocalPort = host, port
+	srv.membership.self = Member{IP: host, Port: port}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	killed := false
+	kill = func() {
+		if killed {
+			return
+		}
+		killed = true
+		cancel()
+		ln.Close()
+		// A real pod kill severs every open socket immediately (kernel
+		// TCP RST/FIN), not just stops future Accepts — close every
+		// already-established connection too, both inbound (accepted
+		// clients) and this node's own outbound ring dial, or survivors
+		// would keep talking to a "killed" node over sockets that were
+		// never actually closed (an artifact of this test harness, not
+		// something a real process kill would ever leave open).
+		srv.clientMu.RLock()
+		for c := range srv.clients {
+			c.conn.Close()
+		}
+		srv.clientMu.RUnlock()
+		srv.membership.rightMu.Lock()
+		if srv.membership.dialConn != nil {
+			srv.membership.dialConn.Close()
+		}
+		if srv.membership.passiveConn != nil {
+			srv.membership.passiveConn.Close()
+		}
+		srv.membership.rightMu.Unlock()
+	}
+	t.Cleanup(kill)
+	go func() { _ = srv.listenOn(ctx, ln) }()
+	srv.StartMembership(ctx, seeds)
+	return srv, addr, kill
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -329,4 +390,70 @@ func mustParseCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
 		out = append(out, n)
 	}
 	return out
+}
+
+// ---- #754 regression: killing a member must converge, not corrupt -------
+
+// TestMembership_N3_KillMember_ConvergesWithoutCorruption reproduces the
+// live-sandbox failure from #754: kill one member of a 3-member ring and
+// verify (a) every survivor converges to exactly the same 2-member set,
+// (b) that convergence is stable (no further flapping/mis-eviction), and
+// (c) a pod that rejoins afterward never learns about the dead member.
+func TestMembership_N3_KillMember_ConvergesWithoutCorruption(t *testing.T) {
+	srvA, addrA, _ := startKillableRingNode(t, "shared-secret", nil, 3)
+	srvB, addrB, killB := startKillableRingNode(t, "shared-secret", []string{addrA}, 3)
+	srvC, _, _ := startKillableRingNode(t, "shared-secret", []string{addrA}, 3)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return len(srvA.membership.Members()) == 3 &&
+			len(srvB.membership.Members()) == 3 &&
+			len(srvC.membership.Members()) == 3
+	})
+	time.Sleep(300 * time.Millisecond) // let all right-neighbor dials settle
+
+	killB()
+
+	survivors := []*Server{srvA, srvC}
+	for _, s := range survivors {
+		waitFor(t, 10*time.Second, func() bool {
+			members := s.membership.Members()
+			if len(members) != 2 {
+				return false
+			}
+			for _, mem := range members {
+				if mem.String() == addrB {
+					return false // the dead member must be gone, not just uncounted
+				}
+			}
+			return true
+		})
+	}
+
+	// Stability: once converged, it must STAY converged — no further
+	// eviction (the #754 bug specifically mis-declared the live wrap
+	// neighbor dead one detection cycle after the real death).
+	time.Sleep(2 * time.Second)
+	for _, s := range survivors {
+		members := s.membership.Members()
+		if len(members) != 2 {
+			t.Errorf("member %s: expected steady 2-member set after convergence, got %v (flapped)", s.membership.self, members)
+		}
+		for _, mem := range members {
+			if mem.String() == addrB {
+				t.Errorf("member %s: dead member %s resurrected after convergence", s.membership.self, addrB)
+			}
+		}
+	}
+
+	// A rejoin (simulating the replacement pod, new IP) must not learn
+	// about the dead member via either survivor's DIRECTOR-LIST snapshot.
+	srvD, _, _ := startKillableRingNode(t, "shared-secret", []string{addrA}, 3)
+	waitFor(t, 5*time.Second, func() bool {
+		return len(srvD.membership.Members()) == 3
+	})
+	for _, mem := range srvD.membership.Members() {
+		if mem.String() == addrB {
+			t.Errorf("rejoining member learned about the dead member %s", addrB)
+		}
+	}
 }
