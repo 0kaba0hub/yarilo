@@ -65,11 +65,15 @@ func (m Member) less(o Member) bool {
 // outgoing connection to this node's right neighbor, and (origin, seq)
 // deduplicated event forwarding around the ring.
 type Membership struct {
-	srv        *Server
-	self       Member
-	secret     []byte // HMAC ring-join secret; empty = JOIN always rejected
-	tlsCfg     *tls.Config
-	minMembers int
+	srv         *Server
+	self        Member
+	secret      []byte // HMAC ring-join secret; empty = JOIN always rejected
+	tlsCfg      *tls.Config
+	minMembers  int
+	allowedNets []*net.IPNet // JOIN source CIDR allow-list (#750 phase 2); empty = unrestricted
+	// tlsServerName is the stable hostname ring TLS dials verify the peer's
+	// certificate against (#750 phase 2) — see Options.RingTLSServerName.
+	tlsServerName string
 
 	mu      sync.RWMutex
 	members []Member          // sorted, includes self once Start has run
@@ -97,19 +101,35 @@ type Membership struct {
 
 // NewMembership creates a Membership for self, not yet started. secret
 // authenticates incoming JOINs (empty = ring auth disabled, every JOIN
-// rejected — #750 phase 2 adds dial-back + CIDR filtering on top of this
-// HMAC core). tlsCfg wraps outgoing right-neighbor dials when non-nil.
-// minMembers is an install-time warning threshold only; it never refuses
-// service.
-func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, minMembers int) *Membership {
+// rejected). tlsCfg wraps outgoing right-neighbor and JOIN dials when
+// non-nil; tlsServerName overrides the hostname those dials verify the
+// peer certificate against (see Options.RingTLSServerName). minMembers is
+// an install-time warning threshold only; it never refuses service.
+// allowedNets restricts which source IPs may attempt a JOIN at all.
+func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, minMembers int, allowedNets []*net.IPNet, tlsServerName string) *Membership {
 	return &Membership{
-		srv:        srv,
-		self:       self,
-		secret:     secret,
-		tlsCfg:     tlsCfg,
-		minMembers: minMembers,
-		lastSeq:    make(map[string]uint64),
+		srv:           srv,
+		self:          self,
+		secret:        secret,
+		tlsCfg:        tlsCfg,
+		minMembers:    minMembers,
+		allowedNets:   allowedNets,
+		tlsServerName: tlsServerName,
+		lastSeq:       make(map[string]uint64),
 	}
+}
+
+// dialTLSConfig returns m.tlsCfg with ServerName overridden to
+// m.tlsServerName when both are set (#750 phase 2) — nil tlsCfg (no TLS)
+// passes through unchanged. Cloned rather than mutated in place since
+// tls.Config is shared across every ring dial.
+func (m *Membership) dialTLSConfig() *tls.Config {
+	if m.tlsCfg == nil || m.tlsServerName == "" {
+		return m.tlsCfg
+	}
+	cfg := m.tlsCfg.Clone()
+	cfg.ServerName = m.tlsServerName
+	return cfg
 }
 
 // Start initializes the member list to [self] and, if seeds are given,
@@ -189,8 +209,8 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	var conn net.Conn
 	var err error
-	if m.tlsCfg != nil {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, m.tlsCfg)
+	if tlsCfg := m.dialTLSConfig(); tlsCfg != nil {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
@@ -395,10 +415,30 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	}
 	joiner.Port = port
 
+	// CIDR allow-list (#750 phase 2): fail fast, before the HMAC challenge
+	// is even sent — same pattern as the admin API's apiMiddleware.
+	if len(m.allowedNets) > 0 {
+		remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		ip := net.ParseIP(remoteIP)
+		allowed := false
+		for _, n := range m.allowedNets {
+			if ip != nil && n.Contains(ip) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			_ = writeLine(conn, "JOIN-FAIL\tsource not allowed")
+			slog.Warn("director: JOIN rejected, source IP not in join_allowed_nets", "joiner", joiner, "remote", conn.RemoteAddr())
+			joinRejected.WithLabelValues("cidr_denied").Inc()
+			return
+		}
+	}
+
 	if len(m.secret) == 0 {
 		_ = writeLine(conn, "JOIN-FAIL\tring auth not configured")
 		slog.Warn("director: JOIN rejected, ring auth not configured", "joiner", joiner)
-		joinRejected.Inc()
+		joinRejected.WithLabelValues("no_secret").Inc()
 		return
 	}
 
@@ -427,14 +467,25 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	got, err := hex.DecodeString(proofFields[1])
 	if err != nil {
 		_ = writeLine(conn, "JOIN-FAIL\tmalformed proof")
-		joinRejected.Inc()
+		joinRejected.WithLabelValues("malformed_proof").Inc()
 		return
 	}
 	want := joinHMAC(m.secret, nonceHex, joiner)
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		_ = writeLine(conn, "JOIN-FAIL\tinvalid proof")
 		slog.Warn("director: JOIN rejected, invalid HMAC proof", "joiner", joiner)
-		joinRejected.Inc()
+		joinRejected.WithLabelValues("invalid_proof").Inc()
+		return
+	}
+
+	// Dial-back verification (#750 phase 2): confirm the claimed address
+	// actually runs a director before admitting it — a valid HMAC proof
+	// only proves the joiner knows the ring secret, not that joiner.IP is
+	// really reachable as claimed (e.g. a typo'd or spoofed self-report).
+	if err := m.dialBackVerify(joiner); err != nil {
+		_ = writeLine(conn, "JOIN-FAIL\tdial-back verification failed")
+		slog.Warn("director: JOIN rejected, dial-back verification failed", "joiner", joiner, "err", err)
+		joinRejected.WithLabelValues("dial_back_failed").Inc()
 		return
 	}
 
@@ -463,6 +514,40 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 func writeLine(conn net.Conn, s string) error {
 	_, err := fmt.Fprintf(conn, "%s\n", s)
 	return err
+}
+
+// dialBackVerify dials joiner's claimed address and confirms something
+// speaking the director server handshake (VERSION...DONE) answers there —
+// a short-lived, read-only connection, closed immediately after. It does
+// NOT re-run JOIN or otherwise authenticate the far end's identity beyond
+// "a director process is listening here"; the HMAC proof already covers
+// the joiner knowing the ring secret, so this only guards against a
+// claimed address that nothing director-shaped is actually reachable at.
+func (m *Membership) dialBackVerify(joiner Member) error {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	addr := joiner.String()
+	var conn net.Conn
+	var err error
+	if tlsCfg := m.dialTLSConfig(); tlsCfg != nil {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
+	if err != nil {
+		return fmt.Errorf("dial-back: dial %s: %w", addr, err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	rd := bufio.NewReaderSize(conn, 256)
+	line, err := rd.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("dial-back: read handshake: %w", err)
+	}
+	if !strings.HasPrefix(line, "VERSION\t"+protoName+"\t") {
+		return fmt.Errorf("dial-back: unexpected handshake line: %q", strings.TrimRight(line, "\n"))
+	}
+	return nil
 }
 
 // ---- ring topology: neighbor computation + the single right-hand dial -----
@@ -616,8 +701,8 @@ func (m *Membership) dialRight(ctx context.Context, target Member) {
 func (m *Membership) connectRight(ctx context.Context, addr string) (redirect string, err error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	var conn net.Conn
-	if m.tlsCfg != nil {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, m.tlsCfg)
+	if tlsCfg := m.dialTLSConfig(); tlsCfg != nil {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}

@@ -1,9 +1,13 @@
 package director
 
 import (
+	"bufio"
 	"context"
+	"encoding/hex"
+	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,4 +225,108 @@ func TestMembership_N3_EventReachesAllMembers(t *testing.T) {
 		eC := srvC.userDir.Get("user@example.com")
 		return eB != nil && eB.Host == "10.0.0.7:993" && eC != nil && eC.Host == "10.0.0.7:993"
 	})
+}
+
+// ---- phase 2: CIDR allow-list + dial-back verification ---------------------
+
+// manualJoin drives one raw DIRECTOR-JOIN exchange against addr, claiming
+// (claimIP, claimPort) as the joiner's address and proving with secret
+// (which may deliberately be wrong, to test rejection paths). Returns the
+// server's final line (JOIN-OK or JOIN-FAIL\t...).
+func manualJoin(t *testing.T, addr, claimIP string, claimPort int, secret string) string {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial %s: %v", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
+
+	rd := bufio.NewReader(conn)
+	for {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read server handshake: %v", err)
+		}
+		if strings.TrimRight(line, "\n") == "DONE" {
+			break
+		}
+	}
+
+	fmt.Fprintf(conn, "DIRECTOR-JOIN\t%s\t%d\n", claimIP, claimPort) //nolint:errcheck
+	line, err := rd.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read challenge/fail: %v", err)
+	}
+	line = strings.TrimRight(line, "\n")
+	fields := strings.Split(line, "\t")
+	if fields[0] != "JOIN-CHALLENGE" {
+		return line // JOIN-FAIL before any proof was even requested
+	}
+	nonce := fields[1]
+	proof := hex.EncodeToString(joinHMAC([]byte(secret), nonce, Member{IP: claimIP, Port: claimPort}))
+	fmt.Fprintf(conn, "JOIN-PROOF\t%s\n", proof) //nolint:errcheck
+
+	line, err = rd.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	return strings.TrimRight(line, "\n")
+}
+
+func TestMembership_Join_RejectsSourceNotInAllowedNets(t *testing.T) {
+	srv := NewWithOptions(Options{
+		PingInterval:    24 * time.Hour,
+		RingSecret:      []byte("shared-secret"),
+		JoinAllowedNets: mustParseCIDRs(t, "10.0.0.0/8"), // excludes 127.0.0.1
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+	srv.opts.LocalIP, srv.opts.LocalPort = host, port
+	srv.membership.self = Member{IP: host, Port: port}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel(); ln.Close() })
+	go func() { _ = srv.listenOn(ctx, ln) }()
+	srv.StartMembership(ctx, nil)
+
+	got := manualJoin(t, addr, "127.0.0.1", 9999, "shared-secret")
+	if !strings.HasPrefix(got, "JOIN-FAIL") {
+		t.Fatalf("expected JOIN-FAIL for a source outside join_allowed_nets, got %q", got)
+	}
+	if len(srv.membership.Members()) != 1 {
+		t.Error("a CIDR-denied join must not have been admitted")
+	}
+}
+
+func TestMembership_Join_RejectsFailedDialBack(t *testing.T) {
+	srv, addr := startRingNode(t, "shared-secret", nil, 3)
+
+	// Claim a port nothing listens on — dial-back must fail and the join
+	// must be rejected, even though the HMAC proof itself is valid.
+	got := manualJoin(t, addr, "127.0.0.1", 1, "shared-secret")
+	if !strings.HasPrefix(got, "JOIN-FAIL") {
+		t.Fatalf("expected JOIN-FAIL for an unreachable claimed address, got %q", got)
+	}
+	if len(srv.membership.Members()) != 1 {
+		t.Error("a join that fails dial-back must not have been admitted")
+	}
+}
+
+func mustParseCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
+	t.Helper()
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			t.Fatalf("parse CIDR %q: %v", c, err)
+		}
+		out = append(out, n)
+	}
+	return out
 }

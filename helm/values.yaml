@@ -64,6 +64,15 @@ components:
         containerPort: 10024
 
     ## mTLS for internal connections (director ↔ auth, director ↔ backend).
+    ## WARNING (#750 phase 2 / #753): ring TLS dials verify the peer's
+    ## certificate against ring_tls_server_name (below), NOT the ephemeral
+    ## pod IP being dialed — the shared internalTLS cert used across every
+    ## component today has no per-component SAN, so it almost certainly
+    ## does NOT carry ring_tls_server_name yet. Until #753 (chart-managed
+    ## director cert) lands or you reissue the shared cert with that SAN
+    ## yourself, enabling internalTLS here makes ring connections fail
+    ## closed — the ring silently never converges past N=1. Keep this
+    ## `false` on the director component until the SAN exists.
     internalTLS:
       enabled: false
       secretName: ""
@@ -117,6 +126,23 @@ components:
     ## only ever run as a singleton ring, so keep this in sync across replicas
     ## (which the auto-generated Secret already guarantees within one release).
     ring_secret: "${DIRECTOR_RING_SECRET}"
+
+    ## CIDRs allowed to attempt a DIRECTOR-JOIN at all (#750 phase 2) —
+    ## checked before the HMAC challenge is even sent, same fail-fast
+    ## pattern as api.allowed_nets below. Empty = unrestricted (HMAC is
+    ## still required to succeed either way). Defaults follow the same
+    ## in-cluster ranges as the admin API.
+    join_allowed_nets:
+      - "127.0.0.0/8"
+      - "10.96.0.0/12"
+      - "10.244.0.0/16"
+
+    ## Stable hostname ring TLS dials verify the peer certificate against
+    ## instead of the ephemeral pod IP actually dialed (#750 phase 2) — only
+    ## meaningful when internalTLS.enabled is true (see the WARNING above).
+    ## Must appear in the director certificate's DNS SANs. Defaults to the
+    ## headless ring-seed Service name at render time when left empty.
+    ring_tls_server_name: ""
 
     ## Install-time warning threshold only ("fewer members than this = no
     ## state redundancy") — never refuses service at any member count.

@@ -29,21 +29,23 @@ var (
 	}, []string{"ip", "port", "tag", "protocol"})
 
 	// joinAccepted / joinRejected count ring DIRECTOR-JOIN outcomes (#750).
-	// Rejected includes: no ring secret configured, malformed proof, and
-	// HMAC mismatch — the counter alone doesn't distinguish which; the
-	// accompanying slog.Warn does.
+	// joinRejected's "reason" label distinguishes cidr_denied (source IP not
+	// in join_allowed_nets), no_secret (ring auth not configured),
+	// malformed_proof / invalid_proof (HMAC challenge/response failure), and
+	// dial_back_failed (#750 phase 2: claimed address didn't answer as a
+	// director) — see the accompanying slog.Warn for the specific joiner.
 	joinAccepted = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "yarilo",
 		Subsystem: "director",
 		Name:      "ring_join_accepted_total",
 		Help:      "Total number of ring DIRECTOR-JOIN requests accepted.",
 	})
-	joinRejected = promauto.NewCounter(prometheus.CounterOpts{
+	joinRejected = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "yarilo",
 		Subsystem: "director",
 		Name:      "ring_join_rejected_total",
-		Help:      "Total number of ring DIRECTOR-JOIN requests rejected (no secret configured, malformed or invalid HMAC proof).",
-	})
+		Help:      "Total number of ring DIRECTOR-JOIN requests rejected, labelled by reason.",
+	}, []string{"reason"})
 )
 
 // updateMetrics refreshes all backend Prometheus gauges.

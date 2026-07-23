@@ -7,6 +7,8 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net"
@@ -65,6 +67,26 @@ func main() {
 		}
 	}
 
+	// Internal mTLS CLIENT config for ring dials (JOIN + right-neighbor,
+	// #750). Deliberately separate from ringTLSCfg above: mtls.ServerConfig
+	// sets ClientCAs (for verifying incoming client certs) but no RootCAs,
+	// so using it to dial out would always fail server-certificate
+	// verification against the system trust store — ring TLS dials need
+	// the RootCAs mtls.ClientConfig actually sets.
+	var ringDialTLSCfg *tls.Config
+	if cfg.InternalTLS.Enabled {
+		ringDialTLSCfg, err = mtls.ClientConfig(
+			cfg.InternalTLS.Cert,
+			cfg.InternalTLS.Key,
+			cfg.InternalTLS.CA,
+		)
+		if err != nil {
+			slog.Error("internal_tls ring client config failed", "err", err)
+			os.Exit(1)
+		}
+		checkRingCertSAN(cfg)
+	}
+
 	// Internal mTLS client config for dialling backend pods.
 	var backendTLSCfg *tls.Config
 	if cfg.InternalTLS.Enabled {
@@ -103,10 +125,12 @@ func main() {
 		PingInterval:          time.Duration(cfg.DirectorService.PingInterval) * time.Second,
 		PingTimeout:           time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
 		UsernameHashLowercase: &usernameHashLowercase,
-		PeerTLS:               ringTLSCfg,
+		PeerTLS:               ringDialTLSCfg,
 		LocalIP:               localIP,
 		LocalPort:             localPort,
 		RingSecret:            []byte(cfg.DirectorService.RingSecret),
+		JoinAllowedNets:       parseCIDRs(cfg.DirectorService.JoinAllowedNets),
+		RingTLSServerName:     cfg.DirectorService.RingTLSServerName,
 		MinMembers:            cfg.DirectorService.MinMembers,
 	})
 
@@ -225,6 +249,40 @@ func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config,
 		}
 	}()
 	return nil
+}
+
+// checkRingCertSAN warns at startup when ring TLS is enabled but the
+// director's own certificate is missing the DNS SAN ring_tls_server_name
+// verifies against (#750 phase 2) — without it, ring TLS handshakes fail
+// closed and the ring silently never converges past N=1. Best-effort only:
+// a read/parse failure here is reported by mtls.ServerConfig/ClientConfig
+// already failing the process at startup, so this just adds the SAN check
+// on top of a cert we already know loads.
+func checkRingCertSAN(cfg *config.Config) {
+	name := cfg.DirectorService.RingTLSServerName
+	if name == "" {
+		slog.Warn("director: internal_tls enabled but director_service.ring_tls_server_name is empty — ring TLS dials will verify against the ephemeral pod IP, which will not match any realistic certificate, so ring TLS connections will not complete (#753)")
+		return
+	}
+	pemBytes, err := os.ReadFile(cfg.InternalTLS.Cert)
+	if err != nil {
+		return
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return
+	}
+	for _, san := range cert.DNSNames {
+		if san == name {
+			return
+		}
+	}
+	slog.Warn("director: internal_tls certificate is missing the ring_tls_server_name DNS SAN — ring TLS handshakes will fail closed until the certificate is reissued with this name, or internal_tls is disabled on the director component (#753)",
+		"expected_san", name, "cert_dns_names", cert.DNSNames)
 }
 
 // parseCIDRs parses a list of CIDR strings into *net.IPNet values.

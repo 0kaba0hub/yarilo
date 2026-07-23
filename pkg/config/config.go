@@ -932,10 +932,10 @@ type DirectorServiceConfig struct {
 	// Peers is the seed list for joining the self-organizing ring (#750) —
 	// "host:port" addresses tried in order until one accepts a DIRECTOR-JOIN.
 	// Once joined, membership is maintained automatically via DIRECTOR-ADD/
-	// REMOVE propagation, not further seed polling. In k8s this is normally
-	// the stable "-director" ClusterIP (kube-proxy guarantees it resolves to
-	// *some* live member); a manual list is a valid seed override for
-	// non-k8s deployments too.
+	// REMOVE propagation, not further seed polling. In k8s this is the
+	// headless "-director-ring" Service (#748/#751) — its DNS resolves
+	// directly to every ready pod's IP; a manual list is a valid seed
+	// override for non-k8s deployments too.
 	Peers []string          `koanf:"peers"`
 	API   DirectorAPIConfig `koanf:"api"`
 	// RingSecret authenticates incoming DIRECTOR-JOIN requests via
@@ -944,6 +944,24 @@ type DirectorServiceConfig struct {
 	// helm/templates/secret-director-ring.yaml). Empty disables ring auth:
 	// every JOIN is rejected and this node can only run as a singleton.
 	RingSecret string `koanf:"ring_secret"`
+	// JoinAllowedNets restricts which source IPs may even attempt a
+	// DIRECTOR-JOIN (#750 phase 2) — checked before the HMAC challenge is
+	// sent, same fail-fast pattern as director_service.api.allowed_nets.
+	// Empty means unrestricted (any source may attempt a join; HMAC is
+	// still required to succeed).
+	JoinAllowedNets []string `koanf:"join_allowed_nets"`
+	// RingTLSServerName is the stable hostname ring TLS connections (JOIN
+	// dial + right-neighbor dial) verify the peer's certificate against,
+	// instead of the ephemeral pod IP actually being dialed (#750 phase 2).
+	// Only meaningful when internal_tls.enabled is true. The configured
+	// name must appear in the director's own certificate's DNS SANs — #753
+	// tracks chart-managed automatic provisioning of that; until it lands,
+	// keep internal_tls.enabled=false on the director component, or the
+	// ring's TLS handshakes fail closed. Empty falls back to verifying
+	// against the dialed pod IP, which will not match any realistic
+	// certificate — i.e. TLS-enabled ring connections simply won't
+	// complete until this is set correctly.
+	RingTLSServerName string `koanf:"ring_tls_server_name"`
 	// MinMembers is an install-time warning threshold only ("fewer members
 	// than this = no state redundancy") — it never refuses service at any
 	// member count. Default 3 (matches the reference's recommended minimum

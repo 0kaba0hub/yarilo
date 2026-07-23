@@ -98,6 +98,17 @@ type Options struct {
 	// (#750). Empty means ring auth is disabled — every JOIN is rejected, so
 	// this node can only ever run as a singleton (N=1) ring.
 	RingSecret []byte
+	// JoinAllowedNets restricts which source IPs may attempt a DIRECTOR-JOIN
+	// (#750 phase 2) — checked before the HMAC challenge is sent. Empty
+	// means unrestricted (HMAC is still required to succeed).
+	JoinAllowedNets []*net.IPNet
+	// RingTLSServerName is the stable hostname ring TLS connections verify
+	// the peer's certificate against, instead of the ephemeral pod IP
+	// actually dialed (#750 phase 2). Only meaningful when PeerTLS is set;
+	// must match a DNS SAN on the director's own certificate. Empty falls
+	// back to verifying against the dialed IP, which will not match any
+	// realistic certificate.
+	RingTLSServerName string
 	// MinMembers is an install-time warning threshold only ("below this =
 	// no state redundancy") — it never refuses service at any member count.
 	MinMembers int
@@ -214,7 +225,7 @@ func NewWithOptions(opts Options) *Server {
 		sessById:  make(map[string]*sessionRec),
 		sessByBE:  make(map[string]map[string]bool),
 	}
-	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers)
+	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers, opts.JoinAllowedNets, opts.RingTLSServerName)
 	return s
 }
 

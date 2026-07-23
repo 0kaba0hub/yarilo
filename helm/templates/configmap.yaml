@@ -724,6 +724,13 @@ data:
       ping_timeout: {{ .Values.components.director.ping_timeout }}
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
       ring_secret: {{ .Values.components.director.ring_secret | quote }}
+      {{- with .Values.components.director.join_allowed_nets }}
+      join_allowed_nets:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      ring_tls_server_name: {{ .Values.components.director.ring_tls_server_name | default (printf "%s-director-ring" (include "yarilo.fullname" .)) | quote }}
       min_members: {{ .Values.components.director.min_members }}
       {{- with .Values.components.director.backends }}
       mail_servers:

@@ -150,11 +150,43 @@ Server → Client:  JOIN-OK\n
                   DONE\n
               or: JOIN-FAIL\t<reason>\n
 ```
-An empty/unconfigured `ring_secret` on the acceptor rejects every JOIN
-outright (`ring auth not configured`) — that node can then only ever run as
-a singleton. On success the acceptor also propagates `DIRECTOR-ADD` around
+`JOIN-FAIL` reasons, in the order they're checked (#750 phase 2 added the
+first and last):
+- `source not allowed` — the dialer's IP isn't in `join_allowed_nets`,
+  checked before the challenge is even sent (fail-fast, mirrors the admin
+  API's `allowed_nets` middleware).
+- `ring auth not configured` — the acceptor has no `ring_secret` set; it
+  can then only ever run as a singleton.
+- `expected JOIN-PROOF` / `malformed proof` / `invalid proof` — the
+  challenge/response didn't arrive in the right shape, or the HMAC didn't
+  match.
+- `dial-back verification failed` — the HMAC proof was valid (the joiner
+  knows the ring secret) but the acceptor's own dial-back to the joiner's
+  *claimed* `<ip>:<port>` didn't get a director-shaped `VERSION` line back
+  within 5s — guards against a valid-secret joiner self-reporting an
+  address that isn't actually reachable or isn't really it.
+
+Each rejection increments `yarilo_director_ring_join_rejected_total`,
+labelled `reason` with the (snake_case) tag matching the list above
+(`cidr_denied`, `no_secret`, `malformed_proof`, `invalid_proof`,
+`dial_back_failed`); an accepted join increments
+`yarilo_director_ring_join_accepted_total` (no labels). The accompanying
+`slog.Warn` on every rejection names the specific joiner.
+
+On success the acceptor also propagates `DIRECTOR-ADD` around
 the ring and recomputes its own right neighbor; the joiner separately dials
 its own computed right neighbor as an ordinary ring connection.
+
+**Ring TLS ServerName** (#750 phase 2): when `internal_tls.enabled` is
+true, both the JOIN dial and the right-neighbor dial verify the peer's
+certificate against `director_service.ring_tls_server_name` — a stable
+configured hostname — rather than the ephemeral pod IP actually being
+dialed, which would never match a realistic certificate. The configured
+name must be present in the director's own certificate's DNS SANs; #753
+tracks chart-managed provisioning of that (today's shared internalTLS cert
+has no per-component SAN at all). The director process warns at startup
+(`checkRingCertSAN` in `app/yarilo-director/main.go`) if its own loaded
+certificate is missing the configured name.
 
 **Ring data connection** (right-neighbor dial — same VERSION/ME/PEER/DONE
 handshake #700 introduced, now targeting one computed neighbor instead of
