@@ -291,11 +291,21 @@ func TestMembership_N3_KillMember_ConvergesWithoutCorruption(t *testing.T) {
 	srvB, addrB, killB := startKillableRingNode(t, "shared-secret", []string{addrA}, 3)
 	srvC, _, _ := startKillableRingNode(t, "shared-secret", []string{addrA}, 3)
 
-	waitFor(t, 10*time.Second, func() bool {
-		return len(srvA.membership.Members()) == 3 &&
+	ready := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(srvA.membership.Members()) == 3 &&
 			len(srvB.membership.Members()) == 3 &&
-			len(srvC.membership.Members()) == 3
-	})
+			len(srvC.membership.Members()) == 3 {
+			ready = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatalf("initial 3-way convergence timed out; A=%v B=%v C=%v",
+			srvA.membership.Members(), srvB.membership.Members(), srvC.membership.Members())
+	}
 	time.Sleep(500 * time.Millisecond) // let all right-neighbor dials settle
 
 	killB()
@@ -306,18 +316,29 @@ func TestMembership_N3_KillMember_ConvergesWithoutCorruption(t *testing.T) {
 	// on a dev machine, so the window here is deliberately generous.
 	survivors := []*Server{srvA, srvC}
 	for _, s := range survivors {
-		waitFor(t, 20*time.Second, func() bool {
-			members := s.membership.Members()
-			if len(members) != 2 {
-				return false
-			}
-			for _, mem := range members {
-				if mem.String() == addrB {
-					return false // the dead member must be gone, not just uncounted
+		var last []Member
+		deadline := time.Now().Add(20 * time.Second)
+		ok := false
+		for time.Now().Before(deadline) {
+			last = s.membership.Members()
+			if len(last) == 2 {
+				dead := false
+				for _, mem := range last {
+					if mem.String() == addrB {
+						dead = true
+						break
+					}
+				}
+				if !dead {
+					ok = true
+					break
 				}
 			}
-			return true
-		})
+			time.Sleep(20 * time.Millisecond)
+		}
+		if !ok {
+			t.Fatalf("member %s: did not converge to 2 members without %s within 20s; last observed members=%v", s.membership.self, addrB, last)
+		}
 	}
 
 	// Stability: once converged, it must STAY converged — no further
@@ -339,9 +360,18 @@ func TestMembership_N3_KillMember_ConvergesWithoutCorruption(t *testing.T) {
 	// A rejoin (simulating the replacement pod, new IP) must not learn
 	// about the dead member via either survivor's DIRECTOR-LIST snapshot.
 	srvD, _, _ := startKillableRingNode(t, "shared-secret", []string{addrA}, 3)
-	waitFor(t, 10*time.Second, func() bool {
-		return len(srvD.membership.Members()) == 3
-	})
+	rejoinOK := false
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(srvD.membership.Members()) == 3 {
+			rejoinOK = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !rejoinOK {
+		t.Fatalf("rejoin convergence timed out; D=%v", srvD.membership.Members())
+	}
 	for _, mem := range srvD.membership.Members() {
 		if mem.String() == addrB {
 			t.Errorf("rejoining member learned about the dead member %s", addrB)
