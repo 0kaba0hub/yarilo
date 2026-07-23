@@ -214,22 +214,41 @@ reach instead).
 
 **Event forwarding** (RING-CHANGE / USER-MOVED / USER-KICKED / DIRECTOR-ADD
 / DIRECTOR-REMOVE) replaces #700's full-mesh direct-broadcast-to-every-peer
-with proper ring propagation, each line carrying an origin + sequence
-envelope:
+with ring propagation, each line carrying an origin + sequence envelope:
 ```
 <KIND>\t<originIP>\t<originPort>\t<seq>\t<...original payload>\n
 ```
 A node receiving one of these: if `origin` is itself, the event has
 travelled all the way around the ring and is **absorbed** (never
 re-applied, never re-forwarded — this is what makes the ring self-limiting
-with zero coordination, and at N=2 is what turns "forward unconditionally"
-into exactly one round trip rather than an infinite bounce, since the
-single shared connection there serves as both "left" and "right"). Otherwise
-it applies the change locally (unless `seq` is not newer than the highest
-already seen from that origin — a safety net against duplicates) and
-forwards unconditionally to its own right neighbor. Local login clients
-never see the envelope form — they keep receiving the plain, historical
-`<KIND>\t<...payload>\n` line unchanged.
+with zero coordination). Otherwise it applies the change locally (unless
+`seq` is not newer than the highest already seen from that origin — a
+safety net against duplicates) and **broadcasts to every currently live
+ring connection except the one the event just arrived on** — the
+`arrivalConn` skipped in `broadcastRing`, matching Dovecot's
+`director_update_send` (`director.c`) rather than picking one fixed
+"the" forward path. At N=2 the only ring connection *is* the arrival
+connection, so broadcasting sends nowhere there and the event simply stops
+without needing to bounce back to origin — the (origin, seq) dedup, not
+which connections get skipped, is what actually terminates the flood once
+it loops back to its author. Local login clients never see the envelope
+form — they keep receiving the plain, historical `<KIND>\t<...payload>\n`
+line unchanged.
+
+An earlier version of this forwarding path instead picked a single "the"
+connection to send on — the outgoing dial (`dialConn`) if present,
+otherwise a `passiveConn` registered only for the N=2 tie-break's passive
+member, decided once when a connection was *accepted* and never revisited.
+That role could go stale on an already-open connection: a 3→2 shrink could
+leave a connection accepted under N=3 rules (correctly not the passive
+path at the time) permanently unable to forward anything once its node
+became the N=2 passive side after a neighbor's death — a real,
+deterministically-reproducible bug (not CI flakiness) depending only on
+which member happened to die relative to ring order, root-caused via
+`TestMembership_N3_KillMember_ConvergesWithoutCorruption` failing in CI
+while passing locally. Every ring connection — dial-out or accepted, at
+any member count — is now tracked for its whole lifetime and is eligible
+to carry a broadcast; no per-connection role exists to become stale.
 
 **Death detection** in phase 1 is read-error-based, not timeout-based: a
 node whose right-neighbor dial fails (after a few short retries) or drops

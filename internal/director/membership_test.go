@@ -3,6 +3,7 @@ package director
 import (
 	"context"
 	"net"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -90,8 +91,8 @@ func startKillableRingNode(t *testing.T, secret string, seeds []string, minMembe
 		if srv.membership.dialConn != nil {
 			srv.membership.dialConn.Close()
 		}
-		if srv.membership.passiveConn != nil {
-			srv.membership.passiveConn.Close()
+		for c := range srv.membership.ringConns {
+			c.Close()
 		}
 		srv.membership.rightMu.Unlock()
 	}
@@ -127,11 +128,11 @@ func TestMembership_N1_NoPeerMachinery(t *testing.T) {
 	}
 	srv.membership.rightMu.Lock()
 	dialConn := srv.membership.dialConn
-	passiveConn := srv.membership.passiveConn
+	ringConns := len(srv.membership.ringConns)
 	target := srv.membership.rightTarget
 	srv.membership.rightMu.Unlock()
-	if dialConn != nil || passiveConn != nil || !target.isZero() {
-		t.Errorf("N=1: no dial/connection should ever be attempted, got dialConn=%v passiveConn=%v target=%v", dialConn, passiveConn, target)
+	if dialConn != nil || ringConns != 0 || !target.isZero() {
+		t.Errorf("N=1: no dial/connection should ever be attempted, got dialConn=%v ringConns=%d target=%v", dialConn, ringConns, target)
 	}
 
 	// A singleton must still serve LOOKUP normally — the degradation ladder
@@ -197,17 +198,17 @@ func TestMembership_N2_OnlyLowerMemberDials(t *testing.T) {
 	})
 
 	// The higher-sorted member must never dial: it has no rightTarget of its
-	// own (rightNeighbor() reports !ok for it), though its passiveConn does
-	// get populated once the lower member's connection arrives
-	// (serveRingConn's N=2 special case) — that's the "one connection
-	// serves both directions" requirement, not a dial from this side.
+	// own (rightNeighbor() reports !ok for it), though the connection the
+	// lower member dials in does get registered in ringConns once it
+	// arrives — that's the "one connection serves both directions"
+	// requirement, not a dial from this side.
 	if _, ok := higher.membership.rightNeighbor(); ok {
 		t.Error("N=2: the higher-sorted member must not compute a dial target")
 	}
 	waitFor(t, 3*time.Second, func() bool {
 		higher.membership.rightMu.Lock()
 		defer higher.membership.rightMu.Unlock()
-		return higher.membership.passiveConn != nil
+		return len(higher.membership.ringConns) > 0
 	})
 	higher.membership.rightMu.Lock()
 	higherDialConn := higher.membership.dialConn
@@ -375,6 +376,83 @@ func TestMembership_N3_KillMember_ConvergesWithoutCorruption(t *testing.T) {
 	for _, mem := range srvD.membership.Members() {
 		if mem.String() == addrB {
 			t.Errorf("rejoining member learned about the dead member %s", addrB)
+		}
+	}
+}
+
+// TestMembership_N3_ShrinkToN2_ReusesExistingConnectionForward isolates the
+// exact #754 follow-up scenario, independent of dial/accept timing luck:
+// kill the wrap (highest-sorted) member of a 3-ring, so the surviving
+// low→mid dial edge is completely untouched by the death — low was already
+// dialing mid before the kill and keeps dialing the same target after, no
+// redial involved. mid alone detects the death (its own dial to high fails)
+// and must deliver DIRECTOR-REMOVE to low over that same still-open,
+// pre-existing connection now that mid has become the N=2 passive member —
+// there is no new connection anywhere in this path for a resync to hide
+// behind. Under the old dialConn/passiveConn model this connection was
+// classified (at accept time, while still N=3) as not the passive path and
+// never revisited, so the event had nowhere to go and was silently dropped
+// forever; broadcastRing has no such role to go stale.
+func TestMembership_N3_ShrinkToN2_ReusesExistingConnectionForward(t *testing.T) {
+	n1, addr1, kill1 := startKillableRingNode(t, "shared-secret", nil, 3)
+	n2, addr2, kill2 := startKillableRingNode(t, "shared-secret", []string{addr1}, 3)
+	n3, addr3, kill3 := startKillableRingNode(t, "shared-secret", []string{addr1}, 3)
+
+	nodes := []*Server{n1, n2, n3}
+	addrOf := map[*Server]string{n1: addr1, n2: addr2, n3: addr3}
+	killOf := map[*Server]func(){n1: kill1, n2: kill2, n3: kill3}
+
+	ready := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(n1.membership.Members()) == 3 && len(n2.membership.Members()) == 3 && len(n3.membership.Members()) == 3 {
+			ready = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatalf("initial 3-way convergence timed out; n1=%v n2=%v n3=%v",
+			n1.membership.Members(), n2.membership.Members(), n3.membership.Members())
+	}
+	time.Sleep(500 * time.Millisecond) // let all right-neighbor dials settle
+
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].membership.self.less(nodes[j].membership.self) })
+	low, mid, high := nodes[0], nodes[1], nodes[2]
+
+	killOf[high]()
+	deadAddr := addrOf[high]
+
+	// Tight on purpose: long enough for the direct one-hop forward under
+	// test (death detection ~3 failed attempts at ~1s spacing, then an
+	// immediate broadcastRing), but with no fresh connection anywhere in
+	// this path for a resync to accidentally paper over a still-broken
+	// forward — this window is what makes the test actually isolate the
+	// fix rather than just eventually observe it.
+	for _, s := range []*Server{low, mid} {
+		var last []Member
+		survivorDeadline := time.Now().Add(6 * time.Second)
+		ok := false
+		for time.Now().Before(survivorDeadline) {
+			last = s.membership.Members()
+			if len(last) == 2 {
+				dead := false
+				for _, mem := range last {
+					if mem.String() == deadAddr {
+						dead = true
+						break
+					}
+				}
+				if !dead {
+					ok = true
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if !ok {
+			t.Fatalf("member %s: did not receive DIRECTOR-REMOVE for wrap member %s over the pre-existing connection within 6s; last observed members=%v",
+				s.membership.self, deadAddr, last)
 		}
 	}
 }
