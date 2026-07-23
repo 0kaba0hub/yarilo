@@ -146,7 +146,8 @@ Client → Server:  DIRECTOR-JOIN\t<ip>\t<port>\n
 Server → Client:  JOIN-CHALLENGE\t<nonce_hex>\n   or   JOIN-FAIL\t<reason>\n
 Client → Server:  JOIN-PROOF\t<hmac_hex>\n         (HMAC-SHA256(ring_secret, nonce+"\t"+ip+"\t"+port))
 Server → Client:  JOIN-OK\n
-                  DIRECTOR-LIST\t<ip1>:<port1>,...\n   (existing members; joiner adds itself)
+                  DIRECTOR-LIST\t<ip1>:<port1>,...\t<removed_ip1>:<removed_port1>,...\n
+                                        (existing members + tombstoned/dead members, #754; joiner adds itself)
                   DONE\n
               or: JOIN-FAIL\t<reason>\n
 ```
@@ -194,24 +195,54 @@ every configured peer):
 ```
 VERSION\tyarilo-director\t1\t0\n
 ME\t<ip>\t<port>\t<timestamp>\n
+MEMBERS\t<ip1>:<port1>,...\t<removed_ip1>:<removed_port1>,...\n
 PEER\t1\n
 DONE\n
 ```
 `PEER\t1` still marks the connection as a ring/replica connection rather
 than a login proxy (`client.isPeer`) — a login proxy's generic
-`cluster/proto` dialer never sends it. Immediately after this handshake,
-**both** ends send a `DIRECTOR-LIST` snapshot of their current member list
-(a union-merge on receipt, never a blind replace) — this closes a
-same-process race where a `DIRECTOR-ADD` fired between a join being
-accepted and that acceptor's own (possibly just-retargeted) dial completing
-would otherwise vanish, without needing the full user/backend state
-snapshot planned for #750 phase 3.
+`cluster/proto` dialer never sends it.
+
+`MEMBERS` (#754) is sent by the dialer *before* `PEER` deliberately: the
+acceptor's CONNECT-redirect decision (triggered by the `PEER` line, see
+below) uses its own membership view, and without this the acceptor could
+redirect the dialer straight back toward a member the dialer already knows
+is dead — precisely because it's dialing elsewhere to route around that
+death — and the redirect path never reaches the post-handshake
+`DIRECTOR-LIST` resync that would otherwise fix the acceptor's stale view.
+Merging the dialer's tombstones first closes that gap regardless of which
+way the connection ends up being used.
+
+Immediately after the handshake, **both** ends additionally send a
+`DIRECTOR-LIST\t<members-csv>\t<removed-csv>\n` snapshot of their current
+member list *and* tombstone set (each side's set is unioned into the
+other's — including tombstones, never a blind replace) — this closes a
+same-process race where a `DIRECTOR-ADD`/`DIRECTOR-REMOVE` fired between a
+membership change being accepted and that node's own (possibly
+just-retargeted) dial completing would otherwise vanish, without needing
+the full user/backend state snapshot planned for #750 phase 3.
+
+**Tombstones** (#754): `removed` is a permanent per-node set of members
+known to be dead — required because a plain union-merge of member lists
+alone would let any peer whose view hasn't caught up yet silently
+resurrect a member some other node already correctly evicted, on every
+reconnect. `addMember` (used both when accepting a fresh authenticated
+JOIN and when applying a relayed `DIRECTOR-ADD`) clears the tombstone for
+that `(ip, port)` — trusted to mean the address is alive again, whether
+that's a genuine rejoin or the address was reassigned to a new pod.
 
 A connection may also receive, at any point: `CONNECT\t<ip>\t<port>\n` —
 sent by an acceptor that determines the dialer picked a stale target (its
 membership view says someone else should be receiving this dial); the
 dialer retries immediately against the given address instead of treating
-it as a failure.
+it as a failure. Because a redirect can change *who the dialer is actually
+trying to reach* mid-attempt, death-declaration after exhausting retries
+must track and blame that current address, never the originally intended
+one — conflating the two was the direct cause of a live member being
+wrongly declared dead in #754's regression (a stale redirect bounced the
+dialer toward an already-dead member; exhausting retries against it then
+mis-attributed the death to the node it had originally been trying to
+reach instead).
 
 **Event forwarding** (RING-CHANGE / USER-MOVED / USER-KICKED / DIRECTOR-ADD
 / DIRECTOR-REMOVE) replaces #700's full-mesh direct-broadcast-to-every-peer

@@ -22,7 +22,11 @@
 //	  JOIN-CHALLENGE\t{nonce_hex}\n
 //	  JOIN-PROOF\t{hmac_hex}\n             (HMAC-SHA256(ring_secret, nonce+ip+port))
 //	  JOIN-OK\n / JOIN-FAIL\t{reason}\n
-//	  DIRECTOR-LIST\t{ip1}:{port1},...\n   (existing members; joiner adds itself and dials its right neighbor separately)
+//	  DIRECTOR-LIST\t{ip1}:{port1},...\t{removed_ip1}:{removed_port1},...\n
+//	                                        (existing members + tombstoned/dead members, #754; joiner adds itself and dials its right neighbor separately)
+//	  MEMBERS\t{ip1}:{port1},...\t{removed_ip1}:{removed_port1},...\n
+//	                                        (sent by a ring/PEER dialer right before "PEER\t1", #754 — merged
+//	                                         before the CONNECT-redirect decision below, so it isn't made on stale data)
 //	  CONNECT\t{ip}\t{port}\n              (sent on a ring/PEER connection: wrong target, dial here instead)
 //	  DIRECTOR-ADD\t{originIP}\t{originPort}\t{seq}\t{ip}\t{port}\n
 //	  DIRECTOR-REMOVE\t{originIP}\t{originPort}\t{seq}\t{ip}\t{port}\n
@@ -428,6 +432,12 @@ func (s *Server) handleConn(conn net.Conn) {
 			if port, pErr := strconv.Atoi(fields[2]); pErr == nil {
 				dialer = Member{IP: fields[1], Port: port}
 			}
+		case fields[0] == "MEMBERS" && len(fields) >= 3:
+			// Sent by a ring dialer right before PEER (#754) — merged
+			// BEFORE the PEER case's CONNECT-redirect check below, so that
+			// decision uses the dialer's membership view too, not just
+			// this node's own (possibly stale) one.
+			s.membership.mergeMembers(parseMemberList(fields[1]), parseMemberList(fields[2]))
 		case fields[0] == "PEER":
 			// Sent only by another director replica's ring connection
 			// (#700, repurposed for the ring's right-neighbor dial in
