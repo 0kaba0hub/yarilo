@@ -39,14 +39,14 @@ func (s *Server) apiUserMove(w http.ResponseWriter, r *http.Request) {
 	s.overrides[user] = addr
 	s.overrideMu.Unlock()
 	s.userDir.Set(user, addr, false)
-	s.broadcast(fmt.Sprintf("USER-MOVED\t%s\t%s\t%s", user, backendHost, portStr), nil)
+	s.originateRingEvent("USER-MOVED", fmt.Sprintf("%s\t%s\t%s", user, backendHost, portStr), nil)
 	slog.Info("director API: user moved", "user", user, "backend", addr)
 	apiJSON(w, map[string]string{"status": "ok"})
 }
 
 func (s *Server) apiUserKick(w http.ResponseWriter, r *http.Request) {
 	user := s.normalizeUser(r.PathValue("user"))
-	s.broadcast(fmt.Sprintf("USER-KICKED\t%s", user), nil)
+	s.originateRingEvent("USER-KICKED", user, nil)
 	slog.Info("director API: user kicked", "user", user)
 	apiJSON(w, map[string]string{"status": "ok"})
 }

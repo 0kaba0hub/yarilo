@@ -97,12 +97,30 @@ components:
     #   port: 24
     #   tag: ""
 
-    ## Peer director addresses for ring sync (required when replicas > 1).
-    ## Each entry is "host:port" where port matches directorPort (default 9102).
-    ## With StatefulSet, use headless-service pod DNS:
-    ##   yarilo-director-0.yarilo-director-headless:9102
-    ##   yarilo-director-1.yarilo-director-headless:9102
+    ## Seed address(es) for the self-organizing ring (#750, replaces the old
+    ## static full-mesh peer list — same key, new semantics). Each entry is
+    ## "host:port"; director joins via the first that accepts a
+    ## DIRECTOR-JOIN, then maintains membership automatically from there —
+    ## no further entries here needed as replicas scale. Use the headless
+    ## -director-ring Service (#748/#751) as the seed — its DNS name resolves
+    ## to every ready pod's IP directly (not a single virtual IP), so any
+    ## resolver hit lands on a live replica even though director is a plain
+    ## Deployment, not a StatefulSet:
+    ##   <release>-director-ring:9102
+    ## replicas: 1 needs no seed at all — a lone director is a valid N=1 ring.
     peers: []
+
+    ## HMAC secret authenticating DIRECTOR-JOIN requests (#750). Auto-generated
+    ## into Secret <release>-director-ring-secret on first deploy and preserved
+    ## on upgrades, same pattern as the API token below. Empty (or a rotated,
+    ## now-mismatched value) means every JOIN is rejected — that replica can
+    ## only ever run as a singleton ring, so keep this in sync across replicas
+    ## (which the auto-generated Secret already guarantees within one release).
+    ring_secret: "${DIRECTOR_RING_SECRET}"
+
+    ## Install-time warning threshold only ("fewer members than this = no
+    ## state redundancy") — never refuses service at any member count.
+    min_members: 3
 
     ## HTTP admin API (yarilo-admin CLI target).
     ## A 32-char token is auto-generated into Secret <release>-director-api-token on first

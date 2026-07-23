@@ -27,6 +27,23 @@ var (
 		Name:      "backend_sessions",
 		Help:      "Exact number of active proxied sessions per backend and protocol.",
 	}, []string{"ip", "port", "tag", "protocol"})
+
+	// joinAccepted / joinRejected count ring DIRECTOR-JOIN outcomes (#750).
+	// Rejected includes: no ring secret configured, malformed proof, and
+	// HMAC mismatch — the counter alone doesn't distinguish which; the
+	// accompanying slog.Warn does.
+	joinAccepted = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "director",
+		Name:      "ring_join_accepted_total",
+		Help:      "Total number of ring DIRECTOR-JOIN requests accepted.",
+	})
+	joinRejected = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "director",
+		Name:      "ring_join_rejected_total",
+		Help:      "Total number of ring DIRECTOR-JOIN requests rejected (no secret configured, malformed or invalid HMAC proof).",
+	})
 )
 
 // updateMetrics refreshes all backend Prometheus gauges.

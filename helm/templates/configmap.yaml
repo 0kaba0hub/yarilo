@@ -723,6 +723,8 @@ data:
       ping_interval: {{ .Values.components.director.ping_interval }}
       ping_timeout: {{ .Values.components.director.ping_timeout }}
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
+      ring_secret: {{ .Values.components.director.ring_secret | quote }}
+      min_members: {{ .Values.components.director.min_members }}
       {{- with .Values.components.director.backends }}
       mail_servers:
         {{- range . }}
@@ -735,8 +737,11 @@ data:
       lmtp_listen: {{ printf ":%d" (int .Values.components.director.listeners.lmtp.containerPort) | quote }}
       {{- end }}
       {{- with .Values.components.director.peers }}
-      ## Static seed override (non-k8s). In-cluster, runtime ring membership
-      ## discovers peers via the -director ClusterIP seed — see #750.
+      ## Seed list for the self-organizing ring (#750). In-cluster, point
+      ## this at the headless -director-ring Service (#748/#751) — its DNS
+      ## resolves directly to every ready pod's IP, so any hit lands on a
+      ## live replica to DIRECTOR-JOIN against. Manual host:port entries
+      ## remain a valid override for non-k8s deployments.
       peers:
         {{- range . }}
         - {{ . | quote }}

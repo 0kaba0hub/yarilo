@@ -16,6 +16,17 @@
 //	  ME\t{ip}\t{port}\t{ts}\n
 //	  DONE\n
 //
+//	Ring membership handshake (#750 — self-organizing ring, replaces the
+//	static full-mesh peer list; see membership.go and INTERNALS.md §1):
+//	  DIRECTOR-JOIN\t{ip}\t{port}\n        (sent instead of ME/DONE, on a fresh connection to a seed)
+//	  JOIN-CHALLENGE\t{nonce_hex}\n
+//	  JOIN-PROOF\t{hmac_hex}\n             (HMAC-SHA256(ring_secret, nonce+ip+port))
+//	  JOIN-OK\n / JOIN-FAIL\t{reason}\n
+//	  DIRECTOR-LIST\t{ip1}:{port1},...\n   (existing members; joiner adds itself and dials its right neighbor separately)
+//	  CONNECT\t{ip}\t{port}\n              (sent on a ring/PEER connection: wrong target, dial here instead)
+//	  DIRECTOR-ADD\t{originIP}\t{originPort}\t{seq}\t{ip}\t{port}\n
+//	  DIRECTOR-REMOVE\t{originIP}\t{originPort}\t{seq}\t{ip}\t{port}\n
+//
 //	Client commands:
 //	  LOOKUP\t{id}\t{user}\t{tag}\n                  (tag required; "" = untagged pool, not "any tag")
 //	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\n
@@ -38,11 +49,16 @@
 //	  OK\n
 //	  PONG\n
 //
-//	Server pushes (unsolicited, to all connected clients):
+//	Server pushes (unsolicited, to local login clients — plain form, unchanged):
 //	  RING-CHANGE\t{ip}\t{event}\t{tag}\n            (event: up | down | flush)
 //	  USER-MOVED\t{user}\t{ip}\t{port}\n             (when user is moved by another client)
 //	  USER-KICKED\t{user}\n                          (broadcast kick notification)
 //	  USER-KILLED-EVERYWHERE\t{hash}\n               (director confirms all sessions gone)
+//
+//	Server pushes (ring-envelope form, right-neighbor connections only, #750):
+//	  RING-CHANGE\t{originIP}\t{originPort}\t{seq}\t{ip}\t{event}\t{tag}\n
+//	  USER-MOVED\t{originIP}\t{originPort}\t{seq}\t{user}\t{ip}\t{port}\n
+//	  USER-KICKED\t{originIP}\t{originPort}\t{seq}\t{user}\n
 package director
 
 import (
@@ -72,10 +88,19 @@ type Options struct {
 	UserExpire   time.Duration // how long a user→backend mapping lives; default 900s
 	PingInterval time.Duration // idle time before sending PING; default 30s
 	PingTimeout  time.Duration // time to wait for PONG before closing; default 10s
-	// PeerTLS, LocalIP, LocalPort are used when adding peers via AddPeer.
+	// PeerTLS, LocalIP, LocalPort identify and secure this node's ring
+	// connections (dial-out to its right neighbor, and the JOIN dial to a
+	// seed) — see StartMembership.
 	PeerTLS   *tls.Config
 	LocalIP   string
 	LocalPort int
+	// RingSecret authenticates incoming DIRECTOR-JOIN requests via HMAC-SHA256
+	// (#750). Empty means ring auth is disabled — every JOIN is rejected, so
+	// this node can only ever run as a singleton (N=1) ring.
+	RingSecret []byte
+	// MinMembers is an install-time warning threshold only ("below this =
+	// no state redundancy") — it never refuses service at any member count.
+	MinMembers int
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// (director_username_hash_lowercase, #738) — matches the reference
 	// implementation's default hash template so two spellings of the same
@@ -167,12 +192,9 @@ type Server struct {
 	sessById  map[string]*sessionRec     // sessionID → record
 	sessByBE  map[string]map[string]bool // backendIP → set of sessionIDs
 
-	// peers tracks dynamically managed director-peer connections.
-	peersMu    sync.RWMutex
-	peerCancel map[string]context.CancelFunc
-	peerTLS    *tls.Config
-	localIP    string
-	localPort  int
+	// membership owns the self-organizing ring: member list, the single
+	// right-neighbor connection, and (origin, seq) event forwarding (#750).
+	membership *Membership
 }
 
 // New creates a director server with an empty ring and default options.
@@ -182,20 +204,18 @@ func New() *Server {
 
 // NewWithOptions creates a director server with custom options.
 func NewWithOptions(opts Options) *Server {
-	return &Server{
-		ring:       ring.New(opts.usernameHashLowercase()),
-		opts:       opts,
-		userDir:    NewUserDir(opts.userExpire(), opts.usernameHashLowercase()),
-		overrides:  make(map[string]string),
-		clients:    make(map[*client]struct{}),
-		sessions:   make(map[string]int),
-		sessById:   make(map[string]*sessionRec),
-		sessByBE:   make(map[string]map[string]bool),
-		peerCancel: make(map[string]context.CancelFunc),
-		peerTLS:    opts.PeerTLS,
-		localIP:    opts.LocalIP,
-		localPort:  opts.LocalPort,
+	s := &Server{
+		ring:      ring.New(opts.usernameHashLowercase()),
+		opts:      opts,
+		userDir:   NewUserDir(opts.userExpire(), opts.usernameHashLowercase()),
+		overrides: make(map[string]string),
+		clients:   make(map[*client]struct{}),
+		sessions:  make(map[string]int),
+		sessById:  make(map[string]*sessionRec),
+		sessByBE:  make(map[string]map[string]bool),
 	}
+	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers)
+	return s
 }
 
 // normalizeUser applies the #738 username hash-normalization at the single
@@ -217,44 +237,23 @@ func (s *Server) normalizeUser(username string) string {
 	return ring.NormalizeUsername(username)
 }
 
-// SetPeerDialConfig sets TLS and local identity used when dialling peers via AddPeer.
-func (s *Server) SetPeerDialConfig(tlsCfg *tls.Config, localIP string, localPort int) {
-	s.peerTLS = tlsCfg
-	s.localIP = localIP
-	s.localPort = localPort
+// StartMembership begins the self-organizing ring (#750): if seeds is
+// non-empty, this node tries to join via each in turn; either way it starts
+// (or already is) a valid N=1 ring immediately and never refuses service
+// while a join is pending.
+func (s *Server) StartMembership(ctx context.Context, seeds []string) {
+	s.membership.Start(ctx, seeds)
 }
 
-// AddPeer starts a persistent dial loop to peer director addr.
-// The loop runs until ctx is cancelled or RemovePeer is called.
-func (s *Server) AddPeer(ctx context.Context, addr string) {
-	s.peersMu.Lock()
-	defer s.peersMu.Unlock()
-	if _, ok := s.peerCancel[addr]; ok {
-		return
-	}
-	pCtx, cancel := context.WithCancel(ctx)
-	s.peerCancel[addr] = cancel
-	pd := NewPeerDialer(s, nil, s.peerTLS, s.localIP, s.localPort)
-	go pd.RunPeer(pCtx, addr)
-}
-
-// RemovePeer cancels the dial loop for addr.
-func (s *Server) RemovePeer(addr string) {
-	s.peersMu.Lock()
-	defer s.peersMu.Unlock()
-	if cancel, ok := s.peerCancel[addr]; ok {
-		cancel()
-		delete(s.peerCancel, addr)
-	}
-}
-
-// ListPeers returns the addresses of all currently managed peers.
+// ListPeers returns the current ring membership (self included), formatted
+// as "ip:port" strings — kept for API/CLI compatibility (yarilo-admin
+// `director ring status`); semantics changed from "statically configured
+// full-mesh peers" to "current self-organized ring members" (#750).
 func (s *Server) ListPeers() []string {
-	s.peersMu.RLock()
-	defer s.peersMu.RUnlock()
-	out := make([]string, 0, len(s.peerCancel))
-	for addr := range s.peerCancel {
-		out = append(out, addr)
+	members := s.membership.Members()
+	out := make([]string, len(members))
+	for i, m := range members {
+		out[i] = m.String()
 	}
 	return out
 }
@@ -358,6 +357,24 @@ func (s *Server) broadcastToLogins(line string) {
 	}
 }
 
+// originateRingEvent delivers a RING-CHANGE/USER-MOVED/USER-KICKED event
+// this node just authored: local login clients get the plain historical
+// line (exclude, when non-nil, skips the client that triggered it — e.g.
+// the health pod whose own BACKEND-UP doesn't need echoing back), and the
+// ring (#750) gets the (origin, seq)-enveloped form via Membership.originate
+// for propagation to the right neighbor and, eventually, every member.
+func (s *Server) originateRingEvent(kind, payload string, exclude *client) {
+	s.clientMu.RLock()
+	for c := range s.clients {
+		if c == exclude || c.isPeer {
+			continue
+		}
+		_ = c.WriteLine(kind + "\t" + payload)
+	}
+	s.clientMu.RUnlock()
+	s.membership.originate(kind, payload)
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
@@ -377,6 +394,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	_ = c.WriteLine("DONE")
 
 	// Read client handshake — consume until DONE.
+	var dialer Member
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
@@ -388,16 +406,41 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		fields := strings.Split(line, "\t")
 		switch {
+		case fields[0] == "DIRECTOR-JOIN":
+			// Sent instead of ME/DONE, on a fresh connection to a seed
+			// (#750) — handleJoin owns the rest of this connection's
+			// lifetime (challenge/response, DIRECTOR-LIST, close).
+			s.membership.handleJoin(conn, fields)
+			return
 		case len(fields) >= 3 && fields[0] == "ME":
 			slog.Debug("director: client identified", "ip", fields[1], "port", fields[2])
+			if port, pErr := strconv.Atoi(fields[2]); pErr == nil {
+				dialer = Member{IP: fields[1], Port: port}
+			}
 		case fields[0] == "PEER":
-			// Sent only by another director replica's PeerDialer (#700) —
-			// a login proxy's generic cluster/proto dialer never sends
-			// this. Distinguishes a peer connection from a login client
-			// so broadcastToLogins can stop peer-originated events from
-			// ping-ponging back out to other peers.
+			// Sent only by another director replica's ring connection
+			// (#700, repurposed for the ring's right-neighbor dial in
+			// #750) — a login proxy's generic cluster/proto dialer never
+			// sends this. Distinguishes a ring connection from a login
+			// client so broadcastToLogins can stop a peer-originated
+			// event from being relayed back out to other ring
+			// connections, and so CONNECT-redirect only ever applies here.
 			c.isPeer = true
+			if !dialer.isZero() {
+				if want, redirect := s.membership.checkRedirect(dialer); redirect {
+					_ = c.WriteLine(fmt.Sprintf("CONNECT\t%s\t%d", want.IP, want.Port))
+					return
+				}
+			}
 		}
+	}
+
+	if c.isPeer {
+		// Ring connections have their own dedicated line-processing loop
+		// (#750) — reuses rd rather than a fresh bufio.Reader so no
+		// already-buffered bytes from the handshake read are lost.
+		s.membership.serveRingConn(conn, rd, dialer)
+		return
 	}
 
 	// Start PING/PONG keepalive goroutine.
@@ -579,7 +622,7 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 		LastUp: ts,
 	})
 	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts)
-	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), c)
+	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tup\t%s", ip, tag), c)
 	s.updateMetrics()
 	_ = c.WriteLine("OK")
 }
@@ -595,7 +638,7 @@ func (s *Server) handleBackendDown(c *client, fields []string) {
 	s.ring.RemoveBackend(ip)
 	s.kickSessionsForBackend(ip)
 	slog.Info("director: backend down", "ip", ip)
-	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tdown\t%s", ip, tag), c)
+	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tdown\t%s", ip, tag), c)
 	s.updateMetrics()
 	_ = c.WriteLine("OK")
 }
@@ -616,7 +659,7 @@ func (s *Server) handleBackendFlush(c *client, fields []string) {
 	}
 	s.kickSessionsForBackend(ip)
 	slog.Info("director: backend flush", "ip", ip)
-	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tflush\t%s", ip, tag), c)
+	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tflush\t%s", ip, tag), c)
 	s.updateMetrics()
 	_ = c.WriteLine("OK")
 }
@@ -638,7 +681,7 @@ func (s *Server) handleUserMove(c *client, fields []string) {
 	s.userDir.Set(user, addr, false)
 
 	slog.Info("director: user moved", "user", user, "backend", addr)
-	s.broadcast(fmt.Sprintf("USER-MOVED\t%s\t%s\t%s", user, ip, portStr), c)
+	s.originateRingEvent("USER-MOVED", fmt.Sprintf("%s\t%s\t%s", user, ip, portStr), c)
 	_ = c.WriteLine("OK")
 }
 
@@ -687,7 +730,7 @@ func (s *Server) handleUserKick(c *client, fields []string) {
 	}
 	user := s.normalizeUser(fields[1])
 	slog.Info("director: user kick", "user", user)
-	s.broadcast(fmt.Sprintf("USER-KICKED\t%s", user), c)
+	s.originateRingEvent("USER-KICKED", user, c)
 	_ = c.WriteLine("OK")
 }
 
@@ -717,7 +760,7 @@ func (s *Server) AddBackend(ip string, port int, tag string) {
 		LastUp: ts,
 	})
 	slog.Info("director: backend registered", "ip", ip, "port", port, "tag", tag)
-	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tup\t%s", ip, tag), nil)
+	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tup\t%s", ip, tag), nil)
 	s.updateMetrics()
 }
 

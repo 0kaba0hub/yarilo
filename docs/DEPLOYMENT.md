@@ -23,7 +23,7 @@ Goroutines vs fork:
 
 ### director deployment
 Routes user connections to backends through a **consistent-hashing ring**.
-Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`), 3 director processes (with monitor sidecars), peer-sync ring.
+Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`), 3 director processes (with monitor sidecars), self-organizing ring (#750).
 This is where **TLS terminate + passdb auth + allow_nets enforcement** happens.
 
 **Login pod auth flow:**
@@ -312,11 +312,18 @@ helm/yarilo-backend       → backend pool (one release per tag = per NFS shard,
 - A ClusterIP Service for each.
 
 ### yarilo-director
-- `StatefulSet yarilo-director` — replicaCount=3 (peer-sync ring).
+- `Deployment yarilo-director` — replicaCount=3, self-organizing ring (#750): each
+  replica dials only its right neighbor in `(ip, port)` sort order, never a full
+  mesh, and every member count (including N=1, a lone replica) is a fully valid,
+  service-serving state. Plain Deployment, not a StatefulSet — no per-pod stable
+  network identity is needed. The headless `-director-ring` Service (#748/#751)
+  is the join seed: its DNS name resolves directly to every ready pod's IP (not
+  a single virtual IP), so any resolver hit lands on a live replica to
+  `DIRECTOR-JOIN` against; membership is self-maintaining from there.
 - 2 containers per pod: `yarilo-director` + `yarilo-monitor` (sidecar).
 - 4 login-proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`) — in separate containers or under a master-supervised process tree.
 - ClusterIP Service — public entry point: :993/:995/:587/:24.
-- Headless Service — for peer-sync DNS.
+- ClusterIP Service (`-director-ring`) — internal ring protocol port; also the join seed.
 
 ### yarilo-backend (one release per tag, e.g. `yarilo-backend-a`)
 **4 separate StatefulSets (one per protocol)** within a single Helm release, for independent scaling:
@@ -436,7 +443,7 @@ Synced between directors over the peer protocol.
 
 | Layer | HA approach |
 |:---|:---|
-| Director | replicaCount=3, peer-sync, monitor sidecar |
+| Director | replicaCount=3, self-organizing ring (#750), monitor sidecar |
 | Backend per tag | replicaCount=3–5, shared NFS RWX, ring rebalance |
 | yarilo-locks (per tag) | replicaCount=2, state in Redis |
 | yarilo-auth | replicaCount=2, stateless |

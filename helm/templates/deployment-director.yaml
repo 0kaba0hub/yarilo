@@ -34,11 +34,20 @@ spec:
               value: "yarilo-director"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: DIRECTOR_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ printf "%s-director-api-token" (include "yarilo.fullname" .) }}
                   key: token
+            - name: DIRECTOR_RING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "%s-director-ring-secret" (include "yarilo.fullname" .) }}
+                  key: secret
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
