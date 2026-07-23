@@ -1,36 +1,25 @@
 package director
 
 import (
-	"context"
-	"encoding/json"
-	"log/slog"
 	"net/http"
 )
 
+// apiPeerList returns the current ring membership (self included) — real
+// self-organized state (#750), not a statically configured peer list.
 func (s *Server) apiPeerList(w http.ResponseWriter, _ *http.Request) {
 	apiJSON(w, map[string]any{"peers": s.ListPeers()})
 }
 
-func (s *Server) apiPeerAdd(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Addr string `json:"addr"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Addr == "" {
-		apiError(w, "addr required", http.StatusBadRequest)
-		return
-	}
-	s.AddPeer(ctx, req.Addr)
-	slog.Info("director API: peer added", "addr", req.Addr)
-	apiJSON(w, map[string]string{"status": "ok"})
+// apiPeerAdd/apiPeerRemove previously forced a peer into/out of a static
+// full-mesh list. The ring is self-organizing now (#750): membership is
+// driven by DIRECTOR-JOIN against a seed and DIRECTOR-REMOVE on detected
+// death — there is nothing left for an admin to force. Routes stay
+// registered (rather than 404ing) so `yarilo-admin director ring add/remove`
+// gets a clear explanation instead of a bare connection/method error.
+func (s *Server) apiPeerAdd(w http.ResponseWriter, _ *http.Request) {
+	apiError(w, "ring membership is self-organizing (#750) — join a node to the ring by pointing its director_service.peers at a seed; there is no manual add", http.StatusGone)
 }
 
-func (s *Server) apiPeerRemove(w http.ResponseWriter, r *http.Request) {
-	addr := r.URL.Query().Get("addr")
-	if addr == "" {
-		apiError(w, "addr query param required", http.StatusBadRequest)
-		return
-	}
-	s.RemovePeer(addr)
-	slog.Info("director API: peer removed", "addr", addr)
-	apiJSON(w, map[string]string{"status": "ok"})
+func (s *Server) apiPeerRemove(w http.ResponseWriter, _ *http.Request) {
+	apiError(w, "ring membership is self-organizing (#750) — a member is removed automatically when its right-neighbor dial fails; there is no manual remove", http.StatusGone)
 }

@@ -116,30 +116,99 @@ request_timeout       = 30s
 reconnect_retry       = 60s
 ```
 
-### yarilo's actual PeerDialer handshake (full-mesh, not ring)
+### yarilo's actual ring handshake (self-organizing ring, #750 — supersedes the earlier full-mesh PeerDialer, #700)
 
-`internal/director/peer.go`'s implemented handshake is a simplified subset
-of the above (no `DIRECTOR`/`USER`/`OPTIONS`/`SYNC` lines — just enough for
-ring seeding and USER-KICKED/USER-MOVED/RING-CHANGE propagation between a
-full-mesh set of peer addresses, not a ring topology):
+`internal/director/membership.go` implements a simplified subset of the
+above (no `DIRECTOR`/`USER`/`OPTIONS`/`SYNC` lines): members are ordered by
+`(ip, port)`, and — unlike the reference's mesh — each node dials only its
+**right neighbor** in that sorted order (wrapping around), never every peer.
+Routing truth stays the deterministic ring hash (`pkg/cluster/ring`);
+membership exists purely to redundantly share routing state between
+neighbors, not to elect or vote.
 
+Degradation ladder (every member count is a fully valid, service-serving
+state — never refuses service):
+
+```
+N=1: no neighbors, no ring connections at all — ordinary single-replica mode.
+N=2: left == right; exactly ONE connection serves both directions — only
+     the lexicographically lower (ip,port) member dials; the higher member
+     never dials, but that one shared connection carries traffic both ways.
+N=3+: every member dials its right neighbor — N distinct directed edges,
+      a proper cycle.
+```
+
+**Join** (a fresh connection to a seed — normally the director Service's
+stable ClusterIP, sometimes a manually configured peer address for non-k8s
+— separate from, and closed before, the actual ring data connection):
+```
+Client → Server:  DIRECTOR-JOIN\t<ip>\t<port>\n
+Server → Client:  JOIN-CHALLENGE\t<nonce_hex>\n   or   JOIN-FAIL\t<reason>\n
+Client → Server:  JOIN-PROOF\t<hmac_hex>\n         (HMAC-SHA256(ring_secret, nonce+"\t"+ip+"\t"+port))
+Server → Client:  JOIN-OK\n
+                  DIRECTOR-LIST\t<ip1>:<port1>,...\n   (existing members; joiner adds itself)
+                  DONE\n
+              or: JOIN-FAIL\t<reason>\n
+```
+An empty/unconfigured `ring_secret` on the acceptor rejects every JOIN
+outright (`ring auth not configured`) — that node can then only ever run as
+a singleton. On success the acceptor also propagates `DIRECTOR-ADD` around
+the ring and recomputes its own right neighbor; the joiner separately dials
+its own computed right neighbor as an ordinary ring connection.
+
+**Ring data connection** (right-neighbor dial — same VERSION/ME/PEER/DONE
+handshake #700 introduced, now targeting one computed neighbor instead of
+every configured peer):
 ```
 VERSION\tyarilo-director\t1\t0\n
 ME\t<ip>\t<port>\t<timestamp>\n
 PEER\t1\n
 DONE\n
 ```
+`PEER\t1` still marks the connection as a ring/replica connection rather
+than a login proxy (`client.isPeer`) — a login proxy's generic
+`cluster/proto` dialer never sends it. Immediately after this handshake,
+**both** ends send a `DIRECTOR-LIST` snapshot of their current member list
+(a union-merge on receipt, never a blind replace) — this closes a
+same-process race where a `DIRECTOR-ADD` fired between a join being
+accepted and that acceptor's own (possibly just-retargeted) dial completing
+would otherwise vanish, without needing the full user/backend state
+snapshot planned for #750 phase 3.
 
-`PEER\t1` (#700) marks the connection as another director replica's
-PeerDialer, not a login proxy — a login proxy's generic `cluster/proto`
-dialer never sends it. The accepting server records this per-connection
-(`client.isPeer`) so a peer-originated `USER-KICKED` push is re-broadcast
-to this director's own login clients only (`broadcastToLogins`), never
-relayed back out to other peer connections. Without this, `USER-KICKED`
-ping-pongs forever between directors in a full-mesh topology: each
-replica's own `handleUserKick` already broadcasts directly to every peer,
-so a peer relaying it further is redundant, not required for
-convergence.
+A connection may also receive, at any point: `CONNECT\t<ip>\t<port>\n` —
+sent by an acceptor that determines the dialer picked a stale target (its
+membership view says someone else should be receiving this dial); the
+dialer retries immediately against the given address instead of treating
+it as a failure.
+
+**Event forwarding** (RING-CHANGE / USER-MOVED / USER-KICKED / DIRECTOR-ADD
+/ DIRECTOR-REMOVE) replaces #700's full-mesh direct-broadcast-to-every-peer
+with proper ring propagation, each line carrying an origin + sequence
+envelope:
+```
+<KIND>\t<originIP>\t<originPort>\t<seq>\t<...original payload>\n
+```
+A node receiving one of these: if `origin` is itself, the event has
+travelled all the way around the ring and is **absorbed** (never
+re-applied, never re-forwarded — this is what makes the ring self-limiting
+with zero coordination, and at N=2 is what turns "forward unconditionally"
+into exactly one round trip rather than an infinite bounce, since the
+single shared connection there serves as both "left" and "right"). Otherwise
+it applies the change locally (unless `seq` is not newer than the highest
+already seen from that origin — a safety net against duplicates) and
+forwards unconditionally to its own right neighbor. Local login clients
+never see the envelope form — they keep receiving the plain, historical
+`<KIND>\t<...payload>\n` line unchanged.
+
+**Death detection** in phase 1 is read-error-based, not timeout-based: a
+node whose right-neighbor dial fails (after a few short retries) or drops
+declares that member dead, removes it locally, announces `DIRECTOR-REMOVE`
+around the ring, and recomputes its own right neighbor — naturally skipping
+the dead member to whoever's next. An *accepted* connection dropping never
+triggers a death declaration; that is always the dialing side's
+responsibility. Faster, actively-probed ring timeouts (rather than relying
+on the OS/TCP to eventually surface a dead connection) are planned for
+#750 phase 4 alongside `members_hash`-based anti-entropy.
 
 ### USER-WEAK Flow (sticky session re-sync):
 1. User nearing TTL expiry → send `USER-WEAK` through ring

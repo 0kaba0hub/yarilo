@@ -929,8 +929,26 @@ type DirectorServiceConfig struct {
 	PingInterval int                `koanf:"ping_interval"` // seconds between PING probes; 0 = 30
 	PingTimeout  int                `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
-	Peers        []string           `koanf:"peers"`         // peer director addresses "host:port" for ring sync (replicas > 1)
-	API          DirectorAPIConfig  `koanf:"api"`
+	// Peers is the seed list for joining the self-organizing ring (#750) —
+	// "host:port" addresses tried in order until one accepts a DIRECTOR-JOIN.
+	// Once joined, membership is maintained automatically via DIRECTOR-ADD/
+	// REMOVE propagation, not further seed polling. In k8s this is normally
+	// the stable "-director" ClusterIP (kube-proxy guarantees it resolves to
+	// *some* live member); a manual list is a valid seed override for
+	// non-k8s deployments too.
+	Peers []string          `koanf:"peers"`
+	API   DirectorAPIConfig `koanf:"api"`
+	// RingSecret authenticates incoming DIRECTOR-JOIN requests via
+	// HMAC-SHA256 (#750). Supports ${ENV_VAR} — generate one Secret per
+	// release the same way director_service.api.token is (see
+	// helm/templates/secret-director-ring.yaml). Empty disables ring auth:
+	// every JOIN is rejected and this node can only run as a singleton.
+	RingSecret string `koanf:"ring_secret"`
+	// MinMembers is an install-time warning threshold only ("fewer members
+	// than this = no state redundancy") — it never refuses service at any
+	// member count. Default 3 (matches the reference's recommended minimum
+	// for the degradation ladder to have real redundancy at rest).
+	MinMembers int `koanf:"min_members"`
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// for ring routing, sticky assignments and admin overrides (#738).
 	// Matches the reference implementation's default hash template — two
@@ -1633,6 +1651,7 @@ func Load(path string) (*Config, error) {
 			PingInterval:          30,
 			PingTimeout:           10,
 			UsernameHashLowercase: true,
+			MinMembers:            3,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// 127.0.0.0/8   — loopback (same-pod CLI)
@@ -1796,6 +1815,7 @@ func expandEnv(cfg *Config) {
 	expandSvcSSL(cfg.Services.POP3)
 	expandSvcSSL(cfg.Services.POP3S)
 	cfg.DirectorService.API.Token = expand(cfg.DirectorService.API.Token)
+	cfg.DirectorService.RingSecret = expand(cfg.DirectorService.RingSecret)
 	cfg.BackendAPI.Token = expand(cfg.BackendAPI.Token)
 	cfg.Protocol.Submission.Relay.Password = expand(cfg.Protocol.Submission.Relay.Password)
 	for i := range cfg.Auth.Passdb {

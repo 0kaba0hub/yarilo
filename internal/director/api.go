@@ -33,9 +33,7 @@ func (s *Server) StartAPI(ctx context.Context, addr, token string, allowedNets [
 	mux.Handle("POST /api/director/users/{user}/kick", h(s.apiUserKick))
 
 	mux.Handle("GET /api/director/ring", h(s.apiPeerList))
-	mux.Handle("POST /api/director/ring", h(func(w http.ResponseWriter, r *http.Request) {
-		s.apiPeerAdd(ctx, w, r)
-	}))
+	mux.Handle("POST /api/director/ring", h(s.apiPeerAdd))
 	mux.Handle("DELETE /api/director/ring", h(s.apiPeerRemove))
 
 	srv := &http.Server{Addr: addr, Handler: mux}

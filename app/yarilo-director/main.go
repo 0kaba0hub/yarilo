@@ -84,12 +84,30 @@ func main() {
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
+	// Ring identity (#750): the pod's own address for the JOIN handshake and
+	// the right-neighbor dial, computed before NewWithOptions since
+	// Membership is constructed inside it.
+	localIP := os.Getenv("POD_IP")
+	_, portStr, _ := net.SplitHostPort(cfg.DirectorService.Listen)
+	localPort := 0
+	if p, err := strconv.Atoi(portStr); err == nil {
+		localPort = p
+	}
+	if cfg.DirectorService.RingSecret == "" && len(cfg.DirectorService.Peers) > 0 {
+		slog.Warn("director: peers (seed) configured but ring_secret is empty — every DIRECTOR-JOIN will be rejected, this node can only run as a singleton ring")
+	}
+
 	usernameHashLowercase := cfg.DirectorService.UsernameHashLowercase
 	srv := director.NewWithOptions(director.Options{
 		UserExpire:            time.Duration(cfg.DirectorService.UserExpire) * time.Second,
 		PingInterval:          time.Duration(cfg.DirectorService.PingInterval) * time.Second,
 		PingTimeout:           time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
 		UsernameHashLowercase: &usernameHashLowercase,
+		PeerTLS:               ringTLSCfg,
+		LocalIP:               localIP,
+		LocalPort:             localPort,
+		RingSecret:            []byte(cfg.DirectorService.RingSecret),
+		MinMembers:            cfg.DirectorService.MinMembers,
 	})
 
 	// Resolve static backends from config and register them in the ring.
@@ -101,19 +119,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Configure peer dial identity and register static peers.
-	localIP := os.Getenv("POD_IP")
-	_, portStr, _ := net.SplitHostPort(cfg.DirectorService.Listen)
-	localPort := 0
-	if p, err := strconv.Atoi(portStr); err == nil {
-		localPort = p
-	}
-	srv.SetPeerDialConfig(ringTLSCfg, localIP, localPort)
-	for _, addr := range cfg.DirectorService.Peers {
-		srv.AddPeer(ctx, addr)
-	}
+	// Start ring membership (#750): joins via the configured seeds, or runs
+	// as a singleton (N=1) until a seed becomes reachable / is configured.
+	srv.StartMembership(ctx, cfg.DirectorService.Peers)
 	if len(cfg.DirectorService.Peers) > 0 {
-		slog.Info("director: peer sync started", "peers", cfg.DirectorService.Peers)
+		slog.Info("director: ring join started", "seeds", cfg.DirectorService.Peers)
 	}
 
 	// Start director-protocol server (ring management, inter-director sync).
