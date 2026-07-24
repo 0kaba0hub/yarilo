@@ -1376,7 +1376,7 @@ func (m *Membership) originate(kind, payload string) {
 // #750 phase 4 may later piggyback anti-entropy metadata on them.
 func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
-	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED":
+	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN":
 		m.handleEnvelope(fields, arrivalConn)
 	}
 }
@@ -1458,6 +1458,20 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 		applyRingChangeFields(m.srv, payload)
 	case "USER-MOVED":
 		applyUserMovedFields(m.srv, payload)
+	case "USER-ASSIGN":
+		// payload: <hash> <backend> <assign_seq> <assign_by> (#772 PR-2)
+		if m.srv == nil || len(payload) < 4 {
+			return
+		}
+		hash, err := strconv.ParseUint(payload[0], 10, 32)
+		if err != nil {
+			return
+		}
+		seq, err := strconv.ParseUint(payload[2], 10, 64)
+		if err != nil {
+			return
+		}
+		m.srv.userDir.MergeByHash(uint32(hash), payload[1], false, seq, payload[3])
 	case "USER-KICKED":
 		if len(payload) < 1 {
 			return

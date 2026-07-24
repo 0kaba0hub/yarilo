@@ -636,9 +636,21 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		return
 	}
 
-	// Record user→backend in directory.
+	// Record user→backend in directory and propagate the fresh sticky
+	// assignment to the ring (#772 PR-2) so every director pins the user
+	// to the SAME backend even where it diverges from the deterministic
+	// hash (e.g. an entry that outlived a backend add/remove). Only the
+	// NEW pin here propagates — the sticky TTL-refresh path above does
+	// NOT, or every repeat login would be a ring broadcast. Sent
+	// director↔director only (by hash), never to login clients, so it
+	// bypasses originateRingEvent. The userDir Lamport stamp (assign_seq,
+	// assign_by) rides in the payload; the ring envelope's own (origin,
+	// seq) still dedups the propagation.
 	addr = net.JoinHostPort(b.IP, strconv.Itoa(b.Port))
-	s.userDir.Set(user, addr, false)
+	h := s.userDir.Set(user, addr, false)
+	if seq, by, ok := s.userDir.LastAssign(h); ok {
+		s.membership.originate("USER-ASSIGN", fmt.Sprintf("%d\t%s\t%d\t%s", h, addr, seq, by))
+	}
 
 	_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%d\t%s", id, b.IP, b.Port, b.Tag))
 }
