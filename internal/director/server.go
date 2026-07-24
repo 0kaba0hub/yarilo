@@ -101,6 +101,14 @@ type Options struct {
 	// MinMembers is an install-time warning threshold only ("below this =
 	// no state redundancy") — it never refuses service at any member count.
 	MinMembers int
+	// AntiEntropyInterval is how often each member re-broadcasts its
+	// member+tombstone snapshot over every live ring connection (#759) —
+	// a bounded safety net that heals any membership split where at least
+	// one connection crosses the two views, without waiting for an event
+	// to be (possibly unluckily) dropped and never re-sent. 0 = default
+	// (3s); negative = disabled (unit tests that assert on exact
+	// propagation paths).
+	AntiEntropyInterval time.Duration
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// (director_username_hash_lowercase, #738) — matches the reference
 	// implementation's default hash template so two spellings of the same
@@ -215,6 +223,7 @@ func NewWithOptions(opts Options) *Server {
 		sessByBE:  make(map[string]map[string]bool),
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers)
+	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
 	return s
 }
 

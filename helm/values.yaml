@@ -122,6 +122,13 @@ components:
     ## state redundancy") — never refuses service at any member count.
     min_members: 3
 
+    ## How often (seconds) each ring member re-broadcasts its
+    ## member+tombstone snapshot over every live ring connection (#759) —
+    ## a bounded safety net that heals membership splits without waiting
+    ## for a possibly-lost ADD/REMOVE broadcast. 0 = default (3);
+    ## negative = disabled.
+    anti_entropy_interval: 3
+
     ## HTTP admin API (yarilo-admin CLI target).
     ## A 32-char token is auto-generated into Secret <release>-director-api-token on first
     ## deploy and preserved on upgrades. To rotate: delete the Secret before helm upgrade.

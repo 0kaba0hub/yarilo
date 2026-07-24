@@ -153,9 +153,20 @@ Server → Client:  JOIN-OK\n
 ```
 An empty/unconfigured `ring_secret` on the acceptor rejects every JOIN
 outright (`ring auth not configured`) — that node can then only ever run as
-a singleton. On success the acceptor also propagates `DIRECTOR-ADD` around
-the ring and recomputes its own right neighbor; the joiner separately dials
-its own computed right neighbor as an ordinary ring connection.
+a singleton. A JOIN whose `(ip, port)` equals the acceptor's own is
+rejected with a reason starting with the stable prefix `self-dial` (#759):
+a load-balanced ClusterIP seed routes ~1/N of a pod's own JOIN dials back
+to itself, and accepting that used to look like an instant successful join
+(of nothing), permanently stopping the joiner's seed retries. The
+`self-dial` prefix is wire contract — the joiner classifies it
+(`errJoinSelfDial`) and retries the seed on a short fixed interval (500ms)
+instead of the exponential backoff reserved for a genuinely unreachable
+seed; live evidence showed backoff-on-self-dial stretching one pod's
+convergence past 60s while its peers took ~14s. On success the acceptor
+broadcasts `DIRECTOR-ADD` over its current ring connections *before*
+recomputing its own right neighbor (broadcast-before-reconcile, see below)
+and the joiner separately dials its own computed right neighbor as an
+ordinary ring connection.
 
 **Ring data connection** (right-neighbor dial — same VERSION/ME/PEER/DONE
 handshake #700 introduced, now targeting one computed neighbor instead of
@@ -189,6 +200,33 @@ same-process race where a `DIRECTOR-ADD`/`DIRECTOR-REMOVE` fired between a
 membership change being accepted and that node's own (possibly
 just-retargeted) dial completing would otherwise vanish, without needing
 the full user/backend state snapshot planned for #750 phase 3.
+
+The same `DIRECTOR-LIST` snapshot is also **re-broadcast periodically**
+over every live ring connection (`anti_entropy_interval`, default 3s,
+negative disables; #759) — a bounded safety net on top of the
+connect-time exchange: any membership split where at least one connection
+crosses the two views heals within one interval, instead of depending on
+every individual `DIRECTOR-ADD`/`REMOVE` having survived every
+concurrent-formation race. Receivers union it via the same idempotent
+merge, so the steady-state cost is one no-op line per connection per
+interval. A split with *no* crossing connection (fully disjoint subrings
+formed by simultaneous starts behind a load-balanced seed) is out of its
+reach — that remains #750 phase 4's seed re-poll / `members_hash`
+anti-entropy.
+
+**Broadcast-before-reconcile** (#759): every path that changes membership
+and announces it — join accept (`handleJoin`), death declaration
+(`dialRight`), and envelope relay (`handleEnvelope`) — broadcasts over the
+*pre-reconcile* connection set first and only then recomputes/redials its
+right neighbor. `reconcile()` may tear down a live dial to a member that
+sorts differently under the new view, and under concurrent formation the
+replacement dial races the broadcast; live 3-pod evidence: an acceptor
+that learned of a third member never told its still-directly-connected
+earlier neighbor, leaving it permanently stuck at 2 members. Every current
+member is reachable over the old connection set by definition, so
+broadcast-first cannot lose the event. (The historical reverse order dated
+from when originate() could only send via `dialConn` — obsolete since
+`broadcastRing`.)
 
 **Tombstones** (#754): `removed` is a permanent per-node set of members
 known to be dead — required because a plain union-merge of member lists

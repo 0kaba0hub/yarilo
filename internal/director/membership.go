@@ -25,6 +25,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -82,6 +83,10 @@ type Membership struct {
 	secret     []byte // HMAC ring-join secret; empty = JOIN always rejected
 	tlsCfg     *tls.Config
 	minMembers int
+	// antiEntropyInterval paces antiEntropyLoop's periodic snapshot
+	// re-broadcast; 0 = default (3s), negative = disabled. See the
+	// Options field comment.
+	antiEntropyInterval time.Duration
 
 	mu      sync.RWMutex
 	members []Member          // sorted, includes self once Start has run
@@ -161,11 +166,46 @@ func (m *Membership) Start(ctx context.Context, seeds []string) {
 		slog.Warn("director: min_members configured above 1 but no seeds given — running as a permanent singleton ring (no state redundancy)",
 			"min_members", m.minMembers)
 	}
+	// Anti-entropy runs regardless of seeds: a founder node has no seeds
+	// but still accepts joins and holds ring connections that need the
+	// periodic snapshot (#759).
+	if m.antiEntropyInterval >= 0 {
+		go m.antiEntropyLoop(ctx)
+	}
 	if len(seeds) == 0 {
 		slog.Info("director: ring membership starting as singleton (no seeds configured)")
 		return
 	}
 	go m.joinLoop(ctx, seeds)
+}
+
+// antiEntropyLoop periodically re-broadcasts this node's member+tombstone
+// snapshot (the same DIRECTOR-LIST line every connection already exchanges
+// once at connect time) over every live ring connection (#759). Receivers
+// union it via mergeMembers, which is idempotent — so this is a bounded,
+// no-coordination safety net: any membership split where at least one
+// connection crosses the two views heals within one interval, instead of
+// depending on every individual ADD/REMOVE broadcast having survived every
+// concurrent-formation race. A split with NO crossing connection (fully
+// disjoint subrings) is out of this loop's reach — that needs #750 phase
+// 4's seed re-poll. Cost: one line per connection per interval, only sent
+// when at least one connection exists.
+func (m *Membership) antiEntropyLoop(ctx context.Context) {
+	interval := m.antiEntropyInterval
+	if interval == 0 {
+		interval = 3 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		m.broadcastRing(nil, fmt.Sprintf("DIRECTOR-LIST\t%s\t%s",
+			formatMemberList(m.Members()), formatMemberList(m.removedList())))
+	}
 }
 
 // Members returns a snapshot of the current ring membership, sorted.
@@ -179,49 +219,64 @@ func (m *Membership) Members() []Member {
 
 // ---- join (client side: dial a seed, authenticate, learn the ring) --------
 
-// joinLoop tries each seed in turn, with a short backoff, until one join
-// succeeds. It then returns — membership from that point on is maintained
-// by DIRECTOR-ADD/REMOVE propagation, not further seed polling. Any
-// rejected join (self-dial via a load-balanced ClusterIP seed, #759; wrong
-// secret; etc.) is just an error from joinVia's point of view and falls
-// through to the same retry — a self-dial specifically used to look like a
-// trivial, immediate "success" (the pod joining nothing but itself) before
-// handleJoin started rejecting it, which is what made the gap below worse
-// in practice than it had to be.
+// errJoinSelfDial marks a JOIN rejected because the load-balanced seed
+// routed the dial back to this node itself (#759): with a ClusterIP seed
+// in front of N pods this is an expected, instant outcome roughly 1/N of
+// the time, not evidence the seed is unhealthy — joinLoop retries it on a
+// short fixed interval instead of feeding it into the exponential backoff
+// reserved for a genuinely unreachable seed. Live 3-pod evidence for why
+// this distinction matters: treating self-dials as ordinary failures
+// pushed one pod through 16s+ backoff windows per (expected!) rejection,
+// stretching its convergence past 60s while its two peers took ~14s.
+var errJoinSelfDial = errors.New("director/join: self-dial via load-balanced seed")
+
+// joinLoop tries each seed in turn until one join succeeds. It then
+// returns — membership from that point on is maintained by
+// DIRECTOR-ADD/REMOVE propagation plus the periodic anti-entropy snapshot
+// (antiEntropyLoop), not further seed polling. A self-dial rejection
+// retries fast (see errJoinSelfDial); every other failure walks the
+// exponential backoff.
 //
-// Known phase-1 gap, still real: several pods starting simultaneously
-// behind a fresh ClusterIP can form two (or more) fully disjoint subrings
-// that each converge internally and then simply stop retrying the seed,
-// with no path left for either to ever discover the other — every retry
-// after that lands on an already-known peer and looks like success. A
-// live 3-pod simultaneous start is expected to show a *transient* split
-// that heals within a few seed-retry cycles (a few seconds to tens of
-// seconds, bounded by the backoff below); a split that never heals is the
-// gap this comment describes, not a regression. Full partition-heal via
-// periodic anti-entropy re-sync, independent of "have I already joined
-// once", is #750 phase 4 — not resolved here.
+// Known phase-1 gap, narrowed but still real: several pods starting
+// simultaneously behind a fresh ClusterIP can form two (or more) fully
+// disjoint subrings that each converge internally and then stop retrying
+// the seed, with no remaining path for either subring to discover the
+// other — every retry after that lands on an already-known peer and looks
+// like success. antiEntropyLoop heals any split where at least one
+// connection crosses the two views; a split with zero crossing
+// connections still needs #750 phase 4's seed re-poll / members_hash
+// anti-entropy — not resolved here.
 func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 	backoff := 2 * time.Second
 	for {
+		selfDial := false
 		for _, addr := range seeds {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := m.joinVia(ctx, addr); err != nil {
-				slog.Debug("director: ring join attempt failed", "seed", addr, "err", err)
-				continue
+			err := m.joinVia(ctx, addr)
+			if err == nil {
+				slog.Info("director: joined ring", "seed", addr, "members", m.Members())
+				m.reconcile()
+				return
 			}
-			slog.Info("director: joined ring", "seed", addr, "members", m.Members())
-			m.reconcile()
-			return
+			if errors.Is(err, errJoinSelfDial) {
+				selfDial = true
+			}
+			slog.Debug("director: ring join attempt failed", "seed", addr, "err", err)
+		}
+		wait := backoff
+		if selfDial {
+			// The seed answered (with ourselves) — it is reachable and
+			// serving; kube-proxy just needs another roll of the dice.
+			wait = 500 * time.Millisecond
+		} else if backoff < 30*time.Second {
+			backoff *= 2
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
-		}
-		if backoff < 30*time.Second {
-			backoff *= 2
+		case <-time.After(wait):
 		}
 	}
 }
@@ -261,7 +316,7 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 	}
 	fields := strings.Split(strings.TrimRight(line, "\n"), "\t")
 	if fields[0] == "JOIN-FAIL" {
-		return fmt.Errorf("director/join: rejected: %s", strings.Join(fields[1:], " "))
+		return joinFailError(fields[1:])
 	}
 	if fields[0] != "JOIN-CHALLENGE" || len(fields) < 2 {
 		return fmt.Errorf("director/join: unexpected reply: %q", line)
@@ -279,7 +334,7 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 	}
 	fields = strings.Split(strings.TrimRight(line, "\n"), "\t")
 	if fields[0] == "JOIN-FAIL" {
-		return fmt.Errorf("director/join: rejected: %s", strings.Join(fields[1:], " "))
+		return joinFailError(fields[1:])
 	}
 	if fields[0] != "JOIN-OK" {
 		return fmt.Errorf("director/join: unexpected reply: %q", line)
@@ -325,6 +380,18 @@ func consumeServerHandshake(rd *bufio.Reader) error {
 			return nil
 		}
 	}
+}
+
+// joinFailError maps a JOIN-FAIL's reason fields to the error joinLoop
+// keys its retry policy on: a reason starting with "self-dial" (the stable
+// prefix handleJoin sends, kept stable as wire contract) becomes
+// errJoinSelfDial; anything else is an ordinary rejection.
+func joinFailError(reason []string) error {
+	msg := strings.Join(reason, " ")
+	if strings.HasPrefix(msg, "self-dial") {
+		return fmt.Errorf("%w: %s", errJoinSelfDial, msg)
+	}
+	return fmt.Errorf("director/join: rejected: %s", msg)
 }
 
 func joinHMAC(secret []byte, nonce string, joiner Member) []byte {
@@ -560,15 +627,20 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	slog.Info("director: ring join accepted", "joiner", joiner, "members", len(existing)+1)
 	joinAccepted.Inc()
 
-	// Adopt whatever right-neighbor change the new member implies BEFORE
-	// telling the rest of the ring about it (#754) — originate() sends via
-	// whatever connection reconcile() just set up; the other way round,
-	// a topology change here would leave originate() with no connection
-	// to send on at all (this exact ordering bug is why DIRECTOR-REMOVE
-	// silently never reached surviving members after a neighbor's death —
-	// see dialRight).
-	m.reconcile()
+	// Broadcast the join over the OLD topology's connections first, THEN
+	// rebuild edges (#759 problem 2). reconcile() may tear down this
+	// node's dial-out to its previous right neighbor (the joiner sorts
+	// between them), and under concurrent formation the replacement dial
+	// races the broadcast — live 3-pod evidence: an acceptor that learned
+	// of a third member never told its still-directly-connected earlier
+	// neighbor, leaving it permanently stuck at 2 members. Every current
+	// member is reachable over the pre-reconcile connection set by
+	// definition, so originate-first cannot lose the event; the reverse
+	// order can. (The historical reason for reconcile-first — originate
+	// used to send only via dialConn, nil right after a death — died with
+	// broadcastRing, which uses every live connection.)
 	m.originate("DIRECTOR-ADD", fmt.Sprintf("%s\t%d", joiner.IP, joiner.Port))
+	m.reconcile()
 }
 
 func writeLine(conn net.Conn, s string) error {
@@ -742,13 +814,15 @@ func (m *Membership) dialRight(ctx context.Context, target Member) {
 	}
 	slog.Warn("director: ring neighbor unreachable, declaring dead", "self", m.self, "target", current)
 	m.removeMember(current)
-	// Adopt the new right neighbor before announcing the death — keeps this
-	// node's own dial target current as of the announcement, though
-	// broadcastRing no longer depends on it: any other still-live ring
-	// connection (e.g. an accepted inbound one) carries DIRECTOR-REMOVE
-	// just as well now (#754 follow-up).
-	m.reconcile()
+	// Announce over the surviving pre-reconcile connections first, then
+	// rebuild edges — same broadcast-before-reconcile rule as handleJoin
+	// (#759 problem 2): reconcile() may tear down a live connection the
+	// announcement still needs, while the announcement can never need a
+	// connection reconcile() has yet to create (the dead dial is already
+	// gone, and any new right neighbor resyncs via DIRECTOR-LIST on
+	// connect anyway).
 	m.originate("DIRECTOR-REMOVE", fmt.Sprintf("%s\t%d", current.IP, current.Port))
+	m.reconcile()
 }
 
 // connectRight performs one dial+handshake+read-loop against addr. Returns
@@ -965,8 +1039,14 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	m.lastSeq[key] = seq
 	m.mu.Unlock()
 
-	m.applyEnvelope(kind, payload)
+	// Forward BEFORE applying: applyEnvelope reconciles on ADD/REMOVE,
+	// which can tear down exactly the connection this relay still needs —
+	// the same broadcast-before-reconcile rule as handleJoin/dialRight
+	// (#759 problem 2). The forwarded line is the untouched original, so
+	// nothing about the local apply feeds into it; dedup was already
+	// recorded above, so a concurrent redelivery can't double-forward.
 	m.broadcastRing(arrivalConn, strings.Join(fields, "\t"))
+	m.applyEnvelope(kind, payload)
 }
 
 func (m *Membership) applyEnvelope(kind string, payload []string) {

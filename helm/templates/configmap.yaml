@@ -725,6 +725,7 @@ data:
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
       ring_secret: {{ .Values.components.director.ring_secret | quote }}
       min_members: {{ .Values.components.director.min_members }}
+      anti_entropy_interval: {{ .Values.components.director.anti_entropy_interval }}
       {{- with .Values.components.director.backends }}
       mail_servers:
         {{- range . }}
