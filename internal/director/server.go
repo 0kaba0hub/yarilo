@@ -109,6 +109,16 @@ type Options struct {
 	// (3s); negative = disabled (unit tests that assert on exact
 	// propagation paths).
 	AntiEntropyInterval time.Duration
+	// SeedPollInterval is how often joinLoop re-polls a seed AFTER the
+	// initial join succeeded (#759 Fix A). The seed (a shared ClusterIP
+	// every pod can always reach) is the one guaranteed crossing point
+	// between arbitrarily-partitioned member views — connection-bound
+	// mechanisms (broadcast, anti-entropy) cannot heal a split with no
+	// crossing connection, so this bounds every partition's lifetime by
+	// the poll interval. Backs off automatically (30s) once membership
+	// has been stable for a few polls. 0 = default (2s); negative =
+	// legacy one-shot join (join once, never poll again).
+	SeedPollInterval time.Duration
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// (director_username_hash_lowercase, #738) — matches the reference
 	// implementation's default hash template so two spellings of the same
@@ -224,6 +234,7 @@ func NewWithOptions(opts Options) *Server {
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
+	s.membership.seedPollInterval = opts.SeedPollInterval
 	return s
 }
 

@@ -109,6 +109,7 @@ func main() {
 		RingSecret:            []byte(cfg.DirectorService.RingSecret),
 		MinMembers:            cfg.DirectorService.MinMembers,
 		AntiEntropyInterval:   time.Duration(cfg.DirectorService.AntiEntropyInterval) * time.Second,
+		SeedPollInterval:      time.Duration(cfg.DirectorService.SeedPollInterval) * time.Second,
 	})
 
 	// Resolve static backends from config and register them in the ring.

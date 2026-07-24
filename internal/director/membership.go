@@ -87,6 +87,10 @@ type Membership struct {
 	// re-broadcast; 0 = default (3s), negative = disabled. See the
 	// Options field comment.
 	antiEntropyInterval time.Duration
+	// seedPollInterval paces joinLoop's periodic seed re-poll; 0 =
+	// default (2s), negative = legacy one-shot join. See the Options
+	// field comment.
+	seedPollInterval time.Duration
 
 	mu      sync.RWMutex
 	members []Member          // sorted, includes self once Start has run
@@ -230,48 +234,98 @@ func (m *Membership) Members() []Member {
 // stretching its convergence past 60s while its two peers took ~14s.
 var errJoinSelfDial = errors.New("director/join: self-dial via load-balanced seed")
 
-// joinLoop tries each seed in turn until one join succeeds. It then
-// returns — membership from that point on is maintained by
-// DIRECTOR-ADD/REMOVE propagation plus the periodic anti-entropy snapshot
-// (antiEntropyLoop), not further seed polling. A self-dial rejection
-// retries fast (see errJoinSelfDial); every other failure walks the
-// exponential backoff.
+// joinLoop joins the ring via the seeds, then keeps polling a seed
+// periodically forever (#759 Fix A) — it never returns while ctx lives
+// (unless seed polling is explicitly disabled, which restores the old
+// one-shot join). The periodic re-poll exists because every OTHER
+// convergence mechanism (DIRECTOR-ADD/REMOVE broadcast, the anti-entropy
+// snapshot) only travels over ring connections that already exist, and
+// every mechanism that CREATES connections is a single right-neighbor
+// dial computed from this node's own — possibly divergent — member view.
+// Under concurrent formation those single dials are not guaranteed to
+// form one connected graph (live-reproduced: two nodes closing a private
+// 2-cycle while a third, better-informed node's knowledge never crossed
+// into it), at which point no amount of flooding over existing
+// connections can heal the split. The seed — one shared ClusterIP every
+// pod can always reach — is the one guaranteed crossing point, so
+// re-polling it bounds every partition's lifetime by the poll interval
+// regardless of what the dial graph looks like.
 //
-// Known phase-1 gap, narrowed but still real: several pods starting
-// simultaneously behind a fresh ClusterIP can form two (or more) fully
-// disjoint subrings that each converge internally and then stop retrying
-// the seed, with no remaining path for either subring to discover the
-// other — every retry after that lands on an already-known peer and looks
-// like success. antiEntropyLoop heals any split where at least one
-// connection crosses the two views; a split with zero crossing
-// connections still needs #750 phase 4's seed re-poll / members_hash
-// anti-entropy — not resolved here.
+// Pacing: seedPollInterval (default 2s) while membership is still
+// changing; once the view has been stable for stablePollsForBackoff
+// consecutive polls it stretches to seedPollIdleInterval (30s), snapping
+// back on any change. A self-dial rejection retries fast (see
+// errJoinSelfDial); a genuinely unreachable seed walks the exponential
+// backoff. Re-polls are cheap on the seed side too — handleJoin treats a
+// known joiner as a read-only snapshot request (no DIRECTOR-ADD, no
+// reconcile).
 func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
+	const (
+		stablePollsForBackoff = 5
+		seedPollIdleInterval  = 30 * time.Second
+	)
+	pollInterval := m.seedPollInterval
+	if pollInterval == 0 {
+		pollInterval = 2 * time.Second
+	}
+	oneShot := pollInterval < 0
+
 	backoff := 2 * time.Second
+	joined := false
+	stablePolls := 0
+	lastView := ""
 	for {
 		selfDial := false
+		ok := false
 		for _, addr := range seeds {
 			if ctx.Err() != nil {
 				return
 			}
 			err := m.joinVia(ctx, addr)
 			if err == nil {
-				slog.Info("director: joined ring", "seed", addr, "members", m.Members())
-				m.reconcile()
-				return
+				ok = true
+				if !joined {
+					joined = true
+					slog.Info("director: joined ring", "seed", addr, "members", m.Members())
+					m.reconcile()
+				}
+				break
 			}
 			if errors.Is(err, errJoinSelfDial) {
 				selfDial = true
 			}
 			slog.Debug("director: ring join attempt failed", "seed", addr, "err", err)
 		}
-		wait := backoff
-		if selfDial {
+		if ok && oneShot {
+			return
+		}
+
+		var wait time.Duration
+		switch {
+		case ok:
+			backoff = 2 * time.Second
+			view := formatMemberList(m.Members())
+			if view == lastView {
+				if stablePolls < stablePollsForBackoff {
+					stablePolls++
+				}
+			} else {
+				stablePolls = 0
+				lastView = view
+			}
+			wait = pollInterval
+			if stablePolls >= stablePollsForBackoff {
+				wait = seedPollIdleInterval
+			}
+		case selfDial:
 			// The seed answered (with ourselves) — it is reachable and
 			// serving; kube-proxy just needs another roll of the dice.
 			wait = 500 * time.Millisecond
-		} else if backoff < 30*time.Second {
-			backoff *= 2
+		default:
+			wait = backoff
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -349,20 +403,21 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 		return fmt.Errorf("director/join: expected DIRECTOR-LIST, got %q", line)
 	}
 	members := parseMemberList(fields[1])
-	members = append(members, m.self)
+	var removed []Member
 	if len(fields) >= 3 {
-		for _, mem := range parseMemberList(fields[2]) {
-			m.mu.Lock()
-			m.removed[mem] = struct{}{}
-			m.mu.Unlock()
-		}
+		removed = parseMemberList(fields[2])
 	}
 
 	if _, err := rd.ReadString('\n'); err != nil { // DONE
 		return fmt.Errorf("director/join: read DONE: %w", err)
 	}
 
-	m.setMembers(members)
+	// Union, never replace (#759 Fix A): on a periodic re-poll the seed
+	// answering may itself be the stale one — a replace would regress this
+	// node's view to the seed's. mergeMembers adds self, applies both
+	// tombstone sets, and reconciles only when something actually changed,
+	// which also makes the steady-state poll a complete no-op locally.
+	m.mergeMembers(members, removed)
 	return nil
 }
 
@@ -612,8 +667,21 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	}
 
 	// Snapshot the member list BEFORE adding the joiner — DIRECTOR-LIST
-	// tells the joiner who else is here; it adds itself locally.
+	// tells the joiner who else is here; it adds itself locally. A joiner
+	// we already know is a periodic seed re-poll (#759 Fix A), not a new
+	// member: it still gets the full list+tombstone snapshot (that
+	// exchange IS the poll's purpose — the seed is the one guaranteed
+	// crossing point every pod can always reach), but no DIRECTOR-ADD is
+	// broadcast and no reconcile runs, so a 2s poll cadence across the
+	// fleet costs nothing beyond this one reply.
 	existing := m.Members()
+	already := false
+	for _, mem := range existing {
+		if mem.equal(joiner) {
+			already = true
+			break
+		}
+	}
 	m.addMember(joiner)
 
 	if err := writeLine(conn, "JOIN-OK"); err != nil {
@@ -623,6 +691,11 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 		return
 	}
 	_ = writeLine(conn, "DONE")
+
+	if already {
+		slog.Debug("director: ring re-join poll served", "joiner", joiner)
+		return
+	}
 
 	slog.Info("director: ring join accepted", "joiner", joiner, "members", len(existing)+1)
 	joinAccepted.Inc()

@@ -955,6 +955,13 @@ type DirectorServiceConfig struct {
 	// splits without waiting for a possibly-lost ADD/REMOVE broadcast.
 	// 0 = default (3); negative = disabled.
 	AntiEntropyInterval int `koanf:"anti_entropy_interval"`
+	// SeedPollInterval is how often (seconds) each member re-polls a seed
+	// after its initial join (#759) — the seed is the one guaranteed
+	// crossing point between partitioned member views, so this bounds any
+	// formation split's lifetime regardless of ring dial topology. Backs
+	// off automatically once membership is stable. 0 = default (2);
+	// negative = legacy one-shot join.
+	SeedPollInterval int `koanf:"seed_poll_interval"`
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// for ring routing, sticky assignments and admin overrides (#738).
 	// Matches the reference implementation's default hash template — two
@@ -1659,6 +1666,7 @@ func Load(path string) (*Config, error) {
 			UsernameHashLowercase: true,
 			MinMembers:            3,
 			AntiEntropyInterval:   3,
+			SeedPollInterval:      2,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// No default IP restriction — service/pod CIDRs differ per

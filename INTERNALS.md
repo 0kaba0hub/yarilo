@@ -209,10 +209,28 @@ crosses the two views heals within one interval, instead of depending on
 every individual `DIRECTOR-ADD`/`REMOVE` having survived every
 concurrent-formation race. Receivers union it via the same idempotent
 merge, so the steady-state cost is one no-op line per connection per
-interval. A split with *no* crossing connection (fully disjoint subrings
-formed by simultaneous starts behind a load-balanced seed) is out of its
-reach — that remains #750 phase 4's seed re-poll / `members_hash`
-anti-entropy.
+interval.
+
+A split with *no* crossing connection is out of any connection-bound
+mechanism's reach, and under concurrent formation such splits genuinely
+happen: each node's ONE outbound dial goes to a right neighbor computed
+from its own — possibly divergent — member view, so the union of all
+dials is not guaranteed to form a connected graph (live-reproduced: two
+nodes closed a private 2-cycle while a third, better-informed node's
+knowledge never crossed into it). The **periodic seed re-poll**
+(`seed_poll_interval`, default 2s, negative restores the legacy one-shot
+join; #759) closes exactly this: `joinLoop` never stops — after the
+initial join it keeps re-dialing the seed (one shared ClusterIP every pod
+can always reach, i.e. a crossing point that always exists), merging the
+returned member+tombstone snapshot via the same idempotent union. The
+acceptor treats a re-join from an already-known member as a read-only
+snapshot request — no `DIRECTOR-ADD` broadcast, no reconcile — so the
+poll is one request/reply per member per interval, and the interval
+stretches to 30s automatically once the view has been stable for a few
+polls (snapping back on any change). This bounds every formation
+partition's lifetime by the poll interval regardless of ring dial
+topology, which is what makes a clean simultaneous multi-pod start
+converge in seconds instead of relying on dial-graph luck.
 
 **Broadcast-before-reconcile** (#759): every path that changes membership
 and announces it — join accept (`handleJoin`), death declaration
