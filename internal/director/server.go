@@ -286,6 +286,11 @@ func (s *Server) StartMembership(ctx context.Context, seeds []string) {
 	s.membership.Start(ctx, seeds)
 }
 
+// GracefulLeave announces this director's exit to the ring (#770) — call
+// on SIGTERM, BEFORE cancelling the server ctx, then allow a brief flush.
+// See Membership.Leave.
+func (s *Server) GracefulLeave() { s.membership.Leave() }
+
 // ListPeers returns the current ring membership (self included), formatted
 // as "ip:port" strings — kept for API/CLI compatibility (yarilo-admin
 // `director ring status`); semantics changed from "statically configured

@@ -154,6 +154,12 @@ func main() {
 	select {
 	case sig := <-sigCh:
 		slog.Info("received signal, shutting down", "signal", sig.String())
+		// Graceful ring leave (#770): announce DIRECTOR-REMOVE + QUIT while
+		// connections are still open, so peers evict us instantly with no
+		// death-detection window, then give it a moment to flush before
+		// tearing everything down.
+		srv.GracefulLeave()
+		time.Sleep(500 * time.Millisecond)
 		cancel()
 		grace := time.Duration(cfg.DirectorService.Shutdown.SessionGracePeriod) * time.Second
 		if grace > 0 {

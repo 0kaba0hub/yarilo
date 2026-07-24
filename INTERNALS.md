@@ -421,6 +421,19 @@ JOIN) converge the same way: the anti-entropy snapshot spreads the
 phantom until views agree, at which point exactly one node computes it as
 its right neighbor, dials it, fails, and evicts it for everyone.
 
+*Graceful leave* (#770): on SIGTERM, before tearing anything down, a
+director calls `Leave()` — it sets a `leaving` flag so `handleJoin`
+answers every JOIN with `JOIN-FAIL\tshutting down` (no fresh joiner can
+learn the dying member, closing the phantom-injection source on the
+planned path), originates `DIRECTOR-REMOVE` for **itself** so peers evict
+it instantly via the existing seq-dedup + tombstone path (zero
+death-detection window, no verification probes for a planned exit), and
+sends `QUIT\tshutting down` on every ring connection. The process then
+flushes briefly and proceeds with its normal shutdown. A hard kill
+(SIGKILL) still converges via the neighbor-monitoring path above — this
+only removes the latency and probe traffic from the expected k8s
+rolling-restart / scale-down case.
+
 Tombstones expire after `tombstone_ttl` (default 600s; #765): lazily
 deleted on read, dropped from gossip once expired, and an incoming
 gossiped tombstone for an already-known entry keeps the original local
