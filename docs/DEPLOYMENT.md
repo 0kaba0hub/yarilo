@@ -23,7 +23,7 @@ Goroutines vs fork:
 
 ### director deployment
 Routes user connections to backends through a **consistent-hashing ring**.
-Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`), 3 director processes (with monitor sidecars), self-organizing ring (#750).
+Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`), 3 director processes, self-organizing ring (#750).
 This is where **TLS terminate + passdb auth + allow_nets enforcement** happens.
 
 **Login pod auth flow:**
@@ -50,6 +50,69 @@ Backend auth logic:
 - Login pod sends `YARILO\tADDR=...\tSESSION=...\tUSER=...\tTOKEN=...\n` before any protocol exchange.
 - Backend's `PreambleListener` reads the preamble, calls yarilo-auth VERIFY (`service=` field enforced), enters pre-authenticated state.
 - All 4 backends accept only the YARILO preamble from login pods (director is control-plane only — it never touches client bytes; #741). Client-IP forwarding into the *login* layer, when needed, is haproxy protocol / native inbound (ID/XCLIENT, #742) / none, chosen per protocol — it never reaches the backend directly. LMTP preamble originates from `yarilo-lmtp-login`.
+
+### backend liveness — self-registration + heartbeat (#776)
+
+Backends are registered in the director ring by **self-registration + heartbeat**,
+not by a one-time DNS resolve or an external prober. This makes the backend list a
+second application of the exact lifecycle machinery already built for the director
+ring itself (JOIN on start, ring-wide keepalive, graceful leave #770, Lamport
+ordering #772, tombstone-free convergence) rather than a separate DNS-poll
+mechanism — and it works in **every** topology (k8s and non-k8s standalone),
+consistent with config-not-binary. Supersedes the DNS-reconcile approach (closed
+PR #778).
+
+Model:
+- **Register on start.** Each backend session process (`yarilo-imap` / `-pop3` /
+  `-submission` / `-lmtp`) dials the director **ClusterIP Service** — it does not
+  matter which director replica answers; a load-balanced address is correct here
+  precisely because the registration is gossiped **ring-wide**. It sends
+  `BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}`; the receiving director adds it and
+  forwards it as a `RING-CHANGE up` envelope so every director learns it. (This is
+  the first and only backend→director control channel — until now the director
+  only ever dialed backends, never the reverse.)
+- **Heartbeat = periodic re-register.** Every `backend_register_interval` the
+  backend re-sends `BACKEND-UP`. Each such heartbeat carries a **monotonic
+  per-origin sequence** (a logical counter, NOT wall-clock — the Lamport lesson of
+  #772: pod clocks are unsynchronized, so freshness is compared only *within* one
+  backend's own origin), gossiped ring-wide as "backend X seen at seq N". Every
+  director keeps the max seen per backend. A heartbeat landing on **any** director
+  refreshes the lease everywhere — this is what makes a load-balanced heartbeat
+  correct (a per-director timer with LB'd heartbeats would false-expire a live
+  backend on the directors that happened not to receive it).
+- **TTL expiry.** A backend whose last-seen has not advanced within
+  `backend_expire` on the ring is removed (`RING-CHANGE down` → `RemoveBackend`
+  everywhere) and its hash-slice stops routing. This covers the *silent hang*
+  (a wedged backend stops heartbeating) with no external prober — which is why the
+  **`yarilo-monitor` sidecar is removed**: existence + silent-hang are covered by
+  register/heartbeat/expiry, and overload is self-reported (below).
+- **Graceful leave.** On SIGTERM the backend sends `BACKEND-DOWN` (analog of the
+  director's #770 graceful leave) so it disappears immediately without waiting out
+  the TTL — a planned rollout or scale-down never blackholes a hash-slice for the
+  expiry window.
+- **Overload self-report.** A backend under load sends `BACKEND-FLUSH` (drain: stop
+  new lookups, keep existing sessions) or `BACKEND-DOWN` itself — the backend knows
+  its own load, which an external prober cannot infer. Health/load-shedding is thus
+  the same channel as existence, backend-driven.
+
+Safety + migration:
+- **Never remove the last backend of a tag** by TTL expiry — a suspect-but-only
+  backend is kept (and logged loudly) rather than guaranteeing a total blackhole
+  for that tag.
+- **Static `mail_servers` entries stay non-expiring** — they are a bootstrap /
+  non-k8s fallback and are never pruned by the heartbeat lease, so registration can
+  be rolled out incrementally with no binary branching (config-not-binary).
+- **admin-API `backends add/remove` stay manual and non-expiring** — an operator's
+  explicit entry is never touched by the lease.
+- **No tombstone needed** (unlike ring members whose ephemeral pod identity never
+  returns): a dead backend heartbeats nowhere and never re-registers, so a gossiped
+  ghost simply ages out at TTL.
+
+Config (snake_case, section-prefixed; `yarilo.yaml` + Helm `values.yaml`):
+- `director_service.backend_expire` — seconds of missed heartbeat before a backend
+  is removed ring-wide.
+- backend side: `backend_register_interval` + the director ClusterIP address to
+  register against.
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
@@ -301,7 +364,7 @@ binaries do not change.
 
 ```
 helm/yarilo-shared        → auth + anvil + Redis (shared across the installation)
-helm/yarilo-director      → director pool + monitor sidecars
+helm/yarilo-director      → director pool
 helm/yarilo-backend       → backend pool (one release per tag = per NFS shard, with its own locks)
 ```
 
@@ -320,7 +383,6 @@ helm/yarilo-backend       → backend pool (one release per tag = per NFS shard,
   is the join seed: its DNS name resolves directly to every ready pod's IP (not
   a single virtual IP), so any resolver hit lands on a live replica to
   `DIRECTOR-JOIN` against; membership is self-maintaining from there.
-- 2 containers per pod: `yarilo-director` + `yarilo-monitor` (sidecar).
 - 4 login-proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`) — in separate containers or under a master-supervised process tree.
 - ClusterIP Service — public entry point: :993/:995/:587/:24.
 - ClusterIP Service (`-director-ring`) — internal ring protocol port; also the join seed.
@@ -443,7 +505,7 @@ Synced between directors over the peer protocol.
 
 | Layer | HA approach |
 |:---|:---|
-| Director | replicaCount=3, self-organizing ring (#750), monitor sidecar |
+| Director | replicaCount=3, self-organizing ring (#750) |
 | Backend per tag | replicaCount=3–5, shared NFS RWX, ring rebalance |
 | yarilo-locks (per tag) | replicaCount=2, state in Redis |
 | yarilo-auth | replicaCount=2, stateless |
@@ -452,7 +514,7 @@ Synced between directors over the peer protocol.
 | NFS server | a separate HA effort (Pacemaker+DRBD, or managed NFS such as AWS EFS) |
 
 **Backend failover sequence:**
-1. The `yarilo-monitor` sidecar detects a dead pod (~5–10 s).
+1. The backend stops heartbeating (SIGTERM → BACKEND-DOWN immediately; hard kill → TTL expiry, #776).
 2. Director removes it from the ring.
 3. Locks on the dead pod expire via TTL (30 s) on `yarilo-locks-<tag>`.
 4. Ring rehash → users move to neighbouring replicas in the same tag.

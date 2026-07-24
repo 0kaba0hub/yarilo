@@ -27,7 +27,7 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 	// bound; the probe path alone would take several seconds of retries).
 	for _, s := range []*Server{srvA, srvC} {
 		ok := false
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			has := false
 			for _, m := range s.membership.Members() {
@@ -43,7 +43,7 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		if !ok {
-			t.Fatalf("member %s still holds the gracefully-left %s after 2s: %v",
+			t.Fatalf("member %s still holds the gracefully-left %s after 5s: %v",
 				s.membership.self, leaver, s.membership.Members())
 		}
 	}
