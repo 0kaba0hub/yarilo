@@ -18,6 +18,14 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 			len(srvB.membership.Members()) == 3 &&
 			len(srvC.membership.Members()) == 3
 	})
+	// Member-COUNT convergence does not imply the ring DIALS are all
+	// established — reconcile may still be connecting right after formation.
+	// Leave() broadcasts DIRECTOR-REMOVE over the CURRENT ring connections,
+	// so firing it before B's own dial completes routes the removal the
+	// long way and was the source of the occasional >2s flake. Let the ring
+	// connections settle first; eviction is then sub-second (direct
+	// envelope propagation, no timer/retry).
+	time.Sleep(300 * time.Millisecond)
 
 	leaver := srvB.membership.self
 	srvB.membership.Leave()
@@ -27,7 +35,7 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 	// bound; the probe path alone would take several seconds of retries).
 	for _, s := range []*Server{srvA, srvC} {
 		ok := false
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
 			has := false
 			for _, m := range s.membership.Members() {
@@ -43,7 +51,7 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		if !ok {
-			t.Fatalf("member %s still holds the gracefully-left %s after 5s: %v",
+			t.Fatalf("member %s still holds the gracefully-left %s after 2s: %v",
 				s.membership.self, leaver, s.membership.Members())
 		}
 	}
