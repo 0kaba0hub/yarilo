@@ -958,9 +958,14 @@ type DirectorServiceConfig struct {
 	// SeedPollInterval is how often (seconds) each member re-polls a seed
 	// after its initial join (#759) — the seed is the one guaranteed
 	// crossing point between partitioned member views, so this bounds any
-	// formation split's lifetime regardless of ring dial topology. Backs
-	// off automatically once membership is stable. 0 = default (2);
-	// negative = legacy one-shot join.
+	// formation split's lifetime regardless of ring dial topology. Runs
+	// at full cadence while the view holds fewer than min_members,
+	// easing to a lazy 30s backstop once the expected cluster size is
+	// reached (and snapping back on any loss); gating on the configured
+	// target size — never on own-view stability, which a partitioned
+	// node also exhibits. A hostname seed is resolved explicitly and
+	// every resulting address except self is polled each cycle.
+	// 0 = default (2); negative = legacy one-shot join.
 	SeedPollInterval int `koanf:"seed_poll_interval"`
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// for ring routing, sticky assignments and admin overrides (#738).

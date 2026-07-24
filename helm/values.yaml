@@ -130,13 +130,19 @@ components:
     anti_entropy_interval: 3
 
     ## How often (seconds) each member re-polls a seed after its initial
-    ## join (#759). The seed ClusterIP is the one guaranteed crossing
-    ## point between partitioned member views — broadcast and anti-entropy
-    ## only travel over connections that already exist, so a formation
-    ## split with no crossing connection can ONLY heal through the seed.
-    ## Backs off to 30s automatically once membership has been stable for
-    ## a few polls. 0 = default (2); negative = one-shot join (join once,
-    ## never poll again).
+    ## join (#759). The seed is the one guaranteed crossing point between
+    ## partitioned member views — broadcast and anti-entropy only travel
+    ## over connections that already exist, so a formation split with no
+    ## crossing connection can ONLY heal through the seed. Runs at full
+    ## cadence while the node's view holds fewer than min_members (a
+    ## short view is per se proof of work left, no matter how stable it
+    ## looks), easing to a lazy 30s backstop once the expected cluster
+    ## size is reached — and snapping back the moment a member is lost.
+    ## A hostname seed (the headless -director-ring Service) is resolved
+    ## explicitly and every resulting pod address except self is polled
+    ## each cycle — deterministic convergence in one cycle, no
+    ## load-balancer routing luck. 0 = default (2); negative = one-shot
+    ## join (join once, never poll again).
     seed_poll_interval: 2
 
     ## HTTP admin API (yarilo-admin CLI target).

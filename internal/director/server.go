@@ -115,9 +115,11 @@ type Options struct {
 	// between arbitrarily-partitioned member views — connection-bound
 	// mechanisms (broadcast, anti-entropy) cannot heal a split with no
 	// crossing connection, so this bounds every partition's lifetime by
-	// the poll interval. Backs off automatically (30s) once membership
-	// has been stable for a few polls. 0 = default (2s); negative =
-	// legacy one-shot join (join once, never poll again).
+	// the poll interval. Full cadence while the view holds fewer than
+	// MinMembers, lazy 30s backstop once the target size is reached —
+	// see joinLoop for why the gate is the target size and never
+	// own-view stability. 0 = default (2s); negative = legacy one-shot
+	// join (join once, never poll again).
 	SeedPollInterval time.Duration
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// (director_username_hash_lowercase, #738) — matches the reference

@@ -91,6 +91,9 @@ type Membership struct {
 	// default (2s), negative = legacy one-shot join. See the Options
 	// field comment.
 	seedPollInterval time.Duration
+	// resolveHost overrides seed hostname resolution in tests; nil =
+	// stdlib resolver (see resolveSeed).
+	resolveHost func(ctx context.Context, host string) ([]string, error)
 
 	mu      sync.RWMutex
 	members []Member          // sorted, includes self once Start has run
@@ -260,20 +263,29 @@ var errJoinSelfDial = errors.New("director/join: self-dial via load-balanced see
 // known joiner as a read-only snapshot request (no DIRECTOR-ADD, no
 // reconcile).
 func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
-	const (
-		stablePollsForBackoff = 5
-		seedPollIdleInterval  = 30 * time.Second
-	)
 	pollInterval := m.seedPollInterval
 	if pollInterval == 0 {
 		pollInterval = 2 * time.Second
 	}
 	oneShot := pollInterval < 0
 
+	// Poll pacing: full cadence while this node's view holds FEWER than
+	// min_members, easing to a lazy 30s backstop once the view has
+	// reached the expected cluster size. Gating on the configured target
+	// size is deliberate and materially different from the stable-view
+	// backoff an earlier revision shipped: a partitioned node's own view
+	// is perfectly stable, so backing off on stability slowed exactly
+	// the node that needed healing (live-measured ~117s to learn the
+	// third member, failing the converge-in-seconds gate) — whereas a
+	// view still short of min_members is per se proof of work left to
+	// do, no matter how stable it looks. The condition re-evaluates
+	// every cycle, so losing a member snaps straight back to the fast
+	// cadence. The lazy backstop never fully stops: a view can reach
+	// min_members while still holding a stale (dead) entry in place of
+	// a replacement pod, and the 30s poll bounds that heal too.
+	const idleInterval = 30 * time.Second
 	backoff := 2 * time.Second
 	joined := false
-	stablePolls := 0
-	lastView := ""
 	for {
 		selfDial := false
 		ok := false
@@ -281,8 +293,8 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 			if ctx.Err() != nil {
 				return
 			}
-			err := m.joinVia(ctx, addr)
-			if err == nil {
+			polled, err := m.pollSeed(ctx, addr)
+			if err == nil && polled {
 				ok = true
 				if !joined {
 					joined = true
@@ -294,7 +306,9 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 			if errors.Is(err, errJoinSelfDial) {
 				selfDial = true
 			}
-			slog.Debug("director: ring join attempt failed", "seed", addr, "err", err)
+			if err != nil {
+				slog.Debug("director: ring join attempt failed", "seed", addr, "err", err)
+			}
 		}
 		if ok && oneShot {
 			return
@@ -304,18 +318,9 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 		switch {
 		case ok:
 			backoff = 2 * time.Second
-			view := formatMemberList(m.Members())
-			if view == lastView {
-				if stablePolls < stablePollsForBackoff {
-					stablePolls++
-				}
-			} else {
-				stablePolls = 0
-				lastView = view
-			}
 			wait = pollInterval
-			if stablePolls >= stablePollsForBackoff {
-				wait = seedPollIdleInterval
+			if m.minMembers > 1 && len(m.Members()) >= m.minMembers {
+				wait = idleInterval
 			}
 		case selfDial:
 			// The seed answered (with ourselves) — it is reachable and
@@ -333,6 +338,103 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// pollSeed polls one configured seed once, expanding a hostname seed into
+// per-member candidates first (#759): a literal-IP seed is dialed as-is,
+// but a hostname — in k8s the headless -director-ring Service, whose DNS
+// answer is the complete list of ready pod IPs — is resolved explicitly
+// and EVERY resulting address except this node's own is polled this
+// cycle. Resolving ourselves matters twice over: it turns one poll into a
+// deterministic sweep of every peer (convergence in one cycle, no routing
+// luck), and it sidesteps Go's RFC 6724 destination ordering, which sorts
+// the address sharing the longest prefix with the source first — i.e. the
+// pod's OWN IP, which a naive sequential dial would then pick every
+// single time. Returns polled=false only when every candidate was self
+// (single-member DNS answer while alone), with err carrying the self-dial
+// classification when applicable.
+func (m *Membership) pollSeed(ctx context.Context, addr string) (polled bool, err error) {
+	candidates := m.expandSeed(ctx, addr)
+	if len(candidates) == 0 {
+		return false, fmt.Errorf("%w: seed %s resolves only to this node", errJoinSelfDial, addr)
+	}
+	var lastErr error
+	for _, cand := range candidates {
+		if ctx.Err() != nil {
+			return polled, lastErr
+		}
+		if vErr := m.joinVia(ctx, cand); vErr != nil {
+			lastErr = vErr
+			continue
+		}
+		polled = true
+	}
+	if polled {
+		return true, nil
+	}
+	return false, lastErr
+}
+
+// expandSeed turns a configured seed address into the list of candidate
+// addresses to poll this cycle, excluding this node itself. Literal-IP
+// seeds and hostnames that fail to resolve pass through unchanged (the
+// dial itself will surface the error); a resolvable hostname fans out to
+// every A/AAAA answer with the seed's port.
+func (m *Membership) expandSeed(ctx context.Context, addr string) []string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return []string{addr}
+	}
+	if net.ParseIP(host) != nil {
+		if (Member{IP: host, Port: atoiOr(port, 0)}).equal(m.self) {
+			return nil
+		}
+		return []string{addr}
+	}
+	ips, err := m.resolveSeed(ctx, host)
+	if err != nil || len(ips) == 0 {
+		return []string{addr}
+	}
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		// The stdlib resolver returns bare IPs (the seed's port applies
+		// to all of them — every director pod listens on the same port);
+		// a test resolver may return full host:port entries instead,
+		// since in-process test members share one IP and differ by port.
+		if h, p, sErr := net.SplitHostPort(ip); sErr == nil {
+			if (Member{IP: h, Port: atoiOr(p, 0)}).equal(m.self) {
+				continue
+			}
+			out = append(out, ip)
+			continue
+		}
+		if (Member{IP: ip, Port: atoiOr(port, 0)}).equal(m.self) {
+			continue
+		}
+		out = append(out, net.JoinHostPort(ip, port))
+	}
+	return out
+}
+
+// resolveSeed resolves a seed hostname to IPs — swappable in tests (the
+// production default is the stdlib resolver).
+func (m *Membership) resolveSeed(ctx context.Context, host string) ([]string, error) {
+	if m.resolveHost != nil {
+		return m.resolveHost(ctx, host)
+	}
+	ips, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("director/join: resolve seed: %w", err)
+	}
+	return ips, nil
+}
+
+func atoiOr(s string, def int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // joinVia dials addr, consumes its normal server handshake, then performs
