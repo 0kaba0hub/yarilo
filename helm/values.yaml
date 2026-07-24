@@ -130,6 +130,15 @@ components:
     ## state redundancy") — never refuses service at any member count.
     min_members: 3
 
+    ## How long (seconds) a lease-managed backend may go without a
+    ## heartbeat before it is removed ring-wide (#776). A backend becomes
+    ## lease-managed when it self-registers with a monotonic seq (a
+    ## heartbeating pod); static mail_servers / admin-added backends never
+    ## heartbeat and are never expired. The last backend of a tag is never
+    ## expired (kept over a guaranteed total blackhole, logged loudly).
+    ## 0 = default (30); negative = disabled.
+    backend_expire: 30
+
     ## How often (seconds) each ring member re-broadcasts its
     ## member+tombstone snapshot over every live ring connection (#759) —
     ## a bounded safety net that heals membership splits without waiting

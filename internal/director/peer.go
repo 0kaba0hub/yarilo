@@ -73,6 +73,14 @@ func applyRingChangeFields(srv *Server, payload []string) {
 	ts := time.Now().Unix()
 	switch event {
 	case "up":
+		// A gossiped heartbeat may carry the backend's seq (#776, 4th field)
+		// — refresh this director's lease so a heartbeat that landed on ANY
+		// director keeps the backend alive everywhere.
+		if len(payload) >= 4 {
+			if seq, err := strconv.ParseUint(payload[3], 10, 64); err == nil {
+				srv.recordBackendSeen(ip, seq)
+			}
+		}
 		if !srv.ring.SetUp(ip, true, ts) {
 			// Backend not in our ring (arrived after handshake, no port info).
 			// It will be picked up on the next reconnect handshake.
@@ -81,6 +89,7 @@ func applyRingChangeFields(srv *Server, payload []string) {
 			slog.Info("director: ring change up", "ip", ip, "tag", tag)
 		}
 	case "down":
+		srv.forgetBackendLease(ip)
 		srv.ring.RemoveBackend(ip)
 		slog.Info("director: ring change down", "ip", ip)
 	case "flush":

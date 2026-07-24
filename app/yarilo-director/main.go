@@ -112,10 +112,15 @@ func main() {
 		SeedPollInterval:      time.Duration(cfg.DirectorService.SeedPollInterval) * time.Second,
 		SeedPollIdleInterval:  time.Duration(cfg.DirectorService.SeedPollIdleInterval) * time.Second,
 		TombstoneTTL:          time.Duration(cfg.DirectorService.TombstoneTTL) * time.Second,
+		BackendExpire:         time.Duration(cfg.DirectorService.BackendExpire) * time.Second,
 	})
 
 	// Resolve static backends from config and register them in the ring.
 	resolveBackends(ctx, cfg, srv)
+
+	// Backend heartbeat-lease expiry (#776): remove lease-managed backends
+	// that stop heartbeating (silent hang / crash), ring-wide.
+	srv.StartBackendExpiry(ctx)
 
 	// Start mail protocol proxy listeners.
 	if err := startProxies(ctx, srv, cfg, nil, backendTLSCfg); err != nil {

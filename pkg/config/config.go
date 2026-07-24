@@ -967,6 +967,13 @@ type DirectorServiceConfig struct {
 	// every resulting address except self is polled each cycle.
 	// 0 = default (2); negative = legacy one-shot join.
 	SeedPollInterval int `koanf:"seed_poll_interval"`
+	// BackendExpire is how long (seconds) a lease-managed backend may go
+	// without a heartbeat before it is removed ring-wide (#776). A backend
+	// becomes lease-managed when a seq'd BACKEND-UP arrives for it (a
+	// self-registering pod); static mail_servers and admin-added backends
+	// never heartbeat and are never expired. 0 = default (30); negative =
+	// disabled.
+	BackendExpire int `koanf:"backend_expire"`
 	// SeedPollIdleInterval is the eased poll cadence (seconds) once the
 	// view has reached min_members. Defaults to the same 2s as
 	// SeedPollInterval — no effective backoff — because a node cannot
@@ -1689,6 +1696,7 @@ func Load(path string) (*Config, error) {
 			AntiEntropyInterval:   3,
 			SeedPollInterval:      2,
 			SeedPollIdleInterval:  2,
+			BackendExpire:         30,
 			TombstoneTTL:          600,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
