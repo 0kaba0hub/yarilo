@@ -61,6 +61,9 @@ var (
 
 	flagFTSUser = flag.String("fts-user", "", "IMAP username for the full-text search check (enables it)")
 	flagFTSPass = flag.String("fts-pass", "", "password for -fts-user")
+
+	flagDirectorAPI      = flag.String("director-api", "", "director admin API base URL, e.g. http://yarilo-director-api:9103 (enables the check, #755)")
+	flagDirectorAPIToken = flag.String("director-api-token", "", "director admin API bearer token (defaults to env DIRECTOR_API_TOKEN / YARILO_ADMIN_TOKEN)")
 )
 
 type result struct {
@@ -199,6 +202,12 @@ func main() {
 			return checkFTS(*flagFTSUser, *flagFTSPass)
 		}})
 	}
+	if *flagDirectorAPI != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"director admin API status (authenticated)", checkDirectorAPI})
+	}
 
 	slog.Info("smoke: start", "total", len(checks))
 	var failures []result
@@ -260,6 +269,47 @@ func httpGet(url string) error {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	return nil
+}
+
+// checkDirectorAPI verifies the director admin API authenticates a bearer
+// token (#755): the whole class of bug was `yarilo-admin director status`
+// returning 403 from every pod because the token was never plumbed. This
+// hits GET /api/director/status with the token and asserts a 200 with a
+// member list — a 403 is the exact regression to catch, so it is reported
+// distinctly from any other non-200.
+func checkDirectorAPI() error {
+	token := *flagDirectorAPIToken
+	if token == "" {
+		token = os.Getenv("DIRECTOR_API_TOKEN")
+	}
+	if token == "" {
+		token = os.Getenv("YARILO_ADMIN_TOKEN")
+	}
+	url := strings.TrimRight(*flagDirectorAPI, "/") + "/api/director/status"
+	c := &http.Client{Timeout: *flagTimeout}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("director API rejected the token (HTTP %d) — the #755 plumbing is broken: %s", resp.StatusCode, body)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte("peers")) {
+		return fmt.Errorf("director API status returned 200 but no member list: %s", body)
 	}
 	return nil
 }
