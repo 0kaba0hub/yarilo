@@ -244,7 +244,7 @@ func NewWithOptions(opts Options) *Server {
 	s := &Server{
 		ring:      ring.New(opts.usernameHashLowercase()),
 		opts:      opts,
-		userDir:   NewUserDir(opts.userExpire(), opts.usernameHashLowercase()),
+		userDir:   NewUserDir(opts.userExpire(), opts.usernameHashLowercase(), Member{IP: opts.LocalIP, Port: opts.LocalPort}.String()),
 		overrides: make(map[string]string),
 		clients:   make(map[*client]struct{}),
 		sessions:  make(map[string]int),

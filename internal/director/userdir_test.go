@@ -6,7 +6,7 @@ import (
 )
 
 func TestUserDir_SetGet(t *testing.T) {
-	d := NewUserDir(time.Minute, true)
+	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
 	d.Set("alice@example.com", "10.0.0.1:993", false)
 
 	e := d.Get("alice@example.com")
@@ -22,7 +22,7 @@ func TestUserDir_SetGet(t *testing.T) {
 }
 
 func TestUserDir_WeakFlag(t *testing.T) {
-	d := NewUserDir(time.Minute, true)
+	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
 	d.Set("bob@example.com", "10.0.0.2:993", true)
 	e := d.Get("bob@example.com")
 	if e == nil || !e.Weak {
@@ -31,7 +31,7 @@ func TestUserDir_WeakFlag(t *testing.T) {
 }
 
 func TestUserDir_Expiry(t *testing.T) {
-	d := NewUserDir(50*time.Millisecond, true)
+	d := NewUserDir(50*time.Millisecond, true, "10.0.0.1:9102")
 	d.Set("carol@example.com", "10.0.0.3:993", false)
 
 	time.Sleep(100 * time.Millisecond)
@@ -41,7 +41,7 @@ func TestUserDir_Expiry(t *testing.T) {
 }
 
 func TestUserDir_Delete(t *testing.T) {
-	d := NewUserDir(time.Minute, true)
+	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
 	d.Set("dave@example.com", "10.0.0.4:993", false)
 	d.Delete("dave@example.com")
 	if e := d.Get("dave@example.com"); e != nil {
@@ -72,7 +72,7 @@ func TestUserDir_HashLowercase(t *testing.T) {
 // TestUserDir_GetSetDelete_CaseInsensitive proves a user stored under one
 // spelling is retrievable and deletable under another, with lowercase=true.
 func TestUserDir_GetSetDelete_CaseInsensitive(t *testing.T) {
-	d := NewUserDir(time.Minute, true)
+	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
 	d.Set("User@d.test", "10.0.0.9:993", false)
 
 	e := d.Get("user@d.test")
@@ -87,7 +87,7 @@ func TestUserDir_GetSetDelete_CaseInsensitive(t *testing.T) {
 }
 
 func TestUserDir_SetByHash(t *testing.T) {
-	d := NewUserDir(time.Minute, true)
+	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
 	h := HashUsername("eve@example.com", true)
 	d.SetByHash(h, "10.0.0.5:993", false)
 
@@ -98,7 +98,7 @@ func TestUserDir_SetByHash(t *testing.T) {
 }
 
 func TestUserDir_Purge(t *testing.T) {
-	d := NewUserDir(50*time.Millisecond, true)
+	d := NewUserDir(50*time.Millisecond, true, "10.0.0.1:9102")
 	d.Set("a@x.com", "10.0.0.1:993", false)
 	d.Set("b@x.com", "10.0.0.2:993", false)
 
@@ -112,12 +112,59 @@ func TestUserDir_Purge(t *testing.T) {
 }
 
 func TestUserDir_Snapshot(t *testing.T) {
-	d := NewUserDir(time.Minute, true)
+	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
 	d.Set("u1@x.com", "10.0.0.1:993", false)
 	d.Set("u2@x.com", "10.0.0.2:993", false)
 
 	snap := d.Snapshot()
 	if len(snap) != 2 {
 		t.Errorf("expected 2 snapshot entries, got %d", len(snap))
+	}
+}
+
+func TestUserDir_MergeByHash_Ordering(t *testing.T) {
+	h := HashUsername("u@x", true)
+	tests := []struct {
+		name       string
+		seedSeq    uint64
+		seedBy     string
+		seedHost   string
+		inSeq      uint64
+		inBy       string
+		inHost     string
+		wantHost   string
+		wantChange bool // returned "changed backend" signal
+	}{
+		{"newer seq wins", 1, "a", "b1", 2, "b", "b2", "b2", true},
+		{"older seq loses", 5, "a", "b1", 3, "b", "b2", "b1", false},
+		{"equal seq lower id wins", 4, "z", "b1", 4, "a", "b2", "b2", true},
+		{"equal seq higher id loses", 4, "a", "b1", 4, "z", "b2", "b1", false},
+		{"equal seq same id same host no-op", 4, "a", "b1", 4, "a", "b1", "b1", false},
+		{"newer seq same host: change=false", 1, "a", "b1", 2, "a", "b1", "b1", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewUserDir(time.Minute, true, "self:9102")
+			d.MergeByHash(h, tc.seedHost, false, tc.seedSeq, tc.seedBy)
+			changed := d.MergeByHash(h, tc.inHost, false, tc.inSeq, tc.inBy)
+			if e := d.GetByHash(h); e == nil || e.Host != tc.wantHost {
+				t.Fatalf("host = %v, want %s", e, tc.wantHost)
+			}
+			if changed != tc.wantChange {
+				t.Fatalf("changed = %v, want %v", changed, tc.wantChange)
+			}
+		})
+	}
+}
+
+func TestUserDir_LamportAdvancesPastRemote(t *testing.T) {
+	d := NewUserDir(time.Minute, true, "self:9102")
+	h := HashUsername("u@x", true)
+	// A remote assignment at seq 100 must push a subsequent LOCAL assignment
+	// past it, so local wins deterministically (Lamport causality).
+	d.MergeByHash(h, "remote:993", false, 100, "peer:9102")
+	d.Set("u@x", "local:993", false)
+	if e := d.GetByHash(h); e == nil || e.Host != "local:993" || e.AssignSeq <= 100 {
+		t.Fatalf("local assignment must sort after remote seq 100, got %+v", e)
 	}
 }
