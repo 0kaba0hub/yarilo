@@ -181,13 +181,25 @@ func (m *Membership) Members() []Member {
 
 // joinLoop tries each seed in turn, with a short backoff, until one join
 // succeeds. It then returns — membership from that point on is maintained
-// by DIRECTOR-ADD/REMOVE propagation, not further seed polling.
+// by DIRECTOR-ADD/REMOVE propagation, not further seed polling. Any
+// rejected join (self-dial via a load-balanced ClusterIP seed, #759; wrong
+// secret; etc.) is just an error from joinVia's point of view and falls
+// through to the same retry — a self-dial specifically used to look like a
+// trivial, immediate "success" (the pod joining nothing but itself) before
+// handleJoin started rejecting it, which is what made the gap below worse
+// in practice than it had to be.
 //
-// Known phase-1 gap: two pods starting simultaneously before either can
-// reach a seed (e.g. the first two pods behind a fresh ClusterIP) may each
-// self-elect as a singleton ring and never merge, since neither retries
-// after its own "join" trivially never happens. Anti-entropy (#750 phase 4)
-// is the intended fix; not resolved here.
+// Known phase-1 gap, still real: several pods starting simultaneously
+// behind a fresh ClusterIP can form two (or more) fully disjoint subrings
+// that each converge internally and then simply stop retrying the seed,
+// with no path left for either to ever discover the other — every retry
+// after that lands on an already-known peer and looks like success. A
+// live 3-pod simultaneous start is expected to show a *transient* split
+// that heals within a few seed-retry cycles (a few seconds to tens of
+// seconds, bounded by the backoff below); a split that never heals is the
+// gap this comment describes, not a regression. Full partition-heal via
+// periodic anti-entropy re-sync, independent of "have I already joined
+// once", is #750 phase 4 — not resolved here.
 func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 	backoff := 2 * time.Second
 	for {
@@ -473,6 +485,21 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 		return
 	}
 	joiner.Port = port
+
+	if joiner.equal(m.self) {
+		// A load-balanced ClusterIP seed can route a pod's own JOIN dial
+		// back to itself (#759): kube-proxy has no reason to avoid it.
+		// Accepting it looks like a normal join (the "joiner" is already
+		// self, so addMember is a no-op) but never actually discovers any
+		// other member — and joinLoop stops retrying the seed the moment
+		// it believes it has joined, leaving the pod stuck as a permanent,
+		// silent N=1. Reject explicitly instead, so joinVia returns an
+		// error and joinLoop's existing generic retry keeps dialing the
+		// seed until kube-proxy happens to route it elsewhere.
+		_ = writeLine(conn, "JOIN-FAIL\tself-dial via load-balanced seed, retry")
+		slog.Debug("director: JOIN rejected, self-dial via load-balanced seed", "self", m.self)
+		return
+	}
 
 	if len(m.secret) == 0 {
 		_ = writeLine(conn, "JOIN-FAIL\tring auth not configured")

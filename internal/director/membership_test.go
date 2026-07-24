@@ -176,6 +176,23 @@ func TestMembership_Join_RejectsWhenNoSecretConfigured(t *testing.T) {
 	}
 }
 
+// TestMembership_Join_RejectsSelfDial reproduces #759's root cause: a
+// load-balanced ClusterIP seed can route a pod's own JOIN dial back to
+// itself. Before handleJoin rejected this, it looked like a normal,
+// immediate success (addMember(self) is a harmless no-op) — but joinLoop
+// then stops retrying the seed forever, leaving the pod stuck as a
+// permanently isolated N=1 that never discovers any real peer.
+func TestMembership_Join_RejectsSelfDial(t *testing.T) {
+	srv, addr := startRingNode(t, "shared-secret", nil, 3)
+
+	if err := srv.membership.joinVia(context.Background(), addr); err == nil {
+		t.Fatal("a JOIN that dials back to self must be rejected, got nil error")
+	}
+	if members := srv.membership.Members(); len(members) != 1 {
+		t.Fatalf("a rejected self-dial JOIN must not change membership, got %v", members)
+	}
+}
+
 // ---- N=2: tie-break (only the lower member dials) + origin-absorb ---------
 
 func TestMembership_N2_OnlyLowerMemberDials(t *testing.T) {
