@@ -127,11 +127,19 @@ components:
     ## deploy and preserved on upgrades. To rotate: delete the Secret before helm upgrade.
     api:
       port: 9103
-      ## CIDRs allowed to reach the API. Default: loopback + k8s service/pod CIDRs.
-      allowed_nets:
-        - "127.0.0.0/8"
-        - "10.96.0.0/12"
-        - "10.244.0.0/16"
+      ## CIDRs allowed to reach the API, checked BEFORE the bearer token.
+      ## Empty (default) = no IP restriction — the API is gated on the
+      ## auto-generated token alone, which is the real security boundary
+      ## (random per install, never logged). This is deliberate: service
+      ## and pod CIDRs differ per cluster/CNI, so any hardcoded default
+      ## here (kubeadm's 10.96.0.0/12 + 10.244.0.0/16 was tried and
+      ## silently 403'd every request on clusters using different ranges,
+      ## #759) would either be wrong out of the box or require every
+      ## installer to already know their cluster's CIDRs before the chart
+      ## even works. Empty here does NOT mean "no security" — it means
+      ## "security is the token." Set this to your actual service/pod
+      ## CIDRs as opt-in defense-in-depth once you know them.
+      allowed_nets: []
 
     ## yarilo-monitor sidecar — probes backend pods and reports health to the director.
     ## Runs as a sidecar container in the director pod.

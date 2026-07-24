@@ -202,6 +202,10 @@ Director replicas self-organize into a ring at runtime (#750 phase 1 — replace
 
 **#755** fixed `yarilo-admin director ...` returning 403 from every pod, including the director pod's own shell — the director admin API token and URL were never plumbed to `yarilo-backend-api` (the standard admin plane) or reliably available for local use. Both are now wired via a shared Helm env-injection helper.
 
+**#758** replaced the ring's single-edge event-forward path (one connection picked at accept time — `dialConn`, or a `passiveConn` reserved for the N=2 tie-break's passive member) with a broadcast to every currently live ring connection except whichever one an event just arrived on, matching Dovecot's `director_update_send` skip-arrival model instead of a fixed per-connection role that could go stale mid-connection across an N=3→N=2 shrink.
+
+**#759 (found in a live 3-pod simultaneous-start sandbox test)** fixed a load-balanced ClusterIP seed routing a pod's own `DIRECTOR-JOIN` dial back to itself: this looked like an ordinary, immediate join success (a self-join is a harmless no-op), so `joinLoop` stopped retrying the seed forever, leaving the pod stuck as a permanently isolated N=1 that never discovered any real peer. `handleJoin` now rejects a self-dial explicitly, so the existing generic retry keeps dialing the seed until kube-proxy routes it elsewhere. Also dropped `components.director.api.allowed_nets`'s hardcoded kubeadm-shaped default (`10.96.0.0/12` + `10.244.0.0/16`) — wrong for any cluster with different service/pod CIDRs, silently 403ing every request including well-authenticated ones — in favor of an empty default (token-only auth; CIDR filtering is opt-in defense-in-depth once an operator knows their real cluster CIDRs). A fully disjoint multi-subring partition on simultaneous multi-pod start remains a known gap, tracked by #750 phase 4's anti-entropy re-sync — expect a transient split that heals within a few seed-retry cycles, not an instant 3-way converge.
+
 ---
 
 ## Quick start (Helm)

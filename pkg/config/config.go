@@ -1654,10 +1654,16 @@ func Load(path string) (*Config, error) {
 			MinMembers:            3,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
-				// 127.0.0.0/8   — loopback (same-pod CLI)
-				// 10.96.0.0/12  — k8s service CIDR (kubeadm default)
-				// 10.244.0.0/16 — k8s pod CIDR (flannel/kubeadm default)
-				AllowedNets: []string{"127.0.0.0/8", "10.96.0.0/12", "10.244.0.0/16"},
+				// No default IP restriction — service/pod CIDRs differ per
+				// cluster/CNI, so a hardcoded guess here (kubeadm's
+				// 10.96.0.0/12 + 10.244.0.0/16 was tried and silently
+				// 403'd every request on clusters using different ranges,
+				// #759) is either wrong out of the box or requires knowing
+				// the cluster's CIDRs before the config even works. The
+				// auto-generated bearer token is the real security
+				// boundary; allowed_nets is opt-in defense-in-depth once
+				// an operator knows their actual CIDRs.
+				AllowedNets: nil,
 			},
 		},
 		QuotaStatus: QuotaStatusConfig{Listen: ":12340", RecipientDelimiter: "+", Nouser: "REJECT Unknown user"},
