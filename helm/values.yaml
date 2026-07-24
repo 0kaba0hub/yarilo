@@ -101,12 +101,20 @@ components:
     ## static full-mesh peer list — same key, new semantics). Each entry is
     ## "host:port"; director joins via the first that accepts a
     ## DIRECTOR-JOIN, then maintains membership automatically from there —
-    ## no further entries here needed as replicas scale. Use the headless
-    ## -director-ring Service (#748/#751) as the seed — its DNS name resolves
-    ## to every ready pod's IP directly (not a single virtual IP), so any
-    ## resolver hit lands on a live replica even though director is a plain
-    ## Deployment, not a StatefulSet:
-    ##   <release>-director-ring:9102
+    ## no further entries here needed as replicas scale.
+    ##
+    ## LEAVE THIS EMPTY in k8s. At replicas > 1 the seed is auto-derived to
+    ## the headless <release>-director-ring Service (#751/#764), which is
+    ## the ONLY correct ring seed: its DNS name resolves to every ready pod
+    ## IP directly, so the DNS fan-out (#763) polls each peer and formation
+    ## converges deterministically with no self-dials. Do NOT point this at
+    ## the ClusterIP <release>-director Service — that resolves to a single
+    ## virtual IP, load-balances every dial randomly (including back to
+    ## self), and silently reintroduces the formation partition #759 fought.
+    ## -director stays the LOOKUP endpoint for login pods, never the seed.
+    ##
+    ## Set an explicit host:port list only for non-k8s deployments or a
+    ## deliberate manual seed; it overrides the auto-derived default.
     ## replicas: 1 needs no seed at all — a lone director is a valid N=1 ring.
     peers: []
 
@@ -144,6 +152,17 @@ components:
     ## load-balancer routing luck. 0 = default (2); negative = one-shot
     ## join (join once, never poll again).
     seed_poll_interval: 2
+
+    ## Eased poll cadence (seconds) once the view has reached min_members.
+    ## Defaults to the same 2s as seed_poll_interval — i.e. NO effective
+    ## backoff — because a node cannot tell "converged" from "stable but
+    ## holding a dead member": a freshly-respawned replacement pod that
+    ## learned a since-dead member during the death-detection window would
+    ## otherwise keep it for a full idle interval (#765, live-measured 40s+
+    ## at a 30s idle). Raise this only to trade steady-state polling for
+    ## slower dead-member eviction on fresh joiners. Clamped up to
+    ## seed_poll_interval. 0 = default (2).
+    seed_poll_idle_interval: 2
 
     ## HTTP admin API (yarilo-admin CLI target).
     ## A 32-char token is auto-generated into Secret <release>-director-api-token on first

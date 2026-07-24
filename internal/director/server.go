@@ -116,11 +116,20 @@ type Options struct {
 	// mechanisms (broadcast, anti-entropy) cannot heal a split with no
 	// crossing connection, so this bounds every partition's lifetime by
 	// the poll interval. Full cadence while the view holds fewer than
-	// MinMembers, lazy 30s backstop once the target size is reached —
-	// see joinLoop for why the gate is the target size and never
-	// own-view stability. 0 = default (2s); negative = legacy one-shot
-	// join (join once, never poll again).
+	// MinMembers, easing to SeedPollIdleInterval once the target size is
+	// reached — see joinLoop for why the gate is the target size and
+	// never own-view stability. 0 = default (2s); negative = legacy
+	// one-shot join (join once, never poll again).
 	SeedPollInterval time.Duration
+	// SeedPollIdleInterval is the eased poll cadence once the view has
+	// reached MinMembers. Defaults to the SAME 2s as SeedPollInterval —
+	// i.e. no effective backoff — because a node cannot tell "converged"
+	// from "stable but holding a dead member", so a lazy idle cadence
+	// leaves a freshly-respawned pod's stale member in place for a full
+	// interval (#765). Raise it only to trade steady-state polling for
+	// slower dead-member eviction on fresh joiners. Clamped up to
+	// SeedPollInterval; 0 = default (2s).
+	SeedPollIdleInterval time.Duration
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// (director_username_hash_lowercase, #738) — matches the reference
 	// implementation's default hash template so two spellings of the same
@@ -237,6 +246,7 @@ func NewWithOptions(opts Options) *Server {
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
 	s.membership.seedPollInterval = opts.SeedPollInterval
+	s.membership.seedPollIdleInterval = opts.SeedPollIdleInterval
 	return s
 }
 

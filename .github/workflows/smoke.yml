@@ -18,6 +18,9 @@ on:
       insecure:
         description: "Skip TLS cert verification (true/false)"
         default: "false"
+      director_api:
+        description: "Director admin API base URL (#755, e.g. http://10.0.0.1:9103); leave empty to skip. Only reachable from an in-cluster/port-forwarded runner."
+        default: ""
 
   workflow_call:
     inputs:
@@ -36,6 +39,9 @@ on:
       insecure:
         type: string
         default: "false"
+      director_api:
+        type: string
+        default: ""
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -66,10 +72,18 @@ jobs:
           SMOKE_IMAP_PASS: ${{ secrets.SMOKE_IMAP_PASS }}
           SMOKE_QUOTA_OVER_USER: ${{ vars.SMOKE_QUOTA_OVER_USER }}
           SMOKE_QUOTA_OVER_PASS: ${{ secrets.SMOKE_QUOTA_OVER_PASS }}
+          DIRECTOR_API_TOKEN: ${{ secrets.SMOKE_DIRECTOR_API_TOKEN }}
         run: |
           POP3S_FLAGS=""
           if [ -n "${{ inputs.pop3s_port }}" ]; then
             POP3S_FLAGS="-pop3s -pop3s-port ${{ inputs.pop3s_port }}"
+          fi
+          # Director admin API check (#755): only when a URL is provided —
+          # the API is a ClusterIP, reachable only from an in-cluster or
+          # port-forwarded runner. Token comes from the secret env above.
+          DIRECTOR_FLAGS=""
+          if [ -n "${{ inputs.director_api }}" ]; then
+            DIRECTOR_FLAGS="-director-api ${{ inputs.director_api }}"
           fi
           # QUOTA + ACL checks reuse the imap login user when it is configured.
           QUOTA_ACL_FLAGS=""
@@ -86,7 +100,7 @@ jobs:
             -telemetry "${{ inputs.telemetry_url }}" \
             -insecure="${{ inputs.insecure }}" \
             -timeout 15s \
-            $POP3S_FLAGS $QUOTA_ACL_FLAGS
+            $POP3S_FLAGS $QUOTA_ACL_FLAGS $DIRECTOR_FLAGS
 
       - name: Run imaptest
         run: |

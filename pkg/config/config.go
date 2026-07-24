@@ -960,13 +960,23 @@ type DirectorServiceConfig struct {
 	// crossing point between partitioned member views, so this bounds any
 	// formation split's lifetime regardless of ring dial topology. Runs
 	// at full cadence while the view holds fewer than min_members,
-	// easing to a lazy 30s backstop once the expected cluster size is
+	// easing to seed_poll_idle_interval once the expected cluster size is
 	// reached (and snapping back on any loss); gating on the configured
 	// target size — never on own-view stability, which a partitioned
 	// node also exhibits. A hostname seed is resolved explicitly and
 	// every resulting address except self is polled each cycle.
 	// 0 = default (2); negative = legacy one-shot join.
 	SeedPollInterval int `koanf:"seed_poll_interval"`
+	// SeedPollIdleInterval is the eased poll cadence (seconds) once the
+	// view has reached min_members. Defaults to the same 2s as
+	// SeedPollInterval — no effective backoff — because a node cannot
+	// tell "converged" from "stable but holding a dead member": a
+	// freshly-respawned replacement pod that learned a since-dead member
+	// during the death-detection window would otherwise keep it for a
+	// full idle interval (#765). Raise it only to trade steady-state
+	// polling for slower dead-member eviction on fresh joiners; clamped
+	// up to seed_poll_interval. 0 = default (2).
+	SeedPollIdleInterval int `koanf:"seed_poll_idle_interval"`
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// for ring routing, sticky assignments and admin overrides (#738).
 	// Matches the reference implementation's default hash template — two
@@ -1672,6 +1682,7 @@ func Load(path string) (*Config, error) {
 			MinMembers:            3,
 			AntiEntropyInterval:   3,
 			SeedPollInterval:      2,
+			SeedPollIdleInterval:  2,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// No default IP restriction — service/pod CIDRs differ per

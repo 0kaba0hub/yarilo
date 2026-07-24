@@ -91,6 +91,10 @@ type Membership struct {
 	// default (2s), negative = legacy one-shot join. See the Options
 	// field comment.
 	seedPollInterval time.Duration
+	// seedPollIdleInterval is the eased poll cadence once the view has
+	// reached min_members; 0 = default (2s = no effective backoff),
+	// clamped up to seedPollInterval. See the Options field comment.
+	seedPollIdleInterval time.Duration
 	// resolveHost overrides seed hostname resolution in tests; nil =
 	// stdlib resolver (see resolveSeed).
 	resolveHost func(ctx context.Context, host string) ([]string, error)
@@ -254,14 +258,24 @@ var errJoinSelfDial = errors.New("director/join: self-dial via load-balanced see
 // re-polling it bounds every partition's lifetime by the poll interval
 // regardless of what the dial graph looks like.
 //
-// Pacing: seedPollInterval (default 2s) while membership is still
-// changing; once the view has been stable for stablePollsForBackoff
-// consecutive polls it stretches to seedPollIdleInterval (30s), snapping
-// back on any change. A self-dial rejection retries fast (see
-// errJoinSelfDial); a genuinely unreachable seed walks the exponential
-// backoff. Re-polls are cheap on the seed side too — handleJoin treats a
-// known joiner as a read-only snapshot request (no DIRECTOR-ADD, no
-// reconcile).
+// Pacing: seedPollInterval (default 2s) while this node's view holds
+// FEWER than min_members; once it reaches the expected cluster size the
+// cadence eases to seedPollIdleInterval. That idle interval defaults to
+// the SAME 2s — i.e. constant polling by default — because a node cannot
+// locally tell "converged" from "stable but holding a dead member": a
+// freshly-respawned replacement pod that learned a since-dead member
+// during the death-detection window sits at min_members-or-more with a
+// stale entry, and a lazy idle cadence there leaves the dead member in
+// place for a full idle interval (#765 — live-measured 40s+ with a 30s
+// idle). Operators who want to trade steady-state polling for slower
+// dead-member eviction on fresh joiners can raise seed_poll_idle_interval
+// explicitly. Gating on min_members (not on own-view stability) is still
+// deliberate: a partitioned node below the target size must never back
+// off, since its view is perfectly stable yet wrong (#759). A self-dial
+// rejection retries fast (see errJoinSelfDial); a genuinely unreachable
+// seed walks the exponential backoff. Re-polls are cheap on the seed
+// side too — handleJoin treats a known joiner as a read-only snapshot
+// request (no DIRECTOR-ADD, no reconcile).
 func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 	pollInterval := m.seedPollInterval
 	if pollInterval == 0 {
@@ -269,21 +283,13 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 	}
 	oneShot := pollInterval < 0
 
-	// Poll pacing: full cadence while this node's view holds FEWER than
-	// min_members, easing to a lazy 30s backstop once the view has
-	// reached the expected cluster size. Gating on the configured target
-	// size is deliberate and materially different from the stable-view
-	// backoff an earlier revision shipped: a partitioned node's own view
-	// is perfectly stable, so backing off on stability slowed exactly
-	// the node that needed healing (live-measured ~117s to learn the
-	// third member, failing the converge-in-seconds gate) — whereas a
-	// view still short of min_members is per se proof of work left to
-	// do, no matter how stable it looks. The condition re-evaluates
-	// every cycle, so losing a member snaps straight back to the fast
-	// cadence. The lazy backstop never fully stops: a view can reach
-	// min_members while still holding a stale (dead) entry in place of
-	// a replacement pod, and the 30s poll bounds that heal too.
-	const idleInterval = 30 * time.Second
+	idleInterval := m.seedPollIdleInterval
+	if idleInterval <= 0 {
+		idleInterval = 2 * time.Second
+	}
+	if idleInterval < pollInterval {
+		idleInterval = pollInterval
+	}
 	backoff := 2 * time.Second
 	joined := false
 	for {

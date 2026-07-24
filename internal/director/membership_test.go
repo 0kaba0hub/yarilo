@@ -255,6 +255,93 @@ func TestMembership_AntiEntropy_HealsMissedMemberBroadcast(t *testing.T) {
 	})
 }
 
+// startPollingRingNode starts a node with periodic seed polling ENABLED
+// (unlike startRingNode, which disables it) at the given intervals, so
+// tests can exercise the #765 idle-cadence behavior. idle<=0 uses the
+// production default (2s), matching what ships.
+func startPollingRingNode(t *testing.T, secret string, seeds []string, minMembers int, poll, idle time.Duration) (*Server, string) {
+	t.Helper()
+	srv := NewWithOptions(Options{
+		PingInterval:         24 * time.Hour,
+		RingSecret:           []byte(secret),
+		MinMembers:           minMembers,
+		AntiEntropyInterval:  -1, // isolate the seed-poll path — no anti-entropy backstop
+		SeedPollInterval:     poll,
+		SeedPollIdleInterval: idle,
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	srv.opts.LocalIP, srv.opts.LocalPort = host, port
+	srv.membership.self = Member{IP: host, Port: port}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		ln.Close()
+	})
+	go func() { _ = srv.listenOn(ctx, ln) }()
+	srv.StartMembership(ctx, seeds)
+	return srv, addr
+}
+
+// TestMembership_FreshJoiner_EvictsRecentlyDeadViaPoll reproduces #765: a
+// node sitting at >= min_members while holding a member that a survivor
+// has since tombstoned must drop it PROMPTLY via the periodic seed poll,
+// not linger for a full idle interval. This is the fresh-replacement-pod
+// case — it learned the dead member as live during the death-detection
+// window, so its own view looks stable and "converged" (>= min_members)
+// even though it is wrong. With the shipped default (idle == poll == 2s)
+// eviction happens within a poll cycle; the earlier hardcoded 30s idle
+// left the dead member in place for up to 30s (live-measured 40s+), which
+// this test's deadline would catch.
+func TestMembership_FreshJoiner_EvictsRecentlyDeadViaPoll(t *testing.T) {
+	// Explicit poll=1s, idle=0 -> production default (2s), so this guards
+	// exactly the shipped pacing that fixes #765.
+	srvA, addrA := startPollingRingNode(t, "shared-secret", nil, 2, time.Second, 0)
+	srvD, _ := startPollingRingNode(t, "shared-secret", []string{addrA}, 2, time.Second, 0)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return len(srvA.membership.Members()) == 2 && len(srvD.membership.Members()) == 2
+	})
+
+	// Inject a dead member as LIVE on both, with NO tombstone anywhere —
+	// mirroring a fresh joiner that learned it during the death window.
+	dead := Member{IP: "10.255.255.254", Port: 9102}
+	srvA.membership.addMember(dead)
+	srvD.membership.addMember(dead)
+	waitFor(t, 3*time.Second, func() bool {
+		return len(srvD.membership.Members()) == 3 // D now idle-paced (>= min_members)
+	})
+
+	// A detects the death and tombstones it (D does not, and D never
+	// dials it). D must learn the tombstone via its next seed poll of A.
+	srvA.membership.removeMember(dead)
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		found := false
+		for _, mem := range srvD.membership.Members() {
+			if mem.equal(dead) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return // evicted — pass
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("fresh joiner did not evict the tombstoned member within 8s; members=%v", srvD.membership.Members())
+}
+
 // ---- N=2: tie-break (only the lower member dials) + origin-absorb ---------
 
 func TestMembership_N2_OnlyLowerMemberDials(t *testing.T) {

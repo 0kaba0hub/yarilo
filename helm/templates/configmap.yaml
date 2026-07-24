@@ -727,6 +727,7 @@ data:
       min_members: {{ .Values.components.director.min_members }}
       anti_entropy_interval: {{ .Values.components.director.anti_entropy_interval }}
       seed_poll_interval: {{ .Values.components.director.seed_poll_interval }}
+      seed_poll_idle_interval: {{ .Values.components.director.seed_poll_idle_interval }}
       {{- with .Values.components.director.backends }}
       mail_servers:
         {{- range . }}
@@ -738,12 +739,22 @@ data:
       {{- if .Values.components.director.listeners.lmtp.enabled }}
       lmtp_listen: {{ printf ":%d" (int .Values.components.director.listeners.lmtp.containerPort) | quote }}
       {{- end }}
-      {{- with .Values.components.director.peers }}
-      ## Seed list for the self-organizing ring (#750). In-cluster, point
-      ## this at the headless -director-ring Service (#748/#751) — its DNS
-      ## resolves directly to every ready pod's IP, so any hit lands on a
-      ## live replica to DIRECTOR-JOIN against. Manual host:port entries
-      ## remain a valid override for non-k8s deployments.
+      ## Seed list for the self-organizing ring (#750). An explicit
+      ## peers override wins; otherwise, at replicas > 1, the seed is
+      ## auto-derived to the HEADLESS -director-ring Service (#751/#764),
+      ## NEVER the ClusterIP -director Service. This matters: the ring
+      ## seed must resolve to every director pod's IP so the DNS fan-out
+      ## (#763) can poll each peer directly. The ClusterIP -director
+      ## resolves to a single virtual IP, which load-balances every dial
+      ## randomly (including back to self) and silently reintroduces the
+      ## formation partition #759 fought — that Service stays the LOOKUP
+      ## endpoint for login pods, not the ring seed. A lone replica
+      ## (N=1) needs no seed at all.
+      {{- $peers := .Values.components.director.peers }}
+      {{- if and (not $peers) (gt (int .Values.components.director.replicas) 1) }}
+      {{- $peers = list (printf "%s-director-ring:%v" (include "yarilo.fullname" .) (int .Values.components.director.directorPort)) }}
+      {{- end }}
+      {{- with $peers }}
       peers:
         {{- range . }}
         - {{ . | quote }}
