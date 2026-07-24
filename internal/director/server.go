@@ -130,6 +130,23 @@ type Options struct {
 	// slower dead-member eviction on fresh joiners. Clamped up to
 	// SeedPollInterval; 0 = default (2s).
 	SeedPollIdleInterval time.Duration
+	// TombstoneTTL bounds how long a dead member's tombstone is kept and
+	// gossiped (#765) — long enough to outlive propagation delay, short
+	// enough that churn across many rollouts can't grow the set forever.
+	// Safe to expire because liveness eviction (PollEvictFailures)
+	// re-evicts a resurrected-but-unreachable member within a few poll
+	// cycles regardless. 0 = default (10m); negative = never expire.
+	TombstoneTTL time.Duration
+	// PollEvictFailures is how many consecutive failed liveness probes
+	// evict a member (#765). Every poll cycle each node re-verifies EVERY
+	// member it knows (not just its right neighbor) with the
+	// authenticated JOIN poll; a member failing this many cycles in a row
+	// is tombstoned and its removal broadcast. This is what actually
+	// clears phantom members a rolling restart injects — dialRight's
+	// death detection only ever covers the CURRENT right neighbor, so
+	// churn could park dead entries outside everyone's dial path forever.
+	// 0 = default (3); negative = disabled.
+	PollEvictFailures int
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// (director_username_hash_lowercase, #738) — matches the reference
 	// implementation's default hash template so two spellings of the same
@@ -247,6 +264,8 @@ func NewWithOptions(opts Options) *Server {
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
 	s.membership.seedPollInterval = opts.SeedPollInterval
 	s.membership.seedPollIdleInterval = opts.SeedPollIdleInterval
+	s.membership.tombstoneTTL = opts.TombstoneTTL
+	s.membership.pollEvictFailures = opts.PollEvictFailures
 	return s
 }
 

@@ -337,15 +337,43 @@ while passing locally. Every ring connection — dial-out or accepted, at
 any member count — is now tracked for its whole lifetime and is eligible
 to carry a broadcast; no per-connection role exists to become stale.
 
-**Death detection** in phase 1 is read-error-based, not timeout-based: a
+**Death detection** has two layers. The dial layer is read-error-based: a
 node whose right-neighbor dial fails (after a few short retries) or drops
 declares that member dead, removes it locally, announces `DIRECTOR-REMOVE`
 around the ring, and recomputes its own right neighbor — naturally skipping
 the dead member to whoever's next. An *accepted* connection dropping never
 triggers a death declaration; that is always the dialing side's
-responsibility. Faster, actively-probed ring timeouts (rather than relying
-on the OS/TCP to eventually surface a dead connection) are planned for
-#750 phase 4 alongside `members_hash`-based anti-entropy.
+responsibility.
+
+The dial layer alone has a structural blind spot (#765): it only ever
+probes this node's CURRENT right neighbor, so a member that churn parked
+outside everyone's dial path — canonically, a terminating pod whose
+snapshot a fresh joiner merged mid-rolling-restart (the ring headless
+Service publishes not-ready addresses by design, so a dying pod still
+answers an authenticated JOIN and hands out its own membership) — was
+never probed by anyone and lingered forever; live testing proved timer
+tuning does not touch this, because eviction wasn't racing, it wasn't
+happening. The **liveness-probe layer** closes it: every seed-poll cycle,
+each node re-verifies EVERY member it knows (except itself) with the same
+authenticated JOIN poll, concurrently and under a short per-probe
+deadline that bounds the whole exchange (dial + handshake — a half-dead
+peer that accepts but never answers must also count as a failure). A
+member failing `poll_evict_failures` consecutive cycles (default 3) is
+tombstoned and its `DIRECTOR-REMOVE` broadcast; a successful probe doubles
+as anti-entropy since the JOIN reply's snapshot merges as usual. Worst
+case a phantom survives `poll_evict_failures × poll cadence` plus one
+probe timeout; a wrongly-evicted live member re-joins on its own next
+poll (`addMember` clears its tombstone).
+
+Tombstones expire after `tombstone_ttl` (default 600s; #765): lazily
+deleted on read, dropped from gossip once expired, and an incoming
+gossiped tombstone for an already-known entry keeps the original local
+stamp rather than refreshing it — otherwise the periodic anti-entropy
+re-broadcast would keep every tombstone alive forever and the set would
+grow without bound across rollouts. Expiry is safe precisely because of
+the probe layer: if a stale snapshot resurrects a long-dead member after
+its tombstone aged out, the resurrectee fails its probes and is re-evicted
+within `poll_evict_failures` cycles.
 
 ### USER-WEAK Flow (sticky session re-sync):
 1. User nearing TTL expiry → send `USER-WEAK` through ring

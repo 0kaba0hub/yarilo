@@ -269,6 +269,7 @@ func startPollingRingNode(t *testing.T, secret string, seeds []string, minMember
 		SeedPollInterval:     poll,
 		SeedPollIdleInterval: idle,
 	})
+	srv.membership.probeTimeout = 500 * time.Millisecond // keep probes of dead test addresses fast
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -340,6 +341,95 @@ func TestMembership_FreshJoiner_EvictsRecentlyDeadViaPoll(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("fresh joiner did not evict the tombstoned member within 8s; members=%v", srvD.membership.Members())
+}
+
+// TestMembership_ProbeEviction_ClearsPhantomMember is the #765 gate: a
+// phantom member (a terminating pod's address a fresh joiner merged during
+// rolling-restart churn) that is NOT anyone's right neighbor must still be
+// evicted — dialRight's death detection only covers the current right
+// neighbor, so before per-member liveness probing such an entry lingered
+// forever, timer tuning notwithstanding (live-verified on 2.1.62). Both
+// nodes learn the phantom; the probe loop must tombstone it and broadcast
+// the removal so BOTH views drop to exactly the live pair.
+func TestMembership_ProbeEviction_ClearsPhantomMember(t *testing.T) {
+	srvA, addrA := startPollingRingNode(t, "shared-secret", nil, 2, 300*time.Millisecond, 300*time.Millisecond)
+	srvB, _ := startPollingRingNode(t, "shared-secret", []string{addrA}, 2, 300*time.Millisecond, 300*time.Millisecond)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return len(srvA.membership.Members()) == 2 && len(srvB.membership.Members()) == 2
+	})
+
+	// A dead-but-once-valid address: a listener that closed after being
+	// registered, exactly like a terminating pod that answered a JOIN
+	// snapshot and then went away.
+	phantomLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("phantom listen: %v", err)
+	}
+	pHost, pPortStr, _ := net.SplitHostPort(phantomLn.Addr().String())
+	pPort, _ := strconv.Atoi(pPortStr)
+	phantom := Member{IP: pHost, Port: pPort}
+	phantomLn.Close()
+
+	srvA.membership.addMember(phantom)
+	srvB.membership.addMember(phantom)
+	waitFor(t, 2*time.Second, func() bool {
+		return len(srvA.membership.Members()) == 3 && len(srvB.membership.Members()) == 3
+	})
+
+	// Probe eviction: 3 consecutive failures at a 300ms cadence with a
+	// 500ms probe timeout — well under this deadline; the old behavior
+	// (no probing at all) never converges and fails it deterministically.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		aClean := len(srvA.membership.Members()) == 2
+		bClean := len(srvB.membership.Members()) == 2
+		if aClean && bClean {
+			return // phantom evicted everywhere — pass
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("phantom member not evicted within 10s; A=%v B=%v",
+		srvA.membership.Members(), srvB.membership.Members())
+}
+
+// TestMembership_TombstoneTTL_ExpiresAndReadmits pins the #765 tombstone
+// TTL semantics: an expired tombstone stops being gossiped and no longer
+// blocks re-admission — bounded growth across churn, safe because probe
+// eviction re-evicts an unreachable resurrectee on its own.
+func TestMembership_TombstoneTTL_ExpiresAndReadmits(t *testing.T) {
+	srv, _ := startRingNode(t, "shared-secret", nil, 1)
+	srv.membership.tombstoneTTL = 100 * time.Millisecond
+
+	dead := Member{IP: "10.9.9.9", Port: 9102}
+	srv.membership.addMember(dead)
+	srv.membership.removeMember(dead)
+
+	if got := srv.membership.removedList(); len(got) != 1 || !got[0].equal(dead) {
+		t.Fatalf("fresh tombstone must be listed, got %v", got)
+	}
+	srv.membership.mergeMembers([]Member{dead}, nil)
+	for _, mem := range srv.membership.Members() {
+		if mem.equal(dead) {
+			t.Fatal("live tombstone must block re-admission via merge")
+		}
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	if got := srv.membership.removedList(); len(got) != 0 {
+		t.Fatalf("expired tombstone must not be gossiped, got %v", got)
+	}
+	srv.membership.mergeMembers([]Member{dead}, nil)
+	found := false
+	for _, mem := range srv.membership.Members() {
+		if mem.equal(dead) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expired tombstone must no longer block re-admission")
+	}
 }
 
 // ---- N=2: tie-break (only the lower member dials) + origin-absorb ---------

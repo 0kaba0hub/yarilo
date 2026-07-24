@@ -98,22 +98,44 @@ type Membership struct {
 	// resolveHost overrides seed hostname resolution in tests; nil =
 	// stdlib resolver (see resolveSeed).
 	resolveHost func(ctx context.Context, host string) ([]string, error)
+	// tombstoneTTL bounds how long a tombstone outlives its death (#765);
+	// 0 = default (10m), negative = never expire. See the removed field
+	// comment for the expiry semantics.
+	tombstoneTTL time.Duration
+	// pollEvictFailures is how many consecutive failed liveness probes
+	// (one per seed-poll cycle) evict a member (#765); 0 = default (3),
+	// negative = disabled. See joinLoop.
+	pollEvictFailures int
+	// probeTimeout bounds one liveness probe's whole exchange (dial +
+	// handshake); 0 = default (2s). Unexported knob — tests shorten it;
+	// production stays on the default.
+	probeTimeout time.Duration
 
 	mu      sync.RWMutex
 	members []Member          // sorted, includes self once Start has run
 	lastSeq map[string]uint64 // "ip:port" -> highest seq processed (dedup)
 	seq     atomic.Uint64     // this node's own outgoing seq counter
-	// removed is the set of members known to be dead (#754) — a permanent
-	// tombstone, not just a transient absence from the current member
-	// list. Required because DIRECTOR-LIST resync (mergeMembers) unions
-	// snapshots from potentially-stale peers: without a tombstone, a peer
-	// who hasn't yet learned of a death would silently resurrect the
-	// removed member on every reconnect. addMember clears the tombstone
-	// for that (ip,port) — a legitimate fresh authenticated JOIN (or a
-	// relayed DIRECTOR-ADD vouching for one) is trusted to mean exactly
-	// that: this address is alive again, whether it's a rejoin or the
-	// address was reassigned to a genuinely new pod.
-	removed map[Member]struct{}
+	// removed is the set of members known to be dead (#754), mapped to
+	// when THIS node first learned of the death — a tombstone, not just a
+	// transient absence from the current member list. Required because
+	// DIRECTOR-LIST resync (mergeMembers) unions snapshots from
+	// potentially-stale peers: without a tombstone, a peer who hasn't yet
+	// learned of a death would silently resurrect the removed member on
+	// every reconnect. addMember clears the tombstone for that (ip,port)
+	// — a legitimate fresh authenticated JOIN (or a relayed DIRECTOR-ADD
+	// vouching for one) is trusted to mean exactly that: this address is
+	// alive again, whether it's a rejoin or the address was reassigned to
+	// a genuinely new pod. Entries expire after tombstoneTTL (#765, lazy
+	// deletion on read) so churn across many rollouts cannot grow the set
+	// unboundedly; an incoming gossiped tombstone for an ALREADY-KNOWN
+	// entry keeps the original local stamp (never refreshes), so a
+	// tombstone ages out cluster-wide within roughly one TTL plus
+	// propagation delay rather than being kept alive forever by the
+	// periodic anti-entropy re-broadcast. Expiry is safe even if a stale
+	// snapshot then resurrects the member: liveness eviction (joinLoop's
+	// per-member probing) re-evicts an unreachable member within a few
+	// poll cycles regardless of tombstone state.
+	removed map[Member]time.Time
 
 	rightMu     sync.Mutex
 	rightTarget Member // zero Member{} = no active dial target
@@ -158,7 +180,7 @@ func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, 
 		tlsCfg:     tlsCfg,
 		minMembers: minMembers,
 		lastSeq:    make(map[string]uint64),
-		removed:    make(map[Member]struct{}),
+		removed:    make(map[Member]time.Time),
 		ringConns:  make(map[net.Conn]struct{}),
 	}
 }
@@ -290,8 +312,16 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 	if idleInterval < pollInterval {
 		idleInterval = pollInterval
 	}
+	evictAfter := m.pollEvictFailures
+	if evictAfter == 0 {
+		evictAfter = 3
+	}
+
 	backoff := 2 * time.Second
 	joined := false
+	// probeFails counts consecutive failed liveness probes per CURRENT
+	// member (#765). Only this goroutine touches it — no locking needed.
+	probeFails := make(map[Member]int)
 	for {
 		selfDial := false
 		ok := false
@@ -320,6 +350,10 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 			return
 		}
 
+		if evictAfter > 0 && !oneShot {
+			m.probeMembers(ctx, probeFails, evictAfter)
+		}
+
 		var wait time.Duration
 		switch {
 		case ok:
@@ -342,6 +376,84 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
+		}
+	}
+}
+
+// probeMembers liveness-probes every CURRENT member (except self) with the
+// same authenticated JOIN poll the seed path uses, and evicts any member
+// that fails evictAfter consecutive cycles (#765). This closes the only
+// remaining eviction hole: dialRight declares death solely for this node's
+// CURRENT right neighbor, so a member that churn left outside everyone's
+// dial path — e.g. a terminating pod whose snapshot a fresh joiner merged
+// during a rolling restart — was never probed by anyone and lingered
+// forever, timer tuning notwithstanding (live-verified: raising the idle
+// interval changed nothing, because eviction wasn't racing, it wasn't
+// happening). Probing every member from every node means every phantom is
+// re-checked each cycle by the whole fleet and disappears within
+// evictAfter cycles; a member that is merely slow gets evictAfter × poll
+// interval of grace, and a wrongly-evicted live member re-joins on its own
+// next poll (addMember clears the tombstone). A successful probe doubles
+// as anti-entropy: the JOIN reply's DIRECTOR-LIST snapshot is merged as
+// usual. probeFails is also GC'd here so counters can't accumulate for
+// members already gone from the view.
+func (m *Membership) probeMembers(ctx context.Context, probeFails map[Member]int, evictAfter int) {
+	members := m.Members()
+	targets := make([]Member, 0, len(members))
+	current := make(map[Member]bool, len(members))
+	for _, mem := range members {
+		if mem.equal(m.self) {
+			continue
+		}
+		targets = append(targets, mem)
+		current[mem] = true
+	}
+
+	timeout := m.probeTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	// Probe concurrently: probes to dead/black-holed members burn their
+	// whole timeout, and serializing them would stretch the poll cycle by
+	// one timeout per phantom — the more garbage the ring holds, the
+	// slower it would clean itself. Concurrent, the cycle extends by at
+	// most one timeout total. Results are collected and the counters
+	// updated single-threaded below — probeFails stays owned by joinLoop.
+	errs := make([]error, len(targets))
+	var wg sync.WaitGroup
+	for i, mem := range targets {
+		wg.Add(1)
+		go func(i int, addr string) {
+			defer wg.Done()
+			pctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			errs[i] = m.joinVia(pctx, addr)
+		}(i, mem.String())
+	}
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		return
+	}
+	for i, mem := range targets {
+		if errs[i] == nil {
+			delete(probeFails, mem)
+			continue
+		}
+		probeFails[mem]++
+		slog.Debug("director: member liveness probe failed", "member", mem, "consecutive", probeFails[mem], "err", errs[i])
+		if probeFails[mem] >= evictAfter {
+			slog.Warn("director: member unreachable, evicting", "member", mem, "failed_probes", probeFails[mem])
+			delete(probeFails, mem)
+			m.removeMember(mem)
+			m.originate("DIRECTOR-REMOVE", fmt.Sprintf("%s\t%d", mem.IP, mem.Port))
+			m.reconcile()
+		}
+	}
+	for mem := range probeFails {
+		if !current[mem] {
+			delete(probeFails, mem)
 		}
 	}
 }
@@ -454,7 +566,10 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 	var conn net.Conn
 	var err error
 	if m.tlsCfg != nil {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, m.tlsCfg)
+		// tls.Dialer (not DialWithDialer) so a ctx deadline — the liveness
+		// probes run with a short one (#765) — bounds the TLS dial too.
+		td := &tls.Dialer{NetDialer: dialer, Config: m.tlsCfg}
+		conn, err = td.DialContext(ctx, "tcp", addr)
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
@@ -462,6 +577,13 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 		return fmt.Errorf("director/join: dial: %w", err)
 	}
 	defer conn.Close()
+	// A ctx deadline must bound the whole exchange, not just the dial: a
+	// half-dead peer that accepts but never answers would otherwise hang
+	// the handshake reads indefinitely (#765 — liveness probes must fail
+	// fast, and a failed probe IS the signal).
+	if dl, hasDeadline := ctx.Deadline(); hasDeadline {
+		_ = conn.SetDeadline(dl)
+	}
 
 	rd := bufio.NewReaderSize(conn, 4096)
 	if err := consumeServerHandshake(rd); err != nil {
@@ -607,7 +729,7 @@ func (m *Membership) setMembers(members []Member) {
 		if seen[mem] {
 			continue
 		}
-		if _, dead := m.removed[mem]; dead && !mem.equal(m.self) {
+		if m.tombstonedLocked(mem) && !mem.equal(m.self) {
 			continue
 		}
 		seen[mem] = true
@@ -616,6 +738,25 @@ func (m *Membership) setMembers(members []Member) {
 	sort.Slice(uniq, func(i, j int) bool { return uniq[i].less(uniq[j]) })
 	m.members = uniq
 	m.mu.Unlock()
+}
+
+// tombstonedLocked reports whether mem currently counts as tombstoned,
+// lazily deleting an entry whose TTL has elapsed (#765). Caller must hold
+// m.mu (write). TTL <= negative never expires; 0 uses the default.
+func (m *Membership) tombstonedLocked(mem Member) bool {
+	stamp, dead := m.removed[mem]
+	if !dead {
+		return false
+	}
+	ttl := m.tombstoneTTL
+	if ttl == 0 {
+		ttl = 10 * time.Minute
+	}
+	if ttl > 0 && time.Since(stamp) > ttl {
+		delete(m.removed, mem)
+		return false
+	}
+	return true
 }
 
 // mergeMembers unions incoming members and tombstones with this node's own
@@ -631,8 +772,15 @@ func (m *Membership) setMembers(members []Member) {
 func (m *Membership) mergeMembers(incomingMembers, incomingRemoved []Member) {
 	m.mu.Lock()
 	for _, mem := range incomingRemoved {
-		if !mem.equal(m.self) {
-			m.removed[mem] = struct{}{}
+		if mem.equal(m.self) {
+			continue
+		}
+		// Keep the original local stamp for an already-known tombstone:
+		// re-stamping on every gossiped copy would let the periodic
+		// anti-entropy re-broadcast refresh the TTL forever, so nothing
+		// would ever age out (#765).
+		if _, known := m.removed[mem]; !known {
+			m.removed[mem] = time.Now()
 		}
 	}
 	current := append([]Member{}, m.members...)
@@ -651,14 +799,17 @@ func (m *Membership) mergeMembers(incomingMembers, incomingRemoved []Member) {
 	}
 }
 
-// removedList returns a snapshot of the tombstone set, for exchange in a
-// DIRECTOR-LIST resync.
+// removedList returns a snapshot of the live (non-expired) tombstone set,
+// for exchange in a DIRECTOR-LIST resync — expired entries are dropped
+// here too so they stop being gossiped (#765).
 func (m *Membership) removedList() []Member {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	out := make([]Member, 0, len(m.removed))
 	for mem := range m.removed {
-		out = append(out, mem)
+		if m.tombstonedLocked(mem) {
+			out = append(out, mem)
+		}
 	}
 	return out
 }
@@ -694,7 +845,7 @@ func (m *Membership) removeMember(mem Member) {
 		}
 	}
 	if !mem.equal(m.self) {
-		m.removed[mem] = struct{}{}
+		m.removed[mem] = time.Now()
 	}
 	m.mu.Unlock()
 }
