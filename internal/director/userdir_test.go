@@ -1,6 +1,7 @@
 package director
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -166,5 +167,23 @@ func TestUserDir_LamportAdvancesPastRemote(t *testing.T) {
 	d.Set("u@x", "local:993", false)
 	if e := d.GetByHash(h); e == nil || e.Host != "local:993" || e.AssignSeq <= 100 {
 		t.Fatalf("local assignment must sort after remote seq 100, got %+v", e)
+	}
+}
+
+func TestUserDir_SetByHash_MonotonicUnderConcurrency(t *testing.T) {
+	d := NewUserDir(time.Minute, true, "self:9102")
+	h := HashUsername("hot@x", true)
+	const n = 200
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); d.SetByHash(h, "b:993", false) }()
+	}
+	wg.Wait()
+	// After n concurrent Sets on the same hash the persisted seq must be the
+	// highest ticked value — never regressed by a later-locking, earlier-
+	// ticked writer.
+	if e := d.GetByHash(h); e == nil || e.AssignSeq != uint64(n) {
+		t.Fatalf("persisted seq = %v, want %d (monotonic per hash)", e, n)
 	}
 }

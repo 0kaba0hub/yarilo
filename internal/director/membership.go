@@ -112,6 +112,7 @@ type Membership struct {
 	members []Member          // sorted, includes self once Start has run
 	lastSeq map[string]uint64 // "ip:port" -> highest seq processed (dedup)
 	seq     atomic.Uint64     // this node's own outgoing seq counter
+	leaving atomic.Bool       // graceful shutdown in progress (#770): reject new JOINs
 	// removed is the set of members known to be dead (#754), mapped to
 	// when THIS node first learned of the death — a tombstone, not just a
 	// transient absence from the current member list. Required because
@@ -824,6 +825,14 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		return
 	}
+	if m.leaving.Load() {
+		// Graceful shutdown in progress (#770): a fresh joiner must not
+		// learn this dying member (the #765 phantom-injection source), and
+		// a re-poll must not re-add us to a peer that already got our
+		// DIRECTOR-REMOVE.
+		_ = writeLine(conn, "JOIN-FAIL\tshutting down")
+		return
+	}
 	joiner := Member{IP: fields[1]}
 	port, err := strconv.Atoi(fields[2])
 	if err != nil {
@@ -1366,6 +1375,39 @@ func (m *Membership) originate(kind, payload string) {
 	m.broadcastRing(nil, fmt.Sprintf("%s\t%s\t%d\t%d\t%s", kind, m.self.IP, m.self.Port, seq, payload))
 }
 
+// Leave performs a graceful ring exit (#770), called on SIGTERM BEFORE the
+// process's ctx is cancelled (while ring connections are still open). It
+// (1) stops answering JOINs so no fresh joiner can learn this dying member
+// — the #765 phantom-injection source; (2) originates DIRECTOR-REMOVE for
+// itself so peers evict it immediately via the existing seq-dedup +
+// tombstone path, with zero death-detection window and no verification
+// probes fired for a planned exit; and (3) sends QUIT on every live ring
+// connection so each neighbor classifies the imminent close as deliberate
+// (benign), not a silent death. Unlike the reference — whose members are
+// static config and simply reconnect around a stopped director — our
+// members are ephemeral pods whose IPs never return, so announcing the
+// exit is the correct adaptation. Hard kills (SIGKILL) still converge via
+// the #768 neighbor-monitoring path; this only removes the latency on the
+// planned path. Best-effort: the caller should allow a brief flush before
+// cancelling ctx.
+func (m *Membership) Leave() {
+	m.leaving.Store(true)
+	m.originate("DIRECTOR-REMOVE", fmt.Sprintf("%s\t%d", m.self.IP, m.self.Port))
+
+	m.rightMu.Lock()
+	conns := make([]net.Conn, 0, len(m.ringConns))
+	for c := range m.ringConns {
+		conns = append(conns, c)
+	}
+	m.rightMu.Unlock()
+	for _, c := range conns {
+		_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, _ = fmt.Fprintf(c, "QUIT\tshutting down\n")
+		_ = c.SetWriteDeadline(time.Time{})
+	}
+	slog.Info("director: graceful ring leave", "self", m.self)
+}
+
 // handleRingLine dispatches one line read from a ring connection: every
 // envelope command (DIRECTOR-ADD/REMOVE, RING-CHANGE, USER-MOVED,
 // USER-KICKED) goes through the shared (origin, seq) dedup + apply +
@@ -1376,7 +1418,7 @@ func (m *Membership) originate(kind, payload string) {
 // #750 phase 4 may later piggyback anti-entropy metadata on them.
 func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
-	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED":
+	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN":
 		m.handleEnvelope(fields, arrivalConn)
 	}
 }
@@ -1458,6 +1500,20 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 		applyRingChangeFields(m.srv, payload)
 	case "USER-MOVED":
 		applyUserMovedFields(m.srv, payload)
+	case "USER-ASSIGN":
+		// payload: <hash> <backend> <assign_seq> <assign_by> (#772 PR-2)
+		if m.srv == nil || len(payload) < 4 {
+			return
+		}
+		hash, err := strconv.ParseUint(payload[0], 10, 32)
+		if err != nil {
+			return
+		}
+		seq, err := strconv.ParseUint(payload[2], 10, 64)
+		if err != nil {
+			return
+		}
+		m.srv.userDir.MergeByHash(uint32(hash), payload[1], false, seq, payload[3])
 	case "USER-KICKED":
 		if len(payload) < 1 {
 			return

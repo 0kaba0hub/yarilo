@@ -99,15 +99,18 @@ func (d *UserDir) Set(username, host string, weak bool) uint32 {
 }
 
 // SetByHash stores a locally-originated mapping by pre-computed hash.
+// tick + write happen under the SAME lock so the persisted stamp is
+// monotonic per hash (#772 PR-2 review): with tick outside the lock, two
+// concurrent Sets on the same hash could persist their seqs out of order,
+// and once PR-2 propagates every LOOKUP a backwards seq would hit the wire.
 func (d *UserDir) SetByHash(hash uint32, host string, weak bool) {
-	seq := d.tick()
 	d.mu.Lock()
 	d.byHash[hash] = &UserEntry{
 		Hash:      hash,
 		Host:      host,
 		Weak:      weak,
 		ExpiresAt: time.Now().Add(d.expire),
-		AssignSeq: seq,
+		AssignSeq: d.tick(),
 		AssignBy:  d.self,
 	}
 	d.mu.Unlock()

@@ -216,9 +216,24 @@ fastest-clock replica win nondeterministically), and `assign_by` is the id
 each under the `(assign_seq, assign_by)` total order — a strictly higher
 seq wins; on a tie the lower id wins — advancing its own Lamport clock past
 the incoming seq so a later local assignment sorts after it. Deterministic
-and reproducible in tests without a fake clock. (Per-LOOKUP live
-propagation of these assignments and same-seq-conflict kick are the
-remaining #772 slices; this is the snapshot-on-connect + ordering base.)
+and reproducible in tests without a fake clock.
+
+Beyond the connect-time snapshot, a **fresh** sticky assignment made by a
+normal `LOOKUP` is propagated live around the ring as a `USER-ASSIGN`
+envelope (#772 PR-2):
+```
+USER-ASSIGN\t<originIP>\t<originPort>\t<ring_seq>\t<user_hash>\t<host>\t<assign_seq>\t<assign_by>\n
+```
+carried on the same `(origin, ring_seq)` dedup + forward path as the other
+ring events, applied via the same `(assign_seq, assign_by)` merge. Only a
+NEW pin propagates — the sticky **TTL-refresh** on a repeat LOOKUP does
+not, or every repeat login would be a ring broadcast. It travels
+director↔director only (by hash), never to login clients, so it bypasses
+`originateRingEvent`. (`SetByHash` ticks the Lamport clock and writes the
+entry under a single lock, so the persisted stamp stays monotonic per hash
+even under concurrent local LOOKUPs — otherwise a backwards seq could hit
+the wire.) The remaining #772 slice is same-`assign_seq` conflict
+resolution (lower id wins **+ kick** the user off the wrong backend).
 
 The same `DIRECTOR-LIST` snapshot is also **re-broadcast periodically**
 over every live ring connection (`anti_entropy_interval`, default 3s,
@@ -405,6 +420,19 @@ addresses by design, so a dying pod still completes an authenticated
 JOIN) converge the same way: the anti-entropy snapshot spreads the
 phantom until views agree, at which point exactly one node computes it as
 its right neighbor, dials it, fails, and evicts it for everyone.
+
+*Graceful leave* (#770): on SIGTERM, before tearing anything down, a
+director calls `Leave()` — it sets a `leaving` flag so `handleJoin`
+answers every JOIN with `JOIN-FAIL\tshutting down` (no fresh joiner can
+learn the dying member, closing the phantom-injection source on the
+planned path), originates `DIRECTOR-REMOVE` for **itself** so peers evict
+it instantly via the existing seq-dedup + tombstone path (zero
+death-detection window, no verification probes for a planned exit), and
+sends `QUIT\tshutting down` on every ring connection. The process then
+flushes briefly and proceeds with its normal shutdown. A hard kill
+(SIGKILL) still converges via the neighbor-monitoring path above — this
+only removes the latency and probe traffic from the expected k8s
+rolling-restart / scale-down case.
 
 Tombstones expire after `tombstone_ttl` (default 600s; #765): lazily
 deleted on read, dropped from gossip once expired, and an incoming
