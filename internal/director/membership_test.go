@@ -76,6 +76,7 @@ func startKillableRingNode(t *testing.T, secret string, seeds []string, minMembe
 		AntiEntropyInterval: -1, // see startRingNode — direct-path tests stay strict
 		SeedPollInterval:    -1,
 	})
+	srv.membership.probeTimeout = 500 * time.Millisecond // fail death-verification probes of killed nodes fast
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -343,15 +344,16 @@ func TestMembership_FreshJoiner_EvictsRecentlyDeadViaPoll(t *testing.T) {
 	t.Fatalf("fresh joiner did not evict the tombstoned member within 8s; members=%v", srvD.membership.Members())
 }
 
-// TestMembership_ProbeEviction_ClearsPhantomMember is the #765 gate: a
-// phantom member (a terminating pod's address a fresh joiner merged during
-// rolling-restart churn) that is NOT anyone's right neighbor must still be
-// evicted — dialRight's death detection only covers the current right
-// neighbor, so before per-member liveness probing such an entry lingered
-// forever, timer tuning notwithstanding (live-verified on 2.1.62). Both
-// nodes learn the phantom; the probe loop must tombstone it and broadcast
-// the removal so BOTH views drop to exactly the live pair.
-func TestMembership_ProbeEviction_ClearsPhantomMember(t *testing.T) {
+// TestMembership_NeighborEviction_ClearsPhantomMember is the #765/#768
+// gate for phantom cleanup under the reference's neighbor model: a phantom
+// member (a terminating pod's address merged during rolling-restart churn)
+// must be evicted by whichever node computes it as its RIGHT neighbor —
+// exactly one node does, once views agree (anti-entropy spreads the
+// phantom before the eviction kills it; O(1) probes per node, no
+// all-probes-all sweep). Both nodes learn the phantom, both reconcile,
+// the phantom's left-in-ring dials it, fails, tombstones it and
+// broadcasts the removal so BOTH views drop to exactly the live pair.
+func TestMembership_NeighborEviction_ClearsPhantomMember(t *testing.T) {
 	srvA, addrA := startPollingRingNode(t, "shared-secret", nil, 2, 300*time.Millisecond, 300*time.Millisecond)
 	srvB, _ := startPollingRingNode(t, "shared-secret", []string{addrA}, 2, 300*time.Millisecond, 300*time.Millisecond)
 
@@ -373,14 +375,17 @@ func TestMembership_ProbeEviction_ClearsPhantomMember(t *testing.T) {
 
 	srvA.membership.addMember(phantom)
 	srvB.membership.addMember(phantom)
+	srvA.membership.reconcile()
+	srvB.membership.reconcile()
 	waitFor(t, 2*time.Second, func() bool {
 		return len(srvA.membership.Members()) == 3 && len(srvB.membership.Members()) == 3
 	})
 
-	// Probe eviction: 3 consecutive failures at a 300ms cadence with a
-	// 500ms probe timeout — well under this deadline; the old behavior
-	// (no probing at all) never converges and fails it deterministically.
-	deadline := time.Now().Add(10 * time.Second)
+	// dialRight against the dead phantom: 3 refused dials at ~1s spacing
+	// on whichever node has it as right neighbor, then DIRECTOR-REMOVE to
+	// the other — well under this deadline. Without neighbor-driven
+	// eviction this never converges.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		aClean := len(srvA.membership.Members()) == 2
 		bClean := len(srvB.membership.Members()) == 2
@@ -389,8 +394,49 @@ func TestMembership_ProbeEviction_ClearsPhantomMember(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("phantom member not evicted within 10s; A=%v B=%v",
+	t.Fatalf("phantom member not evicted within 15s; A=%v B=%v",
 		srvA.membership.Members(), srvB.membership.Members())
+}
+
+// TestMembership_LeftNeighborDeath_DetectedByAcceptSide is the #768 core
+// regression: at N=2 only the lower-sorted member dials, so when the LOWER
+// member dies the higher one has no dial of its own to notice the death —
+// before left-neighbor monitoring the survivor kept the dead member
+// forever (an accepted connection dropping was documented as "never a
+// death signal"). Now the accept side must treat the loss of the
+// connection from its current left neighbor as a death signal, verify
+// with probes, and evict.
+func TestMembership_LeftNeighborDeath_DetectedByAcceptSide(t *testing.T) {
+	srvA, addrA, killA := startKillableRingNode(t, "shared-secret", nil, 2)
+	srvB, _, killB := startKillableRingNode(t, "shared-secret", []string{addrA}, 2)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return len(srvA.membership.Members()) == 2 && len(srvB.membership.Members()) == 2
+	})
+	time.Sleep(300 * time.Millisecond) // let the single N=2 connection settle
+
+	lower, higher := srvA, srvB
+	killLower := killA
+	if srvB.membership.self.less(srvA.membership.self) {
+		lower, higher = srvB, srvA
+		killLower = killB
+	}
+	_ = lower
+
+	killLower()
+
+	// Death verification: up to 3 probes at ~1s spacing after the read
+	// error — well inside this window. The old model never detects this
+	// at all (no dial from the higher member exists to fail).
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if members := higher.membership.Members(); len(members) == 1 && members[0].equal(higher.membership.self) {
+			return // survivor correctly dropped its dead left neighbor
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("higher member did not evict its dead LEFT neighbor within 10s; members=%v",
+		higher.membership.Members())
 }
 
 // TestMembership_TombstoneTTL_ExpiresAndReadmits pins the #765 tombstone

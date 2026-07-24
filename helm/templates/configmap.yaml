@@ -728,7 +728,6 @@ data:
       anti_entropy_interval: {{ .Values.components.director.anti_entropy_interval }}
       seed_poll_interval: {{ .Values.components.director.seed_poll_interval }}
       seed_poll_idle_interval: {{ .Values.components.director.seed_poll_idle_interval }}
-      poll_evict_failures: {{ .Values.components.director.poll_evict_failures }}
       tombstone_ttl: {{ .Values.components.director.tombstone_ttl }}
       {{- with .Values.components.director.backends }}
       mail_servers:

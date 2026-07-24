@@ -102,13 +102,10 @@ type Membership struct {
 	// 0 = default (10m), negative = never expire. See the removed field
 	// comment for the expiry semantics.
 	tombstoneTTL time.Duration
-	// pollEvictFailures is how many consecutive failed liveness probes
-	// (one per seed-poll cycle) evict a member (#765); 0 = default (3),
-	// negative = disabled. See joinLoop.
-	pollEvictFailures int
-	// probeTimeout bounds one liveness probe's whole exchange (dial +
-	// handshake); 0 = default (2s). Unexported knob — tests shorten it;
-	// production stays on the default.
+	// probeTimeout bounds one death-verification probe's whole exchange
+	// (dial + handshake) when a neighbor connection is lost (#768); 0 =
+	// default (2s). Unexported knob — tests shorten it; production stays
+	// on the default.
 	probeTimeout time.Duration
 
 	mu      sync.RWMutex
@@ -132,9 +129,10 @@ type Membership struct {
 	// tombstone ages out cluster-wide within roughly one TTL plus
 	// propagation delay rather than being kept alive forever by the
 	// periodic anti-entropy re-broadcast. Expiry is safe even if a stale
-	// snapshot then resurrects the member: liveness eviction (joinLoop's
-	// per-member probing) re-evicts an unreachable member within a few
-	// poll cycles regardless of tombstone state.
+	// snapshot then resurrects the member: neighbor liveness monitoring
+	// (#768 — dialRight on the right, onLeftConnLost on the left)
+	// re-evicts an unreachable member within seconds regardless of
+	// tombstone state.
 	removed map[Member]time.Time
 
 	rightMu     sync.Mutex
@@ -312,16 +310,8 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 	if idleInterval < pollInterval {
 		idleInterval = pollInterval
 	}
-	evictAfter := m.pollEvictFailures
-	if evictAfter == 0 {
-		evictAfter = 3
-	}
-
 	backoff := 2 * time.Second
 	joined := false
-	// probeFails counts consecutive failed liveness probes per CURRENT
-	// member (#765). Only this goroutine touches it — no locking needed.
-	probeFails := make(map[Member]int)
 	for {
 		selfDial := false
 		ok := false
@@ -350,10 +340,6 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 			return
 		}
 
-		if evictAfter > 0 && !oneShot {
-			m.probeMembers(ctx, probeFails, evictAfter)
-		}
-
 		var wait time.Duration
 		switch {
 		case ok:
@@ -376,84 +362,6 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
-		}
-	}
-}
-
-// probeMembers liveness-probes every CURRENT member (except self) with the
-// same authenticated JOIN poll the seed path uses, and evicts any member
-// that fails evictAfter consecutive cycles (#765). This closes the only
-// remaining eviction hole: dialRight declares death solely for this node's
-// CURRENT right neighbor, so a member that churn left outside everyone's
-// dial path — e.g. a terminating pod whose snapshot a fresh joiner merged
-// during a rolling restart — was never probed by anyone and lingered
-// forever, timer tuning notwithstanding (live-verified: raising the idle
-// interval changed nothing, because eviction wasn't racing, it wasn't
-// happening). Probing every member from every node means every phantom is
-// re-checked each cycle by the whole fleet and disappears within
-// evictAfter cycles; a member that is merely slow gets evictAfter × poll
-// interval of grace, and a wrongly-evicted live member re-joins on its own
-// next poll (addMember clears the tombstone). A successful probe doubles
-// as anti-entropy: the JOIN reply's DIRECTOR-LIST snapshot is merged as
-// usual. probeFails is also GC'd here so counters can't accumulate for
-// members already gone from the view.
-func (m *Membership) probeMembers(ctx context.Context, probeFails map[Member]int, evictAfter int) {
-	members := m.Members()
-	targets := make([]Member, 0, len(members))
-	current := make(map[Member]bool, len(members))
-	for _, mem := range members {
-		if mem.equal(m.self) {
-			continue
-		}
-		targets = append(targets, mem)
-		current[mem] = true
-	}
-
-	timeout := m.probeTimeout
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-
-	// Probe concurrently: probes to dead/black-holed members burn their
-	// whole timeout, and serializing them would stretch the poll cycle by
-	// one timeout per phantom — the more garbage the ring holds, the
-	// slower it would clean itself. Concurrent, the cycle extends by at
-	// most one timeout total. Results are collected and the counters
-	// updated single-threaded below — probeFails stays owned by joinLoop.
-	errs := make([]error, len(targets))
-	var wg sync.WaitGroup
-	for i, mem := range targets {
-		wg.Add(1)
-		go func(i int, addr string) {
-			defer wg.Done()
-			pctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			errs[i] = m.joinVia(pctx, addr)
-		}(i, mem.String())
-	}
-	wg.Wait()
-
-	if ctx.Err() != nil {
-		return
-	}
-	for i, mem := range targets {
-		if errs[i] == nil {
-			delete(probeFails, mem)
-			continue
-		}
-		probeFails[mem]++
-		slog.Debug("director: member liveness probe failed", "member", mem, "consecutive", probeFails[mem], "err", errs[i])
-		if probeFails[mem] >= evictAfter {
-			slog.Warn("director: member unreachable, evicting", "member", mem, "failed_probes", probeFails[mem])
-			delete(probeFails, mem)
-			m.removeMember(mem)
-			m.originate("DIRECTOR-REMOVE", fmt.Sprintf("%s\t%d", mem.IP, mem.Port))
-			m.reconcile()
-		}
-	}
-	for mem := range probeFails {
-		if !current[mem] {
-			delete(probeFails, mem)
 		}
 	}
 }
@@ -1044,6 +952,38 @@ func (m *Membership) rightNeighborOf(of Member) (Member, bool) {
 	}
 }
 
+// leftNeighbor returns the member whose right-neighbor dial should be
+// arriving at this node — the predecessor in sorted order, wrapping — i.e.
+// the reference's dir->left (#768). N=1 has none. N=2: only the
+// lexicographically lower member dials, so only the HIGHER member has a
+// left (the lower one; the lower member's own guard is its dial-out,
+// handled by dialRight).
+func (m *Membership) leftNeighbor() (Member, bool) {
+	members := m.Members()
+	switch len(members) {
+	case 0, 1:
+		return Member{}, false
+	case 2:
+		a, b := members[0], members[1]
+		if m.self.equal(b) {
+			return a, true
+		}
+		return Member{}, false
+	default:
+		idx := -1
+		for i, mem := range members {
+			if mem.equal(m.self) {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			return Member{}, false
+		}
+		return members[(idx-1+len(members))%len(members)], true
+	}
+}
+
 // reconcile recomputes this node's right-neighbor DIAL target and adjusts
 // it to match: tears down a stale dial and starts a new one when the
 // target changed, including down to "no target" at N=1 or the N=2 passive
@@ -1244,7 +1184,16 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 		return "", fmt.Errorf("member snapshot send: %w", wErr)
 	}
 
+	// Keepalive both ways (#768): we PING our right neighbor over this
+	// dial, it PINGs us back over it too (plus over whatever it dials);
+	// the read deadline turns a silently-hung peer into a read error,
+	// which dialRight's caller treats as one failed attempt — the same
+	// death path an outright refused dial takes.
+	go m.ringPinger(ctx, conn)
+	readWindow := m.ringPingInterval() + m.ringPingTimeout()
+
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(readWindow))
 		line, rErr := rd.ReadString('\n')
 		if rErr != nil {
 			if ctx.Err() != nil {
@@ -1258,6 +1207,10 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 			continue
 		}
 		switch {
+		case fields[0] == "PING":
+			_, _ = fmt.Fprintf(conn, "PONG\n")
+		case fields[0] == "PONG":
+			// keepalive traffic — arrival already refreshed the deadline
 		case fields[0] == "CONNECT" && len(fields) >= 3:
 			return net.JoinHostPort(fields[1], fields[2]), nil
 		case fields[0] == "DIRECTOR-LIST" && len(fields) >= 2:
@@ -1320,9 +1273,9 @@ func (m *Membership) originate(kind, payload string) {
 // USER-KICKED) goes through the shared (origin, seq) dedup + apply +
 // forward path. arrivalConn is the connection this line was just read from
 // — handleEnvelope needs it to skip re-sending the event back the way it
-// came. There is no active ring PING loop yet in phase 1 — death detection
-// is read-error-based (see dialRight) — so PING/PONG lines never occur on a
-// ring connection today; #750 phase 4 adds anti-entropy over PING.
+// came. PING/PONG keepalive lines are handled directly in the two ring
+// read loops (serveRingConn / connectRight) before reaching here (#768);
+// #750 phase 4 may later piggyback anti-entropy metadata on them.
 func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
 	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED":
@@ -1444,6 +1397,106 @@ func (m *Membership) broadcastRing(arrivalConn net.Conn, line string) {
 	}
 }
 
+// ---- ring keepalive: PING both neighbors, reference-style (#768) ----------
+
+// ringPingInterval / ringPingTimeout pace the per-connection ring
+// keepalive, reusing the same knobs as the client plane (the reference
+// similarly derives its ring PING from director_ping_idle_timeout).
+func (m *Membership) ringPingInterval() time.Duration { return m.srv.opts.pingInterval() }
+func (m *Membership) ringPingTimeout() time.Duration  { return m.srv.opts.pingTimeout() }
+
+// ringPinger writes a PING line on conn every ring ping interval until the
+// connection dies or ctx ends — the reference PINGs BOTH its neighbor
+// connections (director.c: director_connection_ping(dir->left) +
+// (dir->right)), and both our read loops enforce a read deadline of
+// interval+timeout, so a silently-hung peer (no RST, no FIN) is detected
+// within one interval+timeout on whichever side notices first, instead of
+// waiting for the OS to eventually surface the dead TCP session.
+func (m *Membership) ringPinger(ctx context.Context, conn net.Conn) {
+	interval := m.ringPingInterval()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err := fmt.Fprintf(conn, "PING\n"); err != nil {
+			return // connection gone — its read loop handles the fallout
+		}
+		_ = conn.SetWriteDeadline(time.Time{})
+	}
+}
+
+// onLeftConnLost handles the loss of the accepted connection from this
+// node's LEFT neighbor (#768) — the reference monitors both dir->left and
+// dir->right, so a death is always detected by the dead node's immediate
+// neighbors (O(1) probes per node, regardless of ring size) rather than by
+// an all-probes-all sweep. dialRight already owns right-side deaths; this
+// is the symmetric left side, with the same verify-then-declare shape:
+// losing an inbound connection is often benign (the left neighbor
+// re-targeted its dial after a membership change and closed the old one),
+// so the dialer identity is checked against the CURRENT computed left
+// neighbor, and death is declared only after a few failed verification
+// probes. In the reference a lost connection alone never removes a host —
+// its host list is static config, so it just reconnects around the hole —
+// but our membership is dynamic k8s pods whose IPs never come back, so the
+// correct adaptation is eviction (with the reference's own delayed-purge
+// "removed" trick, our tombstones, preventing gossip re-adds); a live
+// member wrongly suspected simply passes a probe (or rejoins on its own
+// next poll, clearing the tombstone).
+func (m *Membership) onLeftConnLost(ctx context.Context, dialer Member) {
+	if dialer.isZero() || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	left, ok := m.leftNeighbor()
+	if !ok || !left.equal(dialer) {
+		return // not our left (anymore) — a benign re-target or an old conn
+	}
+
+	const maxAttempts = 3
+	timeout := m.probeTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
+		err := m.joinVia(pctx, dialer.String())
+		cancel()
+		if err == nil {
+			return // alive — it will re-dial us on its own
+		}
+		// Someone else may have already declared (and propagated) this
+		// death while we were probing.
+		still := false
+		for _, mem := range m.Members() {
+			if mem.equal(dialer) {
+				still = true
+				break
+			}
+		}
+		if !still {
+			return
+		}
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}
+	slog.Warn("director: left ring neighbor unreachable, declaring dead", "self", m.self, "target", dialer)
+	m.removeMember(dialer)
+	m.originate("DIRECTOR-REMOVE", fmt.Sprintf("%s\t%d", dialer.IP, dialer.Port))
+	m.reconcile()
+}
+
 // ---- accept side: serving an already-accepted ring/PEER connection --------
 
 // serveRingConn processes an accepted ring connection until it closes. rd
@@ -1453,12 +1506,10 @@ func (m *Membership) broadcastRing(arrivalConn net.Conn, line string) {
 // registered in ringConns for its whole lifetime, regardless of dial/accept
 // role or N=2/N=3+ topology — see the field comment.
 //
-// An accept-side disconnect never declares the peer dead — that's the
-// dialing side's job (dialRight); losing an inbound connection here just
-// means our neighbor will reconnect (or notice on its own dial that we're
-// gone).
+// Loss of this connection is a death SIGNAL when its dialer is this node's
+// current left neighbor (#768) — see onLeftConnLost; verification probes
+// keep a benign re-target or reconnect from being mistaken for a death.
 func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Member) {
-	_ = dialer // no longer role-gates registration; CONNECT-redirect (checkRedirect) already used it before this call
 	m.rightMu.Lock()
 	m.ringConns[conn] = struct{}{}
 	m.rightMu.Unlock()
@@ -1468,14 +1519,23 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 		m.rightMu.Unlock()
 	}()
 
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go m.ringPinger(ctx, conn)
+
 	// Mirror connectRight's snapshot exchange from this side too, so
 	// convergence after a race doesn't depend on which end happened to
 	// dial — see the comment there for why this resync exists.
 	_, _ = fmt.Fprintf(conn, "DIRECTOR-LIST\t%s\t%s\n", formatMemberList(m.Members()), formatMemberList(m.removedList()))
 
+	readWindow := m.ringPingInterval() + m.ringPingTimeout()
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(readWindow))
 		line, err := rd.ReadString('\n')
 		if err != nil {
+			m.onLeftConnLost(ctx, dialer)
 			return
 		}
 		line = strings.TrimRight(line, "\n")
@@ -1483,14 +1543,20 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 		if len(fields) == 0 || fields[0] == "" {
 			continue
 		}
-		if fields[0] == "DIRECTOR-LIST" && len(fields) >= 2 {
+		switch {
+		case fields[0] == "PING":
+			_, _ = fmt.Fprintf(conn, "PONG\n")
+		case fields[0] == "PONG":
+			// keepalive traffic — its arrival already refreshed the
+			// read deadline, nothing else to do
+		case fields[0] == "DIRECTOR-LIST" && len(fields) >= 2:
 			removed := ""
 			if len(fields) >= 3 {
 				removed = fields[2]
 			}
 			m.mergeMembers(parseMemberList(fields[1]), parseMemberList(removed))
-			continue
+		default:
+			m.handleRingLine(fields, conn)
 		}
-		m.handleRingLine(fields, conn)
 	}
 }

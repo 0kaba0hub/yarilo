@@ -164,21 +164,11 @@ components:
     ## seed_poll_interval. 0 = default (2).
     seed_poll_idle_interval: 2
 
-    ## How many consecutive failed liveness probes evict a member (#765).
-    ## Every poll cycle each node re-verifies EVERY member it knows via
-    ## the authenticated JOIN poll — not just its right neighbor — so
-    ## phantom members injected by rolling-restart churn (a fresh joiner
-    ## merging a terminating pod's snapshot) are tombstoned and their
-    ## removal broadcast within this many cycles, instead of lingering
-    ## outside everyone's dial path forever. Worst-case eviction latency
-    ## is poll_evict_failures x the active poll cadence. 0 = default (3);
-    ## negative = disabled.
-    poll_evict_failures: 3
-
     ## How long (seconds) a dead member's tombstone is kept and gossiped
     ## (#765) — bounds tombstone-set growth across many rollouts. Safe to
-    ## expire: liveness eviction re-evicts a resurrected-but-unreachable
-    ## member within poll_evict_failures poll cycles regardless of
+    ## expire: neighbor liveness monitoring (#768 — both immediate
+    ## neighbors watch every member, reference model) re-evicts a
+    ## resurrected-but-unreachable member within seconds regardless of
     ## tombstone state. 0 = default (600); negative = never expire.
     tombstone_ttl: 600
 
