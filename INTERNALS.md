@@ -366,7 +366,15 @@ tombstone).
 deadline of `ping_interval + ping_timeout`, so a silently-hung peer (no
 FIN/RST) surfaces as a read error — feeding the exact same two death
 paths above — instead of waiting for the OS to notice the dead TCP
-session. (In the reference a lost connection alone never removes a host,
+session.
+
+*QUIT:* every deliberate ring-connection teardown announces itself with
+`QUIT\t<reason>\n` before closing (reference parity —
+director-connection.c sends it on every intentional disconnect), and
+both ring read loops parse it. A `QUIT` from the current left neighbor
+classifies the loss as benign immediately — a dial re-target after a
+membership change no longer goes through the death-verification probes
+at all; probing remains only for genuinely unannounced drops. (In the reference a lost connection alone never removes a host,
 because its host list is static config and it simply reconnects around
 the hole; our membership is dynamic k8s pods whose IPs never come back,
 so the correct adaptation is eviction — using the reference's own

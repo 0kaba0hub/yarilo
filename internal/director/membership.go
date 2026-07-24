@@ -1005,6 +1005,14 @@ func (m *Membership) reconcile() {
 		m.rightCancel = nil
 	}
 	if m.dialConn != nil {
+		// QUIT before the deliberate close (#768, reference parity —
+		// director-connection.c sends QUIT\t<reason> on every intentional
+		// disconnect): the peer we're abandoning is usually OUR old right
+		// neighbor, i.e. we are ITS left — without this line our close
+		// looks identical to a silent death and forces it through the
+		// verification-probe path for what is just a re-target.
+		_ = m.dialConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, _ = fmt.Fprintf(m.dialConn, "QUIT\tretargeting right neighbor\n")
 		_ = m.dialConn.Close()
 		m.dialConn = nil
 	}
@@ -1211,6 +1219,17 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 			_, _ = fmt.Fprintf(conn, "PONG\n")
 		case fields[0] == "PONG":
 			// keepalive traffic — arrival already refreshed the deadline
+		case fields[0] == "QUIT":
+			// The peer is closing deliberately (#768) — e.g. shutting
+			// down. Surface it as an ordinary attempt failure with the
+			// announced reason; dialRight's retry/death policy applies
+			// unchanged (a deliberately-exiting right neighbor SHOULD
+			// eventually be declared dead by it, that's the point).
+			reason := ""
+			if len(fields) >= 2 {
+				reason = fields[1]
+			}
+			return "", fmt.Errorf("peer quit: %s", reason)
 		case fields[0] == "CONNECT" && len(fields) >= 3:
 			return net.JoinHostPort(fields[1], fields[2]), nil
 		case fields[0] == "DIRECTOR-LIST" && len(fields) >= 2:
@@ -1549,6 +1568,18 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 		case fields[0] == "PONG":
 			// keepalive traffic — its arrival already refreshed the
 			// read deadline, nothing else to do
+		case fields[0] == "QUIT":
+			// Deliberate close announced by the peer (#768, reference
+			// parity) — typically our left neighbor re-targeting its
+			// dial after a membership change. Explicitly NOT a death
+			// signal: return without onLeftConnLost, skipping the
+			// verification probes an unannounced drop would trigger.
+			reason := ""
+			if len(fields) >= 2 {
+				reason = fields[1]
+			}
+			slog.Debug("director: ring peer quit", "dialer", dialer, "reason", reason)
+			return
 		case fields[0] == "DIRECTOR-LIST" && len(fields) >= 2:
 			removed := ""
 			if len(fields) >= 3 {

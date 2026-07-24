@@ -1,13 +1,16 @@
 package director
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -476,6 +479,87 @@ func TestMembership_TombstoneTTL_ExpiresAndReadmits(t *testing.T) {
 	if !found {
 		t.Fatal("expired tombstone must no longer block re-admission")
 	}
+}
+
+// dialAsLeftNeighbor performs a raw ring/PEER handshake against addr,
+// impersonating member left (which must sort LOWER than the server so the
+// server computes it as its left neighbor). Returns the open connection
+// with the handshake fully consumed.
+func dialAsLeftNeighbor(t *testing.T, addr string, left Member) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("raw dial: %v", err)
+	}
+	rd := bufio.NewReader(conn)
+	for { // consume the server handshake
+		line, rErr := rd.ReadString('\n')
+		if rErr != nil {
+			t.Fatalf("raw handshake read: %v", rErr)
+		}
+		if strings.TrimRight(line, "\n") == "DONE" {
+			break
+		}
+	}
+	for _, s := range []string{
+		fmt.Sprintf("ME\t%s\t%d", left.IP, left.Port),
+		fmt.Sprintf("MEMBERS\t%s\t", left.String()),
+		"PEER\t1",
+		"DONE",
+	} {
+		if _, wErr := fmt.Fprintf(conn, "%s\n", s); wErr != nil {
+			t.Fatalf("raw handshake send: %v", wErr)
+		}
+	}
+	return conn
+}
+
+// TestMembership_QuitClassifiesCloseAsBenign pins the #768 QUIT semantics
+// (reference parity: director-connection.c sends QUIT\t<reason> before
+// every intentional disconnect). The same connection loss from the
+// current LEFT neighbor must go two different ways: announced with QUIT —
+// benign, no death probes, the member stays; unannounced — suspected
+// death, verification probes fail (the address is unroutable), member
+// evicted.
+func TestMembership_QuitClassifiesCloseAsBenign(t *testing.T) {
+	left := Member{IP: "9.0.0.1", Port: 9102} // sorts below 127.0.0.1 — always the server's left
+
+	t.Run("quit close keeps the member", func(t *testing.T) {
+		srv, addr, _ := startKillableRingNode(t, "shared-secret", nil, 2)
+		conn := dialAsLeftNeighbor(t, addr, left)
+		waitFor(t, 3*time.Second, func() bool {
+			return len(srv.membership.Members()) == 2
+		})
+
+		_, _ = fmt.Fprintf(conn, "QUIT\tretargeting right neighbor\n")
+		conn.Close()
+
+		// Long enough for the abrupt-close path to have evicted (~4s at
+		// the helper's 500ms probe timeout) — the member must survive it.
+		time.Sleep(6 * time.Second)
+		if members := srv.membership.Members(); len(members) != 2 {
+			t.Fatalf("QUIT-announced close must not evict the left neighbor, got %v", members)
+		}
+	})
+
+	t.Run("silent close evicts", func(t *testing.T) {
+		srv, addr, _ := startKillableRingNode(t, "shared-secret", nil, 2)
+		conn := dialAsLeftNeighbor(t, addr, left)
+		waitFor(t, 3*time.Second, func() bool {
+			return len(srv.membership.Members()) == 2
+		})
+
+		conn.Close() // no QUIT — indistinguishable from a death
+
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if len(srv.membership.Members()) == 1 {
+				return // suspected, probed, evicted — correct
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("silent close of the left neighbor must evict it, got %v", srv.membership.Members())
+	})
 }
 
 // ---- N=2: tie-break (only the lower member dials) + origin-absorb ---------
