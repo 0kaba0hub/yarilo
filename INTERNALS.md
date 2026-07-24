@@ -232,8 +232,16 @@ director↔director only (by hash), never to login clients, so it bypasses
 `originateRingEvent`. (`SetByHash` ticks the Lamport clock and writes the
 entry under a single lock, so the persisted stamp stays monotonic per hash
 even under concurrent local LOOKUPs — otherwise a backwards seq could hit
-the wire.) The remaining #772 slice is same-`assign_seq` conflict
-resolution (lower id wins **+ kick** the user off the wrong backend).
+the wire.)
+
+When such a merge MOVES a user to a different backend — a genuine
+two-replica conflict (same `assign_seq`, the lower id won, this node lost)
+or simply a newer reassignment — the loser must not keep serving the user
+on the now-wrong backend, or the mailbox split-brains across two backends.
+`MergeByHash` returns the previous host in that case and the director kicks
+its OWN sessions for that user hash off it (`USER-KICKED` to the owning
+login proxy), leaving other users on the same backend running. No kick on
+a first sighting or a same-backend refresh.
 
 The same `DIRECTOR-LIST` snapshot is also **re-broadcast periodically**
 over every live ring connection (`anti_entropy_interval`, default 3s,

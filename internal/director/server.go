@@ -935,6 +935,36 @@ func (s *Server) kickSessionsForBackend(ip string) {
 	}
 }
 
+// kickStaleSessions kicks this director's own sessions for user `hash` that
+// are still routed to oldHost after a ring merge moved the user to a
+// different backend (#772 PR-3) — a genuine two-replica conflict (lower id
+// won, we lost) or any newer reassignment. Leaving them would split-brain
+// the mailbox across two backends. Only sessions whose username hashes to
+// `hash` are touched; other users on the same backend keep running. oldHost
+// is "ip:port"; sessions are keyed by backend IP.
+func (s *Server) kickStaleSessions(hash uint32, oldHost string) {
+	ip, _, err := net.SplitHostPort(oldHost)
+	if err != nil {
+		ip = oldHost
+	}
+	lc := s.opts.usernameHashLowercase()
+	s.sessRecMu.Lock()
+	var victims []*sessionRec
+	for id := range s.sessByBE[ip] {
+		if rec, ok := s.sessById[id]; ok && HashUsername(rec.user, lc) == hash {
+			victims = append(victims, rec)
+			delete(s.sessById, id)
+			delete(s.sessByBE[ip], id)
+		}
+	}
+	s.sessRecMu.Unlock()
+
+	for _, rec := range victims {
+		_ = rec.cl.WriteLine(fmt.Sprintf("USER-KICKED\t%s", rec.user))
+		slog.Info("director: kicked stale session after ring reassignment", "session", rec.id, "user", rec.user, "old_backend", ip)
+	}
+}
+
 // removeClientSessions removes all session records owned by a disconnected client.
 func (s *Server) removeClientSessions(c *client) {
 	s.sessRecMu.Lock()
