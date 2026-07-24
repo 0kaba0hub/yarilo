@@ -31,9 +31,9 @@
 //	  LOOKUP\t{id}\t{user}\t{tag}\n                  (tag required; "" = untagged pool, not "any tag")
 //	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\n
 //	  SESSION-CLOSE\t{id}\n
-//	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\n   (vhosts optional; 0 = 100)
-//	  BACKEND-DOWN\t{ip}\n
-//	  BACKEND-FLUSH\t{ip}\n                          (drain: stop new lookups, keep backend in registry)
+//	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\t{seq}\n  (vhosts optional; 0=100. seq optional: a backend's monotonic heartbeat counter, #776 — its presence makes the backend lease-managed / expirable)
+//	  BACKEND-DOWN\t{ip}\n                            (LEAVE: remove + rehash — SIGTERM / expiry)
+//	  BACKEND-FLUSH\t{ip}\n                          (drain / overload: stop new lookups, keep sessions + ring slot, NO rehash)
 //	  HOST-REMOVE\t{ip}\n                            (alias for BACKEND-DOWN)
 //	  USER-MOVE\t{user}\t{ip}\t{port}\n              (force user to specific backend)
 //	  USER-RELEASE\t{user}\n                         (remove user override)
@@ -130,6 +130,12 @@ type Options struct {
 	// slower dead-member eviction on fresh joiners. Clamped up to
 	// SeedPollInterval; 0 = default (2s).
 	SeedPollIdleInterval time.Duration
+	// BackendExpire is how long a lease-managed backend may go without a
+	// heartbeat before it is removed ring-wide (#776). A backend becomes
+	// lease-managed when a seq'd BACKEND-UP arrives for it; static
+	// mail_servers / admin-added backends never heartbeat and are never
+	// expired. 0 = default (30s); negative = disabled (no lease expiry).
+	BackendExpire time.Duration
 	// TombstoneTTL bounds how long a dead member's tombstone is kept and
 	// gossiped (#765) — long enough to outlive propagation delay, short
 	// enough that churn across many rollouts can't grow the set forever.
@@ -232,6 +238,25 @@ type Server struct {
 	// membership owns the self-organizing ring: member list, the single
 	// right-neighbor connection, and (origin, seq) event forwarding (#750).
 	membership *Membership
+
+	// backendSeen tracks the heartbeat lease per backend (#776): a backend
+	// becomes lease-managed the first time a seq'd BACKEND-UP arrives for
+	// it (directly or gossiped). Static mail_servers / admin-added backends
+	// never heartbeat, so they never enter this map and are never expired.
+	// A lease-managed backend whose last-seen has not advanced within
+	// BackendExpire is removed ring-wide.
+	backendSeenMu sync.Mutex
+	backendSeen   map[string]backendLease
+}
+
+// backendLease records the freshest heartbeat seen for a backend and the
+// LOCAL time this director saw it (#776). seq is the backend's own
+// monotonic per-origin counter — compared only within that backend's
+// origin (the Lamport lesson of #772), never across backends. at is used
+// for time-based expiry.
+type backendLease struct {
+	seq uint64
+	at  time.Time
 }
 
 // New creates a director server with an empty ring and default options.
@@ -242,14 +267,15 @@ func New() *Server {
 // NewWithOptions creates a director server with custom options.
 func NewWithOptions(opts Options) *Server {
 	s := &Server{
-		ring:      ring.New(opts.usernameHashLowercase()),
-		opts:      opts,
-		userDir:   NewUserDir(opts.userExpire(), opts.usernameHashLowercase(), Member{IP: opts.LocalIP, Port: opts.LocalPort}.String()),
-		overrides: make(map[string]string),
-		clients:   make(map[*client]struct{}),
-		sessions:  make(map[string]int),
-		sessById:  make(map[string]*sessionRec),
-		sessByBE:  make(map[string]map[string]bool),
+		ring:        ring.New(opts.usernameHashLowercase()),
+		opts:        opts,
+		userDir:     NewUserDir(opts.userExpire(), opts.usernameHashLowercase(), Member{IP: opts.LocalIP, Port: opts.LocalPort}.String()),
+		overrides:   make(map[string]string),
+		clients:     make(map[*client]struct{}),
+		sessions:    make(map[string]int),
+		sessById:    make(map[string]*sessionRec),
+		sessByBE:    make(map[string]map[string]bool),
+		backendSeen: make(map[string]backendLease),
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
@@ -680,13 +706,34 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 	if len(fields) >= 5 {
 		vhosts, _ = strconv.Atoi(fields[4])
 	}
+	// Optional 6th field: the backend's monotonic heartbeat seq (#776). Its
+	// presence marks this a lease-managed backend (a self-registering pod);
+	// its absence keeps the legacy non-expiring behaviour (static
+	// mail_servers seeding, admin tooling). A stale/duplicate heartbeat
+	// (seq not newer than what we already recorded) is not re-gossiped.
+	var seq uint64
+	hasSeq := false
+	if len(fields) >= 6 {
+		if v, err := strconv.ParseUint(fields[5], 10, 64); err == nil {
+			seq, hasSeq = v, true
+		}
+	}
+	if hasSeq && !s.recordBackendSeen(ip, seq) {
+		// Duplicate/stale heartbeat: refresh nothing, don't re-gossip.
+		_ = c.WriteLine("OK")
+		return
+	}
 	ts := time.Now().Unix()
 	s.ring.AddBackend(&ring.Backend{
 		IP: ip, Port: port, Tag: tag, Up: true, Vhosts: vhosts,
 		LastUp: ts,
 	})
-	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts)
-	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tup\t%s", ip, tag), c)
+	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts, "seq", seq)
+	payload := fmt.Sprintf("%s\tup\t%s", ip, tag)
+	if hasSeq {
+		payload = fmt.Sprintf("%s\tup\t%s\t%d", ip, tag, seq)
+	}
+	s.originateRingEvent("RING-CHANGE", payload, c)
 	s.updateMetrics()
 	_ = c.WriteLine("OK")
 }
@@ -932,6 +979,99 @@ func (s *Server) kickSessionsForBackend(ip string) {
 	for _, rec := range recs {
 		_ = rec.cl.WriteLine(fmt.Sprintf("USER-KICKED\t%s", rec.user))
 		slog.Info("director: kicked session", "session", rec.id, "user", rec.user, "backend", ip)
+	}
+}
+
+// recordBackendSeen records a heartbeat for a backend under the #776 lease:
+// it refreshes the local last-seen time only on a STRICTLY newer per-origin
+// seq (a gossiped duplicate of a heartbeat already recorded does not extend
+// the lease; a stale/lower seq is ignored). Returns true when the seq was
+// fresh — the caller then gossips it onward so every director's lease for
+// this backend is refreshed by a heartbeat that landed on ANY of them.
+func (s *Server) recordBackendSeen(ip string, seq uint64) bool {
+	s.backendSeenMu.Lock()
+	defer s.backendSeenMu.Unlock()
+	cur, ok := s.backendSeen[ip]
+	if ok && seq <= cur.seq {
+		return false
+	}
+	s.backendSeen[ip] = backendLease{seq: seq, at: time.Now()}
+	return true
+}
+
+// forgetBackendLease drops a backend's lease (on removal), so a later
+// re-registration starts a fresh lease rather than comparing against a
+// stale seq.
+func (s *Server) forgetBackendLease(ip string) {
+	s.backendSeenMu.Lock()
+	delete(s.backendSeen, ip)
+	s.backendSeenMu.Unlock()
+}
+
+func (o *Options) backendExpire() time.Duration {
+	if o.BackendExpire == 0 {
+		return 30 * time.Second
+	}
+	return o.BackendExpire
+}
+
+// StartBackendExpiry runs the #776 lease-expiry loop until ctx ends: every
+// backendExpire/3 it removes any lease-managed backend whose heartbeat has
+// not advanced within backendExpire (silent hang / crash), ring-wide via
+// RING-CHANGE down. Never expires the LAST backend of a tag — a
+// suspect-but-only backend is kept (logged loudly) over a guaranteed total
+// blackhole. Negative BackendExpire disables the loop.
+func (s *Server) StartBackendExpiry(ctx context.Context) {
+	if s.opts.BackendExpire < 0 {
+		return
+	}
+	exp := s.opts.backendExpire()
+	tick := exp / 3
+	if tick < time.Second {
+		tick = time.Second
+	}
+	go func() {
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.expireStaleBackends(exp)
+			}
+		}
+	}()
+}
+
+func (s *Server) expireStaleBackends(expire time.Duration) {
+	now := time.Now()
+	s.backendSeenMu.Lock()
+	var stale []string
+	for ip, lease := range s.backendSeen {
+		if now.Sub(lease.at) > expire {
+			stale = append(stale, ip)
+		}
+	}
+	s.backendSeenMu.Unlock()
+
+	for _, ip := range stale {
+		b := s.ring.GetBackend(ip)
+		if b == nil {
+			s.forgetBackendLease(ip)
+			continue
+		}
+		if s.ring.CountBackendsInTag(b.Tag) <= 1 {
+			slog.Warn("director: backend lease expired but it is the LAST in its tag — keeping to avoid total blackhole",
+				"ip", ip, "tag", b.Tag)
+			continue
+		}
+		s.forgetBackendLease(ip)
+		s.ring.RemoveBackend(ip)
+		s.kickSessionsForBackend(ip)
+		s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tdown\t%s", ip, b.Tag), nil)
+		s.updateMetrics()
+		slog.Warn("director: backend expired, no heartbeat", "ip", ip, "tag", b.Tag, "expire", expire)
 	}
 }
 

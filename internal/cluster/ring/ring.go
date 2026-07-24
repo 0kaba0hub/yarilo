@@ -107,6 +107,20 @@ func (r *Ring) Backends() []Backend {
 	return out
 }
 
+// CountBackendsInTag returns how many backends are registered under tag —
+// used by the #776 lease-expiry safety guard (never remove the last one).
+func (r *Ring) CountBackendsInTag(tag string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, b := range r.backends {
+		if b.Tag == tag {
+			n++
+		}
+	}
+	return n
+}
+
 // Lookup returns the backend IP for the given username.
 // Returns "" if the ring is empty.
 func (r *Ring) Lookup(username string) string {

@@ -729,6 +729,7 @@ data:
       seed_poll_interval: {{ .Values.components.director.seed_poll_interval }}
       seed_poll_idle_interval: {{ .Values.components.director.seed_poll_idle_interval }}
       tombstone_ttl: {{ .Values.components.director.tombstone_ttl }}
+      backend_expire: {{ .Values.components.director.backend_expire }}
       {{- with .Values.components.director.backends }}
       mail_servers:
         {{- range . }}

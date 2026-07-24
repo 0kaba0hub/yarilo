@@ -108,7 +108,7 @@
   <text x="785" y="305" text-anchor="end" fill="#1d4ed8" font-size="10" font-weight="bold">LOOKUP · backend</text>
 
   <!-- ══════════════════════════════════════════════════
-       Directors container (3 pods + monitor sidecars)
+       Directors container (3 pods; backends self-register + heartbeat, #776)
   ══════════════════════════════════════════════════ -->
   <rect x="260" y="322" width="560" height="350" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="2"/>
   <text x="540" y="345" text-anchor="middle" fill="#1d4ed8" font-size="12" font-weight="bold">directors</text>
@@ -122,9 +122,9 @@
   <text x="410" y="423" text-anchor="middle" fill="#475569" font-size="9">ring · userDir · sessions</text>
   <text x="410" y="438" text-anchor="middle" fill="#475569" font-size="9">mTLS :9102 · API :9103</text>
   <rect x="560" y="390" width="220" height="56" rx="5" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
-  <text x="670" y="408" text-anchor="middle" fill="#c2410c" font-size="11" font-weight="bold">yarilo-monitor</text>
-  <text x="670" y="423" text-anchor="middle" fill="#475569" font-size="9">sidecar container</text>
-  <text x="670" y="438" text-anchor="middle" fill="#475569" font-size="9">localhost:9103 · health</text>
+  <text x="670" y="408" text-anchor="middle" fill="#c2410c" font-size="11" font-weight="bold">backend lease · #776</text>
+  <text x="670" y="423" text-anchor="middle" fill="#475569" font-size="9">BACKEND-UP heartbeat (seq)</text>
+  <text x="670" y="438" text-anchor="middle" fill="#475569" font-size="9">TTL expiry → RING-CHANGE down</text>
   <line x1="560" y1="418" x2="522" y2="418" stroke="#c2410c" stroke-width="1.8" marker-end="url(#am)"/>
 
   <!-- Pod 2 -->
@@ -135,9 +135,9 @@
   <text x="410" y="523" text-anchor="middle" fill="#475569" font-size="9">ring · userDir · sessions</text>
   <text x="410" y="538" text-anchor="middle" fill="#475569" font-size="9">mTLS :9102 · API :9103</text>
   <rect x="560" y="490" width="220" height="56" rx="5" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
-  <text x="670" y="508" text-anchor="middle" fill="#c2410c" font-size="11" font-weight="bold">yarilo-monitor</text>
-  <text x="670" y="523" text-anchor="middle" fill="#475569" font-size="9">sidecar container</text>
-  <text x="670" y="538" text-anchor="middle" fill="#475569" font-size="9">localhost:9103 · health</text>
+  <text x="670" y="508" text-anchor="middle" fill="#c2410c" font-size="11" font-weight="bold">backend lease · #776</text>
+  <text x="670" y="523" text-anchor="middle" fill="#475569" font-size="9">BACKEND-UP heartbeat (seq)</text>
+  <text x="670" y="538" text-anchor="middle" fill="#475569" font-size="9">TTL expiry → RING-CHANGE down</text>
   <line x1="560" y1="518" x2="522" y2="518" stroke="#c2410c" stroke-width="1.8" marker-end="url(#am)"/>
 
   <!-- Pod 3 -->
@@ -148,9 +148,9 @@
   <text x="410" y="623" text-anchor="middle" fill="#475569" font-size="9">ring · userDir · sessions</text>
   <text x="410" y="638" text-anchor="middle" fill="#475569" font-size="9">mTLS :9102 · API :9103</text>
   <rect x="560" y="590" width="220" height="56" rx="5" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
-  <text x="670" y="608" text-anchor="middle" fill="#c2410c" font-size="11" font-weight="bold">yarilo-monitor</text>
-  <text x="670" y="623" text-anchor="middle" fill="#475569" font-size="9">sidecar container</text>
-  <text x="670" y="638" text-anchor="middle" fill="#475569" font-size="9">localhost:9103 · health</text>
+  <text x="670" y="608" text-anchor="middle" fill="#c2410c" font-size="11" font-weight="bold">backend lease · #776</text>
+  <text x="670" y="623" text-anchor="middle" fill="#475569" font-size="9">BACKEND-UP heartbeat (seq)</text>
+  <text x="670" y="638" text-anchor="middle" fill="#475569" font-size="9">TTL expiry → RING-CHANGE down</text>
   <line x1="560" y1="618" x2="522" y2="618" stroke="#c2410c" stroke-width="1.8" marker-end="url(#am)"/>
 
   <!-- Peer sync (ring) between directors -->

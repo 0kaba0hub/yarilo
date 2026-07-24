@@ -364,6 +364,26 @@ it loops back to its author. Local login clients never see the envelope
 form — they keep receiving the plain, historical `<KIND>\t<...payload>\n`
 line unchanged.
 
+**Backend heartbeat lease** (#776): a backend self-registers with any
+director via `BACKEND-UP\t<ip>\t<port>\t<tag>\t<vhosts>\t<seq>` and re-sends
+it every `backend_register_interval`. The optional trailing `<seq>` — a
+**monotonic per-origin counter** owned by the backend (the Lamport lesson
+of #772: compared only within that backend's own origin, never wall-clock
+across backends) — marks the backend *lease-managed*: the receiving
+director records `(seq, local-time)`, and forwards the heartbeat as a
+`RING-CHANGE up\t<ip>\t<tag>\t<seq>` envelope so a heartbeat that landed on
+**any** director refreshes the lease **everywhere** (only a strictly newer
+seq refreshes; a gossiped duplicate does not). A lease-managed backend
+whose last-seen has not advanced within `backend_expire` is removed
+ring-wide via `RING-CHANGE down` (an actual `RemoveBackend` — the
+silent-hang path, no external prober). Two guards: a `BACKEND-UP` **without**
+a seq (static `mail_servers` seeding, admin tooling) is never lease-managed
+and never expired; and the **last backend of a tag** is never expired (kept,
+logged loudly, over a guaranteed total blackhole). `BACKEND-DOWN` is a
+LEAVE (remove + rehash — SIGTERM graceful exit or expiry); `BACKEND-FLUSH`
+is drain/overload (stays in the ring, no rehash) — the two must not be
+conflated.
+
 An earlier version of this forwarding path instead picked a single "the"
 connection to send on — the outgoing dial (`dialConn`) if present,
 otherwise a `passiveConn` registered only for the N=2 tie-break's passive
