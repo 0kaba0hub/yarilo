@@ -935,6 +935,46 @@ func (s *Server) kickSessionsForBackend(ip string) {
 	}
 }
 
+// ReconcileDNSBackends reconciles the ring's backends for one mail_servers
+// host against its authoritative DNS endpoint set (#776): adds pod IPs that
+// appeared, and REMOVES (ring-wide) reconcilable backends of this host's tag
+// that are no longer resolvable — a rescheduled/drained backend whose IP
+// changed, or a stale entry a peer gossiped. admin-API backends (Source
+// "admin") are never touched. Removal goes out as RING-CHANGE down, which
+// every director applies as an actual RemoveBackend (not a health down-mark),
+// so a dead IP is dropped consistently and its hash-slice stops blackholing.
+//
+// SAFETY: liveIPs must be a SUCCESSFUL, NON-EMPTY resolution — the caller
+// skips a host whose DNS lookup failed or returned nothing, and this
+// method double-guards, so a transient DNS blip can never prune every
+// backend into a total blackhole.
+//
+// Scope assumption: one headless service (host) per tag — the norm in
+// DEPLOYMENT.md (one NFS shard = one tag). Pruning is keyed by tag, so two
+// mail_servers hosts sharing a tag is unsupported for DNS reconciliation.
+func (s *Server) ReconcileDNSBackends(tag string, port int, liveIPs []string) {
+	if len(liveIPs) == 0 {
+		return // never blackhole on an empty/failed resolution
+	}
+	live := make(map[string]bool, len(liveIPs))
+	for _, ip := range liveIPs {
+		live[ip] = true
+		if s.ring.GetBackend(ip) == nil {
+			s.AddBackend(ip, port, tag) // Source "" — reconcilable
+		}
+	}
+	for _, b := range s.ring.Backends() {
+		if b.Tag != tag || b.Source == "admin" || live[b.IP] {
+			continue
+		}
+		s.ring.RemoveBackend(b.IP)
+		s.kickSessionsForBackend(b.IP)
+		s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tdown\t%s", b.IP, b.Tag), nil)
+		slog.Info("director: backend pruned, not in DNS", "ip", b.IP, "tag", b.Tag)
+	}
+	s.updateMetrics()
+}
+
 // kickStaleSessions kicks this director's own sessions for user `hash` that
 // are still routed to oldHost after a ring merge moved the user to a
 // different backend (#772 PR-3) — a genuine two-replica conflict (lower id

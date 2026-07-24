@@ -929,6 +929,14 @@ type DirectorServiceConfig struct {
 	PingInterval int                `koanf:"ping_interval"` // seconds between PING probes; 0 = 30
 	PingTimeout  int                `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
+	// BackendRefreshInterval re-resolves mail_servers headless DNS every N
+	// seconds and reconciles the backend list to the live endpoint set
+	// (#776) — adds new pod IPs, prunes IPs no longer resolvable (a
+	// rescheduled backend, or a stale entry gossiped by a peer), so a dead
+	// backend never blackholes a hash-slice of users until a restart.
+	// admin-API backends are never pruned. 0 = default (30); negative =
+	// disabled (list stays static-at-startup, pre-#776 behaviour).
+	BackendRefreshInterval int `koanf:"backend_refresh_interval"`
 	// Peers is the seed list for joining the self-organizing ring (#750) —
 	// "host:port" addresses tried in order until one accepts a DIRECTOR-JOIN.
 	// Once joined, membership is maintained automatically via DIRECTOR-ADD/
@@ -1681,15 +1689,16 @@ func Load(path string) (*Config, error) {
 				SessionGracePeriod: 30,
 				KillTimeout:        5,
 			},
-			UserExpire:            900,
-			PingInterval:          30,
-			PingTimeout:           10,
-			UsernameHashLowercase: true,
-			MinMembers:            3,
-			AntiEntropyInterval:   3,
-			SeedPollInterval:      2,
-			SeedPollIdleInterval:  2,
-			TombstoneTTL:          600,
+			UserExpire:             900,
+			PingInterval:           30,
+			PingTimeout:            10,
+			UsernameHashLowercase:  true,
+			MinMembers:             3,
+			BackendRefreshInterval: 30,
+			AntiEntropyInterval:    3,
+			SeedPollInterval:       2,
+			SeedPollIdleInterval:   2,
+			TombstoneTTL:           600,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// No default IP restriction — service/pod CIDRs differ per

@@ -23,6 +23,12 @@ type Backend struct {
 	LastUp   int64 // Unix timestamp of last transition to Up
 	LastDown int64 // Unix timestamp of last transition to Down (0 if never)
 	Hostname string
+	// Source marks a backend's origin for DNS reconciliation (#776):
+	// "admin" = explicitly added via the admin API and NEVER pruned by
+	// re-resolution; anything else (DNS resolution of mail_servers, a
+	// gossiped RING-CHANGE, a peer's HOST handshake) is reconcilable —
+	// dropped when it is no longer in the authoritative DNS endpoint set.
+	Source string
 }
 
 // Ring is a consistent-hashing ring.

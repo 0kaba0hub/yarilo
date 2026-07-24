@@ -114,8 +114,10 @@ func main() {
 		TombstoneTTL:          time.Duration(cfg.DirectorService.TombstoneTTL) * time.Second,
 	})
 
-	// Resolve static backends from config and register them in the ring.
+	// Resolve backends from config and register them in the ring, then keep
+	// re-resolving periodically (#776) so backend pod reschedules self-heal.
 	resolveBackends(ctx, cfg, srv)
+	go backendRefreshLoop(ctx, cfg, srv)
 
 	// Start mail protocol proxy listeners.
 	if err := startProxies(ctx, srv, cfg, nil, backendTLSCfg); err != nil {
@@ -181,14 +183,39 @@ func main() {
 func resolveBackends(ctx context.Context, cfg *config.Config, srv *director.Server) {
 	for _, ms := range cfg.DirectorService.MailServers {
 		addrs, err := net.DefaultResolver.LookupHost(ctx, ms.Host)
-		if err != nil {
-			slog.Error("director: resolve backend", "host", ms.Host, "err", err)
+		if err != nil || len(addrs) == 0 {
+			// Per-host guard (#776): a failed/empty resolution of ONE host
+			// must not touch that host's backends (never blackhole), and
+			// must not affect other hosts.
+			slog.Warn("director: resolve backend skipped", "host", ms.Host, "err", err, "pods", len(addrs))
 			continue
 		}
-		for _, addr := range addrs {
-			srv.AddBackend(addr, ms.Port, ms.Tag)
+		srv.ReconcileDNSBackends(ms.Tag, ms.Port, addrs)
+		slog.Info("director: backends reconciled", "host", ms.Host, "pods", len(addrs), "tag", ms.Tag)
+	}
+}
+
+// backendRefreshLoop periodically re-resolves mail_servers DNS and
+// reconciles the backend list (#776), so a rescheduled backend's new pod IP
+// is picked up and its dead old IP pruned within one interval — no director
+// restart needed.
+func backendRefreshLoop(ctx context.Context, cfg *config.Config, srv *director.Server) {
+	secs := cfg.DirectorService.BackendRefreshInterval
+	if secs < 0 {
+		return // disabled: list stays static-at-startup
+	}
+	if secs == 0 {
+		secs = 30
+	}
+	ticker := time.NewTicker(time.Duration(secs) * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			resolveBackends(ctx, cfg, srv)
 		}
-		slog.Info("director: backends resolved", "host", ms.Host, "pods", len(addrs), "tag", ms.Tag)
 	}
 }
 

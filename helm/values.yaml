@@ -130,6 +130,18 @@ components:
     ## state redundancy") — never refuses service at any member count.
     min_members: 3
 
+    ## How often (seconds) each director re-resolves the mail_servers
+    ## headless DNS and reconciles its backend list to the live endpoint
+    ## set (#776): new backend pod IPs are added, and IPs no longer
+    ## resolvable (a rescheduled backend, or a stale entry a peer gossiped)
+    ## are pruned ring-wide — so a dead backend never blackholes a
+    ## hash-slice of users until a director restart. DNS is authoritative
+    ## for backend EXISTENCE; the monitor sidecar still owns health/drain.
+    ## admin-API-added backends are never pruned. A failed/empty resolution
+    ## of a host never touches that host's backends (no blackhole).
+    ## 0 = default (30); negative = disabled (static list, pre-#776).
+    backend_refresh_interval: 30
+
     ## How often (seconds) each ring member re-broadcasts its
     ## member+tombstone snapshot over every live ring connection (#759) —
     ## a bounded safety net that heals membership splits without waiting

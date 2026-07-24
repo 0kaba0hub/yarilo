@@ -725,6 +725,7 @@ data:
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
       ring_secret: {{ .Values.components.director.ring_secret | quote }}
       min_members: {{ .Values.components.director.min_members }}
+      backend_refresh_interval: {{ .Values.components.director.backend_refresh_interval }}
       anti_entropy_interval: {{ .Values.components.director.anti_entropy_interval }}
       seed_poll_interval: {{ .Values.components.director.seed_poll_interval }}
       seed_poll_idle_interval: {{ .Values.components.director.seed_poll_idle_interval }}
