@@ -3,9 +3,12 @@ package director
 import (
 	"context"
 	"errors"
+	"io"
+	"math/rand/v2"
 	"net"
 	"sort"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +34,7 @@ func startRingNodeAE(t *testing.T, secret string, seeds []string, minMembers int
 		RingSecret:          []byte(secret),
 		MinMembers:          minMembers,
 		AntiEntropyInterval: antiEntropy,
+		SeedPollInterval:    -1, // one-shot join — periodic seed re-poll would mask direct-path regressions, same as anti-entropy
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -70,6 +74,7 @@ func startKillableRingNode(t *testing.T, secret string, seeds []string, minMembe
 		RingSecret:          []byte(secret),
 		MinMembers:          minMembers,
 		AntiEntropyInterval: -1, // see startRingNode — direct-path tests stay strict
+		SeedPollInterval:    -1,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -528,5 +533,128 @@ func TestMembership_N3_ShrinkToN2_ReusesExistingConnectionForward(t *testing.T) 
 			t.Fatalf("member %s: did not receive DIRECTOR-REMOVE for wrap member %s over the pre-existing connection within 6s; last observed members=%v",
 				s.membership.self, deadAddr, last)
 		}
+	}
+}
+
+// TestMembership_Formation_ViaLoadBalancedSeed is the in-process gate for
+// #759's live failure mode: N members join SIMULTANEOUSLY through one
+// shared seed address that — like a k8s ClusterIP behind kube-proxy —
+// proxies every connection to a RANDOM member, including the dialer
+// itself. Under that formation race the per-node right-neighbor dials are
+// computed from divergent views and are not guaranteed to form one
+// connected graph, so convergence must not depend on them: the periodic
+// seed re-poll (every pod can always reach the seed, so it is a
+// guaranteed crossing point) plus anti-entropy must converge everyone
+// regardless of routing luck. Run with -count to shake the randomness.
+func TestMembership_Formation_ViaLoadBalancedSeed(t *testing.T) {
+	const n = 3
+
+	var (
+		mu    sync.Mutex
+		addrs []string
+	)
+	seedLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("seed listen: %v", err)
+	}
+	t.Cleanup(func() { seedLn.Close() })
+	go func() {
+		for {
+			c, aErr := seedLn.Accept()
+			if aErr != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				mu.Lock()
+				var target string
+				if len(addrs) > 0 {
+					target = addrs[rand.IntN(len(addrs))]
+				}
+				mu.Unlock()
+				if target == "" {
+					return
+				}
+				b, dErr := net.Dial("tcp", target)
+				if dErr != nil {
+					return
+				}
+				defer b.Close()
+				go func() { _, _ = io.Copy(b, c) }()
+				_, _ = io.Copy(c, b)
+			}(c)
+		}
+	}()
+	seedAddr := seedLn.Addr().String()
+
+	// Phase 1: bring up every node's listener (registering it with the
+	// seed router) WITHOUT starting membership, so that when membership
+	// does start, all N race their joins concurrently — the divergent
+	// formation views are the whole point of this test.
+	srvs := make([]*Server, 0, n)
+	starts := make([]func(), 0, n)
+	for i := 0; i < n; i++ {
+		srv := NewWithOptions(Options{
+			PingInterval:        24 * time.Hour,
+			RingSecret:          []byte("shared-secret"),
+			MinMembers:          n,
+			AntiEntropyInterval: 500 * time.Millisecond,
+			SeedPollInterval:    300 * time.Millisecond,
+		})
+		ln, lErr := net.Listen("tcp", "127.0.0.1:0")
+		if lErr != nil {
+			t.Fatalf("listen: %v", lErr)
+		}
+		addr := ln.Addr().String()
+		host, portStr, _ := net.SplitHostPort(addr)
+		port, pErr := strconv.Atoi(portStr)
+		if pErr != nil {
+			t.Fatalf("parse port: %v", pErr)
+		}
+		srv.opts.LocalIP, srv.opts.LocalPort = host, port
+		srv.membership.self = Member{IP: host, Port: port}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(func() {
+			cancel()
+			ln.Close()
+		})
+		go func() { _ = srv.listenOn(ctx, ln) }()
+
+		mu.Lock()
+		addrs = append(addrs, addr)
+		mu.Unlock()
+
+		starts = append(starts, func() { srv.StartMembership(ctx, []string{seedAddr}) })
+		srvs = append(srvs, srv)
+	}
+
+	// Phase 2: simultaneous start.
+	for _, start := range starts {
+		start()
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	converged := false
+	for time.Now().Before(deadline) {
+		all := true
+		for _, srv := range srvs {
+			if len(srv.membership.Members()) != n {
+				all = false
+				break
+			}
+		}
+		if all {
+			converged = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !converged {
+		views := make([]string, 0, n)
+		for _, srv := range srvs {
+			views = append(views, formatMemberList(srv.membership.Members()))
+		}
+		t.Fatalf("formation via load-balanced seed did not converge to %d everywhere within 15s; views=%v", n, views)
 	}
 }

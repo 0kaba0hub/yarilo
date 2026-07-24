@@ -129,6 +129,16 @@ components:
     ## negative = disabled.
     anti_entropy_interval: 3
 
+    ## How often (seconds) each member re-polls a seed after its initial
+    ## join (#759). The seed ClusterIP is the one guaranteed crossing
+    ## point between partitioned member views — broadcast and anti-entropy
+    ## only travel over connections that already exist, so a formation
+    ## split with no crossing connection can ONLY heal through the seed.
+    ## Backs off to 30s automatically once membership has been stable for
+    ## a few polls. 0 = default (2); negative = one-shot join (join once,
+    ## never poll again).
+    seed_poll_interval: 2
+
     ## HTTP admin API (yarilo-admin CLI target).
     ## A 32-char token is auto-generated into Secret <release>-director-api-token on first
     ## deploy and preserved on upgrades. To rotate: delete the Secret before helm upgrade.
