@@ -5,6 +5,7 @@ package proto
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -185,13 +186,20 @@ func (c *Conn) BackendDown(ip string) error {
 	return nil
 }
 
-// ReadLine reads one LF-terminated line (max 16384 bytes).
+// ReadLine reads one LF-terminated line, hard-capped at the reader's
+// buffer size (maxLineLen). ReadSlice — unlike ReadString, which keeps
+// appending without bound (#703) — fails with ErrBufferFull once the
+// buffer fills without a newline, so a peer streaming bytes with no LF
+// costs at most one buffer, not unbounded memory per connection.
 func (c *Conn) ReadLine() (string, error) {
-	line, err := c.rd.ReadString('\n')
+	line, err := c.rd.ReadSlice('\n')
 	if err != nil {
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return "", fmt.Errorf("cluster/proto: line exceeds %d bytes", maxLineLen)
+		}
 		return "", err
 	}
-	return strings.TrimRight(line, "\n"), nil
+	return strings.TrimRight(string(line), "\n"), nil
 }
 
 // WriteLine writes a line followed by LF.

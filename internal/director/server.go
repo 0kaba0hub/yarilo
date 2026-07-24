@@ -437,7 +437,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Read client handshake — consume until DONE.
 	var dialer Member
 	for {
-		line, err := rd.ReadString('\n')
+		line, err := readBoundedLine(rd)
 		if err != nil {
 			return
 		}
@@ -496,7 +496,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer close(stopPing)
 
 	for {
-		line, err := rd.ReadString('\n')
+		line, err := readBoundedLine(rd)
 		if err != nil {
 			if err != io.EOF {
 				_ = err

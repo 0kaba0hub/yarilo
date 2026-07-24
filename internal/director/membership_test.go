@@ -562,6 +562,26 @@ func TestMembership_QuitClassifiesCloseAsBenign(t *testing.T) {
 	})
 }
 
+// TestReadBoundedLine_RejectsOversizedLine pins the #703 fix: a peer
+// streaming bytes with no newline must cost at most one bufio buffer, not
+// unbounded memory — ReadString kept growing forever; readBoundedLine
+// errors out at the buffer boundary and the caller drops the connection.
+func TestReadBoundedLine_RejectsOversizedLine(t *testing.T) {
+	rd := bufio.NewReaderSize(strings.NewReader(strings.Repeat("a", 8192)), 4096)
+	if _, err := readBoundedLine(rd); err == nil {
+		t.Fatal("a line exceeding the buffer must be rejected, got nil error")
+	}
+
+	rd = bufio.NewReaderSize(strings.NewReader("DIRECTOR-LIST\t1.2.3.4:9102\t\n"), 4096)
+	line, err := readBoundedLine(rd)
+	if err != nil {
+		t.Fatalf("valid line: %v", err)
+	}
+	if strings.TrimRight(line, "\n") != "DIRECTOR-LIST\t1.2.3.4:9102\t" {
+		t.Fatalf("unexpected line: %q", line)
+	}
+}
+
 // ---- N=2: tie-break (only the lower member dials) + origin-absorb ---------
 
 func TestMembership_N2_OnlyLowerMemberDials(t *testing.T) {

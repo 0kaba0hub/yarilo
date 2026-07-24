@@ -502,7 +502,7 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 		return fmt.Errorf("director/join: send JOIN: %w", err)
 	}
 
-	line, err := rd.ReadString('\n')
+	line, err := readBoundedLine(rd)
 	if err != nil {
 		return fmt.Errorf("director/join: read challenge: %w", err)
 	}
@@ -520,7 +520,7 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 		return fmt.Errorf("director/join: send proof: %w", err)
 	}
 
-	line, err = rd.ReadString('\n')
+	line, err = readBoundedLine(rd)
 	if err != nil {
 		return fmt.Errorf("director/join: read result: %w", err)
 	}
@@ -532,7 +532,7 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 		return fmt.Errorf("director/join: unexpected reply: %q", line)
 	}
 
-	line, err = rd.ReadString('\n')
+	line, err = readBoundedLine(rd)
 	if err != nil {
 		return fmt.Errorf("director/join: read member list: %w", err)
 	}
@@ -546,7 +546,7 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 		removed = parseMemberList(fields[2])
 	}
 
-	if _, err := rd.ReadString('\n'); err != nil { // DONE
+	if _, err := readBoundedLine(rd); err != nil { // DONE
 		return fmt.Errorf("director/join: read DONE: %w", err)
 	}
 
@@ -565,7 +565,7 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 // always have.
 func consumeServerHandshake(rd *bufio.Reader) error {
 	for {
-		line, err := rd.ReadString('\n')
+		line, err := readBoundedLine(rd)
 		if err != nil {
 			return err
 		}
@@ -809,7 +809,7 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	rd := bufio.NewReaderSize(conn, 1024)
-	line, err := rd.ReadString('\n')
+	line, err := readBoundedLine(rd)
 	if err != nil {
 		return
 	}
@@ -886,6 +886,25 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 func writeLine(conn net.Conn, s string) error {
 	_, err := fmt.Fprintf(conn, "%s\n", s)
 	return err
+}
+
+// readBoundedLine reads one LF-terminated line, hard-capped at rd's buffer size.
+// ReadSlice — unlike ReadString, which keeps appending without bound
+// (#703) — fails with ErrBufferFull once the buffer fills with no
+// newline, so a misbehaving or malicious peer streaming bytes without LF
+// costs at most one buffer per connection, not unbounded memory; callers
+// treat the error like any other read failure and drop the connection.
+// The returned line keeps its trailing \n, matching ReadString's
+// contract, so call sites trim exactly as before.
+func readBoundedLine(rd *bufio.Reader) (string, error) {
+	line, err := rd.ReadSlice('\n')
+	if err != nil {
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return "", fmt.Errorf("director: line exceeds %d bytes", rd.Size())
+		}
+		return "", err
+	}
+	return string(line), nil
 }
 
 // ---- ring topology: neighbor computation + the single right-hand dial -----
@@ -1126,7 +1145,7 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 	rd := bufio.NewReaderSize(conn, 4096)
 	inHandshake := false
 	for {
-		line, rErr := rd.ReadString('\n')
+		line, rErr := readBoundedLine(rd)
 		if rErr != nil {
 			return "", fmt.Errorf("handshake read: %w", rErr)
 		}
@@ -1202,7 +1221,7 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readWindow))
-		line, rErr := rd.ReadString('\n')
+		line, rErr := readBoundedLine(rd)
 		if rErr != nil {
 			if ctx.Err() != nil {
 				return "", nil
@@ -1552,7 +1571,7 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 	readWindow := m.ringPingInterval() + m.ringPingTimeout()
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readWindow))
-		line, err := rd.ReadString('\n')
+		line, err := readBoundedLine(rd)
 		if err != nil {
 			m.onLeftConnLost(ctx, dialer)
 			return
