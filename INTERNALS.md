@@ -225,18 +225,30 @@ member+tombstone snapshot via the same idempotent union. The acceptor
 treats a re-join from an already-known member as a read-only snapshot
 request — no `DIRECTOR-ADD` broadcast, no reconcile — so the poll is one
 request/reply per member per interval. Pacing gates on the configured
-TARGET SIZE, never on own-view stability: full cadence while the view
-holds fewer than `min_members` (a short view is per se proof of work
-left, however stable it looks), easing to a lazy 30s backstop once the
-expected cluster size is reached and snapping back the moment a member
-is lost. An earlier revision instead backed off once the node's own view
-had been stable for a few polls — exactly backwards during a partition,
-since a partitioned node's view is perfectly stable; that slowed
-precisely the node that needed healing (live-measured: ~117s for one pod
-to learn the third member, failing the converge-in-seconds gate). The
-lazy backstop never fully stops: a view can sit at `min_members` while
-holding a stale (dead) entry in place of a replacement pod, and the 30s
-poll bounds that heal too.
+TARGET SIZE, never on own-view stability: full cadence
+(`seed_poll_interval`, default 2s) while the view holds fewer than
+`min_members` (a short view is per se proof of work left, however stable
+it looks), easing to `seed_poll_idle_interval` once the expected cluster
+size is reached and snapping back the moment a member is lost. An earlier
+revision instead backed off once the node's own view had been stable for
+a few polls — exactly backwards during a partition, since a partitioned
+node's view is perfectly stable; that slowed precisely the node that
+needed healing (live-measured: ~117s for one pod to learn the third
+member, failing the converge-in-seconds gate).
+
+The idle cadence is a distinct knob, but **defaults to the same 2s as the
+active cadence — no effective backoff** (#765). A node cannot locally
+distinguish "converged" from "stable but holding a dead member": when a
+pod is killed on a converged ring, its k8s replacement can learn the
+dying member as *live* during the death-detection window and reach
+`min_members` with a stale entry, at which point a lazy idle cadence
+leaves that dead member in place for a full idle interval (live-measured
+40s+ with a 30s idle). Tombstone-wins on merge and the per-`DIRECTOR-LIST`
+tombstone exchange already guarantee the dead member is *evicted once the
+tombstone arrives*; the idle default only bounds *how soon* it arrives.
+Operators who want to trade steady-state polling for slower dead-member
+eviction on fresh joiners can raise `seed_poll_idle_interval` explicitly
+(it is clamped up to `seed_poll_interval`).
 
 A hostname seed is additionally **resolved explicitly and fanned out**
 (`pollSeed`/`expandSeed`): every A/AAAA answer except this node's own

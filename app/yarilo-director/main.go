@@ -110,6 +110,7 @@ func main() {
 		MinMembers:            cfg.DirectorService.MinMembers,
 		AntiEntropyInterval:   time.Duration(cfg.DirectorService.AntiEntropyInterval) * time.Second,
 		SeedPollInterval:      time.Duration(cfg.DirectorService.SeedPollInterval) * time.Second,
+		SeedPollIdleInterval:  time.Duration(cfg.DirectorService.SeedPollIdleInterval) * time.Second,
 	})
 
 	// Resolve static backends from config and register them in the ring.

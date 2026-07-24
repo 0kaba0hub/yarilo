@@ -727,6 +727,7 @@ data:
       min_members: {{ .Values.components.director.min_members }}
       anti_entropy_interval: {{ .Values.components.director.anti_entropy_interval }}
       seed_poll_interval: {{ .Values.components.director.seed_poll_interval }}
+      seed_poll_idle_interval: {{ .Values.components.director.seed_poll_idle_interval }}
       {{- with .Values.components.director.backends }}
       mail_servers:
         {{- range . }}
