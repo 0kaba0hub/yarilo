@@ -546,8 +546,22 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 		removed = parseMemberList(fields[2])
 	}
 
-	if _, err := readBoundedLine(rd); err != nil { // DONE
-		return fmt.Errorf("director/join: read DONE: %w", err)
+	// After DIRECTOR-LIST the acceptor streams a userDir snapshot (#772) —
+	// zero or more USER lines — terminated by DONE. Merge each so a
+	// freshly-joined/restarted director inherits current sticky routing
+	// state immediately instead of starting empty.
+	for {
+		line, err := readBoundedLine(rd)
+		if err != nil {
+			return fmt.Errorf("director/join: read snapshot: %w", err)
+		}
+		f := strings.Split(strings.TrimRight(line, "\n"), "\t")
+		if f[0] == "DONE" {
+			break
+		}
+		if f[0] == "USER" {
+			m.applyUserLine(f)
+		}
 	}
 
 	// Union, never replace (#759 Fix A): on a periodic re-poll the seed
@@ -707,6 +721,48 @@ func (m *Membership) mergeMembers(incomingMembers, incomingRemoved []Member) {
 	}
 }
 
+// ---- userDir state exchange (#772) ----------------------------------------
+
+// sendUserSnapshot streams this director's userDir as USER lines over conn,
+// sent right after DIRECTOR-LIST on every ring (re)connect so a fresh or
+// restarted director inherits current sticky routing state immediately
+// (#772 — the reference's U-line handshake). Wire form, one per entry:
+//
+//	USER\t<hash>\t<host>\t<assign_seq>\t<assign_by>\t<weak>\n
+//
+// O(users), sent only on connect; the ongoing per-LOOKUP propagation is a
+// separate concern (#772 PR-2).
+func (m *Membership) sendUserSnapshot(conn net.Conn) {
+	if m.srv == nil {
+		return
+	}
+	for _, e := range m.srv.userDir.Snapshot() {
+		weak := "0"
+		if e.Weak {
+			weak = "1"
+		}
+		_, _ = fmt.Fprintf(conn, "USER\t%d\t%s\t%d\t%s\t%s\n", e.Hash, e.Host, e.AssignSeq, e.AssignBy, weak)
+	}
+}
+
+// applyUserLine merges one received USER snapshot line into the local
+// userDir under the (AssignSeq, AssignBy) total order (#772). Malformed
+// lines are ignored.
+func (m *Membership) applyUserLine(fields []string) {
+	if m.srv == nil || len(fields) < 6 {
+		return
+	}
+	hash, err := strconv.ParseUint(fields[1], 10, 32)
+	if err != nil {
+		return
+	}
+	seq, err := strconv.ParseUint(fields[3], 10, 64)
+	if err != nil {
+		return
+	}
+	m.srv.userDir.MergeByHash(uint32(hash), fields[2], fields[5] == "1", seq, fields[4])
+}
+
 // removedList returns a snapshot of the live (non-expired) tombstone set,
 // for exchange in a DIRECTOR-LIST resync — expired entries are dropped
 // here too so they stop being gossiped (#765).
@@ -857,6 +913,7 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	if err := writeLine(conn, "DIRECTOR-LIST\t"+formatMemberList(existing)+"\t"+formatMemberList(m.removedList())); err != nil {
 		return
 	}
+	m.sendUserSnapshot(conn) // #772: userDir state, between DIRECTOR-LIST and DONE
 	_ = writeLine(conn, "DONE")
 
 	if already {
@@ -1210,6 +1267,7 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 	if _, wErr := fmt.Fprintf(conn, "DIRECTOR-LIST\t%s\t%s\n", formatMemberList(m.Members()), formatMemberList(m.removedList())); wErr != nil {
 		return "", fmt.Errorf("member snapshot send: %w", wErr)
 	}
+	m.sendUserSnapshot(conn) // #772: userDir snapshot on connect
 
 	// Keepalive both ways (#768): we PING our right neighbor over this
 	// dial, it PINGs us back over it too (plus over whatever it dials);
@@ -1257,6 +1315,8 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 				removed = fields[2]
 			}
 			m.mergeMembers(parseMemberList(fields[1]), parseMemberList(removed))
+		case fields[0] == "USER":
+			m.applyUserLine(fields)
 		default:
 			m.handleRingLine(fields, conn)
 		}
@@ -1567,6 +1627,7 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 	// convergence after a race doesn't depend on which end happened to
 	// dial — see the comment there for why this resync exists.
 	_, _ = fmt.Fprintf(conn, "DIRECTOR-LIST\t%s\t%s\n", formatMemberList(m.Members()), formatMemberList(m.removedList()))
+	m.sendUserSnapshot(conn) // #772: userDir snapshot on connect
 
 	readWindow := m.ringPingInterval() + m.ringPingTimeout()
 	for {
@@ -1605,6 +1666,8 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 				removed = fields[2]
 			}
 			m.mergeMembers(parseMemberList(fields[1]), parseMemberList(removed))
+		case fields[0] == "USER":
+			m.applyUserLine(fields)
 		default:
 			m.handleRingLine(fields, conn)
 		}

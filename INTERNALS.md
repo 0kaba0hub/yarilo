@@ -201,6 +201,25 @@ membership change being accepted and that node's own (possibly
 just-retargeted) dial completing would otherwise vanish, without needing
 the full user/backend state snapshot planned for #750 phase 3.
 
+Right after `DIRECTOR-LIST` (and, on the JOIN bootstrap, before the closing
+`DONE`) the sender also streams its **userDir snapshot** (#772) — zero or
+more lines, one per sticky user→backend assignment:
+```
+USER\t<user_hash>\t<host_ip:port>\t<assign_seq>\t<assign_by>\t<weak>\n
+```
+so a fresh or restarted director inherits current sticky routing state
+immediately rather than starting empty (the reference's U-line handshake).
+`assign_seq` is a **Lamport-clock** value (a logical counter — NOT
+wall-clock; pod clocks are unsynchronized and unix-nano would let the
+fastest-clock replica win nondeterministically), and `assign_by` is the id
+(`ip:port`) of the director that made the assignment. The receiver merges
+each under the `(assign_seq, assign_by)` total order — a strictly higher
+seq wins; on a tie the lower id wins — advancing its own Lamport clock past
+the incoming seq so a later local assignment sorts after it. Deterministic
+and reproducible in tests without a fake clock. (Per-LOOKUP live
+propagation of these assignments and same-seq-conflict kick are the
+remaining #772 slices; this is the snapshot-on-connect + ordering base.)
+
 The same `DIRECTOR-LIST` snapshot is also **re-broadcast periodically**
 over every live ring connection (`anti_entropy_interval`, default 3s,
 negative disables; #759) — a bounded safety net on top of the
