@@ -115,7 +115,11 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	for i, b := range backends {
 		bs[i] = toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts})
 	}
-	apiJSON(w, map[string]any{"backends": bs, "peers": s.ListPeers()})
+	// Backends only — the director-membership (`peers`) list lives on the
+	// dedicated GET /api/director/ring endpoint (`director ring status`).
+	// status is the backend/routing plane; duplicating peers here made the
+	// two commands overlap for no reason.
+	apiJSON(w, map[string]any{"backends": bs})
 }
 
 func (s *Server) apiDump(w http.ResponseWriter, _ *http.Request) {

@@ -276,9 +276,11 @@ func httpGet(url string) error {
 // checkDirectorAPI verifies the director admin API authenticates a bearer
 // token (#755): the whole class of bug was `yarilo-admin director status`
 // returning 403 from every pod because the token was never plumbed. This
-// hits GET /api/director/status with the token and asserts a 200 with a
-// member list — a 403 is the exact regression to catch, so it is reported
-// distinctly from any other non-200.
+// hits GET /api/director/ring (the member/peer list) with the token and
+// asserts a 200 with a member list — a 403 is the exact regression to
+// catch, so it is reported distinctly from any other non-200. (Uses /ring
+// rather than /status because status is now backends-only — the peer list
+// moved to its dedicated endpoint.)
 func checkDirectorAPI() error {
 	token := *flagDirectorAPIToken
 	if token == "" {
@@ -287,7 +289,7 @@ func checkDirectorAPI() error {
 	if token == "" {
 		token = os.Getenv("YARILO_ADMIN_TOKEN")
 	}
-	url := strings.TrimRight(*flagDirectorAPI, "/") + "/api/director/status"
+	url := strings.TrimRight(*flagDirectorAPI, "/") + "/api/director/ring"
 	c := &http.Client{Timeout: *flagTimeout}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
