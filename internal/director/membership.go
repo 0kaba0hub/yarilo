@@ -761,7 +761,9 @@ func (m *Membership) applyUserLine(fields []string) {
 	if err != nil {
 		return
 	}
-	m.srv.userDir.MergeByHash(uint32(hash), fields[2], fields[5] == "1", seq, fields[4])
+	if old := m.srv.userDir.MergeByHash(uint32(hash), fields[2], fields[5] == "1", seq, fields[4]); old != "" {
+		m.srv.kickStaleSessions(uint32(hash), old)
+	}
 }
 
 // removedList returns a snapshot of the live (non-expired) tombstone set,
@@ -1513,7 +1515,9 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 		if err != nil {
 			return
 		}
-		m.srv.userDir.MergeByHash(uint32(hash), payload[1], false, seq, payload[3])
+		if old := m.srv.userDir.MergeByHash(uint32(hash), payload[1], false, seq, payload[3]); old != "" {
+			m.srv.kickStaleSessions(uint32(hash), old)
+		}
 	case "USER-KICKED":
 		if len(payload) < 1 {
 			return

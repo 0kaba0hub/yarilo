@@ -131,9 +131,12 @@ func (d *UserDir) LastAssign(hash uint32) (seq uint64, by string, ok bool) {
 // propagated event, #772) under the (AssignSeq, AssignBy) total order:
 // it wins only if strictly newer, or equal-seq from a lower-id director.
 // The Lamport clock is advanced past the incoming seq regardless, so a
-// later local assignment sorts after it. Returns true if it changed the
-// live mapping to a DIFFERENT backend (the signal PR-3 turns into a kick).
-func (d *UserDir) MergeByHash(hash uint32, host string, weak bool, seq uint64, by string) bool {
+// later local assignment sorts after it. Returns the PREVIOUS host when
+// the merge moved the user to a DIFFERENT backend — the caller kicks that
+// user's now-stale sessions off it (#772 PR-3). Returns "" when the
+// incoming assignment lost, when it is a first sighting (no old backend),
+// or when it kept the same backend — all "no kick needed".
+func (d *UserDir) MergeByHash(hash uint32, host string, weak bool, seq uint64, by string) (kickOldHost string) {
 	d.observe(seq)
 	incoming := &UserEntry{
 		Hash:      hash,
@@ -147,11 +150,14 @@ func (d *UserDir) MergeByHash(hash uint32, host string, weak bool, seq uint64, b
 	defer d.mu.Unlock()
 	cur := d.byHash[hash]
 	if cur != nil && !incoming.newer(cur) {
-		return false
+		return ""
 	}
-	changedBackend := cur == nil || cur.Host != host
+	old := ""
+	if cur != nil && cur.Host != host {
+		old = cur.Host
+	}
 	d.byHash[hash] = incoming
-	return changedBackend
+	return old
 }
 
 // Get returns the entry for username, or nil if not found or expired.

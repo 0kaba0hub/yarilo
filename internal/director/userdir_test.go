@@ -126,33 +126,33 @@ func TestUserDir_Snapshot(t *testing.T) {
 func TestUserDir_MergeByHash_Ordering(t *testing.T) {
 	h := HashUsername("u@x", true)
 	tests := []struct {
-		name       string
-		seedSeq    uint64
-		seedBy     string
-		seedHost   string
-		inSeq      uint64
-		inBy       string
-		inHost     string
-		wantHost   string
-		wantChange bool // returned "changed backend" signal
+		name     string
+		seedSeq  uint64
+		seedBy   string
+		seedHost string
+		inSeq    uint64
+		inBy     string
+		inHost   string
+		wantHost string
+		wantKick string // MergeByHash return: old host to kick, "" if none
 	}{
-		{"newer seq wins", 1, "a", "b1", 2, "b", "b2", "b2", true},
-		{"older seq loses", 5, "a", "b1", 3, "b", "b2", "b1", false},
-		{"equal seq lower id wins", 4, "z", "b1", 4, "a", "b2", "b2", true},
-		{"equal seq higher id loses", 4, "a", "b1", 4, "z", "b2", "b1", false},
-		{"equal seq same id same host no-op", 4, "a", "b1", 4, "a", "b1", "b1", false},
-		{"newer seq same host: change=false", 1, "a", "b1", 2, "a", "b1", "b1", false},
+		{"newer seq wins", 1, "a", "b1", 2, "b", "b2", "b2", "b1"},
+		{"older seq loses", 5, "a", "b1", 3, "b", "b2", "b1", ""},
+		{"equal seq lower id wins", 4, "z", "b1", 4, "a", "b2", "b2", "b1"},
+		{"equal seq higher id loses", 4, "a", "b1", 4, "z", "b2", "b1", ""},
+		{"equal seq same id same host no-op", 4, "a", "b1", 4, "a", "b1", "b1", ""},
+		{"newer seq same host: no kick", 1, "a", "b1", 2, "a", "b1", "b1", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			d := NewUserDir(time.Minute, true, "self:9102")
 			d.MergeByHash(h, tc.seedHost, false, tc.seedSeq, tc.seedBy)
-			changed := d.MergeByHash(h, tc.inHost, false, tc.inSeq, tc.inBy)
+			kick := d.MergeByHash(h, tc.inHost, false, tc.inSeq, tc.inBy)
 			if e := d.GetByHash(h); e == nil || e.Host != tc.wantHost {
 				t.Fatalf("host = %v, want %s", e, tc.wantHost)
 			}
-			if changed != tc.wantChange {
-				t.Fatalf("changed = %v, want %v", changed, tc.wantChange)
+			if kick != tc.wantKick {
+				t.Fatalf("kickOldHost = %q, want %q", kick, tc.wantKick)
 			}
 		})
 	}
