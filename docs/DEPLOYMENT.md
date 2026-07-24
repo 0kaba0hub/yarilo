@@ -71,29 +71,41 @@ Model:
   forwards it as a `RING-CHANGE up` envelope so every director learns it. (This is
   the first and only backend→director control channel — until now the director
   only ever dialed backends, never the reverse.)
-- **Heartbeat = periodic re-register.** Every `backend_register_interval` the
-  backend re-sends `BACKEND-UP`. Each such heartbeat carries a **monotonic
-  per-origin sequence** (a logical counter, NOT wall-clock — the Lamport lesson of
-  #772: pod clocks are unsynchronized, so freshness is compared only *within* one
-  backend's own origin), gossiped ring-wide as "backend X seen at seq N". Every
-  director keeps the max seen per backend. A heartbeat landing on **any** director
-  refreshes the lease everywhere — this is what makes a load-balanced heartbeat
-  correct (a per-director timer with LB'd heartbeats would false-expire a live
-  backend on the directors that happened not to receive it).
-- **TTL expiry.** A backend whose last-seen has not advanced within
-  `backend_expire` on the ring is removed (`RING-CHANGE down` → `RemoveBackend`
-  everywhere) and its hash-slice stops routing. This covers the *silent hang*
-  (a wedged backend stops heartbeating) with no external prober — which is why the
-  **`yarilo-monitor` sidecar is removed**: existence + silent-hang are covered by
-  register/heartbeat/expiry, and overload is self-reported (below).
-- **Graceful leave.** On SIGTERM the backend sends `BACKEND-DOWN` (analog of the
-  director's #770 graceful leave) so it disappears immediately without waiting out
-  the TTL — a planned rollout or scale-down never blackholes a hash-slice for the
-  expiry window.
-- **Overload self-report.** A backend under load sends `BACKEND-FLUSH` (drain: stop
-  new lookups, keep existing sessions) or `BACKEND-DOWN` itself — the backend knows
-  its own load, which an external prober cannot infer. Health/load-shedding is thus
-  the same channel as existence, backend-driven.
+- **Heartbeat = periodic re-register, gated on self-health.** Every
+  `backend_register_interval` the backend re-sends `BACKEND-UP` — but ONLY while its
+  own data-path listener is actually serving (the same condition as its `/readyz`:
+  the protocol listener is accepting and not wedged). A heartbeat must prove the
+  DATA PATH is alive, not merely that a control goroutine still ticks: an NFS-hang
+  where session goroutines are stuck on I/O and the accept queue is stalled, yet a
+  detached heartbeat goroutine keeps sending, is exactly the "live heartbeat, dead
+  data-path" hole the monitor's port-probe used to close. Gating the heartbeat on
+  self-health turns that wedge into **silence → TTL expiry**, so removing the
+  monitor loses no coverage. Each heartbeat carries a **monotonic per-origin
+  sequence** (a logical counter, NOT wall-clock — the Lamport lesson of #772: pod
+  clocks are unsynchronized, so freshness is compared only *within* one backend's
+  own origin), gossiped ring-wide as "backend X seen at seq N". Every director keeps
+  the max seen per backend; a heartbeat landing on **any** director refreshes the
+  lease everywhere — this is what makes a load-balanced heartbeat correct (a
+  per-director timer with LB'd heartbeats would false-expire a live backend on the
+  directors that happened not to receive it).
+- **TTL expiry → LEAVE (remove + rehash).** A backend whose last-seen has not
+  advanced within `backend_expire` on the ring is REMOVED (`RING-CHANGE down` →
+  `RemoveBackend` everywhere); its hash-slice rehashes onto neighbouring backends
+  in the same tag. This covers the silent hang / crash with no external prober.
+- **Graceful leave → LEAVE (remove + rehash).** On SIGTERM the backend sends
+  `BACKEND-DOWN` (analog of the director's #770 graceful leave) so it is removed
+  immediately without waiting out the TTL — a planned rollout / scale-down never
+  blackholes a hash-slice for the expiry window.
+- **Overload → FLUSH (drain, NO rehash), never DOWN.** Removal and overload are
+  DIFFERENT wire events with different consequences and must not be conflated. A
+  backend shedding load sends `BACKEND-FLUSH`: it STAYS in the ring, new LOOKUPs
+  stop landing on it, existing sessions keep running — its hash-slice does NOT
+  move. A transient load spike therefore causes zero user reshuffling. Sending
+  `BACKEND-DOWN` on overload would remove it → rehash the slice away → and then a
+  second rehash back when it re-registers a minute later: double-shuffling users
+  through a transient peak, worse than the peak itself. This matches Dovecot's
+  down/vhosts semantics (drain by zeroing vhosts, not by removal). `BACKEND-DOWN`
+  is reserved for genuine LEAVE (SIGTERM / expiry).
 
 Safety + migration:
 - **Never remove the last backend of a tag** by TTL expiry — a suspect-but-only
