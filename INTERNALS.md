@@ -220,17 +220,36 @@ nodes closed a private 2-cycle while a third, better-informed node's
 knowledge never crossed into it). The **periodic seed re-poll**
 (`seed_poll_interval`, default 2s, negative restores the legacy one-shot
 join; #759) closes exactly this: `joinLoop` never stops — after the
-initial join it keeps re-dialing the seed (one shared ClusterIP every pod
-can always reach, i.e. a crossing point that always exists), merging the
-returned member+tombstone snapshot via the same idempotent union. The
-acceptor treats a re-join from an already-known member as a read-only
-snapshot request — no `DIRECTOR-ADD` broadcast, no reconcile — so the
-poll is one request/reply per member per interval, and the interval
-stretches to 30s automatically once the view has been stable for a few
-polls (snapping back on any change). This bounds every formation
-partition's lifetime by the poll interval regardless of ring dial
-topology, which is what makes a clean simultaneous multi-pod start
-converge in seconds instead of relying on dial-graph luck.
+initial join it keeps re-polling the seed, merging the returned
+member+tombstone snapshot via the same idempotent union. The acceptor
+treats a re-join from an already-known member as a read-only snapshot
+request — no `DIRECTOR-ADD` broadcast, no reconcile — so the poll is one
+request/reply per member per interval. Pacing gates on the configured
+TARGET SIZE, never on own-view stability: full cadence while the view
+holds fewer than `min_members` (a short view is per se proof of work
+left, however stable it looks), easing to a lazy 30s backstop once the
+expected cluster size is reached and snapping back the moment a member
+is lost. An earlier revision instead backed off once the node's own view
+had been stable for a few polls — exactly backwards during a partition,
+since a partitioned node's view is perfectly stable; that slowed
+precisely the node that needed healing (live-measured: ~117s for one pod
+to learn the third member, failing the converge-in-seconds gate). The
+lazy backstop never fully stops: a view can sit at `min_members` while
+holding a stale (dead) entry in place of a replacement pod, and the 30s
+poll bounds that heal too.
+
+A hostname seed is additionally **resolved explicitly and fanned out**
+(`pollSeed`/`expandSeed`): every A/AAAA answer except this node's own
+address is polled each cycle. With the headless `-director-ring` Service
+as the seed — whose DNS answer is the complete list of ready pod IPs —
+this makes formation a deterministic sweep of every peer (convergence in
+about one poll interval, zero self-dials, no routing luck), and it
+sidesteps Go's RFC 6724 destination ordering, which sorts the address
+sharing the longest prefix with the source first — i.e. the pod's own
+IP, which a naive sequential dial of the resolved list would pick every
+single time. A literal-IP seed (or an unresolvable hostname) is dialed
+as-is, where the server-side self-dial rejection plus the 500ms fast
+retry remain the fallback path.
 
 **Broadcast-before-reconcile** (#759): every path that changes membership
 and announces it — join accept (`handleJoin`), death declaration

@@ -658,3 +658,92 @@ func TestMembership_Formation_ViaLoadBalancedSeed(t *testing.T) {
 		t.Fatalf("formation via load-balanced seed did not converge to %d everywhere within 15s; views=%v", n, views)
 	}
 }
+
+// TestMembership_Formation_ViaHeadlessDNSSeed covers the recommended
+// production seed shape (#759): a hostname (in k8s the headless
+// -director-ring Service) whose resolution returns EVERY member address.
+// expandSeed must fan the poll out to all resolved addresses except self
+// each cycle — deterministic convergence within about one poll interval,
+// no routing randomness, no self-dials at all. This also pins the
+// self-exclusion behavior that sidesteps Go's RFC 6724 own-IP-first
+// destination ordering.
+func TestMembership_Formation_ViaHeadlessDNSSeed(t *testing.T) {
+	const n = 3
+
+	var (
+		mu    sync.Mutex
+		addrs []string
+	)
+	resolve := func(ctx context.Context, host string) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string{}, addrs...), nil
+	}
+
+	srvs := make([]*Server, 0, n)
+	starts := make([]func(), 0, n)
+	for i := 0; i < n; i++ {
+		srv := NewWithOptions(Options{
+			PingInterval:        24 * time.Hour,
+			RingSecret:          []byte("shared-secret"),
+			MinMembers:          n,
+			AntiEntropyInterval: -1, // seed fan-out alone must converge this
+			SeedPollInterval:    300 * time.Millisecond,
+		})
+		srv.membership.resolveHost = resolve
+		ln, lErr := net.Listen("tcp", "127.0.0.1:0")
+		if lErr != nil {
+			t.Fatalf("listen: %v", lErr)
+		}
+		addr := ln.Addr().String()
+		host, portStr, _ := net.SplitHostPort(addr)
+		port, pErr := strconv.Atoi(portStr)
+		if pErr != nil {
+			t.Fatalf("parse port: %v", pErr)
+		}
+		srv.opts.LocalIP, srv.opts.LocalPort = host, port
+		srv.membership.self = Member{IP: host, Port: port}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(func() {
+			cancel()
+			ln.Close()
+		})
+		go func() { _ = srv.listenOn(ctx, ln) }()
+
+		mu.Lock()
+		addrs = append(addrs, addr)
+		mu.Unlock()
+
+		starts = append(starts, func() { srv.StartMembership(ctx, []string{"ring.test:9102"}) })
+		srvs = append(srvs, srv)
+	}
+
+	for _, start := range starts {
+		start()
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	converged := false
+	for time.Now().Before(deadline) {
+		all := true
+		for _, srv := range srvs {
+			if len(srv.membership.Members()) != n {
+				all = false
+				break
+			}
+		}
+		if all {
+			converged = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !converged {
+		views := make([]string, 0, n)
+		for _, srv := range srvs {
+			views = append(views, formatMemberList(srv.membership.Members()))
+		}
+		t.Fatalf("formation via headless-DNS seed did not converge to %d everywhere within 5s; views=%v", n, views)
+	}
+}
