@@ -949,6 +949,12 @@ type DirectorServiceConfig struct {
 	// member count. Default 3 (matches the reference's recommended minimum
 	// for the degradation ladder to have real redundancy at rest).
 	MinMembers int `koanf:"min_members"`
+	// AntiEntropyInterval is how often (seconds) each ring member
+	// re-broadcasts its member+tombstone snapshot over every live ring
+	// connection (#759) — a bounded safety net that heals membership
+	// splits without waiting for a possibly-lost ADD/REMOVE broadcast.
+	// 0 = default (3); negative = disabled.
+	AntiEntropyInterval int `koanf:"anti_entropy_interval"`
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// for ring routing, sticky assignments and admin overrides (#738).
 	// Matches the reference implementation's default hash template — two
@@ -1652,6 +1658,7 @@ func Load(path string) (*Config, error) {
 			PingTimeout:           10,
 			UsernameHashLowercase: true,
 			MinMembers:            3,
+			AntiEntropyInterval:   3,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// No default IP restriction — service/pod CIDRs differ per

@@ -2,6 +2,7 @@ package director
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sort"
 	"strconv"
@@ -14,13 +15,22 @@ import (
 // startRingNode starts a director with ring membership active: secret
 // authenticates JOINs it receives, seeds is who it tries to join via (nil =
 // starts as a founder). Uses the same ctx for the listener and membership so
-// t.Cleanup tears down both.
+// t.Cleanup tears down both. Anti-entropy is disabled so tests that assert
+// on exact propagation paths stay strict — the periodic snapshot would
+// otherwise eventually paper over a broken direct broadcast; use
+// startRingNodeAE to enable it explicitly.
 func startRingNode(t *testing.T, secret string, seeds []string, minMembers int) (*Server, string) {
 	t.Helper()
+	return startRingNodeAE(t, secret, seeds, minMembers, -1)
+}
+
+func startRingNodeAE(t *testing.T, secret string, seeds []string, minMembers int, antiEntropy time.Duration) (*Server, string) {
+	t.Helper()
 	srv := NewWithOptions(Options{
-		PingInterval: 24 * time.Hour, // disable client-facing PING during tests
-		RingSecret:   []byte(secret),
-		MinMembers:   minMembers,
+		PingInterval:        24 * time.Hour, // disable client-facing PING during tests
+		RingSecret:          []byte(secret),
+		MinMembers:          minMembers,
+		AntiEntropyInterval: antiEntropy,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -56,9 +66,10 @@ func startRingNode(t *testing.T, secret string, seeds []string, minMembers int) 
 func startKillableRingNode(t *testing.T, secret string, seeds []string, minMembers int) (srv *Server, addr string, kill func()) {
 	t.Helper()
 	srv = NewWithOptions(Options{
-		PingInterval: 24 * time.Hour,
-		RingSecret:   []byte(secret),
-		MinMembers:   minMembers,
+		PingInterval:        24 * time.Hour,
+		RingSecret:          []byte(secret),
+		MinMembers:          minMembers,
+		AntiEntropyInterval: -1, // see startRingNode — direct-path tests stay strict
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -185,12 +196,58 @@ func TestMembership_Join_RejectsWhenNoSecretConfigured(t *testing.T) {
 func TestMembership_Join_RejectsSelfDial(t *testing.T) {
 	srv, addr := startRingNode(t, "shared-secret", nil, 3)
 
-	if err := srv.membership.joinVia(context.Background(), addr); err == nil {
+	err := srv.membership.joinVia(context.Background(), addr)
+	if err == nil {
 		t.Fatal("a JOIN that dials back to self must be rejected, got nil error")
+	}
+	// joinLoop keys its fast-retry-vs-backoff decision on this exact
+	// classification (#759): a self-dial must NOT look like an ordinary
+	// rejection, or every (expected, ~1/N) self-dial walks the exponential
+	// backoff and stretches formation into minutes.
+	if !errors.Is(err, errJoinSelfDial) {
+		t.Fatalf("self-dial rejection must classify as errJoinSelfDial, got: %v", err)
 	}
 	if members := srv.membership.Members(); len(members) != 1 {
 		t.Fatalf("a rejected self-dial JOIN must not change membership, got %v", members)
 	}
+}
+
+// TestMembership_AntiEntropy_HealsMissedMemberBroadcast verifies the #759
+// safety net: if one node's member view gains an entry whose DIRECTOR-ADD
+// broadcast a directly-connected peer never received (simulated by adding
+// the member out-of-band, with no broadcast at all), the periodic
+// DIRECTOR-LIST snapshot re-broadcast must deliver it within a few
+// intervals — direct broadcasts are the fast path, anti-entropy is the
+// bounded backstop for exactly the concurrent-formation races that
+// dropped them live.
+func TestMembership_AntiEntropy_HealsMissedMemberBroadcast(t *testing.T) {
+	srvA, addrA := startRingNodeAE(t, "shared-secret", nil, 3, 200*time.Millisecond)
+	srvB, _ := startRingNodeAE(t, "shared-secret", []string{addrA}, 3, 200*time.Millisecond)
+
+	waitFor(t, 3*time.Second, func() bool {
+		return len(srvA.membership.Members()) == 2 && len(srvB.membership.Members()) == 2
+	})
+	time.Sleep(300 * time.Millisecond) // let the N=2 ring connection settle
+
+	// A real, dialable third node (an unjoined singleton) — using a live
+	// address keeps reconcile()'s post-merge dial from declaring it dead
+	// mid-test, which would turn this into a death-path test instead.
+	srvD, _ := startRingNode(t, "shared-secret", nil, 3)
+
+	// Simulate the missed broadcast: A learns about D, no DIRECTOR-ADD is
+	// ever sent. Without anti-entropy, B would now be stuck at 2 members
+	// forever (this is live #759 problem 2's end state).
+	srvA.membership.addMember(srvD.membership.self)
+	srvA.membership.reconcile()
+
+	waitFor(t, 3*time.Second, func() bool {
+		for _, mem := range srvB.membership.Members() {
+			if mem.equal(srvD.membership.self) {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // ---- N=2: tie-break (only the lower member dials) + origin-absorb ---------

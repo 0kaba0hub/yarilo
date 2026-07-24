@@ -108,6 +108,7 @@ func main() {
 		LocalPort:             localPort,
 		RingSecret:            []byte(cfg.DirectorService.RingSecret),
 		MinMembers:            cfg.DirectorService.MinMembers,
+		AntiEntropyInterval:   time.Duration(cfg.DirectorService.AntiEntropyInterval) * time.Second,
 	})
 
 	// Resolve static backends from config and register them in the ring.
