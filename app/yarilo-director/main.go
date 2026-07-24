@@ -112,7 +112,6 @@ func main() {
 		SeedPollInterval:      time.Duration(cfg.DirectorService.SeedPollInterval) * time.Second,
 		SeedPollIdleInterval:  time.Duration(cfg.DirectorService.SeedPollIdleInterval) * time.Second,
 		TombstoneTTL:          time.Duration(cfg.DirectorService.TombstoneTTL) * time.Second,
-		PollEvictFailures:     cfg.DirectorService.PollEvictFailures,
 	})
 
 	// Resolve static backends from config and register them in the ring.

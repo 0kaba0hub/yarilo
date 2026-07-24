@@ -337,33 +337,55 @@ while passing locally. Every ring connection — dial-out or accepted, at
 any member count — is now tracked for its whole lifetime and is eligible
 to carry a broadcast; no per-connection role exists to become stale.
 
-**Death detection** has two layers. The dial layer is read-error-based: a
-node whose right-neighbor dial fails (after a few short retries) or drops
-declares that member dead, removes it locally, announces `DIRECTOR-REMOVE`
-around the ring, and recomputes its own right neighbor — naturally skipping
-the dead member to whoever's next. An *accepted* connection dropping never
-triggers a death declaration; that is always the dialing side's
-responsibility.
+**Death detection** follows the reference's both-neighbors model (#768,
+Dovecot `director.c`: `director_connection_ping(dir->left)` +
+`(dir->right)`) — a death is detected by the dead node's immediate
+neighbors, O(1) probes per node regardless of ring size, never by an
+all-probes-all sweep (an earlier revision briefly shipped one; it worked
+but scaled O(N²) and conceptually negated the ring ordering).
 
-The dial layer alone has a structural blind spot (#765): it only ever
-probes this node's CURRENT right neighbor, so a member that churn parked
-outside everyone's dial path — canonically, a terminating pod whose
-snapshot a fresh joiner merged mid-rolling-restart (the ring headless
-Service publishes not-ready addresses by design, so a dying pod still
-answers an authenticated JOIN and hands out its own membership) — was
-never probed by anyone and lingered forever; live testing proved timer
-tuning does not touch this, because eviction wasn't racing, it wasn't
-happening. The **liveness-probe layer** closes it: every seed-poll cycle,
-each node re-verifies EVERY member it knows (except itself) with the same
-authenticated JOIN poll, concurrently and under a short per-probe
-deadline that bounds the whole exchange (dial + handshake — a half-dead
-peer that accepts but never answers must also count as a failure). A
-member failing `poll_evict_failures` consecutive cycles (default 3) is
-tombstoned and its `DIRECTOR-REMOVE` broadcast; a successful probe doubles
-as anti-entropy since the JOIN reply's snapshot merges as usual. Worst
-case a phantom survives `poll_evict_failures × poll cadence` plus one
-probe timeout; a wrongly-evicted live member re-joins on its own next
-poll (`addMember` clears its tombstone).
+*Right side (dial):* a node whose right-neighbor dial fails (after a few
+short retries) or drops declares that member dead, removes it locally,
+announces `DIRECTOR-REMOVE`, and recomputes its right neighbor —
+naturally skipping the dead member.
+
+*Left side (accept, #768):* losing the accepted connection whose dialer
+is this node's CURRENT computed left neighbor is a death signal too —
+previously an accepted connection dropping was never one, which left the
+N=2 higher-sorted member (who never dials) permanently blind to its only
+peer's death. Because an inbound drop is often benign (the left neighbor
+re-targeted its dial after a membership change), death is declared only
+after a few failed verification probes (authenticated JOIN with a short
+deadline bounding dial + handshake, so a half-dead peer that accepts but
+never answers also fails fast). A live member wrongly suspected passes a
+probe, or re-joins on its own next seed poll (`addMember` clears its
+tombstone).
+
+*Keepalive:* both ends of every ring connection send `PING\n` every
+`ping_interval` and answer `PONG\n`; each read loop enforces a read
+deadline of `ping_interval + ping_timeout`, so a silently-hung peer (no
+FIN/RST) surfaces as a read error — feeding the exact same two death
+paths above — instead of waiting for the OS to notice the dead TCP
+session.
+
+*QUIT:* every deliberate ring-connection teardown announces itself with
+`QUIT\t<reason>\n` before closing (reference parity —
+director-connection.c sends it on every intentional disconnect), and
+both ring read loops parse it. A `QUIT` from the current left neighbor
+classifies the loss as benign immediately — a dial re-target after a
+membership change no longer goes through the death-verification probes
+at all; probing remains only for genuinely unannounced drops. (In the reference a lost connection alone never removes a host,
+because its host list is static config and it simply reconnects around
+the hole; our membership is dynamic k8s pods whose IPs never come back,
+so the correct adaptation is eviction — using the reference's own
+delayed-purge "removed" trick, our tombstones, against gossip re-adds.)
+
+*Phantom members* (a terminating pod's snapshot merged by a fresh joiner
+mid-rolling-restart — the ring headless Service publishes not-ready
+addresses by design, so a dying pod still completes an authenticated
+JOIN) converge the same way: the anti-entropy snapshot spreads the
+phantom until views agree, at which point exactly one node computes it as
+its right neighbor, dials it, fails, and evicts it for everyone.
 
 Tombstones expire after `tombstone_ttl` (default 600s; #765): lazily
 deleted on read, dropped from gossip once expired, and an incoming

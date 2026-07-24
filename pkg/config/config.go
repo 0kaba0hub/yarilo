@@ -979,18 +979,10 @@ type DirectorServiceConfig struct {
 	SeedPollIdleInterval int `koanf:"seed_poll_idle_interval"`
 	// TombstoneTTL bounds (seconds) how long a dead member's tombstone is
 	// kept and gossiped (#765) — churn across many rollouts must not grow
-	// the set forever. Safe to expire: liveness eviction re-evicts a
-	// resurrected-but-unreachable member within poll_evict_failures poll
-	// cycles regardless. 0 = default (600); negative = never expire.
+	// the set forever. Safe to expire: neighbor liveness monitoring (#768)
+	// re-evicts a resurrected-but-unreachable member within seconds
+	// regardless. 0 = default (600); negative = never expire.
 	TombstoneTTL int `koanf:"tombstone_ttl"`
-	// PollEvictFailures is how many consecutive failed liveness probes
-	// evict a member (#765). Every poll cycle each node re-verifies every
-	// member it knows via the authenticated JOIN poll — not just its
-	// right neighbor — so phantom members injected by rolling-restart
-	// churn are cleared within this many cycles instead of lingering
-	// outside everyone's dial path forever. 0 = default (3); negative =
-	// disabled.
-	PollEvictFailures int `koanf:"poll_evict_failures"`
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// for ring routing, sticky assignments and admin overrides (#738).
 	// Matches the reference implementation's default hash template — two
@@ -1698,7 +1690,6 @@ func Load(path string) (*Config, error) {
 			SeedPollInterval:      2,
 			SeedPollIdleInterval:  2,
 			TombstoneTTL:          600,
-			PollEvictFailures:     3,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// No default IP restriction — service/pod CIDRs differ per

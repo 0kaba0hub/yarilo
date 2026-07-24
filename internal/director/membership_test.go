@@ -1,13 +1,16 @@
 package director
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -76,6 +79,7 @@ func startKillableRingNode(t *testing.T, secret string, seeds []string, minMembe
 		AntiEntropyInterval: -1, // see startRingNode — direct-path tests stay strict
 		SeedPollInterval:    -1,
 	})
+	srv.membership.probeTimeout = 500 * time.Millisecond // fail death-verification probes of killed nodes fast
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -343,15 +347,16 @@ func TestMembership_FreshJoiner_EvictsRecentlyDeadViaPoll(t *testing.T) {
 	t.Fatalf("fresh joiner did not evict the tombstoned member within 8s; members=%v", srvD.membership.Members())
 }
 
-// TestMembership_ProbeEviction_ClearsPhantomMember is the #765 gate: a
-// phantom member (a terminating pod's address a fresh joiner merged during
-// rolling-restart churn) that is NOT anyone's right neighbor must still be
-// evicted — dialRight's death detection only covers the current right
-// neighbor, so before per-member liveness probing such an entry lingered
-// forever, timer tuning notwithstanding (live-verified on 2.1.62). Both
-// nodes learn the phantom; the probe loop must tombstone it and broadcast
-// the removal so BOTH views drop to exactly the live pair.
-func TestMembership_ProbeEviction_ClearsPhantomMember(t *testing.T) {
+// TestMembership_NeighborEviction_ClearsPhantomMember is the #765/#768
+// gate for phantom cleanup under the reference's neighbor model: a phantom
+// member (a terminating pod's address merged during rolling-restart churn)
+// must be evicted by whichever node computes it as its RIGHT neighbor —
+// exactly one node does, once views agree (anti-entropy spreads the
+// phantom before the eviction kills it; O(1) probes per node, no
+// all-probes-all sweep). Both nodes learn the phantom, both reconcile,
+// the phantom's left-in-ring dials it, fails, tombstones it and
+// broadcasts the removal so BOTH views drop to exactly the live pair.
+func TestMembership_NeighborEviction_ClearsPhantomMember(t *testing.T) {
 	srvA, addrA := startPollingRingNode(t, "shared-secret", nil, 2, 300*time.Millisecond, 300*time.Millisecond)
 	srvB, _ := startPollingRingNode(t, "shared-secret", []string{addrA}, 2, 300*time.Millisecond, 300*time.Millisecond)
 
@@ -373,14 +378,17 @@ func TestMembership_ProbeEviction_ClearsPhantomMember(t *testing.T) {
 
 	srvA.membership.addMember(phantom)
 	srvB.membership.addMember(phantom)
+	srvA.membership.reconcile()
+	srvB.membership.reconcile()
 	waitFor(t, 2*time.Second, func() bool {
 		return len(srvA.membership.Members()) == 3 && len(srvB.membership.Members()) == 3
 	})
 
-	// Probe eviction: 3 consecutive failures at a 300ms cadence with a
-	// 500ms probe timeout — well under this deadline; the old behavior
-	// (no probing at all) never converges and fails it deterministically.
-	deadline := time.Now().Add(10 * time.Second)
+	// dialRight against the dead phantom: 3 refused dials at ~1s spacing
+	// on whichever node has it as right neighbor, then DIRECTOR-REMOVE to
+	// the other — well under this deadline. Without neighbor-driven
+	// eviction this never converges.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		aClean := len(srvA.membership.Members()) == 2
 		bClean := len(srvB.membership.Members()) == 2
@@ -389,8 +397,49 @@ func TestMembership_ProbeEviction_ClearsPhantomMember(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("phantom member not evicted within 10s; A=%v B=%v",
+	t.Fatalf("phantom member not evicted within 15s; A=%v B=%v",
 		srvA.membership.Members(), srvB.membership.Members())
+}
+
+// TestMembership_LeftNeighborDeath_DetectedByAcceptSide is the #768 core
+// regression: at N=2 only the lower-sorted member dials, so when the LOWER
+// member dies the higher one has no dial of its own to notice the death —
+// before left-neighbor monitoring the survivor kept the dead member
+// forever (an accepted connection dropping was documented as "never a
+// death signal"). Now the accept side must treat the loss of the
+// connection from its current left neighbor as a death signal, verify
+// with probes, and evict.
+func TestMembership_LeftNeighborDeath_DetectedByAcceptSide(t *testing.T) {
+	srvA, addrA, killA := startKillableRingNode(t, "shared-secret", nil, 2)
+	srvB, _, killB := startKillableRingNode(t, "shared-secret", []string{addrA}, 2)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return len(srvA.membership.Members()) == 2 && len(srvB.membership.Members()) == 2
+	})
+	time.Sleep(300 * time.Millisecond) // let the single N=2 connection settle
+
+	lower, higher := srvA, srvB
+	killLower := killA
+	if srvB.membership.self.less(srvA.membership.self) {
+		lower, higher = srvB, srvA
+		killLower = killB
+	}
+	_ = lower
+
+	killLower()
+
+	// Death verification: up to 3 probes at ~1s spacing after the read
+	// error — well inside this window. The old model never detects this
+	// at all (no dial from the higher member exists to fail).
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if members := higher.membership.Members(); len(members) == 1 && members[0].equal(higher.membership.self) {
+			return // survivor correctly dropped its dead left neighbor
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("higher member did not evict its dead LEFT neighbor within 10s; members=%v",
+		higher.membership.Members())
 }
 
 // TestMembership_TombstoneTTL_ExpiresAndReadmits pins the #765 tombstone
@@ -429,6 +478,107 @@ func TestMembership_TombstoneTTL_ExpiresAndReadmits(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expired tombstone must no longer block re-admission")
+	}
+}
+
+// dialAsLeftNeighbor performs a raw ring/PEER handshake against addr,
+// impersonating member left (which must sort LOWER than the server so the
+// server computes it as its left neighbor). Returns the open connection
+// with the handshake fully consumed.
+func dialAsLeftNeighbor(t *testing.T, addr string, left Member) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("raw dial: %v", err)
+	}
+	rd := bufio.NewReader(conn)
+	for { // consume the server handshake
+		line, rErr := rd.ReadString('\n')
+		if rErr != nil {
+			t.Fatalf("raw handshake read: %v", rErr)
+		}
+		if strings.TrimRight(line, "\n") == "DONE" {
+			break
+		}
+	}
+	for _, s := range []string{
+		fmt.Sprintf("ME\t%s\t%d", left.IP, left.Port),
+		fmt.Sprintf("MEMBERS\t%s\t", left.String()),
+		"PEER\t1",
+		"DONE",
+	} {
+		if _, wErr := fmt.Fprintf(conn, "%s\n", s); wErr != nil {
+			t.Fatalf("raw handshake send: %v", wErr)
+		}
+	}
+	return conn
+}
+
+// TestMembership_QuitClassifiesCloseAsBenign pins the #768 QUIT semantics
+// (reference parity: director-connection.c sends QUIT\t<reason> before
+// every intentional disconnect). The same connection loss from the
+// current LEFT neighbor must go two different ways: announced with QUIT —
+// benign, no death probes, the member stays; unannounced — suspected
+// death, verification probes fail (the address is unroutable), member
+// evicted.
+func TestMembership_QuitClassifiesCloseAsBenign(t *testing.T) {
+	left := Member{IP: "9.0.0.1", Port: 9102} // sorts below 127.0.0.1 — always the server's left
+
+	t.Run("quit close keeps the member", func(t *testing.T) {
+		srv, addr, _ := startKillableRingNode(t, "shared-secret", nil, 2)
+		conn := dialAsLeftNeighbor(t, addr, left)
+		waitFor(t, 3*time.Second, func() bool {
+			return len(srv.membership.Members()) == 2
+		})
+
+		_, _ = fmt.Fprintf(conn, "QUIT\tretargeting right neighbor\n")
+		conn.Close()
+
+		// Long enough for the abrupt-close path to have evicted (~4s at
+		// the helper's 500ms probe timeout) — the member must survive it.
+		time.Sleep(6 * time.Second)
+		if members := srv.membership.Members(); len(members) != 2 {
+			t.Fatalf("QUIT-announced close must not evict the left neighbor, got %v", members)
+		}
+	})
+
+	t.Run("silent close evicts", func(t *testing.T) {
+		srv, addr, _ := startKillableRingNode(t, "shared-secret", nil, 2)
+		conn := dialAsLeftNeighbor(t, addr, left)
+		waitFor(t, 3*time.Second, func() bool {
+			return len(srv.membership.Members()) == 2
+		})
+
+		conn.Close() // no QUIT — indistinguishable from a death
+
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if len(srv.membership.Members()) == 1 {
+				return // suspected, probed, evicted — correct
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("silent close of the left neighbor must evict it, got %v", srv.membership.Members())
+	})
+}
+
+// TestReadBoundedLine_RejectsOversizedLine pins the #703 fix: a peer
+// streaming bytes with no newline must cost at most one bufio buffer, not
+// unbounded memory — ReadString kept growing forever; readBoundedLine
+// errors out at the buffer boundary and the caller drops the connection.
+func TestReadBoundedLine_RejectsOversizedLine(t *testing.T) {
+	rd := bufio.NewReaderSize(strings.NewReader(strings.Repeat("a", 8192)), 4096)
+	if _, err := readBoundedLine(rd); err == nil {
+		t.Fatal("a line exceeding the buffer must be rejected, got nil error")
+	}
+
+	rd = bufio.NewReaderSize(strings.NewReader("DIRECTOR-LIST\t1.2.3.4:9102\t\n"), 4096)
+	line, err := readBoundedLine(rd)
+	if err != nil {
+		t.Fatalf("valid line: %v", err)
+	}
+	if strings.TrimRight(line, "\n") != "DIRECTOR-LIST\t1.2.3.4:9102\t" {
+		t.Fatalf("unexpected line: %q", line)
 	}
 }
 
