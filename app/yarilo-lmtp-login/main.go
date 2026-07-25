@@ -89,6 +89,7 @@ func main() {
 		BackendAddr:      lmtpCfg.BackendAddr,
 		DirectorAddr:     lmtpCfg.DirectorAddr,
 		DirectorTLS:      intTLS,
+		BackendTLS:       intTLS,
 		DirectorTag:      lmtpCfg.DirectorTag,
 		BackendPort:      lmtpCfg.BackendPort,
 		LocalIP:          os.Getenv("POD_IP"),

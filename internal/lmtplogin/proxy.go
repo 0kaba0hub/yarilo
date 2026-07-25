@@ -41,6 +41,9 @@ type Options struct {
 	BackendAddr string
 	// BackendTimeout caps each backend dial and transaction. Default: 300s.
 	BackendTimeout time.Duration
+	// BackendTLS optionally wraps the backend fan-out dial with internal mTLS,
+	// matching the other login proxies (#739). nil = plain TCP.
+	BackendTLS *tls.Config
 
 	// DirectorAddr is the yarilo-director address for per-recipient LOOKUP.
 	// When set, each RCPT TO triggers a LOOKUP to resolve the backend pod
@@ -242,7 +245,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				User:      e.username,
 				Token:     e.token,
 			}
-			rerr := fanOutOne(e.backendAddr, s.opts.Hostname, s.from, e.to, data, pre, s.opts.BackendTimeout)
+			rerr := fanOutOne(e.backendAddr, s.opts.Hostname, s.from, e.to, data, pre, s.opts.BackendTimeout, s.opts.BackendTLS)
 			if rerr == nil {
 				slog.Info("lmtplogin: delivered", "rcpt", e.to, "size", len(data))
 			} else {
@@ -469,12 +472,29 @@ func (s *session) directorLookup(username, tag string) (string, error) {
 
 // ---- backend fan-out --------------------------------------------------------
 
+// dialBackend opens the backend fan-out connection, wrapping it in internal
+// mTLS when tlsCfg is set (#739 — parity with the other login proxies).
+func dialBackend(addr string, timeout time.Duration, tlsCfg *tls.Config) (net.Conn, error) {
+	if tlsCfg != nil {
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, tlsCfg)
+		if err != nil {
+			return nil, fmt.Errorf("lmtplogin: mtls dial backend %s: %w", addr, err)
+		}
+		return conn, nil
+	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("lmtplogin: dial backend %s: %w", addr, err)
+	}
+	return conn, nil
+}
+
 // fanOutOne opens a single backend connection for rcpt, writes the preamble,
 // then completes a minimal LMTP transaction: LHLO → MAIL FROM → RCPT TO → DATA.
-func fanOutOne(backendAddr, hostname, from, rcpt string, data []byte, pre loginproto.Preamble, timeout time.Duration) error {
-	conn, err := net.DialTimeout("tcp", backendAddr, timeout)
+func fanOutOne(backendAddr, hostname, from, rcpt string, data []byte, pre loginproto.Preamble, timeout time.Duration, tlsCfg *tls.Config) error {
+	conn, err := dialBackend(backendAddr, timeout, tlsCfg)
 	if err != nil {
-		return fmt.Errorf("lmtplogin: dial backend %s: %w", backendAddr, err)
+		return err
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(timeout)) //nolint:errcheck
