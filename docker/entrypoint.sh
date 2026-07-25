@@ -14,6 +14,9 @@ case "$YARILO_COMPONENT" in
   yarilo-backend-api)
     exec /usr/local/bin/yarilo-backend-api
     ;;
+  yarilo-backend-reg)
+    exec /usr/local/bin/yarilo-backend-reg
+    ;;
   yarilo-locks)
     exec /usr/local/bin/yarilo-locks
     ;;

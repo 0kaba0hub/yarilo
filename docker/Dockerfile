@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         yarilo-anvil \
         yarilo-admin \
         yarilo-backend-api \
+        yarilo-backend-reg \
         yarilo-director \
         yarilo-imap \
         yarilo-imap-login \

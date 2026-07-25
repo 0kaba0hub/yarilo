@@ -31,10 +31,31 @@ backend_register:
   director_addr: ""
   ## Heartbeat interval in seconds. 0 = default (10).
   register_interval: 10
-  ## Routing pool tag; must match a director tag. Empty = default pool.
+  ## Routing pool tag = NFS shard; must match a director tag. NOT a protocol
+  ## dimension (#788). Empty = default pool.
   tag: ""
   ## Ring weight (vhosts). 0 = director default (100).
   vhosts: 0
+  ## Readiness signal for the co-located pod (#788). Each protocol container
+  ## touches readiness_dir/<proto> only while ready; the yarilo-backend-reg
+  ## sidecar heartbeats only while all readiness_protocols files are fresh.
+  ## readiness_dir is a shared emptyDir mounted into every container in the pod.
+  readiness_dir: /run/yarilo-ready
+  ## How often (seconds) a protocol container re-touches its file WHILE ready.
+  ## 0 = default (5).
+  readiness_touch_interval: 5
+  ## How old (seconds) a readiness file may be before the sidecar treats that
+  ## protocol as down and withholds the pod's heartbeat. 0 = default (15 ≈ 3×
+  ## touch). Widen on slow nodes to avoid false silence flapping the whole pod.
+  readiness_stale_after: 15
+  ## Protocols the sidecar requires fresh before heartbeating. Empty = no gate
+  ## (heartbeat unconditionally). The co-located pod sets its full container set.
+  readiness_protocols:
+    - imap
+    - pop3
+    - submission
+    - lmtp
+    - managesieve
 
 storage:
   mailbox: maildir

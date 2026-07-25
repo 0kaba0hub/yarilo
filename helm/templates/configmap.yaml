@@ -770,12 +770,13 @@ data:
           - {{ . | quote }}
           {{- end }}
 
-    ## Backend self-registration + heartbeat to the director (#776). Read by
-    ## the backend session processes (imap/pop3/lmtp/submission). An empty
-    ## director_addr disables registration (standalone / non-cluster runs).
-    ## director_addr auto-derives to the ClusterIP -director Service — the same
-    ## LOOKUP endpoint — when register is enabled and no explicit override is
-    ## set; any replica answers, the registration gossips ring-wide.
+    ## Co-located backend pod registration (#776/#788). Read by the
+    ## yarilo-backend-reg sidecar (one BACKEND-UP for the pod IP) and by the
+    ## protocol containers' readiness touchers. An empty director_addr disables
+    ## registration (standalone / non-cluster runs). director_addr auto-derives
+    ## to the ClusterIP -director Service — the same LOOKUP endpoint — when
+    ## register is enabled and no explicit override is set; any replica answers,
+    ## the registration gossips ring-wide.
     {{- $reg := .Values.backend_register }}
     {{- $regAddr := $reg.director_addr }}
     {{- if and $reg.enabled (not $regAddr) }}
@@ -786,6 +787,15 @@ data:
       register_interval: {{ $reg.register_interval }}
       tag: {{ $reg.tag | quote }}
       vhosts: {{ $reg.vhosts }}
+      readiness_dir: {{ $reg.readiness_dir | quote }}
+      readiness_touch_interval: {{ $reg.readiness_touch_interval }}
+      readiness_stale_after: {{ $reg.readiness_stale_after }}
+      {{- with $reg.readiness_protocols }}
+      readiness_protocols:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
 
     {{- if .Values.components.saslLogin.enabled }}
     sasl_login:
