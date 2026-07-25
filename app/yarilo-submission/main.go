@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
-	"github.com/0kaba0hub/yarilo/internal/backendreg"
+	"github.com/0kaba0hub/yarilo/internal/readyfile"
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
 	"github.com/0kaba0hub/yarilo/pkg/build"
@@ -160,8 +161,16 @@ func main() {
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
-	stopReg := startRegistration(cfg, primary.Port)
-	defer stopReg()
+	// Publish this protocol container's readiness into the co-located pod's
+	// shared directory (#788); the yarilo-backend-reg sidecar gates the pod's
+	// director heartbeat on it. Ready = listeners bound (a relay proxy has no
+	// wedge-prone data path). No-op when readiness_dir is unset.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ready atomic.Bool
+	reg := cfg.BackendRegister
+	go readyfile.Touch(ctx, reg.ReadinessDir, "submission",
+		time.Duration(reg.ReadinessTouchInterval)*time.Second, ready.Load)
 
 	// port 587 — STARTTLS
 	if svcs.Submission.Active() {
@@ -197,10 +206,13 @@ func main() {
 		slog.Info("submission: listening", "addr", addr, "tls", "implicit")
 	}
 
+	ready.Store(true) // listeners bound → the readiness toucher may start signalling
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+	cancel() // stop touching the readiness file so the sidecar drops this pod
 	slog.Info("yarilo-submission stopped")
 }
 
@@ -260,49 +272,6 @@ func (a chainAuth) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, err
 		return nil, nil
 	}
 	return lookup.LookupSCRAMSha1(username)
-}
-
-// startRegistration self-registers this submission backend with the director
-// and heartbeats over the ring (#776), returning a stop func that sends a
-// graceful BACKEND-DOWN (LEAVE) before teardown. It runs on its own context
-// so the LEAVE lands before shutdown. No-op when backend_register.director_addr
-// or POD_IP is unset (non-cluster runs).
-func startRegistration(cfg *config.Config, port int) (stop func()) {
-	reg := cfg.BackendRegister
-	if reg.DirectorAddr == "" || port == 0 {
-		return func() {}
-	}
-	ip := os.Getenv("POD_IP")
-	if ip == "" {
-		slog.Warn("backendreg: POD_IP unset, submission registration disabled")
-		return func() {}
-	}
-	var tlsCfg *tls.Config
-	if cfg.InternalTLS.Enabled {
-		t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
-		if err != nil {
-			slog.Error("backendreg: mTLS client config failed, registration disabled", "err", err)
-			return func() {}
-		}
-		tlsCfg = t
-	}
-	client := backendreg.New(backendreg.Options{
-		DirectorAddr: reg.DirectorAddr,
-		SelfIP:       ip,
-		Port:         port,
-		Tag:          reg.Tag,
-		Vhosts:       reg.Vhosts,
-		Interval:     time.Duration(reg.RegisterInterval) * time.Second,
-		TLS:          tlsCfg,
-	})
-	regCtx, cancel := context.WithCancel(context.Background())
-	go client.Run(regCtx)
-	slog.Info("backendreg: registering with director", "director", reg.DirectorAddr, "ip", ip, "port", port, "tag", reg.Tag)
-	return func() {
-		client.Leave()
-		time.Sleep(300 * time.Millisecond) // let BACKEND-DOWN flush before teardown
-		cancel()
-	}
 }
 
 func parseCIDRs(ss []string) []*net.IPNet {

@@ -19,7 +19,6 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/passdbs"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/internal/backendreg"
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 	"github.com/0kaba0hub/yarilo/internal/fts/language"
 	imapsvr "github.com/0kaba0hub/yarilo/internal/imap"
@@ -27,6 +26,7 @@ import (
 	mssvr "github.com/0kaba0hub/yarilo/internal/managesieve"
 	pop3svr "github.com/0kaba0hub/yarilo/internal/pop3"
 	"github.com/0kaba0hub/yarilo/internal/quotawarn"
+	"github.com/0kaba0hub/yarilo/internal/readyfile"
 	"github.com/0kaba0hub/yarilo/internal/sieve"
 	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
 	"github.com/0kaba0hub/yarilo/internal/storage/mailboxbuild"
@@ -65,53 +65,18 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// Ready reports whether this backend is serving (the /readyz condition) —
-// the self-health gate for the director-registration heartbeat (#776).
-func (s *Server) Ready() bool { return s.telem != nil && s.telem.IsReady() }
-
-// startRegistration begins self-registration + heartbeat to the director
-// for this backend's session port (#776), and returns a stop func that
-// sends a graceful BACKEND-DOWN (LEAVE) before tearing the registration
-// down — it uses its OWN context (not the shutdown ctx) so the LEAVE lands
-// on a still-open connection. No-op when backend_register.director_addr or
-// POD_IP is unset (non-cluster runs).
-func (s *Server) startRegistration(port int) (stop func()) {
+// startReadyFile publishes this protocol container's readiness into the shared
+// co-located-pod directory (#788): readyfile.Touch bumps the file's mtime ONLY
+// while telemetry reports ready, so the yarilo-backend-reg sidecar (which owns
+// the pod's single director registration) gates the pod's heartbeat on this
+// protocol being alive. A wedged data path stops touching → the file goes stale
+// → the pod is expired ring-wide. No-op when backend_register.readiness_dir is
+// unset (standalone / single-process runs). The director registration itself no
+// longer lives here — it is the sidecar's job.
+func (s *Server) startReadyFile(ctx context.Context, proto string) {
 	reg := s.cfg.BackendRegister
-	if reg.DirectorAddr == "" || port == 0 {
-		return func() {}
-	}
-	ip := os.Getenv("POD_IP")
-	if ip == "" {
-		slog.Warn("backendreg: POD_IP unset, backend registration disabled")
-		return func() {}
-	}
-	var tlsCfg *tls.Config
-	if s.cfg.InternalTLS.Enabled {
-		t, err := mtls.ClientConfig(s.cfg.InternalTLS.Cert, s.cfg.InternalTLS.Key, s.cfg.InternalTLS.CA)
-		if err != nil {
-			slog.Error("backendreg: mTLS client config failed, registration disabled", "err", err)
-			return func() {}
-		}
-		tlsCfg = t
-	}
-	client := backendreg.New(backendreg.Options{
-		DirectorAddr: reg.DirectorAddr,
-		SelfIP:       ip,
-		Port:         port,
-		Tag:          reg.Tag,
-		Vhosts:       reg.Vhosts,
-		Interval:     time.Duration(reg.RegisterInterval) * time.Second,
-		Healthy:      s.Ready,
-		TLS:          tlsCfg,
-	})
-	regCtx, cancel := context.WithCancel(context.Background())
-	go client.Run(regCtx)
-	slog.Info("backendreg: registering with director", "director", reg.DirectorAddr, "ip", ip, "port", port, "tag", reg.Tag)
-	return func() {
-		client.Leave()
-		time.Sleep(300 * time.Millisecond) // let BACKEND-DOWN flush before teardown
-		cancel()
-	}
+	ready := func() bool { return s.telem != nil && s.telem.IsReady() }
+	go readyfile.Touch(ctx, reg.ReadinessDir, proto, time.Duration(reg.ReadinessTouchInterval)*time.Second, ready)
 }
 
 // New creates and wires all components according to cfg.
@@ -580,8 +545,7 @@ func (s *Server) RunIMAP(ctx context.Context) error {
 			}
 		}()
 	}
-	stop := s.startRegistration(regPort(svcs.IMAP, svcs.IMAPS))
-	defer stop()
+	s.startReadyFile(ctx, "imap")
 	<-ctx.Done()
 	return nil
 }
@@ -615,8 +579,7 @@ func (s *Server) RunPOP3(ctx context.Context) error {
 			os.Exit(1)
 		}()
 	}
-	stop := s.startRegistration(regPort(svcs.POP3, svcs.POP3S))
-	defer stop()
+	s.startReadyFile(ctx, "pop3")
 	<-ctx.Done()
 	return nil
 }
@@ -657,8 +620,7 @@ func (s *Server) RunLMTP(ctx context.Context) error {
 			os.Exit(1)
 		}
 	}()
-	stop := s.startRegistration(regPort(svcs.LMTP))
-	defer stop()
+	s.startReadyFile(ctx, "lmtp")
 	<-ctx.Done()
 	return nil
 }
@@ -690,6 +652,7 @@ func (s *Server) RunManageSieve(ctx context.Context) error {
 			os.Exit(1)
 		}
 	}()
+	s.startReadyFile(ctx, "managesieve")
 	<-ctx.Done()
 	return nil
 }
@@ -826,17 +789,6 @@ func firstActive(svcs ...*config.ServiceConfig) *config.ServiceConfig {
 		}
 	}
 	return nil
-}
-
-// regPort picks the port a login proxy dials for director registration
-// (#776): session backends serve plain — TLS is terminated at the login
-// proxy — so the plain port is preferred, falling back to the TLS port when
-// only the implicit-TLS listener is enabled. 0 means nothing to register.
-func regPort(svcs ...*config.ServiceConfig) int {
-	if s := firstActive(svcs...); s != nil {
-		return s.Port
-	}
-	return 0
 }
 
 // listenAddr converts a ServiceConfig into a TCP listen address.

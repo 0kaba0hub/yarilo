@@ -923,19 +923,40 @@ type DirectorAPIConfig struct {
 }
 
 // DirectorServiceConfig configures the standalone yarilo-director process.
-// BackendRegisterConfig configures a backend session process's
-// self-registration + heartbeat to the director (#776). Empty DirectorAddr
-// disables registration (non-cluster / standalone runs).
+// BackendRegisterConfig configures the co-located pod's director registration
+// (#776/#788). It is consumed by the yarilo-backend-reg sidecar (which owns the
+// single BACKEND-UP for the pod IP) and by the protocol containers' readiness
+// touchers. Empty DirectorAddr disables registration (non-cluster / standalone).
 type BackendRegisterConfig struct {
 	// DirectorAddr is the director ClusterIP Service "host:port" to
 	// register against — any replica; the registration gossips ring-wide.
 	DirectorAddr string `koanf:"director_addr"`
-	// RegisterInterval paces the heartbeat (seconds); 0 = 10.
+	// RegisterInterval paces the sidecar heartbeat (seconds); 0 = 10.
 	RegisterInterval int `koanf:"register_interval"`
-	// Tag places this backend in a routing pool (matches director tags).
+	// Tag places this backend in a routing pool = NFS shard (matches director
+	// tags); it is NOT a protocol dimension (#788).
 	Tag string `koanf:"tag"`
 	// Vhosts is the ring weight (0 = director default 100).
 	Vhosts int `koanf:"vhosts"`
+
+	// ReadinessDir is the shared (emptyDir) directory where each protocol
+	// container touches its readiness file and the sidecar reads them (#788).
+	// Empty disables the readiness signal (single-process / standalone runs).
+	ReadinessDir string `koanf:"readiness_dir"`
+	// ReadinessTouchInterval is how often (seconds) a protocol container
+	// re-touches its readiness file WHILE ready; 0 = 5.
+	ReadinessTouchInterval int `koanf:"readiness_touch_interval"`
+	// ReadinessStaleAfter is how old (seconds) a readiness file may be before
+	// the sidecar treats that protocol as not-ready and withholds the pod's
+	// heartbeat; 0 = 15 (≈ 3× the touch interval). Widen on slow nodes to avoid
+	// false silence flapping the whole pod.
+	ReadinessStaleAfter int `koanf:"readiness_stale_after"`
+	// ReadinessProtocols is the set of protocol readiness files the sidecar
+	// requires fresh before heartbeating (e.g. imap, pop3, submission, lmtp,
+	// managesieve). Empty = the sidecar heartbeats unconditionally (no gate).
+	// Zero-valued ReadinessTouchInterval / ReadinessStaleAfter default to 5s /
+	// 15s in readyfile.Touch / readyfile.AllFresh respectively.
+	ReadinessProtocols []string `koanf:"readiness_protocols"`
 }
 
 type DirectorServiceConfig struct {
