@@ -36,8 +36,8 @@ docker/          — Dockerfile
 **Інфраструктурна архітектура yarilo визначена цими документами/схемами в `docs/`. Це source of truth для будь-яких рішень по deployment, scaling, HA, координації між компонентами:**
 
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — топологія deployment, sizing (per pod, per tag), HA strategy, sharding через tags, обґрунтування рішень
-- **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login-proxies, 3-pod director StatefulSet з peer-sync, monitor sidecars, ring-routing до backend tags
-- **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): 4 окремі StatefulSet-и на протокол (imap/pop3/submission/lmtp) для незалежного scaling, yarilo-locks для cross-pod coordination, shared NFS PV (RWX)
+- **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login-proxies, 3-pod director StatefulSet з peer-sync, backend-lease (self-registration + heartbeat #776, замість monitor-sidecar-ів), ring-routing до backend tags
+- **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): ОДИН co-located StatefulSet, под якого несе всі протокол-контейнери (imap/pop3/submission/lmtp/managesieve) + `yarilo-fts` + `yarilo-backend-reg` сайдкар на спільному IP; `yarilo-locks`/`backend-api`/`quota-status` — окремі deployments; shared NFS PV (RWX)
 - **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: повний стек (login + sessions + auth + anvil + `yarilo-locks` embedded + storage) для self-contained інсталяцій без director-а
 
 **Правила використання:**
@@ -46,12 +46,12 @@ docker/          — Dockerfile
 3. При планувані нової функціональності з infrastructure-наслідками — перевір схеми, обговори зміни, оновлюй документ.
 
 **Ключові архітектурні рішення зафіксовані в схемах:**
-- 4 окремих StatefulSet-и на протокол у backend deployment — для independent scaling per protocol
+- ОДИН co-located StatefulSet на backend deployment — под несе всі протокол-контейнери (imap/pop3/submission/lmtp/managesieve) + `yarilo-fts` (fts_addr=localhost) + `yarilo-backend-reg` сайдкар на спільному IP. Це відновлює Dovecot-інваріант «1 mail-host = всі per-user ресурси юзера» і робить одне кільце/один userDir коректними (#788); fts co-located дає single-writer per-user індексу безкоштовно (#675/#676). Свідома відмова від independent per-protocol scaling заради routing-когерентності (consistent hashing несумісний з «1 юзер = 1 под» при роздільних пулах)
 - `yarilo-auth` + `yarilo-anvil` — shared services (Deployments × 2), один deployment на всю інсталяцію
 - `yarilo-locks` — single abstraction for cross-process write coordination. **All k8s deployments (standalone and backend) use `remote` mode** — its own Deployment behind a ClusterIP Service, mTLS TCP `:9104`, Redis-backed state. `embedded` mode (in-memory + Unix socket) is reserved for unit tests and non-k8s CLI runs; it is never the production default because Unix sockets cannot cross pods, which breaks any `replicaCount > 1`. In-process goroutine concurrency stays on `sync.Mutex` as a two-tier fast-path.
-- Один NFS PV (RWX) на tag — shared всіма 4 StatefulSet-ами в межах tag-у
-- Director — StatefulSet × 3 з peer-sync, 4 окремі ring-и (по одному на протокол)
-- Sticky routing per-protocol, cross-protocol coordination через `yarilo-locks`
+- Один NFS PV (RWX) на tag — shared всіма co-located подами в межах tag-у; `tag` = NFS-шард, НЕ протокол
+- Director — StatefulSet × 3 з peer-sync, ОДНЕ кільце + один userDir (один pod IP на юзера обслуговує всі протоколи; login override-ить порт)
+- Sticky routing per-user (не per-protocol): юзер закріплений за одним co-located подом на всі протоколи; cross-POD coordination через `yarilo-locks`
 - TLS terminate + passdb на director, userdb на backend через shared `yarilo-auth`
 
 ---

@@ -42,9 +42,40 @@ This is where **TLS terminate + passdb auth + allow_nets enforcement** happens.
 
 ### backend deployment (one per tag = one per NFS shard)
 Handles authenticated mail sessions, reading and writing mail + index data to NFS.
-Contains: 4 session processes (`yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`) plus `yarilo-locks` for write coordination.
+
+**Co-located pod (one pod serves ALL of a user's per-user state).** A backend pod
+is a **single StatefulSet** whose pod runs one container per protocol —
+`yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`,
+`yarilo-managesieve` — plus the `yarilo-fts` full-text-search container and a
+`yarilo-backend-reg` registration sidecar, sharing the pod's **one IP** and the
+tag's **one NFS PV (RWX)**. `yarilo-locks` runs as its own per-tag Deployment for
+cross-pod write coordination. `yarilo-backend-api` and `yarilo-quota-status` are
+separate backend-side Deployments (not per-user-write, own lifecycle) — not in
+the pod.
+
+This is deliberate and load-bearing for the whole director model: it restores the
+Dovecot invariant **one mail-host owns every per-user resource**. Because the pod
+at a given IP answers imap *and* pop3 *and* lmtp *and* submission *and*
+managesieve, the director needs only **one ring and one user→pod map** — a user
+hashes to one pod IP, and that IP is correct for every protocol (the login proxy
+dials the protocol-specific port on that same IP). See "Director routing — one
+ring" and "Why co-located, not per-protocol StatefulSets" below.
+
+**FTS is co-located for the same reason — and it closes #675/#676.** The Xapian
+index is **per-user**, and a session reaches FTS over `ftsproto`. Today
+`fts.fts_addr` is a shared ClusterIP, so requests for one user's index
+round-robin across `yarilo-fts` replicas → two pods cache the same user's write
+handle → corruption (why `replicas > 1` is a footgun, #676; the write-handle
+hand-off #675). Co-locating `yarilo-fts` in the pod with `fts_addr = localhost`
+makes the user's **already-sticky** pod the sole owner of that user's index write
+handle. On the shared NFS every per-user Xapian dir then has exactly one writer —
+the same "1 user = 1 pod" invariant that fixes #788 gives FTS single-writer for
+free, so `replicas > N` is safe (indexing load follows the users on each pod).
+
 **Login proxies are not needed inside the backend** — it accepts plain TCP from the director
-with auth state in the YARILO preamble.
+with auth state in the YARILO preamble. The login pods (`yarilo-imap-login`, …,
+`yarilo-sasl-login`) live in the **director deployment** (see
+`docs/yarilo_director.svg`), never here.
 
 Backend auth logic:
 - Login pod sends `YARILO\tADDR=...\tSESSION=...\tUSER=...\tTOKEN=...\n` before any protocol exchange.
@@ -62,28 +93,55 @@ mechanism — and it works in **every** topology (k8s and non-k8s standalone),
 consistent with config-not-binary. Supersedes the DNS-reconcile approach (closed
 PR #778).
 
+**One registration per POD, not per protocol.** Because the pod is co-located,
+exactly **one** `yarilo-backend-reg` sidecar per pod owns the director
+registration — it registers the **pod IP once**, not one stream per protocol
+container. This is not cosmetic: four protocol containers each registering the
+same IP would push four independent monotonic-seq streams for one origin, and the
+strictly-newer lease dedup (#776) compares seq only within an origin — four
+interleaved streams on one IP would fight, each rejecting the others as stale. One
+sidecar = one origin = one clean seq stream. The sidecar reuses the exact
+`internal/backendreg` client (including the #787 fixes: PONG on the director's
+PING, and reconnect-backoff reset on a healthy long-lived connection — without
+those a co-located pod would flap **as a whole**, a larger blast radius than the
+per-protocol flap #787 first surfaced).
+
 Model:
-- **Register on start.** Each backend session process (`yarilo-imap` / `-pop3` /
-  `-submission` / `-lmtp`) dials the director **ClusterIP Service** — it does not
-  matter which director replica answers; a load-balanced address is correct here
-  precisely because the registration is gossiped **ring-wide**. It sends
-  `BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}`; the receiving director adds it and
-  forwards it as a `RING-CHANGE up` envelope so every director learns it. (This is
-  the first and only backend→director control channel — until now the director
-  only ever dialed backends, never the reverse.)
-- **Heartbeat = periodic re-register, gated on self-health.** Every
-  `backend_register_interval` the backend re-sends `BACKEND-UP` — but ONLY while its
-  own data-path listener is actually serving (the same condition as its `/readyz`:
-  the protocol listener is accepting and not wedged). A heartbeat must prove the
-  DATA PATH is alive, not merely that a control goroutine still ticks: an NFS-hang
-  where session goroutines are stuck on I/O and the accept queue is stalled, yet a
-  detached heartbeat goroutine keeps sending, is exactly the "live heartbeat, dead
-  data-path" hole the monitor's port-probe used to close. Gating the heartbeat on
-  self-health turns that wedge into **silence → TTL expiry**, so removing the
-  monitor loses no coverage. Each heartbeat carries a **monotonic per-origin
-  sequence** (a logical counter, NOT wall-clock — the Lamport lesson of #772: pod
-  clocks are unsynchronized, so freshness is compared only *within* one backend's
-  own origin), gossiped ring-wide as "backend X seen at seq N". Every director keeps
+- **Register on start.** The `yarilo-backend-reg` sidecar dials the director
+  **ClusterIP Service** — it does not matter which director replica answers; a
+  load-balanced address is correct here precisely because the registration is
+  gossiped **ring-wide**. It sends `BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\t{seq}`
+  for the **pod IP**; the receiving director adds it and forwards it as a
+  `RING-CHANGE up` envelope (carrying port + vhosts, #776) so every director learns
+  it. `{port}` is nominal — login proxies override it with their own protocol port
+  (`internal/login` BackendPort / lmtp-login BackendPort), dialing
+  `{pod-ip}:{protocol-port}`; the ring entry identifies the POD, the login picks the
+  protocol port. (This is the only backend→director control channel — otherwise the
+  director only ever dials backends.)
+- **`{tag}` is the STORAGE SHARD, never the protocol.** A co-located pod serves all
+  protocols, so protocol is not a routing dimension — the tag stays a pure NFS-shard
+  label (one tag = one NFS PV = one `yarilo-backend` release). Per-user shard
+  selection (userdb `director_tag`, #746) is unaffected.
+- **Heartbeat = periodic re-register, gated on the PROTOCOL containers'
+  self-health.** Every `backend_register_interval` the sidecar re-sends
+  `BACKEND-UP` — but ONLY while **every protocol** container in the pod is serving
+  (each protocol's `/readyz`: listener accepting and not wedged). A heartbeat must
+  prove the DATA PATH is alive, not merely that a control goroutine still ticks.
+  **Readiness-gate semantics (spell this out for operators):** because it is one
+  pod = one ring entry, a *single* unready protocol container makes the whole pod
+  go silent → the lease expires → the pod is removed for **all** protocols. This is
+  correct and matches Dovecot (host down = down for everything on that host), but it
+  is a real coupling: an NFS-wedged `yarilo-lmtp` will pull the pod's IMAP traffic
+  off too. That is the price of the one-mail-host invariant, and the sidecar's gate
+  makes the wedge fail safe (silence → expiry) rather than routing to a half-dead
+  pod. **`yarilo-fts` is deliberately NOT in the gate:** FTS is best-effort (a
+  wedged index degrades SEARCH to a slow fallback but never blocks mail flow), so
+  an unhealthy fts container must not evict the pod's live IMAP/LMTP traffic. Each heartbeat
+  carries a **monotonic per-origin sequence** (a logical counter, NOT wall-clock —
+  the Lamport lesson of #772: pod clocks are unsynchronized, so freshness is
+  compared only *within* one backend's own origin; the seq is seeded from the
+  process start time so a same-IP restart resumes above the director's last-recorded
+  seq, #776), gossiped ring-wide as "backend X seen at seq N". Every director keeps
   the max seen per backend; a heartbeat landing on **any** director refreshes the
   lease everywhere — this is what makes a load-balanced heartbeat correct (a
   per-director timer with LB'd heartbeats would false-expire a live backend on the
@@ -123,8 +181,11 @@ Safety + migration:
 Config (snake_case, section-prefixed; `yarilo.yaml` + Helm `values.yaml`):
 - `director_service.backend_expire` — seconds of missed heartbeat before a backend
   is removed ring-wide.
-- backend side: `backend_register_interval` + the director ClusterIP address to
-  register against.
+- sidecar side: `backend_register.director_addr` (director ClusterIP),
+  `backend_register.register_interval`, `backend_register.tag` (NFS shard),
+  `backend_register.vhosts`. One `backend_register` block per pod drives the single
+  `yarilo-backend-reg` sidecar; there is **no** per-protocol registration path
+  (config-not-binary: one registration mechanism, no modes).
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
@@ -400,36 +461,56 @@ helm/yarilo-backend       → backend pool (one release per tag = per NFS shard,
 - ClusterIP Service (`-director-ring`) — internal ring protocol port; also the join seed.
 
 ### yarilo-backend (one release per tag, e.g. `yarilo-backend-a`)
-**4 separate StatefulSets (one per protocol)** within a single Helm release, for independent scaling:
+**One co-located StatefulSet per tag** — the pod runs all four protocol containers plus the registration sidecar:
 
-- `StatefulSet yarilo-backend-<tag>-imap` — replicaCount=N (HPA: connection count).
-- `StatefulSet yarilo-backend-<tag>-pop3` — replicaCount=M (HPA: poll rate, typically small).
-- `StatefulSet yarilo-backend-<tag>-submission` — replicaCount=P (HPA: outbound rate).
-- `StatefulSet yarilo-backend-<tag>-lmtp` — replicaCount=Q (HPA: delivery queue, scaled on burst).
-- `Deployment yarilo-locks-<tag>` — replicaCount=2, cross-protocol coordination.
+- `StatefulSet yarilo-backend-<tag>` — replicaCount=N. Pod containers:
+  `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`,
+  `yarilo-managesieve`, `yarilo-fts` (`fts_addr = localhost`), and
+  `yarilo-backend-reg` (registration sidecar). All share the pod IP.
+- `Deployment yarilo-locks-<tag>` — replicaCount=2, cross-pod write coordination.
 - `Deployment redis-<tag>` (or shared Redis) — state backend for locks.
-- One **PVC NFS (RWX)** — shared by all 4 StatefulSets within the tag.
-- 4 Headless Services — one per StatefulSet, for sticky routing from the director.
+- `Deployment yarilo-backend-api-<tag>` and `Deployment yarilo-quota-status-<tag>`
+  — backend-side support services, own replicaCount (not per-user-write, not in
+  the pod).
+- One **PVC NFS (RWX)** — shared by all pods within the tag.
+- One Headless Service — stable per-pod DNS for sticky routing from the director.
 
-**Why 4 separate StatefulSets and not 1 with 4 containers in a pod:**
-- Process isolation — an `imap` crash does not affect `lmtp`.
-- Independent scaling — POP3 typically runs as 1 pod, lmtp at 10+ during mass delivery.
-- Right-sized resources — each StatefulSet has its own CPU/RAM limits.
-- HPA per protocol driven by different metrics.
+**Why co-located, not per-protocol StatefulSets:**
+- **Routing coherence (the whole point).** Consistent hashing cannot give both
+  "1 user = 1 pod across protocols" *and* independent per-protocol pod pools — they
+  are mathematically incompatible. Separate pools would hash the same user to
+  *different* pods for IMAP vs LMTP, so every cross-protocol write (LMTP delivery →
+  the mailbox an IMAP session on another pod holds) crosses pods and fights over
+  `yarilo-locks` / index-cache coherence. Co-locating restores Dovecot's
+  one-mail-host invariant and makes the single ring + single userDir **correct**,
+  not merely a shortcut (this is the causal fix for #788, not a workaround).
+- **FTS single-writer for free (#675/#676).** The per-user Xapian index has the same
+  single-writer requirement as the mailbox. Co-locating `yarilo-fts` (localhost)
+  puts the user's index write handle on their already-sticky pod, so each per-user
+  index on the shared NFS has exactly one writer cluster-wide — no fts ring, no
+  ClusterIP round-robin corruption. One invariant ("1 user = 1 pod") fixes #788 and
+  #675/#676 together.
+- **One IP per user.** The director stores one pod IP per user; that IP serves every
+  protocol, so no protocol dimension is needed on the ring, the userDir, or the wire.
+- Vertical sizing stays per-protocol — each **container** keeps its own CPU/RAM
+  limits. What is given up is **independent per-protocol replica-count / HPA**: you
+  scale the pod (all protocols together), not one protocol's pool. This is a
+  deliberate trade of an unused scaling axis for routing correctness.
 
-**Trade-off:** Cross-protocol writes (e.g. LMTP delivery → IMAP STORE on the same mailbox) go
-through `yarilo-locks` (cross-pod). Locks becomes the **critical path** for every write.
+**Trade-off (documented, accepted):** the whole pod scales as a unit, and one
+unready protocol container takes the pod (all protocols) out of the ring — see the
+readiness-gate semantics under "backend liveness". Cross-protocol writes still go
+through `yarilo-locks` for cross-*pod* coordination (a user's replicas across the
+tag), but same-user same-protocol traffic is pinned to one pod.
 
-### Director routing — 4 separate rings
+### Director routing — one ring
 
-The director maintains 4 independent rings (one per protocol):
-- `ring_imap`: `MD5(user) → yarilo-backend-<tag>-imap-N`
-- `ring_pop3`: `MD5(user) → yarilo-backend-<tag>-pop3-M`
-- `ring_submission`: ...
-- `ring_lmtp`: ...
-
-N, M, P, Q can differ (different StatefulSet sizes). For a single user, IMAP and LMTP may land
-on different pods — coordination goes through `yarilo-locks`.
+The director maintains **one** consistent-hashing ring and **one** user→pod
+directory: `MD5(user) → yarilo-backend-<tag>-N` (the pod IP). The same pod answers
+IMAP, POP3, Submission and LMTP for that user; the login proxy dials the
+protocol-specific port on the resolved pod IP. `tag` selects the NFS shard, never
+the protocol. There is no per-protocol ring — a single user never lands on
+different pods for different protocols.
 
 ---
 
@@ -461,14 +542,12 @@ resources:
 
 ---
 
-## Sizing per backend tag (4 StatefulSets + one NFS share + local locks)
+## Sizing per backend tag (one co-located StatefulSet + one NFS share + local locks)
 
 | Parameter | Typical | Min/Max |
 |:---|:---|:---|
-| yarilo-imap replicaCount | 3–5 | 1 / scale-out |
-| yarilo-pop3 replicaCount | 1–2 | 1 / scale-out (POP3 is rarely intensive) |
-| yarilo-submission replicaCount | 2–3 | 1 / scale-out |
-| yarilo-lmtp replicaCount | 3–5 baseline | 1 / 10+ during mass-delivery burst |
+| yarilo-backend replicaCount (co-located pod) | 3–5 | 1 / scale-out |
+| per-container resources (imap/pop3/submission/lmtp) | sized independently within the pod | see "Sizing per backend pod" |
 | locks replicaCount | **2** | stateless, ClusterIP |
 | Users per pod | **3–5k** mostly idle | Goroutines are cheap, but FD/RAM limits apply |
 | **Total users per tag** | **10–20k** | NFS server is the constraint |
@@ -499,8 +578,11 @@ Each with its own NFS PV and its own `yarilo-locks` service.
 
 ## Director routing & stickiness
 
-**Ring:** `MD5(username) → backend pod` (within a single tag).
-**Tag assignment:** a separate user → tag map (admin-defined or hash-based shard).
+**Ring:** `MD5(username) → co-located backend pod` (within a single tag). One ring,
+one pod IP per user, serving every protocol — the login proxy dials the
+protocol-specific port on that IP.
+**Tag assignment:** a separate user → tag map (admin-defined or hash-based shard) —
+`tag` = NFS shard, not protocol.
 
 1. Client → director's login proxy (TLS terminate).
 2. Login proxy: passdb in-process (auth only: password + allow_nets), then userdb for home/mail. Backend receives user info via extended XCLIENT, skips passdb/userdb.
@@ -526,7 +608,10 @@ Synced between directors over the peer protocol.
 | NFS server | a separate HA effort (Pacemaker+DRBD, or managed NFS such as AWS EFS) |
 
 **Backend failover sequence:**
-1. The backend stops heartbeating (SIGTERM → BACKEND-DOWN immediately; hard kill → TTL expiry, #776).
+1. The pod stops heartbeating — the `yarilo-backend-reg` sidecar sends BACKEND-DOWN
+   on SIGTERM (immediate); a hard kill or any unready protocol container → the
+   sidecar goes silent → TTL expiry (#776). Either way the **whole pod** leaves the
+   ring for all protocols.
 2. Director removes it from the ring.
 3. Locks on the dead pod expire via TTL (30 s) on `yarilo-locks-<tag>`.
 4. Ring rehash → users move to neighbouring replicas in the same tag.
