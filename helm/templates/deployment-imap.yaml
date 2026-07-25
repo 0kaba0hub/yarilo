@@ -40,6 +40,10 @@ spec:
               value: "yarilo-imap"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             {{- include "yarilo.adminBackendEnv" . | nindent 12 }}
             {{- include "yarilo.dbEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}

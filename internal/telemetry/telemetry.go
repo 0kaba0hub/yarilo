@@ -29,6 +29,12 @@ func New(addr string) *Server {
 // SetReady marks the server as ready to serve traffic.
 func (s *Server) SetReady(v bool) { s.ready.Store(v) }
 
+// IsReady reports the current readiness — the /readyz condition. The
+// backend registration client (#776) gates its heartbeat on this so a
+// not-ready backend stops heartbeating and is expired ring-wide rather
+// than being kept as a live-but-wedged routing target.
+func (s *Server) IsReady() bool { return s.ready.Load() }
+
 // ListenAndServe starts the HTTP server. Blocks until ctx is done.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	go func() {

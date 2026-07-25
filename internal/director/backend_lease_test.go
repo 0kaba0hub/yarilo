@@ -120,3 +120,33 @@ func TestBackendLease_GossipedHeartbeatRefreshes(t *testing.T) {
 		t.Fatalf("gossiped heartbeat must refresh the local lease, got %+v ok=%v", lease, ok)
 	}
 }
+
+// TestBackendLease_GossipedUpAddsUnknownBackend: a lease-managed "up" gossip
+// carries port + vhosts, so a director that has NEVER seen this backend (the
+// registration is a persistent connection to only 1 of N directors via the
+// ClusterIP) adds it to its ring for routing — closing the "routed on 1 of N
+// directors" gap (#776 PR-2). Without the port, SetUp alone could not.
+func TestBackendLease_GossipedUpAddsUnknownBackend(t *testing.T) {
+	s := NewWithOptions(Options{})
+	// Backend is unknown to this director (no handshake, no prior gossip).
+	if hasBackend(s, "10.0.0.42") {
+		t.Fatal("precondition: backend must be unknown")
+	}
+
+	// RING-CHANGE up payload: {ip} up {tag} {seq} {port} {vhosts}
+	applyRingChangeFields(s, []string{"10.0.0.42", "up", "imap", "12", "10143", "50"})
+
+	be := s.ring.GetBackend("10.0.0.42")
+	if be == nil {
+		t.Fatal("gossiped up with port must add the unknown backend to the ring")
+	}
+	if be.Port != 10143 || be.Tag != "imap" || be.Vhosts != 50 || !be.Up {
+		t.Fatalf("added backend has wrong fields: %+v", be)
+	}
+	s.backendSeenMu.Lock()
+	lease, ok := s.backendSeen["10.0.0.42"]
+	s.backendSeenMu.Unlock()
+	if !ok || lease.seq != 12 {
+		t.Fatalf("gossiped up must also record the lease seq, got %+v ok=%v", lease, ok)
+	}
+}

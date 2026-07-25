@@ -73,17 +73,36 @@ func applyRingChangeFields(srv *Server, payload []string) {
 	ts := time.Now().Unix()
 	switch event {
 	case "up":
-		// A gossiped heartbeat may carry the backend's seq (#776, 4th field)
-		// — refresh this director's lease so a heartbeat that landed on ANY
-		// director keeps the backend alive everywhere.
+		// A gossiped heartbeat carries the backend's seq (#776, field 3) and,
+		// for lease-managed backends, its port + vhosts (fields 4-5). Refresh
+		// the lease so a heartbeat that landed on ANY director keeps the
+		// backend alive everywhere.
+		var seq uint64
 		if len(payload) >= 4 {
-			if seq, err := strconv.ParseUint(payload[3], 10, 64); err == nil {
+			if v, err := strconv.ParseUint(payload[3], 10, 64); err == nil {
+				seq = v
 				srv.recordBackendSeen(ip, seq)
 			}
 		}
+		// When port is present, add the backend outright: the registration is
+		// a persistent connection to exactly ONE of N directors (ClusterIP),
+		// so the other directors only ever learn this backend via this gossip
+		// — SetUp can't help them, it has no port. Full AddBackend closes the
+		// "routed on 1 of 3 directors" gap.
+		if len(payload) >= 6 {
+			port, pErr := strconv.Atoi(payload[4])
+			vhosts, _ := strconv.Atoi(payload[5])
+			if pErr == nil {
+				srv.ring.AddBackend(&ring.Backend{
+					IP: ip, Port: port, Tag: tag, Up: true, Vhosts: vhosts, LastUp: ts,
+				})
+				slog.Info("director: ring change up", "ip", ip, "tag", tag, "port", port, "seq", seq)
+				break
+			}
+		}
 		if !srv.ring.SetUp(ip, true, ts) {
-			// Backend not in our ring (arrived after handshake, no port info).
-			// It will be picked up on the next reconnect handshake.
+			// Backend not in our ring and no port carried (legacy admin/api
+			// gossip): it will be picked up on the next reconnect handshake.
 			slog.Warn("director: ring RING-CHANGE up for unknown backend", "ip", ip, "tag", tag)
 		} else {
 			slog.Info("director: ring change up", "ip", ip, "tag", tag)
