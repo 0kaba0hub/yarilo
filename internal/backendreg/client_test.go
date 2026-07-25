@@ -17,6 +17,8 @@ import (
 type mockDirector struct {
 	ln net.Listener
 
+	sendPing bool // when set, the mock sends one PING right after the handshake
+
 	mu      sync.Mutex
 	lines   []string
 	conns   []net.Conn
@@ -59,7 +61,10 @@ func (m *mockDirector) handle(conn net.Conn) {
 	wr.WriteString("HOST-HAND-START\n")                //nolint:errcheck
 	wr.WriteString("HOST-HAND-END\n")                  //nolint:errcheck
 	wr.WriteString("DONE\n")                           //nolint:errcheck
-	wr.Flush()                                         //nolint:errcheck
+	if m.sendPing {
+		wr.WriteString("PING\n") //nolint:errcheck
+	}
+	wr.Flush() //nolint:errcheck
 
 	rd := bufio.NewReader(conn)
 	for {
@@ -304,4 +309,25 @@ func TestClient_NoDirectorAddrIsNoop(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Run with empty DirectorAddr should return immediately")
 	}
+}
+
+// TestClient_RepliesPongToPing guards #787: the director's PING keepalive must
+// be answered with PONG, otherwise the director closes the registration and the
+// live backend flaps through TTL expiry.
+func TestClient_RepliesPongToPing(t *testing.T) {
+	md := newMockDirector(t)
+	defer md.close()
+	md.sendPing = true // mock sends one PING right after the handshake
+
+	c := New(Options{
+		DirectorAddr: md.addr(),
+		SelfIP:       "10.0.0.20",
+		Port:         10143,
+		Interval:     50 * time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	md.waitFor(t, func(ls []string) bool { return countPrefix(ls, "PONG") >= 1 })
 }

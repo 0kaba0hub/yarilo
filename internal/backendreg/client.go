@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,8 +90,17 @@ func (c *Client) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		start := time.Now()
 		if err := c.runOnce(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("backendreg: director connection lost, reconnecting", "err", err, "backoff", backoff)
+		}
+		// A connection that survived well past a heartbeat interval was
+		// healthy — reset the backoff so a single later drop (e.g. a director
+		// rollout) does not inherit a pegged reconnectMax delay and then leave
+		// the backend silent past backend_expire (#787). Without this, backoff
+		// doubles to 30s after a few early failures and never recovers.
+		if time.Since(start) > 2*c.opts.Interval {
+			backoff = reconnectBase
 		}
 		select {
 		case <-ctx.Done():
@@ -146,15 +156,22 @@ func (c *Client) runOnce(ctx context.Context) error {
 		c.wrMu.Unlock()
 	}()
 
-	// Drain the read side so a director-closed connection surfaces as an
-	// error that triggers reconnect (and so any server replies don't back
-	// up); we don't act on the content.
+	// Read the server side: reply PONG to the director's PING keepalive
+	// (#787 — the director closes any client that does not PONG within
+	// PingTimeout, so a silent drain loop gets this registration killed every
+	// ~30s and the live backend flaps through TTL expiry). Everything else is
+	// ignored; a director-closed connection surfaces as a read error that
+	// triggers reconnect.
 	readErr := make(chan error, 1)
 	go func() {
 		for {
-			if _, e := rd.ReadString('\n'); e != nil {
+			line, e := rd.ReadString('\n')
+			if e != nil {
 				readErr <- e
 				return
+			}
+			if strings.TrimRight(line, "\r\n") == "PING" {
+				c.send("PONG")
 			}
 		}
 	}()
