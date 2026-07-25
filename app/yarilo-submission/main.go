@@ -58,7 +58,7 @@ func main() {
 
 	slog.Info("yarilo-submission starting",
 		"version", build.Version,
-		"telemetry", cfg.Telemetry.Listen,
+		"telemetry", telemetry.Addr(cfg.Telemetry.Listen), // resolved (honours TELEMETRY_LISTEN)
 	)
 
 	// ---- auth chain ----
