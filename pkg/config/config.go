@@ -24,6 +24,7 @@ type Config struct {
 	AuthService        AuthServiceConfig            `koanf:"auth_service"`
 	AnvilService       AnvilServiceConfig           `koanf:"anvil_service"`
 	DirectorService    DirectorServiceConfig        `koanf:"director_service"`
+	BackendRegister    BackendRegisterConfig        `koanf:"backend_register"`
 	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
 	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
 	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
@@ -922,6 +923,21 @@ type DirectorAPIConfig struct {
 }
 
 // DirectorServiceConfig configures the standalone yarilo-director process.
+// BackendRegisterConfig configures a backend session process's
+// self-registration + heartbeat to the director (#776). Empty DirectorAddr
+// disables registration (non-cluster / standalone runs).
+type BackendRegisterConfig struct {
+	// DirectorAddr is the director ClusterIP Service "host:port" to
+	// register against — any replica; the registration gossips ring-wide.
+	DirectorAddr string `koanf:"director_addr"`
+	// RegisterInterval paces the heartbeat (seconds); 0 = 10.
+	RegisterInterval int `koanf:"register_interval"`
+	// Tag places this backend in a routing pool (matches director tags).
+	Tag string `koanf:"tag"`
+	// Vhosts is the ring weight (0 = director default 100).
+	Vhosts int `koanf:"vhosts"`
+}
+
 type DirectorServiceConfig struct {
 	Listen       string             `koanf:"listen"`
 	Shutdown     ShutdownConfig     `koanf:"shutdown"`

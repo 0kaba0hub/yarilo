@@ -12,6 +12,30 @@ image:
 ## lmtp). When a userdb lookup returns explicit per-user values
 ## (volatile_dir=, index_dir=, control_dir= or modifiers in the mail=
 ## location string), those take priority over these cluster-wide defaults.
+## Backend self-registration + heartbeat to the director (#776). The backend
+## session pods (imap/pop3/lmtp/submission) register their own POD_IP + session
+## port in the director hash ring and heartbeat while /readyz is true, so the
+## ring reflects live backends without a one-time DNS resolve or an external
+## prober. A graceful SIGTERM sends BACKEND-DOWN (immediate remove + rehash);
+## a crash / wedge stops the heartbeat and the director expires the lease
+## (components.director.backend_expire). Requires POD_IP (set automatically on
+## the backend deployments via the Downward API) and network reachability to
+## the director Service.
+backend_register:
+  ## Enable backend registration. Leave false for standalone / static
+  ## mail_servers deployments (those backends never heartbeat, never expire).
+  enabled: false
+  ## Director address to register against. Empty + enabled auto-derives to the
+  ## ClusterIP -director Service (the LOOKUP endpoint); any replica answers and
+  ## the registration gossips ring-wide. Set explicitly for non-k8s runs.
+  director_addr: ""
+  ## Heartbeat interval in seconds. 0 = default (10).
+  register_interval: 10
+  ## Routing pool tag; must match a director tag. Empty = default pool.
+  tag: ""
+  ## Ring weight (vhosts). 0 = director default (100).
+  vhosts: 0
+
 storage:
   mailbox: maildir
   maildir_root: /var/mail/vhosts
