@@ -4,6 +4,7 @@ package telemetry
 import (
 	"context"
 	"net/http"
+	"os"
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -13,6 +14,21 @@ import (
 type Server struct {
 	srv   *http.Server
 	ready atomic.Bool
+}
+
+// Addr resolves the telemetry listen address, letting the TELEMETRY_LISTEN env
+// var override the config value. In the co-located backend pod (#788) every
+// container shares the pod IP and reads the same yarilo.yaml, so each must be
+// told a distinct telemetry port via env; non-co-located components leave it
+// unset and fall back to the config value.
+func Addr(cfgListen string) string {
+	if v := os.Getenv("TELEMETRY_LISTEN"); v != "" {
+		return v
+	}
+	if cfgListen == "" {
+		return ":8080"
+	}
+	return cfgListen
 }
 
 // New creates a telemetry server listening on addr (e.g. ":8080").

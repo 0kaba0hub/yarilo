@@ -1,4 +1,4 @@
-{{- if ((.Values.components.manageSieve | default dict).enabled) }}
+{{- if and ((.Values.components.manageSieve | default dict).enabled) (not .Values.components.backend.coLocated) }}
 ## Headless — ManageSieve backend pods (internal, reached by the login pod).
 apiVersion: v1
 kind: Service

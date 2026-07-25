@@ -22,9 +22,10 @@ image:
 ## the backend deployments via the Downward API) and network reachability to
 ## the director Service.
 backend_register:
-  ## Enable backend registration. Leave false for standalone / static
-  ## mail_servers deployments (those backends never heartbeat, never expire).
-  enabled: false
+  ## Enable backend registration. Default true: the co-located pod's
+  ## yarilo-backend-reg sidecar registers the pod IP with the director. Harmless
+  ## for standalone (no sidecar container, director_addr stays empty → no-op).
+  enabled: true
   ## Director address to register against. Empty + enabled auto-derives to the
   ## ClusterIP -director Service (the LOOKUP endpoint); any replica answers and
   ## the registration gossips ring-wide. Set explicitly for non-k8s runs.
@@ -90,6 +91,34 @@ storage:
 ## Components
 ## -------------------------------------------------------------------
 components:
+
+  ## Co-located backend pod (#788). One StatefulSet whose pod runs every
+  ## protocol container (imap/pop3/submission/lmtp/managesieve) + yarilo-fts
+  ## (localhost) + yarilo-backend-api + the yarilo-backend-reg sidecar, sharing
+  ## one pod IP + the tag's NFS PV. Restores the Dovecot invariant "one
+  ## mail-host owns every per-user resource" → one director ring + one userDir
+  ## are correct, and per-user fts is single-writer for free (#675/#676).
+  ## Per-container resources come from the components.<proto>/fts/backendAPI
+  ## blocks below. quota-status stays a SEPARATE Deployment (global-read, served
+  ## to the external Postfix MTA — it writes no per-user state).
+  backend:
+    ## coLocated: true renders the merged StatefulSet and suppresses the legacy
+    ## per-protocol backend Deployments. This is the model behind a director.
+    coLocated: true
+    replicas: 3
+    ## Internal mTLS for the pod's control channels (director registration,
+    ## auth/anvil/locks dials). Shared by all containers in the pod.
+    internalTLS:
+      enabled: false
+      secretName: ""
+    ## Resources for the tiny yarilo-backend-reg registration sidecar.
+    regResources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
 
   ## Director — front-end proxy.
   ## Accepts client connections, routes to backend via consistent hash.

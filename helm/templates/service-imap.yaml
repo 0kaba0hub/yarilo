@@ -1,4 +1,4 @@
-{{- if .Values.components.imap.enabled }}
+{{- if and .Values.components.imap.enabled (not .Values.components.backend.coLocated) }}
 ## Headless — IMAP backend pods (director resolves A-records → individual pod IPs)
 apiVersion: v1
 kind: Service

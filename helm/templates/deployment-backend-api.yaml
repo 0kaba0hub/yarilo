@@ -1,4 +1,4 @@
-{{- if .Values.components.backendAPI.enabled }}
+{{- if and .Values.components.backendAPI.enabled (not .Values.components.backend.coLocated) }}
 {{- $tokenSecret := .Values.components.backendAPI.token_secret }}
 {{- if eq $tokenSecret "" }}
 {{- $tokenSecret = printf "%s-backend-api-token" (include "yarilo.fullname" .) }}

@@ -44,7 +44,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tel := telemetry.New(cfg.Telemetry.Listen)
+	tel := telemetry.New(telemetry.Addr(cfg.Telemetry.Listen))
 	go func() {
 		if err := tel.ListenAndServe(ctx); err != nil {
 			slog.Error("telemetry server failed", "err", err)

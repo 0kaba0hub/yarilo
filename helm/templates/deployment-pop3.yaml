@@ -1,4 +1,4 @@
-{{- if .Values.components.pop3.enabled }}
+{{- if and .Values.components.pop3.enabled (not .Values.components.backend.coLocated) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

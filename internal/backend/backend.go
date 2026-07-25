@@ -496,7 +496,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// ---- telemetry ----
-	telemAddr := cfg.Telemetry.Listen
+	telemAddr := telemetry.Addr(cfg.Telemetry.Listen)
 	if telemAddr == "" {
 		telemAddr = ":8080"
 	}

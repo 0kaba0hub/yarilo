@@ -1,0 +1,251 @@
+{{- if .Values.components.backend.coLocated }}
+{{- /*
+  Co-located backend pod (#788): one StatefulSet whose pod runs every protocol
+  container + yarilo-fts (localhost) + yarilo-backend-api + the
+  yarilo-backend-reg registration sidecar, sharing one pod IP and the tag's NFS
+  PV. One user hashes to one pod IP that serves every protocol, so the director
+  needs only one ring + one userDir. See docs/DEPLOYMENT.md.
+*/ -}}
+{{- $root := . }}
+{{- $reg := .Values.backend_register }}
+{{- $stale := $reg.readiness_stale_after | default 15 }}
+{{- $readyDir := $reg.readiness_dir | default "/run/yarilo-ready" }}
+{{- $itls := .Values.components.backend.internalTLS | default dict }}
+{{- /* Protocol containers: name/component/protocol port(s)/telemetry port/ready file. */ -}}
+{{- $protocols := list
+  (dict "name" "imap" "component" "yarilo-imap" "telemetry" 8080 "ports" (list (dict "name" "imap" "port" 10143)))
+  (dict "name" "pop3" "component" "yarilo-pop3" "telemetry" 8081 "ports" (list (dict "name" "pop3" "port" 10110)))
+  (dict "name" "submission" "component" "yarilo-submission" "telemetry" 8082 "ports" (list (dict "name" "submission" "port" 10587)))
+  (dict "name" "lmtp" "component" "yarilo-lmtp" "telemetry" 8083 "ports" (list (dict "name" "lmtp" "port" 10024)))
+  (dict "name" "managesieve" "component" "yarilo-managesieve" "telemetry" 8084 "ports" (list (dict "name" "sieve" "port" 14190)))
+}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "yarilo.fullname" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+spec:
+  serviceName: {{ include "yarilo.fullname" . }}-backend
+  replicas: {{ .Values.components.backend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 8 }}
+      annotations:
+        {{- include "yarilo.configChecksum" . | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "yarilo.initWaitTCP" (dict "name" "wait-locks" "host" (printf "%s-locks.%s.svc" (include "yarilo.fullname" .) .Release.Namespace) "port" "9104" "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
+        {{- include "yarilo.initWaitTCP" (dict "name" "wait-redis" "host" (include "yarilo.redisInitHost" .) "port" (include "yarilo.redisInitPort" .) "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
+      containers:
+        {{- range $p := $protocols }}
+        - name: {{ $p.component }}
+          image: {{ include "yarilo.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: {{ $p.component | quote }}
+            - name: LOG_LEVEL
+              value: {{ $root.Values.logLevel | quote }}
+            - name: TELEMETRY_LISTEN
+              value: {{ printf ":%d" (int $p.telemetry) | quote }}
+            {{- include "yarilo.adminBackendEnv" $root | nindent 12 }}
+            {{- include "yarilo.dbEnv" $root | nindent 12 }}
+            {{- with $root.Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            {{- range $port := $p.ports }}
+            - name: {{ $port.name }}
+              containerPort: {{ $port.port }}
+              protocol: TCP
+            {{- end }}
+            - name: telemetry
+              containerPort: {{ $p.telemetry }}
+              protocol: TCP
+          # readiness = the pod's own freshness file for this protocol (#788),
+          # the same signal the yarilo-backend-reg sidecar gates the heartbeat on.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test $(( $(date +%s) - $(stat -c %Y {{ printf "%s/%s" $readyDir $p.name }} 2>/dev/null || echo 0) )) -lt {{ $stale }}
+            periodSeconds: 5
+            failureThreshold: 2
+          volumeMounts:
+            {{- include "yarilo.backendVolumeMounts" (dict "root" $root "itls" $itls) | nindent 12 }}
+          resources:
+            {{- toYaml (index $root.Values.components $p.name).resources | nindent 12 }}
+        {{- end }}
+        # ---- yarilo-fts (co-located; fts_addr=localhost → per-user single writer, #675/#676) ----
+        - name: yarilo-fts
+          image: {{ include "yarilo.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-fts"
+            - name: LOG_LEVEL
+              value: {{ $root.Values.logLevel | quote }}
+            - name: TELEMETRY_LISTEN
+              value: ":8085"
+            {{- with $root.Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: fts
+              containerPort: {{ $root.Values.components.fts.port }}
+              protocol: TCP
+            - name: telemetry
+              containerPort: 8085
+              protocol: TCP
+          # fts is best-effort — NOT gated (a wedged index degrades SEARCH but
+          # must not evict the pod's mail traffic). Standard HTTP readiness.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8085
+            periodSeconds: 10
+          volumeMounts:
+            {{- include "yarilo.backendVolumeMounts" (dict "root" $root "itls" $itls) | nindent 12 }}
+          resources:
+            {{- toYaml $root.Values.components.fts.resources | nindent 12 }}
+        # ---- yarilo-backend-api (per-user writer; listens on the pod IP only, #788/#792) ----
+        - name: yarilo-backend-api
+          image: {{ include "yarilo.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-backend-api"
+            - name: LOG_LEVEL
+              value: {{ $root.Values.logLevel | quote }}
+            {{- include "yarilo.adminBackendEnv" $root | nindent 12 }}
+            {{- include "yarilo.dbEnv" $root | nindent 12 }}
+            {{- with $root.Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: backend-api
+              containerPort: 9105
+              protocol: TCP
+          volumeMounts:
+            {{- include "yarilo.backendVolumeMounts" (dict "root" $root "itls" $itls) | nindent 12 }}
+          resources:
+            {{- toYaml $root.Values.components.backendAPI.resources | nindent 12 }}
+        # ---- yarilo-backend-reg (registration sidecar: one BACKEND-UP for the pod IP) ----
+        - name: yarilo-backend-reg
+          image: {{ include "yarilo.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-backend-reg"
+            - name: LOG_LEVEL
+              value: {{ $root.Values.logLevel | quote }}
+            - name: TELEMETRY_LISTEN
+              value: ":8086"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- with $root.Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: telemetry
+              containerPort: 8086
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8086
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yarilo
+              readOnly: true
+            - name: ready
+              mountPath: {{ $readyDir }}
+            {{- include "yarilo.internalTLSMount" $itls | nindent 12 }}
+          resources:
+            {{- toYaml $root.Values.components.backend.regResources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "yarilo.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        # shared readiness signal (#788): protocol containers touch, sidecar reads
+        - name: ready
+          emptyDir: {}
+        {{- if .Values.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- include "yarilo.internalTLSVolume" $itls | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# Headless Service: stable per-pod DNS + the director dials pod IPs directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 4 }}
+  ports:
+    - name: imap
+      port: 10143
+      targetPort: imap
+    - name: pop3
+      port: 10110
+      targetPort: pop3
+    - name: submission
+      port: 10587
+      targetPort: submission
+    - name: lmtp
+      port: 10024
+      targetPort: lmtp
+    - name: sieve
+      port: 14190
+      targetPort: sieve
+    - name: backend-api
+      port: 9105
+      targetPort: backend-api
+{{- end }}

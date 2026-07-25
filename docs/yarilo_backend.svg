@@ -61,7 +61,7 @@
   <text x="608" y="173" text-anchor="start" fill="#475569" font-size="8">(#776 lease · #787 PONG+backoff)</text>
 
   <!-- ══════════════════════════════════════════════════
-       ONE co-located pod: 5 protocols + fts + reg sidecar, one IP
+       ONE co-located pod: 5 protocols + fts + backend-api + reg sidecar, one IP
   ══════════════════════════════════════════════════ -->
   <rect x="30" y="198" width="700" height="200" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="2" stroke-dasharray="6 4"/>
   <rect x="32" y="200" width="360" height="18" rx="2" fill="#334155"/>
@@ -99,36 +99,38 @@
   <text x="650" y="277" text-anchor="middle" fill="#475569" font-size="8">ManageSieve</text>
   <text x="650" y="290" text-anchor="middle" fill="#475569" font-size="8">script store</text>
 
-  <!-- fts + reg sidecar row -->
-  <rect x="42" y="316" width="400" height="70" rx="5" fill="#e0e7ff" stroke="#4338ca" stroke-width="2"/>
-  <text x="242" y="334" text-anchor="middle" fill="#4338ca" font-size="11" font-weight="bold">yarilo-fts  (co-located · fts_addr = localhost)</text>
-  <text x="242" y="348" text-anchor="middle" fill="#475569" font-size="9">per-user Xapian index · sticky pod = sole writer</text>
-  <text x="242" y="361" text-anchor="middle" fill="#475569" font-size="9">single-writer for free → closes #675 / #676</text>
-  <text x="242" y="376" text-anchor="middle" fill="#64748b" font-size="8">best-effort: NOT in the readiness gate (wedge ⇒ slow SEARCH, mail still flows)</text>
+  <!-- fts + backend-api + reg sidecar row -->
+  <rect x="42" y="316" width="250" height="70" rx="5" fill="#e0e7ff" stroke="#4338ca" stroke-width="2"/>
+  <text x="167" y="334" text-anchor="middle" fill="#4338ca" font-size="10" font-weight="bold">yarilo-fts (localhost)</text>
+  <text x="167" y="348" text-anchor="middle" fill="#475569" font-size="8">per-user Xapian · sticky pod = sole writer</text>
+  <text x="167" y="360" text-anchor="middle" fill="#475569" font-size="8">single-writer free → #675/#676</text>
+  <text x="167" y="374" text-anchor="middle" fill="#64748b" font-size="7">best-effort · NOT in readiness gate</text>
 
-  <rect x="458" y="316" width="256" height="70" rx="5" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
-  <text x="586" y="334" text-anchor="middle" fill="#334155" font-size="11" font-weight="bold">yarilo-backend-reg</text>
-  <text x="586" y="348" text-anchor="middle" fill="#334155" font-size="9">registration sidecar</text>
-  <text x="586" y="361" text-anchor="middle" fill="#475569" font-size="8">one BACKEND-UP for the pod IP</text>
-  <text x="586" y="374" text-anchor="middle" fill="#475569" font-size="8">gated on all protocol containers ready</text>
+  <rect x="300" y="316" width="190" height="70" rx="5" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
+  <text x="395" y="334" text-anchor="middle" fill="#15803d" font-size="10" font-weight="bold">yarilo-backend-api</text>
+  <text x="395" y="348" text-anchor="middle" fill="#475569" font-size="8">admin API · per-user writer</text>
+  <text x="395" y="360" text-anchor="middle" fill="#475569" font-size="8">listens pod-IP only</text>
+  <text x="395" y="374" text-anchor="middle" fill="#64748b" font-size="7">admin LOOKUP-routed (#792)</text>
+
+  <rect x="498" y="316" width="216" height="70" rx="5" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="606" y="334" text-anchor="middle" fill="#334155" font-size="10" font-weight="bold">yarilo-backend-reg</text>
+  <text x="606" y="348" text-anchor="middle" fill="#334155" font-size="8">registration sidecar</text>
+  <text x="606" y="360" text-anchor="middle" fill="#475569" font-size="8">one BACKEND-UP for pod IP</text>
+  <text x="606" y="373" text-anchor="middle" fill="#475569" font-size="8">gated on all protocols ready</text>
 
   <!-- ══════════════════════════════════════════════════
-       Backend-side separate deployments (right column)
+       Backend-side SEPARATE deployments: locks + quota-status (global-read)
   ══════════════════════════════════════════════════ -->
   <rect x="748" y="198" width="242" height="60" rx="5" fill="#fef2f2" stroke="#7c2d12" stroke-width="2"/>
   <text x="869" y="216" text-anchor="middle" fill="#7c2d12" font-size="12" font-weight="bold">yarilo-locks</text>
   <text x="869" y="230" text-anchor="middle" fill="#7c2d12" font-size="8">Deployment × 2 · mTLS :9104</text>
   <text x="869" y="245" text-anchor="middle" fill="#475569" font-size="9">cross-pod write coord · TTL 30s</text>
 
-  <rect x="748" y="266" width="242" height="58" rx="5" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
-  <text x="869" y="284" text-anchor="middle" fill="#15803d" font-size="11" font-weight="bold">yarilo-backend-api</text>
-  <text x="869" y="298" text-anchor="middle" fill="#475569" font-size="9">admin/HTTP API</text>
-  <text x="869" y="311" text-anchor="middle" fill="#64748b" font-size="8">Deployment · own replicaCount</text>
-
-  <rect x="748" y="332" width="242" height="58" rx="5" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
-  <text x="869" y="350" text-anchor="middle" fill="#15803d" font-size="11" font-weight="bold">yarilo-quota-status</text>
-  <text x="869" y="364" text-anchor="middle" fill="#475569" font-size="9">quota policy service</text>
-  <text x="869" y="377" text-anchor="middle" fill="#64748b" font-size="8">Deployment · own replicaCount</text>
+  <rect x="748" y="280" width="242" height="70" rx="5" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
+  <text x="869" y="300" text-anchor="middle" fill="#15803d" font-size="11" font-weight="bold">yarilo-quota-status</text>
+  <text x="869" y="315" text-anchor="middle" fill="#475569" font-size="9">Postfix policy service (global-read)</text>
+  <text x="869" y="329" text-anchor="middle" fill="#64748b" font-size="8">separate Deployment · stable ClusterIP</text>
+  <text x="869" y="342" text-anchor="middle" fill="#64748b" font-size="8">for the external MTA · no per-user write</text>
 
   <!-- Control-plane bus (pod → locks + shared services) -->
   <line x1="380" y1="398" x2="380" y2="414" stroke="#64748b" stroke-width="1.8"/>
