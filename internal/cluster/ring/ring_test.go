@@ -135,6 +135,68 @@ func TestLookupBackendByTag_ConsistentWithinTag(t *testing.T) {
 	}
 }
 
+// TestAddBackend_PreservesTransitionMetadata guards #705: re-adding a known
+// backend with only LastUp set (a BACKEND-UP heartbeat / admin add) must not
+// clobber the existing LastDown / Hostname / LastUp — otherwise the
+// timestamp-based peer up/down merge is corrupted.
+func TestAddBackend_PreservesTransitionMetadata(t *testing.T) {
+	tests := []struct {
+		name         string
+		existing     Backend
+		incoming     Backend
+		wantLastUp   int64
+		wantLastDown int64
+		wantHostname string
+	}{
+		{
+			name:         "heartbeat preserves LastDown and Hostname",
+			existing:     Backend{IP: "10.0.0.1", Port: 143, Up: false, LastUp: 100, LastDown: 200, Hostname: "be-1"},
+			incoming:     Backend{IP: "10.0.0.1", Port: 143, Up: true, LastUp: 300},
+			wantLastUp:   300,
+			wantLastDown: 200,
+			wantHostname: "be-1",
+		},
+		{
+			name:         "handshake carrying non-zero fields overwrites",
+			existing:     Backend{IP: "10.0.0.2", LastUp: 100, LastDown: 200, Hostname: "old"},
+			incoming:     Backend{IP: "10.0.0.2", LastUp: 400, LastDown: 350, Hostname: "new"},
+			wantLastUp:   400,
+			wantLastDown: 350,
+			wantHostname: "new",
+		},
+		{
+			name:         "zero LastUp on incoming is preserved from existing",
+			existing:     Backend{IP: "10.0.0.3", LastUp: 500, LastDown: 0, Hostname: "h"},
+			incoming:     Backend{IP: "10.0.0.3", Up: true},
+			wantLastUp:   500,
+			wantLastDown: 0,
+			wantHostname: "h",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := New(false)
+			ex := tt.existing
+			r.AddBackend(&ex)
+			in := tt.incoming
+			r.AddBackend(&in)
+			got := r.GetBackend(tt.incoming.IP)
+			if got == nil {
+				t.Fatal("backend missing after re-add")
+			}
+			if got.LastUp != tt.wantLastUp {
+				t.Errorf("LastUp = %d, want %d", got.LastUp, tt.wantLastUp)
+			}
+			if got.LastDown != tt.wantLastDown {
+				t.Errorf("LastDown = %d, want %d", got.LastDown, tt.wantLastDown)
+			}
+			if got.Hostname != tt.wantHostname {
+				t.Errorf("Hostname = %q, want %q", got.Hostname, tt.wantHostname)
+			}
+		})
+	}
+}
+
 func TestTags(t *testing.T) {
 	r := New(false)
 	r.AddBackend(&Backend{IP: "10.0.0.1", Tag: "ssd", Up: true})

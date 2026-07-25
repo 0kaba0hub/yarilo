@@ -58,10 +58,28 @@ func New(lowercase bool) *Ring {
 	}
 }
 
-// AddBackend inserts or replaces a backend and rebuilds the ring.
+// AddBackend inserts or updates a backend and rebuilds the ring. When the IP
+// is already known, zero-valued transition metadata on the incoming struct does
+// NOT clobber the existing entry (#705): a BACKEND-UP heartbeat / admin add
+// carries only LastUp, so without this an existing LastDown and Hostname would
+// be reset to zero on every heartbeat, corrupting the timestamp-based up/down
+// merge peers rely on (a backend that went down would gossip D0 and be
+// resurrected Up cluster-wide). A handshake that legitimately carries these
+// fields still overwrites, because its values are non-zero.
 func (r *Ring) AddBackend(b *Backend) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if prev, ok := r.backends[b.IP]; ok {
+		if b.LastDown == 0 {
+			b.LastDown = prev.LastDown
+		}
+		if b.LastUp == 0 {
+			b.LastUp = prev.LastUp
+		}
+		if b.Hostname == "" {
+			b.Hostname = prev.Hostname
+		}
+	}
 	r.backends[b.IP] = b
 	r.rebuild()
 }
