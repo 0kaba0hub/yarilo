@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -170,12 +171,20 @@ func TestClient_HandshakeAndHeartbeat(t *testing.T) {
 	if first[1] != "10.0.0.7" || first[2] != "10143" || first[3] != "imap-a" || first[4] != "100" {
 		t.Fatalf("BACKEND-UP identity fields wrong: %q", ups[0])
 	}
-	if first[5] != "1" {
-		t.Fatalf("first heartbeat seq = %q, want 1", first[5])
+	// seq is seeded from the process start time (unix seconds) so a same-IP
+	// restart resumes above the director's last-recorded seq — so assert
+	// monotonic increase, not a fixed 1/2.
+	firstSeq, err := strconv.ParseUint(first[5], 10, 64)
+	if err != nil {
+		t.Fatalf("first heartbeat seq not a uint: %q", first[5])
 	}
 	second := strings.Split(ups[1], "\t")
-	if second[5] != "2" {
-		t.Fatalf("second heartbeat seq = %q, want 2 (monotonic)", second[5])
+	secondSeq, err := strconv.ParseUint(second[5], 10, 64)
+	if err != nil {
+		t.Fatalf("second heartbeat seq not a uint: %q", second[5])
+	}
+	if secondSeq != firstSeq+1 {
+		t.Fatalf("second seq = %d, want first+1 (%d)", secondSeq, firstSeq+1)
 	}
 }
 

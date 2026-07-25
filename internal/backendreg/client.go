@@ -65,7 +65,16 @@ func New(opts Options) *Client {
 	if opts.Healthy == nil {
 		opts.Healthy = func() bool { return true }
 	}
-	return &Client{opts: opts}
+	c := &Client{opts: opts}
+	// Seed the heartbeat seq from the process start time (unix seconds) so a
+	// backend restart on the SAME IP without a graceful LEAVE resumes ABOVE
+	// the seq the director last recorded — otherwise the new process would
+	// start at 1, every heartbeat would be rejected as stale, and the backend
+	// would stay invisible until the lease expired (a ~TTL blackhole). The
+	// seq is per-origin (compared only against this backend's own prior seq,
+	// never across nodes), so wall-clock skew between pods is irrelevant.
+	c.seq.Store(uint64(time.Now().Unix()))
+	return c
 }
 
 // Run keeps a registration connection to the director alive until ctx ends,

@@ -57,6 +57,9 @@
 //
 //	Server pushes (ring-envelope form, right-neighbor connections only, #750):
 //	  RING-CHANGE\t{originIP}\t{originPort}\t{seq}\t{ip}\t{event}\t{tag}\n
+//	    a lease-managed backend "up" carries port + vhosts so a director that
+//	    only sees the backend via gossip (registration lands on 1 of N) can add
+//	    it to its ring: ...\t{ip}\tup\t{tag}\t{beSeq}\t{port}\t{vhosts}\n (#776)
 //	  USER-MOVED\t{originIP}\t{originPort}\t{seq}\t{user}\t{ip}\t{port}\n
 //	  USER-KICKED\t{originIP}\t{originPort}\t{seq}\t{user}\n
 package director
@@ -731,7 +734,12 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts, "seq", seq)
 	payload := fmt.Sprintf("%s\tup\t%s", ip, tag)
 	if hasSeq {
-		payload = fmt.Sprintf("%s\tup\t%s\t%d", ip, tag, seq)
+		// Carry port + vhosts so a director that receives this gossip WITHOUT
+		// a persistent connection from the backend (the ClusterIP registration
+		// lands on exactly one of N directors) can add the backend to its ring
+		// for routing — SetUp alone can't, it has no port. seq stays at field 3
+		// so a legacy seq-only payload keeps parsing.
+		payload = fmt.Sprintf("%s\tup\t%s\t%d\t%d\t%d", ip, tag, seq, port, vhosts)
 	}
 	s.originateRingEvent("RING-CHANGE", payload, c)
 	s.updateMetrics()
