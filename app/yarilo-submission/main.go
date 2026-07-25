@@ -27,6 +27,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/readyfile"
 	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
 	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
+	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
@@ -159,7 +160,7 @@ func main() {
 		OAuth2Enabled:    len(cfg.Auth.OAuth2) > 0,
 	})
 
-	go runTelemetry(cfg.Telemetry.Listen)
+	go runTelemetry(telemetry.Addr(cfg.Telemetry.Listen))
 
 	// Publish this protocol container's readiness into the co-located pod's
 	// shared directory (#788); the yarilo-backend-reg sidecar gates the pod's

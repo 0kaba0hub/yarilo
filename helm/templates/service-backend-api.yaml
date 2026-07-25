@@ -1,4 +1,4 @@
-{{- if .Values.components.backendAPI.enabled }}
+{{- if and .Values.components.backendAPI.enabled (not .Values.components.backend.coLocated) }}
 apiVersion: v1
 kind: Service
 metadata:

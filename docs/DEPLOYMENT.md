@@ -46,12 +46,25 @@ Handles authenticated mail sessions, reading and writing mail + index data to NF
 **Co-located pod (one pod serves ALL of a user's per-user state).** A backend pod
 is a **single StatefulSet** whose pod runs one container per protocol —
 `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`,
-`yarilo-managesieve` — plus the `yarilo-fts` full-text-search container and a
-`yarilo-backend-reg` registration sidecar, sharing the pod's **one IP** and the
-tag's **one NFS PV (RWX)**. `yarilo-locks` runs as its own per-tag Deployment for
-cross-pod write coordination. `yarilo-backend-api` and `yarilo-quota-status` are
-separate backend-side Deployments (not per-user-write, own lifecycle) — not in
-the pod.
+`yarilo-managesieve` — plus the `yarilo-fts` full-text-search container, the
+`yarilo-backend-api` admin container, and a `yarilo-backend-reg` registration
+sidecar, sharing the pod's **one IP** and the tag's **one NFS PV (RWX)**.
+`yarilo-locks` runs as its own per-tag Deployment for cross-pod write
+coordination.
+
+**What goes in the pod vs stays separate — the criterion.** The pod holds
+everything that owns **per-user write state**: the protocol containers, `fts`
+(per-user Xapian index), and `backend-api` (its `fts rescan`/`optimize` and
+direct mailbox/index access write a user's data — as a standalone Deployment it
+would be a *second* writer of the same index/mailbox the user's sticky pod owns,
+the #675/#676 hazard; in-pod it uses that pod's localhost fts, so single-writer
+holds). `backend-api` listens on the **pod IP only**; `yarilo-admin` reaches the
+owning pod by doing a director LOOKUP itself and dialing that pod (#792).
+**Global-read services with stable external consumers stay separate** —
+`yarilo-quota-status` is a Postfix policy service the external MTA dials at a
+fixed endpoint, and it only reads a shared quota dict (any instance answers any
+user, no per-user write), so co-locating it would break the MTA contract for
+zero gain. It stays its own Deployment.
 
 This is deliberate and load-bearing for the whole director model: it restores the
 Dovecot invariant **one mail-host owns every per-user resource**. Because the pod
@@ -469,9 +482,9 @@ helm/yarilo-backend       → backend pool (one release per tag = per NFS shard,
   `yarilo-backend-reg` (registration sidecar). All share the pod IP.
 - `Deployment yarilo-locks-<tag>` — replicaCount=2, cross-pod write coordination.
 - `Deployment redis-<tag>` (or shared Redis) — state backend for locks.
-- `Deployment yarilo-backend-api-<tag>` and `Deployment yarilo-quota-status-<tag>`
-  — backend-side support services, own replicaCount (not per-user-write, not in
-  the pod).
+- `Deployment yarilo-quota-status-<tag>` — global-read Postfix policy service,
+  own replicaCount, stable ClusterIP for the external MTA (NOT in the pod;
+  `backend-api` IS in the pod — see the co-location criterion above).
 - One **PVC NFS (RWX)** — shared by all pods within the tag.
 - One Headless Service — stable per-pod DNS for sticky routing from the director.
 

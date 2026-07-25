@@ -1,4 +1,4 @@
-{{- if .Values.components.submission.enabled }}
+{{- if and .Values.components.submission.enabled (not .Values.components.backend.coLocated) }}
 ## ClusterIP — submission backend (receives from yarilo-submission-login pods).
 apiVersion: v1
 kind: Service

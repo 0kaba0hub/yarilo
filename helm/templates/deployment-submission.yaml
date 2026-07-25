@@ -1,4 +1,4 @@
-{{- if .Values.components.submission.enabled }}
+{{- if and .Values.components.submission.enabled (not .Values.components.backend.coLocated) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -1,4 +1,4 @@
-{{- if .Values.components.lmtp.enabled }}
+{{- if and .Values.components.lmtp.enabled (not .Values.components.backend.coLocated) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

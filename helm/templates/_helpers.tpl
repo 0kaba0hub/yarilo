@@ -206,3 +206,26 @@ YARILO_API_URL/YARILO_API_TOKEN pair, which is claimed by the backend plane.
       name: {{ $tokenSecret }}
       key: token
 {{- end }}
+
+{{/*
+yarilo.backendVolumeMounts — the volume mounts shared by every co-located
+backend protocol/fts/backend-api container (#788): config, tmp, the shared
+readiness emptyDir, the mail PV, and the optional internal-mTLS secret.
+Args: dict "root" $ "itls" <internalTLS config>.
+*/}}
+{{- define "yarilo.backendVolumeMounts" -}}
+{{- $root := .root -}}
+{{- $readyDir := $root.Values.backend_register.readiness_dir | default "/run/yarilo-ready" -}}
+- name: config
+  mountPath: /etc/yarilo
+  readOnly: true
+- name: tmp
+  mountPath: /tmp
+- name: ready
+  mountPath: {{ $readyDir }}
+{{- if $root.Values.storage.persistence.enabled }}
+- name: mail
+  mountPath: {{ $root.Values.storage.maildir_root | default "/var/mail/vhosts" }}
+{{- end }}
+{{- include "yarilo.internalTLSMount" .itls }}
+{{- end -}}

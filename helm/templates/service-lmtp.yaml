@@ -1,4 +1,4 @@
-{{- if .Values.components.lmtp.enabled }}
+{{- if and .Values.components.lmtp.enabled (not .Values.components.backend.coLocated) }}
 ## Headless — LMTP backend pods (director resolves A-records → individual pod IPs)
 apiVersion: v1
 kind: Service

@@ -1,4 +1,4 @@
-{{- if .Values.components.pop3.enabled }}
+{{- if and .Values.components.pop3.enabled (not .Values.components.backend.coLocated) }}
 ## Headless — POP3 backend pods (director resolves A-records → individual pod IPs)
 apiVersion: v1
 kind: Service
