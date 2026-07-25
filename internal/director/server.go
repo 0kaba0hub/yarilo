@@ -77,6 +77,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
@@ -296,10 +297,12 @@ func NewWithOptions(opts Options) *Server {
 // s.ring — already operates on normalized usernames, so no other call site
 // needs its own normalize call.
 //
-// Ordering with #701 (LOOKUP field TAB-escaping): once TabUnescape lands,
-// normalize must run AFTER unescape — normalizeUser(TabUnescape(raw)), never
-// the other way round — since escaping is reversible byte-for-byte and
-// lowercasing is not.
+// Ordering with #701 (LOOKUP field TAB-escaping): the wire senders that escape
+// the username (proto.Conn.Lookup, proto.Conn.SessionOpen) are unescaped at
+// their ingress BEFORE this normalize runs — normalizeUser(proto.TabUnescape(raw))
+// in handleLookup — since escaping is reversible byte-for-byte and lowercasing
+// is not. Admin/API ingress (apiUserMove/apiUserKick) is NOT tab-escaped and
+// must not be unescaped.
 func (s *Server) normalizeUser(username string) string {
 	if !s.opts.usernameHashLowercase() {
 		return username
@@ -631,7 +634,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	if len(fields) < 4 {
 		return
 	}
-	id, user := fields[1], s.normalizeUser(fields[2])
+	id, user := fields[1], s.normalizeUser(proto.TabUnescape(fields[2]))
 	tag := fields[3]
 
 	// Admin override wins everything.
@@ -938,8 +941,13 @@ func (s *Server) handleSessionOpen(c *client, fields []string) {
 		return
 	}
 	rec := &sessionRec{
-		id:      fields[1],
-		user:    fields[2],
+		id: fields[1],
+		// SESSION-OPEN escapes the username on the wire (proto.Conn.SessionOpen),
+		// exactly like LOOKUP — unescape so the username echoed back in
+		// USER-KICKED matches what the login proxy sent (#701). No normalize:
+		// this field is not a hash key, and lowercasing it would break the
+		// login-side kick match on the original-case username.
+		user:    proto.TabUnescape(fields[2]),
 		backend: fields[3],
 		cl:      c,
 	}

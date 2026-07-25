@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
@@ -118,6 +119,41 @@ func TestLookup_NoBackends(t *testing.T) {
 	line := readLine(t, sc)
 	if !strings.HasPrefix(line, "FAIL\t1\t") {
 		t.Errorf("expected FAIL, got %q", line)
+	}
+}
+
+// TestLookup_UnescapesUsername guards #701: the director must TabUnescape the
+// LOOKUP username before hashing, so a username containing a TAB (escaped
+// byte-for-byte on the wire by proto.Conn.Lookup) resolves to the same backend
+// the ring picks for the raw username — not to a different backend keyed on the
+// escaped string.
+func TestLookup_UnescapesUsername(t *testing.T) {
+	srv, addr := startServer(t)
+	for i := 1; i <= 5; i++ {
+		srv.ring.AddBackend(&ring.Backend{IP: fmt.Sprintf("10.0.0.%d", i), Port: 10993, Tag: "imap", Up: true})
+	}
+
+	const rawUser = "al\tice@d.test" // real TAB inside the username
+	wantIP := srv.ring.LookupBackendByTag(rawUser, "imap").IP
+	// Sanity: hashing the escaped form would pick a different backend, so the
+	// test actually exercises the unescape (skip the rare hash collision).
+	escaped := proto.TabEscape(rawUser)
+	if got := srv.ring.LookupBackendByTag(escaped, "imap"); got != nil && got.IP == wantIP {
+		t.Skip("escaped and unescaped forms collided on this backend set — uninformative run")
+	}
+
+	conn, sc := dialTest(t, addr)
+	readHandshake(t, sc)
+	sendHandshake(t, conn)
+
+	conn.Write([]byte(fmt.Sprintf("LOOKUP\t9\t%s\timap\n", escaped)))
+	line := readLine(t, sc)
+	parts := strings.Split(line, "\t")
+	if len(parts) < 4 || parts[0] != "HOST" {
+		t.Fatalf("expected HOST line, got %q", line)
+	}
+	if parts[2] != wantIP {
+		t.Errorf("LOOKUP routed to %q, want %q (director must unescape before hashing)", parts[2], wantIP)
 	}
 }
 
