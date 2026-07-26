@@ -7,6 +7,8 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net"
@@ -51,7 +53,8 @@ func main() {
 		"internal_tls", cfg.InternalTLS.Enabled,
 	)
 
-	// Internal mTLS for director-protocol server (other directors connect here).
+	// Internal mTLS for the director-protocol LISTENER (other directors connect
+	// here). Server config: presents our cert, requires+verifies client certs.
 	var ringTLSCfg *tls.Config
 	if cfg.InternalTLS.Enabled {
 		ringTLSCfg, err = mtls.ServerConfig(
@@ -62,6 +65,33 @@ func main() {
 		if err != nil {
 			slog.Error("internal_tls server config failed", "err", err)
 			os.Exit(1)
+		}
+	}
+
+	// Internal mTLS for DIALLING ring peers (JOIN + right-neighbor + seed
+	// polls). This must be a CLIENT config — a server config has no RootCAs and
+	// no ServerName, so reusing it for the dial verified nothing (#753). Ring
+	// peers are dialled by ephemeral pod IP, so we pin ServerName to a stable
+	// name present in every director's cert (director_service
+	// .ring_tls_server_name, chart-defaulted to <release>-director-ring).
+	var ringDialTLSCfg *tls.Config
+	if cfg.InternalTLS.Enabled {
+		ringDialTLSCfg, err = mtls.ClientConfig(
+			cfg.InternalTLS.Cert,
+			cfg.InternalTLS.Key,
+			cfg.InternalTLS.CA,
+		)
+		if err != nil {
+			slog.Error("internal_tls ring dial config failed", "err", err)
+			os.Exit(1)
+		}
+		ringDialTLSCfg.ServerName = cfg.DirectorService.RingTLSServerName
+
+		if ringTLSMisconfigured(cfg.InternalTLS.Enabled, cfg.DirectorService.Peers, cfg.DirectorService.RingTLSServerName) {
+			slog.Error("director: internal_tls enabled with peers configured but director_service.ring_tls_server_name is empty — ring dial cannot verify pod-IP peers without it; the ring will not converge. Set director_service.ring_tls_server_name to a name in the director internal-tls cert (chart default: <release>-director-ring)")
+		} else if name := cfg.DirectorService.RingTLSServerName; name != "" && !certHasSAN(cfg.InternalTLS.Cert, name) {
+			slog.Warn("director: ring_tls_server_name is not present in this director's internal-tls certificate SANs — peers present the same cert, so ring TLS handshakes will fail; re-issue the cert with this name (chart Certificate handles this)",
+				"ring_tls_server_name", name)
 		}
 	}
 
@@ -107,7 +137,7 @@ func main() {
 		AssignmentPolicy:      cfg.DirectorService.AssignmentPolicy,
 		UserKickDelay:         time.Duration(cfg.DirectorService.UserKickDelay) * time.Second,
 		MaxParallelKicks:      cfg.DirectorService.MaxParallelKicks,
-		PeerTLS:               ringTLSCfg,
+		PeerTLS:               ringDialTLSCfg,
 		LocalIP:               localIP,
 		LocalPort:             localPort,
 		RingSecret:            []byte(cfg.DirectorService.RingSecret),
@@ -286,4 +316,44 @@ func logLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// ringTLSMisconfigured reports the loud-failure condition (#753): internal_tls
+// is on and ring peers are configured, but ring_tls_server_name is empty — the
+// ring dial would then verify peer certs against ephemeral pod IPs and fail, so
+// the ring silently never converges. The caller logs an ERROR with a fix hint.
+func ringTLSMisconfigured(tlsEnabled bool, peers []string, serverName string) bool {
+	return tlsEnabled && len(peers) > 0 && serverName == ""
+}
+
+// certHasSAN reports whether the PEM cert file's leaf certificate lists name in
+// its DNS SANs (#753). Best-effort: an unreadable/unparseable cert returns true
+// so we do not emit a spurious warning on top of the real load error elsewhere.
+func certHasSAN(certFile, name string) bool {
+	pemBytes, err := os.ReadFile(certFile)
+	if err != nil {
+		return true
+	}
+	for {
+		var block *pem.Block
+		block, pemBytes = pem.Decode(pemBytes)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		crt, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		for _, dns := range crt.DNSNames {
+			if dns == name {
+				return true
+			}
+		}
+		// Only the leaf (first cert) matters for what peers verify.
+		return false
+	}
+	return true
 }

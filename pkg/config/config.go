@@ -1004,6 +1004,15 @@ type DirectorServiceConfig struct {
 	// helm/templates/secret-director-ring.yaml). Empty disables ring auth:
 	// every JOIN is rejected and this node can only run as a singleton.
 	RingSecret string `koanf:"ring_secret"`
+	// RingTLSServerName is the TLS ServerName used when dialling ring peers
+	// (JOIN + right-neighbor + seed polls) under internal_tls (#753). Ring
+	// peers are dialled by ephemeral pod IP, so without a stable name Go would
+	// verify the peer cert against the pod IP and fail (no pod-IP SAN). Set it
+	// to a name present in every director's internal-tls cert — the chart
+	// defaults it to the headless <release>-director-ring Service. Empty with
+	// internal_tls enabled and peers configured is a misconfiguration (the ring
+	// cannot verify pod-IP peers): the director logs an ERROR at startup.
+	RingTLSServerName string `koanf:"ring_tls_server_name"`
 	// MinMembers is an install-time warning threshold only ("fewer members
 	// than this = no state redundancy") — it never refuses service at any
 	// member count. Default 3 (matches the reference's recommended minimum
