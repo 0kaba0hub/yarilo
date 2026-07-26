@@ -793,11 +793,31 @@ data:
       readiness_dir: {{ $reg.readiness_dir | quote }}
       readiness_touch_interval: {{ $reg.readiness_touch_interval }}
       readiness_stale_after: {{ $reg.readiness_stale_after }}
+      {{- /* The sidecar gate must wait on exactly the protocols that actually
+             run in the pod. Under co-located, derive the list from the same
+             components.<proto>.enabled flags the StatefulSet filters on — a
+             disabled protocol has no ready-file and would otherwise silence the
+             heartbeat forever. Otherwise fall back to the explicit values list. */}}
+      {{- if .Values.components.backend.coLocated }}
+      {{- $enabled := list }}
+      {{- range $pair := (list (list "imap" "imap") (list "pop3" "pop3") (list "submission" "submission") (list "lmtp" "lmtp") (list "managesieve" "manageSieve")) }}
+      {{- if (index $.Values.components (index $pair 1) | default dict).enabled }}
+      {{- $enabled = append $enabled (index $pair 0) }}
+      {{- end }}
+      {{- end }}
+      {{- with $enabled }}
+      readiness_protocols:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- else }}
       {{- with $reg.readiness_protocols }}
       readiness_protocols:
         {{- range . }}
         - {{ . | quote }}
         {{- end }}
+      {{- end }}
       {{- end }}
 
     {{- if .Values.components.saslLogin.enabled }}

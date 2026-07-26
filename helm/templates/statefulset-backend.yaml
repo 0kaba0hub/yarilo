@@ -11,14 +11,26 @@
 {{- $stale := $reg.readiness_stale_after | default 15 }}
 {{- $readyDir := $reg.readiness_dir | default "/run/yarilo-ready" }}
 {{- $itls := .Values.components.backend.internalTLS | default dict }}
-{{- /* Protocol containers: name/component/protocol port(s)/telemetry port/ready file. */ -}}
-{{- $protocols := list
-  (dict "name" "imap" "component" "yarilo-imap" "telemetry" 8080 "ports" (list (dict "name" "imap" "port" 10143)))
-  (dict "name" "pop3" "component" "yarilo-pop3" "telemetry" 8081 "ports" (list (dict "name" "pop3" "port" 10110)))
-  (dict "name" "submission" "component" "yarilo-submission" "telemetry" 8082 "ports" (list (dict "name" "submission" "port" 10587)))
-  (dict "name" "lmtp" "component" "yarilo-lmtp" "telemetry" 8083 "ports" (list (dict "name" "lmtp" "port" 10024)))
-  (dict "name" "managesieve" "component" "yarilo-managesieve" "telemetry" 8084 "ports" (list (dict "name" "sieve" "port" 14190)))
+{{- /* Protocol containers. vkey = the components.* values key (managesieve is
+       camelCase 'manageSieve'). Only protocols whose components.<vkey>.enabled
+       is true render — config-not-binary: the operator picks the protocol set,
+       and a disabled protocol must not start (it would demand config it lacks
+       and, under OrderedReady, wedge the whole StatefulSet). The sidecar's
+       readiness_protocols is derived from the SAME enabled set in the configmap,
+       so a disabled protocol never silences the heartbeat. */ -}}
+{{- $allProtocols := list
+  (dict "name" "imap" "vkey" "imap" "component" "yarilo-imap" "telemetry" 8080 "ports" (list (dict "name" "imap" "port" 10143)))
+  (dict "name" "pop3" "vkey" "pop3" "component" "yarilo-pop3" "telemetry" 8081 "ports" (list (dict "name" "pop3" "port" 10110)))
+  (dict "name" "submission" "vkey" "submission" "component" "yarilo-submission" "telemetry" 8082 "ports" (list (dict "name" "submission" "port" 10587)))
+  (dict "name" "lmtp" "vkey" "lmtp" "component" "yarilo-lmtp" "telemetry" 8083 "ports" (list (dict "name" "lmtp" "port" 10024)))
+  (dict "name" "managesieve" "vkey" "manageSieve" "component" "yarilo-managesieve" "telemetry" 8084 "ports" (list (dict "name" "sieve" "port" 14190)))
 }}
+{{- $protocols := list }}
+{{- range $p := $allProtocols }}
+{{- if (index $root.Values.components $p.vkey | default dict).enabled }}
+{{- $protocols = append $protocols $p }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -90,14 +102,14 @@ spec:
             {{- /* external TLS: a protocol backend that terminates its own TLS
                    (e.g. submission on 587/465) reads general.ssl → mount its
                    secret at /etc/yarilo/tls, matching the legacy deployment. */}}
-            {{- $ptls := (index $root.Values.components $p.name).tls | default dict }}
+            {{- $ptls := (index $root.Values.components $p.vkey).tls | default dict }}
             {{- if $ptls.secretName }}
             - name: tls-{{ $p.name }}
               mountPath: /etc/yarilo/tls
               readOnly: true
             {{- end }}
           resources:
-            {{- toYaml (index $root.Values.components $p.name).resources | nindent 12 }}
+            {{- toYaml (index $root.Values.components $p.vkey).resources | nindent 12 }}
         {{- end }}
         # ---- yarilo-fts (co-located; fts_addr=localhost → per-user single writer, #675/#676) ----
         - name: yarilo-fts
@@ -211,7 +223,7 @@ spec:
         {{- end }}
         {{- /* per-protocol external-TLS secrets (one volume per protocol that sets tls.secretName) */}}
         {{- range $p := $protocols }}
-        {{- $ptls := (index $root.Values.components $p.name).tls | default dict }}
+        {{- $ptls := (index $root.Values.components $p.vkey).tls | default dict }}
         {{- if $ptls.secretName }}
         - name: tls-{{ $p.name }}
           secret:
@@ -248,21 +260,13 @@ spec:
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 4 }}
   ports:
-    - name: imap
-      port: 10143
-      targetPort: imap
-    - name: pop3
-      port: 10110
-      targetPort: pop3
-    - name: submission
-      port: 10587
-      targetPort: submission
-    - name: lmtp
-      port: 10024
-      targetPort: lmtp
-    - name: sieve
-      port: 14190
-      targetPort: sieve
+    {{- range $p := $protocols }}
+    {{- range $port := $p.ports }}
+    - name: {{ $port.name }}
+      port: {{ $port.port }}
+      targetPort: {{ $port.name }}
+    {{- end }}
+    {{- end }}
     - name: backend-api
       port: 9105
       targetPort: backend-api
