@@ -725,6 +725,7 @@ data:
       user_expire: {{ .Values.components.director.user_expire }}
       ping_interval: {{ .Values.components.director.ping_interval }}
       ping_timeout: {{ .Values.components.director.ping_timeout }}
+      write_timeout: {{ .Values.components.director.write_timeout }}
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
       ring_secret: {{ .Values.components.director.ring_secret | quote }}
       min_members: {{ .Values.components.director.min_members }}

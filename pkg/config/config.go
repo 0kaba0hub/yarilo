@@ -965,6 +965,7 @@ type DirectorServiceConfig struct {
 	UserExpire   int                `koanf:"user_expire"`   // seconds before user→backend mapping expires; 0 = 900
 	PingInterval int                `koanf:"ping_interval"` // seconds between PING probes; 0 = 30
 	PingTimeout  int                `koanf:"ping_timeout"`  // seconds to wait for PONG before closing; 0 = 10
+	WriteTimeout int                `koanf:"write_timeout"` // seconds to bound a single client push/reply write (#704); 0 = 10, negative = disabled
 	MailServers  []MailServerConfig `koanf:"mail_servers"`  // static backend list, loaded at startup
 	// Peers is the seed list for joining the self-organizing ring (#750) —
 	// "host:port" addresses tried in order until one accepts a DIRECTOR-JOIN.
@@ -1728,6 +1729,7 @@ func Load(path string) (*Config, error) {
 			UserExpire:            900,
 			PingInterval:          30,
 			PingTimeout:           10,
+			WriteTimeout:          10,
 			UsernameHashLowercase: true,
 			MinMembers:            3,
 			AntiEntropyInterval:   3,
