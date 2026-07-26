@@ -311,8 +311,21 @@ type HAProxyConfig struct {
 	TrustedNets []string `koanf:"trusted_nets"` // CIDRs allowed to send PROXY header
 }
 
+// XClientConfig gates NATIVE inbound client-IP forwarding on the login pods
+// (#742): IMAP ID fields (x-originating-ip) and POP3/Submission XCLIENT. It is
+// the login_trusted_networks analogue and is SEPARATE from general.haproxy,
+// which keeps its own trusted_nets — an operator picks per listener between the
+// PROXY protocol (haproxy_protocol), native forwarding (xclient_protocol), or
+// neither. Per-listener enable is ServiceConfig.XClient (xclient_protocol);
+// this block is the global trust list a forward's source must fall inside.
+//
+// Precedence when BOTH mechanisms are active on a listener: the PROXY header is
+// consumed first, so by the time XCLIENT/ID is read the socket peer already
+// reflects the PROXY-rewritten address. The trusted-net check runs against THAT
+// peer (it is the real adjacent hop), and the XCLIENT/ID forward wins as the
+// final client IP applied to auth, allow_nets, anvil, and the backend preamble.
 type XClientConfig struct {
-	TrustedNets []string `koanf:"trusted_nets"` // CIDRs allowed to send XCLIENT
+	TrustedNets []string `koanf:"trusted_nets"` // CIDRs whose forwarded client IP (XCLIENT/ID) is trusted
 }
 
 type LimitsConfig struct {
@@ -322,14 +335,19 @@ type LimitsConfig struct {
 // ServiceConfig is per-listener configuration.
 // A nil pointer in ServicesConfig means the listener is not started.
 type ServiceConfig struct {
-	Enabled          bool       `koanf:"enabled"`
-	Port             int        `koanf:"port"`
-	ConnectionLimit  int        `koanf:"connection_limit"` // 0 = unlimited
-	SSLMode          string     `koanf:"ssl_mode"`         // no | ssl | starttls
-	SSL              *SSLConfig `koanf:"ssl"`              // overrides general.ssl
-	HAProxy          bool       `koanf:"haproxy_protocol"`
-	XClient          bool       `koanf:"xclient_protocol"`
-	DisablePlainAuth bool       `koanf:"disable_plaintext_auth"`
+	Enabled         bool       `koanf:"enabled"`
+	Port            int        `koanf:"port"`
+	ConnectionLimit int        `koanf:"connection_limit"` // 0 = unlimited
+	SSLMode         string     `koanf:"ssl_mode"`         // no | ssl | starttls
+	SSL             *SSLConfig `koanf:"ssl"`              // overrides general.ssl
+	HAProxy         bool       `koanf:"haproxy_protocol"`
+	// XClient enables native inbound client-IP forwarding on this listener
+	// (#742): IMAP ID x-originating-ip, POP3/Submission XCLIENT. A forward is
+	// applied only when the socket peer is inside general.xclient.trusted_nets.
+	// Off = the forwarding commands are ignored (ID replies NIL; XCLIENT is an
+	// unknown command). See XClientConfig for the haproxy/native/none choice.
+	XClient          bool `koanf:"xclient_protocol"`
+	DisablePlainAuth bool `koanf:"disable_plaintext_auth"`
 }
 
 // Active returns true if the service is configured and enabled.

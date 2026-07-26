@@ -10,6 +10,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/0kaba0hub/yarilo/internal/xclient"
 )
 
 // imapPreAuthCaps returns the IMAP capability string for the pre-auth state.
@@ -36,6 +38,89 @@ type preamble struct {
 	password string // credential to pass to yarilo-auth AUTH
 	ehloLine string // SMTP EHLO line replayed after XCLIENT reset (submission only)
 	cmdTag   string // IMAP command tag; empty for POP3/Submission
+	// forwardIP/forwardPort carry the ORIGINAL client address a trusted
+	// upstream proxy forwarded natively (IMAP ID fields / POP3+Submission
+	// XCLIENT, #742). Populated only when the listener has xclient_protocol
+	// enabled; the caller (handleConn) still verifies the socket peer is in
+	// general.xclient.trusted_nets before applying them — this struct records
+	// what was claimed, not what is trusted. forwardSource is "xclient" or
+	// "id" so the caller can log an untrusted claim at the right level.
+	forwardIP     string
+	forwardPort   string
+	forwardSource string
+}
+
+// idForwardedClientIP extracts the original client IP/port a trusted proxy
+// forwarded in an IMAP ID command (#742): x-originating-ip / x-client-ip and
+// x-originating-port / x-client-port. Returns empty strings when absent.
+// The reference/Dovecot imap-login honours these keys from login_trusted_networks.
+func idForwardedClientIP(line string) (ip, port string) {
+	open := strings.IndexByte(line, '(')
+	closeIdx := strings.LastIndexByte(line, ')')
+	if open < 0 || closeIdx < open {
+		return "", ""
+	}
+	toks := imapIDTokens(line[open+1 : closeIdx])
+	for i := 0; i+1 < len(toks); i += 2 {
+		switch strings.ToLower(toks[i]) {
+		case "x-originating-ip", "x-client-ip":
+			ip = strings.Trim(toks[i+1], "[]")
+		case "x-originating-port", "x-client-port":
+			port = toks[i+1]
+		}
+	}
+	return ip, port
+}
+
+// imapIDTokens splits an IMAP ID parameter list body into ordered tokens,
+// honouring double-quoted strings. NIL and bare atoms pass through verbatim.
+func imapIDTokens(body string) []string {
+	var toks []string
+	var b strings.Builder
+	inQuote := false
+	flush := func() {
+		if b.Len() > 0 {
+			toks = append(toks, b.String())
+			b.Reset()
+		}
+	}
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		switch {
+		case c == '"':
+			if inQuote {
+				toks = append(toks, b.String())
+				b.Reset()
+				inQuote = false
+			} else {
+				inQuote = true
+			}
+		case inQuote:
+			if c == '\\' && i+1 < len(body) {
+				i++
+				b.WriteByte(body[i])
+				continue
+			}
+			b.WriteByte(c)
+		case c == ' ' || c == '\t':
+			flush()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	flush()
+	return toks
+}
+
+// xclientForwarded parses an inbound XCLIENT command line (POP3/Submission,
+// #742) and returns the forwarded client IP/port. Empty ADDR (or the
+// [UNAVAILABLE] sentinel, handled by xclient.Parse) yields empty strings.
+func xclientForwarded(line string) (ip, port string) {
+	a, err := xclient.Parse(line)
+	if err != nil {
+		return "", ""
+	}
+	return a.Addr, a.Port
 }
 
 // extractPreamble dispatches to the protocol-specific handler.
@@ -71,6 +156,7 @@ func extractIMAPPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 // or continueAuth for retry after a failed authentication.
 // Returns the updated conn and rd (may be TLS-upgraded if STARTTLS was performed).
 func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
+	var fwdIP, fwdPort string
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
@@ -93,6 +179,15 @@ func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 			fmt.Fprintf(conn, "* CAPABILITY %s\r\n", c)                       //nolint:errcheck
 			fmt.Fprintf(conn, "%s OK [CAPABILITY %s] CAPABILITY\r\n", tag, c) //nolint:errcheck
 		case "ID":
+			// A trusted upstream proxy forwards the real client IP in ID
+			// fields (#742). Record it here; handleConn verifies the socket
+			// peer is trusted before applying. Reply is unchanged (NIL) so an
+			// untrusted client learns nothing about our trust state.
+			if opts.XClient {
+				if ip, port := idForwardedClientIP(line); ip != "" {
+					fwdIP, fwdPort = ip, port
+				}
+			}
 			fmt.Fprintf(conn, "* ID NIL\r\n")      //nolint:errcheck
 			fmt.Fprintf(conn, "%s OK ID\r\n", tag) //nolint:errcheck
 		case "NOOP":
@@ -122,9 +217,12 @@ func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 				continue
 			}
 			return &preamble{
-				username: username,
-				password: password,
-				cmdTag:   tag,
+				username:      username,
+				password:      password,
+				cmdTag:        tag,
+				forwardIP:     fwdIP,
+				forwardPort:   fwdPort,
+				forwardSource: "id",
 			}, conn, rd, nil
 		case "AUTHENTICATE":
 			if len(fields) < 3 {
@@ -155,9 +253,12 @@ func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 					continue
 				}
 				return &preamble{
-					username: username,
-					password: password,
-					cmdTag:   tag,
+					username:      username,
+					password:      password,
+					cmdTag:        tag,
+					forwardIP:     fwdIP,
+					forwardPort:   fwdPort,
+					forwardSource: "id",
 				}, conn, rd, nil
 			case "LOGIN":
 				// Two-step: server prompts for username, then password.
@@ -189,9 +290,12 @@ func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 					continue
 				}
 				return &preamble{
-					username: username,
-					password: string(passBytes),
-					cmdTag:   tag,
+					username:      username,
+					password:      string(passBytes),
+					cmdTag:        tag,
+					forwardIP:     fwdIP,
+					forwardPort:   fwdPort,
+					forwardSource: "id",
 				}, conn, rd, nil
 			default:
 				fmt.Fprintf(conn, "%s NO Unsupported mechanism\r\n", tag) //nolint:errcheck
@@ -216,6 +320,7 @@ func extractPOP3Preamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, op
 // or continueAuth for retry after a failed authentication.
 func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	var username string
+	var fwdIP, fwdPort string
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
@@ -239,6 +344,14 @@ func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 			capa += ".\r\n"
 			fmt.Fprint(conn, capa) //nolint:errcheck
 		case upper == "NOOP":
+			fmt.Fprintf(conn, "+OK\r\n") //nolint:errcheck
+		case opts.XClient && strings.HasPrefix(upper, "XCLIENT"):
+			// Trusted upstream forwards the real client IP (#742). Record it;
+			// handleConn verifies the peer is trusted before applying. Reply
+			// is a plain +OK regardless, so an untrusted client learns nothing.
+			if ip, port := xclientForwarded(line); ip != "" {
+				fwdIP, fwdPort = ip, port
+			}
 			fmt.Fprintf(conn, "+OK\r\n") //nolint:errcheck
 		case upper == "QUIT":
 			fmt.Fprintf(conn, "+OK Goodbye\r\n") //nolint:errcheck
@@ -283,7 +396,7 @@ func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 					fmt.Fprintf(conn, "-ERR Invalid authentication\r\n") //nolint:errcheck
 					continue
 				}
-				return &preamble{username: user, password: pass}, conn, rd, nil
+				return &preamble{username: user, password: pass, forwardIP: fwdIP, forwardPort: fwdPort, forwardSource: "xclient"}, conn, rd, nil
 			case "LOGIN":
 				if _, err := fmt.Fprintf(conn, "+ VXNlcm5hbWU6\r\n"); err != nil {
 					return nil, conn, rd, fmt.Errorf("pop3: auth login username prompt: %w", err)
@@ -309,7 +422,7 @@ func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 					fmt.Fprintf(conn, "-ERR Invalid base64\r\n") //nolint:errcheck
 					continue
 				}
-				return &preamble{username: string(userBytes), password: string(passBytes)}, conn, rd, nil
+				return &preamble{username: string(userBytes), password: string(passBytes), forwardIP: fwdIP, forwardPort: fwdPort, forwardSource: "xclient"}, conn, rd, nil
 			default:
 				fmt.Fprintf(conn, "-ERR Unknown authentication mechanism\r\n") //nolint:errcheck
 				continue
@@ -323,8 +436,11 @@ func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 				continue
 			}
 			return &preamble{
-				username: username,
-				password: strings.TrimSpace(line[5:]),
+				username:      username,
+				password:      strings.TrimSpace(line[5:]),
+				forwardIP:     fwdIP,
+				forwardPort:   fwdPort,
+				forwardSource: "xclient",
 			}, conn, rd, nil
 		default:
 			fmt.Fprintf(conn, "-ERR Unknown command\r\n") //nolint:errcheck
@@ -358,6 +474,7 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 
 	var ehloLine string
 	var tlsDone bool
+	var fwdIP, fwdPort string
 
 	for {
 		line, err := rd.ReadString('\n')
@@ -383,6 +500,9 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 			} else if opts.OAuth2Enabled {
 				caps += "250-AUTH OAUTHBEARER XOAUTH2\r\n"
 			}
+			if opts.XClient {
+				caps += "250-XCLIENT ADDR PORT\r\n"
+			}
 			caps += "250 8BITMIME\r\n"
 			if _, err := io.WriteString(conn, caps); err != nil {
 				return nil, conn, rd, fmt.Errorf("smtp: send ehlo resp: %w", err)
@@ -401,11 +521,23 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 			rd = bufio.NewReaderSize(conn, 4096)
 			tlsDone = true
 			ehloLine = "" // must re-EHLO after STARTTLS
+		case opts.XClient && strings.HasPrefix(upper, "XCLIENT"):
+			// Postfix-compatible inbound XCLIENT (#742): record the forwarded
+			// client IP and reset to the post-greeting state — the upstream
+			// re-issues EHLO next, exactly as it does against Postfix. Reply is
+			// the standard greeting regardless of trust (no trust leak);
+			// handleConn verifies the peer before applying fwdIP.
+			if ip, port := xclientForwarded(trimmed); ip != "" {
+				fwdIP, fwdPort = ip, port
+			}
+			ehloLine = ""
+			fmt.Fprintf(conn, "220 Yarilo Login ready\r\n") //nolint:errcheck
 		case strings.HasPrefix(upper, "AUTH "):
 			pre, err := handleSMTPAuth(conn, rd, trimmed, ehloLine)
 			if err != nil {
 				return nil, conn, rd, err
 			}
+			pre.forwardIP, pre.forwardPort, pre.forwardSource = fwdIP, fwdPort, "xclient"
 			return pre, conn, rd, nil
 		case upper == "QUIT":
 			fmt.Fprintf(conn, "221 Bye\r\n") //nolint:errcheck

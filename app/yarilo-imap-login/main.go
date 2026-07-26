@@ -83,6 +83,7 @@ func main() {
 
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
+	xclientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
 	localIP := os.Getenv("POD_IP")
 	// dirAddr must be the REMOTE yarilo-director service address
 	// (imap_login_service.director_addr), never cfg.DirectorService.Listen
@@ -135,6 +136,8 @@ func main() {
 			HAProxy:          svcs.IMAPS.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
 			HAProxyNets:      haproxyNets,
+			XClient:          svcs.IMAPS.XClient,
+			XClientNets:      xclientNets,
 		})
 		go func() {
 			slog.Error("imaps-login: server error", "err", srv.Serve(ln))
@@ -175,6 +178,8 @@ func main() {
 			HAProxy:          svcs.IMAP.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
 			HAProxyNets:      haproxyNets,
+			XClient:          svcs.IMAP.XClient,
+			XClientNets:      xclientNets,
 		})
 		go func() {
 			slog.Error("imap-login: server error", "err", srv.Serve(ln))

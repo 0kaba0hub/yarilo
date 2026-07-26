@@ -1437,14 +1437,26 @@ general:
       - "10.0.0.0/8"
     timeout: 3
 
-  ## XCLIENT forwarding support.
-  ## When enabled, the director sends an XCLIENT ADDR=<real-ip> command to the backend
-  ## (yarilo-imap / yarilo-pop3 / yarilo-lmtp) immediately after connecting, so the
-  ## backend session sees the real client IP instead of the director's pod IP.
+  ## Native inbound client-IP forwarding on the LOGIN pods (#742).
+  ## This is the login_trusted_networks analogue — the third way (besides the
+  ## HAProxy PROXY protocol above, and none) for an upstream proxy to hand the
+  ## real client IP to yarilo. Per protocol the operator chooses ONE of:
+  ##   - haproxy: general.haproxy + <listener>.haproxy_protocol   (PROXY header)
+  ##   - native:  general.xclient  + <listener>.xclient_protocol  (this block)
+  ##   - none:    neither                                          (socket IP only)
   ##
-  ## Requires the backend to trust the director's pod CIDR in its own xclient.trusted_nets.
-  ## The director itself does not check trusted_nets for outgoing XCLIENT — trusted_nets here
-  ## is written into the backend config so it knows which sources to accept XCLIENT from.
+  ## The forwarded IP is honoured only when the connection's peer is inside
+  ## trusted_nets below AND the listener has xclient_protocol: true. The
+  ## mechanisms per protocol:
+  ##   - IMAP:       ID command fields (x-originating-ip / x-originating-port)
+  ##   - POP3:       XCLIENT ADDR= PORT=
+  ##   - Submission: XCLIENT ADDR= (advertised in EHLO; Postfix-compatible reset)
+  ##   - LMTP:       (added in a follow-up — critical for a Postfix relay in front)
+  ##
+  ## Precedence when BOTH haproxy and xclient are active on a listener: the
+  ## PROXY header rewrites the peer first, the trusted-net check runs against
+  ## that rewritten peer (the real adjacent hop), and the XCLIENT/ID forward is
+  ## the final client IP. `enabled` toggles xclient_protocol on every listener.
   xclient:
     enabled: false
     trusted_nets:

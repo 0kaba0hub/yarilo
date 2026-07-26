@@ -133,6 +133,17 @@ type Options struct {
 	HAProxy        bool
 	HAProxyTimeout time.Duration
 	HAProxyNets    []*net.IPNet
+
+	// XClient enables native inbound client-IP forwarding on this listener
+	// (#742): IMAP ID fields, POP3/Submission XCLIENT. Mirrors the per-listener
+	// xclient_protocol config key. Off = the forwarding commands are ignored
+	// (ID replies NIL, XCLIENT is an unknown command).
+	XClient bool
+	// XClientNets are the CIDRs (general.xclient.trusted_nets) whose forwarded
+	// client IP is trusted. A forwarded address is applied ONLY when the socket
+	// peer — already PROXY-rewritten if HAProxy also ran — is inside one of
+	// these ranges. Empty = trust nobody (every forward is ignored+logged).
+	XClientNets []*net.IPNet
 }
 
 // liveSession tracks one active proxied session for kick support.
@@ -322,6 +333,32 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	var authResult *authclient.AuthResult
 	for attempt := 1; ; attempt++ {
+		// Native inbound client-IP forwarding (#742): the SINGLE point where a
+		// proxy-forwarded address replaces the socket IP, so every downstream
+		// consumer below (auth, allow_nets, anvil, the backend preamble ADDR=)
+		// inherits it. pre.forwardIP is populated by the pre-auth parser ONLY
+		// when this listener has xclient_protocol enabled; here we additionally
+		// require the socket peer — already PROXY-rewritten if HAProxy also ran
+		// — to be inside general.xclient.trusted_nets. Runs at the top of the
+		// retry loop so a forward arriving in a retry iteration is honoured too.
+		if pre.forwardIP != "" && clientIP != pre.forwardIP {
+			if ipInNets(clientIP, s.opts.XClientNets) {
+				log = log.With("orig_ip", clientIP, "fwd_ip", pre.forwardIP, "fwd_port", pre.forwardPort, "fwd_via", pre.forwardSource)
+				log.Info("login: client ip forwarded")
+				clientIP = pre.forwardIP
+			} else if pre.forwardSource == "xclient" {
+				// An untrusted peer sending XCLIENT is an anomaly — someone is
+				// claiming to be a proxy.
+				log.Warn("login: ignoring XCLIENT from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
+				pre.forwardIP = ""
+			} else {
+				// A bare IMAP ID with x-originating-ip is routine MUA chatter;
+				// Debug, not Warn, to avoid log spam on every ordinary login.
+				log.Debug("login: ignoring forwarded ID from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
+				pre.forwardIP = ""
+			}
+		}
+
 		var aerr error
 		authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
 		if errors.Is(aerr, authclient.ErrTempFail) {
@@ -935,6 +972,22 @@ func anvilService(p Protocol) string {
 	default:
 		return "imap"
 	}
+}
+
+// ipInNets reports whether the string IP is inside one of the CIDRs. Used to
+// gate native XCLIENT/ID forwarding on general.xclient.trusted_nets (#742).
+// Empty nets = trust nobody.
+func ipInNets(ip string, nets []*net.IPNet) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }
 
 func haProxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {

@@ -82,6 +82,7 @@ func main() {
 	}
 
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
+	xclientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
 	localIP := os.Getenv("POD_IP")
 	// See yarilo-imap-login/main.go for why this must be the component's
@@ -129,6 +130,8 @@ func main() {
 			HAProxy:          svcs.POP3S.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
 			HAProxyNets:      haproxyNets,
+			XClient:          svcs.POP3S.XClient,
+			XClientNets:      xclientNets,
 		})
 		go func() {
 			slog.Error("pop3s-login: server error", "err", srv.Serve(ln))
@@ -170,6 +173,8 @@ func main() {
 			HAProxy:          svcs.POP3.HAProxy,
 			HAProxyTimeout:   haproxyTimeout,
 			HAProxyNets:      haproxyNets,
+			XClient:          svcs.POP3.XClient,
+			XClientNets:      xclientNets,
 		})
 		go func() {
 			slog.Error("pop3-login: server error", "err", srv.Serve(ln))
