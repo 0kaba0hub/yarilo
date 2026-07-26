@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -98,6 +99,13 @@ func main() {
 		AnvilAddr:        cfg.AnvilService.ClientAddr(),
 		AnvilTLS:         intTLS,
 		ConcurrencyLimit: cfg.Protocol.LMTP.UserConcurrencyLimit,
+		// Inbound client-IP forwarding (#742): a Postfix relay in front conveys
+		// the original SMTP client's IP via PROXY protocol and/or XCLIENT.
+		HAProxy:        cfg.Services.LMTP.HAProxy,
+		HAProxyTimeout: time.Duration(cfg.General.HAProxy.Timeout) * time.Second,
+		HAProxyNets:    parseCIDRs(cfg.General.HAProxy.TrustedNets),
+		XClient:        cfg.Services.LMTP.XClient,
+		XClientNets:    parseCIDRs(cfg.General.XClient.TrustedNets),
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Services.LMTP.Port)
@@ -120,6 +128,19 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+}
+
+func parseCIDRs(ss []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(ss))
+	for _, s := range ss {
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			slog.Warn("lmtp-login: invalid CIDR", "cidr", s, "err", err)
+			continue
+		}
+		nets = append(nets, n)
+	}
+	return nets
 }
 
 func runTelemetry(addr string) {

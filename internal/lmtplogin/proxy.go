@@ -22,6 +22,7 @@ import (
 	"time"
 
 	goSmtp "github.com/emersion/go-smtp"
+	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
@@ -81,6 +82,20 @@ type Options struct {
 	// ReadTimeout / WriteTimeout for the MTA-facing side.
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+
+	// HAProxy enables PROXY protocol v1/v2 header reading from trusted
+	// upstreams (#742), mirroring the other login proxies — a Postfix relay in
+	// front of lmtp-login can forward the ORIGINAL SMTP client's IP this way.
+	HAProxy        bool
+	HAProxyTimeout time.Duration
+	HAProxyNets    []*net.IPNet
+
+	// XClient enables the inbound XCLIENT command (#742) so a trusted relay
+	// forwards the original client's IP (critical for a Postfix relay in front,
+	// which can only convey it via XCLIENT). A forward is honoured only when the
+	// socket peer is inside XClientNets (general.xclient.trusted_nets).
+	XClient     bool
+	XClientNets []*net.IPNet
 }
 
 // ErrTooManyConcurrent is returned when the cluster-wide delivery count for a
@@ -109,6 +124,7 @@ func New(opts Options) *Server {
 	srv.LMTP = true
 	srv.ReadTimeout = opts.ReadTimeout
 	srv.WriteTimeout = opts.WriteTimeout
+	srv.EnableXCLIENT = opts.XClient
 
 	s.srv = srv
 	return s
@@ -116,6 +132,17 @@ func New(opts Options) *Server {
 
 // Serve accepts LMTP connections on ln until it is closed.
 func (s *Server) Serve(ln net.Listener) error {
+	if s.opts.HAProxy {
+		timeout := s.opts.HAProxyTimeout
+		if timeout == 0 {
+			timeout = 3 * time.Second
+		}
+		ln = &proxyproto.Listener{
+			Listener:          ln,
+			Policy:            haProxyPolicy(s.opts.HAProxyNets),
+			ReadHeaderTimeout: timeout,
+		}
+	}
 	mode := s.opts.BackendAddr
 	if s.opts.DirectorAddr != "" {
 		mode = "director:" + s.opts.DirectorAddr
@@ -142,7 +169,7 @@ func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 			}
 		}
 	}
-	return &session{opts: b.opts, peerIP: peerIP}, nil
+	return &session{opts: b.opts, peerIP: peerIP, socketIP: peerIP}, nil
 }
 
 // ---- session ----------------------------------------------------------------
@@ -156,10 +183,14 @@ type rcptEntry struct {
 }
 
 type session struct {
-	opts   Options
-	peerIP string
-	from   string
-	rcpts  []rcptEntry
+	opts Options
+	// socketIP is the immutable TCP peer (proxyproto-rewritten if HAProxy ran);
+	// it is what the XCLIENT trust check is made against. peerIP starts equal
+	// and is overridden by a trusted inbound XCLIENT (#742).
+	socketIP string
+	peerIP   string
+	from     string
+	rcpts    []rcptEntry
 
 	// anvilConn is dialled lazily on the first RCPT TO that needs it.
 	// One connection reused for all RCPTs in this MTA session.
@@ -561,4 +592,58 @@ func newSessionID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+// XClient receives the parameters of an inbound XCLIENT command from the go-smtp
+// server (#742). The forwarded ADDR is honoured only when the immutable socket
+// peer is inside XClientNets — the relay itself must be trusted. On success the
+// forwarded IP replaces peerIP, flowing into the backend preamble ADDR=, the
+// anvil per-recipient CONNECT, and the issued session token.
+func (s *session) XClient(a goSmtp.XClientAttrs) {
+	if a.Addr == "" {
+		return
+	}
+	if !ipInNets(s.socketIP, s.opts.XClientNets) {
+		// A relay that is not in xclient.trusted_nets sending XCLIENT is an
+		// anomaly — someone is claiming to be a trusted front-end.
+		slog.Warn("lmtplogin: ignoring XCLIENT from untrusted peer", "peer_ip", s.socketIP, "claimed_ip", a.Addr)
+		return
+	}
+	slog.Info("lmtplogin: client ip forwarded", "orig_ip", s.socketIP, "fwd_ip", a.Addr, "fwd_via", "xclient")
+	s.peerIP = a.Addr
+}
+
+// haProxyPolicy trusts the PROXY header only from peers inside nets. Empty nets
+// = ignore every PROXY header. Mirrors internal/login.
+func haProxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
+	return func(upstream net.Addr) (proxyproto.Policy, error) {
+		if len(nets) == 0 {
+			return proxyproto.IGNORE, nil
+		}
+		tcpAddr, ok := upstream.(*net.TCPAddr)
+		if !ok {
+			return proxyproto.IGNORE, nil
+		}
+		for _, n := range nets {
+			if n.Contains(tcpAddr.IP) {
+				return proxyproto.USE, nil
+			}
+		}
+		return proxyproto.IGNORE, nil
+	}
+}
+
+// ipInNets reports whether the string IP falls inside one of the CIDRs. Empty
+// nets = trust nobody. Gates inbound XCLIENT on xclient.trusted_nets (#742).
+func ipInNets(ip string, nets []*net.IPNet) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }
