@@ -74,12 +74,14 @@ data:
         port: {{ .Values.components.submissionLogin.listeners.submission.containerPort }}
         ssl_mode: starttls
         disable_plaintext_auth: true
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       submissions:
         enabled: {{ .Values.components.submissionLogin.listeners.submissions.enabled }}
         port: {{ .Values.components.submissionLogin.listeners.submissions.containerPort }}
         ssl_mode: ssl
         disable_plaintext_auth: true
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         xclient_protocol: {{ .Values.general.xclient.enabled }}
       {{- $msLoginL := (((.Values.components.manageSieveLogin | default dict).listeners | default dict).managesieve | default dict) }}
       managesieve:
