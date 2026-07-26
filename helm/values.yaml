@@ -1451,7 +1451,11 @@ general:
   ##   - IMAP:       ID command fields (x-originating-ip / x-originating-port)
   ##   - POP3:       XCLIENT ADDR= PORT=
   ##   - Submission: XCLIENT ADDR= (advertised in EHLO; Postfix-compatible reset)
-  ##   - LMTP:       (added in a follow-up — critical for a Postfix relay in front)
+  ##   - LMTP:       XCLIENT ADDR= (critical for a Postfix relay in front, which
+  ##                 can only convey the original SMTP client IP via XCLIENT)
+  ##
+  ## lmtp-login also gains HAProxy PROXY support here (services.lmtp
+  ## .haproxy_protocol) — pick haproxy or xclient per the same rule.
   ##
   ## Precedence when BOTH haproxy and xclient are active on a listener: the
   ## PROXY header rewrites the peer first, the trusted-net check runs against

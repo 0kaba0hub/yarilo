@@ -6,6 +6,7 @@ require (
 	github.com/0kaba0hub/go-xapian v0.1.0
 	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/MicahParks/keyfunc/v3 v3.8.0
+	github.com/abadojack/whatlanggo v1.0.1
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/blevesearch/snowballstem v0.9.0
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8.0.20260619144330-06898882abab
@@ -32,7 +33,6 @@ require (
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/MicahParks/jwkset v0.11.0 // indirect
-	github.com/abadojack/whatlanggo v1.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -72,4 +72,4 @@ replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0
 
 replace github.com/emersion/go-sasl => github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f
 
-replace github.com/emersion/go-smtp => github.com/0kaba0hub/go-smtp v0.0.0-20260712165350-106ee832679f
+replace github.com/emersion/go-smtp => github.com/0kaba0hub/go-smtp v0.0.0-20260726161302-7be37afd6829
