@@ -102,6 +102,7 @@ func main() {
 		UserExpire:            time.Duration(cfg.DirectorService.UserExpire) * time.Second,
 		PingInterval:          time.Duration(cfg.DirectorService.PingInterval) * time.Second,
 		PingTimeout:           time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
+		WriteTimeout:          time.Duration(cfg.DirectorService.WriteTimeout) * time.Second,
 		UsernameHashLowercase: &usernameHashLowercase,
 		PeerTLS:               ringTLSCfg,
 		LocalIP:               localIP,

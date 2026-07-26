@@ -86,6 +86,36 @@ type LookupResult struct {
 	Tag  string // backend tag (may be empty)
 }
 
+// readReply reads the next genuine request/reply line, skipping any unsolicited
+// server pushes interleaved on this connection (#702). The director fans out
+// RING-CHANGE / USER-MOVED / USER-KICKED / USER-KILLED-EVERYWHERE and PING
+// keepalives to EVERY connection — including one that is mid-request — so a
+// request/reply method must not mistake such a push for its reply. PING is
+// answered with PONG (as the watch loop does) and skipped.
+func (c *Conn) readReply() (string, error) {
+	for {
+		line, err := c.ReadLine()
+		if err != nil {
+			return "", err
+		}
+		switch replyVerb(line) {
+		case "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-KILLED-EVERYWHERE":
+			continue
+		case "PING":
+			_ = c.WriteLine("PONG")
+			continue
+		}
+		return line, nil
+	}
+}
+
+func replyVerb(line string) string {
+	if i := strings.IndexByte(line, '\t'); i >= 0 {
+		return line[:i]
+	}
+	return line
+}
+
 // Lookup asks the director for the backend address for the given username.
 // tag restricts routing to backends with that tag; pass "" for the untagged
 // pool (#737 — there is no full-ring mode; every caller belongs to exactly
@@ -95,7 +125,7 @@ func (c *Conn) Lookup(id, username, tag string) (LookupResult, error) {
 	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s\t%s", id, TabEscape(username), tag)); err != nil {
 		return LookupResult{}, fmt.Errorf("director lookup: write: %w", err)
 	}
-	line, err := c.ReadLine()
+	line, err := c.readReply()
 	if err != nil {
 		return LookupResult{}, fmt.Errorf("director lookup: read: %w", err)
 	}
@@ -131,7 +161,7 @@ func (c *Conn) SessionOpen(sessionID, username, backendIP string) error {
 	if err := c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s", sessionID, TabEscape(username), backendIP)); err != nil {
 		return fmt.Errorf("director session-open: write: %w", err)
 	}
-	line, err := c.ReadLine()
+	line, err := c.readReply()
 	if err != nil {
 		return fmt.Errorf("director session-open: read: %w", err)
 	}
@@ -146,7 +176,7 @@ func (c *Conn) SessionClose(sessionID string) error {
 	if err := c.WriteLine(fmt.Sprintf("SESSION-CLOSE\t%s", sessionID)); err != nil {
 		return fmt.Errorf("director session-close: write: %w", err)
 	}
-	line, err := c.ReadLine()
+	line, err := c.readReply()
 	if err != nil {
 		return fmt.Errorf("director session-close: read: %w", err)
 	}
@@ -161,7 +191,7 @@ func (c *Conn) BackendUp(ip string, port int, tag string) error {
 	if err := c.WriteLine(fmt.Sprintf("BACKEND-UP\t%s\t%d\t%s", ip, port, tag)); err != nil {
 		return fmt.Errorf("director backend-up: write: %w", err)
 	}
-	line, err := c.ReadLine()
+	line, err := c.readReply()
 	if err != nil {
 		return fmt.Errorf("director backend-up: read: %w", err)
 	}
@@ -176,7 +206,7 @@ func (c *Conn) BackendDown(ip string) error {
 	if err := c.WriteLine(fmt.Sprintf("BACKEND-DOWN\t%s", ip)); err != nil {
 		return fmt.Errorf("director backend-down: write: %w", err)
 	}
-	line, err := c.ReadLine()
+	line, err := c.readReply()
 	if err != nil {
 		return fmt.Errorf("director backend-down: read: %w", err)
 	}

@@ -92,6 +92,11 @@ type Options struct {
 	UserExpire   time.Duration // how long a user→backend mapping lives; default 900s
 	PingInterval time.Duration // idle time before sending PING; default 30s
 	PingTimeout  time.Duration // time to wait for PONG before closing; default 10s
+	// WriteTimeout bounds a single push/response write to a client (#704) so
+	// one slow/stuck client cannot block the broadcast fan-out (and, formerly,
+	// hold the client read-lock) and stall the push plane for everyone. 0 =
+	// default 10s; negative = no deadline (legacy blocking behaviour).
+	WriteTimeout time.Duration
 	// PeerTLS, LocalIP, LocalPort identify and secure this node's ring
 	// connections (dial-out to its right neighbor, and the JOIN dial to a
 	// seed) — see StartMembership.
@@ -183,12 +188,27 @@ func (o *Options) pingTimeout() time.Duration {
 	return o.PingTimeout
 }
 
-// client wraps an active connection with a per-connection write lock so
-// unsolicited pushes never interleave with command responses.
+// writeTimeout is the per-write deadline (#704). 0 = 10s; negative = disabled.
+func (o *Options) writeTimeout() time.Duration {
+	if o.WriteTimeout == 0 {
+		return 10 * time.Second
+	}
+	if o.WriteTimeout < 0 {
+		return 0
+	}
+	return o.WriteTimeout
+}
+
+// client wraps an active connection with a per-connection write lock. The lock
+// guarantees each written LINE is atomic — it does NOT order a push relative to
+// a command reply, so a push can still land between a request and its reply on
+// the same conn; the request/reply reader (proto.Conn.readReply, #702) skips
+// such interleaved pushes rather than relying on ordering here.
 type client struct {
-	conn   net.Conn
-	mu     sync.Mutex
-	pongCh chan struct{} // receives a token each time PONG is received
+	conn         net.Conn
+	mu           sync.Mutex
+	writeTimeout time.Duration // per-write deadline (#704); 0 = none
+	pongCh       chan struct{} // receives a token each time PONG is received
 	// isPeer marks a connection as another director replica's PeerDialer
 	// (identified by the "PEER" handshake line, #700) rather than a login
 	// proxy — broadcastToLogins uses this to stop a peer-originated event
@@ -201,6 +221,11 @@ type client struct {
 func (c *client) WriteLine(line string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.writeTimeout > 0 {
+		// Bound this write so a stuck client can't block the broadcaster (#704).
+		_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+		defer c.conn.SetWriteDeadline(time.Time{}) //nolint:errcheck
+	}
 	_, err := io.WriteString(c.conn, line+"\n")
 	return err
 }
@@ -403,12 +428,17 @@ func (s *Server) removeClient(c *client) {
 // broadcast sends an unsolicited line to all connected clients except the one
 // that triggered the change.
 func (s *Server) broadcast(line string, exclude *client) {
+	// Snapshot the targets under the lock, then write OUTSIDE it (#704): a
+	// bounded but slow write must not hold clientMu and block registrations.
 	s.clientMu.RLock()
-	defer s.clientMu.RUnlock()
+	targets := make([]*client, 0, len(s.clients))
 	for c := range s.clients {
-		if c == exclude {
-			continue
+		if c != exclude {
+			targets = append(targets, c)
 		}
+	}
+	s.clientMu.RUnlock()
+	for _, c := range targets {
 		_ = c.WriteLine(line)
 	}
 }
@@ -421,11 +451,14 @@ func (s *Server) broadcast(line string, exclude *client) {
 // this method exists to avoid.
 func (s *Server) broadcastToLogins(line string) {
 	s.clientMu.RLock()
-	defer s.clientMu.RUnlock()
+	targets := make([]*client, 0, len(s.clients))
 	for c := range s.clients {
-		if c.isPeer {
-			continue
+		if !c.isPeer {
+			targets = append(targets, c)
 		}
+	}
+	s.clientMu.RUnlock()
+	for _, c := range targets {
 		_ = c.WriteLine(line)
 	}
 }
@@ -438,20 +471,23 @@ func (s *Server) broadcastToLogins(line string) {
 // for propagation to the right neighbor and, eventually, every member.
 func (s *Server) originateRingEvent(kind, payload string, exclude *client) {
 	s.clientMu.RLock()
+	targets := make([]*client, 0, len(s.clients))
 	for c := range s.clients {
-		if c == exclude || c.isPeer {
-			continue
+		if c != exclude && !c.isPeer {
+			targets = append(targets, c)
 		}
-		_ = c.WriteLine(kind + "\t" + payload)
 	}
 	s.clientMu.RUnlock()
+	for _, c := range targets {
+		_ = c.WriteLine(kind + "\t" + payload)
+	}
 	s.membership.originate(kind, payload)
 }
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	c := &client{conn: conn, pongCh: make(chan struct{}, 4)}
+	c := &client{conn: conn, writeTimeout: s.opts.writeTimeout(), pongCh: make(chan struct{}, 4)}
 	s.addClient(c)
 	defer s.removeClient(c)
 

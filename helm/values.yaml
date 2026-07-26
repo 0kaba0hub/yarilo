@@ -146,6 +146,7 @@ components:
     user_expire: 900
     ping_interval: 30
     ping_timeout: 10
+    write_timeout: 10
 
     ## Lowercase usernames before hashing/keying them for ring routing, sticky
     ## assignments and admin overrides (#738). Without this, "User@d.test" and
