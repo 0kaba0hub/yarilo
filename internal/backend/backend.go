@@ -211,6 +211,19 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		authTLS = t
 	}
+	// Internal mTLS SERVER config for the login->backend data path (#824): the
+	// login pods dial the backend session ports over mTLS (their BackendTLS), so
+	// the PreambleListener must terminate it — verifying the login's client cert
+	// against the internal CA — before reading the YARILO preamble. The
+	// server-side mirror of #816's client dials.
+	var internalServerTLS *tls.Config
+	if cfg.InternalTLS.Enabled {
+		t, err := mtls.ServerConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+		if err != nil {
+			return nil, fmt.Errorf("backend: internal_tls server: %w", err)
+		}
+		internalServerTLS = t
+	}
 
 	// ---- sieve ----
 	svcs := cfg.Services
@@ -263,6 +276,7 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxyTrustedNets: haproxyNets,
 			AuthAddr:           authAddr,
 			AuthTLS:            authTLS,
+			PreambleTLS:        internalServerTLS,
 			MasterAddr:         masterAddr,
 			MasterTLS:          authTLS,
 			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
@@ -344,6 +358,7 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxyTrustedNets: haproxyNets,
 			AuthAddr:           authAddr,
 			AuthTLS:            authTLS,
+			PreambleTLS:        internalServerTLS,
 			MasterAddr:         masterAddr,
 			MasterTLS:          authTLS,
 			NoFlagUpdates:      p.NoFlagUpdates,
@@ -386,6 +401,7 @@ func New(cfg *config.Config) (*Server, error) {
 			HAProxyNets:    haproxyNets,
 			AuthAddr:       authAddr,
 			AuthTLS:        authTLS,
+			PreambleTLS:    internalServerTLS,
 			TLSConfig:      submissionTLS,
 			Config:         cfg.Protocol.Submission,
 			Auth:           chainAuth{authChain},
@@ -430,6 +446,7 @@ func New(cfg *config.Config) (*Server, error) {
 			MetadataDict:         metadataDict,
 			AuthAddr:             authAddr,
 			AuthTLS:              authTLS,
+			PreambleTLS:          internalServerTLS,
 			SieveEngine:          sieveEngine,
 			Namespaces:           cfg.Namespaces,
 			ACLEnabled:           cfg.ACL.Enabled,
@@ -466,6 +483,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Config:          cfg.Protocol.ManageSieve,
 			AuthAddr:        authAddr,
 			AuthTLS:         authTLS,
+			PreambleTLS:     internalServerTLS,
 			MasterAddr:      masterAddr,
 			MasterTLS:       authTLS,
 			SieveExtensions: cfg.Sieve.SieveExtensions,

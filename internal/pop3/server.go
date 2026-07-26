@@ -41,8 +41,9 @@ type Options struct {
 	HAProxyTrustedNets []*net.IPNet
 	// AuthAddr is the host:port of yarilo-auth login protocol used by the
 	// PreambleListener to verify session tokens forwarded by login pods.
-	AuthAddr string
-	AuthTLS  *tls.Config
+	AuthAddr    string
+	AuthTLS     *tls.Config
+	PreambleTLS *tls.Config // internal mTLS on the data path (#824)
 	// MasterAddr is the host:port of yarilo-auth master protocol for userdb lookups.
 	MasterAddr       string
 	MasterTLS        *tls.Config
@@ -146,6 +147,7 @@ func (s *Server) wrapListeners(ln net.Listener) net.Listener {
 			MasterAddr:      s.opts.MasterAddr,
 			MasterTLS:       s.opts.MasterTLS,
 			ExpectedService: "pop3",
+			TLSConfig:       s.opts.PreambleTLS,
 		}
 	}
 	return ln

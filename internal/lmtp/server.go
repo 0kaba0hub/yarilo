@@ -98,7 +98,8 @@ type Options struct {
 	// in unit tests or when lmtp-login is not in the path).
 	AuthAddr string
 	// AuthTLS optionally wraps the auth-client dialer with mTLS.
-	AuthTLS *tls.Config
+	AuthTLS     *tls.Config
+	PreambleTLS *tls.Config // internal mTLS on the data path (#824)
 
 	// SieveEngine executes per-user Sieve scripts during local delivery.
 	// When nil, Sieve filtering is disabled and all messages are delivered
@@ -176,6 +177,7 @@ func (s *Server) Serve(ln net.Listener) error {
 			AuthAddr:        s.opts.AuthAddr,
 			AuthTLS:         s.opts.AuthTLS,
 			ExpectedService: "lmtp",
+			TLSConfig:       s.opts.PreambleTLS,
 		}
 	}
 	if wa := parseWorkarounds(s.opts.Config.ClientWorkarounds); wa != 0 {
