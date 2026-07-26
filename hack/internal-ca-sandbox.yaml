@@ -3,20 +3,33 @@
 # Provisions a self-signed internal CA and the SHARED internal-tls cert that
 # auth / anvil / locks / backend / backend-api / fts / login pods present.
 # The director issues its OWN cert via the chart
-# (components.director.internalTLS.certificate.enabled, #753) using the same
-# ClusterIssuer created here (yarilo-internal-ca).
+# (components.director.internalTLS.certificate.enabled, #753) — point its
+# issuerRef at the SAME namespaced Issuer created here (see note below).
 #
 # Trust model (#816): every internal client dial pins ONE name —
 # internal_tls.server_name, default <release>-internal — so the shared cert
-# needs exactly that SAN, NOT every service FQDN. Adjust RELEASE / namespace
-# below to match the deploy (sandbox: release yarilo-sb, ns yarilo-sb →
-# server_name yarilo-sb-internal).
+# needs exactly that SAN, NOT every service FQDN.
+#
+# Names below assume Helm release "yarilo" in namespace "yarilo-sb", so
+# yarilo.fullname == "yarilo" and server_name renders "yarilo-internal"
+# (verified: helm template). Adjust if your release differs.
+#
+# IMPORTANT — namespaced Issuer, not ClusterIssuer:
+#   cert-manager here runs with --cluster-resource-namespace=cert-manager, so a
+#   ClusterIssuer resolves its ca.secretName in the cert-manager namespace, not
+#   yarilo-sb — it would never find the CA secret we create in yarilo-sb. A
+#   namespaced Issuer resolves the secret in its OWN namespace, so everything
+#   stays in yarilo-sb. The chart's director Certificate must therefore also
+#   reference a namespaced Issuer:
+#     components.director.internalTLS.certificate.issuerRef:
+#       kind: Issuer
+#       name: yarilo-internal-ca
 #
 # Apply BEFORE enabling internal_tls in the chart:
 #   kubectl apply -f hack/internal-ca-sandbox.yaml
 # then set components.<all>.internalTLS.{enabled:true, secretName:yarilo-internal-tls}
 # and components.director.internalTLS.{secretName:yarilo-director-internal-tls,
-# certificate.enabled:true}.
+# certificate.enabled:true, certificate.issuerRef.kind:Issuer}.
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
@@ -26,7 +39,7 @@ metadata:
 spec:
   selfSigned: {}
 ---
-# Self-signed internal root CA.
+# Self-signed internal root CA (secret lands in yarilo-sb).
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -45,20 +58,20 @@ spec:
     name: yarilo-selfsigned-bootstrap
     kind: Issuer
 ---
-# CA issuer the chart's director Certificate AND the shared cert below use.
-# ClusterIssuer so the chart default (issuerRef.kind: ClusterIssuer,
-# name: yarilo-internal-ca) resolves without change.
+# Namespaced CA Issuer — resolves ca.secretName in yarilo-sb (see note above).
+# The chart's director Certificate points here with issuerRef.kind: Issuer.
 apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
+kind: Issuer
 metadata:
   name: yarilo-internal-ca
+  namespace: yarilo-sb
 spec:
   ca:
     secretName: yarilo-internal-ca
 ---
 # Shared internal-tls cert for every NON-director internal component.
-# One SAN — the pinned server_name (<release>-internal) — is all that is
-# required now that clients pin ServerName (#816).
+# One SAN — the pinned server_name (yarilo-internal) — is all that is required
+# now that clients pin ServerName (#816).
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -73,6 +86,6 @@ spec:
     size: 256
   issuerRef:
     name: yarilo-internal-ca
-    kind: ClusterIssuer
+    kind: Issuer
   dnsNames:
-    - yarilo-sb-internal
+    - yarilo-internal
