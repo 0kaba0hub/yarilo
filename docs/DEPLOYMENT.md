@@ -681,6 +681,32 @@ operation. Reference parity: Dovecot does hash + vhosts weighting only;
 
 ---
 
+## Kick pacing — `user_kick_delay` and `max_parallel_kicks` (#740)
+
+Two knobs shape how sessions are torn down, mirroring the reference's
+`director_user_kick_delay` / `director_max_parallel_kicks`:
+
+- **`director_service.user_kick_delay`** (default `2`s) — an admin-initiated
+  kick (director API, typically the tail of a user move) waits this long before
+  the `USER-KICKED` push, so an in-flight command on the old backend can
+  complete. Applies to the **admin path only**: a backend-down / lease-expiry
+  kick fires immediately (there is nothing to grace on a dead backend), and the
+  split-writer conflict-kick is never delayed. Negative = disabled (immediate).
+
+- **`director_service.max_parallel_kicks`** (default `100`) — when a backend
+  goes down, its sessions are kicked in batches of this size with a short pause
+  between batches, spreading the re-login stampede across the surviving backends
+  instead of firing every kick at once. Negative = no batching.
+
+**Migrating from `dovecot.conf`:** `director_max_parallel_moves` has **no yarilo
+equivalent and is intentionally omitted**. yarilo rehashes lazily — a moved or
+kicked user is re-placed only on its next `LOOKUP` (kick → re-login → LOOKUP),
+so there is no proactive bulk-move phase to bound; the move rate is already
+capped by `max_parallel_kicks`. A parsed-but-unread key would be a config gap,
+so the key does not exist rather than existing as a no-op.
+
+---
+
 ## Stickiness rationale
 
 User X is always served by a single backend pod (within the same tag). Reasons:

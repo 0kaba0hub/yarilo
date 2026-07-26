@@ -168,6 +168,23 @@ components:
     ## = load-aware two-level pick (per-protocol then total, vhosts-normalized).
     assignment_policy: hash
 
+    ## Grace window (seconds) before an admin-initiated kick pushes USER-KICKED
+    ## (#740), letting a user's in-flight command on the old backend finish
+    ## after a move. Admin path only — a backend-down/expiry kick fires
+    ## immediately (nothing to grace on a dead backend) and the split-writer
+    ## conflict-kick is never delayed. Matches the reference's
+    ## director_user_kick_delay. 0 = 2; negative = disabled (immediate).
+    ## Note: there is no max_parallel_moves knob — yarilo rehashes lazily
+    ## (kick -> re-login -> LOOKUP), so the move rate is already bounded by
+    ## max_parallel_kicks below; a parsed-but-unread key is deliberately omitted.
+    user_kick_delay: 2
+    ## Cap on sessions kicked per batch when a backend goes down (#740). The
+    ## rest are kicked in later batches with a short pause between them,
+    ## spreading the re-login stampede across surviving backends instead of
+    ## firing every kick at once. Matches director_max_parallel_kicks.
+    ## 0 = 100; negative = no batching (kick all at once).
+    max_parallel_kicks: 100
+
     ## Static backend list loaded at startup.
     ## Each entry must match a backend service in the backend namespace.
     ## tag: optional pool tag to group backends (empty = default pool).

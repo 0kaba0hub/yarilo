@@ -164,6 +164,34 @@ type Options struct {
 	// "hash" (default, Dovecot semantics) or "least_sessions" (load-aware).
 	// Sticky pins / overrides / USER-MOVE are unaffected.
 	AssignmentPolicy string
+	// UserKickDelay delays an admin-initiated kick before the USER-KICKED is
+	// pushed (#740), a grace window for a user's in-flight command on the old
+	// backend after a move. Admin path only — backend-down/expiry and the
+	// split-writer conflict-kick are never delayed. 0 = 2s; negative = 0.
+	UserKickDelay time.Duration
+	// MaxParallelKicks caps sessions kicked per batch on backend-down (#740),
+	// spreading the re-login stampede. 0 = 100; <= 0 after default = no batching.
+	MaxParallelKicks int
+}
+
+func (o *Options) userKickDelay() time.Duration {
+	if o.UserKickDelay == 0 {
+		return 2 * time.Second
+	}
+	if o.UserKickDelay < 0 {
+		return 0
+	}
+	return o.UserKickDelay
+}
+
+func (o *Options) maxParallelKicks() int {
+	if o.MaxParallelKicks == 0 {
+		return 100
+	}
+	if o.MaxParallelKicks < 0 {
+		return 0
+	}
+	return o.MaxParallelKicks
 }
 
 func (o *Options) usernameHashLowercase() bool {
@@ -1046,16 +1074,56 @@ func (s *Server) kickSessionsForBackend(ip string) {
 	delete(s.sessByBE, ip)
 	s.sessRecMu.Unlock()
 
+	// Only local sessions carry a conn to kick; remote replicas (#804) are the
+	// owning director's job — every director runs this on the gossiped
+	// backend-down, so each kicks its own local sessions.
+	local := recs[:0]
 	for _, rec := range recs {
-		if rec.cl == nil {
-			continue // remote replica of another director's session (#804): kick
-			// is the owning director's job — every director runs this on the
-			// gossiped backend-down, so each kicks its own local sessions.
+		if rec.cl != nil {
+			local = append(local, rec)
 		}
+	}
+	if len(local) == 0 {
+		return
+	}
+
+	kickOne := func(rec *sessionRec) {
 		_ = rec.cl.WriteLine(fmt.Sprintf("USER-KICKED\t%s", rec.user))
 		slog.Info("director: kicked session", "session", rec.id, "user", rec.user, "backend", ip)
 	}
+
+	batch := s.opts.maxParallelKicks()
+	if batch <= 0 || batch >= len(local) {
+		for _, rec := range local {
+			kickOne(rec)
+		}
+		return
+	}
+
+	// Batch to spread the re-login stampede (#740): kick maxParallelKicks at a
+	// time with a short pause between batches so surviving backends don't take
+	// every re-login at once. Off the caller goroutine so the backend-down
+	// handler isn't blocked by the paced kicks.
+	go func() {
+		for i := 0; i < len(local); i += batch {
+			end := i + batch
+			if end > len(local) {
+				end = len(local)
+			}
+			for _, rec := range local[i:end] {
+				kickOne(rec)
+			}
+			if end < len(local) {
+				time.Sleep(kickBatchPause)
+			}
+		}
+	}()
 }
+
+// kickBatchPause is the delay between successive max_parallel_kicks batches
+// (#740). Fixed rather than configurable: it only shapes how the re-login
+// stampede is spread, and max_parallel_kicks is the operator-facing dial.
+const kickBatchPause = 100 * time.Millisecond
 
 // recordBackendSeen records a heartbeat for a backend under the #776 lease:
 // it refreshes the local last-seen time only on a STRICTLY newer per-origin

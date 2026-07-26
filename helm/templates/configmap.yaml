@@ -728,6 +728,8 @@ data:
       write_timeout: {{ .Values.components.director.write_timeout }}
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
       assignment_policy: {{ .Values.components.director.assignment_policy | default "hash" | quote }}
+      user_kick_delay: {{ .Values.components.director.user_kick_delay }}
+      max_parallel_kicks: {{ .Values.components.director.max_parallel_kicks }}
       ring_secret: {{ .Values.components.director.ring_secret | quote }}
       min_members: {{ .Values.components.director.min_members }}
       anti_entropy_interval: {{ .Values.components.director.anti_entropy_interval }}

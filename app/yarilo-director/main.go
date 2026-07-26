@@ -105,6 +105,8 @@ func main() {
 		WriteTimeout:          time.Duration(cfg.DirectorService.WriteTimeout) * time.Second,
 		UsernameHashLowercase: &usernameHashLowercase,
 		AssignmentPolicy:      cfg.DirectorService.AssignmentPolicy,
+		UserKickDelay:         time.Duration(cfg.DirectorService.UserKickDelay) * time.Second,
+		MaxParallelKicks:      cfg.DirectorService.MaxParallelKicks,
 		PeerTLS:               ringTLSCfg,
 		LocalIP:               localIP,
 		LocalPort:             localPort,

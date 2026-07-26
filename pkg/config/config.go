@@ -1043,6 +1043,26 @@ type DirectorServiceConfig struct {
 	// migration step is needed.
 	UsernameHashLowercase bool   `koanf:"username_hash_lowercase"`
 	AssignmentPolicy      string `koanf:"assignment_policy"` // hash | least_sessions (#797); default hash
+	// UserKickDelay is how long (seconds) an admin-initiated kick is delayed
+	// before the USER-KICKED is pushed (#740), giving a user's in-flight
+	// command on the old backend a grace window to complete after a move.
+	// Applies ONLY to admin-initiated kicks (director API); a backend-down /
+	// expiry kick fires immediately (there is nothing left to grace on a dead
+	// backend) and the split-writer conflict-kick is likewise never delayed.
+	// Matches the reference's director_user_kick_delay. 0 = default (2);
+	// negative = disabled (immediate). There is deliberately no
+	// max_parallel_moves equivalent: yarilo rehashes lazily (kick → re-login →
+	// LOOKUP), so the move rate is already bounded by max_parallel_kicks —
+	// a parsed-but-unread key would be a config gap, so it is omitted.
+	UserKickDelay int `koanf:"user_kick_delay"`
+	// MaxParallelKicks caps how many sessions are kicked per batch when a
+	// backend goes down (#740). The remaining sessions are kicked in
+	// subsequent batches with a short pause between them, spreading the
+	// re-login stampede across the surviving backends instead of firing every
+	// kick at once. Matches the reference's director_max_parallel_kicks.
+	// 0 = default (100); negative or 0-after-default disables batching (kick
+	// all at once).
+	MaxParallelKicks int `koanf:"max_parallel_kicks"`
 	// LMTPListen enables the director's embedded LMTP proxy (per-recipient
 	// fan-out via ring routing) on this address, e.g. ":10024". Empty =
 	// disabled. This deliberately does NOT reuse the shared services.lmtp
@@ -1737,6 +1757,8 @@ func Load(path string) (*Config, error) {
 			WriteTimeout:          10,
 			UsernameHashLowercase: true,
 			AssignmentPolicy:      "hash",
+			UserKickDelay:         2,
+			MaxParallelKicks:      100,
 			MinMembers:            3,
 			AntiEntropyInterval:   3,
 			SeedPollInterval:      2,
