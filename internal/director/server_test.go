@@ -319,7 +319,11 @@ func TestRingChange_DownIncludesTag(t *testing.T) {
 	}
 }
 
-func TestUserMove_OverridesRing(t *testing.T) {
+// TestUserMove_PinsToBackend (#708): USER-MOVE writes a TTL'd userDir pin, so a
+// subsequent LOOKUP routes to the moved backend instead of the ring-hash one.
+// Both backends must be Up in the requested tag — the pin is a normal sticky
+// entry now, not an unconditional override.
+func TestUserMove_PinsToBackend(t *testing.T) {
 	_, addr := startServer(t)
 	conn, sc := dialTest(t, addr)
 	readHandshake(t, sc)
@@ -327,31 +331,35 @@ func TestUserMove_OverridesRing(t *testing.T) {
 
 	conn.Write([]byte("BACKEND-UP\t10.0.0.6\t10993\timap\t100\n"))
 	readLine(t, sc) // OK
+	conn.Write([]byte("BACKEND-UP\t10.0.0.99\t10993\timap\t100\n"))
+	readLine(t, sc) // OK
 
 	conn.Write([]byte("USER-MOVE\talice@example.com\t10.0.0.99\t10993\n"))
 	if got := readLine(t, sc); got != "OK" {
 		t.Fatalf("USER-MOVE: expected OK, got %q", got)
 	}
 
-	conn.Write([]byte("LOOKUP\t7\talice@example.com\t\n"))
+	conn.Write([]byte("LOOKUP\t7\talice@example.com\timap\n"))
 	line := readLine(t, sc)
 	parts := strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] != "10.0.0.99" {
-		t.Errorf("expected override HOST 10.0.0.99, got %q", line)
+		t.Errorf("expected moved HOST 10.0.0.99, got %q", line)
 	}
 }
 
-// TestUserMove_OverrideCaseInsensitive proves #738: an admin override set
-// under one spelling of a username is honoured (and releasable) under any
-// other spelling, since the default lowercase=true normalizes s.overrides
-// keys at the wire ingress (handleUserMove/handleLookup/handleUserRelease).
-func TestUserMove_OverrideCaseInsensitive(t *testing.T) {
+// TestUserMove_CaseInsensitive proves #738 under the #708 model: a move set
+// under one spelling routes under any other spelling, since USER-MOVE writes
+// the userDir pin via the lowercase-normalized hash. (USER-RELEASE is gone —
+// #708 drops the overrides map; a move just TTL-expires.)
+func TestUserMove_CaseInsensitive(t *testing.T) {
 	_, addr := startServer(t)
 	conn, sc := dialTest(t, addr)
 	readHandshake(t, sc)
 	sendHandshake(t, conn)
 
 	conn.Write([]byte("BACKEND-UP\t10.0.0.16\t10993\timap\t100\n"))
+	readLine(t, sc) // OK
+	conn.Write([]byte("BACKEND-UP\t10.0.0.199\t10993\timap\t100\n"))
 	readLine(t, sc) // OK
 
 	conn.Write([]byte("USER-MOVE\tAlice@Example.com\t10.0.0.199\t10993\n"))
@@ -363,44 +371,7 @@ func TestUserMove_OverrideCaseInsensitive(t *testing.T) {
 	line := readLine(t, sc)
 	parts := strings.Split(line, "\t")
 	if len(parts) < 4 || parts[0] != "HOST" || parts[2] != "10.0.0.199" {
-		t.Fatalf("LOOKUP with different spelling: expected override HOST 10.0.0.199, got %q", line)
-	}
-
-	conn.Write([]byte("USER-RELEASE\tALICE@EXAMPLE.COM\n"))
-	if got := readLine(t, sc); got != "OK" {
-		t.Fatalf("USER-RELEASE: expected OK, got %q", got)
-	}
-
-	conn.Write([]byte("LOOKUP\t10\talice@example.com\timap\n"))
-	line = readLine(t, sc)
-	parts = strings.Split(line, "\t")
-	if len(parts) < 4 || parts[0] != "HOST" || parts[2] == "10.0.0.199" {
-		t.Errorf("expected ring backend after release via a third spelling, got %q", line)
-	}
-}
-
-func TestUserRelease_FallsBackToRing(t *testing.T) {
-	_, addr := startServer(t)
-	conn, sc := dialTest(t, addr)
-	readHandshake(t, sc)
-	sendHandshake(t, conn)
-
-	conn.Write([]byte("BACKEND-UP\t10.0.0.7\t10993\timap\t100\n"))
-	readLine(t, sc) // OK
-
-	conn.Write([]byte("USER-MOVE\tbob@example.com\t10.0.0.99\t10993\n"))
-	readLine(t, sc) // OK
-
-	conn.Write([]byte("USER-RELEASE\tbob@example.com\n"))
-	if got := readLine(t, sc); got != "OK" {
-		t.Fatalf("USER-RELEASE: expected OK, got %q", got)
-	}
-
-	conn.Write([]byte("LOOKUP\t8\tbob@example.com\timap\n"))
-	line := readLine(t, sc)
-	parts := strings.Split(line, "\t")
-	if len(parts) < 4 || parts[0] != "HOST" || parts[2] == "10.0.0.99" {
-		t.Errorf("expected ring backend after release, got %q", line)
+		t.Fatalf("LOOKUP with different spelling: expected moved HOST 10.0.0.199, got %q", line)
 	}
 }
 
