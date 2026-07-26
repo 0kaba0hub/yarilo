@@ -255,19 +255,25 @@ func New(cfg *config.Config) (*Server, error) {
 			MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 				return buildMailboxByDriver(driver, storageCfg, locker)
 			},
-			Index:                idx,
-			Resolver:             resolver,
-			Auth:                 authChain,
-			ProxyProtocol:        primary.HAProxy,
-			HAProxyTimeout:       haproxyTimeout,
-			HAProxyTrustedNets:   haproxyNets,
-			AuthAddr:             authAddr,
-			AuthTLS:              authTLS,
-			MasterAddr:           masterAddr,
-			MasterTLS:            authTLS,
-			IdleNotifyInterval:   time.Duration(p.IdleNotifyInterval) * time.Second,
-			MaxLineLength:        p.MaxLineLength,
-			ConnLimit:            connLimiter,
+			Index:              idx,
+			Resolver:           resolver,
+			Auth:               authChain,
+			ProxyProtocol:      primary.HAProxy,
+			HAProxyTimeout:     haproxyTimeout,
+			HAProxyTrustedNets: haproxyNets,
+			AuthAddr:           authAddr,
+			AuthTLS:            authTLS,
+			MasterAddr:         masterAddr,
+			MasterTLS:          authTLS,
+			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
+			MaxLineLength:      p.MaxLineLength,
+			ConnLimit:          connLimiter,
+			// yarilo-anvil for the SELECT push (#WHO folder tracking): the imap
+			// session reports its currently-SELECTed mailbox so `yarilo-admin
+			// who` can render it. Without this the anvil client is a permanent
+			// no-op and the WHO FOLDERS column is always empty.
+			AnvilAddr:            cfg.AnvilService.ClientAddr(),
+			AnvilTLS:             authTLS,
 			IDSend:               p.IDSend,
 			LoginGreeting:        p.LoginGreeting,
 			LogoutFormat:         p.LogoutFormat,
