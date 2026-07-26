@@ -525,6 +525,21 @@ protocol-specific port on the resolved pod IP. `tag` selects the NFS shard, neve
 the protocol. There is no per-protocol ring — a single user never lands on
 different pods for different protocols.
 
+**Admin per-user ops reach the owning pod the same way (#792).** `yarilo-backend-api`
+listens on the pod IP only, so a per-user admin op (`yarilo-admin backend fts
+rescan <user>`, folder/quota/index/… on a user) must hit the user's pod.
+`yarilo-admin` does the routing **client-side**: it asks the director
+`GET /api/director/map?user=X` — which resolves with the *same* precedence a
+login LOOKUP uses (admin override → sticky pin → ring hash, the director owning
+the assignment) — then dials `http://{pod-ip}:{backend_api_port}`. It never picks
+a pod itself: a client-side choice would race a concurrent login and put two pods
+on one user's FTS index, breaking the single-writer invariant. Routing auto-enables
+when a director URL is configured (co-located); with no director it uses the fixed
+`--backend-url` (standalone). `--route-by-user=false` is a debug escape hatch for
+talking to one pod directly. If the director is unreachable the op fails with a
+clear error — never a silent fall-through to a random pod. Global ops (dict,
+user iterate) carry no user and always use the fixed URL.
+
 ---
 
 ## Sizing per backend pod

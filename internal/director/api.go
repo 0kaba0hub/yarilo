@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+
+	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 )
 
 // StartAPI starts the HTTP admin API server on addr.
@@ -111,6 +114,43 @@ type backendDTOSource struct {
 	Sessions int
 }
 
+// resolveUserBackend answers "which backend is this user routed to" with the
+// same precedence a login LOOKUP uses: admin override → sticky userDir pin (if
+// the backend is still up) → ring hash. user must already be normalized. Returns
+// ("",0,"",false) when the ring is empty. sticky reports whether the answer came
+// from an override or an existing pin (vs a fresh hash). Read-only: it never
+// records a new pin — that is the login LOOKUP's job.
+func (s *Server) resolveUserBackend(user string) (ip string, port int, tag string, sticky bool) {
+	s.overrideMu.RLock()
+	addr, hasOverride := s.overrides[user]
+	s.overrideMu.RUnlock()
+	if hasOverride {
+		if h, p, err := net.SplitHostPort(addr); err == nil {
+			pi := 0
+			if b := s.ring.GetBackend(h); b != nil {
+				pi = b.Port
+			}
+			if p != "" {
+				if v, err := strconv.Atoi(p); err == nil {
+					pi = v
+				}
+			}
+			return h, pi, s.backendTag(h), true
+		}
+	}
+	if e := s.userDir.Get(user); e != nil && !e.Weak {
+		if h, _, err := net.SplitHostPort(e.Host); err == nil {
+			if b := s.ring.GetBackend(h); b != nil && b.Up {
+				return b.IP, b.Port, b.Tag, true
+			}
+		}
+	}
+	if b := s.ring.LookupBackend(user); b != nil {
+		return b.IP, b.Port, b.Tag, false
+	}
+	return "", 0, "", false
+}
+
 func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	backends := s.ring.Backends()
 	sess := s.backendSessionCounts()
@@ -156,14 +196,21 @@ func (s *Server) apiDump(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) apiMap(w http.ResponseWriter, r *http.Request) {
-	user := r.URL.Query().Get("user")
-	if user != "" {
-		b := s.ring.LookupBackend(user)
-		if b == nil {
+	raw := r.URL.Query().Get("user")
+	if raw != "" {
+		// Resolve to the SAME pod a login LOOKUP would: admin override →
+		// sticky userDir pin → ring hash. This matters for #792: a per-user
+		// backend-api op (fts rescan, etc.) must hit the pod the user is
+		// actually pinned to, or it becomes a second writer of that user's
+		// index — the single-writer hazard co-location (#788) exists to avoid.
+		// The director owns the assignment; the admin never picks a pod itself.
+		user := s.normalizeUser(proto.TabUnescape(raw))
+		ip, port, tag, sticky := s.resolveUserBackend(user)
+		if ip == "" {
 			apiError(w, "no backends available", http.StatusServiceUnavailable)
 			return
 		}
-		apiJSON(w, map[string]any{"user": user, "backend": b.IP, "port": b.Port, "tag": b.Tag})
+		apiJSON(w, map[string]any{"user": raw, "backend": ip, "port": port, "tag": tag, "sticky": sticky})
 		return
 	}
 	type uDTO struct {

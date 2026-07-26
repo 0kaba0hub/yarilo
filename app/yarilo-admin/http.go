@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -27,19 +28,39 @@ func apiDelete(path string) ([]byte, error) {
 // endpoint (dict / acl / quota / folder / user / mailbox).
 // Director-plane ops keep the apiURL/apiToken pair on the existing
 // apiGet/apiPost family.
+//
+// Per-user routing (#792): in the co-located topology backend-api listens on
+// the POD IP, so a per-user op must reach the pod the user is pinned to. When
+// routing is on (routeByUser), these chokepoints extract the user from the
+// request (query `user=` for GET, body `"user"` for POST) and resolve the pod
+// via a director LOOKUP — the director owns the assignment; the admin never
+// picks a pod itself (that would race a login and split the per-user FTS
+// writer). Requests with no user (dict, iterate) keep the fixed backendAPIURL.
 func backendAPIGet(path string) ([]byte, error) {
-	return doRequest(backendAPIURL, backendAPIToken, http.MethodGet, path, nil)
+	base, err := backendBaseForUser(resolveBackendUser(path, nil))
+	if err != nil {
+		return nil, err
+	}
+	return doRequest(base, backendAPIToken, http.MethodGet, path, nil)
 }
 
 func backendAPIPost(path string, body any) ([]byte, error) {
-	return doRequest(backendAPIURL, backendAPIToken, http.MethodPost, path, body)
+	base, err := backendBaseForUser(resolveBackendUser(path, body))
+	if err != nil {
+		return nil, err
+	}
+	return doRequest(base, backendAPIToken, http.MethodPost, path, body)
 }
 
 // backendAPIStream sends a POST and returns the raw response body
 // as an io.ReadCloser so streaming endpoints (NDJSON iterate) can
 // be consumed line-by-line. Caller MUST Close the body.
 func backendAPIStream(path string, body any) (io.ReadCloser, error) {
-	resp, err := doRawRequest(backendAPIURL, backendAPIToken, http.MethodPost, path, body)
+	base, err := backendBaseForUser(resolveBackendUser(path, body))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := doRawRequest(base, backendAPIToken, http.MethodPost, path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +70,47 @@ func backendAPIStream(path string, body any) (io.ReadCloser, error) {
 		return nil, apiError(resp, data)
 	}
 	return resp.Body, nil
+}
+
+// resolveBackendUser extracts the target user from a backend-api request: the
+// `user` query param (GET) or the top-level "user" key of a map body (POST).
+// Returns "" for global ops (dict uses typed struct bodies; iterate/count carry
+// no user) — those keep the fixed backendAPIURL.
+func resolveBackendUser(path string, body any) string {
+	if u, ok := body.(map[string]any); ok {
+		if s, ok := u["user"].(string); ok && s != "" {
+			return s
+		}
+	}
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		if q, err := url.ParseQuery(path[i+1:]); err == nil {
+			return q.Get("user")
+		}
+	}
+	return ""
+}
+
+// backendBaseForUser returns the backend-api base URL to use for a request.
+// When routing is off or the request has no user, the fixed backendAPIURL is
+// used (standalone / global ops). Otherwise it asks the director which pod owns
+// the user and targets that pod's backend-api port. A director that is down or
+// has no backend for the user yields a clean error — never a silent fallback to
+// a random pod (which would write the wrong pod's per-user state).
+func backendBaseForUser(user string) (string, error) {
+	if !routeByUser || user == "" {
+		return backendAPIURL, nil
+	}
+	data, err := apiGet("/api/director/map?user=" + url.QueryEscape(user))
+	if err != nil {
+		return "", fmt.Errorf("resolve backend for user %q via director (%s): %w", user, apiURL, err)
+	}
+	var m struct {
+		Backend string `json:"backend"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil || m.Backend == "" {
+		return "", fmt.Errorf("director returned no backend for user %q", user)
+	}
+	return fmt.Sprintf("http://%s:%d", m.Backend, backendAPIPort), nil
 }
 
 func doRequest(baseURL, token, method, path string, body any) ([]byte, error) {
