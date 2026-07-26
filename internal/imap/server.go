@@ -193,9 +193,10 @@ type Options struct {
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
 
 	// AnvilAddr is the yarilo-anvil server address. When non-empty
-	// and the session arrived with XCLIENT SESSION=<id>, each
-	// SELECT / EXAMINE / UNSELECT pushes a SELECT command to anvil
-	// so `who` can render the currently-SELECTed folder.
+	// and the session carried a login-forwarded anvil session id in
+	// the YARILO preamble (SESSION=<id>, #808), each SELECT / EXAMINE
+	// / UNSELECT pushes a SELECT command to anvil so `who` can render
+	// the currently-SELECTed folder.
 	AnvilAddr string
 	// AnvilTLS optionally wraps the anvil dialer with mTLS.
 	AnvilTLS *tls.Config

@@ -68,22 +68,13 @@ func (c *imapAnvilClient) Close() {
 	}
 }
 
-// anvilSessionID returns the anvil session id captured on the
-// underlying TCP connection via XCLIENT SESSION=. Empty when
-// XCLIENT did not run (direct backend connect) or the attr was
-// missing.
+// anvilSessionID returns the anvil session id the login pod forwarded in the
+// YARILO preamble (SESSION=<id>), captured into s.sid by newSession (#808).
+// It is the SAME id the login registered the session under in anvil, so a
+// SELECT push updates the right session. Empty on a direct (non-preamble)
+// backend connect, where PushSelect correctly no-ops.
 func (s *session) anvilSessionID() string {
-	if s.imapConn == nil {
-		return ""
-	}
-	nc := s.imapConn.NetConn()
-	if nc == nil {
-		return ""
-	}
-	if sid, ok := nc.(interface{ SessionID() string }); ok {
-		return sid.SessionID()
-	}
-	return ""
+	return s.sid
 }
 
 // pushAnvilSelect fires SELECT(sessionID, folder) to anvil so
