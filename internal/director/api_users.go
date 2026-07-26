@@ -51,10 +51,18 @@ func (s *Server) apiUserKick(w http.ResponseWriter, r *http.Request) {
 	// user_kick_delay before the USER-KICKED push so an in-flight command on
 	// the old backend can finish. Scheduled off the request goroutine so the
 	// API responds immediately; backend-down/expiry kicks are never delayed.
+	// Clearing the sticky pin is the point of a kick (#706): otherwise the
+	// kicked user's next connection re-resolves to the SAME still-Up backend and
+	// the kick is a routing no-op. Deleted alongside the USER-KICKED push (which
+	// replicas apply too), so origin and replicas drop the pin together.
 	if delay := s.opts.userKickDelay(); delay > 0 {
-		time.AfterFunc(delay, func() { s.originateRingEvent("USER-KICKED", user, nil) })
+		time.AfterFunc(delay, func() {
+			s.userDir.Delete(user)
+			s.originateRingEvent("USER-KICKED", user, nil)
+		})
 		slog.Info("director API: user kick scheduled", "user", user, "delay", delay)
 	} else {
+		s.userDir.Delete(user)
 		s.originateRingEvent("USER-KICKED", user, nil)
 		slog.Info("director API: user kicked", "user", user)
 	}

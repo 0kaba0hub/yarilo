@@ -3,6 +3,7 @@ package director
 import (
 	"crypto/md5"
 	"encoding/binary"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -186,6 +187,27 @@ func (d *UserDir) DeleteByHash(hash uint32) {
 	d.mu.Lock()
 	delete(d.byHash, hash)
 	d.mu.Unlock()
+}
+
+// DeleteByBackend removes every pin pointing at backendIP (host part of the
+// stored "ip:port" Host), returning the count removed (#706). Used when a
+// backend is flushed so new LOOKUPs rehash away from it instead of sticking to
+// a drained/evacuated backend.
+func (d *UserDir) DeleteByBackend(backendIP string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := 0
+	for h, e := range d.byHash {
+		host, _, err := net.SplitHostPort(e.Host)
+		if err != nil {
+			host = e.Host
+		}
+		if host == backendIP {
+			delete(d.byHash, h)
+			n++
+		}
+	}
+	return n
 }
 
 // Snapshot returns a copy of all non-expired entries.

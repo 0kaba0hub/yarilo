@@ -843,8 +843,13 @@ func (s *Server) handleBackendFlush(c *client, fields []string) {
 		_ = c.WriteLine("OK")
 		return
 	}
-	s.kickSessionsForBackend(ip)
-	slog.Info("director: backend flush", "ip", ip)
+	// Wire BACKEND-FLUSH is a backend self-reporting overload (#779/#811):
+	// DRAIN, not evacuate. Keep the ring slot and every existing session; only
+	// clear the pins so NEW lookups rehash away. Do NOT kick — the wire-doc
+	// contract is "keep sessions, no rehash". (Operator-forced evacuation with a
+	// kick is the admin `backends flush` command, apiBackendFlush.)
+	n := s.userDir.DeleteByBackend(ip)
+	slog.Info("director: backend flush (drain)", "ip", ip, "pins_cleared", n)
 	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tflush\t%s", ip, tag), c)
 	s.updateMetrics()
 	_ = c.WriteLine("OK")
