@@ -341,9 +341,13 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 			Policy:            proxyPolicy(s.opts.HAProxyTrustedNets),
 		}
 	}
-	if s.opts.MaxLineLength > 0 {
-		ln = &maxLineLenListener{Listener: ln, limit: s.opts.MaxLineLength}
-	}
+	// PreambleListener terminates internal mTLS (#824), so it must wrap the RAW
+	// (proxyproto-unwrapped) stream — every plaintext-oriented wrapper below
+	// (maxLineLen, greeting, ID) has to sit ABOVE it, operating on the decrypted
+	// IMAP stream. maxLineLen in particular buffers + line-scans through its own
+	// bufio.Reader; under TLS it mangled the binary ClientHello and the
+	// handshake never completed (#826). proxyproto stays innermost — the PROXY
+	// header is pre-TLS.
 	if s.opts.AuthAddr != "" {
 		ln = &loginproto.PreambleListener{
 			Listener:        ln,
@@ -354,6 +358,9 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 			ExpectedService: "imap",
 			TLSConfig:       s.opts.PreambleTLS,
 		}
+	}
+	if s.opts.MaxLineLength > 0 {
+		ln = &maxLineLenListener{Listener: ln, limit: s.opts.MaxLineLength}
 	}
 	if s.opts.LoginGreeting != "" {
 		ln = &greetingListener{Listener: ln, greeting: s.opts.LoginGreeting}

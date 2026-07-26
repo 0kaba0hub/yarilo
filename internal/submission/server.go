@@ -122,9 +122,6 @@ func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
 	if tlsCfg != nil {
 		ln = tls.NewListener(ln, tlsCfg)
 	}
-	if s.workarounds != 0 {
-		ln = &workaroundListener{Listener: ln, workarounds: s.workarounds}
-	}
 	if s.opts.HAProxy {
 		ln = &proxyproto.Listener{
 			Listener:          ln,
@@ -132,8 +129,16 @@ func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
 			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
 	}
+	// PreambleListener terminates internal mTLS (#824) — the workaround wrapper
+	// buffers + line-scans through its own bufio.Reader, so it MUST sit above
+	// TLS, on the decrypted SMTP stream; under TLS it mangled the binary
+	// ClientHello and the handshake never completed (#826). proxyproto stays
+	// below (PROXY header is pre-TLS).
 	if s.opts.AuthAddr != "" {
 		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "smtp", TLSConfig: s.opts.PreambleTLS}
+	}
+	if s.workarounds != 0 {
+		ln = &workaroundListener{Listener: ln, workarounds: s.workarounds}
 	}
 	return s.subSrv.Serve(ln)
 }
