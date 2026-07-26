@@ -763,7 +763,12 @@ func TestBackendDown_KicksActiveSessions(t *testing.T) {
 	}
 }
 
-func TestBackendFlush_KicksActiveSessions(t *testing.T) {
+// TestBackendFlush_DrainsWithoutKick: the WIRE BACKEND-FLUSH (a backend
+// self-reporting overload, #779/#811) drains — it must NOT kick sessions
+// (#706). The login pod gets the RING-CHANGE flush push (so new lookups stop),
+// but the active session is left running. Operator-forced evacuation with a
+// kick is the admin `backends flush` command, not this.
+func TestBackendFlush_DrainsWithoutKick(t *testing.T) {
 	_, addr := startServer(t)
 
 	loginConn, loginSc := dialTest(t, addr)
@@ -786,15 +791,20 @@ func TestBackendFlush_KicksActiveSessions(t *testing.T) {
 		t.Fatalf("BACKEND-FLUSH: got %q", got)
 	}
 
-	lines := []string{readLine(t, loginSc), readLine(t, loginSc)}
-	var kicked bool
-	for _, l := range lines {
-		if l == "USER-KICKED\teve@example.com" {
-			kicked = true
-		}
+	// The only push is the RING-CHANGE flush — never a USER-KICKED.
+	got := readLine(t, loginSc)
+	if strings.HasPrefix(got, "USER-KICKED") {
+		t.Fatalf("wire BACKEND-FLUSH must DRAIN, not kick, got %q", got)
 	}
-	if !kicked {
-		t.Errorf("expected USER-KICKED on loginConn after FLUSH, got: %v", lines)
+	if !strings.HasPrefix(got, "RING-CHANGE\t10.0.0.11\tflush") {
+		t.Fatalf("expected RING-CHANGE flush push, got %q", got)
+	}
+	// Nothing else (no kick) arrives shortly after.
+	_ = loginConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if loginSc.Scan() {
+		if line := loginSc.Text(); strings.HasPrefix(line, "USER-KICKED") {
+			t.Fatalf("no kick expected after drain-flush, got %q", line)
+		}
 	}
 }
 

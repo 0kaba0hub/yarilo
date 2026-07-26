@@ -1523,6 +1523,10 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 		if len(payload) < 1 {
 			return
 		}
+		// Drop the sticky pin on every replica too (#706), matching the origin —
+		// else a replica answering the kicked user's next LOOKUP still routes to
+		// the old backend.
+		m.srv.userDir.Delete(payload[0])
 		m.srv.broadcastToLogins(fmt.Sprintf("USER-KICKED\t%s", payload[0]))
 	case "SESSION-OPEN":
 		// payload: <id> <user> <backend> <proto> (#804) — a remote replica of a

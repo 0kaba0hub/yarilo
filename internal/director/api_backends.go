@@ -115,15 +115,23 @@ func (s *Server) apiBackendDown(w http.ResponseWriter, r *http.Request) {
 	apiJSON(w, map[string]string{"status": "ok"})
 }
 
+// apiBackendFlush is the operator-forced EVACUATION (doveadm director flush
+// parity, #706): kick the backend's sessions and clear its pins so users move
+// off NOW. This is deliberately different from the wire BACKEND-FLUSH
+// (handleBackendFlush), which DRAINS without kicking. The kick is origin-local
+// (matching the other admin ops); the pin-clear replicates ring-wide via the
+// originated flush event, so every replica rehashes away too.
 func (s *Server) apiBackendFlush(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
 	if ip == "all" {
 		for _, b := range s.ring.Backends() {
 			s.ring.SetUp(b.IP, false, time.Now().Unix())
-			s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tflush\t%s", b.IP, b.Tag), nil)
+			s.kickSessionsForBackend(b.IP)
+			s.userDir.DeleteByBackend(b.IP)
+			s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tflush\t%s", b.IP, b.Tag), nil)
 		}
 		s.updateMetrics()
-		slog.Info("director API: all backends flushed")
+		slog.Info("director API: all backends flushed (evacuate)")
 		apiJSON(w, map[string]string{"status": "ok"})
 		return
 	}
@@ -132,8 +140,10 @@ func (s *Server) apiBackendFlush(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "backend not found", http.StatusNotFound)
 		return
 	}
-	s.broadcast(fmt.Sprintf("RING-CHANGE\t%s\tflush\t%s", ip, tag), nil)
+	s.kickSessionsForBackend(ip)
+	n := s.userDir.DeleteByBackend(ip)
+	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tflush\t%s", ip, tag), nil)
 	s.updateMetrics()
-	slog.Info("director API: backend flushed", "ip", ip)
+	slog.Info("director API: backend flushed (evacuate)", "ip", ip, "pins_cleared", n)
 	apiJSON(w, map[string]string{"status": "ok"})
 }

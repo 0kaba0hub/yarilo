@@ -133,7 +133,11 @@ func applyRingChangeFields(srv *Server, payload []string) {
 		slog.Info("director: ring change down", "ip", ip)
 	case "flush":
 		srv.ring.SetUp(ip, false, ts)
-		slog.Info("director: ring change flush", "ip", ip)
+		// Clear the flushed backend's pins on every replica (#706) so new
+		// LOOKUPs rehash away from it. Sessions are untouched (drain) — the
+		// origin decided whether to kick (admin evacuate) or not (wire drain).
+		n := srv.userDir.DeleteByBackend(ip)
+		slog.Info("director: ring change flush", "ip", ip, "pins_cleared", n)
 	}
 }
 
