@@ -193,7 +193,7 @@ func resolveBackends(ctx context.Context, cfg *config.Config, srv *director.Serv
 			continue
 		}
 		for _, addr := range addrs {
-			srv.AddBackend(addr, ms.Port, ms.Tag)
+			srv.AddBackend(addr, ms.Port, ms.Tag, ms.Vhosts)
 		}
 		slog.Info("director: backends resolved", "host", ms.Host, "pods", len(addrs), "tag", ms.Tag)
 	}

@@ -900,13 +900,14 @@ func (s *Server) handleUserKilled(c *client, fields []string) {
 
 // AddBackend registers a backend pod in the hash ring.
 // Called at startup after DNS resolution of headless services.
-func (s *Server) AddBackend(ip string, port int, tag string) {
+func (s *Server) AddBackend(ip string, port int, tag string, vhosts int) {
 	ts := time.Now().Unix()
 	s.ring.AddBackend(&ring.Backend{
 		IP:     ip,
 		Port:   port,
 		Tag:    tag,
 		Up:     true,
+		Vhosts: vhosts,
 		LastUp: ts,
 	})
 	slog.Info("director: backend registered", "ip", ip, "port", port, "tag", tag)

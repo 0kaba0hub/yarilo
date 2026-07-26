@@ -741,6 +741,9 @@ data:
         - host: {{ .host | quote }}
           port: {{ .port }}
           tag: {{ .tag | quote }}
+          {{- if .vhosts }}
+          vhosts: {{ .vhosts }}
+          {{- end }}
         {{- end }}
       {{- end }}
       {{- if .Values.components.director.listeners.lmtp.enabled }}

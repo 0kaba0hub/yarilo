@@ -913,6 +913,10 @@ type MailServerConfig struct {
 	Port int    `koanf:"port"`
 	// Tag groups backends into pools; an empty tag means the default pool.
 	Tag string `koanf:"tag"`
+	// Vhosts is the ring weight 1..100 for this static backend (#740/#797).
+	// 0 = director default; set explicitly so it is a real least_sessions
+	// candidate (0 there means drain).
+	Vhosts int `koanf:"vhosts"`
 }
 
 // DirectorAPIConfig configures the HTTP admin API on yarilo-director.
