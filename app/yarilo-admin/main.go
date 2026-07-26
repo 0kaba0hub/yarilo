@@ -28,6 +28,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 )
 
 var (
@@ -36,6 +38,9 @@ var (
 
 	backendAPIURL   string
 	backendAPIToken string
+	backendAPIPort  int    // per-user routing: pod backend-api port (#792)
+	routeFlag       string // "auto" | "true" | "false"
+	routeByUser     bool   // resolved: route per-user backend ops via director LOOKUP
 
 	outputFormat string
 )
@@ -47,6 +52,8 @@ func main() {
 	flag.StringVar(&apiToken, "token", envOr("YARILO_ADMIN_TOKEN", envOr("DIRECTOR_API_TOKEN", "")), "Director API bearer token")
 	flag.StringVar(&backendAPIURL, "backend-url", envOr("YARILO_BACKEND_API_URL", "http://localhost:9105"), "yarilo-backend-api base URL (used by 'backend ...' subcommands)")
 	flag.StringVar(&backendAPIToken, "backend-token", envOr("YARILO_BACKEND_API_TOKEN", envOr("BACKEND_API_TOKEN", "")), "yarilo-backend-api bearer token")
+	flag.IntVar(&backendAPIPort, "backend-port", envOrInt("YARILO_BACKEND_API_PORT", 9105), "backend-api port on the resolved pod (per-user routing, #792)")
+	flag.StringVar(&routeFlag, "route-by-user", envOr("YARILO_ADMIN_ROUTE_BY_USER", "auto"), "Route per-user backend ops to the user's pod via a director LOOKUP: auto (on when a director URL is configured) | true | false (escape hatch: talk to --backend-url directly)")
 	flag.StringVar(&authAddr, "auth-addr", envOr("YARILO_AUTH_ADDR", "localhost:9102"), "yarilo-auth master socket (used by 'auth ...' subcommands)")
 	flag.StringVar(&authCert, "auth-cert", envOr("YARILO_AUTH_CERT", ""), "mTLS client cert for auth-master socket")
 	flag.StringVar(&authKey, "auth-key", envOr("YARILO_AUTH_KEY", ""), "mTLS client key for auth-master socket")
@@ -78,6 +85,21 @@ func main() {
 		case "director":
 			apiToken = v
 		}
+	}
+
+	// Resolve per-user routing (#792). "auto" turns routing on when a director
+	// URL was explicitly configured (env or --url flag) — the co-located
+	// topology. A bare default director URL (no env, no flag) means standalone,
+	// so routing stays off and the fixed --backend-url is used unchanged.
+	switch strings.ToLower(routeFlag) {
+	case "true", "on", "yes", "1":
+		routeByUser = true
+	case "false", "off", "no", "0":
+		routeByUser = false
+	default: // auto
+		directorConfigured := os.Getenv("YARILO_ADMIN_URL") != "" ||
+			os.Getenv("YARILO_API_URL") != "" || flagSet("url")
+		routeByUser = directorConfigured
 	}
 
 	args := flag.Args()
@@ -231,4 +253,24 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envOrInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// flagSet reports whether a flag was explicitly passed on the command line.
+func flagSet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }
