@@ -10,7 +10,7 @@ import (
 )
 
 // Assignment policies for the INITIAL (unpinned) user→backend placement (#797).
-// Sticky pins, admin overrides, and USER-MOVE are unaffected — only a fresh
+// Sticky pins and USER-MOVE are unaffected — only a fresh
 // assignment consults the policy.
 const (
 	policyHash          = "hash"           // consistent hash (default; Dovecot semantics)

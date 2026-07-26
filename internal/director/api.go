@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
@@ -115,29 +114,12 @@ type backendDTOSource struct {
 }
 
 // resolveUserBackend answers "which backend is this user routed to" with the
-// same precedence a login LOOKUP uses: admin override → sticky userDir pin (if
-// the backend is still up) → ring hash. user must already be normalized. Returns
+// same precedence a login LOOKUP uses (#708): sticky userDir pin (if the backend
+// is still up) → ring hash. user must already be normalized. Returns
 // ("",0,"",false) when the ring is empty. sticky reports whether the answer came
-// from an override or an existing pin (vs a fresh hash). Read-only: it never
-// records a new pin — that is the login LOOKUP's job.
+// from an existing pin (vs a fresh hash). Read-only under hash; under
+// least_sessions it pins a fresh user (the director owns placement).
 func (s *Server) resolveUserBackend(user string) (ip string, port int, tag string, sticky bool) {
-	s.overrideMu.RLock()
-	addr, hasOverride := s.overrides[user]
-	s.overrideMu.RUnlock()
-	if hasOverride {
-		if h, p, err := net.SplitHostPort(addr); err == nil {
-			pi := 0
-			if b := s.ring.GetBackend(h); b != nil {
-				pi = b.Port
-			}
-			if p != "" {
-				if v, err := strconv.Atoi(p); err == nil {
-					pi = v
-				}
-			}
-			return h, pi, s.backendTag(h), true
-		}
-	}
 	if e := s.userDir.Get(user); e != nil && !e.Weak {
 		if h, _, err := net.SplitHostPort(e.Host); err == nil {
 			if b := s.ring.GetBackend(h); b != nil && b.Up {
@@ -228,8 +210,8 @@ func (s *Server) apiMap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Resolve to the SAME pod a login LOOKUP would: admin override →
-		// sticky userDir pin → ring hash. This matters for #792: a per-user
+		// Resolve to the SAME pod a login LOOKUP would:
+		// sticky userDir pin → ring hash (#708). This matters for #792: a per-user
 		// backend-api op (fts rescan, etc.) must hit the pod the user is
 		// actually pinned to, or it becomes a second writer of that user's
 		// index — the single-writer hazard co-location (#788) exists to avoid.

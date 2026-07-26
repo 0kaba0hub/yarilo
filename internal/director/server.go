@@ -35,8 +35,7 @@
 //	  BACKEND-DOWN\t{ip}\n                            (LEAVE: remove + rehash — SIGTERM / expiry)
 //	  BACKEND-FLUSH\t{ip}\n                          (drain / overload: stop new lookups, keep sessions + ring slot, NO rehash)
 //	  HOST-REMOVE\t{ip}\n                            (alias for BACKEND-DOWN)
-//	  USER-MOVE\t{user}\t{ip}\t{port}\n              (force user to specific backend)
-//	  USER-RELEASE\t{user}\n                         (remove user override)
+//	  USER-MOVE\t{user}\t{ip}\t{port}\n              (move user: TTL'd userDir pin + kick old sessions, #708)
 //	  USER-WEAK\t{user}\n                            (mark current assignment as soft/weak)
 //	  USER-KICK\t{user}\n                            (broadcast kick to all login clients)
 //	  USER-KILLED\t{hash}\n                          (login reports sessions closed for hash)
@@ -64,7 +63,10 @@
 //	    only sees the backend via gossip (registration lands on 1 of N) can add
 //	    it to its ring: ...\t{ip}\tup\t{tag}\t{beSeq}\t{port}\t{vhosts}\n (#776)
 //	  USER-MOVED\t{originIP}\t{originPort}\t{seq}\t{user}\t{ip}\t{port}\n
-//	  USER-KICKED\t{originIP}\t{originPort}\t{seq}\t{user}\n
+//	  USER-KICKED\t{originIP}\t{originPort}\t{seq}\t{user}[\t{oldBackendIP}]\n
+//	    oldBackendIP present (#708 move-kick): the pin is dropped only if it
+//	    still points there (compare-and-delete). Absent (#823 admin kick): the
+//	    pin is dropped unconditionally. The session kick fires either way.
 //	  SESSION-OPEN\t{originIP}\t{originPort}\t{seq}\t{id}\t{user}\t{backend}\t{proto}\n  (#804 — replicate the load view)
 //	  SESSION-CLOSE\t{originIP}\t{originPort}\t{seq}\t{id}\n
 package director
@@ -165,7 +167,7 @@ type Options struct {
 	UsernameHashLowercase *bool
 	// AssignmentPolicy selects the INITIAL (unpinned) placement strategy (#797):
 	// "hash" (default, Dovecot semantics) or "least_sessions" (load-aware).
-	// Sticky pins / overrides / USER-MOVE are unaffected.
+	// Sticky pins / USER-MOVE are unaffected.
 	AssignmentPolicy string
 	// UserKickDelay delays an admin-initiated kick before the USER-KICKED is
 	// pushed (#740), a grace window for a user's in-flight command on the old
@@ -284,10 +286,6 @@ type Server struct {
 	// userDir stores user→backend mappings with TTL.
 	userDir *UserDir
 
-	// overrides maps username → "ip:port" for admin-forced assignments.
-	overrideMu sync.RWMutex
-	overrides  map[string]string
-
 	// clients is the registry of all currently connected clients.
 	clientMu sync.RWMutex
 	clients  map[*client]struct{}
@@ -333,7 +331,6 @@ func NewWithOptions(opts Options) *Server {
 		ring:        ring.New(opts.usernameHashLowercase()),
 		opts:        opts,
 		userDir:     NewUserDir(opts.userExpire(), opts.usernameHashLowercase(), Member{IP: opts.LocalIP, Port: opts.LocalPort}.String()),
-		overrides:   make(map[string]string),
 		clients:     make(map[*client]struct{}),
 		sessById:    make(map[string]*sessionRec),
 		sessByBE:    make(map[string]map[string]bool),
@@ -350,8 +347,8 @@ func NewWithOptions(opts Options) *Server {
 // normalizeUser applies the #738 username hash-normalization at the single
 // ingress point for every wire/HTTP handler that turns a raw username into a
 // hash or map key (handleLookup, handleUserMove, handleUserWeak,
-// handleUserRelease, handleUserKick, RouteUser, apiUserMove, apiUserKick).
-// Everything downstream of these call sites — s.overrides, s.userDir,
+// handleUserKick, RouteUser, apiUserMove, apiUserKick).
+// Everything downstream of these call sites — s.userDir,
 // s.ring — already operates on normalized usernames, so no other call site
 // needs its own normalize call.
 //
@@ -629,8 +626,6 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleBackendFlush(c, fields)
 		case "USER-MOVE":
 			s.handleUserMove(c, fields)
-		case "USER-RELEASE":
-			s.handleUserRelease(c, fields)
 		case "USER-WEAK":
 			s.handleUserWeak(c, fields)
 		case "USER-KICK":
@@ -700,7 +695,7 @@ func hostLine(b ring.Backend) string {
 // tag is required; "" restricts to the untagged pool — there is no
 // full-ring mode (#737: a login pod belongs to exactly one tag-pool, per
 // DEPLOYMENT.md's tag-based sharding model).
-// Checks admin overrides first, then ring lookup restricted to tag.
+// One order (#708): sticky userDir pin, then ring lookup restricted to tag.
 // Response: HOST\t{id}\t{ip}\t{port}\t{tag}
 func (s *Server) handleLookup(c *client, fields []string) {
 	if len(fields) < 4 {
@@ -713,20 +708,9 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		reqProto = fields[4]
 	}
 
-	// Admin override wins everything.
-	s.overrideMu.RLock()
-	addr, hasOverride := s.overrides[user]
-	s.overrideMu.RUnlock()
-
-	if hasOverride {
-		host, portStr, err := net.SplitHostPort(addr)
-		if err == nil {
-			t := s.backendTag(host)
-			_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, t))
-			return
-		}
-	}
-
+	// One lookup order (#708): sticky userDir pin → ring. An admin USER-MOVE now
+	// writes a normal (TTL'd) userDir entry, so there is no separate override
+	// branch to check first.
 	// Sticky routing: honour an existing userDir entry if the backend is still Up
 	// and matches the requested tag. Refreshes TTL so active users stay pinned.
 	if e := s.userDir.Get(user); e != nil && !e.Weak {
@@ -861,37 +845,35 @@ func (s *Server) handleUserMove(c *client, fields []string) {
 		_ = c.WriteLine("OK")
 		return
 	}
-	user, ip, portStr := s.normalizeUser(fields[1]), fields[2], fields[3]
-	addr := net.JoinHostPort(ip, portStr)
-
-	s.overrideMu.Lock()
-	s.overrides[user] = addr
-	s.overrideMu.Unlock()
-
-	// Record in user directory as a strong assignment.
-	s.userDir.Set(user, addr, false)
-
-	slog.Info("director: user moved", "user", user, "backend", addr)
-	s.originateRingEvent("USER-MOVED", fmt.Sprintf("%s\t%s\t%s", user, ip, portStr), c)
+	user := s.normalizeUser(fields[1])
+	s.moveUser(user, net.JoinHostPort(fields[2], fields[3]), c)
 	_ = c.WriteLine("OK")
 }
 
-// handleUserRelease processes: USER-RELEASE\t{user}
-func (s *Server) handleUserRelease(c *client, fields []string) {
-	if len(fields) < 2 {
-		_ = c.WriteLine("OK")
-		return
+// moveUser records an admin-forced move as a normal (TTL'd) userDir pin and
+// kicks the user's sessions on the OLD backend so the next connection lands on
+// the new one (#708) — move = route change + kick, atomically. The kick carries
+// the old backend IP: the compare-and-delete apply drops the pin only if it
+// still points there, so this move's fresh pin survives the kick it triggers.
+// A plain admin kick (apiUserKick, no old IP) still clears unconditionally
+// (#823). Longevity is not permanent — while the user has a live session the
+// pin's TTL is kept fresh (#804 registry, PR-B); an idle user falls back to the
+// ring hash after user_expire. exclude is the originating client (nil for API).
+func (s *Server) moveUser(user, addr string, exclude *client) {
+	oldIP := ""
+	if e := s.userDir.Get(user); e != nil {
+		if h, _, err := net.SplitHostPort(e.Host); err == nil {
+			oldIP = h
+		}
 	}
-	user := s.normalizeUser(fields[1])
-
-	s.overrideMu.Lock()
-	delete(s.overrides, user)
-	s.overrideMu.Unlock()
-
-	s.userDir.Delete(user)
-
-	slog.Info("director: user released", "user", user)
-	_ = c.WriteLine("OK")
+	s.userDir.Set(user, addr, false)
+	host, portStr, _ := net.SplitHostPort(addr)
+	s.originateRingEvent("USER-MOVED", fmt.Sprintf("%s\t%s\t%s", user, host, portStr), exclude)
+	if oldIP != "" && oldIP != host {
+		// Conditional kick: USER-KICKED with a trailing old-backend field.
+		s.originateRingEvent("USER-KICKED", fmt.Sprintf("%s\t%s", user, oldIP), exclude)
+	}
+	slog.Info("director: user moved", "user", user, "backend", addr, "kicked_old", oldIP)
 }
 
 // handleUserWeak processes: USER-WEAK\t{user}
@@ -962,18 +944,9 @@ func (s *Server) LookupBackend(username string) *ring.Backend {
 }
 
 // RouteUser returns the backend IP for a recipient username, implementing
-// lmtp.UserRouter. Checks admin overrides, sticky userDir, then the ring.
+// lmtp.UserRouter. One order (#708): sticky userDir pin → ring.
 func (s *Server) RouteUser(username string) (string, error) {
 	username = s.normalizeUser(username)
-	s.overrideMu.RLock()
-	addr, hasOverride := s.overrides[username]
-	s.overrideMu.RUnlock()
-	if hasOverride {
-		host, _, err := net.SplitHostPort(addr)
-		if err == nil {
-			return host, nil
-		}
-	}
 	if e := s.userDir.Get(username); e != nil && !e.Weak {
 		host, _, err := net.SplitHostPort(e.Host)
 		if err == nil {

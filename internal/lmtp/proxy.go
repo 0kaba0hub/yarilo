@@ -14,8 +14,8 @@ import (
 )
 
 // UserRouter resolves a recipient username to a backend IP address.
-// Implementations consult admin overrides, sticky routing, and the
-// consistent-hash ring in that order.
+// Implementations consult the sticky userDir pin, then the consistent-hash
+// ring, in that order (#708 — an admin move is now a normal sticky pin).
 type UserRouter interface {
 	RouteUser(username string) (ip string, err error)
 }

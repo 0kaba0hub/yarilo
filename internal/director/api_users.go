@@ -2,7 +2,6 @@ package director
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,17 +30,13 @@ func (s *Server) apiUserMove(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "backend or ip+port required", http.StatusBadRequest)
 		return
 	}
-	backendHost, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
+	if _, _, err := net.SplitHostPort(addr); err != nil {
 		apiError(w, "invalid backend address", http.StatusBadRequest)
 		return
 	}
-	s.overrideMu.Lock()
-	s.overrides[user] = addr
-	s.overrideMu.Unlock()
-	s.userDir.Set(user, addr, false)
-	s.originateRingEvent("USER-MOVED", fmt.Sprintf("%s\t%s\t%s", user, backendHost, portStr), nil)
-	slog.Info("director API: user moved", "user", user, "backend", addr)
+	// Move = TTL'd userDir pin + kick old sessions, replicated ring-wide (#708).
+	// No permanent overrides map anymore.
+	s.moveUser(user, addr, nil)
 	apiJSON(w, map[string]string{"status": "ok"})
 }
 
