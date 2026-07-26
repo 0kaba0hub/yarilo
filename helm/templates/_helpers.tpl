@@ -183,7 +183,13 @@ Include in any component that reads passdb/userdb from SQL.
 - name: YARILO_ADMIN_TYPE
   value: backend
 - name: YARILO_API_URL
+  {{- /* Co-located: backend-api runs in THIS pod on the pod IP (no separate
+         Service), so reach it over localhost. Legacy: the -backend-api Service. */}}
+  {{- if .Values.components.backend.coLocated }}
+  value: "http://localhost:9105"
+  {{- else }}
   value: {{ printf "http://%s-backend-api:9105" (include "yarilo.fullname" .) }}
+  {{- end }}
 - name: YARILO_API_TOKEN
   valueFrom:
     secretKeyRef:
