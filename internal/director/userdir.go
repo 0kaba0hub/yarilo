@@ -177,6 +177,30 @@ func (d *UserDir) GetByHash(hash uint32) *UserEntry {
 	return e
 }
 
+// Touch extends the pin's TTL without changing its target or assignment stamp
+// (#708 PR-B). While a user has a live session (the #804 session registry), the
+// director periodically touches the pin so a move/assignment does not
+// TTL-expire out from under an active session; once the last session closes the
+// touches stop and the pin lapses back to the ring hash after user_expire. This
+// is deliberately NOT a re-assignment: AssignSeq/AssignBy/Host are untouched, so
+// it neither propagates nor perturbs conflict resolution. Returns whether an
+// entry existed.
+func (d *UserDir) Touch(username string) bool {
+	return d.TouchByHash(HashUsername(username, d.lowercase))
+}
+
+// TouchByHash is Touch by pre-computed hash.
+func (d *UserDir) TouchByHash(hash uint32) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byHash[hash]
+	if !ok {
+		return false
+	}
+	e.ExpiresAt = time.Now().Add(d.expire)
+	return true
+}
+
 // Delete removes the entry for username.
 func (d *UserDir) Delete(username string) {
 	d.DeleteByHash(HashUsername(username, d.lowercase))
