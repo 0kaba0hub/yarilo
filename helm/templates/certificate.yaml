@@ -78,3 +78,37 @@ spec:
   renewBefore: {{ . }}
   {{- end }}
 {{- end }}
+{{- $dirCert := .Values.components.director.internalTLS.certificate }}
+{{- $dirSecret := .Values.components.director.internalTLS.secretName }}
+{{- if and $dirCert.enabled $dirSecret }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "yarilo.fullname" . }}-director-internal-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $dirSecret }}
+  issuerRef:
+    kind: {{ $dirCert.issuerRef.kind }}
+    name: {{ $dirCert.issuerRef.name }}
+  dnsNames:
+    {{- if $dirCert.dnsNames }}
+    {{- range $dirCert.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- else }}
+    ## Ring dial pins ServerName to the -director-ring name (#753); -director
+    ## added for symmetry / future use. Both cover the SNI a peer verifies.
+    - {{ printf "%s-director-ring" (include "yarilo.fullname" .) | quote }}
+    - {{ printf "%s-director" (include "yarilo.fullname" .) | quote }}
+    {{- end }}
+  {{- with $dirCert.duration }}
+  duration: {{ . }}
+  {{- end }}
+  {{- with $dirCert.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
+{{- end }}

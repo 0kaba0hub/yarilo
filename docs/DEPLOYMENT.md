@@ -297,6 +297,32 @@ internal_tls:
   ca:   /etc/yarilo/tls/ca.crt
 ```
 
+#### Ring mTLS — `director_service.ring_tls_server_name` (#753)
+
+The director dials its ring peers (JOIN, right-neighbor, seed polls) by
+**ephemeral pod IP**. Under `internal_tls` the dial verifies the peer's
+certificate against `ring_tls_server_name` (a stable name), *not* the pod IP —
+without it Go would check the pod IP against the cert's SANs and fail closed, so
+the ring would silently never converge. The dial uses a proper client config
+(with `RootCAs`); the ring *listener* keeps the mTLS server config.
+
+The chart issues a **director-specific** internal-tls certificate (enable
+`components.director.internalTLS.certificate`) whose SANs default to
+`<release>-director-ring` and `<release>-director`, and renders
+`ring_tls_server_name` to `<release>-director-ring` automatically. The stock
+*shared* internal-tls secret has no such SAN — enabling `internal_tls` on the
+director with that shared cert fails ring handshakes. On misconfiguration the
+director is loud: an **ERROR** when `internal_tls` is on and peers are set but
+`ring_tls_server_name` is empty, and a **Warn** when the configured name is
+absent from its own loaded certificate.
+
+**Certificate rotation.** cert-manager renews the Secret and kubelet refreshes
+the mounted files, but each director loads its `tls.Config` **once at startup** —
+a renewed cert is picked up only after a **rolling restart of the director
+StatefulSet**. The ring survives a rolling restart normally (verified by the
+#770 graceful-leave gates). Lazy in-process reload (`GetClientCertificate`) is a
+possible future enhancement, not implemented here.
+
 ```yaml
 # dev / unit tests / non-k8s CLI runs (single process, no Redis).
 locks_service:

@@ -140,9 +140,35 @@ components:
         containerPort: 10024
 
     ## mTLS for internal connections (director ↔ auth, director ↔ backend).
+    ## Ring mTLS (#753). Ring peers are dialled by EPHEMERAL pod IP, so the
+    ## dial pins a stable TLS ServerName (ringTlsServerName below) that must be
+    ## a SAN in the director's internal-tls cert. The stock shared internal-tls
+    ## secret has no such SAN, so enable certificate below to have the chart
+    ## issue a director-specific cert into secretName with the ring SANs — or
+    ## provide your own secret via secretName. With internalTLS.enabled=true and
+    ## peers configured but no ring name in the cert, the ring cannot verify
+    ## peers and never converges (the director logs an ERROR/Warn to say so).
     internalTLS:
       enabled: false
+      ## Director-specific internal-tls secret (distinct from the shared one),
+      ## carrying the ring SANs. Required when certificate.enabled is true.
       secretName: ""
+      certificate:
+        enabled: false
+        issuerRef:
+          ## Must be a cluster-INTERNAL CA — a public ACME issuer
+          ## (letsencrypt) cannot sign these internal names.
+          kind: ClusterIssuer
+          name: yarilo-internal-ca
+        ## SANs for the issued cert. Empty defaults (in certificate.yaml) to
+        ## [<release>-director-ring, <release>-director]; override to add names.
+        dnsNames: []
+        # duration: 2160h
+        # renewBefore: 360h
+      ## TLS ServerName used when dialling ring peers (rendered to
+      ## director_service.ring_tls_server_name). Empty defaults to
+      ## <release>-director-ring in the rendered config.
+      ringTlsServerName: ""
 
     ## Consistent-hash routing settings.
     user_expire: 900
