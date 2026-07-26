@@ -72,10 +72,13 @@ RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata xapian-c
 COPY --from=builder /out/ /usr/local/bin/
 COPY --from=fts-builder /out/yarilo-fts /usr/local/bin/yarilo-fts
 COPY --from=fts-builder /out/fts-bench /usr/local/bin/fts-bench
-# Short aliases for the operator CLI — hardlinks to the same binary (one inode,
-# no data duplication; behave as real files, no dangling-link risk).
-RUN ln /usr/local/bin/yarilo-admin /usr/local/bin/yariloctl && \
-    ln /usr/local/bin/yarilo-admin /usr/local/bin/yaradm
+# Short aliases for the operator CLI — relative symlinks (busybox multi-call
+# convention). A hardlink to yarilo-admin, which lives in the lower COPY layer,
+# forces an overlayfs copy-up of the ~15 MB binary into THIS layer per alias
+# (image bloat, and the source of cross-layer edge cases). A symlink is a few
+# bytes, resolves in the same dir, and the CLI does not branch on argv[0].
+RUN ln -s yarilo-admin /usr/local/bin/yariloctl && \
+    ln -s yarilo-admin /usr/local/bin/yaradm
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
 
