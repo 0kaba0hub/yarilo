@@ -97,8 +97,12 @@ func main() {
 	case "false", "off", "no", "0":
 		routeByUser = false
 	default: // auto
-		directorConfigured := os.Getenv("YARILO_ADMIN_URL") != "" ||
-			os.Getenv("YARILO_API_URL") != "" || flagSet("url")
+		// Key ONLY on director-plane signals. YARILO_API_URL is plane-ambiguous
+		// (adminBackendEnv sets it to the BACKEND API), so counting it here
+		// false-positives inside a backend pod — routing on with no director to
+		// LOOKUP against. A real director is signalled by YARILO_ADMIN_URL (the
+		// adminDirectorEnv var) or an explicit --url.
+		directorConfigured := os.Getenv("YARILO_ADMIN_URL") != "" || flagSet("url")
 		routeByUser = directorConfigured
 	}
 

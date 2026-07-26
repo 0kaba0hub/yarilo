@@ -72,6 +72,9 @@ spec:
             - name: TELEMETRY_LISTEN
               value: {{ printf ":%d" (int $p.telemetry) | quote }}
             {{- include "yarilo.adminBackendEnv" $root | nindent 12 }}
+            {{- if $root.Values.components.director.enabled }}
+            {{- include "yarilo.adminDirectorEnv" $root | nindent 12 }}
+            {{- end }}
             {{- include "yarilo.dbEnv" $root | nindent 12 }}
             {{- with $root.Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -155,6 +158,9 @@ spec:
             - name: LOG_LEVEL
               value: {{ $root.Values.logLevel | quote }}
             {{- include "yarilo.adminBackendEnv" $root | nindent 12 }}
+            {{- if $root.Values.components.director.enabled }}
+            {{- include "yarilo.adminDirectorEnv" $root | nindent 12 }}
+            {{- end }}
             {{- include "yarilo.dbEnv" $root | nindent 12 }}
             {{- with $root.Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
