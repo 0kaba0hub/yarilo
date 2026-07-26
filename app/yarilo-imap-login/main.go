@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -96,6 +97,12 @@ func main() {
 	}
 	dirAddr := cfg.IMAPLoginService.DirectorAddr
 
+	// ctx drives the per-listener director watch (#736): the persistent
+	// connection that delivers USER-KICKED pushes so kicks actually reach this
+	// login pod's sessions. Cancelled on shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go runTelemetry(cfg.Telemetry.Listen)
 
 	// Port 993 — implicit TLS (IMAPS).
@@ -133,6 +140,9 @@ func main() {
 			slog.Error("imaps-login: server error", "err", srv.Serve(ln))
 			os.Exit(1)
 		}()
+		if dirAddr != "" {
+			go srv.Watch(ctx)
+		}
 		slog.Info("imap-login: listening", "addr", addr, "tls", "implicit")
 	}
 
@@ -170,6 +180,9 @@ func main() {
 			slog.Error("imap-login: server error", "err", srv.Serve(ln))
 			os.Exit(1)
 		}()
+		if dirAddr != "" {
+			go srv.Watch(ctx)
+		}
 		slog.Info("imap-login: listening", "addr", addr, "tls", "starttls")
 	}
 
@@ -177,6 +190,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+	cancel()
 	slog.Info("yarilo-imap-login stopped")
 }
 
