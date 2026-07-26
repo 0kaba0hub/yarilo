@@ -12,9 +12,10 @@ import (
 
 func (s *Server) apiBackendList(w http.ResponseWriter, _ *http.Request) {
 	backends := s.ring.Backends()
+	sess := s.backendSessionCounts()
 	bs := make([]backendDTO, len(backends))
 	for i, b := range backends {
-		bs[i] = toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts})
+		bs[i] = toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts, sess[b.IP]})
 	}
 	apiJSON(w, map[string]any{"backends": bs})
 }

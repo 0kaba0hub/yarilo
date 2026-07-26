@@ -229,10 +229,6 @@ type Server struct {
 	clientMu sync.RWMutex
 	clients  map[*client]struct{}
 
-	// lmtp session counter per backend IP (used for metrics only).
-	sessionsMu sync.Mutex
-	sessions   map[string]int
-
 	// sessRec tracks active proxied sessions reported via SESSION-OPEN/CLOSE.
 	// Director uses this to send USER-KICKED when a backend goes down.
 	sessRecMu sync.RWMutex
@@ -276,7 +272,6 @@ func NewWithOptions(opts Options) *Server {
 		userDir:     NewUserDir(opts.userExpire(), opts.usernameHashLowercase(), Member{IP: opts.LocalIP, Port: opts.LocalPort}.String()),
 		overrides:   make(map[string]string),
 		clients:     make(map[*client]struct{}),
-		sessions:    make(map[string]int),
 		sessById:    make(map[string]*sessionRec),
 		sessByBE:    make(map[string]map[string]bool),
 		backendSeen: make(map[string]backendLease),
@@ -958,6 +953,7 @@ func (s *Server) handleSessionOpen(c *client, fields []string) {
 	}
 	s.sessByBE[rec.backend][rec.id] = true
 	s.sessRecMu.Unlock()
+	s.updateMetrics() // refresh backend_sessions
 	_ = c.WriteLine("OK")
 }
 
@@ -974,6 +970,7 @@ func (s *Server) handleSessionClose(c *client, fields []string) {
 		delete(s.sessByBE[rec.backend], id)
 	}
 	s.sessRecMu.Unlock()
+	s.updateMetrics() // refresh backend_sessions
 	_ = c.WriteLine("OK")
 }
 

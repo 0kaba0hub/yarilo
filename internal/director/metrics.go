@@ -2,7 +2,6 @@ package director
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -18,15 +17,17 @@ var (
 		Help:      "Backend ring membership and status (1 = present, status label = up|flush).",
 	}, []string{"ip", "port", "tag", "status"})
 
-	// backendSessions is the exact count of active proxied sessions per backend
-	// and client-facing protocol. Incremented when biProxy starts, decremented
-	// when it returns.
+	// backendSessions is the current number of active proxied sessions per
+	// backend IP (summed across all protocols), sourced from the SESSION-OPEN/
+	// SESSION-CLOSE registry (sessByBE). Each director exposes the sessions of
+	// the login pods connected to IT — a session is reported to exactly one
+	// director, so sum across directors (sum by (ip)) for the cluster total.
 	backendSessions = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "yarilo",
 		Subsystem: "director",
 		Name:      "backend_sessions",
-		Help:      "Exact number of active proxied sessions per backend and protocol.",
-	}, []string{"ip", "port", "tag", "protocol"})
+		Help:      "Current active proxied sessions per backend IP (all protocols); sum across directors for the total.",
+	}, []string{"ip", "tag"})
 
 	// joinAccepted / joinRejected count ring DIRECTOR-JOIN outcomes (#750).
 	// Rejected includes: no ring secret configured, malformed proof, and
@@ -46,43 +47,17 @@ var (
 	})
 )
 
-// updateMetrics refreshes all backend Prometheus gauges.
-// Called after every ring mutation.
-//
-// backend_sessions (below) is always empty now: its only writers,
-// Server.sessionOpen/sessionClose, lived in the data-path proxy removed in
-// #741 (director is control-plane only — see docs/DEPLOYMENT.md). The gauge
-// and the s.sessions map it reads are left in place rather than removed
-// unilaterally; whether to delete the metric or wire it to real
-// login-pod-reported session counts is a separate decision.
+// updateMetrics refreshes all backend Prometheus gauges. Called after every
+// ring mutation and on every session open/close (backend_sessions tracks the
+// live SESSION-OPEN/SESSION-CLOSE registry).
 func (s *Server) updateMetrics() {
 	backends := s.ring.Backends()
 
-	s.sessionsMu.Lock()
-	snap := make(map[string]int, len(s.sessions))
-	for k, n := range s.sessions {
-		snap[k] = n
-	}
-	s.sessionsMu.Unlock()
+	// Current active sessions per backend IP, from the SESSION-OPEN/CLOSE
+	// registry (this director's view). len(set) = sessions on that backend.
+	sessCounts := s.backendSessionCounts()
 
-	// Build ip → protocol → count from the snapshot.
-	byIPProto := make(map[string]map[string]int)
-	for key, n := range snap {
-		if n == 0 {
-			continue
-		}
-		parts := strings.SplitN(key, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		ip, proto := parts[0], parts[1]
-		if byIPProto[ip] == nil {
-			byIPProto[ip] = make(map[string]int)
-		}
-		byIPProto[ip][proto] += n
-	}
-
-	// Clear old series so removed backends / protocols don't linger.
+	// Clear old series so removed backends don't linger.
 	backendInfo.Reset()
 	backendSessions.Reset()
 
@@ -93,9 +68,18 @@ func (s *Server) updateMetrics() {
 			status = "flush"
 		}
 		backendInfo.WithLabelValues(b.IP, portStr, b.Tag, status).Set(1)
-
-		for proto, cnt := range byIPProto[b.IP] {
-			backendSessions.WithLabelValues(b.IP, portStr, b.Tag, proto).Set(float64(cnt))
-		}
+		backendSessions.WithLabelValues(b.IP, b.Tag).Set(float64(sessCounts[b.IP]))
 	}
+}
+
+// backendSessionCounts returns the current active-session count per backend IP
+// from the SESSION-OPEN/CLOSE registry (sessByBE), summed across all protocols.
+func (s *Server) backendSessionCounts() map[string]int {
+	s.sessRecMu.RLock()
+	defer s.sessRecMu.RUnlock()
+	out := make(map[string]int, len(s.sessByBE))
+	for ip, set := range s.sessByBE {
+		out[ip] = len(set)
+	}
+	return out
 }
