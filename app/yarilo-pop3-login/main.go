@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -91,6 +92,11 @@ func main() {
 	}
 	dirAddr := cfg.POP3LoginService.DirectorAddr
 
+	// ctx drives the per-listener director watch (#736) so USER-KICKED pushes
+	// reach this pod's sessions. Cancelled on shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go runTelemetry(cfg.Telemetry.Listen)
 
 	// Port 995 — implicit TLS (POP3S).
@@ -128,6 +134,9 @@ func main() {
 			slog.Error("pop3s-login: server error", "err", srv.Serve(ln))
 			os.Exit(1)
 		}()
+		if dirAddr != "" {
+			go srv.Watch(ctx)
+		}
 		slog.Info("pop3-login: listening", "addr", addr, "tls", "implicit")
 	}
 
@@ -166,6 +175,9 @@ func main() {
 			slog.Error("pop3-login: server error", "err", srv.Serve(ln))
 			os.Exit(1)
 		}()
+		if dirAddr != "" {
+			go srv.Watch(ctx)
+		}
 		slog.Info("pop3-login: listening", "addr", addr, "tls", "starttls")
 	}
 
@@ -173,6 +185,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+	cancel()
 	slog.Info("yarilo-pop3-login stopped")
 }
 

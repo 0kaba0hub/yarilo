@@ -549,9 +549,14 @@ func (s *Server) directorLookup(username, tag string) (string, error) {
 	return result.Addr, nil
 }
 
-// Watch maintains a persistent director connection for receiving USER-KICKED pushes.
-// Must be started as a goroutine before serving connections.
+// Watch maintains a persistent director connection for receiving USER-KICKED
+// pushes (#736) — the push plane that makes admin/backend-down kicks actually
+// reach this login pod's sessions. Start it as a goroutine per Server before
+// serving. No-op without a director (standalone / BackendAddr mode).
 func (s *Server) Watch(ctx context.Context) {
+	if s.opts.DirectorAddr == "" {
+		return
+	}
 	backoff := 2 * time.Second
 	for {
 		s.runWatch(ctx)

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -126,12 +127,20 @@ func main() {
 		slog.Error("managesieve-login: server error", "err", srv.Serve(ln))
 		os.Exit(1)
 	}()
+	// Persistent director watch (#736): delivers USER-KICKED so kicks reach
+	// this pod's sessions. Cancelled on shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if cfg.ManageSieveLoginService.DirectorAddr != "" {
+		go srv.Watch(ctx)
+	}
 	slog.Info("managesieve-login: listening", "addr", addr, "tls", "starttls")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+	cancel()
 	slog.Info("yarilo-managesieve-login stopped")
 }
 
