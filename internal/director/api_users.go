@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 func (s *Server) apiUserMove(w http.ResponseWriter, r *http.Request) {
@@ -46,7 +47,16 @@ func (s *Server) apiUserMove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiUserKick(w http.ResponseWriter, r *http.Request) {
 	user := s.normalizeUser(r.PathValue("user"))
-	s.originateRingEvent("USER-KICKED", user, nil)
-	slog.Info("director API: user kicked", "user", user)
+	// Grace window (#740): an admin kick (typically the tail of a move) waits
+	// user_kick_delay before the USER-KICKED push so an in-flight command on
+	// the old backend can finish. Scheduled off the request goroutine so the
+	// API responds immediately; backend-down/expiry kicks are never delayed.
+	if delay := s.opts.userKickDelay(); delay > 0 {
+		time.AfterFunc(delay, func() { s.originateRingEvent("USER-KICKED", user, nil) })
+		slog.Info("director API: user kick scheduled", "user", user, "delay", delay)
+	} else {
+		s.originateRingEvent("USER-KICKED", user, nil)
+		slog.Info("director API: user kicked", "user", user)
+	}
 	apiJSON(w, map[string]string{"status": "ok"})
 }
