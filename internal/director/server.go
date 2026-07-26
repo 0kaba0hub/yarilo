@@ -7,7 +7,7 @@
 //	Server → Client handshake:
 //	  VERSION\tyarilo-director\t1\t0\n
 //	  HOST-HAND-START\n
-//	  HOST\t{ip}\t{port}\t{tag}\tD{down_ts}\tU{up_ts}\t{hostname}\n  (one per backend)
+//	  HOST\t{ip}\t{port}\t{tag}\tD{down_ts}\tU{up_ts}\t{hostname}\tV{vhosts}\n  (one per backend; V{vhosts} trailing, #706, tolerated-absent)
 //	  HOST-HAND-END\n
 //	  DONE\n
 //
@@ -50,7 +50,10 @@
 //	  PONG\n
 //
 //	Server pushes (unsolicited, to local login clients — plain form, unchanged):
-//	  RING-CHANGE\t{ip}\t{event}\t{tag}\n            (event: up | down | flush)
+//	  RING-CHANGE\t{ip}\t{event}\t{tag}\n            (event: up | down | flush | vhosts)
+//	    vhosts (#706): ...\t{ip}\tvhosts\t{tag}\t{count}\n — admin weight change,
+//	    replicated ring-wide; carries NO seq, so it never turns the backend
+//	    lease-managed.
 //	  USER-MOVED\t{user}\t{ip}\t{port}\n             (when user is moved by another client)
 //	  USER-KICKED\t{user}\n                          (broadcast kick notification)
 //	  USER-KILLED-EVERYWHERE\t{hash}\n               (director confirms all sessions gone)
@@ -686,8 +689,11 @@ func (s *Server) pingLoop(c *client, stop <-chan struct{}) {
 
 // hostLine formats a Backend as a HOST wire line for the handshake.
 func hostLine(b ring.Backend) string {
-	return fmt.Sprintf("HOST\t%s\t%d\t%s\tD%d\tU%d\t%s",
-		b.IP, b.Port, b.Tag, b.LastDown, b.LastUp, b.Hostname)
+	// V{vhosts} is a trailing field (#706): a joining director learns each
+	// backend's ring weight from the handshake, not only its up/down state.
+	// applyHandshakeHost tolerates its absence, so a pre-#706 peer still parses.
+	return fmt.Sprintf("HOST\t%s\t%d\t%s\tD%d\tU%d\t%s\tV%d",
+		b.IP, b.Port, b.Tag, b.LastDown, b.LastUp, b.Hostname, b.Vhosts)
 }
 
 // handleLookup processes: LOOKUP\t{id}\t{user}\t{tag}

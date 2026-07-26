@@ -55,10 +55,12 @@ func (s *Server) apiBackendUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	found := false
+	tag := ""
 	for _, b := range s.ring.Backends() {
 		if b.IP == ip {
 			b.Vhosts = req.Vhosts
 			s.ring.AddBackend(&b)
+			tag = b.Tag
 			found = true
 			break
 		}
@@ -67,6 +69,11 @@ func (s *Server) apiBackendUpdate(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "backend not found", http.StatusNotFound)
 		return
 	}
+	// Replicate the weight change ring-wide (#706): without this replicas keep
+	// their old vhosts and disagree on ring layout until the next handshake.
+	// The "vhosts" event carries no seq, so it never turns the backend
+	// lease-managed (a static backend must stay non-expirable).
+	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tvhosts\t%s\t%d", ip, tag, req.Vhosts), nil)
 	s.updateMetrics()
 	slog.Info("director API: backend updated", "ip", ip, "vhosts", req.Vhosts)
 	apiJSON(w, map[string]string{"status": "ok"})
