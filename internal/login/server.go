@@ -42,6 +42,23 @@ const (
 	ProtocolManageSieve Protocol = "managesieve"
 )
 
+// Base collapses a listener protocol to the co-located backend container it maps
+// to (imaps→imap, pop3s→pop3, submissions→submission) — the granularity the
+// director counts sessions at for least_sessions placement (#797). Sent as the
+// trailing proto field on LOOKUP / SESSION-OPEN.
+func (p Protocol) Base() string {
+	switch p {
+	case ProtocolIMAPS:
+		return "imap"
+	case ProtocolPOP3S:
+		return "pop3"
+	case ProtocolSubmissions:
+		return "submission"
+	default:
+		return string(p)
+	}
+}
+
 // Options configures the login proxy Server.
 type Options struct {
 	// Protocol is one of the Protocol constants above.
@@ -132,10 +149,10 @@ type watchConn struct {
 	c  *proto.Conn
 }
 
-func (w *watchConn) sessionOpen(sessID, username, backendIP string) {
+func (w *watchConn) sessionOpen(sessID, username, backendIP, protoName string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_ = w.c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s", sessID, proto.TabEscape(username), backendIP))
+	_ = w.c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s\t%s", sessID, proto.TabEscape(username), backendIP, protoName))
 }
 
 func (w *watchConn) sessionClose(sessID string) {
@@ -449,7 +466,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	wc := s.watch
 	s.watchMu.RUnlock()
 	if wc != nil {
-		wc.sessionOpen(sessID, pre.username, backendIP)
+		wc.sessionOpen(sessID, pre.username, backendIP, s.opts.Protocol.Base())
 		defer wc.sessionClose(sessID)
 	}
 
@@ -534,7 +551,7 @@ func (s *Server) directorLookup(username, tag string) (string, error) {
 	defer c.Close()
 
 	id := fmt.Sprintf("%d", s.reqID.Add(1))
-	result, err := c.Lookup(id, username, tag)
+	result, err := c.Lookup(id, username, tag, s.opts.Protocol.Base())
 	if err != nil {
 		return "", fmt.Errorf("director lookup: %w", err)
 	}

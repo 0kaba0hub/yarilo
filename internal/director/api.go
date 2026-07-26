@@ -145,6 +145,17 @@ func (s *Server) resolveUserBackend(user string) (ip string, port int, tag strin
 			}
 		}
 	}
+	// Fresh (unpinned) user. Under least_sessions the admin must NOT read a hash
+	// pod the login would never assign — the director owns placement, so pin it
+	// here too (assignAndPin). The admin path has no protocol, so pickBackend
+	// skips level 1 and decides on total load. Under hash the read stays
+	// side-effect-free (deterministic — admin hash == login hash).
+	if s.assignmentPolicy() == policyLeastSessions {
+		if b := s.assignAndPin(user, "", ""); b != nil {
+			return b.IP, b.Port, b.Tag, false
+		}
+		return "", 0, "", false
+	}
 	if b := s.ring.LookupBackend(user); b != nil {
 		return b.IP, b.Port, b.Tag, false
 	}

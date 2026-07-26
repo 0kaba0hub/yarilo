@@ -83,3 +83,23 @@ func (s *Server) backendSessionCounts() map[string]int {
 	}
 	return out
 }
+
+// sessionCounts returns, per backend IP, the total active sessions and the
+// per-protocol breakdown (#797 least_sessions placement). Both from the live
+// SESSION-OPEN/CLOSE registry.
+func (s *Server) sessionCounts() (total map[string]int, byProto map[string]map[string]int) {
+	s.sessRecMu.RLock()
+	defer s.sessRecMu.RUnlock()
+	total = make(map[string]int, len(s.sessByBE))
+	byProto = make(map[string]map[string]int, len(s.sessByBE))
+	for ip, set := range s.sessByBE {
+		total[ip] = len(set)
+	}
+	for _, rec := range s.sessById {
+		if byProto[rec.backend] == nil {
+			byProto[rec.backend] = make(map[string]int)
+		}
+		byProto[rec.backend][rec.proto]++
+	}
+	return total, byProto
+}

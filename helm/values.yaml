@@ -35,8 +35,10 @@ backend_register:
   ## Routing pool tag = NFS shard; must match a director tag. NOT a protocol
   ## dimension (#788). Empty = default pool.
   tag: ""
-  ## Ring weight (vhosts). 0 = director default (100).
-  vhosts: 0
+  ## Ring weight (vhosts), 1..100. Register an explicit weight so the pod is a
+  ## real candidate under assignment_policy: least_sessions, where vhosts 0 means
+  ## DRAIN (excluded from new placements, #797). 100 = full weight.
+  vhosts: 100
   ## Readiness signal for the co-located pod (#788). Each protocol container
   ## touches readiness_dir/<proto> only while ready; the yarilo-backend-reg
   ## sidecar heartbeats only while all readiness_protocols files are fresh.
@@ -157,6 +159,10 @@ components:
     ## existing sticky entries just expire naturally via user_expire, no
     ## special migration step is needed.
     username_hash_lowercase: true
+    ## Initial (unpinned) user placement (#797): hash | least_sessions.
+    ## hash = consistent hash (Dovecot semantics, deterministic). least_sessions
+    ## = load-aware two-level pick (per-protocol then total, vhosts-normalized).
+    assignment_policy: hash
 
     ## Static backend list loaded at startup.
     ## Each entry must match a backend service in the backend namespace.

@@ -727,6 +727,7 @@ data:
       ping_timeout: {{ .Values.components.director.ping_timeout }}
       write_timeout: {{ .Values.components.director.write_timeout }}
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
+      assignment_policy: {{ .Values.components.director.assignment_policy | default "hash" | quote }}
       ring_secret: {{ .Values.components.director.ring_secret | quote }}
       min_members: {{ .Values.components.director.min_members }}
       anti_entropy_interval: {{ .Values.components.director.anti_entropy_interval }}

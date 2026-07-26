@@ -104,6 +104,7 @@ func main() {
 		PingTimeout:           time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
 		WriteTimeout:          time.Duration(cfg.DirectorService.WriteTimeout) * time.Second,
 		UsernameHashLowercase: &usernameHashLowercase,
+		AssignmentPolicy:      cfg.DirectorService.AssignmentPolicy,
 		PeerTLS:               ringTLSCfg,
 		LocalIP:               localIP,
 		LocalPort:             localPort,
