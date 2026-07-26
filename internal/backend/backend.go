@@ -442,43 +442,16 @@ func New(cfg *config.Config) (*Server, error) {
 			},
 		}
 		if addr := cfg.AuthService.MasterAddr; addr != "" {
-			ac, err := authclient.Dial(addr, nil)
-			if err != nil {
-				return nil, fmt.Errorf("backend: lmtp userdb dial %s: %w", addr, err)
-			}
-			var acMu sync.Mutex
 			lmtpResolver := lmtpOpts.Resolver
 			if lmtpResolver == nil {
 				lmtpResolver = &mailbox.Resolver{}
 			}
-			lmtpOpts.UserdbLookup = func(ctx context.Context, username string) (*mailbox.UserInfo, error) {
-				acMu.Lock()
-				cur := ac
-				acMu.Unlock()
-
-				ui, err := cur.Userdb(ctx, username)
-				if err != nil {
-					acMu.Lock()
-					if ac == cur {
-						_ = ac.Close()
-						fresh, dialErr := authclient.Dial(addr, nil)
-						if dialErr != nil {
-							acMu.Unlock()
-							slog.Warn("lmtp: userdb auth reconnect failed", "addr", addr, "err", dialErr)
-							return nil, err
-						}
-						ac = fresh
-						slog.Info("lmtp: userdb auth reconnected", "addr", addr)
-					}
-					cur = ac
-					acMu.Unlock()
-					ui, err = cur.Userdb(ctx, username)
-					if err != nil {
-						return nil, err
-					}
-				}
-				return ResolveUserInfo(lmtpResolver, username, ui), nil
-			}
+			// Dial the auth-master over internal mTLS (authTLS), and LAZILY —
+			// see lazyUserdbLookup for why an eager, nil-TLS dial wedged lmtp
+			// readiness under internal_tls (#821).
+			lmtpOpts.UserdbLookup = lazyUserdbLookup(addr,
+				func() (*authclient.Client, error) { return authclient.Dial(addr, authTLS) },
+				lmtpResolver)
 		}
 		lmtpServer = lmtp.New(lmtpOpts)
 	}
@@ -912,6 +885,54 @@ func (a chainAuth) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, err
 // storage identity (Driver, MailPath, quota rules, dir overrides). Shared by
 // LMTP delivery and the quota-status policy service so both resolve identical
 // paths.
+// lazyUserdbLookup builds the LMTP UserdbLookup that resolves a recipient's
+// userdb via yarilo-auth. The auth-master client is dialled LAZILY on the first
+// lookup — never at backend.New — and reconnected on error (#821). Eager dialing
+// wedged lmtp readiness whenever yarilo-auth was slow, and under internal_tls a
+// plain (nil-TLS) dial to the mTLS auth listener HUNG in the handshake with no
+// error, blocking the pod forever. dial is injected so the laziness is testable.
+func lazyUserdbLookup(addr string, dial func() (*authclient.Client, error), resolver *mailbox.Resolver) func(context.Context, string) (*mailbox.UserInfo, error) {
+	var acMu sync.Mutex
+	var ac *authclient.Client
+	return func(ctx context.Context, username string) (*mailbox.UserInfo, error) {
+		acMu.Lock()
+		if ac == nil {
+			c, dialErr := dial()
+			if dialErr != nil {
+				acMu.Unlock()
+				return nil, fmt.Errorf("lmtp: userdb auth dial %s: %w", addr, dialErr)
+			}
+			ac = c
+		}
+		cur := ac
+		acMu.Unlock()
+
+		ui, err := cur.Userdb(ctx, username)
+		if err != nil {
+			acMu.Lock()
+			if ac == cur {
+				_ = ac.Close()
+				fresh, dialErr := dial()
+				if dialErr != nil {
+					ac = nil // reset so the next lookup re-dials
+					acMu.Unlock()
+					slog.Warn("lmtp: userdb auth reconnect failed", "addr", addr, "err", dialErr)
+					return nil, err
+				}
+				ac = fresh
+				slog.Info("lmtp: userdb auth reconnected", "addr", addr)
+			}
+			cur = ac
+			acMu.Unlock()
+			ui, err = cur.Userdb(ctx, username)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return ResolveUserInfo(resolver, username, ui), nil
+	}
+}
+
 func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.UserInfo) *mailbox.UserInfo {
 	if ui == nil {
 		return nil
