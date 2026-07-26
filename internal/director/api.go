@@ -86,11 +86,12 @@ func apiError(w http.ResponseWriter, msg string, code int) {
 }
 
 type backendDTO struct {
-	IP     string `json:"ip"`
-	Port   int    `json:"port"`
-	Tag    string `json:"tag"`
-	Up     bool   `json:"up"`
-	Vhosts int    `json:"vhosts"`
+	IP       string `json:"ip"`
+	Port     int    `json:"port"`
+	Tag      string `json:"tag"`
+	Up       bool   `json:"up"`
+	Vhosts   int    `json:"vhosts"`
+	Sessions int    `json:"sessions"` // current active proxied sessions on this backend (this director's view)
 }
 
 func toBackendDTO(b backendDTOSource) backendDTO {
@@ -98,22 +99,24 @@ func toBackendDTO(b backendDTOSource) backendDTO {
 	if v == 0 {
 		v = 100
 	}
-	return backendDTO{b.IP, b.Port, b.Tag, b.Up, v}
+	return backendDTO{b.IP, b.Port, b.Tag, b.Up, v, b.Sessions}
 }
 
 type backendDTOSource struct {
-	IP     string
-	Port   int
-	Tag    string
-	Up     bool
-	Vhosts int
+	IP       string
+	Port     int
+	Tag      string
+	Up       bool
+	Vhosts   int
+	Sessions int
 }
 
 func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	backends := s.ring.Backends()
+	sess := s.backendSessionCounts()
 	bs := make([]backendDTO, len(backends))
 	for i, b := range backends {
-		bs[i] = toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts})
+		bs[i] = toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts, sess[b.IP]})
 	}
 	// Backends only — the director-membership (`peers`) list lives on the
 	// dedicated GET /api/director/ring endpoint (`director ring status`).
@@ -129,10 +132,11 @@ func (s *Server) apiDump(w http.ResponseWriter, _ *http.Request) {
 		LastDown int64 `json:"last_down"`
 	}
 	backends := s.ring.Backends()
+	sess := s.backendSessionCounts()
 	bs := make([]bDump, len(backends))
 	for i, b := range backends {
 		bs[i] = bDump{
-			backendDTO: toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts}),
+			backendDTO: toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts, sess[b.IP]}),
 			LastUp:     b.LastUp,
 			LastDown:   b.LastDown,
 		}

@@ -12,11 +12,12 @@ import (
 func humanBackends(data []byte) error {
 	var r struct {
 		Backends []struct {
-			IP     string `json:"ip"`
-			Port   int    `json:"port"`
-			Tag    string `json:"tag"`
-			Up     bool   `json:"up"`
-			Vhosts int    `json:"vhosts"`
+			IP       string `json:"ip"`
+			Port     int    `json:"port"`
+			Tag      string `json:"tag"`
+			Up       bool   `json:"up"`
+			Vhosts   int    `json:"vhosts"`
+			Sessions int    `json:"sessions"`
 		} `json:"backends"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -26,13 +27,20 @@ func humanBackends(data []byte) error {
 		fmt.Println("no backends")
 		return nil
 	}
-	fmt.Printf("%-24s %-10s %-6s %s\n", "BACKEND", "TAG", "STATE", "VHOSTS")
+	fmt.Printf("%-24s %-10s %-6s %-7s %s\n", "BACKEND", "TAG", "STATE", "VHOSTS", "SESSIONS")
 	for _, b := range r.Backends {
 		state := "down"
 		if b.Up {
 			state = "up"
 		}
-		fmt.Printf("%-24s %-10s %-6s %d\n", fmt.Sprintf("%s:%d", b.IP, b.Port), b.Tag, state, b.Vhosts)
+		// A co-located backend registers a nominal port 0 (the pod IP serves
+		// many protocol ports; the login proxy picks the port). Show just the
+		// IP in that case; static / admin-added backends keep ip:port.
+		addr := b.IP
+		if b.Port != 0 {
+			addr = fmt.Sprintf("%s:%d", b.IP, b.Port)
+		}
+		fmt.Printf("%-24s %-10s %-6s %-7d %d\n", addr, b.Tag, state, b.Vhosts, b.Sessions)
 	}
 	return nil
 }
