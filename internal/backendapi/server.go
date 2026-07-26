@@ -99,6 +99,12 @@ type Options struct {
 	AnvilAddr string
 	AnvilTLS  *tls.Config
 
+	// PodIP is this backend pod's IP (from the POD_IP env / status.podIP).
+	// /who scopes to sessions routed to THIS backend by default (#814),
+	// matching each anvil session's Backend field against it. Empty (env not
+	// injected) disables the scoping — /who then behaves as if --all was set.
+	PodIP string
+
 	// AuthClient is the live yarilo-auth master-protocol client,
 	// dialled at startup from BackendAPIConfig.AuthMasterAddr.
 	// When nil, /api/backend/user/info skips the userdb-enrichment

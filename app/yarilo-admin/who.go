@@ -34,12 +34,13 @@ func whoList(args []string) error {
 	fs := flag.NewFlagSet("backend who", flag.ContinueOnError)
 	service := fs.String("protocol", "", "filter by service (imap | pop3 | submission | lmtp); empty = all")
 	user := fs.String("user", "", "filter by user")
+	all := fs.Bool("all", false, "cluster-wide view (all backends) with a BACKEND column; default shows only THIS backend's sessions")
 	output := fs.String("output", "table", "table | json")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("usage: yarilo-admin backend who [list] [--protocol IMAP] [--user U] [--output table|json]")
+		return fmt.Errorf("usage: yarilo-admin backend who [list] [--protocol IMAP] [--user U] [--all] [--output table|json]")
 	}
 	// Server always returns the JSON shape; CLI decides how to render.
 	// Request flat sessions when rendering a table — easier to print.
@@ -51,6 +52,7 @@ func whoList(args []string) error {
 		"service":  *service,
 		"user":     *user,
 		"group_by": groupBy,
+		"all":      *all,
 	})
 	if err != nil {
 		return err
@@ -58,13 +60,14 @@ func whoList(args []string) error {
 	if *output == "json" {
 		return printJSON(body, nil)
 	}
-	return renderWhoTable(os.Stdout, body)
+	return renderWhoTable(os.Stdout, body, *all)
 }
 
 func whoCount(args []string) error {
 	fs := flag.NewFlagSet("backend who count", flag.ContinueOnError)
 	user := fs.String("user", "", "filter by user")
 	by := fs.String("by", "", `breakdown dimension: "" (single total), "protocol", or "user"`)
+	all := fs.Bool("all", false, "count across all backends; default counts only THIS backend's sessions")
 	output := fs.String("output", "table", "table | json")
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -77,6 +80,7 @@ func whoCount(args []string) error {
 		"service": service,
 		"user":    *user,
 		"by":      *by,
+		"all":     *all,
 	})
 	if err != nil {
 		return err
@@ -96,6 +100,7 @@ type whoSession struct {
 	Service     string `json:"service"`
 	ConnectedAt string `json:"connected_at"`
 	Folder      string `json:"folder,omitempty"`
+	Backend     string `json:"backend,omitempty"`
 }
 
 // userGroup aggregates every active session belonging to one user
@@ -106,10 +111,14 @@ type userGroup struct {
 	protocols []string
 	ips       []string
 	folders   []string
+	backends  []string
 	since     string
 }
 
-func renderWhoTable(w io.Writer, body []byte) error {
+// renderWhoTable prints the per-user table. showBackend adds a BACKEND column
+// (the --all / cluster-wide view, #814); the default local-backend view omits
+// it since every row is on this same backend.
+func renderWhoTable(w io.Writer, body []byte, showBackend bool) error {
 	var resp struct {
 		Total    int          `json:"total"`
 		Sessions []whoSession `json:"sessions"`
@@ -134,6 +143,9 @@ func renderWhoTable(w io.Writer, body []byte) error {
 		if s.Folder != "" {
 			g.folders = append(g.folders, s.Folder)
 		}
+		if s.Backend != "" {
+			g.backends = append(g.backends, s.Backend)
+		}
 		if s.ConnectedAt < g.since {
 			g.since = s.ConnectedAt
 		}
@@ -145,11 +157,20 @@ func renderWhoTable(w io.Writer, body []byte) error {
 	sort.Strings(users)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "USER\tCOUNT\tPROTOCOLS\tIPS\tFOLDERS\tSINCE")
+	if showBackend {
+		fmt.Fprintln(tw, "USER\tCOUNT\tPROTOCOLS\tIPS\tBACKEND\tFOLDERS\tSINCE")
+	} else {
+		fmt.Fprintln(tw, "USER\tCOUNT\tPROTOCOLS\tIPS\tFOLDERS\tSINCE")
+	}
 	for _, u := range users {
 		g := groups[u]
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n",
-			g.user, g.count, joinUnique(g.protocols), joinUnique(g.ips), joinUnique(g.folders), g.since)
+		if showBackend {
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+				g.user, g.count, joinUnique(g.protocols), joinUnique(g.ips), joinUnique(g.backends), joinUnique(g.folders), g.since)
+		} else {
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n",
+				g.user, g.count, joinUnique(g.protocols), joinUnique(g.ips), joinUnique(g.folders), g.since)
+		}
 	}
 	tw.Flush()
 	fmt.Fprintf(w, "\nTotal: %d sessions, %d users\n", resp.Total, len(groups))

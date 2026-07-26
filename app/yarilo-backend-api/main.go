@@ -177,6 +177,7 @@ func main() {
 		QuotaCloneDicts:    cfg.Quota.CloneDicts,
 		AnvilAddr:          cfg.AnvilService.ClientAddr(),
 		AnvilTLS:           anvilTLS,
+		PodIP:              os.Getenv("POD_IP"),
 		AuthClient:         authcl,
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 			return mailboxbuild.ByDriver(driver, cfg.Storage, locker)

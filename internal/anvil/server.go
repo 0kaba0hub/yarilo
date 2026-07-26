@@ -25,7 +25,8 @@
 //	  FAIL\t{id}\treason=too-many-connections\n
 //	  COUNT\t{n}\n                          ← LOOKUP reply
 //	  PENALTY\t{count}\n                    ← PENALTY-LOOKUP reply
-//	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\t{folder}\n
+//	  BACKEND\t{id}\t{backend_ip}\n        ← 1.7 (backend pod the session routed to)
+//	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\t{folder}\t{backend}\n
 //	  EVENT\t{channel}\t{payload}\n         ← server push to subscribers
 //	  DONE\n
 //
@@ -45,6 +46,7 @@
 //   - 1.4 → 1.5: SUBSCRIBE / EMIT / EVENT for operational pub-sub
 //     (kick events ride this channel)
 //   - 1.5 → 1.6: PENALTY-LOOKUP / PENALTY-UPDATE for IP-bound auth
+//   - 1.6 → 1.7: BACKEND command + backend field in SESSION reply (#814)
 //     backoff (yarilo-auth dials anvil pre-passdb to look up the
 //     current penalty for the client IP, sleeps the mapped seconds,
 //     then runs the chain; on fail increments the counter, on OK
@@ -72,7 +74,7 @@ import (
 const (
 	protoName = "yarilo-anvil"
 	majorVer  = 1
-	minorVer  = 6
+	minorVer  = 7
 )
 
 // DefaultPenaltyDecay is how long a penalty entry survives after
@@ -133,6 +135,11 @@ type SessionInfo struct {
 	// SELECT). Updated via the SELECT wire command and surfaced
 	// in WHO output.
 	Folder string
+	// Backend is the backend pod IP the session was routed to (#814),
+	// pushed by the login pod after the director LOOKUP resolves it. Empty
+	// until the BACKEND command arrives (and for pre-1.7 clients). Lets `who`
+	// show only the sessions on the backend it runs against.
+	Backend string
 	// lastSeen is the most recent heartbeat (or CONNECT) timestamp.
 	// Unexported because callers should not depend on it — the
 	// sweeper owns reaping. Wire format never surfaces it.
@@ -308,6 +315,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleHeartbeat(conn, fields)
 		case "SELECT":
 			s.handleSelect(conn, fields)
+		case "BACKEND":
+			s.handleBackend(conn, fields)
 		case "EMIT":
 			s.handleEmit(conn, fields)
 		case "PENALTY-LOOKUP":
@@ -390,8 +399,8 @@ func (s *Server) handleWho(conn net.Conn, args []string) {
 		if v, ok := filter["user"]; ok && v != sess.User {
 			continue
 		}
-		fmt.Fprintf(conn, "SESSION\t%s\t%s\t%s\t%s\t%d\t%s\n",
-			sess.ID, sess.User, sess.IP, sess.Service, sess.ConnectedAt.Unix(), sess.Folder)
+		fmt.Fprintf(conn, "SESSION\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+			sess.ID, sess.User, sess.IP, sess.Service, sess.ConnectedAt.Unix(), sess.Folder, sess.Backend)
 	}
 	fmt.Fprintln(conn, "DONE")
 }
@@ -470,6 +479,26 @@ func (s *Server) handleSelect(conn net.Conn, fields []string) {
 	sess, ok := s.sessions[id]
 	if ok {
 		sess.Folder = folder
+	}
+	s.mu.Unlock()
+	if !ok {
+		fmt.Fprintf(conn, "OK\t%s\treason=unknown\n", id)
+		return
+	}
+	fmt.Fprintf(conn, "OK\t%s\n", id)
+}
+
+// handleBackend records the backend pod IP a session was routed to (#814),
+// pushed by the login pod after the director LOOKUP. Mirrors handleSelect.
+func (s *Server) handleBackend(conn net.Conn, fields []string) {
+	if len(fields) < 3 {
+		return
+	}
+	id, backend := fields[1], fields[2]
+	s.mu.Lock()
+	sess, ok := s.sessions[id]
+	if ok {
+		sess.Backend = backend
 	}
 	s.mu.Unlock()
 	if !ok {

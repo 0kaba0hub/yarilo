@@ -451,6 +451,14 @@ func (s *Server) handleConn(conn net.Conn) {
 				}
 			} else {
 				log.Info("login: anvil", "user", pre.username, "result", "ok")
+				// #814: record the routed backend in anvil so `who` can scope
+				// to the local backend. Best-effort, and BEFORE the heartbeat
+				// goroutine starts so ac is never written concurrently.
+				if beIP, _, splitErr := net.SplitHostPort(backendAddr); splitErr == nil {
+					if berr := ac.Backend(sessID, beIP); berr != nil {
+						log.Debug("login: anvil backend push", "err", berr)
+					}
+				}
 				hbCtx, hbCancel := context.WithCancel(context.Background())
 				hbDone := make(chan struct{})
 				go func() {

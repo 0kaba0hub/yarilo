@@ -145,6 +145,12 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 			if len(fields) >= 7 {
 				folder = fields[6]
 			}
+			// Backend is the 1.7 addition (#814); tolerate its absence
+			// so a pre-1.7 server (or pre-routing session) still parses.
+			var backend string
+			if len(fields) >= 8 {
+				backend = fields[7]
+			}
 			out = append(out, SessionInfo{
 				ID:          fields[1],
 				User:        fields[2],
@@ -152,6 +158,7 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 				Service:     fields[4],
 				ConnectedAt: time.Unix(ts, 0).UTC(),
 				Folder:      folder,
+				Backend:     backend,
 			})
 		case "DONE":
 			return out, nil
@@ -205,6 +212,27 @@ func (c *Conn) Select(id, folder string) error {
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 || fields[0] != "OK" {
 		return fmt.Errorf("anvil/client: unexpected SELECT response: %q", line)
+	}
+	return nil
+}
+
+// Backend records the backend pod IP a session was routed to (#814). The login
+// pod pushes this once, after the director LOOKUP resolves the backend, so
+// `who` can show only the sessions on the backend it runs against. Mirrors
+// Select. Best-effort at the call site: a pre-1.7 anvil returns no OK, and the
+// caller ignores the error.
+func (c *Conn) Backend(id, backendIP string) error {
+	if _, err := fmt.Fprintf(c.conn, "BACKEND\t%s\t%s\n", id, backendIP); err != nil {
+		return fmt.Errorf("anvil/client: write BACKEND: %w", err)
+	}
+	line, err := c.rd.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("anvil/client: read BACKEND response: %w", err)
+	}
+	line = strings.TrimRight(line, "\n")
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 || fields[0] != "OK" {
+		return fmt.Errorf("anvil/client: unexpected BACKEND response: %q", line)
 	}
 	return nil
 }

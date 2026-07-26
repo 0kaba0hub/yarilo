@@ -157,6 +157,12 @@ spec:
               value: "yarilo-backend-api"
             - name: LOG_LEVEL
               value: {{ $root.Values.logLevel | quote }}
+            # POD_IP is this co-located pod's IP — the backend IP sessions route
+            # to — so `who` can scope to THIS backend by default (#814).
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             {{- include "yarilo.adminBackendEnv" $root | nindent 12 }}
             {{- if $root.Values.components.director.enabled }}
             {{- include "yarilo.adminDirectorEnv" $root | nindent 12 }}

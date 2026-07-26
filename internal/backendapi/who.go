@@ -24,6 +24,9 @@ type whoRequest struct {
 	Service string `json:"service"`
 	User    string `json:"user"`
 	GroupBy string `json:"group_by"`
+	// All disables the default local-backend scoping (#814): the cluster-wide
+	// anvil view, with each session's Backend visible.
+	All bool `json:"all"`
 }
 
 type whoSessionOut struct {
@@ -35,6 +38,24 @@ type whoSessionOut struct {
 	// Folder is the currently-SELECTed IMAP mailbox, empty when
 	// the session has not SELECTed yet or the service is not IMAP.
 	Folder string `json:"folder,omitempty"`
+	// Backend is the backend pod IP the session routed to (#814).
+	Backend string `json:"backend,omitempty"`
+}
+
+// filterLocalBackend keeps only sessions routed to podIP (#814 — the default
+// scope for /who). An empty podIP (env not injected) cannot scope, so the list
+// is returned unchanged (equivalent to --all).
+func filterLocalBackend(sessions []anvil.SessionInfo, podIP string) []anvil.SessionInfo {
+	if podIP == "" {
+		return sessions
+	}
+	out := make([]anvil.SessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Backend == podIP {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 type whoGroupOut struct {
@@ -65,6 +86,11 @@ func (s *Server) handleWho(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		apiError(w, "anvil who: "+err.Error(), http.StatusBadGateway)
 		return
+	}
+	// Default scope: only sessions routed to THIS backend (#814). --all keeps
+	// the cluster-wide anvil view (with Backend surfaced per session).
+	if !req.All {
+		sessions = filterLocalBackend(sessions, s.opts.PodIP)
 	}
 	sort.Slice(sessions, func(i, j int) bool {
 		if sessions[i].User != sessions[j].User {
@@ -129,6 +155,7 @@ func (s *Server) handleWhoCount(w http.ResponseWriter, r *http.Request) {
 		Service string `json:"service"`
 		User    string `json:"user"`
 		By      string `json:"by"`
+		All     bool   `json:"all"`
 	}
 	if r.ContentLength > 0 {
 		if !decodeJSON(w, r, &req) {
@@ -150,6 +177,9 @@ func (s *Server) handleWhoCount(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		apiError(w, "anvil who: "+err.Error(), http.StatusBadGateway)
 		return
+	}
+	if !req.All {
+		sessions = filterLocalBackend(sessions, s.opts.PodIP)
 	}
 	resp := map[string]any{
 		"total":   len(sessions),
@@ -186,6 +216,7 @@ func formatSession(s anvil.SessionInfo) whoSessionOut {
 		Service:     s.Service,
 		ConnectedAt: s.ConnectedAt.UTC().Format(time.RFC3339),
 		Folder:      s.Folder,
+		Backend:     s.Backend,
 	}
 }
 

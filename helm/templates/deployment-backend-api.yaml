@@ -42,6 +42,11 @@ spec:
               value: "yarilo-backend-api"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            # POD_IP lets `who` scope to this backend by default (#814).
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             {{- include "yarilo.adminBackendEnv" . | nindent 12 }}
             {{- if .Values.components.director.enabled }}
             {{- include "yarilo.adminDirectorEnv" . | nindent 12 }}
