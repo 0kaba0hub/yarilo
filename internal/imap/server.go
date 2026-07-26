@@ -62,6 +62,8 @@ type Options struct {
 	// When set, connections must carry a valid YARILO preamble.
 	AuthAddr string
 	AuthTLS  *tls.Config
+	// PreambleTLS terminates internal mTLS on the login->backend data path (#824).
+	PreambleTLS *tls.Config
 	// MasterAddr is the host:port of yarilo-auth master protocol used by
 	// the PreambleListener to perform userdb lookups after token verification.
 	MasterAddr         string
@@ -350,6 +352,7 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 			MasterAddr:      s.opts.MasterAddr,
 			MasterTLS:       s.opts.MasterTLS,
 			ExpectedService: "imap",
+			TLSConfig:       s.opts.PreambleTLS,
 		}
 	}
 	if s.opts.LoginGreeting != "" {

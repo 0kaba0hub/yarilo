@@ -41,7 +41,8 @@ type Options struct {
 	// PreambleListener to verify session tokens forwarded by the login pod.
 	AuthAddr string
 	// AuthTLS is the mTLS client config for the yarilo-auth login connection.
-	AuthTLS *tls.Config
+	AuthTLS     *tls.Config
+	PreambleTLS *tls.Config // internal mTLS on the data path (#824)
 	// MasterAddr is the host:port of yarilo-auth master protocol for userdb lookups.
 	MasterAddr string
 	// MasterTLS is the mTLS client config for the yarilo-auth master connection.
@@ -65,6 +66,7 @@ func (srv *Server) ServeManageSieve(ctx context.Context, ln net.Listener) error 
 			MasterAddr:      srv.opts.MasterAddr,
 			MasterTLS:       srv.opts.MasterTLS,
 			ExpectedService: "managesieve",
+			TLSConfig:       srv.opts.PreambleTLS,
 		}
 	}
 	for {

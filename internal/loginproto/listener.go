@@ -80,6 +80,14 @@ type PreambleListener struct {
 	MasterTLS  *tls.Config
 	// ExpectedService, when non-empty, must match the service in the VERIFY response.
 	ExpectedService string
+	// TLSConfig, when set, terminates internal mTLS on each accepted connection
+	// BEFORE the YARILO preamble is read (#824). The login pods wrap the
+	// backend session dial in mTLS (BackendTLS) under internal_tls, so the
+	// backend must terminate it here — otherwise the TLS ClientHello bytes are
+	// read as a preamble ("not a YARILO preamble") and every login fails. This
+	// is the server-side mirror of the login's client dial: a mtls.ServerConfig
+	// that verifies the login's client cert against the internal CA.
+	TLSConfig *tls.Config
 
 	startOnce sync.Once
 	ready     chan acceptResult
@@ -156,6 +164,17 @@ const preambleReadTimeout = 5 * time.Second
 
 func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	c.SetDeadline(time.Now().Add(preambleReadTimeout)) //nolint:errcheck
+
+	// Terminate internal mTLS first (#824) — the login dialled us over mTLS, so
+	// the preamble arrives inside the TLS session. The read deadline set above
+	// also bounds the handshake.
+	if l.TLSConfig != nil {
+		tconn := tls.Server(c, l.TLSConfig)
+		if err := tconn.Handshake(); err != nil {
+			return nil, fmt.Errorf("internal mtls handshake: %w", err)
+		}
+		c = tconn
+	}
 
 	br := bufio.NewReader(c)
 	pre, err := Parse(br)

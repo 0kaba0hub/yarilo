@@ -64,6 +64,7 @@ type Options struct {
 	// verify session tokens forwarded by login pods.
 	AuthAddr         string
 	AuthTLS          *tls.Config
+	PreambleTLS      *tls.Config // internal mTLS on the data path (#824)
 	DisablePlainAuth bool
 	// TLSConfig enables STARTTLS on plain-text listeners (port 587).
 	// For implicit TLS (port 465) the listener is wrapped in Serve(_, tlsCfg).
@@ -132,7 +133,7 @@ func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
 		}
 	}
 	if s.opts.AuthAddr != "" {
-		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "smtp"}
+		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "smtp", TLSConfig: s.opts.PreambleTLS}
 	}
 	return s.subSrv.Serve(ln)
 }
