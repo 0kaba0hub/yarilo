@@ -189,6 +189,30 @@ func (d *UserDir) DeleteByHash(hash uint32) {
 	d.mu.Unlock()
 }
 
+// DeleteIfBackend removes the user's pin ONLY if it still points at backendIP
+// (compare-and-delete, #708). A move rewrites the pin to a NEW backend before
+// the kick it triggers arrives, so this conditional leaves the fresh pin intact
+// while a plain admin kick (which passes the current backend) still clears it.
+// Returns whether it deleted.
+func (d *UserDir) DeleteIfBackend(username, backendIP string) bool {
+	hash := HashUsername(username, d.lowercase)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byHash[hash]
+	if !ok {
+		return false
+	}
+	host, _, err := net.SplitHostPort(e.Host)
+	if err != nil {
+		host = e.Host
+	}
+	if host != backendIP {
+		return false
+	}
+	delete(d.byHash, hash)
+	return true
+}
+
 // DeleteByBackend removes every pin pointing at backendIP (host part of the
 // stored "ip:port" Host), returning the count removed (#706). Used when a
 // backend is flushed so new LOOKUPs rehash away from it instead of sticking to

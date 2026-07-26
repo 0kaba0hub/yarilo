@@ -32,13 +32,12 @@ func TestResolveUserBackend_Sticky(t *testing.T) {
 		t.Fatalf("pinned user: want %s (sticky), got ip=%q sticky=%v", other, ip, sticky)
 	}
 
-	// Admin override beats the pin.
-	s.overrideMu.Lock()
-	s.overrides["fresh@d.test"] = "10.0.0.1:10143"
-	s.overrideMu.Unlock()
+	// A move (now a normal userDir pin, #708 — no overrides map) re-routes the
+	// user to the moved backend.
+	s.userDir.Set("fresh@d.test", "10.0.0.1:10143", false)
 	ip, _, _, sticky = s.resolveUserBackend("fresh@d.test")
 	if ip != "10.0.0.1" || !sticky {
-		t.Fatalf("override: want 10.0.0.1 (sticky), got ip=%q sticky=%v", ip, sticky)
+		t.Fatalf("moved user: want 10.0.0.1 (sticky), got ip=%q sticky=%v", ip, sticky)
 	}
 }
 
