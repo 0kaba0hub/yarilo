@@ -100,10 +100,12 @@ spec:
     - {{ . | quote }}
     {{- end }}
     {{- else }}
-    ## Ring dial pins ServerName to the -director-ring name (#753); -director
-    ## added for symmetry / future use. Both cover the SNI a peer verifies.
+    ## Ring dial pins the -director-ring name (#753); -director for symmetry;
+    ## the shared internal.server_name (#816) so backend-reg / other clients
+    ## dialling the director verify with the unified pinned name.
     - {{ printf "%s-director-ring" (include "yarilo.fullname" .) | quote }}
     - {{ printf "%s-director" (include "yarilo.fullname" .) | quote }}
+    - {{ .Values.internalTLS.serverName | default (printf "%s-internal" (include "yarilo.fullname" .)) | quote }}
     {{- end }}
   {{- with $dirCert.duration }}
   duration: {{ . }}

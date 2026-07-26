@@ -5,6 +5,19 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+## Cluster-wide internal mTLS (#816). Per-component internalTLS.{enabled,
+## secretName} live under components.* ; this block holds the ONE setting
+## shared across all of them: the TLS name every internal client dial pins.
+internalTLS:
+  ## Name every internal client (auth/anvil/locks/backend-api/... dials) pins
+  ## as the server certificate name. Internal services are reached by short
+  ## name / FQDN / pod IP interchangeably, so this stable pinned name — not the
+  ## dialed host — is what gets verified. Empty auto-derives <release>-internal,
+  ## which the chart also injects into the director cert SANs; the shared
+  ## internal-tls cert you provide MUST carry this name as a SAN. The director
+  ## RING dial is separate (components.director.internalTLS.ringTlsServerName).
+  serverName: ""
+
 ## -------------------------------------------------------------------
 ## Storage (shared across all session components)
 ## -------------------------------------------------------------------
@@ -799,6 +812,13 @@ components:
     servicePort: 12325
     containerPort: 12325
 
+    ## mTLS for the dial to yarilo-auth (#816). Required when the shared
+    ## internal_tls is enabled — without the mount this pod CrashLoops on the
+    ## missing cert. secretName is the shared internal-tls secret.
+    internalTLS:
+      enabled: false
+      secretName: ""
+
     ## auth_addr overrides the yarilo-auth dial address.
     ## Defaults to auth_service.addr from the shared config.
     auth_addr: ""
@@ -848,6 +868,13 @@ components:
     replicas: 1
     servicePort: 12340
     containerPort: 12340
+
+    ## mTLS for the dial to yarilo-auth (#816). Required when the shared
+    ## internal_tls is enabled — without the mount this pod CrashLoops on the
+    ## missing cert. secretName is the shared internal-tls secret.
+    internalTLS:
+      enabled: false
+      secretName: ""
 
     ## default_quota_rules mirror yarilo.yaml quota_rule format.
     ## Applied to every recipient; per-user rules require userdb lookup (future phase).

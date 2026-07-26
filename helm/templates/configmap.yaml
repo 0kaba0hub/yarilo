@@ -587,7 +587,9 @@ data:
     internal_tls:
       {{- $msTLSEnabled := ((.Values.components.manageSieve | default dict).internalTLS | default dict).enabled }}
       {{- $msLoginTLSEnabled := ((.Values.components.manageSieveLogin | default dict).internalTLS | default dict).enabled }}
-      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $msTLSEnabled $msLoginTLSEnabled }}
+      {{- $saslTLSEnabled := ((.Values.components.saslLogin | default dict).internalTLS | default dict).enabled }}
+      {{- $quotaTLSEnabled := ((.Values.components.quotaStatus | default dict).internalTLS | default dict).enabled }}
+      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $msTLSEnabled $msLoginTLSEnabled $saslTLSEnabled $quotaTLSEnabled }}
       enabled: {{ $anyTLS | default false }}
       {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.anvil.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
       {{- if $tlsSecret }}
@@ -599,6 +601,9 @@ data:
       key: ""
       ca: ""
       {{- end }}
+      # Pinned name every internal client dial verifies (#816). Defaults to
+      # <release>-internal; this MUST be a SAN in the shared internal-tls cert.
+      server_name: {{ .Values.internalTLS.serverName | default (printf "%s-internal" (include "yarilo.fullname" .)) | quote }}
 
     auth_service:
       listen: {{ .Values.components.auth.listen | quote }}

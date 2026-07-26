@@ -83,7 +83,7 @@ func main() {
 	if qs.AuthMasterAddr != "" {
 		var authTLS *tls.Config
 		if cfg.InternalTLS.Enabled {
-			authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+			authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
 			if err != nil {
 				slog.Error("auth mtls config failed", "err", err)
 				os.Exit(1)

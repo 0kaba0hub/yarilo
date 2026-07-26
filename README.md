@@ -177,7 +177,7 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 | yarilo-quota-status | Quota policy socket (Postfix quota check) | ✅ |
 | yarilo-fts | Full-text search indexer + lookup service (flatcurve/Xapian; sole cgo/libxapian process) | ✅ |
 | yarilo-backend-api | HTTP admin API (dict, ACL, folder, quota, rebuild) | ✅ |
-| yarilo-admin | CLI control tool — `director` and `backend` planes | ✅ |
+| yarilo-admin | CLI control tool — `director` and `backend` planes (aliases: `yariloctl`, `yaradm`) | ✅ |
 | yarilo-monitor | Backend health sidecar for director ring | ✅ |
 | yarilo-migrate | Offline mailbox migration (Maildir ↔ dbox ↔ mdbox) | ✅ |
 | yarilo-director | Consistent-hashing ring, sticky sessions, failover | planned |

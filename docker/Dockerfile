@@ -72,6 +72,10 @@ RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata xapian-c
 COPY --from=builder /out/ /usr/local/bin/
 COPY --from=fts-builder /out/yarilo-fts /usr/local/bin/yarilo-fts
 COPY --from=fts-builder /out/fts-bench /usr/local/bin/fts-bench
+# Short aliases for the operator CLI — hardlinks to the same binary (one inode,
+# no data duplication; behave as real files, no dangling-link risk).
+RUN ln /usr/local/bin/yarilo-admin /usr/local/bin/yariloctl && \
+    ln /usr/local/bin/yarilo-admin /usr/local/bin/yaradm
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
 

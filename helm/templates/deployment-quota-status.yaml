@@ -64,6 +64,7 @@ spec:
               mountPath: {{ .Values.storage.maildir_root }}
               readOnly: true
             {{- end }}
+            {{- include "yarilo.internalTLSMount" .Values.components.quotaStatus.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -79,6 +80,7 @@ spec:
             claimName: {{ include "yarilo.fullname" . }}-mail
             readOnly: true
         {{- end }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.quotaStatus.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
