@@ -1,21 +1,14 @@
-# Build outputs
+# Build outputs — root-level dev builds. `go build ./app/<name>/` (no -o) drops
+# the compiled binary in the repo root; ignore every such artifact by pattern so
+# no new binary can slip in (imap/pop3/submission/managesieve-login, fts, etc.).
 /yarilo
+/yarilo-*
+/smoketest
+# Binaries built inside their app dir (older habit)
 app/yarilo/yarilo
 app/yarilo-migrate/yarilo-migrate
 app/smoketest/smoketest
 app/smoketest-e2e/smoketest-e2e
-
-# Local compiled binaries (root-level dev builds)
-/yarilo-admin
-/yarilo-director
-/yarilo-imap
-/yarilo-lmtp
-/yarilo-migrate
-/yarilo-monitor
-/yarilo-pop3
-/yarilo-quota-status
-/yarilo-submission
-/smoketest
 
 # macOS
 .DS_Store
