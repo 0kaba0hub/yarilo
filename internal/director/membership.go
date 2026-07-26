@@ -1420,7 +1420,8 @@ func (m *Membership) Leave() {
 // #750 phase 4 may later piggyback anti-entropy metadata on them.
 func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
-	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN":
+	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN",
+		"SESSION-OPEN", "SESSION-CLOSE":
 		m.handleEnvelope(fields, arrivalConn)
 	}
 }
@@ -1523,6 +1524,16 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 			return
 		}
 		m.srv.broadcastToLogins(fmt.Sprintf("USER-KICKED\t%s", payload[0]))
+	case "SESSION-OPEN":
+		// payload: <id> <user> <backend> <proto> (#804) — a remote replica of a
+		// session another director owns; feeds the least_sessions load view.
+		if m.srv != nil {
+			m.srv.applyRemoteSessionOpen(payload)
+		}
+	case "SESSION-CLOSE":
+		if m.srv != nil && len(payload) >= 1 {
+			m.srv.applyRemoteSessionClose(payload[0])
+		}
 	}
 }
 

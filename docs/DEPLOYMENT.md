@@ -667,7 +667,7 @@ independently pick a pod and split a user's per-user writer (#788).
   `(ip, port)`. Session counts come from the live SESSION-OPEN/CLOSE registry
   (no new plumbing), which now carries a trailing `proto` field on LOOKUP /
   SESSION-OPEN. The admin resolve has no protocol → level 1 is skipped, total
-  load decides.
+  load decides. Session counts are replicated ring-wide (SESSION-OPEN/CLOSE gossiped as (origin, seq) envelopes, #804), so whichever random replica answers a LOOKUP decides on the full cluster view — not just the sessions on the watch-holding replica.
 
 **Trade-offs (least_sessions).** It gives up hash determinism: an expired-then-
 returning user may land on a different pod than before. Acceptable because the

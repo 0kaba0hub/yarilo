@@ -62,6 +62,8 @@
 //	    it to its ring: ...\t{ip}\tup\t{tag}\t{beSeq}\t{port}\t{vhosts}\n (#776)
 //	  USER-MOVED\t{originIP}\t{originPort}\t{seq}\t{user}\t{ip}\t{port}\n
 //	  USER-KICKED\t{originIP}\t{originPort}\t{seq}\t{user}\n
+//	  SESSION-OPEN\t{originIP}\t{originPort}\t{seq}\t{id}\t{user}\t{backend}\t{proto}\n  (#804 — replicate the load view)
+//	  SESSION-CLOSE\t{originIP}\t{originPort}\t{seq}\t{id}\n
 package director
 
 import (
@@ -1000,6 +1002,13 @@ func (s *Server) handleSessionOpen(c *client, fields []string) {
 	}
 	s.sessByBE[rec.backend][rec.id] = true
 	s.sessRecMu.Unlock()
+	// Replicate ring-wide (#804): SESSION-OPEN/CLOSE land on ONE director (the
+	// login pod's watch-holder behind the ClusterIP), but least_sessions (#797)
+	// needs the cluster-wide session view on whichever RANDOM replica answers a
+	// LOOKUP. Gossip it as an (origin, seq) envelope like USER-ASSIGN; peers add
+	// a REMOTE record (cl=nil). Kick stays local (owning conn), so remote records
+	// only feed the load view.
+	s.membership.originate("SESSION-OPEN", fmt.Sprintf("%s\t%s\t%s\t%s", rec.id, proto.TabEscape(rec.user), rec.backend, rec.proto))
 	s.updateMetrics() // refresh backend_sessions
 	_ = c.WriteLine("OK")
 }
@@ -1017,7 +1026,8 @@ func (s *Server) handleSessionClose(c *client, fields []string) {
 		delete(s.sessByBE[rec.backend], id)
 	}
 	s.sessRecMu.Unlock()
-	s.updateMetrics() // refresh backend_sessions
+	s.membership.originate("SESSION-CLOSE", id) // drop the remote copies (#804)
+	s.updateMetrics()                           // refresh backend_sessions
 	_ = c.WriteLine("OK")
 }
 
@@ -1037,6 +1047,11 @@ func (s *Server) kickSessionsForBackend(ip string) {
 	s.sessRecMu.Unlock()
 
 	for _, rec := range recs {
+		if rec.cl == nil {
+			continue // remote replica of another director's session (#804): kick
+			// is the owning director's job — every director runs this on the
+			// gossiped backend-down, so each kicks its own local sessions.
+		}
 		_ = rec.cl.WriteLine(fmt.Sprintf("USER-KICKED\t%s", rec.user))
 		slog.Info("director: kicked session", "session", rec.id, "user", rec.user, "backend", ip)
 	}
@@ -1165,14 +1180,65 @@ func (s *Server) kickStaleSessions(hash uint32, oldHost string) {
 	}
 }
 
-// removeClientSessions removes all session records owned by a disconnected client.
+// removeClientSessions removes all session records owned by a disconnected
+// client and gossips a SESSION-CLOSE for each so peers drop their remote copies
+// (#804) — a login pod dropping without a clean SESSION-CLOSE must not leave its
+// sessions counted forever on every replica.
 func (s *Server) removeClientSessions(c *client) {
 	s.sessRecMu.Lock()
-	defer s.sessRecMu.Unlock()
+	var closedIDs []string
 	for id, rec := range s.sessById {
 		if rec.cl == c {
 			delete(s.sessById, id)
 			delete(s.sessByBE[rec.backend], id)
+			closedIDs = append(closedIDs, id)
 		}
 	}
+	s.sessRecMu.Unlock()
+	for _, id := range closedIDs {
+		s.membership.originate("SESSION-CLOSE", id)
+	}
+	if len(closedIDs) > 0 {
+		s.updateMetrics()
+	}
+}
+
+// applyRemoteSessionOpen records a session reported by ANOTHER director via the
+// ring (#804). Marked remote (cl=nil): it feeds the least_sessions load view but
+// is never kicked locally (that is the owning director's job).
+func (s *Server) applyRemoteSessionOpen(payload []string) {
+	if len(payload) < 3 {
+		return
+	}
+	rec := &sessionRec{id: payload[0], user: proto.TabUnescape(payload[1]), backend: payload[2]}
+	if len(payload) >= 4 {
+		rec.proto = payload[3]
+	}
+	s.sessRecMu.Lock()
+	// Never clobber a locally-owned record (ids are per-login-pod unique, so this
+	// is defensive) — keep ours so kick still has the owning conn.
+	if ex, ok := s.sessById[rec.id]; ok && ex.cl != nil {
+		s.sessRecMu.Unlock()
+		return
+	}
+	s.sessById[rec.id] = rec
+	if s.sessByBE[rec.backend] == nil {
+		s.sessByBE[rec.backend] = make(map[string]bool)
+	}
+	s.sessByBE[rec.backend][rec.id] = true
+	s.sessRecMu.Unlock()
+	s.updateMetrics()
+}
+
+// applyRemoteSessionClose drops a remote session copy on SESSION-CLOSE gossip
+// (#804). Only removes non-local records so a stray close can't evict a session
+// this director actually owns.
+func (s *Server) applyRemoteSessionClose(id string) {
+	s.sessRecMu.Lock()
+	if rec, ok := s.sessById[id]; ok && rec.cl == nil {
+		delete(s.sessById, id)
+		delete(s.sessByBE[rec.backend], id)
+	}
+	s.sessRecMu.Unlock()
+	s.updateMetrics()
 }
