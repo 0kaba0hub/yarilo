@@ -104,6 +104,7 @@ func main() {
 		PingTimeout:           time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
 		WriteTimeout:          time.Duration(cfg.DirectorService.WriteTimeout) * time.Second,
 		UsernameHashLowercase: &usernameHashLowercase,
+		AssignmentPolicy:      cfg.DirectorService.AssignmentPolicy,
 		PeerTLS:               ringTLSCfg,
 		LocalIP:               localIP,
 		LocalPort:             localPort,
@@ -192,7 +193,7 @@ func resolveBackends(ctx context.Context, cfg *config.Config, srv *director.Serv
 			continue
 		}
 		for _, addr := range addrs {
-			srv.AddBackend(addr, ms.Port, ms.Tag)
+			srv.AddBackend(addr, ms.Port, ms.Tag, ms.Vhosts)
 		}
 		slog.Info("director: backends resolved", "host", ms.Host, "pods", len(addrs), "tag", ms.Tag)
 	}

@@ -28,8 +28,8 @@
 //	  DIRECTOR-REMOVE\t{originIP}\t{originPort}\t{seq}\t{ip}\t{port}\n
 //
 //	Client commands:
-//	  LOOKUP\t{id}\t{user}\t{tag}\n                  (tag required; "" = untagged pool, not "any tag")
-//	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\n
+//	  LOOKUP\t{id}\t{user}\t{tag}\t{proto}\n           (tag required; ""=untagged pool. proto optional: base protocol for least_sessions #797)
+//	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\t{proto}\n  (proto optional, #797)
 //	  SESSION-CLOSE\t{id}\n
 //	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\t{seq}\n  (vhosts optional; 0=100. seq optional: a backend's monotonic heartbeat counter, #776 — its presence makes the backend lease-managed / expirable)
 //	  BACKEND-DOWN\t{ip}\n                            (LEAVE: remove + rehash — SIGTERM / expiry)
@@ -158,6 +158,10 @@ type Options struct {
 	// implementation's default hash template so two spellings of the same
 	// account route to the same backend. Defaults to true.
 	UsernameHashLowercase *bool
+	// AssignmentPolicy selects the INITIAL (unpinned) placement strategy (#797):
+	// "hash" (default, Dovecot semantics) or "least_sessions" (load-aware).
+	// Sticky pins / overrides / USER-MOVE are unaffected.
+	AssignmentPolicy string
 }
 
 func (o *Options) usernameHashLowercase() bool {
@@ -235,6 +239,7 @@ type sessionRec struct {
 	id      string
 	user    string
 	backend string  // backend IP (without port)
+	proto   string  // base protocol (imap/pop3/…), for least_sessions counts (#797)
 	cl      *client // which login-pod connection owns this session
 }
 
@@ -667,6 +672,10 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	}
 	id, user := fields[1], s.normalizeUser(proto.TabUnescape(fields[2]))
 	tag := fields[3]
+	reqProto := "" // base protocol of the requesting login (#797), optional
+	if len(fields) >= 5 {
+		reqProto = fields[4]
+	}
 
 	// Admin override wins everything.
 	s.overrideMu.RLock()
@@ -697,29 +706,17 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		}
 	}
 
-	// Ring lookup, always restricted to the requested tag ("" = untagged pool).
-	b := s.ring.LookupBackendByTag(user, tag)
+	// Fresh assignment via the configured policy (hash | least_sessions, #797),
+	// restricted to the requested tag ("" = untagged pool). assignAndPin is the
+	// single owner: it picks, records the sticky pin, and propagates USER-ASSIGN
+	// (#772 PR-2) so every director pins the user to the SAME backend — the same
+	// machinery whether the pick was a hash or a least-loaded choice. Sent
+	// director↔director only (by hash), never to login clients.
+	b := s.assignAndPin(user, tag, reqProto)
 	if b == nil {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=no-backends", id))
 		return
 	}
-
-	// Record user→backend in directory and propagate the fresh sticky
-	// assignment to the ring (#772 PR-2) so every director pins the user
-	// to the SAME backend even where it diverges from the deterministic
-	// hash (e.g. an entry that outlived a backend add/remove). Only the
-	// NEW pin here propagates — the sticky TTL-refresh path above does
-	// NOT, or every repeat login would be a ring broadcast. Sent
-	// director↔director only (by hash), never to login clients, so it
-	// bypasses originateRingEvent. The userDir Lamport stamp (assign_seq,
-	// assign_by) rides in the payload; the ring envelope's own (origin,
-	// seq) still dedups the propagation.
-	addr = net.JoinHostPort(b.IP, strconv.Itoa(b.Port))
-	h := s.userDir.Set(user, addr, false)
-	if seq, by, ok := s.userDir.LastAssign(h); ok {
-		s.membership.originate("USER-ASSIGN", fmt.Sprintf("%d\t%s\t%d\t%s", h, addr, seq, by))
-	}
-
 	_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%d\t%s", id, b.IP, b.Port, b.Tag))
 }
 
@@ -903,13 +900,14 @@ func (s *Server) handleUserKilled(c *client, fields []string) {
 
 // AddBackend registers a backend pod in the hash ring.
 // Called at startup after DNS resolution of headless services.
-func (s *Server) AddBackend(ip string, port int, tag string) {
+func (s *Server) AddBackend(ip string, port int, tag string, vhosts int) {
 	ts := time.Now().Unix()
 	s.ring.AddBackend(&ring.Backend{
 		IP:     ip,
 		Port:   port,
 		Tag:    tag,
 		Up:     true,
+		Vhosts: vhosts,
 		LastUp: ts,
 	})
 	slog.Info("director: backend registered", "ip", ip, "port", port, "tag", tag)
@@ -942,6 +940,16 @@ func (s *Server) RouteUser(username string) (string, error) {
 				return host, nil
 			}
 		}
+	}
+	// Fresh (unpinned) delivery. Under least_sessions the placement must be the
+	// director's single owned decision (assignAndPin), or LMTP could pick a
+	// different pod than a concurrent IMAP login and split the user's writer
+	// (#797/#788). Under hash the deterministic lookup stays read-only.
+	if s.assignmentPolicy() == policyLeastSessions {
+		if b := s.assignAndPin(username, "", "lmtp"); b != nil {
+			return b.IP, nil
+		}
+		return "", fmt.Errorf("no backends available")
 	}
 	b := s.ring.LookupBackend(username)
 	if b == nil {
@@ -981,6 +989,9 @@ func (s *Server) handleSessionOpen(c *client, fields []string) {
 		user:    proto.TabUnescape(fields[2]),
 		backend: fields[3],
 		cl:      c,
+	}
+	if len(fields) >= 5 {
+		rec.proto = fields[4] // base protocol (#797), optional
 	}
 	s.sessRecMu.Lock()
 	s.sessById[rec.id] = rec

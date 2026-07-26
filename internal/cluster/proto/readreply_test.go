@@ -34,7 +34,7 @@ func TestLookup_SkipsInterleavedPushes(t *testing.T) {
 	done := make(chan struct{})
 	var res LookupResult
 	var err error
-	go func() { res, err = c.Lookup("1", "u@d.test", "imap"); close(done) }()
+	go func() { res, err = c.Lookup("1", "u@d.test", "imap", "imap"); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -68,7 +68,7 @@ func TestReadReply_AnswersPing(t *testing.T) {
 		_, _ = dirNC.Write([]byte("HOST\t2\t10.0.0.6\t10143\t\n"))
 	}()
 
-	if _, err := c.Lookup("2", "u@d.test", ""); err != nil {
+	if _, err := c.Lookup("2", "u@d.test", "", "imap"); err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
 }

@@ -454,7 +454,7 @@ func (s *session) directorLookup(username, tag string) (string, error) {
 	defer dc.Close()
 
 	id := fmt.Sprintf("%d", s.reqID.Add(1))
-	res, err := dc.Lookup(id, username, tag)
+	res, err := dc.Lookup(id, username, tag, "lmtp")
 	if err != nil {
 		return "", fmt.Errorf("lmtplogin/director: lookup %s: %w", username, err)
 	}

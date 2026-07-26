@@ -648,6 +648,39 @@ Synced between directors over the peer protocol.
 
 ---
 
+## Initial placement policy — `director_service.assignment_policy` (#797)
+
+Only the **first** (unpinned) user→backend assignment consults the policy; sticky
+pins, admin overrides, and USER-MOVE are unaffected. The director is the **single
+owner** of placement — the LOOKUP path, LMTP `RouteUser`, and the admin
+per-user resolve (#792) all funnel through one `assignAndPin`, so no caller can
+independently pick a pod and split a user's per-user writer (#788).
+
+- **`hash`** (default, Dovecot semantics): the consistent-hash backend for the
+  user's tag. Deterministic — if a sticky entry expires after long inactivity the
+  user returns to the same pod (warm per-user index locality on the shared PV,
+  easy debugging).
+- **`least_sessions`**: the least-loaded Up backend in the tag by a two-level,
+  capacity-normalized load — **level 1** the requesting protocol's sessions,
+  **level 2** total sessions among level-1 ties; each `count*100/vhosts`
+  (`vhosts` 1..100; **`vhosts: 0` = drain → excluded**); tie-break lower
+  `(ip, port)`. Session counts come from the live SESSION-OPEN/CLOSE registry
+  (no new plumbing), which now carries a trailing `proto` field on LOOKUP /
+  SESSION-OPEN. The admin resolve has no protocol → level 1 is skipped, total
+  load decides.
+
+**Trade-offs (least_sessions).** It gives up hash determinism: an expired-then-
+returning user may land on a different pod than before. Acceptable because the
+data lives on the shared tag PV, but it must be a deliberate operator choice —
+hence the `hash` default. Second, because a fresh resolve now **pins**, a bulk
+admin sweep over never-logged-in users (e.g. `yarilo-admin backend fts rescan`
+across a cohort) creates userDir entries for each — a deliberate side effect (the
+pins TTL-expire), so don't be surprised by a populated userDir after a mass
+operation. Reference parity: Dovecot does hash + vhosts weighting only;
+`least_sessions` is a yarilo extension, default stays reference-compatible.
+
+---
+
 ## Stickiness rationale
 
 User X is always served by a single backend pod (within the same tag). Reasons:

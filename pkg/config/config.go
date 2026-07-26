@@ -913,6 +913,10 @@ type MailServerConfig struct {
 	Port int    `koanf:"port"`
 	// Tag groups backends into pools; an empty tag means the default pool.
 	Tag string `koanf:"tag"`
+	// Vhosts is the ring weight 1..100 for this static backend (#740/#797).
+	// 0 = director default; set explicitly so it is a real least_sessions
+	// candidate (0 there means drain).
+	Vhosts int `koanf:"vhosts"`
 }
 
 // DirectorAPIConfig configures the HTTP admin API on yarilo-director.
@@ -1037,7 +1041,8 @@ type DirectorServiceConfig struct {
 	// mixed-case usernames; their existing sticky entries just expire
 	// naturally via TTL (director_service.user_expire) — no special
 	// migration step is needed.
-	UsernameHashLowercase bool `koanf:"username_hash_lowercase"`
+	UsernameHashLowercase bool   `koanf:"username_hash_lowercase"`
+	AssignmentPolicy      string `koanf:"assignment_policy"` // hash | least_sessions (#797); default hash
 	// LMTPListen enables the director's embedded LMTP proxy (per-recipient
 	// fan-out via ring routing) on this address, e.g. ":10024". Empty =
 	// disabled. This deliberately does NOT reuse the shared services.lmtp
@@ -1731,6 +1736,7 @@ func Load(path string) (*Config, error) {
 			PingTimeout:           10,
 			WriteTimeout:          10,
 			UsernameHashLowercase: true,
+			AssignmentPolicy:      "hash",
 			MinMembers:            3,
 			AntiEntropyInterval:   3,
 			SeedPollInterval:      2,

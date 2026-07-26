@@ -121,8 +121,10 @@ func replyVerb(line string) string {
 // pool (#737 — there is no full-ring mode; every caller belongs to exactly
 // one tag-pool).
 // Returns LookupResult on success, or an error if no backends are available.
-func (c *Conn) Lookup(id, username, tag string) (LookupResult, error) {
-	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s\t%s", id, TabEscape(username), tag)); err != nil {
+func (c *Conn) Lookup(id, username, tag, proto string) (LookupResult, error) {
+	// proto (trailing field) tells the director which protocol is asking, for
+	// least_sessions placement (#797); optional for older callers.
+	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s\t%s\t%s", id, TabEscape(username), tag, proto)); err != nil {
 		return LookupResult{}, fmt.Errorf("director lookup: write: %w", err)
 	}
 	line, err := c.readReply()
@@ -157,8 +159,8 @@ func (c *Conn) Lookup(id, username, tag string) (LookupResult, error) {
 // SessionOpen registers an active proxied session with the director.
 // sessionID is a login-pod-local unique ID; backendIP is the IP of the backend serving the session.
 // The director uses this to send USER-KICKED when the backend goes down.
-func (c *Conn) SessionOpen(sessionID, username, backendIP string) error {
-	if err := c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s", sessionID, TabEscape(username), backendIP)); err != nil {
+func (c *Conn) SessionOpen(sessionID, username, backendIP, proto string) error {
+	if err := c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s\t%s", sessionID, TabEscape(username), backendIP, proto)); err != nil {
 		return fmt.Errorf("director session-open: write: %w", err)
 	}
 	line, err := c.readReply()
