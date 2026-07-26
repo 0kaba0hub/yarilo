@@ -32,6 +32,7 @@ func applyHandshakeHost(srv *Server, line string) {
 		tag = fields[3]
 	}
 	var lastDown, lastUp int64
+	var vhosts int
 	for _, f := range fields[4:] {
 		if len(f) < 2 {
 			continue
@@ -45,6 +46,8 @@ func applyHandshakeHost(srv *Server, line string) {
 			lastDown = v
 		case 'U':
 			lastUp = v
+		case 'V':
+			vhosts = int(v) // ring weight (#706); absent on pre-#706 peers → 0 = default
 		}
 	}
 	// lastDown==0: backend never went down → Up.
@@ -52,7 +55,7 @@ func applyHandshakeHost(srv *Server, line string) {
 	// lastDown >= lastUp (incl. equal): went down at or after last up → Down.
 	up := lastDown == 0 || lastUp > lastDown
 	srv.ring.AddBackend(&ring.Backend{
-		IP: ip, Port: port, Tag: tag, Up: up,
+		IP: ip, Port: port, Tag: tag, Up: up, Vhosts: vhosts,
 		LastUp: lastUp, LastDown: lastDown,
 	})
 	slog.Debug("director: ring handshake backend", "ip", ip, "port", port, "tag", tag, "up", up)
@@ -106,6 +109,23 @@ func applyRingChangeFields(srv *Server, payload []string) {
 			slog.Warn("director: ring RING-CHANGE up for unknown backend", "ip", ip, "tag", tag)
 		} else {
 			slog.Info("director: ring change up", "ip", ip, "tag", tag)
+		}
+	case "vhosts":
+		// Admin vhost-weight change (#706), replicated ring-wide. Deliberately
+		// carries NO seq and never calls recordBackendSeen — an operator
+		// reweighting a static backend must not turn it lease-managed (which
+		// would make it expirable). Update the weight in place, preserving the
+		// backend's up/down state.
+		n := 0
+		if len(payload) >= 4 {
+			n, _ = strconv.Atoi(payload[3])
+		}
+		if b := srv.ring.GetBackend(ip); b != nil {
+			b.Vhosts = n
+			srv.ring.AddBackend(b)
+			slog.Info("director: ring change vhosts", "ip", ip, "vhosts", n)
+		} else {
+			slog.Warn("director: ring RING-CHANGE vhosts for unknown backend", "ip", ip)
 		}
 	case "down":
 		srv.forgetBackendLease(ip)
