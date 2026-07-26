@@ -87,6 +87,15 @@ spec:
             failureThreshold: 2
           volumeMounts:
             {{- include "yarilo.backendVolumeMounts" (dict "root" $root "itls" $itls) | nindent 12 }}
+            {{- /* external TLS: a protocol backend that terminates its own TLS
+                   (e.g. submission on 587/465) reads general.ssl → mount its
+                   secret at /etc/yarilo/tls, matching the legacy deployment. */}}
+            {{- $ptls := (index $root.Values.components $p.name).tls | default dict }}
+            {{- if $ptls.secretName }}
+            - name: tls-{{ $p.name }}
+              mountPath: /etc/yarilo/tls
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml (index $root.Values.components $p.name).resources | nindent 12 }}
         {{- end }}
@@ -199,6 +208,15 @@ spec:
         - name: mail
           persistentVolumeClaim:
             claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- /* per-protocol external-TLS secrets (one volume per protocol that sets tls.secretName) */}}
+        {{- range $p := $protocols }}
+        {{- $ptls := (index $root.Values.components $p.name).tls | default dict }}
+        {{- if $ptls.secretName }}
+        - name: tls-{{ $p.name }}
+          secret:
+            secretName: {{ $ptls.secretName }}
+        {{- end }}
         {{- end }}
         {{- include "yarilo.internalTLSVolume" $itls | nindent 8 }}
         {{- with .Values.extraVolumes }}
