@@ -94,11 +94,15 @@ func dispatchDirector(args []string) error {
 		return printOutput(data, err, nil) // full dump stays JSON
 	case "map":
 		fs := flag.NewFlagSet("map", flag.ExitOnError)
-		user := fs.String("user", "", "username to look up")
+		user := fs.String("user", "", "username to look up (introspects the stored pin, no side effect)")
 		parseFlags(fs, args[1:]) //nolint:errcheck
 		path := "/api/director/map"
 		if *user != "" {
-			path += "?user=" + url.QueryEscape(*user)
+			// peek: pure introspection (#813) — reports the stored pin (or
+			// "pinned": false) without resolving/assigning. The unpeeked
+			// ?user= endpoint is the routing resolver used internally by
+			// per-user backend ops and must not be used for inspection.
+			path += "?user=" + url.QueryEscape(*user) + "&peek=1"
 		}
 		data, err := apiGet(path)
 		return printOutput(data, err, nil)

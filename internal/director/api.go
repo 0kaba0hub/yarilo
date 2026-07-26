@@ -209,13 +209,33 @@ func (s *Server) apiDump(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) apiMap(w http.ResponseWriter, r *http.Request) {
 	raw := r.URL.Query().Get("user")
 	if raw != "" {
+		user := s.normalizeUser(proto.TabUnescape(raw))
+
+		// peek: pure introspection of the stored pin (#813). userDir.Get hashes
+		// the username the SAME way entries are stored, so the CLI filter that
+		// used to come back empty (hash-mismatch via the resolve path) now
+		// matches. Crucially this has NO side effect — unlike the resolver
+		// below it never assignAndPins an unpinned user, so an operator
+		// inspecting the map cannot accidentally create pins.
+		if r.URL.Query().Get("peek") != "" {
+			e := s.userDir.Get(user)
+			if e == nil {
+				apiJSON(w, map[string]any{"user": raw, "pinned": false})
+				return
+			}
+			ip, _, _ := net.SplitHostPort(e.Host)
+			apiJSON(w, map[string]any{"user": raw, "pinned": true, "backend": ip, "host": e.Host, "weak": e.Weak})
+			return
+		}
+
 		// Resolve to the SAME pod a login LOOKUP would: admin override →
 		// sticky userDir pin → ring hash. This matters for #792: a per-user
 		// backend-api op (fts rescan, etc.) must hit the pod the user is
 		// actually pinned to, or it becomes a second writer of that user's
 		// index — the single-writer hazard co-location (#788) exists to avoid.
 		// The director owns the assignment; the admin never picks a pod itself.
-		user := s.normalizeUser(proto.TabUnescape(raw))
+		// backendBaseForUser (yarilo-admin) depends on this resolve+pin
+		// behaviour — do NOT turn it into a pure read (use peek for that).
 		ip, port, tag, sticky := s.resolveUserBackend(user)
 		if ip == "" {
 			apiError(w, "no backends available", http.StatusServiceUnavailable)

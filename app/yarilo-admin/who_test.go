@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestRenderWhoTable_ExampleOutput(t *testing.T) {
 		]
 	}`)
 	var buf bytes.Buffer
-	if err := renderWhoTable(&buf, body); err != nil {
+	if err := renderWhoTable(&buf, body, false); err != nil {
 		t.Fatal(err)
 	}
 	fmt.Printf("=== who (table) ===\n%s\n", buf.String())
@@ -27,7 +28,7 @@ func TestRenderWhoTable_ExampleOutput(t *testing.T) {
 func TestRenderWhoTable_Empty(t *testing.T) {
 	body := []byte(`{"total":0,"sessions":[]}`)
 	var buf bytes.Buffer
-	if err := renderWhoTable(&buf, body); err != nil {
+	if err := renderWhoTable(&buf, body, false); err != nil {
 		t.Fatal(err)
 	}
 	fmt.Printf("=== who (table, empty) ===\n%s\n", buf.String())
@@ -67,4 +68,26 @@ func TestRenderCountTable_ByUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	fmt.Printf("=== who count --by user ===\n%s\n", buf.String())
+}
+
+func TestRenderWhoTable_AllShowsBackendColumn(t *testing.T) {
+	body := []byte(`{"total":1,"sessions":[
+		{"id":"1","user":"a@d.test","ip":"1.2.3.4","service":"imap","connected_at":"2026-05-31T18:00:00Z","backend":"10.0.0.7"}
+	]}`)
+	var buf bytes.Buffer
+	if err := renderWhoTable(&buf, body, true); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "BACKEND") || !strings.Contains(out, "10.0.0.7") {
+		t.Fatalf("--all view must show BACKEND column + value, got:\n%s", out)
+	}
+	// Default (no --all) omits it.
+	var buf2 bytes.Buffer
+	if err := renderWhoTable(&buf2, body, false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf2.String(), "BACKEND") {
+		t.Fatalf("default view must NOT show BACKEND column, got:\n%s", buf2.String())
+	}
 }
