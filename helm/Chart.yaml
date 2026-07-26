@@ -2,8 +2,8 @@ apiVersion: v2
 name: yarilo
 description: Production-grade IMAP/POP3/Submission mail server
 type: application
-version: 2.0.97
-appVersion: "2.1.97"
+version: 2.0.98
+appVersion: "2.1.98"
 keywords:
   - imap
   - submission

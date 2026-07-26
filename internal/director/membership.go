@@ -1523,11 +1523,18 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 		if len(payload) < 1 {
 			return
 		}
-		// Drop the sticky pin on every replica too (#706), matching the origin —
-		// else a replica answering the kicked user's next LOOKUP still routes to
-		// the old backend.
-		m.srv.userDir.Delete(payload[0])
-		m.srv.broadcastToLogins(fmt.Sprintf("USER-KICKED\t%s", payload[0]))
+		user := payload[0]
+		// Drop the sticky pin on every replica (#706). A move-kick carries the
+		// old backend IP (#708): the pin is dropped only if it STILL points
+		// there (compare-and-delete), so the move's fresh pin — set by the
+		// USER-MOVED that flew with this kick — survives. A plain admin kick
+		// (no old IP) clears unconditionally.
+		if len(payload) >= 2 && payload[1] != "" {
+			m.srv.userDir.DeleteIfBackend(user, payload[1])
+		} else {
+			m.srv.userDir.Delete(user)
+		}
+		m.srv.broadcastToLogins(fmt.Sprintf("USER-KICKED\t%s", user))
 	case "SESSION-OPEN":
 		// payload: <id> <user> <backend> <proto> (#804) — a remote replica of a
 		// session another director owns; feeds the least_sessions load view.
