@@ -297,6 +297,28 @@ internal_tls:
   ca:   /etc/yarilo/tls/ca.crt
 ```
 
+#### Internal client dials — `internal_tls.server_name` (#816)
+
+Every internal **client** dial (auth / anvil / locks / backend-api / backend /
+fts / the login pods) verifies the peer against a single pinned name,
+`internal_tls.server_name` — **not** the dialed host. Internal services are
+reached by short name, FQDN, or pod IP interchangeably, so host-based
+verification is unreliable; the shared internal-tls cert instead carries one
+stable SAN and every client pins it. Because all internal components share one
+cert, mutual auth attests **"cluster member"**, not a specific service identity
+(true per-service identity would need per-service certs — a separate redesign).
+
+The chart defaults `server_name` to `<release>-internal` and injects that name
+into the director cert SANs; **the shared internal-tls secret you provide MUST
+carry `<release>-internal` as a SAN** (`hack/internal-ca-sandbox.yaml` shows a
+self-signed CA chain that does). `internal_tls.enabled=true` with an empty
+`server_name` fails **loudly at startup** (`mtls.ClientConfig` errors with a fix
+hint) rather than as a cryptic "ServerName must be specified" on the first dial.
+`saslLogin` and `quotaStatus` now also carry an `internalTLS` block/mount — every
+component that dials an internal service needs the cert mounted.
+
+The director **ring** dial is separate — see below.
+
 #### Ring mTLS — `director_service.ring_tls_server_name` (#753)
 
 The director dials its ring peers (JOIN, right-neighbor, seed polls) by

@@ -205,7 +205,7 @@ func New(cfg *config.Config) (*Server, error) {
 	masterAddr := cfg.AuthService.MasterAddr
 	var authTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
-		t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+		t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
 		if err != nil {
 			return nil, fmt.Errorf("backend: auth_service mtls: %w", err)
 		}
@@ -1159,7 +1159,7 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 			return nil, fmt.Errorf("locks_client.endpoints must list at least one host:port for remote mode")
 		}
 		if cfg.InternalTLS.Enabled {
-			tlsCfg, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
+			tlsCfg, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
 			if err != nil {
 				return nil, fmt.Errorf("locks_client mtls: %w", err)
 			}

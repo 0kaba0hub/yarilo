@@ -72,6 +72,7 @@ func main() {
 			cfg.InternalTLS.Cert,
 			cfg.InternalTLS.Key,
 			cfg.InternalTLS.CA,
+			cfg.InternalTLS.ServerName,
 		)
 		if err != nil {
 			slog.Error("internal TLS config failed", "err", err)

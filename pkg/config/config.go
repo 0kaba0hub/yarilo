@@ -547,6 +547,18 @@ type InternalTLSConfig struct {
 	Cert    string `koanf:"cert"`
 	Key     string `koanf:"key"`
 	CA      string `koanf:"ca"`
+	// ServerName is the TLS name every internal CLIENT dial pins (#816).
+	// Internal services are reached by short name OR FQDN OR pod IP depending
+	// on the caller, so verifying against the dialed host is unreliable — the
+	// shared internal cert instead carries one stable SAN, pinned here. Since
+	// all internal components share one cert, mutual auth attests
+	// "cluster member", not a specific service identity; a single pinned name
+	// is the honest model (per-service identity would need per-service certs).
+	// The director RING dial is the exception (director_service
+	// .ring_tls_server_name, #753) — directors carry their own cert. Empty
+	// with internal_tls enabled is a misconfiguration: mtls.ClientConfig fails
+	// loudly at startup. The chart defaults it to <release>-internal.
+	ServerName string `koanf:"server_name"`
 }
 
 // QuotaConfig toggles the quota engine: enforcement on every save (IMAP

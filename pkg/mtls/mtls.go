@@ -30,9 +30,18 @@ func ServerConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	}, nil
 }
 
-// ClientConfig returns a *tls.Config for mTLS clients.
-// The client presents certFile/keyFile and verifies the server against caFile.
-func ClientConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
+// ClientConfig returns a *tls.Config for mTLS clients. The client presents
+// certFile/keyFile and verifies the server against caFile, pinning serverName
+// as the expected certificate name (#816). serverName is REQUIRED: internal
+// services are dialled by short name / FQDN / pod IP interchangeably, so
+// verifying against the dialed host is unreliable — the pinned name must be a
+// SAN in the shared internal cert. An empty serverName is a misconfiguration
+// (typically an empty internal_tls.server_name) and fails loudly here rather
+// than as a cryptic "ServerName must be specified" on the first dial.
+func ClientConfig(certFile, keyFile, caFile, serverName string) (*tls.Config, error) {
+	if serverName == "" {
+		return nil, fmt.Errorf("mtls: empty ServerName — set internal_tls.server_name (or ring_tls_server_name for the director ring); mTLS peer verification needs a stable pinned name")
+	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("mtls: load client cert %q: %w", certFile, err)
@@ -44,6 +53,7 @@ func ClientConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      ca,
+		ServerName:   serverName,
 		MinVersion:   tls.VersionTLS13,
 	}, nil
 }

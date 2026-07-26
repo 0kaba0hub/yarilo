@@ -76,32 +76,37 @@ func main() {
 	// .ring_tls_server_name, chart-defaulted to <release>-director-ring).
 	var ringDialTLSCfg *tls.Config
 	if cfg.InternalTLS.Enabled {
-		ringDialTLSCfg, err = mtls.ClientConfig(
-			cfg.InternalTLS.Cert,
-			cfg.InternalTLS.Key,
-			cfg.InternalTLS.CA,
-		)
-		if err != nil {
-			slog.Error("internal_tls ring dial config failed", "err", err)
-			os.Exit(1)
-		}
-		ringDialTLSCfg.ServerName = cfg.DirectorService.RingTLSServerName
-
 		if ringTLSMisconfigured(cfg.InternalTLS.Enabled, cfg.DirectorService.Peers, cfg.DirectorService.RingTLSServerName) {
+			// #753: log + continue (leave the dial nil) rather than exit — the
+			// ring simply won't converge, which the ERROR makes obvious.
 			slog.Error("director: internal_tls enabled with peers configured but director_service.ring_tls_server_name is empty — ring dial cannot verify pod-IP peers without it; the ring will not converge. Set director_service.ring_tls_server_name to a name in the director internal-tls cert (chart default: <release>-director-ring)")
-		} else if name := cfg.DirectorService.RingTLSServerName; name != "" && !certHasSAN(cfg.InternalTLS.Cert, name) {
-			slog.Warn("director: ring_tls_server_name is not present in this director's internal-tls certificate SANs — peers present the same cert, so ring TLS handshakes will fail; re-issue the cert with this name (chart Certificate handles this)",
-				"ring_tls_server_name", name)
+		} else {
+			ringDialTLSCfg, err = mtls.ClientConfig(
+				cfg.InternalTLS.Cert,
+				cfg.InternalTLS.Key,
+				cfg.InternalTLS.CA,
+				cfg.DirectorService.RingTLSServerName,
+			)
+			if err != nil {
+				slog.Error("internal_tls ring dial config failed", "err", err)
+				os.Exit(1)
+			}
+			if name := cfg.DirectorService.RingTLSServerName; name != "" && !certHasSAN(cfg.InternalTLS.Cert, name) {
+				slog.Warn("director: ring_tls_server_name is not present in this director's internal-tls certificate SANs — peers present the same cert, so ring TLS handshakes will fail; re-issue the cert with this name (chart Certificate handles this)",
+					"ring_tls_server_name", name)
+			}
 		}
 	}
 
-	// Internal mTLS client config for dialling backend pods.
+	// Internal mTLS client config for dialling backend pods (shared internal
+	// cert → pin internal_tls.server_name, #816).
 	var backendTLSCfg *tls.Config
 	if cfg.InternalTLS.Enabled {
 		backendTLSCfg, err = mtls.ClientConfig(
 			cfg.InternalTLS.Cert,
 			cfg.InternalTLS.Key,
 			cfg.InternalTLS.CA,
+			cfg.InternalTLS.ServerName,
 		)
 		if err != nil {
 			slog.Error("internal_tls client config failed", "err", err)

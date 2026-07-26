@@ -1,0 +1,78 @@
+# Internal mTLS CA chain for the sandbox (#816 gate).
+#
+# Provisions a self-signed internal CA and the SHARED internal-tls cert that
+# auth / anvil / locks / backend / backend-api / fts / login pods present.
+# The director issues its OWN cert via the chart
+# (components.director.internalTLS.certificate.enabled, #753) using the same
+# ClusterIssuer created here (yarilo-internal-ca).
+#
+# Trust model (#816): every internal client dial pins ONE name —
+# internal_tls.server_name, default <release>-internal — so the shared cert
+# needs exactly that SAN, NOT every service FQDN. Adjust RELEASE / namespace
+# below to match the deploy (sandbox: release yarilo-sb, ns yarilo-sb →
+# server_name yarilo-sb-internal).
+#
+# Apply BEFORE enabling internal_tls in the chart:
+#   kubectl apply -f hack/internal-ca-sandbox.yaml
+# then set components.<all>.internalTLS.{enabled:true, secretName:yarilo-internal-tls}
+# and components.director.internalTLS.{secretName:yarilo-director-internal-tls,
+# certificate.enabled:true}.
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: yarilo-selfsigned-bootstrap
+  namespace: yarilo-sb
+spec:
+  selfSigned: {}
+---
+# Self-signed internal root CA.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: yarilo-internal-ca
+  namespace: yarilo-sb
+spec:
+  isCA: true
+  commonName: yarilo-internal-ca
+  secretName: yarilo-internal-ca
+  duration: 87600h    # 10y
+  renewBefore: 8760h  # 1y
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: yarilo-selfsigned-bootstrap
+    kind: Issuer
+---
+# CA issuer the chart's director Certificate AND the shared cert below use.
+# ClusterIssuer so the chart default (issuerRef.kind: ClusterIssuer,
+# name: yarilo-internal-ca) resolves without change.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: yarilo-internal-ca
+spec:
+  ca:
+    secretName: yarilo-internal-ca
+---
+# Shared internal-tls cert for every NON-director internal component.
+# One SAN — the pinned server_name (<release>-internal) — is all that is
+# required now that clients pin ServerName (#816).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: yarilo-internal-tls
+  namespace: yarilo-sb
+spec:
+  secretName: yarilo-internal-tls
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: yarilo-internal-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - yarilo-sb-internal
