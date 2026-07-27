@@ -112,7 +112,7 @@ type UserIndex interface {
 	// missing from the index so the caller can reindex exactly those.
 	Rescan(mbox MailboxRef, present []uint32) (missing []uint32, err error)
 	// Optimize compacts every mailbox owned by the user — the whole-user
-	// semantics yarilo-admin fts optimize keeps (#715).
+	// semantics yarctl fts optimize keeps (#715).
 	Optimize() error
 	// OptimizeMailbox compacts sealed shards for exactly one mailbox — used
 	// by the background auto-optimize queue (#715) so one large mailbox's

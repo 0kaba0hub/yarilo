@@ -306,7 +306,7 @@ func dispatchRing(args []string) error {
 }
 
 func printDirectorUsage() {
-	fmt.Fprintln(os.Stderr, `yarilo-admin director <command>
+	fmt.Fprintln(os.Stderr, `yarctl director <command>
 
 Commands:
   status                              Backend routing status (use 'ring status' for directors)

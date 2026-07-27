@@ -20,6 +20,6 @@
 // Consumers wire authclient at startup with the configured master
 // address and the internal mTLS material. The current production
 // consumer is yarilo-backend-api (Phase AUTH-1 follow-up); future
-// consumers — yarilo-admin's userdb subcommand, the standalone
+// consumers — yarctl's userdb subcommand, the standalone
 // smoketest — will Dial the same address.
 package authclient

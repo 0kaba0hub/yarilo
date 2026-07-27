@@ -410,7 +410,7 @@ STATUS  <user> <folder-guid>                          # last_indexed_uid
 - **Autoindex**: on `EventDelivered` when `fts_autoindex: true`, throttled by
   `fts_autoindex_max_recent_msgs` (skip when the folder's recent backlog
   exceeds the limit).
-- **Manual**: `yarilo-admin fts rescan|optimize|status` → backend-api →
+- **Manual**: `yarctl fts rescan|optimize|status` → backend-api →
   service.
 - **Automatic optimize** (#715): the flatcurve engine implements the
   optional `fts.OptimizeNotifier` capability — right after a shard
@@ -659,7 +659,7 @@ evaluated and accepted — not gaps to close silently:
    (stemming on by default) + the `yarilo-fts` service (queue, worker,
    LOOKUP, wire protocol, embedded/remote) + expunge/rescan consistency +
    SEARCH integration with fallback + write-through LMTP indexing +
-   config/Helm + `yarilo-admin fts` + tests + **index-size and
+   config/Helm + `yarctl fts` + tests + **index-size and
    search-latency benchmark** ✅ (acceptance gate — `internal/ftsbench`
    + `app/fts-bench`).
 2. **FTS-2**: relevancy surface (`SEARCH RETURN (RELEVANCY)`) ✅ — engine
@@ -859,7 +859,7 @@ evaluated and accepted — not gaps to close silently:
   SEARCH latency indexed vs brute-force; NFS behaviour of the service-owned
   index.
 - **Live sandbox**: deploy `yarilo-fts`, imaptest, manual SEARCH BODY/TEXT,
-  `yarilo-admin fts` flows.
+  `yarctl fts` flows.
 
 ---
 

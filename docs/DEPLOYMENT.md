@@ -58,7 +58,7 @@ everything that owns **per-user write state**: the protocol containers, `fts`
 direct mailbox/index access write a user's data — as a standalone Deployment it
 would be a *second* writer of the same index/mailbox the user's sticky pod owns,
 the #675/#676 hazard; in-pod it uses that pod's localhost fts, so single-writer
-holds). `backend-api` listens on the **pod IP only**; `yarilo-admin` reaches the
+holds). `backend-api` listens on the **pod IP only**; `yarctl` reaches the
 owning pod by doing a director LOOKUP itself and dialing that pod (#792).
 **Global-read services with stable external consumers stay separate** —
 `yarilo-quota-status` is a Postfix policy service the external MTA dials at a
@@ -574,9 +574,9 @@ the protocol. There is no per-protocol ring — a single user never lands on
 different pods for different protocols.
 
 **Admin per-user ops reach the owning pod the same way (#792).** `yarilo-backend-api`
-listens on the pod IP only, so a per-user admin op (`yarilo-admin backend fts
+listens on the pod IP only, so a per-user admin op (`yarctl backend fts
 rescan <user>`, folder/quota/index/… on a user) must hit the user's pod.
-`yarilo-admin` does the routing **client-side**: it asks the director
+`yarctl` does the routing **client-side**: it asks the director
 `GET /api/director/map?user=X` — which resolves with the *same* precedence a
 login LOOKUP uses (sticky userDir pin → ring hash, the director owning the
 assignment; #708 removed the separate admin-override map) — then dials
@@ -722,7 +722,7 @@ independently pick a pod and split a user's per-user writer (#788).
 returning user may land on a different pod than before. Acceptable because the
 data lives on the shared tag PV, but it must be a deliberate operator choice —
 hence the `hash` default. Second, because a fresh resolve now **pins**, a bulk
-admin sweep over never-logged-in users (e.g. `yarilo-admin backend fts rescan`
+admin sweep over never-logged-in users (e.g. `yarctl backend fts rescan`
 across a cohort) creates userDir entries for each — a deliberate side effect (the
 pins TTL-expire), so don't be surprised by a populated userDir after a mass
 operation. Reference parity: Dovecot does hash + vhosts weighting only;
@@ -732,7 +732,7 @@ operation. Reference parity: Dovecot does hash + vhosts weighting only;
 
 ## USER-MOVE and pin longevity (#708)
 
-An admin **USER-MOVE** (`yarilo-admin director users <u> move …`) is an
+An admin **USER-MOVE** (`yarctl director users <u> move …`) is an
 **operational tool — "shift this user off that backend now" — not permanent
 routing configuration.** It writes a normal, TTL'd userDir pin at the target
 (replicated ring-wide via the same `USER-MOVED` gossip) and immediately kicks

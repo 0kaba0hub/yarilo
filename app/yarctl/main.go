@@ -1,4 +1,4 @@
-// yarilo-admin is the unified yarilo operator CLI. Every subsystem
+// yarctl is the unified yarilo operator CLI. Every subsystem
 // that needs an "ops surface" lives under a top-level plane:
 //
 //	director              — talks to yarilo-director's HTTP admin API
@@ -20,7 +20,7 @@
 // When YARILO_ADMIN_TYPE is set the plane is pre-selected and the first
 // CLI argument is the service/command directly (no plane prefix needed):
 //
-//	YARILO_ADMIN_TYPE=backend yarilo-admin user info u1@example.com
+//	YARILO_ADMIN_TYPE=backend yarctl user info u1@example.com
 package main
 
 import (
@@ -64,7 +64,7 @@ func main() {
 	switch outputFormat {
 	case "human", "json":
 	default:
-		fmt.Fprintf(os.Stderr, "yarilo-admin: unknown output format %q (valid: human, json)\n", outputFormat)
+		fmt.Fprintf(os.Stderr, "yarctl: unknown output format %q (valid: human, json)\n", outputFormat)
 		os.Exit(1)
 	}
 
@@ -144,7 +144,7 @@ func dispatch(args []string) error {
 	case "auth":
 		return dispatchAuth(args[1:])
 	case "user":
-		// Top-level shorthand: yarilo-admin user <cmd> — always hits backend plane.
+		// Top-level shorthand: yarctl user <cmd> — always hits backend plane.
 		return dispatchUser(args[1:])
 	default:
 		return fmt.Errorf("unknown plane %q — available: director, backend, auth\n(tip: set YARILO_ADMIN_TYPE=backend to skip the plane prefix)", args[0])
@@ -191,26 +191,26 @@ func dispatchBackend(args []string) error {
 func printUsage() {
 	adminType := os.Getenv("YARILO_ADMIN_TYPE")
 	if adminType != "" {
-		fmt.Fprintf(os.Stderr, `yarilo-admin — yarilo operator CLI (plane: %s)
+		fmt.Fprintf(os.Stderr, `yarctl — yarilo operator CLI (plane: %s)
 
 YARILO_ADMIN_TYPE=%s is set — plane prefix is implicit.
 
 Usage:
-  yarilo-admin <service> <command> [args...]
+  yarctl <service> <command> [args...]
 
 `, adminType, adminType)
 		switch adminType {
 		case "backend":
 			printBackendUsage()
 		case "director":
-			fmt.Fprintln(os.Stderr, "Run 'yarilo-admin status|dump|map|backends|users|ring' directly.")
+			fmt.Fprintln(os.Stderr, "Run 'yarctl status|dump|map|backends|users|ring' directly.")
 		}
 		return
 	}
-	fmt.Fprintln(os.Stderr, `yarilo-admin — yarilo operator CLI
+	fmt.Fprintln(os.Stderr, `yarctl — yarilo operator CLI
 
 Usage:
-  yarilo-admin [global-flags] <plane> <command> [args...]
+  yarctl [global-flags] <plane> <command> [args...]
 
 Global flags:
   -O human|json    Output format (default: human); human renderers added per command over time
@@ -229,11 +229,11 @@ Shorthand (no plane prefix):
 
 Tip: set YARILO_ADMIN_TYPE=backend|director|auth to skip the plane prefix entirely.
 
-Run 'yarilo-admin <plane>' with no command for that plane's usage.`)
+Run 'yarctl <plane>' with no command for that plane's usage.`)
 }
 
 func printBackendUsage() {
-	fmt.Fprintln(os.Stderr, `yarilo-admin backend <service> <command>
+	fmt.Fprintln(os.Stderr, `yarctl backend <service> <command>
 
 Services:
   dict          — pkg/dict KV-store ops (lookup, iterate, set, unset, atomic-inc, expire-scan, commit-batch, drivers, exists)
@@ -249,7 +249,7 @@ Services:
   who           — active session listing
   sessions      — session management (kick)
 
-Run 'yarilo-admin backend <service>' with no command for that service's usage.`)
+Run 'yarctl backend <service>' with no command for that service's usage.`)
 }
 
 func envOr(key, def string) string {

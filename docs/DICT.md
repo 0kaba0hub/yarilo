@@ -221,21 +221,21 @@ Behaviour in mapped mode:
 
 ---
 
-## CLI — `yarilo-admin dict`
+## CLI — `yarctl dict`
 
 ### Select the dict
 
 Either via running config:
 
 ```sh
-yarilo-admin dict <command> --config /etc/yarilo.yaml --dict metadata ...
+yarctl dict <command> --config /etc/yarilo.yaml --dict metadata ...
 ```
 
 Or ad-hoc (no config required):
 
 ```sh
-yarilo-admin dict <command> --driver file --setting path=/tmp/x.dict ...
-yarilo-admin dict <command> --driver redis --setting addr=localhost:6379 --setting prefix=test: ...
+yarctl dict <command> --driver file --setting path=/tmp/x.dict ...
+yarctl dict <command> --driver redis --setting addr=localhost:6379 --setting prefix=test: ...
 ```
 
 Per-op identity:
@@ -249,19 +249,19 @@ Per-op identity:
 ### Commands
 
 ```sh
-yarilo-admin dict drivers                                                # list registered driver names
+yarctl dict drivers                                                # list registered driver names
 
-yarilo-admin dict lookup [select] KEY                                    # print value
-yarilo-admin dict iterate [select] [--recurse] [--no-value] [--exact] \
+yarctl dict lookup [select] KEY                                    # print value
+yarctl dict iterate [select] [--recurse] [--no-value] [--exact] \
                           [--sort-key|--sort-value] PATH                 # list rows
 
-yarilo-admin dict set    [select] [--value-stdin] KEY [VALUE]            # write
-yarilo-admin dict unset  [select] KEY                                    # delete
-yarilo-admin dict atomic-inc [select] KEY DELTA                          # integer add (delta may be negative)
+yarctl dict set    [select] [--value-stdin] KEY [VALUE]            # write
+yarctl dict unset  [select] KEY                                    # delete
+yarctl dict atomic-inc [select] KEY DELTA                          # integer add (delta may be negative)
 
-yarilo-admin dict expire-scan [select]                                   # drop TTL-expired rows
+yarctl dict expire-scan [select]                                   # drop TTL-expired rows
 
-yarilo-admin dict commit-batch [select] < script.txt                     # multi-op atomic transaction
+yarctl dict commit-batch [select] < script.txt                     # multi-op atomic transaction
 ```
 
 ### `commit-batch` script format
@@ -283,20 +283,20 @@ unset	priv/old/key
 Pipe the script:
 
 ```sh
-yarilo-admin dict commit-batch --config /etc/yarilo.yaml --dict quota < initialise.dict
+yarctl dict commit-batch --config /etc/yarilo.yaml --dict quota < initialise.dict
 ```
 
 ### Example session
 
 ```sh
 # Standalone development dict via file driver
-$ yarilo-admin dict set --driver file --setting path=/tmp/m.dict priv/box/INBOX/comment "first message arrived"
+$ yarctl dict set --driver file --setting path=/tmp/m.dict priv/box/INBOX/comment "first message arrived"
 ok
 
-$ yarilo-admin dict lookup --driver file --setting path=/tmp/m.dict priv/box/INBOX/comment
+$ yarctl dict lookup --driver file --setting path=/tmp/m.dict priv/box/INBOX/comment
 first message arrived
 
-$ yarilo-admin dict iterate --driver file --setting path=/tmp/m.dict --recurse --sort-key priv/
+$ yarctl dict iterate --driver file --setting path=/tmp/m.dict --recurse --sort-key priv/
 priv/box/INBOX/comment	first message arrived
 ```
 

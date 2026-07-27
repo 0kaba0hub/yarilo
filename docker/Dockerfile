@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         yarilo \
         yarilo-auth \
         yarilo-anvil \
-        yarilo-admin \
+        yarctl \
         yarilo-backend-api \
         yarilo-backend-reg \
         yarilo-director \
@@ -72,13 +72,14 @@ RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata xapian-c
 COPY --from=builder /out/ /usr/local/bin/
 COPY --from=fts-builder /out/yarilo-fts /usr/local/bin/yarilo-fts
 COPY --from=fts-builder /out/fts-bench /usr/local/bin/fts-bench
-# Short aliases for the operator CLI — relative symlinks (busybox multi-call
-# convention). A hardlink to yarilo-admin, which lives in the lower COPY layer,
-# forces an overlayfs copy-up of the ~15 MB binary into THIS layer per alias
-# (image bloat, and the source of cross-layer edge cases). A symlink is a few
-# bytes, resolves in the same dir, and the CLI does not branch on argv[0].
-RUN ln -s yarilo-admin /usr/local/bin/yariloctl && \
-    ln -s yarilo-admin /usr/local/bin/yaradm
+# Backward-compat alias for the operator CLI: the binary is now `yarctl`, but
+# existing tooling (sandbox test jobs, older scripts) still invokes it as
+# `yarilo-admin`. A relative symlink (busybox multi-call convention) keeps that
+# name working. A hardlink to yarctl, which lives in the lower COPY layer,
+# would force an overlayfs copy-up of the ~15 MB binary into THIS layer (image
+# bloat); a symlink is a few bytes, resolves in the same dir, and the CLI does
+# not branch on argv[0].
+RUN ln -s yarctl /usr/local/bin/yarilo-admin
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/yarilo.yaml /etc/yarilo/yarilo.yaml
 

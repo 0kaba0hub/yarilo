@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// `yarilo-admin backend dict` is a thin HTTP client over the
+// `yarctl backend dict` is a thin HTTP client over the
 // yarilo-backend-api endpoint (--backend-url, default
 // http://localhost:9105 or $YARILO_BACKEND_API_URL). The
 // yarilo-backend-api process owns the live dict.Dict instances;
@@ -49,7 +49,7 @@ func dispatchDict(args []string) error {
 	case "commit-batch":
 		return cmdDictCommitBatch(args[1:])
 	default:
-		return fmt.Errorf("unknown dict command %q — run 'yarilo-admin dict' for usage", args[0])
+		return fmt.Errorf("unknown dict command %q — run 'yarctl dict' for usage", args[0])
 	}
 }
 
@@ -427,7 +427,7 @@ func isPrintable(v []byte) bool {
 }
 
 func printDictUsage() {
-	fmt.Fprintln(os.Stderr, `yarilo-admin backend dict <command>
+	fmt.Fprintln(os.Stderr, `yarctl backend dict <command>
 
 Talks to yarilo-backend-api (default http://localhost:9105 or
 $YARILO_BACKEND_API_URL). Override per-invocation:
@@ -454,9 +454,9 @@ Commands:
                                          (set\tKEY\tBASE64, unset\tKEY, atomic-inc\tKEY\tDELTA)
 
 Examples:
-  yarilo-admin backend dict drivers
-  yarilo-admin backend dict lookup metadata priv/box/abc123/comment
-  yarilo-admin backend dict iterate --recurse --sort-key metadata priv/
-  yarilo-admin backend dict set metadata priv/foo bar
-  yarilo-admin backend dict atomic-inc quota priv/quota/storage 1024`)
+  yarctl backend dict drivers
+  yarctl backend dict lookup metadata priv/box/abc123/comment
+  yarctl backend dict iterate --recurse --sort-key metadata priv/
+  yarctl backend dict set metadata priv/foo bar
+  yarctl backend dict atomic-inc quota priv/quota/storage 1024`)
 }

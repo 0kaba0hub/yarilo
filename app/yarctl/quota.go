@@ -26,7 +26,7 @@ func dispatchQuota(args []string) error {
 
 func dispatchQuotaClone(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: yarilo-admin backend quota clone <list|get> ...")
+		return fmt.Errorf("usage: yarctl backend quota clone <list|get> ...")
 	}
 	switch args[0] {
 	case "list":
@@ -70,7 +70,7 @@ func quotaCloneGet(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return fmt.Errorf("usage: yarilo-admin backend quota clone get <backend> <user>")
+		return fmt.Errorf("usage: yarctl backend quota clone get <backend> <user>")
 	}
 	data, err := backendAPIGet("/api/backend/quota/clone/get?backend=" +
 		url.QueryEscape(fs.Arg(0)) + "&user=" + url.QueryEscape(fs.Arg(1)))
@@ -111,11 +111,11 @@ func humanQuotaCloneGet(data []byte) error {
 }
 
 func printQuotaUsage() {
-	fmt.Println(`yarilo-admin backend quota <command>
+	fmt.Println(`yarctl backend quota <command>
 
 Commands:
   show   <user>                     — current usage and configured limits
-  recalc <user>                     — rescan all folders and rewrite counters (yarilo-admin quota recalc)
+  recalc <user>                     — rescan all folders and rewrite counters (yarctl quota recalc)
   clone  list                       — configured quota_clone backends
   clone  get <backend> <user>       — mirrored usage a clone backend holds
                                       (advisory mirror; 'quota show' is authoritative)
@@ -124,7 +124,7 @@ Common flags:
   --namespace NS    namespace slug for recalc; default "personal"
 
 Limits shown by 'show' are always 0 (unlimited) from this endpoint —
-quota_rules live in the auth/userdb layer. Use 'yarilo-admin auth passdb
+quota_rules live in the auth/userdb layer. Use 'yarctl auth passdb
 show <user>' to inspect per-user rules.`)
 }
 
@@ -136,7 +136,7 @@ func quotaShow(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: yarilo-admin backend quota show <user>")
+		return fmt.Errorf("usage: yarctl backend quota show <user>")
 	}
 	data, err := backendAPIGet("/api/backend/quota/show?user=" + url.QueryEscape(fs.Arg(0)))
 	return printOutput(data, err, humanQuotaShow)
@@ -178,7 +178,7 @@ func quotaRecalc(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: yarilo-admin backend quota recalc <user>")
+		return fmt.Errorf("usage: yarctl backend quota recalc <user>")
 	}
 	user := fs.Arg(0)
 	data, err := backendAPIPost("/api/backend/quota/recalc", map[string]any{

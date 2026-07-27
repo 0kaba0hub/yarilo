@@ -231,7 +231,7 @@ type MasterAuthenticator interface {
 //   - (nil, err)    — transient backend error. The session
 //     surfaces this as temp_fail.
 //
-// Verifiers are produced by `yarilo-admin auth scram-verifier`
+// Verifiers are produced by `yarctl auth scram-verifier`
 // (or any tool that emits the
 // `{SCRAM-SHA-256}iter,salt,stored,server` blob).
 type SCRAMSha256Lookup interface {

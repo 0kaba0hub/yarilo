@@ -29,7 +29,7 @@ func dispatchMetadata(args []string) error {
 }
 
 func printMetadataUsage() {
-	fmt.Println(`yarilo-admin backend metadata <command>
+	fmt.Println(`yarctl backend metadata <command>
 
 Commands:
   list   <user> [<folder>] [--namespace NS] [--scope private|shared] [--as-user U]
@@ -59,7 +59,7 @@ func metadataList(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend metadata list <user> [<folder>] [--namespace NS] [--scope ...] [--as-user U]")
+		return fmt.Errorf("usage: yarctl backend metadata list <user> [<folder>] [--namespace NS] [--scope ...] [--as-user U]")
 	}
 	folder := ""
 	if fs.NArg() > 1 {
@@ -83,7 +83,7 @@ func metadataGet(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 || *entry == "" {
-		return fmt.Errorf("usage: yarilo-admin backend metadata get <user> [<folder>] --entry /private/<name> [--namespace NS] [--as-user U]")
+		return fmt.Errorf("usage: yarctl backend metadata get <user> [<folder>] --entry /private/<name> [--namespace NS] [--as-user U]")
 	}
 	folder := ""
 	if fs.NArg() > 1 {
@@ -109,7 +109,7 @@ func metadataSet(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 || *entry == "" {
-		return fmt.Errorf("usage: yarilo-admin backend metadata set <user> [<folder>] --entry /private/<name> --value V | --value-file path")
+		return fmt.Errorf("usage: yarctl backend metadata set <user> [<folder>] --entry /private/<name> --value V | --value-file path")
 	}
 	if *value == "" && *valueFile == "" {
 		return fmt.Errorf("metadata set: --value or --value-file required")
@@ -145,7 +145,7 @@ func metadataDelete(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 || *entry == "" {
-		return fmt.Errorf("usage: yarilo-admin backend metadata delete <user> [<folder>] --entry /private/<name> [--namespace NS] [--as-user U]")
+		return fmt.Errorf("usage: yarctl backend metadata delete <user> [<folder>] --entry /private/<name> [--namespace NS] [--as-user U]")
 	}
 	folder := ""
 	if fs.NArg() > 1 {

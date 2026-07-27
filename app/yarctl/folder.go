@@ -37,7 +37,7 @@ func dispatchFolder(args []string) error {
 }
 
 func printFolderUsage() {
-	fmt.Println(`yarilo-admin backend folder <command>
+	fmt.Println(`yarctl backend folder <command>
 
 Commands:
   list    <user> [--namespace NS]                              — list folder names in a namespace
@@ -68,7 +68,7 @@ func folderList(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend folder list <user> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend folder list <user> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/folder/list", map[string]any{
 		"user":      fs.Arg(0),
@@ -96,7 +96,7 @@ func folderCreate(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend folder create <user> <folder> [--namespace NS] [--special-use ATTR]")
+		return fmt.Errorf("usage: yarctl backend folder create <user> <folder> [--namespace NS] [--special-use ATTR]")
 	}
 	body := map[string]any{
 		"user":      fs.Arg(0),
@@ -116,7 +116,7 @@ func folderDelete(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend folder delete <user> <folder> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend folder delete <user> <folder> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/folder/delete", map[string]any{
 		"user":      fs.Arg(0),
@@ -132,7 +132,7 @@ func folderRename(args []string) error {
 		return err
 	}
 	if fs.NArg() < 3 {
-		return fmt.Errorf("usage: yarilo-admin backend folder rename <user> <old> <new> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend folder rename <user> <old> <new> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/folder/rename", map[string]any{
 		"user":       fs.Arg(0),
@@ -150,7 +150,7 @@ func folderExpunge(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend folder expunge <user> <folder> [--namespace NS] [--uids 1,2,3]")
+		return fmt.Errorf("usage: yarctl backend folder expunge <user> <folder> [--namespace NS] [--uids 1,2,3]")
 	}
 	body := map[string]any{
 		"user":      fs.Arg(0),
@@ -193,7 +193,7 @@ func folderSingleFolderCommand(cmd, path string, args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend folder %s <user> <folder> [--namespace NS]", cmd)
+		return fmt.Errorf("usage: yarctl backend folder %s <user> <folder> [--namespace NS]", cmd)
 	}
 	return printJSON(backendAPIPost(path, map[string]any{
 		"user":      fs.Arg(0),

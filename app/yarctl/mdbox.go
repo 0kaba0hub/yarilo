@@ -21,7 +21,7 @@ func dispatchMdbox(args []string) error {
 }
 
 func printMdboxUsage() {
-	fmt.Println(`yarilo-admin backend mdbox <command>
+	fmt.Println(`yarctl backend mdbox <command>
 
 Commands:
   purge <user> [--namespace NS]
@@ -33,7 +33,7 @@ Commands:
         without per-folder I/O.
 
   altmove <user> [--namespace NS] [--before RFC3339] [--reverse]
-        Move messages to alt (cold) storage. (yarilo-admin mdbox altmove)
+        Move messages to alt (cold) storage. (yarctl mdbox altmove)
         --before:  only move messages with InternalDate before this
                    RFC3339 timestamp (e.g. 2025-01-01T00:00:00Z).
                    Omit to move all messages.
@@ -48,7 +48,7 @@ func mdboxPurge(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend mdbox purge <user> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend mdbox purge <user> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/mdbox/purge", map[string]any{
 		"user":      fs.Arg(0),
@@ -65,7 +65,7 @@ func mdboxAltMove(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend mdbox altmove <user> [--namespace NS] [--before RFC3339] [--reverse]")
+		return fmt.Errorf("usage: yarctl backend mdbox altmove <user> [--namespace NS] [--before RFC3339] [--reverse]")
 	}
 	return printJSON(backendAPIPost("/api/backend/mdbox/altmove", map[string]any{
 		"user":      fs.Arg(0),

@@ -5,8 +5,8 @@ for backend-plane operations: **dict** (today), **acl** (Phase ACL-1),
 **quota** (Phase QUOTA-1), **folder / user** (future). One instance
 runs per backend tag (or one per standalone deployment).
 
-The `yarilo-admin` CLI is a thin HTTP client over this API; every
-backend-plane subcommand lives under `yarilo-admin backend <service>
+The `yarctl` CLI is a thin HTTP client over this API; every
+backend-plane subcommand lives under `yarctl backend <service>
 <command>` (`backend dict ...`, future `backend acl ...`,
 `backend quota ...`, etc.).
 
@@ -224,7 +224,7 @@ storage driver (`UserMailbox.ListFolders`).
 { "folders": ["INBOX", "Sent", "Trash"] }
 ```
 
-CLI: `yarilo-admin backend folder list <user> [--namespace NS]`
+CLI: `yarctl backend folder list <user> [--namespace NS]`
 
 ### `POST /api/backend/folder/info`
 
@@ -244,7 +244,7 @@ ACL/metadata key namespace.
 }
 ```
 
-CLI: `yarilo-admin backend folder info <user> <folder>`
+CLI: `yarctl backend folder info <user> <folder>`
 
 ### `POST /api/backend/folder/guid`
 
@@ -255,7 +255,7 @@ piping into ACL / METADATA CLIs that need the GUID directly.
 { "folder": "INBOX", "guid": "ab12...ef" }
 ```
 
-CLI: `yarilo-admin backend folder guid <user> <folder>`
+CLI: `yarctl backend folder guid <user> <folder>`
 
 ### `POST /api/backend/folder/stats`
 
@@ -276,7 +276,7 @@ sizes from `UserMailbox.List`).
 }
 ```
 
-CLI: `yarilo-admin backend folder stats <user> <folder>`
+CLI: `yarctl backend folder stats <user> <folder>`
 
 ### `POST /api/backend/folder/create`
 
@@ -309,7 +309,7 @@ exists, the operator just needs to follow up to set the attr.
 note at the top of this document; backend-api is gated by
 `Token`, `AllowedNets`, and mTLS.
 
-CLI: `yarilo-admin backend folder create <user> <folder> [--namespace NS] [--special-use ATTR]`
+CLI: `yarctl backend folder create <user> <folder> [--namespace NS] [--special-use ATTR]`
 
 ### `POST /api/backend/folder/delete`
 
@@ -325,7 +325,7 @@ warning logged so the admin can correlate.
 
 Response (200): `{ "status": "ok" }`. 404 on missing folder.
 
-CLI: `yarilo-admin backend folder delete <user> <folder> [--namespace NS]`
+CLI: `yarctl backend folder delete <user> <folder> [--namespace NS]`
 
 ### `POST /api/backend/folder/rename`
 
@@ -347,7 +347,7 @@ not implemented here yet).
 Response (200): `{ "status": "ok" }`. 404 on missing source, 409 on
 destination conflict, 400 when `old_folder == "INBOX"`.
 
-CLI: `yarilo-admin backend folder rename <user> <old> <new> [--namespace NS]`
+CLI: `yarctl backend folder rename <user> <old> <new> [--namespace NS]`
 
 ### `POST /api/backend/folder/expunge`
 
@@ -376,7 +376,7 @@ Warn and the operation continues with the next message — partial
 expunge is surfaced via the returned `expunged` list (count may be
 smaller than requested).
 
-CLI: `yarilo-admin backend folder expunge <user> <folder> [--namespace NS] [--uids 1,2,3]`
+CLI: `yarctl backend folder expunge <user> <folder> [--namespace NS] [--uids 1,2,3]`
 
 ## User endpoints
 
@@ -427,7 +427,7 @@ call fails (auth down, network), the response still returns 200 with
 tooling that values the local view is not blocked by auth-side
 flakiness.
 
-CLI: `yarilo-admin backend user info <user>`
+CLI: `yarctl backend user info <user>`
 
 ### `POST /api/backend/user/iterate`
 
@@ -443,7 +443,7 @@ Returns 503 when `backend_api.auth_master_addr` is unset (no userdb
 to enumerate); returns 502 when the master-protocol call fails
 (reason text in the JSON `error` field).
 
-CLI: `yarilo-admin backend user iterate`
+CLI: `yarctl backend user iterate`
 
 ### `POST /api/backend/user/usage`
 
@@ -462,7 +462,7 @@ ad-hoc capacity inspection before QUOTA-1 ships.
 }
 ```
 
-CLI: `yarilo-admin backend user usage <user>`
+CLI: `yarctl backend user usage <user>`
 
 ## Index endpoints
 
@@ -489,7 +489,7 @@ Use the optional `limit` field to cap the response size.
 }
 ```
 
-CLI: `yarilo-admin backend index dump <user> <folder> [--limit N]`
+CLI: `yarctl backend index dump <user> <folder> [--limit N]`
 
 ### `POST /api/backend/index/rebuild`
 
@@ -533,7 +533,7 @@ The endpoint takes the cross-process mailbox lock
 (`locks.MailboxKey`) for the whole rebuild so concurrent
 IMAP writers cannot race the snapshot.
 
-CLI: `yarilo-admin backend index rebuild <user> <folder> [--namespace NS]`
+CLI: `yarctl backend index rebuild <user> <folder> [--namespace NS]`
 
 ### `POST /api/backend/index/optimize`
 
@@ -550,7 +550,7 @@ contains its header.
 { "folder": "INBOX", "duration_ms": 4 }
 ```
 
-CLI: `yarilo-admin backend index optimize <user> <folder> [--namespace NS]`
+CLI: `yarctl backend index optimize <user> <folder> [--namespace NS]`
 
 ## Subscriptions endpoints
 
@@ -565,7 +565,7 @@ as IMAP, so concurrent sessions see admin writes immediately.
 | `POST /api/backend/subscriptions/add` | `{user, folder, namespace?}` | `{"status": "ok"}` |
 | `POST /api/backend/subscriptions/remove` | `{user, folder, namespace?}` | `{"status": "ok"}` |
 
-CLI: `yarilo-admin backend subscriptions {list|add|remove} <user> [<folder>] [--namespace NS]`
+CLI: `yarctl backend subscriptions {list|add|remove} <user> [<folder>] [--namespace NS]`
 
 ## SpecialUse endpoints
 
@@ -583,7 +583,7 @@ Only the personal namespace carries special-use — RFC 6154
 | `POST /api/backend/specialuse/set` | `{user, folder, attr}` | `{"status": "ok"}` |
 | `POST /api/backend/specialuse/delete` | `{user, folder}` | `{"status": "ok"}` |
 
-CLI: `yarilo-admin backend specialuse {list|get|set|delete} <user> [<folder>] [<attr>]`
+CLI: `yarctl backend specialuse {list|get|set|delete} <user> [<folder>] [<attr>]`
 
 ## Metadata endpoints
 
@@ -619,7 +619,7 @@ Request envelope (every metadata endpoint accepts it):
 | `POST /api/backend/metadata/set` | `value` is base64. Wraps a single dict transaction. |
 | `POST /api/backend/metadata/delete` | Unset one entry under one dict transaction. |
 
-CLI: `yarilo-admin backend metadata {list|get|set|delete} <user> [<folder>] --entry /private/<name> [...]`
+CLI: `yarctl backend metadata {list|get|set|delete} <user> [<folder>] --entry /private/<name> [...]`
 
 ## Who endpoint
 
@@ -662,7 +662,7 @@ and clear on `DISCONNECT`. Caveats — see [TODO.md](../TODO.md):
 
 Returns `501 Not Implemented` when `anvil_service.listen` is empty.
 
-CLI: `yarilo-admin backend who [--protocol IMAP] [--user U] [--group-by user|none]`
+CLI: `yarctl backend who [--protocol IMAP] [--user U] [--group-by user|none]`
 
 ### `POST /api/backend/who/count`
 
@@ -698,11 +698,11 @@ breakdown dimension.
 CLI:
 
 ```
-yarilo-admin backend who count                          # global total
-yarilo-admin backend who count imap                     # total for protocol
-yarilo-admin backend who count --user alice@x.com       # total for user
-yarilo-admin backend who count --by protocol            # breakdown by protocol
-yarilo-admin backend who count --by user                # breakdown by user
+yarctl backend who count                          # global total
+yarctl backend who count imap                     # total for protocol
+yarctl backend who count --user alice@x.com       # total for user
+yarctl backend who count --by protocol            # breakdown by protocol
+yarctl backend who count --by user                # breakdown by user
 ```
 
 ## OpSettings shape
@@ -723,9 +723,9 @@ to no `op` field at all.
 
 | Phase | Adds |
 |:---|:---|
-| OPS-BACKEND-API (v1.23) | dict surface; `yarilo-admin backend dict` CLI as HTTP client |
+| OPS-BACKEND-API (v1.23) | dict surface; `yarctl backend dict` CLI as HTTP client |
 | BACKEND-API-EASY (v1.24, this) | folder / user / index / subscriptions / specialuse / metadata read-write surfaces against the existing storage + dict backends |
-| ACL-1 (next) | `POST /api/backend/acl/{get,set,delete,my-rights,list-rights,debug}` + `yarilo-admin backend acl` CLI |
+| ACL-1 (next) | `POST /api/backend/acl/{get,set,delete,my-rights,list-rights,debug}` + `yarctl backend acl` CLI |
 | QUOTA-1 | `POST /api/backend/quota/{show,set,unset,recalc}` |
 | BACKEND-API-AUTH | `user info` enriched with uid/gid/userdb fields via yarilo-auth RPC |
 | BACKEND-API-SESSIONS | `who` / `kick` via session-binary RPC; `anvil penalties/connections` |

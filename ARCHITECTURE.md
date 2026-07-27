@@ -538,7 +538,7 @@ defaults for `OpSettings` that the caller can override per-op.
 
 ### CLI
 
-`yarilo-admin dict <command>` exposes the full surface for ops debugging:
+`yarctl dict <command>` exposes the full surface for ops debugging:
 `lookup`, `iterate`, `set`, `unset`, `atomic-inc`, `expire-scan`,
 `commit-batch` (stdin TAB-delimited script), `drivers`. The dict is
 selected either via `--config PATH --dict NAME` (production config) or
@@ -635,8 +635,8 @@ exposes:
 | **Backend**  | `yarilo-backend-api` | `:9105` `/api/backend/<service>/...` | dict (today); acl / quota / folder / user / mailbox (future) |
 
 Both speak JSON over HTTPS with Bearer-token auth + IP allow-list.
-The `yarilo-admin` CLI is a thin HTTP client over both — operator
-runs `yarilo-admin director <command>` or `yarilo-admin backend
+The `yarctl` CLI is a thin HTTP client over both — operator
+runs `yarctl director <command>` or `yarctl backend
 <service> <command>`. Each plane has its own URL + token
 (`--url`/`--token` vs `--backend-url`/`--backend-token`); their
 defaults work out of the box when running inside the respective

@@ -286,7 +286,7 @@ func (s *MasterServer) handleList(conn net.Conn, fields []string) {
 // or `FAIL <id> reason=no cache configured` when the server was
 // constructed without WithMasterCache.
 //
-// Admin CLI: `yarilo-admin auth cache flush [<user-mask>…]`.
+// Admin CLI: `yarctl auth cache flush [<user-mask>…]`.
 func (s *MasterServer) handleCacheFlush(conn net.Conn, fields []string) {
 	id := parseID(fields)
 	if s.cache == nil {

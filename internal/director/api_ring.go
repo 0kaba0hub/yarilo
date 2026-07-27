@@ -18,7 +18,7 @@ func (s *Server) apiPeerList(w http.ResponseWriter, _ *http.Request) {
 // full-mesh list. The ring is self-organizing now (#750): membership is
 // driven by DIRECTOR-JOIN against a seed and DIRECTOR-REMOVE on detected
 // death — there is nothing left for an admin to force. Routes stay
-// registered (rather than 404ing) so `yarilo-admin director ring add/remove`
+// registered (rather than 404ing) so `yarctl director ring add/remove`
 // gets a clear explanation instead of a bare connection/method error.
 func (s *Server) apiPeerAdd(w http.ResponseWriter, _ *http.Request) {
 	apiError(w, "ring membership is self-organizing (#750) — join a node to the ring by pointing its director_service.peers at a seed; there is no manual add", http.StatusGone)

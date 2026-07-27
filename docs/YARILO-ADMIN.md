@@ -1,4 +1,4 @@
-# yarilo-admin
+# yarctl
 
 Unified operator CLI for yarilo. Two top-level planes:
 
@@ -17,10 +17,10 @@ for the wire references.
 
 ```sh
 # exec into the director pod
-kubectl exec -it <director-pod> -- yarilo-admin director status
+kubectl exec -it <director-pod> -- yarctl director status
 
 # or from outside the cluster (set URL + token explicitly)
-yarilo-admin --url http://10.0.0.1:9103 --token <token> director status
+yarctl --url http://10.0.0.1:9103 --token <token> director status
 ```
 
 ---
@@ -49,7 +49,7 @@ kubectl get secret yarilo-backend-api-token   -o jsonpath='{.data.token}' | base
 ## Global flags
 
 ```
-yarilo-admin [--url URL] [--token TOKEN] \
+yarctl [--url URL] [--token TOKEN] \
              [--backend-url URL] [--backend-token TOKEN] \
              <resource> <action> [args...]
 ```
@@ -77,7 +77,7 @@ exposes — director state lives in director's process; backend state
 Ring state overview: backends and peers.
 
 ```sh
-yarilo-admin director status
+yarctl director status
 ```
 
 ```json
@@ -96,7 +96,7 @@ yarilo-admin director status
 Full state: backends, active user→backend entries, peers.
 
 ```sh
-yarilo-admin director dump
+yarctl director dump
 ```
 
 ---
@@ -107,8 +107,8 @@ Show user→backend mappings. Without `--user` returns all active entries from u
 With `--user` performs a live ring lookup.
 
 ```sh
-yarilo-admin director map
-yarilo-admin director map --user alice@example.com
+yarctl director map
+yarctl director map --user alice@example.com
 ```
 
 ---
@@ -118,7 +118,7 @@ yarilo-admin director map --user alice@example.com
 List all backends in the ring.
 
 ```sh
-yarilo-admin director backends list
+yarctl director backends list
 ```
 
 ---
@@ -128,12 +128,12 @@ yarilo-admin director backends list
 Add a backend to the ring.
 
 ```sh
-yarilo-admin director backends add <ip> --port <port> [--tag <tag>] [--vhosts <n>]
+yarctl director backends add <ip> --port <port> [--tag <tag>] [--vhosts <n>]
 ```
 
 ```sh
-yarilo-admin director backends add 10.0.0.3 --port 993 --tag ssd
-yarilo-admin director backends add 10.0.0.4 --port 993 --tag ssd --vhosts 200
+yarctl director backends add 10.0.0.3 --port 993 --tag ssd
+yarctl director backends add 10.0.0.4 --port 993 --tag ssd --vhosts 200
 ```
 
 ---
@@ -143,11 +143,11 @@ yarilo-admin director backends add 10.0.0.4 --port 993 --tag ssd --vhosts 200
 Remove a backend from the ring.
 
 ```sh
-yarilo-admin director backends remove <ip>
+yarctl director backends remove <ip>
 ```
 
 ```sh
-yarilo-admin director backends remove 10.0.0.3
+yarctl director backends remove 10.0.0.3
 ```
 
 ---
@@ -157,11 +157,11 @@ yarilo-admin director backends remove 10.0.0.3
 Update the virtual node weight of a backend.
 
 ```sh
-yarilo-admin director backends update <ip> --vhosts <n>
+yarctl director backends update <ip> --vhosts <n>
 ```
 
 ```sh
-yarilo-admin director backends update 10.0.0.3 --vhosts 200
+yarctl director backends update 10.0.0.3 --vhosts 200
 ```
 
 ---
@@ -171,7 +171,7 @@ yarilo-admin director backends update 10.0.0.3 --vhosts 200
 Mark a backend as up (resumes routing to it).
 
 ```sh
-yarilo-admin director backends up <ip>
+yarctl director backends up <ip>
 ```
 
 ---
@@ -181,7 +181,7 @@ yarilo-admin director backends up <ip>
 Mark a backend as down / flush (stops new routing, existing sessions continue).
 
 ```sh
-yarilo-admin director backends down <ip>
+yarctl director backends down <ip>
 ```
 
 ---
@@ -191,12 +191,12 @@ yarilo-admin director backends down <ip>
 Flush a specific backend or all backends at once.
 
 ```sh
-yarilo-admin director backends flush <ip|all>
+yarctl director backends flush <ip|all>
 ```
 
 ```sh
-yarilo-admin director backends flush 10.0.0.3
-yarilo-admin director backends flush all
+yarctl director backends flush 10.0.0.3
+yarctl director backends flush all
 ```
 
 ---
@@ -206,11 +206,11 @@ yarilo-admin director backends flush all
 Force-assign a user to a specific backend, overriding consistent-hash routing.
 
 ```sh
-yarilo-admin director users move <user> --backend <ip:port>
+yarctl director users move <user> --backend <ip:port>
 ```
 
 ```sh
-yarilo-admin director users move alice@example.com --backend 10.0.0.1:993
+yarctl director users move alice@example.com --backend 10.0.0.1:993
 ```
 
 ---
@@ -220,11 +220,11 @@ yarilo-admin director users move alice@example.com --backend 10.0.0.1:993
 Kick a user — all active sessions for that user are terminated.
 
 ```sh
-yarilo-admin director users kick <user>
+yarctl director users kick <user>
 ```
 
 ```sh
-yarilo-admin director users kick alice@example.com
+yarctl director users kick alice@example.com
 ```
 
 ---
@@ -241,7 +241,7 @@ processed from that origin; `-` when none has been heard) and any tombstones
 (members known dead on this replica, with the tombstone age).
 
 ```sh
-yarilo-admin director ring status
+yarctl director ring status
 ```
 
 ```
@@ -266,11 +266,11 @@ Dynamically add a peer director. Active until pod restart — for permanent peer
 use `components.director.peers` in Helm values.
 
 ```sh
-yarilo-admin director ring add <addr>
+yarctl director ring add <addr>
 ```
 
 ```sh
-yarilo-admin director ring add 10.0.0.4:9102
+yarctl director ring add 10.0.0.4:9102
 ```
 
 ---
@@ -280,11 +280,11 @@ yarilo-admin director ring add 10.0.0.4:9102
 Disconnect a peer director.
 
 ```sh
-yarilo-admin director ring remove <addr>
+yarctl director ring remove <addr>
 ```
 
 ```sh
-yarilo-admin director ring remove 10.0.0.4:9102
+yarctl director ring remove 10.0.0.4:9102
 ```
 
 ---

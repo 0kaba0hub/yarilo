@@ -22,7 +22,7 @@ func dispatchSpecialUse(args []string) error {
 }
 
 func printSpecialUseUsage() {
-	fmt.Println(`yarilo-admin backend specialuse <command>
+	fmt.Println(`yarctl backend specialuse <command>
 
 Commands:
   list   <user>                       — overrides + configured defaults
@@ -36,7 +36,7 @@ Only the personal namespace carries special-use overrides — RFC 6154
 
 func specialUseList(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend specialuse list <user>")
+		return fmt.Errorf("usage: yarctl backend specialuse list <user>")
 	}
 	return printJSON(backendAPIPost("/api/backend/specialuse/list", map[string]any{
 		"user": args[0],
@@ -45,7 +45,7 @@ func specialUseList(args []string) error {
 
 func specialUseGet(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend specialuse get <user> <folder>")
+		return fmt.Errorf("usage: yarctl backend specialuse get <user> <folder>")
 	}
 	return printJSON(backendAPIPost("/api/backend/specialuse/get", map[string]any{
 		"user":   args[0],
@@ -55,7 +55,7 @@ func specialUseGet(args []string) error {
 
 func specialUseSet(args []string) error {
 	if len(args) < 3 {
-		return fmt.Errorf(`usage: yarilo-admin backend specialuse set <user> <folder> <attr>  (e.g. "\Sent")`)
+		return fmt.Errorf(`usage: yarctl backend specialuse set <user> <folder> <attr>  (e.g. "\Sent")`)
 	}
 	return printJSON(backendAPIPost("/api/backend/specialuse/set", map[string]any{
 		"user":   args[0],
@@ -66,7 +66,7 @@ func specialUseSet(args []string) error {
 
 func specialUseDelete(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend specialuse delete <user> <folder>")
+		return fmt.Errorf("usage: yarctl backend specialuse delete <user> <folder>")
 	}
 	return printJSON(backendAPIPost("/api/backend/specialuse/delete", map[string]any{
 		"user":   args[0],

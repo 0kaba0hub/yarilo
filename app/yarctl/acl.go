@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// dispatchACL routes `yarilo-admin backend acl <command>` to the
+// dispatchACL routes `yarctl backend acl <command>` to the
 // matching admin-API call. The wire format and on-disk semantics
 // are identical to IMAP SETACL / DELETEACL so admin writes are
 // visible to live IMAP sessions immediately.
@@ -32,7 +32,7 @@ func dispatchACL(args []string) error {
 }
 
 func printACLUsage() {
-	fmt.Println(`yarilo-admin backend acl <command>
+	fmt.Println(`yarctl backend acl <command>
 
 Commands:
   list    <user>                              — every (mailbox, identifier, rights) in
@@ -60,7 +60,7 @@ func aclList(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend acl list <user> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl list <user> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/acl/list", map[string]any{
 		"user":      fs.Arg(0),
@@ -75,7 +75,7 @@ func aclGet(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend acl get <user> <mailbox> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl get <user> <mailbox> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/acl/get", map[string]any{
 		"user":      fs.Arg(0),
@@ -96,7 +96,7 @@ func aclSet(args []string) error {
 		return err
 	}
 	if fs.NArg() < 3 {
-		return fmt.Errorf("usage: yarilo-admin backend acl set <user> <mailbox> <identifier> <rights> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl set <user> <mailbox> <identifier> <rights> [--namespace NS]")
 	}
 	user, mbox, identifier := fs.Arg(0), fs.Arg(1), fs.Arg(2)
 	rights := ""
@@ -123,7 +123,7 @@ func aclDelete(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend acl delete <user> <mailbox> [<identifier>] [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl delete <user> <mailbox> [<identifier>] [--namespace NS]")
 	}
 	user, mbox := fs.Arg(0), fs.Arg(1)
 	if fs.NArg() == 2 {
@@ -156,7 +156,7 @@ func aclRebuild(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend acl rebuild <user> <folder> [<folder> ...] [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl rebuild <user> <folder> [<folder> ...] [--namespace NS]")
 	}
 	folders := make([]string, 0, fs.NArg()-1)
 	for i := 1; i < fs.NArg(); i++ {

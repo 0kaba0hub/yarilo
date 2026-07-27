@@ -23,7 +23,7 @@ func dispatchSubs(args []string) error {
 }
 
 func printSubsUsage() {
-	fmt.Println(`yarilo-admin backend subscriptions <command>
+	fmt.Println(`yarctl backend subscriptions <command>
 
 Commands:
   list   <user> [--namespace NS]                — every subscribed folder
@@ -41,7 +41,7 @@ func subsList(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend subscriptions list <user> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend subscriptions list <user> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/subscriptions/list", map[string]any{
 		"user":      fs.Arg(0),
@@ -64,7 +64,7 @@ func subsMutate(cmd, path string, args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend subscriptions %s <user> <folder> [--namespace NS]", cmd)
+		return fmt.Errorf("usage: yarctl backend subscriptions %s <user> <folder> [--namespace NS]", cmd)
 	}
 	return printJSON(backendAPIPost(path, map[string]any{
 		"user":      fs.Arg(0),

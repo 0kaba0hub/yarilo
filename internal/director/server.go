@@ -382,7 +382,7 @@ func (s *Server) StartMembership(ctx context.Context, seeds []string) {
 func (s *Server) GracefulLeave() { s.membership.Leave() }
 
 // ListPeers returns the current ring membership (self included), formatted
-// as "ip:port" strings — kept for API/CLI compatibility (yarilo-admin
+// as "ip:port" strings — kept for API/CLI compatibility (yarctl
 // `director ring status`); semantics changed from "statically configured
 // full-mesh peers" to "current self-organized ring members" (#750).
 func (s *Server) ListPeers() []string {
