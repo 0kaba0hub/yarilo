@@ -161,6 +161,13 @@ type Membership struct {
 	// anything at all once its node became the N=2 passive side (#754
 	// follow-up). ringConns has no such role to get stale — connections are
 	// registered/deregistered purely by their own lifetime.
+	// backendHashMiss counts CONSECUTIVE anti-entropy ticks a ring connection's
+	// backend-set hash has disagreed with ours (#846); backendSyncAt rate-limits
+	// snapshot pulls per connection. Both guarded by rightMu, cleared when the
+	// connection is deregistered.
+	backendHashMiss map[net.Conn]int
+	backendSyncAt   map[net.Conn]time.Time
+
 	dialConn net.Conn
 	// ringConns tracks every live ring connection (see the long comment above);
 	// the value records who is on the other end and since when (#833) so admin
@@ -189,6 +196,8 @@ func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, 
 		lastSeq:         make(map[string]uint64),
 		removed:         make(map[Member]time.Time),
 		ringConns:       make(map[net.Conn]ringConnMeta),
+		backendHashMiss: make(map[net.Conn]int),
+		backendSyncAt:   make(map[net.Conn]time.Time),
 	}
 }
 
@@ -256,6 +265,9 @@ func (m *Membership) antiEntropyLoop(ctx context.Context) {
 		}
 		m.broadcastRing(nil, fmt.Sprintf("DIRECTOR-LIST\t%s\t%s",
 			formatMemberList(m.Members()), formatMemberList(m.removedList())))
+		// Piggyback the backend-set hash on the same tick (#846) — a separate
+		// line keeps the members plane and the backends plane cleanly apart.
+		m.broadcastBackendHash()
 	}
 }
 
@@ -1377,6 +1389,8 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 			m.dialConn = nil
 		}
 		delete(m.ringConns, conn)
+		delete(m.backendHashMiss, conn)
+		delete(m.backendSyncAt, conn)
 		m.rightMu.Unlock()
 	}()
 
@@ -1442,6 +1456,8 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 			m.mergeMembers(parseMemberList(fields[1]), parseMemberList(removed))
 		case fields[0] == "USER":
 			m.applyUserLine(fields)
+		case strings.HasPrefix(fields[0], "BACKEND-") && m.handleBackendSyncLine(conn, rd, fields):
+			// #846 backend-set resync sub-protocol (per-connection request/response)
 		default:
 			m.handleRingLine(fields, conn)
 		}
@@ -1817,6 +1833,8 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 	defer func() {
 		m.rightMu.Lock()
 		delete(m.ringConns, conn)
+		delete(m.backendHashMiss, conn)
+		delete(m.backendSyncAt, conn)
 		m.rightMu.Unlock()
 	}()
 
@@ -1871,6 +1889,8 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 			m.mergeMembers(parseMemberList(fields[1]), parseMemberList(removed))
 		case fields[0] == "USER":
 			m.applyUserLine(fields)
+		case strings.HasPrefix(fields[0], "BACKEND-") && m.handleBackendSyncLine(conn, rd, fields):
+			// #846 backend-set resync sub-protocol (per-connection request/response)
 		default:
 			m.handleRingLine(fields, conn)
 		}

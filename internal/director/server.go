@@ -334,6 +334,13 @@ type Server struct {
 	unreachMu sync.Mutex
 	unreach   map[string]map[string]time.Time
 
+	// backendTomb records recently-removed backends (down / expiry / unreachable
+	// eviction) and the lease seq at removal (#846), so a resync snapshot from a
+	// peer that has not yet learned of the removal cannot resurrect the ghost —
+	// only a strictly-newer seq (a genuine re-registration) re-admits it.
+	backendTombMu sync.Mutex
+	backendTomb   map[string]backendTombstone
+
 	// apiToken / apiAddr are captured when StartAPI runs so the cross-replica
 	// ring-topology aggregator (#833 PR-B) can fan out to peers' own admin APIs
 	// with the shared per-release token, deriving each peer's API endpoint from
@@ -369,6 +376,7 @@ func NewWithOptions(opts Options) *Server {
 		sessByBE:    make(map[string]map[string]bool),
 		backendSeen: make(map[string]backendLease),
 		unreach:     make(map[string]map[string]time.Time),
+		backendTomb: make(map[string]backendTombstone),
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers, opts.JoinAllowedNets)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
@@ -822,6 +830,7 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 	// that heartbeats again was a transient blip, so it must not be re-evicted
 	// by reports from before it recovered — a new corroboration must build up.
 	s.clearUnreachable(ip)
+	s.clearBackendTomb(ip) // #846: a genuine re-registration drops the resync tombstone
 	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts, "seq", seq)
 	payload := fmt.Sprintf("%s\tup\t%s", ip, tag)
 	if hasSeq {
@@ -845,6 +854,7 @@ func (s *Server) handleBackendDown(c *client, fields []string) {
 	}
 	ip := fields[1]
 	tag := s.backendTag(ip)
+	s.recordBackendTomb(ip) // #846: block resync resurrection until a newer seq
 	s.ring.RemoveBackend(ip)
 	s.kickSessionsForBackend(ip)
 	slog.Info("director: backend down", "ip", ip)
@@ -1275,6 +1285,7 @@ func (s *Server) expireStaleBackends(expire time.Duration) {
 				"ip", ip, "tag", b.Tag)
 			continue
 		}
+		s.recordBackendTomb(ip) // #846: before forgetBackendLease, which clears the seq
 		s.forgetBackendLease(ip)
 		s.ring.RemoveBackend(ip)
 		s.kickSessionsForBackend(ip)

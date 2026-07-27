@@ -76,6 +76,7 @@ func applyRingChangeFields(srv *Server, payload []string) {
 	ts := time.Now().Unix()
 	switch event {
 	case "up":
+		srv.clearBackendTomb(ip) // #846: a real up event re-admits; drop any resync tombstone
 		// A gossiped heartbeat carries the backend's seq (#776, field 3) and,
 		// for lease-managed backends, its port + vhosts (fields 4-5). Refresh
 		// the lease so a heartbeat that landed on ANY director keeps the
@@ -128,6 +129,7 @@ func applyRingChangeFields(srv *Server, payload []string) {
 			slog.Warn("director: ring RING-CHANGE vhosts for unknown backend", "ip", ip)
 		}
 	case "down":
+		srv.recordBackendTomb(ip) // #846: block resync resurrection until a newer seq
 		srv.forgetBackendLease(ip)
 		srv.ring.RemoveBackend(ip)
 		slog.Info("director: ring change down", "ip", ip)

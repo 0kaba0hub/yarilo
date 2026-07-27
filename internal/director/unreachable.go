@@ -118,6 +118,7 @@ func (s *Server) evictUnreachable(ip string, from *client) {
 			"ip", ip, "tag", b.Tag)
 		return
 	}
+	s.recordBackendTomb(ip) // #846: before forgetBackendLease, which clears the seq
 	s.forgetBackendLease(ip)
 	s.ring.RemoveBackend(ip)
 	s.kickSessionsForBackend(ip)
