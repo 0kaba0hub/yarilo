@@ -1148,6 +1148,48 @@ func (o *Options) backendExpire() time.Duration {
 // RING-CHANGE down. Never expires the LAST backend of a tag — a
 // suspect-but-only backend is kept (logged loudly) over a guaranteed total
 // blackhole. Negative BackendExpire disables the loop.
+// StartSessionRefresh keeps a user's sticky pin alive while they have a live
+// proxied session (#708 PR-B, session-registry-driven — no #707 login refresh).
+// Every user_expire/2 it touches the userDir pin of every user with an active
+// session in the #804 registry, so a moved/assigned user does not TTL-expire
+// mid-session; when their last session closes the touches stop and the pin
+// lapses back to the ring hash after user_expire. Each director refreshes from
+// its OWN (ring-replicated) session view, so no extra propagation is needed.
+func (s *Server) StartSessionRefresh(ctx context.Context) {
+	exp := s.opts.userExpire()
+	tick := exp / 2
+	if tick < time.Second {
+		tick = time.Second
+	}
+	go func() {
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.refreshPinnedSessions()
+			}
+		}
+	}()
+}
+
+// refreshPinnedSessions touches the pin of every user with a live session.
+func (s *Server) refreshPinnedSessions() {
+	s.sessRecMu.RLock()
+	users := make(map[string]struct{}, len(s.sessById))
+	for _, rec := range s.sessById {
+		if rec.user != "" {
+			users[rec.user] = struct{}{}
+		}
+	}
+	s.sessRecMu.RUnlock()
+	for u := range users {
+		s.userDir.Touch(u)
+	}
+}
+
 func (s *Server) StartBackendExpiry(ctx context.Context) {
 	if s.opts.BackendExpire < 0 {
 		return

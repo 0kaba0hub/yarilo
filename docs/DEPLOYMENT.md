@@ -578,8 +578,9 @@ listens on the pod IP only, so a per-user admin op (`yarilo-admin backend fts
 rescan <user>`, folder/quota/index/… on a user) must hit the user's pod.
 `yarilo-admin` does the routing **client-side**: it asks the director
 `GET /api/director/map?user=X` — which resolves with the *same* precedence a
-login LOOKUP uses (admin override → sticky pin → ring hash, the director owning
-the assignment) — then dials `http://{pod-ip}:{backend_api_port}`. It never picks
+login LOOKUP uses (sticky userDir pin → ring hash, the director owning the
+assignment; #708 removed the separate admin-override map) — then dials
+`http://{pod-ip}:{backend_api_port}`. It never picks
 a pod itself: a client-side choice would race a concurrent login and put two pods
 on one user's FTS index, breaking the single-writer invariant. Routing auto-enables
 when a director URL is configured (co-located); with no director it uses the fixed
@@ -699,7 +700,7 @@ Synced between directors over the peer protocol.
 ## Initial placement policy — `director_service.assignment_policy` (#797)
 
 Only the **first** (unpinned) user→backend assignment consults the policy; sticky
-pins, admin overrides, and USER-MOVE are unaffected. The director is the **single
+pins and USER-MOVE are unaffected. The director is the **single
 owner** of placement — the LOOKUP path, LMTP `RouteUser`, and the admin
 per-user resolve (#792) all funnel through one `assignAndPin`, so no caller can
 independently pick a pod and split a user's per-user writer (#788).
@@ -726,6 +727,30 @@ across a cohort) creates userDir entries for each — a deliberate side effect (
 pins TTL-expire), so don't be surprised by a populated userDir after a mass
 operation. Reference parity: Dovecot does hash + vhosts weighting only;
 `least_sessions` is a yarilo extension, default stays reference-compatible.
+
+---
+
+## USER-MOVE and pin longevity (#708)
+
+An admin **USER-MOVE** (`yarilo-admin director users <u> move …`) is an
+**operational tool — "shift this user off that backend now" — not permanent
+routing configuration.** It writes a normal, TTL'd userDir pin at the target
+(replicated ring-wide via the same `USER-MOVED` gossip) and immediately kicks
+the user's sessions on the old backend so the next connection lands on the new
+one. There is **no permanent-override map** (removed in #708) and **no
+USER-RELEASE** — a move just expires.
+
+**Longevity is session-driven, not permanent.** While the user holds a live
+proxied session, the director keeps the pin's TTL fresh: every `user_expire/2`
+it touches the pin of every user with an active session in the replicated
+session registry (#804). Each director refreshes from its own ring-replicated
+session view, so no extra propagation is needed. Once the user's **last session
+closes**, the touches stop and the pin **lapses back to the ring hash** after
+`director_service.user_expire`. So a move survives exactly as long as the user
+stays connected; an idle user deterministically returns to their hash backend.
+
+Operators who need a **permanent** placement should use **tags** (a user's
+tag-pool is routing configuration), not a move.
 
 ---
 

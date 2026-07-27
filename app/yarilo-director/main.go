@@ -161,6 +161,11 @@ func main() {
 	// that stop heartbeating (silent hang / crash), ring-wide.
 	srv.StartBackendExpiry(ctx)
 
+	// Session-driven pin freshness (#708 PR-B): keep a user's sticky pin alive
+	// while they hold a live proxied session (#804 registry); idle users lapse
+	// back to the ring hash after user_expire.
+	srv.StartSessionRefresh(ctx)
+
 	// Start mail protocol proxy listeners.
 	if err := startProxies(ctx, srv, cfg, nil, backendTLSCfg); err != nil {
 		slog.Error("proxy startup failed", "err", err)
