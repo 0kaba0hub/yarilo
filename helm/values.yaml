@@ -217,6 +217,22 @@ components:
     ## (kick -> re-login -> LOOKUP), so the move rate is already bounded by
     ## max_parallel_kicks below; a parsed-but-unread key is deliberately omitted.
     user_kick_delay: 2
+    ## Confirmed ring-wide kick (#847, Dovecot user_kill_state parity). While a
+    ## user is being kicked/moved, LOOKUP is HELD so a concurrent login cannot
+    ## land on a fresh backend before the old sessions are gone (the split-writer
+    ## window). user_kill_timeout is the hard fallthrough (seconds): if the kill
+    ## is not confirmed complete within it (a stuck session-holder), the hold is
+    ## released anyway with a WARN, so a user is never locked out permanently.
+    ## Replicated ring-wide as a DURATION — each director computes its own local
+    ## deadline, never a wall-clock one (pod-clock skew would make it unstable).
+    ## The login proxy treats the hold as retryable (bounded re-LOOKUP), so a
+    ## kick does not turn concurrent logins into client errors. 0 = 15.
+    user_kill_timeout: 15
+    ## How long (seconds) the user's ring-wide session count must stay at zero
+    ## before the kill is confirmed complete (#847) — a stable-zero window that
+    ## absorbs a session opening mid-kill dipping the count to zero momentarily.
+    ## 0 = 1.
+    user_kill_confirm_grace: 1
     ## Cap on sessions kicked per batch when a backend goes down (#740). The
     ## rest are kicked in later batches with a short pause between them,
     ## spreading the re-login stampede across surviving backends instead of

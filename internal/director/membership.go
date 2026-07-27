@@ -1551,7 +1551,7 @@ func (m *Membership) Leave() {
 func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
 	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN",
-		"SESSION-OPEN", "SESSION-CLOSE", "BACKEND-UNREACHABLE":
+		"SESSION-OPEN", "SESSION-CLOSE", "BACKEND-UNREACHABLE", "USER-KILLING", "USER-KILL-DONE":
 		m.handleEnvelope(fields, arrivalConn)
 	}
 }
@@ -1681,6 +1681,24 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 		// original reporter so corroboration aggregates ring-wide.
 		if m.srv != nil {
 			m.srv.applyRemoteUnreachable(payload)
+		}
+	case "USER-KILLING":
+		// payload: <hash> <ttlMillis> (#847). Replicated as a DURATION; each
+		// director computes its own local deadline so pod-clock skew cannot make
+		// the hold unstable (the #772 wall-clock lesson).
+		if m.srv != nil && len(payload) >= 2 {
+			if hash, err := strconv.ParseUint(payload[0], 10, 32); err == nil {
+				if ms, err := strconv.ParseInt(payload[1], 10, 64); err == nil {
+					m.srv.applyKilling(uint32(hash), time.Duration(ms)*time.Millisecond)
+				}
+			}
+		}
+	case "USER-KILL-DONE":
+		// payload: <hash> (#847) — kill confirmed or timed out; release the hold.
+		if m.srv != nil && len(payload) >= 1 {
+			if hash, err := strconv.ParseUint(payload[0], 10, 32); err == nil {
+				m.srv.applyKillDone(uint32(hash))
+			}
 		}
 	}
 }

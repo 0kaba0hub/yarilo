@@ -417,7 +417,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			tag = authResult.DirectorTag
 		}
 		var err error
-		backendAddr, err = s.directorLookup(pre.username, tag)
+		backendAddr, err = s.directorLookupWithHold(pre.username, tag, log)
 		if err != nil {
 			log.Warn("login: director lookup failed", "user", pre.username, "err", err)
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
@@ -611,6 +611,34 @@ func (s *Server) directorLookup(username, tag string) (string, error) {
 		}
 	}
 	return result.Addr, nil
+}
+
+// maxLookupHolds / lookupHoldBackoff bound the confirmed-kick retry (#847): a
+// LOOKUP held while the user's old sessions drain is re-tried a few times rather
+// than surfaced as a client error, matching the bounded re-route pattern of
+// #782. The window (attempts × backoff) covers a normal kill; a kill that
+// outlasts it means the director's hard timeout has since cleared the hold, so
+// the next fresh login succeeds.
+const (
+	maxLookupHolds    = 5
+	lookupHoldBackoff = 150 * time.Millisecond
+)
+
+// directorLookupWithHold performs a director LOOKUP, retrying on a retryable
+// confirmed-kick hold (#847, proto.ErrLookupHold) with a bounded backoff. Any
+// other error (or success) returns immediately.
+func (s *Server) directorLookupWithHold(username, tag string, log *slog.Logger) (string, error) {
+	for attempt := 0; ; attempt++ {
+		addr, err := s.directorLookup(username, tag)
+		if err == nil || !errors.Is(err, proto.ErrLookupHold) {
+			return addr, err
+		}
+		if attempt >= maxLookupHolds {
+			return "", err
+		}
+		log.Debug("login: director holding lookup (user kill in progress), retrying", "user", username, "attempt", attempt+1)
+		time.Sleep(lookupHoldBackoff)
+	}
 }
 
 // maxBackendReroutes bounds the active fast-fail re-route (#782): after the

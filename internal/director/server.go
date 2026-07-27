@@ -46,6 +46,7 @@
 //	Server responses:
 //	  HOST\t{id}\t{ip}\t{port}\t{tag}\n
 //	  FAIL\t{id}\treason=no-backends\n
+//	  FAIL\t{id}\treason=killing\n               (#847 — user is under a confirmed ring-wide kick; RETRYABLE, the login proxy re-LOOKUPs until the kill confirms rather than erroring the client)
 //	  OK\n
 //	  PONG\n
 //
@@ -70,6 +71,12 @@
 //	    pin is dropped unconditionally. The session kick fires either way.
 //	  SESSION-OPEN\t{originIP}\t{originPort}\t{seq}\t{id}\t{user}\t{backend}\t{proto}\n  (#804 — replicate the load view)
 //	  SESSION-CLOSE\t{originIP}\t{originPort}\t{seq}\t{id}\n
+//	  USER-KILLING\t{originIP}\t{originPort}\t{seq}\t{hash}\t{ttlMillis}\n
+//	    (#847 — a user entered a confirmed kick; hold LOOKUP ring-wide. ttlMillis
+//	    is a DURATION: each director computes its own deadline on receipt, never a
+//	    wall-clock deadline, which pod-clock skew would make unstable)
+//	  USER-KILL-DONE\t{originIP}\t{originPort}\t{seq}\t{hash}\n
+//	    (#847 — kill confirmed (sessions gone) or timed out; release the hold)
 //	  BACKEND-UNREACHABLE\t{originIP}\t{originPort}\t{seq}\t{backendIP}\t{reporterID}\n
 //	    (#782 — replicate a proxy's unreachable report ring-wide so corroboration
 //	    aggregates across directors. reporterID is the reporting login proxy, in
@@ -193,6 +200,25 @@ type Options struct {
 	// MaxParallelKicks caps sessions kicked per batch on backend-down (#740),
 	// spreading the re-login stampede. 0 = 100; <= 0 after default = no batching.
 	MaxParallelKicks int
+	// UserKillTimeout is the hard fallthrough for the confirmed kick (#847);
+	// UserKillConfirmGrace is the stable-zero window before confirming. 0 =
+	// defaults (15s, 1s).
+	UserKillTimeout      time.Duration
+	UserKillConfirmGrace time.Duration
+}
+
+func (o *Options) userKillTimeout() time.Duration {
+	if o.UserKillTimeout <= 0 {
+		return 15 * time.Second
+	}
+	return o.UserKillTimeout
+}
+
+func (o *Options) userKillConfirmGrace() time.Duration {
+	if o.UserKillConfirmGrace <= 0 {
+		return 1 * time.Second
+	}
+	return o.UserKillConfirmGrace
 }
 
 func (o *Options) userKickDelay() time.Duration {
@@ -341,6 +367,14 @@ type Server struct {
 	backendTombMu sync.Mutex
 	backendTomb   map[string]backendTombstone
 
+	// killing tracks users under a confirmed ring-wide kick (#847), keyed by
+	// username hash. While a user is killing, LOOKUP is held (no fresh backend
+	// assignment) so a concurrent login cannot open on a new backend before the
+	// old sessions are gone. Cleared when the user's ring-wide session count has
+	// stayed at zero for the confirm grace, or when the hard timeout elapses.
+	killMu  sync.Mutex
+	killing map[uint32]killState
+
 	// apiToken / apiAddr are captured when StartAPI runs so the cross-replica
 	// ring-topology aggregator (#833 PR-B) can fan out to peers' own admin APIs
 	// with the shared per-release token, deriving each peer's API endpoint from
@@ -377,6 +411,7 @@ func NewWithOptions(opts Options) *Server {
 		backendSeen: make(map[string]backendLease),
 		unreach:     make(map[string]map[string]time.Time),
 		backendTomb: make(map[string]backendTombstone),
+		killing:     make(map[uint32]killState),
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers, opts.JoinAllowedNets)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
@@ -752,6 +787,17 @@ func (s *Server) handleLookup(c *client, fields []string) {
 		reqProto = fields[4]
 	}
 
+	// Confirmed-kick hold (#847): while this user is being killed ring-wide,
+	// refuse to assign a backend so a concurrent login cannot open on a fresh
+	// pod before the old sessions are gone (the split-writer window). This gates
+	// only fresh LOOKUP assignment — the move's own replicated USER-ASSIGN pin
+	// is applied elsewhere and is unaffected. The reason is retryable: the login
+	// proxy re-LOOKUPs until the kill confirms, rather than erroring the client.
+	if s.isKilling(HashUsername(user, s.opts.usernameHashLowercase())) {
+		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=%s", id, killReason))
+		return
+	}
+
 	// One lookup order (#708): sticky userDir pin → ring. An admin USER-MOVE now
 	// writes a normal (TTL'd) userDir entry, so there is no separate override
 	// branch to check first.
@@ -920,6 +966,12 @@ func (s *Server) moveUser(user, addr string, exclude *client) {
 	host, portStr, _ := net.SplitHostPort(addr)
 	s.originateRingEvent("USER-MOVED", fmt.Sprintf("%s\t%s\t%s", user, host, portStr), exclude)
 	if oldIP != "" && oldIP != host {
+		// A genuine relocation kicks the old sessions — same split-writer window
+		// as an admin kick, so hold LOOKUP until the old sessions confirm gone
+		// (#847). The new pin above is already set and is NOT gated (the hold is
+		// only on fresh LOOKUP assignment); a held login re-LOOKUPs and lands on
+		// the new pin once the kill confirms.
+		s.startKilling(HashUsername(user, s.opts.usernameHashLowercase()))
 		// Conditional kick: USER-KICKED with a trailing old-backend field.
 		s.originateRingEvent("USER-KICKED", fmt.Sprintf("%s\t%s", user, oldIP), exclude)
 	}
@@ -953,6 +1005,9 @@ func (s *Server) handleUserKick(c *client, fields []string) {
 	}
 	user := s.normalizeUser(fields[1])
 	slog.Info("director: user kick", "user", user)
+	// Mark the user killing (and replicate it) BEFORE the kick tears sessions
+	// down, so the LOOKUP hold is in force ring-wide for the whole drain (#847).
+	s.startKilling(HashUsername(user, s.opts.usernameHashLowercase()))
 	s.originateRingEvent("USER-KICKED", user, c)
 	_ = c.WriteLine("OK")
 }
@@ -1071,7 +1126,8 @@ func (s *Server) handleSessionOpen(c *client, fields []string) {
 	// a REMOTE record (cl=nil). Kick stays local (owning conn), so remote records
 	// only feed the load view.
 	s.membership.originate("SESSION-OPEN", fmt.Sprintf("%s\t%s\t%s\t%s", rec.id, proto.TabEscape(rec.user), rec.backend, rec.proto))
-	s.updateMetrics() // refresh backend_sessions
+	s.noteSessionOpened(rec.user) // #847: a new session voids a pending kill-confirm
+	s.updateMetrics()             // refresh backend_sessions
 	_ = c.WriteLine("OK")
 }
 
@@ -1082,14 +1138,19 @@ func (s *Server) handleSessionClose(c *client, fields []string) {
 		return
 	}
 	id := fields[1]
+	closedUser := ""
 	s.sessRecMu.Lock()
 	if rec, ok := s.sessById[id]; ok {
+		closedUser = rec.user
 		delete(s.sessById, id)
 		delete(s.sessByBE[rec.backend], id)
 	}
 	s.sessRecMu.Unlock()
 	s.membership.originate("SESSION-CLOSE", id) // drop the remote copies (#804)
-	s.updateMetrics()                           // refresh backend_sessions
+	if closedUser != "" {
+		s.noteSessionClosed(closedUser) // #847: arm kill-confirm when the count hits zero
+	}
+	s.updateMetrics() // refresh backend_sessions
 	_ = c.WriteLine("OK")
 }
 
@@ -1107,6 +1168,14 @@ func (s *Server) kickSessionsForBackend(ip string) {
 	}
 	delete(s.sessByBE, ip)
 	s.sessRecMu.Unlock()
+
+	// A backend-down removal also drops these sessions from the ring-wide count,
+	// so arm the kill-confirm for any of these users under a kill (#847). Cheap
+	// for the common case: noteSessionClosed early-returns unless the user is
+	// actually killing.
+	for _, rec := range recs {
+		s.noteSessionClosed(rec.user)
+	}
 
 	// Only local sessions carry a conn to kick; remote replicas (#804) are the
 	// owning director's job — every director runs this on the gossiped
@@ -1372,6 +1441,7 @@ func (s *Server) applyRemoteSessionOpen(payload []string) {
 	}
 	s.sessByBE[rec.backend][rec.id] = true
 	s.sessRecMu.Unlock()
+	s.noteSessionOpened(rec.user) // #847: remote session also voids a pending confirm
 	s.updateMetrics()
 }
 
@@ -1379,11 +1449,16 @@ func (s *Server) applyRemoteSessionOpen(payload []string) {
 // (#804). Only removes non-local records so a stray close can't evict a session
 // this director actually owns.
 func (s *Server) applyRemoteSessionClose(id string) {
+	closedUser := ""
 	s.sessRecMu.Lock()
 	if rec, ok := s.sessById[id]; ok && rec.cl == nil {
+		closedUser = rec.user
 		delete(s.sessById, id)
 		delete(s.sessByBE[rec.backend], id)
 	}
 	s.sessRecMu.Unlock()
+	if closedUser != "" {
+		s.noteSessionClosed(closedUser) // #847: gossiped close also arms the confirm
+	}
 	s.updateMetrics()
 }

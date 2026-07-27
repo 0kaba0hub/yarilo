@@ -243,6 +243,27 @@ its OWN sessions for that user hash off it (`USER-KICKED` to the owning
 login proxy), leaving other users on the same backend running. No kick on
 a first sighting or a same-backend refresh.
 
+**Confirmed ring-wide kick (#847, Dovecot `user_kill_state` parity).** A plain
+kick is only a broadcast; the split-writer window it leaves is closed by a
+confirmed kill. On an admin `USER-KICK` or a move-kick the director marks the
+user **killing** and replicates it as `USER-KILLING\t<hash>\t<ttlMillis>` — a
+DURATION, so each director computes its own local deadline (never a wall-clock
+deadline on the wire; pod-clock skew would make the hold unstable, the same
+lesson as the Lamport user-assign order). While killing, `handleLookup` returns
+a **retryable** `FAIL reason=killing` instead of assigning a backend, so a
+concurrent login cannot open on a fresh pod before the old sessions are gone;
+the login proxy re-LOOKUPs (bounded) rather than erroring the client. Only fresh
+LOOKUP assignment is gated — the move's own replicated `USER-ASSIGN` pin is
+applied on the envelope path and is unaffected. The kill is confirmed complete
+when the user's **ring-wide** session count (the #804 replicated registry) has
+stayed at zero for `user_kill_confirm_grace` — a stable-zero window so a
+SESSION-OPEN landing mid-kill (a session routed just before the kill) that dips
+the count to zero momentarily cannot release the hold early; any SESSION-OPEN
+for the user re-arms it. A sweep then gossips `USER-KILL-DONE\t<hash>` and every
+director resumes LOOKUP together. `user_kill_timeout` is a hard fallthrough: an
+unconfirmed kill releases anyway (logged) so a stuck holder never locks a user
+out permanently.
+
 The same `DIRECTOR-LIST` snapshot is also **re-broadcast periodically**
 over every live ring connection (`anti_entropy_interval`, default 3s,
 negative disables; #759) — a bounded safety net on top of the

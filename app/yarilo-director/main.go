@@ -142,6 +142,8 @@ func main() {
 		AssignmentPolicy:      cfg.DirectorService.AssignmentPolicy,
 		UserKickDelay:         time.Duration(cfg.DirectorService.UserKickDelay) * time.Second,
 		MaxParallelKicks:      cfg.DirectorService.MaxParallelKicks,
+		UserKillTimeout:       time.Duration(cfg.DirectorService.UserKillTimeout) * time.Second,
+		UserKillConfirmGrace:  time.Duration(cfg.DirectorService.UserKillConfirmGrace) * time.Second,
 		PeerTLS:               ringDialTLSCfg,
 		LocalIP:               localIP,
 		LocalPort:             localPort,
@@ -168,6 +170,10 @@ func main() {
 	// while they hold a live proxied session (#804 registry); idle users lapse
 	// back to the ring hash after user_expire.
 	srv.StartSessionRefresh(ctx)
+
+	// Confirmed-kick sweep (#847): clear a user's LOOKUP hold once its ring-wide
+	// sessions confirm gone (stable-zero) or the hard timeout elapses.
+	srv.StartKillSweep(ctx)
 
 	// Start mail protocol proxy listeners.
 	if err := startProxies(ctx, srv, cfg, nil, backendTLSCfg); err != nil {
