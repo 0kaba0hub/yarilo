@@ -223,6 +223,21 @@ extraEnv:
         key: dsn
 
 components:
+  director:
+    enabled: true
+    replicas: 5
+    ring_secret: "sandbox-ring-secret-32charslong00"
+    min_members: 3
+    seed_poll_idle_interval: 5
+    assignment_policy: least_sessions
+    backend_unreachable_reporters: 1
+    listeners:
+      lmtp:
+        enabled: true
+        port: 24
+        containerPort: 10024
+    backends: []
+
   ## IMAP login — TLS terminator on :993 (IMAPS) / :143 (STARTTLS).
   ## Creates yarilo-tls Secret via cert-manager.
   imapLogin:
