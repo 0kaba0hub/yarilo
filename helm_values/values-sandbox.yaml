@@ -256,7 +256,9 @@ components:
         enabled: true
       imap:
         enabled: true
-    backend_addr: "yarilo-imap:10143"
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10143
     service:
       type: LoadBalancer
       annotations:
@@ -274,7 +276,9 @@ components:
         enabled: true
       pop3:
         enabled: true
-    backend_addr: "yarilo-pop3:10110"
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10110
     service:
       type: LoadBalancer
       annotations:
@@ -333,7 +337,9 @@ components:
   ## LMTP login proxy — MTA-facing, plain LMTP, no preamble required.
   lmtpLogin:
     enabled: true
-    backend_addr: "yarilo-lmtp:10024"
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10024
 
   saslLogin:
     enabled: true
@@ -365,7 +371,9 @@ components:
   ## ManageSieve login pod — client-facing on :4190 STARTTLS.
   manageSieveLogin:
     enabled: true
-    backend_addr: "yarilo-managesieve:14190"
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 14190
     tls:
       secretName: yarilo-tls
     listeners:
