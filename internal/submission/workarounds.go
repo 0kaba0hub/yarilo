@@ -46,6 +46,12 @@ type workaroundConn struct {
 	workarounds submissionWorkarounds
 }
 
+// Unwrap exposes the wrapped conn so the server can walk to the
+// *loginproto.PreambleConn carrying pre-auth state (#830). Since #828 put this
+// wrapper ABOVE the PreambleListener, the direct type-assertion stopped seeing
+// the PreambleConn and every session started unauthenticated.
+func (c *workaroundConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *workaroundConn) Read(b []byte) (int, error) {
 	for {
 		if len(c.pending) > 0 {

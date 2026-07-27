@@ -176,7 +176,7 @@ func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 	remoteIP := connRemoteIP(c)
 	username := ""
 	sid := ""
-	if pc, ok := c.Conn().(*loginproto.PreambleConn); ok {
+	if pc := loginproto.UnwrapPreambleConn(c.Conn()); pc != nil {
 		username = pc.Username
 		sid = pc.SessionID
 	}

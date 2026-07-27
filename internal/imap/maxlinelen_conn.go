@@ -43,6 +43,12 @@ type maxLineLenConn struct {
 	limit   int
 }
 
+// Unwrap exposes the wrapped conn so the server can walk the wrapper chain to
+// the *loginproto.PreambleConn carrying pre-auth state (#830). Since #828 put
+// this wrapper ABOVE the PreambleListener, without this the walk stopped here
+// and every co-located session started unauthenticated.
+func (c *maxLineLenConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *maxLineLenConn) Read(b []byte) (int, error) {
 	if len(c.pending) > 0 {
 		n := copy(b, c.pending)
