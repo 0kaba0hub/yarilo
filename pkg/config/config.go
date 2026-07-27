@@ -1025,6 +1025,14 @@ type DirectorServiceConfig struct {
 	// internal_tls enabled and peers configured is a misconfiguration (the ring
 	// cannot verify pod-IP peers): the director logs an ERROR at startup.
 	RingTLSServerName string `koanf:"ring_tls_server_name"`
+	// JoinAllowedNets restricts which source CIDRs a DIRECTOR-JOIN is accepted
+	// from (#773) — the exact pattern of api.allowed_nets: empty = allow all
+	// (unchanged behaviour), otherwise the joiner's source IP must fall inside
+	// one of the listed networks or the JOIN is rejected before the HMAC
+	// challenge even begins. A cheap first-line filter that keeps the ring-join
+	// surface off untrusted networks; the dial-back check and HMAC proof are the
+	// per-peer identity controls layered behind it.
+	JoinAllowedNets []string `koanf:"join_allowed_nets"`
 	// MinMembers is an install-time warning threshold only ("fewer members
 	// than this = no state redundancy") — it never refuses service at any
 	// member count. Default 3 (matches the reference's recommended minimum

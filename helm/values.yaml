@@ -276,6 +276,15 @@ components:
     ## state redundancy") — never refuses service at any member count.
     min_members: 3
 
+    ## CIDRs a DIRECTOR-JOIN is accepted from (#773) — same semantics as
+    ## api.allowed_nets: empty list = allow all (unchanged behaviour),
+    ## otherwise the joiner's source IP must fall inside one of these networks
+    ## or the JOIN is rejected before the HMAC challenge. A live director is
+    ## additionally dialled back at its claimed address to prove it controls it
+    ## (unconditional, not a knob). On k8s set this to the pod network CIDR to
+    ## keep the ring-join surface off everything else.
+    join_allowed_nets: []
+
     ## How long (seconds) a lease-managed backend may go without a
     ## heartbeat before it is removed ring-wide (#776). A backend becomes
     ## lease-managed when it self-registers with a monotonic seq (a

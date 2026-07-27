@@ -147,6 +147,7 @@ func main() {
 		LocalPort:             localPort,
 		RingSecret:            []byte(cfg.DirectorService.RingSecret),
 		MinMembers:            cfg.DirectorService.MinMembers,
+		JoinAllowedNets:       parseCIDRs(cfg.DirectorService.JoinAllowedNets),
 		AntiEntropyInterval:   time.Duration(cfg.DirectorService.AntiEntropyInterval) * time.Second,
 		SeedPollInterval:      time.Duration(cfg.DirectorService.SeedPollInterval) * time.Second,
 		SeedPollIdleInterval:  time.Duration(cfg.DirectorService.SeedPollIdleInterval) * time.Second,

@@ -83,6 +83,9 @@ type Membership struct {
 	secret     []byte // HMAC ring-join secret; empty = JOIN always rejected
 	tlsCfg     *tls.Config
 	minMembers int
+	// joinAllowedNets restricts source CIDRs for DIRECTOR-JOIN (#773); nil/empty
+	// = allow all. Checked before the HMAC challenge.
+	joinAllowedNets []*net.IPNet
 	// antiEntropyInterval paces antiEntropyLoop's periodic snapshot
 	// re-broadcast; 0 = default (3s), negative = disabled. See the
 	// Options field comment.
@@ -171,16 +174,17 @@ type Membership struct {
 // HMAC core). tlsCfg wraps outgoing right-neighbor dials when non-nil.
 // minMembers is an install-time warning threshold only; it never refuses
 // service.
-func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, minMembers int) *Membership {
+func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, minMembers int, joinAllowedNets []*net.IPNet) *Membership {
 	return &Membership{
-		srv:        srv,
-		self:       self,
-		secret:     secret,
-		tlsCfg:     tlsCfg,
-		minMembers: minMembers,
-		lastSeq:    make(map[string]uint64),
-		removed:    make(map[Member]time.Time),
-		ringConns:  make(map[net.Conn]struct{}),
+		srv:             srv,
+		self:            self,
+		secret:          secret,
+		tlsCfg:          tlsCfg,
+		minMembers:      minMembers,
+		joinAllowedNets: joinAllowedNets,
+		lastSeq:         make(map[string]uint64),
+		removed:         make(map[Member]time.Time),
+		ringConns:       make(map[net.Conn]struct{}),
 	}
 }
 
@@ -574,6 +578,70 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 	return nil
 }
 
+// dialBackTimeout bounds the whole dial-back exchange (#773). A single attempt,
+// no retry: a genuine director on a flat pod network answers well within this;
+// anything slower is treated as "did not prove it controls the address". Kept
+// short so a spoofed/unreachable ME cannot stall a join handler.
+const dialBackTimeout = 3 * time.Second
+
+// verifyDialBack independently dials the address the joiner CLAIMED (its ME
+// ip:port) and confirms a live director answers there (#773) — proof the joiner
+// really controls that address rather than feeding a forged ME. It is a plain
+// client connection: it reads the server handshake (VERSION..DONE) and closes,
+// sending NO DIRECTOR-JOIN / ME / PEER, so the acceptor side treats it as an
+// anonymous probe and never mutates its membership or triggers a reverse join —
+// which is what keeps simultaneous N-pod formation from cascading into a storm
+// of cross dial-backs (every side's probe is independent, short, and inert).
+//
+// Must only be called after a valid HMAC proof — see the invariant note in
+// handleJoin.
+func (m *Membership) verifyDialBack(joiner Member) error {
+	ctx, cancel := context.WithTimeout(m.ctx, dialBackTimeout)
+	defer cancel()
+
+	dialer := &net.Dialer{Timeout: dialBackTimeout}
+	var conn net.Conn
+	var err error
+	if m.tlsCfg != nil {
+		td := &tls.Dialer{NetDialer: dialer, Config: m.tlsCfg}
+		conn, err = td.DialContext(ctx, "tcp", joiner.String())
+	} else {
+		conn, err = dialer.DialContext(ctx, "tcp", joiner.String())
+	}
+	if err != nil {
+		return fmt.Errorf("director/dialback: dial %s: %w", joiner, err)
+	}
+	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+
+	rd := bufio.NewReaderSize(conn, 4096)
+	if err := consumeServerHandshake(rd); err != nil {
+		return fmt.Errorf("director/dialback: handshake %s: %w", joiner, err)
+	}
+	return nil
+}
+
+// ipInNets reports whether addr's IP falls inside any of nets. A nil/unparseable
+// address or IP is never allowed (caller gates on len(nets) > 0 for allow-all).
+func ipInNets(addr net.Addr, nets []*net.IPNet) bool {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // consumeServerHandshake reads and discards VERSION..HOST-HAND-*..DONE. The
 // join connection doesn't need the backend list — the real ring/PEER
 // connection (dialRight) already learns it the same way client connections
@@ -842,6 +910,19 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	}
 	joiner.Port = port
 
+	// CIDR allow-list (#773) — the cheapest filter, run first and before the
+	// HMAC challenge: keep the ring-join surface off untrusted networks without
+	// spending a nonce/HMAC round on packets that will never be admitted. The
+	// source of truth is the ACTUAL peer address (conn.RemoteAddr), never the
+	// claimed ME fields, so a spoofed ME cannot dodge the filter. Empty list =
+	// allow all (unchanged behaviour).
+	if len(m.joinAllowedNets) > 0 && !ipInNets(conn.RemoteAddr(), m.joinAllowedNets) {
+		_ = writeLine(conn, "JOIN-FAIL\tnot allowed from this network")
+		slog.Warn("director: JOIN rejected, source not in join_allowed_nets", "remote", conn.RemoteAddr())
+		joinRejected.Inc()
+		return
+	}
+
 	if joiner.equal(m.self) {
 		// A load-balanced ClusterIP seed can route a pod's own JOIN dial
 		// back to itself (#759): kube-proxy has no reason to avoid it.
@@ -896,6 +977,24 @@ func (m *Membership) handleJoin(conn net.Conn, fields []string) {
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		_ = writeLine(conn, "JOIN-FAIL\tinvalid proof")
 		slog.Warn("director: JOIN rejected, invalid HMAC proof", "joiner", joiner)
+		joinRejected.Inc()
+		return
+	}
+
+	// Dial-back verification (#773) — MUST run only AFTER a valid HMAC proof,
+	// and this ordering is an anti-amplification invariant, not an optimisation:
+	// the dial-back makes THIS director connect to the joiner's CLAIMED ME
+	// address. Were it reachable before the proof, any host in join_allowed_nets
+	// could send a DIRECTOR-JOIN carrying a victim's ME and turn the ring into a
+	// reflector that dials arbitrary addresses on command. Gating it behind the
+	// proof means only a genuine ring member (one that knows the secret) can
+	// ever cause a dial-back, and it is aimed at that member's own claimed
+	// address. The proof establishes membership; the dial-back then establishes
+	// that the joiner truly controls the address it claims (not a spoofed ME) by
+	// confirming a live director answers there.
+	if err := m.verifyDialBack(joiner); err != nil {
+		_ = writeLine(conn, "JOIN-FAIL\tdial-back verification failed")
+		slog.Warn("director: JOIN rejected, dial-back verification failed", "joiner", joiner, "err", err)
 		joinRejected.Inc()
 		return
 	}
