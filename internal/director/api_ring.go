@@ -4,10 +4,14 @@ import (
 	"net/http"
 )
 
-// apiPeerList returns the current ring membership (self included) — real
-// self-organized state (#750), not a statically configured peer list.
+// apiPeerList returns this replica's rich ring-status view (#833): computed
+// left/right neighbors, per-neighbor live-edge state + uptime, the sparse
+// (origin,seq) dedup watermark per member, and tombstones — all from the
+// self-organized membership state (#750), as THIS director sees it. A
+// structured object (not a bare address list) so a gate can assert topology
+// programmatically.
 func (s *Server) apiPeerList(w http.ResponseWriter, _ *http.Request) {
-	apiJSON(w, map[string]any{"peers": s.ListPeers()})
+	apiJSON(w, s.membership.Status())
 }
 
 // apiPeerAdd/apiPeerRemove previously forced a peer into/out of a static

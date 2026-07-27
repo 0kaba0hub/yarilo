@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"text/tabwriter"
+	"time"
 )
 
 // humanBackends renders a {"backends":[...]} response as an aligned table.
@@ -45,19 +47,93 @@ func humanBackends(data []byte) error {
 	return nil
 }
 
-// humanPeers renders a {"peers":[...]} response as one member per line.
-func humanPeers(data []byte) error {
+// humanRingStatus renders the rich ring-status object (#833) as an aligned
+// per-member table: this replica's computed neighbors, its live edges (link
+// role/state/uptime), and the sparse dedup watermark — plus any tombstones.
+func humanRingStatus(data []byte) error {
 	var r struct {
-		Peers []string `json:"peers"`
+		Self    string `json:"self"`
+		Size    int    `json:"size"`
+		Members []struct {
+			Addr  string  `json:"addr"`
+			Index int     `json:"index"`
+			Self  bool    `json:"self"`
+			Left  *string `json:"left"`
+			Right *string `json:"right"`
+			Seq   *uint64 `json:"seq"`
+			Link  *struct {
+				Role  string  `json:"role"`
+				State string  `json:"state"`
+				Since *string `json:"since"`
+			} `json:"link"`
+		} `json:"members"`
+		Tombstones []struct {
+			Addr string `json:"addr"`
+			Age  string `json:"age"`
+		} `json:"tombstones"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
-	fmt.Printf("%d director%s:\n", len(r.Peers), plural(len(r.Peers)))
-	for _, p := range r.Peers {
-		fmt.Printf("  %s\n", p)
+
+	fmt.Printf("ring status: %d director%s (self %s)\n", r.Size, plural(r.Size), r.Self)
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "IDX\tADDR\tLEFT | RIGHT\tLINK\tSEQ")
+	for _, m := range r.Members {
+		marker := m.Addr
+		if m.Self {
+			marker = "* " + m.Addr
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n",
+			m.Index, marker, neighborsCol(m.Left, m.Right), linkCol(m.Self, m.Link), seqCol(m.Seq))
+	}
+	tw.Flush()
+
+	if len(r.Tombstones) > 0 {
+		fmt.Printf("tombstones (%d):\n", len(r.Tombstones))
+		for _, t := range r.Tombstones {
+			fmt.Printf("  %s (age %s)\n", t.Addr, t.Age)
+		}
 	}
 	return nil
+}
+
+func neighborsCol(left, right *string) string {
+	l, rt := "-", "-"
+	if left != nil {
+		l = *left
+	}
+	if right != nil {
+		rt = *right
+	}
+	return l + " | " + rt
+}
+
+func linkCol(self bool, link *struct {
+	Role  string  `json:"role"`
+	State string  `json:"state"`
+	Since *string `json:"since"`
+}) string {
+	if self {
+		return "(self)"
+	}
+	if link == nil {
+		return "-" // not a direct neighbor of this replica
+	}
+	if link.State == "connected" && link.Since != nil {
+		if t, err := time.Parse(time.RFC3339, *link.Since); err == nil {
+			return fmt.Sprintf("%s connected %s", link.Role, time.Since(t).Round(time.Second))
+		}
+		return link.Role + " connected"
+	}
+	return link.Role + " " + link.State
+}
+
+func seqCol(seq *uint64) string {
+	if seq == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *seq)
 }
 
 // humanStatus renders {"status":"ok"} action replies as a single line.
@@ -211,7 +287,7 @@ func dispatchRing(args []string) error {
 	switch args[0] {
 	case "status":
 		data, err := apiGet("/api/director/ring")
-		return printOutput(data, err, humanPeers)
+		return printOutput(data, err, humanRingStatus)
 	case "add":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: director ring add <addr>")
@@ -248,7 +324,7 @@ Commands:
   users move USER --backend IP:PORT   Force-move user to backend
   users kick USER                     Kick user (disconnect all sessions)
 
-  ring status                         List director peers
+  ring status                         Ring topology of the queried replica: neighbors, link state, seq
   ring add ADDR                       Add peer (addr = ip:port)
   ring remove ADDR                    Remove peer`)
 }

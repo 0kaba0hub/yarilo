@@ -231,11 +231,32 @@ yarilo-admin director users kick alice@example.com
 
 ### `director ring status`
 
-List all currently connected director peers.
+Show the ring topology **as the queried replica sees it** (ring membership is
+per-replica, so this is one replica's own view). For every member it prints the
+computed left/right neighbors in `(ip,port)` order, and for this replica's
+direct neighbors the live edge — role (`left`/`right`, or `both` at N=2 where a
+single connection serves both directions), state (`connected`/`reconnecting`)
+and uptime. It also prints each member's dedup watermark (highest `seq`
+processed from that origin; `-` when none has been heard) and any tombstones
+(members known dead on this replica, with the tombstone age).
 
 ```sh
 yarilo-admin director ring status
 ```
+
+```
+ring status: 3 directors (self 10.0.0.2:9102)
+IDX  ADDR              LEFT | RIGHT                       LINK                  SEQ
+0    10.0.0.1:9102     10.0.0.3:9102 | 10.0.0.2:9102      left connected 4m12s  41
+1  * 10.0.0.2:9102     10.0.0.1:9102 | 10.0.0.3:9102      (self)                42
+2    10.0.0.3:9102     10.0.0.2:9102 | 10.0.0.1:9102      right connected 4m12s 40
+```
+
+Use `-O json` for the structured object (`schemaVersion`, `self`, `size`,
+`members[]`, `tombstones[]`) — suitable for programmatic topology assertions.
+
+> A single-command cross-replica view (`--all`, with a divergence/health
+> verdict) is tracked separately in #833 PR-B.
 
 ---
 

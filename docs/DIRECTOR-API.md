@@ -237,10 +237,27 @@ CLI: `yarilo-admin director users kick alice@example.com`
 
 #### `GET /api/director/ring`
 
-List all currently managed director peers.
+Ring topology as **this replica** sees it (membership is per-replica). Each
+member carries its computed `left`/`right` neighbors (`(ip,port)` order; `null`
+at N=1). `link` is present only for this replica's direct neighbors and
+describes the live edge — `role` (`left`/`right`, or `both` at N=2 where one
+connection serves both directions), `state` (`connected`/`reconnecting`) and
+`since` (RFC3339, `null` while reconnecting). `seq` is the dedup watermark
+(highest seq processed from that origin; `null` when none heard). `tombstones`
+lists members known dead on this replica with the tombstone age.
 
 ```json
-{"peers": ["10.0.0.2:9102", "10.0.0.3:9102"]}
+{
+  "schemaVersion": 1,
+  "self": "10.0.0.2:9102",
+  "size": 3,
+  "members": [
+    {"addr": "10.0.0.1:9102", "index": 0, "self": false, "left": "10.0.0.3:9102", "right": "10.0.0.2:9102", "seq": 41, "link": {"role": "left", "state": "connected", "since": "2026-07-27T09:56:42Z"}},
+    {"addr": "10.0.0.2:9102", "index": 1, "self": true,  "left": "10.0.0.1:9102", "right": "10.0.0.3:9102", "seq": 42, "link": null},
+    {"addr": "10.0.0.3:9102", "index": 2, "self": false, "left": "10.0.0.2:9102", "right": "10.0.0.1:9102", "seq": 40, "link": {"role": "right", "state": "connected", "since": "2026-07-27T09:56:42Z"}}
+  ],
+  "tombstones": []
+}
 ```
 
 CLI: `yarilo-admin director ring status`
