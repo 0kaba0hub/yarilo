@@ -55,6 +55,16 @@ yarctl [--url URL] [--token TOKEN] \
              <resource> <action> [args...]
 ```
 
+Global flags (`-O`, `--url`, `--token`, `--backend-url`, `--backend-token`, …)
+are **position-independent** — they may appear before the plane, between the
+plane and the command, or trailing. All of these are equivalent:
+
+```sh
+yarctl -O json director ring status
+yarctl director ring status -O json
+yarctl director -O json ring status
+```
+
 | Flag | Default | Used by | Description |
 |:---|:---|:---|:---|
 | `--url` | `$YARILO_ADMIN_URL` or `http://localhost:9103` | `director` | Director API base URL |

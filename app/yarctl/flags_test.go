@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"slices"
 	"testing"
 )
 
@@ -103,3 +104,78 @@ func TestParseFlagsDashPositionals(t *testing.T) {
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+// TestExtractGlobalFlags_PositionIndependent covers #836: -O/--url and other
+// global flags must be pulled from ANY position (before the plane, between
+// plane and command, trailing), while subcommand flags/positionals stay in
+// rest untouched.
+func TestExtractGlobalFlags_PositionIndependent(t *testing.T) {
+	registerGlobalFlags() // populate flag.CommandLine so the scan can recognize globals
+
+	cases := []struct {
+		name    string
+		argv    []string
+		globals []string
+		rest    []string
+	}{
+		{
+			"A prefix",
+			[]string{"-O", "json", "director", "ring", "status"},
+			[]string{"-O", "json"},
+			[]string{"director", "ring", "status"},
+		},
+		{
+			"B trailing (the silent-swallow bug)",
+			[]string{"director", "ring", "status", "-O", "json"},
+			[]string{"-O", "json"},
+			[]string{"director", "ring", "status"},
+		},
+		{
+			"C between plane and command",
+			[]string{"director", "-O", "json", "ring", "status"},
+			[]string{"-O", "json"},
+			[]string{"director", "ring", "status"},
+		},
+		{
+			"D backends trailing",
+			[]string{"director", "backends", "list", "-O", "json"},
+			[]string{"-O", "json"},
+			[]string{"director", "backends", "list"},
+		},
+		{
+			"equals form trailing",
+			[]string{"director", "ring", "status", "-O=json"},
+			[]string{"-O=json"},
+			[]string{"director", "ring", "status"},
+		},
+		{
+			"multiple globals mixed positions",
+			[]string{"--url", "http://x:9103", "director", "ring", "status", "-O", "json"},
+			[]string{"--url", "http://x:9103", "-O", "json"},
+			[]string{"director", "ring", "status"},
+		},
+		{
+			"subcommand flag stays in rest",
+			[]string{"director", "backends", "add", "10.0.0.3", "--port", "993", "-O", "json"},
+			[]string{"-O", "json"},
+			[]string{"director", "backends", "add", "10.0.0.3", "--port", "993"},
+		},
+		{
+			"-- terminator passes through to rest",
+			[]string{"director", "ring", "status", "--", "-O", "json"},
+			nil,
+			[]string{"director", "ring", "status", "--", "-O", "json"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			globals, rest := extractGlobalFlags(tc.argv)
+			if !slices.Equal(globals, tc.globals) {
+				t.Errorf("globals = %v, want %v", globals, tc.globals)
+			}
+			if !slices.Equal(rest, tc.rest) {
+				t.Errorf("rest = %v, want %v", rest, tc.rest)
+			}
+		})
+	}
+}
