@@ -22,10 +22,20 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 	// established — reconcile may still be connecting right after formation.
 	// Leave() broadcasts DIRECTOR-REMOVE over the CURRENT ring connections,
 	// so firing it before B's own dial completes routes the removal the
-	// long way and was the source of the occasional >2s flake. Let the ring
-	// connections settle first; eviction is then sub-second (direct
-	// envelope propagation, no timer/retry).
-	time.Sleep(300 * time.Millisecond)
+	// long way and was the source of the occasional >2s flake. Wait for the
+	// ring to be fully wired deterministically instead of guessing a sleep
+	// (a fixed sleep still flaked under CI load): in a healthy N=3 cycle each
+	// node holds exactly two ring connections (one dial-out to its right, one
+	// accepted from its left). Once all three reach that, eviction is
+	// sub-second (direct envelope propagation, no timer/retry).
+	ringConnCount := func(s *Server) int {
+		s.membership.rightMu.Lock()
+		defer s.membership.rightMu.Unlock()
+		return len(s.membership.ringConns)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return ringConnCount(srvA) >= 2 && ringConnCount(srvB) >= 2 && ringConnCount(srvC) >= 2
+	})
 
 	leaver := srvB.membership.self
 	srvB.membership.Leave()

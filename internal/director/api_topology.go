@@ -1,6 +1,7 @@
 package director
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -99,7 +100,9 @@ const peerFetchTimeout = 3 * time.Second
 // fetchPeerRing GETs a peer's single-replica ring status over plain HTTP (the
 // admin API is not under internal_tls) with the shared Bearer token.
 func (s *Server) fetchPeerRing(apiAddr string) (*RingStatus, error) {
-	req, err := http.NewRequest(http.MethodGet, "http://"+apiAddr+"/api/director/ring", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), peerFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+apiAddr+"/api/director/ring", nil)
 	if err != nil {
 		return nil, fmt.Errorf("director/topology: build request: %w", err)
 	}
