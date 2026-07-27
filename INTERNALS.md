@@ -403,6 +403,14 @@ threshold (default 2) guards against a single partitioned proxy wrongly evicting
 a healthy backend; single-login-replica deployments set it to 1, with the TTL
 lease as the backstop.
 
+On the login-proxy side, a connect failure to the LOOKUP-resolved backend
+triggers the report plus a bounded re-LOOKUP: the proxy re-asks the director for
+a live pod and dials that instead, so an in-flight client lands on a working
+backend rather than seeing an error. It is deliberately bounded — a re-LOOKUP
+that returns the SAME address (the ring has not dropped the dead pod yet) stops
+the re-route and the client gets a transient unavailable instead of the proxy
+spinning on a dead backend.
+
 An earlier version of this forwarding path instead picked a single "the"
 connection to send on — the outgoing dial (`dialConn`) if present,
 otherwise a `passiveConn` registered only for the N=2 tie-break's passive

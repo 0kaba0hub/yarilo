@@ -404,14 +404,15 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	// Find backend address: fixed addr (standalone) or director LOOKUP (director mode).
-	var backendAddr string
+	// tag is hoisted so the fast-fail re-route (#782) below can re-LOOKUP with it.
+	var backendAddr, tag string
 	if s.opts.BackendAddr != "" {
 		backendAddr = s.opts.BackendAddr
 	} else {
 		// Per-user director_tag (#746, from the passdb/userdb response) wins
 		// over the login component's static Tag config — lets a shared
 		// login fleet route different users to different tag-pools.
-		tag := s.opts.Tag
+		tag = s.opts.Tag
 		if authResult.DirectorTag != "" {
 			tag = authResult.DirectorTag
 		}
@@ -480,8 +481,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}
 
-	// Dial backend pod.
-	backendConn, err := dialBackend(backendAddr, s.opts.BackendTLS)
+	// Dial backend pod, with an active fast-fail re-route on a connect failure
+	// in director mode (#782): report the backend unreachable and re-LOOKUP.
+	backendConn, backendAddr, err := s.dialBackendWithReroute(pre.username, tag, backendAddr, log)
 	if err != nil {
 		log.Error("login: dial backend", "addr", backendAddr, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
@@ -609,6 +611,71 @@ func (s *Server) directorLookup(username, tag string) (string, error) {
 		}
 	}
 	return result.Addr, nil
+}
+
+// maxBackendReroutes bounds the active fast-fail re-route (#782): after the
+// first dial fails we re-LOOKUP at most this many times. Kept small on purpose
+// — the re-route is an accelerator over the TTL/corroboration path, not a
+// retry storm; a re-LOOKUP that returns the SAME (still-dead) pod stops it
+// early regardless.
+const maxBackendReroutes = 1
+
+// dialBackendWithReroute dials addr and, on a connect failure in director mode,
+// performs the login-proxy half of the active fast-fail re-route (#782): it
+// reports the backend unreachable to the director (which corroborates across
+// proxies and evicts early) and re-LOOKUPs for a live pod. It gives up — rather
+// than spin — when the re-LOOKUP returns the SAME address, because that means
+// the ring has not dropped the dead pod yet (below the corroboration threshold,
+// or this proxy is the first reporter); the client then gets a transient
+// unavailable and reconnects, by which point corroboration or the TTL lease has
+// rehashed it. Returns the working conn and the address actually connected to.
+func (s *Server) dialBackendWithReroute(username, tag, addr string, log *slog.Logger) (net.Conn, string, error) {
+	conn, err := dialBackend(addr, s.opts.BackendTLS)
+	if err == nil {
+		return conn, addr, nil
+	}
+	// Standalone mode (fixed backend) has no director to re-route through.
+	if s.opts.BackendAddr != "" {
+		return nil, addr, err
+	}
+	for attempt := 0; attempt < maxBackendReroutes; attempt++ {
+		log.Warn("login: backend dial failed — reporting unreachable and re-looking-up", "addr", addr, "err", err)
+		s.reportUnreachable(addr)
+		newAddr, lerr := s.directorLookup(username, tag)
+		if lerr != nil {
+			return nil, addr, fmt.Errorf("re-lookup after unreachable: %w", lerr)
+		}
+		if newAddr == addr {
+			return nil, addr, fmt.Errorf("re-lookup returned the same unreachable backend %s", addr)
+		}
+		addr = newAddr
+		conn, err = dialBackend(addr, s.opts.BackendTLS)
+		if err == nil {
+			return conn, addr, nil
+		}
+	}
+	return nil, addr, fmt.Errorf("backend unreachable after re-route: %w", err)
+}
+
+// reportUnreachable tells the director a dial to backendAddr failed (#782).
+// Best-effort: a fresh short-lived director connection, errors only logged —
+// the report is an accelerator, and the TTL lease remains the backstop.
+func (s *Server) reportUnreachable(backendAddr string) {
+	ip, _, err := net.SplitHostPort(backendAddr)
+	if err != nil {
+		ip = backendAddr
+	}
+	var c *proto.Conn
+	if s.opts.DirectorTLS != nil {
+		c, err = proto.DialTLS(s.opts.DirectorAddr, s.opts.LocalIP, 0, s.opts.DirectorTLS)
+	} else {
+		c, err = proto.Dial(s.opts.DirectorAddr, s.opts.LocalIP, 0)
+	}
+	if err != nil {
+		return
+	}
+	defer c.Close()
+	_ = c.Unreachable(ip)
 }
 
 // Watch maintains a persistent director connection for receiving USER-KICKED
