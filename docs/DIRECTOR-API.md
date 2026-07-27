@@ -256,9 +256,15 @@ lists members known dead on this replica with the tombstone age.
     {"addr": "10.0.0.2:9102", "index": 1, "self": true,  "left": "10.0.0.1:9102", "right": "10.0.0.3:9102", "seq": 42, "link": null},
     {"addr": "10.0.0.3:9102", "index": 2, "self": false, "left": "10.0.0.2:9102", "right": "10.0.0.1:9102", "seq": 40, "link": {"role": "right", "state": "connected", "since": "2026-07-27T09:56:42Z"}}
   ],
-  "tombstones": []
+  "tombstones": [],
+  "backendSetHash": "1a2b3c4d"
 }
 ```
+
+`backendSetHash` (#846) is a stable hash over this replica's routing backend set
+(`{ip, port, tag, vhosts, up}`, order-independent). Replicas that agree on
+routing share the same hash; a difference is a diverged backend set (a dropped
+`RING-CHANGE`), flagged by the `--all` verdict below.
 
 CLI: `yarctl director ring status`
 
@@ -271,7 +277,9 @@ Cross-replica aggregate. The queried director fans out to every peer's own
 Bearer token) and returns each replica's view plus a health verdict. `healthy`
 is `false` when any `error`-severity issue is present: `peer-unreachable` (a
 member whose view could not be collected — never silently dropped),
-`view-size-mismatch`, `asymmetric-edge`, `tombstone-divergence`. `seq-lag` is
+`view-size-mismatch`, `backend-set-divergence` (replicas hashing their routing
+backend set differently — #846), `asymmetric-edge`, `tombstone-divergence`.
+`seq-lag` is
 `warn` only and does not affect `healthy`. `assumptions` records that peer API
 endpoints are derived from each ring IP + this replica's `api.listen` port
 (uniform-`api.listen` assumption).

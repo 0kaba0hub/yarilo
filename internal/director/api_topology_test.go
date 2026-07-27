@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
 func sp(s string) *string { return &s }
@@ -238,5 +240,59 @@ func TestFetchPeerRing_Non200IsError(t *testing.T) {
 	s := &Server{apiToken: "x"}
 	if _, err := s.fetchPeerRing(ts.URL[len("http://"):]); err == nil {
 		t.Fatal("a non-200 peer response must be an error, not a silent empty view")
+	}
+}
+
+func TestComputeTopology_BackendSetDivergence(t *testing.T) {
+	order := []string{"10.0.0.1:9102", "10.0.0.2:9102", "10.0.0.3:9102"}
+	views := map[string]RingStatus{}
+	for _, a := range order {
+		v := mkView(a, order, nil)
+		v.BackendSetHash = "aaaa1111" // all agree
+		views[a] = v
+	}
+
+	// Healthy: identical hashes -> no divergence issue.
+	topo := computeTopology(order[0], views, nil, 9103)
+	if hasIssue(topo.Issues, "backend-set-divergence") {
+		t.Fatalf("identical backend-set hashes must not flag divergence; issues=%+v", topo.Issues)
+	}
+
+	// One replica's backend set diverged (a dropped RING-CHANGE).
+	diverged := views[order[2]]
+	diverged.BackendSetHash = "bbbb2222"
+	views[order[2]] = diverged
+
+	topo = computeTopology(order[0], views, nil, 9103)
+	if topo.Healthy {
+		t.Fatal("a backend-set hash mismatch must be unhealthy")
+	}
+	if !hasIssue(topo.Issues, "backend-set-divergence") {
+		t.Errorf("expected backend-set-divergence issue, got %+v", topo.Issues)
+	}
+}
+
+// TestStatus_BackendSetHashReflectsRing verifies Status() hashes the live ring
+// and that two directors with the same backends produce the same hash.
+func TestStatus_BackendSetHashReflectsRing(t *testing.T) {
+	sA, _ := startRingNode(t, "shared-secret", nil, 1)
+	sB, _ := startRingNode(t, "shared-secret", nil, 1)
+	for _, s := range []*Server{sA, sB} {
+		s.ring.AddBackend(&ring.Backend{IP: "10.0.0.1", Port: 993, Tag: "imap", Up: true, Vhosts: 100})
+		s.ring.AddBackend(&ring.Backend{IP: "10.0.0.2", Port: 993, Tag: "imap", Up: true, Vhosts: 100})
+	}
+	hA := sA.membership.Status().BackendSetHash
+	hB := sB.membership.Status().BackendSetHash
+	if hA == "" {
+		t.Fatal("a populated ring must produce a non-empty backend-set hash")
+	}
+	if hA != hB {
+		t.Errorf("same backend set must hash identically across replicas: %s vs %s", hA, hB)
+	}
+
+	// A divergent set on B must change its hash.
+	sB.ring.RemoveBackend("10.0.0.2")
+	if sB.membership.Status().BackendSetHash == hA {
+		t.Error("removing a backend on one replica must change its backend-set hash")
 	}
 }
