@@ -173,6 +173,23 @@ func (c *Conn) SessionOpen(sessionID, username, backendIP, proto string) error {
 	return nil
 }
 
+// Unreachable reports to the director that a dial to backendIP failed (#782).
+// Corroborated across enough distinct login proxies, this evicts the backend
+// from the ring ahead of its heartbeat-lease TTL so the next LOOKUP re-routes.
+func (c *Conn) Unreachable(backendIP string) error {
+	if err := c.WriteLine("BACKEND-UNREACHABLE\t" + backendIP); err != nil {
+		return fmt.Errorf("director unreachable: write: %w", err)
+	}
+	line, err := c.readReply()
+	if err != nil {
+		return fmt.Errorf("director unreachable: read: %w", err)
+	}
+	if line != "OK" {
+		return fmt.Errorf("director unreachable: unexpected response: %q", line)
+	}
+	return nil
+}
+
 // SessionClose unregisters a proxied session from the director.
 func (c *Conn) SessionClose(sessionID string) error {
 	if err := c.WriteLine(fmt.Sprintf("SESSION-CLOSE\t%s", sessionID)); err != nil {
