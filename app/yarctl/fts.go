@@ -48,7 +48,7 @@ func parseUserArg(fs *flag.FlagSet, args []string) (string, error) {
 }
 
 func printFTSUsage() {
-	fmt.Println(`yarilo-admin fts <command>
+	fmt.Println(`yarctl fts <command>
 
 Commands:
   status   <user> --folder NAME     — per-mailbox indexing checkpoint
@@ -73,7 +73,7 @@ func ftsStatus(args []string) error {
 		return err
 	}
 	if user == "" {
-		return fmt.Errorf("usage: yarilo-admin fts status <user> [--folder NAME]")
+		return fmt.Errorf("usage: yarctl fts status <user> [--folder NAME]")
 	}
 	data, err := backendAPIGet("/api/backend/fts/status?user=" +
 		url.QueryEscape(user) + "&folder=" + url.QueryEscape(*folder))
@@ -103,7 +103,7 @@ func ftsRescan(args []string) error {
 		return err
 	}
 	if user == "" {
-		return fmt.Errorf("usage: yarilo-admin fts rescan <user> [--folder NAME]")
+		return fmt.Errorf("usage: yarctl fts rescan <user> [--folder NAME]")
 	}
 	path := "/api/backend/fts/rescan?user=" + url.QueryEscape(user)
 	if *folder != "" {
@@ -133,7 +133,7 @@ func ftsOptimize(args []string) error {
 		return err
 	}
 	if user == "" {
-		return fmt.Errorf("usage: yarilo-admin fts optimize <user>")
+		return fmt.Errorf("usage: yarctl fts optimize <user>")
 	}
 	data, err := backendAPIPost("/api/backend/fts/optimize?user="+url.QueryEscape(user), nil)
 	return printOutput(data, err, func(data []byte) error {

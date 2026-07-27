@@ -54,14 +54,14 @@ typically a cheaper storage class (HDD-backed, object-gateway, etc.).
 
 ```sh
 # Move all messages older than 2025-01-01 to cold storage:
-yarilo-admin backend mdbox altmove alice@example.com \
+yarctl backend mdbox altmove alice@example.com \
   --before 2025-01-01T00:00:00Z
 
 # Move all messages (no date filter):
-yarilo-admin backend mdbox altmove alice@example.com
+yarctl backend mdbox altmove alice@example.com
 
 # Move back from cold to primary (reverse):
-yarilo-admin backend mdbox altmove alice@example.com \
+yarctl backend mdbox altmove alice@example.com \
   --before 2025-01-01T00:00:00Z \
   --reverse
 ```
@@ -101,8 +101,8 @@ Run `purge` before `altmove` to avoid compacting zero-ref records
 into the alt tier unnecessarily:
 
 ```sh
-yarilo-admin backend mdbox purge alice@example.com
-yarilo-admin backend mdbox altmove alice@example.com --before 2025-01-01T00:00:00Z
+yarctl backend mdbox purge alice@example.com
+yarctl backend mdbox altmove alice@example.com --before 2025-01-01T00:00:00Z
 ```
 
 ### Automation via CronJob
@@ -123,7 +123,7 @@ spec:
           - name: altmove
             image: ghcr.io/0kaba0hub/yarilo:latest
             command:
-            - yarilo-admin
+            - yarctl
             - backend
             - mdbox
             - altmove

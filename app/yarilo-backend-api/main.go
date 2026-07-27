@@ -1,8 +1,8 @@
 // yarilo-backend-api is the backend-plane admin HTTP API.
 //
 // One instance runs per backend tag (or one per standalone
-// deployment). Operators reach it via the yarilo-admin CLI's
-// `backend` subtree (yarilo-admin backend dict ..., backend folder ...,
+// deployment). Operators reach it via the yarctl CLI's
+// `backend` subtree (yarctl backend dict ..., backend folder ...,
 // backend user ..., backend index ..., backend subscriptions ...,
 // backend specialuse ..., backend metadata ...).
 //

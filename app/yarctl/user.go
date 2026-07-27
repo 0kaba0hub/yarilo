@@ -39,7 +39,7 @@ func looksLikeUser(s string) bool {
 }
 
 func printUserUsage() {
-	fmt.Println(`yarilo-admin backend user <command>
+	fmt.Println(`yarctl backend user <command>
 
 Commands:
   info     <user>  — username, resolved home, configured namespaces,
@@ -54,7 +54,7 @@ Commands:
 
 func userInfo(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend user info <user>")
+		return fmt.Errorf("usage: yarctl backend user info <user>")
 	}
 	data, err := backendAPIPost("/api/backend/user/info", map[string]any{"user": args[0]})
 	return printOutput(data, err, humanUserInfo)
@@ -115,7 +115,7 @@ func humanUserInfo(data []byte) error {
 
 func userUsage(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend user usage <user>")
+		return fmt.Errorf("usage: yarctl backend user usage <user>")
 	}
 	data, err := backendAPIPost("/api/backend/user/usage", map[string]any{"user": args[0]})
 	return printOutput(data, err, humanUserUsage)

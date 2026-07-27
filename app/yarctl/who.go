@@ -16,8 +16,8 @@ import (
 //
 // Subcommands:
 //
-//	yarilo-admin backend who [list] [--protocol ...] [--user U] [--output table|json]
-//	yarilo-admin backend who count [proto] [--user U] [--by user|protocol] [--output table|json]
+//	yarctl backend who [list] [--protocol ...] [--user U] [--output table|json]
+//	yarctl backend who count [proto] [--user U] [--by user|protocol] [--output table|json]
 func dispatchWho(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
@@ -40,7 +40,7 @@ func whoList(args []string) error {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("usage: yarilo-admin backend who [list] [--protocol IMAP] [--user U] [--all] [--output table|json]")
+		return fmt.Errorf("usage: yarctl backend who [list] [--protocol IMAP] [--user U] [--all] [--output table|json]")
 	}
 	// Server always returns the JSON shape; CLI decides how to render.
 	// Request flat sessions when rendering a table — easier to print.
@@ -104,7 +104,7 @@ type whoSession struct {
 }
 
 // userGroup aggregates every active session belonging to one user
-// into the per-user row shown by `yarilo-admin backend who`.
+// into the per-user row shown by `yarctl backend who`.
 type userGroup struct {
 	user      string
 	count     int

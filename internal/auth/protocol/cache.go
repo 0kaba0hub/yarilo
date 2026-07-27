@@ -301,7 +301,7 @@ func (c *Cache) Clear() uint32 {
 // ClearByUserMask evicts every entry whose stored username matches
 // any of the supplied masks. Mask syntax: `*` matches zero or more
 // chars, `?` matches one (admin CLI:
-// `yarilo-admin auth cache flush [<user-mask>...]`).
+// `yarctl auth cache flush [<user-mask>...]`).
 //
 // Empty masks slice → behaves like Clear (full flush).
 func (c *Cache) ClearByUserMask(masks []string) uint32 {

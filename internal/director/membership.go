@@ -161,8 +161,12 @@ type Membership struct {
 	// anything at all once its node became the N=2 passive side (#754
 	// follow-up). ringConns has no such role to get stale — connections are
 	// registered/deregistered purely by their own lifetime.
-	dialConn    net.Conn
-	ringConns   map[net.Conn]struct{}
+	dialConn net.Conn
+	// ringConns tracks every live ring connection (see the long comment above);
+	// the value records who is on the other end and since when (#833) so admin
+	// ring-status can name each edge and its uptime. Metadata only — broadcast
+	// still just iterates the keys, and nothing on the wire changed.
+	ringConns   map[net.Conn]ringConnMeta
 	rightCancel context.CancelFunc
 
 	ctx context.Context //nolint:containedctx // reconcile is triggered from accept-time handlers with no request-scoped ctx of their own; stored once at Start like Server's other background loops
@@ -184,8 +188,19 @@ func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, 
 		joinAllowedNets: joinAllowedNets,
 		lastSeq:         make(map[string]uint64),
 		removed:         make(map[Member]time.Time),
-		ringConns:       make(map[net.Conn]struct{}),
+		ringConns:       make(map[net.Conn]ringConnMeta),
 	}
+}
+
+// ringConnMeta records who is on the other end of a live ring connection and
+// since when (#833). Populated at register time on both the dial-out and the
+// accept side so admin ring-status can name each edge and report its uptime;
+// it is pure local bookkeeping — no wire change, and broadcast still only
+// iterates ringConns' keys.
+type ringConnMeta struct {
+	peer  Member
+	since time.Time
+	role  string // "dial" = we dialed out to peer; "accept" = peer dialed us
 }
 
 // Start initializes the member list to [self] and, if seeds are given,
@@ -1354,7 +1369,7 @@ func (m *Membership) connectRight(ctx context.Context, addr string) (redirect st
 
 	m.rightMu.Lock()
 	m.dialConn = conn
-	m.ringConns[conn] = struct{}{}
+	m.ringConns[conn] = ringConnMeta{peer: m.rightTarget, since: time.Now(), role: "dial"}
 	m.rightMu.Unlock()
 	defer func() {
 		m.rightMu.Lock()
@@ -1790,7 +1805,7 @@ func (m *Membership) onLeftConnLost(ctx context.Context, dialer Member) {
 // keep a benign re-target or reconnect from being mistaken for a death.
 func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Member) {
 	m.rightMu.Lock()
-	m.ringConns[conn] = struct{}{}
+	m.ringConns[conn] = ringConnMeta{peer: dialer, since: time.Now(), role: "accept"}
 	m.rightMu.Unlock()
 	defer func() {
 		m.rightMu.Lock()
@@ -1852,5 +1867,125 @@ func (m *Membership) serveRingConn(conn net.Conn, rd *bufio.Reader, dialer Membe
 		default:
 			m.handleRingLine(fields, conn)
 		}
+	}
+}
+
+// ---- admin ring status (#833) ----------------------------------------------
+
+// RingStatus is one replica's view of the ring, built from its own membership
+// state — the per-replica nature is deliberate: comparing several replicas'
+// RingStatus is how divergence (the #750-era failure mode) is spotted.
+type RingStatus struct {
+	SchemaVersion int                 `json:"schemaVersion"`
+	Self          string              `json:"self"`
+	Size          int                 `json:"size"`
+	Members       []RingMemberStatus  `json:"members"`
+	Tombstones    []RingTombstoneInfo `json:"tombstones"`
+}
+
+// RingMemberStatus describes one member as this replica sees it. Left/Right are
+// the member's computed neighbors in (ip,port) order (nil at N=1). Link is set
+// only when the member is a direct ring-neighbor of THIS replica — it carries
+// the live edge's state and uptime.
+type RingMemberStatus struct {
+	Addr  string    `json:"addr"`
+	Index int       `json:"index"`
+	Self  bool      `json:"self"`
+	Left  *string   `json:"left"`
+	Right *string   `json:"right"`
+	Seq   *uint64   `json:"seq"` // dedup watermark: highest seq processed from this origin; nil = none heard
+	Link  *RingLink `json:"link"`
+}
+
+// RingLink is this replica's live ring edge to a neighbor.
+type RingLink struct {
+	Role  string  `json:"role"`  // "left" | "right" | "both" (N=2, one conn serves both directions)
+	State string  `json:"state"` // "connected" | "reconnecting"
+	Since *string `json:"since"` // RFC3339 connection-established time; nil when reconnecting
+}
+
+// RingTombstoneInfo is a member known-dead on this replica and the age of that
+// tombstone (how long ago this node learned of the death).
+type RingTombstoneInfo struct {
+	Addr string `json:"addr"`
+	Age  string `json:"age"`
+}
+
+// Status builds this replica's RingStatus snapshot. Read-only.
+func (m *Membership) Status() RingStatus {
+	m.mu.RLock()
+	members := make([]Member, len(m.members))
+	copy(members, m.members)
+	lastSeq := make(map[string]uint64, len(m.lastSeq))
+	for k, v := range m.lastSeq {
+		lastSeq[k] = v
+	}
+	now := time.Now()
+	tombs := make([]RingTombstoneInfo, 0, len(m.removed))
+	for mem, t := range m.removed {
+		tombs = append(tombs, RingTombstoneInfo{Addr: mem.String(), Age: now.Sub(t).Round(time.Second).String()})
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(members, func(i, j int) bool { return members[i].less(members[j]) })
+	sort.Slice(tombs, func(i, j int) bool { return tombs[i].Addr < tombs[j].Addr })
+
+	selfLeft, hasLeft := m.leftNeighbor()
+	selfRight, hasRight := m.rightNeighbor()
+
+	// peer -> live edge metadata, so a member row can report its link state.
+	m.rightMu.Lock()
+	connByPeer := make(map[Member]ringConnMeta, len(m.ringConns))
+	for _, meta := range m.ringConns {
+		connByPeer[meta.peer] = meta
+	}
+	m.rightMu.Unlock()
+
+	n := len(members)
+	rows := make([]RingMemberStatus, 0, n)
+	for i, mem := range members {
+		row := RingMemberStatus{Addr: mem.String(), Index: i, Self: mem.equal(m.self)}
+		if n >= 2 {
+			l := members[(i-1+n)%n].String()
+			r := members[(i+1)%n].String()
+			row.Left, row.Right = &l, &r
+		}
+		if s, ok := lastSeq[mem.String()]; ok {
+			v := s
+			row.Seq = &v
+		}
+
+		if !mem.equal(m.self) {
+			role := ""
+			switch {
+			case n == 2:
+				// One connection serves both directions between the pair.
+				role = "both"
+			case hasLeft && selfLeft.equal(mem) && hasRight && selfRight.equal(mem):
+				role = "both"
+			case hasLeft && selfLeft.equal(mem):
+				role = "left"
+			case hasRight && selfRight.equal(mem):
+				role = "right"
+			}
+			if role != "" {
+				link := &RingLink{Role: role, State: "reconnecting"}
+				if meta, ok := connByPeer[mem]; ok {
+					link.State = "connected"
+					since := meta.since.UTC().Format(time.RFC3339)
+					link.Since = &since
+				}
+				row.Link = link
+			}
+		}
+		rows = append(rows, row)
+	}
+
+	return RingStatus{
+		SchemaVersion: 1,
+		Self:          m.self.String(),
+		Size:          n,
+		Members:       rows,
+		Tombstones:    tombs,
 	}
 }

@@ -336,7 +336,7 @@ components:
     ## tombstone state. 0 = default (600); negative = never expire.
     tombstone_ttl: 600
 
-    ## HTTP admin API (yarilo-admin CLI target).
+    ## HTTP admin API (yarctl CLI target).
     ## A 32-char token is auto-generated into Secret <release>-director-api-token on first
     ## deploy and preserved on upgrades. To rotate: delete the Secret before helm upgrade.
     api:
@@ -514,7 +514,7 @@ components:
     ## `<service>\t<username>`. Positive entries hold the
     ## verified credential and bag; negative entries short-
     ## circuit failed lookups for the NegativeTTL window. Evict
-    ## selectively via `yarilo-admin auth cache flush
+    ## selectively via `yarctl auth cache flush
     ## [user-mask...]`.
     cache:
       size_bytes: 104857600
@@ -666,7 +666,7 @@ components:
 
   ## yarilo-backend-api — storage-plane operator HTTP API.
   ## Exposes dict / acl (later) / quota (later) / folder / user
-  ## operations consumed by yarilo-admin CLI. Mounts the same
+  ## operations consumed by yarctl CLI. Mounts the same
   ## storage PVC as the session pods + connects to every
   ## configured dict.
   ##
@@ -1693,7 +1693,7 @@ extraVolumeMounts: []
 ## `yarilo.index*`; a namespace-wide `yarilo-acl-list` index
 ## mirrors which mailboxes have an explicit ACL for LIST
 ## optimisation. Admin surface lives at
-## `yarilo-backend-api /api/backend/acl/*` and `yarilo-admin
+## `yarilo-backend-api /api/backend/acl/*` and `yarctl
 ## backend acl <command>`. When disabled, every ACL command
 ## returns NO("ACL extension disabled by operator") and ACL is
 ## absent from the CAPABILITY response.
@@ -1768,7 +1768,7 @@ fts:
   fts_flatcurve_min_term_size: 2
   ## Queues a mailbox for automatic background shard compaction once its
   ## sealed-shard count reaches this value (#715), on top of the manual
-  ## `yarilo-admin fts optimize` command. 0 disables auto-optimize (manual
+  ## `yarctl fts optimize` command. 0 disables auto-optimize (manual
   ## only) — explicit, not just "unset falls back to a default".
   fts_flatcurve_optimize_limit: 10
   fts_flatcurve_rotate_count: 5000

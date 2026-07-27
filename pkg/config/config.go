@@ -865,7 +865,7 @@ type FTSConfig struct {
 	FlatcurveMinTermSize int `koanf:"fts_flatcurve_min_term_size"`
 	// FlatcurveOptimizeLimit queues a mailbox for automatic background
 	// shard compaction once its sealed-shard count reaches this value
-	// (#715), in addition to the manual `yarilo-admin fts optimize`
+	// (#715), in addition to the manual `yarctl fts optimize`
 	// command. 0 explicitly disables auto-optimize (manual only) — this is
 	// NOT defaulted at the flatcurve.Options layer, only here, so an
 	// operator's explicit 0 is respected rather than silently coerced back
@@ -1231,9 +1231,9 @@ type LMTPLoginServiceConfig struct {
 // single combined session pod).
 //
 // The director-plane HTTP admin (ring / backends / users / peers)
-// is hosted by yarilo-director on its own port; the yarilo-admin
-// CLI surfaces both through nested subcommands (`yarilo-admin
-// director ...` vs `yarilo-admin backend ...`).
+// is hosted by yarilo-director on its own port; the yarctl
+// CLI surfaces both through nested subcommands (`yarctl
+// director ...` vs `yarctl backend ...`).
 type BackendAPIConfig struct {
 	Listen      string   `koanf:"listen"`       // ":9105" default
 	Token       string   `koanf:"token"`        // Bearer token; supports ${ENV_VAR} via koanf

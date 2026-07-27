@@ -283,7 +283,7 @@ func New(cfg *config.Config) (*Server, error) {
 			MaxLineLength:      p.MaxLineLength,
 			ConnLimit:          connLimiter,
 			// yarilo-anvil for the SELECT push (#WHO folder tracking): the imap
-			// session reports its currently-SELECTed mailbox so `yarilo-admin
+			// session reports its currently-SELECTed mailbox so `yarctl
 			// who` can render it. Without this the anvil client is a permanent
 			// no-op and the WHO FOLDERS column is always empty.
 			AnvilAddr:            cfg.AnvilService.ClientAddr(),

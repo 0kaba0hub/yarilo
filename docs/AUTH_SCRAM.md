@@ -95,10 +95,10 @@ columns per protocol.
 ## Generating a verifier
 
 ```sh
-yarilo-admin auth scram-verifier --password 'hunter2'
+yarctl auth scram-verifier --password 'hunter2'
 # → {SCRAM-SHA-256}600000,…
 
-yarilo-admin auth scram-verifier --mech sha1 --password 'hunter2'
+yarctl auth scram-verifier --mech sha1 --password 'hunter2'
 # → {SCRAM-SHA-1}600000,…
 ```
 
@@ -197,7 +197,7 @@ from "user exists, wrong password" by timing alone.
 Tooling clamps anything below 4 096 up to 4 096 so a misconfig
 never lands trivially-cracked verifiers in the database.
 Operators on hardware that struggles with 600 000 can run
-`yarilo-admin auth scram-verifier --iterations N` to pick a
+`yarctl auth scram-verifier --iterations N` to pick a
 lower value (down to the 4 096 floor) — but this is a
 deliberate security trade-off and should be documented in the
 deployment's runbook.

@@ -46,7 +46,7 @@ func dispatchAuth(args []string) error {
 //
 // Usage:
 //
-//	yarilo-admin auth scram-verifier [--mech sha256|sha1] [--iterations N] [--password X]
+//	yarctl auth scram-verifier [--mech sha256|sha1] [--iterations N] [--password X]
 //
 // --mech defaults to sha256 (preferred for new deployments). sha1
 // is provided for legacy clients (older Thunderbird, Apple Mail
@@ -55,7 +55,7 @@ func dispatchAuth(args []string) error {
 // When --password is omitted, the command reads one line from
 // stdin (with prompt suppression so terminal echo can be
 // disabled by the surrounding shell, e.g.
-// `stty -echo; yarilo-admin auth scram-verifier; stty echo`).
+// `stty -echo; yarctl auth scram-verifier; stty echo`).
 func cmdAuthSCRAMVerifier(args []string) error {
 	fs := flag.NewFlagSet("scram-verifier", flag.ContinueOnError)
 	mech := fs.String("mech", "sha256", "digest family: sha256 (default) | sha1 (legacy)")
@@ -167,7 +167,7 @@ func buildAuthTLS() (*tls.Config, error) {
 }
 
 func printAuthUsage() {
-	fmt.Fprintln(os.Stderr, `yarilo-admin auth <command>
+	fmt.Fprintln(os.Stderr, `yarctl auth <command>
 
 Commands:
   cache flush [<user-mask> ...]  evict auth-cache entries matching the mask(s); no mask = full flush
@@ -184,14 +184,14 @@ When --auth-cert/--auth-key/--auth-ca are unset, the connection is plain TCP (de
 }
 
 func printAuthCacheUsage() {
-	fmt.Fprintln(os.Stderr, `yarilo-admin auth cache <command>
+	fmt.Fprintln(os.Stderr, `yarctl auth cache <command>
 
 Commands:
   flush [<user-mask> ...]  evict cache entries matching the mask(s); no mask = full flush
 
 Mask syntax: glob with '*' (any run) and '?' (one char). Examples:
-  yarilo-admin auth cache flush                     # full flush
-  yarilo-admin auth cache flush 'alice@example.com' # exact user
-  yarilo-admin auth cache flush 'alice@*'           # all alice's domains
-  yarilo-admin auth cache flush '*@gone.example'    # whole domain`)
+  yarctl auth cache flush                     # full flush
+  yarctl auth cache flush 'alice@example.com' # exact user
+  yarctl auth cache flush 'alice@*'           # all alice's domains
+  yarctl auth cache flush '*@gone.example'    # whole domain`)
 }

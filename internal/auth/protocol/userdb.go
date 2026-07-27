@@ -235,7 +235,7 @@ func (c UserdbChain) Lookup(username string) (*UserInfo, error) {
 }
 
 // UserdbIterator is implemented by userdb backends that support
-// listing every known user. Used by `yarilo-admin backend user
+// listing every known user. Used by `yarctl backend user
 // iterate` and by the master-protocol `LIST` command. Optional —
 // a backend that cannot enumerate (e.g. an LDAP search with no
 // suitable filter) simply does not implement it.

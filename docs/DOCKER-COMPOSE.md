@@ -124,7 +124,7 @@ For a public deployment you also need MX / SPF / DKIM (signed at the MTA) / PTR.
   compose up -d`.
 - **Backup**: snapshot the `mail` (messages + indexes) and `state` (userdb)
   volumes.
-- **Admin CLI**: `docker compose exec yarilo-imap yarilo-admin ...`; migrate
+- **Admin CLI**: `docker compose exec yarilo-imap yarctl ...`; migrate
   mailbox formats with `yarilo-migrate`.
 
 ## 8. Troubleshooting

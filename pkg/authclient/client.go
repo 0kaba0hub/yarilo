@@ -263,7 +263,7 @@ func (c *Client) iterateUsersLocked(ctx context.Context) ([]string, error) {
 // syntax: `*` = any run, `?` = one char).
 //
 // Returns the count of evicted entries reported by the server.
-// Used by `yarilo-admin auth cache flush [mask…]`.
+// Used by `yarctl auth cache flush [mask…]`.
 func (c *Client) CacheFlush(ctx context.Context, masks []string) (uint32, error) {
 	if c.closed.Load() {
 		return 0, ErrClosed

@@ -17,7 +17,7 @@
 //
 // Wire protocol: JSON over HTTPS. Endpoints mirror the shape of
 // internal/director's existing /api/director/... surface so the
-// yarilo-admin CLI can speak both with identical machinery
+// yarctl CLI can speak both with identical machinery
 // (bearer-token auth, IP allow-list, application/json bodies).
 //
 // Streaming endpoints (currently dict/iterate) use NDJSON — one

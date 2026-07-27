@@ -19,14 +19,14 @@ func dispatchSessions(args []string) error {
 }
 
 func printSessionsUsage() {
-	fmt.Println(`yarilo-admin backend sessions <command>
+	fmt.Println(`yarctl backend sessions <command>
 
 Commands:
   kick <sess-id> [--user U] [--protocols imap,pop3,...]
         Close the session whose id matches <sess-id>. The kick
         event is broadcast across every login + LMTP pod via
         yarilo-locks Emit; only the owner reacts. Listing the
-        id is enough — find it with` + " `yarilo-admin backend who`" + `.
+        id is enough — find it with` + " `yarctl backend who`" + `.
         --protocols narrows the broadcast (default: all four
         channels). --user is recorded for the audit log only.`)
 }
@@ -39,7 +39,7 @@ func sessionsKick(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend sessions kick <sess-id> [--user U] [--protocols imap,pop3,...]")
+		return fmt.Errorf("usage: yarctl backend sessions kick <sess-id> [--user U] [--protocols imap,pop3,...]")
 	}
 	body := map[string]any{
 		"session_id": fs.Arg(0),

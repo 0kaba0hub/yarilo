@@ -295,7 +295,7 @@ func countFlatcurveShards(t *testing.T, dir string) (sealed, current int) {
 
 // TestServiceAutoOptimize (#715) is the acceptance scenario from the issue:
 // index past the rotate threshold enough times to cross OptimizeLimit, and
-// observe the shard count return to 1 automatically — no yarilo-admin fts
+// observe the shard count return to 1 automatically — no yarctl fts
 // optimize call — while SEARCH results stay correct across the transition.
 func TestServiceAutoOptimize(t *testing.T) {
 	root := t.TempDir()

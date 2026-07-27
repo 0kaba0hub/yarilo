@@ -274,7 +274,7 @@ func httpGet(url string) error {
 }
 
 // checkDirectorAPI verifies the director admin API authenticates a bearer
-// token (#755): the whole class of bug was `yarilo-admin director status`
+// token (#755): the whole class of bug was `yarctl director status`
 // returning 403 from every pod because the token was never plumbed. This
 // hits GET /api/director/ring (the member/peer list) with the token and
 // asserts a 200 with a member list — a 403 is the exact regression to

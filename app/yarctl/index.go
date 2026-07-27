@@ -25,7 +25,7 @@ func dispatchIndex(args []string) error {
 }
 
 func printIndexUsage() {
-	fmt.Println(`yarilo-admin backend index <command>
+	fmt.Println(`yarctl backend index <command>
 
 Commands:
   dump     <user> <folder> [--namespace NS] [--limit N]
@@ -63,7 +63,7 @@ func indexDump(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend index dump <user> <folder> [--namespace NS] [--limit N]")
+		return fmt.Errorf("usage: yarctl backend index dump <user> <folder> [--namespace NS] [--limit N]")
 	}
 	return printJSON(backendAPIPost("/api/backend/index/dump", map[string]any{
 		"user":      fs.Arg(0),
@@ -80,7 +80,7 @@ func indexRebuild(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend index rebuild <user> <folder> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend index rebuild <user> <folder> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/index/rebuild", map[string]any{
 		"user":      fs.Arg(0),
@@ -97,7 +97,7 @@ func indexRebuildStorage(args []string) error {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: yarilo-admin backend index rebuild-storage <user> [--namespace NS] [--restore-orphans]")
+		return fmt.Errorf("usage: yarctl backend index rebuild-storage <user> [--namespace NS] [--restore-orphans]")
 	}
 	return printJSON(backendAPIPost("/api/backend/index/rebuild-storage", map[string]any{
 		"user":            fs.Arg(0),
@@ -113,7 +113,7 @@ func indexOptimize(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarilo-admin backend index optimize <user> <folder> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend index optimize <user> <folder> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/index/optimize", map[string]any{
 		"user":      fs.Arg(0),

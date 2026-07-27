@@ -64,7 +64,7 @@ func Register(name string, init InitFunc) {
 }
 
 // Drivers returns the sorted list of currently-registered driver
-// names. Used by yarilo-admin to print the available choices when
+// names. Used by yarctl to print the available choices when
 // the user passes an unknown driver name.
 func Drivers() []string {
 	driversMu.RLock()

@@ -260,10 +260,10 @@ it is skipped (fail-open) so an I/O blip does not block delivery.
 
 ```sh
 # Show current usage (summed from the index)
-yarilo-admin backend quota show alice@example.com
+yarctl backend quota show alice@example.com
 
 # Force-rebuild each folder's aggregate from records, then report
-yarilo-admin backend quota recalc alice@example.com
+yarctl backend quota recalc alice@example.com
 ```
 
 These call `GET /api/backend/quota/show` and `POST /api/backend/quota/recalc`
@@ -283,17 +283,17 @@ target:
 
 ```sh
 # List the configured clone backends
-yarilo-admin backend quota clone list
+yarctl backend quota clone list
 
 # Read what one backend holds for a mailbox (advisory mirror)
-yarilo-admin backend quota clone get quota_clone_mysql alice@example.com
+yarctl backend quota clone get quota_clone_mysql alice@example.com
 ```
 
 These call `GET /api/backend/quota/clone/list` and
 `GET /api/backend/quota/clone/get?backend=<name>&user=<user>`, which reads
 `priv/quota/storage` + `priv/quota/messages` from that dict, scoped per user.
 `backend` is restricted to the configured clone list — for arbitrary dicts use
-`yarilo-admin backend dict get`. The returned value is an **advisory mirror**;
+`yarctl backend dict get`. The returned value is an **advisory mirror**;
 the authoritative usage is `quota show`, summed from the index.
 
 ## Helm

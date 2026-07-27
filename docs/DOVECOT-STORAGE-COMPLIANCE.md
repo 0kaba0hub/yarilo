@@ -961,8 +961,8 @@ test with 2+ yarilo-imap pods saving to same user).
 - `POST /api/backend/mdbox/purge` — surface in `internal/backendapi/mdbox.go`.
   Type-asserts the user's MailboxBackend to a `Purger` interface;
   non-mdbox drivers return 400 with the driver mismatch surfaced.
-- `yarilo-admin backend mdbox purge <user> [--namespace NS]` —
-  CLI wrapper at `app/yarilo-admin/mdbox.go`.
+- `yarctl backend mdbox purge <user> [--namespace NS]` —
+  CLI wrapper at `app/yarctl/mdbox.go`.
 
 **Phase 4 bug fix bundled:** the original `mdboxmap.AppendBatch.Next`
 returned a batch-relative offset, which collided across multiple
@@ -979,14 +979,14 @@ saved message with map_uid pairing, Scan-after-purge reflects the
 compaction.
 
 **Not in this PR:** automatic purge trigger (cron / threshold).
-Operator-driven via `yarilo-admin backend mdbox purge` for now;
+Operator-driven via `yarctl backend mdbox purge` for now;
 periodic worker is the next ergonomics improvement.
 
 **Scope:**
 - `internal/storage/mailbox/mdbox/purge.go` — implementation of
   `mdbox-purge.c` algorithm. Backend-api gains
   `POST /api/backend/mdbox/purge` + CLI
-  `yarilo-admin backend mdbox purge <user>`.
+  `yarctl backend mdbox purge <user>`.
 - `internal/storage/mailbox/mdbox/rebuild.go` — implementation
   of `mdbox-storage-rebuild.c`. Backend-api `index rebuild` for
   mdbox folders now succeeds (no more 501).

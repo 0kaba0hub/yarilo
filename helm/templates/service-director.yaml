@@ -69,7 +69,7 @@ spec:
   selector:
     {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "director") | nindent 4 }}
 ---
-## ClusterIP — admin API (yarilo-admin CLI)
+## ClusterIP — admin API (yarctl CLI)
 apiVersion: v1
 kind: Service
 metadata:

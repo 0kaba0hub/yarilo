@@ -55,7 +55,7 @@ const defaultKickDialTimeout = 5 * time.Second
 //
 // Fire-and-forget from a correctness standpoint: the response
 // reports "emitted", not "confirmed kicked". Operators that need
-// confirmation re-run `yarilo-admin backend who` and verify the
+// confirmation re-run `yarctl backend who` and verify the
 // session no longer appears.
 func (s *Server) handleSessionsKick(w http.ResponseWriter, r *http.Request) {
 	var req sessionsKickRequest

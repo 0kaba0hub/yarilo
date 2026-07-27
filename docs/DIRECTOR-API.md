@@ -7,7 +7,7 @@ For the storage-plane admin API (dict / acl / quota / folder),
 see [BACKEND-API.md](BACKEND-API.md) — different binary
 (`yarilo-backend-api`), different port (`:9105`), different token.
 
-Both are reachable from the same `yarilo-admin` CLI — director ops
+Both are reachable from the same `yarctl` CLI — director ops
 via `--url` / `--token`, storage ops via `--backend-url` /
 `--backend-token`.
 
@@ -46,11 +46,11 @@ Default allowed CIDRs (configurable via `components.director.api.allowedNets`):
 
 ## CLI
 
-`yarilo-admin` runs inside the director pod and requires no flags — reads URL and token
+`yarctl` runs inside the director pod and requires no flags — reads URL and token
 from environment automatically:
 
 ```sh
-kubectl exec -it <director-pod> -- yarilo-admin director status
+kubectl exec -it <director-pod> -- yarctl director status
 ```
 
 Environment variables (set automatically in the container):
@@ -79,7 +79,7 @@ Ring state overview: all backends and peer directors.
 }
 ```
 
-CLI: `yarilo-admin director status`
+CLI: `yarctl director status`
 
 ---
 
@@ -99,7 +99,7 @@ Full state dump: backends, active user→backend mappings, peers.
 }
 ```
 
-CLI: `yarilo-admin director dump`
+CLI: `yarctl director dump`
 
 ---
 
@@ -116,7 +116,7 @@ With `user` — performs a live ring lookup for that username.
 {"users": [{"hash": 3141592653, "host": "10.0.0.1:993", "weak": false}]}
 ```
 
-CLI: `yarilo-admin director map [--user alice@example.com]`
+CLI: `yarctl director map [--user alice@example.com]`
 
 ---
 
@@ -130,7 +130,7 @@ List all backends currently in the ring.
 {"backends": [...]}
 ```
 
-CLI: `yarilo-admin director backends list`
+CLI: `yarctl director backends list`
 
 ---
 
@@ -146,7 +146,7 @@ Add a backend to the ring. Broadcasts `RING-CHANGE up` to all connected director
 {"status": "ok"}
 ```
 
-CLI: `yarilo-admin director backends add 10.0.0.3 --port 993 --tag ssd`
+CLI: `yarctl director backends add 10.0.0.3 --port 993 --tag ssd`
 
 ---
 
@@ -162,7 +162,7 @@ Update virtual node weight of an existing backend.
 {"status": "ok"}
 ```
 
-CLI: `yarilo-admin director backends update 10.0.0.3 --vhosts 200`
+CLI: `yarctl director backends update 10.0.0.3 --vhosts 200`
 
 ---
 
@@ -170,7 +170,7 @@ CLI: `yarilo-admin director backends update 10.0.0.3 --vhosts 200`
 
 Remove backend from the ring. Broadcasts `RING-CHANGE down`.
 
-CLI: `yarilo-admin director backends remove 10.0.0.3`
+CLI: `yarctl director backends remove 10.0.0.3`
 
 ---
 
@@ -178,7 +178,7 @@ CLI: `yarilo-admin director backends remove 10.0.0.3`
 
 Mark backend as up (resumes new session routing). Broadcasts `RING-CHANGE up`.
 
-CLI: `yarilo-admin director backends up 10.0.0.3`
+CLI: `yarctl director backends up 10.0.0.3`
 
 ---
 
@@ -186,7 +186,7 @@ CLI: `yarilo-admin director backends up 10.0.0.3`
 
 Mark backend as down (flush — stops new routing, keeps in registry). Broadcasts `RING-CHANGE flush`.
 
-CLI: `yarilo-admin director backends down 10.0.0.3`
+CLI: `yarctl director backends down 10.0.0.3`
 
 ---
 
@@ -199,8 +199,8 @@ POST /api/director/backends/10.0.0.3/flush
 POST /api/director/backends/all/flush
 ```
 
-CLI: `yarilo-admin director backends flush 10.0.0.3`
-CLI: `yarilo-admin director backends flush all`
+CLI: `yarctl director backends flush 10.0.0.3`
+CLI: `yarctl director backends flush all`
 
 ---
 
@@ -220,7 +220,7 @@ Broadcasts `USER-MOVED` to all connected directors.
 {"status": "ok"}
 ```
 
-CLI: `yarilo-admin director users move alice@example.com --backend 10.0.0.1:993`
+CLI: `yarctl director users move alice@example.com --backend 10.0.0.1:993`
 
 ---
 
@@ -229,7 +229,7 @@ CLI: `yarilo-admin director users move alice@example.com --backend 10.0.0.1:993`
 Kick a user — broadcasts `USER-KICKED` to all connected login clients, which terminate
 active sessions for that user.
 
-CLI: `yarilo-admin director users kick alice@example.com`
+CLI: `yarctl director users kick alice@example.com`
 
 ---
 
@@ -237,13 +237,30 @@ CLI: `yarilo-admin director users kick alice@example.com`
 
 #### `GET /api/director/ring`
 
-List all currently managed director peers.
+Ring topology as **this replica** sees it (membership is per-replica). Each
+member carries its computed `left`/`right` neighbors (`(ip,port)` order; `null`
+at N=1). `link` is present only for this replica's direct neighbors and
+describes the live edge — `role` (`left`/`right`, or `both` at N=2 where one
+connection serves both directions), `state` (`connected`/`reconnecting`) and
+`since` (RFC3339, `null` while reconnecting). `seq` is the dedup watermark
+(highest seq processed from that origin; `null` when none heard). `tombstones`
+lists members known dead on this replica with the tombstone age.
 
 ```json
-{"peers": ["10.0.0.2:9102", "10.0.0.3:9102"]}
+{
+  "schemaVersion": 1,
+  "self": "10.0.0.2:9102",
+  "size": 3,
+  "members": [
+    {"addr": "10.0.0.1:9102", "index": 0, "self": false, "left": "10.0.0.3:9102", "right": "10.0.0.2:9102", "seq": 41, "link": {"role": "left", "state": "connected", "since": "2026-07-27T09:56:42Z"}},
+    {"addr": "10.0.0.2:9102", "index": 1, "self": true,  "left": "10.0.0.1:9102", "right": "10.0.0.3:9102", "seq": 42, "link": null},
+    {"addr": "10.0.0.3:9102", "index": 2, "self": false, "left": "10.0.0.2:9102", "right": "10.0.0.1:9102", "seq": 40, "link": {"role": "right", "state": "connected", "since": "2026-07-27T09:56:42Z"}}
+  ],
+  "tombstones": []
+}
 ```
 
-CLI: `yarilo-admin director ring status`
+CLI: `yarctl director ring status`
 
 ---
 
@@ -262,7 +279,7 @@ Dynamically add a peer director. Starts a persistent reconnecting dial loop.
 > **Note:** Dynamic peers are not persisted — they are lost on pod restart.
 > For permanent peers, set `components.director.peers` in Helm values.
 
-CLI: `yarilo-admin director ring add 10.0.0.4:9102`
+CLI: `yarctl director ring add 10.0.0.4:9102`
 
 ---
 
@@ -270,7 +287,7 @@ CLI: `yarilo-admin director ring add 10.0.0.4:9102`
 
 Remove a peer and cancel its dial loop.
 
-CLI: `yarilo-admin director ring remove 10.0.0.4:9102`
+CLI: `yarctl director ring remove 10.0.0.4:9102`
 
 ---
 

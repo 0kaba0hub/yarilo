@@ -216,7 +216,7 @@ func (s *Server) apiMap(w http.ResponseWriter, r *http.Request) {
 		// actually pinned to, or it becomes a second writer of that user's
 		// index — the single-writer hazard co-location (#788) exists to avoid.
 		// The director owns the assignment; the admin never picks a pod itself.
-		// backendBaseForUser (yarilo-admin) depends on this resolve+pin
+		// backendBaseForUser (yarctl) depends on this resolve+pin
 		// behaviour — do NOT turn it into a pure read (use peek for that).
 		ip, port, tag, sticky := s.resolveUserBackend(user)
 		if ip == "" {
