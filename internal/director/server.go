@@ -117,6 +117,9 @@ type Options struct {
 	// MinMembers is an install-time warning threshold only ("below this =
 	// no state redundancy") — it never refuses service at any member count.
 	MinMembers int
+	// JoinAllowedNets restricts which source CIDRs a DIRECTOR-JOIN is accepted
+	// from (#773). Nil/empty = allow all. Checked before the HMAC challenge.
+	JoinAllowedNets []*net.IPNet
 	// AntiEntropyInterval is how often each member re-broadcasts its
 	// member+tombstone snapshot over every live ring connection (#759) —
 	// a bounded safety net that heals any membership split where at least
@@ -336,7 +339,7 @@ func NewWithOptions(opts Options) *Server {
 		sessByBE:    make(map[string]map[string]bool),
 		backendSeen: make(map[string]backendLease),
 	}
-	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers)
+	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers, opts.JoinAllowedNets)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
 	s.membership.seedPollInterval = opts.SeedPollInterval
 	s.membership.seedPollIdleInterval = opts.SeedPollIdleInterval
