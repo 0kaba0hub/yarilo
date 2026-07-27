@@ -88,7 +88,7 @@ Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a 
 | Mailbox | Maildir | ✅ |
 | Mailbox | sdbox (single-file dbox with GUID metadata) | ✅ |
 | Mailbox | mdbox (multi-message dbox, higher density) | ✅ |
-| Mailbox | obox (S3-compatible object storage) | planned |
+| Mailbox | obox (S3-compatible object storage) — see [docs/OBOX.md](docs/OBOX.md) | planned |
 | Index | FileIndex (binary mail-index v7.3 wire format, `.index` / `.index.log` / `.index.names`) | ✅ |
 
 All index mutations go through the cross-process mailbox lock (`yarilo-locks`). Sessions sharing a pod serialise on an in-process `sync.RWMutex` — the Redis lock is only ever contested across pods, not within a single pod.
