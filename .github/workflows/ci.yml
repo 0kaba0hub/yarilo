@@ -110,7 +110,7 @@ jobs:
           reporter: java-junit
 
       - name: Upload raw test output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: go-test-output
