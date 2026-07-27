@@ -1116,6 +1116,23 @@ type DirectorServiceConfig struct {
 	// LOOKUP), so the move rate is already bounded by max_parallel_kicks —
 	// a parsed-but-unread key would be a config gap, so it is omitted.
 	UserKickDelay int `koanf:"user_kick_delay"`
+	// UserKillTimeout is the hard fallthrough (seconds) for the confirmed
+	// ring-wide kick (#847): while a user is being killed, LOOKUP is held so a
+	// concurrent login cannot land on a fresh backend before the old sessions
+	// are gone (the split-writer window). If the kill is not confirmed complete
+	// within this window (a stuck session-holder), the killing flag is cleared
+	// anyway — falling through to normal assignment with a WARN, so a user is
+	// never permanently locked out. Replicated as a DURATION (each director
+	// computes its own local deadline on receipt — never a wall-clock deadline,
+	// which pod-clock skew would make unstable). 0 = default (15).
+	UserKillTimeout int `koanf:"user_kill_timeout"`
+	// UserKillConfirmGrace is how long (seconds) the user's ring-wide session
+	// count must stay at zero before the kill is confirmed complete (#847). This
+	// stable-zero window absorbs the race where a session routed just before the
+	// kill does its SESSION-OPEN mid-window, momentarily dipping the count to
+	// zero before that open lands — clearing on the first zero would let a new
+	// login slip in. 0 = default (1).
+	UserKillConfirmGrace int `koanf:"user_kill_confirm_grace"`
 	// MaxParallelKicks caps how many sessions are kicked per batch when a
 	// backend goes down (#740). The remaining sessions are kicked in
 	// subsequent batches with a short pause between them, spreading the
@@ -1819,6 +1836,8 @@ func Load(path string) (*Config, error) {
 			UsernameHashLowercase:       true,
 			AssignmentPolicy:            "hash",
 			UserKickDelay:               2,
+			UserKillTimeout:             15,
+			UserKillConfirmGrace:        1,
 			MaxParallelKicks:            100,
 			MinMembers:                  3,
 			AntiEntropyInterval:         3,
