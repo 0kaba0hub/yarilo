@@ -16,6 +16,8 @@ import (
 // token is required in the Authorization: Bearer header; empty string disables auth.
 // allowedNets restricts access by client IP; nil/empty allows all.
 func (s *Server) StartAPI(ctx context.Context, addr, token string, allowedNets []*net.IPNet) error {
+	s.apiToken = token
+	s.apiAddr = addr
 	mux := http.NewServeMux()
 	h := func(fn http.HandlerFunc) http.Handler { return s.apiMiddleware(token, allowedNets, fn) }
 
@@ -34,6 +36,7 @@ func (s *Server) StartAPI(ctx context.Context, addr, token string, allowedNets [
 	mux.Handle("POST /api/director/users/{user}/move", h(s.apiUserMove))
 	mux.Handle("POST /api/director/users/{user}/kick", h(s.apiUserKick))
 
+	mux.Handle("GET /api/director/ring/topology", h(s.apiRingTopology))
 	mux.Handle("GET /api/director/ring", h(s.apiPeerList))
 	mux.Handle("POST /api/director/ring", h(s.apiPeerAdd))
 	mux.Handle("DELETE /api/director/ring", h(s.apiPeerRemove))

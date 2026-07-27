@@ -45,9 +45,11 @@ var (
 	outputFormat string
 )
 
-func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
-
+// registerGlobalFlags (re)registers the position-independent global flags on
+// flag.CommandLine. Factored out of main so tests can populate the registry
+// that extractGlobalFlags scans against.
+func registerGlobalFlags() {
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	flag.StringVar(&apiURL, "url", envOr("YARILO_ADMIN_URL", "http://localhost:9103"), "Director API base URL (used by 'director' subcommand)")
 	flag.StringVar(&apiToken, "token", envOr("YARILO_ADMIN_TOKEN", envOr("DIRECTOR_API_TOKEN", "")), "Director API bearer token")
 	flag.StringVar(&backendAPIURL, "backend-url", envOr("YARILO_BACKEND_API_URL", "http://localhost:9105"), "yarilo-backend-api base URL (used by 'backend ...' subcommands)")
@@ -59,7 +61,19 @@ func main() {
 	flag.StringVar(&authKey, "auth-key", envOr("YARILO_AUTH_KEY", ""), "mTLS client key for auth-master socket")
 	flag.StringVar(&authCA, "auth-ca", envOr("YARILO_AUTH_CA", ""), "CA bundle that signs the auth-master server cert")
 	flag.StringVar(&outputFormat, "O", "human", "Output format: human or json")
-	flag.Parse()
+}
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	registerGlobalFlags()
+
+	// Global flags are position-independent (#836): pull them out of the whole
+	// argv wherever they appear, leaving the plane/command/subcommand tokens for
+	// dispatch. flag.Parse alone would stop at the plane word and silently drop
+	// any trailing global flag.
+	globals, rest := extractGlobalFlags(os.Args[1:])
+	_ = flag.CommandLine.Parse(globals) // ExitOnError: bad global value already exits
 
 	switch outputFormat {
 	case "human", "json":
@@ -106,10 +120,14 @@ func main() {
 		routeByUser = directorConfigured
 	}
 
-	args := flag.Args()
+	args := rest
 	if len(args) == 0 {
 		printUsage()
 		os.Exit(1)
+	}
+	if a := args[0]; a == "-h" || a == "--help" || a == "help" {
+		printUsage()
+		os.Exit(0)
 	}
 
 	if err := dispatch(args); err != nil {
@@ -211,6 +229,7 @@ Usage:
 
 Usage:
   yarctl [global-flags] <plane> <command> [args...]
+  (global flags may appear in any position, e.g. trailing: yarctl director ring status -O json)
 
 Global flags:
   -O human|json    Output format (default: human); human renderers added per command over time
