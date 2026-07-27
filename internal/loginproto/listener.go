@@ -53,6 +53,26 @@ type PreambleConn struct {
 	br        *bufio.Reader
 }
 
+// UnwrapPreambleConn walks a net.Conn wrapper chain (each wrapper exposing
+// Unwrap() net.Conn) to the underlying *PreambleConn, or nil if none. Servers
+// use it to recover the pre-authenticated session state after listener wrappers
+// (line-length / workaround / greeting / TLS) sit above the PreambleListener
+// (#830) — a direct type assertion misses it whenever any wrapper is on top.
+func UnwrapPreambleConn(c net.Conn) *PreambleConn {
+	type unwrapper interface{ Unwrap() net.Conn }
+	for c != nil {
+		if pc, ok := c.(*PreambleConn); ok {
+			return pc
+		}
+		uw, ok := c.(unwrapper)
+		if !ok {
+			return nil
+		}
+		c = uw.Unwrap()
+	}
+	return nil
+}
+
 // RemoteAddr returns the real client IP forwarded in the preamble.
 func (c *PreambleConn) RemoteAddr() net.Addr { return c.realAddr }
 
