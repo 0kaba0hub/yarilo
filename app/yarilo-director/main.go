@@ -153,6 +153,8 @@ func main() {
 		SeedPollIdleInterval:  time.Duration(cfg.DirectorService.SeedPollIdleInterval) * time.Second,
 		TombstoneTTL:          time.Duration(cfg.DirectorService.TombstoneTTL) * time.Second,
 		BackendExpire:         time.Duration(cfg.DirectorService.BackendExpire) * time.Second,
+		UnreachableReporters:  cfg.DirectorService.BackendUnreachableReporters,
+		UnreachableWindow:     time.Duration(cfg.DirectorService.BackendUnreachableWindow) * time.Second,
 	})
 
 	// Resolve static backends from config and register them in the ring.

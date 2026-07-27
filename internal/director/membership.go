@@ -1535,7 +1535,7 @@ func (m *Membership) Leave() {
 func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
 	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN",
-		"SESSION-OPEN", "SESSION-CLOSE":
+		"SESSION-OPEN", "SESSION-CLOSE", "BACKEND-UNREACHABLE":
 		m.handleEnvelope(fields, arrivalConn)
 	}
 }
@@ -1658,6 +1658,13 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 	case "SESSION-CLOSE":
 		if m.srv != nil && len(payload) >= 1 {
 			m.srv.applyRemoteSessionClose(payload[0])
+		}
+	case "BACKEND-UNREACHABLE":
+		// payload: <backendIP> <reporterID> (#782). A proxy's unreachable
+		// report gossiped by the director it reached; recorded under the
+		// original reporter so corroboration aggregates ring-wide.
+		if m.srv != nil {
+			m.srv.applyRemoteUnreachable(payload)
 		}
 	}
 }

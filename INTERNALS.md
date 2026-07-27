@@ -384,6 +384,25 @@ LEAVE (remove + rehash — SIGTERM graceful exit or expiry); `BACKEND-FLUSH`
 is drain/overload (stays in the ring, no rehash) — the two must not be
 conflated.
 
+Between a backend dying and its lease expiring, the director still hands out
+the dead pod's IP on `LOOKUP`. `BACKEND-UNREACHABLE\t<ip>` is the **active
+fast-fail** signal (#782): a login proxy that fails to dial its assigned
+backend reports it, and once `backend_unreachable_reporters` **distinct**
+proxies corroborate within `backend_unreachable_window`, the director evicts
+the backend early (remove + rehash + `RING-CHANGE down`) instead of waiting
+out `backend_expire`. It is a down/rehash signal, **not** a drain, so it must
+not be conflated with `BACKEND-FLUSH`. The reports replicate ring-wide as
+`BACKEND-UNREACHABLE\t<originIP>\t<originPort>\t<seq>\t<backendIP>\t<reporterID>`
+envelopes — proxies reach different directors through the ClusterIP, so a
+per-director-local count could never reach the threshold; the reporter identity
+rides in the payload so a gossiped copy counts under the **original** proxy, not
+as a second one. Same guards as expiry: the last backend of a tag is never
+evicted, and a fresh higher-seq `BACKEND-UP` re-admits a backend and clears its
+stale reports (a transient blip must not stay evicted). The distinct-reporter
+threshold (default 2) guards against a single partitioned proxy wrongly evicting
+a healthy backend; single-login-replica deployments set it to 1, with the TTL
+lease as the backstop.
+
 An earlier version of this forwarding path instead picked a single "the"
 connection to send on — the outgoing dial (`dialConn`) if present,
 otherwise a `passiveConn` registered only for the N=2 tie-break's passive

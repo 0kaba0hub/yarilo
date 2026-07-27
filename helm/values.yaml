@@ -294,6 +294,23 @@ components:
     ## 0 = default (30); negative = disabled.
     backend_expire: 30
 
+    ## Active fast-fail re-route (#782): when login proxies fail to dial an
+    ## assigned backend they report it unreachable; once this many DISTINCT
+    ## proxies corroborate within backend_unreachable_window, the director
+    ## evicts the backend from the ring ahead of the lease TTL above, so the
+    ## next LOOKUP lands on a live pod instead of waiting out backend_expire.
+    ## Reports replicate ring-wide, so the count aggregates across all
+    ## directors. Default 2 guards against a single partitioned proxy wrongly
+    ## evicting a healthy backend; the last backend of a tag is never evicted.
+    ## Single-login-replica deployments (e.g. sandbox, where two distinct
+    ## reporters for one protocol's failure may never physically exist) should
+    ## set backend_unreachable_reporters=1 — the TTL lease stays the backstop
+    ## regardless. 0 = default (2).
+    backend_unreachable_reporters: 2
+    ## Sliding window (seconds) over which the distinct reports must arrive.
+    ## 0 = default (5).
+    backend_unreachable_window: 5
+
     ## How often (seconds) each ring member re-broadcasts its
     ## member+tombstone snapshot over every live ring connection (#759) —
     ## a bounded safety net that heals membership splits without waiting
