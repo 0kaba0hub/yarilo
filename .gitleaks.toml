@@ -6,3 +6,10 @@ description = "IMAP/SMTP AUTH= capability strings in protocol documentation"
 regexTarget = "match"
 regexes = ['^AUTH=SCRAM-SHA-']
 paths = ['docs/.*\.md']
+
+[allowlist]
+description = "Fake auth token literal in the auth-client unit test fixtures — a mock server reply the test itself asserts on, not a real secret. AND-scoped to the file AND this exact literal, so it suppresses every occurrence regardless of line without allowlisting anything else in the file, and without the per-line .gitleaksignore fingerprints (one of which was missed and broke the scheduled scan)."
+matchCondition = "AND"
+regexTarget = "match"
+regexes = ['abc123def456']
+paths = ['''internal/auth/client/client_test\.go''']
