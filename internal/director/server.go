@@ -34,6 +34,7 @@
 //	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\t{seq}\n  (vhosts optional; 0=100. seq optional: a backend's monotonic heartbeat counter, #776 — its presence makes the backend lease-managed / expirable)
 //	  BACKEND-DOWN\t{ip}\n                            (LEAVE: remove + rehash — SIGTERM / expiry)
 //	  BACKEND-FLUSH\t{ip}\n                          (drain / overload: stop new lookups, keep sessions + ring slot, NO rehash)
+//	  BACKEND-UNREACHABLE\t{ip}\n                    (login proxy failed to dial {ip}; corroborated reports evict early — #782. Distinct from FLUSH: this is a down/rehash signal, not a drain)
 //	  HOST-REMOVE\t{ip}\n                            (alias for BACKEND-DOWN)
 //	  USER-MOVE\t{user}\t{ip}\t{port}\n              (move user: TTL'd userDir pin + kick old sessions, #708)
 //	  USER-WEAK\t{user}\n                            (mark current assignment as soft/weak)
@@ -69,6 +70,11 @@
 //	    pin is dropped unconditionally. The session kick fires either way.
 //	  SESSION-OPEN\t{originIP}\t{originPort}\t{seq}\t{id}\t{user}\t{backend}\t{proto}\n  (#804 — replicate the load view)
 //	  SESSION-CLOSE\t{originIP}\t{originPort}\t{seq}\t{id}\n
+//	  BACKEND-UNREACHABLE\t{originIP}\t{originPort}\t{seq}\t{backendIP}\t{reporterID}\n
+//	    (#782 — replicate a proxy's unreachable report ring-wide so corroboration
+//	    aggregates across directors. reporterID is the reporting login proxy, in
+//	    the payload so a gossip copy counts under the ORIGINAL reporter, never as
+//	    a new one — the seq/originIP identify the relaying director, not the proxy)
 package director
 
 import (
@@ -155,6 +161,13 @@ type Options struct {
 	// mail_servers / admin-added backends never heartbeat and are never
 	// expired. 0 = default (30s); negative = disabled (no lease expiry).
 	BackendExpire time.Duration
+	// UnreachableReporters is how many DISTINCT login proxies must report a
+	// backend unreachable within UnreachableWindow before it is evicted from
+	// the ring ahead of the lease TTL (#782). 0 = default (2).
+	UnreachableReporters int
+	// UnreachableWindow is the sliding window over which those distinct reports
+	// must arrive. 0 = default (5s).
+	UnreachableWindow time.Duration
 	// TombstoneTTL bounds how long a dead member's tombstone is kept and
 	// gossiped (#765) — long enough to outlive propagation delay, short
 	// enough that churn across many rollouts can't grow the set forever.
@@ -312,6 +325,15 @@ type Server struct {
 	backendSeenMu sync.Mutex
 	backendSeen   map[string]backendLease
 
+	// unreach tracks corroborated backend-unreachable reports (#782):
+	// backendIP -> reporterID (login-proxy identity) -> latest report time.
+	// Reports replicate ring-wide (the count must aggregate across directors,
+	// #804), so a gossiped copy is recorded under the ORIGINAL reporter and
+	// never counts as a second one. Distinct reporters within the window that
+	// reach the threshold trigger an early eviction.
+	unreachMu sync.Mutex
+	unreach   map[string]map[string]time.Time
+
 	// apiToken / apiAddr are captured when StartAPI runs so the cross-replica
 	// ring-topology aggregator (#833 PR-B) can fan out to peers' own admin APIs
 	// with the shared per-release token, deriving each peer's API endpoint from
@@ -346,6 +368,7 @@ func NewWithOptions(opts Options) *Server {
 		sessById:    make(map[string]*sessionRec),
 		sessByBE:    make(map[string]map[string]bool),
 		backendSeen: make(map[string]backendLease),
+		unreach:     make(map[string]map[string]time.Time),
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers, opts.JoinAllowedNets)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
@@ -635,6 +658,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleBackendDown(c, fields)
 		case "BACKEND-FLUSH":
 			s.handleBackendFlush(c, fields)
+		case "BACKEND-UNREACHABLE":
+			s.handleBackendUnreachable(c, fields)
 		case "USER-MOVE":
 			s.handleUserMove(c, fields)
 		case "USER-WEAK":
@@ -793,6 +818,10 @@ func (s *Server) handleBackendUp(c *client, fields []string) {
 		IP: ip, Port: port, Tag: tag, Up: true, Vhosts: vhosts,
 		LastUp: ts,
 	})
+	// A fresh (re)admit clears any stale unreachable reports (#782): a backend
+	// that heartbeats again was a transient blip, so it must not be re-evicted
+	// by reports from before it recovered — a new corroboration must build up.
+	s.clearUnreachable(ip)
 	slog.Info("director: backend up", "ip", ip, "port", port, "tag", tag, "vhosts", vhosts, "seq", seq)
 	payload := fmt.Sprintf("%s\tup\t%s", ip, tag)
 	if hasSeq {

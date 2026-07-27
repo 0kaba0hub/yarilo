@@ -1063,6 +1063,20 @@ type DirectorServiceConfig struct {
 	// never heartbeat and are never expired. 0 = default (30); negative =
 	// disabled.
 	BackendExpire int `koanf:"backend_expire"`
+	// BackendUnreachableReporters is how many DISTINCT login proxies must
+	// report a backend unreachable (dial failed) within
+	// BackendUnreachableWindow before the director evicts it from the ring
+	// ahead of the lease TTL (#782 — active fast-fail). Reports replicate
+	// ring-wide, so the count aggregates across all directors. >1 guards
+	// against a single partitioned proxy wrongly evicting a healthy backend;
+	// the last backend of a tag is never evicted. 0 = default (2). Single
+	// login-replica deployments (e.g. sandbox) should set this to 1, since two
+	// distinct reporters for one protocol's failure may never exist — TTL
+	// expiry (backend_expire) remains the backstop either way.
+	BackendUnreachableReporters int `koanf:"backend_unreachable_reporters"`
+	// BackendUnreachableWindow is the sliding window (seconds) over which those
+	// distinct reports must arrive to corroborate. 0 = default (5).
+	BackendUnreachableWindow int `koanf:"backend_unreachable_window"`
 	// SeedPollIdleInterval is the eased poll cadence (seconds) once the
 	// view has reached min_members. Defaults to the same 2s as
 	// SeedPollInterval — no effective backoff — because a node cannot
@@ -1798,20 +1812,22 @@ func Load(path string) (*Config, error) {
 				SessionGracePeriod: 30,
 				KillTimeout:        5,
 			},
-			UserExpire:            900,
-			PingInterval:          30,
-			PingTimeout:           10,
-			WriteTimeout:          10,
-			UsernameHashLowercase: true,
-			AssignmentPolicy:      "hash",
-			UserKickDelay:         2,
-			MaxParallelKicks:      100,
-			MinMembers:            3,
-			AntiEntropyInterval:   3,
-			SeedPollInterval:      2,
-			SeedPollIdleInterval:  2,
-			BackendExpire:         30,
-			TombstoneTTL:          600,
+			UserExpire:                  900,
+			PingInterval:                30,
+			PingTimeout:                 10,
+			WriteTimeout:                10,
+			UsernameHashLowercase:       true,
+			AssignmentPolicy:            "hash",
+			UserKickDelay:               2,
+			MaxParallelKicks:            100,
+			MinMembers:                  3,
+			AntiEntropyInterval:         3,
+			SeedPollInterval:            2,
+			SeedPollIdleInterval:        2,
+			BackendExpire:               30,
+			BackendUnreachableReporters: 2,
+			BackendUnreachableWindow:    5,
+			TombstoneTTL:                600,
 			API: DirectorAPIConfig{
 				Listen: ":9103",
 				// No default IP restriction — service/pod CIDRs differ per
