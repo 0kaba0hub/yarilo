@@ -1888,6 +1888,12 @@ type RingStatus struct {
 	Size          int                 `json:"size"`
 	Members       []RingMemberStatus  `json:"members"`
 	Tombstones    []RingTombstoneInfo `json:"tombstones"`
+	// BackendSetHash is a stable hash of this replica's ROUTING backend set
+	// (#846). Two replicas that agree on routing produce the same hash;
+	// divergence between replicas is a dropped RING-CHANGE that ring status
+	// --all now flags (and PR-2 will auto-heal). Empty only when there is no
+	// ring to hash (Status built without a Server, in unit tests).
+	BackendSetHash string `json:"backendSetHash"`
 }
 
 // RingMemberStatus describes one member as this replica sees it. Left/Right are
@@ -1988,11 +1994,17 @@ func (m *Membership) Status() RingStatus {
 		rows = append(rows, row)
 	}
 
+	hash := ""
+	if m.srv != nil {
+		hash = backendSetHash(m.srv.ring.Backends())
+	}
+
 	return RingStatus{
-		SchemaVersion: 1,
-		Self:          m.self.String(),
-		Size:          n,
-		Members:       rows,
-		Tombstones:    tombs,
+		SchemaVersion:  1,
+		Self:           m.self.String(),
+		Size:           n,
+		Members:        rows,
+		Tombstones:     tombs,
+		BackendSetHash: hash,
 	}
 }

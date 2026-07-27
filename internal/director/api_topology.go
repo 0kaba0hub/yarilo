@@ -41,7 +41,7 @@ type ReplicaView struct {
 // from crying wolf the way raw snapshots did.
 type RingIssue struct {
 	Severity string `json:"severity"` // "error" | "warn"
-	Type     string `json:"type"`     // peer-unreachable | view-size-mismatch | asymmetric-edge | tombstone-divergence | seq-lag
+	Type     string `json:"type"`     // peer-unreachable | view-size-mismatch | backend-set-divergence | asymmetric-edge | tombstone-divergence | seq-lag
 	Detail   string `json:"detail"`
 }
 
@@ -164,6 +164,18 @@ func computeTopology(selfAddr string, views map[string]RingStatus, unreachable [
 	for _, a := range reachAddrs {
 		if v := views[a]; v.Size != refSize {
 			add("error", "view-size-mismatch", fmt.Sprintf("%s sees %d members; self (%s) sees %d", a, v.Size, selfAddr, refSize))
+		}
+	}
+
+	// (2b) backend-set-divergence (#846) — reachable replicas that hash their
+	// routing backend set differently have diverged (a dropped RING-CHANGE).
+	// The reference is this replica's own hash; anything different is flagged.
+	if self, ok := views[selfAddr]; ok && self.BackendSetHash != "" {
+		for _, a := range reachAddrs {
+			v := views[a]
+			if v.BackendSetHash != "" && v.BackendSetHash != self.BackendSetHash {
+				add("error", "backend-set-divergence", fmt.Sprintf("%s backend-set hash %s differs from self (%s) hash %s", a, v.BackendSetHash, selfAddr, self.BackendSetHash))
+			}
 		}
 	}
 

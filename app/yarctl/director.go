@@ -71,12 +71,13 @@ func humanRingStatus(data []byte) error {
 			Addr string `json:"addr"`
 			Age  string `json:"age"`
 		} `json:"tombstones"`
+		BackendSetHash string `json:"backendSetHash"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
 
-	fmt.Printf("ring status: %d director%s (self %s)\n", r.Size, plural(r.Size), r.Self)
+	fmt.Printf("ring status: %d director%s (self %s, backend-set %s)\n", r.Size, plural(r.Size), r.Self, r.BackendSetHash)
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "IDX\tADDR\tLEFT | RIGHT\tLINK\tSEQ")
 	for _, m := range r.Members {
@@ -114,8 +115,9 @@ func humanRingTopology(data []byte) error {
 			Reachable bool   `json:"reachable"`
 			Error     string `json:"error"`
 			Status    *struct {
-				Size    int `json:"size"`
-				Members []struct {
+				Size           int    `json:"size"`
+				BackendSetHash string `json:"backendSetHash"`
+				Members        []struct {
 					Self  bool    `json:"self"`
 					Left  *string `json:"left"`
 					Right *string `json:"right"`
@@ -136,12 +138,13 @@ func humanRingTopology(data []byte) error {
 		verdict, len(r.Replicas), plural(len(r.Replicas)), len(r.Issues), plural(len(r.Issues)))
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "REPLICA\tREACHABLE\tSIZE\tSELF-NEIGHBORS (L | R)")
+	fmt.Fprintln(tw, "REPLICA\tREACHABLE\tSIZE\tBACKEND-SET\tSELF-NEIGHBORS (L | R)")
 	for _, rep := range r.Replicas {
-		reach, size, neigh := "no", "-", "-"
+		reach, size, hash, neigh := "no", "-", "-", "-"
 		if rep.Reachable && rep.Status != nil {
 			reach = "yes"
 			size = fmt.Sprintf("%d", rep.Status.Size)
+			hash = rep.Status.BackendSetHash
 			for _, m := range rep.Status.Members {
 				if m.Self {
 					neigh = neighborsCol(m.Left, m.Right)
@@ -149,7 +152,7 @@ func humanRingTopology(data []byte) error {
 				}
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", rep.Addr, reach, size, neigh)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", rep.Addr, reach, size, hash, neigh)
 	}
 	tw.Flush()
 
