@@ -253,6 +253,28 @@ concurrent-formation race. Receivers union it via the same idempotent
 merge, so the steady-state cost is one no-op line per connection per
 interval.
 
+**Backend-set auto-resync (#846).** The anti-entropy tick also piggybacks a
+`BACKEND-HASH\t<hash>` line — a crc32 over the routing-significant backend
+fields (`{ip, port, tag, vhosts, up}`, order-independent; the yarilo analogue
+of Dovecot's `mail_hosts_hash`). A neighbor whose hash disagrees for
+`backendSyncMinMismatchTicks` (2) **consecutive** ticks — so a normal
+event-propagation window (where `up` flips during flush/drain) is not mistaken
+for divergence — pulls a full snapshot: `BACKEND-SYNC-REQ` →
+`BACKEND-HAND-START` / `BACKEND-HOST\t<ip>\t<port>\t<tag>\t<vhosts>\t<up>\t<seq>` (repeated) /
+`BACKEND-HAND-END`. This is **pairwise** between directly-connected neighbors,
+exactly like Dovecot's director-connection SYNC — non-adjacent divergence heals
+transitively (A↔B, then B↔C) within ~N/2 ticks, deliberately not a ring-wide
+broadcast. The merge is **ADD-only and lease-gated**: a lease record (`seq>0`)
+applies only if strictly newer than the local lease; a static record (`seq==0`)
+only if the backend is absent; and a recently-removed backend (down / expiry /
+unreachable eviction records a short-lived tombstone at its removal seq) is
+never resurrected unless a strictly-newer seq proves a genuine re-registration —
+so resync fills genuinely-missed **ups** without becoming the ghost-resurrection
+channel #776 closed. Absence from a snapshot is never authoritative (a
+missed-**down** self-heals through the lease TTL instead). Pulls are rate-limited
+per connection (`backendSyncCooldown`) so a flapping backend cannot storm.
+`ring status --all` flags an unresolved divergence as `backend-set-divergence`.
+
 A split with *no* crossing connection is out of any connection-bound
 mechanism's reach, and under concurrent formation such splits genuinely
 happen: each node's ONE outbound dial goes to a right neighbor computed

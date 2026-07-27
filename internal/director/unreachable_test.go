@@ -106,4 +106,5 @@ func TestUnreachable_RingGossipAggregates(t *testing.T) {
 // non-nil conn (RemoteAddr is not exercised on this path).
 type nopConn struct{ net.Conn }
 
-func (nopConn) Write(b []byte) (int, error) { return len(b), nil }
+func (nopConn) Write(b []byte) (int, error)        { return len(b), nil }
+func (nopConn) SetWriteDeadline(t time.Time) error { return nil }
