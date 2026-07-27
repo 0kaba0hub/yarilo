@@ -7,7 +7,8 @@ Unified operator CLI for yarilo. Two top-level planes:
 | `director` | `yarilo-director` `:9103` | ring / backends / users / peers | `director status / dump / map / backends / users / ring` |
 | `backend` | `yarilo-backend-api` `:9105` | per-backend storage state | `backend dict / folder / user / index / subscriptions / specialuse / metadata / who` (acl / quota land in their feature phases) |
 
-Both planes speak JSON over HTTPS with Bearer-token auth.
+Both planes speak JSON over plain HTTP with Bearer-token auth plus an IP
+allow-list (they are in-cluster ClusterIP services, not internet-facing).
 See [DIRECTOR-API.md](DIRECTOR-API.md) and [BACKEND-API.md](BACKEND-API.md)
 for the wire references.
 
@@ -255,8 +256,40 @@ IDX  ADDR              LEFT | RIGHT                       LINK                  
 Use `-O json` for the structured object (`schemaVersion`, `self`, `size`,
 `members[]`, `tombstones[]`) — suitable for programmatic topology assertions.
 
-> A single-command cross-replica view (`--all`, with a divergence/health
-> verdict) is tracked separately in #833 PR-B.
+#### `--all` — cross-replica view with a health verdict
+
+Because ring membership is per-replica, `--all` makes the queried director
+aggregate every replica's own view server-side (one authorized fan-out to
+peers' admin APIs) and returns a matrix plus a `healthy` verdict:
+
+```sh
+yarctl director ring status --all
+```
+
+```
+ring topology: UNHEALTHY (3 replicas, 1 issue)
+REPLICA           REACHABLE  SIZE  SELF-NEIGHBORS (L | R)
+10.0.0.1:9102     yes        3     10.0.0.3:9102 | 10.0.0.2:9102
+10.0.0.2:9102     yes        3     10.0.0.1:9102 | 10.0.0.3:9102
+10.0.0.3:9102     no         -     -
+issues:
+  [error] peer-unreachable: 10.0.0.3:9102 is in membership but its view could not be collected
+assumptions:
+  - peer API endpoints derived as <ring-ip>:9103 — assumes uniform api.listen across replicas
+  - admin API is plain HTTP guarded by Bearer token + api.allowed_nets; fan-out source is a director pod IP
+```
+
+The verdict flips to `UNHEALTHY` on `error`-severity issues — `peer-unreachable`
+(a member whose view could not be collected — never reported as healthy),
+`view-size-mismatch`, `asymmetric-edge` (A.right=B but B does not see A as its
+left), and `tombstone-divergence`. `seq-lag` is `warn`-only and does **not**
+fail the verdict (watermarks legitimately differ during activity). `-O json`
+returns `{schemaVersion, healthy, issues[], replicas[], assumptions[]}`.
+
+**Precondition:** the fan-out derives each peer's API endpoint from its ring IP
+plus this replica's `api.listen` port, so all directors must share the same
+`api.listen` (true for a Helm release sharing one ConfigMap), and `api.allowed_nets`
+(if set) must include the director pod CIDR.
 
 ---
 

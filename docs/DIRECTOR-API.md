@@ -264,6 +264,38 @@ CLI: `yarctl director ring status`
 
 ---
 
+#### `GET /api/director/ring/topology`
+
+Cross-replica aggregate. The queried director fans out to every peer's own
+`GET /api/director/ring` (one authorized server-side fan-out, shared per-release
+Bearer token) and returns each replica's view plus a health verdict. `healthy`
+is `false` when any `error`-severity issue is present: `peer-unreachable` (a
+member whose view could not be collected — never silently dropped),
+`view-size-mismatch`, `asymmetric-edge`, `tombstone-divergence`. `seq-lag` is
+`warn` only and does not affect `healthy`. `assumptions` records that peer API
+endpoints are derived from each ring IP + this replica's `api.listen` port
+(uniform-`api.listen` assumption).
+
+```json
+{
+  "schemaVersion": 1,
+  "healthy": false,
+  "issues": [
+    {"severity": "error", "type": "peer-unreachable", "detail": "10.0.0.3:9102 is in membership but its view could not be collected"}
+  ],
+  "replicas": [
+    {"addr": "10.0.0.1:9102", "reachable": true, "status": { /* RingStatus */ }},
+    {"addr": "10.0.0.2:9102", "reachable": true, "status": { /* RingStatus */ }},
+    {"addr": "10.0.0.3:9102", "reachable": false, "error": "director/topology: get 10.0.0.3:9103 ..."}
+  ],
+  "assumptions": ["peer API endpoints derived as <ring-ip>:9103 — assumes uniform api.listen across replicas", "..."]
+}
+```
+
+CLI: `yarctl director ring status --all`
+
+---
+
 #### `POST /api/director/ring`
 
 Dynamically add a peer director. Starts a persistent reconnecting dial loop.

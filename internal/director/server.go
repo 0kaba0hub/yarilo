@@ -311,6 +311,14 @@ type Server struct {
 	// BackendExpire is removed ring-wide.
 	backendSeenMu sync.Mutex
 	backendSeen   map[string]backendLease
+
+	// apiToken / apiAddr are captured when StartAPI runs so the cross-replica
+	// ring-topology aggregator (#833 PR-B) can fan out to peers' own admin APIs
+	// with the shared per-release token, deriving each peer's API endpoint from
+	// its ring IP + this replica's api.listen port (uniform-api.listen
+	// assumption — see apiRingTopology).
+	apiToken string
+	apiAddr  string
 }
 
 // backendLease records the freshest heartbeat seen for a backend and the

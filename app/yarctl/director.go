@@ -98,6 +98,76 @@ func humanRingStatus(data []byte) error {
 	return nil
 }
 
+// humanRingTopology renders the cross-replica aggregate (#833 PR-B): a health
+// verdict, a per-replica reachability/size/self-neighbor summary, then the
+// issue list and the assumptions the matrix depends on.
+func humanRingTopology(data []byte) error {
+	var r struct {
+		Healthy bool `json:"healthy"`
+		Issues  []struct {
+			Severity string `json:"severity"`
+			Type     string `json:"type"`
+			Detail   string `json:"detail"`
+		} `json:"issues"`
+		Replicas []struct {
+			Addr      string `json:"addr"`
+			Reachable bool   `json:"reachable"`
+			Error     string `json:"error"`
+			Status    *struct {
+				Size    int `json:"size"`
+				Members []struct {
+					Self  bool    `json:"self"`
+					Left  *string `json:"left"`
+					Right *string `json:"right"`
+				} `json:"members"`
+			} `json:"status"`
+		} `json:"replicas"`
+		Assumptions []string `json:"assumptions"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+
+	verdict := "HEALTHY"
+	if !r.Healthy {
+		verdict = "UNHEALTHY"
+	}
+	fmt.Printf("ring topology: %s (%d replica%s, %d issue%s)\n",
+		verdict, len(r.Replicas), plural(len(r.Replicas)), len(r.Issues), plural(len(r.Issues)))
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "REPLICA\tREACHABLE\tSIZE\tSELF-NEIGHBORS (L | R)")
+	for _, rep := range r.Replicas {
+		reach, size, neigh := "no", "-", "-"
+		if rep.Reachable && rep.Status != nil {
+			reach = "yes"
+			size = fmt.Sprintf("%d", rep.Status.Size)
+			for _, m := range rep.Status.Members {
+				if m.Self {
+					neigh = neighborsCol(m.Left, m.Right)
+					break
+				}
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", rep.Addr, reach, size, neigh)
+	}
+	tw.Flush()
+
+	if len(r.Issues) > 0 {
+		fmt.Println("issues:")
+		for _, is := range r.Issues {
+			fmt.Printf("  [%s] %s: %s\n", is.Severity, is.Type, is.Detail)
+		}
+	}
+	if len(r.Assumptions) > 0 {
+		fmt.Println("assumptions:")
+		for _, a := range r.Assumptions {
+			fmt.Printf("  - %s\n", a)
+		}
+	}
+	return nil
+}
+
 func neighborsCol(left, right *string) string {
 	l, rt := "-", "-"
 	if left != nil {
@@ -286,6 +356,13 @@ func dispatchRing(args []string) error {
 	}
 	switch args[0] {
 	case "status":
+		fs := flag.NewFlagSet("ring status", flag.ExitOnError)
+		all := fs.Bool("all", false, "aggregate every replica's view server-side and print a divergence/health verdict")
+		parseFlags(fs, args[1:]) //nolint:errcheck
+		if *all {
+			data, err := apiGet("/api/director/ring/topology")
+			return printOutput(data, err, humanRingTopology)
+		}
 		data, err := apiGet("/api/director/ring")
 		return printOutput(data, err, humanRingStatus)
 	case "add":
