@@ -144,7 +144,7 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 | yarilo-backend-reg | Co-located backend registration sidecar — one BACKEND-UP per pod IP, readiness-gated heartbeat, graceful LEAVE on SIGTERM (#776/#788) | ✅ |
 | yarctl | CLI control tool — `director` and `backend` planes (backward-compat alias: `yarilo-admin`) | ✅ |
 | yarilo-monitor | Optional backend health sidecar for the director ring (probe-based; the primary path is yarilo-backend-reg self-registration) | ✅ |
-| yarilo-migrate | Offline mailbox migration (Maildir ↔ dbox ↔ mdbox) | ✅ |
+| yarilo-migrate | Offline mailbox FORMAT converter (Maildir → sdbox/mdbox); not cross-server dsync/imapc | ✅ |
 | yarilo-director | Consistent-hashing ring, sticky sessions, throttled evacuation, failover | ✅ |
 
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
@@ -211,7 +211,9 @@ backups — in [docs/DOCKER-COMPOSE.md](docs/DOCKER-COMPOSE.md).
 
 ---
 
-## Mailbox migration
+## Mailbox format migration (offline)
+
+`yarilo-migrate` is an **offline, on-disk format converter** for a per-user mailbox tree — sources `maildir` / `dbox-v1` / `mdbox-v1`, destinations `sdbox` / `mdbox`. It is **not** a cross-server (dsync/imapc) migration that pulls mail over IMAP from another server.
 
 ```sh
 yarilo-migrate \
