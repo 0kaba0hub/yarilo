@@ -234,3 +234,24 @@ func TestTTLSessionCache_Expires(t *testing.T) {
 		t.Fatal("expired entry must be dropped from the tracking map")
 	}
 }
+
+// TestTTLSessionCache_PrunesExpiredOnPut is the #860 guard: the put-time map is
+// swept of TTL-expired entries on Put, so LRU count-eviction can't leak them.
+func TestTTLSessionCache_PrunesExpiredOnPut(t *testing.T) {
+	c := &ttlSessionCache{lru: tls.NewLRUClientSessionCache(64), ttl: time.Minute, put: map[string]time.Time{}}
+	cs := &tls.ClientSessionState{}
+	c.Put("old1", cs)
+	c.Put("old2", cs)
+	c.put["old1"] = time.Now().Add(-2 * time.Minute) // age past the TTL
+	c.put["old2"] = time.Now().Add(-2 * time.Minute)
+	c.Put("fresh", cs) // triggers the opportunistic sweep
+	if _, ok := c.put["old1"]; ok {
+		t.Error("expired old1 must be pruned on Put")
+	}
+	if _, ok := c.put["old2"]; ok {
+		t.Error("expired old2 must be pruned on Put")
+	}
+	if _, ok := c.put["fresh"]; !ok {
+		t.Error("fresh entry must remain")
+	}
+}
