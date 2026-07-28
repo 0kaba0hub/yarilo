@@ -1,15 +1,10 @@
 <!--
-Docker Hub repository page content for docker.io/0kaba0/yarilo
-- "Short description" (≤100 chars) goes in the repo's Short Description field.
-- Everything below the divider is the Repository Overview (paste as-is).
-- Repo avatar/logo: upload docs/icon.png in the Docker Hub repo settings (SVG is not accepted).
-- Category: Networking (+ Security).
+Docker Hub Repository Overview for docker.io/0kaba0/yarilo.
+Auto-synced on push to main by .github/workflows/dockerhub-description.yaml
+(peter-evans/dockerhub-description). The Short Description is set there via
+short-description; the repo avatar is uploaded once in the Docker Hub UI from
+docs/icon.png (SVG is not accepted). Category: Networking (+ Security).
 -->
-
-**Short description:**
-`IMAP/POP3/LMTP/ManageSieve/Submission mail server with full-text search, written in Go. Kubernetes-native.`
-
----
 
 <table><tr>
 <td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.png" width="180" alt="yarilo logo"/></td>
