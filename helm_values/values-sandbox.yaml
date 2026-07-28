@@ -263,8 +263,29 @@ components:
 
   ## IMAP login — TLS terminator on :993 (IMAPS) / :143 (STARTTLS).
   ## Creates yarilo-tls Secret via cert-manager.
+  ##
+  ## resources (#878): NO cpu limit. Login pods carry all the asymmetric crypto
+  ## in the system — per login they complete three ECDSA handshakes (client TLS
+  ## on 993/143, mTLS to yarilo-auth, mTLS to yarilo-anvil). The chart default
+  ## limit of 200m throttled a 500-client burst to a hard 20s CPU ceiling per
+  ## 100s: measured 21.2s used vs 152.4s spent throttled, which blew the auth
+  ## dial deadline 813 times and surfaced as 1041 NO [UNAVAILABLE] to clients.
+  ## A CFS quota is wrong for a bursty TLS terminator — requests reserve the
+  ## floor, the burst is allowed to use idle node capacity.
   imapLogin:
     enabled: true
+    resources:
+      requests:
+        ## Small floor only — requests reserve scheduling capacity, and the node
+        ## budget is shared with the director/backend/session pods. The burst is
+        ## served by idle node CPU, which is what removing the limit unlocks.
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        ## null removes the chart's default 200m ceiling: Helm deep-merges
+        ## values, so omitting the key would keep the default, not drop it.
+        cpu: null
+        memory: 512Mi
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
@@ -295,6 +316,19 @@ components:
   ## Reuses yarilo-tls Secret from imapLogin.
   pop3Login:
     enabled: true
+    ## Same crypto profile as imapLogin — see the #878 note there.
+    resources:
+      requests:
+        ## Small floor only — requests reserve scheduling capacity, and the node
+        ## budget is shared with the director/backend/session pods. The burst is
+        ## served by idle node CPU, which is what removing the limit unlocks.
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        ## null removes the chart's default 200m ceiling: Helm deep-merges
+        ## values, so omitting the key would keep the default, not drop it.
+        cpu: null
+        memory: 512Mi
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
@@ -369,6 +403,19 @@ components:
   ## LMTP login proxy — MTA-facing, plain LMTP, no preamble required.
   lmtpLogin:
     enabled: true
+    ## Same crypto profile as imapLogin — see the #878 note there.
+    resources:
+      requests:
+        ## Small floor only — requests reserve scheduling capacity, and the node
+        ## budget is shared with the director/backend/session pods. The burst is
+        ## served by idle node CPU, which is what removing the limit unlocks.
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        ## null removes the chart's default 200m ceiling: Helm deep-merges
+        ## values, so omitting the key would keep the default, not drop it.
+        cpu: null
+        memory: 512Mi
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
@@ -378,6 +425,19 @@ components:
 
   saslLogin:
     enabled: true
+    ## Same crypto profile as imapLogin — see the #878 note there.
+    resources:
+      requests:
+        ## Small floor only — requests reserve scheduling capacity, and the node
+        ## budget is shared with the director/backend/session pods. The burst is
+        ## served by idle node CPU, which is what removing the limit unlocks.
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        ## null removes the chart's default 200m ceiling: Helm deep-merges
+        ## values, so omitting the key would keep the default, not drop it.
+        cpu: null
+        memory: 512Mi
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
@@ -412,6 +472,19 @@ components:
   ## ManageSieve login pod — client-facing on :4190 STARTTLS.
   manageSieveLogin:
     enabled: true
+    ## Same crypto profile as imapLogin — see the #878 note there.
+    resources:
+      requests:
+        ## Small floor only — requests reserve scheduling capacity, and the node
+        ## budget is shared with the director/backend/session pods. The burst is
+        ## served by idle node CPU, which is what removing the limit unlocks.
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        ## null removes the chart's default 200m ceiling: Helm deep-merges
+        ## values, so omitting the key would keep the default, not drop it.
+        cpu: null
+        memory: 512Mi
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
@@ -429,10 +502,9 @@ components:
         metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
         metallb.universe.tf/allow-shared-ip: "yarilo-mail"
 
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 1000m
-    memory: 512Mi
+## NOTE (#878): there is deliberately NO top-level `resources:` block here.
+## The chart has no `.Values.resources` — sizing is per-component only
+## (`components.<name>.resources`). A top-level block silently does nothing,
+## and previously made this deployment look like it ran with a 1000m CPU limit
+## while every login pod was in fact capped at the chart default of 200m.
+## Add resources under the component you actually mean to size.
