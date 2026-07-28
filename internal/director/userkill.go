@@ -54,8 +54,21 @@ const killReason = "killing"
 // start of a kick / move-kill, before the sessions are torn down.
 func (s *Server) startKilling(hash uint32) {
 	ttl := s.opts.userKillTimeout()
+	// #870: arm the confirm immediately when the user is ALREADY quiesced (no active
+	// sessions ring-wide at kill-start). Otherwise zeroSince — which is only set on a
+	// session-count transition to zero, driven by SESSION-CLOSE — would never arm for a
+	// user who had nothing to close, so the kill could only ever exit via the hard
+	// timeout: the #848 flush hook (confirmed branch only) would be skipped and the #847
+	// LOOKUP hold would linger the full user_kill_timeout on an idle-user move/kick. A
+	// session opening before the grace elapses disarms it again via noteSessionOpened.
+	// Computed before taking killMu (userSessionCount takes sessRecMu) to avoid nesting.
+	quiesced := s.userSessionCount(hash) == 0
 	s.killMu.Lock()
-	s.killing[hash] = killState{deadline: time.Now().Add(ttl)}
+	st := killState{deadline: time.Now().Add(ttl)}
+	if quiesced {
+		st.zeroSince = time.Now()
+	}
+	s.killing[hash] = st
 	s.killMu.Unlock()
 	// Replicate the TTL in milliseconds; receivers compute their own deadline.
 	s.membership.originate("USER-KILLING", fmt.Sprintf("%d\t%d", hash, ttl.Milliseconds()))
