@@ -32,7 +32,7 @@ func TestNewFileEmptyHasMatchingHeader(t *testing.T) {
 
 func TestRecreateReadRoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "dovecot.index")
+	path := filepath.Join(tmpDir, "yarilo.index")
 
 	exts := []Extension{
 		{Name: "modseq", HdrSize: 16, HdrData: bytes.Repeat([]byte{0xAA}, 16),
@@ -119,7 +119,7 @@ func TestRecreateReadRoundTrip(t *testing.T) {
 
 func TestRecreateKeepBackupHardlinks(t *testing.T) {
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "dovecot.index")
+	path := filepath.Join(tmpDir, "yarilo.index")
 
 	exts := []Extension{{Name: "modseq", RecordSize: 8, RecordAlign: 8}}
 	f, _ := NewFile(1, exts)
@@ -274,7 +274,7 @@ func TestAddHeaderExtension(t *testing.T) {
 	}
 
 	// Header must now match the encoded extensions, else Recreate rejects it.
-	path := filepath.Join(t.TempDir(), "dovecot.index")
+	path := filepath.Join(t.TempDir(), "yarilo.index")
 	if _, err := Recreate(RecreateInput{
 		Path: path, Header: f.Header, Extensions: f.Extensions, Records: f.Records,
 	}); err != nil {

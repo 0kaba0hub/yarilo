@@ -381,7 +381,7 @@ type folderState struct {
 
 	folder      string // mailbox folder name (e.g. "INBOX", "Sent")
 	indexDir    string // <home>/<folder-relative>/
-	indexPath   string // <indexDir>/dovecot.index
+	indexPath   string // <indexDir>/yarilo.index
 	volatileDir string // local dir for tmp files (empty = same as indexDir)
 
 	file      *mailindex.File // the wire-format snapshot

@@ -14,7 +14,7 @@ import (
 // IMAP UID → POP3 UIDL string. Missing file returns an empty
 // map (not an error). Format is TSV: "<uid>\t<uidl>\n".
 //
-// Sidecar lives next to dovecot.index — yarilo-specific
+// Sidecar lives next to yarilo.index — yarilo-specific
 // addition; not in the canonical wire format. Removed when
 // POP3 UIDLs migrate into a proper mail-index extension in a
 // later phase.

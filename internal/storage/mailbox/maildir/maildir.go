@@ -275,7 +275,7 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // Save streams r into tmp/ then atomically renames into cur/.
 // uid is the value returned by UserIndex.AllocateUID on this
 // folder — Maildir does not encode it in the filename, but the
-// uid→filename mapping is appended to the dovecot-uidlist sidecar
+// uid→filename mapping is appended to the yarilo-uidlist sidecar
 // inline so subsequent List() / Fetch() can resolve UIDs without
 // a separate AppendUIDEntry call.
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, error) {

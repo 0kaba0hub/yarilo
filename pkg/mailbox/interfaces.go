@@ -252,7 +252,7 @@ type MailboxBackend interface {
 // Save takes the assigned UID as a parameter. Drivers that encode the UID in
 // the on-disk filename (sdbox: u.<uid>; mdbox: map_uid bookkeeping) use it
 // directly; Maildir ignores the UID for its filename but writes the
-// uid→filename mapping into the dovecot-uidlist sidecar inline. The canonical
+// uid→filename mapping into the yarilo-uidlist sidecar inline. The canonical
 // caller flow is:
 //
 //	uid     := idx.AllocateUID(folderID)

@@ -4,9 +4,9 @@
 // Three on-disk files use this format and are all encoded by this
 // package:
 //
-//   - dovecot.index           — base index (header + records)
-//   - dovecot.index.log       — transaction log
-//   - dovecot.map.index       — mdbox global map (same format,
+//   - yarilo.index            — base index (header + records)
+//   - yarilo.index.log       — transaction log
+//   - yarilo.map.index       — mdbox global map (same format,
 //     different registered extensions)
 //
 // The package is intentionally low-level: it knows about bytes,

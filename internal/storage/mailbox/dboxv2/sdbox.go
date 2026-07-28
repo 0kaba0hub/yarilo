@@ -189,7 +189,7 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 // ---- Init / Create / Delete / Rename --------------------------
 
 // Init materialises the per-user tree (control/, mailboxes/INBOX/
-// dbox-Mails/) and seeds dovecot-uidvalidity if not present.
+// dbox-Mails/) and seeds yarilo-uidvalidity if not present.
 func (u *userMailbox) Init() error {
 	if err := os.MkdirAll(u.controlPath(), 0o700); err != nil {
 		return fmt.Errorf("sdbox/init: control: %w", err)
