@@ -38,7 +38,7 @@ func Verify(stored, input string) bool {
 // BCRYPT, $6$ → SHA512-CRYPT.
 func VerifyWithDefault(stored, input, defaultScheme string) bool {
 	name, hash := SplitWithDefault(stored, defaultScheme)
-	// A "CRYPT" scheme (Dovecot's passwd-file default) is not a concrete
+	// A "CRYPT" scheme (the reference's passwd-file default) is not a concrete
 	// algorithm: resolve it to the crypt(3) family by the hash marker.
 	if name == "CRYPT" {
 		name, hash = SplitWithDefault(hash, "")

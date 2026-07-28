@@ -1,4 +1,4 @@
-# Phase DOVECOT-STORAGE-COMPLIANCE — design doc
+# Storage compliance — design doc
 
 **Status:** RFC, no code yet. Reviewer-eyes-only design until the
 phasing + migration plan is agreed.

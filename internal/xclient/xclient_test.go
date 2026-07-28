@@ -91,12 +91,12 @@ var parseCases = []struct {
 		Attrs{Addr: ""},
 	},
 	{
-		"destaddr + destport (Dovecot 2.4 LMTP)",
+		"destaddr + destport (reference 2.4 LMTP)",
 		"XCLIENT ADDR=1+2E2+2E3+2E4 DESTADDR=10+2E0+2E0+2E1 DESTPORT=24",
 		Attrs{Addr: "1.2.3.4", DestAddr: "10.0.0.1", DestPort: "24"},
 	},
 	{
-		"destip alias accepted (Dovecot 2.4 login-proxy)",
+		"destip alias accepted (reference 2.4 login-proxy)",
 		"XCLIENT ADDR=5+2E5+2E5+2E5 DESTIP=192+2E168+2E1+2E1 DESTPORT=993",
 		Attrs{Addr: "5.5.5.5", DestAddr: "192.168.1.1", DestPort: "993"},
 	},

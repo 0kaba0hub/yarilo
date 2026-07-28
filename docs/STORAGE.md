@@ -4,7 +4,7 @@ Mailbox backends (Maildir, sdbox, mdbox) and the FileIndex (binary mail-index v7
 format: `.index` / `.index.log` / `.index.names`). All index mutations go through the
 cross-process mailbox lock (`yarilo-locks`); sessions sharing a pod serialise on an
 in-process `sync.RWMutex` — the Redis lock is only ever contested across pods, not within
-a single pod. See also [DOVECOT-STORAGE-COMPLIANCE.md](DOVECOT-STORAGE-COMPLIANCE.md) and
+a single pod. See also [STORAGE-COMPLIANCE.md](STORAGE-COMPLIANCE.md) and
 [MDBOX_ALT.md](MDBOX_ALT.md).
 
 ## Maildir sync-on-open

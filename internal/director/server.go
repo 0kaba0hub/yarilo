@@ -197,7 +197,7 @@ type Options struct {
 	// is built.
 	UsernameHashFormat string
 	// AssignmentPolicy selects the INITIAL (unpinned) placement strategy (#797):
-	// "hash" (default, Dovecot semantics) or "least_sessions" (load-aware).
+	// "hash" (default, reference semantics) or "least_sessions" (load-aware).
 	// Sticky pins / USER-MOVE are unaffected.
 	AssignmentPolicy string
 	// UserKickDelay delays an admin-initiated kick before the USER-KICKED is

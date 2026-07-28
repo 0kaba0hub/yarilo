@@ -31,7 +31,7 @@ func NewClone(targets []dict.Dict) *Clone {
 
 // Write mirrors u for user into every target concurrently. Each target is
 // best-effort: a failing one is logged and never blocks the others or the
-// caller's authoritative path. A nil *Clone is a no-op. Uses the Dovecot-
+// caller's authoritative path. A nil *Clone is a no-op. Uses the reference-
 // compatible keys priv/quota/storage and priv/quota/messages so an operator can
 // point external readers at the same layout.
 func (c *Clone) Write(ctx context.Context, user string, u Usage) {

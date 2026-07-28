@@ -1134,7 +1134,7 @@ type DirectorServiceConfig struct {
 	// migration step is needed.
 	UsernameHashLowercase bool `koanf:"username_hash_lowercase"`
 	// UsernameHash is the username→hash-key template (#850), mirroring the reference
-	// director_username_hash expression so a dovecot.conf value migrates verbatim:
+	// director_username_hash expression so an existing value migrates verbatim:
 	// %u (whole user), %n (local part, before first '@'), %d (domain, after first '@'),
 	// each with an optional %L lowercase modifier, plus %% for a literal percent.
 	// Examples: "%Lu" (default, whole username lowercased), "%u" (case-sensitive),

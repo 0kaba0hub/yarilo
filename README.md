@@ -4,14 +4,14 @@
 <td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg" width="180" alt="yarilo logo"/></td>
 <td>
 
-Production-grade IMAP / POP3 / LMTP / ManageSieve / Submission mail server written in Go.
+Production-grade IMAP / POP3 / LMTP / ManageSieve / Submission mail server with built-in full-text search, written in Go.
 Multi-binary architecture — each protocol component is a separate process. Kubernetes-native via Helm.
 
 [![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-yellow)](PLAN.md)
+![Status: beta](https://img.shields.io/badge/status-beta-orange)
 
 </td>
 </tr></table>
@@ -21,38 +21,6 @@ Multi-binary architecture — each protocol component is a separate process. Kub
 ## Architecture
 
 Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a separate compiled binary — no mode flags, no combined processes. Deployment topology is configured purely through Helm values; the same binaries serve standalone and clustered installations.
-
-```
-  Internet
-     |
-     | IMAPS :993 / IMAP :143 / POP3S :995 / POP3 :110
-     | LMTP :24 / ManageSieve :4190 / SASL :4190
-     v
-+------------------------+  +------------------------+
-|  yarilo-imap-login     |  |  yarilo-pop3-login     |  login pods (TLS termination,
-|  yarilo-lmtp-login     |  |  yarilo-managesieve-   |  HAProxy / XCLIENT, passdb,
-|  yarilo-submission-    |  |  login                 |  anvil rate-limit, fd-passing)
-|  login / sasl-login    |  +------------------------+
-+------------------------+
-         |  Unix fd-passing (SCM_RIGHTS) after auth
-         v
-+------------------------+  +------------------------+
-|  yarilo-imap           |  |  yarilo-pop3           |  session pods (mailbox,
-|  yarilo-lmtp           |  |  yarilo-managesieve    |  index, Sieve execution,
-|  yarilo-submission     |  |  yarilo-backend-api    |  quota, ACL)
-+------------------------+  +------------------------+
-         |
-         | cross-process write coordination (TCP mTLS)
-         v
-+------------------------+  +------------------------+
-|  yarilo-locks          |  |  yarilo-auth           |  shared services
-|  yarilo-anvil          |  |  Redis (dict / locks)  |
-+------------------------+  +------------------------+
-         |
-         | NFS PV (RWX) — shared by all session pods in a tag
-         v
-  [ Mailbox + Index files ]
-```
 
 **Login pods** — terminate TLS (SNI per-domain), authenticate via passdb, enforce per-user connection limits (anvil), pass the raw fd to session pods via SCM_RIGHTS. Stateless; scale independently.
 
@@ -144,11 +112,10 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 | yarilo-backend-reg | Co-located backend registration sidecar — one BACKEND-UP per pod IP, readiness-gated heartbeat, graceful LEAVE on SIGTERM (#776/#788) | ✅ |
 | yarctl | CLI control tool — `director` and `backend` planes (backward-compat alias: `yarilo-admin`) | ✅ |
 | yarilo-monitor | Optional backend health sidecar for the director ring (probe-based; the primary path is yarilo-backend-reg self-registration) | ✅ |
-| yarilo-migrate | Offline mailbox migration (Maildir ↔ dbox ↔ mdbox) | ✅ |
+| yarilo-migrate | Offline mailbox FORMAT converter (Maildir → sdbox/mdbox); not cross-server dsync/imapc | ✅ |
 | yarilo-director | Consistent-hashing ring, sticky sessions, throttled evacuation, failover | ✅ |
 
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
-Full wire-format specification: [INTERNALS.md](INTERNALS.md).
 
 Session routing (`backend_addr` / `director_addr` precedence), sticky assignments, username-hash templates (`username_hash`), backend evacuation, the per-user flush hook, tag sharding models, and the self-organizing ring formation (with its design history) are all documented in **[docs/DIRECTOR.md](docs/DIRECTOR.md)**.
 
@@ -211,7 +178,9 @@ backups — in [docs/DOCKER-COMPOSE.md](docs/DOCKER-COMPOSE.md).
 
 ---
 
-## Mailbox migration
+## Mailbox format migration (offline)
+
+`yarilo-migrate` is an **offline, on-disk format converter** for a per-user mailbox tree — sources `maildir` / `dbox-v1` / `mdbox-v1`, destinations `sdbox` / `mdbox`. It is **not** a cross-server (dsync/imapc) migration that pulls mail over IMAP from another server.
 
 ```sh
 yarilo-migrate \
@@ -226,9 +195,7 @@ yarilo-migrate \
 
 | Document | Contents |
 |:---|:---|
-| [PLAN.md](PLAN.md) | Implementation plan, phases, timelines |
-| [INTERNALS.md](INTERNALS.md) | Wire-format specs for all internal protocols |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Code-level architecture, process model, storage contract |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Code-level architecture, process model, storage contract, deployment diagrams |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | K8s topology, sizing, HA strategy, sharding via tags |
 | [docs/GENERAL.md](docs/GENERAL.md) | `general`: SSL, HAProxy, XCLIENT, connection limits |
 | [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config |

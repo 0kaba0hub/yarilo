@@ -6,7 +6,7 @@ durable per-user or per-mailbox state sits on top of. A single contract
 choice of driver (`file`, `redis`, `sql`, `memory`, `fail`) is made via
 YAML config, not code.
 
-See [ARCHITECTURE.md §Dict abstraction](../ARCHITECTURE.md#dict-abstraction)
+See [ARCHITECTURE.md §Dict abstraction](ARCHITECTURE.md#dict-abstraction)
 for the design rationale; this document is the operator reference for
 configuring and operating dicts.
 

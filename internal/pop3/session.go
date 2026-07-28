@@ -1296,7 +1296,7 @@ func (s *session) releaseLock() {
 	}
 }
 
-// acquireDotlock creates a dotlock file at $HOME/dovecot-pop3-session.lock.
+// acquireDotlock creates a dotlock file at $HOME/yarilo-pop3-session.lock.
 // Returns true on success. A lock older than idleTimeout is considered stale
 // and will be stolen (the session that held it is certainly gone by then).
 func (s *session) acquireDotlock(home string) bool {
@@ -1304,7 +1304,7 @@ func (s *session) acquireDotlock(home string) bool {
 		slog.Warn("pop3: dotlock mkdir", "home", home, "err", err)
 		return false
 	}
-	lockPath := filepath.Join(home, "dovecot-pop3-session.lock")
+	lockPath := filepath.Join(home, "yarilo-pop3-session.lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err == nil {
 		fmt.Fprintf(f, "%d\n", os.Getpid()) //nolint:errcheck

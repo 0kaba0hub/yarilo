@@ -5,10 +5,10 @@
 // On-disk layout:
 //
 //	<home>/sdbox/
-//	  control/dovecot-uidvalidity      ← per-user uidvalidity counter
+//	  control/yarilo-uidvalidity      ← per-user uidvalidity counter
 //	  mailboxes/<folder>/dbox-Mails/
 //	    u.<UID>                        ← one file per message (decimal UID)
-//	    dovecot.index*                 ← per-folder fileindex
+//	    yarilo.index*                 ← per-folder fileindex
 //	    .temp.<sec>.P<pid>Q<seq>M<usec>.<host> ← in-flight saves
 //
 // File format (per INTERNALS.md §8):

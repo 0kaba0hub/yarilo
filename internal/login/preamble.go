@@ -53,7 +53,7 @@ type preamble struct {
 // idForwardedClientIP extracts the original client IP/port a trusted proxy
 // forwarded in an IMAP ID command (#742): x-originating-ip / x-client-ip and
 // x-originating-port / x-client-port. Returns empty strings when absent.
-// The reference/Dovecot imap-login honours these keys from login_trusted_networks.
+// The reference imap-login honours these keys from login_trusted_networks.
 func idForwardedClientIP(line string) (ip, port string) {
 	open := strings.IndexByte(line, '(')
 	closeIdx := strings.LastIndexByte(line, ')')

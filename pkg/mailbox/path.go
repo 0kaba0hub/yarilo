@@ -266,7 +266,7 @@ func ParseMailLocationMods(loc string) map[string]string {
 
 // ExpandHome replaces a leading "~/" with home + "/". Paths that do not
 // start with "~/" are returned unchanged. Used for mail_path / dir templates
-// that follow the Dovecot ~/… convention.
+// that follow the reference ~/… convention.
 func ExpandHome(path, home string) string {
 	if strings.HasPrefix(path, "~/") {
 		return home + path[1:]

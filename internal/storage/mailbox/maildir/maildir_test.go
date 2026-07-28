@@ -276,7 +276,7 @@ func TestNestedFolderIsFlatMaildirPP(t *testing.T) {
 }
 
 // TestSave_AppendsUIDList verifies Save inlines the uid→filename
-// entry into the dovecot-uidlist v3 sidecar. Replaces the old
+// entry into the yarilo-uidlist v3 sidecar. Replaces the old
 // standalone AppendUIDEntry contract (removed when two-phase Save
 // landed).
 func TestSave_AppendsUIDList(t *testing.T) {

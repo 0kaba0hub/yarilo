@@ -12,7 +12,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
-// Backend-set auto-resync (#846 PR-2), the repair half of Dovecot hosts_hash
+// Backend-set auto-resync (#846 PR-2), the repair half of the reference hosts_hash
 // parity built on the detection from PR-1. Each anti-entropy tick a director
 // sends its backend-set hash to its ring neighbors (BACKEND-HASH). A neighbor
 // whose hash differs — for backendSyncMinMismatchTicks CONSECUTIVE ticks, so a
@@ -22,7 +22,7 @@ import (
 // merges it under the lease/lamport rules.
 //
 // PAIRWISE, not full-mesh (deliberately): the hash is exchanged only between
-// directly-connected neighbors, exactly like Dovecot's director-connection SYNC.
+// directly-connected neighbors, exactly like the reference's director-connection SYNC.
 // A divergence between non-adjacent directors heals TRANSITIVELY — A↔B repairs
 // one hop, then B↔C the next — converging in at most ~N/2 ticks around the ring.
 // Do NOT "improve" this to a ring-wide broadcast: the pairwise exchange is what
@@ -47,7 +47,7 @@ const (
 	// snapshot is pulled.
 	backendSyncMinMismatchTicks = 2
 	// backendSyncCooldown rate-limits snapshot pulls per connection so a
-	// flapping backend cannot drive a resync storm (Dovecot's desynced_hosts_hash
+	// flapping backend cannot drive a resync storm (the reference's desynced_hosts_hash
 	// debounce).
 	backendSyncCooldown = 10 * time.Second
 	// backendTombTTL bounds how long a removed backend blocks resurrection by a
