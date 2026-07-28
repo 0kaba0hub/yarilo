@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Confirmed ring-wide kick (#847), the yarilo analogue of Dovecot's
+// Confirmed ring-wide kick (#847), the yarilo analogue of the reference implementation's
 // user_kill_state machine adapted to our session-registry + login-proxy model
 // (no auth-IPC). When a user is kicked or moved, the director marks the user
 // "killing" and holds LOOKUP for it, so a concurrent login cannot be assigned a

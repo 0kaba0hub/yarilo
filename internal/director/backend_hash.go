@@ -10,7 +10,7 @@ import (
 )
 
 // backendSetHash computes a stable hash over the ROUTING-significant fields of
-// the backend set (#846) — the yarilo analogue of Dovecot's mail_hosts_hash.
+// the backend set (#846) — the yarilo analogue of the reference implementation's mail_hosts_hash.
 // Two directors that agree on routing produce the same hash; a dropped
 // RING-CHANGE that leaves one director's backend set diverged shows up as a
 // different hash, which ring status --all (#835) flags and PR-2 auto-heals.

@@ -586,7 +586,7 @@ func (u *userMailbox) ProactiveScan() bool { return true }
 // maildirBase returns the stable identity of a maildir filename: everything
 // before the ":" info separator. A flag change renames only the ":2,<flags>"
 // trailer, so two names sharing a base are the same message and must keep the
-// same UID. This mirrors how Dovecot keys the uidlist.
+// same UID. This mirrors how the reference keys the uidlist.
 func maildirBase(name string) string {
 	if i := strings.IndexByte(name, ':'); i >= 0 {
 		return name[:i]
@@ -595,7 +595,7 @@ func maildirBase(name string) string {
 }
 
 // moveNewToCurLocked moves every file out of new/ into cur/, appending the
-// ":2," info marker Dovecot uses for a message with no flags. An MDA delivers
+// ":2," info marker the reference uses for a message with no flags. An MDA delivers
 // into new/; maildir sync migrates those files into cur/ so the rest of the
 // driver (Fetch, Remove, List) — which only looks in cur/ — can reach them.
 // Caller holds the mailbox lock.
@@ -630,7 +630,7 @@ func (u *userMailbox) moveNewToCurLocked(folder string) error {
 }
 
 // ReconcileIndex brings idx into agreement with the physical maildir under the
-// driver's cross-process mailbox lock. It follows the Dovecot maildir sync
+// driver's cross-process mailbox lock. It follows the reference maildir sync
 // model:
 //
 //   - Files in new/ are migrated into cur/ first, so an MDA delivery becomes a

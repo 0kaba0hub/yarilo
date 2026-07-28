@@ -40,7 +40,7 @@ func TestPeekFileHeaderLen(t *testing.T) {
 
 // TestSaveWritesFileHeaderOncePerFile is the core #622 regression: several
 // messages that all land in one m.<N> must produce the file-header line exactly
-// once (at offset 0), not once per message — the divergence that broke Dovecot
+// once (at offset 0), not once per message — the divergence that broke the reference implementation
 // interop. Every body must still fetch back intact.
 func TestSaveWritesFileHeaderOncePerFile(t *testing.T) {
 	mb, home := newTestUser(t)

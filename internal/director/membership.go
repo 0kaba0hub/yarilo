@@ -149,7 +149,7 @@ type Membership struct {
 	// every connection accepted from a neighbor that dialed us — for the
 	// life of each connection, independent of dial/accept role. Broadcasting
 	// ring events (broadcastRing) sends to all of ringConns except whichever
-	// one the event just arrived on, matching Dovecot's director_update_send
+	// one the event just arrived on, matching the reference's director_update_send
 	// (skip only the arrival connection; (origin, seq) dedup in
 	// handleEnvelope is what actually stops the flood once it loops back to
 	// its author — see INTERNALS.md). Earlier this repo instead kept a
@@ -1563,7 +1563,7 @@ func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 // forwarded again). Otherwise, apply locally (unless already seen — a
 // safety net against out-of-order duplicates) and broadcast to every ring
 // connection except the one it just arrived on (broadcastRing) — matching
-// Dovecot's director_update_send skip-arrival rule rather than a fixed
+// the reference's director_update_send skip-arrival rule rather than a fixed
 // "the" forward path. At N=2 the only ring connection IS the arrival
 // connection, so broadcasting sends nowhere and the event simply stops
 // there without needing to bounce back to origin for absorb to apply —

@@ -13,7 +13,7 @@ import (
 // Sticky pins and USER-MOVE are unaffected — only a fresh
 // assignment consults the policy.
 const (
-	policyHash          = "hash"           // consistent hash (default; Dovecot semantics)
+	policyHash          = "hash"           // consistent hash (default; reference semantics)
 	policyLeastSessions = "least_sessions" // load-aware, two-level normalized
 )
 

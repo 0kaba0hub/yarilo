@@ -142,10 +142,10 @@ func TestAutoMigratesLegacyOnOpen(t *testing.T) {
 	}
 }
 
-// TestOpenMigratesDovecotIndexFilename covers the pure-filename
+// TestOpenMigratesLegacyIndexFilename covers the pure-filename
 // migration path: a current-format file under the legacy name
 // gets renamed in place; no wire-format conversion happens.
-func TestOpenMigratesDovecotIndexFilename(t *testing.T) {
+func TestOpenMigratesLegacyIndexFilename(t *testing.T) {
 	dir := t.TempDir()
 	be := New()
 	idx := be.OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: dir})

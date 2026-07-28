@@ -281,13 +281,13 @@ func (e Entry) String() string {
 	return prefix + e.Identifier.String() + " " + e.Rights.String()
 }
 
-// ACL is the ordered set of entries from a dovecot-acl file. Order is
+// ACL is the ordered set of entries from a yarilo-acl file. Order is
 // preserved on read but is semantically insignificant — Negative=true
 // entries subtract from any matching positive regardless of position.
 // Sorted() returns a deterministic ordering for stable on-disk writes.
 type ACL []Entry
 
-// ParseACL reads a full dovecot-acl file body. Comment and blank
+// ParseACL reads a full yarilo-acl file body. Comment and blank
 // lines are skipped; the first malformed entry aborts parsing with
 // the 1-based line number annotated.
 //

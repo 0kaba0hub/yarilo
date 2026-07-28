@@ -355,7 +355,7 @@ func (p *policy) VirusScore(_ context.Context) (string, bool) {
 
 // normalizeScore reads header from hdr, parses its leading numeric value, and
 // maps the raw/max ratio onto the RFC 5235 scale: a *tested* message grades
-// onto 1..maxGrade (1 = clean, maxGrade = certain), matching Dovecot's
+// onto 1..maxGrade (1 = clean, maxGrade = certain), matching the reference's
 // `1 + rint(norm*(maxGrade-1))`; with percent it maps onto 0..100. "0" is
 // reserved for "not tested", so an untested / unconfigured / unparsable header
 // returns ("0", false) — never a tested value of 0.
