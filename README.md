@@ -177,10 +177,11 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 | yarilo-quota-status | Quota policy socket (Postfix quota check) | ✅ |
 | yarilo-fts | Full-text search indexer + lookup service (flatcurve/Xapian; sole cgo/libxapian process) | ✅ |
 | yarilo-backend-api | HTTP admin API (dict, ACL, folder, quota, rebuild) | ✅ |
+| yarilo-backend-reg | Co-located backend registration sidecar — one BACKEND-UP per pod IP, readiness-gated heartbeat, graceful LEAVE on SIGTERM (#776/#788) | ✅ |
 | yarctl | CLI control tool — `director` and `backend` planes (backward-compat alias: `yarilo-admin`) | ✅ |
-| yarilo-monitor | Backend health sidecar for director ring | ✅ |
+| yarilo-monitor | Optional backend health sidecar for the director ring (probe-based; the primary path is yarilo-backend-reg self-registration) | ✅ |
 | yarilo-migrate | Offline mailbox migration (Maildir ↔ dbox ↔ mdbox) | ✅ |
-| yarilo-director | Consistent-hashing ring, sticky sessions, failover | planned |
+| yarilo-director | Consistent-hashing ring, sticky sessions, throttled evacuation, failover | ✅ |
 
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
 Full wire-format specification: [INTERNALS.md](INTERNALS.md).
