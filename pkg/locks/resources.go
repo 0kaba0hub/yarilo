@@ -16,7 +16,7 @@ package locks
 func IndexKey(user string) string { return "idx:" + user }
 
 // MdboxMapKey returns the lock key for the user-wide mdbox map
-// (dovecot.map.index). The mdbox driver acquires this BEFORE any
+// (yarilo.map.index). The mdbox driver acquires this BEFORE any
 // MailboxKey when allocating map_uids / file_ids; this is the
 // strict map-then-folder order documented in
 // docs/STORAGE-COMPLIANCE.md §4.2.
