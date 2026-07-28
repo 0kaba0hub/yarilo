@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -70,6 +71,20 @@ func main() {
 
 	locker := buildLocker(cfg)
 	resolver := backend.BuildResolver(cfg)
+	// The userdb lookup on the SEARCH/index hot path dials yarilo-auth's master.
+	// Under internal_tls that listener requires mTLS, so a nil-TLS dial wedges
+	// the handshake and hangs every FTS-backed SEARCH (#864) — the same trap the
+	// backend already documents ("nil-TLS dial wedged lmtp"). Dial it with the
+	// internal mTLS client config, exactly like the backend does.
+	var authTLS *tls.Config
+	if cfg.InternalTLS.Enabled {
+		authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA,
+			cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
+		if err != nil {
+			slog.Error("fts auth-master mtls config failed", "err", err)
+			os.Exit(1)
+		}
+	}
 	chain, err := language.NewMultiChain(languagesOr(fc.Languages, "en"), fc.LanguageFilters, fc.LanguageFiltersOverride,
 		fc.LanguageTokenMaxLen, fc.LanguageAddressMaxLen, fc.DetectionMinRunes)
 	if err != nil {
@@ -84,7 +99,7 @@ func main() {
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
 		},
 		Index:       file.New(),
-		ResolveUser: userResolver(fc.AuthMasterAddr, resolver),
+		ResolveUser: userResolver(fc.AuthMasterAddr, resolver, authTLS),
 		Chain:       chain,
 		Build: buildmail.Options{
 			HeaderIncludes:       fc.HeaderIncludes,
@@ -145,14 +160,14 @@ func main() {
 // userResolver prefers the yarilo-auth master userdb (per-user storage
 // identity: home, mail location, INDEX= overrides); without an address it
 // falls back to the resolver's template defaults.
-func userResolver(masterAddr string, resolver *mailbox.Resolver) func(string) (*mailbox.UserInfo, error) {
+func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Config) func(string) (*mailbox.UserInfo, error) {
 	if masterAddr == "" {
 		return func(u string) (*mailbox.UserInfo, error) {
 			return resolver.UserInfo(u, ""), nil
 		}
 	}
 	return func(u string) (*mailbox.UserInfo, error) {
-		cl, err := authclient.Dial(masterAddr, nil)
+		cl, err := authclient.Dial(masterAddr, authTLS)
 		if err != nil {
 			return nil, fmt.Errorf("fts: master dial: %w", err)
 		}
