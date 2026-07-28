@@ -30,6 +30,21 @@ internalTLS:
   sessionCacheTtl: 0
 
 ## -------------------------------------------------------------------
+## Login proxies (shared across imap/pop3/submission/managesieve login)
+## -------------------------------------------------------------------
+login:
+  ## Confirmed-kick LOOKUP hold budget (#847/#858). While the director holds a
+  ## user under a confirmed kick, the login proxy re-LOOKUPs instead of erroring
+  ## the concurrent login. lookupHoldMax × lookupHoldBackoffMs MUST exceed the
+  ## director's worst-case confirm time (components.director.user_kill_confirm_grace
+  ## + drain), or the proxy exhausts retries before the kill confirms and the
+  ## login errors. Defaults 20 × 150ms = 3s budget (covers the default 1s grace +
+  ## drain). Raise both together if you raise user_kill_confirm_grace.
+  ## 0 = built-in default.
+  lookupHoldMax: 0
+  lookupHoldBackoffMs: 0
+
+## -------------------------------------------------------------------
 ## Storage (shared across all session components)
 ## -------------------------------------------------------------------
 ## These settings apply to every yarilo session component (imap, pop3,
