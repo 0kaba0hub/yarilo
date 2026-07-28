@@ -4,6 +4,8 @@
 /yarilo
 /yarilo-*
 /smoketest
+/yarctl
+/fts-bench
 # Binaries built inside their app dir (older habit)
 app/yarilo/yarilo
 app/yarilo-migrate/yarilo-migrate
