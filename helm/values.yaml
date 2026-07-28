@@ -17,6 +17,17 @@ internalTLS:
   ## internal-tls cert you provide MUST carry this name as a SAN. The director
   ## RING dial is separate (components.director.internalTLS.ringTlsServerName).
   serverName: ""
+  ## TLS 1.3 client session resumption for internal mTLS dials (#856). Repeated
+  ## dials to the same peer resume via a cached session ticket instead of a full
+  ## handshake — cuts the delivery→verify handshake CPU that times out heavy
+  ## smoke tests on a single-core node.
+  ## sessionCacheSize: cache entries per client config. 0 = built-in default
+  ##   (64); a negative value disables resumption (every dial is a full handshake).
+  sessionCacheSize: 0
+  ## sessionCacheTtl: seconds a cached session may still be resumed, on top of
+  ##   LRU eviction. 0 = LRU-only (no age limit). Set a TTL so a cert rotation
+  ##   stops resuming stale sessions within the window.
+  sessionCacheTtl: 0
 
 ## -------------------------------------------------------------------
 ## Storage (shared across all session components)

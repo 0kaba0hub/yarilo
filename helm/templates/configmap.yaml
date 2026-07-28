@@ -604,6 +604,9 @@ data:
       # Pinned name every internal client dial verifies (#816). Defaults to
       # <release>-internal; this MUST be a SAN in the shared internal-tls cert.
       server_name: {{ .Values.internalTLS.serverName | default (printf "%s-internal" (include "yarilo.fullname" .)) | quote }}
+      # TLS 1.3 session resumption for internal mTLS dials (#856).
+      session_cache_size: {{ .Values.internalTLS.sessionCacheSize | default 0 }}
+      session_cache_ttl: {{ .Values.internalTLS.sessionCacheTtl | default 0 }}
 
     auth_service:
       listen: {{ .Values.components.auth.listen | quote }}
