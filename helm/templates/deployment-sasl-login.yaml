@@ -23,6 +23,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.gracefulShutdown.terminationGracePeriodSeconds | default 45 }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
@@ -52,6 +53,7 @@ spec:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- include "yarilo.preStopDrain" . | nindent 10 }}
           resources:
             {{- toYaml .Values.components.saslLogin.resources | nindent 12 }}
           volumeMounts:
