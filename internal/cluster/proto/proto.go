@@ -13,6 +13,14 @@ import (
 	"time"
 )
 
+// ErrLookupHold is returned by Lookup when the director is holding LOOKUP for a
+// user under a confirmed ring-wide kick (#847). It is retryable: the caller
+// should re-LOOKUP shortly, not error the client.
+var ErrLookupHold = errors.New("director lookup: user kill in progress, retry")
+
+// lookupHoldReason is the FAIL reason the director sends for the hold.
+const lookupHoldReason = "killing"
+
 const (
 	protoName  = "yarilo-director"
 	majorVer   = 1
@@ -150,7 +158,14 @@ func (c *Conn) Lookup(id, username, tag, proto string) (LookupResult, error) {
 			Tag:  tag,
 		}, nil
 	case "FAIL":
-		return LookupResult{}, fmt.Errorf("director lookup: %s", fields[len(fields)-1])
+		reason := fields[len(fields)-1]
+		// A confirmed-kick hold (#847) is retryable, not a hard failure: the
+		// user's old sessions are still draining, so the login proxy should
+		// re-LOOKUP shortly rather than surface an error to the client.
+		if reason == "reason="+lookupHoldReason {
+			return LookupResult{}, fmt.Errorf("director lookup: %w", ErrLookupHold)
+		}
+		return LookupResult{}, fmt.Errorf("director lookup: %s", reason)
 	default:
 		return LookupResult{}, fmt.Errorf("director lookup: unknown response: %q", line)
 	}
