@@ -40,7 +40,7 @@ fts:
   enabled: true
   fts_engine: flatcurve
   fts_mode: remote
-  fts_addr: "yarilo-fts:9106"
+  fts_addr: ""
   fts_auth_master_addr: "yarilo-auth:9102"
   fts_autoindex: true
   # Fail loud in the sandbox: when FTS returns nothing / is unavailable, surface an
@@ -225,6 +225,14 @@ extraEnv:
 components:
   director:
     enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-director-internal-tls
+      certificate:
+        enabled: true
+        issuerRef:
+          kind: Issuer
+          name: yarilo-internal-ca
     replicas: 5
     ring_secret: "sandbox-ring-secret-32charslong00"
     min_members: 3
@@ -238,10 +246,28 @@ components:
         containerPort: 10024
     backends: []
 
+
+  ## internal mTLS for co-located backend + shared services (sandbox #856 gate)
+  backend:
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
+  anvil:
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
+  locks:
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
+
   ## IMAP login — TLS terminator on :993 (IMAPS) / :143 (STARTTLS).
   ## Creates yarilo-tls Secret via cert-manager.
   imapLogin:
     enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
     tls:
       secretName: yarilo-tls
       certificate:
@@ -269,6 +295,9 @@ components:
   ## Reuses yarilo-tls Secret from imapLogin.
   pop3Login:
     enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
     tls:
       secretName: yarilo-tls
     listeners:
@@ -286,6 +315,9 @@ components:
         metallb.universe.tf/allow-shared-ip: "yarilo-mail"
 
   auth:
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
     passdb:
       - driver: mysql
         dsn: "${YARILO_DB_DSN}"
@@ -337,12 +369,18 @@ components:
   ## LMTP login proxy — MTA-facing, plain LMTP, no preamble required.
   lmtpLogin:
     enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
     backend_addr: ""
     director_addr: "yarilo-director:9102"
     backend_port: 10024
 
   saslLogin:
     enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
     service:
       type: LoadBalancer
       annotations:
@@ -351,6 +389,9 @@ components:
 
   quotaStatus:
     enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
     auth_master_addr: "yarilo-auth:9102"
     service:
       type: LoadBalancer
@@ -371,6 +412,9 @@ components:
   ## ManageSieve login pod — client-facing on :4190 STARTTLS.
   manageSieveLogin:
     enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
     backend_addr: ""
     director_addr: "yarilo-director:9102"
     backend_port: 14190
