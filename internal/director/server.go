@@ -211,6 +211,9 @@ type Options struct {
 	// MaxParallelMoves caps concurrent user moves during a graceful evacuation
 	// (#849). 0 = 5; negative = unlimited.
 	MaxParallelMoves int
+	// FlushProgram is an optional per-user cleanup hook run after a confirmed move
+	// (#848); empty = disabled. See config.DirectorServiceConfig.FlushProgram.
+	FlushProgram string
 	// UserKillTimeout is the hard fallthrough for the confirmed kick (#847);
 	// UserKillConfirmGrace is the stable-zero window before confirming. 0 =
 	// defaults (15s, 1s).
@@ -1040,7 +1043,11 @@ func (s *Server) moveUser(user, addr string, exclude *client) {
 		// (#847). The new pin above is already set and is NOT gated (the hold is
 		// only on fresh LOOKUP assignment); a held login re-LOOKUPs and lands on
 		// the new pin once the kill confirms.
-		s.startKilling(HashUsername(user, s.hf))
+		hash := HashUsername(user, s.hf)
+		s.startKilling(hash)
+		// #848: run the operator flush hook once this move confirms (old sessions
+		// gone). Only this originating director attaches the context.
+		s.attachFlush(hash, flushCtx{user: user, oldBackend: oldIP, newBackend: host})
 		// Conditional kick: USER-KICKED with a trailing old-backend field.
 		s.originateRingEvent("USER-KICKED", fmt.Sprintf("%s\t%s", user, oldIP), exclude)
 	}
