@@ -122,7 +122,7 @@ func main() {
 
 	var anvilTLS *tls.Config
 	if cfg.InternalTLS.Enabled && cfg.AnvilService.ClientAddr() != "" {
-		anvilTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
+		anvilTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 		if err != nil {
 			slog.Error("backend-api: anvil mtls client config failed", "err", err)
 			os.Exit(1)
@@ -137,7 +137,7 @@ func main() {
 	if cfg.BackendAPI.AuthMasterAddr != "" {
 		var authTLS *tls.Config
 		if cfg.InternalTLS.Enabled {
-			authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
+			authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 			if err != nil {
 				slog.Error("backend-api: auth mtls client config failed", "err", err)
 				os.Exit(1)
@@ -268,7 +268,7 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 			return nil, fmt.Errorf("locks_client.endpoints must have at least one entry for remote mode")
 		}
 		if cfg.InternalTLS.Enabled {
-			tlsCfg, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
+			tlsCfg, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 			if err != nil {
 				return nil, fmt.Errorf("locks_client mtls: %w", err)
 			}

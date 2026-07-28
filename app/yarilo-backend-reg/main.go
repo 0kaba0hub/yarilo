@@ -131,7 +131,7 @@ func buildTLS(cfg *config.Config) (*tls.Config, error) {
 	if !cfg.InternalTLS.Enabled {
 		return nil, nil
 	}
-	return mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
+	return mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 }
 
 func logLevel() slog.Level {

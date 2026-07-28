@@ -136,7 +136,7 @@ func main() {
 	authAddr := cfg.AuthService.ClientAddr()
 	var authTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
-		t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
+		t, err := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 		if err != nil {
 			slog.Error("auth_service mtls config failed", "err", err)
 			os.Exit(1)

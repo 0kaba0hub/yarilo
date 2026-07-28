@@ -212,7 +212,7 @@ func buildLocker(cfg *config.Config) locks.Locker {
 			os.Exit(1)
 		}
 		if cfg.InternalTLS.Enabled {
-			tlsCfg, terr := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
+			tlsCfg, terr := mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 			if terr != nil {
 				slog.Error("locks mtls failed", "err", terr)
 				os.Exit(1)

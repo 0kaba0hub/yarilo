@@ -559,6 +559,14 @@ type InternalTLSConfig struct {
 	// with internal_tls enabled is a misconfiguration: mtls.ClientConfig fails
 	// loudly at startup. The chart defaults it to <release>-internal.
 	ServerName string `koanf:"server_name"`
+	// SessionCacheSize is the TLS 1.3 client session-resumption cache size
+	// (entries) for internal dials (#856). 0 uses the built-in default; a
+	// negative value disables resumption (every dial pays a full handshake).
+	SessionCacheSize int `koanf:"session_cache_size"`
+	// SessionCacheTTL bounds how long (seconds) a cached session may be resumed,
+	// on top of LRU eviction; 0 means LRU-only (no age limit). A TTL makes a
+	// cert rotation stop resuming stale sessions within that window.
+	SessionCacheTTL int `koanf:"session_cache_ttl"`
 }
 
 // QuotaConfig toggles the quota engine: enforcement on every save (IMAP
