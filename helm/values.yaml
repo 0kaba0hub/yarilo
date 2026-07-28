@@ -43,6 +43,10 @@ login:
   ## 0 = built-in default.
   lookupHoldMax: 0
   lookupHoldBackoffMs: 0
+  ## Graceful drain (#857): seconds the login proxy keeps serving in-flight
+  ## sessions after SIGTERM before closing them. Must fit within
+  ## gracefulShutdown.terminationGracePeriodSeconds. 0 = default (30).
+  sessionGracePeriodSeconds: 0
 
 ## -------------------------------------------------------------------
 ## Graceful rollout (#857)

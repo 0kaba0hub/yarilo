@@ -737,6 +737,11 @@ type LoginConfig struct {
 	// LookupHoldBackoffMs is the delay (milliseconds) between LOOKUP hold
 	// retries. 0 uses the default (150).
 	LookupHoldBackoffMs int `koanf:"lookup_hold_backoff_ms"`
+	// SessionGracePeriod is how long (seconds) a login proxy keeps serving
+	// in-flight proxied sessions after SIGTERM before closing them, so a rolling
+	// restart does not sever live sessions mid-command (#857). Must fit within
+	// the pod terminationGracePeriodSeconds. 0 uses the default (30).
+	SessionGracePeriod int `koanf:"session_grace_period"`
 }
 
 type SASLLoginConfig struct {
