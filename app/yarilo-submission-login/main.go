@@ -100,6 +100,7 @@ func main() {
 	// reach this pod's sessions. Cancelled on shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var loginServers []*login.Server
 
 	go runTelemetry(cfg.Telemetry.Listen)
 
@@ -138,10 +139,13 @@ func main() {
 			XClient:           svcs.Submissions.XClient,
 			XClientNets:       xclientNets,
 		})
-		go func() {
-			slog.Error("submissions-login: server error", "err", srv.Serve(ln))
-			os.Exit(1)
-		}()
+		loginServers = append(loginServers, srv)
+		go func(srv *login.Server, ln net.Listener) {
+			if err := srv.Serve(ln); err != nil {
+				slog.Error("submissions-login: server error", "err", err)
+				os.Exit(1)
+			}
+		}(srv, ln)
 		if dirAddr != "" {
 			go srv.Watch(ctx)
 		}
@@ -183,10 +187,13 @@ func main() {
 			XClient:           svcs.Submission.XClient,
 			XClientNets:       xclientNets,
 		})
-		go func() {
-			slog.Error("submission-login: server error", "err", srv.Serve(ln))
-			os.Exit(1)
-		}()
+		loginServers = append(loginServers, srv)
+		go func(srv *login.Server, ln net.Listener) {
+			if err := srv.Serve(ln); err != nil {
+				slog.Error("submission-login: server error", "err", err)
+				os.Exit(1)
+			}
+		}(srv, ln)
 		if dirAddr != "" {
 			go srv.Watch(ctx)
 		}
@@ -197,6 +204,15 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+	sgrace := cfg.Login.SessionGracePeriod
+	if sgrace <= 0 {
+		sgrace = 30
+	}
+	sctx, scancel := context.WithTimeout(context.Background(), time.Duration(sgrace)*time.Second)
+	for _, srv := range loginServers {
+		_ = srv.Shutdown(sctx)
+	}
+	scancel()
 	cancel()
 	slog.Info("yarilo-submission-login stopped")
 }

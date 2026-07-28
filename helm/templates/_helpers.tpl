@@ -235,3 +235,15 @@ Args: dict "root" $ "itls" <internalTLS config>.
 {{- end }}
 {{- include "yarilo.internalTLSMount" .itls }}
 {{- end -}}
+
+{{/*
+Graceful-shutdown preStop hook (#857): delay SIGTERM so kube removes the pod
+from Service endpoints before the process stops accepting, closing the
+racing-new-connection window. Pass the ROOT context.
+*/}}
+{{- define "yarilo.preStopDrain" -}}
+lifecycle:
+  preStop:
+    exec:
+      command: ["/bin/sh", "-c", "sleep {{ .Values.gracefulShutdown.preStopSleepSeconds | default 5 }}"]
+{{- end -}}

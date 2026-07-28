@@ -102,6 +102,7 @@ func main() {
 		slog.Error("managesieve-login: listen failed", "addr", addr, "err", err)
 		os.Exit(1)
 	}
+	var loginServers []*login.Server
 	srv := login.New(login.Options{
 		Protocol:            login.ProtocolManageSieve,
 		DirectorAddr:        cfg.ManageSieveLoginService.DirectorAddr,
@@ -128,10 +129,13 @@ func main() {
 		HAProxyTimeout:      haproxyTimeout,
 		HAProxyNets:         haproxyNets,
 	})
-	go func() {
-		slog.Error("managesieve-login: server error", "err", srv.Serve(ln))
-		os.Exit(1)
-	}()
+	loginServers = append(loginServers, srv)
+	go func(srv *login.Server, ln net.Listener) {
+		if err := srv.Serve(ln); err != nil {
+			slog.Error("managesieve-login: server error", "err", err)
+			os.Exit(1)
+		}
+	}(srv, ln)
 	// Persistent director watch (#736): delivers USER-KICKED so kicks reach
 	// this pod's sessions. Cancelled on shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,6 +149,15 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+	sgrace := cfg.Login.SessionGracePeriod
+	if sgrace <= 0 {
+		sgrace = 30
+	}
+	sctx, scancel := context.WithTimeout(context.Background(), time.Duration(sgrace)*time.Second)
+	for _, srv := range loginServers {
+		_ = srv.Shutdown(sctx)
+	}
+	scancel()
 	cancel()
 	slog.Info("yarilo-managesieve-login stopped")
 }

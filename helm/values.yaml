@@ -43,6 +43,25 @@ login:
   ## 0 = built-in default.
   lookupHoldMax: 0
   lookupHoldBackoffMs: 0
+  ## Graceful drain (#857): seconds the login proxy keeps serving in-flight
+  ## sessions after SIGTERM before closing them. Must fit within
+  ## gracefulShutdown.terminationGracePeriodSeconds. 0 = default (30).
+  sessionGracePeriodSeconds: 0
+
+## -------------------------------------------------------------------
+## Graceful rollout (#857)
+## -------------------------------------------------------------------
+## During a rolling update, login/backend pods must not drop in-flight or
+## racing-new client connections.
+gracefulShutdown:
+  ## preStop sleep (seconds) before SIGTERM, so kube removes the pod from
+  ## Service endpoints BEFORE the process stops accepting — closes the
+  ## endpoint-removal race (new connections routed to a terminating pod).
+  ## Should be >= the endpoint-propagation interval (kube-proxy / MetalLB).
+  preStopSleepSeconds: 5
+  ## Pod terminationGracePeriodSeconds. Must be >= preStopSleepSeconds +
+  ## login.session_grace_period so the in-flight drain is not hard-killed.
+  terminationGracePeriodSeconds: 45
 
 ## -------------------------------------------------------------------
 ## Storage (shared across all session components)

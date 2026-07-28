@@ -223,6 +223,14 @@ type Server struct {
 
 	watchMu sync.RWMutex
 	watch   *watchConn // persistent director connection for push notifications
+
+	// Graceful-drain state (#857): on Shutdown the listeners are closed (stop
+	// accepting) and inflight is waited on (let live sessions finish) up to the
+	// grace period. draining makes a listener-closed Accept a clean return.
+	drainMu   sync.Mutex
+	listeners []net.Listener
+	draining  bool
+	inflight  sync.WaitGroup
 }
 
 // newSessionID returns a Postfix-style long queue ID:
@@ -270,15 +278,62 @@ func (s *Server) Serve(ln net.Listener) error {
 			ReadHeaderTimeout: timeout,
 		}
 	}
+	s.drainMu.Lock()
+	if s.draining {
+		s.drainMu.Unlock()
+		_ = ln.Close()
+		return nil
+	}
+	s.listeners = append(s.listeners, ln)
+	s.drainMu.Unlock()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.startKickSubscriber(ctx)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			s.drainMu.Lock()
+			draining := s.draining
+			s.drainMu.Unlock()
+			if draining {
+				return nil // listener closed by Shutdown — clean stop
+			}
 			return fmt.Errorf("login: accept: %w", err)
 		}
-		go s.handleConn(conn)
+		s.inflight.Add(1)
+		go func() {
+			defer s.inflight.Done()
+			s.handleConn(conn)
+		}()
+	}
+}
+
+// Shutdown stops accepting new connections (closes the listeners so Serve
+// returns nil) and waits for in-flight proxied sessions to finish, up to ctx's
+// deadline. A session still live when ctx expires is left to process exit —
+// bounded by the pod terminationGracePeriodSeconds. Mirrors the director's
+// graceful ring leave (#770). Safe to call once; idempotent.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.drainMu.Lock()
+	if s.draining {
+		s.drainMu.Unlock()
+		return nil
+	}
+	s.draining = true
+	lns := s.listeners
+	s.listeners = nil
+	s.drainMu.Unlock()
+	for _, ln := range lns {
+		_ = ln.Close()
+	}
+	done := make(chan struct{})
+	go func() { s.inflight.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err() // grace expired with sessions still live
 	}
 }
 
