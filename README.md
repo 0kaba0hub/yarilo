@@ -216,6 +216,7 @@ yarilo-migrate \
 | [docs/BACKEND-API.md](docs/BACKEND-API.md) | Backend HTTP admin API |
 | [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarctl` CLI reference |
 | [docs/DICT.md](docs/DICT.md) | `pkg/dict` KV-store abstraction: drivers, YAML schema |
+| [docs/TODO.md](docs/TODO.md) | Deferred work / backlog (AUTH mechs & drivers, obox, dsync, FTS engines) |
 
 ---
 

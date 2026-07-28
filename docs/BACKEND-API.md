@@ -653,7 +653,7 @@ dials it per request, runs `WHO`, then closes.
 Filters: `service=imap|pop3|submission|lmtp` and `user=<exact>`.
 
 **What "active" means:** entries register on login-pod `CONNECT`
-and clear on `DISCONNECT`. Caveats — see [TODO.md](../TODO.md):
+and clear on `DISCONNECT`. Caveats — see [TODO.md](TODO.md):
 
 - LMTP does not go through anvil; LMTP deliveries are not listed.
 - Stale entries can survive a login-pod crash (no TTL / heartbeat yet).
