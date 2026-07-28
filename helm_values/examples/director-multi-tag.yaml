@@ -1,0 +1,157 @@
+# ============================================================================
+# yarilo — PRODUCTION values: DIRECTOR topology, MULTI-TAG (sharded storage)
+# ============================================================================
+#
+# A "tag" = one NFS shard = one co-located backend StatefulSet with its OWN
+# yarilo-locks and PV (docs/DEPLOYMENT.md "backend deployment — one per tag").
+# The director ring is SHARED; each backend tag self-registers into it and the
+# director routes a user to a pod WITHIN that user's tag (LookupBackendByTag).
+#
+# This is a MULTI-RELEASE install — one Helm release for the control plane +
+# one release PER backend tag:
+#
+#   # 1) Control plane (director + login proxies + shared auth/anvil/quota):
+#   helm upgrade --install yarilo-cp ./helm -n yarilo -f director-multi-tag.yaml \
+#       --set image.tag=<version>
+#
+#   # 2) One backend release per tag (repeat, changing <TAG> / shard / PV):
+#   helm upgrade --install yarilo-shard-a ./helm -n yarilo \
+#       -f director-multi-tag-backend.yaml --set image.tag=<version> \
+#       --set nameOverride=yarilo-shard-a \
+#       --set components.backend.tag=shard-a \
+#       --set storage.persistence.storageClass=<nfs-shard-a>
+#
+# Which tag a user lands on is decided by the passdb (assign the tag per user via
+# a proxy/director_tag field, #746) or by username_hash %Ld to co-locate a whole
+# domain on one tag. Below is the CONTROL-PLANE file; the per-tag backend file is
+# director-multi-tag-backend.yaml.
+# ============================================================================
+
+hostname: mail.example.com
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  tag: ""
+  pullPolicy: IfNotPresent
+logLevel: info
+
+redis:
+  bundled: false
+  externalUrl: "redis://<redis-host>:6379/0"
+mysql:
+  bundled: false
+extraEnv:
+  - name: YARILO_DB_DSN
+    valueFrom:
+      secretKeyRef: { name: yarilo-mysql, key: dsn }
+
+internal_tls:
+  server_name: yarilo-internal
+
+fts:
+  enabled: true
+  fts_engine: flatcurve
+  fts_mode: remote
+  fts_addr: ""                      # co-located per-tag → localhost
+  fts_auth_master_addr: "yarilo-auth:9102"
+  fts_autoindex: true
+
+components:
+
+  director:
+    enabled: true
+    replicas: 3
+    ring_secret: "<32-char-shared-ring-secret>"
+    min_members: 3
+    assignment_policy: least_sessions
+    # Co-locate a whole domain onto its tag's pods (optional routing lever):
+    # username_hash: "%Ld"
+    listeners:
+      lmtp: { enabled: true, port: 24, containerPort: 10024 }
+    backends: []                    # per-tag backends self-register into the shared ring
+    internalTLS:
+      enabled: true
+      secretName: yarilo-director-internal-tls
+      certificate:
+        enabled: true
+        issuerRef: { kind: ClusterIssuer, name: yarilo-internal-ca }
+
+  # IMPORTANT: the control-plane release runs NO backend of its own.
+  backend:
+    coLocated: true
+    replicas: 0                     # backends live in the per-tag releases, not here
+
+  auth:
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    passdb:
+      - driver: mysql
+        dsn: "${YARILO_DB_DSN}"
+        default_pass_scheme: BCRYPT
+        skip_schema: true
+        # NOTE: emit a per-user tag (director_tag / proxy field, #746) here so the
+        # director routes each user to the correct shard. Example adds a `tag`
+        # column from the mailbox table.
+        password_query: |
+          SELECT password, active AS enabled, allow_nets FROM mailbox WHERE username = %u
+        user_query: |
+          SELECT CONCAT(home, mpath) AS home,
+                 CONCAT(mbtype, ':~/', maildir, ':INDEX=~/index',
+                        ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
+                 CONCAT('*:bytes=', quota_bytes, ':messages=', quota_messages) AS quota_rule
+          FROM mailbox WHERE username = %u
+        iterate_query: |
+          SELECT username FROM mailbox WHERE active = 1 ORDER BY username
+    token: { backend: redis, redis_addr: "redis://<redis-host>:6379/0" }
+  anvil:
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  # locks is per-TAG (in the backend releases), not in the control plane:
+  locks:
+    enabled: false
+
+  imapLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10143
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls:
+      secretName: yarilo-tls
+      certificate:
+        enabled: true
+        issuerRef: { kind: ClusterIssuer, name: letsencrypt-prod }
+        dnsNames: [mail.example.com]
+    listeners: { imaps: { enabled: true }, imap: { enabled: true } }
+    service: { type: LoadBalancer }
+  pop3Login:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10110
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls: { secretName: yarilo-tls }
+    listeners: { pop3s: { enabled: true }, pop3: { enabled: true } }
+    service: { type: LoadBalancer }
+  lmtpLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10024
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  manageSieveLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 14190
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls: { secretName: yarilo-tls }
+    listeners: { managesieve: { enabled: true } }
+    service: { type: LoadBalancer }
+  saslLogin:
+    enabled: true
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    service: { type: LoadBalancer }
+  quotaStatus:
+    enabled: true
+    auth_master_addr: "yarilo-auth:9102"
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    service: { type: LoadBalancer }

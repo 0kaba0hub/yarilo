@@ -1,0 +1,96 @@
+# ============================================================================
+# yarilo — PER-TAG BACKEND release (companion to director-multi-tag.yaml)
+# ============================================================================
+#
+# ONE Helm release PER backend tag / NFS shard. Runs ONLY the co-located backend
+# StatefulSet + that tag's own yarilo-locks; the director ring, login proxies and
+# shared auth/anvil/quota-status live in the control-plane release.
+#
+# Install once per tag, overriding the tag name, NFS shard and PV:
+#   helm upgrade --install yarilo-shard-a ./helm -n yarilo \
+#     -f director-multi-tag-backend.yaml --set image.tag=<version> \
+#     --set nameOverride=yarilo-shard-a \
+#     --set components.backend.tag=shard-a \
+#     --set storage.persistence.storageClass=<nfs-shard-a>
+#
+#   helm upgrade --install yarilo-shard-b ./helm -n yarilo \
+#     -f director-multi-tag-backend.yaml --set image.tag=<version> \
+#     --set nameOverride=yarilo-shard-b \
+#     --set components.backend.tag=shard-b \
+#     --set storage.persistence.storageClass=<nfs-shard-b>
+#
+# The tag pods self-register into the SHARED director ring at
+# backend_register.director_addr → yarilo-director (the control-plane Service).
+# ============================================================================
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  tag: ""
+  pullPolicy: IfNotPresent
+logLevel: info
+
+# Per-shard NFS RWX PV (overridden per release via --set storageClass):
+storage:
+  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  persistence:
+    enabled: true
+    accessMode: ReadWriteMany
+    size: 500Gi
+    storageClass: "<nfs-shard-storage-class>"
+
+redis:
+  bundled: false
+  externalUrl: "redis://<redis-host>:6379/0"
+mysql:
+  bundled: false
+extraEnv:
+  - name: YARILO_DB_DSN
+    valueFrom:
+      secretKeyRef: { name: yarilo-mysql, key: dsn }
+
+internal_tls:
+  server_name: yarilo-internal
+
+fts:
+  enabled: true
+  fts_engine: flatcurve
+  fts_mode: remote
+  fts_addr: ""                      # co-located → localhost:9106
+  fts_auth_master_addr: "yarilo-auth:9102"   # SHARED auth in the control-plane release
+  fts_autoindex: true
+
+# Point registration + login backend dials at the SHARED control-plane services.
+# These resolve to the control-plane release's fullname (yarilo-*). If the CP
+# release name differs from "yarilo", set these explicitly.
+backend_register:
+  enabled: true
+  director_addr: "yarilo-director:9102"   # SHARED director ring (control-plane)
+  # tag is taken from components.backend.tag below (rendered into the heartbeat)
+
+components:
+  director:
+    enabled: false                  # NO director here — it lives in the control plane
+
+  backend:
+    coLocated: true
+    replicas: 3                     # scale per shard's user load
+    tag: "shard-a"                  # OVERRIDE per release (--set components.backend.tag=...)
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls   # shared internal cert (same CA as control plane)
+
+  # This tag's OWN locks (cross-pod write coordination within the shard):
+  locks:
+    enabled: true
+    replicas: 2
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+
+  # Shared services are NOT rendered here (they run in the control-plane release):
+  auth:       { enabled: false }
+  anvil:      { enabled: false }
+  quotaStatus: { enabled: false }
+  imapLogin:  { enabled: false }
+  pop3Login:  { enabled: false }
+  lmtpLogin:  { enabled: false }
+  manageSieveLogin: { enabled: false }
+  saslLogin:  { enabled: false }

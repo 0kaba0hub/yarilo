@@ -1,0 +1,161 @@
+# ============================================================================
+# yarilo — PRODUCTION STANDALONE (no director) — hardened single deployment
+# ============================================================================
+#
+# No director ring / no sharding, but production-grade: external Redis + MySQL,
+# full internal mTLS, HA locks, FTS, cert-manager client certs, multiple session
+# replicas. Choose this when ONE backend pool is enough (no need to shard storage
+# across NFS tags) but you want a hardened, HA-capable install.
+#
+# Login proxies dial FIXED backend Services (no LOOKUP). To scale the backend,
+# raise the per-protocol session replicas below — they share the RWX PV, and
+# cross-pod writes are coordinated by yarilo-locks (that is what makes standalone
+# multi-replica safe without a director).
+#
+# Prereqs: external MySQL (PostfixAdmin schema) + Redis, an internal CA
+# (cert-manager Issuer "yarilo-internal-ca") issuing the shared internal-tls
+# secret with the internal_tls.server_name SAN, and a public TLS issuer.
+#
+# Install:
+#   helm upgrade --install yarilo ./helm -n yarilo -f standalone-production.yaml \
+#       --set image.tag=<version>
+# ============================================================================
+
+hostname: mail.example.com
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  tag: ""
+  pullPolicy: IfNotPresent
+logLevel: info
+
+storage:
+  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  persistence:
+    enabled: true
+    accessMode: ReadWriteMany       # RWX so multiple session replicas share the store
+    size: 500Gi
+    storageClass: "<nfs-storage-class>"
+
+redis:
+  bundled: false
+  externalUrl: "redis://<redis-host>:6379/0"
+mysql:
+  bundled: false
+extraEnv:
+  - name: YARILO_DB_DSN
+    valueFrom:
+      secretKeyRef: { name: yarilo-mysql, key: dsn }
+
+internal_tls:
+  server_name: yarilo-internal      # SAN in the shared internal-tls cert
+
+fts:
+  enabled: true
+  fts_engine: flatcurve
+  fts_mode: remote
+  # Standalone (no co-located pod): FTS is its OWN service — keep replicas: 1
+  # (components.fts.replicas > 1 is a footgun without the co-located single-writer
+  # model, #676). Sessions dial it at the ClusterIP below.
+  fts_addr: "yarilo-fts:9106"
+  fts_auth_master_addr: "yarilo-auth:9102"
+  fts_autoindex: true
+
+components:
+
+  director:
+    enabled: false                  # STANDALONE
+
+  backend:
+    coLocated: false                # per-protocol session Deployments
+
+  # Per-protocol session pods — scale these for backend capacity (shared RWX PV,
+  # coordinated by yarilo-locks):
+  imap:
+    enabled: true
+    replicas: 2
+    listeners: { imap: { enabled: true } }
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  pop3:
+    enabled: true
+    replicas: 2
+    listeners: { pop3: { enabled: true } }
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  lmtp:
+    enabled: true
+    replicas: 2
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  manageSieve:
+    enabled: true
+    replicas: 1
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  fts:
+    enabled: true
+    replicas: 1                     # single writer (see fts note above)
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+
+  auth:
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    passdb:
+      - driver: mysql
+        dsn: "${YARILO_DB_DSN}"
+        default_pass_scheme: BCRYPT
+        skip_schema: true
+        password_query: |
+          SELECT password, active AS enabled, allow_nets FROM mailbox WHERE username = %u
+        user_query: |
+          SELECT CONCAT(home, mpath) AS home,
+                 CONCAT(mbtype, ':~/', maildir, ':INDEX=~/index',
+                        ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
+                 CONCAT('*:bytes=', quota_bytes, ':messages=', quota_messages) AS quota_rule
+          FROM mailbox WHERE username = %u
+        iterate_query: |
+          SELECT username FROM mailbox WHERE active = 1 ORDER BY username
+    token: { backend: redis, redis_addr: "redis://<redis-host>:6379/0" }
+  anvil:
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  locks:                            # REQUIRED for multi-replica standalone
+    enabled: true
+    replicas: 2
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+
+  # Login proxies → FIXED backend Services (no director):
+  imapLogin:
+    enabled: true
+    backend_addr: "yarilo-imap:10143"
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls:
+      secretName: yarilo-tls
+      certificate:
+        enabled: true
+        issuerRef: { kind: ClusterIssuer, name: letsencrypt-prod }
+        dnsNames: [mail.example.com]
+    listeners: { imaps: { enabled: true }, imap: { enabled: true } }
+    service: { type: LoadBalancer }
+  pop3Login:
+    enabled: true
+    backend_addr: "yarilo-pop3:10110"
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls: { secretName: yarilo-tls }
+    listeners: { pop3s: { enabled: true }, pop3: { enabled: true } }
+    service: { type: LoadBalancer }
+  lmtpLogin:
+    enabled: true
+    backend_addr: "yarilo-lmtp:10024"
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  manageSieveLogin:
+    enabled: true
+    backend_addr: "yarilo-managesieve:14190"
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls: { secretName: yarilo-tls }
+    listeners: { managesieve: { enabled: true } }
+    service: { type: LoadBalancer }
+  saslLogin:
+    enabled: true
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    service: { type: LoadBalancer }
+  quotaStatus:
+    enabled: true
+    auth_master_addr: "yarilo-auth:9102"
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    service: { type: LoadBalancer }

@@ -1,0 +1,100 @@
+# ============================================================================
+# yarilo — MINIMAL STANDALONE (no director) — dev / eval / tiny install
+# ============================================================================
+#
+# No director ring, no sharding. Login proxies dial a FIXED backend address
+# (no LOOKUP); the backend runs as per-protocol session Deployments on one node.
+# Everything single-replica, bundled Redis, a passwd-file passdb (no external
+# MySQL), no internal mTLS, self-signed client TLS. NOT for production — it is
+# the smallest thing that boots and serves mail.
+#
+# Prereqs: a single-node cluster (or nodeSelector to pin to one node so the
+# ReadWriteOnce PV + all pods co-locate), and a passwd file Secret.
+#
+# Install:
+#   kubectl create secret generic yarilo-passwd \
+#       --from-file=passwd=./passwd -n yarilo         # doveadm/CRAM-style passwd
+#   helm upgrade --install yarilo ./helm -n yarilo -f standalone-minimal.yaml \
+#       --set image.tag=<version>
+# ============================================================================
+
+hostname: mail.example.test
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  tag: ""
+  pullPolicy: IfNotPresent
+logLevel: debug                     # verbose is fine for dev
+
+# Single-node local storage (RWO — all pods must land on the same node):
+storage:
+  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 10Gi
+
+# Bundled Redis (chart's in-namespace StatefulSet) — fine for dev, not for prod:
+redis:
+  bundled: true
+mysql:
+  bundled: false                    # no MySQL — using a passwd-file passdb below
+
+# No internal_tls — plaintext internal dials (single node, dev).
+
+fts:
+  enabled: false                    # keep it minimal; enable for search testing
+
+components:
+
+  director:
+    enabled: false                  # STANDALONE — no director ring
+
+  # Legacy per-protocol backend session Deployments (coLocated=false):
+  backend:
+    coLocated: false                # NOT the director co-located STS
+  imap:  { enabled: true, replicas: 1, listeners: { imap: { enabled: true } } }
+  pop3:  { enabled: true, replicas: 1, listeners: { pop3: { enabled: true } } }
+  lmtp:  { enabled: true, replicas: 1 }
+  manageSieve: { enabled: true, replicas: 1 }
+
+  auth:
+    passdb:
+      - driver: passwd-file         # no external DB — a mounted passwd file
+        passwd_file: /etc/yarilo-passwd/passwd
+    # Mount the Secret created above at /etc/yarilo-passwd (see chart auth extraVolumes,
+    # or --set auth.extraVolumeMounts / extraVolumes).
+    token:
+      backend: redis
+      redis_addr: "redis://yarilo-redis:6379/0"   # bundled redis service
+  anvil: {}
+  locks:
+    enabled: true
+    replicas: 1                     # single locks pod (Redis-backed)
+
+  # Login proxies → FIXED backend Services (no director LOOKUP):
+  imapLogin:
+    enabled: true
+    backend_addr: "yarilo-imap:10143"      # STANDALONE: fixed session-pod Service
+    tls: { secretName: yarilo-tls }        # provide a self-signed cert Secret
+    listeners: { imaps: { enabled: true }, imap: { enabled: true } }
+    service: { type: LoadBalancer }        # or NodePort/ClusterIP for dev
+  pop3Login:
+    enabled: true
+    backend_addr: "yarilo-pop3:10110"
+    tls: { secretName: yarilo-tls }
+    listeners: { pop3s: { enabled: true }, pop3: { enabled: true } }
+    service: { type: LoadBalancer }
+  lmtpLogin:
+    enabled: true
+    backend_addr: "yarilo-lmtp:10024"
+  manageSieveLogin:
+    enabled: true
+    backend_addr: "yarilo-managesieve:14190"
+    tls: { secretName: yarilo-tls }
+    listeners: { managesieve: { enabled: true } }
+    service: { type: LoadBalancer }
+
+  # Not needed for a minimal install:
+  saslLogin:   { enabled: false }
+  quotaStatus: { enabled: false }

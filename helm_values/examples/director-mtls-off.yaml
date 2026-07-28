@@ -1,0 +1,138 @@
+# ============================================================================
+# yarilo — DIRECTOR topology, single tag, internal mTLS OFF
+# ============================================================================
+#
+# Same director + co-located backend routing as director-single-tag.yaml, but
+# WITHOUT internal mTLS between components. Use this only when the pod network is
+# already trusted / encrypted for you — e.g. a service mesh (Istio/Linkerd) does
+# mTLS transparently, or a private, isolated cluster network.
+#
+# Simpler to stand up: no internal-CA, no cert-manager internal cert, no
+# director-specific cert. Client-facing TLS (:993/:995/:587/:4190) is still on.
+#
+# Install:
+#   helm upgrade --install yarilo ./helm -n yarilo -f director-mtls-off.yaml \
+#       --set image.tag=<version>
+#
+# To turn mTLS on later, switch to director-single-tag.yaml (add the internal CA
+# + per-component internalTLS + internal_tls.server_name).
+# ============================================================================
+
+hostname: mail.example.com
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  tag: ""
+  pullPolicy: IfNotPresent
+logLevel: info
+
+storage:
+  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  persistence:
+    enabled: true
+    accessMode: ReadWriteMany
+    size: 500Gi
+    storageClass: "<nfs-storage-class>"
+
+redis:
+  bundled: false
+  externalUrl: "redis://<redis-host>:6379/0"
+mysql:
+  bundled: false
+extraEnv:
+  - name: YARILO_DB_DSN
+    valueFrom:
+      secretKeyRef: { name: yarilo-mysql, key: dsn }
+
+# NO internal_tls block — internal dials are plaintext (mesh/trusted network).
+
+fts:
+  enabled: true
+  fts_engine: flatcurve
+  fts_mode: remote
+  fts_addr: ""                      # co-located → localhost:9106
+  fts_auth_master_addr: "yarilo-auth:9102"
+  fts_autoindex: true
+
+components:
+
+  director:
+    enabled: true
+    replicas: 3
+    ring_secret: "<32-char-shared-ring-secret>"   # ring JOIN auth stays on even without TLS
+    min_members: 3
+    assignment_policy: least_sessions
+    listeners:
+      lmtp: { enabled: true, port: 24, containerPort: 10024 }
+    backends: []
+    # No internalTLS block → ring runs plain TCP.
+
+  backend:
+    coLocated: true
+    replicas: 3
+    tag: ""
+    # No internalTLS → backend session/registration dials are plaintext.
+
+  auth:
+    passdb:
+      - driver: mysql
+        dsn: "${YARILO_DB_DSN}"
+        default_pass_scheme: BCRYPT
+        skip_schema: true
+        password_query: |
+          SELECT password, active AS enabled, allow_nets FROM mailbox WHERE username = %u
+        user_query: |
+          SELECT CONCAT(home, mpath) AS home,
+                 CONCAT(mbtype, ':~/', maildir, ':INDEX=~/index',
+                        ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
+                 CONCAT('*:bytes=', quota_bytes, ':messages=', quota_messages) AS quota_rule
+          FROM mailbox WHERE username = %u
+        iterate_query: |
+          SELECT username FROM mailbox WHERE active = 1 ORDER BY username
+    token: { backend: redis, redis_addr: "redis://<redis-host>:6379/0" }
+  anvil: {}
+  locks:
+    enabled: true
+    replicas: 2
+
+  imapLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10143
+    tls:
+      secretName: yarilo-tls        # client-facing TLS stays ON
+      certificate:
+        enabled: true
+        issuerRef: { kind: ClusterIssuer, name: letsencrypt-prod }
+        dnsNames: [mail.example.com]
+    listeners: { imaps: { enabled: true }, imap: { enabled: true } }
+    service: { type: LoadBalancer }
+  pop3Login:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10110
+    tls: { secretName: yarilo-tls }
+    listeners: { pop3s: { enabled: true }, pop3: { enabled: true } }
+    service: { type: LoadBalancer }
+  lmtpLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10024
+  manageSieveLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 14190
+    tls: { secretName: yarilo-tls }
+    listeners: { managesieve: { enabled: true } }
+    service: { type: LoadBalancer }
+  saslLogin:
+    enabled: true
+    service: { type: LoadBalancer }
+  quotaStatus:
+    enabled: true
+    auth_master_addr: "yarilo-auth:9102"
+    service: { type: LoadBalancer }
