@@ -315,10 +315,20 @@ func dispatchBackends(args []string) error {
 		data, err := apiPost("/api/director/backends/"+args[1]+"/down", nil)
 		return printOutput(data, err, humanStatus)
 	case "flush":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: director backends flush <ip|all>")
+		fs := flag.NewFlagSet("backends flush", flag.ExitOnError)
+		force := fs.Bool("force", false, "immediate mass evacuate (kick every session at once)")
+		maxParallel := fs.Int("max-parallel", -1, "graceful drain window (concurrent moves); default = director_service.max_parallel_moves")
+		parseFlags(fs, args[1:]) //nolint:errcheck
+		if fs.NArg() == 0 {
+			return fmt.Errorf("usage: director backends flush <ip|all> [--force] [--max-parallel N]")
 		}
-		data, err := apiPost("/api/director/backends/"+args[1]+"/flush", nil)
+		q := ""
+		if *force {
+			q = "?force=true"
+		} else if *maxParallel >= 0 {
+			q = fmt.Sprintf("?max_parallel=%d", *maxParallel)
+		}
+		data, err := apiPost("/api/director/backends/"+fs.Arg(0)+"/flush"+q, nil)
 		return printOutput(data, err, humanStatus)
 	default:
 		return fmt.Errorf("unknown backends command %q", args[0])
@@ -399,7 +409,9 @@ Commands:
   backends update IP --vhosts N       Update virtual node count
   backends up IP                      Mark backend up
   backends down IP                    Mark backend down (flush)
-  backends flush IP|all               Flush backend or all backends
+  backends flush IP|all [--force] [--max-parallel N]
+                                      Evacuate backend: graceful throttled drain
+                                      (default) or immediate mass kick (--force)
 
   users move USER --backend IP:PORT   Force-move user to backend
   users kick USER                     Kick user (disconnect all sessions)

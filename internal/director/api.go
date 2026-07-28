@@ -7,10 +7,39 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 )
+
+// boolParam reports whether query param name is a truthy flag ("1", "true", "yes",
+// or present-but-empty like ?force). Absent or an explicit false value → false.
+func boolParam(r *http.Request, name string) bool {
+	if !r.URL.Query().Has(name) {
+		return false
+	}
+	switch strings.ToLower(r.URL.Query().Get(name)) {
+	case "", "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// intParam parses a non-negative integer query param; ok is false when absent or
+// malformed so the caller can fall back to a default.
+func intParam(r *http.Request, name string) (int, bool) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
 
 // StartAPI starts the HTTP admin API server on addr.
 // token is required in the Authorization: Bearer header; empty string disables auth.

@@ -208,6 +208,9 @@ type Options struct {
 	// MaxParallelKicks caps sessions kicked per batch on backend-down (#740),
 	// spreading the re-login stampede. 0 = 100; <= 0 after default = no batching.
 	MaxParallelKicks int
+	// MaxParallelMoves caps concurrent user moves during a graceful evacuation
+	// (#849). 0 = 5; negative = unlimited.
+	MaxParallelMoves int
 	// UserKillTimeout is the hard fallthrough for the confirmed kick (#847);
 	// UserKillConfirmGrace is the stable-zero window before confirming. 0 =
 	// defaults (15s, 1s).
@@ -247,6 +250,18 @@ func (o *Options) maxParallelKicks() int {
 		return 0
 	}
 	return o.MaxParallelKicks
+}
+
+// maxParallelMoves returns the graceful-evacuation concurrency window (#849).
+// 0 = default 5; negative = unlimited (returned as 0, interpreted as "no ceiling").
+func (o *Options) maxParallelMoves() int {
+	if o.MaxParallelMoves == 0 {
+		return 5
+	}
+	if o.MaxParallelMoves < 0 {
+		return 0
+	}
+	return o.MaxParallelMoves
 }
 
 func (o *Options) usernameHashLowercase() bool {
@@ -411,6 +426,12 @@ type Server struct {
 	killMu  sync.Mutex
 	killing map[uint32]killState
 
+	// evacMu guards evac, the set of in-progress graceful backend drains (#849),
+	// keyed by backend IP. Each drain is a resumable, throttled cursor advanced
+	// from the confirmed-kill sweep (evacKillDone).
+	evacMu sync.Mutex
+	evac   map[string]*evacuation
+
 	// apiToken / apiAddr are captured when StartAPI runs so the cross-replica
 	// ring-topology aggregator (#833 PR-B) can fan out to peers' own admin APIs
 	// with the shared per-release token, deriving each peer's API endpoint from
@@ -451,6 +472,7 @@ func NewWithOptions(opts Options) *Server {
 		unreach:         make(map[string]map[string]time.Time),
 		backendTomb:     make(map[string]backendTombstone),
 		killing:         make(map[uint32]killState),
+		evac:            make(map[string]*evacuation),
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers, opts.JoinAllowedNets)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
