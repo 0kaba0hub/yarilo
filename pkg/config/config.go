@@ -1132,8 +1132,18 @@ type DirectorServiceConfig struct {
 	// mixed-case usernames; their existing sticky entries just expire
 	// naturally via TTL (director_service.user_expire) — no special
 	// migration step is needed.
-	UsernameHashLowercase bool   `koanf:"username_hash_lowercase"`
-	AssignmentPolicy      string `koanf:"assignment_policy"` // hash | least_sessions (#797); default hash
+	UsernameHashLowercase bool `koanf:"username_hash_lowercase"`
+	// UsernameHash is the username→hash-key template (#850), mirroring the reference
+	// director_username_hash expression so a dovecot.conf value migrates verbatim:
+	// %u (whole user), %n (local part, before first '@'), %d (domain, after first '@'),
+	// each with an optional %L lowercase modifier, plus %% for a literal percent.
+	// Examples: "%Lu" (default, whole username lowercased), "%u" (case-sensitive),
+	// "%Ld" (route the whole domain to one backend — shared-mailbox/ACL locality),
+	// "%Ln" (local part only, for alias-domain installs). Empty derives the template
+	// from username_hash_lowercase (%Lu / %u) for byte-identical back-compat. When set,
+	// it — not the bool — governs case-folding. Invalid templates fail loudly at startup.
+	UsernameHash     string `koanf:"username_hash"`
+	AssignmentPolicy string `koanf:"assignment_policy"` // hash | least_sessions (#797); default hash
 	// UserKickDelay is how long (seconds) an admin-initiated kick is delayed
 	// before the USER-KICKED is pushed (#740), giving a user's in-flight
 	// command on the old backend a grace window to complete after a move.

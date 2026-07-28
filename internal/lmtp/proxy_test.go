@@ -68,7 +68,7 @@ func (rr *ringRouter) RouteUser(username string) (string, error) {
 // given backend addresses.
 func buildProxyServer(t *testing.T, backends ...string) string {
 	t.Helper()
-	r := ring.New(true)
+	r := ring.New(ring.DefaultHashFormat())
 	backendPort := 24
 	for _, b := range backends {
 		host, portStr, _ := net.SplitHostPort(b)
@@ -132,7 +132,7 @@ func TestLMTP_Proxy_UnknownRoute(t *testing.T) {
 			WriteTimeout: 5,
 			Proxy:        config.LMTPProxyConfig{Timeout: 5},
 		},
-		Router: &ringRouter{r: ring.New(true)}, // empty ring
+		Router: &ringRouter{r: ring.New(ring.DefaultHashFormat())}, // empty ring
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -155,7 +155,7 @@ func TestLMTP_Proxy_UnknownRoute(t *testing.T) {
 }
 
 func TestProxyRouter_Route_Consistent(t *testing.T) {
-	r := ring.New(true)
+	r := ring.New(ring.DefaultHashFormat())
 	r.AddBackend(&ring.Backend{IP: "10.0.0.1", Port: 24, Up: true})
 	r.AddBackend(&ring.Backend{IP: "10.0.0.2", Port: 24, Up: true})
 

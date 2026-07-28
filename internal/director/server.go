@@ -186,8 +186,16 @@ type Options struct {
 	// UsernameHashLowercase lowercases usernames before hashing/keying them
 	// (director_username_hash_lowercase, #738) — matches the reference
 	// implementation's default hash template so two spellings of the same
-	// account route to the same backend. Defaults to true.
+	// account route to the same backend. Defaults to true. Legacy knob: when
+	// UsernameHashFormat is set it takes over case-folding and this is ignored.
 	UsernameHashLowercase *bool
+	// UsernameHashFormat is the username→hash-key template (director_service.username_hash,
+	// #850), mirroring the reference director_username_hash expression: %u (whole user),
+	// %n (local part), %d (domain), each with optional %L lowercase, plus %%. Empty derives
+	// the template from UsernameHashLowercase (%Lu / %u) for byte-identical back-compat.
+	// Parsed once at startup; an invalid template is rejected in main before the server
+	// is built.
+	UsernameHashFormat string
 	// AssignmentPolicy selects the INITIAL (unpinned) placement strategy (#797):
 	// "hash" (default, Dovecot semantics) or "least_sessions" (load-aware).
 	// Sticky pins / USER-MOVE are unaffected.
@@ -246,6 +254,27 @@ func (o *Options) usernameHashLowercase() bool {
 		return true
 	}
 	return *o.UsernameHashLowercase
+}
+
+// effectiveHashFormat resolves the username→hash-key template (#850). An explicit
+// UsernameHashFormat wins and reports explicit=true; otherwise the template is derived
+// from the legacy usernameHashLowercase bool (%Lu / %u) so pre-#850 configs hash
+// byte-for-byte as before and explicit=false. When explicit, ingress normalizeUser
+// becomes a no-op and the template's %L is the sole case-folder. A malformed explicit
+// template is unreachable here — main validates it and fails loudly before the server is
+// built — so the parse error falls back to the safe default rather than panicking.
+func (o *Options) effectiveHashFormat() (hf ring.HashFormat, explicit bool) {
+	if raw := strings.TrimSpace(o.UsernameHashFormat); raw != "" {
+		if parsed, err := ring.ParseHashFormat(raw); err == nil {
+			return parsed, true
+		}
+	}
+	tmpl := "%Lu"
+	if !o.usernameHashLowercase() {
+		tmpl = "%u"
+	}
+	parsed, _ := ring.ParseHashFormat(tmpl)
+	return parsed, false
 }
 
 func (o *Options) userExpire() time.Duration {
@@ -325,6 +354,13 @@ type Server struct {
 	ring *ring.Ring
 	opts Options
 
+	// hf is the compiled username→hash-key template (#850), shared verbatim with s.ring
+	// and s.userDir so every hash of a user goes through one code path. hashFmtExplicit
+	// records whether the operator set username_hash explicitly; when true, ingress
+	// normalizeUser is a no-op and hf's %L is the sole case-folder.
+	hf              ring.HashFormat
+	hashFmtExplicit bool
+
 	// userDir stores user→backend mappings with TTL.
 	userDir *UserDir
 
@@ -401,17 +437,20 @@ func New() *Server {
 
 // NewWithOptions creates a director server with custom options.
 func NewWithOptions(opts Options) *Server {
+	hf, hfExplicit := opts.effectiveHashFormat()
 	s := &Server{
-		ring:        ring.New(opts.usernameHashLowercase()),
-		opts:        opts,
-		userDir:     NewUserDir(opts.userExpire(), opts.usernameHashLowercase(), Member{IP: opts.LocalIP, Port: opts.LocalPort}.String()),
-		clients:     make(map[*client]struct{}),
-		sessById:    make(map[string]*sessionRec),
-		sessByBE:    make(map[string]map[string]bool),
-		backendSeen: make(map[string]backendLease),
-		unreach:     make(map[string]map[string]time.Time),
-		backendTomb: make(map[string]backendTombstone),
-		killing:     make(map[uint32]killState),
+		ring:            ring.New(hf),
+		opts:            opts,
+		hf:              hf,
+		hashFmtExplicit: hfExplicit,
+		userDir:         NewUserDir(opts.userExpire(), hf, Member{IP: opts.LocalIP, Port: opts.LocalPort}.String()),
+		clients:         make(map[*client]struct{}),
+		sessById:        make(map[string]*sessionRec),
+		sessByBE:        make(map[string]map[string]bool),
+		backendSeen:     make(map[string]backendLease),
+		unreach:         make(map[string]map[string]time.Time),
+		backendTomb:     make(map[string]backendTombstone),
+		killing:         make(map[uint32]killState),
 	}
 	s.membership = NewMembership(s, Member{IP: opts.LocalIP, Port: opts.LocalPort}, opts.RingSecret, opts.PeerTLS, opts.MinMembers, opts.JoinAllowedNets)
 	s.membership.antiEntropyInterval = opts.AntiEntropyInterval
@@ -436,6 +475,14 @@ func NewWithOptions(opts Options) *Server {
 // is not. Admin/API ingress (apiUserMove/apiUserKick) is NOT tab-escaped and
 // must not be unescaped.
 func (s *Server) normalizeUser(username string) string {
+	// #850: with an explicit username_hash template, all case-folding lives in the
+	// template (%L), applied inside the hash on both the ring and userDir sides — so
+	// ingress must NOT pre-lowercase, or a case-sensitive %u would be defeated. Back-compat
+	// (no explicit template) keeps the #738 bool-driven ingress lowercasing, which is
+	// byte-identical to the derived %Lu/%u hashing.
+	if s.hashFmtExplicit {
+		return username
+	}
 	if !s.opts.usernameHashLowercase() {
 		return username
 	}
@@ -793,7 +840,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	// only fresh LOOKUP assignment — the move's own replicated USER-ASSIGN pin
 	// is applied elsewhere and is unaffected. The reason is retryable: the login
 	// proxy re-LOOKUPs until the kill confirms, rather than erroring the client.
-	if s.isKilling(HashUsername(user, s.opts.usernameHashLowercase())) {
+	if s.isKilling(HashUsername(user, s.hf)) {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=%s", id, killReason))
 		return
 	}
@@ -971,7 +1018,7 @@ func (s *Server) moveUser(user, addr string, exclude *client) {
 		// (#847). The new pin above is already set and is NOT gated (the hold is
 		// only on fresh LOOKUP assignment); a held login re-LOOKUPs and lands on
 		// the new pin once the kill confirms.
-		s.startKilling(HashUsername(user, s.opts.usernameHashLowercase()))
+		s.startKilling(HashUsername(user, s.hf))
 		// Conditional kick: USER-KICKED with a trailing old-backend field.
 		s.originateRingEvent("USER-KICKED", fmt.Sprintf("%s\t%s", user, oldIP), exclude)
 	}
@@ -1007,7 +1054,7 @@ func (s *Server) handleUserKick(c *client, fields []string) {
 	slog.Info("director: user kick", "user", user)
 	// Mark the user killing (and replicate it) BEFORE the kick tears sessions
 	// down, so the LOOKUP hold is in force ring-wide for the whole drain (#847).
-	s.startKilling(HashUsername(user, s.opts.usernameHashLowercase()))
+	s.startKilling(HashUsername(user, s.hf))
 	s.originateRingEvent("USER-KICKED", user, c)
 	_ = c.WriteLine("OK")
 }
@@ -1376,11 +1423,10 @@ func (s *Server) kickStaleSessions(hash uint32, oldHost string) {
 	if err != nil {
 		ip = oldHost
 	}
-	lc := s.opts.usernameHashLowercase()
 	s.sessRecMu.Lock()
 	var victims []*sessionRec
 	for id := range s.sessByBE[ip] {
-		if rec, ok := s.sessById[id]; ok && HashUsername(rec.user, lc) == hash {
+		if rec, ok := s.sessById[id]; ok && HashUsername(rec.user, s.hf) == hash {
 			victims = append(victims, rec)
 			delete(s.sessById, id)
 			delete(s.sessByBE[ip], id)

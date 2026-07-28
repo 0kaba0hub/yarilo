@@ -22,6 +22,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 	"github.com/0kaba0hub/yarilo/internal/director"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
 	"github.com/0kaba0hub/yarilo/pkg/build"
@@ -137,12 +138,25 @@ func main() {
 	}
 
 	usernameHashLowercase := cfg.DirectorService.UsernameHashLowercase
+	// Validate the username_hash template loudly at startup (#850): a malformed routing
+	// expression must abort the process, never silently mis-route. When it is set it
+	// governs case-folding, so warn that the legacy bool is ignored for config-drift
+	// visibility.
+	if raw := strings.TrimSpace(cfg.DirectorService.UsernameHash); raw != "" {
+		if _, err := ring.ParseHashFormat(raw); err != nil {
+			slog.Error("director: invalid director_service.username_hash", "err", err, "value", raw)
+			os.Exit(1)
+		}
+		slog.Warn("director: username_hash set — it governs case-folding; username_hash_lowercase is ignored",
+			"username_hash", raw)
+	}
 	srv := director.NewWithOptions(director.Options{
 		UserExpire:            time.Duration(cfg.DirectorService.UserExpire) * time.Second,
 		PingInterval:          time.Duration(cfg.DirectorService.PingInterval) * time.Second,
 		PingTimeout:           time.Duration(cfg.DirectorService.PingTimeout) * time.Second,
 		WriteTimeout:          time.Duration(cfg.DirectorService.WriteTimeout) * time.Second,
 		UsernameHashLowercase: &usernameHashLowercase,
+		UsernameHashFormat:    cfg.DirectorService.UsernameHash,
 		AssignmentPolicy:      cfg.DirectorService.AssignmentPolicy,
 		UserKickDelay:         time.Duration(cfg.DirectorService.UserKickDelay) * time.Second,
 		MaxParallelKicks:      cfg.DirectorService.MaxParallelKicks,

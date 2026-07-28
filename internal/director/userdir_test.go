@@ -4,10 +4,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
 func TestUserDir_SetGet(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "10.0.0.1:9102")
 	d.Set("alice@example.com", "10.0.0.1:993", false)
 
 	e := d.Get("alice@example.com")
@@ -23,7 +25,7 @@ func TestUserDir_SetGet(t *testing.T) {
 }
 
 func TestUserDir_WeakFlag(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "10.0.0.1:9102")
 	d.Set("bob@example.com", "10.0.0.2:993", true)
 	e := d.Get("bob@example.com")
 	if e == nil || !e.Weak {
@@ -32,7 +34,7 @@ func TestUserDir_WeakFlag(t *testing.T) {
 }
 
 func TestUserDir_Expiry(t *testing.T) {
-	d := NewUserDir(50*time.Millisecond, true, "10.0.0.1:9102")
+	d := NewUserDir(50*time.Millisecond, ring.DefaultHashFormat(), "10.0.0.1:9102")
 	d.Set("carol@example.com", "10.0.0.3:993", false)
 
 	time.Sleep(100 * time.Millisecond)
@@ -42,7 +44,7 @@ func TestUserDir_Expiry(t *testing.T) {
 }
 
 func TestUserDir_Delete(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "10.0.0.1:9102")
 	d.Set("dave@example.com", "10.0.0.4:993", false)
 	d.Delete("dave@example.com")
 	if e := d.Get("dave@example.com"); e != nil {
@@ -51,8 +53,8 @@ func TestUserDir_Delete(t *testing.T) {
 }
 
 func TestUserDir_HashConsistency(t *testing.T) {
-	h1 := HashUsername("user@example.com", true)
-	h2 := HashUsername("user@example.com", true)
+	h1 := HashUsername("user@example.com", ring.DefaultHashFormat())
+	h2 := HashUsername("user@example.com", ring.DefaultHashFormat())
 	if h1 != h2 {
 		t.Errorf("hash not deterministic: %d vs %d", h1, h2)
 	}
@@ -62,10 +64,10 @@ func TestUserDir_HashConsistency(t *testing.T) {
 // gives the same hash for any spelling of a username, and with
 // lowercase=false the two spellings hash differently (reproducing the bug).
 func TestUserDir_HashLowercase(t *testing.T) {
-	if HashUsername("User@d.test", true) != HashUsername("user@d.test", true) {
+	if HashUsername("User@d.test", ring.DefaultHashFormat()) != HashUsername("user@d.test", ring.DefaultHashFormat()) {
 		t.Error("lowercase=true: hashes for different spellings must match")
 	}
-	if HashUsername("User@d.test", false) == HashUsername("user@d.test", false) {
+	if HashUsername("User@d.test", ring.MustParseHashFormat("%u")) == HashUsername("user@d.test", ring.MustParseHashFormat("%u")) {
 		t.Error("lowercase=false: hashes for different spellings must NOT match (this reproduces the pre-#738 bug)")
 	}
 }
@@ -73,7 +75,7 @@ func TestUserDir_HashLowercase(t *testing.T) {
 // TestUserDir_GetSetDelete_CaseInsensitive proves a user stored under one
 // spelling is retrievable and deletable under another, with lowercase=true.
 func TestUserDir_GetSetDelete_CaseInsensitive(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "10.0.0.1:9102")
 	d.Set("User@d.test", "10.0.0.9:993", false)
 
 	e := d.Get("user@d.test")
@@ -88,8 +90,8 @@ func TestUserDir_GetSetDelete_CaseInsensitive(t *testing.T) {
 }
 
 func TestUserDir_SetByHash(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
-	h := HashUsername("eve@example.com", true)
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "10.0.0.1:9102")
+	h := HashUsername("eve@example.com", ring.DefaultHashFormat())
 	d.SetByHash(h, "10.0.0.5:993", false)
 
 	e := d.GetByHash(h)
@@ -99,7 +101,7 @@ func TestUserDir_SetByHash(t *testing.T) {
 }
 
 func TestUserDir_Purge(t *testing.T) {
-	d := NewUserDir(50*time.Millisecond, true, "10.0.0.1:9102")
+	d := NewUserDir(50*time.Millisecond, ring.DefaultHashFormat(), "10.0.0.1:9102")
 	d.Set("a@x.com", "10.0.0.1:993", false)
 	d.Set("b@x.com", "10.0.0.2:993", false)
 
@@ -113,7 +115,7 @@ func TestUserDir_Purge(t *testing.T) {
 }
 
 func TestUserDir_Snapshot(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "10.0.0.1:9102")
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "10.0.0.1:9102")
 	d.Set("u1@x.com", "10.0.0.1:993", false)
 	d.Set("u2@x.com", "10.0.0.2:993", false)
 
@@ -124,7 +126,7 @@ func TestUserDir_Snapshot(t *testing.T) {
 }
 
 func TestUserDir_MergeByHash_Ordering(t *testing.T) {
-	h := HashUsername("u@x", true)
+	h := HashUsername("u@x", ring.DefaultHashFormat())
 	tests := []struct {
 		name     string
 		seedSeq  uint64
@@ -145,7 +147,7 @@ func TestUserDir_MergeByHash_Ordering(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			d := NewUserDir(time.Minute, true, "self:9102")
+			d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "self:9102")
 			d.MergeByHash(h, tc.seedHost, false, tc.seedSeq, tc.seedBy)
 			kick := d.MergeByHash(h, tc.inHost, false, tc.inSeq, tc.inBy)
 			if e := d.GetByHash(h); e == nil || e.Host != tc.wantHost {
@@ -159,8 +161,8 @@ func TestUserDir_MergeByHash_Ordering(t *testing.T) {
 }
 
 func TestUserDir_LamportAdvancesPastRemote(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "self:9102")
-	h := HashUsername("u@x", true)
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "self:9102")
+	h := HashUsername("u@x", ring.DefaultHashFormat())
 	// A remote assignment at seq 100 must push a subsequent LOCAL assignment
 	// past it, so local wins deterministically (Lamport causality).
 	d.MergeByHash(h, "remote:993", false, 100, "peer:9102")
@@ -171,8 +173,8 @@ func TestUserDir_LamportAdvancesPastRemote(t *testing.T) {
 }
 
 func TestUserDir_SetByHash_MonotonicUnderConcurrency(t *testing.T) {
-	d := NewUserDir(time.Minute, true, "self:9102")
-	h := HashUsername("hot@x", true)
+	d := NewUserDir(time.Minute, ring.DefaultHashFormat(), "self:9102")
+	h := HashUsername("hot@x", ring.DefaultHashFormat())
 	const n = 200
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {

@@ -47,7 +47,7 @@ func (s *Server) apiUserKick(w http.ResponseWriter, r *http.Request) {
 	// (yarctl director users kick → this handler) engages none of the #847
 	// confirmed-kick protection and leaves the split-writer window open (#858).
 	// Mirrors the wire handleUserKick path.
-	s.startKilling(HashUsername(user, s.opts.usernameHashLowercase()))
+	s.startKilling(HashUsername(user, s.hf))
 	// Grace window (#740): an admin kick (typically the tail of a move) waits
 	// user_kick_delay before the USER-KICKED push so an in-flight command on
 	// the old backend can finish. Scheduled off the request goroutine so the
