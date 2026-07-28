@@ -24,10 +24,55 @@ There is no monolithic binary. There is no master process.
 
 Each binary handles its role via goroutines — one goroutine per connection/session within the process.
 
-**Infrastructure topology is defined in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and SVG schemas
-([docs/yarilo_director.svg](docs/yarilo_director.svg), [docs/yarilo_backend.svg](docs/yarilo_backend.svg),
-[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)).** Those are the source of truth for k8s
-resource types, scaling, sharding, and inter-component coordination.
+**Infrastructure topology is defined in [DEPLOYMENT.md](DEPLOYMENT.md) and the SVG schemas
+below.** Those are the source of truth for k8s resource types, scaling, sharding, and
+inter-component coordination.
+
+#### Director deployment (login proxies + director ring → backend tags)
+
+<img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_director.svg" width="100%" alt="Director deployment topology"/>
+
+#### Backend deployment (one co-located StatefulSet per tag)
+
+<img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_backend.svg" width="100%" alt="Backend deployment topology"/>
+
+#### Standalone deployment (full stack in one pod)
+
+<img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_standalone.svg" width="100%" alt="Standalone deployment topology"/>
+
+The logical request flow (login → session → shared services → storage):
+
+```
+  Internet
+     |
+     | IMAPS :993 / IMAP :143 / POP3S :995 / POP3 :110
+     | LMTP :24 / ManageSieve :4190 / SASL :4190
+     v
++------------------------+  +------------------------+
+|  yarilo-imap-login     |  |  yarilo-pop3-login     |  login pods (TLS termination,
+|  yarilo-lmtp-login     |  |  yarilo-managesieve-   |  HAProxy / XCLIENT, passdb,
+|  yarilo-submission-    |  |  login                 |  anvil rate-limit, fd-passing)
+|  login / sasl-login    |  +------------------------+
++------------------------+
+         |  Unix fd-passing (SCM_RIGHTS) after auth
+         v
++------------------------+  +------------------------+
+|  yarilo-imap           |  |  yarilo-pop3           |  session pods (mailbox,
+|  yarilo-lmtp           |  |  yarilo-managesieve    |  index, Sieve execution,
+|  yarilo-submission     |  |  yarilo-backend-api    |  quota, ACL)
++------------------------+  +------------------------+
+         |
+         | cross-process write coordination (TCP mTLS)
+         v
++------------------------+  +------------------------+
+|  yarilo-locks          |  |  yarilo-auth           |  shared services
+|  yarilo-anvil          |  |  Redis (dict / locks)  |
++------------------------+  +------------------------+
+         |
+         | NFS PV (RWX) — shared by all session pods in a tag
+         v
+  [ Mailbox + Index files ]
+```
 
 ### Binary layout
 
@@ -238,10 +283,10 @@ stern -l app.kubernetes.io/part-of=yarilo
 
 | Workload | runAsUser | Capabilities | Storage |
 |:---|:---|:---|:---|
-| `yarilo-imap-login` | `dovenull` | NET_BIND_SERVICE | none |
-| `yarilo-pop3-login` | `dovenull` | NET_BIND_SERVICE | none |
-| `yarilo-submission-login` | `dovenull` | NET_BIND_SERVICE | none |
-| `yarilo-lmtp-proxy` | `dovenull` | NET_BIND_SERVICE | none |
+| `yarilo-imap-login` | `nobody` | NET_BIND_SERVICE | none |
+| `yarilo-pop3-login` | `nobody` | NET_BIND_SERVICE | none |
+| `yarilo-submission-login` | `nobody` | NET_BIND_SERVICE | none |
+| `yarilo-lmtp-proxy` | `nobody` | NET_BIND_SERVICE | none |
 | `yarilo-imap` | `yarilo` | none | RWX PVC (NFS) |
 | `yarilo-pop3` | `yarilo` | none | RWX PVC (NFS) |
 | `yarilo-submission` | `yarilo` | none | RWX PVC (NFS, для Sent folder) |
@@ -259,7 +304,7 @@ stern -l app.kubernetes.io/part-of=yarilo
 ### IMAP (port 993)
 
 ```
-client ──TLS:993──► yarilo-imap-login (dovenull)
+client ──TLS:993──► yarilo-imap-login (nobody)
                         │ TLS handshake
                         │ speak IMAP pre-auth (CAPABILITY / AUTHENTICATE / LOGIN)
                         │ collect username + password from client
@@ -543,7 +588,7 @@ defaults for `OpSettings` that the caller can override per-op.
 `commit-batch` (stdin TAB-delimited script), `drivers`. The dict is
 selected either via `--config PATH --dict NAME` (production config) or
 ad-hoc via `--driver` + repeated `--setting key=value` (debugging). See
-[docs/DICT.md](docs/DICT.md) for the full reference.
+[DICT.md](DICT.md) for the full reference.
 
 ### Deferred from this phase
 
@@ -559,7 +604,7 @@ ad-hoc via `--driver` + repeated `--setting key=value` (debugging). See
 ## Namespaces
 
 yarilo follows the IMAP RFC 2342 / RFC 9051 §6.3.10 namespace model
-and the operational shape Dovecot uses for it:
+and the standard operational shape for it:
 
 | Class | Wire | What it carries |
 |:---|:---|:---|
@@ -568,7 +613,7 @@ and the operational shape Dovecot uses for it:
 | **Shared** | `("Shared/" "/")` | Folders shared between groups or all users, gated by ACL. |
 | **Public** (variant of Shared) | `("Public/" "/")` | Folders accessible to every authenticated user. |
 
-Each namespace MAY use its own separator (Dovecot allows it; we follow).
+Each namespace MAY use its own separator (permitted by the model; we follow it).
 
 ### Phase ordering
 
@@ -577,7 +622,7 @@ Each namespace MAY use its own separator (Dovecot allows it; we follow).
 | **NS-1a** (`v1.20`) | Wire-protocol: `NAMESPACE` response driven by `cfg.Namespaces[]`. Only Personal carries real mailboxes. |
 | **NS-1b** (`v1.21`, shipped) | Per-namespace storage routing via in-session `nsHandle` dispatch keyed on namespace prefix. Each implemented namespace opens its own `UserMailbox` + `UserIndex` + per-namespace `subscriptions-<ns>` file at login. `LIST` traverses every implemented namespace (personal first, then by prefix). `SELECT`/`STATUS`/`APPEND`/`COPY`/`MOVE`/`SUBSCRIBE` route by prefix. METADATA `/private/*` on shared/public mailboxes embeds a SHA-256 hash of the accessing user in the dict key (`priv/box/<guid>/u-<userhash>/<entry>`) so users do not see each other's private annotations on the same folder; `/shared/*` stays global. Other Users (`user/<owner>/...`) is declared in the wire spec but `SELECT` under it returns `NO`. |
 | **ACL-1** | RFC 4314 — required for Shared / Other Users / Public to be actually usable (without it any user reads anyone's stuff). Enforcement primitives shipped (#490); namespace-aware LMTP/Sieve delivery + POST-right shipped (#503/#504). |
-| **NS-2 (owner-templated)** | Owner-templated shared / other namespaces (`prefix: user/%u/`, `location: maildir:%h`): the location variables expand against the **owner** (userdb lookup), and the `nsHandle` is built **on demand per owner** and cached per session. Owner-tier ACL: the owner's own session has implicit full rights; a peer is gated by the owner's ACL. **Same farm tag only** — resolves the owner's storage when the owner's mailbox carries the same farm tag (same PV) as the session's mailbox; a different-farm owner is NS-3. Works in standalone and single-farm backend. Design: [docs/OWNER_SHARED_NS.md](docs/OWNER_SHARED_NS.md) (#499 item 3). |
+| **NS-2 (owner-templated)** | Owner-templated shared / other namespaces (`prefix: user/%u/`, `location: maildir:%h`): the location variables expand against the **owner** (userdb lookup), and the `nsHandle` is built **on demand per owner** and cached per session. Owner-tier ACL: the owner's own session has implicit full rights; a peer is gated by the owner's ACL. **Same farm tag only** — resolves the owner's storage when the owner's mailbox carries the same farm tag (same PV) as the session's mailbox; a different-farm owner is NS-3. Works in standalone and single-farm backend. Design: [OWNER_SHARED_NS.md](OWNER_SHARED_NS.md) (#499 item 3). |
 | **NS-3** | Director routing: when accessing `user/alice/*` and alice's mailbox carries a **different farm tag** (its data is on a PV the accessing pod does not mount), route just the owner-access leg to a pod in alice's farm (cross-pod RPC or namespace-pinned pool). Same-farm access (incl. standalone and single-farm backend) works without this. NS-2 fails closed (`NO` / LMTP implicit-keep) when the owner is on a different farm tag, until NS-3 lands (#499 item 4). |
 
 ### Storage layout (post-NS-1b)
@@ -619,7 +664,7 @@ or public folders get an additional per-accessing-user dimension in
 the dict key so users cannot read each other's private annotations
 on a shared folder.
 
-See [docs/NAMESPACE.md](docs/NAMESPACE.md) for the operator-facing
+See [NAMESPACE.md](NAMESPACE.md) for the operator-facing
 YAML schema and current limitations.
 
 ---
@@ -668,9 +713,9 @@ subcommand sits under both planes when needed.
 
 ### Wire reference
 
-[docs/BACKEND-API.md](docs/BACKEND-API.md) — backend-plane
+[BACKEND-API.md](BACKEND-API.md) — backend-plane
 endpoints (dict surface today; ACL / quota / folder added in
-subsequent phases). [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md)
+subsequent phases). [DIRECTOR-API.md](DIRECTOR-API.md)
 — director plane.
 
 ---
@@ -731,8 +776,8 @@ k8s collects stdout and forwards to log aggregation (fluentd / loki).
 
 ### Guiding principle
 
-Follow Dovecot's log semantics: what is logged, when, and which fields.
-Format is JSON (slog), information content mirrors Dovecot exactly.
+Follow the reference log semantics: what is logged, when, and which fields.
+Format is JSON (slog); the information content mirrors the reference implementation exactly.
 
 ### Session ID
 
@@ -831,7 +876,7 @@ and backend (multi-pod StatefulSets, one NFS RWX) deployments.
 Raw mail delivery (`rename()` into `new/`) is safe — atomic at OS level.
 
 **Required fix:** Route every cross-process write through **`yarilo-locks`** — the single locking
-abstraction in `pkg/locks`. One wire protocol (TAB-delimited, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+abstraction in `pkg/locks`. One wire protocol (TAB-delimited, see [DEPLOYMENT.md](DEPLOYMENT.md)
 §yarilo-locks). Two backends behind one identical wire protocol:
 
 | Use | `yarilo-locks` mode | Backend | Transport |
@@ -863,7 +908,7 @@ the race-prone `NextUID++` pattern to `AllocateAppend` in v1.7.0 (Phase 2.2).
 
 | Threat | Mitigation |
 |:---|:---|
-| Exploit in TLS/SASL handling | `yarilo-imap-login` runs as `dovenull`, no PVC access, NetworkPolicy blocks storage pods |
+| Exploit in TLS/SASL handling | `yarilo-imap-login` runs as `nobody`, no PVC access, NetworkPolicy blocks storage pods |
 | Cross-pod unauthorized access | mTLS on all internal services — certificate required |
 | MITM between pods | mTLS with internal CA verification |
 | Cross-user maildir access | Each session pod runs as `yarilo` uid; NetworkPolicy; director affinity prevents concurrent access |

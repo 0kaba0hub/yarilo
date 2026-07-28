@@ -1,7 +1,7 @@
 // Package file is the per-folder index implementation that
 // underlies every yarilo storage driver (maildir, dbox, mdbox).
 //
-// As of Phase 2 of the DOVECOT-STORAGE-COMPLIANCE rollout it is
+// As of Phase 2 of the storage-compliance rollout it is
 // a thin adapter on top of internal/storage/mailindex — the
 // on-disk format is byte-for-byte the canonical mail-index v7.3.
 // The yarilo-specific .names sidecar persists for now as a

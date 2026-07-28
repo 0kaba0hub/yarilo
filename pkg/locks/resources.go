@@ -19,7 +19,7 @@ func IndexKey(user string) string { return "idx:" + user }
 // (dovecot.map.index). The mdbox driver acquires this BEFORE any
 // MailboxKey when allocating map_uids / file_ids; this is the
 // strict map-then-folder order documented in
-// docs/DOVECOT-STORAGE-COMPLIANCE.md §4.2.
+// docs/STORAGE-COMPLIANCE.md §4.2.
 func MdboxMapKey(user string) string { return "mdboxmap:" + user }
 
 // MailboxKey returns the lock key for a specific mailbox folder.
