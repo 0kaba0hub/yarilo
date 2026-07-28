@@ -43,6 +43,7 @@ type Config struct {
 	BackendAPI              BackendAPIConfig              `koanf:"backend_api"`
 	QuotaStatus             QuotaStatusConfig             `koanf:"quota_status"`
 	SASLLogin               SASLLoginConfig               `koanf:"sasl_login"`
+	Login                   LoginConfig                   `koanf:"login"`
 	Sieve                   SieveConfig                   `koanf:"sieve"`
 	ManageSieveLoginService ManageSieveLoginServiceConfig `koanf:"managesieve_login_service"`
 	Telemetry               TelemetryConfig               `koanf:"telemetry"`
@@ -722,6 +723,22 @@ type QuotaStatusConfig struct {
 // SASL auth protocol, smtpd_sasl_type=dovecot) and proxies each session to
 // yarilo-auth, optionally wrapping the upstream connection with mTLS.
 // This keeps the yarilo-auth socket internal — Postfix has no direct access.
+// LoginConfig holds settings shared by every login proxy (imap/pop3/lmtp/
+// submission/managesieve/sasl), independent of protocol.
+type LoginConfig struct {
+	// LookupHoldMax bounds how many times a login proxy re-LOOKUPs while the
+	// director holds the user under a confirmed kick (#847/#858). The total hold
+	// budget (LookupHoldMax × LookupHoldBackoff) MUST exceed the director's
+	// worst-case confirm time (director_service.user_kill_confirm_grace + drain),
+	// or the proxy exhausts its retries and errors the concurrent login before
+	// the kill can confirm. 0 uses the default (20). With the default 150ms
+	// backoff that is a 3s budget, covering the default 1s confirm grace + drain.
+	LookupHoldMax int `koanf:"lookup_hold_max"`
+	// LookupHoldBackoffMs is the delay (milliseconds) between LOOKUP hold
+	// retries. 0 uses the default (150).
+	LookupHoldBackoffMs int `koanf:"lookup_hold_backoff_ms"`
+}
+
 type SASLLoginConfig struct {
 	// Listen is the TCP address Postfix connects to.
 	// Postfix: smtpd_sasl_path = inet:<host>:<port>

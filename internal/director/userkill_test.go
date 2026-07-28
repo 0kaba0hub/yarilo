@@ -1,6 +1,7 @@
 package director
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -107,5 +108,24 @@ func TestUserKill_TimeoutFallthrough(t *testing.T) {
 	s.killMu.Unlock()
 	if still {
 		t.Error("the sweep must remove a timed-out kill record")
+	}
+}
+
+// TestApiUserKick_StartsKilling is the #858 Defect 2 guard: the operator-facing
+// admin kick (POST /users/{user}/kick → apiUserKick, i.e. yarctl director users
+// kick) must engage the confirmed-kick killing state like the wire handleUserKick
+// does — otherwise it leaves the split-writer window fully open.
+func TestApiUserKick_StartsKilling(t *testing.T) {
+	s := NewWithOptions(Options{})
+	const user = "u@example.com"
+	req := httptest.NewRequest("POST", "/users/"+user+"/kick", nil)
+	req.SetPathValue("user", user)
+	rec := httptest.NewRecorder()
+	s.apiUserKick(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("apiUserKick status = %d, want 200", rec.Code)
+	}
+	if !s.isKilling(hashOf(s, user)) {
+		t.Fatal("apiUserKick must mark the user killing (#858 Defect 2)")
 	}
 }

@@ -104,6 +104,13 @@ type Options struct {
 	// dialling external dependencies at startup. 0 or 1 means a single attempt.
 	DialRetries int
 
+	// LookupHoldMax / LookupHoldBackoff bound the confirmed-kick LOOKUP retry
+	// (#847/#858). Their product is the hold budget, which must exceed the
+	// director's worst-case confirm time. 0 uses the package defaults (20 / 150ms
+	// → 3s budget). From login.lookup_hold_max / lookup_hold_backoff_ms.
+	LookupHoldMax     int
+	LookupHoldBackoff time.Duration
+
 	// AuthAddr is the host:port of yarilo-auth (e.g. "yarilo-auth:9100").
 	// Required: if empty every login attempt is rejected with a temporary error.
 	AuthAddr string
@@ -613,31 +620,50 @@ func (s *Server) directorLookup(username, tag string) (string, error) {
 	return result.Addr, nil
 }
 
-// maxLookupHolds / lookupHoldBackoff bound the confirmed-kick retry (#847): a
-// LOOKUP held while the user's old sessions drain is re-tried a few times rather
-// than surfaced as a client error, matching the bounded re-route pattern of
-// #782. The window (attempts × backoff) covers a normal kill; a kill that
-// outlasts it means the director's hard timeout has since cleared the hold, so
+// defaultMaxLookupHolds / defaultLookupHoldBackoff bound the confirmed-kick
+// retry (#847): a LOOKUP held while the user's old sessions drain is re-tried
+// rather than surfaced as a client error. The total budget
+// (holds × backoff = 3s) MUST exceed the director's worst-case confirm time
+// (user_kill_confirm_grace + drain) or the proxy exhausts its retries before the
+// kill confirms and errors the concurrent login (#858). Overridable via
+// login.lookup_hold_max / lookup_hold_backoff_ms so an operator who raises the
+// director's confirm grace can raise the budget alongside it. A kill that still
+// outlasts the budget means the director's hard timeout has cleared the hold, so
 // the next fresh login succeeds.
 const (
-	maxLookupHolds    = 5
-	lookupHoldBackoff = 150 * time.Millisecond
+	defaultMaxLookupHolds    = 20
+	defaultLookupHoldBackoff = 150 * time.Millisecond
 )
+
+func (s *Server) maxLookupHolds() int {
+	if s.opts.LookupHoldMax > 0 {
+		return s.opts.LookupHoldMax
+	}
+	return defaultMaxLookupHolds
+}
+
+func (s *Server) lookupHoldBackoff() time.Duration {
+	if s.opts.LookupHoldBackoff > 0 {
+		return s.opts.LookupHoldBackoff
+	}
+	return defaultLookupHoldBackoff
+}
 
 // directorLookupWithHold performs a director LOOKUP, retrying on a retryable
 // confirmed-kick hold (#847, proto.ErrLookupHold) with a bounded backoff. Any
 // other error (or success) returns immediately.
 func (s *Server) directorLookupWithHold(username, tag string, log *slog.Logger) (string, error) {
+	maxHolds, backoff := s.maxLookupHolds(), s.lookupHoldBackoff()
 	for attempt := 0; ; attempt++ {
 		addr, err := s.directorLookup(username, tag)
 		if err == nil || !errors.Is(err, proto.ErrLookupHold) {
 			return addr, err
 		}
-		if attempt >= maxLookupHolds {
+		if attempt >= maxHolds {
 			return "", err
 		}
 		log.Debug("login: director holding lookup (user kill in progress), retrying", "user", username, "attempt", attempt+1)
-		time.Sleep(lookupHoldBackoff)
+		time.Sleep(backoff)
 	}
 }
 

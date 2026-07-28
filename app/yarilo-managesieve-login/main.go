@@ -122,6 +122,8 @@ func main() {
 		AnvilTLS:            intTLS,
 		AnvilFailOpen:       cfg.AnvilService.FailOpen,
 		DialRetries:         cfg.General.StartupDialRetries,
+		LookupHoldMax:       cfg.Login.LookupHoldMax,
+		LookupHoldBackoff:   time.Duration(cfg.Login.LookupHoldBackoffMs) * time.Millisecond,
 		HAProxy:             cfg.ManageSieveLoginService.HAProxy,
 		HAProxyTimeout:      haproxyTimeout,
 		HAProxyNets:         haproxyNets,

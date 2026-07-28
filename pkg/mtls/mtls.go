@@ -112,7 +112,18 @@ func (c *ttlSessionCache) Put(key string, cs *tls.ClientSessionState) {
 	if cs == nil {
 		delete(c.put, key)
 	} else {
-		c.put[key] = time.Now()
+		now := time.Now()
+		// Opportunistic prune (#860): the wrapped LRU evicts by COUNT with no
+		// callback, so a key it drops leaves a dangling put-time. Sweep entries
+		// already past the TTL here — cheap (the map holds only keys seen within
+		// the TTL window) — instead of leaking them until a Get/Put for that same
+		// (possibly already-evicted) key that may never come.
+		for k, t := range c.put {
+			if now.Sub(t) > c.ttl {
+				delete(c.put, k)
+			}
+		}
+		c.put[key] = now
 	}
 	c.mu.Unlock()
 	c.lru.Put(key, cs)
