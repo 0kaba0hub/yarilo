@@ -745,6 +745,7 @@ data:
       user_kill_timeout: {{ .Values.components.director.user_kill_timeout }}
       user_kill_confirm_grace: {{ .Values.components.director.user_kill_confirm_grace }}
       max_parallel_kicks: {{ .Values.components.director.max_parallel_kicks }}
+      max_parallel_moves: {{ .Values.components.director.max_parallel_moves | default 5 }}
       ring_secret: {{ .Values.components.director.ring_secret | quote }}
       ring_tls_server_name: {{ .Values.components.director.internalTLS.ringTlsServerName | default (printf "%s-director-ring" (include "yarilo.fullname" .)) | quote }}
       min_members: {{ .Values.components.director.min_members }}

@@ -294,6 +294,14 @@ components:
     ## firing every kick at once. Matches director_max_parallel_kicks.
     ## 0 = 100; negative = no batching (kick all at once).
     max_parallel_kicks: 100
+    ## Cap on concurrent user moves during a GRACEFUL backend evacuation (#849) —
+    ## the throttled `yarctl director backends flush IP` (no --force). The director
+    ## keeps at most this many users draining at once; each user's old sessions
+    ## confirm gone before the next is pulled in, so a planned backend drain
+    ## (rolling upgrade, maintenance) spreads the re-login across surviving pods
+    ## instead of stampeding them. Matches director_max_parallel_moves.
+    ## 0 = 5; negative = unlimited (all at once, ~equivalent to --force).
+    max_parallel_moves: 5
 
     ## Static backend list loaded at startup.
     ## Each entry must match a backend service in the backend namespace.

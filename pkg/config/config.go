@@ -1181,6 +1181,15 @@ type DirectorServiceConfig struct {
 	// 0 = default (100); negative or 0-after-default disables batching (kick
 	// all at once).
 	MaxParallelKicks int `koanf:"max_parallel_kicks"`
+	// MaxParallelMoves caps how many users are migrated concurrently during a
+	// GRACEFUL backend evacuation (#849) — the throttled `flush` (no --force).
+	// The director keeps at most this many user moves in flight at once; each
+	// move completes (its old sessions confirm gone) before the next user is
+	// pulled in, so a planned backend drain spreads the re-login across the
+	// surviving pods instead of stampeding them all at once. Matches the
+	// reference's director_max_parallel_moves. 0 = default (5); negative =
+	// unlimited (all users moved at once, ~equivalent to --force but via moves).
+	MaxParallelMoves int `koanf:"max_parallel_moves"`
 	// LMTPListen enables the director's embedded LMTP proxy (per-recipient
 	// fan-out via ring routing) on this address, e.g. ":10024". Empty =
 	// disabled. This deliberately does NOT reuse the shared services.lmtp
@@ -1879,6 +1888,7 @@ func Load(path string) (*Config, error) {
 			UserKillTimeout:             15,
 			UserKillConfirmGrace:        1,
 			MaxParallelKicks:            100,
+			MaxParallelMoves:            5,
 			MinMembers:                  3,
 			AntiEntropyInterval:         3,
 			SeedPollInterval:            2,

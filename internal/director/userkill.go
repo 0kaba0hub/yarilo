@@ -175,9 +175,11 @@ func (s *Server) sweepKills(grace time.Duration) {
 	for _, hash := range timedOut {
 		slog.Warn("director: kill not confirmed within timeout, releasing LOOKUP hold (fallthrough)", "hash", hash)
 		s.membership.originate("USER-KILL-DONE", fmt.Sprintf("%d", hash))
+		s.evacKillDone(hash) // a timed-out move still frees its evacuation slot (#849)
 	}
 	for _, hash := range confirmed {
 		slog.Info("director: kill confirmed ring-wide, releasing LOOKUP hold", "hash", hash)
 		s.membership.originate("USER-KILL-DONE", fmt.Sprintf("%d", hash))
+		s.evacKillDone(hash) // #849: confirmed move frees its slot; pull the next user
 	}
 }

@@ -121,29 +121,50 @@ func (s *Server) apiBackendDown(w http.ResponseWriter, r *http.Request) {
 // (handleBackendFlush), which DRAINS without kicking. The kick is origin-local
 // (matching the other admin ops); the pin-clear replicates ring-wide via the
 // originated flush event, so every replica rehashes away too.
+// apiBackendFlush evacuates a backend (or "all"). Query params (#849):
+//
+//	force=true            immediate mass evacuate — kick every session at once
+//	                      (the pre-#849 behaviour).
+//	(default, no force)   graceful throttled drain — kick users in a self-clocked
+//	                      window of max_parallel confirmed-kills, spreading the
+//	                      re-login across surviving pods instead of stampeding them.
+//	max_parallel=N        graceful window size; defaults to director_service.max_parallel_moves.
 func (s *Server) apiBackendFlush(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
-	if ip == "all" {
-		for _, b := range s.ring.Backends() {
-			s.ring.SetUp(b.IP, false, time.Now().Unix())
-			s.kickSessionsForBackend(b.IP)
-			s.userDir.DeleteByBackend(b.IP)
-			s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tflush\t%s", b.IP, b.Tag), nil)
-		}
-		s.updateMetrics()
-		slog.Info("director API: all backends flushed (evacuate)")
-		apiJSON(w, map[string]string{"status": "ok"})
-		return
+	force := boolParam(r, "force")
+	maxParallel := s.opts.maxParallelMoves()
+	if v, ok := intParam(r, "max_parallel"); ok {
+		maxParallel = v
 	}
-	tag := s.backendTag(ip)
-	if !s.ring.SetUp(ip, false, time.Now().Unix()) {
+
+	ips := []string{ip}
+	if ip == "all" {
+		ips = ips[:0]
+		for _, b := range s.ring.Backends() {
+			ips = append(ips, b.IP)
+		}
+	} else if s.ring.GetBackend(ip) == nil {
 		apiError(w, "backend not found", http.StatusNotFound)
 		return
 	}
-	s.kickSessionsForBackend(ip)
-	n := s.userDir.DeleteByBackend(ip)
-	s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tflush\t%s", ip, tag), nil)
+
+	if force {
+		for _, bip := range ips {
+			s.ring.SetUp(bip, false, time.Now().Unix())
+			s.kickSessionsForBackend(bip)
+			n := s.userDir.DeleteByBackend(bip)
+			s.originateRingEvent("RING-CHANGE", fmt.Sprintf("%s\tflush\t%s", bip, s.backendTag(bip)), nil)
+			slog.Info("director API: backend flushed (force evacuate)", "ip", bip, "pins_cleared", n)
+		}
+		s.updateMetrics()
+		apiJSON(w, map[string]string{"status": "ok", "mode": "force"})
+		return
+	}
+
+	queued := 0
+	for _, bip := range ips {
+		queued += s.startEvacuation(bip, maxParallel)
+	}
 	s.updateMetrics()
-	slog.Info("director API: backend flushed (evacuate)", "ip", ip, "pins_cleared", n)
-	apiJSON(w, map[string]string{"status": "ok"})
+	apiJSON(w, map[string]any{"status": "ok", "mode": "graceful", "users_queued": queued, "max_parallel": maxParallel})
 }
