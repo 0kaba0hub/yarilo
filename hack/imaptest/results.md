@@ -235,6 +235,55 @@ Setup: 100 clients, 20 users (u1–u20@d00001.test), port 143, ~90 sec each run.
 
 ---
 
+## v2.2.14 — login pods CPU-throttled by chart default (#878)
+
+**Date:** 2026-07-29
+**Changes:** none in code. Removed the CPU limit from all five login pods in
+`helm_values/values-sandbox.yaml` (`components.*Login.resources.limits.cpu: null`,
+requests 100m). Same image tag both runs — `2.2.14` — so the CPU limit is the only variable.
+
+**Root cause:** #878 attributes the `NO [UNAVAILABLE]` storm to a hot-path design
+defect (no login→auth connection pooling) and explicitly rules out capacity,
+citing auth at ~87m CPU. Measurement contradicts that: `yarilo-auth` has **no CPU
+limit at all** and recorded `nr_throttled 0` — it was never the bottleneck. The
+throttled pod was `yarilo-imap-login`, capped at the chart default `limits.cpu: 200m`
+(helm/values.yaml:1135). Login pods carry all the asymmetric crypto in the system:
+three ECDSA handshakes per login (client TLS on 993/143, mTLS to yarilo-auth,
+mTLS to yarilo-anvil). Averaged CPU metrics hid this because the burst is seconds
+long while the scrape window is a minute.
+
+The 1000m top-level `resources:` block in values-sandbox.yaml was **dead** — the
+chart has no `.Values.resources`, only per-component — so the deployment looked
+sized at 1000m while every login pod ran at 200m.
+
+| metric (same job, `clients=500 users=1-100 secs=90`) | baseline (200m limit) | no CPU limit |
+|---|---|---|
+| client `NO [UNAVAILABLE]` | **1041** | **24** (−97.7%) |
+| `login: yarilo-auth dial` errors | 813 | 6 (−99.3%) |
+| `login: anvil dial failed` | 92 | 2 |
+| `login: backend rejected session` | 117 | 16 |
+| imap-login `throttled_usec` during run | **152.4 s** | **0** |
+| imap-login CPU used during run | 21.2 s (= the entire 200m×100s quota) | 28.1 s |
+| successful logins | 633 | **1342** (2.1×) |
+
+**16s stall messages:** yes — 483 (LOGIN 242, APPEND 187), 20–27 s each
+**errors:** 24 residual `UNAVAILABLE`
+**Conclusion:** The CPU limit was the root cause; throttling went to zero and
+login throughput doubled with no code change. Residual stalls are a *different*
+bottleneck now that 2.1× more work reaches the backend: the documented
+5-sessions-per-user `fs.mu` contention this exact config re-introduces (see the
+v2.0.170 note above), plus mild director throttling (181 periods / 4.8 s per pod
+at `limits.cpu: 500m`, ~11% of CPU used). Node had headroom throughout (35%).
+Connection reuse from #878 remains worth doing as a CPU-efficiency measure — it
+removes two of the three handshakes per login, which matters at 1M+ connections —
+but it is an optimisation, not the fix for this failure.
+
+**Follow-ups:** raise/remove the director CPU limit; raise the chart's own 200m
+default for TLS-terminating login pods; dead keys still in values-sandbox.yaml
+(`hostname`, `service:`, `mysql.bundled`, `storage.volatileDir` → `volatile_dir`).
+
+---
+
 ## Template for next run
 
 ```
