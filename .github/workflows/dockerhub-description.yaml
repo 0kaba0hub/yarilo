@@ -1,0 +1,31 @@
+name: Update Docker Hub description
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/DOCKERHUB.md"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  update-description:
+    name: Update Docker Hub description
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: 0kaba0
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: 0kaba0/yarilo
+          readme-filepath: docs/DOCKERHUB.md
+          short-description: "IMAP/POP3/LMTP/ManageSieve/Submission mail server with full-text search, in Go. Kubernetes-native."
