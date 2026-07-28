@@ -1,8 +1,6 @@
 package director
 
 import (
-	"crypto/md5"
-	"encoding/binary"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -43,26 +41,25 @@ func (e *UserEntry) newer(o *UserEntry) bool {
 // UserDir is a hash-keyed, TTL-expiring user→backend directory.
 // Thread-safe.
 type UserDir struct {
-	mu        sync.RWMutex
-	byHash    map[uint32]*UserEntry
-	expire    time.Duration
-	lowercase bool          // #738: lowercase usernames before hashing
-	self      string        // this director's id ("ip:port"), stamped on local assignments (#772)
-	clock     atomic.Uint64 // Lamport clock for assignment ordering (#772)
+	mu     sync.RWMutex
+	byHash map[uint32]*UserEntry
+	expire time.Duration
+	hf     ring.HashFormat // #850: username→hash-key template (encodes #738 lowercasing via %L)
+	self   string          // this director's id ("ip:port"), stamped on local assignments (#772)
+	clock  atomic.Uint64   // Lamport clock for assignment ordering (#772)
 }
 
-// NewUserDir creates a UserDir with the given per-entry TTL. lowercase
-// controls whether usernames are normalized before hashing
-// (director_username_hash_lowercase, #738) — must match the Ring's setting
-// so HashUsername and the ring's own hash never diverge for the same user.
-// self is this director's id ("ip:port"), stamped on locally-originated
+// NewUserDir creates a UserDir with the given per-entry TTL. hf is the compiled
+// username→hash-key template (director_service.username_hash, #850) and MUST be the same
+// HashFormat the Ring uses so HashUsername and the ring's own hash never diverge for the
+// same user. self is this director's id ("ip:port"), stamped on locally-originated
 // assignments for cross-director conflict resolution (#772).
-func NewUserDir(expire time.Duration, lowercase bool, self string) *UserDir {
+func NewUserDir(expire time.Duration, hf ring.HashFormat, self string) *UserDir {
 	return &UserDir{
-		byHash:    make(map[uint32]*UserEntry),
-		expire:    expire,
-		lowercase: lowercase,
-		self:      self,
+		byHash: make(map[uint32]*UserEntry),
+		expire: expire,
+		hf:     hf,
+		self:   self,
 	}
 }
 
@@ -80,21 +77,17 @@ func (d *UserDir) observe(seq uint64) {
 	}
 }
 
-// HashUsername returns the MD5-based uint32 hash used to identify users in
-// the director protocol. Matches the ring's userHash exactly given the same
-// lowercase setting — both delegate to ring.NormalizeUsername.
-func HashUsername(username string, lowercase bool) uint32 {
-	if lowercase {
-		username = ring.NormalizeUsername(username)
-	}
-	sum := md5.Sum([]byte(username))
-	return binary.LittleEndian.Uint32(sum[:4])
+// HashUsername returns the uint32 hash used to identify users in the director protocol.
+// It delegates to ring.Hash(hf.Key(username)) — the exact same code path the ring's own
+// userHash uses — so the two can never diverge for the same user and format (#850).
+func HashUsername(username string, hf ring.HashFormat) uint32 {
+	return ring.Hash(hf.Key(username))
 }
 
 // Set stores a locally-originated user→backend mapping (stamped with a
 // fresh Lamport seq + this director's id) and returns the username hash.
 func (d *UserDir) Set(username, host string, weak bool) uint32 {
-	h := HashUsername(username, d.lowercase)
+	h := HashUsername(username, d.hf)
 	d.SetByHash(h, host, weak)
 	return h
 }
@@ -163,7 +156,7 @@ func (d *UserDir) MergeByHash(hash uint32, host string, weak bool, seq uint64, b
 
 // Get returns the entry for username, or nil if not found or expired.
 func (d *UserDir) Get(username string) *UserEntry {
-	return d.GetByHash(HashUsername(username, d.lowercase))
+	return d.GetByHash(HashUsername(username, d.hf))
 }
 
 // GetByHash returns the entry for hash, or nil if not found or expired.
@@ -186,7 +179,7 @@ func (d *UserDir) GetByHash(hash uint32) *UserEntry {
 // it neither propagates nor perturbs conflict resolution. Returns whether an
 // entry existed.
 func (d *UserDir) Touch(username string) bool {
-	return d.TouchByHash(HashUsername(username, d.lowercase))
+	return d.TouchByHash(HashUsername(username, d.hf))
 }
 
 // TouchByHash is Touch by pre-computed hash.
@@ -203,7 +196,7 @@ func (d *UserDir) TouchByHash(hash uint32) bool {
 
 // Delete removes the entry for username.
 func (d *UserDir) Delete(username string) {
-	d.DeleteByHash(HashUsername(username, d.lowercase))
+	d.DeleteByHash(HashUsername(username, d.hf))
 }
 
 // DeleteByHash removes the entry for hash.
@@ -219,7 +212,7 @@ func (d *UserDir) DeleteByHash(hash uint32) {
 // while a plain admin kick (which passes the current backend) still clears it.
 // Returns whether it deleted.
 func (d *UserDir) DeleteIfBackend(username, backendIP string) bool {
-	hash := HashUsername(username, d.lowercase)
+	hash := HashUsername(username, d.hf)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byHash[hash]

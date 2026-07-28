@@ -85,7 +85,7 @@ func (s *Server) isKilling(hash uint32) bool {
 // noteSessionOpened re-arms the confirm for a killing user: a session opening
 // means the count is not stably zero, so any pending zero observation is void.
 func (s *Server) noteSessionOpened(user string) {
-	hash := HashUsername(user, s.opts.usernameHashLowercase())
+	hash := HashUsername(user, s.hf)
 	s.killMu.Lock()
 	if st, ok := s.killing[hash]; ok {
 		st.zeroSince = time.Time{}
@@ -97,7 +97,7 @@ func (s *Server) noteSessionOpened(user string) {
 // noteSessionClosed arms the confirm for a killing user once its ring-wide
 // session count reaches zero.
 func (s *Server) noteSessionClosed(user string) {
-	hash := HashUsername(user, s.opts.usernameHashLowercase())
+	hash := HashUsername(user, s.hf)
 	s.killMu.Lock()
 	st, ok := s.killing[hash]
 	s.killMu.Unlock()
@@ -120,12 +120,11 @@ func (s *Server) noteSessionClosed(user string) {
 // userSessionCount counts this director's ring-wide view of active sessions for
 // the user hash (local + #804 remote replicas).
 func (s *Server) userSessionCount(hash uint32) int {
-	lc := s.opts.usernameHashLowercase()
 	s.sessRecMu.RLock()
 	defer s.sessRecMu.RUnlock()
 	n := 0
 	for _, rec := range s.sessById {
-		if HashUsername(rec.user, lc) == hash {
+		if HashUsername(rec.user, s.hf) == hash {
 			n++
 		}
 	}

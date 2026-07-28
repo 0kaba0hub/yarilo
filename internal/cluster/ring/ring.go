@@ -31,7 +31,7 @@ type Ring struct {
 	backends  map[string]*Backend // key: IP
 	vhosts    []vhost             // all Up backends, sorted by hash
 	tagVhosts map[string][]vhost  // tag → Up backends for that tag, sorted by hash
-	lowercase bool                // #738: lowercase usernames before hashing
+	hf        HashFormat          // #850: username→hash-key template (encodes #738 lowercasing via %L)
 }
 
 type vhost struct {
@@ -48,13 +48,15 @@ func NormalizeUsername(username string) string {
 	return strings.ToLower(username)
 }
 
-// New returns an empty Ring. lowercase controls whether usernames are
-// normalized via NormalizeUsername before hashing (director_username_hash_lowercase, #738).
-func New(lowercase bool) *Ring {
+// New returns an empty Ring. hf is the compiled username→hash-key template
+// (director_service.username_hash, #850); it encodes the #738 lowercasing via its %L
+// modifier and MUST be the same HashFormat the director's userDir uses so the two
+// hashes never diverge for the same user.
+func New(hf HashFormat) *Ring {
 	return &Ring{
 		backends:  make(map[string]*Backend),
 		tagVhosts: make(map[string][]vhost),
-		lowercase: lowercase,
+		hf:        hf,
 	}
 }
 
@@ -255,11 +257,7 @@ func (r *Ring) rebuild() {
 }
 
 func (r *Ring) userHash(username string) uint32 {
-	if r.lowercase {
-		username = NormalizeUsername(username)
-	}
-	sum := md5.Sum([]byte(username))
-	return binary.LittleEndian.Uint32(sum[:4])
+	return Hash(r.hf.Key(username))
 }
 
 func vhostHash(key string) uint32 {

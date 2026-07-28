@@ -8,7 +8,7 @@ import (
 )
 
 func hashOf(s *Server, user string) uint32 {
-	return HashUsername(user, s.opts.usernameHashLowercase())
+	return HashUsername(user, s.hf)
 }
 
 // TestUserKill_LookupHeld: while a user is killing, LOOKUP returns the retryable

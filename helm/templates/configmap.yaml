@@ -739,6 +739,7 @@ data:
       ping_timeout: {{ .Values.components.director.ping_timeout }}
       write_timeout: {{ .Values.components.director.write_timeout }}
       username_hash_lowercase: {{ .Values.components.director.username_hash_lowercase }}
+      username_hash: {{ .Values.components.director.username_hash | default "" | quote }}
       assignment_policy: {{ .Values.components.director.assignment_policy | default "hash" | quote }}
       user_kick_delay: {{ .Values.components.director.user_kick_delay }}
       user_kill_timeout: {{ .Values.components.director.user_kill_timeout }}
