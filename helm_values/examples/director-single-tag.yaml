@@ -1,0 +1,193 @@
+# ============================================================================
+# yarilo — PRODUCTION values: DIRECTOR topology, single backend tag, full mTLS
+# ============================================================================
+#
+# Topology (docs/yarilo_director.svg + docs/yarilo_backend.svg):
+#   - 3 director pods (self-organizing ring, control-plane routing only).
+#   - Login proxies (imap/pop3/submission/lmtp/managesieve/sasl) that TLS-
+#     terminate for clients and LOOKUP the owning backend pod via the director.
+#   - ONE co-located backend StatefulSet ("tag"): each pod runs every protocol
+#     container + yarilo-fts + yarilo-backend-api + the registration sidecar,
+#     sharing one pod IP and one NFS RWX shard. A user hashes to one pod that
+#     serves ALL protocols (Dovecot "one mail-host owns every per-user resource").
+#   - Shared services: yarilo-auth, yarilo-anvil, yarilo-locks (remote/Redis),
+#     yarilo-quota-status (Postfix policy service, stays separate).
+#   - Full internal mTLS between all internal components.
+#
+# Install:
+#   1. Provision external MySQL + Redis (see redis:/mysql: below).
+#   2. Apply the internal-CA (cert-manager) — see hack/internal-ca-sandbox.yaml
+#      for the shape; issue the shared internal-tls secret + director cert.
+#   3. helm upgrade --install yarilo ./helm -n yarilo -f this-file.yaml \
+#        --set image.tag=<version>
+#
+# Replace every <PLACEHOLDER> before use.
+# ============================================================================
+
+hostname: mail.example.com          # public MX / client-facing FQDN
+
+image:
+  repository: ghcr.io/0kaba0hub/yarilo
+  tag: ""                           # pin a released version, e.g. "2.2.9"
+  pullPolicy: IfNotPresent
+
+logLevel: info                      # info in prod; debug only when diagnosing
+
+# ---- Storage: shared NFS (RWX) for the tag's mailbox + index data ----------
+storage:
+  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  persistence:
+    enabled: true
+    accessMode: ReadWriteMany       # RWX — every co-located pod mounts the shard
+    size: 500Gi                     # size to the tag's mailbox footprint
+    storageClass: "<nfs-storage-class>"
+
+# ---- External state stores (REQUIRED in prod — never bundle) ---------------
+redis:
+  bundled: false                    # use a managed/HA Redis, not the chart's STS
+  externalUrl: "redis://<redis-host>:6379/0"
+mysql:
+  bundled: false                    # use managed MySQL/MariaDB (PostfixAdmin schema)
+
+extraEnv:
+  - name: YARILO_DB_DSN             # injected into auth passdb/userdb
+    valueFrom:
+      secretKeyRef:
+        name: yarilo-mysql          # operator-provided Secret
+        key: dsn
+
+# ---- Internal mTLS: ONE shared cert (server_name pinned) -------------------
+# Every internal client dial pins internal_tls.server_name; the shared cert must
+# carry that SAN. The director gets its OWN cert with the ring SANs.
+# Apply the internal CA (cert-manager Issuer "yarilo-internal-ca") first.
+internal_tls:
+  server_name: yarilo-internal      # must be a SAN in the shared internal-tls cert
+
+# ---- Full-text search: co-located (localhost) → per-user single writer ------
+fts:
+  enabled: true
+  fts_engine: flatcurve             # Xapian; runs the -fts image variant
+  fts_mode: remote
+  fts_addr: ""                      # EMPTY → co-located chart auto-derives localhost:9106
+  fts_auth_master_addr: "yarilo-auth:9102"
+  fts_autoindex: true
+
+components:
+
+  # ---- Director ring (control plane) ----------------------------------------
+  director:
+    enabled: true
+    replicas: 3                     # odd number; 3 is the standard HA ring
+    ring_secret: "<32-char-shared-ring-secret>"   # SAME on all director pods
+    min_members: 3
+    assignment_policy: least_sessions   # load-aware initial placement (or "hash")
+    # username_hash: "%Lu"          # dovecot director_username_hash equivalent; default %Lu
+    listeners:
+      lmtp:                         # director's embedded LMTP proxy (MTA → :24)
+        enabled: true
+        port: 24
+        containerPort: 10024
+    backends: []                    # EMPTY: backends self-register via heartbeat (#776)
+    internalTLS:
+      enabled: true
+      secretName: yarilo-director-internal-tls   # director-specific cert (ring SANs)
+      certificate:
+        enabled: true               # chart issues it via cert-manager
+        issuerRef:
+          kind: ClusterIssuer       # your internal CA issuer
+          name: yarilo-internal-ca
+
+  # ---- Co-located backend StatefulSet (ONE tag / NFS shard) -----------------
+  backend:
+    coLocated: true                 # merged STS: all protocols + fts + backend-api + reg
+    replicas: 3                     # scale to the tag's user load; shares the NFS shard
+    tag: ""                         # default pool; set a name only in multi-tag installs
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
+
+  # ---- Shared services -------------------------------------------------------
+  auth:
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    passdb:
+      - driver: mysql
+        dsn: "${YARILO_DB_DSN}"
+        default_pass_scheme: BCRYPT
+        skip_schema: true           # reuse an existing PostfixAdmin mailbox table
+        password_query: |
+          SELECT password, active AS enabled, allow_nets FROM mailbox WHERE username = %u
+        user_query: |
+          SELECT CONCAT(home, mpath) AS home,
+                 CONCAT(mbtype, ':~/', maildir, ':INDEX=~/index',
+                        ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
+                 CONCAT('*:bytes=', quota_bytes, ':messages=', quota_messages) AS quota_rule
+          FROM mailbox WHERE username = %u
+        iterate_query: |
+          SELECT username FROM mailbox WHERE active = 1 ORDER BY username
+    token:
+      backend: redis
+      redis_addr: "redis://<redis-host>:6379/0"
+  anvil:
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  locks:                            # cross-pod write coordination (Redis-backed)
+    enabled: true
+    replicas: 2                     # HA
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+
+  # ---- Login proxies (client-facing TLS + director LOOKUP) ------------------
+  # backend_addr: "" + director_addr set  → per-session LOOKUP (director routing).
+  imapLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10143
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls:
+      secretName: yarilo-tls        # client-facing cert (public FQDN)
+      certificate:
+        enabled: true
+        issuerRef: { kind: ClusterIssuer, name: letsencrypt-prod }
+        dnsNames: [mail.example.com]
+    listeners:
+      imaps: { enabled: true }      # :993
+      imap:  { enabled: true }      # :143 STARTTLS
+    service:
+      type: LoadBalancer
+  pop3Login:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10110
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls: { secretName: yarilo-tls }
+    listeners:
+      pop3s: { enabled: true }
+      pop3:  { enabled: true }
+    service: { type: LoadBalancer }
+  lmtpLogin:                        # MTA-facing LMTP (plain, no preamble)
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10024
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+  manageSieveLogin:
+    enabled: true
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 14190
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    tls: { secretName: yarilo-tls }
+    listeners:
+      managesieve: { enabled: true }
+    service: { type: LoadBalancer }
+  saslLogin:                        # Submission SASL (:587/:465 via relay)
+    enabled: true
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    service: { type: LoadBalancer }
+
+  # ---- quota-status: Postfix policy service (stays a separate Deployment) ----
+  quotaStatus:
+    enabled: true
+    auth_master_addr: "yarilo-auth:9102"
+    internalTLS: { enabled: true, secretName: yarilo-internal-tls }
+    service: { type: LoadBalancer }
