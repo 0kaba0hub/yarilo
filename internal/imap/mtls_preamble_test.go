@@ -78,7 +78,7 @@ func TestWrapProxy_InternalMTLSHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clientCfg, err := mtls.ClientConfig(certFile, keyFile, caFile, "yarilo-internal")
+	clientCfg, err := mtls.ClientConfig(certFile, keyFile, caFile, "yarilo-internal", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

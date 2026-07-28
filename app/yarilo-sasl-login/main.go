@@ -45,7 +45,7 @@ func main() {
 
 	var authTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
-		authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName)
+		authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 		if err != nil {
 			slog.Error("internal tls config failed", "err", err)
 			os.Exit(1)

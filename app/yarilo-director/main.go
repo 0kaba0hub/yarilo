@@ -86,6 +86,8 @@ func main() {
 				cfg.InternalTLS.Key,
 				cfg.InternalTLS.CA,
 				cfg.DirectorService.RingTLSServerName,
+				cfg.InternalTLS.SessionCacheSize,
+				cfg.InternalTLS.SessionCacheTTL,
 			)
 			if err != nil {
 				slog.Error("internal_tls ring dial config failed", "err", err)
@@ -107,6 +109,8 @@ func main() {
 			cfg.InternalTLS.Key,
 			cfg.InternalTLS.CA,
 			cfg.InternalTLS.ServerName,
+			cfg.InternalTLS.SessionCacheSize,
+			cfg.InternalTLS.SessionCacheTTL,
 		)
 		if err != nil {
 			slog.Error("internal_tls client config failed", "err", err)
