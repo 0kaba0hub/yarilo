@@ -93,6 +93,14 @@ func (s *Server) evacPumpLocked(e *evacuation) {
 		// primitives moveUser uses, so re-login lands on the rehash target once the
 		// kill confirms.
 		s.startKilling(hash)
+		// #848: attach the flush-hook context so the operator cleanup runs once this
+		// user's old sessions confirm gone. new = the rehash target the held re-LOOKUP
+		// will land on (host already excluded from the ring); "" if none survive.
+		newBackend := ""
+		if b := s.ring.LookupBackendByTag(user, e.tag); b != nil {
+			newBackend = b.IP
+		}
+		s.attachFlush(hash, flushCtx{user: user, oldBackend: e.ip, newBackend: newBackend})
 		s.originateRingEvent("USER-KICKED", fmt.Sprintf("%s\t%s", user, e.ip), nil)
 	}
 }

@@ -161,6 +161,7 @@ func main() {
 		UserKickDelay:         time.Duration(cfg.DirectorService.UserKickDelay) * time.Second,
 		MaxParallelKicks:      cfg.DirectorService.MaxParallelKicks,
 		MaxParallelMoves:      cfg.DirectorService.MaxParallelMoves,
+		FlushProgram:          cfg.DirectorService.FlushProgram,
 		UserKillTimeout:       time.Duration(cfg.DirectorService.UserKillTimeout) * time.Second,
 		UserKillConfirmGrace:  time.Duration(cfg.DirectorService.UserKillConfirmGrace) * time.Second,
 		PeerTLS:               ringDialTLSCfg,

@@ -302,6 +302,16 @@ components:
     ## instead of stampeding them. Matches director_max_parallel_moves.
     ## 0 = 5; negative = unlimited (all at once, ~equivalent to --force).
     max_parallel_moves: 5
+    ## Optional external per-user cleanup hook (#848), the analog of the reference's
+    ## director_flush_socket. Path to an executable run once per user AFTER a
+    ## deliberate relocation (admin move or graceful evacuation) confirms ring-wide —
+    ## i.e. after the user's old sessions are gone. Called as:
+    ##   flush_program FLUSH <username> <username_hash> <old_backend> <new_backend>
+    ## Best-effort + async with a bounded timeout: a slow/failing hook is logged, never
+    ## blocks the ring/LOOKUP, never fails the move. Only the director that originated
+    ## the move runs it; mass/reactive paths (backend-down, --force flush) do not.
+    ## The program runs in the director pod's context. Empty = disabled (default).
+    flush_program: ""
 
     ## Static backend list loaded at startup.
     ## Each entry must match a backend service in the backend namespace.

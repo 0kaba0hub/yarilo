@@ -1190,6 +1190,17 @@ type DirectorServiceConfig struct {
 	// reference's director_max_parallel_moves. 0 = default (5); negative =
 	// unlimited (all users moved at once, ~equivalent to --force but via moves).
 	MaxParallelMoves int `koanf:"max_parallel_moves"`
+	// FlushProgram is an optional external executable run once per user AFTER a
+	// deliberate relocation (an admin USER-MOVE or a graceful evacuation) has been
+	// confirmed ring-wide — i.e. after the user's old sessions are gone (#848).
+	// Operators hook mailbox-cache flush, external session cleanup, metrics, etc.
+	// It is invoked as: flush_program FLUSH <username> <username_hash> <old_backend>
+	// <new_backend>, best-effort and asynchronous with a bounded timeout — a slow or
+	// failing hook is logged, never blocks the ring/LOOKUP, and never fails the move.
+	// Only the director that originated the move runs it (mirrors the reference's
+	// self-initiated semantics); mass/reactive paths (backend-down, --force flush) do
+	// NOT trigger it. Empty = disabled (default). The reference's director_flush_socket.
+	FlushProgram string `koanf:"flush_program"`
 	// LMTPListen enables the director's embedded LMTP proxy (per-recipient
 	// fan-out via ring routing) on this address, e.g. ":10024". Empty =
 	// disabled. This deliberately does NOT reuse the shared services.lmtp

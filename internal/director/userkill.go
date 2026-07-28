@@ -31,6 +31,19 @@ import (
 type killState struct {
 	deadline  time.Time
 	zeroSince time.Time
+	// flush, when non-nil, is the per-user flush-hook context (#848) attached ONLY
+	// by this director when it originates a deliberate relocation (moveUser or a
+	// graceful evacuation). Peers that receive the replicated kill never set it, so
+	// only the originator runs the hook — matching the reference's self-initiated
+	// semantics. Fired from the confirmed-kill sweep, after the old sessions are gone.
+	flush *flushCtx
+}
+
+// flushCtx carries what the flush hook is passed for one relocated user (#848).
+type flushCtx struct {
+	user       string
+	oldBackend string
+	newBackend string
 }
 
 // killReason is the retryable LOOKUP failure reason a held user gets.
@@ -50,6 +63,21 @@ func (s *Server) startKilling(hash uint32) {
 
 // applyKilling records a replicated kill for hash with the given TTL, computing
 // the deadline against THIS director's clock.
+// attachFlush records the flush-hook context on an in-progress kill (#848), so the
+// confirmed-kill sweep can run the per-user hook once the old sessions are gone. A
+// no-op when no flush_program is configured or the kill record is already gone.
+func (s *Server) attachFlush(hash uint32, ctx flushCtx) {
+	if s.opts.FlushProgram == "" {
+		return
+	}
+	s.killMu.Lock()
+	if st, ok := s.killing[hash]; ok {
+		st.flush = &ctx
+		s.killing[hash] = st
+	}
+	s.killMu.Unlock()
+}
+
 func (s *Server) applyKilling(hash uint32, ttl time.Duration) {
 	s.killMu.Lock()
 	// Keep an existing (possibly already-armed) record's zeroSince rather than
@@ -155,9 +183,15 @@ func (s *Server) StartKillSweep(ctx context.Context) {
 	}()
 }
 
+type confirmedKill struct {
+	hash  uint32
+	flush *flushCtx // #848: per-user hook context, non-nil only on originator moves
+}
+
 func (s *Server) sweepKills(grace time.Duration) {
 	now := time.Now()
-	var confirmed, timedOut []uint32
+	var timedOut []uint32
+	var confirmed []confirmedKill
 
 	s.killMu.Lock()
 	for hash, st := range s.killing {
@@ -166,7 +200,7 @@ func (s *Server) sweepKills(grace time.Duration) {
 			timedOut = append(timedOut, hash)
 			delete(s.killing, hash)
 		case !st.zeroSince.IsZero() && now.Sub(st.zeroSince) >= grace:
-			confirmed = append(confirmed, hash)
+			confirmed = append(confirmed, confirmedKill{hash: hash, flush: st.flush})
 			delete(s.killing, hash)
 		}
 	}
@@ -177,9 +211,15 @@ func (s *Server) sweepKills(grace time.Duration) {
 		s.membership.originate("USER-KILL-DONE", fmt.Sprintf("%d", hash))
 		s.evacKillDone(hash) // a timed-out move still frees its evacuation slot (#849)
 	}
-	for _, hash := range confirmed {
-		slog.Info("director: kill confirmed ring-wide, releasing LOOKUP hold", "hash", hash)
-		s.membership.originate("USER-KILL-DONE", fmt.Sprintf("%d", hash))
-		s.evacKillDone(hash) // #849: confirmed move frees its slot; pull the next user
+	for _, ck := range confirmed {
+		slog.Info("director: kill confirmed ring-wide, releasing LOOKUP hold", "hash", ck.hash)
+		s.membership.originate("USER-KILL-DONE", fmt.Sprintf("%d", ck.hash))
+		s.evacKillDone(ck.hash) // #849: confirmed move frees its slot; pull the next user
+		if ck.flush != nil {
+			// #848: the user's old sessions are now gone — run the operator cleanup
+			// hook. Async + best-effort; it never gates the ring, only this move's
+			// already-completed relocation.
+			s.runFlushHook(ck.hash, *ck.flush)
+		}
 	}
 }
