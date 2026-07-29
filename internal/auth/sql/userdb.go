@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
 )
 
 // Userdb is the SQL-backed implementation of protocol.Userdb. It
@@ -45,6 +46,9 @@ func NewUserdb(c Config) (*Userdb, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth/sql: userdb open %s: %w", c.Driver, err)
 	}
+	pool := c.Pool
+	pool.Driver = c.Driver
+	sqlpool.Apply(db, pool)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("auth/sql: userdb ping %s: %w", c.Driver, err)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/auth/scheme"
+	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver (registered as "pgx")
@@ -71,6 +72,10 @@ type Config struct {
 	IterateQuery      string // optional; for admin tooling (list users)
 	DefaultPassScheme string // assumed scheme when stored password has no {SCHEME} prefix (default PLAIN)
 	SkipSchema        bool   // do not auto-create yarilo_users
+	// Pool bounds the connection pool. The zero value still yields a bounded,
+	// reusing pool — Go's defaults retain only two idle connections, so a burst
+	// re-dials the rest (#886).
+	Pool sqlpool.Config
 }
 
 // Passdb is an SQL-backed passdb (and optional userdb) entry.
@@ -93,6 +98,9 @@ func New(c Config) (*Passdb, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth/sql: open %s: %w", c.Driver, err)
 	}
+	pool := c.Pool
+	pool.Driver = c.Driver
+	sqlpool.Apply(db, pool)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("auth/sql: ping %s: %w", c.Driver, err)

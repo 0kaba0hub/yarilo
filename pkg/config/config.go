@@ -1661,6 +1661,15 @@ type PassdbEntry struct {
 	DefaultPassScheme string `koanf:"default_pass_scheme"` // assumed scheme when stored password has no {SCHEME} prefix (default PLAIN)
 	SkipSchema        bool   `koanf:"skip_schema"`         // do not run CREATE TABLE IF NOT EXISTS on startup
 
+	// Connection-pool limits for the SQL drivers (#886). Zero values select
+	// bounded, reusing defaults — Go's own defaults retain only two idle
+	// connections, so a login burst re-dials the rest and drove the sandbox
+	// MySQL to its max_connections ceiling. Negative disables a limit.
+	MaxOpenConns    int `koanf:"max_open_conns"`     // 0 = 25
+	MaxIdleConns    int `koanf:"max_idle_conns"`     // 0 = same as max_open_conns
+	ConnMaxLifetime int `koanf:"conn_max_lifetime"`  // seconds; 0 = 300
+	ConnMaxIdleTime int `koanf:"conn_max_idle_time"` // seconds; 0 = 60
+
 	// static driver: one shared credential + templated fields for every user.
 	StaticPassword string            `koanf:"static_password"` // shared password ({SCHEME} or default scheme)
 	Nopassword     bool              `koanf:"nopassword"`      // accept any password (proxy front); requires empty static_password

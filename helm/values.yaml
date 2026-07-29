@@ -573,6 +573,22 @@ components:
         ## iterate_query: |
         ##   SELECT username FROM users WHERE active = 1 ORDER BY username
         ## skip_schema: true   # set when using a custom table instead of yarilo_users
+        ##
+        ## Connection-pool limits (#886). Defaults are per driver, because the
+        ## cost of a connection is not comparable between them:
+        ##   mysql    25 — a connection is a thread
+        ##   postgres  8 — a connection is a process, and the stock
+        ##                 max_connections is 100, LOWER than MySQL's 151
+        ##   sqlite    1 — a file, whose writers serialise inside the library;
+        ##                 extra connections buy SQLITE_BUSY, not throughput
+        ## max_idle_conns defaults to max_open_conns: retaining fewer idle
+        ## connections than the pool opens means the difference is re-dialled on
+        ## every burst, which is what drove the sandbox MySQL to its ceiling.
+        ## Negative disables a limit. Seconds for the two timeouts.
+        ## max_open_conns: 0
+        ## max_idle_conns: 0
+        ## conn_max_lifetime: 0   # 0 = 300
+        ## conn_max_idle_time: 0  # 0 = 60
 
       ## passwd-file driver — a flat, colon-separated user file (classic
       ## /etc/passwd layout) that serves both passdb and userdb roles, so a
@@ -2113,6 +2129,12 @@ dicts:
 #   # The operator owns the table (no auto-create in mapped mode). Without "maps"
 #   # the sql driver keeps its generic key/value layout. Reference this name from
 #   # protocol.lmtp.quota_clone_dicts.
+#   ## The dict drivers take the same pool knobs inside `settings`, since that is
+#   ## where their DSN already lives. quota_clone_mysql is the hottest SQL path in
+#   ## the system — it writes on every mail save — so it benefits most from reuse:
+#   ##   settings:
+#   ##     max_open_conns: 25
+#   ##     conn_max_lifetime: 300
 #   quota_clone_mysql:
 #     driver: sql
 #     settings:

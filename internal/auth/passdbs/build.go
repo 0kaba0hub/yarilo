@@ -13,6 +13,7 @@ import (
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
 	"github.com/0kaba0hub/yarilo/internal/auth/static"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
 )
 
 // Build turns passdb config entries into a passdb chain and a parallel userdb
@@ -32,6 +33,12 @@ func Build(entries []config.PassdbEntry) (passdbs []protocol.Passdb, userdbs []p
 				IterateQuery:      e.IterateQuery,
 				DefaultPassScheme: e.DefaultPassScheme,
 				SkipSchema:        e.SkipSchema,
+				Pool: sqlpool.Config{
+					MaxOpenConns:           e.MaxOpenConns,
+					MaxIdleConns:           e.MaxIdleConns,
+					ConnMaxLifetimeSeconds: e.ConnMaxLifetime,
+					ConnMaxIdleTimeSeconds: e.ConnMaxIdleTime,
+				},
 			}
 			pdb, err := authsql.New(cfg)
 			if err != nil {

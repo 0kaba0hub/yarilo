@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
 
 	_ "github.com/go-sql-driver/mysql" // mysql driver
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver
@@ -103,6 +104,17 @@ func New(cfg dict.Config) (dict.Dict, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", driver, err)
 	}
+	// The quota_clone mirror writes on every mail save, so this is the hottest
+	// SQL path in the system — and the one Go's two-idle-connection default hurt
+	// most (#886). Overrides come from the dict's own settings map so an operator
+	// tunes it where the DSN already lives.
+	sqlpool.Apply(db, sqlpool.Config{
+		Driver:                 driver,
+		MaxOpenConns:           intSetting(cfg.Settings, "max_open_conns"),
+		MaxIdleConns:           intSetting(cfg.Settings, "max_idle_conns"),
+		ConnMaxLifetimeSeconds: intSetting(cfg.Settings, "conn_max_lifetime"),
+		ConnMaxIdleTimeSeconds: intSetting(cfg.Settings, "conn_max_idle_time"),
+	})
 	if err := db.Ping(); err != nil {
 		db.Close() //nolint:errcheck
 		return nil, fmt.Errorf("ping: %w", err)
@@ -697,4 +709,20 @@ func (t *tx) commitMapped(ctx context.Context) (dict.CommitResult, error) {
 		return dict.CommitFailed, fmt.Errorf("commit tx: %w", err)
 	}
 	return dict.CommitOK, nil
+}
+
+// intSetting reads an integer from a dict settings map. YAML decoding may hand
+// back int, int64 or float64 depending on the source, so all three are accepted;
+// anything else yields 0, which sqlpool reads as "use the default".
+func intSetting(settings map[string]any, key string) int {
+	switch v := settings[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
 }
