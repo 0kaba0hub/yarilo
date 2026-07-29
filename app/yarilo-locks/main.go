@@ -20,16 +20,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
@@ -205,19 +204,15 @@ func buildListener(cfg *config.Config, lcfg config.LocksServiceConfig) (net.List
 // /readyz reports backend reachability — useful for k8s rolling updates so a
 // pod whose Redis connection has dropped is taken out of rotation.
 func runTelemetry(addr string, reg *prometheus.Registry, backendReady func() bool) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+	// The shared implementation, with this component's own registry and its real
+	// readiness condition — a pod whose Redis connection has dropped is taken out
+	// of rotation instead of being handed locks it cannot record.
+	tel := telemetry.NewWithOptions(telemetry.Options{
+		Addr:     addr,
+		Registry: reg,
+		Checks:   []telemetry.Check{telemetry.FuncCheck("backend", backendReady)},
 	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if backendReady != nil && !backendReady() {
-			http.Error(w, "backend not ready", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := tel.ListenAndServe(context.Background()); err != nil {
 		slog.Error("telemetry server failed", "err", err)
 	}
 }
