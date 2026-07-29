@@ -777,6 +777,13 @@ type AnvilServiceConfig struct {
 	// FailOpen controls login-pod behaviour when yarilo-anvil is unreachable.
 	// true = allow the session; false (default) = reject the session.
 	FailOpen bool `koanf:"fail_open"`
+	// Conns is how many long-lived connections a login pod keeps to
+	// yarilo-anvil (#878). 0 selects anvil.DefaultPoolSize. Sessions no longer
+	// own a connection: every command carries the session id and the server
+	// keeps no per-connection state, so the connection count is decoupled from
+	// the login rate. The protocol has no request id, so one connection serves
+	// one command at a time — each is a sub-millisecond round trip.
+	Conns int `koanf:"conns"`
 }
 
 // ClientAddr returns the address login pods use to dial yarilo-anvil.

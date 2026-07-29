@@ -757,6 +757,13 @@ components:
     enabled: true
     replicas: 1
     listen: ":9101"
+    ## conns — long-lived connections each login pod keeps to yarilo-anvil (#878).
+    ## 0 = built-in default (4). Sessions do not own a connection: every command
+    ## carries the session id and the server keeps no per-connection state, so the
+    ## connection count no longer tracks the login rate. The anvil protocol has no
+    ## request id, so one connection serves one command at a time — each is a
+    ## sub-millisecond round trip, so a handful covers any realistic login rate.
+    conns: 0
 
     internalTLS:
       enabled: false

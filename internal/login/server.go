@@ -100,6 +100,11 @@ type Options struct {
 	// AnvilFailOpen controls what happens when yarilo-anvil is unreachable.
 	// true = allow the session (fail open); false = reject the session (fail closed).
 	AnvilFailOpen bool
+	// AnvilConns is how many long-lived connections the shared anvil pool keeps
+	// (#878). 0 selects anvil.DefaultPoolSize. The anvil protocol carries no
+	// request id, so a connection serves one command at a time; each command is a
+	// sub-millisecond round trip, so a handful covers any realistic login rate.
+	AnvilConns int
 	// DialRetries is the number of attempts (with exponential backoff) when
 	// dialling external dependencies at startup. 0 or 1 means a single attempt.
 	DialRetries int
@@ -162,10 +167,102 @@ type liveSession struct {
 
 // watchConn wraps a proto.Conn for the persistent director watch connection.
 // Writes are mutex-protected; reads happen in a dedicated goroutine.
+//
+// LOOKUP rides this same connection (#878). The director protocol echoes the
+// request id in its HOST/FAIL reply, so the read loop can route replies to the
+// caller that is waiting for them — which removes a dial (and, under internal
+// TLS, a full handshake) from every login. Measured before this change:
+// director_lookup cost 1.06s per login while the director's own
+// yarilo_director_lookup_seconds reported 0.4ms of work.
 type watchConn struct {
 	mu sync.Mutex
 	c  *proto.Conn
+
+	pendMu  sync.Mutex
+	pending map[string]chan string
 }
+
+// awaitReply registers id and returns the channel its reply will arrive on.
+func (w *watchConn) awaitReply(id string) chan string {
+	ch := make(chan string, 1)
+	w.pendMu.Lock()
+	if w.pending == nil {
+		w.pending = make(map[string]chan string)
+	}
+	w.pending[id] = ch
+	w.pendMu.Unlock()
+	return ch
+}
+
+func (w *watchConn) forgetReply(id string) {
+	w.pendMu.Lock()
+	delete(w.pending, id)
+	w.pendMu.Unlock()
+}
+
+// deliver routes a reply to its waiter. Reports false when nobody is waiting,
+// which is how ordinary push lines fall through to the watch handling.
+func (w *watchConn) deliver(id, line string) bool {
+	w.pendMu.Lock()
+	ch, ok := w.pending[id]
+	if ok {
+		delete(w.pending, id)
+	}
+	w.pendMu.Unlock()
+	if !ok {
+		return false
+	}
+	ch <- line
+	return true
+}
+
+// failPending wakes every waiter when the connection dies, so a login in flight
+// falls back to a fresh dial instead of waiting out its timeout.
+func (w *watchConn) failPending() {
+	w.pendMu.Lock()
+	pending := w.pending
+	w.pending = nil
+	w.pendMu.Unlock()
+	for _, ch := range pending {
+		close(ch)
+	}
+}
+
+// lookup performs a LOOKUP over the persistent connection.
+func (w *watchConn) lookup(id, username, tag, protoName string, timeout time.Duration) (proto.LookupResult, error) {
+	ch := w.awaitReply(id)
+
+	w.mu.Lock()
+	err := w.c.WriteLine(proto.LookupRequestLine(id, username, tag, protoName))
+	w.mu.Unlock()
+	if err != nil {
+		w.forgetReply(id)
+		return proto.LookupResult{}, fmt.Errorf("director lookup: write: %w", err)
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case line, ok := <-ch:
+		if !ok {
+			return proto.LookupResult{}, errWatchClosed
+		}
+		return proto.ParseLookupReply(line)
+	case <-timer.C:
+		w.forgetReply(id)
+		return proto.LookupResult{}, fmt.Errorf("director lookup: timed out after %s", timeout)
+	}
+}
+
+// errWatchClosed means the watch connection dropped while a lookup was in
+// flight. The caller retries on a fresh connection: LOOKUP is a read of the
+// routing decision, so repeating it is safe.
+var errWatchClosed = errors.New("director watch connection closed")
+
+// directorLookupTimeout bounds one LOOKUP over the persistent connection. Well
+// above the director's own sub-millisecond handling, but low enough that a wedged
+// connection falls back to a dial rather than holding the login.
+const directorLookupTimeout = 10 * time.Second
 
 func (w *watchConn) sessionOpen(sessID, username, backendIP, protoName string) {
 	w.mu.Lock()
@@ -233,6 +330,14 @@ type Server struct {
 	authMu sync.Mutex
 	authCl *authclient.Client
 
+	// anvilMu guards the shared yarilo-anvil pool (#878). Sessions no longer own
+	// a connection: every anvil command carries the session id and the server
+	// keeps no per-connection state, so a small fixed set of long-lived
+	// connections serves every session on this pod. Lazy for the same reason as
+	// the auth client — the pod may start before anvil is reachable.
+	anvilMu   sync.Mutex
+	anvilPool *anvil.Pool
+
 	// Graceful-drain state (#857): on Shutdown the listeners are closed (stop
 	// accepting) and inflight is waited on (let live sessions finish) up to the
 	// grace period. draining makes a listener-closed Accept a clean return.
@@ -258,6 +363,28 @@ func (s *Server) authClient() (*authclient.Client, error) {
 	}
 	s.authCl = cl
 	return cl, nil
+}
+
+// anvilClient returns the shared anvil pool, creating it on first use. The pool
+// dials lazily, so this cannot fail on an unreachable anvil — a dial error
+// surfaces on the first command instead.
+func (s *Server) anvilClient() *anvil.Pool {
+	s.anvilMu.Lock()
+	defer s.anvilMu.Unlock()
+	if s.anvilPool == nil {
+		s.anvilPool = anvil.NewPool(s.opts.AnvilAddr, s.opts.AnvilTLS, s.opts.AnvilConns, 0)
+	}
+	return s.anvilPool
+}
+
+func (s *Server) closeAnvilPool() {
+	s.anvilMu.Lock()
+	pool := s.anvilPool
+	s.anvilPool = nil
+	s.anvilMu.Unlock()
+	if pool != nil {
+		pool.Close()
+	}
 }
 
 func (s *Server) closeAuthClient() {
@@ -369,9 +496,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		s.closeAuthClient()
+		s.closeAnvilPool()
 		return nil
 	case <-ctx.Done():
 		s.closeAuthClient()
+		s.closeAnvilPool()
 		return ctx.Err() // grace expired with sessions still live
 	}
 }
@@ -552,62 +681,54 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}
 
-	// Anvil connection limit check.
+	// Anvil connection limit check. Shared pool (#878): no per-session dial. The
+	// phase metric now measures CONNECT over an already-open connection, so it
+	// reads as a round trip rather than a full mTLS handshake.
 	if s.opts.AnvilAddr != "" {
 		anvilStart := time.Now()
-		ac, aerr := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 0)
+		ap := s.anvilClient()
+		svc := anvilService(s.opts.Protocol)
+		cerr := ap.Connect(sessID, pre.username, clientIP, svc)
 		s.observePhase(phaseAnvilConnect, anvilStart)
-		if aerr != nil {
-			log.Error("login: anvil dial failed", "addr", s.opts.AnvilAddr, "err", aerr)
+		switch {
+		case errors.Is(cerr, anvil.ErrTooManyConns):
+			log.Warn("login: anvil", "user", pre.username, "result", "fail", "reason", "too_many_connections")
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
+			return
+		case cerr != nil:
+			log.Error("login: anvil connect failed", "addr", s.opts.AnvilAddr, "err", cerr)
 			if !s.opts.AnvilFailOpen {
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 				s.incResult("unavailable")
 				return
 			}
-		} else {
-			svc := anvilService(s.opts.Protocol)
-			cerr := ac.Connect(sessID, pre.username, clientIP, svc)
-			if cerr == anvil.ErrTooManyConns {
-				ac.Close()
-				log.Warn("login: anvil", "user", pre.username, "result", "fail", "reason", "too_many_connections")
-				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
-				return
-			}
-			if cerr != nil {
-				ac.Close()
-				log.Error("login: anvil connect failed", "err", cerr)
-				if !s.opts.AnvilFailOpen {
-					writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-					return
+		default:
+			log.Info("login: anvil", "user", pre.username, "result", "ok")
+			// #814: record the routed backend in anvil so `who` can scope to the
+			// local backend. Best-effort.
+			if beIP, _, splitErr := net.SplitHostPort(backendAddr); splitErr == nil {
+				if berr := ap.Backend(sessID, beIP); berr != nil {
+					log.Debug("login: anvil backend push", "err", berr)
 				}
-			} else {
-				log.Info("login: anvil", "user", pre.username, "result", "ok")
-				// #814: record the routed backend in anvil so `who` can scope
-				// to the local backend. Best-effort, and BEFORE the heartbeat
-				// goroutine starts so ac is never written concurrently.
-				if beIP, _, splitErr := net.SplitHostPort(backendAddr); splitErr == nil {
-					if berr := ac.Backend(sessID, beIP); berr != nil {
-						log.Debug("login: anvil backend push", "err", berr)
-					}
-				}
-				hbCtx, hbCancel := context.WithCancel(context.Background())
-				hbDone := make(chan struct{})
-				go func() {
-					defer close(hbDone)
-					interval := anvil.DefaultSessionTTL / 3
-					if err := ac.HeartbeatLoop(hbCtx, sessID, interval, nil); err != nil {
-						log.Debug("login: anvil heartbeat loop", "err", err)
-					}
-				}()
-				defer func() {
-					hbCancel()
-					<-hbDone
-					if err := ac.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
-						log.Debug("login: anvil disconnect", "err", err)
-					}
-					ac.Close()
-				}()
 			}
+			hbCtx, hbCancel := context.WithCancel(context.Background())
+			hbDone := make(chan struct{})
+			go func() {
+				defer close(hbDone)
+				interval := anvil.DefaultSessionTTL / 3
+				if err := ap.HeartbeatLoop(hbCtx, sessID, interval, nil); err != nil {
+					log.Debug("login: anvil heartbeat loop", "err", err)
+				}
+			}()
+			// The pool outlives the session, so there is nothing to close here —
+			// only the registration to release.
+			defer func() {
+				hbCancel()
+				<-hbDone
+				if err := ap.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
+					log.Debug("login: anvil disconnect", "err", err)
+				}
+			}()
 		}
 	}
 
@@ -725,6 +846,44 @@ func (s *Server) handleConn(conn net.Conn) {
 // directorLookup dials yarilo-director, issues a LOOKUP restricted to tag,
 // and returns the backend address.
 func (s *Server) directorLookup(username, tag string) (string, error) {
+	id := fmt.Sprintf("%d", s.reqID.Add(1))
+
+	// Prefer the persistent watch connection (#878). It is absent only before the
+	// watch has connected or between reconnects, in which case fall through to a
+	// dial so a login is never blocked on the watch being up.
+	s.watchMu.RLock()
+	wc := s.watch
+	s.watchMu.RUnlock()
+	if wc != nil {
+		result, lerr := wc.lookup(id, username, tag, s.opts.Protocol.Base(), directorLookupTimeout)
+		if lerr == nil {
+			return s.applyBackendPort(result.Addr), nil
+		}
+		// A dead connection or a hold is not a reason to skip the fallback path
+		// for the former; a hold must propagate unchanged so the caller retries.
+		if !errors.Is(lerr, errWatchClosed) {
+			return "", lerr
+		}
+	}
+
+	return s.directorLookupDial(id, username, tag)
+}
+
+// applyBackendPort overrides the ring port the director returns with the
+// component's configured backend port.
+func (s *Server) applyBackendPort(addr string) string {
+	if s.opts.BackendPort <= 0 {
+		return addr
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return net.JoinHostPort(host, fmt.Sprintf("%d", s.opts.BackendPort))
+}
+
+// directorLookupDial is the fallback: one connection for one lookup.
+func (s *Server) directorLookupDial(id, username, tag string) (string, error) {
 	var c *proto.Conn
 	var err error
 	if s.opts.DirectorTLS != nil {
@@ -737,20 +896,11 @@ func (s *Server) directorLookup(username, tag string) (string, error) {
 	}
 	defer c.Close()
 
-	id := fmt.Sprintf("%d", s.reqID.Add(1))
 	result, err := c.Lookup(id, username, tag, s.opts.Protocol.Base())
 	if err != nil {
 		return "", fmt.Errorf("director lookup: %w", err)
 	}
-
-	// Override the backend port from config (director returns ring port; we may need backend-specific port).
-	if s.opts.BackendPort > 0 {
-		host, _, err2 := net.SplitHostPort(result.Addr)
-		if err2 == nil {
-			return net.JoinHostPort(host, fmt.Sprintf("%d", s.opts.BackendPort)), nil
-		}
-	}
-	return result.Addr, nil
+	return s.applyBackendPort(result.Addr), nil
 }
 
 // defaultMaxLookupHolds / defaultLookupHoldBackoff bound the confirmed-kick
@@ -921,7 +1071,11 @@ func (s *Server) runWatch(ctx context.Context) {
 	slog.Info("login: director watch connected", "addr", s.opts.DirectorAddr)
 
 	readErr := make(chan error, 1)
-	go func() { readErr <- s.watchReadLoop(c, wc) }()
+	go func() {
+		err := s.watchReadLoop(c, wc)
+		wc.failPending()
+		readErr <- err
+	}()
 
 	select {
 	case <-ctx.Done():
@@ -941,6 +1095,13 @@ func (s *Server) watchReadLoop(c *proto.Conn, wc *watchConn) error {
 			return err
 		}
 		switch {
+		case strings.HasPrefix(line, "HOST\t"), strings.HasPrefix(line, "FAIL\t"):
+			// Reply to a LOOKUP issued on this connection; route it by id. An
+			// unclaimed id is a reply nobody waits for any more (its caller timed
+			// out) and is dropped.
+			if fields := strings.Split(line, "\t"); len(fields) >= 2 {
+				wc.deliver(fields[1], line)
+			}
 		case strings.HasPrefix(line, "USER-KICKED\t"):
 			fields := strings.SplitN(line, "\t", 2)
 			if len(fields) == 2 {

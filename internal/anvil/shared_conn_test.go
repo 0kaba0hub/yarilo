@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -15,10 +16,24 @@ import (
 // Limiter.Acquire before it counts anything, so a load test there cannot catch
 // a regression in this logic.
 
-// startTestServer runs a real anvil listener and returns its address.
-func startTestServer(t *testing.T, max int, opts ...ServerOption) (*Server, string) {
+// testServer is a live anvil listener plus an accept counter, so a test can
+// assert how many connections a client actually opened.
+type testServer struct {
+	*Server
+	mu      sync.Mutex
+	accepts int
+}
+
+func (ts *testServer) acceptCount() int {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.accepts
+}
+
+// startTestServer runs a real anvil listener and returns it with its address.
+func startTestServer(t *testing.T, max int, opts ...ServerOption) (*testServer, string) {
 	t.Helper()
-	s := NewServer(max, opts...)
+	ts := &testServer{Server: NewServer(max, opts...)}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -29,11 +44,14 @@ func startTestServer(t *testing.T, max int, opts ...ServerOption) (*Server, stri
 			if aerr != nil {
 				return
 			}
-			go s.handleConn(c)
+			ts.mu.Lock()
+			ts.accepts++
+			ts.mu.Unlock()
+			go ts.handleConn(c)
 		}
 	}()
 	t.Cleanup(func() { _ = ln.Close() })
-	return s, ln.Addr().String()
+	return ts, ln.Addr().String()
 }
 
 // testConn is a raw client that speaks the anvil wire protocol, so a single

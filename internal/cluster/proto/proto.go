@@ -132,13 +132,27 @@ func replyVerb(line string) string {
 func (c *Conn) Lookup(id, username, tag, proto string) (LookupResult, error) {
 	// proto (trailing field) tells the director which protocol is asking, for
 	// least_sessions placement (#797); optional for older callers.
-	if err := c.WriteLine(fmt.Sprintf("LOOKUP\t%s\t%s\t%s\t%s", id, TabEscape(username), tag, proto)); err != nil {
+	if err := c.WriteLine(LookupRequestLine(id, username, tag, proto)); err != nil {
 		return LookupResult{}, fmt.Errorf("director lookup: write: %w", err)
 	}
 	line, err := c.readReply()
 	if err != nil {
 		return LookupResult{}, fmt.Errorf("director lookup: read: %w", err)
 	}
+	return ParseLookupReply(line)
+}
+
+// LookupRequestLine renders a LOOKUP request. Exported so a caller that owns a
+// persistent director connection can write the request itself and match the
+// reply by id, instead of dialling one connection per lookup (#878).
+func LookupRequestLine(id, username, tag, proto string) string {
+	return fmt.Sprintf("LOOKUP\t%s\t%s\t%s\t%s", id, TabEscape(username), tag, proto)
+}
+
+// ParseLookupReply decodes a HOST or FAIL reply to a LOOKUP. Split out of Lookup
+// so the same parsing serves both the dial-per-lookup path and a demultiplexed
+// persistent connection.
+func ParseLookupReply(line string) (LookupResult, error) {
 	fields := ParseLine(line)
 	if len(fields) < 2 {
 		return LookupResult{}, fmt.Errorf("director lookup: unexpected response: %q", line)
