@@ -54,6 +54,15 @@ type Server struct {
 	lmtp        *lmtp.Server    // nil if LMTP not configured
 	managesieve *mssvr.Server   // nil if ManageSieve not configured
 	locker      locks.Locker    // cross-process write coordinator; nil = disabled
+
+	// Per-protocol TLS configs, kept so each Run* can bind its own listener
+	// BEFORE reporting readiness (#899). Binding cannot happen in New: the
+	// co-located backend pod runs one protocol per container off a single config,
+	// so a New that bound every port would have five containers fighting over the
+	// same five ports.
+	imapTLS       *tls.Config
+	pop3TLS       *tls.Config
+	submissionTLS *tls.Config
 }
 
 // Close releases backend resources. Session binaries should defer Close after
@@ -243,10 +252,13 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// ---- IMAP ----
+	// The TLS configs are declared at function scope so Server can keep them:
+	// each Run* binds its own listener before reporting ready (#899), which needs
+	// the config after New has returned.
+	var imapTLS, pop3TLS, submissionTLS *tls.Config
 	var imapServer *imapsvr.Server
 	if svcs.IMAP.Active() || svcs.IMAPS.Active() {
 		primary := firstActive(svcs.IMAPS, svcs.IMAP)
-		var imapTLS *tls.Config
 		if svcs.IMAPS.Active() {
 			t, err := buildTLS(cfg, svcs.IMAPS, alpnIMAP)
 			if err != nil {
@@ -333,7 +345,6 @@ func New(cfg *config.Config) (*Server, error) {
 	var pop3Server *pop3svr.Server
 	if svcs.POP3.Active() || svcs.POP3S.Active() {
 		primary := firstActive(svcs.POP3S, svcs.POP3)
-		var pop3TLS *tls.Config
 		if svcs.POP3S.Active() {
 			t, err := buildTLS(cfg, svcs.POP3S, alpnPOP3)
 			if err != nil {
@@ -386,7 +397,6 @@ func New(cfg *config.Config) (*Server, error) {
 			submissionProxy = submproxy.New(cfg.Protocol.Submission.Relay, cfg.Protocol.Submission.Hostname)
 		}
 
-		var submissionTLS *tls.Config
 		if primary.SSLMode != "no" && primary.SSLMode != "" {
 			t, err := buildTLS(cfg, primary, alpnSMTP)
 			if err != nil {
@@ -508,7 +518,38 @@ func New(cfg *config.Config) (*Server, error) {
 		lmtp:        lmtpServer,
 		managesieve: msServer,
 		locker:      locker,
+
+		imapTLS:       imapTLS,
+		pop3TLS:       pop3TLS,
+		submissionTLS: submissionTLS,
 	}, nil
+}
+
+// bindTCP binds addr and returns the listener, so a caller can hold every port
+// BEFORE reporting readiness.
+//
+// This split exists because readiness must mean "fully initialised" (#899).
+// Reporting ready and then binding in a goroutine let Kubernetes add the pod to
+// the Service endpoints while its protocol port was not accepting yet — a client
+// arriving in that window gets connection refused, which is most likely exactly
+// during a rollout, when traffic shifts the moment a pod goes ready.
+func bindTCP(proto, addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("%s: bind %s: %w", proto, addr, err)
+	}
+	slog.Info("listener bound", "proto", proto, "addr", addr)
+	return ln, nil
+}
+
+// bindTLS is bindTCP for a TLS listener.
+func bindTLS(proto, addr string, cfg *tls.Config) (net.Listener, error) {
+	ln, err := tls.Listen("tcp", addr, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("%s: bind %s (tls): %w", proto, addr, err)
+	}
+	slog.Info("listener bound", "proto", proto, "addr", addr, "tls", true)
+	return ln, nil
 }
 
 // RunIMAP starts the IMAP/IMAPS listeners and telemetry, then blocks until ctx is cancelled.
@@ -518,25 +559,51 @@ func (s *Server) RunIMAP(ctx context.Context) error {
 			slog.Error("telemetry: server error", "err", err)
 		}
 	}()
-	s.telem.SetReady(true)
 
 	svcs := s.cfg.Services
 	if s.imap == nil {
 		slog.Warn("imap: no listeners configured")
+		// Nothing to serve, but the process is up and its storage opened, so it is
+		// as ready as it will ever be. Reporting not-ready forever would keep the
+		// pod out of rotation with no way to recover.
+		s.telem.SetReady(true)
 		<-ctx.Done()
 		return nil
 	}
+
+	// Bind every configured port first. A failure here is fatal and must be:
+	// carrying on with a port unbound would leave the pod reporting ready while
+	// silently serving nothing on it.
+	var tlsLn, plainLn net.Listener
 	if svcs.IMAPS.Active() {
+		ln, err := bindTLS("imap", listenAddr(svcs.IMAPS), s.imapTLS)
+		if err != nil {
+			return err
+		}
+		tlsLn = ln
+	}
+	if svcs.IMAP.Active() {
+		ln, err := bindTCP("imap", listenAddr(svcs.IMAP))
+		if err != nil {
+			return err
+		}
+		plainLn = ln
+	}
+
+	// Every port is accepting now, so the pod really can serve.
+	s.telem.SetReady(true)
+
+	if tlsLn != nil {
 		go func() {
-			if err := s.imap.ListenAndServeTLS(); err != nil {
+			if err := s.imap.Serve(tlsLn); err != nil {
 				slog.Error("imap: TLS server error", "err", err)
 				os.Exit(1)
 			}
 		}()
 	}
-	if svcs.IMAP.Active() {
+	if plainLn != nil {
 		go func() {
-			if err := s.imap.ListenAndServe(); err != nil {
+			if err := s.imap.Serve(plainLn); err != nil {
 				slog.Error("imap: plain server error", "err", err)
 				os.Exit(1)
 			}
@@ -554,25 +621,42 @@ func (s *Server) RunPOP3(ctx context.Context) error {
 			slog.Error("telemetry: server error", "err", err)
 		}
 	}()
-	s.telem.SetReady(true)
-
 	svcs := s.cfg.Services
 	if s.pop3 == nil {
 		slog.Warn("pop3: no listeners configured")
+		s.telem.SetReady(true)
 		<-ctx.Done()
 		return nil
 	}
+
+	// Bind before reporting ready (#899).
+	var tlsLn, plainLn net.Listener
 	if svcs.POP3S.Active() {
+		ln, err := bindTLS("pop3", listenAddr(svcs.POP3S), s.pop3TLS)
+		if err != nil {
+			return err
+		}
+		tlsLn = ln
+	}
+	if svcs.POP3.Active() {
+		ln, err := bindTCP("pop3", listenAddr(svcs.POP3))
+		if err != nil {
+			return err
+		}
+		plainLn = ln
+	}
+
+	s.telem.SetReady(true)
+
+	if tlsLn != nil {
 		go func() {
-			err := s.pop3.ListenAndServeTLS()
-			slog.Error("pop3: TLS server error", "err", err)
+			slog.Error("pop3: TLS server error", "err", s.pop3.Serve(tlsLn))
 			os.Exit(1)
 		}()
 	}
-	if svcs.POP3.Active() {
+	if plainLn != nil {
 		go func() {
-			err := s.pop3.ListenAndServe()
-			slog.Error("pop3: plain server error", "err", err)
+			slog.Error("pop3: plain server error", "err", s.pop3.Serve(plainLn))
 			os.Exit(1)
 		}()
 	}
@@ -588,30 +672,34 @@ func (s *Server) RunLMTP(ctx context.Context) error {
 			slog.Error("telemetry: server error", "err", err)
 		}
 	}()
-	s.telem.SetReady(true)
-
 	svcs := s.cfg.Services
 	if s.lmtp == nil || !svcs.LMTP.Active() {
 		slog.Warn("lmtp: no listener configured")
+		s.telem.SetReady(true)
 		<-ctx.Done()
 		return nil
 	}
+
+	// Bind before reporting ready (#899). A TLS error is now fatal at startup
+	// rather than inside a goroutine after the pod already said it was ready.
+	ln, err := bindTCP("lmtp", listenAddr(svcs.LMTP))
+	if err != nil {
+		return err
+	}
+	if svcs.LMTP.SSLMode == "ssl" {
+		tlsCfg, terr := buildTLS(s.cfg, svcs.LMTP)
+		if terr != nil {
+			ln.Close()
+			return fmt.Errorf("lmtp: TLS: %w", terr)
+		}
+		if tlsCfg != nil {
+			ln = tls.NewListener(ln, tlsCfg)
+		}
+	}
+
+	s.telem.SetReady(true)
+
 	go func() {
-		ln, err := net.Listen("tcp", listenAddr(svcs.LMTP))
-		if err != nil {
-			slog.Error("lmtp: listen error", "err", err)
-			os.Exit(1)
-		}
-		if svcs.LMTP.SSLMode == "ssl" {
-			tlsCfg, err := buildTLS(s.cfg, svcs.LMTP)
-			if err != nil {
-				slog.Error("lmtp: TLS error", "err", err)
-				os.Exit(1)
-			}
-			if tlsCfg != nil {
-				ln = tls.NewListener(ln, tlsCfg)
-			}
-		}
 		if err := s.lmtp.Serve(ln); err != nil {
 			slog.Error("lmtp: server error", "err", err)
 			os.Exit(1)
@@ -630,20 +718,23 @@ func (s *Server) RunManageSieve(ctx context.Context) error {
 			slog.Error("telemetry: server error", "err", err)
 		}
 	}()
-	s.telem.SetReady(true)
-
 	svcs := s.cfg.Services
 	if s.managesieve == nil || !svcs.ManageSieveBE.Active() {
 		slog.Warn("managesieve: no listener configured")
+		s.telem.SetReady(true)
 		<-ctx.Done()
 		return nil
 	}
+
+	// Bind before reporting ready (#899).
+	ln, err := bindTCP("managesieve", listenAddr(svcs.ManageSieveBE))
+	if err != nil {
+		return err
+	}
+
+	s.telem.SetReady(true)
+
 	go func() {
-		ln, err := net.Listen("tcp", listenAddr(svcs.ManageSieveBE))
-		if err != nil {
-			slog.Error("managesieve: listen error", "err", err)
-			os.Exit(1)
-		}
 		if err := s.managesieve.ServeManageSieve(ctx, ln); err != nil {
 			slog.Error("managesieve: server error", "err", err)
 			os.Exit(1)
@@ -661,112 +752,134 @@ func (s *Server) Run(ctx context.Context) error {
 			slog.Error("telemetry: server error", "err", err)
 		}
 	}()
-	s.telem.SetReady(true)
 
 	svcs := s.cfg.Services
 
-	// IMAP
+	// Bind every configured port BEFORE reporting readiness (#899). In standalone
+	// this is the whole stack in one process, so "ready" has to mean every
+	// protocol is accepting — not that the goroutines which will eventually bind
+	// them have been started.
+	type listener struct {
+		name  string
+		ln    net.Listener
+		serve func(net.Listener) error
+	}
+	var listeners []listener
+	// A bind failure aborts startup, so close whatever already succeeded rather
+	// than leaking the fds into a process that is about to exit.
+	closeAll := func() {
+		for _, l := range listeners {
+			l.ln.Close()
+		}
+	}
+
 	if s.imap != nil {
 		if svcs.IMAPS.Active() {
-			go func() {
-				if err := s.imap.ListenAndServeTLS(); err != nil {
-					slog.Error("imap: TLS server error", "err", err)
-					os.Exit(1)
-				}
-			}()
+			ln, err := bindTLS("imap", listenAddr(svcs.IMAPS), s.imapTLS)
+			if err != nil {
+				closeAll()
+				return err
+			}
+			listeners = append(listeners, listener{"imap/tls", ln, s.imap.Serve})
 		}
 		if svcs.IMAP.Active() {
-			go func() {
-				if err := s.imap.ListenAndServe(); err != nil {
-					slog.Error("imap: plain server error", "err", err)
-					os.Exit(1)
-				}
-			}()
+			ln, err := bindTCP("imap", listenAddr(svcs.IMAP))
+			if err != nil {
+				closeAll()
+				return err
+			}
+			listeners = append(listeners, listener{"imap", ln, s.imap.Serve})
 		}
 	}
 
-	// POP3
 	if s.pop3 != nil {
 		if svcs.POP3S.Active() {
-			go func() {
-				err := s.pop3.ListenAndServeTLS()
-				slog.Error("pop3: TLS server error", "err", err)
-				os.Exit(1)
-			}()
+			ln, err := bindTLS("pop3", listenAddr(svcs.POP3S), s.pop3TLS)
+			if err != nil {
+				closeAll()
+				return err
+			}
+			listeners = append(listeners, listener{"pop3/tls", ln, s.pop3.Serve})
 		}
 		if svcs.POP3.Active() {
-			go func() {
-				err := s.pop3.ListenAndServe()
-				slog.Error("pop3: plain server error", "err", err)
-				os.Exit(1)
-			}()
+			ln, err := bindTCP("pop3", listenAddr(svcs.POP3))
+			if err != nil {
+				closeAll()
+				return err
+			}
+			listeners = append(listeners, listener{"pop3", ln, s.pop3.Serve})
 		}
 	}
 
-	// Submission (STARTTLS)
+	// Submission (STARTTLS): the TLS config is handed to Serve rather than
+	// wrapping the listener, since the upgrade happens mid-session.
 	if s.submission != nil && svcs.Submission.Active() {
-		go func() {
-			ln, err := net.Listen("tcp", listenAddr(svcs.Submission))
-			if err != nil {
-				slog.Error("smtp: submission listen error", "err", err)
-				os.Exit(1)
+		ln, err := bindTCP("submission", listenAddr(svcs.Submission))
+		if err != nil {
+			closeAll()
+			return err
+		}
+		var tlsCfg *tls.Config
+		if svcs.Submission.SSLMode == "ssl" {
+			t, terr := buildTLS(s.cfg, svcs.Submission, alpnSMTP)
+			if terr != nil {
+				ln.Close()
+				closeAll()
+				return fmt.Errorf("submission: TLS: %w", terr)
 			}
-			var tlsCfg *tls.Config
-			if svcs.Submission.SSLMode == "ssl" {
-				t, err := buildTLS(s.cfg, svcs.Submission, alpnSMTP)
-				if err != nil {
-					slog.Error("smtp: submission TLS error", "err", err)
-					os.Exit(1)
-				}
-				tlsCfg = t
-			}
-			if err := s.submission.Serve(ln, tlsCfg); err != nil {
-				slog.Error("smtp: submission server error", "err", err)
-				os.Exit(1)
-			}
-		}()
+			tlsCfg = t
+		}
+		listeners = append(listeners, listener{"submission", ln, func(l net.Listener) error {
+			return s.submission.Serve(l, tlsCfg)
+		}})
 	}
 
-	// LMTP (port 24) — local delivery for external MTAs
 	if s.lmtp != nil && svcs.LMTP.Active() {
-		go func() {
-			ln, err := net.Listen("tcp", listenAddr(svcs.LMTP))
-			if err != nil {
-				slog.Error("lmtp: listen error", "err", err)
-				os.Exit(1)
+		ln, err := bindTCP("lmtp", listenAddr(svcs.LMTP))
+		if err != nil {
+			closeAll()
+			return err
+		}
+		if svcs.LMTP.SSLMode == "ssl" {
+			tlsCfg, terr := buildTLS(s.cfg, svcs.LMTP)
+			if terr != nil {
+				ln.Close()
+				closeAll()
+				return fmt.Errorf("lmtp: TLS: %w", terr)
 			}
-			if svcs.LMTP.SSLMode == "ssl" {
-				tlsCfg, err := buildTLS(s.cfg, svcs.LMTP)
-				if err != nil {
-					slog.Error("lmtp: TLS error", "err", err)
-					os.Exit(1)
-				}
-				if tlsCfg != nil {
-					ln = tls.NewListener(ln, tlsCfg)
-				}
+			if tlsCfg != nil {
+				ln = tls.NewListener(ln, tlsCfg)
 			}
-			if err := s.lmtp.Serve(ln); err != nil {
-				slog.Error("lmtp: server error", "err", err)
-				os.Exit(1)
-			}
-		}()
+		}
+		listeners = append(listeners, listener{"lmtp", ln, s.lmtp.Serve})
 	}
 
-	// Submissions (SSL-only, port 465)
+	// Submissions (implicit TLS on 465).
 	if s.submission != nil && svcs.Submissions.Active() {
+		ln, err := bindTCP("submissions", listenAddr(svcs.Submissions))
+		if err != nil {
+			closeAll()
+			return err
+		}
+		tlsCfg, terr := buildTLS(s.cfg, svcs.Submissions, alpnSMTP)
+		if terr != nil {
+			ln.Close()
+			closeAll()
+			return fmt.Errorf("submissions: TLS: %w", terr)
+		}
+		listeners = append(listeners, listener{"submissions", ln, func(l net.Listener) error {
+			return s.submission.Serve(l, tlsCfg)
+		}})
+	}
+
+	// Every port is accepting now.
+	s.telem.SetReady(true)
+
+	for _, l := range listeners {
+		l := l
 		go func() {
-			ln, err := net.Listen("tcp", listenAddr(svcs.Submissions))
-			if err != nil {
-				slog.Error("smtp: submissions listen error", "err", err)
-				os.Exit(1)
-			}
-			tlsCfg, err := buildTLS(s.cfg, svcs.Submissions, alpnSMTP)
-			if err != nil {
-				slog.Error("smtp: submissions TLS error", "err", err)
-				os.Exit(1)
-			}
-			if err := s.submission.Serve(ln, tlsCfg); err != nil {
-				slog.Error("smtp: submissions server error", "err", err)
+			if err := l.serve(l.ln); err != nil {
+				slog.Error("server error", "proto", l.name, "err", err)
 				os.Exit(1)
 			}
 		}()
