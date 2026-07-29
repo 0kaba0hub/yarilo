@@ -341,3 +341,40 @@ the label carries the name; exactly one series exists at a time.
 ```
 yarilo_log_level{level="debug"} -4
 ```
+
+---
+
+## Transient-failure retries (#896)
+
+Three login-path failures are temporary by definition and are now retried before
+the client is told anything: `yarilo-auth` reporting temp-fail, the first dial to
+auth, and bringing up the backend session (dial + preamble + greeting, retried as
+one unit because a failed greeting leaves the connection unusable).
+
+Budget: `login.transientRetries`, default **3**, `150ms` between attempts. A
+negative value restores fail-on-first-error.
+
+### `yarilo_login_transient_retries_total{protocol,stage}`
+### `yarilo_login_transient_exhausted_total{protocol,stage}`
+
+Stages: `auth_dial`, `auth`, `backend_session`.
+
+Read them as a pair — that is the whole point:
+
+| retries | exhausted | meaning |
+|---|---|---|
+| flat | flat | nothing transient is happening |
+| rising | flat | **the budget is absorbing blips** — a dependency is flapping but no client saw it |
+| rising | rising | the outage outlasts the budget; the fix is upstream, not a bigger budget |
+
+```promql
+# share of transient failures that still reached a client
+sum(rate(yarilo_login_transient_exhausted_total[5m]))
+  / sum(rate(yarilo_login_transient_retries_total[5m]))
+```
+
+A raise in `transientRetries` is not a fix for the third row: it only lengthens
+how long a login waits before failing anyway.
+
+Not covered: `preamble_error`. There the client connection is already broken or
+sent something unparseable, so there is nothing to retry against.

@@ -137,6 +137,7 @@ func main() {
 			AnvilConns:        cfg.AnvilService.Conns,
 			DialRetries:       cfg.General.StartupDialRetries,
 			LookupHoldMax:     cfg.Login.LookupHoldMax,
+			TransientRetries:  cfg.Login.TransientRetries,
 			LookupHoldBackoff: time.Duration(cfg.Login.LookupHoldBackoffMs) * time.Millisecond,
 			HAProxy:           svcs.IMAPS.HAProxy,
 			HAProxyTimeout:    haproxyTimeout,
