@@ -122,12 +122,20 @@ func main() {
 	}()
 	slog.Info("lmtp-login: listening", "addr", addr)
 
-	go runTelemetry(cfg.Telemetry.Listen)
+	tel := startTelemetry(cfg.Telemetry.Listen)
+
+	// Every configured port is bound and serving now, so the pod can accept
+	// clients. Reporting earlier would let Kubernetes route to a port that is not
+	// listening yet.
+	tel.SetReady(true)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
+	// Leave the Service endpoints before draining, so no new client is routed
+	// here while in-flight work finishes.
+	tel.SetReady(false)
 }
 
 func parseCIDRs(ss []string) []*net.IPNet {
@@ -143,14 +151,18 @@ func parseCIDRs(ss []string) []*net.IPNet {
 	return nets
 }
 
-func runTelemetry(addr string) {
-	// One shared implementation for /healthz, /readyz, /metrics and
-	// /debug/loglevel. No Checks yet: this component's /readyz was an
-	// unconditional 200 before unification, and turning that into a real
-	// condition is a behaviour change, not a refactor — see the readiness issue
-	// for the per-component conditions.
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
-	if err := tel.ListenAndServe(context.Background()); err != nil {
-		slog.Error("telemetry server failed", "err", err)
-	}
+// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
+// returns the server so the caller can report readiness once its listeners are
+// actually bound.
+//
+// Lifecycle is on: without it /readyz answers 200 from the moment the process
+// starts, which says nothing. With it, ready means this pod holds its ports.
+func startTelemetry(addr string) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+	go func() {
+		if err := tel.ListenAndServe(context.Background()); err != nil {
+			slog.Error("telemetry server failed", "err", err)
+		}
+	}()
+	return tel
 }

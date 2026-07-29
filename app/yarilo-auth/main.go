@@ -89,7 +89,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go runTelemetry(cfg.Telemetry.Listen)
+	tel := startTelemetry(cfg.Telemetry.Listen)
 
 	// Build a userdb chain shared by both the client-protocol
 	// server (RunAuth enriches successful passdb with userdb_*
@@ -199,8 +199,15 @@ func main() {
 	}
 	srv := protocol.NewServer(dbs, srvOpts...)
 	errCh := make(chan error, 3)
+	// Bind before readiness: ListenAndServe would bind inside the goroutine, so the
+	// pod would announce itself ready without knowing the port came up.
+	clientLn, err := srv.Listen(cfg.AuthService.Listen, tlsCfg)
+	if err != nil {
+		slog.Error("auth: listen failed", "addr", cfg.AuthService.Listen, "err", err)
+		os.Exit(1)
+	}
 	go func() {
-		if err := srv.ListenAndServe(ctx, cfg.AuthService.Listen, tlsCfg); err != nil {
+		if err := srv.Serve(ctx, clientLn); err != nil {
 			errCh <- err
 		}
 	}()
@@ -221,12 +228,20 @@ func main() {
 		}
 		master := protocol.NewMasterServer(combinedUserdb, masterOpts...)
 		slog.Info("yarilo-auth master listener", "addr", cfg.AuthService.MasterListen)
+		masterLn, merr := master.Listen(cfg.AuthService.MasterListen, tlsCfg)
+		if merr != nil {
+			slog.Error("auth/master: listen failed", "addr", cfg.AuthService.MasterListen, "err", merr)
+			os.Exit(1)
+		}
 		go func() {
-			if err := master.ListenAndServe(ctx, cfg.AuthService.MasterListen, tlsCfg); err != nil {
+			if err := master.Serve(ctx, masterLn); err != nil {
 				errCh <- err
 			}
 		}()
 	}
+
+	// Both ports are bound, so the pod can serve.
+	tel.SetReady(true)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -249,16 +264,17 @@ func main() {
 	slog.Info("yarilo-auth stopped")
 }
 
-func runTelemetry(addr string) {
-	// One shared implementation for /healthz, /readyz, /metrics and
-	// /debug/loglevel. No Checks yet: this component's /readyz was an
-	// unconditional 200 before unification, and turning that into a real
-	// condition is a behaviour change, not a refactor — see the readiness issue
-	// for the per-component conditions.
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
-	if err := tel.ListenAndServe(context.Background()); err != nil {
-		slog.Error("telemetry server failed", "err", err)
-	}
+// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
+// returns the server so the caller can report readiness once its listeners are
+// actually bound.
+func startTelemetry(addr string) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+	go func() {
+		if err := tel.ListenAndServe(context.Background()); err != nil {
+			slog.Error("telemetry server failed", "err", err)
+		}
+	}()
+	return tel
 }
 
 // buildTokenStore creates the appropriate TokenStore based on config and returns

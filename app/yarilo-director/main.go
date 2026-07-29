@@ -119,7 +119,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go runTelemetry(cfg.Telemetry.Listen)
+	tel := startTelemetry(cfg.Telemetry.Listen)
 
 	// Ring identity (#750): the pod's own address for the JOIN handshake and
 	// the right-neighbor dial, computed before NewWithOptions since
@@ -205,10 +205,17 @@ func main() {
 		slog.Info("director: ring join started", "seeds", cfg.DirectorService.Peers)
 	}
 
-	// Start director-protocol server (ring management, inter-director sync).
+	// Bind the director-protocol port (ring management, inter-director sync)
+	// BEFORE readiness is reported: ListenAndServe would bind inside the goroutine,
+	// so the pod would announce itself ready without knowing the port came up.
+	ringLn, err := srv.Listen(cfg.DirectorService.Listen, ringTLSCfg)
+	if err != nil {
+		slog.Error("director: listen failed", "addr", cfg.DirectorService.Listen, "err", err)
+		os.Exit(1)
+	}
 	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(ctx, cfg.DirectorService.Listen, ringTLSCfg); err != nil {
+		if err := srv.Serve(ctx, ringLn); err != nil {
 			errCh <- err
 		}
 		close(errCh)
@@ -223,12 +230,20 @@ func main() {
 		}
 	}()
 
+	// Every configured port is bound and serving now, so the pod can accept
+	// clients. Reporting earlier would let Kubernetes route to a port that is not
+	// listening yet.
+	tel.SetReady(true)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	select {
 	case sig := <-sigCh:
 		slog.Info("received signal, shutting down", "signal", sig.String())
+		// Leave the Service endpoints before draining, so no new client is routed
+		// here while in-flight work finishes.
+		tel.SetReady(false)
 		// Graceful ring leave (#770): announce DIRECTOR-REMOVE + QUIT while
 		// connections are still open, so peers evict us instantly with no
 		// death-detection window, then give it a moment to flush before
@@ -327,16 +342,20 @@ func parseCIDRs(ss []string) []*net.IPNet {
 	return nets
 }
 
-func runTelemetry(addr string) {
-	// One shared implementation for /healthz, /readyz, /metrics and
-	// /debug/loglevel. No Checks yet: this component's /readyz was an
-	// unconditional 200 before unification, and turning that into a real
-	// condition is a behaviour change, not a refactor — see the readiness issue
-	// for the per-component conditions.
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
-	if err := tel.ListenAndServe(context.Background()); err != nil {
-		slog.Error("telemetry server failed", "err", err)
-	}
+// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
+// returns the server so the caller can report readiness once its listeners are
+// actually bound.
+//
+// Lifecycle is on: without it /readyz answers 200 from the moment the process
+// starts, which says nothing. With it, ready means this pod holds its ports.
+func startTelemetry(addr string) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+	go func() {
+		if err := tel.ListenAndServe(context.Background()); err != nil {
+			slog.Error("telemetry server failed", "err", err)
+		}
+	}()
+	return tel
 }
 
 // ringTLSMisconfigured reports the loud-failure condition (#753): internal_tls

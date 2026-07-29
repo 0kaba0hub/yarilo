@@ -71,7 +71,7 @@ func main() {
 	}
 
 	telemetryAddr := cfg.Telemetry.Listen
-	go runTelemetry(telemetryAddr)
+	tel := startTelemetry(telemetryAddr)
 
 	slog.Info("yarilo-sasl-login starting",
 		"version", build.Version,
@@ -82,6 +82,11 @@ func main() {
 		"haproxy", sl.HAProxy,
 		"telemetry", telemetryAddr,
 	)
+
+	// Every configured port is bound and serving now, so the pod can accept
+	// clients. Reporting earlier would let Kubernetes route to a port that is not
+	// listening yet.
+	tel.SetReady(true)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -94,16 +99,20 @@ func main() {
 	slog.Info("yarilo-sasl-login stopped")
 }
 
-func runTelemetry(addr string) {
-	// One shared implementation for /healthz, /readyz, /metrics and
-	// /debug/loglevel. No Checks yet: this component's /readyz was an
-	// unconditional 200 before unification, and turning that into a real
-	// condition is a behaviour change, not a refactor — see the readiness issue
-	// for the per-component conditions.
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
-	if err := tel.ListenAndServe(context.Background()); err != nil {
-		slog.Error("telemetry server failed", "err", err)
-	}
+// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
+// returns the server so the caller can report readiness once its listeners are
+// actually bound.
+//
+// Lifecycle is on: without it /readyz answers 200 from the moment the process
+// starts, which says nothing. With it, ready means this pod holds its ports.
+func startTelemetry(addr string) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+	go func() {
+		if err := tel.ListenAndServe(context.Background()); err != nil {
+			slog.Error("telemetry server failed", "err", err)
+		}
+	}()
+	return tel
 }
 
 func parseCIDRs(ss []string) []*net.IPNet {

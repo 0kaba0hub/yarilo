@@ -51,7 +51,7 @@ func main() {
 
 	// Telemetry (/healthz, /readyz, /metrics) — same as every other component,
 	// so orchestrators health-check quota-status the standard HTTP way.
-	go runTelemetry(cfg.Telemetry.Listen)
+	tel := startTelemetry(cfg.Telemetry.Listen)
 
 	// Storage access: quota is enforced by summing the recipient's index
 	// aggregate (the count backend), exactly as a delivery agent would — no
@@ -139,6 +139,11 @@ func main() {
 		"per_user_rules_configured", authcl != nil,
 	)
 
+	// Every configured port is bound and serving now, so the pod can accept
+	// clients. Reporting earlier would let Kubernetes route to a port that is not
+	// listening yet.
+	tel.SetReady(true)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -150,16 +155,20 @@ func main() {
 	slog.Info("yarilo-quota-status stopped")
 }
 
-func runTelemetry(addr string) {
-	// One shared implementation for /healthz, /readyz, /metrics and
-	// /debug/loglevel. No Checks yet: this component's /readyz was an
-	// unconditional 200 before unification, and turning that into a real
-	// condition is a behaviour change, not a refactor — see the readiness issue
-	// for the per-component conditions.
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
-	if err := tel.ListenAndServe(context.Background()); err != nil {
-		slog.Error("telemetry server failed", "err", err)
-	}
+// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
+// returns the server so the caller can report readiness once its listeners are
+// actually bound.
+//
+// Lifecycle is on: without it /readyz answers 200 from the moment the process
+// starts, which says nothing. With it, ready means this pod holds its ports.
+func startTelemetry(addr string) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+	go func() {
+		if err := tel.ListenAndServe(context.Background()); err != nil {
+			slog.Error("telemetry server failed", "err", err)
+		}
+	}()
+	return tel
 }
 
 func openDict(dicts map[string]config.DictConfig, name string) (dict.Dict, error) {

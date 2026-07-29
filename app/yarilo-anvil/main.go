@@ -59,16 +59,26 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go runTelemetry(cfg.Telemetry.Listen)
+	tel := startTelemetry(cfg.Telemetry.Listen)
 
 	srv := anvil.NewServer(cfg.General.Limits.MaxUserIPConnections)
 	errCh := make(chan error, 1)
+	// Bind before readiness: ListenAndServe would bind inside the goroutine, so the
+	// pod would announce itself ready without knowing the port came up.
+	ln, err := srv.Listen(cfg.AnvilService.Listen, tlsCfg)
+	if err != nil {
+		slog.Error("anvil: listen failed", "addr", cfg.AnvilService.Listen, "err", err)
+		os.Exit(1)
+	}
 	go func() {
-		if err := srv.ListenAndServe(ctx, cfg.AnvilService.Listen, tlsCfg); err != nil {
+		if err := srv.Serve(ctx, ln); err != nil {
 			errCh <- err
 		}
 		close(errCh)
 	}()
+
+	// The port is bound, so the pod can serve.
+	tel.SetReady(true)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -91,14 +101,15 @@ func main() {
 	slog.Info("yarilo-anvil stopped")
 }
 
-func runTelemetry(addr string) {
-	// One shared implementation for /healthz, /readyz, /metrics and
-	// /debug/loglevel. No Checks yet: this component's /readyz was an
-	// unconditional 200 before unification, and turning that into a real
-	// condition is a behaviour change, not a refactor — see the readiness issue
-	// for the per-component conditions.
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
-	if err := tel.ListenAndServe(context.Background()); err != nil {
-		slog.Error("telemetry server failed", "err", err)
-	}
+// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
+// returns the server so the caller can report readiness once its listener is
+// actually bound.
+func startTelemetry(addr string) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+	go func() {
+		if err := tel.ListenAndServe(context.Background()); err != nil {
+			slog.Error("telemetry server failed", "err", err)
+		}
+	}()
+	return tel
 }

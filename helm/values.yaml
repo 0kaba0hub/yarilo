@@ -1108,6 +1108,22 @@ components:
     enabled: false
     replicas: 1
 
+    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before
+    ## this pod takes traffic, replacing the wait-auth / wait-anvil init containers
+    ## (#903). Safe here because a login pod does not dial either dependency during
+    ## startup — those connections are created lazily on the first login
+    ## (#885/#891) — so the process comes up regardless and the probe only
+    ## withholds traffic.
+    ##
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3 min).
+    ## Prefer generous: exceeding it restarts a pod that is healthy and merely
+    ## waiting, which the init container never did.
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
+
     listeners:
       imaps:
         enabled: true
