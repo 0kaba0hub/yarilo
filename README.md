@@ -7,13 +7,14 @@
 Production-grade IMAP / POP3 / LMTP / ManageSieve / Submission mail server with built-in full-text search, written in Go.
 Multi-binary architecture — each protocol component is a separate process. Kubernetes-native via Helm.
 
-<!-- Badges intentionally live on ONE source line: inside an HTML block GitHub
-     turns single newlines between inline images into line breaks, which Chrome
-     renders as one badge per row while Safari collapses them. Keep them joined. -->
-[![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo) [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE) ![Status: beta](https://img.shields.io/badge/status-beta-orange)
-
 </td>
 </tr></table>
+
+<!-- Badges live OUTSIDE the table on purpose. Inside the <td> Chrome laid them
+     out one per row while Safari kept them inline, from the same GitHub-rendered
+     HTML; as a top-level paragraph they get the full README width and both
+     browsers agree. Keep them here, on one line. -->
+[![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo) [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE) ![Status: beta](https://img.shields.io/badge/status-beta-orange)
 
 ---
 
