@@ -35,6 +35,7 @@ import (
 	_ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
 	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
@@ -42,9 +43,7 @@ import (
 // version is set via pkg/build; kept for vet compatibility
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "backend-api"))
+	logging.Setup("backend-api")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -291,17 +290,4 @@ func parseCIDRs(in []string) []*net.IPNet {
 		out = append(out, n)
 	}
 	return out
-}
-
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }

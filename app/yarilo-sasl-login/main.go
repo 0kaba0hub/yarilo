@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -18,13 +17,12 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/sasllogin"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "sasl-login"))
+	logging.Setup("sasl-login")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -123,17 +121,4 @@ func parseCIDRs(ss []string) []*net.IPNet {
 		out = append(out, n)
 	}
 	return out
-}
-
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }

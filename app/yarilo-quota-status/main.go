@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -31,6 +30,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 	"github.com/0kaba0hub/yarilo/pkg/quota"
@@ -39,9 +39,7 @@ import (
 // version is set via pkg/build; kept for vet compatibility
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "quota-status"))
+	logging.Setup("quota-status")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -181,17 +179,4 @@ func openDict(dicts map[string]config.DictConfig, name string) (dict.Dict, error
 	}
 	slog.Info("dict opened", "name", name, "driver", cfg.Driver)
 	return d, nil
-}
-
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }

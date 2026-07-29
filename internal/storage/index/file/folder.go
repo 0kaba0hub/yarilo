@@ -29,17 +29,6 @@ var errLogIndexIDMismatch = errors.New("fileindex: log IndexID does not match ba
 // and the index is rewritten atomically in the current format
 // before returning. Migration leaves a .legacy backup so an
 // operator can roll back manually if needed.
-// msgVSize returns the message's virtual (RFC822) size for quota accounting,
-// falling back to the physical size when the backend did not populate VSize
-// (e.g. maildir without a W= field). Quota is a byte total, so a best-available
-// size is better than zero.
-func msgVSize(m *mailbox.MessageMeta) uint32 {
-	if m.VSize != 0 {
-		return m.VSize
-	}
-	return m.Size
-}
-
 func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string) (*mailbox.Folder, error) {
 	indexDir := u.indexDir(folder)
 	indexPath := indexPathFor(indexDir)
@@ -940,7 +929,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 			extNameModSeq:       encodeModseqRec(modseq),
 			extNameKeywords:     encodeKeywordsRec(kwBits),
 			extNameInternalDate: encodeIdateRec(m.InternalDate),
-			extNameVsize:        encodeVsizeRec(msgVSize(m)),
+			extNameVsize:        encodeVsizeRec(m.RFC822Size()),
 		},
 	}
 	fs.file.Records = append(fs.file.Records, rec)
@@ -955,7 +944,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 		fs.filenames[m.UID] = m.Filename
 	}
 	fs.sizes[m.UID] = m.Size
-	fs.vsize.Vsize += uint64(msgVSize(m))
+	fs.vsize.Vsize += uint64(m.RFC822Size())
 	fs.vsize.MessageCount++
 	if m.UID > fs.vsize.HighestUID {
 		fs.vsize.HighestUID = m.UID
@@ -1372,7 +1361,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 				Ext: map[string][]byte{
 					extNameModSeq:   encodeModseqRec(modseq),
 					extNameKeywords: encodeKeywordsRec(kwBits),
-					extNameVsize:    encodeVsizeRec(msgVSize(m)),
+					extNameVsize:    encodeVsizeRec(m.RFC822Size()),
 				},
 			}
 			fs.file.Records = append(fs.file.Records, rec)

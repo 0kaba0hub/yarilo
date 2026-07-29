@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +24,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/authtoken"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
@@ -33,9 +33,7 @@ import (
 // version is set via pkg/build; kept for vet compatibility
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "auth"))
+	logging.Setup("auth")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -295,17 +293,4 @@ func buildTokenStore(cfg config.AuthTokenConfig, dialRetries int) (protocol.Toke
 	slog.Info("auth: token store backend=memory")
 	s := authtoken.New(ttl)
 	return s, s.Close
-}
-
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }

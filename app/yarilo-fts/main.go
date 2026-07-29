@@ -13,7 +13,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -28,14 +27,13 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "fts"))
+	logging.Setup("fts")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -254,11 +252,4 @@ func languagesOr(xs []string, def string) []string {
 		return xs
 	}
 	return []string{def}
-}
-
-func logLevel() slog.Level {
-	if strings.EqualFold(os.Getenv("LOG_LEVEL"), "debug") {
-		return slog.LevelDebug
-	}
-	return slog.LevelInfo
 }
