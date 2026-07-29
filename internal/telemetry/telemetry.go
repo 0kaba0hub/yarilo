@@ -8,28 +8,51 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/pkg/logging"
 )
 
-// logLevelGauge publishes the active log level so an operator can confirm from
-// the same place they read every other metric that a change took effect (#889).
-// The value is slog's numeric level; the label carries the name.
-var logLevelGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
-	Namespace: "yarilo",
-	Name:      "log_level",
-	Help:      "Active log level (value = slog level number, label = name).",
-}, []string{"level"})
+// logLevelDesc describes the active-log-level metric (#889), which an operator
+// uses to confirm from the metrics they already scrape that a change took effect.
+var logLevelDesc = prometheus.NewDesc(
+	"yarilo_log_level",
+	"Active log level (value = slog level number, label = name).",
+	[]string{"level"}, nil,
+)
 
+// logLevelCollector reads the level at SCRAPE time rather than caching it in a
+// gauge.
+//
+// This is deliberate: the level can change without any HTTP request touching
+// this package — SetLevelFor's TTL reverts it from a timer inside pkg/logging,
+// which cannot call back here without inverting the dependency. A cached gauge
+// went stale exactly there, reporting the raised level after it had already
+// reverted, which defeats the point of publishing it at all. Computing on
+// collect makes staleness impossible instead of merely unlikely.
+type logLevelCollector struct{}
+
+func (logLevelCollector) Describe(ch chan<- *prometheus.Desc) { ch <- logLevelDesc }
+
+func (logLevelCollector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(
+		logLevelDesc, prometheus.GaugeValue, float64(logging.Level()), logging.String(),
+	)
+}
+
+var logLevelOnce sync.Once
+
+// publishLogLevel registers the collector once. Kept as a function so the call
+// sites read the same as before.
 func publishLogLevel() {
-	logLevelGauge.Reset()
-	logLevelGauge.WithLabelValues(logging.String()).Set(float64(logging.Level()))
+	logLevelOnce.Do(func() {
+		prometheus.DefaultRegisterer.MustRegister(logLevelCollector{})
+	})
 }
 
 // Server is the telemetry HTTP server.
