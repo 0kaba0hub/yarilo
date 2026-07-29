@@ -113,6 +113,14 @@ type PreambleListener struct {
 	ready     chan acceptResult
 	ctx       context.Context
 	cancel    context.CancelFunc
+
+	// authMu guards the shared yarilo-auth client used for token VERIFY (#878).
+	// This was a fresh mTLS handshake per accepted session — on sandbox the
+	// backend side accounted for 4616 of the 9469 connections yarilo-auth saw in
+	// a single run. One multiplexed connection serves every session on the pod;
+	// the VERIFY wire protocol carries a request id, so they interleave safely.
+	authMu sync.Mutex
+	authCl *authclient.Client
 }
 
 type acceptResult struct {
@@ -177,7 +185,31 @@ func (l *PreambleListener) Accept() (net.Conn, error) {
 // the underlying listener, which unblocks the internal acceptLoop.
 func (l *PreambleListener) Close() error {
 	l.cancel()
+	l.authMu.Lock()
+	cl := l.authCl
+	l.authCl = nil
+	l.authMu.Unlock()
+	if cl != nil {
+		_ = cl.Close()
+	}
 	return l.Listener.Close()
+}
+
+// authClient returns the shared VERIFY client, dialling it on first use. A dial
+// failure leaves the field nil so the next session retries — the backend does
+// not need yarilo-auth reachable at start.
+func (l *PreambleListener) authClient() (*authclient.Client, error) {
+	l.authMu.Lock()
+	defer l.authMu.Unlock()
+	if l.authCl != nil {
+		return l.authCl, nil
+	}
+	cl, err := authclient.Dial(l.AuthAddr, l.AuthTLS)
+	if err != nil {
+		return nil, err
+	}
+	l.authCl = cl
+	return cl, nil
 }
 
 const preambleReadTimeout = 5 * time.Second
@@ -204,11 +236,10 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 
 	c.SetDeadline(time.Time{}) //nolint:errcheck
 
-	authCl, err := authclient.Dial(l.AuthAddr, l.AuthTLS)
+	authCl, err := l.authClient()
 	if err != nil {
 		return nil, fmt.Errorf("auth dial: %w", err)
 	}
-	defer authCl.Close()
 
 	username, sessionID, service, err := authCl.Verify(pre.Token, pre.User, pre.SessionID)
 	if err != nil {

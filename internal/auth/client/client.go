@@ -1,16 +1,31 @@
 // Package client implements the yarilo-auth TAB-delimited client protocol.
-// All public methods are safe for use from a single goroutine; do not share
-// a Client across goroutines without external synchronization.
+//
+// A Client owns ONE persistent connection and multiplexes every request over
+// it, which is what the wire protocol was always built for: each command
+// carries a request id and the reply echoes it back. All public methods are
+// safe for concurrent use from any number of goroutines — a login pod holds a
+// single Client for its whole lifetime rather than dialling per login (#878).
+//
+// Why this matters: a fresh connection means a full mutual-TLS handshake, and
+// measurement on sandbox showed 9469 connections for 9329 requests — one
+// handshake per request, costing 1.73s per login against an 0.28s AUTH
+// exchange. Reuse removes that cost from the hot path entirely.
 package client
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
 // Sentinel errors returned by Authenticate, Verify, and LookupUser.
@@ -18,6 +33,31 @@ var (
 	ErrAuthFailed   = errors.New("auth/client: authentication failed")
 	ErrTempFail     = errors.New("auth/client: temporary backend failure")
 	ErrUserNotFound = errors.New("auth/client: user not found")
+	// ErrConnLost is returned when the connection dropped after the request
+	// was already on the wire. Such a request is deliberately NOT retried: the
+	// server may have processed it, and a second AUTH would double-count the
+	// auth-penalty counter for that IP.
+	ErrConnLost = errors.New("auth/client: connection lost mid-request")
+	// ErrClosed is returned once Close has been called.
+	ErrClosed = errors.New("auth/client: client closed")
+	// ErrTimeout is returned when no reply arrived within the request timeout,
+	// including time spent waiting for a reconnect to finish.
+	ErrTimeout = errors.New("auth/client: request timed out")
+)
+
+const (
+	defaultDialTimeout = 5 * time.Second
+	// defaultRequestTimeout is generous on purpose: yarilo-auth deliberately
+	// sleeps on the AUTH path (auth-penalty tarpit up to 15s, policy tarpit,
+	// timing-leak failure delay), so a legitimate reply can take many seconds.
+	// A tight timeout here would manufacture failures the server never had.
+	defaultRequestTimeout = 30 * time.Second
+	// keepAlive lets the kernel surface a half-open connection (network
+	// partition, pod killed without FIN) instead of a reader blocking forever.
+	keepAlive = 15 * time.Second
+	// reconnectAttempts bounds one redial burst. Callers waiting on the
+	// reconnect give up on their own request timeout, whichever comes first.
+	reconnectAttempts = 5
 )
 
 // AuthResult carries the fields from a successful AUTH OK response.
@@ -32,47 +72,107 @@ type AuthResult struct {
 	DirectorTag string
 }
 
-// Client is a single persistent connection to yarilo-auth.
+// Options tunes a Client. Zero values select the documented defaults.
+type Options struct {
+	// RequestTimeout bounds one request end to end, including any wait for an
+	// in-progress reconnect.
+	RequestTimeout time.Duration
+	// DialTimeout bounds a single connection attempt (TCP + TLS handshake).
+	DialTimeout time.Duration
+}
+
+type connState int
+
+const (
+	stateLive connState = iota
+	stateReconnecting
+	stateClosed
+)
+
+// Client is a persistent, multiplexed connection to yarilo-auth.
 type Client struct {
-	conn net.Conn
-	rd   *bufio.Reader
-	seq  int
+	addr   string
+	tlsCfg *tls.Config
+	opts   Options
+
+	seq atomic.Uint64
+
+	// mu guards every field below. It is held across the socket write, which
+	// is safe because requests are single short lines; it is never held while
+	// waiting for a reply.
+	mu      sync.Mutex
+	conn    net.Conn
+	state   connState
+	gen     uint64        // bumped on every successful dial
+	ready   chan struct{} // non-nil while reconnecting; closed on success
+	pending map[string]chan string
 }
 
 // Dial connects to addr (TCP or Unix socket) and performs the VERSION
 // handshake. tlsCfg may be nil for plain (non-TLS) connections.
 func Dial(addr string, tlsCfg *tls.Config) (*Client, error) {
-	const dialTimeout = 5 * time.Second
+	return New(addr, tlsCfg, Options{})
+}
 
-	var raw net.Conn
-	var err error
-	if tlsCfg != nil {
-		raw, err = tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp", addr, tlsCfg)
-	} else {
-		raw, err = net.DialTimeout("tcp", addr, dialTimeout)
+// New is Dial with explicit Options.
+func New(addr string, tlsCfg *tls.Config, opts Options) (*Client, error) {
+	if opts.RequestTimeout <= 0 {
+		opts.RequestTimeout = defaultRequestTimeout
 	}
+	if opts.DialTimeout <= 0 {
+		opts.DialTimeout = defaultDialTimeout
+	}
+	c := &Client{
+		addr:    addr,
+		tlsCfg:  tlsCfg,
+		opts:    opts,
+		pending: make(map[string]chan string),
+	}
+	conn, rd, err := c.dial()
 	if err != nil {
-		return nil, fmt.Errorf("auth/client: dial %s: %w", addr, err)
-	}
-
-	c := &Client{conn: raw, rd: bufio.NewReader(raw)}
-	if err := c.handshake(); err != nil {
-		_ = raw.Close()
 		return nil, err
 	}
+	c.mu.Lock()
+	c.conn = conn
+	c.state = stateLive
+	c.gen++
+	gen := c.gen
+	c.mu.Unlock()
+	go c.readLoop(rd, gen)
 	return c, nil
 }
 
-// Close closes the underlying connection.
+// Close closes the connection and fails every in-flight request.
 func (c *Client) Close() error {
-	return c.conn.Close()
+	c.mu.Lock()
+	if c.state == stateClosed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.state = stateClosed
+	conn := c.conn
+	c.conn = nil
+	pending := c.pending
+	c.pending = make(map[string]chan string)
+	if c.ready != nil {
+		close(c.ready)
+		c.ready = nil
+	}
+	c.mu.Unlock()
+
+	for _, ch := range pending {
+		close(ch)
+	}
+	if conn != nil {
+		return conn.Close()
+	}
+	return nil
 }
 
 // Authenticate sends an AUTH command for the given credentials and returns the
 // result. remoteIP and sessionID may be empty strings (omitted from request).
 func (c *Client) Authenticate(username, password, service, remoteIP, sessionID string) (*AuthResult, error) {
-	c.seq++
-	id := fmt.Sprintf("%d", c.seq)
+	id := c.nextID()
 
 	var sb strings.Builder
 	sb.WriteString("AUTH\t")
@@ -99,33 +199,23 @@ func (c *Client) Authenticate(username, password, service, remoteIP, sessionID s
 		sb.WriteString(sessionID)
 	}
 
-	if err := c.writeLine(sb.String()); err != nil {
+	line, err := c.exchange(id, sb.String())
+	if err != nil {
 		return nil, err
 	}
-	return c.readAuthResponse(id)
+	return parseAuthResponse(line)
 }
 
 // LookupUser sends a USER command to yarilo-auth and returns whether the user
 // exists in the userdb. Returns ErrUserNotFound when the user is unknown,
 // ErrTempFail on a transient backend error.
 func (c *Client) LookupUser(username string) (bool, error) {
-	c.seq++
-	id := fmt.Sprintf("%d", c.seq)
-
-	if err := c.writeLine(fmt.Sprintf("USER\t%s\t%s", id, username)); err != nil {
-		return false, err
-	}
-	line, err := c.readLine()
+	id := c.nextID()
+	line, err := c.exchange(id, fmt.Sprintf("USER\t%s\t%s", id, username))
 	if err != nil {
 		return false, err
 	}
 	fields := strings.Split(line, "\t")
-	if len(fields) < 2 {
-		return false, fmt.Errorf("auth/client: malformed USER response: %q", line)
-	}
-	if fields[1] != id {
-		return false, fmt.Errorf("auth/client: USER id mismatch: got %q want %q", fields[1], id)
-	}
 	switch fields[0] {
 	case "USER":
 		return true, nil
@@ -144,27 +234,246 @@ func (c *Client) LookupUser(username string) (bool, error) {
 // at issue time. Returns ErrAuthFailed when the token is unknown, expired,
 // or the claims don't match.
 func (c *Client) Verify(token, username, sessionID string) (string, string, string, error) {
-	c.seq++
-	id := fmt.Sprintf("%d", c.seq)
-
-	line := fmt.Sprintf("VERIFY\t%s\t%s\tuser=%s\tsession=%s", id, token, username, sessionID)
-	if err := c.writeLine(line); err != nil {
+	id := c.nextID()
+	req := fmt.Sprintf("VERIFY\t%s\t%s\tuser=%s\tsession=%s", id, token, username, sessionID)
+	line, err := c.exchange(id, req)
+	if err != nil {
 		return "", "", "", err
 	}
-	return c.readVerifyResponse(id)
+	return parseVerifyResponse(line)
 }
 
-// handshake exchanges VERSION lines.
-func (c *Client) handshake() error {
-	if err := c.writeLine("VERSION\t1\t0"); err != nil {
-		return err
+func (c *Client) nextID() string {
+	return strconv.FormatUint(c.seq.Add(1), 10)
+}
+
+// exchange registers id, writes req, and waits for the matching reply.
+//
+// A write failure is retried on a fresh connection: the error means the line —
+// crucially including its terminating newline — did not make it out, and the
+// server's reader only dispatches on a complete line, so the command cannot
+// have been executed. A failure AFTER a successful write is not retried
+// (ErrConnLost), because the server may have processed it and a repeated AUTH
+// would double-count the auth-penalty counter.
+func (c *Client) exchange(id, req string) (string, error) {
+	deadline := time.Now().Add(c.opts.RequestTimeout)
+	ch := make(chan string, 1)
+
+	for {
+		if err := c.awaitLive(deadline); err != nil {
+			return "", err
+		}
+
+		c.mu.Lock()
+		if c.state == stateClosed {
+			c.mu.Unlock()
+			return "", ErrClosed
+		}
+		if c.state != stateLive {
+			c.mu.Unlock()
+			continue // lost the race with a reconnect; wait again
+		}
+		c.pending[id] = ch
+		gen := c.gen
+		_, werr := fmt.Fprintln(c.conn, req)
+		c.mu.Unlock()
+
+		if werr == nil {
+			break
+		}
+
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		c.beginReconnect(gen)
+		if time.Now().After(deadline) {
+			return "", ErrTimeout
+		}
+	}
+
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case line, ok := <-ch:
+		if !ok {
+			return "", ErrConnLost
+		}
+		return line, nil
+	case <-timer.C:
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return "", ErrTimeout
+	}
+}
+
+// awaitLive blocks while a reconnect is in progress so a caller queues instead
+// of failing. This is the whole point of the reconnect design: during a
+// yarilo-auth rollout the logins wait a few hundred milliseconds and succeed,
+// rather than each being told the service is unavailable.
+func (c *Client) awaitLive(deadline time.Time) error {
+	for {
+		c.mu.Lock()
+		switch c.state {
+		case stateClosed:
+			c.mu.Unlock()
+			return ErrClosed
+		case stateLive:
+			c.mu.Unlock()
+			return nil
+		}
+		ready := c.ready
+		c.mu.Unlock()
+
+		if ready == nil {
+			return nil // reconnect finished between the check and here
+		}
+		timer := time.NewTimer(time.Until(deadline))
+		select {
+		case <-ready:
+			timer.Stop()
+		case <-timer.C:
+			return ErrTimeout
+		}
+	}
+}
+
+// beginReconnect transitions to reconnecting and redials, once per generation.
+// Concurrent callers that observed the same broken generation all wait on the
+// single redial rather than each opening their own connection.
+func (c *Client) beginReconnect(gen uint64) {
+	c.mu.Lock()
+	if c.state == stateClosed || c.gen != gen || c.state == stateReconnecting {
+		c.mu.Unlock()
+		return
+	}
+	c.state = stateReconnecting
+	c.ready = make(chan struct{})
+	old := c.conn
+	c.conn = nil
+	// Requests already on the wire cannot be safely replayed — hand them
+	// ErrConnLost instead of silently retrying.
+	inflight := c.pending
+	c.pending = make(map[string]chan string)
+	c.mu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
+	}
+	for _, ch := range inflight {
+		close(ch)
+	}
+
+	go c.redial()
+}
+
+func (c *Client) redial() {
+	var conn net.Conn
+	var rd *bufio.Reader
+	err := retry.Do(context.Background(), reconnectAttempts, 200*time.Millisecond, func() error {
+		var derr error
+		conn, rd, derr = c.dial()
+		return derr
+	})
+
+	c.mu.Lock()
+	if c.state == stateClosed {
+		c.mu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return
+	}
+	ready := c.ready
+	c.ready = nil
+	if err != nil {
+		// Stay reconnecting-but-unblocked: waiters wake, see a non-live
+		// state, and re-enter with their own remaining deadline, which
+		// triggers a fresh redial burst rather than wedging forever.
+		c.state = stateReconnecting
+		c.mu.Unlock()
+		if ready != nil {
+			close(ready)
+		}
+		return
+	}
+	c.conn = conn
+	c.state = stateLive
+	c.gen++
+	gen := c.gen
+	c.mu.Unlock()
+
+	if ready != nil {
+		close(ready)
+	}
+	go c.readLoop(rd, gen)
+}
+
+// readLoop demultiplexes replies by request id until the connection breaks.
+func (c *Client) readLoop(rd *bufio.Reader, gen uint64) {
+	for {
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			c.beginReconnect(gen)
+			return
+		}
+		line = strings.TrimRight(line, "\r\n")
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 {
+			// Malformed reply carries no id, so it cannot be routed. Dropping
+			// it is correct: the waiter times out rather than being handed a
+			// reply that may belong to someone else.
+			continue
+		}
+		id := fields[1]
+		c.mu.Lock()
+		ch, ok := c.pending[id]
+		if ok {
+			delete(c.pending, id)
+		}
+		c.mu.Unlock()
+		if ok {
+			ch <- line
+		}
+	}
+}
+
+func (c *Client) dial() (net.Conn, *bufio.Reader, error) {
+	var raw net.Conn
+	var err error
+	if c.tlsCfg != nil {
+		raw, err = tls.DialWithDialer(
+			&net.Dialer{Timeout: c.opts.DialTimeout, KeepAlive: keepAlive},
+			"tcp", c.addr, c.tlsCfg)
+	} else {
+		raw, err = (&net.Dialer{Timeout: c.opts.DialTimeout, KeepAlive: keepAlive}).
+			Dial("tcp", c.addr)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("auth/client: dial %s: %w", c.addr, err)
+	}
+	rd := bufio.NewReader(raw)
+	if err := handshake(raw, rd); err != nil {
+		_ = raw.Close()
+		return nil, nil, err
+	}
+	return raw, rd, nil
+}
+
+// handshake exchanges VERSION lines. Runs before readLoop starts, so the
+// handshake banner (which carries no request id) is never seen by the
+// demultiplexer.
+func handshake(conn net.Conn, rd *bufio.Reader) error {
+	if _, err := fmt.Fprintln(conn, "VERSION\t1\t0"); err != nil {
+		return fmt.Errorf("auth/client: handshake write: %w", err)
 	}
 	gotVersion := false
 	for {
-		line, err := c.readLine()
+		line, err := rd.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("auth/client: handshake read: %w", err)
 		}
+		line = strings.TrimRight(line, "\r\n")
 		if strings.HasPrefix(line, "VERSION\t") {
 			gotVersion = true
 			continue
@@ -180,34 +489,8 @@ func (c *Client) handshake() error {
 	return nil
 }
 
-func (c *Client) writeLine(s string) error {
-	_, err := fmt.Fprintln(c.conn, s)
-	if err != nil {
-		return fmt.Errorf("auth/client: write: %w", err)
-	}
-	return nil
-}
-
-func (c *Client) readLine() (string, error) {
-	line, err := c.rd.ReadString('\n')
-	if err != nil {
-		return "", fmt.Errorf("auth/client: read: %w", err)
-	}
-	return strings.TrimRight(line, "\r\n"), nil
-}
-
-func (c *Client) readAuthResponse(id string) (*AuthResult, error) {
-	line, err := c.readLine()
-	if err != nil {
-		return nil, err
-	}
+func parseAuthResponse(line string) (*AuthResult, error) {
 	fields := strings.Split(line, "\t")
-	if len(fields) < 2 {
-		return nil, fmt.Errorf("auth/client: malformed response: %q", line)
-	}
-	if fields[1] != id {
-		return nil, fmt.Errorf("auth/client: response id mismatch: got %q want %q", fields[1], id)
-	}
 	switch fields[0] {
 	case "OK":
 		res := &AuthResult{}
@@ -238,18 +521,8 @@ func (c *Client) readAuthResponse(id string) (*AuthResult, error) {
 	}
 }
 
-func (c *Client) readVerifyResponse(id string) (string, string, string, error) {
-	line, err := c.readLine()
-	if err != nil {
-		return "", "", "", err
-	}
+func parseVerifyResponse(line string) (string, string, string, error) {
 	fields := strings.Split(line, "\t")
-	if len(fields) < 2 {
-		return "", "", "", fmt.Errorf("auth/client: malformed verify response: %q", line)
-	}
-	if fields[1] != id {
-		return "", "", "", fmt.Errorf("auth/client: verify id mismatch: got %q want %q", fields[1], id)
-	}
 	switch fields[0] {
 	case "OK":
 		var username, sessionID, service string
