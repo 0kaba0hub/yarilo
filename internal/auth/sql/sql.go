@@ -380,3 +380,7 @@ func schemaFor(driver string) (string, bool) {
 	}
 	return "", false
 }
+
+// DriverName satisfies protocol.DriverName so passdb metrics carry the SQL
+// dialect ("mysql" | "postgres" | "sqlite") rather than a generic label.
+func (p *Passdb) DriverName() string { return p.driver }

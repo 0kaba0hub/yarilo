@@ -8,6 +8,7 @@ package scheme
 import (
 	"crypto/subtle"
 	"strings"
+	"time"
 
 	"github.com/GehirnInc/crypt/sha512_crypt"
 	"github.com/emersion/go-sasl"
@@ -46,6 +47,10 @@ func VerifyWithDefault(stored, input, defaultScheme string) bool {
 			return false // unmarked bare crypt(3) (DES) is unsupported
 		}
 	}
+	// Observed after CRYPT resolution so the label carries the concrete
+	// algorithm actually executed, not the alias the column happened to use.
+	start := time.Now()
+	defer func() { observeVerify(name, start) }()
 	switch name {
 	case "PLAIN", "CLEARTEXT":
 		return subtle.ConstantTimeCompare([]byte(hash), []byte(input)) == 1

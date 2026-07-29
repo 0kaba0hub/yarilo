@@ -132,3 +132,6 @@ func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 	}
 	return protocol.ResultOK, nil
 }
+
+// DriverName satisfies protocol.DriverName for passdb metrics.
+func (p *Passdb) DriverName() string { return "oauth2" }
