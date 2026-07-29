@@ -247,3 +247,25 @@ lifecycle:
     exec:
       command: ["/bin/sh", "-c", "sleep {{ .Values.gracefulShutdown.preStopSleepSeconds | default 5 }}"]
 {{- end -}}
+
+{{/*
+Effective log level for one component (#887 follow-up).
+
+Falls back to the installation-wide .Values.logLevel unless the component's name
+appears in .Values.logLevelOverrides. Keyed by the component name the container
+already reports in YARILO_COMPONENT, so an operator raises verbosity for a single
+service without knowing the internal values.yaml key layout:
+
+  logLevelOverrides:
+    yarilo-auth: debug
+
+Call: (dict "name" "yarilo-auth" "root" $)
+*/}}
+{{- define "yarilo.logLevel" -}}
+{{- $ovr := .root.Values.logLevelOverrides | default dict -}}
+{{- if hasKey $ovr .name -}}
+{{- index $ovr .name -}}
+{{- else -}}
+{{- .root.Values.logLevel -}}
+{{- end -}}
+{{- end -}}

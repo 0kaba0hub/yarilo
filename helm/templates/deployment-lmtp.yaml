@@ -39,7 +39,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-lmtp"
             - name: LOG_LEVEL
-              value: {{ .Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-lmtp" "root" $) | quote }}
             - name: POD_IP
               valueFrom:
                 fieldRef:

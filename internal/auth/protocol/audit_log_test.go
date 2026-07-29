@@ -6,18 +6,40 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // captureSlog swaps the default slog logger to a buffer for the
 // duration of the test and returns the buffer + a restore func.
-func captureSlog(t *testing.T) (*bytes.Buffer, func()) {
+// syncBuffer is a bytes.Buffer safe for concurrent Write and String. The server
+// logs from its own goroutines (and, since #887, from one goroutine per command),
+// while the test reads the buffer from the test goroutine — a bare bytes.Buffer
+// races there.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureSlog(t *testing.T) (*syncBuffer, func()) {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &syncBuffer{}
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	return &buf, func() { slog.SetDefault(prev) }
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	return buf, func() { slog.SetDefault(prev) }
 }
 
 // TestWire_Audit_RegularLoginLogsEmptyMaster — every successful

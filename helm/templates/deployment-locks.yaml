@@ -38,7 +38,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-locks"
             - name: LOG_LEVEL
-              value: {{ .Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-locks" "root" $) | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

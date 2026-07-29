@@ -41,7 +41,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-backend-api"
             - name: LOG_LEVEL
-              value: {{ .Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-backend-api" "root" $) | quote }}
             # POD_IP lets `who` scope to this backend by default (#814).
             - name: POD_IP
               valueFrom:

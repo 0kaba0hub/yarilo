@@ -33,7 +33,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-director"
             - name: LOG_LEVEL
-              value: {{ .Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-director" "root" $) | quote }}
             - name: POD_IP
               valueFrom:
                 fieldRef:
@@ -98,7 +98,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-monitor"
             - name: LOG_LEVEL
-              value: {{ .Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-monitor" "root" $) | quote }}
             - name: MONITOR_CONFIG
               value: /etc/yarilo-monitor/monitor.yaml
           securityContext:
