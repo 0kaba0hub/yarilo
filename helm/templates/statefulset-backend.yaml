@@ -69,7 +69,7 @@ spec:
             - name: YARILO_COMPONENT
               value: {{ $p.component | quote }}
             - name: LOG_LEVEL
-              value: {{ $root.Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" $p.component "root" $root) | quote }}
             - name: TELEMETRY_LISTEN
               value: {{ printf ":%d" (int $p.telemetry) | quote }}
             {{- include "yarilo.adminBackendEnv" $root | nindent 12 }}
@@ -124,7 +124,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-fts"
             - name: LOG_LEVEL
-              value: {{ $root.Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-fts" "root" $root) | quote }}
             - name: TELEMETRY_LISTEN
               value: ":8085"
             {{- with $root.Values.extraEnv }}
@@ -158,7 +158,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-backend-api"
             - name: LOG_LEVEL
-              value: {{ $root.Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-backend-api" "root" $root) | quote }}
             # POD_IP is this co-located pod's IP — the backend IP sessions route
             # to — so `who` can scope to THIS backend by default (#814).
             - name: POD_IP
@@ -191,7 +191,7 @@ spec:
             - name: YARILO_COMPONENT
               value: "yarilo-backend-reg"
             - name: LOG_LEVEL
-              value: {{ $root.Values.logLevel | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-backend-reg" "root" $root) | quote }}
             - name: TELEMETRY_LISTEN
               value: ":8086"
             - name: POD_IP

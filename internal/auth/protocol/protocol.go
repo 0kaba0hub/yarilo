@@ -758,10 +758,30 @@ type Server struct {
 	cookie               string
 	defaultMailPath      string
 	defaultInboxPath     string
+	// maxConcurrentRequests bounds in-flight commands per connection (#887).
+	// 0 selects DefaultMaxConcurrentRequests.
+	maxConcurrentRequests int
 }
 
 // ServerOption tunes a NewServer construction.
+// DefaultMaxConcurrentRequests bounds how many commands one connection may have
+// in flight at once (#887). Reached only under a burst; the read loop then applies
+// backpressure by not reading the next command, which is preferable to spawning
+// unbounded goroutines.
+const DefaultMaxConcurrentRequests = 256
+
 type ServerOption func(*Server)
+
+// WithMaxConcurrentRequests overrides DefaultMaxConcurrentRequests — the number
+// of commands a single connection may process concurrently. Values <= 0 restore
+// the default.
+func WithMaxConcurrentRequests(n int) ServerOption {
+	return func(s *Server) {
+		if n > 0 {
+			s.maxConcurrentRequests = n
+		}
+	}
+}
 
 // WithUserdb attaches a userdb backend to the Server. When set,
 // every successful passdb result is enriched with userdb fields
@@ -1029,15 +1049,42 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Co
 	}
 }
 
+// handleConn serves one client connection. Commands are dispatched to their own
+// goroutine (#887): a client multiplexes many requests over a single connection
+// (#878/#885), and handling them one at a time made the connection a queue.
+// Worse, the AUTH path deliberately sleeps — auth-penalty tarpit, policy tarpit,
+// timing-leak failure delay — so a single tarpitted request would stall every
+// unrelated login queued behind it.
+//
+// Out-of-order completion is exactly what the wire protocol expects: every reply
+// carries the request id it answers, and the client demultiplexes on it.
 func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close()
 	cuid := s.connUID.Add(1)
 	connections.Inc()
 	connectionsTotal.Inc()
 	defer connections.Dec()
 	rd := bufio.NewReaderSize(conn, maxLine)
 
-	// Server → Client handshake
+	// Handlers now run concurrently, so every reply must be written atomically
+	// or two replies could interleave mid-line on the wire.
+	sc := &syncConn{Conn: conn}
+
+	var wg sync.WaitGroup
+	// Close only after every in-flight handler has finished, otherwise a
+	// handler still holding the tarpit sleep would write to a closed conn.
+	defer func() {
+		wg.Wait()
+		_ = conn.Close()
+	}()
+
+	limit := s.maxConcurrentRequests
+	if limit <= 0 {
+		limit = DefaultMaxConcurrentRequests
+	}
+	sem := make(chan struct{}, limit)
+
+	// Server → Client handshake. Written before any handler exists, so the
+	// plain conn is safe here.
 	fmt.Fprintf(conn, "VERSION\t%d\t%d\n", majorVer, minorVer)
 	fmt.Fprintf(conn, "MECH\tPLAIN\tplaintext\n")
 	fmt.Fprintf(conn, "MECH\tLOGIN\tplaintext\n")
@@ -1062,18 +1109,46 @@ func (s *Server) handleConn(conn net.Conn) {
 		switch fields[0] {
 		case "CPID":
 			// client pid — ignore for now
-		case "AUTH":
-			start := time.Now()
-			observeRequest("AUTH", s.handleAuth(conn, fields), start)
-		case "VERIFY":
-			start := time.Now()
-			observeRequest("VERIFY", s.handleVerify(conn, fields), start)
+		case "AUTH", "VERIFY":
+			verb := fields[0]
+			// strings.Split allocated a fresh slice for this line, so the
+			// goroutine owns it outright.
+			args := fields
+			// Blocking here is deliberate backpressure: at the bound the read
+			// loop stops consuming commands instead of spawning more goroutines.
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				start := time.Now()
+				if verb == "AUTH" {
+					observeRequest("AUTH", s.handleAuth(sc, args), start)
+					return
+				}
+				observeRequest("VERIFY", s.handleVerify(sc, args), start)
+			}()
 		case "CONT":
 			// SASL continuation — not needed for PLAIN
 		case "CANCEL":
 			// cancel pending auth
 		}
 	}
+}
+
+// syncConn serialises writes so concurrent handlers cannot interleave two
+// replies within one line. Handlers emit a whole line per fmt.Fprintf/Fprintln
+// call, which is one Write, so a mutex around Write is all the atomicity the
+// wire format needs.
+type syncConn struct {
+	net.Conn
+	mu sync.Mutex
+}
+
+func (c *syncConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.Write(b)
 }
 
 // connRemoteIP extracts the client IP from a net.Conn.

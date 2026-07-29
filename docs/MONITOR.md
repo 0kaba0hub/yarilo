@@ -279,3 +279,32 @@ cannot express that.
 Collection is unconditional; there is no enable/disable knob. The cost is a
 handful of counters and histograms per request, and a metric that has to be
 switched on is never on when the incident starts.
+
+---
+
+## Log verbosity
+
+`logLevel` sets the level for the whole installation (default `info`); it reaches
+every container as `LOG_LEVEL`.
+
+`logLevelOverrides` raises or lowers it for individual components, keyed by the
+name the container reports in `YARILO_COMPONENT`:
+
+```yaml
+logLevel: info
+logLevelOverrides:
+  yarilo-auth: debug
+  yarilo-imap-login: debug
+```
+
+Keeping the installation at `info` and raising one component on demand is the
+intended pattern. Cluster-wide `debug` under load produces enough volume that
+kubelet rotates the container log away — during the #878 investigation the
+backend log for the exact window being analysed was already gone by the time it
+was read.
+
+**The level is read once at process start**, so changing it restarts the pods of
+the affected components. That is a real limitation when diagnosing a live
+incident: the restart destroys the state being investigated. Runtime switching
+without a restart, and exposing the active level over `:8080`, are tracked
+separately.

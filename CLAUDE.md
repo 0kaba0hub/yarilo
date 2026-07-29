@@ -1,4 +1,4 @@
-# yarilo — project rules for Claude
+# yarilo — repository conventions
 
 Extends the workspace-level `/CLAUDE.md`. All global rules apply.
 Rules here are **yarilo-specific** and take precedence where they overlap.
@@ -31,28 +31,28 @@ docker/          — Dockerfile
 
 ---
 
-## Infrastructure architecture — головна концепція
+## Infrastructure architecture — the core concept
 
-**Інфраструктурна архітектура yarilo визначена цими документами/схемами в `docs/`. Це source of truth для будь-яких рішень по deployment, scaling, HA, координації між компонентами:**
+**yarilo's infrastructure architecture is defined by these documents and diagrams in `docs/`. They are the source of truth for every decision about deployment, scaling, HA, and cross-component coordination:**
 
-- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — топологія deployment, sizing (per pod, per tag), HA strategy, sharding через tags, обґрунтування рішень
-- **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login-proxies, 3-pod director StatefulSet з peer-sync, backend-lease (self-registration + heartbeat #776, замість monitor-sidecar-ів), ring-routing до backend tags
-- **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): ОДИН co-located StatefulSet, под якого несе всі протокол-контейнери (imap/pop3/submission/lmtp/managesieve) + `yarilo-fts` + `yarilo-backend-reg` сайдкар на спільному IP; `yarilo-locks`/`backend-api`/`quota-status` — окремі deployments; shared NFS PV (RWX)
-- **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: повний стек (login + sessions + auth + anvil + `yarilo-locks` embedded + storage) для self-contained інсталяцій без director-а
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — deployment topology, sizing (per pod, per tag), HA strategy, sharding via tags, and the rationale behind each decision
+- **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login proxies, a 3-pod director StatefulSet with peer-sync, backend-lease (self-registration + heartbeat #776, replacing the monitor sidecars), ring routing to backend tags
+- **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): ONE co-located StatefulSet whose pod carries every protocol container (imap/pop3/submission/lmtp/managesieve) plus `yarilo-fts` and the `yarilo-backend-reg` sidecar on a shared IP; `yarilo-locks`, `backend-api` and `quota-status` are separate deployments; one shared NFS PV (RWX)
+- **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: the full stack (login + sessions + auth + anvil + embedded `yarilo-locks` + storage) for self-contained installations without a director
 
-**Правила використання:**
-1. Будь-яка зміна в infrastructure approach (нові поди, зміна scaling-моделі, нові services, зміна координації) **починається з оновлення цих схем + DEPLOYMENT.md**, а не з коду.
-2. Якщо код суперечить схемі — або код виправляється під схему, або схема оновлюється з обґрунтуванням.
-3. При планувані нової функціональності з infrastructure-наслідками — перевір схеми, обговори зміни, оновлюй документ.
+**How to use them:**
+1. Any change to the infrastructure approach (new pods, a different scaling model, new services, changed coordination) **starts by updating these diagrams and DEPLOYMENT.md**, not by writing code.
+2. When code contradicts a diagram, either the code is corrected to match or the diagram is updated with a stated rationale.
+3. When planning a feature with infrastructure consequences, check the diagrams first, discuss the change, then update the document.
 
-**Ключові архітектурні рішення зафіксовані в схемах:**
-- ОДИН co-located StatefulSet на backend deployment — под несе всі протокол-контейнери (imap/pop3/submission/lmtp/managesieve) + `yarilo-fts` (fts_addr=localhost) + `yarilo-backend-reg` сайдкар на спільному IP. Це відновлює Dovecot-інваріант «1 mail-host = всі per-user ресурси юзера» і робить одне кільце/один userDir коректними (#788); fts co-located дає single-writer per-user індексу безкоштовно (#675/#676). Свідома відмова від independent per-protocol scaling заради routing-когерентності (consistent hashing несумісний з «1 юзер = 1 под» при роздільних пулах)
-- `yarilo-auth` + `yarilo-anvil` — shared services (Deployments × 2), один deployment на всю інсталяцію
+**Key architectural decisions, as recorded in the diagrams:**
+- ONE co-located StatefulSet per backend deployment — the pod carries every protocol container (imap/pop3/submission/lmtp/managesieve) plus `yarilo-fts` (fts_addr=localhost) and the `yarilo-backend-reg` sidecar on a shared IP. This restores the reference invariant that one mail host owns all of a user's per-user resources, which is what makes a single ring and a single userDir correct (#788); co-locating fts gives a single writer per user index for free (#675/#676). Independent per-protocol scaling is given up deliberately in exchange for routing coherence — consistent hashing cannot hold "one user, one pod" across separate pools
+- `yarilo-auth` and `yarilo-anvil` are shared services (two Deployments), one deployment per installation
 - `yarilo-locks` — single abstraction for cross-process write coordination. **All k8s deployments (standalone and backend) use `remote` mode** — its own Deployment behind a ClusterIP Service, mTLS TCP `:9104`, Redis-backed state. `embedded` mode (in-memory + Unix socket) is reserved for unit tests and non-k8s CLI runs; it is never the production default because Unix sockets cannot cross pods, which breaks any `replicaCount > 1`. In-process goroutine concurrency stays on `sync.Mutex` as a two-tier fast-path.
-- Один NFS PV (RWX) на tag — shared всіма co-located подами в межах tag-у; `tag` = NFS-шард, НЕ протокол
-- Director — StatefulSet × 3 з peer-sync, ОДНЕ кільце + один userDir (один pod IP на юзера обслуговує всі протоколи; login override-ить порт)
-- Sticky routing per-user (не per-protocol): юзер закріплений за одним co-located подом на всі протоколи; cross-POD coordination через `yarilo-locks`
-- TLS terminate + passdb на director, userdb на backend через shared `yarilo-auth`
+- One NFS PV (RWX) per tag, shared by every co-located pod within that tag; a `tag` is an NFS shard, NOT a protocol
+- Director is a 3-replica StatefulSet with peer-sync, ONE ring and one userDir — a single pod IP per user serves every protocol, and the login proxy overrides the port
+- Sticky routing is per user, not per protocol: a user is pinned to one co-located pod for every protocol, and cross-pod coordination goes through `yarilo-locks`
+- TLS termination and passdb happen at the director; userdb happens at the backend via the shared `yarilo-auth`
 
 ---
 
@@ -62,7 +62,7 @@ docker/          — Dockerfile
 Every decision about processes, UIDs, IPC, storage is defined there.
 Code that contradicts ARCHITECTURE.md is wrong — fix the code, not the document.
 
-**Для infrastructure/deployment рівня — see `docs/DEPLOYMENT.md` + SVG-схеми вище.**
+**For the infrastructure and deployment layer, see `docs/DEPLOYMENT.md` and the SVG diagrams above.**
 
 Key rules derived from ARCHITECTURE.md:
 

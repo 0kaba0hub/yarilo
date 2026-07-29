@@ -1755,6 +1755,25 @@ containerSecurityContext:
 
 logLevel: info
 
+## logLevelOverrides raises (or lowers) verbosity for individual components
+## without touching the rest of the installation. Keyed by the component name the
+## container reports in YARILO_COMPONENT, so no knowledge of the internal
+## components.* key layout is needed:
+##
+##   logLevelOverrides:
+##     yarilo-auth: debug
+##     yarilo-imap-login: debug
+##
+## Recognised names: yarilo-director, yarilo-monitor, yarilo-auth, yarilo-anvil,
+## yarilo-locks, yarilo-fts, yarilo-backend-api, yarilo-backend-reg,
+## yarilo-quota-status, yarilo-imap, yarilo-pop3, yarilo-lmtp,
+## yarilo-managesieve, yarilo-submission, and the matching *-login components.
+##
+## Keeping the installation at info and raising one component on demand is the
+## intended pattern: cluster-wide debug produces enough volume to rotate away the
+## very window being investigated.
+logLevelOverrides: {}
+
 ## initContainerImage — image used by dependency-wait init containers.
 ## Must include busybox-compatible `nc` (netcat). Default: busybox:1.36.
 initContainerImage: "busybox:1.36"
