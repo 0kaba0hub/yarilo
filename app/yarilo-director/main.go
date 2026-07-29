@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -20,11 +19,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 	"github.com/0kaba0hub/yarilo/internal/director"
 	"github.com/0kaba0hub/yarilo/internal/lmtp"
+	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/logging"
@@ -330,15 +328,13 @@ func parseCIDRs(ss []string) []*net.IPNet {
 }
 
 func runTelemetry(addr string) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.Handle("/metrics", promhttp.Handler())
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	// One shared implementation for /healthz, /readyz, /metrics and
+	// /debug/loglevel. No Checks yet: this component's /readyz was an
+	// unconditional 200 before unification, and turning that into a real
+	// condition is a behaviour change, not a refactor — see the readiness issue
+	// for the per-component conditions.
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
+	if err := tel.ListenAndServe(context.Background()); err != nil {
 		slog.Error("telemetry server failed", "err", err)
 	}
 }

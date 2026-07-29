@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
@@ -60,8 +61,12 @@ func TestReadyz_Ready(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", code)
 	}
-	if body != "ok" {
-		t.Fatalf("body: got %q, want %q", body, "ok")
+	// The body is JSON naming every condition, so a failing probe says which
+	// dependency is missing instead of only that the pod is not ready. Nothing
+	// consumes the old "ok" text: kubelet probes look at the status code and
+	// smoketest only prints the body on failure.
+	if !strings.Contains(body, `"ready":true`) {
+		t.Fatalf("body: got %q, want it to report ready:true", body)
 	}
 }
 

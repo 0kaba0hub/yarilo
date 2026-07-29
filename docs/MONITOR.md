@@ -378,3 +378,53 @@ how long a login waits before failing anyway.
 
 Not covered: `preamble_error`. There the client connection is already broken or
 sent something unparseable, so there is nothing to retry against.
+
+---
+
+## Telemetry is one implementation
+
+Every component serves `/healthz`, `/readyz`, `/metrics` and `/debug/loglevel`
+from `internal/telemetry`. Before unification each binary built its own mux,
+which is how `/debug/loglevel` came to exist in two components out of fourteen
+while the other twelve answered 404, and how `/readyz` came to be an
+unconditional 200 in eleven of them.
+
+### Wiring a component
+
+```go
+tel := telemetry.NewWithOptions(telemetry.Options{
+    Addr:     telemetry.Addr(cfg.Telemetry.Listen),
+    Registry: reg,                       // nil = the default registry
+    Checks: []telemetry.Check{           // readiness conditions
+        telemetry.TCPCheck("auth", authAddr, authTLS),
+        telemetry.FuncCheck("backend", backendReady),
+    },
+    Lifecycle: true,                     // also require SetReady(true)
+})
+go tel.ListenAndServe(ctx)
+```
+
+`TCPCheck` with a TLS config completes the handshake too, so a component whose
+certificate is wrong reports not-ready rather than "port accepts".
+
+An empty `Checks` list means the process being up **is** the condition — a
+legitimate answer, but state it deliberately.
+
+### `/readyz`
+
+Answers JSON naming every condition, so a failing probe says which dependency is
+missing:
+
+```json
+{"ready":false,"checks":[{"name":"auth","ok":false,"error":"connection refused"},
+                         {"name":"redis","ok":true}]}
+```
+
+Checks run concurrently under an 800ms deadline, so readiness latency is the
+slowest dependency rather than their sum, and a hung dependency surfaces as
+not-ready instead of as a probe timeout.
+
+### `yarilo_readiness_check{check}`
+
+Each condition is also published as a gauge (1 = passing), so a not-ready pod can
+be diagnosed from metrics without shelling into it.

@@ -16,10 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"net/http"
-
 	"github.com/emersion/go-sasl"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
@@ -296,15 +293,13 @@ func firstActive(svcs ...*config.ServiceConfig) *config.ServiceConfig {
 }
 
 func runTelemetry(addr string) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.Handle("/metrics", promhttp.Handler())
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	// One shared implementation for /healthz, /readyz, /metrics and
+	// /debug/loglevel. No Checks yet: this component's /readyz was an
+	// unconditional 200 before unification, and turning that into a real
+	// condition is a behaviour change, not a refactor — see the readiness issue
+	// for the per-component conditions.
+	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
+	if err := tel.ListenAndServe(context.Background()); err != nil {
 		slog.Error("telemetry server failed", "err", err)
 	}
 }

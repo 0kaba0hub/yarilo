@@ -233,7 +233,13 @@ components:
         issuerRef:
           kind: Issuer
           name: yarilo-internal-ca
-    replicas: 5
+    ## 3 is the minimum meaningful ring (min_members: 3). 5 was only ever set to
+    ## observe a non-minimal ring; steady state does not need it, and the peer
+    ## mesh grows quadratically — the seed poll opens a fresh mTLS connection to
+    ## every other replica on every tick, so 5 replicas is 5x4=20 handshakes per
+    ## cycle against 3x2=6. See the issue on making those connections persistent;
+    ## this only reduces the symptom.
+    replicas: 3
     ## resources (#878): NO cpu limit, same reasoning as the login pods. Every
     ## login blocks on a director LOOKUP, and the chart default of 500m throttled
     ## it — measured 320 CFS periods / 8s throttled against 76s used (~10%) over

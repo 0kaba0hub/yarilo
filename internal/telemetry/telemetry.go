@@ -34,8 +34,10 @@ func publishLogLevel() {
 
 // Server is the telemetry HTTP server.
 type Server struct {
-	srv   *http.Server
-	ready atomic.Bool
+	srv       *http.Server
+	ready     atomic.Bool
+	checks    []Check
+	lifecycle bool
 }
 
 // Addr resolves the telemetry listen address, letting the TELEMETRY_LISTEN env
@@ -53,27 +55,77 @@ func Addr(cfgListen string) string {
 	return cfgListen
 }
 
-// New creates a telemetry server listening on addr (e.g. ":8080").
+// Options configures a telemetry server. Every component serves the same four
+// endpoints from this one implementation; before unification each binary built
+// its own mux, which is how /debug/loglevel ended up in two components out of
+// fourteen and how /readyz ended up unconditional in eleven.
+type Options struct {
+	// Addr is the listen address, e.g. ":8080".
+	Addr string
+	// Registry gathers the metrics to serve. Nil uses the default registry,
+	// which is what promauto-based components register into.
+	Registry prometheus.Gatherer
+	// Checks are the component's readiness conditions. /readyz passes when every
+	// one of them passes; an empty list means the process being up IS the
+	// condition, which is a legitimate answer for a component with no external
+	// dependency — but state it by leaving this empty on purpose, not by accident.
+	//
+	// Wiring a dependency is meant to be one line:
+	//
+	//	Checks: []telemetry.Check{
+	//	    telemetry.TCPCheck("auth", authAddr, authTLS),
+	//	    telemetry.TCPCheck("director", directorAddr, directorTLS),
+	//	}
+	Checks []Check
+	// Lifecycle makes /readyz additionally require SetReady(true). Components
+	// that go through a startup phase, or that mark themselves unready while
+	// draining, set this; without it the flag is ignored so a component that
+	// never calls SetReady is not stuck at not-ready forever.
+	Lifecycle bool
+}
+
+// New creates a telemetry server listening on addr, serving the default registry
+// and gating /readyz on the SetReady flag.
 func New(addr string) *Server {
-	s := &Server{}
+	return NewWithOptions(Options{Addr: addr, Lifecycle: true})
+}
+
+// NewWithOptions creates a telemetry server from explicit options.
+func NewWithOptions(opts Options) *Server {
+	s := &Server{checks: opts.Checks, lifecycle: opts.Lifecycle}
+
+	metrics := promhttp.Handler()
+	if opts.Registry != nil {
+		metrics = promhttp.HandlerFor(opts.Registry, promhttp.HandlerOpts{})
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/readyz", s.readyz)
 	mux.HandleFunc("/debug/loglevel", s.logLevel)
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", metrics)
 	publishLogLevel()
-	s.srv = &http.Server{Addr: addr, Handler: mux}
+	s.srv = &http.Server{Addr: opts.Addr, Handler: mux}
 	return s
 }
 
 // SetReady marks the server as ready to serve traffic.
 func (s *Server) SetReady(v bool) { s.ready.Store(v) }
 
+// isReady resolves the lifecycle gate only. Dependency checks are evaluated per
+// request in readyz, since they involve I/O.
+func (s *Server) isReady() bool {
+	if s.lifecycle {
+		return s.ready.Load()
+	}
+	return true
+}
+
 // IsReady reports the current readiness — the /readyz condition. The
 // backend registration client (#776) gates its heartbeat on this so a
 // not-ready backend stops heartbeating and is expired ring-wide rather
 // than being kept as a live-but-wedged routing target.
-func (s *Server) IsReady() bool { return s.ready.Load() }
+func (s *Server) IsReady() bool { return s.isReady() }
 
 // ListenAndServe starts the HTTP server. Blocks until ctx is done.
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -95,14 +147,26 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("ok")) //nolint:errcheck
 }
 
-func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
-	if s.ready.Load() {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok")) //nolint:errcheck
-		return
+func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
+	results := evaluate(r.Context(), s.checks)
+	failed := make([]string, 0, len(results))
+	for _, res := range results {
+		if !res.OK {
+			failed = append(failed, res.Name)
+		}
 	}
-	w.WriteHeader(http.StatusServiceUnavailable)
-	w.Write([]byte("not ready")) //nolint:errcheck
+	ready := s.isReady() && len(failed) == 0
+
+	w.Header().Set("Content-Type", "application/json")
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	// The body names the failing dependency: "not ready" alone sends an operator
+	// reading kubectl describe on a hunt that the pod could have answered.
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ready":  ready,
+		"checks": results,
+	})
 }
 
 // logLevel reads or changes the active log level (#889).
