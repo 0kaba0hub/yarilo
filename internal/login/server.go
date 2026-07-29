@@ -354,11 +354,14 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	// Implicit-TLS upgrade (IMAPS / POP3S / Submissions).
 	if s.opts.ExtTLS != nil {
+		tlsStart := time.Now()
 		tlsConn := tls.Server(conn, s.opts.ExtTLS)
 		if err := tlsConn.Handshake(); err != nil {
 			log.Debug("login: tls handshake", "err", err)
+			s.incResult("tls_error")
 			return
 		}
+		s.observePhase(phaseTLSHandshake, tlsStart)
 		conn = tlsConn
 	}
 
@@ -366,24 +369,35 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	// Extract preamble: speak the protocol pre-auth exchange to collect credentials.
 	// authConn/authRd may be TLS-upgraded from the original conn/rd if STARTTLS happened.
+	preambleStart := time.Now()
 	pre, authConn, authRd, err := extractPreamble(conn, rd, s.opts.Protocol, s.opts.StarttlsTLS, s.opts)
 	if err != nil {
 		log.Debug("login: preamble", "err", err)
+		s.incResult("preamble_error")
 		return
 	}
+	s.observePhase(phasePreamble, preambleStart)
 
 	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 	if s.opts.AuthAddr == "" {
 		log.Error("login: auth_addr not configured")
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+		s.incResult("unavailable")
 		return
 	}
+	authDialStart := time.Now()
 	authCl, err := authclient.Dial(s.opts.AuthAddr, s.opts.AuthTLS)
 	if err != nil {
 		log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+		// Observed on failure too: a timed-out dial is the single most
+		// important latency sample there is, and dropping it would make the
+		// histogram look healthy exactly when the path is broken.
+		s.observePhase(phaseAuthDial, authDialStart)
+		s.incResult("unavailable")
 		return
 	}
+	s.observePhase(phaseAuthDial, authDialStart)
 	defer authCl.Close()
 
 	// Auth retry loop: keep the connection open after a bad-password failure.
@@ -422,10 +436,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		var aerr error
+		authStart := time.Now()
 		authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
+		// One observation per attempt, not per login: the retry loop keeps the
+		// connection open across a bad-password retry, and each attempt is its
+		// own round-trip to yarilo-auth.
+		s.observePhase(phaseAuth, authStart)
 		if errors.Is(aerr, authclient.ErrTempFail) {
 			log.Warn("login: auth temp fail", "user", pre.username, "result", "fail")
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+			s.incResult("unavailable")
 			return
 		}
 
@@ -479,21 +499,27 @@ func (s *Server) handleConn(conn net.Conn) {
 			tag = authResult.DirectorTag
 		}
 		var err error
+		lookupStart := time.Now()
 		backendAddr, err = s.directorLookupWithHold(pre.username, tag, log)
+		s.observePhase(phaseDirectorLookup, lookupStart)
 		if err != nil {
 			log.Warn("login: director lookup failed", "user", pre.username, "err", err)
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
+			s.incResult("unavailable")
 			return
 		}
 	}
 
 	// Anvil connection limit check.
 	if s.opts.AnvilAddr != "" {
+		anvilStart := time.Now()
 		ac, aerr := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 0)
+		s.observePhase(phaseAnvilConnect, anvilStart)
 		if aerr != nil {
 			log.Error("login: anvil dial failed", "addr", s.opts.AnvilAddr, "err", aerr)
 			if !s.opts.AnvilFailOpen {
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+				s.incResult("unavailable")
 				return
 			}
 		} else {
@@ -545,10 +571,13 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	// Dial backend pod, with an active fast-fail re-route on a connect failure
 	// in director mode (#782): report the backend unreachable and re-LOOKUP.
+	backendDialStart := time.Now()
 	backendConn, backendAddr, err := s.dialBackendWithReroute(pre.username, tag, backendAddr, log)
+	s.observePhase(phaseBackendDial, backendDialStart)
 	if err != nil {
 		log.Error("login: dial backend", "addr", backendAddr, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
+		s.incResult("unavailable")
 		return
 	}
 	defer backendConn.Close()
@@ -600,10 +629,13 @@ func (s *Server) handleConn(conn net.Conn) {
 	// include in the tagged OK response sent to the client.
 	// If the backend closes the connection (e.g. token VERIFY failed) we must
 	// tell the client rather than silently dropping the TCP connection.
+	greetingStart := time.Now()
 	backendCaps, err := readBackendGreeting(backendRd, s.opts.Protocol)
+	s.observePhase(phaseBackendPreamble, greetingStart)
 	if err != nil {
 		log.Error("login: backend rejected session", "user", pre.username, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+		s.incResult("backend_rejected")
 		return
 	}
 
@@ -633,6 +665,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	log.Info("login: session routed", "user", pre.username, "backend", backendAddr, "result", "ok")
+	s.incResult("ok")
 
 	// Auth is confirmed — tell the client before entering proxy mode.
 	writeProtoAuthOK(authConn, s.opts.Protocol, pre.cmdTag, backendCaps)
@@ -640,7 +673,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	authConn.SetDeadline(time.Time{})    //nolint:errcheck
 	backendConn.SetDeadline(time.Time{}) //nolint:errcheck
 
+	proto := string(s.opts.Protocol)
+	sessionsGauge.WithLabelValues(proto).Inc()
 	biProxy(authRd, authConn, backendRd, backendConn)
+	sessionsGauge.WithLabelValues(proto).Dec()
 	log.Info("login: disconnect", "user", pre.username)
 }
 

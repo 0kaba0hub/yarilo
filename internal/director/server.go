@@ -849,7 +849,9 @@ func hostLine(b ring.Backend) string {
 // One order (#708): sticky userDir pin, then ring lookup restricted to tag.
 // Response: HOST\t{id}\t{ip}\t{port}\t{tag}
 func (s *Server) handleLookup(c *client, fields []string) {
+	start := time.Now()
 	if len(fields) < 4 {
+		observeLookup("bad_request", start)
 		return
 	}
 	id, user := fields[1], s.normalizeUser(proto.TabUnescape(fields[2]))
@@ -867,6 +869,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	// proxy re-LOOKUPs until the kill confirms, rather than erroring the client.
 	if s.isKilling(HashUsername(user, s.hf)) {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=%s", id, killReason))
+		observeLookup("killing", start)
 		return
 	}
 
@@ -882,6 +885,7 @@ func (s *Server) handleLookup(c *client, fields []string) {
 				if existing.Tag == tag {
 					s.userDir.Set(user, e.Host, false) // refresh TTL
 					_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%s\t%s", id, host, portStr, existing.Tag))
+					observeLookup("sticky", start)
 					return
 				}
 			}
@@ -897,9 +901,11 @@ func (s *Server) handleLookup(c *client, fields []string) {
 	b := s.assignAndPin(user, tag, reqProto)
 	if b == nil {
 		_ = c.WriteLine(fmt.Sprintf("FAIL\t%s\treason=no-backends", id))
+		observeLookup("no_backends", start)
 		return
 	}
 	_ = c.WriteLine(fmt.Sprintf("HOST\t%s\t%s\t%d\t%s", id, b.IP, b.Port, b.Tag))
+	observeLookup("assigned", start)
 }
 
 // handleBackendUp processes: BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}

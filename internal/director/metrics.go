@@ -2,6 +2,7 @@ package director
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -45,7 +46,23 @@ var (
 		Name:      "ring_join_rejected_total",
 		Help:      "Total number of ring DIRECTOR-JOIN requests rejected (no secret configured, malformed or invalid HMAC proof).",
 	})
+
+	// lookupSeconds is the login-blocking path: a login proxy cannot route
+	// until LOOKUP answers. The result label separates a healthy assignment
+	// from the two states that make a login retry — `killing` (confirmed-kick
+	// hold, retryable by design) and `no_backends`.
+	lookupSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "yarilo",
+		Subsystem: "director",
+		Name:      "lookup_seconds",
+		Help:      "Server-side latency of director LOOKUP by outcome (sticky, assigned, killing, no_backends, bad_request).",
+		Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 16), // 100µs … ~3s
+	}, []string{"result"})
 )
+
+func observeLookup(result string, start time.Time) {
+	lookupSeconds.WithLabelValues(result).Observe(time.Since(start).Seconds())
+}
 
 // updateMetrics refreshes all backend Prometheus gauges. Called after every
 // ring mutation and on every session open/close (backend_sessions tracks the

@@ -186,3 +186,96 @@ yarilo_director_backend_info{status!="up"} == 1
 # Backend session count exceeds threshold
 sum by (ip, port, tag) (yarilo_director_backend_sessions) > 500
 ```
+
+---
+
+## Prometheus metrics (login path) — #881
+
+Before these existed, `yarilo-auth`, `yarilo-anvil` and the login pods exported
+only Go runtime metrics, so a login stall could not be attributed to a
+component without `kubectl exec` into cgroup files and log grepping. That gap
+produced a wrong root cause in #878: auth was blamed on the strength of a
+scrape-averaged CPU gauge while the real bottleneck was CFS throttling on the
+login pod.
+
+### `yarilo_login_phase_seconds`
+
+**Start here.** Histogram of one login phase, per protocol. A login walks the
+phases in order and each is a separate network dependency, so this single
+metric names the owner of a stall instead of requiring a bisect across four
+services.
+
+```
+yarilo_login_phase_seconds_bucket{protocol="imap", phase="auth_dial",  le="5.12"}  1841
+yarilo_login_phase_seconds_bucket{protocol="imap", phase="auth",       le="0.128"} 1802
+```
+
+| `phase` | Covers |
+|:---|:---|
+| `tls_handshake` | Client-facing TLS termination (IMAPS/POP3S implicit TLS). |
+| `preamble` | Pre-auth protocol exchange that collects credentials. |
+| `auth_dial` | Opening the connection to `yarilo-auth` (a full mTLS handshake today). |
+| `auth` | One `AUTH` round-trip. Observed per attempt — the retry loop reuses the connection. |
+| `director_lookup` | Director `LOOKUP`, including confirmed-kick hold retries. |
+| `anvil_connect` | Dial + `CONNECT` to `yarilo-anvil`. |
+| `backend_dial` | Dial to the backend pod, including fast-fail re-route. |
+| `backend_preamble` | Reading the backend greeting (token `VERIFY` happens here). |
+
+`auth_dial` is observed on failure as well as success: a timed-out dial is the
+most important latency sample there is, and dropping it would leave the
+histogram looking healthy exactly when the path is broken.
+
+Slowest phase over 5 minutes:
+```promql
+topk(3, histogram_quantile(0.99, sum by (phase, le) (rate(yarilo_login_phase_seconds_bucket[5m]))))
+```
+
+### `yarilo_login_result_total`
+
+Login outcomes: `ok`, `unavailable`, `backend_rejected`, `preamble_error`,
+`tls_error`. Kept as distinct series on purpose — collapsing `unavailable` into
+a generic failure counter is what made the #878 storm hard to read.
+
+### `yarilo_login_sessions`
+
+Currently proxied sessions held open by this login pod, by protocol.
+
+### `yarilo_auth_*`
+
+| Metric | Type | Notes |
+|:---|:---|:---|
+| `request_seconds{verb,result}` | histogram | Wall-clock per verb (`AUTH`, `VERIFY`). **Includes** the deliberate penalty/policy/failure delays — it answers "how long did the login proxy wait", not "how much work did auth do". |
+| `passdb_seconds{driver,result}` | histogram | One chain driver call. Compare against `request_seconds` to separate real backend cost from intentional tarpit. |
+| `scheme_verify_seconds{scheme}` | histogram | Password-scheme cost alone. BCRYPT/SHA512-CRYPT are expensive by design; this separates a raised cost factor from a slow query. Emitted by whichever process verifies — auth for wire logins, session binaries for in-process auth. |
+| `cache_lookups_total{result}` | counter | `hit` \| `miss` \| `expired` \| `pwd_mismatch`. The cache itself collapses the last three into one miss counter; only this split shows that the TTL is too short (`expired`) versus a stale credential being retried (`pwd_mismatch`). |
+| `cache_entries` / `cache_bytes` / `cache_max_bytes` | gauge | Fill ratio. The cache is bytes-bounded, so a full cache silently degrades into a pass-through and every login pays the passdb round-trip again. |
+| `connections` / `connections_total` | gauge / counter | Connection churn. `connections_total` rising in lockstep with the login rate means every login pays a fresh mTLS handshake; a flat curve means connections are being reused. |
+
+Cache hit ratio:
+```promql
+sum(rate(yarilo_auth_cache_lookups_total{result="hit"}[5m]))
+  / sum(rate(yarilo_auth_cache_lookups_total[5m]))
+```
+
+### `yarilo_anvil_*`
+
+| Metric | Type | Notes |
+|:---|:---|:---|
+| `request_seconds{verb,result}` | histogram | Per-verb server-side latency. anvil is a single Deployment with a strict request/response protocol, so a slow verb serialises every login that needs it. |
+| `sessions` | gauge | Tracked login sessions. |
+| `sessions_reaped_total` | counter | TTL evictions. A rising rate means sessions are losing their heartbeat, and each reap makes the next `HEARTBEAT` answer `reason=unknown` to a session that is in fact alive. |
+| `penalty_lookups_total{result}` | counter | `hit` (penalty in force) \| `miss` \| `expired`. |
+| `connections` / `connections_total` | gauge / counter | Saturation signal for a single-replica service. |
+
+### `yarilo_director_lookup_seconds`
+
+Server-side `LOOKUP` latency by outcome: `sticky`, `assigned`, `killing`,
+`no_backends`, `bad_request`. `killing` and `no_backends` both make a login
+proxy retry, but only one of them is a healthy state — a single latency series
+cannot express that.
+
+### Notes
+
+Collection is unconditional; there is no enable/disable knob. The cost is a
+handful of counters and histograms per request, and a metric that has to be
+switched on is never on when the incident starts.

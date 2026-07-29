@@ -701,7 +701,9 @@ func (c Chain) Authenticate(req *Request) (Result, error) {
 	}
 	for _, db := range c {
 		snap := req.Fields.Snapshot()
+		start := time.Now()
 		result, err := db.Authenticate(req)
+		observePassdb(driverLabel(db), resultLabel(result, err), start)
 		switch result {
 		case ResultNext:
 			req.Fields.Rollback(snap)
@@ -1030,6 +1032,9 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Co
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	cuid := s.connUID.Add(1)
+	connections.Inc()
+	connectionsTotal.Inc()
+	defer connections.Dec()
 	rd := bufio.NewReaderSize(conn, maxLine)
 
 	// Server → Client handshake
@@ -1058,9 +1063,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		case "CPID":
 			// client pid — ignore for now
 		case "AUTH":
-			s.handleAuth(conn, fields)
+			start := time.Now()
+			observeRequest("AUTH", s.handleAuth(conn, fields), start)
 		case "VERIFY":
-			s.handleVerify(conn, fields)
+			start := time.Now()
+			observeRequest("VERIFY", s.handleVerify(conn, fields), start)
 		case "CONT":
 			// SASL continuation — not needed for PLAIN
 		case "CANCEL":
@@ -1083,9 +1090,13 @@ func connRemoteIP(conn net.Conn) string {
 	return ""
 }
 
-func (s *Server) handleAuth(conn net.Conn, fields []string) {
+// handleAuth processes one AUTH command and returns the metric result label
+// for it ("ok" | "fail" | "tempfail" | "bad_request"). The label is returned
+// rather than observed here so the caller times the whole verb, including the
+// deliberate delays this function applies.
+func (s *Server) handleAuth(conn net.Conn, fields []string) string {
 	if len(fields) < 3 {
-		return
+		return "bad_request"
 	}
 	id := fields[1]
 	mech := fields[2]
@@ -1116,7 +1127,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	if !ok {
 		slog.Debug("auth: bad SASL response format", "id", id, "mech", mech)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=bad-credentials\n", id)
-		return
+		return "bad_request"
 	}
 	// Master-user separator workaround (RFC 4616 §2.1 doesn't
 	// cover this case): clients that can't supply authzid encode
@@ -1187,7 +1198,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 			if s.policy != nil && s.policyMode.ReportAfter {
 				go s.policy.ReportAfter(context.Background(), policyReq, false, true)
 			}
-			return
+			return "fail"
 		}
 		if d.TarpitSecs > 0 {
 			time.Sleep(time.Duration(d.TarpitSecs) * time.Second)
@@ -1253,7 +1264,10 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 		if s.policy != nil && s.policyMode.ReportAfter && target == "" {
 			go s.policy.ReportAfter(context.Background(), policyReq, false, false)
 		}
-		return
+		if isInternal {
+			return "tempfail"
+		}
+		return "fail"
 	}
 
 	// Policy-server post-chain check (check_after_auth). The
@@ -1278,7 +1292,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 			if s.policyMode.ReportAfter {
 				go s.policy.ReportAfter(context.Background(), policyReq, false, true)
 			}
-			return
+			return "fail"
 		}
 		if d.TarpitSecs > 0 {
 			time.Sleep(time.Duration(d.TarpitSecs) * time.Second)
@@ -1316,6 +1330,7 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 	if s.policy != nil && s.policyMode.ReportAfter && target == "" {
 		go s.policy.ReportAfter(context.Background(), policyReq, true, false)
 	}
+	return "ok"
 }
 
 // handleVerify processes a VERIFY command from a backend pod.
@@ -1328,12 +1343,14 @@ func (s *Server) handleAuth(conn net.Conn, fields []string) {
 //
 // The token is one-time. user= and session= are verified against the
 // stored token — a mismatch is treated as a FAIL.
-func (s *Server) handleVerify(conn net.Conn, fields []string) {
+// The metric result label is returned for the caller to observe, mirroring
+// handleAuth.
+func (s *Server) handleVerify(conn net.Conn, fields []string) string {
 	if len(fields) < 3 {
 		if len(fields) >= 2 {
 			fmt.Fprintf(conn, "FAIL\t%s\treason=bad-request\n", fields[1])
 		}
-		return
+		return "bad_request"
 	}
 	id := fields[1]
 	tok := fields[2]
@@ -1350,26 +1367,27 @@ func (s *Server) handleVerify(conn net.Conn, fields []string) {
 
 	if s.tokenStore == nil {
 		fmt.Fprintf(conn, "FAIL\t%s\treason=not-configured\n", id)
-		return
+		return "error"
 	}
 	username, sessionID, service, ok := s.tokenStore.Validate(tok)
 	if !ok {
 		slog.Info("auth: verify failed: invalid token", "id", id)
 		fmt.Fprintf(conn, "FAIL\t%s\n", id)
-		return
+		return "fail"
 	}
 	if claimedUser != "" && claimedUser != username {
 		slog.Warn("auth: verify failed: user mismatch", "claimed", claimedUser, "token_user", username)
 		fmt.Fprintf(conn, "FAIL\t%s\n", id)
-		return
+		return "fail"
 	}
 	if claimedSession != "" && claimedSession != sessionID {
 		slog.Warn("auth: verify failed: session mismatch", "claimed", claimedSession, "token_session", sessionID)
 		fmt.Fprintf(conn, "FAIL\t%s\n", id)
-		return
+		return "fail"
 	}
 	slog.Info("auth: verify ok", "user", username, "session", sessionID)
 	fmt.Fprintf(conn, "OK\t%s\tuser=%s\tsession=%s\tservice=%s\n", id, username, sessionID, service)
+	return "ok"
 }
 
 // buildAuthOK renders the OK response. When res.Fields is set, the
