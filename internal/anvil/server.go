@@ -284,6 +284,9 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Co
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
+	connections.Inc()
+	connectionsTotal.Inc()
+	defer connections.Dec()
 	rd := bufio.NewReaderSize(conn, 4096)
 
 	fmt.Fprintf(conn, "VERSION\t%s\t%d\t%d\n", protoName, majorVer, minorVer)
@@ -302,27 +305,40 @@ func (s *Server) handleConn(conn net.Conn) {
 		if len(fields) == 0 {
 			continue
 		}
+		// Every verb is timed at the dispatch point. Only the verbs on the
+		// login hot path report a distinguishing result label; the rest are
+		// recorded as "ok" because their wire replies carry no uniform outcome
+		// worth a separate series.
+		start := time.Now()
 		switch fields[0] {
 		case "CONNECT":
-			s.handleConnect(conn, fields)
+			observeRequest("CONNECT", s.handleConnect(conn, fields), start)
 		case "DISCONNECT":
 			s.handleDisconnect(conn, fields)
+			observeRequest("DISCONNECT", "ok", start)
 		case "WHO":
 			s.handleWho(conn, fields[1:])
+			observeRequest("WHO", "ok", start)
 		case "LOOKUP":
 			s.handleLookup(conn, fields)
+			observeRequest("LOOKUP", "ok", start)
 		case "HEARTBEAT":
-			s.handleHeartbeat(conn, fields)
+			observeRequest("HEARTBEAT", s.handleHeartbeat(conn, fields), start)
 		case "SELECT":
 			s.handleSelect(conn, fields)
+			observeRequest("SELECT", "ok", start)
 		case "BACKEND":
 			s.handleBackend(conn, fields)
+			observeRequest("BACKEND", "ok", start)
 		case "EMIT":
 			s.handleEmit(conn, fields)
+			observeRequest("EMIT", "ok", start)
 		case "PENALTY-LOOKUP":
 			s.handlePenaltyLookup(conn, fields)
+			observeRequest("PENALTY-LOOKUP", "ok", start)
 		case "PENALTY-UPDATE":
 			s.handlePenaltyUpdate(conn, fields)
+			observeRequest("PENALTY-UPDATE", "ok", start)
 		case "SUBSCRIBE":
 			// SUBSCRIBE takes over the connection for server→client
 			// pushes; handleSubscribe blocks until the conn closes
@@ -336,12 +352,13 @@ func (s *Server) handleConn(conn net.Conn) {
 }
 
 // handleConnect processes: CONNECT\t{id}\t{user}\t{ip}\t{service}
-func (s *Server) handleConnect(conn net.Conn, fields []string) {
+// The metric result label is returned for the dispatcher to observe.
+func (s *Server) handleConnect(conn net.Conn, fields []string) string {
 	if len(fields) < 5 {
 		// Tolerate the legacy 4-field form (no service) for back-compat
 		// with v1.0 clients — service stays empty in the session record.
 		if len(fields) < 4 {
-			return
+			return "bad_request"
 		}
 		fields = append(fields, "")
 	}
@@ -349,7 +366,7 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) {
 	if !s.limiter.Acquire(user, ip) {
 		slog.Warn("anvil: too many connections", "sid", id, "user", user, "ip", ip, "service", service)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
-		return
+		return "too_many_connections"
 	}
 	now := time.Now().UTC()
 	s.mu.Lock()
@@ -361,9 +378,11 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) {
 		ConnectedAt: now,
 		lastSeen:    now,
 	}
+	sessions.Set(float64(len(s.sessions)))
 	s.mu.Unlock()
 	slog.Debug("anvil: connect", "sid", id, "user", user, "ip", ip, "service", service)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
+	return "ok"
 }
 
 // handleDisconnect processes: DISCONNECT\t{id}\t{user}\t{ip}\t{service}
@@ -375,6 +394,7 @@ func (s *Server) handleDisconnect(conn net.Conn, fields []string) {
 	s.limiter.Release(user, ip)
 	s.mu.Lock()
 	delete(s.sessions, id)
+	sessions.Set(float64(len(s.sessions)))
 	s.mu.Unlock()
 	slog.Debug("anvil: disconnect", "sid", id, "user", user, "ip", ip)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
@@ -444,9 +464,12 @@ func (s *Server) handleLookup(conn net.Conn, fields []string) {
 // already reaped and reissue CONNECT. Unknown ID is NOT a hard
 // error: the pod is operating on stale information and recovers
 // by reconnecting.
-func (s *Server) handleHeartbeat(conn net.Conn, fields []string) {
+// The metric result label is returned for the dispatcher to observe. A
+// "session_unknown" outcome is the signal that the sweeper reaped a session
+// whose owner still believes it is alive.
+func (s *Server) handleHeartbeat(conn net.Conn, fields []string) string {
 	if len(fields) < 2 {
-		return
+		return "bad_request"
 	}
 	id := fields[1]
 	s.mu.Lock()
@@ -457,9 +480,10 @@ func (s *Server) handleHeartbeat(conn net.Conn, fields []string) {
 	s.mu.Unlock()
 	if !ok {
 		fmt.Fprintf(conn, "OK\t%s\treason=unknown\n", id)
-		return
+		return "session_unknown"
 	}
 	fmt.Fprintf(conn, "OK\t%s\n", id)
+	return "ok"
 }
 
 // handleSelect processes: SELECT\t{id}\t{folder}\n
@@ -543,7 +567,9 @@ func (s *Server) sweepStaleSessions(now time.Time) {
 			delete(s.sessions, id)
 		}
 	}
+	sessions.Set(float64(len(s.sessions)))
 	s.mu.Unlock()
+	sessionsReaped.Add(float64(len(dropped)))
 	for _, r := range dropped {
 		s.limiter.Release(r.user, r.ip)
 	}
@@ -576,14 +602,17 @@ func (s *Server) handlePenaltyLookup(conn net.Conn, fields []string) {
 	defer s.penaltyMu.Unlock()
 	e, ok := s.penalties[ip]
 	if !ok {
+		penaltyLookups.WithLabelValues("miss").Inc()
 		fmt.Fprintf(conn, "PENALTY\t0\n")
 		return
 	}
 	if time.Since(e.lastUpdate) > s.penaltyDecay {
 		delete(s.penalties, ip)
+		penaltyLookups.WithLabelValues("expired").Inc()
 		fmt.Fprintf(conn, "PENALTY\t0\n")
 		return
 	}
+	penaltyLookups.WithLabelValues("hit").Inc()
 	fmt.Fprintf(conn, "PENALTY\t%d\n", e.count)
 }
 

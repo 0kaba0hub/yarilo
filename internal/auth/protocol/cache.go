@@ -147,12 +147,16 @@ func (c *Cache) Lookup(key, password string) (*CacheEntry, bool) {
 	el, ok := c.entries[key]
 	if !ok {
 		c.misses++
+		cacheLookups.WithLabelValues("miss").Inc()
+		c.observeSize()
 		return nil, false
 	}
 	e := el.Value.(*CacheEntry) //nolint:errcheck // map+LRU only ever hold *CacheEntry
 	if time.Now().After(e.expires) {
 		c.removeElement(el)
 		c.misses++
+		cacheLookups.WithLabelValues("expired").Inc()
+		c.observeSize()
 		return nil, false
 	}
 	if e.Result == ResultOK {
@@ -160,12 +164,25 @@ func (c *Cache) Lookup(key, password string) (*CacheEntry, bool) {
 		// compare so a hit/miss cannot be timed apart.
 		if len(e.pwdMAC) == 0 || !hmac.Equal(e.pwdMAC, c.macPassword(password)) {
 			c.misses++
+			cacheLookups.WithLabelValues("pwd_mismatch").Inc()
+			c.observeSize()
 			return nil, false
 		}
 	}
 	c.lru.MoveToFront(el)
 	c.hits++
+	cacheLookups.WithLabelValues("hit").Inc()
+	c.observeSize()
 	return e, true
+}
+
+// observeSize publishes the cache fill gauges. Called with c.mu held from the
+// paths that can change occupancy, so the gauges never report a torn view of
+// curSize vs entry count.
+func (c *Cache) observeSize() {
+	cacheEntries.Set(float64(len(c.entries)))
+	cacheBytes.Set(float64(c.curSize))
+	cacheMaxBytes.Set(float64(c.maxSize))
 }
 
 // Insert stores an entry under key. password is the plain
@@ -251,6 +268,7 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 	el := c.lru.PushFront(e)
 	c.entries[key] = el
 	c.curSize += size
+	c.observeSize()
 }
 
 // removeElement removes el from both indices and adjusts curSize.

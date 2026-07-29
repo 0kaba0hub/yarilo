@@ -118,3 +118,6 @@ func (db *DB) scram(parse func(string) (*sasl.ScramCredentials, bool)) *sasl.Scr
 	}
 	return creds
 }
+
+// DriverName satisfies protocol.DriverName for passdb metrics.
+func (db *DB) DriverName() string { return "static" }

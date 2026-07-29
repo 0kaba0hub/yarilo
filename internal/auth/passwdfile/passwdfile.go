@@ -199,3 +199,6 @@ func (db *DB) lookupSCRAM(username string, parse func(string) (*sasl.ScramCreden
 	}
 	return creds
 }
+
+// DriverName satisfies protocol.DriverName for passdb metrics.
+func (db *DB) DriverName() string { return "passwd-file" }
