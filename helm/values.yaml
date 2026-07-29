@@ -47,6 +47,20 @@ login:
   ## sessions after SIGTERM before closing them. Must fit within
   ## gracefulShutdown.terminationGracePeriodSeconds. 0 = default (30).
   sessionGracePeriodSeconds: 0
+  ## transientRetries (#896): extra attempts a transient failure gets before the
+  ## client is told the service is unavailable — yarilo-auth reporting temp-fail,
+  ## the first dial to auth, and bringing up the backend session. Answering on the
+  ## first error turns a dependency blip (a rolling restart, a reconnect) into a
+  ## visible login failure the client can only recover from by opening a new
+  ## connection and repeating the TLS handshake.
+  ## 0 = built-in default (3). A negative value opts out and restores
+  ## fail-on-first-error.
+  ##
+  ## Watch yarilo_login_transient_retries_total against
+  ## yarilo_login_transient_exhausted_total: retries rising with exhausted flat
+  ## means the budget is absorbing blips; both rising means the outage outlasts it
+  ## and the fix is upstream, not a larger budget.
+  transientRetries: 0
 
 ## -------------------------------------------------------------------
 ## Graceful rollout (#857)

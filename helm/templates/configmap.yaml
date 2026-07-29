@@ -859,6 +859,7 @@ data:
       lookup_hold_max: {{ .Values.login.lookupHoldMax | default 0 }}
       lookup_hold_backoff_ms: {{ .Values.login.lookupHoldBackoffMs | default 0 }}
       session_grace_period: {{ .Values.login.sessionGracePeriodSeconds | default 0 }}
+      transient_retries: {{ .Values.login.transientRetries | default 0 }}
     {{- if .Values.components.saslLogin.enabled }}
     sasl_login:
       listen: {{ printf ":%d" (int .Values.components.saslLogin.containerPort) | quote }}

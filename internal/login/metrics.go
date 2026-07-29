@@ -40,6 +40,26 @@ var (
 		Help:      "Login outcomes by protocol and result (ok, auth_failed, unavailable, backend_rejected, preamble_error, tls_error).",
 	}, []string{"protocol", "result"})
 
+	// transientRetries counts retry attempts actually made, and
+	// transientExhausted counts the cases where the budget ran out and the client
+	// was told the service is unavailable anyway (#896). The pair is the useful
+	// signal: retries alone only say a dependency is flapping, while exhausted
+	// says a client saw it. A rising retries count with exhausted flat means the
+	// budget is doing its job; both rising means the outage outlasts it.
+	transientRetries = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "login",
+		Name:      "transient_retries_total",
+		Help:      "Retry attempts made after a transient failure, by protocol and stage (auth_dial, auth, backend_session).",
+	}, []string{"protocol", "stage"})
+
+	transientExhausted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "login",
+		Name:      "transient_exhausted_total",
+		Help:      "Transient failures that exhausted their retry budget and were surfaced to the client, by protocol and stage.",
+	}, []string{"protocol", "stage"})
+
 	sessionsGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "yarilo",
 		Subsystem: "login",
@@ -54,4 +74,19 @@ func (s *Server) observePhase(phase string, start time.Time) {
 
 func (s *Server) incResult(result string) {
 	resultTotal.WithLabelValues(string(s.opts.Protocol), result).Inc()
+}
+
+// Stage labels for the transient-retry counters.
+const (
+	stageAuthDial       = "auth_dial"
+	stageAuth           = "auth"
+	stageBackendSession = "backend_session"
+)
+
+func (s *Server) incTransientRetry(stage string) {
+	transientRetries.WithLabelValues(string(s.opts.Protocol), stage).Inc()
+}
+
+func (s *Server) incTransientExhausted(stage string) {
+	transientExhausted.WithLabelValues(string(s.opts.Protocol), stage).Inc()
 }

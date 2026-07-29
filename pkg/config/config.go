@@ -742,6 +742,13 @@ type LoginConfig struct {
 	// restart does not sever live sessions mid-command (#857). Must fit within
 	// the pod terminationGracePeriodSeconds. 0 uses the default (30).
 	SessionGracePeriod int `koanf:"session_grace_period"`
+	// TransientRetries is how many extra attempts a transient failure gets before
+	// the client is told the service is unavailable (#896): yarilo-auth reporting
+	// temp-fail, the first dial to auth, and bringing up the backend session.
+	// Answering on the first error turns a dependency blip into a visible login
+	// failure the client can only recover from by reconnecting. 0 uses the default
+	// (3); a negative value opts out and restores fail-on-first-error.
+	TransientRetries int `koanf:"transient_retries"`
 }
 
 type SASLLoginConfig struct {

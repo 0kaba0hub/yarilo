@@ -100,6 +100,13 @@ type Options struct {
 	// AnvilFailOpen controls what happens when yarilo-anvil is unreachable.
 	// true = allow the session (fail open); false = reject the session (fail closed).
 	AnvilFailOpen bool
+	// TransientRetries is how many extra attempts a transient failure gets before
+	// the client is told the service is unavailable (#896). 0 selects the default
+	// (3). Applies to failures that are temporary by definition — yarilo-auth
+	// reporting temp-fail, the first dial to auth, and bringing up the backend
+	// session — where answering on the first error turns a blip into a visible
+	// login failure the client can only recover from by reconnecting.
+	TransientRetries int
 	// AnvilConns is how many long-lived connections the shared anvil pool keeps
 	// (#878). 0 selects anvil.DefaultPoolSize. The anvil protocol carries no
 	// request id, so a connection serves one command at a time; each command is a
@@ -397,6 +404,26 @@ func (s *Server) closeAuthClient() {
 	}
 }
 
+// defaultTransientRetries is the extra-attempt budget for a transient failure.
+// Three keeps a rolling restart of a dependency invisible to clients without
+// holding a login long enough to look like a hang.
+const defaultTransientRetries = 3
+
+// transientRetryBackoff is the pause between attempts. Deliberately short: the
+// failures this covers are a pod rolling or a connection being re-established,
+// which resolve in well under a second.
+const transientRetryBackoff = 150 * time.Millisecond
+
+func (s *Server) transientRetries() int {
+	if s.opts.TransientRetries > 0 {
+		return s.opts.TransientRetries
+	}
+	if s.opts.TransientRetries < 0 {
+		return 0 // explicit opt-out
+	}
+	return defaultTransientRetries
+}
+
 // newSessionID returns a Postfix-style long queue ID:
 //
 //	{base52(secs, ≥6)}{base52(usec, 4)}z{seed(4)}{base51(seq, ≥1)}
@@ -558,16 +585,27 @@ func (s *Server) handleConn(conn net.Conn) {
 	// a pod start or an auth reconnect, which is exactly the signal that the
 	// reuse is working.
 	authDialStart := time.Now()
-	authCl, err := s.authClient()
-	if err != nil {
-		log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
-		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-		// Observed on failure too: a timed-out dial is the single most
-		// important latency sample there is, and dropping it would make the
-		// histogram look healthy exactly when the path is broken.
-		s.observePhase(phaseAuthDial, authDialStart)
-		s.incResult("unavailable")
-		return
+	var authCl *authclient.Client
+	for attempt := 0; ; attempt++ {
+		var derr error
+		authCl, derr = s.authClient()
+		if derr == nil {
+			break
+		}
+		if attempt >= s.transientRetries() {
+			log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "attempts", attempt+1, "err", derr)
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+			// Observed on failure too: a timed-out dial is the single most
+			// important latency sample there is, and dropping it would make the
+			// histogram look healthy exactly when the path is broken.
+			s.observePhase(phaseAuthDial, authDialStart)
+			s.incTransientExhausted(stageAuthDial)
+			s.incResult("unavailable")
+			return
+		}
+		log.Warn("login: yarilo-auth dial failed, retrying", "addr", s.opts.AuthAddr, "attempt", attempt+1, "err", derr)
+		s.incTransientRetry(stageAuthDial)
+		time.Sleep(transientRetryBackoff)
 	}
 	s.observePhase(phaseAuthDial, authDialStart)
 
@@ -607,17 +645,31 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		var aerr error
-		authStart := time.Now()
-		authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
-		// One observation per attempt, not per login: the retry loop keeps the
-		// connection open across a bad-password retry, and each attempt is its
-		// own round-trip to yarilo-auth.
-		s.observePhase(phaseAuth, authStart)
-		if errors.Is(aerr, authclient.ErrTempFail) {
-			log.Warn("login: auth temp fail", "user", pre.username, "result", "fail")
-			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-			s.incResult("unavailable")
-			return
+		// A temp-fail means "try again" by definition, so retry it here instead of
+		// turning a passdb blip into a login the client can only recover from by
+		// reconnecting (#896). Safe to repeat: yarilo-auth deliberately does NOT
+		// touch the auth-penalty counter on internal failures, so a retry cannot
+		// tarpit the user.
+		for tfAttempt := 0; ; tfAttempt++ {
+			authStart := time.Now()
+			authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
+			// One observation per attempt, not per login: the retry loop keeps the
+			// connection open across a bad-password retry, and each attempt is its
+			// own round-trip to yarilo-auth.
+			s.observePhase(phaseAuth, authStart)
+			if !errors.Is(aerr, authclient.ErrTempFail) {
+				break
+			}
+			if tfAttempt >= s.transientRetries() {
+				log.Warn("login: auth temp fail", "user", pre.username, "attempts", tfAttempt+1, "result", "fail")
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+				s.incTransientExhausted(stageAuth)
+				s.incResult("unavailable")
+				return
+			}
+			log.Warn("login: auth temp fail, retrying", "user", pre.username, "attempt", tfAttempt+1)
+			s.incTransientRetry(stageAuth)
+			time.Sleep(transientRetryBackoff)
 		}
 
 		authFailed := aerr != nil
@@ -732,20 +784,38 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}
 
-	// Dial backend pod, with an active fast-fail re-route on a connect failure
-	// in director mode (#782): report the backend unreachable and re-LOOKUP.
+	// Bring up the backend session, retrying transient failures (#896). Dial,
+	// preamble and greeting are retried as one unit because a failed greeting
+	// leaves the connection unusable — the whole bring-up has to be redone, and
+	// dialBackendWithReroute may land on a different backend next time.
 	backendDialStart := time.Now()
-	backendConn, backendAddr, err := s.dialBackendWithReroute(pre.username, tag, backendAddr, log)
-	s.observePhase(phaseBackendDial, backendDialStart)
-	if err != nil {
-		log.Error("login: dial backend", "addr", backendAddr, "err", err)
-		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
-		s.incResult("unavailable")
-		return
+	var bs *backendSession
+	retries := s.transientRetries()
+	for attempt := 0; ; attempt++ {
+		var berr error
+		bs, berr = s.openBackendSession(pre, authResult, tag, backendAddr, clientIP, sessID, log)
+		if berr == nil {
+			break
+		}
+		if attempt >= retries {
+			log.Error("login: backend session failed", "addr", backendAddr, "attempts", attempt+1, "err", berr)
+			s.observePhase(phaseBackendDial, backendDialStart)
+			s.incTransientExhausted(stageBackendSession)
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
+			s.incResult("unavailable")
+			return
+		}
+		log.Warn("login: backend session failed, retrying", "addr", backendAddr, "attempt", attempt+1, "err", berr)
+		s.incTransientRetry(stageBackendSession)
+		time.Sleep(transientRetryBackoff)
 	}
+	s.observePhase(phaseBackendDial, backendDialStart)
+
+	backendConn, backendRd, backendAddr, backendCaps := bs.conn, bs.rd, bs.addr, bs.caps
 	defer backendConn.Close()
 
-	// Register session for kick support.
+	// Register the session for kick support only once it is actually up — a
+	// bring-up that never completed has nothing to kick.
 	sess := &liveSession{id: sessID, user: pre.username, backendConn: backendConn}
 	s.sessMu.Lock()
 	s.sessions[pre.username] = append(s.sessions[pre.username], sess)
@@ -769,62 +839,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	if wc != nil {
 		wc.sessionOpen(sessID, pre.username, backendIP, s.opts.Protocol.Base())
 		defer wc.sessionClose(sessID)
-	}
-
-	backendRd := bufio.NewReaderSize(backendConn, 4096)
-
-	// Send preamble to backend before its protocol greeting.
-	// The backend's PreambleListener reads this line and calls yarilo-auth VERIFY.
-	pre2 := loginproto.Preamble{
-		Addr:      clientIP,
-		SessionID: sessID,
-		User:      pre.username,
-		Token:     authResult.Token,
-		Helo:      pre.ehloLine,
-	}
-	if _, err := io.WriteString(backendConn, pre2.Format()); err != nil {
-		log.Error("login: send preamble", "err", err)
-		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-		return
-	}
-
-	// Read backend greeting; for IMAP extract post-auth capabilities to
-	// include in the tagged OK response sent to the client.
-	// If the backend closes the connection (e.g. token VERIFY failed) we must
-	// tell the client rather than silently dropping the TCP connection.
-	greetingStart := time.Now()
-	backendCaps, err := readBackendGreeting(backendRd, s.opts.Protocol)
-	s.observePhase(phaseBackendPreamble, greetingStart)
-	if err != nil {
-		log.Error("login: backend rejected session", "user", pre.username, "err", err)
-		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-		s.incResult("backend_rejected")
-		return
-	}
-
-	// For SMTP submission: send EHLO so the backend's state machine has a HELO
-	// domain before the client (in biProxy) sends MAIL FROM.
-	if isSubmission(s.opts.Protocol) {
-		ehlo := pre.ehloLine
-		if ehlo == "" {
-			ehlo = "EHLO yarilo-submission-login\r\n"
-		}
-		if _, err := io.WriteString(backendConn, ehlo); err != nil {
-			log.Error("login: smtp ehlo send", "err", err)
-			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-			return
-		}
-		for {
-			line, err := backendRd.ReadString('\n')
-			if err != nil {
-				log.Error("login: smtp ehlo resp", "err", err)
-				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-				return
-			}
-			if len(line) >= 4 && line[3] != '-' {
-				break
-			}
-		}
 	}
 
 	log.Info("login: session routed", "user", pre.username, "backend", backendAddr, "result", "ok")
@@ -956,6 +970,82 @@ func (s *Server) directorLookupWithHold(username, tag string, log *slog.Logger) 
 // retry storm; a re-LOOKUP that returns the SAME (still-dead) pod stops it
 // early regardless.
 const maxBackendReroutes = 1
+
+// backendSession is a backend connection that completed the preamble handshake
+// and, for submission, its EHLO exchange.
+type backendSession struct {
+	conn net.Conn
+	rd   *bufio.Reader
+	addr string
+	caps string
+}
+
+// openBackendSession dials a backend and brings the session up to the point
+// where the client can be told the login succeeded. Every failure closes the
+// connection before returning, so the caller may simply retry (#896).
+func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthResult, tag, addr, clientIP, sessID string, log *slog.Logger) (*backendSession, error) {
+	// Fast-fail re-route on a connect failure in director mode (#782): report the
+	// backend unreachable and re-LOOKUP.
+	conn, addr, err := s.dialBackendWithReroute(pre.username, tag, addr, log)
+	if err != nil {
+		return nil, fmt.Errorf("dial backend %s: %w", addr, err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			conn.Close()
+		}
+	}()
+
+	rd := bufio.NewReaderSize(conn, 4096)
+
+	// The backend's PreambleListener reads this line and calls yarilo-auth VERIFY.
+	pre2 := loginproto.Preamble{
+		Addr:      clientIP,
+		SessionID: sessID,
+		User:      pre.username,
+		Token:     authResult.Token,
+		Helo:      pre.ehloLine,
+	}
+	if _, werr := io.WriteString(conn, pre2.Format()); werr != nil {
+		return nil, fmt.Errorf("send preamble: %w", werr)
+	}
+
+	// Read the backend greeting; for IMAP this carries the post-auth capabilities
+	// echoed in the tagged OK. A backend that closes here (token VERIFY failed,
+	// or it is shutting down) must be reported, not silently dropped.
+	greetingStart := time.Now()
+	caps, gerr := readBackendGreeting(rd, s.opts.Protocol)
+	s.observePhase(phaseBackendPreamble, greetingStart)
+	if gerr != nil {
+		s.incResult("backend_rejected")
+		return nil, fmt.Errorf("backend rejected session: %w", gerr)
+	}
+
+	// SMTP submission: send EHLO so the backend has a HELO domain before the
+	// client sends MAIL FROM through the proxy.
+	if isSubmission(s.opts.Protocol) {
+		ehlo := pre.ehloLine
+		if ehlo == "" {
+			ehlo = "EHLO yarilo-submission-login\r\n"
+		}
+		if _, werr := io.WriteString(conn, ehlo); werr != nil {
+			return nil, fmt.Errorf("smtp ehlo send: %w", werr)
+		}
+		for {
+			line, rerr := rd.ReadString('\n')
+			if rerr != nil {
+				return nil, fmt.Errorf("smtp ehlo response: %w", rerr)
+			}
+			if len(line) >= 4 && line[3] != '-' {
+				break
+			}
+		}
+	}
+
+	ok = true
+	return &backendSession{conn: conn, rd: rd, addr: addr, caps: caps}, nil
+}
 
 // dialBackendWithReroute dials addr and, on a connect failure in director mode,
 // performs the login-proxy half of the active fast-fail re-route (#782): it
