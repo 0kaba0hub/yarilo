@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -23,13 +22,12 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/readyfile"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "backend-reg"))
+	logging.Setup("backend-reg")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -132,11 +130,4 @@ func buildTLS(cfg *config.Config) (*tls.Config, error) {
 		return nil, nil
 	}
 	return mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
-}
-
-func logLevel() slog.Level {
-	if strings.EqualFold(os.Getenv("LOG_LEVEL"), "debug") {
-		return slog.LevelDebug
-	}
-	return slog.LevelInfo
 }

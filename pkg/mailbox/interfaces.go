@@ -214,6 +214,39 @@ type SyncStats struct {
 	Changed  bool
 }
 
+// RFC822Size returns the size to report as RFC822.SIZE and to match against in
+// SEARCH LARGER/SMALLER: the VIRTUAL size, i.e. the octet count of the message
+// as transmitted with CRLF line endings (RFC 3501 §6.4.5).
+//
+// This must never be the physical on-disk size. A copy stored with bare LF is
+// shorter on disk than what the server transmits, so reporting Size makes the
+// same message announce different sizes depending on how it happened to be
+// stored — and announce fewer octets than FETCH BODY[] then delivers (#892).
+//
+// VSize == 0 means the backend did not record a virtual size (a maildir file
+// written without a W= field, or an older store), in which case the physical
+// size is the best available answer.
+func (m *MessageMeta) RFC822Size() uint32 {
+	if m == nil {
+		return 0
+	}
+	if m.VSize != 0 {
+		return m.VSize
+	}
+	return m.Size
+}
+
+// RFC822Size mirrors MessageMeta.RFC822Size for scan records.
+func (r *ScanRecord) RFC822Size() uint32 {
+	if r == nil {
+		return 0
+	}
+	if r.VSize != 0 {
+		return r.VSize
+	}
+	return r.Size
+}
+
 type ScanRecord struct {
 	Filename     string
 	GUID         [16]byte

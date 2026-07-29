@@ -3,12 +3,34 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 )
+
+// logLevelGauge publishes the active log level so an operator can confirm from
+// the same place they read every other metric that a change took effect (#889).
+// The value is slog's numeric level; the label carries the name.
+var logLevelGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "yarilo",
+	Name:      "log_level",
+	Help:      "Active log level (value = slog level number, label = name).",
+}, []string{"level"})
+
+func publishLogLevel() {
+	logLevelGauge.Reset()
+	logLevelGauge.WithLabelValues(logging.String()).Set(float64(logging.Level()))
+}
 
 // Server is the telemetry HTTP server.
 type Server struct {
@@ -37,7 +59,9 @@ func New(addr string) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/readyz", s.readyz)
+	mux.HandleFunc("/debug/loglevel", s.logLevel)
 	mux.Handle("/metrics", promhttp.Handler())
+	publishLogLevel()
 	s.srv = &http.Server{Addr: addr, Handler: mux}
 	return s
 }
@@ -79,4 +103,76 @@ func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.WriteHeader(http.StatusServiceUnavailable)
 	w.Write([]byte("not ready")) //nolint:errcheck
+}
+
+// logLevel reads or changes the active log level (#889).
+//
+//	GET  /debug/loglevel                       → {"level":"info"}
+//	POST /debug/loglevel {"level":"debug"}     → change until further notice
+//	POST /debug/loglevel {"level":"debug","ttl":"30s"} → revert automatically
+//
+// This listener is the telemetry port, which is not exposed to mail clients; it
+// must never be published on a client-facing service. The TTL form is the one to
+// prefer: a bounded raise cannot be forgotten in the on position, which is how a
+// debug switch usually ends up rotating away the log it was meant to capture.
+func (s *Server) logLevel(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeLogLevel(w)
+	case http.MethodPost, http.MethodPut:
+		var req struct {
+			Level string `json:"level"`
+			TTL   string `json:"ttl"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.Level == "" {
+			http.Error(w, `"level" is required`, http.StatusBadRequest)
+			return
+		}
+		lvl := logging.ParseLevel(req.Level)
+		if logging.LevelName(lvl) != normaliseLevelName(req.Level) {
+			http.Error(w, "unknown level (want debug|info|warn|error)", http.StatusBadRequest)
+			return
+		}
+		var ttl time.Duration
+		if req.TTL != "" {
+			d, err := time.ParseDuration(req.TTL)
+			if err != nil || d < 0 {
+				http.Error(w, `"ttl" must be a duration such as "30s"`, http.StatusBadRequest)
+				return
+			}
+			ttl = d
+		}
+		if ttl > 0 {
+			logging.SetLevelFor(lvl, ttl)
+			slog.Info("logging: level raised temporarily", "level", logging.String(), "ttl", ttl.String())
+		} else {
+			logging.SetLevel(lvl)
+			slog.Info("logging: level changed", "level", logging.String())
+		}
+		publishLogLevel()
+		writeLogLevel(w)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// normaliseLevelName lets the handler reject an unknown name instead of silently
+// accepting it as info, which ParseLevel does by design for LOG_LEVEL.
+func normaliseLevelName(s string) string {
+	switch lower := strings.ToLower(strings.TrimSpace(s)); lower {
+	case "warning":
+		return "warn"
+	default:
+		return lower
+	}
+}
+
+func writeLogLevel(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"level": logging.String()})
 }

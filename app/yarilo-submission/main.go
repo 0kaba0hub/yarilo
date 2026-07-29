@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -30,15 +29,14 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
 // version is set via pkg/build; kept for vet compatibility
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "submission"))
+	logging.Setup("submission")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -308,18 +306,5 @@ func runTelemetry(addr string) {
 	mux.Handle("/metrics", promhttp.Handler())
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		slog.Error("telemetry server failed", "err", err)
-	}
-}
-
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
 	}
 }

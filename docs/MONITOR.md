@@ -303,8 +303,41 @@ kubelet rotates the container log away — during the #878 investigation the
 backend log for the exact window being analysed was already gone by the time it
 was read.
 
-**The level is read once at process start**, so changing it restarts the pods of
-the affected components. That is a real limitation when diagnosing a live
-incident: the restart destroys the state being investigated. Runtime switching
-without a restart, and exposing the active level over `:8080`, are tracked
-separately.
+`LOG_LEVEL` remains the startup default, so nothing about an existing
+deployment changes.
+
+### Changing the level at runtime (#889)
+
+The level lives in a `slog.LevelVar`, so it can be changed **without restarting
+the pod** — which matters because a restart destroys the state being
+investigated:
+
+```
+GET  /debug/loglevel                                → {"level":"info"}
+POST /debug/loglevel {"level":"debug"}              → until further notice
+POST /debug/loglevel {"level":"debug","ttl":"30s"}  → reverts automatically
+```
+
+Prefer the TTL form. A bounded raise cannot be forgotten in the on position,
+which is the usual way a debug switch ends up rotating away the log it was
+supposed to capture.
+
+The endpoint is served on the telemetry listener (`:8080`) only, which is not
+exposed to mail clients. It must never be published on a client-facing Service.
+
+Example — raise `yarilo-auth` to debug for half a minute:
+
+```
+kubectl -n yarilo-sb exec deploy/yarilo-auth -- \
+  wget -qO- --post-data '{"level":"debug","ttl":"30s"}' localhost:8080/debug/loglevel
+```
+
+### `yarilo_log_level`
+
+The active level is also published as a gauge, so a change can be confirmed from
+the same place every other metric is read. The value is slog's numeric level and
+the label carries the name; exactly one series exists at a time.
+
+```
+yarilo_log_level{level="debug"} -4
+```

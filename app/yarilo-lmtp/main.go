@@ -9,20 +9,18 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/0kaba0hub/yarilo/internal/backend"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 )
 
 // version is set via pkg/build; kept for vet compatibility
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "lmtp"))
+	logging.Setup("lmtp")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -64,17 +62,4 @@ func main() {
 	}
 
 	slog.Info("yarilo-lmtp stopped")
-}
-
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }

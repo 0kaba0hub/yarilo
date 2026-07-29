@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +33,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
@@ -42,9 +42,7 @@ import (
 // version is set via pkg/build; kept for vet compatibility
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel(),
-	})).With("service", "locks"))
+	logging.Setup("locks")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -221,18 +219,5 @@ func runTelemetry(addr string, reg *prometheus.Registry, backendReady func() boo
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		slog.Error("telemetry server failed", "err", err)
-	}
-}
-
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
 	}
 }

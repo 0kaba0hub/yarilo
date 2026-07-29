@@ -868,13 +868,6 @@ func applyNumFmt(mod string, val uint64) string {
 	return fmt.Sprintf("%"+mod, val)
 }
 
-func msgVSize(m *mailbox.MessageMeta) uint32 {
-	if m.VSize > 0 {
-		return m.VSize
-	}
-	return m.Size
-}
-
 func appendFlag(flags []string, flag string) []string {
 	for _, f := range flags {
 		if strings.EqualFold(f, flag) {
@@ -961,14 +954,14 @@ func (s *session) cmdList(arg string) {
 		if !ok {
 			return
 		}
-		s.ok(fmt.Sprintf("%d %d", idx+1, msgVSize(s.msgs[idx])))
+		s.ok(fmt.Sprintf("%d %d", idx+1, s.msgs[idx].RFC822Size()))
 		return
 	}
 	count, total := s.countActive()
 	s.ok(fmt.Sprintf("%d messages (%d octets)", count, total))
 	for i, m := range s.msgs {
 		if !s.deleted[i] {
-			fmt.Fprintf(s.conn, "%d %d\r\n", i+1, msgVSize(m))
+			fmt.Fprintf(s.conn, "%d %d\r\n", i+1, m.RFC822Size())
 		}
 	}
 	s.writeDot()
@@ -1253,7 +1246,7 @@ func (s *session) countActive() (count int, total int64) {
 	for i, m := range s.msgs {
 		if !s.deleted[i] {
 			count++
-			total += int64(msgVSize(m))
+			total += int64(m.RFC822Size())
 		}
 	}
 	return count, total

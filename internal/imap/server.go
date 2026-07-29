@@ -1658,7 +1658,7 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 		boxMsgs, listErr := h.box.List(rel)
 		if listErr == nil {
 			for _, bm := range boxMsgs {
-				totalSize += int64(bm.Size)
+				totalSize += int64(bm.RFC822Size())
 			}
 		}
 	}
@@ -2292,7 +2292,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 			imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
 		}
 
-		if !imapserver.MatchMessage(seqNum, imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, rawMsg, matchCrit) {
+		if !imapserver.MatchMessage(seqNum, imaplib.UID(m.UID), m.InternalDate, int64(m.RFC822Size()), imapFlags, rawMsg, matchCrit) {
 			continue
 		}
 
@@ -2426,7 +2426,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 				for j, k := range m.Keywords {
 					imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
 				}
-				if imapserver.MatchMessage(uint32(i+1), imaplib.UID(m.UID), m.InternalDate, int64(m.Size), imapFlags, raw, matchCrit) {
+				if imapserver.MatchMessage(uint32(i+1), imaplib.UID(m.UID), m.InternalDate, int64(m.RFC822Size()), imapFlags, raw, matchCrit) {
 					saved.AddNum(imaplib.UID(m.UID))
 				}
 			}
@@ -2602,7 +2602,10 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteInternalDate(m.InternalDate)
 		}
 		if opts.RFC822Size {
-			mw.WriteRFC822Size(int64(m.Size))
+			// Virtual (CRLF) size — the octet count actually transmitted. Using
+			// the physical size made the same message report different values
+			// depending on the stored line endings (#892).
+			mw.WriteRFC822Size(int64(m.RFC822Size()))
 		}
 		if opts.ModSeq && m.ModSeq > 0 {
 			mw.WriteModSeq(m.ModSeq)
