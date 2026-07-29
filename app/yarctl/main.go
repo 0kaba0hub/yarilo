@@ -155,6 +155,10 @@ func dispatch(args []string) error {
 	}
 
 	switch args[0] {
+	case "wait":
+		// Plane-independent: this is a dependency probe for a startupProbe, not an
+		// admin operation against a service.
+		return dispatchWait(args[1:])
 	case "director":
 		return dispatchDirector(args[1:])
 	case "backend":
@@ -165,7 +169,7 @@ func dispatch(args []string) error {
 		// Top-level shorthand: yarctl user <cmd> — always hits backend plane.
 		return dispatchUser(args[1:])
 	default:
-		return fmt.Errorf("unknown plane %q — available: director, backend, auth\n(tip: set YARILO_ADMIN_TYPE=backend to skip the plane prefix)", args[0])
+		return fmt.Errorf("unknown plane %q — available: director, backend, auth, wait\n(tip: set YARILO_ADMIN_TYPE=backend to skip the plane prefix)", args[0])
 	}
 }
 

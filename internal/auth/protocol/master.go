@@ -124,17 +124,34 @@ func NewMasterServer(userdb Userdb, opts ...MasterServerOption) *MasterServer {
 // RequireAndVerifyClientCert is the caller's responsibility — set
 // it on tlsCfg). Each connection is served by its own goroutine;
 // active conns drain before the function returns.
-func (s *MasterServer) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {
-	var ln net.Listener
-	var err error
+// Listen binds addr and returns the listener, so a caller can report readiness
+// only once the port is accepting.
+func (s *MasterServer) Listen(addr string, tlsCfg *tls.Config) (net.Listener, error) {
 	if tlsCfg != nil {
-		ln, err = tls.Listen("tcp", addr, tlsCfg)
-	} else {
-		ln, err = net.Listen("tcp", addr)
+		ln, err := tls.Listen("tcp", addr, tlsCfg)
+		if err != nil {
+			return nil, fmt.Errorf("auth/master: listen %s (tls): %w", addr, err)
+		}
+		return ln, nil
 	}
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("auth/master: listen %s: %w", addr, err)
+		return nil, fmt.Errorf("auth/master: listen %s: %w", addr, err)
 	}
+	return ln, nil
+}
+
+// ListenAndServe binds addr and serves it.
+func (s *MasterServer) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {
+	ln, err := s.Listen(addr, tlsCfg)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, ln)
+}
+
+// Serve serves an already-bound listener.
+func (s *MasterServer) Serve(ctx context.Context, ln net.Listener) error {
 
 	var wg sync.WaitGroup
 	go func() {

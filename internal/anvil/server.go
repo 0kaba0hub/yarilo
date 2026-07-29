@@ -246,17 +246,37 @@ func (s *Server) Sessions() []*SessionInfo {
 // ListenAndServe starts the anvil TCP server. When tlsCfg is non-nil the
 // listener uses mTLS. Blocks until ctx is cancelled; active sessions drain
 // before the function returns.
-func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {
-	var ln net.Listener
-	var err error
+// Listen binds addr and returns the listener, so a caller can report readiness
+// only once the port is accepting. ListenAndServe binds and serves in one call,
+// which forces the caller to run it in a goroutine and therefore to announce
+// readiness before knowing whether the bind succeeded.
+func (s *Server) Listen(addr string, tlsCfg *tls.Config) (net.Listener, error) {
 	if tlsCfg != nil {
-		ln, err = tls.Listen("tcp", addr, tlsCfg)
-	} else {
-		ln, err = net.Listen("tcp", addr)
+		ln, err := tls.Listen("tcp", addr, tlsCfg)
+		if err != nil {
+			return nil, fmt.Errorf("anvil: listen %s (tls): %w", addr, err)
+		}
+		return ln, nil
 	}
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("anvil: listen %s: %w", addr, err)
+		return nil, fmt.Errorf("anvil: listen %s: %w", addr, err)
 	}
+	return ln, nil
+}
+
+// ListenAndServe binds addr and serves it. Kept for callers that do not need to
+// separate the two.
+func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {
+	ln, err := s.Listen(addr, tlsCfg)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, ln)
+}
+
+// Serve serves an already-bound listener.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 
 	var wg sync.WaitGroup
 	go func() {
