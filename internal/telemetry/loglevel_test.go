@@ -7,8 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/prometheus/client_golang/prometheus/testutil"
+	"time"
 
 	"github.com/0kaba0hub/yarilo/pkg/logging"
 )
@@ -134,10 +133,51 @@ func TestLogLevelGaugeTracksActiveLevel(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/debug/loglevel", strings.NewReader(`{"level":"error"}`))
 	srv.Handler().ServeHTTP(rec, req)
 
-	if got := testutil.ToFloat64(logLevelGauge.WithLabelValues("error")); got != float64(slog.LevelError) {
-		t.Fatalf("gauge for error = %v, want %v", got, float64(slog.LevelError))
+	if got := scrapeLogLevel(t, srv); got != `yarilo_log_level{level="error"}` {
+		t.Fatalf("scraped %q, want the error series", got)
 	}
-	if n := testutil.CollectAndCount(logLevelGauge); n != 1 {
-		t.Fatalf("gauge series = %d, want exactly 1 — stale levels must not linger", n)
+}
+
+// TestLogLevelGaugeIsNotStaleAfterATTLRevert is the regression this collector
+// exists for. The level can change with no HTTP request involved — SetLevelFor
+// reverts it from a timer inside pkg/logging — and a cached gauge kept reporting
+// the raised level after it had already reverted. Verified live on the sandbox
+// before the fix: the endpoint said debug while the metric still said warn.
+func TestLogLevelGaugeIsNotStaleAfterATTLRevert(t *testing.T) {
+	t.Cleanup(func() { logging.SetLevel(slog.LevelInfo) })
+
+	srv := New(":0")
+	logging.SetLevel(slog.LevelInfo)
+	logging.SetLevelFor(slog.LevelWarn, 50*time.Millisecond)
+
+	if got := scrapeLogLevel(t, srv); got != `yarilo_log_level{level="warn"}` {
+		t.Fatalf("during the TTL scraped %q, want warn", got)
 	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if scrapeLogLevel(t, srv) == `yarilo_log_level{level="info"}` {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("metric still reports %q after the TTL reverted the level", scrapeLogLevel(t, srv))
+}
+
+// scrapeLogLevel returns the yarilo_log_level series as name{label} — exactly
+// what a Prometheus scrape would see, which is the point: the value must be
+// derived at collect time, not from something a handler remembered to update.
+func scrapeLogLevel(t *testing.T, srv *Server) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "yarilo_log_level{") {
+			if i := strings.LastIndex(line, " "); i > 0 {
+				return line[:i]
+			}
+			return line
+		}
+	}
+	return ""
 }
