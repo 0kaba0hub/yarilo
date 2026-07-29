@@ -224,6 +224,15 @@ type Server struct {
 	watchMu sync.RWMutex
 	watch   *watchConn // persistent director connection for push notifications
 
+	// authMu guards the shared yarilo-auth client (#878). One multiplexed
+	// connection serves every login on this pod: the AUTH wire protocol carries
+	// a request id per command, so concurrent logins interleave over a single
+	// mTLS session instead of each paying a fresh handshake. Created lazily
+	// because the pod may start before yarilo-auth is reachable, and Serve runs
+	// once per listener (imaps + imap) while the client must be a singleton.
+	authMu sync.Mutex
+	authCl *authclient.Client
+
 	// Graceful-drain state (#857): on Shutdown the listeners are closed (stop
 	// accepting) and inflight is waited on (let live sessions finish) up to the
 	// grace period. draining makes a listener-closed Accept a clean return.
@@ -231,6 +240,34 @@ type Server struct {
 	listeners []net.Listener
 	draining  bool
 	inflight  sync.WaitGroup
+}
+
+// authClient returns the shared yarilo-auth client, dialling it on first use.
+// A dial failure is returned to the caller (which surfaces the usual
+// UNAVAILABLE) and leaves the field nil so the next login retries — the pod
+// does not need auth to be up at start.
+func (s *Server) authClient() (*authclient.Client, error) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if s.authCl != nil {
+		return s.authCl, nil
+	}
+	cl, err := authclient.Dial(s.opts.AuthAddr, s.opts.AuthTLS)
+	if err != nil {
+		return nil, err
+	}
+	s.authCl = cl
+	return cl, nil
+}
+
+func (s *Server) closeAuthClient() {
+	s.authMu.Lock()
+	cl := s.authCl
+	s.authCl = nil
+	s.authMu.Unlock()
+	if cl != nil {
+		_ = cl.Close()
+	}
 }
 
 // newSessionID returns a Postfix-style long queue ID:
@@ -331,8 +368,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	go func() { s.inflight.Wait(); close(done) }()
 	select {
 	case <-done:
+		s.closeAuthClient()
 		return nil
 	case <-ctx.Done():
+		s.closeAuthClient()
 		return ctx.Err() // grace expired with sessions still live
 	}
 }
@@ -385,8 +424,12 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.incResult("unavailable")
 		return
 	}
+	// Shared multiplexed client (#878) — no per-login handshake. The phase
+	// metric stays: it should now read ~0 except on the very first login after
+	// a pod start or an auth reconnect, which is exactly the signal that the
+	// reuse is working.
 	authDialStart := time.Now()
-	authCl, err := authclient.Dial(s.opts.AuthAddr, s.opts.AuthTLS)
+	authCl, err := s.authClient()
 	if err != nil {
 		log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "err", err)
 		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
@@ -398,7 +441,6 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 	s.observePhase(phaseAuthDial, authDialStart)
-	defer authCl.Close()
 
 	// Auth retry loop: keep the connection open after a bad-password failure.
 	// Up to maxAuthAttempts attempts; after the last one send an untagged
