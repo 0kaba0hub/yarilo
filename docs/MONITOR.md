@@ -428,3 +428,29 @@ not-ready instead of as a probe timeout.
 
 Each condition is also published as a gauge (1 = passing), so a not-ready pod can
 be diagnosed from metrics without shelling into it.
+
+### What `/readyz` means
+
+**Fully initialised**: storage opened, dependencies wired, and **every configured
+port bound and accepting**. Not "some checks passed on this request".
+
+The ordering matters and used to be wrong. Readiness was reported immediately
+after starting the telemetry server, while the protocol listeners were bound
+inside goroutines that had not necessarily run yet:
+
+```go
+s.telem.SetReady(true)                  // pod announced as ready
+go func() { s.imap.ListenAndServeTLS() }()   // port bound only now
+```
+
+Kubernetes adds a pod to the Service endpoints the moment it goes ready, so a
+client arriving in that window got `connection refused` — most likely during a
+rollout, which is exactly when traffic shifts to a freshly-ready pod.
+
+Every `Run*` now binds first and reports ready afterwards, so a bind failure is a
+startup error instead of a log line from a goroutine in a pod that already claimed
+to be serving.
+
+Readiness stays a **lifecycle flag**, not a set of per-request probes: a
+dependency that is unreachable at startup is caught by `backend.New` failing, and
+one that fails later belongs in the client-facing error path.
