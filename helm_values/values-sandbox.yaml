@@ -234,6 +234,22 @@ components:
           kind: Issuer
           name: yarilo-internal-ca
     replicas: 5
+    ## resources (#878): NO cpu limit, same reasoning as the login pods. Every
+    ## login blocks on a director LOOKUP, and the chart default of 500m throttled
+    ## it — measured 320 CFS periods / 8s throttled against 76s used (~10%) over
+    ## one imaptest run. Server-side LOOKUP itself is 0.4ms
+    ## (yarilo_director_lookup_seconds), so throttling is pure added latency on a
+    ## login-blocking path. requests stay at the chart default 100m: the sandbox
+    ## node is already at 85% of allocatable CPU requests.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        ## null removes the chart default; Helm deep-merges, so omitting the key
+        ## would keep 500m.
+        cpu: null
+        memory: 256Mi
     ring_secret: "sandbox-ring-secret-32charslong00"
     min_members: 3
     seed_poll_idle_interval: 5
