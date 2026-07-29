@@ -122,6 +122,7 @@ func main() {
 		AnvilAddr:           cfg.AnvilService.ClientAddr(),
 		AnvilTLS:            intTLS,
 		AnvilFailOpen:       cfg.AnvilService.FailOpen,
+		AnvilConns:          cfg.AnvilService.Conns,
 		DialRetries:         cfg.General.StartupDialRetries,
 		LookupHoldMax:       cfg.Login.LookupHoldMax,
 		LookupHoldBackoff:   time.Duration(cfg.Login.LookupHoldBackoffMs) * time.Millisecond,
