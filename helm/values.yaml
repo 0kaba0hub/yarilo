@@ -1273,8 +1273,12 @@ components:
   submissionLogin:
     enabled: false
 
-    ## startupProbe waits for yarilo-anvil to report ready before this pod takes
-    ## traffic, replacing its wait-* init containers (#903). Safe because a login
+    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before
+    ## this pod takes traffic, replacing its wait-* init containers (#903).
+    ##
+    ## auth is included even though the init containers only had wait-anvil: this
+    ## pod authenticates logins and configures AuthAddr like every other login
+    ## proxy, so the missing wait-auth was an oversight rather than a design. Safe because a login
     ## pod does not dial its dependencies during startup — the connections are
     ## created lazily on the first login.
     ##

@@ -60,7 +60,7 @@ spec:
             - name: telemetry
               containerPort: 8080
               protocol: TCP
-          {{- include "yarilo.loginStartupProbe" (dict "probe" .Values.components.submissionLogin.startupProbe "root" $ "auth" false "anvil" true) | nindent 10 }}
+          {{- include "yarilo.loginStartupProbe" (dict "probe" .Values.components.submissionLogin.startupProbe "root" $ "auth" true "anvil" true) | nindent 10 }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
