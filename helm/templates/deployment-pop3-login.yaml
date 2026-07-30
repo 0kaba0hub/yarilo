@@ -26,11 +26,6 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.gracefulShutdown.terminationGracePeriodSeconds | default 45 }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
-        {{- include "yarilo.initWaitTCP" (dict "name" "wait-auth" "host" (printf "%s-auth.%s.svc" (include "yarilo.fullname" .) .Release.Namespace) "port" "9100" "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
-        {{- if .Values.components.anvil.enabled }}
-        {{- include "yarilo.initWaitTCP" (dict "name" "wait-anvil" "host" (printf "%s-anvil.%s.svc" (include "yarilo.fullname" .) .Release.Namespace) "port" "9101" "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
-        {{- end }}
       containers:
         - name: yarilo-pop3-login
           image: {{ include "yarilo.image" . }}
@@ -63,6 +58,7 @@ spec:
             - name: telemetry
               containerPort: 8080
               protocol: TCP
+          {{- include "yarilo.loginStartupProbe" (dict "probe" .Values.components.pop3Login.startupProbe "root" $ "auth" true "anvil" true) | nindent 10 }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:

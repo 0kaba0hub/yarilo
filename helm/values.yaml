@@ -960,6 +960,20 @@ components:
   ## Postfix has no direct access to yarilo-auth; yarilo-sasl-login proxies each session.
   saslLogin:
     enabled: false
+
+    ## startupProbe waits for yarilo-auth to report ready before this pod takes
+    ## traffic, replacing its wait-* init containers (#903). Safe because a login
+    ## pod does not dial its dependencies during startup — the connections are
+    ## created lazily on the first login.
+    ##
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3 min).
+    ## Prefer generous: exceeding it restarts a pod that is healthy and merely
+    ## waiting, which the init container never did.
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     replicas: 1
     servicePort: 12325
     containerPort: 12325
@@ -1191,6 +1205,20 @@ components:
   ## POP3 login pod — TLS terminator + director LOOKUP + proxy to yarilo-pop3 backend.
   pop3Login:
     enabled: false
+
+    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before this pod takes
+    ## traffic, replacing its wait-* init containers (#903). Safe because a login
+    ## pod does not dial its dependencies during startup — the connections are
+    ## created lazily on the first login.
+    ##
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3 min).
+    ## Prefer generous: exceeding it restarts a pod that is healthy and merely
+    ## waiting, which the init container never did.
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     replicas: 1
 
     listeners:
@@ -1244,6 +1272,20 @@ components:
   ## Submission login pod — TLS terminator + director LOOKUP + proxy to yarilo-submission backend.
   submissionLogin:
     enabled: false
+
+    ## startupProbe waits for yarilo-anvil to report ready before this pod takes
+    ## traffic, replacing its wait-* init containers (#903). Safe because a login
+    ## pod does not dial its dependencies during startup — the connections are
+    ## created lazily on the first login.
+    ##
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3 min).
+    ## Prefer generous: exceeding it restarts a pod that is healthy and merely
+    ## waiting, which the init container never did.
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     replicas: 1
 
     listeners:
@@ -1299,6 +1341,20 @@ components:
   ## per recipient, each with a YARILO preamble.
   lmtpLogin:
     enabled: false
+
+    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before this pod takes
+    ## traffic, replacing its wait-* init containers (#903). Safe because a login
+    ## pod does not dial its dependencies during startup — the connections are
+    ## created lazily on the first login.
+    ##
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3 min).
+    ## Prefer generous: exceeding it restarts a pod that is healthy and merely
+    ## waiting, which the init container never did.
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     replicas: 1
 
     listeners:
@@ -1373,6 +1429,20 @@ components:
   ## ManageSieve login pod — RFC 5804 client-facing proxy (port 4190, STARTTLS).
   manageSieveLogin:
     enabled: false
+
+    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before this pod takes
+    ## traffic, replacing its wait-* init containers (#903). Safe because a login
+    ## pod does not dial its dependencies during startup — the connections are
+    ## created lazily on the first login.
+    ##
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3 min).
+    ## Prefer generous: exceeding it restarts a pod that is healthy and merely
+    ## waiting, which the init container never did.
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     replicas: 1
 
     listeners:
