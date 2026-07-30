@@ -551,6 +551,19 @@ components:
     ## Empty disables the listener.
     saslListen: ""
 
+    ## startupProbe waits for Redis and (when applicable) the SQL database to accept
+    ## a TCP connection before this pod takes traffic, replacing the wait-redis /
+    ## wait-db init containers (#903). The auth code is unchanged — it still fails
+    ## fast if a dependency is missing at process start — so the DB must be up first
+    ## (the sandbox db-init and managed schemas ensure this); the probe withholds
+    ## traffic and does not run liveness until the dependencies answer.
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3m).
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
+
     internalTLS:
       enabled: false
       secretName: ""
