@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -30,21 +29,24 @@ import (
 //
 // Usage:
 //
-//	yarctl wait --url http://yarilo-auth:8080/readyz \
-//	            --url http://yarilo-anvil:8080/readyz [--timeout 2s]
+//	yarctl wait [--timeout 2s] http://yarilo-auth:8080/readyz http://yarilo-anvil:8080/readyz
+//
+// URLs are POSITIONAL, not a --url flag: yarctl already registers a global --url
+// (the Director API base URL), and global flags are extracted from argv before a
+// subcommand ever sees them, so a --url here would be swallowed and the probe
+// would fail with "at least one URL is required" no matter what was passed.
 //
 // Exit 0 when every URL answers 2xx. Non-zero otherwise, with the failing URL and
 // the reason on stderr.
 func dispatchWait(args []string) error {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
-	var urls stringList
-	fs.Var(&urls, "url", "URL to probe; repeat for several dependencies (all must pass)")
 	timeout := fs.Duration("timeout", 2*time.Second, "deadline for each probe, covering DNS, dial and response")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	urls := fs.Args()
 	if len(urls) == 0 {
-		return errors.New("wait: at least one --url is required")
+		return errors.New("wait: at least one URL argument is required (usage: yarctl wait [--timeout 2s] URL...)")
 	}
 
 	for _, u := range urls {
@@ -79,18 +81,5 @@ func probeURL(u string, timeout time.Duration) error {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("%s: HTTP %d", u, resp.StatusCode)
 	}
-	return nil
-}
-
-// stringList collects a repeated flag.
-type stringList []string
-
-func (l *stringList) String() string { return strings.Join(*l, ",") }
-
-func (l *stringList) Set(v string) error {
-	if v == "" {
-		return errors.New("empty URL")
-	}
-	*l = append(*l, v)
 	return nil
 }

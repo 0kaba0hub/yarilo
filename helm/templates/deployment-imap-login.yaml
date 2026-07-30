@@ -80,9 +80,12 @@ spec:
                 - yarctl
                 - wait
                 - --timeout={{ .Values.components.imapLogin.startupProbe.timeout }}
-                - --url=http://{{ include "yarilo.fullname" . }}-auth-telemetry.{{ .Release.Namespace }}.svc:8080/readyz
+                ## URLs are positional: yarctl registers a global --url (Director API)
+                ## and strips global flags from argv before a subcommand sees them, so
+                ## a --url here is swallowed and the probe never passes.
+                - http://{{ include "yarilo.fullname" . }}-auth-telemetry.{{ .Release.Namespace }}.svc:8080/readyz
                 {{- if .Values.components.anvil.enabled }}
-                - --url=http://{{ include "yarilo.fullname" . }}-anvil-telemetry.{{ .Release.Namespace }}.svc:8080/readyz
+                - http://{{ include "yarilo.fullname" . }}-anvil-telemetry.{{ .Release.Namespace }}.svc:8080/readyz
                 {{- end }}
             periodSeconds: {{ .Values.components.imapLogin.startupProbe.periodSeconds }}
             ## failureThreshold x periodSeconds is the whole startup budget. Keep it

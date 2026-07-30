@@ -94,7 +94,48 @@ func TestProbeURLUnreachable(t *testing.T) {
 
 func TestDispatchWaitRequiresAURL(t *testing.T) {
 	if err := dispatchWait(nil); err == nil {
-		t.Fatal("wait without --url must be an error, not a silent success")
+		t.Fatal("wait without a URL must be an error, not a silent success")
+	}
+}
+
+// TestWaitURLsSurviveGlobalFlagExtraction is the regression test for the bug this
+// subcommand shipped with: yarctl registers a GLOBAL --url (the Director API base
+// URL) and pulls global flags out of argv before any subcommand sees them, so
+// `yarctl wait --url=...` lost its URL and the probe failed with "at least one URL
+// is required" whatever was passed. It reached the cluster because the original
+// test called dispatchWait directly and skipped extractGlobalFlags entirely.
+//
+// Asserting on the real argv path is the point: URLs must arrive as positional
+// arguments, untouched by the extractor.
+func TestWaitURLsSurviveGlobalFlagExtraction(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	argv := []string{"wait", "--timeout=1s", srv.URL}
+	globals, rest := extractGlobalFlags(argv)
+
+	// The URL must not have been captured as a global flag value.
+	for _, g := range globals {
+		if g == srv.URL {
+			t.Fatalf("the probe URL was swallowed by global flag extraction: globals=%v", globals)
+		}
+	}
+	if len(rest) == 0 || rest[0] != "wait" {
+		t.Fatalf("dispatch tokens lost: rest=%v", rest)
+	}
+	if err := dispatchWait(rest[1:]); err != nil {
+		t.Fatalf("wait via the real argv path: %v", err)
+	}
+}
+
+// TestWaitRejectsTheOldFlagForm guards the chart against silently regressing to
+// --url, which would parse as the global flag and leave the probe permanently
+// failing rather than erroring visibly.
+func TestWaitRejectsTheOldFlagForm(t *testing.T) {
+	if err := dispatchWait([]string{"--url=http://example.invalid/readyz"}); err == nil {
+		t.Fatal("--url must be rejected outright, not accepted as a URL")
 	}
 }
 
@@ -106,27 +147,9 @@ func TestDispatchWaitAllURLsMustPass(t *testing.T) {
 	}))
 	defer ok.Close()
 
-	// Both ready → no error.
-	if err := dispatchWait([]string{"--url", ok.URL, "--url", ok.URL, "--timeout", "1s"}); err != nil {
+	if err := dispatchWait([]string{"--timeout", "1s", ok.URL, ok.URL}); err != nil {
 		t.Fatalf("two ready dependencies should pass: %v", err)
 	}
-	// The failing case exits the process, so it is covered by TestProbeURLStatuses
-	// rather than here — dispatchWait calls os.Exit so kubelet sees a non-zero
-	// status, which cannot be asserted in-process.
-}
-
-func TestStringListFlag(t *testing.T) {
-	var l stringList
-	if err := l.Set("a"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := l.Set("b"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := l.Set(""); err == nil {
-		t.Fatal("an empty URL must be rejected")
-	}
-	if got := l.String(); got != "a,b" {
-		t.Fatalf("String() = %q, want \"a,b\"", got)
-	}
+	// The failing case calls os.Exit so kubelet sees a non-zero status, which
+	// cannot be asserted in-process; probeURL covers the status taxonomy.
 }
