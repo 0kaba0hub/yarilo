@@ -1059,6 +1059,17 @@ components:
     servicePort: 12340
     containerPort: 12340
 
+    ## startupProbe waits for Redis (the dict backend) to accept a TCP connection
+    ## before this pod takes traffic, replacing the wait-redis init container (#903).
+    ## The code is unchanged — it still fails fast on a missing dependency at process
+    ## start — so the probe only withholds traffic/liveness until Redis answers.
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3m).
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
+
     ## mTLS for the dial to yarilo-auth (#816). Required when the shared
     ## internal_tls is enabled — without the mount this pod CrashLoops on the
     ## missing cert. secretName is the shared internal-tls secret.
