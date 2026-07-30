@@ -207,6 +207,16 @@ dicts:
 mysql:
   bundled: false
 
+## initAddr is what makes the wait-db init container render. Without it the chart
+## silently skips wait-db, so auth and the session pods waited only for Redis and
+## then crash-looped against a database that was not up yet — the init container
+## looked like protection it was not providing.
+##
+## Only initAddr is set here: the DSN itself arrives through extraEnv from the
+## yarilo-mysql Secret, so secretName/dsn stay empty on purpose.
+database:
+  initAddr: "mysql.db.svc:3306"
+
 ## External Redis — managed by redis-sandbox.yaml (namespace: redis); the chart's
 ## in-namespace Redis StatefulSet is disabled. Consumers (locks state, dicts)
 ## point at redis.redis.svc.cluster.local:6379.
