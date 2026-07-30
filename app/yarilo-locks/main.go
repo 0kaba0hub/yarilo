@@ -34,7 +34,6 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 	"github.com/0kaba0hub/yarilo/pkg/logging"
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
-	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
 // version is stamped at build time via -ldflags="-X main.version=<tag>".
@@ -71,7 +70,7 @@ func main() {
 	reg := prometheus.NewRegistry()
 	metrics := locks.NewMetrics(reg, lcfg.Mode)
 
-	backend, backendReady, err := buildBackend(ctx, lcfg, cfg.General.StartupDialRetries)
+	backend, backendReady, err := buildBackend(lcfg)
 	if err != nil {
 		slog.Error("backend init failed", "err", err, "mode", lcfg.Mode)
 		os.Exit(1)
@@ -124,7 +123,7 @@ func main() {
 // buildBackend instantiates the state backend for the configured mode.
 // The returned readiness function reports whether the backend is presently
 // usable; /readyz consults it on each request.
-func buildBackend(ctx context.Context, lcfg config.LocksServiceConfig, dialRetries int) (locks.Backend, func() bool, error) {
+func buildBackend(lcfg config.LocksServiceConfig) (locks.Backend, func() bool, error) {
 	switch lcfg.Mode {
 	case "embedded":
 		b := locks.NewMemoryBackend()
@@ -139,14 +138,13 @@ func buildBackend(ctx context.Context, lcfg config.LocksServiceConfig, dialRetri
 			return nil, nil, fmt.Errorf("parse redis url: %w", err)
 		}
 		rdb := redis.NewClient(opts)
-		if err := retry.Do(ctx, dialRetries, time.Second, func() error {
-			pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
-			defer pcancel()
-			return rdb.Ping(pctx).Err()
-		}); err != nil {
-			_ = rdb.Close()
-			return nil, nil, fmt.Errorf("redis ping: %w", err)
-		}
+		// No eager Ping+fail here (#903). redis.NewClient is lazy — it connects on
+		// first use with a reconnecting pool — so the process comes up regardless of
+		// whether Redis is reachable yet, instead of exiting into CrashLoopBackOff.
+		// The startupProbe (yarctl wait tcp://redis) is what withholds traffic until
+		// Redis answers, and `ready` reports Redis health on /readyz. A missing/bad
+		// redis URL or an unknown mode still fails loudly below — those are local
+		// preconditions a retry cannot fix.
 		opts2 := []locks.RedisOption{}
 		if lcfg.KeyPrefix != "" {
 			opts2 = append(opts2, locks.WithKeyPrefix(lcfg.KeyPrefix))

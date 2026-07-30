@@ -866,6 +866,17 @@ components:
     replicas: 2
     listen: ":9104"
 
+    ## startupProbe waits for Redis (remote mode) to accept a TCP connection before
+    ## this pod takes traffic, replacing the wait-redis init container (#903). Safe
+    ## because the process comes up regardless of Redis — redis.NewClient is lazy
+    ## (connects on first use) — so the probe only withholds traffic until Redis
+    ## answers. periodSeconds x failureThreshold is the startup budget (2s x 90 = 3m).
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
+
     internalTLS:
       enabled: false
       secretName: ""

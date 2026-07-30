@@ -312,3 +312,33 @@ startupProbe:
   failureThreshold: {{ $p.failureThreshold }}
 {{- end }}
 {{- end -}}
+
+{{/*
+startupProbe that waits on raw dependency endpoints via `yarctl wait`, replacing a
+backend/shared pod's wait-* init containers (#903). Unlike yarilo.loginStartupProbe
+(which targets the auth/anvil telemetry /readyz URLs), this takes an explicit list of
+targets so a pod can wait on tcp://<db> / tcp://<redis> that have no HTTP endpoint.
+
+The pod must come up WITHOUT dialing the dependency at startup (lazy client, no
+os.Exit), or removing the init container swaps clean waiting for CrashLoopBackOff.
+
+Call: (dict "probe" .Values.components.<c>.startupProbe "targets" (list "tcp://host:port" ...))
+*/}}
+{{- define "yarilo.depStartupProbe" -}}
+{{- $p := .probe -}}
+{{- if $p.enabled }}
+startupProbe:
+  exec:
+    command:
+      - yarctl
+      - wait
+      - --timeout={{ $p.timeout }}
+      {{- range .targets }}
+      - {{ . }}
+      {{- end }}
+  periodSeconds: {{ $p.periodSeconds }}
+  ## failureThreshold x periodSeconds is the whole startup budget. Keep it generous:
+  ## exceeding it restarts a pod that is healthy and merely waiting for a dependency.
+  failureThreshold: {{ $p.failureThreshold }}
+{{- end }}
+{{- end -}}
