@@ -269,3 +269,46 @@ Call: (dict "name" "yarilo-auth" "root" $)
 {{- .root.Values.logLevel -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+startupProbe for a login pod, replacing its wait-* init containers (#903).
+
+Safe for login pods specifically: none of them dials auth or anvil during startup
+— those connections are created lazily on the first login (#885/#891) — so the
+process comes up regardless and the probe only withholds traffic until the
+dependencies answer.
+
+While it fails the pod stays out of the Service endpoints AND liveness is not run,
+so a dependency slow to appear cannot cause a restart. It stops after the first
+success: a dependency failing later is a runtime error the login reports to the
+client, not a reason to pull the pod.
+
+URLs are POSITIONAL. yarctl registers a global --url (Director API) and strips
+global flags from argv before a subcommand sees them, so a --url here would be
+swallowed and the probe would never pass (#906).
+
+Call: (dict "probe" .Values.components.<c>.startupProbe "root" $ "auth" true "anvil" true)
+*/}}
+{{- define "yarilo.loginStartupProbe" -}}
+{{- $p := .probe -}}
+{{- $root := .root -}}
+{{- if $p.enabled }}
+startupProbe:
+  exec:
+    command:
+      - yarctl
+      - wait
+      - --timeout={{ $p.timeout }}
+      {{- if .auth }}
+      - http://{{ include "yarilo.fullname" $root }}-auth-telemetry.{{ $root.Release.Namespace }}.svc:8080/readyz
+      {{- end }}
+      {{- if and .anvil $root.Values.components.anvil.enabled }}
+      - http://{{ include "yarilo.fullname" $root }}-anvil-telemetry.{{ $root.Release.Namespace }}.svc:8080/readyz
+      {{- end }}
+  periodSeconds: {{ $p.periodSeconds }}
+  ## failureThreshold x periodSeconds is the whole startup budget. Keep it
+  ## generous: exceeding it restarts a pod that is healthy and merely waiting,
+  ## which the init container never did.
+  failureThreshold: {{ $p.failureThreshold }}
+{{- end }}
+{{- end -}}
