@@ -92,6 +92,49 @@ func TestProbeURLUnreachable(t *testing.T) {
 	}
 }
 
+// TestProbeTCPReachable: a dependency with no HTTP endpoint (a database or Redis)
+// is probed by opening a TCP connection — a live listener passes (#903).
+func TestProbeTCPReachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	// Accept and drop connections so the dial completes.
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	if err := probeURL("tcp://"+ln.Addr().String(), time.Second); err != nil {
+		t.Fatalf("a live TCP listener must pass: %v", err)
+	}
+}
+
+// TestProbeTCPUnreachable: nothing listening behind the address fails the probe,
+// and the error names the tcp:// target.
+func TestProbeTCPUnreachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // free the port
+
+	err = probeURL("tcp://"+addr, 500*time.Millisecond)
+	if err == nil {
+		t.Fatal("an unreachable TCP address must fail the probe")
+	}
+	if !strings.Contains(err.Error(), "tcp://"+addr) {
+		t.Fatalf("error %q should name the tcp:// target", err)
+	}
+}
+
 func TestDispatchWaitRequiresAURL(t *testing.T) {
 	if err := dispatchWait(nil); err == nil {
 		t.Fatal("wait without a URL must be an error, not a silent success")
