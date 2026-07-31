@@ -119,8 +119,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tel := startTelemetry(cfg.Telemetry.Listen)
-
 	// Ring identity (#750): the pod's own address for the JOIN handshake and
 	// the right-neighbor dial, computed before NewWithOptions since
 	// Membership is constructed inside it.
@@ -175,6 +173,10 @@ func main() {
 		UnreachableReporters:  cfg.DirectorService.BackendUnreachableReporters,
 		UnreachableWindow:     time.Duration(cfg.DirectorService.BackendUnreachableWindow) * time.Second,
 	})
+
+	// Telemetry starts after the server exists so the liveness watchdog can probe
+	// the ring mutex — the routing hot path (#904).
+	tel := startTelemetry(cfg.Telemetry, srv)
 
 	// Resolve static backends from config and register them in the ring.
 	resolveBackends(ctx, cfg, srv)
@@ -348,14 +350,49 @@ func parseCIDRs(ss []string) []*net.IPNet {
 //
 // Lifecycle is on: without it /readyz answers 200 from the moment the process
 // starts, which says nothing. With it, ready means this pod holds its ports.
-func startTelemetry(addr string) *telemetry.Server {
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+func startTelemetry(cfg config.TelemetryConfig, srv *director.Server) *telemetry.Server {
+	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true}
+	if wd := cfg.LivenessWatchdog; wd.Enabled {
+		var gate *telemetry.Gate
+		if wd.FaultInjectionEnabled {
+			gate = telemetry.NewGate()
+			opts.Fault = gate
+		}
+		opts.Watchdog = telemetry.WatchdogOptions{
+			Check:            directorLivenessCheck(srv, gate),
+			Interval:         time.Duration(wd.IntervalSeconds) * time.Second,
+			Timeout:          time.Duration(wd.TimeoutSeconds) * time.Second,
+			FailureThreshold: wd.FailureThreshold,
+		}
+	}
+	tel := telemetry.NewWithOptions(opts)
 	go func() {
 		if err := tel.ListenAndServe(context.Background()); err != nil {
 			slog.Error("telemetry server failed", "err", err)
 		}
 	}()
 	return tel
+}
+
+// directorLivenessCheck reads the ring backend count to prove the routing path
+// is not deadlocked (#904). The count takes the same ring mutex every LOOKUP
+// holds; a wedged ring — the state that hangs every login proxy while the
+// director's TCP and /readyz stay green — blocks the read, which the watchdog
+// counts as a failure via its own timeout. The ring, userDir and killing map
+// are all in-process, so this touches nothing shared; a restart genuinely fixes
+// it (the ring rebuilds from gossip + backend re-registration).
+func directorLivenessCheck(srv *director.Server, gate *telemetry.Gate) telemetry.LivenessCheck {
+	return func(ctx context.Context) error {
+		if gate != nil {
+			if err := gate.Check(ctx); err != nil {
+				return err
+			}
+		}
+		if srv != nil {
+			srv.RingBackendCount()
+		}
+		return nil
+	}
 }
 
 // ringTLSMisconfigured reports the loud-failure condition (#753): internal_tls
