@@ -89,8 +89,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tel := startTelemetry(cfg.Telemetry.Listen)
-
 	// Build a userdb chain shared by both the client-protocol
 	// server (RunAuth enriches successful passdb with userdb_*
 	// fields — Phase AUTH-2 PR 3) and the master-protocol server
@@ -113,6 +111,11 @@ func main() {
 		time.Duration(cfg.Auth.Cache.TTLSeconds)*time.Second,
 		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
 	)
+
+	// Telemetry starts here, after the cache exists, so the liveness watchdog can
+	// probe it (#904): a wedged cache mutex is exactly the kind of "up but cannot
+	// authenticate" state that fails no other probe.
+	tel := startTelemetry(cfg.Telemetry, authCache)
 
 	tokenStore, tokenClose := buildTokenStore(cfg.Auth.Token, cfg.General.StartupDialRetries)
 	defer tokenClose()
@@ -266,15 +269,50 @@ func main() {
 
 // startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
 // returns the server so the caller can report readiness once its listeners are
-// actually bound.
-func startTelemetry(addr string) *telemetry.Server {
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+// actually bound. When the liveness watchdog is enabled it probes the auth cache
+// (#904).
+func startTelemetry(cfg config.TelemetryConfig, cache *protocol.Cache) *telemetry.Server {
+	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true}
+	if wd := cfg.LivenessWatchdog; wd.Enabled {
+		var gate *telemetry.Gate
+		if wd.FaultInjectionEnabled {
+			gate = telemetry.NewGate()
+			opts.Fault = gate
+		}
+		opts.Watchdog = telemetry.WatchdogOptions{
+			Check:            authLivenessCheck(cache, gate),
+			Interval:         time.Duration(wd.IntervalSeconds) * time.Second,
+			Timeout:          time.Duration(wd.TimeoutSeconds) * time.Second,
+			FailureThreshold: wd.FailureThreshold,
+		}
+	}
+	tel := telemetry.NewWithOptions(opts)
 	go func() {
 		if err := tel.ListenAndServe(context.Background()); err != nil {
 			slog.Error("telemetry server failed", "err", err)
 		}
 	}()
 	return tel
+}
+
+// authLivenessCheck exercises the in-process auth cache mutex to prove the
+// authentication path is not deadlocked (#904). It reads the cache stats — a
+// pure, side-effect-free take of c.mu — and never touches the passdb/userdb
+// backend: the point is the local code path, so a shared-database outage cannot
+// trip every auth pod at once. A wedged cache mutex blocks the read, which the
+// watchdog observes as a failure via its own timeout.
+func authLivenessCheck(cache *protocol.Cache, gate *telemetry.Gate) telemetry.LivenessCheck {
+	return func(ctx context.Context) error {
+		if gate != nil {
+			if err := gate.Check(ctx); err != nil {
+				return err
+			}
+		}
+		if cache != nil {
+			cache.Stats()
+		}
+		return nil
+	}
 }
 
 // buildTokenStore creates the appropriate TokenStore based on config and returns
