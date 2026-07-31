@@ -288,12 +288,18 @@ type MailboxBackend interface {
 // uid→filename mapping into the yarilo-uidlist sidecar inline. The canonical
 // caller flow is:
 //
-//	uid     := idx.AllocateUID(folderID)
-//	filename := box.Save(folder, r, uid, size, flags)
-//	idx.AppendMessage(folderID, &MessageMeta{UID: uid, Filename: filename, ...})
+//	uid            := idx.AllocateUID(folderID)
+//	filename, vsize := box.Save(folder, r, uid, size, flags)
+//	idx.AppendMessage(folderID, &MessageMeta{UID: uid, Filename: filename, VSize: vsize, ...})
 //
 // If Save fails after AllocateUID, the UID is burnt — the index
 // simply skips the hole on the next scan.
+//
+// Save returns the message's VIRTUAL (CRLF-normalized) size alongside the
+// filename — the value that must land in MessageMeta.VSize so RFC822.SIZE is
+// consistent from the first FETCH. The driver already computes it while writing
+// (maildir W=, sdbox/mdbox V-trailer); returning it here avoids the index
+// falling back to the physical size until a rescan populates VSize (#892 gap).
 //
 // Close releases any open file descriptors held by the handle.
 type UserMailbox interface {
@@ -301,7 +307,7 @@ type UserMailbox interface {
 	Create(folder string) error
 	Delete(folder string) error
 	Rename(oldName, newName string) error
-	Save(folder string, r io.Reader, uid uint32, size int64, flags []string) (string, error)
+	Save(folder string, r io.Reader, uid uint32, size int64, flags []string) (name string, vsize uint32, err error)
 	// Fetch returns a reader for the message body. altTier hints that the
 	// message lives in alt (cold) storage so the driver can open it directly
 	// without trying the primary path first. The hint is set from

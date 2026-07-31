@@ -27,7 +27,7 @@ func TestGUIDIndexed(t *testing.T) {
 	u := openTestUserMailbox(t, home)
 
 	body := "From: a@a.com\r\nSubject: guid-test\r\n\r\nbody\r\n"
-	filename, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
+	filename, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestGUIDPreservedAfterPurge(t *testing.T) {
 	}
 	filenames := make([]string, len(bodies))
 	for i, b := range bodies {
-		fn, err := u.Save("INBOX", strings.NewReader(b), 0, int64(len(b)), nil)
+		fn, _, err := u.Save("INBOX", strings.NewReader(b), 0, int64(len(b)), nil)
 		if err != nil {
 			t.Fatalf("Save[%d]: %v", i, err)
 		}
@@ -159,7 +159,7 @@ func TestGUIDInRebuildScan(t *testing.T) {
 	u := openTestUserMailbox(t, home)
 
 	body := "From: a@a.com\r\n\r\nrebuild body\r\n"
-	filename, _ := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
+	filename, _, _ := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
 
 	recs, err := u.Scan("INBOX")
 	if err != nil {

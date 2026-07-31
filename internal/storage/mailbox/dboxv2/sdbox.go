@@ -332,18 +332,18 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // this folder. size is the wire-level body size; on-disk physical
 // size comes from actual bytes written (post-CRLF normalisation).
 // flags are ignored — sdbox delegates flag storage to the index.
-func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, uint32, error) {
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
 		defer func() { <-u.b.writeSem }()
 	}
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
-		return "", fmt.Errorf("sdbox/save: mkdir: %w", err)
+		return "", 0, fmt.Errorf("sdbox/save: mkdir: %w", err)
 	}
 
 	body, err := readBodyCRLF(r)
 	if err != nil {
-		return "", fmt.Errorf("sdbox/save: read body: %w", err)
+		return "", 0, fmt.Errorf("sdbox/save: read body: %w", err)
 	}
 	physSize := uint32(len(body))
 	virtSize := physSize
@@ -388,9 +388,9 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return finalName, nil
+	return finalName, virtSize, nil
 }
 
 // ---- Fetch / Remove / Copy ----------------------------------

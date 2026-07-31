@@ -460,24 +460,24 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 // uid parameter is the per-folder UID assigned by the external
 // fileindex; mdbox ignores it (filename is map_uid, not the
 // per-folder UID).
-func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, uint32, error) {
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
 		defer func() { <-u.b.writeSem }()
 	}
 	body, err := readBodyCRLF(r)
 	if err != nil {
-		return "", fmt.Errorf("mdbox/save: read body: %w", err)
+		return "", 0, fmt.Errorf("mdbox/save: read body: %w", err)
 	}
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
-		return "", fmt.Errorf("mdbox/save: mkdir folder: %w", err)
+		return "", 0, fmt.Errorf("mdbox/save: mkdir folder: %w", err)
 	}
 	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
-		return "", fmt.Errorf("mdbox/save: mkdir storage: %w", err)
+		return "", 0, fmt.Errorf("mdbox/save: mkdir storage: %w", err)
 	}
 	m, err := u.openMap()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	guid := randomGUID()
@@ -504,14 +504,14 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	if rotate {
 		fileID, err = m.AllocFileID()
 		if err != nil {
-			return "", fmt.Errorf("mdbox/save: alloc file id: %w", err)
+			return "", 0, fmt.Errorf("mdbox/save: alloc file id: %w", err)
 		}
 		curSize = 0
 	}
 
 	f, err := os.OpenFile(u.mfilePath(fileID), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
-		return "", fmt.Errorf("mdbox/save: open m.%d: %w", fileID, err)
+		return "", 0, fmt.Errorf("mdbox/save: open m.%d: %w", fileID, err)
 	}
 	// Re-stat under the file handle to nail down the offset we
 	// actually wrote at. O_APPEND guarantees the bytes land at
@@ -520,7 +520,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return "", fmt.Errorf("mdbox/save: stat handle: %w", err)
+		return "", 0, fmt.Errorf("mdbox/save: stat handle: %w", err)
 	}
 	offset := uint32(st.Size())
 	// The dbox file-header line is a FILE-level header: emit it only when this is
@@ -544,18 +544,18 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	recLen = uint32(len(record))
 	if _, err := f.Write(record); err != nil {
 		f.Close()
-		return "", fmt.Errorf("mdbox/save: write record: %w", err)
+		return "", 0, fmt.Errorf("mdbox/save: write record: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("mdbox/save: close m.%d: %w", fileID, err)
+		return "", 0, fmt.Errorf("mdbox/save: close m.%d: %w", fileID, err)
 	}
 
 	mapUID, err := m.AppendRecord(fileID, offset, recLen, guid)
 	if err != nil {
-		return "", fmt.Errorf("mdbox/save: map append: %w", err)
+		return "", 0, fmt.Errorf("mdbox/save: map append: %w", err)
 	}
 	_ = curSize
-	return strconv.FormatUint(uint64(mapUID), 10), nil
+	return strconv.FormatUint(uint64(mapUID), 10), uint32(len(body)), nil
 }
 
 // Fetch resolves the message identified by filename (decimal map_uid)

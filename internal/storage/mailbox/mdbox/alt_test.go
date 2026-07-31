@@ -30,7 +30,7 @@ func altTestBackend(t *testing.T) (*Backend, *userMailbox, string) {
 
 func testSaveMsg(t *testing.T, u *userMailbox, body string) string {
 	t.Helper()
-	filename, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
+	filename, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}

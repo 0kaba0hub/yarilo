@@ -69,7 +69,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		return 0, fmt.Errorf("lmtp: modseq: %w", err)
 	}
 	tSave := time.Now()
-	filename, err := box.Save(folder, bytes.NewReader(data), uid, size, flags)
+	filename, vsize, err := box.Save(folder, bytes.NewReader(data), uid, size, flags)
 	if err != nil {
 		return 0, fmt.Errorf("lmtp: save: %w", err)
 	}
@@ -81,6 +81,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		Filename:     filename,
 		ModSeq:       modseq,
 		Size:         uint32(size),
+		VSize:        vsize,
 		InternalDate: time.Now(),
 		Flags:        flags,
 	}); err != nil {

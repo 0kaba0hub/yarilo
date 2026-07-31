@@ -67,11 +67,11 @@ func Run(cfg Config) (Report, error) {
 	}
 	metas := make([]*mailbox.MessageMeta, 0, len(corpus.Messages))
 	for _, m := range corpus.Messages {
-		name, err := box.Save(benchMbox.Name, bytes.NewReader(m.Raw), m.UID, int64(len(m.Raw)), nil)
+		name, vsize, err := box.Save(benchMbox.Name, bytes.NewReader(m.Raw), m.UID, int64(len(m.Raw)), nil)
 		if err != nil {
 			return Report{}, fmt.Errorf("ftsbench: save uid %d: %w", m.UID, err)
 		}
-		meta := &mailbox.MessageMeta{UID: m.UID, Filename: name, Size: uint32(len(m.Raw))}
+		meta := &mailbox.MessageMeta{UID: m.UID, Filename: name, Size: uint32(len(m.Raw)), VSize: vsize}
 		if err := uidx.AppendMessage(folder.ID, meta); err != nil {
 			return Report{}, fmt.Errorf("ftsbench: append uid %d: %w", m.UID, err)
 		}

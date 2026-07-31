@@ -148,7 +148,7 @@ func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBacke
 		if err != nil {
 			return fmt.Errorf("allocate %s/%s: %w", user, msg.Folder, err)
 		}
-		filename, err := box.Save(msg.Folder, msg.bodyReader(), uid, int64(len(msg.Body)), msg.Flags)
+		filename, vsize, err := box.Save(msg.Folder, msg.bodyReader(), uid, int64(len(msg.Body)), msg.Flags)
 		if err != nil {
 			return fmt.Errorf("save %s/%s: %w", user, msg.Folder, err)
 		}
@@ -157,6 +157,7 @@ func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBacke
 			Filename:     filename,
 			Flags:        msg.Flags,
 			Size:         uint32(len(msg.Body)),
+			VSize:        vsize,
 			InternalDate: msg.InternalDate,
 			GUID:         msg.GUID,
 		}

@@ -11,7 +11,7 @@ import (
 func TestPurgeNoOpWhenNoZeroRef(t *testing.T) {
 	mb, _ := newTestUser(t)
 	for i := 0; i < 3; i++ {
-		if _, err := mb.Save("INBOX", strings.NewReader("body"), uint32(i+1), 4, nil); err != nil {
+		if _, _, err := mb.Save("INBOX", strings.NewReader("body"), uint32(i+1), 4, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -28,7 +28,7 @@ func TestPurgeUnlinksAllZeroFile(t *testing.T) {
 	mb, home := newTestUser(t)
 	var names []string
 	for i := 0; i < 3; i++ {
-		n, err := mb.Save("INBOX", strings.NewReader("body"), uint32(i+1), 4, nil)
+		n, _, err := mb.Save("INBOX", strings.NewReader("body"), uint32(i+1), 4, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +57,7 @@ func TestPurgeCompactsLiveRecords(t *testing.T) {
 	mb, home := newTestUser(t)
 	var names []string
 	for i, body := range []string{"keep one", "DROP this body", "keep two"} {
-		n, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil)
+		n, _, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +120,7 @@ func TestPurgeCompactsLiveRecords(t *testing.T) {
 
 func TestPurgeIdempotent(t *testing.T) {
 	mb, _ := newTestUser(t)
-	n, _ := mb.Save("INBOX", strings.NewReader("body"), 1, 4, nil)
+	n, _, _ := mb.Save("INBOX", strings.NewReader("body"), 1, 4, nil)
 	_ = mb.Remove("INBOX", n)
 	if _, err := mb.(*userMailbox).Purge(); err != nil {
 		t.Fatalf("first Purge: %v", err)

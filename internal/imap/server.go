@@ -1332,7 +1332,7 @@ func (s *session) renameInbox(dest string) error {
 		if readErr != nil {
 			return fmt.Errorf("imap/rename-inbox read: %w", readErr)
 		}
-		newFilename, saveErr := s.box.Save(dest, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
+		newFilename, vsize, saveErr := s.box.Save(dest, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return fmt.Errorf("imap/rename-inbox save: %w", saveErr)
 		}
@@ -1341,6 +1341,7 @@ func (s *session) renameInbox(dest string) error {
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
 			Size:         uint32(len(data)),
+			VSize:        vsize,
 			InternalDate: m.InternalDate,
 		}
 		if err := s.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
@@ -1726,7 +1727,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	}
 
 	tSave := time.Now()
-	filename, err := h.box.Save(rel, r, 0, size, flagList)
+	filename, vsize, err := h.box.Save(rel, r, 0, size, flagList)
 	if err != nil {
 		return nil, err
 	}
@@ -1736,7 +1737,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		internalDate = opts.Time
 	}
 	m := &mailbox.MessageMeta{
-		Filename: filename, Flags: flagList, Keywords: kwList, Size: uint32(size),
+		Filename: filename, Flags: flagList, Keywords: kwList, Size: uint32(size), VSize: vsize,
 		InternalDate: internalDate,
 	}
 	if err := h.idx.AllocateAndAppend(f.ID, m); err != nil {
@@ -2605,7 +2606,20 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			// Virtual (CRLF) size — the octet count actually transmitted. Using
 			// the physical size made the same message report different values
 			// depending on the stored line endings (#892).
-			mw.WriteRFC822Size(int64(m.RFC822Size()))
+			size := m.RFC822Size()
+			// Legacy records written before Save() returned the virtual size have
+			// VSize==0 and fall back to the physical size, which flip-flops against
+			// the virtual size other paths report. Recompute it from the body once
+			// on read so the answer is stable for these older messages too.
+			if m.VSize == 0 && m.Filename != "" {
+				if rc, ferr := s.fetchSelected(m); ferr == nil {
+					if raw, rerr := io.ReadAll(rc); rerr == nil {
+						size = virtualSizeFromRaw(raw)
+					}
+					rc.Close()
+				}
+			}
+			mw.WriteRFC822Size(int64(size))
 		}
 		if opts.ModSeq && m.ModSeq > 0 {
 			mw.WriteModSeq(m.ModSeq)
@@ -2939,7 +2953,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			return nil, fmt.Errorf("imap/copy read: %w", readErr)
 		}
 		tSave := time.Now()
-		newFilename, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
+		newFilename, vsize, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return nil, fmt.Errorf("imap/copy save: %w", saveErr)
 		}
@@ -2949,6 +2963,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
 			Size:         uint32(len(data)),
+			VSize:        vsize,
 			InternalDate: m.InternalDate,
 		}
 		tIndex := time.Now()
@@ -3286,7 +3301,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			return fmt.Errorf("imap/move read: %w", readErr)
 		}
 		tSave := time.Now()
-		newFilename, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
+		newFilename, vsize, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
 		if saveErr != nil {
 			return fmt.Errorf("imap/move save: %w", saveErr)
 		}
@@ -3296,6 +3311,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
 			Size:         uint32(len(data)),
+			VSize:        vsize,
 			InternalDate: m.InternalDate,
 		}
 		tIndex := time.Now()
@@ -3412,6 +3428,20 @@ func toImapFlags(flags []string) []imaplib.Flag {
 		out[i] = imaplib.Flag(f)
 	}
 	return out
+}
+
+// virtualSizeFromRaw returns the octet count the message occupies once every
+// bare LF is normalised to CRLF — the RFC822.SIZE a client observes on the
+// wire. It mirrors the counting the storage backends do at Save() time and is
+// the fallback for legacy index records that never recorded a virtual size.
+func virtualSizeFromRaw(raw []byte) uint32 {
+	n := uint32(len(raw))
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\n' && (i == 0 || raw[i-1] != '\r') {
+			n++
+		}
+	}
+	return n
 }
 
 func numSetContains(numSet imaplib.NumSet, seqNum uint32, uid imaplib.UID) bool {
