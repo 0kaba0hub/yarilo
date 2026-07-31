@@ -459,6 +459,10 @@ func continueAuth(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, p Protoco
 		return pop3CommandLoop(conn, rd, extTLS, opts)
 	case ProtocolManageSieve:
 		return manageSieveCommandLoop(conn, rd, extTLS, opts)
+	case ProtocolSubmission, ProtocolSubmissions:
+		// Re-enter the SMTP loop without the 220 greeting: the connection is
+		// mid-session, the client re-EHLOs and re-AUTHs after the 4xx (#896).
+		return smtpAuthLoop(conn, rd, extTLS, opts)
 	default:
 		return nil, conn, rd, fmt.Errorf("login: continueAuth: non-retriable protocol %q", p)
 	}
@@ -471,7 +475,15 @@ func extractSubmissionPreamble(conn net.Conn, rd *bufio.Reader, extTLS *tls.Conf
 	if _, err := fmt.Fprintf(conn, "220 Yarilo Login ready\r\n"); err != nil {
 		return nil, conn, rd, fmt.Errorf("smtp: send greeting: %w", err)
 	}
+	return smtpAuthLoop(conn, rd, extTLS, opts)
+}
 
+// smtpAuthLoop speaks SMTP after the 220 greeting until AUTH completes. It is
+// split out of extractSubmissionPreamble so continueAuth can re-enter it WITHOUT
+// re-greeting: after a transient failure the proxy has answered a 4xx and the
+// client re-issues EHLO/AUTH on the same connection (#896). The client re-EHLOs
+// after the 4xx, so starting with an empty ehloLine is correct.
+func smtpAuthLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts Options) (*preamble, net.Conn, *bufio.Reader, error) {
 	var ehloLine string
 	var tlsDone bool
 	var fwdIP, fwdPort string

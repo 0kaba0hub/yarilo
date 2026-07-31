@@ -634,10 +634,13 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 		if s.opts.AuthAddr == "" {
+			// A missing auth_addr is a permanent misconfiguration, not a transient
+			// blip: re-LOGIN cannot fix it, so close rather than hold the socket
+			// open for the re-login budget (#896 review).
 			log.Error("login: auth_addr not configured")
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 			s.incResult("unavailable")
-			return outcomeRetry, nil
+			return outcomeClose, nil
 		}
 		// Shared multiplexed client (#878) — no per-login handshake. The phase
 		// metric stays: it should now read ~0 except on the very first login after
