@@ -137,6 +137,15 @@ func main() {
 }
 
 func dispatch(args []string) error {
+	// `wait` is a plane-independent dependency probe (used as a k8s startupProbe),
+	// not an admin operation against a plane. Recognise it BEFORE YARILO_ADMIN_TYPE
+	// routes the args into a plane — otherwise a backend container (which sets
+	// YARILO_ADMIN_TYPE=backend) dispatches `wait` as a backend service and fails
+	// with "unknown backend service \"wait\"" (#903).
+	if len(args) > 0 && args[0] == "wait" {
+		return dispatchWait(args[1:])
+	}
+
 	// When YARILO_ADMIN_TYPE is set the plane is implicit — first arg is the
 	// service/command directly. Top-level "user" shorthand always delegates to
 	// the backend plane regardless of YARILO_ADMIN_TYPE.
