@@ -756,7 +756,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 
 			if attempt >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
-				writeProtoError(authConn, s.opts.Protocol, "", imapCodeAuthenticationFail, "Too many failed authentications")
+				// Tagged completion for the client's last command THEN the close
+				// announcement (#928 consistency). The old untagged `* BYE` (tag
+				// "") left the final LOGIN without a tagged reply, which breaks the
+				// IMAP contract; tagged NO [AUTHENTICATIONFAILED] + * BYE is the
+				// canonical failure-then-BYE sequence.
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Too many failed authentications")
+				writeProtoClose(authConn, s.opts.Protocol, "closing")
 				return outcomeClose, nil
 			}
 			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
@@ -810,7 +816,11 @@ func (s *Server) handleConn(conn net.Conn) {
 			switch {
 			case errors.Is(cerr, anvil.ErrTooManyConns):
 				log.Warn("login: anvil", "user", pre.username, "result", "fail", "reason", "too_many_connections")
+				// The over-limit code, then the close announcement (#928
+				// consistency) so IMAP/ManageSieve announce the close with a BYE
+				// rather than dropping the socket after the tagged NO.
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
+				writeProtoClose(authConn, s.opts.Protocol, "closing")
 				return outcomeClose, nil
 			case cerr != nil:
 				log.Error("login: anvil connect failed", "addr", s.opts.AnvilAddr, "err", cerr)
