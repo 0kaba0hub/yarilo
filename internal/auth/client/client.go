@@ -52,9 +52,21 @@ const (
 	// timing-leak failure delay), so a legitimate reply can take many seconds.
 	// A tight timeout here would manufacture failures the server never had.
 	defaultRequestTimeout = 30 * time.Second
-	// keepAlive lets the kernel surface a half-open connection (network
-	// partition, pod killed without FIN) instead of a reader blocking forever.
-	keepAlive = 15 * time.Second
+	// defaultWriteTimeout bounds a single socket write (#926). A write to a
+	// healthy peer drains into the send buffer in microseconds, so 5s already
+	// means the connection is fundamentally broken — a blackholed peer (pod
+	// killed without FIN/RST, conntrack dropped) whose send buffer has filled.
+	// It is deliberately SEPARATE from RequestTimeout: an operator raising the
+	// request budget for a slow passdb must not also stretch dead-socket
+	// detection, which guards a different failure.
+	defaultWriteTimeout = 5 * time.Second
+	// keepAlive is the TCP keepalive idle period; keepAliveInterval/Count set the
+	// probe cadence explicitly (#926) so a blackholed IDLE connection is torn
+	// down in ~keepAlive + Count*Interval, not the ~11 min the Linux defaults
+	// (75s * 9) produced in the incident.
+	keepAlive         = 15 * time.Second
+	keepAliveInterval = 15 * time.Second
+	keepAliveCount    = 4
 	// reconnectAttempts bounds one redial burst. Callers waiting on the
 	// reconnect give up on their own request timeout, whichever comes first.
 	reconnectAttempts = 5
@@ -79,6 +91,10 @@ type Options struct {
 	RequestTimeout time.Duration
 	// DialTimeout bounds a single connection attempt (TCP + TLS handshake).
 	DialTimeout time.Duration
+	// WriteTimeout bounds a single socket write so a blackholed peer cannot block
+	// a write forever while holding the shared mutex (#926). 0 uses the default
+	// (5s). Independent of RequestTimeout.
+	WriteTimeout time.Duration
 }
 
 type connState int
@@ -121,6 +137,9 @@ func New(addr string, tlsCfg *tls.Config, opts Options) (*Client, error) {
 	}
 	if opts.DialTimeout <= 0 {
 		opts.DialTimeout = defaultDialTimeout
+	}
+	if opts.WriteTimeout <= 0 {
+		opts.WriteTimeout = defaultWriteTimeout
 	}
 	c := &Client{
 		addr:    addr,
@@ -275,6 +294,11 @@ func (c *Client) exchange(id, req string) (string, error) {
 		}
 		c.pending[id] = ch
 		gen := c.gen
+		// Bound the write so a blackholed peer whose send buffer has filled
+		// cannot block here forever while holding c.mu, wedging every other
+		// caller parked on c.mu.Lock() (#926). On timeout the write returns an
+		// error and we fall through to beginReconnect below.
+		_ = c.conn.SetWriteDeadline(time.Now().Add(c.opts.WriteTimeout))
 		_, werr := fmt.Fprintln(c.conn, req)
 		c.mu.Unlock()
 
@@ -439,15 +463,25 @@ func (c *Client) readLoop(rd *bufio.Reader, gen uint64) {
 }
 
 func (c *Client) dial() (net.Conn, *bufio.Reader, error) {
+	// Explicit keepalive cadence (#926): net.Dialer.KeepAlive alone sets only the
+	// idle period and leaves interval/count at the OS defaults (Linux 75s * 9 ≈
+	// 11 min), which is what let a blackholed idle connection sit undetected in
+	// the incident. Idle + Count*Interval bounds detection to ~75s.
+	dialer := &net.Dialer{
+		Timeout: c.opts.DialTimeout,
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     keepAlive,
+			Interval: keepAliveInterval,
+			Count:    keepAliveCount,
+		},
+	}
 	var raw net.Conn
 	var err error
 	if c.tlsCfg != nil {
-		raw, err = tls.DialWithDialer(
-			&net.Dialer{Timeout: c.opts.DialTimeout, KeepAlive: keepAlive},
-			"tcp", c.addr, c.tlsCfg)
+		raw, err = tls.DialWithDialer(dialer, "tcp", c.addr, c.tlsCfg)
 	} else {
-		raw, err = (&net.Dialer{Timeout: c.opts.DialTimeout, KeepAlive: keepAlive}).
-			Dial("tcp", c.addr)
+		raw, err = dialer.Dial("tcp", c.addr)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("auth/client: dial %s: %w", c.addr, err)
