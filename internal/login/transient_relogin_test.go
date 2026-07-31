@@ -38,12 +38,17 @@ func TestTransientReloginCap(t *testing.T) {
 
 // TestTransientReloginKeepsConnectionOpen is the #896 acceptance shape: a
 // transient failure answers a tagged NO [UNAVAILABLE] but does NOT close the
-// connection — the client can LOGIN again on the SAME socket. With auth_addr
-// unset every attempt is transient, so the connection survives the first NO,
-// answers a second, and is closed only once the cap is reached.
+// connection — the client can LOGIN again on the SAME socket. An unreachable
+// yarilo-auth makes every attempt transient (auth_dial), so the connection
+// survives the first NO, answers a second, and is closed only at the cap.
 func TestTransientReloginKeepsConnectionOpen(t *testing.T) {
 	s := &Server{
-		opts:     Options{Protocol: ProtocolIMAP, AuthAddr: "", TransientReloginCap: 2},
+		opts: Options{
+			Protocol:            ProtocolIMAP,
+			AuthAddr:            reservedDeadAddr(t), // unreachable → transient auth_dial
+			TransientRetries:    -1,                  // fail the dial on the first error
+			TransientReloginCap: 2,
+		},
 		sessions: make(map[string][]*liveSession),
 	}
 	srv, cli := pipePair(t)
