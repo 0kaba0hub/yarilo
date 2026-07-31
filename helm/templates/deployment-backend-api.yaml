@@ -29,10 +29,8 @@ spec:
     spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
-        {{- if include "yarilo.dbInitHost" . }}
-        {{- include "yarilo.initWaitTCP" (dict "name" "wait-db" "host" (include "yarilo.dbInitHost" .) "port" (include "yarilo.dbInitPort" .) "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
-        {{- end }}
+      {{- /* No wait-db init container (#903): the startupProbe below waits for the
+             DB (when one is configured) before the pod takes traffic. */}}
       containers:
         - name: yarilo-backend-api
           image: {{ include "yarilo.image" . }}
@@ -66,6 +64,11 @@ spec:
             - name: backend-api
               containerPort: 9105
               protocol: TCP
+          {{- $targets := list }}
+          {{- if include "yarilo.dbInitHost" . }}
+          {{- $targets = append $targets (printf "tcp://%s:%s" (include "yarilo.dbInitHost" .) (include "yarilo.dbInitPort" .)) }}
+          {{- end }}
+          {{- include "yarilo.depStartupProbe" (dict "probe" .Values.components.backendAPI.startupProbe "targets" $targets) | nindent 10 }}
           livenessProbe:
             httpGet:
               path: /api/backend/health

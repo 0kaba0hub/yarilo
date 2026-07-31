@@ -831,6 +831,11 @@ components:
   ## /api/admin/proxy/<user>/... proxies admin requests to the
   ## right backend's yarilo-backend-api by user-to-backend mapping.
   backendAPI:
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     enabled: true
     replicas: 1
     listen: ":9105"
@@ -904,6 +909,11 @@ components:
   ## IMAP backend — handles sessions proxied from director.
   ## Director proxies 993→imap:993, 143→imap:143.
   imap:
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     enabled: true
     replicas: 1
 
@@ -931,6 +941,11 @@ components:
 
   ## POP3 backend — director proxies 995→pop3:995, 110→pop3:110.
   pop3:
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     enabled: false
     replicas: 1
 
@@ -958,6 +973,11 @@ components:
 
   ## LMTP backend — director proxies 24→lmtp:24.
   lmtp:
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     enabled: false
     replicas: 1
 
@@ -1120,6 +1140,11 @@ components:
   ## Submission backend — accepts mail from submission-login pods, relays to upstream MTA.
   ## ClusterIP only; mail clients connect to yarilo-submission-login (LoadBalancer).
   submission:
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     enabled: false
     replicas: 1
 
@@ -1444,6 +1469,11 @@ components:
 
   ## ManageSieve backend — RFC 5804 Sieve script management (internal, port 14190).
   manageSieve:
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     enabled: false
     replicas: 1
 

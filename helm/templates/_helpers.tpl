@@ -326,7 +326,7 @@ Call: (dict "probe" .Values.components.<c>.startupProbe "targets" (list "tcp://h
 */}}
 {{- define "yarilo.depStartupProbe" -}}
 {{- $p := .probe -}}
-{{- if $p.enabled }}
+{{- if and $p.enabled .targets }}
 startupProbe:
   exec:
     command:
