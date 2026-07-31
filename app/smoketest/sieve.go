@@ -225,6 +225,20 @@ func (c *imapClient) close() { c.conn.Close() }
 func (c *imapClient) cmd(command string) ([]string, error) {
 	c.seq++
 	tag := fmt.Sprintf("S%04d", c.seq)
+	// Set the read deadline per command from imap-read-timeout, above the server
+	// fts catch-up budget, so a legitimate index wait (UID SEARCH under load) is
+	// not misread as an i/o timeout (#934). A caller may have set a shorter
+	// deadline; this overrides it for the whole command.
+	start := time.Now()
+	c.conn.SetDeadline(start.Add(*flagIMAPReadTimeout)) //nolint:errcheck
+	defer func() {
+		// Keep slowness visible without failing the run: a command that outlasts
+		// the ordinary per-check timeout was the server legitimately waiting on
+		// the FTS index, not a fault.
+		if d := time.Since(start); d > *flagTimeout {
+			slog.Warn("smoke: slow IMAP command", "command", command, "took", d.Round(time.Second).String())
+		}
+	}()
 	fmt.Fprintf(c.conn, "%s %s\r\n", tag, command)
 	var untagged []string
 	for {
