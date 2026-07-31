@@ -1096,6 +1096,13 @@ type backendSession struct {
 // openBackendSession dials a backend and brings the session up to the point
 // where the client can be told the login succeeded. Every failure closes the
 // connection before returning, so the caller may simply retry (#896).
+// backendBringupTimeout bounds the backend bring-up (preamble + greeting +
+// SMTP EHLO) in openBackendSession (#927). In line with the dial timeout — a
+// backend that has not greeted within it is wedged, not slow — and deliberately
+// a constant, not a config knob (same class as the auth-client socket bounds,
+// #926). A var only so a test can shorten it.
+var backendBringupTimeout = 5 * time.Second
+
 func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthResult, tag, addr, clientIP, sessID string, log *slog.Logger) (*backendSession, error) {
 	// Fast-fail re-route on a connect failure in director mode (#782): report the
 	// backend unreachable and re-LOOKUP.
@@ -1109,6 +1116,15 @@ func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthRe
 			conn.Close()
 		}
 	}()
+
+	// Bound the whole bring-up — preamble write, greeting read, and (for SMTP)
+	// the EHLO exchange — with a deadline (#927). Without it a backend that
+	// accepts TCP but never greets (storage hang, token-Verify wedge) holds the
+	// handler in readBackendGreeting forever; the incident behind #926 saw
+	// handlers stuck 7-11 min. A timed-out bring-up returns an error, which the
+	// caller treats as a transient failure and (after #896) answers with a keep-
+	// open NO [UNAVAILABLE] rather than hanging. Cleared once established, below.
+	conn.SetDeadline(time.Now().Add(backendBringupTimeout)) //nolint:errcheck
 
 	rd := bufio.NewReaderSize(conn, 4096)
 
@@ -1156,6 +1172,9 @@ func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthRe
 		}
 	}
 
+	// Established: clear the bring-up deadline so the proxied session is not
+	// bounded by it (handleConn clears deadlines again before proxying anyway).
+	conn.SetDeadline(time.Time{}) //nolint:errcheck
 	ok = true
 	return &backendSession{conn: conn, rd: rd, addr: addr, caps: caps}, nil
 }
