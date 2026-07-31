@@ -1774,7 +1774,25 @@ type StorageConfig struct {
 }
 
 type TelemetryConfig struct {
-	Listen string `koanf:"listen"`
+	Listen           string                 `koanf:"listen"`
+	LivenessWatchdog LivenessWatchdogConfig `koanf:"liveness_watchdog"`
+}
+
+// LivenessWatchdogConfig tunes the timer-driven liveness self-check (#904). It
+// is disabled by default: a component only opts in once it has a self-check
+// worth restarting on, so a fleet without one keeps today's unconditional
+// /healthz. The knobs match the guard-rails — a timeout shorter than the
+// interval and a consecutive-failure threshold — so a single slow storage call
+// cannot restart a busy pod.
+type LivenessWatchdogConfig struct {
+	Enabled bool `koanf:"liveness_watchdog_enabled"`
+	// IntervalSeconds is the gap between self-checks.
+	IntervalSeconds int `koanf:"liveness_watchdog_interval_seconds"`
+	// TimeoutSeconds bounds one self-check; kept below the interval so a hung
+	// check is counted as failed rather than stalling the next tick.
+	TimeoutSeconds int `koanf:"liveness_watchdog_timeout_seconds"`
+	// FailureThreshold is how many consecutive failures fail /healthz.
+	FailureThreshold int `koanf:"liveness_watchdog_failure_threshold"`
 }
 
 type LogConfig struct {
@@ -1979,9 +1997,17 @@ func Load(path string) (*Config, error) {
 			Listen:         ":12325",
 			HAProxyTimeout: 3,
 		},
-		Telemetry: TelemetryConfig{Listen: ":8080"},
-		Log:       LogConfig{Level: "info"},
-		ACL:       ACLConfig{CacheTTL: 30},
+		Telemetry: TelemetryConfig{
+			Listen: ":8080",
+			LivenessWatchdog: LivenessWatchdogConfig{
+				Enabled:          false,
+				IntervalSeconds:  10,
+				TimeoutSeconds:   5,
+				FailureThreshold: 3,
+			},
+		},
+		Log: LogConfig{Level: "info"},
+		ACL: ACLConfig{CacheTTL: 30},
 		Sieve: SieveConfig{
 			DefaultName:        "yarilo",
 			MaxScriptSize:      65536,
