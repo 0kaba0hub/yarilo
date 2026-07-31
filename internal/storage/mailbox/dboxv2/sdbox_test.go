@@ -54,7 +54,7 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 	_, mb, home := newTestUser(t)
 	body := "From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\nbody bytes\r\n"
 
-	name, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)), nil)
+	name, _, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -90,9 +90,14 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 func TestSaveCRLFNormalisation(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	lf := "line one\nline two\n"
-	name, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil)
+	name, vsize, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
+	}
+	// Save must return the virtual (CRLF) size so the index records it and
+	// RFC822.SIZE stays stable: 18 physical bytes + 2 bare LFs = 20 (#892).
+	if wantV := uint32(len(lf) + 2); vsize != wantV {
+		t.Errorf("Save vsize = %d, want %d", vsize, wantV)
 	}
 	rc, err := mb.Fetch("INBOX", name, false)
 	if err != nil {
@@ -111,7 +116,7 @@ func TestSaveCRLFNormalisation(t *testing.T) {
 
 func TestCopyHardlinks(t *testing.T) {
 	_, mb, home := newTestUser(t)
-	src, err := mb.Save("INBOX", strings.NewReader("payload"), 3, 7, nil)
+	src, _, err := mb.Save("INBOX", strings.NewReader("payload"), 3, 7, nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -149,7 +154,7 @@ func TestRemoveIdempotent(t *testing.T) {
 func TestListAndFolderOps(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	for _, uid := range []uint32{1, 2, 3} {
-		if _, err := mb.Save("INBOX", strings.NewReader("msg"), uid, 3, nil); err != nil {
+		if _, _, err := mb.Save("INBOX", strings.NewReader("msg"), uid, 3, nil); err != nil {
 			t.Fatalf("save uid=%d: %v", uid, err)
 		}
 	}
@@ -227,7 +232,7 @@ func TestDeleteRemovesFolderDir(t *testing.T) {
 func TestScanRecoversGUIDAndSize(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	body := "hello world"
-	name, err := mb.Save("INBOX", strings.NewReader(body), 42, int64(len(body)), nil)
+	name, _, err := mb.Save("INBOX", strings.NewReader(body), 42, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}

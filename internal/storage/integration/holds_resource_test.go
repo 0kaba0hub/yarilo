@@ -48,7 +48,7 @@ func TestHoldsResourceSkipsInnerAcquire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
-	filename, err := mb.Save("INBOX", strings.NewReader("body"), uid, 4, nil)
+	filename, _, err := mb.Save("INBOX", strings.NewReader("body"), uid, 4, nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}

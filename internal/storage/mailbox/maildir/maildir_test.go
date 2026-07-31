@@ -128,7 +128,7 @@ func TestSave_Fetch_Remove(t *testing.T) {
 	}
 
 	body := "From: test@example.com\r\nSubject: Test\r\n\r\nHello\r\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), []string{`\Seen`})
+	filename, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), []string{`\Seen`})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -284,11 +284,11 @@ func TestSave_AppendsUIDList(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "m"
-	f1, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), []string{`\Seen`})
+	f1, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), []string{`\Seen`})
 	if err != nil {
 		t.Fatalf("Save uid=1: %v", err)
 	}
-	f2, err := box.Save("INBOX", strings.NewReader(body), 2, int64(len(body)), nil)
+	f2, _, err := box.Save("INBOX", strings.NewReader(body), 2, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("Save uid=2: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestSave_VSize_PureCRLF(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "From: a@b\r\n\r\nhello\r\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
+	filename, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestSave_VSize_PureLF(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "From: a@b\n\nhello\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
+	filename, vsize, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,6 +405,11 @@ func TestSave_VSize_PureLF(t *testing.T) {
 	if virt != wantVirt {
 		t.Errorf("virt=%d, want %d (= %d + %d LF count)", virt, wantVirt, len(body), strings.Count(body, "\n"))
 	}
+	// The value Save returns is what the caller records as MessageMeta.VSize;
+	// it must match the W= annotation so RFC822.SIZE cannot flip-flop (#892).
+	if vsize != wantVirt {
+		t.Errorf("Save returned vsize=%d, want %d", vsize, wantVirt)
+	}
 }
 
 func TestSave_VSize_MixedLineEndings(t *testing.T) {
@@ -414,7 +419,7 @@ func TestSave_VSize_MixedLineEndings(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "header: ok\r\nbare-lf-after\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
+	filename, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +435,7 @@ func TestList_PopulatesSizesFromFilename(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "From: a@b\n\nhello\n"
-	filename, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
+	filename, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +492,7 @@ func TestUIDListRoundtrip(t *testing.T) {
 
 	saved := make(map[string]uint32)
 	for _, uid := range []uint32{1, 2, 3} {
-		fn, err := box.Save("INBOX", strings.NewReader("m"), uid, 1, nil)
+		fn, _, err := box.Save("INBOX", strings.NewReader("m"), uid, 1, nil)
 		if err != nil {
 			t.Fatalf("Save uid=%d: %v", uid, err)
 		}
@@ -512,7 +517,7 @@ func TestReadUIDList_CacheHitSkipsDiskRead(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	box.Init() //nolint:errcheck
 
-	if _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil); err != nil {
+	if _, _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -545,7 +550,7 @@ func TestReadUIDList_CacheUpdatedAfterAppend(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	// Seed initial entry and populate cache.
-	fn1, err := box.Save("INBOX", strings.NewReader("msg1"), 1, 1, nil)
+	fn1, _, err := box.Save("INBOX", strings.NewReader("msg1"), 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +587,7 @@ func TestList_ReadDirCacheHitSkipsReadDir(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	box.Init() //nolint:errcheck
 
-	if _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil); err != nil {
+	if _, _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -614,7 +619,7 @@ func TestList_ReadDirCacheInvalidatedAfterSave(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	box.Init() //nolint:errcheck
 
-	if _, err := box.Save("INBOX", strings.NewReader("msg1"), 1, 1, nil); err != nil {
+	if _, _, err := box.Save("INBOX", strings.NewReader("msg1"), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := box.List("INBOX"); err != nil {
@@ -626,7 +631,7 @@ func TestList_ReadDirCacheInvalidatedAfterSave(t *testing.T) {
 	}
 
 	// Save a second message — must invalidate the cache.
-	if _, err := box.Save("INBOX", strings.NewReader("msg2"), 2, 1, nil); err != nil {
+	if _, _, err := box.Save("INBOX", strings.NewReader("msg2"), 2, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if c.entries != nil {
@@ -647,7 +652,7 @@ func TestList_ReadDirCacheInvalidatedAfterRemove(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	box.Init() //nolint:errcheck
 
-	fn, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil)
+	fn, _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +713,7 @@ func TestSyncTokenChangesOnDelivery(t *testing.T) {
 		t.Fatalf("settled token drifted with no change: %q -> %q", empty, again)
 	}
 
-	name, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil)
+	name, _, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

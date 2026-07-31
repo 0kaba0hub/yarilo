@@ -78,7 +78,7 @@ func saveRawMessage(t *testing.T, box mailbox.UserMailbox, uidx mailbox.UserInde
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, err := box.Save(testMbox.Name, strings.NewReader(raw), uid, int64(len(raw)), nil)
+	name, _, err := box.Save(testMbox.Name, strings.NewReader(raw), uid, int64(len(raw)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

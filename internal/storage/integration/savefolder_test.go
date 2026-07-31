@@ -68,7 +68,7 @@ func TestSaveFolderDoesNotOverwriteFreshNextUID(t *testing.T) {
 		if err != nil {
 			t.Fatalf("allocate A %d: %v", i, err)
 		}
-		filename, err := mbA.Save("INBOX", strings.NewReader("body"), uid, 0, nil)
+		filename, _, err := mbA.Save("INBOX", strings.NewReader("body"), uid, 0, nil)
 		if err != nil {
 			t.Fatalf("save A %d: %v", i, err)
 		}
@@ -90,7 +90,7 @@ func TestSaveFolderDoesNotOverwriteFreshNextUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocate A post: %v", err)
 	}
-	filename, err := mbA.Save("INBOX", strings.NewReader("after-save"), uid, 0, nil)
+	filename, _, err := mbA.Save("INBOX", strings.NewReader("after-save"), uid, 0, nil)
 	if err != nil {
 		t.Fatalf("save A post: %v", err)
 	}

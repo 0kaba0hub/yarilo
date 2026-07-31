@@ -258,7 +258,7 @@ func (a *adminUserContext) deliver(t *testing.T, body string) {
 	if err != nil {
 		t.Fatalf("allocateUID: %v", err)
 	}
-	filename, err := a.box.Save("INBOX", io.NopCloser(bytes.NewBufferString(body)), uid, int64(len(body)), nil)
+	filename, _, err := a.box.Save("INBOX", io.NopCloser(bytes.NewBufferString(body)), uid, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}

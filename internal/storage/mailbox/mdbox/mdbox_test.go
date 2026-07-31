@@ -49,7 +49,7 @@ func TestMapIndexFollowsINDEX(t *testing.T) {
 	t.Cleanup(func() { _ = mb.Close() })
 
 	body := "From: a@x\r\n\r\nbody\r\n"
-	if _, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil); err != nil {
+	if _, _, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
@@ -70,7 +70,7 @@ func TestMapIndexFollowsINDEX(t *testing.T) {
 func TestSaveFetchRoundTrip(t *testing.T) {
 	mb, _ := newTestUser(t)
 	body := "From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\nbody bytes\r\n"
-	name, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
+	name, _, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestMultiSaveAssignsDistinctMapUIDs(t *testing.T) {
 	mb, _ := newTestUser(t)
 	names := []string{}
 	for i, body := range []string{"first body", "second", "third one"} {
-		name, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil)
+		name, _, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil)
 		if err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
@@ -114,9 +114,14 @@ func TestMultiSaveAssignsDistinctMapUIDs(t *testing.T) {
 func TestSaveCRLFNormalisation(t *testing.T) {
 	mb, _ := newTestUser(t)
 	lf := "line one\nline two\n"
-	name, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil)
+	name, vsize, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
+	}
+	// Save must return the virtual (CRLF) size so the index records it and
+	// RFC822.SIZE stays stable: 18 physical bytes + 2 bare LFs = 20 (#892).
+	if wantV := uint32(len(lf) + 2); vsize != wantV {
+		t.Errorf("Save vsize = %d, want %d", vsize, wantV)
 	}
 	rc, err := mb.Fetch("INBOX", name, false)
 	if err != nil {
@@ -133,7 +138,7 @@ func TestSaveCRLFNormalisation(t *testing.T) {
 func TestCopyIsRefcountOnly(t *testing.T) {
 	mb, home := newTestUser(t)
 	body := "hello"
-	srcName, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
+	srcName, _, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -184,7 +189,7 @@ func TestCopyIsRefcountOnly(t *testing.T) {
 
 func TestRemoveDecrementsRefcountIdempotent(t *testing.T) {
 	mb, _ := newTestUser(t)
-	name, err := mb.Save("INBOX", strings.NewReader("payload"), 1, 7, nil)
+	name, _, err := mb.Save("INBOX", strings.NewReader("payload"), 1, 7, nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}

@@ -182,7 +182,7 @@ func TestReconcile_VanishedFileWritesTombstone(t *testing.T) {
 // filename trailer. And an unchanged folder is a no-op.
 func TestReconcile_PreservesIndexFlagsAndNoOp(t *testing.T) {
 	box, idx, folder := recSetup(t)
-	name, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil) // flagless :2,
+	name, _, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil) // flagless :2,
 	if err != nil {
 		t.Fatal(err)
 	}

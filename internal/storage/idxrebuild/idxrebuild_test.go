@@ -39,11 +39,11 @@ func TestRebuildFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	keep, err := box.Save("INBOX", strings.NewReader("a\n"), 1, 2, nil)
+	keep, _, err := box.Save("INBOX", strings.NewReader("a\n"), 1, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, err := box.Save("INBOX", strings.NewReader("b\n"), 2, 2, nil)
+	gone, _, err := box.Save("INBOX", strings.NewReader("b\n"), 2, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestRebuildFolder(t *testing.T) {
 	if err := box.Remove("INBOX", gone); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := box.Save("INBOX", strings.NewReader("c\n"), 0, 2, nil)
+	fresh, _, err := box.Save("INBOX", strings.NewReader("c\n"), 0, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,11 +108,11 @@ func TestExpungeMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	keep, err := box.Save("INBOX", strings.NewReader("a\n"), 1, 2, nil)
+	keep, _, err := box.Save("INBOX", strings.NewReader("a\n"), 1, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, err := box.Save("INBOX", strings.NewReader("b\n"), 2, 2, nil)
+	gone, _, err := box.Save("INBOX", strings.NewReader("b\n"), 2, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestExpungeMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An orphan appears on disk that the index never saw — must be left alone.
-	if _, err := box.Save("INBOX", strings.NewReader("c\n"), 0, 2, nil); err != nil {
+	if _, _, err := box.Save("INBOX", strings.NewReader("c\n"), 0, 2, nil); err != nil {
 		t.Fatal(err)
 	}
 

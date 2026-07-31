@@ -278,7 +278,7 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // uid→filename mapping is appended to the yarilo-uidlist sidecar
 // inline so subsequent List() / Fetch() can resolve UIDs without
 // a separate AppendUIDEntry call.
-func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, uint32, error) {
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
 		defer func() { <-u.b.writeSem }()
@@ -292,17 +292,17 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 	tmpPath := filepath.Join(folderPath, "tmp", basename)
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return "", fmt.Errorf("maildir: create tmp: %w", err)
+		return "", 0, fmt.Errorf("maildir: create tmp: %w", err)
 	}
 	sc := &sizeCounter{}
 	if _, err := io.Copy(f, io.TeeReader(r, sc)); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("maildir: write: %w", err)
+		return "", 0, fmt.Errorf("maildir: write: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmpPath)
-		return "", err
+		return "", 0, err
 	}
 
 	flagStr := encodeFlags(flags)
@@ -325,9 +325,9 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 		}
 		return nil
 	}); err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return finalName, nil
+	return finalName, sc.phys + sc.lfNoCR, nil
 }
 
 // appendUIDListLocked appends one entry to the yarilo-uidlist v3

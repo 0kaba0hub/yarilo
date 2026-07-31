@@ -71,7 +71,7 @@ func deliverMsg(t *testing.T, box *userMailbox, idx mailbox.UserIndex, folder, b
 	if err != nil {
 		t.Fatalf("alloc uid: %v", err)
 	}
-	fn, err := box.Save(folder, strings.NewReader(body), uid, int64(len(body)), nil)
+	fn, _, err := box.Save(folder, strings.NewReader(body), uid, int64(len(body)), nil)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestRebuildRestoresTaggedOrphanOptIn(t *testing.T) {
 
 	// Tagged orphan: saved into "Archive" (so its trailer records Archive) but
 	// never appended to any folder index.
-	if _, err := box.Save("Archive", strings.NewReader("tagged orphan\r\n"), 0, 14, nil); err != nil {
+	if _, _, err := box.Save("Archive", strings.NewReader("tagged orphan\r\n"), 0, 14, nil); err != nil {
 		t.Fatalf("save tagged orphan: %v", err)
 	}
 	// Untagged orphan: no ORIG_MAILBOX at all.
@@ -192,7 +192,7 @@ func TestRebuildDefaultDoesNotRestore(t *testing.T) {
 	box, idx := newBoxAndIndex(t, home)
 	deliverMsg(t, box, idx, "INBOX", "referenced\r\n")
 	taggedUID, _ := parseFilename(func() string {
-		fn, err := box.Save("Archive", strings.NewReader("tagged orphan\r\n"), 0, 14, nil)
+		fn, _, err := box.Save("Archive", strings.NewReader("tagged orphan\r\n"), 0, 14, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +232,7 @@ func TestRebuildZeroRefsUnreferenced(t *testing.T) {
 	deliverMsg(t, box, idx, "INBOX", "referenced message body\r\n")
 
 	// Unreferenced: written to storage, never appended to any folder index.
-	orphanFn, err := box.Save("INBOX", strings.NewReader("orphan body\r\n"), 0, 12, nil)
+	orphanFn, _, err := box.Save("INBOX", strings.NewReader("orphan body\r\n"), 0, 12, nil)
 	if err != nil {
 		t.Fatalf("save orphan: %v", err)
 	}

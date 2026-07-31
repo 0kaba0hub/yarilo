@@ -48,7 +48,7 @@ func TestSaveWritesFileHeaderOncePerFile(t *testing.T) {
 
 	bodies := []string{"first message\r\n", "second message\r\n", "third message\r\n"}
 	for _, b := range bodies {
-		if _, err := u.Save("INBOX", strings.NewReader(b), 0, int64(len(b)), nil); err != nil {
+		if _, _, err := u.Save("INBOX", strings.NewReader(b), 0, int64(len(b)), nil); err != nil {
 			t.Fatalf("save %q: %v", b, err)
 		}
 	}
