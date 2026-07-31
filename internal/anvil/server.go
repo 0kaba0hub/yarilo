@@ -243,6 +243,16 @@ func (s *Server) Sessions() []*SessionInfo {
 	return out
 }
 
+// SessionCount returns the number of tracked sessions. It takes the same s.mu
+// that every CONNECT/DISCONNECT/LOOKUP/HEARTBEAT handler holds, so it is the
+// cheap liveness probe (#904): if that hot-path mutex is wedged, this call
+// blocks and the watchdog trips. Unlike Sessions() it allocates nothing.
+func (s *Server) SessionCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sessions)
+}
+
 // ListenAndServe starts the anvil TCP server. When tlsCfg is non-nil the
 // listener uses mTLS. Blocks until ctx is cancelled; active sessions drain
 // before the function returns.
