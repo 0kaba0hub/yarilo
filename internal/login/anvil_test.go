@@ -262,9 +262,15 @@ func TestLogin_Anvil_RejectsWhenLimitReached(t *testing.T) {
 
 	fmt.Fprintf(conn, "A1 LOGIN alice secret\r\n")
 	resp, _ := rd.ReadString('\n')
-	// Expect NO [UNAVAILABLE] too many connections
+	// Expect NO [LIMIT] too many connections, THEN an untagged BYE announcing
+	// the close (#928 consistency) rather than a bare tagged NO then a silent
+	// drop.
 	if !strings.HasPrefix(resp, "A1 NO") {
 		t.Fatalf("expected A1 NO (too many connections), got: %q", resp)
+	}
+	bye, _ := rd.ReadString('\n')
+	if !strings.HasPrefix(bye, "* BYE") {
+		t.Fatalf("expected a * BYE close notice after the over-limit NO, got: %q", bye)
 	}
 }
 
