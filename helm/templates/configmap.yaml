@@ -915,6 +915,7 @@ data:
         liveness_watchdog_interval_seconds: {{ .Values.telemetry.livenessWatchdog.intervalSeconds }}
         liveness_watchdog_timeout_seconds: {{ .Values.telemetry.livenessWatchdog.timeoutSeconds }}
         liveness_watchdog_failure_threshold: {{ .Values.telemetry.livenessWatchdog.failureThreshold }}
+        liveness_watchdog_fault_injection_enabled: {{ .Values.telemetry.livenessWatchdog.faultInjectionEnabled }}
 
     log:
       level: {{ .Values.logLevel | quote }}

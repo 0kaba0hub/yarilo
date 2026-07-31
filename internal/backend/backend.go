@@ -507,7 +507,27 @@ func New(cfg *config.Config) (*Server, error) {
 	if telemAddr == "" {
 		telemAddr = ":8080"
 	}
-	telem := telemetry.New(telemAddr)
+	telemOpts := telemetry.Options{Addr: telemAddr, Lifecycle: true}
+	// Liveness watchdog (#904): the session/standalone self-check stats the mail
+	// store base and enters a local gate. A hung NFS handle makes the stat block,
+	// which the watchdog observes as a failure via its own timeout; the gate lets
+	// the fault-injection endpoint drive the same trip on a live pod. Both are
+	// opt-in and off by default.
+	if wd := cfg.Telemetry.LivenessWatchdog; wd.Enabled {
+		storePath := storeHealthPath(cfg.Storage)
+		var gate *telemetry.Gate
+		if wd.FaultInjectionEnabled {
+			gate = telemetry.NewGate()
+			telemOpts.Fault = gate
+		}
+		telemOpts.Watchdog = telemetry.WatchdogOptions{
+			Check:            storeLivenessCheck(storePath, gate),
+			Interval:         time.Duration(wd.IntervalSeconds) * time.Second,
+			Timeout:          time.Duration(wd.TimeoutSeconds) * time.Second,
+			FailureThreshold: wd.FailureThreshold,
+		}
+	}
+	telem := telemetry.NewWithOptions(telemOpts)
 
 	return &Server{
 		cfg:         cfg,
@@ -523,6 +543,49 @@ func New(cfg *config.Config) (*Server, error) {
 		pop3TLS:       pop3TLS,
 		submissionTLS: submissionTLS,
 	}, nil
+}
+
+// storeHealthPath derives a fixed directory to stat as the mail store liveness
+// signal (#904): the leading, non-templated prefix of the first configured
+// location. A path like "/mnt/mail/%d/%n" yields "/mnt/mail" — the NFS mount
+// whose stat hangs when the handle goes stale. Empty when nothing is
+// configured, which disables the stat leg (the gate leg still works).
+func storeHealthPath(sc config.StorageConfig) string {
+	for _, loc := range []string{sc.MailPath, sc.MaildirRoot, sc.MailHomeTemplate} {
+		if loc == "" {
+			continue
+		}
+		if i := strings.IndexByte(loc, '%'); i >= 0 {
+			loc = loc[:i]
+		}
+		loc = strings.TrimRight(loc, "/")
+		if loc == "" {
+			loc = "/"
+		}
+		return loc
+	}
+	return ""
+}
+
+// storeLivenessCheck returns the session/standalone self-check: enter the local
+// gate (so fault injection can wedge it) and stat the mail store base (so a hung
+// NFS handle is caught). It touches nothing shared, per the watchdog contract.
+// The stat runs without an explicit deadline because the watchdog already bounds
+// the whole check with its timeout — a hung stat is observed as a failure there.
+func storeLivenessCheck(storePath string, gate *telemetry.Gate) telemetry.LivenessCheck {
+	return func(ctx context.Context) error {
+		if gate != nil {
+			if err := gate.Check(ctx); err != nil {
+				return err
+			}
+		}
+		if storePath != "" {
+			if _, err := os.Stat(storePath); err != nil {
+				return fmt.Errorf("backend: mail store stat %q: %w", storePath, err)
+			}
+		}
+		return nil
+	}
 }
 
 // bindTCP binds addr and returns the listener, so a caller can hold every port

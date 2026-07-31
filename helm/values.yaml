@@ -1922,6 +1922,10 @@ telemetry:
     intervalSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 3
+    # POST /debug/fault/deadlock wedges the self-check so an operator can confirm
+    # on a live pod that the watchdog trips and the container restarts. A
+    # deliberate self-destruct switch — leave off outside a verification run.
+    faultInjectionEnabled: false
   serviceMonitor:
     enabled: false
     namespace: ""
