@@ -135,6 +135,21 @@ func TestProbeTCPUnreachable(t *testing.T) {
 	}
 }
 
+// TestWaitIsPlaneIndependent is the regression test for the live #903 failure: a
+// backend container sets YARILO_ADMIN_TYPE=backend, which made `yarctl wait` dispatch
+// into the backend plane ("unknown backend service \"wait\""). wait must be recognised
+// before the plane routing regardless of the env.
+func TestWaitIsPlaneIndependent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("YARILO_ADMIN_TYPE", "backend")
+	if err := dispatch([]string{"wait", "--timeout=1s", srv.URL}); err != nil {
+		t.Fatalf("wait must be plane-independent with YARILO_ADMIN_TYPE=backend: %v", err)
+	}
+}
+
 func TestDispatchWaitRequiresAURL(t *testing.T) {
 	if err := dispatchWait(nil); err == nil {
 		t.Fatal("wait without a URL must be an error, not a silent success")
