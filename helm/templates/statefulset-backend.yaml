@@ -57,16 +57,11 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.gracefulShutdown.terminationGracePeriodSeconds | default 45 }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
-        {{- include "yarilo.initWaitTCP" (dict "name" "wait-locks" "host" (printf "%s-locks.%s.svc" (include "yarilo.fullname" .) .Release.Namespace) "port" "9104" "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
-        {{- include "yarilo.initWaitTCP" (dict "name" "wait-redis" "host" (include "yarilo.redisInitHost" .) "port" (include "yarilo.redisInitPort" .) "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
-        {{- /* The session containers call backend.New, which builds the passdb chain
-               and pings the database, then exits on failure. Waiting only for locks
-               and Redis let the pod start and crash-loop against a database that was
-               not up yet. Rendered only when database.initAddr is configured. */}}
-        {{- if include "yarilo.dbInitHost" . }}
-        {{- include "yarilo.initWaitTCP" (dict "name" "wait-db" "host" (include "yarilo.dbInitHost" .) "port" (include "yarilo.dbInitPort" .) "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
-        {{- end }}
+      {{- /* No wait-* init containers (#903): each session container carries a
+             startupProbe (below) that waits for locks, Redis and (when applicable)
+             the DB before that container takes traffic. The fts / backend-api /
+             backend-reg sidecars start ungated — they fail fast on a missing
+             dependency the same way the session containers do. */}}
       containers:
         {{- range $p := $protocols }}
         - name: {{ $p.component }}
@@ -98,6 +93,11 @@ spec:
             - name: telemetry
               containerPort: {{ $p.telemetry }}
               protocol: TCP
+          {{- $targets := list (printf "tcp://%s-locks.%s.svc:9104" (include "yarilo.fullname" $root) $root.Release.Namespace) (printf "tcp://%s:%s" (include "yarilo.redisInitHost" $root) (include "yarilo.redisInitPort" $root)) }}
+          {{- if include "yarilo.dbInitHost" $root }}
+          {{- $targets = append $targets (printf "tcp://%s:%s" (include "yarilo.dbInitHost" $root) (include "yarilo.dbInitPort" $root)) }}
+          {{- end }}
+          {{- include "yarilo.depStartupProbe" (dict "probe" $root.Values.components.backend.startupProbe "targets" $targets) | nindent 10 }}
           # readiness = the pod's own freshness file for this protocol (#788),
           # the same signal the yarilo-backend-reg sidecar gates the heartbeat on.
           readinessProbe:
