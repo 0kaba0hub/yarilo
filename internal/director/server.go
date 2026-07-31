@@ -527,6 +527,22 @@ func (s *Server) StartMembership(ctx context.Context, seeds []string) {
 // See Membership.Leave.
 func (s *Server) GracefulLeave() { s.membership.Leave() }
 
+// RingBackendCount reads the ring under its lock — the liveness probe (#904).
+// The ring is the routing hot path every LOOKUP takes; if its mutex is wedged
+// the director can route no one, and this call blocks, tripping the watchdog.
+//
+// The probe takes the read-lock, so it also blocks while a write-lock is held.
+// That is safe only because every ring write section (backend add/remove,
+// SetUp, hash-resync rebuild) is O(ms) — far below the watchdog window. If a
+// long-running write section under r.mu is ever introduced, revisit the
+// watchdog timeout, or the probe would flag a legitimately busy ring as wedged.
+func (s *Server) RingBackendCount() int {
+	if s == nil || s.ring == nil {
+		return 0
+	}
+	return s.ring.Len()
+}
+
 // ListPeers returns the current ring membership (self included), formatted
 // as "ip:port" strings — kept for API/CLI compatibility (yarctl
 // `director ring status`); semantics changed from "statically configured

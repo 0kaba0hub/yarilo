@@ -127,6 +127,15 @@ func (r *Ring) Backends() []Backend {
 	return out
 }
 
+// Len returns the number of registered backends. It takes the same r.mu every
+// Lookup holds, allocation-free, so it is the liveness probe (#904): if the ring
+// mutex is wedged the director can route no one, and this call blocks.
+func (r *Ring) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.backends)
+}
+
 // CountBackendsInTag returns how many backends are registered under tag —
 // used by the #776 lease-expiry safety guard (never remove the last one).
 func (r *Ring) CountBackendsInTag(tag string) int {
