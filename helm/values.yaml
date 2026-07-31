@@ -180,6 +180,15 @@ components:
     ## per-protocol backend Deployments. This is the model behind a director.
     coLocated: true
     replicas: 3
+    ## startupProbe on each session container: waits for locks, Redis and (when a DB
+    ## host is configured) the database to accept a TCP connection before that
+    ## container takes traffic, replacing the wait-* init containers (#903). The
+    ## fts/backend-api/backend-reg sidecars are ungated. Code is unchanged (fail-fast).
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
     ## Internal mTLS for the pod's control channels (director registration,
     ## auth/anvil/locks dials). Shared by all containers in the pod.
     internalTLS:
