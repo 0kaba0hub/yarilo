@@ -45,6 +45,17 @@ var (
 	ErrTimeout = errors.New("auth/client: request timed out")
 )
 
+// The three client timeouts below — dial, request, write — are deliberately
+// hardcoded constants, NOT config knobs (#926). They are internal safety bounds
+// of the protocol client, not behavioural parameters an operator has a
+// legitimate reason to tune per deployment: a healthy write is microseconds, a
+// dial is sub-second, and the request budget is already generous for the
+// server's own tarpits. A value being hit means something is broken, not
+// mistuned — exposing them would promise a tunability this class does not have,
+// and yarilo's "every tunable is a config knob" rule is about Dovecot-modelled
+// features and behavioural parameters, not socket-level guards (Dovecot itself
+// keeps plenty of such constants). If a real need to tune them ever appears,
+// expose all three together as one auth-client config section, never piecemeal.
 const (
 	defaultDialTimeout = 5 * time.Second
 	// defaultRequestTimeout is generous on purpose: yarilo-auth deliberately
