@@ -61,6 +61,7 @@ type Server struct {
 	ready     atomic.Bool
 	checks    []Check
 	lifecycle bool
+	wd        *watchdog
 }
 
 // Addr resolves the telemetry listen address, letting the TELEMETRY_LISTEN env
@@ -105,6 +106,13 @@ type Options struct {
 	// draining, set this; without it the flag is ignored so a component that
 	// never calls SetReady is not stuck at not-ready forever.
 	Lifecycle bool
+	// Watchdog opts the component into timer-driven liveness: when its Check
+	// fails FailureThreshold times in a row, /healthz starts failing so the
+	// kubelet restarts a wedged-but-alive process. Left zero, /healthz stays
+	// unconditional — readiness and a dead accept loop's os.Exit(1) cover the
+	// rest, so this is only for the deadlock / hung-storage states nothing else
+	// can see.
+	Watchdog WatchdogOptions
 }
 
 // New creates a telemetry server listening on addr, serving the default registry
@@ -115,7 +123,7 @@ func New(addr string) *Server {
 
 // NewWithOptions creates a telemetry server from explicit options.
 func NewWithOptions(opts Options) *Server {
-	s := &Server{checks: opts.Checks, lifecycle: opts.Lifecycle}
+	s := &Server{checks: opts.Checks, lifecycle: opts.Lifecycle, wd: newWatchdog(opts.Watchdog)}
 
 	metrics := promhttp.Handler()
 	if opts.Registry != nil {
@@ -152,6 +160,9 @@ func (s *Server) IsReady() bool { return s.isReady() }
 
 // ListenAndServe starts the HTTP server. Blocks until ctx is done.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	if s.wd != nil {
+		go s.wd.run(ctx)
+	}
 	go func() {
 		<-ctx.Done()
 		s.srv.Shutdown(context.Background()) //nolint:errcheck
@@ -166,6 +177,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) Handler() http.Handler { return s.srv.Handler }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
+	// A tripped watchdog is the one liveness signal that restarts the container:
+	// the process is up and this handler runs, but its request path is wedged.
+	if s.wd.unhealthy() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("watchdog: liveness self-check failing\n")) //nolint:errcheck
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok")) //nolint:errcheck
 }

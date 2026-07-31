@@ -1913,6 +1913,15 @@ database:
 ## -------------------------------------------------------------------
 telemetry:
   listen: ":8080"
+  # Timer-driven liveness watchdog (#904). Disabled by default: it restarts a
+  # pod whose request path is wedged (a deadlock, a hung NFS handle) while the
+  # process and this HTTP server keep answering — so it is only meaningful once a
+  # component wires a self-check. Keep timeoutSeconds < intervalSeconds.
+  livenessWatchdog:
+    enabled: false
+    intervalSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
   serviceMonitor:
     enabled: false
     namespace: ""
@@ -1928,6 +1937,9 @@ livenessProbe:
     port: telemetry
   initialDelaySeconds: 10
   periodSeconds: 30
+  # Stacks on top of the watchdog's own consecutive-failure threshold so a
+  # single slow /healthz cannot restart a busy pod (#904).
+  failureThreshold: 3
 
 readinessProbe:
   httpGet:
