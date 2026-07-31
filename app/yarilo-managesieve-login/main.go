@@ -123,6 +123,7 @@ func main() {
 		DialRetries:         cfg.General.StartupDialRetries,
 		LookupHoldMax:       cfg.Login.LookupHoldMax,
 		TransientRetries:    cfg.Login.TransientRetries,
+		TransientReloginCap: cfg.Login.TransientReloginCap,
 		LookupHoldBackoff:   time.Duration(cfg.Login.LookupHoldBackoffMs) * time.Millisecond,
 		HAProxy:             cfg.ManageSieveLoginService.HAProxy,
 		HAProxyTimeout:      haproxyTimeout,
