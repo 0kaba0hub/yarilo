@@ -107,10 +107,11 @@ type Options struct {
 	// session — where answering on the first error turns a blip into a visible
 	// login failure the client can only recover from by reconnecting.
 	TransientRetries int
-	// TransientReloginCap caps how many times a client may LOGIN again on the
-	// SAME connection after a transient failure (#896), before the connection is
-	// finally closed. Independent of AuthMaxAttempts (bad passwords). 0 selects
-	// the default (3).
+	// TransientReloginCap is the number of transient failures one connection
+	// tolerates (#896), each answered with a tagged NO, before it is closed —
+	// counted from the first attempt, so cap=N permits N tagged NOs (N-1 actual
+	// re-LOGINs between them). Independent of AuthMaxAttempts (bad passwords).
+	// 0 selects the default (3).
 	TransientReloginCap int
 	// AnvilConns is how many long-lived connections the shared anvil pool keeps
 	// (#878). 0 selects anvil.DefaultPoolSize. The anvil protocol carries no

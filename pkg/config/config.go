@@ -753,10 +753,12 @@ type LoginConfig struct {
 	// transient_retries above are exhausted, the proxy answers a tagged NO
 	// [UNAVAILABLE] but keeps the connection OPEN and returns to the pre-auth
 	// command loop, so the client can LOGIN again on the SAME connection — no
-	// new TCP + TLS handshake. This caps how many such client re-LOGINs one
-	// connection may make before it is finally closed, so a wedged backend
-	// cannot accumulate sockets that never progress. It is independent of the
-	// bad-password limit (auth_max_attempts). 0 uses the default (3).
+	// new TCP + TLS handshake. The cap is the number of transient failures one
+	// connection tolerates, each answered with a tagged NO, before it is closed
+	// — counted from the first attempt, so cap=N permits N tagged NOs (N-1 actual
+	// re-LOGINs between them). It bounds a wedged backend from accumulating
+	// sockets, and is independent of the bad-password limit (auth_max_attempts).
+	// 0 uses the default (3).
 	TransientReloginCap int `koanf:"transient_relogin_cap"`
 }
 
