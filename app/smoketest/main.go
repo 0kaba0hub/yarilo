@@ -36,6 +36,11 @@ var (
 	flagManageSievePass = flag.String("managesieve-pass", "", "ManageSieve PLAIN auth password")
 	flagTelemetry       = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
 	flagTimeout         = flag.Duration("timeout", 10*time.Second, "per-check timeout")
+	// The IMAP verify/search steps ride the server's FTS path, whose catch-up
+	// loop legitimately waits up to fts_timeout (30s) while the per-mailbox index
+	// lags under load. The client read deadline must sit ABOVE that budget or a
+	// legitimate wait reads as an i/o timeout and fails the run (#934).
+	flagIMAPReadTimeout = flag.Duration("imap-read-timeout", 45*time.Second, "IMAP read deadline for the sieve verify/search steps (must exceed the server fts catch-up budget)")
 	flagInsecure        = flag.Bool("insecure", false, "skip TLS certificate verification")
 	flagSMTPMX          = flag.Bool("smtp-mx", false, "check SMTP MX EHLO (port -smtp-mx-port)")
 	flagSMTPSub         = flag.Bool("smtp-sub", false, "check SMTP submission EHLO+STARTTLS (port -smtp-sub-port)")
