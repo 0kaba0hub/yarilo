@@ -638,7 +638,10 @@ func (s *Server) handleConn(conn net.Conn) {
 			// blip: re-LOGIN cannot fix it, so close rather than hold the socket
 			// open for the re-login budget (#896 review).
 			log.Error("login: auth_addr not configured")
-			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+			// This path closes (outcomeClose), so announce the close rather than
+			// a keep-open transient code — a NO (TRYLATER)/454 here would tell the
+			// client to retry a socket we are about to drop (#928).
+			writeProtoClose(authConn, s.opts.Protocol, "service temporarily unavailable")
 			s.incResult("unavailable")
 			return outcomeClose, nil
 		}
@@ -899,6 +902,10 @@ func (s *Server) handleConn(conn net.Conn) {
 		// outcomeRetry.
 		reloginCount++
 		if reloginCount >= s.transientReloginCap() {
+			// The transient budget is spent; this connection closes now, so
+			// announce it (#928) instead of dropping the socket right after the
+			// keep-open NO/454 the failing attempt already sent.
+			writeProtoClose(authConn, s.opts.Protocol, "too many transient failures, closing")
 			return
 		}
 		var retryExtTLS *tls.Config
@@ -1556,14 +1563,48 @@ func writeProtoError(conn net.Conn, p Protocol, tag, imapCode, msg string) {
 			fmt.Fprintf(conn, "-ERR %s\r\n", msg) //nolint:errcheck
 		}
 	case ProtocolSubmission, ProtocolSubmissions:
-		fmt.Fprintf(conn, "421 4.3.0 %s\r\n", msg) //nolint:errcheck
+		// A transient failure keeps the connection open (#896/#928), so it must
+		// NOT announce a close: 421 means "closing transmission channel" (RFC
+		// 5321) and a compliant client hangs up. 454 is the temporary
+		// authentication failure (RFC 4954) that leaves the session open.
+		switch imapCode {
+		case imapCodeUnavailable:
+			fmt.Fprintf(conn, "454 4.7.0 %s\r\n", msg) //nolint:errcheck
+		default:
+			fmt.Fprintf(conn, "421 4.3.0 %s\r\n", msg) //nolint:errcheck
+		}
 	case ProtocolManageSieve:
+		// Likewise BYE announces a close (RFC 5804): a client that gets it hangs
+		// up, defeating the #896 keep-open. Transient → NO (TRYLATER); over-limit
+		// → plain NO (it precedes a close, but NO+close is what Dovecot does).
 		switch imapCode {
 		case imapCodeAuthenticationFail:
 			fmt.Fprintf(conn, "NO (AUTHENTICATIONFAILED) %q\r\n", msg) //nolint:errcheck
+		case imapCodeUnavailable:
+			fmt.Fprintf(conn, "NO (TRYLATER) %q\r\n", msg) //nolint:errcheck
 		default:
-			fmt.Fprintf(conn, "BYE %q\r\n", msg) //nolint:errcheck
+			fmt.Fprintf(conn, "NO %q\r\n", msg) //nolint:errcheck
 		}
+	}
+}
+
+// writeProtoClose sends a protocol-correct close announcement — the message that
+// legitimately precedes closing the connection (#928). Its counterpart
+// writeProtoError sends the per-command "keep the connection open" form; keeping
+// the two apart is the whole point: a transient failure must not be answered
+// with a close notice while #896 holds the socket open for a retry, and a real
+// close (the transient_relogin_cap, a permanent misconfiguration) must announce
+// itself rather than dropping the socket unannounced.
+func writeProtoClose(conn net.Conn, p Protocol, msg string) {
+	switch p {
+	case ProtocolIMAP, ProtocolIMAPS:
+		fmt.Fprintf(conn, "* BYE %s\r\n", msg) //nolint:errcheck
+	case ProtocolPOP3, ProtocolPOP3S:
+		fmt.Fprintf(conn, "-ERR [SYS/TEMP] %s\r\n", msg) //nolint:errcheck
+	case ProtocolSubmission, ProtocolSubmissions:
+		fmt.Fprintf(conn, "421 4.3.0 %s\r\n", msg) //nolint:errcheck
+	case ProtocolManageSieve:
+		fmt.Fprintf(conn, "BYE %q\r\n", msg) //nolint:errcheck
 	}
 }
 

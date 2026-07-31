@@ -77,10 +77,18 @@ func TestTransientReloginKeepsConnectionOpen(t *testing.T) {
 		t.Fatalf("second response = %q, want tagged NO [UNAVAILABLE]", resp2)
 	}
 
-	// Cap (2) reached: the connection is now closed.
+	// Cap (2) reached: an untagged BYE announces the close (#928), then the
+	// connection is closed.
 	cli.SetReadDeadline(time.Now().Add(2 * time.Second))
+	bye, err := crd.ReadString('\n')
+	if err != nil {
+		t.Fatalf("expected a BYE close notice at the cap: %v", err)
+	}
+	if !strings.Contains(bye, "BYE") {
+		t.Fatalf("cap close notice = %q, want an untagged BYE", bye)
+	}
 	if _, err := crd.ReadString('\n'); err == nil {
-		t.Fatal("connection should be closed after the re-login cap is reached")
+		t.Fatal("connection should be closed after the BYE at the re-login cap")
 	}
 }
 
