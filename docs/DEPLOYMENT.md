@@ -468,6 +468,42 @@ background TTL sweeper — no external dependencies.
 Embedded mode has no HA — state is ephemeral; on process crash every lock is lost. Acceptable
 for unit tests and CLI dev runs; not used in k8s deployments.
 
+### Liveness vs readiness — why `yarilo-locks` has no watchdog self-check (#904)
+
+The split, stated plainly so it is not "completed" back into a dependency probe:
+
+- **liveness** = *local process state*. It restarts a process that is up but whose own request
+  path is wedged.
+- **readiness** = *Redis reachability*. It removes a pod from rotation when its backend is
+  unreachable, and returns it automatically once Redis answers.
+
+`yarilo-locks` in **remote mode deliberately wires no liveness self-check**, because it has no
+local state that could wedge independently of Redis. The grant path is
+`handleLock → RedisBackend.Acquire → Redis Lua script`, directly: `RedisBackend` holds no mutex,
+no queue, no in-process shard — the acquire *is* the Redis round-trip. The only in-process grant
+mutex is `MemoryBackend.mu`, and that backend is used **only** in embedded/test mode, never in
+k8s. So the "up but locally wedged" state a liveness self-check exists to catch does not exist
+here — there is nothing between accept and the Redis call to deadlock.
+
+A self-check that round-trips Redis (the shape the #904 issue first sketched for this component)
+is **rejected**: it re-creates the exact failure the watchdog guard-rail forbids. A hung Redis
+(TCP alive, no replies) would hang that probe on **every** locks replica at once, restarting the
+whole HA pool synchronously into a backoff loop — and a restart cannot fix a hung Redis. Both a
+down Redis and a hung Redis already have the correct answer: the readiness ping hangs or fails,
+the pod leaves rotation without a restart, and rejoins the moment Redis responds. Not-ready is
+the right degradation; dead is not.
+
+The dead-accept-loop and hard-crash cases are covered by `os.Exit(1)` on `Serve` error, no probe
+involved. So the coverage is complete without a locks watchdog: crash → `os.Exit`; Redis
+unreachable/hung → readiness; and there is no third, local-only failure mode to add.
+
+**Revisit trigger.** If remote-mode `yarilo-locks` ever grows a genuine local stage in the grant
+path — an in-process cache, a grant queue, an in-process shard — this decision is reopened: that
+stage *can* wedge independently of Redis, and it should then get a liveness self-check that
+acquires and releases a **probe-scoped** lock through that stage, bounded by a timeout well above
+the worst-case acquire, and never reaching Redis. Until such a stage exists, there is nothing
+local to probe.
+
 ---
 
 ## Standalone deployment — single-node k8s, scale-out by replicaCount
