@@ -200,6 +200,49 @@ Config (snake_case, section-prefixed; `yarilo.yaml` + Helm `values.yaml`):
   `yarilo-backend-reg` sidecar; there is **no** per-protocol registration path
   (config-not-binary: one registration mechanism, no modes).
 
+### backend process liveness — the watchdog probe (#904)
+
+Distinct from ring registration above: that governs whether a backend is a
+routing target, this governs whether a wedged container is **restarted**.
+
+The three probes on each co-located protocol container answer three different
+questions, and only one of them can restart the container:
+
+- **startupProbe** — dependencies (locks, Redis, DB) are reachable before the
+  container takes traffic (#903). Runs once at start.
+- **readinessProbe** — the pod's per-protocol freshness file is fresh (#788), so
+  the login proxy only routes to a container that is currently serving. Removes
+  from endpoints, never restarts.
+- **livenessProbe** — `/healthz`, which is unconditional until the **liveness
+  watchdog** trips it. The watchdog is a timer-driven self-check (stat the mail
+  store base, enter a local gate) that fails `/healthz` when the request path is
+  wedged in a way nothing else sees: a stale NFS handle hanging every mailbox op,
+  or an in-process deadlock, while the accept loop and this HTTP server keep
+  answering. Restarting is then the only correct response, and liveness is the
+  only probe that restarts.
+
+**Why liveness is gated on the watchdog.** Without a self-check, `/healthz`
+answers 200 as long as the telemetry server runs, so a liveness probe on it is
+inert — it can only ever catch the telemetry server itself dying, which the
+process's own `os.Exit(1)` on a dead accept loop already covers. So the backend
+carried no livenessProbe historically. The probe is therefore rendered **only
+when `telemetry.livenessWatchdog.enabled`** is set: enabling the watchdog is what
+makes `/healthz` a real signal, and only then does watching it with a restart
+make sense. Off by default preserves the prior no-restart behaviour exactly.
+
+**Guard rails against restarting a healthy busy pod:** the watchdog trips only
+after several consecutive failed self-checks, the self-check timeout is shorter
+than its interval, the probe has its own `failureThreshold` on top, and the
+self-check touches **nothing shared** — so a hung NFS handle restarts the one pod
+that mounts it, and a database hiccup restarts nothing. A single protocol
+container restarts alone; the other protocols on the pod keep serving.
+
+Config (snake_case, section-prefixed; `yarilo.yaml` + Helm `values.yaml`):
+`telemetry.liveness_watchdog.liveness_watchdog_enabled` / `_interval_seconds` /
+`_timeout_seconds` / `_failure_threshold`, and `_fault_injection_enabled` — a
+self-destruct switch that exposes `POST /debug/fault/deadlock` to confirm the
+restart path on a live pod, off by default.
+
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
 - `yarilo-anvil` — connection/session limits (read + write from both sides)

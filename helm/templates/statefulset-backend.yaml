@@ -108,6 +108,17 @@ spec:
                 - test $(( $(date +%s) - $(stat -c %Y {{ printf "%s/%s" $readyDir $p.name }} 2>/dev/null || echo 0) )) -lt {{ $stale }}
             periodSeconds: 5
             failureThreshold: 2
+          {{- if $root.Values.telemetry.livenessWatchdog.enabled }}
+          # Liveness watches /healthz so a tripped watchdog — a wedged request
+          # path (hung NFS handle, deadlock) the readiness file and startupProbe
+          # cannot see — restarts THIS protocol container while the others keep
+          # serving (#904). Gated on the watchdog: with no self-check /healthz
+          # never fails, so a liveness here would be inert, and leaving it off
+          # preserves the backend's prior no-liveness behaviour by default. The
+          # "telemetry" port name resolves to this container's own port.
+          livenessProbe:
+            {{- toYaml $root.Values.livenessProbe | nindent 12 }}
+          {{- end }}
           volumeMounts:
             {{- include "yarilo.backendVolumeMounts" (dict "root" $root "itls" $itls) | nindent 12 }}
             {{- /* external TLS: a protocol backend that terminates its own TLS
