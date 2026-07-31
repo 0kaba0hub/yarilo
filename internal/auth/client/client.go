@@ -14,7 +14,6 @@ package client
 
 import (
 	"bufio"
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -24,8 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
 // Sentinel errors returned by Authenticate, Verify, and LookupUser.
@@ -78,9 +75,13 @@ const (
 	keepAlive         = 15 * time.Second
 	keepAliveInterval = 15 * time.Second
 	keepAliveCount    = 4
-	// reconnectAttempts bounds one redial burst. Callers waiting on the
-	// reconnect give up on their own request timeout, whichever comes first.
-	reconnectAttempts = 5
+	// Reconnect backoff bounds (#932): the redial loop starts here and doubles up
+	// to the cap, and NEVER gives up while the client is open. A caller waiting
+	// on the reconnect still bails on its own request timeout, but the loop keeps
+	// going, so the client recovers within maxReconnectBackoff of auth returning
+	// — however long the outage — instead of becoming a permanent zombie.
+	initialReconnectBackoff = 200 * time.Millisecond
+	maxReconnectBackoff     = 5 * time.Second
 )
 
 // AuthResult carries the fields from a successful AUTH OK response.
@@ -133,6 +134,10 @@ type Client struct {
 	gen     uint64        // bumped on every successful dial
 	ready   chan struct{} // non-nil while reconnecting; closed on success
 	pending map[string]chan string
+
+	// done is closed by Close so the redial loop, which never gives up on its
+	// own (#932), wakes from its backoff and exits promptly.
+	done chan struct{}
 }
 
 // Dial connects to addr (TCP or Unix socket) and performs the VERSION
@@ -157,6 +162,7 @@ func New(addr string, tlsCfg *tls.Config, opts Options) (*Client, error) {
 		tlsCfg:  tlsCfg,
 		opts:    opts,
 		pending: make(map[string]chan string),
+		done:    make(chan struct{}),
 	}
 	conn, rd, err := c.dial()
 	if err != nil {
@@ -180,6 +186,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.state = stateClosed
+	close(c.done)
 	conn := c.conn
 	c.conn = nil
 	pending := c.pending
@@ -361,7 +368,13 @@ func (c *Client) awaitLive(deadline time.Time) error {
 		c.mu.Unlock()
 
 		if ready == nil {
-			return nil // reconnect finished between the check and here
+			// Invariant (#932): redial never abandons an open client, so `ready`
+			// is non-nil for as long as the state is reconnecting. A nil here can
+			// therefore only be a benign lost race with a redial that just went
+			// live between the switch above and this read — re-loop so the switch
+			// observes stateLive, rather than mis-reporting "ready" (the old
+			// behaviour that turned the give-up state into a busy-spin zombie).
+			continue
 		}
 		timer := time.NewTimer(time.Until(deadline))
 		select {
@@ -403,45 +416,52 @@ func (c *Client) beginReconnect(gen uint64) {
 }
 
 func (c *Client) redial() {
-	var conn net.Conn
-	var rd *bufio.Reader
-	err := retry.Do(context.Background(), reconnectAttempts, 200*time.Millisecond, func() error {
-		var derr error
-		conn, rd, derr = c.dial()
-		return derr
-	})
-
-	c.mu.Lock()
-	if c.state == stateClosed {
-		c.mu.Unlock()
-		if conn != nil {
-			_ = conn.Close()
+	// The redial goroutine OWNS recovery and never gives up while the client is
+	// open (#932). An auth outage that outlasts a fixed retry budget (a pod
+	// replacement is 10-60s) previously made this return, leaving the client
+	// stuck in stateReconnecting with no goroutine able to revive it — a
+	// permanent, CPU-burning zombie, since no request path calls beginReconnect
+	// again. Instead we loop with a capped exponential backoff until a dial
+	// succeeds or Close wakes us.
+	backoff := initialReconnectBackoff
+	for {
+		conn, rd, derr := c.dial()
+		if derr == nil {
+			c.mu.Lock()
+			if c.state == stateClosed {
+				c.mu.Unlock()
+				_ = conn.Close()
+				return
+			}
+			ready := c.ready
+			c.ready = nil
+			c.conn = conn
+			c.state = stateLive
+			c.gen++
+			gen := c.gen
+			c.mu.Unlock()
+			if ready != nil {
+				close(ready)
+			}
+			go c.readLoop(rd, gen)
+			return
 		}
-		return
-	}
-	ready := c.ready
-	c.ready = nil
-	if err != nil {
-		// Stay reconnecting-but-unblocked: waiters wake, see a non-live
-		// state, and re-enter with their own remaining deadline, which
-		// triggers a fresh redial burst rather than wedging forever.
-		c.state = stateReconnecting
-		c.mu.Unlock()
-		if ready != nil {
-			close(ready)
-		}
-		return
-	}
-	c.conn = conn
-	c.state = stateLive
-	c.gen++
-	gen := c.gen
-	c.mu.Unlock()
 
-	if ready != nil {
-		close(ready)
+		c.mu.Lock()
+		closed := c.state == stateClosed
+		c.mu.Unlock()
+		if closed {
+			return
+		}
+		select {
+		case <-time.After(backoff):
+		case <-c.done:
+			return
+		}
+		if backoff *= 2; backoff > maxReconnectBackoff {
+			backoff = maxReconnectBackoff
+		}
 	}
-	go c.readLoop(rd, gen)
 }
 
 // readLoop demultiplexes replies by request id until the connection breaks.
