@@ -25,8 +25,8 @@ spec:
     spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
-        {{- include "yarilo.initWaitTCP" (dict "name" "wait-redis" "host" (include "yarilo.redisInitHost" .) "port" (include "yarilo.redisInitPort" .) "image" (.Values.initContainerImage | default "busybox:1.36")) | nindent 8 }}
+      {{- /* No wait-redis init container (#903): the startupProbe below waits for
+             Redis before the pod takes traffic. */}}
       containers:
         - name: yarilo-quota-status
           image: {{ include "yarilo.image" . }}
@@ -47,6 +47,7 @@ spec:
               protocol: TCP
             - name: telemetry
               containerPort: 8080
+          {{- include "yarilo.depStartupProbe" (dict "probe" .Values.components.quotaStatus.startupProbe "targets" (list (printf "tcp://%s:%s" (include "yarilo.redisInitHost" .) (include "yarilo.redisInitPort" .)))) | nindent 10 }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
