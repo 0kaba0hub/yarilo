@@ -59,9 +59,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tel := startTelemetry(cfg.Telemetry.Listen)
-
 	srv := anvil.NewServer(cfg.General.Limits.MaxUserIPConnections)
+
+	// Telemetry starts after the server exists so the liveness watchdog can probe
+	// its session-tracking mutex (#904).
+	tel := startTelemetry(cfg.Telemetry, srv)
 	errCh := make(chan error, 1)
 	// Bind before readiness: ListenAndServe would bind inside the goroutine, so the
 	// pod would announce itself ready without knowing the port came up.
@@ -103,13 +105,47 @@ func main() {
 
 // startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
 // returns the server so the caller can report readiness once its listener is
-// actually bound.
-func startTelemetry(addr string) *telemetry.Server {
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+// actually bound. When the liveness watchdog is enabled it probes the anvil
+// session-tracking mutex (#904).
+func startTelemetry(cfg config.TelemetryConfig, srv *anvil.Server) *telemetry.Server {
+	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true}
+	if wd := cfg.LivenessWatchdog; wd.Enabled {
+		var gate *telemetry.Gate
+		if wd.FaultInjectionEnabled {
+			gate = telemetry.NewGate()
+			opts.Fault = gate
+		}
+		opts.Watchdog = telemetry.WatchdogOptions{
+			Check:            anvilLivenessCheck(srv, gate),
+			Interval:         time.Duration(wd.IntervalSeconds) * time.Second,
+			Timeout:          time.Duration(wd.TimeoutSeconds) * time.Second,
+			FailureThreshold: wd.FailureThreshold,
+		}
+	}
+	tel := telemetry.NewWithOptions(opts)
 	go func() {
 		if err := tel.ListenAndServe(context.Background()); err != nil {
 			slog.Error("telemetry server failed", "err", err)
 		}
 	}()
 	return tel
+}
+
+// anvilLivenessCheck exercises the session-tracking mutex to prove the anvil hot
+// path is not deadlocked (#904). Reading the session count takes the same s.mu
+// every CONNECT/DISCONNECT/LOOKUP holds; a handler wedged under that lock blocks
+// the read, which the watchdog observes as a failure via its own timeout. All
+// state is in-process, so this touches nothing shared.
+func anvilLivenessCheck(srv *anvil.Server, gate *telemetry.Gate) telemetry.LivenessCheck {
+	return func(ctx context.Context) error {
+		if gate != nil {
+			if err := gate.Check(ctx); err != nil {
+				return err
+			}
+		}
+		if srv != nil {
+			srv.SessionCount()
+		}
+		return nil
+	}
 }
