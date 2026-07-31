@@ -1793,6 +1793,11 @@ type LivenessWatchdogConfig struct {
 	TimeoutSeconds int `koanf:"liveness_watchdog_timeout_seconds"`
 	// FailureThreshold is how many consecutive failures fail /healthz.
 	FailureThreshold int `koanf:"liveness_watchdog_failure_threshold"`
+	// FaultInjectionEnabled registers POST /debug/fault/deadlock, which wedges
+	// the self-check gate so an operator can confirm on a live pod that the
+	// watchdog trips and the container restarts. Off by default; it is a
+	// deliberate self-destruct switch, safe only because it is gated here.
+	FaultInjectionEnabled bool `koanf:"liveness_watchdog_fault_injection_enabled"`
 }
 
 type LogConfig struct {

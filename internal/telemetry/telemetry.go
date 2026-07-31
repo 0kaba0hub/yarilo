@@ -62,6 +62,7 @@ type Server struct {
 	checks    []Check
 	lifecycle bool
 	wd        *watchdog
+	fault     *Gate
 }
 
 // Addr resolves the telemetry listen address, letting the TELEMETRY_LISTEN env
@@ -113,6 +114,11 @@ type Options struct {
 	// rest, so this is only for the deadlock / hung-storage states nothing else
 	// can see.
 	Watchdog WatchdogOptions
+	// Fault, when non-nil, registers POST /debug/fault/deadlock to wedge this
+	// gate so a live pod can be driven into the tripped state to confirm the
+	// watchdog end to end (#904). It is off unless the component builds it from
+	// an explicit config opt-in; the same gate is what the watchdog Check enters.
+	Fault *Gate
 }
 
 // New creates a telemetry server listening on addr, serving the default registry
@@ -123,7 +129,7 @@ func New(addr string) *Server {
 
 // NewWithOptions creates a telemetry server from explicit options.
 func NewWithOptions(opts Options) *Server {
-	s := &Server{checks: opts.Checks, lifecycle: opts.Lifecycle, wd: newWatchdog(opts.Watchdog)}
+	s := &Server{checks: opts.Checks, lifecycle: opts.Lifecycle, wd: newWatchdog(opts.Watchdog), fault: opts.Fault}
 
 	metrics := promhttp.Handler()
 	if opts.Registry != nil {
@@ -134,6 +140,9 @@ func NewWithOptions(opts Options) *Server {
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/readyz", s.readyz)
 	mux.HandleFunc("/debug/loglevel", s.logLevel)
+	if s.fault != nil {
+		mux.HandleFunc("/debug/fault/deadlock", s.faultHandler)
+	}
 	mux.Handle("/metrics", metrics)
 	publishLogLevel()
 	s.srv = &http.Server{Addr: opts.Addr, Handler: mux}
