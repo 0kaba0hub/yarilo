@@ -62,6 +62,21 @@ login:
   ## and the fix is upstream, not a larger budget.
   transientRetries: 0
 
+  ## transientReloginCap (#896) is the DIFFERENT, second-layer knob. Once the
+  ## per-hop transientRetries above are exhausted, the proxy answers a tagged
+  ## NO [UNAVAILABLE] but keeps the connection OPEN and returns to the pre-auth
+  ## command loop, so the client can LOGIN again on the SAME connection — no new
+  ## TCP + TLS handshake, which is the whole cost #896 removes.
+  ## The cap is the number of transient failures ONE connection tolerates, each
+  ## answered with a tagged NO, before it is finally closed — so a wedged backend
+  ## cannot accumulate sockets that never progress. Counted from the first
+  ## attempt, so cap=N permits N tagged NOs, i.e. N-1 actual re-LOGINs between
+  ## them. Independent of auth_max_attempts (bad passwords). 0 = default (3); a
+  ## negative value opts out and closes on the first transient, as before #896.
+  ##   transientRetries    = internal per-hop retries BEFORE the client sees a NO
+  ##   transientReloginCap = transient NOs tolerated per connection AFTER them
+  transientReloginCap: 0
+
 ## -------------------------------------------------------------------
 ## Graceful rollout (#857)
 ## -------------------------------------------------------------------

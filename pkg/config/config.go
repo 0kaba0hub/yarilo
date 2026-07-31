@@ -749,6 +749,17 @@ type LoginConfig struct {
 	// failure the client can only recover from by reconnecting. 0 uses the default
 	// (3); a negative value opts out and restores fail-on-first-error.
 	TransientRetries int `koanf:"transient_retries"`
+	// TransientReloginCap is the DIFFERENT knob (#896): after the per-hop
+	// transient_retries above are exhausted, the proxy answers a tagged NO
+	// [UNAVAILABLE] but keeps the connection OPEN and returns to the pre-auth
+	// command loop, so the client can LOGIN again on the SAME connection — no
+	// new TCP + TLS handshake. The cap is the number of transient failures one
+	// connection tolerates, each answered with a tagged NO, before it is closed
+	// — counted from the first attempt, so cap=N permits N tagged NOs (N-1 actual
+	// re-LOGINs between them). It bounds a wedged backend from accumulating
+	// sockets, and is independent of the bad-password limit (auth_max_attempts).
+	// 0 uses the default (3).
+	TransientReloginCap int `koanf:"transient_relogin_cap"`
 }
 
 type SASLLoginConfig struct {

@@ -107,6 +107,12 @@ type Options struct {
 	// session — where answering on the first error turns a blip into a visible
 	// login failure the client can only recover from by reconnecting.
 	TransientRetries int
+	// TransientReloginCap is the number of transient failures one connection
+	// tolerates (#896), each answered with a tagged NO, before it is closed —
+	// counted from the first attempt, so cap=N permits N tagged NOs (N-1 actual
+	// re-LOGINs between them). Independent of AuthMaxAttempts (bad passwords).
+	// 0 selects the default (3).
+	TransientReloginCap int
 	// AnvilConns is how many long-lived connections the shared anvil pool keeps
 	// (#878). 0 selects anvil.DefaultPoolSize. The anvil protocol carries no
 	// request id, so a connection serves one command at a time; each command is a
@@ -424,6 +430,20 @@ func (s *Server) transientRetries() int {
 	return defaultTransientRetries
 }
 
+// defaultTransientReloginCap is the client-side re-LOGIN budget per connection
+// (#896). Distinct from transientRetries, which is the per-hop internal budget.
+const defaultTransientReloginCap = 3
+
+func (s *Server) transientReloginCap() int {
+	if s.opts.TransientReloginCap > 0 {
+		return s.opts.TransientReloginCap
+	}
+	if s.opts.TransientReloginCap < 0 {
+		return 0 // explicit opt-out: close on the first transient, as before #896
+	}
+	return defaultTransientReloginCap
+}
+
 // newSessionID returns a Postfix-style long queue ID:
 //
 //	{base52(secs, ≥6)}{base52(usec, 4)}z{seed(4)}{base51(seq, ≥1)}
@@ -532,6 +552,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
+// loginOutcome is the result of one attemptLogin pass (#896): whether the
+// connection should be proxied, closed, or kept open for the client to retry.
+type loginOutcome int
+
+const (
+	outcomeDone  loginOutcome = iota // authenticated and brought up; proxy it
+	outcomeClose                     // fatal (bad-password exhausted, over limit); close
+	outcomeRetry                     // transient; a tagged NO is sent, keep the connection for a re-LOGIN
+)
+
+// established is the set of resources a successful login pass hands back to
+// handleConn to proxy and own for the session's lifetime.
+type established struct {
+	bs           *backendSession
+	releaseAnvil func() // anvil heartbeat-cancel + Disconnect; nil when anvil is disabled
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(60 * time.Second)) //nolint:errcheck
@@ -573,246 +610,312 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	s.observePhase(phasePreamble, preambleStart)
 
-	// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
-	if s.opts.AuthAddr == "" {
-		log.Error("login: auth_addr not configured")
-		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-		s.incResult("unavailable")
-		return
-	}
-	// Shared multiplexed client (#878) — no per-login handshake. The phase
-	// metric stays: it should now read ~0 except on the very first login after
-	// a pod start or an auth reconnect, which is exactly the signal that the
-	// reuse is working.
-	authDialStart := time.Now()
-	var authCl *authclient.Client
-	for attempt := 0; ; attempt++ {
-		var derr error
-		authCl, derr = s.authClient()
-		if derr == nil {
-			break
-		}
-		if attempt >= s.transientRetries() {
-			log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "attempts", attempt+1, "err", derr)
-			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-			// Observed on failure too: a timed-out dial is the single most
-			// important latency sample there is, and dropping it would make the
-			// histogram look healthy exactly when the path is broken.
-			s.observePhase(phaseAuthDial, authDialStart)
-			s.incTransientExhausted(stageAuthDial)
-			s.incResult("unavailable")
-			return
-		}
-		log.Warn("login: yarilo-auth dial failed, retrying", "addr", s.opts.AuthAddr, "attempt", attempt+1, "err", derr)
-		s.incTransientRetry(stageAuthDial)
-		time.Sleep(transientRetryBackoff)
-	}
-	s.observePhase(phaseAuthDial, authDialStart)
-
-	// Auth retry loop: keep the connection open after a bad-password failure.
-	// Up to maxAuthAttempts attempts; after the last one send an untagged
-	// BYE (IMAP) / -ERR (POP3) and close.
-	maxAuthAttempts := s.opts.AuthMaxAttempts
-	if maxAuthAttempts <= 0 {
-		maxAuthAttempts = 3
-	}
-	var authResult *authclient.AuthResult
-	for attempt := 1; ; attempt++ {
-		// Native inbound client-IP forwarding (#742): the SINGLE point where a
-		// proxy-forwarded address replaces the socket IP, so every downstream
-		// consumer below (auth, allow_nets, anvil, the backend preamble ADDR=)
-		// inherits it. pre.forwardIP is populated by the pre-auth parser ONLY
-		// when this listener has xclient_protocol enabled; here we additionally
-		// require the socket peer — already PROXY-rewritten if HAProxy also ran
-		// — to be inside general.xclient.trusted_nets. Runs at the top of the
-		// retry loop so a forward arriving in a retry iteration is honoured too.
-		if pre.forwardIP != "" && clientIP != pre.forwardIP {
-			if ipInNets(clientIP, s.opts.XClientNets) {
-				log = log.With("orig_ip", clientIP, "fwd_ip", pre.forwardIP, "fwd_port", pre.forwardPort, "fwd_via", pre.forwardSource)
-				log.Info("login: client ip forwarded")
-				clientIP = pre.forwardIP
-			} else if pre.forwardSource == "xclient" {
-				// An untrusted peer sending XCLIENT is an anomaly — someone is
-				// claiming to be a proxy.
-				log.Warn("login: ignoring XCLIENT from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
-				pre.forwardIP = ""
-			} else {
-				// A bare IMAP ID with x-originating-ip is routine MUA chatter;
-				// Debug, not Warn, to avoid log spam on every ordinary login.
-				log.Debug("login: ignoring forwarded ID from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
-				pre.forwardIP = ""
+	// attemptLogin runs one full authenticate→route→bring-up pass. On a transient
+	// failure it returns outcomeRetry, having written a tagged NO [UNAVAILABLE]
+	// and released anything it acquired, so handleConn can loop back into the
+	// pre-auth command loop and let the client LOGIN again on the SAME connection
+	// — no new TCP + TLS handshake (#896). On success it returns the established
+	// resources for handleConn to proxy and own. pre/authConn/authRd are the
+	// outer per-connection state; the bad-password sub-loop mutates them in place.
+	var est *established
+	attempt := func() (loginOutcome, *established) {
+		// committed is flipped only on a successful bring-up; until then the
+		// deferred unwind releases whatever this pass acquired (the anvil slot),
+		// so a transient failure after anvil.Connect cannot leak a connection
+		// slot. On success the release is handed to handleConn instead, so the
+		// slot lives for the whole proxied session.
+		committed := false
+		var releaseAnvil func()
+		defer func() {
+			if !committed && releaseAnvil != nil {
+				releaseAnvil()
 			}
-		}
+		}()
 
-		var aerr error
-		// A temp-fail means "try again" by definition, so retry it here instead of
-		// turning a passdb blip into a login the client can only recover from by
-		// reconnecting (#896). Safe to repeat: yarilo-auth deliberately does NOT
-		// touch the auth-penalty counter on internal failures, so a retry cannot
-		// tarpit the user.
-		for tfAttempt := 0; ; tfAttempt++ {
-			authStart := time.Now()
-			authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
-			// One observation per attempt, not per login: the retry loop keeps the
-			// connection open across a bad-password retry, and each attempt is its
-			// own round-trip to yarilo-auth.
-			s.observePhase(phaseAuth, authStart)
-			if !errors.Is(aerr, authclient.ErrTempFail) {
+		// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
+		if s.opts.AuthAddr == "" {
+			log.Error("login: auth_addr not configured")
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+			s.incResult("unavailable")
+			return outcomeRetry, nil
+		}
+		// Shared multiplexed client (#878) — no per-login handshake. The phase
+		// metric stays: it should now read ~0 except on the very first login after
+		// a pod start or an auth reconnect, which is exactly the signal that the
+		// reuse is working.
+		authDialStart := time.Now()
+		var authCl *authclient.Client
+		for attempt := 0; ; attempt++ {
+			var derr error
+			authCl, derr = s.authClient()
+			if derr == nil {
 				break
 			}
-			if tfAttempt >= s.transientRetries() {
-				log.Warn("login: auth temp fail", "user", pre.username, "attempts", tfAttempt+1, "result", "fail")
+			if attempt >= s.transientRetries() {
+				log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "attempts", attempt+1, "err", derr)
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-				s.incTransientExhausted(stageAuth)
+				// Observed on failure too: a timed-out dial is the single most
+				// important latency sample there is, and dropping it would make the
+				// histogram look healthy exactly when the path is broken.
+				s.observePhase(phaseAuthDial, authDialStart)
+				s.incTransientExhausted(stageAuthDial)
 				s.incResult("unavailable")
-				return
+				return outcomeRetry, nil
 			}
-			log.Warn("login: auth temp fail, retrying", "user", pre.username, "attempt", tfAttempt+1)
-			s.incTransientRetry(stageAuth)
+			log.Warn("login: yarilo-auth dial failed, retrying", "addr", s.opts.AuthAddr, "attempt", attempt+1, "err", derr)
+			s.incTransientRetry(stageAuthDial)
 			time.Sleep(transientRetryBackoff)
 		}
+		s.observePhase(phaseAuthDial, authDialStart)
 
-		authFailed := aerr != nil
-		if aerr == nil {
-			if authResult.Nologin {
-				log.Info("login: auth", "user", pre.username, "result", "fail", "reason", "nologin", "attempt", attempt)
-				authFailed = true
-			} else if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
-				log.Info("login: auth", "user", pre.username, "result", "fail", "reason", "ip_not_in_allow_nets", "attempt", attempt)
-				authFailed = true
+		// Auth retry loop: keep the connection open after a bad-password failure.
+		// Up to maxAuthAttempts attempts; after the last one send an untagged
+		// BYE (IMAP) / -ERR (POP3) and close.
+		maxAuthAttempts := s.opts.AuthMaxAttempts
+		if maxAuthAttempts <= 0 {
+			maxAuthAttempts = 3
+		}
+		var authResult *authclient.AuthResult
+		for attempt := 1; ; attempt++ {
+			// Native inbound client-IP forwarding (#742): the SINGLE point where a
+			// proxy-forwarded address replaces the socket IP, so every downstream
+			// consumer below (auth, allow_nets, anvil, the backend preamble ADDR=)
+			// inherits it. pre.forwardIP is populated by the pre-auth parser ONLY
+			// when this listener has xclient_protocol enabled; here we additionally
+			// require the socket peer — already PROXY-rewritten if HAProxy also ran
+			// — to be inside general.xclient.trusted_nets. Runs at the top of the
+			// retry loop so a forward arriving in a retry iteration is honoured too.
+			if pre.forwardIP != "" && clientIP != pre.forwardIP {
+				if ipInNets(clientIP, s.opts.XClientNets) {
+					log = log.With("orig_ip", clientIP, "fwd_ip", pre.forwardIP, "fwd_port", pre.forwardPort, "fwd_via", pre.forwardSource)
+					log.Info("login: client ip forwarded")
+					clientIP = pre.forwardIP
+				} else if pre.forwardSource == "xclient" {
+					// An untrusted peer sending XCLIENT is an anomaly — someone is
+					// claiming to be a proxy.
+					log.Warn("login: ignoring XCLIENT from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
+					pre.forwardIP = ""
+				} else {
+					// A bare IMAP ID with x-originating-ip is routine MUA chatter;
+					// Debug, not Warn, to avoid log spam on every ordinary login.
+					log.Debug("login: ignoring forwarded ID from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
+					pre.forwardIP = ""
+				}
 			}
-		} else {
-			log.Info("login: auth", "user", pre.username, "result", "fail", "attempt", attempt)
+
+			var aerr error
+			// A temp-fail means "try again" by definition, so retry it here instead of
+			// turning a passdb blip into a login the client can only recover from by
+			// reconnecting (#896). Safe to repeat: yarilo-auth deliberately does NOT
+			// touch the auth-penalty counter on internal failures, so a retry cannot
+			// tarpit the user.
+			for tfAttempt := 0; ; tfAttempt++ {
+				authStart := time.Now()
+				authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
+				// One observation per attempt, not per login: the retry loop keeps the
+				// connection open across a bad-password retry, and each attempt is its
+				// own round-trip to yarilo-auth.
+				s.observePhase(phaseAuth, authStart)
+				if !errors.Is(aerr, authclient.ErrTempFail) {
+					break
+				}
+				if tfAttempt >= s.transientRetries() {
+					log.Warn("login: auth temp fail", "user", pre.username, "attempts", tfAttempt+1, "result", "fail")
+					writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+					s.incTransientExhausted(stageAuth)
+					s.incResult("unavailable")
+					return outcomeRetry, nil
+				}
+				log.Warn("login: auth temp fail, retrying", "user", pre.username, "attempt", tfAttempt+1)
+				s.incTransientRetry(stageAuth)
+				time.Sleep(transientRetryBackoff)
+			}
+
+			authFailed := aerr != nil
+			if aerr == nil {
+				if authResult.Nologin {
+					log.Info("login: auth", "user", pre.username, "result", "fail", "reason", "nologin", "attempt", attempt)
+					authFailed = true
+				} else if authResult.AllowNets != "" && !checkAllowNets(clientIP, authResult.AllowNets) {
+					log.Info("login: auth", "user", pre.username, "result", "fail", "reason", "ip_not_in_allow_nets", "attempt", attempt)
+					authFailed = true
+				}
+			} else {
+				log.Info("login: auth", "user", pre.username, "result", "fail", "attempt", attempt)
+			}
+
+			if !authFailed {
+				log.Info("login: auth", "user", pre.username, "result", "ok", "attempt", attempt)
+				break
+			}
+
+			if attempt >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
+				writeProtoError(authConn, s.opts.Protocol, "", imapCodeAuthenticationFail, "Too many failed authentications")
+				return outcomeClose, nil
+			}
+			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
+
+			var retryExtTLS *tls.Config
+			if _, ok := authConn.(*tls.Conn); !ok {
+				retryExtTLS = s.opts.StarttlsTLS
+			}
+			pre, authConn, authRd, err = continueAuth(authConn, authRd, retryExtTLS, s.opts.Protocol, s.opts)
+			if err != nil {
+				log.Debug("login: preamble retry", "err", err)
+				return outcomeClose, nil
+			}
+			log.Info("login: auth retry", "user", pre.username, "attempt", attempt+1)
 		}
 
-		if !authFailed {
-			log.Info("login: auth", "user", pre.username, "result", "ok", "attempt", attempt)
+		// Find backend address: fixed addr (standalone) or director LOOKUP (director mode).
+		// tag is hoisted so the fast-fail re-route (#782) below can re-LOOKUP with it.
+		var backendAddr, tag string
+		if s.opts.BackendAddr != "" {
+			backendAddr = s.opts.BackendAddr
+		} else {
+			// Per-user director_tag (#746, from the passdb/userdb response) wins
+			// over the login component's static Tag config — lets a shared
+			// login fleet route different users to different tag-pools.
+			tag = s.opts.Tag
+			if authResult.DirectorTag != "" {
+				tag = authResult.DirectorTag
+			}
+			var err error
+			lookupStart := time.Now()
+			backendAddr, err = s.directorLookupWithHold(pre.username, tag, log)
+			s.observePhase(phaseDirectorLookup, lookupStart)
+			if err != nil {
+				log.Warn("login: director lookup failed", "user", pre.username, "err", err)
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
+				s.incResult("unavailable")
+				return outcomeRetry, nil
+			}
+		}
+
+		// Anvil connection limit check. Shared pool (#878): no per-session dial. The
+		// phase metric now measures CONNECT over an already-open connection, so it
+		// reads as a round trip rather than a full mTLS handshake.
+		if s.opts.AnvilAddr != "" {
+			anvilStart := time.Now()
+			ap := s.anvilClient()
+			svc := anvilService(s.opts.Protocol)
+			cerr := ap.Connect(sessID, pre.username, clientIP, svc)
+			s.observePhase(phaseAnvilConnect, anvilStart)
+			switch {
+			case errors.Is(cerr, anvil.ErrTooManyConns):
+				log.Warn("login: anvil", "user", pre.username, "result", "fail", "reason", "too_many_connections")
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
+				return outcomeClose, nil
+			case cerr != nil:
+				log.Error("login: anvil connect failed", "addr", s.opts.AnvilAddr, "err", cerr)
+				if !s.opts.AnvilFailOpen {
+					writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
+					s.incResult("unavailable")
+					return outcomeRetry, nil
+				}
+			default:
+				log.Info("login: anvil", "user", pre.username, "result", "ok")
+				// #814: record the routed backend in anvil so `who` can scope to the
+				// local backend. Best-effort.
+				if beIP, _, splitErr := net.SplitHostPort(backendAddr); splitErr == nil {
+					if berr := ap.Backend(sessID, beIP); berr != nil {
+						log.Debug("login: anvil backend push", "err", berr)
+					}
+				}
+				hbCtx, hbCancel := context.WithCancel(context.Background())
+				hbDone := make(chan struct{})
+				go func() {
+					defer close(hbDone)
+					interval := anvil.DefaultSessionTTL / 3
+					if err := ap.HeartbeatLoop(hbCtx, sessID, interval, nil); err != nil {
+						log.Debug("login: anvil heartbeat loop", "err", err)
+					}
+				}()
+				// The pool outlives the session, so there is nothing to close here —
+				// only the registration to release. Captured as releaseAnvil rather
+				// than deferred directly: on a transient failure before bring-up the
+				// closure's committed-defer runs it (releasing the slot before the
+				// re-LOGIN), and on success it is handed to handleConn to defer for
+				// the whole proxied session (#896).
+				releaseAnvil = func() {
+					hbCancel()
+					<-hbDone
+					if err := ap.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
+						log.Debug("login: anvil disconnect", "err", err)
+					}
+				}
+			}
+		}
+
+		// Bring up the backend session, retrying transient failures (#896). Dial,
+		// preamble and greeting are retried as one unit because a failed greeting
+		// leaves the connection unusable — the whole bring-up has to be redone, and
+		// dialBackendWithReroute may land on a different backend next time.
+		backendDialStart := time.Now()
+		var bs *backendSession
+		retries := s.transientRetries()
+		for attempt := 0; ; attempt++ {
+			var berr error
+			bs, berr = s.openBackendSession(pre, authResult, tag, backendAddr, clientIP, sessID, log)
+			if berr == nil {
+				break
+			}
+			if attempt >= retries {
+				log.Error("login: backend session failed", "addr", backendAddr, "attempts", attempt+1, "err", berr)
+				s.observePhase(phaseBackendDial, backendDialStart)
+				s.incTransientExhausted(stageBackendSession)
+				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
+				s.incResult("unavailable")
+				return outcomeRetry, nil
+			}
+			log.Warn("login: backend session failed, retrying", "addr", backendAddr, "attempt", attempt+1, "err", berr)
+			s.incTransientRetry(stageBackendSession)
+			time.Sleep(transientRetryBackoff)
+		}
+		s.observePhase(phaseBackendDial, backendDialStart)
+
+		committed = true
+		return outcomeDone, &established{bs: bs, releaseAnvil: releaseAnvil}
+	}
+
+	// Transient re-login loop (#896): a transient failure keeps the connection
+	// open (a tagged NO [UNAVAILABLE] was sent) and returns to the pre-auth
+	// command loop so the client can LOGIN again on this same connection — no new
+	// TCP + TLS handshake. Bounded by transient_relogin_cap so a wedged backend
+	// cannot accumulate sockets; the per-connection deadline is the other bound.
+	// This budget is independent of AuthMaxAttempts (bad passwords).
+	for reloginCount := 0; ; {
+		outcome, e := attempt()
+		if outcome == outcomeDone {
+			est = e
 			break
 		}
-
-		if attempt >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
-			writeProtoError(authConn, s.opts.Protocol, "", imapCodeAuthenticationFail, "Too many failed authentications")
+		if outcome == outcomeClose {
 			return
 		}
-		writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Authentication failed.")
-
+		// outcomeRetry.
+		reloginCount++
+		if reloginCount >= s.transientReloginCap() {
+			return
+		}
 		var retryExtTLS *tls.Config
 		if _, ok := authConn.(*tls.Conn); !ok {
 			retryExtTLS = s.opts.StarttlsTLS
 		}
-		pre, authConn, authRd, err = continueAuth(authConn, authRd, retryExtTLS, s.opts.Protocol, s.opts)
-		if err != nil {
-			log.Debug("login: preamble retry", "err", err)
+		var cerr error
+		pre, authConn, authRd, cerr = continueAuth(authConn, authRd, retryExtTLS, s.opts.Protocol, s.opts)
+		if cerr != nil {
+			log.Debug("login: transient re-login: client did not retry", "err", cerr)
 			return
 		}
-		log.Info("login: auth retry", "user", pre.username, "attempt", attempt+1)
+		log.Info("login: transient re-login", "attempt", reloginCount+1)
 	}
 
-	// Find backend address: fixed addr (standalone) or director LOOKUP (director mode).
-	// tag is hoisted so the fast-fail re-route (#782) below can re-LOOKUP with it.
-	var backendAddr, tag string
-	if s.opts.BackendAddr != "" {
-		backendAddr = s.opts.BackendAddr
-	} else {
-		// Per-user director_tag (#746, from the passdb/userdb response) wins
-		// over the login component's static Tag config — lets a shared
-		// login fleet route different users to different tag-pools.
-		tag = s.opts.Tag
-		if authResult.DirectorTag != "" {
-			tag = authResult.DirectorTag
-		}
-		var err error
-		lookupStart := time.Now()
-		backendAddr, err = s.directorLookupWithHold(pre.username, tag, log)
-		s.observePhase(phaseDirectorLookup, lookupStart)
-		if err != nil {
-			log.Warn("login: director lookup failed", "user", pre.username, "err", err)
-			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
-			s.incResult("unavailable")
-			return
-		}
-	}
-
-	// Anvil connection limit check. Shared pool (#878): no per-session dial. The
-	// phase metric now measures CONNECT over an already-open connection, so it
-	// reads as a round trip rather than a full mTLS handshake.
-	if s.opts.AnvilAddr != "" {
-		anvilStart := time.Now()
-		ap := s.anvilClient()
-		svc := anvilService(s.opts.Protocol)
-		cerr := ap.Connect(sessID, pre.username, clientIP, svc)
-		s.observePhase(phaseAnvilConnect, anvilStart)
-		switch {
-		case errors.Is(cerr, anvil.ErrTooManyConns):
-			log.Warn("login: anvil", "user", pre.username, "result", "fail", "reason", "too_many_connections")
-			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeLimit, "too many connections")
-			return
-		case cerr != nil:
-			log.Error("login: anvil connect failed", "addr", s.opts.AnvilAddr, "err", cerr)
-			if !s.opts.AnvilFailOpen {
-				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-				s.incResult("unavailable")
-				return
-			}
-		default:
-			log.Info("login: anvil", "user", pre.username, "result", "ok")
-			// #814: record the routed backend in anvil so `who` can scope to the
-			// local backend. Best-effort.
-			if beIP, _, splitErr := net.SplitHostPort(backendAddr); splitErr == nil {
-				if berr := ap.Backend(sessID, beIP); berr != nil {
-					log.Debug("login: anvil backend push", "err", berr)
-				}
-			}
-			hbCtx, hbCancel := context.WithCancel(context.Background())
-			hbDone := make(chan struct{})
-			go func() {
-				defer close(hbDone)
-				interval := anvil.DefaultSessionTTL / 3
-				if err := ap.HeartbeatLoop(hbCtx, sessID, interval, nil); err != nil {
-					log.Debug("login: anvil heartbeat loop", "err", err)
-				}
-			}()
-			// The pool outlives the session, so there is nothing to close here —
-			// only the registration to release.
-			defer func() {
-				hbCancel()
-				<-hbDone
-				if err := ap.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
-					log.Debug("login: anvil disconnect", "err", err)
-				}
-			}()
-		}
-	}
-
-	// Bring up the backend session, retrying transient failures (#896). Dial,
-	// preamble and greeting are retried as one unit because a failed greeting
-	// leaves the connection unusable — the whole bring-up has to be redone, and
-	// dialBackendWithReroute may land on a different backend next time.
-	backendDialStart := time.Now()
-	var bs *backendSession
-	retries := s.transientRetries()
-	for attempt := 0; ; attempt++ {
-		var berr error
-		bs, berr = s.openBackendSession(pre, authResult, tag, backendAddr, clientIP, sessID, log)
-		if berr == nil {
-			break
-		}
-		if attempt >= retries {
-			log.Error("login: backend session failed", "addr", backendAddr, "attempts", attempt+1, "err", berr)
-			s.observePhase(phaseBackendDial, backendDialStart)
-			s.incTransientExhausted(stageBackendSession)
-			writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "backend unavailable")
-			s.incResult("unavailable")
-			return
-		}
-		log.Warn("login: backend session failed, retrying", "addr", backendAddr, "attempt", attempt+1, "err", berr)
-		s.incTransientRetry(stageBackendSession)
-		time.Sleep(transientRetryBackoff)
-	}
-	s.observePhase(phaseBackendDial, backendDialStart)
-
-	backendConn, backendRd, backendAddr, backendCaps := bs.conn, bs.rd, bs.addr, bs.caps
+	backendConn, backendRd, backendAddr, backendCaps := est.bs.conn, est.bs.rd, est.bs.addr, est.bs.caps
 	defer backendConn.Close()
+	if est.releaseAnvil != nil {
+		defer est.releaseAnvil()
+	}
 
 	// Register the session for kick support only once it is actually up — a
 	// bring-up that never completed has nothing to kick.
