@@ -10,7 +10,7 @@
 #     container + yarilo-fts + yarilo-backend-api + the registration sidecar,
 #     sharing one pod IP and one NFS RWX shard. A user hashes to one pod that
 #     serves ALL protocols (the reference: "one mail-host owns every per-user resource").
-#   - Shared services: yarilo-auth, yarilo-anvil, yarilo-locks (remote/Redis),
+#   - Shared services: yarilo-auth, yarilo-warden, yarilo-locks (remote/Redis),
 #     yarilo-quota-status (Postfix policy service, stays separate).
 #   - Full internal mTLS between all internal components.
 #
@@ -127,7 +127,7 @@ components:
     token:
       backend: redis
       redis_addr: "redis://<redis-host>:6379/0"
-  anvil:
+  warden:
     internalTLS: { enabled: true, secretName: yarilo-internal-tls }
   locks:                            # cross-pod write coordination (Redis-backed)
     enabled: true

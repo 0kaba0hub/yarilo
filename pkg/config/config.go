@@ -22,7 +22,7 @@ type Config struct {
 	Auth               AuthConfig                   `koanf:"auth"`
 	InternalTLS        InternalTLSConfig            `koanf:"internal_tls"`
 	AuthService        AuthServiceConfig            `koanf:"auth_service"`
-	AnvilService       AnvilServiceConfig           `koanf:"anvil_service"`
+	WardenService      WardenServiceConfig          `koanf:"warden_service"`
 	DirectorService    DirectorServiceConfig        `koanf:"director_service"`
 	BackendRegister    BackendRegisterConfig        `koanf:"backend_register"`
 	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
@@ -294,7 +294,7 @@ type GeneralConfig struct {
 	XClient XClientConfig `koanf:"xclient"`
 	Limits  LimitsConfig  `koanf:"limits"`
 	// StartupDialRetries is the maximum number of dial attempts when connecting
-	// to external dependencies (anvil, Redis) at startup. Default 3.
+	// to external dependencies (warden, Redis) at startup. Default 3.
 	StartupDialRetries int `koanf:"startup_dial_retries"`
 }
 
@@ -324,7 +324,7 @@ type HAProxyConfig struct {
 // consumed first, so by the time XCLIENT/ID is read the socket peer already
 // reflects the PROXY-rewritten address. The trusted-net check runs against THAT
 // peer (it is the real adjacent hop), and the XCLIENT/ID forward wins as the
-// final client IP applied to auth, allow_nets, anvil, and the backend preamble.
+// final client IP applied to auth, allow_nets, warden, and the backend preamble.
 type XClientConfig struct {
 	TrustedNets []string `koanf:"trusted_nets"` // CIDRs whose forwarded client IP (XCLIENT/ID) is trusted
 }
@@ -389,7 +389,7 @@ type LMTPProtocolConfig struct {
 	// VerboseReplies includes diagnostic details in error responses. Default: false.
 	VerboseReplies bool `koanf:"verbose_replies"`
 	// UserConcurrencyLimit is the max concurrent deliveries per user enforced
-	// cluster-wide via yarilo-anvil at RCPT TO. Default: 10.
+	// cluster-wide via yarilo-warden at RCPT TO. Default: 10.
 	// Value 0 is a hard configuration error — operators that genuinely want
 	// no limit MUST set -1 ("unlimited"), so a missing or zeroed config can
 	// never silently turn off the DoS guard.
@@ -785,19 +785,19 @@ type SASLLoginConfig struct {
 	Shutdown    ShutdownConfig `koanf:"shutdown"`
 }
 
-// AnvilServiceConfig configures the standalone yarilo-anvil process.
-type AnvilServiceConfig struct {
+// WardenServiceConfig configures the standalone yarilo-warden process.
+type WardenServiceConfig struct {
 	Listen string `koanf:"listen"`
-	// Addr is the address login pods use to dial yarilo-anvil.
+	// Addr is the address login pods use to dial yarilo-warden.
 	// Defaults to Listen when empty (single-process / dev mode).
-	// In k8s set to the ClusterIP service DNS, e.g. "yarilo-anvil:9101".
+	// In k8s set to the ClusterIP service DNS, e.g. "yarilo-warden:9101".
 	Addr     string         `koanf:"addr"`
 	Shutdown ShutdownConfig `koanf:"shutdown"`
-	// FailOpen controls login-pod behaviour when yarilo-anvil is unreachable.
+	// FailOpen controls login-pod behaviour when yarilo-warden is unreachable.
 	// true = allow the session; false (default) = reject the session.
 	FailOpen bool `koanf:"fail_open"`
 	// Conns is how many long-lived connections a login pod keeps to
-	// yarilo-anvil (#878). 0 selects anvil.DefaultPoolSize. Sessions no longer
+	// yarilo-warden (#878). 0 selects warden.DefaultPoolSize. Sessions no longer
 	// own a connection: every command carries the session id and the server
 	// keeps no per-connection state, so the connection count is decoupled from
 	// the login rate. The protocol has no request id, so one connection serves
@@ -810,16 +810,16 @@ type AnvilServiceConfig struct {
 	// RedisAddr is the Redis URL used when StateBackend="redis".
 	// Format: redis://[password@]host:port/db
 	RedisAddr string `koanf:"redis_addr"`
-	// KeyPrefix / ChannelPrefix namespace anvil's Redis keys and Pub/Sub
+	// KeyPrefix / ChannelPrefix namespace warden's Redis keys and Pub/Sub
 	// channels (#938/#939 practice). Empty keeps the service-name defaults
-	// ("yarilo:anvil:" / "yarilo:anvil:events:"). ChannelPrefix namespaces the
+	// ("yarilo:warden:" / "yarilo:warden:events:"). ChannelPrefix namespaces the
 	// kick bus (#908 PR3); keys use KeyPrefix.
 	KeyPrefix     string `koanf:"key_prefix"`
 	ChannelPrefix string `koanf:"channel_prefix"`
 }
 
-// ClientAddr returns the address login pods use to dial yarilo-anvil.
-func (c AnvilServiceConfig) ClientAddr() string {
+// ClientAddr returns the address login pods use to dial yarilo-warden.
+func (c WardenServiceConfig) ClientAddr() string {
 	if c.Addr != "" {
 		return c.Addr
 	}
@@ -1432,7 +1432,7 @@ type AuthConfig struct {
 	// Penalty groups the cross-pod IP-bound auth-fail backoff.
 	// Opt-in: Enabled=false skips both Lookup and Update entirely
 	// (every auth runs at full speed regardless of prior fails).
-	// When enabled, requires the anvil service to be reachable.
+	// When enabled, requires the warden service to be reachable.
 	Penalty AuthPenaltyConfig `koanf:"penalty"`
 
 	// Token configures the one-time session token issued by yarilo-auth
@@ -1544,7 +1544,7 @@ type OAuth2Entry struct {
 }
 
 // AuthPenaltyConfig configures cross-pod IP-bound auth backoff.
-// State lives in the anvil service so a single attacker IP pays
+// State lives in the warden service so a single attacker IP pays
 // the exponential cost across every auth pod they land on.
 type AuthPenaltyConfig struct {
 	// Enabled toggles the feature. Default false.
@@ -1924,7 +1924,7 @@ func Load(path string) (*Config, error) {
 			Key:     "/etc/yarilo/tls/tls.key",
 			CA:      "/etc/yarilo/tls/ca.crt",
 		},
-		AnvilService: AnvilServiceConfig{
+		WardenService: WardenServiceConfig{
 			Listen: ":9101",
 			Shutdown: ShutdownConfig{
 				SessionGracePeriod: 30,

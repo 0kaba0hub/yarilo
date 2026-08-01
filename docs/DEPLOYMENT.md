@@ -35,7 +35,7 @@ This is where **TLS terminate + passdb auth + allow_nets enforcement** happens.
 5. On failure: send `NO Invalid credentials` to the client. Backend is never contacted.
 6. On success: send proto-specific auth OK to the client, then dial the backend and send:
    ```
-   YARILO\tADDR=<real-client-ip>\tSESSION=<anvil-id>\tUSER=<username>\tTOKEN=<64hex>\n
+   YARILO\tADDR=<real-client-ip>\tSESSION=<warden-id>\tUSER=<username>\tTOKEN=<64hex>\n
    ```
 7. Backend reads the preamble, calls yarilo-auth `VERIFY token` to confirm the session,
    and enters pre-authenticated state. No passdb round-trip on the backend side.
@@ -245,7 +245,7 @@ restart path on a live pod, off by default.
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
-- `yarilo-anvil` — connection/session limits (read + write from both sides)
+- `yarilo-warden` — connection/session limits (read + write from both sides)
 
 ### Why `yarilo-locks` is per backend rather than shared
 - Each backend tag has its **own NFS share** — a separate data scope.
@@ -254,7 +254,7 @@ restart path on a live pod, off by default.
 - Blast-radius isolation: a `yarilo-locks` failure in tag A does not affect tag B.
 - No global bottleneck.
 
-### Who writes and reads `yarilo-anvil`
+### Who writes and reads `yarilo-warden`
 
 | Writer | What it writes |
 |:---|:---|
@@ -267,14 +267,14 @@ restart path on a live pod, off by default.
 | director's login proxies | Before admitting a new connection — enforce per-user/per-IP limits on connections + sessions |
 | `yarilo-lmtp-login` | Per RCPT TO — enforce per-user delivery concurrency limits before fan-out |
 
-Anvil merges conn-state (from the director / lmtp-login) with session-state (from the backends) — written
+Warden merges conn-state (from the director / lmtp-login) with session-state (from the backends) — written
 from different processes, read from a single place (the login proxy).
 
-### Scaling `yarilo-anvil` — 1 → N replicas (#908)
+### Scaling `yarilo-warden` — 1 → N replicas (#908)
 
-Anvil holds three pieces of shared state: the per-IP auth-failure **penalty** counter, the
+Warden holds three pieces of shared state: the per-IP auth-failure **penalty** counter, the
 per-`user@ip` **session** accounting (the connection limit), and the **kick bus** (`EMIT`/`SUBSCRIBE`).
-Where that state lives is a single config choice — `components.anvil.service.state_backend`:
+Where that state lives is a single config choice — `components.warden.service.state_backend`:
 
 | `state_backend` | State lives in | Replicas | Deploy strategy |
 |:---|:---|:---|:---|
@@ -294,16 +294,16 @@ Where that state lives is a single config choice — `components.anvil.service.s
   normal `RollingUpdate`. This is the required setting before raising `replicas`.
 
 Both the subscribe path (go-redis auto-reconnects and re-subscribes on a Redis blip) and the
-login→anvil transport (the login pod redials + re-subscribes) recover on their own, so a Redis or anvil
+login→warden transport (the login pod redials + re-subscribes) recover on their own, so a Redis or warden
 restart does not permanently deafen a pod to kicks. Kick delivery is best-effort / at-most-once and is
 **not** a correctness guarantee — the director's confirmed ring-wide kill (#847) holds `LOOKUP` until the
 ring-wide session count is stably zero, so split-writer safety never depends on a kick landing; the kick
 only makes teardown prompt.
 
-Observability for the scale-out (all always-on, no debug flag): `yarilo_anvil_connect_total{result}`,
-`yarilo_anvil_kick_emitted_total` / `yarilo_anvil_kick_delivered_total` (different pods, proving
-cross-replica delivery under a scrape), `yarilo_anvil_redis_errors_total{op}` (fail-open made visible),
-`yarilo_anvil_reconcile_adjustments_total`, and `yarilo_anvil_penalty_updates_total{result}`. Structured
+Observability for the scale-out (all always-on, no debug flag): `yarilo_warden_connect_total{result}`,
+`yarilo_warden_kick_emitted_total` / `yarilo_warden_kick_delivered_total` (different pods, proving
+cross-replica delivery under a scrape), `yarilo_warden_redis_errors_total{op}` (fail-open made visible),
+`yarilo_warden_reconcile_adjustments_total`, and `yarilo_warden_penalty_updates_total{result}`. Structured
 logs carry `pod=` so a kick can be traced across replicas directly.
 
 ---
@@ -378,7 +378,7 @@ internal_tls:
 
 #### Internal client dials — `internal_tls.server_name` (#816)
 
-Every internal **client** dial (auth / anvil / locks / backend-api / backend /
+Every internal **client** dial (auth / warden / locks / backend-api / backend /
 fts / the login pods) verifies the peer against a single pinned name,
 `internal_tls.server_name` — **not** the dialed host. Internal services are
 reached by short name, FQDN, or pod IP interchangeably, so host-based
@@ -499,7 +499,7 @@ background TTL sweeper — no external dependencies.
 
 - 2 replicas of `yarilo-locks` per backend deployment, behind a ClusterIP Service.
 - Stateless (state in Redis).
-- Local Redis, or shared with other components (anvil, etc.).
+- Local Redis, or shared with other components (warden, etc.).
 
 Embedded mode has no HA — state is ephemeral; on process crash every lock is lost. Acceptable
 for unit tests and CLI dev runs; not used in k8s deployments.
@@ -555,7 +555,7 @@ For local development, evaluation and small self-hosted installs there is a
 **Docker Compose** deployment ([deploy/compose/](../deploy/compose),
 [DOCKER-COMPOSE.md](DOCKER-COMPOSE.md)). It collapses the topology further: the
 whole server runs as **one `yarilo` process** in `mode: single` — every protocol
-plus embedded auth, anvil and locks (in-memory) in-process, no login proxies and
+plus embedded auth, warden and locks (in-memory) in-process, no login proxies and
 no `yarilo-locks` service. The minimal profile needs no external dependencies
 (SQLite userdb + local volumes); a `full` profile adds MariaDB and Redis. It is a
 single-host target and is **not** highly available — for HA/scale-out use the
@@ -566,10 +566,10 @@ Helm standalone or backend deployments above.
 | Component | Default replicas | Scale by |
 |:---|:---|:---|
 | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login` | 1 each | `replicaCount` per protocol (login is stateless beyond TLS state) |
-| `yarilo-lmtp-login` | 0 (disabled by default) | `components.lmtpLogin.enabled: true` in values.yaml; MTA-facing LMTP proxy — anvil CONNECT per recipient, SESSION token, preamble fan-out |
+| `yarilo-lmtp-login` | 0 (disabled by default) | `components.lmtpLogin.enabled: true` in values.yaml; MTA-facing LMTP proxy — warden CONNECT per recipient, SESSION token, preamble fan-out |
 | `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp` | 1 each | `replicaCount` per protocol (coordination via locks) |
 | `yarilo-auth` | 1 | `replicaCount` (stateless; userdb in SQL) |
-| `yarilo-anvil` | 1 | `replicaCount` (state in Redis) |
+| `yarilo-warden` | 1 | `replicaCount` (state in Redis) |
 | `yarilo-locks` | 2 | `replicaCount` (state in Redis; 2 = HA default) |
 | `redis` | 1 (StatefulSet) | external HA or Sentinel for production |
 
@@ -612,15 +612,15 @@ binaries do not change.
 ## Helm chart structure
 
 ```
-helm/yarilo-shared        → auth + anvil + Redis (shared across the installation)
+helm/yarilo-shared        → auth + warden + Redis (shared across the installation)
 helm/yarilo-director      → director pool
 helm/yarilo-backend       → backend pool (one release per tag = per NFS shard, with its own locks)
 ```
 
 ### yarilo-shared
 - `Deployment yarilo-auth` — replicaCount=2, stateless (userdb in an external SQL/LDAP).
-- `Deployment yarilo-anvil` — replicaCount=2, state in Redis.
-- `Deployment redis` (or external) — state backend for anvil.
+- `Deployment yarilo-warden` — replicaCount=2, state in Redis.
+- `Deployment redis` (or external) — state backend for warden.
 - A ClusterIP Service for each.
 
 ### yarilo-director
@@ -795,7 +795,7 @@ Synced between directors over the peer protocol.
 | Backend per tag | replicaCount=3–5, shared NFS RWX, ring rebalance |
 | yarilo-locks (per tag) | replicaCount=2, state in Redis |
 | yarilo-auth | replicaCount=2, stateless |
-| yarilo-anvil | replicaCount=2, state in Redis |
+| yarilo-warden | replicaCount=2, state in Redis |
 | Redis | external HA (Sentinel/Cluster) or managed |
 | NFS server | a separate HA effort (Pacemaker+DRBD, or managed NFS such as AWS EFS) |
 

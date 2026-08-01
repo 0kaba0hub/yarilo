@@ -6,28 +6,28 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 // registerSessionRoutes wires the session-control surface. The
 // only command shipped today is `kick`; future additions go here.
 func (s *Server) registerSessionRoutes() {
 	s.mux.Handle("POST /api/backend/sessions/kick", s.middleware(s.handleSessionsKick))
-	s.mux.Handle("GET /api/backend/anvil/dump", s.middleware(s.handleAnvilDump))
+	s.mux.Handle("GET /api/backend/warden/dump", s.middleware(s.handleWardenDump))
 }
 
-// handleAnvilDump opens a short-lived anvil connection and returns the
+// handleWardenDump opens a short-lived warden connection and returns the
 // admin/debug state snapshot: accounting counters with their live tally (drift)
-// and penalty entries with remaining TTL. Backend-agnostic — the anvil server
+// and penalty entries with remaining TTL. Backend-agnostic — the warden server
 // computes it from whichever state backend is configured.
-func (s *Server) handleAnvilDump(w http.ResponseWriter, _ *http.Request) {
-	if s.opts.AnvilAddr == "" {
-		apiError(w, "dump: anvil_addr not configured on backendapi", http.StatusServiceUnavailable)
+func (s *Server) handleWardenDump(w http.ResponseWriter, _ *http.Request) {
+	if s.opts.WardenAddr == "" {
+		apiError(w, "dump: warden_addr not configured on backendapi", http.StatusServiceUnavailable)
 		return
 	}
-	ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, defaultKickDialTimeout)
+	ac, err := warden.Dial(s.opts.WardenAddr, s.opts.WardenTLS, defaultKickDialTimeout)
 	if err != nil {
-		apiError(w, "dump: anvil dial: "+err.Error(), http.StatusBadGateway)
+		apiError(w, "dump: warden dial: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer ac.Close()
@@ -41,9 +41,9 @@ func (s *Server) handleAnvilDump(w http.ResponseWriter, _ *http.Request) {
 }
 
 type sessionsKickRequest struct {
-	// SessionID is the anvil-issued session identifier (the value
+	// SessionID is the warden-issued session identifier (the value
 	// `who` surfaces in the ID column). The kick event is
-	// broadcast across every login + LMTP pod via the anvil
+	// broadcast across every login + LMTP pod via the warden
 	// pub-sub channel; only the owner reacts.
 	SessionID string `json:"session_id"`
 	// User is purely advisory — recorded for audit, not used to
@@ -68,11 +68,11 @@ type sessionsKickResponse struct {
 // when a future session binary subscribes to its own channel.
 var kickChannels = []string{"imap", "pop3", "submission", "lmtp"}
 
-// defaultKickDialTimeout bounds the anvil dial so a partial
+// defaultKickDialTimeout bounds the warden dial so a partial
 // outage cannot stall the HTTP request indefinitely.
 const defaultKickDialTimeout = 5 * time.Second
 
-// handleSessionsKick opens a short-lived anvil connection and
+// handleSessionsKick opens a short-lived warden connection and
 // EMITs the kick payload to every requested channel. The matching
 // session pod (login for IMAP/POP3/Submission, LMTP backend for
 // LMTP) reacts by closing its conn; pods without a matching id
@@ -91,8 +91,8 @@ func (s *Server) handleSessionsKick(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "session_id required", http.StatusBadRequest)
 		return
 	}
-	if s.opts.AnvilAddr == "" {
-		apiError(w, "kick: anvil_addr not configured on backendapi", http.StatusServiceUnavailable)
+	if s.opts.WardenAddr == "" {
+		apiError(w, "kick: warden_addr not configured on backendapi", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -101,9 +101,9 @@ func (s *Server) handleSessionsKick(w http.ResponseWriter, r *http.Request) {
 		targets = kickChannels
 	}
 
-	ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, defaultKickDialTimeout)
+	ac, err := warden.Dial(s.opts.WardenAddr, s.opts.WardenTLS, defaultKickDialTimeout)
 	if err != nil {
-		apiError(w, "kick: anvil dial: "+err.Error(), http.StatusBadGateway)
+		apiError(w, "kick: warden dial: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer ac.Close()

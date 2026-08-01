@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func TestServer_PenaltyLookup_DefaultZero(t *testing.T) {
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	c := dialAnvil(t, addr)
+	c := dialWarden(t, addr)
 	defer c.Close()
 
 	n, err := c.PenaltyLookup("203.0.113.42")
@@ -58,7 +58,7 @@ func TestServer_PenaltyUpdate_RoundTrip(t *testing.T) {
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	c := dialAnvil(t, addr)
+	c := dialWarden(t, addr)
 	defer c.Close()
 
 	if err := c.PenaltyUpdate("203.0.113.42", 3); err != nil {
@@ -83,7 +83,7 @@ func TestServer_PenaltyUpdate_ZeroClearsEntry(t *testing.T) {
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	c := dialAnvil(t, addr)
+	c := dialWarden(t, addr)
 	defer c.Close()
 
 	c.PenaltyUpdate("1.2.3.4", 4) //nolint:errcheck
@@ -108,7 +108,7 @@ func TestServer_PenaltyUpdate_Clamps(t *testing.T) {
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	c := dialAnvil(t, addr)
+	c := dialWarden(t, addr)
 	defer c.Close()
 
 	c.PenaltyUpdate("9.9.9.9", 999) //nolint:errcheck
@@ -137,7 +137,7 @@ func TestServer_PenaltyDecay(t *testing.T) {
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	c := dialAnvil(t, addr)
+	c := dialWarden(t, addr)
 	defer c.Close()
 
 	c.PenaltyUpdate("4.4.4.4", 3) //nolint:errcheck
@@ -159,7 +159,7 @@ func TestServer_PenaltyIPIsolation(t *testing.T) {
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	c := dialAnvil(t, addr)
+	c := dialWarden(t, addr)
 	defer c.Close()
 
 	c.PenaltyUpdate("1.1.1.1", 3) //nolint:errcheck
@@ -186,7 +186,7 @@ func freePort(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-func dialAnvil(t *testing.T, addr string) *Conn {
+func dialWarden(t *testing.T, addr string) *Conn {
 	t.Helper()
 	c, err := Dial(addr, nil, 2*time.Second)
 	if err != nil {

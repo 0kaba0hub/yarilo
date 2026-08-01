@@ -77,10 +77,10 @@
   <text x="120" y="272" text-anchor="middle" fill="#94a3b8" font-size="8">SASL socket :12345 (Postfix)</text>
 
   <rect x="30" y="276" width="180" height="62" rx="5" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
-  <text x="120" y="295" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-anvil</text>
+  <text x="120" y="295" text-anchor="middle" fill="#ca8a04" font-size="12" font-weight="bold">yarilo-warden</text>
   <text x="120" y="309" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
   <text x="120" y="322" text-anchor="middle" fill="#475569" font-size="9">mTLS :9101 · conn/sess limits</text>
-  <text x="120" y="334" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP · yarilo-anvil.svc</text>
+  <text x="120" y="334" text-anchor="middle" fill="#94a3b8" font-size="8">ClusterIP · yarilo-warden.svc</text>
 
   <rect x="30" y="348" width="180" height="62" rx="5" fill="#fef2f2" stroke="#7c2d12" stroke-width="2"/>
   <text x="120" y="367" text-anchor="middle" fill="#7c2d12" font-size="12" font-weight="bold">yarilo-locks</text>
@@ -91,7 +91,7 @@
   <rect x="30" y="420" width="180" height="62" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="2" stroke-dasharray="6,3"/>
   <text x="120" y="439" text-anchor="middle" fill="#b91c1c" font-size="12" font-weight="bold">redis</text>
   <text x="120" y="453" text-anchor="middle" fill="#475569" font-size="9">StatefulSet · bundled subchart</text>
-  <text x="120" y="466" text-anchor="middle" fill="#475569" font-size="9">state backend for locks + anvil</text>
+  <text x="120" y="466" text-anchor="middle" fill="#475569" font-size="9">state backend for locks + warden</text>
   <text x="120" y="478" text-anchor="middle" fill="#94a3b8" font-size="8">swap for external managed Redis</text>
 
   <!-- locks → redis -->
@@ -135,7 +135,7 @@
   <text x="942" y="224" text-anchor="middle" fill="#0d9488" font-size="12" font-weight="bold">yarilo-lmtp-login</text>
   <text x="942" y="238" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
   <text x="942" y="251" text-anchor="middle" fill="#475569" font-size="9">:24 LMTP · optional</text>
-  <text x="942" y="264" text-anchor="middle" fill="#475569" font-size="9">anvil CONNECT · SESSION · fan-out</text>
+  <text x="942" y="264" text-anchor="middle" fill="#475569" font-size="9">warden CONNECT · SESSION · fan-out</text>
   <text x="942" y="276" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-lmtp-login.svc</text>
 
   <!-- login → session arrows -->
@@ -191,9 +191,9 @@
   <circle cx="942" cy="445" r="3" fill="#64748b"/>
   <circle cx="210" cy="445" r="3" fill="#64748b"/>
   <text x="635" y="462" text-anchor="middle" fill="#475569" font-size="10" font-weight="bold">control plane · mTLS over ClusterIP Service DNS</text>
-  <text x="635" y="474" text-anchor="middle" fill="#94a3b8" font-size="9">sessions → yarilo-locks (X locks · EVENT) · sessions → yarilo-auth (userdb) · logins → yarilo-anvil (rate-limit) · logins → yarilo-auth (passdb)</text>
+  <text x="635" y="474" text-anchor="middle" fill="#94a3b8" font-size="9">sessions → yarilo-locks (X locks · EVENT) · sessions → yarilo-auth (userdb) · logins → yarilo-warden (rate-limit) · logins → yarilo-auth (passdb)</text>
 
-  <!-- bus → auth/anvil/locks -->
+  <!-- bus → auth/warden/locks -->
   <line x1="210" y1="445" x2="210" y2="235" stroke="#ca8a04" stroke-width="1.5" marker-end="url(#aa)"/>
   <line x1="210" y1="445" x2="210" y2="307" stroke="#ca8a04" stroke-width="1.5" marker-end="url(#aa)"/>
   <line x1="210" y1="445" x2="210" y2="379" stroke="#7c2d12" stroke-width="1.5" marker-end="url(#al)"/>
@@ -233,5 +233,5 @@
   <text x="40" y="758" fill="#475569" font-size="10">• SASL AUTH: smtpd_sasl_type=dovecot · smtpd_sasl_path=inet:[yarilo-auth.svc]:12345 — Postfix authenticates SMTP submission users via yarilo-auth.</text>
   <text x="40" y="772" fill="#475569" font-size="10">• Quota policy: check_policy_service inet:[yarilo-quota-status.svc]:12340 — rejects delivery to over-quota recipients before Postfix queues the message.</text>
   <text x="40" y="786" fill="#475569" font-size="10">• Virtual alias resolution: configure alias_dict in quota_status.yaml pointing at the same SQL DB — yarilo-quota-status resolves aliases before quota check.</text>
-  <text x="40" y="800" fill="#475569" font-size="10">• LMTP: mailbox_transport = lmtp:inet:[yarilo-lmtp-login.svc]:24 — Postfix delivers to yarilo-lmtp-login; per-recipient anvil tracking + SESSION tokens; fan-out preamble to yarilo-lmtp. Enable: components.lmtpLogin.enabled: true in values.yaml.</text>
+  <text x="40" y="800" fill="#475569" font-size="10">• LMTP: mailbox_transport = lmtp:inet:[yarilo-lmtp-login.svc]:24 — Postfix delivers to yarilo-lmtp-login; per-recipient warden tracking + SESSION tokens; fan-out preamble to yarilo-lmtp. Enable: components.lmtpLogin.enabled: true in values.yaml.</text>
 </svg>

@@ -4,7 +4,7 @@
 #
 # ONE Helm release PER backend tag / NFS shard. Runs ONLY the co-located backend
 # StatefulSet + that tag's own yarilo-locks; the director ring, login proxies and
-# shared auth/anvil/quota-status live in the control-plane release.
+# shared auth/warden/quota-status live in the control-plane release.
 #
 # Install once per tag, overriding the tag name, NFS shard and PV:
 #   helm upgrade --install yarilo-shard-a ./helm -n yarilo \
@@ -87,7 +87,7 @@ components:
 
   # Shared services are NOT rendered here (they run in the control-plane release):
   auth:       { enabled: false }
-  anvil:      { enabled: false }
+  warden:      { enabled: false }
   quotaStatus: { enabled: false }
   imapLogin:  { enabled: false }
   pop3Login:  { enabled: false }

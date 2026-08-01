@@ -1,17 +1,17 @@
-package anvil_test
+package warden_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 func TestBackendPushSurfacedInWho(t *testing.T) {
 	_, addr, cancel := startServerWithRef(t, 5)
 	defer cancel()
 
-	c, err := anvil.Dial(addr, nil, time.Second)
+	c, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestBackendPushSurfacedInWho(t *testing.T) {
 
 	who := dialWho(t, addr)
 	defer who.Close()
-	sessions, err := who.Who(anvil.WhoFilter{})
+	sessions, err := who.Who(warden.WhoFilter{})
 	if err != nil {
 		t.Fatalf("who: %v", err)
 	}
@@ -47,9 +47,9 @@ func TestBackendPushSurfacedInWho(t *testing.T) {
 	}
 }
 
-func dialWho(t *testing.T, addr string) *anvil.Conn {
+func dialWho(t *testing.T, addr string) *warden.Conn {
 	t.Helper()
-	c, err := anvil.Dial(addr, nil, time.Second)
+	c, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial who: %v", err)
 	}

@@ -38,7 +38,7 @@ docker/          — Dockerfile
 - **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — deployment topology, sizing (per pod, per tag), HA strategy, sharding via tags, and the rationale behind each decision
 - **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login proxies, a 3-pod director StatefulSet with peer-sync, backend-lease (self-registration + heartbeat #776, replacing the monitor sidecars), ring routing to backend tags
 - **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): ONE co-located StatefulSet whose pod carries every protocol container (imap/pop3/submission/lmtp/managesieve) plus `yarilo-fts` and the `yarilo-backend-reg` sidecar on a shared IP; `yarilo-locks`, `backend-api` and `quota-status` are separate deployments; one shared NFS PV (RWX)
-- **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: the full stack (login + sessions + auth + anvil + embedded `yarilo-locks` + storage) for self-contained installations without a director
+- **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: the full stack (login + sessions + auth + warden + embedded `yarilo-locks` + storage) for self-contained installations without a director
 
 **How to use them:**
 1. Any change to the infrastructure approach (new pods, a different scaling model, new services, changed coordination) **starts by updating these diagrams and DEPLOYMENT.md**, not by writing code.
@@ -47,7 +47,7 @@ docker/          — Dockerfile
 
 **Key architectural decisions, as recorded in the diagrams:**
 - ONE co-located StatefulSet per backend deployment — the pod carries every protocol container (imap/pop3/submission/lmtp/managesieve) plus `yarilo-fts` (fts_addr=localhost) and the `yarilo-backend-reg` sidecar on a shared IP. This restores the reference invariant that one mail host owns all of a user's per-user resources, which is what makes a single ring and a single userDir correct (#788); co-locating fts gives a single writer per user index for free (#675/#676). Independent per-protocol scaling is given up deliberately in exchange for routing coherence — consistent hashing cannot hold "one user, one pod" across separate pools
-- `yarilo-auth` and `yarilo-anvil` are shared services (two Deployments), one deployment per installation
+- `yarilo-auth` and `yarilo-warden` are shared services (two Deployments), one deployment per installation
 - `yarilo-locks` — single abstraction for cross-process write coordination. **All k8s deployments (standalone and backend) use `remote` mode** — its own Deployment behind a ClusterIP Service, mTLS TCP `:9104`, Redis-backed state. `embedded` mode (in-memory + Unix socket) is reserved for unit tests and non-k8s CLI runs; it is never the production default because Unix sockets cannot cross pods, which breaks any `replicaCount > 1`. In-process goroutine concurrency stays on `sync.Mutex` as a two-tier fast-path.
 - One NFS PV (RWX) per tag, shared by every co-located pod within that tag; a `tag` is an NFS shard, NOT a protocol
 - Director is a 3-replica StatefulSet with peer-sync, ONE ring and one userDir — a single pod IP per user serves every protocol, and the login proxy overrides the port
@@ -91,7 +91,7 @@ Key rules derived from ARCHITECTURE.md:
   Storage backends expose `OpenUser(*UserInfo) UserMailbox`. Sessions call `OpenUser` once
   after auth. Handle methods take NO user/path parameter — `UserInfo` is captured at Open time.
 - **Director owns the ring.** Nothing else modifies backend assignment.
-- **Internal protocols** (director, auth, anvil, ipc) are TAB-delimited, LF-terminated,
+- **Internal protocols** (director, auth, warden, ipc) are TAB-delimited, LF-terminated,
   with version handshake. See docs_internal/INTERNALS.md for exact wire format.
 - **Each process writes only to its own resources.** No cross-process writes to shared state.
 - **Cross-process write coordination always goes through `yarilo-locks`.** Single `pkg/locks` API,

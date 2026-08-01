@@ -20,7 +20,7 @@ var ErrNotYarilo = errors.New("loginproto: not a YARILO preamble")
 // Preamble carries the connection metadata sent by a login pod to a backend.
 type Preamble struct {
 	Addr      string // original client IP
-	SessionID string // anvil session identifier
+	SessionID string // warden session identifier
 	User      string // authenticated username (verified by yarilo-auth)
 	Token     string // one-time session token for yarilo-auth VERIFY
 	Helo      string // EHLO/HELO domain (SMTP submission only)

@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"bufio"
@@ -11,14 +11,14 @@ import (
 	"time"
 )
 
-// Conn is a single TCP connection to yarilo-anvil for one login session.
+// Conn is a single TCP connection to yarilo-warden for one login session.
 // Dial, call Connect once, defer Disconnect+Close.
 type Conn struct {
 	conn net.Conn
 	rd   *bufio.Reader
 }
 
-// Dial connects to the anvil server, reads the version handshake, and returns
+// Dial connects to the warden server, reads the version handshake, and returns
 // a ready Conn. tlsCfg may be nil for plain TCP.
 func Dial(addr string, tlsCfg *tls.Config, timeout time.Duration) (*Conn, error) {
 	if timeout == 0 {
@@ -32,7 +32,7 @@ func Dial(addr string, tlsCfg *tls.Config, timeout time.Duration) (*Conn, error)
 		raw, err = net.DialTimeout("tcp", addr, timeout)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("anvil/client: dial %s: %w", addr, err)
+		return nil, fmt.Errorf("warden/client: dial %s: %w", addr, err)
 	}
 	c := &Conn{conn: raw, rd: bufio.NewReaderSize(raw, 512)}
 	if err := c.readHandshake(); err != nil {
@@ -43,23 +43,23 @@ func Dial(addr string, tlsCfg *tls.Config, timeout time.Duration) (*Conn, error)
 }
 
 func (c *Conn) readHandshake() error {
-	// VERSION\tyarilo-anvil\t1\t0\n
+	// VERSION\tyarilo-warden\t1\t0\n
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read version: %w", err)
+		return fmt.Errorf("warden/client: read version: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 || fields[0] != "VERSION" || fields[1] != protoName {
-		return fmt.Errorf("anvil/client: unexpected handshake: %q", line)
+		return fmt.Errorf("warden/client: unexpected handshake: %q", line)
 	}
 	// DONE\n
 	done, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read done: %w", err)
+		return fmt.Errorf("warden/client: read done: %w", err)
 	}
 	if strings.TrimRight(done, "\n") != "DONE" {
-		return fmt.Errorf("anvil/client: expected DONE, got %q", done)
+		return fmt.Errorf("warden/client: expected DONE, got %q", done)
 	}
 	return nil
 }
@@ -68,11 +68,11 @@ func (c *Conn) readHandshake() error {
 // transport error. id must be unique per request (e.g. session sequence number).
 func (c *Conn) Connect(id, user, ip, service string) error {
 	if _, err := fmt.Fprintf(c.conn, "CONNECT\t%s\t%s\t%s\t%s\n", id, user, ip, service); err != nil {
-		return fmt.Errorf("anvil/client: write CONNECT: %w", err)
+		return fmt.Errorf("warden/client: write CONNECT: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read CONNECT response: %w", err)
+		return fmt.Errorf("warden/client: read CONNECT response: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
@@ -80,7 +80,7 @@ func (c *Conn) Connect(id, user, ip, service string) error {
 		return ErrTooManyConns
 	}
 	if len(fields) < 2 || fields[0] != "OK" {
-		return fmt.Errorf("anvil/client: unexpected CONNECT response: %q", line)
+		return fmt.Errorf("warden/client: unexpected CONNECT response: %q", line)
 	}
 	return nil
 }
@@ -89,16 +89,16 @@ func (c *Conn) Connect(id, user, ip, service string) error {
 // Errors are non-fatal (session is ending anyway).
 func (c *Conn) Disconnect(id, user, ip, service string) error {
 	if _, err := fmt.Fprintf(c.conn, "DISCONNECT\t%s\t%s\t%s\t%s\n", id, user, ip, service); err != nil {
-		return fmt.Errorf("anvil/client: write DISCONNECT: %w", err)
+		return fmt.Errorf("warden/client: write DISCONNECT: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read DISCONNECT response: %w", err)
+		return fmt.Errorf("warden/client: read DISCONNECT response: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
 	if len(fields) < 1 || fields[0] != "OK" {
-		return fmt.Errorf("anvil/client: unexpected DISCONNECT response: %q", line)
+		return fmt.Errorf("warden/client: unexpected DISCONNECT response: %q", line)
 	}
 	return nil
 }
@@ -109,7 +109,7 @@ type WhoFilter struct {
 	User    string
 }
 
-// Who streams the active session list from the anvil server. The
+// Who streams the active session list from the warden server. The
 // returned slice is empty (not nil) when no sessions match. Errors
 // are transport-level — an empty list with no error means the
 // server returned DONE without any sessions.
@@ -122,13 +122,13 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 		args = append(args, "user="+f.User)
 	}
 	if _, err := fmt.Fprintln(c.conn, strings.Join(args, "\t")); err != nil {
-		return nil, fmt.Errorf("anvil/client: write WHO: %w", err)
+		return nil, fmt.Errorf("warden/client: write WHO: %w", err)
 	}
 	out := make([]SessionInfo, 0, 8)
 	for {
 		line, err := c.rd.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("anvil/client: read WHO response: %w", err)
+			return nil, fmt.Errorf("warden/client: read WHO response: %w", err)
 		}
 		line = strings.TrimRight(line, "\n")
 		fields := strings.Split(line, "\t")
@@ -163,7 +163,7 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 		case "DONE":
 			return out, nil
 		default:
-			return nil, fmt.Errorf("anvil/client: unexpected WHO line: %q", line)
+			return nil, fmt.Errorf("warden/client: unexpected WHO line: %q", line)
 		}
 	}
 }
@@ -173,13 +173,13 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 // until DONE.
 func (c *Conn) Dump() (*StateDump, error) {
 	if _, err := fmt.Fprintln(c.conn, "DUMP"); err != nil {
-		return nil, fmt.Errorf("anvil/client: write DUMP: %w", err)
+		return nil, fmt.Errorf("warden/client: write DUMP: %w", err)
 	}
 	d := &StateDump{}
 	for {
 		line, err := c.rd.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("anvil/client: read DUMP response: %w", err)
+			return nil, fmt.Errorf("warden/client: read DUMP response: %w", err)
 		}
 		line = strings.TrimRight(line, "\n")
 		fields := strings.Split(line, "\t")
@@ -201,27 +201,27 @@ func (c *Conn) Dump() (*StateDump, error) {
 		case "DONE":
 			return d, nil
 		default:
-			return nil, fmt.Errorf("anvil/client: unexpected DUMP line: %q", line)
+			return nil, fmt.Errorf("warden/client: unexpected DUMP line: %q", line)
 		}
 	}
 }
 
-// Heartbeat extends the TTL of an active session on the anvil
+// Heartbeat extends the TTL of an active session on the warden
 // server. Returns (true, nil) on hit, (false, nil) when the
 // server reports `reason=unknown` (caller should re-issue
 // Connect), or an error on transport failure.
 func (c *Conn) Heartbeat(id string) (bool, error) {
 	if _, err := fmt.Fprintf(c.conn, "HEARTBEAT\t%s\n", id); err != nil {
-		return false, fmt.Errorf("anvil/client: write HEARTBEAT: %w", err)
+		return false, fmt.Errorf("warden/client: write HEARTBEAT: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return false, fmt.Errorf("anvil/client: read HEARTBEAT response: %w", err)
+		return false, fmt.Errorf("warden/client: read HEARTBEAT response: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 || fields[0] != "OK" {
-		return false, fmt.Errorf("anvil/client: unexpected HEARTBEAT response: %q", line)
+		return false, fmt.Errorf("warden/client: unexpected HEARTBEAT response: %q", line)
 	}
 	for _, f := range fields[2:] {
 		if f == "reason=unknown" {
@@ -231,7 +231,7 @@ func (c *Conn) Heartbeat(id string) (bool, error) {
 	return true, nil
 }
 
-// Select tells the anvil server which IMAP mailbox the session
+// Select tells the warden server which IMAP mailbox the session
 // is currently SELECTed in. Empty folder means UNSELECT.
 //
 // Best-effort: returns nil for unknown session (the server's
@@ -240,16 +240,16 @@ func (c *Conn) Heartbeat(id string) (bool, error) {
 // to alter their flow based on the result.
 func (c *Conn) Select(id, folder string) error {
 	if _, err := fmt.Fprintf(c.conn, "SELECT\t%s\t%s\n", id, folder); err != nil {
-		return fmt.Errorf("anvil/client: write SELECT: %w", err)
+		return fmt.Errorf("warden/client: write SELECT: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read SELECT response: %w", err)
+		return fmt.Errorf("warden/client: read SELECT response: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 || fields[0] != "OK" {
-		return fmt.Errorf("anvil/client: unexpected SELECT response: %q", line)
+		return fmt.Errorf("warden/client: unexpected SELECT response: %q", line)
 	}
 	return nil
 }
@@ -257,20 +257,20 @@ func (c *Conn) Select(id, folder string) error {
 // Backend records the backend pod IP a session was routed to (#814). The login
 // pod pushes this once, after the director LOOKUP resolves the backend, so
 // `who` can show only the sessions on the backend it runs against. Mirrors
-// Select. Best-effort at the call site: a pre-1.7 anvil returns no OK, and the
+// Select. Best-effort at the call site: a pre-1.7 warden returns no OK, and the
 // caller ignores the error.
 func (c *Conn) Backend(id, backendIP string) error {
 	if _, err := fmt.Fprintf(c.conn, "BACKEND\t%s\t%s\n", id, backendIP); err != nil {
-		return fmt.Errorf("anvil/client: write BACKEND: %w", err)
+		return fmt.Errorf("warden/client: write BACKEND: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read BACKEND response: %w", err)
+		return fmt.Errorf("warden/client: read BACKEND response: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 || fields[0] != "OK" {
-		return fmt.Errorf("anvil/client: unexpected BACKEND response: %q", line)
+		return fmt.Errorf("warden/client: unexpected BACKEND response: %q", line)
 	}
 	return nil
 }
@@ -281,20 +281,20 @@ func (c *Conn) Backend(id, backendIP string) error {
 // cluster-wide before issuing Connect.
 func (c *Conn) Lookup(user, service string) (int, error) {
 	if _, err := fmt.Fprintf(c.conn, "LOOKUP\t%s\t%s\n", user, service); err != nil {
-		return 0, fmt.Errorf("anvil/client: write LOOKUP: %w", err)
+		return 0, fmt.Errorf("warden/client: write LOOKUP: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return 0, fmt.Errorf("anvil/client: read LOOKUP response: %w", err)
+		return 0, fmt.Errorf("warden/client: read LOOKUP response: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 || fields[0] != "COUNT" {
-		return 0, fmt.Errorf("anvil/client: unexpected LOOKUP response: %q", line)
+		return 0, fmt.Errorf("warden/client: unexpected LOOKUP response: %q", line)
 	}
 	n, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return 0, fmt.Errorf("anvil/client: bad LOOKUP count %q: %w", fields[1], err)
+		return 0, fmt.Errorf("warden/client: bad LOOKUP count %q: %w", fields[1], err)
 	}
 	return n, nil
 }
@@ -309,20 +309,20 @@ func (c *Conn) Lookup(user, service string) (int, error) {
 // failed attempt regardless of which auth pod they land on.
 func (c *Conn) PenaltyLookup(ip string) (int, error) {
 	if _, err := fmt.Fprintf(c.conn, "PENALTY-LOOKUP\t%s\n", ip); err != nil {
-		return 0, fmt.Errorf("anvil/client: write PENALTY-LOOKUP: %w", err)
+		return 0, fmt.Errorf("warden/client: write PENALTY-LOOKUP: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return 0, fmt.Errorf("anvil/client: read PENALTY-LOOKUP response: %w", err)
+		return 0, fmt.Errorf("warden/client: read PENALTY-LOOKUP response: %w", err)
 	}
 	line = strings.TrimRight(line, "\n")
 	fields := strings.Split(line, "\t")
 	if len(fields) < 2 || fields[0] != "PENALTY" {
-		return 0, fmt.Errorf("anvil/client: unexpected PENALTY-LOOKUP response: %q", line)
+		return 0, fmt.Errorf("warden/client: unexpected PENALTY-LOOKUP response: %q", line)
 	}
 	n, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return 0, fmt.Errorf("anvil/client: bad PENALTY count %q: %w", fields[1], err)
+		return 0, fmt.Errorf("warden/client: bad PENALTY count %q: %w", fields[1], err)
 	}
 	return n, nil
 }
@@ -333,14 +333,14 @@ func (c *Conn) PenaltyLookup(ip string) (int, error) {
 // Callers use count+1 on every fail, count=0 on every success.
 func (c *Conn) PenaltyUpdate(ip string, count int) error {
 	if _, err := fmt.Fprintf(c.conn, "PENALTY-UPDATE\t%s\t%d\n", ip, count); err != nil {
-		return fmt.Errorf("anvil/client: write PENALTY-UPDATE: %w", err)
+		return fmt.Errorf("warden/client: write PENALTY-UPDATE: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read PENALTY-UPDATE response: %w", err)
+		return fmt.Errorf("warden/client: read PENALTY-UPDATE response: %w", err)
 	}
 	if strings.TrimRight(line, "\n") != "OK" {
-		return fmt.Errorf("anvil/client: unexpected PENALTY-UPDATE response: %q", line)
+		return fmt.Errorf("warden/client: unexpected PENALTY-UPDATE response: %q", line)
 	}
 	return nil
 }
@@ -357,14 +357,14 @@ func (c *Conn) Close() { c.conn.Close() }
 // "received by every subscriber".
 func (c *Conn) Emit(channel, payload string) error {
 	if _, err := fmt.Fprintf(c.conn, "EMIT\t%s\t%s\n", channel, payload); err != nil {
-		return fmt.Errorf("anvil/client: write EMIT: %w", err)
+		return fmt.Errorf("warden/client: write EMIT: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("anvil/client: read EMIT response: %w", err)
+		return fmt.Errorf("warden/client: read EMIT response: %w", err)
 	}
 	if strings.TrimRight(line, "\n") != "OK" {
-		return fmt.Errorf("anvil/client: unexpected EMIT response: %q", line)
+		return fmt.Errorf("warden/client: unexpected EMIT response: %q", line)
 	}
 	return nil
 }
@@ -380,14 +380,14 @@ func (c *Conn) Emit(channel, payload string) error {
 // cancelled; the subscriber goroutine owns the conn lifecycle.
 func (c *Conn) Subscribe(ctx context.Context, channel string) (<-chan string, error) {
 	if _, err := fmt.Fprintf(c.conn, "SUBSCRIBE\t%s\n", channel); err != nil {
-		return nil, fmt.Errorf("anvil/client: write SUBSCRIBE: %w", err)
+		return nil, fmt.Errorf("warden/client: write SUBSCRIBE: %w", err)
 	}
 	line, err := c.rd.ReadString('\n')
 	if err != nil {
-		return nil, fmt.Errorf("anvil/client: read SUBSCRIBE ack: %w", err)
+		return nil, fmt.Errorf("warden/client: read SUBSCRIBE ack: %w", err)
 	}
 	if strings.TrimRight(line, "\n") != "OK" {
-		return nil, fmt.Errorf("anvil/client: unexpected SUBSCRIBE ack: %q", line)
+		return nil, fmt.Errorf("warden/client: unexpected SUBSCRIBE ack: %q", line)
 	}
 	out := make(chan string, 16)
 	// ctx-cancel closer: closing the conn forces ReadString to
@@ -433,7 +433,7 @@ func (c *Conn) Subscribe(ctx context.Context, channel string) (<-chan string, er
 // graceful ctx cancellation returns nil.
 func (c *Conn) HeartbeatLoop(ctx context.Context, id string, interval time.Duration, onUnknown func()) error {
 	if interval <= 0 {
-		return fmt.Errorf("anvil/client: heartbeat interval must be > 0")
+		return fmt.Errorf("warden/client: heartbeat interval must be > 0")
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -456,6 +456,6 @@ func (c *Conn) HeartbeatLoop(ctx context.Context, id string, interval time.Durat
 	}
 }
 
-// ErrTooManyConns is returned by Connect when the anvil server responds FAIL
+// ErrTooManyConns is returned by Connect when the warden server responds FAIL
 // with reason=too-many-connections.
-var ErrTooManyConns = fmt.Errorf("anvil: too many connections")
+var ErrTooManyConns = fmt.Errorf("warden: too many connections")

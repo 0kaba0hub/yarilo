@@ -1,6 +1,6 @@
 ## yarilo — single-host standalone deployment (Docker Compose).
 ## Full split topology: login proxies (TLS terminators) in front of session
-## backends, with shared auth / anvil / locks and Redis. One image, one config;
+## backends, with shared auth / warden / locks and Redis. One image, one config;
 ## each service selects its component via YARILO_COMPONENT. See DOCKER-COMPOSE.md.
 name: yarilo
 
@@ -24,7 +24,7 @@ x-backend: &backend
   depends_on:
     yarilo-auth:
       condition: service_started
-    yarilo-anvil:
+    yarilo-warden:
       condition: service_started
     yarilo-locks:
       condition: service_started
@@ -39,7 +39,7 @@ x-proxy: &proxy
   depends_on:
     yarilo-auth:
       condition: service_started
-    yarilo-anvil:
+    yarilo-warden:
       condition: service_started
 
 services:
@@ -66,10 +66,10 @@ services:
       - state:/var/lib/yarilo
     restart: unless-stopped
 
-  yarilo-anvil:
+  yarilo-warden:
     image: *image
     environment:
-      YARILO_COMPONENT: yarilo-anvil
+      YARILO_COMPONENT: yarilo-warden
       LOG_LEVEL: "${LOG_LEVEL:-info}"
     healthcheck: *health
     volumes:

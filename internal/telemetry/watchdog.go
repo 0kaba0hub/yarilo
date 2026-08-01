@@ -27,7 +27,7 @@ type WatchdogOptions struct {
 	// Check is the self-check. Nil disables the watchdog entirely.
 	Check LivenessCheck
 	// Interval is the gap between checks. It is timer-driven on purpose: "traffic
-	// arrived recently" is not a health signal, because anvil and the login pods
+	// arrived recently" is not a health signal, because warden and the login pods
 	// legitimately sit idle, and a traffic-driven liveness would restart them at
 	// night.
 	Interval time.Duration

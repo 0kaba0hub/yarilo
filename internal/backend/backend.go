@@ -294,12 +294,12 @@ func New(cfg *config.Config) (*Server, error) {
 			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
 			MaxLineLength:      p.MaxLineLength,
 			ConnLimit:          connLimiter,
-			// yarilo-anvil for the SELECT push (#WHO folder tracking): the imap
+			// yarilo-warden for the SELECT push (#WHO folder tracking): the imap
 			// session reports its currently-SELECTed mailbox so `yarctl
-			// who` can render it. Without this the anvil client is a permanent
+			// who` can render it. Without this the warden client is a permanent
 			// no-op and the WHO FOLDERS column is always empty.
-			AnvilAddr:            cfg.AnvilService.ClientAddr(),
-			AnvilTLS:             authTLS,
+			WardenAddr:           cfg.WardenService.ClientAddr(),
+			WardenTLS:            authTLS,
 			IDSend:               p.IDSend,
 			LoginGreeting:        p.LoginGreeting,
 			LogoutFormat:         p.LogoutFormat,

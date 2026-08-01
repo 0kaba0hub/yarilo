@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"context"
@@ -11,14 +11,14 @@ import (
 )
 
 // DefaultPoolSize is the number of long-lived connections a Pool keeps. The
-// anvil wire protocol carries no request id, so a connection cannot be
+// warden wire protocol carries no request id, so a connection cannot be
 // multiplexed the way yarilo-auth's is (#885) — each request holds its
 // connection for one round trip. Every operation is a sub-millisecond in-cluster
 // RPC, so a handful of connections serves tens of thousands of operations per
 // second, and the point is simply that the count no longer tracks the login rate.
 const DefaultPoolSize = 4
 
-// Pool is a fixed set of long-lived connections to yarilo-anvil, each guarded by
+// Pool is a fixed set of long-lived connections to yarilo-warden, each guarded by
 // its own mutex.
 //
 // Sessions do NOT own a connection. Every command carries the session id on the
@@ -26,13 +26,13 @@ const DefaultPoolSize = 4
 // keeps no per-connection state — its handleConn performs no cleanup when a
 // connection drops, and the connection-limit accounting keys on the (user, ip)
 // pair from the CONNECT arguments rather than on connection identity. That is
-// what makes sharing safe; see internal/anvil/shared_conn_test.go, which pins
+// what makes sharing safe; see internal/warden/shared_conn_test.go, which pins
 // those invariants.
 //
 // The trade-off this introduces: losing one connection now affects every session
 // using it rather than one. Recovery is a redial of a few hundred milliseconds
 // against a 90s session TTL, so the sweeper never sees a gap, and
-// yarilo_anvil_sessions_reaped_total makes it visible if that ever stops holding.
+// yarilo_warden_sessions_reaped_total makes it visible if that ever stops holding.
 type Pool struct {
 	addr    string
 	tlsCfg  *tls.Config
@@ -53,7 +53,7 @@ type pooledConn struct {
 
 // NewPool creates a Pool of size connections against addr. Connections are
 // dialled lazily on first use, so the pool can be constructed before
-// yarilo-anvil is reachable. size <= 0 selects DefaultPoolSize.
+// yarilo-warden is reachable. size <= 0 selects DefaultPoolSize.
 func NewPool(addr string, tlsCfg *tls.Config, size int, timeout time.Duration) *Pool {
 	if size <= 0 {
 		size = DefaultPoolSize
@@ -86,14 +86,14 @@ func (p *Pool) Close() {
 // do runs fn on one connection, redialling and retrying once if the connection
 // turned out to be dead.
 //
-// The retry is safe because every anvil operation is idempotent in its session
+// The retry is safe because every warden operation is idempotent in its session
 // id: a repeated CONNECT for the same id upserts the same session record, and
 // HEARTBEAT/SELECT/BACKEND/DISCONNECT are naturally so. ErrTooManyConns is a
 // protocol answer rather than a transport failure, so it is returned untouched
 // and never triggers a redial.
 func (p *Pool) do(fn func(*Conn) error) error {
 	if p.closed.Load() {
-		return errors.New("anvil/pool: closed")
+		return errors.New("warden/pool: closed")
 	}
 	pc := p.conns[int(p.next.Add(1)-1)%len(p.conns)]
 
@@ -145,7 +145,7 @@ func (p *Pool) Select(id, folder string) error {
 }
 
 // PenaltyLookup / PenaltyUpdate run the auth-penalty ops over the pool so they
-// survive an anvil restart (#946): p.do redials on a transport error and retries
+// survive an warden restart (#946): p.do redials on a transport error and retries
 // once, where the raw single Conn used by yarilo-auth would fail every op forever
 // after the connection died. Satisfies protocol.PenaltyStore.
 func (p *Pool) PenaltyLookup(ip string) (int, error) {
@@ -183,7 +183,7 @@ func (p *Pool) Heartbeat(id string) (bool, error) {
 // returns nil — the session is gone and beating harder will not bring it back.
 func (p *Pool) HeartbeatLoop(ctx context.Context, id string, interval time.Duration, onUnknown func()) error {
 	if interval <= 0 {
-		return fmt.Errorf("anvil/pool: heartbeat interval must be > 0")
+		return fmt.Errorf("warden/pool: heartbeat interval must be > 0")
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()

@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"time"
@@ -8,22 +8,22 @@ import (
 )
 
 var (
-	// requestSeconds is per-verb server-side latency. yarilo-anvil is a single
+	// requestSeconds is per-verb server-side latency. yarilo-warden is a single
 	// Deployment and its wire protocol is strict request/response per
 	// connection, so a slow verb here serialises every login that needs it —
-	// which makes this the metric that distinguishes "anvil is the queue" from
-	// "anvil is fine" during a login stall.
+	// which makes this the metric that distinguishes "warden is the queue" from
+	// "warden is fine" during a login stall.
 	requestSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "request_seconds",
-		Help:      "Server-side latency of yarilo-anvil requests by verb and outcome.",
+		Help:      "Server-side latency of yarilo-warden requests by verb and outcome.",
 		Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 16), // 100µs … ~3s
 	}, []string{"verb", "result"})
 
 	sessions = promauto.NewGauge(prometheus.GaugeOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "sessions",
 		Help:      "Current number of tracked login sessions.",
 	})
@@ -34,14 +34,14 @@ var (
 	// HEARTBEAT return reason=unknown to a session that is in fact alive.
 	sessionsReaped = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "sessions_reaped_total",
 		Help:      "Total sessions dropped by the TTL sweeper.",
 	})
 
 	penaltyLookups = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "penalty_lookups_total",
 		Help:      "Auth-penalty lookups by outcome (hit = a penalty was in force, miss = none).",
 	}, []string{"result"})
@@ -51,16 +51,16 @@ var (
 	// rate until connection reuse lands.
 	connections = promauto.NewGauge(prometheus.GaugeOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "connections",
-		Help:      "Currently open connections to yarilo-anvil.",
+		Help:      "Currently open connections to yarilo-warden.",
 	})
 
 	connectionsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "connections_total",
-		Help:      "Total connections accepted by yarilo-anvil since start.",
+		Help:      "Total connections accepted by yarilo-warden since start.",
 	})
 
 	// connectTotal makes the PR2 limit assertable by number rather than by
@@ -69,14 +69,14 @@ var (
 	// counter keeps an acceptance gate a one-liner.)
 	connectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "connect_total",
 		Help:      "CONNECT outcomes by result.",
 	}, []string{"result"})
 
 	penaltyUpdates = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "penalty_updates_total",
 		Help:      "Auth-penalty updates by effect (set = counter raised, clear = counter dropped).",
 	}, []string{"result"})
@@ -88,13 +88,13 @@ var (
 	// of both proves cross-replica delivery without racing a session death.
 	kickEmitted = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "kick_emitted_total",
 		Help:      "Kick events published via EMIT.",
 	})
 	kickDelivered = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "kick_delivered_total",
 		Help:      "Kick EVENT lines forwarded to a subscribed client.",
 	})
@@ -104,7 +104,7 @@ var (
 	// so a Redis outage is visible instead of only inferable from behaviour.
 	redisErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "redis_errors_total",
 		Help:      "Redis operation errors by op (fail-open is applied, but counted here).",
 	}, []string{"op"})
@@ -113,7 +113,7 @@ var (
 	// that was previously invisible.
 	reconcileAdjustments = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "yarilo",
-		Subsystem: "anvil",
+		Subsystem: "warden",
 		Name:      "reconcile_adjustments_total",
 		Help:      "Connection-counter leaks corrected by reconciliation.",
 	})

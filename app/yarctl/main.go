@@ -191,9 +191,9 @@ func dispatch(args []string) error {
 	case "user":
 		// Top-level shorthand: yarctl user <cmd> — always hits backend plane.
 		return dispatchUser(args[1:])
-	case "anvil":
-		// Top-level shorthand: yarctl anvil <cmd> — introspection via backend plane.
-		return dispatchAnvil(args[1:])
+	case "warden":
+		// Top-level shorthand: yarctl warden <cmd> — introspection via backend plane.
+		return dispatchWarden(args[1:])
 	default:
 		return fmt.Errorf("unknown plane %q — available: director, backend, auth, wait\n(tip: set YARILO_ADMIN_TYPE=backend to skip the plane prefix)", args[0])
 	}
@@ -231,14 +231,14 @@ func dispatchBackend(args []string) error {
 		return dispatchQuota(args[1:])
 	case "fts":
 		return dispatchFTS(args[1:])
-	case "anvil":
-		// anvil introspection runs against the backend plane, so it must resolve
+	case "warden":
+		// warden introspection runs against the backend plane, so it must resolve
 		// here too — the backend-api container sets YARILO_ADMIN_TYPE=backend,
-		// which routes `yarctl anvil dump` through dispatchBackend rather than the
+		// which routes `yarctl warden dump` through dispatchBackend rather than the
 		// top-level shorthand (#953, same class as the `wait` special-case #903).
-		return dispatchAnvil(args[1:])
+		return dispatchWarden(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts, anvil", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts, warden", args[0])
 	}
 }
 
@@ -285,7 +285,7 @@ Planes:
 
 Shorthand (no plane prefix):
   user      — alias for 'backend user'
-  anvil     — connection-accounting introspection (anvil dump), via the backend plane
+  warden     — connection-accounting introspection (warden dump), via the backend plane
 
 Tip: set YARILO_ADMIN_TYPE=backend|director|auth to skip the plane prefix entirely.
 

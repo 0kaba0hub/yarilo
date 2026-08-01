@@ -1,7 +1,7 @@
 // Package lmtplogin implements the yarilo-lmtp-login service.
 //
 // It accepts LMTP connections from MTAs (e.g. Postfix), performs
-// per-recipient anvil CONNECT and yarilo-auth SESSION token issuance, then
+// per-recipient warden CONNECT and yarilo-auth SESSION token issuance, then
 // at DATA time fans out one backend connection per recipient — each
 // preceded by a YARILO preamble carrying the recipient's session token.
 package lmtplogin
@@ -24,10 +24,10 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/lmtpreply"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 	"github.com/0kaba0hub/yarilo/pkg/authclient"
 )
 
@@ -66,13 +66,13 @@ type Options struct {
 	// AuthMasterTLS optionally wraps the auth master dialer with mTLS.
 	AuthMasterTLS *tls.Config
 
-	// AnvilAddr is the yarilo-anvil address for per-recipient CONNECT /
+	// WardenAddr is the yarilo-warden address for per-recipient CONNECT /
 	// DISCONNECT and the optional cluster-wide concurrency gate. Empty
-	// disables anvil integration; deliveries proceed without concurrency
+	// disables warden integration; deliveries proceed without concurrency
 	// tracking (acceptable for single-pod dev / unit tests).
-	AnvilAddr string
-	// AnvilTLS optionally wraps the anvil dialer with mTLS.
-	AnvilTLS *tls.Config
+	WardenAddr string
+	// WardenTLS optionally wraps the warden dialer with mTLS.
+	WardenTLS *tls.Config
 
 	// ConcurrencyLimit is the maximum number of concurrent in-flight
 	// deliveries to the same recipient across the cluster. -1 means
@@ -149,7 +149,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 	slog.Info("lmtplogin: listening", "addr", ln.Addr().String(),
 		"backend", mode,
-		"anvil", s.opts.AnvilAddr != "",
+		"warden", s.opts.WardenAddr != "",
 	)
 	return s.srv.Serve(ln)
 }
@@ -177,7 +177,7 @@ func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 type rcptEntry struct {
 	to          string // original RCPT TO value
 	username    string // canonical user@domain (no plus-detail)
-	anvilID     string // anvil session handle (empty if anvil skipped)
+	wardenID    string // warden session handle (empty if warden skipped)
 	token       string // one-time session token from yarilo-auth
 	backendAddr string // resolved backend address (per-recipient in director mode)
 }
@@ -192,11 +192,11 @@ type session struct {
 	from     string
 	rcpts    []rcptEntry
 
-	// anvilConn is dialled lazily on the first RCPT TO that needs it.
+	// wardenConn is dialled lazily on the first RCPT TO that needs it.
 	// One connection reused for all RCPTs in this MTA session.
-	anvilMu   sync.Mutex
-	anvilConn *anvil.Conn
-	anvilErr  error // sticky dial failure
+	wardenMu   sync.Mutex
+	wardenConn *warden.Conn
+	wardenErr  error // sticky dial failure
 
 	// authCl is the yarilo-auth master client, dialled lazily.
 	authMu  sync.Mutex
@@ -226,26 +226,26 @@ func (s *session) Rcpt(to string, _ *goSmtp.RcptOptions) error {
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 4, 0}, Message: "Backend routing error"}
 	}
 
-	// Anvil CONNECT: register delivery and optionally gate concurrency.
-	anvilID, err := s.anvilConnect(username)
+	// Warden CONNECT: register delivery and optionally gate concurrency.
+	wardenID, err := s.wardenConnect(username)
 	if errors.Is(err, ErrTooManyConcurrent) {
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Too many concurrent deliveries for user"}
 	}
 	if err != nil {
-		slog.Warn("lmtplogin: anvil unavailable, accepting without cluster limit", "user", username, "err", err)
+		slog.Warn("lmtplogin: warden unavailable, accepting without cluster limit", "user", username, "err", err)
 	}
 
 	// Issue a session token for this recipient.
-	tok, err := s.issueToken(username, anvilID)
+	tok, err := s.issueToken(username, wardenID)
 	if err != nil {
-		if anvilID != "" {
-			s.anvilDisconnect(anvilID, username)
+		if wardenID != "" {
+			s.wardenDisconnect(wardenID, username)
 		}
 		slog.Error("lmtplogin: session token issue failed", "user", username, "err", err)
 		return &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 3, 0}, Message: "Temporary auth error"}
 	}
 
-	s.rcpts = append(s.rcpts, rcptEntry{to: to, username: username, anvilID: anvilID, token: tok, backendAddr: backendAddr})
+	s.rcpts = append(s.rcpts, rcptEntry{to: to, username: username, wardenID: wardenID, token: tok, backendAddr: backendAddr})
 	return nil
 }
 
@@ -272,7 +272,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			defer wg.Done()
 			pre := loginproto.Preamble{
 				Addr:      s.peerIP,
-				SessionID: e.anvilID,
+				SessionID: e.wardenID,
 				User:      e.username,
 				Token:     e.token,
 			}
@@ -300,10 +300,10 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 		status.SetStatus(res.to, smtpErr)
 	}
 
-	// Release anvil slots for all recipients regardless of outcome.
+	// Release warden slots for all recipients regardless of outcome.
 	for _, e := range s.rcpts {
-		if e.anvilID != "" {
-			s.anvilDisconnect(e.anvilID, e.username)
+		if e.wardenID != "" {
+			s.wardenDisconnect(e.wardenID, e.username)
 		}
 	}
 	s.rcpts = nil
@@ -312,8 +312,8 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 
 func (s *session) Reset() {
 	for _, e := range s.rcpts {
-		if e.anvilID != "" {
-			s.anvilDisconnect(e.anvilID, e.username)
+		if e.wardenID != "" {
+			s.wardenDisconnect(e.wardenID, e.username)
 		}
 	}
 	s.rcpts = nil
@@ -322,12 +322,12 @@ func (s *session) Reset() {
 
 func (s *session) Logout() error {
 	s.Reset()
-	s.anvilMu.Lock()
-	if s.anvilConn != nil {
-		s.anvilConn.Close()
-		s.anvilConn = nil
+	s.wardenMu.Lock()
+	if s.wardenConn != nil {
+		s.wardenConn.Close()
+		s.wardenConn = nil
 	}
-	s.anvilMu.Unlock()
+	s.wardenMu.Unlock()
 	s.authMu.Lock()
 	if s.authCl != nil {
 		s.authCl.Close()
@@ -337,50 +337,50 @@ func (s *session) Logout() error {
 	return nil
 }
 
-// ---- anvil helpers ----------------------------------------------------------
+// ---- warden helpers ----------------------------------------------------------
 
-func (s *session) anvilConnect(user string) (string, error) {
-	if s.opts.AnvilAddr == "" {
+func (s *session) wardenConnect(user string) (string, error) {
+	if s.opts.WardenAddr == "" {
 		return "", nil
 	}
-	s.anvilMu.Lock()
-	defer s.anvilMu.Unlock()
-	if s.anvilConn == nil {
-		if s.anvilErr != nil {
-			return "", s.anvilErr
+	s.wardenMu.Lock()
+	defer s.wardenMu.Unlock()
+	if s.wardenConn == nil {
+		if s.wardenErr != nil {
+			return "", s.wardenErr
 		}
-		c, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+		c, err := warden.Dial(s.opts.WardenAddr, s.opts.WardenTLS, 5*time.Second)
 		if err != nil {
-			s.anvilErr = fmt.Errorf("lmtplogin/anvil: dial: %w", err)
-			return "", s.anvilErr
+			s.wardenErr = fmt.Errorf("lmtplogin/warden: dial: %w", err)
+			return "", s.wardenErr
 		}
-		s.anvilConn = c
+		s.wardenConn = c
 	}
 	limit := s.opts.ConcurrencyLimit
 	if limit > 0 {
-		count, err := s.anvilConn.Lookup(user, "lmtp")
+		count, err := s.wardenConn.Lookup(user, "lmtp")
 		if err != nil {
-			return "", fmt.Errorf("lmtplogin/anvil: lookup: %w", err)
+			return "", fmt.Errorf("lmtplogin/warden: lookup: %w", err)
 		}
 		if count >= limit {
 			return "", ErrTooManyConcurrent
 		}
 	}
 	id := newSessionID()
-	if err := s.anvilConn.Connect(id, user, s.peerIP, "lmtp"); err != nil {
-		return "", fmt.Errorf("lmtplogin/anvil: connect: %w", err)
+	if err := s.wardenConn.Connect(id, user, s.peerIP, "lmtp"); err != nil {
+		return "", fmt.Errorf("lmtplogin/warden: connect: %w", err)
 	}
 	return id, nil
 }
 
-func (s *session) anvilDisconnect(id, user string) {
-	s.anvilMu.Lock()
-	defer s.anvilMu.Unlock()
-	if s.anvilConn == nil {
+func (s *session) wardenDisconnect(id, user string) {
+	s.wardenMu.Lock()
+	defer s.wardenMu.Unlock()
+	if s.wardenConn == nil {
 		return
 	}
-	if err := s.anvilConn.Disconnect(id, user, s.peerIP, "lmtp"); err != nil {
-		slog.Debug("lmtplogin/anvil: disconnect", "user", user, "err", err)
+	if err := s.wardenConn.Disconnect(id, user, s.peerIP, "lmtp"); err != nil {
+		slog.Debug("lmtplogin/warden: disconnect", "user", user, "err", err)
 	}
 }
 
@@ -404,14 +404,14 @@ func (s *session) ensureAuthClient() (*authclient.Client, error) {
 	return c, nil
 }
 
-func (s *session) issueToken(username, anvilID string) (string, error) {
+func (s *session) issueToken(username, wardenID string) (string, error) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
 	c, err := s.ensureAuthClient()
 	if err != nil {
 		return "", err
 	}
-	tok, err := c.IssueSession(context.Background(), username, anvilID, s.peerIP)
+	tok, err := c.IssueSession(context.Background(), username, wardenID, s.peerIP)
 	if err != nil {
 		return "", fmt.Errorf("lmtplogin/auth: IssueSession: %w", err)
 	}
@@ -598,7 +598,7 @@ func newSessionID() string {
 // server (#742). The forwarded ADDR is honoured only when the immutable socket
 // peer is inside XClientNets — the relay itself must be trusted. On success the
 // forwarded IP replaces peerIP, flowing into the backend preamble ADDR=, the
-// anvil per-recipient CONNECT, and the issued session token.
+// warden per-recipient CONNECT, and the issued session token.
 func (s *session) XClient(a goSmtp.XClientAttrs) {
 	if a.Addr == "" {
 		return

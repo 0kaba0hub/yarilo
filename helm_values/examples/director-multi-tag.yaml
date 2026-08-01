@@ -10,7 +10,7 @@
 # This is a MULTI-RELEASE install — one Helm release for the control plane +
 # one release PER backend tag:
 #
-#   # 1) Control plane (director + login proxies + shared auth/anvil/quota):
+#   # 1) Control plane (director + login proxies + shared auth/warden/quota):
 #   helm upgrade --install yarilo-cp ./helm -n yarilo -f director-multi-tag.yaml \
 #       --set image.tag=<version>
 #
@@ -102,7 +102,7 @@ components:
         iterate_query: |
           SELECT username FROM mailbox WHERE active = 1 ORDER BY username
     token: { backend: redis, redis_addr: "redis://<redis-host>:6379/0" }
-  anvil:
+  warden:
     internalTLS: { enabled: true, secretName: yarilo-internal-tls }
   # locks is per-TAG (in the backend releases), not in the control plane:
   locks:

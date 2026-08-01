@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"testing"
@@ -19,7 +19,7 @@ func TestStateBackendPenaltyContract(t *testing.T) {
 			mr := miniredis.RunT(t)
 			rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 			t.Cleanup(func() { rdb.Close() })
-			return NewRedisBackend(rdb, "test:anvil:", "test:anvil:events:", decay, time.Minute, 0)
+			return NewRedisBackend(rdb, "test:warden:", "test:warden:events:", decay, time.Minute, 0)
 		},
 	}
 	for name, mk := range backends {
@@ -77,7 +77,7 @@ func TestRedisPenaltyLookupErrorStatus(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 500 * time.Millisecond})
 	t.Cleanup(func() { rdb.Close() })
-	b := NewRedisBackend(rdb, "test:anvil:", "test:anvil:events:", time.Minute, time.Minute, 0)
+	b := NewRedisBackend(rdb, "test:warden:", "test:warden:events:", time.Minute, time.Minute, 0)
 
 	mr.Close() // Redis is now down.
 	if c, s := b.PenaltyLookup("1.2.3.4"); c != 0 || s != "error" {
@@ -91,7 +91,7 @@ func TestRedisPenaltyTTL(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { rdb.Close() })
-	b := NewRedisBackend(rdb, "test:anvil:", "test:anvil:events:", 100*time.Millisecond, time.Minute, 0)
+	b := NewRedisBackend(rdb, "test:warden:", "test:warden:events:", 100*time.Millisecond, time.Minute, 0)
 
 	b.PenaltyUpdate("1.2.3.4", 4)
 	if c, _ := b.PenaltyLookup("1.2.3.4"); c != 4 {

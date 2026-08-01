@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 func freeAddr(t *testing.T) string {
@@ -22,9 +22,9 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-func startAnvilForTest(t *testing.T) (string, context.CancelFunc) {
+func startWardenForTest(t *testing.T) (string, context.CancelFunc) {
 	t.Helper()
-	srv := anvil.NewServer(10)
+	srv := warden.NewServer(10)
 	ctx, cancel := context.WithCancel(context.Background())
 	addr := freeAddr(t)
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
@@ -39,7 +39,7 @@ func startAnvilForTest(t *testing.T) (string, context.CancelFunc) {
 		{"s1", "alice@example.com", "1.1.1.1", "imap"},
 		{"s2", "bob@example.com", "2.2.2.2", "pop3"},
 	} {
-		c, err := anvil.Dial(addr, nil, time.Second)
+		c, err := warden.Dial(addr, nil, time.Second)
 		if err != nil {
 			t.Fatalf("dial: %v", err)
 		}
@@ -55,10 +55,10 @@ func startAnvilForTest(t *testing.T) (string, context.CancelFunc) {
 	return addr, cancel
 }
 
-func whoTestServer(t *testing.T, anvilAddr string) *httptest.Server {
+func whoTestServer(t *testing.T, wardenAddr string) *httptest.Server {
 	t.Helper()
 	s := New(Options{
-		AnvilAddr: anvilAddr,
+		WardenAddr: wardenAddr,
 	})
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -66,8 +66,8 @@ func whoTestServer(t *testing.T, anvilAddr string) *httptest.Server {
 }
 
 func TestWhoReturnsAllSessionsGroupedByUser(t *testing.T) {
-	anvilAddr, _ := startAnvilForTest(t)
-	ts := whoTestServer(t, anvilAddr)
+	wardenAddr, _ := startWardenForTest(t)
+	ts := whoTestServer(t, wardenAddr)
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/who", "", map[string]any{})
 	if status != 200 {
@@ -95,8 +95,8 @@ func TestWhoReturnsAllSessionsGroupedByUser(t *testing.T) {
 }
 
 func TestWhoProtocolFilter(t *testing.T) {
-	anvilAddr, _ := startAnvilForTest(t)
-	ts := whoTestServer(t, anvilAddr)
+	wardenAddr, _ := startWardenForTest(t)
+	ts := whoTestServer(t, wardenAddr)
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/who", "", map[string]any{
 		"service": "imap",
@@ -117,8 +117,8 @@ func TestWhoProtocolFilter(t *testing.T) {
 }
 
 func TestWhoFlatGrouping(t *testing.T) {
-	anvilAddr, _ := startAnvilForTest(t)
-	ts := whoTestServer(t, anvilAddr)
+	wardenAddr, _ := startWardenForTest(t)
+	ts := whoTestServer(t, wardenAddr)
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/who", "", map[string]any{
 		"group_by": "none",
@@ -140,8 +140,8 @@ func TestWhoFlatGrouping(t *testing.T) {
 }
 
 func TestWhoCountTotal(t *testing.T) {
-	anvilAddr, _ := startAnvilForTest(t)
-	ts := whoTestServer(t, anvilAddr)
+	wardenAddr, _ := startWardenForTest(t)
+	ts := whoTestServer(t, wardenAddr)
 
 	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/who/count", "", map[string]any{})
 	if status != 200 {
@@ -157,8 +157,8 @@ func TestWhoCountTotal(t *testing.T) {
 }
 
 func TestWhoCountByProtocol(t *testing.T) {
-	anvilAddr, _ := startAnvilForTest(t)
-	ts := whoTestServer(t, anvilAddr)
+	wardenAddr, _ := startWardenForTest(t)
+	ts := whoTestServer(t, wardenAddr)
 
 	_, body := doJSON(t, ts, http.MethodPost, "/api/backend/who/count", "", map[string]any{
 		"by": "protocol",
@@ -174,8 +174,8 @@ func TestWhoCountByProtocol(t *testing.T) {
 }
 
 func TestWhoCountByUser(t *testing.T) {
-	anvilAddr, _ := startAnvilForTest(t)
-	ts := whoTestServer(t, anvilAddr)
+	wardenAddr, _ := startWardenForTest(t)
+	ts := whoTestServer(t, wardenAddr)
 
 	_, body := doJSON(t, ts, http.MethodPost, "/api/backend/who/count", "", map[string]any{
 		"by": "user",
@@ -191,8 +191,8 @@ func TestWhoCountByUser(t *testing.T) {
 }
 
 func TestWhoCountWithServiceFilter(t *testing.T) {
-	anvilAddr, _ := startAnvilForTest(t)
-	ts := whoTestServer(t, anvilAddr)
+	wardenAddr, _ := startWardenForTest(t)
+	ts := whoTestServer(t, wardenAddr)
 
 	_, body := doJSON(t, ts, http.MethodPost, "/api/backend/who/count", "", map[string]any{
 		"service": "imap",
@@ -206,10 +206,10 @@ func TestWhoCountWithServiceFilter(t *testing.T) {
 	}
 }
 
-func TestWhoReturns501WhenAnvilNotConfigured(t *testing.T) {
+func TestWhoReturns501WhenWardenNotConfigured(t *testing.T) {
 	ts := whoTestServer(t, "")
 	status, _ := doJSON(t, ts, http.MethodPost, "/api/backend/who", "", map[string]any{})
 	if status != http.StatusNotImplemented {
-		t.Errorf("status=%d want 501 when anvil not wired", status)
+		t.Errorf("status=%d want 501 when warden not wired", status)
 	}
 }

@@ -58,8 +58,8 @@ spec:
             - name: telemetry
               containerPort: 8080
               protocol: TCP
-          ## startupProbe replaces the wait-auth / wait-anvil init containers (#903).
-          ## It works here because this pod does NOT dial auth or anvil during
+          ## startupProbe replaces the wait-auth / wait-warden init containers (#903).
+          ## It works here because this pod does NOT dial auth or warden during
           ## startup — those connections are created lazily on the first login
           ## (#885/#891) — so the process comes up regardless and the probe simply
           ## withholds traffic until the dependencies answer.
@@ -84,8 +84,8 @@ spec:
                 ## and strips global flags from argv before a subcommand sees them, so
                 ## a --url here is swallowed and the probe never passes.
                 - http://{{ include "yarilo.fullname" . }}-auth-telemetry.{{ .Release.Namespace }}.svc:8080/readyz
-                {{- if .Values.components.anvil.enabled }}
-                - http://{{ include "yarilo.fullname" . }}-anvil-telemetry.{{ .Release.Namespace }}.svc:8080/readyz
+                {{- if .Values.components.warden.enabled }}
+                - http://{{ include "yarilo.fullname" . }}-warden-telemetry.{{ .Release.Namespace }}.svc:8080/readyz
                 {{- end }}
             periodSeconds: {{ .Values.components.imapLogin.startupProbe.periodSeconds }}
             ## failureThreshold x periodSeconds is the whole startup budget. Keep it

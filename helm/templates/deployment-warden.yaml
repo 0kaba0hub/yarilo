@@ -1,22 +1,22 @@
-{{- if .Values.components.anvil.enabled }}
-{{- $anvilBackend := .Values.components.anvil.service.state_backend | default "memory" }}
-{{- if and (gt (int .Values.components.anvil.replicas) 1) (ne $anvilBackend "redis") }}
-{{- fail "anvil: components.anvil.replicas > 1 requires components.anvil.service.state_backend: redis (memory state is per-pod; sessions, the connection limit, and the kick bus would fragment across replicas). Either set state_backend: redis, or set replicas: 1." }}
+{{- if .Values.components.warden.enabled }}
+{{- $wardenBackend := .Values.components.warden.service.state_backend | default "memory" }}
+{{- if and (gt (int .Values.components.warden.replicas) 1) (ne $wardenBackend "redis") }}
+{{- fail "warden: components.warden.replicas > 1 requires components.warden.service.state_backend: redis (memory state is per-pod; sessions, the connection limit, and the kick bus would fragment across replicas). Either set state_backend: redis, or set replicas: 1." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "yarilo.fullname" . }}-anvil
+  name: {{ include "yarilo.fullname" . }}-warden
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "yarilo.componentLabels" (dict "root" . "component" "anvil") | nindent 4 }}
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "warden") | nindent 4 }}
 spec:
-  replicas: {{ .Values.components.anvil.replicas }}
+  replicas: {{ .Values.components.warden.replicas }}
   selector:
     matchLabels:
-      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "anvil") | nindent 6 }}
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "warden") | nindent 6 }}
   strategy:
-    {{- if eq $anvilBackend "redis" }}
+    {{- if eq $wardenBackend "redis" }}
     # redis-backed pods are stateless, so a rolling update is safe.
     type: RollingUpdate
     {{- else }}
@@ -28,7 +28,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "yarilo.componentLabels" (dict "root" . "component" "anvil") | nindent 8 }}
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "warden") | nindent 8 }}
       annotations:
         {{- include "yarilo.configChecksum" . | nindent 8 }}
         {{- with .Values.podAnnotations }}
@@ -38,21 +38,21 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: yarilo-anvil
+        - name: yarilo-warden
           image: {{ include "yarilo.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: YARILO_COMPONENT
-              value: "yarilo-anvil"
+              value: "yarilo-warden"
             - name: LOG_LEVEL
-              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-anvil" "root" $) | quote }}
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-warden" "root" $) | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: anvil
+            - name: warden
               containerPort: 9101
               protocol: TCP
             - name: telemetry
@@ -63,14 +63,14 @@ spec:
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
-            {{- toYaml .Values.components.anvil.resources | nindent 12 }}
+            {{- toYaml .Values.components.warden.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/yarilo
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- include "yarilo.internalTLSMount" .Values.components.anvil.internalTLS | nindent 12 }}
+            {{- include "yarilo.internalTLSMount" .Values.components.warden.internalTLS | nindent 12 }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -80,7 +80,7 @@ spec:
             name: {{ include "yarilo.fullname" . }}
         - name: tmp
           emptyDir: {}
-        {{- include "yarilo.internalTLSVolume" .Values.components.anvil.internalTLS | nindent 8 }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.warden.internalTLS | nindent 8 }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

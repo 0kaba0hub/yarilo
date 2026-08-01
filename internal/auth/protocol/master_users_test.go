@@ -375,7 +375,7 @@ func TestRunMasterAuth_PassdbNextRejects(t *testing.T) {
 
 // TestRunMasterAuth_MasterdbErrorPropagatesAsTempFail — backend
 // errors during the masterdb pass must surface as ResultTempFail
-// (not Fail) so anvil / penalty / cache can distinguish a real
+// (not Fail) so warden / penalty / cache can distinguish a real
 // outage from a credential mismatch.
 func TestRunMasterAuth_MasterdbErrorPropagatesAsTempFail(t *testing.T) {
 	wantErr := errors.New("ldap unreachable")

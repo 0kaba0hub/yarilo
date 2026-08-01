@@ -40,9 +40,9 @@ import (
 
 // Server is the yarilo IMAP server.
 type Server struct {
-	srv         *imapserver.Server
-	opts        Options
-	anvilClient *imapAnvilClient
+	srv          *imapserver.Server
+	opts         Options
+	wardenClient *imapWardenClient
 }
 
 // Options configures the IMAP server.
@@ -194,14 +194,14 @@ type Options struct {
 	// correct per-user backend for the personal namespace.
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
 
-	// AnvilAddr is the yarilo-anvil server address. When non-empty
-	// and the session carried a login-forwarded anvil session id in
+	// WardenAddr is the yarilo-warden server address. When non-empty
+	// and the session carried a login-forwarded warden session id in
 	// the YARILO preamble (SESSION=<id>, #808), each SELECT / EXAMINE
-	// / UNSELECT pushes a SELECT command to anvil so `who` can render
+	// / UNSELECT pushes a SELECT command to warden so `who` can render
 	// the currently-SELECTed folder.
-	AnvilAddr string
-	// AnvilTLS optionally wraps the anvil dialer with mTLS.
-	AnvilTLS *tls.Config
+	WardenAddr string
+	// WardenTLS optionally wraps the warden dialer with mTLS.
+	WardenTLS *tls.Config
 
 	// MaildirSyncOnSelect reconciles the index against the physical mailbox
 	// on SELECT/EXAMINE for drivers whose storage can change out of band
@@ -252,8 +252,8 @@ const (
 // New creates an IMAP server.
 func New(opts Options) *Server {
 	s := &Server{
-		opts:        opts,
-		anvilClient: newImapAnvilClient(opts.AnvilAddr, opts.AnvilTLS),
+		opts:         opts,
+		wardenClient: newImapWardenClient(opts.WardenAddr, opts.WardenTLS),
 	}
 
 	caps := imaplib.CapSet{
@@ -1098,9 +1098,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	// Seed a usage baseline so a quota_warning "under" crossing fires even when
 	// the session only deletes mail (EXPUNGE with no prior save to seed it).
 	s.seedQuotaWarnSnap()
-	tAnvil := time.Now()
-	s.pushAnvilSelect(name)
-	slog.Debug("imap: select timing anvil_ms", "folder", rel, "anvil_ms", time.Since(tAnvil).Milliseconds())
+	tWarden := time.Now()
+	s.pushWardenSelect(name)
+	slog.Debug("imap: select timing warden_ms", "folder", rel, "warden_ms", time.Since(tWarden).Milliseconds())
 
 	// Auto-subscribe the folder on first SELECT so LSUB returns it
 	// without requiring an explicit SUBSCRIBE command from the client.
@@ -1185,7 +1185,7 @@ func (s *session) Unselect() error {
 	s.syncModSeq = 0
 	s.hasPendingExpunge = false
 	s.knownKeywords = nil
-	s.pushAnvilSelect("")
+	s.pushWardenSelect("")
 	return nil
 }
 

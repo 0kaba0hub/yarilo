@@ -1,7 +1,7 @@
 # Internal mTLS CA chain for the sandbox (#816 gate).
 #
 # Provisions a self-signed internal CA and the SHARED internal-tls cert that
-# auth / anvil / locks / backend / backend-api / fts / login pods present.
+# auth / warden / locks / backend / backend-api / fts / login pods present.
 # The director issues its OWN cert via the chart
 # (components.director.internalTLS.certificate.enabled, #753) — point its
 # issuerRef at the SAME namespaced Issuer created here (see note below).

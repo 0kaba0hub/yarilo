@@ -92,16 +92,16 @@ type Options struct {
 	// to inspect the fan-out. From cfg.Quota.CloneDicts.
 	QuotaCloneDicts []string
 
-	// AnvilAddr / AnvilTLS configure backend-api's connection to
-	// yarilo-anvil for the WHO endpoint. Empty Addr disables /who
+	// WardenAddr / WardenTLS configure backend-api's connection to
+	// yarilo-warden for the WHO endpoint. Empty Addr disables /who
 	// (returns 501). Same TLS config the rest of internal cluster
 	// traffic uses.
-	AnvilAddr string
-	AnvilTLS  *tls.Config
+	WardenAddr string
+	WardenTLS  *tls.Config
 
 	// PodIP is this backend pod's IP (from the POD_IP env / status.podIP).
 	// /who scopes to sessions routed to THIS backend by default (#814),
-	// matching each anvil session's Backend field against it. Empty (env not
+	// matching each warden session's Backend field against it. Empty (env not
 	// injected) disables the scoping — /who then behaves as if --all was set.
 	PodIP string
 

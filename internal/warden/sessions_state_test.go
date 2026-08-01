@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"strconv"
@@ -20,7 +20,7 @@ func TestStateBackendSessionContract(t *testing.T) {
 			mr := miniredis.RunT(t)
 			rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 			t.Cleanup(func() { rdb.Close() })
-			return NewRedisBackend(rdb, "test:anvil:", "test:anvil:events:", time.Minute, time.Minute, limit)
+			return NewRedisBackend(rdb, "test:warden:", "test:warden:events:", time.Minute, time.Minute, limit)
 		},
 	}
 	for name, mk := range backends {
@@ -90,7 +90,7 @@ func TestRedisSessionReconcile(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { rdb.Close() })
 	const limit = 3
-	b := NewRedisBackend(rdb, "test:anvil:", "test:anvil:events:", time.Minute, 200*time.Millisecond, limit)
+	b := NewRedisBackend(rdb, "test:warden:", "test:warden:events:", time.Minute, 200*time.Millisecond, limit)
 	const u, ip = "alice@example.com", "1.2.3.4"
 
 	for i := 1; i <= limit; i++ {

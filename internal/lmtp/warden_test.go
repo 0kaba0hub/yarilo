@@ -6,20 +6,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
-// startTestAnvil spins an in-process anvil server on a random
+// startTestWarden spins an in-process warden server on a random
 // port and returns its address. The server stops when the test
 // finishes.
-func startTestAnvil(t *testing.T) string {
+func startTestWarden(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
-	srv := anvil.NewServer(0) // unlimited per-IP — we only test LOOKUP/CONNECT semantics
+	srv := warden.NewServer(0) // unlimited per-IP — we only test LOOKUP/CONNECT semantics
 	ln.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -44,12 +44,12 @@ func startTestAnvil(t *testing.T) string {
 	return addr
 }
 
-// TestAnvilSessionClient_ReserveAndRelease covers the happy
+// TestWardenSessionClient_ReserveAndRelease covers the happy
 // path: first reserve passes LOOKUP+CONNECT, the count visible
 // to a second client is now 1, release brings it back to 0.
-func TestAnvilSessionClient_ReserveAndRelease(t *testing.T) {
-	addr := startTestAnvil(t)
-	c := newAnvilSessionClient(addr, 10, "10.0.0.1")
+func TestWardenSessionClient_ReserveAndRelease(t *testing.T) {
+	addr := startTestWarden(t)
+	c := newWardenSessionClient(addr, 10, "10.0.0.1")
 	defer c.releaseAll()
 
 	id, err := c.reserveDelivery("alice@example.com")
@@ -61,7 +61,7 @@ func TestAnvilSessionClient_ReserveAndRelease(t *testing.T) {
 	}
 
 	// Side-channel: open another client, run LOOKUP — must see 1.
-	probe, err := anvil.Dial(addr, nil, time.Second)
+	probe, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("probe dial: %v", err)
 	}
@@ -84,15 +84,15 @@ func TestAnvilSessionClient_ReserveAndRelease(t *testing.T) {
 	}
 }
 
-// TestAnvilSessionClient_RejectsAtLimit confirms the
+// TestWardenSessionClient_RejectsAtLimit confirms the
 // cluster-wide cap: with limit=2, the third reserve for the
 // same user fails with ErrTooManyConcurrent.
-func TestAnvilSessionClient_RejectsAtLimit(t *testing.T) {
-	addr := startTestAnvil(t)
+func TestWardenSessionClient_RejectsAtLimit(t *testing.T) {
+	addr := startTestWarden(t)
 
 	// Two pre-existing CONNECTs from a sibling pod, simulated
-	// by a direct anvil client.
-	other, err := anvil.Dial(addr, nil, time.Second)
+	// by a direct warden client.
+	other, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("other dial: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestAnvilSessionClient_RejectsAtLimit(t *testing.T) {
 
 	// Now a session client with limit=2 tries to reserve — count
 	// is already 2, so ErrTooManyConcurrent.
-	c := newAnvilSessionClient(addr, 2, "10.0.0.3")
+	c := newWardenSessionClient(addr, 2, "10.0.0.3")
 	defer c.releaseAll()
 	if _, err := c.reserveDelivery("bob@example.com"); err != ErrTooManyConcurrent {
 		t.Fatalf("reserve at limit: got %v, want ErrTooManyConcurrent", err)
@@ -118,12 +118,12 @@ func TestAnvilSessionClient_RejectsAtLimit(t *testing.T) {
 	}
 }
 
-// TestAnvilSessionClient_UnlimitedSkipsLookup verifies that
+// TestWardenSessionClient_UnlimitedSkipsLookup verifies that
 // limit=-1 (unlimited) still issues CONNECT — so `who` sees the
 // delivery — but does not gate on LOOKUP.
-func TestAnvilSessionClient_UnlimitedSkipsLookup(t *testing.T) {
-	addr := startTestAnvil(t)
-	c := newAnvilSessionClient(addr, -1, "10.0.0.4")
+func TestWardenSessionClient_UnlimitedSkipsLookup(t *testing.T) {
+	addr := startTestWarden(t)
+	c := newWardenSessionClient(addr, -1, "10.0.0.4")
 	defer c.releaseAll()
 
 	for i := 0; i < 50; i++ {
@@ -131,7 +131,7 @@ func TestAnvilSessionClient_UnlimitedSkipsLookup(t *testing.T) {
 			t.Fatalf("reserve %d: %v", i, err)
 		}
 	}
-	probe, _ := anvil.Dial(addr, nil, time.Second)
+	probe, _ := warden.Dial(addr, nil, time.Second)
 	defer probe.Close()
 	count, _ := probe.Lookup("carol@example.com", "lmtp")
 	if count != 50 {
@@ -139,12 +139,12 @@ func TestAnvilSessionClient_UnlimitedSkipsLookup(t *testing.T) {
 	}
 }
 
-// TestAnvilSessionClient_ReleaseAllIdempotent covers the
+// TestWardenSessionClient_ReleaseAllIdempotent covers the
 // Logout / Reset path: releaseAll fires DISCONNECT for every
 // outstanding entry, and a second call is a safe no-op.
-func TestAnvilSessionClient_ReleaseAllIdempotent(t *testing.T) {
-	addr := startTestAnvil(t)
-	c := newAnvilSessionClient(addr, 10, "10.0.0.5")
+func TestWardenSessionClient_ReleaseAllIdempotent(t *testing.T) {
+	addr := startTestWarden(t)
+	c := newWardenSessionClient(addr, 10, "10.0.0.5")
 	for _, u := range []string{"u1@x", "u2@x", "u3@x"} {
 		if _, err := c.reserveDelivery(u); err != nil {
 			t.Fatalf("reserve %s: %v", u, err)
@@ -153,7 +153,7 @@ func TestAnvilSessionClient_ReleaseAllIdempotent(t *testing.T) {
 	c.releaseAll()
 	c.releaseAll() // idempotent
 
-	probe, _ := anvil.Dial(addr, nil, time.Second)
+	probe, _ := warden.Dial(addr, nil, time.Second)
 	defer probe.Close()
 	for _, u := range []string{"u1@x", "u2@x", "u3@x"} {
 		count, _ := probe.Lookup(u, "lmtp")
@@ -163,15 +163,15 @@ func TestAnvilSessionClient_ReleaseAllIdempotent(t *testing.T) {
 	}
 }
 
-// TestAnvilSessionClient_UnreachableDowngrades covers the
-// resilience path: when AnvilAddr is set but the server is down,
-// reserve returns ErrAnvilUnavailable so the caller can downgrade
+// TestWardenSessionClient_UnreachableDowngrades covers the
+// resilience path: when WardenAddr is set but the server is down,
+// reserve returns ErrWardenUnavailable so the caller can downgrade
 // to best-effort delivery.
-func TestAnvilSessionClient_UnreachableDowngrades(t *testing.T) {
-	c := newAnvilSessionClient("127.0.0.1:1", 10, "10.0.0.6")
+func TestWardenSessionClient_UnreachableDowngrades(t *testing.T) {
+	c := newWardenSessionClient("127.0.0.1:1", 10, "10.0.0.6")
 	defer c.releaseAll()
 	_, err := c.reserveDelivery("alice@example.com")
 	if err == nil {
-		t.Fatal("expected error on unreachable anvil")
+		t.Fatal("expected error on unreachable warden")
 	}
 }

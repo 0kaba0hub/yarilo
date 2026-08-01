@@ -9,36 +9,36 @@ import (
 	"text/tabwriter"
 )
 
-// dispatchAnvil is the `anvil` subtree — introspection of the shared
+// dispatchWarden is the `warden` subtree — introspection of the shared
 // connection-accounting service. Routed via the backend plane (backend-api ->
-// anvil), like `backend who`.
+// warden), like `backend who`.
 //
-//	yarctl anvil dump [--output table|json]
-func dispatchAnvil(args []string) error {
+//	yarctl warden dump [--output table|json]
+func dispatchWarden(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: yarctl anvil dump [--output table|json]")
+		return fmt.Errorf("usage: yarctl warden dump [--output table|json]")
 	}
 	switch args[0] {
 	case "dump":
-		return anvilDump(args[1:])
+		return wardenDump(args[1:])
 	default:
-		return fmt.Errorf("unknown anvil command %q — available: dump", args[0])
+		return fmt.Errorf("unknown warden command %q — available: dump", args[0])
 	}
 }
 
-// anvilDump prints the anvil state snapshot: per-user@IP connection counters
+// wardenDump prints the warden state snapshot: per-user@IP connection counters
 // with their live session tally (DRIFT = counter - live; non-zero means a leaked
 // counter) and the per-IP penalty entries with remaining TTL.
-func anvilDump(args []string) error {
-	fs := flag.NewFlagSet("anvil dump", flag.ContinueOnError)
+func wardenDump(args []string) error {
+	fs := flag.NewFlagSet("warden dump", flag.ContinueOnError)
 	output := fs.String("output", "table", "table | json")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("usage: yarctl anvil dump [--output table|json]")
+		return fmt.Errorf("usage: yarctl warden dump [--output table|json]")
 	}
-	body, err := backendAPIGet("/api/backend/anvil/dump")
+	body, err := backendAPIGet("/api/backend/warden/dump")
 	if err != nil {
 		return err
 	}

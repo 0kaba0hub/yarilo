@@ -22,10 +22,10 @@ import (
 
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
 	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 // Protocol identifies the mail protocol handled by the login pod.
@@ -90,15 +90,15 @@ type Options struct {
 	// preamble phase (IMAP :143, POP3 :110, Submission :587).
 	// Nil means STARTTLS is not advertised or available on this listener.
 	StarttlsTLS *tls.Config
-	// AnvilAddr is the host:port of yarilo-anvil for per-user@IP connection
+	// WardenAddr is the host:port of yarilo-warden for per-user@IP connection
 	// limiting (mail_max_userip_connections). Empty = no limit enforcement.
-	AnvilAddr string
-	// AnvilTLS is the mTLS config for connecting to yarilo-anvil.
+	WardenAddr string
+	// WardenTLS is the mTLS config for connecting to yarilo-warden.
 	// Nil means plain TCP.
-	AnvilTLS *tls.Config
-	// AnvilFailOpen controls what happens when yarilo-anvil is unreachable.
+	WardenTLS *tls.Config
+	// WardenFailOpen controls what happens when yarilo-warden is unreachable.
 	// true = allow the session (fail open); false = reject the session (fail closed).
-	AnvilFailOpen bool
+	WardenFailOpen bool
 	// TransientRetries is how many extra attempts a transient failure gets before
 	// the client is told the service is unavailable (#896). 0 selects the default
 	// (3). Applies to failures that are temporary by definition — yarilo-auth
@@ -112,11 +112,11 @@ type Options struct {
 	// re-LOGINs between them). Independent of AuthMaxAttempts (bad passwords).
 	// 0 selects the default (3).
 	TransientReloginCap int
-	// AnvilConns is how many long-lived connections the shared anvil pool keeps
-	// (#878). 0 selects anvil.DefaultPoolSize. The anvil protocol carries no
+	// WardenConns is how many long-lived connections the shared warden pool keeps
+	// (#878). 0 selects warden.DefaultPoolSize. The warden protocol carries no
 	// request id, so a connection serves one command at a time; each command is a
 	// sub-millisecond round trip, so a handful covers any realistic login rate.
-	AnvilConns int
+	WardenConns int
 	// DialRetries is the number of attempts (with exponential backoff) when
 	// dialling external dependencies at startup. 0 or 1 means a single attempt.
 	DialRetries int
@@ -342,13 +342,13 @@ type Server struct {
 	authMu sync.Mutex
 	authCl *authclient.Client
 
-	// anvilMu guards the shared yarilo-anvil pool (#878). Sessions no longer own
-	// a connection: every anvil command carries the session id and the server
+	// wardenMu guards the shared yarilo-warden pool (#878). Sessions no longer own
+	// a connection: every warden command carries the session id and the server
 	// keeps no per-connection state, so a small fixed set of long-lived
 	// connections serves every session on this pod. Lazy for the same reason as
-	// the auth client — the pod may start before anvil is reachable.
-	anvilMu   sync.Mutex
-	anvilPool *anvil.Pool
+	// the auth client — the pod may start before warden is reachable.
+	wardenMu   sync.Mutex
+	wardenPool *warden.Pool
 
 	// Graceful-drain state (#857): on Shutdown the listeners are closed (stop
 	// accepting) and inflight is waited on (let live sessions finish) up to the
@@ -377,23 +377,23 @@ func (s *Server) authClient() (*authclient.Client, error) {
 	return cl, nil
 }
 
-// anvilClient returns the shared anvil pool, creating it on first use. The pool
-// dials lazily, so this cannot fail on an unreachable anvil — a dial error
+// wardenClient returns the shared warden pool, creating it on first use. The pool
+// dials lazily, so this cannot fail on an unreachable warden — a dial error
 // surfaces on the first command instead.
-func (s *Server) anvilClient() *anvil.Pool {
-	s.anvilMu.Lock()
-	defer s.anvilMu.Unlock()
-	if s.anvilPool == nil {
-		s.anvilPool = anvil.NewPool(s.opts.AnvilAddr, s.opts.AnvilTLS, s.opts.AnvilConns, 0)
+func (s *Server) wardenClient() *warden.Pool {
+	s.wardenMu.Lock()
+	defer s.wardenMu.Unlock()
+	if s.wardenPool == nil {
+		s.wardenPool = warden.NewPool(s.opts.WardenAddr, s.opts.WardenTLS, s.opts.WardenConns, 0)
 	}
-	return s.anvilPool
+	return s.wardenPool
 }
 
-func (s *Server) closeAnvilPool() {
-	s.anvilMu.Lock()
-	pool := s.anvilPool
-	s.anvilPool = nil
-	s.anvilMu.Unlock()
+func (s *Server) closeWardenPool() {
+	s.wardenMu.Lock()
+	pool := s.wardenPool
+	s.wardenPool = nil
+	s.wardenMu.Unlock()
 	if pool != nil {
 		pool.Close()
 	}
@@ -542,11 +542,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		s.closeAuthClient()
-		s.closeAnvilPool()
+		s.closeWardenPool()
 		return nil
 	case <-ctx.Done():
 		s.closeAuthClient()
-		s.closeAnvilPool()
+		s.closeWardenPool()
 		return ctx.Err() // grace expired with sessions still live
 	}
 }
@@ -564,8 +564,8 @@ const (
 // established is the set of resources a successful login pass hands back to
 // handleConn to proxy and own for the session's lifetime.
 type established struct {
-	bs           *backendSession
-	releaseAnvil func() // anvil heartbeat-cancel + Disconnect; nil when anvil is disabled
+	bs            *backendSession
+	releaseWarden func() // warden heartbeat-cancel + Disconnect; nil when warden is disabled
 }
 
 func (s *Server) handleConn(conn net.Conn) {
@@ -619,15 +619,15 @@ func (s *Server) handleConn(conn net.Conn) {
 	var est *established
 	attempt := func() (loginOutcome, *established) {
 		// committed is flipped only on a successful bring-up; until then the
-		// deferred unwind releases whatever this pass acquired (the anvil slot),
-		// so a transient failure after anvil.Connect cannot leak a connection
+		// deferred unwind releases whatever this pass acquired (the warden slot),
+		// so a transient failure after warden.Connect cannot leak a connection
 		// slot. On success the release is handed to handleConn instead, so the
 		// slot lives for the whole proxied session.
 		committed := false
-		var releaseAnvil func()
+		var releaseWarden func()
 		defer func() {
-			if !committed && releaseAnvil != nil {
-				releaseAnvil()
+			if !committed && releaseWarden != nil {
+				releaseWarden()
 			}
 		}()
 
@@ -684,7 +684,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		for attempt := 1; ; attempt++ {
 			// Native inbound client-IP forwarding (#742): the SINGLE point where a
 			// proxy-forwarded address replaces the socket IP, so every downstream
-			// consumer below (auth, allow_nets, anvil, the backend preamble ADDR=)
+			// consumer below (auth, allow_nets, warden, the backend preamble ADDR=)
 			// inherits it. pre.forwardIP is populated by the pre-auth parser ONLY
 			// when this listener has xclient_protocol enabled; here we additionally
 			// require the socket peer — already PROXY-rewritten if HAProxy also ran
@@ -716,7 +716,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			// tarpit the user.
 			for tfAttempt := 0; ; tfAttempt++ {
 				authStart := time.Now()
-				authResult, aerr = authCl.Authenticate(pre.username, pre.password, anvilService(s.opts.Protocol), clientIP, sessID)
+				authResult, aerr = authCl.Authenticate(pre.username, pre.password, wardenService(s.opts.Protocol), clientIP, sessID)
 				// One observation per attempt, not per login: the retry loop keeps the
 				// connection open across a bad-password retry, and each attempt is its
 				// own round-trip to yarilo-auth.
@@ -803,18 +803,18 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		}
 
-		// Anvil connection limit check. Shared pool (#878): no per-session dial. The
+		// Warden connection limit check. Shared pool (#878): no per-session dial. The
 		// phase metric now measures CONNECT over an already-open connection, so it
 		// reads as a round trip rather than a full mTLS handshake.
-		if s.opts.AnvilAddr != "" {
-			anvilStart := time.Now()
-			ap := s.anvilClient()
-			svc := anvilService(s.opts.Protocol)
+		if s.opts.WardenAddr != "" {
+			wardenStart := time.Now()
+			ap := s.wardenClient()
+			svc := wardenService(s.opts.Protocol)
 			cerr := ap.Connect(sessID, pre.username, clientIP, svc)
-			s.observePhase(phaseAnvilConnect, anvilStart)
+			s.observePhase(phaseWardenConnect, wardenStart)
 			switch {
-			case errors.Is(cerr, anvil.ErrTooManyConns):
-				log.Warn("login: anvil", "user", pre.username, "result", "fail", "reason", "too_many_connections")
+			case errors.Is(cerr, warden.ErrTooManyConns):
+				log.Warn("login: warden", "user", pre.username, "result", "fail", "reason", "too_many_connections")
 				// The over-limit code, then the close announcement (#928
 				// consistency) so IMAP/ManageSieve announce the close with a BYE
 				// rather than dropping the socket after the tagged NO.
@@ -822,41 +822,41 @@ func (s *Server) handleConn(conn net.Conn) {
 				writeProtoClose(authConn, s.opts.Protocol, "closing")
 				return outcomeClose, nil
 			case cerr != nil:
-				log.Error("login: anvil connect failed", "addr", s.opts.AnvilAddr, "err", cerr)
-				if !s.opts.AnvilFailOpen {
+				log.Error("login: warden connect failed", "addr", s.opts.WardenAddr, "err", cerr)
+				if !s.opts.WardenFailOpen {
 					writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
 					s.incResult("unavailable")
 					return outcomeRetry, nil
 				}
 			default:
-				log.Info("login: anvil", "user", pre.username, "result", "ok")
-				// #814: record the routed backend in anvil so `who` can scope to the
+				log.Info("login: warden", "user", pre.username, "result", "ok")
+				// #814: record the routed backend in warden so `who` can scope to the
 				// local backend. Best-effort.
 				if beIP, _, splitErr := net.SplitHostPort(backendAddr); splitErr == nil {
 					if berr := ap.Backend(sessID, beIP); berr != nil {
-						log.Debug("login: anvil backend push", "err", berr)
+						log.Debug("login: warden backend push", "err", berr)
 					}
 				}
 				hbCtx, hbCancel := context.WithCancel(context.Background())
 				hbDone := make(chan struct{})
 				go func() {
 					defer close(hbDone)
-					interval := anvil.DefaultSessionTTL / 3
+					interval := warden.DefaultSessionTTL / 3
 					if err := ap.HeartbeatLoop(hbCtx, sessID, interval, nil); err != nil {
-						log.Debug("login: anvil heartbeat loop", "err", err)
+						log.Debug("login: warden heartbeat loop", "err", err)
 					}
 				}()
 				// The pool outlives the session, so there is nothing to close here —
-				// only the registration to release. Captured as releaseAnvil rather
+				// only the registration to release. Captured as releaseWarden rather
 				// than deferred directly: on a transient failure before bring-up the
 				// closure's committed-defer runs it (releasing the slot before the
 				// re-LOGIN), and on success it is handed to handleConn to defer for
 				// the whole proxied session (#896).
-				releaseAnvil = func() {
+				releaseWarden = func() {
 					hbCancel()
 					<-hbDone
 					if err := ap.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
-						log.Debug("login: anvil disconnect", "err", err)
+						log.Debug("login: warden disconnect", "err", err)
 					}
 				}
 			}
@@ -890,7 +890,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.observePhase(phaseBackendDial, backendDialStart)
 
 		committed = true
-		return outcomeDone, &established{bs: bs, releaseAnvil: releaseAnvil}
+		return outcomeDone, &established{bs: bs, releaseWarden: releaseWarden}
 	}
 
 	// Transient re-login loop (#896): a transient failure keeps the connection
@@ -932,8 +932,8 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	backendConn, backendRd, backendAddr, backendCaps := est.bs.conn, est.bs.rd, est.bs.addr, est.bs.caps
 	defer backendConn.Close()
-	if est.releaseAnvil != nil {
-		defer est.releaseAnvil()
+	if est.releaseWarden != nil {
+		defer est.releaseWarden()
 	}
 
 	// Register the session for kick support only once it is actually up — a
@@ -1387,7 +1387,7 @@ findLoop:
 	return true
 }
 
-// kickChannel is the anvil pub/sub channel this login pod
+// kickChannel is the warden pub/sub channel this login pod
 // subscribes to. Keyed per-protocol so each login binary only
 // wakes up for relevant events. Event payload is the session id.
 func (s *Server) kickChannel() string {
@@ -1395,10 +1395,10 @@ func (s *Server) kickChannel() string {
 }
 
 // startKickSubscriber spawns the per-protocol kick subscriber. No-op when
-// AnvilAddr is unset (single-process dev runs). The loop runs until ctx is
+// WardenAddr is unset (single-process dev runs). The loop runs until ctx is
 // cancelled; see kickSubscribeLoop for the reconnect semantics.
 func (s *Server) startKickSubscriber(ctx context.Context) {
-	if s.opts.AnvilAddr == "" {
+	if s.opts.WardenAddr == "" {
 		return
 	}
 	go s.kickSubscribeLoop(ctx, s.kickChannel())
@@ -1407,9 +1407,9 @@ func (s *Server) startKickSubscriber(ctx context.Context) {
 // kickReconnectDelay is the backoff between kick-subscriber reconnect attempts.
 const kickReconnectDelay = time.Second
 
-// kickSubscribeLoop keeps a live subscription to the anvil kick channel,
+// kickSubscribeLoop keeps a live subscription to the warden kick channel,
 // redialling and re-subscribing whenever the connection drops (#908 PR3 — the
-// mirror of #946 on the subscribe side). Without this a single anvil restart or
+// mirror of #946 on the subscribe side). Without this a single warden restart or
 // network blip would silently and permanently deafen this login pod to kicks,
 // which is security-relevant: a kick is how a compromised or relocated session
 // is evicted. The loop exits only when ctx is cancelled.
@@ -1418,9 +1418,9 @@ func (s *Server) kickSubscribeLoop(ctx context.Context, channel string) {
 		if ctx.Err() != nil {
 			return
 		}
-		ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+		ac, err := warden.Dial(s.opts.WardenAddr, s.opts.WardenTLS, 5*time.Second)
 		if err != nil {
-			slog.Warn("login: kick subscribe dial failed, retrying", "addr", s.opts.AnvilAddr, "err", err)
+			slog.Warn("login: kick subscribe dial failed, retrying", "addr", s.opts.WardenAddr, "err", err)
 			if !sleepCtx(ctx, kickReconnectDelay) {
 				return
 			}
@@ -1679,8 +1679,8 @@ func isRetriableProtocol(p Protocol) bool {
 		p == ProtocolManageSieve
 }
 
-// anvilService maps a login Protocol to the service name used in the anvil protocol.
-func anvilService(p Protocol) string {
+// wardenService maps a login Protocol to the service name used in the warden protocol.
+func wardenService(p Protocol) string {
 	switch p {
 	case ProtocolPOP3, ProtocolPOP3S:
 		return "pop3"

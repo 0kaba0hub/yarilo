@@ -37,7 +37,7 @@ This is a **single image** containing every yarilo binary. The component to run 
 | `yarilo-submission` / `yarilo-submission-login` | Submission relay / login proxy |
 | `yarilo-managesieve` / `yarilo-managesieve-login` | ManageSieve backend / login proxy |
 | `yarilo-sasl-login` | SASL auth socket (Postfix / Exim relay) |
-| `yarilo-auth` · `yarilo-anvil` · `yarilo-locks` | Shared services (passdb, rate-limit, write locks) |
+| `yarilo-auth` · `yarilo-warden` · `yarilo-locks` | Shared services (passdb, rate-limit, write locks) |
 | `yarilo-director` · `yarilo-backend-api` · `yarilo-backend-reg` | Director ring, admin API, backend registration sidecar |
 | `yarilo-fts` · `yarilo-quota-status` · `yarilo-migrate` | Full-text search, quota policy, offline format migration |
 

@@ -40,11 +40,11 @@ inter-component coordination.
 
 <img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_standalone.svg" width="100%" alt="Standalone deployment topology"/>
 
-> **Note (#908):** the diagrams draw `yarilo-anvil` as a single shared service for
+> **Note (#908):** the diagrams draw `yarilo-warden` as a single shared service for
 > clarity. Its replica count is a config value, not a fixed topology: with
-> `state_backend: redis` anvil runs N replicas behind the same ClusterIP (all state
+> `state_backend: redis` warden runs N replicas behind the same ClusterIP (all state
 > — penalty, sessions, kick bus — in shared Redis), and with `state_backend: memory`
-> it stays a single pod. See *Scaling `yarilo-anvil`* in
+> it stays a single pod. See *Scaling `yarilo-warden`* in
 > [docs/DEPLOYMENT.md](DEPLOYMENT.md).
 
 The logical request flow (login → session → shared services → storage):
@@ -58,7 +58,7 @@ The logical request flow (login → session → shared services → storage):
 +------------------------+  +------------------------+
 |  yarilo-imap-login     |  |  yarilo-pop3-login     |  login pods (TLS termination,
 |  yarilo-lmtp-login     |  |  yarilo-managesieve-   |  HAProxy / XCLIENT, passdb,
-|  yarilo-submission-    |  |  login                 |  anvil rate-limit, fd-passing)
+|  yarilo-submission-    |  |  login                 |  warden rate-limit, fd-passing)
 |  login / sasl-login    |  +------------------------+
 +------------------------+
          |  Unix fd-passing (SCM_RIGHTS) after auth
@@ -73,7 +73,7 @@ The logical request flow (login → session → shared services → storage):
          v
 +------------------------+  +------------------------+
 |  yarilo-locks          |  |  yarilo-auth           |  shared services
-|  yarilo-anvil          |  |  Redis (dict / locks)  |
+|  yarilo-warden          |  |  Redis (dict / locks)  |
 +------------------------+  +------------------------+
          |
          | NFS PV (RWX) — shared by all session pods in a tag
@@ -95,7 +95,7 @@ The logical request flow (login → session → shared services → storage):
   yarilo-lmtp                 # LMTP delivery backend
   yarilo-auth                 # passdb + userdb (shared service)
   yarilo-auth-worker
-  yarilo-anvil                # connlimit + session counters + kick bus (shared; Redis Pub/Sub across replicas, #908)
+  yarilo-warden                # connlimit + session counters + kick bus (shared; Redis Pub/Sub across replicas, #908)
   yarilo-director             # ring + userDir + monitor
   yarilo-locks                # cross-pod write coordination (per backend tag)
   yarilo-monitor              # sidecar in director pod — polls backend pod health, reports to director ring
@@ -123,7 +123,7 @@ app/
   yarilo-lmtp/main.go
   yarilo-auth/main.go
   yarilo-auth-worker/main.go
-  yarilo-anvil/main.go
+  yarilo-warden/main.go
   yarilo-director/main.go
   yarilo-monitor/main.go
 internal/
@@ -135,19 +135,19 @@ internal/
   submission/
   lmtp/
   auth/            — passdb/userdb chain
-  anvil/           — connection accounting
+  warden/           — connection accounting
   director/        — consistent hash ring, user→pod routing
   monitor/         — backend pod health checks, lock TTL liveness reports to director
 pkg/
   mailbox/         — MailboxBackend + IndexBackend interfaces
   config/          — YAML config via koanf
 helm/
-  yarilo-shared/   — shared services (yarilo-auth, yarilo-anvil, Redis)
+  yarilo-shared/   — shared services (yarilo-auth, yarilo-warden, Redis)
     Chart.yaml
     values.yaml
     templates/
       auth-deployment.yaml
-      anvil-deployment.yaml
+      warden-deployment.yaml
       redis-statefulset.yaml
   yarilo-director/ — director pool (login-proxies + director StatefulSet + monitor sidecar)
     Chart.yaml
@@ -195,7 +195,7 @@ helm install yarilo-backend-b ./helm/yarilo-backend --set tag=b -f values-prod.y
 ```yaml
 auth:
   replicas: 2
-anvil:
+warden:
   replicas: 2
   redis:
     address: redis.shared.svc:6379
@@ -249,8 +249,8 @@ stern -l app.kubernetes.io/part-of=yarilo
 | Workload | Type | Service | Replicas | Notes |
 |:---|:---|:---|:---|:---|
 | `yarilo-auth` | Deployment | ClusterIP :9100 | 2+ | stateless, HPA, userdb queries external SQL/LDAP |
-| `yarilo-anvil` | Deployment | ClusterIP :9101 | 2 | state в Redis (HA), conn+session counters |
-| `redis-shared` | StatefulSet (or external) | ClusterIP :6379 | per-Redis-HA-design | state backend для anvil |
+| `yarilo-warden` | Deployment | ClusterIP :9101 | 2 | state в Redis (HA), conn+session counters |
+| `redis-shared` | StatefulSet (or external) | ClusterIP :6379 | per-Redis-HA-design | state backend для warden |
 
 ### yarilo-director chart
 
@@ -299,7 +299,7 @@ stern -l app.kubernetes.io/part-of=yarilo
 | `yarilo-submission` | `yarilo` | none | RWX PVC (NFS, для Sent folder) |
 | `yarilo-lmtp` | `yarilo` | none | RWX PVC (NFS) |
 | `yarilo-auth` | `yarilo` | none | none |
-| `yarilo-anvil` | `yarilo` | none | none |
+| `yarilo-warden` | `yarilo` | none | none |
 | `yarilo-director` | `yarilo` | none | none |
 | `yarilo-monitor` (sidecar) | `yarilo` | none | none |
 | `yarilo-locks` | `yarilo` | none | none |
@@ -316,12 +316,12 @@ client ──TLS:993──► yarilo-imap-login (nobody)
                         │ speak IMAP pre-auth (CAPABILITY / AUTHENTICATE / LOGIN)
                         │ collect username + password from client
                         │ AUTH request ──mTLS──► yarilo-auth :9100
-                        │   passdb chain, brute-force penalty via yarilo-anvil
+                        │   passdb chain, brute-force penalty via yarilo-warden
                         │   → returns session token (64-char hex, one-time, TTL 60s)
                         │ check nologin / allow_nets from auth response
                         │ routing ──mTLS──► yarilo-director :9102
                         │   → returns yarilo-imap pod address
-                        │ conn limit ──mTLS──► yarilo-anvil :9101
+                        │ conn limit ──mTLS──► yarilo-warden :9101
                         │ FAIL → send NO to client, close
                         │ OK:
                         │   send tag OK to client
@@ -402,7 +402,7 @@ Plain TCP — лише на data plane між director-проксі і backend-p
 | From | To | Transport | Protocol |
 |:---|:---|:---|:---|
 | `*-login` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited AUTH — **passdb only** → session token |
-| `*-login` | `yarilo-anvil` | mTLS TCP :9101 | TAB-delimited (connection counting) |
+| `*-login` | `yarilo-warden` | mTLS TCP :9101 | TAB-delimited (connection counting) |
 | `*-login` | `yarilo-director` | mTLS TCP :9102 | TAB-delimited LOOKUP |
 | `*-login` | `yarilo-imap/pop3/submission` | plain TCP ClusterIP | XCLIENT preamble (ADDR/SESSION/TOKEN/USER), then raw protocol bytes (proxy) |
 | `yarilo-imap/pop3/submission/managesieve` | `yarilo-auth` | mTLS TCP :9100 | TAB-delimited VERIFY(token, user=) — token + username binding check |
@@ -410,13 +410,13 @@ Plain TCP — лише на data plane між director-проксі і backend-p
 | `yarilo-director` | `yarilo-lmtp` | plain TCP ClusterIP | raw LMTP bytes (proxy) |
 | `yarilo-monitor` (sidecar) | backend `/healthz` of each StatefulSet pod | mTLS HTTP | health polling (rebalance ring on failures) |
 | `yarilo-imap/pop3/submission/lmtp` | `yarilo-locks-<tag>` | mTLS TCP :9104 | TAB-delimited (LOCK/UNLOCK/RENEW) |
-| `yarilo-imap/pop3/submission/lmtp` | `yarilo-anvil` | mTLS TCP :9101 | TAB-delimited (SESSION events) |
+| `yarilo-imap/pop3/submission/lmtp` | `yarilo-warden` | mTLS TCP :9101 | TAB-delimited (SESSION events) |
 
 ---
 
 ## mTLS
 
-All internal TCP services (auth, anvil, director, locks, health) require mutual TLS.
+All internal TCP services (auth, warden, director, locks, health) require mutual TLS.
 Every pod presents a certificate; the peer verifies it against the internal CA.
 Connections without a valid certificate are rejected.
 
@@ -920,5 +920,5 @@ the race-prone `NextUID++` pattern to `AllocateAppend` in v1.7.0 (Phase 2.2).
 | MITM between pods | mTLS with internal CA verification |
 | Cross-user maildir access | Each session pod runs as `yarilo` uid; NetworkPolicy; director affinity prevents concurrent access |
 | Auth bypass | `yarilo-auth` reachable only via mTLS; NetworkPolicy restricts access to login pods |
-| Connection flooding | `yarilo-anvil` enforces `max_userip_connections` globally across all login replicas |
+| Connection flooding | `yarilo-warden` enforces `max_userip_connections` globally across all login replicas |
 | Backend failure | `yarilo-monitor` (sidecar in director pod) detects via `/healthz` polling, `yarilo-director` removes from ring, reroutes in-flight connections |

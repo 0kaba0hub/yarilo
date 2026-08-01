@@ -97,13 +97,13 @@ func TestBackendBaseForUser(t *testing.T) {
 	})
 }
 
-// TestBackendDispatchRoutesAnvil is the #953 regression: in the backend-api
-// container (YARILO_ADMIN_TYPE=backend) `yarctl anvil dump` routes through
-// dispatchBackend, so `anvil` must resolve there — not fail as an unknown
+// TestBackendDispatchRoutesWarden is the #953 regression: in the backend-api
+// container (YARILO_ADMIN_TYPE=backend) `yarctl warden dump` routes through
+// dispatchBackend, so `warden` must resolve there — not fail as an unknown
 // backend service.
-func TestBackendDispatchRoutesAnvil(t *testing.T) {
+func TestBackendDispatchRoutesWarden(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/backend/anvil/dump" {
+		if r.URL.Path == "/api/backend/warden/dump" {
 			w.Write([]byte(`{"counters":[],"penalties":[]}`)) //nolint:errcheck
 			return
 		}
@@ -114,7 +114,7 @@ func TestBackendDispatchRoutesAnvil(t *testing.T) {
 	defer func() { backendAPIURL = old }()
 	backendAPIURL = srv.URL
 
-	if err := dispatchBackend([]string{"anvil", "dump", "--output", "json"}); err != nil {
-		t.Fatalf("dispatchBackend routing anvil dump: %v", err)
+	if err := dispatchBackend([]string{"warden", "dump", "--output", "json"}); err != nil {
+		t.Fatalf("dispatchBackend routing warden dump: %v", err)
 	}
 }

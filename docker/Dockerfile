@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     for cmd in \
         yarilo \
         yarilo-auth \
-        yarilo-anvil \
+        yarilo-warden \
         yarctl \
         yarilo-backend-api \
         yarilo-backend-reg \
