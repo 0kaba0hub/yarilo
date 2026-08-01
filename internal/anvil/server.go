@@ -158,27 +158,16 @@ type Server struct {
 	mu       sync.Mutex
 	sessions map[string]*SessionInfo // id → session
 
-	// penalties is the per-IP auth-fail backoff store.
-	// Sweep-cleared when an entry sits unchanged for penaltyDecay
-	// so a long-quiet attacker doesn't lock themselves out forever
-	// (and so an honest user behind shared NAT eventually clears).
-	penaltyMu sync.Mutex
-	penalties map[string]*penaltyEntry
+	// state is the pluggable shared-state backend (#908). In this phase it
+	// stores the per-IP auth-fail penalty counter (memory or Redis); sessions and
+	// the kick bus still live in the maps here and move to it in later phases.
+	state StateBackend
 
 	// subsMu protects the subs map. Held during EMIT broadcast
 	// AND during SUBSCRIBE add — keep handler hot path short
 	// (no I/O under the lock).
 	subsMu sync.Mutex
 	subs   map[string][]chan<- subEvent // channel name → subscriber outboxes
-}
-
-// penaltyEntry is the per-IP auth-fail counter. Updated atomically
-// under Server.penaltyMu; touched by handlePenaltyLookup (read) and
-// handlePenaltyUpdate (write). Sweep drops entries whose
-// lastUpdate is older than penaltyDecay.
-type penaltyEntry struct {
-	count      int
-	lastUpdate time.Time
 }
 
 // subEvent is one server-side push pending write to a subscriber
@@ -221,11 +210,15 @@ func NewServer(max int, opts ...ServerOption) *Server {
 		sweepInterval: DefaultSweepInterval,
 		penaltyDecay:  DefaultPenaltyDecay,
 		sessions:      make(map[string]*SessionInfo),
-		penalties:     make(map[string]*penaltyEntry),
 		subs:          make(map[string][]chan<- subEvent),
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	// Default to the in-process backend unless WithStateBackend injected one; its
+	// decay must reflect any WithPenaltyDecay applied above, so build it here.
+	if s.state == nil {
+		s.state = newMemoryBackend(s.penaltyDecay)
 	}
 	return s
 }
@@ -609,14 +602,7 @@ func (s *Server) sweepStaleSessions(now time.Time) {
 // update is older than penaltyDecay. Inner of sweepLoop — takes
 // `now` so tests can fast-forward.
 func (s *Server) sweepStalePenalties(now time.Time) {
-	cutoff := now.Add(-s.penaltyDecay)
-	s.penaltyMu.Lock()
-	defer s.penaltyMu.Unlock()
-	for ip, e := range s.penalties {
-		if e.lastUpdate.Before(cutoff) {
-			delete(s.penalties, ip)
-		}
-	}
+	s.state.PenaltySweep(now)
 }
 
 // handlePenaltyLookup processes: PENALTY-LOOKUP\t{ip}
@@ -628,22 +614,9 @@ func (s *Server) handlePenaltyLookup(conn net.Conn, fields []string) {
 		return
 	}
 	ip := fields[1]
-	s.penaltyMu.Lock()
-	defer s.penaltyMu.Unlock()
-	e, ok := s.penalties[ip]
-	if !ok {
-		penaltyLookups.WithLabelValues("miss").Inc()
-		fmt.Fprintf(conn, "PENALTY\t0\n")
-		return
-	}
-	if time.Since(e.lastUpdate) > s.penaltyDecay {
-		delete(s.penalties, ip)
-		penaltyLookups.WithLabelValues("expired").Inc()
-		fmt.Fprintf(conn, "PENALTY\t0\n")
-		return
-	}
-	penaltyLookups.WithLabelValues("hit").Inc()
-	fmt.Fprintf(conn, "PENALTY\t%d\n", e.count)
+	count, status := s.state.PenaltyLookup(ip)
+	penaltyLookups.WithLabelValues(status).Inc()
+	fmt.Fprintf(conn, "PENALTY\t%d\n", count)
 }
 
 // handlePenaltyUpdate processes: PENALTY-UPDATE\t{ip}\t{count}
@@ -667,13 +640,7 @@ func (s *Server) handlePenaltyUpdate(conn net.Conn, fields []string) {
 	if count > MaxPenalty {
 		count = MaxPenalty
 	}
-	s.penaltyMu.Lock()
-	defer s.penaltyMu.Unlock()
-	if count == 0 {
-		delete(s.penalties, ip)
-	} else {
-		s.penalties[ip] = &penaltyEntry{count: count, lastUpdate: time.Now().UTC()}
-	}
+	s.state.PenaltyUpdate(ip, count)
 	fmt.Fprintf(conn, "OK\n")
 }
 

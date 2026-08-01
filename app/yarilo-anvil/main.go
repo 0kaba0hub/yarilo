@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/build"
@@ -59,11 +61,44 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	srv := anvil.NewServer(cfg.General.Limits.MaxUserIPConnections)
+	// Shared-state backend (#908): memory (default) or Redis. Redis lets penalty
+	// state survive a restart and be shared across replicas; readiness gates on it
+	// like locks. In this phase only penalties are Redis-backed.
+	var stateOpts []anvil.ServerOption
+	var stateChecks []telemetry.Check
+	var closeState func()
+	if cfg.AnvilService.StateBackend == "redis" {
+		opt, perr := redis.ParseURL(cfg.AnvilService.RedisAddr)
+		if perr != nil {
+			slog.Error("anvil: invalid redis_addr", "addr", cfg.AnvilService.RedisAddr, "err", perr)
+			os.Exit(1)
+		}
+		rdb := redis.NewClient(opt)
+		prefix := cfg.AnvilService.KeyPrefix
+		if prefix == "" {
+			prefix = "yarilo:anvil:"
+		}
+		backend := anvil.NewRedisBackend(rdb, prefix, anvil.DefaultPenaltyDecay)
+		stateOpts = append(stateOpts, anvil.WithStateBackend(backend))
+		closeState = func() { _ = backend.Close() }
+		stateChecks = append(stateChecks, telemetry.FuncCheck("state-redis", func() bool {
+			pctx, pcancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer pcancel()
+			return rdb.Ping(pctx).Err() == nil
+		}))
+		slog.Info("anvil: state backend=redis", "addr", cfg.AnvilService.RedisAddr, "key_prefix", prefix)
+	} else {
+		slog.Info("anvil: state backend=memory")
+	}
+	if closeState != nil {
+		defer closeState()
+	}
+
+	srv := anvil.NewServer(cfg.General.Limits.MaxUserIPConnections, stateOpts...)
 
 	// Telemetry starts after the server exists so the liveness watchdog can probe
 	// its session-tracking mutex (#904).
-	tel := startTelemetry(cfg.Telemetry, srv)
+	tel := startTelemetry(cfg.Telemetry, srv, stateChecks)
 	errCh := make(chan error, 1)
 	// Bind before readiness: ListenAndServe would bind inside the goroutine, so the
 	// pod would announce itself ready without knowing the port came up.
@@ -107,8 +142,8 @@ func main() {
 // returns the server so the caller can report readiness once its listener is
 // actually bound. When the liveness watchdog is enabled it probes the anvil
 // session-tracking mutex (#904).
-func startTelemetry(cfg config.TelemetryConfig, srv *anvil.Server) *telemetry.Server {
-	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true}
+func startTelemetry(cfg config.TelemetryConfig, srv *anvil.Server, checks []telemetry.Check) *telemetry.Server {
+	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true, Checks: checks}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {
 		var gate *telemetry.Gate
 		if wd.FaultInjectionEnabled {
