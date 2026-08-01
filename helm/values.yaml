@@ -181,6 +181,16 @@ storage:
 ## -------------------------------------------------------------------
 components:
 
+  ## Key-naming boundary within each component:
+  ##   * config-mirror keys — those that render into a yarilo.yaml config section
+  ##     — are snake_case and spelled 1:1 with the config key (e.g. a `service:`
+  ##     or `token:` sub-block: listen, key_prefix, channel_prefix, redis_addr).
+  ##   * k8s-shape keys — deployment concerns (replicas, startupProbe, resources,
+  ##     internalTLS) — are camelCase.
+  ## Keep the two apart so the same config knob is never spelled two ways. Anvil
+  ## (#908: service.state_backend / key_prefix / channel_prefix) follows this
+  ## from its first PR.
+
   ## Co-located backend pod (#788). One StatefulSet whose pod runs every
   ## protocol container (imap/pop3/submission/lmtp/managesieve) + yarilo-fts
   ## (localhost) + yarilo-backend-api + the yarilo-backend-reg sidecar, sharing
@@ -912,16 +922,22 @@ components:
   locks:
     enabled: true
     replicas: 2
-    listen: ":9104"
 
-    ## Redis key/channel prefixes (#938). The prefix is the installation boundary:
-    ## when several installations share one Redis, give each a DISTINCT prefix so
-    ## their lock keys and event channels do not collide. Keep the prefix
-    ## consistent across a single installation's Redis-using components (locks,
-    ## authtoken, and anvil #908) so one namespace value covers the whole install.
-    ## Defaults are service-name based; leave as-is for a dedicated Redis.
-    key_prefix: "yarilo:locks:"
-    channel_prefix: "yarilo:events:"
+    ## service — config-mirror subtree: keys here are snake_case and map 1:1 to
+    ## the locks_service.* section of yarilo.yaml, unlike the k8s-shape keys
+    ## (replicas / startupProbe / resources) at this level. See the boundary note
+    ## at the top of components:.
+    service:
+      listen: ":9104"
+      ## Redis key/channel prefixes (#938). The prefix is the installation
+      ## boundary: when several installations share one Redis, give each a
+      ## DISTINCT prefix so their lock keys and event channels do not collide.
+      ## Keep it consistent across an installation's Redis-using components
+      ## (locks, authtoken, and anvil #908) so one namespace value covers the
+      ## whole install. Defaults are service-name based; leave as-is for a
+      ## dedicated Redis.
+      key_prefix: "yarilo:locks:"
+      channel_prefix: "yarilo:events:"
 
     ## startupProbe waits for Redis (remote mode) to accept a TCP connection before
     ## this pod takes traffic, replacing the wait-redis init container (#903). Safe
