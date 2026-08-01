@@ -55,9 +55,9 @@ type PreambleConn struct {
 
 // UnwrapPreambleConn walks a net.Conn wrapper chain (each wrapper exposing
 // Unwrap() net.Conn) to the underlying *PreambleConn, or nil if none. Servers
-// use it to recover the pre-authenticated session state after listener wrappers
-// (line-length / workaround / greeting / TLS) sit above the PreambleListener
-// (#830) — a direct type assertion misses it whenever any wrapper is on top.
+// use it to recover the pre-authenticated session state when listener wrappers
+// (line-length/greeting/TLS) sit above the PreambleListener; a direct type
+// assertion misses those.
 func UnwrapPreambleConn(c net.Conn) *PreambleConn {
 	type unwrapper interface{ Unwrap() net.Conn }
 	for c != nil {
@@ -101,12 +101,9 @@ type PreambleListener struct {
 	// ExpectedService, when non-empty, must match the service in the VERIFY response.
 	ExpectedService string
 	// TLSConfig, when set, terminates internal mTLS on each accepted connection
-	// BEFORE the YARILO preamble is read (#824). The login pods wrap the
-	// backend session dial in mTLS (BackendTLS) under internal_tls, so the
-	// backend must terminate it here — otherwise the TLS ClientHello bytes are
-	// read as a preamble ("not a YARILO preamble") and every login fails. This
-	// is the server-side mirror of the login's client dial: a mtls.ServerConfig
-	// that verifies the login's client cert against the internal CA.
+	// BEFORE the YARILO preamble is read. The login pods wrap the backend
+	// session dial in mTLS, so the backend must terminate it here; otherwise the
+	// TLS ClientHello bytes are read as a preamble and every login fails.
 	TLSConfig *tls.Config
 
 	startOnce sync.Once
@@ -114,11 +111,9 @@ type PreambleListener struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 
-	// authMu guards the shared yarilo-auth client used for token VERIFY (#878).
-	// This was a fresh mTLS handshake per accepted session — on sandbox the
-	// backend side accounted for 4616 of the 9469 connections yarilo-auth saw in
-	// a single run. One multiplexed connection serves every session on the pod;
-	// the VERIFY wire protocol carries a request id, so they interleave safely.
+	// authMu guards the shared yarilo-auth client used for token VERIFY. One
+	// multiplexed connection serves every session on the pod; the VERIFY wire
+	// protocol carries a request id, so requests interleave safely.
 	authMu sync.Mutex
 	authCl *authclient.Client
 }
@@ -217,9 +212,9 @@ const preambleReadTimeout = 5 * time.Second
 func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	c.SetDeadline(time.Now().Add(preambleReadTimeout)) //nolint:errcheck
 
-	// Terminate internal mTLS first (#824) — the login dialled us over mTLS, so
-	// the preamble arrives inside the TLS session. The read deadline set above
-	// also bounds the handshake.
+	// Terminate internal mTLS first: the login dialled us over mTLS, so the
+	// preamble arrives inside the TLS session. The read deadline above also
+	// bounds the handshake.
 	if l.TLSConfig != nil {
 		tconn := tls.Server(c, l.TLSConfig)
 		if err := tconn.Handshake(); err != nil {

@@ -1,27 +1,15 @@
-// Package quota implements per-user storage and message-count quota
-// tracking and enforcement. It is the yarilo equivalent of the
-// reference implementation's quota plugin.
+// Package quota tracks and enforces per-user storage and message-count quota.
 //
-// Architecture:
+// Limits come from the userdb quota_rule= extra field (e.g. "*:storage=5G" or
+// "Trash:storage=+1G"); a wildcard rule covers all mailboxes.
 //
-//   - Limits come from the userdb `quota_rule=` extra field
-//     (format: `*:storage=5G` or `Trash:storage=+1G`). A single
-//     wildcard rule `*:storage=<limit>` covers all mailboxes and is
-//     what most deployments use.
+// Usage is stored as running counters in pkg/dict under two per-user keys,
+// priv/quota/storage (bytes) and priv/quota/messages (count), applied
+// atomically via dict.AtomicInc.
 //
-//   - Usage is tracked as running counters in pkg/dict under two
-//     per-user keys:
-//     priv/quota/storage   — bytes used (int64 string)
-//     priv/quota/messages  — message count (int64 string)
-//     Deltas are applied atomically via dict.AtomicInc so concurrent
-//     session saves do not race.
-//
-//   - The IMAP extension (RFC 9208) exposes GETQUOTAROOT and GETQUOTA
-//     commands. SETQUOTA is always rejected (limits are operator-set,
-//     not client-set).
-//
-//   - LMTP inbound delivery checks quota before accepting a message
-//     and returns 452 "Mailbox full" when over the limit.
+// IMAP QUOTA (RFC 9208) exposes GETQUOTAROOT and GETQUOTA; SETQUOTA is always
+// rejected since limits are operator-set. LMTP checks quota before accepting a
+// message and returns 452 "Mailbox full" when over.
 package quota
 
 import (
@@ -38,8 +26,7 @@ const (
 	KeyStorage  = "priv/quota/storage"  // bytes used (int64)
 	KeyMessages = "priv/quota/messages" // message count (int64)
 
-	// RootName is the quota root name surfaced in IMAP QUOTA/QUOTAROOT
-	// responses. Matches the reference implementation default "User quota".
+	// RootName is the quota root name surfaced in IMAP QUOTA/QUOTAROOT responses.
 	RootName = "User quota"
 )
 
@@ -61,14 +48,10 @@ type Limits struct {
 	PerFolder    map[string]FolderRule
 }
 
-// EffectiveLimits returns the limits that apply when operating on folder.
-// The second return value is true when the folder is configured as
-// "ignore" — in that case the first value is zero and the caller must
-// skip both quota enforcement and counter updates for this folder.
-//
-// For additive rules (+N) the effective limit is global + per-folder N.
-// For non-additive rules the per-folder value replaces the global one.
-// Exact folder name match only; no glob patterns yet.
+// EffectiveLimits returns the limits that apply when operating on folder. The
+// second value is true for an "ignore" folder, where the caller must skip both
+// enforcement and counter updates. Additive rules (+N) add to the global
+// limit; non-additive rules replace it. Exact folder name match only.
 func (l Limits) EffectiveLimits(folder string) (Limits, bool) {
 	rule, ok := l.PerFolder[folder]
 	if !ok {
@@ -95,15 +78,13 @@ func (l Limits) EffectiveLimits(folder string) (Limits, bool) {
 	return eff, false
 }
 
-// ParseRules parses a slice of quota rule strings in the format
-// `[<mailbox>:]<resource>=<limit>` and returns the aggregate Limits.
+// ParseRules parses quota rule strings in the format [<mailbox>:]<resource>=<limit>
+// and returns the aggregate Limits.
 //
-// Rule examples:
-//
-//	"*:storage=5G"        → 5 GiB global storage limit
-//	"*:messages=100000"   → 100 000 global message limit
-//	"Trash:storage=+1G"   → Trash gets global + 1 GiB headroom
-//	"Spam:ignore"         → Spam messages don't count toward quota
+//	"*:storage=5G"        -> 5 GiB global storage limit
+//	"*:messages=100000"   -> 100000 global message limit
+//	"Trash:storage=+1G"   -> Trash gets global + 1 GiB
+//	"Spam:ignore"         -> Spam messages don't count toward quota
 func ParseRules(rules []string) Limits {
 	var out Limits
 	for _, r := range rules {
@@ -120,15 +101,15 @@ func parseRule(rule string, out *Limits) {
 		rest = rule[idx+1:]
 	}
 
-	// A single rule may carry multiple key=value pairs separated by ":".
-	// e.g. "*:bytes=1073741824:messages=100000"
+	// One rule may carry multiple key=value pairs separated by ":",
+	// e.g. "*:bytes=1073741824:messages=100000".
 	for _, spec := range strings.Split(rest, ":") {
 		spec = strings.TrimSpace(spec)
 		if spec == "" {
 			continue
 		}
 
-		// "ignore" directive: folder messages don't count toward quota.
+		// "ignore": folder messages don't count toward quota.
 		if strings.EqualFold(spec, "ignore") {
 			if folder != "*" {
 				if out.PerFolder == nil {
@@ -175,19 +156,17 @@ func parseRule(rule string, out *Limits) {
 	}
 }
 
-// ParseSize converts a human-readable size like "5G", "500M", "1T" or a plain
-// byte count into bytes. "0" or empty means unlimited (0). Exported for config
-// wiring (e.g. quota_mail_size).
+// ParseSize converts a size like "5G", "500M", "1T" or a plain byte count into
+// bytes. "0" or empty means unlimited (0). Exported for config wiring.
 func ParseSize(s string) int64 { return parseSize(s) }
 
-// parseSize converts a human-readable size like "5G", "500M", "1T"
-// or a plain byte count into bytes. "0" or empty means unlimited (0).
+// parseSize converts a size like "5G", "500M", "1T" or a plain byte count into
+// bytes. "0" or empty means unlimited (0).
 func parseSize(s string) int64 {
 	if s == "" || s == "0" {
 		return 0
 	}
-	// Strip leading + (additive rule — treated as absolute here for
-	// simplicity, matching the global-limit-only QUOTA-1 scope).
+	// Leading + (additive) is treated as absolute here.
 	s = strings.TrimPrefix(s, "+")
 	if len(s) == 0 {
 		return 0
@@ -229,8 +208,7 @@ type Usage struct {
 	Messages     int64
 }
 
-// Counter wraps a dict.Dict and a username to provide atomic
-// per-user quota counter operations.
+// Counter provides atomic per-user quota counter operations over a dict.Dict.
 type Counter struct {
 	d    dict.Dict
 	user string
@@ -245,15 +223,11 @@ func (c *Counter) ops() *dict.OpSettings {
 	return &dict.OpSettings{Username: c.user}
 }
 
-// Add increments the storage (bytes) and message counters by the
-// given deltas. Negative deltas decrement (on expunge). Uses a
-// read-compute-write pattern so missing keys are initialised on
-// first use — the dict.AtomicInc primitive returns CommitNotFound
-// for absent keys instead of initialising them.
-//
-// Per-user sessions serialise via yarilo-locks so a plain
-// read-write is race-free in production; for multi-pod setups
-// the locker ensures only one session per user is active.
+// Add increments the storage (bytes) and message counters by the given deltas;
+// negative deltas decrement (on expunge). Uses read-compute-write so missing
+// keys are initialised on first use, since dict.AtomicInc returns
+// CommitNotFound for absent keys. Per-user sessions serialise via yarilo-locks,
+// so the plain read-write is race-free in production.
 func (c *Counter) Add(ctx context.Context, bytes, messages int64) error {
 	if bytes == 0 && messages == 0 {
 		return nil

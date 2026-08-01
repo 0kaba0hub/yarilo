@@ -21,25 +21,17 @@ type PurgeStats struct {
 	BytesReclaimed  int64 // total bytes freed from the storage tree
 }
 
-// Purge reclaims disk in <home>/mdbox/storage by walking every
-// m.<N> file that contains at least one zero-ref record. For
-// each such file:
+// Purge walks every m.<N> file holding a zero-ref record:
+//   - all records dead: AppendMove expunges them, m.<N> unlinked;
+//   - some live: live records copied into a fresh m.<newFileID>,
+//     AppendMove rewrites map pointers and expunges dead UIDs under
+//     the map X lock, old m.<N> unlinked.
 //
-//   - if every record in the file is zero-ref, AppendMove
-//     expunges them all and the m.<N> file is unlinked;
-//   - otherwise, the live records are copied forward into a
-//     fresh m.<newFileID>, AppendMove rewrites the map pointers
-//     to the new location (and expunges the dead UIDs) under
-//     the map X lock, then the original m.<N> is unlinked.
+// map_uid values are preserved across the move, so per-folder
+// indexes keep working with no per-folder I/O.
 //
-// `map_uid` values are preserved across the move — every
-// per-folder index that references them continues to work
-// without any per-folder I/O. This is the canonical mdbox
-// "shared-by-default" property.
-//
-// Purge is safe to invoke concurrently with Save / Copy on
-// other folders: the map X lock serialises the AppendMove
-// against any concurrent AppendBatch.Finish.
+// Safe concurrent with Save/Copy on other folders: the map X lock
+// serialises AppendMove against any concurrent AppendBatch.Finish.
 func (u *userMailbox) Purge() (PurgeStats, error) {
 	stats := PurgeStats{}
 	m, err := u.openMap()
@@ -50,8 +42,7 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 	if err != nil {
 		return stats, fmt.Errorf("mdbox/purge: enumerate: %w", err)
 	}
-	// Stable order so multi-file purges produce reproducible
-	// allocation sequences (helps debugging / fixture diffs).
+	// Stable order for reproducible allocation sequences.
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i] < candidates[j] })
 
 	for _, fileID := range candidates {
@@ -96,8 +87,8 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 		if err != nil {
 			return stats, err
 		}
-		// Anchor the age clock for the compacted file so mdbox_rotate_interval
-		// applies to it too (best-effort — a failure must not fail the purge).
+		// Anchor create-time so mdbox_rotate_interval applies to the
+		// compacted file too (best-effort; must not fail the purge).
 		if rerr := m.RecordFileCreated(newID, time.Now().Unix()); rerr != nil {
 			slog.Warn("mdbox: record compacted file create-time failed", "user", u.username, "file_id", newID, "err", rerr)
 		}
@@ -113,8 +104,7 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 		stats.FilesRewritten++
 		stats.RecordsKept += len(live)
 		stats.RecordsExpunged += len(dead)
-		// Reclaimed bytes = oldSize - newSize. Both are taken
-		// after AppendMove so live records are accounted for.
+		// Reclaimed = oldSize - newSize, both taken after AppendMove.
 		if delta := oldBytes - newBytes; delta > 0 {
 			stats.BytesReclaimed += delta
 		}
@@ -122,11 +112,10 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 	return stats, nil
 }
 
-// compactRecords reads each live record's body (and original GUID)
-// from src m.<id> and appends them to dst m.<id>, producing the
-// MovedRecord slice AppendMove needs. The original GUID from the
-// dbox trailer is preserved in the destination record — minting a
-// fresh GUID would break message identity across purge cycles.
+// compactRecords copies each live record's body from src m.<id> to
+// dst m.<id>, producing the MovedRecord slice AppendMove needs. The
+// original GUID from the dbox trailer is preserved: a fresh GUID
+// would break message identity across purge cycles.
 func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxmap.MapEntry) ([]mdboxmap.MovedRecord, error) {
 	srcPath := u.mfilePath(srcFileID)
 	src, err := os.Open(srcPath)
@@ -166,13 +155,10 @@ func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxma
 	return out, nil
 }
 
-// compactRecordsToTier is the tier-aware variant of compactRecords.
-// It reads live records from srcPath and writes them into dstPath
-// (which may be in a different storage tier), using dstFileID as
-// the new file_id in the returned MovedRecord slice. Unlike
-// compactRecords, src and dst paths are supplied directly by the
-// caller — this allows cross-tier copies (primary → alt and vice
-// versa).
+// compactRecordsToTier is the tier-aware variant of compactRecords:
+// src and dst paths are supplied directly, allowing cross-tier
+// copies (primary <-> alt). dstFileID becomes the new file_id in
+// the returned MovedRecord slice.
 func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID uint32, live []mdboxmap.MapEntry) ([]mdboxmap.MovedRecord, error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
@@ -210,19 +196,18 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 	return out, nil
 }
 
-// appendRecordToFile writes a canonical dbox v2 record at the
-// current end-of-file. guid must be the original GUID from the
-// source trailer — preserved verbatim so message identity
-// survives compaction. The R timestamp is refreshed because it
-// reflects when the record was last stored, not the mail
-// internalDate. Returns the byte offset at which the record starts.
+// appendRecordToFile writes a dbox v2 record at end-of-file. guid
+// must be the original GUID from the source trailer, preserved
+// verbatim so message identity survives compaction. The R timestamp
+// is refreshed (last-stored time, not internalDate). Returns the
+// record's start offset.
 func appendRecordToFile(dst *os.File, body []byte, guid [16]byte, origMailbox string) (uint32, error) {
 	pos, err := dst.Seek(0, io.SeekEnd)
 	if err != nil {
 		return 0, err
 	}
-	// File-header line only before the first record in the destination file; every
-	// later record starts directly at its message header (real dbox v2 layout).
+	// File-header line precedes only the first record; later records
+	// start directly at their message header.
 	rec := buildDboxMessageRecord(body, guid, origMailbox)
 	if pos == 0 {
 		rec = append(buildDboxFileHeader(), rec...)
