@@ -2,22 +2,14 @@ package language
 
 import "github.com/abadojack/whatlanggo"
 
-// defaultMinDetectSample is the minimum sample length (in runes) below which
-// detection is considered unreliable, mirroring the reference implementation's
-// SHORT/UNKNOWN fallback (per-part language detection falls back to the
-// first configured language when there isn't enough text to classify).
-// whatlanggo's own trigram model needs a comparable amount of text to
-// produce a stable result; below this we don't even bother calling it. Used
-// when MultiChain wasn't given an explicit override (see NewMultiChain).
+// defaultMinDetectSample: below this many runes the trigram model isn't
+// reliable; don't even call it.
 const defaultMinDetectSample = 10
 
-// detectLanguage restricts detection to candidates (mirroring the reference
-// implementation's language_match_lists — Norwegian bokmål/nynorsk etc. both
-// collapse to their base ISO 639-1 code the same way). minRunes overrides
-// defaultMinDetectSample when > 0 (#696: tunable detection threshold).
-// Returns ok=false when the sample is too short or the result isn't
-// reliable enough to trust — callers must fall back to the first configured
-// language, never guess.
+// detectLanguage restricts detection to candidates. minRunes overrides
+// defaultMinDetectSample when > 0. ok=false when the sample is too short
+// or the result unreliable; callers fall back to the first configured
+// language.
 func detectLanguage(sample string, candidates []string, minRunes int) (lang string, ok bool) {
 	if minRunes <= 0 {
 		minRunes = defaultMinDetectSample
@@ -48,15 +40,9 @@ func detectLanguage(sample string, candidates []string, minRunes int) (lang stri
 }
 
 // isoToWhatlang maps the ISO 639-1 codes this package can build a filter
-// chain for (filter.go) to whatlanggo's Lang enum. Detection is only ever
-// restricted to (and can only ever return) a language this package can
-// actually configure — there is no point detecting a language with no
-// filter chain to apply. That no longer means "can stem": uk (#718) has no
-// Snowball algorithm at all (passthroughFilter stands in) but is still
-// detectable, since lowercase+stopwords is a real, distinct filter chain —
-// and detecting it is exactly what keeps a uk part from being mis-stemmed
-// under a neighbouring language's chain (e.g. ru) in a mixed-language
-// mailbox.
+// chain for. uk has no Snowball stemmer but is still detectable
+// (lowercase+stopwords chain), which keeps uk parts from being mis-stemmed
+// under ru in a mixed mailbox.
 var isoToWhatlang = map[string]whatlanggo.Lang{
 	"en": whatlanggo.Eng,
 	"fr": whatlanggo.Fra,

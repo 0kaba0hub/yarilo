@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// TestACL_SetGetListDeleteRoundTrip exercises the admin ACL surface
-// against an on-disk storage stack. Mirrors the special-use /
-// subscriptions tests in storage_test.go.
+// TestACL_SetGetListDeleteRoundTrip exercises the admin ACL
+// endpoints against an on-disk storage stack.
 func TestACL_SetGetListDeleteRoundTrip(t *testing.T) {
 	ts, _ := storageTestServer(t)
 	const user = "alice@example.com"

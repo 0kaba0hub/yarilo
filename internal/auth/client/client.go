@@ -1,15 +1,9 @@
 // Package client implements the yarilo-auth TAB-delimited client protocol.
 //
-// A Client owns ONE persistent connection and multiplexes every request over
-// it, which is what the wire protocol was always built for: each command
-// carries a request id and the reply echoes it back. All public methods are
-// safe for concurrent use from any number of goroutines — a login pod holds a
-// single Client for its whole lifetime rather than dialling per login (#878).
-//
-// Why this matters: a fresh connection means a full mutual-TLS handshake, and
-// measurement on sandbox showed 9469 connections for 9329 requests — one
-// handshake per request, costing 1.73s per login against an 0.28s AUTH
-// exchange. Reuse removes that cost from the hot path entirely.
+// A Client owns one persistent connection and multiplexes all requests over
+// it: each command carries a request id, the reply echoes it back. Safe for
+// concurrent use; hold one Client per process instead of dialing per login,
+// which would add a full mutual-TLS handshake to every request.
 package client
 
 import (
@@ -30,10 +24,9 @@ var (
 	ErrAuthFailed   = errors.New("auth/client: authentication failed")
 	ErrTempFail     = errors.New("auth/client: temporary backend failure")
 	ErrUserNotFound = errors.New("auth/client: user not found")
-	// ErrConnLost is returned when the connection dropped after the request
-	// was already on the wire. Such a request is deliberately NOT retried: the
-	// server may have processed it, and a second AUTH would double-count the
-	// auth-penalty counter for that IP.
+	// ErrConnLost is returned when the connection dropped after the request was
+	// written. Not retried: the server may have processed it, and a second AUTH
+	// would double-count the auth-penalty counter.
 	ErrConnLost = errors.New("auth/client: connection lost mid-request")
 	// ErrClosed is returned once Close has been called.
 	ErrClosed = errors.New("auth/client: client closed")
@@ -42,44 +35,24 @@ var (
 	ErrTimeout = errors.New("auth/client: request timed out")
 )
 
-// The three client timeouts below — dial, request, write — are deliberately
-// hardcoded constants, NOT config knobs (#926). They are internal safety bounds
-// of the protocol client, not behavioural parameters an operator has a
-// legitimate reason to tune per deployment: a healthy write is microseconds, a
-// dial is sub-second, and the request budget is already generous for the
-// server's own tarpits. A value being hit means something is broken, not
-// mistuned — exposing them would promise a tunability this class does not have,
-// and yarilo's "every tunable is a config knob" rule is about mail-feature and
-// behavioural parameters, not socket-level guards (such internal constants are
-// conventionally left fixed). If a real need to tune them ever appears,
-// expose all three together as one auth-client config section, never piecemeal.
+// Timeouts are internal safety bounds, not config knobs: hitting one means the
+// connection is broken, not mistuned (#926).
 const (
 	defaultDialTimeout = 5 * time.Second
-	// defaultRequestTimeout is generous on purpose: yarilo-auth deliberately
-	// sleeps on the AUTH path (auth-penalty tarpit up to 15s, policy tarpit,
-	// timing-leak failure delay), so a legitimate reply can take many seconds.
-	// A tight timeout here would manufacture failures the server never had.
+	// Generous on purpose: the server sleeps on the AUTH path (auth-penalty
+	// tarpit up to 15s, failure delay), so a legitimate reply can take seconds.
 	defaultRequestTimeout = 30 * time.Second
-	// defaultWriteTimeout bounds a single socket write (#926). A write to a
-	// healthy peer drains into the send buffer in microseconds, so 5s already
-	// means the connection is fundamentally broken — a blackholed peer (pod
-	// killed without FIN/RST, conntrack dropped) whose send buffer has filled.
-	// It is deliberately SEPARATE from RequestTimeout: an operator raising the
-	// request budget for a slow passdb must not also stretch dead-socket
-	// detection, which guards a different failure.
+	// Bounds a single socket write. Separate from RequestTimeout: a healthy
+	// write drains into the send buffer in microseconds, so 5s means a
+	// blackholed peer, whatever the request budget is.
 	defaultWriteTimeout = 5 * time.Second
-	// keepAlive is the TCP keepalive idle period; keepAliveInterval/Count set the
-	// probe cadence explicitly (#926) so a blackholed IDLE connection is torn
-	// down in ~keepAlive + Count*Interval, not the ~11 min the Linux defaults
-	// (75s * 9) produced in the incident.
+	// Explicit probe cadence tears down a blackholed idle connection in
+	// ~keepAlive + Count*Interval instead of the ~11 min Linux defaults.
 	keepAlive         = 15 * time.Second
 	keepAliveInterval = 15 * time.Second
 	keepAliveCount    = 4
-	// Reconnect backoff bounds (#932): the redial loop starts here and doubles up
-	// to the cap, and NEVER gives up while the client is open. A caller waiting
-	// on the reconnect still bails on its own request timeout, but the loop keeps
-	// going, so the client recovers within maxReconnectBackoff of auth returning
-	// — however long the outage — instead of becoming a permanent zombie.
+	// Redial backoff doubles up to the cap and never gives up while the client
+	// is open; callers still bail on their own request timeout.
 	initialReconnectBackoff = 200 * time.Millisecond
 	maxReconnectBackoff     = 5 * time.Second
 )
@@ -90,9 +63,8 @@ type AuthResult struct {
 	Nologin   bool
 	AllowNets string
 	Token     string
-	// DirectorTag is the per-user director backend tag (#746), when the
-	// passdb/userdb chain set one. Empty means no per-user override —
-	// the login component's static director_tag config applies.
+	// DirectorTag is the per-user director backend tag, if the passdb/userdb
+	// chain set one. Empty means the static director_tag config applies.
 	DirectorTag string
 }
 
@@ -103,9 +75,9 @@ type Options struct {
 	RequestTimeout time.Duration
 	// DialTimeout bounds a single connection attempt (TCP + TLS handshake).
 	DialTimeout time.Duration
-	// WriteTimeout bounds a single socket write so a blackholed peer cannot block
-	// a write forever while holding the shared mutex (#926). 0 uses the default
-	// (5s). Independent of RequestTimeout.
+	// WriteTimeout bounds a single socket write so a blackholed peer cannot
+	// block forever while holding the shared mutex. Independent of
+	// RequestTimeout.
 	WriteTimeout time.Duration
 }
 
@@ -125,9 +97,8 @@ type Client struct {
 
 	seq atomic.Uint64
 
-	// mu guards every field below. It is held across the socket write, which
-	// is safe because requests are single short lines; it is never held while
-	// waiting for a reply.
+	// mu guards the fields below. Held across the socket write (requests are
+	// single short lines), never while waiting for a reply.
 	mu      sync.Mutex
 	conn    net.Conn
 	state   connState
@@ -135,8 +106,8 @@ type Client struct {
 	ready   chan struct{} // non-nil while reconnecting; closed on success
 	pending map[string]chan string
 
-	// done is closed by Close so the redial loop, which never gives up on its
-	// own (#932), wakes from its backoff and exits promptly.
+	// done is closed by Close so the redial loop wakes from its backoff and
+	// exits.
 	done chan struct{}
 }
 
@@ -286,12 +257,10 @@ func (c *Client) nextID() string {
 
 // exchange registers id, writes req, and waits for the matching reply.
 //
-// A write failure is retried on a fresh connection: the error means the line —
-// crucially including its terminating newline — did not make it out, and the
-// server's reader only dispatches on a complete line, so the command cannot
-// have been executed. A failure AFTER a successful write is not retried
-// (ErrConnLost), because the server may have processed it and a repeated AUTH
-// would double-count the auth-penalty counter.
+// A write failure is retried on a fresh connection: the server dispatches only
+// on a complete line, so a partial write cannot have been executed. A failure
+// after a successful write returns ErrConnLost instead — the server may have
+// processed it, and a repeated AUTH would double-count the auth penalty.
 func (c *Client) exchange(id, req string) (string, error) {
 	deadline := time.Now().Add(c.opts.RequestTimeout)
 	ch := make(chan string, 1)
@@ -312,10 +281,8 @@ func (c *Client) exchange(id, req string) (string, error) {
 		}
 		c.pending[id] = ch
 		gen := c.gen
-		// Bound the write so a blackholed peer whose send buffer has filled
-		// cannot block here forever while holding c.mu, wedging every other
-		// caller parked on c.mu.Lock() (#926). On timeout the write returns an
-		// error and we fall through to beginReconnect below.
+		// Bound the write so a blackholed peer cannot block forever while
+		// holding c.mu; on timeout we fall through to beginReconnect.
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.opts.WriteTimeout))
 		_, werr := fmt.Fprintln(c.conn, req)
 		c.mu.Unlock()
@@ -349,10 +316,8 @@ func (c *Client) exchange(id, req string) (string, error) {
 	}
 }
 
-// awaitLive blocks while a reconnect is in progress so a caller queues instead
-// of failing. This is the whole point of the reconnect design: during a
-// yarilo-auth rollout the logins wait a few hundred milliseconds and succeed,
-// rather than each being told the service is unavailable.
+// awaitLive blocks while a reconnect is in progress so callers queue instead
+// of failing during a short auth outage.
 func (c *Client) awaitLive(deadline time.Time) error {
 	for {
 		c.mu.Lock()
@@ -368,12 +333,9 @@ func (c *Client) awaitLive(deadline time.Time) error {
 		c.mu.Unlock()
 
 		if ready == nil {
-			// Invariant (#932): redial never abandons an open client, so `ready`
-			// is non-nil for as long as the state is reconnecting. A nil here can
-			// therefore only be a benign lost race with a redial that just went
-			// live between the switch above and this read — re-loop so the switch
-			// observes stateLive, rather than mis-reporting "ready" (the old
-			// behaviour that turned the give-up state into a busy-spin zombie).
+			// ready is non-nil for as long as state is reconnecting; nil here
+			// is only a lost race with a redial that just went live. Re-loop so
+			// the switch observes stateLive.
 			continue
 		}
 		timer := time.NewTimer(time.Until(deadline))
@@ -386,9 +348,8 @@ func (c *Client) awaitLive(deadline time.Time) error {
 	}
 }
 
-// beginReconnect transitions to reconnecting and redials, once per generation.
-// Concurrent callers that observed the same broken generation all wait on the
-// single redial rather than each opening their own connection.
+// beginReconnect transitions to reconnecting and redials, once per generation;
+// concurrent callers wait on the single redial.
 func (c *Client) beginReconnect(gen uint64) {
 	c.mu.Lock()
 	if c.state == stateClosed || c.gen != gen || c.state == stateReconnecting {
@@ -399,8 +360,8 @@ func (c *Client) beginReconnect(gen uint64) {
 	c.ready = make(chan struct{})
 	old := c.conn
 	c.conn = nil
-	// Requests already on the wire cannot be safely replayed — hand them
-	// ErrConnLost instead of silently retrying.
+	// Requests already on the wire cannot be safely replayed; fail them with
+	// ErrConnLost.
 	inflight := c.pending
 	c.pending = make(map[string]chan string)
 	c.mu.Unlock()
@@ -416,13 +377,9 @@ func (c *Client) beginReconnect(gen uint64) {
 }
 
 func (c *Client) redial() {
-	// The redial goroutine OWNS recovery and never gives up while the client is
-	// open (#932). An auth outage that outlasts a fixed retry budget (a pod
-	// replacement is 10-60s) previously made this return, leaving the client
-	// stuck in stateReconnecting with no goroutine able to revive it — a
-	// permanent, CPU-burning zombie, since no request path calls beginReconnect
-	// again. Instead we loop with a capped exponential backoff until a dial
-	// succeeds or Close wakes us.
+	// The redial goroutine owns recovery: loop with capped backoff until a dial
+	// succeeds or Close wakes us. Giving up would leave the client stuck in
+	// stateReconnecting with nothing to revive it (#932).
 	backoff := initialReconnectBackoff
 	for {
 		conn, rd, derr := c.dial()
@@ -475,9 +432,7 @@ func (c *Client) readLoop(rd *bufio.Reader, gen uint64) {
 		line = strings.TrimRight(line, "\r\n")
 		fields := strings.Split(line, "\t")
 		if len(fields) < 2 {
-			// Malformed reply carries no id, so it cannot be routed. Dropping
-			// it is correct: the waiter times out rather than being handed a
-			// reply that may belong to someone else.
+			// No id, cannot be routed; drop it and let the waiter time out.
 			continue
 		}
 		id := fields[1]
@@ -494,10 +449,9 @@ func (c *Client) readLoop(rd *bufio.Reader, gen uint64) {
 }
 
 func (c *Client) dial() (net.Conn, *bufio.Reader, error) {
-	// Explicit keepalive cadence (#926): net.Dialer.KeepAlive alone sets only the
-	// idle period and leaves interval/count at the OS defaults (Linux 75s * 9 ≈
-	// 11 min), which is what let a blackholed idle connection sit undetected in
-	// the incident. Idle + Count*Interval bounds detection to ~75s.
+	// net.Dialer.KeepAlive alone leaves interval/count at the OS defaults
+	// (Linux 75s * 9 ≈ 11 min); explicit cadence bounds blackhole detection to
+	// ~75s.
 	dialer := &net.Dialer{
 		Timeout: c.opts.DialTimeout,
 		KeepAliveConfig: net.KeepAliveConfig{
@@ -526,8 +480,7 @@ func (c *Client) dial() (net.Conn, *bufio.Reader, error) {
 }
 
 // handshake exchanges VERSION lines. Runs before readLoop starts, so the
-// handshake banner (which carries no request id) is never seen by the
-// demultiplexer.
+// id-less banner is never seen by the demultiplexer.
 func handshake(conn net.Conn, rd *bufio.Reader) error {
 	if _, err := fmt.Fprintln(conn, "VERSION\t1\t0"); err != nil {
 		return fmt.Errorf("auth/client: handshake write: %w", err)

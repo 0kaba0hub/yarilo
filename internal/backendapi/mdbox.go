@@ -9,10 +9,8 @@ import (
 	mdboxdriver "github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
 )
 
-// registerMdboxRoutes wires the mdbox-specific admin surface.
-// Only meaningful for users whose storage backend is mdbox; for
-// any other driver the endpoint surfaces 400 with the actual
-// driver name so the caller can audit configuration.
+// registerMdboxRoutes registers mdbox-specific admin routes.
+// Non-mdbox drivers get 400.
 func (s *Server) registerMdboxRoutes() {
 	s.mux.Handle("POST /api/backend/mdbox/purge", s.middleware(s.handleMdboxPurge))
 	s.mux.Handle("POST /api/backend/mdbox/altmove", s.middleware(s.handleMdboxAltMove))
@@ -32,11 +30,9 @@ type mdboxPurgeResponse struct {
 	BytesReclaimed  int64 `json:"bytes_reclaimed"`
 }
 
-// handleMdboxPurge runs the mdbox driver's Purge() against the
-// supplied user. Reclaims disk by compacting every m.<N> that
-// holds at least one zero-ref record; the global map is rewritten
-// atomically so per-folder indexes referencing live map_uids
-// continue to work without per-folder I/O.
+// handleMdboxPurge runs mdbox Purge(): compacts m.<N> files with
+// zero-ref records; the map rewrite is atomic so live map_uids
+// stay valid.
 func (s *Server) handleMdboxPurge(w http.ResponseWriter, r *http.Request) {
 	var req mdboxPurgeRequest
 	if !decodeJSON(w, r, &req) {
@@ -82,9 +78,8 @@ func (s *Server) handleMdboxPurge(w http.ResponseWriter, r *http.Request) {
 type mdboxAltMoveRequest struct {
 	User      string `json:"user"`
 	Namespace string `json:"namespace"`
-	// Before is an RFC 3339 timestamp; messages with InternalDate
-	// strictly before this time are eligible for alt-move.
-	// Empty string means "all messages".
+	// Before (RFC 3339): only messages with InternalDate strictly
+	// before this are moved. Empty = all messages.
 	Before  string `json:"before"`
 	Reverse bool   `json:"reverse"`
 }
@@ -97,9 +92,9 @@ type mdboxAltMoveResponse struct {
 	BytesMoved    int64 `json:"bytes_moved"`
 }
 
-// handleMdboxAltMove moves messages from primary storage to alt (cold)
-// storage or vice versa (Reverse=true), filtered by InternalDate < Before.
-// Performs mark + purge in one atomic call per file.
+// handleMdboxAltMove moves messages between primary and alt storage
+// (Reverse=true for alt→primary), filtered by InternalDate < Before.
+// Mark + purge in one atomic call per file.
 func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 	var req mdboxAltMoveRequest
 	if !decodeJSON(w, r, &req) {
@@ -148,9 +143,8 @@ func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update AltTier flag in every folder's fileindex so subsequent
-	// Fetch() calls can skip the primary open() syscall. withMailboxLock
-	// is already taken inside UserIndex.SetAltTier (via withFolder).
+	// Update AltTier in every folder's index so Fetch() can skip the
+	// primary open(). SetAltTier takes the mailbox lock itself.
 	if len(stats.MovedFilenames) > 0 {
 		if flagErr := s.setAltTierAllFolders(bundle, stats.MovedFilenames, !req.Reverse); flagErr != nil {
 			slog.Warn("altmove: failed to update alt-tier index flags",
@@ -167,9 +161,8 @@ func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// setAltTierAllFolders iterates every mailbox folder and calls
-// SetAltTier on each so the AltTier index flag stays in sync with the
-// physical location of the m.<N> files after an altmove run.
+// setAltTierAllFolders calls SetAltTier on every selectable folder
+// to keep the index flag in sync with the m.<N> file location.
 func (s *Server) setAltTierAllFolders(bundle *nsBundle, filenames []string, altTier bool) error {
 	entries, err := bundle.box.ListFolders()
 	if err != nil {

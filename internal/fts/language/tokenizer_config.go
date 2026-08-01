@@ -3,20 +3,8 @@ package language
 import "fmt"
 
 // ValidateTokenizerConfig validates the fts_language_tokenizer_generic_*
-// keys (#726 item 2). Only the "simple" algorithm (this package's own
-// tokenizer.go) is implemented. "tr29" is a valid reference option, not
-// silently mapped to "simple" or ignored — it errors clearly at startup
-// until the TR29 tokenizer lands, currently blocked on the Bleve stream.
-//
-// wb5a and explicitPrefix are TR29-only knobs (WB5a word-break rule
-// variant; explicit_prefix controls trailing-'*' prefix-search semantics —
-// see docs/FTS.md). Both are accepted config keys but rejected if true, for
-// the same reason as tr29: a silent no-op would be worse than a clear
-// error, and — for explicitPrefix specifically — flatcurve already
-// prefix-matches every term unconditionally (its own Xapian OP_WILDCARD
-// query shape), so enabling the knob today would have no visible effect
-// even if it didn't error, which is exactly the kind of "works by
-// accident" behavior worth refusing outright.
+// keys. Only "simple" is implemented; "tr29" and the TR29-only knobs
+// (wb5a, explicit_prefix) error at startup rather than silently no-op.
 func ValidateTokenizerConfig(algorithm string, wb5a, explicitPrefix bool) error {
 	switch algorithm {
 	case "", "simple":

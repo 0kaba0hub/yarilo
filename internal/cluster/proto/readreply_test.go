@@ -13,9 +13,8 @@ func newTestConn(nc net.Conn) *Conn {
 	return &Conn{conn: nc, rd: bufio.NewReaderSize(nc, maxLineLen)}
 }
 
-// TestLookup_SkipsInterleavedPushes guards #702: an unsolicited push (RING-CHANGE)
-// arriving on the connection before the HOST reply must be skipped, not mistaken
-// for the reply.
+// TestLookup_SkipsInterleavedPushes: an unsolicited push (RING-CHANGE)
+// arriving before the HOST reply must be skipped, not mistaken for it.
 func TestLookup_SkipsInterleavedPushes(t *testing.T) {
 	cliNC, dirNC := net.Pipe()
 	defer cliNC.Close()
@@ -25,7 +24,7 @@ func TestLookup_SkipsInterleavedPushes(t *testing.T) {
 	go func() {
 		dir := bufio.NewReader(dirNC)
 		_, _ = dir.ReadString('\n') // consume the LOOKUP request
-		// Two interleaved pushes, then the genuine reply.
+		// two interleaved pushes, then the genuine reply
 		_, _ = dirNC.Write([]byte("RING-CHANGE\t10.0.0.9\tup\timap\n"))
 		_, _ = dirNC.Write([]byte("USER-KICKED\tbob@d.test\n"))
 		_, _ = dirNC.Write([]byte("HOST\t1\t10.0.0.5\t10143\timap\n"))
@@ -60,7 +59,7 @@ func TestReadReply_AnswersPing(t *testing.T) {
 		dir := bufio.NewReader(dirNC)
 		_, _ = dir.ReadString('\n') // LOOKUP
 		_, _ = dirNC.Write([]byte("PING\n"))
-		// Expect a PONG back from the client before it accepts the reply.
+		// expect a PONG from the client before it accepts the reply
 		line, _ := dir.ReadString('\n')
 		if line != "PONG\n" {
 			t.Errorf("want PONG after PING, got %q", line)

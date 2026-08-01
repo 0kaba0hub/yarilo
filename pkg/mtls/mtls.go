@@ -32,18 +32,14 @@ func ServerConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	}, nil
 }
 
-// ClientConfig returns a *tls.Config for mTLS clients. The client presents
-// certFile/keyFile and verifies the server against caFile, pinning serverName
-// as the expected certificate name (#816). serverName is REQUIRED: internal
-// services are dialled by short name / FQDN / pod IP interchangeably, so
-// verifying against the dialed host is unreliable — the pinned name must be a
-// SAN in the shared internal cert. An empty serverName is a misconfiguration
-// (typically an empty internal_tls.server_name) and fails loudly here rather
-// than as a cryptic "ServerName must be specified" on the first dial.
-// cacheSize bounds the client session LRU (0 disables resumption — every dial
-// pays a full handshake). cacheTTLSecs, when > 0, expires a cached session that
-// age in addition to LRU eviction; 0 means LRU-only. Both come from
-// internal_tls.session_cache_size / session_cache_ttl.
+// ClientConfig returns a *tls.Config for mTLS clients, presenting
+// certFile/keyFile and verifying the server against caFile with serverName
+// pinned. serverName is required: internal services are dialled by short name,
+// FQDN or pod IP interchangeably, so the pinned name (a SAN in the shared
+// internal cert) is the only reliable check. cacheSize bounds the session LRU
+// (negative disables resumption, 0 = default); cacheTTLSecs > 0 also expires
+// cached sessions by age. Both come from internal_tls.session_cache_size /
+// session_cache_ttl.
 func ClientConfig(certFile, keyFile, caFile, serverName string, cacheSize, cacheTTLSecs int) (*tls.Config, error) {
 	if serverName == "" {
 		return nil, fmt.Errorf("mtls: empty ServerName — set internal_tls.server_name (or ring_tls_server_name for the director ring); mTLS peer verification needs a stable pinned name")
@@ -61,26 +57,19 @@ func ClientConfig(certFile, keyFile, caFile, serverName string, cacheSize, cache
 		RootCAs:      ca,
 		ServerName:   serverName,
 		MinVersion:   tls.VersionTLS13,
-		// Cache TLS 1.3 session tickets so repeated dials to the same internal
-		// peer resume (PSK) instead of paying a full handshake each time (#856).
-		// Every component builds one client config per peer at startup and reuses
-		// it for all dials, so the cache is shared across those dials. Resumption
-		// is bound to the original mutually-authenticated session, so it preserves
-		// the mTLS peer identity; a stale/unknown ticket falls back to a full
-		// handshake. This cuts the delivery→verify handshake CPU that pushed the
-		// heavy sieve smoke tests past their read deadline on a single-core node.
+		// Cache TLS 1.3 session tickets so repeated dials to the same peer
+		// resume instead of paying a full handshake. Resumption is bound to
+		// the original mutually-authenticated session, so mTLS peer identity
+		// is preserved; a stale ticket falls back to a full handshake.
 		ClientSessionCache: newSessionCache(cacheSize, cacheTTLSecs),
 	}, nil
 }
 
-// defaultSessionCacheSize is used when internal_tls.session_cache_size is unset
-// (koanf zero). A component dials only a handful of distinct internal peers.
+// defaultSessionCacheSize is used when internal_tls.session_cache_size is unset.
 const defaultSessionCacheSize = 64
 
-// newSessionCache builds the client session cache from the configured size/TTL.
-// size < 0 disables resumption; size == 0 uses the default; ttlSecs > 0 wraps
-// the LRU so a cached session also expires by age (e.g. so a cert rotation
-// stops resuming old sessions within the TTL).
+// newSessionCache builds the client session cache. size < 0 disables
+// resumption; size == 0 uses the default; ttlSecs > 0 also expires sessions by age.
 func newSessionCache(size, ttlSecs int) tls.ClientSessionCache {
 	if size < 0 {
 		return nil // resumption disabled
@@ -96,9 +85,7 @@ func newSessionCache(size, ttlSecs int) tls.ClientSessionCache {
 }
 
 // ttlSessionCache wraps an LRU tls.ClientSessionCache with a per-entry age
-// limit: a session older than ttl is treated as absent (and evicted) on Get, so
-// resumption never uses a session past the operator's TTL. Go's stdlib LRU
-// caches by count only.
+// limit; the stdlib LRU evicts by count only.
 type ttlSessionCache struct {
 	lru tls.ClientSessionCache
 	ttl time.Duration
@@ -113,11 +100,8 @@ func (c *ttlSessionCache) Put(key string, cs *tls.ClientSessionState) {
 		delete(c.put, key)
 	} else {
 		now := time.Now()
-		// Opportunistic prune (#860): the wrapped LRU evicts by COUNT with no
-		// callback, so a key it drops leaves a dangling put-time. Sweep entries
-		// already past the TTL here — cheap (the map holds only keys seen within
-		// the TTL window) — instead of leaking them until a Get/Put for that same
-		// (possibly already-evicted) key that may never come.
+		// The LRU evicts by count with no callback, which would leak
+		// put-times; sweep TTL-expired entries here.
 		for k, t := range c.put {
 			if now.Sub(t) > c.ttl {
 				delete(c.put, k)

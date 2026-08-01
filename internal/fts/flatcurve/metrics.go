@@ -7,8 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Optimize Prometheus metrics (#715). Registered on the default registry,
-// which the telemetry /metrics handler serves.
+// Optimize metrics, registered on the default registry.
 var (
 	metricOptimizeRuns = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fts_optimize_runs_total",

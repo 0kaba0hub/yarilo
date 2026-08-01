@@ -8,15 +8,10 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// registerFolderRoutes wires the folder admin surface. Reads
-// (list / info / guid / stats / repair) live here; mutating ops
-// (create / delete / rename / expunge) live in folder_write.go but
-// share the same /api/backend/folder/ prefix.
-//
-// Mutating ops bypass ACL — the admin plane is already gated by
-// the bearer token, AllowedNets, and mTLS. The ACL store is still
-// maintained (yarilo-acl files moved on rename, dropped on delete)
-// so an admin DELETE leaves no orphaned ACL state behind.
+// registerFolderRoutes registers folder admin routes. Reads live
+// here; mutating ops are in folder_write.go. Mutating ops bypass
+// ACL (admin plane is gated by token/AllowedNets/mTLS), but ACL
+// files are still moved on rename and dropped on delete.
 func (s *Server) registerFolderRoutes() {
 	s.mux.Handle("POST /api/backend/folder/list", s.middleware(s.handleFolderList))
 	s.mux.Handle("POST /api/backend/folder/info", s.middleware(s.handleFolderInfo))
@@ -144,8 +139,7 @@ func (s *Server) handleFolderStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// folderInfoCommon reads (req, opens) the folder and returns the
-// metadata. Used by both info and guid endpoints.
+// folderInfoCommon opens the folder and returns its metadata.
 func (s *Server) folderInfoCommon(w http.ResponseWriter, r *http.Request) (*folderInfoOut, int, error) {
 	var req folderRequest
 	if !decodeJSON(w, r, &req) {

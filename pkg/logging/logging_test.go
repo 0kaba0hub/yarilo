@@ -51,9 +51,7 @@ func TestSetLevel(t *testing.T) {
 	}
 }
 
-// TestSetLevelForReverts covers the reason the TTL exists: a bounded raise must
-// come back down on its own, so "debug for 30s while I reproduce" cannot be left
-// switched on and rotate the log away.
+// A bounded raise must revert on its own.
 func TestSetLevelForReverts(t *testing.T) {
 	t.Cleanup(func() { SetLevel(slog.LevelInfo) })
 
@@ -73,9 +71,7 @@ func TestSetLevelForReverts(t *testing.T) {
 	t.Fatalf("level did not revert, still %v", Level())
 }
 
-// TestSetLevelForOverlappingRaisesKeepBaseline guards the timer bookkeeping: a
-// second raise while one is pending must not make the eventual revert land on
-// the raised level instead of the original.
+// A second raise while one is pending must still revert to the original level.
 func TestSetLevelForOverlappingRaisesKeepBaseline(t *testing.T) {
 	t.Cleanup(func() { SetLevel(slog.LevelInfo) })
 
@@ -93,8 +89,7 @@ func TestSetLevelForOverlappingRaisesKeepBaseline(t *testing.T) {
 	t.Fatalf("expected revert to warn, got %v", Level())
 }
 
-// TestSetLevelCancelsPendingRevert: an explicit permanent change must win over a
-// timer that is still pending.
+// An explicit permanent change must win over a pending revert timer.
 func TestSetLevelCancelsPendingRevert(t *testing.T) {
 	t.Cleanup(func() { SetLevel(slog.LevelInfo) })
 

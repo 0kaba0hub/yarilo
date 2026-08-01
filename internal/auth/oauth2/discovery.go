@@ -11,11 +11,7 @@ import (
 )
 
 // DiscoveryDocument is the subset of OpenID Provider Configuration
-// (per OpenID Connect Discovery 1.0 §3) we consume. The IdP
-// publishes the full document at
-// `<issuer>/.well-known/openid-configuration`; we read only the
-// fields needed to build a validator without operator-side
-// endpoint configuration.
+// (OpenID Connect Discovery 1.0 §3) needed to build a validator.
 type DiscoveryDocument struct {
 	Issuer                string   `json:"issuer"`
 	JWKSURI               string   `json:"jwks_uri"`
@@ -24,13 +20,8 @@ type DiscoveryDocument struct {
 	ScopesSupported       []string `json:"scopes_supported,omitempty"`
 }
 
-// FetchDiscovery resolves the OpenID configuration document for
-// the supplied issuer URL. The lookup URL is
-// `<issuer>/.well-known/openid-configuration` (trailing slash on
-// issuer is normalised away).
-//
-// Errors wrap ErrUpstream so callers can distinguish transient
-// network failure from value error.
+// FetchDiscovery fetches `<issuer>/.well-known/openid-configuration`.
+// Errors wrap ErrUpstream.
 func FetchDiscovery(ctx context.Context, issuerURL string, hc *http.Client, timeout time.Duration) (*DiscoveryDocument, error) {
 	if issuerURL == "" {
 		return nil, fmt.Errorf("oauth2/discovery: empty issuer URL")
@@ -70,36 +61,28 @@ func FetchDiscovery(ctx context.Context, issuerURL string, hc *http.Client, time
 	return &doc, nil
 }
 
-// DiscoveryConfig configures how a validator should be built from
-// an OIDC discovery document. Mirrors the constructor parameters
-// of the underlying validators so operators get the same knobs
-// regardless of which transport ends up active.
+// DiscoveryConfig configures how a validator is built from an OIDC
+// discovery document.
 type DiscoveryConfig struct {
-	// IssuerURL is the OAuth provider issuer URL. The OIDC
-	// document is fetched from
-	// `<IssuerURL>/.well-known/openid-configuration`. REQUIRED.
+	// IssuerURL is the OAuth provider issuer URL. Required.
 	IssuerURL string
 
-	// PreferIntrospection picks the introspection endpoint over
-	// the local JWKS when both are advertised. Default false:
-	// local JWT validation is faster (no per-login HTTP call)
-	// and works for any signed token.
+	// PreferIntrospection picks the introspection endpoint over local JWKS
+	// when both are advertised. Default false: local JWT validation avoids a
+	// per-login HTTP call.
 	PreferIntrospection bool
 
-	// IntrospectionMode is the transport used when an
-	// introspection validator is built. Default
+	// IntrospectionMode is the introspection transport. Default
 	// IntrospectionPostForm.
 	IntrospectionMode IntrospectionMode
 
-	// ClientID / ClientSecret for the introspection endpoint
-	// (ignored when local JWT is selected).
+	// ClientID / ClientSecret for the introspection endpoint (ignored for
+	// local JWT).
 	ClientID     string
 	ClientSecret string
 
-	// Shared constraints applied to whichever validator ends up
-	// active. The discovery document's `issuer` claim is auto-
-	// added to Issuers (so an operator who only configures
-	// IssuerURL still gets iss-verification for free).
+	// Shared constraints for whichever validator ends up active. The
+	// document's issuer is auto-added to Issuers.
 	Issuers           []string
 	Audience          string
 	RequiredScopes    []string
@@ -108,18 +91,9 @@ type DiscoveryConfig struct {
 	HTTPTimeout       time.Duration
 }
 
-// NewDiscoveryValidator fetches the OIDC document, then constructs
-// a LocalJWTValidator or IntrospectionValidator depending on
-// what's advertised + PreferIntrospection. Returns a Validator
-// that wraps either implementation.
-//
-// Order of preference:
-//
-//	PreferIntrospection=true: introspection_endpoint → jwks_uri
-//	PreferIntrospection=false (default): jwks_uri → introspection_endpoint
-//
-// A discovery document missing both endpoints is a configuration
-// error and surfaces as ErrUpstream.
+// NewDiscoveryValidator fetches the OIDC document and builds a
+// LocalJWTValidator or IntrospectionValidator, preferring jwks_uri unless
+// PreferIntrospection is set. A document with neither endpoint is ErrUpstream.
 func NewDiscoveryValidator(ctx context.Context, cfg DiscoveryConfig) (Validator, error) {
 	if cfg.IssuerURL == "" {
 		return nil, fmt.Errorf("oauth2/discovery: empty IssuerURL")
@@ -131,11 +105,9 @@ func NewDiscoveryValidator(ctx context.Context, cfg DiscoveryConfig) (Validator,
 	if err != nil {
 		return nil, err
 	}
-	// allowedIssuersForLocalJWT auto-adds the document's iss so an
-	// operator who only sets IssuerURL still gets iss verification
-	// for free. Done ONLY for the local-JWT path: introspection
-	// responses (RFC 7662) often omit the iss claim, so auto-
-	// adding the doc's iss there would silently reject every token.
+	// Auto-add the document's iss for the local-JWT path only: introspection
+	// responses (RFC 7662) often omit iss, so requiring it there would
+	// reject every token.
 	allowedIssuersForLocalJWT := cfg.Issuers
 	if doc.Issuer != "" && !containsString(allowedIssuersForLocalJWT, doc.Issuer) {
 		allowedIssuersForLocalJWT = append(allowedIssuersForLocalJWT, doc.Issuer)
@@ -172,7 +144,7 @@ func NewDiscoveryValidator(ctx context.Context, cfg DiscoveryConfig) (Validator,
 			HTTPTimeout:       cfg.HTTPTimeout,
 		})
 	}
-	// First preference unavailable — fall through to second.
+	// First preference unavailable; try the second.
 	if second == doc.JWKSURI && second != "" {
 		return NewLocalJWTValidator(ctx, LocalJWTConfig{
 			JWKSURL:           second,

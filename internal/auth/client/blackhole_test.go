@@ -10,11 +10,8 @@ import (
 	"time"
 )
 
-// startBlackhole accepts one connection, completes the VERSION handshake so the
-// client reaches stateLive, then never reads again — modelling a peer that was
-// blackholed (pod killed without FIN/RST, conntrack dropped). Writes into it
-// succeed until the send buffer fills, after which the next write blocks in the
-// kernel forever.
+// startBlackhole completes the VERSION handshake, then never reads again:
+// writes succeed until the send buffer fills, then block in the kernel.
 func startBlackhole(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -29,12 +26,11 @@ func startBlackhole(t *testing.T) string {
 				return
 			}
 			go func(c net.Conn) {
-				// Complete the handshake, then read nothing, ever.
+				// Complete the handshake, then hold the conn open without
+				// reading.
 				rd := bufio.NewReader(c)
-				// Read the client's VERSION line so the handshake can proceed.
 				_, _ = rd.ReadString('\n')
 				fmt.Fprint(c, "VERSION\t1\t0\nSPID\t1\nDONE\n")
-				// Deliberately stop reading. Hold the conn open.
 				select {}
 			}(c)
 		}
@@ -42,11 +38,9 @@ func startBlackhole(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-// TestBlackholedWriteDoesNotWedgeEveryCaller is the #926 regression: a write to a
-// blackholed peer must not block forever under c.mu and pile every other caller
-// up behind it. N concurrent requests against such a peer must all fail in about
-// one request timeout — INDEPENDENTLY — not serialize into N * timeout (which is
-// the signature of the mutex holding the wedge), and the process must not hang.
+// A write to a blackholed peer must not block forever under c.mu: N concurrent
+// requests must fail in about one request timeout, not serialize into
+// N * timeout (#926).
 func TestBlackholedWriteDoesNotWedgeEveryCaller(t *testing.T) {
 	addr := startBlackhole(t)
 
@@ -60,9 +54,8 @@ func TestBlackholedWriteDoesNotWedgeEveryCaller(t *testing.T) {
 	}
 	defer c.Close()
 
-	// A payload far larger than any default socket send buffer, so a single
-	// write cannot drain into the buffer and genuinely blocks against the
-	// non-reading peer — exercising the write deadline, not just the reply wait.
+	// Larger than any default socket send buffer, so the write genuinely
+	// blocks and exercises the write deadline.
 	huge := strings.Repeat("x", 8<<20)
 
 	const n = 8
@@ -85,9 +78,8 @@ func TestBlackholedWriteDoesNotWedgeEveryCaller(t *testing.T) {
 			t.Fatalf("caller %d unexpectedly succeeded against a blackholed peer", i)
 		}
 	}
-	// Independence: all N ran concurrently, so the batch takes about one request
-	// timeout plus reconnect slack — NOT n * RequestTimeout, which is what a
-	// mutex-serialised wedge would produce.
+	// All N ran concurrently: the batch takes about one request timeout plus
+	// reconnect slack, not n * RequestTimeout.
 	if max := 4 * c.opts.RequestTimeout; elapsed > max {
 		t.Fatalf("batch took %v; a bounded, independent failure should be well under %v (n*timeout = %v)",
 			elapsed, max, time.Duration(n)*c.opts.RequestTimeout)

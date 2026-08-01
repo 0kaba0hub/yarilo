@@ -55,11 +55,9 @@ type Server struct {
 	managesieve *mssvr.Server   // nil if ManageSieve not configured
 	locker      locks.Locker    // cross-process write coordinator; nil = disabled
 
-	// Per-protocol TLS configs, kept so each Run* can bind its own listener
-	// BEFORE reporting readiness (#899). Binding cannot happen in New: the
-	// co-located backend pod runs one protocol per container off a single config,
-	// so a New that bound every port would have five containers fighting over the
-	// same five ports.
+	// Per-protocol TLS configs, kept so each Run* binds its listener before
+	// reporting readiness. New cannot bind: the co-located pod runs one
+	// protocol per container off a single config.
 	imapTLS       *tls.Config
 	pop3TLS       *tls.Config
 	submissionTLS *tls.Config
@@ -74,14 +72,10 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// startReadyFile publishes this protocol container's readiness into the shared
-// co-located-pod directory (#788): readyfile.Touch bumps the file's mtime ONLY
-// while telemetry reports ready, so the yarilo-backend-reg sidecar (which owns
-// the pod's single director registration) gates the pod's heartbeat on this
-// protocol being alive. A wedged data path stops touching → the file goes stale
-// → the pod is expired ring-wide. No-op when backend_register.readiness_dir is
-// unset (standalone / single-process runs). The director registration itself no
-// longer lives here — it is the sidecar's job.
+// startReadyFile publishes this protocol's readiness into the shared pod
+// directory: the file's mtime is bumped only while telemetry reports ready,
+// so the yarilo-backend-reg sidecar gates the pod heartbeat on it. No-op when
+// backend_register.readiness_dir is unset.
 func (s *Server) startReadyFile(ctx context.Context, proto string) {
 	reg := s.cfg.BackendRegister
 	ready := func() bool { return s.telem != nil && s.telem.IsReady() }
@@ -95,10 +89,8 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: auth: %w", err)
 	}
-	// OAuth2 passdbs join the chain ahead of SQL so an OAUTHBEARER
-	// login resolves locally before SQL ever sees the bearer token
-	// as a plaintext "password". When no providers are configured
-	// this is a no-op and the chain stays SQL-only.
+	// OAuth2 passdbs go ahead of SQL so SQL never sees a bearer token
+	// as a plaintext "password".
 	if len(cfg.Auth.OAuth2) > 0 {
 		oauth2pdbs, err := oauth2.BuildPassdbs(context.Background(), cfg.Auth.OAuth2)
 		if err != nil {
@@ -150,11 +142,8 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 	mbox := buildMailbox(cfg.Storage, locker)
 
-	// ---- per-namespace mailbox driver overrides ----
-	// Builds a separate MailboxBackend instance per distinct
-	// non-default driver referenced from cfg.Namespaces[*].Location.
-	// Namespaces using the global driver are absent from the map and
-	// resolve at session-open time to the global mbox.
+	// Per-namespace mailbox driver overrides; namespaces on the global
+	// driver are absent from the map.
 	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, cfg.Storage, locker)
 	if err != nil {
 		return nil, fmt.Errorf("backend: namespace mailboxes: %w", err)
@@ -165,8 +154,8 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: dicts.metadata: %w", err)
 	}
-	// The quota_clone mirror (built below from quota_clone_dicts) is the only
-	// dict consumer of quota data; the enforcement path reads the index.
+	// quota data goes to dicts only via the quota_clone mirror; enforcement
+	// reads the index
 	idxOpts := []file.Option{file.WithLocker(locker)}
 	if cfg.Storage.IndexLogCompactMinBytes != 0 {
 		idxOpts = append(idxOpts, file.WithLogCompaction(
@@ -220,11 +209,9 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		authTLS = t
 	}
-	// Internal mTLS SERVER config for the login->backend data path (#824): the
-	// login pods dial the backend session ports over mTLS (their BackendTLS), so
-	// the PreambleListener must terminate it — verifying the login's client cert
-	// against the internal CA — before reading the YARILO preamble. The
-	// server-side mirror of #816's client dials.
+	// mTLS server config for the login->backend data path: the PreambleListener
+	// verifies the login's client cert against the internal CA before reading
+	// the YARILO preamble.
 	var internalServerTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
 		t, err := mtls.ServerConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
@@ -241,8 +228,8 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: sieve dict: %w", err)
 	}
-	// Dedicated dict for the duplicate test (RFC 7352). driver=redis makes the
-	// dedup window cross-pod; absent/memory keeps per-process behaviour.
+	// Dict for the Sieve duplicate test (RFC 7352). driver=redis makes the
+	// dedup window cross-pod; absent/memory keeps it per-process.
 	dupDict, err := buildDict(cfg.Dicts, "sieve_duplicate")
 	if err != nil {
 		return nil, fmt.Errorf("backend: sieve duplicate dict: %w", err)
@@ -252,9 +239,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// ---- IMAP ----
-	// The TLS configs are declared at function scope so Server can keep them:
-	// each Run* binds its own listener before reporting ready (#899), which needs
-	// the config after New has returned.
+	// TLS configs are kept on Server so each Run* can bind after New returns.
 	var imapTLS, pop3TLS, submissionTLS *tls.Config
 	var imapServer *imapsvr.Server
 	if svcs.IMAP.Active() || svcs.IMAPS.Active() {
@@ -294,10 +279,7 @@ func New(cfg *config.Config) (*Server, error) {
 			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
 			MaxLineLength:      p.MaxLineLength,
 			ConnLimit:          connLimiter,
-			// yarilo-warden for the SELECT push (#WHO folder tracking): the imap
-			// session reports its currently-SELECTed mailbox so `yarctl
-			// who` can render it. Without this the warden client is a permanent
-			// no-op and the WHO FOLDERS column is always empty.
+			// warden push of the SELECTed mailbox, used by `yarctl who`
 			WardenAddr:           cfg.WardenService.ClientAddr(),
 			WardenTLS:            authTLS,
 			IDSend:               p.IDSend,
@@ -473,9 +455,7 @@ func New(cfg *config.Config) (*Server, error) {
 			if lmtpResolver == nil {
 				lmtpResolver = &mailbox.Resolver{}
 			}
-			// Dial the auth-master over internal mTLS (authTLS), and LAZILY —
-			// see lazyUserdbLookup for why an eager, nil-TLS dial wedged lmtp
-			// readiness under internal_tls (#821).
+			// dial the auth-master lazily over internal mTLS; see lazyUserdbLookup
 			lmtpOpts.UserdbLookup = lazyUserdbLookup(addr,
 				func() (*authclient.Client, error) { return authclient.Dial(addr, authTLS) },
 				lmtpResolver)
@@ -508,11 +488,8 @@ func New(cfg *config.Config) (*Server, error) {
 		telemAddr = ":8080"
 	}
 	telemOpts := telemetry.Options{Addr: telemAddr, Lifecycle: true}
-	// Liveness watchdog (#904): the session/standalone self-check stats the mail
-	// store base and enters a local gate. A hung NFS handle makes the stat block,
-	// which the watchdog observes as a failure via its own timeout; the gate lets
-	// the fault-injection endpoint drive the same trip on a live pod. Both are
-	// opt-in and off by default.
+	// Liveness watchdog: stats the mail store base (catches hung NFS via the
+	// watchdog timeout) and enters a local gate (fault injection). Off by default.
 	if wd := cfg.Telemetry.LivenessWatchdog; wd.Enabled {
 		storePath := storeHealthPath(cfg.Storage)
 		var gate *telemetry.Gate
@@ -545,11 +522,9 @@ func New(cfg *config.Config) (*Server, error) {
 	}, nil
 }
 
-// storeHealthPath derives a fixed directory to stat as the mail store liveness
-// signal (#904): the leading, non-templated prefix of the first configured
-// location. A path like "/mnt/mail/%d/%n" yields "/mnt/mail" — the NFS mount
-// whose stat hangs when the handle goes stale. Empty when nothing is
-// configured, which disables the stat leg (the gate leg still works).
+// storeHealthPath derives the directory to stat as the mail store liveness
+// signal: the leading non-templated prefix of the first configured location,
+// e.g. "/mnt/mail/%d/%n" -> "/mnt/mail". Empty disables the stat leg.
 func storeHealthPath(sc config.StorageConfig) string {
 	for _, loc := range []string{sc.MailPath, sc.MaildirRoot, sc.MailHomeTemplate} {
 		if loc == "" {
@@ -567,11 +542,8 @@ func storeHealthPath(sc config.StorageConfig) string {
 	return ""
 }
 
-// storeLivenessCheck returns the session/standalone self-check: enter the local
-// gate (so fault injection can wedge it) and stat the mail store base (so a hung
-// NFS handle is caught). It touches nothing shared, per the watchdog contract.
-// The stat runs without an explicit deadline because the watchdog already bounds
-// the whole check with its timeout — a hung stat is observed as a failure there.
+// storeLivenessCheck enters the local gate and stats the mail store base.
+// No explicit stat deadline: the watchdog timeout bounds the whole check.
 func storeLivenessCheck(storePath string, gate *telemetry.Gate) telemetry.LivenessCheck {
 	return func(ctx context.Context) error {
 		if gate != nil {
@@ -588,14 +560,9 @@ func storeLivenessCheck(storePath string, gate *telemetry.Gate) telemetry.Livene
 	}
 }
 
-// bindTCP binds addr and returns the listener, so a caller can hold every port
-// BEFORE reporting readiness.
-//
-// This split exists because readiness must mean "fully initialised" (#899).
-// Reporting ready and then binding in a goroutine let Kubernetes add the pod to
-// the Service endpoints while its protocol port was not accepting yet — a client
-// arriving in that window gets connection refused, which is most likely exactly
-// during a rollout, when traffic shifts the moment a pod goes ready.
+// bindTCP binds addr and returns the listener, so callers can hold every port
+// before reporting readiness; binding after SetReady leaves a window where a
+// client gets connection refused.
 func bindTCP(proto, addr string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -626,17 +593,14 @@ func (s *Server) RunIMAP(ctx context.Context) error {
 	svcs := s.cfg.Services
 	if s.imap == nil {
 		slog.Warn("imap: no listeners configured")
-		// Nothing to serve, but the process is up and its storage opened, so it is
-		// as ready as it will ever be. Reporting not-ready forever would keep the
-		// pod out of rotation with no way to recover.
+		// nothing to serve; report ready so the pod isn't stuck out of rotation
 		s.telem.SetReady(true)
 		<-ctx.Done()
 		return nil
 	}
 
-	// Bind every configured port first. A failure here is fatal and must be:
-	// carrying on with a port unbound would leave the pod reporting ready while
-	// silently serving nothing on it.
+	// Bind every configured port first; a failure is fatal, otherwise the pod
+	// would report ready with a port unbound.
 	var tlsLn, plainLn net.Listener
 	if svcs.IMAPS.Active() {
 		ln, err := bindTLS("imap", listenAddr(svcs.IMAPS), s.imapTLS)
@@ -653,7 +617,7 @@ func (s *Server) RunIMAP(ctx context.Context) error {
 		plainLn = ln
 	}
 
-	// Every port is accepting now, so the pod really can serve.
+	// every port is accepting now
 	s.telem.SetReady(true)
 
 	if tlsLn != nil {
@@ -692,7 +656,7 @@ func (s *Server) RunPOP3(ctx context.Context) error {
 		return nil
 	}
 
-	// Bind before reporting ready (#899).
+	// bind before reporting ready
 	var tlsLn, plainLn net.Listener
 	if svcs.POP3S.Active() {
 		ln, err := bindTLS("pop3", listenAddr(svcs.POP3S), s.pop3TLS)
@@ -743,8 +707,7 @@ func (s *Server) RunLMTP(ctx context.Context) error {
 		return nil
 	}
 
-	// Bind before reporting ready (#899). A TLS error is now fatal at startup
-	// rather than inside a goroutine after the pod already said it was ready.
+	// bind before reporting ready; a TLS error is fatal at startup
 	ln, err := bindTCP("lmtp", listenAddr(svcs.LMTP))
 	if err != nil {
 		return err
@@ -789,7 +752,7 @@ func (s *Server) RunManageSieve(ctx context.Context) error {
 		return nil
 	}
 
-	// Bind before reporting ready (#899).
+	// bind before reporting ready
 	ln, err := bindTCP("managesieve", listenAddr(svcs.ManageSieveBE))
 	if err != nil {
 		return err
@@ -818,18 +781,15 @@ func (s *Server) Run(ctx context.Context) error {
 
 	svcs := s.cfg.Services
 
-	// Bind every configured port BEFORE reporting readiness (#899). In standalone
-	// this is the whole stack in one process, so "ready" has to mean every
-	// protocol is accepting — not that the goroutines which will eventually bind
-	// them have been started.
+	// Bind every configured port before reporting readiness: in standalone,
+	// "ready" means every protocol is accepting.
 	type listener struct {
 		name  string
 		ln    net.Listener
 		serve func(net.Listener) error
 	}
 	var listeners []listener
-	// A bind failure aborts startup, so close whatever already succeeded rather
-	// than leaking the fds into a process that is about to exit.
+	// a bind failure aborts startup, so close already-bound listeners
 	closeAll := func() {
 		for _, l := range listeners {
 			l.ln.Close()
@@ -874,8 +834,8 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
-	// Submission (STARTTLS): the TLS config is handed to Serve rather than
-	// wrapping the listener, since the upgrade happens mid-session.
+	// Submission STARTTLS: TLS config is handed to Serve, not wrapped around
+	// the listener, since the upgrade happens mid-session.
 	if s.submission != nil && svcs.Submission.Active() {
 		ln, err := bindTCP("submission", listenAddr(svcs.Submission))
 		if err != nil {
@@ -935,7 +895,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}})
 	}
 
-	// Every port is accepting now.
+	// every port is accepting now
 	s.telem.SetReady(true)
 
 	for _, l := range listeners {
@@ -1011,11 +971,9 @@ func parseCIDRs(cidrs []string) []*net.IPNet {
 	return nets
 }
 
-// chainAuth adapts protocol.Authenticator to smtp.Authenticator.
-// The wrapper exists because go-smtp's Authenticator surface speaks
-// (username, password) → error rather than the richer
-// AuthResponse / Fields shape; here we discard everything except
-// the "did the chain accept these credentials" decision.
+// chainAuth adapts protocol.Authenticator to the SMTP server's
+// (username, password) -> error surface; only the accept/reject decision
+// is kept.
 type chainAuth struct{ c protocol.Authenticator }
 
 func (a chainAuth) AuthPlain(username, password string) error {
@@ -1029,12 +987,9 @@ func (a chainAuth) AuthPlain(username, password string) error {
 	return nil
 }
 
-// AuthPlainMaster forwards a SASL PLAIN response carrying an
-// authzid to the underlying protocol chain via
-// MasterAuthenticator. When the underlying chain does not
-// implement MasterAuthenticator (e.g. a test stub or a driver
-// that pre-dates AUTH-3) the call fails opaquely — the wire
-// reply stays indistinguishable from a wrong-password rejection.
+// AuthPlainMaster forwards a SASL PLAIN response carrying an authzid to the
+// chain's MasterAuthenticator. If the chain doesn't implement it, the failure
+// is deliberately indistinguishable from a wrong-password rejection.
 func (a chainAuth) AuthPlainMaster(authzid, authid, password string) error {
 	master, ok := a.c.(protocol.MasterAuthenticator)
 	if !ok {
@@ -1050,12 +1005,8 @@ func (a chainAuth) AuthPlainMaster(authzid, authid, password string) error {
 	return nil
 }
 
-// LookupSCRAMSha256 satisfies submission.SCRAMSha256LookupAuthenticator
-// by forwarding to the underlying protocol chain. Returns
-// (nil, nil) when the chain does not expose SCRAM verifiers,
-// which the submission session interprets as "do not advertise
-// SCRAM mechs in EHLO" so a deployment without verifiers never
-// surfaces a mech it cannot serve.
+// LookupSCRAMSha256 forwards to the chain's SCRAM verifier lookup. Returns
+// (nil, nil) when the chain has none, so SCRAM mechs are not advertised in EHLO.
 func (a chainAuth) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
 	lookup, ok := a.c.(protocol.SCRAMSha256Lookup)
 	if !ok {
@@ -1073,18 +1024,10 @@ func (a chainAuth) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, err
 	return lookup.LookupSCRAMSha1(username)
 }
 
-// ResolveUserInfo maps a userdb protocol.UserInfo to the storage-layer
-// mailbox.UserInfo used to open a user's mailbox + index: it expands the home
-// directory via the resolver and the %h/%u template modifiers, and copies the
-// storage identity (Driver, MailPath, quota rules, dir overrides). Shared by
-// LMTP delivery and the quota-status policy service so both resolve identical
-// paths.
-// lazyUserdbLookup builds the LMTP UserdbLookup that resolves a recipient's
-// userdb via yarilo-auth. The auth-master client is dialled LAZILY on the first
-// lookup — never at backend.New — and reconnected on error (#821). Eager dialing
-// wedged lmtp readiness whenever yarilo-auth was slow, and under internal_tls a
-// plain (nil-TLS) dial to the mTLS auth listener HUNG in the handshake with no
-// error, blocking the pod forever. dial is injected so the laziness is testable.
+// lazyUserdbLookup builds the LMTP UserdbLookup resolving a recipient's userdb
+// via yarilo-auth. The client is dialled lazily on first lookup and re-dialled
+// on error; an eager dial at New would block readiness when yarilo-auth is
+// slow or when a plain dial hits an mTLS listener (#821).
 func lazyUserdbLookup(addr string, dial func() (*authclient.Client, error), resolver *mailbox.Resolver) func(context.Context, string) (*mailbox.UserInfo, error) {
 	var acMu sync.Mutex
 	var ac *authclient.Client
@@ -1108,7 +1051,7 @@ func lazyUserdbLookup(addr string, dial func() (*authclient.Client, error), reso
 				_ = ac.Close()
 				fresh, dialErr := dial()
 				if dialErr != nil {
-					ac = nil // reset so the next lookup re-dials
+					ac = nil // next lookup re-dials
 					acMu.Unlock()
 					slog.Warn("lmtp: userdb auth reconnect failed", "addr", addr, "err", dialErr)
 					return nil, err
@@ -1163,9 +1106,9 @@ func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.U
 	if ui.InboxPath != "" {
 		mbi.InboxPath = mailbox.ExpandHome(ui.InboxPath, mbi.Home)
 	}
-	// Stamp the per-user driver + any embedded INDEX=/CONTROL=/ALT=/VOLATILEDIR=
-	// modifiers via the shared resolver (the separate userdb dir fields set above
-	// win). Same parse IMAP/POP3 use, so LMTP and quota-status resolve identically.
+	// Stamp the per-user driver + embedded INDEX=/CONTROL=/ALT=/VOLATILEDIR=
+	// modifiers; the separate userdb dir fields set above win. Same parse as
+	// IMAP/POP3 so all consumers resolve identical paths.
 	if err := mailbox.StampLocation(mbi, ui.MailLocation); err != nil {
 		slog.Warn("backend: mail_location parse failed; using global mailbox backend",
 			"user", username, "mail_location", ui.MailLocation, "err", err)
@@ -1180,10 +1123,9 @@ func BuildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 	return buildMailbox(cfg, locker)
 }
 
-// BuildMailboxByDriver constructs the mailbox backend for a named per-user
-// driver (mdbox / sdbox / maildir), applying the same options the session pods
-// use. Exported so standalone binaries (yarilo-fts) resolve each user's
-// storage format from the userdb mail_location instead of the global default.
+// BuildMailboxByDriver constructs the mailbox backend for a named driver
+// (mdbox / sdbox / maildir) with the same options the session pods use.
+// Exported for standalone binaries (yarilo-fts).
 func BuildMailboxByDriver(driver string, cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
 	return buildMailboxByDriver(driver, cfg, locker)
 }
@@ -1214,23 +1156,16 @@ func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 	return buildMailboxByDriver(cfg.Mailbox, cfg, locker)
 }
 
-// buildMailboxByDriver constructs a MailboxBackend for the named driver from sc.
-// Thin wrapper over the shared mailboxbuild.ByDriver so every binary builds mdbox
-// (and its tuning) identically — see #639.
+// buildMailboxByDriver wraps mailboxbuild.ByDriver so every binary builds
+// mdbox (and its tuning) identically.
 func buildMailboxByDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
 	return mailboxbuild.ByDriver(driver, sc, locker)
 }
 
-// buildNamespaceMailboxes constructs the per-namespace MailboxBackend
-// override map for cfg.Namespaces. A namespace declared with a
-// `location:` URL whose driver prefix differs from cfg.Storage.Mailbox
-// gets its own backend instance; namespaces without a location: or
-// using the same driver as the global default are absent from the map
-// and resolve at session-open time to the global backend.
-//
-// The override map is keyed by namespace prefix (same key the IMAP
-// session dispatcher uses). Same-driver namespaces share their
-// Backend instance to keep the in-memory footprint small.
+// buildNamespaceMailboxes builds the per-namespace MailboxBackend override
+// map, keyed by namespace prefix. Only namespaces whose location: driver
+// differs from the global default get an entry; same-driver namespaces share
+// one backend instance.
 func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver string, sc config.StorageConfig, locker locks.Locker) (map[string]mailbox.MailboxBackend, error) {
 	if len(namespaces) == 0 {
 		return nil, nil
@@ -1243,7 +1178,7 @@ func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver s
 	overrides := map[string]mailbox.MailboxBackend{}
 	for _, ns := range namespaces {
 		if ns.Location == "" {
-			// Personal-style namespace inheriting the global default.
+			// inherits the global default
 			continue
 		}
 		loc, ok, err := mailbox.ParseLocation(ns.Location, nil)
@@ -1255,8 +1190,7 @@ func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver s
 		}
 		drv := strings.ToLower(loc.Driver)
 		if drv == globalDriver {
-			// Same driver as global default — no override needed; the
-			// session opens against the global Mailbox backend.
+			// same driver as global default — no override needed
 			continue
 		}
 		b, exists := byDriver[drv]
@@ -1273,18 +1207,9 @@ func buildNamespaceMailboxes(namespaces []config.NamespaceConfig, globalDriver s
 	return overrides, nil
 }
 
-// buildNamespaces translates cfg.Namespaces into the wire-protocol
-// shape the IMAP server consumes. An empty slice in => empty slice
-// out; the server applies its built-in single-personal-namespace
-// fallback so pre-v1.20 deployments without a namespaces: block keep
-// working unchanged.
-//
-// Separator defaults to "/" when omitted; non-single-rune values are
-// dropped to "/" with a warning so a misconfigured yaml does not
-// produce a malformed NAMESPACE response.
-// personalSeparator returns the IMAP hierarchy separator of the personal
-// namespace (default "." — maildir++), used to stamp UserInfo for the LMTP
-// and backend-api paths that have no per-namespace IMAP context.
+// personalSeparator returns the personal namespace's hierarchy separator
+// (default "." — maildir++), used to stamp UserInfo for paths without
+// per-namespace IMAP context (LMTP, backend-api).
 func personalSeparator(cfg []config.NamespaceConfig) string {
 	for _, ns := range cfg {
 		if strings.EqualFold(strings.TrimSpace(ns.Type), "personal") && ns.Separator != "" {

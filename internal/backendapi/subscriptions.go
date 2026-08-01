@@ -7,11 +7,9 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
 )
 
-// registerSubscriptionRoutes wires the per-user IMAP SUBSCRIBE
-// state surface. Reuses internal/userstate/subs.Store — same
-// on-disk format (sorted folder names, tmp+rename atomicity) and
-// the same locks.SubscriptionsKey so concurrent IMAP sessions
-// stay consistent.
+// registerSubscriptionRoutes registers IMAP subscription routes.
+// Uses subs.Store with the same on-disk format and lock key as
+// IMAP sessions.
 func (s *Server) registerSubscriptionRoutes() {
 	s.mux.Handle("POST /api/backend/subscriptions/list", s.middleware(s.handleSubsList))
 	s.mux.Handle("POST /api/backend/subscriptions/add", s.middleware(s.handleSubsAdd))
@@ -74,14 +72,9 @@ func (s *Server) handleSubsRemove(w http.ResponseWriter, r *http.Request) {
 	apiJSON(w, map[string]string{"status": "ok"})
 }
 
-// openSubsStore decodes the common request body, builds the per-user
-// namespace bundle, and returns the subs.Store for that namespace.
-// The userContext is intentionally not closed here — the store does
-// its own file I/O without long-lived handles, and the caller's
-// request lifecycle ends immediately after the store operation.
-//
-// Returns (nil, "", err) on decode/lookup failure with the HTTP
-// response already written by the helpers it called.
+// openSubsStore decodes the request and returns the namespace's
+// subs.Store. On error the HTTP response is already written.
+// The store holds no long-lived handles, so uc can be closed here.
 func (s *Server) openSubsStore(w http.ResponseWriter, r *http.Request) (*subs.Store, string, error) {
 	var req subsRequest
 	if !decodeJSON(w, r, &req) {

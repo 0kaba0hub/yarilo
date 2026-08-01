@@ -1,5 +1,5 @@
-// Package ring implements consistent hashing for yarilo-director.
-// Algorithm: MD5, 100 virtual nodes per backend (configurable), binary search.
+// Package ring implements the director's consistent-hashing ring:
+// MD5, 100 virtual nodes per backend (configurable), binary search.
 package ring
 
 import (
@@ -31,7 +31,7 @@ type Ring struct {
 	backends  map[string]*Backend // key: IP
 	vhosts    []vhost             // all Up backends, sorted by hash
 	tagVhosts map[string][]vhost  // tag → Up backends for that tag, sorted by hash
-	hf        HashFormat          // #850: username→hash-key template (encodes #738 lowercasing via %L)
+	hf        HashFormat          // username→hash-key template
 }
 
 type vhost struct {
@@ -39,19 +39,15 @@ type vhost struct {
 	ip   string
 }
 
-// NormalizeUsername is the shared username normalization used for hashing
-// (#738): lowercased, matching the reference implementation's default hash
-// template so two spellings of the same account route to the same backend.
-// director.HashUsername delegates here so the two independent hash
-// implementations can never drift apart.
+// NormalizeUsername lowercases a username for hashing, so two spellings
+// of the same account route to the same backend. director.HashUsername
+// delegates here.
 func NormalizeUsername(username string) string {
 	return strings.ToLower(username)
 }
 
-// New returns an empty Ring. hf is the compiled username→hash-key template
-// (director_service.username_hash, #850); it encodes the #738 lowercasing via its %L
-// modifier and MUST be the same HashFormat the director's userDir uses so the two
-// hashes never diverge for the same user.
+// New returns an empty Ring. hf must be the same HashFormat the
+// director's userDir uses, so the two hashes never diverge for a user.
 func New(hf HashFormat) *Ring {
 	return &Ring{
 		backends:  make(map[string]*Backend),
@@ -60,14 +56,11 @@ func New(hf HashFormat) *Ring {
 	}
 }
 
-// AddBackend inserts or updates a backend and rebuilds the ring. When the IP
-// is already known, zero-valued transition metadata on the incoming struct does
-// NOT clobber the existing entry (#705): a BACKEND-UP heartbeat / admin add
-// carries only LastUp, so without this an existing LastDown and Hostname would
-// be reset to zero on every heartbeat, corrupting the timestamp-based up/down
-// merge peers rely on (a backend that went down would gossip D0 and be
-// resurrected Up cluster-wide). A handshake that legitimately carries these
-// fields still overwrites, because its values are non-zero.
+// AddBackend inserts or updates a backend and rebuilds the ring.
+// Zero-valued LastUp/LastDown/Hostname on the incoming struct don't
+// clobber an existing entry — heartbeats carry only LastUp, and the
+// timestamp-based up/down merge between peers depends on LastDown
+// surviving them.
 func (r *Ring) AddBackend(b *Backend) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -94,9 +87,8 @@ func (r *Ring) RemoveBackend(ip string) {
 	r.rebuild()
 }
 
-// SetUp marks a backend as up or down without removing it from the registry.
-// Used for BACKEND-FLUSH: the backend stays known but stops receiving new lookups.
-// Returns false if the backend is not found.
+// SetUp marks a backend up or down without removing it (BACKEND-FLUSH:
+// stays known, stops receiving new lookups). Returns false if unknown.
 func (r *Ring) SetUp(ip string, up bool, ts int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -127,17 +119,17 @@ func (r *Ring) Backends() []Backend {
 	return out
 }
 
-// Len returns the number of registered backends. It takes the same r.mu every
-// Lookup holds, allocation-free, so it is the liveness probe (#904): if the ring
-// mutex is wedged the director can route no one, and this call blocks.
+// Len returns the number of registered backends. Takes the same r.mu as
+// Lookup, so it doubles as the liveness probe: a wedged ring mutex
+// blocks here too.
 func (r *Ring) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.backends)
 }
 
-// CountBackendsInTag returns how many backends are registered under tag —
-// used by the #776 lease-expiry safety guard (never remove the last one).
+// CountBackendsInTag returns how many backends are registered under tag;
+// the lease-expiry guard never removes the last one.
 func (r *Ring) CountBackendsInTag(tag string) int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -234,7 +226,7 @@ func (r *Ring) lookupLocked(username string, vhs []vhost) *Backend {
 
 func (r *Ring) rebuild() {
 	r.vhosts = r.vhosts[:0]
-	// Reset per-tag slices (reuse maps, clear slices).
+	// reuse the map, clear the slices
 	for t := range r.tagVhosts {
 		r.tagVhosts[t] = r.tagVhosts[t][:0]
 	}

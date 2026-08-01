@@ -2,12 +2,9 @@ package language
 
 import "testing"
 
-// TestStopwordListsIncludeDiacriticForms (review finding): the tokenizer's
-// lowercase filter does not strip diacritics (strings.ToLower only), so a
-// stopword list containing only the ASCII transliteration of an accented
-// word (e.g. "fuer" instead of "für") never matches the real token from
-// actual text and silently fails to filter it. Every accented stopword must
-// have its real Unicode form present too.
+// Lowercasing doesn't strip diacritics, so an ASCII-only transliteration
+// ("fuer") never matches the real token; every accented stopword must be
+// listed in its Unicode form.
 func TestStopwordListsIncludeDiacriticForms(t *testing.T) {
 	tests := []struct {
 		lang string
@@ -43,12 +40,8 @@ func TestStopwordListsIncludeDiacriticForms(t *testing.T) {
 	}
 }
 
-// TestStopwordListsAreCanonicalLength (#694): de/fr/es/pt were previously
-// small, heavily truncated hand-picked subsets (e.g. French at ~40 words
-// against the canonical Snowball list's ~150+) — not just missing accents,
-// but missing most of the list entirely. Pins a minimum word count per
-// language so a future accidental truncation regresses loudly instead of
-// silently shrinking the filter back down.
+// Pin a minimum word count per language so an accidental truncation of a
+// Snowball list fails loudly.
 func TestStopwordListsAreCanonicalLength(t *testing.T) {
 	minWords := map[string]int{
 		"en": 100,

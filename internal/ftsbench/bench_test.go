@@ -6,15 +6,12 @@ import (
 	"testing"
 )
 
-// indexRatioCap bounds the on-disk index size as a multiple of the indexed
-// corpus (docs/FTS.md §12, "DB proliferation" / index-size axis). Xapian
-// glass over plain text sits well under this; the cap catches a regression
-// such as accidentally enabling suffix (substring) indexing.
+// indexRatioCap bounds on-disk index size as a multiple of the corpus
+// (docs/FTS.md §12); catches e.g. accidental substring indexing.
 const indexRatioCap = 3.0
 
-// TestAcceptance is the FTS-1 acceptance gate. It fails the build when the
-// index-backed SEARCH is not at least as fast as the brute-force scan, or
-// when the index grows past indexRatioCap. Both are the promises §12 makes.
+// TestAcceptance fails when indexed SEARCH is slower than a brute-force
+// scan or the index grows past indexRatioCap (docs/FTS.md §12).
 func TestAcceptance(t *testing.T) {
 	rep, err := Run(Config{
 		Root:       t.TempDir(),

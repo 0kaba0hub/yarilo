@@ -8,7 +8,7 @@ import (
 )
 
 // optimizeJob is one (user, mailbox) pair queued for background
-// auto-optimization (#715).
+// auto-optimization.
 type optimizeJob struct {
 	user fts.UserRef
 	mbox fts.MailboxRef
@@ -18,15 +18,10 @@ func optimizeKey(user fts.UserRef, mbox fts.MailboxRef) string {
 	return user.Username + "\x00" + mbox.GUID
 }
 
-// optimizeQueue is a FIFO with true dedup, not just "cheap to re-run": a
-// mailbox already queued (or currently being optimized) is never queued a
-// second time — an engine can call the OptimizeNotifier callback on every
-// rotation while a mailbox stays at/above its shard threshold, and that
-// must not pile up duplicate work. The dedup marker is cleared only once
-// the run actually finishes (see done), not when the job is popped for
-// processing — a rotation that happens WHILE a compaction is already in
-// flight must still be able to queue a fresh pass afterward, since it
-// wasn't covered by the run already underway.
+// optimizeQueue is a FIFO with dedup: a mailbox already queued or in
+// flight is never queued twice. The dedup marker is cleared at done(),
+// not pop() — a rotation during a running compaction must still be able
+// to queue a fresh pass afterward.
 type optimizeQueue struct {
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -41,9 +36,8 @@ func newOptimizeQueue() *optimizeQueue {
 	return q
 }
 
-// push enqueues (user, mbox) unless it's already queued or in flight. It
-// must stay fast and non-blocking: this is called directly from the
-// engine's OptimizeNotifier callback, synchronously inside the write path.
+// push enqueues (user, mbox) unless already queued or in flight. Must
+// stay non-blocking: called synchronously from the engine's write path.
 func (q *optimizeQueue) push(user fts.UserRef, mbox fts.MailboxRef) {
 	key := optimizeKey(user, mbox)
 	q.mu.Lock()
@@ -78,8 +72,7 @@ func (q *optimizeQueue) pop(ctx context.Context) (optimizeJob, bool) {
 	return j, true
 }
 
-// done clears the dedup marker after a run completes (successfully or not),
-// letting a rotation that occurred mid-run queue a fresh pass.
+// done clears the dedup marker after a run completes (success or not).
 func (q *optimizeQueue) done(user fts.UserRef, mbox fts.MailboxRef) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

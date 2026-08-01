@@ -6,10 +6,9 @@ import (
 	"golang.org/x/net/html"
 )
 
-// htmlToText streams the text content of an HTML document into sink,
-// dropping script/style/head subtrees and emitting a space at tag
-// boundaries so adjacent elements do not fuse into one token
-// (the fts-parser-html behaviour). Entities are decoded by the tokenizer.
+// htmlToText streams HTML text content into sink, dropping
+// script/style/head subtrees and emitting a space at tag boundaries so
+// adjacent elements don't fuse into one token.
 func htmlToText(r io.Reader, sink func([]byte) error) error {
 	tk := html.NewTokenizer(r)
 	skipDepth := 0

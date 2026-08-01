@@ -4,11 +4,8 @@ package flatcurve
 
 import "testing"
 
-// TestReopenAfterDiscard verifies the #629 recovery contract: after the write
-// shard is released the way every engine error path now does (discardCurrent),
-// the next update reopens the existing shard and keeps indexing — instead of the
-// old behaviour where a poisoned st.cur was returned forever. The previously
-// committed document must survive and the new one must be searchable.
+// After discardCurrent (as done on engine errors) the next update must
+// reopen the shard and keep indexing; earlier docs must survive.
 func TestReopenAfterDiscard(t *testing.T) {
 	ui, _ := testEngine(t, Options{})
 	indexDoc(t, ui, 1, nil, []string{"alpha"})

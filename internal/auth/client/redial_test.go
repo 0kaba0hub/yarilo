@@ -11,12 +11,9 @@ import (
 	"time"
 )
 
-// flakyAuth is an in-process yarilo-auth whose availability can be toggled. While
-// "up" it completes the handshake and answers VERIFY with OK; while "down" it
-// drops connections during the handshake (a dial that reaches TCP but cannot
-// establish a usable session), and it closes any live connection when it goes
-// down — modelling an auth outage (pod replacement) that outlasts a fixed redial
-// budget.
+// flakyAuth is a fake auth server whose availability can be toggled. While up
+// it completes the handshake and answers OK; while down it drops connections
+// during the handshake and closes any live ones.
 type flakyAuth struct {
 	addr string
 
@@ -82,11 +79,9 @@ func (fa *flakyAuth) handle(c net.Conn) {
 	}
 }
 
-// TestRedialRecoversFromAnOutageLongerThanTheBudget is the #932 regression: an
-// auth outage that outlasts any fixed redial budget must NOT leave the client a
-// zombie. Requests during the outage fail with ErrTimeout, but once auth returns
-// the NEXT request succeeds because the redial loop recovered ON ITS OWN — no
-// request write triggered the reconnect — and no goroutines pile up.
+// A long auth outage must not leave the client stuck in reconnecting with
+// nothing to revive it: requests during the outage fail with ErrTimeout, and
+// once auth returns the redial loop recovers on its own (#932).
 func TestRedialRecoversFromAnOutageLongerThanTheBudget(t *testing.T) {
 	fa := newFlakyAuth(t)
 
@@ -102,12 +97,11 @@ func TestRedialRecoversFromAnOutageLongerThanTheBudget(t *testing.T) {
 
 	baseline := runtime.NumGoroutine()
 
-	// Outage: drop the live connection and refuse handshakes. This kills the
-	// current conn, so the reader triggers the reconnect; redial then loops.
+	// Drop the live connection and refuse handshakes; the reader triggers the
+	// reconnect and redial loops.
 	fa.setDown()
 
-	// Hammer the client for LONGER than the old fixed budget (5 * 200ms = 1s).
-	// Every request must fail with ErrTimeout, none must hang or succeed.
+	// Requests during the outage must fail, not hang or succeed.
 	outageDeadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(outageDeadline) {
 		var wg sync.WaitGroup
@@ -123,8 +117,8 @@ func TestRedialRecoversFromAnOutageLongerThanTheBudget(t *testing.T) {
 		wg.Wait()
 	}
 
-	// Auth returns. Under the pre-fix code the redial goroutine had already
-	// given up and no request path can revive it, so this would never succeed.
+	// Auth returns; the redial loop must recover without any request write
+	// triggering it.
 	fa.setUp()
 	recovered := false
 	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); {
@@ -137,9 +131,7 @@ func TestRedialRecoversFromAnOutageLongerThanTheBudget(t *testing.T) {
 		t.Fatal("client never recovered after auth returned — redial gave up (zombie)")
 	}
 
-	// No busy-spinning pileup: once recovered, the goroutine count settles back
-	// near the baseline rather than the dozens of [runnable] exchange frames the
-	// zombie produced.
+	// No busy-spin pileup: goroutine count settles back near the baseline.
 	time.Sleep(200 * time.Millisecond)
 	if got := runtime.NumGoroutine(); got > baseline+10 {
 		t.Fatalf("goroutine pileup: %d goroutines, baseline was %d", got, baseline)

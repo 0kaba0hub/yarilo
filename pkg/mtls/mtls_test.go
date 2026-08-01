@@ -18,9 +18,7 @@ import (
 	"time"
 )
 
-// TestClientConfig_EmptyServerNameFails guards the #816 loud fail: an empty
-// ServerName (typically an empty internal_tls.server_name) errors immediately
-// with a fix hint, before any cert I/O.
+// Empty ServerName must fail immediately with a hint, before any cert I/O.
 func TestClientConfig_EmptyServerNameFails(t *testing.T) {
 	_, err := ClientConfig("nonexistent.crt", "nonexistent.key", "nonexistent.ca", "", 0, 0)
 	if err == nil {
@@ -79,9 +77,8 @@ func writeSelfSigned(t testing.TB) (certFile, keyFile string) {
 	return certFile, keyFile
 }
 
-// TestClientConfig_SessionResumption proves the #856 fix end-to-end: a second
-// dial to the same mTLS server resumes via a cached TLS 1.3 session ticket
-// instead of a full handshake. Loopback only — no external service.
+// A second dial to the same mTLS server must resume via a cached TLS 1.3
+// session ticket. Loopback only.
 func TestClientConfig_SessionResumption(t *testing.T) {
 	certFile, keyFile := writeSelfSigned(t)
 	srvCfg, err := ServerConfig(certFile, keyFile, certFile)
@@ -140,10 +137,8 @@ func TestClientConfig_SessionResumption(t *testing.T) {
 	}
 }
 
-// BenchmarkMTLSHandshake quantifies the #856 tax: a full mTLS handshake versus a
-// resumed one, against a loopback server. The delta is the per-dial CPU the
-// ClientSessionCache saves on repeated internal dials. (Absolute numbers are
-// machine-specific; the ratio is the point.)
+// BenchmarkMTLSHandshake compares a full mTLS handshake with a resumed one
+// against a loopback server; the ratio is the point.
 func BenchmarkMTLSHandshake(b *testing.B) {
 	certFile, keyFile := writeSelfSigned(b)
 	srvCfg, err := ServerConfig(certFile, keyFile, certFile)
@@ -183,7 +178,7 @@ func BenchmarkMTLSHandshake(b *testing.B) {
 
 	b.Run("full", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			// Fresh cache each iteration → always a full handshake.
+			// fresh cache each iteration: always a full handshake
 			cfg, _ := ClientConfig(certFile, keyFile, certFile, "yarilo-internal", 0, 0)
 			dial(cfg)
 		}
@@ -200,8 +195,8 @@ func BenchmarkMTLSHandshake(b *testing.B) {
 	})
 }
 
-// TestNewSessionCache locks the size/TTL policy: negative disables resumption,
-// zero uses the default, and a positive TTL wraps the LRU (#856).
+// Size/TTL policy: negative disables resumption, zero uses the default,
+// a positive TTL wraps the LRU.
 func TestNewSessionCache(t *testing.T) {
 	if newSessionCache(-1, 0) != nil {
 		t.Fatal("negative size must disable resumption (nil cache)")
@@ -217,8 +212,7 @@ func TestNewSessionCache(t *testing.T) {
 	}
 }
 
-// TestTTLSessionCache_Expires verifies a cached session past its TTL is treated
-// as absent (no sleep — the put timestamp is aged directly).
+// A cached session past its TTL is treated as absent (put timestamp aged directly).
 func TestTTLSessionCache_Expires(t *testing.T) {
 	c := &ttlSessionCache{lru: tls.NewLRUClientSessionCache(4), ttl: time.Minute, put: map[string]time.Time{}}
 	cs := &tls.ClientSessionState{}
@@ -235,8 +229,7 @@ func TestTTLSessionCache_Expires(t *testing.T) {
 	}
 }
 
-// TestTTLSessionCache_PrunesExpiredOnPut is the #860 guard: the put-time map is
-// swept of TTL-expired entries on Put, so LRU count-eviction can't leak them.
+// Put must sweep TTL-expired entries so LRU count-eviction cannot leak them.
 func TestTTLSessionCache_PrunesExpiredOnPut(t *testing.T) {
 	c := &ttlSessionCache{lru: tls.NewLRUClientSessionCache(64), ttl: time.Minute, put: map[string]time.Time{}}
 	cs := &tls.ClientSessionState{}

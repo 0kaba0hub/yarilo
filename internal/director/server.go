@@ -1,13 +1,13 @@
 // Package director implements the yarilo-director TCP+mTLS routing server.
-// Login pods call it to resolve which backend pod should handle a given user,
-// and health pods call it to register/deregister backends from the hash ring.
+// Login pods resolve user→backend here; health pods register/deregister
+// backends from the hash ring.
 //
 // Protocol (TAB-delimited, LF-terminated):
 //
 //	Server → Client handshake:
 //	  VERSION\tyarilo-director\t1\t0\n
 //	  HOST-HAND-START\n
-//	  HOST\t{ip}\t{port}\t{tag}\tD{down_ts}\tU{up_ts}\t{hostname}\tV{vhosts}\n  (one per backend; V{vhosts} trailing, #706, tolerated-absent)
+//	  HOST\t{ip}\t{port}\t{tag}\tD{down_ts}\tU{up_ts}\t{hostname}\tV{vhosts}\n  (one per backend; trailing V{vhosts} may be absent)
 //	  HOST-HAND-END\n
 //	  DONE\n
 //
@@ -16,27 +16,26 @@
 //	  ME\t{ip}\t{port}\t{ts}\n
 //	  DONE\n
 //
-//	Ring membership handshake (#750 — self-organizing ring, replaces the
-//	static full-mesh peer list; see membership.go and the internal docs):
-//	  DIRECTOR-JOIN\t{ip}\t{port}\n        (sent instead of ME/DONE, on a fresh connection to a seed)
+//	Ring membership handshake (self-organizing ring, see membership.go):
+//	  DIRECTOR-JOIN\t{ip}\t{port}\n        (instead of ME/DONE, on a fresh connection to a seed)
 //	  JOIN-CHALLENGE\t{nonce_hex}\n
-//	  JOIN-PROOF\t{hmac_hex}\n             (HMAC-SHA256(ring_secret, nonce+ip+port))
+//	  JOIN-PROOF\t{hmac_hex}\n             (keyed hash over ring_secret, nonce, ip, port)
 //	  JOIN-OK\n / JOIN-FAIL\t{reason}\n
-//	  DIRECTOR-LIST\t{ip1}:{port1},...\n   (existing members; joiner adds itself and dials its right neighbor separately)
-//	  CONNECT\t{ip}\t{port}\n              (sent on a ring/PEER connection: wrong target, dial here instead)
+//	  DIRECTOR-LIST\t{ip1}:{port1},...\n   (existing members; joiner adds itself, dials right neighbor)
+//	  CONNECT\t{ip}\t{port}\n              (on a ring/PEER connection: wrong target, dial here instead)
 //	  DIRECTOR-ADD\t{originIP}\t{originPort}\t{seq}\t{ip}\t{port}\n
 //	  DIRECTOR-REMOVE\t{originIP}\t{originPort}\t{seq}\t{ip}\t{port}\n
 //
 //	Client commands:
-//	  LOOKUP\t{id}\t{user}\t{tag}\t{proto}\n           (tag required; ""=untagged pool. proto optional: base protocol for least_sessions #797)
-//	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\t{proto}\n  (proto optional, #797)
+//	  LOOKUP\t{id}\t{user}\t{tag}\t{proto}\n           (tag required; ""=untagged pool. proto optional, for least_sessions)
+//	  SESSION-OPEN\t{id}\t{user}\t{backendIP}\t{proto}\n  (proto optional)
 //	  SESSION-CLOSE\t{id}\n
-//	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\t{seq}\n  (vhosts optional; 0=100. seq optional: a backend's monotonic heartbeat counter, #776 — its presence makes the backend lease-managed / expirable)
-//	  BACKEND-DOWN\t{ip}\n                            (LEAVE: remove + rehash — SIGTERM / expiry)
-//	  BACKEND-FLUSH\t{ip}\n                          (drain / overload: stop new lookups, keep sessions + ring slot, NO rehash)
-//	  BACKEND-UNREACHABLE\t{ip}\n                    (login proxy failed to dial {ip}; corroborated reports evict early — #782. Distinct from FLUSH: this is a down/rehash signal, not a drain)
+//	  BACKEND-UP\t{ip}\t{port}\t{tag}\t{vhosts}\t{seq}\n  (vhosts optional; 0=100. seq optional: monotonic heartbeat counter; its presence makes the backend lease-managed / expirable)
+//	  BACKEND-DOWN\t{ip}\n                            (remove + rehash)
+//	  BACKEND-FLUSH\t{ip}\n                          (drain: stop new lookups, keep sessions + ring slot, NO rehash)
+//	  BACKEND-UNREACHABLE\t{ip}\n                    (login proxy failed to dial; corroborated reports evict early. A down/rehash signal, not a drain)
 //	  HOST-REMOVE\t{ip}\n                            (alias for BACKEND-DOWN)
-//	  USER-MOVE\t{user}\t{ip}\t{port}\n              (move user: TTL'd userDir pin + kick old sessions, #708)
+//	  USER-MOVE\t{user}\t{ip}\t{port}\n              (TTL'd userDir pin + kick old sessions)
 //	  USER-WEAK\t{user}\n                            (mark current assignment as soft/weak)
 //	  USER-KICK\t{user}\n                            (broadcast kick to all login clients)
 //	  USER-KILLED\t{hash}\n                          (login reports sessions closed for hash)
@@ -46,42 +45,36 @@
 //	Server responses:
 //	  HOST\t{id}\t{ip}\t{port}\t{tag}\n
 //	  FAIL\t{id}\treason=no-backends\n
-//	  FAIL\t{id}\treason=killing\n               (#847 — user is under a confirmed ring-wide kick; RETRYABLE, the login proxy re-LOOKUPs until the kill confirms rather than erroring the client)
+//	  FAIL\t{id}\treason=killing\n               (user under a confirmed ring-wide kick; retryable — proxy re-LOOKUPs until the kill confirms)
 //	  OK\n
 //	  PONG\n
 //
-//	Server pushes (unsolicited, to local login clients — plain form, unchanged):
+//	Server pushes (unsolicited, to local login clients — plain form):
 //	  RING-CHANGE\t{ip}\t{event}\t{tag}\n            (event: up | down | flush | vhosts)
-//	    vhosts (#706): ...\t{ip}\tvhosts\t{tag}\t{count}\n — admin weight change,
-//	    replicated ring-wide; carries NO seq, so it never turns the backend
-//	    lease-managed.
-//	  USER-MOVED\t{user}\t{ip}\t{port}\n             (when user is moved by another client)
-//	  USER-KICKED\t{user}\n                          (broadcast kick notification)
-//	  USER-KILLED-EVERYWHERE\t{hash}\n               (director confirms all sessions gone)
+//	    vhosts form: ...\t{ip}\tvhosts\t{tag}\t{count}\n — admin weight change,
+//	    replicated ring-wide; carries NO seq, never turns the backend lease-managed.
+//	  USER-MOVED\t{user}\t{ip}\t{port}\n
+//	  USER-KICKED\t{user}\n
+//	  USER-KILLED-EVERYWHERE\t{hash}\n               (all sessions confirmed gone)
 //
-//	Server pushes (ring-envelope form, right-neighbor connections only, #750):
+//	Server pushes (ring-envelope form, right-neighbor connections only):
 //	  RING-CHANGE\t{originIP}\t{originPort}\t{seq}\t{ip}\t{event}\t{tag}\n
-//	    a lease-managed backend "up" carries port + vhosts so a director that
-//	    only sees the backend via gossip (registration lands on 1 of N) can add
-//	    it to its ring: ...\t{ip}\tup\t{tag}\t{beSeq}\t{port}\t{vhosts}\n (#776)
+//	    a lease-managed "up" carries port + vhosts so a gossip-only director can
+//	    add the backend to its ring: ...\t{ip}\tup\t{tag}\t{beSeq}\t{port}\t{vhosts}\n
 //	  USER-MOVED\t{originIP}\t{originPort}\t{seq}\t{user}\t{ip}\t{port}\n
 //	  USER-KICKED\t{originIP}\t{originPort}\t{seq}\t{user}[\t{oldBackendIP}]\n
-//	    oldBackendIP present (#708 move-kick): the pin is dropped only if it
-//	    still points there (compare-and-delete). Absent (#823 admin kick): the
-//	    pin is dropped unconditionally. The session kick fires either way.
-//	  SESSION-OPEN\t{originIP}\t{originPort}\t{seq}\t{id}\t{user}\t{backend}\t{proto}\n  (#804 — replicate the load view)
+//	    oldBackendIP present: drop the pin only if it still points there
+//	    (compare-and-delete). Absent: drop unconditionally. Kick fires either way.
+//	  SESSION-OPEN\t{originIP}\t{originPort}\t{seq}\t{id}\t{user}\t{backend}\t{proto}\n  (replicate the load view)
 //	  SESSION-CLOSE\t{originIP}\t{originPort}\t{seq}\t{id}\n
 //	  USER-KILLING\t{originIP}\t{originPort}\t{seq}\t{hash}\t{ttlMillis}\n
-//	    (#847 — a user entered a confirmed kick; hold LOOKUP ring-wide. ttlMillis
-//	    is a DURATION: each director computes its own deadline on receipt, never a
-//	    wall-clock deadline, which pod-clock skew would make unstable)
+//	    (hold LOOKUP ring-wide. ttlMillis is a DURATION — each director computes
+//	    its own deadline on receipt; wall-clock deadlines would break under skew)
 //	  USER-KILL-DONE\t{originIP}\t{originPort}\t{seq}\t{hash}\n
-//	    (#847 — kill confirmed (sessions gone) or timed out; release the hold)
+//	    (kill confirmed or timed out; release the hold)
 //	  BACKEND-UNREACHABLE\t{originIP}\t{originPort}\t{seq}\t{backendIP}\t{reporterID}\n
-//	    (#782 — replicate a proxy's unreachable report ring-wide so corroboration
-//	    aggregates across directors. reporterID is the reporting login proxy, in
-//	    the payload so a gossip copy counts under the ORIGINAL reporter, never as
-//	    a new one — the seq/originIP identify the relaying director, not the proxy)
+//	    (reporterID is the reporting login proxy, so a gossip copy counts under
+//	    the original reporter; seq/originIP identify the relaying director)
 package director
 
 import (
@@ -112,111 +105,78 @@ type Options struct {
 	UserExpire   time.Duration // how long a user→backend mapping lives; default 900s
 	PingInterval time.Duration // idle time before sending PING; default 30s
 	PingTimeout  time.Duration // time to wait for PONG before closing; default 10s
-	// WriteTimeout bounds a single push/response write to a client (#704) so
-	// one slow/stuck client cannot block the broadcast fan-out (and, formerly,
-	// hold the client read-lock) and stall the push plane for everyone. 0 =
-	// default 10s; negative = no deadline (legacy blocking behaviour).
+	// WriteTimeout bounds a single push/response write so a stuck client
+	// can't stall the broadcast fan-out. 0 = 10s; negative = no deadline.
 	WriteTimeout time.Duration
 	// PeerTLS, LocalIP, LocalPort identify and secure this node's ring
-	// connections (dial-out to its right neighbor, and the JOIN dial to a
-	// seed) — see StartMembership.
+	// connections — see StartMembership.
 	PeerTLS   *tls.Config
 	LocalIP   string
 	LocalPort int
-	// RingSecret authenticates incoming DIRECTOR-JOIN requests via HMAC-SHA256
-	// (#750). Empty means ring auth is disabled — every JOIN is rejected, so
-	// this node can only ever run as a singleton (N=1) ring.
+	// RingSecret authenticates incoming DIRECTOR-JOIN requests. Empty disables
+	// ring auth: every JOIN is rejected, the node stays a singleton ring.
 	RingSecret []byte
-	// MinMembers is an install-time warning threshold only ("below this =
-	// no state redundancy") — it never refuses service at any member count.
+	// MinMembers is a warning threshold only; never refuses service.
 	MinMembers int
-	// JoinAllowedNets restricts which source CIDRs a DIRECTOR-JOIN is accepted
-	// from (#773). Nil/empty = allow all. Checked before the HMAC challenge.
+	// JoinAllowedNets restricts source CIDRs for DIRECTOR-JOIN. Nil = allow
+	// all. Checked before the challenge.
 	JoinAllowedNets []*net.IPNet
-	// AntiEntropyInterval is how often each member re-broadcasts its
-	// member+tombstone snapshot over every live ring connection (#759) —
-	// a bounded safety net that heals any membership split where at least
-	// one connection crosses the two views, without waiting for an event
-	// to be (possibly unluckily) dropped and never re-sent. 0 = default
-	// (3s); negative = disabled (unit tests that assert on exact
-	// propagation paths).
+	// AntiEntropyInterval: how often each member re-broadcasts its
+	// member+tombstone snapshot over every live ring connection, healing any
+	// split that has a crossing connection. 0 = 3s; negative = disabled.
 	AntiEntropyInterval time.Duration
-	// SeedPollInterval is how often joinLoop re-polls a seed AFTER the
-	// initial join succeeded (#759 Fix A). The seed (a shared ClusterIP
-	// every pod can always reach) is the one guaranteed crossing point
-	// between arbitrarily-partitioned member views — connection-bound
-	// mechanisms (broadcast, anti-entropy) cannot heal a split with no
-	// crossing connection, so this bounds every partition's lifetime by
-	// the poll interval. Full cadence while the view holds fewer than
-	// MinMembers, easing to SeedPollIdleInterval once the target size is
-	// reached — see joinLoop for why the gate is the target size and
-	// never own-view stability. 0 = default (2s); negative = legacy
-	// one-shot join (join once, never poll again).
+	// SeedPollInterval: how often joinLoop re-polls a seed after the initial
+	// join. The seed ClusterIP is the one guaranteed crossing point between
+	// partitioned views, so this bounds every partition's lifetime. Full
+	// cadence below MinMembers, easing to SeedPollIdleInterval after.
+	// 0 = 2s; negative = one-shot join.
 	SeedPollInterval time.Duration
-	// SeedPollIdleInterval is the eased poll cadence once the view has
-	// reached MinMembers. Defaults to the SAME 2s as SeedPollInterval —
-	// i.e. no effective backoff — because a node cannot tell "converged"
-	// from "stable but holding a dead member", so a lazy idle cadence
-	// leaves a freshly-respawned pod's stale member in place for a full
-	// interval (#765). Raise it only to trade steady-state polling for
-	// slower dead-member eviction on fresh joiners. Clamped up to
-	// SeedPollInterval; 0 = default (2s).
+	// SeedPollIdleInterval: poll cadence once the view reached MinMembers.
+	// Defaults to the same 2s — a node can't tell "converged" from "holding a
+	// dead member", so a lazy cadence delays dead-member eviction. Clamped up
+	// to SeedPollInterval; 0 = 2s.
 	SeedPollIdleInterval time.Duration
-	// BackendExpire is how long a lease-managed backend may go without a
-	// heartbeat before it is removed ring-wide (#776). A backend becomes
-	// lease-managed when a seq'd BACKEND-UP arrives for it; static
-	// mail_servers / admin-added backends never heartbeat and are never
-	// expired. 0 = default (30s); negative = disabled (no lease expiry).
+	// BackendExpire: how long a lease-managed backend may go without a
+	// heartbeat before ring-wide removal. Static/admin-added backends never
+	// heartbeat and never expire. 0 = 30s; negative = disabled.
 	BackendExpire time.Duration
-	// UnreachableReporters is how many DISTINCT login proxies must report a
-	// backend unreachable within UnreachableWindow before it is evicted from
-	// the ring ahead of the lease TTL (#782). 0 = default (2).
+	// UnreachableReporters: how many distinct login proxies must report a
+	// backend unreachable within UnreachableWindow to evict it early. 0 = 2.
 	UnreachableReporters int
-	// UnreachableWindow is the sliding window over which those distinct reports
-	// must arrive. 0 = default (5s).
+	// UnreachableWindow is the sliding window for those reports. 0 = 5s.
 	UnreachableWindow time.Duration
 	// TombstoneTTL bounds how long a dead member's tombstone is kept and
-	// gossiped (#765) — long enough to outlive propagation delay, short
-	// enough that churn across many rollouts can't grow the set forever.
-	// Safe to expire because neighbor liveness monitoring (#768) plus the
-	// anti-entropy view convergence re-evict a resurrected-but-unreachable
-	// member within seconds regardless. 0 = default (10m); negative =
-	// never expire.
+	// gossiped — long enough to outlive propagation, short enough that churn
+	// can't grow the set forever. 0 = 10m; negative = never expire.
 	TombstoneTTL time.Duration
-	// UsernameHashLowercase lowercases usernames before hashing/keying them
-	// (director_username_hash_lowercase, #738) — matches the reference
-	// implementation's default hash template so two spellings of the same
-	// account route to the same backend. Defaults to true. Legacy knob: when
-	// UsernameHashFormat is set it takes over case-folding and this is ignored.
+	// UsernameHashLowercase lowercases usernames before hashing, so two
+	// spellings of one account route to the same backend. Defaults to true.
+	// Ignored when UsernameHashFormat is set.
 	UsernameHashLowercase *bool
-	// UsernameHashFormat is the username→hash-key template (director_service.username_hash,
-	// #850), mirroring the reference director_username_hash expression: %u (whole user),
-	// %n (local part), %d (domain), each with optional %L lowercase, plus %%. Empty derives
-	// the template from UsernameHashLowercase (%Lu / %u) for byte-identical back-compat.
-	// Parsed once at startup; an invalid template is rejected in main before the server
-	// is built.
+	// UsernameHashFormat is the username→hash-key template
+	// (director_service.username_hash): %u (whole user), %n (local part),
+	// %d (domain), optional %L lowercase, plus %%. Empty derives %Lu / %u from
+	// UsernameHashLowercase for byte-identical back-compat. Validated in main.
 	UsernameHashFormat string
-	// AssignmentPolicy selects the INITIAL (unpinned) placement strategy (#797):
-	// "hash" (default, reference semantics) or "least_sessions" (load-aware).
-	// Sticky pins / USER-MOVE are unaffected.
+	// AssignmentPolicy selects the initial (unpinned) placement: "hash"
+	// (default) or "least_sessions". Sticky pins / USER-MOVE are unaffected.
 	AssignmentPolicy string
-	// UserKickDelay delays an admin-initiated kick before the USER-KICKED is
-	// pushed (#740), a grace window for a user's in-flight command on the old
-	// backend after a move. Admin path only — backend-down/expiry and the
-	// split-writer conflict-kick are never delayed. 0 = 2s; negative = 0.
+	// UserKickDelay delays an admin-initiated kick, a grace window for
+	// in-flight commands on the old backend. Admin path only. 0 = 2s;
+	// negative = 0.
 	UserKickDelay time.Duration
-	// MaxParallelKicks caps sessions kicked per batch on backend-down (#740),
-	// spreading the re-login stampede. 0 = 100; <= 0 after default = no batching.
+	// MaxParallelKicks caps sessions kicked per batch on backend-down,
+	// spreading the re-login stampede. 0 = 100; negative = no batching.
 	MaxParallelKicks int
-	// MaxParallelMoves caps concurrent user moves during a graceful evacuation
-	// (#849). 0 = 5; negative = unlimited.
+	// MaxParallelMoves caps concurrent user moves during a graceful
+	// evacuation. 0 = 5; negative = unlimited.
 	MaxParallelMoves int
-	// FlushProgram is an optional per-user cleanup hook run after a confirmed move
-	// (#848); empty = disabled. See config.DirectorServiceConfig.FlushProgram.
+	// FlushProgram is an optional per-user cleanup hook run after a confirmed
+	// move; empty = disabled.
 	FlushProgram string
-	// UserKillTimeout is the hard fallthrough for the confirmed kick (#847);
-	// UserKillConfirmGrace is the stable-zero window before confirming. 0 =
-	// defaults (15s, 1s).
+	// UserKillTimeout is the hard fallthrough for the confirmed kick;
+	// UserKillConfirmGrace is the stable-zero window before confirming.
+	// 0 = defaults (15s, 1s).
 	UserKillTimeout      time.Duration
 	UserKillConfirmGrace time.Duration
 }
@@ -255,8 +215,8 @@ func (o *Options) maxParallelKicks() int {
 	return o.MaxParallelKicks
 }
 
-// maxParallelMoves returns the graceful-evacuation concurrency window (#849).
-// 0 = default 5; negative = unlimited (returned as 0, interpreted as "no ceiling").
+// maxParallelMoves returns the graceful-evacuation concurrency window.
+// 0 = default 5; negative = unlimited (returned as 0).
 func (o *Options) maxParallelMoves() int {
 	if o.MaxParallelMoves == 0 {
 		return 5
@@ -274,13 +234,12 @@ func (o *Options) usernameHashLowercase() bool {
 	return *o.UsernameHashLowercase
 }
 
-// effectiveHashFormat resolves the username→hash-key template (#850). An explicit
-// UsernameHashFormat wins and reports explicit=true; otherwise the template is derived
-// from the legacy usernameHashLowercase bool (%Lu / %u) so pre-#850 configs hash
-// byte-for-byte as before and explicit=false. When explicit, ingress normalizeUser
-// becomes a no-op and the template's %L is the sole case-folder. A malformed explicit
-// template is unreachable here — main validates it and fails loudly before the server is
-// built — so the parse error falls back to the safe default rather than panicking.
+// effectiveHashFormat resolves the username→hash-key template. An explicit
+// UsernameHashFormat wins (explicit=true); otherwise %Lu / %u is derived from
+// the legacy lowercase bool so old configs hash byte-for-byte as before.
+// When explicit, ingress normalizeUser is a no-op and the template's %L is the
+// sole case-folder. A malformed explicit template is rejected in main; the
+// parse error here falls back to the default rather than panicking.
 func (o *Options) effectiveHashFormat() (hf ring.HashFormat, explicit bool) {
 	if raw := strings.TrimSpace(o.UsernameHashFormat); raw != "" {
 		if parsed, err := ring.ParseHashFormat(raw); err == nil {
@@ -316,7 +275,7 @@ func (o *Options) pingTimeout() time.Duration {
 	return o.PingTimeout
 }
 
-// writeTimeout is the per-write deadline (#704). 0 = 10s; negative = disabled.
+// writeTimeout is the per-write deadline. 0 = 10s; negative = disabled.
 func (o *Options) writeTimeout() time.Duration {
 	if o.WriteTimeout == 0 {
 		return 10 * time.Second
@@ -328,21 +287,16 @@ func (o *Options) writeTimeout() time.Duration {
 }
 
 // client wraps an active connection with a per-connection write lock. The lock
-// guarantees each written LINE is atomic — it does NOT order a push relative to
-// a command reply, so a push can still land between a request and its reply on
-// the same conn; the request/reply reader (proto.Conn.readReply, #702) skips
-// such interleaved pushes rather than relying on ordering here.
+// makes each written LINE atomic; it does NOT order pushes relative to command
+// replies — proto.Conn.readReply skips interleaved pushes instead.
 type client struct {
 	conn         net.Conn
 	mu           sync.Mutex
-	writeTimeout time.Duration // per-write deadline (#704); 0 = none
+	writeTimeout time.Duration // per-write deadline; 0 = none
 	pongCh       chan struct{} // receives a token each time PONG is received
-	// isPeer marks a connection as another director replica's PeerDialer
-	// (identified by the "PEER" handshake line, #700) rather than a login
-	// proxy — broadcastToLogins uses this to stop a peer-originated event
-	// from being relayed back out to peer connections, which is what
-	// caused USER-KICKED to ping-pong forever between replicas in a
-	// full-mesh topology.
+	// isPeer marks another director's ring connection (the "PEER" handshake
+	// line) rather than a login proxy; peer-originated events must not be
+	// relayed back to peer connections or they'd loop forever.
 	isPeer bool
 }
 
@@ -350,7 +304,7 @@ func (c *client) WriteLine(line string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.writeTimeout > 0 {
-		// Bound this write so a stuck client can't block the broadcaster (#704).
+		// Bound this write so a stuck client can't block the broadcaster.
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 		defer c.conn.SetWriteDeadline(time.Time{}) //nolint:errcheck
 	}
@@ -363,7 +317,7 @@ type sessionRec struct {
 	id      string
 	user    string
 	backend string  // backend IP (without port)
-	proto   string  // base protocol (imap/pop3/…), for least_sessions counts (#797)
+	proto   string  // base protocol (imap/pop3/…), for least_sessions counts
 	cl      *client // which login-pod connection owns this session
 }
 

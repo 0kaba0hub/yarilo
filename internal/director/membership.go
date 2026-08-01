@@ -1,16 +1,15 @@
 // Package director — Membership implements the self-organizing director
-// ring (#750, phase 1): members ordered by (ip, port), each node dialing
-// only its right neighbor, joined via an HMAC-authenticated JOIN against a
-// seed. Routing truth stays the deterministic ring hash (pkg/cluster/ring) —
-// membership exists to redundantly share routing state between neighbors,
-// not to elect or vote on anything.
+// ring: members ordered by (ip, port), each node dialing its right
+// neighbor, joined via an HMAC-authenticated JOIN against a seed. Routing
+// truth stays the deterministic ring hash (pkg/cluster/ring); membership
+// only shares routing state between neighbors.
 //
 // Degradation ladder (must hold at every member count):
 //
-//	N=1: no neighbors, no peer connections — today's single-replica mode.
-//	N=2: left == right; exactly ONE connection serves both directions —
-//	     only the lexicographically lower (ip,port) member dials.
-//	N=3+: every member dials its right neighbor; N distinct directed edges.
+//	N=1: no neighbors, no peer connections — single-replica mode.
+//	N=2: left == right; only the lower (ip,port) member dials — one
+//	     connection serves both directions.
+//	N=3+: every member dials its right neighbor; N directed edges.
 //
 // See the internal docs for the wire format.
 package director
@@ -38,9 +37,8 @@ import (
 )
 
 // Member identifies one director replica by its ring-protocol address.
-// Ordering is (IP, Port) lexicographic — deterministic on every node, no
-// separate node id: a restarted pod gets a new IP in k8s and simply rejoins
-// as a fresh member (no identity to reconcile).
+// Ordered by (IP, Port); no separate node id — a restarted pod gets a new
+// IP and rejoins as a fresh member.
 type Member struct {
 	IP   string
 	Port int
@@ -52,14 +50,10 @@ func (m Member) isZero() bool { return m.IP == "" && m.Port == 0 }
 
 func (m Member) equal(o Member) bool { return m.IP == o.IP && m.Port == o.Port }
 
-// less orders members deterministically: IP first (by parsed numeric
-// octets, NOT string comparison — "10.0.0.17" < "10.0.0.6" as strings,
-// backwards from the actual numeric address, #754), then port. Every node
-// computes the exact same ordering from the exact same member set, with
-// zero coordination — that determinism is what makes the ring computable
-// locally instead of needing a vote. Falls back to string comparison for
-// an unparseable IP (should never happen in practice) so ordering stays
-// total and deterministic either way.
+// less orders members by parsed IP bytes, then port — string comparison
+// would sort "10.0.0.17" before "10.0.0.6". Deterministic on every node
+// with zero coordination; unparseable IPs fall back to string comparison
+// so ordering stays total.
 func (m Member) less(o Member) bool {
 	a, b := net.ParseIP(m.IP), net.ParseIP(o.IP)
 	if a == nil || b == nil {

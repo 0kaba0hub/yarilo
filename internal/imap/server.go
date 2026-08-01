@@ -57,15 +57,15 @@ type Options struct {
 	ProxyProtocol      bool
 	HAProxyTimeout     time.Duration
 	HAProxyTrustedNets []*net.IPNet
-	// AuthAddr is the host:port of yarilo-auth login protocol used by the
-	// PreambleListener to verify session tokens forwarded by login pods.
-	// When set, connections must carry a valid YARILO preamble.
+	// AuthAddr is the yarilo-auth login-protocol address used to verify
+	// session tokens forwarded by login pods. When set, connections must
+	// carry a valid YARILO preamble.
 	AuthAddr string
 	AuthTLS  *tls.Config
-	// PreambleTLS terminates internal mTLS on the login->backend data path (#824).
+	// PreambleTLS terminates internal mTLS on the login->backend data path.
 	PreambleTLS *tls.Config
-	// MasterAddr is the host:port of yarilo-auth master protocol used by
-	// the PreambleListener to perform userdb lookups after token verification.
+	// MasterAddr is the yarilo-auth master-protocol address used for userdb
+	// lookups after token verification.
 	MasterAddr         string
 	MasterTLS          *tls.Config
 	DisablePlainAuth   bool
@@ -82,42 +82,32 @@ type Options struct {
 	// Zero disables.
 	FailureDelay time.Duration
 
-	// OAuth2Enabled flips advertisement of the OAUTHBEARER SASL
-	// mechanism in the AuthenticateMechanisms reply. Set by the
-	// backend / yarilo-auth wiring when at least one OAuth provider
-	// is configured under auth.oauth2; otherwise the mech stays
-	// off the wire so a client never sees it advertised against a
-	// deployment that cannot validate tokens.
+	// OAuth2Enabled advertises OAUTHBEARER/XOAUTH2. Set when at least one
+	// OAuth provider is configured; otherwise the mechs are never
+	// advertised against a deployment that cannot validate tokens.
 	OAuth2Enabled bool
 
 	// Locker is the cross-process write coordinator. When non-nil, each
-	// successful write (APPEND/COPY/MOVE/STORE/EXPUNGE) emits an EVENT on
-	// the mailbox key so IMAP IDLE sessions on other pods are woken up
-	// without waiting for the heartbeat interval. Nil keeps the legacy
-	// timer-based IDLE behaviour.
+	// successful write emits an EVENT on the mailbox key so IDLE sessions
+	// on other pods wake up immediately. Nil keeps timer-based IDLE.
 	Locker locks.Locker
 
-	// SpecialUseDefaults is the folder-name → \Sent/\Drafts/etc. mapping
-	// applied by LIST when the on-disk per-user special_use file does not
-	// override. Driven by protocol.imap.imap_special_use_defaults in
-	// yarilo.yaml.
+	// SpecialUseDefaults maps folder names to \Sent/\Drafts/etc. for LIST
+	// when the per-user special_use file does not override.
 	SpecialUseDefaults map[string]string
 
-	// MetadataDict backs RFC 5464 METADATA (GETMETADATA / SETMETADATA).
-	// When nil, the server still advertises METADATA / METADATA-SERVER
-	// (the lib needs the caps to parse the commands) but every op
-	// returns "metadata storage disabled". Operators wire this from
-	// cfg.Dicts["metadata"] in yarilo.yaml.
+	// MetadataDict backs RFC 5464 METADATA. When nil the caps are still
+	// advertised (the lib needs them to parse the commands) but every op
+	// returns "metadata storage disabled".
 	MetadataDict dict.Dict
 
-	// SieveEngine runs imapsieve scripts (RFC 6785) on IMAP events (APPEND,
-	// COPY/MOVE, flag change). Nil disables imapsieve; the engine itself no-ops
-	// unless imapsieve_enabled is set.
+	// SieveEngine runs imapsieve scripts (RFC 6785) on APPEND, COPY/MOVE and
+	// flag changes. Nil disables imapsieve.
 	SieveEngine *sieve.Engine
 
-	// QuotaEngine toggles quota enforcement on saves — APPEND / COPY / MOVE are
-	// rejected with OVERQUOTA when over the user's limit, summed from the index.
-	// Independent of the IMAP QUOTA extension below.
+	// QuotaEngine enables quota enforcement on saves; APPEND/COPY/MOVE are
+	// rejected with OVERQUOTA over the limit. Independent of the IMAP QUOTA
+	// extension below.
 	QuotaEngine bool
 	// QuotaName is the quota-root name in GETQUOTA responses (default "User quota").
 	QuotaName string
@@ -126,9 +116,8 @@ type Options struct {
 	// QuotaMailSize rejects a single message larger than this many bytes
 	// (0 = unlimited), independent of the usage limit.
 	QuotaMailSize int64
-	// QuotaPolicy carries the site-wide quota tunables (percentage scaling,
-	// storage extra, ignore-unlimited, mailbox-count caps, hidden, warnings).
-	// Grace is not applied on the interactive IMAP path.
+	// QuotaPolicy carries site-wide quota tunables. Grace is not applied on
+	// the interactive IMAP path.
 	QuotaPolicy quota.Policy
 	// QuotaWarner runs quota_warning actions. Nil = warnings only log.
 	QuotaWarner *quotawarn.Runner
@@ -139,24 +128,19 @@ type Options struct {
 	// QuotaCloneFlushDelay debounces clone writes (one per interval per session).
 	QuotaCloneFlushDelay time.Duration
 
-	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
-	// capability + GETQUOTA / GETQUOTAROOT commands. Client-facing query only —
-	// no enforcement. When false the server does not advertise QUOTA and
-	// GETQUOTA returns NO.
+	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): capability plus
+	// GETQUOTA/GETQUOTAROOT. Query only, no enforcement. When false the
+	// capability is not advertised and GETQUOTA returns NO.
 	IMAPQuota bool
 
-	// ACLEnabled exposes RFC 4314 server-side ACL (GETACL / SETACL /
-	// DELETEACL / MYRIGHTS / LISTRIGHTS) when true. Storage is the
-	// per-mailbox `yarilo-acl` file in each folder's index directory
-	// — no extra backend wiring required. When false, the SessionACL
-	// methods on *session return NO("ACL extension disabled by
-	// operator"); the capability is still advertised since go-imap
-	// detects it via interface assertion.
+	// ACLEnabled exposes RFC 4314 server-side ACL. Storage is the
+	// per-mailbox yarilo-acl file in each folder's index directory. When
+	// false the SessionACL methods return NO; the capability is still
+	// advertised since go-imap detects it via interface assertion.
 	ACLEnabled bool
 
 	// ACLDefaultsFromInbox makes root-level default ACLs resolve from INBOX
-	// for private/shared namespaces. The dispatcher applies the
-	// namespace-type gate when constructing each namespace's ACL store.
+	// for private/shared namespaces.
 	ACLDefaultsFromInbox bool
 
 	// ACLGlobal is the operator-configured global ACL merged into every
@@ -168,66 +152,50 @@ type Options struct {
 	ACLGlobalsOnly bool
 
 	// ACLCacheTTL is how long a parsed per-mailbox ACL is trusted before its
-	// file's mtime+size are re-validated (the acl_cache_ttl knob). Zero disables
-	// caching.
+	// file's mtime+size are re-validated. Zero disables caching.
 	ACLCacheTTL time.Duration
 
-	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC
-	// 9051 §6.3.10). When nil/empty the server falls back to a single
-	// personal namespace with separator "/" — backwards-compatible
-	// with pre-v1.20 single-namespace deployments.
+	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC 9051
+	// §6.3.10). When nil/empty a single personal namespace with separator
+	// "/" is assumed.
 	Namespaces []NamespaceSpec
 
-	// NamespaceMailboxes (optional) carries per-namespace
-	// MailboxBackend overrides keyed by namespace prefix. When a
-	// namespace has an entry here, openHandle uses it instead of the
-	// global Mailbox backend — letting operators mix storage drivers
-	// across namespaces (e.g. personal=maildir + shared=mdbox).
-	// Personal namespaces always use the global Mailbox backend unless
+	// NamespaceMailboxes carries per-namespace MailboxBackend overrides
+	// keyed by namespace prefix, letting operators mix storage drivers
+	// across namespaces. Personal namespaces use the global backend unless
 	// the per-user MailLoc carries a different driver.
 	NamespaceMailboxes map[string]mailbox.MailboxBackend
 
-	// MailboxByDriver (optional) returns a MailboxBackend for the given
-	// driver name ("mdbox", "maildir", "sdbox", …). When non-nil and a
-	// user's mail_location specifies a driver that differs from the
-	// global default, completeLogin calls this factory to select the
-	// correct per-user backend for the personal namespace.
+	// MailboxByDriver returns a MailboxBackend for a driver name ("mdbox",
+	// "maildir", …). Used when a user's mail_location driver differs from
+	// the global default.
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
 
-	// WardenAddr is the yarilo-warden server address. When non-empty
-	// and the session carried a login-forwarded warden session id in
-	// the YARILO preamble (SESSION=<id>, #808), each SELECT / EXAMINE
-	// / UNSELECT pushes a SELECT command to warden so `who` can render
-	// the currently-SELECTed folder.
+	// WardenAddr is the yarilo-warden server address. When set and the
+	// preamble carried a warden session id, each SELECT/EXAMINE/UNSELECT
+	// pushes the selected folder to warden for `who`.
 	WardenAddr string
 	// WardenTLS optionally wraps the warden dialer with mTLS.
 	WardenTLS *tls.Config
 
 	// MaildirSyncOnSelect reconciles the index against the physical mailbox
 	// on SELECT/EXAMINE for drivers whose storage can change out of band
-	// (maildir). When true (the default) messages delivered by an MDA or a
-	// second MUA appear without an operator rebuild. Index-authoritative
-	// drivers (dbox) ignore it — they do not implement ProactiveScan.
+	// (maildir). Index-authoritative drivers (dbox) do not implement
+	// ProactiveScan and ignore it.
 	MaildirSyncOnSelect bool
 
-	// DboxReactiveRebuild enables the sdbox/mdbox reactive auto-rebuild: when a
-	// read hits a missing/corrupt message the folder is flagged, and the next
-	// SELECT rebuilds its index from storage. Default true. Maildir ignores it
-	// (it reconciles proactively via MaildirSyncOnSelect instead).
+	// DboxReactiveRebuild enables the sdbox/mdbox reactive auto-rebuild:
+	// a read hitting a missing/corrupt message flags the folder, and the
+	// next SELECT rebuilds its index from storage. Default true.
 	DboxReactiveRebuild bool
 }
 
-// NamespaceSpec is the per-namespace data the IMAP server needs to
-// render NAMESPACE responses and route mailbox operations. Mirrors
-// the relevant subset of config.NamespaceConfig; kept separate so
-// callers (backend, tests) can construct it without depending on
-// pkg/config.
+// NamespaceSpec is the per-namespace data needed to render NAMESPACE
+// responses and route mailbox operations. Kept separate from
+// config.NamespaceConfig so callers do not depend on pkg/config.
 //
-// Location is the storage URL ("maildir:/path") for this namespace.
-// Empty means the namespace is wire-declared but not backed by
-// storage — SELECT etc. on it returns NO. Personal namespaces
-// inherit their storage from cfg.Storage.MailHomeTemplate and may
-// leave Location empty.
+// Location is the storage URL ("maildir:/path"). Empty means the namespace
+// is wire-declared but not backed by storage; SELECT on it returns NO.
 type NamespaceSpec struct {
 	Type      NamespaceType
 	Prefix    string
@@ -239,8 +207,7 @@ type NamespaceSpec struct {
 	IgnoreACL bool
 }
 
-// NamespaceType classifies a namespace into the three slots of the
-// IMAP NAMESPACE response: Personal / Other / Shared.
+// NamespaceType is the NAMESPACE response slot: Personal / Other / Shared.
 type NamespaceType string
 
 const (
@@ -266,10 +233,9 @@ func New(opts Options) *Server {
 		imaplib.CapNamespace:   {},
 		imaplib.CapUnselect:    {},
 		imaplib.CapLiteralPlus: {},
-		// IMAP4rev2 (RFC 9051) requires these. Some are wire-level (ENABLE,
-		// SASL-IR) — declaring them is enough; go-imap/v2 handles the
-		// protocol mechanics. The rest (ESEARCH, SEARCHRES, STATUS=SIZE)
-		// require semantic implementation in Search/Status below.
+		// IMAP4rev2 (RFC 9051) requires these. ENABLE and SASL-IR are
+		// wire-level and handled by go-imap/v2; ESEARCH, SEARCHRES and
+		// STATUS=SIZE are implemented in Search/Status below.
 		imaplib.CapESearch:          {},
 		imaplib.CapSearchRes:        {},
 		imaplib.CapEnable:           {},
@@ -341,13 +307,11 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 			Policy:            proxyPolicy(s.opts.HAProxyTrustedNets),
 		}
 	}
-	// PreambleListener terminates internal mTLS (#824), so it must wrap the RAW
-	// (proxyproto-unwrapped) stream — every plaintext-oriented wrapper below
-	// (maxLineLen, greeting, ID) has to sit ABOVE it, operating on the decrypted
-	// IMAP stream. maxLineLen in particular buffers + line-scans through its own
-	// bufio.Reader; under TLS it mangled the binary ClientHello and the
-	// handshake never completed (#826). proxyproto stays innermost — the PROXY
-	// header is pre-TLS.
+	// PreambleListener terminates internal mTLS, so it must wrap the raw
+	// stream; plaintext wrappers (maxLineLen, greeting, ID) sit above it on
+	// the decrypted IMAP stream. maxLineLen line-scans and would mangle a
+	// TLS ClientHello. proxyproto stays innermost: the PROXY header is
+	// pre-TLS.
 	if s.opts.AuthAddr != "" {
 		ln = &loginproto.PreambleListener{
 			Listener:        ln,
@@ -416,8 +380,7 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 }
 
 // unwrapPreambleConn walks the net.Conn wrapper chain looking for a
-// *loginproto.PreambleConn. Wrapper types (greetingConn, idImapConn) expose
-// Unwrap() net.Conn so they can be peeled off transparently.
+// *loginproto.PreambleConn via Unwrap().
 func unwrapPreambleConn(c net.Conn) *loginproto.PreambleConn {
 	type unwrapper interface{ Unwrap() net.Conn }
 	for c != nil {
@@ -440,21 +403,16 @@ type session struct {
 	imapConn *imapserver.Conn
 	userInfo *mailbox.UserInfo
 	sid      string // cross-service correlation ID from login-proxy
-	// box / idx / subs are convenience aliases for the personal
-	// namespace handle (== s.primary.box / .idx / .subs). They keep
-	// the pre-NS-1b single-namespace code path readable for the
-	// common case (INBOX + personal folders). Cross-namespace ops
-	// (SELECT under "Shared/", LIST traversal, GETMETADATA on a
-	// shared mailbox) explicitly route through s.dispatch() and use
-	// the resulting handle's box/idx/subs.
+	// box / idx / subs alias the personal namespace handle
+	// (s.primary.box / .idx / .subs). Cross-namespace ops route through
+	// s.dispatch() and use the resulting handle instead.
 	box  mailbox.UserMailbox
 	idx  mailbox.UserIndex
 	subs *subs.Store
 
-	// personalMailbox overrides the global Options.Mailbox for the
-	// personal namespace when the user's mail_location carries a driver
-	// different from the server default (e.g. mdbox user on a maildir
-	// deployment). Set in completeLogin; nil means use the global default.
+	// personalMailbox overrides Options.Mailbox for the personal namespace
+	// when the user's mail_location driver differs from the server default.
+	// Nil means use the global default.
 	personalMailbox mailbox.MailboxBackend
 
 	limitIP string
@@ -466,16 +424,13 @@ type session struct {
 	maildirSyncTokens map[string]string
 
 	// markedCorrupt records folders this session already flagged FSCKD so a
-	// FETCH over many corrupt messages marks once, not per message. Cleared for
-	// a folder once its reactive heal runs. Keyed by folder ID (stable across the
-	// FETCH mark site and the SELECT/STATUS clear site, unlike the folder name).
+	// FETCH over many corrupt messages marks once, not per message. Keyed
+	// by folder ID (stable across mark and clear sites, unlike the name).
 	markedCorrupt map[uint64]bool
 
-	// healAttempts counts consecutive reactive-heal failures per folder in this
-	// session. A near-continuous purge/altmove keeps every scan incomplete, so the
-	// heal aborts and the folder stays FSCKD; after maxHealAttempts we stop auto-
-	// retrying (each attempt costs a full storage scan) until the marker clears.
-	// Reset on a successful heal or when another session clears the marker.
+	// healAttempts counts consecutive reactive-heal failures per folder.
+	// After maxHealAttempts we stop auto-retrying (each attempt is a full
+	// storage scan) until the marker clears. Reset on a successful heal.
 	healAttempts map[uint64]int
 
 	// knownMsgs is the server's copy of the client's sequence→message state
@@ -498,21 +453,18 @@ type session struct {
 	// Nil when no folder is selected.
 	knownKeywords map[string]struct{}
 
-	// notify holds the NOTIFY (RFC 5465) configuration for the selected mailbox.
-	// notifyActive is true once the client issues NOTIFY SET: from then on the
-	// selected mailbox's unsolicited responses are governed by selNew/selExpunge/
-	// selFlagChange (all false unless a SELECTED / SELECTED-DELAYED filter turned
-	// them on). selImmediateExpunge distinguishes SELECTED (immediate expunges)
-	// from SELECTED-DELAYED (deferred). NOTIFY NONE clears notifyActive.
+	// NOTIFY (RFC 5465) state. notifyActive is set by NOTIFY SET and cleared
+	// by NOTIFY NONE; while set, unsolicited responses for the selected
+	// mailbox are governed by selNew/selExpunge/selFlagChange.
+	// selImmediateExpunge distinguishes SELECTED from SELECTED-DELAYED.
 	notifyActive        bool
 	selNew              bool
 	selExpunge          bool
 	selFlagChange       bool
 	selImmediateExpunge bool
-	// notifyWatch monitors non-selected mailboxes named by PERSONAL / SUBSCRIBED
-	// / SUBTREE / MAILBOXES / INBOXES filters (RFC 5465 §6). Nil unless a NOTIFY
-	// SET requested such a filter. Its activity surfaces as "* STATUS" responses
-	// drained by Poll and Idle.
+	// notifyWatch monitors non-selected mailboxes named by RFC 5465 §6
+	// filters. Nil unless NOTIFY SET requested one. Its activity surfaces
+	// as "* STATUS" responses drained by Poll and Idle.
 	notifyWatch *notifyWatcher
 
 	// quotaCache is a short-lived cache of the index-derived user quota usage,
@@ -532,29 +484,23 @@ type session struct {
 	overStatusChecked bool
 	overStatusLoginAt time.Time
 
-	// namespaces holds the per-namespace storage handles, keyed by
-	// the namespace prefix. The personal namespace always has key "".
-	// Empty / declared-only namespaces (Other Users in NS-1b) are
+	// namespaces holds the per-namespace storage handles keyed by prefix;
+	// the personal namespace has key "". Declared-only namespaces are
 	// absent — dispatch() catches them via the wire-spec list.
 	namespaces map[string]*nsHandle
-	// primary is the personal namespace handle; pointer-equal to
-	// namespaces[""].
+	// primary is the personal namespace handle; equals namespaces[""].
 	primary *nsHandle
-	// folderNS is the namespace handle for the currently-SELECTed
-	// folder. Captured at SELECT time so folder-bound ops (FETCH,
-	// STORE, EXPUNGE, etc.) route to the right backend without
-	// re-parsing the mailbox name. When nil, s.primary is assumed.
+	// folderNS is the namespace handle of the selected folder, captured at
+	// SELECT so folder-bound ops route without re-parsing the name. Nil
+	// means s.primary.
 	folderNS *nsHandle
 
-	// savedSearchUIDs holds the most recent SEARCH result that was issued
-	// with RETURN SAVE (RFC 5182). Subsequent commands that reference $ get
-	// this set substituted in via go-imap/v2's IsSearchRes detection.
+	// savedSearchUIDs is the last SEARCH RETURN SAVE result (RFC 5182);
+	// substituted for $ in later commands.
 	savedSearchUIDs imaplib.UIDSet
 
 	// specialUse persists per-user RFC 6154 overrides set via CREATE
-	// (USE ...) and resolves folder→attr for LIST. Only personal —
-	// RFC 6154 \Sent/\Drafts/etc. semantics do not extend to shared
-	// or public namespaces.
+	// (USE ...) and resolves folder→attr for LIST. Personal namespace only.
 	specialUse *specialuse.Store
 
 	statsDeleted    int
@@ -585,19 +531,17 @@ func (s *session) folderIdx() mailbox.UserIndex {
 
 var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
 
-// emitMailboxChange is fire-and-forget — events are advisory wake-ups for
-// subscribed IMAP IDLE sessions on other pods. Errors are logged at debug
-// level and never surfaced to the caller because the authoritative state
-// already lives in the just-written index/uidlist files. A 1-second timeout
-// keeps a sluggish locks server from stalling the IMAP command.
+// emitMailboxChange is fire-and-forget: events are advisory wake-ups for
+// IDLE sessions on other pods, the authoritative state is already on disk.
+// A 1-second timeout keeps a slow locks server from stalling the command.
 func (s *session) emitMailboxChange(folder string, eventType locks.EventType, uid uint32) {
-	// A delivered/expunged message changes storage usage — refresh the quota
-	// clone. Independent of the event bus, so it runs before the Locker guard.
+	// delivered/expunged changes storage usage; runs before the Locker
+	// guard since it is independent of the event bus.
 	if eventType == locks.EventDelivered || eventType == locks.EventExpunged {
 		s.ftsNotify(folder, eventType == locks.EventExpunged, uid)
 		s.quotaChanged()
-		// A single fresh post-commit read feeds both quota_warning crossing
-		// detection and the quota_clone mirror.
+		// one post-commit read feeds both quota_warning crossing detection
+		// and the quota_clone mirror.
 		wantWarn := len(s.srv.opts.QuotaPolicy.Warnings) > 0 && s.quotaSnapSet
 		wantClone := s.srv.opts.QuotaClone != nil
 		if wantWarn || wantClone {
@@ -624,9 +568,8 @@ func (s *session) emitMailboxChange(folder string, eventType locks.EventType, ui
 }
 
 // emitMailboxList publishes a mailbox-list event (create / delete / rename /
-// subscribe) on the user's MailboxListKey. Fire-and-forget with the same
-// rationale as emitMailboxChange: the events are advisory NOTIFY wake-ups for
-// sibling sessions; the authoritative state already lives on disk.
+// subscribe) on the user's MailboxListKey. Fire-and-forget, same rationale
+// as emitMailboxChange.
 func (s *session) emitMailboxList(eventType locks.EventType, payload string) {
 	if s.srv.opts.Locker == nil || s.userInfo == nil {
 		return
@@ -656,8 +599,7 @@ func (s *session) Close() error {
 		})
 		slog.Info("imap: logout", "sid", s.sid, "user", s.userInfo.Username, "stats", msg)
 	}
-	// closeHandles tears down every per-namespace box+idx; s.box/s.idx
-	// aliases pointed at s.primary so the personal handle is included.
+	// tears down every per-namespace box+idx, including the personal handle.
 	s.closeHandles()
 	return nil
 }
@@ -698,25 +640,20 @@ func (s *session) Login(username, password string) error {
 	return s.completeLogin(res)
 }
 
-// delayFailure holds the calling goroutine for opts.FailureDelay
-// before letting an auth-failure surface to the client. Equalises
-// wall-clock between success and every failure-cause so the wire
-// timing carries no information about whether the user exists.
+// delayFailure sleeps for opts.FailureDelay before an auth failure
+// surfaces, so wire timing carries no information about whether the
+// user exists.
 func (s *session) delayFailure() {
 	if d := s.srv.opts.FailureDelay; d > 0 {
 		time.Sleep(d)
 	}
 }
 
-// AuthenticateMechanisms advertises the SASL mechanisms our session
-// implements itself (overriding go-imap's built-in PLAIN handler).
-// PLAIN is unconditional; OAUTHBEARER lights up when an OAuth
-// provider is configured; SCRAM-SHA-256 + SCRAM-SHA-256-PLUS light
-// up when the configured Authenticator implements
-// SCRAMSha256Lookup (i.e. at least one passdb carries SCRAM
-// verifiers). The PLUS variant additionally requires the
-// connection to be over TLS 1.3+ so the RFC 9266 exporter is
-// available.
+// AuthenticateMechanisms advertises the SASL mechanisms this session
+// implements. PLAIN is unconditional; OAUTHBEARER/XOAUTH2 require a
+// configured OAuth provider; SCRAM requires a passdb with SCRAM verifiers.
+// The PLUS variants additionally require TLS 1.3+ for the RFC 9266
+// exporter.
 func (s *session) AuthenticateMechanisms() []string {
 	out := []string{sasl.Plain}
 	if s.srv.opts.OAuth2Enabled {
@@ -739,15 +676,9 @@ func (s *session) AuthenticateMechanisms() []string {
 }
 
 // Authenticate returns the SASL server for the requested mechanism.
-// Custom PLAIN handler is used when the configured Authenticator
-// implements protocol.MasterAuthenticator — otherwise we delegate
-// the response shape (no authzid) to the standard Login path so
-// stubs / non-master backends keep working. OAUTHBEARER routes the
-// bearer token through the regular Authenticator surface (the OAuth
-// passdb downstream extracts the token from req.Password). SCRAM
-// variants route through the SCRAMSha256Lookup interface — the
-// verifier never crosses the wire and no plain password is ever
-// compared.
+// OAUTHBEARER routes the bearer token through the regular Authenticator
+// (the OAuth passdb extracts it from the password field). SCRAM variants
+// route through the lookup interfaces; no plain password is compared.
 func (s *session) Authenticate(mech string) (sasl.Server, error) {
 	switch mech {
 	case sasl.Plain:
@@ -821,10 +752,9 @@ func (s *session) Authenticate(mech string) (sasl.Server, error) {
 	}
 }
 
-// completeSCRAMLogin is the OnSuccess hook for SCRAM session
-// adapters. The SCRAM SASL server has already verified the user
-// (via stored StoredKey + ClientProof); here we run the regular
-// post-auth setup so the IMAP session lands fully initialised.
+// completeSCRAMLogin is the OnSuccess hook for SCRAM adapters; the SASL
+// server has already verified the user, this runs the regular post-auth
+// setup.
 func (s *session) completeSCRAMLogin(username string) error {
 	return s.completeLogin(&protocol.AuthResponse{
 		Result:   protocol.AuthOK,
@@ -832,10 +762,8 @@ func (s *session) completeSCRAMLogin(username string) error {
 	})
 }
 
-// tlsExporter returns the RFC 9266 TLS exporter output for the
-// session's underlying TLS connection, or nil when the conn is
-// not TLS 1.3+. The 32-byte exporter is the channel-binding
-// material for SCRAM-SHA-256-PLUS.
+// tlsExporter returns the 32-byte RFC 9266 exporter output used as
+// SCRAM-PLUS channel binding, or nil when the conn is not TLS 1.3+.
 func (s *session) tlsExporter() []byte {
 	netConn := s.imapConn.NetConn()
 	if netConn == nil {
@@ -856,12 +784,9 @@ func (s *session) tlsExporter() []byte {
 	return out
 }
 
-// authenticateOAuthBearer is the OAuthBearerAuthenticator callback
-// invoked by go-sasl after it has parsed the GS2 envelope. Wire-
-// shape concerns (gs2-header parsing, RFC 7628 JSON error blob on
-// failure) live entirely inside go-sasl; here we only translate
-// (Username, Token) into the chain's Authenticate(user, password,
-// service) call and surface a Bearer JSON error on rejection.
+// authenticateOAuthBearer translates (Username, Token) into the chain's
+// Authenticate call. Wire-shape concerns (GS2 parsing, RFC 7628 JSON
+// error blob) live inside go-sasl.
 func (s *session) authenticateOAuthBearer(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
 	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap", remoteIP(s.imapConn.NetConn()))
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
@@ -880,8 +805,8 @@ func (s *session) authenticateOAuthBearer(opts sasl.OAuthBearerOptions) *sasl.OA
 	return nil
 }
 
-// authenticateXOAuth2 is the XOAUTH2 callback. Same token
-// validation path as OAUTHBEARER — only the wire format differs.
+// authenticateXOAuth2 is the XOAUTH2 callback. Same token validation
+// path as OAUTHBEARER; only the wire format differs.
 func (s *session) authenticateXOAuth2(opts sasl.XOAuth2Options) *sasl.OAuthBearerError {
 	res, err := s.srv.opts.Auth.Authenticate(opts.Username, opts.Token, "imap", remoteIP(s.imapConn.NetConn()))
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
@@ -900,14 +825,10 @@ func (s *session) authenticateXOAuth2(opts sasl.XOAuth2Options) *sasl.OAuthBeare
 	return nil
 }
 
-// authenticatePlainSASL is the PlainAuthenticator callback used by
-// our SessionSASL handler. authzid carries the impersonation target
-// (master-user model); empty / equal-to-authid disables
-// impersonation and falls back to the regular login path.
-//
-// When the configured Authenticator does not implement
-// MasterAuthenticator, a non-empty distinct authzid is rejected
-// (same opacity as the wire FAIL — no detail given to the client).
+// authenticatePlainSASL handles AUTHENTICATE PLAIN. authzid carries the
+// impersonation target (master-user model); empty or equal-to-authid
+// falls back to the regular login path. Without a MasterAuthenticator a
+// distinct authzid is rejected with no detail given to the client.
 func (s *session) authenticatePlainSASL(authzid, authid, password string) error {
 	invalid := &imaplib.Error{
 		Type: imaplib.StatusResponseTypeNo,
@@ -935,11 +856,9 @@ func (s *session) authenticatePlainSASL(authzid, authid, password string) error 
 	return s.completeLogin(res)
 }
 
-// completeLogin runs the post-auth session setup shared between the
-// IMAP LOGIN command path and the AUTHENTICATE PLAIN SASL path.
-// res carries the resolved username (target, for master flows) and
-// the userdb-enriched fields needed to open the per-namespace
-// storage handles.
+// completeLogin runs the post-auth setup shared by LOGIN and AUTHENTICATE.
+// res carries the resolved username and userdb fields needed to open the
+// per-namespace storage handles.
 func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	resolver := s.srv.opts.Resolver
 	if resolver == nil {
@@ -983,11 +902,10 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		userInfo.InboxPath = mailbox.ExpandVars(ip, res.Username)
 	}
 
-	// Stamp the per-user driver + INDEX=/CONTROL=/ALT=/VOLATILEDIR= modifiers via
-	// the shared resolver (the same parse POP3 and LMTP use), so the fileindex
-	// and ACL pick the matching per-folder layout. personalMailbox stays nil for
-	// the global driver (SelectPersonalBackend given a nil global), so dispatch
-	// falls through to the global backend.
+	// Stamp the per-user driver + INDEX=/CONTROL=/ALT=/VOLATILEDIR=
+	// modifiers via the shared resolver (same parse as POP3 and LMTP).
+	// personalMailbox stays nil for the global driver, so dispatch falls
+	// through to the global backend.
 	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
 		slog.Warn("imap: mail_location parse failed; using global mailbox backend",
 			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)
@@ -1019,8 +937,8 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	s.idx = primary.idx
 	s.subs = primary.subs
 
-	// quota_over_status: reconcile the external over-flag against actual usage at
-	// login (unless lazy, when the first quota op triggers it).
+	// quota_over_status: reconcile the external over-flag against actual
+	// usage at login (unless lazy).
 	s.overStatusLoginAt = time.Now()
 	if os := s.srv.opts.QuotaPolicy.OverStatus; os.Mask != "" && !os.LazyCheck {
 		if u, uerr := s.countUsage(false); uerr == nil {
@@ -1034,11 +952,8 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		s.srv.opts.SpecialUseDefaults,
 	)
 
-	// Audit log. master_user is non-empty only on the impersonation
-	// path (AUTH-3); surfaces as `master_user=` in every subsequent
-	// log line for the session. Always emitted for ALL logins so
-	// SIEM can correlate regular and master-user sessions through
-	// one log shape.
+	// Audit log. master_user is non-empty only on the impersonation path;
+	// emitted for all logins so SIEM sees one log shape.
 	master, _ := res.Fields.Get("master_user")
 	slog.Info("imap: login",
 		"sid", s.sid,
@@ -1095,15 +1010,15 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	}
 	s.folder = f
 	s.folderNS = h
-	// Seed a usage baseline so a quota_warning "under" crossing fires even when
-	// the session only deletes mail (EXPUNGE with no prior save to seed it).
+	// seed a usage baseline so a quota_warning "under" crossing fires even
+	// when the session only deletes mail.
 	s.seedQuotaWarnSnap()
 	tWarden := time.Now()
 	s.pushWardenSelect(name)
 	slog.Debug("imap: select timing warden_ms", "folder", rel, "warden_ms", time.Since(tWarden).Milliseconds())
 
-	// Auto-subscribe the folder on first SELECT so LSUB returns it
-	// without requiring an explicit SUBSCRIBE command from the client.
+	// auto-subscribe on first SELECT so LSUB returns the folder without an
+	// explicit SUBSCRIBE.
 	if h.subs != nil {
 		tSubs := time.Now()
 		if subs, snapErr := h.subs.Snapshot(); snapErr == nil {
@@ -1149,11 +1064,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 		HighestModSeq:  f.HighestModSeq,
 		MailboxID:      mailbox.FormatObjectID(f.GUID), // RFC 8474 OBJECTID
 	}
-	// QRESYNC SELECT (RFC 7162 §3.2): when the client supplies (UIDVALIDITY
-	// <v> <last-known-modseq> [<known-uids>]) and the UIDVALIDITY matches,
-	// reply with VANISHED (EARLIER) listing UIDs expunged since the client's
-	// modseq. The KnownUIDs filter narrows the response to UIDs the client
-	// actually remembers; an empty set means "tell me everything".
+	// QRESYNC SELECT (RFC 7162 §3.2): on matching UIDVALIDITY, reply with
+	// VANISHED (EARLIER) listing UIDs expunged since the client's modseq.
+	// KnownUIDs narrows the response; empty means "tell me everything".
 	if opts != nil && opts.QResync != nil && opts.QResync.UIDValidity == f.UIDValidity {
 		vanishedUIDs, vErr := h.idx.Vanished(f.ID, opts.QResync.ModSeq)
 		if vErr == nil && len(vanishedUIDs) > 0 {
@@ -1211,12 +1124,9 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 	if err := h.box.Create(rel); err != nil {
 		return err
 	}
-	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr so
-	// subsequent LIST replies advertise it. RFC permits multiple USE attrs
-	// in the request but forbids carrying more than one on the folder; we
-	// honour the first one in the supplied slice and ignore the rest.
-	// Special-use semantics are personal-namespace-only — shared/public
-	// folders with \Sent/\Drafts would be confusing across users.
+	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr for
+	// later LIST replies. The RFC forbids more than one attr per folder;
+	// honour the first and ignore the rest. Personal namespace only.
 	if opts != nil && len(opts.SpecialUse) > 0 && s.specialUse != nil && h == s.primary {
 		if err := s.specialUse.Set(rel, opts.SpecialUse[0]); err != nil {
 			slog.Warn("imap: special_use persist failed",
@@ -1239,15 +1149,13 @@ func (s *session) Delete(name string) error {
 	if err := h.box.Delete(rel); err != nil {
 		return err
 	}
-	// Drop the folder's index state so it does not outlive the mailbox.
-	// Non-fatal: the mailbox is already gone, so a clean DELETE result
-	// is reported and any orphan index dir is reclaimed on next rebuild.
+	// drop the folder's index state. Non-fatal: the mailbox is already
+	// gone; any orphan index dir is reclaimed on next rebuild.
 	if err := h.idx.DeleteFolder(rel); err != nil {
 		slog.Warn("imap: index delete after DELETE failed", "folder", name, "err", err)
 	}
-	// Drop any explicit ACL state — file + namespace-wide index.
-	// Errors are non-fatal (mailbox is already gone); log and
-	// proceed so the client sees a clean DELETE result.
+	// drop explicit ACL state (file + namespace-wide index). Non-fatal:
+	// the mailbox is already gone.
 	if h.acl != nil {
 		if err := h.acl.Remove(rel); err != nil {
 			slog.Warn("imap: acl remove after DELETE failed", "folder", name, "err", err)
@@ -1276,9 +1184,8 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 			Text: "RENAME across namespaces is not supported",
 		}
 	}
-	// RENAME requires DELETE on the source mailbox plus CREATE on
-	// the destination's parent — lets shared-mailbox admin grant
-	// move rights without granting blanket delete.
+	// RENAME requires DELETE on the source plus CREATE on the destination's
+	// parent, so move rights can be granted without blanket delete.
 	if err := s.requireRight(hOld, relOld, mailbox.RightDeleteMailbox); err != nil {
 		return err
 	}
@@ -1399,27 +1306,23 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		}
 	}
 
-	// Iterate every implemented namespace (personal first, then by
-	// prefix). Each handle's folders are emitted with the namespace
-	// prefix re-attached so the wire-protocol name is the full path
-	// the client sent / would send back.
+	// iterate every implemented namespace (personal first, then by prefix);
+	// folders are emitted with the namespace prefix re-attached.
 	for _, h := range s.orderedHandles() {
 		if err := s.listNamespace(w, h, ref, patterns, opts); err != nil {
 			return err
 		}
 	}
 
-	// Also emit "namespace root" entries for shared/public (\Noselect
-	// \HasChildren) so a top-level LIST returns the namespace as a
-	// visible folder even before any sub-folder exists. Personal's
-	// root is INBOX-based and not emitted separately.
+	// emit namespace-root entries for shared/public (\Noselect
+	// \HasChildren) so a top-level LIST shows the namespace even before
+	// any sub-folder exists.
 	for _, spec := range s.namespaceSpecsForList() {
 		if spec.Type == NamespacePersonal || !spec.List {
 			continue
 		}
-		// Skip namespaces with no implemented handle (Other Users
-		// declared-only). Emit a \Noselect entry so clients see the
-		// namespace exists; SELECT under it returns NO.
+		// declared-only namespaces get a \Noselect entry; SELECT under
+		// them returns NO.
 		rootName := strings.TrimSuffix(spec.Prefix, string(spec.Separator))
 		if rootName == "" {
 			continue
@@ -1443,12 +1346,9 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 }
 
 // aclVisibleEntries filters folders by the RFC 4314 lookup right for a
-// non-owned namespace. A folder the user has 'l' on is kept unchanged. A
-// folder without 'l' that is an ancestor of a visible one is kept as a
-// \NoSelect container (Selectable=false) so the path to the visible child is
-// navigable; every other no-lookup folder is dropped. On an ACL read error
-// the folder fails closed (hidden). Uses the full EffectiveFor resolution
-// (per-mailbox + inheritance + global + defaults), not the acl-list index.
+// non-owned namespace. A no-lookup folder that is an ancestor of a visible
+// one is kept as a \NoSelect container; every other no-lookup folder is
+// dropped. On an ACL read error the folder fails closed (hidden).
 func (s *session) aclVisibleEntries(h *nsHandle, entries []mailbox.FolderEntry, sep string) []mailbox.FolderEntry {
 	sepByte := byte(h.spec.Separator)
 	aclUser, aclGroups := s.userInfo.ACLIdentity()
@@ -1462,8 +1362,7 @@ func (s *session) aclVisibleEntries(h *nsHandle, entries []mailbox.FolderEntry, 
 		}
 		lookup[e.Name] = r.Has(mailbox.RightLookup)
 	}
-	// Mark every ancestor of a visible folder so it can survive as a
-	// \NoSelect placeholder.
+	// mark ancestors of visible folders so they survive as \NoSelect.
 	visibleAncestor := make(map[string]bool)
 	for name, ok := range lookup {
 		if !ok {
@@ -1501,24 +1400,20 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 	}
 	sep := string(h.spec.Separator)
 
-	// ACL LIST hiding (RFC 4314 lookup right): in a namespace the user does
-	// not own, drop folders they have no 'l' right on. A no-lookup folder that
-	// is an ancestor of a visible one survives as a \NoSelect container so the
-	// path to the visible child stays navigable. The owner (personal ns) has
-	// full rights, so filtering is skipped there.
+	// ACL LIST hiding (RFC 4314 lookup right); the owner has full rights so
+	// filtering is skipped for the personal namespace.
 	if s.aclEnforced(h) && h.acl != nil && !s.isOwner(h) {
 		entries = s.aclVisibleEntries(h, entries, sep)
 	}
 
-	// Flat name slice for the O(n) hierarchy helpers (childrenAttr/isLeaf).
+	// flat name slice for the hierarchy helpers.
 	names := make([]string, len(entries))
 	for i, e := range entries {
 		names[i] = e.Name
 	}
 
-	// Snapshot subscriptions once per LIST — every folder's ReturnSubscribed
-	// / SelectSubscribed decision consults the same view, even if a sibling
-	// session SUBSCRIBE'd mid-iteration.
+	// snapshot subscriptions once per LIST so every folder consults the
+	// same view.
 	var subs map[string]struct{}
 	if h.subs != nil && (opts != nil && (opts.SelectSubscribed || opts.ReturnSubscribed)) {
 		tSubs := time.Now()
@@ -1532,46 +1427,38 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 
 	for _, entry := range entries {
 		name := entry.Name
-		// Wire-protocol name = namespace prefix + namespace-relative name.
+		// wire-protocol name = namespace prefix + relative name.
 		full := ref + h.fullName(name)
 		if !listMatch(full, patterns) {
 			continue
 		}
-		// SELECT SUBSCRIBED — drop folders the user has not subscribed to.
-		// RECURSIVEMATCH refinement (return parent even if only a child is
-		// subscribed) is out of scope for IMAP-B; clients that need it must
-		// LIST without the filter and post-filter on their side.
+		// SELECT SUBSCRIBED drops folders the user has not subscribed to.
+		// RECURSIVEMATCH refinement is not implemented.
 		if opts != nil && opts.SelectSubscribed {
 			if _, ok := subs[name]; !ok {
 				continue
 			}
 		}
 		attrs := mailboxAttrs(name, names, sep, s.srv.opts.ClientWorkarounds)
-		// \NoSelect container — a folder that exists only to hold children.
 		if !entry.Selectable {
 			attrs = append(attrs, imaplib.MailboxAttrNoSelect)
 		}
-		// RETURN CHILDREN — annotate \HasChildren / \HasNoChildren.
 		if opts != nil && opts.ReturnChildren {
 			attrs = append(attrs, childrenAttr(name, names, sep))
 		}
-		// RETURN SUBSCRIBED — annotate \Subscribed when applicable.
 		if opts != nil && opts.ReturnSubscribed {
 			if _, ok := subs[name]; ok {
 				attrs = append(attrs, imaplib.MailboxAttrSubscribed)
 			}
 		}
-		// SPECIAL-USE (RFC 6154). Only personal namespace has
-		// special-use semantics — \Sent/\Drafts/etc. on a shared
-		// folder is confusing across users.
+		// SPECIAL-USE (RFC 6154); personal namespace only.
 		if h == s.primary && s.specialUse != nil {
 			if attr := s.specialUse.Get(name); attr != "" {
 				attrs = append(attrs, attr)
 			}
 		}
 		data := &imaplib.ListData{Mailbox: full, Delim: h.spec.Separator, Attrs: attrs}
-		// RETURN STATUS (RFC 5819 / IMAP4rev2) — per-folder Status response
-		// embedded in the LIST reply. Skip on failure rather than abort the
+		// RETURN STATUS (RFC 5819): skip on failure rather than abort the
 		// whole LIST.
 		if opts != nil && opts.ReturnStatus != nil {
 			if status, statErr := s.Status(full, opts.ReturnStatus); statErr == nil {
@@ -1596,10 +1483,8 @@ func (s *session) namespaceSpecsForList() []NamespaceSpec {
 	return specs
 }
 
-// childrenAttr returns \HasChildren when `name` is a hierarchy prefix of any
-// other listed folder, otherwise \HasNoChildren. sep is the namespace
-// separator — folder names carry it, not a hard-coded "/". Cheap O(n) scan —
-// acceptable because LIST already loaded the slice.
+// childrenAttr returns \HasChildren when name is a hierarchy prefix of any
+// other listed folder, otherwise \HasNoChildren.
 func childrenAttr(name string, all []string, sep string) imaplib.MailboxAttr {
 	prefix := name + sep
 	for _, other := range all {

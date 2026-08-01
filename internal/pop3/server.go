@@ -26,12 +26,9 @@ type Options struct {
 	AddrPlain string // STARTTLS address, e.g. ":110"
 	TLSConfig *tls.Config
 	Mailbox   mailbox.MailboxBackend
-	// MailboxByDriver (optional) returns a MailboxBackend for a given driver
-	// name ("maildir", "sdbox", "mdbox"). When set and the user's mail_location
-	// carries a driver, the session uses the returned backend for the personal
-	// mailbox — the POP3 counterpart of the IMAP resolution. Without it POP3
-	// reads every user through the global Mailbox backend and sees 0 messages
-	// for dbox users.
+	// MailboxByDriver (optional) returns a MailboxBackend for a driver name
+	// ("maildir", "sdbox", "mdbox"). Without it dbox users are read through
+	// the global Mailbox backend and see 0 messages.
 	MailboxByDriver    func(driver string) mailbox.MailboxBackend
 	Index              mailbox.IndexBackend
 	Resolver           *mailbox.Resolver
@@ -59,24 +56,17 @@ type Options struct {
 	SaveUIDL       bool               // pop3_save_uidl: persist UIDLs to index for stability across rebuilds
 	LockSession    bool               // pop3_lock_session: dotlock file to prevent IMAP+POP3 conflicts
 	ConnLimit      *connlimit.Limiter // per-user@IP connection limit; nil = unlimited
-	// FailureDelay holds the goroutine for this duration before
-	// surfacing an auth-failure to the client. Equalises wall-clock
-	// between every failure cause so the wire timing carries no info
-	// about whether the user exists. Zero disables.
+	// FailureDelay delays auth-failure replies so wire timing carries no
+	// info about whether the user exists. Zero disables.
 	FailureDelay time.Duration
 
-	// OAuth2Enabled flips advertisement and acceptance of the
-	// OAUTHBEARER SASL mechanism. Set by the wiring when at least
-	// one OAuth provider is configured; otherwise OAUTHBEARER is
-	// invisible to the client.
+	// OAuth2Enabled enables the OAUTHBEARER/XOAUTH2 SASL mechanisms.
+	// Set when at least one OAuth provider is configured.
 	OAuth2Enabled bool
 
-	// Locker is the cross-process write coordinator. When non-nil, the
-	// QUIT-time hard-delete batch runs under a single X lock on
-	// mbox:<user>:INBOX so concurrent IMAP/LMTP writers observe an
-	// atomic before-or-after view across the whole expunge. Nil falls
-	// back to per-message locking via the storage backends (correct but
-	// not batch-atomic).
+	// Locker is the cross-process write coordinator. Non-nil runs the
+	// QUIT-time expunge batch under one X lock on mbox:<user>:INBOX;
+	// nil falls back to per-message locking (correct but not batch-atomic).
 	Locker locks.Locker
 }
 

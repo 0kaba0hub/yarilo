@@ -92,8 +92,7 @@ func TestAuthenticate_OK(t *testing.T) {
 	}
 }
 
-// TestAuthenticate_DirectorTag proves #746: a director_tag= token on the
-// AUTH OK reply lands on AuthResult.DirectorTag.
+// A director_tag= field on the AUTH OK reply lands on AuthResult.DirectorTag.
 func TestAuthenticate_DirectorTag(t *testing.T) {
 	addr := stubAuthServer(t, func(conn net.Conn, rd *bufio.Reader) {
 		for {

@@ -39,80 +39,55 @@ const (
 )
 
 // AuthResponse is the final response sent back to the client session.
-//
-// Phase AUTH-2 PR 1 adds Fields alongside the legacy typed members.
-// When a passdb populates Fields, handleAuth emits the OK reply
-// from the bag (with prefix gating: auth_* stripped, userdb_*
-// passed through). When Fields is nil the typed fallback path runs
-// — that's the pre-AUTH-2 wire shape, byte-compatible for the
-// existing SQL passdb until PR 2 swaps the Passdb interface to
-// take a shared Fields instance directly.
+// When Fields is set the OK reply is emitted from the bag; when nil,
+// the legacy typed members drive the wire output.
 type AuthResponse struct {
 	Result   AuthResult
 	Username string
 	Home     string
 	MailLoc  string
-	// Groups is the list of supplementary groups the user belongs to,
-	// sourced from the userdb `groups=` extra field. Used by ACL
-	// evaluation to match `group=` and `group-override=` entries.
-	// Empty when not configured — group= ACL entries have no effect.
+	// Groups is the supplementary group list from the userdb
+	// `groups=` field, used by ACL group= matching.
 	Groups []string
 
-	// ACLUser / ACLGroups override the identity used when evaluating ACLs,
-	// sourced from the acl_user / acl_groups userdb fields. Empty ACLUser
-	// means "evaluate as Username / Groups".
+	// ACLUser / ACLGroups override the identity used for ACL
+	// evaluation. Empty ACLUser means evaluate as Username / Groups.
 	ACLUser   string
 	ACLGroups []string
 
-	// QuotaRules is the list of per-user quota rules sourced from the
-	// userdb `quota_rule=` extra field. Format: `*:storage=5G`.
+	// QuotaRules holds per-user quota rules (`*:storage=5G`).
 	QuotaRules []string
 
-	// QuotaOverFlag is the userdb `quota_over_flag=` value — the external
-	// "over quota" marker compared against quota_over_status_mask at login.
+	// QuotaOverFlag is the external "over quota" marker compared
+	// against quota_over_status_mask at login.
 	QuotaOverFlag string
 
-	// DirectorTag is the per-user director backend tag (#746), sourced
-	// from a passdb or userdb `director_tag=` extra field. Empty means
-	// no per-user override — the login component's static director_tag
-	// applies. Lets a shared login fleet route different users to
-	// different tag-pools without a dedicated login Deployment per tag.
+	// DirectorTag is the per-user director backend tag. Empty means
+	// the login component's static director_tag applies.
 	DirectorTag string
 
-	// VolatileDir is the VOLATILEDIR modifier from the mail location (or
-	// direct volatile_dir= userdb field). Carries the raw template string
-	// (%u/%n/%d/%h unexpanded) — callers expand it against the resolved
-	// home after auth completes.
+	// VolatileDir is the VOLATILEDIR mail-location modifier, raw
+	// template (%u/%n/%d/%h unexpanded).
 	VolatileDir string
 
-	// IndexDir is the INDEX= modifier from the mail location (or direct
-	// index_dir= userdb field). Carries the raw template string
-	// (%u/%n/%d/%h unexpanded). When set, per-folder index files live
-	// here instead of co-located with the mailbox under Home.
+	// IndexDir is the INDEX= mail-location modifier, raw template.
+	// When set, per-folder index files live here.
 	IndexDir string
 
-	// ControlDir is the CONTROL= modifier from the mail location (or direct
-	// control_dir= userdb field). Carries the raw template string
-	// (%u/%n/%d/%h unexpanded). When set, per-folder control files
-	// (yarilo-uidlist, subscriptions) live here instead of co-located
-	// with the mailbox under Home.
+	// ControlDir is the CONTROL= mail-location modifier, raw template.
+	// When set, per-folder control files live here.
 	ControlDir string
 
-	// AltDir is the ALT= modifier from the mail location (or direct
-	// alt_dir= userdb field). Carries the raw template string
-	// (%u/%n/%d/%h unexpanded). When set, cold-tiered messages live
-	// under AltDir; reads check both primary and alt tiers.
+	// AltDir is the ALT= mail-location modifier, raw template.
+	// When set, cold-tiered messages live under it.
 	AltDir string
 
-	// MailPath is the base path of the mail storage tree (driver:PATH
-	// from mail_location, or the standalone mail_path= userdb field).
-	// Carries the raw template string (%u/%n/%d/%h/~/ unexpanded).
-	// When empty, backends fall back to Home.
+	// MailPath is the base path of the mail storage tree, raw
+	// template. Empty falls back to Home.
 	MailPath string
 
-	// InboxPath overrides INBOX location within the mail tree (from the
-	// mail_inbox_path= userdb field). Carries the raw template string
-	// (%u/%n/%d/%h/~/ unexpanded). When empty, defaults to MailPath.
+	// InboxPath overrides the INBOX location, raw template.
+	// Empty defaults to MailPath.
 	InboxPath string
 
 	Proxy bool
@@ -120,130 +95,77 @@ type AuthResponse struct {
 	Port  int
 
 	// Fields carries the passdb result as a key/value bag with
-	// prefix-derived scoping (see fields.go). Populated by passdb
-	// implementations that opt into Phase AUTH-2's wire surface;
-	// nil falls back to the typed-fields wire path.
+	// prefix-derived scoping (see fields.go). Nil falls back to
+	// the typed-fields wire path.
 	Fields *Fields
 }
 
-// Request bundles every input a passdb needs to authenticate plus
-// the shared Fields bag the chain mutates as it walks. Phase AUTH-2
-// PR 2 introduces this struct so passdb backends can write directly
-// into the bag (the chain isolates each driver's mutations via
-// Snapshot / Rollback on ResultNext). PR 3 will extend Request with
-// userdb-prefetch metadata.
+// Request bundles the passdb inputs plus the shared Fields bag the
+// chain mutates. The chain isolates each driver's mutations via
+// Snapshot / Rollback on ResultNext.
 type Request struct {
 	Username string
 	Password string
 	Service  string
-	// RemoteIP is the client IP string (no port). Empty when the IP is
-	// unavailable (in-process chain, loopback test harnesses). Passdb
-	// drivers that enforce allow_nets MUST skip the check when empty.
+	// RemoteIP is the client IP (no port); may be empty. Drivers
+	// enforcing allow_nets must skip the check when empty.
 	RemoteIP string
 
-	// Fields is the chain-wide bag that accumulates passdb output.
-	// Driver implementations MAY assume non-nil; the canonical
-	// caller (Chain.Authenticate) allocates it when the Server-side
-	// authenticate entry-point starts the chain.
+	// Fields accumulates passdb output. Drivers may assume non-nil;
+	// Chain.Authenticate allocates it.
 	Fields *Fields
 }
 
 // Result classifies a passdb outcome. Separate from AuthResult
-// (which is wire-shaped on AuthResponse) because ResultNext is a
-// chain-internal signal — it never reaches the client wire.
+// because ResultNext is chain-internal and never reaches the wire.
 type Result int
 
 const (
-	// ResultOK — user verified, Fields populated, chain stops.
+	// ResultOK — user verified, chain stops.
 	ResultOK Result = iota
-	// ResultFail — credentials rejected (password mismatch,
-	// disabled account, expired credential). Chain stops; the
-	// wire returns FAIL.
+	// ResultFail — credentials rejected, chain stops.
 	ResultFail
-	// ResultNext — user unknown in this driver; chain rolls back
-	// any partial Fields mutations and tries the next driver.
+	// ResultNext — user unknown here; roll back and try next driver.
 	ResultNext
-	// ResultTempFail — backend technical failure (DB down,
-	// network). Chain stops with a wire-level FAIL temp_fail.
-	// Always accompanies a non-nil error so the server-side log
-	// has the underlying cause.
+	// ResultTempFail — backend failure; always with a non-nil error.
 	ResultTempFail
 )
 
-// Passdb is the interface that passdb backends implement. Drivers
-// receive a chain-wide Request whose Fields bag they mutate
-// directly; the returned Result selects the chain's next move.
-// error is reserved for unexpected technical failures that
-// accompany ResultTempFail — the wire never carries the error
-// text, only the temp_fail marker, so a driver-level "connection
-// refused" is invisible to the login pod.
+// Passdb is implemented by passdb backends. Drivers mutate
+// req.Fields directly; error accompanies ResultTempFail only.
+// The wire never carries error text, only the temp_fail marker.
 type Passdb interface {
 	Authenticate(req *Request) (Result, error)
 }
 
-// Authenticator is the simpler legacy surface session paths
-// (yarilo-imap, yarilo-pop3, etc.) use directly when they need to
-// verify credentials in-process (without going over the
-// yarilo-auth wire). Wraps a Passdb chain and projects the chain-
-// internal Result back onto a wire-shaped AuthResponse so the
-// caller does not need to know about Request / Result.
+// Authenticator is the in-process surface session processes use to
+// verify credentials without going over the wire. Wraps a Passdb
+// chain and returns a wire-shaped AuthResponse.
 type Authenticator interface {
 	Authenticate(username, password, service, remoteIP string) (*AuthResponse, error)
 }
 
-// MasterAuthenticator extends Authenticator with the SASL PLAIN
-// authzid surface — i.e. master-user impersonation. Session-level
-// callers (IMAP / POP3 / Submission) type-assert opts.Auth into
-// this interface to decide whether to honour authzid; backends
-// that only implement Authenticator (or stub test doubles) keep
-// working unchanged but fall back to "authzid must equal authid"
-// behaviour at the SASL layer.
-//
-//   - authzid — target identity the caller wants to log in AS.
-//     When empty (or equal to authid), this is a regular login and
-//     callers should typically dispatch via Authenticate instead.
-//   - authid  — the user supplying the password (the master in
-//     an impersonation request).
-//   - password — the master's password.
-//   - service — login service tag (imap / pop3 / submission /
-//     lmtp). Logged + forwarded to the chain unmodified.
+// MasterAuthenticator extends Authenticator with master-user
+// impersonation (SASL PLAIN authzid). Sessions type-assert into
+// this interface; backends without it fall back to requiring
+// authzid == authid. authzid is the target identity, authid the
+// user supplying the password.
 type MasterAuthenticator interface {
 	AuthenticateMaster(authzid, authid, password, service, remoteIP string) (*AuthResponse, error)
 }
 
-// SCRAMSha256Lookup exposes per-user SCRAM-SHA-256 verifiers to
-// the session-layer SASL mech. Implementing this interface on the
-// configured Authenticator (and on individual passdbs that carry
-// verifiers in their backing store) lights up SCRAM-SHA-256 and
-// SCRAM-SHA-256-PLUS advertisement in IMAP / POP3 / Submission.
-//
-// LookupSCRAMSha256 returns:
-//
-//   - (creds, nil)  — user exists and has a SCRAM-SHA-256 verifier.
-//     The SASL mech drives challenge-response from
-//     the returned StoredKey / ServerKey without
-//     ever seeing a plain password.
-//   - (nil, nil)    — user unknown OR stored credential is not a
-//     SCRAM verifier. The SASL mech fabricates a
-//     fake verifier so the exchange completes with
-//     a uniform auth-failed outcome and an attacker
-//     cannot probe for user existence via timing.
-//   - (nil, err)    — transient backend error. The session
-//     surfaces this as temp_fail.
-//
-// Verifiers are produced by `yarctl auth scram-verifier`
-// (or any tool that emits the
-// `{SCRAM-SHA-256}iter,salt,stored,server` blob).
+// SCRAMSha256Lookup exposes per-user SCRAM-SHA-256 verifiers to the
+// SASL mech; implementing it enables SCRAM-SHA-256(-PLUS)
+// advertisement. Returns (creds, nil) when a verifier exists,
+// (nil, nil) when the user is unknown or has no SCRAM verifier —
+// the mech then fabricates a fake verifier so user existence can't
+// be probed — and (nil, err) on transient backend error.
 type SCRAMSha256Lookup interface {
 	LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error)
 }
 
-// SCRAMSha1Lookup is the SHA-1 counterpart of SCRAMSha256Lookup.
-// Same semantics, same (creds, nil) / (nil, nil) / (nil, err)
-// contract; only the digest family of the returned verifier
-// differs. Provided for compatibility with legacy clients that
-// only speak SCRAM-SHA-1 — new deployments should provision
-// SCRAM-SHA-256 verifiers instead.
+// SCRAMSha1Lookup is the SHA-1 counterpart of SCRAMSha256Lookup,
+// for legacy clients that only speak SCRAM-SHA-1.
 type SCRAMSha1Lookup interface {
 	LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error)
 }
@@ -251,89 +173,59 @@ type SCRAMSha1Lookup interface {
 // AuthenticatorOption tunes a NewAuthenticator construction.
 type AuthenticatorOption func(*chainAuthenticator)
 
-// WithAuthenticatorMasterdb attaches a dedicated masterdb chain.
-// Mirrors WithMasterdb on the wire Server: AuthenticateMaster
-// consults this chain first, falling through to the main passdb's
-// per-user `master_user=yes` flag only when no masterdb entry
-// knows the master.
+// WithAuthenticatorMasterdb attaches a dedicated masterdb chain,
+// consulted before the main passdb's per-user `master_user=yes` flag.
 func WithAuthenticatorMasterdb(passdbs []Passdb) AuthenticatorOption {
 	return func(a *chainAuthenticator) { a.masterdb = passdbs }
 }
 
-// WithAuthenticatorMasterUserSeparator enables the
-// `target<sep>master` SASL workaround for legacy clients that
-// cannot send authzid. Empty disables it. Mirrors
-// WithMasterUserSeparator on the wire Server.
+// WithAuthenticatorMasterUserSeparator enables the `target<sep>master`
+// workaround for clients that cannot send authzid. Empty disables it.
 func WithAuthenticatorMasterUserSeparator(sep string) AuthenticatorOption {
 	return func(a *chainAuthenticator) { a.masterUserSeparator = sep }
 }
 
-// WithAuthenticatorMasterUsers flips the top-level master-user
-// opt-in. When false (the default), NewAuthenticator returns an
-// Authenticator-only wrapper — type-asserts to
-// MasterAuthenticator at every protocol entry point fail, so any
-// distinct SASL PLAIN authzid is rejected before the chain is
-// consulted. When true, the chainAuthenticator's
-// AuthenticateMaster method is exposed and the masterdb /
-// separator options take effect.
+// WithAuthenticatorMasterUsers is the master-user opt-in. When
+// false (the default) NewAuthenticator returns an Authenticator-only
+// wrapper, so MasterAuthenticator type-asserts fail and any distinct
+// authzid is rejected before the chain runs.
 func WithAuthenticatorMasterUsers(enabled bool) AuthenticatorOption {
 	return func(a *chainAuthenticator) { a.masterUsersEnabled = enabled }
 }
 
-// WithAuthenticatorCache attaches an auth cache. When set, every
-// Authenticate / AuthenticateMaster call first consults the cache
-// (key = `<service>\t<username>`) and short-circuits on hit.
-// Misses run the full chain and seed the cache with the result.
-// Nil cache = caching disabled (every call goes to the chain).
-//
-// The cache is keyed by the passdb-side username; in a master-user
-// flow the master and target produce independent cache entries.
+// WithAuthenticatorCache attaches an auth cache, consulted before
+// the chain; misses seed it with the result. Nil disables caching.
 func WithAuthenticatorCache(c *Cache) AuthenticatorOption {
 	return func(a *chainAuthenticator) { a.cache = c }
 }
 
-// NewAuthenticator wraps one or more Passdb drivers into the
-// session-friendly Authenticator surface. Passdb-only: userdb lookups
-// are the session process's responsibility (via the master protocol).
-//
-// Master-user impersonation is opt-in via
-// WithAuthenticatorMasterUsers(true). When disabled (the default)
-// the returned Authenticator deliberately does NOT implement
-// MasterAuthenticator — so session-level type assertions in
-// IMAP/POP3/Submission fail and any distinct SASL PLAIN authzid
-// is rejected. Operators must explicitly flip the toggle (and
-// configure masterdb / separator) to enable the feature.
+// NewAuthenticator wraps Passdb drivers into the Authenticator
+// surface. Passdb-only; userdb lookups happen via the master
+// protocol. Unless WithAuthenticatorMasterUsers(true) is given the
+// result deliberately does not implement MasterAuthenticator.
 func NewAuthenticator(passdbs []Passdb, opts ...AuthenticatorOption) Authenticator {
 	a := &chainAuthenticator{chain: Chain(passdbs)}
 	for _, opt := range opts {
 		opt(a)
 	}
 	if !a.masterUsersEnabled {
-		// Hide AuthenticateMaster behind a wrapper that exposes
-		// only the Authenticator surface. This makes the
-		// type-assert in session.Auth(PLAIN) fail cleanly.
+		// hide AuthenticateMaster so session-side type-asserts fail
 		return &plainOnlyAuthenticator{inner: a}
 	}
 	return a
 }
 
-// plainOnlyAuthenticator wraps chainAuthenticator to hide its
-// AuthenticateMaster method when master-users are disabled.
-// Implements Authenticator but NOT MasterAuthenticator on
-// purpose — Go method-set lookup walks the embedded type and
-// would expose AuthenticateMaster if we just embedded the inner
-// pointer, so the field is named and the wrapper redeclares
-// only the methods it wants to expose.
+// plainOnlyAuthenticator hides AuthenticateMaster when master-users
+// are disabled. The inner field is named, not embedded, so the
+// method set exposes only what is redeclared here.
 type plainOnlyAuthenticator struct{ inner *chainAuthenticator }
 
 func (p *plainOnlyAuthenticator) Authenticate(username, password, service, remoteIP string) (*AuthResponse, error) {
 	return p.inner.Authenticate(username, password, service, remoteIP)
 }
 
-// LookupSCRAMSha256 forwards the SCRAM lookup so the wrapper
-// (returned when master-users are disabled) still exposes
-// SCRAM-SHA-256 support. SCRAM is orthogonal to master-user
-// impersonation — disabling one must not disable the other.
+// LookupSCRAMSha256 forwards the SCRAM lookup: SCRAM is orthogonal
+// to master-user impersonation and must survive the wrapper.
 func (p *plainOnlyAuthenticator) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
 	return p.inner.LookupSCRAMSha256(username)
 }

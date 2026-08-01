@@ -3,8 +3,7 @@ package language
 import "testing"
 
 func TestDetectLanguage(t *testing.T) {
-	// Long enough, clearly-distinguishing sentences for a trigram-based
-	// classifier to have a stable, reliable answer.
+	// Long enough for a trigram classifier to give a stable answer.
 	const englishSample = "The quick brown fox jumps over the lazy dog while the sun shines brightly over the green meadow this morning."
 	const germanSample = "Der schnelle braune Fuchs springt über den faulen Hund während die Sonne hell über die grüne Wiese scheint heute Morgen."
 	const frenchSample = "Le renard brun rapide saute par-dessus le chien paresseux pendant que le soleil brille sur le pré vert ce matin."
@@ -23,9 +22,7 @@ func TestDetectLanguage(t *testing.T) {
 		{"empty", "", []string{"en", "de", "fr"}, "", false},
 		{"no candidates", englishSample, nil, "", false},
 		{
-			// German text, but German isn't in the candidate set — detection
-			// must not return a language the caller didn't offer, mirroring
-			// the reference implementation's language_match_lists restriction.
+			// Detection must not return a language outside the candidate set.
 			name:       "detected language outside candidate set",
 			sample:     germanSample,
 			candidates: []string{"en", "fr"},
@@ -46,10 +43,8 @@ func TestDetectLanguage(t *testing.T) {
 	}
 }
 
-// TestDetectLanguageUkrainianVsRussian (#718) proves uk is detectable at
-// all (isoToWhatlang) and distinguished from its closest neighbour ru —
-// exactly what keeps a Ukrainian part in a mixed uk/ru mailbox from being
-// mis-stemmed under the ru chain.
+// uk must be detectable and distinguished from ru, so uk parts in a
+// mixed mailbox aren't stemmed under the ru chain.
 func TestDetectLanguageUkrainianVsRussian(t *testing.T) {
 	const ukrainianSample = "Доброго дня! Сьогодні чудова погода, і я хочу піти погуляти у парку разом із друзями та випити смачної кави."
 	const russianSample = "Быстрая коричневая лиса прыгает через ленивую собаку, пока солнце ярко светит над зелёной поляной сегодня утром."

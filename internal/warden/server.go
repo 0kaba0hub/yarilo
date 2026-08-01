@@ -33,29 +33,12 @@
 //	  PEN\t{ip}\t{count}\t{ttl_secs}\n      ← 1.8 DUMP: penalty entry
 //	  DONE\n
 //
-// WHO replies with one SESSION line per matching active session,
-// then DONE. The optional service= / user= tokens narrow the list.
-// LOOKUP replies with a single COUNT line carrying the live count
-// of (user, service) pairs. HEARTBEAT extends a session's TTL by
-// SessionTTL — login pods refresh their registrations on a timer
-// so a crashed pod doesn't leak entries forever; a background
-// sweeper drops sessions that miss their refresh window.
+// WHO replies with one SESSION line per matching session, then DONE.
+// LOOKUP replies COUNT with the live (user, service) session count.
+// HEARTBEAT renews a session's TTL; a background sweeper drops
+// sessions that miss their refresh window.
 //
-// Minor protocol version bumps:
-//   - 1.0 → 1.1: WHO command
-//   - 1.1 → 1.2: LOOKUP command
-//   - 1.2 → 1.3: HEARTBEAT command + TTL/sweeper
-//   - 1.3 → 1.4: SELECT command + folder field in SESSION reply
-//   - 1.4 → 1.5: SUBSCRIBE / EMIT / EVENT for operational pub-sub
-//     (kick events ride this channel)
-//   - 1.5 → 1.6: PENALTY-LOOKUP / PENALTY-UPDATE for IP-bound auth
-//   - 1.6 → 1.7: BACKEND command + backend field in SESSION reply (#814)
-//     backoff (yarilo-auth dials warden pre-passdb to look up the
-//     current penalty for the client IP, sleeps the mapped seconds,
-//     then runs the chain; on fail increments the counter, on OK
-//     resets it).
-//
-// Older clients ignore unknown commands entirely.
+// Unknown commands are ignored.
 package warden
 
 import (
@@ -78,24 +61,15 @@ const (
 	minorVer  = 8
 )
 
-// DefaultPenaltyDecay is how long a penalty entry survives after
-// its last update before the sweeper drops it. Matches the
-// AUTH_PENALTY_TIMEOUT formula: 2 + 4 + 8 + 15 = 29s — once an
-// IP's worst-case backoff chain has fully played out, the entry
-// is stale and can be evicted so a returning attacker starts
-// fresh-clean rather than re-amplifying a years-old slot.
+// DefaultPenaltyDecay is how long a penalty entry survives after its
+// last update. 2+4+8+15 = 29s: the worst-case backoff chain length.
 const DefaultPenaltyDecay = 29 * time.Second
 
-// MaxPenalty caps the per-IP backoff counter. Above this the
-// PenaltyToSecs mapping plateaus at the maximum sleep — extra
-// fails simply keep the counter at the cap until decay.
+// MaxPenalty caps the per-IP backoff counter; PenaltyToSecs plateaus there.
 const MaxPenalty = 4
 
-// PenaltyToSecs maps a penalty counter to the sleep duration
-// applied BEFORE the next auth attempt from that IP. Cumulative
-// budget for 4 successive fails is 2+4+8+15 = 29 seconds; after
-// that the cap holds. Returns 0 for counter 0 so the first
-// attempt from a clean IP is never slowed.
+// PenaltyToSecs maps a penalty counter to the sleep applied before the
+// next auth attempt from that IP. 0 for a clean IP.
 func PenaltyToSecs(count int) int {
 	switch {
 	case count <= 0:
@@ -111,39 +85,26 @@ func PenaltyToSecs(count int) int {
 	}
 }
 
-// DefaultSessionTTL is how long an warden session lives without a
-// HEARTBEAT. Login pods refresh on a timer significantly shorter
-// than this so a brief network hiccup never reaps a live session.
-// 90 seconds = three 30-second heartbeats budgeted before drop.
+// DefaultSessionTTL is how long a session lives without a HEARTBEAT.
+// 90s budgets three missed 30s heartbeats before drop.
 const DefaultSessionTTL = 90 * time.Second
 
-// DefaultSweepInterval is how often the background goroutine
-// walks the session map to drop stale entries. Tighter than TTL
-// so a leaked session is gone within `TTL + interval` of the
-// pod crash, not `2 * TTL`.
+// DefaultSweepInterval is how often stale sessions are reaped.
 const DefaultSweepInterval = 15 * time.Second
 
-// SessionInfo is one tracked client connection. Exported so the
-// client package can return parsed WHO rows directly.
+// SessionInfo is one tracked client connection.
 type SessionInfo struct {
 	ID          string
 	User        string
 	IP          string
 	Service     string
 	ConnectedAt time.Time
-	// Folder is the currently-SELECTed IMAP mailbox name (empty
-	// for non-IMAP services or sessions that have not yet sent
-	// SELECT). Updated via the SELECT wire command and surfaced
-	// in WHO output.
+	// Folder is the currently-SELECTed IMAP mailbox (empty for non-IMAP).
 	Folder string
-	// Backend is the backend pod IP the session was routed to (#814),
-	// pushed by the login pod after the director LOOKUP resolves it. Empty
-	// until the BACKEND command arrives (and for pre-1.7 clients). Lets `who`
-	// show only the sessions on the backend it runs against.
+	// Backend is the backend pod IP the session routed to; empty until
+	// the BACKEND command arrives (and for pre-1.7 clients).
 	Backend string
-	// lastSeen is the most recent heartbeat (or CONNECT) timestamp.
-	// Unexported because callers should not depend on it — the
-	// sweeper owns reaping. Wire format never surfaces it.
+	// lastSeen is the last heartbeat (or CONNECT) time; the sweeper owns it.
 	lastSeen time.Time
 }
 
@@ -154,32 +115,25 @@ type Server struct {
 	sweepInterval time.Duration
 	penaltyDecay  time.Duration
 
-	// state is the pluggable shared-state backend (#908): sessions (with the
-	// per-user@IP connection limit), the penalty counter, and the kick bus, in
-	// memory or Redis. Emit/Subscribe delegate to it, so a Redis backend fans
-	// kicks out cross-replica via Pub/Sub while memory stays in-process.
+	// state holds sessions, penalties and the kick bus, in memory or
+	// Redis; the Redis backend fans kicks out cross-replica via Pub/Sub.
 	state StateBackend
 }
 
 // ServerOption configures a Server at construction time.
 type ServerOption func(*Server)
 
-// WithSessionTTL overrides DefaultSessionTTL — how long a
-// session lives between heartbeats. Tests use a short TTL so
-// the sweeper can be exercised in subsecond time.
+// WithSessionTTL overrides DefaultSessionTTL.
 func WithSessionTTL(d time.Duration) ServerOption {
 	return func(s *Server) { s.sessionTTL = d }
 }
 
-// WithSweepInterval overrides DefaultSweepInterval — how often
-// the background sweeper drops stale sessions.
+// WithSweepInterval overrides DefaultSweepInterval.
 func WithSweepInterval(d time.Duration) ServerOption {
 	return func(s *Server) { s.sweepInterval = d }
 }
 
-// WithPenaltyDecay overrides DefaultPenaltyDecay — how long a
-// penalty entry survives after its last update before the
-// sweeper drops it.
+// WithPenaltyDecay overrides DefaultPenaltyDecay.
 func WithPenaltyDecay(d time.Duration) ServerOption {
 	return func(s *Server) { s.penaltyDecay = d }
 }
@@ -195,36 +149,27 @@ func NewServer(max int, opts ...ServerOption) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
-	// Default to the in-process backend unless WithStateBackend injected one; its
-	// decay/TTL/limit must reflect any options applied above, so build it here.
+	// build after options so decay/TTL/limit reflect them
 	if s.state == nil {
 		s.state = newMemoryBackend(s.penaltyDecay, s.sessionTTL, max)
 	}
 	return s
 }
 
-// Sessions returns a snapshot of every tracked session. Used by
-// tests and by the in-process accounting path (no wire detour).
+// Sessions returns a snapshot of every tracked session.
 func (s *Server) Sessions() []*SessionInfo {
 	return s.state.SessionList()
 }
 
-// SessionCount returns the number of tracked sessions. For the memory backend it
-// takes the same mutex the hot-path handlers hold, so it doubles as the #904
-// liveness probe; the Redis backend counts via SCAN, so the warden watchdog
-// self-check is wired only in memory mode (a Redis warden is like locks — no
-// local mutex to wedge, #921).
+// SessionCount returns the number of tracked sessions. For the memory
+// backend it takes the hot-path mutex, so it doubles as a liveness probe;
+// the Redis backend counts via SCAN and has no local mutex to wedge.
 func (s *Server) SessionCount() int {
 	return s.state.SessionCount()
 }
 
-// ListenAndServe starts the warden TCP server. When tlsCfg is non-nil the
-// listener uses mTLS. Blocks until ctx is cancelled; active sessions drain
-// before the function returns.
-// Listen binds addr and returns the listener, so a caller can report readiness
-// only once the port is accepting. ListenAndServe binds and serves in one call,
-// which forces the caller to run it in a goroutine and therefore to announce
-// readiness before knowing whether the bind succeeded.
+// Listen binds addr (mTLS when tlsCfg is non-nil) and returns the
+// listener, so callers can report readiness only after the bind succeeds.
 func (s *Server) Listen(addr string, tlsCfg *tls.Config) (net.Listener, error) {
 	if tlsCfg != nil {
 		ln, err := tls.Listen("tcp", addr, tlsCfg)
@@ -240,8 +185,7 @@ func (s *Server) Listen(addr string, tlsCfg *tls.Config) (net.Listener, error) {
 	return ln, nil
 }
 
-// ListenAndServe binds addr and serves it. Kept for callers that do not need to
-// separate the two.
+// ListenAndServe binds addr and serves it.
 func (s *Server) ListenAndServe(ctx context.Context, addr string, tlsCfg *tls.Config) error {
 	ln, err := s.Listen(addr, tlsCfg)
 	if err != nil {
@@ -300,10 +244,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		if len(fields) == 0 {
 			continue
 		}
-		// Every verb is timed at the dispatch point. Only the verbs on the
-		// login hot path report a distinguishing result label; the rest are
-		// recorded as "ok" because their wire replies carry no uniform outcome
-		// worth a separate series.
+		// only login hot-path verbs report a distinguishing result label
 		start := time.Now()
 		switch fields[0] {
 		case "CONNECT":
@@ -340,11 +281,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handlePenaltyUpdate(conn, fields)
 			observeRequest("PENALTY-UPDATE", "ok", start)
 		case "SUBSCRIBE":
-			// SUBSCRIBE takes over the connection for server→client
-			// pushes; handleSubscribe blocks until the conn closes
-			// or the subscriber's outbox drops. Returning from
-			// handleConn after it ends is correct — the for-loop
-			// above would just re-read EOF anyway.
+			// takes over the conn for server pushes; blocks until it closes
 			s.handleSubscribe(conn, fields)
 			return
 		}
@@ -352,11 +289,10 @@ func (s *Server) handleConn(conn net.Conn) {
 }
 
 // handleConnect processes: CONNECT\t{id}\t{user}\t{ip}\t{service}
-// The metric result label is returned for the dispatcher to observe.
+// Returns the metric result label.
 func (s *Server) handleConnect(conn net.Conn, fields []string) string {
 	if len(fields) < 5 {
-		// Tolerate the legacy 4-field form (no service) for back-compat
-		// with v1.0 clients — service stays empty in the session record.
+		// tolerate the legacy v1.0 4-field form (no service)
 		if len(fields) < 4 {
 			return "bad_request"
 		}
@@ -365,10 +301,8 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) string {
 	id, user, ip, service := fields[1], fields[2], fields[3], fields[4]
 	ok, err := s.state.SessionConnect(id, user, ip, service)
 	if err != nil {
-		// Bounded backend error → fail OPEN: allow the session (a Redis blip must
-		// not block every login), untracked until the backend recovers. The limit
-		// is temporarily unenforced — availability over strict limiting, the same
-		// posture as the penalty path (#908; verified end to end in PR4).
+		// fail open: a Redis blip must not block logins; the limit is
+		// unenforced until the backend recovers
 		slog.Warn("warden: connect state error, failing open", "pod", podID, "sid", id, "user", user, "ip", ip, "err", err)
 		fmt.Fprintf(conn, "OK\t%s\n", id)
 		return "state_error"
@@ -378,9 +312,7 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) string {
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
 		return "too_many_connections"
 	}
-	// No cnt= here on purpose: SessionLookupCount is a SCAN on the Redis backend,
-	// too costly for the hot path (#932 lesson). Use the connect_total /
-	// sessions metrics for counts; the log carries pod identity for kick tracing.
+	// no cnt= here: SessionLookupCount is a Redis SCAN, too costly on the hot path
 	slog.Info("warden: session connect", "pod", podID, "sid", id, "user", user, "ip", ip, "service", service)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 	return "ok"
@@ -398,14 +330,7 @@ func (s *Server) handleDisconnect(conn net.Conn, fields []string) {
 }
 
 // handleWho processes: WHO[\tkey=value]...
-//
-// Recognised filter keys:
-//
-//	service={imap|pop3|submission|lmtp|...}
-//	user={username}
-//
-// Unknown keys are ignored so future filters can land without
-// breaking older warden servers.
+// Filter keys: service=, user=. Unknown keys are ignored.
 func (s *Server) handleWho(conn net.Conn, args []string) {
 	filter := parseFilter(args)
 	snap := s.Sessions()
@@ -422,17 +347,14 @@ func (s *Server) handleWho(conn net.Conn, args []string) {
 	fmt.Fprintln(conn, "DONE")
 }
 
-// handleDump processes: DUMP (admin/debug introspection, #908 fast-follow).
-//
-// Replies with the accounting counters (each with its live session tally, so
-// drift is visible) and the penalty entries (with remaining TTL), then DONE:
+// handleDump processes: DUMP. Replies with counters (with live tally, so
+// drift is visible) and penalty entries, then DONE:
 //
 //	CNT\t{user@ip}\t{counter}\t{live}\n   (repeated)
 //	PEN\t{ip}\t{count}\t{ttl_secs}\n      (repeated)
 //	DONE\n
 //
-// A backend error still ends with DONE (best-effort snapshot); the reader treats
-// a short/empty dump as "nothing to show" rather than an error.
+// A backend error still ends with DONE (best-effort snapshot).
 func (s *Server) handleDump(conn net.Conn) {
 	d, err := s.state.Dump()
 	if err != nil {
@@ -450,15 +372,8 @@ func (s *Server) handleDump(conn net.Conn) {
 }
 
 // handleLookup processes: LOOKUP\t{user}\t{service}
-//
-// Replies with a single line: COUNT\t{n}\n where n is the live
-// number of sessions matching (user, service). Used by LMTP at
-// RCPT TO to enforce lmtp_user_concurrency_limit cluster-wide.
-//
-// Missing service is treated as "any service" — practically this
-// means an LMTP delivery counter without a service filter, which
-// is over-counting but never under-counting. Real callers always
-// supply both.
+// Replies COUNT\t{n}\n with the live (user, service) session count.
+// Used by LMTP at RCPT TO to enforce lmtp_user_concurrency_limit.
 func (s *Server) handleLookup(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		fmt.Fprintf(conn, "COUNT\t0\n")
@@ -469,16 +384,8 @@ func (s *Server) handleLookup(conn net.Conn, fields []string) {
 }
 
 // handleHeartbeat processes: HEARTBEAT\t{id}\n
-//
-// Bumps the session's lastSeen so the sweeper does not reap it.
-// Replies OK\t{id}\n on hit, OK\t{id}\treason=unknown\n on miss —
-// the unknown case lets a login pod detect its registration was
-// already reaped and reissue CONNECT. Unknown ID is NOT a hard
-// error: the pod is operating on stale information and recovers
-// by reconnecting.
-// The metric result label is returned for the dispatcher to observe. A
-// "session_unknown" outcome is the signal that the sweeper reaped a session
-// whose owner still believes it is alive.
+// Replies OK\t{id}\n on hit, OK\t{id}\treason=unknown\n on miss so a
+// login pod can detect its registration was reaped and reissue CONNECT.
 func (s *Server) handleHeartbeat(conn net.Conn, fields []string) string {
 	if len(fields) < 2 {
 		return "bad_request"
@@ -493,13 +400,7 @@ func (s *Server) handleHeartbeat(conn net.Conn, fields []string) string {
 }
 
 // handleSelect processes: SELECT\t{id}\t{folder}\n
-//
-// Sets the session's currently-SELECTed folder. Empty folder is
-// the UNSELECT signal — clears the field so WHO renders the
-// session as authenticated-but-not-in-a-folder. Unknown id is
-// silently ignored: the session may already have been reaped
-// (the IMAP client driving the SELECT will notice on its next
-// command and recover).
+// Empty folder clears the field (UNSELECT).
 func (s *Server) handleSelect(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		return
@@ -512,8 +413,7 @@ func (s *Server) handleSelect(conn net.Conn, fields []string) {
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 }
 
-// handleBackend records the backend pod IP a session was routed to (#814),
-// pushed by the login pod after the director LOOKUP. Mirrors handleSelect.
+// handleBackend processes: BACKEND\t{id}\t{backend_ip}\n
 func (s *Server) handleBackend(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		return
@@ -526,13 +426,8 @@ func (s *Server) handleBackend(conn net.Conn, fields []string) {
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 }
 
-// sweepLoop periodically drops sessions whose lastSeen is older
-// than the configured TTL and releases their connection-limit
-// slot. Stops when ctx is cancelled (server shutdown).
-//
-// Reaped sessions are gone from `who`, from LOOKUP counts, and
-// their slot is free for the next CONNECT — exactly the
-// behaviour a real DISCONNECT would have produced.
+// sweepLoop periodically reaps sessions past their TTL, with the same
+// effect as a real DISCONNECT.
 func (s *Server) sweepLoop(ctx context.Context) {
 	t := time.NewTicker(s.sweepInterval)
 	defer t.Stop()
@@ -546,12 +441,8 @@ func (s *Server) sweepLoop(ctx context.Context) {
 	}
 }
 
-// sweepStalePenalties drops every penalty entry whose last
-// update is older than penaltyDecay. Inner of sweepLoop — takes
-// `now` so tests can fast-forward.
 // handlePenaltyLookup processes: PENALTY-LOOKUP\t{ip}
-// Replies: PENALTY\t{count}\n where count is 0 when no entry
-// exists or the entry has expired (lazy eviction on read).
+// Replies PENALTY\t{count}\n; 0 when no entry or expired.
 func (s *Server) handlePenaltyLookup(conn net.Conn, fields []string) {
 	if len(fields) < 2 {
 		fmt.Fprintf(conn, "PENALTY\t0\n")
@@ -564,9 +455,7 @@ func (s *Server) handlePenaltyLookup(conn net.Conn, fields []string) {
 }
 
 // handlePenaltyUpdate processes: PENALTY-UPDATE\t{ip}\t{count}
-// Replies: OK\n. Count is clamped to [0, MaxPenalty]. Count 0
-// deletes the entry (matches the auth-success reset path: no
-// reason to keep a zero counter around).
+// Replies OK\n. Count is clamped to [0, MaxPenalty]; 0 deletes the entry.
 func (s *Server) handlePenaltyUpdate(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		fmt.Fprintf(conn, "OK\n")
@@ -596,15 +485,9 @@ func (s *Server) handlePenaltyUpdate(conn net.Conn, fields []string) {
 }
 
 // handleEmit processes: EMIT\t{channel}\t{payload}\n
-//
-// Delegates to the state backend (in-process fan-out for memory, Redis PUBLISH
-// for redis), then replies OK\n. Emit is best-effort / at-most-once, so OK means
-// "published", not "received": delivery is NOT the correctness guarantee for a
-// kick — the director's #847 confirmed kill holds LOOKUP until the ring-wide
-// session count is stably zero, so split-writer safety never depends on the kick
-// landing; the kick only makes teardown prompt. A publish error (e.g. a Redis
-// blip) is logged and still answered OK — the caller cannot make it more
-// reliable, and the confirm loop is the backstop.
+// Best-effort at-most-once publish; OK means "published", not "received".
+// Kick correctness never depends on delivery — the director's confirmed
+// kill is the backstop — so publish errors are logged and still answered OK.
 func (s *Server) handleEmit(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		return
@@ -620,15 +503,9 @@ func (s *Server) handleEmit(conn net.Conn, fields []string) {
 }
 
 // handleSubscribe processes: SUBSCRIBE\t{channel}\n
-//
-// Subscribes via the state backend, replies OK\n once, then pushes
-// EVENT\t{channel}\t{payload}\n lines until the conn drops or ctx is cancelled.
-// One conn = one channel — callers wanting multiple channels open multiple conns.
-//
-// A reader goroutine cancels the subscription context when the client conn
-// closes, which closes the backend channel and unwinds the writer loop. For the
-// Redis backend the backend channel auto-reconnects underneath, so a Redis blip
-// does not end this subscription — only a client disconnect does.
+// Replies OK\n once, then pushes EVENT\t{channel}\t{payload}\n lines until
+// the conn drops. One conn = one channel. The Redis backend reconnects
+// underneath, so only a client disconnect ends the subscription.
 func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
 	if len(fields) < 2 {
 		return
@@ -649,8 +526,7 @@ func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
 	}
 	slog.Info("warden: subscribe", "pod", podID, "channel", channel)
 
-	// Reader half: a client-side close surfaces as a Read error and cancels ctx,
-	// which closes ch and unwinds the writer loop below.
+	// client-side close surfaces as a Read error and unwinds the writer loop
 	go func() {
 		buf := make([]byte, 64)
 		for {

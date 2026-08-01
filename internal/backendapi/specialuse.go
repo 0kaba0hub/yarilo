@@ -9,15 +9,9 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
 )
 
-// registerSpecialUseRoutes wires the per-user RFC 6154
-// special-use override surface. Reuses
-// internal/userstate/specialuse.Store — same on-disk format and
-// the same lock key as IMAP CREATE (USE ...), so concurrent IMAP
-// sessions see admin writes immediately.
-//
-// Only the personal namespace carries special-use overrides — RFC
-// 6154 \Sent / \Drafts / etc. semantics do not extend to shared or
-// public namespaces.
+// registerSpecialUseRoutes registers RFC 6154 special-use override
+// routes. Uses specialuse.Store with the same on-disk format and
+// lock key as IMAP CREATE (USE ...). Personal namespace only.
 func (s *Server) registerSpecialUseRoutes() {
 	s.mux.Handle("POST /api/backend/specialuse/list", s.middleware(s.handleSpecialUseList))
 	s.mux.Handle("POST /api/backend/specialuse/get", s.middleware(s.handleSpecialUseGet))

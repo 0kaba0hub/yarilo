@@ -1,6 +1,4 @@
 // Package lmtp implements an LMTP server (RFC 2033) for local mail delivery.
-// External MTAs (e.g. Postfix) connect on port 24 or a Unix socket and use
-// LHLO + per-recipient DATA responses to deliver mail to local mailboxes.
 package lmtp
 
 import (
@@ -50,28 +48,24 @@ type Options struct {
 	// BackendPort is the LMTP port on backend pods. Default: 24.
 	BackendPort int
 
-	// Locker is the cross-process write coordinator. When non-nil, after a
-	// successful delivery the server emits a `delivered` EVENT on the
-	// mailbox key so subscribed IMAP IDLE sessions on other pods receive
-	// the notification immediately. Nil disables cross-pod notifications.
+	// Locker is the cross-process write coordinator. Non-nil emits a
+	// `delivered` EVENT after each delivery so IMAP IDLE on other pods
+	// wakes up; nil disables cross-pod notifications.
 	Locker locks.Locker
 
-	// FTSClient, when set with FTSAutoindex, queues an INDEX toward
-	// yarilo-fts after each accepted delivery (write-through autoindex;
-	// best-effort — rescan heals lost hooks).
+	// FTSClient, when set with FTSAutoindex, queues an INDEX after each
+	// accepted delivery. Best-effort: rescan heals lost hooks.
 	FTSClient    ftsproto.Client
 	FTSAutoindex bool
 	FTSMaxRecent int
 
-	// UserdbLookup fetches per-user storage config from the userdb before
-	// accepting RCPT TO. Returning (nil, nil) means user not found → 550.
-	// Returning (nil, err) means transient failure → 451.
-	// When nil (unit tests / director-only nodes) the check is skipped.
+	// UserdbLookup fetches per-user storage config before accepting RCPT TO.
+	// (nil, nil) = user not found → 550; (nil, err) = transient → 451.
+	// Nil skips the check (unit tests / director-only nodes).
 	UserdbLookup func(ctx context.Context, username string) (*mailbox.UserInfo, error)
 
-	// QuotaEngine enables quota enforcement on delivery: a message that would
-	// push the recipient over their limit is rejected with 452 4.2.2 "Mailbox
-	// full". Usage is summed from the recipient's index (count backend).
+	// QuotaEngine enables quota enforcement on delivery: over-quota messages
+	// are rejected with 452 4.2.2. Usage is summed from the recipient's index.
 	QuotaEngine bool
 
 	// QuotaExceededMessage is the 452 text when a delivery is over quota.
@@ -88,42 +82,36 @@ type Options struct {
 	QuotaClone *quota.Clone
 
 	// MetadataDict backs the mboxmetadata / servermetadata Sieve tests
-	// (RFC 5490 §4): the same dict IMAP uses for RFC 5464 METADATA. Nil
-	// disables those tests (they report the annotation as absent).
+	// (RFC 5490 §4); same dict IMAP uses for RFC 5464 METADATA. Nil
+	// reports every annotation as absent.
 	MetadataDict dict.Dict
 
-	// AuthAddr is the yarilo-auth client-protocol address used by the
-	// PreambleListener to verify session tokens forwarded by lmtp-login.
-	// When empty, preamble verification is skipped (plain TCP; use only
-	// in unit tests or when lmtp-login is not in the path).
+	// AuthAddr is the yarilo-auth client-protocol address used to verify
+	// session tokens forwarded by lmtp-login. Empty skips preamble
+	// verification (unit tests, or lmtp-login not in the path).
 	AuthAddr string
 	// AuthTLS optionally wraps the auth-client dialer with mTLS.
 	AuthTLS     *tls.Config
 	PreambleTLS *tls.Config // internal mTLS on the data path (#824)
 
 	// SieveEngine executes per-user Sieve scripts during local delivery.
-	// When nil, Sieve filtering is disabled and all messages are delivered
-	// to the default folder (INBOX or user+folder addressing).
+	// Nil disables filtering; messages go to the default folder.
 	SieveEngine *sieve.Engine
 
-	// MailboxByDriver, when non-nil, returns a MailboxBackend for the given
-	// driver name. Used to select the correct per-user storage backend when
-	// the user's mail_location specifies a driver that differs from the
-	// global default (e.g. mdbox users on a maildir-default server).
+	// MailboxByDriver, when non-nil, returns a MailboxBackend for a driver
+	// name, selecting per-user storage when the user's mail_location driver
+	// differs from the global default.
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
 
-	// Namespaces routes a delivery whose target folder carries a namespace
-	// prefix (e.g. "Public/News", "Shared/List") to that namespace's storage
-	// instead of the recipient's own store. Empty = every delivery lands in
-	// the recipient's personal store (INBOX / +detail).
+	// Namespaces routes a namespace-prefixed target folder (e.g. "Public/News")
+	// to that namespace's storage. Empty = everything lands in the recipient's
+	// personal store.
 	Namespaces []config.NamespaceConfig
 
-	// ACL enforcement for cross-namespace delivery. When ACLEnabled is set,
-	// delivering into a shared / public namespace requires the recipient to
-	// hold the 'p' (post) right on the target folder; a denial falls back to
-	// the recipient's INBOX (implicit keep). Delivery into the recipient's own
-	// personal store never consults the ACL. ACLGlobal / ACLGlobalsOnly /
-	// ACLDefaultsFromInbox mirror the IMAP resolution so both paths agree.
+	// ACL enforcement for cross-namespace delivery: shared/public targets
+	// require the 'p' (post) right; a denial falls back to INBOX (implicit
+	// keep). The personal store is never ACL-checked. The ACL* fields mirror
+	// the IMAP resolution so both paths agree.
 	ACLEnabled           bool
 	ACLGlobal            *acl.Global
 	ACLGlobalsOnly       bool

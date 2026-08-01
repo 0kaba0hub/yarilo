@@ -13,8 +13,8 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 )
 
-// boolParam reports whether query param name is a truthy flag ("1", "true", "yes",
-// or present-but-empty like ?force). Absent or an explicit false value → false.
+// boolParam reports whether query param name is a truthy flag ("1", "true",
+// "yes", or bare like ?force).
 func boolParam(r *http.Request, name string) bool {
 	if !r.URL.Query().Has(name) {
 		return false
@@ -125,7 +125,7 @@ type backendDTO struct {
 	Tag      string `json:"tag"`
 	Up       bool   `json:"up"`
 	Vhosts   int    `json:"vhosts"`
-	Sessions int    `json:"sessions"` // current active proxied sessions on this backend (this director's view)
+	Sessions int    `json:"sessions"` // active proxied sessions (this director's view)
 }
 
 func toBackendDTO(b backendDTOSource) backendDTO {
@@ -145,12 +145,10 @@ type backendDTOSource struct {
 	Sessions int
 }
 
-// resolveUserBackend answers "which backend is this user routed to" with the
-// same precedence a login LOOKUP uses (#708): sticky userDir pin (if the backend
-// is still up) → ring hash. user must already be normalized. Returns
-// ("",0,"",false) when the ring is empty. sticky reports whether the answer came
-// from an existing pin (vs a fresh hash). Read-only under hash; under
-// least_sessions it pins a fresh user (the director owns placement).
+// resolveUserBackend resolves a user with LOOKUP precedence: sticky pin (if
+// its backend is still up) → ring hash. user must already be normalized.
+// sticky reports whether an existing pin answered. Read-only under hash;
+// under least_sessions a fresh user is pinned here.
 func (s *Server) resolveUserBackend(user string) (ip string, port int, tag string, sticky bool) {
 	if e := s.userDir.Get(user); e != nil && !e.Weak {
 		if h, _, err := net.SplitHostPort(e.Host); err == nil {
@@ -159,11 +157,9 @@ func (s *Server) resolveUserBackend(user string) (ip string, port int, tag strin
 			}
 		}
 	}
-	// Fresh (unpinned) user. Under least_sessions the admin must NOT read a hash
-	// pod the login would never assign — the director owns placement, so pin it
-	// here too (assignAndPin). The admin path has no protocol, so pickBackend
-	// skips level 1 and decides on total load. Under hash the read stays
-	// side-effect-free (deterministic — admin hash == login hash).
+	// Fresh user: under least_sessions pin here too — the director owns
+	// placement, and a hash read would name a pod the login never assigns.
+	// Under hash the lookup is deterministic and side-effect-free.
 	if s.assignmentPolicy() == policyLeastSessions {
 		if b := s.assignAndPin(user, "", ""); b != nil {
 			return b.IP, b.Port, b.Tag, false
@@ -183,10 +179,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	for i, b := range backends {
 		bs[i] = toBackendDTO(backendDTOSource{b.IP, b.Port, b.Tag, b.Up, b.Vhosts, sess[b.IP]})
 	}
-	// Backends only — the director-membership (`peers`) list lives on the
-	// dedicated GET /api/director/ring endpoint (`director ring status`).
-	// status is the backend/routing plane; duplicating peers here made the
-	// two commands overlap for no reason.
+	// Backends only; director membership lives on GET /api/director/ring.
 	apiJSON(w, map[string]any{"backends": bs})
 }
 
@@ -225,12 +218,8 @@ func (s *Server) apiMap(w http.ResponseWriter, r *http.Request) {
 	if raw != "" {
 		user := s.normalizeUser(proto.TabUnescape(raw))
 
-		// peek: pure introspection of the stored pin (#813). userDir.Get hashes
-		// the username the SAME way entries are stored, so the CLI filter that
-		// used to come back empty (hash-mismatch via the resolve path) now
-		// matches. Crucially this has NO side effect — unlike the resolver
-		// below it never assignAndPins an unpinned user, so an operator
-		// inspecting the map cannot accidentally create pins.
+		// peek: read the stored pin only. No side effects — never pins an
+		// unpinned user, unlike the resolver below.
 		if r.URL.Query().Get("peek") != "" {
 			e := s.userDir.Get(user)
 			if e == nil {
@@ -242,14 +231,10 @@ func (s *Server) apiMap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Resolve to the SAME pod a login LOOKUP would:
-		// sticky userDir pin → ring hash (#708). This matters for #792: a per-user
-		// backend-api op (fts rescan, etc.) must hit the pod the user is
-		// actually pinned to, or it becomes a second writer of that user's
-		// index — the single-writer hazard co-location (#788) exists to avoid.
-		// The director owns the assignment; the admin never picks a pod itself.
-		// backendBaseForUser (yarctl) depends on this resolve+pin
-		// behaviour — do NOT turn it into a pure read (use peek for that).
+		// Resolve to the same pod a login LOOKUP would (sticky pin → ring
+		// hash): a per-user backend op must hit the user's pod or it becomes
+		// a second writer of that user's index. yarctl depends on the
+		// resolve+pin behaviour — do not turn this into a pure read (use peek).
 		ip, port, tag, sticky := s.resolveUserBackend(user)
 		if ip == "" {
 			apiError(w, "no backends available", http.StatusServiceUnavailable)
