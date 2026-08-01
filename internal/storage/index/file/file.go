@@ -1,17 +1,12 @@
 // Package file is the per-folder index implementation that
 // underlies every yarilo storage driver (maildir, dbox, mdbox).
 //
-// As of Phase 2 of the storage-compliance rollout it is
-// a thin adapter on top of internal/storage/mailindex — the
+// It is a thin adapter on top of internal/storage/mailindex; the
 // on-disk format is byte-for-byte the canonical mail-index v7.3.
-// The yarilo-specific .names sidecar persists for now as a
-// transitional mechanism (Phase 3 sdbox drops the need for it by
-// encoding UID in the filename; Phase 5 mdbox drops it entirely
-// in favour of map_uid).
+// The yarilo-specific .names sidecar is transitional (sdbox
+// encodes the UID in the filename, mdbox uses map_uid instead).
 //
-// The package exposes the same Backend / OpenUser / UserIndex
-// surface every caller has used since v1.0. No consumer needs to
-// change.
+// The package exposes the Backend / OpenUser / UserIndex surface.
 package file
 
 import (
@@ -44,19 +39,16 @@ const (
 	defaultLogCompactMinAgeSecs int   = 300         // 5 min
 )
 
-// sidecarTmpSeq disambiguates concurrent sidecar-file writers (saveNames,
-// ensureLogStub) the same way mailindex.tmpSeq does for the base index: two
-// callers racing a shared, non-unique "<path>.tmp" name step on each other's
-// file, and the loser's os.Rename fails outright (ENOENT, source already
-// consumed by the winner's rename) instead of just losing an update.
+// sidecarTmpSeq gives concurrent sidecar-file writers (saveNames,
+// ensureLogStub) unique tmp names, so a shared "<path>.tmp" race cannot make
+// the loser's os.Rename fail with ENOENT after the winner consumes the source.
 var sidecarTmpSeq atomic.Uint64
 
 // sidecarTmpPath returns a unique working path for a sidecar rewrite of dst.
-// When volatileDir is set, the tmp file is written there (by design every
-// scratch/tmp write goes to the fast local volatile volume, matching
-// mailindex.Recreate's TmpDir handling) rather than next to dst on the
-// shared mail volume; the caller must then stage it back onto dst's own
-// filesystem before the final rename, since os.Rename cannot cross devices.
+// When volatileDir is set the tmp file goes there (fast local volatile volume)
+// rather than next to dst on the shared mail volume; the caller must then stage
+// it back onto dst's filesystem before the final rename, since os.Rename cannot
+// cross devices.
 func sidecarTmpPath(dst, volatileDir string) string {
 	suffix := fmt.Sprintf(".tmp.%d.%d", os.Getpid(), sidecarTmpSeq.Add(1))
 	if volatileDir != "" {
@@ -120,11 +112,9 @@ type Backend struct {
 	logCompactMaxBytes int64
 	logCompactMinAge   time.Duration
 
-	// users caches one userIndex per username so all sessions belonging
-	// to the same user share a single in-process index state. Only one
-	// goroutine at a time can hold fs.mu for a given folder, which means
-	// the cross-process Redis mailbox lock is never contended within a
-	// single pod — eliminating the APPEND/STORE stall root cause.
+	// users caches one userIndex per username so all sessions for the same
+	// user share a single in-process index state, serialising on fs.mu rather
+	// than contending the cross-process Redis mailbox lock within a pod.
 	usersMu sync.Mutex
 	users   map[string]*refUserIndex
 }
@@ -391,13 +381,10 @@ type folderState struct {
 
 	logSize int64     // byte count of .index.log after last write/reload
 	baseMod time.Time // mtime of base .index at last full reload
-	// baseIdent is the os.FileInfo captured at the same moment as baseMod,
-	// compared via os.SameFile (inode+device) rather than mtime alone (#666,
-	// same class as the .log identity check in fdMatchesFile/logFileReplaced):
-	// mtime has coarse resolution on some filesystems, so a same-tick replace
-	// of the base .index by a concurrent flush()/Recreate() elsewhere could
-	// otherwise be missed and reload()'s fast path would wrongly trust a
-	// stale in-memory snapshot.
+	// baseIdent is the os.FileInfo captured with baseMod, compared via
+	// os.SameFile (inode+device) not mtime alone: coarse mtime resolution can
+	// hide a same-tick replace of the base .index by a concurrent flush()/
+	// Recreate(), which would let reload()'s fast path trust a stale snapshot.
 	baseIdent os.FileInfo
 	lastFlush time.Time // wall-clock time of last flush() call (zero = never)
 
@@ -417,13 +404,10 @@ type folderState struct {
 	// from the folder state (e.g. after a legacy import or crash).
 	vsize hdrVsize
 
-	// traceID is the calling session's correlation ID (mailbox.UserInfo.SessionID
-	// for IMAP/POP3, empty for LMTP — see userHandle.stampTrace), refreshed by
-	// every userHandle call that touches this folder. userIndex is shared/cached
-	// across concurrent sessions for the same user (Backend.OpenUser), so this is
-	// "whichever session most recently touched this folder" rather than a strict
-	// per-call value — still enough to grep one session's slice of a shared
-	// folder's log lines instead of correlating by hand via user+folder+timestamp.
+	// traceID is the calling session's correlation ID (empty for LMTP),
+	// refreshed by every userHandle call touching this folder. Since userIndex
+	// is shared across a user's sessions, it tracks whichever session most
+	// recently touched the folder, enough to grep one session's log lines.
 	traceID string
 }
 
@@ -465,13 +449,11 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	if !needCompact {
 		return
 	}
-	// Defence in depth (#644): never flush our in-memory header as ground truth
-	// if the shared log was replaced by another process's compaction since our
-	// last reload — that header could be stale (lower NextUID) and would regress
-	// the folder's UID counter. Under the distributed mailbox lock this must not
-	// happen; if the invariant is ever broken, bail and let the next reload
-	// reconcile from the rewritten base instead — re-fetching the index header
-	// after a log rotation rather than trusting an earlier snapshot of it.
+	// Never flush our in-memory header if the shared log was replaced by another
+	// process's compaction since our last reload: that header could carry a
+	// stale (lower) NextUID and regress the folder's UID counter. Under the
+	// distributed lock this cannot happen; if it ever does, bail and let the
+	// next reload reconcile from the rewritten base.
 	if fs.logFileReplaced() {
 		slog.Warn("fileindex: skipping compaction, .log replaced since reload", "folder", fs.folder)
 		fs.closeFDs()
@@ -561,19 +543,14 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 }
 
 // withFolderRO reloads the folder state, then runs read-only fn against the
-// settled in-memory snapshot under a shared distributed lock (#671).
+// settled in-memory snapshot.
 //
-// The reload is serialized against writers via the same cross-process
-// resource the write path (withFolderLock) takes (#647): an unlocked reload
-// could interleave with another process's lock-holding compaction (flush +
-// truncateLog) and load a torn view into the shared in-memory folderState —
-// which every subsequent, correctly locked write then trusts as a baseline,
-// regressing the folder's NextUID. Since #671, this is a SHARED distributed
-// lock rather than the writer's exclusive one: it still blocks against an
-// in-flight writer (shared and exclusive are mutually exclusive), but
-// concurrent readers no longer serialize against each other. fn then reads
-// the settled snapshot under fs.mu.RLock without holding the distributed
-// resource at all.
+// The reload takes a SHARED distributed lock so it cannot interleave with
+// another process's lock-holding compaction (flush + truncateLog) and load a
+// torn view into the shared folderState — which every later locked write would
+// then trust as a baseline, regressing NextUID. Shared holders run
+// concurrently and only block against an in-flight exclusive writer; fn then
+// reads under fs.mu.RLock without holding the distributed lock at all.
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
 	u.mu.Lock()
 	fs, ok := u.open[folderID]
@@ -625,9 +602,9 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 // write) runs fn without re-acquiring, so it cannot deadlock against itself.
 // When no locker is wired (tests) fn runs unguarded.
 //
-// shared selects a shared (read) lock instead of the default exclusive one
-// (#671) — multiple shared holders may run concurrently, only blocking
-// against an in-flight exclusive writer.
+// shared selects a shared (read) lock instead of the default exclusive one:
+// multiple shared holders run concurrently, blocking only against an in-flight
+// exclusive writer.
 func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) error {
 	if u.b.locker != nil {
 		key := locks.MailboxKey(u.username, fs.folder)
@@ -904,14 +881,10 @@ func migrateLegacyFilenames(indexDir string) error {
 			return fmt.Errorf("fileindex/migrate: stat %s: %w", legacyPath, err)
 		}
 		if err := os.Rename(legacyPath, nativePath); err != nil {
-			// #672: a concurrent opener may have already renamed this exact pair
-			// between our two stats above and this call — os.Rename is atomic, so
-			// only one racer's rename actually succeeds, and the loser sees ENOENT
-			// (the legacy path is already gone). Re-check nativePath before
-			// treating this as a real failure: if it now exists, someone else
-			// already completed this migration and there is nothing left to do,
-			// mirroring the double-check pattern from OpenFolder's first-creation
-			// race (#658/#659).
+			// A concurrent opener may have renamed this pair between the stats
+			// above and here; os.Rename is atomic, so the loser sees ENOENT.
+			// Re-check nativePath: if it now exists the migration is already
+			// done and there is nothing left to do.
 			if errors.Is(err, os.ErrNotExist) {
 				if _, statErr := os.Stat(nativePath); statErr == nil {
 					continue

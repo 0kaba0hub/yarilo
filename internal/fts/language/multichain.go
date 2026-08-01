@@ -7,65 +7,53 @@ import (
 )
 
 // detectionAlgoVersion is mixed into SettingsChecksum whenever the build
-// algorithm itself changes token output for a fixed language configuration
-// (not just the configured language set) — #696 moved from one detection
-// per message to one per body/attachment part, which changes which chain
-// individual parts of a mixed-language message end up indexed under. #725
-// bumped it again: header NAMEs are now indexed separately (item 5) and
-// address headers (From/To/Cc/Bcc/Reply-To/Sender) get structured
-// address-list parsing before tokenization (item 7) — both change indexed
-// header tokens. Bump this whenever such a change happens so existing
-// mailboxes reindex via the settings-drift path instead of silently
-// keeping stale tokens.
+// algorithm changes token output for a fixed language configuration (not just
+// the configured language set). Bump it on any such change so existing
+// mailboxes reindex via the settings-drift path instead of keeping stale
+// tokens. History: v2 detects per body/attachment part rather than per
+// message; v3 indexes header NAMEs separately and parses address headers as
+// RFC 5322 address-lists before tokenizing.
 const detectionAlgoVersion = 3
 
-// MultiChain holds one Chain per configured language and implements the
-// reference implementation's deliberately ASYMMETRIC multi-language design
-// (#668 point 3, refined by #696):
+// MultiChain holds one Chain per configured language and implements a
+// deliberately ASYMMETRIC multi-language design:
 //
-//   - Indexing selects exactly ONE language per body/attachment part —
+//   - Indexing selects exactly ONE language per body/attachment part,
 //     auto-detected from that part's own text, falling back to the first
-//     configured language when the part's sample is short/ambiguous (see
-//     buildmail, which owns the per-part sampling). Headers are not
-//     language text at all and never go through detection or a MultiChain
-//     language — see buildmail's dedicated data chain.
+//     configured language when the sample is short/ambiguous (buildmail owns
+//     the per-part sampling). Headers are not language text and never go
+//     through detection — see buildmail's dedicated data chain.
 //   - Search expands each query token through EVERY configured language's
-//     filter chain, OR-ing the results together ("enough for one of them to
-//     match" — the reference implementation's own phrasing), so a query
-//     matches content indexed under any configured language without needing
-//     to know which one a given part was detected as.
+//     filter chain, OR-ing the results, so a query matches content indexed
+//     under any configured language without knowing which one a part detected
+//     as.
 //
-// A single configured language degenerates MultiChain to exactly the old
-// single-Chain behaviour (chains[0] always selected, no detector call) —
-// one code path serves both cases, per the config-not-binary principle.
+// A single configured language degenerates to the plain single-Chain behaviour
+// (chains[0] always selected, no detector call) — one code path serves both.
 type MultiChain struct {
 	chains        []*Chain
 	languages     []string // parallel to chains; chains[0]/languages[0] is the fallback
 	minDetectRune int
 	// overridden records which languages had an explicit
-	// fts_language_filters_override entry (#726 item 4), regardless of
-	// whether its resolved filter list actually differs from the global
-	// default — mixed into SettingsChecksum so the override's mere
-	// presence in config is itself a configuration change that forces a
-	// reindex, not just its resolved effect on tokens.
+	// fts_language_filters_override entry, regardless of whether its resolved
+	// filter list differs from the global default. Mixed into SettingsChecksum
+	// so the override's mere presence in config forces a reindex, not just its
+	// resolved effect on tokens.
 	overridden map[string]bool
 }
 
-// NewMultiChain builds one Chain per language, sharing the same token/
-// address limits. languages must be non-empty; the first entry is the
-// fallback used when detection is skipped (single language configured) or
-// unreliable. minDetectRunes overrides the default reliability threshold
-// for the sample text handed to TryDetect/SelectForIndex (0 = package
-// default, see defaultMinDetectSample); #696 makes this tunable
-// (fts_detection_min_runes).
+// NewMultiChain builds one Chain per language, sharing the same token/address
+// limits. languages must be non-empty; the first entry is the fallback used
+// when detection is skipped (single language) or unreliable. minDetectRunes
+// overrides the default reliability threshold for the sample handed to
+// TryDetect/SelectForIndex (0 = package default, fts_detection_min_runes).
 //
 // filters is the default filter chain for every language; filtersOverride
-// replaces it for specific languages (#726 item 4) — e.g. uk (no Snowball
-// stemmer) shouldn't carry "snowball" even when other configured languages
-// do. A language absent from filtersOverride uses filters unchanged; a
-// present language's list is a full replacement, not a merge. Every
-// filtersOverride key must also name a configured language — an unknown
-// key (a typo like "ukr") is a configuration error, not silently ignored.
+// replaces it for specific languages — e.g. uk (no Snowball stemmer) shouldn't
+// carry "snowball" when other languages do. An absent language uses filters
+// unchanged; a present language's list is a full replacement, not a merge.
+// Every filtersOverride key must name a configured language — an unknown key
+// (a typo like "ukr") is a configuration error, not silently ignored.
 func NewMultiChain(languages []string, filters []string, filtersOverride map[string][]string, tokenMaxLen, addressMaxLen, minDetectRunes int) (*MultiChain, error) {
 	if len(languages) == 0 {
 		languages = []string{"en"}
@@ -109,18 +97,16 @@ func NewMultiChain(languages []string, filters []string, filtersOverride map[str
 	return m, nil
 }
 
-// NeedsDetection reports whether TryDetect/SelectForIndex would actually use
-// their sample argument — false when only one language is configured, so
-// callers can skip collecting a sample entirely (buildmail's per-part
-// bounded-prefix read is pure overhead when the result is always discarded).
+// NeedsDetection reports whether TryDetect/SelectForIndex would use their
+// sample argument — false with one language configured, so callers can skip
+// collecting a sample entirely.
 func (m *MultiChain) NeedsDetection() bool {
 	return len(m.chains) > 1
 }
 
-// TryDetect attempts language detection only, without falling back to the
-// default language on failure — callers that can cheaply grow their sample
-// (buildmail's retry-with-larger-prefix, #696) use this to decide whether a
-// retry is worthwhile before giving up and calling SelectForIndex.
+// TryDetect attempts detection only, without falling back to the default
+// language on failure — callers that can cheaply grow their sample use this to
+// decide whether a retry is worthwhile before calling SelectForIndex.
 // ok=false means the sample was too short/ambiguous to trust.
 func (m *MultiChain) TryDetect(sample string) (chain *Chain, lang string, ok bool) {
 	if len(m.chains) == 1 {
@@ -136,12 +122,11 @@ func (m *MultiChain) TryDetect(sample string) (chain *Chain, lang string, ok boo
 	return nil, "", false
 }
 
-// SelectForIndex picks the single chain a body/attachment part's index
-// tokens go through. sample should be a representative excerpt of that
-// part's own text — enough for reliable detection, but not the whole part
-// (see buildmail's bounded-prefix sampling, #696). Falls back to the first
-// configured language when detection is unreliable. Returns the chosen
-// chain and its language code (for logging/observability).
+// SelectForIndex picks the single chain a body/attachment part's index tokens
+// go through. sample should be a representative excerpt of the part's own text,
+// enough for reliable detection but not the whole part. Falls back to the
+// first configured language when detection is unreliable. Returns the chosen
+// chain and its language code.
 func (m *MultiChain) SelectForIndex(sample string) (*Chain, string) {
 	if c, lang, ok := m.TryDetect(sample); ok {
 		return c, lang
@@ -150,12 +135,10 @@ func (m *MultiChain) SelectForIndex(sample string) (*Chain, string) {
 }
 
 // ExpandSearch mirrors Chain.ExpandSearch, but for each token adds every
-// configured language's filtered form as an additional OR-variant on the
-// same Word (Word.Variants is already documented as an OR set — a document
-// matches when it matches ANY variant). A token that every configured
-// language's filter chain treats as a stopword is dropped from the query
-// entirely, same as the single-language case, since it was never indexed
-// under any of them.
+// configured language's filtered form as an OR-variant on the same Word
+// (Word.Variants is an OR set: a document matches ANY variant). A token every
+// language treats as a stopword is dropped entirely, since it was never
+// indexed under any of them.
 func (m *MultiChain) ExpandSearch(query string) []fts.Word {
 	if len(m.chains) == 1 {
 		return m.chains[0].ExpandSearch(query)
@@ -185,18 +168,17 @@ func (m *MultiChain) ExpandSearch(query string) []fts.Word {
 			}
 		}
 		if !anyKept {
-			continue // stopword in every configured language: never indexed anywhere
+			continue // stopword in every language: never indexed anywhere
 		}
 		words = append(words, fts.Word{Variants: variants})
 	}
 	return words
 }
 
-// SettingsChecksum aggregates every configured chain's checksum plus the
-// detection algorithm version, so a mailbox checkpoint invalidates (forcing
-// a rebuild) when the configured language SET changes OR when the detection
-// algorithm itself changes token output for an unchanged configuration
-// (#696).
+// SettingsChecksum aggregates every chain's checksum plus the detection
+// algorithm version, so a mailbox checkpoint invalidates (forcing a rebuild)
+// when the configured language SET changes or when the detection algorithm
+// changes token output for an unchanged configuration.
 func (m *MultiChain) SettingsChecksum() uint32 {
 	h := uint32(2166136261) // FNV-1a
 	mix := func(n uint32) {
@@ -209,11 +191,11 @@ func (m *MultiChain) SettingsChecksum() uint32 {
 	for i, c := range m.chains {
 		mix(c.SettingsChecksum())
 		if m.overridden[m.languages[i]] {
-			// #726 item 4: the override's mere presence in config is part
-			// of the configuration, even when its resolved filter list
-			// happens to match the global default — mixed in independent
-			// of the per-chain checksum above (which only covers the
-			// RESOLVED Filters/Language/limits, not where they came from).
+			// The override's mere presence in config is part of the
+			// configuration, even when its resolved filter list matches the
+			// global default — mixed in independent of the per-chain checksum
+			// above (which covers only the resolved Filters/Language/limits,
+			// not where they came from).
 			mix(0x726)
 		}
 	}

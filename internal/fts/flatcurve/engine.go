@@ -38,8 +38,8 @@ const (
 	maxTermBytes = 200
 
 	// checkpointFile is a yarilo sidecar (not part of the flatcurve format):
-	// the per-mailbox last_indexed_uid + settings checksum. A missing file
-	// on a migrated index falls back to Xapian's get_lastdocid.
+	// per-mailbox last_indexed_uid + settings checksum. Missing on a migrated
+	// index, it falls back to Xapian's get_lastdocid.
 	checkpointFile = "yarilo.checkpoint"
 )
 
@@ -70,25 +70,20 @@ func (o Options) withDefaults() Options {
 	if o.MinTermSize <= 0 {
 		o.MinTermSize = 2
 	}
-	// OptimizeLimit has no default here — 0 means "auto-optimize disabled"
-	// (#715), the same "0 = special" convention as MaxSize elsewhere. The
+	// OptimizeLimit has no default here: 0 means "auto-optimize disabled". The
 	// positive default (10) lives in pkg/config.DefaultConfig() only, so a
-	// config layer explicitly setting 0 is respected, not silently
-	// overridden back to a default.
+	// config layer explicitly setting 0 is respected, not overridden.
 	if o.RotateCount == 0 {
 		o.RotateCount = 5000
 	}
-	// RotateTime has no default here — 0 means "time-based rotation
-	// disabled" (#724), the same "0 = special" convention OptimizeLimit
-	// uses (#715). The positive default (5000ms) lives in
-	// pkg/config.DefaultConfig() only.
+	// RotateTime has no default here: 0 means "time-based rotation disabled".
+	// The positive default (5000ms) lives in pkg/config.DefaultConfig() only.
 	if o.MailboxDir == nil {
-		// Co-locate the fts-flatcurve directory inside the mailbox's own
-		// per-folder index directory (the same driver-aware layout the
-		// fileindex and ACL store share via mailbox.FolderSubpath), then append
-		// the label — e.g. mdbox INBOX → <root>/mailboxes/INBOX/dbox-Mails/
-		// fts-flatcurve. Matches where the real index data lives instead of a
-		// flat <root>/<folder>/fts-flatcurve path (#654).
+		// Co-locate fts-flatcurve inside the mailbox's own per-folder index
+		// directory (the driver-aware layout fileindex and the ACL store share
+		// via mailbox.FolderSubpath), then append the label — e.g. mdbox INBOX
+		// → <root>/mailboxes/INBOX/dbox-Mails/fts-flatcurve. Matches where the
+		// real index data lives, not a flat <root>/<folder>/fts-flatcurve.
 		o.MailboxDir = func(user fts.UserRef, mbox fts.MailboxRef) string {
 			sub := mailbox.FolderSubpath(user.Driver, mbox.Name, mbox.Name,
 				mailbox.SepOrDefault(user.Separator))
@@ -98,8 +93,8 @@ func (o Options) withDefaults() Options {
 	return o
 }
 
-// legacyMailboxDir is the pre-#654 flat layout (<root>/<folder>/fts-flatcurve).
-// Used only to migrate an existing index to the driver-aware path.
+// legacyMailboxDir is the old flat layout (<root>/<folder>/fts-flatcurve),
+// used only to migrate an existing index to the driver-aware path.
 func legacyMailboxDir(user fts.UserRef, mbox fts.MailboxRef) string {
 	return filepath.Join(user.IndexRoot, mbox.Name, Label)
 }
@@ -108,10 +103,9 @@ func legacyMailboxDir(user fts.UserRef, mbox fts.MailboxRef) string {
 type Engine struct {
 	opts Options
 
-	// optimizeCB implements fts.OptimizeNotifier (#715). Set once by the
-	// service during startup, before any indexing begins; stored via
-	// atomic.Pointer so every userIndex's write path (running on its own
-	// goroutine, under its own per-user lock) can read it without a shared
+	// optimizeCB implements fts.OptimizeNotifier. Set once at startup before
+	// any indexing; stored via atomic.Pointer so every userIndex write path
+	// (its own goroutine, its own per-user lock) can read it without a shared
 	// mutex.
 	optimizeCB atomic.Pointer[func(fts.UserRef, fts.MailboxRef)]
 }
@@ -126,14 +120,12 @@ func (e *Engine) SetOptimizeCallback(fn func(user fts.UserRef, mbox fts.MailboxR
 	e.optimizeCB.Store(&fn)
 }
 
-// notifyOptimizeIfNeeded checks the sealed-shard count right after a
-// rotation and, once it reaches OptimizeLimit, calls the registered
-// callback (#715). Called under the owning userIndex's u.mu — the callback
-// itself must only enqueue and return, never compact, so this stays a fast,
-// bounded check (one os.ReadDir of the mailbox's own shard directory) and
-// doesn't extend how long the write path holds the lock. Firing again on
-// every subsequent rotation while the mailbox is still at/above the limit
-// is expected and harmless: the queue on the receiving end dedups.
+// notifyOptimizeIfNeeded checks the sealed-shard count right after a rotation
+// and, once it reaches OptimizeLimit, calls the registered callback. Called
+// under the owning userIndex's u.mu; the callback must only enqueue and
+// return, never compact, so this stays a bounded check (one os.ReadDir) and
+// doesn't extend how long the write path holds the lock. Firing on every
+// rotation while still at/above the limit is harmless: the queue dedups.
 func (e *Engine) notifyOptimizeIfNeeded(st *mboxState) {
 	if e.opts.OptimizeLimit <= 0 {
 		return
@@ -171,9 +163,9 @@ func (e *Engine) OpenUser(_ context.Context, user fts.UserRef) (fts.UserIndex, e
 // sole writer (docs/FTS.md §4), so a plain mutex per user index suffices.
 type mboxState struct {
 	dir     string
-	eng     *Engine        // set once at creation; gives commitCurrent access to opts.RotateTime (#724) without threading it through every call site
-	user    fts.UserRef    // set once at creation; identifies the owning user for #715's optimize callback
-	mbox    fts.MailboxRef // set once at creation; identifies this mailbox for #715's optimize callback
+	eng     *Engine        // gives commitCurrent access to opts.RotateTime without threading it through every call site
+	user    fts.UserRef    // owning user, for the optimize callback
+	mbox    fts.MailboxRef // this mailbox, for the optimize callback
 	cur     *xapian.WDB
 	curPath string
 	pending int    // uncommitted document updates
@@ -199,14 +191,12 @@ func (u *userIndex) state(mbox fts.MailboxRef) *mboxState {
 	return st
 }
 
-// cleanStaleOptimizeTmp removes a leftover "optimize" compaction tmp
-// directory from a crash mid-run (#715). optimizeDir already os.RemoveAll()s
-// this same path before starting a fresh Compact, so a stale one is at
-// worst temporary disk usage, never corruption — this just reclaims it
-// proactively the first time the mailbox's directory is touched, since the
-// service has no upfront list of every mailbox to sweep at process start.
-// shardPaths only picks up dbPrefix/currentPrefix directories, so a stale
-// "optimize" dir is never mistaken for a shard in the meantime either way.
+// cleanStaleOptimizeTmp removes a leftover "optimize" compaction tmp directory
+// from a crash mid-run. optimizeDir already os.RemoveAll()s this path before a
+// fresh Compact, so a stale one is at worst wasted disk, never corruption;
+// this reclaims it the first time the directory is touched, since the service
+// has no upfront list of mailboxes to sweep at startup. shardPaths only picks
+// up dbPrefix/currentPrefix dirs, so a stale one is never taken for a shard.
 func cleanStaleOptimizeTmp(dir string) {
 	tmp := filepath.Join(dir, "optimize")
 	if _, err := os.Stat(tmp); err != nil {
@@ -219,12 +209,11 @@ func cleanStaleOptimizeTmp(dir string) {
 	slog.Info("fts/flatcurve: cleaned stale optimize tmp dir left over from a prior crash", "dir", tmp)
 }
 
-// migrateLegacyDir moves an existing FTS index from the pre-#654 flat path to
-// the driver-aware dir, so switching the resolver relocates the index in place
-// instead of orphaning it and forcing a full reindex. Best-effort: on any
-// failure a fresh index is built at newDir (self-heals via autoindex). The
-// yarilo-fts service is the sole writer, so no cross-process race here. Caller
-// holds u.mu.
+// migrateLegacyDir moves an existing FTS index from the old flat path to the
+// driver-aware dir, so switching the resolver relocates the index in place
+// instead of orphaning it and forcing a full reindex. Best-effort: on failure
+// a fresh index is built at newDir (self-heals via autoindex). The yarilo-fts
+// service is the sole writer, so no cross-process race. Caller holds u.mu.
 func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
 	legacy := legacyMailboxDir(u.user, mbox)
 	if legacy == newDir {
@@ -247,7 +236,7 @@ func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
 			"from", legacy, "to", newDir, "err", err)
 		return
 	}
-	slog.Info("fts/flatcurve: migrated legacy FTS dir to driver-aware path (#654)",
+	slog.Info("fts/flatcurve: migrated legacy FTS dir to driver-aware path",
 		"from", legacy, "to", newDir)
 }
 
@@ -295,14 +284,13 @@ func (st *mboxState) ensureCurrent() error {
 		curPath = filepath.Join(st.dir,
 			fmt.Sprintf("%s%d", currentPrefix, time.Now().UnixMicro()))
 	}
-	// Create the shard directory ourselves and fsync its parent BEFORE handing the
-	// path to Xapian. Xapian opens the glass DB with DB_NO_SYNC (no directory
-	// fsync), so relying on it to create current.<ts> leaves the directory entry
-	// unflushed — a rotate/rename or restart can then race a write into a
+	// Create the shard directory and fsync its parent BEFORE handing the path
+	// to Xapian. Xapian opens the glass DB with DB_NO_SYNC (no directory
+	// fsync), so letting it create current.<ts> leaves the directory entry
+	// unflushed: a rotate/rename or restart then races a write into a
 	// not-yet-durable directory, surfacing as "Couldn't write new rev file:
 	// .../current.<ts>/v.tmp (No such file or directory)" and permanently
-	// wedging the shard (#629). Making + fsyncing the directory first removes that
-	// window.
+	// wedging the shard. Making + fsyncing the directory first closes that gap.
 	if err := os.MkdirAll(curPath, 0o700); err != nil {
 		return fmt.Errorf("fts/flatcurve: mkdir current shard: %w", err)
 	}
@@ -333,14 +321,12 @@ func (st *mboxState) ensureCurrent() error {
 	return nil
 }
 
-// commitCurrent commits the pending documents in the current write shard.
-// If the commit itself took longer than RotateTime, it also rotates right
-// after (#724): large-document mailboxes with few messages per shard never
-// hit RotateCount, so without this a single shard can accumulate an
-// unbounded amount of slow-to-commit data. This is the single place every
-// caller (the write path's CommitLimit check, an explicit Commit(),
-// Refresh()) goes through, so the time-based trigger applies uniformly
-// without threading RotateTime through each call site.
+// commitCurrent commits the pending documents in the current write shard. If
+// the commit took longer than RotateTime, it rotates right after: large-
+// document mailboxes with few messages per shard never hit RotateCount, so
+// without this a single shard accumulates unbounded slow-to-commit data. Every
+// caller (the CommitLimit check, an explicit Commit(), Refresh()) goes through
+// here, so the time-based trigger applies uniformly.
 func (st *mboxState) commitCurrent() error {
 	if st.cur == nil || st.pending == 0 {
 		return nil
@@ -348,7 +334,7 @@ func (st *mboxState) commitCurrent() error {
 	t0 := time.Now()
 	if err := st.cur.Commit(); err != nil {
 		slog.Warn("fts/flatcurve: commitCurrent failed, discarding handle", "dir", st.dir, "cur_path", st.curPath, "pending", st.pending, "err", err)
-		st.discardCurrent() // reopen on the next pass rather than keep a dead handle (#629)
+		st.discardCurrent() // reopen next pass rather than keep a dead handle
 		return err
 	}
 	dur := time.Since(t0)
@@ -360,7 +346,7 @@ func (st *mboxState) commitCurrent() error {
 			st.discardCurrent()
 			return err
 		}
-		st.eng.notifyOptimizeIfNeeded(st) // #715: this seals a shard too
+		st.eng.notifyOptimizeIfNeeded(st) // this seals a shard too
 	}
 	return nil
 }
@@ -373,7 +359,7 @@ func (st *mboxState) rotate() error {
 	}
 	if err := st.cur.Commit(); err != nil {
 		slog.Warn("fts/flatcurve: rotate commit failed, discarding handle", "dir", st.dir, "cur_path", st.curPath, "err", err)
-		st.discardCurrent() // reopen on the next pass (#629)
+		st.discardCurrent() // reopen on the next pass
 		return err
 	}
 	st.cur.Close()
@@ -388,8 +374,8 @@ func (st *mboxState) rotate() error {
 		return fmt.Errorf("fts/flatcurve: rotate: %w", err)
 	}
 	// Make the rename durable before the next ensureCurrent creates a new
-	// current.<ts>: otherwise a restart could leave both the old (unrenamed) and
-	// new shard directory entries unflushed, the state that wedges #629.
+	// current.<ts>: otherwise a restart could leave both the old (unrenamed)
+	// and new shard directory entries unflushed, the state that wedges a shard.
 	if err := syncDir(st.dir); err != nil {
 		return fmt.Errorf("fts/flatcurve: fsync after rotate: %w", err)
 	}
@@ -408,12 +394,12 @@ func syncDir(dir string) error {
 	return f.Sync()
 }
 
-// discardCurrent force-releases the write shard WITHOUT committing. Called on any
-// engine error so the next ensureCurrent reopens a fresh handle instead of
-// returning the same poisoned one forever — the DatabaseClosedError "sticky
-// handle" of #629. Uncommitted docs are dropped, but the caller returns the error
-// so the ftsservice checkpoint does not advance and those UIDs are re-indexed on
-// the next pass. Best-effort: close errors are ignored (the handle is dead anyway).
+// discardCurrent force-releases the write shard WITHOUT committing. Called on
+// any engine error so the next ensureCurrent reopens a fresh handle instead of
+// returning the same poisoned one forever (the DatabaseClosedError sticky
+// handle). Uncommitted docs are dropped, but the caller returns the error so
+// the ftsservice checkpoint does not advance and those UIDs re-index next pass.
+// Best-effort: close errors are ignored (the handle is dead anyway).
 func (st *mboxState) discardCurrent() {
 	if st.cur != nil {
 		st.cur.Close()
@@ -443,8 +429,8 @@ func (st *mboxState) closeCurrent() error {
 
 // Checkpoint returns the persisted (last_indexed_uid, uidvalidity, settings
 // checksum). The on-disk file is v2 ("2 <uidvalidity> <last_uid> <checksum>");
-// a legacy v1 file ("1 <last_uid> <checksum>") reads uidvalidity back as 0 so the
-// caller treats it as "unknown" and lets a UIDVALIDITY mismatch reset it (#638).
+// an old v1 file ("1 <last_uid> <checksum>") reads uidvalidity back as 0 so
+// the caller treats it as "unknown" and lets a UIDVALIDITY mismatch reset it.
 func (u *userIndex) Checkpoint(mbox fts.MailboxRef) (lastUID, uidValidity, sum uint32, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -539,17 +525,16 @@ func (up *update) SetBuildKey(k fts.BuildKey) (bool, error) {
 		up.uid = k.UID
 	}
 	up.key = k
-	// The header-existence boolean term is NOT set here (#725 item 6): the
-	// reference only records header presence together with at least one
-	// >=min_term_size token actually surviving normTerm, so it's set lazily
-	// in BuildMore once we know that's true — HEADER X-Foo "" (a value
-	// that tokenizes to nothing) must not match.
+	// The header-existence boolean term is NOT set here: header presence is
+	// recorded only together with at least one >=min_term_size token surviving
+	// normTerm, so it's set lazily in BuildMore once that's known — HEADER
+	// X-Foo "" (a value that tokenizes to nothing) must not match.
 	return true, nil
 }
 
-// normTerm applies the upstream term normalization: minimum length, the
-// 200-byte cap (multibyte-safe) and the lowercased first ASCII character
-// (Xapian treats a leading capital as a term prefix).
+// normTerm normalizes a term: minimum length, the 200-byte cap
+// (multibyte-safe), and lowercasing the first ASCII character (Xapian treats a
+// leading capital as a term prefix).
 func normTerm(tok string, minSize int) string {
 	if len(tok) < minSize {
 		return ""
@@ -571,8 +556,8 @@ func normTerm(tok string, minSize int) string {
 	return tok
 }
 
-// addWithSuffixes adds prefix+term and, in substring mode, every suffix of
-// the term not shorter than minSize (the upstream substring_search loop).
+// addWithSuffixes adds prefix+term and, in substring mode, every suffix of the
+// term not shorter than minSize.
 func (up *update) addWithSuffixes(prefix, term string, substring bool, minSize int) error {
 	s := term
 	for {
@@ -608,14 +593,12 @@ func (up *update) BuildMore(data []byte) error {
 		}
 		name := strings.ToLower(up.key.HdrName)
 		if name == "" {
-			// The header-NAME-only build key (#725 item 5, empty HdrName)
-			// only ever reaches the A-pool above — it has no per-field
-			// existence signal of its own.
+			// The header-NAME-only build key (empty HdrName) only reaches the
+			// A-pool above; it has no per-field existence signal of its own.
 			return nil
 		}
-		// Header existence (#725 item 6): set lazily here, now that a real
-		// (>=min_term_size) token for THIS field is confirmed, not
-		// proactively in SetBuildKey.
+		// Header existence: set lazily here, now that a real (>=min_term_size)
+		// token for THIS field is confirmed, not proactively in SetBuildKey.
 		if !up.seenBool[name] {
 			up.seenBool[name] = true
 			if err := up.doc.AddBooleanTerm(boolPrefix + name); err != nil {
@@ -641,7 +624,7 @@ func (up *update) flushDocLocked() error {
 		return err
 	}
 	if err := st.cur.ReplaceDocument(up.uid, up.doc); err != nil {
-		st.discardCurrent() // poisoned shard → reopen on the next pass (#629)
+		st.discardCurrent() // poisoned shard → reopen on the next pass
 		return err
 	}
 	up.doc.Free()
@@ -661,7 +644,7 @@ func (up *update) flushDocLocked() error {
 			st.discardCurrent()
 			return err
 		}
-		up.ui.eng.notifyOptimizeIfNeeded(st) // #715
+		up.ui.eng.notifyOptimizeIfNeeded(st)
 	}
 	return nil
 }
@@ -679,7 +662,7 @@ func (up *update) Rollback() error {
 	up.ui.mu.Lock()
 	defer up.ui.mu.Unlock()
 	// Already-flushed documents stay (rescan reconciles); only the pending
-	// document is discarded — the upstream failure semantics.
+	// document is discarded.
 	if up.doc != nil {
 		up.doc.Free()
 		up.doc = nil
@@ -693,8 +676,8 @@ func (u *userIndex) Expunge(mbox fts.MailboxRef, uid uint32) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	st := u.state(mbox)
-	// The open write shard is checked in place; sealed shards are opened
-	// one by one (the upstream per-shard probe).
+	// The open write shard is checked in place; sealed shards are opened one by
+	// one.
 	if st.cur != nil {
 		existed, err := st.cur.DeleteDocument(uid)
 		if err != nil {
@@ -816,14 +799,11 @@ func (u *userIndex) Optimize() error {
 	return nil
 }
 
-// OptimizeMailbox compacts sealed shards for exactly one mailbox (#715). It
-// takes the same u.mu as Optimize and every write path, so it can never run
-// concurrently with a manual whole-user Optimize (or another OptimizeMailbox
-// call) against the same userIndex — no separate coordination is needed
-// beyond the mutex already required for correctness. optimizeDir itself is
-// a cheap no-op below 2 shards, so an occasional redundant call (e.g. manual
-// and auto-optimize racing to enqueue/run for the same mailbox) costs
-// nothing.
+// OptimizeMailbox compacts sealed shards for one mailbox. It takes the same
+// u.mu as Optimize and every write path, so it never runs concurrently with a
+// whole-user Optimize or another OptimizeMailbox against the same userIndex.
+// optimizeDir is a no-op below 2 shards, so a redundant call (manual and
+// auto-optimize racing for the same mailbox) costs nothing.
 func (u *userIndex) OptimizeMailbox(mbox fts.MailboxRef) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -920,15 +900,14 @@ func (u *userIndex) Lookup(mbox fts.MailboxRef, q fts.Query) (fts.Result, error)
 	}
 	defer xq.Free()
 
-	// Search each shard SEPARATELY and merge, rather than combining them into one
-	// database and searching once (#670). A Xapian database combined from N
-	// sub-databases renumbers matches to an interleaved external docid
-	// ((local-1)*N + i + 1), so a combined search over ≥2 shards would report
-	// mangled ids instead of the real UIDs (docid == UID holds only per shard).
-	// A single-shard search returns the local docid unchanged, i.e. the UID.
-	// The query is immutable and safe to reuse across shards; a UID lives in
-	// exactly one shard, but we merge into a map (keeping the higher weight) to
-	// stay correct even if that ever stops holding.
+	// Search each shard SEPARATELY and merge, not combine into one database and
+	// search once. A Xapian database combined from N sub-databases renumbers
+	// matches to an interleaved external docid ((local-1)*N + i + 1), so a
+	// combined search over ≥2 shards reports mangled ids instead of real UIDs
+	// (docid == UID holds only per shard). A single-shard search returns the
+	// local docid unchanged, i.e. the UID. The query is immutable and reusable
+	// across shards; a UID lives in exactly one shard, but we merge into a map
+	// (keeping the higher weight) to stay correct even if that stops holding.
 	best := make(map[uint32]float64)
 	for _, p := range paths {
 		db, derr := xapian.OpenDBMulti([]string{p})
@@ -1075,8 +1054,8 @@ func buildVariant(field fts.FieldKind, hdrName, v string, minSize int) (*xapian.
 			q, err := xapian.QueryWildcard(hdrPrefix + strings.ToUpper(hdrName) + v)
 			return q, false, err
 		}
-		// Non-indexed header: only the pooled A prefix knows the term —
-		// an over-approximation the caller must re-verify (maybe).
+		// Non-indexed header: only the pooled A prefix knows the term, an
+		// over-approximation the caller must re-verify (maybe).
 		q, err := xapian.QueryWildcard(allHdrPrefix + v)
 		return q, true, err
 	default:

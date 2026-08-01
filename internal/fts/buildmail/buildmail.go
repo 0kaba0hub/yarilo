@@ -1,9 +1,8 @@
 // Package buildmail turns a raw RFC 5322 message into the FTS build-key
-// stream. It walks the MIME
-// structure, emits KeyHeader / KeyMIMEHeader for indexable header fields and
-// KeyBodyPart for decoded text parts (HTML converted to text, other
-// attachment types routed through an optional external decoder), skips
-// multipart containers, and caps the indexed body size.
+// stream: KeyHeader/KeyMIMEHeader for indexable header fields, KeyBodyPart for
+// decoded text parts (HTML converted to text, other attachments via an
+// optional external decoder). Skips multipart containers; caps indexed body
+// size.
 package buildmail
 
 import (
@@ -27,58 +26,51 @@ import (
 // Options selects which headers are indexed and how much body text is fed.
 type Options struct {
 	// HeaderIncludes / HeaderExcludes filter header fields by name
-	// (case-insensitive; a trailing '*' is a prefix mask). The default is
-	// index-unless-excluded; an include match overrides an exclude match.
+	// (case-insensitive; trailing '*' is a prefix mask). Default is
+	// index-unless-excluded; an include match wins over an exclude match.
 	HeaderIncludes []string
 	HeaderExcludes []string
-	// MaxSize caps the total body bytes fed to the index per message
+	// MaxSize caps total body bytes fed to the index per message
 	// (fts_message_max_size). 0 = unlimited.
 	MaxSize int64
 
-	// Decoder extracts text from non-text/HTML attachment parts (PDF,
-	// office documents, etc.). Nil = attachments beyond text/HTML stay
-	// unindexed (fts_decoder_driver=none, the default). See #669.
+	// Decoder extracts text from non-text/HTML attachment parts (PDF, office
+	// documents, etc.). Nil = such attachments stay unindexed
+	// (fts_decoder_driver=none, the default).
 	Decoder decoder.Decoder
 
-	// DedupBodyParts skips re-tokenizing a body part whose normalized text
-	// content was already indexed for the SAME message — multipart/alternative
-	// text+html twins, or a quoted block repeated within one body. Opt-in
-	// (fts_dedup_body_parts, default false): the extra per-part hashing and
-	// buffering is skipped entirely on the default fast path. See #669.
+	// DedupBodyParts skips re-tokenizing a body part whose normalized text was
+	// already indexed for the SAME message (multipart/alternative text+html
+	// twins, a repeated quoted block). Opt-in (fts_dedup_body_parts, default
+	// false): the extra per-part hashing and buffering is off on the fast path.
 	DedupBodyParts bool
 
-	// DetectionSampleBytes bounds how many bytes of a body/attachment part
-	// are read up front to derive its language-detection sample (#696;
-	// fts_detection_sample_bytes). 0 = defaultDetectionSampleBytes. Only
-	// matters when the configured chain has more than one language.
+	// DetectionSampleBytes bounds how many bytes of a part are read up front
+	// for its language-detection sample (fts_detection_sample_bytes). 0 =
+	// defaultDetectionSampleBytes. Only matters with more than one language.
 	DetectionSampleBytes int
 }
 
-// Builder streams messages into an fts.Update through a language chain,
-// selected per body/attachment part (#668 point 3, refined by #696: exactly
-// one auto-detected language per PART, never redundant per-language
-// re-stemming — see MultiChain). Headers are not language text and always
-// go through dataChain instead (#696 point 2).
+// Builder streams messages into an fts.Update. The language chain is selected
+// per body/attachment part: exactly one auto-detected language per part (see
+// MultiChain). Headers are not language text and always go through dataChain.
 type Builder struct {
 	opts      Options
 	chain     *language.MultiChain
 	dataChain *language.Chain
 }
 
-// New returns a Builder. chain is required: the first engine is tokenized,
-// so every part streams through the tokenizer + filters.
+// New returns a Builder. chain is required.
 func New(opts Options, chain *language.MultiChain) *Builder {
-	// dataChain indexes header values (addresses, message-ids, subjects in
-	// arbitrary languages) with normalization only — no stemming, no
-	// stopwords, regardless of the configured language filter set.
-	// internal/imap's header query expansion must use the exact same chain
-	// (#723) — a stemmed query variant against an unstemmed indexed token
-	// produces false-positive wildcard matches.
+	// dataChain indexes header values (addresses, message-ids, subjects) with
+	// normalization only: no stemming, no stopwords, regardless of the
+	// configured language filters. internal/imap's header query expansion must
+	// use the exact same chain, or a stemmed query variant against an
+	// unstemmed indexed token yields false-positive wildcard matches.
 	dataChain, err := language.NewDataChain()
 	if err != nil {
-		// "lowercase" is a static, language-independent filter — this
-		// cannot fail in practice; a panic here would only mean the filter
-		// chain itself was broken at compile time, not a runtime condition.
+		// "lowercase" is a static, language-independent filter: cannot fail at
+		// runtime, only if the filter chain is broken at compile time.
 		panic(fmt.Sprintf("fts/buildmail: data chain: %v", err))
 	}
 	return &Builder{opts: opts, chain: chain, dataChain: dataChain}
@@ -104,39 +96,30 @@ func (b *Builder) headerIndexable(name string) bool {
 	return !matchHeaderList(name, b.opts.HeaderExcludes)
 }
 
-// buildState carries per-message state through the MIME walk: the UID being
-// indexed, the remaining body-size budget, and (when DedupBodyParts is on)
-// the set of already-seen normalized body-text hashes for THIS message only
-// — cross-message dedup is out of scope, see Options.DedupBodyParts. Unlike
-// before #696, there is no message-wide language chain here: each part
-// picks its own (see detectPartChain / selectChainForBytes).
+// buildState carries per-message MIME-walk state: the UID, the remaining
+// body-size budget, and (when DedupBodyParts is on) the already-seen
+// normalized body-text hashes for THIS message only. No message-wide language
+// chain: each part picks its own (see detectPartChain / selectChainForBytes).
 type buildState struct {
 	uid        uint32
 	remaining  int64
 	seenHashes map[uint64]struct{}
 }
 
-// defaultDetectionSampleBytes bounds how many raw bytes of a body/attachment
-// part are read up front to derive its language-detection sample, when
-// Options.DetectionSampleBytes isn't set.
+// defaultDetectionSampleBytes bounds the language-detection sample read from a
+// part when Options.DetectionSampleBytes isn't set.
 const defaultDetectionSampleBytes = 1024
 
 // detectionRetryFactor grows the sample once (to
-// detectSampleBytes()*detectionRetryFactor) when the first bounded prefix
-// was too short/ambiguous to classify but more of the part is available to
-// read — mirroring the reference implementation's retry-before-fallback
-// behaviour (#696 point 4) with a single bounded growth step rather than an
-// open-ended retry loop.
+// detectSampleBytes()*detectionRetryFactor) when the first bounded prefix was
+// too short/ambiguous to classify but more of the part is available. A single
+// bounded growth step, not an open-ended retry loop.
 const detectionRetryFactor = 4
 
 // Build parses raw and streams the message's indexable parts into upd. The
-// caller owns the update session (commit/rollback).
-//
-// #696 removed the message-wide pre-pass that #695 had bounded: headers no
-// longer go through a detected language chain at all (buildHeaders always
-// uses dataChain), so there is nothing that needs a sample before the walk
-// starts. Each body/attachment part now detects its own language lazily,
-// from its own text, exactly when it is built — see detectPartChain.
+// caller owns the update session (commit/rollback). Each body/attachment part
+// detects its own language lazily, from its own text (see detectPartChain);
+// headers always use dataChain.
 func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 	remaining := b.opts.MaxSize
 	if remaining <= 0 {
@@ -156,10 +139,9 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 }
 
 // readPrefix reads up to n bytes from r, tolerating a short read at EOF (a
-// part shorter than n bytes is not an error — it just means the entire part
-// became the detection sample). r's read position advances past whatever
-// was consumed; the caller reattaches the remainder via io.MultiReader
-// rather than "unreading" it.
+// part shorter than n bytes just becomes the whole detection sample). r
+// advances past what was consumed; the caller reattaches the remainder via
+// io.MultiReader.
 func readPrefix(r io.Reader, n int) ([]byte, error) {
 	buf := make([]byte, n)
 	read, err := io.ReadFull(r, buf)
@@ -176,10 +158,8 @@ func (b *Builder) detectSampleBytes() int {
 	return defaultDetectionSampleBytes
 }
 
-// extractSample turns a raw prefix into detector-ready text: as-is for
-// plain text, tag-stripped for HTML (tolerant of a prefix that cuts a tag
-// in half — htmlToText already tolerates malformed/truncated input, see
-// html.go).
+// extractSample turns a raw prefix into detector-ready text: as-is for plain
+// text, tag-stripped for HTML (htmlToText tolerates truncated input).
 func extractSample(prefix []byte, isHTML bool) string {
 	if !isHTML {
 		return string(prefix)
@@ -193,15 +173,10 @@ func extractSample(prefix []byte, isHTML bool) string {
 }
 
 // detectPartChain selects the language chain for one body part's own text,
-// reading only a bounded prefix of r (#696: per-part detection, generalizing
-// #695's message-level bounded-prefix pattern down to the part level). It
-// returns the chosen chain and a reader that replays the consumed prefix
-// before continuing with whatever remains of r, so the real indexing pass
-// still sees the part's full content.
-//
-// When only one language is configured, detection never runs at all — r is
-// returned unread, matching the zero-overhead single-language path #695
-// established at the message level.
+// reading only a bounded prefix of r. It returns the chosen chain and a reader
+// that replays the consumed prefix before the rest of r, so the indexing pass
+// still sees the part's full content. With one language configured, detection
+// is skipped and r is returned unread.
 func (b *Builder) detectPartChain(r io.Reader, isHTML bool) (*language.Chain, io.Reader, error) {
 	if !b.chain.NeedsDetection() {
 		chain, _ := b.chain.SelectForIndex("")
@@ -218,9 +193,8 @@ func (b *Builder) detectPartChain(r io.Reader, isHTML bool) (*language.Chain, io
 		return chain, io.MultiReader(bytes.NewReader(prefix), r), nil
 	}
 
-	// The first bounded prefix wasn't enough to classify reliably. Retry
-	// with a larger sample only if there's actually more to read (a short
-	// prefix already hit EOF, so growing it would read nothing new).
+	// First prefix wasn't enough to classify. Retry with a larger sample only
+	// if there's more to read (a short prefix already hit EOF).
 	if len(prefix) == cap0 {
 		extra, err := readPrefix(r, cap0*detectionRetryFactor-cap0)
 		if err != nil {
@@ -236,11 +210,9 @@ func (b *Builder) detectPartChain(r io.Reader, isHTML bool) (*language.Chain, io
 	return chain, io.MultiReader(bytes.NewReader(prefix), r), nil
 }
 
-// selectChainForBytes is detectPartChain's counterpart for content that is
-// already fully materialized in memory (decoded attachment text, #696 point
-// 3) — no bounded-read/replay dance needed, just detect on a bounded slice
-// of what's already there, with the same retry-once-if-more-is-available
-// shape as detectPartChain.
+// selectChainForBytes is detectPartChain's counterpart for content already
+// fully in memory (decoded attachment text): detect on a bounded slice, with
+// the same retry-once-if-more-is-available shape.
 func (b *Builder) selectChainForBytes(data []byte) *language.Chain {
 	if !b.chain.NeedsDetection() {
 		chain, _ := b.chain.SelectForIndex("")
@@ -292,8 +264,8 @@ func (b *Builder) walkEntity(st *buildState, e *message.Entity, depth int, upd f
 				return nil
 			}
 			if err != nil {
-				// A broken part must not abort the whole message: index what
-				// was readable.
+				// A broken part must not abort the message: index what was
+				// readable.
 				return nil
 			}
 			if err := b.walkEntity(st, part, depth+1, upd); err != nil {
@@ -313,9 +285,9 @@ func (b *Builder) walkEntity(st *buildState, e *message.Entity, depth int, upd f
 	}
 }
 
-// addressHeaders are the fields whose value is an RFC 5322 address-list —
-// From/To/Cc/Bcc/Reply-To/Sender get structured parsing before tokenization
-// (#725 item 7) instead of tokenizing the raw decoded text as one blob.
+// addressHeaders are the fields whose value is an RFC 5322 address-list; they
+// get structured parsing before tokenization instead of tokenizing the raw
+// decoded text as one blob.
 var addressHeaders = map[string]bool{
 	"from": true, "to": true, "cc": true, "bcc": true,
 	"reply-to": true, "sender": true,
@@ -341,11 +313,10 @@ func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd
 			continue
 		}
 
-		// The header NAME itself gets its own build key with an empty
-		// HdrName (#725 item 5): it lands only in the A-pool (TEXT search
-		// matches by header name, e.g. "list-id"), never in the per-field
-		// H<NAME> pool alongside the value — otherwise HEADER List-Id
-		// "list-id" would spuriously match its own name.
+		// The header NAME itself gets its own build key with an empty HdrName:
+		// it lands only in the A-pool (TEXT matches by header name, e.g.
+		// "list-id"), never in the per-field H<NAME> pool alongside the value,
+		// or HEADER List-Id "list-id" would match its own name.
 		if accept, err := upd.SetBuildKey(fts.BuildKey{UID: st.uid, Type: keyType}); err != nil {
 			return err
 		} else if accept {
@@ -376,10 +347,8 @@ func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd
 	return nil
 }
 
-// writeDataChain runs text through a fresh no-stemming data-chain session
-// (#696 point 2 — headers are not language text) into upd. A fresh session
-// per call: tokenizer state must not leak between build keys (the reference
-// resets the tokenizer per build key).
+// writeDataChain runs text through a fresh no-stemming data-chain session into
+// upd. Fresh per call: tokenizer state must not leak between build keys.
 func (b *Builder) writeDataChain(text string, upd fts.Update) error {
 	session := b.dataChain.NewIndexSession(func(tok string) error {
 		return upd.BuildMore([]byte(tok))
@@ -392,14 +361,11 @@ func (b *Builder) writeDataChain(text string, upd fts.Update) error {
 
 // addressHeaderText re-derives an address-header's tokenizable text via
 // structured RFC 5322 address-list parsing on the RAW (not RFC2047-decoded)
-// bytes (#725 item 7), mirroring the reference's own parse-then-decode
-// order: decoding RFC2047 encoded-words BEFORE parsing can turn decoded
-// display-name characters ('(', '[', '<') into RFC 5322 comment/special
-// delimiters, corrupting the address-list parse. net/mail.ParseAddressList
-// decodes RFC2047 encoded-words in the display name as part of parsing the
-// raw bytes, so parse-raw-then-decode happens in one call. A parse failure
-// (a garbage header) falls back to the already-decoded value as-is —
-// tokenizing something imperfect beats dropping the header.
+// bytes. Decoding encoded-words before parsing can turn decoded display-name
+// characters ('(', '[', '<') into RFC 5322 comment/special delimiters and
+// corrupt the parse; net/mail.ParseAddressList decodes as part of parsing the
+// raw bytes, so parse-then-decode happens in one call. A parse failure falls
+// back to the already-decoded value.
 func addressHeaderText(raw, decoded string) string {
 	addrs, err := mail.ParseAddressList(raw)
 	if err != nil || len(addrs) == 0 {
@@ -431,9 +397,8 @@ func (b *Builder) buildTextBody(st *buildState, e *message.Entity, mediaType str
 }
 
 // buildDecodedAttachment routes a non-text/HTML part through the configured
-// external decoder (nil Decoder = attachment stays unindexed, unchanged
-// behaviour from before #669). A decoder returning ok=false (unsupported
-// content type/extension) is treated the same as no decoder: skip silently.
+// external decoder (nil Decoder = attachment stays unindexed). A decoder
+// returning ok=false (unsupported type/extension) is skipped silently.
 func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, mediaType string, upd fts.Update) error {
 	if b.opts.Decoder == nil {
 		return nil
@@ -447,28 +412,23 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 	text, ok, err := b.opts.Decoder.Decode(context.Background(), mediaType, filename, e.Body)
 	if err != nil {
 		if errors.Is(err, decoder.ErrDegraded) {
-			// Retries against a transient condition (network error, 5xx)
-			// were exhausted: index this message without the attachment's
-			// text and move on. The reference implementation's own
-			// "…- ignoring" semantics — a document that fails to extract
-			// does not get a second autoindex pass, since nothing about it
-			// is expected to change on retry beyond the same transient
-			// failure recurring (#697).
+			// Retries against a transient condition (network error, 5xx) were
+			// exhausted: index this message without the attachment text and
+			// move on. No second autoindex pass follows, since nothing about
+			// the document is expected to change beyond the same failure.
 			metricDecoderDegraded.Inc()
 			slog.Info("fts/buildmail: decoder degraded, indexing without attachment text",
 				"uid", st.uid, "content_type", mediaType, "filename", filename, "err", err)
 			return nil
 		}
-		// Any other decoder error is a hard failure (bad config, a
-		// permanent 4xx, a script protocol error): abort this message's
-		// indexing attempt so autoindex retries it later, rather than
-		// committing a silently-incomplete document (#697).
+		// Any other decoder error is a hard failure (bad config, a permanent
+		// 4xx, a script protocol error): abort this message so autoindex
+		// retries it later, rather than commit a silently-incomplete document.
 		return fmt.Errorf("fts/buildmail: decode attachment: %w", err)
 	}
 	if !ok || len(text) == 0 {
-		// Unsupported content type/extension: index what was otherwise
-		// readable and move on, matching the tolerant-of-broken-parts
-		// behaviour used throughout this walk.
+		// Unsupported content type/extension: index what else was readable and
+		// move on, like the rest of this walk tolerates broken parts.
 		slog.Debug("fts/buildmail: decoder skipped attachment",
 			"uid", st.uid, "content_type", mediaType, "filename", filename)
 		return nil
@@ -480,15 +440,14 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 	return b.buildBodyText(st, chain, mediaType, produce, upd)
 }
 
-// buildBodyText is the shared tail for both text/HTML parts and decoded
-// attachment text: applies the size cap, optionally dedups against this
-// message's already-seen normalized text, and tokenizes into upd.
+// buildBodyText is the shared tail for text/HTML parts and decoded attachment
+// text: applies the size cap, optionally dedups against this message's
+// already-seen normalized text, and tokenizes into upd.
 //
-// DedupBodyParts is opt-in specifically because it changes the hot path:
-// disabled (default), text streams directly into the tokenizer exactly as
-// before #669 — zero extra buffering, zero extra allocation. Enabled, the
-// part's text must be fully buffered first (bounded by MaxSize) so its
-// normalized hash can be computed and compared before deciding to tokenize.
+// DedupBodyParts is opt-in because it changes the hot path: disabled (default),
+// text streams directly into the tokenizer with no extra buffering; enabled,
+// the part's text is fully buffered first (bounded by MaxSize) so its
+// normalized hash can be compared before deciding to tokenize.
 func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentType string, produce func(sink func([]byte) error) error, upd fts.Update) error {
 	if st.remaining == 0 {
 		return nil
@@ -505,12 +464,11 @@ func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentTy
 	}
 
 	if b.opts.DedupBodyParts {
-		// Buffer and hash BEFORE calling SetBuildKey: a duplicate must never
-		// declare a key at all, only decide-and-discard after reading the
-		// content. The read is bounded by st.remaining as an upper bound (via
-		// a local copy, not yet deducted) purely to cap memory use — the
-		// budget itself is only actually spent once we commit to indexing
-		// below, so a duplicate that gets skipped costs nothing from it.
+		// Buffer and hash BEFORE SetBuildKey: a duplicate must never declare a
+		// key, only decide-and-discard after reading the content. The read is
+		// bounded by a local copy of st.remaining (not yet deducted) purely to
+		// cap memory; the budget is spent only once indexing commits below, so
+		// a skipped duplicate costs nothing from it.
 		var buf bytes.Buffer
 		limit := st.remaining
 		_ = produce(func(p []byte) error {
@@ -526,13 +484,11 @@ func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentTy
 			buf.Write(p)
 			return nil
 		})
-		// A genuine read error mid-part (not just hitting the size cap) is
-		// tolerated the same way the non-dedup branch below tolerates one:
-		// whatever text was collected BEFORE the error still gets hashed and
-		// indexed, rather than discarding the whole part. The two branches
-		// must treat a mid-read failure identically — otherwise the same
-		// message indexes different content purely based on whether
-		// fts_dedup_body_parts is on.
+		// A genuine mid-part read error (not just the size cap) is tolerated
+		// like the non-dedup branch below: whatever was collected before the
+		// error still gets hashed and indexed. Both branches must treat a
+		// mid-read failure identically, or the same message indexes different
+		// content depending on whether fts_dedup_body_parts is on.
 		text := buf.Bytes()
 		if len(text) == 0 {
 			return nil // nothing readable at all

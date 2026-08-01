@@ -44,10 +44,8 @@ const (
 	// per-message MAIL_FLAG_DIRTY backend bit.
 	HdrFlagHaveDirty HeaderFlag = 0x0002
 	// HdrFlagFsckd is the persisted "index needs a reactive rebuild" marker.
-	// A dbox driver sets it (via IndexBackend's CorruptionMarker) when a read
-	// hits a missing/corrupt message; the next folder open runs the reactive
-	// heal and clears it. Persisted so the flag survives across the reader
-	// process and the next opener (which may be a different pod).
+	// Set on a missing/corrupt-message read; the next folder open heals and
+	// clears it. Persisted so it survives across processes and pods.
 	HdrFlagFsckd HeaderFlag = 0x0004
 )
 
@@ -97,20 +95,11 @@ type Header struct {
 	DayFirstUID [8]uint32 // offset 88, 32 bytes
 }
 
-// NewHeader returns a Header initialised to the values a fresh
-// index gets at create time:
-//
-//   - MajorVersion + MinorVersion at the package's current target
-//   - BaseHeaderSize = HeaderMinSize (120)
-//   - HeaderSize = HeaderMinSize (no extensions registered yet)
-//   - RecordSize = base record min (5: uid+flags)
-//   - CompatFlags = LITTLE_ENDIAN
-//   - IndexID = supplied (caller passes time.Now().Unix())
-//   - All counts and modseq fields zero
-//
-// Caller MUST set UIDValidity before the first sync — a zero
-// UIDValidity is legal in a freshly-created index but must be
-// stamped before any messages are appended.
+// NewHeader returns a Header for a fresh index: current version,
+// BaseHeaderSize = HeaderSize = HeaderMinSize (no extensions),
+// RecordSize = RecordMinSize, LITTLE_ENDIAN, supplied IndexID,
+// all counts zero. Caller must stamp UIDValidity before the first
+// message is appended.
 func NewHeader(indexID uint32) Header {
 	return Header{
 		MajorVersion:   MajorVersion,
@@ -137,8 +126,7 @@ func (h *Header) Encode(w io.Writer) error {
 	return err
 }
 
-// EncodeBytes returns h as a fresh 120-byte slice — convenient
-// for tests and for the pwrite-header-in-place path Recreate uses.
+// EncodeBytes returns h as a fresh 120-byte slice.
 func (h *Header) EncodeBytes() []byte {
 	buf := make([]byte, HeaderMinSize)
 	h.encodeInto(buf)
@@ -179,16 +167,11 @@ func (h *Header) encodeInto(buf []byte) {
 
 // DecodeHeader reads exactly HeaderMinSize bytes from r and parses
 // them as a Header. Returns ErrShortRead on truncated input,
-// ErrMajorMismatch when the major version does not match this
-// package's MajorVersion, ErrEndian on a big-endian file.
-//
-// Minor-version skew is tolerated both ways:
-//   - Older writer (minor < ours): all fields are present because
-//     BaseHeaderSize is constant within a major version. We do not
-//     auto-upgrade the minor field on read; the next write does.
-//   - Newer writer (minor > ours): we preserve the on-disk value
-//     and refuse to lower it (preventing a forward downgrade
-//     surprise).
+// ErrMajorMismatch on major-version mismatch, ErrEndian on a
+// big-endian file. Minor-version skew is tolerated both ways: all
+// fields are present because BaseHeaderSize is constant within a
+// major version, and the on-disk minor value is preserved (never
+// upgraded on read, never lowered).
 func DecodeHeader(r io.Reader) (Header, error) {
 	buf := make([]byte, HeaderMinSize)
 	n, err := io.ReadFull(r, buf)

@@ -15,17 +15,16 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// headerDataChain expands HEADER search values through the same "data"
-// chain buildmail indexes header values with (#696 index side, #723 search
-// side) — normalization only, no stemming, no stopwords, independent of
-// the configured language(s). A stemmed query variant against an unstemmed
-// indexed header token produces false-positive wildcard matches (e.g.
-// "running" -> "run*" matching an unrelated "runway").
+// headerDataChain expands HEADER search values through the same "data" chain
+// buildmail indexes header values with: normalization only, no stemming, no
+// stopwords, independent of the configured language(s). A stemmed query variant
+// against an unstemmed indexed header token yields false-positive wildcard
+// matches (e.g. "running" -> "run*" matching an unrelated "runway").
 var headerDataChain = mustHeaderDataChain()
 
-// expander is satisfied by both *language.MultiChain (Body/Text, full
-// language stemming) and *language.Chain (Header, the no-stemming data
-// chain) — buildFTSQuery picks whichever fits the field.
+// expander is satisfied by both *language.MultiChain (Body/Text, full language
+// stemming) and *language.Chain (Header, the no-stemming data chain);
+// buildFTSQuery picks whichever fits the field.
 type expander interface {
 	ExpandSearch(query string) []fts.Word
 }
@@ -33,9 +32,8 @@ type expander interface {
 func mustHeaderDataChain() *language.Chain {
 	c, err := language.NewDataChain()
 	if err != nil {
-		// "lowercase" is a static, language-independent filter — this
-		// cannot fail in practice; a panic here would only mean the filter
-		// chain itself was broken at compile time, not a runtime condition.
+		// "lowercase" is a static, language-independent filter: cannot fail at
+		// runtime, only if the filter chain is broken at compile time.
 		panic(fmt.Sprintf("imap: header data chain: %v", err))
 	}
 	return c
@@ -47,10 +45,10 @@ type FTSOptions struct {
 	Client ftsproto.Client
 	// Chain must match the yarilo-fts service's configured language SET
 	// (order-independent) so query expansion covers exactly the languages
-	// indexing could have picked. #668 point 3: query expansion is
-	// deliberately asymmetric from indexing — it fans out through every
-	// configured language, OR'd together, since a query doesn't know which
-	// single language a given message was auto-detected as.
+	// indexing could have picked. Query expansion is deliberately asymmetric
+	// from indexing: it fans out through every configured language, OR'd
+	// together, since a query doesn't know which single language a given
+	// message was auto-detected as.
 	Chain *language.MultiChain
 	// AddMissing / ReadFallback / Timeout / Strict — see docs/FTS.md §11.
 	AddMissing   string
@@ -61,13 +59,11 @@ type FTSOptions struct {
 	// autoindex throttle forwarded to the service.
 	Autoindex bool
 	MaxRecent int
-	// SearchEnabled gates SEARCH only (#726 item 3, fts_search) — false
-	// degrades every SEARCH to the sequential scan (as if FTS weren't
-	// configured) while indexing/autoindex/write-through keep running
-	// unaffected: an incident-response knob for "the FTS index/engine is
-	// misbehaving, stop querying it, but don't let the index go stale
-	// while we investigate." Distinct from fts.enabled (all-or-nothing,
-	// including indexing) at the config layer.
+	// SearchEnabled gates SEARCH only (fts_search): false degrades every SEARCH
+	// to the sequential scan while indexing/autoindex/write-through keep
+	// running. An incident-response knob for "the FTS engine is misbehaving,
+	// stop querying it, but don't let the index go stale." Distinct from
+	// fts.enabled (all-or-nothing, including indexing) at the config layer.
 	SearchEnabled bool
 }
 
@@ -92,14 +88,13 @@ type ftsFilter struct {
 	// strippedNeedsBody: the stripped criteria still require the raw
 	// message (sent-date checks).
 	strippedNeedsBody bool
-	// scores holds the engine's native (unnormalized) ranking weight per
-	// UID, when the engine populated fts.Result.Scores (flatcurve does via
-	// the Xapian MSet weight). Nil when the FTS constraint expanded to
-	// nothing indexed (pure-stopword query) or the engine returned none —
-	// callers must fall back to omitting RELEVANCY rather than fabricate a
-	// score. Normalization to the RFC 4731/6203 wire range (min-max, 1-100)
-	// happens once per SEARCH, after the final matched set (FTS ∩ stripped-
-	// criteria ∩ verify) is known — see relevancyScores in server.go.
+	// scores holds the engine's native (unnormalized) ranking weight per UID,
+	// when the engine populated fts.Result.Scores (flatcurve does via the
+	// Xapian MSet weight). Nil when the FTS constraint expanded to nothing
+	// indexed (pure-stopword query) or the engine returned none — callers omit
+	// RELEVANCY rather than fabricate a score. Normalization to the RFC
+	// 4731/6203 wire range (min-max, 1-100) happens once per SEARCH, after the
+	// final matched set is known — see relevancyScores in server.go.
 	scores map[uint32]float64
 }
 
@@ -123,14 +118,11 @@ func (s *session) prepareFTSSearch(criteria *imaplib.SearchCriteria, msgs []*mai
 	query, stripped, strippedNeedsBody, impossible := s.buildFTSQuery(criteria)
 	if impossible {
 		// At least one Body/Text/Header criterion expanded to nothing (pure
-		// stopwords) — that criterion can never match, since stopwords were
-		// never indexed, so the whole ANDed query is unmatchable regardless
-		// of any other criteria that DID expand to real terms (#722; the
-		// reference implementation's fts-search-args.c does this per-arg —
-		// an empty expansion becomes SEARCH_ALL with an inverted match, not
-		// a dropped constraint). This is a definite answer, not an
-		// index-unavailable condition, so it bypasses ftsCatchUp/fallback
-		// entirely — same as the real Lookup path below.
+		// stopwords): that criterion can never match, since stopwords were
+		// never indexed, so the whole ANDed query is unmatchable regardless of
+		// any other criteria that DID expand to real terms. This is a definite
+		// answer, not an index-unavailable condition, so it bypasses
+		// ftsCatchUp/fallback entirely, same as the Lookup path below.
 		return &ftsFilter{
 			covered:           map[uint32]bool{},
 			verify:            map[uint32]bool{},
@@ -182,10 +174,10 @@ func (s *session) prepareFTSSearch(criteria *imaplib.SearchCriteria, msgs []*mai
 			f.scores[sc.UID] = sc.Value
 		}
 	}
-	// Visibility diagnostic (#625): how many candidates the FTS index returned for
-	// this search, so a "search finds nothing" case shows whether FTS had no hits
-	// (0 candidates → likely not indexed) vs. hits that later failed re-verify.
-	// Counts only — never the query terms (private mail content).
+	// Visibility diagnostic: how many candidates the FTS index returned, so a
+	// "search finds nothing" case shows whether FTS had no hits (0 → likely not
+	// indexed) vs. hits that later failed re-verify. Counts only, never the
+	// query terms (private mail content).
 	slog.Debug("imap: fts search candidates",
 		"user", user, "folder", mbox.Name,
 		"definite", len(res.Definite), "maybe", len(res.Maybe))
@@ -216,12 +208,11 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 			timeout = 30 * time.Second
 		}
 		deadline := time.Now().Add(timeout)
-		// Give up early when the index makes NO progress (#629): a broken FTS
-		// backend keeps the checkpoint flat, so waiting the full timeout only makes
-		// the client hang past its own TCP read deadline (a raw i/o timeout instead
-		// of a graceful degrade). A genuinely-progressing index advances the
-		// checkpoint and resets the stall counter, so slow-but-working indexing
-		// still gets the full window. ~2s of no movement → fall back to a scan.
+		// Give up early when the index makes NO progress: a broken FTS backend
+		// keeps the checkpoint flat, so waiting the full timeout only makes the
+		// client hang past its own TCP read deadline. A progressing index
+		// advances the checkpoint and resets the stall counter, so slow-but-
+		// working indexing still gets the full window. ~2s flat → fall back.
 		const maxStallPolls = 8 // 8 × 250ms ≈ 2s of no movement
 		best := last
 		stalls := 0
@@ -261,11 +252,9 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 // buildFTSQuery converts the top-level Body/Text/Header criteria into the
 // engine query and returns the criteria with those keys stripped, plus
 // impossible=true if ANY criterion's every token expanded to nothing (pure
-// stopwords, #722): stopwords were never indexed, so that ANDed criterion
-// can never match, and the whole query is unmatchable regardless of any
-// other criteria that DID expand to real terms — mirroring the reference
-// implementation's per-arg empty-expansion → match-nothing semantics
-// (fts-search-args.c), not a dropped/vacuous constraint.
+// stopwords): stopwords were never indexed, so that ANDed criterion can never
+// match, and the whole query is unmatchable regardless of any other criteria
+// that DID expand to real terms — a match-nothing, not a dropped, constraint.
 func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *imaplib.SearchCriteria, bool, bool) {
 	chain := s.srv.opts.FTS.Chain
 	var terms []fts.Term
@@ -294,11 +283,9 @@ func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *i
 				HdrName: strings.ToLower(h.Key)})
 			continue
 		}
-		// Headers are not language text (#696 index side, #723 search
-		// side): always the no-stemming data chain, never the configured
-		// language chain, regardless of the header field name — matching
-		// buildmail, which indexes every header uniformly through the same
-		// data chain.
+		// Headers are not language text: always the no-stemming data chain,
+		// never the configured language chain, regardless of the field name —
+		// matching buildmail, which indexes every header through the same chain.
 		add(headerDataChain, fts.FieldHeader, strings.ToLower(h.Key), h.Value)
 	}
 
@@ -335,7 +322,7 @@ func (s *session) ftsNotify(folderName string, expunged bool, uid uint32) {
 				"user", user, "folder", mbox.Name, "expunged", expunged, "err", err)
 			return
 		}
-		// Breadcrumb (#625): confirm the FTS index/expunge notify was sent, so an
+		// Breadcrumb: confirm the FTS index/expunge notify was sent, so an
 		// indexing gap (message delivered but never handed to FTS) is visible.
 		slog.Debug("imap: fts notify sent",
 			"user", user, "folder", mbox.Name, "uid", uid, "expunged", expunged)
@@ -344,22 +331,17 @@ func (s *session) ftsNotify(folderName string, expunged bool, uid uint32) {
 
 // relevancyScores normalizes raw per-UID engine weights to the RFC 4731/6203
 // wire range, in order's enumeration order (one score per matched message,
-// same order as the ESEARCH ALL data item). Verified against the reference
-// implementation's own SEARCH RETURN (RELEVANCY) formula: a plain per-result-
-// set linear min-max scale to integers 1-100 — never 0, floored at 1 — with
-// diff defaulting to 1.0 when every score in the set is equal (avoids a
-// divide-by-zero; a uniform set — every raw score equal to min — then maps
-// to the floor value 1 for every message, since the reference formula has
-// no signal to rank them apart).
+// same order as the ESEARCH ALL data item). A per-result-set linear min-max
+// scale to integers 1-100 — never 0, floored at 1 — with diff defaulting to
+// 1.0 when every score is equal (avoids divide-by-zero; a uniform set maps to
+// the floor value 1 for every message).
 //
-// order can include UIDs the engine returned no score for (e.g. matched
-// only via a stripped, non-FTS criterion ANDed onto the search) — a plain
-// map lookup would silently default those to 0.0, which then corrupts the
-// whole set's min-max range for every message that DOES have a genuine
-// score (dragging lo down to a fabricated zero, compressing everything
-// else toward the top of the scale). Score-less UIDs are excluded from the
-// lo/hi computation entirely and floored to 1 in the output — "no ranking
-// signal" is not the same claim as "ranked lowest by the engine."
+// order can include UIDs the engine returned no score for (matched only via a
+// stripped, non-FTS criterion ANDed onto the search) — a plain map lookup
+// would default those to 0.0 and corrupt the set's min-max range, dragging lo
+// down to a fabricated zero and compressing everything else. Score-less UIDs
+// are excluded from the lo/hi computation and floored to 1: "no ranking
+// signal" is not "ranked lowest by the engine."
 func relevancyScores(raw map[uint32]float64, order []uint32) []uint32 {
 	if len(order) == 0 {
 		return nil

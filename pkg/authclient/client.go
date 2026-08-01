@@ -17,38 +17,28 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 )
 
-// defaultDialTimeout caps the initial TCP / TLS handshake so a
-// reachable-but-stalled master listener cannot wedge startup
-// indefinitely. Callers that need different bounds pass a tweaked
-// dialer via [DialContext].
+// defaultDialTimeout caps the initial TCP/TLS handshake so a stalled master
+// listener cannot wedge startup. Use [DialContext] for a different bound.
 const defaultDialTimeout = 5 * time.Second
 
-// ErrNotImplemented is returned by [Client.PassdbLookup] until
-// Phase AUTH-2 ships Passdb.LookupCredentials and the master-protocol
-// PASS handler stops returning the corresponding `FAIL reason=PASS
-// not implemented` line. Callers can use errors.Is to gate
-// fall-through behaviour cleanly.
+// ErrNotImplemented is returned by [Client.PassdbLookup] while the master
+// PASS handler still replies `FAIL reason=PASS not implemented`. Callers can
+// errors.Is against it to gate fall-through behaviour.
 var ErrNotImplemented = errors.New("authclient: PASS not implemented (Phase AUTH-2)")
 
-// ErrClosed signals that a Client has had Close called or its
-// connection terminated; subsequent calls return this so callers
-// can re-Dial deterministically rather than hanging on the dead
-// reader.
+// ErrClosed signals that a Client was Closed or its connection terminated.
+// Subsequent calls return it so callers can re-Dial rather than hang.
 var ErrClosed = errors.New("authclient: client closed")
 
-// Client speaks the yarilo-auth master protocol over a single TCP
-// (optionally mTLS-wrapped) connection. Methods are safe to call
-// from multiple goroutines: a mutex enforces one in-flight request
-// at a time on the underlying conn, mirroring the server-side
-// per-connection serial-processing guarantee.
+// Client speaks the yarilo-auth master protocol over a single TCP (optionally
+// mTLS-wrapped) connection. Methods are safe for concurrent use: a mutex
+// enforces one in-flight request at a time on the underlying conn.
 //
-// When the underlying connection breaks (e.g. yarilo-auth restart),
-// the next call transparently redials and retries the operation once.
-// Explicit [Client.Close] disables reconnect permanently.
+// When the connection breaks (e.g. yarilo-auth restart) the next call redials
+// and retries once. [Client.Close] disables reconnect permanently.
 //
-// Construct with [Dial] / [DialContext]. Always call [Client.Close]
-// on shutdown so the FIN propagates promptly to the server side and
-// the goroutine watching that conn there returns.
+// Construct with [Dial] / [DialContext]. Always [Client.Close] on shutdown so
+// the FIN reaches the server promptly.
 type Client struct {
 	conn   net.Conn
 	rd     *bufio.Reader
@@ -60,22 +50,15 @@ type Client struct {
 	tlsCfg *tls.Config
 }
 
-// Dial opens a connection to the yarilo-auth master listener at
-// addr and consumes the protocol handshake. When tlsCfg is non-nil
-// the connection is wrapped in TLS — yarilo's standard deployment
-// supplies an mTLS config built from the internal CA + the
-// consumer's client cert.
-//
-// The handshake's VERSION line is validated: only major version 1
-// is accepted today. Future major bumps surface as a typed error so
-// callers can fail fast rather than speak stale dialect.
+// Dial opens a connection to the yarilo-auth master listener at addr and
+// consumes the handshake. A non-nil tlsCfg wraps the connection in (m)TLS.
+// Only major version 1 is accepted; other versions return a typed error.
 func Dial(addr string, tlsCfg *tls.Config) (*Client, error) {
 	return DialContext(context.Background(), addr, tlsCfg)
 }
 
-// DialContext is Dial with a context-aware dial. The context bounds
-// the TCP + TLS handshake; once the handshake is consumed the
-// context has no further effect on the returned Client.
+// DialContext is Dial with a context that bounds the TCP + TLS handshake.
+// After the handshake the context no longer affects the returned Client.
 func DialContext(ctx context.Context, addr string, tlsCfg *tls.Config) (*Client, error) {
 	d := net.Dialer{Timeout: defaultDialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
@@ -102,9 +85,8 @@ func DialContext(ctx context.Context, addr string, tlsCfg *tls.Config) (*Client,
 	return c, nil
 }
 
-// consumeHandshake drains the server-side handshake (VERSION, SPID,
-// CUID, COOKIE, DONE) and validates the version line. Subsequent
-// reads on c.rd see only command responses.
+// consumeHandshake drains the server handshake (VERSION, SPID, CUID, COOKIE,
+// DONE) and validates the version line. Later reads see only command responses.
 func (c *Client) consumeHandshake() error {
 	verSeen := false
 	for {
@@ -130,9 +112,8 @@ func (c *Client) consumeHandshake() error {
 			}
 			verSeen = true
 		case "SPID", "CUID", "COOKIE":
-			// informational — server identity / cookie. Recorded
-			// only for telemetry; the cookie is not used to
-			// authenticate subsequent commands on this client.
+			// informational only; the cookie does not authenticate
+			// subsequent commands on this client.
 		}
 	}
 	if !verSeen {
@@ -141,9 +122,8 @@ func (c *Client) consumeHandshake() error {
 	return nil
 }
 
-// Close releases the underlying connection. Idempotent — calling
-// Close twice returns nil the second time. After Close every other
-// method on this Client returns [ErrClosed].
+// Close releases the underlying connection. Idempotent. After Close every
+// other method returns [ErrClosed].
 func (c *Client) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
@@ -157,9 +137,7 @@ func (c *Client) Close() error {
 //   - (nil, nil) — backend miss (master responded NOTFOUND)
 //   - (nil, err) — wire / parse / backend error
 //
-// Mirrors the [protocol.Userdb] contract so callers chaining
-// Client.Userdb with other Userdb implementations see the same
-// "not found is nil/nil" semantics.
+// Mirrors the [protocol.Userdb] "not found is nil/nil" contract.
 func (c *Client) Userdb(ctx context.Context, username string) (*protocol.UserInfo, error) {
 	if c.closed.Load() {
 		return nil, ErrClosed
@@ -172,12 +150,9 @@ func (c *Client) Userdb(ctx context.Context, username string) (*protocol.UserInf
 	return c.parseUserResponse(line, id, username)
 }
 
-// PassdbLookup runs a PASS lookup. The master-protocol handler for
-// PASS returns `FAIL reason=PASS not implemented` until Phase AUTH-2
-// ships Passdb.LookupCredentials; this method therefore always
-// returns [ErrNotImplemented]. The full method exists in PR 3 so
-// consumers can ship the typed call surface unchanged when AUTH-2
-// flips the implementation on.
+// PassdbLookup runs a PASS lookup. The master PASS handler still replies
+// `FAIL reason=PASS not implemented`, so this method always returns
+// [ErrNotImplemented]; the typed call surface is stable for when it lands.
 func (c *Client) PassdbLookup(ctx context.Context, username string) (*protocol.UserInfo, error) {
 	if c.closed.Load() {
 		return nil, ErrClosed
@@ -187,24 +162,20 @@ func (c *Client) PassdbLookup(ctx context.Context, username string) (*protocol.U
 	if err != nil {
 		return nil, err
 	}
-	// The expected server reply is `FAIL\t<id>\treason=PASS not
-	// implemented...`. Distinguish that from a real backend error
-	// so consumers can errors.Is(err, ErrNotImplemented) cleanly.
+	// Distinguish the `FAIL reason=PASS not implemented` reply from a real
+	// backend error so callers can errors.Is(err, ErrNotImplemented).
 	if reason, ok := extractFailReason(line, id); ok {
 		if strings.HasPrefix(reason, "PASS not implemented") {
 			return nil, ErrNotImplemented
 		}
 		return nil, fmt.Errorf("authclient: PASS %s: %s", username, reason)
 	}
-	// Phase AUTH-2 will start returning PASS hits — parse like USER.
+	// A PASS hit parses like USER.
 	return c.parseUserResponse(line, id, username)
 }
 
-// IterateUsers runs a LIST and collects every streamed username
-// until the server emits the DONE marker. Backends that do not
-// support enumeration return a FAIL line; this method surfaces
-// that as a typed error (compare its message against the wire
-// reason if needed).
+// IterateUsers runs a LIST and collects streamed usernames until the DONE
+// marker. Backends without enumeration reply FAIL, surfaced as an error.
 func (c *Client) IterateUsers(ctx context.Context) ([]string, error) {
 	if c.closed.Load() {
 		return nil, ErrClosed
@@ -256,14 +227,10 @@ func (c *Client) iterateUsersLocked(ctx context.Context) ([]string, error) {
 	}
 }
 
-// CacheFlush invokes the master-protocol CACHE-FLUSH verb. Empty
-// masks slice triggers a full flush; otherwise each mask is sent
-// as an additional tab-separated argument and yarilo-auth evicts
-// every entry whose stored username matches any mask (glob
-// syntax: `*` = any run, `?` = one char).
-//
-// Returns the count of evicted entries reported by the server.
-// Used by `yarctl auth cache flush [mask…]`.
+// CacheFlush invokes the CACHE-FLUSH verb. An empty masks slice flushes
+// everything; otherwise each mask is sent as a tab-separated argument and
+// entries whose username matches any mask are evicted (glob: `*`, `?`).
+// Returns the evicted-entry count reported by the server.
 func (c *Client) CacheFlush(ctx context.Context, masks []string) (uint32, error) {
 	if c.closed.Load() {
 		return 0, ErrClosed
@@ -299,14 +266,12 @@ func (c *Client) CacheFlush(ctx context.Context, masks []string) (uint32, error)
 	}
 }
 
-// IssueSession sends a SESSION command to the master listener and returns the
-// one-time token bound to username. The token is scoped to the "lmtp" service
-// and must be consumed by a VERIFY call on the client listener within the
-// token TTL.
+// IssueSession sends a SESSION command and returns a one-time token bound to
+// username. The token is scoped to the "lmtp" service and must be consumed by
+// a VERIFY on the client listener within its TTL.
 //
-// sid is the warden session ID already registered for this delivery; ip is the
-// originating MTA address (both are recorded in the audit log but do not affect
-// token validity).
+// sid is the warden session ID for this delivery; ip is the originating MTA
+// address. Both are audit-logged only and do not affect token validity.
 func (c *Client) IssueSession(ctx context.Context, username, sid, ip string) (string, error) {
 	if c.closed.Load() {
 		return "", ErrClosed
@@ -336,10 +301,9 @@ func (c *Client) IssueSession(ctx context.Context, username, sid, ip string) (st
 	}
 }
 
-// exchange writes a single-line request under c.mu and reads the
-// matching single-line response. On a connection error it redials
-// once and retries. Used by USER and PASS — LIST has its own
-// multi-line loop above.
+// exchange writes a single-line request under c.mu and reads the matching
+// single-line response, redialing once on a connection error. LIST has its
+// own multi-line loop.
 func (c *Client) exchange(ctx context.Context, line string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -352,8 +316,7 @@ func (c *Client) exchange(ctx context.Context, line string) (string, error) {
 	return resp, err
 }
 
-// exchangeLocked performs one write+read pair; c.mu must be held by
-// the caller.
+// exchangeLocked performs one write+read pair; c.mu must be held.
 func (c *Client) exchangeLocked(ctx context.Context, line string) (string, error) {
 	if err := c.applyDeadline(ctx); err != nil {
 		return "", err
@@ -369,8 +332,8 @@ func (c *Client) exchangeLocked(ctx context.Context, line string) (string, error
 	return strings.TrimRight(resp, "\r\n"), nil
 }
 
-// redial closes the dead connection and opens a fresh one. Must be
-// called with c.mu held. On success c.conn and c.rd are replaced.
+// redial closes the dead connection and opens a fresh one, replacing c.conn
+// and c.rd on success. Must be called with c.mu held.
 func (c *Client) redial() error {
 	_ = c.conn.Close()
 	d := net.Dialer{Timeout: defaultDialTimeout}
@@ -395,10 +358,9 @@ func (c *Client) redial() error {
 	return nil
 }
 
-// isConnectionError reports whether err indicates a broken connection
-// that warrants a reconnect attempt. Context cancellations and
-// network timeouts are excluded — those are caller / server issues,
-// not a dead socket.
+// isConnectionError reports whether err is a broken connection that warrants
+// a reconnect. Context cancellations and timeouts are excluded — they are
+// caller/server issues, not a dead socket.
 func isConnectionError(err error) bool {
 	if err == nil {
 		return false
@@ -416,11 +378,9 @@ func isConnectionError(err error) bool {
 	return false
 }
 
-// parseUserResponse handles USER hit / NOTFOUND / FAIL responses
-// keyed by id. The username argument is the value the caller
-// supplied — used to set UserInfo.Username when the wire-side
-// username token matches (defensive against a server bug, the
-// caller's value wins).
+// parseUserResponse handles USER hit / NOTFOUND / FAIL responses keyed by id.
+// The caller-supplied username fills UserInfo.Username when the wire token is
+// empty, so the caller's value wins.
 func (c *Client) parseUserResponse(line, id, username string) (*protocol.UserInfo, error) {
 	parts := strings.Split(line, "\t")
 	if len(parts) < 2 || parts[1] != id {
@@ -449,10 +409,8 @@ func (c *Client) parseUserResponse(line, id, username string) (*protocol.UserInf
 	}
 }
 
-// extractFailReason returns (reason, true) when line is a FAIL with
-// the expected id. The OK==false return path lets callers
-// distinguish "FAIL for me" from "this is some other frame" without
-// a second parse pass.
+// extractFailReason returns (reason, true) when line is a FAIL with the
+// expected id, letting callers tell "FAIL for me" from another frame.
 func extractFailReason(line, id string) (string, bool) {
 	parts := strings.Split(line, "\t")
 	if len(parts) < 2 || parts[0] != "FAIL" || parts[1] != id {
@@ -461,10 +419,8 @@ func extractFailReason(line, id string) (string, bool) {
 	return failReason(parts), true
 }
 
-// failReason concatenates the `key=value` tokens after the FAIL
-// header into a human-readable reason. Falls back to the joined
-// tokens when no `reason=` token is present so the caller still
-// gets diagnostic context.
+// failReason returns the `reason=` token after the FAIL header, falling back
+// to the joined tokens when none is present.
 func failReason(parts []string) string {
 	for _, p := range parts[2:] {
 		if strings.HasPrefix(p, "reason=") {
@@ -481,10 +437,8 @@ func (c *Client) allocID() string {
 	return strconv.FormatUint(c.nextID.Add(1), 10)
 }
 
-// applyDeadline ports the request's ctx Deadline onto the
-// underlying net.Conn so a slow server triggers a read / write
-// deadline rather than hanging the caller's goroutine indefinitely.
-// Returns ctx.Err immediately when ctx is already done.
+// applyDeadline ports the ctx deadline onto the net.Conn so a slow server hits
+// a read/write deadline instead of hanging. Returns ctx.Err if ctx is done.
 func (c *Client) applyDeadline(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

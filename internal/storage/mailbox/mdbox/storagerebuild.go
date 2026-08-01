@@ -16,9 +16,9 @@ import (
 var allMessages = mailbox.SeqSet{{From: 1, To: 0}}
 
 // withMapLock runs fn while holding the cross-process storage (map) X-lock at
-// the driver level, so a whole storage-wide rebuild is serialised against the
-// deliveries that take the same lock inside box.Save. Re-entrant: the mdboxmap
-// methods called under fn see HoldsResource(MdboxMapKey) and skip re-acquiring.
+// the driver level, so a storage-wide rebuild is serialised against deliveries
+// that take the same lock inside box.Save. Re-entrant: mdboxmap methods called
+// under fn see HoldsResource(MdboxMapKey) and skip re-acquiring.
 func (u *userMailbox) withMapLock(fn func() error) error {
 	if u.b.locker == nil {
 		return fn()
@@ -38,54 +38,54 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 }
 
 // RebuildStorage rebuilds the whole mdbox storage for the user, implementing
-// mailbox.StorageWideRebuilder. It reconciles the shared map against the
-// physical m.<N> files, resets every folder index to the messages that still
-// exist, recomputes each map record's refcount from the actual folder references,
-// and drops map records whose message vanished — all under the storage (map)
-// X-lock, then bumps the persisted rebuild generation counter.
+// mailbox.StorageWideRebuilder. Under the storage (map) X-lock it reconciles the
+// shared map against the physical m.<N> files, resets every folder index to the
+// messages that still exist, recomputes each map record's refcount from the
+// actual folder references, and drops map records whose message vanished, then
+// bumps the persisted rebuild generation counter.
 //
-// Refcount recompute: after the folder
-// indexes are reconciled, every live map record's refcount is set to the number
-// of folders that reference it. A message referenced by no folder becomes
-// zero-ref, so the next purge reclaims it — no stale refcount>0 lingers to trip
-// the next rebuild. It is NOT re-filed into a mailbox: without ORIG_MAILBOX
-// metadata (a #594 Phase 2b follow-up) the rebuild cannot tell genuinely-lost
-// mail from churn/refcount-leak garbage, and blind adoption mass-resurrects
-// deleted mail (a real sandbox finding). Unreferenced-but-present records are
-// reported (UnreferencedZeroref) and logged, never resurrected.
+// Refcount recompute: after the folder indexes are reconciled, every live map
+// record's refcount is set to the number of folders that reference it. A message
+// referenced by no folder becomes zero-ref so the next purge reclaims it, and no
+// stale refcount>0 lingers. Such a record is NOT re-filed: without an
+// orig-mailbox tag the rebuild cannot tell genuinely-lost mail from
+// churn/refcount-leak garbage, and blind adoption mass-resurrects deleted mail.
+// Unreferenced-but-present records are reported (UnreferencedZeroref) and
+// logged, never resurrected.
 //
-// Lock order: the map X-lock (MdboxMapKey) is the outer lock and the per-folder
-// mailbox lock (MailboxKey, taken inside idx.ResetFolder/GetMessages) is the
-// inner — the same order every delivery path takes (box.Save's map lock before
-// idx append's folder lock), so there is no inversion. Holding the map lock
-// blocks new deliveries; a delivery already past box.Save but not yet past its
-// folder append is counted by the phase-2 re-read, so its refcount stays >0.
+// Lock order: the map X-lock (MdboxMapKey) is outer, the per-folder mailbox lock
+// (MailboxKey, taken inside idx.ResetFolder/GetMessages) is inner — the same
+// order every delivery takes (box.Save's map lock before idx append's folder
+// lock), so there is no inversion. Holding the map lock blocks new deliveries; a
+// delivery past box.Save but not yet past its folder append is counted by the
+// phase-2 re-read, so its refcount stays >0.
 //
-// QUIESCENCE REQUIRED. This is an operator repair tool and must run with the user's mailboxes quiesced — no concurrent
-// delivery AND no concurrent folder operations (CREATE/DELETE/RENAME). The
-// rebuild holds only the storage (map) lock, not each folder's mailbox lock, so:
+// QUIESCENCE REQUIRED. This operator repair tool must run with the user's
+// mailboxes quiesced: no concurrent delivery and no concurrent folder operation
+// (CREATE/DELETE/RENAME). The rebuild holds only the map lock, not each folder's
+// mailbox lock, so:
 //   - a delivery whose box.Save committed just before this rebuild took the lock
 //     and whose folder append lands after that folder's phase-2 count would have
-//     its refcount recomputed to 0 while a folder references it — a later purge
-//     could then reclaim live mail; and
-//   - with --restore-orphans, a concurrent DELETE of an orphan's ORIG_MAILBOX
+//     its refcount recomputed to 0 while a folder references it, and a later
+//     purge could reclaim live mail; and
+//   - with --restore-orphans, a concurrent DELETE of an orphan's orig-mailbox
 //     folder can race openOrCreateFolder.
 //
 // The windows are small (the phase-2 re-read shrinks the delivery one) but not
-// eliminated here; fully closing them needs the delivery folder-append (and the
-// restore) to serialise on the map lock too — a separate hardening.
+// eliminated; closing them fully needs the delivery folder-append and the
+// restore to serialise on the map lock too.
 //
-// modseq/QRESYNC: ResetFolder now preserves each surviving record's own modseq
-// (no modseq storm for QRESYNC clients); it still loses per-UID VANISHED fidelity
-// for dropped records since the reset rewrites the whole set. The dropped UIDs are
-// returned per folder in StorageRebuildStats.ExpungedUIDs so the operator caller
-// invalidates their FTS documents instead of leaving ghosts until the next rescan.
+// modseq/QRESYNC: ResetFolder preserves each surviving record's own modseq (no
+// modseq storm for QRESYNC clients); it still loses per-UID VANISHED fidelity
+// for dropped records, since the reset rewrites the whole set. The dropped UIDs
+// are returned per folder in StorageRebuildStats.ExpungedUIDs so the caller
+// invalidates their FTS documents instead of leaving ghosts until the next
+// rescan.
 func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool) (mailbox.StorageRebuildStats, error) {
 	var stats mailbox.StorageRebuildStats
 
 	// Alt-mounted guard: a configured-but-unmounted alt tier would make every
-	// alt-resident message look vanished and get mass-expunged. Refuse, as
-	// an alt-tier verify does before a rebuild.
+	// alt-resident message look vanished and get mass-expunged. Refuse.
 	if u.AltEnabled() {
 		if _, err := os.Stat(u.altStoragePath()); err != nil {
 			return stats, fmt.Errorf("mdbox/rebuild: alt storage %q unavailable, refusing to rebuild (would expunge alt-resident mail): %w", u.altStoragePath(), err)
@@ -98,10 +98,9 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 	}
 
 	err = u.withMapLock(func() error {
-		// Scan once. Abort on an incomplete scan: a half-corrupt m.<N> or a
-		// transient I/O read is indistinguishable from "message gone", so
-		// expunging on it would delete live mail. The wrapped error names the bad
-		// file; the operator flow is to move/repair that m.<N> and re-run.
+		// Abort on an incomplete scan: a half-corrupt m.<N> or a transient I/O read
+		// is indistinguishable from "message gone", so expunging on it would delete
+		// live mail. The wrapped error names the bad file; move/repair it and re-run.
 		scanned, serr := u.scanStorage()
 		if serr != nil {
 			return fmt.Errorf("mdbox/rebuild: refusing to rebuild on an incomplete scan; move or repair the named m.<N> and re-run: %w", serr)
@@ -146,10 +145,10 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 			stats.FoldersRebuilt++
 		}
 
-		// Phase 2: re-read every folder to build the authoritative reference COUNT
-		// per map_uid (post-reset, and picking up any in-flight delivery whose
-		// folder append landed after its folder's phase-1 reset). This count is
-		// what the refcount is recomputed to.
+		// Phase 2: re-read every folder to build the authoritative reference count
+		// per map_uid (post-reset, picking up any in-flight delivery whose folder
+		// append landed after its folder's phase-1 reset). The refcount is
+		// recomputed to this count.
 		refCount := make(map[uint32]int, len(scanned))
 		reread := func() error {
 			for _, fe := range folders {
@@ -176,12 +175,12 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 			return err
 		}
 
-		// Phase 3 (opt-in): restore orphans that carry an ORIG_MAILBOX tag back to
-		// their home folder. Only tagged AND currently-unreferenced records qualify
-		// — an untagged churn/leak record (the live-sandbox 889 case) is never
-		// re-filed. Restored messages go through AllocateAndAppend, the same path a
-		// normal delivery takes, so the destination folder's vsize/modseq/quota
-		// aggregates are recomputed correctly.
+		// Phase 3 (opt-in): restore orphans that carry an orig-mailbox tag back to
+		// their home folder. Only tagged and currently-unreferenced records qualify;
+		// an untagged churn/leak record is never re-filed. Restored messages go
+		// through AllocateAndAppend, the same path a normal delivery takes, so the
+		// destination folder's vsize/modseq/quota aggregates are recomputed
+		// correctly.
 		if restoreOrphans {
 			restored, rerr := u.restoreTaggedOrphans(idx, present, refCount)
 			if rerr != nil {
@@ -197,7 +196,7 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 		}
 		stats.Expunged = dropped
 
-		// Recompute refcounts from the actual references (including any just-restored
+		// Recompute refcounts from the actual references (including just-restored
 		// orphans): unreferenced records go to zero-ref so purge reclaims them.
 		zeroed, rerr := m.SetRefcountsFromReferences(refCount)
 		if rerr != nil {
@@ -222,11 +221,12 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 }
 
 // restoreTaggedOrphans re-files every present, currently-unreferenced message
-// that carries an ORIG_MAILBOX tag back into that folder (created if missing),
-// via AllocateAndAppend — the same path a normal delivery takes, so vsize/modseq/
-// quota aggregates stay correct. It bumps refCount for each restored map_uid so
-// the subsequent recompute keeps it referenced. Untagged records are left alone
-// (they become zero-ref for purge). Returns the number restored.
+// that carries an orig-mailbox tag back into that folder (created if missing)
+// via AllocateAndAppend, the same path a normal delivery takes, so
+// vsize/modseq/quota aggregates stay correct. It bumps refCount for each
+// restored map_uid so the subsequent recompute keeps it referenced. Untagged
+// records are left alone (they become zero-ref for purge). Returns the count
+// restored.
 func (u *userMailbox) restoreTaggedOrphans(idx mailbox.UserIndex, present map[string]*mailbox.ScanRecord, refCount map[uint32]int) (int, error) {
 	// Deterministic order so two runs restore identically.
 	fns := make([]string, 0, len(present))
@@ -240,7 +240,7 @@ func (u *userMailbox) restoreTaggedOrphans(idx mailbox.UserIndex, present map[st
 	for _, fn := range fns {
 		rec := present[fn]
 		if rec.OrigMailbox == "" {
-			continue // no home recorded — never guess; leave for purge
+			continue // no home recorded; never guess, leave for purge
 		}
 		uid, perr := parseFilename(fn)
 		if perr != nil || refCount[uid] != 0 {
@@ -250,10 +250,9 @@ func (u *userMailbox) restoreTaggedOrphans(idx mailbox.UserIndex, present map[st
 		if oerr != nil {
 			return restored, oerr
 		}
-		// Accepted parity gap: a restored orphan comes back with default flags
-		// (unseen, no keywords). Flags live in the fileindex, and an orphan is by
-		// definition a message no index references, so there is no surviving source
-		// for them — the storage trailer carries no flags. Documented in README.
+		// A restored orphan comes back with default flags (unseen, no keywords):
+		// flags live in the fileindex, an orphan is a message no index references,
+		// and the storage trailer carries no flags, so there is no surviving source.
 		nm := &mailbox.MessageMeta{
 			Filename:     fn,
 			Size:         rec.Size,
@@ -299,7 +298,7 @@ func (u *userMailbox) openOrCreateFolder(idx mailbox.UserIndex, name string, cac
 // resetFolderToPresent rewrites folder f's index to the subset of its current
 // records whose map_uid is still present in the physical scan, dropping the rest
 // (their message vanished). Surviving records keep their UID, flags, modseq and
-// other metadata. Returns the UIDs dropped so the caller can invalidate their
+// other metadata. Returns the dropped UIDs so the caller can invalidate their
 // FTS documents.
 func (u *userMailbox) resetFolderToPresent(idx mailbox.UserIndex, f *mailbox.Folder, present map[string]*mailbox.ScanRecord) ([]uint32, error) {
 	existing, err := idx.GetMessages(f.ID, allMessages)
@@ -312,7 +311,7 @@ func (u *userMailbox) resetFolderToPresent(idx mailbox.UserIndex, f *mailbox.Fol
 			continue
 		}
 		if _, ok := present[mm.Filename]; !ok {
-			continue // map_uid vanished from storage — drop this record
+			continue // map_uid vanished from storage; drop this record
 		}
 		rebuilt = append(rebuilt, mm)
 	}
