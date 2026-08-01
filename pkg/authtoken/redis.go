@@ -11,9 +11,25 @@ import (
 )
 
 const (
-	keyPrefix = "yarilo:authtoken:"
-	opTimeout = 5 * time.Second
+	// defaultKeyPrefix namespaces token keys in Redis. It is the installation
+	// boundary: two installations sharing one Redis must use distinct prefixes
+	// or they collide on token keys (#939). Overridable via WithKeyPrefix.
+	defaultKeyPrefix = "yarilo:authtoken:"
+	opTimeout        = 5 * time.Second
 )
+
+// RedisOption tunes a RedisStore at construction, mirroring locks' options.
+type RedisOption func(*RedisStore)
+
+// WithKeyPrefix overrides the Redis key prefix. Empty is ignored (keeps the
+// default), so a blank config value does not erase the namespace.
+func WithKeyPrefix(p string) RedisOption {
+	return func(s *RedisStore) {
+		if p != "" {
+			s.keyPrefix = p
+		}
+	}
+}
 
 type tokenPayload struct {
 	Username  string `json:"u"`
@@ -24,16 +40,21 @@ type tokenPayload struct {
 // RedisStore is a Redis-backed one-time token store.
 // GETDEL provides atomic consume; Redis TTL replaces the background sweeper.
 type RedisStore struct {
-	client *redis.Client
-	ttl    time.Duration
+	client    *redis.Client
+	ttl       time.Duration
+	keyPrefix string
 }
 
 // NewRedis returns a RedisStore. The caller owns the client lifecycle; Close is a no-op.
-func NewRedis(client *redis.Client, ttl time.Duration) *RedisStore {
+func NewRedis(client *redis.Client, ttl time.Duration, opts ...RedisOption) *RedisStore {
 	if ttl <= 0 {
 		ttl = defaultTTL
 	}
-	return &RedisStore{client: client, ttl: ttl}
+	s := &RedisStore{client: client, ttl: ttl, keyPrefix: defaultKeyPrefix}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *RedisStore) Issue(username, sessionID, service string) (string, error) {
@@ -48,7 +69,7 @@ func (s *RedisStore) Issue(username, sessionID, service string) (string, error) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
-	if err := s.client.Set(ctx, keyPrefix+tok, payload, s.ttl).Err(); err != nil {
+	if err := s.client.Set(ctx, s.keyPrefix+tok, payload, s.ttl).Err(); err != nil {
 		return "", err
 	}
 	return tok, nil
@@ -57,7 +78,7 @@ func (s *RedisStore) Issue(username, sessionID, service string) (string, error) 
 func (s *RedisStore) Validate(tok string) (username, sessionID, service string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
-	val, err := s.client.GetDel(ctx, keyPrefix+tok).Result()
+	val, err := s.client.GetDel(ctx, s.keyPrefix+tok).Result()
 	if err != nil {
 		return "", "", "", false
 	}

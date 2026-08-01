@@ -339,7 +339,7 @@ func buildTokenStore(cfg config.AuthTokenConfig, dialRetries int) (protocol.Toke
 			os.Exit(1)
 		}
 		slog.Info("auth: token store backend=redis", "addr", cfg.RedisAddr)
-		return authtoken.NewRedis(rdb, ttl), func() { rdb.Close() }
+		return authtoken.NewRedis(rdb, ttl, authtoken.WithKeyPrefix(cfg.KeyPrefix)), func() { rdb.Close() }
 	}
 	slog.Info("auth: token store backend=memory")
 	s := authtoken.New(ttl)
