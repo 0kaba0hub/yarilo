@@ -5,7 +5,7 @@ resolve to **per-owner** storage by expanding the location template against
 the *owner's* `UserInfo` (looked up from the userdb on demand), instead of the
 single fixed path every session sees today.
 
-This is the yarilo equivalent of Dovecot's `index/shared/shared-storage.c`.
+This is the yarilo equivalent of the reference's `index/shared/shared-storage.c`.
 
 Status: **design** — no code yet. Items 1 (delivery-through-namespaces, #503)
 and 2 (POST-right, #504) are done and live-verified.
@@ -38,7 +38,7 @@ wired to an owner identity.
 
 ---
 
-## 2. Dovecot 2.4 reference
+## 2. Reference implementation
 
 ```
 namespace {
@@ -52,7 +52,7 @@ namespace {
 ```
 
 - **`%%u` / `%%n` / `%%d` / `%%h` = the mailbox OWNER**; single `%u` = the
-  logged-in user. The doubling is only Dovecot's config-parser escaping; the
+  logged-in user. The doubling is only the reference's config-parser escaping; the
   runtime distinction is "owner var" vs "session var".
 - On first access to `user/alice/*`, `shared-storage.c:159`
   (`shared_storage_get_namespace`) parses the owner out of the name, does a
@@ -170,7 +170,7 @@ owner>` (unlike fixed shared/public, whose owner is `""`). Then:
   — replaces the current `spec.Type == NamespacePersonal` check for these
   handles.
 - The owner's own session (`user/self/...`) → `isOwner == true` → full
-  implicit rights, no ACL file needed (matches Dovecot PRIVATE ownership).
+  implicit rights, no ACL file needed (matches the reference PRIVATE ownership).
 - A peer (`bob` opening `user/alice/...`) → `isOwner == false` → the existing
   `EffectiveFor(...)` ACL resolution gates every operation: `r` to SELECT,
   `p`/`i` to APPEND, `l` for LIST visibility, etc. This reuses **all** of the

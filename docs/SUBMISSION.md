@@ -22,7 +22,7 @@ Protocol-level behaviour shared across both submission listeners.
 | `max_line_length` | `4096` | Maximum SMTP command or DATA line length in bytes. |
 | `max_recipients` | `0` | Maximum recipients per message. `0` = unlimited. |
 | `recipient_delimiter` | `+` | Subaddress separator: `user+tag@domain` → `user@domain`. Empty = disabled. |
-| `submission_add_received_header` | `true` | Prepend a `Received:` trace header to messages before forwarding. Set to `false` to suppress (Dovecot 2.4 parity — protects sender identity). |
+| `submission_add_received_header` | `true` | Prepend a `Received:` trace header to messages before forwarding. Set to `false` to suppress (the reference parity — protects sender identity). |
 
 ```yaml
 protocol:

@@ -1,7 +1,7 @@
 # mdbox Alt Storage (Cold Tiering)
 
 yarilo mdbox supports moving messages to a secondary (cold) storage
-tier — functionally equivalent to Dovecot's `mail_alt_path` +
+tier — functionally equivalent to the reference's `mail_alt_path` +
 `doveadm altmove`. Messages moved to alt storage remain fully
 accessible; the Fetch path transparently falls back to the alt
 directory when a file is not found in primary.
@@ -136,10 +136,10 @@ spec:
 In practice, drive the user list from the SQL passdb iterate_query
 and loop per user.
 
-## Wire compatibility with Dovecot
+## Wire compatibility with the reference
 
 The on-disk format of moved `m.<N>` files is identical to primary
-files — same dbox v2 record layout. Dovecot's `mail_alt_path` and
+files — same dbox v2 record layout. The reference's `mail_alt_path` and
 yarilo's `mdbox_alt_storage_path` are interchangeable at the
 filesystem level, enabling live migration between the two servers
 without data conversion.

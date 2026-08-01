@@ -17,7 +17,7 @@ Shared TLS certificate. Used by every TLS-enabled listener that does not define 
 | `tls_min_version` | `TLS1.2` | Minimum TLS version: `TLS1.2` \| `TLS1.3`. |
 | `prefer_server_ciphers` | `false` | Use server cipher-suite preference order. |
 
-**TLS ALPN matching (Dovecot 2.4 parity).** TLS listeners advertise ALPN protocol identifiers per IANA RFC 7301: `imap` for IMAP/IMAPS, `pop3` for POP3/POP3S, `smtp` for Submission/Submissions. Clients that send ALPN must match — mismatching connections are refused. Clients without ALPN are accepted (backward-compatibility). LMTP is internal-only and does not enforce ALPN.
+**TLS ALPN matching (the reference parity).** TLS listeners advertise ALPN protocol identifiers per IANA RFC 7301: `imap` for IMAP/IMAPS, `pop3` for POP3/POP3S, `smtp` for Submission/Submissions. Clients that send ALPN must match — mismatching connections are refused. Clients without ALPN are accepted (backward-compatibility). LMTP is internal-only and does not enforce ALPN.
 
 ```yaml
 general:
@@ -61,7 +61,7 @@ Enable per-listener with `haproxy_protocol: true` in the service config. See [SE
 
 SMTP XCLIENT command for trusted relay infrastructure. A relay behind which yarilo sits can pass the real client IP, hostname, and helo string via XCLIENT before the mail transaction begins. Only connections from `trusted_nets` are allowed to send XCLIENT.
 
-**Supported XCLIENT attributes:** `ADDR`, `PORT`, `HELO`, `LOGIN`, `PROTO`, `SESSION`, `TTL`, `FORWARD`, plus Dovecot 2.4 extensions `DESTADDR` (alias: `DESTIP`) and `DESTPORT` for the destination the client originally connected to (load-balancer awareness).
+**Supported XCLIENT attributes:** `ADDR`, `PORT`, `HELO`, `LOGIN`, `PROTO`, `SESSION`, `TTL`, `FORWARD`, plus the reference extensions `DESTADDR` (alias: `DESTIP`) and `DESTPORT` for the destination the client originally connected to (load-balancer awareness).
 
 | Key | Default | Description |
 |:---|:---|:---|

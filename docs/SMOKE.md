@@ -122,7 +122,7 @@ Against a real deployment, point `-host` at the public hostname and use the stan
 
 ## What auto-provisioning means
 
-When LMTP receives a message for a user whose Maildir doesn't exist, it creates `INBOX/{cur,new,tmp}/` and proceeds. This matches Dovecot's behavior — LMTP is internal, the upstream MTA has already vetted recipients.
+When LMTP receives a message for a user whose Maildir doesn't exist, it creates `INBOX/{cur,new,tmp}/` and proceeds. This matches the reference's behavior — LMTP is internal, the upstream MTA has already vetted recipients.
 
 If you want strict recipient validation at the LMTP layer (instead of trusting the MTA), file an issue — there's currently no `lmtp_reject_unknown_recipients` knob.
 

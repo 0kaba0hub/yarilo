@@ -14,7 +14,7 @@ Protocol-level behaviour, shared across both IMAP listeners.
 | Key | Default | Description |
 |:---|:---|:---|
 | `imap_idle_notify_interval` | `120` | Seconds between unsolicited EXISTS/RECENT responses during IDLE (RFC 2177 keepalive). `0` = disabled. |
-| `imap_max_line_length` | `65536` | Max IMAP command line length in bytes (64 KB = Dovecot default). `0` = unlimited. |
+| `imap_max_line_length` | `65536` | Max IMAP command line length in bytes (64 KB = the reference default). `0` = unlimited. |
 | `imap_id_send` | `name *` | Space-separated key-value pairs sent in the ID response (RFC 2971). `*` = server-default values. Empty string = ID extension disabled. |
 | `login_greeting` | `""` | Custom text appended to the server greeting replacing the default `Yarilo IMAP server ready`. Empty = default greeting. |
 | `imap_logout_format` | `""` | Format string logged at session end. Empty = no stats line. Variables listed below. |

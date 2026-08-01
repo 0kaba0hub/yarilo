@@ -332,7 +332,7 @@ CLI: `yarctl backend folder delete <user> <folder> [--namespace NS]`
 Renames a folder within one namespace (cross-namespace rename is
 not supported). The `yarilo-acl` file is moved across index dirs
 and the namespace-wide index entries are rewritten. INBOX cannot
-be renamed via backend-api (Dovecot-style move-messages semantics
+be renamed via backend-api (reference-style move-messages semantics
 not implemented here yet).
 
 ```json

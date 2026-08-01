@@ -292,7 +292,7 @@ Beyond `home` / `mail`, a lookup may return extra fields — as a SQL column ali
 
 | Field | Meaning |
 |:---|:---|
-| `acl_user` | Override the identity used when **evaluating ACLs** (Dovecot `acl_user`). Typically set on a master-user session so ACL checks resolve as the impersonated user rather than the login. Empty = evaluate as the login user. |
+| `acl_user` | Override the identity used when **evaluating ACLs** (the reference's `acl_user`). Typically set on a master-user session so ACL checks resolve as the impersonated user rather than the login. Empty = evaluate as the login user. |
 | `acl_groups` | Group names (comma-separated) used alongside `acl_user` for ACL evaluation. |
 
 > `acl_user` / `acl_groups` only affect **non-owner** namespaces (shared / public / other-users). A user always has full rights in their own personal namespace regardless of the override.

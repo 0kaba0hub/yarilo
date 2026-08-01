@@ -49,11 +49,11 @@ map, a per-folder rebuild would import unrelated messages — so the per-folder 
 `yarctl backend index rebuild-storage <user>`). It reconciles the shared map against the
 physical `m.<N>` files under the storage lock, resets every folder index to the messages
 that still exist, **recomputes each map record's refcount from the actual folder
-references** (Dovecot `rebuild_apply_map` parity), drops map records whose message
+references** (the reference `rebuild_apply_map` parity), drops map records whose message
 vanished, and bumps a persisted `rebuild_count` generation counter in the map header. It
 **refuses** to run when the scan is incomplete (a half-corrupt `m.<N>` or transient I/O —
 move/repair the named file and re-run) or when a configured alt tier is unmounted (would
-mass-expunge alt-resident mail). It is an operator repair tool (Dovecot `force-resync`
+mass-expunge alt-resident mail). It is an operator repair tool (the reference `force-resync`
 parity) and should run with the user's mailboxes **quiesced** — no concurrent delivery
 *and* no concurrent folder operations (CREATE/DELETE/RENAME); neither the delivery
 folder-append nor the restore is serialised on the storage lock, so a concurrent message
@@ -93,11 +93,11 @@ On-disk `m.<N>` files follow the **dbox v2 layout**: the ASCII file-header line
 first message, then each message is `[32-byte header][body][trailer]`. The reader is
 self-describing — at each record it tells a file-header line (starts with the ASCII version
 digit) apart from a raw message header (starts with the `\x01\x02` magic) by the first
-byte, so a real Dovecot instance parses past the first message in a multi-message file, and
+byte, so a real the reference instance parses past the first message in a multi-message file, and
 legacy yarilo stores that stamped the header before every record still read back unchanged
 (no migration).
 
-Three Dovecot-parity knobs tune when a new `m.<N>` is rolled and how it is allocated (all
+Three the reference-parity knobs tune when a new `m.<N>` is rolled and how it is allocated (all
 under `storage:`, mdbox only):
 
 | Key | Default | Effect |
@@ -107,7 +107,7 @@ under `storage:`, mdbox only):
 | `mdbox_preallocate_space` | `false` | `fallocate()` the new file to `mdbox_rotate_size` up front (Linux only; a no-op elsewhere). |
 
 The age check reads a **persisted per-file create-time** stored in the map header (not a
-filesystem `btime`, which is unreliable over NFS), so it survives restarts. Unlike Dovecot
+filesystem `btime`, which is unreliable over NFS), so it survives restarts. Unlike the reference
 it uses a **rolling window** (`now − createTime > interval`) rather than a clock-boundary
 snap, so "rotate every interval" means the file actually lived at least that long.
 Preallocation uses `FALLOC_FL_KEEP_SIZE` so the file's logical size still grows from zero

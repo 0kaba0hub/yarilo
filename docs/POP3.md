@@ -13,7 +13,7 @@ Protocol-level behaviour, shared across both POP3 listeners.
 
 | Key | Default | Description |
 |:---|:---|:---|
-| `pop3_no_flag_updates` | `false` | `false` = set `\Seen` on RETR'd messages at QUIT (Dovecot default). `true` = no flag changes on retrieval. |
+| `pop3_no_flag_updates` | `false` | `false` = set `\Seen` on RETR'd messages at QUIT (the reference default). `true` = no flag changes on retrieval. |
 | `pop3_reuse_xuidl` | `false` | Use the `X-UIDL` message header as the UIDL value. Enables migration from Courier / qmail / cPanel without UIDL changes. |
 | `pop3_uidl_format` | `%u.%v` | UIDL format string. See variables below. |
 | `pop3_uidl_duplicates` | `rename` | `allow` = emit duplicate UIDLs as-is. `rename` = append `-N` suffix to guarantee uniqueness. |
@@ -38,7 +38,7 @@ Common presets:
 | Format | Result example | Compatible with |
 |:---|:---|:---|
 | `%u.%v` | `1234.5678` | yarilo default |
-| `%08Xu%08Xv` | `000004D2000016C2` | Dovecot |
+| `%08Xu%08Xv` | `000004D2000016C2` | the reference |
 | `%f` | `1700000000.M123P456.host:2,S` | Courier (Maildir) |
 
 ---

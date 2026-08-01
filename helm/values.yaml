@@ -194,7 +194,7 @@ components:
   ## Co-located backend pod (#788). One StatefulSet whose pod runs every
   ## protocol container (imap/pop3/submission/lmtp/managesieve) + yarilo-fts
   ## (localhost) + yarilo-backend-api + the yarilo-backend-reg sidecar, sharing
-  ## one pod IP + the tag's NFS PV. Restores the Dovecot invariant "one
+  ## one pod IP + the tag's NFS PV. Restores the reference invariant "one
   ## mail-host owns every per-user resource" → one director ring + one userDir
   ## are correct, and per-user fts is single-writer for free (#675/#676).
   ## Per-container resources come from the components.<proto>/fts/backendAPI
@@ -306,7 +306,7 @@ components:
     ## not the bool — governs case-folding. An invalid template aborts startup.
     username_hash: ""
     ## Initial (unpinned) user placement (#797): hash | least_sessions.
-    ## hash = consistent hash (Dovecot semantics, deterministic). least_sessions
+    ## hash = consistent hash (reference semantics, deterministic). least_sessions
     ## = load-aware two-level pick (per-protocol then total, vhosts-normalized).
     assignment_policy: hash
 
@@ -320,7 +320,7 @@ components:
     ## (kick -> re-login -> LOOKUP), so the move rate is already bounded by
     ## max_parallel_kicks below; a parsed-but-unread key is deliberately omitted.
     user_kick_delay: 2
-    ## Confirmed ring-wide kick (#847, Dovecot user_kill_state parity). While a
+    ## Confirmed ring-wide kick (#847, reference user_kill_state parity). While a
     ## user is being kicked/moved, LOOKUP is HELD so a concurrent login cannot
     ## land on a fresh backend before the old sessions are gone (the split-writer
     ## window). user_kill_timeout is the hard fallthrough (seconds): if the kill
@@ -700,9 +700,9 @@ components:
     ## selectively via `yarctl auth cache flush
     ## [user-mask...]`.
     cache:
-      ## cache_size — human-readable byte cap (1024-based units: b, k, M, G, T,
-      ## Dovecot-style; a bare integer is bytes). "100M" == 104857600. Empty/0
-      ## disables caching. Quote it so a unit suffix stays a string.
+      ## cache_size — human-readable byte cap (1024-based units: b, k, M, G, T;
+      ## a bare integer is bytes). "100M" == 104857600. Empty/0 disables caching.
+      ## Quote it so a unit suffix stays a string.
       cache_size: "100M"
       ttl_seconds: 1800
       negative_ttl_seconds: 1800

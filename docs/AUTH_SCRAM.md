@@ -49,7 +49,7 @@ user.
 
 ## Storage format
 
-Each SCRAM-enabled user's `password` column carries a Dovecot-
+Each SCRAM-enabled user's `password` column carries a reference-
 compatible blob — the inner shape is identical across the
 SHA-256 and SHA-1 families; only the scheme prefix differs:
 
