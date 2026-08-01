@@ -811,8 +811,8 @@ type AnvilServiceConfig struct {
 	RedisAddr string `koanf:"redis_addr"`
 	// KeyPrefix / ChannelPrefix namespace anvil's Redis keys and Pub/Sub
 	// channels (#938/#939 practice). Empty keeps the service-name defaults
-	// ("yarilo:anvil:" / "yarilo:anvil:events:"). ChannelPrefix is reserved for
-	// the kick bus (a later phase); keys use KeyPrefix from this phase.
+	// ("yarilo:anvil:" / "yarilo:anvil:events:"). ChannelPrefix namespaces the
+	// kick bus (#908 PR3); keys use KeyPrefix.
 	KeyPrefix     string `koanf:"key_prefix"`
 	ChannelPrefix string `koanf:"channel_prefix"`
 }
