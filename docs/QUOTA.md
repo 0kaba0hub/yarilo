@@ -17,7 +17,7 @@ counter.** This mirrors the reference, which *removed* its `dict` quota backend
 (the drift-prone "counter is the source of truth" model); the authoritative
 value is computed from the mailbox index.
 
-- The FileIndex carries two extensions (see INTERNALS.md): a per-record `vsize`
+- The FileIndex carries two extensions (see the internal docs): a per-record `vsize`
   (virtual/RFC822 size) and a header `hdr-vsize` aggregate
   `{vsize, highest_uid, message_count}`.
 - The aggregate is maintained incrementally on append/expunge and **self-heals**:
