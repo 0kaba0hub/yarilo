@@ -14,8 +14,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/0kaba0hub/yarilo/internal/warden"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
 	"github.com/0kaba0hub/yarilo/pkg/logging"
