@@ -46,6 +46,16 @@ func TestStateBackendSessionContract(t *testing.T) {
 				t.Fatalf("session count = %d, want %d", got, limit)
 			}
 
+			// Idempotent CONNECT (#942 review): a retry with an already-registered
+			// id must NOT take a second slot. Re-CONNECT sid(1); the count is
+			// unchanged and the pool stays full.
+			if ok, err := b.SessionConnect(sid(1), u, ip, "imap"); err != nil || !ok {
+				t.Fatalf("idempotent re-connect = (%v,%v), want (true,nil)", ok, err)
+			}
+			if got := b.SessionCount(); got != limit {
+				t.Fatalf("count after idempotent re-connect = %d, want %d (no double-count)", got, limit)
+			}
+
 			// Touch: known vs unknown.
 			if !b.SessionTouch(sid(1)) {
 				t.Fatal("touch of a live session should be known")

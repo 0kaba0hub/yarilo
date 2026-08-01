@@ -94,11 +94,28 @@ func newMemoryBackend(decay, sessionTTL time.Duration, max int) *memoryBackend {
 }
 
 func (b *memoryBackend) SessionConnect(id, user, ip, service string) (bool, error) {
+	now := time.Now().UTC()
+	// Idempotent (#942 review): a retried CONNECT for an already-registered id
+	// refreshes without taking a second limiter slot.
+	b.mu.Lock()
+	if sess, exists := b.sessions[id]; exists {
+		sess.lastSeen = now
+		b.mu.Unlock()
+		return true, nil
+	}
+	b.mu.Unlock()
+
 	if !b.limiter.Acquire(user, ip) {
 		return false, nil
 	}
-	now := time.Now().UTC()
 	b.mu.Lock()
+	if sess, exists := b.sessions[id]; exists {
+		// Lost a race with a concurrent same-id CONNECT — undo the extra slot.
+		sess.lastSeen = now
+		b.mu.Unlock()
+		b.limiter.Release(user, ip)
+		return true, nil
+	}
 	b.sessions[id] = &SessionInfo{ID: id, User: user, IP: ip, Service: service, ConnectedAt: now, lastSeen: now}
 	sessions.Set(float64(len(b.sessions)))
 	b.mu.Unlock()
@@ -289,6 +306,15 @@ func (b *redisBackend) sessKey(id string) string      { return b.keyPrefix + "se
 // so concurrent CONNECTs cannot both slip past the limit.
 // KEYS[1]=cnt KEYS[2]=sess; ARGV: 1=limit 2=ttlMs 3=user 4=ip 5=service 6=connectedAt
 var connectScript = redis.NewScript(`
+-- Idempotent (#942 review): a retried CONNECT for an already-registered session
+-- (a network retry after the command actually succeeded) must refresh it WITHOUT
+-- a second INCR, or one session would be double-counted. Mirrors the idempotent
+-- DISCONNECT (which DECRs only on DEL==1).
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  redis.call('HSET', KEYS[2], 'user', ARGV[3], 'ip', ARGV[4], 'service', ARGV[5], 'connected_at', ARGV[6])
+  redis.call('PEXPIRE', KEYS[2], ARGV[2])
+  return 1
+end
 local limit = tonumber(ARGV[1])
 if limit > 0 and tonumber(redis.call('GET', KEYS[1]) or '0') >= limit then
   return 0
