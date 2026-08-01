@@ -217,8 +217,14 @@ func dispatchBackend(args []string) error {
 		return dispatchQuota(args[1:])
 	case "fts":
 		return dispatchFTS(args[1:])
+	case "anvil":
+		// anvil introspection runs against the backend plane, so it must resolve
+		// here too — the backend-api container sets YARILO_ADMIN_TYPE=backend,
+		// which routes `yarctl anvil dump` through dispatchBackend rather than the
+		// top-level shorthand (#953, same class as the `wait` special-case #903).
+		return dispatchAnvil(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts, anvil", args[0])
 	}
 }
 
