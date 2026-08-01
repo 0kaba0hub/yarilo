@@ -427,11 +427,10 @@ components:
       # Sandbox shares one Redis; every component lives under the yarilo-sb: namespace.
       key_prefix: "yarilo-sb:authtoken:"
 
-    # Cross-pod auth-fail tarpit via anvil. Blocked on #942 (auth reuses the
-    # server TLS config for the penalty anvil dial → CrashLoop under mTLS);
-    # re-enable to gate #908 PR1 once #942 lands.
+    # Cross-pod auth-fail tarpit via anvil (prod-like; exercises the #908 Redis
+    # penalty backend end-to-end). #942 fixed the mTLS client-config dial.
     penalty:
-      enabled: false
+      enabled: true
 
   ## IMAP session pod.
   imap:
