@@ -2,6 +2,7 @@ package anvil
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"time"
@@ -113,10 +114,18 @@ func (b *redisBackend) PenaltyLookup(ip string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
 	defer cancel()
 	v, err := b.rdb.Get(ctx, b.penaltyKey(ip)).Int()
-	if err != nil {
-		return 0, "miss" // redis.Nil (absent/expired) or a bounded error → fail open
+	switch {
+	case err == nil:
+		return v, "hit"
+	case errors.Is(err, redis.Nil):
+		return 0, "miss" // key absent or expired — a real "no penalty"
+	default:
+		// A bounded Redis error (down/blackholed). Fail open — a tarpit is an
+		// availability control, and failing closed would tarpit everyone during a
+		// Redis blip (self-DoS). The distinct "error" status keeps the outage
+		// visible in the penaltyLookups metric rather than hiding it as a miss.
+		return 0, "error"
 	}
-	return v, "hit"
 }
 
 func (b *redisBackend) PenaltyUpdate(ip string, count int) {
