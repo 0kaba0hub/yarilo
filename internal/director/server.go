@@ -17,7 +17,7 @@
 //	  DONE\n
 //
 //	Ring membership handshake (#750 — self-organizing ring, replaces the
-//	static full-mesh peer list; see membership.go and INTERNALS.md §1):
+//	static full-mesh peer list; see membership.go and the internal docs):
 //	  DIRECTOR-JOIN\t{ip}\t{port}\n        (sent instead of ME/DONE, on a fresh connection to a seed)
 //	  JOIN-CHALLENGE\t{nonce_hex}\n
 //	  JOIN-PROOF\t{hmac_hex}\n             (HMAC-SHA256(ring_secret, nonce+ip+port))

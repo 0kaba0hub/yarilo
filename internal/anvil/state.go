@@ -79,8 +79,37 @@ type StateBackend interface {
 	// concern the caller must itself reconnect (login.kickSubscribeLoop).
 	Subscribe(ctx context.Context, channel string) (<-chan string, error)
 
+	// Dump returns an admin/debug snapshot of the accounting counters (with the
+	// live session tally, so drift is visible) and the penalty entries (with
+	// remaining TTL). Backend-agnostic — memory computes it in-process, Redis via
+	// SCAN. Surfaced by `yarctl anvil dump`.
+	Dump() (*StateDump, error)
+
 	// Close releases backend resources (the Redis client). Memory returns nil.
 	Close() error
+}
+
+// StateDump is the admin snapshot returned by Dump.
+type StateDump struct {
+	Counters  []CounterStat `json:"counters"`
+	Penalties []PenaltyStat `json:"penalties"`
+}
+
+// CounterStat is one per-user@IP connection counter alongside the live session
+// tally for the same key. Drift = Counter - Live: a positive drift is a leaked
+// counter (the reconcile target); it should be 0 in steady state.
+type CounterStat struct {
+	UserIP  string `json:"user_ip"`
+	Counter int    `json:"counter"`
+	Live    int    `json:"live"`
+}
+
+// PenaltyStat is one per-IP auth-failure penalty with its remaining TTL in
+// seconds (-1 when the backend cannot report a TTL).
+type PenaltyStat struct {
+	IP      string `json:"ip"`
+	Count   int    `json:"count"`
+	TTLSecs int    `json:"ttl_secs"`
 }
 
 // subscriberOutboxSize bounds a subscriber's pending-event buffer. Emit drops
@@ -322,6 +351,39 @@ func (b *memoryBackend) Subscribe(ctx context.Context, channel string) (<-chan s
 	return out, nil
 }
 
+func (b *memoryBackend) Dump() (*StateDump, error) {
+	now := time.Now().UTC()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Live tally per user@IP from the session set; the counter comes from the
+	// limiter for the same (user, ip). In memory these move together, so drift is
+	// structurally 0 — the field exists for parity with the Redis dump.
+	type uip struct{ user, ip string }
+	live := map[uip]int{}
+	for _, s := range b.sessions {
+		live[uip{s.User, s.IP}]++
+	}
+	counters := make([]CounterStat, 0, len(live))
+	for k, n := range live {
+		counters = append(counters, CounterStat{
+			UserIP:  k.user + "@" + k.ip,
+			Counter: b.limiter.Count(k.user, k.ip),
+			Live:    n,
+		})
+	}
+
+	penalties := make([]PenaltyStat, 0, len(b.penalties))
+	for ip, e := range b.penalties {
+		ttl := int((b.decay - now.Sub(e.lastUpdate)).Seconds())
+		if ttl < 0 {
+			ttl = 0
+		}
+		penalties = append(penalties, PenaltyStat{IP: ip, Count: e.count, TTLSecs: ttl})
+	}
+	return &StateDump{Counters: counters, Penalties: penalties}, nil
+}
+
 func (b *memoryBackend) Close() error { return nil }
 
 // redisOpTimeout bounds every Redis operation so a blackholed or down Redis
@@ -561,20 +623,7 @@ func (b *redisBackend) Maintain(time.Time) {
 	defer cancel()
 
 	// Live tally per user@IP from the session hashes.
-	live := map[string]int{}
-	sit := b.rdb.Scan(ctx, 0, b.keyPrefix+"sess:*", scanCount).Iterator()
-	for sit.Next(ctx) {
-		h, err := b.rdb.HMGet(ctx, sit.Val(), "user", "ip").Result()
-		if err != nil || len(h) != 2 {
-			continue
-		}
-		u, ok0 := h[0].(string)
-		ipv, ok1 := h[1].(string)
-		if !ok0 || !ok1 {
-			continue // missing/expired field, or a non-string value
-		}
-		live[u+"@"+ipv]++
-	}
+	live := b.liveTally(ctx)
 
 	// Compare each counter to the tally; decrement any leak.
 	cit := b.rdb.Scan(ctx, 0, b.keyPrefix+"cnt:*", scanCount).Iterator()
@@ -644,6 +693,70 @@ func (b *redisBackend) Subscribe(ctx context.Context, channel string) (<-chan st
 		}
 	}()
 	return out, nil
+}
+
+// liveTally returns the live session count per user@IP, scanned from the session
+// hashes. Shared by Maintain (reconcile) and Dump so both see the same view.
+func (b *redisBackend) liveTally(ctx context.Context) map[string]int {
+	live := map[string]int{}
+	sit := b.rdb.Scan(ctx, 0, b.keyPrefix+"sess:*", scanCount).Iterator()
+	for sit.Next(ctx) {
+		h, err := b.rdb.HMGet(ctx, sit.Val(), "user", "ip").Result()
+		if err != nil || len(h) != 2 {
+			continue
+		}
+		u, ok0 := h[0].(string)
+		ipv, ok1 := h[1].(string)
+		if !ok0 || !ok1 {
+			continue // missing/expired field, or a non-string value
+		}
+		live[u+"@"+ipv]++
+	}
+	return live
+}
+
+func (b *redisBackend) Dump() (*StateDump, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*redisOpTimeout)
+	defer cancel()
+
+	live := b.liveTally(ctx)
+	seen := map[string]bool{}
+	counters := []CounterStat{}
+	cit := b.rdb.Scan(ctx, 0, b.keyPrefix+"cnt:*", scanCount).Iterator()
+	for cit.Next(ctx) {
+		key := cit.Val()
+		userip := strings.TrimPrefix(key, b.keyPrefix+"cnt:")
+		cur, err := b.rdb.Get(ctx, key).Int()
+		if err != nil {
+			continue // raced with an expiry/DEL
+		}
+		seen[userip] = true
+		counters = append(counters, CounterStat{UserIP: userip, Counter: cur, Live: live[userip]})
+	}
+	// A user@IP with live sessions but no counter (counter under-count) is also
+	// drift worth showing.
+	for userip, n := range live {
+		if !seen[userip] {
+			counters = append(counters, CounterStat{UserIP: userip, Counter: 0, Live: n})
+		}
+	}
+
+	penalties := []PenaltyStat{}
+	pit := b.rdb.Scan(ctx, 0, b.keyPrefix+"penalty:*", scanCount).Iterator()
+	for pit.Next(ctx) {
+		key := pit.Val()
+		ip := strings.TrimPrefix(key, b.keyPrefix+"penalty:")
+		cnt, err := b.rdb.Get(ctx, key).Int()
+		if err != nil {
+			continue
+		}
+		ttl := -1
+		if d, err := b.rdb.PTTL(ctx, key).Result(); err == nil && d > 0 {
+			ttl = int(d.Seconds())
+		}
+		penalties = append(penalties, PenaltyStat{IP: ip, Count: cnt, TTLSecs: ttl})
+	}
+	return &StateDump{Counters: counters, Penalties: penalties}, nil
 }
 
 func (b *redisBackend) Close() error { return b.rdb.Close() }

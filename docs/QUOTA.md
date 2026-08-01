@@ -13,16 +13,16 @@ userdb quota_rule=*:storage=5G → AuthResponse.QuotaRules → userInfo.QuotaRul
 ```
 
 **Usage is the `count` backend — derived from the index, never a stored
-counter.** This mirrors Dovecot 2.4, which *removed* its `dict` quota backend
+counter.** This mirrors the reference, which *removed* its `dict` quota backend
 (the drift-prone "counter is the source of truth" model); the authoritative
 value is computed from the mailbox index.
 
-- The FileIndex carries two extensions (see INTERNALS.md): a per-record `vsize`
+- The FileIndex carries two extensions (see the internal docs): a per-record `vsize`
   (virtual/RFC822 size) and a header `hdr-vsize` aggregate
   `{vsize, highest_uid, message_count}`.
 - The aggregate is maintained incrementally on append/expunge and **self-heals**:
   on load it is trusted only while `highest_uid+1 == uidnext && message_count ==
-  messages` (a cheap O(1) validity check, exactly Dovecot's), otherwise it is
+  messages` (a cheap O(1) validity check, exactly the reference's), otherwise it is
   recomputed from the per-record vsize.
 - `quota.CountUsage(idx, folders, limits)` sums each folder's `FolderVSize`
   aggregate — the authoritative usage. `ignore` folders are skipped.
@@ -33,7 +33,7 @@ value is computed from the mailbox index.
 |:---|:---|
 | IMAP GETQUOTA / APPEND enforcement | `session.countUsage` → sum `FolderVSize` (1 s display cache; enforcement fresh) |
 | LMTP delivery | opens the recipient index at delivery time → `CountUsage` |
-| `yarilo-quota-status` (Postfix policy) | a **full mail process**: opens the recipient's mailbox+index → `CountUsage`, exactly like Dovecot's quota-status (`mail_storage_service`). **Not** a dict reader. Needs the mail PV mounted. |
+| `yarilo-quota-status` (Postfix policy) | a **full mail process**: opens the recipient's mailbox+index → `CountUsage`, exactly like the reference's quota-status (`mail_storage_service`). **Not** a dict reader. Needs the mail PV mounted. |
 | `backend-api` /show, /recalc | `CountUsage`; /recalc force-rebuilds each folder's aggregate |
 | POP3 | **nothing** — POP3 never appends, so no enforcement; DELE→expunge decrements the index aggregate automatically |
 
@@ -41,11 +41,11 @@ value is computed from the mailbox index.
 
 1. **quota engine** (`quota.enabled`) — the count backend + enforcement on
    **every save**: IMAP APPEND/COPY/MOVE (OVERQUOTA), LMTP delivery (452), and
-   the quota-status policy service. This mirrors Dovecot's `quota` plugin, whose
+   the quota-status policy service. This mirrors the reference's `quota` plugin, whose
    `quota-storage.c` hooks `mail_save` — the path shared by APPEND and delivery.
 2. **IMAP QUOTA extension** (`protocol.imap.imap_quota`) — RFC 9208
    `GETQUOTA` / `GETQUOTAROOT` + the `QUOTA` capability. A **client-facing query
-   only, no enforcement** (Dovecot's `imap_quota` plugin registers only the
+   only, no enforcement** (the reference's `imap_quota` plugin registers only the
    commands). Toggle it independently of the engine — you can enforce without
    advertising the extension, or advertise it without enforcing.
 
@@ -80,7 +80,7 @@ dicts:
 ```
 
 Keys written per user: `priv/quota/storage` (bytes) and `priv/quota/messages`
-(count) — the same layout Dovecot's clone uses, so existing external readers
+(count) — the same layout the reference's clone uses, so existing external readers
 work unchanged.
 
 ## Configuration

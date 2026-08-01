@@ -168,6 +168,44 @@ func (c *Conn) Who(f WhoFilter) ([]SessionInfo, error) {
 	}
 }
 
+// Dump requests the admin/debug snapshot (DUMP): accounting counters with their
+// live tally (drift) and penalty entries with remaining TTL. Reads CNT/PEN lines
+// until DONE.
+func (c *Conn) Dump() (*StateDump, error) {
+	if _, err := fmt.Fprintln(c.conn, "DUMP"); err != nil {
+		return nil, fmt.Errorf("anvil/client: write DUMP: %w", err)
+	}
+	d := &StateDump{}
+	for {
+		line, err := c.rd.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("anvil/client: read DUMP response: %w", err)
+		}
+		line = strings.TrimRight(line, "\n")
+		fields := strings.Split(line, "\t")
+		switch fields[0] {
+		case "CNT":
+			if len(fields) < 4 {
+				continue
+			}
+			counter, _ := strconv.Atoi(fields[2])
+			live, _ := strconv.Atoi(fields[3])
+			d.Counters = append(d.Counters, CounterStat{UserIP: fields[1], Counter: counter, Live: live})
+		case "PEN":
+			if len(fields) < 4 {
+				continue
+			}
+			cnt, _ := strconv.Atoi(fields[2])
+			ttl, _ := strconv.Atoi(fields[3])
+			d.Penalties = append(d.Penalties, PenaltyStat{IP: fields[1], Count: cnt, TTLSecs: ttl})
+		case "DONE":
+			return d, nil
+		default:
+			return nil, fmt.Errorf("anvil/client: unexpected DUMP line: %q", line)
+		}
+	}
+}
+
 // Heartbeat extends the TTL of an active session on the anvil
 // server. Returns (true, nil) on hit, (false, nil) when the
 // server reports `reason=unknown` (caller should re-issue

@@ -48,7 +48,7 @@ namespaces:
 Equivalent to pre-v1.20 behaviour — the IMAP `NAMESPACE` response is
 `* NAMESPACE (("" "/")) NIL NIL`.
 
-### Personal + Shared + Other Users (Dovecot-style)
+### Personal + Shared + Other Users (reference-style)
 
 ```yaml
 namespaces:
@@ -65,7 +65,7 @@ namespaces:
     list: true
     location: "maildir:/var/yarilo/shared"
 
-  - type: other                # Dovecot's "Other Users" namespace
+  - type: other                # the reference's "Other Users" namespace
     prefix: "user/%u/"         # %u ⇒ owner-templated (client sees "user/alice/INBOX")
     separator: "/"
     list: true
@@ -100,13 +100,13 @@ S: A1 OK NAMESPACE completed
 
 ## Per-namespace separator
 
-yarilo follows Dovecot: each namespace MAY use a different separator.
+yarilo follows the reference: each namespace MAY use a different separator.
 
 | Field | Constraint |
 |:---|:---|
 | `separator` | exactly one character. Missing → defaults to `/`. Multi-char → falls back to `/` with a warning at startup. |
 
-Useful when migrating from a legacy Dovecot deployment that used `.` for
+Useful when migrating from a legacy the reference deployment that used `.` for
 personal mailboxes (mbox legacy) and `/` for shared:
 
 ```yaml

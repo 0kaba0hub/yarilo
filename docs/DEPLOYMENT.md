@@ -3,7 +3,7 @@
 ## Architecture model
 
 yarilo is a Go application that uses **goroutines** for concurrency, not fork-per-user as in
-Dovecot C. A single process (e.g. `yarilo-imap`) serves N user sessions through goroutines
+The reference C. A single process (e.g. `yarilo-imap`) serves N user sessions through goroutines
 (~100 KB per session).
 
 **Multi-binary, multi-process** (per CLAUDE.md):
@@ -67,7 +67,7 @@ user, no per-user write), so co-locating it would break the MTA contract for
 zero gain. It stays its own Deployment.
 
 This is deliberate and load-bearing for the whole director model: it restores the
-Dovecot invariant **one mail-host owns every per-user resource**. Because the pod
+The reference invariant **one mail-host owns every per-user resource**. Because the pod
 at a given IP answers imap *and* pop3 *and* lmtp *and* submission *and*
 managesieve, the director needs only **one ring and one user→pod map** — a user
 hashes to one pod IP, and that IP is correct for every protocol (the login proxy
@@ -143,7 +143,7 @@ Model:
   **Readiness-gate semantics (spell this out for operators):** because it is one
   pod = one ring entry, a *single* unready protocol container makes the whole pod
   go silent → the lease expires → the pod is removed for **all** protocols. This is
-  correct and matches Dovecot (host down = down for everything on that host), but it
+  correct and matches the reference (host down = down for everything on that host), but it
   is a real coupling: an NFS-wedged `yarilo-lmtp` will pull the pod's IMAP traffic
   off too. That is the price of the one-mail-host invariant, and the sidecar's gate
   makes the wedge fail safe (silence → expiry) rather than routing to a half-dead
@@ -174,7 +174,7 @@ Model:
   move. A transient load spike therefore causes zero user reshuffling. Sending
   `BACKEND-DOWN` on overload would remove it → rehash the slice away → and then a
   second rehash back when it re-registers a minute later: double-shuffling users
-  through a transient peak, worse than the peak itself. This matches Dovecot's
+  through a transient peak, worse than the peak itself. This matches the reference's
   down/vhosts semantics (drain by zeroing vhosts, not by removal). `BACKEND-DOWN`
   is reserved for genuine LEAVE (SIGTERM / expiry).
 
@@ -657,7 +657,7 @@ helm/yarilo-backend       → backend pool (one release per tag = per NFS shard,
   are mathematically incompatible. Separate pools would hash the same user to
   *different* pods for IMAP vs LMTP, so every cross-protocol write (LMTP delivery →
   the mailbox an IMAP session on another pod holds) crosses pods and fights over
-  `yarilo-locks` / index-cache coherence. Co-locating restores Dovecot's
+  `yarilo-locks` / index-cache coherence. Co-locating restores the reference's
   one-mail-host invariant and makes the single ring + single userDir **correct**,
   not merely a shortcut (this is the causal fix for #788, not a workaround).
 - **FTS single-writer for free (#675/#676).** The per-user Xapian index has the same
@@ -820,7 +820,7 @@ owner** of placement — the LOOKUP path, LMTP `RouteUser`, and the admin
 per-user resolve (#792) all funnel through one `assignAndPin`, so no caller can
 independently pick a pod and split a user's per-user writer (#788).
 
-- **`hash`** (default, Dovecot semantics): the consistent-hash backend for the
+- **`hash`** (default, the reference semantics): the consistent-hash backend for the
   user's tag. Deterministic — if a sticky entry expires after long inactivity the
   user returns to the same pod (warm per-user index locality on the shared PV,
   easy debugging).
@@ -840,7 +840,7 @@ hence the `hash` default. Second, because a fresh resolve now **pins**, a bulk
 admin sweep over never-logged-in users (e.g. `yarctl backend fts rescan`
 across a cohort) creates userDir entries for each — a deliberate side effect (the
 pins TTL-expire), so don't be surprised by a populated userDir after a mass
-operation. Reference parity: Dovecot does hash + vhosts weighting only;
+operation. Reference parity: the reference does hash + vhosts weighting only;
 `least_sessions` is a yarilo extension, default stays reference-compatible.
 
 ---
@@ -886,7 +886,7 @@ Two knobs shape how sessions are torn down, mirroring the reference's
   between batches, spreading the re-login stampede across the surviving backends
   instead of firing every kick at once. Negative = no batching.
 
-**Migrating from `dovecot.conf`:** `director_max_parallel_moves` has **no yarilo
+**Migration note:** a legacy `director_max_parallel_moves` setting has **no yarilo
 equivalent and is intentionally omitted**. yarilo rehashes lazily — a moved or
 kicked user is re-placed only on its next `LOOKUP` (kick → re-login → LOOKUP),
 so there is no proactive bulk-move phase to bound; the move rate is already
@@ -913,5 +913,5 @@ yarilo is written in Go. Go runtime + `fork()` = undefined behaviour — forbidd
 - `exec.Command` — to launch child processes at pod startup.
 - **Goroutines per user** within a process — one goroutine per user session.
 
-This is fundamentally different from the Dovecot C model (fork per user → process per user →
+This is fundamentally different from the reference C model (fork per user → process per user →
 ~10 MB per session). yarilo holds 1000+ users in a single process without resource overhead.

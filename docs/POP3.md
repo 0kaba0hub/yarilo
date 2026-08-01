@@ -13,7 +13,7 @@ Protocol-level behaviour, shared across both POP3 listeners.
 
 | Key | Default | Description |
 |:---|:---|:---|
-| `pop3_no_flag_updates` | `false` | `false` = set `\Seen` on RETR'd messages at QUIT (Dovecot default). `true` = no flag changes on retrieval. |
+| `pop3_no_flag_updates` | `false` | `false` = set `\Seen` on RETR'd messages at QUIT (the reference default). `true` = no flag changes on retrieval. |
 | `pop3_reuse_xuidl` | `false` | Use the `X-UIDL` message header as the UIDL value. Enables migration from Courier / qmail / cPanel without UIDL changes. |
 | `pop3_uidl_format` | `%u.%v` | UIDL format string. See variables below. |
 | `pop3_uidl_duplicates` | `rename` | `allow` = emit duplicate UIDLs as-is. `rename` = append `-N` suffix to guarantee uniqueness. |
@@ -21,7 +21,7 @@ Protocol-level behaviour, shared across both POP3 listeners.
 | `pop3_delete_type` | `expunge` | `expunge` = remove message from disk at QUIT. `flag` = set `pop3_deleted_flag` (soft delete, keeps message in IMAP). |
 | `pop3_deleted_flag` | `""` | IMAP flag to set when `pop3_delete_type: flag`. Example: `$POP3Deleted`. |
 | `pop3_save_uidl` | `false` | Persist computed UIDL values to `$HOME/.<folder>/pop3.uidl`. Subsequent sessions load the saved values so UIDLs remain stable across index rebuilds or backend changes. |
-| `pop3_lock_session` | `false` | Create a dotlock file at `$HOME/dovecot-pop3-session.lock` after login. Prevents simultaneous access from another yarilo-pop3 replica on the same PVC. Stale locks (older than 10 min) are stolen automatically. |
+| `pop3_lock_session` | `false` | Create a dotlock file at `$HOME/yarilo-pop3-session.lock` after login. Prevents simultaneous access from another yarilo-pop3 replica on the same PVC. Stale locks (older than 10 min) are stolen automatically. |
 
 ### `pop3_uidl_format` variables
 
@@ -38,7 +38,7 @@ Common presets:
 | Format | Result example | Compatible with |
 |:---|:---|:---|
 | `%u.%v` | `1234.5678` | yarilo default |
-| `%08Xu%08Xv` | `000004D2000016C2` | Dovecot |
+| `%08Xu%08Xv` | `000004D2000016C2` | the reference |
 | `%f` | `1700000000.M123P456.host:2,S` | Courier (Maildir) |
 
 ---
@@ -98,7 +98,7 @@ protocol:
     pop3_lock_session: true
 ```
 
-After login, the session creates `$HOME/dovecot-pop3-session.lock`. A second session for the same user on any pod that shares the filesystem will be rejected with `-ERR mailbox already in use`. The lock is released when the session ends (QUIT or disconnect). Locks older than 10 minutes (2× the idle timeout) are automatically treated as stale and stolen.
+After login, the session creates `$HOME/yarilo-pop3-session.lock`. A second session for the same user on any pod that shares the filesystem will be rejected with `-ERR mailbox already in use`. The lock is released when the session ends (QUIT or disconnect). Locks older than 10 minutes (2× the idle timeout) are automatically treated as stale and stolen.
 
 | Helm value | Config key | Default | Description |
 |:---|:---|:---|:---|

@@ -27,7 +27,7 @@ type Attrs struct {
 
 const unavailable = "[UNAVAILABLE]"
 
-// maxLineLen is the maximum line length per XCLIENT command (INTERNALS.md §22).
+// maxLineLen is the maximum line length per XCLIENT command (the internal docs).
 const maxLineLen = 512
 
 // DecodeXText decodes an xtext-encoded value.

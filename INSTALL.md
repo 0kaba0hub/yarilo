@@ -236,7 +236,7 @@ LMTP on port 24 is normally not exposed publicly — for the sandbox the LoadBal
 
 ## Storage architecture and phase roadmap
 
-yarilo storage follows the Dovecot `mail_storage` pattern: `MailboxBackend` and
+yarilo storage follows the reference `mail_storage` pattern: `MailboxBackend` and
 `IndexBackend` are per-process factories; `UserMailbox` / `UserIndex` are
 per-session handles created once after authentication and closed when the
 session ends. All per-user state (filesystem root, future quota, uid/gid) is
@@ -265,7 +265,7 @@ The **global** home layout is controlled by two config keys:
 ```yaml
 storage:
   maildirRoot: /var/mail/vhosts        # Root prepended to template-derived paths
-  mailHomeTemplate: "%d/%n"            # Dovecot %-vars: %d=domain, %n=local, %u=full email
+  mailHomeTemplate: "%d/%n"            # the reference %-vars: %d=domain, %n=local, %u=full email
 ```
 
 Default (`%d/%n`) gives `/var/mail/vhosts/example.com/alice`. Switch to `%u`

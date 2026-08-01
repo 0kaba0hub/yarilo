@@ -293,7 +293,7 @@ without an operator deleting `fts-flatcurve/` on disk.
   recreated, so the checkpoint is stale and its `last_indexed_uid` can sit above the
   new low UIDs — the indexer detects this and rebuilds from scratch rather than
   silently skipping every new message (#638). The reference gets this for free by
-  co-locating the fts header inside the mailbox's own `dovecot.index` (recreated on
+  co-locating the fts header inside the mailbox's own index (recreated on
   UIDVALIDITY change); yarilo's `yarilo-fts` is a separate process that must not write
   the session-owned fileindex, so it tracks UIDVALIDITY explicitly in its own
   checkpoint. The checkpoint read-modify-write runs under the per-mailbox lock so
@@ -367,7 +367,7 @@ rejected (development stalled; Bleve v2 is actively maintained).
 
 ## 10. The `yarilo-fts` service
 
-TAB-delimited, LF-terminated protocol with version handshake (INTERNALS.md
+TAB-delimited, LF-terminated protocol with version handshake (internal-protocol
 style). Requests:
 
 ```
@@ -574,7 +574,7 @@ fts:
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
 volume). `appVersion` bump ships with each feature slice.
 
-### Migration notes: `dovecot.conf` → `yarilo.yaml` (#727)
+### Migration notes: legacy config → `yarilo.yaml` (#727)
 
 Config keys are named to track the reference's own `fts_flatcurve_*` /
 `fts_*` naming closely, but a few values and shapes need translation, not a

@@ -517,7 +517,8 @@ type POP3ProtocolConfig struct {
 
 type SubmissionProtocolConfig struct {
 	Hostname           string      `koanf:"hostname"`
-	MaxMsgSize         int64       `koanf:"max_message_size"`
+	MaxMsgSize         int64       `koanf:"-"` // resolved from MaxMsgSizeRaw at load
+	MaxMsgSizeRaw      string      `koanf:"max_message_size"`
 	MaxLineLength      int         `koanf:"max_line_length"`
 	MaxRecipients      int         `koanf:"max_recipients"` // 0 = unlimited
 	RecipientDelimiter string      `koanf:"recipient_delimiter"`
@@ -719,9 +720,9 @@ type QuotaStatusConfig struct {
 }
 
 // SASLLoginConfig configures the yarilo-sasl-login binary.
-// yarilo-sasl-login listens for plain-TCP connections from Postfix (yarilo
-// SASL auth protocol, smtpd_sasl_type=dovecot) and proxies each session to
-// yarilo-auth, optionally wrapping the upstream connection with mTLS.
+// yarilo-sasl-login listens for plain-TCP connections from a fronting MTA
+// (e.g. Postfix) speaking the yarilo SASL auth protocol and proxies each
+// session to yarilo-auth, optionally wrapping the upstream connection with mTLS.
 // This keeps the yarilo-auth socket internal — Postfix has no direct access.
 // LoginConfig holds settings shared by every login proxy (imap/pop3/lmtp/
 // submission/managesieve/sasl), independent of protocol.
@@ -887,7 +888,8 @@ type FTSConfig struct {
 
 	Autoindex              bool     `koanf:"fts_autoindex"`
 	AutoindexMaxRecentMsgs int      `koanf:"fts_autoindex_max_recent_msgs"`
-	MessageMaxSize         int64    `koanf:"fts_message_max_size"`
+	MessageMaxSize         int64    `koanf:"-"` // resolved from MessageMaxSizeRaw at load
+	MessageMaxSizeRaw      string   `koanf:"fts_message_max_size"`
 	HeaderIncludes         []string `koanf:"fts_header_includes"`
 	HeaderExcludes         []string `koanf:"fts_header_excludes"`
 	CommitLimit            int      `koanf:"fts_commit_limit"`
@@ -960,7 +962,8 @@ type FTSConfig struct {
 	// DecoderMaxSize caps the attachment bytes sent to the decoder per part
 	// (0 = unlimited). Independent of MessageMaxSize, which caps indexed text
 	// AFTER decoding.
-	DecoderMaxSize int64 `koanf:"fts_decoder_max_size"`
+	DecoderMaxSize    int64  `koanf:"-"` // resolved from DecoderMaxSizeRaw at load
+	DecoderMaxSizeRaw string `koanf:"fts_decoder_max_size"`
 	// DecoderTimeoutSecs bounds a single decode call.
 	DecoderTimeoutSecs int `koanf:"fts_decoder_timeout_secs"`
 	// DecoderMaxAttempts bounds the tika driver's retry count against
@@ -984,7 +987,8 @@ type FTSConfig struct {
 	// part are read up front to derive its language-detection sample
 	// (0 = buildmail's own default). Only matters with 2+ Languages
 	// configured. See #696.
-	DetectionSampleBytes int `koanf:"fts_detection_sample_bytes"`
+	DetectionSampleBytes    int    `koanf:"-"` // resolved from DetectionSampleBytesRaw at load
+	DetectionSampleBytesRaw string `koanf:"fts_detection_sample_bytes"`
 	// DetectionMinRunes overrides the minimum sample length (in runes) below
 	// which detection is considered unreliable and falls back to the first
 	// configured language (0 = language package's own default). See #696.
@@ -1655,7 +1659,7 @@ func (a AuthCacheConfig) CacheSizeBytes() int64 { return a.cacheSizeBytes }
 // MasterUsersConfig configures the master-user impersonation
 // surface. Master-user lets a privileged account log into another
 // user's mailbox by sending a SASL PLAIN response with the
-// target's identity in authzid. See INTERNALS.md for the wire
+// target's identity in authzid. See the internal docs for the wire
 // model.
 type MasterUsersConfig struct {
 	// Enabled is the top-level opt-in. While false, distinct
@@ -1773,10 +1777,12 @@ type StorageConfig struct {
 	// Compaction only fires when the log is also older than
 	// IndexLogCompactMinAgeSecs (age guard prevents burst storms).
 	// 0 disables compaction entirely. Default 32 KiB.
-	IndexLogCompactMinBytes int64 `koanf:"index_log_compact_min_bytes"`
+	IndexLogCompactMinBytes    int64  `koanf:"-"` // resolved from IndexLogCompactMinBytesRaw at load
+	IndexLogCompactMinBytesRaw string `koanf:"index_log_compact_min_bytes"`
 	// IndexLogCompactMaxBytes forces compaction regardless of log age
 	// when the log exceeds this size. Default 1 MiB.
-	IndexLogCompactMaxBytes int64 `koanf:"index_log_compact_max_bytes"`
+	IndexLogCompactMaxBytes    int64  `koanf:"-"` // resolved from IndexLogCompactMaxBytesRaw at load
+	IndexLogCompactMaxBytesRaw string `koanf:"index_log_compact_max_bytes"`
 	// IndexLogCompactMinAgeSecs is the minimum log age in seconds
 	// before a min-size compaction fires. Default 300 s.
 	IndexLogCompactMinAgeSecs int `koanf:"index_log_compact_min_age_secs"`
@@ -1882,7 +1888,7 @@ func Load(path string) (*Config, error) {
 				DeleteType:     "expunge",
 			},
 			Submission: SubmissionProtocolConfig{
-				MaxMsgSize:         41943040,
+				MaxMsgSizeRaw:      "40M",
 				MaxLineLength:      4096,
 				RecipientDelimiter: "+",
 				AddReceivedHeader:  true,
@@ -2087,6 +2093,20 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// resolveSize parses a human-readable size field (a bare integer in bytes, or a
+// 1024-based K/M/G/T suffix via quota.ParseSize) to bytes. A non-empty value
+// that parses to 0 is malformed and returns an error so startup fails loudly
+// rather than silently disabling the field. name is the dotted config path, used
+// only in the error.
+func resolveSize(name, raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	n := quota.ParseSize(raw)
+	if n == 0 && raw != "" && raw != "0" {
+		return 0, fmt.Errorf("config: %s: invalid size %q (use bytes or a K/M/G/T suffix, e.g. 100M)", name, raw)
+	}
+	return n, nil
+}
+
 func (cfg *Config) validate() error {
 	if cfg.InternalTLS.Enabled {
 		if cfg.InternalTLS.Cert == "" || cfg.InternalTLS.Key == "" || cfg.InternalTLS.CA == "" {
@@ -2100,17 +2120,37 @@ func (cfg *Config) validate() error {
 	if cfg.Services.LMTP.Active() && cfg.Protocol.LMTP.UserConcurrencyLimit == 0 {
 		return fmt.Errorf(`config: lmtp.user_concurrency_limit must not be 0 (did you mean "unlimited" via -1?)`)
 	}
-	// Resolve the human-readable auth cache size to bytes once (quota.ParseSize
-	// is the shared K/M/G/T parser, same as mdbox_rotate_size / quota_mail_size),
-	// so consumers read a plain int64. A non-empty value that parses to 0 is a
-	// malformed size — fail startup loudly rather than silently disabling the
-	// cache.
-	raw := strings.TrimSpace(cfg.Auth.Cache.CacheSize)
-	n := quota.ParseSize(raw)
-	if n == 0 && raw != "" && raw != "0" {
-		return fmt.Errorf("config: auth.cache.cache_size: invalid size %q (use bytes or a K/M/G/T suffix, e.g. 100M)", raw)
+	// Resolve every human-readable size field to bytes once (quota.ParseSize is
+	// the shared K/M/G/T parser, same as mdbox_rotate_size / quota_mail_size), so
+	// consumers read a plain int64. A non-empty value that parses to 0 is a
+	// malformed size — fail startup loudly rather than silently disabling it.
+	var serr error
+	resolve := func(name, raw string, dst *int64) {
+		if serr != nil {
+			return
+		}
+		n, err := resolveSize(name, raw)
+		if err != nil {
+			serr = err
+			return
+		}
+		*dst = n
 	}
-	cfg.Auth.Cache.cacheSizeBytes = n
+	resolve("auth.cache.cache_size", cfg.Auth.Cache.CacheSize, &cfg.Auth.Cache.cacheSizeBytes)
+	resolve("submission.max_message_size", cfg.Protocol.Submission.MaxMsgSizeRaw, &cfg.Protocol.Submission.MaxMsgSize)
+	resolve("fts.fts_message_max_size", cfg.FTS.MessageMaxSizeRaw, &cfg.FTS.MessageMaxSize)
+	resolve("fts.fts_decoder_max_size", cfg.FTS.DecoderMaxSizeRaw, &cfg.FTS.DecoderMaxSize)
+	resolve("storage.index_log_compact_min_bytes", cfg.Storage.IndexLogCompactMinBytesRaw, &cfg.Storage.IndexLogCompactMinBytes)
+	resolve("storage.index_log_compact_max_bytes", cfg.Storage.IndexLogCompactMaxBytesRaw, &cfg.Storage.IndexLogCompactMaxBytes)
+	if serr != nil {
+		return serr
+	}
+	// fts_detection_sample_bytes is an int (small sample cap), resolved separately.
+	dsb, err := resolveSize("fts.fts_detection_sample_bytes", cfg.FTS.DetectionSampleBytesRaw)
+	if err != nil {
+		return err
+	}
+	cfg.FTS.DetectionSampleBytes = int(dsb)
 	return nil
 }
 

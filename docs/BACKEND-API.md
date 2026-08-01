@@ -203,7 +203,7 @@ Errors come back with the matching HTTP status and a JSON body:
 Read-only inspection of mailbox state. Mutating folder ops
 (create / delete / rename / expunge) are deferred — they need
 IMAP-level ACL context and proper event emission to live sessions.
-See `TODO.md`.
+Deferred (tracked in the internal backlog).
 
 Common request body (every folder endpoint accepts it):
 
@@ -332,7 +332,7 @@ CLI: `yarctl backend folder delete <user> <folder> [--namespace NS]`
 Renames a folder within one namespace (cross-namespace rename is
 not supported). The `yarilo-acl` file is moved across index dirs
 and the namespace-wide index entries are rewritten. INBOX cannot
-be renamed via backend-api (Dovecot-style move-messages semantics
+be renamed via backend-api (reference-style move-messages semantics
 not implemented here yet).
 
 ```json
@@ -506,7 +506,7 @@ Driver support:
 |:---|:---|
 | `maildir` | Walks `cur/` + `new/`, parses flags + size from filename. Flags from disk win over the previous index (the filename is the source of truth for maildir). |
 | `dbox` | Walks `u.<seq>` files, reads GUID + size + Received date from the per-file trailer. Flags are left empty in the scan — the rebuild keeps prior index flags. |
-| `mdbox` | Returns `501 Not Implemented` with a pointer to Phase MDBOX-PROD-READY (see `TODO.md`). |
+| `mdbox` | Returns `501 Not Implemented` with a pointer to Phase MDBOX-PROD-READY (deferred). |
 
 ```json
 // request
@@ -653,7 +653,7 @@ dials it per request, runs `WHO`, then closes.
 Filters: `service=imap|pop3|submission|lmtp` and `user=<exact>`.
 
 **What "active" means:** entries register on login-pod `CONNECT`
-and clear on `DISCONNECT`. Caveats — see [TODO.md](TODO.md):
+and clear on `DISCONNECT`. Caveats:
 
 - LMTP does not go through anvil; LMTP deliveries are not listed.
 - Stale entries can survive a login-pod crash (no TTL / heartbeat yet).

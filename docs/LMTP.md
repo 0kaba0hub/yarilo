@@ -62,7 +62,7 @@ Controls the `Delivered-To:` header prepended before storing the message.
 
 ## `client_workarounds`
 
-A list of compatibility shims for non-conformant MTA clients. Unknown entries are silently ignored (Dovecot behaviour).
+A list of compatibility shims for non-conformant MTA clients. Unknown entries are silently ignored (the reference behaviour).
 
 | Name | Effect |
 |:---|:---|

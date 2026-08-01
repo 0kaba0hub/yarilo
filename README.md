@@ -56,7 +56,7 @@ Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a 
 | Mailbox | Maildir | ✅ |
 | Mailbox | sdbox (single-file dbox with GUID metadata) | ✅ |
 | Mailbox | mdbox (multi-message dbox, higher density) | ✅ |
-| Mailbox | obox (S3-compatible object storage) — see [docs/OBOX.md](docs/OBOX.md) | planned |
+| Mailbox | obox (S3-compatible object storage) | planned |
 | Index | FileIndex (binary mail-index v7.3 wire format, `.index` / `.index.log` / `.index.names`) | ✅ |
 
 All index mutations go through the cross-process mailbox lock (`yarilo-locks`). Sessions sharing a pod serialise on an in-process `sync.RWMutex` — the Redis lock is only ever contested across pods, not within a single pod.
@@ -216,7 +216,6 @@ yarilo-migrate \
 | [docs/BACKEND-API.md](docs/BACKEND-API.md) | Backend HTTP admin API |
 | [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarctl` CLI reference |
 | [docs/DICT.md](docs/DICT.md) | `pkg/dict` KV-store abstraction: drivers, YAML schema |
-| [docs/TODO.md](docs/TODO.md) | Deferred work / backlog (AUTH mechs & drivers, obox, dsync, FTS engines) |
 
 ---
 

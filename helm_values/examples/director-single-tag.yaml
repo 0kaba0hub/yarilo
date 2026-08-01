@@ -9,7 +9,7 @@
 #   - ONE co-located backend StatefulSet ("tag"): each pod runs every protocol
 #     container + yarilo-fts + yarilo-backend-api + the registration sidecar,
 #     sharing one pod IP and one NFS RWX shard. A user hashes to one pod that
-#     serves ALL protocols (Dovecot "one mail-host owns every per-user resource").
+#     serves ALL protocols (the reference: "one mail-host owns every per-user resource").
 #   - Shared services: yarilo-auth, yarilo-anvil, yarilo-locks (remote/Redis),
 #     yarilo-quota-status (Postfix policy service, stays separate).
 #   - Full internal mTLS between all internal components.
@@ -81,7 +81,7 @@ components:
     ring_secret: "<32-char-shared-ring-secret>"   # SAME on all director pods
     min_members: 3
     assignment_policy: least_sessions   # load-aware initial placement (or "hash")
-    # username_hash: "%Lu"          # dovecot director_username_hash equivalent; default %Lu
+    # username_hash: "%Lu"          # director_username_hash equivalent; default %Lu
     listeners:
       lmtp:                         # director's embedded LMTP proxy (MTA → :24)
         enabled: true

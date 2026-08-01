@@ -189,7 +189,7 @@ services:
     depends_on:
       yarilo-auth:
         condition: service_started
-    # Dovecot-style SASL auth socket for a fronting MTA (Postfix smtpd_sasl_type=dovecot).
+    # reference-style SASL auth socket for a fronting MTA (Postfix smtpd_sasl_type=dovecot).
     ports:
       - "${SASL_BIND:-127.0.0.1}:${SASL_PORT:-12325}:12325"
 

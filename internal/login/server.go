@@ -1635,7 +1635,7 @@ func writeProtoError(conn net.Conn, p Protocol, tag, imapCode, msg string) {
 	case ProtocolManageSieve:
 		// Likewise BYE announces a close (RFC 5804): a client that gets it hangs
 		// up, defeating the #896 keep-open. Transient → NO (TRYLATER); over-limit
-		// → plain NO (it precedes a close, but NO+close is what Dovecot does).
+		// → plain NO (it precedes a close, but NO+close is the conventional reply).
 		switch imapCode {
 		case imapCodeAuthenticationFail:
 			fmt.Fprintf(conn, "NO (AUTHENTICATIONFAILED) %q\r\n", msg) //nolint:errcheck

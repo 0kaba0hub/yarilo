@@ -19,6 +19,7 @@
 //	  EMIT\t{channel}\t{payload}\n         ← 1.5
 //	  PENALTY-LOOKUP\t{ip}\n               ← 1.6 (auth-penalty IP backoff)
 //	  PENALTY-UPDATE\t{ip}\t{count}\n      ← 1.6
+//	  DUMP\n                               ← 1.8 (admin/debug state snapshot)
 //
 //	Server responses:
 //	  OK\t{id}\n
@@ -28,6 +29,8 @@
 //	  BACKEND\t{id}\t{backend_ip}\n        ← 1.7 (backend pod the session routed to)
 //	  SESSION\t{id}\t{user}\t{ip}\t{service}\t{connect_unix}\t{folder}\t{backend}\n
 //	  EVENT\t{channel}\t{payload}\n         ← server push to subscribers
+//	  CNT\t{user@ip}\t{counter}\t{live}\n   ← 1.8 DUMP: counter vs live tally (drift)
+//	  PEN\t{ip}\t{count}\t{ttl_secs}\n      ← 1.8 DUMP: penalty entry
 //	  DONE\n
 //
 // WHO replies with one SESSION line per matching active session,
@@ -72,7 +75,7 @@ import (
 const (
 	protoName = "yarilo-anvil"
 	majorVer  = 1
-	minorVer  = 7
+	minorVer  = 8
 )
 
 // DefaultPenaltyDecay is how long a penalty entry survives after
@@ -313,6 +316,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		case "WHO":
 			s.handleWho(conn, fields[1:])
 			observeRequest("WHO", "ok", start)
+		case "DUMP":
+			s.handleDump(conn)
+			observeRequest("DUMP", "ok", start)
 		case "LOOKUP":
 			s.handleLookup(conn, fields)
 			observeRequest("LOOKUP", "ok", start)
@@ -412,6 +418,33 @@ func (s *Server) handleWho(conn net.Conn, args []string) {
 		}
 		fmt.Fprintf(conn, "SESSION\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			sess.ID, sess.User, sess.IP, sess.Service, sess.ConnectedAt.Unix(), sess.Folder, sess.Backend)
+	}
+	fmt.Fprintln(conn, "DONE")
+}
+
+// handleDump processes: DUMP (admin/debug introspection, #908 fast-follow).
+//
+// Replies with the accounting counters (each with its live session tally, so
+// drift is visible) and the penalty entries (with remaining TTL), then DONE:
+//
+//	CNT\t{user@ip}\t{counter}\t{live}\n   (repeated)
+//	PEN\t{ip}\t{count}\t{ttl_secs}\n      (repeated)
+//	DONE\n
+//
+// A backend error still ends with DONE (best-effort snapshot); the reader treats
+// a short/empty dump as "nothing to show" rather than an error.
+func (s *Server) handleDump(conn net.Conn) {
+	d, err := s.state.Dump()
+	if err != nil {
+		slog.Warn("anvil: dump failed", "pod", podID, "err", err)
+		fmt.Fprintln(conn, "DONE")
+		return
+	}
+	for _, c := range d.Counters {
+		fmt.Fprintf(conn, "CNT\t%s\t%d\t%d\n", c.UserIP, c.Counter, c.Live)
+	}
+	for _, p := range d.Penalties {
+		fmt.Fprintf(conn, "PEN\t%s\t%d\t%d\n", p.IP, p.Count, p.TTLSecs)
 	}
 	fmt.Fprintln(conn, "DONE")
 }

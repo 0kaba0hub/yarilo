@@ -42,7 +42,7 @@ data:
     -- values-sandbox.yaml splits the SELECT into passwordQuery + userQuery
     -- so the same yarilo wiring works against multi-table production schemas.
     --
-    -- password column holds Dovecot-style "{SCHEME}hash". Supported schemes:
+    -- password column holds reference-style "{SCHEME}hash". Supported schemes:
     -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
     --
     -- Read-status per column (yarilo HEAD):
