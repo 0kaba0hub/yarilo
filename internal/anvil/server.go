@@ -304,7 +304,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		start := time.Now()
 		switch fields[0] {
 		case "CONNECT":
-			observeRequest("CONNECT", s.handleConnect(conn, fields), start)
+			res := s.handleConnect(conn, fields)
+			connectTotal.WithLabelValues(res).Inc()
+			observeRequest("CONNECT", res, start)
 		case "DISCONNECT":
 			s.handleDisconnect(conn, fields)
 			observeRequest("DISCONNECT", "ok", start)
@@ -361,16 +363,19 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) string {
 		// not block every login), untracked until the backend recovers. The limit
 		// is temporarily unenforced — availability over strict limiting, the same
 		// posture as the penalty path (#908; verified end to end in PR4).
-		slog.Warn("anvil: connect state error, failing open", "sid", id, "user", user, "ip", ip, "err", err)
+		slog.Warn("anvil: connect state error, failing open", "pod", podID, "sid", id, "user", user, "ip", ip, "err", err)
 		fmt.Fprintf(conn, "OK\t%s\n", id)
 		return "state_error"
 	}
 	if !ok {
-		slog.Warn("anvil: too many connections", "sid", id, "user", user, "ip", ip, "service", service)
+		slog.Warn("anvil: too many connections", "pod", podID, "sid", id, "user", user, "ip", ip, "service", service)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
 		return "too_many_connections"
 	}
-	slog.Debug("anvil: connect", "sid", id, "user", user, "ip", ip, "service", service)
+	// No cnt= here on purpose: SessionLookupCount is a SCAN on the Redis backend,
+	// too costly for the hot path (#932 lesson). Use the connect_total /
+	// sessions metrics for counts; the log carries pod identity for kick tracing.
+	slog.Info("anvil: session connect", "pod", podID, "sid", id, "user", user, "ip", ip, "service", service)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 	return "ok"
 }
@@ -547,6 +552,13 @@ func (s *Server) handlePenaltyUpdate(conn net.Conn, fields []string) {
 		count = MaxPenalty
 	}
 	s.state.PenaltyUpdate(ip, count)
+	if count > 0 {
+		penaltyUpdates.WithLabelValues("set").Inc()
+		slog.Info("anvil: penalty set", "pod", podID, "ip", ip, "count", count)
+	} else {
+		penaltyUpdates.WithLabelValues("clear").Inc()
+		slog.Info("anvil: penalty clear", "pod", podID, "ip", ip)
+	}
 	fmt.Fprintf(conn, "OK\n")
 }
 
@@ -565,8 +577,11 @@ func (s *Server) handleEmit(conn net.Conn, fields []string) {
 		return
 	}
 	channel, payload := fields[1], fields[2]
+	kickEmitted.Inc()
 	if err := s.state.Emit(channel, payload); err != nil {
-		slog.Warn("anvil: emit failed", "channel", channel, "err", err)
+		slog.Warn("anvil: emit failed", "pod", podID, "channel", channel, "err", err)
+	} else {
+		slog.Info("anvil: kick emitted", "pod", podID, "channel", channel, "sess", payload)
 	}
 	fmt.Fprintf(conn, "OK\n")
 }
@@ -599,6 +614,7 @@ func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
 	if _, err := fmt.Fprintf(conn, "OK\n"); err != nil {
 		return
 	}
+	slog.Info("anvil: subscribe", "pod", podID, "channel", channel)
 
 	// Reader half: a client-side close surfaces as a Read error and cancels ctx,
 	// which closes ch and unwinds the writer loop below.
@@ -616,6 +632,8 @@ func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
 		if _, err := fmt.Fprintf(conn, "EVENT\t%s\t%s\n", channel, payload); err != nil {
 			return
 		}
+		kickDelivered.Inc()
+		slog.Info("anvil: kick delivered", "pod", podID, "channel", channel, "sess", payload)
 	}
 }
 

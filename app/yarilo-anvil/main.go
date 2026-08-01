@@ -90,9 +90,15 @@ func main() {
 			defer pcancel()
 			return rdb.Ping(pctx).Err() == nil
 		}))
-		slog.Info("anvil: state backend=redis", "addr", cfg.AnvilService.RedisAddr, "key_prefix", prefix)
+		slog.Info("anvil: state backend=redis", "addr", cfg.AnvilService.RedisAddr, "key_prefix", prefix, "channel_prefix", chanPrefix)
 	} else {
-		slog.Info("anvil: state backend=memory")
+		// memory state is per-pod: sessions/penalty counters and the kick bus live
+		// in this process only. Running more than one replica would fragment them —
+		// each pod would see a different subset of sessions, enforce the limit
+		// independently, and miss kicks published to a sibling — so replicas MUST
+		// stay 1. The Helm chart fails closed on replicas>1 with memory; this warn
+		// is the runtime half, self-explaining without grepping the issue.
+		slog.Warn("anvil: state backend=memory — replicas MUST stay 1; >1 fragments sessions/penalty/kick. Set state_backend=redis to scale out")
 	}
 	if closeState != nil {
 		defer closeState()

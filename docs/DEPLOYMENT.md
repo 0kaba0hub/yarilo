@@ -270,6 +270,42 @@ restart path on a live pod, off by default.
 Anvil merges conn-state (from the director / lmtp-login) with session-state (from the backends) — written
 from different processes, read from a single place (the login proxy).
 
+### Scaling `yarilo-anvil` — 1 → N replicas (#908)
+
+Anvil holds three pieces of shared state: the per-IP auth-failure **penalty** counter, the
+per-`user@ip` **session** accounting (the connection limit), and the **kick bus** (`EMIT`/`SUBSCRIBE`).
+Where that state lives is a single config choice — `components.anvil.service.state_backend`:
+
+| `state_backend` | State lives in | Replicas | Deploy strategy |
+|:---|:---|:---|:---|
+| `memory` (default) | the pod's process | **must be 1** | `Recreate` |
+| `redis` | shared Redis | any N | `RollingUpdate` |
+
+- **`memory`** is the standalone / dev / test default. All three pieces of state are per-pod, so a
+  second replica would see a *different* subset of sessions, enforce the limit independently, and — the
+  decisive one — **miss kicks**: a login pod's `SUBSCRIBE` lands (via the ClusterIP) on one pod while an
+  `EMIT` may land on another, and an in-process bus never crosses that gap. The chart therefore **fails
+  closed** on `replicas > 1` with `memory`, and the deploy strategy is `Recreate` so a rolling update
+  never briefly runs two memory pods and splits their state.
+- **`redis`** moves all three pieces into shared Redis: penalty is a key with TTL, sessions are hashes +
+  an atomic counter reconciled by a sweep, and the kick bus is Redis **Pub/Sub** — an `EMIT` on any pod
+  `PUBLISH`es, and every pod's subscribers receive it, so a kick published on pod-B is delivered by
+  pod-A. Pods are then stateless and scale to any N behind the existing ClusterIP; the strategy is a
+  normal `RollingUpdate`. This is the required setting before raising `replicas`.
+
+Both the subscribe path (go-redis auto-reconnects and re-subscribes on a Redis blip) and the
+login→anvil transport (the login pod redials + re-subscribes) recover on their own, so a Redis or anvil
+restart does not permanently deafen a pod to kicks. Kick delivery is best-effort / at-most-once and is
+**not** a correctness guarantee — the director's confirmed ring-wide kill (#847) holds `LOOKUP` until the
+ring-wide session count is stably zero, so split-writer safety never depends on a kick landing; the kick
+only makes teardown prompt.
+
+Observability for the scale-out (all always-on, no debug flag): `yarilo_anvil_connect_total{result}`,
+`yarilo_anvil_kick_emitted_total` / `yarilo_anvil_kick_delivered_total` (different pods, proving
+cross-replica delivery under a scrape), `yarilo_anvil_redis_errors_total{op}` (fail-open made visible),
+`yarilo_anvil_reconcile_adjustments_total`, and `yarilo_anvil_penalty_updates_total{result}`. Structured
+logs carry `pod=` so a kick can be traced across replicas directly.
+
 ---
 
 ## yarilo-locks — design

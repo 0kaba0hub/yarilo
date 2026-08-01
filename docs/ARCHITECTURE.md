@@ -40,6 +40,13 @@ inter-component coordination.
 
 <img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_standalone.svg" width="100%" alt="Standalone deployment topology"/>
 
+> **Note (#908):** the diagrams draw `yarilo-anvil` as a single shared service for
+> clarity. Its replica count is a config value, not a fixed topology: with
+> `state_backend: redis` anvil runs N replicas behind the same ClusterIP (all state
+> — penalty, sessions, kick bus — in shared Redis), and with `state_backend: memory`
+> it stays a single pod. See *Scaling `yarilo-anvil`* in
+> [docs/DEPLOYMENT.md](DEPLOYMENT.md).
+
 The logical request flow (login → session → shared services → storage):
 
 ```
@@ -88,7 +95,7 @@ The logical request flow (login → session → shared services → storage):
   yarilo-lmtp                 # LMTP delivery backend
   yarilo-auth                 # passdb + userdb (shared service)
   yarilo-auth-worker
-  yarilo-anvil                # connlimit + session counters (shared service)
+  yarilo-anvil                # connlimit + session counters + kick bus (shared; Redis Pub/Sub across replicas, #908)
   yarilo-director             # ring + userDir + monitor
   yarilo-locks                # cross-pod write coordination (per backend tag)
   yarilo-monitor              # sidecar in director pod — polls backend pod health, reports to director ring

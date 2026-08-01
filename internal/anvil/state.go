@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -440,6 +441,7 @@ func (b *redisBackend) PenaltyLookup(ip string) (int, string) {
 		// availability control, and failing closed would tarpit everyone during a
 		// Redis blip (self-DoS). The distinct "error" status keeps the outage
 		// visible in the penaltyLookups metric rather than hiding it as a miss.
+		redisErrors.WithLabelValues("penalty_lookup").Inc()
 		return 0, "error"
 	}
 }
@@ -449,10 +451,14 @@ func (b *redisBackend) PenaltyUpdate(ip string, count int) {
 	defer cancel()
 	key := b.penaltyKey(ip)
 	if count <= 0 {
-		_ = b.rdb.Del(ctx, key).Err()
+		if err := b.rdb.Del(ctx, key).Err(); err != nil {
+			redisErrors.WithLabelValues("penalty_update").Inc()
+		}
 		return
 	}
-	_ = b.rdb.Set(ctx, key, strconv.Itoa(count), b.penaltyTTL).Err()
+	if err := b.rdb.Set(ctx, key, strconv.Itoa(count), b.penaltyTTL).Err(); err != nil {
+		redisErrors.WithLabelValues("penalty_update").Inc()
+	}
 }
 
 // PenaltySweep is a no-op: Redis key TTL evicts stale penalties.
@@ -466,7 +472,7 @@ func (b *redisBackend) SessionConnect(id, user, ip, service string) (bool, error
 		b.limit, b.sessionTTL.Milliseconds(), user, ip, service, strconv.FormatInt(time.Now().UTC().Unix(), 10),
 	).Int()
 	if err != nil {
-		return false, err // bounded backend error → caller applies AnvilFailOpen
+		return false, redisErr("connect", err) // bounded backend error → caller applies AnvilFailOpen
 	}
 	return res == 1, nil
 }
@@ -474,7 +480,9 @@ func (b *redisBackend) SessionConnect(id, user, ip, service string) (bool, error
 func (b *redisBackend) SessionDisconnect(id, user, ip string) {
 	ctx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
 	defer cancel()
-	_ = disconnectScript.Run(ctx, b.rdb, []string{b.cntKey(user, ip), b.sessKey(id)}).Err()
+	if err := disconnectScript.Run(ctx, b.rdb, []string{b.cntKey(user, ip), b.sessKey(id)}).Err(); err != nil {
+		redisErrors.WithLabelValues("disconnect").Inc()
+	}
 }
 
 func (b *redisBackend) SessionTouch(id string) bool {
@@ -482,6 +490,7 @@ func (b *redisBackend) SessionTouch(id string) bool {
 	defer cancel()
 	ok, err := b.rdb.PExpire(ctx, b.sessKey(id), b.sessionTTL).Result()
 	if err != nil {
+		redisErrors.WithLabelValues("touch").Inc()
 		return false
 	}
 	return ok
@@ -577,7 +586,12 @@ func (b *redisBackend) Maintain(time.Time) {
 		}
 		userip := strings.TrimPrefix(key, b.keyPrefix+"cnt:")
 		if leak := cur - live[userip]; leak > 0 {
-			_ = reconcileScript.Run(ctx, b.rdb, []string{key}, leak).Err()
+			if err := reconcileScript.Run(ctx, b.rdb, []string{key}, leak).Err(); err != nil {
+				redisErrors.WithLabelValues("reconcile").Inc()
+				continue
+			}
+			reconcileAdjustments.Inc()
+			slog.Info("anvil: reconciled counter leak", "pod", podID, "key", userip, "leak", leak)
 		}
 	}
 }
@@ -588,7 +602,7 @@ func (b *redisBackend) Emit(channel, payload string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
 	defer cancel()
 	if err := b.rdb.Publish(ctx, b.chanKey(channel), payload).Err(); err != nil {
-		return fmt.Errorf("anvil/redis: publish %s: %w", channel, err)
+		return redisErr("publish", fmt.Errorf("anvil/redis: publish %s: %w", channel, err))
 	}
 	return nil
 }
@@ -606,7 +620,7 @@ func (b *redisBackend) Subscribe(ctx context.Context, channel string) (<-chan st
 	defer cancel()
 	if _, err := ps.Receive(rctx); err != nil {
 		_ = ps.Close()
-		return nil, fmt.Errorf("anvil/redis: subscribe %s: %w", channel, err)
+		return nil, redisErr("subscribe", fmt.Errorf("anvil/redis: subscribe %s: %w", channel, err))
 	}
 	out := make(chan string, subscriberOutboxSize)
 	go func() {

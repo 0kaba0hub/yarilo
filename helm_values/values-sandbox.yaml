@@ -285,11 +285,13 @@ components:
       enabled: true
       secretName: yarilo-internal-tls
   anvil:
+    # #908 PR4: singleton lifted. Redis-backed state (penalties + sessions + kick
+    # bus) is shared across replicas, so the sandbox runs 2 to exercise the
+    # cross-replica paths (kick published on one pod, delivered by another).
+    replicas: 2
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
-    # #908 PR1: Redis-backed penalties (sessions/kick move in later phases).
-    # replicas stays 1 until PR4 lifts the singleton.
     service:
       state_backend: redis
       key_prefix: "yarilo-sb:anvil:"
