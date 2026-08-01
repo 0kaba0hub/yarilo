@@ -34,3 +34,41 @@ func TestValidateBackendOrDirector(t *testing.T) {
 		})
 	}
 }
+
+// TestCacheSizeResolution proves auth.cache.cache_size is parsed to bytes at
+// load (human-readable units) and that a malformed value fails loudly rather
+// than silently disabling the cache (#950 follow-on).
+func TestCacheSizeResolution(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantByte int64
+		wantErr  bool
+	}{
+		{"", 0, false},
+		{"0", 0, false},
+		{"100M", 100 * 1024 * 1024, false},
+		{"512k", 512 * 1024, false},
+		{"104857600", 104857600, false},
+		{"bogus", 0, true},
+		{"100MB", 0, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Auth.Cache.CacheSize = tc.in
+			err := cfg.validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("cache_size=%q: want error, got none (bytes=%d)", tc.in, cfg.Auth.Cache.CacheSizeBytes())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("cache_size=%q: unexpected error: %v", tc.in, err)
+			}
+			if got := cfg.Auth.Cache.CacheSizeBytes(); got != tc.wantByte {
+				t.Fatalf("cache_size=%q resolved to %d, want %d", tc.in, got, tc.wantByte)
+			}
+		})
+	}
+}

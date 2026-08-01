@@ -434,6 +434,18 @@ components:
     penalty:
       enabled: true
 
+    # Negative auth caching stays ON (default 1800s) on purpose (#950). The
+    # per-password negative-MAC fix (Option A) makes it safe — a wrong-password
+    # storm no longer blocks the user's correct password — and keeping it ON is
+    # exactly what the #950 acceptance must exercise. Do NOT set
+    # negative_ttl_seconds: 0 here: that was the interim mitigation, and with the
+    # fix in place it would only mask the fixed path (no negatives = nothing to
+    # poison = a trivially-green anti-test).
+    cache:
+      cache_size: "100M"
+      ttl_seconds: 1800
+      negative_ttl_seconds: 1800
+
   ## IMAP session pod.
   imap:
     listeners:

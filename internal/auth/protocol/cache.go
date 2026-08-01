@@ -14,7 +14,7 @@ import (
 
 // Cache is an in-process LRU cache for verified auth lookups.
 //
-//   - Bytes-bounded: SizeBytes caps the total payload weight; LRU
+//   - Bytes-bounded: the byte cap limits total payload weight; LRU
 //     eviction makes room when an insert would exceed the cap.
 //   - Two TTLs: positive entries (successful auth) live up to TTL,
 //     negative entries (failed lookup — unknown user, wrong
@@ -22,12 +22,14 @@ import (
 //     NegTTL means a fresh password attempt can succeed soon after
 //     the user resets their password without waiting for the full
 //     positive TTL to expire.
-//   - Password verify on hit: the cached entry stores an HMAC of
-//     the plain password (computed with a process-local random
-//     key). On lookup, the incoming password is HMAC-ed and
-//     compared in constant time. Negative entries store an empty
-//     password slot so any incoming password triggers re-lookup
-//     against the chain if the user happens to exist now.
+//   - Password verify on hit: every cached entry — positive OR
+//     negative — stores an HMAC of the plain password that produced
+//     it (computed with a process-local random key). On lookup the
+//     incoming password is HMAC-ed and compared in constant time; a
+//     mismatch is a miss and re-runs the chain. For a negative entry
+//     this means only the SAME wrong password short-circuits, while
+//     a different (e.g. the user's correct) password falls through to
+//     the chain instead of inheriting the cached Fail (#950).
 //
 // Caching defence-in-depth: the HMAC key is generated per Cache
 // construction and never persisted. A memory dump reveals the
@@ -52,13 +54,14 @@ type Cache struct {
 }
 
 // CacheEntry is the cached value. ResultOK carries Fields (the
-// passdb result the chain produced) and pwdMAC (HMAC of the
-// verified plain password). ResultFail carries neither — the
-// presence of a Fail entry alone short-circuits the chain.
+// passdb result the chain produced); both ResultOK and ResultFail
+// carry pwdMAC (HMAC of the plain password that produced the entry).
+// A Fail entry short-circuits the chain ONLY when the incoming
+// password MACs to the same value (#950) — so a wrong password does
+// not poison the user's correct one.
 //
-// pwdMAC is set only on positive entries. Empty pwdMAC on a
-// positive entry would let any caller pass on a cache hit, so
-// callers MUST treat (Result=OK, len(pwdMAC)=0) as cache miss.
+// Empty pwdMAC on any entry is treated as a cache miss by Lookup, so
+// a legacy/unset entry fails safe (re-runs the chain).
 type CacheEntry struct {
 	Result   Result
 	Fields   *Fields
@@ -159,15 +162,18 @@ func (c *Cache) Lookup(key, password string) (*CacheEntry, bool) {
 		c.observeSize()
 		return nil, false
 	}
-	if e.Result == ResultOK {
-		// Positive entries require password verify. Constant-time
-		// compare so a hit/miss cannot be timed apart.
-		if len(e.pwdMAC) == 0 || !hmac.Equal(e.pwdMAC, c.macPassword(password)) {
-			c.misses++
-			cacheLookups.WithLabelValues("pwd_mismatch").Inc()
-			c.observeSize()
-			return nil, false
-		}
+	// Verify the incoming password against the stored MAC for BOTH positive
+	// AND negative entries (#950). A negative entry now carries the MAC of the
+	// wrong password that seeded it, so a DIFFERENT password — notably the
+	// user's CORRECT one — no longer matches a poisoned Fail entry and falls
+	// through to the chain. A repeated identical wrong password still matches
+	// and short-circuits (repeat-failure / per-password anti-enumeration).
+	// Constant-time compare so a hit/miss cannot be timed apart.
+	if len(e.pwdMAC) == 0 || !hmac.Equal(e.pwdMAC, c.macPassword(password)) {
+		c.misses++
+		cacheLookups.WithLabelValues("pwd_mismatch").Inc()
+		c.observeSize()
+		return nil, false
 	}
 	c.lru.MoveToFront(el)
 	c.hits++
@@ -186,10 +192,9 @@ func (c *Cache) observeSize() {
 }
 
 // Insert stores an entry under key. password is the plain
-// credential (HMAC-ed before storage; never retained as plain).
-// For negative entries pass an empty password — Insert stores no
-// pwdMAC and Lookup treats every Fail entry as an unconditional
-// short-circuit regardless of incoming password.
+// credential (HMAC-ed before storage; never retained as plain) and
+// is recorded for negative entries too (#950), so a Fail entry only
+// short-circuits a later lookup that presents the SAME password.
 //
 // fields is the AuthResponse bag captured at the chain's reply;
 // it's stored by reference so the caller must not mutate it after
@@ -243,8 +248,12 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 		Fields:   fields,
 		username: username,
 	}
+	// Store the password MAC for BOTH positive and negative entries (#950): a
+	// negative entry must remember WHICH password failed, so only that same
+	// password short-circuits on lookup while a different (correct) password
+	// re-runs the chain instead of inheriting the poisoned Fail verdict.
+	e.pwdMAC = c.macPassword(password)
 	if result == ResultOK {
-		e.pwdMAC = c.macPassword(password)
 		e.expires = time.Now().Add(c.ttl)
 	} else {
 		e.expires = time.Now().Add(c.negTTL)
