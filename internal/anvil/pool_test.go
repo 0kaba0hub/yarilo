@@ -157,3 +157,35 @@ func TestNewPoolSizeDefaults(t *testing.T) {
 		})
 	}
 }
+
+// TestPoolPenaltyRedialsAfterConnectionLoss is the #946 regression: yarilo-auth's
+// penalty ops must survive an anvil restart. Over the pool, a dead connection is
+// redialed and the op retried, where a raw single Conn failed every penalty op
+// forever (broken pipe) until auth itself was restarted — silently disabling the
+// tarpit.
+func TestPoolPenaltyRedialsAfterConnectionLoss(t *testing.T) {
+	srv, addr := startTestServer(t, 0)
+	p := NewPool(addr, nil, 1, time.Second)
+	defer p.Close()
+
+	if err := p.PenaltyUpdate("1.2.3.4", 3); err != nil {
+		t.Fatalf("PenaltyUpdate: %v", err)
+	}
+	if n, err := p.PenaltyLookup("1.2.3.4"); err != nil || n != 3 {
+		t.Fatalf("PenaltyLookup = (%d,%v), want (3,nil)", n, err)
+	}
+	before := srv.acceptCount()
+
+	// Kill the pooled connection from underneath the pool (an anvil restart).
+	p.conns[0].mu.Lock()
+	p.conns[0].c.Close()
+	p.conns[0].mu.Unlock()
+
+	// The next penalty op must reconnect and succeed, not fail with broken pipe.
+	if n, err := p.PenaltyLookup("1.2.3.4"); err != nil || n != 3 {
+		t.Fatalf("PenaltyLookup after connection loss = (%d,%v), want (3,nil)", n, err)
+	}
+	if after := srv.acceptCount(); after <= before {
+		t.Fatalf("accepts %d → %d, want a redial", before, after)
+	}
+}

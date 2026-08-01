@@ -156,13 +156,16 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		penaltyConn, err := anvil.Dial(cfg.AnvilService.ClientAddr(), penaltyTLS, 5*time.Second)
-		if err != nil {
-			slog.Error("anvil dial for penalty", "addr", cfg.AnvilService.ClientAddr(), "err", err)
-			os.Exit(1)
-		}
+		// A resilient pool, NOT a single Dial (#946): the pool redials on a
+		// transport error and retries once, so the tarpit survives an anvil
+		// restart without an auth restart — a raw single Conn failed every penalty
+		// op forever after its connection died. It also dials lazily, so auth
+		// starts even if anvil is momentarily down; penalty stays fail-open until
+		// it reconnects, so there is no startup CrashLoop on this path either.
+		penaltyPool := anvil.NewPool(cfg.AnvilService.ClientAddr(), penaltyTLS, 0, 5*time.Second)
+		defer penaltyPool.Close()
 		srvOpts = append(srvOpts,
-			protocol.WithPenalty(penaltyConn, anvil.PenaltyToSecs),
+			protocol.WithPenalty(penaltyPool, anvil.PenaltyToSecs),
 		)
 		slog.Info("yarilo-auth penalty enabled", "anvil", cfg.AnvilService.ClientAddr())
 	}

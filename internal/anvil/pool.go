@@ -144,6 +144,24 @@ func (p *Pool) Select(id, folder string) error {
 	return p.do(func(c *Conn) error { return c.Select(id, folder) })
 }
 
+// PenaltyLookup / PenaltyUpdate run the auth-penalty ops over the pool so they
+// survive an anvil restart (#946): p.do redials on a transport error and retries
+// once, where the raw single Conn used by yarilo-auth would fail every op forever
+// after the connection died. Satisfies protocol.PenaltyStore.
+func (p *Pool) PenaltyLookup(ip string) (int, error) {
+	var count int
+	err := p.do(func(c *Conn) error {
+		var lerr error
+		count, lerr = c.PenaltyLookup(ip)
+		return lerr
+	})
+	return count, err
+}
+
+func (p *Pool) PenaltyUpdate(ip string, count int) error {
+	return p.do(func(c *Conn) error { return c.PenaltyUpdate(ip, count) })
+}
+
 // Heartbeat renews a session's TTL. Reports false when the server does not know
 // the session — it was reaped, and the caller must re-issue CONNECT.
 func (p *Pool) Heartbeat(id string) (bool, error) {
