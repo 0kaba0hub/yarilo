@@ -295,8 +295,8 @@ components:
     ## existing sticky entries just expire naturally via user_expire, no
     ## special migration step is needed.
     username_hash_lowercase: true
-    ## Username hash template (#850) — mirrors the reference director_username_hash
-    ## expression, so a dovecot.conf value migrates verbatim. Variables: %u (whole
+    ## Username hash template (#850) — uses the same director_username_hash
+    ## expression syntax, so an existing value migrates verbatim. Variables: %u (whole
     ## user), %n (local part, before first '@'), %d (domain, after first '@'), each
     ## with optional %L lowercase; %% is a literal percent. Examples: "%Lu" (default,
     ## whole username lowercased), "%u" (case-sensitive), "%Ld" (route the whole domain
