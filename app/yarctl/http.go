@@ -20,12 +20,12 @@ var (
 	httpClientErr  error
 )
 
-// adminHTTPClient returns the HTTP client for the director / backend-api hops.
-// When internal mTLS is configured (a CA, ServerName, or client cert is set,
-// #954) it builds a client that presents the client cert, trusts the internal
-// CA, and verifies the server cert against the pinned ServerName (the internal
-// SAN, since the URL host is an IP/localhost that never matches). Otherwise it
-// is http.DefaultClient. Built once; reused so the TLS session cache is shared.
+// adminHTTPClient returns the HTTP client for the director/backend-api hops.
+// With internal mTLS configured (CA, ServerName, or client cert set, #954) it
+// presents the client cert, trusts the internal CA, and verifies the server
+// against the pinned ServerName (the URL host is an IP/localhost that never
+// matches). Otherwise http.DefaultClient. Built once so the TLS session cache
+// is shared.
 func adminHTTPClient() (*http.Client, error) {
 	httpClientOnce.Do(func() {
 		httpClient, httpClientErr = newAdminClient(tlsCert, tlsKey, tlsCA, tlsServerName)
@@ -33,10 +33,9 @@ func adminHTTPClient() (*http.Client, error) {
 	return httpClient, httpClientErr
 }
 
-// newAdminClient builds the admin-plane HTTP client. With none of the internal
-// mTLS inputs set it returns http.DefaultClient (plain HTTP). Otherwise it
-// requires cert+key+ca+serverName (mtls.ClientConfig validates) and returns a
-// client that dials over mTLS. Pure — no globals — so it is unit-testable.
+// newAdminClient builds the admin-plane HTTP client. With no internal mTLS
+// inputs set it returns http.DefaultClient (plain HTTP); otherwise it requires
+// cert+key+ca+serverName and dials over mTLS. Pure (no globals) for testability.
 func newAdminClient(cert, key, ca, serverName string) (*http.Client, error) {
 	if ca == "" && cert == "" && serverName == "" {
 		return http.DefaultClient, nil
@@ -61,18 +60,15 @@ func apiDelete(path string) ([]byte, error) {
 	return doRequest(apiURL, apiToken, http.MethodDelete, path, nil)
 }
 
-// backendAPIGet / backendAPIPost talk to the yarilo-backend-api
-// endpoint (dict / acl / quota / folder / user / mailbox).
-// Director-plane ops keep the apiURL/apiToken pair on the existing
-// apiGet/apiPost family.
+// backendAPIGet / backendAPIPost talk to the yarilo-backend-api endpoint
+// (dict/acl/quota/folder/user/mailbox); director-plane ops stay on apiGet/apiPost.
 //
-// Per-user routing (#792): in the co-located topology backend-api listens on
-// the POD IP, so a per-user op must reach the pod the user is pinned to. When
-// routing is on (routeByUser), these chokepoints extract the user from the
-// request (query `user=` for GET, body `"user"` for POST) and resolve the pod
-// via a director LOOKUP — the director owns the assignment; the admin never
-// picks a pod itself (that would race a login and split the per-user FTS
-// writer). Requests with no user (dict, iterate) keep the fixed backendAPIURL.
+// Per-user routing (#792): backend-api listens on the pod IP, so a per-user op
+// must reach the pod the user is pinned to. When routeByUser is on, these
+// chokepoints extract the user (query user= for GET, body "user" for POST) and
+// resolve the pod via a director LOOKUP; the admin never picks a pod itself
+// (that would race a login and split the per-user FTS writer). Requests with no
+// user (dict, iterate) keep the fixed backendAPIURL.
 func backendAPIGet(path string) ([]byte, error) {
 	base, err := backendBaseForUser(resolveBackendUser(path, nil))
 	if err != nil {
@@ -127,12 +123,12 @@ func resolveBackendUser(path string, body any) string {
 	return ""
 }
 
-// backendBaseForUser returns the backend-api base URL to use for a request.
-// When routing is off or the request has no user, the fixed backendAPIURL is
-// used (standalone / global ops). Otherwise it asks the director which pod owns
-// the user and targets that pod's backend-api port. A director that is down or
-// has no backend for the user yields a clean error — never a silent fallback to
-// a random pod (which would write the wrong pod's per-user state).
+// backendBaseForUser returns the backend-api base URL for a request. With
+// routing off or no user it uses the fixed backendAPIURL (standalone/global
+// ops); otherwise it asks the director which pod owns the user and targets that
+// pod's backend-api port. A director that is down or has no backend errors
+// cleanly, never falling back to a random pod (which would write the wrong
+// pod's per-user state).
 func backendBaseForUser(user string) (string, error) {
 	if !routeByUser || user == "" {
 		return backendAPIURL, nil
@@ -147,9 +143,9 @@ func backendBaseForUser(user string) (string, error) {
 	if err := json.Unmarshal(data, &m); err != nil || m.Backend == "" {
 		return "", fmt.Errorf("director returned no backend for user %q", user)
 	}
-	// Match the scheme the backend-api serves: https under internal mTLS (#954),
-	// otherwise plain http. The resolved host is a pod IP, so verification relies
-	// on the pinned --tls-server-name, not the host.
+	// Match the scheme backend-api serves: https under internal mTLS (#954), else
+	// http. The host is a pod IP, so verification relies on the pinned
+	// --tls-server-name, not the host.
 	return fmt.Sprintf("%s://%s:%d", adminScheme(), m.Backend, backendAPIPort), nil
 }
 
@@ -178,11 +174,9 @@ func doRequest(baseURL, token, method, path string, body any) ([]byte, error) {
 	return data, nil
 }
 
-// apiError turns a >=400 response into a clean operator-facing error. When the
-// body is the JSON {"error": "..."} envelope the handlers emit, only that
-// message is surfaced (e.g. "not a configured quota_clone backend: metadata")
-// rather than the raw "HTTP 400 Bad Request: {...}". Non-JSON or empty bodies
-// fall back to the HTTP status line so an unexpected response is still diagnosable.
+// apiError turns a >=400 response into a clean operator-facing error. A JSON
+// {"error": "..."} envelope surfaces only its message; non-JSON or empty bodies
+// fall back to the HTTP status line.
 func apiError(resp *http.Response, body []byte) error {
 	var env struct {
 		Error string `json:"error"`

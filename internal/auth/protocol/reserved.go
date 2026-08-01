@@ -7,24 +7,18 @@ import (
 	"strings"
 )
 
-// Validator parses a raw field value and returns its canonical
-// string form. Returns an error when the value does not satisfy
-// the field's type contract.
-//
-// Canonicalisation: validators normalise equivalent inputs to a
-// single representation. `Set("nologin", "TRUE")` then
-// `Set("nologin", "yes")` then `Set("nologin", "1")` all land in
-// the bag as `nologin=yes` — so two callers writing the "same"
-// field produce byte-identical wire output.
+// Validator parses a raw field value into its canonical string form,
+// or errors if the value violates the field's type contract.
+// Equivalent inputs normalise to one representation ("TRUE"/"yes"/"1"
+// all become "yes"), so two callers writing the same field produce
+// byte-identical wire output.
 type Validator func(value string) (string, error)
 
-// reservedValidators is the registry of typed auth fields.
-// Keys are the BASE field name; SetValidated unwraps the
-// `userdb_` prefix before lookup so `userdb_uid` validates as
-// `uid`. The `forward_` prefix passes through without validation
-// because forward_* fields are by design opaque to the chain (any
-// value the source produced has to survive verbatim through the
-// proxy hop).
+// reservedValidators is the registry of typed auth fields, keyed by
+// BASE field name. SetValidated strips the userdb_ prefix before lookup
+// so userdb_uid validates as uid. forward_* fields pass through
+// unvalidated: they are opaque to the chain and must survive verbatim
+// through the proxy hop.
 var reservedValidators = map[string]Validator{
 	// Numeric — uint32.
 	"uid":      validateUint32,
@@ -80,10 +74,9 @@ func validateInt(v string) (string, error) {
 	return strconv.Itoa(n), nil
 }
 
-// validateBool accepts the canonical truthy / falsy literals
-// passdb columns and admin tooling produce. Canonical output:
-// "yes" / "no" — matches what VisitFields emits via the "yes"
-// shortcut.
+// validateBool accepts the truthy/falsy literals passdb columns and
+// admin tooling produce. Canonical output: "yes"/"no", matching what
+// VisitFields emits via the "yes" shortcut.
 func validateBool(v string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "yes", "true", "on", "1", "t", "y":
@@ -94,11 +87,9 @@ func validateBool(v string) (string, error) {
 	return "", fmt.Errorf("not a boolean: %q (accept yes/no/true/false/on/off/1/0)", v)
 }
 
-// validateCIDRList accepts a comma-separated list of IP / CIDR
-// strings. Single IPs are auto-promoted to /32 (IPv4) or /128
-// (IPv6) so an admin can write `allow_nets=10.0.0.5` without
-// the explicit suffix. Returns a canonical comma-joined form
-// with each network in its CIDR notation.
+// validateCIDRList accepts a comma-separated list of IP/CIDR strings.
+// Single IPs are promoted to /32 (IPv4) or /128 (IPv6) so allow_nets=10.0.0.5
+// works without the suffix. Returns the canonical comma-joined CIDR form.
 func validateCIDRList(v string) (string, error) {
 	parts := splitTrim(v)
 	if len(parts) == 0 {
