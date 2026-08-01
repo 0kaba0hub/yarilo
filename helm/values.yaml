@@ -721,6 +721,12 @@ components:
       ## redis_addr — Redis URL used when backend=redis.
       ## Format: redis://[password@]host:port/db
       redis_addr: ""
+      ## key_prefix — Redis key namespace for tokens (#939). The installation
+      ## boundary: when several installations share one Redis, give each a
+      ## distinct prefix so their token keys do not collide. Keep it consistent
+      ## with the other Redis-using components' prefixes (locks, anvil) for one
+      ## install. Default is service-name based.
+      key_prefix: "yarilo:authtoken:"
 
     ## oauth2 — OAuth 2.0 bearer-token providers. Each entry
     ## becomes a passdb that participates in the auth chain (placed
@@ -907,6 +913,15 @@ components:
     enabled: true
     replicas: 2
     listen: ":9104"
+
+    ## Redis key/channel prefixes (#938). The prefix is the installation boundary:
+    ## when several installations share one Redis, give each a DISTINCT prefix so
+    ## their lock keys and event channels do not collide. Keep the prefix
+    ## consistent across a single installation's Redis-using components (locks,
+    ## authtoken, and anvil #908) so one namespace value covers the whole install.
+    ## Defaults are service-name based; leave as-is for a dedicated Redis.
+    keyPrefix: "yarilo:locks:"
+    channelPrefix: "yarilo:events:"
 
     ## startupProbe waits for Redis (remote mode) to accept a TCP connection before
     ## this pod takes traffic, replacing the wait-redis init container (#903). Safe

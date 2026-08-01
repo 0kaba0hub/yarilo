@@ -1548,6 +1548,10 @@ type AuthTokenConfig struct {
 	// RedisAddr is a Redis URL used when Backend="redis".
 	// Format: redis://[password@]host:port/db
 	RedisAddr string `koanf:"redis_addr"`
+	// KeyPrefix namespaces token keys in Redis (#939). The installation
+	// boundary: two installs sharing one Redis need distinct prefixes or their
+	// token keys collide. Empty keeps the default "yarilo:authtoken:".
+	KeyPrefix string `koanf:"key_prefix"`
 }
 
 // AuthPolicyConfig configures the external HTTP policy-server

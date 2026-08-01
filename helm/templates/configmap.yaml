@@ -366,6 +366,7 @@ data:
         {{- with .Values.components.auth.token.redis_addr }}
         redis_addr: {{ . | quote }}
         {{- end }}
+        key_prefix: {{ .Values.components.auth.token.key_prefix | default "yarilo:authtoken:" | quote }}
 
     {{- with .Values.acl }}
     acl:
@@ -714,6 +715,8 @@ data:
     locks_service:
       mode: remote
       listen: {{ .Values.components.locks.listen | quote }}
+      key_prefix: {{ .Values.components.locks.keyPrefix | default "yarilo:locks:" | quote }}
+      channel_prefix: {{ .Values.components.locks.channelPrefix | default "yarilo:events:" | quote }}
       {{- if .Values.redis.bundled }}
       redis: {{ printf "redis://%s-redis.%s.svc.cluster.local:6379/0" (include "yarilo.fullname" .) .Release.Namespace | quote }}
       {{- else }}
