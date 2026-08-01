@@ -96,3 +96,25 @@ func TestBackendBaseForUser(t *testing.T) {
 		}
 	})
 }
+
+// TestBackendDispatchRoutesAnvil is the #953 regression: in the backend-api
+// container (YARILO_ADMIN_TYPE=backend) `yarctl anvil dump` routes through
+// dispatchBackend, so `anvil` must resolve there — not fail as an unknown
+// backend service.
+func TestBackendDispatchRoutesAnvil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/backend/anvil/dump" {
+			w.Write([]byte(`{"counters":[],"penalties":[]}`)) //nolint:errcheck
+			return
+		}
+		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+	}))
+	defer srv.Close()
+	old := backendAPIURL
+	defer func() { backendAPIURL = old }()
+	backendAPIURL = srv.URL
+
+	if err := dispatchBackend([]string{"anvil", "dump", "--output", "json"}); err != nil {
+		t.Fatalf("dispatchBackend routing anvil dump: %v", err)
+	}
+}

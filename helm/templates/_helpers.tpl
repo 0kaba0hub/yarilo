@@ -180,21 +180,38 @@ Include in any component that reads passdb/userdb from SQL.
 {{- if eq $tokenSecret "" }}
 {{- $tokenSecret = printf "%s-backend-api-token" (include "yarilo.fullname" .) }}
 {{- end }}
+{{- $btls := .Values.components.backendAPI.internalTLS.enabled }}
+{{- $scheme := ternary "https" "http" $btls }}
 - name: YARILO_ADMIN_TYPE
   value: backend
 - name: YARILO_API_URL
   {{- /* Co-located: backend-api runs in THIS pod on the pod IP (no separate
-         Service), so reach it over localhost. Legacy: the -backend-api Service. */}}
+         Service), so reach it over localhost. Legacy: the -backend-api Service.
+         https when backend-api serves internal mTLS (#954). */}}
   {{- if .Values.components.backend.coLocated }}
-  value: "http://localhost:9105"
+  value: "{{ $scheme }}://localhost:9105"
   {{- else }}
-  value: {{ printf "http://%s-backend-api:9105" (include "yarilo.fullname" .) }}
+  value: {{ printf "%s://%s-backend-api:9105" $scheme (include "yarilo.fullname" .) }}
   {{- end }}
 - name: YARILO_API_TOKEN
   valueFrom:
     secretKeyRef:
       name: {{ $tokenSecret }}
       key: token
+{{- if $btls }}
+  {{- /* yarctl dials backend-api over mTLS: present the client cert, trust the
+         internal CA, and verify against the pinned SAN (the URL host is
+         localhost/an IP that never matches the cert). Same secret the server
+         mounts at /etc/yarilo/internal-tls (#954). */}}
+- name: YARILO_ADMIN_TLS_CERT
+  value: /etc/yarilo/internal-tls/tls.crt
+- name: YARILO_ADMIN_TLS_KEY
+  value: /etc/yarilo/internal-tls/tls.key
+- name: YARILO_ADMIN_TLS_CA
+  value: /etc/yarilo/internal-tls/ca.crt
+- name: YARILO_ADMIN_TLS_SERVER_NAME
+  value: {{ .Values.internalTLS.serverName | default (printf "%s-internal" (include "yarilo.fullname" .)) | quote }}
+{{- end }}
 {{- end }}
 {{/*
 YARILO_ADMIN_URL / YARILO_ADMIN_TOKEN env block for the director admin API.

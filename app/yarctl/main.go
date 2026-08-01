@@ -42,6 +42,16 @@ var (
 	routeFlag       string // "auto" | "true" | "false"
 	routeByUser     bool   // resolved: route per-user backend ops via director LOOKUP
 
+	// Internal-mTLS client config for the director / backend-api HTTP hops
+	// (#954). When the admin servers run behind internal mTLS these carry the
+	// client cert/key, the CA that signed the server cert, and the ServerName to
+	// verify against (the internal cert SAN, e.g. "yarilo-internal") — since the
+	// URL host is usually an IP or localhost that never matches the SAN.
+	tlsCert       string
+	tlsKey        string
+	tlsCA         string
+	tlsServerName string
+
 	outputFormat string
 )
 
@@ -60,6 +70,10 @@ func registerGlobalFlags() {
 	flag.StringVar(&authCert, "auth-cert", envOr("YARILO_AUTH_CERT", ""), "mTLS client cert for auth-master socket")
 	flag.StringVar(&authKey, "auth-key", envOr("YARILO_AUTH_KEY", ""), "mTLS client key for auth-master socket")
 	flag.StringVar(&authCA, "auth-ca", envOr("YARILO_AUTH_CA", ""), "CA bundle that signs the auth-master server cert")
+	flag.StringVar(&tlsCert, "tls-cert", envOr("YARILO_ADMIN_TLS_CERT", ""), "internal mTLS client cert for the director / backend-api HTTP endpoints (#954)")
+	flag.StringVar(&tlsKey, "tls-key", envOr("YARILO_ADMIN_TLS_KEY", ""), "internal mTLS client key for the director / backend-api HTTP endpoints")
+	flag.StringVar(&tlsCA, "tls-ca", envOr("YARILO_ADMIN_TLS_CA", ""), "CA that signed the director / backend-api server cert; enables HTTPS/mTLS when set")
+	flag.StringVar(&tlsServerName, "tls-server-name", envOr("YARILO_ADMIN_TLS_SERVER_NAME", ""), "ServerName to verify the admin server cert against (internal cert SAN, e.g. yarilo-internal)")
 	flag.StringVar(&outputFormat, "O", "human", "Output format: human or json")
 }
 
@@ -217,8 +231,14 @@ func dispatchBackend(args []string) error {
 		return dispatchQuota(args[1:])
 	case "fts":
 		return dispatchFTS(args[1:])
+	case "anvil":
+		// anvil introspection runs against the backend plane, so it must resolve
+		// here too — the backend-api container sets YARILO_ADMIN_TYPE=backend,
+		// which routes `yarctl anvil dump` through dispatchBackend rather than the
+		// top-level shorthand (#953, same class as the `wait` special-case #903).
+		return dispatchAnvil(args[1:])
 	default:
-		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts", args[0])
+		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts, anvil", args[0])
 	}
 }
 
@@ -253,6 +273,10 @@ Global flags:
   --token          Director API bearer token (env: YARILO_ADMIN_TOKEN)
   --backend-url    Backend API base URL (env: YARILO_BACKEND_API_URL, default: http://localhost:9105)
   --backend-token  Backend API bearer token (env: YARILO_BACKEND_API_TOKEN)
+  --tls-ca         CA for the director/backend-api server cert; enables HTTPS/mTLS (env: YARILO_ADMIN_TLS_CA)
+  --tls-cert       Internal mTLS client cert (env: YARILO_ADMIN_TLS_CERT)
+  --tls-key        Internal mTLS client key (env: YARILO_ADMIN_TLS_KEY)
+  --tls-server-name  ServerName to verify the admin cert against, e.g. yarilo-internal (env: YARILO_ADMIN_TLS_SERVER_NAME)
 
 Planes:
   director  — manage the yarilo-director cluster (ring, backends, users, peers)
@@ -260,7 +284,8 @@ Planes:
   auth      — query yarilo-auth userdb/passdb
 
 Shorthand (no plane prefix):
-  user      — alias for 'backend user' (mirrors doveadm user)
+  user      — alias for 'backend user'
+  anvil     — connection-accounting introspection (anvil dump), via the backend plane
 
 Tip: set YARILO_ADMIN_TYPE=backend|director|auth to skip the plane prefix entirely.
 
