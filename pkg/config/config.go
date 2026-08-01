@@ -720,9 +720,9 @@ type QuotaStatusConfig struct {
 }
 
 // SASLLoginConfig configures the yarilo-sasl-login binary.
-// yarilo-sasl-login listens for plain-TCP connections from Postfix (yarilo
-// SASL auth protocol, smtpd_sasl_type=dovecot) and proxies each session to
-// yarilo-auth, optionally wrapping the upstream connection with mTLS.
+// yarilo-sasl-login listens for plain-TCP connections from a fronting MTA
+// (e.g. Postfix) speaking the yarilo SASL auth protocol and proxies each
+// session to yarilo-auth, optionally wrapping the upstream connection with mTLS.
 // This keeps the yarilo-auth socket internal — Postfix has no direct access.
 // LoginConfig holds settings shared by every login proxy (imap/pop3/lmtp/
 // submission/managesieve/sasl), independent of protocol.
