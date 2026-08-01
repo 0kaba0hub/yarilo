@@ -44,9 +44,7 @@ func main() {
 	flag.Parse()
 
 	if *flagSrc == "" {
-		// Back-compat: if neither --src nor --dst supplied, the
-		// pre-Phase-7 invocation was `--format <dst>` over a
-		// Maildir tree. Honour it.
+		// Legacy `--format <dst>` invocation implied a Maildir source.
 		*flagSrc = "maildir"
 	}
 	if *flagDst == "" && *flagFormat != "" {
@@ -182,10 +180,7 @@ func userDir(root, user string) string {
 	return filepath.Join(root, user)
 }
 
-// maildirFlags parses Maildir flag chars from filename ":2,<flags>".
-// Kept here (not in source.go) so source.go has no Maildir-only
-// awareness — pickWalker stays the only place that maps strings
-// to types.
+// maildirFlags parses Maildir flag chars from a filename's ":2,<flags>" suffix.
 func maildirFlags(filename string) []string {
 	idx := strings.Index(filename, ":2,")
 	if idx < 0 {

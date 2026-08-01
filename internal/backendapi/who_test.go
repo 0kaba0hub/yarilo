@@ -31,8 +31,7 @@ func startWardenForTest(t *testing.T) (string, context.CancelFunc) {
 	time.Sleep(30 * time.Millisecond)
 	t.Cleanup(cancel)
 
-	// Seed two sessions via the wire protocol so the server's
-	// in-memory registry mirrors what backend-api will see.
+	// Seed two sessions via the wire protocol.
 	for _, sess := range []struct {
 		id, user, ip, service string
 	}{
@@ -47,9 +46,8 @@ func startWardenForTest(t *testing.T) (string, context.CancelFunc) {
 			c.Close()
 			t.Fatalf("connect %s: %v", sess.id, err)
 		}
-		// Keep the conn open until cleanup — closing here would
-		// terminate the session in the limiter accounting, but the
-		// session registry survives because DISCONNECT was not sent.
+		// Keep the conn open until cleanup so the session stays
+		// registered.
 		t.Cleanup(c.Close)
 	}
 	return addr, cancel

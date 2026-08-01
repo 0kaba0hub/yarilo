@@ -5,14 +5,9 @@ import (
 	"hash/fnv"
 )
 
-// normalizedTextHash hashes text after collapsing all whitespace runs
-// (leading/trailing included) to single-space-separated words, so a
-// text/plain part and the tag-stripped text of its multipart/alternative
-// text/html twin — which carry the same content but different literal
-// whitespace (real newlines vs. the spaces htmlToText inserts at tag
-// boundaries) — hash identically. No case-folding: that would treat
-// genuinely different content (a proper noun vs. a lowercase word) as
-// duplicates.
+// normalizedTextHash hashes text with whitespace runs collapsed, so a
+// text/plain part and the tag-stripped text of its text/html alternative
+// hash identically. No case-folding: that would fuse distinct content.
 func normalizedTextHash(text []byte) uint64 {
 	h := fnv.New64a()
 	for i, word := range bytes.Fields(text) {

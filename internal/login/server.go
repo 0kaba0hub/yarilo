@@ -1,8 +1,6 @@
-// Package login implements the yarilo mail-protocol login proxy.
-// Each login pod accepts mail-client connections (IMAP, POP3, or SMTP Submission),
-// extracts the protocol preamble to learn the authenticated username, queries the
-// yarilo-director LOOKUP to find the correct backend pod, and proxies the session.
-// TLS is terminated here; backends receive plain TCP (or mTLS for internal links).
+// Package login implements the mail-protocol login proxy: it authenticates the
+// client, resolves the backend via director LOOKUP, and proxies the session.
+// TLS terminates here; backends receive plain TCP (or mTLS internally).
 package login
 
 import (
@@ -41,10 +39,10 @@ const (
 	ProtocolManageSieve Protocol = "managesieve"
 )
 
-// Base collapses a listener protocol to the co-located backend container it maps
-// to (imaps→imap, pop3s→pop3, submissions→submission) — the granularity the
-// director counts sessions at for least_sessions placement (#797). Sent as the
-// trailing proto field on LOOKUP / SESSION-OPEN.
+// Base collapses a listener protocol to its backend container name
+// (imaps→imap, pop3s→pop3, submissions→submission) — the granularity the
+// director counts sessions at. Sent as the trailing proto field on
+// LOOKUP / SESSION-OPEN.
 func (p Protocol) Base() string {
 	switch p {
 	case ProtocolIMAPS:
@@ -62,8 +60,8 @@ func (p Protocol) Base() string {
 type Options struct {
 	// Protocol is one of the Protocol constants above.
 	Protocol Protocol
-	// Tag restricts director LOOKUP to backends with this tag (#737).
-	// "" = the untagged pool, not "any tag" — there is no full-ring mode.
+	// Tag restricts director LOOKUP to backends with this tag.
+	// "" means the untagged pool, not "any tag".
 	Tag string
 	// DirectorAddr is the host:port of yarilo-director (e.g. "yarilo-director:9102").
 	// Ignored when BackendAddr is set.
@@ -99,32 +97,25 @@ type Options struct {
 	// WardenFailOpen controls what happens when yarilo-warden is unreachable.
 	// true = allow the session (fail open); false = reject the session (fail closed).
 	WardenFailOpen bool
-	// TransientRetries is how many extra attempts a transient failure gets before
-	// the client is told the service is unavailable (#896). 0 selects the default
-	// (3). Applies to failures that are temporary by definition — yarilo-auth
-	// reporting temp-fail, the first dial to auth, and bringing up the backend
-	// session — where answering on the first error turns a blip into a visible
-	// login failure the client can only recover from by reconnecting.
+	// TransientRetries is the extra-attempt budget for transient failures
+	// (auth temp-fail, auth dial, backend bring-up). 0 selects the default (3).
 	TransientRetries int
-	// TransientReloginCap is the number of transient failures one connection
-	// tolerates (#896), each answered with a tagged NO, before it is closed —
-	// counted from the first attempt, so cap=N permits N tagged NOs (N-1 actual
-	// re-LOGINs between them). Independent of AuthMaxAttempts (bad passwords).
-	// 0 selects the default (3).
+	// TransientReloginCap is how many transient failures one connection may
+	// answer with a tagged NO before it is closed. cap=N permits N tagged NOs.
+	// Independent of AuthMaxAttempts. 0 selects the default (3).
 	TransientReloginCap int
-	// WardenConns is how many long-lived connections the shared warden pool keeps
-	// (#878). 0 selects warden.DefaultPoolSize. The warden protocol carries no
-	// request id, so a connection serves one command at a time; each command is a
-	// sub-millisecond round trip, so a handful covers any realistic login rate.
+	// WardenConns is the size of the shared warden connection pool.
+	// 0 selects warden.DefaultPoolSize. The warden protocol has no request id,
+	// so a connection serves one command at a time.
 	WardenConns int
 	// DialRetries is the number of attempts (with exponential backoff) when
 	// dialling external dependencies at startup. 0 or 1 means a single attempt.
 	DialRetries int
 
-	// LookupHoldMax / LookupHoldBackoff bound the confirmed-kick LOOKUP retry
-	// (#847/#858). Their product is the hold budget, which must exceed the
-	// director's worst-case confirm time. 0 uses the package defaults (20 / 150ms
-	// → 3s budget). From login.lookup_hold_max / lookup_hold_backoff_ms.
+	// LookupHoldMax / LookupHoldBackoff bound the confirmed-kick LOOKUP retry.
+	// Their product must exceed the director's worst-case confirm time.
+	// 0 uses the defaults (20 / 150ms → 3s budget). From
+	// login.lookup_hold_max / lookup_hold_backoff_ms.
 	LookupHoldMax     int
 	LookupHoldBackoff time.Duration
 
@@ -158,15 +149,13 @@ type Options struct {
 	HAProxyTimeout time.Duration
 	HAProxyNets    []*net.IPNet
 
-	// XClient enables native inbound client-IP forwarding on this listener
-	// (#742): IMAP ID fields, POP3/Submission XCLIENT. Mirrors the per-listener
-	// xclient_protocol config key. Off = the forwarding commands are ignored
-	// (ID replies NIL, XCLIENT is an unknown command).
+	// XClient enables inbound client-IP forwarding on this listener
+	// (IMAP ID fields, POP3/Submission XCLIENT). Mirrors xclient_protocol.
+	// Off = ID replies NIL, XCLIENT is an unknown command.
 	XClient bool
-	// XClientNets are the CIDRs (general.xclient.trusted_nets) whose forwarded
-	// client IP is trusted. A forwarded address is applied ONLY when the socket
-	// peer — already PROXY-rewritten if HAProxy also ran — is inside one of
-	// these ranges. Empty = trust nobody (every forward is ignored+logged).
+	// XClientNets (general.xclient.trusted_nets) are the CIDRs whose forwarded
+	// client IP is trusted; the socket peer must be inside one of them.
+	// Empty = trust nobody.
 	XClientNets []*net.IPNet
 }
 
@@ -180,12 +169,9 @@ type liveSession struct {
 // watchConn wraps a proto.Conn for the persistent director watch connection.
 // Writes are mutex-protected; reads happen in a dedicated goroutine.
 //
-// LOOKUP rides this same connection (#878). The director protocol echoes the
-// request id in its HOST/FAIL reply, so the read loop can route replies to the
-// caller that is waiting for them — which removes a dial (and, under internal
-// TLS, a full handshake) from every login. Measured before this change:
-// director_lookup cost 1.06s per login while the director's own
-// yarilo_director_lookup_seconds reported 0.4ms of work.
+// LOOKUP rides this same connection: the director echoes the request id in its
+// HOST/FAIL reply, so the read loop routes replies to waiting callers. This
+// removes a dial (and TLS handshake) from every login.
 type watchConn struct {
 	mu sync.Mutex
 	c  *proto.Conn
@@ -212,8 +198,8 @@ func (w *watchConn) forgetReply(id string) {
 	w.pendMu.Unlock()
 }
 
-// deliver routes a reply to its waiter. Reports false when nobody is waiting,
-// which is how ordinary push lines fall through to the watch handling.
+// deliver routes a reply to its waiter. Reports false when nobody is waiting;
+// ordinary push lines fall through to the watch handling.
 func (w *watchConn) deliver(id, line string) bool {
 	w.pendMu.Lock()
 	ch, ok := w.pending[id]
@@ -228,7 +214,7 @@ func (w *watchConn) deliver(id, line string) bool {
 	return true
 }
 
-// failPending wakes every waiter when the connection dies, so a login in flight
+// failPending wakes every waiter when the connection dies; an in-flight login
 // falls back to a fresh dial instead of waiting out its timeout.
 func (w *watchConn) failPending() {
 	w.pendMu.Lock()
@@ -267,13 +253,11 @@ func (w *watchConn) lookup(id, username, tag, protoName string, timeout time.Dur
 }
 
 // errWatchClosed means the watch connection dropped while a lookup was in
-// flight. The caller retries on a fresh connection: LOOKUP is a read of the
-// routing decision, so repeating it is safe.
+// flight. Safe to retry on a fresh connection: LOOKUP is a read.
 var errWatchClosed = errors.New("director watch connection closed")
 
-// directorLookupTimeout bounds one LOOKUP over the persistent connection. Well
-// above the director's own sub-millisecond handling, but low enough that a wedged
-// connection falls back to a dial rather than holding the login.
+// directorLookupTimeout bounds one LOOKUP over the persistent connection;
+// a wedged connection falls back to a dial rather than holding the login.
 const directorLookupTimeout = 10 * time.Second
 
 func (w *watchConn) sessionOpen(sessID, username, backendIP, protoName string) {
@@ -294,12 +278,10 @@ func (w *watchConn) pong() {
 	_ = w.c.WriteLine("PONG")
 }
 
-// sessionIDAlphabet is the 52-character set used by Postfix long queue IDs:
-// digits 0-9, uppercase consonants B-Z, lowercase consonants b-z.
-// Vowels (AEIOUaeiou) are excluded to avoid confusion when read aloud.
-// 'z' (index 51) serves as the separator between the time and sequence
-// parts; the sequence is encoded in the first 51 characters only so that
-// 'z' never appears inside it, making the split unambiguous.
+// sessionIDAlphabet is the 52-character Postfix long-queue-ID set: digits,
+// consonants B-Z/b-z (vowels excluded). 'z' (index 51) separates the time and
+// sequence parts; the sequence uses only the first 51 characters so 'z' never
+// appears inside it.
 const sessionIDAlphabet = "0123456789BCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz"
 
 // encodeSessionPart encodes n in the given alphabet, left-padding with
@@ -333,26 +315,21 @@ type Server struct {
 	watchMu sync.RWMutex
 	watch   *watchConn // persistent director connection for push notifications
 
-	// authMu guards the shared yarilo-auth client (#878). One multiplexed
-	// connection serves every login on this pod: the AUTH wire protocol carries
-	// a request id per command, so concurrent logins interleave over a single
-	// mTLS session instead of each paying a fresh handshake. Created lazily
-	// because the pod may start before yarilo-auth is reachable, and Serve runs
-	// once per listener (imaps + imap) while the client must be a singleton.
+	// Shared yarilo-auth client. The AUTH wire protocol carries a request id
+	// per command, so concurrent logins multiplex over one connection.
+	// Created lazily: the pod may start before yarilo-auth is reachable.
 	authMu sync.Mutex
 	authCl *authclient.Client
 
-	// wardenMu guards the shared yarilo-warden pool (#878). Sessions no longer own
-	// a connection: every warden command carries the session id and the server
-	// keeps no per-connection state, so a small fixed set of long-lived
-	// connections serves every session on this pod. Lazy for the same reason as
-	// the auth client — the pod may start before warden is reachable.
+	// Shared yarilo-warden pool. Every warden command carries the session id,
+	// so a small fixed pool serves every session. Lazy for the same reason as
+	// the auth client.
 	wardenMu   sync.Mutex
 	wardenPool *warden.Pool
 
-	// Graceful-drain state (#857): on Shutdown the listeners are closed (stop
-	// accepting) and inflight is waited on (let live sessions finish) up to the
-	// grace period. draining makes a listener-closed Accept a clean return.
+	// Graceful-drain state: Shutdown closes the listeners and waits on inflight
+	// up to the grace period. draining makes a listener-closed Accept a clean
+	// return.
 	drainMu   sync.Mutex
 	listeners []net.Listener
 	draining  bool
@@ -360,9 +337,7 @@ type Server struct {
 }
 
 // authClient returns the shared yarilo-auth client, dialling it on first use.
-// A dial failure is returned to the caller (which surfaces the usual
-// UNAVAILABLE) and leaves the field nil so the next login retries — the pod
-// does not need auth to be up at start.
+// A dial failure leaves the field nil so the next login retries.
 func (s *Server) authClient() (*authclient.Client, error) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
@@ -377,9 +352,8 @@ func (s *Server) authClient() (*authclient.Client, error) {
 	return cl, nil
 }
 
-// wardenClient returns the shared warden pool, creating it on first use. The pool
-// dials lazily, so this cannot fail on an unreachable warden — a dial error
-// surfaces on the first command instead.
+// wardenClient returns the shared warden pool, creating it on first use.
+// The pool dials lazily; a dial error surfaces on the first command.
 func (s *Server) wardenClient() *warden.Pool {
 	s.wardenMu.Lock()
 	defer s.wardenMu.Unlock()
@@ -410,13 +384,10 @@ func (s *Server) closeAuthClient() {
 }
 
 // defaultTransientRetries is the extra-attempt budget for a transient failure.
-// Three keeps a rolling restart of a dependency invisible to clients without
-// holding a login long enough to look like a hang.
 const defaultTransientRetries = 3
 
-// transientRetryBackoff is the pause between attempts. Deliberately short: the
-// failures this covers are a pod rolling or a connection being re-established,
-// which resolve in well under a second.
+// transientRetryBackoff is the pause between attempts. Short: the failures it
+// covers (pod rolling, connection re-established) resolve in under a second.
 const transientRetryBackoff = 150 * time.Millisecond
 
 func (s *Server) transientRetries() int {
@@ -429,8 +400,8 @@ func (s *Server) transientRetries() int {
 	return defaultTransientRetries
 }
 
-// defaultTransientReloginCap is the client-side re-LOGIN budget per connection
-// (#896). Distinct from transientRetries, which is the per-hop internal budget.
+// defaultTransientReloginCap is the client-side re-LOGIN budget per connection.
+// Distinct from transientRetries, the per-hop internal budget.
 const defaultTransientReloginCap = 3
 
 func (s *Server) transientReloginCap() int {
@@ -438,7 +409,7 @@ func (s *Server) transientReloginCap() int {
 		return s.opts.TransientReloginCap
 	}
 	if s.opts.TransientReloginCap < 0 {
-		return 0 // explicit opt-out: close on the first transient, as before #896
+		return 0 // explicit opt-out: close on the first transient
 	}
 	return defaultTransientReloginCap
 }
@@ -447,10 +418,9 @@ func (s *Server) transientReloginCap() int {
 //
 //	{base52(secs, ≥6)}{base52(usec, 4)}z{seed(4)}{base51(seq, ≥1)}
 //
-// The 4-char seed is random per Server instance (generated in New) so IDs
-// are unique across pods even when secs+usec+seq coincide.
+// The 4-char seed is random per Server instance so IDs are unique across pods.
 // Time parts use the full 52-char alphabet; seed and seq use the first 51
-// chars so 'z' remains an unambiguous time/suffix separator.
+// chars so 'z' remains an unambiguous separator.
 func (s *Server) newSessionID() string {
 	now := time.Now()
 	secs := uint64(now.Unix())
@@ -519,11 +489,9 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 }
 
-// Shutdown stops accepting new connections (closes the listeners so Serve
-// returns nil) and waits for in-flight proxied sessions to finish, up to ctx's
-// deadline. A session still live when ctx expires is left to process exit —
-// bounded by the pod terminationGracePeriodSeconds. Mirrors the director's
-// graceful ring leave (#770). Safe to call once; idempotent.
+// Shutdown stops accepting new connections and waits for in-flight sessions
+// up to ctx's deadline. Sessions still live at expiry are left to process exit
+// (bounded by terminationGracePeriodSeconds). Idempotent.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.drainMu.Lock()
 	if s.draining {
@@ -551,8 +519,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
-// loginOutcome is the result of one attemptLogin pass (#896): whether the
-// connection should be proxied, closed, or kept open for the client to retry.
+// loginOutcome is the result of one login pass: proxy, close, or keep the
+// connection open for the client to retry.
 type loginOutcome int
 
 const (
@@ -561,8 +529,8 @@ const (
 	outcomeRetry                     // transient; a tagged NO is sent, keep the connection for a re-LOGIN
 )
 
-// established is the set of resources a successful login pass hands back to
-// handleConn to proxy and own for the session's lifetime.
+// established is what a successful login pass hands back to handleConn to
+// proxy and own for the session's lifetime.
 type established struct {
 	bs            *backendSession
 	releaseWarden func() // warden heartbeat-cancel + Disconnect; nil when warden is disabled
@@ -609,20 +577,16 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	s.observePhase(phasePreamble, preambleStart)
 
-	// attemptLogin runs one full authenticate→route→bring-up pass. On a transient
-	// failure it returns outcomeRetry, having written a tagged NO [UNAVAILABLE]
-	// and released anything it acquired, so handleConn can loop back into the
-	// pre-auth command loop and let the client LOGIN again on the SAME connection
-	// — no new TCP + TLS handshake (#896). On success it returns the established
-	// resources for handleConn to proxy and own. pre/authConn/authRd are the
-	// outer per-connection state; the bad-password sub-loop mutates them in place.
+	// attempt runs one authenticate→route→bring-up pass. On a transient failure
+	// it returns outcomeRetry, having written a tagged NO [UNAVAILABLE] and
+	// released anything it acquired, so the client can LOGIN again on the same
+	// connection. pre/authConn/authRd are the outer per-connection state; the
+	// bad-password sub-loop mutates them in place.
 	var est *established
 	attempt := func() (loginOutcome, *established) {
-		// committed is flipped only on a successful bring-up; until then the
-		// deferred unwind releases whatever this pass acquired (the warden slot),
-		// so a transient failure after warden.Connect cannot leak a connection
-		// slot. On success the release is handed to handleConn instead, so the
-		// slot lives for the whole proxied session.
+		// committed flips only on a successful bring-up; until then the deferred
+		// unwind releases the warden slot. On success the release is handed to
+		// handleConn for the session's lifetime.
 		committed := false
 		var releaseWarden func()
 		defer func() {
@@ -633,21 +597,16 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		// Authenticate via yarilo-auth: passdb chain, brute-force penalty, token issuance.
 		if s.opts.AuthAddr == "" {
-			// A missing auth_addr is a permanent misconfiguration, not a transient
-			// blip: re-LOGIN cannot fix it, so close rather than hold the socket
-			// open for the re-login budget (#896 review).
+			// Permanent misconfiguration, not a transient blip: close rather than
+			// hold the socket open for the re-login budget.
 			log.Error("login: auth_addr not configured")
-			// This path closes (outcomeClose), so announce the close rather than
-			// a keep-open transient code — a NO (TRYLATER)/454 here would tell the
-			// client to retry a socket we are about to drop (#928).
+			// Closing path: announce the close, not a keep-open transient code.
 			writeProtoClose(authConn, s.opts.Protocol, "service temporarily unavailable")
 			s.incResult("unavailable")
 			return outcomeClose, nil
 		}
-		// Shared multiplexed client (#878) — no per-login handshake. The phase
-		// metric stays: it should now read ~0 except on the very first login after
-		// a pod start or an auth reconnect, which is exactly the signal that the
-		// reuse is working.
+		// Shared multiplexed client — no per-login handshake. The phase metric
+		// reads ~0 except on the first login after a pod start or auth reconnect.
 		authDialStart := time.Now()
 		var authCl *authclient.Client
 		for attempt := 0; ; attempt++ {
@@ -659,9 +618,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			if attempt >= s.transientRetries() {
 				log.Error("login: yarilo-auth dial", "addr", s.opts.AuthAddr, "attempts", attempt+1, "err", derr)
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeUnavailable, "service temporarily unavailable")
-				// Observed on failure too: a timed-out dial is the single most
-				// important latency sample there is, and dropping it would make the
-				// histogram look healthy exactly when the path is broken.
+				// Observed on failure too: a timed-out dial must show in the
+				// histogram.
 				s.observePhase(phaseAuthDial, authDialStart)
 				s.incTransientExhausted(stageAuthDial)
 				s.incResult("unavailable")
@@ -682,44 +640,35 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		var authResult *authclient.AuthResult
 		for attempt := 1; ; attempt++ {
-			// Native inbound client-IP forwarding (#742): the SINGLE point where a
-			// proxy-forwarded address replaces the socket IP, so every downstream
-			// consumer below (auth, allow_nets, warden, the backend preamble ADDR=)
-			// inherits it. pre.forwardIP is populated by the pre-auth parser ONLY
-			// when this listener has xclient_protocol enabled; here we additionally
-			// require the socket peer — already PROXY-rewritten if HAProxy also ran
-			// — to be inside general.xclient.trusted_nets. Runs at the top of the
-			// retry loop so a forward arriving in a retry iteration is honoured too.
+			// Single point where a forwarded address replaces the socket IP;
+			// auth, allow_nets, warden, and the backend preamble ADDR= all
+			// inherit it. Applied only when the socket peer is inside
+			// general.xclient.trusted_nets. Runs at the top of the retry loop so
+			// a forward arriving in a retry iteration is honoured too.
 			if pre.forwardIP != "" && clientIP != pre.forwardIP {
 				if ipInNets(clientIP, s.opts.XClientNets) {
 					log = log.With("orig_ip", clientIP, "fwd_ip", pre.forwardIP, "fwd_port", pre.forwardPort, "fwd_via", pre.forwardSource)
 					log.Info("login: client ip forwarded")
 					clientIP = pre.forwardIP
 				} else if pre.forwardSource == "xclient" {
-					// An untrusted peer sending XCLIENT is an anomaly — someone is
-					// claiming to be a proxy.
+					// An untrusted peer claiming to be a proxy is an anomaly.
 					log.Warn("login: ignoring XCLIENT from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
 					pre.forwardIP = ""
 				} else {
-					// A bare IMAP ID with x-originating-ip is routine MUA chatter;
-					// Debug, not Warn, to avoid log spam on every ordinary login.
+					// Bare IMAP ID with x-originating-ip is routine MUA chatter;
+					// Debug to avoid log spam.
 					log.Debug("login: ignoring forwarded ID from untrusted peer", "peer_ip", clientIP, "claimed_ip", pre.forwardIP)
 					pre.forwardIP = ""
 				}
 			}
 
 			var aerr error
-			// A temp-fail means "try again" by definition, so retry it here instead of
-			// turning a passdb blip into a login the client can only recover from by
-			// reconnecting (#896). Safe to repeat: yarilo-auth deliberately does NOT
-			// touch the auth-penalty counter on internal failures, so a retry cannot
-			// tarpit the user.
+			// Retry temp-fails here rather than surfacing a passdb blip. Safe to
+			// repeat: internal failures do not touch the auth-penalty counter.
 			for tfAttempt := 0; ; tfAttempt++ {
 				authStart := time.Now()
 				authResult, aerr = authCl.Authenticate(pre.username, pre.password, wardenService(s.opts.Protocol), clientIP, sessID)
-				// One observation per attempt, not per login: the retry loop keeps the
-				// connection open across a bad-password retry, and each attempt is its
-				// own round-trip to yarilo-auth.
+				// One observation per attempt: each is its own round-trip.
 				s.observePhase(phaseAuth, authStart)
 				if !errors.Is(aerr, authclient.ErrTempFail) {
 					break
@@ -755,11 +704,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 
 			if attempt >= maxAuthAttempts || !isRetriableProtocol(s.opts.Protocol) {
-				// Tagged completion for the client's last command THEN the close
-				// announcement (#928 consistency). The old untagged `* BYE` (tag
-				// "") left the final LOGIN without a tagged reply, which breaks the
-				// IMAP contract; tagged NO [AUTHENTICATIONFAILED] + * BYE is the
-				// canonical failure-then-BYE sequence.
+				// Tagged NO [AUTHENTICATIONFAILED] then * BYE: the last LOGIN must
+				// get a tagged reply before the close announcement.
 				writeProtoError(authConn, s.opts.Protocol, pre.cmdTag, imapCodeAuthenticationFail, "Too many failed authentications")
 				writeProtoClose(authConn, s.opts.Protocol, "closing")
 				return outcomeClose, nil
@@ -778,15 +724,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			log.Info("login: auth retry", "user", pre.username, "attempt", attempt+1)
 		}
 
-		// Find backend address: fixed addr (standalone) or director LOOKUP (director mode).
-		// tag is hoisted so the fast-fail re-route (#782) below can re-LOOKUP with it.
+		// Find backend address: fixed addr (standalone) or director LOOKUP.
+		// tag is hoisted so the fast-fail re-route below can re-LOOKUP with it.
 		var backendAddr, tag string
 		if s.opts.BackendAddr != "" {
 			backendAddr = s.opts.BackendAddr
 		} else {
-			// Per-user director_tag (#746, from the passdb/userdb response) wins
-			// over the login component's static Tag config — lets a shared
-			// login fleet route different users to different tag-pools.
+			// Per-user director_tag from passdb/userdb wins over the static Tag
+			// config, so a shared login fleet can route users to different pools.
 			tag = s.opts.Tag
 			if authResult.DirectorTag != "" {
 				tag = authResult.DirectorTag
@@ -803,9 +748,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		}
 
-		// Warden connection limit check. Shared pool (#878): no per-session dial. The
-		// phase metric now measures CONNECT over an already-open connection, so it
-		// reads as a round trip rather than a full mTLS handshake.
+		// Warden connection limit check over the shared pool (no per-session
+		// dial); the phase metric measures one round trip.
 		if s.opts.WardenAddr != "" {
 			wardenStart := time.Now()
 			ap := s.wardenClient()

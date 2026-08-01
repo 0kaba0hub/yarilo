@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-// defaultTikaMaxAttempts mirrors the reference implementation's own Tika
-// plugin default: one initial attempt plus one retry (#697).
+// defaultTikaMaxAttempts is one initial attempt plus one retry.
 const defaultTikaMaxAttempts = 2
 
 // tikaRetryBase is the exponential-backoff base delay between retries.
@@ -41,21 +40,15 @@ func newTikaDecoder(baseURL string, timeout time.Duration, maxSize int64, maxAtt
 // extracted plain text.
 //
 // 415/422/204 mean Tika understood the request but has nothing to extract
-// (unsupported type / no content) — treated as "unsupported" (ok=false),
-// not an error, same as an unconfigured decoder.
+// (unsupported type / no content): treated as unsupported (ok=false), not an
+// error. A connection error or 5xx is retried (bounded, exponential backoff);
+// any other non-2xx is a hard, non-retryable failure returned immediately. When
+// retries are exhausted the error wraps ErrDegraded so the caller can index the
+// message without this attachment's text instead of failing it.
 //
-// A connection error or 5xx is retried (bounded, exponential backoff): a
-// transient Tika restart must not permanently degrade the index the way
-// silently skipping did before #697. Any other non-2xx status is a hard,
-// non-retryable failure (bad request, auth, config) — returned immediately
-// so the caller aborts this message's indexing attempt. Once retries are
-// exhausted against a transient condition, the error wraps ErrDegraded so
-// the caller can index the message without this attachment's text instead
-// of failing it outright.
-//
-// The attachment is read fully into memory up front (bounded by maxSize)
-// because a retry needs to resend the same bytes — an http.Request body
-// reader can only be consumed once.
+// The attachment is read fully into memory up front (bounded by maxSize) because
+// a retry must resend the same bytes and an http.Request body can be consumed
+// only once.
 func (d *tikaDecoder) Decode(ctx context.Context, contentType, filename string, body io.Reader) ([]byte, bool, error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
@@ -84,9 +77,9 @@ func (d *tikaDecoder) Decode(ctx context.Context, contentType, filename string, 
 	return nil, false, fmt.Errorf("fts/decoder/tika: giving up after %d attempts: %w: %w", d.maxAttempts, ErrDegraded, lastErr)
 }
 
-// attempt runs a single PUT. retry=true means the caller should back off and
-// try again (network error or 5xx); retry=false means the result — success,
-// unsupported, or a hard error — is final.
+// attempt runs a single PUT. retry=true means back off and try again (network
+// error or 5xx); retry=false means the result (success, unsupported, or a hard
+// error) is final.
 func (d *tikaDecoder) attempt(ctx context.Context, contentType, filename string, data []byte) (text []byte, ok bool, retry bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, d.baseURL+"/tika", bytes.NewReader(data))
 	if err != nil {

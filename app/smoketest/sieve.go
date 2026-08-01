@@ -225,16 +225,13 @@ func (c *imapClient) close() { c.conn.Close() }
 func (c *imapClient) cmd(command string) ([]string, error) {
 	c.seq++
 	tag := fmt.Sprintf("S%04d", c.seq)
-	// Set the read deadline per command from imap-read-timeout, above the server
-	// fts catch-up budget, so a legitimate index wait (UID SEARCH under load) is
-	// not misread as an i/o timeout (#934). A caller may have set a shorter
-	// deadline; this overrides it for the whole command.
+	// Per-command deadline from imap-read-timeout, above the server's fts
+	// catch-up budget, so an index wait isn't misread as an i/o timeout.
+	// Overrides any shorter deadline set by the caller.
 	start := time.Now()
 	c.conn.SetDeadline(start.Add(*flagIMAPReadTimeout)) //nolint:errcheck
 	defer func() {
-		// Keep slowness visible without failing the run: a command that outlasts
-		// the ordinary per-check timeout was the server legitimately waiting on
-		// the FTS index, not a fault.
+		// warn but don't fail; slow commands are usually a legitimate index wait
 		if d := time.Since(start); d > *flagTimeout {
 			slog.Warn("smoke: slow IMAP command", "command", command, "took", d.Round(time.Second).String())
 		}
@@ -370,9 +367,8 @@ func checkFolder(user, pass, folder string) error {
 		exists, selErr := c.selectFolder(folder)
 		switch {
 		case selErr != nil:
-			// fileinto :create is asynchronous: lmtpSend returns once the relay
-			// accepts the message, before delivery+Sieve create the folder. A
-			// SELECT that beats it returns NONEXISTENT — keep polling, don't fail.
+			// delivery is async; a SELECT before fileinto :create runs
+			// returns NONEXISTENT — keep polling
 			lastErr = selErr
 		case exists >= 1:
 			uids, _ := c.uidSearch("ALL")
@@ -392,9 +388,8 @@ func checkFolder(user, pass, folder string) error {
 	}
 }
 
-// checkAbsentInInbox does a single IMAP SEARCH and returns an error if any
-// message matching subjectToken is found. Used for negative assertions (reject,
-// ereject) where a 30s poll loop is wrong — absence should be confirmed once.
+// checkAbsentInInbox fails if any message matching subjectToken exists.
+// Single check, no poll loop: absence is confirmed once.
 func checkAbsentInInbox(user, pass, subjectToken string) error {
 	c, err := imapDial()
 	if err != nil {
@@ -587,8 +582,7 @@ func testSieveReject(user, pass, to string) error {
 	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
-	// MX accepts the message (250), yarilo-lmtp rejects it async — message must NOT land in INBOX.
-	// Single check after a short wait: no poll loop needed for a negative assertion.
+	// MX accepts (250), rejection happens async — message must NOT land in INBOX
 	time.Sleep(5 * time.Second)
 	if err := checkAbsentInInbox(user, pass, subject); err != nil {
 		return fmt.Errorf("reject: %w", err)
@@ -603,7 +597,7 @@ func testSieveEreject(user, pass, to string) error {
 	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
 		return err
 	}
-	// Same as reject — single check after wait, no poll loop.
+	// same as reject: single check after wait
 	time.Sleep(5 * time.Second)
 	if err := checkAbsentInInbox(user, pass, subject); err != nil {
 		return fmt.Errorf("ereject: %w", err)
@@ -627,7 +621,7 @@ func testSieveDuplicate(user, pass, to string) error {
 			return fmt.Errorf("inject %d: %w", i+1, err)
 		}
 	}
-	// Clean up duplicate that landed in INBOX (second copy, non-duplicate path)
+	// clean up the second copy that landed in INBOX via the duplicate path
 	c, err := imapDial()
 	if err != nil {
 		return err
@@ -721,10 +715,8 @@ func testSieveEnvironment(user, pass, to string) error {
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
 	}
-	// Test environment :is with vnd.yarilo.username item AND
-	// the env. variable namespace (${env.vnd.yarilo.default_mailbox}).
-	// On match: set folder name via env. variable then override to the
-	// test folder so the assertion is folder-based (fast, avoids INBOX search).
+	// environment :is on vnd.yarilo.username; on match route to the test
+	// folder so the assertion is folder-based
 	script := `require ["environment","variables","fileinto","mailbox","vnd.yarilo.environment"];` + "\n" +
 		`set "dest" "Junk";` + "\n" +
 		`if environment :is "vnd.yarilo.username" "` + to + `" {` + "\n" +
@@ -737,10 +729,8 @@ func testSieveEnvironment(user, pass, to string) error {
 	return checkFolder(user, pass, folder)
 }
 
-// testSievePipe verifies that vnd.yarilo.pipe is advertised and accepted by
-// the Sieve interpreter. The script uses :try so that when no binary exists in
-// the sandbox's sieve_pipe_bin_dir the action silently fails and the implicit
-// keep fires, delivering the message to INBOX as normal.
+// testSievePipe verifies vnd.yarilo.pipe is accepted. :try lets the action
+// fail silently when the binary is absent, so implicit keep delivers to INBOX.
 func testSievePipe(user, pass, to string) error {
 	clearInbox(user, pass)
 	id := uniqueID()
@@ -749,16 +739,12 @@ func testSievePipe(user, pass, to string) error {
 	if err := sieveInject(script, "sender@test.invalid", to, id, "pipe-try test", "pipe test body"); err != nil {
 		return err
 	}
-	// Match the exact injected message by its unique Message-ID rather than a
-	// UID range: delivery is asynchronous and the range form is sensitive to
-	// unrelated INBOX activity, which made this check flake intermittently.
+	// match by Message-ID: UID-range search flakes when unrelated deliveries race in
 	return inboxWaitByID(user, pass, id, "pipe :try: message was not delivered to INBOX after failed pipe")
 }
 
-// testSieveExecute verifies that vnd.yarilo.execute is accepted by the Sieve
-// interpreter. The script uses execute as a test inside if/else so that
-// regardless of whether the program exists in the sandbox, the implicit keep
-// fires and delivers the message to INBOX.
+// testSieveExecute verifies vnd.yarilo.execute is accepted. execute is used as
+// a test inside if/else so implicit keep delivers to INBOX either way.
 func testSieveExecute(user, pass, to string) error {
 	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
@@ -775,10 +761,8 @@ func testSieveExecute(user, pass, to string) error {
 	return inboxWaitByUID(user, pass, uidnext, "execute test: message was not delivered to INBOX")
 }
 
-// testSieveFilter verifies that vnd.yarilo.filter is accepted by the Sieve
-// interpreter. The script uses filter as a test inside an if/else so that
-// regardless of whether the program exists in the sandbox, the implicit keep
-// fires and delivers the message to INBOX.
+// testSieveFilter verifies vnd.yarilo.filter is accepted. filter is used as a
+// test inside if/else so implicit keep delivers to INBOX either way.
 func testSieveFilter(user, pass, to string) error {
 	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
@@ -794,12 +778,8 @@ func testSieveFilter(user, pass, to string) error {
 	return inboxWaitByUID(user, pass, uidnext, "filter test: message was not delivered to INBOX")
 }
 
-// inboxWaitByUID polls INBOX for any message with UID >= uidnext for up to
-// 30 seconds. Uses UID range search (needsBody=false) so no per-message NFS
-// reads are required — only the in-memory fileindex is consulted.
-// inboxWaitByID polls INBOX until a message carrying the given Message-ID
-// appears, then deletes it. Unlike inboxWaitByUID it identifies the exact
-// injected message, so it is immune to unrelated deliveries racing into INBOX.
+// inboxWaitByID polls INBOX (30s) until a message with the given Message-ID
+// appears, then deletes it. Immune to unrelated deliveries racing into INBOX.
 func inboxWaitByID(user, pass, id, failMsg string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -833,6 +813,8 @@ func inboxWaitByID(user, pass, id, failMsg string) error {
 	}
 }
 
+// inboxWaitByUID polls INBOX (30s) for any message with UID >= uidnext.
+// UID range search only touches the in-memory fileindex, no per-message reads.
 func inboxWaitByUID(user, pass string, uidnext int, failMsg string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -1000,8 +982,7 @@ func joined(lines []string) string { return strings.Join(lines, "\n") }
 // testIMAPObjectID verifies RFC 8474: OBJECTID capability, MAILBOXID in SELECT,
 // and EMAILID in FETCH.
 func testIMAPObjectID(user, pass, to string) error {
-	// Deterministic delivery: empty INBOX + a plain keep script so the message
-	// lands in INBOX regardless of any leftover active script.
+	// empty INBOX + plain keep script so delivery is deterministic
 	clearInbox(user, pass)
 	if err := msieveSetActive("keep;\n"); err != nil {
 		return fmt.Errorf("msieve keep: %w", err)
@@ -1033,7 +1014,7 @@ func testIMAPObjectID(user, pass, to string) error {
 	if err := lmtpSend(id, "s@test.invalid", to, "objectid", "body"); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
-	// Delivery + indexing is async; re-SELECT and search a few times.
+	// delivery + indexing is async; re-SELECT and search a few times
 	var uids []string
 	for i := 0; i < 10; i++ {
 		if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
@@ -1130,8 +1111,7 @@ func testSieveMailboxID(user, pass, to string) error {
 		return fmt.Errorf("SELECT %q missing MAILBOXID: %s", folder, joined(sel))
 	}
 
-	// :mailboxid resolves to `folder`; the "Fallback" positional is a trap —
-	// if resolution failed the message would land there instead.
+	// "Fallback" positional catches failed :mailboxid resolution
 	script := "require [\"fileinto\",\"mailboxid\"];\n" +
 		"fileinto :mailboxid \"" + mboxID + "\" \"Fallback\";\n"
 	if err := msieveSetActive(script); err != nil {
@@ -1159,10 +1139,9 @@ func extractMailboxID(s string) string {
 	return rest[:j]
 }
 
-// testSieveMetadata verifies RFC 5490 §4 mboxmetadata + servermetadata: a Sieve
-// script routes on IMAP METADATA annotations set via SETMETADATA. Sets a
-// mailbox-scoped annotation on INBOX and a server-scoped one, then asserts a
-// message keying on both lands in the target folder.
+// testSieveMetadata verifies RFC 5490 §4 mboxmetadata + servermetadata: sets a
+// mailbox-scoped and a server-scoped annotation, then asserts a script keying
+// on both routes to the target folder.
 func testSieveMetadata(user, pass, to string) error {
 	clearInbox(user, pass)
 	folder := "sieve-test-meta"
@@ -1201,11 +1180,9 @@ func testSieveMetadata(user, pass, to string) error {
 	return checkFolder(user, pass, folder)
 }
 
-// testSieveReport verifies vnd.yarilo.report (RFC 5965 ARF) end to end: the
-// script reports the delivered trigger back to the recipient, so the ARF report
-// routes through submission -> LMTP into INBOX, and we confirm its multipart/report
-// structure. The report is guarded on the trigger's subject so the delivered
-// report (subject "abuse report") does not re-trigger itself into a mail loop.
+// testSieveReport verifies vnd.yarilo.report (RFC 5965 ARF): the script reports
+// the trigger back to the recipient via submission -> LMTP into INBOX.
+// Guarded on the trigger's subject so the report cannot loop.
 func testSieveReport(user, pass, to string) error {
 	clearInbox(user, pass)
 	script := "require [\"vnd.yarilo.report\"];\n" +
@@ -1228,9 +1205,8 @@ func testSieveReport(user, pass, to string) error {
 	if err := c.login(user, pass); err != nil {
 		return err
 	}
-	// The report is submitted asynchronously and routed back via LMTP. Poll until
-	// a delivered message matches the feedback-report content type (which excludes
-	// the trigger) AND fetches as a valid multipart/report.
+	// report submission is async; poll for a delivered multipart/report
+	// with the feedback-report content type (excludes the trigger)
 	var found bool
 	for i := 0; i < 30 && !found; i++ {
 		c.conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck

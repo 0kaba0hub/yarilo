@@ -231,11 +231,8 @@ func jsonToACL(in []aclEntryJSON) (mailbox.ACL, error) {
 }
 
 // parseAdminIdentifier accepts the disk-canonical forms (anyone /
-// authenticated / owner / user= / group= / group-override=) AND a
-// bare username (same convention as the IMAP wire bridge in
-// internal/imap.identifierFromIMAP) — admins typing
-// `bob@example.com` should not have to remember the `user=` prefix
-// every time.
+// authenticated / owner / user= / group= / group-override=) and a
+// bare username (same convention as internal/imap.identifierFromIMAP).
 func parseAdminIdentifier(s string) (mailbox.Identifier, error) {
 	switch s {
 	case "anyone":

@@ -2,10 +2,8 @@ package ftsservice
 
 import "testing"
 
-// TestIsBrokenEngine locks the error classifier that drives handle eviction
-// (#629): a Xapian closed/opening error, or the rev-file write failure that
-// wedges a flatcurve shard, must be recognised so the worker reopens the index;
-// an ordinary error must not trigger a needless reopen.
+// Xapian closed/opening errors and rev-file write failures must trigger
+// a reopen; ordinary errors must not.
 func TestIsBrokenEngine(t *testing.T) {
 	cases := []struct {
 		name string

@@ -18,23 +18,18 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/logging"
 )
 
-// logLevelDesc describes the active-log-level metric (#889), which an operator
-// uses to confirm from the metrics they already scrape that a change took effect.
+// logLevelDesc describes the active-log-level metric, letting an operator
+// confirm from scraped metrics that a level change took effect.
 var logLevelDesc = prometheus.NewDesc(
 	"yarilo_log_level",
 	"Active log level (value = slog level number, label = name).",
 	[]string{"level"}, nil,
 )
 
-// logLevelCollector reads the level at SCRAPE time rather than caching it in a
-// gauge.
-//
-// This is deliberate: the level can change without any HTTP request touching
-// this package — SetLevelFor's TTL reverts it from a timer inside pkg/logging,
-// which cannot call back here without inverting the dependency. A cached gauge
-// went stale exactly there, reporting the raised level after it had already
-// reverted, which defeats the point of publishing it at all. Computing on
-// collect makes staleness impossible instead of merely unlikely.
+// logLevelCollector reads the level at scrape time rather than caching a gauge:
+// SetLevelFor's TTL can revert the level from a timer inside pkg/logging without
+// any HTTP request here, so a cached gauge would go stale. Computing on collect
+// makes staleness impossible.
 type logLevelCollector struct{}
 
 func (logLevelCollector) Describe(ch chan<- *prometheus.Desc) { ch <- logLevelDesc }
@@ -47,8 +42,7 @@ func (logLevelCollector) Collect(ch chan<- prometheus.Metric) {
 
 var logLevelOnce sync.Once
 
-// publishLogLevel registers the collector once. Kept as a function so the call
-// sites read the same as before.
+// publishLogLevel registers the collector once.
 func publishLogLevel() {
 	logLevelOnce.Do(func() {
 		prometheus.DefaultRegisterer.MustRegister(logLevelCollector{})
@@ -65,11 +59,10 @@ type Server struct {
 	fault     *Gate
 }
 
-// Addr resolves the telemetry listen address, letting the TELEMETRY_LISTEN env
-// var override the config value. In the co-located backend pod (#788) every
-// container shares the pod IP and reads the same yarilo.yaml, so each must be
-// told a distinct telemetry port via env; non-co-located components leave it
-// unset and fall back to the config value.
+// Addr resolves the telemetry listen address; TELEMETRY_LISTEN overrides the
+// config value. In the co-located backend pod every container shares the pod IP
+// and reads the same yarilo.yaml, so each is told a distinct telemetry port via
+// env; other components leave it unset and fall back to the config value.
 func Addr(cfgListen string) string {
 	if v := os.Getenv("TELEMETRY_LISTEN"); v != "" {
 		return v
@@ -81,43 +74,37 @@ func Addr(cfgListen string) string {
 }
 
 // Options configures a telemetry server. Every component serves the same four
-// endpoints from this one implementation; before unification each binary built
-// its own mux, which is how /debug/loglevel ended up in two components out of
-// fourteen and how /readyz ended up unconditional in eleven.
+// endpoints from this one implementation.
 type Options struct {
 	// Addr is the listen address, e.g. ":8080".
 	Addr string
 	// Registry gathers the metrics to serve. Nil uses the default registry,
 	// which is what promauto-based components register into.
 	Registry prometheus.Gatherer
-	// Checks are the component's readiness conditions. /readyz passes when every
-	// one of them passes; an empty list means the process being up IS the
-	// condition, which is a legitimate answer for a component with no external
-	// dependency — but state it by leaving this empty on purpose, not by accident.
-	//
-	// Wiring a dependency is meant to be one line:
+	// Checks are the component's readiness conditions: /readyz passes when every
+	// one passes. An empty list means the process being up IS the condition — a
+	// legitimate answer for a component with no external dependency, but leave it
+	// empty on purpose, not by accident.
 	//
 	//	Checks: []telemetry.Check{
 	//	    telemetry.TCPCheck("auth", authAddr, authTLS),
 	//	    telemetry.TCPCheck("director", directorAddr, directorTLS),
 	//	}
 	Checks []Check
-	// Lifecycle makes /readyz additionally require SetReady(true). Components
-	// that go through a startup phase, or that mark themselves unready while
-	// draining, set this; without it the flag is ignored so a component that
-	// never calls SetReady is not stuck at not-ready forever.
+	// Lifecycle makes /readyz additionally require SetReady(true). Set it on
+	// components with a startup phase or that mark themselves unready while
+	// draining; without it the flag is ignored so a component that never calls
+	// SetReady is not stuck not-ready forever.
 	Lifecycle bool
-	// Watchdog opts the component into timer-driven liveness: when its Check
-	// fails FailureThreshold times in a row, /healthz starts failing so the
-	// kubelet restarts a wedged-but-alive process. Left zero, /healthz stays
-	// unconditional — readiness and a dead accept loop's os.Exit(1) cover the
-	// rest, so this is only for the deadlock / hung-storage states nothing else
-	// can see.
+	// Watchdog opts into timer-driven liveness: when the Check fails
+	// FailureThreshold times in a row, /healthz starts failing so the kubelet
+	// restarts a wedged-but-alive process. Left zero, /healthz stays
+	// unconditional — this covers only deadlock / hung-storage states.
 	Watchdog WatchdogOptions
 	// Fault, when non-nil, registers POST /debug/fault/deadlock to wedge this
 	// gate so a live pod can be driven into the tripped state to confirm the
-	// watchdog end to end (#904). It is off unless the component builds it from
-	// an explicit config opt-in; the same gate is what the watchdog Check enters.
+	// watchdog end to end. Off unless the component opts in via config; the same
+	// gate is what the watchdog Check enters.
 	Fault *Gate
 }
 
@@ -161,10 +148,9 @@ func (s *Server) isReady() bool {
 	return true
 }
 
-// IsReady reports the current readiness — the /readyz condition. The
-// backend registration client (#776) gates its heartbeat on this so a
-// not-ready backend stops heartbeating and is expired ring-wide rather
-// than being kept as a live-but-wedged routing target.
+// IsReady reports the current /readyz condition. The backend registration
+// client gates its heartbeat on this so a not-ready backend stops heartbeating
+// and is expired ring-wide rather than kept as a live-but-wedged target.
 func (s *Server) IsReady() bool { return s.isReady() }
 
 // ListenAndServe starts the HTTP server. Blocks until ctx is done.
@@ -186,8 +172,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) Handler() http.Handler { return s.srv.Handler }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
-	// A tripped watchdog is the one liveness signal that restarts the container:
-	// the process is up and this handler runs, but its request path is wedged.
+	// A tripped watchdog is the liveness signal that restarts the container: the
+	// process is up and this handler runs, but its request path is wedged.
 	if s.wd.unhealthy() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("watchdog: liveness self-check failing\n")) //nolint:errcheck
@@ -211,24 +197,22 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	// The body names the failing dependency: "not ready" alone sends an operator
-	// reading kubectl describe on a hunt that the pod could have answered.
+	// The body names the failing dependency so an operator reading kubectl
+	// describe sees which check failed.
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ready":  ready,
 		"checks": results,
 	})
 }
 
-// logLevel reads or changes the active log level (#889).
+// logLevel reads or changes the active log level.
 //
 //	GET  /debug/loglevel                       → {"level":"info"}
 //	POST /debug/loglevel {"level":"debug"}     → change until further notice
 //	POST /debug/loglevel {"level":"debug","ttl":"30s"} → revert automatically
 //
-// This listener is the telemetry port, which is not exposed to mail clients; it
-// must never be published on a client-facing service. The TTL form is the one to
-// prefer: a bounded raise cannot be forgotten in the on position, which is how a
-// debug switch usually ends up rotating away the log it was meant to capture.
+// Served on the telemetry port only; must never be published on a client-facing
+// service. Prefer the TTL form so a bounded raise cannot be left on forever.
 func (s *Server) logLevel(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

@@ -25,10 +25,11 @@ type IMAPEventOptions struct {
 	ScriptName   string // mailbox-bound script name (from METADATA); "" = globals only
 }
 
-// RunIMAPEvent runs the imapsieve script chain — admin global-before → the
-// mailbox-bound script (named by the /shared/imapsieve/script METADATA
-// annotation) → admin global-after — for an IMAP event, returning the merged
-// actions. Returns (nil, nil) when imapsieve is disabled or no script applies.
+// RunIMAPEvent runs the imapsieve (RFC 6785) script chain for an IMAP event:
+// admin global-before -> the mailbox-bound script (named by the
+// /shared/imapsieve/script METADATA annotation) -> admin global-after, and
+// returns the merged actions. Returns (nil, nil) when imapsieve is disabled or
+// no script applies.
 func (e *Engine) RunIMAPEvent(ctx context.Context, opts IMAPEventOptions) (*FilterResult, error) {
 	if !e.cfg.ImapSieveEnabled {
 		return nil, nil
@@ -100,7 +101,7 @@ func (e *Engine) RunIMAPEvent(ctx context.Context, opts IMAPEventOptions) (*Filt
 func (e *Engine) ImapSieveEnabled() bool { return e.cfg.ImapSieveEnabled }
 
 // HasImapGlobals reports whether any admin global-before/after imapsieve script
-// is configured — so a caller can skip per-message work when nothing would run
+// is configured, so a caller can skip per-message work when nothing would run
 // without a mailbox-bound script.
 func (e *Engine) HasImapGlobals() bool {
 	return len(e.imapGlobalBefore) > 0 || len(e.imapGlobalAfter) > 0

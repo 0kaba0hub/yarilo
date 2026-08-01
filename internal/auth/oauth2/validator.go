@@ -1,33 +1,28 @@
-// Package oauth2 validates OAuth 2.0 bearer tokens for the SASL
-// OAUTHBEARER mechanism (RFC 7628) and exposes the result as a
-// passdb.Passdb so OAuth-authenticated logins flow through the
-// regular yarilo-auth pipeline (chain ordering, caching, penalty,
-// policy, audit log — all work unchanged).
+// Package oauth2 validates OAuth 2.0 bearer tokens for the SASL OAUTHBEARER
+// mechanism (RFC 7628) and exposes the result as a passdb.Passdb, so OAuth
+// logins flow through the regular yarilo-auth pipeline unchanged.
 //
-// Three validation modes are supported:
+// Three validation modes:
 //
-//   - LocalJWTValidator — JWT signature verification against a JWKS
-//     endpoint. No HTTP call per login (JWKS is cached + auto-
-//     refreshed on key rotation).
-//   - TokeninfoValidator — Google-style direct endpoint
-//     (tokeninfo_url + ?access_token=…) that returns claims JSON.
-//   - IntrospectionValidator — RFC 7662 token introspection.
-//     Three transport modes: bearer header, query param, form body.
+//   - LocalJWTValidator — JWT signature check against a cached, auto-refreshed
+//     JWKS; no HTTP call per login.
+//   - TokeninfoValidator — direct endpoint (tokeninfo_url + ?access_token=…)
+//     returning claims JSON.
+//   - IntrospectionValidator — RFC 7662 introspection (bearer header, query
+//     param, or form body transport).
 //
-// OIDCDiscovery wraps any of the three by auto-resolving endpoints
-// from `<issuer>/.well-known/openid-configuration`. Operators that
-// configure an issuer URL get JWKS + introspection URLs for free.
+// OIDCDiscovery wraps any of the three, resolving endpoints from
+// `<issuer>/.well-known/openid-configuration`.
 //
 // Username mapping is config-driven:
 //
 //   - username_attribute (default "email") — claim name to extract
-//   - username_validation_format (default "%{user}") — template
-//     applied to the SASL authzid; the extracted claim must equal
-//     the templated authzid (case-insensitive when "%Lu" is used)
+//   - username_validation_format (default "%{user}") — template applied to the
+//     SASL authzid; the extracted claim must equal it (case-insensitive
+//     with "%Lu")
 //
-// All validators populate Claims with the raw token claim set so
-// the passdb can hand operator-extra claims back to the chain via
-// extra_fields (RFC 7662 sub, scope, custom org/role claims, etc.).
+// Validators populate Claims with the raw claim set so the passdb can hand
+// operator-extra claims back to the chain via extra_fields.
 package oauth2
 
 import (
@@ -36,82 +31,62 @@ import (
 	"fmt"
 )
 
-// Claims holds the validated token's claim set. Mandatory claims
-// (Username, Issuer, ExpiresAt) are exposed as struct fields so
-// the passdb can short-circuit common checks without dipping into
-// the map. Operator-extra claims live in Extra — driver
-// configuration decides which Extra keys land on the AuthResponse
-// as userdb_* fields.
+// Claims holds the validated token's claim set. Common claims are struct
+// fields; every other claim lives in Extra, from which driver configuration
+// decides which keys land on the AuthResponse as userdb_* fields.
 type Claims struct {
-	// Username is the value the SASL authzid is compared against,
-	// after applying username_validation_format. Source: the claim
-	// named by Config.UsernameAttribute (default "email").
+	// Username is compared against the SASL authzid after applying
+	// username_validation_format. Source: Config.UsernameAttribute.
 	Username string
 
-	// Issuer (iss) — set when present. Empty for non-JWT tokens
-	// returned by an introspection endpoint that omits the field.
+	// Issuer (iss) — empty when the source token omits it.
 	Issuer string
 
-	// Subject (sub) — opaque user identifier. Distinct from
-	// Username; some IdPs put a UUID in sub and email in email.
+	// Subject (sub) — opaque user identifier, distinct from Username.
 	Subject string
 
-	// ExpiresAt (exp). Zero when the source token format does not
-	// carry an expiry (rare; introspection responses usually do).
+	// ExpiresAt (exp) — zero when the token carries no expiry.
 	ExpiresAt int64
 
-	// IssuedAt (iat). Zero when absent.
+	// IssuedAt (iat) — zero when absent.
 	IssuedAt int64
 
-	// Scope is the space-separated scope string the token was
-	// issued for. Either a single space-separated string in `scope`
-	// (RFC 6749) or `scp` (Microsoft variant).
+	// Scope — space-separated scope string, from `scope` (RFC 6749) or
+	// `scp` (Microsoft variant).
 	Scope string
 
-	// Audience (aud) — empty string or a single value. JWT spec
-	// allows an array; we accept either and flatten to the first
-	// entry when an array is present.
+	// Audience (aud) — a single value; an array is flattened to its first entry.
 	Audience string
 
-	// Active is the per-token authoritativeness flag. RFC 7662
-	// introspection responses set "active": false to indicate a
-	// revoked or expired token; local JWT validators infer it from
-	// the signature + exp + nbf checks. Validators MUST NOT return
-	// (Claims, nil) when Active is false — they translate the
-	// inactive state into ErrTokenInactive.
+	// Active is the per-token authoritativeness flag: RFC 7662 sets
+	// "active": false for a revoked/expired token; JWT validators infer it
+	// from signature + exp + nbf. Validators MUST NOT return (Claims, nil)
+	// when Active is false — they return ErrTokenInactive.
 	Active bool
 
-	// Extra holds every other claim from the token response.
-	// Keys preserve the original case from the source. Values are
-	// the raw JSON values converted to strings (numbers via %v,
-	// bools as "true"/"false", strings verbatim).
+	// Extra holds every other claim, keys in their source case, values as
+	// strings (numbers via %v, bools as "true"/"false", strings verbatim).
 	Extra map[string]string
 }
 
-// Validator is the abstract token-validation operation. Each
-// configured OAuth provider builds one of LocalJWT, Tokeninfo,
-// Introspection (optionally wrapped by OIDC discovery) and
-// registers it under a name; the OAuth passdb consults its
-// configured validator on every OAUTHBEARER login.
+// Validator is the abstract token-validation operation. Each configured OAuth
+// provider builds one (optionally wrapped by OIDC discovery); the OAuth passdb
+// consults it on every OAUTHBEARER login.
 //
-// Implementations MUST be safe for concurrent use — the passdb
-// calls Validate from goroutines serving independent connections.
+// Implementations MUST be safe for concurrent use.
 type Validator interface {
-	// Validate examines the supplied bearer token, performs every
-	// configured check (signature / issuer / audience / scope /
-	// active / exp+grace), and either returns the parsed Claims
-	// or an error from this package's error set.
+	// Validate runs every configured check (signature / issuer / audience /
+	// scope / active / exp+grace) and returns the parsed Claims or an error
+	// from this package's error set.
 	//
-	// The context is the auth request context — Validate honours
-	// cancellation (HTTP introspection lookups, JWKS refreshes).
-	// Network errors return errors that wrap ErrUpstream so the
-	// passdb can map them to ResultTempFail (the chain falls
-	// through to the next passdb instead of blocking the user).
+	// Validate honours ctx cancellation (introspection lookups, JWKS
+	// refreshes). Network errors wrap ErrUpstream so the passdb maps them
+	// to ResultTempFail and the chain falls through instead of blocking.
 	Validate(ctx context.Context, token string) (*Claims, error)
 }
 
-// Errors returned by Validator implementations. The passdb maps
-// them to chain results:
+// Errors returned by Validator implementations. The passdb maps them to
+// chain results:
 //
 //   - ErrTokenInvalid       → ResultFail (next passdb gets a try)
 //   - ErrTokenExpired       → ResultFail
@@ -136,16 +111,13 @@ var (
 	ErrUpstream         = errors.New("oauth2: upstream validation endpoint unreachable")
 )
 
-// CheckActive returns ErrInactiveAccount when the configured
-// active attribute is present in claims but its value does not
-// match the configured active value. Returns nil when no check
-// is configured or when the check passes.
+// CheckActive returns ErrInactiveAccount when the configured active attribute
+// is present but its value does not match activeValue; nil when no check is
+// configured or it passes.
 //
-// Semantics: `active_attribute=enabled active_value=true` means
-// the claim `enabled` must equal the string "true" for the login
-// to continue. Empty active_attribute disables the check; empty
-// active_value with non-empty active_attribute requires the
-// attribute to be merely PRESENT.
+// `active_attribute=enabled active_value=true` requires claim `enabled` to
+// equal "true". Empty active_attribute disables the check; empty active_value
+// requires the attribute merely to be present.
 func CheckActive(c *Claims, activeAttribute, activeValue string) error {
 	if activeAttribute == "" {
 		return nil

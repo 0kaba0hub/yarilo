@@ -7,39 +7,28 @@ import (
 )
 
 // UserInfo carries the full set of user fields a userdb lookup can
-// return. The struct is intentionally comprehensive — adding fields
-// later means breaking the protocol surface that pkg/authclient +
-// yarilo-backend-api speak, so the
-// shape is fixed up-front during Phase AUTH-1 and the prefix /
-// snapshot / prefetch semantics in later phases extend BEHAVIOUR
-// without touching DATA shape.
-//
-// Zero values are the "field absent" marker; the master-protocol
-// wire serialiser in Phase AUTH-1 PR 2 skips them. Sensitive fields
-// (Password, CertName, PolicyResponse) are populated server-side but
-// the wire layer filters them out unconditionally — they exist on
-// the struct so internal pipelines can carry them without a parallel
-// struct.
+// return. Zero values mark an absent field and are skipped by the
+// wire serialiser. Sensitive fields (Password, CertName,
+// PolicyResponse) exist on the struct so passdb→userdb pipelines can
+// carry them, but the wire layer filters them out unconditionally.
 type UserInfo struct {
 	// ---- Identity & delegation --------------------------------
 
-	// Username is the resolved canonical username this UserInfo
-	// describes. Mandatory.
+	// Username is the resolved canonical username. Mandatory.
 	Username string
 
 	// OriginalUser is the username the client supplied before any
-	// userdb-side translations (case folding, alias rewrite). Empty
+	// userdb-side translation (case folding, alias rewrite). Empty
 	// when no translation occurred.
 	OriginalUser string
 
 	// MasterUser is the master user when this lookup arrived via
-	// `master=` delegation. Populated only by Phase AUTH-3 master-
-	// user flows; the field exists in PR 1 so the schema is stable.
+	// `master=` delegation.
 	MasterUser string
 
-	// LoginUser is the post-impersonation effective user. For non-
-	// delegated lookups this equals Username; for master-user flows
-	// it is the target user. Phase AUTH-3 populates this.
+	// LoginUser is the post-impersonation effective user. Equals
+	// Username for non-delegated lookups; the target user for
+	// master-user flows.
 	LoginUser string
 
 	// ---- System identity --------------------------------------
@@ -53,10 +42,8 @@ type UserInfo struct {
 	ClientCertPresent bool     // TLS client cert auth was used
 
 	// ACLUser / ACLGroups override the identity used when evaluating ACLs.
-	// Set via the acl_user / acl_groups userdb fields — typically on a
-	// master-user session so ACL checks resolve as the impersonated ACL
-	// identity rather than the authenticated login. Empty ACLUser means
-	// "evaluate as Username / Groups".
+	// Set via the acl_user / acl_groups userdb fields. Empty ACLUser means
+	// evaluate as Username / Groups.
 	ACLUser   string
 	ACLGroups []string
 
@@ -69,44 +56,38 @@ type UserInfo struct {
 	MailboxFormat     string // maildir | sdbox | mdbox
 	MailAttributeDict string // dict URL for RFC 5464 METADATA
 
-	// VolatileDir is the VOLATILEDIR modifier extracted from MailLocation
-	// (or set directly via the `volatile_dir` userdb extra field). Carries
-	// the raw template string (%u/%n/%d/%h not yet expanded) so callers
-	// can expand it against the resolved home after userdb completes.
+	// VolatileDir is the VOLATILEDIR modifier from MailLocation (or the
+	// `volatile_dir` userdb field). Raw template (%u/%n/%d/%h unexpanded),
+	// expanded against the resolved home after userdb completes.
 	VolatileDir string
 
-	// IndexDir is the INDEX= modifier extracted from MailLocation (or set
-	// directly via the `index_dir` userdb extra field). Carries the raw
-	// template string (%u/%n/%d/%h not yet expanded). When set, per-folder
-	// index files (yarilo.index*, yarilo-acl) are stored here instead of
-	// co-located with the mailbox data under Home.
+	// IndexDir is the INDEX= modifier from MailLocation (or the `index_dir`
+	// userdb field). Raw template (%u/%n/%d/%h unexpanded). When set,
+	// per-folder index files (yarilo.index*, yarilo-acl) live here instead
+	// of alongside the mailbox data under Home.
 	IndexDir string
 
-	// ControlDir is the CONTROL= modifier extracted from MailLocation (or
-	// set directly via the `control_dir` userdb extra field). Carries the
-	// raw template string (%u/%n/%d/%h not yet expanded). When set,
-	// per-folder control files (yarilo-uidlist, subscriptions) are stored
-	// here instead of co-located with the mailbox data under Home.
+	// ControlDir is the CONTROL= modifier from MailLocation (or the
+	// `control_dir` userdb field). Raw template (%u/%n/%d/%h unexpanded).
+	// When set, per-folder control files (yarilo-uidlist, subscriptions)
+	// live here instead of alongside the mailbox data under Home.
 	ControlDir string
 
-	// AltDir is the ALT= modifier extracted from MailLocation (or set
-	// directly via the `alt_dir` userdb extra field). Carries the raw
-	// template string (%u/%n/%d/%h not yet expanded). When set, messages
-	// that have been cold-tiered live under AltDir; reads check both
-	// primary (Home) and alt tiers.
+	// AltDir is the ALT= modifier from MailLocation (or the `alt_dir`
+	// userdb field). Raw template (%u/%n/%d/%h unexpanded). Cold-tiered
+	// messages live here; reads check both primary (Home) and alt tiers.
 	AltDir string
 
-	// MailPath is the root of the actual mail storage tree, separate from
-	// Home (which holds Sieve scripts and other metadata). Set via the
-	// `mail_path` userdb extra field, or derived from the base path of
-	// the MailLocation string. Carries the raw template string
-	// (%u/%n/%d/%h/~/ not yet expanded). When empty, backends use Home.
+	// MailPath is the root of the mail storage tree, separate from Home
+	// (which holds Sieve scripts and other metadata). Set via the
+	// `mail_path` userdb field or derived from the base path of
+	// MailLocation. Raw template (%u/%n/%d/%h/~/ unexpanded). Empty falls
+	// back to Home.
 	MailPath string
 
 	// InboxPath overrides the INBOX location within the mail tree. Set via
-	// the `mail_inbox_path` userdb extra field. Carries the raw template
-	// string (%u/%n/%d/%h/~/ not yet expanded). When empty, defaults to
-	// MailPath (or Home).
+	// the `mail_inbox_path` userdb field. Raw template (%u/%n/%d/%h/~/
+	// unexpanded). Empty defaults to MailPath (or Home).
 	InboxPath string
 
 	// ---- Quota ------------------------------------------------
@@ -125,17 +106,15 @@ type UserInfo struct {
 	// ---- Director routing ---------------------------------------
 
 	// DirectorTag shards this user to a specific director backend tag
-	// (`director_tag=` extra field, #746). Empty means the login
-	// component's static director_tag (or "" — the untagged pool)
-	// applies instead; a per-user value here always wins. Lets a
-	// single shared login fleet route different users to different
-	// tag-pools without a dedicated login Deployment per tag.
+	// (`director_tag=` field). A per-user value always wins over the login
+	// component's static director_tag ("" is the untagged pool), so one
+	// shared login fleet can route different users to different tag-pools.
 	DirectorTag string
 
 	// ---- Login control / fail shape ---------------------------
 
 	NoLogin        bool // reject login outright
-	NoDelay        bool // bypass auth-penalty backoff (Phase AUTH-4)
+	NoDelay        bool // bypass auth-penalty backoff
 	NoAuthenticate bool // auth disabled for this user
 	PassExpired    bool // password expired — client must re-set
 	NoPassword     bool // passdb without a password (e.g. OAuth)
@@ -166,59 +145,44 @@ type UserInfo struct {
 
 	// ---- Forwarding (proxy chain) -----------------------------
 
-	// Forward carries `forward_*` fields that are passed through
-	// a proxy chain unchanged. Map key is the field name WITHOUT
-	// the `forward_` prefix.
+	// Forward carries `forward_*` fields passed through a proxy chain
+	// unchanged. Map key is the field name WITHOUT the `forward_` prefix.
 	Forward map[string]string
 
 	// ---- Extra (forward-compat / driver-specific) -------------
 
-	// Extra is the catch-all bag for fields not modelled as typed
-	// struct members. Anything a userdb driver returns that does
-	// not map to a typed field above ends up here, keyed by the
-	// raw field name. Wire-level prefix semantics (`userdb_*=`,
-	// `auth_*=`) land in Phase AUTH-2.
+	// Extra is the catch-all bag for fields not modelled as typed struct
+	// members, keyed by the raw field name.
 	Extra map[string]string
 
 	// ---- Internal (never serialised to the wire) --------------
 
-	// Password is the stored credential (or scheme-encoded hash)
-	// from a passdb lookup. The master-protocol wire serialiser
-	// in Phase AUTH-1 PR 2 strips this unconditionally so an
-	// admin-side USER request can never leak credentials. Present
-	// on the struct so passdb→userdb internal pipelines do not
-	// need a parallel type.
+	// Password is the stored credential (or scheme-encoded hash) from a
+	// passdb lookup. The wire serialiser strips it unconditionally so an
+	// admin-side USER request cannot leak credentials.
 	Password string
 
-	// CertName is the TLS client certificate Common Name. Set by
-	// the EXTERNAL SASL mechanism (Phase AUTH-5). Internal-only.
+	// CertName is the TLS client certificate Common Name, set by the
+	// EXTERNAL SASL mechanism. Internal-only.
 	CertName string
 
-	// PolicyResponse is the verbatim body returned by the policy
-	// HTTP endpoint in Phase AUTH-6. Internal-only.
+	// PolicyResponse is the verbatim body returned by the policy HTTP
+	// endpoint. Internal-only.
 	PolicyResponse string
 }
 
-// Userdb is the contract every userdb backend implements. Unlike
-// Passdb.Authenticate, Lookup takes no password — userdb answers
-// "who is this user?" for admin tooling, master-protocol clients,
-// and the prefetch shortcut (Phase AUTH-2) that lets a passdb
-// short-circuit a redundant userdb round-trip.
-//
-// Semantics on the return value match Passdb / Chain:
+// Userdb answers "who is this user?" without a password, for admin
+// tooling, master-protocol clients, and the passdb prefetch shortcut.
+// Return semantics:
 //   - (ui != nil, nil)  — user found, ui populated
-//   - (nil, nil)        — user unknown in this backend; UserdbChain
-//     tries the next entry
-//   - (nil, err != nil) — backend failure; UserdbChain stops and
-//     surfaces the error to the caller
+//   - (nil, nil)        — user unknown here; UserdbChain tries the next entry
+//   - (nil, err != nil) — backend failure; UserdbChain stops and surfaces err
 type Userdb interface {
 	Lookup(username string) (*UserInfo, error)
 }
 
-// UserdbChain composes multiple Userdb backends with first-hit-wins
-// semantics, mirroring the Passdb Chain. The first non-nil response
-// from any backend in the chain is returned; an error from any
-// backend short-circuits the chain ("stop, do not try fallbacks").
+// UserdbChain composes multiple Userdb backends first-hit-wins. The
+// first non-nil response is returned; an error short-circuits the chain.
 type UserdbChain []Userdb
 
 func (c UserdbChain) Lookup(username string) (*UserInfo, error) {
@@ -234,30 +198,23 @@ func (c UserdbChain) Lookup(username string) (*UserInfo, error) {
 	return nil, nil
 }
 
-// UserdbIterator is implemented by userdb backends that support
-// listing every known user. Used by `yarctl backend user
-// iterate` and by the master-protocol `LIST` command. Optional —
-// a backend that cannot enumerate (e.g. an LDAP search with no
-// suitable filter) simply does not implement it.
+// UserdbIterator lists every known user, for `yarctl backend user
+// iterate` and the master-protocol `LIST` command. Optional — a backend
+// that cannot enumerate simply does not implement it.
 type UserdbIterator interface {
 	Iterate() ([]string, error)
 }
 
-// VisitFields calls fn for every non-zero typed field on UserInfo
-// in canonical order. Internal-only fields (Password, CertName,
-// PolicyResponse) are NEVER passed to fn — callers that serialise
-// to a wire / bag get them stripped by construction.
+// VisitFields calls fn for every non-zero typed field in canonical
+// order. Internal-only fields (Password, CertName, PolicyResponse) are
+// never passed to fn. Lists are comma-joined; booleans emit only when
+// true (value "yes"); numbers are decimal. Forward fields emit with the
+// `forward_` prefix; Extra emits verbatim. Forward and Extra are
+// iterated in lexicographic key order so serialising the same UserInfo
+// is byte-identical across callers.
 //
-// Lists are emitted as a single comma-joined value; booleans are
-// emitted only when true (value "yes"); numbers are decimal-rendered.
-// Forward fields emit with the `forward_` prefix; Extra entries
-// emit verbatim. Forward and Extra are iterated in lexicographic
-// key order so two callers serialising the same UserInfo produce
-// byte-identical output.
-//
-// Shared by master.go's marshalUserInfo (no prefix, tab-joined
-// wire form) and protocol.go's writeUserdbFields (`userdb_` prefix,
-// Fields-bag form) so the field surface stays in lockstep.
+// Shared by master.go's marshalUserInfo and protocol.go's
+// writeUserdbFields so the field surface stays in lockstep.
 func (ui *UserInfo) VisitFields(fn func(key, value string)) {
 	if ui == nil {
 		return
@@ -352,11 +309,8 @@ func (ui *UserInfo) VisitFields(fn func(key, value string)) {
 	}
 }
 
-// formatUint / formatInt / joinCSV / sortedMapKeys are tiny
-// dependency-free helpers shared by VisitFields and the master /
-// client wire serialisers. Live here (not in a separate utils
-// file) because each is exactly one usage pattern and inlining
-// them would bloat each call site.
+// formatUint / formatInt / joinCSV / sortedMapKeys are dependency-free
+// helpers shared by VisitFields and the master / client wire serialisers.
 
 func formatUint(v uint64) string { return strconv.FormatUint(v, 10) }
 

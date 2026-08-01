@@ -9,12 +9,9 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
-// registerWhoRoutes wires the active-session listing surface.
-// Data source is yarilo-warden — backend-api dials it per request,
-// runs WHO, then closes. This matches the existing per-request
-// dial pattern used by login pods for CONNECT/DISCONNECT — no
-// long-lived warden pool needed for an admin tool that runs at most
-// every few seconds during ops investigations.
+// registerWhoRoutes registers active-session listing routes.
+// Dials warden per request; no long-lived pool needed for an
+// admin tool.
 func (s *Server) registerWhoRoutes() {
 	s.mux.Handle("POST /api/backend/who", s.middleware(s.handleWho))
 	s.mux.Handle("POST /api/backend/who/count", s.middleware(s.handleWhoCount))
@@ -24,8 +21,8 @@ type whoRequest struct {
 	Service string `json:"service"`
 	User    string `json:"user"`
 	GroupBy string `json:"group_by"`
-	// All disables the default local-backend scoping (#814): the cluster-wide
-	// warden view, with each session's Backend visible.
+	// All disables the default local-backend scoping: cluster-wide
+	// view with each session's Backend visible.
 	All bool `json:"all"`
 }
 
@@ -35,16 +32,14 @@ type whoSessionOut struct {
 	IP          string `json:"ip"`
 	Service     string `json:"service"`
 	ConnectedAt string `json:"connected_at"`
-	// Folder is the currently-SELECTed IMAP mailbox, empty when
-	// the session has not SELECTed yet or the service is not IMAP.
+	// Folder is the SELECTed IMAP mailbox; empty if none or not IMAP.
 	Folder string `json:"folder,omitempty"`
-	// Backend is the backend pod IP the session routed to (#814).
+	// Backend is the backend pod IP the session routed to.
 	Backend string `json:"backend,omitempty"`
 }
 
-// filterLocalBackend keeps only sessions routed to podIP (#814 — the default
-// scope for /who). An empty podIP (env not injected) cannot scope, so the list
-// is returned unchanged (equivalent to --all).
+// filterLocalBackend keeps only sessions routed to podIP.
+// Empty podIP cannot scope; the list is returned unchanged.
 func filterLocalBackend(sessions []warden.SessionInfo, podIP string) []warden.SessionInfo {
 	if podIP == "" {
 		return sessions
@@ -87,8 +82,7 @@ func (s *Server) handleWho(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "warden who: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	// Default scope: only sessions routed to THIS backend (#814). --all keeps
-	// the cluster-wide warden view (with Backend surfaced per session).
+	// Default scope: only sessions routed to this backend.
 	if !req.All {
 		sessions = filterLocalBackend(sessions, s.opts.PodIP)
 	}
@@ -99,9 +93,7 @@ func (s *Server) handleWho(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].ConnectedAt.Before(sessions[j].ConnectedAt)
 	})
 
-	// "user" is the canonical grouping — one user's IMAP/POP3
-	// mailbox is the same data plane, so grouping by user gives the
-	// per-mailbox view operators ask for.
+	// Grouping by user gives the per-mailbox view.
 	if req.GroupBy == "" {
 		req.GroupBy = "user"
 	}
@@ -140,16 +132,9 @@ func (s *Server) handleWho(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleWhoCount returns aggregated session counts instead of the
-// full list. Supports the same `service` / `user` filters as
-// `/who` plus an optional `by` dimension:
-//
-//	by="" (default)  — single total
-//	by="protocol"    — map service→count
-//	by="user"        — map user→count
-//
-// Empty `service` + empty `user` + by="" reports the global total,
-// matching the user's request "who count → суму".
+// handleWhoCount returns aggregated session counts. Same filters
+// as /who; by="" total only, by="protocol" service→count,
+// by="user" user→count.
 func (s *Server) handleWhoCount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Service string `json:"service"`
@@ -220,9 +205,8 @@ func formatSession(s warden.SessionInfo) whoSessionOut {
 	}
 }
 
-// WardenEndpoint is the small slice of Options consumed by the who
-// route. Surfaced as a separate type so the CLI / tests can call it
-// without importing the full Server.
+// WardenEndpoint is the slice of Options consumed by the who route;
+// separate type so CLI/tests avoid the full Server.
 type WardenEndpoint struct {
 	Addr      string
 	TLSConfig *tls.Config

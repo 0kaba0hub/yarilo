@@ -23,10 +23,9 @@ import (
 //	< OK\t<lock_id>\n                                      only blocks against a LOCK (exclusive) holder
 //	< BUSY\t<current_owner>\n                            — an exclusive lock is currently held
 //
-//	LOCK-SHARED keeps protocolVersion at "1": older servers reply
-//	ERROR\tunknown_command for it, same fallback as COUNTER-INC below.
-//	UNLOCK/RENEW work unchanged for shared lock IDs — the server tracks
-//	each lock ID's kind (exclusive/shared) internally.
+//	LOCK-SHARED stays at protocolVersion "1": older servers reply
+//	ERROR\tunknown_command. UNLOCK/RENEW work unchanged for shared lock
+//	IDs; the server tracks each lock ID's kind internally.
 //
 //	> UNLOCK\t<lock_id>\n
 //	< OK\n | NOT_FOUND\n
@@ -44,9 +43,9 @@ import (
 //	> COUNTER-INC\t<key>\t<delta>\n
 //	< OK\t<new_value>\n                                  — atomic increment, returns the post-increment value
 //
-// COUNTER-INC keeps protocolVersion at "1": older servers reply
-// ERROR\tunknown_command, which clients translate into an
-// "unsupported wire op" error rather than a protocol break.
+// COUNTER-INC stays at protocolVersion "1": older servers reply
+// ERROR\tunknown_command, which clients translate into an "unsupported
+// wire op" error rather than a protocol break.
 const protocolVersion = "1"
 
 // Commands sent by the client.
@@ -71,8 +70,7 @@ const (
 	respEvent    = "EVENT"
 )
 
-// maxLineLen guards against unbounded reads on the framed protocol.
-// Owners are typically short hostnames + pid; resource keys are short.
+// maxLineLen guards against unbounded reads; owners and resource keys are short.
 const maxLineLen = 8192
 
 // reader is a line-framed protocol reader.

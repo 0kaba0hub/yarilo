@@ -36,10 +36,8 @@ var (
 	flagManageSievePass = flag.String("managesieve-pass", "", "ManageSieve PLAIN auth password")
 	flagTelemetry       = flag.String("telemetry", "http://localhost:8080", "telemetry base URL")
 	flagTimeout         = flag.Duration("timeout", 10*time.Second, "per-check timeout")
-	// The IMAP verify/search steps ride the server's FTS path, whose catch-up
-	// loop legitimately waits up to fts_timeout (30s) while the per-mailbox index
-	// lags under load. The client read deadline must sit ABOVE that budget or a
-	// legitimate wait reads as an i/o timeout and fails the run (#934).
+	// FTS catch-up can wait up to fts_timeout (30s) under index lag; the read
+	// deadline must exceed that budget or a legitimate wait reads as i/o timeout.
 	flagIMAPReadTimeout = flag.Duration("imap-read-timeout", 45*time.Second, "IMAP read deadline for the sieve verify/search steps (must exceed the server fts catch-up budget)")
 	flagInsecure        = flag.Bool("insecure", false, "skip TLS certificate verification")
 	flagSMTPMX          = flag.Bool("smtp-mx", false, "check SMTP MX EHLO (port -smtp-mx-port)")
@@ -278,14 +276,9 @@ func httpGet(url string) error {
 	return nil
 }
 
-// checkDirectorAPI verifies the director admin API authenticates a bearer
-// token (#755): the whole class of bug was `yarctl director status`
-// returning 403 from every pod because the token was never plumbed. This
-// hits GET /api/director/ring (the member/peer list) with the token and
-// asserts a 200 with a member list — a 403 is the exact regression to
-// catch, so it is reported distinctly from any other non-200. (Uses /ring
-// rather than /status because status is now backends-only — the peer list
-// moved to its dedicated endpoint.)
+// checkDirectorAPI verifies the director admin API authenticates a bearer token.
+// Hits GET /api/director/ring with the token and asserts 200 with a peer list;
+// 403/401 is reported distinctly. Uses /ring because /status is backends-only.
 func checkDirectorAPI() error {
 	token := *flagDirectorAPIToken
 	if token == "" {

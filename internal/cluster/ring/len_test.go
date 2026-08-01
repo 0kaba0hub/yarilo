@@ -18,11 +18,8 @@ func TestLenCountsBackends(t *testing.T) {
 	}
 }
 
-// TestLenBlocksUnderWriteHold is the property the #904 liveness probe relies on:
-// Len takes the same r.mu the ring's writers hold, so a writer that never
-// releases the lock — the wedged-ring deadlock — blocks the probe, which the
-// watchdog then observes as a failure. Held with the real write-lock, not a
-// mock, so the block is genuinely on the mutex.
+// TestLenBlocksUnderWriteHold: Len takes the same r.mu the ring's
+// writers hold, so a wedged writer blocks the liveness probe.
 func TestLenBlocksUnderWriteHold(t *testing.T) {
 	r := New(MustParseHashFormat("%u"))
 
@@ -35,7 +32,7 @@ func TestLenBlocksUnderWriteHold(t *testing.T) {
 		r.mu.Unlock()
 		t.Fatal("Len returned while the write-lock was held — the probe cannot detect a wedged ring")
 	case <-time.After(50 * time.Millisecond):
-		// Expected: the probe is blocked on the mutex.
+		// expected: the probe is blocked on the mutex
 	}
 
 	r.mu.Unlock()

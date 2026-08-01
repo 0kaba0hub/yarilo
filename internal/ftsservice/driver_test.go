@@ -6,8 +6,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// stubBackend is a marker MailboxBackend so mailboxFor's selection is
-// observable without touching storage.
+// stubBackend marks which backend mailboxFor picked.
 type stubBackend struct {
 	mailbox.MailboxBackend
 	name string

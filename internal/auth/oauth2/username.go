@@ -5,28 +5,19 @@ import (
 	"strings"
 )
 
-// UsernameTemplate expands a small set of substitutions used by
-// `username_validation_format`. The template is applied to the
-// SASL authzid (the username the client claims to be) before
-// comparing against the token's username claim. Default
-// "%{user}" means identity (no transform).
+// UsernameTemplate expands the substitutions for `username_validation_format`,
+// applied to the SASL authzid before comparing against the token's username claim.
+// Default "%{user}" is identity. An unknown substitution returns an error so a
+// config typo fails at startup rather than producing wrong identities.
 //
-// Substitutions:
+// Substitutions (%L prefix lowercases):
 //
-//   - %u  / %{user}   — full username verbatim
+//   - %u / %{user}    — full username verbatim
 //   - %Lu             — full username lowercased
 //   - %n              — local part (before @)
 //   - %Ln             — local part lowercased
 //   - %d              — domain (after @); empty when no @
 //   - %Ld             — domain lowercased
-//
-// The %L prefix is case-folding shorthand. Other transforms
-// (%U upper, %E escape, %M md5, …) are intentionally omitted —
-// add only when an operator hits a concrete need.
-//
-// An unknown substitution returns an error so a typo in
-// configuration fails loudly at startup rather than silently
-// producing wrong identities at runtime.
 func UsernameTemplate(template, user string) (string, error) {
 	if template == "" || template == "%{user}" || template == "%u" {
 		return user, nil
@@ -43,7 +34,7 @@ func UsernameTemplate(template, user string) (string, error) {
 			return "", fmt.Errorf("oauth2: trailing %% in template %q", template)
 		}
 		i++
-		// %{user} long form.
+		// %{name} long form.
 		if template[i] == '{' {
 			end := strings.IndexByte(template[i:], '}')
 			if end < 0 {
@@ -59,7 +50,7 @@ func UsernameTemplate(template, user string) (string, error) {
 			}
 			continue
 		}
-		// %L… case-fold prefix.
+		// %L… lowercase prefix.
 		lower := false
 		if template[i] == 'L' {
 			lower = true
@@ -112,13 +103,10 @@ func domainPart(user string) string {
 	return ""
 }
 
-// CompareUsername returns nil when the token's claimed username
-// matches the templated SASL authzid. Returns ErrUsernameMismatch
-// otherwise. Empty authzid (RFC 7628 allows it) skips the check —
-// the validator's username claim becomes the resolved identity.
-//
-// Comparison is byte-exact after template expansion. Operators
-// who need case-insensitive comparison use the %Lu template.
+// CompareUsername returns the resolved username when the token's claim matches the
+// templated SASL authzid, else ErrUsernameMismatch. An empty authzid (allowed by
+// RFC 7628) skips the check and adopts the claim. Comparison is byte-exact after
+// expansion; use %Lu for case-insensitive matching.
 func CompareUsername(claimUsername, authzid, template string) (string, error) {
 	if authzid == "" {
 		return claimUsername, nil

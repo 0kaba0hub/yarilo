@@ -36,7 +36,7 @@ func TestLookup_Consistency(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		r.AddBackend(&Backend{IP: fmt.Sprintf("10.0.0.%d", i), Up: true})
 	}
-	// Same username must always map to the same backend.
+	// same username must always map to the same backend
 	first := r.Lookup("bob@example.com")
 	for i := 0; i < 100; i++ {
 		if got := r.Lookup("bob@example.com"); got != first {
@@ -56,7 +56,7 @@ func TestLookup_Distribution(t *testing.T) {
 		b := r.Lookup(fmt.Sprintf("user%d@example.com", i))
 		counts[b]++
 	}
-	// Each backend should serve at least 5% of users (very loose bound).
+	// each backend should serve at least 5% of users (loose bound)
 	for _, ip := range backends {
 		if counts[ip] < 50 {
 			t.Errorf("backend %s got only %d/3000 users — distribution looks wrong", ip, counts[ip])
@@ -135,10 +135,8 @@ func TestLookupBackendByTag_ConsistentWithinTag(t *testing.T) {
 	}
 }
 
-// TestAddBackend_PreservesTransitionMetadata guards #705: re-adding a known
-// backend with only LastUp set (a BACKEND-UP heartbeat / admin add) must not
-// clobber the existing LastDown / Hostname / LastUp — otherwise the
-// timestamp-based peer up/down merge is corrupted.
+// TestAddBackend_PreservesTransitionMetadata: a heartbeat carrying only
+// LastUp must not clobber existing LastDown / Hostname / LastUp.
 func TestAddBackend_PreservesTransitionMetadata(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -223,9 +221,8 @@ func TestRemoveBackend(t *testing.T) {
 	}
 }
 
-// TestLookup_CaseInsensitiveHash proves #738: with lowercase=true two
-// spellings of the same account hash (and therefore route) identically;
-// with lowercase=false they diverge, reproducing the original bug.
+// TestLookup_CaseInsensitiveHash: with lowercase=true two spellings of
+// the same account route identically; with lowercase=false they diverge.
 func TestLookup_CaseInsensitiveHash(t *testing.T) {
 	spellings := []string{"User@d.test", "user@d.test", "USER@D.TEST"}
 

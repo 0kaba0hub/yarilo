@@ -1,33 +1,18 @@
-// Package redis is a Redis-backed dict driver.
+// Package redis is a Redis-backed dict driver for state shared across pods.
 //
-// Designed for the yarilo backend k8s deployment where state must be
-// shared across pods (a redis Service sits in the same namespace and
-// every yarilo session pod talks to it). Standalone deployments can
-// also use this driver — it scales from one pod to many without code
-// change.
+// Storage model: every dict key becomes one Redis string key (Set/Get/Del).
+// Multi-value falls back to a single value per key; the SQL driver carries
+// true multi-value when needed.
 //
-// Storage model: every dict key becomes a single Redis string key
-// (Set/Get/Del). Multi-value semantics fall back to a single value
-// per key — multi-value is rarely needed for yarilo's use cases
-// (METADATA, quota counters) and a Redis LIST per key would complicate
-// SCAN and EXPIRE without earning much. SQL driver carries true
-// multi-value when needed.
+// Iteration: SCAN with a MATCH pattern derived from the iterate path. Returned
+// keys are then filtered locally, since SCAN cannot stop at the first "/".
 //
-// Iteration: SCAN with a MATCH pattern derived from the iterate path.
-// We append "*" or "?*" depending on recursion flag. Returned keys are
-// then locally filtered against the path-matching rule so that
-// shallow iteration drops keys with extra "/" segments — Redis SCAN
-// has no native "stop at first slash" filter.
+// Transactions: MULTI/EXEC. AtomicInc uses INCRBY; CommitNotFound is emulated
+// by an EXISTS check before the MULTI (the race window is acceptable —
+// concurrent unset on a counter is not a supported pattern).
 //
-// Transactions: Redis MULTI/EXEC provides atomic execution of
-// queued commands. AtomicInc uses INCRBY on integer values; the
-// CommitNotFound semantics are emulated by checking EXISTS before
-// the MULTI (race window is acceptable — concurrent unset on a
-// counter is not a yarilo-supported pattern).
-//
-// TTL: OpSettings.ExpireSecs translates to EXPIRE issued in the same
-// MULTI block as the SET. ExpireScan is a no-op — Redis handles
-// expiry server-side; the call returns immediately.
+// TTL: OpSettings.ExpireSecs becomes an EXPIRE in the same MULTI as the SET.
+// ExpireScan is a no-op — Redis expires keys server-side.
 package redis
 
 import (
@@ -56,10 +41,9 @@ func init() {
 //	"prefix"   string         — prepended to every dict key on the wire
 //	"dial_timeout" string     — Go duration; default 5s
 //
-// "prefix" lets multiple dict configurations co-exist on the same
-// Redis instance without colliding (e.g. "yarilo:metadata:%u:" for
-// per-user metadata, "yarilo:quota:" for global counters). The caller
-// is expected to have varexpand'd %u/%h/%n before Open.
+// "prefix" lets multiple dict configurations share one Redis instance without
+// colliding (e.g. "yarilo:metadata:%u:", "yarilo:quota:"). The caller must have
+// varexpand'd %u/%h/%n before Open.
 func New(cfg dict.Config) (dict.Dict, error) {
 	addr, _ := cfg.Settings["addr"].(string)
 	if addr == "" {
@@ -109,7 +93,7 @@ func (d *Dict) key(set *dict.OpSettings, k string) string {
 	return d.prefix + dict.ScopedKey(set, k)
 }
 func (d *Dict) trim(set *dict.OpSettings, k string) string {
-	// strip the Redis-level prefix, then the per-user scope prefix if any
+	// strip the Redis prefix, then the per-user scope prefix if any
 	k = strings.TrimPrefix(k, d.prefix)
 	if set != nil && set.Username != "" {
 		k = strings.TrimPrefix(k, set.Username+"/")
@@ -320,10 +304,9 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 
 	ctx := context.Background()
 
-	// Pre-check that every atomic-inc target exists: missing key →
-	// CommitNotFound, no other ops applied. Race window between
-	// EXISTS and MULTI is acceptable — concurrent unset on a counter
-	// is not a yarilo-supported pattern.
+	// Pre-check that every atomic-inc target exists: a missing key →
+	// CommitNotFound, no ops applied. The EXISTS/MULTI race window is
+	// acceptable — concurrent unset on a counter is not a supported pattern.
 	set := &dict.OpSettings{Username: t.username}
 	for _, op := range t.buf.Ops {
 		if op.Kind != dict.OpAtomicInc {
@@ -360,12 +343,11 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 		return nil
 	})
 	if err != nil {
-		// Pipeline errors during command queuing or EXEC failure.
 		if errors.Is(err, redis.Nil) {
 			return dict.CommitNotFound, nil
 		}
-		// Network errors mid-EXEC → write-uncertain: the server may
-		// have applied the EXEC before the connection broke.
+		// Network error mid-EXEC → write-uncertain: the server may have
+		// applied the EXEC before the connection broke.
 		if isNetworkErr(err) {
 			return dict.CommitWriteUncertain, err
 		}
@@ -384,8 +366,7 @@ func isNetworkErr(err error) bool {
 		strings.Contains(s, "broken pipe")
 }
 
-// Atomic-inc against non-integer values surfaces as a regular Commit
-// error (Redis INCRBY returns "value is not an integer"). We do not
-// translate that to CommitFailed-with-special-code because RFC 7162
-// callers do not distinguish it from any other commit failure.
+// Atomic-inc against a non-integer value surfaces as a regular Commit error
+// (INCRBY returns "value is not an integer"); callers do not distinguish it
+// from any other commit failure.
 var _ = strconv.ParseInt

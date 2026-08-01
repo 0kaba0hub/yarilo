@@ -5,28 +5,15 @@ import (
 	"strings"
 )
 
-// Fields is an ordered key/value bag that carries the result of a
-// passdb (and, eventually, userdb) lookup through the auth pipeline.
-// Insertion order is preserved so the wire output is deterministic
-// for any given mutation sequence — two processes that build the
-// same Fields produce byte-identical OK responses.
-//
-// Scope is derived from the key prefix at iteration / serialise
-// time, not stored on the entry:
+// Fields is an ordered key/value bag carrying a passdb/userdb lookup
+// result through the auth pipeline. Insertion order is preserved so two
+// processes that build the same Fields produce byte-identical OK
+// responses. Scope is derived from the key prefix at serialise time,
+// not stored on the entry:
 //
 //	auth_*    → ScopeInternal — never crosses the client wire
-//	userdb_*  → ScopeUserdb   — passed through with the prefix
-//	                            preserved so login pods can tell
-//	                            them apart from passdb-only fields
-//	(other)   → ScopePassdb   — passdb-only field, emitted on the
-//	                            wire verbatim
-//
-// Phase AUTH-2 PR 1 introduces Fields alongside the legacy typed
-// AuthResponse fields. Both populate in parallel so the existing
-// SQL passdb + handleAuth call sites stay byte-compatible with the
-// pre-AUTH-2 wire. PR 2 swaps the Passdb interface to take a shared
-// Fields instance so chains can mutate it; PR 3 wires userdb
-// prefetch through the same bag.
+//	userdb_*  → ScopeUserdb   — passed through with the prefix preserved
+//	(other)   → ScopePassdb   — passdb-only field, emitted verbatim
 type Fields struct {
 	keys []string
 	vals []string
@@ -36,16 +23,10 @@ type Fields struct {
 // NewFields constructs an empty bag.
 func NewFields() *Fields { return &Fields{idx: make(map[string]int)} }
 
-// Snapshot captures the bag's current state so it can be restored
-// later via Rollback. Used by Chain to isolate each passdb's
-// mutations: snapshot before the call, rollback on ResultNext so
-// the next driver sees a clean slate. The snapshot is read-only —
-// every mutating method on Fields is safe to call between
-// Snapshot and Rollback / discard.
-//
-// Snapshot is O(n) in the current bag size (copies the keys, vals
-// and idx maps); chain depth + bag size are both bounded by config
-// so the cost stays trivial.
+// Snapshot captures the bag's state for later Rollback. Chain uses it
+// to isolate each passdb's mutations: snapshot before the call, roll
+// back on ResultNext so the next driver sees a clean slate. O(n) in the
+// current bag size (copies keys, vals, idx).
 type Snapshot struct {
 	keys []string
 	vals []string
@@ -53,8 +34,7 @@ type Snapshot struct {
 }
 
 // Snapshot captures the bag's state. Returns nil for a nil bag
-// (Rollback is also nil-safe) so callers can use the pair without
-// pre-allocation when the bag is optional.
+// (Rollback is also nil-safe).
 func (f *Fields) Snapshot() *Snapshot {
 	if f == nil {
 		return nil
@@ -70,9 +50,8 @@ func (f *Fields) Snapshot() *Snapshot {
 	return &Snapshot{keys: keys, vals: vals, idx: idx}
 }
 
-// Rollback restores the bag to the state captured by snap. Calling
-// Rollback with a nil snap is a no-op so callers do not need to
-// branch on Snapshot returning nil.
+// Rollback restores the bag to the state captured by snap. Nil snap is
+// a no-op.
 func (f *Fields) Rollback(snap *Snapshot) {
 	if f == nil || snap == nil {
 		return
@@ -87,18 +66,12 @@ func (f *Fields) Rollback(snap *Snapshot) {
 	}
 }
 
-// SetValidated parses value through the reserved-field registry
-// before storing. When key matches a known reserved name (or
-// `userdb_<base>` where base is reserved), the validator returns
-// the canonical form and that goes into the bag. Unknown keys
-// (including everything `forward_*`-prefixed and anything not in
-// the registry) pass through verbatim — same behaviour as Set.
-//
-// Returns a non-nil error when validation fails; the bag is NOT
-// mutated in that case so callers can retry / surface the parse
-// error without rolling back. Intended for admin / wire-side
-// callers that ingest arbitrary input; driver-side passdb code
-// keeps using Set (the driver knows its own schema).
+// SetValidated canonicalises value through the reserved-field registry
+// before storing. When key (or its `userdb_<base>` form) is reserved,
+// the validator's canonical form goes into the bag; unknown keys pass
+// through verbatim like Set. On validation failure the bag is NOT
+// mutated. For admin / wire-side callers ingesting arbitrary input;
+// driver-side passdb code uses Set (it knows its own schema).
 func (f *Fields) SetValidated(key, value string) error {
 	base := key
 	if rest, ok := strings.CutPrefix(key, "userdb_"); ok {
@@ -116,9 +89,8 @@ func (f *Fields) SetValidated(key, value string) error {
 	return nil
 }
 
-// Set adds or overwrites a key. Stable: rewriting a key keeps its
-// original insertion-order position so the wire serialisation does
-// not flip mid-stream.
+// Set adds or overwrites a key. Rewriting a key keeps its original
+// insertion-order position.
 func (f *Fields) Set(key, value string) {
 	if i, ok := f.idx[key]; ok {
 		f.vals[i] = value
@@ -150,8 +122,8 @@ func (f *Fields) Has(key string) bool {
 	return ok
 }
 
-// Delete removes a key. No-op when the key is absent. Subsequent
-// keys shift to fill the gap so iteration order stays sequential.
+// Delete removes a key (no-op when absent). Subsequent keys shift to
+// fill the gap so iteration order stays sequential.
 func (f *Fields) Delete(key string) {
 	if f == nil {
 		return
@@ -170,8 +142,7 @@ func (f *Fields) Delete(key string) {
 	}
 }
 
-// Len returns the number of fields. Returns 0 for a nil bag so
-// callers do not have to nil-check before length-based decisions.
+// Len returns the number of fields. Returns 0 for a nil bag.
 func (f *Fields) Len() int {
 	if f == nil {
 		return 0
@@ -192,29 +163,23 @@ func (f *Fields) Each(fn func(key, value string) bool) {
 	}
 }
 
-// Scope classifies a field by its key prefix. Defined as a type so
-// switch statements stay exhaustive when phase AUTH-2 PR 2 adds
-// snapshot tracking.
+// Scope classifies a field by its key prefix.
 type Scope int
 
 const (
-	// ScopePassdb — passdb-side fields (no prefix). Crosses the
-	// client wire as `key=value`.
+	// ScopePassdb — passdb-side fields (no prefix). Cross the client
+	// wire as `key=value`.
 	ScopePassdb Scope = iota
-	// ScopeUserdb — fields prefetched by passdb for the userdb
-	// layer. Crosses the client wire as `userdb_key=value` so
-	// login pods can split the response into passdb / userdb halves.
+	// ScopeUserdb — fields prefetched by passdb for the userdb layer.
+	// Cross the client wire as `userdb_key=value` so login pods can
+	// split the response into passdb / userdb halves.
 	ScopeUserdb
-	// ScopeInternal — internal-only metadata. Never crosses the
-	// client wire. Used for state-tracking fields like
-	// `auth_cache_key`, `auth_failure_attempted`, etc. in later
-	// AUTH-N phases.
+	// ScopeInternal — internal-only metadata (e.g. `auth_cache_key`).
+	// Never crosses the client wire.
 	ScopeInternal
 )
 
-// ScopeOf returns the scope a key belongs to. The classification is
-// derived from the prefix so callers do not need to remember which
-// flags to set when calling Set.
+// ScopeOf returns the scope a key belongs to, derived from its prefix.
 func ScopeOf(key string) Scope {
 	switch {
 	case strings.HasPrefix(key, "auth_"):
@@ -226,17 +191,10 @@ func ScopeOf(key string) Scope {
 	}
 }
 
-// WireForm renders Fields as the tab-delimited `key=value` sequence
-// the client protocol's OK response carries. ScopeInternal entries
-// are dropped unconditionally; ScopeUserdb and ScopePassdb entries
-// are emitted in insertion order with values escape-encoded so
-// embedded tabs / newlines / NULs cannot break the wire framing.
-//
-// The first element returned is the response's user= token when
-// `user=` is present in the bag — the rest of the auth pipeline
-// expects the username token to lead. Callers that surface
-// username via a different mechanism may pass it explicitly and
-// drop the `user=` entry before serialising.
+// WireForm renders Fields as the tab-delimited `key=value` sequence the
+// client protocol's OK response carries. ScopeInternal entries are
+// dropped; the rest emit in insertion order with values escape-encoded
+// so embedded tabs / newlines / NULs cannot break the wire framing.
 func (f *Fields) WireForm() []string {
 	if f == nil {
 		return nil
@@ -251,11 +209,10 @@ func (f *Fields) WireForm() []string {
 	return out
 }
 
-// escapeFieldValue stops TAB / LF / NUL / backslash from breaking
-// the line-oriented framing of the client / master protocols.
-// Implementation duplicates the escape semantics of master.go's
-// escapeValue so callers do not need to import the master file —
-// the wire convention is the same on both sockets.
+// escapeFieldValue stops TAB / LF / NUL / backslash from breaking the
+// line-oriented framing of the client / master protocols. Matches the
+// escape semantics of master.go's escapeValue — same wire convention on
+// both sockets.
 func escapeFieldValue(v string) string {
 	if !strings.ContainsAny(v, "\t\n\x00\\") {
 		return v

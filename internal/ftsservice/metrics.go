@@ -7,9 +7,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// FTS Prometheus metrics (#677). Registered on the default registry, which the
-// telemetry /metrics handler serves. Cardinality is deliberately bounded — no
-// per-user or per-mailbox labels, and never the query terms (private content).
+// FTS metrics, registered on the default registry. Cardinality is bounded:
+// no per-user/per-mailbox labels, never query terms (private content).
 var (
 	metricIndexMessages = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fts_index_messages_total",
@@ -24,13 +23,9 @@ var (
 		Name: "fts_index_errors_total",
 		Help: "FTS index jobs that returned an error.",
 	})
-	// metricIndexBuildHalts counts a hard buildmail.Build failure halting a
-	// mailbox's index run without advancing the checkpoint past the failed
-	// UID (#721). This is expected to stay at zero in a healthy deployment
-	// — a deterministic per-document failure (bad config, a permanent 4xx)
-	// keeps incrementing it on every retry of the same UID until the
-	// underlying cause is fixed, so it's the loud, hard-to-miss signal for
-	// an operator, not just a log line that scrolls by once.
+	// metricIndexBuildHalts: hard buildmail failure halted a mailbox run
+	// without advancing the checkpoint. Expected zero; a deterministic
+	// failure keeps incrementing on every retry of the same UID.
 	metricIndexBuildHalts = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fts_index_build_halts_total",
 		Help: "Mailbox index runs halted by a hard buildmail failure, without advancing the checkpoint past the failed message.",
@@ -61,9 +56,8 @@ var (
 		Name: "fts_recovery_total",
 		Help: "FTS engine recoveries (a broken/closed index handle was evicted for reopen).",
 	}, []string{"reason"})
-	// metricLockWait is the per-mailbox FTS write-lock acquire time — the direct
-	// signal of cross-pod contention as fts scales to multiple pods (#675). Wired
-	// into the binary's LockMailbox via ObserveLockWait.
+	// metricLockWait: per-mailbox FTS write-lock acquire time — the direct
+	// signal of cross-pod contention.
 	metricLockWait = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "fts_lock_wait_seconds",
 		Help:    "Time spent acquiring the per-mailbox FTS write lock.",

@@ -6,22 +6,17 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
 )
 
-// AppendBatch is one in-flight save transaction. Callers:
+// AppendBatch is one in-flight save transaction:
 //
-//  1. Call Map.AppendBatch() to start.
-//  2. For every new message they want to write to the storage
-//     tree, call b.Next(size). Next returns the (file_id, offset)
-//     the message body must be written to. The caller is
-//     responsible for actually copying bytes to
-//     <storage>/m.<file_id> at offset.
-//  3. After all bodies are on disk, call b.Finish(). Finish takes
-//     the cross-process map lock, allocates map_uids, persists
-//     the records, and returns the slice of assigned map_uids
-//     in the order they were Next-allocated.
+//  1. Map.AppendBatch() starts it.
+//  2. b.Next(size) per message returns the (file_id, offset) the
+//     caller must write the body to at <storage>/m.<file_id>.
+//  3. b.Finish() takes the cross-process map lock, allocates
+//     map_uids, persists the records, and returns them in
+//     Next-allocation order.
 //
-// Finish MUST be called exactly once. An AppendBatch that is
-// dropped without Finish leaks no on-disk state — only the
-// caller's in-flight m.<N> body bytes are wasted.
+// Finish MUST be called exactly once. Dropping a batch without
+// Finish leaks no on-disk state; only in-flight body bytes are wasted.
 type AppendBatch struct {
 	m        *Map
 	pending  []pendingEntry
@@ -41,11 +36,9 @@ func (m *Map) AppendBatch() *AppendBatch {
 	return &AppendBatch{m: m}
 }
 
-// AppendRecord allocates a fresh map_uid for one record under
-// the map X lock. The caller has already written the record to
-// m.<fileID> at offset and now needs the index to learn about
-// it. guid must match the GUID written into the dbox trailer.
-// Returns the assigned map_uid.
+// AppendRecord allocates a fresh map_uid for one already-written
+// record under the map X lock. guid must match the GUID in the dbox
+// trailer. Returns the assigned map_uid.
 func (m *Map) AppendRecord(fileID, offset, size uint32, guid [16]byte) (uint32, error) {
 	uids, err := m.AppendRecords([]RecordLayout{{FileID: fileID, Offset: offset, Size: size, GUID: guid}})
 	if err != nil {
@@ -54,11 +47,10 @@ func (m *Map) AppendRecord(fileID, offset, size uint32, guid [16]byte) (uint32, 
 	return uids[0], nil
 }
 
-// RecordLayout is one (file_id, offset, size, guid) tuple passed to
-// AppendRecords. The caller has already written the body at this
-// location; the map records the pointer + GUID and assigns a map_uid.
-// GUID must be the same 128-bit value written into the dbox trailer
-// so rebuild can pair physical records with map entries via GUID match.
+// RecordLayout is one (file_id, offset, size, guid) tuple for
+// AppendRecords, describing an already-written body. GUID must match
+// the dbox trailer so rebuild can pair physical records with map
+// entries by GUID.
 type RecordLayout struct {
 	FileID uint32
 	Offset uint32
@@ -66,11 +58,10 @@ type RecordLayout struct {
 	GUID   [16]byte
 }
 
-// AppendRecords is the batch variant of AppendRecord — same
-// semantics, one cross-process lock hop for all entries. Returns
-// the assigned map_uids in input order. Bumps highest_file_id
-// to max(input.FileID, current) so later calls won't re-pick a
-// file_id already in use.
+// AppendRecords is the batch variant of AppendRecord: one
+// cross-process lock hop for all entries, map_uids returned in input
+// order. Bumps highest_file_id to max(input.FileID, current) so later
+// calls won't re-pick a file_id already in use.
 func (m *Map) AppendRecords(layouts []RecordLayout) ([]uint32, error) {
 	if len(layouts) == 0 {
 		return nil, nil
@@ -106,15 +97,11 @@ func (m *Map) AppendRecords(layouts []RecordLayout) ([]uint32, error) {
 	return out, nil
 }
 
-// AllocFileID reserves and persists a fresh m.<N> physical
-// file_id under the map X lock. Used by purge / rebuild to write
-// compacted bodies into a known-unique file_id; concurrent
-// AppendBatch peers see the bumped highest_file_id and route
-// their next Save into an even higher id.
-//
-// The caller is responsible for actually creating the
-// m.<returned id> file on disk; AllocFileID only updates the
-// in-index counter.
+// AllocFileID reserves and persists a fresh m.<N> file_id under the
+// map X lock. Used by purge/rebuild for compacted bodies; concurrent
+// AppendBatch peers see the bumped highest_file_id and route their
+// next Save into a higher id. The caller creates the file on disk;
+// AllocFileID only advances the in-index counter.
 func (m *Map) AllocFileID() (uint32, error) {
 	var assigned uint32
 	err := m.withMapLock(func() error {
@@ -132,21 +119,17 @@ func (m *Map) AllocFileID() (uint32, error) {
 	return assigned, err
 }
 
-// Next reserves a (file_id, offset) for one message of `size`
-// bytes. The first Next call in a batch picks file_id =
-// highestFileID (or 1 if zero) and offset = current size of that
-// file (looked up by the caller via os.Stat on the actual
-// m.<file_id> file). For simplicity in this Phase-4 helper we
-// pack writes into the SAME file_id until cumulative offset
-// would exceed rotateSize; then we roll to file_id+1.
+// Next reserves a (file_id, offset) for one message of size bytes.
+// The first Next in a batch picks file_id = highestFileID (or 1) and
+// offset 0. Writes pack into the same file_id until cumulative offset
+// would exceed rotateSize, then roll to file_id+1.
 //
-// Callers that need fancier rotation policies (e.g. respect a
-// caller-supplied per-physical-file size cap) should drive the
-// rotation themselves by interleaving FinishAndFlush() calls.
+// Callers needing a different rotation policy drive it themselves by
+// interleaving FinishAndFlush() calls.
 func (b *AppendBatch) Next(size uint32) (fileID, offset uint32) {
 	b.m.mu.Lock()
 	defer b.m.mu.Unlock()
-	// First slot of the batch — start at the current high water.
+	// First slot of the batch: start at the current high water.
 	if len(b.pending) == 0 {
 		fileID = b.m.highestFileID
 		if fileID == 0 {
@@ -171,11 +154,10 @@ func (b *AppendBatch) Next(size uint32) (fileID, offset uint32) {
 	return fileID, offset
 }
 
-// SetLastGUID records the GUID for the most recently reserved slot
-// (the slot returned by the last Next call). Must be called after
-// Next and before the next Next or Finish. The GUID is the same
-// 128-bit value written into the dbox trailer so rebuild can pair
-// physical records with map entries via GUID match.
+// SetLastGUID records the GUID for the slot from the last Next call.
+// Must be called after Next and before the next Next or Finish. GUID
+// must match the dbox trailer so rebuild can pair physical records
+// with map entries by GUID.
 func (b *AppendBatch) SetLastGUID(guid [16]byte) {
 	if len(b.pending) == 0 {
 		return
@@ -183,14 +165,12 @@ func (b *AppendBatch) SetLastGUID(guid [16]byte) {
 	b.pending[len(b.pending)-1].guid = guid
 }
 
-// Finish takes the cross-process map lock, assigns map_uids,
-// appends one map record per Next call, advances
-// highest_file_id, and persists. Returns the slice of map_uids
-// in Next-allocation order.
+// Finish takes the cross-process map lock, assigns map_uids, appends
+// one record per Next call, advances highest_file_id, and persists.
+// Returns the map_uids in Next-allocation order.
 //
-// Concurrent peers serialise here: the first writer to grab the
-// X lock takes the lower map_uids; the next reloads the fresh
-// state and gets the higher range.
+// Concurrent peers serialise here: the first to grab the X lock takes
+// the lower map_uids; the next reloads and gets the higher range.
 func (b *AppendBatch) Finish() ([]uint32, error) {
 	if b.finished {
 		return nil, fmt.Errorf("mdboxmap/finish: batch already finished")
@@ -201,17 +181,16 @@ func (b *AppendBatch) Finish() ([]uint32, error) {
 	}
 	var mapUIDs []uint32
 	err := b.m.withMapLock(func() error {
-		// Refresh the on-disk view — a sibling process may have
-		// raced and burned the file_id / map_uid range we
-		// reserved on Next() while we were writing bodies.
+		// Refresh: a sibling process may have burned the file_id /
+		// map_uid range we reserved on Next() while writing bodies.
 		if err := b.m.reloadLocked(); err != nil {
 			return err
 		}
 
-		// Recompute physical offsets against the freshly-loaded
-		// highestFileID. We keep the relative layout the caller
-		// built (one continuous block per batch, rotating every
-		// rotateSize bytes); only the base file_id shifts.
+		// Recompute offsets against the freshly-loaded highestFileID.
+		// The caller's relative layout is kept (one continuous block
+		// per batch, rotating every rotateSize bytes); only the base
+		// file_id shifts.
 		baseDelta := int64(0)
 		if b.pending[0].fileID > 0 {
 			baseDelta = int64(b.m.highestFileID) - int64(b.pending[0].fileID)

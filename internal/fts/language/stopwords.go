@@ -9,12 +9,8 @@ import (
 //go:embed data/stopwords_*.txt
 var stopwordFiles embed.FS
 
-// stopwordLists holds one word set per language, built once at package init
-// from the embedded data/stopwords_<lang>.txt files (Snowball project's
-// canonical stopword lists — the same project the snowball stemmers in
-// filter.go come from). Every language filter.go can stem (en/fr/de/it/pt/
-// ru/es) has a matching list here, so configuring any of them with the
-// "stopwords" filter works — see #668 point 3.
+// stopwordLists: one word set per language, from the embedded Snowball
+// stopword lists. Every stemmable language in filter.go has a list here.
 var stopwordLists = mustLoadStopwordLists()
 
 func mustLoadStopwordLists() map[string]map[string]struct{} {

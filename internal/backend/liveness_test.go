@@ -32,7 +32,7 @@ func TestStoreHealthPath(t *testing.T) {
 	}
 }
 
-// TestStoreLivenessCheckStat: a reachable store passes, a missing one fails.
+// reachable store passes, missing one fails
 func TestStoreLivenessCheckStat(t *testing.T) {
 	dir := t.TempDir()
 	if err := storeLivenessCheck(dir, nil)(context.Background()); err != nil {
@@ -44,8 +44,7 @@ func TestStoreLivenessCheckStat(t *testing.T) {
 	}
 }
 
-// TestStoreLivenessCheckGateWedged: a wedged gate fails the check on the context
-// deadline even when the store path is fine — the injected-deadlock path.
+// wedged gate fails the check on the context deadline even when the store is fine
 func TestStoreLivenessCheckGateWedged(t *testing.T) {
 	dir := t.TempDir()
 	gate := telemetry.NewGate()
@@ -58,8 +57,7 @@ func TestStoreLivenessCheckGateWedged(t *testing.T) {
 	}
 }
 
-// TestStoreLivenessCheckEmptyPathGateOnly: with no store path the gate leg alone
-// governs — an open gate passes.
+// with no store path only the gate leg governs
 func TestStoreLivenessCheckEmptyPathGateOnly(t *testing.T) {
 	if err := storeLivenessCheck("", telemetry.NewGate())(context.Background()); err != nil {
 		t.Fatalf("empty path + open gate should pass: %v", err)

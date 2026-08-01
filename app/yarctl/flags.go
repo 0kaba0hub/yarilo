@@ -5,20 +5,15 @@ import (
 	"strings"
 )
 
-// parseFlags parses fs but, unlike flag.FlagSet.Parse, tolerates a REGISTERED
-// flag that appears AFTER positional arguments. Go's flag package stops at the
-// first non-flag token and silently ignores every flag after it — a footgun for
-// a repair CLI, where `cmd <user> --restore-orphans` would quietly run WITHOUT
-// the flag. parseFlags pulls only the tokens that match a registered flag (and
-// their values) to the front, then does a normal Parse; callers keep using
-// fs.Arg / fs.NArg / fs.Args unchanged.
+// parseFlags parses fs but, unlike flag.FlagSet.Parse, tolerates a registered
+// flag appearing after positional arguments (stdlib stops at the first non-flag
+// token and ignores flags after it, so `cmd <user> --restore-orphans` would run
+// without the flag). It moves registered flags and their values to the front,
+// then Parses; callers keep using fs.Arg/fs.NArg/fs.Args unchanged.
 //
-// Crucially, a dash-prefixed token that is NOT a registered flag is left in
-// place as a positional — so legitimate dash-prefixed positionals still work
-// exactly as stdlib treats them (a negative delta `atomic-inc k -5`, an ACL
-// revoke `acl set u box r -lrs`). fs.Parse then applies its own semantics: such
-// a token errors only if it lands before the first positional (an unknown flag),
-// and is a plain arg otherwise. A literal "--" terminator is preserved verbatim.
+// A dash-prefixed token that is not a registered flag stays in place as a
+// positional, so negative deltas (`atomic-inc k -5`) and ACL revokes
+// (`acl set u box r -lrs`) still work. A literal "--" terminator is preserved.
 func parseFlags(fs *flag.FlagSet, args []string) error {
 	var flags, positionals []string
 	for i := 0; i < len(args); i++ {
@@ -44,19 +39,15 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 	return fs.Parse(append(flags, positionals...))
 }
 
-// extractGlobalFlags scans the FULL argv and pulls out tokens that name a
-// global (flag.CommandLine) flag — plus their values — from ANY position, so
-// -O/--url/--token/--backend-* work whether they appear before the plane,
-// between the plane and the command, or trailing (#836). Previously globals
-// were read only in the prefix (flag.Parse stops at the plane word), so a
-// trailing "-O json" was silently swallowed and broke scripts that parsed JSON.
+// extractGlobalFlags scans the full argv and pulls out global (flag.CommandLine)
+// flags and their values from any position, so -O/--url/--token/--backend-* work
+// before the plane, between plane and command, or trailing (#836).
 //
-// Everything that is not a global flag (the plane, the command, and every
-// subcommand-scoped flag/positional) is returned in order as rest, untouched,
-// for dispatch — a subcommand flag is never a CommandLine flag, so it is never
-// stolen here; its own parseFlags handles it later. A literal "--" stops global
-// extraction: it and the remainder pass through to rest verbatim so the
-// subcommand still sees the terminator.
+// Everything else (the plane, the command, and subcommand-scoped
+// flags/positionals) is returned in order as rest for dispatch; a subcommand
+// flag is never a CommandLine flag, so it is never stolen here and its own
+// parseFlags handles it later. A literal "--" stops extraction: it and the
+// remainder pass through to rest verbatim.
 func extractGlobalFlags(argv []string) (globals, rest []string) {
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]

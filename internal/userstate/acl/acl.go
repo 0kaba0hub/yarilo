@@ -1,23 +1,16 @@
 // Package acl persists per-mailbox ACL state in a yarilo-acl file inside the
 // folder's mailbox directory: the ACL lives with the mail data and does NOT
-// follow INDEX=. One file per mailbox; on-disk format is the same ACL line
-// encoding parsed and written by pkg/mailbox.
+// follow INDEX=. One file per mailbox; on-disk format is the ACL line encoding
+// of pkg/mailbox.
 //
-// Cross-process correctness comes from pkg/locks via the same
-// MailboxKey the fileindex backend uses for that folder. Read-
-// modify-write goes through withLock so concurrent SETACL on the
-// same mailbox cannot interleave; pure reads (GETACL/MYRIGHTS)
-// take the same lock briefly to avoid catching a torn file.
+// Cross-process writes serialise through pkg/locks under the same MailboxKey
+// the fileindex backend uses; reads take the lock briefly to avoid a torn file.
 //
-// Layout — folder → file, rooted at the mail root and using the driver's
-// folder sub-layout via mailbox.FolderSubpath, so the yarilo-acl file sits
-// in the mailbox directory. For maildir:
+// Layout uses mailbox.FolderSubpath (shared with the mailbox backends). For
+// maildir:
 //
 //	INBOX           → <mailroot>/yarilo-acl
 //	Sent            → <mailroot>/.Sent/yarilo-acl
-//
-// mailbox.FolderSubpath is the single source of truth for the folder→dir
-// mapping, shared with the mailbox backends.
 package acl
 
 import (
@@ -35,43 +28,32 @@ import (
 // FileName is the on-disk per-folder ACL filename.
 const FileName = "yarilo-acl"
 
-// Store is a per-user, per-namespace ACL handle. Construct one per
-// namespace handle at session open time; methods take the folder
-// name relative to the namespace root (same convention as
-// mailbox.UserMailbox).
+// Store is a per-user, per-namespace ACL handle. Methods take the folder name
+// relative to the namespace root (same convention as mailbox.UserMailbox).
 type Store struct {
-	// mailRoot is the mailbox data root (MailPath, else Home). The ACL file
-	// lives in the mailbox directory, so it does NOT follow INDEX=.
+	// mailRoot is the mailbox data root (MailPath, else Home); the ACL file
+	// lives there, so it does NOT follow INDEX=.
 	mailRoot string
-	// driver selects the per-folder folder sub-layout (maildir/mdbox/sdbox)
-	// via mailbox.FolderSubpath, shared with the mailbox backends.
+	// driver selects the folder sub-layout via mailbox.FolderSubpath.
 	driver string
-	// separator is the IMAP hierarchy separator, converted to the driver's
-	// on-disk separator by mailbox.FolderSubpath.
+	// separator is the IMAP hierarchy separator.
 	separator string
-	// defaultsFromInbox makes the terminal namespace-root default resolve
-	// from INBOX's ACL instead of the (maildir-disabled) folder "" default.
-	// Set only for private/shared namespaces.
+	// defaultsFromInbox resolves the namespace-root default from INBOX's ACL
+	// instead of the (maildir-disabled) folder "" default. Private/shared only.
 	defaultsFromInbox bool
 	// globalsOnly ignores the per-mailbox files and evaluates only global.
 	globalsOnly bool
 	// global is the operator-configured global ACL merged into every
 	// EffectiveFor with global precedence; nil when none.
 	global *Global
-	// username is whose lock-key is acquired on every write. For
-	// shared/public namespaces this is the accessing user — the
-	// MailboxKey is per-(user, folder), so concurrent writes from
-	// two different users to the same shared mailbox serialise
-	// only when they collide on the same lock key (covered by
-	// the fileindex's MailboxKey of the namespace owner; see
-	// callers in internal/imap).
+	// username keys the lock acquired on every write; for shared/public
+	// namespaces this is the accessing user.
 	username string
 	owner    string
 	locker   locks.Locker
 
 	// ttl bounds how long a cached parsed ACL is trusted before its file's
-	// mtime+size are re-validated. Zero disables caching. clock is time.Now,
-	// overridable in tests.
+	// mtime+size are re-validated. Zero disables caching.
 	ttl     time.Duration
 	clock   func() time.Time
 	cacheMu sync.Mutex
@@ -88,12 +70,8 @@ type cacheEntry struct {
 	at     time.Time
 }
 
-// New constructs a Store. The ACL file lives in the mailbox directory, so
-// the root is mailPath when set, else home (the per-namespace root: personal
-// = UserInfo.Home; shared/public = the namespace location). driver selects
-// the folder sub-layout; pol carries the operator ACL knobs (root default
-// from INBOX — private/shared only, the caller applies that gate; global ACL;
-// globals-only); locker may be nil for tests / single-process runs.
+// New constructs a Store rooted at mailPath when set, else home. pol carries
+// the operator ACL knobs; locker may be nil for tests / single-process runs.
 func New(home, mailPath, driver, separator, username, owner string, pol Policy, locker locks.Locker) *Store {
 	root := home
 	if mailPath != "" {
@@ -118,11 +96,9 @@ func New(home, mailPath, driver, separator, username, owner string, pol Policy, 
 	return s
 }
 
-// Path returns the on-disk yarilo-acl path for folder. Exposed so
-// callers (admin CLI, integration tests) can locate the file without
-// re-deriving the layout. folder == "" is the local per-namespace-root
-// default ACL; for maildir it collides with INBOX and is disabled — see
-// rootDefaultDisabled.
+// Path returns the on-disk yarilo-acl path for folder. folder == "" is the
+// local per-namespace-root default ACL; for maildir it collides with INBOX and
+// is disabled — see rootDefaultDisabled.
 func (s *Store) Path(folder string) string {
 	return filepath.Join(s.mailRoot, mailbox.FolderSubpath(s.driver, folder, folder, s.separator), FileName)
 }
@@ -147,11 +123,9 @@ func (s *Store) mailboxesRoot() string {
 	}
 }
 
-// Get returns the parsed ACL for folder. When the file does not
-// exist, returns (nil, nil) — "no explicit ACL on this mailbox"
-// is a normal state, not an error. Inheritance lookup (the
-// first-ancestor-with-explicit-ACL walk) is the caller's job and
-// lives in the evaluator that ships with PR E.
+// Get returns the parsed ACL for folder, or (nil, nil) when the file does not
+// exist ("no explicit ACL on this mailbox" is a normal state). Inheritance
+// lookup is the caller's job.
 func (s *Store) Get(folder string) (mailbox.ACL, error) {
 	if s.ttl > 0 {
 		return s.getCached(folder)
@@ -176,10 +150,9 @@ func (s *Store) getUncached(folder string) (mailbox.ACL, error) {
 }
 
 // getCached serves ACLs from an in-process cache validated against the file's
-// mtime+size.  Within the TTL the parsed ACL is
-// trusted with no filesystem access; past the TTL a lock-free stat confirms the
-// file is unchanged (cheap) or triggers a reload. Reads are safe without the
-// distributed lock because writes land via atomic tmp+rename.
+// mtime+size. Within the TTL the parsed ACL is trusted with no I/O; past it a
+// lock-free stat confirms the file is unchanged or triggers a reload. Safe
+// without the remote lock because writes land via atomic tmp+rename.
 func (s *Store) getCached(folder string) (mailbox.ACL, error) {
 	now := s.clock()
 
@@ -225,8 +198,8 @@ func (s *Store) putCache(folder string, ent cacheEntry) {
 	s.cacheMu.Unlock()
 }
 
-// invalidate drops a folder's cache entry after a local write so the next read
-// reloads. Cross-process writes are caught by the mtime+size re-validation.
+// invalidate drops a folder's cache entry after a local write. Cross-process
+// writes are caught by the mtime+size re-validation.
 func (s *Store) invalidate(folder string) {
 	if s.cache == nil {
 		return
@@ -236,14 +209,10 @@ func (s *Store) invalidate(folder string) {
 	s.cacheMu.Unlock()
 }
 
-// Set replaces the on-disk ACL with acl, encoded in canonical sorted
-// order via ACL.Sorted(). Empty acl results in an empty file (zero
-// bytes), not file removal — use Remove for that. Atomic via
-// tmp+rename inside the folder's index dir.
-//
-// After the per-mailbox file write succeeds, the yarilo-acl-list
-// namespace-wide index is updated in the same call so LIST
-// optimisations see the change without a separate rebuild.
+// Set replaces the on-disk ACL with acl in canonical sorted order. Empty acl
+// writes an empty file (not removal — use Remove for that), atomic via
+// tmp+rename. The yarilo-acl-list namespace-wide index is updated in the same
+// call so LIST optimisations see the change.
 func (s *Store) Set(folder string, acl mailbox.ACL) error {
 	if folder == "" && s.rootDefaultDisabled() {
 		return fmt.Errorf("userstate/acl: namespace-root default ACL unavailable (collides with INBOX); use a global ACL instead")
@@ -257,29 +226,16 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 	return s.ListUpdate(folder, acl)
 }
 
-// EffectiveFor resolves the user's effective rights on folder,
-// walking ancestors until an explicit yarilo-acl file is found
-// (first-ancestor-with-explicit-ACL semantics).
+// EffectiveFor resolves the user's effective rights on folder, walking
+// ancestors until an explicit yarilo-acl file is found (first-hit wins). An
+// owner gets FullRights immediately without I/O; otherwise folder's ACL is
+// read, and on absence the last path segment is stripped and retried, ending
+// with one pass at the namespace-root ACL (folder = ""). No ACL found returns
+// the empty rights set.
 //
-//   - isOwner == true: returns FullRights immediately without I/O.
-//   - else: read folder's ACL. If present, return its Effective.
-//     If absent, strip the last segment off folder and retry. After
-//     all segments are stripped, take one final pass at the
-//     namespace-root ACL (folder = ""). If no ACL was ever found,
-//     returns the empty rights set.
-//
-// sep is the namespace's hierarchy separator (typically '/' for
-// personal namespaces; the caller passes h.spec.Separator). When
-// sep is the zero byte the walk is disabled and only folder itself
-// is consulted — useful for tests and namespaces that explicitly
-// opt out of inheritance.
-//
-// Inheritance is "first hit wins": once an ancestor with an ACL
-// file is found, that file's positive / negative balance determines
-// the rights. ACLs from deeper ancestors (including the root) are
-// not merged in. The alternative (full-chain merge) breaks the
-// principle of locality for shared-mailbox admin who expects
-// setting one ACL to fully override the inherited one.
+// sep == 0 disables the walk (only folder itself is consulted). Inheritance
+// never merges deeper ancestors: the first ACL found fully determines the
+// rights, so a shared-mailbox admin's single ACL overrides the inherited one.
 func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool, sep byte) (mailbox.Rights, error) {
 	var localACL mailbox.ACL
 	if !s.globalsOnly {
@@ -341,10 +297,7 @@ func (s *Store) rootDefaultACL() (mailbox.ACL, error) {
 	return s.Get(defFolder)
 }
 
-// lastSepIndex returns the byte index of the last occurrence of sep
-// in s, or -1 when none is present. Stripped out into its own helper
-// so the caller can swap separators without restating the bytes import
-// surface.
+// lastSepIndex returns the byte index of the last sep in s, or -1 when absent.
 func lastSepIndex(s string, sep byte) int {
 	for i := len(s) - 1; i >= 0; i-- {
 		if s[i] == sep {
@@ -354,13 +307,9 @@ func lastSepIndex(s string, sep byte) int {
 	return -1
 }
 
-// Remove deletes the yarilo-acl file. Idempotent — a missing file
-// is not an error. Used by ACL admin paths that want to drop a
-// mailbox back to "no explicit ACL" — after which EffectiveFor
-// resumes walking ancestors for the inherited ACL.
-//
-// Also drops every yarilo-acl-list entry for this mailbox so the
-// namespace-wide index stays consistent.
+// Remove deletes the yarilo-acl file (idempotent) and drops every
+// yarilo-acl-list entry for the mailbox. The mailbox falls back to "no explicit
+// ACL", after which EffectiveFor resumes walking ancestors.
 func (s *Store) Remove(folder string) error {
 	if err := s.withLock(folder, func() error {
 		path := s.Path(folder)
@@ -375,17 +324,11 @@ func (s *Store) Remove(folder string) error {
 	return s.ListRemove(folder)
 }
 
-// Rename moves the per-mailbox yarilo-acl file from oldFolder's
-// index dir to newFolder's, and rewrites every yarilo-acl-list
-// entry pointing at oldFolder to point at newFolder. Called from
-// the IMAP RENAME handler so the index stays consistent across the
-// structural change. Missing source file is a no-op (mailbox had
-// no explicit ACL); the index rewrite still runs in case the
-// caller previously seeded entries out-of-band.
-//
-// Both per-folder locks are taken in lexicographic order to mirror
-// fileindex.withTwoFolderLocks so two RENAMEs cannot deadlock
-// against each other.
+// Rename moves the per-mailbox yarilo-acl file from oldFolder to newFolder and
+// rewrites every yarilo-acl-list entry pointing at oldFolder. A missing source
+// file is a no-op; the index rewrite still runs. Both per-folder locks are
+// taken in lexicographic order (mirroring fileindex.withTwoFolderLocks) so two
+// RENAMEs cannot deadlock.
 func (s *Store) Rename(oldFolder, newFolder string) error {
 	first, second := oldFolder, newFolder
 	if first > second {
@@ -422,11 +365,9 @@ func (s *Store) Rename(oldFolder, newFolder string) error {
 	return s.ListRename(oldFolder, newFolder)
 }
 
-// Update applies fn under the folder lock — fn receives the current
-// ACL (nil when the file does not exist) and returns the new ACL
-// to persist. Returning a nil ACL is treated as "leave on disk as-is";
-// to drop entries, return an empty (non-nil) mailbox.ACL. Used by
-// SETACL / DELETEACL which read-modify-write a single identifier.
+// Update read-modify-writes the ACL under the folder lock: fn receives the
+// current ACL (nil when absent) and returns the ACL to persist. A nil return
+// leaves disk as-is; return an empty (non-nil) ACL to drop all entries.
 func (s *Store) Update(folder string, fn func(mailbox.ACL) (mailbox.ACL, error)) error {
 	err := s.withLock(folder, func() error {
 		current, err := s.loadLocked(folder)
@@ -499,10 +440,8 @@ func (s *Store) withLock(folder string, fn func() error) error {
 	}
 	key := locks.MailboxKey(s.username, folder)
 	if s.locker.HoldsResource(key) {
-		// Outer caller already owns this MailboxKey (e.g. an admin
-		// operation that takes the lock once and drives several ACL
-		// edits). Skip re-acquire — locks are not reentrant on the
-		// remote backend.
+		// Outer caller already holds this MailboxKey; skip re-acquire, the
+		// remote lock is not reentrant.
 		return fn()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)

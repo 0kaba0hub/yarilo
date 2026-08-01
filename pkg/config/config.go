@@ -34,8 +34,7 @@ type Config struct {
 	LocksClient        LocksClientConfig            `koanf:"locks_client"`
 	Storage            StorageConfig                `koanf:"storage"`
 	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
-	// ACL is a mail-storage concern shared across protocols (IMAP RFC 4314
-	// commands, and — as enforcement lands — LMTP post/insert, POP3 read),
+	// ACL is shared across protocols (IMAP RFC 4314, LMTP, POP3),
 	// so it lives at the top level rather than under protocol.imap.
 	ACL                     ACLConfig                     `koanf:"acl"`
 	Quota                   QuotaConfig                   `koanf:"quota"`
@@ -58,13 +57,11 @@ type SieveConfig struct {
 	MaxScriptSize int `koanf:"sieve_max_script_size"`
 	// MaxRedirects is the maximum number of redirect actions per message. Default: 32.
 	MaxRedirects int `koanf:"sieve_max_redirects"`
-	// MaxActions caps the total number of actions a single script may apply
-	// (fileinto, redirect, keep, ...). Guards runaway scripts. 0 = unlimited.
-	// Corresponds to sieve_max_actions. Default: 32.
+	// MaxActions caps the total actions a single script may apply
+	// (fileinto, redirect, keep, ...). 0 = unlimited. Default: 32.
 	MaxActions int `koanf:"sieve_max_actions"`
-	// DuplicateMaxPeriod caps the duplicate test's tracking period in seconds
-	// (RFC 7352 §7: sites SHOULD impose a maximum; a larger :seconds is silently
-	// clamped). 0 = no limit. Default: 604800 (7 days).
+	// DuplicateMaxPeriod caps the duplicate test's tracking period in seconds;
+	// a larger :seconds is clamped (RFC 7352 §7). 0 = no limit. Default: 604800 (7 days).
 	DuplicateMaxPeriod int `koanf:"sieve_duplicate_max_period"`
 	// DuplicateDriver selects the backend for the duplicate test (RFC 7352):
 	//   file   — per-user file in the home dir (default; cross-pod on shared storage)
@@ -85,43 +82,35 @@ type SieveConfig struct {
 	SubmissionSSL string `koanf:"sieve_submission_ssl"`
 	// SubmissionTimeout is the connect and command timeout in seconds. Default: 30.
 	SubmissionTimeout int `koanf:"sieve_submission_timeout"`
-	// SubmissionAuthSecret is the name of the Kubernetes Secret that holds
-	// SMTP AUTH credentials (keys: user, password). Empty = no authentication.
-	// The Helm chart mounts the secret as YARILO_SIEVE_SUBMISSION_USER /
-	// YARILO_SIEVE_SUBMISSION_PASSWORD env vars based on this name.
+	// SubmissionAuthSecret names the Kubernetes Secret with SMTP AUTH
+	// credentials (keys: user, password), mounted by the chart as
+	// YARILO_SIEVE_SUBMISSION_USER/PASSWORD env vars. Empty = no auth.
 	SubmissionAuthSecret string `koanf:"sieve_submission_auth_secret"`
 
-	// DefaultName is the reserved name of the per-user default Sieve script
-	// (the active-pointer entry point). Corresponds to sieve_default_name.
+	// DefaultName is the reserved name of the per-user default Sieve script.
 	// Default: "yarilo".
 	DefaultName string `koanf:"sieve_default_name"`
 
-	// GlobalBefore is an ordered list of paths to .sieve script files executed
-	// before the user's active script. Admin-defined rules; applied to every
-	// message regardless of per-user settings.
+	// GlobalBefore is an ordered list of .sieve file paths executed before
+	// the user's active script, for every message.
 	GlobalBefore []string `koanf:"sieve_global_before"`
-	// GlobalAfter is an ordered list of paths to .sieve script files executed
-	// after the user's active script.
+	// GlobalAfter is the same, executed after the user's active script.
 	GlobalAfter []string `koanf:"sieve_global_after"`
 
-	// ImapSieveEnabled activates imapsieve (RFC 6785): running Sieve scripts on
-	// IMAP events (message APPEND, COPY/MOVE, flag change). Per-mailbox binding
-	// is via the IMAP METADATA annotation /shared/imapsieve/script (and the
-	// server-wide equivalent under INBOX), not static config.
+	// ImapSieveEnabled activates imapsieve (RFC 6785): Sieve scripts on IMAP
+	// events (APPEND, COPY/MOVE, flag change). Per-mailbox binding is via the
+	// METADATA annotation /shared/imapsieve/script, not static config.
 	ImapSieveEnabled bool `koanf:"imapsieve_enabled"`
-	// ImapSieveScriptDir is the directory holding the admin-managed scripts a
-	// mailbox's /shared/imapsieve/script annotation names (value "<name>" →
-	// <dir>/<name>.sieve).
+	// ImapSieveScriptDir holds the admin-managed scripts the annotation names
+	// (value "<name>" → <dir>/<name>.sieve).
 	ImapSieveScriptDir string `koanf:"imapsieve_script_dir"`
 	// ImapSieveGlobalBefore / ImapSieveGlobalAfter are ordered .sieve paths run
 	// before / after the mailbox-bound script on every imapsieve event.
 	ImapSieveGlobalBefore []string `koanf:"imapsieve_global_before"`
 	ImapSieveGlobalAfter  []string `koanf:"imapsieve_global_after"`
 
-	// SieveExtensions is the whitelist of Sieve extensions users may declare
-	// with require. Corresponds to sieve_extensions.
-	// Empty slice = allow all extensions (backwards-compatible default).
-	// Non-empty = strict whitelist enforced at PUTSCRIPT and delivery time.
+	// SieveExtensions whitelists the extensions users may require.
+	// Empty = allow all; non-empty = enforced at PUTSCRIPT and delivery time.
 	SieveExtensions []string `koanf:"sieve_extensions"`
 
 	// ScriptsDriver selects the script storage backend: "fs" (default) stores
@@ -205,21 +194,15 @@ type SieveConfig struct {
 	ReportUserAgent string `koanf:"sieve_report_user_agent"`
 }
 
-// DictConfig declares one named dict instance. The map key in
-// Config.Dicts is the logical name yarilo features reference (e.g.
-// "metadata", "quota_count"); Driver selects the registered
-// pkg/dict driver (file|memory|fail|redis|sql) and Settings carries
-// the driver-specific knobs. The driver decodes Settings at Open
-// time — see each driver's package doc for the schema.
+// DictConfig declares one named dict instance. The Config.Dicts map key is
+// the logical name features reference; Driver selects the pkg/dict driver
+// (file|memory|fail|redis|sql) and Settings carries driver-specific knobs.
 //
-// Driver-agnostic settings on top of the per-driver map:
+// Driver-agnostic siblings of "driver"/"settings":
 //
 //	expire_secs — default TTL for writes; per-op OpSettings overrides
 //	username    — passed as OpSettings.Username when callers omit it
 //	home_dir    — passed as OpSettings.HomeDir when callers omit it
-//
-// These three are siblings of "driver" / "settings" in the yaml so
-// operators do not have to repeat them in every driver-specific block.
 type DictConfig struct {
 	Driver     string         `koanf:"driver"`
 	Settings   map[string]any `koanf:"settings"`
@@ -228,62 +211,33 @@ type DictConfig struct {
 	HomeDir    string         `koanf:"home_dir"`
 }
 
-// NamespaceConfig declares one IMAP namespace (RFC 2342 / RFC 9051
-// §6.3.10). The Type field picks which slot of the NAMESPACE response
-// the namespace lands in (personal / other / shared). Multiple
-// namespaces of the same type are allowed and concatenated in
-// declaration order.
-//
-// Storage routing (NS-1b, future PR): Location templates the on-disk
-// path or backend URL for this namespace; the wire-only NS-1a phase
-// shipping in v1.20 reads Type, Prefix, Separator and List only — the
-// other fields are accepted by koanf so operators can stage their
-// full namespace config before the storage layer lands.
-//
-// Defaults applied at backend startup when cfg.Namespaces is empty:
-//
-//	[{ Type: "personal", Prefix: "", Separator: "/", List: true }]
-//
-// — i.e. backwards-compatible with pre-v1.20 single-namespace
-// deployments.
+// NamespaceConfig declares one IMAP namespace (RFC 2342 / RFC 9051 §6.3.10).
+// Multiple namespaces of the same type are concatenated in declaration order.
+// Empty cfg.Namespaces defaults to
+// [{ Type: "personal", Prefix: "", Separator: "/", List: true }].
 type NamespaceConfig struct {
-	// Type is one of "personal", "other", "shared". Determines which
-	// slot of the IMAP NAMESPACE response carries this entry.
+	// Type is "personal", "other" or "shared" — the NAMESPACE response slot.
 	Type string `koanf:"type"`
-	// Prefix is the entry-point name visible to IMAP clients ("",
-	// "Shared/", "user/", "Public/", ...). Empty string is reserved
-	// for the personal namespace.
+	// Prefix is the client-visible entry point ("", "Shared/", "Public/", ...).
+	// Empty string is reserved for the personal namespace.
 	Prefix string `koanf:"prefix"`
-	// Separator is the hierarchy delimiter for this namespace.
-	// Different namespaces MAY use different separators.
+	// Separator is the hierarchy delimiter; may differ per namespace.
 	Separator string `koanf:"separator"`
-	// List exposes the namespace in the NAMESPACE response. False
-	// keeps the namespace addressable internally (e.g. for future
-	// per-user shared folders) without advertising it.
+	// List exposes the namespace in the NAMESPACE response. False keeps it
+	// addressable internally without advertising it.
 	List bool `koanf:"list"`
-	// Hidden hides matching mailboxes from LIST "" "*" (per-RFC 9051
-	// "no-inferiors / no-children" hints). Reserved for NS-1b — koanf
-	// accepts it now so config does not have to change later.
+	// Hidden hides matching mailboxes from LIST "" "*". Reserved for NS-1b.
 	Hidden bool `koanf:"hidden"`
-	// Subscriptions: whether SUBSCRIBE state is tracked for mailboxes
-	// in this namespace. Default true (per-RFC 5258).
+	// Subscriptions: whether SUBSCRIBE state is tracked here. Default true.
 	Subscriptions bool `koanf:"subscriptions"`
-	// Inbox marks the namespace that owns the special "INBOX"
-	// mailbox. MUST be set on exactly one namespace (typically the
-	// first personal namespace). Reserved for NS-1b.
+	// Inbox marks the namespace owning "INBOX". MUST be set on exactly one
+	// namespace. Reserved for NS-1b.
 	Inbox bool `koanf:"inbox"`
-	// Location is the storage URL for this namespace (NS-1b).
-	// Templated via pkg/dict/varexpand (%u, %h, %n, %d). Examples:
-	//   "maildir:%h"                       — per-user personal
-	//   "maildir:/var/yarilo/shared"       — shared
-	//   "maildir:/var/yarilo/public"       — public
-	// Read by NS-1b storage routing; NS-1a accepts it for forward-
-	// compat but does not act on it.
+	// Location is the storage URL for this namespace (NS-1b), templated via
+	// pkg/dict/varexpand (%u, %h, %n, %d), e.g. "maildir:%h".
 	Location string `koanf:"location"`
-	// IgnoreACL bypasses ACL enforcement for this namespace: rights are
-	// not checked and no folders are hidden by lookup right, even when
-	// acl.enabled is true. Useful for a trusted namespace (e.g. an admin
-	// or public root) that should be fully accessible.
+	// IgnoreACL bypasses ACL enforcement for this namespace even when
+	// acl.enabled is true — for trusted admin/public roots.
 	IgnoreACL bool `koanf:"acl_ignore"`
 }
 
@@ -312,19 +266,12 @@ type HAProxyConfig struct {
 	TrustedNets []string `koanf:"trusted_nets"` // CIDRs allowed to send PROXY header
 }
 
-// XClientConfig gates NATIVE inbound client-IP forwarding on the login pods
-// (#742): IMAP ID fields (x-originating-ip) and POP3/Submission XCLIENT. It is
-// the login_trusted_networks analogue and is SEPARATE from general.haproxy,
-// which keeps its own trusted_nets — an operator picks per listener between the
-// PROXY protocol (haproxy_protocol), native forwarding (xclient_protocol), or
-// neither. Per-listener enable is ServiceConfig.XClient (xclient_protocol);
-// this block is the global trust list a forward's source must fall inside.
-//
-// Precedence when BOTH mechanisms are active on a listener: the PROXY header is
-// consumed first, so by the time XCLIENT/ID is read the socket peer already
-// reflects the PROXY-rewritten address. The trusted-net check runs against THAT
-// peer (it is the real adjacent hop), and the XCLIENT/ID forward wins as the
-// final client IP applied to auth, allow_nets, warden, and the backend preamble.
+// XClientConfig is the global trust list for native inbound client-IP
+// forwarding (IMAP ID x-originating-ip, POP3/Submission XCLIENT). Separate
+// from general.haproxy; per-listener enable is ServiceConfig.XClient.
+// When both PROXY and XCLIENT are active, the PROXY header is consumed first,
+// the trusted-net check runs against the PROXY-rewritten peer, and the
+// XCLIENT/ID forward wins as the final client IP.
 type XClientConfig struct {
 	TrustedNets []string `koanf:"trusted_nets"` // CIDRs whose forwarded client IP (XCLIENT/ID) is trusted
 }
@@ -343,10 +290,8 @@ type ServiceConfig struct {
 	SSL             *SSLConfig `koanf:"ssl"`              // overrides general.ssl
 	HAProxy         bool       `koanf:"haproxy_protocol"`
 	// XClient enables native inbound client-IP forwarding on this listener
-	// (#742): IMAP ID x-originating-ip, POP3/Submission XCLIENT. A forward is
-	// applied only when the socket peer is inside general.xclient.trusted_nets.
-	// Off = the forwarding commands are ignored (ID replies NIL; XCLIENT is an
-	// unknown command). See XClientConfig for the haproxy/native/none choice.
+	// (IMAP ID x-originating-ip, POP3/Submission XCLIENT); applied only when
+	// the socket peer is inside general.xclient.trusted_nets.
 	XClient          bool `koanf:"xclient_protocol"`
 	DisablePlainAuth bool `koanf:"disable_plaintext_auth"`
 }
@@ -402,40 +347,20 @@ type LMTPProtocolConfig struct {
 	ClientWorkarounds []string `koanf:"client_workarounds"`
 	// Proxy configures LMTP proxy mode (director → backend routing).
 	Proxy LMTPProxyConfig `koanf:"proxy"`
-	// RateLimit caps deliveries per (sender IP, recipient mailbox)
-	// pair within a sliding time window. Defends a specific
-	// mailbox from one specific source flooding it. Off by default
-	// — opt-in to avoid surprising existing deployments; turn on
-	// for any internet-facing LMTP listener.
+	// RateLimit caps deliveries per (sender IP, recipient mailbox) pair
+	// within a sliding window.
 	RateLimit LMTPRateLimitConfig `koanf:"rate_limit"`
 }
 
-// LMTPRateLimitConfig configures the per-(IP, mailbox) token
-// bucket enforced at RCPT TO. Counters live in yarilo-locks
-// (COUNTER-INC primitive) so the limit is cluster-wide, not
-// per-pod.
-//
-// Defaults are tuned for typical legitimate traffic: 100 RCPT
-// for the same (sender IP, recipient mailbox) pair per 60s. A
-// regular client sends 1-10 messages per minute even on spike;
-// mailing list relays fan-out across recipients (and usually
-// across source IPs), so the same (IP, mailbox) pair past 100/min
-// is reliably abuse and not legitimate volume.
-//
-// Operators who run unusual workloads (e.g. a single relay that
-// genuinely pumps >100 delivery attempts per minute into one
-// recipient) raise the burst, widen the window, or set
-// `enabled: false` outright.
+// LMTPRateLimitConfig configures the per-(IP, mailbox) limit enforced at
+// RCPT TO. Counters live in yarilo-locks, so the limit is cluster-wide.
 type LMTPRateLimitConfig struct {
 	// Enabled gates the entire check. Default: true.
 	Enabled bool `koanf:"enabled"`
-	// PerRecipientBurst is the max deliveries allowed per
-	// (sender IP, recipient mailbox) pair inside one window
-	// before further RCPT TO commands receive 421 4.7.0.
-	// Default: 100.
+	// PerRecipientBurst is the max deliveries per (sender IP, recipient
+	// mailbox) pair inside one window; excess gets 421 4.7.0. Default: 100.
 	PerRecipientBurst int `koanf:"per_recipient_burst"`
-	// PerRecipientWindowSeconds is the sliding window width.
-	// Default: 60.
+	// PerRecipientWindowSeconds is the sliding window width. Default: 60.
 	PerRecipientWindowSeconds int `koanf:"per_recipient_window_seconds"`
 }
 
@@ -454,36 +379,30 @@ type IMAPProtocolConfig struct {
 	LoginGreeting      string   `koanf:"login_greeting"`
 	LogoutFormat       string   `koanf:"imap_logout_format"`
 	ClientWorkarounds  []string `koanf:"client_workarounds"`
-	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208): the QUOTA
-	// capability advertisement + GETQUOTA / GETQUOTAROOT. Independent of the
-	// quota engine (enforcement) — a client-facing protocol feature. Default on.
+	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208). Independent of
+	// the quota engine (enforcement). Default on.
 	IMAPQuota bool `koanf:"imap_quota"`
 	// SpecialUseDefaults maps a folder name (case-sensitive) to its RFC 6154
-	// special-use attribute. LIST advertises the attr automatically when the
-	// folder name matches. Per-user CREATE (USE ...) overrides win against
-	// these defaults via the on-disk special_use file.
+	// special-use attribute. Per-user CREATE (USE ...) overrides win via the
+	// on-disk special_use file.
 	SpecialUseDefaults map[string]string `koanf:"imap_special_use_defaults"`
 }
 
-// ACLConfig groups RFC 4314 ACL knobs. Richer policy (global ACL,
-// group= resolution, cache, etc.) lands in later ACL phases (see the ACL
-// parity backlog).
+// ACLConfig groups RFC 4314 ACL knobs.
 type ACLConfig struct {
 	Enabled bool `koanf:"enabled"`
 	// DefaultsFromInbox makes root-level default ACLs resolve from INBOX's
-	// ACL for private/shared namespaces. This is the maildir answer to the
-	// namespace-root==INBOX collision, where the local folder-"" default is
-	// unavailable.
+	// ACL for private/shared namespaces (maildir: the namespace root is
+	// INBOX, so the folder-"" default is unavailable).
 	DefaultsFromInbox bool `koanf:"defaults_from_inbox"`
-	// GlobalsOnly ignores the per-mailbox yarilo-acl files and evaluates only
-	// the global ACL rules below. Useful for centrally-administered setups.
+	// GlobalsOnly ignores per-mailbox yarilo-acl files and evaluates only the
+	// global rules below.
 	GlobalsOnly bool `koanf:"globals_only"`
-	// Global holds operator-configured ACL rules applied across all users
-	// and merged with the per-mailbox ACL (global takes precedence).
+	// Global holds operator ACL rules applied across all users, merged with
+	// the per-mailbox ACL (global takes precedence).
 	Global []GlobalACLRule `koanf:"global"`
 	// CacheTTL is how long (seconds) a parsed per-mailbox ACL is trusted
-	// before its file's mtime+size are re-validated (the acl_cache_ttl
-	// knob, default 30). 0 disables caching — every right check reads the file.
+	// before mtime+size re-validation. Default 30; 0 disables caching.
 	CacheTTL int `koanf:"acl_cache_ttl"`
 }
 
@@ -549,32 +468,26 @@ type InternalTLSConfig struct {
 	Cert    string `koanf:"cert"`
 	Key     string `koanf:"key"`
 	CA      string `koanf:"ca"`
-	// ServerName is the TLS name every internal CLIENT dial pins (#816).
-	// Internal services are reached by short name OR FQDN OR pod IP depending
-	// on the caller, so verifying against the dialed host is unreliable — the
-	// shared internal cert instead carries one stable SAN, pinned here. Since
-	// all internal components share one cert, mutual auth attests
-	// "cluster member", not a specific service identity; a single pinned name
-	// is the honest model (per-service identity would need per-service certs).
-	// The director RING dial is the exception (director_service
-	// .ring_tls_server_name, #753) — directors carry their own cert. Empty
-	// with internal_tls enabled is a misconfiguration: mtls.ClientConfig fails
-	// loudly at startup. The chart defaults it to <release>-internal.
+	// ServerName is the TLS name every internal client dial pins. Internal
+	// services are reached by short name, FQDN or pod IP, so the shared
+	// internal cert carries one stable SAN instead. Exception: the director
+	// ring dial uses director_service.ring_tls_server_name. Empty with
+	// internal_tls enabled fails loudly at startup; the chart defaults it
+	// to <release>-internal.
 	ServerName string `koanf:"server_name"`
 	// SessionCacheSize is the TLS 1.3 client session-resumption cache size
-	// (entries) for internal dials (#856). 0 uses the built-in default; a
-	// negative value disables resumption (every dial pays a full handshake).
+	// (entries) for internal dials. 0 = built-in default; negative disables
+	// resumption.
 	SessionCacheSize int `koanf:"session_cache_size"`
-	// SessionCacheTTL bounds how long (seconds) a cached session may be resumed,
-	// on top of LRU eviction; 0 means LRU-only (no age limit). A TTL makes a
-	// cert rotation stop resuming stale sessions within that window.
+	// SessionCacheTTL bounds how long (seconds) a cached session may be
+	// resumed, on top of LRU eviction; 0 = LRU-only. A TTL stops a cert
+	// rotation from resuming stale sessions.
 	SessionCacheTTL int `koanf:"session_cache_ttl"`
 }
 
-// QuotaConfig toggles the quota engine: enforcement on every save (IMAP
-// APPEND/COPY/MOVE, LMTP delivery, and the quota-status policy service), summed
-// from the index count backend. Independent of the IMAP QUOTA *extension*
-// (protocol.imap.imap_quota), which only exposes the GETQUOTA commands.
+// QuotaConfig toggles the quota engine: enforcement on every save, summed
+// from the index count backend. Independent of the IMAP QUOTA extension
+// (protocol.imap.imap_quota), which only exposes GETQUOTA.
 type QuotaConfig struct {
 	Enabled bool `koanf:"enabled"`
 	// Name is the quota-root name surfaced in IMAP GETQUOTA / GETQUOTAROOT.
@@ -617,10 +530,9 @@ type QuotaConfig struct {
 	WarningExecTimeout int `koanf:"quota_warning_exec_timeout"`
 	// Warnings are the quota_warning rules.
 	Warnings []QuotaWarning `koanf:"quota_warnings"`
-	// CloneDicts names the dicts (from the top-level dicts: map) that mirror the
-	// authoritative usage. Empty disables cloning. yarilo fans out to all of
-	// them at once (e.g. SQL + Redis). The mirror is advisory, never the source
-	// of truth.
+	// CloneDicts names the dicts (top-level dicts: map) that mirror the
+	// authoritative usage; writes fan out to all of them. The mirror is
+	// advisory, never the source of truth. Empty disables cloning.
 	CloneDicts []string `koanf:"quota_clone_dicts"`
 	// CloneFlushDelay debounces clone writes: at most one mirror write per this
 	// many seconds per session, plus a final flush on session close. Default 10.
@@ -719,50 +631,37 @@ type QuotaStatusConfig struct {
 	AuthMasterAddr string `koanf:"auth_master_addr"`
 }
 
-// SASLLoginConfig configures the yarilo-sasl-login binary.
-// yarilo-sasl-login listens for plain-TCP connections from a fronting MTA
-// (e.g. Postfix) speaking the yarilo SASL auth protocol and proxies each
-// session to yarilo-auth, optionally wrapping the upstream connection with mTLS.
-// This keeps the yarilo-auth socket internal — Postfix has no direct access.
 // LoginConfig holds settings shared by every login proxy (imap/pop3/lmtp/
 // submission/managesieve/sasl), independent of protocol.
 type LoginConfig struct {
 	// LookupHoldMax bounds how many times a login proxy re-LOOKUPs while the
-	// director holds the user under a confirmed kick (#847/#858). The total hold
-	// budget (LookupHoldMax × LookupHoldBackoff) MUST exceed the director's
-	// worst-case confirm time (director_service.user_kill_confirm_grace + drain),
-	// or the proxy exhausts its retries and errors the concurrent login before
-	// the kill can confirm. 0 uses the default (20). With the default 150ms
-	// backoff that is a 3s budget, covering the default 1s confirm grace + drain.
+	// director holds the user under a confirmed kick. LookupHoldMax ×
+	// LookupHoldBackoff must exceed the director's worst-case confirm time
+	// (user_kill_confirm_grace + drain) or the concurrent login errors before
+	// the kill confirms. 0 = default (20).
 	LookupHoldMax int `koanf:"lookup_hold_max"`
 	// LookupHoldBackoffMs is the delay (milliseconds) between LOOKUP hold
-	// retries. 0 uses the default (150).
+	// retries. 0 = default (150).
 	LookupHoldBackoffMs int `koanf:"lookup_hold_backoff_ms"`
 	// SessionGracePeriod is how long (seconds) a login proxy keeps serving
-	// in-flight proxied sessions after SIGTERM before closing them, so a rolling
-	// restart does not sever live sessions mid-command (#857). Must fit within
-	// the pod terminationGracePeriodSeconds. 0 uses the default (30).
+	// in-flight sessions after SIGTERM. Must fit within the pod
+	// terminationGracePeriodSeconds. 0 = default (30).
 	SessionGracePeriod int `koanf:"session_grace_period"`
-	// TransientRetries is how many extra attempts a transient failure gets before
-	// the client is told the service is unavailable (#896): yarilo-auth reporting
-	// temp-fail, the first dial to auth, and bringing up the backend session.
-	// Answering on the first error turns a dependency blip into a visible login
-	// failure the client can only recover from by reconnecting. 0 uses the default
-	// (3); a negative value opts out and restores fail-on-first-error.
+	// TransientRetries is how many extra attempts a transient failure gets
+	// (auth temp-fail, auth dial, backend session setup) before the client
+	// is told the service is unavailable. 0 = default (3); negative =
+	// fail on first error.
 	TransientRetries int `koanf:"transient_retries"`
-	// TransientReloginCap is the DIFFERENT knob (#896): after the per-hop
-	// transient_retries above are exhausted, the proxy answers a tagged NO
-	// [UNAVAILABLE] but keeps the connection OPEN and returns to the pre-auth
-	// command loop, so the client can LOGIN again on the SAME connection — no
-	// new TCP + TLS handshake. The cap is the number of transient failures one
-	// connection tolerates, each answered with a tagged NO, before it is closed
-	// — counted from the first attempt, so cap=N permits N tagged NOs (N-1 actual
-	// re-LOGINs between them). It bounds a wedged backend from accumulating
-	// sockets, and is independent of the bad-password limit (auth_max_attempts).
-	// 0 uses the default (3).
+	// TransientReloginCap: after transient_retries are exhausted the proxy
+	// answers a tagged NO [UNAVAILABLE] but keeps the connection open for
+	// re-LOGIN. This caps how many such failures one connection tolerates
+	// before it is closed. Independent of auth_max_attempts. 0 = default (3).
 	TransientReloginCap int `koanf:"transient_relogin_cap"`
 }
 
+// SASLLoginConfig configures yarilo-sasl-login: a fronting MTA (Postfix)
+// connects here and each session is proxied to yarilo-auth, keeping the
+// yarilo-auth socket internal.
 type SASLLoginConfig struct {
 	// Listen is the TCP address Postfix connects to.
 	// Postfix: smtpd_sasl_path = inet:<host>:<port>
@@ -796,24 +695,19 @@ type WardenServiceConfig struct {
 	// FailOpen controls login-pod behaviour when yarilo-warden is unreachable.
 	// true = allow the session; false (default) = reject the session.
 	FailOpen bool `koanf:"fail_open"`
-	// Conns is how many long-lived connections a login pod keeps to
-	// yarilo-warden (#878). 0 selects warden.DefaultPoolSize. Sessions no longer
-	// own a connection: every command carries the session id and the server
-	// keeps no per-connection state, so the connection count is decoupled from
-	// the login rate. The protocol has no request id, so one connection serves
-	// one command at a time — each is a sub-millisecond round trip.
+	// Conns is how many long-lived pooled connections a login pod keeps to
+	// yarilo-warden; commands carry the session id, so the count is decoupled
+	// from the login rate. The protocol has no request id — one connection
+	// serves one command at a time. 0 = warden.DefaultPoolSize.
 	Conns int `koanf:"conns"`
-	// StateBackend selects the shared-state store (#908): "memory" (default,
-	// in-process, single replica) or "redis" (survives restart, required before
-	// replicas > 1). Mirrors locks_service embedded/remote.
+	// StateBackend selects the shared-state store: "memory" (default, single
+	// replica) or "redis" (survives restart, required for replicas > 1).
 	StateBackend string `koanf:"state_backend"`
 	// RedisAddr is the Redis URL used when StateBackend="redis".
 	// Format: redis://[password@]host:port/db
 	RedisAddr string `koanf:"redis_addr"`
 	// KeyPrefix / ChannelPrefix namespace warden's Redis keys and Pub/Sub
-	// channels (#938/#939 practice). Empty keeps the service-name defaults
-	// ("yarilo:warden:" / "yarilo:warden:events:"). ChannelPrefix namespaces the
-	// kick bus (#908 PR3); keys use KeyPrefix.
+	// channels. Empty = defaults "yarilo:warden:" / "yarilo:warden:events:".
 	KeyPrefix     string `koanf:"key_prefix"`
 	ChannelPrefix string `koanf:"channel_prefix"`
 }
@@ -827,13 +721,9 @@ func (c WardenServiceConfig) ClientAddr() string {
 }
 
 // AuthServiceConfig configures the standalone yarilo-auth process.
-//
-// Listen is the client-protocol address (login pods speak this);
-// MasterListen, when non-empty, opens the password-less master
-// protocol on a separate listener for admin tooling and
-// yarilo-backend-api userdb lookups. Both listeners share the
-// global InternalTLS material — splitting trust domains is a
-// future operational knob, not in Phase AUTH-1.
+// Listen is the client-protocol address; MasterListen, when non-empty, opens
+// the password-less master protocol for admin tooling and userdb lookups.
+// Both listeners share the global InternalTLS material.
 type AuthServiceConfig struct {
 	Listen string `koanf:"listen"`
 	// Addr is the address login pods use to dial yarilo-auth.

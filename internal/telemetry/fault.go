@@ -7,15 +7,14 @@ import (
 	"net/http"
 )
 
-// Gate is a context-aware mutex a liveness self-check enters to prove the
-// request path is not blocked. Under normal operation the token is always free,
-// so Check returns immediately; the fault-injection endpoint (#904) can Wedge it
-// to hold the token forever, which drives the self-check — and therefore the
-// watchdog — into the tripped state on a live pod without a real deadlock.
+// Gate is a context-aware mutex a liveness self-check enters to prove the request
+// path is not blocked. Normally the token is free so Check returns at once; the
+// fault-injection endpoint can Wedge it to hold the token forever, tripping the
+// watchdog on a live pod without a real deadlock.
 //
 // It is a channel of one token rather than a sync.Mutex because acquisition must
-// be bounded by a context: a truly wedged gate must fail the check on the
-// watchdog's timeout, not block its goroutine indefinitely.
+// be bounded by a context: a wedged gate fails the check on the watchdog's
+// timeout instead of blocking its goroutine indefinitely.
 type Gate struct {
 	sem chan struct{}
 }
@@ -28,8 +27,8 @@ func NewGate() *Gate {
 }
 
 // Check acquires and immediately releases the token, bounded by ctx. It returns
-// nil when the gate is open and ctx.Err() (wrapped) when the gate is wedged and
-// the deadline passes — the signal the watchdog counts as a failure.
+// nil when the gate is open and wrapped ctx.Err() when the gate is wedged and the
+// deadline passes, which the watchdog counts as a failure.
 func (g *Gate) Check(ctx context.Context) error {
 	select {
 	case <-g.sem:
@@ -40,9 +39,9 @@ func (g *Gate) Check(ctx context.Context) error {
 	}
 }
 
-// Wedge takes the token and never returns it, simulating a permanently held
-// lock. It reports false if the gate was already wedged. This is reachable only
-// through the fault-injection endpoint, which is off unless explicitly enabled.
+// Wedge takes the token and never returns it, simulating a permanently held lock.
+// It reports false if the gate was already wedged. Reachable only through the
+// fault-injection endpoint, which is off unless explicitly enabled.
 func (g *Gate) Wedge() bool {
 	select {
 	case <-g.sem:
@@ -54,8 +53,7 @@ func (g *Gate) Wedge() bool {
 
 // faultHandler wedges the gate on POST, so an operator can confirm on a live pod
 // that a blocked request path trips /healthz while /readyz and the accept loop
-// stay healthy (#904 acceptance). It is registered only when fault injection is
-// enabled in config, and is a no-op safeguard otherwise.
+// stay healthy. Registered only when fault injection is enabled in config.
 func (s *Server) faultHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)

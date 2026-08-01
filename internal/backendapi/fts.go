@@ -9,15 +9,9 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// ftsExpunge invalidates the FTS documents for the UIDs an index rebuild dropped
-// from folder. Best-effort and session-less (the operator rebuild has no IMAP
-// session): a lost notify heals on the next fts rescan. No-op when no FTS client
-// is configured. The caller holds uc open.
-//
-// One RPC per UID: pkg/fts.Client has no batch Expunge, so a storage-wide rebuild
-// that dropped hundreds of UIDs fans out into that many round-trips. Acceptable
-// for this best-effort operator path; batch this if pkg/fts.Client ever grows a
-// bulk-expunge method.
+// ftsExpunge invalidates FTS documents for UIDs a rebuild dropped.
+// Best-effort: a lost notify heals on the next fts rescan. No-op
+// without an FTS client. One RPC per UID (no batch Expunge yet).
 func (s *Server) ftsExpunge(uc *userContext, folder string, uids []uint32) {
 	if s.opts.FTSClient == nil || len(uids) == 0 {
 		return
@@ -34,19 +28,18 @@ func (s *Server) ftsExpunge(uc *userContext, folder string, uids []uint32) {
 	}
 }
 
-// registerFTSRoutes wires the operator surface for full-text search. Every
-// endpoint dials the yarilo-fts service over ftsproto — backend-api resolves
-// the folder's GUID/UIDVALIDITY from the authoritative index so the operator
-// only ever names user + folder. Disabled (501) when no FTS client is set.
+// registerFTSRoutes registers full-text search operator routes.
+// GUID/UIDVALIDITY are resolved from the index so callers name
+// only user + folder. 501 when no FTS client is set.
 func (s *Server) registerFTSRoutes() {
 	s.mux.Handle("GET /api/backend/fts/status", s.middleware(s.handleFTSStatus))
 	s.mux.Handle("POST /api/backend/fts/rescan", s.middleware(s.handleFTSRescan))
 	s.mux.Handle("POST /api/backend/fts/optimize", s.middleware(s.handleFTSOptimize))
 }
 
-// ftsMailboxRef resolves a folder name to the full wire identity via the
-// user's index. UIDVALIDITY and GUID come from the authoritative folder
-// record so the service keys the same mailbox the IMAP path does.
+// ftsMailboxRef resolves a folder name to its wire identity.
+// GUID/UIDVALIDITY come from the folder record so the service keys
+// the same mailbox the IMAP path does.
 func (s *Server) ftsMailboxRef(uc *userContext, folder string) (fts.MailboxRef, error) {
 	bundle, err := uc.ns(s, "")
 	if err != nil {

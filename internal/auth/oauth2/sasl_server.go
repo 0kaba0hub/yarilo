@@ -10,35 +10,21 @@ import (
 	"github.com/emersion/go-sasl"
 )
 
-// SASLAuthenticator is the OAUTHBEARER callback shape, identical
-// to sasl.OAuthBearerAuthenticator. Kept under our package so
-// callers do not have to import go-sasl directly.
+// SASLAuthenticator is the OAUTHBEARER callback, identical to
+// sasl.OAuthBearerAuthenticator so callers need not import go-sasl.
 type SASLAuthenticator func(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError
 
-// XOAuth2SASLAuthenticator is the XOAUTH2 callback. Receives the
-// (Username, Token) pair extracted from the client's initial
-// response; returns nil on success or a *sasl.OAuthBearerError
-// on rejection. The same token validator used by OAUTHBEARER is
-// expected downstream — only the wire format differs.
+// XOAuth2SASLAuthenticator is the XOAUTH2 callback: receives the
+// (Username, Token) pair from the client's initial response, returns nil on
+// success or *sasl.OAuthBearerError on rejection.
 type XOAuth2SASLAuthenticator func(opts sasl.XOAuth2Options) *sasl.OAuthBearerError
 
-// NewOAuthBearerSASLServer returns an OAUTHBEARER server with
-// fast-fail semantics: on authenticator rejection the server
-// returns done=true on the first call rather than entering the
-// RFC 7628 §3.2.3 dummy-0x01 acknowledgement dance.
-//
-// Why: the spec's two-round failure handshake assumes the client
-// sends a single 0x01 byte after receiving the error JSON. Real-
-// world Go clients (go-imap, go-smtp imapclient) skip that step —
-// the saslClient.Next call returns the error immediately, the
-// outer command loop unwinds, and the server is left blocking on
-// a read that will never come until the protocol read deadline
-// (typically 5+ minutes for IMAP idle) expires. We surface the
-// JSON error blob ONCE with done=true so the protocol-layer loop
-// exits its read immediately.
-//
-// On success the behaviour matches upstream sasl.NewOAuthBearerServer:
-// done=true, nil error, no challenge.
+// NewOAuthBearerSASLServer returns an OAUTHBEARER server with fast-fail
+// semantics: on rejection it returns the error JSON with done=true instead of
+// the RFC 7628 §3.2.3 dummy-0x01 round-trip. Common clients never send the
+// 0x01 acknowledgement, which would leave the server blocking on a read
+// until the protocol deadline. Success behaviour matches upstream
+// sasl.NewOAuthBearerServer.
 func NewOAuthBearerSASLServer(auth SASLAuthenticator) sasl.Server {
 	return &fastFailOAuthBearerServer{authenticate: auth}
 }
@@ -53,9 +39,8 @@ func (s *fastFailOAuthBearerServer) Next(response []byte) ([]byte, bool, error) 
 		return nil, true, errFastFailDone
 	}
 
-	// Send empty challenge when caller has no initial response —
-	// matches upstream go-sasl behaviour for the SASL framework's
-	// "expect initial response" flow.
+	// No initial response: send an empty challenge, matching upstream
+	// go-sasl.
 	if response == nil {
 		return []byte{}, false, nil
 	}
@@ -77,6 +62,7 @@ func (s *fastFailOAuthBearerServer) Next(response []byte) ([]byte, bool, error) 
 			return nil, true, jerr
 		}
 		// done=true skips the RFC 7628 §3.2.3 dummy round-trip.
+
 		return blob, true, authzErr
 	}
 	return nil, true, nil

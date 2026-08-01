@@ -12,10 +12,9 @@ import (
 	"time"
 )
 
-// RingTopology is the cross-replica view (#833 PR-B): every reachable replica's
-// own RingStatus plus a health verdict derived from comparing them. The whole
-// point over a single-replica status is spotting DIVERGENCE — the failure mode
-// that produced false "defects" during the #750 arc.
+// RingTopology is the cross-replica view (#833): every reachable replica's own
+// RingStatus plus a health verdict from comparing them. The point over a
+// single-replica status is spotting DIVERGENCE.
 type RingTopology struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	Healthy       bool          `json:"healthy"`
@@ -37,20 +36,17 @@ type ReplicaView struct {
 
 // RingIssue is one detected problem. Only "error" severity flips Healthy to
 // false; "warn" is informational (e.g. transient seq lag during activity) and
-// deliberately does NOT fail the verdict — that separation is what keeps --all
-// from crying wolf the way raw snapshots did.
+// does NOT fail the verdict.
 type RingIssue struct {
 	Severity string `json:"severity"` // "error" | "warn"
 	Type     string `json:"type"`     // peer-unreachable | view-size-mismatch | backend-set-divergence | asymmetric-edge | tombstone-divergence | seq-lag
 	Detail   string `json:"detail"`
 }
 
-// apiRingTopology aggregates every replica's ring view server-side and returns
-// one authorized response (#833 PR-B). It fans out to each peer's OWN admin API
-// (the single-replica GET /api/director/ring) with the shared per-release
-// token, deriving each peer's API endpoint from its ring IP + THIS replica's
-// api.listen port. That assumes every director runs the same api.listen (true
-// for a Helm release sharing one ConfigMap) — recorded in Assumptions.
+// apiRingTopology aggregates every replica's ring view server-side into one
+// authorized response (#833). It fans out to each peer's own admin API with the
+// shared per-release token, deriving each peer's endpoint from its ring IP +
+// THIS replica's api.listen port (assumes uniform api.listen; see Assumptions).
 func (s *Server) apiRingTopology(w http.ResponseWriter, _ *http.Request) {
 	self := s.membership.Status()
 
@@ -129,20 +125,18 @@ func (s *Server) fetchPeerRing(apiAddr string) (*RingStatus, error) {
 	return &st, nil
 }
 
-// computeTopology is the pure verdict function (no I/O): given the collected
-// per-replica views (keyed by ring addr, self included), the ring addrs that
-// could not be collected, and the derived api port, it builds the matrix and
-// the health verdict. Kept separate from the HTTP fan-out so the divergence
-// logic is unit-testable with synthetic views.
+// computeTopology is the pure verdict function (no I/O): from the collected
+// per-replica views (keyed by ring addr, self included), the uncollected addrs,
+// and the derived api port it builds the matrix and health verdict. Separate
+// from the fan-out so the divergence logic is unit-testable with synthetic views.
 func computeTopology(selfAddr string, views map[string]RingStatus, unreachable []string, apiPort int) RingTopology {
 	var issues []RingIssue
 	add := func(sev, typ, detail string) {
 		issues = append(issues, RingIssue{Severity: sev, Type: typ, Detail: detail})
 	}
 
-	// (1) peer-unreachable — a member of this replica's view whose own view was
-	// not collected. Counts as an error: never report healthy with a silently
-	// missing peer, or --all shows green mid-partition.
+	// (1) peer-unreachable — a member whose own view was not collected. An
+	// error: never report healthy with a silently missing peer.
 	for _, addr := range unreachable {
 		add("error", "peer-unreachable", fmt.Sprintf("%s is in membership but its view could not be collected", addr))
 	}
@@ -167,7 +161,7 @@ func computeTopology(selfAddr string, views map[string]RingStatus, unreachable [
 		}
 	}
 
-	// (2b) backend-set-divergence (#846) — reachable replicas that hash their
+	// (2b) backend-set-divergence (#846) — reachable replicas hashing their
 	// routing backend set differently have diverged (a dropped RING-CHANGE).
 	// The reference is this replica's own hash; anything different is flagged.
 	if self, ok := views[selfAddr]; ok && self.BackendSetHash != "" {
@@ -180,7 +174,7 @@ func computeTopology(selfAddr string, views map[string]RingStatus, unreachable [
 	}
 
 	// (3) asymmetric-edge — A's self-row says right=B but B's self-row does not
-	// say left=A (or the mirror on the left). Deduped by unordered pair.
+	// say left=A (or the mirror). Deduped by unordered pair.
 	selfRowOf := func(v RingStatus) *RingMemberStatus {
 		for i := range v.Members {
 			if v.Members[i].Self {
@@ -247,9 +241,8 @@ func computeTopology(selfAddr string, views map[string]RingStatus, unreachable [
 		add("error", "tombstone-divergence", fmt.Sprintf("%s is a live member on some replicas but tombstoned on others", addr))
 	}
 
-	// (5) seq-lag — per origin, a reachable replica trailing the max watermark.
-	// Warn only: watermarks legitimately differ during activity, and flipping
-	// healthy on that is exactly the false defect we must avoid.
+	// (5) seq-lag — per origin, a replica trailing the max watermark. Warn only:
+	// watermarks legitimately differ during activity.
 	maxSeq := map[string]uint64{}
 	for _, a := range reachAddrs {
 		for _, m := range views[a].Members {

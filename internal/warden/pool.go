@@ -11,28 +11,17 @@ import (
 )
 
 // DefaultPoolSize is the number of long-lived connections a Pool keeps. The
-// warden wire protocol carries no request id, so a connection cannot be
-// multiplexed the way yarilo-auth's is (#885) — each request holds its
-// connection for one round trip. Every operation is a sub-millisecond in-cluster
-// RPC, so a handful of connections serves tens of thousands of operations per
-// second, and the point is simply that the count no longer tracks the login rate.
+// wire protocol carries no request id, so a connection holds one request for a
+// single round trip (#885); a handful suffices since each op is a sub-ms RPC.
 const DefaultPoolSize = 4
 
-// Pool is a fixed set of long-lived connections to yarilo-warden, each guarded by
-// its own mutex.
+// Pool is a fixed set of long-lived connections to yarilo-warden, each guarded
+// by its own mutex.
 //
-// Sessions do NOT own a connection. Every command carries the session id on the
-// wire (CONNECT/DISCONNECT/HEARTBEAT/SELECT/BACKEND all take it), and the server
-// keeps no per-connection state — its handleConn performs no cleanup when a
-// connection drops, and the connection-limit accounting keys on the (user, ip)
-// pair from the CONNECT arguments rather than on connection identity. That is
-// what makes sharing safe; see internal/warden/shared_conn_test.go, which pins
-// those invariants.
-//
-// The trade-off this introduces: losing one connection now affects every session
-// using it rather than one. Recovery is a redial of a few hundred milliseconds
-// against a 90s session TTL, so the sweeper never sees a gap, and
-// yarilo_warden_sessions_reaped_total makes it visible if that ever stops holding.
+// Sessions do NOT own a connection: every command carries the session id on the
+// wire and the server keeps no per-connection state, so a connection is freely
+// shared. Losing one redials in a few hundred ms, well within the 90s session
+// TTL. See internal/warden/shared_conn_test.go for the pinned invariants.
 type Pool struct {
 	addr    string
 	tlsCfg  *tls.Config
@@ -45,15 +34,15 @@ type Pool struct {
 	closed    atomic.Bool
 }
 
-// pooledConn is one connection plus the mutex serialising its round trips.
+// pooledConn is one connection and the mutex serialising its round trips.
 type pooledConn struct {
 	mu sync.Mutex
 	c  *Conn // nil until first use, and after a transport error
 }
 
-// NewPool creates a Pool of size connections against addr. Connections are
-// dialled lazily on first use, so the pool can be constructed before
-// yarilo-warden is reachable. size <= 0 selects DefaultPoolSize.
+// NewPool creates a Pool of size connections against addr, dialled lazily on
+// first use so it can be built before yarilo-warden is reachable. size <= 0
+// selects DefaultPoolSize.
 func NewPool(addr string, tlsCfg *tls.Config, size int, timeout time.Duration) *Pool {
 	if size <= 0 {
 		size = DefaultPoolSize
@@ -83,14 +72,10 @@ func (p *Pool) Close() {
 	})
 }
 
-// do runs fn on one connection, redialling and retrying once if the connection
-// turned out to be dead.
-//
-// The retry is safe because every warden operation is idempotent in its session
-// id: a repeated CONNECT for the same id upserts the same session record, and
-// HEARTBEAT/SELECT/BACKEND/DISCONNECT are naturally so. ErrTooManyConns is a
-// protocol answer rather than a transport failure, so it is returned untouched
-// and never triggers a redial.
+// do runs fn on one connection, redialling and retrying once on a dead
+// connection. The retry is safe because every op is idempotent in its session
+// id (a repeated CONNECT upserts the same record). ErrTooManyConns is a
+// protocol answer, not a transport failure, so it never triggers a redial.
 func (p *Pool) do(fn func(*Conn) error) error {
 	if p.closed.Load() {
 		return errors.New("warden/pool: closed")
@@ -112,8 +97,7 @@ func (p *Pool) do(fn func(*Conn) error) error {
 		if err == nil || errors.Is(err, ErrTooManyConns) {
 			return err
 		}
-		// Transport failure: discard the connection so the next caller redials,
-		// and retry once on a fresh one.
+		// Transport failure: discard the connection and retry once on a fresh one.
 		pc.c.Close()
 		pc.c = nil
 		if attempt == 1 {
@@ -145,9 +129,8 @@ func (p *Pool) Select(id, folder string) error {
 }
 
 // PenaltyLookup / PenaltyUpdate run the auth-penalty ops over the pool so they
-// survive an warden restart (#946): p.do redials on a transport error and retries
-// once, where the raw single Conn used by yarilo-auth would fail every op forever
-// after the connection died. Satisfies protocol.PenaltyStore.
+// survive a warden restart (#946): p.do redials and retries once. Satisfies
+// protocol.PenaltyStore.
 func (p *Pool) PenaltyLookup(ip string) (int, error) {
 	var count int
 	err := p.do(func(c *Conn) error {
@@ -163,7 +146,7 @@ func (p *Pool) PenaltyUpdate(ip string, count int) error {
 }
 
 // Heartbeat renews a session's TTL. Reports false when the server does not know
-// the session — it was reaped, and the caller must re-issue CONNECT.
+// the session (reaped); the caller must then re-issue CONNECT.
 func (p *Pool) Heartbeat(id string) (bool, error) {
 	var known bool
 	err := p.do(func(c *Conn) error {
@@ -174,13 +157,10 @@ func (p *Pool) Heartbeat(id string) (bool, error) {
 	return known, err
 }
 
-// HeartbeatLoop renews id every interval until ctx is cancelled, mirroring
-// Conn.HeartbeatLoop but over the shared pool. Each beat is one short round trip
-// that holds its connection only for that beat, so many sessions share the pool
-// without blocking each other for any meaningful time.
-//
-// Returns nil on ctx cancellation. On unknown session it calls onUnknown and
-// returns nil — the session is gone and beating harder will not bring it back.
+// HeartbeatLoop renews id every interval until ctx is cancelled, over the
+// shared pool. Each beat holds a connection only for its round trip. Returns
+// nil on ctx cancellation; on unknown session it calls onUnknown and returns
+// nil.
 func (p *Pool) HeartbeatLoop(ctx context.Context, id string, interval time.Duration, onUnknown func()) error {
 	if interval <= 0 {
 		return fmt.Errorf("warden/pool: heartbeat interval must be > 0")

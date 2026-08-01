@@ -16,23 +16,17 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// folderEventTimeout bounds the fire-and-forget event emission so a
-// sluggish yarilo-locks pub/sub cannot stall the admin HTTP request.
-// Mirrors the 1-second timeout the IMAP session path uses.
+// folderEventTimeout bounds the fire-and-forget event emission so a sluggish
+// yarilo-locks pub/sub cannot stall the admin HTTP request.
 const folderEventTimeout = time.Second
 
-// registerFolderWriteRoutes wires the mutating folder admin
-// endpoints. Routes live in folder.go's switch but the bodies are
-// here so the read-only path stays small + scannable.
+// registerFolderWriteRoutes wires the mutating folder admin endpoints.
 //
-// Authorisation model: admin bypass — backend-api is already gated
-// by Token + AllowedNets + mTLS (see middleware.go). The handler
-// does NOT consult ACL.Effective even when an ACL file exists on
-// the target mailbox; admins doing operator-level repair should be
-// able to act regardless of per-user grants. The ACL store IS still
-// updated so an admin DELETE drops the yarilo-acl file + global
-// index entries, and RENAME moves them — leaving no orphan ACL
-// state behind.
+// Authorisation model: admin bypass. backend-api is already gated by Token +
+// AllowedNets + mTLS, so the handler does NOT consult ACL.Effective even when
+// an ACL file exists on the target mailbox. The ACL store IS still updated:
+// DELETE drops the yarilo-acl file + global index entries and RENAME moves
+// them, leaving no orphan ACL state behind.
 func (s *Server) registerFolderWriteRoutes() {
 	s.mux.Handle("POST /api/backend/folder/create", s.middleware(s.handleFolderCreate))
 	s.mux.Handle("POST /api/backend/folder/delete", s.middleware(s.handleFolderDelete))
@@ -40,12 +34,10 @@ func (s *Server) registerFolderWriteRoutes() {
 	s.mux.Handle("POST /api/backend/folder/expunge", s.middleware(s.handleFolderExpunge))
 }
 
-// folderCreateRequest is decoded by handleFolderCreate. SpecialUse
-// is optional — when set, the folder is registered with that
-// RFC 6154 attribute via internal/userstate/specialuse so a
-// subsequent LIST surfaces it (matches the IMAP CREATE-SPECIAL-USE
-// flow). Personal-namespace only — specialuse is per-user and
-// has no semantics on shared / public namespaces.
+// folderCreateRequest is decoded by handleFolderCreate. SpecialUse is optional;
+// when set, the folder is registered with that RFC 6154 attribute so a
+// subsequent LIST surfaces it. Personal-namespace only: specialuse is per-user
+// and has no semantics on shared / public namespaces.
 type folderCreateRequest struct {
 	User       string `json:"user"`
 	Folder     string `json:"folder"`
@@ -53,8 +45,8 @@ type folderCreateRequest struct {
 	SpecialUse string `json:"special_use"`
 }
 
-// folderRenameRequest carries the old + new folder names. Renaming
-// across namespaces is not supported (mirrors the IMAP path).
+// folderRenameRequest carries the old + new folder names. Renaming across
+// namespaces is not supported.
 type folderRenameRequest struct {
 	User      string `json:"user"`
 	OldFolder string `json:"old_folder"`
@@ -62,9 +54,8 @@ type folderRenameRequest struct {
 	Namespace string `json:"namespace"`
 }
 
-// folderExpungeRequest narrows the EXPUNGE to a specific UID set
-// when UIDs is non-nil; when empty, every \Deleted-flagged message
-// is removed (the IMAP EXPUNGE semantic).
+// folderExpungeRequest narrows the EXPUNGE to a specific UID set when UIDs is
+// non-nil; when empty, every \Deleted-flagged message is removed.
 type folderExpungeRequest struct {
 	User      string   `json:"user"`
 	Folder    string   `json:"folder"`
@@ -107,8 +98,8 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CREATE-SPECIAL-USE — only meaningful on personal. Shared /
-	// public folders do not carry per-user RFC 6154 attrs.
+	// Only meaningful on personal; shared / public folders do not carry
+	// per-user RFC 6154 attrs.
 	if req.SpecialUse != "" && bundle.spec.Type == "personal" {
 		store := specialuse.New(
 			bundle.folderHome(),
@@ -118,9 +109,8 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 			s.opts.SpecialUseDefaults,
 		)
 		if err := store.Set(req.Folder, imaplib.MailboxAttr(req.SpecialUse)); err != nil {
-			// Folder is created; rolling back is worse than logging
-			// the partial state. Surface as 200 with a warning so the
-			// admin sees the diagnostic.
+			// Folder is created; rolling back is worse than reporting the
+			// partial state. Surface as 200 with a warning.
 			slog.Warn("backendapi/folder: special_use set failed",
 				"user", req.User, "folder", req.Folder, "attr", req.SpecialUse, "err", err)
 			apiJSON(w, map[string]any{
@@ -169,9 +159,8 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "delete: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Drop the per-folder yarilo-acl file + namespace-wide list
-	// entries. Non-fatal — the mailbox is already gone; surface a
-	// warning so the admin sees ACL-state drift if it happens.
+	// Drop the per-folder yarilo-acl file + namespace-wide list entries.
+	// Non-fatal: the mailbox is already gone; warn on ACL-state drift.
 	if err := s.dropFolderACL(bundle, req.Folder); err != nil {
 		slog.Warn("backendapi/folder: acl cleanup after delete failed",
 			"user", req.User, "folder", req.Folder, "err", err)
@@ -191,9 +180,8 @@ func (s *Server) handleFolderRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.EqualFold(req.OldFolder, "INBOX") {
-		// INBOX rename has move-messages semantics that the admin path
-		// does not yet implement (it would need to touch every message).
-		// Reject with a clear reason rather
+		// INBOX rename has move-messages semantics the admin path does not
+		// yet implement (it would need to touch every message). Reject rather
 		// than silently doing the wrong thing.
 		apiError(w, "rename of INBOX is not supported via backend-api", http.StatusBadRequest)
 		return
@@ -234,8 +222,8 @@ func (s *Server) handleFolderRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bundle.idx.RenameFolder(req.OldFolder, req.NewFolder); err != nil {
-		// On-disk box rename succeeded; index disagreed. Logging
-		// rather than rolling back — operator can run repair.
+		// On-disk box rename succeeded; index disagreed. Log rather than
+		// roll back; the operator can run repair.
 		slog.Warn("backendapi/folder: idx rename failed after box rename",
 			"user", req.User, "from", req.OldFolder, "to", req.NewFolder, "err", err)
 	}
@@ -327,7 +315,7 @@ func (s *Server) handleFolderExpunge(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// hasDeletedFlag mirrors the IMAP path's flag-search predicate.
+// hasDeletedFlag reports whether flags contain \Deleted.
 func hasDeletedFlag(flags []string) bool {
 	for _, f := range flags {
 		if strings.EqualFold(f, `\Deleted`) {
@@ -337,9 +325,8 @@ func hasDeletedFlag(flags []string) bool {
 	return false
 }
 
-// dropFolderACL removes the per-folder yarilo-acl file AND its
-// namespace-wide list entry. Idempotent — the underlying
-// acl.Store.Remove is a no-op when no file exists.
+// dropFolderACL removes the per-folder yarilo-acl file and its namespace-wide
+// list entry. Idempotent: acl.Store.Remove is a no-op when no file exists.
 func (s *Server) dropFolderACL(bundle *nsBundle, folder string) error {
 	store := acl.New(
 		bundle.folderHome(),
@@ -354,8 +341,8 @@ func (s *Server) dropFolderACL(bundle *nsBundle, folder string) error {
 	return store.Remove(folder)
 }
 
-// renameFolderACL moves the per-folder yarilo-acl file across index
-// dirs and rewrites the namespace-wide list entries. Idempotent.
+// renameFolderACL moves the per-folder yarilo-acl file across index dirs and
+// rewrites the namespace-wide list entries. Idempotent.
 func (s *Server) renameFolderACL(bundle *nsBundle, oldFolder, newFolder string) error {
 	store := acl.New(
 		bundle.folderHome(),
@@ -370,10 +357,9 @@ func (s *Server) renameFolderACL(bundle *nsBundle, oldFolder, newFolder string) 
 	return store.Rename(oldFolder, newFolder)
 }
 
-// emitFolderEvent pushes an advisory wake-up to IDLE sessions on
-// other pods. Fire-and-forget: errors are logged at Debug only
-// because the authoritative state already lives on disk and the
-// next poll picks it up.
+// emitFolderEvent pushes an advisory wake-up to IDLE sessions on other pods.
+// Fire-and-forget: errors are logged at Debug only, since the authoritative
+// state already lives on disk and the next poll picks it up.
 func (s *Server) emitFolderEvent(uc *userContext, folder string, eventType locks.EventType, uid uint32) {
 	if s.opts.Locker == nil || uc.info == nil {
 		return

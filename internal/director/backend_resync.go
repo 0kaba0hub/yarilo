@@ -12,34 +12,27 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
 )
 
-// Backend-set auto-resync (#846 PR-2), the repair half of the reference hosts_hash
-// parity built on the detection from PR-1. Each anti-entropy tick a director
-// sends its backend-set hash to its ring neighbors (BACKEND-HASH). A neighbor
-// whose hash differs — for backendSyncMinMismatchTicks CONSECUTIVE ticks, so a
-// normal event-propagation window (where up flips during flush/drain) is not
-// mistaken for divergence — asks that neighbor for a full backend snapshot
-// (BACKEND-SYNC-REQ → BACKEND-HAND-START … BACKEND-HOST … BACKEND-HAND-END) and
-// merges it under the lease/lamport rules.
+// Backend-set auto-resync (#846 PR-2): each anti-entropy tick a director sends
+// its backend-set hash to its ring neighbors (BACKEND-HASH). A neighbor whose
+// hash differs for backendSyncMinMismatchTicks CONSECUTIVE ticks (debouncing a
+// normal propagation window where up flips during flush/drain) pulls a full
+// snapshot (BACKEND-SYNC-REQ → BACKEND-HAND-START … BACKEND-HOST …
+// BACKEND-HAND-END) and merges it under the lease rules.
 //
-// PAIRWISE, not full-mesh (deliberately): the hash is exchanged only between
-// directly-connected neighbors, exactly like the reference's director-connection SYNC.
-// A divergence between non-adjacent directors heals TRANSITIVELY — A↔B repairs
-// one hop, then B↔C the next — converging in at most ~N/2 ticks around the ring.
-// Do NOT "improve" this to a ring-wide broadcast: the pairwise exchange is what
-// keeps the steady-state cost one line per connection per tick.
+// PAIRWISE, not full-mesh: the hash is exchanged only between directly-connected
+// neighbors. Non-adjacent divergence heals TRANSITIVELY (A↔B, then B↔C),
+// converging in ~N/2 ticks. Do NOT broadcast ring-wide: pairwise exchange keeps
+// steady-state cost at one line per connection per tick.
 //
-// MERGE IS ADD-ONLY and lease-gated, never a resurrection channel (the #776
-// ghost-backend guard):
+// MERGE IS ADD-ONLY and lease-gated, never a resurrection channel (#776):
 //   - a lease-managed record (seq>0) applies only if STRICTLY NEWER than our
-//     lease for that backend (recordBackendSeen), exactly like a live heartbeat;
+//     lease (recordBackendSeen), exactly like a live heartbeat;
 //   - a static record (seq==0) applies only if the backend is locally ABSENT;
-//   - a record for a recently-removed backend (down / expiry / unreachable
-//     eviction) is blocked unless its seq exceeds the removal seq — so a peer
-//     that has not yet learned of a removal cannot re-add the ghost.
-// Absence from a snapshot is NEVER authoritative (it does not remove anything):
-// a missed-DOWN self-heals through the lease TTL (the dead pod stops
-// heartbeating everywhere); this resync targets the missed-UP that otherwise
-// never heals, because a backend self-registers to only one director.
+//   - a record for a recently-removed backend is blocked unless its seq exceeds
+//     the removal seq, so a peer lagging a removal cannot re-add the ghost.
+// Absence from a snapshot is NEVER authoritative: a missed-DOWN self-heals via
+// the lease TTL, so this resync targets only the missed-UP that otherwise never
+// heals (a backend self-registers to just one director).
 
 const (
 	// backendSyncMinMismatchTicks debounces resync against normal propagation:
@@ -47,8 +40,7 @@ const (
 	// snapshot is pulled.
 	backendSyncMinMismatchTicks = 2
 	// backendSyncCooldown rate-limits snapshot pulls per connection so a
-	// flapping backend cannot drive a resync storm (the reference's desynced_hosts_hash
-	// debounce).
+	// flapping backend cannot drive a resync storm.
 	backendSyncCooldown = 10 * time.Second
 	// backendTombTTL bounds how long a removed backend blocks resurrection by a
 	// stale snapshot. Comfortably longer than propagation + a few ticks.
@@ -74,7 +66,7 @@ func (m *Membership) broadcastBackendHash() {
 
 // handleBackendSyncLine handles the resync sub-protocol on a ring connection,
 // returning true when it consumed the line. conn carries replies; rd reads a
-// snapshot block. Kept out of handleRingLine because these are per-connection
+// snapshot block. Kept out of handleRingLine: these are per-connection
 // request/response lines, not (origin,seq) envelopes to forward.
 func (m *Membership) handleBackendSyncLine(conn net.Conn, rd *bufio.Reader, fields []string) bool {
 	switch fields[0] {
@@ -225,9 +217,9 @@ func (s *Server) backendLeaseSeq(ip string) uint64 {
 	return s.backendSeen[ip].seq
 }
 
-// recordBackendTomb marks ip as removed at seq, blocking resurrection by a
-// stale snapshot until backendTombTTL elapses or a strictly-newer record shows
-// a genuine re-registration.
+// recordBackendTomb marks ip as removed at its current lease seq, blocking
+// resurrection by a stale snapshot until backendTombTTL elapses or a
+// strictly-newer record proves a genuine re-registration.
 func (s *Server) recordBackendTomb(ip string) {
 	s.backendTombMu.Lock()
 	s.backendTomb[ip] = backendTombstone{seq: s.backendLeaseSeq(ip), at: time.Now()}

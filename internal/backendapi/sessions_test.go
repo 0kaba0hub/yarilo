@@ -13,9 +13,8 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
-// startKickWarden spins an in-process warden server, returns its
-// address and a subscription channel on "kick:imap" that the
-// test asserts against.
+// startKickWarden starts a warden server; returns its address and
+// a subscription channel on "kick:imap".
 func startKickWarden(t *testing.T) (string, <-chan string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -112,10 +111,7 @@ func TestKickEndpoint_RejectsMissingWarden(t *testing.T) {
 	}
 }
 
-// mustPostKick issues POST /api/backend/sessions/kick with a
-// caller-supplied JSON body. Uses NewRequestWithContext so it
-// passes golangci-lint's noctx check; behaviour is otherwise
-// identical to a bare http.Post.
+// mustPostKick issues POST /api/backend/sessions/kick.
 func mustPostKick(t *testing.T, baseURL string, body []byte) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,

@@ -7,9 +7,8 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 
-// BuildEngine resolves the configured fts_engine. The engine is required and
-// explicit: no name (or an unknown one) fails startup fast, so the active
-// engine is always stated in config.
+// BuildEngine resolves the configured fts_engine; a missing or unknown
+// name fails startup.
 func BuildEngine(cfg config.FTSConfig) (fts.Engine, error) {
 	switch cfg.Engine {
 	case "flatcurve":

@@ -1,26 +1,20 @@
 // Package file is a JSON-backed local-filesystem dict driver.
 //
-// One Dict instance corresponds to one file path. The caller passes
-// the literal path in Config.Settings["path"]; per-user templating
-// ("%h/.metadata") is the caller's job — use pkg/dict/varexpand to
-// resolve %u/%h/%n/%d/%i before Open.
+// One Dict instance maps to one file path, passed in Config.Settings["path"];
+// per-user templating (%u/%h/%n/%d/%i) is the caller's job via pkg/dict/varexpand
+// before Open.
 //
-// Concurrency: an in-process sync.RWMutex serialises mutations and
-// guards reads. The driver is NOT safe across processes — two yarilo
-// binaries opening the same path will silently clobber each other.
-// Deployment topologies that need shared state across pods use redis
-// or sql drivers; the file driver is for standalone single-process
-// runs (CLI, dev, embedded tests, single-pod helm release).
+// An in-process sync.RWMutex guards reads and mutations. The driver is NOT safe
+// across processes — two binaries opening the same path clobber each other — so
+// it is for single-process runs (CLI, dev, tests, single-pod helm); use the
+// redis or sql drivers for state shared across pods.
 //
-// Format: a single JSON document with a fixed envelope and an array
-// of rows. The "version" tag is reserved for future migrations.
-// []byte values are JSON-encoded as base64 by encoding/json's default,
-// so binary values survive round-trip without escaping.
+// Format: one JSON document with a fixed envelope and an array of rows; the
+// "version" tag is reserved for future migrations. []byte values are
+// base64-encoded by encoding/json, so binary values survive round-trip.
 //
-// Writes are atomic via temp-file + rename: the on-disk file is
-// either the pre-write or the post-write state, never partial.
-// fsync is issued before rename so a crash between rename and the
-// next OS flush does not lose committed data.
+// Writes are atomic via temp-file + fsync + rename: the on-disk file is either
+// the pre-write or post-write state, never partial.
 package file
 
 import (
@@ -43,9 +37,9 @@ func init() {
 	dict.Register("file", New)
 }
 
-// New constructs a file dict. Required setting: "path" (string).
-// The file does not have to exist yet — first commit creates it
-// along with any missing parent directories (0700 perms by default).
+// New constructs a file dict. Required setting: "path" (string). The file need
+// not exist yet — the first commit creates it and any missing parent
+// directories (0700).
 func New(cfg dict.Config) (dict.Dict, error) {
 	pathAny, ok := cfg.Settings["path"]
 	if !ok {
@@ -96,8 +90,8 @@ func (d *Dict) Close() error {
 	return nil
 }
 
-// loadLocked reads the on-disk file into d.rows. Called once per
-// process; subsequent calls are a no-op. d.mu (write) must be held.
+// loadLocked reads the on-disk file into d.rows once; subsequent calls are a
+// no-op. d.mu (write) must be held.
 func (d *Dict) loadLocked() error {
 	if d.loaded {
 		return nil
@@ -125,9 +119,9 @@ func (d *Dict) loadLocked() error {
 	return nil
 }
 
-// flushLocked serialises d.rows and writes it atomically via temp-file
-// + fsync + rename. d.mu (write) must be held. Caller is responsible
-// for in-memory state being the desired post-write state.
+// flushLocked serialises d.rows and writes it atomically via temp-file + fsync +
+// rename. d.mu (write) must be held; d.rows must already be the desired
+// post-write state.
 func (d *Dict) flushLocked() error {
 	if err := os.MkdirAll(filepath.Dir(d.path), 0o700); err != nil {
 		return fmt.Errorf("mkdir parent: %w", err)

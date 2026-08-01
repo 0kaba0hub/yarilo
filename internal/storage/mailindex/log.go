@@ -18,11 +18,10 @@ const (
 	// canonical MAIL_TRANSACTION_LOG_HEADER_MIN_SIZE.
 	LogHeaderMinSize = 24
 
-	// LogHeaderSize is the actual byte length the writer
-	// produces at LOG_MAJOR=1 LOG_MINOR=3 — 40 bytes: base 24
-	// + initial_modseq(8, since v1.1) + compat_flags(1) +
-	// unused[3] + unused2(4) (since v1.2). Newer minor
-	// versions MAY grow this; readers preserve unknown tail
+	// LogHeaderSize is the byte length written at LOG_MAJOR=1
+	// LOG_MINOR=3: 40 bytes = base 24 + initial_modseq(8, v1.1+)
+	// + compat_flags(1) + unused[3] + unused2(4) (v1.2+). Newer
+	// minor versions may grow this; readers preserve unknown tail
 	// bytes.
 	LogHeaderSize = 40
 )
@@ -44,18 +43,11 @@ const (
 //	uint8  unused[3]                  offset 33
 //	uint32 unused2                    offset 36
 //
-// Size: LogHeaderMinSize=24 is the minimum valid hdr_size
-// (anything smaller is corruption). LogHeaderSize=40 is the full
-// MAJOR=1 MINOR=3 footprint with every optional tail field
-// present: 24 base + 8 initial_modseq (v1.1+) + 1 compat_flags +
-// 3 unused + 4 unused2 (v1.2+).
-//
-// Per-spec parsing rule: "If [hdr_size] is larger than this
-// struct, ignore any unknown fields. If it's smaller, assume the
-// rest of the fields are 0." DecodeLogHeader implements both
-// halves — older writers' missing tail is zero-padded; newer
-// writers' extra tail is preserved verbatim via HdrSize so the
-// next Recreate keeps the on-disk size unchanged.
+// Parsing rule: hdr_size larger than this struct means ignore the
+// unknown tail; smaller means assume the missing fields are 0.
+// DecodeLogHeader does both — older writers' missing tail is
+// zero-padded, newer writers' extra tail is preserved via HdrSize
+// so the next Recreate keeps the on-disk size unchanged.
 type LogHeader struct {
 	MajorVersion   uint8
 	MinorVersion   uint8
@@ -71,10 +63,9 @@ type LogHeader struct {
 }
 
 // NewLogHeader returns a LogHeader for a freshly-created .log
-// file: current version, supplied indexid + file_seq, zero
-// prev-file pointers (caller passes non-zero when rotating from
-// an existing .log), now as create_stamp via caller (the package
-// has no time source — caller passes the timestamp explicitly).
+// file: current version, supplied indexID + fileSeq, zero prev-file
+// pointers (non-zero when rotating from an existing .log). The
+// package has no time source, so createStamp is caller-supplied.
 func NewLogHeader(indexID, fileSeq, createStamp uint32) LogHeader {
 	return LogHeader{
 		MajorVersion: LogMajorVersion,
@@ -181,14 +172,10 @@ func (h *LogHeader) decodeFrom(buf []byte) {
 
 // ---- uint32 ↔ offset framing for transaction sizes -------------------
 
-// EncodeFramedSize packs a 4-byte-aligned offset (< 1 GiB) into
-// a 4-byte big-endian value whose every byte has the high bit
-// set (0x80 0x80 0x80 0x80). The framing means a torn write
-// that lands in any byte of this field produces a value whose
-// magic bits are wrong, so the reader rejects it as a partial
-// transaction header.
-//
-// Algorithm (matches the canonical mail_index_uint32_to_offset):
+// EncodeFramedSize packs a 4-byte-aligned offset (< 1 GiB) into a
+// 4-byte big-endian value with the high bit set on every byte
+// (0x80808080). A torn write to any byte breaks the magic bits, so
+// the reader rejects it as a partial transaction header.
 //
 //	offset must be < 0x40000000 and 4-byte aligned.
 //	offset >>= 2
@@ -210,15 +197,12 @@ func EncodeFramedSize(offset uint32) (uint32, error) {
 	v |= ((offset >> 7) & 0x7f) << 8
 	v |= ((offset >> 14) & 0x7f) << 16
 	v |= ((offset >> 21) & 0x7f) << 24
-	// Convert little-endian-on-disk to big-endian (the canonical
-	// reader does be32 because it operates on the raw memory
-	// without endian conversion).
+	// On-disk order is big-endian.
 	return byteSwap32(v), nil
 }
 
-// DecodeFramedSize is the inverse of EncodeFramedSize. Returns
-// 0 when the magic 0x80808080 bits are not all set — that's how
-// the canonical reader detects torn writes.
+// DecodeFramedSize is the inverse of EncodeFramedSize. Returns 0
+// when the 0x80808080 magic bits are not all set (torn write).
 func DecodeFramedSize(framed uint32) uint32 {
 	framed = byteSwap32(framed)
 	if framed&0x80808080 != 0x80808080 {

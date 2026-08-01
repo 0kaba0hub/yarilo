@@ -8,17 +8,15 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// maxHealAttempts bounds consecutive reactive-heal failures for one folder in one
-// session. Beyond it, a near-continuous purge/altmove is keeping every scan
-// incomplete (heal aborts, folder stays FSCKD); we stop auto-retrying — each retry
-// costs a full storage scan — and log once, pointing the operator at a rebuild.
+// maxHealAttempts bounds consecutive reactive-heal failures for one folder in
+// one session. Beyond it a continuous purge/altmove keeps aborting the scan;
+// stop auto-retrying (each retry costs a full storage scan) and log once.
 const maxHealAttempts = 3
 
-// flagCorruptOnRead persists the folder's FSCKD marker when a read failed
-// because the backing storage is missing/corrupt (never for a transient I/O
-// error). The next open then heals the index. Gated per session so a FETCH over
-// N corrupt messages does not pay N lock/log round-trips — one mark suffices,
-// the heal removes every missing record at once. Best-effort.
+// flagCorruptOnRead persists the folder's FSCKD marker when a read failed on
+// missing/corrupt storage (never on a transient I/O error) so the next open
+// heals the index. Gated per session so a FETCH over N corrupt messages pays
+// one lock/log round-trip, not N. Best-effort.
 func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, folder, filename string, uid uint32, err error) {
 	if err == nil || !errors.Is(err, mailbox.ErrCorruptStorage) {
 		return
@@ -31,8 +29,8 @@ func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, fold
 		s.markedCorrupt = make(map[uint64]bool)
 	}
 	// Key by folder ID, not name: the mark site (FETCH uses s.folder.Name) and
-	// the clear site (SELECT/STATUS use the namespace-relative name) can differ
-	// for shared/public folders — the ID is the one identity every call site has.
+	// the clear site (SELECT/STATUS use the namespace-relative name) differ for
+	// shared/public folders; the ID is the one identity every call site has.
 	if s.markedCorrupt[folderID] {
 		return
 	}
@@ -47,14 +45,14 @@ func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, fold
 
 // fetchSelected reads a message body from the selected folder, flagging the
 // folder for a reactive heal if the read tripped over corrupt storage. All
-// selected-folder FETCH body reads go through here so the marker is set no
-// matter which body specifier triggered the read.
+// selected-folder FETCH body reads go through here so the marker is set
+// whichever body specifier triggered the read.
 func (s *session) fetchSelected(m *mailbox.MessageMeta) (rc io.ReadCloser, err error) {
 	rc, err = s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier)
 	if err != nil {
-		// Only flag corruption a driver can actually heal: a driver without a
-		// reactive rebuilder (mdbox until #594 Phase 2b) would otherwise be left
-		// stuck FSCKD with nothing to clear the marker.
+		// Only flag corruption a driver can actually heal; a driver without a
+		// reactive rebuilder would otherwise be stuck FSCKD with nothing to
+		// clear the marker.
 		if mailbox.CanReactiveHeal(s.folderBox()) {
 			s.flagCorruptOnRead(s.folderIdx(), s.folder.ID, s.folder.Name, m.Filename, m.UID, err)
 		}
@@ -64,17 +62,16 @@ func (s *session) fetchSelected(m *mailbox.MessageMeta) (rc io.ReadCloser, err e
 
 // dboxHealIfCorrupt runs the reactive heal when the folder carries the FSCKD
 // marker and the driver supports it. Returns a refreshed folder handle when a
-// heal ran, or nil otherwise. Non-fatal on error. Used from SELECT, STATUS and
+// heal ran, else nil. Non-fatal on error. Used from SELECT, STATUS and
 // Poll/IDLE so a flagged folder heals on whichever the client hits first.
 func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) *mailbox.Folder {
 	if !s.srv.opts.DboxReactiveRebuild {
 		return nil
 	}
 	if !f.Fsckd {
-		// The folder is clean — possibly because another session already healed
-		// and cleared the marker. Drop our stale per-session flag so a fresh
-		// corruption re-flags this folder instead of being suppressed until the
-		// session ends.
+		// Clean, possibly because another session already healed. Drop the
+		// stale per-session flag so a fresh corruption re-flags this folder
+		// instead of being suppressed until the session ends.
 		delete(s.markedCorrupt, f.ID)
 		delete(s.healAttempts, f.ID)
 		return nil
@@ -83,9 +80,9 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 	if !ok {
 		return nil
 	}
-	// Retry-bound: once a folder has failed to heal maxHealAttempts times this
-	// session (a purge/altmove keeps aborting the scan), stop auto-retrying it —
-	// the escalation was already logged on the attempt that hit the bound.
+	// Once a folder has failed to heal maxHealAttempts times this session,
+	// stop auto-retrying; the escalation was logged on the attempt that hit
+	// the bound.
 	if s.healAttempts[f.ID] >= maxHealAttempts {
 		return nil
 	}
@@ -103,12 +100,12 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 		}
 		return nil
 	}
-	// The marker is cleared, so drop any per-session mark so a later corruption
-	// re-flags the folder.
+	// Marker cleared: drop the per-session mark so a later corruption re-flags
+	// the folder.
 	delete(s.markedCorrupt, f.ID)
 	delete(s.healAttempts, f.ID)
-	// Invalidate FTS documents for the expunged records — the reactive heal path
-	// otherwise leaves ghost documents until the next fts rescan.
+	// Invalidate FTS documents for the expunged records; otherwise ghost
+	// documents linger until the next fts rescan.
 	for _, uid := range expunged {
 		s.ftsNotify(rel, true, uid)
 	}

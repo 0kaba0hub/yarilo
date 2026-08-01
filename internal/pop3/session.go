@@ -121,8 +121,8 @@ func (s *session) serve() {
 	s.ok("yarilo POP3 server ready")
 
 	if s.state == statePreAuth {
-		// Login pod has already authenticated the user and discards this
-		// greeting. Set up the mailbox without sending an extra wire response.
+		// login pod already authenticated and discards this greeting;
+		// set up the mailbox without an extra wire response
 		if !s.completePreAuth() {
 			return
 		}
@@ -147,7 +147,7 @@ func (s *session) dispatch(line string) {
 	cmd = strings.ToUpper(strings.TrimSpace(cmd))
 	arg = strings.TrimSpace(arg)
 
-	// arg is deliberately omitted — USER/PASS carry credentials in the clear.
+	// arg omitted: USER/PASS carry credentials in the clear
 	user := s.preAuthUser
 	if s.userInfo != nil {
 		user = s.userInfo.Username
@@ -203,9 +203,7 @@ func (s *session) cmdPass(arg string) {
 	s.finishAuth("", username, arg)
 }
 
-// cmdSASLAuth implements POP3 SASL (RFC 5034): "AUTH <mech>
-// [<base64-init>]". Supported mechanisms: PLAIN (always),
-// OAUTHBEARER (when at least one OAuth provider is configured).
+// cmdSASLAuth handles "AUTH <mech> [<base64-init>]" (RFC 5034).
 func (s *session) cmdSASLAuth(arg string) {
 	parts := strings.SplitN(arg, " ", 2)
 	if len(parts) == 0 || parts[0] == "" {
@@ -241,9 +239,7 @@ func (s *session) cmdSASLAuth(arg string) {
 	}
 }
 
-// scramBuilder captures the per-digest-family wiring so the
-// shared handleSASLScram path does not need to know whether it is
-// dispatching the SHA-256 or SHA-1 mech.
+// scramBuilder wires one digest family (SHA-1 or SHA-256) for handleSASLScram.
 type scramBuilder struct {
 	supported bool
 	nonPlus   func(onSuccess func(string) error) *scram.Session
@@ -274,12 +270,7 @@ func (s *session) scramSha1Builder() scramBuilder {
 	}
 }
 
-// handleSASLScram — AUTH SCRAM-SHA-{1,256} / SCRAM-SHA-{1,256}-PLUS
-// (RFC 5802 / RFC 7677). Multi-round: client-first → server-
-// first → client-final → server-final. Uses the shared SCRAM
-// session adapter from internal/auth/scram so the success hook
-// runs through the regular completeAuthenticated path. Digest
-// family is wired in via the supplied scramBuilder.
+// handleSASLScram handles AUTH SCRAM-SHA-{1,256}[-PLUS] (RFC 5802 / RFC 7677).
 func (s *session) handleSASLScram(parts []string, plus bool, b scramBuilder) {
 	if !b.supported {
 		s.writeErr("unsupported mechanism")
@@ -294,8 +285,7 @@ func (s *session) handleSASLScram(parts []string, plus bool, b scramBuilder) {
 		}
 	}
 
-	// Capture the SCRAM-verified username via the OnSuccess hook
-	// so the post-success path can run completeAuthenticated.
+	// capture the SCRAM-verified username for completeAuthenticated
 	var (
 		verifiedUser string
 		completed    bool
@@ -320,8 +310,7 @@ func (s *session) handleSASLScram(parts []string, plus bool, b scramBuilder) {
 		return
 	}
 	if !completed {
-		// driveSASL exited cleanly without the underlying server
-		// reporting done=true with no err — defensive fall-through.
+		// defensive: driveSASL returned nil without a success callback
 		s.writeErr("authentication failed")
 		return
 	}
@@ -331,9 +320,8 @@ func (s *session) handleSASLScram(parts []string, plus bool, b scramBuilder) {
 	})
 }
 
-// tlsExporter returns the 32-byte RFC 9266 channel-binding
-// material derived from the underlying TLS conn. Returns nil
-// for non-TLS or pre-TLS-1.3 connections.
+// tlsExporter returns the 32-byte RFC 9266 channel-binding material,
+// or nil for non-TLS or pre-TLS-1.3 connections.
 func (s *session) tlsExporter() []byte {
 	netConn := s.conn
 	tc, ok := netConn.(*tls.Conn)
@@ -351,16 +339,11 @@ func (s *session) tlsExporter() []byte {
 	return out
 }
 
-// driveSASL runs the multi-round SASL exchange. The initial
-// response (when supplied via the AUTH line's second token) is
-// fed to srv.Next first; otherwise an empty initial response is
-// passed. For each non-final challenge the driver writes a
-// `+ <base64>` continuation line and reads the next client
-// line. Returns nil on done=true with no error; any error from
-// the SASL server bubbles up.
+// driveSASL runs the multi-round SASL exchange: writes "+ <base64>"
+// continuations, reads client responses, returns nil on success.
 func (s *session) driveSASL(parts []string, srv sasl.Server) error {
 	var resp []byte
-	// Initial response (optional in POP3 SASL).
+	// initial response is optional in POP3 SASL
 	if len(parts) == 2 {
 		decoded, err := base64.StdEncoding.DecodeString(parts[1])
 		if err != nil {
@@ -376,17 +359,12 @@ func (s *session) driveSASL(parts []string, srv sasl.Server) error {
 			return err
 		}
 		if done {
-			// On success the underlying SCRAM server returns the
-			// final v=ServerSignature challenge. POP3 has no
-			// way to deliver post-success SASL data, so we
-			// surface the +OK without it — clients that depend
-			// on ServerSignature verification (rare in POP3)
-			// fall back to the no-server-sig codepath.
+			// POP3 cannot deliver post-success SASL data, so the final
+			// v=ServerSignature challenge is dropped.
 			_ = challenge
 			fmt.Fprintf(s.conn, "+OK authenticated\r\n")
 			return nil
 		}
-		// Continuation — emit + <base64-challenge>, read next.
 		fmt.Fprintf(s.conn, "+ %s\r\n",
 			base64.StdEncoding.EncodeToString(challenge))
 		line, err := s.br.ReadString('\n')
@@ -405,10 +383,8 @@ func (s *session) driveSASL(parts []string, srv sasl.Server) error {
 	}
 }
 
-// handleSASLPlain — the historical AUTH PLAIN path. Reads the
-// initial response (or prompts for it), decodes, validates the
-// NUL-separated authzid/authid/password tuple and dispatches via
-// finishAuth.
+// handleSASLPlain handles AUTH PLAIN: decodes the NUL-separated
+// authzid/authid/password tuple and dispatches via finishAuth.
 func (s *session) handleSASLPlain(parts []string) {
 	if s.srv.opts.DisablePlainAuth && !s.onTLS {
 		s.writeErr("plaintext authentication disabled, use STLS first")
@@ -428,15 +404,12 @@ func (s *session) handleSASLPlain(parts []string) {
 		s.writeErr("invalid PLAIN response")
 		return
 	}
-	// fields[0]=authzid, fields[1]=authid, fields[2]=password.
+	// fields: authzid, authid, password
 	s.finishAuth(fields[0], fields[1], fields[2])
 }
 
-// handleSASLOAuthBearer — AUTH OAUTHBEARER (RFC 7628). Reads the
-// initial response, decodes, feeds it to a go-sasl OAUTHBEARER
-// server which extracts the bearer token from the GS2 envelope
-// and invokes our callback. Wire-shape concerns (GS2 parsing, JSON
-// error blob on failure) live entirely in go-sasl.
+// handleSASLOAuthBearer handles AUTH OAUTHBEARER (RFC 7628).
+// GS2 parsing and the JSON error blob live in go-sasl.
 func (s *session) handleSASLOAuthBearer(parts []string) {
 	payload, ok := s.readSASLPayload(parts)
 	if !ok {
@@ -452,21 +425,18 @@ func (s *session) handleSASLOAuthBearer(parts []string) {
 		return nil
 	})
 	if _, _, err := srv.Next(decoded); err != nil {
-		// go-sasl's OAUTHBEARER server returns errors only on
-		// malformed input — never for backend rejection (those
-		// surface via the callback's *OAuthBearerError, but
-		// finishAuth already wrote the wire reply).
+		// err means malformed input only; backend rejection is already
+		// answered on the wire by finishAuth
 		if d := s.srv.opts.FailureDelay; d > 0 {
 			time.Sleep(d)
 		}
 		s.writeErr("invalid OAUTHBEARER response")
 		return
 	}
-	// finishAuth wrote +OK/-ERR; nothing else for us to do.
 }
 
-// handleSASLXOAuth2 mirrors handleSASLOAuthBearer for the XOAUTH2
-// wire format (user=X\x01auth=Bearer T\x01\x01, no GS2 envelope).
+// handleSASLXOAuth2 handles AUTH XOAUTH2
+// (user=X\x01auth=Bearer T\x01\x01, no GS2 envelope).
 func (s *session) handleSASLXOAuth2(parts []string) {
 	payload, ok := s.readSASLPayload(parts)
 	if !ok {
@@ -490,10 +460,8 @@ func (s *session) handleSASLXOAuth2(parts []string) {
 	}
 }
 
-// readSASLPayload returns the base64 SASL initial response. When
-// the AUTH line carries no second token, prompts the client with
-// "+\r\n" and reads the response line. Returns ok=false after
-// writing the appropriate error reply.
+// readSASLPayload returns the base64 SASL initial response, prompting
+// with "+ \r\n" when the AUTH line carried none.
 func (s *session) readSASLPayload(parts []string) (string, bool) {
 	if len(parts) == 2 {
 		return parts[1], true
@@ -511,11 +479,9 @@ func (s *session) readSASLPayload(parts []string) (string, bool) {
 	return payload, true
 }
 
-// finishAuth authenticates, resolves UserInfo, opens storage handles, and
-// loads the mailbox. Used by both PASS (after USER) and AUTH PLAIN.
+// finishAuth authenticates and completes session setup.
 // authzid carries the master-user impersonation target (RFC 4616);
-// USER/PASS path passes "" since the legacy command has no authzid
-// surface.
+// USER/PASS passes "".
 func (s *session) finishAuth(authzid, username, password string) {
 	if s.srv.opts.DisablePlainAuth && !s.onTLS {
 		s.writeErr("plaintext authentication disabled, use STLS first")
@@ -523,9 +489,7 @@ func (s *session) finishAuth(authzid, username, password string) {
 	}
 	res, err := s.authenticate(authzid, username, password)
 	if err != nil || res == nil || res.Result != protocol.AuthOK {
-		// Timing-leak mitigation: hold the -ERR reply for the
-		// configured delay so unknown-user / wrong-password
-		// surface in the same wall-clock time.
+		// delay so unknown-user and wrong-password take the same time
 		if d := s.srv.opts.FailureDelay; d > 0 {
 			time.Sleep(d)
 		}
@@ -536,11 +500,7 @@ func (s *session) finishAuth(authzid, username, password string) {
 	s.completeAuthenticated(res)
 }
 
-// completeAuthenticated runs the post-verify session setup
-// (resolve userInfo, acquire connection limit + mailbox lock,
-// open backends, load mailbox, write +OK). Shared between the
-// password-verifying finishAuth path and the SCRAM SASL path
-// where the credential is already verified by the mechanism.
+// completeAuthenticated runs post-verify session setup and writes +OK.
 func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 	if !s.setupSession(res) {
 		return
@@ -550,9 +510,8 @@ func (s *session) completeAuthenticated(res *protocol.AuthResponse) {
 }
 
 // completePreAuth sets up the session for a login-pod pre-authenticated
-// connection. Identical to setupSession but sends no wire response — the
-// login pod has already told the client "+OK Logged in" and will discard
-// the backend greeting. Returns false when setup fails (caller closes conn).
+// connection. Sends no wire response: the login pod already answered
+// "+OK Logged in" and discards the backend greeting.
 func (s *session) completePreAuth() bool {
 	res := &protocol.AuthResponse{
 		Result:      protocol.AuthOK,
@@ -575,10 +534,8 @@ func (s *session) completePreAuth() bool {
 	return ok
 }
 
-// setupSession resolves UserInfo, acquires limits/locks, opens storage handles,
-// and loads the mailbox. On failure it writes an error to the wire (for the
-// normal auth path) and returns false. For preAuth callers, the error line is
-// never seen by the client — the connection just closes.
+// setupSession resolves UserInfo, acquires limits/locks, opens storage
+// handles, and loads the mailbox. On failure writes -ERR and returns false.
 func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	resolver := s.srv.opts.Resolver
 	if resolver == nil {
@@ -639,11 +596,8 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	}
 	s.lockKey = userInfo.Username
 
-	// Honour the per-user mail_location driver (sdbox/mdbox/maildir) exactly as
-	// IMAP does: record it on userInfo so the fileindex picks the matching
-	// per-folder layout, and select the per-user mailbox backend when the driver
-	// differs from the global default. Without this POP3 opens every user
-	// through the global (maildir) backend and reports 0 messages for dbox users.
+	// honour the per-user mail_location driver; otherwise dbox users are
+	// opened through the global maildir backend and see 0 messages
 	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
 		slog.Warn("pop3: mail_location parse failed; using global mailbox backend",
 			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)
@@ -664,7 +618,7 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 		return false
 	}
 
-	// Dotlock is acquired after Init so the home directory exists on disk.
+	// dotlock after Init so the home directory exists on disk
 	if s.srv.opts.LockSession && !s.acquireDotlock(userInfo.Home) {
 		s.srv.unlock(s.lockKey)
 		s.lockKey = ""
@@ -698,11 +652,9 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	return true
 }
 
-// authenticate dispatches to MasterAuthenticator when authzid is
-// set and the backend supports it; otherwise falls back to the
-// regular Authenticator surface. Reject distinct authzid against a
-// non-master backend with an opaque AuthFail so the wire reply
-// stays indistinguishable from a wrong-password rejection.
+// authenticate dispatches to MasterAuthenticator when authzid is set and
+// supported. A distinct authzid against a non-master backend gets an opaque
+// AuthFail, indistinguishable from a wrong password.
 func (s *session) authenticate(authzid, username, password string) (*protocol.AuthResponse, error) {
 	ip := s.remoteIP.String()
 	if authzid == "" || authzid == username {
@@ -721,22 +673,13 @@ func (s *session) loadMailbox() error {
 		slog.Error("pop3: open folder", "user", s.userInfo.Username, "err", err)
 		return err
 	}
-	// Reactive self-heal: a dbox folder flagged corrupt (by an earlier read on
-	// any protocol) is healed on POP3 login too, so a POP3-only mailbox does not
-	// stay broken waiting for an IMAP SELECT that never comes.
+	// heal a corrupt-flagged dbox folder at login so a POP3-only mailbox
+	// does not stay broken waiting for an IMAP SELECT
 	if folder.Fsckd {
 		if rb, ok := s.box.(mailbox.ReactiveHealer); ok {
-			// POP3 has no FTS client wired in, so the expunged UIDs cannot be
-			// invalidated here — a POP3-only heal leaves FTS ghost documents until
-			// the next rescan. The IMAP heal path and the operator rebuild both
-			// notify FTS directly.
-			//
-			// No retry-bound here either (unlike the IMAP path's maxHealAttempts):
-			// a POP3 session heals at most once, at login, not in a SELECT/STATUS/
-			// IDLE loop, so one session cannot spin on incomplete scans. A client
-			// that reconnects rapidly during a near-continuous purge could still
-			// reproduce the scan storm across logins, but POP3 sessions are short
-			// and a cross-login bound would need persistent state — an accepted gap.
+			// no FTS client here: expunged UIDs leave FTS ghost documents
+			// until the next rescan. Heal runs at most once per session
+			// (at login), so no retry bound is needed.
 			if expunged, herr := rb.HealCorruptFolder(s.idx, folder); herr != nil {
 				slog.Warn("pop3: dbox reactive heal failed", "user", s.userInfo.Username, "err", herr)
 			} else if len(expunged) > 0 {
@@ -769,7 +712,6 @@ func (s *session) loadMailbox() error {
 }
 
 // computeUIDLs pre-builds the UIDL string for every message.
-// saved is a uid→uidl map from a prior session (nil or empty = no prior data).
 // Priority: ReuseXUIDL header > saved index entry > format-computed value.
 func (s *session) computeUIDLs(saved map[uint32]string) {
 	s.uidls = make([]string, len(s.msgs))
@@ -971,12 +913,8 @@ func (s *session) cmdList(arg string) {
 // the read tripped over corrupt sdbox storage (missing/truncated/bad file).
 func (s *session) fetchINBOX(m *mailbox.MessageMeta) (io.ReadCloser, error) {
 	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
-	// Flag once per session: a RETR loop over a corrupt mailbox must not pay an
-	// OpenFolder+mark per message — the single mark heals every missing record on
-	// the next open. POP3 has no mid-session re-check (unlike IMAP's SELECT path):
-	// if another session heals the folder after this mark, a later corruption in
-	// this same session is not re-flagged until QUIT. Accepted — POP3 sessions are
-	// short and the next login heals anyway.
+	// flag once per session: one mark heals every missing record on the
+	// next open, so a RETR loop over a corrupt mailbox pays no per-message cost
 	if err != nil && !s.markedCorrupt && mailbox.MarkCorruptOnFetchErr(s.box, s.idx, "INBOX", err) {
 		s.markedCorrupt = true
 	}
@@ -1155,9 +1093,8 @@ func (s *session) cmdQuit() {
 		errCount = s.expungeDeleted()
 	}
 
-	// Release dotlock and in-memory lock before sending +OK so the next session
-	// can acquire the lock as soon as it reads our response (not later when the
-	// goroutine unwinds its defers).
+	// release locks before sending +OK so the next session can acquire
+	// them as soon as it reads our response
 	s.releaseLock()
 
 	slog.Debug("pop3: quit timing",
@@ -1186,9 +1123,8 @@ func (s *session) expungeDeleted() int {
 			return s.expungeDeletedPerMessage()
 		}
 		defer func() { _ = s.srv.opts.Locker.Unlock(ctx, lk.ID) }()
-		// Inside this scope the storage backends' withMailboxLock will see
-		// HoldsResource and skip re-acquiring — the whole batch runs under
-		// one X lock from cross-process observers' POV.
+		// withMailboxLock sees HoldsResource and skips re-acquiring:
+		// the whole batch runs under one X lock
 		for i, m := range s.msgs {
 			if !s.deleted[i] {
 				continue
@@ -1199,9 +1135,7 @@ func (s *session) expungeDeleted() int {
 				continue
 			}
 			s.idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
-			// Best-effort EXPUNGED EVENT so IMAP IDLE on sibling pods wakes
-			// up. Reuses the same Locker connection that holds the outer
-			// lock — Emit is independent of the active Lock.
+			// best-effort EXPUNGED event so IMAP IDLE on sibling pods wakes up
 			_ = s.srv.opts.Locker.Emit(ctx, key, locks.EventExpunged, strconv.FormatUint(uint64(m.UID), 10))
 		}
 		return errCount
@@ -1209,9 +1143,8 @@ func (s *session) expungeDeleted() int {
 	return s.expungeDeletedPerMessage()
 }
 
-// expungeDeletedPerMessage is the legacy path used when no Locker is wired
-// (single-process dev, tests). Each storage call takes its own X lock — N+M
-// lock cycles per QUIT but per-message atomicity is preserved.
+// expungeDeletedPerMessage is used when no Locker is wired (single-process
+// dev, tests); each storage call takes its own X lock.
 func (s *session) expungeDeletedPerMessage() int {
 	var errCount int
 	for i, m := range s.msgs {
@@ -1289,9 +1222,8 @@ func (s *session) releaseLock() {
 	}
 }
 
-// acquireDotlock creates a dotlock file at $HOME/yarilo-pop3-session.lock.
-// Returns true on success. A lock older than idleTimeout is considered stale
-// and will be stolen (the session that held it is certainly gone by then).
+// acquireDotlock creates $HOME/yarilo-pop3-session.lock. A lock older than
+// idleTimeout is stale and gets stolen.
 func (s *session) acquireDotlock(home string) bool {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		slog.Warn("pop3: dotlock mkdir", "home", home, "err", err)
@@ -1309,12 +1241,11 @@ func (s *session) acquireDotlock(home string) bool {
 		slog.Warn("pop3: dotlock create", "home", home, "err", err)
 		return false
 	}
-	// Lock exists: treat as stale only if older than the idle timeout.
 	info, err := os.Stat(lockPath)
 	if err != nil || time.Since(info.ModTime()) < idleTimeout {
 		return false
 	}
-	// Stale lock: remove and re-create atomically.
+	// stale lock: remove and re-create
 	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false
 	}

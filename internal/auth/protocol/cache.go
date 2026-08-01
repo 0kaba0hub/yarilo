@@ -12,33 +12,11 @@ import (
 	"time"
 )
 
-// Cache is an in-process LRU cache for verified auth lookups.
-//
-//   - Bytes-bounded: the byte cap limits total payload weight; LRU
-//     eviction makes room when an insert would exceed the cap.
-//   - Two TTLs: positive entries (successful auth) live up to TTL,
-//     negative entries (failed lookup — unknown user, wrong
-//     password) live up to NegTTL. A separate, typically shorter
-//     NegTTL means a fresh password attempt can succeed soon after
-//     the user resets their password without waiting for the full
-//     positive TTL to expire.
-//   - Password verify on hit: every cached entry — positive OR
-//     negative — stores an HMAC of the plain password that produced
-//     it (computed with a process-local random key). On lookup the
-//     incoming password is HMAC-ed and compared in constant time; a
-//     mismatch is a miss and re-runs the chain. For a negative entry
-//     this means only the SAME wrong password short-circuits, while
-//     a different (e.g. the user's correct) password falls through to
-//     the chain instead of inheriting the cached Fail (#950).
-//
-// Caching defence-in-depth: the HMAC key is generated per Cache
-// construction and never persisted. A memory dump reveals the
-// HMACs (which are not invertible) but not plain passwords. The
-// key never crosses any wire — even the master-protocol
-// CACHE-FLUSH only carries user masks, not entries.
-//
-// Cache key format is decided by the caller (typically
-// `service\tusername`); Cache treats keys as opaque.
+// Cache is a bytes-bounded LRU for verified auth lookups.
+// Each entry stores a keyed digest of the password that produced it,
+// compared in constant time on lookup; mismatch is a miss, so a
+// negative entry only matches the same wrong password. The digest
+// key is per-process random, never persisted.
 type Cache struct {
 	mu      sync.Mutex
 	maxSize int64
@@ -48,20 +26,14 @@ type Cache struct {
 	entries map[string]*list.Element
 	lru     *list.List
 	hmacKey []byte
-	// hits / misses bookkeeping for tests / telemetry.
+	// telemetry counters
 	hits   uint64
 	misses uint64
 }
 
-// CacheEntry is the cached value. ResultOK carries Fields (the
-// passdb result the chain produced); both ResultOK and ResultFail
-// carry pwdMAC (HMAC of the plain password that produced the entry).
-// A Fail entry short-circuits the chain ONLY when the incoming
-// password MACs to the same value (#950) — so a wrong password does
-// not poison the user's correct one.
-//
-// Empty pwdMAC on any entry is treated as a cache miss by Lookup, so
-// a legacy/unset entry fails safe (re-runs the chain).
+// CacheEntry is the cached passdb result. Both OK and Fail entries
+// carry the password digest; an empty digest is treated as a miss
+// so an unset entry fails safe.
 type CacheEntry struct {
 	Result   Result
 	Fields   *Fields
@@ -70,23 +42,16 @@ type CacheEntry struct {
 	expires  time.Time
 }
 
-// NewCache returns a Cache bounded by sizeBytes total payload. A
-// non-positive sizeBytes returns nil — caching is disabled and
-// every helper that takes a *Cache no-ops on nil.
-//
-// ttl is the positive-entry lifetime; negTTL is the negative-entry
-// lifetime. ttl=0 disables positive caching; negTTL=0 disables
-// negative caching. Setting ttl=0 with sizeBytes>0 means only
-// negatives are cached (and vice versa).
+// NewCache returns a Cache bounded by sizeBytes. Non-positive
+// sizeBytes returns nil; all methods no-op on a nil Cache.
+// ttl=0 disables positive caching, negTTL=0 negative caching.
 func NewCache(sizeBytes int64, ttl, negTTL time.Duration) *Cache {
 	if sizeBytes <= 0 {
 		return nil
 	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		// crypto/rand failure means the OS RNG is broken;
-		// without a key we cannot guarantee the password-MAC
-		// cannot be precomputed. Refuse to construct.
+		// no RNG, digests would be precomputable; refuse to construct
 		return nil
 	}
 	return &Cache{
@@ -99,19 +64,16 @@ func NewCache(sizeBytes int64, ttl, negTTL time.Duration) *Cache {
 	}
 }
 
-// macPassword computes HMAC-SHA256 of plain under the per-cache
-// random key. Used for both insert and verify so a side-channel
-// observer (cache dump) sees only MACs, never plain passwords.
+// macPassword digests plain under the per-cache random key;
+// a memory dump reveals digests, never plain passwords.
 func (c *Cache) macPassword(plain string) []byte {
 	var h hash.Hash = hmac.New(sha256.New, c.hmacKey)
 	h.Write([]byte(plain))
 	return h.Sum(nil)
 }
 
-// estimateEntrySize is the bytes-budget weight assigned to an
-// entry. Approximates total memory by summing fixed overhead +
-// key length + serialized Fields bag + pwdMAC length. Off by
-// some pointer/map overhead — close enough for LRU pressure.
+// estimateEntrySize approximates an entry's memory weight for the
+// byte budget. Ignores some pointer/map overhead.
 func estimateEntrySize(key string, e *CacheEntry) int64 {
 	n := int64(96) // fixed: list element + map slot + struct headers
 	n += int64(len(key))
@@ -126,20 +88,9 @@ func estimateEntrySize(key string, e *CacheEntry) int64 {
 	return n
 }
 
-// Lookup checks the cache for key. On positive hit it verifies
-// the incoming password against the stored HMAC in constant time;
-// mismatch is treated as miss so a stale cached password cannot
-// authenticate a new one. Negative hits return (entry, true) with
-// Result=ResultFail and the caller short-circuits without
-// touching the chain.
-//
-// Expired entries are evicted lazily — Lookup removes them on
-// touch so capacity accounting stays current. neg_expired_r
-// equivalent: when an expired entry is encountered the caller
-// gets (nil, false) and runs the chain; the eviction means a
-// reinsert can land cleanly.
-//
-// Returns (nil, false) for cache miss or password mismatch.
+// Lookup returns the entry for key if it is unexpired and the
+// password digest matches. Expired entries are evicted on touch.
+// Returns (nil, false) on miss or password mismatch.
 func (c *Cache) Lookup(key, password string) (*CacheEntry, bool) {
 	if c == nil {
 		return nil, false
@@ -162,13 +113,8 @@ func (c *Cache) Lookup(key, password string) (*CacheEntry, bool) {
 		c.observeSize()
 		return nil, false
 	}
-	// Verify the incoming password against the stored MAC for BOTH positive
-	// AND negative entries (#950). A negative entry now carries the MAC of the
-	// wrong password that seeded it, so a DIFFERENT password — notably the
-	// user's CORRECT one — no longer matches a poisoned Fail entry and falls
-	// through to the chain. A repeated identical wrong password still matches
-	// and short-circuits (repeat-failure / per-password anti-enumeration).
-	// Constant-time compare so a hit/miss cannot be timed apart.
+	// verify the digest on negative entries too, so a wrong-password
+	// entry can't block the correct password; constant-time compare
 	if len(e.pwdMAC) == 0 || !hmac.Equal(e.pwdMAC, c.macPassword(password)) {
 		c.misses++
 		cacheLookups.WithLabelValues("pwd_mismatch").Inc()
@@ -182,24 +128,16 @@ func (c *Cache) Lookup(key, password string) (*CacheEntry, bool) {
 	return e, true
 }
 
-// observeSize publishes the cache fill gauges. Called with c.mu held from the
-// paths that can change occupancy, so the gauges never report a torn view of
-// curSize vs entry count.
+// observeSize publishes the fill gauges. Called with c.mu held.
 func (c *Cache) observeSize() {
 	cacheEntries.Set(float64(len(c.entries)))
 	cacheBytes.Set(float64(c.curSize))
 	cacheMaxBytes.Set(float64(c.maxSize))
 }
 
-// Insert stores an entry under key. password is the plain
-// credential (HMAC-ed before storage; never retained as plain) and
-// is recorded for negative entries too (#950), so a Fail entry only
-// short-circuits a later lookup that presents the SAME password.
-//
-// fields is the AuthResponse bag captured at the chain's reply;
-// it's stored by reference so the caller must not mutate it after
-// Insert returns. Pass a snapshot (Fields.Snapshot then a fresh
-// Fields rebuilt) if mutation is unavoidable.
+// Insert stores an entry under key. The plain password is digested
+// before storage, for negative entries too. fields is stored by
+// reference; the caller must not mutate it after Insert returns.
 func (c *Cache) Insert(key, username, password string, result Result, fields *Fields) {
 	if c == nil {
 		return
@@ -214,28 +152,9 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 	defer c.mu.Unlock()
 
 	if el, ok := c.entries[key]; ok {
-		// Anti-poisoning: do NOT downgrade an existing positive
-		// entry to a negative one. Scenario: user mistypes pwd
-		// once → chain returns Fail → without this guard we would
-		// overwrite the cached OK with a Fail and short-circuit
-		// every subsequent attempt — including the correct
-		// password — for the neg-TTL window. Locks the user out
-		// of their own account.
-		//
-		// With the guard, a wrong-password attempt just leaves
-		// the old OK entry in place. Next attempt with the right
-		// password hits cache and verifies against stored HMAC →
-		// hit. Password change handled by HMAC mismatch (Lookup
-		// returns miss) → chain runs → Insert overwrites with
-		// the new HMAC (this code path, result=OK on existing
-		// entry, which IS allowed to overwrite).
-		//
-		// We cannot distinguish "user unknown" from "user known
-		// but wrong password" at the Chain layer (both surface
-		// as ResultFail), so we conservatively never negative-
-		// cache a key that previously authenticated. The first-
-		// time-failed (unknown user) path still seeds correctly
-		// because there's no prior entry.
+		// Never downgrade a cached OK to Fail: a single mistyped
+		// password would otherwise lock out the correct one for
+		// the neg-TTL window.
 		existing := el.Value.(*CacheEntry) //nolint:errcheck // map+LRU only ever hold *CacheEntry
 		if result == ResultFail && existing.Result == ResultOK {
 			return
@@ -248,10 +167,8 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 		Fields:   fields,
 		username: username,
 	}
-	// Store the password MAC for BOTH positive and negative entries (#950): a
-	// negative entry must remember WHICH password failed, so only that same
-	// password short-circuits on lookup while a different (correct) password
-	// re-runs the chain instead of inheriting the poisoned Fail verdict.
+	// Negative entries remember which password failed, so only that
+	// password short-circuits on lookup.
 	e.pwdMAC = c.macPassword(password)
 	if result == ResultOK {
 		e.expires = time.Now().Add(c.ttl)
@@ -269,8 +186,7 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 		c.removeElement(oldest)
 	}
 	if size > c.maxSize {
-		// Single oversized entry — refuse to insert instead of
-		// flushing the whole cache for it.
+		// oversized entry: skip rather than flush the whole cache
 		return
 	}
 
@@ -284,8 +200,7 @@ func (c *Cache) Insert(key, username, password string, result Result, fields *Fi
 // Caller must hold the mutex.
 func (c *Cache) removeElement(el *list.Element) {
 	e := el.Value.(*CacheEntry) //nolint:errcheck // map+LRU only ever hold *CacheEntry
-	// Find key by linear scan; we keep the key in the entries
-	// map only, so reuse it from there to avoid storing on entry.
+	// key lives only in the entries map; find it by scan
 	for k, v := range c.entries {
 		if v == el {
 			c.curSize -= estimateEntrySize(k, e)
@@ -325,12 +240,8 @@ func (c *Cache) Clear() uint32 {
 	return n
 }
 
-// ClearByUserMask evicts every entry whose stored username matches
-// any of the supplied masks. Mask syntax: `*` matches zero or more
-// chars, `?` matches one (admin CLI:
-// `yarctl auth cache flush [<user-mask>...]`).
-//
-// Empty masks slice → behaves like Clear (full flush).
+// ClearByUserMask evicts entries whose username matches any mask
+// (`*` = any run, `?` = one char). Empty masks means full flush.
 func (c *Cache) ClearByUserMask(masks []string) uint32 {
 	if c == nil {
 		return 0
@@ -357,18 +268,14 @@ func (c *Cache) ClearByUserMask(masks []string) uint32 {
 	return removed
 }
 
-// userMaskMatch implements `*` / `?` glob matching. Iterative,
-// O(len(pattern) * len(name)) worst case — fine for short user
-// names and small mask lists used by the admin CLI.
+// userMaskMatch implements `*` / `?` glob matching.
 func userMaskMatch(mask, name string) bool {
-	// Common cases first.
 	if mask == "*" {
 		return true
 	}
 	if !strings.ContainsAny(mask, "*?") {
 		return mask == name
 	}
-	// Recursive backtracker.
 	return globMatch(mask, name)
 }
 
@@ -376,7 +283,7 @@ func globMatch(pattern, s string) bool {
 	for len(pattern) > 0 {
 		switch pattern[0] {
 		case '*':
-			// Compress runs of stars.
+			// compress star runs
 			for len(pattern) > 0 && pattern[0] == '*' {
 				pattern = pattern[1:]
 			}
@@ -404,8 +311,8 @@ func globMatch(pattern, s string) bool {
 	return len(s) == 0
 }
 
-// Stats returns hit / miss / size counters for telemetry. The
-// returned size is the byte estimate, not entry count.
+// Stats returns hit / miss / size counters. sizeBytes is the
+// byte estimate, not entry count.
 func (c *Cache) Stats() (hits, misses uint64, sizeBytes, entryCount int64) {
 	if c == nil {
 		return 0, 0, 0, 0
@@ -415,11 +322,9 @@ func (c *Cache) Stats() (hits, misses uint64, sizeBytes, entryCount int64) {
 	return c.hits, c.misses, c.curSize, int64(len(c.entries))
 }
 
-// MakeCacheKey assembles the canonical cache key for a passdb /
-// userdb lookup. Pinned to a single shape across drivers for
-// predictability. Wire layer + chainAuthenticator both call this
-// so cache hits are interchangeable between in-process and
-// remote auth paths for the same (user, service).
+// MakeCacheKey builds the canonical cache key for a (service, user)
+// lookup; shared by the wire layer and in-process auth so their
+// cache hits are interchangeable.
 func MakeCacheKey(service, username string) string {
 	return fmt.Sprintf("%s\t%s", service, username)
 }

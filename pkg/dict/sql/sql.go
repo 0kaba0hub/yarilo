@@ -1,15 +1,12 @@
 // Package sql is a database/sql-backed dict driver.
 //
-// Supports three drivers out of the box, selected via Config.Settings:
+// Three drivers, selected via Config.Settings, all statically compiled in:
 //
 //	driver: "sqlite"   — modernc.org/sqlite (pure Go, no CGO)
 //	driver: "postgres" — github.com/jackc/pgx/v5/stdlib (pure Go)
 //	driver: "mysql"    — github.com/go-sql-driver/mysql
 //
-// Both are statically compiled in so the choice is runtime-config-only,
-// per yarilo's config-not-binary rule.
-//
-// Schema:
+// Generic KV schema:
 //
 //	CREATE TABLE <table> (
 //	    namespace TEXT NOT NULL,
@@ -20,18 +17,11 @@
 //	);
 //	CREATE INDEX <table>_expires_idx ON <table>(expires) WHERE expires IS NOT NULL;
 //
-// "namespace" is the per-Dict prefix (matches Redis driver's prefix
-// concept) — lets multiple yarilo features share one database without
-// key collisions. ExpireScan runs `DELETE FROM <table> WHERE expires
-// IS NOT NULL AND expires <= ?` and reports the row count via the
-// driver's slog logger.
+// "namespace" is the per-Dict prefix; it lets multiple features share one
+// database without key collisions.
 //
-// Multi-value: not stored. A second Set on the same key overwrites.
-// Use SQL directly for any feature that genuinely needs multi-value.
-//
-// Transactions: native database/sql transactions. AtomicInc uses
-// UPDATE ... SET v = CAST(CAST(v AS BIGINT) + ? AS BLOB) WHERE k=?
-// and reports CommitNotFound when zero rows were affected.
+// Multi-value is not stored: a second Set on the same key overwrites.
+// AtomicInc reports CommitNotFound when the key is absent.
 package sql
 
 import (
@@ -64,14 +54,11 @@ func init() {
 //	"namespace"  string — per-Dict prefix; default ""
 //	"maps"       list   — enables mapped mode (see below); optional
 //
-// In the default (generic KV) mode the table is auto-created on Open if it does
-// not exist. To opt out of auto-create (e.g. when the schema is managed by a
-// migration tool), pre-create the table; the IF NOT EXISTS guard is idempotent.
+// Generic KV mode auto-creates the table on Open (IF NOT EXISTS, idempotent).
 //
-// When "maps" is present the driver switches to mapped mode: each dict key binds
-// to a table column, so a per-user row carries one column per key
-// (username_field is the primary key). The operator owns the table schema, so no
-// auto-create runs. Each map entry is:
+// Mapped mode (when "maps" is present): each dict key binds to a table column,
+// so a per-user row carries one column per key (username_field is the primary
+// key). The operator owns the schema, so no auto-create runs. Each map entry is:
 //
 //	{ key: "priv/quota/storage", table: quota, username_field: username, value_field: bytes }
 func New(cfg dict.Config) (dict.Dict, error) {
@@ -104,10 +91,9 @@ func New(cfg dict.Config) (dict.Dict, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", driver, err)
 	}
-	// The quota_clone mirror writes on every mail save, so this is the hottest
-	// SQL path in the system — and the one Go's two-idle-connection default hurt
-	// most (#886). Overrides come from the dict's own settings map so an operator
-	// tunes it where the DSN already lives.
+	// The quota_clone mirror writes on every mail save, so Go's two-idle-connection
+	// default throttles the hottest SQL path. Overrides come from the dict's own
+	// settings map, alongside the DSN.
 	sqlpool.Apply(db, sqlpool.Config{
 		Driver:                 driver,
 		MaxOpenConns:           intSetting(cfg.Settings, "max_open_conns"),
@@ -120,8 +106,7 @@ func New(cfg dict.Config) (dict.Dict, error) {
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 	d := &Dict{db: db, driver: driver, table: table, ns: ns, maps: maps}
-	// Mapped mode: the operator owns the schema (column types are theirs), so
-	// skip auto-create. Generic KV mode manages its own table.
+	// Mapped mode: the operator owns the schema, so skip auto-create.
 	if len(maps) == 0 {
 		if err := d.ensureSchema(); err != nil {
 			db.Close() //nolint:errcheck
@@ -134,10 +119,9 @@ func New(cfg dict.Config) (dict.Dict, error) {
 	return d, nil
 }
 
-// validateMaps fails fast at Open time when a mapped table/column does not
-// exist, so a typo or a forgotten CREATE TABLE surfaces at startup rather than
-// silently on the first (best-effort) quota_clone write. A LIMIT 0 select never
-// returns rows but still resolves the identifiers.
+// validateMaps checks each mapped table/column at Open time so a typo or a
+// missing CREATE TABLE surfaces at startup, not on the first write. The LIMIT 0
+// select resolves the identifiers without returning rows.
 func (d *Dict) validateMaps() error {
 	seen := make(map[string]bool, len(d.maps))
 	for key, e := range d.maps {
@@ -154,17 +138,17 @@ func (d *Dict) validateMaps() error {
 	return nil
 }
 
-// mapEntry binds a dict key to a table column: writes/reads for the key target
-// value_field in table, scoped by username_field.
+// mapEntry binds a dict key to a table column: reads/writes target value_field,
+// scoped by username_field.
 type mapEntry struct {
 	table   string
 	userCol string
 	valCol  string
 }
 
-// parseMaps decodes the "maps" setting into a key→column binding table. A nil
-// setting means generic KV mode (empty result). Every field is required and
-// every identifier is validated so it can be interpolated into SQL safely.
+// parseMaps decodes the "maps" setting into a key→column binding table; nil
+// means generic KV mode. Every field is required, and every identifier is
+// validated so it can be interpolated into SQL safely.
 func parseMaps(raw any) (map[string]mapEntry, error) {
 	if raw == nil {
 		return nil, nil
@@ -206,11 +190,11 @@ func parseMaps(raw any) (map[string]mapEntry, error) {
 func driverName(d string) string {
 	switch d {
 	case "postgres":
-		return "pgx" // jackc/pgx/v5/stdlib registers as "pgx"
+		return "pgx" // driver-registered name for jackc/pgx/v5/stdlib
 	case "sqlite":
-		return "sqlite" // modernc.org/sqlite registers as "sqlite"
+		return "sqlite"
 	case "mysql":
-		return "mysql" // go-sql-driver/mysql registers as "mysql"
+		return "mysql"
 	}
 	return d
 }
@@ -243,10 +227,8 @@ func (d *Dict) mapped() bool { return len(d.maps) > 0 }
 func (d *Dict) Name() string                 { return "sql" }
 func (d *Dict) Wait(_ context.Context) error { return nil }
 
-// scope combines the per-Dict namespace with the per-op username so keys are
-// scoped per user, matching the redis driver (which folds the username into the
-// key). Empty username keeps the bare namespace, so single-user callers are
-// unchanged.
+// scope combines the per-Dict namespace with the per-op username to key entries
+// per user. Empty username keeps the bare namespace.
 func (d *Dict) scope(user string) string {
 	if user == "" {
 		return d.ns
@@ -271,10 +253,9 @@ func (d *Dict) Close() error {
 }
 
 func (d *Dict) ensureSchema() error {
-	// Per-driver column types. BLOB vs BYTEA: sqlite accepts BLOB, postgres
-	// needs BYTEA, mysql accepts BLOB. Key columns: sqlite/postgres take TEXT in
-	// a primary key, but mysql cannot index a TEXT/BLOB column without a length,
-	// so it uses VARCHAR(191) (the utf8mb4 index-length limit).
+	// Per-driver column types. Value: postgres needs BYTEA, others take BLOB.
+	// Key: mysql cannot index TEXT without a length, so it uses VARCHAR(191)
+	// (the utf8mb4 index-length limit); sqlite/postgres take TEXT.
 	blob, keyType := "BLOB", "TEXT"
 	switch d.driver {
 	case "postgres":
@@ -294,16 +275,15 @@ func (d *Dict) ensureSchema() error {
 	}
 	idx := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_expires_idx ON %s(expires) WHERE expires IS NOT NULL`, d.table, d.table)
 	if _, err := d.db.Exec(idx); err != nil {
-		// sqlite supports partial indexes; postgres also; if a driver
-		// rejects, fall back to a non-partial index. Don't fail on the
-		// fallback either — the index is an optimisation only.
+		// Fall back to a non-partial index when the driver rejects the
+		// partial one. The index is an optimisation only, so don't fail.
 		_, _ = d.db.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_expires_idx ON %s(expires)`, d.table, d.table))
 	}
 	return nil
 }
 
-// placeholder returns the bind-parameter syntax for the active driver.
-// sqlite uses ?; postgres uses $1, $2, ...
+// placeholder returns the bind-parameter syntax for the active driver:
+// postgres uses $1, $2, ...; the others use ?.
 func (d *Dict) placeholder(n int) string {
 	switch d.driver {
 	case "postgres":
@@ -313,8 +293,7 @@ func (d *Dict) placeholder(n int) string {
 	}
 }
 
-// argsFor returns SQL like "WHERE namespace = ? AND k = ?" with the
-// right placeholder syntax for the driver.
+// argsFor builds an "a = ? AND b = ?" clause with the driver's placeholders.
 func (d *Dict) argsFor(names ...string) string {
 	parts := make([]string, len(names))
 	for i, n := range names {
@@ -346,8 +325,7 @@ func (d *Dict) Lookup(ctx context.Context, set *dict.OpSettings, key string) ([]
 	return [][]byte{v}, true, nil
 }
 
-// mapFor resolves the column binding for a key, or errors if the key is not
-// mapped (mapped mode matches keys exactly).
+// mapFor resolves the column binding for a key, erroring if it is not mapped.
 func (d *Dict) mapFor(key string) (mapEntry, error) {
 	e, ok := d.maps[key]
 	if !ok {
@@ -356,8 +334,8 @@ func (d *Dict) mapFor(key string) (mapEntry, error) {
 	return e, nil
 }
 
-// lookupMapped reads value_field from the mapped table for the op's user. A NULL
-// column reads as "not found", matching the generic driver's missing-key result.
+// lookupMapped reads value_field from the mapped table for the op's user.
+// A NULL column reads as "not found".
 func (d *Dict) lookupMapped(ctx context.Context, set *dict.OpSettings, key string) ([][]byte, bool, error) {
 	user := opUser(set)
 	if user == "" {
@@ -383,7 +361,7 @@ func (d *Dict) lookupMapped(ctx context.Context, set *dict.OpSettings, key strin
 }
 
 // mappedUpsert returns the driver-specific single-column upsert keyed on the
-// username column, so multiple keys mapped to the same table share one row.
+// username column, so keys mapped to the same table share one row.
 func (d *Dict) mappedUpsert(e mapEntry) string {
 	switch d.driver {
 	case "postgres":
@@ -391,9 +369,8 @@ func (d *Dict) mappedUpsert(e mapEntry) string {
             ON CONFLICT (%s) DO UPDATE SET %s = EXCLUDED.%s`,
 			e.table, e.userCol, e.valCol, e.userCol, e.valCol, e.valCol)
 	case "mysql":
-		// VALUES() in ON DUPLICATE KEY UPDATE is deprecated on MySQL 8.0.20+ but
-		// works on MySQL and MariaDB alike; the alias form (AS new) is rejected
-		// by MariaDB, so keep VALUES() while the primary target is MariaDB.
+		// VALUES() is deprecated on MySQL 8.0.20+ but the alias form (AS new) is
+		// rejected by MariaDB, so keep VALUES() while MariaDB is the target.
 		return fmt.Sprintf(`INSERT INTO %s (%s, %s) VALUES (?, ?)
             ON DUPLICATE KEY UPDATE %s = VALUES(%s)`,
 			e.table, e.userCol, e.valCol, e.valCol, e.valCol)
@@ -425,8 +402,8 @@ func (d *Dict) Iterate(ctx context.Context, set *dict.OpSettings, path string, f
 		q = fmt.Sprintf(`SELECT k, v, expires FROM %s WHERE %s`, d.table, d.argsFor("namespace", "k"))
 		args = []any{ns, path}
 	default:
-		// Use LIKE 'prefix%' for prefix iteration (path is a slash-
-		// terminated string). Locally filter for shallow recursion.
+		// LIKE 'prefix%' for prefix iteration; shallow recursion is
+		// filtered locally below.
 		q = fmt.Sprintf(`SELECT k, v, expires FROM %s WHERE namespace = %s AND k LIKE %s`,
 			d.table, d.placeholder(1), d.placeholder(2))
 		args = []any{ns, path + "%"}
@@ -495,12 +472,11 @@ func (d *Dict) ExpireScan(ctx context.Context) error {
 		return dict.ErrClosed
 	}
 	if d.mapped() {
-		// Mapped mode has no generic KV table and no per-row expiry column;
-		// a blind DELETE would hit a non-existent (or unrelated) table.
+		// Mapped mode has no generic KV table and no per-row expiry column.
 		return errors.New("sql: ExpireScan is not supported in mapped mode")
 	}
-	// No namespace filter: entries are scoped per user (namespace = ns[/user]),
-	// so an expired row is dropped regardless of its scope — expiry is absolute.
+	// No namespace filter: expiry is absolute, so an expired row is dropped
+	// regardless of its per-user scope.
 	q := fmt.Sprintf(`DELETE FROM %s WHERE expires IS NOT NULL AND expires <= %s`,
 		d.table, d.placeholder(1))
 	_, err := d.db.ExecContext(ctx, q, time.Now().Unix())
@@ -629,9 +605,8 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 				return dict.CommitFailed, fmt.Errorf("delete %q: %w", op.Key, err)
 			}
 		case dict.OpAtomicInc:
-			// Read current value under tx, validate it's an integer,
-			// update with new value. Single statement would be cleaner
-			// but CAST(BLOB AS BIGINT) semantics differ across drivers.
+			// Read-validate-update rather than a single UPDATE:
+			// CAST(BLOB AS BIGINT) semantics differ across drivers.
 			q := fmt.Sprintf(`SELECT v FROM %s WHERE %s`, t.d.table, t.d.argsFor("namespace", "k"))
 			var cur []byte
 			err := t.sqlTx.QueryRowContext(ctx, q, t.ns, op.Key).Scan(&cur)
@@ -664,17 +639,17 @@ func (t *tx) Commit() (dict.CommitResult, error) {
 	return dict.CommitOK, nil
 }
 
-// commitMapped applies buffered ops against the mapped columns. Set upserts the
+// commitMapped applies buffered ops against the mapped columns: Set upserts
 // value_field for the tx user; Unset clears it to NULL (the row is shared by
-// other mapped columns, so it is never deleted here); AtomicInc is unsupported.
+// other columns, so it is never deleted); AtomicInc is unsupported.
 func (t *tx) commitMapped(ctx context.Context) (dict.CommitResult, error) {
 	if t.user == "" {
 		t.sqlTx.Rollback() //nolint:errcheck
 		return dict.CommitFailed, errors.New("mapped mode requires a username")
 	}
 	if t.expires > 0 {
-		// Mapped columns carry no per-row expiry, so a TTL cannot be honoured or
-		// reaped; fail loudly rather than silently keep rows forever.
+		// Mapped columns carry no per-row expiry, so a TTL cannot be honoured;
+		// fail loudly rather than keep rows forever.
 		t.sqlTx.Rollback() //nolint:errcheck
 		return dict.CommitFailed, errors.New("sql: per-key TTL (expire_secs) is not supported in mapped mode")
 	}
@@ -687,8 +662,7 @@ func (t *tx) commitMapped(ctx context.Context) (dict.CommitResult, error) {
 		switch op.Kind {
 		case dict.OpSet:
 			// Bind as string, not []byte: pgx encodes []byte as bytea, which a
-			// numeric target column (BIGINT) rejects. Text binds coerce cleanly
-			// on all three drivers.
+			// numeric target column rejects. Text binds coerce on all drivers.
 			if _, err := t.sqlTx.ExecContext(ctx, t.d.mappedUpsert(e), t.user, string(op.Value)); err != nil {
 				t.sqlTx.Rollback() //nolint:errcheck
 				return dict.CommitFailed, fmt.Errorf("upsert %q: %w", op.Key, err)
@@ -711,9 +685,9 @@ func (t *tx) commitMapped(ctx context.Context) (dict.CommitResult, error) {
 	return dict.CommitOK, nil
 }
 
-// intSetting reads an integer from a dict settings map. YAML decoding may hand
-// back int, int64 or float64 depending on the source, so all three are accepted;
-// anything else yields 0, which sqlpool reads as "use the default".
+// intSetting reads an integer from a dict settings map, accepting the int,
+// int64 or float64 that YAML decoding may produce. Anything else yields 0,
+// which sqlpool reads as "use the default".
 func intSetting(settings map[string]any, key string) int {
 	switch v := settings[key].(type) {
 	case int:

@@ -42,8 +42,8 @@ type Options struct {
 	BackendAddr string
 	// BackendTimeout caps each backend dial and transaction. Default: 300s.
 	BackendTimeout time.Duration
-	// BackendTLS optionally wraps the backend fan-out dial with internal mTLS,
-	// matching the other login proxies (#739). nil = plain TCP.
+	// BackendTLS optionally wraps the backend fan-out dial with internal mTLS.
+	// nil = plain TCP.
 	BackendTLS *tls.Config
 
 	// DirectorAddr is the yarilo-director address for per-recipient LOOKUP.
@@ -52,8 +52,8 @@ type Options struct {
 	DirectorAddr string
 	// DirectorTLS is the mTLS config for connecting to yarilo-director.
 	DirectorTLS *tls.Config
-	// DirectorTag restricts LOOKUP to backends with this tag (#737).
-	// "" = the untagged pool, not "any tag" — there is no full-ring mode.
+	// DirectorTag restricts LOOKUP to backends with this tag. "" = the untagged
+	// pool, not "any tag" — there is no full-ring mode.
 	DirectorTag string
 	// BackendPort overrides the port in the LOOKUP result. 0 = use as-is.
 	BackendPort int
@@ -84,16 +84,14 @@ type Options struct {
 	WriteTimeout time.Duration
 
 	// HAProxy enables PROXY protocol v1/v2 header reading from trusted
-	// upstreams (#742), mirroring the other login proxies — a Postfix relay in
-	// front of lmtp-login can forward the ORIGINAL SMTP client's IP this way.
+	// upstreams so a relay can forward the original SMTP client's IP.
 	HAProxy        bool
 	HAProxyTimeout time.Duration
 	HAProxyNets    []*net.IPNet
 
-	// XClient enables the inbound XCLIENT command (#742) so a trusted relay
-	// forwards the original client's IP (critical for a Postfix relay in front,
-	// which can only convey it via XCLIENT). A forward is honoured only when the
-	// socket peer is inside XClientNets (general.xclient.trusted_nets).
+	// XClient enables the inbound XCLIENT command so a trusted relay forwards the
+	// original client's IP. Honoured only when the socket peer is inside
+	// XClientNets (general.xclient.trusted_nets).
 	XClient     bool
 	XClientNets []*net.IPNet
 }
@@ -203,8 +201,7 @@ type session struct {
 	authCl  *authclient.Client
 	authErr error // sticky dial failure
 
-	// reqID generates the LOOKUP correlation id (#741 — previously sent
-	// empty, unlike internal/login's per-request counter).
+	// reqID generates the LOOKUP correlation id.
 	reqID atomic.Uint64
 }
 
@@ -418,11 +415,10 @@ func (s *session) issueToken(username, wardenID string) (string, error) {
 	return tok, nil
 }
 
-// resolveDirectorTag looks up the per-recipient director_tag userdb field
-// (#746) so a shared login fleet can route different users to different
-// tag-pools. Falls back to "" (caller then uses the static opts.DirectorTag)
-// on any lookup failure or when the user carries no override — a tag-lookup
-// miss must never block delivery.
+// resolveDirectorTag looks up the per-recipient director_tag userdb field so a
+// shared login fleet can route different users to different tag-pools. Falls
+// back to "" (caller uses the static opts.DirectorTag) on any lookup failure or
+// missing override — a tag-lookup miss must never block delivery.
 func (s *session) resolveDirectorTag(username string) string {
 	if s.opts.AuthMasterAddr == "" {
 		return ""
@@ -447,13 +443,11 @@ func (s *session) resolveDirectorTag(username string) string {
 
 // ---- director / backend resolution ------------------------------------------
 
-// resolveBackend returns the backend address for the given username.
-// BackendAddr (standalone) wins when both BackendAddr and DirectorAddr are
-// set (#741 — unified with internal/login's existing precedence, which
-// lmtplogin previously inverted). In director mode (DirectorAddr set,
-// BackendAddr empty) it performs a per-recipient LOOKUP, restricted to the
-// user's per-user director_tag (#746) when the userdb sets one, falling
-// back to the component's static DirectorTag otherwise.
+// resolveBackend returns the backend address for username. BackendAddr
+// (standalone) wins when both it and DirectorAddr are set. In director mode
+// (DirectorAddr set, BackendAddr empty) it performs a per-recipient LOOKUP,
+// restricted to the user's director_tag when the userdb sets one, else the
+// static DirectorTag.
 func (s *session) resolveBackend(username string) (string, error) {
 	if s.opts.BackendAddr != "" {
 		return s.opts.BackendAddr, nil
@@ -504,7 +498,7 @@ func (s *session) directorLookup(username, tag string) (string, error) {
 // ---- backend fan-out --------------------------------------------------------
 
 // dialBackend opens the backend fan-out connection, wrapping it in internal
-// mTLS when tlsCfg is set (#739 — parity with the other login proxies).
+// mTLS when tlsCfg is set.
 func dialBackend(addr string, timeout time.Duration, tlsCfg *tls.Config) (net.Conn, error) {
 	if tlsCfg != nil {
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, tlsCfg)
@@ -557,8 +551,8 @@ func fanOutOne(backendAddr, hostname, from, rcpt string, data []byte, pre loginp
 	perRcpt, closeErr := wc.CloseWithLMTPResponse()
 	if lmtpErr, ok := closeErr.(goSmtp.LMTPDataError); ok {
 		if smtpErr, found := lmtpErr[rcpt]; found {
-			// Strip the backend's per-recipient "<rcpt> " prefix; this login
-			// server's handleDataLMTP prepends its own, else it doubles up.
+			// Strip the backend's per-recipient "<rcpt> " prefix; this server
+			// prepends its own, else it doubles up.
 			return lmtpreply.StripRcptPrefix(smtpErr, rcpt)
 		}
 		return nil
@@ -594,18 +588,15 @@ func newSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// XClient receives the parameters of an inbound XCLIENT command from the go-smtp
-// server (#742). The forwarded ADDR is honoured only when the immutable socket
-// peer is inside XClientNets — the relay itself must be trusted. On success the
-// forwarded IP replaces peerIP, flowing into the backend preamble ADDR=, the
-// warden per-recipient CONNECT, and the issued session token.
+// XClient receives an inbound XCLIENT command from the go-smtp server. The
+// forwarded ADDR is honoured only when the immutable socket peer is inside
+// XClientNets. On success the forwarded IP replaces peerIP, flowing into the
+// backend preamble ADDR=, the warden CONNECT, and the issued session token.
 func (s *session) XClient(a goSmtp.XClientAttrs) {
 	if a.Addr == "" {
 		return
 	}
 	if !ipInNets(s.socketIP, s.opts.XClientNets) {
-		// A relay that is not in xclient.trusted_nets sending XCLIENT is an
-		// anomaly — someone is claiming to be a trusted front-end.
 		slog.Warn("lmtplogin: ignoring XCLIENT from untrusted peer", "peer_ip", s.socketIP, "claimed_ip", a.Addr)
 		return
 	}
@@ -634,7 +625,7 @@ func haProxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) 
 }
 
 // ipInNets reports whether the string IP falls inside one of the CIDRs. Empty
-// nets = trust nobody. Gates inbound XCLIENT on xclient.trusted_nets (#742).
+// nets = trust nobody.
 func ipInNets(ip string, nets []*net.IPNet) bool {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {

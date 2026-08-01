@@ -13,13 +13,13 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/locks"
 )
 
-// Map is the in-memory + on-disk handle for one user's
-// map index. All mutations route through Map so the
-// in-process Mutex + cross-process X lock stay coherent.
+// Map is the in-memory + on-disk handle for one user's map index. All mutations
+// route through Map so the in-process Mutex and cross-process X lock stay
+// coherent.
 //
-// Map is NOT goroutine-safe outside its own methods; share a
-// single Map per user-session, do not pass to a worker pool
-// without external synchronisation.
+// Map is not goroutine-safe outside its own methods; share a single Map per
+// user-session, do not pass it to a worker pool without external
+// synchronisation.
 type Map struct {
 	path     string
 	username string
@@ -29,42 +29,40 @@ type Map struct {
 	mu sync.Mutex
 	f  *mailindex.File // in-memory mirror; nil after Close
 
-	// nextMapUID is the next UID the mailindex's record-stream
-	// would assign on Append. We track it explicitly because we
-	// need to publish it back to callers AT allocation time, not
-	// after the next Recreate.
+	// nextMapUID is the next UID the mailindex record-stream would assign on
+	// Append. Tracked explicitly so it can be published back to callers at
+	// allocation time, not after the next Recreate.
 	nextMapUID uint32
 
-	// highestFileID is the latest value parsed from the "map"
-	// extension header; updated on every AppendBatch that adds
-	// new m.<N> files.
+	// highestFileID is the latest value parsed from the "map" extension header;
+	// updated on every AppendBatch that adds new m.<N> files.
 	highestFileID uint32
 
 	// rebuildCount is the storage-wide-rebuild generation counter parsed from the
-	// "map" extension header (#594 Phase 2b). Bumped once per successful rebuild.
+	// "map" extension header. Bumped once per successful rebuild.
 	rebuildCount uint32
 
 	// createFileID / createTime record the id and unix-second creation stamp of
 	// the current append file (the one Save writes into), persisted in the "map"
-	// header for the mdbox_rotate_interval age check (#623). Persisting the stamp
-	// keeps it restart-safe without depending on an unreliable-over-NFS filesystem
-	// btime. Only the current append file's stamp is tracked — an already-rotated
+	// header for the mdbox_rotate_interval age check. Persisting the stamp keeps
+	// it restart-safe without depending on an unreliable-over-NFS filesystem
+	// btime. Only the current append file's stamp is tracked; an already-rotated
 	// file is never appended to again, so its age no longer matters.
 	createFileID uint32
 	createTime   uint64
 
-	// rotateSize is the per-m.<N> size cap the batch append path enforces. 0 means
-	// the package default (defaultRotateSize).
+	// rotateSize is the per-m.<N> size cap the batch append path enforces. 0
+	// means the package default (defaultRotateSize).
 	rotateSize uint32
 
-	// byMapUID indexes records by UID for O(1) Lookup.
-	// Rebuilt on every load/flush.
+	// byMapUID indexes records by UID for O(1) Lookup. Rebuilt on every
+	// load/flush.
 	byMapUID map[uint32]int
 
 	// baseMod / logSize track what this handle has applied from disk so
 	// reloadLocked can fast-path when nothing changed and replay only the log
 	// tail a sibling process appended since. baseMod is the base index file's
-	// mtime; logSize is the byte offset of the append log we have replayed.
+	// mtime; logSize is the replayed byte offset of the append log.
 	baseMod time.Time
 	logSize int64
 }
@@ -72,9 +70,9 @@ type Map struct {
 // Option configures Map construction.
 type Option func(*Map)
 
-// WithLocker wires a yarilo-locks client. A nil Locker leaves
-// only the in-process Mutex as the barrier — never safe in k8s
-// production, only for unit tests.
+// WithLocker wires a yarilo-locks client. A nil Locker leaves only the
+// in-process Mutex as the barrier: never safe in k8s production, unit tests
+// only.
 func WithLocker(l locks.Locker) Option {
 	return func(m *Map) { m.locker = l }
 }
@@ -85,8 +83,8 @@ func WithOwner(s string) Option {
 	return func(m *Map) { m.owner = s }
 }
 
-// defaultRotateSize is the per-m.<N> size cap when none is configured — the real
-// mdbox_rotate_size default (10 MiB).
+// defaultRotateSize is the per-m.<N> size cap when none is configured (the
+// mdbox_rotate_size default, 10 MiB).
 const defaultRotateSize uint32 = 10 * 1024 * 1024
 
 // WithRotateSize sets the per-m.<N> size cap the batch append path enforces.
@@ -103,12 +101,10 @@ func (m *Map) rotateSizeOrDefault() uint32 {
 	return m.rotateSize
 }
 
-// Open opens (or creates) the per-user mdbox map at dir. The
-// canonical filename is MapIndexFileName ("yarilo.map.index").
-// On first open we also probe for LegacyMapIndexFileName
-// (the legacy map filename) and migrate it in place — see
-// loadOrInit. username is the cross-process map-lock key (see
-// locks.MdboxMapKey).
+// Open opens (or creates) the per-user mdbox map at dir. The canonical filename
+// is MapIndexFileName ("yarilo.map.index"). On first open it also probes for
+// LegacyMapIndexFileName and migrates it in place (see loadOrInit). username is
+// the cross-process map-lock key (see locks.MdboxMapKey).
 func Open(dir, username string, opts ...Option) (*Map, error) {
 	m := &Map{
 		path:     filepath.Join(dir, MapIndexFileName),
@@ -133,7 +129,7 @@ func Open(dir, username string, opts ...Option) (*Map, error) {
 	return m, nil
 }
 
-// Close releases per-handle state. Idempotent. No I/O.
+// Close releases per-handle state. Idempotent, no I/O.
 func (m *Map) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -142,13 +138,12 @@ func (m *Map) Close() error {
 	return nil
 }
 
-// loadOrInit reads the file from disk or, when it does not yet
-// exist, creates a fresh map index with the canonical extensions.
+// loadOrInit reads the file from disk or, when it does not yet exist, creates a
+// fresh map index with the canonical extensions.
 //
-// Migration path: if the yarilo-native file is absent but a
-// legacy file is found in the same directory, we rename it into
-// place atomically. From that point on, only the yarilo-native
-// file is read or written.
+// Migration: if the yarilo-native file is absent but a legacy file exists in the
+// same directory, it is renamed into place atomically. From then on only the
+// yarilo-native file is read or written.
 func (m *Map) loadOrInit() error {
 	if _, err := os.Stat(m.path); errors.Is(err, os.ErrNotExist) {
 		legacy := filepath.Join(filepath.Dir(m.path), LegacyMapIndexFileName)
@@ -184,10 +179,9 @@ func (m *Map) loadOrInit() error {
 	return nil
 }
 
-// createFresh writes a brand-new map.index with both extensions
-// registered and zero records. Used both on first OpenUser and
-// as the fallback after a corrupt file is moved aside by the
-// admin rebuild flow.
+// createFresh writes a brand-new map.index with both extensions registered and
+// zero records. Used on first OpenUser and as the fallback after a corrupt file
+// is moved aside by the admin rebuild flow.
 func (m *Map) createFresh() error {
 	indexID := uint32(time.Now().Unix())
 	f, err := mailindex.NewFile(indexID, defaultExtensions(0))
@@ -205,8 +199,8 @@ func (m *Map) createFresh() error {
 	return nil
 }
 
-// reindex rebuilds the byMapUID lookup table and refreshes the
-// cached header counters from m.f. Caller must hold m.mu.
+// reindex rebuilds the byMapUID lookup table and refreshes the cached header
+// counters from m.f. Caller must hold m.mu.
 func (m *Map) reindex() {
 	idx := make(map[uint32]int, len(m.f.Records))
 	var maxUID, maxFileID uint32
@@ -224,8 +218,8 @@ func (m *Map) reindex() {
 	m.byMapUID = idx
 
 	// Derive the allocation counters from the records too, not just the base
-	// header: log-replayed appends advance them past whatever the base header
-	// (written before those appends) recorded.
+	// header: log-replayed appends advance them past what the base header (written
+	// before those appends) recorded.
 	next := m.f.Header.NextUID
 	if maxUID+1 > next {
 		next = maxUID + 1
@@ -245,10 +239,9 @@ func (m *Map) reindex() {
 	m.highestFileID = hfid
 }
 
-// findExt returns a pointer to the named extension in the slice,
-// or nil if not found. Returns a pointer so callers can mutate
-// HdrData in place; the caller must call flushLocked afterwards
-// for the change to land on disk.
+// findExt returns a pointer to the named extension in the slice, or nil if not
+// found. The pointer lets callers mutate HdrData in place; they must call
+// flushLocked afterwards for the change to land on disk.
 func findExt(exts []mailindex.Extension, name string) *mailindex.Extension {
 	for i := range exts {
 		if exts[i].Name == name {
@@ -258,10 +251,9 @@ func findExt(exts []mailindex.Extension, name string) *mailindex.Extension {
 	return nil
 }
 
-// withMapLock runs fn under the per-process Mutex + the
-// cross-process map X lock. The HoldsResource shortcut keeps
-// re-entrant calls from the same goroutine from deadlocking on
-// the cross-process lock (POP3 QUIT pattern).
+// withMapLock runs fn under the per-process Mutex and the cross-process map X
+// lock. The HoldsResource shortcut keeps re-entrant calls from the same
+// goroutine from deadlocking on the cross-process lock (POP3 QUIT pattern).
 func (m *Map) withMapLock(fn func() error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -282,12 +274,10 @@ func (m *Map) withMapLock(fn func() error) error {
 	return fn()
 }
 
-// flushLocked rewrites the on-disk map.index file from m.f.
-// Caller MUST hold m.mu. Used by every mutation path.
-// flushLocked rewrites the whole base index from m.f and drops the append log —
+// flushLocked rewrites the whole base index from m.f and drops the append log:
 // the base now holds the full state, so the log resets to empty. This is the
-// compaction point (and the full-state persist for refcount / purge / file-id
-// allocation). Caller MUST hold m.mu.
+// compaction point and the full-state persist for refcount/purge/file-id
+// allocation. Caller MUST hold m.mu.
 func (m *Map) flushLocked() error {
 	if err := m.setMapHeaderLocked(); err != nil {
 		return err
@@ -310,7 +300,7 @@ func (m *Map) flushLocked() error {
 // setMapHeaderLocked writes highest_file_id + rebuild_count into the "map"
 // extension header and recomputes Header.HeaderSize/RecordSize so Recreate
 // accepts the file. It also migrates a legacy 4-byte header to 8 bytes in place
-// (growing HdrSize) — mirrors File.AddHeaderExtension's recompute. Idempotent:
+// (growing HdrSize), mirroring File.AddHeaderExtension's recompute. Idempotent:
 // once the header is 8 bytes, repeated calls re-encode the same size and do not
 // migrate again. Caller MUST hold m.mu.
 func (m *Map) setMapHeaderLocked() error {
@@ -319,7 +309,7 @@ func (m *Map) setMapHeaderLocked() error {
 		return fmt.Errorf("mdboxmap/flush: missing %q extension", extMap)
 	}
 	ext.HdrData = encodeMapHeader(m.highestFileID, m.rebuildCount, m.createFileID, m.createTime)
-	ext.HdrSize = uint32(len(ext.HdrData)) // 20; grows a legacy 4/8-byte header
+	ext.HdrSize = uint32(len(ext.HdrData)) // 20 bytes; grows a legacy 4/8-byte header
 	layout, err := mailindex.ComputeRecordLayout(m.f.Extensions)
 	if err != nil {
 		return fmt.Errorf("mdboxmap/flush: layout: %w", err)
@@ -343,10 +333,10 @@ func (m *Map) RebuildCount() uint32 {
 }
 
 // CreateTime returns the persisted unix-second creation stamp of file fileID and
-// whether it is known. Only the current append file's stamp is tracked, so this
-// returns ok=false for any other (already-rotated or legacy) file — the caller
-// must then skip the age-based rotation check (a file whose age we cannot prove
-// is never rotated by age, only by size).
+// whether it is known. Only the current append file's stamp is tracked, so it
+// returns ok=false for any other (already-rotated or legacy) file; the caller
+// then skips the age-based rotation check (a file whose age cannot be proven is
+// rotated by size only, never by age).
 func (m *Map) CreateTime(fileID uint32) (int64, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -359,7 +349,7 @@ func (m *Map) CreateTime(fileID uint32) (int64, bool) {
 // RecordFileCreated persists fileID as the current append file with creation
 // stamp ts (unix seconds), under the cross-process map lock. Called once when a
 // new physical m.<N> file is first written (Save's first record, or a compaction
-// destination), so the mdbox_rotate_interval age check has a restart-safe anchor.
+// destination) so the mdbox_rotate_interval age check has a restart-safe anchor.
 // A no-op when fileID already matches the recorded current file.
 func (m *Map) RecordFileCreated(fileID uint32, ts int64) error {
 	return m.withMapLock(func() error {
@@ -387,9 +377,9 @@ func (m *Map) BumpRebuildCount() error {
 	})
 }
 
-// reloadLocked refreshes m from disk, incrementally. It re-opens the base only
+// reloadLocked refreshes m from disk incrementally. It re-opens the base only
 // when it changed (compaction / full-state rewrite) and otherwise replays just
-// the append-log tail a sibling process wrote since our last apply — so a peer's
+// the append-log tail a sibling process wrote since our last apply, so a peer's
 // deliveries become visible without re-reading the whole map. Caller MUST hold
 // m.mu. Write callers additionally hold the cross-process lock; readers may call
 // it lock-free (a torn log tail is stopped cleanly by replayLogLocked).
@@ -409,7 +399,7 @@ func (m *Map) reloadLocked() error {
 		return nil
 	}
 
-	// Base changed (or first load) → re-open it, then replay the whole log.
+	// Base changed (or first load): re-open it, then replay the whole log.
 	if m.f == nil || !baseMod.Equal(m.baseMod) {
 		if baseErr != nil {
 			return fmt.Errorf("mdboxmap/reload: %w", baseErr)
@@ -435,7 +425,7 @@ func (m *Map) reloadLocked() error {
 		return nil
 	}
 
-	// Base unchanged, log grew → replay only the new tail.
+	// Base unchanged, log grew: replay only the new tail.
 	if logSize > m.logSize {
 		applied, err := m.replayLogLocked(m.logSize)
 		if err != nil && !errors.Is(err, errLogIndexMismatch) {
@@ -447,9 +437,8 @@ func (m *Map) reloadLocked() error {
 	return nil
 }
 
-// HighestFileID returns the cached highest_file_id. Caller does
-// not need to hold any lock — value is exposed for diagnostics
-// only; trust the value returned by Append.Finish() for write
+// HighestFileID returns the cached highest_file_id. No lock needed; the value is
+// for diagnostics only. Trust the value returned by Append.Finish() for write
 // decisions.
 func (m *Map) HighestFileID() uint32 {
 	m.mu.Lock()
@@ -458,16 +447,16 @@ func (m *Map) HighestFileID() uint32 {
 }
 
 // NextMapUID returns the next map_uid the index would assign on
-// AppendBatch.Finish. Same caveat as HighestFileID — diagnostic
-// only; the canonical value comes back from Finish.
+// AppendBatch.Finish. Same caveat as HighestFileID: diagnostic only, the
+// canonical value comes back from Finish.
 func (m *Map) NextMapUID() uint32 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.nextMapUID
 }
 
-// MessageCount returns the live record count (not the high-water
-// map_uid). Exposed for tests and rebuild flows.
+// MessageCount returns the live record count (not the high-water map_uid).
+// Exposed for tests and rebuild flows.
 func (m *Map) MessageCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

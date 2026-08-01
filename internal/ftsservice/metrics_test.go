@@ -27,8 +27,8 @@ func TestMetricsIncrement(t *testing.T) {
 	}
 }
 
-// TestMetricsEndpointExposesFTSMetrics checks the telemetry /metrics handler
-// serves the FTS metric families (#677).
+// TestMetricsEndpointExposesFTSMetrics checks the telemetry /metrics
+// handler serves the FTS metric families.
 func TestMetricsEndpointExposesFTSMetrics(t *testing.T) {
 	// Touch each family so even the label-vec ones have a series to render.
 	metricLookupTotal.Inc()

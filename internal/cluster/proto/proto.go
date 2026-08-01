@@ -13,9 +13,8 @@ import (
 	"time"
 )
 
-// ErrLookupHold is returned by Lookup when the director is holding LOOKUP for a
-// user under a confirmed ring-wide kick (#847). It is retryable: the caller
-// should re-LOOKUP shortly, not error the client.
+// ErrLookupHold is returned when the director holds LOOKUP for a user
+// under a confirmed ring-wide kick. Retryable: re-LOOKUP shortly.
 var ErrLookupHold = errors.New("director lookup: user kill in progress, retry")
 
 // lookupHoldReason is the FAIL reason the director sends for the hold.
@@ -94,12 +93,10 @@ type LookupResult struct {
 	Tag  string // backend tag (may be empty)
 }
 
-// readReply reads the next genuine request/reply line, skipping any unsolicited
-// server pushes interleaved on this connection (#702). The director fans out
-// RING-CHANGE / USER-MOVED / USER-KICKED / USER-KILLED-EVERYWHERE and PING
-// keepalives to EVERY connection — including one that is mid-request — so a
-// request/reply method must not mistake such a push for its reply. PING is
-// answered with PONG (as the watch loop does) and skipped.
+// readReply reads the next reply line, skipping unsolicited server
+// pushes (RING-CHANGE / USER-* / PING keepalives) that the director
+// fans out to every connection, including mid-request ones. PING is
+// answered with PONG.
 func (c *Conn) readReply() (string, error) {
 	for {
 		line, err := c.ReadLine()
@@ -124,14 +121,12 @@ func replyVerb(line string) string {
 	return line
 }
 
-// Lookup asks the director for the backend address for the given username.
-// tag restricts routing to backends with that tag; pass "" for the untagged
-// pool (#737 — there is no full-ring mode; every caller belongs to exactly
-// one tag-pool).
-// Returns LookupResult on success, or an error if no backends are available.
+// Lookup asks the director for the backend address for username. tag
+// restricts routing to that tag's pool; "" is the untagged pool — there
+// is no full-ring mode, every caller belongs to exactly one tag-pool.
 func (c *Conn) Lookup(id, username, tag, proto string) (LookupResult, error) {
-	// proto (trailing field) tells the director which protocol is asking, for
-	// least_sessions placement (#797); optional for older callers.
+	// trailing proto field feeds least_sessions placement; optional
+	// for older callers
 	if err := c.WriteLine(LookupRequestLine(id, username, tag, proto)); err != nil {
 		return LookupResult{}, fmt.Errorf("director lookup: write: %w", err)
 	}
@@ -142,16 +137,13 @@ func (c *Conn) Lookup(id, username, tag, proto string) (LookupResult, error) {
 	return ParseLookupReply(line)
 }
 
-// LookupRequestLine renders a LOOKUP request. Exported so a caller that owns a
-// persistent director connection can write the request itself and match the
-// reply by id, instead of dialling one connection per lookup (#878).
+// LookupRequestLine renders a LOOKUP request, for callers that own a
+// persistent director connection and match replies by id.
 func LookupRequestLine(id, username, tag, proto string) string {
 	return fmt.Sprintf("LOOKUP\t%s\t%s\t%s\t%s", id, TabEscape(username), tag, proto)
 }
 
-// ParseLookupReply decodes a HOST or FAIL reply to a LOOKUP. Split out of Lookup
-// so the same parsing serves both the dial-per-lookup path and a demultiplexed
-// persistent connection.
+// ParseLookupReply decodes a HOST or FAIL reply to a LOOKUP.
 func ParseLookupReply(line string) (LookupResult, error) {
 	fields := ParseLine(line)
 	if len(fields) < 2 {
@@ -173,9 +165,8 @@ func ParseLookupReply(line string) (LookupResult, error) {
 		}, nil
 	case "FAIL":
 		reason := fields[len(fields)-1]
-		// A confirmed-kick hold (#847) is retryable, not a hard failure: the
-		// user's old sessions are still draining, so the login proxy should
-		// re-LOOKUP shortly rather than surface an error to the client.
+		// confirmed-kick hold is retryable: the user's old sessions
+		// are still draining, re-LOOKUP instead of erroring the client
 		if reason == "reason="+lookupHoldReason {
 			return LookupResult{}, fmt.Errorf("director lookup: %w", ErrLookupHold)
 		}
@@ -202,9 +193,8 @@ func (c *Conn) SessionOpen(sessionID, username, backendIP, proto string) error {
 	return nil
 }
 
-// Unreachable reports to the director that a dial to backendIP failed (#782).
-// Corroborated across enough distinct login proxies, this evicts the backend
-// from the ring ahead of its heartbeat-lease TTL so the next LOOKUP re-routes.
+// Unreachable reports a failed dial to backendIP. Corroborated across
+// enough login proxies, this evicts the backend ahead of its lease TTL.
 func (c *Conn) Unreachable(backendIP string) error {
 	if err := c.WriteLine("BACKEND-UNREACHABLE\t" + backendIP); err != nil {
 		return fmt.Errorf("director unreachable: write: %w", err)
@@ -264,11 +254,9 @@ func (c *Conn) BackendDown(ip string) error {
 	return nil
 }
 
-// ReadLine reads one LF-terminated line, hard-capped at the reader's
-// buffer size (maxLineLen). ReadSlice — unlike ReadString, which keeps
-// appending without bound (#703) — fails with ErrBufferFull once the
-// buffer fills without a newline, so a peer streaming bytes with no LF
-// costs at most one buffer, not unbounded memory per connection.
+// ReadLine reads one LF-terminated line, capped at maxLineLen.
+// ReadSlice fails with ErrBufferFull once the buffer fills, so a peer
+// streaming bytes with no LF costs at most one buffer.
 func (c *Conn) ReadLine() (string, error) {
 	line, err := c.rd.ReadSlice('\n')
 	if err != nil {

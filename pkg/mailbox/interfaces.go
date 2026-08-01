@@ -7,53 +7,46 @@ import (
 	"time"
 )
 
-// ErrCorruptStorage is returned (wrapped) by a mailbox driver's read path when a
-// message's backing storage is missing, truncated or malformed — as opposed to a
-// transient I/O error. It is the reactive-rebuild trigger: a caller that reads a
-// message and sees this via errors.Is marks the folder corrupt so the next open
-// rebuilds the index from storage. Transient errors (EIO, timeouts) must NOT be
-// wrapped with it, so a flaky disk does not trigger a mass index reset.
+// ErrCorruptStorage is wrapped by a driver's read path when a message's backing
+// storage is missing, truncated or malformed. Callers detect it via errors.Is and
+// mark the folder for a rebuild on next open. Transient I/O errors (EIO, timeouts)
+// must NOT be wrapped with it.
 var ErrCorruptStorage = errors.New("mailbox: corrupt message storage")
 
-// CorruptionMarker is an optional capability of an IndexBackend handle: it
-// persists a per-folder "needs rebuild" marker (the FSCKD header flag) so a
-// missing/corrupt message detected on one read triggers a reactive heal on the
-// next open — possibly in another process. Kept off the core UserIndex
-// interface so alternate index backends and test mocks need not implement it;
-// callers type-assert. The current marker is exposed read-side as Folder.Fsckd.
+// CorruptionMarker is an optional capability of an IndexBackend handle that
+// persists a per-folder "needs rebuild" marker so a corrupt message detected on
+// one read triggers a heal on the next open. Kept off the core UserIndex interface;
+// callers type-assert. The marker is exposed read-side as Folder.Fsckd.
 type CorruptionMarker interface {
 	// MarkFolderCorrupt sets the marker. Idempotent.
 	MarkFolderCorrupt(folderID uint64) error
-	// ClearFolderCorrupt clears the marker. Called under the mailbox lock right
-	// after the reactive heal, and by the operator rebuild endpoint.
+	// ClearFolderCorrupt clears the marker, under the mailbox lock after the heal
+	// and by the operator rebuild endpoint.
 	ClearFolderCorrupt(folderID uint64) error
 }
 
-// ReactiveHealer is an index-authoritative driver that can self-heal a folder
-// whose index references missing/corrupt storage. Only such drivers should ever
-// have a folder flagged FSCKD: marking a driver that cannot heal (mdbox until
-// #594 Phase 2b) would strand the folder corrupt forever with nothing to clear
-// the marker.
+// ReactiveHealer is a driver that can self-heal a folder whose index references
+// missing/corrupt storage. Only such drivers may have a folder flagged corrupt;
+// a driver that cannot heal would strand the folder with nothing to clear the marker.
 type ReactiveHealer interface {
 	// HealCorruptFolder repairs folder and returns the UIDs it expunged (records
 	// whose backing message vanished), so the caller can invalidate their FTS
-	// documents. len(result) is the heal count.
+	// documents.
 	HealCorruptFolder(idx UserIndex, folder *Folder) ([]uint32, error)
 }
 
-// CanReactiveHeal reports whether box can self-heal corruption. The corruption
-// marker must be gated on this: flag only what something will later clear.
+// CanReactiveHeal reports whether box can self-heal corruption. Marking a folder
+// corrupt must be gated on this: flag only what something will later clear.
 func CanReactiveHeal(box any) bool {
 	_, ok := box.(ReactiveHealer)
 	return ok
 }
 
 // FolderAgnosticStorage marks a driver whose Scan enumerates storage-wide (not
-// per-folder) records — mdbox, where messages are shared across folders through
-// the map. A per-folder rebuild (idxrebuild.RebuildFolder) is unsafe for such a
-// driver: it would import every stored message into the target folder with fresh
-// UIDs. These drivers need a dedicated storage-wide rebuild; the operator
-// per-folder endpoint must reject them.
+// per-folder) records, such as mdbox where messages are shared across folders. A
+// per-folder rebuild is unsafe for such a driver — it would import every stored
+// message into the target folder with fresh UIDs — so it needs a dedicated
+// storage-wide rebuild and the per-folder endpoint must reject it.
 type FolderAgnosticStorage interface {
 	FolderAgnosticScan() bool
 }
@@ -72,40 +65,29 @@ type StorageRebuildStats struct {
 	ExpungedUIDs map[string][]uint32
 }
 
-// StorageWideRebuilder is a folder-agnostic driver (mdbox) that can rebuild its
-// whole storage: reconcile the shared map against the physical files, reset
-// every folder index against the surviving messages, recompute each map record's
-// refcount from the actual folder references (so an unreferenced message becomes
-// zero-ref garbage for the next purge — never resurrected), and drop map records
-// whose message vanished — all under the storage (map) lock. idx is the user's
-// index backend for the same namespace. Implemented by mdbox; driven by the
-// operator rebuild-storage endpoint and (later) the reactive trigger.
+// StorageWideRebuilder is a folder-agnostic driver that can rebuild its whole
+// storage under the storage (map) lock: reconcile the shared map against physical
+// files, reset every folder index against surviving messages, recompute each map
+// record's refcount from actual folder references (unreferenced messages become
+// zero-ref garbage for the next purge, never resurrected), and drop map records
+// whose message vanished. idx is the user's index backend for the same namespace.
 //
-// Orphan RESTORE (re-filing an unreferenced message into a mailbox) happens only
-// when restoreOrphans is set AND the message carries an ORIG_MAILBOX tag, so it
-// is re-filed into its recorded home folder — never blindly adopted. The default
-// (restoreOrphans false) leaves unreferenced messages zero-ref for purge, so a
-// default run is byte-identical to the pre-restore behaviour. Even a tag only
-// proves "was once in this folder", not "is lost", so the resurrection decision
-// stays the operator's, per-request.
+// Orphan restore (re-filing an unreferenced message) happens only when
+// restoreOrphans is set AND the message carries an ORIG_MAILBOX tag; it is re-filed
+// into its recorded home folder, never blindly adopted. The default leaves
+// unreferenced messages zero-ref for purge.
 type StorageWideRebuilder interface {
 	RebuildStorage(idx UserIndex, restoreOrphans bool) (StorageRebuildStats, error)
 }
 
-// MarkCorruptOnFetchErr flags folder for a reactive heal when err reports
-// corrupt storage (ErrCorruptStorage). It resolves the folder ID via idx and
-// records the marker if idx supports it — a no-op otherwise. Shared by the read
-// paths of every protocol (IMAP, POP3, ManageSieve/imapsieve, FTS) so an
-// sdbox mailbox self-heals no matter which protocol first trips over the bad
-// message. Best-effort: any resolution/marking error is swallowed.
+// MarkCorruptOnFetchErr flags folder for a heal when err wraps ErrCorruptStorage.
+// It resolves the folder ID via idx and records the marker if idx supports it,
+// else a no-op. box is the driver that produced err: the marker is persisted only
+// when the driver can heal it (CanReactiveHeal). Best-effort — any
+// resolution/marking error is swallowed.
 //
-// box is the driver that produced err: the marker is only persisted when the
-// driver can actually heal it (CanReactiveHeal), so a driver without a reactive
-// rebuilder never leaves a folder stuck FSCKD.
-//
-// It returns true only when it actually marked the folder, so a caller can gate
-// its own per-session/per-scan "already flagged" state without duplicating the
-// corruption classification: `if !marked && MarkCorruptOnFetchErr(...) { marked = true }`.
+// Returns true only when it actually marked the folder, so a caller can gate its
+// own "already flagged" state without repeating the corruption classification.
 func MarkCorruptOnFetchErr(box any, idx UserIndex, folder string, err error) bool {
 	if err == nil || !errors.Is(err, ErrCorruptStorage) {
 		return false
@@ -125,8 +107,7 @@ func MarkCorruptOnFetchErr(box any, idx UserIndex, folder string, err error) boo
 }
 
 // FormatObjectID renders a 16-byte GUID as the RFC 8474 object identifier used
-// for IMAP MAILBOXID / EMAILID (OBJECTID): 32 lowercase hex characters, the
-// same string form other mail servers use for the 128-bit GUID.
+// for IMAP MAILBOXID / EMAILID (OBJECTID): 32 lowercase hex characters.
 func FormatObjectID(guid [16]byte) string {
 	return hex.EncodeToString(guid[:])
 }
@@ -144,9 +125,9 @@ type MessageMeta struct {
 	GUID         [16]byte
 	CacheOffset  uint32
 	// AltTier is true when the message body resides in alt (cold) storage.
-	// Stored as FlagBackend (0x40) in the on-disk index record so Fetch()
-	// can open the correct tier without a wasted primary-tier syscall.
-	// Only meaningful for mdbox; other drivers ignore it.
+	// Stored as FlagBackend (0x40) in the on-disk index record so Fetch() opens
+	// the correct tier without a wasted primary-tier syscall. Only meaningful for
+	// mdbox; other drivers ignore it.
 	AltTier bool
 }
 
@@ -159,15 +140,14 @@ type Folder struct {
 	Messages      uint32
 	Unseen        uint32
 	HighestModSeq uint64
-	// GUID is a stable 16-byte identifier stamped at folder creation
-	// time. Survives RENAME (unlike Name). Used as the key namespace
-	// for per-folder metadata in pkg/dict (RFC 5464 METADATA) and as
-	// the rename-stable handle for ACL state, quota counters, etc.
+	// GUID is a stable 16-byte identifier stamped at folder creation time.
+	// Survives RENAME (unlike Name). Used as the key namespace for per-folder
+	// metadata in pkg/dict (RFC 5464 METADATA) and as the rename-stable handle
+	// for ACL state, quota counters, etc.
 	GUID [16]byte
-	// Fsckd is true when the folder index carries the persisted FSCKD marker —
-	// a dbox driver detected a missing/corrupt message and flagged the index
-	// for a rebuild on the next open. The session runs the reactive rebuild and
-	// clears the marker.
+	// Fsckd is true when the folder index carries the persisted corruption marker:
+	// a driver detected a missing/corrupt message and flagged the index for a
+	// rebuild on the next open. The session runs the rebuild and clears the marker.
 	Fsckd bool
 }
 
@@ -178,24 +158,6 @@ type SeqRange struct {
 	From, To uint32 // inclusive; To==0 means '*'
 }
 
-// ScanRecord is one entry produced by UserMailbox.Scan — the raw
-// per-message info a storage driver can reconstruct from disk
-// alone (no help from the index). Used by admin rebuild flows to
-// regenerate the fileindex after corruption or operator request.
-//
-// Fields populated per driver:
-//
-//	maildir: Filename, Size (from "S=" or stat), VSize (from "W="),
-//	         InternalDate (from stat mtime), Flags (parsed from
-//	         the ":2,FLAGS" trailer); GUID stays zero — Maildir
-//	         filenames carry no GUID.
-//	dbox:    Filename, GUID (from "G<hex>\n" trailer line),
-//	         Size+VSize (from "Z<hex>" / "V<hex>"), InternalDate
-//	         (from "R<hex>" Unix epoch); Flags empty — dbox
-//	         delegates flag storage to the index.
-//	mdbox:   not implemented in this phase — driver returns
-//	         "not yet implemented" until Phase MDBOX-PROD-READY.
-//
 // FlagsUpdate carries the new flag and keyword sets for one message in a
 // batch UpdateFlagsMulti call.
 type FlagsUpdate struct {
@@ -214,18 +176,10 @@ type SyncStats struct {
 	Changed  bool
 }
 
-// RFC822Size returns the size to report as RFC822.SIZE and to match against in
-// SEARCH LARGER/SMALLER: the VIRTUAL size, i.e. the octet count of the message
-// as transmitted with CRLF line endings (RFC 3501 §6.4.5).
-//
-// This must never be the physical on-disk size. A copy stored with bare LF is
-// shorter on disk than what the server transmits, so reporting Size makes the
-// same message announce different sizes depending on how it happened to be
-// stored — and announce fewer octets than FETCH BODY[] then delivers (#892).
-//
-// VSize == 0 means the backend did not record a virtual size (a maildir file
-// written without a W= field, or an older store), in which case the physical
-// size is the best available answer.
+// RFC822Size returns the size to report as RFC822.SIZE and to match in SEARCH
+// LARGER/SMALLER: the VIRTUAL size, the octet count of the message as transmitted
+// with CRLF line endings (RFC 3501 §6.4.5), never the physical on-disk size. When
+// VSize == 0 the backend recorded no virtual size and the physical Size is used.
 func (m *MessageMeta) RFC822Size() uint32 {
 	if m == nil {
 		return 0
@@ -247,6 +201,8 @@ func (r *ScanRecord) RFC822Size() uint32 {
 	return r.Size
 }
 
+// ScanRecord is one entry produced by UserMailbox.Scan: the raw per-message info
+// a driver reconstructs from disk alone (no index). Drives admin rebuild flows.
 type ScanRecord struct {
 	Filename     string
 	GUID         [16]byte
@@ -255,53 +211,26 @@ type ScanRecord struct {
 	InternalDate time.Time
 	Flags        []string
 	// OrigMailbox is the mailbox a message was originally saved into, recovered
-	// from storage metadata (mdbox trailer). Empty for records written before the
-	// key existed or for drivers that don't store it. A storage-wide rebuild uses
-	// it to restore an orphan to its home folder instead of guessing.
+	// from storage metadata (mdbox trailer). Empty when unrecorded. A storage-wide
+	// rebuild uses it to restore an orphan to its home folder instead of guessing.
 	OrigMailbox string
 }
 
 // MailboxBackend is the per-process factory for user-scoped storage handles.
 // It holds no per-user state; all per-user state lives in UserMailbox.
-//
-// Phase 5 — multi-namespace stub:
-//
-//	OpenNamespace(user *UserInfo, namespace string) (UserMailbox, error)
-//	    Returns a handle for a shared or public namespace (e.g. "shared/" or "Public").
-//	    Implementation: separate Backend instance rooted at the namespace storage dir,
-//	    wrapped with the same UserMailbox contract. Namespace list comes from
-//	    config.Namespaces (private/shared/public, each with its own location template).
 type MailboxBackend interface {
 	OpenUser(*UserInfo) UserMailbox
 }
 
 // UserMailbox is a per-session, per-user storage handle bound to a single UserInfo
-// at creation time.
+// at creation time. Init MUST be called before any other method; it creates the
+// on-disk directory structure.
 //
-// Init MUST be called before any other method — it creates the on-disk directory
-// structure. Callers that open a handle but never call Init will see errors from
-// the underlying filesystem operations.
-//
-// Save takes the assigned UID as a parameter. Drivers that encode the UID in
-// the on-disk filename (sdbox: u.<uid>; mdbox: map_uid bookkeeping) use it
-// directly; Maildir ignores the UID for its filename but writes the
-// uid→filename mapping into the yarilo-uidlist sidecar inline. The canonical
-// caller flow is:
-//
-//	uid            := idx.AllocateUID(folderID)
-//	filename, vsize := box.Save(folder, r, uid, size, flags)
-//	idx.AppendMessage(folderID, &MessageMeta{UID: uid, Filename: filename, VSize: vsize, ...})
-//
-// If Save fails after AllocateUID, the UID is burnt — the index
-// simply skips the hole on the next scan.
-//
-// Save returns the message's VIRTUAL (CRLF-normalized) size alongside the
-// filename — the value that must land in MessageMeta.VSize so RFC822.SIZE is
-// consistent from the first FETCH. The driver already computes it while writing
-// (maildir W=, sdbox/mdbox V-trailer); returning it here avoids the index
-// falling back to the physical size until a rescan populates VSize (#892 gap).
-//
-// Close releases any open file descriptors held by the handle.
+// Save takes the assigned UID as a parameter and returns the message's stored
+// filename plus its VIRTUAL (CRLF-normalized) size, which must land in
+// MessageMeta.VSize so RFC822.SIZE is consistent from the first FETCH. If Save
+// fails after the UID was allocated, the UID is burnt and the index skips the hole
+// on the next scan. Close releases any open file descriptors.
 type UserMailbox interface {
 	Init() error
 	Create(folder string) error
@@ -320,23 +249,15 @@ type UserMailbox interface {
 	// including nested folders (dbox drivers recurse the physical tree) and
 	// \NoSelect containers (FolderEntry.Selectable=false).
 	ListFolders() ([]FolderEntry, error)
-	// Scan walks the on-disk representation of folder and yields
-	// every visible message as a ScanRecord. Used by the admin
-	// rebuild flow to regenerate the fileindex independently of
-	// whatever the index currently believes. Returns
-	// (nil, fmt.Errorf("driver/scan: not yet implemented"))
-	// from drivers that have not implemented disk-scan yet.
+	// Scan walks folder's on-disk representation and yields every visible message
+	// as a ScanRecord, so the admin rebuild flow can regenerate the fileindex
+	// independently of the index. Drivers without disk-scan return a "not yet
+	// implemented" error.
 	Scan(folder string) ([]ScanRecord, error)
 	Close() error
 }
 
 // IndexBackend is the per-process factory for user-scoped index handles.
-//
-// Phase 5 — multi-namespace stub:
-//
-//	OpenNamespace(user *UserInfo, namespace string) (UserIndex, error)
-//	    Returns an index handle for a non-private namespace.
-//	    Implementation: separate Backend instance rooted at the namespace index dir.
 type IndexBackend interface {
 	OpenUser(*UserInfo) UserIndex
 }
@@ -347,40 +268,29 @@ type UserIndex interface {
 	OpenFolder(folder string, uidValidity uint32) (*Folder, error)
 	SaveFolder(f *Folder) error
 	AppendMessage(folderID uint64, m *MessageMeta) error
-	// AllocateUID atomically reserves and persists the folder's next UID
-	// under the cross-process mailbox lock. The caller passes the UID to
-	// UserMailbox.Save, then records the full MessageMeta via AppendMessage.
-	//
-	// If the caller fails between AllocateUID and AppendMessage the UID
-	// is burnt (uid hole). Periodic rebuild reconciles state by scanning
-	// the on-disk tree.
+	// AllocateUID atomically reserves and persists the folder's next UID under the
+	// cross-process mailbox lock. If the caller fails between AllocateUID and
+	// AppendMessage the UID is burnt (uid hole), reconciled by a later rebuild.
 	AllocateUID(folderID uint64) (uint32, error)
 	// AllocateUIDWithModSeq atomically reserves the folder's next UID and
-	// pre-allocates the next modseq value in one lock/reload/flush cycle,
-	// replacing the separate AllocateUID + NextModSeq calls in Append.
+	// pre-allocates the next modseq value in one lock/reload/flush cycle.
 	AllocateUIDWithModSeq(folderID uint64) (uid uint32, modseq uint64, err error)
 	// AllocateAndAppend assigns a UID and records the message in a single
-	// lock/reload/flush cycle — the go-imap appendBytes pattern applied to
-	// persistent storage. m.UID and m.ModSeq are filled in by the call;
-	// all other fields must be set by the caller. m.Filename must already
-	// be known (box.Save completes before this call). Replaces the two-step
-	// AllocateUID(WithModSeq) + AppendMessage pattern that caused APPEND stalls.
+	// lock/reload/flush cycle. m.UID and m.ModSeq are filled in by the call; all
+	// other fields (including m.Filename) must be set by the caller beforehand.
 	AllocateAndAppend(folderID uint64, m *MessageMeta) error
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
 	// UpdateFilename repoints the stored on-disk filename for a UID without
-	// touching flags, UID or modseq. Used by maildir sync-on-open when a second
-	// MUA renamed a tracked file out of band (a flag change moves the ":2,"
-	// trailer); the message keeps its identity but must be reachable at its new
-	// name. No-op when uid is unknown.
+	// touching flags, UID or modseq. Used by maildir sync-on-open when another MUA
+	// renamed a tracked file out of band. No-op when uid is unknown.
 	UpdateFilename(folderID uint64, uid uint32, filename string) error
 	// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a
 	// single lock/reload/flush cycle. Returns the new modseq per UID.
 	UpdateFlagsMulti(folderID uint64, updates map[uint32]FlagsUpdate) (map[uint32]uint64, error)
-	// SetAltTier sets or clears the AltTier marker (FlagBackend) for every
-	// message in folderID whose Filename matches one of the supplied names.
-	// Called by the altmove API after physically relocating mdbox m.<N> files
-	// so subsequent Fetch calls can skip the primary-tier open() attempt.
-	// Operates under the cross-process mailbox lock for the folder.
+	// SetAltTier sets or clears the AltTier marker (FlagBackend) for every message
+	// in folderID whose Filename matches one of the supplied names, under the
+	// folder's cross-process mailbox lock. Called by the altmove API after
+	// relocating mdbox files so subsequent Fetch calls skip the primary-tier open.
 	SetAltTier(folderID uint64, filenames []string, altTier bool) error
 	GetMessages(folderID uint64, uids SeqSet) ([]*MessageMeta, error)
 	ExpungeMessage(folderID uint64, uid uint32) error
@@ -401,25 +311,20 @@ type UserIndex interface {
 	GetPOP3UIDLs(folderID uint64) (map[uint32]string, error)
 	// SavePOP3UIDLs persists POP3 UIDLs so subsequent sessions use stable values.
 	SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error
-	// ResetFolder atomically replaces the on-disk record set for
-	// folderID with the supplied messages. Preserves UIDVALIDITY
-	// and the folder GUID; bumps NextUID past max(records.UID).
-	// Each surviving record keeps its own ModSeq (no QRESYNC modseq
-	// storm on rebuild); HighestModSeq advances to the greatest
-	// modseq carried in, and a record with no modseq is stamped a
-	// fresh one. Returns the UIDs present before the reset but absent
-	// after — the dropped records, so the caller can invalidate their
-	// FTS documents. Drives the admin rebuild flow. Caller has already
-	// taken the cross-process mailbox lock and made a .bak of the old
-	// base file.
+	// ResetFolder atomically replaces folderID's on-disk record set with the
+	// supplied messages. Preserves UIDVALIDITY and the folder GUID; bumps NextUID
+	// past max(records.UID). Each surviving record keeps its own ModSeq (a record
+	// with none is stamped fresh) and HighestModSeq advances to the greatest one.
+	// Returns UIDs present before the reset but absent after, so the caller can
+	// invalidate their FTS documents. Caller holds the mailbox lock and has made a
+	// .bak of the old base file.
 	ResetFolder(folderID uint64, records []*MessageMeta) ([]uint32, error)
-	// OptimizeIndex compacts the .index.log overlay into the base
-	// .index file. Returns a no-op nil when there is nothing to
-	// compact. Takes the same X lock as a normal write.
+	// OptimizeIndex compacts the .index.log overlay into the base .index file,
+	// under the same write lock as a normal write. No-op nil when nothing to compact.
 	OptimizeIndex(folderID uint64) error
-	// FolderVSize returns the folder's cached aggregate virtual size and
-	// message count (the hdr-vsize extension). The index-derived source of
-	// truth the count quota backend sums across a user's folders.
+	// FolderVSize returns the folder's cached aggregate virtual size and message
+	// count (the hdr-vsize extension), which the count quota backend sums across a
+	// user's folders.
 	FolderVSize(folderID uint64) (bytes uint64, messages uint32, err error)
 	// RecomputeVSize forces a rebuild of the folder's vsize aggregate from
 	// records and persists it — the admin recovery path for a corrupted count.

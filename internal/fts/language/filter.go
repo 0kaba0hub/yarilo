@@ -46,13 +46,9 @@ func (f snowballFilter) Apply(t string) (string, bool) {
 	return env.Current(), true
 }
 
-// passthroughFilter stands in for "snowball" on a language with no Snowball
-// algorithm at all — Ukrainian (#718) has no official Snowball stemmer, and
-// the reference implementation cannot stem it either. A stemmer-less
-// language is defined by whatever OTHER filters apply to it (typically
-// lowercase + stopwords); Name() still reports "snowball" so logs/debugging
-// see the configured filter chain unchanged, even though this step is a
-// no-op.
+// passthroughFilter stands in for "snowball" on a language with no
+// Snowball stemmer (e.g. uk). Name() still reports "snowball" so the
+// configured chain shows up unchanged in logs.
 type passthroughFilter struct{}
 
 func (passthroughFilter) Name() string                  { return "snowball" }
@@ -80,7 +76,7 @@ func buildFilters(names []string, lang string) ([]Filter, error) {
 			if stem, ok := snowballStemmers[lang]; ok {
 				out = append(out, snowballFilter{stem: stem})
 			} else {
-				out = append(out, passthroughFilter{}) // #718: stemmer-less language
+				out = append(out, passthroughFilter{}) // stemmer-less language
 			}
 		case "stopwords":
 			words, ok := stopwordLists[lang]

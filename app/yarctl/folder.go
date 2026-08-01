@@ -167,9 +167,8 @@ func folderExpunge(args []string) error {
 	return printJSON(backendAPIPost("/api/backend/folder/expunge", body))
 }
 
-// parseUIDList accepts comma-separated unsigned 32-bit ints. Bare
-// (non-list) input passes through as a single-element slice so
-// `--uids 42` works without forcing a trailing comma.
+// parseUIDList accepts comma-separated unsigned 32-bit ints. Bare (non-list)
+// input passes through as a single-element slice.
 func parseUIDList(s string) ([]uint32, error) {
 	var out []uint32
 	for _, tok := range strings.Split(s, ",") {

@@ -32,14 +32,13 @@ func TestHashFormat_Key(t *testing.T) {
 		{"%Ld", "User@Example.com", "example.com"},
 		{"%Ln@%Ld", "User@Example.com", "user@example.com"},
 		{"%%%Lu", "A@B", "%a@b"},
-		// Domain-less user (reference semantics): %n is the whole username, %d is empty
-		// so every domain-less user shares one key. Documented + tested so the first
-		// local account in a deployment does not look like a bug.
+		// domain-less user: %n is the whole username, %d is empty,
+		// so every domain-less user shares one key
 		{"%n", "localuser", "localuser"},
 		{"%Ln", "LocalUser", "localuser"},
 		{"%d", "localuser", ""},
 		{"%Ld", "LocalUser", ""},
-		// First '@' wins (matches reference t_strcut / i_strchr_to_next).
+		// first '@' wins
 		{"%n", "a@b@c", "a"},
 		{"%d", "a@b@c", "b@c"},
 	}
@@ -54,9 +53,9 @@ func TestHashFormat_Key(t *testing.T) {
 	}
 }
 
-// TestRing_UserHashMatchesCanonical locks the structural invariant: the ring's own
-// userHash goes through the exact same Hash(hf.Key(...)) that director.HashUsername uses,
-// so ring and userDir can never diverge for the same user and format (#850).
+// TestRing_UserHashMatchesCanonical: the ring's userHash goes through
+// the same Hash(hf.Key(...)) as director.HashUsername, so ring and
+// userDir never diverge.
 func TestRing_UserHashMatchesCanonical(t *testing.T) {
 	for _, format := range []string{"%Lu", "%u", "%Ld", "%Ln@%Ld"} {
 		hf := MustParseHashFormat(format)
@@ -69,8 +68,8 @@ func TestRing_UserHashMatchesCanonical(t *testing.T) {
 	}
 }
 
-// TestHashFormat_DomainlessCollide proves the documented edge: a %d template routes
-// every domain-less user to the SAME hash (empty key), deterministically.
+// TestHashFormat_DomainlessCollide: a %d template routes every
+// domain-less user to the same hash (empty key).
 func TestHashFormat_DomainlessCollide(t *testing.T) {
 	hf := MustParseHashFormat("%Ld")
 	if Hash(hf.Key("alice")) != Hash(hf.Key("bob")) {

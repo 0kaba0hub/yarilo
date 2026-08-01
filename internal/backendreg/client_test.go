@@ -154,7 +154,7 @@ func TestClient_HandshakeAndHeartbeat(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx)
 
-	// Client handshake (ME) then at least two heartbeats with rising seq.
+	// ME handshake then at least two heartbeats with rising seq
 	lines := md.waitFor(t, func(ls []string) bool {
 		return countPrefix(ls, "ME\t") >= 1 && countPrefix(ls, "BACKEND-UP\t") >= 2
 	})
@@ -168,7 +168,7 @@ func TestClient_HandshakeAndHeartbeat(t *testing.T) {
 			ups = append(ups, l)
 		}
 	}
-	// Fields: BACKEND-UP\tip\tport\ttag\tvhosts\tseq
+	// fields: BACKEND-UP\tip\tport\ttag\tvhosts\tseq
 	first := strings.Split(ups[0], "\t")
 	if len(first) != 6 {
 		t.Fatalf("BACKEND-UP field count = %d, want 6: %q", len(first), ups[0])
@@ -176,9 +176,7 @@ func TestClient_HandshakeAndHeartbeat(t *testing.T) {
 	if first[1] != "10.0.0.7" || first[2] != "10143" || first[3] != "imap-a" || first[4] != "100" {
 		t.Fatalf("BACKEND-UP identity fields wrong: %q", ups[0])
 	}
-	// seq is seeded from the process start time (unix seconds) so a same-IP
-	// restart resumes above the director's last-recorded seq — so assert
-	// monotonic increase, not a fixed 1/2.
+	// seq is time-seeded, so assert monotonic increase, not a fixed 1/2
 	firstSeq, err := strconv.ParseUint(first[5], 10, 64)
 	if err != nil {
 		t.Fatalf("first heartbeat seq not a uint: %q", first[5])
@@ -208,7 +206,7 @@ func TestClient_UnhealthySkipsHeartbeat(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx)
 
-	// The ME handshake still lands, but no BACKEND-UP is ever sent.
+	// ME handshake still lands, but no BACKEND-UP is sent
 	md.waitFor(t, func(ls []string) bool { return countPrefix(ls, "ME\t") >= 1 })
 	time.Sleep(150 * time.Millisecond)
 	if n := countPrefix(md.snapshot(), "BACKEND-UP\t"); n != 0 {
@@ -289,8 +287,8 @@ func TestClient_ReconnectsAfterDrop(t *testing.T) {
 	go c.Run(ctx)
 
 	md.waitFor(t, func(ls []string) bool { return countPrefix(ls, "ME\t") >= 1 })
-	// Force-close the active connection; the client must redial the same
-	// listener and re-handshake + resume heartbeating.
+	// force-close the active connection; the client must redial,
+	// re-handshake and resume heartbeating
 	md.reset()
 	md.dropConns()
 	md.waitFor(t, func(ls []string) bool {
@@ -311,9 +309,8 @@ func TestClient_NoDirectorAddrIsNoop(t *testing.T) {
 	}
 }
 
-// TestClient_RepliesPongToPing guards #787: the director's PING keepalive must
-// be answered with PONG, otherwise the director closes the registration and the
-// live backend flaps through TTL expiry.
+// TestClient_RepliesPongToPing: the director's PING keepalive must be
+// answered with PONG or the director closes the registration.
 func TestClient_RepliesPongToPing(t *testing.T) {
 	md := newMockDirector(t)
 	defer md.close()

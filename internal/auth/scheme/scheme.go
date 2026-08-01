@@ -1,8 +1,6 @@
-// Package scheme verifies a plaintext password against a stored password
-// string carrying an optional {SCHEME} prefix, and parses SCRAM verifier
-// blobs. It is the single password-scheme implementation shared by every
-// passdb driver (sql, passwd-file, ...) so the recognised scheme set and its
-// semantics never drift between backends.
+// Package scheme verifies a plaintext password against a stored {SCHEME}-prefixed
+// password string and parses SCRAM verifier blobs. Shared by every passdb driver
+// so the recognised scheme set stays uniform across backends.
 package scheme
 
 import (
@@ -15,15 +13,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Verify reports whether input matches the stored password, using PLAIN as the
-// fallback scheme when no {SCHEME} prefix is present and no crypt(3) marker is
-// detected.
+// Verify reports whether input matches the stored password, defaulting to PLAIN
+// when no {SCHEME} prefix and no crypt(3) marker are present.
 func Verify(stored, input string) bool {
 	return VerifyWithDefault(stored, input, "")
 }
 
-// VerifyWithDefault is like Verify but uses defaultScheme as the fallback when
-// no {SCHEME} prefix is present and no crypt(3) marker is detected. Empty
+// VerifyWithDefault is Verify with a configurable fallback scheme; empty
 // defaultScheme falls back to PLAIN.
 //
 // Recognised schemes (case-insensitive prefix):
@@ -32,23 +28,21 @@ func Verify(stored, input string) bool {
 //   - {SHA512-CRYPT} — crypt(3) SHA-512 ($6$salt$hash)
 //   - {CRYPT} — crypt(3) autodetection by hash marker ($2*→bcrypt, $6$→sha512)
 //   - {SCRAM-SHA-256} / {SCRAM-SHA-1} — re-derive StoredKey from input and the
-//     stored iter/salt, then constant-time compare. The same verifier blob
-//     drives both this PLAIN-path verify and the SCRAM SASL exchange.
+//     stored iter/salt, then constant-time compare; the same verifier blob
+//     also drives the SCRAM SASL exchange.
 //
-// Crypt(3) autodetection applies even without a prefix: $2a$/$2b$/$2y$ →
-// BCRYPT, $6$ → SHA512-CRYPT.
+// crypt(3) markers $2a$/$2b$/$2y$ → BCRYPT and $6$ → SHA512-CRYPT are autodetected
+// without a prefix.
 func VerifyWithDefault(stored, input, defaultScheme string) bool {
 	name, hash := SplitWithDefault(stored, defaultScheme)
-	// A "CRYPT" scheme (the reference's passwd-file default) is not a concrete
-	// algorithm: resolve it to the crypt(3) family by the hash marker.
+	// CRYPT is an alias, not an algorithm: resolve to the crypt(3) family by marker.
 	if name == "CRYPT" {
 		name, hash = SplitWithDefault(hash, "")
 		if name == "PLAIN" {
 			return false // unmarked bare crypt(3) (DES) is unsupported
 		}
 	}
-	// Observed after CRYPT resolution so the label carries the concrete
-	// algorithm actually executed, not the alias the column happened to use.
+	// Observe after resolution so the label carries the algorithm actually run.
 	start := time.Now()
 	defer func() { observeVerify(name, start) }()
 	switch name {
@@ -66,10 +60,9 @@ func VerifyWithDefault(stored, input, defaultScheme string) bool {
 	return false
 }
 
-// verifyScramSha256Plain re-derives the StoredKey for the supplied plain
-// password using the iter+salt from the stored blob, then constant-time
-// compares against the stored StoredKey. Keeps PLAIN/LOGIN auth working against
-// a {SCRAM-SHA-256} column — one verifier, two auth paths.
+// verifyScramSha256Plain re-derives the StoredKey from the plain password using
+// the blob's iter+salt and constant-time compares, letting PLAIN/LOGIN auth work
+// against a {SCRAM-SHA-256} column.
 func verifyScramSha256Plain(blob, plaintext string) bool {
 	creds, err := sasl.DecodeScramCredentials(blob)
 	if err != nil {
@@ -89,10 +82,9 @@ func verifyScramSha1Plain(blob, plaintext string) bool {
 	return subtle.ConstantTimeCompare(derived.StoredKey, creds.StoredKey) == 1
 }
 
-// ParseSCRAMSha256Credentials extracts the SCRAM verifier from a stored
-// password carrying the {SCRAM-SHA-256} scheme. Returns (nil, false) when the
-// value does not carry that scheme or the blob is malformed — callers use the
-// falsy outcome to mean "this user has no SCRAM-SHA-256 verifier".
+// ParseSCRAMSha256Credentials extracts the SCRAM verifier from a {SCRAM-SHA-256}
+// stored password. Returns (nil, false) when the scheme differs or the blob is
+// malformed, meaning the user has no SCRAM-SHA-256 verifier.
 func ParseSCRAMSha256Credentials(stored string) (*sasl.ScramCredentials, bool) {
 	return parseSCRAMCredentials(stored, "SCRAM-SHA-256")
 }
@@ -114,8 +106,8 @@ func parseSCRAMCredentials(stored, want string) (*sasl.ScramCredentials, bool) {
 	return creds, true
 }
 
-// Split returns the scheme name (uppercased) and the remaining hash, with
-// PLAIN as the default. Autodetects the crypt(3) markers $2a$/$2b$/$2y$ and $6$.
+// Split returns the uppercased scheme name and remaining hash, defaulting to
+// PLAIN. Autodetects the crypt(3) markers $2a$/$2b$/$2y$ and $6$.
 func Split(stored string) (name, hash string) {
 	return SplitWithDefault(stored, "")
 }

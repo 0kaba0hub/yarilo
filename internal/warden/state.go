@@ -15,16 +15,13 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 )
 
-// StateBackend is warden's pluggable shared-state store (#908). The memory
-// backend is the historical in-process behaviour and the default for standalone
-// and tests; the Redis backend lets state survive a pod restart and be shared
-// across replicas. This PR (1) covers the per-IP auth-failure penalty counter
-// only; session accounting (PR2, Lua check-and-increment) and the kick bus (PR3,
-// Redis Pub/Sub) extend this interface in later phases.
+// StateBackend is warden's pluggable shared-state store: in-memory (default,
+// standalone and tests) or Redis (state survives pod restarts, shared across
+// replicas).
 type StateBackend interface {
-	// PenaltyLookup returns the current auth-failure count for ip and a status
-	// for metrics: "hit", "miss", or "expired". Redis cannot distinguish an
-	// expired key from one that never existed and reports "miss" for both.
+	// PenaltyLookup returns the auth-failure count for ip and a status for
+	// metrics: "hit", "miss", or "expired". Redis cannot distinguish an expired
+	// key from a missing one and reports "miss" for both.
 	PenaltyLookup(ip string) (count int, status string)
 	// PenaltyUpdate sets the count for ip; count <= 0 clears the entry.
 	PenaltyUpdate(ip string, count int)
@@ -33,21 +30,18 @@ type StateBackend interface {
 	PenaltySweep(now time.Time)
 
 	// SessionConnect registers a session and enforces the per-user@IP limit
-	// atomically. ok=true means registered; ok=false with err==nil means the
-	// limit is reached (too-many-connections); err!=nil is a backend error — the
-	// caller applies WardenFailOpen, since a bounded Redis error is NOT a limit
-	// rejection (#926/#932).
+	// atomically. ok=false with err==nil means the limit is reached; err!=nil is
+	// a backend error and the caller fails open — a Redis error is not a limit
+	// rejection.
 	SessionConnect(id, user, ip, service string) (ok bool, err error)
 	// SessionDisconnect removes a session and frees its limit slot. Idempotent:
-	// a second call (or one for an unknown id) must not drive the counter
-	// negative.
+	// a duplicate call must not drive the counter negative.
 	SessionDisconnect(id, user, ip string)
-	// SessionTouch renews a session's liveness (heartbeat). Returns false when
-	// the session is unknown (already reaped), so the caller can tell the pod to
-	// re-register.
+	// SessionTouch renews a session's liveness. Returns false when the session
+	// is unknown (already reaped) so the caller can re-register.
 	SessionTouch(id string) (known bool)
-	// SessionSetFolder / SessionSetBackend update session metadata; they return
-	// false for an unknown id so the caller can reply "unknown".
+	// SessionSetFolder / SessionSetBackend update session metadata; false for an
+	// unknown id.
 	SessionSetFolder(id, folder string) (known bool)
 	SessionSetBackend(id, backend string) (known bool)
 	// SessionList returns a snapshot of all sessions.
@@ -58,34 +52,25 @@ type StateBackend interface {
 	// SessionCount returns the total number of tracked sessions.
 	SessionCount() int
 
-	// Maintain runs periodic upkeep: the memory backend sweeps stale sessions
-	// and penalties; the Redis backend reconciles the connection counters from
-	// live session keys (its penalties expire by TTL).
+	// Maintain runs periodic upkeep: memory sweeps stale sessions and penalties;
+	// Redis reconciles the connection counters from live session keys.
 	Maintain(now time.Time)
 
-	// Emit publishes payload to channel for delivery to current subscribers
-	// (the kick bus, #908 PR3). Delivery is best-effort / at-most-once: an event
-	// published while a subscriber is reconnecting is lost, and a full outbox is
-	// dropped. This is NOT a correctness guarantee — the director's confirmed
-	// ring-wide kill (#847) holds LOOKUP until the ring-wide session count is
-	// stably zero, so split-writer safety never depends on a kick landing; the
-	// kick only makes teardown prompt. See server.handleEmit.
+	// Emit publishes payload to channel for current subscribers. Best-effort /
+	// at-most-once: events during a subscriber reconnect are lost, a full outbox
+	// is dropped. Not a correctness guarantee — the director's confirmed kill
+	// holds LOOKUP until the session count is zero; a kick only speeds teardown.
 	Emit(channel, payload string) error
-	// Subscribe returns a channel of payloads for the named channel until ctx is
-	// cancelled, at which point the returned channel is closed. The Redis backend
-	// relays go-redis PubSub.Channel, which auto-reconnects and re-subscribes on a
-	// Redis blip, so a transient Redis outage does not permanently deafen a
-	// subscriber. The transport between a login pod and warden is a separate
-	// concern the caller must itself reconnect (login.kickSubscribeLoop).
+	// Subscribe returns payloads for the named channel until ctx is cancelled,
+	// then closes the channel. The Redis backend auto-reconnects on a Redis blip;
+	// the login-pod↔warden transport is the caller's own reconnect concern.
 	Subscribe(ctx context.Context, channel string) (<-chan string, error)
 
-	// Dump returns an admin/debug snapshot of the accounting counters (with the
-	// live session tally, so drift is visible) and the penalty entries (with
-	// remaining TTL). Backend-agnostic — memory computes it in-process, Redis via
-	// SCAN. Surfaced by `yarctl warden dump`.
+	// Dump returns an admin snapshot: counters (with live tally, so drift is
+	// visible) and penalties (with remaining TTL).
 	Dump() (*StateDump, error)
 
-	// Close releases backend resources (the Redis client). Memory returns nil.
+	// Close releases backend resources. Memory returns nil.
 	Close() error
 }
 
@@ -95,9 +80,9 @@ type StateDump struct {
 	Penalties []PenaltyStat `json:"penalties"`
 }
 
-// CounterStat is one per-user@IP connection counter alongside the live session
-// tally for the same key. Drift = Counter - Live: a positive drift is a leaked
-// counter (the reconcile target); it should be 0 in steady state.
+// CounterStat is one per-user@IP connection counter with the live session
+// tally for the same key. Counter - Live > 0 is a leaked counter; 0 in steady
+// state.
 type CounterStat struct {
 	UserIP  string `json:"user_ip"`
 	Counter int    `json:"counter"`
@@ -105,25 +90,25 @@ type CounterStat struct {
 }
 
 // PenaltyStat is one per-IP auth-failure penalty with its remaining TTL in
-// seconds (-1 when the backend cannot report a TTL).
+// seconds (-1 when unknown).
 type PenaltyStat struct {
 	IP      string `json:"ip"`
 	Count   int    `json:"count"`
 	TTLSecs int    `json:"ttl_secs"`
 }
 
-// subscriberOutboxSize bounds a subscriber's pending-event buffer. Emit drops
-// events (best-effort) rather than blocking a publisher on a slow consumer.
+// subscriberOutboxSize bounds a subscriber's pending-event buffer; Emit drops
+// rather than blocking a publisher on a slow consumer.
 const subscriberOutboxSize = 64
 
-// penaltyEntry is the per-IP auth-fail counter for the memory backend. Sweep
-// drops entries whose lastUpdate is older than the decay window.
+// penaltyEntry is the memory backend's per-IP auth-fail counter; swept when
+// lastUpdate is older than the decay window.
 type penaltyEntry struct {
 	count      int
 	lastUpdate time.Time
 }
 
-// memoryBackend is the in-process StateBackend — today's behaviour, unchanged.
+// memoryBackend is the in-process StateBackend.
 type memoryBackend struct {
 	decay      time.Duration
 	sessionTTL time.Duration
@@ -133,9 +118,8 @@ type memoryBackend struct {
 	penalties map[string]*penaltyEntry
 	sessions  map[string]*SessionInfo
 
-	// subsMu guards subs, the in-process kick bus (#908 PR3): channel name →
-	// subscriber outboxes. Non-blocking sends are done under this lock so a
-	// concurrent unsubscribe (close) cannot race a send-on-closed-channel.
+	// subsMu guards subs (channel name → subscriber outboxes). Sends happen
+	// under this lock so an unsubscribe close cannot race a send.
 	subsMu sync.Mutex
 	subs   map[string][]chan string
 }
@@ -153,8 +137,8 @@ func newMemoryBackend(decay, sessionTTL time.Duration, max int) *memoryBackend {
 
 func (b *memoryBackend) SessionConnect(id, user, ip, service string) (bool, error) {
 	now := time.Now().UTC()
-	// Idempotent (#942 review): a retried CONNECT for an already-registered id
-	// refreshes without taking a second limiter slot.
+	// A retried CONNECT for an already-registered id refreshes without taking a
+	// second limiter slot.
 	b.mu.Lock()
 	if sess, exists := b.sessions[id]; exists {
 		sess.lastSeen = now
@@ -187,7 +171,7 @@ func (b *memoryBackend) SessionDisconnect(id, user, ip string) {
 	sessions.Set(float64(len(b.sessions)))
 	b.mu.Unlock()
 	// Release only if the session existed, so a duplicate DISCONNECT cannot free
-	// a slot twice — the same idempotency the Redis backend enforces via Lua.
+	// a slot twice.
 	if existed {
 		b.limiter.Release(user, ip)
 	}
@@ -256,8 +240,7 @@ func (b *memoryBackend) SessionCount() int {
 	return len(b.sessions)
 }
 
-// Maintain sweeps stale sessions (releasing their limiter slots) and penalties —
-// the historical sweeper behaviour, unchanged.
+// Maintain sweeps stale sessions (releasing their limiter slots) and penalties.
 func (b *memoryBackend) Maintain(now time.Time) {
 	cutoff := now.Add(-b.sessionTTL)
 	type reap struct{ user, ip string }
@@ -314,8 +297,7 @@ func (b *memoryBackend) PenaltySweep(now time.Time) {
 }
 
 // Emit fans out to every subscriber on channel. Non-blocking: a full outbox is
-// dropped (best-effort). The send happens under subsMu so it cannot race the
-// close in Subscribe's cleanup goroutine.
+// dropped. Sends under subsMu so they cannot race the close in Subscribe.
 func (b *memoryBackend) Emit(channel, payload string) error {
 	b.subsMu.Lock()
 	defer b.subsMu.Unlock()
@@ -328,8 +310,8 @@ func (b *memoryBackend) Emit(channel, payload string) error {
 	return nil
 }
 
-// Subscribe registers an outbox on channel and returns it. When ctx is
-// cancelled the outbox is removed and closed, so the caller's range unwinds.
+// Subscribe registers an outbox on channel; ctx cancellation removes and
+// closes it.
 func (b *memoryBackend) Subscribe(ctx context.Context, channel string) (<-chan string, error) {
 	out := make(chan string, subscriberOutboxSize)
 	b.subsMu.Lock()
@@ -356,9 +338,8 @@ func (b *memoryBackend) Dump() (*StateDump, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Live tally per user@IP from the session set; the counter comes from the
-	// limiter for the same (user, ip). In memory these move together, so drift is
-	// structurally 0 — the field exists for parity with the Redis dump.
+	// In memory the counter and the session set move together, so drift is
+	// structurally 0; the field exists for parity with the Redis dump.
 	type uip struct{ user, ip string }
 	live := map[uip]int{}
 	for _, s := range b.sessions {
@@ -386,14 +367,12 @@ func (b *memoryBackend) Dump() (*StateDump, error) {
 
 func (b *memoryBackend) Close() error { return nil }
 
-// redisOpTimeout bounds every Redis operation so a blackholed or down Redis
-// fails fast instead of hanging a handler — the #926/#932 lesson. A read error
-// is treated as "no penalty" (fail-open), matching the connection-limit
-// fail-open posture; the caller's WardenFailOpen governs the session decision.
+// redisOpTimeout bounds every Redis operation so a down or blackholed Redis
+// fails fast instead of hanging a handler.
 const redisOpTimeout = 3 * time.Second
 
-// scanCount is the COUNT hint for SCAN — cursor-based, non-blocking iteration
-// (never KEYS), so listing/reconciliation stays cheap even as sessions grow.
+// scanCount is the COUNT hint for SCAN (never KEYS), keeping iteration cheap
+// as sessions grow.
 const scanCount = 256
 
 // unixToTime parses a stored unix-seconds string; zero on any parse error.
@@ -405,9 +384,7 @@ func unixToTime(s string) time.Time {
 	return time.Unix(n, 0).UTC()
 }
 
-// redisBackend is the Redis-backed StateBackend. In this PR it implements only
-// the penalty counter (SET EX / GET / DEL); sessions and the kick bus land in
-// later phases. The caller owns the client lifecycle beyond Close.
+// redisBackend is the Redis-backed StateBackend.
 type redisBackend struct {
 	rdb           *redis.Client
 	keyPrefix     string
@@ -418,11 +395,9 @@ type redisBackend struct {
 }
 
 // NewRedisBackend wraps a client as a Redis StateBackend. keyPrefix namespaces
-// every key and channelPrefix every Pub/Sub channel (#938/#939 practice);
-// penaltyTTL is the penalty decay window and sessionTTL the per-session key TTL
-// (renewed by heartbeat), both enforced by Redis key expiry; limit is the
-// per-user@IP connection cap (0 = unlimited). The caller owns the client
-// lifecycle beyond Close.
+// every key and channelPrefix every Pub/Sub channel. penaltyTTL and sessionTTL
+// are enforced by Redis key expiry (sessionTTL renewed by heartbeat); limit is
+// the per-user@IP connection cap (0 = unlimited).
 func NewRedisBackend(rdb *redis.Client, keyPrefix, channelPrefix string, penaltyTTL, sessionTTL time.Duration, limit int) StateBackend {
 	return &redisBackend{rdb: rdb, keyPrefix: keyPrefix, channelPrefix: channelPrefix, penaltyTTL: penaltyTTL, sessionTTL: sessionTTL, limit: limit}
 }
@@ -432,9 +407,8 @@ func (b *redisBackend) cntKey(user, ip string) string { return b.keyPrefix + "cn
 func (b *redisBackend) sessKey(id string) string      { return b.keyPrefix + "sess:" + id }
 func (b *redisBackend) chanKey(channel string) string { return b.channelPrefix + channel }
 
-// connectScript is the single point of atomicity for CONNECT (mirrors
-// locks.Acquire): check the counter against the limit, and only on pass create
-// the session hash (with TTL) and increment the counter — all in one round trip,
+// connectScript makes CONNECT atomic: check the counter against the limit, and
+// only on pass create the session hash (with TTL) and increment the counter,
 // so concurrent CONNECTs cannot both slip past the limit.
 // KEYS[1]=cnt KEYS[2]=sess; ARGV: 1=limit 2=ttlMs 3=user 4=ip 5=service 6=connectedAt
 var connectScript = redis.NewScript(`
@@ -457,10 +431,9 @@ redis.call('INCR', KEYS[1])
 return 1
 `)
 
-// disconnectScript is the mirrored idempotent release: decrement the counter
-// ONLY if the session key still existed, so a duplicate DISCONNECT — or one for
-// a session already TTL-expired after a crash — cannot drive the counter
-// negative. KEYS[1]=cnt KEYS[2]=sess
+// disconnectScript: decrement the counter only if the session key still
+// existed, so a duplicate DISCONNECT (or one for a TTL-expired session) cannot
+// drive the counter negative. KEYS[1]=cnt KEYS[2]=sess
 var disconnectScript = redis.NewScript(`
 if redis.call('DEL', KEYS[2]) == 1 then
   if redis.call('DECR', KEYS[1]) <= 0 then redis.call('DEL', KEYS[1]) end
@@ -469,7 +442,7 @@ return 1
 `)
 
 // setFieldScript updates one session-hash field only if the session still
-// exists, so a late SELECT/BACKEND cannot recreate a TTL-less hash (a leak).
+// exists, so a late SELECT/BACKEND cannot recreate a TTL-less hash.
 // KEYS[1]=sess; ARGV: 1=field 2=value
 var setFieldScript = redis.NewScript(`
 if redis.call('EXISTS', KEYS[1]) == 1 then

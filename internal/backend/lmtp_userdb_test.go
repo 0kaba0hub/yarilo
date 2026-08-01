@@ -9,10 +9,8 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// TestLazyUserdbLookup_LazyAndSurfacesDialError guards #821: building the LMTP
-// userdb lookup must NOT dial yarilo-auth (an eager dial wedged lmtp readiness,
-// and hung under internal_tls). The dial happens on the first lookup, and a
-// failed dial surfaces as an error — not a hang.
+// Building the lookup must not dial yarilo-auth; the dial happens on the
+// first lookup and a failed dial returns an error instead of hanging (#821).
 func TestLazyUserdbLookup_LazyAndSurfacesDialError(t *testing.T) {
 	dials := 0
 	boom := errors.New("connection refused")
@@ -34,7 +32,7 @@ func TestLazyUserdbLookup_LazyAndSurfacesDialError(t *testing.T) {
 		t.Fatalf("a failed dial must surface (not hang), got %v", err)
 	}
 
-	// A subsequent lookup re-dials (the previous failure reset the client).
+	// failed dial resets the client, so the next lookup re-dials
 	_, _ = lookup(context.Background(), "u2@d.test")
 	if dials != 2 {
 		t.Fatalf("after a failed dial the next lookup must re-dial, dialed %d", dials)

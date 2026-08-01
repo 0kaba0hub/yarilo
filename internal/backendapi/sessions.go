@@ -9,17 +9,14 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
-// registerSessionRoutes wires the session-control surface. The
-// only command shipped today is `kick`; future additions go here.
+// registerSessionRoutes registers session-control routes.
 func (s *Server) registerSessionRoutes() {
 	s.mux.Handle("POST /api/backend/sessions/kick", s.middleware(s.handleSessionsKick))
 	s.mux.Handle("GET /api/backend/warden/dump", s.middleware(s.handleWardenDump))
 }
 
-// handleWardenDump opens a short-lived warden connection and returns the
-// admin/debug state snapshot: accounting counters with their live tally (drift)
-// and penalty entries with remaining TTL. Backend-agnostic — the warden server
-// computes it from whichever state backend is configured.
+// handleWardenDump returns the warden state snapshot: accounting
+// counters with drift, penalty entries with remaining TTL.
 func (s *Server) handleWardenDump(w http.ResponseWriter, _ *http.Request) {
 	if s.opts.WardenAddr == "" {
 		apiError(w, "dump: warden_addr not configured on backendapi", http.StatusServiceUnavailable)
@@ -41,47 +38,32 @@ func (s *Server) handleWardenDump(w http.ResponseWriter, _ *http.Request) {
 }
 
 type sessionsKickRequest struct {
-	// SessionID is the warden-issued session identifier (the value
-	// `who` surfaces in the ID column). The kick event is
-	// broadcast across every login + LMTP pod via the warden
-	// pub-sub channel; only the owner reacts.
+	// SessionID is the warden-issued id shown by `who`. The kick is
+	// broadcast to all pods; only the owner reacts.
 	SessionID string `json:"session_id"`
-	// User is purely advisory — recorded for audit, not used to
-	// scope the kick. Empty when the operator only knows the id.
+	// User is advisory, recorded for audit only.
 	User string `json:"user"`
-	// Protocols narrows the broadcast to specific channels (e.g.
-	// `["imap"]`). Empty means fan out to every supported channel
-	// — the typical case when the operator only knows the id.
+	// Protocols narrows the broadcast; empty = all channels.
 	Protocols []string `json:"protocols,omitempty"`
 }
 
 type sessionsKickResponse struct {
-	// EmittedTo lists the kick:<protocol> channels the event was
-	// successfully published on. A channel that fails publish
-	// (transport error) is reported in Errors.
+	// EmittedTo lists channels the event was published on;
+	// failed channels go to Errors.
 	EmittedTo []string `json:"emitted_to"`
 	Errors    []string `json:"errors,omitempty"`
 }
 
-// kickChannels lists every kick:<protocol> resource emitted on
-// when the request did not specify a subset. Add new entries here
-// when a future session binary subscribes to its own channel.
+// kickChannels: default kick:<protocol> fan-out set.
 var kickChannels = []string{"imap", "pop3", "submission", "lmtp"}
 
-// defaultKickDialTimeout bounds the warden dial so a partial
-// outage cannot stall the HTTP request indefinitely.
+// defaultKickDialTimeout bounds the warden dial so an outage
+// cannot stall the HTTP request.
 const defaultKickDialTimeout = 5 * time.Second
 
-// handleSessionsKick opens a short-lived warden connection and
-// EMITs the kick payload to every requested channel. The matching
-// session pod (login for IMAP/POP3/Submission, LMTP backend for
-// LMTP) reacts by closing its conn; pods without a matching id
-// silently ignore.
-//
-// Fire-and-forget from a correctness standpoint: the response
-// reports "emitted", not "confirmed kicked". Operators that need
-// confirmation re-run `yarctl backend who` and verify the
-// session no longer appears.
+// handleSessionsKick EMITs the kick payload to each requested
+// channel. Fire-and-forget: the response means "emitted", not
+// "confirmed kicked".
 func (s *Server) handleSessionsKick(w http.ResponseWriter, r *http.Request) {
 	var req sessionsKickRequest
 	if !decodeJSON(w, r, &req) {

@@ -8,10 +8,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TestDefaultMaxOpenConnsPerDriver pins the values, because one number would be
-// wrong twice: Postgres forks a process per connection and its stock
-// max_connections (100) is LOWER than the MySQL ceiling this package was written
-// after hitting, and SQLite is a file whose writers serialise inside the library.
 func TestDefaultMaxOpenConnsPerDriver(t *testing.T) {
 	tests := []struct {
 		driver string
@@ -30,6 +26,7 @@ func TestDefaultMaxOpenConnsPerDriver(t *testing.T) {
 			}
 		})
 	}
+	// postgres connections are processes, so its default must stay below mysql's
 	if DefaultMaxOpenConns("postgres") >= DefaultMaxOpenConns("mysql") {
 		t.Fatal("the postgres default must stay below the mysql one — its connections are processes")
 	}
@@ -45,10 +42,7 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestApplyIdleMatchesOpen is the actual churn fix. Go retains two idle
-// connections by default, so a pool that opens 25 re-dials 23 of them on every
-// burst — which is what drove 225k connections and 41k thread creations on the
-// sandbox MySQL (#886).
+// Idle capacity must follow the open limit, not Go's default of 2.
 func TestApplyIdleMatchesOpen(t *testing.T) {
 	db := openTestDB(t)
 	Apply(db, Config{Driver: "mysql"})
@@ -57,9 +51,7 @@ func TestApplyIdleMatchesOpen(t *testing.T) {
 	if stats.MaxOpenConnections != 25 {
 		t.Fatalf("MaxOpenConnections = %d, want 25", stats.MaxOpenConnections)
 	}
-	// database/sql exposes no MaxIdleConns getter, so assert the observable
-	// consequence: with idle capacity matching the open limit, a connection
-	// returned to the pool is retained rather than closed.
+	// no MaxIdleConns getter; assert that a returned connection is retained
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
@@ -77,8 +69,7 @@ func TestApplyExplicitValues(t *testing.T) {
 	}
 }
 
-// TestApplyNegativeMeansUnlimited covers the opt-out: database/sql reads 0 as
-// "no limit", so a negative knob has to be translated rather than passed through.
+// database/sql reads 0 as "no limit", so a negative knob must be translated.
 func TestApplyNegativeMeansUnlimited(t *testing.T) {
 	db := openTestDB(t)
 	Apply(db, Config{Driver: "mysql", MaxOpenConns: -1})
@@ -89,7 +80,6 @@ func TestApplyNegativeMeansUnlimited(t *testing.T) {
 }
 
 func TestApplyNilDBIsSafe(t *testing.T) {
-	// Callers should not have to branch.
 	Apply(nil, Config{})
 }
 
@@ -113,8 +103,6 @@ func TestDurationKnob(t *testing.T) {
 	}
 }
 
-// TestSQLiteDefaultSerialises guards the reason SQLite gets 1: extra connections
-// to a file database buy SQLITE_BUSY, not throughput.
 func TestSQLiteDefaultSerialises(t *testing.T) {
 	db := openTestDB(t)
 	Apply(db, Config{Driver: "sqlite"})

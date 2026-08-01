@@ -336,29 +336,11 @@ func (acl ACL) String() string {
 	return b.String()
 }
 
-// Effective resolves the effective rights an authenticated user has
-// on this mailbox's stored ACL.
-//
-// Semantics (RFC 4314 §3.5):
-//   - isOwner == true: returns FullRights regardless of stored
-//     entries (personal-namespace owner auto-grant).
-//   - else: union of positive entries whose Identifier matches the
-//     accessing user — anyone, authenticated, user=<user>,
-//     group=<g> (when <g> is in groups), group-override=<g> — minus
-//     negative entries matching the same identifiers.
-//
-// groups is the list of supplementary groups the user belongs to,
-// sourced from the userdb `groups=` extra field. Pass nil or empty
-// when no group membership is configured — group= entries have no
-// effect.
-//
-// Identifier type priority (higher tier replaces lower when matched):
-//  1. anyone / authenticated / group= → base tier
-//  2. user= → replaces if any user= entry matches
-//  3. group-override= → replaces if any group-override= matches
-//
-// A nil ACL with isOwner == false yields the empty rights set — no
-// implicit grant for non-owners is the RFC 4314 default.
+// Effective resolves the rights user has on this stored ACL (RFC 4314 §3.5).
+// isOwner true returns FullRights regardless of entries; otherwise it is the
+// positive entries matching the user (by tier precedence) minus matching negatives.
+// groups is the user's supplementary groups (nil when none). A nil ACL with
+// isOwner false yields the empty set — the RFC 4314 default for non-owners.
 func (acl ACL) Effective(user string, groups []string, isOwner bool) Rights {
 	pos, neg, _ := acl.effectiveMasks(user, groups, isOwner)
 	return pos.Remove(neg)
@@ -398,19 +380,12 @@ func aclTier(t IdentifierType) int {
 	}
 }
 
-// effectiveMasks resolves the user's positive and negative right masks by
-// applying every matching entry in ascending tier order:
-//
-//   - A positive entry at a new tier REPLACES the running positive mask;
-//     within the group / group-override tiers positive entries ADD (merge).
-//   - A negative entry only subtracts — it never resets the positive mask —
-//     so a negative user= entry revokes rights without wiping a lower tier's
-//     positive grant; its negative mask REPLACEs at a new tier, ADDs within.
-//   - An owner with no explicit owner-tier entry gets full rights at the owner
-//     tier (a matching user=/group-override= entry can still replace it).
-//
-// Effective is pos.Remove(neg); the masks are exposed so a global ACL can be
-// merged with the right precedence (see EffectiveWithGlobal).
+// effectiveMasks resolves the user's positive and negative right masks by applying
+// every matching entry in ascending tier order: a mask REPLACES at a new tier and
+// ADDs (merges) within a tier, separately for positives and negatives. An owner
+// with no explicit owner-tier entry gets full rights at the owner tier. The masks
+// are returned separately so a global ACL can be merged at the right precedence
+// (see EffectiveWithGlobal); Effective itself is pos.Remove(neg).
 func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, neg Rights, matched bool) {
 	groupSet := makeGroupSet(groups)
 

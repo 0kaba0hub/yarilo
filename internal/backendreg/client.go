@@ -1,8 +1,5 @@
-// Package backendreg is the backend side of the director backend-liveness
-// model (#776): a backend session process self-registers with the director
-// and heartbeats, so the director's hash ring reflects live backend pods
-// without a one-time DNS resolve or an external prober. See
-// docs/DEPLOYMENT.md "backend liveness — self-registration + heartbeat".
+// Package backendreg self-registers a backend with the director and
+// heartbeats, so the ring reflects live backend pods.
 package backendreg
 
 import (
@@ -26,23 +23,19 @@ const (
 
 // Options configures a Client.
 type Options struct {
-	// DirectorAddr is the director's ClusterIP Service "host:port". It does
-	// not matter which director replica answers — the registration is
-	// gossiped ring-wide, so a load-balanced address is correct.
+	// DirectorAddr is "host:port"; any director replica works, the
+	// registration is gossiped ring-wide.
 	DirectorAddr string
-	// SelfIP / Port / Tag identify THIS backend in the ring; Port is the
-	// session port the login proxies dial. Vhosts is the ring weight (0 =
-	// director default 100).
+	// SelfIP/Port/Tag identify this backend in the ring; Port is the
+	// session port. Vhosts is the ring weight (0 = default 100).
 	SelfIP string
 	Port   int
 	Tag    string
 	Vhosts int
-	// Interval paces the heartbeat (BACKEND-UP re-register). 0 = 10s.
+	// Interval paces the heartbeat. 0 = 10s.
 	Interval time.Duration
-	// Healthy gates the heartbeat on self-health: BACKEND-UP is sent ONLY
-	// while this returns true (the /readyz condition), so a wedged data
-	// path (accept stalled, sessions blocked on I/O) stops heartbeating and
-	// is expired ring-wide rather than kept as a live-but-dead target.
+	// Healthy gates the heartbeat; an unhealthy backend goes silent and
+	// its lease expires ring-wide.
 	Healthy func() bool
 	// TLS wraps the director connection when non-nil (internal mTLS).
 	TLS *tls.Config
@@ -67,13 +60,9 @@ func New(opts Options) *Client {
 		opts.Healthy = func() bool { return true }
 	}
 	c := &Client{opts: opts}
-	// Seed the heartbeat seq from the process start time (unix seconds) so a
-	// backend restart on the SAME IP without a graceful LEAVE resumes ABOVE
-	// the seq the director last recorded — otherwise the new process would
-	// start at 1, every heartbeat would be rejected as stale, and the backend
-	// would stay invisible until the lease expired (a ~TTL blackhole). The
-	// seq is per-origin (compared only against this backend's own prior seq,
-	// never across nodes), so wall-clock skew between pods is irrelevant.
+	// seed seq from unix time so a restart on the same IP without a
+	// graceful LEAVE resumes above the director's last recorded seq;
+	// seq is per-origin, so cross-pod clock skew doesn't matter
 	c.seq.Store(uint64(time.Now().Unix()))
 	return c
 }
@@ -94,11 +83,8 @@ func (c *Client) Run(ctx context.Context) {
 		if err := c.runOnce(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("backendreg: director connection lost, reconnecting", "err", err, "backoff", backoff)
 		}
-		// A connection that survived well past a heartbeat interval was
-		// healthy — reset the backoff so a single later drop (e.g. a director
-		// rollout) does not inherit a pegged reconnectMax delay and then leave
-		// the backend silent past backend_expire (#787). Without this, backoff
-		// doubles to 30s after a few early failures and never recovers.
+		// a long-lived connection was healthy: reset backoff so a later
+		// drop doesn't inherit a pegged reconnectMax delay
 		if time.Since(start) > 2*c.opts.Interval {
 			backoff = reconnectBase
 		}
@@ -129,7 +115,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 	defer conn.Close()
 
 	rd := bufio.NewReaderSize(conn, 4096)
-	// Consume the director's server handshake (VERSION / HOST-HAND* / DONE).
+	// consume the director's handshake (VERSION / HOST-HAND* / DONE)
 	for {
 		line, rErr := rd.ReadString('\n')
 		if rErr != nil {
@@ -139,7 +125,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 			break
 		}
 	}
-	// Send our client handshake, then take over the write side.
+	// send our handshake, then take over the write side
 	wr := bufio.NewWriter(conn)
 	if _, err := fmt.Fprintf(wr, "VERSION\tyarilo-director\t1\t0\nME\t%s\t%d\t0\nDONE\n", c.opts.SelfIP, c.opts.Port); err != nil {
 		return fmt.Errorf("backendreg: handshake send: %w", err)
@@ -156,12 +142,9 @@ func (c *Client) runOnce(ctx context.Context) error {
 		c.wrMu.Unlock()
 	}()
 
-	// Read the server side: reply PONG to the director's PING keepalive
-	// (#787 — the director closes any client that does not PONG within
-	// PingTimeout, so a silent drain loop gets this registration killed every
-	// ~30s and the live backend flaps through TTL expiry). Everything else is
-	// ignored; a director-closed connection surfaces as a read error that
-	// triggers reconnect.
+	// reply PONG to the director's PING keepalive — the director closes
+	// clients that don't PONG within PingTimeout. everything else is
+	// ignored; a closed connection surfaces as a read error.
 	readErr := make(chan error, 1)
 	go func() {
 		for {
@@ -176,7 +159,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 		}
 	}()
 
-	// Heartbeat immediately, then on the interval.
+	// heartbeat immediately, then on the interval
 	c.heartbeat()
 	t := time.NewTicker(c.opts.Interval)
 	defer t.Stop()
@@ -204,14 +187,14 @@ func (c *Client) heartbeat() {
 		c.opts.SelfIP, c.opts.Port, c.opts.Tag, c.opts.Vhosts, seq))
 }
 
-// Leave sends a graceful BACKEND-DOWN (SIGTERM) so the director removes this
-// backend immediately (LEAVE = remove + rehash) without waiting out the TTL.
+// Leave sends BACKEND-DOWN so the director removes this backend
+// immediately (remove + rehash) instead of waiting out the TTL.
 func (c *Client) Leave() {
 	c.send(fmt.Sprintf("BACKEND-DOWN\t%s", c.opts.SelfIP))
 }
 
-// Drain sends BACKEND-FLUSH (overload): the backend STAYS in the ring, new
-// lookups stop landing on it, existing sessions keep — NO rehash.
+// Drain sends BACKEND-FLUSH: the backend stays in the ring, new lookups
+// stop landing on it, existing sessions keep; no rehash.
 func (c *Client) Drain() {
 	c.send(fmt.Sprintf("BACKEND-FLUSH\t%s", c.opts.SelfIP))
 }

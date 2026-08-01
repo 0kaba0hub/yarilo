@@ -70,10 +70,9 @@ func main() {
 	locker := buildLocker(cfg)
 	resolver := backend.BuildResolver(cfg)
 	// The userdb lookup on the SEARCH/index hot path dials yarilo-auth's master.
-	// Under internal_tls that listener requires mTLS, so a nil-TLS dial wedges
-	// the handshake and hangs every FTS-backed SEARCH (#864) — the same trap the
-	// backend already documents ("nil-TLS dial wedged lmtp"). Dial it with the
-	// internal mTLS client config, exactly like the backend does.
+	// Under internal_tls that listener requires mTLS; a nil-TLS dial wedges the
+	// handshake and hangs every FTS-backed SEARCH (#864), so dial with the
+	// internal mTLS client config.
 	var authTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
 		authTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA,

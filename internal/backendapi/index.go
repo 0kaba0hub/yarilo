@@ -7,13 +7,9 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// registerIndexRoutes wires the fileindex inspection + mutation
-// surface. `dump` is read-only. `rebuild` regenerates ONE folder's index from
-// disk via UserMailbox.Scan (per-folder resync); it rejects folder-agnostic
-// drivers (mdbox) with 501. `rebuild-storage` is the storage-wide rebuild for
-// mdbox (reconcile the shared map, reset every folder, adopt orphans, drop
-// vanished records). `optimize` compacts .index.log into the base .index file
-// with no semantic change.
+// registerIndexRoutes registers index routes: dump (read-only),
+// rebuild (per-folder resync; 501 for mdbox), rebuild-storage
+// (storage-wide, for mdbox), optimize (compact .index.log).
 func (s *Server) registerIndexRoutes() {
 	s.mux.Handle("POST /api/backend/index/dump", s.middleware(s.handleIndexDump))
 	s.mux.Handle("POST /api/backend/index/rebuild", s.middleware(s.handleIndexRebuild))

@@ -8,10 +8,8 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/fts"
 )
 
-// jobSeq generates a per-process monotonic ID for every index job so its
-// full lifecycle (queued -> lock wait -> checkpoint read -> index run ->
-// checkpoint write, possibly spanning several log lines and goroutines) can
-// be grepped as one thread instead of correlated by hand via user+folder+time.
+// jobSeq: per-process monotonic job ID, so one job's log lines can be
+// grepped as a single thread.
 var jobSeq atomic.Uint64
 
 func nextJobID() uint64 { return jobSeq.Add(1) }
@@ -24,9 +22,9 @@ type job struct {
 	maxRecent int
 }
 
-// queue is a FIFO with a priority front-insert (PREPEND — on-demand search
-// catch-up jumps ahead of background autoindex jobs). Duplicate jobs are
-// cheap: the worker re-reads the checkpoint and no-ops when nothing is new.
+// queue is a FIFO with a priority front-insert (PREPEND: search catch-up
+// jumps ahead of autoindex). Duplicates are cheap: the worker re-reads
+// the checkpoint and no-ops.
 type queue struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
@@ -84,7 +82,7 @@ func (q *queue) close() {
 	q.mu.Unlock()
 }
 
-// depth returns the number of pending jobs. Used for the queue-depth metric.
+// depth returns the number of pending jobs.
 func (q *queue) depth() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()

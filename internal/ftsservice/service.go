@@ -37,10 +37,10 @@ type Options struct {
 	// (pkg/locks; wired by the binary). nil = direct call (unit tests only).
 	LockMailbox func(user, folder string, fn func() error) error
 
-	// MailboxByDriver returns the mailbox backend for a per-user storage
-	// driver (mdbox / sdbox / maildir) when it differs from the global
-	// Mailbox — the userdb mail_location driver, resolved exactly as the
-	// session pods do. nil, or a nil result, falls back to Mailbox.
+	// MailboxByDriver returns the mailbox backend for a per-user storage driver
+	// (mdbox / sdbox / maildir) when it differs from the global Mailbox — the
+	// userdb mail_location driver, resolved as the session pods do. nil, or a
+	// nil result, falls back to Mailbox.
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
 }
 
@@ -89,10 +89,10 @@ func New(opts Options) (*Service, error) {
 		users:         map[string]*userHandle{},
 		stop:          cancel,
 	}
-	// Wired before any worker starts, so the plain field write inside
-	// SetOptimizeCallback happens-before every goroutine that could read it
-	// (#715) — an engine that doesn't grow shards unboundedly (a future
-	// non-flatcurve driver) simply doesn't implement OptimizeNotifier.
+	// Wired before any worker starts, so the field write inside
+	// SetOptimizeCallback happens-before every goroutine that could read it. An
+	// engine that doesn't grow shards unboundedly simply doesn't implement
+	// OptimizeNotifier.
 	if on, ok := opts.Engine.(fts.OptimizeNotifier); ok {
 		on.SetOptimizeCallback(s.enqueueOptimize)
 	}
@@ -241,10 +241,10 @@ func (s *Service) Status(user string, mbox fts.MailboxRef) (uint32, uint32, erro
 		return 0, 0, err
 	}
 	last, storedUIDV, sum, err := h.ui.Checkpoint(mbox)
-	// A checkpoint recorded under a different UIDVALIDITY belongs to a mailbox that
-	// has since been recreated — report "not indexed" (last=0) so the client's
-	// catch-up queues a reindex that resets it, instead of trusting a stale
-	// last_indexed_uid that suppresses indexing of the new low UIDs (#638).
+	// A checkpoint recorded under a different UIDVALIDITY belongs to a mailbox
+	// since recreated — report "not indexed" (last=0) so the client's catch-up
+	// queues a reindex that resets it, rather than trust a stale
+	// last_indexed_uid that suppresses indexing of the new low UIDs.
 	staleUIDV := last > 0 && mbox.UIDValidity != 0 && storedUIDV != mbox.UIDValidity
 	if staleUIDV {
 		last = 0
@@ -273,8 +273,8 @@ func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
 		return err
 	}
 	if len(missing) > 0 {
-		// The checkpoint may sit above the gaps; reset it so the index walk
-		// revisits the missing range.
+		// The checkpoint may sit above the gaps; reset it so the walk revisits
+		// the missing range.
 		low := missing[0]
 		if err := h.ui.SetCheckpoint(mbox, low-1, uidValidity, s.opts.Chain.SettingsChecksum()); err != nil {
 			return err
@@ -300,9 +300,9 @@ func (s *Service) Optimize(user string) error {
 }
 
 // enqueueOptimize implements fts.OptimizeNotifier — the engine's write path
-// calls this synchronously (#715) when a mailbox crosses its shard
-// threshold. It must stay fast: optimizeQueue.push only takes its own small
-// mutex and returns, no compaction work happens here.
+// calls this synchronously when a mailbox crosses its shard threshold. It must
+// stay fast: optimizeQueue.push takes its own small mutex and returns, no
+// compaction happens here.
 func (s *Service) enqueueOptimize(user fts.UserRef, mbox fts.MailboxRef) {
 	s.optimizeQueue.push(user, mbox)
 }
@@ -324,9 +324,9 @@ func (s *Service) worker(ctx context.Context) {
 			metricIndexErrors.Inc()
 			slog.Error("fts: index job failed",
 				"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "err", err)
-			// Recovery (#629): a broken/closed engine handle stays broken for every
-			// subsequent job unless it is reopened. Drop the cached user handle so
-			// the next job re-opens a fresh index — the engine also self-heals its
+			// Recovery: a broken/closed engine handle stays broken for every
+			// subsequent job unless reopened. Drop the cached user handle so the
+			// next job re-opens a fresh index — the engine also self-heals its
 			// write shard, but evicting here recovers even a wholesale-poisoned
 			// UserIndex without an operator deleting the on-disk index.
 			if reason := brokenEngineReason(err); reason != "" {
@@ -339,9 +339,9 @@ func (s *Service) worker(ctx context.Context) {
 	}
 }
 
-// optimizeWorker drains the auto-optimize queue one mailbox at a time
-// (#715): a single dedicated goroutine, separate from the index workers, so
-// a long compaction never blocks indexing of other users/mailboxes.
+// optimizeWorker drains the auto-optimize queue one mailbox at a time: a
+// single dedicated goroutine, separate from the index workers, so a long
+// compaction never blocks indexing of other users/mailboxes.
 func (s *Service) optimizeWorker(ctx context.Context) {
 	defer s.wg.Done()
 	for {
@@ -373,10 +373,10 @@ func (s *Service) runOptimize(j optimizeJob) {
 }
 
 // brokenEngineReason returns a bounded label when err indicates the engine's
-// on-disk index or its open handle is unusable — a Xapian DatabaseClosedError,
-// or the rev-file open/write failure that wedges a flatcurve shard (#629) — and
-// "" otherwise. A false positive only costs a handle reopen, so the match is
-// deliberately broad.
+// on-disk index or open handle is unusable (a Xapian DatabaseClosedError, or
+// the rev-file open/write failure that wedges a flatcurve shard), "" otherwise.
+// A false positive only costs a handle reopen, so the match is deliberately
+// broad.
 func brokenEngineReason(err error) string {
 	if err == nil {
 		return ""
@@ -444,9 +444,10 @@ func (s *Service) runIndex(j job) error {
 	tStart := time.Now()
 	checksum := s.opts.Chain.SettingsChecksum()
 
-	// Snapshot the folder (outside the lock): its UIDVALIDITY is the authoritative
-	// current value — the Index/autoindex path often sends MailboxRef.UIDValidity=0,
-	// so the checkpoint compare must use the folder's own value, not the job's.
+	// Snapshot the folder (outside the lock): its UIDVALIDITY is the
+	// authoritative current value — the Index/autoindex path often sends
+	// MailboxRef.UIDValidity=0, so the checkpoint compare must use the folder's
+	// own value, not the job's.
 	folder, err := h.idx.OpenFolder(j.mbox.Name, j.mbox.UIDValidity)
 	if err != nil {
 		return fmt.Errorf("ftsservice: open folder: %w", err)
@@ -458,21 +459,21 @@ func (s *Service) runIndex(j job) error {
 	}
 
 	indexedCount, skippedCount := 0, 0
-	// Everything from the checkpoint read through the checkpoint write runs under
-	// the per-mailbox lock (locks.MailboxKey(user, folder)): concurrent index jobs
-	// for the SAME mailbox must not race the read-modify-write of last_indexed_uid
-	// and clobber each other's progress. Different mailboxes/users are keyed
-	// separately and index in parallel.
+	// Everything from the checkpoint read through the checkpoint write runs
+	// under the per-mailbox lock: concurrent index jobs for the SAME mailbox
+	// must not race the read-modify-write of last_indexed_uid and clobber each
+	// other's progress. Different mailboxes/users are keyed separately and
+	// index in parallel.
 	err = s.opts.LockMailbox(j.user, j.mbox.Name, func() error {
 		last, storedUIDV, storedSum, cerr := h.ui.Checkpoint(j.mbox)
 		if cerr != nil {
 			return cerr
 		}
-		// Decide whether the checkpoint is stale and the index must be rebuilt:
-		//  - settings changed: query-time tokenization no longer matches the index;
+		// Decide whether the checkpoint is stale and the index must rebuild:
+		//  - settings changed: query-time tokenization no longer matches;
 		//  - UIDVALIDITY changed: the mailbox was recreated, so the stale
-		//    last_indexed_uid can sit above the new low UIDs and silently suppress
-		//    indexing of every new message (#638).
+		//    last_indexed_uid can sit above the new low UIDs and silently
+		//    suppress indexing of every new message.
 		reset := ""
 		if last > 0 && storedSum != checksum {
 			reset = "settings"
@@ -485,7 +486,7 @@ func (s *Service) runIndex(j job) error {
 			"stored_uidvalidity", storedUIDV, "current_uidvalidity", curUIDV, "reset", reset)
 		if reset != "" {
 			slog.Info("fts: resetting mailbox index", "job_id", j.id, "user", j.user, "folder", j.mbox.Name, "reason", reset)
-			if _, rerr := h.ui.Rescan(j.mbox, nil); rerr != nil { // drop every stale document
+			if _, rerr := h.ui.Rescan(j.mbox, nil); rerr != nil { // drop every stale doc
 				return rerr
 			}
 			last = 0
@@ -502,7 +503,7 @@ func (s *Service) runIndex(j job) error {
 		}
 		indexed := last
 		batch := 0
-		marked := false // FSCKD flagged for this mailbox scan; gate repeat marks
+		marked := false // folder flagged for heal this scan; gate repeat marks
 		for _, m := range msgs {
 			if m.UID <= last || m.UID > j.maxUID {
 				continue
@@ -512,18 +513,15 @@ func (s *Service) runIndex(j job) error {
 				if errors.As(err, &buildErr) {
 					// A hard buildmail failure must never let a partially
 					// built document flush into the shard on the NEXT
-					// message's first SetBuildKey (#721) — Rollback discards
-					// it. Commit + checkpoint whatever was already fully
-					// built before this UID, then halt: the checkpoint must
-					// not advance past the failed message, so a future
-					// index run (autoindex, delivery, search catch-up)
-					// naturally retries it — e.g. after a decoder config
-					// fix — instead of it being silently, permanently
-					// skipped. This mirrors the reference implementation's
-					// own semantics; see #697 for why anything reaching
-					// this point is already a genuinely hard failure
-					// (retriable decoder errors degrade earlier, without
-					// ever erroring out of Build).
+					// message's first SetBuildKey — Rollback discards it.
+					// Commit + checkpoint whatever was fully built before
+					// this UID, then halt: the checkpoint must not advance
+					// past the failed message, so a future index run
+					// (autoindex, delivery, search catch-up) retries it —
+					// e.g. after a decoder config fix — instead of silently
+					// skipping it forever. Anything reaching here is a hard
+					// failure; retriable decoder errors degrade earlier
+					// without erroring out of Build.
 					return s.haltIndexRunOnBuildFailure(j, h, upd, indexed, curUIDV, checksum, m.UID, buildErr.err)
 				}
 				skippedCount++
@@ -531,8 +529,8 @@ func (s *Service) runIndex(j job) error {
 				// log and move the checkpoint past it (rescan can revisit).
 				slog.Warn("fts: message skipped",
 					"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", m.UID, "err", err)
-				// Flag the folder for a reactive heal once per scan (not per
-				// message): a mailbox full of vanished files must not pay an
+				// Flag the folder for a reactive heal once per scan, not per
+				// message: a mailbox full of vanished files must not pay an
 				// OpenFolder+mark for each one.
 				if !marked && mailbox.MarkCorruptOnFetchErr(h.box, h.idx, j.mbox.Name, err) {
 					marked = true
@@ -578,38 +576,35 @@ func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.Messag
 	if err := s.builder.Build(m.UID, io.Reader(rc), upd); err != nil {
 		return &buildError{err: err}
 	}
-	// Per-message breadcrumb: which UID/file was fed to the engine (size is the
-	// index-time signal for "was there anything to tokenize"). Metadata only.
+	// Per-message breadcrumb: which UID/file was fed to the engine. Metadata
+	// only (size is the index-time signal for "was there anything to
+	// tokenize").
 	slog.Debug("fts: message indexed", "folder", mbox.Name, "guid", mbox.GUID,
 		"uid", m.UID, "file", m.Filename, "size", m.Size, "alt_tier", m.AltTier)
 	return nil
 }
 
 // buildError tags an indexOne failure as coming from buildmail's Build (a
-// content/config problem) rather than from Fetch (a storage/read problem)
-// — runIndex treats these very differently (#721): a Build failure halts
-// the run without advancing the checkpoint past it (see
-// haltIndexRunOnBuildFailure), while a Fetch failure keeps the
-// pre-existing skip-and-continue-with-heal tolerance ("one unreadable
-// message must not stall the mailbox forever").
+// content/config problem) rather than Fetch (a storage/read problem). runIndex
+// treats these differently: a Build failure halts the run without advancing the
+// checkpoint past it (see haltIndexRunOnBuildFailure), while a Fetch failure
+// keeps the skip-and-continue-with-heal tolerance.
 type buildError struct{ err error }
 
 func (e *buildError) Error() string { return e.err.Error() }
 func (e *buildError) Unwrap() error { return e.err }
 
-// haltIndexRunOnBuildFailure discards the in-progress (partially built)
-// document for the failed UID so it can never leak into a later message's
-// flush (#721), commits and checkpoints whatever was already fully built
-// before it, and halts the run — the checkpoint deliberately does NOT
-// advance past uid, so a future index run (autoindex, delivery, search
-// catch-up) naturally retries it once the underlying cause is fixed.
+// haltIndexRunOnBuildFailure discards the partially built document for the
+// failed UID so it can never leak into a later message's flush, commits and
+// checkpoints whatever was fully built before it, and halts the run — the
+// checkpoint does NOT advance past uid, so a future index run retries it once
+// the cause is fixed.
 //
-// This must stay loud: a deterministic per-document failure (bad decoder
-// config, a permanent 4xx) halts at the exact same UID on every single
-// retry until fixed, so every occurrence — not just the first — logs at
-// Error and bumps metricIndexBuildHalts. A steady-state stuck mailbox must
-// surface as a rising counter and a repeating log line, never a single
-// message that scrolls by once and then goes quiet.
+// This stays loud: a deterministic per-document failure (bad decoder config, a
+// permanent 4xx) halts at the same UID on every retry until fixed, so every
+// occurrence — not just the first — logs at Error and bumps
+// metricIndexBuildHalts. A stuck mailbox must surface as a rising counter and
+// a repeating log line, not a single message that scrolls by once.
 func (s *Service) haltIndexRunOnBuildFailure(j job, h *userHandle, upd fts.Update, indexed, curUIDV, checksum uint32, uid uint32, buildErr error) error {
 	if rerr := upd.Rollback(); rerr != nil {
 		slog.Error("fts: rollback after build failure also failed",

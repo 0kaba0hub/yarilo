@@ -18,8 +18,8 @@ type stubAuth struct {
 	// delay is applied before each reply so concurrent requests genuinely
 	// overlap on the connection.
 	delay time.Duration
-	// replyOutOfOrder answers a batch in reverse arrival order, which is what
-	// proves the demultiplexer routes by id rather than by arrival sequence.
+	// replyOutOfOrder answers each batch in reverse arrival order to check
+	// that replies are routed by id, not arrival sequence.
 	replyOutOfOrder bool
 
 	mu     sync.Mutex
@@ -138,11 +138,8 @@ func (s *stubAuth) handle(c net.Conn) {
 	}
 }
 
-// TestConcurrentRequestsShareOneConnection is the #878 acceptance test. The old
-// client dialled per request, so connection count tracked request count 1:1
-// (measured on sandbox: 9469 connections for 9329 requests). Asserting a hard
-// equality of ONE accept — not merely "fewer than N" — is what distinguishes
-// real reuse from a pool that still dials under load.
+// Concurrent requests must share exactly one connection; anything more means
+// the client still dials under load (#878).
 func TestConcurrentRequestsShareOneConnection(t *testing.T) {
 	const concurrency = 200
 
@@ -165,7 +162,7 @@ func TestConcurrentRequestsShareOneConnection(t *testing.T) {
 				errs <- err
 				return
 			}
-			// Each caller must receive ITS OWN reply, not another's.
+			// Each caller must receive its own reply.
 			if res.Username != user {
 				errs <- fmt.Errorf("reply mismatch: got %q want %q", res.Username, user)
 			}
@@ -182,9 +179,7 @@ func TestConcurrentRequestsShareOneConnection(t *testing.T) {
 	}
 }
 
-// TestRepliesRoutedByIDNotArrivalOrder covers the demultiplexer directly: the
-// stub answers each batch of three in reverse order, which the old
-// read-the-next-line client reported as "response id mismatch".
+// Replies arriving out of order must still be routed to the right waiters.
 func TestRepliesRoutedByIDNotArrivalOrder(t *testing.T) {
 	srv := newStubAuth(t, 0, true)
 	c, err := Dial(srv.addr(), nil)
@@ -218,9 +213,8 @@ func TestRepliesRoutedByIDNotArrivalOrder(t *testing.T) {
 	}
 }
 
-// TestReconnectQueuesInsteadOfFailing is the behaviour the old code got wrong:
-// during an auth restart every in-flight login was told UNAVAILABLE. A request
-// that has not yet been written must wait for the reconnect and then succeed.
+// A request that has not yet been written must wait for the reconnect and
+// then succeed, not fail during an auth restart.
 func TestReconnectQueuesInsteadOfFailing(t *testing.T) {
 	srv := newStubAuth(t, 0, false)
 	c, err := Dial(srv.addr(), nil)
@@ -233,8 +227,7 @@ func TestReconnectQueuesInsteadOfFailing(t *testing.T) {
 		t.Fatalf("warm-up Authenticate: %v", err)
 	}
 
-	// Kill the live connection underneath the client; the stub keeps listening,
-	// so the redial succeeds and the next request must ride the new connection.
+	// Kill the live connection; the stub keeps listening, so redial succeeds.
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()

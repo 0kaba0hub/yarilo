@@ -26,12 +26,11 @@ type connSlot struct {
 }
 
 // Client is the Locker implementation talking the TAB-delimited wire protocol.
-// Internally it maintains a pool of control connections so concurrent goroutines
-// do not serialise through a single mutex. SUBSCRIBE opens a dedicated connection
-// per subscription (returned to the caller via a channel).
+// It maintains a pool of control connections so concurrent goroutines do not
+// serialise; SUBSCRIBE opens a dedicated connection per subscription.
 //
-// Owner convention: callers should pass "<process>/<pid>/<sessionID>" so the
-// BUSY response identifies the contending peer in logs. Not enforced.
+// Owner convention (not enforced): callers pass "<process>/<pid>/<sessionID>"
+// so the BUSY response identifies the contending peer in logs.
 type Client struct {
 	dial     Dialer
 	poolSize int
@@ -42,15 +41,12 @@ type Client struct {
 	idle chan *connSlot
 
 	// holdsMu guards the holds map. Separate from the pool so HoldsResource is
-	// safe to call from goroutines that may be mid-roundtrip.
+	// safe to call mid-roundtrip.
 	//
-	// Holds are tracked per-goroutine — re-entrancy applies only when
-	// the same goroutine that took the lock makes the inner call. A
-	// concurrent goroutine on the same client sees an empty holds map
-	// for itself and goes through normal Acquire (which will hit
-	// ErrBusy and retry until the holder releases). This prevents the
-	// "two goroutines share a client → both skip Acquire" race that
-	// global holds tracking allowed.
+	// Holds are tracked per-goroutine, so the HoldsResource re-entrancy
+	// short-circuit applies only to the goroutine that took the lock; a
+	// concurrent goroutine on the same client sees no hold and goes through
+	// normal Acquire (ErrBusy + retry until release).
 	holdsMu sync.RWMutex
 	holds   map[uint64]map[string]string // goID → resource → lockID
 
@@ -188,11 +184,10 @@ func (c *Client) reconnectSlot(ctx context.Context, slot *connSlot) error {
 	return c.ensureConnected(ctx, slot)
 }
 
-// roundtrip serializes a single command/response on one pool slot. On
-// transient transport error it reconnects once and retries. Safe for every
-// command in our protocol — LOCK is the only mutating call, and lock IDs
-// are randomly generated client-side so a retry that arrives after a server
-// already saw the first attempt cannot accidentally collide.
+// roundtrip serializes a single command/response on one pool slot, reconnecting
+// once on transient transport error. Retry is safe for every command: LOCK is
+// the only mutating call and lock IDs are generated client-side, so a retry the
+// server already saw cannot collide.
 func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error) {
 	select {
 	case <-c.closed:
@@ -200,7 +195,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 	default:
 	}
 
-	// Take an idle slot from the pool (blocks until one is available or ctx fires).
+	// Take an idle slot (blocks until one is available or ctx fires).
 	var slot *connSlot
 	select {
 	case <-c.closed:
@@ -349,10 +344,9 @@ func (c *Client) Unlock(ctx context.Context, lockID string) error {
 	return fmt.Errorf("locks/client: unexpected response %v: %w", resp, ErrProtocol)
 }
 
-// HoldsResource implements Locker. Cheap RLock — safe to call from inside
-// any roundtrip without risk of recursion. Returns true only when the
-// CALLING goroutine itself has Acquired this resource; concurrent
-// goroutines on the same client see false and go through normal Acquire.
+// HoldsResource implements Locker. Returns true only when the calling goroutine
+// itself holds this resource; concurrent goroutines on the same client see
+// false and go through normal Acquire.
 func (c *Client) HoldsResource(resource string) bool {
 	gid := goID()
 	c.holdsMu.RLock()
@@ -364,10 +358,8 @@ func (c *Client) HoldsResource(resource string) bool {
 	return false
 }
 
-// dropHoldByID removes whichever resource→ID entry matches the supplied
-// lockID for the calling goroutine. Called from Unlock; no-op if the ID
-// was not tracked (e.g. NOT_FOUND on a stale ID — the holds map was
-// already cleaned).
+// dropHoldByID removes the calling goroutine's resource→ID entry matching
+// lockID. No-op if the ID was not tracked.
 func (c *Client) dropHoldByID(lockID string) {
 	gid := goID()
 	c.holdsMu.Lock()
@@ -387,14 +379,9 @@ func (c *Client) dropHoldByID(lockID string) {
 	}
 }
 
-// goID returns the current goroutine's ID by parsing the
-// runtime.Stack header. Cheap (one stack-frame copy + a short scan),
-// portable, and gives a stable per-goroutine identifier without
-// depending on runtime internals.
-//
-// Used to track lock ownership per goroutine so re-entrancy
-// (HoldsResource short-circuit) applies only to the goroutine that
-// took the lock, not to concurrent peers on the same Client.
+// goID returns the current goroutine's ID by parsing the runtime.Stack header.
+// Used to track lock ownership per goroutine so the HoldsResource re-entrancy
+// short-circuit applies only to the goroutine that took the lock.
 func goID() uint64 {
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)
@@ -448,9 +435,8 @@ func (c *Client) Emit(ctx context.Context, resource string, t EventType, payload
 	return nil
 }
 
-// IncrementCounter implements Locker. Atomically adds delta to the
-// counter at key and returns the post-increment value. Sent over a pool
-// slot so concurrent callers do not serialise unnecessarily.
+// IncrementCounter implements Locker. Atomically adds delta to the counter at
+// key and returns the post-increment value.
 func (c *Client) IncrementCounter(ctx context.Context, key string, delta int64) (int64, error) {
 	resp, err := c.roundtrip(ctx, cmdCounterInc, key, strconv.FormatInt(delta, 10))
 	if err != nil {
@@ -545,12 +531,8 @@ func (c *Client) Close() error {
 }
 
 // Acquire is Lock with blocking semantics: retries on ErrBusy with exponential
-// backoff (1ms → 100ms cap, small jitter) until ctx is cancelled or the lock
-// is taken. Use this when the caller wants "wait until available" — typical
-// for storage write paths where contention is short and bounded.
-//
-// Returns the acquired Lock on success, or the last underlying error
-// (context cancellation or non-busy failure) otherwise.
+// backoff (1ms → 100ms cap, small jitter) until ctx is cancelled or the lock is
+// taken. Returns the Lock on success, else the last underlying error.
 func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
 	backoff := time.Millisecond
 	const maxBackoff = 100 * time.Millisecond
@@ -579,11 +561,9 @@ func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Dur
 	}
 }
 
-// AcquireShared is LockShared with blocking semantics: retries on ErrBusy
-// with exponential backoff (1ms → 100ms cap, small jitter) until ctx is
-// cancelled or the shared lock is taken. Mirrors Acquire; use this for
-// read-path callers (#671) that only need to block against an in-flight
-// exclusive writer, not against other concurrent readers.
+// AcquireShared is LockShared with blocking semantics, mirroring Acquire. Use
+// it for read-path callers that must block only against an in-flight exclusive
+// writer, not against other concurrent readers.
 func AcquireShared(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
 	backoff := time.Millisecond
 	const maxBackoff = 100 * time.Millisecond

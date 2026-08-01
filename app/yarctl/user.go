@@ -27,8 +27,7 @@ func dispatchUser(args []string) error {
 	}
 }
 
-// looksLikeUser returns true when s is plausibly a username rather than
-// a subcommand name — currently any string containing "@" qualifies.
+// looksLikeUser reports whether s is a username rather than a subcommand (contains "@").
 func looksLikeUser(s string) bool {
 	for _, c := range s {
 		if c == '@' {
