@@ -839,14 +839,34 @@ components:
   anvil:
     enabled: true
     replicas: 1
-    listen: ":9101"
-    ## conns — long-lived connections each login pod keeps to yarilo-anvil (#878).
-    ## 0 = built-in default (4). Sessions do not own a connection: every command
-    ## carries the session id and the server keeps no per-connection state, so the
-    ## connection count no longer tracks the login rate. The anvil protocol has no
-    ## request id, so one connection serves one command at a time — each is a
-    ## sub-millisecond round trip, so a handful covers any realistic login rate.
-    conns: 0
+
+    ## service — config-mirror subtree: snake_case keys, 1:1 with anvil_service.*
+    ## of yarilo.yaml. k8s-shape keys (replicas / internalTLS / resources) stay at
+    ## the level above. See the boundary note at the top of components:.
+    service:
+      listen: ":9101"
+      ## conns — long-lived connections each login pod keeps to yarilo-anvil
+      ## (#878). 0 = built-in default (4). Sessions do not own a connection: every
+      ## command carries the session id and the server keeps no per-connection
+      ## state, so the connection count no longer tracks the login rate. The anvil
+      ## protocol has no request id, so one connection serves one command at a
+      ## time — each is a sub-ms round trip, so a handful covers any login rate.
+      conns: 0
+
+      ## state_backend (#908) — shared-state store.
+      ##   "memory": in-process, single replica (replicas MUST stay 1).
+      ##   "redis":  survives a restart and is shared across replicas; required
+      ##             before raising replicas > 1. In this phase only the per-IP
+      ##             penalty counter is Redis-backed; sessions/kick follow.
+      state_backend: memory
+      ## redis_addr — Redis URL when state_backend=redis. Empty derives it from
+      ## the top-level redis: section (bundled or externalUrl), same as locks.
+      redis_addr: ""
+      ## key/channel prefixes (#938/#939 practice) — the installation boundary;
+      ## keep consistent with locks/authtoken on a shared Redis. channel_prefix is
+      ## reserved for the kick bus (a later phase). Defaults are service-name based.
+      key_prefix: "yarilo:anvil:"
+      channel_prefix: "yarilo:anvil:events:"
 
     internalTLS:
       enabled: false

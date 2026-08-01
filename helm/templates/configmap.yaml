@@ -627,10 +627,18 @@ data:
         session_grace_period: 30
         kill_timeout: 5
 
+    {{- $anvilSvc := .Values.components.anvil.service }}
+    {{- $anvilListen := $anvilSvc.listen | default ":9101" }}
     anvil_service:
-      listen: {{ .Values.components.anvil.listen | quote }}
-      addr: {{ printf "%s-anvil%s" (include "yarilo.fullname" .) .Values.components.anvil.listen | quote }}
-      conns: {{ .Values.components.anvil.conns | default 0 }}
+      listen: {{ $anvilListen | quote }}
+      addr: {{ printf "%s-anvil%s" (include "yarilo.fullname" .) $anvilListen | quote }}
+      conns: {{ $anvilSvc.conns | default 0 }}
+      state_backend: {{ $anvilSvc.state_backend | default "memory" | quote }}
+      key_prefix: {{ $anvilSvc.key_prefix | default "yarilo:anvil:" | quote }}
+      channel_prefix: {{ $anvilSvc.channel_prefix | default "yarilo:anvil:events:" | quote }}
+      {{- if eq ($anvilSvc.state_backend | default "memory") "redis" }}
+      redis_addr: {{ if $anvilSvc.redis_addr }}{{ $anvilSvc.redis_addr | quote }}{{ else if .Values.redis.bundled }}{{ printf "redis://%s-redis.%s.svc.cluster.local:6379/0" (include "yarilo.fullname" .) .Release.Namespace | quote }}{{ else }}{{ .Values.redis.externalUrl | quote }}{{ end }}
+      {{- end }}
       shutdown:
         session_grace_period: 30
         kill_timeout: 5

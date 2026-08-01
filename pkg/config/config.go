@@ -802,6 +802,19 @@ type AnvilServiceConfig struct {
 	// the login rate. The protocol has no request id, so one connection serves
 	// one command at a time — each is a sub-millisecond round trip.
 	Conns int `koanf:"conns"`
+	// StateBackend selects the shared-state store (#908): "memory" (default,
+	// in-process, single replica) or "redis" (survives restart, required before
+	// replicas > 1). Mirrors locks_service embedded/remote.
+	StateBackend string `koanf:"state_backend"`
+	// RedisAddr is the Redis URL used when StateBackend="redis".
+	// Format: redis://[password@]host:port/db
+	RedisAddr string `koanf:"redis_addr"`
+	// KeyPrefix / ChannelPrefix namespace anvil's Redis keys and Pub/Sub
+	// channels (#938/#939 practice). Empty keeps the service-name defaults
+	// ("yarilo:anvil:" / "yarilo:anvil:events:"). ChannelPrefix is reserved for
+	// the kick bus (a later phase); keys use KeyPrefix from this phase.
+	KeyPrefix     string `koanf:"key_prefix"`
+	ChannelPrefix string `koanf:"channel_prefix"`
 }
 
 // ClientAddr returns the address login pods use to dial yarilo-anvil.

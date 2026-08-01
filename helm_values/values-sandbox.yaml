@@ -169,7 +169,7 @@ dicts:
     settings:
       addr: redis.redis.svc.cluster.local:6379
       db: 0
-      prefix: "yarilo:metadata:"
+      prefix: "yarilo-sb:metadata:"
       path: null
   ## quota_clone mirror targets — fan-out: usage is written to BOTH at once.
   ## Advisory mirror only; enforcement always reads the index.
@@ -178,7 +178,7 @@ dicts:
     settings:
       addr: redis.redis.svc.cluster.local:6379
       db: 0
-      prefix: "quota:"
+      prefix: "yarilo-sb:quota:"
   quota_clone_mysql:
     driver: sql
     settings:
@@ -195,13 +195,13 @@ dicts:
     settings:
       addr: redis.redis.svc.cluster.local:6379
       db: 0
-      prefix: "yarilo:sieve:vacation:%u:"
+      prefix: "yarilo-sb:sieve:vacation:%u:"
   sieve_duplicate:
     driver: redis
     settings:
       addr: redis.redis.svc.cluster.local:6379
       db: 0
-      prefix: "yarilo:sieve:duplicate:%u:"
+      prefix: "yarilo-sb:sieve:duplicate:%u:"
 
 ## External MySQL — managed by mysql-sandbox.yaml; bundled StatefulSet disabled.
 mysql:
@@ -288,10 +288,20 @@ components:
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
+    # #908 PR1: Redis-backed penalties (sessions/kick move in later phases).
+    # replicas stays 1 until PR4 lifts the singleton.
+    service:
+      state_backend: redis
+      key_prefix: "yarilo-sb:anvil:"
+      channel_prefix: "yarilo-sb:anvil:events:"
   locks:
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
+    # Sandbox shares one Redis; every component lives under the yarilo-sb: namespace.
+    service:
+      key_prefix: "yarilo-sb:locks:"
+      channel_prefix: "yarilo-sb:events:"
 
   ## IMAP login — TLS terminator on :993 (IMAPS) / :143 (STARTTLS).
   ## Creates yarilo-tls Secret via cert-manager.
@@ -414,6 +424,8 @@ components:
     token:
       backend: redis
       redis_addr: "redis://redis.redis.svc.cluster.local:6379/0"
+      # Sandbox shares one Redis; every component lives under the yarilo-sb: namespace.
+      key_prefix: "yarilo-sb:authtoken:"
 
   ## IMAP session pod.
   imap:
