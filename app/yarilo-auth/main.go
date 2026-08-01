@@ -137,7 +137,26 @@ func main() {
 			slog.Error("auth.penalty.enabled requires anvil_service.listen")
 			os.Exit(1)
 		}
-		penaltyConn, err := anvil.Dial(cfg.AnvilService.ClientAddr(), tlsCfg, 5*time.Second)
+		// Build a CLIENT mTLS config for the outbound anvil dial — NOT the server
+		// config used for our own listener, which carries no ServerName and would
+		// verify anvil's cert against the dial host instead of the shared internal
+		// SAN, CrashLooping under mTLS (#942). Mirrors the login pods' anvil dial.
+		var penaltyTLS *tls.Config
+		if cfg.InternalTLS.Enabled {
+			penaltyTLS, err = mtls.ClientConfig(
+				cfg.InternalTLS.Cert,
+				cfg.InternalTLS.Key,
+				cfg.InternalTLS.CA,
+				cfg.InternalTLS.ServerName,
+				cfg.InternalTLS.SessionCacheSize,
+				cfg.InternalTLS.SessionCacheTTL,
+			)
+			if err != nil {
+				slog.Error("anvil penalty client tls config failed", "err", err)
+				os.Exit(1)
+			}
+		}
+		penaltyConn, err := anvil.Dial(cfg.AnvilService.ClientAddr(), penaltyTLS, 5*time.Second)
 		if err != nil {
 			slog.Error("anvil dial for penalty", "addr", cfg.AnvilService.ClientAddr(), "err", err)
 			os.Exit(1)
