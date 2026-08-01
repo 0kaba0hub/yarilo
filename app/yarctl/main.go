@@ -177,6 +177,9 @@ func dispatch(args []string) error {
 	case "user":
 		// Top-level shorthand: yarctl user <cmd> — always hits backend plane.
 		return dispatchUser(args[1:])
+	case "anvil":
+		// Top-level shorthand: yarctl anvil <cmd> — introspection via backend plane.
+		return dispatchAnvil(args[1:])
 	default:
 		return fmt.Errorf("unknown plane %q — available: director, backend, auth, wait\n(tip: set YARILO_ADMIN_TYPE=backend to skip the plane prefix)", args[0])
 	}

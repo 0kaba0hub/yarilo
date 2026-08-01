@@ -13,6 +13,31 @@ import (
 // only command shipped today is `kick`; future additions go here.
 func (s *Server) registerSessionRoutes() {
 	s.mux.Handle("POST /api/backend/sessions/kick", s.middleware(s.handleSessionsKick))
+	s.mux.Handle("GET /api/backend/anvil/dump", s.middleware(s.handleAnvilDump))
+}
+
+// handleAnvilDump opens a short-lived anvil connection and returns the
+// admin/debug state snapshot: accounting counters with their live tally (drift)
+// and penalty entries with remaining TTL. Backend-agnostic — the anvil server
+// computes it from whichever state backend is configured.
+func (s *Server) handleAnvilDump(w http.ResponseWriter, _ *http.Request) {
+	if s.opts.AnvilAddr == "" {
+		apiError(w, "dump: anvil_addr not configured on backendapi", http.StatusServiceUnavailable)
+		return
+	}
+	ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, defaultKickDialTimeout)
+	if err != nil {
+		apiError(w, "dump: anvil dial: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer ac.Close()
+
+	d, err := ac.Dump()
+	if err != nil {
+		apiError(w, "dump: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	apiJSON(w, d)
 }
 
 type sessionsKickRequest struct {
