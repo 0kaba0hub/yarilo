@@ -304,7 +304,7 @@ func (c *Client) CacheFlush(ctx context.Context, masks []string) (uint32, error)
 // and must be consumed by a VERIFY call on the client listener within the
 // token TTL.
 //
-// sid is the anvil session ID already registered for this delivery; ip is the
+// sid is the warden session ID already registered for this delivery; ip is the
 // originating MTA address (both are recorded in the audit log but do not affect
 // token validity).
 func (c *Client) IssueSession(ctx context.Context, username, sid, ip string) (string, error) {

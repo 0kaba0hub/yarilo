@@ -6,7 +6,7 @@ chart, on one host, with Docker Compose.
 
 Clients connect to **login proxies** (which terminate TLS) that forward to the
 **session backends**; the backends share a Maildir store and coordinate through
-`yarilo-auth`, `yarilo-anvil` and `yarilo-locks` (Redis-backed). One image serves
+`yarilo-auth`, `yarilo-warden` and `yarilo-locks` (Redis-backed). One image serves
 every role — each container picks its component via `YARILO_COMPONENT`.
 
 > Single-host, **not** highly available. For HA / multi-node use the Helm chart
@@ -18,7 +18,7 @@ Everything lives in [`deploy/compose/`](../deploy/compose).
 
 | Group | Containers |
 |:---|:---|
-| Infra | `redis`, `yarilo-auth` (userdb), `yarilo-anvil`, `yarilo-locks` |
+| Infra | `redis`, `yarilo-auth` (userdb), `yarilo-warden`, `yarilo-locks` |
 | Session backends | `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`, `yarilo-submission`, `yarilo-managesieve` |
 | Login proxies (TLS) | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`, `yarilo-managesieve-login` |
 | MTA integration | `yarilo-sasl-login` (SASL auth for Postfix), `yarilo-quota-status` (quota policy) |

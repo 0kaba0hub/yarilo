@@ -1,6 +1,6 @@
 // yarilo-lmtp-login is the LMTP login proxy for the yarilo mail server.
 // It accepts MTA connections (e.g. from Postfix), performs per-recipient
-// anvil CONNECT and yarilo-auth SESSION token issuance, then fans out one
+// warden CONNECT and yarilo-auth SESSION token issuance, then fans out one
 // backend LMTP connection per recipient — each preceded by a YARILO preamble.
 package main
 
@@ -96,8 +96,8 @@ func main() {
 		LocalIP:          os.Getenv("POD_IP"),
 		AuthMasterAddr:   cfg.AuthService.MasterAddr,
 		AuthMasterTLS:    intTLS,
-		AnvilAddr:        cfg.AnvilService.ClientAddr(),
-		AnvilTLS:         intTLS,
+		WardenAddr:       cfg.WardenService.ClientAddr(),
+		WardenTLS:        intTLS,
 		ConcurrencyLimit: cfg.Protocol.LMTP.UserConcurrencyLimit,
 		// Inbound client-IP forwarding (#742): a Postfix relay in front conveys
 		// the original SMTP client's IP via PROXY protocol and/or XCLIENT.

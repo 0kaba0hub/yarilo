@@ -16,7 +16,7 @@ const (
 	phaseAuthDial        = "auth_dial"
 	phaseAuth            = "auth"
 	phaseDirectorLookup  = "director_lookup"
-	phaseAnvilConnect    = "anvil_connect"
+	phaseWardenConnect   = "warden_connect"
 	phaseBackendDial     = "backend_dial"
 	phaseBackendPreamble = "backend_preamble"
 )
@@ -29,7 +29,7 @@ var (
 		Namespace: "yarilo",
 		Subsystem: "login",
 		Name:      "phase_seconds",
-		Help:      "Latency of one login phase (tls_handshake, preamble, auth_dial, auth, director_lookup, anvil_connect, backend_dial, backend_preamble).",
+		Help:      "Latency of one login phase (tls_handshake, preamble, auth_dial, auth, director_lookup, warden_connect, backend_dial, backend_preamble).",
 		Buckets:   prometheus.ExponentialBuckets(0.001, 2, 16), // 1ms … ~65s
 	}, []string{"protocol", "phase"})
 

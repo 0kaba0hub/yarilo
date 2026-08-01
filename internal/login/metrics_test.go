@@ -22,7 +22,7 @@ func TestPhaseLabelsAreStable(t *testing.T) {
 		{"auth dial", phaseAuthDial, "auth_dial"},
 		{"auth", phaseAuth, "auth"},
 		{"director lookup", phaseDirectorLookup, "director_lookup"},
-		{"anvil connect", phaseAnvilConnect, "anvil_connect"},
+		{"warden connect", phaseWardenConnect, "warden_connect"},
 		{"backend dial", phaseBackendDial, "backend_dial"},
 		{"backend preamble", phaseBackendPreamble, "backend_preamble"},
 	}

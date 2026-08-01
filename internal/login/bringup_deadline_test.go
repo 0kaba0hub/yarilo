@@ -35,14 +35,14 @@ func startSilentBackend(t *testing.T) string {
 // TestBackendBringupDeadlineDoesNotHang is the #927 regression: a backend that
 // accepts but never greets must not pin the login handler in readBackendGreeting
 // forever. The bring-up times out, becomes a transient failure, and the client
-// gets a keep-open NO [UNAVAILABLE] on the same connection — the anvil slot
+// gets a keep-open NO [UNAVAILABLE] on the same connection — the warden slot
 // released — instead of hanging until the client's own deadline.
 func TestBackendBringupDeadlineDoesNotHang(t *testing.T) {
 	prev := backendBringupTimeout
 	backendBringupTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { backendBringupTimeout = prev })
 
-	anvilAddr, anvilSrv := startAnvilWithHandle(t)
+	wardenAddr, wardenSrv := startWardenWithHandle(t)
 	authAddr := startOKAuth(t)
 	silent := startSilentBackend(t)
 
@@ -50,7 +50,7 @@ func TestBackendBringupDeadlineDoesNotHang(t *testing.T) {
 		opts: Options{
 			Protocol:            ProtocolIMAP,
 			AuthAddr:            authAddr,
-			AnvilAddr:           anvilAddr,
+			WardenAddr:          wardenAddr,
 			BackendAddr:         silent,
 			TransientRetries:    -1, // fail the bring-up on the first timeout
 			TransientReloginCap: 2,  // keep open for one re-LOGIN, then close
@@ -58,8 +58,8 @@ func TestBackendBringupDeadlineDoesNotHang(t *testing.T) {
 		sessions: make(map[string][]*liveSession),
 	}
 	t.Cleanup(func() {
-		if s.anvilPool != nil {
-			s.anvilPool.Close()
+		if s.wardenPool != nil {
+			s.wardenPool.Close()
 		}
 	})
 
@@ -87,11 +87,11 @@ func TestBackendBringupDeadlineDoesNotHang(t *testing.T) {
 		t.Fatalf("a2 = %q, want the connection still open with a tagged NO", resp2)
 	}
 
-	// The anvil slot taken on each timed-out bring-up must have been released.
+	// The warden slot taken on each timed-out bring-up must have been released.
 	deadline := time.Now().Add(2 * time.Second)
-	for anvilSrv.SessionCount() != 0 {
+	for wardenSrv.SessionCount() != 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("anvil slot leaked after a bring-up timeout: SessionCount = %d", anvilSrv.SessionCount())
+			t.Fatalf("warden slot leaked after a bring-up timeout: SessionCount = %d", wardenSrv.SessionCount())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

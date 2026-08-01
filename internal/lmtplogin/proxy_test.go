@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 	"github.com/0kaba0hub/yarilo/pkg/authtoken"
 )
 
@@ -75,16 +75,16 @@ func TestResolveDirectorTag(t *testing.T) {
 
 // ---- infrastructure ---------------------------------------------------------
 
-// startTestAnvil spins a real yarilo-anvil on a random local port.
-func startTestAnvil(t *testing.T) string {
+// startTestWarden spins a real yarilo-warden on a random local port.
+func startTestWarden(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("anvil listen: %v", err)
+		t.Fatalf("warden listen: %v", err)
 	}
 	addr := ln.Addr().String()
 	ln.Close()
-	srv := anvil.NewServer(0)
+	srv := warden.NewServer(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
@@ -418,10 +418,10 @@ func (c *mtaConn) quit(t *testing.T) {
 // ---- tests ------------------------------------------------------------------
 
 // TestServer_HappyPath runs one full LMTP delivery through lmtp-login,
-// with a real anvil, real auth master, and a stub backend.
+// with a real warden, real auth master, and a stub backend.
 // It verifies that the stub received the correct preamble fields.
 func TestServer_HappyPath(t *testing.T) {
-	anvilAddr := startTestAnvil(t)
+	wardenAddr := startTestWarden(t)
 	authAddr := startTestAuth(t)
 	stub, backendAddr := newStubBackend(t)
 
@@ -429,7 +429,7 @@ func TestServer_HappyPath(t *testing.T) {
 		Hostname:         "test.local",
 		BackendAddr:      backendAddr,
 		AuthMasterAddr:   authAddr,
-		AnvilAddr:        anvilAddr,
+		WardenAddr:       wardenAddr,
 		ConcurrencyLimit: 5,
 	})
 
@@ -495,7 +495,7 @@ func TestServer_PlusDetailStripped(t *testing.T) {
 // TestServer_MultiRecipient sends two RCPT TOs; verifies two separate backend
 // connections, each with the correct preamble USER.
 func TestServer_MultiRecipient(t *testing.T) {
-	anvilAddr := startTestAnvil(t)
+	wardenAddr := startTestWarden(t)
 	authAddr := startTestAuth(t)
 	stub, backendAddr := newStubBackend(t)
 
@@ -503,7 +503,7 @@ func TestServer_MultiRecipient(t *testing.T) {
 		Hostname:         "test.local",
 		BackendAddr:      backendAddr,
 		AuthMasterAddr:   authAddr,
-		AnvilAddr:        anvilAddr,
+		WardenAddr:       wardenAddr,
 		ConcurrencyLimit: 5,
 	})
 
@@ -552,15 +552,15 @@ func TestServer_MultiRecipient(t *testing.T) {
 	}
 }
 
-// TestServer_AnvilConcurrencyLimit verifies that RCPT TO returns 451 when the
+// TestServer_WardenConcurrencyLimit verifies that RCPT TO returns 451 when the
 // cluster-wide delivery count is already at the configured limit.
-func TestServer_AnvilConcurrencyLimit(t *testing.T) {
-	anvilAddr := startTestAnvil(t)
+func TestServer_WardenConcurrencyLimit(t *testing.T) {
+	wardenAddr := startTestWarden(t)
 	authAddr := startTestAuth(t)
 	_, backendAddr := newStubBackend(t)
 
-	// Pre-fill 2 CONNECT slots via a direct anvil client.
-	sibling, err := anvil.Dial(anvilAddr, nil, time.Second)
+	// Pre-fill 2 CONNECT slots via a direct warden client.
+	sibling, err := warden.Dial(wardenAddr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("sibling dial: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestServer_AnvilConcurrencyLimit(t *testing.T) {
 		Hostname:         "test.local",
 		BackendAddr:      backendAddr,
 		AuthMasterAddr:   authAddr,
-		AnvilAddr:        anvilAddr,
+		WardenAddr:       wardenAddr,
 		ConcurrencyLimit: 2,
 	})
 
@@ -589,10 +589,10 @@ func TestServer_AnvilConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// TestServer_AnvilUnavailable verifies that delivery proceeds (no hard 451)
-// when anvil is unreachable — the proxy warns and delivers without concurrency
+// TestServer_WardenUnavailable verifies that delivery proceeds (no hard 451)
+// when warden is unreachable — the proxy warns and delivers without concurrency
 // tracking.
-func TestServer_AnvilUnavailable(t *testing.T) {
+func TestServer_WardenUnavailable(t *testing.T) {
 	authAddr := startTestAuth(t)
 	stub, backendAddr := newStubBackend(t)
 
@@ -600,17 +600,17 @@ func TestServer_AnvilUnavailable(t *testing.T) {
 		Hostname:       "test.local",
 		BackendAddr:    backendAddr,
 		AuthMasterAddr: authAddr,
-		AnvilAddr:      "127.0.0.1:1", // unreachable
+		WardenAddr:     "127.0.0.1:1", // unreachable
 	})
 
 	mta := dialMTA(t, proxyAddr)
 	mta.lmtpHandshake(t)
 	mta.mailFrom(t, "sender@example.com")
 
-	// RCPT TO must succeed despite anvil being down.
+	// RCPT TO must succeed despite warden being down.
 	code := mta.tryRcpt(t, "dave@example.com")
 	if code != 250 {
-		t.Errorf("RCPT TO with anvil down = %d, want 250", code)
+		t.Errorf("RCPT TO with warden down = %d, want 250", code)
 	}
 
 	mta.data(t, "Subject: Resilience\r\n\r\nBody")
@@ -650,10 +650,10 @@ func TestServer_AuthFail(t *testing.T) {
 	}
 }
 
-// TestServer_Reset verifies that RSET releases anvil slots for all recipients
+// TestServer_Reset verifies that RSET releases warden slots for all recipients
 // accumulated since the last MAIL FROM.
 func TestServer_Reset(t *testing.T) {
-	anvilAddr := startTestAnvil(t)
+	wardenAddr := startTestWarden(t)
 	authAddr := startTestAuth(t)
 	_, backendAddr := newStubBackend(t)
 
@@ -661,7 +661,7 @@ func TestServer_Reset(t *testing.T) {
 		Hostname:         "test.local",
 		BackendAddr:      backendAddr,
 		AuthMasterAddr:   authAddr,
-		AnvilAddr:        anvilAddr,
+		WardenAddr:       wardenAddr,
 		ConcurrencyLimit: 5,
 	})
 
@@ -675,8 +675,8 @@ func TestServer_Reset(t *testing.T) {
 	mta.readCode(t, 250)
 	mta.quit(t)
 
-	// Probe anvil: count must be back to 0.
-	probe, err := anvil.Dial(anvilAddr, nil, time.Second)
+	// Probe warden: count must be back to 0.
+	probe, err := warden.Dial(wardenAddr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("probe dial: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestServer_Reset(t *testing.T) {
 		t.Fatalf("probe lookup: %v", err)
 	}
 	if count != 0 {
-		t.Errorf("anvil count after RSET = %d, want 0", count)
+		t.Errorf("warden count after RSET = %d, want 0", count)
 	}
 }
 

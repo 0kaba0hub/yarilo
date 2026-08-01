@@ -1,6 +1,6 @@
-// yarilo-anvil is the connection-accounting service for the yarilo mail server.
+// yarilo-warden is the connection-accounting service for the yarilo mail server.
 // It enforces mail_max_userip_connections across all login pods by tracking
-// active per-user@IP connections over the yarilo-anvil TCP+mTLS protocol.
+// active per-user@IP connections over the yarilo-warden TCP+mTLS protocol.
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -25,7 +25,7 @@ import (
 // version is set via pkg/build; kept for vet compatibility
 
 func main() {
-	logging.Setup("anvil")
+	logging.Setup("warden")
 
 	cfgPath := os.Getenv("CONFIG")
 	if cfgPath == "" {
@@ -37,9 +37,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("yarilo-anvil starting",
+	slog.Info("yarilo-warden starting",
 		"version", build.Version,
-		"listen", cfg.AnvilService.Listen,
+		"listen", cfg.WardenService.Listen,
 		"telemetry", cfg.Telemetry.Listen,
 		"max_userip_connections", cfg.General.Limits.MaxUserIPConnections,
 		"internal_tls", cfg.InternalTLS.Enabled,
@@ -64,33 +64,33 @@ func main() {
 	// Shared-state backend (#908): memory (default) or Redis. Redis lets penalty
 	// state survive a restart and be shared across replicas; readiness gates on it
 	// like locks. In this phase only penalties are Redis-backed.
-	var stateOpts []anvil.ServerOption
+	var stateOpts []warden.ServerOption
 	var stateChecks []telemetry.Check
 	var closeState func()
-	if cfg.AnvilService.StateBackend == "redis" {
-		opt, perr := redis.ParseURL(cfg.AnvilService.RedisAddr)
+	if cfg.WardenService.StateBackend == "redis" {
+		opt, perr := redis.ParseURL(cfg.WardenService.RedisAddr)
 		if perr != nil {
-			slog.Error("anvil: invalid redis_addr", "addr", cfg.AnvilService.RedisAddr, "err", perr)
+			slog.Error("warden: invalid redis_addr", "addr", cfg.WardenService.RedisAddr, "err", perr)
 			os.Exit(1)
 		}
 		rdb := redis.NewClient(opt)
-		prefix := cfg.AnvilService.KeyPrefix
+		prefix := cfg.WardenService.KeyPrefix
 		if prefix == "" {
-			prefix = "yarilo:anvil:"
+			prefix = "yarilo:warden:"
 		}
-		chanPrefix := cfg.AnvilService.ChannelPrefix
+		chanPrefix := cfg.WardenService.ChannelPrefix
 		if chanPrefix == "" {
-			chanPrefix = "yarilo:anvil:events:"
+			chanPrefix = "yarilo:warden:events:"
 		}
-		backend := anvil.NewRedisBackend(rdb, prefix, chanPrefix, anvil.DefaultPenaltyDecay, anvil.DefaultSessionTTL, cfg.General.Limits.MaxUserIPConnections)
-		stateOpts = append(stateOpts, anvil.WithStateBackend(backend))
+		backend := warden.NewRedisBackend(rdb, prefix, chanPrefix, warden.DefaultPenaltyDecay, warden.DefaultSessionTTL, cfg.General.Limits.MaxUserIPConnections)
+		stateOpts = append(stateOpts, warden.WithStateBackend(backend))
 		closeState = func() { _ = backend.Close() }
 		stateChecks = append(stateChecks, telemetry.FuncCheck("state-redis", func() bool {
 			pctx, pcancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer pcancel()
 			return rdb.Ping(pctx).Err() == nil
 		}))
-		slog.Info("anvil: state backend=redis", "addr", cfg.AnvilService.RedisAddr, "key_prefix", prefix, "channel_prefix", chanPrefix)
+		slog.Info("warden: state backend=redis", "addr", cfg.WardenService.RedisAddr, "key_prefix", prefix, "channel_prefix", chanPrefix)
 	} else {
 		// memory state is per-pod: sessions/penalty counters and the kick bus live
 		// in this process only. Running more than one replica would fragment them —
@@ -98,13 +98,13 @@ func main() {
 		// independently, and miss kicks published to a sibling — so replicas MUST
 		// stay 1. The Helm chart fails closed on replicas>1 with memory; this warn
 		// is the runtime half, self-explaining without grepping the issue.
-		slog.Warn("anvil: state backend=memory — replicas MUST stay 1; >1 fragments sessions/penalty/kick. Set state_backend=redis to scale out")
+		slog.Warn("warden: state backend=memory — replicas MUST stay 1; >1 fragments sessions/penalty/kick. Set state_backend=redis to scale out")
 	}
 	if closeState != nil {
 		defer closeState()
 	}
 
-	srv := anvil.NewServer(cfg.General.Limits.MaxUserIPConnections, stateOpts...)
+	srv := warden.NewServer(cfg.General.Limits.MaxUserIPConnections, stateOpts...)
 
 	// Telemetry starts after the server exists so the liveness watchdog can probe
 	// its session-tracking mutex (#904).
@@ -112,9 +112,9 @@ func main() {
 	errCh := make(chan error, 1)
 	// Bind before readiness: ListenAndServe would bind inside the goroutine, so the
 	// pod would announce itself ready without knowing the port came up.
-	ln, err := srv.Listen(cfg.AnvilService.Listen, tlsCfg)
+	ln, err := srv.Listen(cfg.WardenService.Listen, tlsCfg)
 	if err != nil {
-		slog.Error("anvil: listen failed", "addr", cfg.AnvilService.Listen, "err", err)
+		slog.Error("warden: listen failed", "addr", cfg.WardenService.Listen, "err", err)
 		os.Exit(1)
 	}
 	go func() {
@@ -134,25 +134,25 @@ func main() {
 	case sig := <-sigCh:
 		slog.Info("received signal, shutting down", "signal", sig.String())
 		cancel()
-		grace := time.Duration(cfg.AnvilService.Shutdown.SessionGracePeriod) * time.Second
+		grace := time.Duration(cfg.WardenService.Shutdown.SessionGracePeriod) * time.Second
 		if grace > 0 {
 			time.Sleep(grace)
 		}
 	case err := <-errCh:
 		if err != nil {
-			slog.Error("anvil server error", "err", err)
+			slog.Error("warden server error", "err", err)
 			os.Exit(1)
 		}
 	}
 
-	slog.Info("yarilo-anvil stopped")
+	slog.Info("yarilo-warden stopped")
 }
 
 // startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
 // returns the server so the caller can report readiness once its listener is
-// actually bound. When the liveness watchdog is enabled it probes the anvil
+// actually bound. When the liveness watchdog is enabled it probes the warden
 // session-tracking mutex (#904).
-func startTelemetry(cfg config.TelemetryConfig, srv *anvil.Server, checks []telemetry.Check) *telemetry.Server {
+func startTelemetry(cfg config.TelemetryConfig, srv *warden.Server, checks []telemetry.Check) *telemetry.Server {
 	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true, Checks: checks}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {
 		var gate *telemetry.Gate
@@ -161,7 +161,7 @@ func startTelemetry(cfg config.TelemetryConfig, srv *anvil.Server, checks []tele
 			opts.Fault = gate
 		}
 		opts.Watchdog = telemetry.WatchdogOptions{
-			Check:            anvilLivenessCheck(srv, gate),
+			Check:            wardenLivenessCheck(srv, gate),
 			Interval:         time.Duration(wd.IntervalSeconds) * time.Second,
 			Timeout:          time.Duration(wd.TimeoutSeconds) * time.Second,
 			FailureThreshold: wd.FailureThreshold,
@@ -176,12 +176,12 @@ func startTelemetry(cfg config.TelemetryConfig, srv *anvil.Server, checks []tele
 	return tel
 }
 
-// anvilLivenessCheck exercises the session-tracking mutex to prove the anvil hot
+// wardenLivenessCheck exercises the session-tracking mutex to prove the warden hot
 // path is not deadlocked (#904). Reading the session count takes the same s.mu
 // every CONNECT/DISCONNECT/LOOKUP holds; a handler wedged under that lock blocks
 // the read, which the watchdog observes as a failure via its own timeout. All
 // state is in-process, so this touches nothing shared.
-func anvilLivenessCheck(srv *anvil.Server, gate *telemetry.Gate) telemetry.LivenessCheck {
+func wardenLivenessCheck(srv *warden.Server, gate *telemetry.Gate) telemetry.LivenessCheck {
 	return func(ctx context.Context) error {
 		if gate != nil {
 			if err := gate.Check(ctx); err != nil {

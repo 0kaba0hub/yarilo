@@ -1,16 +1,16 @@
-package anvil_test
+package warden_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
-func startServerWithRef(t *testing.T, max int) (*anvil.Server, string, context.CancelFunc) {
+func startServerWithRef(t *testing.T, max int) (*warden.Server, string, context.CancelFunc) {
 	t.Helper()
-	srv := anvil.NewServer(max)
+	srv := warden.NewServer(max)
 	ctx, cancel := context.WithCancel(context.Background())
 	addr := freeAddr(t)
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
@@ -22,7 +22,7 @@ func TestServerSessionsRegisterAndRelease(t *testing.T) {
 	srv, addr, cancel := startServerWithRef(t, 5)
 	defer cancel()
 
-	c, err := anvil.Dial(addr, nil, time.Second)
+	c, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestClientWhoReturnsActiveSessions(t *testing.T) {
 	defer cancel()
 
 	// Two connect-only clients (no disconnect) so WHO sees them.
-	c1, err := anvil.Dial(addr, nil, time.Second)
+	c1, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial1: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestClientWhoReturnsActiveSessions(t *testing.T) {
 	if err := c1.Connect("s1", "alice@example.com", "1.1.1.1", "imap"); err != nil {
 		t.Fatalf("connect1: %v", err)
 	}
-	c2, err := anvil.Dial(addr, nil, time.Second)
+	c2, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial2: %v", err)
 	}
@@ -68,13 +68,13 @@ func TestClientWhoReturnsActiveSessions(t *testing.T) {
 
 	// Issue WHO via a third connection so we don't interleave reads
 	// on c1/c2 (whose readers are sync with their own Connect/Disconnect).
-	who, err := anvil.Dial(addr, nil, time.Second)
+	who, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial who: %v", err)
 	}
 	defer who.Close()
 
-	all, err := who.Who(anvil.WhoFilter{})
+	all, err := who.Who(warden.WhoFilter{})
 	if err != nil {
 		t.Fatalf("who all: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestClientWhoReturnsActiveSessions(t *testing.T) {
 		t.Fatalf("who all returned %d sessions, want 2: %+v", len(all), all)
 	}
 
-	imapOnly, err := who.Who(anvil.WhoFilter{Service: "imap"})
+	imapOnly, err := who.Who(warden.WhoFilter{Service: "imap"})
 	if err != nil {
 		t.Fatalf("who imap: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestClientWhoReturnsActiveSessions(t *testing.T) {
 		t.Fatalf("who imap returned %+v, want only alice@example.com", imapOnly)
 	}
 
-	byUser, err := who.Who(anvil.WhoFilter{User: "bob@example.com"})
+	byUser, err := who.Who(warden.WhoFilter{User: "bob@example.com"})
 	if err != nil {
 		t.Fatalf("who user: %v", err)
 	}

@@ -1,5 +1,5 @@
 // Package mtls provides helpers for building mutual-TLS configs used between
-// yarilo components (auth, anvil, director, imap-login → imap, etc.).
+// yarilo components (auth, warden, director, imap-login → imap, etc.).
 // All inter-component connections use TLS 1.3 with client-cert verification.
 package mtls
 

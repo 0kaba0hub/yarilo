@@ -1,10 +1,10 @@
-package anvil_test
+package warden_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 func TestClient_ConnectOK(t *testing.T) {
@@ -12,7 +12,7 @@ func TestClient_ConnectOK(t *testing.T) {
 	defer cancel()
 	time.Sleep(20 * time.Millisecond)
 
-	c, err := anvil.Dial(addr, nil, time.Second)
+	c, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestClient_ConnectTooMany(t *testing.T) {
 	defer cancel()
 	time.Sleep(20 * time.Millisecond)
 
-	c, err := anvil.Dial(addr, nil, time.Second)
+	c, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestClient_ConnectTooMany(t *testing.T) {
 		t.Fatalf("first Connect: %v", err)
 	}
 	err = c.Connect("2", "alice@example.com", "1.2.3.4", "imap")
-	if err != anvil.ErrTooManyConns {
+	if err != warden.ErrTooManyConns {
 		t.Fatalf("expected ErrTooManyConns, got: %v", err)
 	}
 }
@@ -48,7 +48,7 @@ func TestClient_DisconnectReleasesSlot(t *testing.T) {
 	defer cancel()
 	time.Sleep(20 * time.Millisecond)
 
-	c, err := anvil.Dial(addr, nil, time.Second)
+	c, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestClient_DisconnectReleasesSlot(t *testing.T) {
 }
 
 func TestClient_DialUnreachable(t *testing.T) {
-	_, err := anvil.Dial("127.0.0.1:1", nil, 100*time.Millisecond)
+	_, err := warden.Dial("127.0.0.1:1", nil, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected error dialling unreachable addr")
 	}

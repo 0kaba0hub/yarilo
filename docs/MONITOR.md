@@ -191,7 +191,7 @@ sum by (ip, port, tag) (yarilo_director_backend_sessions) > 500
 
 ## Prometheus metrics (login path) — #881
 
-Before these existed, `yarilo-auth`, `yarilo-anvil` and the login pods exported
+Before these existed, `yarilo-auth`, `yarilo-warden` and the login pods exported
 only Go runtime metrics, so a login stall could not be attributed to a
 component without `kubectl exec` into cgroup files and log grepping. That gap
 produced a wrong root cause in #878: auth was blamed on the strength of a
@@ -217,7 +217,7 @@ yarilo_login_phase_seconds_bucket{protocol="imap", phase="auth",       le="0.128
 | `auth_dial` | Opening the connection to `yarilo-auth` (a full mTLS handshake today). |
 | `auth` | One `AUTH` round-trip. Observed per attempt — the retry loop reuses the connection. |
 | `director_lookup` | Director `LOOKUP`, including confirmed-kick hold retries. |
-| `anvil_connect` | Dial + `CONNECT` to `yarilo-anvil`. |
+| `warden_connect` | Dial + `CONNECT` to `yarilo-warden`. |
 | `backend_dial` | Dial to the backend pod, including fast-fail re-route. |
 | `backend_preamble` | Reading the backend greeting (token `VERIFY` happens here). |
 
@@ -257,11 +257,11 @@ sum(rate(yarilo_auth_cache_lookups_total{result="hit"}[5m]))
   / sum(rate(yarilo_auth_cache_lookups_total[5m]))
 ```
 
-### `yarilo_anvil_*`
+### `yarilo_warden_*`
 
 | Metric | Type | Notes |
 |:---|:---|:---|
-| `request_seconds{verb,result}` | histogram | Per-verb server-side latency. anvil is a single Deployment with a strict request/response protocol, so a slow verb serialises every login that needs it. |
+| `request_seconds{verb,result}` | histogram | Per-verb server-side latency. warden is a single Deployment with a strict request/response protocol, so a slow verb serialises every login that needs it. |
 | `sessions` | gauge | Tracked login sessions. |
 | `sessions_reaped_total` | counter | TTL evictions. A rising rate means sessions are losing their heartbeat, and each reap makes the next `HEARTBEAT` answer `reason=unknown` to a session that is in fact alive. |
 | `penalty_lookups_total{result}` | counter | `hit` (penalty in force) \| `miss` \| `expired`. |

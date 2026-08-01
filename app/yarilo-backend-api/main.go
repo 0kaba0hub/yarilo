@@ -119,11 +119,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	var anvilTLS *tls.Config
-	if cfg.InternalTLS.Enabled && cfg.AnvilService.ClientAddr() != "" {
-		anvilTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
+	var wardenTLS *tls.Config
+	if cfg.InternalTLS.Enabled && cfg.WardenService.ClientAddr() != "" {
+		wardenTLS, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA, cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
 		if err != nil {
-			slog.Error("backend-api: anvil mtls client config failed", "err", err)
+			slog.Error("backend-api: warden mtls client config failed", "err", err)
 			os.Exit(1)
 		}
 	}
@@ -174,8 +174,8 @@ func main() {
 		MetadataDict:       dicts["metadata"],
 		QuotaDict:          dicts["quota"],
 		QuotaCloneDicts:    cfg.Quota.CloneDicts,
-		AnvilAddr:          cfg.AnvilService.ClientAddr(),
-		AnvilTLS:           anvilTLS,
+		WardenAddr:         cfg.WardenService.ClientAddr(),
+		WardenTLS:          wardenTLS,
 		PodIP:              os.Getenv("POD_IP"),
 		AuthClient:         authcl,
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {

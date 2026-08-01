@@ -290,7 +290,7 @@ Call: (dict "name" "yarilo-auth" "root" $)
 {{/*
 startupProbe for a login pod, replacing its wait-* init containers (#903).
 
-Safe for login pods specifically: none of them dials auth or anvil during startup
+Safe for login pods specifically: none of them dials auth or warden during startup
 — those connections are created lazily on the first login (#885/#891) — so the
 process comes up regardless and the probe only withholds traffic until the
 dependencies answer.
@@ -304,7 +304,7 @@ URLs are POSITIONAL. yarctl registers a global --url (Director API) and strips
 global flags from argv before a subcommand sees them, so a --url here would be
 swallowed and the probe would never pass (#906).
 
-Call: (dict "probe" .Values.components.<c>.startupProbe "root" $ "auth" true "anvil" true)
+Call: (dict "probe" .Values.components.<c>.startupProbe "root" $ "auth" true "warden" true)
 */}}
 {{- define "yarilo.loginStartupProbe" -}}
 {{- $p := .probe -}}
@@ -319,8 +319,8 @@ startupProbe:
       {{- if .auth }}
       - http://{{ include "yarilo.fullname" $root }}-auth-telemetry.{{ $root.Release.Namespace }}.svc:8080/readyz
       {{- end }}
-      {{- if and .anvil $root.Values.components.anvil.enabled }}
-      - http://{{ include "yarilo.fullname" $root }}-anvil-telemetry.{{ $root.Release.Namespace }}.svc:8080/readyz
+      {{- if and .warden $root.Values.components.warden.enabled }}
+      - http://{{ include "yarilo.fullname" $root }}-warden-telemetry.{{ $root.Release.Namespace }}.svc:8080/readyz
       {{- end }}
   periodSeconds: {{ $p.periodSeconds }}
   ## failureThreshold x periodSeconds is the whole startup budget. Keep it
@@ -333,7 +333,7 @@ startupProbe:
 {{/*
 startupProbe that waits on raw dependency endpoints via `yarctl wait`, replacing a
 backend/shared pod's wait-* init containers (#903). Unlike yarilo.loginStartupProbe
-(which targets the auth/anvil telemetry /readyz URLs), this takes an explicit list of
+(which targets the auth/warden telemetry /readyz URLs), this takes an explicit list of
 targets so a pod can wait on tcp://<db> / tcp://<redis> that have no HTTP endpoint.
 
 The pod must come up WITHOUT dialing the dependency at startup (lazy client, no

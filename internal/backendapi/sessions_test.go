@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
-// startKickAnvil spins an in-process anvil server, returns its
+// startKickWarden spins an in-process warden server, returns its
 // address and a subscription channel on "kick:imap" that the
 // test asserts against.
-func startKickAnvil(t *testing.T) (string, <-chan string) {
+func startKickWarden(t *testing.T) (string, <-chan string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -25,7 +25,7 @@ func startKickAnvil(t *testing.T) (string, <-chan string) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv := anvil.NewServer(0)
+	srv := warden.NewServer(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -42,7 +42,7 @@ func startKickAnvil(t *testing.T) (string, <-chan string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	subConn, err := anvil.Dial(addr, nil, time.Second)
+	subConn, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial sub: %v", err)
 	}
@@ -61,9 +61,9 @@ func startKickAnvil(t *testing.T) (string, <-chan string) {
 }
 
 func TestKickEndpoint_EmitsBroadcast(t *testing.T) {
-	addr, ch := startKickAnvil(t)
+	addr, ch := startKickWarden(t)
 
-	s := New(Options{AnvilAddr: addr})
+	s := New(Options{WardenAddr: addr})
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -89,7 +89,7 @@ func TestKickEndpoint_EmitsBroadcast(t *testing.T) {
 }
 
 func TestKickEndpoint_RejectsMissingSessionID(t *testing.T) {
-	s := New(Options{AnvilAddr: "127.0.0.1:1"})
+	s := New(Options{WardenAddr: "127.0.0.1:1"})
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -100,8 +100,8 @@ func TestKickEndpoint_RejectsMissingSessionID(t *testing.T) {
 	}
 }
 
-func TestKickEndpoint_RejectsMissingAnvil(t *testing.T) {
-	s := New(Options{}) // no AnvilAddr
+func TestKickEndpoint_RejectsMissingWarden(t *testing.T) {
+	s := New(Options{}) // no WardenAddr
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 

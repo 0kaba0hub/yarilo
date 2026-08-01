@@ -14,12 +14,12 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
 	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
 	"github.com/0kaba0hub/yarilo/internal/auth/passdbs"
 	"github.com/0kaba0hub/yarilo/internal/auth/policy"
 	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
 	"github.com/0kaba0hub/yarilo/internal/telemetry"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 	"github.com/0kaba0hub/yarilo/pkg/authtoken"
 	"github.com/0kaba0hub/yarilo/pkg/build"
 	"github.com/0kaba0hub/yarilo/pkg/config"
@@ -128,19 +128,19 @@ func main() {
 		protocol.WithCache(authCache),
 	}
 
-	// Auth-penalty: dial the anvil service and route Lookup/Update
+	// Auth-penalty: dial the warden service and route Lookup/Update
 	// through it. Connection failure at startup → fatal (operator
-	// asked for the feature). Per-request anvil errors are
+	// asked for the feature). Per-request warden errors are
 	// non-fatal and log-only — Server falls back to no-tarpit.
 	if cfg.Auth.Penalty.Enabled {
-		if cfg.AnvilService.Listen == "" {
-			slog.Error("auth.penalty.enabled requires anvil_service.listen")
+		if cfg.WardenService.Listen == "" {
+			slog.Error("auth.penalty.enabled requires warden_service.listen")
 			os.Exit(1)
 		}
-		// Build a CLIENT mTLS config for the outbound anvil dial — NOT the server
+		// Build a CLIENT mTLS config for the outbound warden dial — NOT the server
 		// config used for our own listener, which carries no ServerName and would
-		// verify anvil's cert against the dial host instead of the shared internal
-		// SAN, CrashLooping under mTLS (#942). Mirrors the login pods' anvil dial.
+		// verify warden's cert against the dial host instead of the shared internal
+		// SAN, CrashLooping under mTLS (#942). Mirrors the login pods' warden dial.
 		var penaltyTLS *tls.Config
 		if cfg.InternalTLS.Enabled {
 			penaltyTLS, err = mtls.ClientConfig(
@@ -152,22 +152,22 @@ func main() {
 				cfg.InternalTLS.SessionCacheTTL,
 			)
 			if err != nil {
-				slog.Error("anvil penalty client tls config failed", "err", err)
+				slog.Error("warden penalty client tls config failed", "err", err)
 				os.Exit(1)
 			}
 		}
 		// A resilient pool, NOT a single Dial (#946): the pool redials on a
-		// transport error and retries once, so the tarpit survives an anvil
+		// transport error and retries once, so the tarpit survives an warden
 		// restart without an auth restart — a raw single Conn failed every penalty
 		// op forever after its connection died. It also dials lazily, so auth
-		// starts even if anvil is momentarily down; penalty stays fail-open until
+		// starts even if warden is momentarily down; penalty stays fail-open until
 		// it reconnects, so there is no startup CrashLoop on this path either.
-		penaltyPool := anvil.NewPool(cfg.AnvilService.ClientAddr(), penaltyTLS, 0, 5*time.Second)
+		penaltyPool := warden.NewPool(cfg.WardenService.ClientAddr(), penaltyTLS, 0, 5*time.Second)
 		defer penaltyPool.Close()
 		srvOpts = append(srvOpts,
-			protocol.WithPenalty(penaltyPool, anvil.PenaltyToSecs),
+			protocol.WithPenalty(penaltyPool, warden.PenaltyToSecs),
 		)
-		slog.Info("yarilo-auth penalty enabled", "anvil", cfg.AnvilService.ClientAddr())
+		slog.Info("yarilo-auth penalty enabled", "warden", cfg.WardenService.ClientAddr())
 	}
 
 	// Policy server: HTTP hook into wforce or equivalent. URL=""

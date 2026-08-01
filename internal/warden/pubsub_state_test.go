@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"context"
@@ -20,7 +20,7 @@ func TestStateBackendPubSubContract(t *testing.T) {
 			mr := miniredis.RunT(t)
 			rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 			t.Cleanup(func() { rdb.Close() })
-			return NewRedisBackend(rdb, "test:anvil:", "test:anvil:events:", time.Minute, time.Minute, 0)
+			return NewRedisBackend(rdb, "test:warden:", "test:warden:events:", time.Minute, time.Minute, 0)
 		},
 	}
 	for name, mk := range backends {

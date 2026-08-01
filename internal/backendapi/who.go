@@ -6,14 +6,14 @@ import (
 	"sort"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 // registerWhoRoutes wires the active-session listing surface.
-// Data source is yarilo-anvil — backend-api dials it per request,
+// Data source is yarilo-warden — backend-api dials it per request,
 // runs WHO, then closes. This matches the existing per-request
 // dial pattern used by login pods for CONNECT/DISCONNECT — no
-// long-lived anvil pool needed for an admin tool that runs at most
+// long-lived warden pool needed for an admin tool that runs at most
 // every few seconds during ops investigations.
 func (s *Server) registerWhoRoutes() {
 	s.mux.Handle("POST /api/backend/who", s.middleware(s.handleWho))
@@ -25,7 +25,7 @@ type whoRequest struct {
 	User    string `json:"user"`
 	GroupBy string `json:"group_by"`
 	// All disables the default local-backend scoping (#814): the cluster-wide
-	// anvil view, with each session's Backend visible.
+	// warden view, with each session's Backend visible.
 	All bool `json:"all"`
 }
 
@@ -45,11 +45,11 @@ type whoSessionOut struct {
 // filterLocalBackend keeps only sessions routed to podIP (#814 — the default
 // scope for /who). An empty podIP (env not injected) cannot scope, so the list
 // is returned unchanged (equivalent to --all).
-func filterLocalBackend(sessions []anvil.SessionInfo, podIP string) []anvil.SessionInfo {
+func filterLocalBackend(sessions []warden.SessionInfo, podIP string) []warden.SessionInfo {
 	if podIP == "" {
 		return sessions
 	}
-	out := make([]anvil.SessionInfo, 0, len(sessions))
+	out := make([]warden.SessionInfo, 0, len(sessions))
 	for _, s := range sessions {
 		if s.Backend == podIP {
 			out = append(out, s)
@@ -71,24 +71,24 @@ func (s *Server) handleWho(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if s.opts.AnvilAddr == "" {
-		apiError(w, "yarilo-anvil endpoint not configured", http.StatusNotImplemented)
+	if s.opts.WardenAddr == "" {
+		apiError(w, "yarilo-warden endpoint not configured", http.StatusNotImplemented)
 		return
 	}
-	c, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+	c, err := warden.Dial(s.opts.WardenAddr, s.opts.WardenTLS, 5*time.Second)
 	if err != nil {
-		apiError(w, "anvil dial: "+err.Error(), http.StatusBadGateway)
+		apiError(w, "warden dial: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer c.Close()
 
-	sessions, err := c.Who(anvil.WhoFilter{Service: req.Service, User: req.User})
+	sessions, err := c.Who(warden.WhoFilter{Service: req.Service, User: req.User})
 	if err != nil {
-		apiError(w, "anvil who: "+err.Error(), http.StatusBadGateway)
+		apiError(w, "warden who: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	// Default scope: only sessions routed to THIS backend (#814). --all keeps
-	// the cluster-wide anvil view (with Backend surfaced per session).
+	// the cluster-wide warden view (with Backend surfaced per session).
 	if !req.All {
 		sessions = filterLocalBackend(sessions, s.opts.PodIP)
 	}
@@ -162,20 +162,20 @@ func (s *Server) handleWhoCount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if s.opts.AnvilAddr == "" {
-		apiError(w, "yarilo-anvil endpoint not configured", http.StatusNotImplemented)
+	if s.opts.WardenAddr == "" {
+		apiError(w, "yarilo-warden endpoint not configured", http.StatusNotImplemented)
 		return
 	}
-	c, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+	c, err := warden.Dial(s.opts.WardenAddr, s.opts.WardenTLS, 5*time.Second)
 	if err != nil {
-		apiError(w, "anvil dial: "+err.Error(), http.StatusBadGateway)
+		apiError(w, "warden dial: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer c.Close()
 
-	sessions, err := c.Who(anvil.WhoFilter{Service: req.Service, User: req.User})
+	sessions, err := c.Who(warden.WhoFilter{Service: req.Service, User: req.User})
 	if err != nil {
-		apiError(w, "anvil who: "+err.Error(), http.StatusBadGateway)
+		apiError(w, "warden who: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	if !req.All {
@@ -208,7 +208,7 @@ func (s *Server) handleWhoCount(w http.ResponseWriter, r *http.Request) {
 	apiJSON(w, resp)
 }
 
-func formatSession(s anvil.SessionInfo) whoSessionOut {
+func formatSession(s warden.SessionInfo) whoSessionOut {
 	return whoSessionOut{
 		ID:          s.ID,
 		User:        s.User,
@@ -220,10 +220,10 @@ func formatSession(s anvil.SessionInfo) whoSessionOut {
 	}
 }
 
-// AnvilEndpoint is the small slice of Options consumed by the who
+// WardenEndpoint is the small slice of Options consumed by the who
 // route. Surfaced as a separate type so the CLI / tests can call it
 // without importing the full Server.
-type AnvilEndpoint struct {
+type WardenEndpoint struct {
 	Addr      string
 	TLSConfig *tls.Config
 }

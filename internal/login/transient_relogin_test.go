@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 // TestTransientReloginCap pins the budget semantics of the client-side re-LOGIN
@@ -92,16 +92,16 @@ func TestTransientReloginKeepsConnectionOpen(t *testing.T) {
 	}
 }
 
-// TestTransientReloginReleasesAnvilSlot is the regression test for the leak
+// TestTransientReloginReleasesWardenSlot is the regression test for the leak
 // found in review: a transient failure at the BACKEND stage happens after
-// anvil.Connect, so re-entering the command loop without releasing the anvil
+// warden.Connect, so re-entering the command loop without releasing the warden
 // slot would leak a connection-limit slot on every retry. The slot must be back
 // to zero once the pass fails.
-func TestTransientReloginReleasesAnvilSlot(t *testing.T) {
-	anvilAddr, anvilSrv := startAnvilWithHandle(t)
+func TestTransientReloginReleasesWardenSlot(t *testing.T) {
+	wardenAddr, wardenSrv := startWardenWithHandle(t)
 	authAddr := startOKAuth(t)
 
-	// A backend address that refuses connections, so bring-up fails after anvil
+	// A backend address that refuses connections, so bring-up fails after warden
 	// has already registered the session.
 	deadBackend := reservedDeadAddr(t)
 
@@ -109,21 +109,21 @@ func TestTransientReloginReleasesAnvilSlot(t *testing.T) {
 		opts: Options{
 			Protocol:            ProtocolIMAP,
 			AuthAddr:            authAddr,
-			AnvilAddr:           anvilAddr,
+			WardenAddr:          wardenAddr,
 			BackendAddr:         deadBackend,
 			TransientRetries:    -1, // fail the backend bring-up on the first error
 			TransientReloginCap: 1,  // close after the first transient
 		},
 		sessions: make(map[string][]*liveSession),
 	}
-	// Close the shared anvil pool before the embedded anvil server is torn down,
-	// or anvil's graceful Serve would block on wg.Wait for handlers reading on
-	// the still-open pool connections. LIFO ordering runs this before the anvil
+	// Close the shared warden pool before the embedded warden server is torn down,
+	// or warden's graceful Serve would block on wg.Wait for handlers reading on
+	// the still-open pool connections. LIFO ordering runs this before the warden
 	// helper's own cleanup. A test artifact only — a real login pod's pool lives
 	// for the pod's lifetime.
 	t.Cleanup(func() {
-		if s.anvilPool != nil {
-			s.anvilPool.Close()
+		if s.wardenPool != nil {
+			s.wardenPool.Close()
 		}
 	})
 	srv, cli := pipePair(t)
@@ -140,14 +140,14 @@ func TestTransientReloginReleasesAnvilSlot(t *testing.T) {
 	cli.Close()
 	<-done
 
-	// The anvil slot taken during the failed pass must have been released.
+	// The warden slot taken during the failed pass must have been released.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if anvilSrv.SessionCount() == 0 {
+		if wardenSrv.SessionCount() == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("anvil session slot leaked: SessionCount = %d, want 0", anvilSrv.SessionCount())
+			t.Fatalf("warden session slot leaked: SessionCount = %d, want 0", wardenSrv.SessionCount())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -183,9 +183,9 @@ func reservedDeadAddr(t *testing.T) string {
 	return addr
 }
 
-// startAnvilWithHandle runs an in-process anvil and returns its address plus the
+// startWardenWithHandle runs an in-process warden and returns its address plus the
 // server, so a test can read SessionCount directly.
-func startAnvilWithHandle(t *testing.T) (string, *anvil.Server) {
+func startWardenWithHandle(t *testing.T) (string, *warden.Server) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -194,7 +194,7 @@ func startAnvilWithHandle(t *testing.T) (string, *anvil.Server) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv := anvil.NewServer(0)
+	srv := warden.NewServer(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _ = srv.ListenAndServe(ctx, addr, nil); close(done) }()

@@ -67,7 +67,7 @@ components:
     token:
       backend: redis
       redis_addr: "redis://yarilo-redis:6379/0"   # bundled redis service
-  anvil: {}
+  warden: {}
   locks:
     enabled: true
     replicas: 1                     # single locks pod (Redis-backed)

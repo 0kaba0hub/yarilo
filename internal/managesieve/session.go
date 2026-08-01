@@ -25,7 +25,7 @@ type session struct {
 	store             sieve.ScriptStore
 	maxSize           int
 	allowedExtensions []string
-	// sid is the anvil session correlation ID from the login-proxy preamble
+	// sid is the warden session correlation ID from the login-proxy preamble
 	// (loginproto.PreambleConn.SessionID) — included on every command
 	// dispatch and error line so a session's activity greps as one thread.
 	sid string

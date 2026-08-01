@@ -1,4 +1,4 @@
-package anvil_test
+package warden_test
 
 import (
 	"bufio"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 func freeAddr(t *testing.T) string {
@@ -25,7 +25,7 @@ func freeAddr(t *testing.T) string {
 
 func startServer(t *testing.T, max int) (addr string, cancel context.CancelFunc) {
 	t.Helper()
-	srv := anvil.NewServer(max)
+	srv := warden.NewServer(max)
 	ctx, cancel := context.WithCancel(context.Background())
 	addr = freeAddr(t)
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
@@ -64,7 +64,7 @@ func send(t *testing.T, conn net.Conn, sc *bufio.Scanner, cmd string) string {
 }
 
 func TestHandshake(t *testing.T) {
-	srv := anvil.NewServer(10)
+	srv := warden.NewServer(10)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -89,7 +89,7 @@ func TestHandshake(t *testing.T) {
 		}
 	}
 	hs := strings.Join(lines, "\n")
-	if !strings.Contains(hs, "VERSION\tyarilo-anvil") {
+	if !strings.Contains(hs, "VERSION\tyarilo-warden") {
 		t.Errorf("missing VERSION in handshake: %q", hs)
 	}
 	if !strings.Contains(hs, "DONE") {
@@ -187,7 +187,7 @@ func TestConnect_Unlimited(t *testing.T) {
 }
 
 func TestGracefulShutdown(t *testing.T) {
-	srv := anvil.NewServer(10)
+	srv := warden.NewServer(10)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	addr := freeAddr(t)

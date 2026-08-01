@@ -324,7 +324,7 @@ func (s *MasterServer) handleCacheFlush(conn net.Conn, fields []string) {
 // TOKEN issued here can only be consumed by VERIFY on the client
 // listener. Wire shape:
 //
-//	SESSION <id> user=<username> sid=<anvil-session-id> ip=<mta-ip>
+//	SESSION <id> user=<username> sid=<warden-session-id> ip=<mta-ip>
 //	→ OK <id> token=<tok>
 //	→ FAIL <id> reason=...
 func (s *MasterServer) handleSession(conn net.Conn, fields []string) {

@@ -1,7 +1,7 @@
 # Auth Penalty (cross-pod IP backoff)
 
 `yarilo-auth` can enforce a per-client-IP exponential backoff on
-failed auth attempts. The counter lives in the `yarilo-anvil`
+failed auth attempts. The counter lives in the `yarilo-warden`
 service so a single attacker IP pays the cost across every auth pod
 they land on — pod load-balancing does not let them reset by
 landing on a fresh pod.
@@ -33,12 +33,12 @@ auth:
     enabled: true
 ```
 
-The penalty store reuses the configured `anvil_service.listen`
+The penalty store reuses the configured `warden_service.listen`
 address; no separate connection knob.
 
 | Setting | Default | Notes |
 |---|---|---|
-| `enabled` | `false` | Opt-in. While `false`, every login skips both Lookup and Update (zero overhead). Flip to `true` once `yarilo-anvil` is provisioned |
+| `enabled` | `false` | Opt-in. While `false`, every login skips both Lookup and Update (zero overhead). Flip to `true` once `yarilo-warden` is provisioned |
 
 ## Behaviour
 
@@ -73,7 +73,7 @@ sixth, seventh, … each also wait the cap.
 After 29 seconds with no Update, the entry is swept (matches the
 cumulative budget plus one cap window — once the worst-case backoff
 chain has fully played out, the entry no longer carries useful
-signal). Configurable via `anvil.WithPenaltyDecay` for testing,
+signal). Configurable via `warden.WithPenaltyDecay` for testing,
 not exposed in the YAML — the default is well-calibrated.
 
 A decayed entry returns 0 on the next Lookup, so a long-quiet IP
@@ -81,7 +81,7 @@ starts fresh on its next attempt.
 
 ## Wire protocol
 
-`yarilo-anvil` exposes two new verbs in protocol version 1.6:
+`yarilo-warden` exposes two new verbs in protocol version 1.6:
 
 ```
 PENALTY-LOOKUP <ip>            → PENALTY <count>
@@ -92,8 +92,8 @@ PENALTY-UPDATE <ip> <count>    → OK
 - `count=0` deletes the entry (auth-success reset)
 - `count<0` clamps to 0; `count>MaxPenalty` clamps to MaxPenalty
 
-The full anvil protocol is documented in
-`internal/anvil/server.go`.
+The full warden protocol is documented in
+`internal/warden/server.go`.
 
 ## Interaction with other anti-abuse layers
 
@@ -101,11 +101,11 @@ The defence-in-depth stack is layered:
 
 1. **TCP / TLS layer**: HAProxy rate limits, fail2ban — pre-Yarilo
 2. **Connection limits**: `mail_max_userip_connections` enforced
-   by `yarilo-anvil` (`CONNECT` / `DISCONNECT` verbs)
+   by `yarilo-warden` (`CONNECT` / `DISCONNECT` verbs)
 3. **Auth failure delay**: `auth.failure_delay` (2s by default)
    equalises timing between unknown-user and wrong-password
 4. **Auth penalty** (this feature): exponential backoff per IP,
-   shared cross-pod via `yarilo-anvil`
+   shared cross-pod via `yarilo-warden`
 5. **Policy server** (`auth.policy.url`): external HTTP hook with
    pattern-detection logic — see [AUTH_POLICY.md](AUTH_POLICY.md)
 

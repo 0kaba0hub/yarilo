@@ -3,11 +3,11 @@ package backendapi
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 func TestFilterLocalBackend(t *testing.T) {
-	sessions := []anvil.SessionInfo{
+	sessions := []warden.SessionInfo{
 		{ID: "a", Backend: "10.0.0.7"},
 		{ID: "b", Backend: "10.0.0.8"},
 		{ID: "c", Backend: "10.0.0.7"},

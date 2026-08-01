@@ -112,7 +112,7 @@ components:
         iterate_query: |
           SELECT username FROM mailbox WHERE active = 1 ORDER BY username
     token: { backend: redis, redis_addr: "redis://<redis-host>:6379/0" }
-  anvil:
+  warden:
     internalTLS: { enabled: true, secretName: yarilo-internal-tls }
   locks:                            # REQUIRED for multi-replica standalone
     enabled: true

@@ -1,11 +1,11 @@
-// Package anvil implements the yarilo-anvil TCP+mTLS connection-accounting server.
+// Package warden implements the yarilo-warden TCP+mTLS connection-accounting server.
 // Login pods call it to enforce mail_max_userip_connections across the cluster;
 // LMTP backend pods call it to enforce lmtp_user_concurrency_limit.
 //
 // Protocol (TAB-delimited, LF-terminated):
 //
 //	Server → Client handshake:
-//	  VERSION\tyarilo-anvil\t1\t6\n
+//	  VERSION\tyarilo-warden\t1\t6\n
 //	  DONE\n
 //
 //	Client commands:
@@ -50,13 +50,13 @@
 //     (kick events ride this channel)
 //   - 1.5 → 1.6: PENALTY-LOOKUP / PENALTY-UPDATE for IP-bound auth
 //   - 1.6 → 1.7: BACKEND command + backend field in SESSION reply (#814)
-//     backoff (yarilo-auth dials anvil pre-passdb to look up the
+//     backoff (yarilo-auth dials warden pre-passdb to look up the
 //     current penalty for the client IP, sleeps the mapped seconds,
 //     then runs the chain; on fail increments the counter, on OK
 //     resets it).
 //
 // Older clients ignore unknown commands entirely.
-package anvil
+package warden
 
 import (
 	"bufio"
@@ -73,7 +73,7 @@ import (
 )
 
 const (
-	protoName = "yarilo-anvil"
+	protoName = "yarilo-warden"
 	majorVer  = 1
 	minorVer  = 8
 )
@@ -111,7 +111,7 @@ func PenaltyToSecs(count int) int {
 	}
 }
 
-// DefaultSessionTTL is how long an anvil session lives without a
+// DefaultSessionTTL is how long an warden session lives without a
 // HEARTBEAT. Login pods refresh on a timer significantly shorter
 // than this so a brief network hiccup never reaps a live session.
 // 90 seconds = three 30-second heartbeats budgeted before drop.
@@ -147,7 +147,7 @@ type SessionInfo struct {
 	lastSeen time.Time
 }
 
-// Server is the yarilo-anvil TCP server. It wraps a connlimit.Limiter and
+// Server is the yarilo-warden TCP server. It wraps a connlimit.Limiter and
 // exposes it over the wire protocol so multiple login pods can share state.
 type Server struct {
 	sessionTTL    time.Duration
@@ -184,7 +184,7 @@ func WithPenaltyDecay(d time.Duration) ServerOption {
 	return func(s *Server) { s.penaltyDecay = d }
 }
 
-// NewServer creates an anvil server with the given per-user@IP connection limit.
+// NewServer creates an warden server with the given per-user@IP connection limit.
 // max ≤ 0 means unlimited (server still runs but always returns OK).
 func NewServer(max int, opts ...ServerOption) *Server {
 	s := &Server{
@@ -211,14 +211,14 @@ func (s *Server) Sessions() []*SessionInfo {
 
 // SessionCount returns the number of tracked sessions. For the memory backend it
 // takes the same mutex the hot-path handlers hold, so it doubles as the #904
-// liveness probe; the Redis backend counts via SCAN, so the anvil watchdog
-// self-check is wired only in memory mode (a Redis anvil is like locks — no
+// liveness probe; the Redis backend counts via SCAN, so the warden watchdog
+// self-check is wired only in memory mode (a Redis warden is like locks — no
 // local mutex to wedge, #921).
 func (s *Server) SessionCount() int {
 	return s.state.SessionCount()
 }
 
-// ListenAndServe starts the anvil TCP server. When tlsCfg is non-nil the
+// ListenAndServe starts the warden TCP server. When tlsCfg is non-nil the
 // listener uses mTLS. Blocks until ctx is cancelled; active sessions drain
 // before the function returns.
 // Listen binds addr and returns the listener, so a caller can report readiness
@@ -229,13 +229,13 @@ func (s *Server) Listen(addr string, tlsCfg *tls.Config) (net.Listener, error) {
 	if tlsCfg != nil {
 		ln, err := tls.Listen("tcp", addr, tlsCfg)
 		if err != nil {
-			return nil, fmt.Errorf("anvil: listen %s (tls): %w", addr, err)
+			return nil, fmt.Errorf("warden: listen %s (tls): %w", addr, err)
 		}
 		return ln, nil
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("anvil: listen %s: %w", addr, err)
+		return nil, fmt.Errorf("warden: listen %s: %w", addr, err)
 	}
 	return ln, nil
 }
@@ -267,7 +267,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("anvil: accept: %w", err)
+			return fmt.Errorf("warden: accept: %w", err)
 		}
 		wg.Add(1)
 		go func() {
@@ -369,19 +369,19 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) string {
 		// not block every login), untracked until the backend recovers. The limit
 		// is temporarily unenforced — availability over strict limiting, the same
 		// posture as the penalty path (#908; verified end to end in PR4).
-		slog.Warn("anvil: connect state error, failing open", "pod", podID, "sid", id, "user", user, "ip", ip, "err", err)
+		slog.Warn("warden: connect state error, failing open", "pod", podID, "sid", id, "user", user, "ip", ip, "err", err)
 		fmt.Fprintf(conn, "OK\t%s\n", id)
 		return "state_error"
 	}
 	if !ok {
-		slog.Warn("anvil: too many connections", "pod", podID, "sid", id, "user", user, "ip", ip, "service", service)
+		slog.Warn("warden: too many connections", "pod", podID, "sid", id, "user", user, "ip", ip, "service", service)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
 		return "too_many_connections"
 	}
 	// No cnt= here on purpose: SessionLookupCount is a SCAN on the Redis backend,
 	// too costly for the hot path (#932 lesson). Use the connect_total /
 	// sessions metrics for counts; the log carries pod identity for kick tracing.
-	slog.Info("anvil: session connect", "pod", podID, "sid", id, "user", user, "ip", ip, "service", service)
+	slog.Info("warden: session connect", "pod", podID, "sid", id, "user", user, "ip", ip, "service", service)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 	return "ok"
 }
@@ -393,7 +393,7 @@ func (s *Server) handleDisconnect(conn net.Conn, fields []string) {
 	}
 	id, user, ip := fields[1], fields[2], fields[3]
 	s.state.SessionDisconnect(id, user, ip)
-	slog.Debug("anvil: disconnect", "sid", id, "user", user, "ip", ip)
+	slog.Debug("warden: disconnect", "sid", id, "user", user, "ip", ip)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 }
 
@@ -405,7 +405,7 @@ func (s *Server) handleDisconnect(conn net.Conn, fields []string) {
 //	user={username}
 //
 // Unknown keys are ignored so future filters can land without
-// breaking older anvil servers.
+// breaking older warden servers.
 func (s *Server) handleWho(conn net.Conn, args []string) {
 	filter := parseFilter(args)
 	snap := s.Sessions()
@@ -436,7 +436,7 @@ func (s *Server) handleWho(conn net.Conn, args []string) {
 func (s *Server) handleDump(conn net.Conn) {
 	d, err := s.state.Dump()
 	if err != nil {
-		slog.Warn("anvil: dump failed", "pod", podID, "err", err)
+		slog.Warn("warden: dump failed", "pod", podID, "err", err)
 		fmt.Fprintln(conn, "DONE")
 		return
 	}
@@ -587,10 +587,10 @@ func (s *Server) handlePenaltyUpdate(conn net.Conn, fields []string) {
 	s.state.PenaltyUpdate(ip, count)
 	if count > 0 {
 		penaltyUpdates.WithLabelValues("set").Inc()
-		slog.Info("anvil: penalty set", "pod", podID, "ip", ip, "count", count)
+		slog.Info("warden: penalty set", "pod", podID, "ip", ip, "count", count)
 	} else {
 		penaltyUpdates.WithLabelValues("clear").Inc()
-		slog.Info("anvil: penalty clear", "pod", podID, "ip", ip)
+		slog.Info("warden: penalty clear", "pod", podID, "ip", ip)
 	}
 	fmt.Fprintf(conn, "OK\n")
 }
@@ -612,9 +612,9 @@ func (s *Server) handleEmit(conn net.Conn, fields []string) {
 	channel, payload := fields[1], fields[2]
 	kickEmitted.Inc()
 	if err := s.state.Emit(channel, payload); err != nil {
-		slog.Warn("anvil: emit failed", "pod", podID, "channel", channel, "err", err)
+		slog.Warn("warden: emit failed", "pod", podID, "channel", channel, "err", err)
 	} else {
-		slog.Info("anvil: kick emitted", "pod", podID, "channel", channel, "sess", payload)
+		slog.Info("warden: kick emitted", "pod", podID, "channel", channel, "sess", payload)
 	}
 	fmt.Fprintf(conn, "OK\n")
 }
@@ -640,14 +640,14 @@ func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
 
 	ch, err := s.state.Subscribe(ctx, channel)
 	if err != nil {
-		slog.Warn("anvil: subscribe failed", "channel", channel, "err", err)
+		slog.Warn("warden: subscribe failed", "channel", channel, "err", err)
 		return
 	}
 
 	if _, err := fmt.Fprintf(conn, "OK\n"); err != nil {
 		return
 	}
-	slog.Info("anvil: subscribe", "pod", podID, "channel", channel)
+	slog.Info("warden: subscribe", "pod", podID, "channel", channel)
 
 	// Reader half: a client-side close surfaces as a Read error and cancels ctx,
 	// which closes ch and unwinds the writer loop below.
@@ -666,7 +666,7 @@ func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
 			return
 		}
 		kickDelivered.Inc()
-		slog.Info("anvil: kick delivered", "pod", podID, "channel", channel, "sess", payload)
+		slog.Info("warden: kick delivered", "pod", podID, "channel", channel, "sess", payload)
 	}
 }
 

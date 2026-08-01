@@ -8,8 +8,8 @@ case "$YARILO_COMPONENT" in
   yarilo-auth)
     exec /usr/local/bin/yarilo-auth -config /etc/yarilo/yarilo.yaml
     ;;
-  yarilo-anvil)
-    exec /usr/local/bin/yarilo-anvil -config /etc/yarilo/yarilo.yaml
+  yarilo-warden)
+    exec /usr/local/bin/yarilo-warden -config /etc/yarilo/yarilo.yaml
     ;;
   yarilo-backend-api)
     exec /usr/local/bin/yarilo-backend-api
@@ -67,7 +67,7 @@ case "$YARILO_COMPONENT" in
     ;;
   *)
     echo "Unknown YARILO_COMPONENT: '${YARILO_COMPONENT}'"
-    echo "Available: yarilo, yarilo-auth, yarilo-anvil, yarilo-backend-api, yarilo-locks, yarilo-director,"
+    echo "Available: yarilo, yarilo-auth, yarilo-warden, yarilo-backend-api, yarilo-locks, yarilo-director,"
     echo "           yarilo-imap, yarilo-imap-login,"
     echo "           yarilo-pop3, yarilo-pop3-login,"
     echo "           yarilo-lmtp, yarilo-lmtp-login, yarilo-submission, yarilo-submission-login,"

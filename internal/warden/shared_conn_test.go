@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"bufio"
@@ -11,12 +11,12 @@ import (
 )
 
 // These tests guard the per-(user, ip) connection accounting against the shared
-// long-lived anvil connections planned in #878. They are unit tests on purpose:
+// long-lived warden connections planned in #878. They are unit tests on purpose:
 // the sandbox runs with max_user_ip_connections: 0, which short-circuits
 // Limiter.Acquire before it counts anything, so a load test there cannot catch
 // a regression in this logic.
 
-// testServer is a live anvil listener plus an accept counter, so a test can
+// testServer is a live warden listener plus an accept counter, so a test can
 // assert how many connections a client actually opened.
 type testServer struct {
 	*Server
@@ -30,7 +30,7 @@ func (ts *testServer) acceptCount() int {
 	return ts.accepts
 }
 
-// startTestServer runs a real anvil listener and returns it with its address.
+// startTestServer runs a real warden listener and returns it with its address.
 func startTestServer(t *testing.T, max int, opts ...ServerOption) (*testServer, string) {
 	t.Helper()
 	ts := &testServer{Server: NewServer(max, opts...)}
@@ -54,7 +54,7 @@ func startTestServer(t *testing.T, max int, opts ...ServerOption) (*testServer, 
 	return ts, ln.Addr().String()
 }
 
-// testConn is a raw client that speaks the anvil wire protocol, so a single
+// testConn is a raw client that speaks the warden wire protocol, so a single
 // connection can carry commands for many sessions — the shape the shared-client
 // change introduces.
 type testConn struct {

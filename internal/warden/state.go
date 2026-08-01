@@ -1,4 +1,4 @@
-package anvil
+package warden
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/0kaba0hub/yarilo/internal/connlimit"
 )
 
-// StateBackend is anvil's pluggable shared-state store (#908). The memory
+// StateBackend is warden's pluggable shared-state store (#908). The memory
 // backend is the historical in-process behaviour and the default for standalone
 // and tests; the Redis backend lets state survive a pod restart and be shared
 // across replicas. This PR (1) covers the per-IP auth-failure penalty counter
@@ -35,7 +35,7 @@ type StateBackend interface {
 	// SessionConnect registers a session and enforces the per-user@IP limit
 	// atomically. ok=true means registered; ok=false with err==nil means the
 	// limit is reached (too-many-connections); err!=nil is a backend error — the
-	// caller applies AnvilFailOpen, since a bounded Redis error is NOT a limit
+	// caller applies WardenFailOpen, since a bounded Redis error is NOT a limit
 	// rejection (#926/#932).
 	SessionConnect(id, user, ip, service string) (ok bool, err error)
 	// SessionDisconnect removes a session and frees its limit slot. Idempotent:
@@ -75,14 +75,14 @@ type StateBackend interface {
 	// cancelled, at which point the returned channel is closed. The Redis backend
 	// relays go-redis PubSub.Channel, which auto-reconnects and re-subscribes on a
 	// Redis blip, so a transient Redis outage does not permanently deafen a
-	// subscriber. The transport between a login pod and anvil is a separate
+	// subscriber. The transport between a login pod and warden is a separate
 	// concern the caller must itself reconnect (login.kickSubscribeLoop).
 	Subscribe(ctx context.Context, channel string) (<-chan string, error)
 
 	// Dump returns an admin/debug snapshot of the accounting counters (with the
 	// live session tally, so drift is visible) and the penalty entries (with
 	// remaining TTL). Backend-agnostic — memory computes it in-process, Redis via
-	// SCAN. Surfaced by `yarctl anvil dump`.
+	// SCAN. Surfaced by `yarctl warden dump`.
 	Dump() (*StateDump, error)
 
 	// Close releases backend resources (the Redis client). Memory returns nil.
@@ -389,7 +389,7 @@ func (b *memoryBackend) Close() error { return nil }
 // redisOpTimeout bounds every Redis operation so a blackholed or down Redis
 // fails fast instead of hanging a handler — the #926/#932 lesson. A read error
 // is treated as "no penalty" (fail-open), matching the connection-limit
-// fail-open posture; the caller's AnvilFailOpen governs the session decision.
+// fail-open posture; the caller's WardenFailOpen governs the session decision.
 const redisOpTimeout = 3 * time.Second
 
 // scanCount is the COUNT hint for SCAN — cursor-based, non-blocking iteration
@@ -534,7 +534,7 @@ func (b *redisBackend) SessionConnect(id, user, ip, service string) (bool, error
 		b.limit, b.sessionTTL.Milliseconds(), user, ip, service, strconv.FormatInt(time.Now().UTC().Unix(), 10),
 	).Int()
 	if err != nil {
-		return false, redisErr("connect", err) // bounded backend error → caller applies AnvilFailOpen
+		return false, redisErr("connect", err) // bounded backend error → caller applies WardenFailOpen
 	}
 	return res == 1, nil
 }
@@ -640,7 +640,7 @@ func (b *redisBackend) Maintain(time.Time) {
 				continue
 			}
 			reconcileAdjustments.Inc()
-			slog.Info("anvil: reconciled counter leak", "pod", podID, "key", userip, "leak", leak)
+			slog.Info("warden: reconciled counter leak", "pod", podID, "key", userip, "leak", leak)
 		}
 	}
 }
@@ -651,7 +651,7 @@ func (b *redisBackend) Emit(channel, payload string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
 	defer cancel()
 	if err := b.rdb.Publish(ctx, b.chanKey(channel), payload).Err(); err != nil {
-		return redisErr("publish", fmt.Errorf("anvil/redis: publish %s: %w", channel, err))
+		return redisErr("publish", fmt.Errorf("warden/redis: publish %s: %w", channel, err))
 	}
 	return nil
 }
@@ -669,7 +669,7 @@ func (b *redisBackend) Subscribe(ctx context.Context, channel string) (<-chan st
 	defer cancel()
 	if _, err := ps.Receive(rctx); err != nil {
 		_ = ps.Close()
-		return nil, redisErr("subscribe", fmt.Errorf("anvil/redis: subscribe %s: %w", channel, err))
+		return nil, redisErr("subscribe", fmt.Errorf("warden/redis: subscribe %s: %w", channel, err))
 	}
 	out := make(chan string, subscriberOutboxSize)
 	go func() {

@@ -625,7 +625,7 @@ CLI: `yarctl backend metadata {list|get|set|delete} <user> [<folder>] --entry /p
 
 ### `POST /api/backend/who`
 
-Active-session listing. Data source is `yarilo-anvil` — backend-api
+Active-session listing. Data source is `yarilo-warden` — backend-api
 dials it per request, runs `WHO`, then closes.
 
 ```json
@@ -655,12 +655,12 @@ Filters: `service=imap|pop3|submission|lmtp` and `user=<exact>`.
 **What "active" means:** entries register on login-pod `CONNECT`
 and clear on `DISCONNECT`. Caveats:
 
-- LMTP does not go through anvil; LMTP deliveries are not listed.
+- LMTP does not go through warden; LMTP deliveries are not listed.
 - Stale entries can survive a login-pod crash (no TTL / heartbeat yet).
 - Per-folder grouping (currently-SELECTed folder) is not tracked —
-  session binaries do not push folder state into anvil yet.
+  session binaries do not push folder state into warden yet.
 
-Returns `501 Not Implemented` when `anvil_service.listen` is empty.
+Returns `501 Not Implemented` when `warden_service.listen` is empty.
 
 CLI: `yarctl backend who [--protocol IMAP] [--user U] [--group-by user|none]`
 
@@ -728,5 +728,5 @@ to no `op` field at all.
 | ACL-1 (next) | `POST /api/backend/acl/{get,set,delete,my-rights,list-rights,debug}` + `yarctl backend acl` CLI |
 | QUOTA-1 | `POST /api/backend/quota/{show,set,unset,recalc}` |
 | BACKEND-API-AUTH | `user info` enriched with uid/gid/userdb fields via yarilo-auth RPC |
-| BACKEND-API-SESSIONS | `who` / `kick` via session-binary RPC; `anvil penalties/connections` |
+| BACKEND-API-SESSIONS | `who` / `kick` via session-binary RPC; `warden penalties/connections` |
 | BACKEND-API-WRITE | `folder create/delete/rename/expunge`, `index rebuild/optimize`, `folder repair` once driver-specific resync ships |

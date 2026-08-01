@@ -9,7 +9,7 @@ image:
 ## secretName} live under components.* ; this block holds the ONE setting
 ## shared across all of them: the TLS name every internal client dial pins.
 internalTLS:
-  ## Name every internal client (auth/anvil/locks/backend-api/... dials) pins
+  ## Name every internal client (auth/warden/locks/backend-api/... dials) pins
   ## as the server certificate name. Internal services are reached by short
   ## name / FQDN / pod IP interchangeably, so this stable pinned name — not the
   ## dialed host — is what gets verified. Empty auto-derives <release>-internal,
@@ -187,7 +187,7 @@ components:
   ##     or `token:` sub-block: listen, key_prefix, channel_prefix, redis_addr).
   ##   * k8s-shape keys — deployment concerns (replicas, startupProbe, resources,
   ##     internalTLS) — are camelCase.
-  ## Keep the two apart so the same config knob is never spelled two ways. Anvil
+  ## Keep the two apart so the same config knob is never spelled two ways. Warden
   ## (#908: service.state_backend / key_prefix / channel_prefix) follows this
   ## from its first PR.
 
@@ -215,7 +215,7 @@ components:
       periodSeconds: 2
       failureThreshold: 90
     ## Internal mTLS for the pod's control channels (director registration,
-    ## auth/anvil/locks dials). Shared by all containers in the pod.
+    ## auth/warden/locks dials). Shared by all containers in the pod.
     internalTLS:
       enabled: false
       secretName: ""
@@ -709,12 +709,12 @@ components:
 
     ## penalty — cross-pod IP-bound auth-fail backoff. OPT-IN.
     ## Every failed auth from a given client IP increments the
-    ## counter in the anvil service; subsequent attempts from that
+    ## counter in the warden service; subsequent attempts from that
     ## IP sleep PenaltyToSecs(count) seconds before the chain runs
     ## (exponential 0/2/4/8/15 cap). Successful auth resets the
     ## counter to 0. Master-user flows are exempt.
     ##
-    ## Requires the anvil service to be reachable.
+    ## Requires the warden service to be reachable.
     penalty:
       enabled: false
 
@@ -737,7 +737,7 @@ components:
       ## key_prefix — Redis key namespace for tokens (#939). The installation
       ## boundary: when several installations share one Redis, give each a
       ## distinct prefix so their token keys do not collide. Keep it consistent
-      ## with the other Redis-using components' prefixes (locks, anvil) for one
+      ## with the other Redis-using components' prefixes (locks, warden) for one
       ## install. Default is service-name based.
       key_prefix: "yarilo:authtoken:"
 
@@ -838,20 +838,20 @@ components:
       limits:
         memory: 320Mi
 
-  ## Anvil — connection rate limiter. Keep replicas: 1.
-  anvil:
+  ## Warden — connection rate limiter. Keep replicas: 1.
+  warden:
     enabled: true
     replicas: 1
 
-    ## service — config-mirror subtree: snake_case keys, 1:1 with anvil_service.*
+    ## service — config-mirror subtree: snake_case keys, 1:1 with warden_service.*
     ## of yarilo.yaml. k8s-shape keys (replicas / internalTLS / resources) stay at
     ## the level above. See the boundary note at the top of components:.
     service:
       listen: ":9101"
-      ## conns — long-lived connections each login pod keeps to yarilo-anvil
+      ## conns — long-lived connections each login pod keeps to yarilo-warden
       ## (#878). 0 = built-in default (4). Sessions do not own a connection: every
       ## command carries the session id and the server keeps no per-connection
-      ## state, so the connection count no longer tracks the login rate. The anvil
+      ## state, so the connection count no longer tracks the login rate. The warden
       ## protocol has no request id, so one connection serves one command at a
       ## time — each is a sub-ms round trip, so a handful covers any login rate.
       conns: 0
@@ -868,8 +868,8 @@ components:
       ## key/channel prefixes (#938/#939 practice) — the installation boundary;
       ## keep consistent with locks/authtoken on a shared Redis. channel_prefix
       ## namespaces the kick bus Pub/Sub (#908). Defaults are service-name based.
-      key_prefix: "yarilo:anvil:"
-      channel_prefix: "yarilo:anvil:events:"
+      key_prefix: "yarilo:warden:"
+      channel_prefix: "yarilo:warden:events:"
 
     internalTLS:
       enabled: false
@@ -956,7 +956,7 @@ components:
       ## boundary: when several installations share one Redis, give each a
       ## DISTINCT prefix so their lock keys and event channels do not collide.
       ## Keep it consistent across an installation's Redis-using components
-      ## (locks, authtoken, and anvil #908) so one namespace value covers the
+      ## (locks, authtoken, and warden #908) so one namespace value covers the
       ## whole install. Defaults are service-name based; leave as-is for a
       ## dedicated Redis.
       key_prefix: "yarilo:locks:"
@@ -1260,8 +1260,8 @@ components:
     enabled: false
     replicas: 1
 
-    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before
-    ## this pod takes traffic, replacing the wait-auth / wait-anvil init containers
+    ## startupProbe waits for yarilo-auth and yarilo-warden to report ready before
+    ## this pod takes traffic, replacing the wait-auth / wait-warden init containers
     ## (#903). Safe here because a login pod does not dial either dependency during
     ## startup — those connections are created lazily on the first login
     ## (#885/#891) — so the process comes up regardless and the probe only
@@ -1344,7 +1344,7 @@ components:
   pop3Login:
     enabled: false
 
-    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before this pod takes
+    ## startupProbe waits for yarilo-auth and yarilo-warden to report ready before this pod takes
     ## traffic, replacing its wait-* init containers (#903). Safe because a login
     ## pod does not dial its dependencies during startup — the connections are
     ## created lazily on the first login.
@@ -1411,10 +1411,10 @@ components:
   submissionLogin:
     enabled: false
 
-    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before
+    ## startupProbe waits for yarilo-auth and yarilo-warden to report ready before
     ## this pod takes traffic, replacing its wait-* init containers (#903).
     ##
-    ## auth is included even though the init containers only had wait-anvil: this
+    ## auth is included even though the init containers only had wait-warden: this
     ## pod authenticates logins and configures AuthAddr like every other login
     ## proxy, so the missing wait-auth was an oversight rather than a design. Safe because a login
     ## pod does not dial its dependencies during startup — the connections are
@@ -1478,13 +1478,13 @@ components:
         cpu: 200m
         memory: 128Mi
 
-  ## LMTP login pod — MTA-facing LMTP proxy with per-recipient anvil CONNECT
+  ## LMTP login pod — MTA-facing LMTP proxy with per-recipient warden CONNECT
   ## and yarilo-auth SESSION token issuance. Fans out one backend connection
   ## per recipient, each with a YARILO preamble.
   lmtpLogin:
     enabled: false
 
-    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before this pod takes
+    ## startupProbe waits for yarilo-auth and yarilo-warden to report ready before this pod takes
     ## traffic, replacing its wait-* init containers (#903). Safe because a login
     ## pod does not dial its dependencies during startup — the connections are
     ## created lazily on the first login.
@@ -1577,7 +1577,7 @@ components:
   manageSieveLogin:
     enabled: false
 
-    ## startupProbe waits for yarilo-auth and yarilo-anvil to report ready before this pod takes
+    ## startupProbe waits for yarilo-auth and yarilo-warden to report ready before this pod takes
     ## traffic, replacing its wait-* init containers (#903). Safe because a login
     ## pod does not dial its dependencies during startup — the connections are
     ## created lazily on the first login.
@@ -1848,7 +1848,7 @@ sieve:
 ## -------------------------------------------------------------------
 general:
   ## startupDialRetries — number of dial attempts (with exponential backoff)
-  ## when connecting to external dependencies at startup (anvil, Redis).
+  ## when connecting to external dependencies at startup (warden, Redis).
   ## Prevents permanent loss of functionality on rolling restarts when a
   ## dependency pod is not yet ready. Default 3.
   startup_dial_retries: 3
@@ -1907,7 +1907,7 @@ general:
       - "10.0.0.0/8"
 
 ## -------------------------------------------------------------------
-## Redis — state backend for yarilo-locks (and future yarilo-anvil).
+## Redis — state backend for yarilo-locks (and future yarilo-warden).
 ## -------------------------------------------------------------------
 ## Bundled (default): a StatefulSet runs in the release, single-replica
 ## for single-node clusters. For prod HA either bump replicas + run
@@ -2051,7 +2051,7 @@ logLevel: info
 ##     yarilo-auth: debug
 ##     yarilo-imap-login: debug
 ##
-## Recognised names: yarilo-director, yarilo-monitor, yarilo-auth, yarilo-anvil,
+## Recognised names: yarilo-director, yarilo-monitor, yarilo-auth, yarilo-warden,
 ## yarilo-locks, yarilo-fts, yarilo-backend-api, yarilo-backend-reg,
 ## yarilo-quota-status, yarilo-imap, yarilo-pop3, yarilo-lmtp,
 ## yarilo-managesieve, yarilo-submission, and the matching *-login components.

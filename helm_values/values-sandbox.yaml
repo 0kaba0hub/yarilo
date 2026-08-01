@@ -284,7 +284,7 @@ components:
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
-  anvil:
+  warden:
     # #908 PR4: singleton lifted. Redis-backed state (penalties + sessions + kick
     # bus) is shared across replicas, so the sandbox runs 2 to exercise the
     # cross-replica paths (kick published on one pod, delivered by another).
@@ -294,8 +294,8 @@ components:
       secretName: yarilo-internal-tls
     service:
       state_backend: redis
-      key_prefix: "yarilo-sb:anvil:"
-      channel_prefix: "yarilo-sb:anvil:events:"
+      key_prefix: "yarilo-sb:warden:"
+      channel_prefix: "yarilo-sb:warden:events:"
   locks:
     internalTLS:
       enabled: true
@@ -310,7 +310,7 @@ components:
   ##
   ## resources (#878): NO cpu limit. Login pods carry all the asymmetric crypto
   ## in the system — per login they complete three ECDSA handshakes (client TLS
-  ## on 993/143, mTLS to yarilo-auth, mTLS to yarilo-anvil). The chart default
+  ## on 993/143, mTLS to yarilo-auth, mTLS to yarilo-warden). The chart default
   ## limit of 200m throttled a 500-client burst to a hard 20s CPU ceiling per
   ## 100s: measured 21.2s used vs 152.4s spent throttled, which blew the auth
   ## dial deadline 813 times and surfaced as 1041 NO [UNAVAILABLE] to clients.
@@ -429,7 +429,7 @@ components:
       # Sandbox shares one Redis; every component lives under the yarilo-sb: namespace.
       key_prefix: "yarilo-sb:authtoken:"
 
-    # Cross-pod auth-fail tarpit via anvil (prod-like; exercises the #908 Redis
+    # Cross-pod auth-fail tarpit via warden (prod-like; exercises the #908 Redis
     # penalty backend end-to-end). #942 fixed the mTLS client-config dial.
     penalty:
       enabled: true

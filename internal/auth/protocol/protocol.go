@@ -900,7 +900,7 @@ func WithPolicy(checker PolicyChecker, mode PolicyMode) ServerOption {
 }
 
 // PenaltyStore is the cross-process auth-fail backoff store the
-// wire Server consults pre-passdb. Implemented by *anvil.Conn so
+// wire Server consults pre-passdb. Implemented by *warden.Conn so
 // every yarilo-auth pod shares the same counters; tests can plug
 // in a stub. Nil-safe at the call sites — Lookup returns 0 and
 // Update is a no-op when the store is not configured.
@@ -913,7 +913,7 @@ type PenaltyStore interface {
 // PenaltyStore.Lookup to the sleep duration applied before the
 // chain runs. Caller-supplied so a deployment can tune the
 // exponential curve without recompiling protocol — typical
-// implementations: anvil.PenaltyToSecs (2/4/8/15 cap),
+// implementations: warden.PenaltyToSecs (2/4/8/15 cap),
 // linear, or capped-linear. Nil falls back to no-sleep.
 type PenaltyToSecsFunc func(count int) int
 

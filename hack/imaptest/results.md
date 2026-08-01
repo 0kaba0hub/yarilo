@@ -249,7 +249,7 @@ limit at all** and recorded `nr_throttled 0` — it was never the bottleneck. Th
 throttled pod was `yarilo-imap-login`, capped at the chart default `limits.cpu: 200m`
 (helm/values.yaml:1135). Login pods carry all the asymmetric crypto in the system:
 three ECDSA handshakes per login (client TLS on 993/143, mTLS to yarilo-auth,
-mTLS to yarilo-anvil). Averaged CPU metrics hid this because the burst is seconds
+mTLS to yarilo-warden). Averaged CPU metrics hid this because the burst is seconds
 long while the scrape window is a minute.
 
 The 1000m top-level `resources:` block in values-sandbox.yaml was **dead** — the
@@ -260,7 +260,7 @@ sized at 1000m while every login pod ran at 200m.
 |---|---|---|
 | client `NO [UNAVAILABLE]` | **1041** | **24** (−97.7%) |
 | `login: yarilo-auth dial` errors | 813 | 6 (−99.3%) |
-| `login: anvil dial failed` | 92 | 2 |
+| `login: warden dial failed` | 92 | 2 |
 | `login: backend rejected session` | 117 | 16 |
 | imap-login `throttled_usec` during run | **152.4 s** | **0** |
 | imap-login CPU used during run | 21.2 s (= the entire 200m×100s quota) | 28.1 s |

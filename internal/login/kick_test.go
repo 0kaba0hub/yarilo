@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 // cuttableProxy is a TCP passthrough whose live connections can be severed on
-// demand, so a test can simulate an anvil restart / network blip between a login
-// pod and anvil WITHOUT restarting the server.
+// demand, so a test can simulate an warden restart / network blip between a login
+// pod and warden WITHOUT restarting the server.
 type cuttableProxy struct {
 	ln      net.Listener
 	backend string
@@ -64,10 +64,10 @@ func (p *cuttableProxy) cut() {
 	p.conns = nil
 }
 
-// startEmbeddedAnvil spins an in-process anvil server on a
+// startEmbeddedWarden spins an in-process warden server on a
 // random TCP port and returns its address. The server stops
 // when the test finishes.
-func startEmbeddedAnvil(t *testing.T) string {
+func startEmbeddedWarden(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -76,7 +76,7 @@ func startEmbeddedAnvil(t *testing.T) string {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv := anvil.NewServer(0)
+	srv := warden.NewServer(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -126,14 +126,14 @@ func TestKickSession_NoMatchIsNoop(t *testing.T) {
 	}
 }
 
-// TestKickSubscriberDispatchesEvent boots an in-process anvil
+// TestKickSubscriberDispatchesEvent boots an in-process warden
 // server, starts the login subscriber, EMITs a kick event from
-// a separate anvil conn and asserts the session is closed
+// a separate warden conn and asserts the session is closed
 // end-to-end.
 func TestKickSubscriberDispatchesEvent(t *testing.T) {
-	addr := startEmbeddedAnvil(t)
+	addr := startEmbeddedWarden(t)
 	s := &Server{
-		opts:     Options{Protocol: ProtocolIMAP, AnvilAddr: addr},
+		opts:     Options{Protocol: ProtocolIMAP, WardenAddr: addr},
 		sessions: make(map[string][]*liveSession),
 	}
 	cliEnd, srvEnd := net.Pipe()
@@ -150,7 +150,7 @@ func TestKickSubscriberDispatchesEvent(t *testing.T) {
 	// Give the subscriber a moment to wire up before emitting.
 	time.Sleep(100 * time.Millisecond)
 
-	pub, err := anvil.Dial(addr, nil, time.Second)
+	pub, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial pub: %v", err)
 	}
@@ -167,15 +167,15 @@ func TestKickSubscriberDispatchesEvent(t *testing.T) {
 }
 
 // TestKickSubscriberReconnectsAfterDrop is the #908 PR3 requirement (the mirror
-// of #946 on the subscribe side): after the login→anvil connection is severed,
+// of #946 on the subscribe side): after the login→warden connection is severed,
 // the subscriber must redial and re-subscribe so kicks are delivered again. The
 // old single-Dial subscriber went permanently deaf on the first drop.
 func TestKickSubscriberReconnectsAfterDrop(t *testing.T) {
-	anvilAddr := startEmbeddedAnvil(t)
-	proxy := newCuttableProxy(t, anvilAddr)
+	wardenAddr := startEmbeddedWarden(t)
+	proxy := newCuttableProxy(t, wardenAddr)
 
 	s := &Server{
-		opts:     Options{Protocol: ProtocolIMAP, AnvilAddr: proxy.addr()},
+		opts:     Options{Protocol: ProtocolIMAP, WardenAddr: proxy.addr()},
 		sessions: make(map[string][]*liveSession),
 	}
 	cli1, srv1 := net.Pipe()
@@ -193,23 +193,23 @@ func TestKickSubscriberReconnectsAfterDrop(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Baseline: a kick is delivered through the proxy before any cut.
-	emitKick(t, anvilAddr, "sess-1")
+	emitKick(t, wardenAddr, "sess-1")
 	assertConnClosed(t, cli1, "sess-1 before drop")
 
-	// Sever the login→anvil connection. The subscriber's channel closes and the
+	// Sever the login→warden connection. The subscriber's channel closes and the
 	// reconnect loop redials + re-subscribes (after kickReconnectDelay).
 	proxy.cut()
 	// Wait past the backoff plus dial/subscribe round trip.
 	time.Sleep(kickReconnectDelay + time.Second)
 
-	emitKick(t, anvilAddr, "sess-2")
+	emitKick(t, wardenAddr, "sess-2")
 	assertConnClosed(t, cli2, "sess-2 after reconnect")
 }
 
-// emitKick opens a throwaway anvil conn and emits one kick on the imap channel.
+// emitKick opens a throwaway warden conn and emits one kick on the imap channel.
 func emitKick(t *testing.T, addr, sessID string) {
 	t.Helper()
-	pub, err := anvil.Dial(addr, nil, time.Second)
+	pub, err := warden.Dial(addr, nil, time.Second)
 	if err != nil {
 		t.Fatalf("dial pub: %v", err)
 	}

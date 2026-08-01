@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
 // startStubAuth starts a minimal yarilo-auth server that always returns OK.
@@ -58,8 +58,8 @@ func handleStubAuth(conn net.Conn) {
 	}
 }
 
-// startAnvil starts a real yarilo-anvil server and returns its address.
-func startAnvil(t *testing.T, max int) string {
+// startWarden starts a real yarilo-warden server and returns its address.
+func startWarden(t *testing.T, max int) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -68,7 +68,7 @@ func startAnvil(t *testing.T, max int) string {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv := anvil.NewServer(max)
+	srv := warden.NewServer(max)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go srv.ListenAndServe(ctx, addr, nil) //nolint:errcheck
@@ -186,7 +186,7 @@ func handleStubIMAPBackend(conn net.Conn) {
 	}
 }
 
-func buildAnvilLoginServer(t *testing.T, anvilAddr string, maxConns int) (loginAddr string) {
+func buildWardenLoginServer(t *testing.T, wardenAddr string, maxConns int) (loginAddr string) {
 	t.Helper()
 	backendAddr := stubIMAPBackend(t)
 	dirAddr := stubDirector(t, backendAddr)
@@ -195,8 +195,8 @@ func buildAnvilLoginServer(t *testing.T, anvilAddr string, maxConns int) (loginA
 	srv := New(Options{
 		Protocol:      ProtocolIMAP,
 		DirectorAddr:  dirAddr,
-		AnvilAddr:     anvilAddr,
-		AnvilFailOpen: false,
+		WardenAddr:     wardenAddr,
+		WardenFailOpen: false,
 		AuthAddr:      authAddr,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -208,9 +208,9 @@ func buildAnvilLoginServer(t *testing.T, anvilAddr string, maxConns int) (loginA
 	return ln.Addr().String()
 }
 
-func TestLogin_Anvil_AllowsSession(t *testing.T) {
-	anvilAddr := startAnvil(t, 5)
-	loginAddr := buildAnvilLoginServer(t, anvilAddr, 5)
+func TestLogin_Warden_AllowsSession(t *testing.T) {
+	wardenAddr := startWarden(t, 5)
+	loginAddr := buildWardenLoginServer(t, wardenAddr, 5)
 
 	conn, err := net.DialTimeout("tcp", loginAddr, time.Second)
 	if err != nil {
@@ -232,11 +232,11 @@ func TestLogin_Anvil_AllowsSession(t *testing.T) {
 	}
 }
 
-func TestLogin_Anvil_RejectsWhenLimitReached(t *testing.T) {
-	anvilAddr := startAnvil(t, 1)
+func TestLogin_Warden_RejectsWhenLimitReached(t *testing.T) {
+	wardenAddr := startWarden(t, 1)
 
-	// Pre-fill the limit for alice@127.0.0.1 by dialling anvil directly.
-	ac, err := anvil.Dial(anvilAddr, nil, time.Second)
+	// Pre-fill the limit for alice@127.0.0.1 by dialling warden directly.
+	ac, err := warden.Dial(wardenAddr, nil, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestLogin_Anvil_RejectsWhenLimitReached(t *testing.T) {
 		t.Fatalf("pre-fill: %v", err)
 	}
 
-	loginAddr := buildAnvilLoginServer(t, anvilAddr, 1)
+	loginAddr := buildWardenLoginServer(t, wardenAddr, 1)
 
 	conn, err := net.DialTimeout("tcp", loginAddr, time.Second)
 	if err != nil {
@@ -274,7 +274,7 @@ func TestLogin_Anvil_RejectsWhenLimitReached(t *testing.T) {
 	}
 }
 
-func TestLogin_Anvil_FailOpen_WhenUnreachable(t *testing.T) {
+func TestLogin_Warden_FailOpen_WhenUnreachable(t *testing.T) {
 	backendAddr := stubIMAPBackend(t)
 	dirAddr := stubDirector(t, backendAddr)
 	authAddr := startStubAuth(t)
@@ -282,8 +282,8 @@ func TestLogin_Anvil_FailOpen_WhenUnreachable(t *testing.T) {
 	srv := New(Options{
 		Protocol:      ProtocolIMAP,
 		DirectorAddr:  dirAddr,
-		AnvilAddr:     "127.0.0.1:1", // unreachable
-		AnvilFailOpen: true,
+		WardenAddr:     "127.0.0.1:1", // unreachable
+		WardenFailOpen: true,
 		AuthAddr:      authAddr,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -308,13 +308,13 @@ func TestLogin_Anvil_FailOpen_WhenUnreachable(t *testing.T) {
 
 	fmt.Fprintf(conn, "A1 LOGIN alice secret\r\n")
 	resp, _ := rd.ReadString('\n')
-	// Fail-open: session should proceed despite anvil being unreachable.
+	// Fail-open: session should proceed despite warden being unreachable.
 	if !strings.HasPrefix(resp, "A1 OK") {
 		t.Fatalf("expected A1 OK (fail-open), got: %q", resp)
 	}
 }
 
-func TestLogin_Anvil_FailClosed_WhenUnreachable(t *testing.T) {
+func TestLogin_Warden_FailClosed_WhenUnreachable(t *testing.T) {
 	backendAddr := stubIMAPBackend(t)
 	dirAddr := stubDirector(t, backendAddr)
 	authAddr := startStubAuth(t)
@@ -322,8 +322,8 @@ func TestLogin_Anvil_FailClosed_WhenUnreachable(t *testing.T) {
 	srv := New(Options{
 		Protocol:      ProtocolIMAP,
 		DirectorAddr:  dirAddr,
-		AnvilAddr:     "127.0.0.1:1", // unreachable
-		AnvilFailOpen: false,
+		WardenAddr:     "127.0.0.1:1", // unreachable
+		WardenFailOpen: false,
 		AuthAddr:      authAddr,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

@@ -595,9 +595,9 @@ data:
       {{- $msLoginTLSEnabled := ((.Values.components.manageSieveLogin | default dict).internalTLS | default dict).enabled }}
       {{- $saslTLSEnabled := ((.Values.components.saslLogin | default dict).internalTLS | default dict).enabled }}
       {{- $quotaTLSEnabled := ((.Values.components.quotaStatus | default dict).internalTLS | default dict).enabled }}
-      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.anvil.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $msTLSEnabled $msLoginTLSEnabled $saslTLSEnabled $quotaTLSEnabled }}
+      {{- $anyTLS := or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.warden.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $msTLSEnabled $msLoginTLSEnabled $saslTLSEnabled $quotaTLSEnabled }}
       enabled: {{ $anyTLS | default false }}
-      {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.anvil.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
+      {{- $tlsSecret := coalesce .Values.components.director.internalTLS.secretName .Values.components.auth.internalTLS.secretName .Values.components.warden.internalTLS.secretName .Values.components.imap.internalTLS.secretName }}
       {{- if $tlsSecret }}
       cert: /etc/yarilo/internal-tls/tls.crt
       key: /etc/yarilo/internal-tls/tls.key
@@ -632,17 +632,17 @@ data:
         session_grace_period: 30
         kill_timeout: 5
 
-    {{- $anvilSvc := .Values.components.anvil.service }}
-    {{- $anvilListen := $anvilSvc.listen | default ":9101" }}
-    anvil_service:
-      listen: {{ $anvilListen | quote }}
-      addr: {{ printf "%s-anvil%s" (include "yarilo.fullname" .) $anvilListen | quote }}
-      conns: {{ $anvilSvc.conns | default 0 }}
-      state_backend: {{ $anvilSvc.state_backend | default "memory" | quote }}
-      key_prefix: {{ $anvilSvc.key_prefix | default "yarilo:anvil:" | quote }}
-      channel_prefix: {{ $anvilSvc.channel_prefix | default "yarilo:anvil:events:" | quote }}
-      {{- if eq ($anvilSvc.state_backend | default "memory") "redis" }}
-      redis_addr: {{ if $anvilSvc.redis_addr }}{{ $anvilSvc.redis_addr | quote }}{{ else if .Values.redis.bundled }}{{ printf "redis://%s-redis.%s.svc.cluster.local:6379/0" (include "yarilo.fullname" .) .Release.Namespace | quote }}{{ else }}{{ .Values.redis.externalUrl | quote }}{{ end }}
+    {{- $wardenSvc := .Values.components.warden.service }}
+    {{- $wardenListen := $wardenSvc.listen | default ":9101" }}
+    warden_service:
+      listen: {{ $wardenListen | quote }}
+      addr: {{ printf "%s-warden%s" (include "yarilo.fullname" .) $wardenListen | quote }}
+      conns: {{ $wardenSvc.conns | default 0 }}
+      state_backend: {{ $wardenSvc.state_backend | default "memory" | quote }}
+      key_prefix: {{ $wardenSvc.key_prefix | default "yarilo:warden:" | quote }}
+      channel_prefix: {{ $wardenSvc.channel_prefix | default "yarilo:warden:events:" | quote }}
+      {{- if eq ($wardenSvc.state_backend | default "memory") "redis" }}
+      redis_addr: {{ if $wardenSvc.redis_addr }}{{ $wardenSvc.redis_addr | quote }}{{ else if .Values.redis.bundled }}{{ printf "redis://%s-redis.%s.svc.cluster.local:6379/0" (include "yarilo.fullname" .) .Release.Namespace | quote }}{{ else }}{{ .Values.redis.externalUrl | quote }}{{ end }}
       {{- end }}
       shutdown:
         session_grace_period: 30

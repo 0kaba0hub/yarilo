@@ -329,9 +329,9 @@ auth_service:
     session_grace_period: 30
     kill_timeout: 5
 
-anvil_service:
+warden_service:
   listen: ":9101"
-  addr: "yarilo-anvil:9101"
+  addr: "yarilo-warden:9101"
   shutdown:
     session_grace_period: 30
     kill_timeout: 5

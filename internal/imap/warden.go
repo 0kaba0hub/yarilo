@@ -6,49 +6,49 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/anvil"
+	"github.com/0kaba0hub/yarilo/internal/warden"
 )
 
-// imapAnvilClient is the IMAP-server-wide handle to yarilo-anvil
+// imapWardenClient is the IMAP-server-wide handle to yarilo-warden
 // used to push SELECT events. One TCP connection per process,
 // serialised through mu so concurrent Select calls don't
 // interleave on the wire.
 //
-// Lazy: the underlying anvil.Conn is opened on the first call
+// Lazy: the underlying warden.Conn is opened on the first call
 // and reopened on the first transport failure. A nil receiver
-// (when AnvilAddr is unset) silently no-ops every operation —
+// (when WardenAddr is unset) silently no-ops every operation —
 // keeps callers free of guard branches.
-type imapAnvilClient struct {
+type imapWardenClient struct {
 	addr string
 	tls  *tls.Config
 
 	mu   sync.Mutex
-	conn *anvil.Conn
+	conn *warden.Conn
 }
 
-func newImapAnvilClient(addr string, tlsCfg *tls.Config) *imapAnvilClient {
+func newImapWardenClient(addr string, tlsCfg *tls.Config) *imapWardenClient {
 	if addr == "" {
 		return nil
 	}
-	return &imapAnvilClient{addr: addr, tls: tlsCfg}
+	return &imapWardenClient{addr: addr, tls: tlsCfg}
 }
 
-// PushSelect fires SELECT(sessionID, folder) to anvil. Empty
+// PushSelect fires SELECT(sessionID, folder) to warden. Empty
 // folder means UNSELECT. Best-effort: transport errors are
-// logged at Debug and discarded — anvil-side state being
+// logged at Debug and discarded — warden-side state being
 // slightly stale never breaks IMAP correctness.
-func (c *imapAnvilClient) PushSelect(sessionID, folder string) {
+func (c *imapWardenClient) PushSelect(sessionID, folder string) {
 	if c == nil || sessionID == "" {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.dialLocked(); err != nil {
-		slog.Debug("imap/anvil: dial", "err", err)
+		slog.Debug("imap/warden: dial", "err", err)
 		return
 	}
 	if err := c.conn.Select(sessionID, folder); err != nil {
-		slog.Debug("imap/anvil: select", "sess", sessionID, "folder", folder, "err", err)
+		slog.Debug("imap/warden: select", "sess", sessionID, "folder", folder, "err", err)
 		// Drop the conn so the next call redials. Cheap.
 		c.conn.Close()
 		c.conn = nil
@@ -56,7 +56,7 @@ func (c *imapAnvilClient) PushSelect(sessionID, folder string) {
 }
 
 // Close releases the underlying connection. Safe on nil.
-func (c *imapAnvilClient) Close() {
+func (c *imapWardenClient) Close() {
 	if c == nil {
 		return
 	}
@@ -68,32 +68,32 @@ func (c *imapAnvilClient) Close() {
 	}
 }
 
-// anvilSessionID returns the anvil session id the login pod forwarded in the
+// wardenSessionID returns the warden session id the login pod forwarded in the
 // YARILO preamble (SESSION=<id>), captured into s.sid by newSession (#808).
-// It is the SAME id the login registered the session under in anvil, so a
+// It is the SAME id the login registered the session under in warden, so a
 // SELECT push updates the right session. Empty on a direct (non-preamble)
 // backend connect, where PushSelect correctly no-ops.
-func (s *session) anvilSessionID() string {
+func (s *session) wardenSessionID() string {
 	return s.sid
 }
 
-// pushAnvilSelect fires SELECT(sessionID, folder) to anvil so
+// pushWardenSelect fires SELECT(sessionID, folder) to warden so
 // the WHO output renders the currently-SELECTed mailbox. Empty
-// folder is UNSELECT. Best-effort; no-op when AnvilAddr is
+// folder is UNSELECT. Best-effort; no-op when WardenAddr is
 // unset or the connection did not carry an XCLIENT session id.
-func (s *session) pushAnvilSelect(folder string) {
-	id := s.anvilSessionID()
+func (s *session) pushWardenSelect(folder string) {
+	id := s.wardenSessionID()
 	if id == "" {
 		return
 	}
-	s.srv.anvilClient.PushSelect(id, folder)
+	s.srv.wardenClient.PushSelect(id, folder)
 }
 
-func (c *imapAnvilClient) dialLocked() error {
+func (c *imapWardenClient) dialLocked() error {
 	if c.conn != nil {
 		return nil
 	}
-	conn, err := anvil.Dial(c.addr, c.tls, 5*time.Second)
+	conn, err := warden.Dial(c.addr, c.tls, 5*time.Second)
 	if err != nil {
 		return err
 	}

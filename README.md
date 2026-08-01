@@ -22,7 +22,7 @@ Multi-binary architecture — each protocol component is a separate process. Kub
 
 Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a separate compiled binary — no mode flags, no combined processes. Deployment topology is configured purely through Helm values; the same binaries serve standalone and clustered installations.
 
-**Login pods** — terminate TLS (SNI per-domain), authenticate via passdb, enforce per-user connection limits (anvil), pass the raw fd to session pods via SCM_RIGHTS. Stateless; scale independently.
+**Login pods** — terminate TLS (SNI per-domain), authenticate via passdb, enforce per-user connection limits (warden), pass the raw fd to session pods via SCM_RIGHTS. Stateless; scale independently.
 
 **Session pods** — full mail processing: IMAP / POP3 / LMTP / Sieve / Submission / ManageSieve. Each protocol scales as a separate StatefulSet so IMAP can scale independently of LMTP.
 
@@ -30,7 +30,7 @@ Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a 
 
 **yarilo-locks** — cross-process write coordination. TCP mTLS `:9104`, Redis-backed state. All Kubernetes deployments (standalone and backend) use remote mode — embedded Unix-socket mode is reserved for unit tests and single-process CLI runs.
 
-**yarilo-anvil** — connection rate limiting and penalty tracking. Shared across all login pods.
+**yarilo-warden** — connection rate limiting and penalty tracking. Shared across all login pods.
 
 ---
 
@@ -104,7 +104,7 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 | yarilo-submission-login | Submission login proxy | ✅ |
 | yarilo-sasl-login | SASL auth socket for Postfix / Exim relay | ✅ |
 | yarilo-auth | Passdb chain, auth cache, SASL dispatch, master userdb | ✅ |
-| yarilo-anvil | Connection rate limiting + penalty | ✅ |
+| yarilo-warden | Connection rate limiting + penalty | ✅ |
 | yarilo-locks | Cross-process write coordination — Redis-backed, TCP mTLS | ✅ |
 | yarilo-quota-status | Quota policy socket (Postfix quota check) | ✅ |
 | yarilo-fts | Full-text search indexer + lookup service (flatcurve/Xapian; sole cgo/libxapian process) | ✅ |
@@ -164,7 +164,7 @@ These lines carry only metadata (user, folder, UID, filename, counts); **passwor
 ## Quick start (Docker Compose)
 
 Single-host, no Kubernetes — the standalone topology (login proxies + session
-backends + auth/anvil/locks + Redis) on one host, SQLite userdb, one image:
+backends + auth/warden/locks + Redis) on one host, SQLite userdb, one image:
 
 ```sh
 cd deploy/compose
