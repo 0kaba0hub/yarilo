@@ -6,39 +6,21 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// ACL enforcement entry points. The require* helpers below resolve a
-// folder name to its namespace handle, load the stored ACL, compute
-// the accessing user's effective rights (PR D scope — no inheritance,
-// no group resolution, see pkg/mailbox.ACL.Effective), and return a
-// NO error with RFC 5530 NOPERM code when the requested right is
-// absent.
-//
-// Out of PR D scope, deferred to PR E:
-//   - Walking ancestors when the mailbox has no explicit yarilo-acl
-//     file (currently treated as "no rights" for non-owners).
-//   - Group / group-override identifier resolution.
-//   - Owner identifier auto-grant beyond personal-namespace ownership.
-//
-// When ACLEnabled is false, every require* helper returns nil (the
-// extension is off — no enforcement, no NOPERM). Operators can still
-// configure ACL files on disk; they just have no runtime effect until
-// the feature is enabled.
+// ACL enforcement entry points. The require* helpers resolve a folder name
+// to its namespace handle, compute the accessing user's effective rights,
+// and return a NO error with RFC 5530 NOPERM code when the requested right
+// is absent. When ACLEnabled is false every helper returns nil.
 
-// isOwner reports whether the accessing session owns the mailbox in
-// the given namespace handle. PR D: owner == personal namespace —
-// every mailbox in the user's own home is owned by them, regardless
-// of any explicit `owner` ACL entry. Shared / public mailboxes are
-// never auto-owned in PR D scope.
+// isOwner reports whether the accessing session owns the mailbox in the
+// given namespace handle. Owner == personal namespace: every mailbox in the
+// user's own home is owned by them regardless of any explicit `owner` ACL
+// entry. Shared/public mailboxes are never auto-owned.
 func (s *session) isOwner(h *nsHandle) bool {
 	return h.spec.Type == NamespacePersonal
 }
 
-// insertRight returns the right code APPEND / COPY destination /
-// MOVE destination must carry, picking by namespace type (RFC 4314
-// §5.1.1): personal → 'i' (insert), shared / public → 'p' (post).
-//
-// Public namespaces typically receive mail via MTA rather than IMAP
-// APPEND, but the right code still differs per RFC 4314 §5.1.1.
+// insertRight returns the right APPEND / COPY dest / MOVE dest must carry,
+// per RFC 4314 §5.1.1: personal → 'i' (insert), shared/public → 'p' (post).
 func insertRight(spec NamespaceSpec) rune {
 	if spec.Type == NamespacePersonal {
 		return mailbox.RightInsert
@@ -46,29 +28,25 @@ func insertRight(spec NamespaceSpec) rune {
 	return mailbox.RightPost
 }
 
-// aclEnforced reports whether ACL checks fire for this namespace handle: ACL
-// is enabled server-wide AND the namespace does not carry acl_ignore. When it
-// returns false every require* helper grants access unconditionally.
+// aclEnforced reports whether ACL checks fire for this handle: ACL enabled
+// server-wide AND the namespace does not carry acl_ignore.
 func (s *session) aclEnforced(h *nsHandle) bool {
 	return s.srv.opts.ACLEnabled && h != nil && !h.spec.IgnoreACL
 }
 
-// effectiveRights resolves the accessing user's effective rights on
-// folder under h, walking ancestors when no explicit ACL is present
-// (first-ancestor-with-explicit-ACL walk — see
-// internal/userstate/acl.Store.EffectiveFor). The namespace's
-// hierarchy separator drives the walk; sep == 0 disables it.
+// effectiveRights resolves the accessing user's effective rights on folder
+// under h, walking to the first ancestor with an explicit ACL when folder
+// has none (see acl.Store.EffectiveFor). The namespace separator drives the
+// walk; sep == 0 disables it.
 func (s *session) effectiveRights(h *nsHandle, folder string) (mailbox.Rights, error) {
 	aclUser, aclGroups := s.userInfo.ACLIdentity()
 	return h.acl.EffectiveFor(folder, aclUser, aclGroups, s.isOwner(h), byte(h.spec.Separator))
 }
 
-// requireRight loads the effective ACL for folder under h (with
-// inheritance walk through ancestors) and returns nil when the
-// accessing user holds right, or a NO/NOPERM error otherwise.
-// Errors from the ACL store (parse / I/O) surface as NO with the
-// underlying message — they are not silently treated as "denied" so
-// operators can debug from the client transcript.
+// requireRight returns nil when the accessing user holds right on folder
+// under h, or a NO/NOPERM error otherwise. ACL store errors (parse/IO)
+// surface as NO rather than a silent deny, so operators can debug from the
+// client transcript.
 func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	if !s.aclEnforced(h) {
 		return nil
@@ -89,10 +67,9 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	return aclDenied(right)
 }
 
-// requireMetadataAccess gates RFC 5464 mailbox METADATA on the ACL: the
-// accessing user needs the lookup right plus at least one access right
-// (read / write-seen / write / insert / post), matching the acl-attributes
-// rule. Owner and ACL-disabled sessions pass without a lookup.
+// requireMetadataAccess gates RFC 5464 mailbox METADATA: the accessing user
+// needs the lookup right plus at least one access right (r/s/w/i/p). Owner
+// and ACL-disabled sessions pass without a lookup.
 func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
 	if !s.aclEnforced(h) {
 		return nil
@@ -117,10 +94,9 @@ func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
 	}
 }
 
-// requireAllRights folds a set of right codes into a single check —
-// every code must be present. Used by STORE which may carry mixed
-// flag categories (\Seen, \Deleted, plus arbitrary keywords mapping
-// to s + t + w respectively).
+// requireAllRights requires every code in rights to be present. Used by
+// STORE, which may carry mixed flag categories (\Seen, \Deleted, keywords)
+// mapping to s/t/w.
 func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) error {
 	if !s.aclEnforced(h) {
 		return nil
@@ -146,13 +122,10 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 	return nil
 }
 
-// requireRightOnParent enforces a right on the parent of folder —
-// CREATE / RENAME (destination side) require 'k' on the parent
-// mailbox rather than on the folder itself (which does not yet
-// exist). The parent is computed by stripping the trailing segment
-// after the namespace separator; if folder has no separator, the
-// parent is the empty string addressing the namespace-root ACL
-// (<home>/yarilo-acl) — non-owners need an explicit grant there to
+// requireRightOnParent enforces right on folder's parent. CREATE / RENAME
+// (destination) require 'k' on the parent rather than on the not-yet-
+// existing folder. A folder with no separator addresses the namespace-root
+// ACL (<home>/yarilo-acl), where non-owners need an explicit grant to
 // create top-level mailboxes.
 func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) error {
 	if !s.aclEnforced(h) {
@@ -180,14 +153,12 @@ func parentFolder(folder string, sep byte) string {
 	return ""
 }
 
-// requireRightOnSelected enforces right on the currently-SELECTed
-// mailbox. Used by FETCH / SEARCH / STORE / EXPUNGE which operate on
-// state captured in s.folder + s.folderNS at SELECT time.
+// requireRightOnSelected enforces right on the currently-SELECTed mailbox.
+// Used by FETCH / SEARCH / STORE / EXPUNGE, which operate on state captured
+// in s.folder + s.folderNS at SELECT time.
 func (s *session) requireRightOnSelected(right rune) error {
 	if s.folderNS == nil || s.folder == nil {
-		// No SELECT in progress — the lib will reject the command
-		// for state reasons before reaching us, but keep a defensive
-		// nil here so the helper does not panic.
+		// No SELECT in progress: defensive nil so the helper does not panic.
 		return nil
 	}
 	return s.requireRight(s.folderNS, s.folder.Name, right)
@@ -202,9 +173,9 @@ func (s *session) requireAllRightsOnSelected(rights []rune) error {
 	return s.requireAllRights(s.folderNS, s.folder.Name, rights)
 }
 
-// aclDenied builds the canonical NO/NOPERM error for an ACL denial.
-// The message names the missing right so operators can debug from
-// the client transcript without having to read the on-disk ACL file.
+// aclDenied builds the canonical NO/NOPERM error for an ACL denial. The
+// message names the missing right so operators can debug from the client
+// transcript without reading the on-disk ACL file.
 func aclDenied(right rune) error {
 	return &imaplib.Error{
 		Type: imaplib.StatusResponseTypeNo,

@@ -5,9 +5,8 @@ import (
 	"fmt"
 )
 
-// TxType is the type-enum portion of a transaction-log record's
-// `type` field (TxHeader.Type masked to TxTypeMask). Values
-// match enum mail_transaction_type.
+// TxType is the type-enum portion of a transaction-log record's type field
+// (TxHeader.Type masked to TxTypeMask).
 type TxType uint32
 
 const (
@@ -31,29 +30,27 @@ const (
 	TxTypeAttributeUpdt  TxType = 0x00100000
 )
 
-// TxExpungeProt is OR'd into the type field of Expunge /
-// ExpungeGUID records as a corruption-defence marker. A reader
-// that sees an expunge record WITHOUT this bit set treats the
-// log as corrupt and refuses to apply the expunge.
+// TxExpungeProt is OR'd into the type field of Expunge / ExpungeGUID records
+// as a corruption-defence marker. An expunge record without this bit set is
+// treated as corrupt and not applied.
 const TxExpungeProt TxTypeFlags = 0x0000cd90
 
 // ---- per-tx payload structs --------------------------------
 
-// TxExpunge: expunge every UID in [UID1, UID2]. Wire-format
-// payload is a sequence of these (each 8 bytes).
+// TxExpunge: expunge every UID in [UID1, UID2]. Payload is a sequence of
+// these, 8 bytes each.
 type TxExpunge struct {
 	UID1, UID2 uint32
 }
 
-// TxExpungeGUID: expunge UID iff its on-disk GUID matches.
-// Payload is a sequence of these (each 4 + 16 = 20 bytes).
+// TxExpungeGUID: expunge UID iff its on-disk GUID matches. Payload is a
+// sequence of these, 4 + 16 = 20 bytes each.
 type TxExpungeGUID struct {
 	UID  uint32
 	GUID [16]byte
 }
 
-// TxFlagUpdate: update flags for every UID in [UID1, UID2].
-// 12 bytes per record.
+// TxFlagUpdate: update flags for every UID in [UID1, UID2]. 12 bytes per record.
 type TxFlagUpdate struct {
 	UID1, UID2    uint32
 	AddFlags      MailFlag
@@ -69,17 +66,16 @@ type TxModseqUpdate struct {
 	ModSeqHigh32 uint32
 }
 
-// TxHeaderUpdate: patch bytes [Offset, Offset+Size) of the base
-// header. On disk: 4 bytes of fixed header, then Size bytes of
-// data, then 0..3 bytes of padding to 32-bit alignment.
+// TxHeaderUpdate: patch bytes [Offset, Offset+Size) of the base header. On
+// disk: 4 bytes fixed header, Size bytes of data, then 0..3 bytes of padding
+// to 32-bit alignment.
 type TxHeaderUpdate struct {
 	Offset uint16
 	Data   []byte // len(Data) == Size on the wire
 }
 
-// TxExtIntro: introduce (or resize) an extension. The reader
-// uses ext_id when it refers to an already-known extension, or
-// (ext_id=0xffffffff + Name) for a new one.
+// TxExtIntro: introduce (or resize) an extension. ext_id refers to an
+// already-known extension; ext_id=0xffffffff + Name creates a new one.
 type TxExtIntro struct {
 	ExtID       uint32 // 0xffffffff when creating
 	ResetID     uint32
@@ -90,50 +86,48 @@ type TxExtIntro struct {
 	Name        string // empty when ExtID != 0xffffffff
 }
 
-// TxExtIntroFlagNoShrink prevents the EXT_INTRO from shrinking
-// existing hdr_size / record_size / record_align — only grow.
+// TxExtIntroFlagNoShrink prevents EXT_INTRO from shrinking existing
+// hdr_size / record_size / record_align; only grow.
 const TxExtIntroFlagNoShrink uint16 = 0x01
 
-// TxExtReset: bump the last-introduced extension's reset_id,
-// optionally preserving its old per-record bytes.
+// TxExtReset: bump the last-introduced extension's reset_id, optionally
+// preserving its old per-record bytes.
 type TxExtReset struct {
 	NewResetID    uint32
 	PreserveData  uint8
 	UnusedPadding [3]uint8
 }
 
-// TxExtHdrUpdate: patch bytes [Offset, Offset+Size) of the last
-// EXT_INTRO'd extension's header. 16-bit offset+size; for ≥64KB
-// patches use TxExtHdrUpdate32.
+// TxExtHdrUpdate: patch bytes [Offset, Offset+Size) of the last EXT_INTRO'd
+// extension's header. 16-bit offset+size; for >=64KB patches use TxExtHdrUpdate32.
 type TxExtHdrUpdate struct {
 	Offset uint16
 	Data   []byte
 }
 
-// TxExtHdrUpdate32 is the 32-bit-offset variant for headers ≥64KB.
+// TxExtHdrUpdate32 is the 32-bit-offset variant for headers >=64KB.
 type TxExtHdrUpdate32 struct {
 	Offset uint32
 	Data   []byte
 }
 
-// TxExtRecUpdate: write bytes Data into the last EXT_INTRO'd
-// extension's per-record slot for the given UID. Data length
-// must equal that extension's record_size.
+// TxExtRecUpdate: write Data into the last EXT_INTRO'd extension's per-record
+// slot for UID. Data length must equal that extension's record_size.
 type TxExtRecUpdate struct {
 	UID  uint32
 	Data []byte
 }
 
-// TxExtAtomicInc: atomically add Diff (signed) to the last
-// EXT_INTRO'd extension's per-record value for UID. The
-// extension's record_size must be 1, 2, 4, or 8.
+// TxExtAtomicInc: atomically add Diff (signed) to the last EXT_INTRO'd
+// extension's per-record value for UID. The extension's record_size must be
+// 1, 2, 4, or 8.
 type TxExtAtomicInc struct {
 	UID  uint32
 	Diff int32
 }
 
-// TxKeywordUpdate: add or remove a keyword for the given UID
-// ranges. ModifyType is 0 (add) or 1 (remove).
+// TxKeywordUpdate: add or remove a keyword for the given UID ranges.
+// ModifyType is 0 (add) or 1 (remove).
 type TxKeywordUpdate struct {
 	ModifyType uint8
 	Padding    uint8
@@ -141,14 +135,13 @@ type TxKeywordUpdate struct {
 	UIDRanges  []TxKeywordUIDRange
 }
 
-// TxKeywordUIDRange is one (UID1, UID2) pair inside a
-// KEYWORD_UPDATE record.
+// TxKeywordUIDRange is one (UID1, UID2) pair inside a KEYWORD_UPDATE record.
 type TxKeywordUIDRange struct {
 	UID1, UID2 uint32
 }
 
-// TxKeywordModifyAdd / TxKeywordModifyRemove are the two valid
-// values of TxKeywordUpdate.ModifyType. Mirrors enum modify_type.
+// TxKeywordModifyAdd / TxKeywordModifyRemove are the two valid values of
+// TxKeywordUpdate.ModifyType.
 const (
 	TxKeywordModifyAdd    uint8 = 0
 	TxKeywordModifyRemove uint8 = 1
@@ -159,23 +152,22 @@ type TxKeywordReset struct {
 	UID1, UID2 uint32
 }
 
-// TxBoundary opens a multi-record atomic transaction: Size is
-// the total bytes of every subsequent record (including this
-// boundary's own header) that must be treated as one unit.
+// TxBoundary opens a multi-record atomic transaction: Size is the total bytes
+// of every subsequent record (including this boundary's own header) treated as
+// one unit.
 type TxBoundary struct {
 	Size uint32
 }
 
 // ---- encoders -----------------------------------------------
 
-// EncodeTxExpungePayload emits the payload bytes for an
-// EXPUNGE record covering recs. Caller composes the full record:
+// EncodeTxExpungePayload emits the payload bytes for an EXPUNGE record
+// covering recs. Caller composes the full record:
 //
 //	hdr := TxHeader{Size: 8 + len(payload), Type: TxTypeFlags(TxTypeExpunge) | TxExpungeProt}
 //	EncodeTxHeader + write(payload)
 //
-// Always include TxExpungeProt in Type — the reader rejects
-// expunges without it.
+// Type must include TxExpungeProt; expunges without it are rejected.
 func EncodeTxExpungePayload(recs []TxExpunge) []byte {
 	out := make([]byte, 8*len(recs))
 	le := binary.LittleEndian
@@ -186,9 +178,8 @@ func EncodeTxExpungePayload(recs []TxExpunge) []byte {
 	return out
 }
 
-// EncodeTxExpungeGUIDPayload emits the payload for EXPUNGE_GUID.
-// 20 bytes per record. Same protocol caveat about TxExpungeProt
-// applies.
+// EncodeTxExpungeGUIDPayload emits the payload for EXPUNGE_GUID. 20 bytes per
+// record. The same TxExpungeProt requirement applies.
 func EncodeTxExpungeGUIDPayload(recs []TxExpungeGUID) []byte {
 	const sz = 20
 	out := make([]byte, sz*len(recs))
@@ -245,17 +236,16 @@ func EncodeTxHeaderUpdatePayload(rec TxHeaderUpdate) []byte {
 	return out
 }
 
-// EncodeTxExtIntroPayload emits the payload for EXT_INTRO.
-// One record only; never an array.
+// EncodeTxExtIntroPayload emits the payload for EXT_INTRO. One record only.
 //
 // Wire layout (20 fixed bytes + name):
 //
-//	uint32 ext_id        offset 0   — 0xffffffff when creating a new ext
+//	uint32 ext_id        offset 0   0xffffffff when creating a new ext
 //	uint32 reset_id      offset 4
-//	uint32 hdr_size      offset 8   — size of ext's data[] block
+//	uint32 hdr_size      offset 8   size of ext's data[] block
 //	uint16 record_size   offset 12
 //	uint16 record_align  offset 14
-//	uint16 flags         offset 16  — TxExtIntroFlagNoShrink etc.
+//	uint16 flags         offset 16  TxExtIntroFlagNoShrink etc.
 //	uint16 name_size     offset 18
 //	char   name[name_size] offset 20
 func EncodeTxExtIntroPayload(rec TxExtIntro) []byte {
@@ -295,8 +285,8 @@ func EncodeTxExtHdrUpdatePayload(rec TxExtHdrUpdate) []byte {
 	return out
 }
 
-// EncodeTxExtHdrUpdate32Payload — same as above with 32-bit
-// offset+size.
+// EncodeTxExtHdrUpdate32Payload is the 32-bit offset+size variant of
+// EncodeTxExtHdrUpdatePayload.
 func EncodeTxExtHdrUpdate32Payload(rec TxExtHdrUpdate32) []byte {
 	size := 8 + len(rec.Data)
 	pad := (4 - (size % 4)) % 4
@@ -308,10 +298,9 @@ func EncodeTxExtHdrUpdate32Payload(rec TxExtHdrUpdate32) []byte {
 	return out
 }
 
-// EncodeTxExtRecUpdatePayload emits the payload for EXT_REC_UPDATE.
-// Layout per record: uid(4) + data + 0..3 padding to 32-bit
-// alignment. The reader knows data's length from the last
-// EXT_INTRO's record_size.
+// EncodeTxExtRecUpdatePayload emits the payload for EXT_REC_UPDATE. Layout per
+// record: uid(4) + data + 0..3 padding to 32-bit alignment. Data length comes
+// from the last EXT_INTRO's record_size.
 func EncodeTxExtRecUpdatePayload(recs []TxExtRecUpdate) ([]byte, error) {
 	if len(recs) == 0 {
 		return nil, nil
@@ -336,8 +325,8 @@ func EncodeTxExtRecUpdatePayload(recs []TxExtRecUpdate) ([]byte, error) {
 	return out, nil
 }
 
-// EncodeTxExtAtomicIncPayload emits the payload for
-// EXT_ATOMIC_INC. 8 bytes per record.
+// EncodeTxExtAtomicIncPayload emits the payload for EXT_ATOMIC_INC. 8 bytes
+// per record.
 func EncodeTxExtAtomicIncPayload(recs []TxExtAtomicInc) []byte {
 	const sz = 8
 	out := make([]byte, sz*len(recs))
@@ -392,11 +381,9 @@ func EncodeTxBoundaryPayload(rec TxBoundary) []byte {
 	return out
 }
 
-// EncodeTxAppendPayload emits the payload for APPEND. Each
-// record encodes a full Record (base + extensions) using the
-// supplied layout. The reader uses the layout's RecordSize
-// (which it learned from earlier EXT_INTRO records in the same
-// log replay) to slice the payload.
+// EncodeTxAppendPayload emits the payload for APPEND. Each record encodes a
+// full Record (base + extensions) using the supplied layout; the reader slices
+// the payload by layout.RecordSize (learned from earlier EXT_INTRO records).
 func EncodeTxAppendPayload(layout RecordLayout, recs []*Record) ([]byte, error) {
 	stride := int(layout.RecordSize)
 	out := make([]byte, stride*len(recs))

@@ -18,24 +18,17 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// Master-protocol constants. Versioned separately from the client
-// protocol because admin tooling and backend-api speak through here
-// and may evolve on a different cadence.
+// Master-protocol constants, versioned separately from the client protocol.
 const (
 	masterProtoName = "yarilo-auth-master"
 	masterMajorVer  = 1
 	masterMinorVer  = 0
 )
 
-// MasterServer answers password-less userdb lookups and user
-// enumeration over a separate TCP+mTLS listener. Wire format uses
-// USER / PASS / LIST commands with ID-tracked responses.
-//
-// MasterServer is intentionally separate from the client-protocol
-// Server: different audience (admins + backend-api vs login pods),
-// different threat model (no untrusted credentials cross this
-// socket), and different evolution cadence. The two share mTLS
-// material today; splitting is a future operational knob.
+// MasterServer answers password-less userdb lookups and user enumeration over a
+// separate TCP+mTLS listener, using ID-tracked USER / PASS / LIST commands. Kept
+// distinct from the client-protocol Server: no untrusted credentials cross this
+// socket and it evolves on its own cadence.
 type MasterServer struct {
 	userdb           Userdb
 	cache            *Cache
@@ -50,20 +43,16 @@ type MasterServer struct {
 // MasterServerOption tunes a NewMasterServer construction.
 type MasterServerOption func(*MasterServer)
 
-// WithMasterCache attaches the auth cache that the master
-// protocol's CACHE-FLUSH verb operates on. Pass the same *Cache
-// instance the client-protocol Server received via WithCache so
-// flushing through the admin socket actually empties the cache
-// servicing login pods. Nil cache means CACHE-FLUSH responds
-// FAIL.
+// WithMasterCache attaches the auth cache that CACHE-FLUSH operates on. Pass the
+// same *Cache the client-protocol Server got via WithCache so flushing here empties
+// the cache serving login pods. Nil cache makes CACHE-FLUSH respond FAIL.
 func WithMasterCache(c *Cache) MasterServerOption {
 	return func(s *MasterServer) { s.cache = c }
 }
 
-// WithMasterTokenStore attaches the shared token store. When set, the
-// SESSION command issues tokens that the client-protocol VERIFY command
-// can validate (both Server and MasterServer must receive the same
-// TokenStore instance). When nil, SESSION responds FAIL.
+// WithMasterTokenStore attaches the shared token store so SESSION can issue tokens
+// that the client-protocol VERIFY validates (both servers need the same instance).
+// Nil store makes SESSION respond FAIL.
 func WithMasterTokenStore(ts TokenStore) MasterServerOption {
 	return func(s *MasterServer) { s.tokenStore = ts }
 }
@@ -96,15 +85,9 @@ func (s *MasterServer) applyMailPathDefaults(ui *UserInfo) {
 	}
 }
 
-// NewMasterServer constructs a MasterServer rooted at the given
-// userdb. The userdb may be a UserdbChain composing multiple
-// backends; LIST opportunistically uses UserdbIterator via type
-// assertion when the supplied userdb implements it.
-//
-// Passing a nil userdb is legal — every USER lookup will respond
-// NOTFOUND, LIST will respond FAIL. Useful for deployments that
-// expose only the wire surface (e.g. for connectivity checks)
-// without configured backends.
+// NewMasterServer constructs a MasterServer rooted at userdb (which may be a
+// UserdbChain; LIST uses UserdbIterator when implemented). A nil userdb is legal:
+// USER responds NOTFOUND and LIST responds FAIL, exposing only the wire surface.
 func NewMasterServer(userdb Userdb, opts ...MasterServerOption) *MasterServer {
 	cookie := make([]byte, 16)
 	rand.Read(cookie) //nolint:errcheck
@@ -119,13 +102,8 @@ func NewMasterServer(userdb Userdb, opts ...MasterServerOption) *MasterServer {
 	return s
 }
 
-// ListenAndServe accepts connections until ctx is cancelled. When
-// tlsCfg is non-nil the listener uses mTLS (TLS 1.3,
-// RequireAndVerifyClientCert is the caller's responsibility — set
-// it on tlsCfg). Each connection is served by its own goroutine;
-// active conns drain before the function returns.
-// Listen binds addr and returns the listener, so a caller can report readiness
-// only once the port is accepting.
+// Listen binds addr and returns the listener so a caller can report readiness
+// only once the port accepts. Non-nil tlsCfg makes the listener use mTLS.
 func (s *MasterServer) Listen(addr string, tlsCfg *tls.Config) (net.Listener, error) {
 	if tlsCfg != nil {
 		ln, err := tls.Listen("tcp", addr, tlsCfg)
@@ -176,9 +154,8 @@ func (s *MasterServer) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
-// handleConn drives the per-connection greet → serve loop. Commands
-// inside one connection are processed serially; client-side
-// concurrency is achieved by opening multiple connections.
+// handleConn drives the per-connection greet then serve loop. Commands on one
+// connection run serially; concurrency comes from opening multiple connections.
 func (s *MasterServer) handleConn(conn net.Conn) {
 	defer conn.Close()
 	cuid := s.connUID.Add(1)
@@ -205,20 +182,15 @@ func (s *MasterServer) handleConn(conn net.Conn) {
 		fields := strings.Split(line, "\t")
 		switch fields[0] {
 		case "VERSION":
-			// Client version handshake — currently ignored (any
-			// 1.x client is accepted). Reject when a 2.x major
-			// version starts shipping.
+			// Client version handshake, ignored (any 1.x accepted).
 		case "CPID":
-			// Client pid notice — informational, no reply.
+			// Client pid notice, informational, no reply.
 		case "USER":
 			s.handleUser(conn, fields)
 		case "SESSION":
 			s.handleSession(conn, fields)
 		case "PASS":
-			// Phase AUTH-1 PR 2 declares PASS in the wire surface
-			// so pkg/authclient can ship the full method set;
-			// implementation lands with Passdb.LookupCredentials
-			// in Phase AUTH-2.
+			// Declared in the wire surface; not yet implemented.
 			id := parseID(fields)
 			fmt.Fprintf(conn, "FAIL\t%s\treason=PASS not implemented (Phase AUTH-2)\n", id)
 		case "LIST":
@@ -267,10 +239,8 @@ func (s *MasterServer) handleUser(conn net.Conn, fields []string) {
 	fmt.Fprintf(conn, "USER\t%s\t%s\t%s\n", id, username, out)
 }
 
-// handleList streams every user the backend can enumerate, one
-// `LIST <id> <username>` line per user, terminated by `DONE <id>`.
-// FAILs when the configured userdb does not implement
-// UserdbIterator (e.g. an LDAP backend with no enumerate filter).
+// handleList streams one `LIST <id> <username>` line per enumerable user,
+// terminated by `DONE <id>`. FAILs when the userdb is not a UserdbIterator.
 func (s *MasterServer) handleList(conn net.Conn, fields []string) {
 	id := parseID(fields)
 	if s.userdb == nil {
@@ -293,17 +263,13 @@ func (s *MasterServer) handleList(conn net.Conn, fields []string) {
 	fmt.Fprintf(conn, "DONE\t%s\n", id)
 }
 
-// handleCacheFlush evicts cache entries matching the supplied
-// user-masks. Wire shape:
+// handleCacheFlush evicts cache entries matching the supplied user-masks:
 //
 //	CACHE-FLUSH <id>                  → full flush
 //	CACHE-FLUSH <id> <mask> [<mask>…] → selective flush
 //
-// Responds `OK <id> <count>` with the number of entries removed,
-// or `FAIL <id> reason=no cache configured` when the server was
-// constructed without WithMasterCache.
-//
-// Admin CLI: `yarctl auth cache flush [<user-mask>…]`.
+// Responds `OK <id> <count>` with entries removed, or FAIL when no cache was
+// configured via WithMasterCache.
 func (s *MasterServer) handleCacheFlush(conn net.Conn, fields []string) {
 	id := parseID(fields)
 	if s.cache == nil {
@@ -319,10 +285,8 @@ func (s *MasterServer) handleCacheFlush(conn net.Conn, fields []string) {
 	fmt.Fprintf(conn, "OK\t%s\t%d\n", id, n)
 }
 
-// handleSession issues a session token for the given username without
-// passdb verification. Only callable over the master listener — the
-// TOKEN issued here can only be consumed by VERIFY on the client
-// listener. Wire shape:
+// handleSession issues a session token for username without passdb verification;
+// the token is consumable only by VERIFY on the client listener:
 //
 //	SESSION <id> user=<username> sid=<warden-session-id> ip=<mta-ip>
 //	→ OK <id> token=<tok>
@@ -357,10 +321,8 @@ func (s *MasterServer) handleSession(conn net.Conn, fields []string) {
 	fmt.Fprintf(conn, "OK\t%s\ttoken=%s\n", id, tok)
 }
 
-// parseID extracts the request id from a command frame. Returns
-// "0" when the frame is malformed; the response still carries an id
-// so the client side can correlate the FAIL with the offending
-// request even when the parse failed.
+// parseID extracts the request id from a command frame, returning "0" when the
+// frame is malformed so a FAIL response still carries a correlatable id.
 func parseID(fields []string) string {
 	if len(fields) < 2 {
 		return "0"
@@ -368,10 +330,8 @@ func parseID(fields []string) string {
 	return fields[1]
 }
 
-// marshalUserInfo serialises a UserInfo into the tab-separated
-// key=value wire form. Internal-only fields are stripped by
-// UserInfo.VisitFields construction (see userdb.go); this function
-// just tab-joins the visited (key, escaped-value) pairs.
+// marshalUserInfo serialises a UserInfo into tab-separated key=value pairs.
+// VisitFields already drops internal-only fields; this just joins the rest.
 func marshalUserInfo(ui *UserInfo) string {
 	if ui == nil {
 		return ""
@@ -383,8 +343,7 @@ func marshalUserInfo(ui *UserInfo) string {
 	return strings.Join(parts, "\t")
 }
 
-// escapeValue stops tab / newline / NUL bytes in field values from
-// breaking the line-oriented wire framing. Backslash escapes:
+// escapeValue keeps tab/newline/NUL from breaking the line-oriented framing:
 // TAB→`\t`, LF→`\n`, NUL→`\0`, backslash→`\\`.
 func escapeValue(v string) string {
 	if !strings.ContainsAny(v, "\t\n\x00\\") {
@@ -409,12 +368,5 @@ func escapeValue(v string) string {
 	return b.String()
 }
 
-// escapeReason is escapeValue narrowed for the `reason=` field of
-// FAIL responses; same escapes, separate name so callers reading
-// the code know which context applies.
+// escapeReason is escapeValue for the `reason=` field of FAIL responses.
 func escapeReason(v string) string { return escapeValue(v) }
-
-// Map iteration order for Forward / Extra now goes through
-// sortedMapKeys in userdb.go (used by both this file's
-// marshalUserInfo and the writeUserdbFields helper protocol.go
-// adds in PR 3); the old inline insertion-sort version is gone.

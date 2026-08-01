@@ -1,6 +1,6 @@
-// Package submission implements the submission servers (port 587 / 465).
-// AUTH PLAIN is required. Messages are forwarded to the configured upstream MTA
-// via protocol.submission.relay. No MX inbound — external MTAs deliver to LMTP (port 24).
+// Package submission implements the submission servers (port 587 / 465). AUTH is
+// required; messages are relayed to the configured upstream MTA via
+// protocol.submission.relay. No MX inbound — external MTAs deliver to LMTP (port 24).
 package submission
 
 import (
@@ -28,28 +28,23 @@ type Authenticator interface {
 	AuthPlain(username, password string) error
 }
 
-// MasterAuthenticator extends Authenticator with the SASL PLAIN
-// authzid surface (master-user impersonation) exposed on the
-// submission port. Adapters that only implement Authenticator (the
-// AuthPlain-only surface) keep working unchanged; the session-level
-// SASL hook type-asserts into MasterAuthenticator to decide whether
-// to honour a distinct authzid.
+// MasterAuthenticator extends Authenticator with the SASL PLAIN authzid surface
+// (master-user impersonation). The session SASL hook type-asserts into it to
+// decide whether to honour a distinct authzid; AuthPlain-only adapters are
+// unaffected.
 type MasterAuthenticator interface {
 	AuthPlainMaster(authzid, authid, password string) error
 }
 
-// SCRAMSha256LookupAuthenticator exposes per-user SCRAM-SHA-256
-// verifiers to the session-layer SASL mech. The submission
-// session type-asserts opts.Auth into this interface to decide
-// whether to advertise SCRAM-SHA-256 / SCRAM-SHA-256-PLUS in
-// EHLO's AUTH= extension.
+// SCRAMSha256LookupAuthenticator exposes per-user SCRAM-SHA-256 verifiers. The
+// session type-asserts opts.Auth into it to decide whether to advertise
+// SCRAM-SHA-256 / SCRAM-SHA-256-PLUS in EHLO's AUTH= extension.
 type SCRAMSha256LookupAuthenticator interface {
 	LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error)
 }
 
 // SCRAMSha1LookupAuthenticator is the SHA-1 counterpart of
-// SCRAMSha256LookupAuthenticator. Same type-assertion pattern
-// gates SCRAM-SHA-1 / SCRAM-SHA-1-PLUS advertisement.
+// SCRAMSha256LookupAuthenticator, gating SCRAM-SHA-1 / SCRAM-SHA-1-PLUS.
 type SCRAMSha1LookupAuthenticator interface {
 	LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error)
 }
@@ -74,15 +69,12 @@ type Options struct {
 	Auth   Authenticator
 	Proxy  *proxy.Submission
 
-	// FailureDelay holds the goroutine for this duration before
-	// surfacing an auth-failure to the client. Equalises wall-clock
-	// between unknown-user / wrong-password / non-master-backend-
-	// with-authzid so timing carries no signal. Zero disables.
+	// FailureDelay delays surfacing an auth failure by this duration, equalising
+	// wall-clock across failure causes so timing carries no signal. Zero disables.
 	FailureDelay time.Duration
 
-	// OAuth2Enabled flips advertisement and acceptance of the
-	// OAUTHBEARER SASL mechanism. Set by the wiring when at least
-	// one OAuth provider is configured under auth.oauth2.
+	// OAuth2Enabled advertises and accepts the OAUTHBEARER SASL mechanism. Set
+	// when at least one OAuth provider is configured under auth.oauth2.
 	OAuth2Enabled bool
 }
 
@@ -114,9 +106,8 @@ func New(opts Options) *Server {
 	return s
 }
 
-// Serve starts the submission listener. tlsCfg non-nil = implicit TLS (port 465).
-// STARTTLS is handled by go-smtp when TLSConfig is set on the server; for ssl mode
-// the listener is wrapped with tls.NewListener before calling Serve.
+// Serve starts the submission listener. tlsCfg non-nil = implicit TLS (port
+// 465); STARTTLS is handled by go-smtp when TLSConfig is set on the server.
 func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
 	slog.Info("submission: listening", "addr", ln.Addr().String())
 	if tlsCfg != nil {
@@ -129,11 +120,10 @@ func (s *Server) Serve(ln net.Listener, tlsCfg *tls.Config) error {
 			ReadHeaderTimeout: s.haproxyTimeout(),
 		}
 	}
-	// PreambleListener terminates internal mTLS (#824) — the workaround wrapper
-	// buffers + line-scans through its own bufio.Reader, so it MUST sit above
-	// TLS, on the decrypted SMTP stream; under TLS it mangled the binary
-	// ClientHello and the handshake never completed (#826). proxyproto stays
-	// below (PROXY header is pre-TLS).
+	// PreambleListener terminates internal mTLS (#824). The workaround wrapper
+	// line-scans through its own bufio.Reader, so it MUST sit above TLS on the
+	// decrypted SMTP stream; under TLS it mangled the ClientHello (#826).
+	// proxyproto stays below (PROXY header is pre-TLS).
 	if s.opts.AuthAddr != "" {
 		ln = &loginproto.PreambleListener{Listener: ln, AuthAddr: s.opts.AuthAddr, AuthTLS: s.opts.AuthTLS, ExpectedService: "smtp", TLSConfig: s.opts.PreambleTLS}
 	}
@@ -264,11 +254,9 @@ func (s *session) receivedHeader() string {
 		helo, client, hostname, with, time.Now().UTC().Format(time.RFC1123Z))
 }
 
-// AuthMechanisms advertises supported SASL mechanisms.
-// PLAIN: single-line base64 of \0user\0pass (RFC 4616).
-// LOGIN: interactive, two server prompts (legacy — Outlook, some Android MUAs).
-// OAUTHBEARER (RFC 7628): advertised only when an OAuth provider
-// is configured under auth.oauth2.
+// AuthMechanisms advertises supported SASL mechanisms. PLAIN is single-line
+// base64 of \0user\0pass (RFC 4616); LOGIN is two interactive prompts (legacy);
+// OAUTHBEARER (RFC 7628) only when an OAuth provider is configured.
 func (s *session) AuthMechanisms() []string {
 	out := []string{sasl.Plain, sasl.Login}
 	if s.srv.opts.OAuth2Enabled {
@@ -290,11 +278,9 @@ func (s *session) AuthMechanisms() []string {
 	return out
 }
 
-// scramLookupShim adapts the submission-side
-// SCRAMSha256LookupAuthenticator to the protocol-side
-// SCRAMSha256Lookup that scram.NewSha256 expects. One method,
-// one delegation — the indirection keeps the protocol package
-// out of the submission package's public interface set.
+// scramLookupShim adapts the submission-side SCRAMSha256LookupAuthenticator to
+// the protocol-side SCRAMSha256Lookup that scram.NewSha256 expects, keeping the
+// protocol package out of the submission package's public interface set.
 type scramLookupShim struct {
 	a SCRAMSha256LookupAuthenticator
 }
@@ -312,26 +298,16 @@ func (s scramSha1LookupShim) LookupSCRAMSha1(username string) (*sasl.ScramCreden
 	return s.a.LookupSCRAMSha1(username)
 }
 
-// completeSCRAMLogin is the OnSuccess hook for the session's
-// SCRAM adapter. The SCRAM exchange has verified the user; we
-// only need to record that the session is authenticated.
-// AuthPlain is the existing surface go-smtp uses to mark the
-// session authenticated; calling it with empty password keeps
-// the surface uniform across all SASL mechs — the chainAuth
-// adapter on the backend recognises this path as "already
-// SCRAM-verified, no further check".
+// completeSCRAMLogin is the OnSuccess hook for the session's SCRAM adapter. The
+// SCRAM server has already verified the credential; go-smtp flips the session's
+// authenticated bit once Auth's sasl.Server returns done=true, so there is
+// nothing to do here.
 func (s *session) completeSCRAMLogin(_ string) error {
-	// SCRAM success means the SCRAM SASL server already verified
-	// the credential. go-smtp uses the session's authenticated
-	// state to gate MAIL FROM; the framework flips that bit
-	// automatically once Auth's sasl.Server returns done=true
-	// with no error.
 	return nil
 }
 
-// tlsExporter returns the 32-byte RFC 9266 channel-binding
-// material derived from the underlying TLS conn, or nil when the
-// connection is not TLS 1.3+.
+// tlsExporter returns the 32-byte RFC 9266 channel-binding material from the
+// underlying TLS conn, or nil when the connection is not TLS 1.3+.
 func (s *session) tlsExporter() []byte {
 	if s.conn == nil {
 		return nil
@@ -350,12 +326,10 @@ func (s *session) tlsExporter() []byte {
 	return out
 }
 
-// Auth returns a sasl.Server for the requested mechanism. The
-// PLAIN handler honours authzid via MasterAuthenticator when the
-// backend supports it; LOGIN has no authzid surface (RFC limit)
-// so it always dispatches to plain AuthPlain. OAUTHBEARER routes
-// the bearer token through the regular AuthPlain surface; the
-// OAuth passdb downstream extracts the token from req.Password.
+// Auth returns a sasl.Server for the requested mechanism. PLAIN honours authzid
+// via MasterAuthenticator when supported; LOGIN has no authzid surface so it
+// dispatches to plain AuthPlain; OAUTHBEARER routes the bearer token through
+// AuthPlain (the OAuth passdb reads it from req.Password).
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	switch mech {
 	case sasl.Plain:
@@ -410,10 +384,9 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	return nil, goSmtp.ErrAuthUnknownMechanism
 }
 
-// authOAuthBearerSASL is the OAuthBearerAuthenticator callback.
-// go-sasl has already parsed the GS2 envelope; we translate
-// (Username, Token) into the AuthPlain surface (token-as-
-// password) so the OAuth passdb downstream sees it.
+// authOAuthBearerSASL is the OAuthBearerAuthenticator callback. go-sasl has
+// parsed the GS2 envelope; it maps (Username, Token) onto AuthPlain
+// (token-as-password) so the OAuth passdb sees it.
 func (s *session) authOAuthBearerSASL(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
 	if err := s.srv.opts.Auth.AuthPlain(opts.Username, opts.Token); err != nil {
 		if d := s.srv.opts.FailureDelay; d > 0 {
@@ -441,9 +414,8 @@ func (s *session) authOAuthBearerSASL(opts sasl.OAuthBearerOptions) *sasl.OAuthB
 	return nil
 }
 
-// authXOAuth2SASL mirrors authOAuthBearerSASL for the XOAUTH2
-// wire format. Same token validation path — only the struct
-// type carrying (Username, Token) differs.
+// authXOAuth2SASL mirrors authOAuthBearerSASL for the XOAUTH2 wire format; only
+// the struct type carrying (Username, Token) differs.
 func (s *session) authXOAuth2SASL(opts sasl.XOAuth2Options) *sasl.OAuthBearerError {
 	if err := s.srv.opts.Auth.AuthPlain(opts.Username, opts.Token); err != nil {
 		if d := s.srv.opts.FailureDelay; d > 0 {
@@ -471,13 +443,10 @@ func (s *session) authXOAuth2SASL(opts sasl.XOAuth2Options) *sasl.OAuthBearerErr
 	return nil
 }
 
-// authPlainSASL is the PlainAuthenticator callback for SMTP
-// AUTH PLAIN. Empty authzid (or authzid == authid) takes the
-// regular path; a distinct authzid routes through
-// MasterAuthenticator when supported, else fails opaquely.
-//
-// Emits an audit log on success — `master_user` is empty for a
-// regular login, set to the master's identity on impersonation.
+// authPlainSASL is the PlainAuthenticator callback for SMTP AUTH PLAIN. Empty
+// authzid (or authzid == authid) takes the regular path; a distinct authzid
+// routes through MasterAuthenticator when supported, else fails opaquely. On
+// success master_user is empty for a regular login, set on impersonation.
 func (s *session) authPlainSASL(authzid, authid, password string) error {
 	target := authid
 	master := ""
@@ -494,9 +463,7 @@ func (s *session) authPlainSASL(authzid, authid, password string) error {
 		err = goSmtp.ErrAuthFailed
 	}
 	if err != nil {
-		// Timing-leak mitigation: same wall-clock for every failure
-		// cause (wrong password, unknown user, non-master backend
-		// with authzid, etc).
+		// Timing-leak mitigation: same wall-clock for every failure cause.
 		if d := s.srv.opts.FailureDelay; d > 0 {
 			time.Sleep(d)
 		}

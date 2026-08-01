@@ -14,47 +14,36 @@ import (
 )
 
 // nsHandle is the per-namespace storage state attached to a session.
-// One handle per configured namespace (personal, shared, public, ...);
-// "other_users"-class namespaces declared via NAMESPACE but not yet
-// implemented have nil box/idx/subs — dispatcher routes them to a
-// "not yet implemented" NO response.
+// Declared-only namespaces (other_users) have nil box/idx/subs and the
+// dispatcher routes them to a "not yet implemented" NO response.
 type nsHandle struct {
 	// name is the logical namespace identifier ("personal", "shared",
-	// "public", "other"). Used for log lines and the per-namespace
-	// subscription filename.
+	// "public", "other"); used for logs and the subscription filename.
 	name string
 	// spec carries the wire-protocol details (prefix, separator, type).
 	spec NamespaceSpec
-	// location is the resolved physical storage URL after varexpand.
-	// Empty for handles that have no backend (other_users in NS-1b).
+	// location is the resolved storage path; empty for backend-less handles.
 	location string
-	// box / idx are the per-user storage handles for THIS namespace.
-	// Nil when the namespace is declared-only (other_users).
+	// box / idx are the per-user storage handles; nil when declared-only.
 	box mailbox.UserMailbox
 	idx mailbox.UserIndex
 	// subs is the per-namespace subscription store. Personal keeps the
-	// pre-v1.21 filename "subscriptions" so upgrades preserve existing
-	// state; shared/public use "subscriptions-<ns>" siblings in the
-	// user's home so each namespace tracks its own SUBSCRIBE state.
+	// filename "subscriptions" so upgrades preserve existing state;
+	// shared/public use "subscriptions-<ns>" siblings.
 	subs *subs.Store
-	// acl is the per-namespace ACL store backed by yarilo-acl files
-	// inside each folder's index dir. Created at openHandle time; the
-	// SessionACL implementation dispatches GETACL/SETACL/DELETEACL/
-	// MYRIGHTS/LISTRIGHTS through it. Stays nil only for declared-only
-	// namespaces (no backend, no ACL state to manage).
+	// acl is the per-namespace ACL store backed by yarilo-acl files inside
+	// each folder's index dir; nil for declared-only namespaces.
 	acl *acl.Store
-	// userInfo captures who the handle was opened for. Personal uses
-	// the authenticated user's UserInfo; shared/public use a synthetic
-	// UserInfo whose Home is the namespace root.
+	// userInfo is who the handle was opened for. Shared/public use a
+	// synthetic UserInfo whose Home is the namespace root.
 	userInfo *mailbox.UserInfo
 }
 
 // implemented reports whether this namespace has working backends.
-// Other Users in NS-1b is declared but not implemented.
 func (h *nsHandle) implemented() bool { return h != nil && h.box != nil && h.idx != nil }
 
-// fullName returns the wire-protocol mailbox name for a folder living
-// in this namespace. Inverse of dispatch().
+// fullName returns the wire-protocol mailbox name for a folder in this
+// namespace. Inverse of dispatch().
 func (h *nsHandle) fullName(relName string) string {
 	if h.spec.Prefix == "" {
 		return relName
@@ -62,14 +51,11 @@ func (h *nsHandle) fullName(relName string) string {
 	return h.spec.Prefix + relName
 }
 
-// openHandles constructs the per-namespace handles for a session at
-// login time. The personal handle is always created (with userInfo as
-// its Home). Other-class handles are skipped — they are declared in
-// the NAMESPACE response by the session.Namespace() method but the
-// dispatcher returns "not implemented" on access. Shared/public open
-// only when their location: is configured.
-//
-// Returns the handle map keyed by namespace prefix.
+// openHandles constructs the per-namespace handles for a session at login
+// time, keyed by namespace prefix. The personal handle is always created.
+// Other-class handles are skipped (declared in the NAMESPACE response but
+// "not implemented" on access); shared/public open only when their
+// location is configured.
 func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandle, *nsHandle, error) {
 	specs := s.srv.opts.Namespaces
 	if len(specs) == 0 {
@@ -93,8 +79,7 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 			}
 		case NamespaceShared, NamespaceOther: //nolint:exhaustive
 			if spec.Location == "" {
-				// Declared without storage — skip handle; sessions
-				// see this namespace in NAMESPACE responses but
+				// Declared without storage: visible in NAMESPACE, but
 				// SELECT under its prefix returns NO.
 				continue
 			}
@@ -106,12 +91,10 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 				continue
 			}
 			subsFile := "subscriptions-" + nsSlug(spec)
-			// loc.Path is the namespace's mailbox store root. Set MailPath
-			// (not just Home) and the driver + modifiers so the mailbox
-			// backend, the fileindex and the ACL store all resolve to the
-			// same root — otherwise the ACL store (which falls back to Home)
-			// and a maildir backend (which falls back to Home/Maildir) would
-			// disagree, and dbox namespaces would get the maildir ACL layout.
+			// Set MailPath (not just Home) plus driver and modifiers so the
+			// mailbox backend, fileindex and ACL store all resolve to the same
+			// root; otherwise the ACL store (falls back to Home) and a maildir
+			// backend (falls back to Home/Maildir) disagree.
 			ui := &mailbox.UserInfo{
 				Username:    personalUI.Username,
 				Home:        loc.Path,
@@ -132,8 +115,8 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 	}
 
 	if primary == nil {
-		// Operator configured no personal namespace — fall back so
-		// existing pre-v1.21 single-namespace clients keep working.
+		// No personal namespace configured: fall back to a single
+		// empty-prefix personal namespace.
 		fallback := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '.', List: true}
 		h, err := s.openHandle(fallback, "personal", personalUI, owner, "subscriptions")
 		if err != nil {
@@ -145,15 +128,10 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 	return out, primary, nil
 }
 
-// openHandle wires one namespace's box + idx + subs. The mailbox
-// backend is chosen from NamespaceMailboxes[spec.Prefix] when an
-// override is present (per-namespace driver mixing, e.g.
-// personal=maildir + shared=mdbox); otherwise falls back to the
-// global Options.Mailbox. The index backend is uniform — fileindex
-// works against any storage driver.
+// openHandle wires one namespace's box + idx + subs. The mailbox backend
+// comes from NamespaceMailboxes[spec.Prefix] when an override is present
+// (per-namespace driver mixing), otherwise from global Options.Mailbox.
 func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserInfo, owner, subsFile string) (*nsHandle, error) {
-	// The backends convert this namespace's IMAP hierarchy separator to their
-	// on-disk separator (maildir "." flat, dbox "/" nested).
 	ui.Separator = string(spec.Separator)
 	mb := s.mailboxBackendFor(spec)
 	box := mb.OpenUser(ui)
@@ -161,8 +139,8 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		return nil, fmt.Errorf("mailbox init: %w", err)
 	}
 	idx := s.srv.opts.Index.OpenUser(ui)
-	// Subscriptions live in the control root: mail_control_path (ControlDir)
-	// when set, otherwise the mail root (MailPath), falling back to Home.
+	// Subscriptions live in the control root: ControlDir when set, else
+	// MailPath, falling back to Home.
 	subsRoot := ui.Home
 	if ui.MailPath != "" {
 		subsRoot = ui.MailPath
@@ -171,7 +149,7 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		subsRoot = ui.ControlDir
 	}
 	store := subs.New(subsRoot, subsFile, ui.Username, owner, s.srv.opts.Locker)
-	// acl_defaults_from_inbox applies to private/shared namespaces only.
+	// acl_defaults_from_inbox applies to personal/shared namespaces only.
 	defaultsFromInbox := s.srv.opts.ACLDefaultsFromInbox &&
 		(spec.Type == NamespacePersonal || spec.Type == NamespaceShared)
 	aclStore := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.Username, owner, acl.Policy{
@@ -191,10 +169,9 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 	}, nil
 }
 
-// mailboxBackendFor returns the per-namespace MailboxBackend. Priority:
-// 1. explicit NamespaceMailboxes override for the prefix
-// 2. per-user personalMailbox (set when mail_location carries a driver)
-// 3. global Options.Mailbox
+// mailboxBackendFor returns the per-namespace MailboxBackend, in priority
+// order: NamespaceMailboxes override for the prefix, per-user
+// personalMailbox, then global Options.Mailbox.
 func (s *session) mailboxBackendFor(spec NamespaceSpec) mailbox.MailboxBackend {
 	if override, ok := s.srv.opts.NamespaceMailboxes[spec.Prefix]; ok && override != nil {
 		return override
@@ -205,7 +182,7 @@ func (s *session) mailboxBackendFor(spec NamespaceSpec) mailbox.MailboxBackend {
 	return s.srv.opts.Mailbox
 }
 
-// nsSlug normalises a namespace spec into a short identifier used for
+// nsSlug returns a short identifier for a namespace spec, used in
 // per-namespace filenames (subscriptions-<slug>) and log fields.
 func nsSlug(spec NamespaceSpec) string {
 	if name := strings.TrimSuffix(spec.Prefix, "/"); name != "" {
@@ -214,25 +191,19 @@ func nsSlug(spec NamespaceSpec) string {
 	return string(spec.Type)
 }
 
-// dispatch resolves a wire-protocol mailbox name to its namespace
-// handle plus the namespace-relative name (prefix stripped).
-//
-// Rules:
-//   - "INBOX" (case-insensitive) always lives in the personal namespace.
-//   - The longest matching non-empty prefix among configured handles wins.
-//   - When a name matches a DECLARED but UNIMPLEMENTED namespace prefix
-//     (e.g. other_users in NS-1b), returns a NO-typed *imaplib.Error
-//     instead of routing — callers surface it directly.
-//   - When nothing matches, falls back to the personal handle with the
-//     name unchanged. Preserves pre-v1.21 single-namespace behaviour.
+// dispatch resolves a wire-protocol mailbox name to its namespace handle
+// plus the namespace-relative name (prefix stripped). "INBOX" is always
+// personal; otherwise the longest matching non-empty prefix wins. A name
+// under a declared-but-unimplemented prefix returns a NO-typed
+// *imaplib.Error; nothing matching falls back to the personal handle with
+// the name unchanged.
 func (s *session) dispatch(name string) (*nsHandle, string, error) {
 	if strings.EqualFold(name, "INBOX") {
 		return s.primary, "INBOX", nil
 	}
 
-	// First check: does the name belong to a declared but
-	// unimplemented namespace? Iterate the wire spec list so we catch
-	// other_users prefixes even when no handle was opened for them.
+	// Reject declared-but-unimplemented namespaces first. Iterate the wire
+	// spec list to catch other_users prefixes that opened no handle.
 	specs := s.srv.opts.Namespaces
 	if len(specs) == 0 {
 		specs = defaultNamespaces
@@ -267,10 +238,9 @@ func (s *session) dispatch(name string) (*nsHandle, string, error) {
 	return s.primary, name, nil
 }
 
-// orderedHandles returns the implemented namespace handles in stable
-// order (personal first, then by prefix length ascending). Drives
-// cross-namespace LIST traversal — clients expect a stable order so
-// reused connections see consistent listings.
+// orderedHandles returns the implemented namespace handles in stable order
+// (personal first, then by prefix ascending) so cross-namespace LIST
+// traversal yields consistent listings across reused connections.
 func (s *session) orderedHandles() []*nsHandle {
 	out := make([]*nsHandle, 0, len(s.namespaces))
 	for _, h := range s.namespaces {

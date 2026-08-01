@@ -10,9 +10,9 @@ import (
 )
 
 // RFC 5464 METADATA entry names start with /private/ or /shared/, then a
-// hierarchical path of "atom" components. Internally we map those entries
-// to dict keys under per-folder GUID-keyed namespaces, so RENAME-stable
-// state is preserved (folder names change, GUIDs do not).
+// hierarchical path of "atom" components. Entries map to dict keys under
+// per-folder GUID-keyed namespaces so state survives RENAME (folder names
+// change, GUIDs do not).
 //
 // Key layouts produced by this package:
 //
@@ -21,10 +21,9 @@ import (
 //	priv/box/<mbox_guid>/<entry>                               mailbox-scope /private
 //	shared/box/<mbox_guid>/<entry>                             mailbox-scope /shared
 //
-// Server-scope entries (those whose IMAP mailbox name is the empty string)
-// live under INBOX's GUID with a "vendor/yarilo/pvt/server/" prefix so a
-// server-scope /private/comment cannot collide with the same-named
-// mailbox attribute on INBOX itself.
+// Server-scope entries (empty IMAP mailbox name) live under INBOX's GUID with
+// a "vendor/yarilo/pvt/server/" prefix so they cannot collide with same-named
+// mailbox attributes on INBOX itself.
 
 // AttrScope distinguishes per-user-private from per-resource-shared attributes.
 type AttrScope int
@@ -34,25 +33,21 @@ const (
 	AttrShared
 )
 
-// serverScopeVendorPrefix is appended to the dict key for server-scope
-// attributes so they cannot collide with same-named INBOX attributes.
-// "vendor/yarilo/pvt/server/" matches the structure other operators use
-// for vendor-namespaced server metadata.
+// serverScopeVendorPrefix is added to the dict key for server-scope attributes
+// so they cannot collide with same-named INBOX attributes.
 const serverScopeVendorPrefix = "vendor/yarilo/pvt/server/"
 
 // ParseAttrEntry splits a wire-format METADATA entry name like
-// "/private/comment" into (scope, attrName). The attrName is everything
-// after the scope prefix, with the leading slash dropped:
+// "/private/comment" into (scope, attrName), where attrName is everything
+// after the scope prefix with the leading slash dropped:
 //
-//	/private/comment           → (AttrPrivate, "comment")
-//	/shared/admin              → (AttrShared,  "admin")
-//	/private/vendor/yarilo/abc → (AttrPrivate, "vendor/yarilo/abc")
+//	/private/comment           -> (AttrPrivate, "comment")
+//	/shared/admin              -> (AttrShared,  "admin")
+//	/private/vendor/yarilo/abc -> (AttrPrivate, "vendor/yarilo/abc")
 //
-// Returns an error if the entry does not start with /private/ or /shared/,
-// or is otherwise malformed. The fork-side ValidateMetadataEntry already
-// catches most of this on parse; we re-check here so callers that bypass
-// the wire layer (tests, scripted scaffolding) still get the same
-// guarantees.
+// Returns an error if the entry does not start with /private/ or /shared/, or
+// is otherwise malformed. Re-checked here so callers that bypass the wire
+// layer (tests, scripted scaffolding) get the same guarantees.
 func ParseAttrEntry(entry string) (AttrScope, string, error) {
 	switch {
 	case strings.HasPrefix(entry, "/private/"):
@@ -64,38 +59,26 @@ func ParseAttrEntry(entry string) (AttrScope, string, error) {
 }
 
 // AttrKey returns the dict key for a per-folder attribute on a
-// personal-namespace mailbox.
-//
-// scope chooses the priv/ or shared/ namespace; folderGUID is the
-// rename-stable identifier of the target folder (Folder.GUID); attrName
-// is the path-component (without leading slash) returned by
-// ParseAttrEntry.
-//
-// The resulting key is of the form:
+// personal-namespace mailbox:
 //
 //	priv/box/<hex(guid)>/<attrName>
 //
-// The "box/" segment exists so a future extension (e.g. per-message or
-// per-user-scoped attributes) can co-exist under priv/<other>/... without
-// colliding with mailbox attributes.
+// scope chooses the priv/ or shared/ namespace; folderGUID is the
+// rename-stable Folder.GUID; attrName is the path-component (without leading
+// slash) from ParseAttrEntry. The "box/" segment leaves room for future
+// per-message or per-user scopes under priv/<other>/... without collision.
 //
-// For shared / public namespaces use SharedAttrKey instead — it adds
-// a per-accessing-user dimension to the priv/ scope so users do not
-// see each other's private annotations on a shared folder.
+// For shared / public namespaces use SharedAttrKey instead.
 func AttrKey(scope AttrScope, folderGUID [16]byte, attrName string) string {
 	return scopePrefix(scope) + "box/" + hex.EncodeToString(folderGUID[:]) + "/" + attrName
 }
 
-// SharedAttrKey returns the dict key for a per-folder attribute on a
-// shared or public namespace mailbox. For the priv/ scope the key
-// embeds a per-accessing-user dimension (SHA-256 hash of the
-// username, first 16 hex chars) so users cannot see each other's
-// private annotations on the same shared folder. The shared/ scope
-// remains a single value visible to everyone.
-//
-// Hashing avoids embedding raw usernames (which may contain '/' or
-// '%' that would clash with dict path semantics) and gives a stable,
-// case-sensitive identifier without escaping.
+// SharedAttrKey returns the dict key for a per-folder attribute on a shared or
+// public namespace mailbox. The priv/ scope embeds a per-accessing-user
+// dimension (userHash) so users cannot see each other's private annotations on
+// the same shared folder; the shared/ scope is a single value visible to
+// everyone. Hashing avoids raw usernames that may contain '/' or '%' clashing
+// with dict path semantics.
 func SharedAttrKey(scope AttrScope, folderGUID [16]byte, accessingUser, attrName string) string {
 	base := scopePrefix(scope) + "box/" + hex.EncodeToString(folderGUID[:]) + "/"
 	if scope == AttrPrivate {
@@ -104,35 +87,29 @@ func SharedAttrKey(scope AttrScope, folderGUID [16]byte, accessingUser, attrName
 	return base + attrName
 }
 
-// userHash returns the first 16 hex chars of SHA-256(username). Used
+// userHash returns the first 16 hex chars (64 bits) of SHA-256(username), used
 // as a per-user dimension in dict keys for shared/public namespaces.
-// 16 hex chars = 64 bits — collision probability is negligible for
-// realistic per-folder user counts.
 func userHash(username string) string {
 	sum := sha256.Sum256([]byte(username))
 	return hex.EncodeToString(sum[:8])
 }
 
-// ServerAttrKey returns the dict key for a server-scope attribute.
-//
-// Server-scope attributes (those whose IMAP mailbox name is empty) are
-// stored under INBOX's GUID with the serverScopeVendorPrefix added so
-// they cannot collide with same-named INBOX mailbox attributes.
+// ServerAttrKey returns the dict key for a server-scope attribute (empty IMAP
+// mailbox name), stored under INBOX's GUID with serverScopeVendorPrefix so it
+// cannot collide with same-named INBOX mailbox attributes.
 func ServerAttrKey(scope AttrScope, inboxGUID [16]byte, attrName string) string {
 	return scopePrefix(scope) + "box/" + hex.EncodeToString(inboxGUID[:]) + "/" + serverScopeVendorPrefix + attrName
 }
 
-// AttrPrefix returns the dict-iteration path for "all attributes of
-// this personal-namespace folder under this scope". Useful for
-// METADATA GETMETADATA with DEPTH 1 / DEPTH INFINITY.
+// AttrPrefix returns the dict-iteration path for all attributes of a
+// personal-namespace folder under this scope (GETMETADATA DEPTH 1 / INFINITY).
 func AttrPrefix(scope AttrScope, folderGUID [16]byte) string {
 	return scopePrefix(scope) + "box/" + hex.EncodeToString(folderGUID[:]) + "/"
 }
 
-// SharedAttrPrefix returns the iteration path for a shared/public
-// namespace folder. Mirrors SharedAttrKey: priv/ scope is per-user
-// (key includes the accessingUser hash subdir), shared/ scope is
-// global to the folder.
+// SharedAttrPrefix returns the iteration path for a shared/public namespace
+// folder. Mirrors SharedAttrKey: priv/ scope is per-user (includes the
+// accessingUser hash subdir), shared/ scope is global to the folder.
 func SharedAttrPrefix(scope AttrScope, folderGUID [16]byte, accessingUser string) string {
 	base := scopePrefix(scope) + "box/" + hex.EncodeToString(folderGUID[:]) + "/"
 	if scope == AttrPrivate {
@@ -141,8 +118,8 @@ func SharedAttrPrefix(scope AttrScope, folderGUID [16]byte, accessingUser string
 	return base
 }
 
-// ServerAttrPrefix returns the iteration path for server-scope attributes
-// — the equivalent of AttrPrefix for "" (empty) mailbox.
+// ServerAttrPrefix returns the iteration path for server-scope attributes:
+// AttrPrefix for the empty ("") mailbox.
 func ServerAttrPrefix(scope AttrScope, inboxGUID [16]byte) string {
 	return scopePrefix(scope) + "box/" + hex.EncodeToString(inboxGUID[:]) + "/" + serverScopeVendorPrefix
 }
@@ -164,9 +141,9 @@ func FormatAttrEntry(scope AttrScope, attrName string) string {
 	return "/private/" + attrName
 }
 
-// TrimAttrPrefix extracts the attrName from a full dict key, given the
-// scope+guid prefix the iterator used. Returns "" if key does not lie
-// under prefix (defensive — callers should pre-filter).
+// TrimAttrPrefix extracts the attrName from a full dict key given the
+// scope+guid prefix the iterator used. Returns "" if key does not lie under
+// prefix (defensive; callers should pre-filter).
 func TrimAttrPrefix(key, prefix string) string {
 	if !strings.HasPrefix(key, prefix) {
 		return ""

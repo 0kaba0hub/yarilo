@@ -1,17 +1,12 @@
-// yarilo-locks is the cross-process write-coordination service for yarilo.
-// Two modes via locks_service.mode in yarilo.yaml:
+// yarilo-locks is the cross-process write-coordination service, selected by
+// locks_service.mode in yarilo.yaml:
 //
-//	remote   — TCP+mTLS listener backed by Redis. The production default for
-//	           every k8s deployment (single-node or sharded). Multiple replicas
-//	           share state through Redis; clients connect via a ClusterIP
-//	           Service. Scales from 1 → N replicas without code or config rework.
+//	remote   — TCP+mTLS listener backed by Redis; the k8s production default.
+//	           Replicas share state via Redis, so it scales 1 → N without rework.
+//	embedded — Unix-socket listener backed by an in-memory map; dev/CI/unit tests
+//	           only. State is ephemeral and pod-local, so it cannot cross pods.
 //
-//	embedded — Unix-socket listener backed by an in-memory map. Dev / CI / unit
-//	           tests only. State is ephemeral and local to the pod, so embedded
-//	           is single-process by construction and not used in Helm deployments.
-//
-// The same TAB-delimited wire protocol serves both modes; the pkg/locks.Locker
-// interface used by session processes does not care which mode is active.
+// Both modes speak the same TAB-delimited wire protocol behind pkg/locks.Locker.
 package main
 
 import (
@@ -36,8 +31,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
 
-// version is stamped at build time via -ldflags="-X main.version=<tag>".
-// version is set via pkg/build; kept for vet compatibility
+// version is set via pkg/build.
 
 func main() {
 	logging.Setup("locks")
@@ -120,9 +114,8 @@ func main() {
 	slog.Info("yarilo-locks stopped")
 }
 
-// buildBackend instantiates the state backend for the configured mode.
-// The returned readiness function reports whether the backend is presently
-// usable; /readyz consults it on each request.
+// buildBackend instantiates the state backend for the configured mode. The
+// returned readiness func reports current usability; /readyz consults it per request.
 func buildBackend(lcfg config.LocksServiceConfig) (locks.Backend, func() bool, error) {
 	switch lcfg.Mode {
 	case "embedded":
@@ -138,13 +131,10 @@ func buildBackend(lcfg config.LocksServiceConfig) (locks.Backend, func() bool, e
 			return nil, nil, fmt.Errorf("parse redis url: %w", err)
 		}
 		rdb := redis.NewClient(opts)
-		// No eager Ping+fail here (#903). redis.NewClient is lazy — it connects on
-		// first use with a reconnecting pool — so the process comes up regardless of
-		// whether Redis is reachable yet, instead of exiting into CrashLoopBackOff.
-		// The startupProbe (yarctl wait tcp://redis) is what withholds traffic until
-		// Redis answers, and `ready` reports Redis health on /readyz. A missing/bad
-		// redis URL or an unknown mode still fails loudly below — those are local
-		// preconditions a retry cannot fix.
+		// No eager Ping: redis.NewClient is lazy, so the process comes up even when
+		// Redis is not yet reachable rather than crash-looping. The startupProbe gates
+		// traffic and `ready` reports Redis health on /readyz. A bad URL or unknown
+		// mode still fails loudly below since no retry fixes those.
 		opts2 := []locks.RedisOption{}
 		if lcfg.KeyPrefix != "" {
 			opts2 = append(opts2, locks.WithKeyPrefix(lcfg.KeyPrefix))
@@ -163,10 +153,8 @@ func buildBackend(lcfg config.LocksServiceConfig) (locks.Backend, func() bool, e
 	}
 }
 
-// buildListener returns a net.Listener appropriate to the mode.
-// Embedded: Unix socket; the path's parent directory must exist and the
-// process must own a stale socket if one is present (it is removed).
-// Remote: TCP wrapped in mTLS using cfg.InternalTLS.
+// buildListener returns the net.Listener for the mode: embedded a Unix socket
+// (a stale one is removed first), remote a TCP listener wrapped in cfg.InternalTLS mTLS.
 func buildListener(cfg *config.Config, lcfg config.LocksServiceConfig) (net.Listener, error) {
 	switch lcfg.Mode {
 	case "embedded":
@@ -183,8 +171,7 @@ func buildListener(cfg *config.Config, lcfg config.LocksServiceConfig) (net.List
 			return nil, fmt.Errorf("locks_service.listen is required for remote mode")
 		}
 		if !cfg.InternalTLS.Enabled {
-			// Plain TCP in remote mode is only acceptable when the cluster
-			// runs a service mesh handling transport security.
+			// Plain TCP only when a service mesh handles transport security.
 			return net.Listen("tcp", lcfg.Listen)
 		}
 		tlsCfg, err := mtls.ServerConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA)
@@ -197,14 +184,10 @@ func buildListener(cfg *config.Config, lcfg config.LocksServiceConfig) (net.List
 	}
 }
 
-// runTelemetry serves /healthz, /readyz, /metrics on addr.
-// /healthz is process liveness (always 200 while running).
-// /readyz reports backend reachability — useful for k8s rolling updates so a
-// pod whose Redis connection has dropped is taken out of rotation.
+// runTelemetry serves /healthz, /readyz, /metrics on addr. /healthz is liveness
+// (always 200); /readyz reports backend reachability so a pod whose Redis
+// connection dropped is taken out of rotation.
 func runTelemetry(addr string, reg *prometheus.Registry, backendReady func() bool) {
-	// The shared implementation, with this component's own registry and its real
-	// readiness condition — a pod whose Redis connection has dropped is taken out
-	// of rotation instead of being handed locks it cannot record.
 	tel := telemetry.NewWithOptions(telemetry.Options{
 		Addr:     addr,
 		Registry: reg,

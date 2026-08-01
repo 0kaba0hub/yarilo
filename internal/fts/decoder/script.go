@@ -14,11 +14,8 @@ import (
 	"time"
 )
 
-// Wire protocol — TAB-delimited, LF-terminated, same style as pkg/locks (see
-// docs/DEPLOYMENT.md §Wire protocol). A fresh connection per Decode call: the
-// decoder script is expected to be a lightweight, stateless per-request
-// process, and attachment decoding is rare enough relative to mail delivery
-// that connection-pooling would be premature complexity.
+// Wire protocol: TAB-delimited, LF-terminated. Fresh connection per Decode
+// call; the decoder is a stateless per-request process.
 //
 //	> VERSION\tyarilo-fts-decoder\t1\n
 //	< VERSION\t1\tOK\n
@@ -28,25 +25,20 @@ import (
 //	< OK\t<text-size>\n
 //	< <text-size bytes of extracted text>
 //	  or
-//	< SKIP\n                              — content type/extension unsupported
+//	< SKIP\n                              content type/extension unsupported
 //	< ERROR\t<message>\n
 //
-// TYPES is an optional extension (#697), queried once per scriptDecoder on
-// its own connection and cached: a supported-types prefilter avoids dialing
-// (and shipping attachment bytes) for parts the decoder would just SKIP
-// anyway.
+// TYPES is optional: a supported-types prefilter, queried once and cached, to
+// skip dialing for parts the decoder would SKIP.
 //
 //	> TYPES\n
 //	< <content-type>\t<ext>\t<ext>...\n  (repeated, any number of lines)
-//	< \n                                  — empty line terminates the list
+//	< \n                                  empty line terminates the list
 //	  or
-//	< ERROR\t<message>\n                  — TYPES not supported
+//	< ERROR\t<message>\n                  TYPES not supported
 //
-// A script that doesn't recognize TYPES at all (a v1 decoder predating
-// #697) may respond with ERROR, close the connection, or simply never
-// respond — all three are treated identically as "prefilter unavailable":
-// fall back to asking per part via DECODE/SKIP, exactly the pre-#697
-// behaviour.
+// A decoder that does not recognize TYPES (ERROR, closed conn, or no reply)
+// is treated as "prefilter unavailable": fall back to per-part DECODE/SKIP.
 const (
 	scriptProtocolVersion = "1"
 	scriptCmdVersion      = "VERSION"
@@ -63,10 +55,9 @@ type scriptDecoder struct {
 	maxSize int64
 
 	typesOnce sync.Once
-	// supported holds lowercased content-types and extensions (with the
-	// leading dot, e.g. ".pdf") the decoder advertised via TYPES. nil means
-	// the prefilter is unavailable — every part is shipped to DECODE, same
-	// as before #697.
+	// supported holds lowercased content-types and extensions (with leading
+	// dot, e.g. ".pdf") advertised via TYPES. nil means prefilter
+	// unavailable: every part is shipped to DECODE.
 	supported map[string]bool
 }
 
@@ -74,10 +65,8 @@ func newScriptDecoder(addr string, timeout time.Duration, maxSize int64) *script
 	return &scriptDecoder{addr: addr, timeout: timeout, maxSize: maxSize}
 }
 
-// dial connects to addr, accepting "unix:///path/to.sock" (standalone, a
-// co-located decoder process) or a bare "host:port" (k8s/backend, the
-// decoder runs as its own Deployment/Service) — mirrors pkg/locks' embedded-
-// vs-remote split, since a hardcoded transport doesn't fit both topologies.
+// dial connects to addr, accepting "unix:///path/to.sock" (co-located
+// decoder) or a bare "host:port" (decoder as its own Service).
 func (d *scriptDecoder) dial(ctx context.Context) (net.Conn, error) {
 	var dialer net.Dialer
 	if path, ok := strings.CutPrefix(d.addr, "unix://"); ok {
@@ -86,20 +75,16 @@ func (d *scriptDecoder) dial(ctx context.Context) (net.Conn, error) {
 	return dialer.DialContext(ctx, "tcp", d.addr)
 }
 
-// ensureTypesLoaded fetches and caches the TYPES prefilter exactly once per
-// scriptDecoder (#697): concurrent Decode calls during the first fetch block
-// on typesOnce, same as any one-time init.
+// ensureTypesLoaded fetches and caches the TYPES prefilter exactly once.
 func (d *scriptDecoder) ensureTypesLoaded(ctx context.Context) {
 	d.typesOnce.Do(func() {
 		d.supported = d.fetchSupportedTypes(ctx)
 	})
 }
 
-// fetchSupportedTypes queries TYPES on a dedicated connection. Any failure —
-// an explicit ERROR response, the connection dropping, or the dedicated
-// timeout expiring while a v1 script that doesn't recognize TYPES just sits
-// on the connection — returns nil, meaning "prefilter unavailable": Decode
-// falls back to asking per part via DECODE/SKIP, the pre-#697 behaviour.
+// fetchSupportedTypes queries TYPES on a dedicated connection. Any failure
+// (ERROR, dropped conn, or timeout) returns nil, meaning "prefilter
+// unavailable": Decode falls back to per-part DECODE/SKIP.
 func (d *scriptDecoder) fetchSupportedTypes(ctx context.Context) map[string]bool {
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
@@ -128,11 +113,11 @@ func (d *scriptDecoder) fetchSupportedTypes(ctx context.Context) map[string]bool
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
-			return nil // dropped/timed out mid-list: treat the whole fetch as unavailable
+			return nil // dropped/timed out mid-list: whole fetch unavailable
 		}
 		line = strings.TrimRight(line, "\n")
 		if line == "" {
-			return types // empty line terminates the list (possibly empty — still a success)
+			return types // empty line terminates the list
 		}
 		fields := strings.Split(line, "\t")
 		if fields[0] == scriptRespError {
@@ -147,9 +132,8 @@ func (d *scriptDecoder) fetchSupportedTypes(ctx context.Context) map[string]bool
 }
 
 // typeSupported reports whether the cached TYPES list covers contentType or
-// filename's extension. Only meaningful when d.supported != nil — callers
-// must check that first (nil means "prefilter unavailable", not "nothing
-// supported").
+// filename's extension. Only meaningful when d.supported != nil; callers must
+// check that first (nil means "prefilter unavailable", not "nothing supported").
 func (d *scriptDecoder) typeSupported(contentType, filename string) bool {
 	if contentType != "" && d.supported[strings.ToLower(contentType)] {
 		return true

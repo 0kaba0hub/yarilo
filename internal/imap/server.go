@@ -1125,8 +1125,8 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 		return err
 	}
 	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr for
-	// later LIST replies. The RFC forbids more than one attr per folder;
-	// honour the first and ignore the rest. Personal namespace only.
+	// later LIST replies. The RFC allows one attr per folder; honour the
+	// first, ignore the rest. Personal namespace only.
 	if opts != nil && len(opts.SpecialUse) > 0 && s.specialUse != nil && h == s.primary {
 		if err := s.specialUse.Set(rel, opts.SpecialUse[0]); err != nil {
 			slog.Warn("imap: special_use persist failed",
@@ -1198,10 +1198,9 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 	if err := hOld.idx.RenameFolder(relOld, relNew); err != nil {
 		return err
 	}
-	// Move the per-mailbox yarilo-acl file (if any) and rewrite the
-	// namespace-wide index entries. Errors are non-fatal — the
-	// mailbox itself has moved; we log and keep the IMAP response
-	// successful so clients are not blocked by a stale index.
+	// Move the per-mailbox yarilo-acl file and rewrite namespace-wide index
+	// entries. Non-fatal: the mailbox has moved; a stale index must not fail
+	// the IMAP response.
 	if hOld.acl != nil {
 		if err := hOld.acl.Rename(relOld, relNew); err != nil {
 			slog.Warn("imap: acl rename failed", "from", oldName, "to", newName, "err", err)
@@ -1661,10 +1660,9 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 }
 
 // Notify configures NOTIFY (RFC 5465) for this session. options == nil is
-// NOTIFY NONE (revert to default behavior). Once NOTIFY SET is issued, the
-// selected mailbox's unsolicited responses are suppressed unless a SELECTED or
-// SELECTED-DELAYED filter re-enables specific events — matching RFC 5465 §5.
-// Non-selected mailbox filters are accepted but not yet acted on (phase 3).
+// NOTIFY NONE. Once NOTIFY SET is issued the selected mailbox's unsolicited
+// responses are suppressed unless a SELECTED or SELECTED-DELAYED filter
+// re-enables specific events (RFC 5465 §5).
 func (s *session) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOptions) error {
 	s.notifyActive = false
 	s.selNew, s.selExpunge, s.selFlagChange, s.selImmediateExpunge = false, false, false, false
@@ -1707,9 +1705,9 @@ func (s *session) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOpti
 //     meaning flags were altered by another session.
 //   - * N EXISTS — new messages appended to the folder since last poll.
 //
-// Fast-path: OpenFolder reads only the folder header (tiny file) to get
-// HighestModSeq. GetMessages (full index scan) is only called when the
-// modseq advanced or there are pending expunges to deliver.
+// Fast-path: OpenFolder reads only the folder header for HighestModSeq;
+// GetMessages (full index scan) runs only when the modseq advanced or
+// pending expunges remain to deliver.
 func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	slog.Debug("imap: command", "sid", s.sid, "cmd", "Poll")
 	// Non-selected NOTIFY activity is independent of the selected mailbox and
@@ -1965,11 +1963,9 @@ func (s *session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 		wake = s.notifyWatch.wake
 	}
 
-	// Cross-pod event subscription: when another process (LMTP delivery, an
-	// IMAP session on a sibling pod, etc.) writes to this user's folder, we
-	// get an EVENT, refresh the message count from disk, and push the
-	// EXISTS notification immediately — no waiting for the timer. Only the
-	// selected mailbox uses this fast path; non-selected mailboxes go through
+	// Cross-pod event subscription: an EVENT from another process writing this
+	// user's folder refreshes the count and pushes EXISTS immediately, without
+	// waiting for the timer. Selected mailbox only; non-selected mailboxes use
 	// the NOTIFY watcher above.
 	var events <-chan locks.Event
 	var tickC <-chan time.Time
@@ -2056,9 +2052,8 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	// here — the per-message expunge events below supply "after", so an "under"
 	// crossing fires on a delete-only session regardless of SELECT-time seeding.
 	s.captureQuotaSnap()
-	// Track the current sequence number separately: each expunged message
-	// shifts all subsequent sequence numbers down by one, so we must adjust
-	// as we go rather than using the static position from GetMessages.
+	// Each expunge shifts later sequence numbers down by one, so track and
+	// adjust seqNum as we go rather than using the static GetMessages index.
 	seqNum := uint32(len(msgs))
 	var expunge_count int
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -2071,14 +2066,10 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			seqNum--
 			continue
 		}
-		// Free the underlying storage, then drop the index record — the same pairing
-		// every other removal path in this file uses (renameInbox, UID MOVE). Without
-		// the Remove the message vanishes from the client's view but its bytes leak
-		// forever: maildir/sdbox keep the file, mdbox never decrements the map
-		// refcount so purge can never reclaim it. Storage-first so a crash in the
-		// tiny window leaves a dangling index record the reactive heal expunges,
-		// rather than an unreclaimable orphan. Best-effort: on failure the index is
-		// still expunged and the leak is reclaimable by an operator rebuild + purge.
+		// Free storage before dropping the index record. Storage-first so a
+		// crash in the window leaves a dangling index record (reactive heal
+		// expunges it) rather than an unreclaimable orphan. Best-effort: on
+		// failure the index is still expunged, leak reclaimable by rebuild+purge.
 		if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
 			slog.Warn("imap: expunge storage remove failed (index still expunged; leak reclaimable by rebuild+purge)",
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
@@ -2182,12 +2173,10 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 			continue
 		}
 
-		// CONDSTORE SEARCH MODSEQ filter — RFC 7162 §3.1.5.
-		// MetadataName/MetadataType narrow which attribute's modseq to compare;
-		// per-attribute modseq tracking is future work, so we treat any
-		// criteria.ModSeq as "message-level modseq" and ignore the attribute
-		// qualifier — strictly more permissive (returns extra matches), which
-		// is RFC-acceptable.
+		// CONDSTORE SEARCH MODSEQ filter (RFC 7162 §3.1.5). Per-attribute
+		// modseq tracking is unimplemented: the attribute qualifier is ignored
+		// and criteria.ModSeq compared at message level. Strictly more
+		// permissive (extra matches), which is RFC-acceptable.
 		if criteria.ModSeq != nil && m.ModSeq < criteria.ModSeq.ModSeq {
 			continue
 		}
@@ -2212,10 +2201,8 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		}
 	}
 
-	// Visibility diagnostic (#625): when a search matches nothing, record what was
-	// actually scanned so a delivery→visibility mismatch is readable from the log
-	// alone (folder had records 1..N, search matched 0) rather than re-derived from
-	// lock timings. DEBUG-gated; no message content, only counts and the UID range.
+	// On a zero-match search, log the scanned record count and UID range so a
+	// delivery/visibility mismatch is diagnosable. DEBUG-gated, counts only.
 	if hitCount == 0 {
 		var uidMin, uidMax uint32
 		for _, m := range msgs {
@@ -2258,22 +2245,14 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	if opts != nil && opts.ReturnCount {
 		data.Count = hitCount
 	}
-	// CONDSTORE — RFC 7162 §3.1.5. When any matched message carries a
-	// modseq, surface the maximum so the client can persist its
-	// "highest-seen modseq" for the folder. Emitted regardless of which
-	// RETURN items were requested (the spec considers MODSEQ implicit
-	// when SEARCH MODSEQ criteria are used, but it is also useful for
-	// non-modseq searches against a CONDSTORE-enabled mailbox).
+	// CONDSTORE (RFC 7162 §3.1.5): surface the max matched modseq so the client
+	// can persist its highest-seen modseq, regardless of RETURN items requested.
 	if highestMod > 0 {
 		data.ModSeq = highestMod
 	}
-	// RFC 4731/6203 RELEVANCY: only available when FTS actually engaged and
-	// the engine returned scores (Caps.Scoring) — a pure sequential-scan
-	// search, or a query that expanded to nothing indexed (stopwords-only),
-	// has no ranking signal to offer. Per the fork's contract, leaving
-	// data.Relevancy nil simply omits the item from the response rather
-	// than erroring: a client asking for RELEVANCY on an unscored search
-	// still gets its SEARCH results, just without scores.
+	// RELEVANCY (RFC 4731/6203): only available when FTS engaged and returned
+	// scores. A sequential scan has no ranking signal; nil omits the item
+	// from the response rather than erroring.
 	if opts != nil && opts.ReturnRelevancy && ftsF != nil && ftsF.scores != nil {
 		data.Relevancy = relevancyScores(ftsF.scores, matchedOrder)
 	}
@@ -2389,24 +2368,15 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		backendByUID[m.UID] = m
 	}
 
-	// For sequence-number FETCH: iterate knownMsgs (the client's current
-	// seq→UID view). This prevents UID-changed mismatches when another
-	// session has expunged messages and the backend's sequence numbers have
-	// shifted. Messages expunged since the last Poll are silently skipped
-	// here; pollExpunge delivers the EXPUNGE notifications after the tagged
-	// response so the client can reconcile its view.
-	//
-	// For UID FETCH: use the backend's sequence numbering directly — UIDs
-	// are stable identifiers and the client matches by UID, not seq.
 	type fetchEntry struct {
 		seqNum uint32
 		msg    *mailbox.MessageMeta
 	}
-	// Build uid→client-seqNum from knownMsgs so both seq-number and UID
-	// FETCH report sequence numbers that match the client's current view.
-	// This avoids "UID changed" errors when another session has expunged
-	// messages and the backend's positions have shifted before the client
-	// received the EXPUNGE notifications.
+	// Report sequence numbers from the client's knownMsgs view (both seq and
+	// UID FETCH), avoiding "UID changed" errors when another session expunged
+	// messages and the backend positions shifted before the client got the
+	// EXPUNGE. Messages expunged since the last Poll are skipped; Poll delivers
+	// their EXPUNGE after the tagged response.
 	uidToClientSeq := make(map[uint32]uint32, len(s.knownMsgs))
 	for i, km := range s.knownMsgs {
 		uidToClientSeq[km.uid] = uint32(i + 1)
@@ -2417,11 +2387,8 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		for _, m := range backendMsgs {
 			seqNum, ok := uidToClientSeq[m.UID]
 			if !ok {
-				// New message appended after the pre-OK poll; skip it
-				// — client will learn about it on the next Poll cycle.
-				// Visibility diagnostic (#625): the UID exists in the backend but
-				// not yet in the client's sequence view — a common cause of a
-				// just-delivered message reading as "not found" until the next Poll.
+				// UID appended after the pre-OK poll: not yet in the client's
+				// sequence view. Skip; the client learns of it on the next Poll.
 				slog.Debug("imap: fetch skipped uid absent from client view",
 					"user", s.userInfo.Username,
 					"folder", s.folder.Name,
@@ -2488,14 +2455,12 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteInternalDate(m.InternalDate)
 		}
 		if opts.RFC822Size {
-			// Virtual (CRLF) size — the octet count actually transmitted. Using
-			// the physical size made the same message report different values
-			// depending on the stored line endings (#892).
+			// Virtual (CRLF) size: the octet count actually transmitted.
+			// Physical size varies with stored line endings.
 			size := m.RFC822Size()
-			// Legacy records written before Save() returned the virtual size have
-			// VSize==0 and fall back to the physical size, which flip-flops against
-			// the virtual size other paths report. Recompute it from the body once
-			// on read so the answer is stable for these older messages too.
+			// Records with VSize==0 predate Save() returning virtual size and
+			// fall back to physical size; recompute from the body on read so
+			// the reported size stays stable.
 			if m.VSize == 0 && m.Filename != "" {
 				if rc, ferr := s.fetchSelected(m); ferr == nil {
 					if raw, rerr := io.ReadAll(rc); rerr == nil {
