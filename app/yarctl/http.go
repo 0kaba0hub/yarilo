@@ -9,7 +9,44 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+
+	"github.com/0kaba0hub/yarilo/pkg/mtls"
 )
+
+var (
+	httpClientOnce sync.Once
+	httpClient     *http.Client
+	httpClientErr  error
+)
+
+// adminHTTPClient returns the HTTP client for the director / backend-api hops.
+// When internal mTLS is configured (a CA, ServerName, or client cert is set,
+// #954) it builds a client that presents the client cert, trusts the internal
+// CA, and verifies the server cert against the pinned ServerName (the internal
+// SAN, since the URL host is an IP/localhost that never matches). Otherwise it
+// is http.DefaultClient. Built once; reused so the TLS session cache is shared.
+func adminHTTPClient() (*http.Client, error) {
+	httpClientOnce.Do(func() {
+		httpClient, httpClientErr = newAdminClient(tlsCert, tlsKey, tlsCA, tlsServerName)
+	})
+	return httpClient, httpClientErr
+}
+
+// newAdminClient builds the admin-plane HTTP client. With none of the internal
+// mTLS inputs set it returns http.DefaultClient (plain HTTP). Otherwise it
+// requires cert+key+ca+serverName (mtls.ClientConfig validates) and returns a
+// client that dials over mTLS. Pure — no globals — so it is unit-testable.
+func newAdminClient(cert, key, ca, serverName string) (*http.Client, error) {
+	if ca == "" && cert == "" && serverName == "" {
+		return http.DefaultClient, nil
+	}
+	cfg, err := mtls.ClientConfig(cert, key, ca, serverName, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("internal mTLS client config (set --tls-cert/-key/-ca/-server-name or YARILO_ADMIN_TLS_*): %w", err)
+	}
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}, nil
+}
 
 func apiGet(path string) ([]byte, error) {
 	return doRequest(apiURL, apiToken, http.MethodGet, path, nil)
@@ -110,7 +147,19 @@ func backendBaseForUser(user string) (string, error) {
 	if err := json.Unmarshal(data, &m); err != nil || m.Backend == "" {
 		return "", fmt.Errorf("director returned no backend for user %q", user)
 	}
-	return fmt.Sprintf("http://%s:%d", m.Backend, backendAPIPort), nil
+	// Match the scheme the backend-api serves: https under internal mTLS (#954),
+	// otherwise plain http. The resolved host is a pod IP, so verification relies
+	// on the pinned --tls-server-name, not the host.
+	return fmt.Sprintf("%s://%s:%d", adminScheme(), m.Backend, backendAPIPort), nil
+}
+
+// adminScheme is "https" when internal mTLS is configured for the admin hops,
+// else "http". Used for the per-user pod URL the director resolves (#954).
+func adminScheme() string {
+	if tlsCA != "" || tlsServerName != "" || tlsCert != "" {
+		return "https"
+	}
+	return "http"
 }
 
 func doRequest(baseURL, token, method, path string, body any) ([]byte, error) {
@@ -166,7 +215,11 @@ func doRawRequest(baseURL, token, method, path string, body any) (*http.Response
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client, err := adminHTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
