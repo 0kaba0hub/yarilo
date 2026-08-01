@@ -26,7 +26,6 @@ import (
 	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
 	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
 	"github.com/0kaba0hub/yarilo/internal/loginproto"
-	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
 // Protocol identifies the mail protocol handled by the login pod.
@@ -1395,45 +1394,76 @@ func (s *Server) kickChannel() string {
 	return "kick:" + string(s.opts.Protocol)
 }
 
-// startKickSubscriber dials anvil on a dedicated connection and
-// drives kickSession from incoming EVENT lines for the
-// per-protocol kick channel. No-op when AnvilAddr is unset
-// (single-process dev runs). The goroutine exits when ctx is
-// cancelled or the underlying conn errors out — Serve restart
-// re-subscribes.
+// startKickSubscriber spawns the per-protocol kick subscriber. No-op when
+// AnvilAddr is unset (single-process dev runs). The loop runs until ctx is
+// cancelled; see kickSubscribeLoop for the reconnect semantics.
 func (s *Server) startKickSubscriber(ctx context.Context) {
 	if s.opts.AnvilAddr == "" {
 		return
 	}
-	channel := s.kickChannel()
-	attempts := s.opts.DialRetries
-	if attempts <= 0 {
-		attempts = 1
-	}
-	var ac *anvil.Conn
-	err := retry.Do(ctx, attempts, time.Second, func() error {
-		var e error
-		ac, e = anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
-		return e
-	})
-	if err != nil {
-		slog.Error("login: kick subscribe dial failed", "addr", s.opts.AnvilAddr, "attempts", attempts, "err", err)
-		return
-	}
-	ch, err := ac.Subscribe(ctx, channel)
-	if err != nil {
-		ac.Close()
-		slog.Error("login: kick subscribe failed", "channel", channel, "err", err)
-		return
-	}
-	go func() {
-		defer ac.Close()
+	go s.kickSubscribeLoop(ctx, s.kickChannel())
+}
+
+// kickReconnectDelay is the backoff between kick-subscriber reconnect attempts.
+const kickReconnectDelay = time.Second
+
+// kickSubscribeLoop keeps a live subscription to the anvil kick channel,
+// redialling and re-subscribing whenever the connection drops (#908 PR3 — the
+// mirror of #946 on the subscribe side). Without this a single anvil restart or
+// network blip would silently and permanently deafen this login pod to kicks,
+// which is security-relevant: a kick is how a compromised or relocated session
+// is evicted. The loop exits only when ctx is cancelled.
+func (s *Server) kickSubscribeLoop(ctx context.Context, channel string) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		ac, err := anvil.Dial(s.opts.AnvilAddr, s.opts.AnvilTLS, 5*time.Second)
+		if err != nil {
+			slog.Warn("login: kick subscribe dial failed, retrying", "addr", s.opts.AnvilAddr, "err", err)
+			if !sleepCtx(ctx, kickReconnectDelay) {
+				return
+			}
+			continue
+		}
+		ch, err := ac.Subscribe(ctx, channel)
+		if err != nil {
+			ac.Close()
+			slog.Warn("login: kick subscribe failed, retrying", "channel", channel, "err", err)
+			if !sleepCtx(ctx, kickReconnectDelay) {
+				return
+			}
+			continue
+		}
+		slog.Info("login: kick subscriber connected", "channel", channel)
 		for sessID := range ch {
 			if !s.kickSession(sessID) {
 				slog.Debug("login: kick event ignored (no match)", "session", sessID)
 			}
 		}
-	}()
+		ac.Close()
+		// ch closed: either ctx cancel (exit) or a transport drop (reconnect).
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("login: kick subscription dropped, reconnecting", "channel", channel)
+		if !sleepCtx(ctx, kickReconnectDelay) {
+			return
+		}
+	}
+}
+
+// sleepCtx sleeps for d unless ctx is cancelled first; returns false if ctx was
+// cancelled (caller should stop).
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 func dialBackend(addr string, tlsCfg *tls.Config) (net.Conn, error) {

@@ -152,23 +152,10 @@ type Server struct {
 	penaltyDecay  time.Duration
 
 	// state is the pluggable shared-state backend (#908): sessions (with the
-	// per-user@IP connection limit) and the penalty counter, in memory or Redis.
-	// The kick bus (subs) is the last piece still local; it moves in a later phase.
+	// per-user@IP connection limit), the penalty counter, and the kick bus, in
+	// memory or Redis. Emit/Subscribe delegate to it, so a Redis backend fans
+	// kicks out cross-replica via Pub/Sub while memory stays in-process.
 	state StateBackend
-
-	// subsMu protects the subs map. Held during EMIT broadcast
-	// AND during SUBSCRIBE add — keep handler hot path short
-	// (no I/O under the lock).
-	subsMu sync.Mutex
-	subs   map[string][]chan<- subEvent // channel name → subscriber outboxes
-}
-
-// subEvent is one server-side push pending write to a subscriber
-// conn. Kept tiny so EMIT can fan out under a lock without
-// blocking on slow consumers (each outbox is buffered).
-type subEvent struct {
-	channel string
-	payload string
 }
 
 // ServerOption configures a Server at construction time.
@@ -201,7 +188,6 @@ func NewServer(max int, opts ...ServerOption) *Server {
 		sessionTTL:    DefaultSessionTTL,
 		sweepInterval: DefaultSweepInterval,
 		penaltyDecay:  DefaultPenaltyDecay,
-		subs:          make(map[string][]chan<- subEvent),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -564,101 +550,70 @@ func (s *Server) handlePenaltyUpdate(conn net.Conn, fields []string) {
 	fmt.Fprintf(conn, "OK\n")
 }
 
-// subscriberOutboxSize bounds the per-subscriber pending-event
-// buffer. EMIT under the broadcast lock drops events (and the
-// subscriber connection) when the outbox fills — slow subscribers
-// must not stall fast publishers.
-const subscriberOutboxSize = 64
-
 // handleEmit processes: EMIT\t{channel}\t{payload}\n
 //
-// Broadcasts to every subscriber currently listening on {channel}.
-// Reply OK\n after the broadcast — emit is not transactional
-// (subscribers may drop on slow consumer), so OK means "queued
-// for delivery", not "received".
+// Delegates to the state backend (in-process fan-out for memory, Redis PUBLISH
+// for redis), then replies OK\n. Emit is best-effort / at-most-once, so OK means
+// "published", not "received": delivery is NOT the correctness guarantee for a
+// kick — the director's #847 confirmed kill holds LOOKUP until the ring-wide
+// session count is stably zero, so split-writer safety never depends on the kick
+// landing; the kick only makes teardown prompt. A publish error (e.g. a Redis
+// blip) is logged and still answered OK — the caller cannot make it more
+// reliable, and the confirm loop is the backstop.
 func (s *Server) handleEmit(conn net.Conn, fields []string) {
 	if len(fields) < 3 {
 		return
 	}
 	channel, payload := fields[1], fields[2]
-	ev := subEvent{channel: channel, payload: payload}
-
-	s.subsMu.Lock()
-	outboxes := append([]chan<- subEvent(nil), s.subs[channel]...)
-	s.subsMu.Unlock()
-	for _, box := range outboxes {
-		select {
-		case box <- ev:
-		default:
-			// Slow subscriber — drop. Subscriber goroutine
-			// notices the next outbox close and disconnects.
-		}
+	if err := s.state.Emit(channel, payload); err != nil {
+		slog.Warn("anvil: emit failed", "channel", channel, "err", err)
 	}
 	fmt.Fprintf(conn, "OK\n")
 }
 
 // handleSubscribe processes: SUBSCRIBE\t{channel}\n
 //
-// Registers the connection as a subscriber on channel, replies
-// OK\n once, then pushes EVENT\t{channel}\t{payload}\n lines
-// from a per-subscriber outbox until the conn drops or the
-// outbox closes (server shutdown). One conn = one channel —
-// callers wanting multiple channels open multiple conns.
+// Subscribes via the state backend, replies OK\n once, then pushes
+// EVENT\t{channel}\t{payload}\n lines until the conn drops or ctx is cancelled.
+// One conn = one channel — callers wanting multiple channels open multiple conns.
 //
-// A small reader goroutine runs alongside the writer so a
-// client-side close of the conn (ctx cancel on Subscribe)
-// surfaces as a read error and unwinds this handler, instead of
-// blocking forever on `range outbox`.
+// A reader goroutine cancels the subscription context when the client conn
+// closes, which closes the backend channel and unwinds the writer loop. For the
+// Redis backend the backend channel auto-reconnects underneath, so a Redis blip
+// does not end this subscription — only a client disconnect does.
 func (s *Server) handleSubscribe(conn net.Conn, fields []string) {
 	if len(fields) < 2 {
 		return
 	}
 	channel := fields[1]
-	outbox := make(chan subEvent, subscriberOutboxSize)
 
-	s.subsMu.Lock()
-	s.subs[channel] = append(s.subs[channel], outbox)
-	s.subsMu.Unlock()
-	defer func() {
-		s.subsMu.Lock()
-		list := s.subs[channel]
-		for i, ch := range list {
-			if ch == outbox {
-				s.subs[channel] = append(list[:i], list[i+1:]...)
-				break
-			}
-		}
-		s.subsMu.Unlock()
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := s.state.Subscribe(ctx, channel)
+	if err != nil {
+		slog.Warn("anvil: subscribe failed", "channel", channel, "err", err)
+		return
+	}
 
 	if _, err := fmt.Fprintf(conn, "OK\n"); err != nil {
 		return
 	}
 
-	// Reader half: detect client disconnect. When Read errors
-	// (EOF / closed pipe), close `done` so the writer half
-	// stops waiting on `outbox`.
-	done := make(chan struct{})
+	// Reader half: a client-side close surfaces as a Read error and cancels ctx,
+	// which closes ch and unwinds the writer loop below.
 	go func() {
-		defer close(done)
 		buf := make([]byte, 64)
 		for {
 			if _, err := conn.Read(buf); err != nil {
+				cancel()
 				return
 			}
 		}
 	}()
 
-	for {
-		select {
-		case ev, ok := <-outbox:
-			if !ok {
-				return
-			}
-			if _, err := fmt.Fprintf(conn, "EVENT\t%s\t%s\n", ev.channel, ev.payload); err != nil {
-				return
-			}
-		case <-done:
+	for payload := range ch {
+		if _, err := fmt.Fprintf(conn, "EVENT\t%s\t%s\n", channel, payload); err != nil {
 			return
 		}
 	}

@@ -863,8 +863,8 @@ components:
       ## the top-level redis: section (bundled or externalUrl), same as locks.
       redis_addr: ""
       ## key/channel prefixes (#938/#939 practice) — the installation boundary;
-      ## keep consistent with locks/authtoken on a shared Redis. channel_prefix is
-      ## reserved for the kick bus (a later phase). Defaults are service-name based.
+      ## keep consistent with locks/authtoken on a shared Redis. channel_prefix
+      ## namespaces the kick bus Pub/Sub (#908). Defaults are service-name based.
       key_prefix: "yarilo:anvil:"
       channel_prefix: "yarilo:anvil:events:"
 

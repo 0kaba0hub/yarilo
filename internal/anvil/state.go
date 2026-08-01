@@ -3,6 +3,7 @@ package anvil
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,9 +62,29 @@ type StateBackend interface {
 	// live session keys (its penalties expire by TTL).
 	Maintain(now time.Time)
 
+	// Emit publishes payload to channel for delivery to current subscribers
+	// (the kick bus, #908 PR3). Delivery is best-effort / at-most-once: an event
+	// published while a subscriber is reconnecting is lost, and a full outbox is
+	// dropped. This is NOT a correctness guarantee — the director's confirmed
+	// ring-wide kill (#847) holds LOOKUP until the ring-wide session count is
+	// stably zero, so split-writer safety never depends on a kick landing; the
+	// kick only makes teardown prompt. See server.handleEmit.
+	Emit(channel, payload string) error
+	// Subscribe returns a channel of payloads for the named channel until ctx is
+	// cancelled, at which point the returned channel is closed. The Redis backend
+	// relays go-redis PubSub.Channel, which auto-reconnects and re-subscribes on a
+	// Redis blip, so a transient Redis outage does not permanently deafen a
+	// subscriber. The transport between a login pod and anvil is a separate
+	// concern the caller must itself reconnect (login.kickSubscribeLoop).
+	Subscribe(ctx context.Context, channel string) (<-chan string, error)
+
 	// Close releases backend resources (the Redis client). Memory returns nil.
 	Close() error
 }
+
+// subscriberOutboxSize bounds a subscriber's pending-event buffer. Emit drops
+// events (best-effort) rather than blocking a publisher on a slow consumer.
+const subscriberOutboxSize = 64
 
 // penaltyEntry is the per-IP auth-fail counter for the memory backend. Sweep
 // drops entries whose lastUpdate is older than the decay window.
@@ -81,6 +102,12 @@ type memoryBackend struct {
 	mu        sync.Mutex
 	penalties map[string]*penaltyEntry
 	sessions  map[string]*SessionInfo
+
+	// subsMu guards subs, the in-process kick bus (#908 PR3): channel name →
+	// subscriber outboxes. Non-blocking sends are done under this lock so a
+	// concurrent unsubscribe (close) cannot race a send-on-closed-channel.
+	subsMu sync.Mutex
+	subs   map[string][]chan string
 }
 
 func newMemoryBackend(decay, sessionTTL time.Duration, max int) *memoryBackend {
@@ -90,6 +117,7 @@ func newMemoryBackend(decay, sessionTTL time.Duration, max int) *memoryBackend {
 		limiter:    connlimit.New(max),
 		penalties:  make(map[string]*penaltyEntry),
 		sessions:   make(map[string]*SessionInfo),
+		subs:       make(map[string][]chan string),
 	}
 }
 
@@ -255,6 +283,44 @@ func (b *memoryBackend) PenaltySweep(now time.Time) {
 	}
 }
 
+// Emit fans out to every subscriber on channel. Non-blocking: a full outbox is
+// dropped (best-effort). The send happens under subsMu so it cannot race the
+// close in Subscribe's cleanup goroutine.
+func (b *memoryBackend) Emit(channel, payload string) error {
+	b.subsMu.Lock()
+	defer b.subsMu.Unlock()
+	for _, box := range b.subs[channel] {
+		select {
+		case box <- payload:
+		default:
+		}
+	}
+	return nil
+}
+
+// Subscribe registers an outbox on channel and returns it. When ctx is
+// cancelled the outbox is removed and closed, so the caller's range unwinds.
+func (b *memoryBackend) Subscribe(ctx context.Context, channel string) (<-chan string, error) {
+	out := make(chan string, subscriberOutboxSize)
+	b.subsMu.Lock()
+	b.subs[channel] = append(b.subs[channel], out)
+	b.subsMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		b.subsMu.Lock()
+		defer b.subsMu.Unlock()
+		list := b.subs[channel]
+		for i, ch := range list {
+			if ch == out {
+				b.subs[channel] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		close(out)
+	}()
+	return out, nil
+}
+
 func (b *memoryBackend) Close() error { return nil }
 
 // redisOpTimeout bounds every Redis operation so a blackholed or down Redis
@@ -280,25 +346,28 @@ func unixToTime(s string) time.Time {
 // the penalty counter (SET EX / GET / DEL); sessions and the kick bus land in
 // later phases. The caller owns the client lifecycle beyond Close.
 type redisBackend struct {
-	rdb        *redis.Client
-	keyPrefix  string
-	penaltyTTL time.Duration
-	sessionTTL time.Duration
-	limit      int
+	rdb           *redis.Client
+	keyPrefix     string
+	channelPrefix string
+	penaltyTTL    time.Duration
+	sessionTTL    time.Duration
+	limit         int
 }
 
 // NewRedisBackend wraps a client as a Redis StateBackend. keyPrefix namespaces
-// every key (#938/#939 practice); penaltyTTL is the penalty decay window and
-// sessionTTL the per-session key TTL (renewed by heartbeat), both enforced by
-// Redis key expiry; limit is the per-user@IP connection cap (0 = unlimited).
-// The caller owns the client lifecycle beyond Close.
-func NewRedisBackend(rdb *redis.Client, keyPrefix string, penaltyTTL, sessionTTL time.Duration, limit int) StateBackend {
-	return &redisBackend{rdb: rdb, keyPrefix: keyPrefix, penaltyTTL: penaltyTTL, sessionTTL: sessionTTL, limit: limit}
+// every key and channelPrefix every Pub/Sub channel (#938/#939 practice);
+// penaltyTTL is the penalty decay window and sessionTTL the per-session key TTL
+// (renewed by heartbeat), both enforced by Redis key expiry; limit is the
+// per-user@IP connection cap (0 = unlimited). The caller owns the client
+// lifecycle beyond Close.
+func NewRedisBackend(rdb *redis.Client, keyPrefix, channelPrefix string, penaltyTTL, sessionTTL time.Duration, limit int) StateBackend {
+	return &redisBackend{rdb: rdb, keyPrefix: keyPrefix, channelPrefix: channelPrefix, penaltyTTL: penaltyTTL, sessionTTL: sessionTTL, limit: limit}
 }
 
 func (b *redisBackend) penaltyKey(ip string) string   { return b.keyPrefix + "penalty:" + ip }
 func (b *redisBackend) cntKey(user, ip string) string { return b.keyPrefix + "cnt:" + user + "@" + ip }
 func (b *redisBackend) sessKey(id string) string      { return b.keyPrefix + "sess:" + id }
+func (b *redisBackend) chanKey(channel string) string { return b.channelPrefix + channel }
 
 // connectScript is the single point of atomicity for CONNECT (mirrors
 // locks.Acquire): check the counter against the limit, and only on pass create
@@ -511,6 +580,56 @@ func (b *redisBackend) Maintain(time.Time) {
 			_ = reconcileScript.Run(ctx, b.rdb, []string{key}, leak).Err()
 		}
 	}
+}
+
+// Emit PUBLISHes payload on the prefixed channel. Bounded by redisOpTimeout so a
+// down Redis fails fast rather than stalling the publisher.
+func (b *redisBackend) Emit(channel, payload string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
+	defer cancel()
+	if err := b.rdb.Publish(ctx, b.chanKey(channel), payload).Err(); err != nil {
+		return fmt.Errorf("anvil/redis: publish %s: %w", channel, err)
+	}
+	return nil
+}
+
+// Subscribe relays go-redis PubSub.Channel for the prefixed channel. Channel()
+// owns reconnection: on a dropped Redis connection it redials and re-subscribes
+// transparently, so a Redis blip does not permanently deafen the subscriber
+// (#908 PR3 requirement — the mirror of #946 on the subscribe side). The relay
+// goroutine ends, closing out and the PubSub, only when ctx is cancelled.
+func (b *redisBackend) Subscribe(ctx context.Context, channel string) (<-chan string, error) {
+	ps := b.rdb.Subscribe(ctx, b.chanKey(channel))
+	// Confirm the subscription is established so a dead Redis surfaces here
+	// rather than as silent non-delivery later.
+	rctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	defer cancel()
+	if _, err := ps.Receive(rctx); err != nil {
+		_ = ps.Close()
+		return nil, fmt.Errorf("anvil/redis: subscribe %s: %w", channel, err)
+	}
+	out := make(chan string, subscriberOutboxSize)
+	go func() {
+		defer close(out)
+		defer func() { _ = ps.Close() }()
+		rc := ps.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-rc:
+				if !ok {
+					return
+				}
+				select {
+				case out <- msg.Payload:
+				default:
+					// Slow consumer — drop (best-effort, matches memory).
+				}
+			}
+		}
+	}()
+	return out, nil
 }
 
 func (b *redisBackend) Close() error { return b.rdb.Close() }
