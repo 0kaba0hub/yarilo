@@ -16,8 +16,9 @@ import (
 // (user, ip) succeeds.
 func TestSweepStaleSessions(t *testing.T) {
 	s := NewServer(1, WithSessionTTL(100*time.Millisecond))
+	mb := s.state.(*memoryBackend) // white-box: the memory backend holds the maps
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	s.sessions["sess-stale"] = &SessionInfo{
+	mb.sessions["sess-stale"] = &SessionInfo{
 		ID:          "sess-stale",
 		User:        "alice@example.com",
 		IP:          "10.0.0.1",
@@ -25,7 +26,7 @@ func TestSweepStaleSessions(t *testing.T) {
 		ConnectedAt: now.Add(-time.Hour),
 		lastSeen:    now.Add(-time.Hour), // way past TTL
 	}
-	s.sessions["sess-fresh"] = &SessionInfo{
+	mb.sessions["sess-fresh"] = &SessionInfo{
 		ID:          "sess-fresh",
 		User:        "bob@example.com",
 		IP:          "10.0.0.2",
@@ -34,27 +35,27 @@ func TestSweepStaleSessions(t *testing.T) {
 		lastSeen:    now.Add(-50 * time.Millisecond), // inside TTL
 	}
 	// Tell the limiter both slots are taken so reap can release.
-	if !s.limiter.Acquire("alice@example.com", "10.0.0.1") {
+	if !mb.limiter.Acquire("alice@example.com", "10.0.0.1") {
 		t.Fatal("alice acquire")
 	}
-	if !s.limiter.Acquire("bob@example.com", "10.0.0.2") {
+	if !mb.limiter.Acquire("bob@example.com", "10.0.0.2") {
 		t.Fatal("bob acquire")
 	}
 
-	s.sweepStaleSessions(now)
+	mb.Maintain(now)
 
-	if _, ok := s.sessions["sess-stale"]; ok {
+	if _, ok := mb.sessions["sess-stale"]; ok {
 		t.Error("stale session not reaped")
 	}
-	if _, ok := s.sessions["sess-fresh"]; !ok {
+	if _, ok := mb.sessions["sess-fresh"]; !ok {
 		t.Error("fresh session reaped prematurely")
 	}
 	// Alice's slot should be released — a fresh acquire passes.
-	if !s.limiter.Acquire("alice@example.com", "10.0.0.1") {
+	if !mb.limiter.Acquire("alice@example.com", "10.0.0.1") {
 		t.Error("alice slot not released by sweep")
 	}
 	// Bob's slot is still held — a second acquire fails.
-	if s.limiter.Acquire("bob@example.com", "10.0.0.2") {
+	if mb.limiter.Acquire("bob@example.com", "10.0.0.2") {
 		t.Error("bob slot leaked into pool — fresh session reaped")
 	}
 }
@@ -63,8 +64,9 @@ func TestSweepStaleSessions(t *testing.T) {
 // session becomes fresh again under the sweep window.
 func TestHandleHeartbeat_KnownSession(t *testing.T) {
 	s := NewServer(0, WithSessionTTL(100*time.Millisecond))
+	mb := s.state.(*memoryBackend)
 	old := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	s.sessions["sess-1"] = &SessionInfo{
+	mb.sessions["sess-1"] = &SessionInfo{
 		ID:          "sess-1",
 		User:        "alice@example.com",
 		IP:          "10.0.0.1",
@@ -83,7 +85,7 @@ func TestHandleHeartbeat_KnownSession(t *testing.T) {
 
 	s.handleHeartbeat(srvConn, []string{"HEARTBEAT", "sess-1"})
 
-	if got := s.sessions["sess-1"].lastSeen; !got.After(old) {
+	if got := mb.sessions["sess-1"].lastSeen; !got.After(old) {
 		t.Errorf("lastSeen not bumped: still %v", got)
 	}
 }

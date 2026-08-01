@@ -226,7 +226,7 @@ func TestHeartbeatOverSharedConnectionKeepsSessionsAlive(t *testing.T) {
 				t.Fatalf("HEARTBEAT %s = %q — session reaped while heartbeating", id, got)
 			}
 		}
-		s.sweepStaleSessions(time.Now().UTC())
+		s.state.Maintain(time.Now().UTC())
 	}
 
 	if n := len(s.Sessions()); n != len(ids) {

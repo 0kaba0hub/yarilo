@@ -143,8 +143,10 @@ func TestDisconnect_ReleasesSlot(t *testing.T) {
 		t.Errorf("expected FAIL, got: %q", resp)
 	}
 
-	// disconnect frees the slot
-	send(t, conn, sc, "DISCONNECT\t3\talice@example.com\t1.2.3.4\timap")
+	// disconnect the connected session (id 1) frees the slot. A login pod always
+	// sends DISCONNECT with the same id it CONNECTed, so release is by session id
+	// — consistent with the Redis backend's idempotent, id-keyed decrement.
+	send(t, conn, sc, "DISCONNECT\t1\talice@example.com\t1.2.3.4\timap")
 
 	// now connect must succeed
 	resp = send(t, conn, sc, "CONNECT\t4\talice@example.com\t1.2.3.4\timap")
