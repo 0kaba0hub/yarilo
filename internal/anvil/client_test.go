@@ -57,7 +57,8 @@ func TestClient_DisconnectReleasesSlot(t *testing.T) {
 	if err := c.Connect("1", "alice@example.com", "1.2.3.4", "imap"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	if err := c.Disconnect("2", "alice@example.com", "1.2.3.4", "imap"); err != nil {
+	// Disconnect the id that was connected (release is by session id).
+	if err := c.Disconnect("1", "alice@example.com", "1.2.3.4", "imap"); err != nil {
 		t.Fatalf("Disconnect: %v", err)
 	}
 	// Slot released — second connect must succeed.

@@ -78,7 +78,7 @@ func main() {
 		if prefix == "" {
 			prefix = "yarilo:anvil:"
 		}
-		backend := anvil.NewRedisBackend(rdb, prefix, anvil.DefaultPenaltyDecay)
+		backend := anvil.NewRedisBackend(rdb, prefix, anvil.DefaultPenaltyDecay, anvil.DefaultSessionTTL, cfg.General.Limits.MaxUserIPConnections)
 		stateOpts = append(stateOpts, anvil.WithStateBackend(backend))
 		closeState = func() { _ = backend.Close() }
 		stateChecks = append(stateChecks, telemetry.FuncCheck("state-redis", func() bool {

@@ -67,8 +67,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/0kaba0hub/yarilo/internal/connlimit"
 )
 
 const (
@@ -149,18 +147,13 @@ type SessionInfo struct {
 // Server is the yarilo-anvil TCP server. It wraps a connlimit.Limiter and
 // exposes it over the wire protocol so multiple login pods can share state.
 type Server struct {
-	limiter *connlimit.Limiter
-
 	sessionTTL    time.Duration
 	sweepInterval time.Duration
 	penaltyDecay  time.Duration
 
-	mu       sync.Mutex
-	sessions map[string]*SessionInfo // id → session
-
-	// state is the pluggable shared-state backend (#908). In this phase it
-	// stores the per-IP auth-fail penalty counter (memory or Redis); sessions and
-	// the kick bus still live in the maps here and move to it in later phases.
+	// state is the pluggable shared-state backend (#908): sessions (with the
+	// per-user@IP connection limit) and the penalty counter, in memory or Redis.
+	// The kick bus (subs) is the last piece still local; it moves in a later phase.
 	state StateBackend
 
 	// subsMu protects the subs map. Held during EMIT broadcast
@@ -205,20 +198,18 @@ func WithPenaltyDecay(d time.Duration) ServerOption {
 // max ≤ 0 means unlimited (server still runs but always returns OK).
 func NewServer(max int, opts ...ServerOption) *Server {
 	s := &Server{
-		limiter:       connlimit.New(max),
 		sessionTTL:    DefaultSessionTTL,
 		sweepInterval: DefaultSweepInterval,
 		penaltyDecay:  DefaultPenaltyDecay,
-		sessions:      make(map[string]*SessionInfo),
 		subs:          make(map[string][]chan<- subEvent),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	// Default to the in-process backend unless WithStateBackend injected one; its
-	// decay must reflect any WithPenaltyDecay applied above, so build it here.
+	// decay/TTL/limit must reflect any options applied above, so build it here.
 	if s.state == nil {
-		s.state = newMemoryBackend(s.penaltyDecay)
+		s.state = newMemoryBackend(s.penaltyDecay, s.sessionTTL, max)
 	}
 	return s
 }
@@ -226,24 +217,16 @@ func NewServer(max int, opts ...ServerOption) *Server {
 // Sessions returns a snapshot of every tracked session. Used by
 // tests and by the in-process accounting path (no wire detour).
 func (s *Server) Sessions() []*SessionInfo {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*SessionInfo, 0, len(s.sessions))
-	for _, sess := range s.sessions {
-		clone := *sess
-		out = append(out, &clone)
-	}
-	return out
+	return s.state.SessionList()
 }
 
-// SessionCount returns the number of tracked sessions. It takes the same s.mu
-// that every CONNECT/DISCONNECT/LOOKUP/HEARTBEAT handler holds, so it is the
-// cheap liveness probe (#904): if that hot-path mutex is wedged, this call
-// blocks and the watchdog trips. Unlike Sessions() it allocates nothing.
+// SessionCount returns the number of tracked sessions. For the memory backend it
+// takes the same mutex the hot-path handlers hold, so it doubles as the #904
+// liveness probe; the Redis backend counts via SCAN, so the anvil watchdog
+// self-check is wired only in memory mode (a Redis anvil is like locks — no
+// local mutex to wedge, #921).
 func (s *Server) SessionCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.sessions)
+	return s.state.SessionCount()
 }
 
 // ListenAndServe starts the anvil TCP server. When tlsCfg is non-nil the
@@ -386,23 +369,21 @@ func (s *Server) handleConnect(conn net.Conn, fields []string) string {
 		fields = append(fields, "")
 	}
 	id, user, ip, service := fields[1], fields[2], fields[3], fields[4]
-	if !s.limiter.Acquire(user, ip) {
+	ok, err := s.state.SessionConnect(id, user, ip, service)
+	if err != nil {
+		// Bounded backend error → fail OPEN: allow the session (a Redis blip must
+		// not block every login), untracked until the backend recovers. The limit
+		// is temporarily unenforced — availability over strict limiting, the same
+		// posture as the penalty path (#908; verified end to end in PR4).
+		slog.Warn("anvil: connect state error, failing open", "sid", id, "user", user, "ip", ip, "err", err)
+		fmt.Fprintf(conn, "OK\t%s\n", id)
+		return "state_error"
+	}
+	if !ok {
 		slog.Warn("anvil: too many connections", "sid", id, "user", user, "ip", ip, "service", service)
 		fmt.Fprintf(conn, "FAIL\t%s\treason=too-many-connections\n", id)
 		return "too_many_connections"
 	}
-	now := time.Now().UTC()
-	s.mu.Lock()
-	s.sessions[id] = &SessionInfo{
-		ID:          id,
-		User:        user,
-		IP:          ip,
-		Service:     service,
-		ConnectedAt: now,
-		lastSeen:    now,
-	}
-	sessions.Set(float64(len(s.sessions)))
-	s.mu.Unlock()
 	slog.Debug("anvil: connect", "sid", id, "user", user, "ip", ip, "service", service)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 	return "ok"
@@ -414,11 +395,7 @@ func (s *Server) handleDisconnect(conn net.Conn, fields []string) {
 		return
 	}
 	id, user, ip := fields[1], fields[2], fields[3]
-	s.limiter.Release(user, ip)
-	s.mu.Lock()
-	delete(s.sessions, id)
-	sessions.Set(float64(len(s.sessions)))
-	s.mu.Unlock()
+	s.state.SessionDisconnect(id, user, ip)
 	slog.Debug("anvil: disconnect", "sid", id, "user", user, "ip", ip)
 	fmt.Fprintf(conn, "OK\t%s\n", id)
 }
@@ -464,19 +441,7 @@ func (s *Server) handleLookup(conn net.Conn, fields []string) {
 		return
 	}
 	user, service := fields[1], fields[2]
-	count := 0
-	s.mu.Lock()
-	for _, sess := range s.sessions {
-		if sess.User != user {
-			continue
-		}
-		if service != "" && !strings.EqualFold(sess.Service, service) {
-			continue
-		}
-		count++
-	}
-	s.mu.Unlock()
-	fmt.Fprintf(conn, "COUNT\t%d\n", count)
+	fmt.Fprintf(conn, "COUNT\t%d\n", s.state.SessionLookupCount(user, service))
 }
 
 // handleHeartbeat processes: HEARTBEAT\t{id}\n
@@ -495,13 +460,7 @@ func (s *Server) handleHeartbeat(conn net.Conn, fields []string) string {
 		return "bad_request"
 	}
 	id := fields[1]
-	s.mu.Lock()
-	sess, ok := s.sessions[id]
-	if ok {
-		sess.lastSeen = time.Now().UTC()
-	}
-	s.mu.Unlock()
-	if !ok {
+	if !s.state.SessionTouch(id) {
 		fmt.Fprintf(conn, "OK\t%s\treason=unknown\n", id)
 		return "session_unknown"
 	}
@@ -522,13 +481,7 @@ func (s *Server) handleSelect(conn net.Conn, fields []string) {
 		return
 	}
 	id, folder := fields[1], fields[2]
-	s.mu.Lock()
-	sess, ok := s.sessions[id]
-	if ok {
-		sess.Folder = folder
-	}
-	s.mu.Unlock()
-	if !ok {
+	if !s.state.SessionSetFolder(id, folder) {
 		fmt.Fprintf(conn, "OK\t%s\treason=unknown\n", id)
 		return
 	}
@@ -542,13 +495,7 @@ func (s *Server) handleBackend(conn net.Conn, fields []string) {
 		return
 	}
 	id, backend := fields[1], fields[2]
-	s.mu.Lock()
-	sess, ok := s.sessions[id]
-	if ok {
-		sess.Backend = backend
-	}
-	s.mu.Unlock()
-	if !ok {
+	if !s.state.SessionSetBackend(id, backend) {
 		fmt.Fprintf(conn, "OK\t%s\treason=unknown\n", id)
 		return
 	}
@@ -570,41 +517,14 @@ func (s *Server) sweepLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			now := time.Now().UTC()
-			s.sweepStaleSessions(now)
-			s.sweepStalePenalties(now)
+			s.state.Maintain(time.Now().UTC())
 		}
-	}
-}
-
-// sweepStaleSessions is the unit-testable inner of sweepLoop:
-// pass an explicit now so tests can fast-forward without sleeping.
-func (s *Server) sweepStaleSessions(now time.Time) {
-	cutoff := now.Add(-s.sessionTTL)
-	s.mu.Lock()
-	type reap struct{ user, ip string }
-	var dropped []reap
-	for id, sess := range s.sessions {
-		if sess.lastSeen.Before(cutoff) {
-			dropped = append(dropped, reap{user: sess.User, ip: sess.IP})
-			delete(s.sessions, id)
-		}
-	}
-	sessions.Set(float64(len(s.sessions)))
-	s.mu.Unlock()
-	sessionsReaped.Add(float64(len(dropped)))
-	for _, r := range dropped {
-		s.limiter.Release(r.user, r.ip)
 	}
 }
 
 // sweepStalePenalties drops every penalty entry whose last
 // update is older than penaltyDecay. Inner of sweepLoop — takes
 // `now` so tests can fast-forward.
-func (s *Server) sweepStalePenalties(now time.Time) {
-	s.state.PenaltySweep(now)
-}
-
 // handlePenaltyLookup processes: PENALTY-LOOKUP\t{ip}
 // Replies: PENALTY\t{count}\n where count is 0 when no entry
 // exists or the entry has expired (lazy eviction on read).

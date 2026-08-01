@@ -14,12 +14,12 @@ import (
 func TestStateBackendPenaltyContract(t *testing.T) {
 	const decay = 100 * time.Millisecond
 	backends := map[string]func(t *testing.T) StateBackend{
-		"memory": func(*testing.T) StateBackend { return newMemoryBackend(decay) },
+		"memory": func(*testing.T) StateBackend { return newMemoryBackend(decay, time.Minute, 0) },
 		"redis": func(t *testing.T) StateBackend {
 			mr := miniredis.RunT(t)
 			rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 			t.Cleanup(func() { rdb.Close() })
-			return NewRedisBackend(rdb, "test:anvil:", decay)
+			return NewRedisBackend(rdb, "test:anvil:", decay, time.Minute, 0)
 		},
 	}
 	for name, mk := range backends {
@@ -50,7 +50,7 @@ func TestStateBackendPenaltyContract(t *testing.T) {
 // TestMemoryPenaltyExpiry: the memory backend evicts on read past the decay
 // window and reports "expired".
 func TestMemoryPenaltyExpiry(t *testing.T) {
-	b := newMemoryBackend(40 * time.Millisecond)
+	b := newMemoryBackend(40*time.Millisecond, time.Minute, 0)
 	b.PenaltyUpdate("1.2.3.4", 5)
 	time.Sleep(60 * time.Millisecond)
 	if c, s := b.PenaltyLookup("1.2.3.4"); c != 0 || s != "expired" {
@@ -61,7 +61,7 @@ func TestMemoryPenaltyExpiry(t *testing.T) {
 // TestMemoryPenaltySweep: the periodic sweep drops entries older than the decay
 // window (the sweeper path, distinct from lazy read-eviction).
 func TestMemoryPenaltySweep(t *testing.T) {
-	b := newMemoryBackend(time.Minute)
+	b := newMemoryBackend(time.Minute, time.Minute, 0)
 	b.PenaltyUpdate("1.2.3.4", 2)
 	// Sweep with a clock far past the entry's update time.
 	b.PenaltySweep(time.Now().Add(2 * time.Minute))
@@ -77,7 +77,7 @@ func TestRedisPenaltyLookupErrorStatus(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 500 * time.Millisecond})
 	t.Cleanup(func() { rdb.Close() })
-	b := NewRedisBackend(rdb, "test:anvil:", time.Minute)
+	b := NewRedisBackend(rdb, "test:anvil:", time.Minute, time.Minute, 0)
 
 	mr.Close() // Redis is now down.
 	if c, s := b.PenaltyLookup("1.2.3.4"); c != 0 || s != "error" {
@@ -91,7 +91,7 @@ func TestRedisPenaltyTTL(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { rdb.Close() })
-	b := NewRedisBackend(rdb, "test:anvil:", 100*time.Millisecond)
+	b := NewRedisBackend(rdb, "test:anvil:", 100*time.Millisecond, time.Minute, 0)
 
 	b.PenaltyUpdate("1.2.3.4", 4)
 	if c, _ := b.PenaltyLookup("1.2.3.4"); c != 4 {

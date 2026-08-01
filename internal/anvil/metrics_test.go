@@ -55,14 +55,15 @@ func TestPenaltyLookupTaxonomy(t *testing.T) {
 // believes it is alive.
 func TestSweepReportsReapedSessions(t *testing.T) {
 	srv := NewServer(10, WithSessionTTL(time.Nanosecond))
+	mb := srv.state.(*memoryBackend)
 	now := time.Now().UTC()
-	srv.mu.Lock()
-	srv.sessions["s1"] = &SessionInfo{ID: "s1", User: "u@d", IP: "10.0.0.1", lastSeen: now.Add(-time.Hour)}
-	srv.sessions["s2"] = &SessionInfo{ID: "s2", User: "u@d", IP: "10.0.0.1", lastSeen: now.Add(-time.Hour)}
-	srv.mu.Unlock()
+	mb.mu.Lock()
+	mb.sessions["s1"] = &SessionInfo{ID: "s1", User: "u@d", IP: "10.0.0.1", lastSeen: now.Add(-time.Hour)}
+	mb.sessions["s2"] = &SessionInfo{ID: "s2", User: "u@d", IP: "10.0.0.1", lastSeen: now.Add(-time.Hour)}
+	mb.mu.Unlock()
 
 	before := testutil.ToFloat64(sessionsReaped)
-	srv.sweepStaleSessions(now)
+	mb.Maintain(now)
 	if got := testutil.ToFloat64(sessionsReaped); got != before+2 {
 		t.Fatalf("sessions_reaped_total = %v, want %v", got, before+2)
 	}
