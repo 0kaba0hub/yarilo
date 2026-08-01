@@ -461,10 +461,15 @@ func (b *redisBackend) Maintain(time.Time) {
 	sit := b.rdb.Scan(ctx, 0, b.keyPrefix+"sess:*", scanCount).Iterator()
 	for sit.Next(ctx) {
 		h, err := b.rdb.HMGet(ctx, sit.Val(), "user", "ip").Result()
-		if err != nil || len(h) != 2 || h[0] == nil || h[1] == nil {
+		if err != nil || len(h) != 2 {
 			continue
 		}
-		live[h[0].(string)+"@"+h[1].(string)]++
+		u, ok0 := h[0].(string)
+		ipv, ok1 := h[1].(string)
+		if !ok0 || !ok1 {
+			continue // missing/expired field, or a non-string value
+		}
+		live[u+"@"+ipv]++
 	}
 
 	// Compare each counter to the tally; decrement any leak.
