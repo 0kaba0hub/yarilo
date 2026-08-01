@@ -28,8 +28,7 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/retry"
 )
 
-// version is stamped at build time via -ldflags="-X main.version=<tag>".
-// version is set via pkg/build; kept for vet compatibility
+// version is set via pkg/build; kept for vet compatibility.
 
 func main() {
 	logging.Setup("auth")
@@ -50,19 +49,18 @@ func main() {
 		"telemetry", cfg.Telemetry.Listen,
 	)
 
-	// Each passdb entry that can serve userdb lookups (SQL, passwd-file) is
-	// exposed as a userdb too: backend-api admin lookups and the master-protocol
-	// LIST command run off the same backend — operators almost always want both
-	// roles served by the same store.
+	// Each passdb that can serve userdb lookups (SQL, passwd-file) is also
+	// exposed as a userdb, so backend-api admin lookups and the
+	// master-protocol LIST command run off the same store.
 	dbs, userdbs, err := passdbs.Build(cfg.Auth.Passdb)
 	if err != nil {
 		slog.Error("passdb init failed", "err", err)
 		os.Exit(1)
 	}
 
-	// OAuth2 passdbs join the chain ahead of SQL so an OAUTHBEARER
-	// login resolves through the validator before SQL ever sees
-	// the bearer token as a plaintext "password".
+	// OAuth2 passdbs join the chain ahead of SQL so an OAUTHBEARER login
+	// resolves through the validator before SQL sees the bearer token as
+	// a plaintext "password".
 	if len(cfg.Auth.OAuth2) > 0 {
 		oauth2pdbs, err := oauth2.BuildPassdbs(context.Background(), cfg.Auth.OAuth2)
 		if err != nil {
@@ -89,17 +87,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Build a userdb chain shared by both the client-protocol
-	// server (RunAuth enriches successful passdb with userdb_*
-	// fields — Phase AUTH-2 PR 3) and the master-protocol server
-	// (USER / LIST handlers). One backend, two consumers, no
-	// duplicated config.
+	// Build a userdb chain shared by both the client-protocol server
+	// (enriches a successful passdb with userdb_* fields) and the
+	// master-protocol server (USER / LIST handlers). One backend, two
+	// consumers, no duplicated config.
 	var combinedUserdb protocol.Userdb
 	switch len(userdbs) {
 	case 0:
 		// No backends — every userdb-side surface returns NOTFOUND;
-		// passdb-only auth still works because RunAuth no-ops the
-		// enrichment branch when userdb is nil.
+		// passdb-only auth still works because the enrichment branch
+		// no-ops when userdb is nil.
 	case 1:
 		combinedUserdb = userdbs[0]
 	default:
@@ -112,9 +109,9 @@ func main() {
 		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
 	)
 
-	// Telemetry starts here, after the cache exists, so the liveness watchdog can
-	// probe it (#904): a wedged cache mutex is exactly the kind of "up but cannot
-	// authenticate" state that fails no other probe.
+	// Telemetry starts after the cache exists so the liveness watchdog can
+	// probe it: a wedged cache mutex is exactly the "up but cannot
+	// authenticate" state no other probe catches.
 	tel := startTelemetry(cfg.Telemetry, authCache)
 
 	tokenStore, tokenClose := buildTokenStore(cfg.Auth.Token, cfg.General.StartupDialRetries)
@@ -129,18 +126,18 @@ func main() {
 	}
 
 	// Auth-penalty: dial the warden service and route Lookup/Update
-	// through it. Connection failure at startup → fatal (operator
-	// asked for the feature). Per-request warden errors are
-	// non-fatal and log-only — Server falls back to no-tarpit.
+	// through it. Startup connection failure is fatal (operator asked for
+	// the feature); per-request warden errors are log-only and fall back
+	// to no-tarpit.
 	if cfg.Auth.Penalty.Enabled {
 		if cfg.WardenService.Listen == "" {
 			slog.Error("auth.penalty.enabled requires warden_service.listen")
 			os.Exit(1)
 		}
-		// Build a CLIENT mTLS config for the outbound warden dial — NOT the server
-		// config used for our own listener, which carries no ServerName and would
-		// verify warden's cert against the dial host instead of the shared internal
-		// SAN, CrashLooping under mTLS (#942). Mirrors the login pods' warden dial.
+		// Build a CLIENT mTLS config for the outbound warden dial, NOT the
+		// server config used for our own listener: the server config carries
+		// no ServerName and would verify warden's cert against the dial host
+		// instead of the shared internal SAN. Mirrors the login pods' dial.
 		var penaltyTLS *tls.Config
 		if cfg.InternalTLS.Enabled {
 			penaltyTLS, err = mtls.ClientConfig(
@@ -156,12 +153,11 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		// A resilient pool, NOT a single Dial (#946): the pool redials on a
-		// transport error and retries once, so the tarpit survives an warden
-		// restart without an auth restart — a raw single Conn failed every penalty
-		// op forever after its connection died. It also dials lazily, so auth
-		// starts even if warden is momentarily down; penalty stays fail-open until
-		// it reconnects, so there is no startup CrashLoop on this path either.
+		// A resilient pool, not a single Dial: it redials on a transport
+		// error and retries once, so the tarpit survives a warden restart
+		// without an auth restart. It also dials lazily, so auth starts even
+		// if warden is momentarily down; penalty stays fail-open until it
+		// reconnects, so there is no startup CrashLoop.
 		penaltyPool := warden.NewPool(cfg.WardenService.ClientAddr(), penaltyTLS, 0, 5*time.Second)
 		defer penaltyPool.Close()
 		srvOpts = append(srvOpts,
@@ -170,8 +166,7 @@ func main() {
 		slog.Info("yarilo-auth penalty enabled", "warden", cfg.WardenService.ClientAddr())
 	}
 
-	// Policy server: HTTP hook into wforce or equivalent. URL=""
-	// disables.
+	// Policy server: HTTP hook into wforce or equivalent. URL="" disables.
 	if cfg.Auth.Policy.URL != "" {
 		pc, err := policy.New(policy.Config{
 			URL:              cfg.Auth.Policy.URL,
@@ -224,8 +219,8 @@ func main() {
 	}
 	srv := protocol.NewServer(dbs, srvOpts...)
 	errCh := make(chan error, 3)
-	// Bind before readiness: ListenAndServe would bind inside the goroutine, so the
-	// pod would announce itself ready without knowing the port came up.
+	// Bind before readiness: ListenAndServe would bind inside the
+	// goroutine, so the pod would announce ready before the port came up.
 	clientLn, err := srv.Listen(cfg.AuthService.Listen, tlsCfg)
 	if err != nil {
 		slog.Error("auth: listen failed", "addr", cfg.AuthService.Listen, "err", err)
@@ -238,8 +233,8 @@ func main() {
 	}()
 
 	// Master protocol — userdb-only lookups + LIST. Skipped when
-	// master_listen is unset; that keeps single-binary dev / smoke
-	// runs free of an extra bind that nothing consumes.
+	// master_listen is unset, keeping single-binary dev / smoke runs free
+	// of an extra bind nothing consumes.
 	if cfg.AuthService.MasterListen != "" {
 		masterOpts := []protocol.MasterServerOption{
 			protocol.WithMasterCache(authCache),
@@ -289,10 +284,10 @@ func main() {
 	slog.Info("yarilo-auth stopped")
 }
 
-// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel, and
-// returns the server so the caller can report readiness once its listeners are
-// actually bound. When the liveness watchdog is enabled it probes the auth cache
-// (#904).
+// startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel,
+// returning the server so the caller can report readiness once its
+// listeners are bound. When enabled, the liveness watchdog probes the
+// auth cache.
 func startTelemetry(cfg config.TelemetryConfig, cache *protocol.Cache) *telemetry.Server {
 	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {
@@ -317,12 +312,12 @@ func startTelemetry(cfg config.TelemetryConfig, cache *protocol.Cache) *telemetr
 	return tel
 }
 
-// authLivenessCheck exercises the in-process auth cache mutex to prove the
-// authentication path is not deadlocked (#904). It reads the cache stats — a
-// pure, side-effect-free take of c.mu — and never touches the passdb/userdb
-// backend: the point is the local code path, so a shared-database outage cannot
-// trip every auth pod at once. A wedged cache mutex blocks the read, which the
-// watchdog observes as a failure via its own timeout.
+// authLivenessCheck exercises the in-process auth cache mutex to prove
+// the auth path is not deadlocked. It reads cache stats (a
+// side-effect-free take of c.mu) and never touches the passdb/userdb
+// backend, so a shared-database outage cannot trip every auth pod at
+// once. A wedged mutex blocks the read; the watchdog sees the timeout as
+// a failure.
 func authLivenessCheck(cache *protocol.Cache, gate *telemetry.Gate) telemetry.LivenessCheck {
 	return func(ctx context.Context) error {
 		if gate != nil {

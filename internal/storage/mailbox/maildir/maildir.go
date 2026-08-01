@@ -23,9 +23,8 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// Backend is the Maildir MailboxBackend factory.
-// It holds only process-wide state (hostname, pid, counter).
-// Per-user state lives in userMailbox.
+// Backend is the Maildir MailboxBackend factory. Holds only
+// process-wide state (hostname, pid, counter); per-user state lives in userMailbox.
 type Backend struct {
 	hostname     string
 	pid          int
@@ -39,10 +38,9 @@ type Backend struct {
 // Option configures a Backend at construction time.
 type Option func(*Backend)
 
-// WithLocker wires a yarilo-locks client into the backend. Every shared-file
-// write then takes a cross-process X lock on `mbox:<user>:<folder>` before
-// mutating the on-disk maildir. A nil Locker disables cross-process locking
-// (single-process tests / dev), keeping the in-process sync.Mutex only.
+// WithLocker wires a yarilo-locks client into the backend: every shared-file
+// write takes a cross-process X lock on `mbox:<user>:<folder>`. A nil Locker
+// keeps the in-process sync.Mutex only (single-process tests / dev).
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
 }
@@ -57,9 +55,8 @@ func WithMaxConcurrentWrites(n int) Option {
 	}
 }
 
-// WithListUTF8 sets the on-disk folder name encoding.
-// true (default): UTF-8. false: modified-UTF-7 (RFC 3501 §5.1.3) for
-// legacy installations that already store names in that encoding.
+// WithListUTF8 sets the on-disk folder name encoding: true (default) UTF-8,
+// false modified-UTF-7 (RFC 3501 §5.1.3) for legacy installations.
 func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 
 // WithNormalizeNFC enables Unicode NFC normalization of folder names
@@ -84,13 +81,11 @@ func New(opts ...Option) *Backend {
 	return b
 }
 
-// OpenUser returns a per-session handle bound to u. The handle's Home field
-// is used for all path resolution; usernames are never converted to paths here.
+// OpenUser returns a per-session handle bound to u. Path resolution uses u.Home;
+// usernames are never converted to paths.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
-	// Per-driver default: when no mail_path arrives from userdb, default to
-	// <home>/Maildir so INBOX is the maildir root
-	// rather than a home/INBOX subdirectory. The mailbox root is always a
-	// dedicated directory, so the maildir-root INBOX layout always applies.
+	// No mail_path from userdb: default to <home>/Maildir, making INBOX the
+	// maildir root rather than a home/INBOX subdirectory.
 	mailPath := u.MailPath
 	if mailPath == "" {
 		mailPath = filepath.Join(u.Home, "Maildir")
@@ -141,9 +136,9 @@ type userMailbox struct {
 	cache            map[string]*folderCache // keyed by folder name; lazy-initialised
 }
 
-// makeOwner builds the owner string for yarilo-locks BUSY reports.
-// Format: "<process>/<pid>/<user>[/<sid>]". The optional session ID
-// disambiguates concurrent sessions for the same user.
+// makeOwner builds the yarilo-locks owner string
+// "<process>/<pid>/<user>[/<sid>]"; the session ID disambiguates concurrent
+// sessions for the same user.
 func makeOwner(u *mailbox.UserInfo) string {
 	proc := "yarilo"
 	if len(os.Args) > 0 {
@@ -155,11 +150,8 @@ func makeOwner(u *mailbox.UserInfo) string {
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
-// withMailboxLock runs fn under both tiers — first the in-process mutex
-// (cheap, serialises goroutines in this process), then the cross-process
-// yarilo-locks X lock (slow path; only engaged when b.locker is non-nil).
-// The lock TTL is conservatively long enough for any single write op; the
-// context guards against backend unreachability.
+// withMailboxLock runs fn under the in-process mutex, then the cross-process
+// yarilo-locks X lock (only when b.locker is non-nil).
 func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -167,10 +159,9 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 		return fn()
 	}
 	key := locks.MailboxKey(u.username, folder)
-	// Re-entrancy: if our Locker already holds this resource (an outer
-	// scope took it for a batch — e.g. POP3 QUIT / multi-message IMAP
-	// EXPUNGE), skip the per-call Acquire to avoid the same-owner BUSY
-	// loop that yarilo-locks would otherwise produce.
+	// Re-entrancy: an outer scope already holds this resource for a batch
+	// (POP3 QUIT / multi-message EXPUNGE); skip Acquire to avoid a same-owner
+	// BUSY loop.
 	if u.b.locker.HoldsResource(key) {
 		return fn()
 	}
@@ -186,8 +177,8 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 
 func (u *userMailbox) Init() error {
 	if u.explicitMailPath {
-		// With an explicit mail_path the INBOX IS the maildir root —
-		// create cur/new/tmp directly under inboxPath.
+		// Explicit mail_path: INBOX is the maildir root; cur/new/tmp go
+		// directly under inboxPath.
 		for _, sub := range []string{"cur", "new", "tmp"} {
 			if err := os.MkdirAll(filepath.Join(u.inboxPath, sub), 0o700); err != nil {
 				return fmt.Errorf("maildir/init: %w", err)
@@ -204,9 +195,7 @@ func (u *userMailbox) Init() error {
 	return nil
 }
 
-// Create provisions the cur/new/tmp triplet for a folder. Under the
-// cross-process X lock so a concurrent Delete cannot tear the half-built
-// tree apart and no sibling Create races on the same folder.
+// Create provisions the cur/new/tmp triplet for a folder under the X lock.
 func (u *userMailbox) Create(folder string) error {
 	return u.withMailboxLock(folder, func() error {
 		base := u.folderPath(folder)
@@ -219,27 +208,25 @@ func (u *userMailbox) Create(folder string) error {
 	})
 }
 
-// Delete removes the entire folder tree (cur/new/tmp + uidlist + maildirfolder
-// markers). Under the cross-process X lock so no in-flight delivery / read
-// observes a half-deleted tree.
+// Delete removes the entire folder tree (cur/new/tmp + uidlist + markers)
+// under the X lock.
 func (u *userMailbox) Delete(folder string) error {
 	return u.withMailboxLock(folder, func() error {
 		return os.RemoveAll(u.folderPath(folder))
 	})
 }
 
-// Rename renames a folder on disk. Holds the cross-process X lock on BOTH
-// the old and the new name in lexicographic order so two processes calling
-// Rename simultaneously cannot deadlock against each other.
+// Rename renames a folder on disk, holding the X lock on both names in
+// lexicographic order so concurrent Renames cannot deadlock.
 func (u *userMailbox) Rename(oldName, newName string) error {
 	return u.withTwoMailboxLocks(oldName, newName, func() error {
 		return os.Rename(u.folderPath(oldName), u.folderPath(newName))
 	})
 }
 
-// withTwoMailboxLocks is the maildir twin of file/file.userIndex.withTwoMailboxLocks.
-// Same lock-ordering convention so the maildir and index sides never
-// deadlock against each other when Rename ripples through both backends.
+// withTwoMailboxLocks takes both per-folder X locks in lexicographic order.
+// Same ordering as the index side so a Rename rippling through both backends
+// cannot deadlock.
 func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
 	if u.b.locker == nil {
 		return fn()
@@ -272,12 +259,10 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 	return fn()
 }
 
-// Save streams r into tmp/ then atomically renames into cur/.
-// uid is the value returned by UserIndex.AllocateUID on this
-// folder — Maildir does not encode it in the filename, but the
-// uid→filename mapping is appended to the yarilo-uidlist sidecar
-// inline so subsequent List() / Fetch() can resolve UIDs without
-// a separate AppendUIDEntry call.
+// Save streams r into tmp/ then atomically renames into cur/. uid comes from
+// UserIndex.AllocateUID; Maildir does not encode it in the filename, so the
+// uid→filename mapping is appended inline to the yarilo-uidlist sidecar for
+// later List() / Fetch() resolution.
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, uint32, error) {
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
@@ -306,8 +291,8 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 	}
 
 	flagStr := encodeFlags(flags)
-	// Append ,S=<phys>,W=<virt> before :2,<flags>
-	// so List() can return both sizes without reading the file body.
+	// ,S=<phys>,W=<virt> before :2,<flags> so List() reports both sizes
+	// without reading the body.
 	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
 
 	if err := u.withMailboxLock(folder, func() error {
@@ -330,8 +315,8 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 	return finalName, sc.phys + sc.lfNoCR, nil
 }
 
-// appendUIDListLocked appends one entry to the yarilo-uidlist v3
-// sidecar and updates the in-memory cache. Caller MUST hold the mailbox X lock.
+// appendUIDListLocked appends one entry to the yarilo-uidlist v3 sidecar and
+// updates the in-memory cache. Caller MUST hold the mailbox X lock.
 func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string) error {
 	if err := u.migrateLegacyUIDList(folder); err != nil {
 		return err
@@ -351,8 +336,7 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 		return err
 	}
 
-	// Update the cache inline so the next readUIDList within this session
-	// returns immediately without re-reading the file.
+	// Update the cache inline so the next readUIDList skips the file.
 	if fi, statErr := f.Stat(); statErr == nil {
 		c := u.folderCacheFor(folder)
 		if c.uidMap == nil {
@@ -365,9 +349,8 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 	return nil
 }
 
-// sizeCounter is an io.Writer that records bytes written and the number of LF
-// bytes not preceded by CR (lone LFs that would gain a CR under CRLF
-// normalisation).
+// sizeCounter records bytes written and the count of lone LFs (not preceded by
+// CR, which would gain a CR under CRLF normalisation).
 type sizeCounter struct {
 	phys   uint32
 	lfNoCR uint32
@@ -483,9 +466,8 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	// maildir++ is a flat namespace: every ".<name>" dir is a selectable
-	// mailbox and hierarchy lives in the dotted name, so there are no
-	// \NoSelect containers to surface.
+	// maildir++ is flat: every ".<name>" dir is selectable and hierarchy lives
+	// in the dotted name, so there are no \NoSelect containers.
 	folders := []mailbox.FolderEntry{{Name: "INBOX", Selectable: true}}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -510,8 +492,8 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 		if u.normalizeNFC {
 			logical = nfcNormalize(logical)
 		}
-		// maildir++ stores hierarchy flat with "." — map it back to the
-		// namespace's IMAP separator (default no-escape: every "." is a level).
+		// maildir++ stores hierarchy flat with "."; map it back to the
+		// namespace's IMAP separator (every "." is a level).
 		if u.separator != "." {
 			logical = strings.ReplaceAll(logical, ".", u.separator)
 		}
@@ -520,15 +502,11 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	return folders, nil
 }
 
-// Scan walks the on-disk maildir for folder and returns one
-// ScanRecord per message (cur/ + new/). Filenames carry both the
-// flags (parsed) and size (from the optional "S=" infix or, when
-// absent, from os.Stat); InternalDate comes from the file mtime.
-//
-// GUID is left as the zero value — Maildir filenames do not carry
-// a stable per-message GUID; the index keeps that out of band.
-// Caller (rebuild flow) is responsible for preserving the index's
-// GUID assignment for filenames it matches against the old index.
+// Scan walks cur/ + new/ and returns one ScanRecord per message. Flags and
+// size come from the filename (size from the "S=" infix, else os.Stat);
+// InternalDate from the file mtime. GUID is left zero — Maildir filenames
+// carry no stable GUID, so the rebuild flow must preserve the index's GUID
+// for matched filenames.
 func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 	out := make([]mailbox.ScanRecord, 0, 128)
 	for _, sub := range []string{"cur", "new"} {
@@ -577,16 +555,15 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 
 func (u *userMailbox) Close() error { return nil }
 
-// ProactiveScan reports that this driver's on-disk representation may change
-// out of band (MDA delivery into new/, another MUA renaming for flags) so the
-// index must be reconciled by scanning the directory on SELECT. Index-
-// authoritative drivers (dbox) omit this method and self-heal reactively.
+// ProactiveScan reports that the on-disk state may change out of band (MDA
+// delivery into new/, another MUA renaming for flags), so the index must be
+// reconciled by scanning on SELECT. Index-authoritative drivers (dbox) omit
+// this and self-heal reactively.
 func (u *userMailbox) ProactiveScan() bool { return true }
 
-// maildirBase returns the stable identity of a maildir filename: everything
-// before the ":" info separator. A flag change renames only the ":2,<flags>"
-// trailer, so two names sharing a base are the same message and must keep the
-// same UID. This mirrors how the reference keys the uidlist.
+// maildirBase returns everything before the ":" info separator — the stable
+// identity of a maildir filename. A flag change renames only the ":2,<flags>"
+// trailer, so names sharing a base are the same message and keep the same UID.
 func maildirBase(name string) string {
 	if i := strings.IndexByte(name, ':'); i >= 0 {
 		return name[:i]
@@ -594,11 +571,9 @@ func maildirBase(name string) string {
 	return name
 }
 
-// moveNewToCurLocked moves every file out of new/ into cur/, appending the
-// ":2," info marker the reference uses for a message with no flags. An MDA delivers
-// into new/; maildir sync migrates those files into cur/ so the rest of the
-// driver (Fetch, Remove, List) — which only looks in cur/ — can reach them.
-// Caller holds the mailbox lock.
+// moveNewToCurLocked moves every file from new/ into cur/, appending the ":2,"
+// info marker for a message with no flags. The MDA delivers into new/; the rest
+// of the driver (Fetch, Remove, List) only looks in cur/. Caller holds the lock.
 func (u *userMailbox) moveNewToCurLocked(folder string) error {
 	base := u.folderPath(folder)
 	newDir := filepath.Join(base, "new")
@@ -621,7 +596,7 @@ func (u *userMailbox) moveNewToCurLocked(folder string) error {
 		}
 		if err := os.Rename(filepath.Join(newDir, name), filepath.Join(curDir, curName)); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				continue // moved by a concurrent sync — fine
+				continue // moved by a concurrent sync
 			}
 			return fmt.Errorf("maildir/sync: move new->cur %s: %w", name, err)
 		}
@@ -630,22 +605,19 @@ func (u *userMailbox) moveNewToCurLocked(folder string) error {
 }
 
 // ReconcileIndex brings idx into agreement with the physical maildir under the
-// driver's cross-process mailbox lock. It follows the reference maildir sync
-// model:
+// mailbox lock:
 //
-//   - Files in new/ are migrated into cur/ first, so an MDA delivery becomes a
-//     normal, readable message.
-//   - Messages are matched by base name (identity survives a flag rename), so a
-//     second MUA flipping ":2," → ":2,S" keeps the UID.
-//   - New files get a UID via the index's own atomic allocator (no manual
-//     next-UID seed, so a concurrent delivery cannot collide).
-//   - A tracked file that vanished is expunged incrementally, writing a QRESYNC
-//     tombstone; a tracked file renamed out of band has its stored filename (and
-//     the flags now encoded in that name) updated in place.
+//   - new/ is migrated into cur/ first, so an MDA delivery becomes readable.
+//   - Messages match by base name, so a second MUA flipping ":2," → ":2,S"
+//     keeps the UID.
+//   - New files get a UID via the index's atomic allocator (no manual seed, so
+//     a concurrent delivery cannot collide).
+//   - A vanished tracked file is expunged incrementally (QRESYNC tombstone); a
+//     tracked file renamed out of band has its stored filename and flags
+//     updated in place.
 //
-// Tracked messages whose on-disk name is unchanged are left untouched — the
-// index stays authoritative for flags yarilo itself set, which never rename the
-// file.
+// Tracked messages with an unchanged on-disk name are left untouched — the
+// index stays authoritative for flags yarilo set, which never rename the file.
 func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (mailbox.SyncStats, error) {
 	var st mailbox.SyncStats
 	err := u.withMailboxLock(folder.Name, func() error {
@@ -675,7 +647,7 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			base := maildirBase(m.Filename)
 			rec, ok := onDisk[base]
 			if !ok {
-				// File vanished out of band → expunge (tombstone for QRESYNC).
+				// Vanished out of band → expunge (QRESYNC tombstone).
 				if err := idx.ExpungeMessage(folder.ID, m.UID); err != nil {
 					return fmt.Errorf("maildir/sync: expunge %d: %w", m.UID, err)
 				}
@@ -685,8 +657,7 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			tracked[base] = struct{}{}
 			if rec.Filename != m.Filename {
 				// Renamed out of band (a flag change moves the ":2," trailer):
-				// keep the identity, adopt the on-disk flags and repoint the
-				// filename so the message stays reachable.
+				// adopt the on-disk flags and repoint the filename.
 				if !sameFlags(rec.Flags, m.Flags) {
 					if err := idx.UpdateFlags(folder.ID, m.UID, rec.Flags, nil); err != nil {
 						return fmt.Errorf("maildir/sync: update flags %d: %w", m.UID, err)
@@ -743,23 +714,19 @@ func sameFlags(a, b []string) bool {
 	return true
 }
 
-// SyncToken returns an opaque token capturing the folder's cur/ and new/
-// directory mtime and size. When it is unchanged since the previous SELECT no
-// message was delivered, removed or renamed, so the caller may skip the
-// reconcile scan and its lock entirely. An empty token (both dirs missing or
-// unstattable) forces the caller to reconcile.
+// SyncToken returns an opaque token over the folder's cur/ and new/ mtime and
+// size. Unchanged since the previous SELECT means nothing was delivered,
+// removed or renamed, so the caller may skip the reconcile scan and its lock.
+// An empty token (both dirs missing or unstattable) forces a reconcile.
 //
-// A directory whose mtime falls within the current wall-clock second is
-// "dirty": on a filesystem with coarse (1 s) mtime granularity a second change
-// in the same tick would not move the mtime, so the token cannot be trusted
-// for a skip decision. Such a token embeds a per-call nonce so it never
-// matches the cached value, forcing a reconcile until the directory settles a
-// second past its last change. This mirrors the classic maildir same-second
-// dirty-sync rule.
+// A directory whose mtime is within the current wall-clock second is "dirty":
+// on coarse (1 s) mtime granularity a second same-tick change would not move
+// the mtime, so the token embeds a per-call nonce to force a reconcile until
+// the directory settles. This is the classic maildir same-second dirty-sync
+// rule.
 //
-// Over NFS the client attribute cache can stale a directory mtime; operators
-// that deliver across nodes should keep attribute-cache TTLs short. A stale
-// token only delays visibility until the next changed token, never corrupts.
+// Over NFS a stale attribute-cache mtime only delays visibility until the next
+// changed token, never corrupts; keep attribute-cache TTLs short.
 func (u *userMailbox) SyncToken(folder string) string {
 	base := u.folderPath(folder)
 	now := time.Now()
@@ -784,9 +751,8 @@ func (u *userMailbox) SyncToken(folder string) string {
 
 // ---- uidlist ---------------------------------------------------------------
 
-// On-disk filenames. UIDListFileName is what we write; the
-// legacy canonical name is renamed in place on first access so
-// subsequent runs see only the yarilo file.
+// On-disk filenames. The legacy name is renamed to UIDListFileName on first
+// access, so subsequent runs see only the yarilo file.
 const (
 	UIDListFileName       = "yarilo-uidlist"
 	LegacyUIDListFileName = "dovecot-uidlist"
@@ -796,8 +762,8 @@ func (u *userMailbox) uidListPath(folder string) string {
 	return filepath.Join(u.controlFolderPath(folder), UIDListFileName)
 }
 
-// migrateLegacyUIDList renames dovecot-uidlist → yarilo-uidlist
-// if the yarilo-named file is absent. Idempotent.
+// migrateLegacyUIDList renames dovecot-uidlist → yarilo-uidlist when the
+// yarilo file is absent. Idempotent.
 func (u *userMailbox) migrateLegacyUIDList(folder string) error {
 	dst := u.uidListPath(folder)
 	if _, err := os.Stat(dst); err == nil {
@@ -890,9 +856,8 @@ func (u *userMailbox) folderCacheFor(folder string) *folderCache {
 
 // ---- path helpers ----------------------------------------------------------
 
-// folderDiskName converts a logical folder name (UTF-8) to the on-disk
-// directory name component: NFC normalisation then modified-UTF-7 encoding
-// when configured for legacy on-disk encoding.
+// folderDiskName maps a logical UTF-8 folder name to the on-disk directory
+// component: NFC normalisation, then modified-UTF-7 when legacy encoding is set.
 func (u *userMailbox) folderDiskName(folder string) string {
 	if u.normalizeNFC {
 		folder = nfcNormalize(folder)
@@ -914,8 +879,8 @@ func (u *userMailbox) folderPath(folder string) string {
 }
 
 // controlFolderPath returns the directory for per-folder control files
-// (yarilo-uidlist). When CONTROL= is configured, it uses controlDir as
-// the root; otherwise the control files are co-located with the folder.
+// (yarilo-uidlist): under controlDir when CONTROL= is set, else co-located
+// with the folder.
 func (u *userMailbox) controlFolderPath(folder string) string {
 	sub := mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator)
 	if u.controlDir != "" {

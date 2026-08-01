@@ -6,10 +6,9 @@ import (
 	"fmt"
 )
 
-// dispatchACL routes `yarctl backend acl <command>` to the
-// matching admin-API call. The wire format and on-disk semantics
-// are identical to IMAP SETACL / DELETEACL so admin writes are
-// visible to live IMAP sessions immediately.
+// dispatchACL routes `yarctl backend acl <command>` to the matching admin-API
+// call. Wire format and on-disk semantics match IMAP SETACL/DELETEACL, so admin
+// writes are visible to live IMAP sessions immediately.
 func dispatchACL(args []string) error {
 	if len(args) == 0 {
 		printACLUsage()
@@ -84,11 +83,9 @@ func aclGet(args []string) error {
 	}))
 }
 
-// aclSet is upsert-one-entry semantics — the CLI doesn't accept a
-// full ACL JSON (clumsy on the command line). It first GETs the
-// current ACL, swaps in the supplied (identifier, rights), and
-// then PUTs the whole thing back through the same /set endpoint
-// the API uses for full-replace.
+// aclSet upserts one entry: the CLI does not accept a full ACL JSON. It GETs
+// the current ACL, swaps in the supplied (identifier, rights), and pushes the
+// whole thing back through the same /set endpoint the API uses for full-replace.
 func aclSet(args []string) error {
 	fs := flag.NewFlagSet("acl set", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
@@ -127,14 +124,14 @@ func aclDelete(args []string) error {
 	}
 	user, mbox := fs.Arg(0), fs.Arg(1)
 	if fs.NArg() == 2 {
-		// No identifier — drop the entire file.
+		// No identifier: drop the entire file.
 		return printJSON(backendAPIPost("/api/backend/acl/delete", map[string]any{
 			"user":      user,
 			"namespace": *ns,
 			"folder":    mbox,
 		}))
 	}
-	// Single-identifier delete = GET + drop matching entry + SET.
+	// Single-identifier delete: GET, drop matching entry, SET.
 	identifier := fs.Arg(2)
 	current, err := fetchACLEntries(user, *ns, mbox)
 	if err != nil {
@@ -171,19 +168,17 @@ func aclRebuild(args []string) error {
 
 // ---- helpers ----
 
-// aclEntryWire is the wire shape the /get and /set endpoints expose.
-// Kept JSON-compatible with backendapi.aclEntryJSON so the CLI can
-// round-trip without a separate struct registry.
+// aclEntryWire is the wire shape the /get and /set endpoints expose. Kept
+// JSON-compatible with backendapi.aclEntryJSON so the CLI can round-trip.
 type aclEntryWire struct {
 	Identifier string `json:"identifier"`
 	Rights     string `json:"rights"`
 	Negative   bool   `json:"negative,omitempty"`
 }
 
-// fetchACLEntries GETs the current ACL of (user, mailbox) and decodes
-// it into a slice the CLI can mutate before pushing back. The
-// /get endpoint returns an empty array when no file exists, so the
-// caller gets an empty slice rather than an error.
+// fetchACLEntries GETs the current ACL of (user, mailbox) and decodes it into a
+// slice the CLI can mutate before pushing back. The /get endpoint returns an
+// empty array when no file exists, so the caller gets an empty slice, not an error.
 func fetchACLEntries(user, ns, mbox string) ([]aclEntryWire, error) {
 	body, err := backendAPIPost("/api/backend/acl/get", map[string]any{
 		"user":      user,
@@ -202,10 +197,9 @@ func fetchACLEntries(user, ns, mbox string) ([]aclEntryWire, error) {
 	return resp.ACL, nil
 }
 
-// upsertEntry replaces the entry with matching identifier or appends
-// when none exists. Empty rights with a non-`-` identifier collapses
-// to "drop that identifier" — mirrors RFC 4314 SETACL empty-rights
-// semantics so admin and IMAP paths stay symmetric.
+// upsertEntry replaces the entry with matching identifier, or appends when none
+// exists. Empty rights with a non-`-` identifier collapses to "drop that
+// identifier", per RFC 4314 SETACL empty-rights semantics.
 func upsertEntry(in []aclEntryWire, identifier, rights string) []aclEntryWire {
 	if rights == "" && len(identifier) > 0 && identifier[0] != '-' {
 		return dropIdentifier(in, identifier)
@@ -226,9 +220,9 @@ func upsertEntry(in []aclEntryWire, identifier, rights string) []aclEntryWire {
 	return out
 }
 
-// dropIdentifier removes every entry whose identifier matches (after
-// normalising the '-' prefix — DELETEACL drops both positive and
-// negative entries for the identifier per RFC 4314 §3.2).
+// dropIdentifier removes every entry whose identifier matches after normalising
+// the '-' prefix: DELETEACL drops both positive and negative entries for the
+// identifier per RFC 4314 §3.2.
 func dropIdentifier(in []aclEntryWire, identifier string) []aclEntryWire {
 	wantBare := identifier
 	if len(wantBare) > 0 && wantBare[0] == '-' {

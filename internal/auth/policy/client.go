@@ -1,12 +1,10 @@
-// Package policy implements a wforce-compatible HTTP policy
-// client. Yarilo's auth server POSTs every login attempt to an
-// external policy server (typically PowerDNS wforce or any
-// compatible HTTP service); the response decides whether to
-// continue, tarpit, or reject the attempt.
+// Package policy implements a wforce-compatible HTTP policy client. The
+// auth server POSTs every login attempt to an external policy server;
+// the response decides whether to continue, tarpit, or reject.
 //
-// Wire shape is wforce-compatible: JSON payload keys, hash algorithm,
-// status semantics, and command query-string match the wforce protocol
-// so operators can reuse the same wforce instance across deployments.
+// The wire shape (JSON payload keys, hash algorithm, status semantics,
+// command query-string) matches the wforce protocol so operators can
+// reuse the same wforce instance across deployments.
 package policy
 
 import (
@@ -27,29 +25,22 @@ import (
 	"time"
 )
 
-// Mode controls which calls the auth path makes to the policy
-// server. Three orthogonal flags (check_before_auth /
-// check_after_auth / report_after_auth) — any combination is
-// legal; default builds enable check_before + check_after +
-// report_after.
+// Mode controls which calls the auth path makes to the policy server.
+// The three flags are orthogonal; any combination is legal.
 type Mode struct {
-	// CheckBefore: POST ?command=allow BEFORE the passdb runs.
-	// A non-zero status<0 from the policy server rejects the
-	// login outright; status>0 tarpits the connection for that
-	// many seconds before the chain runs.
+	// CheckBefore: POST ?command=allow BEFORE the passdb runs. status<0
+	// rejects the login; status>0 tarpits that many seconds before the
+	// chain runs.
 	CheckBefore bool
 
-	// CheckAfter: POST ?command=allow AFTER the passdb result is
-	// known but BEFORE the reply lands on the wire. Same status
-	// semantics — but here the policy server has visibility on
-	// whether the passdb accepted, so it can downgrade a
-	// successful auth to fail (account-takeover detection).
+	// CheckAfter: POST ?command=allow after the passdb result is known
+	// but before the reply hits the wire. Same status semantics; here
+	// the server can downgrade a successful auth to fail
+	// (account-takeover detection).
 	CheckAfter bool
 
-	// ReportAfter: POST ?command=report once the auth decision
-	// is final. Fire-and-forget — the client does not wait for
-	// the response. Payload carries `success` and `policy_reject`
-	// fields so the server can keep its own analytics.
+	// ReportAfter: POST ?command=report once the decision is final.
+	// Fire-and-forget. Payload carries `success` and `policy_reject`.
 	ReportAfter bool
 }
 
@@ -69,46 +60,39 @@ type Config struct {
 	// "sha256". Must match wforce's hash setting.
 	HashMech string
 
-	// HashNonce is the per-deployment salt mixed into the hash.
-	// REQUIRED when URL is set — empty nonce is rejected at
-	// construction so two deployments with different traffic
-	// don't share the same pwhash space.
+	// HashNonce is the per-deployment salt mixed into the hash. Required
+	// when URL is set; an empty nonce is rejected at construction so two
+	// deployments don't share the same pwhash space.
 	HashNonce string
 
-	// HashTruncateBits is how many MSB bits of the digest survive
-	// hex-encoding into pwhash. Default 12. 12 bits = 4096 buckets
-	// — enough for rate-limit patterns, useless for password
-	// recovery. Set 0 for no truncation (full hash; reveals more
-	// about the password set).
+	// HashTruncateBits is how many MSB bits of the digest survive into
+	// pwhash. Default 12 (4096 buckets — enough for rate-limit patterns,
+	// useless for password recovery). 0 = no truncation (full hash).
 	HashTruncateBits uint
 
-	// Timeout caps the HTTP round-trip. RejectOnFail decides
-	// what happens when the timeout fires.
+	// Timeout caps the HTTP round-trip. RejectOnFail decides what happens
+	// when it fires.
 	Timeout time.Duration
 
-	// RejectOnFail flips the default-allow stance: when true and
-	// the policy server is unreachable / returns non-2xx / sends
-	// malformed JSON, the login is rejected. Default false
-	// (fail-open) — operators flip to true once they trust their
-	// policy infrastructure.
+	// RejectOnFail flips the default-allow stance: when true, an
+	// unreachable / non-2xx / malformed-JSON policy server rejects the
+	// login. Default false (fail-open).
 	RejectOnFail bool
 
-	// LogOnly: when true, the client still POSTs and still logs
-	// decisions, but the Check methods return continue regardless
-	// of the policy server's response. Used to roll out a new
-	// policy in shadow-mode before enforcing.
+	// LogOnly: still POST and log decisions, but Check methods return
+	// continue regardless of the server's response. For shadow-mode
+	// rollout before enforcing.
 	LogOnly bool
 
 	// HTTPClient is the underlying transport. nil → http.DefaultClient
-	// with a Timeout wrapper. Override for tests / metrics
-	// instrumentation.
+	// with a Timeout wrapper.
 	HTTPClient *http.Client
 }
 
-// Decision is the parsed policy-server result. Continue=true
-// means proceed (status==0). Continue=false + Reject=true means
-// the policy server refused (status<0). TarpitSecs>0 (with
-// Continue=true) means sleep that many seconds, then proceed.
+// Decision is the parsed policy-server result. Continue=true means
+// proceed (status==0). Reject=true means refused (status<0).
+// TarpitSecs>0 (with Continue=true) means sleep that many seconds, then
+// proceed.
 type Decision struct {
 	Continue   bool
 	Reject     bool
@@ -116,9 +100,8 @@ type Decision struct {
 	Message    string
 }
 
-// Request is the structured input to a policy call. The client
-// hashes (username, password) per the configured policy and POSTs
-// the JSON template wforce expects.
+// Request is the structured input to a policy call. The client hashes
+// (username, password) and POSTs the JSON template wforce expects.
 type Request struct {
 	Username  string // resolved/requested username before chain
 	Password  string // plain — used only to compute pwhash, never stored
@@ -141,20 +124,18 @@ type Client struct {
 }
 
 var (
-	// ErrPolicyReject is returned by Check* when the server
-	// status was <0 (explicit refuse). Caller surfaces this as
-	// an opaque auth-fail to the wire client.
+	// ErrPolicyReject is returned by Check* on server status<0 (explicit
+	// refuse). Caller surfaces it as an opaque auth-fail.
 	ErrPolicyReject = errors.New("policy: rejected")
 	// ErrPolicyFail is returned by Check* when the server was
-	// unreachable / malformed AND Config.RejectOnFail is true.
-	// Caller surfaces this as temp_fail.
+	// unreachable / malformed and RejectOnFail is true. Caller surfaces
+	// it as temp_fail.
 	ErrPolicyFail = errors.New("policy: server unavailable")
 )
 
-// New builds a Client from cfg. Returns nil + nil when cfg.URL is
-// empty (policy disabled — caller checks for nil and skips). An
-// invalid configuration (URL set but nonce empty, unknown hash
-// mech) returns nil + error.
+// New builds a Client from cfg. Returns (nil, nil) when cfg.URL is empty
+// (policy disabled). Invalid config (URL set but nonce empty, unknown
+// hash mech) returns (nil, error).
 func New(cfg Config) (*Client, error) {
 	if cfg.URL == "" {
 		return nil, nil
@@ -185,8 +166,7 @@ func New(cfg Config) (*Client, error) {
 }
 
 // CheckBefore POSTs ?command=allow with `success` / `policy_reject`
-// omitted. Returns the parsed decision so the caller can sleep
-// the tarpit + decide whether to continue / reject.
+// omitted, returning the parsed decision.
 func (c *Client) CheckBefore(ctx context.Context, req Request) (Decision, error) {
 	if c == nil {
 		return Decision{Continue: true}, nil
@@ -194,9 +174,8 @@ func (c *Client) CheckBefore(ctx context.Context, req Request) (Decision, error)
 	return c.do(ctx, "allow", req, false)
 }
 
-// CheckAfter is like CheckBefore but called once the passdb
-// result is known. The server may downgrade success to fail
-// (e.g. account-takeover detection).
+// CheckAfter is CheckBefore called once the passdb result is known. The
+// server may downgrade success to fail (account-takeover detection).
 func (c *Client) CheckAfter(ctx context.Context, req Request, success bool, policyReject bool) (Decision, error) {
 	if c == nil {
 		return Decision{Continue: true}, nil
@@ -204,9 +183,8 @@ func (c *Client) CheckAfter(ctx context.Context, req Request, success bool, poli
 	return c.doWithStatus(ctx, "allow", req, true, success, policyReject)
 }
 
-// ReportAfter fires the post-decision telemetry call. Returns
-// nothing meaningful — the body is consumed and discarded.
-// Errors are logged but not surfaced.
+// ReportAfter fires the post-decision telemetry call. The body is
+// discarded; errors are logged, not surfaced.
 func (c *Client) ReportAfter(ctx context.Context, req Request, success bool, policyReject bool) {
 	if c == nil {
 		return
@@ -223,8 +201,8 @@ func (c *Client) do(ctx context.Context, command string, req Request, _ bool) (D
 	return c.doWithStatus(ctx, command, req, false, false, false)
 }
 
-// doWithStatus is the actual HTTP round-trip. Used by both Check
-// variants and ReportAfter — the booleans gate emission of the
+// doWithStatus is the actual HTTP round-trip, shared by both Check
+// variants and ReportAfter. The booleans gate emission of the
 // post-decision fields.
 func (c *Client) doWithStatus(ctx context.Context, command string, req Request,
 	includeStatus, success, policyReject bool) (Decision, error) {
@@ -264,8 +242,7 @@ func (c *Client) doWithStatus(ctx context.Context, command string, req Request,
 	}
 
 	if command == "report" {
-		// Report mode: ignore body shape. wforce typically returns
-		// 200 OK with empty body for report.
+		// Report mode has no meaningful body (typically 200 OK, empty).
 		return Decision{Continue: true}, nil
 	}
 
@@ -300,9 +277,8 @@ func (c *Client) doWithStatus(ctx context.Context, command string, req Request,
 	return d, nil
 }
 
-// failoverDecision is what to return when the round-trip fails or
-// the response is malformed. RejectOnFail flips fail-open to
-// fail-closed.
+// failoverDecision is returned when the round-trip fails or the response
+// is malformed. RejectOnFail flips fail-open to fail-closed.
 func (c *Client) failoverDecision() Decision {
 	if c.cfg.RejectOnFail {
 		return Decision{Reject: true, Message: "policy server unavailable"}
@@ -310,8 +286,8 @@ func (c *Client) failoverDecision() Decision {
 	return Decision{Continue: true}
 }
 
-// buildPayload assembles the JSON body. Key set + order is
-// alphabetic to match the wforce wire format.
+// buildPayload assembles the JSON body. Keys are alphabetic to match
+// the wforce wire format.
 func (c *Client) buildPayload(req Request, includeStatus, success, policyReject bool) ([]byte, error) {
 	type field struct {
 		key   string
@@ -342,9 +318,9 @@ func (c *Client) buildPayload(req Request, includeStatus, success, policyReject 
 	return json.Marshal(m)
 }
 
-// hashPassword returns the hex-encoded, truncated MAC of
-// `nonce + requested_username + \0 + password`. Matches the
-// digest-loop sequence wforce understands.
+// hashPassword returns the hex-encoded, truncated digest of
+// `nonce + username + \0 + password`, matching the sequence wforce
+// understands.
 func (c *Client) hashPassword(username, password string) string {
 	var h hash.Hash
 	switch strings.ToLower(c.cfg.HashMech) {
@@ -365,9 +341,8 @@ func (c *Client) hashPassword(username, password string) string {
 	return hex.EncodeToString(digest)
 }
 
-// truncateRshiftBits keeps the top `bits` of the input digest by
-// shifting it right (so the leading byte is the most significant
-// chunk).
+// truncateRshiftBits keeps the top `bits` of the digest (leading byte
+// most significant).
 func truncateRshiftBits(b []byte, bits uint) []byte {
 	totalBits := uint(len(b)) * 8
 	if bits >= totalBits {
@@ -386,9 +361,8 @@ func truncateRshiftBits(b []byte, bits uint) []byte {
 	return out
 }
 
-// joinCommand appends `?command=X` or `&command=X`: if the URL ends
-// with `&`, the caller pre-prepared a query-string and we extend it;
-// otherwise we start one.
+// joinCommand appends `command=X`, extending an existing query-string
+// when the URL ends with `&`, otherwise starting one with `?`.
 func joinCommand(url, command string) string {
 	if strings.HasSuffix(url, "&") {
 		return url + "command=" + command

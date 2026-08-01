@@ -10,64 +10,53 @@ import (
 )
 
 // PassdbConfig configures how a Validator is exposed as a
-// protocol.Passdb. The validator handles all token verification;
-// the passdb wraps it with username comparison, active-attribute
-// check, and field projection.
+// protocol.Passdb. The validator verifies the token; the passdb wraps it
+// with username comparison, active-attribute check, and field
+// projection.
 type PassdbConfig struct {
-	// Validator is the configured token-validator. REQUIRED.
+	// Validator is the configured token-validator. Required.
 	Validator Validator
 
-	// UsernameTemplate is the substitution format applied to the
-	// SASL authzid before comparison against the token's username
-	// claim. Default "%{user}" (identity).
+	// UsernameTemplate is applied to the SASL authzid before comparison
+	// against the token's username claim. Default "%{user}" (identity).
 	UsernameTemplate string
 
-	// ActiveAttribute / ActiveValue — optional account-active
-	// check on a claim NOT named by the validator's
-	// UsernameAttribute. When ActiveAttribute is set, the claim
-	// must be present (and equal ActiveValue if non-empty).
+	// ActiveAttribute / ActiveValue — optional account-active check on a
+	// claim other than the validator's UsernameAttribute. When set, the
+	// claim must be present (and equal ActiveValue if non-empty).
 	ActiveAttribute string
 	ActiveValue     string
 
-	// ExtraFields selects which claims to surface back to the
-	// auth pipeline as userdb_* fields. Empty = none. The list
-	// contains the claim names; their string values land under
-	// `userdb_<name>` in the result bag.
+	// ExtraFields names the claims surfaced back to the auth pipeline as
+	// `userdb_<name>` fields. Empty = none.
 	ExtraFields []string
 
-	// LookupTimeout caps the per-request Validate call. Zero
-	// inherits the validator's own timeouts.
+	// LookupTimeout caps the per-request Validate call. Zero inherits the
+	// validator's own timeouts.
 	LookupTimeout int
 }
 
 // Passdb adapts a Validator to the protocol.Passdb surface so an
-// OAUTHBEARER login flows through the same chain machinery as
-// SQL passdb logins (cache, penalty, policy, audit log, ordering
-// fall-through to the next passdb).
+// OAUTHBEARER login flows through the same chain machinery as SQL passdb
+// logins (cache, penalty, policy, audit log, fall-through).
 //
-// Authentication contract: the SASL OAUTHBEARER handler stuffs
-// the bearer token into req.Password and the GS2 authzid into
-// req.Username. The passdb extracts both and:
+// Contract: the SASL OAUTHBEARER handler puts the bearer token in
+// req.Password and the GS2 authzid in req.Username. The passdb then:
 //
-//  1. Calls Validator.Validate(token) — signature / iss / aud /
-//     scope / exp checks.
-//  2. CompareUsername(token-claim, req.Username, template) —
-//     enforces that the SASL-claimed user matches the token's
-//     username claim.
-//  3. CheckActive(claims, ActiveAttribute, ActiveValue) — optional
-//     account-active claim check.
-//  4. Writes user, userdb_* extra-fields onto req.Fields and
-//     returns ResultOK.
+//  1. Validator.Validate(token) — signature / iss / aud / scope / exp.
+//  2. CompareUsername(claim, req.Username, template) — the SASL-claimed
+//     user must match the token's username claim.
+//  3. CheckActive(claims, ActiveAttribute, ActiveValue) — optional.
+//  4. Writes user + userdb_* fields onto req.Fields, returns ResultOK.
 //
-// Errors map to chain results:
+// Error mapping:
 //
-//   - ErrUpstream    → ResultTempFail (let the chain retry / fall to next passdb)
-//   - everything else → ResultNext (token rejected; chain may try a different passdb)
+//   - ErrUpstream     → ResultTempFail (chain may retry / fall through)
+//   - everything else → ResultNext (token rejected; chain may try another)
 //
-// Note we return ResultNext (not ResultFail) on validation
-// rejection so a deployment with `oauth2 → sql` chain order can
-// still try SQL when the token does not match (e.g. plain-PLAIN
-// from a non-OAuth client routed via the same SASL endpoint).
+// Rejection returns ResultNext (not ResultFail) so an `oauth2 → sql`
+// chain still tries SQL when the token does not match (e.g. plain PLAIN
+// from a non-OAuth client on the same SASL endpoint).
 type Passdb struct {
 	cfg PassdbConfig
 }
@@ -87,7 +76,7 @@ func NewPassdb(cfg PassdbConfig) (*Passdb, error) {
 func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 	token := req.Password
 	if token == "" {
-		// No bearer token to validate — let the next passdb try.
+		// No bearer token — let the next passdb try.
 		return protocol.ResultNext, nil
 	}
 
@@ -95,32 +84,29 @@ func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 	defer cancel()
 	claims, err := p.cfg.Validator.Validate(ctx, token)
 	if err != nil {
-		// Upstream errors are transient; fall through to ResultTempFail
-		// so the operator's failure-delay / penalty kick in correctly.
+		// Upstream errors are transient; ResultTempFail so failure-delay
+		// / penalty engage correctly.
 		if errors.Is(err, ErrUpstream) {
 			return protocol.ResultTempFail, err
 		}
-		// Token validation failure — let the chain try another
-		// passdb. Logged at slog.Debug by the chain wrapper.
+		// Validation failure — let the chain try another passdb.
 		return protocol.ResultNext, nil
 	}
 
-	// Username comparison — SASL authzid vs token claim.
+	// SASL authzid vs token claim.
 	resolvedUser, err := CompareUsername(claims.Username, req.Username, p.cfg.UsernameTemplate)
 	if err != nil {
 		return protocol.ResultNext, nil
 	}
 	if claims.Username == "" {
-		// Token had no username claim at all — clear miss.
+		// No username claim at all — clear miss.
 		return protocol.ResultNext, fmt.Errorf("%w: validator returned no Username", ErrUsernameMissing)
 	}
 
-	// Active-account claim check.
 	if err := CheckActive(claims, p.cfg.ActiveAttribute, p.cfg.ActiveValue); err != nil {
 		return protocol.ResultNext, nil
 	}
 
-	// Project claims onto the auth-request fields.
 	if req.Fields == nil {
 		req.Fields = protocol.NewFields()
 	}

@@ -10,19 +10,16 @@
 //	yarilo-director hosts /api/director/...      (ring / backends / users / peers)
 //	yarilo-backend-api hosts /api/backend/<service>/...  (dict / acl / quota / ...)
 //
-// Different binaries because director state lives in director's
-// process memory and backend state (NFS + dicts) lives in backend
-// pods; in multi-pod cluster these are physically separate pods, so
-// they cannot be combined.
+// Different binaries because director state lives in director's process
+// memory and backend state (NFS + dicts) lives in backend pods; in a
+// multi-pod cluster these are physically separate, so they cannot be combined.
 //
-// Wire protocol: JSON over HTTPS. Endpoints mirror the shape of
-// internal/director's existing /api/director/... surface so the
-// yarctl CLI can speak both with identical machinery
-// (bearer-token auth, IP allow-list, application/json bodies).
+// Wire protocol: JSON over HTTPS. Endpoints mirror internal/director's
+// /api/director/... surface so the yarctl CLI can speak both with identical
+// machinery (bearer-token auth, IP allow-list, application/json bodies).
 //
-// Streaming endpoints (currently dict/iterate) use NDJSON — one
-// JSON object per line — so the CLI can pipeline display without
-// buffering the entire response in memory.
+// Streaming endpoints (currently dict/iterate) use NDJSON, one JSON object
+// per line, so the CLI can display without buffering the whole response.
 package backendapi
 
 import (
@@ -60,17 +57,15 @@ type Server struct {
 
 // Options configures Server.
 //
-// Dicts is the live map opened by the host process; the server
-// hands out pointers to those objects via lookups keyed by name.
-// Mailbox / Index / Resolver / NamespaceMailboxes / Locker /
-// SpecialUseDefaults / MetadataDict / Namespaces are the same shape
-// session binaries already accept — backend-api opens per-user
-// handles on demand from those (see userctx.go) so admin requests
-// reach the same on-disk layout the IMAP path uses.
+// Dicts is the live map opened by the host process; the server hands out
+// pointers to those objects via lookups keyed by name. Mailbox / Index /
+// Resolver / NamespaceMailboxes / Locker / SpecialUseDefaults / MetadataDict /
+// Namespaces are the same shape session binaries accept; backend-api opens
+// per-user handles on demand from those (see userctx.go) so admin requests
+// reach the same on-disk layout the session path uses.
 //
-// Token is the shared admin secret; empty disables auth (test/dev
-// only). AllowedNets, when non-empty, restricts which client IPs may
-// reach the API.
+// Token is the shared admin secret; empty disables auth (test/dev only).
+// AllowedNets, when non-empty, restricts which client IPs may reach the API.
 type Options struct {
 	Addr        string
 	TLSConfig   *tls.Config
@@ -92,32 +87,28 @@ type Options struct {
 	// to inspect the fan-out. From cfg.Quota.CloneDicts.
 	QuotaCloneDicts []string
 
-	// WardenAddr / WardenTLS configure backend-api's connection to
-	// yarilo-warden for the WHO endpoint. Empty Addr disables /who
-	// (returns 501). Same TLS config the rest of internal cluster
-	// traffic uses.
+	// WardenAddr / WardenTLS configure the connection to yarilo-warden for the
+	// WHO endpoint. Empty Addr disables /who (returns 501). Same TLS config the
+	// rest of internal cluster traffic uses.
 	WardenAddr string
 	WardenTLS  *tls.Config
 
 	// PodIP is this backend pod's IP (from the POD_IP env / status.podIP).
-	// /who scopes to sessions routed to THIS backend by default (#814),
-	// matching each warden session's Backend field against it. Empty (env not
-	// injected) disables the scoping — /who then behaves as if --all was set.
+	// /who scopes to sessions routed to THIS backend by default, matching each
+	// warden session's Backend field against it. Empty (env not injected)
+	// disables the scoping; /who then behaves as if --all was set.
 	PodIP string
 
-	// AuthClient is the live yarilo-auth master-protocol client,
-	// dialled at startup from BackendAPIConfig.AuthMasterAddr.
-	// When nil, /api/backend/user/info skips the userdb-enrichment
-	// block and /api/backend/user/iterate returns 503. main.go
-	// owns the lifecycle (Close on shutdown); the Server only
-	// reads through it.
+	// AuthClient is the live yarilo-auth master-protocol client. When nil,
+	// /api/backend/user/info skips the userdb-enrichment block and
+	// /api/backend/user/iterate returns 503. main.go owns the lifecycle
+	// (Close on shutdown); the Server only reads through it.
 	AuthClient *authclient.Client
 
-	// MailboxByDriver, when set, constructs a MailboxBackend for a
-	// named driver (e.g. "mdbox", "sdbox"). Used when a per-user
-	// mail_location specifies a different driver than the global
-	// opts.Mailbox. Backends are cached internally; the factory is
-	// only called once per distinct driver string.
+	// MailboxByDriver, when set, constructs a MailboxBackend for a named driver
+	// (e.g. "mdbox", "sdbox"). Used when a per-user mail_location specifies a
+	// different driver than the global opts.Mailbox. Backends are cached; the
+	// factory is called once per distinct driver string.
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
 
 	// FTSClient dials the yarilo-fts service for the operator fts surface
@@ -148,10 +139,9 @@ func (s *Server) mailboxForDriver(driver string) mailbox.MailboxBackend {
 	return mb
 }
 
-// New constructs a Server and registers the backend endpoints onto an
-// internal ServeMux. Subsequent Server.routes additions (for ACL,
-// quota, etc.) happen via dedicated wire registration in their own
-// files (acl.go, quota.go); dict.go owns the dict surface.
+// New constructs a Server and registers the backend endpoints onto an internal
+// ServeMux. Per-service routes are registered from their own files (acl.go,
+// quota.go, dict.go, ...).
 func New(opts Options) *Server {
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 	s.registerHealth()
@@ -171,10 +161,9 @@ func New(opts Options) *Server {
 	return s
 }
 
-// Serve starts the HTTP server. When opts.TLSConfig is non-nil the
-// listener is TLS-terminated (use this in k8s deployments); plain
-// TCP is for local dev. Blocks until ctx is cancelled or the
-// underlying server returns.
+// Serve starts the HTTP server. When opts.TLSConfig is non-nil the listener is
+// TLS-terminated (k8s deployments); plain TCP is for local dev. Blocks until
+// ctx is cancelled or the underlying server returns.
 func (s *Server) Serve(ctx context.Context) error {
 	if s.opts.Addr == "" {
 		return fmt.Errorf("backendapi: Addr is required")
@@ -209,8 +198,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
-// Handler returns the underlying mux — useful for tests that drive
-// the server via httptest.Server without spinning up Serve.
+// Handler returns the underlying mux, for tests that drive the server via
+// httptest.Server without spinning up Serve.
 func (s *Server) Handler() http.Handler { return s.mux }
 
 // registerHealth wires GET /api/backend/health (200 if process is up).
@@ -221,9 +210,8 @@ func (s *Server) registerHealth() {
 	})
 }
 
-// middleware chains the IP allow-list and bearer-token checks. Use
-// for every authenticated endpoint. Anonymous endpoints (none yet)
-// should bypass and document why.
+// middleware chains the IP allow-list and bearer-token checks. Use for every
+// authenticated endpoint; anonymous endpoints bypass it and document why.
 func (s *Server) middleware(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(s.opts.AllowedNets) > 0 {
@@ -253,10 +241,9 @@ func (s *Server) middleware(next http.HandlerFunc) http.Handler {
 	})
 }
 
-// apiJSON writes v as the response body with Content-Type
-// application/json. Encoder failures are swallowed because the
-// connection is already half-written; logging there would not help
-// the caller. Use apiError instead for status-coded JSON errors.
+// apiJSON writes v as an application/json response body. Encoder failures are
+// swallowed because the connection is already half-written. Use apiError for
+// status-coded JSON errors.
 func apiJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
@@ -264,9 +251,9 @@ func apiJSON(w http.ResponseWriter, v any) {
 	}
 }
 
-// apiError writes a JSON {"error": msg} body with the supplied
-// HTTP status. The status is set BEFORE the body so middleware
-// (logger, metrics) can pick the right code.
+// apiError writes a JSON {"error": msg} body with the supplied HTTP status.
+// The status is set before the body so middleware (logger, metrics) can pick
+// the right code.
 func apiError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

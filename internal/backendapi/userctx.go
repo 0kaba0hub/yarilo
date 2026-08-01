@@ -12,25 +12,22 @@ import (
 )
 
 // userContext is the per-request storage state for a single user.
-//
-// Mirrors the per-session wiring in internal/imap (dispatch.go) but
-// strips the IMAP session machinery: an HTTP admin request only needs
-// to open a namespace handle, do its work, then Close. There is no
-// cross-request state — each request opens fresh handles so two
-// admins acting on the same user never share half-resolved state.
+// Each request opens fresh namespace handles and Closes them; there is no
+// cross-request state, so two admins acting on the same user never share
+// half-resolved state.
 type userContext struct {
 	username string
 	info     *mailbox.UserInfo
 	owner    string
 
-	// handles maps namespace identifier (the slug, e.g. "personal",
-	// "shared", "public") to its opened handle. Personal is always
-	// present after open(); shared/public only when configured.
+	// handles maps namespace slug ("personal", "shared", "public") to its
+	// opened handle. Personal is always present after open(); shared/public
+	// only when configured.
 	handles map[string]*nsBundle
 }
 
-// nsBundle is one namespace's storage state — backed by the same
-// per-user MailboxBackend/IndexBackend as a real session.
+// nsBundle is one namespace's storage state, backed by the same per-user
+// MailboxBackend/IndexBackend as a real session.
 type nsBundle struct {
 	spec     config.NamespaceConfig
 	info     *mailbox.UserInfo
@@ -39,14 +36,10 @@ type nsBundle struct {
 	location string
 }
 
-// openUserContext builds a context for username. The personal handle
-// is opened eagerly so any subsequent operation has it without an
-// extra round-trip; shared/public are opened lazily by ns() when the
-// caller asks for them.
-//
-// Returns an error if the personal handle fails to open (typically a
-// missing/unreadable home dir). Shared/public failures are reported
-// per-call via ns().
+// openUserContext builds a context for username. The personal handle is
+// opened eagerly; shared/public are opened lazily by ns(). Returns an error
+// if the personal handle fails to open (typically a missing/unreadable home
+// dir); shared/public failures are reported per-call via ns().
 func (s *Server) openUserContext(username string) (*userContext, error) {
 	return s.openUserContextInner(username, false)
 }
@@ -96,8 +89,8 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 		if pui.MailPath != "" {
 			ui.MailPath = mailbox.ExpandHome(pui.MailPath, ui.Home)
 		} else if pui.MailLocation != "" {
-			// mail_location = "driver:path[:MODS]" — extract path when
-			// no explicit mail_path field was returned by userdb.
+			// mail_location = "driver:path[:MODS]": extract path when userdb
+			// returned no explicit mail_path field.
 			if colon := strings.IndexByte(pui.MailLocation, ':'); colon >= 0 {
 				rest := pui.MailLocation[colon+1:]
 				if nextColon := strings.IndexByte(rest, ':'); nextColon >= 0 {
@@ -109,10 +102,10 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 				}
 			}
 		}
-		// Parse INDEX=, VOLATILEDIR=, CONTROLDIR=, ALTDIR= modifiers from
-		// mail_location when the corresponding dedicated fields are absent.
-		// Userdb drivers that bake everything into a single mail_location
-		// string (e.g. SQL with CONCAT) never populate the separate fields.
+		// Parse INDEX=/VOLATILEDIR=/CONTROLDIR=/ALTDIR= modifiers from
+		// mail_location when the dedicated fields are absent. Userdb drivers
+		// that bake everything into one mail_location string never populate
+		// the separate fields.
 		if pui.MailLocation != "" {
 			applyMailLocationMods(pui.MailLocation, ui, username)
 			if colon := strings.IndexByte(pui.MailLocation, ':'); colon > 0 {
@@ -168,9 +161,9 @@ func (uc *userContext) Close() {
 	uc.handles = nil
 }
 
-// ns returns the bundle for the named namespace ("personal",
-// "shared", "public", ...). Lazily opens shared/public on first use.
-// Returns an error when the namespace is unknown or has no location.
+// ns returns the bundle for the named namespace, lazily opening shared/public
+// on first use. Returns an error when the namespace is unknown or has no
+// location.
 func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 	if name == "" {
 		name = "personal"
@@ -209,10 +202,9 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 }
 
 // subsFileFor returns the subscription filename for a namespace bundle.
-// Matches the convention used by internal/imap/dispatch.go: personal
-// keeps the bare "subscriptions" filename so an upgrade does not
-// orphan existing state; non-personal namespaces use
-// "subscriptions-<slug>" siblings in their own home.
+// Personal keeps the bare "subscriptions" filename so an upgrade does not
+// orphan existing state; non-personal namespaces use "subscriptions-<slug>"
+// siblings in their own home.
 func subsFileFor(spec config.NamespaceConfig) string {
 	if spec.Type == "personal" {
 		return "subscriptions"
@@ -225,14 +217,13 @@ func subsFileFor(spec config.NamespaceConfig) string {
 }
 
 // applyMailLocationMods parses KEY=value modifiers from a mail_location string
-// and fills in ui fields that are still empty. Only called when the userdb
-// driver bakes everything into a single mail_location (no separate fields).
+// and fills in ui fields that are still empty.
 func applyMailLocationMods(loc string, ui *mailbox.UserInfo, username string) {
 	expand := func(v string) string {
 		v = mailbox.ExpandHome(v, ui.Home)
 		return mailbox.ExpandVars(strings.ReplaceAll(v, "%h", ui.Home), username)
 	}
-	// skip "driver:path" prefix — modifiers start at the third colon-token
+	// skip "driver:path" prefix; modifiers start at the third colon-token
 	colon := strings.IndexByte(loc, ':')
 	if colon < 0 {
 		return
@@ -282,16 +273,16 @@ func (s *Server) mailboxForUser(pui *protocol.UserInfo) mailbox.MailboxBackend {
 	return s.mailboxForDriver(strings.ToLower(pui.MailLocation[:colon]))
 }
 
-// openNS instantiates one namespace's box+idx. mb overrides the backend
-// when non-nil (per-user driver selection); nil falls back to the
-// per-namespace or global default. Init runs to materialise the on-disk root.
+// openNS instantiates one namespace's box+idx. mb overrides the backend when
+// non-nil (per-user driver selection); nil falls back to the per-namespace or
+// global default. Init runs to materialise the on-disk root.
 func (s *Server) openNS(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb mailbox.MailboxBackend) (*nsBundle, error) {
 	return s.openNSInner(spec, ui, mb, false)
 }
 
-// openNSReadOnly is like openNS but skips Init so no directories are
-// created. Returns (nil, nil) when the home directory does not exist —
-// callers treat that as an empty namespace rather than an error.
+// openNSReadOnly is like openNS but skips Init so no directories are created.
+// Returns (nil, nil) when the home directory does not exist; callers treat
+// that as an empty namespace rather than an error.
 func (s *Server) openNSReadOnly(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb mailbox.MailboxBackend) (*nsBundle, error) {
 	if ui.Home != "" {
 		if _, err := os.Stat(ui.Home); os.IsNotExist(err) {
@@ -328,8 +319,8 @@ func (s *Server) openNSInner(spec config.NamespaceConfig, ui *mailbox.UserInfo, 
 	return bundle, nil
 }
 
-// mailboxBackendFor mirrors session.mailboxBackendFor — namespace
-// override wins, otherwise fall through to the global default.
+// mailboxBackendFor returns the backend for a namespace: the per-namespace
+// override wins, otherwise the global default.
 func (s *Server) mailboxBackendFor(spec config.NamespaceConfig) mailbox.MailboxBackend {
 	if override, ok := s.opts.NamespaceMailboxes[spec.Prefix]; ok && override != nil {
 		return override
@@ -347,8 +338,8 @@ func (s *Server) personalSpec() (config.NamespaceConfig, bool) {
 	return config.NamespaceConfig{}, false
 }
 
-// namespaceByName looks up a namespace by its slug — the same slug
-// used by subsFileFor and the admin CLI. Returns false when no match.
+// namespaceByName looks up a namespace by its slug. Returns false when no
+// match.
 func (s *Server) namespaceByName(name string) (config.NamespaceConfig, bool) {
 	for _, spec := range s.opts.Namespaces {
 		if slugFor(spec) == name {
@@ -361,9 +352,9 @@ func (s *Server) namespaceByName(name string) (config.NamespaceConfig, bool) {
 	return config.NamespaceConfig{}, false
 }
 
-// slugFor returns the canonical slug for a namespace spec. Mirrors
-// nsSlug() in internal/imap/dispatch.go so the wire identifier used
-// by admin requests matches the on-disk per-namespace filenames.
+// slugFor returns the canonical slug for a namespace spec, so the wire
+// identifier used by admin requests matches the on-disk per-namespace
+// filenames.
 func slugFor(spec config.NamespaceConfig) string {
 	if name := strings.ToLower(strings.TrimSuffix(spec.Prefix, "/")); name != "" {
 		return name
@@ -388,9 +379,9 @@ func (b *nsBundle) folderControlRoot() string {
 	return b.info.Home
 }
 
-// lockOwner is the identifier shown to yarilo-locks in BUSY reports
-// for any lock acquired by this admin request. Format mirrors the
-// session owner so operators can correlate.
+// lockOwner is the identifier shown in yarilo-locks BUSY reports for any lock
+// this admin request acquires. Format mirrors the session owner so operators
+// can correlate.
 func (uc *userContext) lockOwner() string { return uc.owner }
 
 // dirExists reports whether path is an existing directory.

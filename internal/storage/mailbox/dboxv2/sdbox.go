@@ -22,9 +22,8 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// Directory layout constants — values pinned by the wire spec.
-// Changing them breaks the in-place format the rest of the
-// storage layer depends on.
+// Directory layout constants pinned by the wire spec; changing them breaks the
+// on-disk format the rest of the storage layer depends on.
 const (
 	sdboxRoot         = "sdbox"
 	mailboxesDir      = "mailboxes"
@@ -37,8 +36,8 @@ const (
 	uidvalidityFormat = "%08x" // 8 hex digits, lowercase
 )
 
-// Backend is the sdbox MailboxBackend factory. Like the other
-// drivers, per-user state lives in UserMailbox.
+// Backend is the sdbox MailboxBackend factory; per-user state lives in
+// userMailbox.
 type Backend struct {
 	hostname     string
 	pid          int
@@ -52,12 +51,10 @@ type Backend struct {
 // Option configures a Backend at construction time.
 type Option func(*Backend)
 
-// WithLocker wires a yarilo-locks client into the backend. Every
-// folder-mutating call (Save, Rename, Delete, Remove, AssignUID,
-// Copy) takes the cross-process X lock on
-// locks.MailboxKey(user, folder) before mutating the on-disk
-// tree. A nil Locker keeps the in-process sync.Mutex as the only
-// barrier — never safe in production.
+// WithLocker wires a yarilo-locks client into the backend: every
+// folder-mutating call (Save, Rename, Delete, Remove, AssignUID, Copy) takes
+// the cross-process X lock on locks.MailboxKey(user, folder). A nil Locker
+// keeps only the in-process sync.Mutex — never safe in production.
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
 }
@@ -72,8 +69,8 @@ func WithMaxConcurrentWrites(n int) Option {
 	}
 }
 
-// WithListUTF8 sets the on-disk folder name encoding.
-// true (default): UTF-8. false: modified-UTF-7 (RFC 3501 §5.1.3) for legacy installations.
+// WithListUTF8 sets the on-disk folder name encoding: true (default) UTF-8,
+// false modified-UTF-7 (RFC 3501 §5.1.3) for legacy installations.
 func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 
 // WithNormalizeNFC enables Unicode NFC normalization of folder names. Default true.
@@ -94,9 +91,8 @@ func New(opts ...Option) *Backend {
 
 // OpenUser returns a per-session handle bound to u.
 func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
-	// Per-driver default: when no mail_path arrives from userdb, default to
-	// <home>/sdbox. The resolved mailPath is the
-	// sdbox root as-is — sdboxRoot() never re-appends a subdir.
+	// No mail_path from userdb: default to <home>/sdbox. The resolved mailPath
+	// is the sdbox root as-is; sdboxRoot() never re-appends a subdir.
 	mailPath := u.MailPath
 	if mailPath == "" {
 		mailPath = filepath.Join(u.Home, sdboxRoot)
@@ -135,16 +131,14 @@ func makeOwner(u *mailbox.UserInfo) string {
 	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
-// HealCorruptFolder is the reactive self-heal: under the driver's cross-process
-// mailbox lock it expunges index records whose u.* file has vanished (targeted
-// ExpungeMessage — QRESYNC tombstone + quota decrement, no full ResetFolder and
-// no UID assignment, so it cannot race a concurrent delivery), then clears the
-// FSCKD marker in the SAME lock scope so a marker set by another process between
-// scan and clear is not silently lost. Returns the UIDs it expunged so the caller
-// can invalidate their FTS documents; len(result) is the heal count.
-//
-// Called by the IMAP session when a folder carries the persisted FSCKD marker
-// (a prior read hit a missing/corrupt message).
+// HealCorruptFolder is the reactive self-heal: under the mailbox lock it
+// expunges index records whose u.* file has vanished (targeted ExpungeMessage —
+// QRESYNC tombstone + quota decrement, no ResetFolder, no UID assignment, so it
+// cannot race a delivery), then clears the FSCKD marker in the SAME lock scope
+// so a marker set by another process between scan and clear is not lost.
+// Returns the expunged UIDs (the heal count) so the caller can invalidate their
+// FTS documents. Called by the IMAP session when a folder carries the persisted
+// FSCKD marker.
 func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) ([]uint32, error) {
 	var expunged []uint32
 	err := u.withMailboxLock(folder.Name, func() error {
@@ -161,11 +155,9 @@ func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.F
 	return expunged, err
 }
 
-// withMailboxLock runs fn under the per-process Mutex + the
-// cross-process X lock on locks.MailboxKey(user, folder). The
-// HoldsResource short-circuit is preserved here for the POP3 QUIT
-// re-entrancy pattern; goroutine-local tracking inside pkg/locks
-// keeps concurrent peers from racing through it.
+// withMailboxLock runs fn under the per-process Mutex, then the cross-process X
+// lock on locks.MailboxKey(user, folder). The HoldsResource short-circuit
+// handles the POP3 QUIT re-entrancy pattern.
 func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -188,8 +180,8 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 
 // ---- Init / Create / Delete / Rename --------------------------
 
-// Init materialises the per-user tree (control/, mailboxes/INBOX/
-// dbox-Mails/) and seeds yarilo-uidvalidity if not present.
+// Init materialises the per-user tree (control/, mailboxes/INBOX/dbox-Mails/)
+// and seeds yarilo-uidvalidity if absent.
 func (u *userMailbox) Init() error {
 	if err := os.MkdirAll(u.controlPath(), 0o700); err != nil {
 		return fmt.Errorf("sdbox/init: control: %w", err)
@@ -203,12 +195,9 @@ func (u *userMailbox) Init() error {
 	return nil
 }
 
-// ensureUIDValidity creates control/yarilo-uidvalidity with the
-// current unix timestamp on first run. If a legacy
-// control/dovecot-uidvalidity exists from a canonical install,
-// it is renamed in place instead of seeding a fresh value — the
-// uidvalidity stamp must never decrease across the migration.
-// Subsequent runs see the file and skip.
+// ensureUIDValidity creates control/yarilo-uidvalidity with the current unix
+// timestamp on first run. A legacy control/dovecot-uidvalidity is renamed in
+// place rather than reseeded — the stamp must never decrease across migration.
 func (u *userMailbox) ensureUIDValidity() error {
 	path := u.uidValidityPath()
 	if _, err := os.Stat(path); err == nil {
@@ -237,9 +226,8 @@ func (u *userMailbox) ensureUIDValidity() error {
 	return nil
 }
 
-// UIDValidity returns the per-user uidvalidity stamp, reading
-// (and lazy-initialising) the control file as needed. Exposed for
-// callers that need to seed a folder's index at create time.
+// UIDValidity returns the per-user uidvalidity stamp, lazy-initialising the
+// control file as needed. Used to seed a folder's index at create time.
 func (u *userMailbox) UIDValidity() (uint32, error) {
 	if err := u.ensureUIDValidity(); err != nil {
 		return 0, err
@@ -285,9 +273,8 @@ func (u *userMailbox) Rename(oldName, newName string) error {
 	})
 }
 
-// withTwoMailboxLocks takes both per-folder X locks in
-// lexicographic order. Matches the maildir / mdbox convention so
-// renames cannot deadlock against concurrent writers.
+// withTwoMailboxLocks takes both per-folder X locks in lexicographic order.
+// Matches the maildir / mdbox convention so renames cannot deadlock.
 func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
 	if u.b.locker == nil {
 		return fn()
@@ -322,16 +309,11 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 
 // ---- Save (atomic publish) ----------------------------------
 
-// Save streams r into a fresh .temp.* file then renames it to
-// u.<uid> atomically under the mailbox lock. The two-phase write
-// gives crash safety: a partial body never appears under its
-// final UID-derived name. Returns the final basename — caller
-// then records it in the index via UserIndex.AppendMessage.
-//
-// uid must be the value returned by UserIndex.AllocateUID for
-// this folder. size is the wire-level body size; on-disk physical
-// size comes from actual bytes written (post-CRLF normalisation).
-// flags are ignored — sdbox delegates flag storage to the index.
+// Save streams r into a fresh .temp.* file then atomically renames it under the
+// mailbox lock. The two-phase write is crash-safe: a partial body never appears
+// under its final name. Returns the final basename for the caller to record via
+// UserIndex.AppendMessage. flags are ignored — sdbox delegates flag storage to
+// the index.
 func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, uint32, error) {
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
@@ -395,17 +377,15 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 
 // ---- Fetch / Remove / Copy ----------------------------------
 
-// Fetch returns an io.ReadCloser positioned at the start of the
-// message body. The caller MUST Close. Metadata + file header are
-// skipped; only the raw bytes between message_header end and
-// metadata_magic_post are surfaced.
+// Fetch returns the message body between message_header end and
+// metadata_magic_post; the file header and metadata are skipped. Caller MUST
+// Close.
 func (u *userMailbox) Fetch(folder, filename string, _ bool) (io.ReadCloser, error) {
 	path := filepath.Join(u.folderPath(folder), filename)
 	f, err := os.Open(path)
 	if err != nil {
 		// A vanished file is corruption (the index still references it); any
-		// other open error (EIO, EACCES) is transient and must not trigger a
-		// rebuild.
+		// other open error (EIO, EACCES) is transient and must not rebuild.
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("sdbox/fetch: open %s: %w: %w", path, err, mailbox.ErrCorruptStorage)
 		}
@@ -423,7 +403,7 @@ func (u *userMailbox) Fetch(folder, filename string, _ bool) (io.ReadCloser, err
 	}
 	mh, err := decodeMessageHeader(hdrBuf)
 	if err != nil {
-		// A malformed header (bad magic/version) is structural corruption.
+		// Malformed header (bad magic/version) is structural corruption.
 		_ = f.Close()
 		return nil, fmt.Errorf("sdbox/fetch %s: %w: %w", path, err, mailbox.ErrCorruptStorage)
 	}
@@ -446,8 +426,7 @@ func corruptRead(op, path string, err error) error {
 	return fmt.Errorf("sdbox/fetch: %s %s: %w", op, path, err)
 }
 
-// Remove unlinks the message file. Idempotent: removing a missing
-// file is not an error.
+// Remove unlinks the message file. Idempotent: a missing file is not an error.
 func (u *userMailbox) Remove(folder, filename string) error {
 	return u.withMailboxLock(folder, func() error {
 		path := filepath.Join(u.folderPath(folder), filename)
@@ -458,15 +437,12 @@ func (u *userMailbox) Remove(folder, filename string) error {
 	})
 }
 
-// Copy hardlinks srcFilename from srcFolder into dstFolder under
-// the destination's u.<dstUID> name. Hardlinking gives O(1) IMAP
-// COPY semantics: the inode is shared, only the directory entry
-// changes. The destination UID must have been allocated via
-// UserIndex.AllocateUID on dstFolder before calling Copy.
+// Copy hardlinks srcFilename into dstFolder under the destination's u.<dstUID>
+// name — O(1) IMAP COPY: the inode is shared, only the directory entry changes.
+// dstUID must have been allocated via UserIndex.AllocateUID on dstFolder.
 //
-// Optional API — used by IMAP COPY when the backend type-asserts
-// for Copyable. Falls back to read+Save through the generic path
-// when the backend does not implement it.
+// Optional API used by IMAP COPY when the backend type-asserts for Copyable;
+// otherwise COPY falls back to read+Save.
 func (u *userMailbox) Copy(srcFolder, srcFilename, dstFolder string, dstUID uint32) (string, error) {
 	if dstUID == 0 {
 		return "", fmt.Errorf("sdbox/copy: dstUID 0 invalid")
@@ -504,8 +480,8 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 		if e.IsDir() || !strings.HasPrefix(e.Name(), sdboxMailPrefix) {
 			continue
 		}
-		// Decimal suffix → UID embedded in name (old scheme).
-		// Hex GUID suffix → UID=0; the file index is authoritative.
+		// Decimal suffix → UID in the name (old scheme). Hex GUID suffix →
+		// UID=0; the file index is authoritative.
 		uid64, _ := strconv.ParseUint(strings.TrimPrefix(e.Name(), sdboxMailPrefix), 10, 32)
 		info, err := e.Info()
 		if err != nil {
@@ -529,12 +505,10 @@ func (u *userMailbox) FolderExists(folder string) (bool, error) {
 	return err == nil, err
 }
 
-// ListFolders recursively walks mailboxes/ and surfaces every folder in the
-// fs layout, including nested folders. A directory is selectable when it owns
-// a dbox-Mails subdirectory; a directory that only holds child folders (e.g.
-// a parent auto-created for a nested child) is reported as a \NoSelect
-// container. The dbox-Mails leaf is a message store, not a hierarchy child,
-// so the walk neither descends into it nor emits it.
+// ListFolders recursively walks mailboxes/ and surfaces every folder, nested
+// included. A directory is selectable when it owns a dbox-Mails subdirectory;
+// one holding only child folders is a \NoSelect container. The dbox-Mails leaf
+// is a message store, so the walk neither descends into nor emits it.
 func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	root := u.mailboxesRoot()
 	decode := func(name string) (string, bool) {
@@ -565,11 +539,10 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 
 // ---- Scan (rebuild contract) --------------------------------
 
-// Scan returns one ScanRecord per u.<UID> file in folder. The UID
-// is parsed from the filename; GUID and InternalDate come from
-// the on-disk metadata block. Used by the admin rebuild flow when
-// the fileindex was lost — the canonical reader can recover state
-// from filenames alone because the UID is in there.
+// Scan returns one ScanRecord per u.<UID> file. The UID is parsed from the
+// filename; GUID and InternalDate come from the on-disk metadata block. Used by
+// the admin rebuild flow when the fileindex was lost — state recovers from
+// filenames alone because the UID is in the name.
 func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 	dir := u.folderPath(folder)
 	entries, err := os.ReadDir(dir)
@@ -593,10 +566,8 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 			Size:         uint32(info.Size()),
 			InternalDate: info.ModTime(),
 		}
-		// Best-effort metadata pull: open the file, skip past
-		// header+body, parse the trailer. Errors are non-fatal
-		// — we still surface the filename so the index can
-		// preserve the UID even when the body is corrupt.
+		// Best-effort metadata pull. Errors are non-fatal: the filename is
+		// still surfaced so the index preserves the UID even for a corrupt body.
 		if guid, vsize, when, err := readMetadata(filepath.Join(dir, e.Name())); err == nil {
 			rec.GUID = guid
 			if vsize > 0 {
@@ -611,9 +582,8 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 	return out, nil
 }
 
-// Close releases per-session state. sdbox holds no long-lived
-// resources beyond the OS file descriptors that Fetch returns
-// (caller closes those), so Close is a no-op.
+// Close is a no-op: sdbox holds no long-lived resources (Fetch's fds are closed
+// by the caller).
 func (u *userMailbox) Close() error { return nil }
 
 // ---- helpers -------------------------------------------------
@@ -640,31 +610,29 @@ func (u *userMailbox) folderPath(folder string) string {
 	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpath("sdbox", folder, u.folderDiskName(folder), u.separator))
 }
 
-// folderDir is the mailbox directory itself (mailboxes/<name>), i.e.
-// folderPath without the trailing dbox-Mails leaf. Delete/Rename operate
-// on this so the whole folder tree moves, not just its dbox-Mails payload.
+// folderDir is the mailbox directory (mailboxes/<name>) — folderPath without
+// the trailing dbox-Mails leaf. Delete/Rename operate on this so the whole
+// folder tree moves, not just its payload.
 func (u *userMailbox) folderDir(folder string) string {
 	return filepath.Dir(u.folderPath(folder))
 }
 
-// makeTempName returns ".temp.<sec>.P<pid>Q<seq>M<usec>.<host>"
-// matching the canonical pre-publish naming.
+// makeTempName returns the pre-publish name
+// ".temp.<sec>.P<pid>Q<seq>M<usec>.<host>".
 func (u *userMailbox) makeTempName() string {
 	now := time.Now()
 	return fmt.Sprintf("%s%d.P%dQ%dM%d.%s",
 		temporaryPrefix, now.Unix(), u.b.pid, u.b.tmpSeq.Add(1), now.Nanosecond()/1000, u.b.hostname)
 }
 
-// readBodyCRLF reads r fully and ensures every line is
-// CRLF-terminated, matching the canonical reader's pre-write
-// normalisation. Input already in CRLF is preserved as-is.
+// readBodyCRLF reads r fully and CRLF-terminates every line. Input already in
+// CRLF is preserved as-is.
 func readBodyCRLF(r io.Reader) ([]byte, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	// Fast path: already CRLF — count by scanning a sample,
-	// upgrade if the document mixes line endings.
+	// Fast path: already CRLF.
 	if !needsCRLFNormalisation(raw) {
 		return raw, nil
 	}
@@ -689,11 +657,9 @@ func needsCRLFNormalisation(b []byte) bool {
 	return false
 }
 
-// readMetadata opens path, walks past file-header line + message
-// header + body, and returns the GUID + virtual size + received
-// timestamp parsed from the trailer block. Errors propagate
-// verbatim; callers treat them as "metadata unrecoverable" and
-// fall back to filesystem-derived state.
+// readMetadata walks past the file-header line + message header + body and
+// returns the GUID, virtual size and received timestamp from the trailer.
+// Errors propagate verbatim; callers fall back to filesystem-derived state.
 func readMetadata(path string) ([16]byte, uint32, time.Time, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -741,9 +707,8 @@ func readMetadata(path string) ([16]byte, uint32, time.Time, error) {
 	return guid, vsize, when, nil
 }
 
-// hexDecode is a slim wrapper that returns ErrUnexpectedEOF when
-// the input is the empty string — convenient for the metadata
-// parse paths that treat empty strings as "field absent".
+// hexDecode returns ErrUnexpectedEOF for an empty string, so metadata parse
+// paths can treat an empty value as "field absent".
 func hexDecode(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {

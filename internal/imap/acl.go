@@ -9,15 +9,13 @@ import (
 	"github.com/0kaba0hub/yarilo/pkg/mailbox"
 )
 
-// SessionACL is implemented unconditionally on *session — go-imap
-// detects it via interface assertion at capability and command
-// dispatch time, so the assertion must succeed even when the
-// operator has disabled ACL. The methods consult ACLEnabled and
-// return a NO when the feature is off.
+// SessionACL is implemented unconditionally on *session: go-imap detects it via
+// interface assertion at capability and dispatch time, so the assertion must
+// succeed even when ACL is disabled. The methods consult ACLEnabled and return
+// a NO when the feature is off.
 
-// rightsToIMAP converts the canonical-order yarilo right set into the
-// RFC 4314 RightSet that go-imap surfaces on the wire. Byte-stable
-// because mailbox.Rights is already a sorted single-letter string.
+// rightsToIMAP converts a canonical-order right set into the RFC 4314 RightSet
+// go-imap surfaces on the wire.
 func rightsToIMAP(r mailbox.Rights) imaplib.RightSet {
 	out := make(imaplib.RightSet, 0, len(r))
 	for _, b := range []byte(string(r)) {
@@ -27,8 +25,7 @@ func rightsToIMAP(r mailbox.Rights) imaplib.RightSet {
 }
 
 // rightsFromIMAP converts an inbound RFC 4314 RightSet into canonical
-// mailbox.Rights — dedupes, sorts, and expands obsolete c/d (PR B
-// parser handles all three steps).
+// mailbox.Rights (dedupe, sort, expand obsolete c/d).
 func rightsFromIMAP(rs imaplib.RightSet) (mailbox.Rights, error) {
 	out, err := mailbox.ParseRights(string(rs))
 	if err != nil {
@@ -37,15 +34,11 @@ func rightsFromIMAP(rs imaplib.RightSet) (mailbox.Rights, error) {
 	return out, nil
 }
 
-// identifierToIMAP converts a stored identifier into the wire form
-// surfaced in GETACL responses. The on-disk yarilo-acl format uses
-// `user=` / `group=` / `group-override=` prefixes; the RFC 4314 wire
-// does not. user names are surfaced bare; groups carry the
-// `$`-prefix wire convention so a client SETACL round-trip preserves
-// the type without ambiguity against a bare username.
-//
-// Returns "" for IDInvalid so a buggy caller produces a clearly
-// malformed wire string rather than silently dropping the entry.
+// identifierToIMAP converts a stored identifier into its GETACL wire form.
+// Users are surfaced bare; groups carry the `$`-prefix wire convention so a
+// SETACL round-trip preserves the type unambiguously against a bare username.
+// Returns "" for IDInvalid so a buggy caller emits a clearly malformed string
+// rather than silently dropping the entry.
 func identifierToIMAP(id mailbox.Identifier) imaplib.RightsIdentifier {
 	switch id.Type {
 	case mailbox.IDAnyone:
@@ -59,10 +52,8 @@ func identifierToIMAP(id mailbox.Identifier) imaplib.RightsIdentifier {
 	case mailbox.IDGroup:
 		return imaplib.RightsIdentifier("$" + id.Name)
 	case mailbox.IDGroupOverride:
-		// No standard RFC 4314 wire form for group-override —
-		// surface with disk prefix so the type round-trips. PR
-		// F's admin tooling is the canonical place to manage
-		// these.
+		// No standard RFC 4314 wire form for group-override; surface with
+		// the disk prefix so the type round-trips.
 		return imaplib.RightsIdentifier("group-override=" + id.Name)
 	}
 	return ""
@@ -108,12 +99,9 @@ func identifierFromIMAP(rid imaplib.RightsIdentifier) (mailbox.Identifier, bool,
 	return mailbox.Identifier{Type: mailbox.IDUser, Name: s}, negative, nil
 }
 
-// aclSurfaceEntries skips negative entries when surfacing the ACL on
-// the GETACL wire — RFC 4314 §3.6 says negative entries are
-// represented by their own line with the identifier prefixed by '-'.
-// PR C surfaces them in the same fashion (one entry per disk entry,
-// negatives carrying the '-' prefix in the wire identifier) so a
-// client doing a full GETACL → SETACL round-trip preserves them.
+// aclSurfaceEntries emits one wire entry per disk entry. Per RFC 4314 §3.6 a
+// negative entry is its own line with the identifier prefixed by '-', so a full
+// GETACL → SETACL round-trip preserves it.
 func aclSurfaceEntries(acl mailbox.ACL) []imaplib.ACLEntry {
 	out := make([]imaplib.ACLEntry, 0, len(acl))
 	for _, e := range acl {
@@ -129,10 +117,9 @@ func aclSurfaceEntries(acl mailbox.ACL) []imaplib.ACLEntry {
 	return out
 }
 
-// resolveACLHandle routes a wire mailbox name to its namespace ACL
-// handle. Returns a NO error for declared-but-unimplemented
-// namespaces and for handles without an ACL store (defensive — every
-// implemented namespace has one).
+// resolveACLHandle routes a wire mailbox name to its namespace ACL handle.
+// Returns a NO for declared-but-unimplemented namespaces and for handles
+// without an ACL store.
 func (s *session) resolveACLHandle(folder string) (*nsHandle, string, error) {
 	h, rel, err := s.dispatch(folder)
 	if err != nil {
@@ -156,16 +143,9 @@ func (s *session) requireACLEnabled() error {
 	return nil
 }
 
-// adminCheckPRc is the PR-C-scoped admin check on SETACL/DELETEACL:
-// allow when the accessing user matches the namespace user (the
-// "owner" of personal namespace; for shared/public this is whatever
-// the synthetic UserInfo.Username is) OR when an explicit user=
-// entry for the accessing user carries the 'a' right.
-//
-// Full RFC 4314 admin resolution (inheritance walk, owner identifier
-// detection, negative-rights merge) lands in PR D / E. The narrower
-// rule here is enough for owner-only flows to round-trip without
-// granting non-owners write access to ACLs.
+// adminCheckPRc authorises SETACL/DELETEACL: allow when the accessing user is
+// the namespace user, or when an explicit user= entry for them carries the 'a'
+// (administer) right.
 func (s *session) adminCheckPRc(h *nsHandle, current mailbox.ACL) error {
 	if s.userInfo.Username == h.userInfo.Username {
 		return nil
@@ -225,11 +205,9 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 
 // MyRights implements imapserver.SessionACL.
 //
-// Returns the effective rights for the current user on the named mailbox.
-// The namespace owner always receives FullRights regardless of stored
-// entries (RFC 4314 §4 implicit owner grant). Non-owners receive the
-// union of explicit user= entries; group= / owner / inheritance walk
-// land in PR D/E.
+// Returns the effective rights for the current user on the named mailbox. The
+// namespace owner always receives FullRights (RFC 4314 §4 implicit owner
+// grant); non-owners receive the resolved effective rights.
 func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	if err := s.requireACLEnabled(); err != nil {
 		return nil, err
@@ -238,9 +216,9 @@ func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Resolve the full effective rights the same way enforcement does —
-	// ancestor inheritance, the global ACL and acl_defaults_from_inbox —
-	// so MYRIGHTS matches what SELECT/APPEND/etc. actually allow.
+	// Resolve effective rights the same way enforcement does (ancestor
+	// inheritance, global ACL, acl_defaults_from_inbox) so MYRIGHTS matches what
+	// SELECT/APPEND/etc. actually allow.
 	aclUser, aclGroups := s.userInfo.ACLIdentity()
 	rights, err := h.acl.EffectiveFor(rel, aclUser, aclGroups, s.isOwner(h), byte(h.spec.Separator))
 	if err != nil {
@@ -254,10 +232,8 @@ func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 
 // listRightsOptional is the RFC 4314 §3.7 "optional rights" set advertised by
 // LISTRIGHTS: every standard right plus the two obsolete compound rights
-// (c = k+x create, d = e+t delete), each individually grantable. The order
-// mirrors the fixed list a client sees ("" l r w s t p i e k x a c d): no
-// right is ever implied for any identifier, matching how the reference
-// implementation reports LISTRIGHTS uniformly.
+// (c = k+x create, d = e+t delete), each individually grantable. No right is
+// ever implied for any identifier.
 const listRightsOptional = "lrwstpiekxacd"
 
 // ListRights implements imapserver.SessionACL (RFC 4314 §3.7): the rights that
@@ -274,9 +250,8 @@ func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier)
 	if _, _, err := identifierFromIMAP(identifier); err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
 	}
-	// Probe the folder exists by attempting a load — a nil error here
-	// (whether the file exists or not) confirms the mailbox is
-	// reachable in this namespace.
+	// Probe reachability: a nil error (file present or not) confirms the
+	// mailbox is reachable in this namespace.
 	if _, err := h.acl.Get(rel); err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
 	}

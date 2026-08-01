@@ -23,9 +23,9 @@ import (
 	_ "modernc.org/sqlite"             // SQLite driver (no cgo)
 )
 
-// Per-driver schema. CREATE TABLE IF NOT EXISTS is run on every New() so
-// fresh installs work without manual migration. Skipped when Config.SkipSchema
-// is set (for connecting to existing schemas).
+// Per-driver schema, run as CREATE TABLE IF NOT EXISTS on every New()
+// so fresh installs need no manual migration. Skipped when
+// Config.SkipSchema is set.
 const (
 	schemaSQLite = `CREATE TABLE IF NOT EXISTS yarilo_users (
     username    TEXT PRIMARY KEY,
@@ -52,11 +52,11 @@ const (
 );`
 )
 
-// Default queries used when Config doesn't override them. They target the
-// built-in yarilo_users schema. Results are matched by column name, not
-// position — operators may alias arbitrary columns: pw_hash AS password.
-// Required: password. Optional: home, mail, enabled (defaults to active
-// when absent, so a WHERE active=1 guard in the query is equally valid).
+// Default queries for the built-in yarilo_users schema, used when Config
+// doesn't override them. Results match by column name, not position, so
+// operators may alias columns (pw_hash AS password). Required column:
+// password. Optional: home, mail, enabled (absent = active, so a WHERE
+// active=1 guard works equally).
 const (
 	defaultPasswordQuery = `SELECT password, home, mail, enabled FROM yarilo_users WHERE username = %u`
 	defaultUserQuery     = `SELECT home, mail FROM yarilo_users WHERE username = %u AND enabled = 1`
@@ -72,9 +72,8 @@ type Config struct {
 	IterateQuery      string // optional; for admin tooling (list users)
 	DefaultPassScheme string // assumed scheme when stored password has no {SCHEME} prefix (default PLAIN)
 	SkipSchema        bool   // do not auto-create yarilo_users
-	// Pool bounds the connection pool. The zero value still yields a bounded,
-	// reusing pool — Go's defaults retain only two idle connections, so a burst
-	// re-dials the rest (#886).
+	// Pool bounds the connection pool. The zero value still yields a
+	// bounded, reusing pool.
 	Pool sqlpool.Config
 }
 
@@ -128,23 +127,19 @@ func New(c Config) (*Passdb, error) {
 }
 
 // Authenticate verifies req.Username / req.Password against the SQL
-// store and writes user fields directly into req.Fields when the
-// lookup succeeds. Phase AUTH-2 PR 2 wire — drivers no longer
-// allocate their own AuthResponse; the Chain owns the bag and the
-// Result enum drives chain control flow.
+// store, writing user fields into req.Fields on success. The Chain owns
+// the bag; the Result drives chain control flow.
 //
 // Outcomes:
 //
-//	ResultNext       — row not found in this database; chain falls through
-//	ResultTempFail   — backend / query error (the error return carries
-//	                    the underlying cause for the server-side log)
+//	ResultNext       — row not found here; chain falls through
+//	ResultTempFail   — backend / query error (cause in the error return)
 //	ResultFail       — user found but disabled OR password mismatch
 //	ResultOK         — verified; req.Fields populated with user / home / mail
 //
-// Columns are matched by name, not position. Only "password" is required;
-// "home", "mail", and "enabled" are optional. When "enabled" is absent the
-// row is treated as active — callers may use a WHERE active=1 guard instead.
-// The optional UserQuery runs after the password check to enrich home/mail.
+// Columns match by name, not position. Only "password" is required;
+// "home", "mail", "enabled" are optional (absent enabled = active). The
+// optional UserQuery runs after the password check to enrich home/mail.
 func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 	query, args := substituteVars(p.driver, p.passwordQuery, req.Username)
 
@@ -200,8 +195,8 @@ func (p *Passdb) Authenticate(req *protocol.Request) (protocol.Result, error) {
 	if mailLoc != "" {
 		req.Fields.Set("mail", mailLoc)
 	}
-	// Forward all extra passdb fields (allow_nets, proxy, nologin, …) so the
-	// auth protocol layer can enforce them without passdb-specific knowledge.
+	// Forward extra passdb fields (allow_nets, proxy, nologin, …) so the
+	// auth protocol layer enforces them without passdb-specific knowledge.
 	skipCols := map[string]bool{"password": true, "enabled": true, "home": true, "mail": true}
 	for k, v := range row {
 		if !skipCols[k] && v != "" {
@@ -220,25 +215,20 @@ func (p *Passdb) LookupUser(username string) (home, mailLoc string, err error) {
 	return p.lookupUser(username)
 }
 
-// LookupSCRAMSha256 satisfies protocol.SCRAMSha256Lookup. The SQL
-// passdb runs its configured password_query, recognises the
-// `{SCRAM-SHA-256}` scheme prefix on the password column, and
-// returns the parsed ScramCredentials so the SCRAM-SHA-256 SASL
-// mechanism can drive challenge-response without ever seeing a
-// plain password.
+// LookupSCRAMSha256 satisfies protocol.SCRAMSha256Lookup. Runs
+// password_query, recognises the `{SCRAM-SHA-256}` scheme prefix, and
+// returns the parsed ScramCredentials so the SASL mechanism drives
+// challenge-response without a plain password.
 //
-// Returns (nil, nil) for any of: user unknown / user disabled /
-// stored password not a SCRAM-SHA-256 verifier. The session-side
-// SCRAM server treats nil as "fabricate a fake verifier" so the
-// exchange completes with a uniform auth-failed outcome and an
-// attacker cannot enumerate users.
+// Returns (nil, nil) when the user is unknown / disabled / not a
+// SCRAM-SHA-256 verifier. The SCRAM server fabricates a fake verifier on
+// nil so the exchange fails uniformly and users cannot be enumerated.
 func (p *Passdb) LookupSCRAMSha256(username string) (*sasl.ScramCredentials, error) {
 	return p.lookupSCRAM(username, scheme.ParseSCRAMSha256Credentials)
 }
 
-// LookupSCRAMSha1 satisfies protocol.SCRAMSha1Lookup. SHA-1
-// counterpart of LookupSCRAMSha256 — uses the same password_query
-// path; only the verifier-blob scheme prefix differs.
+// LookupSCRAMSha1 satisfies protocol.SCRAMSha1Lookup. SHA-1 counterpart
+// of LookupSCRAMSha256; only the verifier-blob scheme prefix differs.
 func (p *Passdb) LookupSCRAMSha1(username string) (*sasl.ScramCredentials, error) {
 	return p.lookupSCRAM(username, scheme.ParseSCRAMSha1Credentials)
 }
@@ -301,9 +291,8 @@ func ipInAllowNets(remoteIP string, nets []string) bool {
 }
 
 // scanRowByName executes query+args and returns the first row as a
-// column-name → string map. Uses stringify (defined in userdb.go, same
-// package) so integer/bool columns are normalised to strings. Returns
-// sql.ErrNoRows when the query produces no rows.
+// column-name → string map (integer/bool columns normalised to strings
+// via stringify). Returns sql.ErrNoRows when no rows.
 func scanRowByName(db *sql.DB, query string, args ...any) (map[string]string, error) {
 	rows, err := db.QueryContext(context.Background(), query, args...)
 	if err != nil {

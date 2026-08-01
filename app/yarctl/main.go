@@ -1,26 +1,9 @@
-// yarctl is the unified yarilo operator CLI. Every subsystem
-// that needs an "ops surface" lives under a top-level plane:
-//
-//	director              — talks to yarilo-director's HTTP admin API
-//	  status / dump / map / backends / users / ring
-//
-//	backend               — talks to yarilo-backend-api's HTTP admin API
-//	  dict                — pkg/dict KV-store ops
-//	  acl                 — RFC 4314 ACL (Phase ACL-1)
-//	  quota               — RFC 9208 quota (Phase QUOTA-1)
-//	  folder              — mailbox listing / GUID lookup (Phase later)
-//	  user                — userdb queries (Phase later)
-//	  mailbox             — per-folder operations (Phase later)
-//
-// Global flags pick the underlying HTTP endpoint per plane:
-//
-//	--url / --token              → director plane (default :9103)
-//	--backend-url / --backend-token → backend plane (default :9105)
-//
-// When YARILO_ADMIN_TYPE is set the plane is pre-selected and the first
-// CLI argument is the service/command directly (no plane prefix needed):
-//
-//	YARILO_ADMIN_TYPE=backend yarctl user info u1@example.com
+// yarctl is the yarilo operator CLI. Each subsystem lives under a top-level
+// plane: director (yarilo-director admin API, default :9103) and backend
+// (yarilo-backend-api admin API, default :9105). Global flags --url/--token
+// select the director plane; --backend-url/--backend-token select the backend
+// plane. When YARILO_ADMIN_TYPE is set the plane is implicit and the first
+// argument is the service/command directly (no plane prefix).
 package main
 
 import (
@@ -38,15 +21,14 @@ var (
 
 	backendAPIURL   string
 	backendAPIToken string
-	backendAPIPort  int    // per-user routing: pod backend-api port (#792)
+	backendAPIPort  int    // per-user routing: pod backend-api port
 	routeFlag       string // "auto" | "true" | "false"
 	routeByUser     bool   // resolved: route per-user backend ops via director LOOKUP
 
-	// Internal-mTLS client config for the director / backend-api HTTP hops
-	// (#954). When the admin servers run behind internal mTLS these carry the
-	// client cert/key, the CA that signed the server cert, and the ServerName to
-	// verify against (the internal cert SAN, e.g. "yarilo-internal") — since the
-	// URL host is usually an IP or localhost that never matches the SAN.
+	// Internal-mTLS client config for the director/backend-api HTTP hops:
+	// client cert/key, the CA that signed the server cert, and the ServerName
+	// to verify against (the internal cert SAN, e.g. "yarilo-internal"), since
+	// the URL host is usually an IP or localhost that never matches the SAN.
 	tlsCert       string
 	tlsKey        string
 	tlsCA         string
@@ -56,8 +38,7 @@ var (
 )
 
 // registerGlobalFlags (re)registers the position-independent global flags on
-// flag.CommandLine. Factored out of main so tests can populate the registry
-// that extractGlobalFlags scans against.
+// flag.CommandLine, so tests can populate the registry extractGlobalFlags scans.
 func registerGlobalFlags() {
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	flag.StringVar(&apiURL, "url", envOr("YARILO_ADMIN_URL", "http://localhost:9103"), "Director API base URL (used by 'director' subcommand)")
@@ -82,10 +63,10 @@ func main() {
 
 	registerGlobalFlags()
 
-	// Global flags are position-independent (#836): pull them out of the whole
-	// argv wherever they appear, leaving the plane/command/subcommand tokens for
-	// dispatch. flag.Parse alone would stop at the plane word and silently drop
-	// any trailing global flag.
+	// Global flags are position-independent: pull them out of the whole argv
+	// wherever they appear, leaving the plane/command/subcommand tokens for
+	// dispatch. flag.Parse alone stops at the plane word and drops any trailing
+	// global flag.
 	globals, rest := extractGlobalFlags(os.Args[1:])
 	_ = flag.CommandLine.Parse(globals) // ExitOnError: bad global value already exits
 
@@ -115,10 +96,10 @@ func main() {
 		}
 	}
 
-	// Resolve per-user routing (#792). "auto" turns routing on when a director
-	// URL was explicitly configured (env or --url flag) — the co-located
-	// topology. A bare default director URL (no env, no flag) means standalone,
-	// so routing stays off and the fixed --backend-url is used unchanged.
+	// Resolve per-user routing. "auto" turns routing on when a director URL was
+	// explicitly configured (env or --url flag), the co-located topology. A bare
+	// default director URL (no env, no flag) means standalone, so routing stays
+	// off and the fixed --backend-url is used unchanged.
 	switch strings.ToLower(routeFlag) {
 	case "true", "on", "yes", "1":
 		routeByUser = true
@@ -126,8 +107,8 @@ func main() {
 		routeByUser = false
 	default: // auto
 		// Key ONLY on director-plane signals. YARILO_API_URL is plane-ambiguous
-		// (adminBackendEnv sets it to the BACKEND API), so counting it here
-		// false-positives inside a backend pod — routing on with no director to
+		// (adminBackendEnv sets it to the backend API), so counting it here
+		// false-positives inside a backend pod: routing on with no director to
 		// LOOKUP against. A real director is signalled by YARILO_ADMIN_URL (the
 		// adminDirectorEnv var) or an explicit --url.
 		directorConfigured := os.Getenv("YARILO_ADMIN_URL") != "" || flagSet("url")
@@ -152,17 +133,15 @@ func main() {
 
 func dispatch(args []string) error {
 	// `wait` is a plane-independent dependency probe (used as a k8s startupProbe),
-	// not an admin operation against a plane. Recognise it BEFORE YARILO_ADMIN_TYPE
-	// routes the args into a plane — otherwise a backend container (which sets
-	// YARILO_ADMIN_TYPE=backend) dispatches `wait` as a backend service and fails
-	// with "unknown backend service \"wait\"" (#903).
+	// not an admin operation. Recognise it BEFORE YARILO_ADMIN_TYPE routes the
+	// args into a plane, otherwise a backend container (YARILO_ADMIN_TYPE=backend)
+	// dispatches `wait` as a backend service and fails.
 	if len(args) > 0 && args[0] == "wait" {
 		return dispatchWait(args[1:])
 	}
 
-	// When YARILO_ADMIN_TYPE is set the plane is implicit — first arg is the
-	// service/command directly. Top-level "user" shorthand always delegates to
-	// the backend plane regardless of YARILO_ADMIN_TYPE.
+	// When YARILO_ADMIN_TYPE is set the plane is implicit: first arg is the
+	// service/command directly.
 	adminType := os.Getenv("YARILO_ADMIN_TYPE")
 	if adminType != "" {
 		switch adminType {
@@ -179,8 +158,6 @@ func dispatch(args []string) error {
 
 	switch args[0] {
 	case "wait":
-		// Plane-independent: this is a dependency probe for a startupProbe, not an
-		// admin operation against a service.
 		return dispatchWait(args[1:])
 	case "director":
 		return dispatchDirector(args[1:])
@@ -189,10 +166,10 @@ func dispatch(args []string) error {
 	case "auth":
 		return dispatchAuth(args[1:])
 	case "user":
-		// Top-level shorthand: yarctl user <cmd> — always hits backend plane.
+		// Shorthand: yarctl user <cmd> always hits the backend plane.
 		return dispatchUser(args[1:])
 	case "warden":
-		// Top-level shorthand: yarctl warden <cmd> — introspection via backend plane.
+		// Shorthand: yarctl warden <cmd> introspects via the backend plane.
 		return dispatchWarden(args[1:])
 	default:
 		return fmt.Errorf("unknown plane %q — available: director, backend, auth, wait\n(tip: set YARILO_ADMIN_TYPE=backend to skip the plane prefix)", args[0])
@@ -233,9 +210,9 @@ func dispatchBackend(args []string) error {
 		return dispatchFTS(args[1:])
 	case "warden":
 		// warden introspection runs against the backend plane, so it must resolve
-		// here too — the backend-api container sets YARILO_ADMIN_TYPE=backend,
-		// which routes `yarctl warden dump` through dispatchBackend rather than the
-		// top-level shorthand (#953, same class as the `wait` special-case #903).
+		// here too: the backend-api container sets YARILO_ADMIN_TYPE=backend, which
+		// routes `yarctl warden dump` through dispatchBackend rather than the
+		// top-level shorthand.
 		return dispatchWarden(args[1:])
 	default:
 		return fmt.Errorf("unknown backend service %q — available: dict, folder, user, index, mdbox, subscriptions, specialuse, metadata, acl, who, sessions, quota, fts, warden", args[0])

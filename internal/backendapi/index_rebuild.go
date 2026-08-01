@@ -13,9 +13,8 @@ import (
 )
 
 // rebuildRequest is the wire body for /api/backend/index/rebuild.
-// `reset_uids` flips the default preserve-UIDs semantics to a
-// nuke-and-reissue (UIDVALIDITY would need to bump too; not
-// supported in v1 — operator must DELETE+CREATE instead).
+// reset_uids would reissue UIDs and bump UIDVALIDITY; unsupported in v1
+// (operator must DELETE+CREATE instead).
 type rebuildRequest struct {
 	User      string `json:"user"`
 	Folder    string `json:"folder"`
@@ -73,20 +72,18 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 		return nil, http.StatusNotFound, errFolderNotFound
 	}
 
-	// A folder-agnostic driver (mdbox) has a storage-wide Scan: running the
-	// per-folder rebuild would import every stored message into this folder with
-	// fresh UIDs (cross-folder pollution + duplicates). Reject until the
-	// storage-wide rebuild lands (#594 Phase 2b) — never fall through to
-	// RebuildFolder.
+	// A folder-agnostic driver (mdbox) has a storage-wide Scan: the per-folder
+	// rebuild would import every stored message into this folder with fresh UIDs
+	// (cross-folder pollution + duplicates). Reject; use the storage-wide rebuild.
 	if fa, ok := bundle.box.(mailbox.FolderAgnosticStorage); ok && fa.FolderAgnosticScan() {
 		return nil, http.StatusNotImplemented, errMdboxRebuildUnsupported
 	}
 
 	start := time.Now()
 
-	// Cross-process lock so concurrent IMAP writers cannot race the
-	// rebuild. Acquired before any Scan/OpenFolder work so the snapshot
-	// we read is the snapshot we rewrite.
+	// Cross-process lock so concurrent writers cannot race the rebuild.
+	// Acquired before any Scan/OpenFolder so the snapshot we read is the
+	// snapshot we rewrite.
 	if s.opts.Locker != nil {
 		key := locks.MailboxKey(uc.info.Username, req.Folder)
 		lockCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -103,23 +100,21 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 		return nil, http.StatusInternalServerError, fmt.Errorf("open folder: %w", err)
 	}
 
-	// Folder-agnostic drivers were rejected above, so any error here is a genuine
-	// rebuild failure — no "not yet implemented" special-casing.
 	rstats, err := idxrebuild.RebuildFolder(bundle.box, bundle.idx, folder)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// An operator rebuild is a superset of the reactive heal, so drop any FSCKD
-	// marker — otherwise the next SELECT would run a redundant reactive heal.
+	// An operator rebuild is a superset of the reactive heal; drop any FSCKD
+	// marker so the next SELECT does not run a redundant reactive heal.
 	if cm, ok := bundle.idx.(mailbox.CorruptionMarker); ok {
 		if err := cm.ClearFolderCorrupt(folder.ID); err != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("clear corrupt marker: %w", err)
 		}
 	}
 
-	// Invalidate FTS documents for the dropped records — the rebuild path otherwise
-	// leaves ghost documents until the next fts rescan.
+	// Invalidate FTS documents for the dropped records; otherwise they linger as
+	// ghost documents until the next fts rescan.
 	s.ftsExpunge(uc, folder.Name, rstats.ExpungedUIDs)
 
 	stats := &rebuildStats{
@@ -139,9 +134,9 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 type storageRebuildRequest struct {
 	User      string `json:"user"`
 	Namespace string `json:"namespace"`
-	// RestoreOrphans opts in to re-filing unreferenced messages that carry an
-	// ORIG_MAILBOX tag back into their home folder. Default false: unreferenced
-	// messages are left zero-ref for the next purge, never resurrected.
+	// RestoreOrphans re-files unreferenced messages carrying an ORIG_MAILBOX tag
+	// back into their home folder. Default false: unreferenced messages are left
+	// zero-ref for the next purge, never resurrected.
 	RestoreOrphans bool `json:"restore_orphans"`
 }
 
@@ -158,8 +153,8 @@ type storageRebuildStats struct {
 
 // handleStorageRebuild runs the storage-wide rebuild for a folder-agnostic
 // driver (mdbox): reconcile the shared map against the physical files, reset
-// every folder index, adopt orphans into INBOX, drop vanished map records. A
-// driver that is not storage-wide is rejected — those use per-folder /rebuild.
+// every folder index, adopt orphans into INBOX, drop vanished map records.
+// Non-storage-wide drivers are rejected; those use per-folder /rebuild.
 func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 	var req storageRebuildRequest
 	if !decodeJSON(w, r, &req) {
@@ -184,14 +179,14 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	// The rebuild takes the storage (map) lock itself; no folder lock is acquired
-	// here — it is taken per folder inside idx.ResetFolder.
+	// The rebuild takes the storage (map) lock itself; the per-folder lock is
+	// taken inside idx.ResetFolder.
 	st, err := rb.RebuildStorage(bundle.idx, req.RestoreOrphans)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Invalidate FTS documents for every record the rebuild dropped, per folder —
+	// Invalidate FTS documents for every record the rebuild dropped, per folder;
 	// otherwise they linger as ghost documents until the next fts rescan.
 	for folderName, uids := range st.ExpungedUIDs {
 		s.ftsExpunge(uc, folderName, uids)
@@ -287,13 +282,9 @@ func (s *Server) optimizeFolder(ctx context.Context, req optimizeRequest) (*opti
 
 // ---- folder repair --------------------------------------------------------
 
-// handleFolderRepair runs Rebuild then Optimize back-to-back on
-// one folder under a single per-folder lock. Operator's "one knob
-// to fix whatever is wrong" — Rebuild followed by index compaction.
-//
-// Returns a combined stats object so the operator sees what each
-// step did. If Rebuild fails Optimize is skipped and the error
-// from Rebuild propagates.
+// handleFolderRepair runs Rebuild then index compaction on one folder.
+// Returns a combined stats object. If Rebuild fails, Optimize is skipped
+// and the Rebuild error propagates.
 func (s *Server) handleFolderRepair(w http.ResponseWriter, r *http.Request) {
 	var req rebuildRequest
 	if !decodeJSON(w, r, &req) {
