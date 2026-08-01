@@ -886,7 +886,7 @@ Two knobs shape how sessions are torn down, mirroring the reference's
   between batches, spreading the re-login stampede across the surviving backends
   instead of firing every kick at once. Negative = no batching.
 
-**Migrating from `dovecot.conf`:** `director_max_parallel_moves` has **no yarilo
+**Migration note:** a legacy `director_max_parallel_moves` setting has **no yarilo
 equivalent and is intentionally omitted**. yarilo rehashes lazily — a moved or
 kicked user is re-placed only on its next `LOOKUP` (kick → re-login → LOOKUP),
 so there is no proactive bulk-move phase to bound; the move rate is already
