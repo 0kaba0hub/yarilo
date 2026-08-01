@@ -1422,7 +1422,7 @@ type AuthConfig struct {
 	InternalFailureDelayMs int `koanf:"internal_failure_delay_ms"`
 
 	// Cache groups passdb / userdb cache settings. Disabled by
-	// default (SizeBytes=0).
+	// default (cache_size empty/0).
 	Cache AuthCacheConfig `koanf:"cache"`
 
 	// Penalty groups the cross-pod IP-bound auth-fail backoff.
@@ -1623,11 +1623,15 @@ type AuthPolicyConfig struct {
 // bytes-bounded). Positive entries hold successful credentials
 // verified against the stored HMAC of the password; negative
 // entries hold failed lookups (unknown user, wrong password).
-// Set SizeBytes>0 to enable.
+// Set cache_size>0 to enable.
 type AuthCacheConfig struct {
-	// SizeBytes caps total payload weight (approximate — includes
-	// key + bag + per-entry overhead). 0 disables caching.
-	SizeBytes int64 `koanf:"size_bytes"`
+	// CacheSize caps total payload weight (approximate — includes key + bag +
+	// per-entry overhead). Human-readable: a bare integer (bytes) or a 1024-based
+	// K/M/G/T suffix (e.g. "100M", "512k") via quota.ParseSize. Empty/0 disables
+	// caching. Resolved to bytes at load into cacheSizeBytes; read via
+	// CacheSizeBytes.
+	CacheSize      string `koanf:"cache_size"`
+	cacheSizeBytes int64
 
 	// TTLSeconds is the lifetime of a positive (successful) entry.
 	// Default 1800 (30m). Kept tight because yarilo lacks
@@ -1643,6 +1647,10 @@ type AuthCacheConfig struct {
 	// genuinely-unknown-user entries.
 	NegativeTTLSeconds int `koanf:"negative_ttl_seconds"`
 }
+
+// CacheSizeBytes returns the cache size resolved to bytes at load. Zero means
+// caching is disabled.
+func (a AuthCacheConfig) CacheSizeBytes() int64 { return a.cacheSizeBytes }
 
 // MasterUsersConfig configures the master-user impersonation
 // surface. Master-user lets a privileged account log into another
@@ -1936,7 +1944,7 @@ func Load(path string) (*Config, error) {
 			FailureDelaySeconds:    2,
 			InternalFailureDelayMs: 2000,
 			// Cache off by default — operators opt in by setting
-			// auth.cache.size_bytes>0. TTLs are 30m to keep
+			// auth.cache.cache_size>0. TTLs are 30m to keep
 			// password-change / user-delete staleness windows
 			// tight in environments without explicit cache
 			// flushes from user-management tooling.
@@ -2092,6 +2100,17 @@ func (cfg *Config) validate() error {
 	if cfg.Services.LMTP.Active() && cfg.Protocol.LMTP.UserConcurrencyLimit == 0 {
 		return fmt.Errorf(`config: lmtp.user_concurrency_limit must not be 0 (did you mean "unlimited" via -1?)`)
 	}
+	// Resolve the human-readable auth cache size to bytes once (quota.ParseSize
+	// is the shared K/M/G/T parser, same as mdbox_rotate_size / quota_mail_size),
+	// so consumers read a plain int64. A non-empty value that parses to 0 is a
+	// malformed size — fail startup loudly rather than silently disabling the
+	// cache.
+	raw := strings.TrimSpace(cfg.Auth.Cache.CacheSize)
+	n := quota.ParseSize(raw)
+	if n == 0 && raw != "" && raw != "0" {
+		return fmt.Errorf("config: auth.cache.cache_size: invalid size %q (use bytes or a K/M/G/T suffix, e.g. 100M)", raw)
+	}
+	cfg.Auth.Cache.cacheSizeBytes = n
 	return nil
 }
 

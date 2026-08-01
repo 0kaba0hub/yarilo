@@ -700,7 +700,10 @@ components:
     ## selectively via `yarctl auth cache flush
     ## [user-mask...]`.
     cache:
-      size_bytes: 104857600
+      ## cache_size — human-readable byte cap (1024-based units: b, k, M, G, T,
+      ## Dovecot-style; a bare integer is bytes). "100M" == 104857600. Empty/0
+      ## disables caching. Quote it so a unit suffix stays a string.
+      cache_size: "100M"
       ttl_seconds: 1800
       negative_ttl_seconds: 1800
 

@@ -273,3 +273,22 @@ func TestQuota_IgnoreFolder_SkipsCounter(t *testing.T) {
 		t.Errorf("after Spam skip: storage = %d, want 1000", u.StorageBytes)
 	}
 }
+
+func TestParseSize_Units(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int64
+	}{
+		{"", 0}, {"0", 0}, {"1024", 1024},
+		{"1k", 1024}, {"1K", 1024},
+		{"100M", 100 * 1024 * 1024},
+		{"2G", 2 * 1024 * 1024 * 1024},
+		{"1T", 1024 * 1024 * 1024 * 1024},
+		{"bogus", 0}, {"-5", 0},
+	}
+	for _, tc := range tests {
+		if got := quota.ParseSize(tc.in); got != tc.want {
+			t.Errorf("ParseSize(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

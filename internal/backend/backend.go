@@ -107,7 +107,7 @@ func New(cfg *config.Config) (*Server, error) {
 		passdbs = append(oauth2pdbs, passdbs...)
 	}
 	authCache := protocol.NewCache(
-		cfg.Auth.Cache.SizeBytes,
+		cfg.Auth.Cache.CacheSizeBytes(),
 		time.Duration(cfg.Auth.Cache.TTLSeconds)*time.Second,
 		time.Duration(cfg.Auth.Cache.NegativeTTLSeconds)*time.Second,
 	)

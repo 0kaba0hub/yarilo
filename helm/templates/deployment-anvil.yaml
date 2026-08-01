@@ -1,4 +1,8 @@
 {{- if .Values.components.anvil.enabled }}
+{{- $anvilBackend := .Values.components.anvil.service.state_backend | default "memory" }}
+{{- if and (gt (int .Values.components.anvil.replicas) 1) (ne $anvilBackend "redis") }}
+{{- fail "anvil: components.anvil.replicas > 1 requires components.anvil.service.state_backend: redis (memory state is per-pod; sessions, the connection limit, and the kick bus would fragment across replicas). Either set state_backend: redis, or set replicas: 1." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,7 +16,15 @@ spec:
     matchLabels:
       {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "anvil") | nindent 6 }}
   strategy:
+    {{- if eq $anvilBackend "redis" }}
+    # redis-backed pods are stateless, so a rolling update is safe.
     type: RollingUpdate
+    {{- else }}
+    # memory state is per-pod: a rolling update would briefly run two pods and
+    # split sessions/penalty/kick state. Recreate keeps the single-replica
+    # memory backend correct by default (old pod gone before the new one starts).
+    type: Recreate
+    {{- end }}
   template:
     metadata:
       labels:

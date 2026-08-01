@@ -62,8 +62,70 @@ var (
 		Name:      "connections_total",
 		Help:      "Total connections accepted by yarilo-anvil since start.",
 	})
+
+	// connectTotal makes the PR2 limit assertable by number rather than by
+	// scanning cnt:* keys: result is ok, too_many_connections, state_error, or
+	// bad_request. (request_seconds already carries the same _count, but a plain
+	// counter keeps an acceptance gate a one-liner.)
+	connectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "anvil",
+		Name:      "connect_total",
+		Help:      "CONNECT outcomes by result.",
+	}, []string{"result"})
+
+	penaltyUpdates = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "anvil",
+		Name:      "penalty_updates_total",
+		Help:      "Auth-penalty updates by effect (set = counter raised, clear = counter dropped).",
+	}, []string{"result"})
+
+	// kickEmitted / kickDelivered make the kick bus observable across replicas
+	// (#908): EMIT increments kickEmitted on the pod that received the EMIT,
+	// while the pod whose subscriber forwards the EVENT to its login client
+	// increments kickDelivered. With Redis those are different pods, so a scrape
+	// of both proves cross-replica delivery without racing a session death.
+	kickEmitted = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "anvil",
+		Name:      "kick_emitted_total",
+		Help:      "Kick events published via EMIT.",
+	})
+	kickDelivered = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "anvil",
+		Name:      "kick_delivered_total",
+		Help:      "Kick EVENT lines forwarded to a subscribed client.",
+	})
+
+	// redisErrors makes fail-open non-silent: a bounded Redis error that the
+	// handler swallows (returning fail-open) still shows up here, labelled by op,
+	// so a Redis outage is visible instead of only inferable from behaviour.
+	redisErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "anvil",
+		Name:      "redis_errors_total",
+		Help:      "Redis operation errors by op (fail-open is applied, but counted here).",
+	}, []string{"op"})
+
+	// reconcileAdjustments counts counter leaks corrected by Maintain — drift
+	// that was previously invisible.
+	reconcileAdjustments = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "anvil",
+		Name:      "reconcile_adjustments_total",
+		Help:      "Connection-counter leaks corrected by reconciliation.",
+	})
 )
 
 func observeRequest(verb, result string, start time.Time) {
 	requestSeconds.WithLabelValues(verb, result).Observe(time.Since(start).Seconds())
+}
+
+// redisErr records a fail-open Redis error for op and returns err unchanged, so
+// call sites stay `return redisErr("op", err)`.
+func redisErr(op string, err error) error {
+	redisErrors.WithLabelValues(op).Inc()
+	return err
 }

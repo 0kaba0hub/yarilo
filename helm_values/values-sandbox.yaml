@@ -285,11 +285,13 @@ components:
       enabled: true
       secretName: yarilo-internal-tls
   anvil:
+    # #908 PR4: singleton lifted. Redis-backed state (penalties + sessions + kick
+    # bus) is shared across replicas, so the sandbox runs 2 to exercise the
+    # cross-replica paths (kick published on one pod, delivered by another).
+    replicas: 2
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
-    # #908 PR1: Redis-backed penalties (sessions/kick move in later phases).
-    # replicas stays 1 until PR4 lifts the singleton.
     service:
       state_backend: redis
       key_prefix: "yarilo-sb:anvil:"
@@ -431,6 +433,18 @@ components:
     # penalty backend end-to-end). #942 fixed the mTLS client-config dial.
     penalty:
       enabled: true
+
+    # Negative auth caching stays ON (default 1800s) on purpose (#950). The
+    # per-password negative-MAC fix (Option A) makes it safe — a wrong-password
+    # storm no longer blocks the user's correct password — and keeping it ON is
+    # exactly what the #950 acceptance must exercise. Do NOT set
+    # negative_ttl_seconds: 0 here: that was the interim mitigation, and with the
+    # fix in place it would only mask the fixed path (no negatives = nothing to
+    # poison = a trivially-green anti-test).
+    cache:
+      cache_size: "100M"
+      ttl_seconds: 1800
+      negative_ttl_seconds: 1800
 
   ## IMAP session pod.
   imap:

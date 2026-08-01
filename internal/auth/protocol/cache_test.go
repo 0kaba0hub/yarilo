@@ -52,16 +52,24 @@ func TestCache_PositiveHitVerifiesPassword(t *testing.T) {
 	}
 }
 
-// TestCache_NegativeHitShortCircuits — cached Fail entry returns
-// hit regardless of password — a previously-known failure is
-// authoritative for the neg-TTL window and saves a passdb roundtrip.
-func TestCache_NegativeHitShortCircuits(t *testing.T) {
+// TestCache_NegativeHitRequiresSamePassword — a cached Fail entry
+// short-circuits ONLY when the same password is presented again
+// (#950). The wrong password that seeded it hits (saves a passdb
+// roundtrip on a repeated bad attempt); a different password falls
+// through so a correct credential is never blocked by a poisoned
+// negative entry.
+func TestCache_NegativeHitRequiresSamePassword(t *testing.T) {
 	c := NewCache(1<<20, time.Minute, time.Minute)
-	c.Insert(MakeCacheKey("imap", "ghost"), "ghost", "", ResultFail, nil)
+	key := MakeCacheKey("imap", "ghost")
+	c.Insert(key, "ghost", "bad-guess", ResultFail, nil)
 
-	e, ok := c.Lookup(MakeCacheKey("imap", "ghost"), "anything")
-	if !ok || e == nil || e.Result != ResultFail {
-		t.Fatalf("neg cache miss: ok=%v entry=%+v", ok, e)
+	// Same wrong password → short-circuit Fail.
+	if e, ok := c.Lookup(key, "bad-guess"); !ok || e == nil || e.Result != ResultFail {
+		t.Fatalf("same wrong password should hit the neg entry: ok=%v entry=%+v", ok, e)
+	}
+	// Different password (e.g. the correct one) → miss, so the chain runs.
+	if e, ok := c.Lookup(key, "different"); ok {
+		t.Fatalf("a different password must NOT inherit the cached Fail: entry=%+v", e)
 	}
 }
 
@@ -93,8 +101,8 @@ func TestCache_TTLZeroDisablesPositive(t *testing.T) {
 	if _, ok := c.Lookup("k", "p"); ok {
 		t.Errorf("positive insert landed with ttl=0")
 	}
-	c.Insert("k2", "u2", "", ResultFail, nil)
-	if _, ok := c.Lookup("k2", "anything"); !ok {
+	c.Insert("k2", "u2", "guess", ResultFail, nil)
+	if _, ok := c.Lookup("k2", "guess"); !ok {
 		t.Errorf("negative insert blocked by positive ttl=0")
 	}
 }
@@ -240,16 +248,45 @@ func TestCache_PasswordChangeRefreshesOnSuccess(t *testing.T) {
 	}
 }
 
-// TestCache_UnknownUserNegativeCacheStillWorks — when there's
-// no prior OK entry, negative caching MUST still kick in (so
-// repeated probes for non-existent users skip the passdb).
+// TestCache_UnknownUserNegativeCacheStillWorks — when there's no
+// prior OK entry, negative caching MUST still kick in so a repeated
+// probe with the SAME password for a non-existent user skips the
+// passdb. Post-#950 the short-circuit is per-password: the same
+// probe hits, a new password re-runs the chain.
 func TestCache_UnknownUserNegativeCacheStillWorks(t *testing.T) {
 	c := NewCache(1<<20, time.Minute, time.Minute)
 	key := MakeCacheKey("imap", "ghost")
-	c.Insert(key, "ghost", "", ResultFail, nil)
-	e, ok := c.Lookup(key, "anything")
+	c.Insert(key, "ghost", "probe", ResultFail, nil)
+	e, ok := c.Lookup(key, "probe")
 	if !ok || e == nil || e.Result != ResultFail {
-		t.Errorf("negative cache did not stick for unknown user: %v", e)
+		t.Errorf("negative cache did not stick for a repeated same-password probe: %v", e)
+	}
+}
+
+// TestCache_WrongPasswordDoesNotPoisonUncachedUser is the #950
+// regression: a not-yet-cached user hit with a wrong-password storm
+// seeds a negative entry, and the user's subsequent CORRECT password
+// must still authenticate against the chain rather than inheriting
+// the cached Fail. Before Option A the negative entry short-circuited
+// regardless of password, so the correct password returned FAIL for
+// the whole neg-TTL window (u7 / u46 in the field).
+func TestCache_WrongPasswordDoesNotPoisonUncachedUser(t *testing.T) {
+	c := NewCache(1<<20, time.Minute, time.Minute)
+	key := MakeCacheKey("imap", "u46")
+
+	// Storm: several wrong-password attempts on an uncached user.
+	for _, wrong := range []string{"w1", "w2", "w3", "w4", "w5"} {
+		c.Insert(key, "u46", wrong, ResultFail, nil)
+	}
+
+	// The correct password is a DIFFERENT credential → must miss the
+	// cache (so the caller runs the chain and authenticates).
+	if e, ok := c.Lookup(key, "correct-horse"); ok {
+		t.Fatalf("correct password inherited a poisoned negative entry: %+v", e)
+	}
+	// A repeat of the last wrong password still short-circuits.
+	if _, ok := c.Lookup(key, "w5"); !ok {
+		t.Fatalf("repeated wrong password should still hit the negative entry")
 	}
 }
 
