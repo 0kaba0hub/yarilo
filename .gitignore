@@ -15,7 +15,5 @@ app/smoketest-e2e/smoketest-e2e
 # macOS
 .DS_Store
 
-# Local-only docs
-INTERNALS.md
-PLAN.md
-PLAN_standalone.md
+# Local-only docs (internal design/planning notes, not shipped)
+docs_internal/

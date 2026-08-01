@@ -11,7 +11,7 @@
 //	    yarilo.index*                 ← per-folder fileindex
 //	    .temp.<sec>.P<pid>Q<seq>M<usec>.<host> ← in-flight saves
 //
-// File format (per INTERNALS.md §8):
+// File format (per the internal docs):
 //
 //	<file header line, ASCII>          "2 M20 C<create_stamp_hex>\n"
 //	<dbox_message_header, 32 bytes>    magic + type + UID-slot (v2: spaces) + size

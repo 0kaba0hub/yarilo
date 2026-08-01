@@ -21,8 +21,6 @@ knob. `go-sasl` fork (`0kaba0hub/go-sasl`) already has server-side
 SCRAM/XOAUTH2/CRAM-MD5/DIGEST-MD5 on `yarilo-patches` — pick up from
 there for CRAM-MD5.
 
-See [AUTH_REVIEW.md](AUTH_REVIEW.md) §Phase AUTH-5.
-
 ---
 
 ## Phase AUTH-7 — additional passdb / userdb drivers
@@ -33,8 +31,6 @@ Still missing, by operator demand order:
 `passwd-file` → `ldap` → `pam` → `lua` → `static` → `imap`.
 
 Order driven by ticket pressure, not pre-decided.
-
-See [AUTH_REVIEW.md](AUTH_REVIEW.md) §Phase AUTH-7.
 
 ---
 

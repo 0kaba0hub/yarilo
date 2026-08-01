@@ -1659,7 +1659,7 @@ func (a AuthCacheConfig) CacheSizeBytes() int64 { return a.cacheSizeBytes }
 // MasterUsersConfig configures the master-user impersonation
 // surface. Master-user lets a privileged account log into another
 // user's mailbox by sending a SASL PLAIN response with the
-// target's identity in authzid. See INTERNALS.md for the wire
+// target's identity in authzid. See the internal docs for the wire
 // model.
 type MasterUsersConfig struct {
 	// Enabled is the top-level opt-in. While false, distinct

@@ -21,7 +21,7 @@
 // driver rewrite. It is intentionally storage-driver-agnostic:
 // nothing here knows about folder layout or per-folder indexes.
 //
-// Wire layout — see INTERNALS.md §map for the byte-level spec:
+// Wire layout — see the internal docs for the byte-level spec:
 //
 //	header     standard mailindex header
 //	exts       "map" (12 B per-record, 4 B header for highest_file_id)

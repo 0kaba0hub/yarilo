@@ -12,7 +12,7 @@
 //	     only the lexicographically lower (ip,port) member dials.
 //	N=3+: every member dials its right neighbor; N distinct directed edges.
 //
-// See INTERNALS.md §1 for the wire format.
+// See the internal docs for the wire format.
 package director
 
 import (
@@ -152,7 +152,7 @@ type Membership struct {
 	// one the event just arrived on, matching the reference's director_update_send
 	// (skip only the arrival connection; (origin, seq) dedup in
 	// handleEnvelope is what actually stops the flood once it loops back to
-	// its author — see INTERNALS.md). Earlier this repo instead kept a
+	// its author — see the internal docs). Earlier this repo instead kept a
 	// single "the" forward path (dialConn, falling back to a passiveConn set
 	// only for the N=2 tie-break's passive member) — that role was decided
 	// once, when a connection was accepted, and never revisited as topology

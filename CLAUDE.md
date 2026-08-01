@@ -92,7 +92,7 @@ Key rules derived from ARCHITECTURE.md:
   after auth. Handle methods take NO user/path parameter — `UserInfo` is captured at Open time.
 - **Director owns the ring.** Nothing else modifies backend assignment.
 - **Internal protocols** (director, auth, anvil, ipc) are TAB-delimited, LF-terminated,
-  with version handshake. See INTERNALS.md for exact wire format.
+  with version handshake. See docs_internal/INTERNALS.md for exact wire format.
 - **Each process writes only to its own resources.** No cross-process writes to shared state.
 - **Cross-process write coordination always goes through `yarilo-locks`.** Single `pkg/locks` API,
   single TAB-delimited wire protocol. **In every k8s Helm release (standalone or backend) the
@@ -183,8 +183,8 @@ Never push directly to `main`. Feature branch → PR → user merges.
 
 ## Dovecot compatibility
 
-- Wire formats for all internal protocols are documented in `INTERNALS.md`.
-  **Always consult INTERNALS.md before implementing any binary format or internal socket.**
+- Wire formats for all internal protocols are documented in `docs_internal/INTERNALS.md`.
+  **Always consult docs_internal/INTERNALS.md before implementing any binary format or internal socket.**
 - Magic bytes, version numbers, field offsets — must match exactly.
   See §7 (FileIndex), §8 (Maildir), §2 (director protocol), §3 (auth protocol).
 - Maildir filenames: `{secs}.M{usecs}P{pid}_{seq}.{hostname}:2,{flags}` — flags sorted uppercase.

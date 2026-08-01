@@ -225,7 +225,7 @@ func (e *dupErr) Error() string { return "duplicate uid: " + strconv.FormatUint(
 
 // BenchmarkAcquireRelease measures one cross-process LOCK/UNLOCK pair against
 // the embedded yarilo-locks server. Target: < 500 µs per pair per the Phase 1
-// plan (see PLAN_standalone.md). Reports allocations and ns/op.
+// plan (see the internal docs). Reports allocations and ns/op.
 func BenchmarkAcquireRelease(b *testing.B) {
 	dialLocker := embeddedLocksB(b)
 	lk := dialLocker()

@@ -17,7 +17,7 @@ const (
 )
 
 // Extension names and on-disk sizes are pinned by the wire
-// spec (INTERNALS.md §map). Renaming or resizing breaks the
+// spec (the internal docs). Renaming or resizing breaks the
 // in-place format the rest of the storage layer depends on.
 const (
 	// extMap holds {file_id, offset, size} per record.
