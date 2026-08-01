@@ -86,6 +86,25 @@ Call with component internalTLS config: (dict "enabled" true "secretName" "...")
 {{- end }}
 {{- end }}
 
+{{/*
+Whether internal mTLS is on ANYWHERE. Renders "true" when any component enables
+internalTLS, else empty. This is the same condition the configmap uses for
+internal_tls.enabled, and it is what makes the shared servers (backend-api,
+warden, …) serve HTTPS/mTLS — so callers (e.g. yarctl in the backend-api
+container) must key their client on THIS, not on a single component's flag (#954:
+the backend plane broke because it keyed on components.backendAPI.internalTLS,
+which the co-located install never sets).
+*/}}
+{{- define "yarilo.internalTLSEnabled" -}}
+{{- $ms := ((.Values.components.manageSieve | default dict).internalTLS | default dict).enabled }}
+{{- $msl := ((.Values.components.manageSieveLogin | default dict).internalTLS | default dict).enabled }}
+{{- $sasl := ((.Values.components.saslLogin | default dict).internalTLS | default dict).enabled }}
+{{- $quota := ((.Values.components.quotaStatus | default dict).internalTLS | default dict).enabled }}
+{{- if or .Values.components.director.internalTLS.enabled .Values.components.auth.internalTLS.enabled .Values.components.warden.internalTLS.enabled .Values.components.imap.internalTLS.enabled .Values.components.pop3.internalTLS.enabled .Values.components.lmtp.internalTLS.enabled .Values.components.imapLogin.internalTLS.enabled .Values.components.pop3Login.internalTLS.enabled .Values.components.submissionLogin.internalTLS.enabled $ms $msl $sasl $quota -}}
+true
+{{- end -}}
+{{- end }}
+
 {{- define "yarilo.internalTLSMount" -}}
 {{- if and .enabled .secretName }}
 - name: internal-tls
@@ -180,7 +199,10 @@ Include in any component that reads passdb/userdb from SQL.
 {{- if eq $tokenSecret "" }}
 {{- $tokenSecret = printf "%s-backend-api-token" (include "yarilo.fullname" .) }}
 {{- end }}
-{{- $btls := .Values.components.backendAPI.internalTLS.enabled }}
+{{- /* Key on the GLOBAL internal-TLS condition, not components.backendAPI.* —
+       backend-api serves HTTPS whenever internal_tls.enabled (any component TLS)
+       is on, which the co-located install sets without a backendAPI block (#954). */}}
+{{- $btls := eq (include "yarilo.internalTLSEnabled" .) "true" }}
 {{- $scheme := ternary "https" "http" $btls }}
 - name: YARILO_ADMIN_TYPE
   value: backend
