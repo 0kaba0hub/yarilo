@@ -72,3 +72,41 @@ func TestCacheSizeResolution(t *testing.T) {
 		})
 	}
 }
+
+// TestSizeFieldsResolve proves every human-readable size field is parsed to
+// bytes at load, and a malformed value anywhere fails startup loudly.
+func TestSizeFieldsResolve(t *testing.T) {
+	cfg := &Config{}
+	cfg.Protocol.Submission.MaxMsgSizeRaw = "40M"
+	cfg.FTS.MessageMaxSizeRaw = "1G"
+	cfg.FTS.DecoderMaxSizeRaw = "10M"
+	cfg.FTS.DetectionSampleBytesRaw = "8k"
+	cfg.Storage.IndexLogCompactMinBytesRaw = "32k"
+	cfg.Storage.IndexLogCompactMaxBytesRaw = "1M"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	checks := []struct {
+		name string
+		got  int64
+		want int64
+	}{
+		{"max_message_size", cfg.Protocol.Submission.MaxMsgSize, 40 * 1024 * 1024},
+		{"fts_message_max_size", cfg.FTS.MessageMaxSize, 1024 * 1024 * 1024},
+		{"fts_decoder_max_size", cfg.FTS.DecoderMaxSize, 10 * 1024 * 1024},
+		{"fts_detection_sample_bytes", int64(cfg.FTS.DetectionSampleBytes), 8 * 1024},
+		{"index_log_compact_min_bytes", cfg.Storage.IndexLogCompactMinBytes, 32 * 1024},
+		{"index_log_compact_max_bytes", cfg.Storage.IndexLogCompactMaxBytes, 1024 * 1024},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s resolved to %d, want %d", c.name, c.got, c.want)
+		}
+	}
+
+	bad := &Config{}
+	bad.FTS.DecoderMaxSizeRaw = "10MB" // "MB" is not a valid suffix
+	if err := bad.validate(); err == nil {
+		t.Fatal("malformed fts_decoder_max_size should fail validate")
+	}
+}
