@@ -920,8 +920,8 @@ components:
     ## consistent across a single installation's Redis-using components (locks,
     ## authtoken, and anvil #908) so one namespace value covers the whole install.
     ## Defaults are service-name based; leave as-is for a dedicated Redis.
-    keyPrefix: "yarilo:locks:"
-    channelPrefix: "yarilo:events:"
+    key_prefix: "yarilo:locks:"
+    channel_prefix: "yarilo:events:"
 
     ## startupProbe waits for Redis (remote mode) to accept a TCP connection before
     ## this pod takes traffic, replacing the wait-redis init container (#903). Safe
