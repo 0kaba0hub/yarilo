@@ -21,7 +21,7 @@ var _ mailbox.ReactiveHealer = (*userMailbox)(nil)
 // reads fine.
 func TestFetchCorruptionClassification(t *testing.T) {
 	_, mb, _ := newTestUser(t)
-	name, _, err := mb.Save("INBOX", strings.NewReader("hello body\n"), 7, 11, nil)
+	name, _, _, err := mb.Save("INBOX", strings.NewReader("hello body\n"), 7, 11, nil, [16]byte{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestReactiveHealDropsVanishedPreservesRest(t *testing.T) {
 
 	var names []string
 	for uid := uint32(1); uid <= 3; uid++ {
-		n, _, err := mb.Save("INBOX", strings.NewReader("msg\n"), uid, 4, nil)
+		n, _, _, err := mb.Save("INBOX", strings.NewReader("msg\n"), uid, 4, nil, [16]byte{})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -162,3 +162,37 @@ func RebuildFolder(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailb
 	stats.ExpungedUIDs = expunged
 	return stats, nil
 }
+
+// BackfillGUIDs stamps GUIDs onto a folder whose index predates the guid
+// extension; a folder already marked complete costs one O(1) header read.
+// Values come from Scan, never invented here, or a later rebuild from storage
+// would change EMAILID. Scan rather than List: mdbox enumerates via the index.
+func BackfillGUIDs(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailbox.Folder, name string) error {
+	need, err := idx.GUIDBackfillNeeded(folder.ID)
+	if err != nil || !need {
+		return err
+	}
+	recs, err := box.Scan(name)
+	if err != nil {
+		// No disk-scan, no GUIDs: stay pending rather than mark it done empty.
+		return fmt.Errorf("idxrebuild: scan %s: %w", name, err)
+	}
+	byName := make(map[string][16]byte, len(recs))
+	var zero [16]byte
+	for _, r := range recs {
+		if r.Filename != "" && r.GUID != zero {
+			byName[r.Filename] = r.GUID
+		}
+	}
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		return fmt.Errorf("idxrebuild: read %s: %w", name, err)
+	}
+	guids := make(map[uint32][16]byte, len(msgs))
+	for _, m := range msgs {
+		if g, ok := byName[m.Filename]; ok {
+			guids[m.UID] = g
+		}
+	}
+	return idx.SetGUIDs(folder.ID, guids)
+}

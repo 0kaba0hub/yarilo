@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -113,6 +115,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 // folderCache holds mtime-validated in-memory state for one maildir folder.
 type folderCache struct {
 	uidMap   map[string]uint32
+	guidMap  map[string][16]byte // explicit GUID overrides; empty for name-derived GUIDs
 	uidMtime time.Time
 	uidSize  int64
 	entries  []os.DirEntry
@@ -263,7 +266,8 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // UserIndex.AllocateUID; Maildir does not encode it in the filename, so the
 // uid→filename mapping is appended inline to the yarilo-uidlist sidecar for
 // later List() / Fetch() resolution.
-func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string) (string, uint32, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	var noGUID [16]byte
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
 		defer func() { <-u.b.writeSem }()
@@ -277,23 +281,31 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 	tmpPath := filepath.Join(folderPath, "tmp", basename)
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return "", 0, fmt.Errorf("maildir: create tmp: %w", err)
+		return "", 0, noGUID, fmt.Errorf("maildir: create tmp: %w", err)
 	}
 	sc := &sizeCounter{}
 	if _, err := io.Copy(f, io.TeeReader(r, sc)); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
-		return "", 0, fmt.Errorf("maildir: write: %w", err)
+		return "", 0, noGUID, fmt.Errorf("maildir: write: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmpPath)
-		return "", 0, err
+		return "", 0, noGUID, err
 	}
 
 	flagStr := encodeFlags(flags)
 	// ,S=<phys>,W=<virt> before :2,<flags> so List() reports both sizes
 	// without reading the body.
 	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
+
+	// Fresh base name, so the derived GUID is unique. A caller-supplied GUID
+	// (migration) is pinned with an explicit uidlist override instead.
+	effGUID := guidFromBase(finalName)
+	override := guid != noGUID && guid != effGUID
+	if override {
+		effGUID = guid
+	}
 
 	if err := u.withMailboxLock(folder, func() error {
 		dstPath := filepath.Join(folderPath, "cur", finalName)
@@ -302,22 +314,74 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 			return fmt.Errorf("maildir: rename to cur: %w", err)
 		}
 		u.folderCacheFor(folder).entries = nil
-		if uid != 0 {
-			if err := u.appendUIDListLocked(folder, uid, finalName); err != nil {
+		if uid != 0 || override {
+			if err := u.appendUIDListLocked(folder, uid, finalName, override, effGUID); err != nil {
 				_ = os.Remove(dstPath)
 				return fmt.Errorf("maildir: uidlist: %w", err)
 			}
 		}
 		return nil
 	}); err != nil {
-		return "", 0, err
+		return "", 0, noGUID, err
 	}
-	return finalName, sc.phys + sc.lfNoCR, nil
+	return finalName, sc.phys + sc.lfNoCR, effGUID, nil
+}
+
+// Move renames the message into dstFolder keeping its base name, so the derived
+// GUID and with it EMAILID is unchanged (RFC 8474); only the ":2," trailer and
+// the folder change. A base-name collision falls back to a fresh name plus an
+// explicit uidlist GUID override.
+func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte) (string, [16]byte, error) {
+	var noGUID [16]byte
+	if srcFolder == dstFolder {
+		return filename, guidFromBase(filename), nil
+	}
+	newName := filename
+	outGUID := guid
+	if outGUID == noGUID {
+		outGUID = guidFromBase(filename)
+	}
+	err := u.withTwoMailboxLocks(srcFolder, dstFolder, func() error {
+		srcPath := filepath.Join(u.folderPath(srcFolder), "cur", filename)
+		dstDir := filepath.Join(u.folderPath(dstFolder), "cur")
+		dstPath := filepath.Join(dstDir, newName)
+		override := outGUID != guidFromBase(newName)
+		if _, err := os.Lstat(dstPath); err == nil {
+			// Base name taken: mint a fresh one and pin the GUID explicitly.
+			oldBase := maildirBase(filename)
+			trailer := filename[len(oldBase):] // ":2,<flags>"
+			sizeInfo := ""                     // ",S=<phys>,W=<virt>"
+			if i := strings.IndexByte(oldBase, ','); i >= 0 {
+				sizeInfo = oldBase[i:]
+			}
+			now := time.Now()
+			seq := u.b.counter.Add(1)
+			newName = fmt.Sprintf("%d.M%dP%d_%d.%s%s%s",
+				now.Unix(), now.UnixMicro()%1_000_000, u.b.pid, seq, u.b.hostname, sizeInfo, trailer)
+			dstPath = filepath.Join(dstDir, newName)
+			override = true
+		}
+		if err := os.Rename(srcPath, dstPath); err != nil {
+			return fmt.Errorf("maildir: move rename: %w", err)
+		}
+		u.folderCacheFor(srcFolder).entries = nil
+		u.folderCacheFor(dstFolder).entries = nil
+		if override {
+			if err := u.appendUIDListLocked(dstFolder, 0, newName, true, outGUID); err != nil {
+				return fmt.Errorf("maildir: move uidlist: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", noGUID, err
+	}
+	return newName, outGUID, nil
 }
 
 // appendUIDListLocked appends one entry to the yarilo-uidlist v3 sidecar and
 // updates the in-memory cache. Caller MUST hold the mailbox X lock.
-func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string) error {
+func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string, guidOverride bool, guid [16]byte) error {
 	if err := u.migrateLegacyUIDList(folder); err != nil {
 		return err
 	}
@@ -331,7 +395,14 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 	if info != nil && info.Size() == 0 {
 		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
 	}
-	_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
+	// v3 record: "<uid> [G<guid>] :<filename>". The GUID field is written only
+	// when it must differ from the name-derived one; readers that predate it
+	// skip unknown fields.
+	if guidOverride {
+		_, err = fmt.Fprintf(f, "%d G%s :%s\n", uid, hex.EncodeToString(guid[:]), filename)
+	} else {
+		_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
+	}
 	if err != nil {
 		return err
 	}
@@ -343,6 +414,12 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 			c.uidMap = make(map[string]uint32)
 		}
 		c.uidMap[filename] = uid
+		if guidOverride {
+			if c.guidMap == nil {
+				c.guidMap = make(map[string][16]byte)
+			}
+			c.guidMap[filename] = guid
+		}
 		c.uidMtime = fi.ModTime()
 		c.uidSize = fi.Size()
 	}
@@ -445,6 +522,7 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 			Keywords: keywords,
 			Size:     sz,
 			VSize:    virt,
+			GUID:     u.guidFor(folder, name),
 		})
 	}
 	sort.Slice(msgs, func(i, j int) bool {
@@ -508,6 +586,9 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 // carry no stable GUID, so the rebuild flow must preserve the index's GUID
 // for matched filenames.
 func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
+	// Warm the uidlist cache so explicit GUID overrides win over the derived
+	// value; a missing uidlist just leaves every GUID name-derived.
+	_, _ = u.readUIDList(folder)
 	out := make([]mailbox.ScanRecord, 0, 128)
 	for _, sub := range []string{"cur", "new"} {
 		dir := filepath.Join(u.folderPath(folder), sub)
@@ -543,6 +624,7 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 				VSize:        virt,
 				InternalDate: mtime,
 				Flags:        append([]string(nil), flags...),
+				GUID:         u.guidFor(folder, name),
 			}
 			if len(keywords) > 0 {
 				rec.Flags = append(rec.Flags, keywords...)
@@ -561,6 +643,17 @@ func (u *userMailbox) Close() error { return nil }
 // this and self-heal reactively.
 func (u *userMailbox) ProactiveScan() bool { return true }
 
+// guidFor returns the message GUID for a stored file: the explicit uidlist
+// override when one exists, else the name-derived value. Never zero.
+func (u *userMailbox) guidFor(folder, filename string) [16]byte {
+	if c := u.folderCacheFor(folder); c != nil && c.guidMap != nil {
+		if g, ok := c.guidMap[filename]; ok {
+			return g
+		}
+	}
+	return guidFromBase(filename)
+}
+
 // maildirBase returns everything before the ":" info separator — the stable
 // identity of a maildir filename. A flag change renames only the ":2,<flags>"
 // trailer, so names sharing a base are the same message and keep the same UID.
@@ -569,6 +662,17 @@ func maildirBase(name string) string {
 		return name[:i]
 	}
 	return name
+}
+
+// guidFromBase derives the per-message GUID from the maildir base name. The
+// base is unique per message and never rewritten: a flag change touches only
+// the ":2," trailer and Move keeps it across folders, so EMAILID survives both
+// and an index rebuild recomputes it.
+func guidFromBase(filename string) [16]byte {
+	sum := sha256.Sum256([]byte(maildirBase(filename)))
+	var g [16]byte
+	copy(g[:], sum[:16])
+	return g
 }
 
 // moveNewToCurLocked moves every file from new/ into cur/, appending the ":2,"
@@ -808,6 +912,7 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 	defer f.Close()
 
 	m := make(map[string]uint32)
+	var guids map[string][16]byte
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
@@ -828,6 +933,23 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 			continue
 		}
 		m[filename] = uint32(uid64)
+		// Optional "G<hex>" field: an explicit GUID that must win over the
+		// name-derived one. A later record for the same file supersedes.
+		for _, fld := range parts[1:] {
+			if len(fld) != 1+2*16 || fld[0] != 'G' {
+				continue
+			}
+			raw, decErr := hex.DecodeString(fld[1:])
+			if decErr != nil {
+				continue
+			}
+			if guids == nil {
+				guids = make(map[string][16]byte)
+			}
+			var g [16]byte
+			copy(g[:], raw)
+			guids[filename] = g
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -835,6 +957,7 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 
 	c := u.folderCacheFor(folder)
 	c.uidMap = m
+	c.guidMap = guids
 	c.uidMtime = fi.ModTime()
 	c.uidSize = fi.Size()
 	return m, nil

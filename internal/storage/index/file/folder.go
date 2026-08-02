@@ -703,6 +703,54 @@ func (u *userIndex) RecomputeVSize(folderID uint64) error {
 	})
 }
 
+// GUIDBackfillNeeded reads the guid extension header. An index predating the
+// extension has no header at all and decodes as pending, which is exactly the
+// set of folders that still carry zero GUIDs.
+func (u *userIndex) GUIDBackfillNeeded(folderID uint64) (bool, error) {
+	var need bool
+	err := u.withFolderRO(folderID, func(fs *folderState) error {
+		ext := findExt(fs.file.Extensions, extNameGUID)
+		need = ext == nil || decodeGUIDHdr(ext.HdrData) != guidStateComplete
+		return nil
+	})
+	return need, err
+}
+
+// SetGUIDs stamps storage-provided GUIDs onto records that have none and flips
+// the header to complete. Records already carrying a GUID are left alone, so an
+// interrupted pass resumes to the same result and a second run changes nothing.
+func (u *userIndex) SetGUIDs(folderID uint64, guids map[uint32][16]byte) error {
+	var zero [16]byte
+	return u.withFolder(folderID, func(fs *folderState) error {
+		// An index written before the extension existed needs it added first;
+		// existing records gain 16 zero bytes on the next write.
+		if findExt(fs.file.Extensions, extNameGUID) == nil {
+			if err := fs.file.AddRecordExtension(extNameGUID, encodeGUIDHdr(guidStatePending),
+				guidRecSize, 1, fs.file.Header.UIDValidity); err != nil {
+				return fmt.Errorf("fileindex: add guid extension: %w", err)
+			}
+		}
+		for _, rec := range fs.file.Records {
+			g, ok := guids[rec.UID]
+			if !ok || g == zero {
+				continue
+			}
+			if decodeGUIDRec(rec.Ext[extNameGUID]) != zero {
+				continue // already stamped: never rewrite an assigned identity
+			}
+			if rec.Ext == nil {
+				rec.Ext = make(map[string][]byte, 1)
+			}
+			rec.Ext[extNameGUID] = encodeGUIDRec(g)
+		}
+		if ext := findExt(fs.file.Extensions, extNameGUID); ext != nil {
+			ext.HdrData = encodeGUIDHdr(guidStateComplete)
+			ext.HdrSize = guidHdrSize
+		}
+		return fs.flush(true)
+	})
+}
+
 // AllocateUID reserves and persists the folder's next UID. The
 // caller then passes the UID to UserMailbox.Save and follows up
 // with AppendMessage to record the meta. On crash between
@@ -820,6 +868,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 			extNameKeywords:     encodeKeywordsRec(kwBits),
 			extNameInternalDate: encodeIdateRec(m.InternalDate),
 			extNameVsize:        encodeVsizeRec(m.RFC822Size()),
+			extNameGUID:         encodeGUIDRec(m.GUID),
 		},
 	}
 	fs.file.Records = append(fs.file.Records, rec)
@@ -1119,6 +1168,9 @@ func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbo
 			if data, ok := rec.Ext[extNameInternalDate]; ok {
 				meta.InternalDate = decodeIdateRec(data)
 			}
+			if data, ok := rec.Ext[extNameGUID]; ok {
+				meta.GUID = decodeGUIDRec(data)
+			}
 			out = append(out, meta)
 		}
 		return nil
@@ -1230,6 +1282,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 					extNameModSeq:   encodeModseqRec(modseq),
 					extNameKeywords: encodeKeywordsRec(kwBits),
 					extNameVsize:    encodeVsizeRec(m.RFC822Size()),
+					extNameGUID:     encodeGUIDRec(m.GUID),
 				},
 			}
 			fs.file.Records = append(fs.file.Records, rec)

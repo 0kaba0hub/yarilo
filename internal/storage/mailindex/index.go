@@ -176,6 +176,17 @@ func NewFile(indexID uint32, exts []Extension) (*File, error) {
 // simply appending to Extensions is not enough, because Recreate rejects a file
 // whose HeaderSize no longer matches the encoded extension headers.
 func (f *File) AddHeaderExtension(name string, hdrData []byte, recordAlign uint16, resetID uint32) error {
+	return f.addExtension(name, hdrData, 0, recordAlign, resetID)
+}
+
+// AddRecordExtension appends an extension that also carries per-record bytes.
+// Existing records have no bytes for it and encode as zeros on the next write,
+// which is what makes adding one to an old index safe. No-op when present.
+func (f *File) AddRecordExtension(name string, hdrData []byte, recordSize, recordAlign uint16, resetID uint32) error {
+	return f.addExtension(name, hdrData, recordSize, recordAlign, resetID)
+}
+
+func (f *File) addExtension(name string, hdrData []byte, recordSize, recordAlign uint16, resetID uint32) error {
 	for i := range f.Extensions {
 		if f.Extensions[i].Name == name {
 			return nil
@@ -185,7 +196,7 @@ func (f *File) AddHeaderExtension(name string, hdrData []byte, recordAlign uint1
 		Name:        name,
 		HdrSize:     uint32(len(hdrData)),
 		HdrData:     hdrData,
-		RecordSize:  0,
+		RecordSize:  recordSize,
 		RecordAlign: recordAlign,
 		ResetID:     resetID,
 	})

@@ -19,10 +19,10 @@ func TestRotateSizeConfigurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := strings.Repeat("z", 2048) + "\r\n" // > 1 KiB rotate size
-	if _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil); err != nil {
+	if _, _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{}); err != nil {
 		t.Fatalf("save 1: %v", err)
 	}
-	if _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil); err != nil {
+	if _, _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{}); err != nil {
 		t.Fatalf("save 2: %v", err)
 	}
 	if _, err := os.Stat(u.mfilePath(2)); err != nil {
@@ -41,7 +41,7 @@ func TestRotateSizeDefaultKeepsSmallInOneFile(t *testing.T) {
 	}
 	for i := 0; i < 5; i++ {
 		body := strings.Repeat("m", 4096) + "\r\n"
-		if _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil); err != nil {
+		if _, _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{}); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
@@ -66,7 +66,7 @@ func TestRotateInterval(t *testing.T) {
 
 	// First save creates m.1 at t=base with a small body (well under 10 MiB).
 	small := "hello\r\n"
-	if _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil); err != nil {
+	if _, _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil, [16]byte{}); err != nil {
 		t.Fatalf("save 1: %v", err)
 	}
 	if _, err := os.Stat(u.mfilePath(2)); !os.IsNotExist(err) {
@@ -75,7 +75,7 @@ func TestRotateInterval(t *testing.T) {
 
 	// Advance the clock past the interval; the next save must roll to m.2.
 	clock = base.Add(2 * time.Hour)
-	if _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil); err != nil {
+	if _, _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil, [16]byte{}); err != nil {
 		t.Fatalf("save 2: %v", err)
 	}
 	if _, err := os.Stat(u.mfilePath(2)); err != nil {
@@ -96,11 +96,11 @@ func TestRotateIntervalDisabledByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	small := "hi\r\n"
-	if _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil); err != nil {
+	if _, _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil, [16]byte{}); err != nil {
 		t.Fatalf("save 1: %v", err)
 	}
 	clock = base.Add(1000 * time.Hour) // ancient
-	if _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil); err != nil {
+	if _, _, _, err := u.Save("INBOX", strings.NewReader(small), 0, int64(len(small)), nil, [16]byte{}); err != nil {
 		t.Fatalf("save 2: %v", err)
 	}
 	if _, err := os.Stat(u.mfilePath(2)); !os.IsNotExist(err) {
@@ -119,7 +119,7 @@ func TestPreallocateNoError(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := "preallocated body\r\n"
-	fn, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
+	fn, _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}

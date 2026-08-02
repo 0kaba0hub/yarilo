@@ -286,6 +286,12 @@ func (h *userHandle) FolderVSize(folderID uint64) (uint64, uint32, error) {
 func (h *userHandle) RecomputeVSize(folderID uint64) error {
 	return h.ui.RecomputeVSize(folderID)
 }
+func (h *userHandle) GUIDBackfillNeeded(folderID uint64) (bool, error) {
+	return h.ui.GUIDBackfillNeeded(folderID)
+}
+func (h *userHandle) SetGUIDs(folderID uint64, guids map[uint32][16]byte) error {
+	return h.ui.SetGUIDs(folderID, guids)
+}
 func (h *userHandle) ExpungeMessage(folderID uint64, uid uint32) error {
 	return h.ui.ExpungeMessage(folderID, uid)
 }

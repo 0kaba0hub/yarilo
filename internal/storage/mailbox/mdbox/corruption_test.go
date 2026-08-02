@@ -25,7 +25,7 @@ func openTestUserMailboxAlt(t *testing.T, home, altHome string) *userMailbox {
 
 func mustSave(t *testing.T, u *userMailbox, body string) string {
 	t.Helper()
-	fn, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
+	fn, _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}

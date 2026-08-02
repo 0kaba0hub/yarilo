@@ -313,24 +313,28 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // mailbox lock. The two-phase write is crash-safe: a partial body never appears
 // under its final name. Returns the final basename for the caller to record via
 // UserIndex.AppendMessage. flags are ignored — sdbox delegates flag storage to
-// the index.
-func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, uint32, error) {
+// the index. A zero guid is generated here; a non-zero one is stored verbatim so
+// EMAILID survives COPY/MOVE. The effective GUID is returned.
+func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	var noGUID [16]byte
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
 		defer func() { <-u.b.writeSem }()
 	}
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
-		return "", 0, fmt.Errorf("sdbox/save: mkdir: %w", err)
+		return "", 0, noGUID, fmt.Errorf("sdbox/save: mkdir: %w", err)
 	}
 
 	body, err := readBodyCRLF(r)
 	if err != nil {
-		return "", 0, fmt.Errorf("sdbox/save: read body: %w", err)
+		return "", 0, noGUID, fmt.Errorf("sdbox/save: read body: %w", err)
 	}
 	physSize := uint32(len(body))
 	virtSize := physSize
 
-	guid := randomGUID()
+	if guid == noGUID {
+		guid = randomGUID()
+	}
 	now := uint32(time.Now().Unix())
 	finalName := fmt.Sprintf("%s%s", sdboxMailPrefix, guidHex(guid))
 
@@ -370,9 +374,45 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		return nil
 	})
 	if err != nil {
-		return "", 0, err
+		return "", 0, noGUID, err
 	}
-	return finalName, virtSize, nil
+	return finalName, virtSize, guid, nil
+}
+
+// Move relocates a message between folders by renaming the file; the GUID lives
+// in the metadata block so it survives untouched (RFC 8474: MOVE keeps EMAILID).
+// A zero guid is resolved from the source file's metadata.
+func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte) (string, [16]byte, error) {
+	var noGUID [16]byte
+	if err := os.MkdirAll(u.folderPath(dstFolder), 0o700); err != nil {
+		return "", noGUID, fmt.Errorf("sdbox/move: mkdir dst: %w", err)
+	}
+	newName := filename
+	err := u.withTwoMailboxLocks(srcFolder, dstFolder, func() error {
+		srcPath := filepath.Join(u.folderPath(srcFolder), filename)
+		if guid == noGUID {
+			if g, _, _, merr := readMetadata(srcPath); merr == nil {
+				guid = g
+			}
+		}
+		dstPath := filepath.Join(u.folderPath(dstFolder), newName)
+		if _, err := os.Lstat(dstPath); err == nil {
+			// Name taken in the destination: mint one from the GUID.
+			if guid == noGUID {
+				return fmt.Errorf("sdbox/move: %s exists in %s and no guid to rename by", newName, dstFolder)
+			}
+			newName = fmt.Sprintf("%s%s", sdboxMailPrefix, guidHex(guid))
+			dstPath = filepath.Join(u.folderPath(dstFolder), newName)
+		}
+		if err := os.Rename(srcPath, dstPath); err != nil {
+			return fmt.Errorf("sdbox/move: rename %s → %s: %w", srcPath, dstPath, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", noGUID, err
+	}
+	return newName, guid, nil
 }
 
 // ---- Fetch / Remove / Copy ----------------------------------
@@ -487,12 +527,17 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, &mailbox.MessageMeta{
+		meta := &mailbox.MessageMeta{
 			UID:          uint32(uid64),
 			Filename:     e.Name(),
 			Size:         uint32(info.Size()),
 			InternalDate: info.ModTime(),
-		})
+		}
+		// GUID comes from the metadata block; the index records what we report.
+		if guid, _, _, err := readMetadata(filepath.Join(u.folderPath(folder), e.Name())); err == nil {
+			meta.GUID = guid
+		}
+		out = append(out, meta)
 	}
 	return out, nil
 }

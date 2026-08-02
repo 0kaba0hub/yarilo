@@ -334,6 +334,40 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 	return fn()
 }
 
+// withTwoMailboxLocks takes both per-folder X locks in lexicographic order so
+// a concurrent A→B / B→A pair cannot deadlock.
+func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
+	if u.b.locker == nil {
+		return fn()
+	}
+	a, b := folderA, folderB
+	if a > b {
+		a, b = b, a
+	}
+	keyA := locks.MailboxKey(u.username, a)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	if !u.b.locker.HoldsResource(keyA) {
+		lkA, err := locks.Acquire(ctx, u.b.locker, keyA, u.owner, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("mdbox/lock %s: %w", a, err)
+		}
+		defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
+	}
+	if a == b {
+		return fn()
+	}
+	keyB := locks.MailboxKey(u.username, b)
+	if !u.b.locker.HoldsResource(keyB) {
+		lkB, err := locks.Acquire(ctx, u.b.locker, keyB, u.owner, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("mdbox/lock %s: %w", b, err)
+		}
+		defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
+	}
+	return fn()
+}
+
 // ---- UserMailbox interface ---------------------------------
 
 func (u *userMailbox) Init() error {
@@ -442,27 +476,31 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 // The folder-level lock is not taken here; concurrent Save peers are serialised
 // by the map X lock alone. The uid parameter (per-folder UID from the external
 // fileindex) is ignored: the filename is the map_uid.
-func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string) (string, uint32, error) {
+func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	var noGUID [16]byte
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
 		defer func() { <-u.b.writeSem }()
 	}
 	body, err := readBodyCRLF(r)
 	if err != nil {
-		return "", 0, fmt.Errorf("mdbox/save: read body: %w", err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: read body: %w", err)
 	}
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
-		return "", 0, fmt.Errorf("mdbox/save: mkdir folder: %w", err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: mkdir folder: %w", err)
 	}
 	if err := os.MkdirAll(u.storagePath(), 0o700); err != nil {
-		return "", 0, fmt.Errorf("mdbox/save: mkdir storage: %w", err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: mkdir storage: %w", err)
 	}
 	m, err := u.openMap()
 	if err != nil {
-		return "", 0, err
+		return "", 0, noGUID, err
 	}
 
-	guid := randomGUID()
+	// Zero guid means generate; a supplied guid is stored verbatim (RFC 8474 EMAILID stability).
+	if guid == noGUID {
+		guid = randomGUID()
+	}
 	msgRecord := buildDboxMessageRecord(body, guid, folder)
 	recLen := uint32(len(msgRecord))
 
@@ -485,14 +523,14 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	if rotate {
 		fileID, err = m.AllocFileID()
 		if err != nil {
-			return "", 0, fmt.Errorf("mdbox/save: alloc file id: %w", err)
+			return "", 0, noGUID, fmt.Errorf("mdbox/save: alloc file id: %w", err)
 		}
 		curSize = 0
 	}
 
 	f, err := os.OpenFile(u.mfilePath(fileID), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
-		return "", 0, fmt.Errorf("mdbox/save: open m.%d: %w", fileID, err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: open m.%d: %w", fileID, err)
 	}
 	// Re-stat under the file handle to fix the write offset. O_APPEND guarantees
 	// the bytes land at the post-stat size even if another process appended
@@ -500,7 +538,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return "", 0, fmt.Errorf("mdbox/save: stat handle: %w", err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: stat handle: %w", err)
 	}
 	offset := uint32(st.Size())
 	// The dbox file-header line is a file-level header: emit it only for the first
@@ -523,18 +561,18 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	recLen = uint32(len(record))
 	if _, err := f.Write(record); err != nil {
 		f.Close()
-		return "", 0, fmt.Errorf("mdbox/save: write record: %w", err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: write record: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return "", 0, fmt.Errorf("mdbox/save: close m.%d: %w", fileID, err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: close m.%d: %w", fileID, err)
 	}
 
 	mapUID, err := m.AppendRecord(fileID, offset, recLen, guid)
 	if err != nil {
-		return "", 0, fmt.Errorf("mdbox/save: map append: %w", err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: map append: %w", err)
 	}
 	_ = curSize
-	return strconv.FormatUint(uint64(mapUID), 10), uint32(len(body)), nil
+	return strconv.FormatUint(uint64(mapUID), 10), uint32(len(body)), guid, nil
 }
 
 // Fetch resolves the message identified by filename (decimal map_uid) and
@@ -651,6 +689,59 @@ func (u *userMailbox) Copy(_, srcFilename, _ string, _ uint32) (string, error) {
 		return "", fmt.Errorf("mdbox/copy: refcount inc: %w", err)
 	}
 	return srcFilename, nil
+}
+
+// Move relocates a message between folders keeping its GUID (RFC 8474: MOVE
+// must not change EMAILID). The record trailer names the owning folder, so this
+// re-saves with the same GUID and unreferences the source. Both folder locks
+// are taken in sorted order.
+func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte) (string, [16]byte, error) {
+	var noGUID [16]byte
+	mapUID, err := parseFilename(filename)
+	if err != nil {
+		return "", noGUID, fmt.Errorf("mdbox/move: %w", err)
+	}
+	var newName string
+	outGUID := guid
+	err = u.withTwoMailboxLocks(srcFolder, dstFolder, func() error {
+		if outGUID == noGUID {
+			// No caller-supplied id: the map record holds the effective GUID.
+			m, merr := u.openMap()
+			if merr != nil {
+				return merr
+			}
+			entry, ok, lerr := m.Lookup(mapUID)
+			if lerr != nil {
+				return fmt.Errorf("mdbox/move: lookup: %w", lerr)
+			}
+			if !ok {
+				return fmt.Errorf("mdbox/move: map_uid %d not found: %w", mapUID, mailbox.ErrCorruptStorage)
+			}
+			outGUID = entry.GUID
+		}
+		rc, ferr := u.Fetch(srcFolder, filename, false)
+		if ferr != nil {
+			return fmt.Errorf("mdbox/move: fetch: %w", ferr)
+		}
+		body, rerr := io.ReadAll(rc)
+		_ = rc.Close()
+		if rerr != nil {
+			return fmt.Errorf("mdbox/move: read: %w", rerr)
+		}
+		name, _, saved, serr := u.Save(dstFolder, bytes.NewReader(body), 0, int64(len(body)), nil, outGUID)
+		if serr != nil {
+			return fmt.Errorf("mdbox/move: save: %w", serr)
+		}
+		if derr := u.Remove(srcFolder, filename); derr != nil {
+			return fmt.Errorf("mdbox/move: remove source: %w", derr)
+		}
+		newName, outGUID = name, saved
+		return nil
+	})
+	if err != nil {
+		return "", noGUID, err
+	}
+	return newName, outGUID, nil
 }
 
 // List is intentionally empty: mdbox does not iterate its own directory to

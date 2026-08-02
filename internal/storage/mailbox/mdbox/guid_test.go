@@ -27,7 +27,7 @@ func TestGUIDIndexed(t *testing.T) {
 	u := openTestUserMailbox(t, home)
 
 	body := "From: a@a.com\r\nSubject: guid-test\r\n\r\nbody\r\n"
-	filename, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
+	filename, _, _, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestGUIDPreservedAfterPurge(t *testing.T) {
 	}
 	filenames := make([]string, len(bodies))
 	for i, b := range bodies {
-		fn, _, err := u.Save("INBOX", strings.NewReader(b), 0, int64(len(b)), nil)
+		fn, _, _, err := u.Save("INBOX", strings.NewReader(b), 0, int64(len(b)), nil, [16]byte{})
 		if err != nil {
 			t.Fatalf("Save[%d]: %v", i, err)
 		}
@@ -142,7 +142,7 @@ func TestLookupByGUID_ZeroReturnsNotFound(t *testing.T) {
 	u := openTestUserMailbox(t, home)
 
 	body := "From: a@a.com\r\n\r\nsome body\r\n"
-	u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil) //nolint:errcheck
+	u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{}) //nolint:errcheck
 
 	m, _ := u.openMap()
 	_, ok, err := m.LookupByGUID([16]byte{})
@@ -159,7 +159,7 @@ func TestGUIDInRebuildScan(t *testing.T) {
 	u := openTestUserMailbox(t, home)
 
 	body := "From: a@a.com\r\n\r\nrebuild body\r\n"
-	filename, _, _ := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil)
+	filename, _, _, _ := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
 
 	recs, err := u.Scan("INBOX")
 	if err != nil {
@@ -195,5 +195,44 @@ func TestGUIDInRebuildScan(t *testing.T) {
 	got, _ := io.ReadAll(rc)
 	if !strings.Contains(string(got), "rebuild body") {
 		t.Errorf("unexpected body: %q", got)
+	}
+}
+
+// TestMovePreservesGUID verifies MOVE keeps EMAILID stable (RFC 8474).
+func TestMovePreservesGUID(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	u := openTestUserMailbox(t, home)
+
+	body := "From: a@a.com\r\nSubject: move\r\n\r\nbody\r\n"
+	filename, _, guid, err := u.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if guid == ([16]byte{}) {
+		t.Fatal("Save returned zero GUID")
+	}
+
+	newName, moved, err := u.Move("INBOX", "Archive", filename, [16]byte{})
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if moved != guid {
+		t.Fatalf("GUID changed: %x → %x", guid, moved)
+	}
+
+	m, err := u.openMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapUID, err := parseFilename(newName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok, err := m.Lookup(mapUID)
+	if err != nil || !ok {
+		t.Fatalf("Lookup: ok=%v err=%v", ok, err)
+	}
+	if entry.GUID != guid {
+		t.Fatalf("map GUID %x, want %x", entry.GUID, guid)
 	}
 }

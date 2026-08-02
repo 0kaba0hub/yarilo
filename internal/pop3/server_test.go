@@ -46,8 +46,11 @@ func (m *mockMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 }
 func (m *mockMailbox) List(_ string) ([]*mailbox.MessageMeta, error) { return nil, nil }
 func (m *mockMailbox) Remove(_, _ string) error                      { return nil }
-func (m *mockMailbox) Save(_ string, _ io.Reader, _ uint32, _ int64, _ []string) (string, uint32, error) {
-	return "", 0, nil
+func (m *mockMailbox) Save(_ string, _ io.Reader, _ uint32, _ int64, _ []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	return "", 0, guid, nil
+}
+func (m *mockMailbox) Move(_, _, filename string, guid [16]byte) (string, [16]byte, error) {
+	return filename, guid, nil
 }
 func (m *mockMailbox) Fetch(_, filename string, _ bool) (io.ReadCloser, error) {
 	if m.bodies != nil {
@@ -86,10 +89,12 @@ func (m *mockIndex) UpdateFlagsMulti(_ uint64, _ map[uint32]mailbox.FlagsUpdate)
 func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return m.msgs, nil
 }
-func (m *mockIndex) ExpungeMessage(_ uint64, _ uint32) error      { return nil }
-func (m *mockIndex) FolderVSize(_ uint64) (uint64, uint32, error) { return 0, 0, nil }
-func (m *mockIndex) RecomputeVSize(_ uint64) error                { return nil }
-func (m *mockIndex) NextModSeq(_ uint64) (uint64, error)          { return 1, nil }
+func (m *mockIndex) ExpungeMessage(_ uint64, _ uint32) error        { return nil }
+func (m *mockIndex) FolderVSize(_ uint64) (uint64, uint32, error)   { return 0, 0, nil }
+func (m *mockIndex) RecomputeVSize(_ uint64) error                  { return nil }
+func (m *mockIndex) GUIDBackfillNeeded(_ uint64) (bool, error)      { return false, nil }
+func (m *mockIndex) SetGUIDs(_ uint64, _ map[uint32][16]byte) error { return nil }
+func (m *mockIndex) NextModSeq(_ uint64) (uint64, error)            { return 1, nil }
 func (m *mockIndex) Vanished(_ uint64, _ uint64) ([]uint32, error) {
 	return nil, nil
 }

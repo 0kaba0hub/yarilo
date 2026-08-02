@@ -69,7 +69,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		return 0, fmt.Errorf("lmtp: modseq: %w", err)
 	}
 	tSave := time.Now()
-	filename, vsize, err := box.Save(folder, bytes.NewReader(data), uid, size, flags)
+	filename, vsize, guid, err := box.Save(folder, bytes.NewReader(data), uid, size, flags, [16]byte{})
 	if err != nil {
 		return 0, fmt.Errorf("lmtp: save: %w", err)
 	}
@@ -84,6 +84,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		VSize:        vsize,
 		InternalDate: time.Now(),
 		Flags:        flags,
+		GUID:         guid,
 	}); err != nil {
 		slog.Warn("lmtp: index append failed, rolling back save",
 			"user", username, "folder", folder, "uid", uid, "call_id", callID, "err", err)

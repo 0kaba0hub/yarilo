@@ -19,7 +19,55 @@ const (
 	extNameInternalDate = "idate"
 	extNameHdrVsize     = "hdr-vsize"
 	extNameVsize        = "vsize"
+	extNameGUID         = "guid"
 )
+
+// guid extension layout (4-byte header, 16 bytes per-record):
+//
+//	header:
+//	  uint32 backfill_state  // 0 = pending, 1 = complete
+//	per-record:
+//	  byte message_guid[16]  // RFC 8474 EMAILID; all-zero = not yet known
+//
+// The header state is the O(1) "is this folder backfilled" marker: without it
+// every open of a large folder would rescan all records looking for zeros.
+// RecordAlign is 1, so registering this extension on an existing index leaves
+// every other extension's RecordOffset unchanged.
+const (
+	guidRecSize       = 16
+	guidHdrSize       = 4
+	guidStatePending  = 0
+	guidStateComplete = 1
+)
+
+func encodeGUIDHdr(state uint32) []byte {
+	out := make([]byte, guidHdrSize)
+	binary.LittleEndian.PutUint32(out, state)
+	return out
+}
+
+func decodeGUIDHdr(b []byte) uint32 {
+	if len(b) < guidHdrSize {
+		return guidStatePending
+	}
+	return binary.LittleEndian.Uint32(b)
+}
+
+func encodeGUIDRec(g [16]byte) []byte {
+	out := make([]byte, guidRecSize)
+	copy(out, g[:])
+	return out
+}
+
+// decodeGUIDRec is the inverse. Short or missing data is a record written
+// before the extension existed and decodes as a zero GUID, never an error.
+func decodeGUIDRec(b []byte) [16]byte {
+	var g [16]byte
+	if len(b) >= guidRecSize {
+		copy(g[:], b[:guidRecSize])
+	}
+	return g
+}
 
 // idate extension layout (0 bytes header, 4 bytes per-record):
 //
@@ -387,6 +435,16 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 			HdrData:     nil,
 			RecordSize:  vsizeRecSize,
 			RecordAlign: 4,
+			ResetID:     uidValidity,
+		},
+		{
+			// A fresh folder holds no pre-existing messages, so it is born
+			// backfilled; only indexes predating the extension start pending.
+			Name:        extNameGUID,
+			HdrSize:     guidHdrSize,
+			HdrData:     encodeGUIDHdr(guidStateComplete),
+			RecordSize:  guidRecSize,
+			RecordAlign: 1,
 			ResetID:     uidValidity,
 		},
 	}
