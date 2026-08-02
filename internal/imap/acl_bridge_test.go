@@ -5,7 +5,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Whitebox tests for the wire ↔ on-disk bridge helpers

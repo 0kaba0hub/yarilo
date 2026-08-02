@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/login"
-	"github.com/0kaba0hub/yarilo/internal/telemetry"
-	"github.com/0kaba0hub/yarilo/pkg/build"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/logging"
-	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/yarilomail/yarilo/internal/login"
+	"github.com/yarilomail/yarilo/internal/telemetry"
+	"github.com/yarilomail/yarilo/pkg/build"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/logging"
+	"github.com/yarilomail/yarilo/pkg/mtls"
 )
 
 // version is set via pkg/build; kept for vet compatibility

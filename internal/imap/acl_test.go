@@ -10,11 +10,11 @@ import (
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	imapserver "github.com/yarilomail/yarilo/internal/imap"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // aclPassdb is a local single-user passdb so acl_test.go does not

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
+	"github.com/yarilomail/yarilo/internal/cluster/ring"
 )
 
 // backendSetHash computes a stable hash over the ROUTING-significant fields of

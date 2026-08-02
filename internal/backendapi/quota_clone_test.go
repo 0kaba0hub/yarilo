@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/memory"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	_ "github.com/yarilomail/yarilo/pkg/dict/memory"
+	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
 // quotaCloneTestServer builds a backend-api with one in-memory clone dict seeded

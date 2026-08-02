@@ -20,10 +20,10 @@ import (
 
 	proxyproto "github.com/pires/go-proxyproto"
 
-	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
-	"github.com/0kaba0hub/yarilo/internal/cluster/proto"
-	"github.com/0kaba0hub/yarilo/internal/loginproto"
-	"github.com/0kaba0hub/yarilo/internal/warden"
+	authclient "github.com/yarilomail/yarilo/internal/auth/client"
+	"github.com/yarilomail/yarilo/internal/cluster/proto"
+	"github.com/yarilomail/yarilo/internal/loginproto"
+	"github.com/yarilomail/yarilo/internal/warden"
 )
 
 // Protocol identifies the mail protocol handled by the login pod.

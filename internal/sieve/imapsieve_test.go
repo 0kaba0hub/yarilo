@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/config"
 )
 
 func newImapEngine(t *testing.T, scriptDir string) *Engine {

@@ -3,7 +3,7 @@ package imap
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/internal/loginproto"
+	"github.com/yarilomail/yarilo/internal/loginproto"
 )
 
 // TestUnwrapPreambleConn_ThroughWrappers guards #830: the #828 reorder put the

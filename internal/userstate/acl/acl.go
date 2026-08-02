@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // FileName is the on-disk per-folder ACL filename.

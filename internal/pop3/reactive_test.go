@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // fakeCorruptBox always fails Fetch with ErrCorruptStorage and can heal, so it

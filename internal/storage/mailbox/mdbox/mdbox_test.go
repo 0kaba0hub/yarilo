@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 func newTestUser(t *testing.T) (mailbox.UserMailbox, string) {

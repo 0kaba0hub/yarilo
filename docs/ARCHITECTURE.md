@@ -30,15 +30,15 @@ inter-component coordination.
 
 #### Director deployment (login proxies + director ring → backend tags)
 
-<img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_director.svg" width="100%" alt="Director deployment topology"/>
+<img src="https://raw.githubusercontent.com/yarilomail/yarilo/main/docs/yarilo_director.svg" width="100%" alt="Director deployment topology"/>
 
 #### Backend deployment (one co-located StatefulSet per tag)
 
-<img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_backend.svg" width="100%" alt="Backend deployment topology"/>
+<img src="https://raw.githubusercontent.com/yarilomail/yarilo/main/docs/yarilo_backend.svg" width="100%" alt="Backend deployment topology"/>
 
 #### Standalone deployment (full stack in one pod)
 
-<img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/yarilo_standalone.svg" width="100%" alt="Standalone deployment topology"/>
+<img src="https://raw.githubusercontent.com/yarilomail/yarilo/main/docs/yarilo_standalone.svg" width="100%" alt="Standalone deployment topology"/>
 
 > **Note (#908):** the diagrams draw `yarilo-warden` as a single shared service for
 > clarity. Its replica count is a config value, not a fixed topology: with
@@ -545,7 +545,7 @@ for drivers without native atomic multi-key writes.
 Driver authors implement the three interfaces and call `dict.Register(name, init)`
 from their package's `init()`. The `pkg/dict/drivers/all` package
 blank-imports all in-tree drivers — binaries that want them all just
-`import _ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"`.
+`import _ "github.com/yarilomail/yarilo/pkg/dict/drivers/all"`.
 
 ### Path expansion
 

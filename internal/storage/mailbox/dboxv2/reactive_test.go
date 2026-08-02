@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	fileidx "github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	fileidx "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // sdbox must satisfy the shared reactive-healer contract so IMAP/POP3/FTS gate

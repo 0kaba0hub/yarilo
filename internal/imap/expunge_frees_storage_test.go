@@ -7,9 +7,9 @@ import (
 
 	imap "github.com/emersion/go-imap/v2"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // countMaildirMessages counts message files under every cur/ and new/ directory

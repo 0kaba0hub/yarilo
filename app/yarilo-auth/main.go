@@ -14,18 +14,18 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
-	"github.com/0kaba0hub/yarilo/internal/auth/passdbs"
-	"github.com/0kaba0hub/yarilo/internal/auth/policy"
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/internal/telemetry"
-	"github.com/0kaba0hub/yarilo/internal/warden"
-	"github.com/0kaba0hub/yarilo/pkg/authtoken"
-	"github.com/0kaba0hub/yarilo/pkg/build"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/logging"
-	"github.com/0kaba0hub/yarilo/pkg/mtls"
-	"github.com/0kaba0hub/yarilo/pkg/retry"
+	"github.com/yarilomail/yarilo/internal/auth/oauth2"
+	"github.com/yarilomail/yarilo/internal/auth/passdbs"
+	"github.com/yarilomail/yarilo/internal/auth/policy"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/telemetry"
+	"github.com/yarilomail/yarilo/internal/warden"
+	"github.com/yarilomail/yarilo/pkg/authtoken"
+	"github.com/yarilomail/yarilo/pkg/build"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/logging"
+	"github.com/yarilomail/yarilo/pkg/mtls"
+	"github.com/yarilomail/yarilo/pkg/retry"
 )
 
 // version is set via pkg/build; kept for vet compatibility.

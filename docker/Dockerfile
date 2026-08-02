@@ -36,12 +36,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         yarilo-managesieve \
         yarilo-managesieve-login \
     ; do \
-        go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
+        go build -ldflags="-s -w -X github.com/yarilomail/yarilo/pkg/build.Version=${BUILD_VERSION}" \
             -trimpath -o "/out/$cmd" "./app/$cmd"; \
     done
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    go build -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
+    go build -ldflags="-s -w -X github.com/yarilomail/yarilo/pkg/build.Version=${BUILD_VERSION}" \
     -trimpath -o /out/yarilo-smoketest ./app/smoketest
 
 ## --- yarilo-fts: the only cgo binary (libxapian). Built in its own stage so
@@ -59,7 +59,7 @@ ENV CGO_ENABLED=1 GOOS=linux GOARCH=amd64
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     for cmd in yarilo-fts fts-bench; do \
-        go build -tags flatcurve -ldflags="-s -w -X github.com/0kaba0hub/yarilo/pkg/build.Version=${BUILD_VERSION}" \
+        go build -tags flatcurve -ldflags="-s -w -X github.com/yarilomail/yarilo/pkg/build.Version=${BUILD_VERSION}" \
             -trimpath -o "/out/$cmd" "./app/$cmd"; \
     done
 

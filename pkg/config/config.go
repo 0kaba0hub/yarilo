@@ -10,7 +10,7 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 
-	"github.com/0kaba0hub/yarilo/pkg/quota"
+	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
 // Config is the top-level yarilo configuration.

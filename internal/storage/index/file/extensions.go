@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // Extension names match the canonical wire spec. These are the

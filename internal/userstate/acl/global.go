@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Policy carries the operator ACL knobs a Store evaluates beyond the raw

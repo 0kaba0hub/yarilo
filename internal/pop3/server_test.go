@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // ---- mock auth ---------------------------------------------------------------

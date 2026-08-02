@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/yarilomail/yarilo/pkg/mtls"
 )
 
 // writeInternalCerts generates a self-signed internal CA and one shared leaf

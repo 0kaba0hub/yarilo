@@ -3,8 +3,8 @@ package mailboxbuild
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 func TestParseIntervalSeconds(t *testing.T) {

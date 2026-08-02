@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/pkg/sqlpool"
 )
 
 // Userdb is the SQL-backed implementation of protocol.Userdb. It

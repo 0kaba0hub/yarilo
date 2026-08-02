@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict"
 )
 
 func TestEveryOpReturnsFailDriver(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	authclient "github.com/0kaba0hub/yarilo/internal/auth/client"
-	masterclient "github.com/0kaba0hub/yarilo/pkg/authclient"
+	authclient "github.com/yarilomail/yarilo/internal/auth/client"
+	masterclient "github.com/yarilomail/yarilo/pkg/authclient"
 )
 
 // PreambleConn wraps a net.Conn after the YARILO preamble has been read

@@ -35,10 +35,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mboxenc"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Directory layout constants.

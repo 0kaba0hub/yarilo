@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Stats reports what a RebuildFolder pass did.

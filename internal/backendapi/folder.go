@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // registerFolderRoutes registers folder admin routes. Reads live

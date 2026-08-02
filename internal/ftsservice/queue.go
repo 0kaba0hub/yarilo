@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/fts"
 )
 
 // jobSeq: per-process monotonic job ID, so one job's log lines can be

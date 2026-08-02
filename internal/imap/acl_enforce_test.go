@@ -11,14 +11,14 @@ import (
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	mailboxpkg "github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	imapserver "github.com/yarilomail/yarilo/internal/imap"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/internal/userstate/acl"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	mailboxpkg "github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // enforceServer brings up an IMAP server with ACL enforcement enabled

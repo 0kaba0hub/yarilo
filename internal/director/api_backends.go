@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
+	"github.com/yarilomail/yarilo/internal/cluster/ring"
 )
 
 func (s *Server) apiBackendList(w http.ResponseWriter, _ *http.Request) {

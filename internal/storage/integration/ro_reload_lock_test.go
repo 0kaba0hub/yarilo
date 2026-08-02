@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestReadPathSerializesAgainstConcurrentLockHolder is the #647 regression:

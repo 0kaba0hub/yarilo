@@ -1,8 +1,8 @@
 package mdbox
 
 import (
-	"github.com/0kaba0hub/yarilo/internal/storage/idxrebuild"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // HealCorruptFolder is the reactive self-heal for mdbox (implements

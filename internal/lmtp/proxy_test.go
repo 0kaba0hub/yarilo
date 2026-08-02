@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
-	fileindex "github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/cluster/ring"
+	fileindex "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // buildBackendServer starts a real LMTP backend server and returns its address,

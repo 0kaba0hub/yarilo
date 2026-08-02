@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
+	"github.com/yarilomail/yarilo/internal/cluster/ring"
 )
 
 // applyHandshakeHost registers a backend received in the server's opening

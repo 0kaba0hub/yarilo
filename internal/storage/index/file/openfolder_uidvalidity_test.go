@@ -3,8 +3,8 @@ package file
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // seedZeroUIDValidityIndex writes an on-disk index whose header UIDVALIDITY is

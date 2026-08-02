@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/warden"
+	"github.com/yarilomail/yarilo/internal/warden"
 )
 
 func TestClient_ConnectOK(t *testing.T) {

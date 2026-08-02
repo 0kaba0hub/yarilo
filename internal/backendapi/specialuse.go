@@ -6,7 +6,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 
-	"github.com/0kaba0hub/yarilo/internal/userstate/specialuse"
+	"github.com/yarilomail/yarilo/internal/userstate/specialuse"
 )
 
 // registerSpecialUseRoutes registers RFC 6154 special-use override

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/internal/userstate/subs"
 )
 
 // registerSubscriptionRoutes registers IMAP subscription routes.

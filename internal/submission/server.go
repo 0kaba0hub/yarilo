@@ -16,11 +16,11 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
-	"github.com/0kaba0hub/yarilo/internal/auth/scram"
-	"github.com/0kaba0hub/yarilo/internal/loginproto"
-	"github.com/0kaba0hub/yarilo/internal/submission/proxy"
-	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/internal/auth/oauth2"
+	"github.com/yarilomail/yarilo/internal/auth/scram"
+	"github.com/yarilomail/yarilo/internal/loginproto"
+	"github.com/yarilomail/yarilo/internal/submission/proxy"
+	"github.com/yarilomail/yarilo/pkg/config"
 )
 
 // Authenticator verifies submission AUTH credentials.

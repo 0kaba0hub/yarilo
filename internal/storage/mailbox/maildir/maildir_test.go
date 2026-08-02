@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 func testHome(root, user string) string {

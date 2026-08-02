@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
 // Options configures the quota-status policy server.

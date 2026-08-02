@@ -3,7 +3,7 @@ package decoder
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/config"
 )
 
 func TestNewNoneReturnsNilDecoder(t *testing.T) {

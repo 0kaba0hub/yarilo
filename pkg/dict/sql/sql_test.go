@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/dict/dicttest"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict/dicttest"
 )
 
 func sqliteFactory(t *testing.T) dict.Dict {

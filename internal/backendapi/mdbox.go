@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	mdboxdriver "github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
+	mdboxdriver "github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 )
 
 // registerMdboxRoutes registers mdbox-specific admin routes.

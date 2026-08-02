@@ -15,7 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Master-protocol constants, versioned separately from the client protocol.

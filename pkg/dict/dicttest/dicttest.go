@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict"
 )
 
 // Factory returns a fresh empty Dict for a single test. Called once

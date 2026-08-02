@@ -13,11 +13,11 @@ import (
 
 	proxyproto "github.com/pires/go-proxyproto"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/internal/connlimit"
-	"github.com/0kaba0hub/yarilo/internal/loginproto"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/connlimit"
+	"github.com/yarilomail/yarilo/internal/loginproto"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Options configures the POP3 server.

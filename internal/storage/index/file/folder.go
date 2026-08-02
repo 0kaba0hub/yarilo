@@ -11,8 +11,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 var errLogIndexIDMismatch = errors.New("fileindex: log IndexID does not match base index")

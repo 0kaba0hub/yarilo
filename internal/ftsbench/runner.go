@@ -15,13 +15,13 @@ import (
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 
-	"github.com/0kaba0hub/yarilo/internal/fts/flatcurve"
-	"github.com/0kaba0hub/yarilo/internal/fts/language"
-	"github.com/0kaba0hub/yarilo/internal/ftsservice"
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/pkg/fts"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/fts/flatcurve"
+	"github.com/yarilomail/yarilo/internal/fts/language"
+	"github.com/yarilomail/yarilo/internal/ftsservice"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 const benchUser = "bench@example.com"

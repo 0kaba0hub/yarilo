@@ -17,7 +17,7 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 	"github.com/foxcpp/go-sieve/interp"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/config"
 )
 
 // Sender dispatches outbound mail for Sieve redirect and vacation actions

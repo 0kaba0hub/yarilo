@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/0kaba0hub/yarilo/internal/xclient"
+	"github.com/yarilomail/yarilo/internal/xclient"
 )
 
 // imapPreAuthCaps returns the IMAP capability string for the pre-auth state.

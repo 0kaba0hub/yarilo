@@ -8,7 +8,7 @@ import (
 	"github.com/emersion/go-sasl"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
 )
 
 // writeFile writes body to a temp passwd-file and returns its path.

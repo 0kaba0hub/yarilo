@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/telemetry"
-	"github.com/0kaba0hub/yarilo/internal/warden"
+	"github.com/yarilomail/yarilo/internal/telemetry"
+	"github.com/yarilomail/yarilo/internal/warden"
 )
 
 // TestWardenLivenessCheckHappy: a live server and an open (or absent) gate pass —

@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // Pre-Phase-2 ("yarilo-legacy") .index file layout — preserved

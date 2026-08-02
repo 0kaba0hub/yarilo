@@ -18,16 +18,16 @@ import (
 
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
-	"github.com/0kaba0hub/yarilo/internal/readyfile"
-	submsvr "github.com/0kaba0hub/yarilo/internal/submission"
-	submproxy "github.com/0kaba0hub/yarilo/internal/submission/proxy"
-	"github.com/0kaba0hub/yarilo/internal/telemetry"
-	"github.com/0kaba0hub/yarilo/pkg/build"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/logging"
-	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	authsql "github.com/yarilomail/yarilo/internal/auth/sql"
+	"github.com/yarilomail/yarilo/internal/readyfile"
+	submsvr "github.com/yarilomail/yarilo/internal/submission"
+	submproxy "github.com/yarilomail/yarilo/internal/submission/proxy"
+	"github.com/yarilomail/yarilo/internal/telemetry"
+	"github.com/yarilomail/yarilo/pkg/build"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/logging"
+	"github.com/yarilomail/yarilo/pkg/mtls"
 )
 
 // version is set via pkg/build; kept for vet compatibility

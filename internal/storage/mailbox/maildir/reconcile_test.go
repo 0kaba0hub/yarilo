@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	fileidx "github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	fileidx "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 func recSetup(t *testing.T) (*userMailbox, mailbox.UserIndex, *mailbox.Folder) {

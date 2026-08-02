@@ -3,7 +3,7 @@ package file
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestResetFolderPreservesModSeq: a rebuild that drops one record keeps every

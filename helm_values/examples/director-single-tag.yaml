@@ -27,7 +27,7 @@
 hostname: mail.example.com          # public MX / client-facing FQDN
 
 image:
-  repository: ghcr.io/0kaba0hub/yarilo
+  repository: ghcr.io/yarilomail/yarilo
   tag: ""                           # pin a released version, e.g. "2.2.9"
   pullPolicy: IfNotPresent
 

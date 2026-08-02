@@ -2,14 +2,14 @@ apiVersion: v2
 name: yarilo
 description: Production-grade IMAP/POP3/Submission mail server
 type: application
-version: 2.3.6
-appVersion: "2.3.6"
+version: 2.3.7
+appVersion: "2.3.7"
 keywords:
   - imap
   - submission
   - lmtp
   - mail
-icon: https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg
-home: https://github.com/0kaba0hub/yarilo
+icon: https://raw.githubusercontent.com/yarilomail/yarilo/main/docs/icon.svg
+home: https://github.com/yarilomail/yarilo
 sources:
-  - https://github.com/0kaba0hub/yarilo
+  - https://github.com/yarilomail/yarilo

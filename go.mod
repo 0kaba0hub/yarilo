@@ -1,4 +1,4 @@
-module github.com/0kaba0hub/yarilo
+module github.com/yarilomail/yarilo
 
 go 1.26.2
 

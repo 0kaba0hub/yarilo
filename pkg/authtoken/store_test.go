@@ -7,7 +7,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/0kaba0hub/yarilo/pkg/authtoken"
+	"github.com/yarilomail/yarilo/pkg/authtoken"
 )
 
 // store is the subset of both Store and RedisStore that tests exercise.

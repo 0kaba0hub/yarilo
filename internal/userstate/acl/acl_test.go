@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestStore_DefaultsFromInbox locks acl_defaults_from_inbox: a maildir folder

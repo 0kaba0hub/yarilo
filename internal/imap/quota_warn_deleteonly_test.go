@@ -10,14 +10,14 @@ import (
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
-	"github.com/0kaba0hub/yarilo/internal/quotawarn"
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	imapserver "github.com/yarilomail/yarilo/internal/imap"
+	"github.com/yarilomail/yarilo/internal/quotawarn"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
 // quotaAuthStub authenticates one user and returns a quota_rule so the session

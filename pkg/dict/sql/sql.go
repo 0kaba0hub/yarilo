@@ -34,8 +34,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/sqlpool"
 
 	_ "github.com/go-sql-driver/mysql" // mysql driver
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver

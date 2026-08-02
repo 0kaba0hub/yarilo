@@ -3,7 +3,7 @@ package mdboxmap
 import (
 	"fmt"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // Lookup resolves one map_uid to its on-disk location and current

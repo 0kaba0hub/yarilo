@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/warden"
+	"github.com/yarilomail/yarilo/internal/warden"
 )
 
 func startServerWithRef(t *testing.T, max int) (*warden.Server, string, context.CancelFunc) {

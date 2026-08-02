@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	indexfile "github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestMigrate_DboxV1_ToSdbox covers the canonical Phase 7

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/sasllogin"
+	"github.com/yarilomail/yarilo/internal/sasllogin"
 )
 
 // fakeAuth is a minimal yarilo auth server stub.

@@ -14,9 +14,9 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 
-	"github.com/0kaba0hub/yarilo/internal/monitor"
-	"github.com/0kaba0hub/yarilo/pkg/build"
-	"github.com/0kaba0hub/yarilo/pkg/logging"
+	"github.com/yarilomail/yarilo/internal/monitor"
+	"github.com/yarilomail/yarilo/pkg/build"
+	"github.com/yarilomail/yarilo/pkg/logging"
 )
 
 // version is set via pkg/build; kept for vet compatibility

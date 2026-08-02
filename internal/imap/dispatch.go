@@ -8,9 +8,9 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 
-	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
-	"github.com/0kaba0hub/yarilo/internal/userstate/subs"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/userstate/acl"
+	"github.com/yarilomail/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // nsHandle is the per-namespace storage state attached to a session.

@@ -11,10 +11,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/0kaba0hub/yarilo/internal/backend"
-	"github.com/0kaba0hub/yarilo/pkg/build"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/logging"
+	"github.com/yarilomail/yarilo/internal/backend"
+	"github.com/yarilomail/yarilo/pkg/build"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/logging"
 )
 
 // version is set via pkg/build; kept for vet compatibility

@@ -3,7 +3,7 @@ package mboxenc_test
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mboxenc"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 )
 
 func TestToModUTF7(t *testing.T) {

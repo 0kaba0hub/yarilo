@@ -9,8 +9,8 @@ import (
 	imaplib "github.com/emersion/go-imap/v2"
 	imapserver "github.com/emersion/go-imap/v2/imapserver"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
-	"github.com/0kaba0hub/yarilo/pkg/quota"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
 // quotaChanged invalidates the short-lived read cache after a quota-affecting

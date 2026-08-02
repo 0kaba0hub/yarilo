@@ -3,7 +3,7 @@ package imap
 import (
 	imaplib "github.com/emersion/go-imap/v2"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // ACL enforcement entry points. The require* helpers resolve a folder name

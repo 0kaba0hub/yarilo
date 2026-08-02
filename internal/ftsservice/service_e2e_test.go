@@ -15,14 +15,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/0kaba0hub/yarilo/internal/fts/buildmail"
-	"github.com/0kaba0hub/yarilo/internal/fts/flatcurve"
-	"github.com/0kaba0hub/yarilo/internal/fts/language"
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/pkg/fts"
-	"github.com/0kaba0hub/yarilo/pkg/ftsproto"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/fts/buildmail"
+	"github.com/yarilomail/yarilo/internal/fts/flatcurve"
+	"github.com/yarilomail/yarilo/internal/fts/language"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/ftsproto"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 const testUser = "u@test.com"

@@ -13,7 +13,7 @@ import (
 
 	gosieve "github.com/foxcpp/go-sieve"
 
-	"github.com/0kaba0hub/yarilo/internal/sieve"
+	"github.com/yarilomail/yarilo/internal/sieve"
 )
 
 type session struct {

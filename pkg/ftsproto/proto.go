@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/fts"
 )
 
 const (

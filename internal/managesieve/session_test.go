@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/sieve"
+	"github.com/yarilomail/yarilo/internal/sieve"
 )
 
 type testClient struct {

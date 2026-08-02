@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/config"
 )
 
 // writeTestCert generates a self-signed EC cert and writes cert.pem/key.pem
