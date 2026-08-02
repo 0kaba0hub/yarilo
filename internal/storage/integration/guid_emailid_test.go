@@ -13,9 +13,7 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// RFC 8474 requires EMAILID to be unique per message and unchanged by a MOVE.
-// yarilo shipped an all-zero id for every message because the GUID never
-// reached the index, so these are the guards for that regression.
+// RFC 8474: EMAILID is unique per message and unchanged by MOVE.
 
 func newGUIDBackend(t *testing.T, driver, home string) mailbox.UserMailbox {
 	t.Helper()
@@ -32,9 +30,8 @@ func newGUIDBackend(t *testing.T, driver, home string) mailbox.UserMailbox {
 	return nil
 }
 
-// TestGUIDIsRealAndStable covers the acceptance criteria on every mailbox
-// format: a stored message gets a non-zero unique GUID, MOVE keeps it, and a
-// second store of the same bytes is a distinct message with a distinct id.
+// TestGUIDIsRealAndStable checks every mailbox format: a stored message gets a
+// non-zero unique GUID and MOVE keeps it.
 func TestGUIDIsRealAndStable(t *testing.T) {
 	var zero [16]byte
 	for _, driver := range []string{"maildir", "mdbox", "sdbox"} {
@@ -66,10 +63,8 @@ func TestGUIDIsRealAndStable(t *testing.T) {
 				t.Fatalf("two messages share GUID %x: EMAILID is not unique", guid1)
 			}
 
-			// Scan is the rebuild-facing enumeration every driver implements
-			// (mdbox.List is empty by design: its messages are enumerated via
-			// the index). It must report the GUID Save handed back, otherwise a
-			// rebuild would resurrect the message under a different EMAILID.
+			// Scan, not List: mdbox.List is empty by design. Storage must report
+			// the GUID Save returned or a rebuild would change EMAILID.
 			scanned, err := mb.Scan("INBOX")
 			if err != nil {
 				t.Fatalf("scan: %v", err)
@@ -113,9 +108,8 @@ func TestGUIDIsRealAndStable(t *testing.T) {
 	}
 }
 
-// TestGUIDSurvivesFlagChange is the maildir-specific trap: the GUID is derived
-// from the base name, and a flag change rewrites the ":2," trailer. Deriving
-// from the whole filename would change EMAILID on every \Seen.
+// TestGUIDSurvivesFlagChange: the maildir GUID derives from the base name, so
+// rewriting the ":2," trailer must not change EMAILID.
 func TestGUIDSurvivesFlagChange(t *testing.T) {
 	home := t.TempDir()
 	mb := newGUIDBackend(t, "maildir", home)
@@ -147,8 +141,8 @@ func TestGUIDSurvivesFlagChange(t *testing.T) {
 	}
 }
 
-// TestGUIDReachesIndex is the actual EMAILID path: FETCH reads the index, so a
-// GUID that never lands in a record renders as all-zero.
+// TestGUIDReachesIndex walks the path FETCH uses: a GUID that never lands in an
+// index record renders as all-zero.
 func TestGUIDReachesIndex(t *testing.T) {
 	home := t.TempDir()
 	user := &mailbox.UserInfo{Username: "guid@example.com", Home: home}

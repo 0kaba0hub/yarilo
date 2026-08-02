@@ -163,16 +163,10 @@ func RebuildFolder(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailb
 	return stats, nil
 }
 
-// BackfillGUIDs stamps per-message GUIDs onto a folder whose index predates
-// them, so EMAILID stops rendering all-zero for mail that was already on disk
-// (RFC 8474). It is a no-op once the folder is marked complete, and that check
-// is O(1), so a large folder does not pay a scan on every open.
-//
-// The values come from Scan, the driver's own view: maildir derives the GUID
-// from the immutable base name, dbox reads it back from the record trailer.
-// Nothing is invented here, or a later rebuild from storage would hand the same
-// message a different identity. Scan is used rather than List because mdbox
-// enumerates through the index, not the driver.
+// BackfillGUIDs stamps GUIDs onto a folder whose index predates the guid
+// extension; a folder already marked complete costs one O(1) header read.
+// Values come from Scan, never invented here, or a later rebuild from storage
+// would change EMAILID. Scan rather than List: mdbox enumerates via the index.
 func BackfillGUIDs(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailbox.Folder, name string) error {
 	need, err := idx.GUIDBackfillNeeded(folder.ID)
 	if err != nil || !need {
@@ -180,8 +174,7 @@ func BackfillGUIDs(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailb
 	}
 	recs, err := box.Scan(name)
 	if err != nil {
-		// A driver without disk-scan cannot supply GUIDs; leave the folder
-		// pending rather than marking it done with nothing written.
+		// No disk-scan, no GUIDs: stay pending rather than mark it done empty.
 		return fmt.Errorf("idxrebuild: scan %s: %w", name, err)
 	}
 	byName := make(map[string][16]byte, len(recs))

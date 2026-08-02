@@ -299,9 +299,8 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 	// without reading the body.
 	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
 
-	// The base name is fresh, so the derived GUID is unique. A caller asking for
-	// a specific GUID (identity-preserving migration) gets an explicit uidlist
-	// override; the common paths pass zero and ride on the derivation.
+	// Fresh base name, so the derived GUID is unique. A caller-supplied GUID
+	// (migration) is pinned with an explicit uidlist override instead.
 	effGUID := guidFromBase(finalName)
 	override := guid != noGUID && guid != effGUID
 	if override {
@@ -329,10 +328,9 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 }
 
 // Move renames the message into dstFolder keeping its base name, so the derived
-// GUID — and therefore EMAILID — is unchanged (RFC 8474). Only the ":2,"
-// trailer and the folder change. A base-name collision in the destination is
-// resolved with a fresh name plus an explicit uidlist GUID override, which is
-// the one case where the derivation alone would break identity.
+// GUID and with it EMAILID is unchanged (RFC 8474); only the ":2," trailer and
+// the folder change. A base-name collision falls back to a fresh name plus an
+// explicit uidlist GUID override.
 func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte) (string, [16]byte, error) {
 	var noGUID [16]byte
 	if srcFolder == dstFolder {
@@ -349,8 +347,7 @@ func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte)
 		dstPath := filepath.Join(dstDir, newName)
 		override := outGUID != guidFromBase(newName)
 		if _, err := os.Lstat(dstPath); err == nil {
-			// Base name taken in the destination: mint a fresh one and pin the
-			// original GUID explicitly so the id still survives.
+			// Base name taken: mint a fresh one and pin the GUID explicitly.
 			oldBase := maildirBase(filename)
 			trailer := filename[len(oldBase):] // ":2,<flags>"
 			sizeInfo := ""                     // ",S=<phys>,W=<virt>"
@@ -667,13 +664,10 @@ func maildirBase(name string) string {
 	return name
 }
 
-// guidFromBase derives the per-message GUID from the maildir base name.
-// The base ({secs}.M{usecs}P{pid}_{seq}.{hostname}) is unique per message by
-// construction and never rewritten: a flag change touches only the ":2,"
-// trailer and MOVE renames across folders keeping the base. So EMAILID stays
-// stable with nothing stored, and an index rebuild recomputes it. A GUID that
-// must differ from the derived one (base-name collision in the destination on
-// MOVE) is written to the uidlist as an explicit "G" field and wins on read.
+// guidFromBase derives the per-message GUID from the maildir base name. The
+// base is unique per message and never rewritten: a flag change touches only
+// the ":2," trailer and Move keeps it across folders, so EMAILID survives both
+// and an index rebuild recomputes it.
 func guidFromBase(filename string) [16]byte {
 	sum := sha256.Sum256([]byte(maildirBase(filename)))
 	var g [16]byte

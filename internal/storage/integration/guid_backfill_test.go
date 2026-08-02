@@ -14,10 +14,9 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// stageLegacyFolder builds a folder as the pre-fix binary left it: bodies in
-// storage, and an index whose records carry no GUID because the extension did
-// not exist yet. The extension is stripped from the on-disk file afterwards so
-// this is the real pre-upgrade shape, not a fresh index with empty fields.
+// stageLegacyFolder returns a folder whose index has no guid extension: bodies
+// in storage, records without GUIDs. The extension is stripped from the on-disk
+// file, so this is the real shape rather than a fresh index with empty fields.
 func stageLegacyFolder(t *testing.T, n int) (mailbox.UserMailbox, mailbox.UserIndex, *mailbox.Folder) {
 	t.Helper()
 	home := t.TempDir()
@@ -41,7 +40,7 @@ func stageLegacyFolder(t *testing.T, n int) (mailbox.UserMailbox, mailbox.UserIn
 		if err != nil {
 			t.Fatalf("save: %v", err)
 		}
-		// GUID deliberately omitted: this is the pre-fix record shape.
+		// No GUID: the record shape this fixture reproduces.
 		if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
 			UID: uid, Filename: name, Size: uint32(len(body)), VSize: vsize,
 		}); err != nil {
@@ -126,8 +125,7 @@ func guidsByUID(t *testing.T, idx mailbox.UserIndex, folderID uint64) map[uint32
 	return out
 }
 
-// TestBackfillStampsLegacyRecords is the acceptance case: mail that was on disk
-// before the upgrade must end up with a real EMAILID.
+// TestBackfillStampsLegacyRecords: records with no GUID get one from storage.
 func TestBackfillStampsLegacyRecords(t *testing.T) {
 	var zero [16]byte
 	mb, idx, folder := stageLegacyFolder(t, 3)
@@ -172,9 +170,8 @@ func TestBackfillStampsLegacyRecords(t *testing.T) {
 	}
 }
 
-// TestBackfillIsIdempotent covers the crash-safety requirement: an aborted pass
-// leaves some records stamped, and the resumed run must reach the same state
-// without touching what was already assigned.
+// TestBackfillIsIdempotent: an aborted pass leaves some records stamped, and
+// the resumed run must not touch an already-assigned GUID.
 func TestBackfillIsIdempotent(t *testing.T) {
 	mb, idx, folder := stageLegacyFolder(t, 4)
 
@@ -213,9 +210,8 @@ func TestBackfillIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestBackfillMatchesStorage guards the "transfer, not generation" rule: the
-// index must end up holding exactly what the driver reports, or a later rebuild
-// from storage would change EMAILID.
+// TestBackfillMatchesStorage: the index must hold exactly what the driver
+// reports, or a rebuild from storage would change EMAILID.
 func TestBackfillMatchesStorage(t *testing.T) {
 	mb, idx, folder := stageLegacyFolder(t, 3)
 	if err := idxrebuild.BackfillGUIDs(mb, idx, folder, "INBOX"); err != nil {

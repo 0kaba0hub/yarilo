@@ -1009,10 +1009,8 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	if refreshed := s.dboxHealIfCorrupt(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
-	// Mail stored before per-message GUIDs existed carries none, so EMAILID
-	// would render all-zero. Self-healing on first select; the check is O(1)
-	// once done. A failure is not fatal: the folder stays pending and every
-	// other operation works.
+	// Mail stored before per-message GUIDs carries none, so stamp it once here.
+	// Not fatal: the folder stays pending and every other operation works.
 	if err := idxrebuild.BackfillGUIDs(h.box, h.idx, f, rel); err != nil {
 		slog.Warn("imap: guid backfill failed", "folder", rel, "err", err)
 	}

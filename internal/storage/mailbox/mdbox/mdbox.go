@@ -692,10 +692,9 @@ func (u *userMailbox) Copy(_, srcFilename, _ string, _ uint32) (string, error) {
 }
 
 // Move relocates a message between folders keeping its GUID (RFC 8474: MOVE
-// must not change EMAILID). mdbox has no physical per-folder location, but the
-// record trailer names the owning folder, so the message is re-saved into
-// dstFolder with the same GUID and the source record is unreferenced. Both
-// folder locks are taken in sorted order.
+// must not change EMAILID). The record trailer names the owning folder, so this
+// re-saves with the same GUID and unreferences the source. Both folder locks
+// are taken in sorted order.
 func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte) (string, [16]byte, error) {
 	var noGUID [16]byte
 	mapUID, err := parseFilename(filename)

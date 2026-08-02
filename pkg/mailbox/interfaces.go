@@ -245,11 +245,9 @@ type UserMailbox interface {
 	Rename(oldName, newName string) error
 	Save(folder string, r io.Reader, uid uint32, size int64, flags []string, guid [16]byte) (name string, vsize uint32, outGUID [16]byte, err error)
 	// Move relocates one message between folders keeping its identity: the
-	// returned GUID equals guid (RFC 8474 — MOVE must not change EMAILID).
-	// Maildir renames the file and keeps the base name, so the derived GUID is
-	// unchanged; dbox rewrites the record with the same GUID in its trailer.
-	// Both source and destination are locked in name order so a concurrent
-	// A->B / B->A pair cannot deadlock.
+	// returned GUID equals guid (RFC 8474: MOVE must not change EMAILID).
+	// Source and destination lock in name order, so a concurrent A->B / B->A
+	// pair cannot deadlock.
 	Move(srcFolder, dstFolder, filename string, guid [16]byte) (newName string, outGUID [16]byte, err error)
 	// Fetch returns a reader for the message body. altTier hints that the
 	// message lives in alt (cold) storage so the driver can open it directly
