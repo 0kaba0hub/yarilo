@@ -918,7 +918,6 @@ type DirectorAPIConfig struct {
 	AllowedNets []string `koanf:"allowed_nets"` // CIDRs allowed to call the API
 }
 
-// DirectorServiceConfig configures the standalone yarilo-director process.
 // BackendRegisterConfig configures the co-located pod's director registration
 // (#776/#788). It is consumed by the yarilo-backend-reg sidecar (which owns the
 // single BACKEND-UP for the pod IP) and by the protocol containers' readiness
@@ -955,6 +954,7 @@ type BackendRegisterConfig struct {
 	ReadinessProtocols []string `koanf:"readiness_protocols"`
 }
 
+// DirectorServiceConfig configures the standalone yarilo-director process.
 type DirectorServiceConfig struct {
 	Listen       string             `koanf:"listen"`
 	Shutdown     ShutdownConfig     `koanf:"shutdown"`

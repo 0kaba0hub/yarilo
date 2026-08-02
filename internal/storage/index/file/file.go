@@ -143,16 +143,16 @@ func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
 }
 
-// WithLogCompaction configures automatic log compaction thresholds.
-// minBytes / maxBytes control when rotation fires; minAge prevents
-// rotation before the log reaches a minimum age. Pass 0 for minBytes
-// to disable.
 // WithNoCreate refuses to initialise a missing folder index. Use it in any tool
 // that must observe a store rather than establish one.
 func WithNoCreate() Option {
 	return func(b *Backend) { b.noCreate = true }
 }
 
+// WithLogCompaction configures automatic log compaction thresholds.
+// minBytes / maxBytes control when rotation fires; minAge prevents
+// rotation before the log reaches a minimum age. Pass 0 for minBytes
+// to disable.
 func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
 	return func(b *Backend) {
 		b.logCompactMinBytes = minBytes
