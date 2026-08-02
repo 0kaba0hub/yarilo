@@ -16,10 +16,7 @@ func Apply(ui *mailbox.UserInfo, pui *protocol.UserInfo, username string) {
 	if ui == nil || pui == nil {
 		return
 	}
-	expand := func(v string) string {
-		v = mailbox.ExpandHome(v, ui.Home)
-		return mailbox.ExpandVars(strings.ReplaceAll(v, "%h", ui.Home), username)
-	}
+	expand := func(v string) string { return mailbox.ExpandLocation(v, ui.Home, username) }
 	if pui.VolatileDir != "" {
 		ui.VolatileDir = expand(pui.VolatileDir)
 	}
@@ -33,7 +30,7 @@ func Apply(ui *mailbox.UserInfo, pui *protocol.UserInfo, username string) {
 		ui.AltDir = expand(pui.AltDir)
 	}
 	if pui.MailPath != "" {
-		ui.MailPath = mailbox.ExpandHome(pui.MailPath, ui.Home)
+		ui.MailPath = expand(pui.MailPath)
 	} else if pui.MailLocation != "" {
 		// mail_location = "driver:path[:MODS]": take the path when userdb
 		// returned no explicit mail_path field.
@@ -61,10 +58,7 @@ func Apply(ui *mailbox.UserInfo, pui *protocol.UserInfo, username string) {
 // applyMailLocationMods reads the "driver:path:KEY=value" modifiers. A value
 // already set from a dedicated field wins, so the modifiers only fill gaps.
 func applyMailLocationMods(loc string, ui *mailbox.UserInfo, username string) {
-	expand := func(v string) string {
-		v = mailbox.ExpandHome(v, ui.Home)
-		return mailbox.ExpandVars(strings.ReplaceAll(v, "%h", ui.Home), username)
-	}
+	expand := func(v string) string { return mailbox.ExpandLocation(v, ui.Home, username) }
 	colon := strings.IndexByte(loc, ':')
 	if colon < 0 {
 		return

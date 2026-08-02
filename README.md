@@ -223,9 +223,8 @@ not running is handled by `--offline` plus the templates; the two sources are
 mutually exclusive, because a template disagreeing with userdb would address a
 mailbox the sessions never use.
 
-The templates take `%h` for the user's home and `%u`/`%n`/`%d`, so a userdb
-value of `INDEX=~/index` is written `--index-template %h/index` here — the
-config and flag forms do not expand a leading `~/`.
+The templates take `~/` or `%h` for the user's home, plus `%u`/`%n`/`%d`, so a
+userdb value of `INDEX=~/index` is written the same way here.
 
 The tool never creates an index. A path holding no index is an error naming the
 path, not an empty folder reported as complete.
