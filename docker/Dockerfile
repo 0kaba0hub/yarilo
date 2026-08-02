@@ -91,7 +91,7 @@ RUN chmod +x /entrypoint.sh && \
     mkdir -p /var/lib/yarilo /var/mail/vhosts && \
     chown yarilo:yarilo /var/lib/yarilo /var/mail/vhosts
 
-USER yarilo:yarilo
+USER 1000:1000
 
 EXPOSE 143 993 465 587 8080
 
