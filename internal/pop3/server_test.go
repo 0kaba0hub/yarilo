@@ -46,8 +46,11 @@ func (m *mockMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 }
 func (m *mockMailbox) List(_ string) ([]*mailbox.MessageMeta, error) { return nil, nil }
 func (m *mockMailbox) Remove(_, _ string) error                      { return nil }
-func (m *mockMailbox) Save(_ string, _ io.Reader, _ uint32, _ int64, _ []string) (string, uint32, error) {
-	return "", 0, nil
+func (m *mockMailbox) Save(_ string, _ io.Reader, _ uint32, _ int64, _ []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	return "", 0, guid, nil
+}
+func (m *mockMailbox) Move(_, _, filename string, guid [16]byte) (string, [16]byte, error) {
+	return filename, guid, nil
 }
 func (m *mockMailbox) Fetch(_, filename string, _ bool) (io.ReadCloser, error) {
 	if m.bodies != nil {

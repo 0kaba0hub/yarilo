@@ -98,7 +98,7 @@ func TestDboxConcurrentSaveAndDelete(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			_ = mbA.Create("Stress")
-			_, _, _ = mbA.Save("Stress", strings.NewReader("hello"), uint32(i+1), 5, nil)
+			_, _, _, _ = mbA.Save("Stress", strings.NewReader("hello"), uint32(i+1), 5, nil, [16]byte{})
 		}
 	}()
 	go func() {
@@ -139,7 +139,7 @@ func TestMdboxConcurrentSaveTwoProcesses(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < perProcess; i++ {
-			tok, _, err := mbA.Save("INBOX", strings.NewReader("from-A"), uint32(i+1), 6, nil)
+			tok, _, _, err := mbA.Save("INBOX", strings.NewReader("from-A"), uint32(i+1), 6, nil, [16]byte{})
 			if err != nil {
 				t.Errorf("save A %d: %v", i, err)
 				return
@@ -150,7 +150,7 @@ func TestMdboxConcurrentSaveTwoProcesses(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < perProcess; i++ {
-			tok, _, err := mbB.Save("INBOX", strings.NewReader("from-B"), uint32(perProcess+i+1), 6, nil)
+			tok, _, _, err := mbB.Save("INBOX", strings.NewReader("from-B"), uint32(perProcess+i+1), 6, nil, [16]byte{})
 			if err != nil {
 				t.Errorf("save B %d: %v", i, err)
 				return

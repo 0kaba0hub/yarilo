@@ -820,6 +820,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 			extNameKeywords:     encodeKeywordsRec(kwBits),
 			extNameInternalDate: encodeIdateRec(m.InternalDate),
 			extNameVsize:        encodeVsizeRec(m.RFC822Size()),
+			extNameGUID:         encodeGUIDRec(m.GUID),
 		},
 	}
 	fs.file.Records = append(fs.file.Records, rec)
@@ -1119,6 +1120,9 @@ func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbo
 			if data, ok := rec.Ext[extNameInternalDate]; ok {
 				meta.InternalDate = decodeIdateRec(data)
 			}
+			if data, ok := rec.Ext[extNameGUID]; ok {
+				meta.GUID = decodeGUIDRec(data)
+			}
 			out = append(out, meta)
 		}
 		return nil
@@ -1230,6 +1234,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 					extNameModSeq:   encodeModseqRec(modseq),
 					extNameKeywords: encodeKeywordsRec(kwBits),
 					extNameVsize:    encodeVsizeRec(m.RFC822Size()),
+					extNameGUID:     encodeGUIDRec(m.GUID),
 				},
 			}
 			fs.file.Records = append(fs.file.Records, rec)

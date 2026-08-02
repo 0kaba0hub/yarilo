@@ -153,7 +153,7 @@ func TestTwoProcessAppendNoUIDCollision(t *testing.T) {
 					//    (maildir writes uidlist inline; sdbox renames to u.<uid>).
 					content := strings.NewReader("hello from p" +
 						strconv.Itoa(pid) + ":g" + strconv.Itoa(gid) + ":k" + strconv.Itoa(k))
-					filename, _, err := mb.Save("INBOX", content, uid, 0, nil)
+					filename, _, _, err := mb.Save("INBOX", content, uid, 0, nil, [16]byte{})
 					if err != nil {
 						errCh <- err
 						return

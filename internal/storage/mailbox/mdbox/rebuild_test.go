@@ -11,7 +11,7 @@ func TestScanRecoversAllStoredMessages(t *testing.T) {
 	bodies := []string{"first body", "second one", "third bytes"}
 	want := map[string]bool{}
 	for i, body := range bodies {
-		n, _, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil)
+		n, _, _, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil, [16]byte{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +68,7 @@ func TestScanAfterPurgeReflectsCompaction(t *testing.T) {
 	mb, _ := newTestUser(t)
 	var names []string
 	for i, body := range []string{"keep", "drop", "keep"} {
-		n, _, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil)
+		n, _, _, err := mb.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil, [16]byte{})
 		if err != nil {
 			t.Fatal(err)
 		}

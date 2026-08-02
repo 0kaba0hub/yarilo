@@ -231,12 +231,26 @@ type MailboxBackend interface {
 // MessageMeta.VSize so RFC822.SIZE is consistent from the first FETCH. If Save
 // fails after the UID was allocated, the UID is burnt and the index skips the hole
 // on the next scan. Close releases any open file descriptors.
+//
+// Save is the single generation site for per-message GUIDs (RFC 8474 EMAILID,
+// JMAP Email.id). A zero guid means "assign a fresh one"; a non-zero guid is
+// stored verbatim so MOVE keeps one identity across folders. The returned GUID
+// is the effective one and must land in MessageMeta.GUID. Drivers persist it in
+// storage (dbox record trailer, maildir uidlist), so it survives an index
+// rebuild.
 type UserMailbox interface {
 	Init() error
 	Create(folder string) error
 	Delete(folder string) error
 	Rename(oldName, newName string) error
-	Save(folder string, r io.Reader, uid uint32, size int64, flags []string) (name string, vsize uint32, err error)
+	Save(folder string, r io.Reader, uid uint32, size int64, flags []string, guid [16]byte) (name string, vsize uint32, outGUID [16]byte, err error)
+	// Move relocates one message between folders keeping its identity: the
+	// returned GUID equals guid (RFC 8474 — MOVE must not change EMAILID).
+	// Maildir renames the file and keeps the base name, so the derived GUID is
+	// unchanged; dbox rewrites the record with the same GUID in its trailer.
+	// Both source and destination are locked in name order so a concurrent
+	// A->B / B->A pair cannot deadlock.
+	Move(srcFolder, dstFolder, filename string, guid [16]byte) (newName string, outGUID [16]byte, err error)
 	// Fetch returns a reader for the message body. altTier hints that the
 	// message lives in alt (cold) storage so the driver can open it directly
 	// without trying the primary path first. The hint is set from

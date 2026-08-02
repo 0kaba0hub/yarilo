@@ -1229,33 +1229,25 @@ func (s *session) renameInbox(dest string) error {
 		return err
 	}
 	for _, m := range msgs {
-		rc, fetchErr := s.box.Fetch("INBOX", m.Filename, m.AltTier)
-		if fetchErr != nil {
-			return fmt.Errorf("imap/rename-inbox fetch: %w", fetchErr)
-		}
-		data, readErr := io.ReadAll(rc)
-		rc.Close()
-		if readErr != nil {
-			return fmt.Errorf("imap/rename-inbox read: %w", readErr)
-		}
-		newFilename, vsize, saveErr := s.box.Save(dest, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
-		if saveErr != nil {
-			return fmt.Errorf("imap/rename-inbox save: %w", saveErr)
+		// Relocation, not a new message: the GUID carries over (RFC 8474).
+		newFilename, guid, moveErr := s.box.Move("INBOX", dest, m.Filename, m.GUID)
+		if moveErr != nil {
+			return fmt.Errorf("imap/rename-inbox move: %w", moveErr)
 		}
 		nm := &mailbox.MessageMeta{
 			Filename:     newFilename,
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
-			Size:         uint32(len(data)),
-			VSize:        vsize,
+			Size:         m.Size,
+			VSize:        m.VSize,
 			InternalDate: m.InternalDate,
+			GUID:         guid,
 		}
 		if err := s.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
 			_ = s.box.Remove(dest, newFilename)
 			return fmt.Errorf("imap/rename-inbox record: %w", err)
 		}
 		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
-		s.box.Remove("INBOX", m.Filename)         //nolint:errcheck
 		s.idx.ExpungeMessage(srcFolder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChange("INBOX", locks.EventExpunged, m.UID)
 	}
@@ -1611,7 +1603,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	}
 
 	tSave := time.Now()
-	filename, vsize, err := h.box.Save(rel, r, 0, size, flagList)
+	filename, vsize, guid, err := h.box.Save(rel, r, 0, size, flagList, [16]byte{})
 	if err != nil {
 		return nil, err
 	}
@@ -1622,7 +1614,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	}
 	m := &mailbox.MessageMeta{
 		Filename: filename, Flags: flagList, Keywords: kwList, Size: uint32(size), VSize: vsize,
-		InternalDate: internalDate,
+		InternalDate: internalDate, GUID: guid,
 	}
 	if err := h.idx.AllocateAndAppend(f.ID, m); err != nil {
 		_ = h.box.Remove(rel, filename)
@@ -2803,7 +2795,9 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			return nil, fmt.Errorf("imap/copy read: %w", readErr)
 		}
 		tSave := time.Now()
-		newFilename, vsize, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
+		// COPY yields a distinct message, so a fresh GUID is generated (RFC 8474);
+		// only MOVE preserves the source identity.
+		newFilename, vsize, guid, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags, [16]byte{})
 		if saveErr != nil {
 			return nil, fmt.Errorf("imap/copy save: %w", saveErr)
 		}
@@ -2815,6 +2809,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			Size:         uint32(len(data)),
 			VSize:        vsize,
 			InternalDate: m.InternalDate,
+			GUID:         guid,
 		}
 		tIndex := time.Now()
 		if err := destH.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
@@ -3128,6 +3123,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		filename string
 		destUID  uint32
 		destFile string
+		moved    bool // body relocated in place; source file is already gone
 	}
 	var hits []matched
 	var srcUIDs, dstUIDs imaplib.UIDSet
@@ -3141,39 +3137,62 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
-		if fetchErr != nil {
-			return fmt.Errorf("imap/move fetch: %w", fetchErr)
-		}
-		data, readErr := io.ReadAll(rc)
-		rc.Close()
-		if readErr != nil {
-			return fmt.Errorf("imap/move read: %w", readErr)
-		}
+		// MOVE keeps one identity across folders (RFC 8474), so the source GUID is
+		// carried into the destination instead of a fresh one being generated.
+		var newFilename string
+		var guid [16]byte
+		vsize := m.VSize
+		size := m.Size
 		tSave := time.Now()
-		newFilename, vsize, saveErr := destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags)
-		if saveErr != nil {
-			return fmt.Errorf("imap/move save: %w", saveErr)
+		if srcBox == destH.box {
+			var moveErr error
+			newFilename, guid, moveErr = srcBox.Move(s.folder.Name, destRel, m.Filename, m.GUID)
+			if moveErr != nil {
+				return fmt.Errorf("imap/move relocate: %w", moveErr)
+			}
+		} else {
+			// Cross-namespace: no shared storage to relocate within, so copy the
+			// body over and hand the source GUID to Save, which stores it verbatim.
+			rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
+			if fetchErr != nil {
+				return fmt.Errorf("imap/move fetch: %w", fetchErr)
+			}
+			data, readErr := io.ReadAll(rc)
+			rc.Close()
+			if readErr != nil {
+				return fmt.Errorf("imap/move read: %w", readErr)
+			}
+			var saveErr error
+			newFilename, vsize, guid, saveErr = destH.box.Save(destRel, bytes.NewReader(data), 0, int64(len(data)), m.Flags, m.GUID)
+			if saveErr != nil {
+				return fmt.Errorf("imap/move save: %w", saveErr)
+			}
+			size = uint32(len(data))
 		}
 		saveTotalMs += time.Since(tSave).Milliseconds()
 		nm := &mailbox.MessageMeta{
 			Filename:     newFilename,
 			Flags:        m.Flags,
 			Keywords:     m.Keywords,
-			Size:         uint32(len(data)),
+			Size:         size,
 			VSize:        vsize,
 			InternalDate: m.InternalDate,
+			GUID:         guid,
 		}
 		tIndex := time.Now()
 		if err := destH.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
-			_ = destH.box.Remove(destRel, newFilename)
+			if srcBox == destH.box {
+				_, _, _ = srcBox.Move(destRel, s.folder.Name, newFilename, guid)
+			} else {
+				_ = destH.box.Remove(destRel, newFilename)
+			}
 			return fmt.Errorf("imap/move record: %w", err)
 		}
 		indexTotalMs += time.Since(tIndex).Milliseconds()
 		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
-		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename, destUID: nm.UID, destFile: newFilename})
+		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename, destUID: nm.UID, destFile: newFilename, moved: srcBox == destH.box})
 	}
 
 	if err := w.WriteCopyData(&imaplib.CopyData{
@@ -3187,7 +3206,9 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	// Expunge source in descending seq order (RFC 6851 §3.3).
 	for i := len(hits) - 1; i >= 0; i-- {
 		h := hits[i]
-		srcBox.Remove(s.folder.Name, h.filename)     //nolint:errcheck
+		if !h.moved {
+			srcBox.Remove(s.folder.Name, h.filename) //nolint:errcheck
+		}
 		srcIdx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
 		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, h.srcUID)
 		if err := w.WriteExpunge(h.seqNum); err != nil {

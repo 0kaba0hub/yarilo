@@ -54,7 +54,7 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 	_, mb, home := newTestUser(t)
 	body := "From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\nbody bytes\r\n"
 
-	name, _, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)), nil)
+	name, _, _, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 func TestSaveCRLFNormalisation(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	lf := "line one\nline two\n"
-	name, vsize, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil)
+	name, vsize, _, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSaveCRLFNormalisation(t *testing.T) {
 
 func TestCopyHardlinks(t *testing.T) {
 	_, mb, home := newTestUser(t)
-	src, _, err := mb.Save("INBOX", strings.NewReader("payload"), 3, 7, nil)
+	src, _, _, err := mb.Save("INBOX", strings.NewReader("payload"), 3, 7, nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestRemoveIdempotent(t *testing.T) {
 func TestListAndFolderOps(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	for _, uid := range []uint32{1, 2, 3} {
-		if _, _, err := mb.Save("INBOX", strings.NewReader("msg"), uid, 3, nil); err != nil {
+		if _, _, _, err := mb.Save("INBOX", strings.NewReader("msg"), uid, 3, nil, [16]byte{}); err != nil {
 			t.Fatalf("save uid=%d: %v", uid, err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestDeleteRemovesFolderDir(t *testing.T) {
 func TestScanRecoversGUIDAndSize(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	body := "hello world"
-	name, _, err := mb.Save("INBOX", strings.NewReader(body), 42, int64(len(body)), nil)
+	name, _, _, err := mb.Save("INBOX", strings.NewReader(body), 42, int64(len(body)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -295,5 +295,48 @@ func TestNeedsCRLFNormalisation(t *testing.T) {
 		if got := needsCRLFNormalisation([]byte(tc.in)); got != tc.want {
 			t.Errorf("needsCRLFNormalisation(%q) = %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+// Save must store a caller-supplied GUID verbatim, and Move must keep it.
+func TestSaveGUIDAndMovePreservesIt(t *testing.T) {
+	_, mb, _ := newTestUser(t)
+	var want [16]byte
+	for i := range want {
+		want[i] = byte(i + 1)
+	}
+	name, _, got, err := mb.Save("INBOX", strings.NewReader("body\r\n"), 1, 6, nil, want)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got != want {
+		t.Fatalf("Save guid = %x, want %x", got, want)
+	}
+	metas, err := mb.List("INBOX")
+	if err != nil || len(metas) != 1 {
+		t.Fatalf("list: %v (%d entries)", err, len(metas))
+	}
+	if metas[0].GUID != want {
+		t.Errorf("List guid = %x, want %x", metas[0].GUID, want)
+	}
+	if err := mb.Create("Archive"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	newName, moved, err := mb.Move("INBOX", "Archive", name, [16]byte{})
+	if err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if moved != want {
+		t.Errorf("Move guid = %x, want %x", moved, want)
+	}
+	recs, err := mb.Scan("Archive")
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("scan: %v (%d records)", err, len(recs))
+	}
+	if recs[0].Filename != newName || recs[0].GUID != want {
+		t.Errorf("scan rec = %q/%x, want %q/%x", recs[0].Filename, recs[0].GUID, newName, want)
+	}
+	if left, _ := mb.List("INBOX"); len(left) != 0 {
+		t.Errorf("source folder still holds %d messages", len(left))
 	}
 }

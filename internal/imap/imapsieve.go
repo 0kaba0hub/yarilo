@@ -124,13 +124,13 @@ func (s *session) imapSieveFileInto(name string, raw []byte, flags []string, cre
 	if create {
 		_ = dh.box.Create(drel) // idempotent for imapsieve fileinto :create
 	}
-	newFilename, vsize, err := dh.box.Save(drel, bytes.NewReader(raw), 0, int64(len(raw)), flags)
+	newFilename, vsize, guid, err := dh.box.Save(drel, bytes.NewReader(raw), 0, int64(len(raw)), flags, [16]byte{})
 	if err != nil {
 		slog.Warn("imapsieve: fileinto save", "folder", name, "err", err)
 		return
 	}
 	nm := &mailbox.MessageMeta{
-		Filename: newFilename, Flags: flags, Size: uint32(len(raw)), VSize: vsize, InternalDate: time.Now(),
+		Filename: newFilename, Flags: flags, Size: uint32(len(raw)), VSize: vsize, InternalDate: time.Now(), GUID: guid,
 	}
 	if err := dh.idx.AllocateAndAppend(df.ID, nm); err != nil {
 		_ = dh.box.Remove(drel, newFilename)

@@ -28,8 +28,8 @@ func TestScanReturnsRecordsForDeliveredMessages(t *testing.T) {
 		{"third", []string{`\Seen`, `\Flagged`}},
 	} {
 		uid := uint32(i + 1)
-		_, _, err := box.Save("INBOX", io.NopCloser(bytes.NewBufferString(msg.body)),
-			uid, int64(len(msg.body)), msg.flags)
+		_, _, _, err := box.Save("INBOX", io.NopCloser(bytes.NewBufferString(msg.body)),
+			uid, int64(len(msg.body)), msg.flags, [16]byte{})
 		if err != nil {
 			t.Fatalf("save: %v", err)
 		}
