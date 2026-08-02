@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/storage/mailboxbuild"
+	"github.com/yarilomail/yarilo/internal/userdbinfo"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -27,6 +30,9 @@ type guidOpts struct {
 	Root       string // overrides storage.maildir_root
 	Template   string // overrides storage.mail_home_template
 	User       string // one user@domain instead of every user under root
+	IndexTmpl  string // offline stand-in for the userdb INDEX= override
+	MailTmpl   string // offline stand-in for the userdb mail_path override
+	Offline    bool   // resolve from flags only, never consult userdb
 	DryRun     bool
 }
 
@@ -53,6 +59,13 @@ func runGUIDBackfill(o guidOpts) error {
 	if locker == nil && !o.DryRun {
 		slog.Warn("no yarilo-locks client: safe only against a stopped store", "config", o.ConfigPath)
 	}
+	authcl, err := guidAuthClient(cfg, o)
+	if err != nil {
+		return err
+	}
+	if authcl != nil {
+		defer authcl.Close() //nolint:errcheck
+	}
 	resolver := guidResolver(cfg, o)
 	driver := o.Driver
 	if driver == "" {
@@ -71,7 +84,9 @@ func runGUIDBackfill(o guidOpts) error {
 	// ByDriver is the constructor that applies the storage settings the
 	// services run with (alt path, UTF-8 list, NFC normalisation).
 	boxBE := mailboxbuild.ByDriver(driver, cfg.Storage, locker)
-	idxBE := indexfile.New(indexfile.WithLocker(locker))
+	// Never fabricate an index: a fresh one reads as an empty folder, so a
+	// mis-resolved path would report success having stamped nothing.
+	idxBE := indexfile.New(indexfile.WithLocker(locker), indexfile.WithNoCreate())
 
 	users, err := guidUsers(resolver.Root, resolver.HomeTemplate, o.User)
 	if err != nil {
@@ -79,7 +94,7 @@ func runGUIDBackfill(o guidOpts) error {
 	}
 	var st guidStats
 	for _, user := range users {
-		if err := backfillUser(boxBE, idxBE, resolver, user, o.DryRun, &st); err != nil {
+		if err := backfillUser(boxBE, idxBE, resolver, authcl, o, user, &st); err != nil {
 			return fmt.Errorf("guid backfill %s: %w", user, err)
 		}
 		st.Users++
@@ -90,8 +105,11 @@ func runGUIDBackfill(o guidOpts) error {
 	return nil
 }
 
-func backfillUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, user string, dryRun bool, st *guidStats) error {
-	info := resolver.UserInfo(user, "")
+func backfillUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, authcl *authclient.Client, o guidOpts, user string, st *guidStats) error {
+	info, err := guidUserInfo(resolver, authcl, o, user)
+	if err != nil {
+		return err
+	}
 	box := boxBE.OpenUser(info)
 	defer box.Close() //nolint:errcheck
 	idx := idxBE.OpenUser(info)
@@ -101,6 +119,7 @@ func backfillUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, reso
 	if err != nil {
 		return fmt.Errorf("list folders: %w", err)
 	}
+	dryRun := o.DryRun
 	for _, e := range entries {
 		if !e.Selectable {
 			continue
@@ -258,4 +277,64 @@ func guidLocker(cfg *config.Config) (locks.Locker, error) {
 	default:
 		return nil, fmt.Errorf("locks_client: unknown mode %q", lc.Mode)
 	}
+}
+
+// guidUserInfo resolves one user's storage identity. With a userdb reachable
+// the per-user overrides come from there, exactly as a session resolves them;
+// offline they come from the templates, which is why the two are exclusive.
+func guidUserInfo(resolver *mailbox.Resolver, authcl *authclient.Client, o guidOpts, user string) (*mailbox.UserInfo, error) {
+	ui := resolver.UserInfo(user, "")
+	if authcl != nil {
+		pui, err := authcl.Userdb(context.Background(), user)
+		if err != nil {
+			return nil, fmt.Errorf("userdb lookup %s: %w", user, err)
+		}
+		if pui == nil {
+			return nil, fmt.Errorf("userdb has no user %s", user)
+		}
+		userdbinfo.Apply(ui, pui, user)
+		return ui, nil
+	}
+	if o.IndexTmpl != "" {
+		ui.IndexDir = mailbox.ExpandVars(strings.ReplaceAll(o.IndexTmpl, "%h", ui.Home), user)
+	}
+	if o.MailTmpl != "" {
+		ui.MailPath = mailbox.ExpandVars(strings.ReplaceAll(o.MailTmpl, "%h", ui.Home), user)
+	}
+	return ui, nil
+}
+
+// guidAuthClient dials yarilo-auth for the per-user overrides. --offline takes
+// the templates instead; asking for both is an error, since a template that
+// disagrees with userdb addresses a mailbox the sessions do not use.
+func guidAuthClient(cfg *config.Config, o guidOpts) (*authclient.Client, error) {
+	addr := cfg.BackendAPI.AuthMasterAddr
+	if o.Offline {
+		if addr != "" {
+			slog.Info("offline: ignoring auth_master_addr, resolving from flags", "addr", addr)
+		}
+		return nil, nil
+	}
+	if o.IndexTmpl != "" || o.MailTmpl != "" {
+		return nil, fmt.Errorf("--index-template/--mail-template are offline-only: add --offline, " +
+			"or drop them and let userdb supply the per-user overrides")
+	}
+	if addr == "" {
+		return nil, fmt.Errorf("no backend_api.auth_master_addr in --config: " +
+			"per-user INDEX=/mail_path overrides would be missed; set it, or run --offline with the templates")
+	}
+	var tlsCfg *tls.Config
+	if cfg.InternalTLS.Enabled {
+		var err error
+		tlsCfg, err = mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA,
+			cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
+		if err != nil {
+			return nil, fmt.Errorf("auth mtls client config: %w", err)
+		}
+	}
+	cl, err := authclient.Dial(addr, tlsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("auth master dial %s: %w", addr, err)
+	}
+	return cl, nil
 }

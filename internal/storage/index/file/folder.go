@@ -124,6 +124,10 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 		st, err := os.Stat(fs.indexPath)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
+			if u.b.noCreate {
+				return fmt.Errorf("fileindex/openfolder: no index at %s for folder %q: %w",
+					fs.indexPath, fs.folder, os.ErrNotExist)
+			}
 			return fs.createFresh(uidValidity)
 		case err != nil:
 			return fmt.Errorf("fileindex/openfolder: stat (locked recheck): %w", err)

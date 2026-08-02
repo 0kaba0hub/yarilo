@@ -48,6 +48,9 @@ var (
 	flagRoot      = flag.String("root", "", "override storage.maildir_root (--guid-backfill)")
 	flagHomeTmpl  = flag.String("home-template", "", "override storage.mail_home_template, e.g. %d/%u (--guid-backfill)")
 	flagUser      = flag.String("user", "", "restrict to one user@domain (--guid-backfill); default is every user under the root")
+	flagOffline   = flag.Bool("offline", false, "resolve per-user paths from flags instead of userdb (--guid-backfill); for a stopped store")
+	flagIndexTmpl = flag.String("index-template", "", "offline stand-in for the userdb INDEX= override, e.g. %h/index (--offline)")
+	flagMailTmpl  = flag.String("mail-template", "", "offline stand-in for the userdb mail_path override, e.g. %h/maildir (--offline)")
 )
 
 func main() {
@@ -67,6 +70,9 @@ func main() {
 			Root:       *flagRoot,
 			Template:   *flagHomeTmpl,
 			User:       *flagUser,
+			Offline:    *flagOffline,
+			IndexTmpl:  *flagIndexTmpl,
+			MailTmpl:   *flagMailTmpl,
 			DryRun:     *flagDry,
 		}); err != nil {
 			slog.Error("guid backfill failed", "err", err)
