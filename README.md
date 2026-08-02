@@ -189,6 +189,37 @@ yarilo-migrate \
   --format dbox   # or mdbox; --dry-run to preview
 ```
 
+### GUID pre-migration
+
+Mail stored before yarilo 2.3.8 carries no per-message GUID, so its `EMAILID`
+(RFC 8474) is stamped the first time a client selects the folder. That one-off
+pass is automatic and needs no operator action; this command only moves the cost
+off the first `SELECT`, which is worth doing for very large folders.
+
+```sh
+yarilo-migrate --guid-backfill \
+  --driver mdbox \                      # storage driver of the existing store
+  --root   /var/mail/vhosts \
+  --config /etc/yarilo/yarilo.yaml \    # yarilo-locks client; see the note below
+  --user   u1@example.com               # optional: one user instead of all
+                                        # --dry-run reports what is pending
+```
+
+| Flag | Meaning |
+|:---|:---|
+| `--guid-backfill` | Run the GUID pass instead of a format conversion |
+| `--driver` | `maildir` \| `sdbox` \| `mdbox` — the driver of the existing store |
+| `--root` | Store root holding `<domain>/<user>` trees |
+| `--config` | `yarilo.yaml` used to build the `yarilo-locks` client |
+| `--user` | Restrict to one `user@domain`; default is every user under `--root` |
+| `--dry-run` | Report the folders that would be stamped, write nothing |
+
+The command writes to shared storage, so pass `--config` to make it take the
+same locks the services take; it is then safe to run against a live store.
+Without `--config` it runs unlocked, which is only safe with the store stopped.
+Repeat runs are no-ops: a stamped folder is recorded as done and an already
+assigned GUID is never rewritten.
+
 ---
 
 ## Documentation
