@@ -198,9 +198,7 @@ off the first `SELECT`, which is worth doing for very large folders.
 
 ```sh
 yarilo-migrate --guid-backfill \
-  --driver mdbox \                      # storage driver of the existing store
-  --root   /var/mail/vhosts \
-  --config /etc/yarilo/yarilo.yaml \    # yarilo-locks client; see the note below
+  --config /etc/yarilo/yarilo.yaml \   # layout, driver and the yarilo-locks client
   --user   u1@example.com               # optional: one user instead of all
                                         # --dry-run reports what is pending
 ```
@@ -208,11 +206,17 @@ yarilo-migrate --guid-backfill \
 | Flag | Meaning |
 |:---|:---|
 | `--guid-backfill` | Run the GUID pass instead of a format conversion |
-| `--driver` | `maildir` \| `sdbox` \| `mdbox` — the driver of the existing store |
-| `--root` | Store root holding `<domain>/<user>` trees |
-| `--config` | `yarilo.yaml` used to build the `yarilo-locks` client |
-| `--user` | Restrict to one `user@domain`; default is every user under `--root` |
+| `--config` | `yarilo.yaml` supplying `storage.mailbox`, `storage.maildir_root`, `storage.mail_home_template`, the index/control/alt dirs, and the `yarilo-locks` client |
+| `--driver` | Override `storage.mailbox`: `maildir` \| `sdbox` \| `mdbox` |
+| `--root` | Override `storage.maildir_root` |
+| `--home-template` | Override `storage.mail_home_template`, e.g. `%d/%u` |
+| `--user` | Restrict to one `user@domain`; default is every user under the root |
 | `--dry-run` | Report the folders that would be stamped, write nothing |
+
+Without `--config` both `--driver` and `--root` are required, and the run is
+unlocked. Users are enumerated only for a layout whose leaf directory names the
+user (`%u`, or `%n` with `%d` above it); any other `mail_home_template` has to be
+driven one user at a time with `--user`.
 
 The command writes to shared storage, so pass `--config` to make it take the
 same locks the services take; it is then safe to run against a live store.
