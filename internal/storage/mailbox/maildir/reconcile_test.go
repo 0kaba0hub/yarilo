@@ -285,3 +285,81 @@ func TestReconcile_SameBaseTwiceImportsOnce(t *testing.T) {
 		t.Fatalf("got %d records for one message: %v", len(msgs), names)
 	}
 }
+
+// The damaged state found in the field: two records naming one file, which the
+// repointing branch produces once one of a duplicated pair's files goes away.
+// The lower UID keeps the message; the other is a tombstone.
+func TestReconcile_CollapsesRecordsSharingOneFile(t *testing.T) {
+	box, idx, folder := recSetup(t)
+	name, _, guid, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []uint32{1, 2} {
+		if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
+			UID: uid, Filename: name, Size: 5, VSize: 5, GUID: guid,
+		}); err != nil {
+			t.Fatalf("append uid %d: %v", uid, err)
+		}
+	}
+
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d records for one file, want 1", len(msgs))
+	}
+	if msgs[0].UID != 1 {
+		t.Errorf("kept UID %d, want the lowest (1)", msgs[0].UID)
+	}
+	// The survivor must still be readable: the collapse only drops index rows.
+	rc, err := box.Fetch("INBOX", msgs[0].Filename, msgs[0].AltTier)
+	if err != nil {
+		t.Fatalf("fetch survivor: %v", err)
+	}
+	rc.Close() //nolint:errcheck
+}
+
+// Records that gained a zero GUID after their folder was marked backfilled are
+// invisible to the backfill, so the reconcile stamps them regardless of the
+// marker. Without this they keep an all-zero EMAILID for good.
+func TestReconcile_RestampsZeroGUIDBehindCompleteMarker(t *testing.T) {
+	box, idx, folder := recSetup(t)
+	name, _, want, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
+		UID: 1, Filename: name, Size: 5, VSize: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.SetGUIDs(folder.ID, nil); err != nil {
+		t.Fatalf("mark complete: %v", err)
+	}
+	need, err := idx.GUIDBackfillNeeded(folder.ID)
+	if err != nil {
+		t.Fatalf("needed: %v", err)
+	}
+	if need {
+		t.Fatal("folder should be marked complete for this case")
+	}
+
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].GUID != want {
+		t.Errorf("GUID = %x, want the one storage reports (%x)", msgs[0].GUID, want)
+	}
+}

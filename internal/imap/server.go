@@ -2050,6 +2050,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	// here — the per-message expunge events below supply "after", so an "under"
 	// crossing fires on a delete-only session regardless of SELECT-time seeding.
 	s.captureQuotaSnap()
+	refs := newBodyRefs(msgs)
 	// Each expunge shifts later sequence numbers down by one, so track and
 	// adjust seqNum as we go rather than using the static GetMessages index.
 	seqNum := uint32(len(msgs))
@@ -2068,7 +2069,10 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		// crash in the window leaves a dangling index record (reactive heal
 		// expunges it) rather than an unreclaimable orphan. Best-effort: on
 		// failure the index is still expunged, leak reclaimable by rebuild+purge.
-		if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
+		if !refs.release(m.Filename) {
+			slog.Warn("imap: expunge kept the body, another record still points at it",
+				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename)
+		} else if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
 			slog.Warn("imap: expunge storage remove failed (index still expunged; leak reclaimable by rebuild+purge)",
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
 		}
@@ -3332,6 +3336,30 @@ func virtualSizeFromRaw(raw []byte) uint32 {
 		}
 	}
 	return n
+}
+
+// bodyRefs counts how many index records name each file. Mailboxes damaged
+// before the reconcile guard hold several records for one file, and unlinking
+// on the first expunge would strip the body from the ones still live.
+type bodyRefs map[string]int
+
+func newBodyRefs(msgs []*mailbox.MessageMeta) bodyRefs {
+	r := make(bodyRefs, len(msgs))
+	for _, m := range msgs {
+		if m.Filename != "" {
+			r[m.Filename]++
+		}
+	}
+	return r
+}
+
+// release drops one reference and reports whether the body can now be freed.
+func (r bodyRefs) release(filename string) bool {
+	if filename == "" {
+		return false
+	}
+	r[filename]--
+	return r[filename] <= 0
 }
 
 func numSetContains(numSet imaplib.NumSet, seqNum uint32, uid imaplib.UID) bool {
