@@ -57,7 +57,18 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string
 	slog.Debug("fileindex: openfolder first-open, computing layout",
 		"trace_id", traceID, "folder", folder, "driver", u.driver, "index_dir", indexDir)
 
-	if err := os.MkdirAll(indexDir, 0o700); err != nil {
+	if u.b.noCreate {
+		// Check before any mkdir: a no-create open must leave the filesystem
+		// exactly as it found it, or a mis-resolved path still gets a directory
+		// chain built under it.
+		if _, statErr := os.Stat(indexPath); statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("fileindex/openfolder: no index at %s for folder %q: %w",
+					indexPath, folder, os.ErrNotExist)
+			}
+			return nil, fmt.Errorf("fileindex/openfolder: stat %s: %w", indexPath, statErr)
+		}
+	} else if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("fileindex/openfolder: mkdir: %w", err)
 	}
 	if err := migrateLegacyFilenames(indexDir); err != nil {

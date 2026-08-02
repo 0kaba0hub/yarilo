@@ -295,11 +295,13 @@ func guidUserInfo(resolver *mailbox.Resolver, authcl *authclient.Client, o guidO
 		userdbinfo.Apply(ui, pui, user)
 		return ui, nil
 	}
+	// Same helper the resolver and the userdb overlay use, so "~/index" here
+	// means what it means everywhere else.
 	if o.IndexTmpl != "" {
-		ui.IndexDir = mailbox.ExpandVars(strings.ReplaceAll(o.IndexTmpl, "%h", ui.Home), user)
+		ui.IndexDir = mailbox.ExpandLocation(o.IndexTmpl, ui.Home, user)
 	}
 	if o.MailTmpl != "" {
-		ui.MailPath = mailbox.ExpandVars(strings.ReplaceAll(o.MailTmpl, "%h", ui.Home), user)
+		ui.MailPath = mailbox.ExpandLocation(o.MailTmpl, ui.Home, user)
 	}
 	return ui, nil
 }

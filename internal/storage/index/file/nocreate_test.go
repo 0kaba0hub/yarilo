@@ -69,3 +69,33 @@ func TestDefaultStillCreates(t *testing.T) {
 		t.Fatalf("OpenFolder: %v", err)
 	}
 }
+
+// A refused open must leave the filesystem untouched. The index file was
+// already protected, but the directory chain was built before that check, so a
+// mis-resolved path still got a tree created under it.
+func TestNoCreateLeavesNoDirectories(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "does", "not", "exist")
+	info := &mailbox.UserInfo{Username: "u@x.test", Home: home}
+
+	idx := New(WithNoCreate()).OpenUser(info)
+	t.Cleanup(func() { _ = idx.Close() })
+	if _, err := idx.OpenFolder("INBOX", 1); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenFolder err = %v, want os.ErrNotExist", err)
+	}
+
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Errorf("the refused open created %s (err=%v)", home, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("the refused open left %v under the root", names)
+	}
+}
