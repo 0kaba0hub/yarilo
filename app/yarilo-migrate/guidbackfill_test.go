@@ -484,3 +484,72 @@ func TestGUIDBackfillWrongRootErrors(t *testing.T) {
 		t.Fatal("a wrong root reported success")
 	}
 }
+
+// "~/" and "%h" name the same directory everywhere else, so the offline
+// templates must resolve them identically too.
+func TestGUIDBackfillOfflineTemplateAcceptsTilde(t *testing.T) {
+	var zero [16]byte
+	const user = "u51@d00001.test"
+	for _, tmpl := range []string{"~/index", "%h/index"} {
+		t.Run(tmpl, func(t *testing.T) {
+			root := t.TempDir()
+			resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%u", DefaultIndexDir: "%h/index"}
+			info := resolver.UserInfo(user, "")
+			box := maildir.New().OpenUser(info)
+			idx := indexfile.New().OpenUser(info)
+			if err := box.Init(); err != nil {
+				t.Fatalf("init: %v", err)
+			}
+			folder, err := idx.OpenFolder("INBOX", 1)
+			if err != nil {
+				t.Fatalf("open folder: %v", err)
+			}
+			uid, err := idx.AllocateUID(folder.ID)
+			if err != nil {
+				t.Fatalf("allocate: %v", err)
+			}
+			body := "Subject: t\r\n\r\nbody\r\n"
+			name, vsize, _, err := box.Save("INBOX", strings.NewReader(body), uid, int64(len(body)), nil, zero)
+			if err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
+				UID: uid, Filename: name, Size: uint32(len(body)), VSize: vsize,
+			}); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+			if err := idx.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+			if err := box.Close(); err != nil {
+				t.Fatalf("close box: %v", err)
+			}
+			dropGUIDExt(t, root)
+
+			if err := runGUIDBackfill(guidOpts{
+				Driver: "maildir", Root: root, Template: "%d/%u",
+				IndexTmpl: tmpl, Offline: true, User: user,
+			}); err != nil {
+				t.Fatalf("backfill with %q: %v", tmpl, err)
+			}
+
+			check := indexfile.New().OpenUser(resolver.UserInfo(user, ""))
+			defer check.Close() //nolint:errcheck
+			f, err := check.OpenFolder("INBOX", 0)
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			msgs, err := check.GetMessages(f.ID, mailbox.SeqSet{})
+			if err != nil {
+				t.Fatalf("get messages: %v", err)
+			}
+			if len(msgs) != 1 || msgs[0].GUID == zero {
+				t.Errorf("%q did not stamp the record behind the override", tmpl)
+			}
+			// A literal "~" directory is the symptom of an unexpanded template.
+			if _, err := os.Stat(filepath.Join(root, "~")); !os.IsNotExist(err) {
+				t.Errorf("%q produced a literal ~ directory", tmpl)
+			}
+		})
+	}
+}
