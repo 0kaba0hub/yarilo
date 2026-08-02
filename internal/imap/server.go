@@ -29,6 +29,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/loginproto"
 	"github.com/yarilomail/yarilo/internal/quotawarn"
 	"github.com/yarilomail/yarilo/internal/sieve"
+	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
 	"github.com/yarilomail/yarilo/internal/userstate/specialuse"
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
@@ -1007,6 +1008,13 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	}
 	if refreshed := s.dboxHealIfCorrupt(h, rel, f); refreshed != nil {
 		f = refreshed
+	}
+	// Mail stored before per-message GUIDs existed carries none, so EMAILID
+	// would render all-zero. Self-healing on first select; the check is O(1)
+	// once done. A failure is not fatal: the folder stays pending and every
+	// other operation works.
+	if err := idxrebuild.BackfillGUIDs(h.box, h.idx, f, rel); err != nil {
+		slog.Warn("imap: guid backfill failed", "folder", rel, "err", err)
 	}
 	s.folder = f
 	s.folderNS = h

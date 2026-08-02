@@ -89,10 +89,12 @@ func (m *mockIndex) UpdateFlagsMulti(_ uint64, _ map[uint32]mailbox.FlagsUpdate)
 func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return m.msgs, nil
 }
-func (m *mockIndex) ExpungeMessage(_ uint64, _ uint32) error      { return nil }
-func (m *mockIndex) FolderVSize(_ uint64) (uint64, uint32, error) { return 0, 0, nil }
-func (m *mockIndex) RecomputeVSize(_ uint64) error                { return nil }
-func (m *mockIndex) NextModSeq(_ uint64) (uint64, error)          { return 1, nil }
+func (m *mockIndex) ExpungeMessage(_ uint64, _ uint32) error        { return nil }
+func (m *mockIndex) FolderVSize(_ uint64) (uint64, uint32, error)   { return 0, 0, nil }
+func (m *mockIndex) RecomputeVSize(_ uint64) error                  { return nil }
+func (m *mockIndex) GUIDBackfillNeeded(_ uint64) (bool, error)      { return false, nil }
+func (m *mockIndex) SetGUIDs(_ uint64, _ map[uint32][16]byte) error { return nil }
+func (m *mockIndex) NextModSeq(_ uint64) (uint64, error)            { return 1, nil }
 func (m *mockIndex) Vanished(_ uint64, _ uint64) ([]uint32, error) {
 	return nil, nil
 }

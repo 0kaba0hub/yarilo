@@ -340,6 +340,15 @@ type UserIndex interface {
 	// count (the hdr-vsize extension), which the count quota backend sums across a
 	// user's folders.
 	FolderVSize(folderID uint64) (bytes uint64, messages uint32, err error)
+	// GUIDBackfillNeeded reports whether the folder still holds records written
+	// before per-message GUIDs existed. Constant time: it reads a header state,
+	// never the records, so a large folder does not pay a scan on every open.
+	GUIDBackfillNeeded(folderID uint64) (bool, error)
+	// SetGUIDs stamps GUIDs onto existing records and marks the folder done.
+	// Values must come from storage (Scan), never be invented here, or the
+	// index and the mail store would disagree on a message's identity. Records
+	// that already carry a GUID keep it, so a resumed pass is a no-op for them.
+	SetGUIDs(folderID uint64, guids map[uint32][16]byte) error
 	// RecomputeVSize forces a rebuild of the folder's vsize aggregate from
 	// records and persists it — the admin recovery path for a corrupted count.
 	RecomputeVSize(folderID uint64) error
