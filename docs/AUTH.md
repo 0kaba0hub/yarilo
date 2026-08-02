@@ -260,9 +260,18 @@ auth:
 
 ### Contract
 
-- **`password_query` must return columns in this order:** `password`, `home`, `mail`, `enabled`. Use `AS` aliases to map an existing schema. `password` is the only column whose value is meaningfully used downstream when `user_query` is also set; `home`/`mail` can be empty strings.
+- **`password_query` must return a `password` column.** Columns are matched **by name, not position**, so the order is free; use `AS` aliases to map an existing schema (`pw_hash AS password`). `home`, `mail` and `enabled` are optional — an absent `enabled` counts as active. `password` is the only value used downstream when `user_query` is also set.
 - **`user_query` must return:** `home`, `mail`. Called after a successful auth to fill in mailbox location from an authoritative source.
 - **`iterate_query` must return one column:** `username`.
+
+> **PostgreSQL with a `BOOLEAN` enabled column.** The built-in `yarilo_users`
+> schema declares `enabled` as `INTEGER`, so the default queries filter with
+> `WHERE enabled = 1`. Point yarilo at an existing Postgres schema that types
+> the column `BOOLEAN` and that clause fails with `operator does not exist:
+> boolean = integer` — write `WHERE enabled = true` in your own
+> `password_query` / `user_query`. MySQL is unaffected: its `BOOLEAN` is
+> `TINYINT(1)`, so `= 1` is valid. The Go-side check is dialect-agnostic and
+> accepts `1` / `true` / `t` / `yes` / `on` either way.
 
 ### Userdb / passdb extra fields
 
@@ -326,7 +335,7 @@ Beyond `home` / `mail`, a lookup may return extra fields — as a SQL column ali
 | `nodelay` | Bool: bypass auth-penalty backoff. |
 | `pass_expired` | Bool: password expired, client must reset. |
 | `nopassword` | Bool: accept any password (passdb). |
-| `enabled` | SQL filter column (`WHERE enabled = 1`); not stored as a field. |
+| `enabled` | SQL filter column (`WHERE enabled = 1`, or `= true` on a Postgres `BOOLEAN`); not stored as a field. Optional: an absent column counts as active. |
 
 **Proxy / director** (see [DIRECTOR.md](DIRECTOR.md))
 
@@ -366,15 +375,81 @@ auth:
       dsn: "postgres://yarilo:${DB_PASSWORD}@db.internal:5432/mailapp"
       skip_schema: true
       password_query: |
-        SELECT pw_hash, maildir AS home, mail_path AS mail, active AS enabled
+        SELECT pw_hash AS password, maildir AS home, mail_path AS mail, active AS enabled
         FROM mailbox_users WHERE email = %u
       user_query: |
-        SELECT maildir, mail_path
+        SELECT maildir AS home, mail_path AS mail
         FROM mailbox_users WHERE email = %u
       iterate_query: |
-        SELECT email FROM mailbox_users WHERE active = 1
+        SELECT email FROM mailbox_users WHERE active = true
       default_pass_scheme: BCRYPT
 ```
+
+Every column an existing schema names differently needs an `AS` alias:
+`password` for the passdb, `home` and `mail` for the userdb. A query that
+returns `pw_hash` without the alias authenticates nobody, because the lookup is
+by column name. `WHERE active = true` rather than `= 1` because this schema
+types the column `BOOLEAN`; see the note above.
+
+### Example: PostfixAdmin
+
+PostfixAdmin's `mailbox` table already names its password column `password`, so
+only `active` needs an alias. `skip_schema` keeps yarilo-auth from creating its
+own `yarilo_users` table alongside it. A single `passdb` entry serves both roles:
+`password_query` answers authentication, `user_query` answers the userdb lookup,
+and every column the latter returns is mapped by name onto a userdb field, so
+`quota_rule` and the rest arrive as aliases.
+
+```yaml
+auth:
+  passdb:
+    - driver: mysql
+      dsn: "${YARILO_DB_DSN}"
+      skip_schema: true
+      default_pass_scheme: BCRYPT
+      password_query: |
+        SELECT password, active AS enabled, allow_nets
+        FROM mailbox
+        WHERE username = %u
+      user_query: |
+        SELECT CONCAT(home, mpath) AS home,
+               CONCAT(mbtype, ':~/', maildir,
+                      ':INDEX=~/index',
+                      ':VOLATILEDIR=/tmp/yarilo-volatile/%2.256Nu/%u') AS mail,
+               CONCAT('*:bytes=', quota_bytes, ':messages=', quota_messages) AS quota_rule
+        FROM mailbox
+        WHERE username = %u
+      iterate_query: |
+        SELECT username
+        FROM mailbox
+        WHERE active = 1
+        ORDER BY username
+```
+
+`username`, `password`, `active`, `maildir` and `quota` are stock PostfixAdmin;
+`mpath`, `mbtype`, `quota_bytes`, `quota_messages` and `allow_nets` are columns
+this schema adds. Note that `%2.256Nu` and the second `%u` sit inside a quoted
+SQL string and are left alone — substitution skips quoted sections, so those
+reach the mail layer as templates, while the bare `%u` in the `WHERE` becomes a
+bound parameter.
+
+**On PostgreSQL the same queries work with one token changed:**
+
+```sql
+-- password_query, user_query: unchanged. CONCAT() exists in PostgreSQL and
+-- takes non-text arguments, and a BOOLEAN arriving as "enabled" is read as
+-- active either way, because that check happens in Go rather than in SQL.
+
+-- iterate_query: PostfixAdmin types active as BOOLEAN on PostgreSQL and
+-- TINYINT(1) on MySQL, and PostgreSQL rejects boolean = integer outright.
+SELECT username
+FROM mailbox
+WHERE active            -- was: WHERE active = 1
+ORDER BY username
+```
+
+Leaving `= 1` in place breaks only enumeration: mail keeps flowing while
+`yarilo-admin user list` fails, which makes the cause easy to miss.
 
 ### Example: split passdb across hot/cold sources
 
@@ -386,7 +461,7 @@ auth:
       dsn: "postgres://yarilo:${DB_PASSWORD}@cache.internal:5432/auth"
       skip_schema: true
       password_query: |
-        SELECT pw_hash, '/srv/' || %n AS home, '' AS mail, 1 AS enabled
+        SELECT pw_hash AS password, '/srv/' || %n AS home, '' AS mail, 1 AS enabled
         FROM auth_cache WHERE email = %u
 
     # Authoritative store — falls through when not in cache.
