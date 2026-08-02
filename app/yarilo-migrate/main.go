@@ -17,7 +17,7 @@
 //
 //	yarilo-migrate --src dbox-v1 --dst sdbox --from /var/legacy --to /var/yarilo
 //	yarilo-migrate --src maildir --dst mdbox --from /var/maildir --to /var/yarilo
-//	yarilo-migrate --guid-backfill --driver mdbox --root /var/yarilo --config /etc/yarilo/yarilo.yaml
+//	yarilo-migrate --guid-backfill --config /etc/yarilo/yarilo.yaml
 package main
 
 import (
@@ -43,10 +43,11 @@ var (
 	flagFormat = flag.String("format", "", "[deprecated] alias for --dst")
 
 	flagGUID      = flag.Bool("guid-backfill", false, "stamp per-message GUIDs across an existing store instead of converting")
-	flagDriver    = flag.String("driver", "", "storage driver of the existing store: maildir | sdbox | mdbox (--guid-backfill)")
-	flagRoot      = flag.String("root", "", "existing store root (--guid-backfill)")
-	flagUser      = flag.String("user", "", "restrict to one user@domain (--guid-backfill); default is every user under --root")
-	flagLocksConf = flag.String("config", "", "yarilo.yaml for the yarilo-locks client; omit only when the store is stopped (--guid-backfill)")
+	flagLocksConf = flag.String("config", "", "yarilo.yaml supplying layout, driver and the yarilo-locks client (--guid-backfill)")
+	flagDriver    = flag.String("driver", "", "override storage.mailbox: maildir | sdbox | mdbox (--guid-backfill)")
+	flagRoot      = flag.String("root", "", "override storage.maildir_root (--guid-backfill)")
+	flagHomeTmpl  = flag.String("home-template", "", "override storage.mail_home_template, e.g. %d/%u (--guid-backfill)")
+	flagUser      = flag.String("user", "", "restrict to one user@domain (--guid-backfill); default is every user under the root")
 )
 
 func main() {
@@ -54,12 +55,20 @@ func main() {
 	flag.Parse()
 
 	if *flagGUID {
-		if *flagDriver == "" || *flagRoot == "" {
+		if *flagLocksConf == "" && (*flagDriver == "" || *flagRoot == "") {
 			fmt.Fprintln(os.Stderr,
-				"usage: yarilo-migrate --guid-backfill --driver <maildir|sdbox|mdbox> --root <store> [--user u@d] [--config yarilo.yaml] [--dry-run]")
+				"usage: yarilo-migrate --guid-backfill --config <yarilo.yaml> [--driver d] [--root path] [--home-template t] [--user u@d] [--dry-run]\n"+
+					"       without --config both --driver and --root are required")
 			os.Exit(1)
 		}
-		if err := runGUIDBackfill(*flagDriver, *flagRoot, *flagUser, *flagLocksConf, *flagDry); err != nil {
+		if err := runGUIDBackfill(guidOpts{
+			ConfigPath: *flagLocksConf,
+			Driver:     *flagDriver,
+			Root:       *flagRoot,
+			Template:   *flagHomeTmpl,
+			User:       *flagUser,
+			DryRun:     *flagDry,
+		}); err != nil {
 			slog.Error("guid backfill failed", "err", err)
 			os.Exit(1)
 		}

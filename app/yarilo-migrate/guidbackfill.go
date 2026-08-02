@@ -11,14 +11,24 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
-	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
-	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
-	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailboxbuild"
 	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 	"github.com/yarilomail/yarilo/pkg/mtls"
 )
+
+// guidOpts is one pre-migration invocation. Layout, driver and locking come
+// from the service config so the tool addresses the same store the services do;
+// the flags are overrides for a store with no config to hand.
+type guidOpts struct {
+	ConfigPath string
+	Driver     string // overrides storage.mailbox
+	Root       string // overrides storage.maildir_root
+	Template   string // overrides storage.mail_home_template
+	User       string // one user@domain instead of every user under root
+	DryRun     bool
+}
 
 // guidStats counts what a pre-migration pass touched.
 type guidStats struct {
@@ -31,33 +41,52 @@ type guidStats struct {
 // runGUIDBackfill stamps per-message GUIDs across an existing store, moving the
 // cost off a user's first SELECT. It writes to shared storage: without a config
 // to build the yarilo-locks client it is only safe against a stopped store.
-func runGUIDBackfill(driver, root, onlyUser, cfgPath string, dryRun bool) error {
-	locker, err := guidLocker(cfgPath)
+func runGUIDBackfill(o guidOpts) error {
+	cfg, err := guidConfig(o.ConfigPath)
 	if err != nil {
 		return err
 	}
-	if locker == nil && !dryRun {
-		slog.Warn("no --config: running without yarilo-locks, safe only against a stopped store")
-	}
-	boxBE, idxBE, err := guidBackends(driver, locker)
+	locker, err := guidLocker(cfg)
 	if err != nil {
 		return err
 	}
-	resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
+	if locker == nil && !o.DryRun {
+		slog.Warn("no yarilo-locks client: safe only against a stopped store", "config", o.ConfigPath)
+	}
+	resolver := guidResolver(cfg, o)
+	driver := o.Driver
+	if driver == "" {
+		driver = cfg.Storage.Mailbox
+	}
+	if driver == "" {
+		return fmt.Errorf("no storage driver: set --driver or storage.mailbox in --config")
+	}
+	// ByDriver falls back to maildir on an unknown name, which would silently
+	// read the wrong store here, so the name is checked first.
+	switch strings.ToLower(driver) {
+	case "maildir", "sdbox", "dbox", "mdbox":
+	default:
+		return fmt.Errorf("unknown storage driver %q (want maildir|sdbox|mdbox)", driver)
+	}
+	// ByDriver is the constructor that applies the storage settings the
+	// services run with (alt path, UTF-8 list, NFC normalisation).
+	boxBE := mailboxbuild.ByDriver(driver, cfg.Storage, locker)
+	idxBE := indexfile.New(indexfile.WithLocker(locker))
 
-	users, err := guidUsers(root, onlyUser)
+	users, err := guidUsers(resolver.Root, resolver.HomeTemplate, o.User)
 	if err != nil {
 		return err
 	}
 	var st guidStats
 	for _, user := range users {
-		if err := backfillUser(boxBE, idxBE, resolver, user, dryRun, &st); err != nil {
+		if err := backfillUser(boxBE, idxBE, resolver, user, o.DryRun, &st); err != nil {
 			return fmt.Errorf("guid backfill %s: %w", user, err)
 		}
 		st.Users++
 	}
 	slog.Info("guid backfill complete", "users", st.Users, "folders", st.Folders,
-		"pending", st.Pending, "migrated", st.Migrated, "dry_run", dryRun)
+		"pending", st.Pending, "migrated", st.Migrated, "driver", driver,
+		"root", resolver.Root, "home_template", resolver.HomeTemplate, "dry_run", o.DryRun)
 	return nil
 }
 
@@ -102,12 +131,77 @@ func backfillUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, reso
 	return nil
 }
 
-// guidUsers returns the <domain>/<user> pairs under root as user@domain, or the
-// single --user value when given.
-func guidUsers(root, onlyUser string) ([]string, error) {
+// guidConfig loads the service config. No path yields an empty config, so a
+// configless run still works against a stopped store.
+func guidConfig(path string) (*config.Config, error) {
+	if path == "" {
+		return &config.Config{}, nil
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("config load %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// guidResolver mirrors the resolver the services build, so the tool reads the
+// same homes, index and control dirs. Flags win over the config, and the
+// built-in defaults are the last resort.
+func guidResolver(cfg *config.Config, o guidOpts) *mailbox.Resolver {
+	r := &mailbox.Resolver{
+		Root:               cfg.Storage.MaildirRoot,
+		HomeTemplate:       cfg.Storage.MailHomeTemplate,
+		DefaultVolatileDir: cfg.Storage.VolatileDir,
+		DefaultIndexDir:    cfg.Storage.IndexDir,
+		DefaultControlDir:  cfg.Storage.ControlDir,
+		DefaultAltDir:      cfg.Storage.AltDir,
+		DefaultMailPath:    cfg.Storage.MailPath,
+		DefaultSeparator:   guidSeparator(cfg.Namespaces),
+	}
+	if o.Root != "" {
+		r.Root = o.Root
+	}
+	if o.Template != "" {
+		r.HomeTemplate = o.Template
+	}
+	if r.Root == "" {
+		r.Root = "/var/mail/vhosts"
+	}
+	if r.HomeTemplate == "" {
+		r.HomeTemplate = "%d/%n"
+	}
+	return r
+}
+
+func guidSeparator(nss []config.NamespaceConfig) string {
+	for _, ns := range nss {
+		if strings.EqualFold(strings.TrimSpace(ns.Type), "personal") && ns.Separator != "" {
+			return ns.Separator
+		}
+	}
+	return ""
+}
+
+// guidUsers enumerates the users under root for the given home template. Only a
+// template whose leaf directory names the user can be walked: "%u" is the full
+// address, "%n" the local part with "%d" above it; anything else needs --user.
+func guidUsers(root, template, onlyUser string) ([]string, error) {
 	if onlyUser != "" {
 		return []string{onlyUser}, nil
 	}
+	parts := strings.Split(strings.Trim(filepath.ToSlash(template), "/"), "/")
+	leaf := parts[len(parts)-1]
+	domainAt := -1
+	for i, p := range parts {
+		if p == "%d" {
+			domainAt = i
+		}
+	}
+	if leaf != "%u" && (leaf != "%n" || domainAt < 0) {
+		return nil, fmt.Errorf("cannot enumerate users for mail_home_template %q: pass --user", template)
+	}
+
+	depth := len(parts)
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -117,41 +211,26 @@ func guidUsers(root, onlyUser string) ([]string, error) {
 		if relErr != nil {
 			return relErr
 		}
-		parts := strings.Split(filepath.ToSlash(rel), "/")
-		if len(parts) != 2 || !d.IsDir() {
+		if rel == "." {
+			return nil // the root itself is not a user directory
+		}
+		seg := strings.Split(filepath.ToSlash(rel), "/")
+		if len(seg) != depth || !d.IsDir() {
 			return nil
 		}
-		out = append(out, parts[1]+"@"+parts[0])
+		if leaf == "%u" {
+			out = append(out, seg[depth-1])
+		} else {
+			out = append(out, seg[depth-1]+"@"+seg[domainAt])
+		}
 		return nil
 	})
 	return out, err
 }
 
-func guidBackends(driver string, locker locks.Locker) (mailbox.MailboxBackend, mailbox.IndexBackend, error) {
-	var box mailbox.MailboxBackend
-	switch strings.ToLower(driver) {
-	case "maildir":
-		box = maildir.New(maildir.WithLocker(locker))
-	case "sdbox", "dbox":
-		box = dboxv2.New(dboxv2.WithLocker(locker))
-	case "mdbox":
-		box = mdbox.New(mdbox.WithLocker(locker))
-	default:
-		return nil, nil, fmt.Errorf("unknown --driver %q (want maildir|sdbox|mdbox)", driver)
-	}
-	return box, indexfile.New(indexfile.WithLocker(locker)), nil
-}
-
-// guidLocker builds the yarilo-locks client from the service config. An empty
-// path means no locker, for offline runs against a stopped store.
-func guidLocker(cfgPath string) (locks.Locker, error) {
-	if cfgPath == "" {
-		return nil, nil
-	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return nil, fmt.Errorf("config load %s: %w", cfgPath, err)
-	}
+// guidLocker builds the yarilo-locks client the services use. An empty
+// locks_client mode, or no config at all, means no locker.
+func guidLocker(cfg *config.Config) (locks.Locker, error) {
 	lc := cfg.LocksClient
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
