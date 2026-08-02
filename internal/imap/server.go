@@ -2379,6 +2379,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	for i, km := range s.knownMsgs {
 		uidToClientSeq[km.uid] = uint32(i + 1)
 	}
+	numSet = resolveStar(numSet, backendMsgs, uidToClientSeq)
 
 	var fetchList []fetchEntry
 	if _, isUID := numSet.(imaplib.UIDSet); isUID {
@@ -2609,6 +2610,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	for i, km := range s.knownMsgs {
 		uidToClientSeq[km.uid] = uint32(i + 1)
 	}
+	numSet = resolveStar(numSet, msgs, uidToClientSeq)
 
 	// CONDSTORE STORE (UNCHANGEDSINCE N) — RFC 7162 §3.1.3.
 	// Any message whose current modseq is greater than the client's
@@ -2775,6 +2777,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	for i, km := range s.knownMsgs {
 		copyUIDToClientSeq[km.uid] = uint32(i + 1)
 	}
+	numSet = resolveStar(numSet, msgs, copyUIDToClientSeq)
 	var srcUIDs, dstUIDs imaplib.UIDSet
 	var saveTotalMs, indexTotalMs int64
 	var count int
@@ -2841,6 +2844,11 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		"user", s.userInfo.Username, "src", s.folder.Name, "dst", dest,
 		"count", count, "save_ms", saveTotalMs, "index_ms", indexTotalMs,
 		"total_ms", time.Since(tCopy).Milliseconds())
+	// COPYUID needs at least one pair; the encoder rejects an empty set and
+	// would truncate the reply mid-line. A zero-match COPY is a plain OK.
+	if count == 0 {
+		return nil, nil
+	}
 	return &imaplib.CopyData{
 		UIDValidity: destFolder.UIDValidity,
 		SourceUIDs:  srcUIDs,
@@ -3122,6 +3130,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	for i, km := range s.knownMsgs {
 		moveUIDToClientSeq[km.uid] = uint32(i + 1)
 	}
+	numSet = resolveStar(numSet, msgs, moveUIDToClientSeq)
 
 	type matched struct {
 		seqNum   uint32
@@ -3201,12 +3210,16 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename, destUID: nm.UID, destFile: newFilename, moved: srcBox == destH.box})
 	}
 
-	if err := w.WriteCopyData(&imaplib.CopyData{
-		UIDValidity: destFolder.UIDValidity,
-		SourceUIDs:  srcUIDs,
-		DestUIDs:    dstUIDs,
-	}); err != nil {
-		return err
+	// COPYUID needs at least one pair; the encoder rejects an empty set and
+	// would truncate the reply mid-line. A zero-match MOVE is a plain OK.
+	if len(hits) > 0 {
+		if err := w.WriteCopyData(&imaplib.CopyData{
+			UIDValidity: destFolder.UIDValidity,
+			SourceUIDs:  srcUIDs,
+			DestUIDs:    dstUIDs,
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Expunge source in descending seq order (RFC 6851 §3.3).
@@ -3329,6 +3342,48 @@ func numSetContains(numSet imaplib.NumSet, seqNum uint32, uid imaplib.UID) bool 
 		return ns.Contains(uid)
 	}
 	return false
+}
+
+// resolveStar rewrites a bare "*" as the largest number in the mailbox
+// (RFC 3501 §9). It is encoded {0,0} and Range.Contains requires a non-zero
+// Start, so it matches nothing unresolved; "n:*" is {n,0} and already works.
+func resolveStar(numSet imaplib.NumSet, msgs []*mailbox.MessageMeta, uidToSeq map[uint32]uint32) imaplib.NumSet {
+	var maxUID, maxSeq uint32
+	for _, m := range msgs {
+		if m.UID > maxUID {
+			maxUID = m.UID
+		}
+		if seq, ok := uidToSeq[m.UID]; ok && seq > maxSeq {
+			maxSeq = seq
+		}
+	}
+	switch ns := numSet.(type) {
+	case imaplib.UIDSet:
+		if maxUID == 0 {
+			return ns
+		}
+		out := make(imaplib.UIDSet, len(ns))
+		copy(out, ns)
+		for i := range out {
+			if out[i].Start == 0 && out[i].Stop == 0 {
+				out[i] = imaplib.UIDRange{Start: imaplib.UID(maxUID), Stop: imaplib.UID(maxUID)}
+			}
+		}
+		return out
+	case imaplib.SeqSet:
+		if maxSeq == 0 {
+			return ns
+		}
+		out := make(imaplib.SeqSet, len(ns))
+		copy(out, ns)
+		for i := range out {
+			if out[i].Start == 0 && out[i].Stop == 0 {
+				out[i] = imaplib.SeqRange{Start: maxSeq, Stop: maxSeq}
+			}
+		}
+		return out
+	}
+	return numSet
 }
 
 // searchNeedsBodyRecurse reports whether any criteria in the Not/Or lists

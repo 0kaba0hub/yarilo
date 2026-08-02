@@ -29,9 +29,8 @@ type guidStats struct {
 }
 
 // runGUIDBackfill stamps per-message GUIDs across an existing store, moving the
-// cost off a user's first SELECT; a folder left pending is stamped there
-// instead. It writes to shared storage, so without a config to build the
-// yarilo-locks client it is only safe against a stopped store.
+// cost off a user's first SELECT. It writes to shared storage: without a config
+// to build the yarilo-locks client it is only safe against a stopped store.
 func runGUIDBackfill(driver, root, onlyUser, cfgPath string, dryRun bool) error {
 	locker, err := guidLocker(cfgPath)
 	if err != nil {
