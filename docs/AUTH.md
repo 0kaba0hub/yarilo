@@ -260,9 +260,18 @@ auth:
 
 ### Contract
 
-- **`password_query` must return columns in this order:** `password`, `home`, `mail`, `enabled`. Use `AS` aliases to map an existing schema. `password` is the only column whose value is meaningfully used downstream when `user_query` is also set; `home`/`mail` can be empty strings.
+- **`password_query` must return a `password` column.** Columns are matched **by name, not position**, so the order is free; use `AS` aliases to map an existing schema (`pw_hash AS password`). `home`, `mail` and `enabled` are optional — an absent `enabled` counts as active. `password` is the only value used downstream when `user_query` is also set.
 - **`user_query` must return:** `home`, `mail`. Called after a successful auth to fill in mailbox location from an authoritative source.
 - **`iterate_query` must return one column:** `username`.
+
+> **PostgreSQL with a `BOOLEAN` enabled column.** The built-in `yarilo_users`
+> schema declares `enabled` as `INTEGER`, so the default queries filter with
+> `WHERE enabled = 1`. Point yarilo at an existing Postgres schema that types
+> the column `BOOLEAN` and that clause fails with `operator does not exist:
+> boolean = integer` — write `WHERE enabled = true` in your own
+> `password_query` / `user_query`. MySQL is unaffected: its `BOOLEAN` is
+> `TINYINT(1)`, so `= 1` is valid. The Go-side check is dialect-agnostic and
+> accepts `1` / `true` / `t` / `yes` / `on` either way.
 
 ### Userdb / passdb extra fields
 
@@ -326,7 +335,7 @@ Beyond `home` / `mail`, a lookup may return extra fields — as a SQL column ali
 | `nodelay` | Bool: bypass auth-penalty backoff. |
 | `pass_expired` | Bool: password expired, client must reset. |
 | `nopassword` | Bool: accept any password (passdb). |
-| `enabled` | SQL filter column (`WHERE enabled = 1`); not stored as a field. |
+| `enabled` | SQL filter column (`WHERE enabled = 1`, or `= true` on a Postgres `BOOLEAN`); not stored as a field. Optional: an absent column counts as active. |
 
 **Proxy / director** (see [DIRECTOR.md](DIRECTOR.md))
 
