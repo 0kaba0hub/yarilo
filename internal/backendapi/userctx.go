@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/userdbinfo"
 	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -70,51 +71,7 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 		if pui == nil {
 			return nil, fmt.Errorf("backendapi/userctx: user not found: %s", username)
 		}
-		if pui.VolatileDir != "" {
-			vd := mailbox.ExpandHome(pui.VolatileDir, ui.Home)
-			ui.VolatileDir = mailbox.ExpandVars(strings.ReplaceAll(vd, "%h", ui.Home), username)
-		}
-		if pui.IndexDir != "" {
-			id := mailbox.ExpandHome(pui.IndexDir, ui.Home)
-			ui.IndexDir = mailbox.ExpandVars(strings.ReplaceAll(id, "%h", ui.Home), username)
-		}
-		if pui.ControlDir != "" {
-			cd := mailbox.ExpandHome(pui.ControlDir, ui.Home)
-			ui.ControlDir = mailbox.ExpandVars(strings.ReplaceAll(cd, "%h", ui.Home), username)
-		}
-		if pui.AltDir != "" {
-			ad := mailbox.ExpandHome(pui.AltDir, ui.Home)
-			ui.AltDir = mailbox.ExpandVars(strings.ReplaceAll(ad, "%h", ui.Home), username)
-		}
-		if pui.MailPath != "" {
-			ui.MailPath = mailbox.ExpandHome(pui.MailPath, ui.Home)
-		} else if pui.MailLocation != "" {
-			// mail_location = "driver:path[:MODS]": extract path when userdb
-			// returned no explicit mail_path field.
-			if colon := strings.IndexByte(pui.MailLocation, ':'); colon >= 0 {
-				rest := pui.MailLocation[colon+1:]
-				if nextColon := strings.IndexByte(rest, ':'); nextColon >= 0 {
-					rest = rest[:nextColon]
-				}
-				if rest != "" {
-					mp := mailbox.ExpandHome(rest, ui.Home)
-					ui.MailPath = mailbox.ExpandVars(strings.ReplaceAll(mp, "%h", ui.Home), username)
-				}
-			}
-		}
-		// Parse INDEX=/VOLATILEDIR=/CONTROLDIR=/ALTDIR= modifiers from
-		// mail_location when the dedicated fields are absent. Userdb drivers
-		// that bake everything into one mail_location string never populate
-		// the separate fields.
-		if pui.MailLocation != "" {
-			applyMailLocationMods(pui.MailLocation, ui, username)
-			if colon := strings.IndexByte(pui.MailLocation, ':'); colon > 0 {
-				ui.Driver = strings.ToLower(pui.MailLocation[:colon])
-			}
-		}
-		if pui.InboxPath != "" {
-			ui.InboxPath = mailbox.ExpandHome(pui.InboxPath, ui.Home)
-		}
+		userdbinfo.Apply(ui, pui, username)
 	}
 	uc := &userContext{
 		username: username,
@@ -214,49 +171,6 @@ func subsFileFor(spec config.NamespaceConfig) string {
 		slug = strings.ToLower(spec.Type)
 	}
 	return "subscriptions-" + slug
-}
-
-// applyMailLocationMods parses KEY=value modifiers from a mail_location string
-// and fills in ui fields that are still empty.
-func applyMailLocationMods(loc string, ui *mailbox.UserInfo, username string) {
-	expand := func(v string) string {
-		v = mailbox.ExpandHome(v, ui.Home)
-		return mailbox.ExpandVars(strings.ReplaceAll(v, "%h", ui.Home), username)
-	}
-	// skip "driver:path" prefix; modifiers start at the third colon-token
-	colon := strings.IndexByte(loc, ':')
-	if colon < 0 {
-		return
-	}
-	rest := loc[colon+1:]
-	colon = strings.IndexByte(rest, ':')
-	if colon < 0 {
-		return
-	}
-	for _, mod := range strings.Split(rest[colon+1:], ":") {
-		key, val, ok := strings.Cut(mod, "=")
-		if !ok {
-			continue
-		}
-		switch strings.ToUpper(key) {
-		case "INDEX":
-			if ui.IndexDir == "" {
-				ui.IndexDir = expand(val)
-			}
-		case "VOLATILEDIR":
-			if ui.VolatileDir == "" {
-				ui.VolatileDir = expand(val)
-			}
-		case "CONTROL":
-			if ui.ControlDir == "" {
-				ui.ControlDir = expand(val)
-			}
-		case "ALT":
-			if ui.AltDir == "" {
-				ui.AltDir = expand(val)
-			}
-		}
-	}
 }
 
 // mailboxForUser returns the MailboxBackend that matches the driver in

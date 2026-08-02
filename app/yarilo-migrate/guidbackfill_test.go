@@ -135,7 +135,7 @@ func TestGUIDBackfillStampsStore(t *testing.T) {
 			t.Fatalf("uid=%d already has GUID %x before the run", uid, g)
 		}
 	}
-	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root}); err != nil {
+	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root, Offline: true}); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
 	got := guidsOf(t, root, user)
@@ -157,7 +157,7 @@ func TestGUIDBackfillStampsStore(t *testing.T) {
 func TestGUIDBackfillDryRunWritesNothing(t *testing.T) {
 	var zero [16]byte
 	root, user := stageStore(t, 2)
-	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root, DryRun: true}); err != nil {
+	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root, Offline: true, DryRun: true}); err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
 	for uid, g := range guidsOf(t, root, user) {
@@ -169,11 +169,11 @@ func TestGUIDBackfillDryRunWritesNothing(t *testing.T) {
 
 func TestGUIDBackfillIsIdempotent(t *testing.T) {
 	root, user := stageStore(t, 3)
-	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root}); err != nil {
+	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root, Offline: true}); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	first := guidsOf(t, root, user)
-	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root}); err != nil {
+	if err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root, Offline: true}); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	for uid, g := range guidsOf(t, root, user) {
@@ -184,7 +184,7 @@ func TestGUIDBackfillIsIdempotent(t *testing.T) {
 }
 
 func TestGUIDBackfillRejectsUnknownDriver(t *testing.T) {
-	if err := runGUIDBackfill(guidOpts{Driver: "bogus", Root: t.TempDir(), DryRun: true}); err == nil {
+	if err := runGUIDBackfill(guidOpts{Driver: "bogus", Root: t.TempDir(), Offline: true, DryRun: true}); err == nil {
 		t.Fatal("expected an error for an unknown driver")
 	}
 }
@@ -295,7 +295,7 @@ func TestGUIDBackfillHonoursHomeTemplate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := stageStoreLayout(t, tt.template, user, 2)
 			err := runGUIDBackfill(guidOpts{
-				Driver: "maildir", Root: root, Template: tt.template, User: tt.only,
+				Driver: "maildir", Root: root, Template: tt.template, User: tt.only, Offline: true,
 			})
 			if err != nil {
 				t.Fatalf("backfill: %v", err)
@@ -370,5 +370,117 @@ func TestGUIDUsersEnumeratesFullAddressLayout(t *testing.T) {
 		if !want[u] {
 			t.Errorf("unexpected user %q", u)
 		}
+	}
+}
+
+// The two sources of per-user overrides are exclusive: a template that
+// disagrees with userdb would silently point the tool at another mailbox.
+func TestGUIDBackfillTemplatesRequireOffline(t *testing.T) {
+	root := stageStoreLayout(t, "%d/%u", "u51@d00001.test", 1)
+	err := runGUIDBackfill(guidOpts{
+		Driver: "maildir", Root: root, Template: "%d/%u", IndexTmpl: "%h/index",
+	})
+	if err == nil {
+		t.Fatal("templates without --offline should be refused")
+	}
+	if !strings.Contains(err.Error(), "offline-only") {
+		t.Errorf("error should name the conflict, got: %v", err)
+	}
+}
+
+// Online means userdb, so a config with no auth master is refused rather than
+// quietly resolving the default paths and missing every override.
+func TestGUIDBackfillOnlineNeedsAuthMaster(t *testing.T) {
+	root := stageStoreLayout(t, "%d/%u", "u51@d00001.test", 1)
+	err := runGUIDBackfill(guidOpts{Driver: "maildir", Root: root, Template: "%d/%u"})
+	if err == nil {
+		t.Fatal("online run without auth_master_addr should be refused")
+	}
+	if !strings.Contains(err.Error(), "auth_master_addr") {
+		t.Errorf("error should name the missing setting, got: %v", err)
+	}
+}
+
+// An INDEX= override moves the index out of the mail home; the offline
+// template has to take the tool there, and the pass must stamp the real
+// records rather than a fresh index at the default location.
+func TestGUIDBackfillFollowsIndexTemplate(t *testing.T) {
+	var zero [16]byte
+	const user = "u51@d00001.test"
+	root := t.TempDir()
+	resolver := &mailbox.Resolver{
+		Root: root, HomeTemplate: "%d/%u", DefaultIndexDir: "%h/index",
+	}
+	info := resolver.UserInfo(user, "")
+	box := maildir.New().OpenUser(info)
+	idx := indexfile.New().OpenUser(info)
+	if err := box.Init(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	folder, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("open folder: %v", err)
+	}
+	uid, err := idx.AllocateUID(folder.ID)
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	body := "Subject: t\r\n\r\nbody\r\n"
+	name, vsize, _, err := box.Save("INBOX", strings.NewReader(body), uid, int64(len(body)), nil, zero)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
+		UID: uid, Filename: name, Size: uint32(len(body)), VSize: vsize,
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := box.Close(); err != nil {
+		t.Fatalf("close box: %v", err)
+	}
+	dropGUIDExt(t, root)
+
+	if err := runGUIDBackfill(guidOpts{
+		Driver: "maildir", Root: root, Template: "%d/%u",
+		IndexTmpl: "%h/index", Offline: true, User: user,
+	}); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	check := indexfile.New().OpenUser(resolver.UserInfo(user, ""))
+	defer check.Close() //nolint:errcheck
+	f, err := check.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	msgs, err := check.GetMessages(f.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].GUID == zero {
+		t.Error("the record behind the INDEX= override was not stamped")
+	}
+	// The wrong location must stay untouched: a stray index there is the sign
+	// the tool addressed a mailbox nobody uses.
+	if _, err := os.Stat(filepath.Join(info.Home, indexfile.IndexFileName)); !os.IsNotExist(err) {
+		t.Errorf("a stray index appeared at the default location: %v", err)
+	}
+}
+
+// A root that does not hold the store must fail loudly instead of reporting a
+// clean pass over folders it just invented.
+func TestGUIDBackfillWrongRootErrors(t *testing.T) {
+	err := runGUIDBackfill(guidOpts{
+		Driver: "maildir", Root: t.TempDir(), Template: "%d/%u",
+		Offline: true, User: "u51@d00001.test",
+	})
+	if err == nil {
+		t.Fatal("a wrong root reported success")
 	}
 }

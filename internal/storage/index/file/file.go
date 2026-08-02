@@ -109,9 +109,8 @@ type Backend struct {
 	locker locks.Locker
 
 	// noCreate makes OpenFolder fail instead of initialising a folder whose
-	// index is absent. Tools that repair or report on an existing store set it:
-	// fabricating an empty index there looks like a healthy empty folder and
-	// hides whatever the real state was.
+	// index is absent: a fabricated index reads as a healthy empty folder and
+	// hides whatever the store really held.
 	noCreate bool
 
 	logCompactMinBytes int64

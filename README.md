@@ -198,7 +198,7 @@ off the first `SELECT`, which is worth doing for very large folders.
 
 ```sh
 yarilo-migrate --guid-backfill \
-  --config /etc/yarilo/yarilo.yaml \   # layout, driver and the yarilo-locks client
+  --config /etc/yarilo/yarilo.yaml \   # layout, driver, userdb and yarilo-locks
   --user   u1@example.com               # optional: one user instead of all
                                         # --dry-run reports what is pending
 ```
@@ -206,12 +206,29 @@ yarilo-migrate --guid-backfill \
 | Flag | Meaning |
 |:---|:---|
 | `--guid-backfill` | Run the GUID pass instead of a format conversion |
-| `--config` | `yarilo.yaml` supplying `storage.mailbox`, `storage.maildir_root`, `storage.mail_home_template`, the index/control/alt dirs, and the `yarilo-locks` client |
+| `--config` | `yarilo.yaml` supplying `storage.mailbox`, `storage.maildir_root`, `storage.mail_home_template`, `backend_api.auth_master_addr`, and the `yarilo-locks` client |
 | `--driver` | Override `storage.mailbox`: `maildir` \| `sdbox` \| `mdbox` |
 | `--root` | Override `storage.maildir_root` |
 | `--home-template` | Override `storage.mail_home_template`, e.g. `%d/%u` |
 | `--user` | Restrict to one `user@domain`; default is every user under the root |
+| `--offline` | Resolve per-user paths from flags instead of userdb |
+| `--index-template` | Offline stand-in for the userdb `INDEX=` override, e.g. `%h/index` |
+| `--mail-template` | Offline stand-in for the userdb `mail_path` override |
 | `--dry-run` | Report the folders that would be stamped, write nothing |
+
+Per-user `INDEX=`, `CONTROL=`, `ALT=` and `mail_path` overrides live in the
+userdb, not in `yarilo.yaml`, so by default the tool looks each user up through
+`backend_api.auth_master_addr` exactly as a session does. A store whose auth is
+not running is handled by `--offline` plus the templates; the two sources are
+mutually exclusive, because a template disagreeing with userdb would address a
+mailbox the sessions never use.
+
+The templates take `%h` for the user's home and `%u`/`%n`/`%d`, so a userdb
+value of `INDEX=~/index` is written `--index-template %h/index` here — the
+config and flag forms do not expand a leading `~/`.
+
+The tool never creates an index. A path holding no index is an error naming the
+path, not an empty folder reported as complete.
 
 Without `--config` both `--driver` and `--root` are required, and the run is
 unlocked. Users are enumerated only for a layout whose leaf directory names the
