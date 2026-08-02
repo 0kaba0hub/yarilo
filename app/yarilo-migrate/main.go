@@ -10,10 +10,14 @@
 //	sdbox     — single-message dbox driver
 //	mdbox     — multi-message dbox driver
 //
+// It also pre-stamps per-message GUIDs (RFC 8474 EMAILID) on an existing store,
+// so a folder does not pay that one-off pass on a user's first SELECT.
+//
 // Usage:
 //
 //	yarilo-migrate --src dbox-v1 --dst sdbox --from /var/legacy --to /var/yarilo
 //	yarilo-migrate --src maildir --dst mdbox --from /var/maildir --to /var/yarilo
+//	yarilo-migrate --guid-backfill --driver mdbox --root /var/yarilo --config /etc/yarilo/yarilo.yaml
 package main
 
 import (
@@ -37,11 +41,30 @@ var (
 	flagTo     = flag.String("to", "", "destination root (required)")
 	flagDry    = flag.Bool("dry-run", false, "print actions without writing")
 	flagFormat = flag.String("format", "", "[deprecated] alias for --dst")
+
+	flagGUID      = flag.Bool("guid-backfill", false, "stamp per-message GUIDs across an existing store instead of converting")
+	flagDriver    = flag.String("driver", "", "storage driver of the existing store: maildir | sdbox | mdbox (--guid-backfill)")
+	flagRoot      = flag.String("root", "", "existing store root (--guid-backfill)")
+	flagUser      = flag.String("user", "", "restrict to one user@domain (--guid-backfill); default is every user under --root")
+	flagLocksConf = flag.String("config", "", "yarilo.yaml for the yarilo-locks client; omit only when the store is stopped (--guid-backfill)")
 )
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "migrate"))
 	flag.Parse()
+
+	if *flagGUID {
+		if *flagDriver == "" || *flagRoot == "" {
+			fmt.Fprintln(os.Stderr,
+				"usage: yarilo-migrate --guid-backfill --driver <maildir|sdbox|mdbox> --root <store> [--user u@d] [--config yarilo.yaml] [--dry-run]")
+			os.Exit(1)
+		}
+		if err := runGUIDBackfill(*flagDriver, *flagRoot, *flagUser, *flagLocksConf, *flagDry); err != nil {
+			slog.Error("guid backfill failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *flagSrc == "" {
 		// Legacy `--format <dst>` invocation implied a Maildir source.

@@ -779,15 +779,21 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			if rec.Filename == "" {
 				continue
 			}
-			if _, ok := tracked[maildirBase(rec.Filename)]; ok {
+			base := maildirBase(rec.Filename)
+			if _, ok := tracked[base]; ok {
 				continue
 			}
+			// Claim the base before appending: a scan that reports one message
+			// twice (the same base left in both new/ and cur/) would otherwise
+			// get two records, and expunging either would delete the shared file.
+			tracked[base] = struct{}{}
 			m := &mailbox.MessageMeta{
 				Filename:     rec.Filename,
 				Size:         rec.Size,
 				VSize:        rec.VSize,
 				InternalDate: rec.InternalDate,
 				Flags:        rec.Flags,
+				GUID:         rec.GUID,
 			}
 			if err := idx.AllocateAndAppend(folder.ID, m); err != nil {
 				return fmt.Errorf("maildir/sync: append %s: %w", rec.Filename, err)
