@@ -108,6 +108,12 @@ func copySidecarTmp(src, dst string) error {
 type Backend struct {
 	locker locks.Locker
 
+	// noCreate makes OpenFolder fail instead of initialising a folder whose
+	// index is absent. Tools that repair or report on an existing store set it:
+	// fabricating an empty index there looks like a healthy empty folder and
+	// hides whatever the real state was.
+	noCreate bool
+
 	logCompactMinBytes int64
 	logCompactMaxBytes int64
 	logCompactMinAge   time.Duration
@@ -142,6 +148,12 @@ func WithLocker(l locks.Locker) Option {
 // minBytes / maxBytes control when rotation fires; minAge prevents
 // rotation before the log reaches a minimum age. Pass 0 for minBytes
 // to disable.
+// WithNoCreate refuses to initialise a missing folder index. Use it in any tool
+// that must observe a store rather than establish one.
+func WithNoCreate() Option {
+	return func(b *Backend) { b.noCreate = true }
+}
+
 func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
 	return func(b *Backend) {
 		b.logCompactMinBytes = minBytes
