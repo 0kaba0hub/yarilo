@@ -213,3 +213,75 @@ func TestReconcile_PreservesIndexFlagsAndNoOp(t *testing.T) {
 		t.Fatalf("index \\Seen reverted by reconcile: %+v", msgs[0].Flags)
 	}
 }
+
+// An imported record must carry the GUID Scan reports. A folder already marked
+// backfilled is never revisited, so a zero here would be an EMAILID that stays
+// all-zero for the life of the message.
+func TestReconcile_ImportCarriesGUIDAfterBackfill(t *testing.T) {
+	box, idx, folder := recSetup(t)
+
+	// Bring the folder to the state a backfilled mailbox is in.
+	if err := idx.SetGUIDs(folder.ID, nil); err != nil {
+		t.Fatalf("mark backfilled: %v", err)
+	}
+	need, err := idx.GUIDBackfillNeeded(folder.ID)
+	if err != nil {
+		t.Fatalf("needed: %v", err)
+	}
+	if need {
+		t.Fatal("folder should be marked backfilled for this case")
+	}
+
+	deliverToNew(t, box, "1700000001.MDA.host", "body\n")
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].GUID == ([16]byte{}) {
+		t.Fatal("imported message has a zero GUID")
+	}
+	scanned, err := box.Scan("INBOX")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(scanned) != 1 || scanned[0].GUID != msgs[0].GUID {
+		t.Errorf("index GUID %x does not match storage", msgs[0].GUID)
+	}
+}
+
+// Two names for one base is what an interrupted flag change leaves behind.
+// They must collapse into one record, or expunging either deletes the body the
+// other still points at.
+func TestReconcile_SameBaseTwiceImportsOnce(t *testing.T) {
+	box, idx, folder := recSetup(t)
+
+	const base = "1700000002.MDA.host"
+	cur := filepath.Join(box.folderPath("INBOX"), "cur")
+	for _, trailer := range []string{":2,", ":2,S"} {
+		if err := os.WriteFile(filepath.Join(cur, base+trailer), []byte("body\n"), 0o600); err != nil {
+			t.Fatalf("stage %s: %v", trailer, err)
+		}
+	}
+
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		names := make([]string, 0, len(msgs))
+		for _, m := range msgs {
+			names = append(names, m.Filename)
+		}
+		t.Fatalf("got %d records for one message: %v", len(msgs), names)
+	}
+}
