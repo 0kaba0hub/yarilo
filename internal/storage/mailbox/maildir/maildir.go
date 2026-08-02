@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -744,6 +745,8 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			return fmt.Errorf("maildir/sync: get messages: %w", err)
 		}
 		tracked := make(map[string]struct{}, len(existing))
+		var restamp map[uint32][16]byte
+		var zeroGUID [16]byte
 		for _, m := range existing {
 			if m.Filename == "" {
 				continue
@@ -758,7 +761,26 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				st.Expunged++
 				continue
 			}
+			if _, dup := tracked[base]; dup {
+				// Another record already owns this message. GetMessages is
+				// UID-ordered, so the lowest UID is the keeper and the rest go:
+				// left in place, expunging one would unlink the shared body.
+				if err := idx.ExpungeMessage(folder.ID, m.UID); err != nil {
+					return fmt.Errorf("maildir/sync: expunge duplicate %d: %w", m.UID, err)
+				}
+				st.Expunged++
+				continue
+			}
 			tracked[base] = struct{}{}
+			if m.GUID == zeroGUID && rec.GUID != zeroGUID {
+				// Stamped regardless of the backfill marker: a record imported
+				// into an already-complete folder is invisible to the backfill,
+				// so this is the only thing that can still give it an EMAILID.
+				if restamp == nil {
+					restamp = make(map[uint32][16]byte, 4)
+				}
+				restamp[m.UID] = rec.GUID
+			}
 			if rec.Filename != m.Filename {
 				// Renamed out of band (a flag change moves the ":2," trailer):
 				// adopt the on-disk flags and repoint the filename.
@@ -799,6 +821,15 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				return fmt.Errorf("maildir/sync: append %s: %w", rec.Filename, err)
 			}
 			st.Imported++
+		}
+		if len(restamp) > 0 {
+			if err := idx.SetGUIDs(folder.ID, restamp); err != nil {
+				return fmt.Errorf("maildir/sync: restamp guids: %w", err)
+			}
+			// Not counted as a change: the client's view is the same, only the
+			// internal id stops being all-zero.
+			slog.Info("maildir: stamped missing message GUIDs",
+				"folder", folder.Name, "count", len(restamp))
 		}
 		return nil
 	})
