@@ -4,8 +4,8 @@ yarilo installs two ways. Pick the one that matches your target:
 
 | Path | Best for | Topology | Passdb |
 |:---|:---|:---|:---|
-| **[A. Docker Compose](#part-a--docker-compose)** | one host — local dev, evaluation, small self-hosted installs | standalone (no director), all roles as containers on one host | SQLite (self-contained) |
-| **[B. Kubernetes](#part-b--kubernetes)** | production, HA, multi-node | director ring + co-located backend, login proxies, shared auth / warden / locks | MySQL (default) or Postgres |
+| **[Docker Compose](#part-a--docker-compose)** | one host — local dev, evaluation, small self-hosted installs | standalone (no director), all roles as containers on one host | SQLite (self-contained) |
+| **[Kubernetes](#part-b--kubernetes)** | production, HA, multi-node | director ring + co-located backend, login proxies, shared auth / warden / locks | MySQL (default) or Postgres |
 
 Both run the **same image** (`ghcr.io/yarilomail/yarilo`); a component selects its
 role via `YARILO_COMPONENT` (Compose) or the Helm chart (Kubernetes). Clients
