@@ -180,8 +180,8 @@ func (r *Resolver) Resolve(username, homeOverride string) string {
 }
 
 // UserInfo builds a fully-resolved UserInfo from the username + userdb
-// override. The Default* templates (if set) are %u/%n/%d/%h-expanded into their
-// fields; per-user overrides may overwrite them after the call returns.
+// override. The Default* templates (if set) are ~/-, %h- and %u/%n/%d-expanded
+// into their fields; per-user overrides may overwrite them after the call.
 func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	home := r.Resolve(username, homeOverride)
 	ui := &UserInfo{
@@ -191,27 +191,29 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 		Separator:  r.DefaultSeparator,
 	}
 	if r.DefaultVolatileDir != "" {
-		vd := strings.ReplaceAll(r.DefaultVolatileDir, "%h", home)
-		ui.VolatileDir = ExpandVars(vd, username)
+		ui.VolatileDir = ExpandLocation(r.DefaultVolatileDir, home, username)
 	}
 	if r.DefaultIndexDir != "" {
-		id := strings.ReplaceAll(r.DefaultIndexDir, "%h", home)
-		ui.IndexDir = ExpandVars(id, username)
+		ui.IndexDir = ExpandLocation(r.DefaultIndexDir, home, username)
 	}
 	if r.DefaultControlDir != "" {
-		cd := strings.ReplaceAll(r.DefaultControlDir, "%h", home)
-		ui.ControlDir = ExpandVars(cd, username)
+		ui.ControlDir = ExpandLocation(r.DefaultControlDir, home, username)
 	}
 	if r.DefaultAltDir != "" {
-		ad := strings.ReplaceAll(r.DefaultAltDir, "%h", home)
-		ui.AltDir = ExpandVars(ad, username)
+		ui.AltDir = ExpandLocation(r.DefaultAltDir, home, username)
 	}
 	if r.DefaultMailPath != "" {
-		mp := ExpandHome(r.DefaultMailPath, home)
-		mp = strings.ReplaceAll(mp, "%h", home)
-		ui.MailPath = ExpandVars(mp, username)
+		ui.MailPath = ExpandLocation(r.DefaultMailPath, home, username)
 	}
 	return ui
+}
+
+// ExpandLocation resolves a storage location template: a leading "~/" and "%h"
+// both stand for the user's home, then %u/%n/%d. Every location value goes
+// through it, from the config or the userdb, so one string means one path.
+func ExpandLocation(tmpl, home, username string) string {
+	v := ExpandHome(tmpl, home)
+	return ExpandVars(strings.ReplaceAll(v, "%h", home), username)
 }
 
 // ParseMailLocationMods parses the modifier section of a
