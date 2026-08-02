@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestRebuildRecoversAfterIndexLoss simulates the canonical

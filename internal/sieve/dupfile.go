@@ -14,7 +14,7 @@ import (
 
 	"github.com/foxcpp/go-sieve/interp"
 
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 // DefaultDuplicateFileName is used when SieveConfig.DuplicateFile is unset.

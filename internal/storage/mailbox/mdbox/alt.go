@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 )
 
 // AltMoveQuery filters which messages get moved to (or from) alt

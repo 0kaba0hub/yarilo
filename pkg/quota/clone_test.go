@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/dict/fail"
-	"github.com/0kaba0hub/yarilo/pkg/dict/memory"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict/fail"
+	"github.com/yarilomail/yarilo/pkg/dict/memory"
 )
 
 func newMem(t *testing.T) dict.Dict {

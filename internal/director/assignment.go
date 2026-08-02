@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/0kaba0hub/yarilo/internal/cluster/ring"
+	"github.com/yarilomail/yarilo/internal/cluster/ring"
 )
 
 // Assignment policies for the INITIAL (unpinned) user→backend placement (#797).

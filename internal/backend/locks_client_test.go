@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 // shortSocketPath keeps Unix-socket paths under macOS/BSD sockaddr_un's 104-byte

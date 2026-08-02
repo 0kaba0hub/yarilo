@@ -5,7 +5,7 @@ import (
 
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
 )
 
 func authenticate(db *DB, user, pass string) protocol.Result {

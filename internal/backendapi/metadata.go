@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // registerMetadataRoutes wires the RFC 5464 METADATA admin surface.

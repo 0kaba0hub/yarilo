@@ -17,9 +17,9 @@ import (
 	gosieve "github.com/foxcpp/go-sieve"
 	"github.com/foxcpp/go-sieve/interp"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 // Engine executes Sieve scripts during LMTP delivery.

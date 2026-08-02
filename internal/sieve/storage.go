@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 // DefaultScriptBody is the content written by FsInitUser on first delivery.

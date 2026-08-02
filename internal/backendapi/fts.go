@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/0kaba0hub/yarilo/pkg/fts"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // ftsExpunge invalidates FTS documents for UIDs a rebuild dropped.

@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/0kaba0hub/yarilo/internal/userstate/acl"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/userstate/acl"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // registerACLRoutes wires the RFC 4314 ACL admin surface. Reuses

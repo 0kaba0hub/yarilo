@@ -8,7 +8,7 @@ import (
 	"github.com/emersion/go-sasl"
 	goSmtp "github.com/emersion/go-smtp"
 
-	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/config"
 )
 
 // oauthBearerAuth implements the submission Authenticator surface

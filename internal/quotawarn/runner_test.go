@@ -3,7 +3,7 @@ package quotawarn
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/quota"
+	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
 func TestNew_EmptyBinDirIsNil(t *testing.T) {

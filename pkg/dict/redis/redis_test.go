@@ -7,8 +7,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/dict/dicttest"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict/dicttest"
 )
 
 func TestContractSuite(t *testing.T) {

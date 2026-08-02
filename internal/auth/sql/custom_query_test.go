@@ -8,8 +8,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	authsql "github.com/yarilomail/yarilo/internal/auth/sql"
 )
 
 // buildCustomSchemaDB creates a SQLite DB with a custom-named table to

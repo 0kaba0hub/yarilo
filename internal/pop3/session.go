@@ -22,12 +22,12 @@ import (
 
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/oauth2"
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/internal/auth/scram"
-	"github.com/0kaba0hub/yarilo/internal/loginproto"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/auth/oauth2"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/auth/scram"
+	"github.com/yarilomail/yarilo/internal/loginproto"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 const (

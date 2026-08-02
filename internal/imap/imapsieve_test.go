@@ -9,14 +9,14 @@ import (
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 
-	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
-	"github.com/0kaba0hub/yarilo/internal/sieve"
-	file "github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/memory"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	imapserver "github.com/yarilomail/yarilo/internal/imap"
+	"github.com/yarilomail/yarilo/internal/sieve"
+	file "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	_ "github.com/yarilomail/yarilo/pkg/dict/memory"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // imapSieveScript handles both causes so one bound script serves every test.

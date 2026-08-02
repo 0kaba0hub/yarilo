@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
 )
 
 // defaultDialTimeout caps the initial TCP/TLS handshake so a stalled master

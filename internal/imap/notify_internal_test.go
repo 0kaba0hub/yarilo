@@ -7,7 +7,7 @@ import (
 
 	imaplib "github.com/emersion/go-imap/v2"
 
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 func TestEventMask(t *testing.T) {

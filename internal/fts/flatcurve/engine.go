@@ -17,8 +17,8 @@ import (
 
 	"github.com/0kaba0hub/go-xapian"
 
-	"github.com/0kaba0hub/yarilo/pkg/fts"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // On-disk format constants (see docs/FTS.md for the format specification).

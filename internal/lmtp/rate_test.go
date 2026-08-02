@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 // fakeLocker is a minimal locks.Locker stand-in that implements

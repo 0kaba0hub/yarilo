@@ -3,7 +3,7 @@ package imap
 import (
 	"log/slog"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // proactiveSyncer is implemented by mailbox drivers whose on-disk

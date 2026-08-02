@@ -1,7 +1,7 @@
 // Package all blank-imports every in-tree dict driver so a single
 // import enables all of them in the importing binary.
 //
-//	import _ "github.com/0kaba0hub/yarilo/pkg/dict/drivers/all"
+//	import _ "github.com/yarilomail/yarilo/pkg/dict/drivers/all"
 //
 // Drivers self-register via init() in their own packages; this file
 // just pulls them in. Binaries that want a leaner footprint can
@@ -12,9 +12,9 @@
 package all
 
 import (
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/fail"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/file"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/memory"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/redis"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/sql"
+	_ "github.com/yarilomail/yarilo/pkg/dict/fail"
+	_ "github.com/yarilomail/yarilo/pkg/dict/file"
+	_ "github.com/yarilomail/yarilo/pkg/dict/memory"
+	_ "github.com/yarilomail/yarilo/pkg/dict/redis"
+	_ "github.com/yarilomail/yarilo/pkg/dict/sql"
 )

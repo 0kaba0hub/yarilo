@@ -14,7 +14,7 @@ import (
 
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/pkg/authclient"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 )
 
 var (

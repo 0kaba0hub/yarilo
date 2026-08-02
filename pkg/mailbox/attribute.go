@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict"
 )
 
 // RFC 5464 METADATA entry names start with /private/ or /shared/, then a

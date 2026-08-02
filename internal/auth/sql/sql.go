@@ -14,9 +14,9 @@ import (
 
 	"github.com/emersion/go-sasl"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/internal/auth/scheme"
-	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/auth/scheme"
+	"github.com/yarilomail/yarilo/pkg/sqlpool"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver (registered as "pgx")

@@ -21,8 +21,8 @@ import (
 	"github.com/emersion/go-sasl"
 	goSmtp "github.com/emersion/go-smtp"
 
-	"github.com/0kaba0hub/yarilo/internal/submission/proxy"
-	"github.com/0kaba0hub/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/internal/submission/proxy"
+	"github.com/yarilomail/yarilo/pkg/config"
 )
 
 // stubAuth accepts only alice@example.com / secret.

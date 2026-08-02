@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // healBox is a minimal UserMailbox whose only real method is the reactive heal.

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/0kaba0hub/yarilo/pkg/mtls"
+	"github.com/yarilomail/yarilo/pkg/mtls"
 )
 
 var (

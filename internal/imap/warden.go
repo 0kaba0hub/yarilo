@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/warden"
+	"github.com/yarilomail/yarilo/internal/warden"
 )
 
 // imapWardenClient is the IMAP-server-wide handle to yarilo-warden

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/warden"
+	"github.com/yarilomail/yarilo/internal/warden"
 )
 
 // startKickWarden starts a warden server; returns its address and

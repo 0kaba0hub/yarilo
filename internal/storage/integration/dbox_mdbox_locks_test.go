@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/dboxv2"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/mdbox"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // dboxMdboxLocker spins an embedded yarilo-locks server scoped to this test

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	"github.com/0kaba0hub/yarilo/pkg/authclient"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 )
 
 // stubIteratorUserdb is the same shape as the master-protocol tests

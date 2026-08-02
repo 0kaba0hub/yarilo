@@ -1,7 +1,7 @@
 package language
 
 import (
-	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/fts"
 )
 
 // Settings selects the tokenizer limits and the filter chain.

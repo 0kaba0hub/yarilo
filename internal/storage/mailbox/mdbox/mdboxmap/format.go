@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // On-disk filenames. The yarilo-native name is what we write;

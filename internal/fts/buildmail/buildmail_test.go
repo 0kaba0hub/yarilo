@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/internal/fts/language"
-	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/internal/fts/language"
+	"github.com/yarilomail/yarilo/pkg/fts"
 )
 
 type recordedKey struct {

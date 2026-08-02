@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
 )
 
 // stubValidator returns a preset (claims, err) pair from Validate.

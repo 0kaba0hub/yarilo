@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // mdbox must satisfy the shared reactive-healer contract so the FSCKD marker

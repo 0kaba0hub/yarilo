@@ -7,14 +7,14 @@ docs/icon.png (SVG is not accepted). Category: Networking (+ Security).
 -->
 
 <table><tr>
-<td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.png" width="180" alt="yarilo logo"/></td>
+<td><img src="https://raw.githubusercontent.com/yarilomail/yarilo/main/docs/icon.png" width="180" alt="yarilo logo"/></td>
 <td>
 
 # yarilo
 
 **Production-grade IMAP / POP3 / LMTP / ManageSieve / Submission mail server written in Go, with built-in full-text search.** Multi-binary architecture — each protocol component is a separate process — Kubernetes-native via a Helm chart.
 
-**Source & docs:** https://github.com/0kaba0hub/yarilo
+**Source & docs:** https://github.com/yarilomail/yarilo
 **License:** AGPL-3.0 · **Platform:** `linux/amd64`
 
 </td>
@@ -22,7 +22,7 @@ docs/icon.png (SVG is not accepted). Category: Networking (+ Security).
 
 ## Architecture
 
-Each protocol and infrastructure role is a **separate compiled binary** — no monolith, no mode flags. Login proxies terminate TLS and pass the authenticated connection to session backends; a director ring provides consistent-hash routing with sticky per-user sessions; shared `yarilo-auth` and `yarilo-locks` services back authentication and cross-process write coordination. The same binaries serve a single-node standalone install and a sharded clustered deployment — topology is configuration, not code. See [ARCHITECTURE.md](https://github.com/0kaba0hub/yarilo/blob/main/docs/ARCHITECTURE.md) and [DEPLOYMENT.md](https://github.com/0kaba0hub/yarilo/blob/main/docs/DEPLOYMENT.md).
+Each protocol and infrastructure role is a **separate compiled binary** — no monolith, no mode flags. Login proxies terminate TLS and pass the authenticated connection to session backends; a director ring provides consistent-hash routing with sticky per-user sessions; shared `yarilo-auth` and `yarilo-locks` services back authentication and cross-process write coordination. The same binaries serve a single-node standalone install and a sharded clustered deployment — topology is configuration, not code. See [ARCHITECTURE.md](https://github.com/yarilomail/yarilo/blob/main/docs/ARCHITECTURE.md) and [DEPLOYMENT.md](https://github.com/yarilomail/yarilo/blob/main/docs/DEPLOYMENT.md).
 
 ## One image, many components
 
@@ -77,7 +77,7 @@ Admin/API tokens (`YARILO_ADMIN_TOKEN`, `DIRECTOR_API_TOKEN`, …) gate the cont
 
 ### Kubernetes (recommended)
 
-yarilo is designed for Kubernetes via its Helm chart — login proxies, an optional director ring, co-located backend StatefulSets per storage tag, and shared services. See [DEPLOYMENT.md](https://github.com/0kaba0hub/yarilo/blob/main/docs/DEPLOYMENT.md).
+yarilo is designed for Kubernetes via its Helm chart — login proxies, an optional director ring, co-located backend StatefulSets per storage tag, and shared services. See [DEPLOYMENT.md](https://github.com/yarilomail/yarilo/blob/main/docs/DEPLOYMENT.md).
 
 ### Local (standalone)
 
@@ -99,4 +99,4 @@ docker run --rm \
 
 ## CI
 
-Built and published on every push to `main`; a tagged release is cut automatically when the Helm chart `appVersion` advances. Images are `linux/amd64`, built from [`docker/Dockerfile`](https://github.com/0kaba0hub/yarilo/blob/main/docker/Dockerfile).
+Built and published on every push to `main`; a tagged release is cut automatically when the Helm chart `appVersion` advances. Images are `linux/amd64`, built from [`docker/Dockerfile`](https://github.com/yarilomail/yarilo/blob/main/docker/Dockerfile).

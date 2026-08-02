@@ -24,7 +24,7 @@
 # ============================================================================
 
 image:
-  repository: ghcr.io/0kaba0hub/yarilo
+  repository: ghcr.io/yarilomail/yarilo
   tag: ""
   pullPolicy: IfNotPresent
 logLevel: info

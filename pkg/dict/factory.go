@@ -1,6 +1,6 @@
 package dict
 
-import "github.com/0kaba0hub/yarilo/pkg/dict/varexpand"
+import "github.com/yarilomail/yarilo/pkg/dict/varexpand"
 
 // Factory opens per-user Dict instances by varexpanding %u/%h/%n/%d in settings.
 // Callers open a Dict for each user operation and close it when done.

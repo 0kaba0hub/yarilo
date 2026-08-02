@@ -1,7 +1,7 @@
 # yarilo
 
 <table><tr>
-<td><img src="https://raw.githubusercontent.com/0kaba0hub/yarilo/main/docs/icon.svg" width="180" alt="yarilo logo"/></td>
+<td><img src="https://raw.githubusercontent.com/yarilomail/yarilo/main/docs/icon.svg" width="180" alt="yarilo logo"/></td>
 <td>
 
 Production-grade IMAP / POP3 / LMTP / ManageSieve / Submission mail server with built-in full-text search, written in Go.
@@ -14,7 +14,7 @@ Multi-binary architecture — each protocol component is a separate process. Kub
      out one per row while Safari kept them inline, from the same GitHub-rendered
      HTML; as a top-level paragraph they get the full README width and both
      browsers agree. Keep them here, on one line. -->
-[![CI](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/0kaba0hub/yarilo/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/0kaba0hub/yarilo) [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE) ![Status: beta](https://img.shields.io/badge/status-beta-orange)
+[![CI](https://github.com/yarilomail/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/yarilomail/yarilo/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/yarilomail/yarilo) [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE) ![Status: beta](https://img.shields.io/badge/status-beta-orange)
 
 ---
 

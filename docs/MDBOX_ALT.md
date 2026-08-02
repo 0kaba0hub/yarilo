@@ -121,7 +121,7 @@ spec:
         spec:
           containers:
           - name: altmove
-            image: ghcr.io/0kaba0hub/yarilo:latest
+            image: ghcr.io/yarilomail/yarilo:latest
             command:
             - yarctl
             - backend

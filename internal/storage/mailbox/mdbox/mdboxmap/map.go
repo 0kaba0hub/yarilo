@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 // Map is the in-memory + on-disk handle for one user's map index. All mutations

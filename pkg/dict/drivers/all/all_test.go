@@ -3,7 +3,7 @@ package all
 import (
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict"
 )
 
 func TestAllDriversRegistered(t *testing.T) {

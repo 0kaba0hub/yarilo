@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // The map keeps an append-only transaction log (yarilo.map.index.log) beside the

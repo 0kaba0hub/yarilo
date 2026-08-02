@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/sieve"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/sieve"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 const imapSieveScriptAttr = "imapsieve/script"

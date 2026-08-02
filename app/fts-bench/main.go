@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/0kaba0hub/yarilo/internal/ftsbench"
+	"github.com/yarilomail/yarilo/internal/ftsbench"
 )
 
 func main() {

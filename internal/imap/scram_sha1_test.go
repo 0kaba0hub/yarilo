@@ -15,11 +15,11 @@ import (
 	"github.com/emersion/go-sasl"
 	"golang.org/x/crypto/pbkdf2"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	imapserver "github.com/0kaba0hub/yarilo/internal/imap"
-	"github.com/0kaba0hub/yarilo/internal/storage/index/file"
-	"github.com/0kaba0hub/yarilo/internal/storage/mailbox/maildir"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	imapserver "github.com/yarilomail/yarilo/internal/imap"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // scramSha1Auth mirrors scramAuth (SHA-256) — implements both

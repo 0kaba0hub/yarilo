@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/0kaba0hub/yarilo/pkg/locks"
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // allMessages selects every message in a folder for GetMessages.

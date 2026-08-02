@@ -5,9 +5,9 @@ package ftsservice
 import (
 	"time"
 
-	"github.com/0kaba0hub/yarilo/internal/fts/flatcurve"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/internal/fts/flatcurve"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/fts"
 )
 
 func newFlatcurveEngine(cfg config.FTSConfig) (fts.Engine, error) {

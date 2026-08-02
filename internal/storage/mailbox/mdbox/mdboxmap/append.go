@@ -3,7 +3,7 @@ package mdboxmap
 import (
 	"fmt"
 
-	"github.com/0kaba0hub/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // AppendBatch is one in-flight save transaction:

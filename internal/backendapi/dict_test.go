@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	_ "github.com/0kaba0hub/yarilo/pkg/dict/memory"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	_ "github.com/yarilomail/yarilo/pkg/dict/memory"
 )
 
 // memTestServer wires a Server with a single in-memory dict named

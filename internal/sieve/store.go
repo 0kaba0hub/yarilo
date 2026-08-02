@@ -3,8 +3,8 @@ package sieve
 import (
 	"context"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
-	"github.com/0kaba0hub/yarilo/pkg/locks"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 // ScriptStore is the storage contract for per-user Sieve scripts and

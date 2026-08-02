@@ -1,7 +1,7 @@
 package quota
 
 import (
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // FolderVSizer is the slice of the index a count-based quota read needs:

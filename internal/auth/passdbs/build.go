@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/passwdfile"
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
-	authsql "github.com/0kaba0hub/yarilo/internal/auth/sql"
-	"github.com/0kaba0hub/yarilo/internal/auth/static"
-	"github.com/0kaba0hub/yarilo/pkg/config"
-	"github.com/0kaba0hub/yarilo/pkg/sqlpool"
+	"github.com/yarilomail/yarilo/internal/auth/passwdfile"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
+	authsql "github.com/yarilomail/yarilo/internal/auth/sql"
+	"github.com/yarilomail/yarilo/internal/auth/static"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/sqlpool"
 )
 
 // Build turns passdb config entries into a passdb chain and a parallel userdb

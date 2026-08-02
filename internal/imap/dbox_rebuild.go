@@ -5,7 +5,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // maxHealAttempts bounds consecutive reactive-heal failures for one folder in

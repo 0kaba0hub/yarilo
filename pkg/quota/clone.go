@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/0kaba0hub/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/dict"
 )
 
 // Clone mirrors the authoritative count usage into one or more external dicts

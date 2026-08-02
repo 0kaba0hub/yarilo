@@ -3,7 +3,7 @@ package policy
 import (
 	"context"
 
-	"github.com/0kaba0hub/yarilo/internal/auth/protocol"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
 )
 
 // ProtocolAdapter wraps *Client so it satisfies the

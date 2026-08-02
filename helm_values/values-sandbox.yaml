@@ -83,7 +83,7 @@ general:
     max_user_ip_connections: 0
 
 image:
-  repository: ghcr.io/0kaba0hub/yarilo
+  repository: ghcr.io/yarilomail/yarilo
   tag: latest
   pullPolicy: Always
 

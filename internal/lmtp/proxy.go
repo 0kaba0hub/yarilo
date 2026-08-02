@@ -10,7 +10,7 @@ import (
 
 	goSmtp "github.com/emersion/go-smtp"
 
-	"github.com/0kaba0hub/yarilo/internal/lmtpreply"
+	"github.com/yarilomail/yarilo/internal/lmtpreply"
 )
 
 // UserRouter resolves a recipient username to a backend IP address.

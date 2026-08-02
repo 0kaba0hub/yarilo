@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/0kaba0hub/yarilo/pkg/mailbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestConcurrentCompactionNoUIDRegression reproduces #644: two pods share the

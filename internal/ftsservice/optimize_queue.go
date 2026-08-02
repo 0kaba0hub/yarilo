@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/0kaba0hub/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/fts"
 )
 
 // optimizeJob is one (user, mailbox) pair queued for background
