@@ -90,7 +90,7 @@
   <rect x="920" y="182" width="200" height="72" rx="5" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
   <text x="1020" y="205" text-anchor="middle" fill="#0d9488" font-size="12" font-weight="bold">yarilo-lmtp-login</text>
   <text x="1020" y="223" text-anchor="middle" fill="#475569" font-size="10">:24 (LMTP)</text>
-  <text x="1020" y="239" text-anchor="middle" fill="#475569" font-size="9">warden CONNECT · SESSION · fan-out</text>
+  <text x="1020" y="239" text-anchor="middle" fill="#475569" font-size="9">preamble · per-recipient fan-out</text>
 
   <!-- Control-plane bus (login-proxies → shared services) -->
   <line x1="140" y1="254" x2="140" y2="282" stroke="#64748b" stroke-width="1.8"/>
