@@ -356,6 +356,12 @@ type JMAPProtocolConfig struct {
 	// before it is proxied.
 	MaxSizeRequestRaw string `koanf:"jmap_max_size_request"`
 	MaxSizeRequest    int64  `koanf:"-"`
+	// MaxBodyValueBytes is the server's ceiling on one returned body value.
+	// A client's own maxBodyValueBytes (RFC 8621 §4.2.2) wins when smaller; a
+	// client naming none gets this rather than the whole body, since the
+	// ceiling is the operator's bound on work. Accepts a human size (256K).
+	MaxBodyValueBytesRaw string `koanf:"jmap_max_body_value_bytes"`
+	MaxBodyValueBytes    int64  `koanf:"-"`
 	// PushTimeout is the idle timeout for a push connection, in seconds.
 	// Default 90. Unused until the push phase.
 	PushTimeout int `koanf:"jmap_push_timeout"`
@@ -1823,6 +1829,7 @@ func Load(path string) (*Config, error) {
 				MaxCallsInRequest:     16,
 				MaxSizeUploadRaw:      "40M",
 				MaxSizeRequestRaw:     "10M",
+				MaxBodyValueBytesRaw:  "256K",
 				PushTimeout:           90,
 			},
 			IMAP: IMAPProtocolConfig{
@@ -2103,6 +2110,7 @@ func (cfg *Config) validate() error {
 	resolve("storage.index_log_compact_max_bytes", cfg.Storage.IndexLogCompactMaxBytesRaw, &cfg.Storage.IndexLogCompactMaxBytes)
 	resolve("protocol.jmap.jmap_max_size_upload", cfg.Protocol.JMAP.MaxSizeUploadRaw, &cfg.Protocol.JMAP.MaxSizeUpload)
 	resolve("protocol.jmap.jmap_max_size_request", cfg.Protocol.JMAP.MaxSizeRequestRaw, &cfg.Protocol.JMAP.MaxSizeRequest)
+	resolve("protocol.jmap.jmap_max_body_value_bytes", cfg.Protocol.JMAP.MaxBodyValueBytesRaw, &cfg.Protocol.JMAP.MaxBodyValueBytes)
 	if serr != nil {
 		return serr
 	}

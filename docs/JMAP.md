@@ -69,6 +69,7 @@ clients batch against what is published.
 | `jmap_max_objects_in_set` | `500` | Objects per `Foo/set`. |
 | `jmap_max_size_upload` | `40M` | One blob upload. |
 | `jmap_max_size_request` | `10M` | One API request body. |
+| `jmap_max_body_value_bytes` | `256K` | Server ceiling on one returned `Email` body value. A smaller client `maxBodyValueBytes` wins; truncated values are marked `isTruncated`. |
 | `jmap_push_timeout` | `90` | Idle timeout for a push connection, seconds. Unused until the push phase. |
 | `jmap_cors_allow_origins` | `[]` | Browser origins allowed to call the endpoint. Empty denies every cross-origin request. Exact match, scheme included. |
 
@@ -204,6 +205,58 @@ to know.
 
 ---
 
+## Emails
+
+`Email/get` is read-only. It answers by id — a null `ids` is refused, since it
+would select every message the account has and no limit would bound the cost.
+
+| JMAP member | Source |
+|:---|:---|
+| `id`, `blobId` | the message GUID — the same identity IMAP reports as `EMAILID` (RFC 8474), so one message is one object whichever protocol reaches it |
+| `threadId` | the message's own id: until threading lands each message is its own thread |
+| `mailboxIds`, `keywords`, `size`, `receivedAt` | the index |
+| envelope fields, body parts, `preview` | the message itself, parsed on demand |
+| `keywords` | IMAP system flags translated to the JMAP vocabulary — `\Seen` is `$seen` |
+
+### The message is opened only when it is needed
+
+A request naming only index-backed properties — `id`, `mailboxIds`, `keywords`,
+`size`, `receivedAt` — never opens the message. Everything else, envelope fields
+included, comes from the parsed message, so naming any of them reads it.
+A request naming no properties gets the full default set, which reads it.
+
+Body *values* are separate again: they are returned only for
+`fetchTextBodyValues` / `fetchHTMLBodyValues` / `fetchAllBodyValues`. The
+structural lists (`textBody`, `htmlBody`, `attachments`) are metadata and cost
+the parse but not the content.
+
+### Body value size
+
+`jmap_max_body_value_bytes` is the server's ceiling on one returned body value.
+The client's own `maxBodyValueBytes` (RFC 8621 §4.2.2) wins when smaller; a
+client naming none gets the ceiling rather than the whole body, because the
+ceiling bounds the operator's work rather than expressing a client preference.
+
+Every truncated value carries `isTruncated: true`. A server may return less than
+the whole part; it may not do so silently. The cut lands on a UTF-8 rune
+boundary, and an HTML value additionally drops a trailing partial tag rather
+than emitting markup a client renders as text.
+
+**Worst-case arithmetic, so the two knobs are visibly multiplied:**
+
+```
+returned body bytes  <=  jmap_max_objects_in_get x jmap_max_body_value_bytes
+                     =   500 x 256K  =  128M   (at the defaults)
+```
+
+Reading and parsing the raw messages is **not** bounded by the ceiling — that
+cost is proportional to the messages themselves. It is the same cost an IMAP
+`FETCH BODY[]` of the same messages incurs, so no new surface appears: an
+authenticated user is reading their own mail either way. What the ceiling bounds
+is the response, and with it the memory held per request.
+
+---
+
 ## Capabilities
 
 | Capability | RFC | State |
@@ -211,8 +264,9 @@ to know.
 | Core — session | RFC 8620 §2 | served |
 | Core — request envelope, back-references, `Core/echo` | RFC 8620 §3–§4 | served |
 | Mail — `Mailbox/get`, `Mailbox/query` | RFC 8621 §2 | served, read-only |
+| Mail — `Email/get` (envelope, bodies, preview) | RFC 8621 §4 | served, read-only |
 | Mail — `Mailbox/set`, `Mailbox/changes` | RFC 8621 §2 | later phase |
-| Mail — `Email`, `Thread`, `SearchSnippet` | RFC 8621 §4–§7 | later phase |
+| Mail — `Email/query`, `Email/set`, `Thread`, `SearchSnippet` | RFC 8621 §4–§7 | later phase |
 | Push over WebSocket | RFC 8887 | later phase |
 
 The protocol layer lives in `pkg/jmapcore`, which imports nothing from yarilo

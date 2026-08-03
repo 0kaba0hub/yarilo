@@ -33,6 +33,10 @@ type Options struct {
 	// OnListen fires once the port is bound. The co-located pod publishes its
 	// readiness from it, so it must not run before the listener exists.
 	OnListen func()
+	// MaxBodyValueBytes is the server's ceiling on a returned body value. The
+	// client's own maxBodyValueBytes is honoured when smaller; a client naming
+	// none gets this, since the ceiling bounds the operator's work.
+	MaxBodyValueBytes uint32
 	// Storage reaches one user's mail. Nil leaves only the methods that need no
 	// mail store, which is what the session-resource-only tests run against.
 	Storage *Storage
