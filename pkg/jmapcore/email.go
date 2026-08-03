@@ -1,5 +1,7 @@
 package jmapcore
 
+import "sort"
+
 // EmailAddress is one address in a header field (RFC 8621 §4.1.2.3).
 type EmailAddress struct {
 	Name  *string `json:"name"`
@@ -138,4 +140,85 @@ func EffectiveBodyBytes(clientMax uint32, ceiling uint32) uint32 {
 	default:
 		return clientMax
 	}
+}
+
+// EmailQueryRequest is Email/query (RFC 8621 §4.4).
+type EmailQueryRequest struct {
+	QueryRequest
+	Filter *EmailFilter `json:"filter"`
+	Sort   []Comparator `json:"sort"`
+}
+
+// EmailFilter is a filter condition (RFC 8621 §4.4.1). An operator node
+// (AND/OR/NOT) sets Operator, which is how that case is detected and refused
+// rather than silently matching everything.
+type EmailFilter struct {
+	Operator string `json:"operator"`
+
+	InMailbox          *string  `json:"inMailbox"`
+	InMailboxOtherThan []string `json:"inMailboxOtherThan"`
+	Before             *string  `json:"before"`
+	After              *string  `json:"after"`
+	MinSize            *uint32  `json:"minSize"`
+	MaxSize            *uint32  `json:"maxSize"`
+	HasKeyword         *string  `json:"hasKeyword"`
+	NotKeyword         *string  `json:"notKeyword"`
+	HasAttachment      *bool    `json:"hasAttachment"`
+
+	// Text conditions need the full-text index. They are named here so a
+	// request carrying one can be refused explicitly instead of being ignored,
+	// which would return a confidently wrong result set.
+	Text    *string  `json:"text"`
+	From    *string  `json:"from"`
+	To      *string  `json:"to"`
+	Cc      *string  `json:"cc"`
+	Bcc     *string  `json:"bcc"`
+	Subject *string  `json:"subject"`
+	Body    *string  `json:"body"`
+	Header  []string `json:"header"`
+}
+
+// TextConditions reports which full-text conditions the filter carries, so a
+// caller can name them in its refusal rather than saying "unsupported".
+func (f *EmailFilter) TextConditions() []string {
+	if f == nil {
+		return nil
+	}
+	var out []string
+	for name, set := range map[string]bool{
+		"text": f.Text != nil, "from": f.From != nil, "to": f.To != nil,
+		"cc": f.Cc != nil, "bcc": f.Bcc != nil, "subject": f.Subject != nil,
+		"body": f.Body != nil, "header": len(f.Header) > 0,
+	} {
+		if set {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// EffectiveLimit resolves the client's limit against the server's ceiling, the
+// same way EffectiveBodyBytes does for body values: the smaller wins, and a
+// client naming none gets the ceiling rather than everything. RFC 8620 §5.5
+// lets a server impose its own limit provided the response reports it.
+func EffectiveLimit(clientLimit *uint, ceiling uint) uint {
+	if ceiling == 0 {
+		if clientLimit == nil {
+			return 0
+		}
+		return *clientLimit
+	}
+	if clientLimit == nil || *clientLimit > ceiling {
+		return ceiling
+	}
+	return *clientLimit
+}
+
+// Thread is the Thread object of RFC 8621 §3.
+type Thread struct {
+	ID string `json:"id"`
+	// EmailIDs is ordered by receivedAt (§3). With one message per thread the
+	// order is trivially satisfied.
+	EmailIDs []string `json:"emailIds"`
 }

@@ -37,6 +37,10 @@ type Options struct {
 	// client's own maxBodyValueBytes is honoured when smaller; a client naming
 	// none gets this, since the ceiling bounds the operator's work.
 	MaxBodyValueBytes uint32
+	// QueryMaxLimit caps how many ids one Foo/query returns. The client's own
+	// limit wins when smaller; a client naming none gets this rather than
+	// everything, and the response reports the limit that was applied.
+	QueryMaxLimit uint
 	// Storage reaches one user's mail. Nil leaves only the methods that need no
 	// mail store, which is what the session-resource-only tests run against.
 	Storage *Storage
@@ -53,6 +57,7 @@ func New(opts Options) *Server {
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET "+jmapcore.SessionPath, s.guard(s.handleSession))
 	s.mux.HandleFunc("POST "+apiPath, s.guard(s.handleAPI))
+	s.mux.HandleFunc("GET "+downloadPrefix, s.guard(s.handleDownload))
 	return s
 }
 

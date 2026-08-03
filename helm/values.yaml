@@ -1852,6 +1852,11 @@ protocol:
     ## isTruncated: true, so the cap is visible to the client rather than silent.
     ## Worst-case work per Email/get is jmap_max_objects_in_get x this value.
     jmap_max_body_value_bytes: 256K
+    ## Server ceiling on how many ids one Email/query or Mailbox/query returns.
+    ## A smaller client limit wins; a client naming none gets this rather than
+    ## the whole result set, and the response reports the limit that was
+    ## applied, so the client knows to page with position.
+    jmap_query_max_limit: 256
     ## Idle timeout for a push connection, seconds. Unused until the push phase.
     jmap_push_timeout: 90
     ## Browser origins allowed to call the JMAP endpoint. Empty denies every

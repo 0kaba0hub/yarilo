@@ -362,6 +362,11 @@ type JMAPProtocolConfig struct {
 	// ceiling is the operator's bound on work. Accepts a human size (256K).
 	MaxBodyValueBytesRaw string `koanf:"jmap_max_body_value_bytes"`
 	MaxBodyValueBytes    int64  `koanf:"-"`
+	// QueryMaxLimit caps how many ids one Foo/query returns. A client's own
+	// limit wins when smaller; a client naming none gets this rather than the
+	// whole result set, and the response reports the limit that was applied
+	// (RFC 8620 §5.5). Default 256.
+	QueryMaxLimit int `koanf:"jmap_query_max_limit"`
 	// PushTimeout is the idle timeout for a push connection, in seconds.
 	// Default 90. Unused until the push phase.
 	PushTimeout int `koanf:"jmap_push_timeout"`
@@ -1830,6 +1835,7 @@ func Load(path string) (*Config, error) {
 				MaxSizeUploadRaw:      "40M",
 				MaxSizeRequestRaw:     "10M",
 				MaxBodyValueBytesRaw:  "256K",
+				QueryMaxLimit:         256,
 				PushTimeout:           90,
 			},
 			IMAP: IMAPProtocolConfig{
