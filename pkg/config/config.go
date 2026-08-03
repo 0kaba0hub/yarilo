@@ -28,6 +28,7 @@ type Config struct {
 	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
 	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
 	JMAPLoginService   JMAPLoginServiceConfig       `koanf:"jmap_login_service"`
+	JMAPService        JMAPServiceConfig            `koanf:"jmap_service"`
 	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
 	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
 	LocksService       LocksServiceConfig           `koanf:"locks_service"`
@@ -1211,6 +1212,17 @@ type IMAPLoginServiceConfig struct {
 	// Must match the tag of the backend pool this login Deployment serves
 	// (DEPLOYMENT.md: one login pod = one tag-pool). "" = the untagged pool.
 	DirectorTag string `koanf:"director_tag"`
+}
+
+// JMAPServiceConfig configures the yarilo-jmap backend.
+type JMAPServiceConfig struct {
+	// AuthMasterAddr is the yarilo-auth MASTER-protocol listener, the one
+	// auth_service.master_listen exposes. userdb lookups speak that protocol;
+	// the client listener in auth_service.addr answers a different handshake,
+	// so pointing this at it fails every lookup with a malformed VERSION.
+	// Empty falls back to the resolver's template defaults, which is only
+	// correct when every user's storage matches the templates.
+	AuthMasterAddr string `koanf:"auth_master_addr"`
 }
 
 // JMAPLoginServiceConfig mirrors IMAPLoginServiceConfig for the JMAP proxy.

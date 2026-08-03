@@ -71,6 +71,9 @@ func main() {
 	// refusal: nothing leaks, and a bound port with a named cause in the log
 	// diagnoses itself, where a pod that will not start looks like an image or
 	// scheduling fault.
+	if cfg.JMAPService.AuthMasterAddr == "" {
+		slog.Warn("jmap: jmap_service.auth_master_addr is empty — userdb lookups fall back to the storage templates, which is wrong for any user whose home or mail location is not template-derived")
+	}
 	if cfg.Protocol.JMAP.BaseURL == "" {
 		slog.Warn("jmap: protocol.jmap.jmap_base_url is empty — the session resource will advertise URLs no client can follow; set it to the public origin clients reach this deployment on")
 	}
@@ -182,7 +185,7 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
 		},
 		Index:              file.New(idxOpts...),
-		ResolveUser:        userResolver(authAddr(cfg), resolver, intTLS),
+		ResolveUser:        userResolver(cfg.JMAPService.AuthMasterAddr, resolver, intTLS),
 		Locker:             locker,
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
 	}, nil
@@ -247,11 +250,4 @@ func internalClientTLS(cfg *config.Config) (*tls.Config, error) {
 	}
 	return mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA,
 		cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
-}
-
-func authAddr(cfg *config.Config) string {
-	if cfg.AuthService.Addr != "" {
-		return cfg.AuthService.Addr
-	}
-	return cfg.AuthService.Listen
 }

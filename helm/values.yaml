@@ -1654,6 +1654,12 @@ components:
     enabled: false
     replicas: 1
 
+    ## yarilo-auth MASTER-protocol listener, used for per-user userdb lookups
+    ## (home, mail location, INDEX= overrides). This is NOT auth_service.addr:
+    ## the client listener answers a different handshake, so pointing this at it
+    ## fails every lookup. Empty derives it from components.auth.masterListen.
+    auth_master_addr: ""
+
     listeners:
       ## Internal listener the login proxy dials (services.jmap_be). Deliberately
       ## clear of 8080, which is the telemetry port on every component pod.

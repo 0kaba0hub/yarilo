@@ -13,15 +13,31 @@ import (
 
 // mailboxRegistry binds the Mailbox methods for one authenticated user. The
 // handle is per request, so the closures capture it rather than a session.
-func (s *Server) mailboxRegistry(h *userHandle, accountID string) jmapcore.Registry {
+func (s *Server) mailboxRegistry(lazy *lazyStore, accountID string) jmapcore.Registry {
 	return jmapcore.Registry{
 		"Mailbox/get": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.mailboxGet(ctx, h, accountID, args)
+			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+				return s.mailboxGet(ctx, h, accountID, args)
+			})
 		}},
 		"Mailbox/query": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.mailboxQuery(ctx, h, accountID, args)
+			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+				return s.mailboxQuery(ctx, h, accountID, args)
+			})
 		}},
 	}
+}
+
+// withStore opens the user's mail on first use and turns a failure into a
+// method-level error. The batch keeps its shape: the calls that need no store
+// still answer, and each call that does gets told why it could not.
+func (s *Server) withStore(lazy *lazyStore, fn func(*userHandle) (any, *jmapcore.MethodError)) (any, *jmapcore.MethodError) {
+	h, err := lazy.get()
+	if err != nil {
+		slog.Warn("jmap: mail store unavailable", "err", err)
+		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail, Description: "mail store unavailable"}
+	}
+	return fn(h)
 }
 
 // mailboxGet implements Mailbox/get (RFC 8621 §2.1).

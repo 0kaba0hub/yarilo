@@ -21,10 +21,10 @@ func declaredCapabilities() []string {
 // registry is the method set for one request. It is built per request because
 // the data methods close over that user's storage handle; JMAP has no session
 // to hang them on.
-func (s *Server) registry(h *userHandle, accountID string) jmapcore.Registry {
+func (s *Server) registry(lazy *lazyStore, accountID string) jmapcore.Registry {
 	reg := jmapcore.CoreRegistry()
-	if h != nil {
-		for name, entry := range s.mailboxRegistry(h, accountID) {
+	if lazy.storage != nil {
+		for name, entry := range s.mailboxRegistry(lazy, accountID) {
 			reg[name] = entry
 		}
 	}
@@ -53,21 +53,14 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, id identity) 
 		rerr.Write(w)
 		return
 	}
-	// The handle opens after the envelope parses, so a malformed request never
-	// touches storage, and closes with the request: JMAP has no session to keep
-	// it alive and a cache would need an invalidation story nothing can supply.
-	var h *userHandle
-	if s.opts.Storage != nil {
-		h, err = s.opts.Storage.open(id.user)
-		if err != nil {
-			slog.Warn("jmap: storage open failed", "user", id.user, "session", id.sessionID, "err", err)
-			jmapcore.WriteProblem(w, http.StatusServiceUnavailable, "Mail store unavailable")
-			return
-		}
-		defer h.close()
-	}
+	// The store opens lazily, on the first method that actually needs it, and
+	// closes with the request. Opening up front would fail a whole batch on a
+	// dependency the batch may not use — and Core/echo, which exists to
+	// diagnose exactly that, would be the first casualty.
+	lazy := &lazyStore{storage: s.opts.Storage, user: id.user}
+	defer lazy.close()
 
-	resp := jmapcore.Execute(r.Context(), req, s.registry(h, id.user), s.opts.Limits)
+	resp := jmapcore.Execute(r.Context(), req, s.registry(lazy, id.user), s.opts.Limits)
 	slog.Debug("jmap: api", "user", id.user, "session", id.sessionID, "calls", len(req.MethodCalls))
 	jmapcore.WriteJSON(w, http.StatusOK, resp)
 }

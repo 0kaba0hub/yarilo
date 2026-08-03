@@ -694,6 +694,18 @@ data:
       director_tag: {{ .Values.components.pop3Login.director_tag | quote }}
     {{- end }}
 
+    {{- if ((.Values.components.jmap | default dict).enabled) }}
+    jmap_service:
+      {{- /* The MASTER listener, not auth_service.addr: userdb lookups speak a
+             different protocol than the client listener, and pointing this at
+             the client one fails every lookup (#994). */}}
+      {{- if (.Values.components.jmap | default dict).auth_master_addr }}
+      auth_master_addr: {{ .Values.components.jmap.auth_master_addr | quote }}
+      {{- else if .Values.components.auth.masterListen }}
+      auth_master_addr: {{ printf "%s-auth.%s.svc.cluster.local:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
+      {{- end }}
+    {{- end }}
+
     {{- if ((.Values.components.jmapLogin | default dict).enabled) }}
     jmap_login_service:
       backend_addr: {{ .Values.components.jmapLogin.backend_addr | quote }}
