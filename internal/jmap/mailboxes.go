@@ -83,7 +83,7 @@ func (s *Server) mailboxList(h *userHandle) ([]jmapcore.Mailbox, error) {
 		if err != nil {
 			return nil, fmt.Errorf("jmap: open folder %q: %w", e.Name, err)
 		}
-		ids[e.Name] = hex.EncodeToString(f.GUID[:])
+		ids[e.Name] = mailboxID(f.GUID)
 		folders[e.Name] = f
 	}
 
@@ -126,6 +126,13 @@ func (s *Server) mailboxList(h *userHandle) ([]jmapcore.Mailbox, error) {
 		out = append(out, mb)
 	}
 	return out, nil
+}
+
+// mailboxID is the id a client sees for a mailbox: the same string IMAP reports
+// as MAILBOXID (RFC 8474), through the same formatter, so the two protocols
+// name one mailbox identically by construction rather than by coincidence.
+func mailboxID(guid [16]byte) string {
+	return mailbox.FormatObjectID(guid)
 }
 
 // containerID names a \NoSelect node, which has no index entry and therefore no
@@ -202,5 +209,8 @@ func mailboxState(list []jmapcore.Mailbox) string {
 		}
 		h.Write([]byte{0}) //nolint:errcheck
 	}
+	// Deliberately not FormatObjectID: this is a digest of the set, not an
+	// object id. Routing it through the identity formatter would tie a state
+	// string to an identity format it has nothing to do with.
 	return hex.EncodeToString(h.Sum(nil)[:8])
 }

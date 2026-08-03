@@ -1,7 +1,6 @@
 package jmap
 
 import (
-	"encoding/hex"
 	"fmt"
 	"io"
 	"mime"
@@ -31,10 +30,11 @@ type messageRef struct {
 }
 
 // emailID is the message GUID, which is also its EMAILID in IMAP (RFC 8474).
-// One identity across both protocols is the point: the same message is the same
-// object whichever way a client reaches it.
+// One identity across both protocols is the point, so it goes through the same
+// formatter IMAP uses: encoding it here as well would make the match a
+// coincidence of implementation that a format change would silently break.
 func emailID(m *mailbox.MessageMeta) string {
-	return hex.EncodeToString(m.GUID[:])
+	return mailbox.FormatObjectID(m.GUID)
 }
 
 // findMessages walks the user's folders for the requested ids. Nothing indexes
@@ -58,7 +58,7 @@ func (s *Server) findMessages(h *userHandle, want map[string]bool) (map[string]m
 		if err != nil {
 			return nil, fmt.Errorf("jmap: read folder %q: %w", e.Name, err)
 		}
-		mboxID := hex.EncodeToString(f.GUID[:])
+		mboxID := mailboxID(f.GUID)
 		for _, m := range metas {
 			id := emailID(m)
 			if want != nil && !want[id] {
