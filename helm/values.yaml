@@ -2138,6 +2138,22 @@ database:
 ## -------------------------------------------------------------------
 telemetry:
   listen: ":8080"
+  # Go runtime profilers on the telemetry port. Disabled by default: this is a
+  # switch thrown for the duration of an investigation, and the component logs a
+  # warning at every start while it is on — the failure mode is not enabling it,
+  # it is enabling it for an afternoon and leaving it on for a year.
+  #
+  # enabled serves the profiles that describe execution: CPU, execution trace,
+  # allocations, goroutines, block and mutex. These are stacks and counts.
+  #
+  # heapEnabled is separate because it differs in kind, not degree:
+  # /debug/pprof/heap dumps the live objects of a process that has just parsed
+  # other people's mail, so the dump can contain message bodies. Finding where
+  # CPU and allocations go does not need it — leave it off unless the question
+  # is specifically what is retained.
+  pprof:
+    enabled: false
+    heapEnabled: false
   # Timer-driven liveness watchdog (#904). Disabled by default: it restarts a
   # pod whose request path is wedged (a deadlock, a hung NFS handle) while the
   # process and this HTTP server keep answering — so it is only meaningful once a

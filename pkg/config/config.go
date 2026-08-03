@@ -1807,6 +1807,19 @@ type StorageConfig struct {
 type TelemetryConfig struct {
 	Listen           string                 `koanf:"listen"`
 	LivenessWatchdog LivenessWatchdogConfig `koanf:"liveness_watchdog"`
+	// PprofEnabled serves the Go runtime profilers on the telemetry port:
+	// CPU, execution trace, and the allocation, goroutine, block and mutex
+	// profiles. Off by default — it is a switch thrown for the duration of an
+	// investigation, and the process logs a warning at every start while it is
+	// on, because the failure mode is leaving it enabled and forgetting.
+	PprofEnabled bool `koanf:"telemetry_pprof_enabled"`
+	// PprofHeapEnabled additionally serves /debug/pprof/heap.
+	//
+	// A separate knob because the two differ in kind. The allocation profile
+	// records where allocations were made; the heap profile dumps the live
+	// objects of a process whose live objects are other people's mail. Finding
+	// where CPU and allocations go never needs this one.
+	PprofHeapEnabled bool `koanf:"telemetry_pprof_heap_enabled"`
 }
 
 // LivenessWatchdogConfig tunes the timer-driven liveness self-check (#904). It
@@ -2049,7 +2062,9 @@ func Load(path string) (*Config, error) {
 			HAProxyTimeout: 3,
 		},
 		Telemetry: TelemetryConfig{
-			Listen: ":8080",
+			Listen:           ":8080",
+			PprofEnabled:     false,
+			PprofHeapEnabled: false,
 			LivenessWatchdog: LivenessWatchdogConfig{
 				Enabled:          false,
 				IntervalSeconds:  10,

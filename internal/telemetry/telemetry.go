@@ -106,6 +106,9 @@ type Options struct {
 	// watchdog end to end. Off unless the component opts in via config; the same
 	// gate is what the watchdog Check enters.
 	Fault *Gate
+	// Pprof opts into the Go runtime profilers on this same port. Off unless
+	// the component enables it from config.
+	Pprof PprofOptions
 }
 
 // New creates a telemetry server listening on addr, serving the default registry
@@ -131,6 +134,7 @@ func NewWithOptions(opts Options) *Server {
 		mux.HandleFunc("/debug/fault/deadlock", s.faultHandler)
 	}
 	mux.Handle("/metrics", metrics)
+	registerPprof(mux, opts.Pprof)
 	publishLogLevel()
 	s.srv = &http.Server{Addr: opts.Addr, Handler: mux}
 	return s

@@ -247,6 +247,49 @@ Config (snake_case, section-prefixed; `yarilo.yaml` + Helm `values.yaml`):
 self-destruct switch that exposes `POST /debug/fault/deadlock` to confirm the
 restart path on a live pod, off by default.
 
+### Profiling a live pod
+
+The Go runtime profilers are served on the telemetry port, and are **off by
+default**. They answer questions no metric can: which function a saturated
+worker is actually in, where a component's allocations come from, and why
+adding CPU makes a stage slower rather than faster.
+
+Two switches, because two levels of exposure:
+
+| Value | Serves | Contains |
+|:---|:---|:---|
+| `telemetry.pprof.enabled` | `/debug/pprof/profile`, `trace`, `allocs`, `goroutine`, `block`, `mutex`, `threadcreate`, `cmdline`, `symbol` | stacks and counts — where time and allocations go |
+| `telemetry.pprof.heapEnabled` | `/debug/pprof/heap` | **live objects of a process that has just parsed other people's mail** — a dump can contain message bodies |
+
+They are separate on purpose. Finding where CPU and allocations go — which is
+almost always the question — needs only the first. Turn the heap dump on when
+the question is specifically what is *retained*, and turn it off again after.
+
+There is no `/debug/pprof/` index page: it dispatches any path under it to the
+runtime profile of that name, which would serve the heap dump whatever the
+second switch says.
+
+While either switch is on, every component logs a warning **at every start**
+naming what is exposed. That is deliberate — the failure this guards against is
+not enabling profiling, it is enabling it for an afternoon's investigation and
+leaving it on for a year.
+
+Taking a profile, with the telemetry port reachable only inside the cluster:
+
+```sh
+kubectl -n <ns> port-forward pod/<pod> 8080:<telemetry-port>
+
+# 30 seconds of CPU, which is what identifies a hot stage
+go tool pprof -http=: "http://localhost:8080/debug/pprof/profile?seconds=30"
+
+# where allocations are made, no message content involved
+go tool pprof -http=: http://localhost:8080/debug/pprof/allocs
+```
+
+The telemetry port differs per container in the co-located backend pod — each
+is told its own via `TELEMETRY_LISTEN` — so take it from the container's
+`ports:` rather than assuming `8080`.
+
 ### JMAP — the HTTP frontend/backend split
 
 JMAP is HTTP, so the layers split the same way as every other protocol but the
