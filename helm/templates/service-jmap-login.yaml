@@ -1,0 +1,41 @@
+{{- if .Values.components.jmapLogin.enabled }}
+## LoadBalancer — JMAP client connections (HTTPS:443 -> :8443).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-jmap-login
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap-login") | nindent 4 }}
+  {{- with .Values.components.jmapLogin.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.components.jmapLogin.service.type }}
+  ports:
+    - name: jmap
+      port: {{ .Values.components.jmapLogin.listeners.jmap.servicePort }}
+      targetPort: jmap
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "jmap-login") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-jmap-login-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap-login") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: 8087
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "jmap-login") | nindent 4 }}
+{{- end }}

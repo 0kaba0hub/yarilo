@@ -102,6 +102,7 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 | yarilo-managesieve-login | ManageSieve login proxy — STARTTLS, HAProxy | ✅ |
 | yarilo-submission | Submission relay server | ✅ |
 | yarilo-submission-login | Submission login proxy | ✅ |
+| yarilo-jmap-login | JMAP login proxy — TLS termination, auth, warden, HTTP proxy | ✅ |
 | yarilo-sasl-login | SASL auth socket for Postfix / Exim relay | ✅ |
 | yarilo-auth | Passdb chain, auth cache, SASL dispatch, master userdb | ✅ |
 | yarilo-warden | Connection rate limiting + penalty | ✅ |

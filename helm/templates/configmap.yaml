@@ -95,6 +95,19 @@ data:
         enabled: {{ $msL.enabled | default false }}
         port: {{ $msL.containerPort | default 14190 }}
         ssl_mode: "no"
+      {{- $jmapL := (((.Values.components.jmapLogin | default dict).listeners | default dict).jmap | default dict) }}
+      jmap:
+        enabled: {{ $jmapL.enabled | default false }}
+        port: {{ $jmapL.containerPort | default 8443 }}
+        ssl_mode: ssl
+        connection_limit: {{ $jmapL.connectionLimit | default 0 | int64 }}
+        haproxy_protocol: {{ .Values.general.haproxy.enabled }}
+        disable_plaintext_auth: {{ $jmapL.disablePlainAuth | default false }}
+      {{- $jmapBE := (((.Values.components.jmapLogin | default dict).listeners | default dict).jmapBackend | default dict) }}
+      jmap_be:
+        enabled: {{ $jmapBE.enabled | default false }}
+        port: {{ $jmapBE.containerPort | default 10443 }}
+        ssl_mode: "no"
 
     protocol:
       imap:
@@ -158,6 +171,12 @@ data:
       managesieve:
         max_script_size: {{ (.Values.protocol.managesieve | default dict).max_script_size | default 65536 | int64 }}
         max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).max_invalid_commands | default 3 }}
+      jmap:
+        {{- $jmapP := (.Values.protocol.jmap | default dict) }}
+        jmap_cors_allow_origins:
+        {{- range ($jmapP.jmap_cors_allow_origins | default list) }}
+          - {{ . | quote }}
+        {{- end }}
 
     sieve:
       {{- $sieve := (.Values.sieve | default dict) }}
@@ -661,6 +680,14 @@ data:
       director_addr: {{ .Values.components.pop3Login.director_addr | quote }}
       backend_port: {{ .Values.components.pop3Login.backend_port | default 0 }}
       director_tag: {{ .Values.components.pop3Login.director_tag | quote }}
+    {{- end }}
+
+    {{- if ((.Values.components.jmapLogin | default dict).enabled) }}
+    jmap_login_service:
+      backend_addr: {{ .Values.components.jmapLogin.backend_addr | quote }}
+      director_addr: {{ .Values.components.jmapLogin.director_addr | quote }}
+      backend_port: {{ .Values.components.jmapLogin.backend_port | default 0 }}
+      director_tag: {{ .Values.components.jmapLogin.director_tag | quote }}
     {{- end }}
 
     {{- if .Values.components.submissionLogin.enabled }}

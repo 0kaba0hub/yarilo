@@ -1638,6 +1638,88 @@ components:
         cpu: 200m
         memory: 128Mi
 
+  ## JMAP login pod — TLS terminator + director LOOKUP + per-request HTTP proxy
+  ## to the yarilo-jmap backend container. Internet-facing, like the other
+  ## *Login pods; not part of the co-located backend StatefulSet.
+  jmapLogin:
+    enabled: false
+    replicas: 1
+
+    ## startupProbe waits for yarilo-auth and yarilo-warden to report ready before this pod takes
+    ## traffic, replacing its wait-* init containers (#903). Safe because a login
+    ## pod does not dial its dependencies during startup — the connections are
+    ## created lazily on the first request.
+    ##
+    ## periodSeconds x failureThreshold is the startup budget (2s x 90 = 3 min).
+    ## Prefer generous: exceeding it restarts a pod that is healthy and merely
+    ## waiting, which the init container never did.
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
+
+    listeners:
+      ## Client-facing HTTPS. containerPort is services.jmap.port.
+      jmap:
+        enabled: true
+        servicePort: 443
+        containerPort: 8443
+        ## Per-user/IP accounting held in warden. 0 = unlimited.
+        connectionLimit: 0
+        ## Refuse Basic credentials on a non-TLS listener.
+        disablePlainAuth: true
+      ## The backend listener this login proxies TO (services.jmap_be).
+      ## The backend container itself lands with the yarilo-jmap PR; the port
+      ## is published here because the login reads it to know where to dial.
+      jmapBackend:
+        enabled: false
+        containerPort: 10443
+
+    ## TLS cert presented to JMAP clients. Required while the listener's
+    ## ssl_mode is ssl: the proxy refuses to start without one rather than
+    ## serving :8443 in the clear, which would carry Basic credentials in
+    ## plaintext while looking healthy. Set ssl_mode to "no" only when TLS is
+    ## terminated by an ingress in front of this pod.
+    tls:
+      secretName: ""
+      certificate:
+        enabled: false
+        issuerRef:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        dnsNames: []
+
+    ## mTLS for connections to director and backend pods.
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    ## Standalone mode: fixed backend address (set either this or director_addr).
+    ## Set to "<release>-jmap:<port>".
+    backend_addr: ""
+    ## Director mode: per-request LOOKUP via yarilo-director (set either this
+    ## or backend_addr). One of the two is required (#735). Precedence when
+    ## BOTH are set: backend_addr wins — see imapLogin's comment for why.
+    director_addr: ""
+    ## backend_port overrides the port in the director LOOKUP result.
+    ## 0 = use the LOOKUP result port as-is.
+    backend_port: 0
+    ## director_tag — see imapLogin's comment for the tag/pool-topology rule.
+    director_tag: ""
+
+    service:
+      type: LoadBalancer
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
 ## -------------------------------------------------------------------
 ## Protocol tuning
 ## -------------------------------------------------------------------
@@ -1709,6 +1791,13 @@ protocol:
   managesieve:
     max_script_size: 65536
     max_invalid_commands: 3
+
+  jmap:
+    ## Browser origins allowed to call the JMAP endpoint. Empty denies every
+    ## cross-origin request, which is the default: an endpoint any page can
+    ## call with the user's credentials is an account-takeover surface. Exact
+    ## match, scheme included. "*" is accepted but cannot carry credentials.
+    jmap_cors_allow_origins: []
 
 ## -------------------------------------------------------------------
 ## Sieve mail filtering
