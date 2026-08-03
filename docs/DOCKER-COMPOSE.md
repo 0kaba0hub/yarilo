@@ -20,7 +20,7 @@ Everything lives in [`deploy/compose/`](../deploy/compose).
 |:---|:---|
 | Infra | `redis`, `yarilo-auth` (userdb), `yarilo-warden`, `yarilo-locks` |
 | Session backends | `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`, `yarilo-submission`, `yarilo-managesieve` |
-| Login proxies (TLS) | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`, `yarilo-managesieve-login` |
+| Login proxies (TLS) | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`, `yarilo-managesieve-login`, `yarilo-jmap-login` (commented out until the JMAP backend lands) |
 | MTA integration | `yarilo-sasl-login` (SASL auth for Postfix), `yarilo-quota-status` (quota policy) |
 
 The userdb is SQLite (`yarilo-auth` owns it in the `state` volume); mail lives in

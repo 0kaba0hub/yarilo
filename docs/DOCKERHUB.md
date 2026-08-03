@@ -36,6 +36,7 @@ This is a **single image** containing every yarilo binary. The component to run 
 | `yarilo-lmtp` / `yarilo-lmtp-login` | LMTP delivery / login proxy |
 | `yarilo-submission` / `yarilo-submission-login` | Submission relay / login proxy |
 | `yarilo-managesieve` / `yarilo-managesieve-login` | ManageSieve backend / login proxy |
+| `yarilo-jmap-login` | JMAP login proxy (the backend lands separately) |
 | `yarilo-sasl-login` | SASL auth socket (Postfix / Exim relay) |
 | `yarilo-auth` · `yarilo-warden` · `yarilo-locks` | Shared services (passdb, rate-limit, write locks) |
 | `yarilo-director` · `yarilo-backend-api` · `yarilo-backend-reg` | Director ring, admin API, backend registration sidecar |
