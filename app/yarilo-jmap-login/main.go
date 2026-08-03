@@ -118,6 +118,7 @@ func main() {
 		HAProxyTimeout:     time.Duration(cfg.General.HAProxy.Timeout) * time.Second,
 		LocalIP:            os.Getenv("POD_IP"),
 		CORSAllowOrigins:   cfg.Protocol.JMAP.CORSAllowOrigins,
+		MaxSizeRequest:     cfg.Protocol.JMAP.MaxSizeRequest,
 	})
 	tel.SetReady(true)
 	if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {

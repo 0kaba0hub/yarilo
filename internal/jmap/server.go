@@ -45,6 +45,7 @@ type Server struct {
 func New(opts Options) *Server {
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET "+jmapcore.SessionPath, s.guard(s.handleSession))
+	s.mux.HandleFunc("POST "+apiPath, s.guard(s.handleAPI))
 	return s
 }
 
