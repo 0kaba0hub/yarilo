@@ -27,6 +27,7 @@ type Config struct {
 	BackendRegister    BackendRegisterConfig        `koanf:"backend_register"`
 	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
 	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
+	JMAPLoginService   JMAPLoginServiceConfig       `koanf:"jmap_login_service"`
 	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
 	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
 	LocksService       LocksServiceConfig           `koanf:"locks_service"`
@@ -311,6 +312,8 @@ type ServicesConfig struct {
 	LMTP          *ServiceConfig `koanf:"lmtp"`           // port 24, local delivery (no auth, loopback only)
 	ManageSieve   *ServiceConfig `koanf:"managesieve"`    // port 4190, STARTTLS (login pod)
 	ManageSieveBE *ServiceConfig `koanf:"managesieve_be"` // ManageSieve backend (internal)
+	JMAP          *ServiceConfig `koanf:"jmap"`           // port 8443, HTTPS (yarilo-jmap-login)
+	JMAPBE        *ServiceConfig `koanf:"jmap_be"`        // port 10443, JMAP backend (internal, behind login)
 }
 
 // ProtocolConfig holds protocol-level behaviour settings, independent of listener.
@@ -1173,6 +1176,16 @@ type IMAPLoginServiceConfig struct {
 	// Must match the tag of the backend pool this login Deployment serves
 	// (DEPLOYMENT.md: one login pod = one tag-pool). "" = the untagged pool.
 	DirectorTag string `koanf:"director_tag"`
+}
+
+// JMAPLoginServiceConfig mirrors IMAPLoginServiceConfig for the JMAP proxy.
+// The hop it fronts is per-request HTTP rather than a byte pipe, so the same
+// fields select the route while the transport differs.
+type JMAPLoginServiceConfig struct {
+	BackendAddr  string `koanf:"backend_addr"`
+	DirectorAddr string `koanf:"director_addr"`
+	BackendPort  int    `koanf:"backend_port"`
+	DirectorTag  string `koanf:"director_tag"`
 }
 
 // POP3LoginServiceConfig mirrors IMAPLoginServiceConfig for the POP3 proxy.
