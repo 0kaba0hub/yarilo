@@ -1,0 +1,50 @@
+# IMAP session load against the sandbox.
+#
+# Persistent clients, not a connection per command: IMAP spends its resources
+# per session — the index handle, the cached mailbox view, hibernation — and a
+# generator that reconnects measures the login path instead of any of it.
+#
+#   kubectl apply -f hack/loadtest/imap-job.yaml
+#   kubectl -n yarilo-sb logs -f job/yarilo-loadtest-imap
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yarilo-loadtest-imap
+  namespace: yarilo-sb
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadtest
+        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        args:
+        - -protocol=imap
+        - -addr=yarilo-imap-login.yarilo-sb.svc.cluster.local:143
+        - -users=u1@d00001.test:150
+        - -password=Yarilo!test1
+        - -concurrency=16
+        - -duration=5m
+        # Several mailboxes per user is the condition worth testing against a
+        # server that dispatches index work per user: more than one mailbox of
+        # one user wanting a pass at the same time.
+        - -mailboxes-per-user=4
+        - -create-mailboxes=true
+        # Steady state. Without it the mailbox grows through the whole run, so
+        # the same operation costs more at the end than at the start and no two
+        # measurements from one run are comparable.
+        - -msgs=200
+        - -min-size=20480
+        - -max-size=1048576
+        - -attachment-ratio=0.5
+        - -seed=20260802
+        - -interval=10s
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
