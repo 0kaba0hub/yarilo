@@ -268,7 +268,9 @@ the director and proxies the request to that pod's `yarilo-jmap` over **internal
 mTLS**, carrying `X-Session-ID`, `X-Proxy-TTL` and `Forwarded` (RFC 7239). The
 exact header contract lives in INTERNALS.md; `Forwarded` is the HTTP-native
 equivalent of XCLIENT, giving the backend the real client IP and TLS state for
-logging, warden attribution and `allow_nets`.
+logging and warden attribution. `allow_nets` is enforced in the login pod
+against the real client before proxying, as for every other protocol — one
+enforcement point, not two.
 
 **Trust boundary.** Identity travels in headers, so a request carrying
 `X-Session-ID` or `Forwarded` is honoured only from a peer the backend has been
