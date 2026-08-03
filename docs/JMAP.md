@@ -147,6 +147,14 @@ floor: a request arriving there oversized means the hop was bypassed. Every
 limit problem carries the `limit` member (§3.6.1) — "too big" is useless without
 naming the bound.
 
+The clean refusal needs a declared length. A request whose `Content-Length`
+exceeds the cap is answered with the `limit` problem before anything is read; a
+chunked body, or one that understates its length, is instead cut off by the
+reader as it is proxied, so that client sees a broken response rather than a
+problem document. The excess never reaches a backend either way, and a client
+sending `Content-Length` — which is every real JMAP client — always gets the
+parseable answer.
+
 ---
 
 ## Capabilities
