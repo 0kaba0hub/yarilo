@@ -686,7 +686,8 @@ queues that mailbox.
 | `fts_queue_requeued_total` | mailboxes put back because a request arrived mid-pass |
 | `fts_fetch_seconds` | opening a message — **not** reading it |
 | `fts_read_seconds` | time actually blocked reading a message's bytes |
-| `fts_build_seconds` | tokenising, now that reading happens separately |
+| `fts_build_seconds` | the whole of indexing one message |
+| `fts_build_stage_seconds{stage}` | where that time went: `parse`, `decode`, `tokenize`, `write` |
 | `fts_prefetch_inflight_bytes` | bytes read ahead and not yet indexed |
 | `fts_prefetch_stall_seconds` | the reader waiting for window space — growth means the ceiling is the bottleneck, not the disk |
 | `fts_message_bytes` | the size those two are relative to; 200ms on 30MB and on 3KB are different diagnoses |
@@ -699,6 +700,28 @@ queues that mailbox.
 into the tokeniser, so every byte of storage I/O was being counted as parsing —
 which made the read share look like 7% of a pass when the real figure was
 unknown. `fts_read_seconds` is what settles that.
+
+`fts_build_seconds` answers "is indexing CPU-bound" — it is, overwhelmingly.
+`fts_build_stage_seconds` answers the next question, which is what the CPU is
+doing:
+
+- `parse` — reading the MIME structure;
+- `decode` — extracting text from attachments, including anything handed to an
+  external decoder;
+- `write` — feeding terms to the engine;
+- `tokenize` — the remainder.
+
+Those first three are timed directly. Tokenising is **derived**: reading a text
+part is interleaved with tokenising it, because the reader feeds the tokeniser
+through a callback, and separating them would require every layer to subtract
+its children. So `tokenize` is the pass time that is not parsing, decoding or
+writing — accurate as a share, not as an isolated measurement, and named here
+rather than left to look measured.
+
+The split matters because the fixes differ. Decoding an attachment that yields
+no useful terms and tokenising a body cost the same in the total, and one is a
+question about `fts_message_max_size` and the decoder settings — what is worth
+indexing at all — while the other is a question about the tokeniser.
 
 The two lag gauges are the ones a user feels: "search does not find recent
 mail". Everything else is a proxy for them.

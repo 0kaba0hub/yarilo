@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/mail"
 	"strings"
+	"time"
 
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset"
@@ -104,6 +105,9 @@ type buildState struct {
 	uid        uint32
 	remaining  int64
 	seenHashes map[uint64]struct{}
+	// stages records where this message's time went, so a pass can be read as
+	// "decoding attachments" or "tokenising text" rather than as one number.
+	stages stageTimes
 }
 
 // defaultDetectionSampleBytes bounds the language-detection sample read from a
@@ -126,15 +130,23 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 		remaining = -1 // unlimited
 	}
 
-	e, err := message.Read(raw)
-	if err != nil && !message.IsUnknownCharset(err) {
-		return fmt.Errorf("fts/buildmail: parse: %w", err)
-	}
-
 	st := &buildState{uid: uid, remaining: remaining}
 	if b.opts.DedupBodyParts {
 		st.seenHashes = make(map[uint64]struct{})
 	}
+	t0 := time.Now()
+	defer func() { st.stages.observe(time.Since(t0)) }()
+
+	var e *message.Entity
+	perr := track(&st.stages.parse, func() error {
+		var rerr error
+		e, rerr = message.Read(raw)
+		return rerr
+	})
+	if perr != nil && !message.IsUnknownCharset(perr) {
+		return fmt.Errorf("fts/buildmail: parse: %w", perr)
+	}
+
 	return b.walkEntity(st, e, 0, upd)
 }
 
@@ -320,7 +332,7 @@ func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd
 		if accept, err := upd.SetBuildKey(fts.BuildKey{UID: st.uid, Type: keyType}); err != nil {
 			return err
 		} else if accept {
-			if err := b.writeDataChain(name, upd); err != nil {
+			if err := b.writeDataChain(st, name, upd); err != nil {
 				return err
 			}
 		}
@@ -340,7 +352,7 @@ func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd
 		if addressHeaders[strings.ToLower(name)] {
 			tokenizeText = addressHeaderText(raw, value)
 		}
-		if err := b.writeDataChain(tokenizeText, upd); err != nil {
+		if err := b.writeDataChain(st, tokenizeText, upd); err != nil {
 			return err
 		}
 	}
@@ -349,9 +361,9 @@ func (b *Builder) buildHeaders(st *buildState, e *message.Entity, depth int, upd
 
 // writeDataChain runs text through a fresh no-stemming data-chain session into
 // upd. Fresh per call: tokenizer state must not leak between build keys.
-func (b *Builder) writeDataChain(text string, upd fts.Update) error {
+func (b *Builder) writeDataChain(st *buildState, text string, upd fts.Update) error {
 	session := b.dataChain.NewIndexSession(func(tok string) error {
-		return upd.BuildMore([]byte(tok))
+		return track(&st.stages.write, func() error { return upd.BuildMore([]byte(tok)) })
 	})
 	if err := session.Write([]byte(text)); err != nil {
 		return err
@@ -409,7 +421,15 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 	_, dispParams, _ := e.Header.ContentDisposition()
 	filename := dispParams["filename"]
 
-	text, ok, err := b.opts.Decoder.Decode(context.Background(), mediaType, filename, e.Body)
+	var (
+		text []byte
+		ok   bool
+	)
+	err := track(&st.stages.decode, func() error {
+		var derr error
+		text, ok, derr = b.opts.Decoder.Decode(context.Background(), mediaType, filename, e.Body)
+		return derr
+	})
 	if err != nil {
 		if errors.Is(err, decoder.ErrDegraded) {
 			// Retries against a transient condition (network error, 5xx) were
@@ -516,7 +536,7 @@ func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentTy
 		}
 		text = capBytes(text)
 		session := chain.NewIndexSession(func(tok string) error {
-			return upd.BuildMore([]byte(tok))
+			return track(&st.stages.write, func() error { return upd.BuildMore([]byte(tok)) })
 		})
 		if werr := session.Write(text); werr != nil {
 			_ = session.Close()
@@ -537,7 +557,7 @@ func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentTy
 		return nil
 	}
 	session := chain.NewIndexSession(func(tok string) error {
-		return upd.BuildMore([]byte(tok))
+		return track(&st.stages.write, func() error { return upd.BuildMore([]byte(tok)) })
 	})
 	sinkErr := produce(func(p []byte) error {
 		if st.remaining == 0 {
