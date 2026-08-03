@@ -55,14 +55,14 @@
        Outer wrapper: director deployment
   ══════════════════════════════════════════════════ -->
   <rect x="15" y="150" width="1210" height="542" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
-  <rect x="1000" y="152" width="223" height="24" rx="2" fill="#0f172a"/>
+  <rect x="948" y="152" width="275" height="24" rx="2" fill="#0f172a"/>
   <text x="1218" y="169" text-anchor="end" fill="#f8fafc" font-size="11" font-weight="bold">director · StatefulSet × 3 (peer-sync)</text>
 
   <!-- External entry arrows (MUA/MTA → login proxies) -->
   <line x1="320" y1="130" x2="140" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
   <line x1="450" y1="130" x2="360" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
   <line x1="600" y1="130" x2="580" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
-  <line x1="860" y1="130" x2="800" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
+  <line x1="880" y1="130" x2="935" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
 
   <!-- ══════════════════════════════════════════════════
        Login proxies row (TLS terminate, preamble parse)
@@ -82,15 +82,15 @@
   <text x="580" y="223" text-anchor="middle" fill="#475569" font-size="10">:465 / :587</text>
   <text x="580" y="239" text-anchor="middle" fill="#475569" font-size="9">TLS · preamble · proxy</text>
 
-  <rect x="700" y="182" width="200" height="72" rx="5" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
-  <text x="800" y="205" text-anchor="middle" fill="#0d9488" font-size="12" font-weight="bold">yarilo-lmtp-login</text>
-  <text x="800" y="223" text-anchor="middle" fill="#475569" font-size="10">:24 (LMTP)</text>
-  <text x="800" y="239" text-anchor="middle" fill="#475569" font-size="9">warden CONNECT · SESSION · fan-out</text>
+  <rect x="700" y="182" width="200" height="72" rx="5" fill="#fff1f2" stroke="#be123c" stroke-width="2"/>
+  <text x="800" y="204" text-anchor="middle" fill="#be123c" font-size="12" font-weight="bold">yarilo-jmap-login</text>
+  <text x="800" y="222" text-anchor="middle" fill="#475569" font-size="10">:8443 (HTTPS)</text>
+  <text x="800" y="240" text-anchor="middle" fill="#475569" font-size="9">TLS · headers · proxy</text>
 
-  <rect x="920" y="182" width="200" height="72" rx="5" fill="#fff1f2" stroke="#be123c" stroke-width="2"/>
-  <text x="1020" y="204" text-anchor="middle" fill="#be123c" font-size="12" font-weight="bold">yarilo-jmap-login</text>
-  <text x="1020" y="222" text-anchor="middle" fill="#475569" font-size="10">:8443 (HTTPS)</text>
-  <text x="1020" y="240" text-anchor="middle" fill="#475569" font-size="9">TLS · auth · warden · HTTP proxy</text>
+  <rect x="920" y="182" width="200" height="72" rx="5" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
+  <text x="1020" y="205" text-anchor="middle" fill="#0d9488" font-size="12" font-weight="bold">yarilo-lmtp-login</text>
+  <text x="1020" y="223" text-anchor="middle" fill="#475569" font-size="10">:24 (LMTP)</text>
+  <text x="1020" y="239" text-anchor="middle" fill="#475569" font-size="9">warden CONNECT · SESSION · fan-out</text>
 
   <!-- Control-plane bus (login-proxies → shared services) -->
   <line x1="140" y1="254" x2="140" y2="282" stroke="#64748b" stroke-width="1.8"/>
@@ -106,7 +106,7 @@
   <line x1="1020" y1="254" x2="1020" y2="282" stroke="#64748b" stroke-width="1.8"/>
   <text x="470" y="275" text-anchor="middle" fill="#475569" font-size="10" font-weight="bold">control plane · mTLS</text>
 
-  <line x1="702" y1="131" x2="1012" y2="178" stroke="#be123c" stroke-width="1.8" marker-end="url(#ad)"/>
+  <line x1="700" y1="131" x2="800" y2="178" stroke="#be123c" stroke-width="1.8" marker-end="url(#ad)"/>
 
   <!-- Bus → shared services (UP through wrapper top) -->
   <line x1="140" y1="282" x2="140" y2="132" stroke="#ca8a04" stroke-width="1.8" marker-end="url(#aa)"/>
@@ -187,10 +187,10 @@
   <text x="588" y="717" text-anchor="start" fill="#0f766e" font-size="10" font-weight="bold">submission</text>
 
   <line x1="800" y1="692" x2="800" y2="730" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
-  <text x="808" y="717" text-anchor="start" fill="#0f766e" font-size="10" font-weight="bold">lmtp</text>
+  <text x="808" y="717" text-anchor="start" fill="#0f766e" font-size="10" font-weight="bold">jmap</text>
 
   <line x1="1020" y1="692" x2="1020" y2="730" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
-  <text x="1028" y="717" text-anchor="start" fill="#0f766e" font-size="10" font-weight="bold">jmap</text>
+  <text x="1028" y="717" text-anchor="start" fill="#0f766e" font-size="10" font-weight="bold">lmtp</text>
 
   <line x1="60" y1="730" x2="1180" y2="730" stroke="#0f766e" stroke-width="1.5" stroke-dasharray="4,3"/>
   <text x="60" y="724" text-anchor="start" fill="#0f766e" font-size="9" font-style="italic">data plane · ring-routed by director (per tag · per user)</text>

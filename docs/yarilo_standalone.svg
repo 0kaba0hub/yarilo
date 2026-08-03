@@ -46,7 +46,7 @@
        Outer Helm release wrapper
   ══════════════════════════════════════════════════ -->
   <rect x="15" y="150" width="1295" height="710" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
-  <rect x="970" y="152" width="323" height="24" rx="2" fill="#0f172a"/>
+  <rect x="873" y="152" width="420" height="24" rx="2" fill="#0f172a"/>
   <text x="1288" y="169" text-anchor="end" fill="#f8fafc" font-size="11" font-weight="bold">Helm release: yarilo-standalone (one chart, many Deployments)</text>
 
   <!-- MUA → login proxies arrows -->
@@ -207,15 +207,15 @@
   <line x1="737" y1="474" x2="737" y2="500" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
   <line x1="942" y1="474" x2="942" y2="500" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
 
-  <path d="M 636 125 L 1058 199" fill="none" stroke="#be123c" stroke-width="1.8" marker-end="url(#aq)"/>
-  <text x="852" y="176" text-anchor="middle" fill="#be123c" font-size="8">JMAP :8443 (HTTPS)</text>
+  <path d="M 636 128 L 862 178 L 1052 199" fill="none" stroke="#be123c" stroke-width="1.8" marker-end="url(#aq)"/>
+  <text x="742" y="146" text-anchor="middle" fill="#be123c" font-size="8">JMAP :8443 (HTTPS)</text>
 
   <!-- JMAP: login proxy + backend session, HTTP hop instead of a byte pipe -->
   <rect x="1050" y="204" width="195" height="76" rx="5" fill="#fff1f2" stroke="#be123c" stroke-width="2"/>
   <text x="1147" y="224" text-anchor="middle" fill="#be123c" font-size="12" font-weight="bold">yarilo-jmap-login</text>
   <text x="1147" y="238" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
   <text x="1147" y="251" text-anchor="middle" fill="#475569" font-size="9">:8443 (TLS) · HTTP</text>
-  <text x="1147" y="264" text-anchor="middle" fill="#475569" font-size="8">TLS terminate · auth · warden · proxy</text>
+  <text x="1147" y="264" text-anchor="middle" fill="#475569" font-size="9">TLS terminate · Basic/Bearer · proxy</text>
   <text x="1147" y="276" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-jmap-login.svc</text>
 
   <line x1="1147" y1="280" x2="1147" y2="342" stroke="#be123c" stroke-width="2" marker-end="url(#aq)"/>
