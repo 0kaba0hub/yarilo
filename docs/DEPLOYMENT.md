@@ -270,12 +270,26 @@ exact header contract lives in INTERNALS.md; `Forwarded` is the HTTP-native
 equivalent of XCLIENT, giving the backend the real client IP and TLS state for
 logging, warden attribution and `allow_nets`.
 
-**Trust boundary.** Identity travels in headers, so `yarilo-jmap` accepts them
-**only** over internal mTLS from the login layer's client certificate. A request
-carrying `X-Session-ID` or `Forwarded` from any other principal is rejected
-outright rather than trusted: without that rule anything able to reach the pod
-could name itself any user. This is enforced in code and covered by a test, not
-left to network policy.
+**Trust boundary.** Identity travels in headers, so a request carrying
+`X-Session-ID` or `Forwarded` is honoured only from a peer the backend has been
+told to trust. Three modes, all default-deny — there is no branch in which an
+unknown peer is believed:
+
+| Anchor | Who may set identity headers |
+|:---|:---|
+| `internal_tls.enabled: true` | only the login layer's client certificate. The k8s mode. |
+| mTLS off, `protocol.jmap.jmap_trusted_networks` set | only peers inside those CIDRs. Same trust mechanism as PROXY protocol and XCLIENT already use. |
+| neither | nobody: identity requests answer `403`, and startup logs that no trust anchor is configured. |
+
+The third case keeps the listener up on purpose. A dead port reads as a network
+fault and sends the operator to the wrong place; a live port answering `403`
+with a named cause diagnoses itself, and `/healthz` and `/readyz` keep working
+instead of the pod entering CrashLoop.
+
+The compose standalone has no certificate infrastructure by design — one host,
+a private docker network — so it names its docker subnet in
+`jmap_trusted_networks` explicitly in the shipped config rather than relying on
+a built-in default.
 
 **`connection_limit` means warden.** On this listener the knob has the same
 meaning as everywhere else: per-user/IP accounting held in warden, shared across
