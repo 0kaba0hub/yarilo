@@ -1,6 +1,7 @@
 package jmaplogin
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ func TestProxySetsTheContractHeaders(t *testing.T) {
 // is the second line of defence; this is the first.
 func TestProxyStripsClientSuppliedIdentity(t *testing.T) {
 	base := startProxy(t, Options{})
-	req, err := http.NewRequest(http.MethodGet, base+"/.well-known/jmap", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/.well-known/jmap", nil)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestProxyStripsClientSuppliedIdentity(t *testing.T) {
 // The hop budget decrements, so a proxy loop terminates instead of spinning.
 func TestProxyDecrementsTheHopBudget(t *testing.T) {
 	base := startProxy(t, Options{})
-	req, err := http.NewRequest(http.MethodGet, base+"/.well-known/jmap", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/.well-known/jmap", nil)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}

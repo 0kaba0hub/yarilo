@@ -134,8 +134,12 @@ func (s *Server) Serve(ctx context.Context) error {
 			if state != http.StateClosed && state != http.StateHijacked {
 				return
 			}
-			if v, ok := s.conns.LoadAndDelete(c); ok {
-				s.releaseConn(v.(*connState))
+			v, loaded := s.conns.LoadAndDelete(c)
+			if !loaded {
+				return
+			}
+			if st, ok := v.(*connState); ok {
+				s.releaseConn(st)
 			}
 		},
 	}

@@ -140,7 +140,7 @@ func keepAliveClient() *http.Client {
 
 func get(t *testing.T, c *http.Client, base, authz string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, base+"/.well-known/jmap", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/.well-known/jmap", nil)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
