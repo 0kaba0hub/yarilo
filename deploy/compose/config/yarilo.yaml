@@ -68,6 +68,23 @@ services:
     enabled: true
     port: 14190
     ssl_mode: "no"
+  ## JMAP client listener on yarilo-jmap-login. The compose service is commented
+  ## out until the yarilo-jmap backend lands; this block is its config.
+  jmap:
+    ## Flip to true together with uncommenting yarilo-jmap-login and
+    ## yarilo-jmap in docker-compose.yml; a listener nobody serves is worse
+    ## than an absent one.
+    enabled: false
+    port: 8443
+    ssl_mode: ssl
+    connection_limit: 0
+    haproxy_protocol: false
+    disable_plaintext_auth: true
+  ## Backend listener the JMAP login proxies to.
+  jmap_be:
+    enabled: false
+    port: 10443
+    ssl_mode: "no"
 
 protocol:
   imap:
@@ -345,6 +362,8 @@ managesieve_login_service:
   backend_addr: "yarilo-managesieve:14190"
 submission_login_service:
   backend_addr: "yarilo-submission:10587"
+jmap_login_service:
+  backend_addr: "yarilo-jmap:10443"
 ## yarilo-backend-api consumes this section. Token is loaded from
 ## the Secret at /etc/yarilo/backend-api-token via $BACKEND_API_TOKEN
 ## env so it never lands in the ConfigMap.

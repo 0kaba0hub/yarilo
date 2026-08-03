@@ -178,6 +178,18 @@ services:
     ports:
       - "${SIEVE_PORT:-4190}:14190"
 
+  # Uncomment together with the yarilo-jmap backend service; it lands with the backend PR.
+  # yarilo-jmap-login:
+  #   <<: *proxy
+  #   environment:
+  #     YARILO_COMPONENT: yarilo-jmap-login
+  #     LOG_LEVEL: "${LOG_LEVEL:-info}"
+  #   depends_on:
+  #     yarilo-jmap:
+  #       condition: service_started
+  #   ports:
+  #     - "${JMAP_PORT:-8443}:8443"
+
   yarilo-sasl-login:
     image: *image
     environment:
