@@ -1,8 +1,8 @@
 # JMAP configuration
 
-> **Status: in progress.** The session resource (RFC 8620 §2) and the request
-> envelope (§3) are served end-to-end; the data methods of RFC 8621 land in
-> later phases.
+> **Status: in progress.** The session resource (RFC 8620 §2), the request
+> envelope (§3) and the read-only `Mailbox` methods (RFC 8621 §2) are served
+> end-to-end; the remaining data methods land in later phases.
 
 JMAP runs as two binaries, not one. `yarilo-jmap-login` faces clients and
 `yarilo-jmap` owns the user's state; see
@@ -128,6 +128,12 @@ batch and returns a problem document. A method-level fault becomes an `error`
 response for that one call, and the rest of the batch still runs; a client
 matches responses to calls by `callId`, never by position.
 
+**No method executes until the entire envelope is read and parsed; streaming
+execution is forbidden.** A request is either rejected whole or run whole, which
+is what makes the request-level problems above meaningful. It also fixes the
+boundary for the mutating methods that arrive later: a batch cannot be applied
+halfway because the client's connection died mid-body.
+
 Back-references (§3.7) resolve against the responses produced so far, so a
 reference forward, or into a call answered with `error`, is
 `invalidResultReference` by construction. The path is a JSON Pointer (RFC 6901)
@@ -157,13 +163,56 @@ parseable answer.
 
 ---
 
+## Mailboxes
+
+`Mailbox/get` and `Mailbox/query` are read-only and expose the **personal
+namespace** only; shared and public namespaces arrive with the namespace phase.
+
+| JMAP member | Source |
+|:---|:---|
+| `id` | the folder GUID from the index — stable across a rename, which the name is not |
+| `name` | the leaf name; hierarchy travels in `parentId`, so a client never learns the delimiter |
+| `role` | IMAP special-use, per-user overrides layered over `imap_special_use_defaults`; `INBOX` is `inbox` without carrying an attribute |
+| `totalEmails` / `unreadEmails` | the folder's own counters, the same ones `STATUS` reports |
+| `totalThreads` / `unreadThreads` | equal to the message counts: until threading lands each message is its own thread |
+| `isSubscribed` | the same subscriptions file IMAP reads, so one `SUBSCRIBE` shows in both protocols |
+| `myRights` | full rights in the personal namespace; a `\NoSelect` container reports no read, add, remove or submit |
+
+A `\NoSelect` container appears in the list with a `container:` id. It holds no
+mail, but omitting it would leave its children pointing at a parent the client
+never saw.
+
+Both methods read control files under the cross-process lock, so a concurrent
+IMAP `SUBSCRIBE` or `CREATE (USE ...)` cannot be observed half-applied. The
+backend refuses to start without a locks client for that reason.
+
+### State strings
+
+`Mailbox/get` returns `state` and `Mailbox/query` returns `queryState`; both are
+a digest of the mailbox set. They tell a client that something moved, never
+what. `canCalculateChanges` is `false` and stays false until `Mailbox/changes`
+lands, so a client refetches rather than diffing — the same non-incremental
+contract `Email/query` will start with.
+
+### What is refused rather than approximated
+
+A filter operator (`AND`/`OR`/`NOT`) is answered with `unsupportedFilter`, and a
+sort on any property other than `sortOrder`, `name` or `parentId` with
+`unsupportedSort`. Silently matching everything, or returning a different order
+than the one asked for, would render the wrong list in a client that had no way
+to know.
+
+---
+
 ## Capabilities
 
 | Capability | RFC | State |
 |:---|:---|:---|
 | Core — session | RFC 8620 §2 | served |
 | Core — request envelope, back-references, `Core/echo` | RFC 8620 §3–§4 | served |
-| Mail — `Mailbox`, `Email`, `Thread`, `SearchSnippet` | RFC 8621 | later phase |
+| Mail — `Mailbox/get`, `Mailbox/query` | RFC 8621 §2 | served, read-only |
+| Mail — `Mailbox/set`, `Mailbox/changes` | RFC 8621 §2 | later phase |
+| Mail — `Email`, `Thread`, `SearchSnippet` | RFC 8621 §4–§7 | later phase |
 | Push over WebSocket | RFC 8887 | later phase |
 
 The protocol layer lives in `pkg/jmapcore`, which imports nothing from yarilo
@@ -184,7 +233,12 @@ Four checks:
 3. a batch of two `Core/echo` calls runs, the second reading the first's result
    through a back-reference;
 4. a body one byte over `jmap_max_size_request` is refused by the login layer
-   with a `limit` problem.
+   with a `limit` problem;
+5. `Mailbox/get` returns a mailbox carrying the `inbox` role, with unique ids
+   and every `parentId` naming a mailbox in the same response;
+6. `Mailbox/query` filtered by `role:inbox` matches exactly one mailbox, says
+   `canCalculateChanges: false`, and a back-referenced `Mailbox/get` in the same
+   batch resolves to that mailbox.
 
 Check 4 sends `-jmap-max-size-request` + 1 bytes; pass the deployment's own
 value if it differs from the 10M default.

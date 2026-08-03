@@ -115,10 +115,10 @@ func TestResolveBackRefs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, merr := resolveBackRefs(json.RawMessage(tt.args), done)
 			if tt.wantErr != "" {
-				if merr == nil {
+				switch {
+				case merr == nil:
 					t.Fatalf("resolved to %s, want %s", got, tt.wantErr)
-				}
-				if merr.Type != tt.wantErr {
+				case merr.Type != tt.wantErr:
 					t.Errorf("error type = %s, want %s", merr.Type, tt.wantErr)
 				}
 				return

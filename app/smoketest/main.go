@@ -236,6 +236,14 @@ func main() {
 			name string
 			fn   func() error
 		}{"jmap body cap refused at the login edge", checkJMAPBodyCap})
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap Mailbox/get (roles, ids, parent tree)", checkJMAPMailboxes})
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap Mailbox/query + back-referenced get", checkJMAPMailboxQuery})
 	}
 
 	slog.Info("smoke: start", "total", len(checks))

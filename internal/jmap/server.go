@@ -33,6 +33,9 @@ type Options struct {
 	// OnListen fires once the port is bound. The co-located pod publishes its
 	// readiness from it, so it must not run before the listener exists.
 	OnListen func()
+	// Storage reaches one user's mail. Nil leaves only the methods that need no
+	// mail store, which is what the session-resource-only tests run against.
+	Storage *Storage
 }
 
 // Server serves the JMAP endpoint behind the login proxy.
