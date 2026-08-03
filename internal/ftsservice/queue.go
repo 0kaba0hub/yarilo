@@ -20,6 +20,10 @@ type job struct {
 	mbox      fts.MailboxRef
 	maxUID    uint32
 	maxRecent int
+	// attempt counts how many times this pass has been deferred for transient
+	// lock contention. It bounds the retry: a mailbox that is busy forever must
+	// not be retried forever.
+	attempt int
 }
 
 // queue is a FIFO with a priority front-insert (PREPEND: search catch-up

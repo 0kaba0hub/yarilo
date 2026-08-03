@@ -575,6 +575,28 @@ fts:
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
 volume). `appVersion` bump ships with each feature slice.
 
+### Locking: the full-text index is not the mail index
+
+An index pass takes a lock keyed `fts:<user>:<folder>`, not the mailbox lock.
+The two are different resources with different writers: the mail index is
+written by every session, the full-text index only by `yarilo-fts`. The lock
+exists solely so two full-text passes over one mailbox — after a ring move, for
+instance — cannot race the checkpoint's read-modify-write.
+
+Sharing the mailbox key made every pass queue behind unrelated session writes.
+Under load that was not theoretical: the lock is taken without waiting, so a
+busy mailbox meant an immediate failure, and the pass was dropped rather than
+retried (#1004). The mail-index reads a pass needs (`OpenFolder`,
+`GetMessages`, the present-UID snapshot) deliberately happen **outside** the
+lock, so nothing was relying on the wider scope.
+
+A pass that still loses its lock — genuine contention between two full-text
+writers — is requeued with a bounded backoff rather than dropped, and counted
+in `fts_index_deferred_total`. A pass abandoned after exhausting its retries
+increments `fts_index_dropped_total`, which is expected to stay at zero: every
+increment is mail that is not in the index and will not be until something else
+queues that mailbox.
+
 ### Connections to the service (`fts_max_conns`)
 
 How many connections a session process keeps to `yarilo-fts`. It matters more

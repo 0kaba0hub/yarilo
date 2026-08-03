@@ -322,6 +322,12 @@ func (s *Service) worker(ctx context.Context) {
 		err := s.runIndex(j)
 		metricIndexDuration.Observe(time.Since(t0).Seconds())
 		if err != nil {
+			// Lock contention is not a failure: the pass is rescheduled rather
+			// than lost, and counted separately so a busy mailbox does not
+			// read as a broken one (#1004).
+			if s.deferJob(j, err) {
+				continue
+			}
 			metricIndexErrors.Inc()
 			slog.Error("fts: index job failed",
 				"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "err", err)

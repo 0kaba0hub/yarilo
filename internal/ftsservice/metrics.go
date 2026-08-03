@@ -23,6 +23,20 @@ var (
 		Name: "fts_index_errors_total",
 		Help: "FTS index jobs that returned an error.",
 	})
+	// metricIndexDeferred: a pass that could not take the mailbox lock and was
+	// requeued. Steady growth means write contention, not breakage — it is the
+	// signal that indexing is lagging behind delivery rather than failing.
+	metricIndexDeferred = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fts_index_deferred_total",
+		Help: "FTS index passes requeued after losing the mailbox lock.",
+	})
+	// metricIndexDropped: a pass abandoned after exhausting its retries. Every
+	// increment is mail that is not in the index and will not be until
+	// something else queues that mailbox. Expected zero.
+	metricIndexDropped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fts_index_dropped_total",
+		Help: "FTS index passes given up on after repeated lock contention.",
+	})
 	// metricIndexBuildHalts: hard buildmail failure halted a mailbox run
 	// without advancing the checkpoint. Expected zero; a deterministic
 	// failure keeps incrementing on every retry of the same UID.

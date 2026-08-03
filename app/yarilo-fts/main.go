@@ -195,10 +195,11 @@ func lockMailbox(locker locks.Locker) func(user, folder string, fn func() error)
 	}
 	owner := fmt.Sprintf("yarilo-fts/%d", os.Getpid())
 	return func(user, folder string, fn func() error) error {
-		key := locks.MailboxKey(user, folder)
-		if folder == "" {
-			key = locks.MailboxKey(user, "*fts-optimize*")
-		}
+		// The full-text index, not the mailbox: these are different resources
+		// with different writers, and yarilo-fts is the only writer of this
+		// one. Taking the mailbox key made every pass queue behind session
+		// mail-index writes it does not interact with (#1004).
+		key := locks.FTSKey(user, folder)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		t0 := time.Now()
