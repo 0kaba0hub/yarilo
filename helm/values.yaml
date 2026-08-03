@@ -2290,6 +2290,13 @@ fts:
   ## different user. Raise only with fts_fetch_seconds / fts_build_seconds in
   ## hand: if reads dominate, more workers buy little.
   fts_index_workers: 1
+  ## Messages an index pass reads ahead of the one it is tokenising, so storage
+  ## reads overlap with parsing. Below 2 disables it — the pass reads one at a
+  ## time, exactly as it did before. Both bounds apply: raise the depth for
+  ## latency, raise the byte ceiling only if fts_prefetch_stall_seconds shows
+  ## the reader waiting on the window rather than on the disk.
+  fts_prefetch_depth: 4
+  fts_prefetch_max_bytes: 32M
   fts_autoindex: false
   fts_autoindex_max_recent_msgs: 0
   ## fts_message_max_size — human-readable (bytes or K/M/G/T, e.g. "50M"). "0" = unlimited. Quote it.

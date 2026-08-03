@@ -5,10 +5,10 @@
 package ftsservice
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -34,6 +34,14 @@ type Options struct {
 	CommitLimit int
 	// Workers is the number of concurrent index workers (default 1).
 	Workers int
+	// PrefetchDepth is how many messages a pass reads ahead of the one it is
+	// indexing. Below two it reads one at a time, which is the sequential
+	// behaviour.
+	PrefetchDepth int
+	// PrefetchMaxBytes caps the bytes those messages may hold at once. Depth
+	// alone is not enough: a handful of large attachments would otherwise sit
+	// in memory together.
+	PrefetchMaxBytes int64
 	// LockMailbox wraps every index write in the cross-process mailbox lock
 	// (pkg/locks; wired by the binary). nil = direct call (unit tests only).
 	LockMailbox func(user, folder string, fn func() error) error
@@ -543,11 +551,30 @@ func (s *Service) runIndex(j job) error {
 		indexed := last
 		batch := 0
 		marked := false // folder flagged for heal this scan; gate repeat marks
+
+		// Only the messages this pass will index are read: prefetching the
+		// ones it skips would waste the window on work already done.
+		todo := make([]*mailbox.MessageMeta, 0, len(msgs))
 		for _, m := range msgs {
 			if m.UID <= last || m.UID > j.maxUID {
 				continue
 			}
-			if err := s.indexOne(h, j.mbox, m, upd); err != nil {
+			todo = append(todo, m)
+		}
+
+		fetchCtx, cancelFetch := context.WithCancel(context.Background())
+		defer cancelFetch()
+		fetch := newFetcher(h, j.mbox.Name, s.prefetchOptions())
+		src := fetch.run(fetchCtx, todo)
+
+		for item := range src {
+			m := item.meta
+			err := s.indexOne(j.mbox, item, upd)
+			// The window frees as soon as the bytes are consumed, whatever the
+			// outcome: holding a failed message's reservation would shrink the
+			// window for every message after it.
+			fetch.release(int64(m.Size))
+			if err != nil {
 				var buildErr *buildError
 				if errors.As(err, &buildErr) {
 					// A hard buildmail failure must never let a partially
@@ -607,25 +634,29 @@ func (s *Service) runIndex(j job) error {
 	return err
 }
 
-func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.MessageMeta, upd fts.Update) error {
-	tFetch := time.Now()
-	rc, err := h.box.Fetch(mbox.Name, m.Filename, m.AltTier)
-	if err != nil {
-		// The caller flags the folder for a reactive heal (gated once per scan);
-		// here we just surface the read error.
-		return err
+// prefetchOptions renders the configured window. Prefetching is advisory: with
+// a depth below two the fetcher reads one message at a time, which is the
+// previous behaviour and the whole of it — there is no second code path for a
+// deployment that turns it off.
+func (s *Service) prefetchOptions() prefetchOptions {
+	return prefetchOptions{Depth: s.opts.PrefetchDepth, MaxBytes: s.opts.PrefetchMaxBytes}
+}
+
+// indexOne feeds one already-read message to the engine. Reading happens in the
+// fetcher, so what is timed here is tokenisation alone — the split the earlier
+// metrics could not make, because the body used to be read from inside Build.
+func (s *Service) indexOne(mbox fts.MailboxRef, item fetched, upd fts.Update) error {
+	m := item.meta
+	if item.err != nil {
+		// The read failed for THIS uid. Surfacing it against the right message
+		// is what keeps the checkpoint honest: the caller skips this uid and
+		// moves past it deliberately, rather than halting on a message it
+		// cannot name.
+		return item.err
 	}
-	defer rc.Close()
-	// Fetch is timed to the open, not the read: the body is streamed into
-	// Build, so the bytes are read there. Split this way, "waiting for storage
-	// to hand us a file" and "parsing what it handed us" stay distinguishable,
-	// which is what decides whether overlapping reads or more workers is the
-	// win.
-	metricFetch.Observe(time.Since(tFetch).Seconds())
-	metricMessageBytes.Observe(float64(m.Size))
 
 	tBuild := time.Now()
-	err = s.builder.Build(m.UID, io.Reader(rc), upd)
+	err := s.builder.Build(m.UID, bytes.NewReader(item.body), upd)
 	metricBuild.Observe(time.Since(tBuild).Seconds())
 	if err != nil {
 		return &buildError{err: err}
