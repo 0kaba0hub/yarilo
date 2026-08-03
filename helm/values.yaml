@@ -2291,11 +2291,14 @@ fts:
   ## hand: if reads dominate, more workers buy little.
   fts_index_workers: 1
   ## Messages an index pass reads ahead of the one it is tokenising, so storage
-  ## reads overlap with parsing. Below 2 disables it — the pass reads one at a
-  ## time, exactly as it did before. Both bounds apply: raise the depth for
-  ## latency, raise the byte ceiling only if fts_prefetch_stall_seconds shows
-  ## the reader waiting on the window rather than on the disk.
-  fts_prefetch_depth: 4
+  ## reads overlap with parsing. Below 2 disables it.
+  ##
+  ## Off by default, from measurement rather than caution: reading is ~0.3% of
+  ## an index pass and tokenising is the rest, so overlapping them buys almost
+  ## nothing while the window costs memory once per worker. Raise it where reads
+  ## are genuinely slow — cold alt-tier storage, or an NFS mount with a cold
+  ## cache — which fts_read_seconds against fts_build_seconds will show.
+  fts_prefetch_depth: 1
   fts_prefetch_max_bytes: 32M
   fts_autoindex: false
   fts_autoindex_max_recent_msgs: 0

@@ -347,7 +347,13 @@ func (s *Service) runPass(j job) {
 	defer s.queue.done(j)
 	t0 := time.Now()
 	err := s.runIndex(j)
-	metricIndexDuration.Observe(time.Since(t0).Seconds())
+	elapsed := time.Since(t0)
+	metricIndexDuration.Observe(elapsed.Seconds())
+	// Busy time accumulates whatever the pass returned: a worker occupied by a
+	// failing pass is just as unavailable as one doing useful work, and
+	// utilisation that ignored failures would overstate spare capacity exactly
+	// when there is none.
+	metricWorkerBusySeconds.Add(elapsed.Seconds())
 	if err == nil {
 		return
 	}

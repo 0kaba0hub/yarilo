@@ -5,9 +5,44 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/yarilomail/yarilo/pkg/fts"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
+
+// Utilisation has to survive the sampling interval. A pass takes tens of
+// milliseconds and Prometheus scrapes every 15-30 seconds, so a gauge of
+// "workers busy now" reads zero whether the service is saturated or idle — the
+// metric looked like an answer to a question it could not reach.
+func TestWorkerBusyTimeAccumulates(t *testing.T) {
+	s := &Service{
+		queue: newQueue(),
+		lag:   newLagTracker(),
+		opts: Options{
+			ResolveUser: func(string) (*mailbox.UserInfo, error) {
+				// Failing fast: the counter records the time a worker was
+				// occupied, not the time it was productive. A worker stuck on
+				// failing passes has no spare capacity either.
+				return nil, errors.New("userdb down")
+			},
+		},
+	}
+
+	before := testutil.ToFloat64(metricWorkerBusySeconds)
+	for i := 0; i < 5; i++ {
+		s.queue.push(inbox("u1"), false)
+		j, ok := s.queue.pop(context.Background())
+		if !ok {
+			t.Fatal("nothing queued")
+		}
+		s.runPass(j)
+	}
+	if after := testutil.ToFloat64(metricWorkerBusySeconds); after <= before {
+		t.Errorf("busy time did not move over five passes: %v -> %v — utilisation cannot be derived",
+			before, after)
+	}
+}
 
 func inbox(user string) job {
 	return job{user: user, mbox: fts.MailboxRef{Name: "INBOX"}}

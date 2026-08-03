@@ -437,7 +437,7 @@ data:
       fts_auth_master_addr: {{ $.Values.fts.fts_auth_master_addr | quote }}
       fts_max_conns: {{ $.Values.fts.fts_max_conns | default 4 }}
       fts_index_workers: {{ $.Values.fts.fts_index_workers | default 1 }}
-      fts_prefetch_depth: {{ $.Values.fts.fts_prefetch_depth | default 4 }}
+      fts_prefetch_depth: {{ $.Values.fts.fts_prefetch_depth | default 1 }}
       fts_prefetch_max_bytes: {{ $.Values.fts.fts_prefetch_max_bytes | default "32M" | quote }}
       fts_autoindex: {{ $.Values.fts.fts_autoindex }}
       fts_autoindex_max_recent_msgs: {{ $.Values.fts.fts_autoindex_max_recent_msgs }}

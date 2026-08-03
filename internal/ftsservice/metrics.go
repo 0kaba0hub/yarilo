@@ -39,12 +39,20 @@ var (
 		Name: "fts_queue_requeued_total",
 		Help: "Mailboxes re-queued because a request arrived mid-pass.",
 	})
-	// metricWorkersBusy: index workers currently running a pass. Reads at most
-	// fts_index_workers; a value stuck below it while the queue is deep is the
-	// symptom metricPopSkipped explains.
-	metricWorkersBusy = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "fts_workers_busy",
-		Help: "Index workers currently running a pass.",
+	// metricWorkerBusySeconds: total time workers have spent inside a pass.
+	//
+	// A counter rather than a gauge of "workers busy now". A pass takes tens of
+	// milliseconds and Prometheus scrapes every 15-30 seconds, so a gauge is
+	// almost always sampled between passes: it reads zero whether the service
+	// is saturated or idle. That is worse than having no metric, because the
+	// question it was added for — telling "idle, nothing queued" from "idle,
+	// every queued mailbox belongs to a busy user" — then looks answered.
+	//
+	// rate() over this divided by fts_index_workers is utilisation, in one
+	// series and independent of scrape timing.
+	metricWorkerBusySeconds = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fts_worker_busy_seconds_total",
+		Help: "Total time index workers have spent running passes.",
 	})
 	// metricPopSkipped: queued mailboxes a worker passed over because their
 	// user was already being indexed. Without it, "workers idle while the queue
