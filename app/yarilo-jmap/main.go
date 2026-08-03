@@ -164,12 +164,24 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 		return nil, fmt.Errorf("jmap: locks_client is not configured; set mode remote (or embedded for a single-node dev run)")
 	}
 	resolver := backend.BuildResolver(cfg)
+	// The index takes the locker too. OpenFolder is not purely a read: a folder
+	// with no index yet is created, migrated and log-compacted on open, and
+	// file.withDistLock runs those unguarded when no locker is wired. That
+	// would race a live IMAP SELECT on the same shared index.
+	idxOpts := []file.Option{file.WithLocker(locker)}
+	if cfg.Storage.IndexLogCompactMinBytes != 0 {
+		idxOpts = append(idxOpts, file.WithLogCompaction(
+			cfg.Storage.IndexLogCompactMinBytes,
+			cfg.Storage.IndexLogCompactMaxBytes,
+			time.Duration(cfg.Storage.IndexLogCompactMinAgeSecs)*time.Second,
+		))
+	}
 	return &jmap.Storage{
 		Mailbox: backend.BuildMailbox(cfg.Storage, locker),
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
 		},
-		Index:              file.New(),
+		Index:              file.New(idxOpts...),
 		ResolveUser:        userResolver(authAddr(cfg), resolver, intTLS),
 		Locker:             locker,
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,

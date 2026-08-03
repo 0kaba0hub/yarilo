@@ -40,7 +40,8 @@ func storedServer(t *testing.T) *Server {
 		}
 	}
 
-	idx := file.New()
+	locker := &testLocker{}
+	idx := file.New(file.WithLocker(locker))
 	ui := idx.OpenUser(info)
 	t.Cleanup(func() { ui.Close() }) //nolint:errcheck
 	// Two messages in INBOX, one of them unread, so the counters are distinct
@@ -52,14 +53,12 @@ func storedServer(t *testing.T) *Server {
 		t.Fatalf("index close: %v", err)
 	}
 
-	locker := &testLocker{}
-
 	return New(Options{
 		Trust:  ResolveTrust(false, true, []*net.IPNet{mustCIDR(t, "192.0.2.0/24")}),
 		Limits: testLimits(),
 		Storage: &Storage{
 			Mailbox:     maildir.New(),
-			Index:       file.New(),
+			Index:       file.New(file.WithLocker(locker)),
 			ResolveUser: func(string) (*mailbox.UserInfo, error) { return info, nil },
 			Locker:      locker,
 			SpecialUseDefaults: map[string]string{
