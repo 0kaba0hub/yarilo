@@ -76,6 +76,30 @@ var (
 		Help:    "Time parsing and tokenising one message during indexing.",
 		Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5},
 	})
+	// metricRead: time actually blocked reading message bytes. metricFetch
+	// times the open only — the body streams into Build — so before this the
+	// whole of storage I/O was being counted as tokenisation, and the fetch
+	// share looked like 7% of a pass when the real figure was unknown.
+	metricRead = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fts_read_seconds",
+		Help:    "Time blocked reading one message's bytes during indexing.",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5},
+	})
+	// metricPrefetchInflight: bytes held by messages read ahead but not yet
+	// indexed. Sitting at the ceiling means the window, not the disk, is the
+	// bottleneck.
+	metricPrefetchInflight = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "fts_prefetch_inflight_bytes",
+		Help: "Bytes of prefetched messages waiting to be indexed.",
+	})
+	// metricPrefetchStall: how long the reader waited for the consumer to free
+	// window space. Growth here means the ceiling is too small for the message
+	// sizes in play.
+	metricPrefetchStall = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fts_prefetch_stall_seconds",
+		Help:    "Time the prefetch reader waited for window space.",
+		Buckets: []float64{0.001, 0.01, 0.1, 0.5, 1, 5, 30},
+	})
 	// metricMessageBytes: the two histograms above are uninterpretable without
 	// it — 200ms on 30MB and 200ms on 3KB are different diagnoses.
 	metricMessageBytes = promauto.NewHistogram(prometheus.HistogramOpts{

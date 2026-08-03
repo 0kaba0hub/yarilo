@@ -837,6 +837,16 @@ type FTSConfig struct {
 	// inside the engine while other users' mail stays unindexed. Dispatch
 	// therefore hands each worker a different user. Default 1.
 	IndexWorkers int `koanf:"fts_index_workers"`
+	// PrefetchDepth is how many messages an index pass reads ahead of the one
+	// it is tokenising, so storage reads overlap with parsing. Below two it
+	// reads one at a time, which is the behaviour without prefetching at all.
+	// Default 4.
+	PrefetchDepth int `koanf:"fts_prefetch_depth"`
+	// PrefetchMaxBytes caps what those messages may hold in memory at once.
+	// Depth alone is not a bound: four large attachments would sit there
+	// together. Accepts a human size (32M).
+	PrefetchMaxBytesRaw string `koanf:"fts_prefetch_max_bytes"`
+	PrefetchMaxBytes    int64  `koanf:"-"`
 
 	Autoindex              bool     `koanf:"fts_autoindex"`
 	AutoindexMaxRecentMsgs int      `koanf:"fts_autoindex_max_recent_msgs"`
@@ -2008,6 +2018,8 @@ func Load(path string) (*Config, error) {
 			Listen:                     ":9106",
 			MaxConns:                   4,
 			IndexWorkers:               1,
+			PrefetchDepth:              4,
+			PrefetchMaxBytesRaw:        "32M",
 			CommitLimit:                500,
 			SearchAddMissing:           "body-search-only",
 			SearchReadFallback:         true,
@@ -2126,6 +2138,7 @@ func (cfg *Config) validate() error {
 	resolve("submission.max_message_size", cfg.Protocol.Submission.MaxMsgSizeRaw, &cfg.Protocol.Submission.MaxMsgSize)
 	resolve("fts.fts_message_max_size", cfg.FTS.MessageMaxSizeRaw, &cfg.FTS.MessageMaxSize)
 	resolve("fts.fts_decoder_max_size", cfg.FTS.DecoderMaxSizeRaw, &cfg.FTS.DecoderMaxSize)
+	resolve("fts.fts_prefetch_max_bytes", cfg.FTS.PrefetchMaxBytesRaw, &cfg.FTS.PrefetchMaxBytes)
 	resolve("storage.index_log_compact_min_bytes", cfg.Storage.IndexLogCompactMinBytesRaw, &cfg.Storage.IndexLogCompactMinBytes)
 	resolve("storage.index_log_compact_max_bytes", cfg.Storage.IndexLogCompactMaxBytesRaw, &cfg.Storage.IndexLogCompactMaxBytes)
 	resolve("protocol.jmap.jmap_max_size_upload", cfg.Protocol.JMAP.MaxSizeUploadRaw, &cfg.Protocol.JMAP.MaxSizeUpload)

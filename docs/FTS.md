@@ -596,6 +596,40 @@ released through the same path whatever happens to the pass — including a pani
 — because a mailbox left claimed would never be queued again, and its mail would
 stay unindexed with nothing in the log to say so.
 
+### Reading ahead (`fts_prefetch_depth`, `fts_prefetch_max_bytes`)
+
+An index pass used to read one message and tokenise it before touching the
+next, so the disk idled while the tokeniser worked and the tokeniser idled
+while the disk worked. The pass now reads ahead of the message it is indexing.
+
+Four properties, three of them borrowed from the reference implementation's
+own prefetching and one added because our situation differs:
+
+**Advisory, not mandatory.** A depth below two reads one message at a time —
+the previous behaviour, and the whole of it. There is no second code path for
+a deployment that turns it off.
+
+**Order is mandatory.** Indexing walks UIDs upwards and the checkpoint advances
+monotonically, so a pipeline that reordered would record progress past messages
+it never indexed. One producer feeding one channel makes reordering impossible
+rather than unlikely.
+
+**A read failure stays attached to its message.** The error travels with the
+UID it belongs to, so the pass skips a message it can name instead of halting
+on one it cannot. This is the property worth the tests: getting it wrong
+corrupts what the checkpoint means.
+
+**Two ceilings.** Depth bounds messages, `fts_prefetch_max_bytes` bounds what
+they hold. The reference counts messages only, correctly — its queued objects
+are descriptors. Ours are bytes already read, so four large attachments would
+otherwise sit in memory together. A message larger than the whole ceiling is
+admitted alone: refusing to index it would be worse than briefly exceeding a
+bound that exists to limit concurrency.
+
+Raise the depth for latency; raise the byte ceiling only when
+`fts_prefetch_stall_seconds` shows the reader waiting on the window rather than
+on the disk.
+
 ### Dispatch: parallelism is across users (`fts_index_workers`)
 
 `fts_index_workers` is how many mailboxes are indexed at once. What it can and
@@ -650,12 +684,21 @@ queues that mailbox.
 | `fts_queue_wait_seconds` | how long they waited — separates "deep queue" from "deep queue that is not draining" |
 | `fts_queue_merged_total` | requests folded into a queued pass: duplicate work, and duplicate lock contention, that did not happen |
 | `fts_queue_requeued_total` | mailboxes put back because a request arrived mid-pass |
-| `fts_fetch_seconds` / `fts_build_seconds` | where a pass spends its time — reading storage or parsing |
+| `fts_fetch_seconds` | opening a message — **not** reading it |
+| `fts_read_seconds` | time actually blocked reading a message's bytes |
+| `fts_build_seconds` | tokenising, now that reading happens separately |
+| `fts_prefetch_inflight_bytes` | bytes read ahead and not yet indexed |
+| `fts_prefetch_stall_seconds` | the reader waiting for window space — growth means the ceiling is the bottleneck, not the disk |
 | `fts_message_bytes` | the size those two are relative to; 200ms on 30MB and on 3KB are different diagnoses |
 | `fts_index_deferred_total` | passes requeued after losing the lock |
 | `fts_index_dropped_total` | passes given up on. **Expected zero** |
 | `fts_workers_busy` | workers actually running a pass |
 | `fts_pop_skipped_total` | mailboxes passed over because their user was already being indexed — this is what separates "idle because there is no work" from "idle because the work belongs to busy users" |
+
+`fts_fetch_seconds` timed only the open for a long time while the body streamed
+into the tokeniser, so every byte of storage I/O was being counted as parsing —
+which made the read share look like 7% of a pass when the real figure was
+unknown. `fts_read_seconds` is what settles that.
 
 The two lag gauges are the ones a user feels: "search does not find recent
 mail". Everything else is a proxy for them.
