@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
@@ -50,8 +51,11 @@ func storedServerWithMessageAt(t *testing.T, raw string, ceiling uint32) (*Serve
 	if err != nil {
 		t.Fatalf("open folder: %v", err)
 	}
+	// A real delivery stamps InternalDate; without it the date filters would be
+	// tested against the zero time, which is before every plausible bound.
 	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{
 		UID: 1, Filename: name, Size: uint32(len(raw)), VSize: vsize, Flags: flags, GUID: guid,
+		InternalDate: time.Now(),
 	}); err != nil {
 		t.Fatalf("append: %v", err)
 	}

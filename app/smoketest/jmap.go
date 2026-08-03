@@ -362,3 +362,128 @@ func jmapCall(body string) (json.RawMessage, error) {
 	}
 	return out.MethodResponses[0][1], nil
 }
+
+// checkJMAPEmailDiscovery is what PR6 could not probe: Email/query finds an id,
+// Email/get reads it back through a back-reference, and the download endpoint
+// serves the same message. One batch, so a failure names which step broke.
+func checkJMAPEmailDiscovery() error {
+	body := `{"using":["urn:ietf:params:jmap:mail"],"methodCalls":[` +
+		`["Email/query",{"accountId":"` + *flagJMAPUser + `","limit":1},"c0"],` +
+		`["Email/get",{"accountId":"` + *flagJMAPUser + `",` +
+		`"#ids":{"resultOf":"c0","name":"Email/query","path":"/ids"},` +
+		`"properties":["id","blobId","subject","preview","size"]},"c1"]]}`
+	url := "https://" + net.JoinHostPort(jmapHost(), *flagJMAPPort) + "/jmap/api/"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if *flagJMAPUser != "" {
+		req.SetBasicAuth(*flagJMAPUser, *flagJMAPPass)
+	}
+	resp, err := jmapClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("post %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, raw)
+	}
+	var out struct {
+		MethodResponses [][]json.RawMessage `json:"methodResponses"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	if len(out.MethodResponses) != 2 {
+		return fmt.Errorf("got %d responses for 2 calls: %s", len(out.MethodResponses), raw)
+	}
+	var query struct {
+		IDs                 []string `json:"ids"`
+		QueryState          string   `json:"queryState"`
+		CanCalculateChanges bool     `json:"canCalculateChanges"`
+		Limit               *uint    `json:"limit"`
+	}
+	if err := json.Unmarshal(out.MethodResponses[0][1], &query); err != nil {
+		return fmt.Errorf("decode Email/query: %w", err)
+	}
+	if len(query.IDs) == 0 {
+		return fmt.Errorf("Email/query found no messages — the mailbox must not be empty for this check: %s", raw)
+	}
+	if query.QueryState == "" {
+		return fmt.Errorf("Email/query carries no queryState")
+	}
+	if query.CanCalculateChanges {
+		return fmt.Errorf("canCalculateChanges is true, but Email/changes is not implemented")
+	}
+	// The server applied a limit, so it must say which one.
+	if query.Limit == nil {
+		return fmt.Errorf("Email/query applied a limit without reporting it: %s", raw)
+	}
+	var get struct {
+		List []struct {
+			ID     string `json:"id"`
+			BlobID string `json:"blobId"`
+		} `json:"list"`
+	}
+	if err := json.Unmarshal(out.MethodResponses[1][1], &get); err != nil {
+		return fmt.Errorf("decode Email/get: %w", err)
+	}
+	if len(get.List) != 1 || get.List[0].ID != query.IDs[0] {
+		return fmt.Errorf("back-referenced Email/get returned %d emails: %s", len(get.List), raw)
+	}
+
+	// The blob the same batch named must download, and be non-empty.
+	dl := "https://" + net.JoinHostPort(jmapHost(), *flagJMAPPort) +
+		"/jmap/download/" + *flagJMAPUser + "/" + get.List[0].BlobID + "/message.eml"
+	dreq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, dl, nil)
+	if err != nil {
+		return err
+	}
+	if *flagJMAPUser != "" {
+		dreq.SetBasicAuth(*flagJMAPUser, *flagJMAPPass)
+	}
+	dresp, err := jmapClient().Do(dreq)
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+	defer dresp.Body.Close()
+	if dresp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download HTTP %d", dresp.StatusCode)
+	}
+	n, err := io.Copy(io.Discard, io.LimitReader(dresp.Body, 8<<20))
+	if err != nil {
+		return fmt.Errorf("download read: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("download returned an empty body")
+	}
+	if ct := dresp.Header.Get("Content-Type"); ct != "application/octet-stream" {
+		return fmt.Errorf("download Content-Type = %q, want application/octet-stream", ct)
+	}
+	return nil
+}
+
+// checkJMAPDownloadIsolation proves a blob is refused for another account
+// rather than served — ownership is the precondition the endpoint rests on.
+func checkJMAPDownloadIsolation() error {
+	dl := "https://" + net.JoinHostPort(jmapHost(), *flagJMAPPort) +
+		"/jmap/download/somebody-else@example.invalid/deadbeef/message.eml"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, dl, nil)
+	if err != nil {
+		return err
+	}
+	if *flagJMAPUser != "" {
+		req.SetBasicAuth(*flagJMAPUser, *flagJMAPPass)
+	}
+	resp, err := jmapClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("HTTP %d, want 404 for another account's blob", resp.StatusCode)
+	}
+	return nil
+}

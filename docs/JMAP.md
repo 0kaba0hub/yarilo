@@ -70,6 +70,7 @@ clients batch against what is published.
 | `jmap_max_size_upload` | `40M` | One blob upload. |
 | `jmap_max_size_request` | `10M` | One API request body. |
 | `jmap_max_body_value_bytes` | `256K` | Server ceiling on one returned `Email` body value. A smaller client `maxBodyValueBytes` wins; truncated values are marked `isTruncated`. |
+| `jmap_query_max_limit` | `256` | Server ceiling on ids returned by one query. A smaller client `limit` wins; the response reports the limit applied. |
 | `jmap_push_timeout` | `90` | Idle timeout for a push connection, seconds. Unused until the push phase. |
 | `jmap_cors_allow_origins` | `[]` | Browser origins allowed to call the endpoint. Empty denies every cross-origin request. Exact match, scheme included. |
 
@@ -257,6 +258,65 @@ is the response, and with it the memory held per request.
 
 ---
 
+## Finding and downloading messages
+
+`Email/query` answers the conditions the mail index carries: `inMailbox`,
+`inMailboxOtherThan`, `before`, `after`, `minSize`, `maxSize`, `hasKeyword`,
+`notKeyword`. Sort is `receivedAt` (default, newest first) or `size`; the id
+breaks every tie, so two runs of the same query agree and a client paging with
+`position` never sees a message twice or misses one.
+
+**Full-text conditions are refused, by name.** `text`, `from`, `to`, `cc`,
+`bcc`, `subject`, `body` and `header` need the full-text index, which this phase
+does not reach. The refusal is `unsupportedFilter` with the offending conditions
+listed in `description`, so a client can drop exactly those and retry — or fall
+back to its own filtering over a server-side list. Answering them by ignoring
+them would return a confidently wrong result set, which a client has no way to
+detect.
+
+### Result size
+
+`jmap_query_max_limit` (default 256) is the ceiling on returned ids. The
+client's own `limit` wins when smaller; a client naming none gets the ceiling
+rather than the whole result set. RFC 8620 §5.5 permits this provided the
+response says so, and it does: `limit` in the response is the value that was
+applied, which is what tells a client to page with `position`.
+
+### Query state
+
+`queryState` is a digest of everything that determines the result:
+
+- the filter and the sort — two queries with different arguments describe
+  different lists and must not share a state a client could cache one against
+  the other;
+- the **composition** of the folder set in scope — creating or deleting a
+  folder changes the result without moving any surviving folder's modseq;
+- each in-scope folder's `UIDVALIDITY` and `HIGHESTMODSEQ` — these move on
+  delivery, flag change and expunge.
+
+A filter naming one mailbox reads only that mailbox, so a delivery elsewhere
+does not move this query's state. It is deliberately coarser than a change log:
+a flag change in a folder the query reads moves the state even when the filter
+does not depend on flags. `canCalculateChanges` stays `false` until a change
+journal exists, so a client refetches rather than diffing.
+
+### Download
+
+`GET /jmap/download/{accountId}/{blobId}/{name}` streams the message.
+
+The blob is resolved against the authenticated user's own mail **before**
+anything is opened, so a blobId belonging to somebody else is a `404` that never
+touched their file — ownership is a precondition, not a check applied to an open
+handle. Another account's blob and a nonexistent one answer identically, so the
+response confirms nothing a caller guessed.
+
+The body is copied straight through: a large attachment is never held whole in
+the backend or in the login proxy in front of it. It is served as
+`application/octet-stream` with an attachment disposition and `nosniff`, so a
+crafted message can never render in the origin that serves the API.
+
+---
+
 ## Capabilities
 
 | Capability | RFC | State |
@@ -265,8 +325,11 @@ is the response, and with it the memory held per request.
 | Core — request envelope, back-references, `Core/echo` | RFC 8620 §3–§4 | served |
 | Mail — `Mailbox/get`, `Mailbox/query` | RFC 8621 §2 | served, read-only |
 | Mail — `Email/get` (envelope, bodies, preview) | RFC 8621 §4 | served, read-only |
+| Mail — `Email/query` (index conditions), blob download | RFC 8621 §4.4, RFC 8620 §6.2 | served, read-only |
+| Mail — `Thread/get` | RFC 8621 §3 | served, one message per thread |
 | Mail — `Mailbox/set`, `Mailbox/changes` | RFC 8621 §2 | later phase |
-| Mail — `Email/query`, `Email/set`, `Thread`, `SearchSnippet` | RFC 8621 §4–§7 | later phase |
+| Mail — full-text conditions, `SearchSnippet` | RFC 8621 §4.4.1, §5 | later phase |
+| Mail — `Email/set`, `Mailbox/set` | RFC 8621 | later phase |
 | Push over WebSocket | RFC 8887 | later phase |
 
 The protocol layer lives in `pkg/jmapcore`, which imports nothing from yarilo
@@ -292,7 +355,12 @@ Four checks:
    and every `parentId` naming a mailbox in the same response;
 6. `Mailbox/query` filtered by `role:inbox` matches exactly one mailbox, says
    `canCalculateChanges: false`, and a back-referenced `Mailbox/get` in the same
-   batch resolves to that mailbox.
+   batch resolves to that mailbox;
+7. `Email/query` finds an id, a back-referenced `Email/get` reads it, and the
+   blob it names downloads as a non-empty `application/octet-stream`;
+8. a download for another account's blob is refused with `404`.
+
+Check 7 needs at least one message in the account.
 
 Check 4 sends `-jmap-max-size-request` + 1 bytes; pass the deployment's own
 value if it differs from the 10M default.

@@ -244,6 +244,14 @@ func main() {
 			name string
 			fn   func() error
 		}{"jmap Mailbox/query + back-referenced get", checkJMAPMailboxQuery})
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap Email/query -> Email/get -> download", checkJMAPEmailDiscovery})
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap download refuses another account's blob", checkJMAPDownloadIsolation})
 	}
 
 	slog.Info("smoke: start", "total", len(checks))
