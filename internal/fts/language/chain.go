@@ -8,7 +8,12 @@ import (
 type Settings struct {
 	// Language is the ISO code the snowball / stopwords filters key on.
 	Language string
-	// Filters is the ordered filter chain (lowercase, snowball, stopwords).
+	// Filters is the ordered filter chain (lowercase, stopwords, snowball).
+	//
+	// stopwords comes before snowball because the lists are surface forms. Run
+	// after the stemmer, a list entry has to match the stem rather than the
+	// word, which most of them do not: 55% of the Spanish list and 40% of the
+	// Russian never matched anything at all.
 	Filters []string
 	// TokenMaxLen / AddressMaxLen are byte caps (0 = reference defaults).
 	TokenMaxLen   int
@@ -20,7 +25,7 @@ type Settings struct {
 func DefaultSettings() Settings {
 	return Settings{
 		Language: "en",
-		Filters:  []string{"lowercase", "snowball", "stopwords"},
+		Filters:  []string{"lowercase", "stopwords", "snowball"},
 	}
 }
 
