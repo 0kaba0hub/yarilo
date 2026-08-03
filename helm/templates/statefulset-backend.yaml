@@ -24,13 +24,53 @@
   (dict "name" "submission" "vkey" "submission" "component" "yarilo-submission" "telemetry" 8082 "ports" (list (dict "name" "submission" "port" 10587)))
   (dict "name" "lmtp" "vkey" "lmtp" "component" "yarilo-lmtp" "telemetry" 8083 "ports" (list (dict "name" "lmtp" "port" 10024)))
   (dict "name" "managesieve" "vkey" "manageSieve" "component" "yarilo-managesieve" "telemetry" 8084 "ports" (list (dict "name" "sieve" "port" 14190)))
-  (dict "name" "jmap" "vkey" "jmap" "component" "yarilo-jmap" "telemetry" 8085 "ports" (list (dict "name" "jmap" "port" 10443)))
+  (dict "name" "jmap" "vkey" "jmap" "component" "yarilo-jmap" "telemetry" 8087 "ports" (list (dict "name" "jmap" "port" 10443)))
 }}
+{{- /* Sidecar ports. Declared here, beside the protocol table, so the render-time
+       assert below and the containers themselves read one source: a literal
+       repeated in both places can drift, and the drift is invisible until two
+       containers answer each other's health checks (#1008). */}}
+{{- $ftsTelemetry := 8085 }}
+{{- $ftsPort := int $root.Values.components.fts.port }}
+{{- $regTelemetry := 8086 }}
+{{- $backendAPIPort := 9105 }}
 {{- $protocols := list }}
 {{- range $p := $allProtocols }}
 {{- if (index $root.Values.components $p.vkey | default dict).enabled }}
 {{- $protocols = append $protocols $p }}
 {{- end }}
+{{- end }}
+{{- /* Every container in this pod shares one network namespace, so two of them
+       listening on one port is not a config error the chart can shrug at: both
+       start, whichever binds first wins, and the loser's /healthz, /readyz and
+       metrics are answered by its neighbour. That reads as a healthy component
+       while a different one is being probed. A telemetry port collision lived
+       through a whole release unnoticed for exactly that reason (#1008), so it
+       is asserted here rather than left to review. */}}
+{{- $claimed := dict }}
+{{- $claims := list }}
+{{- range $p := $protocols }}
+{{- $claims = append $claims (dict "port" $p.telemetry "by" (printf "%s telemetry" $p.component)) }}
+{{- range $port := $p.ports }}
+{{- $claims = append $claims (dict "port" $port.port "by" (printf "%s %s" $p.component $port.name)) }}
+{{- end }}
+{{- end }}
+{{- if $root.Values.fts.enabled }}
+{{- $claims = append $claims (dict "port" $ftsTelemetry "by" "yarilo-fts telemetry") }}
+{{- $claims = append $claims (dict "port" $ftsPort "by" "yarilo-fts") }}
+{{- end }}
+{{- if $reg.enabled }}
+{{- $claims = append $claims (dict "port" $regTelemetry "by" "yarilo-backend-reg telemetry") }}
+{{- end }}
+{{- if $root.Values.components.backendAPI.enabled }}
+{{- $claims = append $claims (dict "port" $backendAPIPort "by" "yarilo-backend-api") }}
+{{- end }}
+{{- range $c := $claims }}
+{{- $key := printf "%v" $c.port }}
+{{- if hasKey $claimed $key }}
+{{- fail (printf "co-located backend pod: port %v is claimed by both %s and %s — containers share a network namespace, so one would silently answer the other's health checks" $c.port (get $claimed $key) $c.by) }}
+{{- end }}
+{{- $_ := set $claimed $key $c.by }}
 {{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -145,7 +185,7 @@ spec:
             - name: LOG_LEVEL
               value: {{ include "yarilo.logLevel" (dict "name" "yarilo-fts" "root" $root) | quote }}
             - name: TELEMETRY_LISTEN
-              value: ":8085"
+              value: {{ printf ":%d" (int $ftsTelemetry) | quote }}
             {{- with $root.Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -156,14 +196,14 @@ spec:
               containerPort: {{ $root.Values.components.fts.port }}
               protocol: TCP
             - name: telemetry
-              containerPort: 8085
+              containerPort: {{ $ftsTelemetry }}
               protocol: TCP
           # fts is best-effort — NOT gated (a wedged index degrades SEARCH but
           # must not evict the pod's mail traffic). Standard HTTP readiness.
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8085
+              port: {{ $ftsTelemetry }}
             periodSeconds: 10
           volumeMounts:
             {{- include "yarilo.backendVolumeMounts" (dict "root" $root "itls" $itls) | nindent 12 }}
@@ -196,7 +236,7 @@ spec:
             {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
           ports:
             - name: backend-api
-              containerPort: 9105
+              containerPort: {{ $backendAPIPort }}
               protocol: TCP
           volumeMounts:
             {{- include "yarilo.backendVolumeMounts" (dict "root" $root "itls" $itls) | nindent 12 }}
@@ -212,7 +252,7 @@ spec:
             - name: LOG_LEVEL
               value: {{ include "yarilo.logLevel" (dict "name" "yarilo-backend-reg" "root" $root) | quote }}
             - name: TELEMETRY_LISTEN
-              value: ":8086"
+              value: {{ printf ":%d" (int $regTelemetry) | quote }}
             - name: POD_IP
               valueFrom:
                 fieldRef:
@@ -224,12 +264,12 @@ spec:
             {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
           ports:
             - name: telemetry
-              containerPort: 8086
+              containerPort: {{ $regTelemetry }}
               protocol: TCP
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8086
+              port: {{ $regTelemetry }}
             periodSeconds: 10
           volumeMounts:
             - name: config
@@ -301,6 +341,6 @@ spec:
     {{- end }}
     {{- end }}
     - name: backend-api
-      port: 9105
+      port: {{ $backendAPIPort }}
       targetPort: backend-api
 {{- end }}
