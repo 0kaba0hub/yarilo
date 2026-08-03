@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -420,6 +421,13 @@ func (s *Service) evict(user string) {
 func (s *Service) presentUIDs(h *userHandle, mbox fts.MailboxRef) (uids []uint32, maxUID, uidValidity uint32, err error) {
 	folder, err := h.idx.OpenFolder(mbox.Name, mbox.UIDValidity)
 	if err != nil {
+		// A folder with no index yet holds no messages to compare against. The
+		// index backend runs with WithNoCreate (#993), so this is the normal
+		// answer for such a folder, not a fault: an indexer observes, it does
+		// not create the mail index a session owns.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, 0, 0, nil
+		}
 		return nil, 0, 0, fmt.Errorf("ftsservice: open folder: %w", err)
 	}
 	msgs, err := h.idx.GetMessages(folder.ID, mailbox.SeqSet{})
@@ -450,6 +458,12 @@ func (s *Service) runIndex(j job) error {
 	// own value, not the job's.
 	folder, err := h.idx.OpenFolder(j.mbox.Name, j.mbox.UIDValidity)
 	if err != nil {
+		// Nothing indexed yet means nothing to index — see presentUIDs.
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Debug("ftsservice: folder has no index yet, skipping",
+				"user", j.user, "folder", j.mbox.Name)
+			return nil
+		}
 		return fmt.Errorf("ftsservice: open folder: %w", err)
 	}
 	curUIDV := folder.UIDValidity

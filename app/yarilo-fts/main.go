@@ -95,7 +95,12 @@ func main() {
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
 		},
-		Index:       file.New(),
+		// WithNoCreate for the same reason as quota-status (#993): index writes
+		// here are already guarded one layer up by ftsservice's LockMailbox, and
+		// adding a backend locker would stack two locks on one resource. What
+		// that guard does not cover is OpenFolder creating an index for a folder
+		// that has none — an indexer has nothing to index there anyway.
+		Index:       file.New(file.WithNoCreate()),
 		ResolveUser: userResolver(fc.AuthMasterAddr, resolver, authTLS),
 		Chain:       chain,
 		Build: buildmail.Options{
