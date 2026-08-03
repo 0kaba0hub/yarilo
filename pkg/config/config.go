@@ -327,14 +327,37 @@ type ProtocolConfig struct {
 }
 
 // JMAPProtocolConfig holds JMAP behaviour that is not tied to a listener. The
-// limits published in the session resource arrive with the backend; this is
-// what the login layer needs.
+// limits are published in the session resource as well as enforced, since
+// clients batch against them (RFC 8620 §2).
 type JMAPProtocolConfig struct {
 	// CORSAllowOrigins lists the browser origins allowed to call the endpoint.
 	// Empty denies every cross-origin request: an endpoint any page can call
 	// with the user's credentials is an account-takeover surface. Exact match;
 	// "*" is accepted but cannot carry credentials.
 	CORSAllowOrigins []string `koanf:"jmap_cors_allow_origins"`
+	// BaseURL is the public origin clients reach this deployment on. It prefixes
+	// every URL in the session resource, so it must be the externally visible
+	// name rather than the pod address.
+	BaseURL string `koanf:"jmap_base_url"`
+	// MaxConcurrentRequests caps simultaneous API calls per session. Default 10.
+	MaxConcurrentRequests int `koanf:"jmap_max_concurrent_requests"`
+	// MaxObjectsInGet caps objects per Foo/get. Default 500.
+	MaxObjectsInGet int `koanf:"jmap_max_objects_in_get"`
+	// MaxObjectsInSet caps objects per Foo/set. Default 500.
+	MaxObjectsInSet int `koanf:"jmap_max_objects_in_set"`
+	// MaxCallsInRequest caps method calls in one batch. Default 16.
+	MaxCallsInRequest int `koanf:"jmap_max_calls_in_request"`
+	// MaxSizeUpload caps a single blob upload. Accepts a human size (40M).
+	MaxSizeUploadRaw string `koanf:"jmap_max_size_upload"`
+	MaxSizeUpload    int64  `koanf:"-"`
+	// MaxSizeRequest caps one API request body. Accepts a human size (10M). The
+	// login layer enforces it at the edge, so an oversized body is refused
+	// before it is proxied.
+	MaxSizeRequestRaw string `koanf:"jmap_max_size_request"`
+	MaxSizeRequest    int64  `koanf:"-"`
+	// PushTimeout is the idle timeout for a push connection, in seconds.
+	// Default 90. Unused until the push phase.
+	PushTimeout int `koanf:"jmap_push_timeout"`
 }
 
 type LMTPProtocolConfig struct {
@@ -1781,6 +1804,15 @@ func Load(path string) (*Config, error) {
 			StartupDialRetries: 3,
 		},
 		Protocol: ProtocolConfig{
+			JMAP: JMAPProtocolConfig{
+				MaxConcurrentRequests: 10,
+				MaxObjectsInGet:       500,
+				MaxObjectsInSet:       500,
+				MaxCallsInRequest:     16,
+				MaxSizeUploadRaw:      "40M",
+				MaxSizeRequestRaw:     "10M",
+				PushTimeout:           90,
+			},
 			IMAP: IMAPProtocolConfig{
 				IdleNotifyInterval: 120,
 				MaxLineLength:      65536,
@@ -2057,6 +2089,8 @@ func (cfg *Config) validate() error {
 	resolve("fts.fts_decoder_max_size", cfg.FTS.DecoderMaxSizeRaw, &cfg.FTS.DecoderMaxSize)
 	resolve("storage.index_log_compact_min_bytes", cfg.Storage.IndexLogCompactMinBytesRaw, &cfg.Storage.IndexLogCompactMinBytes)
 	resolve("storage.index_log_compact_max_bytes", cfg.Storage.IndexLogCompactMaxBytesRaw, &cfg.Storage.IndexLogCompactMaxBytes)
+	resolve("protocol.jmap.jmap_max_size_upload", cfg.Protocol.JMAP.MaxSizeUploadRaw, &cfg.Protocol.JMAP.MaxSizeUpload)
+	resolve("protocol.jmap.jmap_max_size_request", cfg.Protocol.JMAP.MaxSizeRequestRaw, &cfg.Protocol.JMAP.MaxSizeRequest)
 	if serr != nil {
 		return serr
 	}
