@@ -2283,6 +2283,13 @@ fts:
   ## queued, not parallel, until this is above one. Connections open on demand,
   ## so raising it costs nothing until that many calls overlap.
   fts_max_conns: 4
+  ## Mailboxes yarilo-fts indexes at once. The engine holds one mutex per user,
+  ## so this parallelises across users, not across one user's mailboxes — a
+  ## second worker on the same user would wait inside the engine while other
+  ## users' mail stays unindexed, which is why dispatch hands each worker a
+  ## different user. Raise only with fts_fetch_seconds / fts_build_seconds in
+  ## hand: if reads dominate, more workers buy little.
+  fts_index_workers: 1
   fts_autoindex: false
   fts_autoindex_max_recent_msgs: 0
   ## fts_message_max_size — human-readable (bytes or K/M/G/T, e.g. "50M"). "0" = unlimited. Quote it.

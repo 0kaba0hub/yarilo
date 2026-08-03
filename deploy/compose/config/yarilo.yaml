@@ -266,6 +266,9 @@ fts:
   ## Connections to yarilo-fts. One serialises request/response pairs, so this
   ## is what decides how many lookups run at once; connections open on demand.
   fts_max_conns: 4
+  ## Mailboxes indexed at once; parallelism is across users, not across one
+  ## user's mailboxes.
+  fts_index_workers: 1
   fts_listen: ":9106"
   fts_auth_master_addr: "yarilo-auth:9102"
   fts_autoindex: true

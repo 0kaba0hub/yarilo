@@ -71,15 +71,20 @@ type entry struct {
 // of background autoindex. A front-insert for a mailbox already queued moves it
 // rather than adding a second entry.
 type queue struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	order  *list.List // of *entry, highest priority first
-	index  map[jobKey]*entry
+	mu    sync.Mutex
+	cond  *sync.Cond
+	order *list.List // of *entry, highest priority first
+	index map[jobKey]*entry
+	// busy counts running passes per user. The engine holds one mutex per
+	// user, so two passes over one user's mailboxes serialise inside it: they
+	// would occupy two workers to do one user's work while other users wait.
+	// Dispatch therefore skips a user that is already running.
+	busy   map[string]int
 	closed bool
 }
 
 func newQueue() *queue {
-	q := &queue{order: list.New(), index: make(map[jobKey]*entry)}
+	q := &queue{order: list.New(), index: make(map[jobKey]*entry), busy: make(map[string]int)}
 	q.cond = sync.NewCond(&q.mu)
 	return q
 }
@@ -158,20 +163,48 @@ func (q *queue) pop(ctx context.Context) (job, bool) {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for q.order.Len() == 0 && !q.closed && ctx.Err() == nil {
+	for {
+		el := q.eligible()
+		if el != nil {
+			q.order.Remove(el)
+			e, _ := el.Value.(*entry)
+			e.el = nil
+			e.running = true
+			q.busy[e.job.user]++
+			metricWorkersBusy.Inc()
+			metricQueueWait.Observe(time.Since(e.queuedAt).Seconds())
+			metricQueueDepth.Set(float64(q.order.Len()))
+			return e.job, true
+		}
+		if q.closed || ctx.Err() != nil {
+			return job{}, false
+		}
+		// Either the queue is empty or every queued mailbox belongs to a user
+		// already being indexed. Both mean this worker has nothing useful to
+		// do; done() wakes it when a user frees up.
 		q.cond.Wait()
 	}
-	el := q.order.Front()
-	if el == nil {
-		return job{}, false
+}
+
+// eligible returns the highest-priority entry whose user is not already being
+// indexed, or nil. Skipping rather than blocking on the front entry is what
+// stops one user with many mailboxes from occupying every worker.
+func (q *queue) eligible() *list.Element {
+	skipped := 0
+	for el := q.order.Front(); el != nil; el = el.Next() {
+		e, _ := el.Value.(*entry)
+		if q.busy[e.job.user] == 0 {
+			if skipped > 0 {
+				metricPopSkipped.Add(float64(skipped))
+			}
+			return el
+		}
+		skipped++
 	}
-	q.order.Remove(el)
-	e, _ := el.Value.(*entry)
-	e.el = nil
-	e.running = true
-	metricQueueWait.Observe(time.Since(e.queuedAt).Seconds())
-	metricQueueDepth.Set(float64(q.order.Len()))
-	return e.job, true
+	if skipped > 0 {
+		metricPopSkipped.Add(float64(skipped))
+	}
+	return nil
 }
 
 // done releases a mailbox after its pass. A request that arrived while the pass
@@ -186,6 +219,15 @@ func (q *queue) done(j job) {
 		return
 	}
 	e.running = false
+	if n := q.busy[key.user]; n <= 1 {
+		delete(q.busy, key.user)
+	} else {
+		q.busy[key.user] = n - 1
+	}
+	metricWorkersBusy.Dec()
+	// A freed user may unblock a worker parked on an entry it had to skip, and
+	// which worker that is cannot be known here — so every waiter is woken.
+	defer q.cond.Broadcast()
 	if !e.requeue || q.closed {
 		delete(q.index, key)
 		metricQueueDepth.Set(float64(q.order.Len()))

@@ -831,6 +831,12 @@ type FTSConfig struct {
 	// folders is queued, not parallel, until this is above one. Connections are
 	// opened on demand. Default 4.
 	MaxConns int `koanf:"fts_max_conns"`
+	// IndexWorkers is how many mailboxes yarilo-fts indexes at once. The engine
+	// holds one mutex per user, so raising this parallelises across users, not
+	// across one user's mailboxes: a second worker on the same user would wait
+	// inside the engine while other users' mail stays unindexed. Dispatch
+	// therefore hands each worker a different user. Default 1.
+	IndexWorkers int `koanf:"fts_index_workers"`
 
 	Autoindex              bool     `koanf:"fts_autoindex"`
 	AutoindexMaxRecentMsgs int      `koanf:"fts_autoindex_max_recent_msgs"`
@@ -2001,6 +2007,7 @@ func Load(path string) (*Config, error) {
 			Mode:                       "remote",
 			Listen:                     ":9106",
 			MaxConns:                   4,
+			IndexWorkers:               1,
 			CommitLimit:                500,
 			SearchAddMissing:           "body-search-only",
 			SearchReadFallback:         true,

@@ -596,6 +596,28 @@ released through the same path whatever happens to the pass — including a pani
 — because a mailbox left claimed would never be queued again, and its mail would
 stay unindexed with nothing in the log to say so.
 
+### Dispatch: parallelism is across users (`fts_index_workers`)
+
+`fts_index_workers` is how many mailboxes are indexed at once. What it can and
+cannot buy follows from the engine: `userIndex` holds **one mutex per user**,
+taken by every write. Two workers on two mailboxes of the same user therefore
+serialise inside the engine — they would occupy two workers to do one user's
+work while other users wait.
+
+So dispatch hands each worker a **different user**: a worker takes the
+highest-priority mailbox whose user is not already being indexed, and skips the
+rest. Nothing is lost — a skipped mailbox is dispatched as soon as its user is
+released — and one user with many mailboxes cannot occupy every worker.
+
+A consequence worth recognising before it is diagnosed as a stall: workers can
+sit idle while the queue is deep, because everything queued belongs to users
+already running. `fts_pop_skipped_total` is what tells those two apart, and
+`fts_workers_busy` shows how many are actually working.
+
+Raise the value only with `fts_fetch_seconds` and `fts_build_seconds` in hand.
+If reads dominate, more workers buy little — the time is spent waiting for
+storage, not tokenising.
+
 ### Locking: the full-text index is not the mail index
 
 An index pass takes a lock keyed `fts:<user>:<folder>`, not the mailbox lock.
@@ -632,6 +654,8 @@ queues that mailbox.
 | `fts_message_bytes` | the size those two are relative to; 200ms on 30MB and on 3KB are different diagnoses |
 | `fts_index_deferred_total` | passes requeued after losing the lock |
 | `fts_index_dropped_total` | passes given up on. **Expected zero** |
+| `fts_workers_busy` | workers actually running a pass |
+| `fts_pop_skipped_total` | mailboxes passed over because their user was already being indexed — this is what separates "idle because there is no work" from "idle because the work belongs to busy users" |
 
 The two lag gauges are the ones a user feels: "search does not find recent
 mail". Everything else is a proxy for them.
