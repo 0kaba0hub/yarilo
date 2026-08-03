@@ -26,7 +26,9 @@ func (s *Server) mailboxRegistry(lazy *lazyStore, accountID string) jmapcore.Reg
 			})
 		}},
 		"Email/get": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.emailGet(ctx, h, accountID, args)
+			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+				return s.emailGet(ctx, h, accountID, args)
+			})
 		}},
 	}
 }
