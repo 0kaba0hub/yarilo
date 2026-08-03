@@ -233,7 +233,12 @@ Four checks:
 3. a batch of two `Core/echo` calls runs, the second reading the first's result
    through a back-reference;
 4. a body one byte over `jmap_max_size_request` is refused by the login layer
-   with a `limit` problem.
+   with a `limit` problem;
+5. `Mailbox/get` returns a mailbox carrying the `inbox` role, with unique ids
+   and every `parentId` naming a mailbox in the same response;
+6. `Mailbox/query` filtered by `role:inbox` matches exactly one mailbox, says
+   `canCalculateChanges: false`, and a back-referenced `Mailbox/get` in the same
+   batch resolves to that mailbox.
 
 Check 4 sends `-jmap-max-size-request` + 1 bytes; pass the deployment's own
 value if it differs from the 10M default.
