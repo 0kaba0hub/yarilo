@@ -103,11 +103,15 @@ data:
         connection_limit: {{ $jmapL.connectionLimit | default 0 | int64 }}
         haproxy_protocol: {{ .Values.general.haproxy.enabled }}
         disable_plaintext_auth: {{ $jmapL.disablePlainAuth | default false }}
-      {{- $jmapBE := (((.Values.components.jmapLogin | default dict).listeners | default dict).jmapBackend | default dict) }}
+      {{- /* The backend listener belongs to the yarilo-jmap container, so it is
+             derived from components.jmap and nowhere else: the login proxy reads
+             the same value to know where to dial. */}}
+      {{- $jmapBE := ((.Values.components.jmap | default dict).listeners | default dict).jmap | default dict }}
       jmap_be:
-        enabled: {{ $jmapBE.enabled | default false }}
+        enabled: {{ (.Values.components.jmap | default dict).enabled | default false }}
         port: {{ $jmapBE.containerPort | default 10443 }}
         ssl_mode: "no"
+        xclient_protocol: {{ $jmapBE.xclient | default false }}
 
     protocol:
       imap:
@@ -173,6 +177,14 @@ data:
         max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).max_invalid_commands | default 3 }}
       jmap:
         {{- $jmapP := (.Values.protocol.jmap | default dict) }}
+        jmap_base_url: {{ $jmapP.jmap_base_url | default "" | quote }}
+        jmap_max_concurrent_requests: {{ $jmapP.jmap_max_concurrent_requests | default 10 }}
+        jmap_max_calls_in_request: {{ $jmapP.jmap_max_calls_in_request | default 16 }}
+        jmap_max_objects_in_get: {{ $jmapP.jmap_max_objects_in_get | default 500 }}
+        jmap_max_objects_in_set: {{ $jmapP.jmap_max_objects_in_set | default 500 }}
+        jmap_max_size_upload: {{ $jmapP.jmap_max_size_upload | default "40M" | quote }}
+        jmap_max_size_request: {{ $jmapP.jmap_max_size_request | default "10M" | quote }}
+        jmap_push_timeout: {{ $jmapP.jmap_push_timeout | default 90 }}
         jmap_cors_allow_origins:
         {{- range ($jmapP.jmap_cors_allow_origins | default list) }}
           - {{ . | quote }}
@@ -876,7 +888,7 @@ data:
              heartbeat forever. Otherwise fall back to the explicit values list. */}}
       {{- if .Values.components.backend.coLocated }}
       {{- $enabled := list }}
-      {{- range $pair := (list (list "imap" "imap") (list "pop3" "pop3") (list "submission" "submission") (list "lmtp" "lmtp") (list "managesieve" "manageSieve")) }}
+      {{- range $pair := (list (list "imap" "imap") (list "pop3" "pop3") (list "submission" "submission") (list "lmtp" "lmtp") (list "managesieve" "manageSieve") (list "jmap" "jmap")) }}
       {{- if (index $.Values.components (index $pair 1) | default dict).enabled }}
       {{- $enabled = append $enabled (index $pair 0) }}
       {{- end }}

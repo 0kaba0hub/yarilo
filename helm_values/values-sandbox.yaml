@@ -93,6 +93,8 @@ service:
   type: LoadBalancer
 
 protocol:
+  jmap:
+    jmap_base_url: "https://mail-sb.seconddns.com"
   imap:
     imap_idle_notify_interval: 120
     imap_max_line_length: 65536
@@ -558,6 +560,15 @@ components:
   manageSieve:
     enabled: true
 
+  ## JMAP backend — one more container in the co-located pod, reached only by
+  ## jmapLogin. internalTLS is on cluster-wide here, so the peer certificate is
+  ## the trust anchor and xclient stays off.
+  jmap:
+    enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
+
   ## ManageSieve login pod — client-facing on :4190 STARTTLS.
   manageSieveLogin:
     enabled: true
@@ -584,6 +595,34 @@ components:
       secretName: yarilo-tls
     listeners:
       managesieve:
+        enabled: true
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
+        metallb.universe.tf/allow-shared-ip: "yarilo-mail"
+
+  ## JMAP login pod — client-facing HTTPS on :443, proxying to the JMAP
+  ## container on the pod the director resolves for the user.
+  jmapLogin:
+    enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: null
+        memory: 512Mi
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10443
+    tls:
+      secretName: yarilo-tls
+    listeners:
+      jmap:
         enabled: true
     service:
       type: LoadBalancer

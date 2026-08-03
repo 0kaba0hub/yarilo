@@ -1389,9 +1389,11 @@ components:
     ## or backend_addr). One of the two is required (#735). Precedence when
     ## BOTH are set: backend_addr wins — see imapLogin's comment for why.
     director_addr: ""
-    ## backend_port overrides the port in the director LOOKUP result.
+    ## backend_port overrides the port in the director LOOKUP result, which
+    ## reports the pod, not the JMAP container. Set it to
+    ## components.jmap.listeners.jmap.containerPort.
     ## 0 = use the LOOKUP result port as-is.
-    backend_port: 0
+    backend_port: 10443
     ## director_tag — see imapLogin's comment for the tag/pool-topology rule.
     director_tag: ""
 
@@ -1638,6 +1640,45 @@ components:
         cpu: 200m
         memory: 128Mi
 
+  ## JMAP backend — the container inside the co-located backend pod that owns
+  ## the user's state and answers the JMAP methods. It never terminates the
+  ## client's TLS and never runs the passdb chain: yarilo-jmap-login did both
+  ## and asserts the user per request, which is why the trust anchor below is
+  ## not optional.
+  jmap:
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
+    enabled: false
+    replicas: 1
+
+    listeners:
+      ## Internal listener the login proxy dials (services.jmap_be). Deliberately
+      ## clear of 8080, which is the telemetry port on every component pod.
+      jmap:
+        enabled: true
+        containerPort: 10443
+        ## Trust the login hop by peer address, using general.xclient.trusted_nets.
+        ## Only consulted when internalTLS is off: with mTLS the peer certificate
+        ## is the anchor. With neither, every request is refused with 403 — the
+        ## listener still binds, so the cause is visible rather than looking like
+        ## a network fault.
+        xclient: false
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
   ## JMAP login pod — TLS terminator + director LOOKUP + per-request HTTP proxy
   ## to the yarilo-jmap backend container. Internet-facing, like the other
   ## *Login pods; not part of the co-located backend StatefulSet.
@@ -1669,12 +1710,6 @@ components:
         connectionLimit: 0
         ## Refuse Basic credentials on a non-TLS listener.
         disablePlainAuth: true
-      ## The backend listener this login proxies TO (services.jmap_be).
-      ## The backend container itself lands with the yarilo-jmap PR; the port
-      ## is published here because the login reads it to know where to dial.
-      jmapBackend:
-        enabled: false
-        containerPort: 10443
 
     ## TLS cert presented to JMAP clients. Required while the listener's
     ## ssl_mode is ssl: the proxy refuses to start without one rather than
@@ -1793,6 +1828,20 @@ protocol:
     max_invalid_commands: 3
 
   jmap:
+    ## Public origin clients reach this deployment on. It prefixes every URL in
+    ## the session resource, so it must be the externally visible name, not a
+    ## pod address. Empty renders relative-looking URLs no client can follow.
+    jmap_base_url: ""
+    ## Limits advertised in the session resource AND enforced. A client batches
+    ## against what is published, so the two must not diverge.
+    jmap_max_concurrent_requests: 10
+    jmap_max_calls_in_request: 16
+    jmap_max_objects_in_get: 500
+    jmap_max_objects_in_set: 500
+    jmap_max_size_upload: 40M
+    jmap_max_size_request: 10M
+    ## Idle timeout for a push connection, seconds. Unused until the push phase.
+    jmap_push_timeout: 90
     ## Browser origins allowed to call the JMAP endpoint. Empty denies every
     ## cross-origin request, which is the default: an endpoint any page can
     ## call with the user's credentials is an account-takeover surface. Exact

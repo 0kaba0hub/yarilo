@@ -30,6 +30,9 @@ type Options struct {
 	Trust Trust
 	// Limits are the bounds advertised in the session resource.
 	Limits jmapcore.Limits
+	// OnListen fires once the port is bound. The co-located pod publishes its
+	// readiness from it, so it must not run before the listener exists.
+	OnListen func()
 }
 
 // Server serves the JMAP endpoint behind the login proxy.
@@ -67,6 +70,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.opts.Addr)
 	if err != nil {
 		return fmt.Errorf("jmap: listen %s: %w", s.opts.Addr, err)
+	}
+	if s.opts.OnListen != nil {
+		s.opts.OnListen()
 	}
 	errCh := make(chan error, 1)
 	go func() {

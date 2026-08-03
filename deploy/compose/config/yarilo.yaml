@@ -11,8 +11,12 @@ general:
       - "127.0.0.1/32"
       - "10.0.0.0/8"
   xclient:
+    ## Compose's default bridge networks live in 172.16/12; 10/8 covers a
+    ## user-defined pool. Peers outside these are not believed about the client
+    ## address, and the JMAP backend refuses them outright.
     trusted_nets:
       - "10.0.0.0/8"
+      - "172.16.0.0/12"
   limits:
     mail_max_userip_connections: 0
   startup_dial_retries: 3
@@ -68,23 +72,23 @@ services:
     enabled: true
     port: 14190
     ssl_mode: "no"
-  ## JMAP client listener on yarilo-jmap-login. The compose service is commented
-  ## out until the yarilo-jmap backend lands; this block is its config.
+  ## JMAP client listener on yarilo-jmap-login.
   jmap:
-    ## Flip to true together with uncommenting yarilo-jmap-login and
-    ## yarilo-jmap in docker-compose.yml; a listener nobody serves is worse
-    ## than an absent one.
-    enabled: false
+    enabled: true
     port: 8443
     ssl_mode: ssl
     connection_limit: 0
     haproxy_protocol: false
     disable_plaintext_auth: true
-  ## Backend listener the JMAP login proxies to.
+  ## Backend listener on yarilo-jmap, reached only by the login proxy. This
+  ## stack runs without internal mTLS, so the trust anchor is the peer address:
+  ## xclient_protocol here plus general.xclient.trusted_nets. Without both the
+  ## backend refuses every request with 403.
   jmap_be:
-    enabled: false
+    enabled: true
     port: 10443
     ssl_mode: "no"
+    xclient_protocol: true
 
 protocol:
   imap:
@@ -136,6 +140,19 @@ protocol:
   managesieve:
     max_script_size: 65536
     max_invalid_commands: 3
+  jmap:
+    ## The origin clients reach this stack on. It prefixes every URL in the
+    ## session resource, so a client that cannot resolve it cannot follow them.
+    jmap_base_url: "https://localhost:8443"
+    jmap_max_concurrent_requests: 10
+    jmap_max_calls_in_request: 16
+    jmap_max_objects_in_get: 500
+    jmap_max_objects_in_set: 500
+    jmap_max_size_upload: 40M
+    jmap_max_size_request: 10M
+    jmap_push_timeout: 90
+    ## Empty denies every cross-origin request, which is the default.
+    jmap_cors_allow_origins: []
 
 sieve:
   sieve_enabled: true

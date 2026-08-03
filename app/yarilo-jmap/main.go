@@ -12,9 +12,12 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/yarilomail/yarilo/internal/jmap"
+	"github.com/yarilomail/yarilo/internal/readyfile"
 	"github.com/yarilomail/yarilo/internal/telemetry"
 	"github.com/yarilomail/yarilo/pkg/build"
 	"github.com/yarilomail/yarilo/pkg/config"
@@ -73,11 +76,21 @@ func main() {
 		}
 	}()
 
+	// Publish this protocol container's readiness into the co-located pod's
+	// shared directory (#788); the yarilo-backend-reg sidecar gates the pod's
+	// director heartbeat on it. Ready = listener bound. No-op when
+	// readiness_dir is unset.
+	var ready atomic.Bool
+	reg := cfg.BackendRegister
+	go readyfile.Touch(ctx, reg.ReadinessDir, "jmap",
+		time.Duration(reg.ReadinessTouchInterval)*time.Second, ready.Load)
+
 	srv := jmap.New(jmap.Options{
 		Addr:      addr,
 		TLSConfig: tlsCfg,
 		Trust:     trust,
 		Limits:    jmap.LimitsFrom(cfg.Protocol.JMAP),
+		OnListen:  func() { ready.Store(true) },
 	})
 	tel.SetReady(true)
 	if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {

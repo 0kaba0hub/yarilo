@@ -1,0 +1,105 @@
+{{- if and ((.Values.components.jmap | default dict).enabled) (not .Values.components.backend.coLocated) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "yarilo.fullname" . }}-jmap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap") | nindent 4 }}
+spec:
+  replicas: {{ .Values.components.jmap.replicas }}
+  selector:
+    matchLabels:
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "jmap") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap") | nindent 8 }}
+      annotations:
+        {{- include "yarilo.configChecksum" . | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- /* No wait-* init containers (#903): the startupProbe below waits for
+             locks, Redis and (when applicable) the DB before the pod takes traffic. */}}
+      containers:
+        - name: yarilo-jmap
+          image: {{ include "yarilo.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-jmap"
+            - name: LOG_LEVEL
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-jmap" "root" $) | quote }}
+            {{- include "yarilo.adminBackendEnv" . | nindent 12 }}
+            {{- include "yarilo.dbEnv" . | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: jmap
+              containerPort: {{ .Values.components.jmap.listeners.jmap.containerPort }}
+              protocol: TCP
+            - name: telemetry
+              containerPort: 8080
+              protocol: TCP
+          {{- $targets := list (printf "tcp://%s-locks.%s.svc:9104" (include "yarilo.fullname" .) .Release.Namespace) (printf "tcp://%s:%s" (include "yarilo.redisInitHost" .) (include "yarilo.redisInitPort" .)) }}
+          {{- if include "yarilo.dbInitHost" . }}
+          {{- $targets = append $targets (printf "tcp://%s:%s" (include "yarilo.dbInitHost" .) (include "yarilo.dbInitPort" .)) }}
+          {{- end }}
+          {{- include "yarilo.depStartupProbe" (dict "probe" .Values.components.jmap.startupProbe "targets" $targets) | nindent 10 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.components.jmap.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yarilo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.storage.persistence.enabled }}
+            - name: mail
+              mountPath: {{ .Values.storage.maildir_root }}
+            {{- end }}
+            {{- include "yarilo.internalTLSMount" .Values.components.jmap.internalTLS | nindent 12 }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "yarilo.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- include "yarilo.internalTLSVolume" .Values.components.jmap.internalTLS | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -24,6 +24,7 @@
   (dict "name" "submission" "vkey" "submission" "component" "yarilo-submission" "telemetry" 8082 "ports" (list (dict "name" "submission" "port" 10587)))
   (dict "name" "lmtp" "vkey" "lmtp" "component" "yarilo-lmtp" "telemetry" 8083 "ports" (list (dict "name" "lmtp" "port" 10024)))
   (dict "name" "managesieve" "vkey" "manageSieve" "component" "yarilo-managesieve" "telemetry" 8084 "ports" (list (dict "name" "sieve" "port" 14190)))
+  (dict "name" "jmap" "vkey" "jmap" "component" "yarilo-jmap" "telemetry" 8085 "ports" (list (dict "name" "jmap" "port" 10443)))
 }}
 {{- $protocols := list }}
 {{- range $p := $allProtocols }}
