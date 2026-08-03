@@ -25,6 +25,18 @@ func MdboxMapKey(user string) string { return "mdboxmap:" + user }
 // Acquire after IndexKey, before DeliverKey.
 func MailboxKey(user, folder string) string { return "mbox:" + user + ":" + folder }
 
+// FTSKey returns the lock key serialising full-text index writes for one
+// mailbox. It is deliberately NOT MailboxKey: the mail index and the full-text
+// index are different resources with different writers. The FTS index has a
+// single writer — yarilo-fts — and this key exists only so two of its own
+// passes (after a ring move, say) cannot race the checkpoint's
+// read-modify-write. Sharing MailboxKey would make every full-text pass
+// contend with every session's mail-index write for a guarantee that concerns
+// neither of them.
+//
+// folder empty is the per-user scope, used by index optimisation.
+func FTSKey(user, folder string) string { return "fts:" + user + ":" + folder }
+
 // MailboxListKey returns the event-bus resource for a user's mailbox-list
 // changes (create / delete / rename / subscribe). NOTIFY watchers subscribe to
 // it to learn about mailboxes appearing or disappearing after NOTIFY SET. It is
