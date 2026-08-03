@@ -278,7 +278,7 @@ unknown peer is believed:
 | Anchor | Who may set identity headers |
 |:---|:---|
 | `internal_tls.enabled: true` | only the login layer's client certificate. The k8s mode. |
-| mTLS off, `protocol.jmap.jmap_trusted_networks` set | only peers inside those CIDRs. Same trust mechanism as PROXY protocol and XCLIENT already use. |
+| mTLS off, `general.xclient.trusted_nets` covers the peer | only peers inside those CIDRs. The same key that already gates XCLIENT and `IMAP ID x-originating-ip`: `Forwarded` is the HTTP member of that family, not a new concept. Enabled per listener with `services.jmap.xclient_protocol`, as elsewhere. |
 | neither | nobody: identity requests answer `403`, and startup logs that no trust anchor is configured. |
 
 The third case keeps the listener up on purpose. A dead port reads as a network
@@ -287,9 +287,10 @@ with a named cause diagnoses itself, and `/healthz` and `/readyz` keep working
 instead of the pod entering CrashLoop.
 
 The compose standalone has no certificate infrastructure by design — one host,
-a private docker network — so it names its docker subnet in
-`jmap_trusted_networks` explicitly in the shipped config rather than relying on
-a built-in default.
+a private docker network — so it adds its docker subnet to
+`general.xclient.trusted_nets` in the shipped config. The stock default is
+`127.0.0.1/32, 10.0.0.0/8`, which does not cover the usual docker bridge, so
+this stays an explicit entry rather than an assumption.
 
 **`connection_limit` means warden.** On this listener the knob has the same
 meaning as everywhere else: per-user/IP accounting held in warden, shared across
