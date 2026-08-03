@@ -2059,7 +2059,7 @@ redis:
   ## image — pulled from the public Redis library on Docker Hub by default.
   image:
     repository: redis
-    tag: "8.8"
+    tag: "8.10"
     pullPolicy: IfNotPresent
   ## persistent volume claim for AOF + dump; required for restart safety.
   persistence:
