@@ -18,7 +18,7 @@ var stemCorpus = []struct {
 }{
 	{"en", []string{"running", "consignment", "flies", "happiness", "argued", "ponies", "caresses", "meetings"}},
 	{"de", []string{"laufen", "häuser", "wissenschaftlich", "grössten", "büchern"}},
-	{"fr", []string{"continuer", "chevaux", "nationalité", "voudrions"}},
+	{"fr", []string{"continuer", "chevaux", "finissions", "voudrions"}},
 	{"ru", []string{"выполнение", "сообщения", "работающий", "письмами"}},
 	{"es", []string{"corriendo", "naciones", "hablábamos"}},
 	{"it", []string{"correre", "nazionale", "parlavamo"}},
