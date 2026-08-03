@@ -2277,6 +2277,12 @@ fts:
   fts_addr: ""                     # sessions dial, e.g. "yarilo-fts:9106"
   fts_listen: ":9106"
   fts_auth_master_addr: ""         # userdb lookups, e.g. "yarilo-auth:9102"
+  ## Connections a session process keeps to yarilo-fts. One connection
+  ## serialises request/response pairs, so this is what decides how many
+  ## lookups actually run at once: a search fanning out over several folders is
+  ## queued, not parallel, until this is above one. Connections open on demand,
+  ## so raising it costs nothing until that many calls overlap.
+  fts_max_conns: 4
   fts_autoindex: false
   fts_autoindex_max_recent_msgs: 0
   ## fts_message_max_size — human-readable (bytes or K/M/G/T, e.g. "50M"). "0" = unlimited. Quote it.

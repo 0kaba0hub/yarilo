@@ -435,6 +435,7 @@ data:
       fts_addr: {{ $.Values.fts.fts_addr | default (ternary (printf "localhost:%d" (int $.Values.components.fts.port)) (printf "%s-fts:%d" (include "yarilo.fullname" .) (int $.Values.components.fts.port)) $.Values.components.backend.coLocated) | quote }}
       fts_listen: {{ $.Values.fts.fts_listen | quote }}
       fts_auth_master_addr: {{ $.Values.fts.fts_auth_master_addr | quote }}
+      fts_max_conns: {{ $.Values.fts.fts_max_conns | default 4 }}
       fts_autoindex: {{ $.Values.fts.fts_autoindex }}
       fts_autoindex_max_recent_msgs: {{ $.Values.fts.fts_autoindex_max_recent_msgs }}
       fts_message_max_size: {{ $.Values.fts.fts_message_max_size | quote }}

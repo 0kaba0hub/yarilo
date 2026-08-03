@@ -263,6 +263,9 @@ fts:
   fts_engine: "flatcurve"
   fts_mode: "remote"
   fts_addr: "yarilo-fts:9106"
+  ## Connections to yarilo-fts. One serialises request/response pairs, so this
+  ## is what decides how many lookups run at once; connections open on demand.
+  fts_max_conns: 4
   fts_listen: ":9106"
   fts_auth_master_addr: "yarilo-auth:9102"
   fts_autoindex: true

@@ -1340,7 +1340,11 @@ func buildFTS(cfg *config.Config) (ftsproto.Client, *language.MultiChain, error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fts language chain: %w", err)
 	}
-	return ftsproto.NewLazy(fc.Addr, 10*time.Second), chain, nil
+	// A pool, not a single connection: one connection serialises request and
+	// response, so a search that fans out over several folders would queue on
+	// it however many goroutines the caller starts. Connections open on demand,
+	// so a pool of four costs nothing until four calls overlap.
+	return ftsproto.NewPool(fc.Addr, fc.MaxConns, 10*time.Second), chain, nil
 }
 
 // languagesOrDefault mirrors app/yarilo-fts/main.go's languagesOr: MultiChain

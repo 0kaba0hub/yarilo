@@ -825,6 +825,12 @@ type FTSConfig struct {
 	// AuthMasterAddr is the yarilo-auth master listener for userdb lookups
 	// (storage identity of the user being indexed). Empty = resolver defaults.
 	AuthMasterAddr string `koanf:"fts_auth_master_addr"`
+	// MaxConns is how many connections a session process keeps to yarilo-fts.
+	// One connection serialises request/response pairs, so this is what decides
+	// how many lookups actually run at once — a search fan-out over several
+	// folders is queued, not parallel, until this is above one. Connections are
+	// opened on demand. Default 4.
+	MaxConns int `koanf:"fts_max_conns"`
 
 	Autoindex              bool     `koanf:"fts_autoindex"`
 	AutoindexMaxRecentMsgs int      `koanf:"fts_autoindex_max_recent_msgs"`
@@ -1994,6 +2000,7 @@ func Load(path string) (*Config, error) {
 		FTS: FTSConfig{
 			Mode:                       "remote",
 			Listen:                     ":9106",
+			MaxConns:                   4,
 			CommitLimit:                500,
 			SearchAddMissing:           "body-search-only",
 			SearchReadFallback:         true,
