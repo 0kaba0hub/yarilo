@@ -3,6 +3,7 @@ package jmap
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/mail"
 	"strings"
@@ -104,9 +105,22 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 	}
 	defer rc.Close() //nolint:errcheck
 
+	// A message that cannot be parsed still exists: Email/query lists it,
+	// download serves its bytes and IMAP shows it. Reporting notFound here
+	// would leave a client unable to reconcile its own view of the account
+	// (#1001), so the object comes back with the half that is trustworthy —
+	// everything the index carries — and the header-derived properties stay
+	// empty. Malformed headers are ordinary in real mail; this is not an
+	// exceptional path.
+	//
+	// A Fetch failure above is the other condition and keeps its own answer:
+	// there the store cannot produce the message at all, download 404s too, and
+	// the methods agree that it is absent.
 	entity, err := message.Read(rc)
 	if err != nil && entity == nil {
-		return email, fmt.Errorf("jmap: parse %s/%d: %w", ref.folder, m.UID, err)
+		slog.Warn("jmap: message could not be parsed, serving index-derived properties only",
+			"folder", ref.folder, "uid", m.UID, "id", email.ID, "err", err)
+		return email, nil
 	}
 	fillHeaders(&email, entity.Header)
 
