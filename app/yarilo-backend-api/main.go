@@ -154,7 +154,7 @@ func main() {
 
 	var ftsClient ftsproto.Client
 	if cfg.FTS.Enabled && cfg.FTS.Mode == "remote" && cfg.FTS.Addr != "" {
-		ftsClient = ftsproto.NewLazy(cfg.FTS.Addr, 10*time.Second)
+		ftsClient = ftsproto.NewPool(cfg.FTS.Addr, cfg.FTS.MaxConns, 10*time.Second)
 		defer ftsClient.Close() //nolint:errcheck
 	}
 

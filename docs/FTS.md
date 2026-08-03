@@ -526,6 +526,7 @@ fts:
   ## Service topology (yarilo-locks precedent).
   fts_mode: remote                  # remote (k8s) | embedded (tests/CLI)
   fts_addr: ""                      # e.g. "yarilo-fts:9106"
+  fts_max_conns: 4                  # connections per session process — see below
 
   ## Indexing behaviour.
   fts_autoindex: false
@@ -573,6 +574,23 @@ fts:
 
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
 volume). `appVersion` bump ships with each feature slice.
+
+### Connections to the service (`fts_max_conns`)
+
+How many connections a session process keeps to `yarilo-fts`. It matters more
+than the name suggests: **one connection serialises request and response
+pairs**, so a caller that issues several lookups at once gets them queued, not
+run in parallel. Until this is above one, a search fanning out over several
+folders is sequential however the caller is written.
+
+The service has always handled each connection on its own goroutine — the
+client side was the bottleneck. Connections open on demand, so a pool of four
+costs nothing until four calls actually overlap.
+
+A caller that finds every connection busy waits up to the dial timeout and then
+gets a distinct "no free connection" error, so an operator can tell "the service
+is busy" from "the service failed". Setting it to `1` reproduces the previous
+single-connection behaviour exactly.
 
 ### Migration notes: legacy config → `yarilo.yaml` (#727)
 
