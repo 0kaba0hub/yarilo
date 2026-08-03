@@ -54,6 +54,15 @@ func main() {
 	}
 	trust := jmap.ResolveTrust(tlsCfg != nil, svc.XClient, parseCIDRs(cfg.General.XClient.TrustedNets))
 
+	// Every URL in the session resource is prefixed with this, so an empty one
+	// publishes paths no client can follow. It is a warning rather than a
+	// refusal: nothing leaks, and a bound port with a named cause in the log
+	// diagnoses itself, where a pod that will not start looks like an image or
+	// scheduling fault.
+	if cfg.Protocol.JMAP.BaseURL == "" {
+		slog.Warn("jmap: protocol.jmap.jmap_base_url is empty — the session resource will advertise URLs no client can follow; set it to the public origin clients reach this deployment on")
+	}
+
 	slog.Info("yarilo-jmap starting",
 		"version", build.Version,
 		"listen", addr,

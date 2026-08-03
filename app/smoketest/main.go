@@ -50,11 +50,13 @@ var (
 	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via SMTP injection + IMAP verify")
 	flagSieveSMTPPort   = flag.String("sieve-smtp-port", "25", "SMTP MX port for Sieve mail injection")
 
-	flagJMAP     = flag.Bool("jmap", false, "check the JMAP session resource (GET /.well-known/jmap)")
-	flagJMAPHost = flag.String("jmap-host", "", "JMAP hostname (defaults to -host)")
-	flagJMAPPort = flag.String("jmap-port", "8443", "JMAP HTTPS port")
-	flagJMAPUser = flag.String("jmap-user", "", "JMAP Basic auth username")
-	flagJMAPPass = flag.String("jmap-pass", "", "password for -jmap-user")
+	flagJMAP           = flag.Bool("jmap", false, "check the JMAP session resource (GET /.well-known/jmap)")
+	flagJMAPHost       = flag.String("jmap-host", "", "JMAP hostname (defaults to -host)")
+	flagJMAPPort       = flag.String("jmap-port", "8443", "JMAP HTTPS port")
+	flagJMAPUser       = flag.String("jmap-user", "", "JMAP Basic auth username")
+	flagJMAPPass       = flag.String("jmap-pass", "", "password for -jmap-user")
+	flagJMAPMaxRequest = flag.Int("jmap-max-size-request", 10485760,
+		"protocol.jmap.jmap_max_size_request of the deployment; the body-cap check sends one byte more")
 
 	flagPasswdFileUser = flag.String("passwd-file-user", "", "IMAP username backed by the passwd-file passdb (enables the check)")
 	flagPasswdFilePass = flag.String("passwd-file-pass", "", "password for -passwd-file-user")
@@ -226,6 +228,14 @@ func main() {
 			name string
 			fn   func() error
 		}{"jmap session resource (/.well-known/jmap)", checkJMAPSession})
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap batch + back-reference (Core/echo x2)", checkJMAPBatch})
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap body cap refused at the login edge", checkJMAPBodyCap})
 	}
 
 	slog.Info("smoke: start", "total", len(checks))

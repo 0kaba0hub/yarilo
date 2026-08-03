@@ -59,6 +59,11 @@ type Options struct {
 	// CORSAllowOrigins lists browser origins allowed to call the endpoint.
 	// Empty denies every cross-origin request.
 	CORSAllowOrigins []string
+	// MaxSizeRequest caps a request body, in bytes. It is the same value the
+	// session resource advertises as maxSizeRequest, enforced here so an
+	// oversized body is refused before it is proxied and before any backend
+	// reads it. 0 leaves the body uncapped.
+	MaxSizeRequest int64
 }
 
 // ConnAccountant is warden's per-user@IP connection accounting, narrowed to
@@ -220,6 +225,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.capBody(w, r) {
+		return
+	}
+
 	backend, err := s.opts.Router.Backend(username, sessionOf(st))
 	if err != nil {
 		slog.Warn("jmap-login: backend lookup failed", "user", username, "err", err)
@@ -227,6 +236,37 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.proxy.serve(w, r, backend, username, sessionOf(st), clientIP)
+}
+
+// capBody enforces maxSizeRequest at the edge and reports whether the request
+// may continue. The refusal is the JMAP limit problem naming the bound, not a
+// bare 413: a client that cannot parse the answer cannot back off correctly.
+// The backend keeps its own cap, but a body refused here never reaches it.
+func (s *Server) capBody(w http.ResponseWriter, r *http.Request) bool {
+	limit := s.opts.MaxSizeRequest
+	if limit <= 0 || r.Body == nil {
+		return true
+	}
+	if r.ContentLength > limit {
+		writeLimitProblem(w, "maxSizeRequest")
+		return false
+	}
+	// A body with no declared length, or one that lies, is capped as it is read
+	// during proxying: the reader errors past the limit rather than streaming
+	// the excess on.
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	return true
+}
+
+// writeLimitProblem emits the RFC 8620 §3.6.1 limit problem. The limit member
+// is required: "too big" is useless without naming the bound that was hit.
+func writeLimitProblem(w http.ResponseWriter, limit string) {
+	(&jmapcore.RequestError{
+		Type:   jmapcore.ProblemLimit,
+		Status: http.StatusRequestEntityTooLarge,
+		Limit:  limit,
+		Detail: "The request body exceeds " + limit + ".",
+	}).Write(w)
 }
 
 // account keeps warden's per-user@IP view in step with this connection. A
