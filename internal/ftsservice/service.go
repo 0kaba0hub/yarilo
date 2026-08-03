@@ -55,6 +55,11 @@ type Service struct {
 	mu    sync.Mutex
 	users map[string]*userHandle
 
+	// lag holds how far behind each mailbox's index is. Published as two
+	// gauges by lagSampler; kept in process because per-mailbox labels would
+	// be unbounded cardinality.
+	lag *lagTracker
+
 	wg   sync.WaitGroup
 	stop context.CancelFunc
 }
@@ -88,6 +93,7 @@ func New(opts Options) (*Service, error) {
 		queue:         newQueue(),
 		optimizeQueue: newOptimizeQueue(),
 		users:         map[string]*userHandle{},
+		lag:           newLagTracker(),
 		stop:          cancel,
 	}
 	// Wired before any worker starts, so the field write inside
@@ -103,6 +109,8 @@ func New(opts Options) (*Service, error) {
 	}
 	s.wg.Add(1)
 	go s.optimizeWorker(ctx)
+	s.wg.Add(1)
+	go s.lagSampler(ctx.Done(), lagSampleInterval)
 	return s, nil
 }
 
@@ -318,31 +326,42 @@ func (s *Service) worker(ctx context.Context) {
 			return
 		}
 		metricQueueDepth.Set(float64(s.queue.depth()))
-		t0 := time.Now()
-		err := s.runIndex(j)
-		metricIndexDuration.Observe(time.Since(t0).Seconds())
-		if err != nil {
-			// Lock contention is not a failure: the pass is rescheduled rather
-			// than lost, and counted separately so a busy mailbox does not
-			// read as a broken one (#1004).
-			if s.deferJob(j, err) {
-				continue
-			}
-			metricIndexErrors.Inc()
-			slog.Error("fts: index job failed",
-				"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "err", err)
-			// Recovery: a broken/closed engine handle stays broken for every
-			// subsequent job unless reopened. Drop the cached user handle so the
-			// next job re-opens a fresh index — the engine also self-heals its
-			// write shard, but evicting here recovers even a wholesale-poisoned
-			// UserIndex without an operator deleting the on-disk index.
-			if reason := brokenEngineReason(err); reason != "" {
-				metricRecoveryTotal.WithLabelValues(reason).Inc()
-				s.evict(j.user)
-				slog.Warn("fts: engine reported a broken index, evicted user handle for reopen",
-					"user", j.user, "folder", j.mbox.Name, "reason", reason)
-			}
-		}
+		// Deferred immediately: a mailbox stays claimed for the whole pass, so
+		// a return, an error or a panic must all release it. Missing this leaves
+		// that mailbox claimed forever — silently unindexed mail, which is the
+		// worst failure this service has.
+		s.runPass(j)
+	}
+}
+
+// runPass indexes one mailbox and always releases it, whatever happens.
+func (s *Service) runPass(j job) {
+	defer s.queue.done(j)
+	t0 := time.Now()
+	err := s.runIndex(j)
+	metricIndexDuration.Observe(time.Since(t0).Seconds())
+	if err == nil {
+		return
+	}
+	// Lock contention is not a failure: the pass is rescheduled rather than
+	// lost, and counted separately so a busy mailbox does not read as a broken
+	// one (#1004).
+	if s.deferJob(j, err) {
+		return
+	}
+	metricIndexErrors.Inc()
+	slog.Error("fts: index job failed",
+		"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "err", err)
+	// Recovery: a broken/closed engine handle stays broken for every subsequent
+	// job unless reopened. Drop the cached user handle so the next job re-opens
+	// a fresh index — the engine also self-heals its write shard, but evicting
+	// here recovers even a wholesale-poisoned UserIndex without an operator
+	// deleting the on-disk index.
+	if reason := brokenEngineReason(err); reason != "" {
+		metricRecoveryTotal.WithLabelValues(reason).Inc()
+		s.evict(j.user)
+		slog.Warn("fts: engine reported a broken index, evicted user handle for reopen",
+			"user", j.user, "folder", j.mbox.Name, "reason", reason)
 	}
 }
 
@@ -573,6 +592,9 @@ func (s *Service) runIndex(j job) error {
 		if err := upd.Commit(); err != nil {
 			return err
 		}
+		// Recorded from the list this pass already read: whatever is left above
+		// the checkpoint is what search will not find. Costs no extra reads.
+		s.lag.observe(j.key(), msgs, indexed)
 		if indexed != last {
 			return h.ui.SetCheckpoint(j.mbox, indexed, curUIDV, checksum)
 		}
@@ -586,6 +608,7 @@ func (s *Service) runIndex(j job) error {
 }
 
 func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.MessageMeta, upd fts.Update) error {
+	tFetch := time.Now()
 	rc, err := h.box.Fetch(mbox.Name, m.Filename, m.AltTier)
 	if err != nil {
 		// The caller flags the folder for a reactive heal (gated once per scan);
@@ -593,7 +616,18 @@ func (s *Service) indexOne(h *userHandle, mbox fts.MailboxRef, m *mailbox.Messag
 		return err
 	}
 	defer rc.Close()
-	if err := s.builder.Build(m.UID, io.Reader(rc), upd); err != nil {
+	// Fetch is timed to the open, not the read: the body is streamed into
+	// Build, so the bytes are read there. Split this way, "waiting for storage
+	// to hand us a file" and "parsing what it handed us" stay distinguishable,
+	// which is what decides whether overlapping reads or more workers is the
+	// win.
+	metricFetch.Observe(time.Since(tFetch).Seconds())
+	metricMessageBytes.Observe(float64(m.Size))
+
+	tBuild := time.Now()
+	err = s.builder.Build(m.UID, io.Reader(rc), upd)
+	metricBuild.Observe(time.Since(tBuild).Seconds())
+	if err != nil {
 		return &buildError{err: err}
 	}
 	// Per-message breadcrumb: which UID/file was fed to the engine. Metadata

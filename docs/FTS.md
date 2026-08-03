@@ -575,6 +575,27 @@ fts:
 Helm: `components.fts` Deployment (replicas 1; ClusterIP `:9106`; the index
 volume). `appVersion` bump ships with each feature slice.
 
+### The index queue
+
+The queue holds **at most one pending pass per mailbox**. A mailbox is the unit
+of work, not a request: a pass reads the checkpoint and indexes everything above
+it, so two passes over one mailbox do the same work twice — and the second finds
+that out only after taking the lock. Under delivery load those duplicates are
+what turn a busy mailbox into a stream of contention, which is why coalescing is
+a correctness property here rather than an optimisation.
+
+Merging keeps the widest range: the pass covers the highest UID any request
+asked for, and the strictest `max_recent` bound. A priority request (a search
+catch-up) for a mailbox already queued **moves** it to the front instead of
+adding a second entry.
+
+A request that arrives while its mailbox is being indexed is not dropped: the
+running pass read its checkpoint before that request existed and will not cover
+it, so the mailbox is re-queued when the pass finishes. Every popped mailbox is
+released through the same path whatever happens to the pass — including a panic
+— because a mailbox left claimed would never be queued again, and its mail would
+stay unindexed with nothing in the log to say so.
+
 ### Locking: the full-text index is not the mail index
 
 An index pass takes a lock keyed `fts:<user>:<folder>`, not the mailbox lock.
@@ -596,6 +617,29 @@ in `fts_index_deferred_total`. A pass abandoned after exhausting its retries
 increments `fts_index_dropped_total`, which is expected to stay at zero: every
 increment is mail that is not in the index and will not be until something else
 queues that mailbox.
+
+### Telemetry
+
+| Metric | Answers |
+|:---|:---|
+| `fts_index_lag_uids` | how much mail is not in the index — the largest gap between a mailbox's highest UID and its checkpoint |
+| `fts_index_lag_seconds` | how old the oldest unindexed message is |
+| `fts_index_queue_depth` | mailboxes waiting for a pass |
+| `fts_queue_wait_seconds` | how long they waited — separates "deep queue" from "deep queue that is not draining" |
+| `fts_queue_merged_total` | requests folded into a queued pass: duplicate work, and duplicate lock contention, that did not happen |
+| `fts_queue_requeued_total` | mailboxes put back because a request arrived mid-pass |
+| `fts_fetch_seconds` / `fts_build_seconds` | where a pass spends its time — reading storage or parsing |
+| `fts_message_bytes` | the size those two are relative to; 200ms on 30MB and on 3KB are different diagnoses |
+| `fts_index_deferred_total` | passes requeued after losing the lock |
+| `fts_index_dropped_total` | passes given up on. **Expected zero** |
+
+The two lag gauges are the ones a user feels: "search does not find recent
+mail". Everything else is a proxy for them.
+
+They carry no per-user or per-mailbox labels — a few hundred users times their
+folders would put that cardinality into Prometheus. The per-mailbox detail is
+kept in process and only the worst case is published, sampled every 30 seconds;
+for a specific user, use the logs.
 
 ### Connections to the service (`fts_max_conns`)
 
