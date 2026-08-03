@@ -16,12 +16,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/backend"
 	"github.com/yarilomail/yarilo/internal/jmap"
 	"github.com/yarilomail/yarilo/internal/readyfile"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/telemetry"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/build"
 	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/logging"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 	"github.com/yarilomail/yarilo/pkg/mtls"
 )
 
@@ -50,6 +55,13 @@ func main() {
 	tlsCfg, err := internalTLS(cfg)
 	if err != nil {
 		slog.Error("internal TLS config failed", "err", err)
+		os.Exit(1)
+	}
+	// The userdb lookup and the locks client dial other components, so they
+	// need the client half of the same internal mTLS.
+	intTLS, err := internalClientTLS(cfg)
+	if err != nil {
+		slog.Error("internal mTLS client config failed", "err", err)
 		os.Exit(1)
 	}
 	trust := jmap.ResolveTrust(tlsCfg != nil, svc.XClient, parseCIDRs(cfg.General.XClient.TrustedNets))
@@ -85,6 +97,12 @@ func main() {
 		}
 	}()
 
+	store, err := buildStorage(cfg, intTLS)
+	if err != nil {
+		slog.Error("storage wiring failed", "err", err)
+		os.Exit(1)
+	}
+
 	// Publish this protocol container's readiness into the co-located pod's
 	// shared directory (#788); the yarilo-backend-reg sidecar gates the pod's
 	// director heartbeat on it. Ready = listener bound. No-op when
@@ -100,6 +118,7 @@ func main() {
 		Trust:     trust,
 		Limits:    jmap.LimitsFrom(cfg.Protocol.JMAP),
 		OnListen:  func() { ready.Store(true) },
+		Storage:   store,
 	})
 	tel.SetReady(true)
 	if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
@@ -129,4 +148,98 @@ func parseCIDRs(ss []string) []*net.IPNet {
 		nets = append(nets, n)
 	}
 	return nets
+}
+
+// buildStorage wires the per-user mail access. Every dependency here is one the
+// session protocols already use, so JMAP reads exactly what IMAP would.
+func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error) {
+	locker, err := buildLocker(cfg, intTLS)
+	if err != nil {
+		return nil, err
+	}
+	// A nil locker would silently downgrade the subscription and special-use
+	// reads to unlocked ones. Every deployment configures locks_client, so an
+	// absent one is a misconfiguration to fail on, not to work around.
+	if locker == nil {
+		return nil, fmt.Errorf("jmap: locks_client is not configured; set mode remote (or embedded for a single-node dev run)")
+	}
+	resolver := backend.BuildResolver(cfg)
+	return &jmap.Storage{
+		Mailbox: backend.BuildMailbox(cfg.Storage, locker),
+		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
+			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
+		},
+		Index:              file.New(),
+		ResolveUser:        userResolver(authAddr(cfg), resolver, intTLS),
+		Locker:             locker,
+		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
+	}, nil
+}
+
+// userResolver prefers the yarilo-auth master userdb, which carries the
+// per-user storage identity (home, mail location, INDEX= overrides). Without an
+// address it falls back to the resolver's template defaults.
+func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Config) func(string) (*mailbox.UserInfo, error) {
+	if masterAddr == "" {
+		return func(u string) (*mailbox.UserInfo, error) {
+			return resolver.UserInfo(u, ""), nil
+		}
+	}
+	return func(u string) (*mailbox.UserInfo, error) {
+		cl, err := authclient.Dial(masterAddr, authTLS)
+		if err != nil {
+			return nil, fmt.Errorf("jmap: master dial: %w", err)
+		}
+		defer cl.Close() //nolint:errcheck
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ui, err := cl.Userdb(ctx, u)
+		if err != nil {
+			return nil, fmt.Errorf("jmap: userdb %s: %w", u, err)
+		}
+		if ui == nil {
+			return nil, fmt.Errorf("jmap: userdb: user not found: %s", u)
+		}
+		return backend.ResolveUserInfo(resolver, u, ui), nil
+	}
+}
+
+func buildLocker(cfg *config.Config, intTLS *tls.Config) (locks.Locker, error) {
+	lc := cfg.LocksClient
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	switch lc.Mode {
+	case "":
+		return nil, nil
+	case "embedded":
+		if lc.Socket == "" {
+			return nil, fmt.Errorf("locks_client.socket required for embedded mode")
+		}
+		return locks.NewClient(ctx, locks.DialUnix(lc.Socket))
+	case "remote":
+		if len(lc.Endpoints) == 0 {
+			return nil, fmt.Errorf("locks_client.endpoints must have at least one entry for remote mode")
+		}
+		if intTLS != nil {
+			return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], intTLS))
+		}
+		return locks.NewClient(ctx, locks.DialTCP(lc.Endpoints[0]))
+	default:
+		return nil, fmt.Errorf("locks_client: unknown mode %q", lc.Mode)
+	}
+}
+
+func internalClientTLS(cfg *config.Config) (*tls.Config, error) {
+	if !cfg.InternalTLS.Enabled {
+		return nil, nil
+	}
+	return mtls.ClientConfig(cfg.InternalTLS.Cert, cfg.InternalTLS.Key, cfg.InternalTLS.CA,
+		cfg.InternalTLS.ServerName, cfg.InternalTLS.SessionCacheSize, cfg.InternalTLS.SessionCacheTTL)
+}
+
+func authAddr(cfg *config.Config) string {
+	if cfg.AuthService.Addr != "" {
+		return cfg.AuthService.Addr
+	}
+	return cfg.AuthService.Listen
 }

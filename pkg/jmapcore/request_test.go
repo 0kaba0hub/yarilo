@@ -49,13 +49,12 @@ func TestParseRequestRejections(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, rerr := ParseRequest([]byte(tt.body), declared(), lim)
-			if rerr == nil {
+			switch {
+			case rerr == nil:
 				t.Fatalf("accepted %s", tt.body)
-			}
-			if rerr.Type != tt.wantType {
+			case rerr.Type != tt.wantType:
 				t.Errorf("type = %s, want %s", rerr.Type, tt.wantType)
-			}
-			if rerr.Limit != tt.wantLimit {
+			case rerr.Limit != tt.wantLimit:
 				t.Errorf("limit = %q, want %q", rerr.Limit, tt.wantLimit)
 			}
 		})
@@ -66,10 +65,10 @@ func TestParseRequestRejections(t *testing.T) {
 // cannot tell which capability was missing.
 func TestUnknownCapabilityNamesTheURN(t *testing.T) {
 	_, rerr := ParseRequest([]byte(`{"using":["urn:example:nope"],"methodCalls":[]}`), declared(), testLimits())
-	if rerr == nil {
+	switch {
+	case rerr == nil:
 		t.Fatal("accepted an unknown capability")
-	}
-	if !strings.Contains(rerr.Detail, "urn:example:nope") {
+	case !strings.Contains(rerr.Detail, "urn:example:nope"):
 		t.Errorf("detail = %q, want it to name the URN", rerr.Detail)
 	}
 }

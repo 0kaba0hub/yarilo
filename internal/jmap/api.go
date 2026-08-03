@@ -18,11 +18,17 @@ func declaredCapabilities() []string {
 	return []string{jmapcore.CapCore, jmapcore.CapMail}
 }
 
-// registry is the method set. The data methods of RFC 8621 join it in later
-// phases; Core/echo alone already exercises dispatch, ordering and
-// back-references.
-func (s *Server) registry() jmapcore.Registry {
-	return jmapcore.CoreRegistry()
+// registry is the method set for one request. It is built per request because
+// the data methods close over that user's storage handle; JMAP has no session
+// to hang them on.
+func (s *Server) registry(h *userHandle, accountID string) jmapcore.Registry {
+	reg := jmapcore.CoreRegistry()
+	if h != nil {
+		for name, entry := range s.mailboxRegistry(h, accountID) {
+			reg[name] = entry
+		}
+	}
+	return reg
 }
 
 // handleAPI runs one batch of method calls (RFC 8620 §3).
@@ -47,7 +53,21 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, id identity) 
 		rerr.Write(w)
 		return
 	}
-	resp := jmapcore.Execute(r.Context(), req, s.registry(), s.opts.Limits)
+	// The handle opens after the envelope parses, so a malformed request never
+	// touches storage, and closes with the request: JMAP has no session to keep
+	// it alive and a cache would need an invalidation story nothing can supply.
+	var h *userHandle
+	if s.opts.Storage != nil {
+		h, err = s.opts.Storage.open(id.user)
+		if err != nil {
+			slog.Warn("jmap: storage open failed", "user", id.user, "session", id.sessionID, "err", err)
+			jmapcore.WriteProblem(w, http.StatusServiceUnavailable, "Mail store unavailable")
+			return
+		}
+		defer h.close()
+	}
+
+	resp := jmapcore.Execute(r.Context(), req, s.registry(h, id.user), s.opts.Limits)
 	slog.Debug("jmap: api", "user", id.user, "session", id.sessionID, "calls", len(req.MethodCalls))
 	jmapcore.WriteJSON(w, http.StatusOK, resp)
 }
