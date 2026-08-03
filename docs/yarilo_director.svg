@@ -1,4 +1,4 @@
-<svg width="1020" height="840" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+<svg width="1240" height="840" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
   <defs>
     <marker id="am" markerWidth="9" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0,9 3.5,0 7" fill="#c2410c"/>
@@ -17,7 +17,7 @@
     </marker>
   </defs>
 
-  <rect width="1020" height="840" fill="#f8fafc"/>
+  <rect width="1240" height="840" fill="#f8fafc"/>
   <text x="510" y="22" text-anchor="middle" fill="#0f172a" font-size="14" font-weight="bold">yarilo — director deployment · shared services · backend pool</text>
 
   <!-- ══════════════════════════════════════════════════
@@ -43,7 +43,7 @@
   <rect x="270" y="50" width="430" height="80" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
   <text x="485" y="75" text-anchor="middle" fill="#0f172a" font-size="12" font-weight="bold">client MUA</text>
   <text x="485" y="93" text-anchor="middle" fill="#475569" font-size="10">Thunderbird · Outlook</text>
-  <text x="485" y="108" text-anchor="middle" fill="#475569" font-size="9">IMAP / POP3 / Submission (TLS)</text>
+  <text x="485" y="108" text-anchor="middle" fill="#475569" font-size="9">IMAP / POP3 / Submission / JMAP (TLS)</text>
 
   <!-- MTA / MX server -->
   <rect x="720" y="50" width="280" height="80" rx="5" fill="#ffffff" stroke="#475569" stroke-width="2"/>
@@ -54,9 +54,9 @@
   <!-- ══════════════════════════════════════════════════
        Outer wrapper: director deployment
   ══════════════════════════════════════════════════ -->
-  <rect x="15" y="150" width="990" height="542" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
-  <rect x="780" y="152" width="223" height="24" rx="2" fill="#0f172a"/>
-  <text x="998" y="169" text-anchor="end" fill="#f8fafc" font-size="11" font-weight="bold">director · StatefulSet × 3 (peer-sync)</text>
+  <rect x="15" y="150" width="1210" height="542" rx="10" fill="none" stroke="#0f172a" stroke-width="2.5"/>
+  <rect x="1000" y="152" width="223" height="24" rx="2" fill="#0f172a"/>
+  <text x="1218" y="169" text-anchor="end" fill="#f8fafc" font-size="11" font-weight="bold">director · StatefulSet × 3 (peer-sync)</text>
 
   <!-- External entry arrows (MUA/MTA → login proxies) -->
   <line x1="320" y1="130" x2="140" y2="182" stroke="#475569" stroke-width="1.8" marker-end="url(#ax)"/>
@@ -87,17 +87,26 @@
   <text x="800" y="223" text-anchor="middle" fill="#475569" font-size="10">:24 (LMTP)</text>
   <text x="800" y="239" text-anchor="middle" fill="#475569" font-size="9">warden CONNECT · SESSION · fan-out</text>
 
+  <rect x="920" y="182" width="200" height="72" rx="5" fill="#fff1f2" stroke="#be123c" stroke-width="2"/>
+  <text x="1020" y="204" text-anchor="middle" fill="#be123c" font-size="12" font-weight="bold">yarilo-jmap-login</text>
+  <text x="1020" y="222" text-anchor="middle" fill="#475569" font-size="10">:8443 (HTTPS)</text>
+  <text x="1020" y="240" text-anchor="middle" fill="#475569" font-size="9">TLS · auth · warden · HTTP proxy</text>
+
   <!-- Control-plane bus (login-proxies → shared services) -->
   <line x1="140" y1="254" x2="140" y2="282" stroke="#64748b" stroke-width="1.8"/>
   <line x1="360" y1="254" x2="360" y2="282" stroke="#64748b" stroke-width="1.8"/>
   <line x1="580" y1="254" x2="580" y2="282" stroke="#64748b" stroke-width="1.8"/>
   <line x1="800" y1="254" x2="800" y2="282" stroke="#64748b" stroke-width="1.8"/>
-  <line x1="140" y1="282" x2="800" y2="282" stroke="#64748b" stroke-width="2"/>
+  <line x1="140" y1="282" x2="1020" y2="282" stroke="#64748b" stroke-width="2"/>
   <circle cx="140" cy="282" r="3" fill="#64748b"/>
   <circle cx="360" cy="282" r="3" fill="#64748b"/>
   <circle cx="580" cy="282" r="3" fill="#64748b"/>
   <circle cx="800" cy="282" r="3" fill="#64748b"/>
+  <circle cx="1020" cy="282" r="3" fill="#64748b"/>
+  <line x1="1020" y1="254" x2="1020" y2="282" stroke="#64748b" stroke-width="1.8"/>
   <text x="470" y="275" text-anchor="middle" fill="#475569" font-size="10" font-weight="bold">control plane · mTLS</text>
+
+  <line x1="702" y1="131" x2="1012" y2="178" stroke="#be123c" stroke-width="1.8" marker-end="url(#ad)"/>
 
   <!-- Bus → shared services (UP through wrapper top) -->
   <line x1="140" y1="282" x2="140" y2="132" stroke="#ca8a04" stroke-width="1.8" marker-end="url(#aa)"/>
@@ -180,7 +189,10 @@
   <line x1="800" y1="692" x2="800" y2="730" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
   <text x="808" y="717" text-anchor="start" fill="#0f766e" font-size="10" font-weight="bold">lmtp</text>
 
-  <line x1="60" y1="730" x2="960" y2="730" stroke="#0f766e" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="1020" y1="692" x2="1020" y2="730" stroke="#0f766e" stroke-width="2" marker-end="url(#ap)"/>
+  <text x="1028" y="717" text-anchor="start" fill="#0f766e" font-size="10" font-weight="bold">jmap</text>
+
+  <line x1="60" y1="730" x2="1180" y2="730" stroke="#0f766e" stroke-width="1.5" stroke-dasharray="4,3"/>
   <text x="60" y="724" text-anchor="start" fill="#0f766e" font-size="9" font-style="italic">data plane · ring-routed by director (per tag · per user)</text>
 
   <!-- Backend (standalone) deployments (tagged shards) -->
