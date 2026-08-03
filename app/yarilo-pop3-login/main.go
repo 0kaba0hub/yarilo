@@ -260,7 +260,7 @@ func parseCIDRs(ss []string) []*net.IPNet {
 // starts, which says nothing. With it, ready means this pod holds its ports.
 func startTelemetry(cfg config.TelemetryConfig) *telemetry.Server {
 	tel := telemetry.NewWithOptions(telemetry.Options{
-		Addr:      cfg.Listen,
+		Addr:      telemetry.Addr(cfg.Listen),
 		Lifecycle: true,
 		Pprof: telemetry.PprofOptions{
 			Enabled: cfg.PprofEnabled,

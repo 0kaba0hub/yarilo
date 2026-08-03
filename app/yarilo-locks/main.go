@@ -189,7 +189,7 @@ func buildListener(cfg *config.Config, lcfg config.LocksServiceConfig) (net.List
 // connection dropped is taken out of rotation.
 func runTelemetry(cfg config.TelemetryConfig, reg *prometheus.Registry, backendReady func() bool) {
 	tel := telemetry.NewWithOptions(telemetry.Options{
-		Addr:     cfg.Listen,
+		Addr:     telemetry.Addr(cfg.Listen),
 		Registry: reg,
 		Checks:   []telemetry.Check{telemetry.FuncCheck("backend", backendReady)},
 		Pprof: telemetry.PprofOptions{

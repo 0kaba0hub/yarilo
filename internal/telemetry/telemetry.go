@@ -65,6 +65,14 @@ type Server struct {
 // env; other components leave it unset and fall back to the config value.
 func Addr(cfgListen string) string {
 	if v := os.Getenv("TELEMETRY_LISTEN"); v != "" {
+		// Logged because the alternative is silence about an address the
+		// operator did not choose. Half the components used to read cfgListen
+		// directly and ignore this variable entirely (#1019); an override that
+		// takes effect and one that is dropped looked identical from outside.
+		if v != cfgListen {
+			slog.Info("telemetry: listen address overridden by TELEMETRY_LISTEN",
+				"config", cfgListen, "env", v)
+		}
 		return v
 	}
 	if cfgListen == "" {
