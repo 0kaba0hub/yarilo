@@ -1,0 +1,116 @@
+{{- if ((.Values.components.jmap | default dict).enabled) }}
+{{- /*
+  JMAP (RFC 8620) client-facing API. Its own Deployment rather than a container
+  in the co-located backend pod: it terminates client TLS itself and is reached
+  directly by clients over HTTPS, so it scales on request load, not on the
+  per-user mailbox affinity that binds the protocol containers to one pod IP.
+*/ -}}
+{{- $jmap := .Values.components.jmap }}
+{{- $telemetry := $jmap.telemetryPort | default 8087 }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "yarilo.fullname" . }}-jmap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap") | nindent 4 }}
+spec:
+  replicas: {{ $jmap.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "jmap") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap") | nindent 8 }}
+      annotations:
+        {{- include "yarilo.configChecksum" . | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: yarilo-jmap
+          image: {{ include "yarilo.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: YARILO_COMPONENT
+              value: "yarilo-jmap"
+            - name: LOG_LEVEL
+              value: {{ include "yarilo.logLevel" (dict "name" "yarilo-jmap" "root" $) | quote }}
+            # Own telemetry port: distinct from every other yarilo container.
+            - name: TELEMETRY_LISTEN
+              value: {{ printf ":%d" (int $telemetry) | quote }}
+            {{- include "yarilo.adminBackendEnv" . | nindent 12 }}
+            {{- include "yarilo.dbEnv" . | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: jmap
+              containerPort: {{ (($jmap.listeners | default dict).jmap | default dict).containerPort | default 8443 }}
+              protocol: TCP
+            - name: telemetry
+              containerPort: {{ $telemetry }}
+              protocol: TCP
+          {{- $targets := list (printf "tcp://%s-locks.%s.svc:9104" (include "yarilo.fullname" .) .Release.Namespace) (printf "tcp://%s:%s" (include "yarilo.redisInitHost" .) (include "yarilo.redisInitPort" .)) }}
+          {{- if include "yarilo.dbInitHost" . }}
+          {{- $targets = append $targets (printf "tcp://%s:%s" (include "yarilo.dbInitHost" .) (include "yarilo.dbInitPort" .)) }}
+          {{- end }}
+          {{- include "yarilo.depStartupProbe" (dict "probe" $jmap.startupProbe "targets" $targets) | nindent 10 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml $jmap.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yarilo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.storage.persistence.enabled }}
+            - name: mail
+              mountPath: {{ .Values.storage.maildir_root }}
+            {{- end }}
+            {{- include "yarilo.externalTLSMount" ($jmap.tls | default dict).secretName | nindent 12 }}
+            {{- include "yarilo.internalTLSMount" $jmap.internalTLS | nindent 12 }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "yarilo.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.storage.persistence.enabled }}
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "yarilo.fullname" . }}-mail
+        {{- end }}
+        {{- include "yarilo.externalTLSVolume" ($jmap.tls | default dict).secretName | nindent 8 }}
+        {{- include "yarilo.internalTLSVolume" $jmap.internalTLS | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

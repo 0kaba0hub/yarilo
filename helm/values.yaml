@@ -1638,6 +1638,58 @@ components:
         cpu: 200m
         memory: 128Mi
 
+  ## JMAP (RFC 8620) — client-facing HTTPS API, its own Deployment because it
+  ## terminates TLS itself and is reached directly by clients (no login proxy).
+  ## Phase 1 serves only the session resource at GET /.well-known/jmap.
+  jmap:
+    enabled: false
+    replicas: 1
+
+    startupProbe:
+      enabled: true
+      timeout: 2s
+      periodSeconds: 2
+      failureThreshold: 90
+
+    listeners:
+      jmap:
+        enabled: true
+        servicePort: 8443
+        containerPort: 8443
+        ## disablePlainAuth rejects Basic auth when the connection is not
+        ## TLS-protected. Renders as services.jmap.disable_plaintext_auth.
+        disablePlainAuth: true
+
+    ## Telemetry (/healthz, /readyz, metrics) port, distinct from every other
+    ## container's so a shared node or a co-located debug session never clashes.
+    telemetryPort: 8087
+
+    ## Client-facing TLS certificate secret (tls.crt / tls.key).
+    tls:
+      secretName: ""
+
+    internalTLS:
+      enabled: false
+      secretName: ""
+
+    ## Renders as services.jmap.haproxy_protocol — expect a HAProxy PROXY
+    ## header ahead of the TLS handshake.
+    haproxy_protocol: false
+    ## Renders as services.jmap.connection_limit — max concurrent connections.
+    connection_limit: 1000
+
+    service:
+      type: ClusterIP
+      annotations: {}
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
 ## -------------------------------------------------------------------
 ## Protocol tuning
 ## -------------------------------------------------------------------
@@ -1709,6 +1761,24 @@ protocol:
   managesieve:
     max_script_size: 65536
     max_invalid_commands: 3
+
+  ## JMAP limits published in the session resource (RFC 8620 §2). Every key
+  ## carries the jmap_ prefix, matching the config keys.
+  jmap:
+    ## jmap_base_url — public HTTPS origin clients reach this server on. It
+    ## prefixes every URL in the session resource, so behind a proxy set the
+    ## externally visible name, not the pod address. Empty = derive from the
+    ## request Host header.
+    jmap_base_url: ""
+    jmap_max_concurrent_requests: 10
+    jmap_max_objects_in_get: 500
+    jmap_max_objects_in_set: 500
+    ## Human-readable sizes (bytes or K/M/G/T). Quote them.
+    jmap_max_size_upload: "40M"
+    jmap_max_size_request: "10M"
+    jmap_max_calls_in_request: 16
+    ## Idle timeout for a push connection, seconds. Unused until the push phase.
+    jmap_push_timeout: 90
 
 ## -------------------------------------------------------------------
 ## Sieve mail filtering

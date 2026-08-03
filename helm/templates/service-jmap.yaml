@@ -1,0 +1,44 @@
+{{- if ((.Values.components.jmap | default dict).enabled) }}
+{{- $jmap := .Values.components.jmap }}
+## ClusterIP — JMAP API requests from clients (HTTPS, terminated by the pod).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-jmap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap") | nindent 4 }}
+  {{- with (($jmap.service | default dict).annotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ ($jmap.service | default dict).type | default "ClusterIP" }}
+  ports:
+    {{- if (($jmap.listeners | default dict).jmap | default dict).enabled }}
+    - name: jmap
+      port: {{ $jmap.listeners.jmap.servicePort | default 8443 }}
+      targetPort: jmap
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "jmap") | nindent 4 }}
+---
+## ClusterIP — telemetry / health
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yarilo.fullname" . }}-jmap-telemetry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "yarilo.componentLabels" (dict "root" . "component" "jmap") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: telemetry
+      port: {{ $jmap.telemetryPort | default 8087 }}
+      targetPort: telemetry
+      protocol: TCP
+  selector:
+    {{- include "yarilo.componentSelectorLabels" (dict "root" . "component" "jmap") | nindent 4 }}
+{{- end }}

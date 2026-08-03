@@ -255,6 +255,7 @@ assigned GUID is never rewritten.
 | [docs/SUBMISSION.md](docs/SUBMISSION.md) | `protocol.submission`: hostname, size, relay |
 | [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: delivery, HAProxy, XCLIENT, TLS, headers |
 | [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL, soft-delete, migration |
+| [docs/JMAP.md](docs/JMAP.md) | `protocol.jmap`: HTTPS listener, session resource, Bearer/Basic auth |
 | [docs/SIEVE.md](docs/SIEVE.md) | `sieve`: filtering, ManageSieve, imapsieve, vacation, extensions |
 | [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL / passwd-file / static backends, password schemes, userdb extra fields |
 | [docs/QUOTA.md](docs/QUOTA.md) | `quota`: count-authoritative engine, grace, warnings, mail_size, clone mirror, over-status |

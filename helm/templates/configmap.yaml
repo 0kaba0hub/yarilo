@@ -95,6 +95,15 @@ data:
         enabled: {{ $msL.enabled | default false }}
         port: {{ $msL.containerPort | default 14190 }}
         ssl_mode: "no"
+      {{- $jmapC := (.Values.components.jmap | default dict) }}
+      {{- $jmapL := (($jmapC.listeners | default dict).jmap | default dict) }}
+      jmap:
+        enabled: {{ and ($jmapC.enabled | default false) ($jmapL.enabled | default true) }}
+        port: {{ $jmapL.containerPort | default 8443 }}
+        ssl_mode: ssl
+        connection_limit: {{ $jmapC.connection_limit | default 1000 | int64 }}
+        disable_plaintext_auth: {{ $jmapL.disablePlainAuth | default false }}
+        haproxy_protocol: {{ $jmapC.haproxy_protocol | default false }}
 
     protocol:
       imap:
@@ -158,6 +167,18 @@ data:
       managesieve:
         max_script_size: {{ (.Values.protocol.managesieve | default dict).max_script_size | default 65536 | int64 }}
         max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).max_invalid_commands | default 3 }}
+      {{- $jmapP := (.Values.protocol.jmap | default dict) }}
+      jmap:
+        jmap_base_url: {{ $jmapP.jmap_base_url | default "" | quote }}
+        jmap_max_concurrent_requests: {{ $jmapP.jmap_max_concurrent_requests | default 10 | int64 }}
+        jmap_max_objects_in_get: {{ $jmapP.jmap_max_objects_in_get | default 500 | int64 }}
+        jmap_max_objects_in_set: {{ $jmapP.jmap_max_objects_in_set | default 500 | int64 }}
+        # Human-readable sizes: quoted so a byte count never renders in
+        # scientific notation.
+        jmap_max_size_upload: {{ $jmapP.jmap_max_size_upload | default "40M" | quote }}
+        jmap_max_size_request: {{ $jmapP.jmap_max_size_request | default "10M" | quote }}
+        jmap_max_calls_in_request: {{ $jmapP.jmap_max_calls_in_request | default 16 | int64 }}
+        jmap_push_timeout: {{ $jmapP.jmap_push_timeout | default 90 | int64 }}
 
     sieve:
       {{- $sieve := (.Values.sieve | default dict) }}
