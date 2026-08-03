@@ -36,6 +36,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         yarilo-managesieve \
         yarilo-managesieve-login \
         yarilo-jmap-login \
+        yarilo-jmap \
     ; do \
         go build -ldflags="-s -w -X github.com/yarilomail/yarilo/pkg/build.Version=${BUILD_VERSION}" \
             -trimpath -o "/out/$cmd" "./app/$cmd"; \

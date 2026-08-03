@@ -50,6 +50,12 @@ var (
 	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via SMTP injection + IMAP verify")
 	flagSieveSMTPPort   = flag.String("sieve-smtp-port", "25", "SMTP MX port for Sieve mail injection")
 
+	flagJMAP     = flag.Bool("jmap", false, "check the JMAP session resource (GET /.well-known/jmap)")
+	flagJMAPHost = flag.String("jmap-host", "", "JMAP hostname (defaults to -host)")
+	flagJMAPPort = flag.String("jmap-port", "8443", "JMAP HTTPS port")
+	flagJMAPUser = flag.String("jmap-user", "", "JMAP Basic auth username")
+	flagJMAPPass = flag.String("jmap-pass", "", "password for -jmap-user")
+
 	flagPasswdFileUser = flag.String("passwd-file-user", "", "IMAP username backed by the passwd-file passdb (enables the check)")
 	flagPasswdFilePass = flag.String("passwd-file-pass", "", "password for -passwd-file-user")
 	flagStaticUser     = flag.String("static-user", "", "IMAP username backed by the static passdb (enables the check)")
@@ -210,6 +216,16 @@ func main() {
 			name string
 			fn   func() error
 		}{"director admin API status (authenticated)", checkDirectorAPI})
+	}
+	if *flagJMAP {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap endpoint refuses anonymous access", checkJMAPUnauthenticated})
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"jmap session resource (/.well-known/jmap)", checkJMAPSession})
 	}
 
 	slog.Info("smoke: start", "total", len(checks))

@@ -19,8 +19,8 @@ Everything lives in [`deploy/compose/`](../deploy/compose).
 | Group | Containers |
 |:---|:---|
 | Infra | `redis`, `yarilo-auth` (userdb), `yarilo-warden`, `yarilo-locks` |
-| Session backends | `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`, `yarilo-submission`, `yarilo-managesieve` |
-| Login proxies (TLS) | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`, `yarilo-managesieve-login`, `yarilo-jmap-login` (commented out until the JMAP backend lands) |
+| Session backends | `yarilo-imap`, `yarilo-pop3`, `yarilo-lmtp`, `yarilo-submission`, `yarilo-managesieve`, `yarilo-jmap` |
+| Login proxies (TLS) | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`, `yarilo-managesieve-login`, `yarilo-jmap-login` |
 | MTA integration | `yarilo-sasl-login` (SASL auth for Postfix), `yarilo-quota-status` (quota policy) |
 
 The userdb is SQLite (`yarilo-auth` owns it in the `state` volume); mail lives in
@@ -29,7 +29,7 @@ the shared `mail` volume. No external database is required.
 ## 1. Prerequisites
 
 - Docker Engine 24+ with the Compose v2 plugin (`docker compose version`).
-- Host ports free: 143/993, 110/995, 587/465, 4190 (and, loopback-only by
+- Host ports free: 143/993, 110/995, 587/465, 4190, 8443 (and, loopback-only by
   default, 24 / 12325 / 12340). Override in `.env`.
 - ~512 MB RAM.
 
@@ -79,6 +79,7 @@ printf 'a login user@example.test changeit\r\nb select INBOX\r\nc logout\r\n' \
 | POP3 / POP3S | 110 / 995 | login proxy |
 | Submission | 587 / 465 | login proxy |
 | ManageSieve | 4190 | login proxy |
+| JMAP | 8443 | login proxy, HTTPS |
 | LMTP | 24 (loopback) | **unauthenticated** — for your MTA only |
 | SASL auth | 12325 (loopback) | Postfix `smtpd_sasl_type = dovecot` |
 | Quota policy | 12340 (loopback) | Postfix `check_policy_service` |

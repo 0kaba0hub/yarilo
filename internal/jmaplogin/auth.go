@@ -2,7 +2,6 @@ package jmaplogin
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -75,15 +74,4 @@ func parseAuthorization(h string) (scheme, cred string, ok bool) {
 	}
 	cred = strings.TrimSpace(cred)
 	return scheme, cred, cred != ""
-}
-
-// writeProblem emits the RFC 7807 body JMAP uses for request-level errors
-// (RFC 8620 §3.6.1).
-func writeProblem(w http.ResponseWriter, status int, detail string) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	body := map[string]any{"type": "about:blank", "status": status, "detail": detail}
-	if err := json.NewEncoder(w).Encode(body); err != nil {
-		slog.Debug("jmap-login: problem write failed", "err", err)
-	}
 }

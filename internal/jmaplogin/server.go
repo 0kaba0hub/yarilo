@@ -20,6 +20,7 @@ import (
 	proxyproto "github.com/pires/go-proxyproto"
 
 	"github.com/yarilomail/yarilo/internal/auth/oauth2"
+	"github.com/yarilomail/yarilo/pkg/jmapcore"
 )
 
 // service is the name this proxy reports to yarilo-auth and yarilo-warden.
@@ -199,7 +200,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if !s.cors.allows(origin) {
 			w.Header().Add("Vary", "Origin")
-			writeProblem(w, http.StatusForbidden, "Origin not allowed")
+			jmapcore.WriteProblem(w, http.StatusForbidden, "Origin not allowed")
 			return
 		}
 		s.cors.apply(w, origin)
@@ -210,19 +211,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		// The reason is logged, never sent: telling a caller whether the user
 		// exists turns this endpoint into an account oracle.
 		w.Header().Set("WWW-Authenticate", `Basic realm="jmap", Bearer`)
-		writeProblem(w, http.StatusUnauthorized, "Unauthorized")
+		jmapcore.WriteProblem(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	if err := s.account(st, username, clientIP); err != nil {
-		writeProblem(w, http.StatusServiceUnavailable, "Connection limit reached")
+		jmapcore.WriteProblem(w, http.StatusServiceUnavailable, "Connection limit reached")
 		return
 	}
 
 	backend, err := s.opts.Router.Backend(username, sessionOf(st))
 	if err != nil {
 		slog.Warn("jmap-login: backend lookup failed", "user", username, "err", err)
-		writeProblem(w, http.StatusBadGateway, "No backend for this user")
+		jmapcore.WriteProblem(w, http.StatusBadGateway, "No backend for this user")
 		return
 	}
 	s.proxy.serve(w, r, backend, username, sessionOf(st), clientIP)

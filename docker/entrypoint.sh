@@ -65,6 +65,9 @@ case "$YARILO_COMPONENT" in
   yarilo-jmap-login)
     exec /usr/local/bin/yarilo-jmap-login
     ;;
+  yarilo-jmap)
+    exec /usr/local/bin/yarilo-jmap
+    ;;
   yarilo-managesieve-login)
     exec /usr/local/bin/yarilo-managesieve-login
     ;;
@@ -76,7 +79,7 @@ case "$YARILO_COMPONENT" in
     echo "           yarilo-lmtp, yarilo-lmtp-login, yarilo-submission, yarilo-submission-login,"
     echo "           yarilo-migrate, yarilo-quota-status, yarilo-sasl-login,"
     echo "           yarilo-managesieve, yarilo-managesieve-login,"
-    echo "           yarilo-jmap-login"
+    echo "           yarilo-jmap-login, yarilo-jmap"
     exit 1
     ;;
 esac

@@ -93,6 +93,8 @@ service:
   type: LoadBalancer
 
 protocol:
+  jmap:
+    jmap_base_url: "https://mail-sb.seconddns.com"
   imap:
     imap_idle_notify_interval: 120
     imap_max_line_length: 65536
@@ -557,6 +559,15 @@ components:
   ## ManageSieve backend — internal, not exposed outside cluster.
   manageSieve:
     enabled: true
+
+  ## JMAP backend — one more container in the co-located pod, reached only by
+  ## jmapLogin. internalTLS is on cluster-wide here, so the peer certificate is
+  ## the trust anchor and xclient stays off.
+  jmap:
+    enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
 
   ## ManageSieve login pod — client-facing on :4190 STARTTLS.
   manageSieveLogin:
