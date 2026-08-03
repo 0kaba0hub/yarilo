@@ -153,7 +153,15 @@ func main() {
 // actually bound. When the liveness watchdog is enabled it probes the warden
 // session-tracking mutex (#904).
 func startTelemetry(cfg config.TelemetryConfig, srv *warden.Server, checks []telemetry.Check) *telemetry.Server {
-	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true, Checks: checks}
+	opts := telemetry.Options{
+		Addr:      telemetry.Addr(cfg.Listen),
+		Lifecycle: true,
+		Checks:    checks,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
+	}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {
 		var gate *telemetry.Gate
 		if wd.FaultInjectionEnabled {

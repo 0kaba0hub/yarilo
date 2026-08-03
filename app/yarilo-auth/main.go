@@ -289,7 +289,14 @@ func main() {
 // listeners are bound. When enabled, the liveness watchdog probes the
 // auth cache.
 func startTelemetry(cfg config.TelemetryConfig, cache *protocol.Cache) *telemetry.Server {
-	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true}
+	opts := telemetry.Options{
+		Addr:      telemetry.Addr(cfg.Listen),
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
+	}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {
 		var gate *telemetry.Gate
 		if wd.FaultInjectionEnabled {

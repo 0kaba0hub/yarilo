@@ -51,7 +51,7 @@ func main() {
 
 	// Telemetry (/healthz, /readyz, /metrics) — same as every other component,
 	// so orchestrators health-check quota-status the standard HTTP way.
-	tel := startTelemetry(cfg.Telemetry.Listen)
+	tel := startTelemetry(cfg.Telemetry)
 
 	// Storage access: quota is enforced by summing the recipient's index
 	// aggregate (the count backend), exactly as a delivery agent would — no
@@ -166,8 +166,15 @@ func main() {
 //
 // Lifecycle is on: without it /readyz answers 200 from the moment the process
 // starts, which says nothing. With it, ready means this pod holds its ports.
-func startTelemetry(addr string) *telemetry.Server {
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+func startTelemetry(cfg config.TelemetryConfig) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{
+		Addr:      cfg.Listen,
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
+	})
 	go func() {
 		if err := tel.ListenAndServe(context.Background()); err != nil {
 			slog.Error("telemetry server failed", "err", err)

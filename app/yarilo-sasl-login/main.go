@@ -71,7 +71,7 @@ func main() {
 	}
 
 	telemetryAddr := cfg.Telemetry.Listen
-	tel := startTelemetry(telemetryAddr)
+	tel := startTelemetry(cfg.Telemetry)
 
 	slog.Info("yarilo-sasl-login starting",
 		"version", build.Version,
@@ -105,8 +105,15 @@ func main() {
 //
 // Lifecycle is on: without it /readyz answers 200 from the moment the process
 // starts, which says nothing. With it, ready means this pod holds its ports.
-func startTelemetry(addr string) *telemetry.Server {
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+func startTelemetry(cfg config.TelemetryConfig) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{
+		Addr:      cfg.Listen,
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
+	})
 	go func() {
 		if err := tel.ListenAndServe(context.Background()); err != nil {
 			slog.Error("telemetry server failed", "err", err)

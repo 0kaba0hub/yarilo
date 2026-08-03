@@ -42,7 +42,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tel := telemetry.New(telemetry.Addr(cfg.Telemetry.Listen))
+	tel := telemetry.NewWithOptions(telemetry.Options{
+		Addr:      telemetry.Addr(cfg.Telemetry.Listen),
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.Telemetry.PprofEnabled,
+			Heap:    cfg.Telemetry.PprofHeapEnabled,
+		},
+	})
 	go func() {
 		if err := tel.ListenAndServe(ctx); err != nil {
 			slog.Error("telemetry server failed", "err", err)

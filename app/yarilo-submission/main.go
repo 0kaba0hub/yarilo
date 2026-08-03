@@ -155,7 +155,7 @@ func main() {
 		OAuth2Enabled:    len(cfg.Auth.OAuth2) > 0,
 	})
 
-	go runTelemetry(telemetry.Addr(cfg.Telemetry.Listen))
+	go runTelemetry(cfg.Telemetry)
 
 	// Publish this protocol container's readiness into the co-located pod's
 	// shared directory (#788); the yarilo-backend-reg sidecar gates the pod's
@@ -292,13 +292,19 @@ func firstActive(svcs ...*config.ServiceConfig) *config.ServiceConfig {
 	return &config.ServiceConfig{}
 }
 
-func runTelemetry(addr string) {
+func runTelemetry(cfg config.TelemetryConfig) {
 	// One shared implementation for /healthz, /readyz, /metrics and
 	// /debug/loglevel. No Checks yet: this component's /readyz was an
 	// unconditional 200 before unification, and turning that into a real
 	// condition is a behaviour change, not a refactor — see the readiness issue
 	// for the per-component conditions.
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr})
+	tel := telemetry.NewWithOptions(telemetry.Options{
+		Addr: telemetry.Addr(cfg.Listen),
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
+	})
 	if err := tel.ListenAndServe(context.Background()); err != nil {
 		slog.Error("telemetry server failed", "err", err)
 	}

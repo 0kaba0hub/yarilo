@@ -91,7 +91,11 @@ func main() {
 	defer cancel()
 
 	tel := telemetry.NewWithOptions(telemetry.Options{
-		Addr:      telemetry.Addr(cfg.Telemetry.Listen),
+		Addr: telemetry.Addr(cfg.Telemetry.Listen),
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.Telemetry.PprofEnabled,
+			Heap:    cfg.Telemetry.PprofHeapEnabled,
+		},
 		Lifecycle: true,
 	})
 	go func() {

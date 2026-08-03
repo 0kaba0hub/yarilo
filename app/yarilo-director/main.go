@@ -330,7 +330,14 @@ func parseCIDRs(ss []string) []*net.IPNet {
 // startTelemetry serves /healthz, /readyz, /metrics and /debug/loglevel.
 // Lifecycle is on: ready is reported only once the caller's ports are bound.
 func startTelemetry(cfg config.TelemetryConfig, srv *director.Server) *telemetry.Server {
-	opts := telemetry.Options{Addr: telemetry.Addr(cfg.Listen), Lifecycle: true}
+	opts := telemetry.Options{
+		Addr:      telemetry.Addr(cfg.Listen),
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
+	}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {
 		var gate *telemetry.Gate
 		if wd.FaultInjectionEnabled {
