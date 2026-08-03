@@ -71,6 +71,7 @@ const (
 	ErrServerFail                  = "serverFail"
 	ErrAccountNotFound             = "accountNotFound"
 	ErrAccountNotSupportedByMethod = "accountNotSupportedByMethod"
+	ErrRequestTooLarge             = "requestTooLarge"
 )
 
 func (e *MethodError) Error() string {

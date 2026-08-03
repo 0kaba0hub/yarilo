@@ -1846,6 +1846,12 @@ protocol:
     jmap_max_objects_in_set: 500
     jmap_max_size_upload: 40M
     jmap_max_size_request: 10M
+    ## Server ceiling on one returned Email body value. A client's own
+    ## maxBodyValueBytes (RFC 8621 §4.2.2) wins when smaller; a client naming
+    ## none gets this rather than the whole body. Truncated values are marked
+    ## isTruncated: true, so the cap is visible to the client rather than silent.
+    ## Worst-case work per Email/get is jmap_max_objects_in_get x this value.
+    jmap_max_body_value_bytes: 256K
     ## Idle timeout for a push connection, seconds. Unused until the push phase.
     jmap_push_timeout: 90
     ## Browser origins allowed to call the JMAP endpoint. Empty denies every

@@ -184,6 +184,7 @@ data:
         jmap_max_objects_in_set: {{ $jmapP.jmap_max_objects_in_set | default 500 }}
         jmap_max_size_upload: {{ $jmapP.jmap_max_size_upload | default "40M" | quote }}
         jmap_max_size_request: {{ $jmapP.jmap_max_size_request | default "10M" | quote }}
+        jmap_max_body_value_bytes: {{ $jmapP.jmap_max_body_value_bytes | default "256K" | quote }}
         jmap_push_timeout: {{ $jmapP.jmap_push_timeout | default 90 }}
         jmap_cors_allow_origins:
         {{- range ($jmapP.jmap_cors_allow_origins | default list) }}

@@ -150,6 +150,9 @@ protocol:
     jmap_max_objects_in_set: 500
     jmap_max_size_upload: 40M
     jmap_max_size_request: 10M
+    ## Server ceiling on one returned body value; a smaller client
+    ## maxBodyValueBytes wins, and truncated values are marked isTruncated.
+    jmap_max_body_value_bytes: 256K
     jmap_push_timeout: 90
     ## Empty denies every cross-origin request, which is the default.
     jmap_cors_allow_origins: []

@@ -79,10 +79,50 @@ type EmailGetRequest struct {
 	MaxBodyValueBytes uint32 `json:"maxBodyValueBytes"`
 }
 
-// WantsBodyValues reports whether any body value was asked for at all, so a
-// request for envelope fields alone never touches a message body.
+// WantsBodyValues reports whether any body value was asked for at all.
 func (r EmailGetRequest) WantsBodyValues() bool {
 	return r.FetchTextBodyValues || r.FetchHTMLBodyValues || r.FetchAllBodyValues
+}
+
+// bodyDerivedProperties are the Email properties that cannot be answered from
+// the index alone: each one needs the message parsed.
+var bodyDerivedProperties = map[string]bool{
+	"bodyStructure": true,
+	"bodyValues":    true,
+	"textBody":      true,
+	"htmlBody":      true,
+	"attachments":   true,
+	"hasAttachment": true,
+	"preview":       true,
+	"headers":       true,
+	"messageId":     true,
+	"inReplyTo":     true,
+	"references":    true,
+	"sender":        true,
+	"from":          true,
+	"to":            true,
+	"cc":            true,
+	"bcc":           true,
+	"replyTo":       true,
+	"subject":       true,
+	"sentAt":        true,
+}
+
+// NeedsMessage reports whether answering this request requires reading the
+// message at all. A client that named only index-backed properties — id,
+// mailboxIds, keywords, size, receivedAt — is answered without opening it.
+// A client that named no properties gets the full default set, which does
+// require the message.
+func (r EmailGetRequest) NeedsMessage() bool {
+	if r.WantsBodyValues() || r.Properties == nil {
+		return true
+	}
+	for _, p := range *r.Properties {
+		if bodyDerivedProperties[p] {
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveBodyBytes resolves the client's cap against the server's ceiling.
