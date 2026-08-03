@@ -23,8 +23,12 @@ Goroutines vs fork:
 
 ### director deployment
 Routes user connections to backends through a **consistent-hashing ring**.
-Contains: 4 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`), 3 director processes, self-organizing ring (#750).
+Contains: 5 proxy processes (`yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login`, `yarilo-lmtp-login`, `yarilo-jmap-login`), 3 director processes, self-organizing ring (#750).
 This is where **TLS terminate + passdb auth + allow_nets enforcement** happens.
+
+`yarilo-jmap-login` carries the same duties over HTTP; the flow below describes
+the byte-pipe protocols, and [JMAP — the HTTP frontend/backend split](#jmap--the-http-frontendbackend-split)
+describes where it differs.
 
 **Login pod auth flow:**
 1. Accept TLS connection from client.
@@ -46,7 +50,7 @@ Handles authenticated mail sessions, reading and writing mail + index data to NF
 **Co-located pod (one pod serves ALL of a user's per-user state).** A backend pod
 is a **single StatefulSet** whose pod runs one container per protocol —
 `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`,
-`yarilo-managesieve` — plus the `yarilo-fts` full-text-search container, the
+`yarilo-managesieve`, `yarilo-jmap` — plus the `yarilo-fts` full-text-search container, the
 `yarilo-backend-api` admin container, and a `yarilo-backend-reg` registration
 sidecar, sharing the pod's **one IP** and the tag's **one NFS PV (RWX)**.
 `yarilo-locks` runs as its own per-tag Deployment for cross-pod write
@@ -242,6 +246,72 @@ Config (snake_case, section-prefixed; `yarilo.yaml` + Helm `values.yaml`):
 `_timeout_seconds` / `_failure_threshold`, and `_fault_injection_enabled` — a
 self-destruct switch that exposes `POST /debug/fault/deadlock` to confirm the
 restart path on a live pod, off by default.
+
+### JMAP — the HTTP frontend/backend split
+
+JMAP is HTTP, so the layers split the same way as every other protocol but the
+hop between them is **per-request HTTP proxying rather than a TCP byte pipe**.
+That is the only difference, and it is what removes the need for fd-passing: a
+JMAP client carries its credentials on every request, so there is no session
+pinned to a connection to hand over.
+
+| Duty | `yarilo-jmap-login` | `yarilo-jmap` |
+|:---|:---|:---|
+| Client TLS (`general.ssl`), HAProxy PROXY protocol | terminates | no knowledge of client TLS |
+| `Authorization` Basic/Bearer → yarilo-auth passdb chain | yes | accepts identity only from the login layer |
+| warden: auth-failure penalty, per-user@IP accounting, kick bus | yes | no |
+| director lookup → proxy to the user's backend pod | yes | — |
+| Storage via `pkg/mailbox`, session object, JMAP methods | no | yes |
+
+**The internal hop.** After auth, `yarilo-jmap-login` resolves the user through
+the director and proxies the request to that pod's `yarilo-jmap` over **internal
+mTLS**, carrying `X-Session-ID`, `X-Proxy-TTL` and `Forwarded` (RFC 7239). The
+exact header contract lives in INTERNALS.md; `Forwarded` is the HTTP-native
+equivalent of XCLIENT, giving the backend the real client IP and TLS state for
+logging and warden attribution. `allow_nets` is enforced in the login pod
+against the real client before proxying, as for every other protocol — one
+enforcement point, not two.
+
+**Trust boundary.** Identity travels in headers, so a request carrying
+`X-Session-ID` or `Forwarded` is honoured only from a peer the backend has been
+told to trust. Three modes, all default-deny — there is no branch in which an
+unknown peer is believed:
+
+| Anchor | Who may set identity headers |
+|:---|:---|
+| `internal_tls.enabled: true` | only the login layer's client certificate. The k8s mode. |
+| mTLS off, `general.xclient.trusted_nets` covers the peer | only peers inside those CIDRs. The same key that already gates XCLIENT and `IMAP ID x-originating-ip`: `Forwarded` is the HTTP member of that family, not a new concept. Enabled per listener with `services.jmap.xclient_protocol`, as elsewhere. |
+| neither | nobody: identity requests answer `403`, and startup logs that no trust anchor is configured. |
+
+The third case keeps the listener up on purpose. A dead port reads as a network
+fault and sends the operator to the wrong place; a live port answering `403`
+with a named cause diagnoses itself, and `/healthz` and `/readyz` keep working
+instead of the pod entering CrashLoop.
+
+The compose standalone has no certificate infrastructure by design — one host,
+a private docker network — so it adds its docker subnet to
+`general.xclient.trusted_nets` in the shipped config. The stock default is
+`127.0.0.1/32, 10.0.0.0/8`, which does not cover the usual docker bridge, so
+this stays an explicit entry rather than an assumption.
+
+**`connection_limit` means warden.** On this listener the knob has the same
+meaning as everywhere else: per-user/IP accounting held in warden, shared across
+replicas. A local socket cap may exist as a process backstop, but it is a
+different thing and is not published under this name.
+
+**Scaling.** `yarilo-jmap-login` is stateless beyond TLS and scales on request
+load in both shapes. `yarilo-jmap` scales differently per shape, for the same
+reason every other session process does: behind a director it is a container in
+the co-located pod and scales with it, because it reads the same per-user index
+and mailbox as that pod's other protocol containers and must not become a second
+writer of them; in the standalone shape it is its own Deployment with its own
+`replicaCount`, and cross-pod write contention is resolved through
+`yarilo-locks` like every other session Deployment there.
+
+**Ports.** Client-facing `:8443` on `yarilo-jmap-login`; the backend listens on
+`:10443`, in the same range as the other backend data ports (`10143`, `10110`,
+`10587`, `10024`, `14190`) and deliberately clear of `:8080`, which is the
+telemetry port every component pod already uses.
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)
@@ -567,7 +637,8 @@ Helm standalone or backend deployments above.
 |:---|:---|:---|
 | `yarilo-imap-login`, `yarilo-pop3-login`, `yarilo-submission-login` | 1 each | `replicaCount` per protocol (login is stateless beyond TLS state) |
 | `yarilo-lmtp-login` | 0 (disabled by default) | `components.lmtpLogin.enabled: true` in values.yaml; MTA-facing LMTP proxy — warden CONNECT per recipient, SESSION token, preamble fan-out |
-| `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp` | 1 each | `replicaCount` per protocol (coordination via locks) |
+| `yarilo-jmap-login` | 1 | `replicaCount` (stateless beyond TLS; scales on request load) |
+| `yarilo-imap`, `yarilo-pop3`, `yarilo-submission`, `yarilo-lmtp`, `yarilo-jmap` | 1 each | `replicaCount` per protocol (coordination via locks) |
 | `yarilo-auth` | 1 | `replicaCount` (stateless; userdb in SQL) |
 | `yarilo-warden` | 1 | `replicaCount` (state in Redis) |
 | `yarilo-locks` | 2 | `replicaCount` (state in Redis; 2 = HA default) |
@@ -581,11 +652,14 @@ RWX provisioner; on multi-node clusters it must be NFS or CephFS.
 
 ### Routing
 
-A k8s `Service` per public port (993, 995, 465, 587, 143, 110) load-balances connections
+A k8s `Service` per public port (993, 995, 465, 587, 143, 110, 8443) load-balances connections
 across the matching login pods. Port `24` is a `Service` in front of `yarilo-lmtp-login`
 (when enabled) which fans out per-recipient preamble connections to `yarilo-lmtp` backends.
 There is **no director** — sessions distribute round-robin (or
-by k8s `Service`'s sessionAffinity setting). Cross-pod write contention is resolved through
+by k8s `Service`'s sessionAffinity setting). `yarilo-jmap-login` keeps its auth,
+warden and proxy duties here and simply skips the director lookup, addressing the
+`yarilo-jmap` Service directly; the binary is the same artefact as in the
+director-backed shape, the routing target comes from config. Cross-pod write contention is resolved through
 `yarilo-locks`; that adds RTT but stays correct. Once cross-pod contention is a measured
 problem, the upgrade path is a director deployment (separate document); the session and login
 binaries do not change.
