@@ -1,0 +1,41 @@
+# Search-only IMAP load: every client does nothing but SEARCH.
+#
+# This is the read side of FTS. The indexing jobs above fill the index; this one
+# asks what querying it costs, without append traffic competing for the same
+# per-user index.
+#
+#   kubectl apply -f hack/loadtest/search-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yarilo-loadtest-search
+  namespace: yarilo-sb
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadtest
+        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        args:
+        - -protocol=imap
+        - -addr=yarilo-imap-login.yarilo-sb.svc.cluster.local:143
+        - -users=u1@d00001.test:150
+        - -password=Yarilo!test1
+        - -concurrency=16
+        - -duration=3m
+        # Weights, not probabilities: everything but SEARCH is switched off, and
+        # -msgs=0 keeps the steady-state top-up from appending anything.
+        - -profile=search=100,append=0,fetch=0,store=0,select=0,logout=0
+        - -msgs=0
+        - -create-mailboxes=false
+        - -interval=10s
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi

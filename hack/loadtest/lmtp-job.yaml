@@ -1,0 +1,48 @@
+# LMTP delivery load against the sandbox.
+#
+# This is the shape that drives FTS: every delivery queues an index pass, so the
+# indexing stage metrics (fts_build_stage_seconds, fts_worker_busy_seconds_total,
+# fts_index_queue_depth) only mean anything while this is running.
+#
+#   kubectl apply -f hack/loadtest/lmtp-job.yaml
+#   kubectl -n yarilo-sb logs -f job/yarilo-loadtest-lmtp
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yarilo-loadtest-lmtp
+  namespace: yarilo-sb
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadtest
+        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        args:
+        - -protocol=lmtp
+        - -addr=yarilo-lmtp-login.yarilo-sb.svc.cluster.local:24
+        # u1..u150 spans all three mailbox types in the sandbox: mdbox u1-50,
+        # maildir u51-100, sdbox u101-150. A run confined to one type measures
+        # that type, not the server.
+        - -recipients=u1@d00001.test:150
+        - -concurrency=8
+        - -duration=5m
+        # 20 KB to 1 MB with attachments: the tokenise stage is dominated by
+        # body size, so a corpus of small plain-text notes reports a cost no
+        # real deployment sees.
+        - -min-size=20480
+        - -max-size=1048576
+        - -attachment-ratio=0.5
+        # Fixed seed, so two runs against different versions compare the server
+        # rather than the corpus.
+        - -seed=20260802
+        - -interval=10s
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
