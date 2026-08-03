@@ -219,6 +219,21 @@ would select every message the account has and no limit would bound the cost.
 | envelope fields, body parts, `preview` | the message itself, parsed on demand |
 | `keywords` | IMAP system flags translated to the JMAP vocabulary — `\Seen` is `$seen` |
 
+### A message that cannot be parsed still exists
+
+Malformed MIME headers are ordinary in real mail — spam, broken clients,
+truncated delivery. Such a message is returned with the properties the index
+carries (`id`, `mailboxIds`, `keywords`, `size`, `receivedAt`) and with the
+header-derived ones empty. It is **not** reported as `notFound`: `Email/query`
+lists it, download serves its bytes and IMAP shows it, so calling it absent
+would leave a client unable to reconcile its own view of the account.
+
+A message whose file cannot be read at all is the other condition and keeps its
+own answer — there the store cannot produce it, download answers `404` too, and
+the methods agree that it is absent. The distinction is what keeps the three
+consistent: they disagree about how much of a message can be rendered, never
+about whether it is there.
+
 ### The message is opened only when it is needed
 
 A request naming only index-backed properties — `id`, `mailboxIds`, `keywords`,
