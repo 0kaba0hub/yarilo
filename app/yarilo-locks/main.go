@@ -84,7 +84,7 @@ func main() {
 		serveErr <- srv.Serve(ctx, ln)
 	}()
 
-	go runTelemetry(cfg.Telemetry.Listen, reg, backendReady)
+	go runTelemetry(cfg.Telemetry, reg, backendReady)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -187,11 +187,15 @@ func buildListener(cfg *config.Config, lcfg config.LocksServiceConfig) (net.List
 // runTelemetry serves /healthz, /readyz, /metrics on addr. /healthz is liveness
 // (always 200); /readyz reports backend reachability so a pod whose Redis
 // connection dropped is taken out of rotation.
-func runTelemetry(addr string, reg *prometheus.Registry, backendReady func() bool) {
+func runTelemetry(cfg config.TelemetryConfig, reg *prometheus.Registry, backendReady func() bool) {
 	tel := telemetry.NewWithOptions(telemetry.Options{
-		Addr:     addr,
+		Addr:     telemetry.Addr(cfg.Listen),
 		Registry: reg,
 		Checks:   []telemetry.Check{telemetry.FuncCheck("backend", backendReady)},
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
 	})
 	if err := tel.ListenAndServe(context.Background()); err != nil {
 		slog.Error("telemetry server failed", "err", err)

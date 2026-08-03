@@ -118,7 +118,7 @@ func main() {
 	defer cancel()
 	var loginServers []*login.Server
 
-	tel := startTelemetry(cfg.Telemetry.Listen)
+	tel := startTelemetry(cfg.Telemetry)
 
 	// Port 993 — implicit TLS (IMAPS).
 	if svcs.IMAPS.Active() {
@@ -263,8 +263,15 @@ func parseCIDRs(ss []string) []*net.IPNet {
 //
 // Lifecycle is on: without it /readyz answers 200 from the moment the process
 // starts, which says nothing. With it, ready means this pod holds its ports.
-func startTelemetry(addr string) *telemetry.Server {
-	tel := telemetry.NewWithOptions(telemetry.Options{Addr: addr, Lifecycle: true})
+func startTelemetry(cfg config.TelemetryConfig) *telemetry.Server {
+	tel := telemetry.NewWithOptions(telemetry.Options{
+		Addr:      telemetry.Addr(cfg.Listen),
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.PprofEnabled,
+			Heap:    cfg.PprofHeapEnabled,
+		},
+	})
 	go func() {
 		if err := tel.ListenAndServe(context.Background()); err != nil {
 			slog.Error("telemetry server failed", "err", err)
