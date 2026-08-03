@@ -51,6 +51,14 @@ func main() {
 		"director_addr", cfg.ManageSieveLoginService.DirectorAddr,
 	)
 
+	// A listener that declares TLS without a certificate must not bind silently.
+	if warn, err := config.CheckListenerTLS("services.managesieve", cfg.Services.ManageSieve, cfg.General.SSL); err != nil {
+		slog.Error("listener TLS check failed", "err", err)
+		os.Exit(1)
+	} else if warn != "" {
+		slog.Warn(warn)
+	}
+
 	// Client-facing TLS for STARTTLS on port 4190.
 	var extTLS *tls.Config
 	if cfg.General.SSL.TLSCert != "" && cfg.General.SSL.TLSKey != "" {

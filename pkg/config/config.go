@@ -2160,3 +2160,33 @@ func expand(s string) string {
 	}
 	return os.ExpandEnv(s)
 }
+
+// CheckListenerTLS compares what a listener declares against the certificate
+// actually configured, so a mismatch surfaces at startup instead of at the
+// first client.
+//
+// An implicit-TLS listener with no certificate is an error: it would bind and
+// speak its protocol in the clear on a port that is TLS by definition, looking
+// healthy while no client can complete a handshake. A STARTTLS listener without
+// one only loses the advertisement, which the client can see and refuse, so
+// that returns a warning instead. name is the config path, used in the message.
+func CheckListenerTLS(name string, svc *ServiceConfig, ssl SSLConfig) (warning string, err error) {
+	if svc == nil || !svc.Active() {
+		return "", nil
+	}
+	if svc.SSL != nil {
+		ssl = *svc.SSL
+	}
+	if ssl.TLSCert != "" && ssl.TLSKey != "" {
+		return "", nil
+	}
+	switch strings.ToLower(svc.SSLMode) {
+	case "ssl":
+		return "", fmt.Errorf("config: %s declares ssl_mode: ssl but no certificate is configured "+
+			"(set general.ssl.tls_cert/tls_key, or %s.ssl); refusing to serve this listener in the clear", name, name)
+	case "starttls":
+		return fmt.Sprintf("%s declares ssl_mode: starttls but no certificate is configured; "+
+			"STARTTLS will not be advertised and clients requiring it cannot connect", name), nil
+	}
+	return "", nil
+}

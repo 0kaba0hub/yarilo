@@ -52,6 +52,20 @@ func main() {
 		"director_addr", cfg.SubmissionLoginSvc.DirectorAddr,
 	)
 
+	// A listener that declares TLS without a certificate must not bind silently.
+	if warn, err := config.CheckListenerTLS("services.submissions", svcs.Submissions, cfg.General.SSL); err != nil {
+		slog.Error("listener TLS check failed", "err", err)
+		os.Exit(1)
+	} else if warn != "" {
+		slog.Warn(warn)
+	}
+	if warn, err := config.CheckListenerTLS("services.submission", svcs.Submission, cfg.General.SSL); err != nil {
+		slog.Error("listener TLS check failed", "err", err)
+		os.Exit(1)
+	} else if warn != "" {
+		slog.Warn(warn)
+	}
+
 	// External TLS (client-facing cert) for Submissions / STARTTLS.
 	var extTLS *tls.Config
 	if cfg.General.SSL.TLSCert != "" && cfg.General.SSL.TLSKey != "" {
