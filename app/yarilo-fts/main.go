@@ -100,6 +100,7 @@ func main() {
 		// adding a backend locker would stack two locks on one resource. What
 		// that guard does not cover is OpenFolder creating an index for a folder
 		// that has none — an indexer has nothing to index there anyway.
+		Workers:     fc.IndexWorkers,
 		Index:       file.New(file.WithNoCreate()),
 		ResolveUser: userResolver(fc.AuthMasterAddr, resolver, authTLS),
 		Chain:       chain,

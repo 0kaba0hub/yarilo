@@ -39,6 +39,22 @@ var (
 		Name: "fts_queue_requeued_total",
 		Help: "Mailboxes re-queued because a request arrived mid-pass.",
 	})
+	// metricWorkersBusy: index workers currently running a pass. Reads at most
+	// fts_index_workers; a value stuck below it while the queue is deep is the
+	// symptom metricPopSkipped explains.
+	metricWorkersBusy = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "fts_workers_busy",
+		Help: "Index workers currently running a pass.",
+	})
+	// metricPopSkipped: queued mailboxes a worker passed over because their
+	// user was already being indexed. Without it, "workers idle while the queue
+	// is deep" looks identical to a stall, when it is the dispatcher correctly
+	// refusing work that would only serialise inside the engine's per-user
+	// mutex.
+	metricPopSkipped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fts_pop_skipped_total",
+		Help: "Queued mailboxes skipped because their user was already being indexed.",
+	})
 	// metricQueueWait: push to pop. Distinguishes "the queue is deep" from
 	// "the queue is deep and nothing is draining".
 	metricQueueWait = promauto.NewHistogram(prometheus.HistogramOpts{
