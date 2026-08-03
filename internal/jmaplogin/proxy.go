@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/yarilomail/yarilo/pkg/jmapcore"
 )
 
 // firstHopTTL is the X-Proxy-TTL this proxy always emits. The login layer is
@@ -87,7 +89,7 @@ func (p *backendProxy) serve(w http.ResponseWriter, r *http.Request, backend, us
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			slog.Warn("jmap-login: backend unreachable", "backend", backend, "user", username, "err", err)
-			writeProblem(w, http.StatusBadGateway, "Backend unavailable")
+			jmapcore.WriteProblem(w, http.StatusBadGateway, "Backend unavailable")
 		},
 	}
 	rp.ServeHTTP(w, r)
