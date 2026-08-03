@@ -58,7 +58,12 @@ func main() {
 	// dict. Reads need no locker.
 	resolver := backendpkg.BuildResolver(cfg)
 	mbox := backendpkg.BuildMailbox(cfg.Storage, nil)
-	idx := file.New()
+	// WithNoCreate: OpenFolder is a write path for a folder that has no index
+	// yet — it would run createFresh and the legacy migration unguarded, racing
+	// a session pod's locked create (#993). A policy service observes; it does
+	// not establish state. CountUsage already skips a folder it cannot open, so
+	// a not-yet-indexed folder contributes zero rather than failing the read.
+	idx := file.New(file.WithNoCreate())
 
 	qs := cfg.QuotaStatus
 	limits := quota.ParseRules(qs.DefaultQuotaRules)
