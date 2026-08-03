@@ -356,6 +356,32 @@ components:
         metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
         metallb.universe.tf/allow-shared-ip: "yarilo-mail"
 
+  ## JMAP login — HTTPS terminator on :8443, per-request proxy to the
+  ## yarilo-jmap backend container (:10443). Until the backend PR lands,
+  ## authenticated requests answer 502 — the login-layer probes still gate.
+  jmapLogin:
+    enabled: true
+    internalTLS:
+      enabled: true
+      secretName: yarilo-internal-tls
+    tls:
+      secretName: yarilo-tls
+      certificate:
+        enabled: true
+        issuerRef:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        dnsNames:
+          - mail-sb.seconddns.com
+    backend_addr: ""
+    director_addr: "yarilo-director:9102"
+    backend_port: 10443
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/loadBalancerIPs: "10.50.80.29"
+        metallb.universe.tf/allow-shared-ip: "yarilo-mail"
+
   ## POP3 login — TLS terminator on :995 (POP3S) / :110 (STLS).
   ## Reuses yarilo-tls Secret from imapLogin.
   pop3Login:
