@@ -2,6 +2,7 @@ package jmap
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // apiRequest is a batch arriving from the login layer.
@@ -151,5 +153,52 @@ func TestAPIOversizedBodyIsALimitProblem(t *testing.T) {
 	}
 	if got["limit"] != "maxSizeRequest" {
 		t.Errorf("limit = %v, want maxSizeRequest", got["limit"])
+	}
+}
+
+// A broken mail store must not take out the methods that do not need it.
+// Core/echo exists to answer when other things cannot, so it is the one method
+// that must never fail on a storage dependency (#994).
+func TestBrokenStoreLeavesStorelessMethodsWorking(t *testing.T) {
+	s := New(Options{
+		Trust:  ResolveTrust(false, true, []*net.IPNet{mustCIDR(t, "192.0.2.0/24")}),
+		Limits: testLimits(),
+		// Wired but unusable: a resolver that always fails stands in for an
+		// auth listener that answers the wrong protocol.
+		Storage: &Storage{
+			Mailbox:     nil,
+			Index:       nil,
+			ResolveUser: func(string) (*mailbox.UserInfo, error) { return nil, errors.New("userdb down") },
+		},
+	})
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, apiRequest(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],
+		"methodCalls":[
+			["Core/echo",{"alive":true},"c0"],
+			["Mailbox/get",{"accountId":"u1@example.com"},"c1"],
+			["Core/echo",{"still":true},"c2"]]}`))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a broken store must not fail the request: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		MethodResponses [][]json.RawMessage `json:"methodResponses"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.MethodResponses) != 3 {
+		t.Fatalf("got %d responses for 3 calls", len(resp.MethodResponses))
+	}
+	want := []string{"Core/echo", "error", "Core/echo"}
+	for i, wantName := range want {
+		var name string
+		if err := json.Unmarshal(resp.MethodResponses[i][0], &name); err != nil {
+			t.Fatalf("response %d name: %v", i, err)
+		}
+		if name != wantName {
+			t.Errorf("response %d = %s, want %s", i, name, wantName)
+		}
 	}
 }

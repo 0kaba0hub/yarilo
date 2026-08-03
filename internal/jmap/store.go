@@ -105,3 +105,37 @@ func (s *Storage) mailboxFor(info *mailbox.UserInfo) mailbox.MailboxBackend {
 	}
 	return s.Mailbox
 }
+
+// lazyStore defers opening the user's mail until a method asks for it. A batch
+// of methods that never touch storage must not fail because storage is down,
+// and Core/echo — whose whole purpose is to answer when other things do not —
+// must never be the first thing a broken dependency takes out.
+type lazyStore struct {
+	storage *Storage
+	user    string
+	handle  *userHandle
+	err     error
+	done    bool
+}
+
+// get opens the handle once per request. A failure is remembered, so a batch of
+// several storage-backed calls reports it once per call without retrying a
+// dependency that is already known to be down.
+func (l *lazyStore) get() (*userHandle, error) {
+	if l.done {
+		return l.handle, l.err
+	}
+	l.done = true
+	if l.storage == nil {
+		l.err = fmt.Errorf("jmap: no mail store configured")
+		return nil, l.err
+	}
+	l.handle, l.err = l.storage.open(l.user)
+	return l.handle, l.err
+}
+
+func (l *lazyStore) close() {
+	if l.handle != nil {
+		l.handle.close()
+	}
+}

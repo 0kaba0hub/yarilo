@@ -379,6 +379,11 @@ managesieve_login_service:
   backend_addr: "yarilo-managesieve:14190"
 submission_login_service:
   backend_addr: "yarilo-submission:10587"
+jmap_service:
+  ## The MASTER listener (auth_service.master_listen), not auth_service.addr:
+  ## userdb lookups speak a different protocol than the client listener.
+  auth_master_addr: "yarilo-auth:9102"
+
 jmap_login_service:
   backend_addr: "yarilo-jmap:10443"
 ## yarilo-backend-api consumes this section. Token is loaded from
