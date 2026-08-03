@@ -1676,7 +1676,11 @@ components:
         enabled: false
         containerPort: 10443
 
-    ## TLS cert presented to JMAP clients.
+    ## TLS cert presented to JMAP clients. Required while the listener's
+    ## ssl_mode is ssl: the proxy refuses to start without one rather than
+    ## serving :8443 in the clear, which would carry Basic credentials in
+    ## plaintext while looking healthy. Set ssl_mode to "no" only when TLS is
+    ## terminated by an ingress in front of this pod.
     tls:
       secretName: ""
       certificate:

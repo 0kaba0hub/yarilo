@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -153,12 +154,20 @@ func backendPort(cfg *config.Config) int {
 
 // clientTLS builds the client-facing config. A per-service ssl block wins over
 // general.ssl, matching every other listener.
+//
+// A listener declared ssl with no certificate is refused rather than served in
+// the clear: it would look healthy while carrying credentials in plaintext.
 func clientTLS(cfg *config.Config, svc *config.ServiceConfig) (*tls.Config, error) {
 	ssl := cfg.General.SSL
 	if svc.SSL != nil {
 		ssl = *svc.SSL
 	}
 	if ssl.TLSCert == "" || ssl.TLSKey == "" {
+		if strings.EqualFold(svc.SSLMode, "ssl") {
+			return nil, fmt.Errorf("services.jmap.ssl_mode is ssl but no certificate is configured: " +
+				"set general.ssl.tls_cert/tls_key (helm: components.jmapLogin.tls.secretName), " +
+				"or set ssl_mode to \"no\" if TLS is terminated upstream")
+		}
 		return nil, nil
 	}
 	t, err := config.BuildTLSConfig(ssl)
