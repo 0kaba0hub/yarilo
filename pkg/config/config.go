@@ -2162,14 +2162,10 @@ func expand(s string) string {
 }
 
 // CheckListenerTLS compares what a listener declares against the certificate
-// actually configured, so a mismatch surfaces at startup instead of at the
-// first client.
-//
-// An implicit-TLS listener with no certificate is an error: it would bind and
-// speak its protocol in the clear on a port that is TLS by definition, looking
-// healthy while no client can complete a handshake. A STARTTLS listener without
-// one only loses the advertisement, which the client can see and refuse, so
-// that returns a warning instead. name is the config path, used in the message.
+// configured for it. An implicit-TLS listener with none is an error: it would
+// serve its protocol in the clear on a port that is TLS by definition. A
+// STARTTLS listener only loses the advertisement, which a client can see and
+// refuse, so that warns. name is the config path, used in the message.
 func CheckListenerTLS(name string, svc *ServiceConfig, ssl SSLConfig) (warning string, err error) {
 	if svc == nil || !svc.Active() {
 		return "", nil
