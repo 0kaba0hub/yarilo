@@ -9,7 +9,7 @@ import (
 // exists so a client can prove the batch machinery — dispatch, ordering,
 // back-references — works before any data method is involved.
 func CoreEcho(_ context.Context, args json.RawMessage) (any, *MethodError) {
-	return json.RawMessage(args), nil
+	return args, nil
 }
 
 // CoreRegistry is the method set of the core capability.
