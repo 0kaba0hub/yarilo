@@ -840,7 +840,13 @@ type FTSConfig struct {
 	// PrefetchDepth is how many messages an index pass reads ahead of the one
 	// it is tokenising, so storage reads overlap with parsing. Below two it
 	// reads one at a time, which is the behaviour without prefetching at all.
-	// Default 4.
+	//
+	// Default 1, i.e. off. Measured on local-ish storage, reading is 0.3% of a
+	// pass and tokenising is the rest, so overlapping them buys almost nothing
+	// while the read-ahead window costs memory once per worker. Raise it where
+	// reads are actually slow — cold alt-tier storage, or an NFS mount whose
+	// cache is not warm — where fts_read_seconds is a real share of
+	// fts_build_seconds.
 	PrefetchDepth int `koanf:"fts_prefetch_depth"`
 	// PrefetchMaxBytes caps what those messages may hold in memory at once.
 	// Depth alone is not a bound: four large attachments would sit there
@@ -2018,7 +2024,7 @@ func Load(path string) (*Config, error) {
 			Listen:                     ":9106",
 			MaxConns:                   4,
 			IndexWorkers:               1,
-			PrefetchDepth:              4,
+			PrefetchDepth:              1,
 			PrefetchMaxBytesRaw:        "32M",
 			CommitLimit:                500,
 			SearchAddMissing:           "body-search-only",

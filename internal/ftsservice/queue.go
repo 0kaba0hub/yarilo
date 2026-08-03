@@ -171,7 +171,6 @@ func (q *queue) pop(ctx context.Context) (job, bool) {
 			e.el = nil
 			e.running = true
 			q.busy[e.job.user]++
-			metricWorkersBusy.Inc()
 			metricQueueWait.Observe(time.Since(e.queuedAt).Seconds())
 			metricQueueDepth.Set(float64(q.order.Len()))
 			return e.job, true
@@ -224,7 +223,6 @@ func (q *queue) done(j job) {
 	} else {
 		q.busy[key.user] = n - 1
 	}
-	metricWorkersBusy.Dec()
 	// A freed user may unblock a worker parked on an entry it had to skip, and
 	// which worker that is cannot be known here — so every waiter is woken.
 	defer q.cond.Broadcast()

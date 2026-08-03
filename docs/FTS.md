@@ -598,37 +598,42 @@ stay unindexed with nothing in the log to say so.
 
 ### Reading ahead (`fts_prefetch_depth`, `fts_prefetch_max_bytes`)
 
-An index pass used to read one message and tokenise it before touching the
-next, so the disk idled while the tokeniser worked and the tokeniser idled
-while the disk worked. The pass now reads ahead of the message it is indexing.
+An index pass can read messages ahead of the one it is tokenising, so storage
+reads overlap with parsing. **It is off by default**, and that is a measurement
+rather than caution:
 
-Four properties, three of them borrowed from the reference implementation's
-own prefetching and one added because our situation differs:
+```
+fts_build_seconds  115.5 ms/message
+fts_read_seconds     0.34 ms/message   ← 0.3% of a pass
+```
 
-**Advisory, not mandatory.** A depth below two reads one message at a time —
-the previous behaviour, and the whole of it. There is no second code path for
-a deployment that turns it off.
+Tokenising and base64 decoding dominate; the disk barely appears. Overlapping
+reads with parsing therefore recovers almost nothing, while the read-ahead
+window holds messages in memory once per worker.
+
+Raise it where reads are genuinely slow — cold alt-tier storage, or an NFS mount
+whose cache is not warm. `fts_read_seconds` against `fts_build_seconds` is what
+says whether that is your deployment; do not raise it on the assumption that it
+must help.
+
+When enabled, four properties hold:
+
+**Advisory.** A depth below two reads one message at a time — the same code
+path, not a second one.
 
 **Order is mandatory.** Indexing walks UIDs upwards and the checkpoint advances
 monotonically, so a pipeline that reordered would record progress past messages
-it never indexed. One producer feeding one channel makes reordering impossible
-rather than unlikely.
+it never indexed. One producer feeding one channel makes that impossible rather
+than unlikely.
 
-**A read failure stays attached to its message.** The error travels with the
-UID it belongs to, so the pass skips a message it can name instead of halting
-on one it cannot. This is the property worth the tests: getting it wrong
-corrupts what the checkpoint means.
+**A read failure stays attached to its message**, so a pass skips a message it
+can name instead of halting on one it cannot.
 
 **Two ceilings.** Depth bounds messages, `fts_prefetch_max_bytes` bounds what
-they hold. The reference counts messages only, correctly — its queued objects
-are descriptors. Ours are bytes already read, so four large attachments would
-otherwise sit in memory together. A message larger than the whole ceiling is
-admitted alone: refusing to index it would be worse than briefly exceeding a
-bound that exists to limit concurrency.
-
-Raise the depth for latency; raise the byte ceiling only when
-`fts_prefetch_stall_seconds` shows the reader waiting on the window rather than
-on the disk.
+they hold — and the byte ceiling is per pass, so N workers can hold N windows. A
+message larger than the whole ceiling is admitted alone: refusing to index it
+would be worse than briefly exceeding a bound whose purpose is limiting
+concurrency.
 
 ### Dispatch: parallelism is across users (`fts_index_workers`)
 
@@ -645,12 +650,21 @@ released — and one user with many mailboxes cannot occupy every worker.
 
 A consequence worth recognising before it is diagnosed as a stall: workers can
 sit idle while the queue is deep, because everything queued belongs to users
-already running. `fts_pop_skipped_total` is what tells those two apart, and
-`fts_workers_busy` shows how many are actually working.
+already running. `fts_pop_skipped_total` tells those two apart, and
+`rate(fts_worker_busy_seconds_total[5m])` shows how much of the worker budget is
+actually in use.
 
-Raise the value only with `fts_fetch_seconds` and `fts_build_seconds` in hand.
-If reads dominate, more workers buy little — the time is spent waiting for
-storage, not tokenising.
+That is a counter rather than a gauge on purpose. A pass takes tens of
+milliseconds and a scrape happens every 15-30 seconds, so a gauge of "workers
+busy now" is sampled between passes almost every time: it reads zero whether the
+service is saturated or idle. A metric that cannot answer the question it was
+added for is worse than none, because the question then looks answered.
+
+The useful lever is not this number. Indexing is CPU-bound — `fts_build_seconds`
+is almost all of a pass — so worker count is bounded by the CPU the container is
+given, and `components.fts.resources.limits.cpu` defaults to `1`. A second
+worker under a one-CPU limit adds scheduling and a second prefetch window, not
+throughput. Raise the CPU limit and the worker count together, or add pods.
 
 ### Locking: the full-text index is not the mail index
 
@@ -693,7 +707,7 @@ queues that mailbox.
 | `fts_message_bytes` | the size those two are relative to; 200ms on 30MB and on 3KB are different diagnoses |
 | `fts_index_deferred_total` | passes requeued after losing the lock |
 | `fts_index_dropped_total` | passes given up on. **Expected zero** |
-| `fts_workers_busy` | workers actually running a pass |
+| `fts_worker_busy_seconds_total` | total time workers spent inside passes; `rate()` divided by `fts_index_workers` is utilisation |
 | `fts_pop_skipped_total` | mailboxes passed over because their user was already being indexed — this is what separates "idle because there is no work" from "idle because the work belongs to busy users" |
 
 `fts_fetch_seconds` timed only the open for a long time while the body streamed

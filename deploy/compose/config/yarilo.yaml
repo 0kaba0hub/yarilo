@@ -270,7 +270,8 @@ fts:
   ## user's mailboxes.
   fts_index_workers: 1
   ## Messages read ahead of the one being tokenised; below 2 disables it.
-  fts_prefetch_depth: 4
+  ## Off by default: reading is a fraction of a percent of an index pass.
+  fts_prefetch_depth: 1
   fts_prefetch_max_bytes: 32M
   fts_listen: ":9106"
   fts_auth_master_addr: "yarilo-auth:9102"
