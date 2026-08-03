@@ -9,7 +9,7 @@ import (
 
 func mustMultiChain(t *testing.T, languages ...string) *language.MultiChain {
 	t.Helper()
-	c, err := language.NewMultiChain(languages, []string{"lowercase", "snowball", "stopwords"}, nil, 0, 0, 0)
+	c, err := language.NewMultiChain(languages, []string{"lowercase", "stopwords", "snowball"}, nil, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestBuildRussianStillStemsInMixedUkRuConfig(t *testing.T) {
 func TestBuildLanguageFiltersOverride(t *testing.T) {
 	chain, err := language.NewMultiChain(
 		[]string{"en", "de"},
-		[]string{"lowercase", "snowball", "stopwords"},
+		[]string{"lowercase", "stopwords", "snowball"},
 		map[string][]string{"de": {"lowercase", "stopwords"}},
 		0, 0, 0,
 	)

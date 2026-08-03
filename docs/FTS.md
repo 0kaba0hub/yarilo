@@ -224,7 +224,7 @@ is Phase 3, behind the same `fts_decoder_*` knobs.
 tokenizer (max 250, whole address as one token; at index time the parts also
 flow through the word tokenizer, at search time the address is withheld so a
 query matches only the whole-address token); filter chain =
-lowercase → snowball stemmer → stopwords — **enabled by default** (an
+lowercase → stopwords → snowball stemmer — **enabled by default** (an
 improvement over the reference's empty default chain, L8); 7 snowball
 languages; CJK via a bigram analyzer (Bleve stream). Configurable per
 `language`/`language_filters` keys.
@@ -544,7 +544,7 @@ fts:
   fts_search: true                  # false = SEARCH-only degrade, indexing keeps running (#726)
 
   ## Language chain.
-  language_filters: [lowercase, snowball, stopwords]   # default ON
+  language_filters: [lowercase, stopwords, snowball]   # default ON
   languages: [en]                   # >1 enables per-part detection (#696)
   fts_language_filters_override: {} # per-language override, e.g. {uk: [lowercase, stopwords]} (#726)
   fts_detection_sample_bytes: 0     # 0 = default 1024; bytes sampled per part

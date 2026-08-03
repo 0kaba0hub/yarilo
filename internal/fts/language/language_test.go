@@ -255,7 +255,7 @@ func TestChainUnknownConfig(t *testing.T) {
 // survives unstemmed (just lowercased), while a configured uk stopword is
 // still dropped exactly like any other language's stopword filter.
 func TestStemmerlessLanguagePassthrough(t *testing.T) {
-	c, err := NewChain(Settings{Language: "uk", Filters: []string{"lowercase", "snowball", "stopwords"}})
+	c, err := NewChain(Settings{Language: "uk", Filters: []string{"lowercase", "stopwords", "snowball"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestStemmerlessLanguagePassthrough(t *testing.T) {
 // languages config change is never silently treated as a no-op by the
 // settings-drift rebuild path.
 func TestSettingsChecksumDistinguishesStemmerlessLanguages(t *testing.T) {
-	filters := []string{"lowercase", "snowball", "stopwords"}
+	filters := []string{"lowercase", "stopwords", "snowball"}
 	uk, err := NewChain(Settings{Language: "uk", Filters: filters})
 	if err != nil {
 		t.Fatal(err)

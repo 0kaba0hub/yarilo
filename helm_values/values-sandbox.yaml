@@ -47,7 +47,7 @@ fts:
   # IMAP error instead of silently falling back to a sequential scan, so FTS
   # regressions (e.g. #638) are caught by smoketest instead of being masked.
   fts_search_read_fallback: false
-  language_filters: [lowercase, snowball, stopwords]
+  language_filters: [lowercase, stopwords, snowball]
   languages: [en]
 
 ## Namespaces. Personal owns INBOX (storage from storage.mail_home_template);

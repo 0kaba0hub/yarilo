@@ -286,7 +286,7 @@ fts:
   fts_search_timeout_secs: 30
   fts_search_strict: false
   languages: ["en"]
-  language_filters: ["lowercase","snowball","stopwords"]
+  language_filters: ["lowercase","stopwords","snowball"]
   fts_flatcurve_commit_limit: 500
   fts_flatcurve_min_term_size: 2
   fts_flatcurve_optimize_limit: 10

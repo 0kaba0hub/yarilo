@@ -2337,7 +2337,7 @@ fts:
   ## Supported: en/fr/de/it/pt/ru/es (stemmed) + uk (Ukrainian — no official
   ## Snowball algorithm exists, so it's lowercase + stopwords only, #718).
   languages: [en]
-  language_filters: [lowercase, snowball, stopwords]
+  language_filters: [lowercase, stopwords, snowball]
   ## Per-language override of language_filters (#726 item 4) — e.g. a
   ## mixed uk/ru deployment wants uk without "snowball" (no official
   ## stemmer exists for it, #718) even though the global default has it

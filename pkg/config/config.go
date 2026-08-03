@@ -2045,7 +2045,7 @@ func Load(path string) (*Config, error) {
 			SearchTimeoutSecs:          30,
 			Search:                     true,
 			Languages:                  []string{"en"},
-			LanguageFilters:            []string{"lowercase", "snowball", "stopwords"},
+			LanguageFilters:            []string{"lowercase", "stopwords", "snowball"},
 			LanguageTokenizerAlgorithm: "simple",
 
 			FlatcurveCommitLimit:     500,
