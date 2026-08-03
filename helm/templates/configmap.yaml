@@ -983,6 +983,8 @@ data:
 
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}
+      telemetry_pprof_enabled: {{ .Values.telemetry.pprof.enabled }}
+      telemetry_pprof_heap_enabled: {{ .Values.telemetry.pprof.heapEnabled }}
       liveness_watchdog:
         liveness_watchdog_enabled: {{ .Values.telemetry.livenessWatchdog.enabled }}
         liveness_watchdog_interval_seconds: {{ .Values.telemetry.livenessWatchdog.intervalSeconds }}

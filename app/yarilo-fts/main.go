@@ -135,7 +135,14 @@ func main() {
 	// Telemetry: /healthz, /readyz, /metrics on the dedicated port (#677).
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	tel := telemetry.New(telemetry.Addr(cfg.Telemetry.Listen))
+	tel := telemetry.NewWithOptions(telemetry.Options{
+		Addr:      telemetry.Addr(cfg.Telemetry.Listen),
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.Telemetry.PprofEnabled,
+			Heap:    cfg.Telemetry.PprofHeapEnabled,
+		},
+	})
 	go func() {
 		if err := tel.ListenAndServe(ctx); err != nil {
 			slog.Error("telemetry server failed", "err", err)

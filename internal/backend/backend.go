@@ -487,7 +487,14 @@ func New(cfg *config.Config) (*Server, error) {
 	if telemAddr == "" {
 		telemAddr = ":8080"
 	}
-	telemOpts := telemetry.Options{Addr: telemAddr, Lifecycle: true}
+	telemOpts := telemetry.Options{
+		Addr:      telemAddr,
+		Lifecycle: true,
+		Pprof: telemetry.PprofOptions{
+			Enabled: cfg.Telemetry.PprofEnabled,
+			Heap:    cfg.Telemetry.PprofHeapEnabled,
+		},
+	}
 	// Liveness watchdog: stats the mail store base (catches hung NFS via the
 	// watchdog timeout) and enters a local gate (fault injection). Off by default.
 	if wd := cfg.Telemetry.LivenessWatchdog; wd.Enabled {
