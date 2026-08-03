@@ -298,9 +298,18 @@ replicas. A local socket cap may exist as a process backstop, but it is a
 different thing and is not published under this name.
 
 **Scaling.** `yarilo-jmap-login` is stateless beyond TLS and scales on request
-load. `yarilo-jmap` scales with the co-located pod it lives in, because it reads
-the same per-user index and mailbox as that pod's other protocol containers and
-must not become a second writer of them.
+load in both shapes. `yarilo-jmap` scales differently per shape, for the same
+reason every other session process does: behind a director it is a container in
+the co-located pod and scales with it, because it reads the same per-user index
+and mailbox as that pod's other protocol containers and must not become a second
+writer of them; in the standalone shape it is its own Deployment with its own
+`replicaCount`, and cross-pod write contention is resolved through
+`yarilo-locks` like every other session Deployment there.
+
+**Ports.** Client-facing `:8443` on `yarilo-jmap-login`; the backend listens on
+`:10443`, in the same range as the other backend data ports (`10143`, `10110`,
+`10587`, `10024`, `14190`) and deliberately clear of `:8080`, which is the
+telemetry port every component pod already uses.
 
 ### shared services (one deployment per installation)
 - `yarilo-auth` — passdb (for the director) + userdb (for everyone)

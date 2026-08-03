@@ -224,7 +224,7 @@
   <text x="1147" y="362" text-anchor="middle" fill="#be123c" font-size="12" font-weight="bold">yarilo-jmap</text>
   <text x="1147" y="376" text-anchor="middle" fill="#475569" font-size="9">Deployment · replicaCount=N</text>
   <text x="1147" y="389" text-anchor="middle" fill="#475569" font-size="9">JMAP methods · storage</text>
-  <text x="1147" y="402" text-anchor="middle" fill="#475569" font-size="8">no client TLS · scales by request rate</text>
+  <text x="1147" y="402" text-anchor="middle" fill="#475569" font-size="8">coordination via yarilo-locks</text>
   <text x="1147" y="414" text-anchor="middle" fill="#94a3b8" font-size="8">Service: yarilo-jmap.svc</text>
 
   <line x1="1147" y1="418" x2="1147" y2="445" stroke="#64748b" stroke-width="1.5"/>

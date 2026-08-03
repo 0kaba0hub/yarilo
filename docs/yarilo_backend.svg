@@ -40,7 +40,7 @@
   <text x="705" y="66" text-anchor="middle" fill="#1d4ed8" font-size="13" font-weight="bold">director deployment  (login proxies live here — see yarilo_director.svg)</text>
   <text x="705" y="80" text-anchor="middle" fill="#1d4ed8" font-size="9">k8s: StatefulSet × 3 · ONE ring · ONE userDir (one pod IP per user)</text>
   <text x="705" y="95" text-anchor="middle" fill="#475569" font-size="10">ring · userDir · TLS terminate · passdb · preamble parse</text>
-  <text x="705" y="110" text-anchor="middle" fill="#475569" font-size="9">plain TCP → pod-IP:{protocol port} · yarilo-jmap-login: HTTPS → pod-IP:8080 over internal mTLS</text>
+  <text x="705" y="110" text-anchor="middle" fill="#475569" font-size="9">plain TCP → pod-IP:{protocol port} · yarilo-jmap-login: HTTPS → pod-IP:10443 over internal mTLS</text>
 
   <!-- ══════════════════════════════════════════════════
        Outer wrapper: backend deployment (Helm release per tag)
@@ -106,7 +106,7 @@
 
   <rect x="722" y="232" width="128" height="72" rx="5" fill="#ffe4e6" stroke="#be123c" stroke-width="2"/>
   <text x="786" y="250" text-anchor="middle" fill="#be123c" font-size="11" font-weight="bold">yarilo-jmap</text>
-  <text x="786" y="262" text-anchor="middle" fill="#be123c" font-size="8">container · :8080</text>
+  <text x="786" y="262" text-anchor="middle" fill="#be123c" font-size="8">container · :10443</text>
   <text x="786" y="277" text-anchor="middle" fill="#475569" font-size="8">JMAP methods · storage</text>
   <text x="786" y="290" text-anchor="middle" fill="#475569" font-size="8">no client TLS</text>
 
