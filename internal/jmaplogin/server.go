@@ -55,6 +55,9 @@ type Options struct {
 
 	// LocalIP is this pod's address, reported to the backend in Forwarded.
 	LocalIP string
+	// CORSAllowOrigins lists browser origins allowed to call the endpoint.
+	// Empty denies every cross-origin request.
+	CORSAllowOrigins []string
 }
 
 // ConnAccountant is warden's per-user@IP connection accounting, narrowed to
@@ -98,6 +101,7 @@ type Server struct {
 	opts  Options
 	mux   *http.ServeMux
 	proxy *backendProxy
+	cors  cors
 
 	// conns maps a live connection to its accounting state so the ConnState
 	// hook can release it; ConnContext cannot see the close.
@@ -106,7 +110,7 @@ type Server struct {
 
 // New builds the proxy.
 func New(opts Options) *Server {
-	s := &Server{opts: opts, mux: http.NewServeMux()}
+	s := &Server{opts: opts, mux: http.NewServeMux(), cors: newCORS(opts.CORSAllowOrigins)}
 	s.proxy = newBackendProxy(opts)
 	s.mux.HandleFunc("/", s.handle)
 	return s
@@ -184,8 +188,22 @@ func (s *Server) Serve(ctx context.Context) error {
 
 // handle authenticates, accounts and proxies one request.
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	// A preflight carries no credentials by definition, so it is answered
+	// before authentication or the browser never gets to send the real request.
+	if r.Method == http.MethodOptions && r.Header.Get("Origin") != "" {
+		s.cors.preflight(w, r)
+		return
+	}
 	st, _ := r.Context().Value(ctxKey{}).(*connState)
 	clientIP := clientAddr(r, st)
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if !s.cors.allows(origin) {
+			w.Header().Add("Vary", "Origin")
+			writeProblem(w, http.StatusForbidden, "Origin not allowed")
+			return
+		}
+		s.cors.apply(w, origin)
+	}
 
 	username, err := s.authenticate(r, clientIP, sessionOf(st))
 	if err != nil {

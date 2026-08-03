@@ -1,7 +1,6 @@
 package jmaplogin
 
 import (
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -11,9 +10,11 @@ import (
 	"time"
 )
 
-// proxyTTL is the initial X-Proxy-TTL, decremented per hop. Matches
-// LOGIN_PROXY_TTL used by the byte-pipe protocols.
-const proxyTTL = 5
+// firstHopTTL is the X-Proxy-TTL this proxy always emits. The login layer is
+// by definition the first hop, so the budget starts at LOGIN_PROXY_TTL minus
+// this one; the client's own value is never read, or a caller could widen its
+// own loop budget.
+const firstHopTTL = "4"
 
 // Headers of the login to backend contract. Identity travels in them because
 // there is no session bound to the connection to hand over.
@@ -24,11 +25,30 @@ const (
 	hdrUser      = "X-Yarilo-User"
 )
 
-// hopHeaders are stripped from the client's request before proxying: a client
-// must not be able to name itself, and the trust rule on the backend is the
-// second line of defence, not the first.
-var hopHeaders = []string{hdrForwarded, hdrSessionID, hdrProxyTTL, hdrUser,
+// yariloPrefix covers every header the backend treats as coming from this
+// proxy, including the open-ended X-Yarilo-Forward-<key> family. Stripping by
+// prefix rather than by list means a header added to the contract later cannot
+// be forgotten here and become a way in.
+const yariloPrefix = "X-Yarilo-"
+
+// hopHeaders are the fixed names stripped from the client's request before
+// proxying. A client must not be able to name itself; the backend's trust rule
+// is the second line of defence, not the first.
+var hopHeaders = []string{hdrForwarded, hdrSessionID, hdrProxyTTL,
 	"X-Forwarded-For", "X-Forwarded-Port", "X-Forwarded-Proto"}
+
+// stripClientIdentity removes everything the backend would otherwise read as
+// this proxy's word.
+func stripClientIdentity(h http.Header) {
+	for _, name := range hopHeaders {
+		h.Del(name)
+	}
+	for name := range h {
+		if strings.HasPrefix(http.CanonicalHeaderKey(name), yariloPrefix) {
+			h.Del(name)
+		}
+	}
+}
 
 // backendProxy forwards one request to the pod that owns the user's state.
 type backendProxy struct {
@@ -59,12 +79,10 @@ func (p *backendProxy) serve(w http.ResponseWriter, r *http.Request, backend, us
 			pr.Out.URL.Scheme = target.Scheme
 			pr.Out.URL.Host = target.Host
 			pr.Out.Host = target.Host
-			for _, h := range hopHeaders {
-				pr.Out.Header.Del(h)
-			}
+			stripClientIdentity(pr.Out.Header)
 			pr.Out.Header.Set(hdrForwarded, forwardedValue(r, clientIP, p.localIP))
 			pr.Out.Header.Set(hdrSessionID, sessionID)
-			pr.Out.Header.Set(hdrProxyTTL, fmt.Sprint(nextTTL(r)))
+			pr.Out.Header.Set(hdrProxyTTL, firstHopTTL)
 			pr.Out.Header.Set(hdrUser, username)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -100,30 +118,4 @@ func clientPort(r *http.Request) string {
 		return "0"
 	}
 	return port
-}
-
-// nextTTL decrements the incoming hop budget, or starts it when this is the
-// first proxy. A request arriving at zero is rejected before it gets here.
-func nextTTL(r *http.Request) int {
-	n := proxyTTL
-	if v := r.Header.Get(hdrProxyTTL); v != "" {
-		if parsed, err := parseTTL(v); err == nil {
-			n = parsed
-		}
-	}
-	if n > 0 {
-		n--
-	}
-	return n
-}
-
-func parseTTL(v string) (int, error) {
-	var n int
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-		return 0, err
-	}
-	if n < 0 || n > proxyTTL {
-		return 0, fmt.Errorf("jmap-login: ttl %d out of range", n)
-	}
-	return n, nil
 }

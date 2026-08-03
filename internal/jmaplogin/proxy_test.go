@@ -93,3 +93,51 @@ func TestProxyReportsAnUnplaceableUser(t *testing.T) {
 		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
 }
+
+// The contract has an open-ended X-Yarilo-Forward-<key> family, so stripping a
+// fixed list would leave a way to inject passdb forward fields into the backend.
+func TestProxyStripsTheWholeYariloPrefix(t *testing.T) {
+	base := startProxy(t, Options{})
+	r, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/.well-known/jmap", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	r.Header.Set("Authorization", basic("u1", "pw"))
+	r.Header.Set("X-Yarilo-Forward-x", "injected")
+	r.Header.Set("X-Yarilo-Anything", "injected")
+
+	resp, err := keepAliveClient().Do(r)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	for _, h := range []string{"X-Yarilo-Forward-x", "X-Yarilo-Anything"} {
+		if got := resp.Header.Get("Echo-Extra-" + h); got != "" {
+			t.Errorf("%s survived as %q", h, got)
+		}
+	}
+}
+
+// The login layer is the first hop by definition, so the budget it emits comes
+// from the constant and never from the caller, who could otherwise widen it.
+func TestProxyIgnoresAClientSuppliedHopBudget(t *testing.T) {
+	base := startProxy(t, Options{})
+	for _, sent := range []string{"5", "99", "0", "-3", "garbage"} {
+		r, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/.well-known/jmap", nil)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		r.Header.Set("Authorization", basic("u1", "pw"))
+		r.Header.Set(hdrProxyTTL, sent)
+
+		resp, err := keepAliveClient().Do(r)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		got := resp.Header.Get("Echo-" + hdrProxyTTL)
+		resp.Body.Close() //nolint:errcheck
+		if got != firstHopTTL {
+			t.Errorf("client sent %q, backend saw %q, want %s", sent, got, firstHopTTL)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +82,12 @@ func startProxy(t *testing.T, opts Options) string {
 		// Echo the contract headers so the proxy tests can read them back.
 		for _, h := range []string{hdrForwarded, hdrSessionID, hdrProxyTTL, hdrUser} {
 			w.Header().Set("Echo-"+h, r.Header.Get(h))
+		}
+		// Echo anything else in the family so a strip failure is visible.
+		for name, vals := range r.Header {
+			if name != hdrUser && strings.HasPrefix(name, yariloPrefix) {
+				w.Header().Set("Echo-Extra-"+name, vals[0])
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 	}))

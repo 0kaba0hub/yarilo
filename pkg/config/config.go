@@ -323,6 +323,18 @@ type ProtocolConfig struct {
 	Submission  SubmissionProtocolConfig  `koanf:"submission"`
 	LMTP        LMTPProtocolConfig        `koanf:"lmtp"`
 	ManageSieve ManageSieveProtocolConfig `koanf:"managesieve"`
+	JMAP        JMAPProtocolConfig        `koanf:"jmap"`
+}
+
+// JMAPProtocolConfig holds JMAP behaviour that is not tied to a listener. The
+// limits published in the session resource arrive with the backend; this is
+// what the login layer needs.
+type JMAPProtocolConfig struct {
+	// CORSAllowOrigins lists the browser origins allowed to call the endpoint.
+	// Empty denies every cross-origin request: an endpoint any page can call
+	// with the user's credentials is an account-takeover surface. Exact match;
+	// "*" is accepted but cannot carry credentials.
+	CORSAllowOrigins []string `koanf:"jmap_cors_allow_origins"`
 }
 
 type LMTPProtocolConfig struct {

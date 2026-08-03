@@ -117,6 +117,7 @@ func main() {
 		HAProxyTrustedNets: parseCIDRs(cfg.General.HAProxy.TrustedNets),
 		HAProxyTimeout:     time.Duration(cfg.General.HAProxy.Timeout) * time.Second,
 		LocalIP:            os.Getenv("POD_IP"),
+		CORSAllowOrigins:   cfg.Protocol.JMAP.CORSAllowOrigins,
 	})
 	tel.SetReady(true)
 	if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {

@@ -1792,6 +1792,13 @@ protocol:
     max_script_size: 65536
     max_invalid_commands: 3
 
+  jmap:
+    ## Browser origins allowed to call the JMAP endpoint. Empty denies every
+    ## cross-origin request, which is the default: an endpoint any page can
+    ## call with the user's credentials is an account-takeover surface. Exact
+    ## match, scheme included. "*" is accepted but cannot carry credentials.
+    jmap_cors_allow_origins: []
+
 ## -------------------------------------------------------------------
 ## Sieve mail filtering
 ## -------------------------------------------------------------------

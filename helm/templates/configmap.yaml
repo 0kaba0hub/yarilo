@@ -171,6 +171,12 @@ data:
       managesieve:
         max_script_size: {{ (.Values.protocol.managesieve | default dict).max_script_size | default 65536 | int64 }}
         max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).max_invalid_commands | default 3 }}
+      jmap:
+        {{- $jmapP := (.Values.protocol.jmap | default dict) }}
+        jmap_cors_allow_origins:
+        {{- range ($jmapP.jmap_cors_allow_origins | default list) }}
+          - {{ . | quote }}
+        {{- end }}
 
     sieve:
       {{- $sieve := (.Values.sieve | default dict) }}
