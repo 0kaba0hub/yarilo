@@ -2,16 +2,15 @@ package jmapcore
 
 import (
 	"reflect"
-	"sort"
 	"testing"
 )
 
-// specProperties is every Email property of RFC 8621 §4.1, written out.
+// specEmailProperties is every Email property of RFC 8621 §4.1, written out.
 //
 // Written out rather than derived, because this is the one check that can catch
 // something *missing*: a list built from the struct agrees with the struct by
 // construction and would say nothing about a property yarilo never modelled.
-var specProperties = []string{
+var specEmailProperties = []string{
 	// §4.1.1 Metadata.
 	"id", "blobId", "threadId", "mailboxIds", "keywords", "size", "receivedAt",
 	// §4.1.2 Header fields parsed.
@@ -67,36 +66,17 @@ func TestEveryFieldIsClassifiedOrIndexOnly(t *testing.T) {
 	}
 }
 
-// A property of §4.1 that yarilo does not model is refused as a typo, and the
-// client is told its request is wrong when the request is right.
+// A property of §4.1 that yarilo does not model is refused as a typo, so the
+// client is told its request is wrong when the request is right. The other
+// direction catches an unannounced extension a client cannot know exists.
 //
-// This is the check the other two cannot make: they compare our own sets
-// against our own struct, and agree with each other however much is missing.
-func TestNoSpecifiedPropertyIsMissing(t *testing.T) {
-	fields := jsonFields(reflect.TypeOf(Email{}))
-	var missing []string
-	for _, name := range specProperties {
-		if _, ok := fields[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-	sort.Strings(missing)
-	if len(missing) > 0 {
-		t.Errorf("RFC 8621 §4.1 properties with no field: %v — each is now refused as unknown", missing)
-	}
-}
-
-// And the reverse, so the list above cannot rot into a subset of itself: a
-// field with no place in §4.1 is an extension, and an unannounced one is a
-// property a client cannot know exists.
-func TestNoFieldIsOutsideTheSpecification(t *testing.T) {
-	inSpec := make(map[string]bool, len(specProperties))
-	for _, name := range specProperties {
-		inSpec[name] = true
-	}
-	for name := range jsonFields(reflect.TypeOf(Email{})) {
-		if !inSpec[name] {
-			t.Errorf("%q is a field of Email and is not in RFC 8621 §4.1", name)
-		}
-	}
+// This is the check the two above cannot make: they compare our own sets
+// against our own struct and agree with each other however much is missing.
+//
+// Expressed through the same helper as Mailbox and Thread, deliberately. It was
+// four bespoke tests here and one shared helper there, and the difference was
+// enough for a reviewer to conclude Email had no coverage at all — which is the
+// cost of a guard nobody can find, and how one comes to be written twice.
+func TestEmailMatchesTheSpecification(t *testing.T) {
+	assertPropertySet(t, "Email", reflect.TypeOf(Email{}), specEmailProperties)
 }
