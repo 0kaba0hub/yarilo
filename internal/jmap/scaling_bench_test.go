@@ -153,6 +153,53 @@ func BenchmarkFolderScalingEmailQueryGet(b *testing.B) {
 	}
 }
 
+// A client asking for one mailbox should pay for one mailbox. It does not:
+// queryScope opens every folder and applies the inMailbox filter afterwards, so
+// the filter narrows the answer without narrowing the work.
+//
+// It cannot simply be reordered. The JMAP mailbox id is the folder's GUID, and
+// the GUID lives inside the folder's own index — so "which folder is mailbox X"
+// is a question that can only be answered by opening folders. That is the thing
+// missing at the account level, and this benchmark is what would show it fixed.
+func BenchmarkFolderScalingEmailQueryInOneMailbox(b *testing.B) {
+	for _, folders := range folderCounts {
+		b.Run(fmt.Sprintf("folders=%d", folders), func(b *testing.B) {
+			s := benchServer(b, folders, 5)
+			// Resolve INBOX's id the way a client does, from Mailbox/get.
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, apiRequest(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],
+				"methodCalls":[["Mailbox/get",{"accountId":"u1@example.com","ids":null},"c0"]]}`))
+			id := firstMailboxID(b, w.Body.String())
+
+			body := fmt.Sprintf(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],
+				"methodCalls":[
+					["Email/query",{"accountId":"u1@example.com","limit":10,
+						"filter":{"inMailbox":%q},
+						"sort":[{"property":"receivedAt","isAscending":false}]},"q0"]]}`, id)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				post(b, s, body)
+			}
+		})
+	}
+}
+
+// firstMailboxID pulls one id out of a Mailbox/get reply.
+func firstMailboxID(b *testing.B, body string) string {
+	b.Helper()
+	const key = `"id":"`
+	i := strings.Index(body, key)
+	if i < 0 {
+		b.Fatalf("no mailbox id in %s", body)
+	}
+	rest := body[i+len(key):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		b.Fatalf("malformed id in %s", body)
+	}
+	return rest[:j]
+}
+
 // The other half of the question: with the folder count fixed, does cost track
 // the number of messages the client actually asked for? If it does not, the
 // work is elsewhere.
