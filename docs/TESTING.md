@@ -93,6 +93,55 @@ start. `-msgs=0` turns it off, which is what the search-only Job needs.
 server that dispatches index work per user: more than one mailbox of one user
 wanting a pass at the same time.
 
+### Check for CPU throttling before believing a latency number
+
+**Do this first, every time.** A container at its CPU limit produces latencies
+that look exactly like a defect in the code, and no amount of profiling the code
+will find them — the profile shows the work spread over wall-clock time that the
+scheduler took away.
+
+This is not hypothetical. JMAP read latency was measured at 5085 ms median and
+investigated as an algorithmic problem, complete with a benchmark and three
+proposed redesigns. The container had `limits.cpu: 500m` and was consuming ~450m
+of it:
+
+```
+nr_periods 2226 · nr_throttled 1806 · throttled_usec 286912352
+```
+
+81% of scheduler periods stopped. Raising the limit and changing nothing else:
+
+| | `cpu: 500m` | `cpu: 3` |
+|:---|---:|---:|
+| `Email/query`+`get` median | 5085 ms | **322.9 ms** |
+| `Mailbox/get` median | 1103 ms | 132.2 ms |
+| throughput | 1.2 ops/s | 15.3 ops/s |
+| `nr_throttled` | 1806 / 2226 | 0 / 840 |
+
+A fifteen-fold difference from a value in `values.yaml`.
+
+Read it from inside the container — cgroup v2 exposes it directly:
+
+```sh
+kubectl -n <ns> exec <pod> -c <container> -- cat /sys/fs/cgroup/cpu.stat
+```
+
+`nr_throttled` against `nr_periods` is the whole answer. Anything above a few
+percent means the numbers beside it describe the quota, not the server.
+
+The kubelet also exports `container_cpu_cfs_throttled_periods_total` per
+container via cAdvisor:
+
+```sh
+kubectl get --raw "/api/v1/nodes/<node>/proxy/metrics/cadvisor" \
+  | grep container_cpu_cfs_throttled_periods_total
+```
+
+**But nothing scrapes it.** The cluster runs metrics-server only, with no
+Prometheus, so this is available on demand and not in history — there is no
+answering "was it throttled during yesterday's run" after the fact. Take the
+reading while the run is going, or record it with the result.
+
 ### Profiling under load
 
 A load run is when the profilers are worth having. With
@@ -106,3 +155,7 @@ go tool pprof -http=: "http://localhost:8085/debug/pprof/profile?seconds=30"
 
 Take the profile while the Job is running, not after — an idle process profiles
 its idle loop, which is a picture of nothing.
+
+And read `cpu.stat` in the same window. A profile taken through throttling
+attributes the work correctly and the *time* misleadingly: the shares are real,
+the seconds are the quota's.
