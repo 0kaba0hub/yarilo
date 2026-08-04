@@ -301,27 +301,6 @@ func (c *imapClient) deleteUIDs(uids []string) error {
 	return err
 }
 
-// clearInbox deletes all messages from INBOX so that inboxWaitByUID
-// gets a clean UIDNEXT unaffected by leftover messages from previous tests.
-func clearInbox(user, pass string) {
-	c, err := imapDial()
-	if err != nil {
-		return
-	}
-	defer c.close()
-	if err := c.login(user, pass); err != nil {
-		return
-	}
-	if _, err := c.selectFolder("INBOX"); err != nil {
-		return
-	}
-	uids, err := c.uidSearch("ALL")
-	if err != nil || len(uids) == 0 {
-		return
-	}
-	c.deleteUIDs(uids) //nolint:errcheck
-}
-
 func (c *imapClient) deleteFolder(folder string) {
 	c.cmd(fmt.Sprintf("DELETE %q", folder)) //nolint:errcheck
 }
@@ -455,7 +434,6 @@ const sieveScriptNameConst = "smoke-sieve-plugins"
 // ── plugin tests ───────────────────────────────────────────────────────────
 
 func testSieveFileinto(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-fileinto"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -468,7 +446,6 @@ func testSieveFileinto(user, pass, to string) error {
 }
 
 func testSieveMailbox(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-mailbox"
 	// Delete the folder if it survived a previous run so :create starts fresh.
 	func() {
@@ -490,7 +467,6 @@ func testSieveMailbox(user, pass, to string) error {
 }
 
 func testSieveImap4flags(user, pass, to string) error {
-	clearInbox(user, pass)
 	id := uniqueID()
 	script := "require \"imap4flags\";\naddflag \"\\\\Flagged\";\nkeep;\n"
 	if err := msieveSetActive(script); err != nil {
@@ -536,7 +512,6 @@ func testSieveImap4flags(user, pass, to string) error {
 }
 
 func testSieveBody(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-body"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -550,7 +525,6 @@ func testSieveBody(user, pass, to string) error {
 }
 
 func testSieveEnvelope(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-envelope"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -563,7 +537,6 @@ func testSieveEnvelope(user, pass, to string) error {
 }
 
 func testSieveVariables(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-variables"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -576,7 +549,6 @@ func testSieveVariables(user, pass, to string) error {
 }
 
 func testSieveReject(user, pass, to string) error {
-	clearInbox(user, pass)
 	subject := "reject-" + uniqueID()
 	script := "require \"reject\";\nreject \"smoke test reject\";\n"
 	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
@@ -591,7 +563,6 @@ func testSieveReject(user, pass, to string) error {
 }
 
 func testSieveEreject(user, pass, to string) error {
-	clearInbox(user, pass)
 	subject := "ereject-" + uniqueID()
 	script := "require \"ereject\";\nereject \"smoke test ereject\";\n"
 	if err := sieveInject(script, "", to, uniqueID(), subject, "body"); err != nil {
@@ -606,7 +577,6 @@ func testSieveEreject(user, pass, to string) error {
 }
 
 func testSieveDuplicate(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-duplicate"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -638,7 +608,6 @@ func testSieveDuplicate(user, pass, to string) error {
 }
 
 func testSieveRelational(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-relational"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -654,7 +623,6 @@ func testSieveRelational(user, pass, to string) error {
 }
 
 func testSieveDate(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-date"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -670,7 +638,6 @@ func testSieveDate(user, pass, to string) error {
 }
 
 func testSieveEnotify(user, pass, to string) error {
-	clearInbox(user, pass)
 	token := fmt.Sprintf("XNOTIFY%d", time.Now().UnixNano())
 	script := fmt.Sprintf(
 		"require \"enotify\";\n"+
@@ -697,7 +664,6 @@ func testSieveEnotify(user, pass, to string) error {
 // ── main sieve check ───────────────────────────────────────────────────────
 
 func testSieveDebugLog(user, pass, to string) error {
-	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
 	script := `require ["variables","envelope","vnd.yarilo.debug"];` + "\n" +
 		`if envelope :matches "to" "*" { set "to" "${1}"; }` + "\n" +
@@ -710,7 +676,6 @@ func testSieveDebugLog(user, pass, to string) error {
 }
 
 func testSieveEnvironment(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-environment"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -732,7 +697,6 @@ func testSieveEnvironment(user, pass, to string) error {
 // testSievePipe verifies vnd.yarilo.pipe is accepted. :try lets the action
 // fail silently when the binary is absent, so implicit keep delivers to INBOX.
 func testSievePipe(user, pass, to string) error {
-	clearInbox(user, pass)
 	id := uniqueID()
 	script := `require ["vnd.yarilo.pipe"];` + "\n" +
 		`pipe :try "smoketest-noop";` + "\n"
@@ -746,7 +710,6 @@ func testSievePipe(user, pass, to string) error {
 // testSieveExecute verifies vnd.yarilo.execute is accepted. execute is used as
 // a test inside if/else so implicit keep delivers to INBOX either way.
 func testSieveExecute(user, pass, to string) error {
-	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
 	script := `require ["vnd.yarilo.execute", "variables"];` + "\n" +
 		`set "result" "";` + "\n" +
@@ -764,7 +727,6 @@ func testSieveExecute(user, pass, to string) error {
 // testSieveFilter verifies vnd.yarilo.filter is accepted. filter is used as a
 // test inside if/else so implicit keep delivers to INBOX either way.
 func testSieveFilter(user, pass, to string) error {
-	clearInbox(user, pass)
 	uidnext := inboxUIDNext(user, pass)
 	script := `require ["vnd.yarilo.filter"];` + "\n" +
 		`if filter "smoketest-noop" {` + "\n" +
@@ -983,7 +945,6 @@ func joined(lines []string) string { return strings.Join(lines, "\n") }
 // and EMAILID in FETCH.
 func testIMAPObjectID(user, pass, to string) error {
 	// empty INBOX + plain keep script so delivery is deterministic
-	clearInbox(user, pass)
 	if err := msieveSetActive("keep;\n"); err != nil {
 		return fmt.Errorf("msieve keep: %w", err)
 	}
@@ -1043,7 +1004,6 @@ func testIMAPObjectID(user, pass, to string) error {
 // testSieveForeverypart verifies RFC 5703 foreverypart + mime: a multipart
 // message's HTML part routes to a folder.
 func testSieveForeverypart(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-mime"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -1067,7 +1027,6 @@ func testSieveForeverypart(user, pass, to string) error {
 // testSieveMaxActions verifies sieve_max_actions: a script exceeding the cap
 // aborts and falls back to implicit keep (INBOX).
 func testSieveMaxActions(user, pass, to string) error {
-	clearInbox(user, pass)
 	var b strings.Builder
 	b.WriteString("require [\"fileinto\",\"mailbox\"];\n")
 	for i := 0; i < 40; i++ { // > default cap 32
@@ -1086,7 +1045,6 @@ func testSieveMaxActions(user, pass, to string) error {
 // testSieveMailboxID verifies RFC 9042: fileinto :mailboxid delivers to the
 // folder carrying the given MAILBOXID rather than the positional fallback.
 func testSieveMailboxID(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-mboxid"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -1143,7 +1101,6 @@ func extractMailboxID(s string) string {
 // mailbox-scoped and a server-scoped annotation, then asserts a script keying
 // on both routes to the target folder.
 func testSieveMetadata(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-meta"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
@@ -1184,7 +1141,6 @@ func testSieveMetadata(user, pass, to string) error {
 // the trigger back to the recipient via submission -> LMTP into INBOX.
 // Guarded on the trigger's subject so the report cannot loop.
 func testSieveReport(user, pass, to string) error {
-	clearInbox(user, pass)
 	script := "require [\"vnd.yarilo.report\"];\n" +
 		"if header :contains \"subject\" \"report-trigger\" {\n" +
 		"  report \"abuse\" \"smoke abuse report\" \"" + to + "\";\n" +
@@ -1193,7 +1149,11 @@ func testSieveReport(user, pass, to string) error {
 		return fmt.Errorf("msieve: %w", err)
 	}
 	id := fmt.Sprintf("report-%d@test", time.Now().UnixNano())
-	if err := lmtpSend(id, "s@test.invalid", to, "report-trigger", "body"); err != nil {
+	// The subject carries a unique token so the cleanup at the end can name
+	// this run's trigger. The script matches on :contains, so the token does
+	// not stop it firing.
+	trigger := "report-trigger-" + uniqueID()
+	if err := lmtpSend(id, "s@test.invalid", to, trigger, "body"); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
 
@@ -1208,6 +1168,7 @@ func testSieveReport(user, pass, to string) error {
 	// report submission is async; poll for a delivered multipart/report
 	// with the feedback-report content type (excludes the trigger)
 	var found bool
+	var reportUIDs []string
 	for i := 0; i < 30 && !found; i++ {
 		c.conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
 		if _, err := c.cmd(`SELECT "INBOX"`); err != nil {
@@ -1222,6 +1183,7 @@ func testSieveReport(user, pass, to string) error {
 			raw := joined(hdr)
 			if strings.Contains(raw, "multipart/report") && strings.Contains(raw, "report-type=feedback-report") {
 				found = true
+				reportUIDs = append(reportUIDs, uid)
 				break
 			}
 		}
@@ -1232,15 +1194,21 @@ func testSieveReport(user, pass, to string) error {
 	if !found {
 		return fmt.Errorf("no valid ARF report delivered back to INBOX within timeout")
 	}
-	all, _ := c.uidSearch("ALL")
-	c.deleteUIDs(all) //nolint:errcheck
+	// Only what this check put there: the report it matched, and the trigger by
+	// its own subject. Emptying INBOX would take the account's mail with it,
+	// and nothing in this tool's flags says the account is disposable (#1056).
+	if len(reportUIDs) > 0 {
+		c.deleteUIDs(reportUIDs) //nolint:errcheck
+	}
+	if _, err := cleanInboxBySubject(user, pass, trigger); err != nil {
+		return fmt.Errorf("cleanup of the trigger message: %w", err)
+	}
 	return nil
 }
 
 // testSieveSpamtest verifies RFC 5235 spamtest against the configured
 // status header (requires sieve_spamtest_status_header set).
 func testSieveSpamtest(user, pass, to string) error {
-	clearInbox(user, pass)
 	folder := "sieve-test-spam"
 	if err := createFolder(user, pass, folder); err != nil {
 		return fmt.Errorf("pre-create: %w", err)
