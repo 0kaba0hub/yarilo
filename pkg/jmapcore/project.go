@@ -44,9 +44,13 @@ func Project(value any, props []string) any {
 	add := func(name string) {
 		idx, ok := fields[name]
 		if !ok {
-			// Unknown property names are rejected when the request is
-			// validated, and a property this server does not implement is
-			// absent rather than null.
+			// A name the object does not carry is simply absent from the
+			// answer: better than null, which would assert the property exists
+			// and is empty.
+			//
+			// Nothing validates property names anywhere in the request path
+			// today, so this is also where a client's typo lands — subjekt
+			// returns an object without a subject and without an error (#1032).
 			return
 		}
 		out[name] = v.Field(idx).Interface()
@@ -68,6 +72,11 @@ var alwaysProjected = [...]string{"id"}
 var fieldCache sync.Map // reflect.Type → map[string]int
 
 // jsonFields resolves a struct's JSON names once per type.
+//
+// Embedded structs are not flattened: their fields are not reachable by the
+// name the encoder would give them. No JMAP object embeds one today, so this is
+// a constraint on future ones rather than a defect — an embedded field would be
+// silently unprojectable.
 func jsonFields(t reflect.Type) map[string]int {
 	if cached, ok := fieldCache.Load(t); ok {
 		if fields, ok := cached.(map[string]int); ok {
