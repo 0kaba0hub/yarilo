@@ -162,3 +162,110 @@ func TestHeaderFieldGroupedAddresses(t *testing.T) {
 		t.Errorf("header:To:asGroupedAddresses =\n got %s\nwant %s", got, want)
 	}
 }
+
+// The headers property was in the classification and had no field behind it, so
+// asking for it read the message and answered nothing: the client paid for the
+// read and got an object without the property and without an error (#1034).
+func TestHeadersPropertyIsAnswered(t *testing.T) {
+	s, id := storedServerWithMessage(t, headerRichMessage, 0)
+
+	value, present := headerPropPresent(t, s, id, "headers")
+	if !present {
+		t.Fatal("headers is missing from the answer")
+	}
+	list, ok := value.([]any)
+	if !ok || len(list) == 0 {
+		t.Fatalf("headers = %v, want the message's fields", value)
+	}
+
+	// Order is the answer, not an incidental: Received lines read as a route,
+	// and a sorted or deduplicated set is a different message.
+	var names []string
+	for _, entry := range list {
+		field, _ := entry.(map[string]any)
+		name, _ := field["name"].(string)
+		names = append(names, name)
+	}
+	want := []string{
+		"Subject", "From", "To", "Date", "Message-Id",
+		"List-Unsubscribe", "X-Spam-Status", "Received", "Received",
+	}
+	if len(names) != len(want) {
+		t.Fatalf("headers = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Errorf("header %d = %q, want %q — the order is the message's", i, names[i], want[i])
+		}
+	}
+
+	// The value is raw, so a folded field keeps its folding.
+	for _, entry := range list {
+		field, _ := entry.(map[string]any)
+		if field["name"] != "Received" {
+			continue
+		}
+		if value, _ := field["value"].(string); strings.Contains(value, "b.example.com") {
+			if !strings.Contains(value, "\n") {
+				t.Errorf("the folded Received lost its folding: %q", value)
+			}
+			return
+		}
+	}
+	t.Error("the folded Received field is not in the list")
+}
+
+// A backslash quotes whatever follows it, inside a quoted string and inside a
+// comment alike (RFC 5322 §3.2.1). Without that, an escaped quote closes the
+// string early and the parser then treats the punctuation after it as group
+// syntax — quietly, which is the same failure flattening would have been.
+//
+// Tested against the parser directly: routed through a whole Email/get, the
+// grouping came out the same either way, so the assertion said nothing.
+func TestGroupedAddressesQuotedPair(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		value  string
+		groups []any // group names, in order
+	}{
+		{
+			name:   "escaped quote does not close the string",
+			value:  `"a \" b; c" <one@example.com>, two@example.com`,
+			groups: []any{nil},
+		},
+		{
+			name:   "escaped quote does not expose a colon",
+			value:  `"a \" Group: x@example.com;" <one@example.com>`,
+			groups: []any{nil},
+		},
+		{
+			name:   "a real group is still found",
+			value:  `one@example.com, Team:alice@example.com;, two@example.com`,
+			groups: []any{nil, "Team", nil},
+		},
+		{
+			name:   "escaped paren does not close a comment",
+			value:  `one@example.com (a \) still comment; and: not a group)`,
+			groups: []any{nil},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := groupedAddresses(tc.value)
+			if len(got) != len(tc.groups) {
+				t.Fatalf("%d groups, want %d: %+v", len(got), len(tc.groups), got)
+			}
+			for i, want := range tc.groups {
+				switch want := want.(type) {
+				case nil:
+					if got[i].Name != nil {
+						t.Errorf("group %d is named %q, want ungrouped", i, *got[i].Name)
+					}
+				case string:
+					if got[i].Name == nil || *got[i].Name != want {
+						t.Errorf("group %d = %v, want %q", i, got[i].Name, want)
+					}
+				}
+			}
+		})
+	}
+}

@@ -267,6 +267,7 @@ func collectParts(e *message.Entity, prefix string) []walkedPart {
 
 // fillHeaders lifts the envelope fields (RFC 8621 §4.1.2).
 func fillHeaders(email *jmapcore.Email, h message.Header) {
+	email.Headers = allHeaders(h)
 	if s := h.Get("Subject"); s != "" {
 		decoded := decodeWord(s)
 		email.Subject = &decoded

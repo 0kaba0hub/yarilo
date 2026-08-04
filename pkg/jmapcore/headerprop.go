@@ -70,11 +70,14 @@ func ParseHeaderProperty(p string) (HeaderProperty, bool) {
 		out.All = true
 		rest = trimmed
 	}
-	// A form suffix, if any, is what follows the final colon — and a header
-	// field name may not contain a colon, so this cannot be ambiguous.
+	// A form suffix, if any, follows the first colon. RFC 5322 field names are
+	// printable ASCII excluding the colon, so the first colon is the only place
+	// a suffix can begin and everything after it must be the form — which is
+	// why "header:To:asText:asRaw" is refused rather than read as a field named
+	// "To:asText".
 	if name, form, found := strings.Cut(rest, ":"); found {
 		f, known := headerForms[form]
-		if !known || strings.Contains(name, ":") {
+		if !known {
 			return HeaderProperty{}, false
 		}
 		out.Form, rest = f, name

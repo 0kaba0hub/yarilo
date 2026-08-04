@@ -46,6 +46,31 @@ func headerFieldValues(h message.Header, props []jmapcore.HeaderProperty) map[st
 	return out
 }
 
+// allHeaders lists every field in the order the message carries them.
+//
+// The order is the point: Received lines read as a route, and a set of fields
+// sorted or deduplicated is a different message from the one that arrived.
+func allHeaders(h message.Header) []jmapcore.EmailHeader {
+	out := []jmapcore.EmailHeader{}
+	fields := h.Fields()
+	for fields.Next() {
+		raw, err := fields.Raw()
+		if err != nil {
+			out = append(out, jmapcore.EmailHeader{Name: fields.Key(), Value: fields.Value()})
+			continue
+		}
+		name, value, found := strings.Cut(string(raw), ":")
+		if !found {
+			continue
+		}
+		out = append(out, jmapcore.EmailHeader{
+			Name:  strings.TrimSpace(name),
+			Value: strings.TrimRight(value, "\r\n"),
+		})
+	}
+	return out
+}
+
 // rawHeaderValues collects every occurrence of a field, in the order they
 // appear in the message.
 func rawHeaderValues(h message.Header, name string) []string {
@@ -161,6 +186,7 @@ func groupedAddresses(v string) []jmapcore.EmailAddressGroup {
 	var (
 		out     []jmapcore.EmailAddressGroup
 		quoted  bool
+		escaped bool
 		depth   int
 		segment strings.Builder
 		name    *string
@@ -177,6 +203,18 @@ func groupedAddresses(v string) []jmapcore.EmailAddressGroup {
 	for i := 0; i < len(v); i++ {
 		c := v[i]
 		switch {
+		case escaped:
+			// A quoted-pair: the backslash quoted whatever follows, so it is
+			// content and cannot open or close anything. Without this a display
+			// name containing an escaped quote flips the quoting state, and the
+			// group then splits on a ';' that is inside a string (RFC 5322
+			// §3.2.1).
+			escaped = false
+			if quoted {
+				segment.WriteByte(c)
+			}
+		case c == '\\' && (quoted || depth > 0):
+			escaped = true
 		case c == '"':
 			quoted = !quoted
 			segment.WriteByte(c)
@@ -190,10 +228,20 @@ func groupedAddresses(v string) []jmapcore.EmailAddressGroup {
 			}
 		case depth > 0:
 		case c == ':':
-			// Everything so far was the group's display name.
-			label := strings.TrimSpace(segment.String())
+			// Only the last token before the colon is the group's name;
+			// anything before that belongs to the ungrouped addresses that
+			// preceded it. A list may mix the two — "a@x, Team:b@x;, c@x" is
+			// three groups, not one — and taking the whole segment as the name
+			// swallowed the addresses in front of it.
+			pending := segment.String()
 			segment.Reset()
-			if label != "" {
+			label := pending
+			if comma := strings.LastIndex(pending, ","); comma >= 0 {
+				segment.WriteString(pending[:comma])
+				label = pending[comma+1:]
+				flush()
+			}
+			if label = strings.TrimSpace(label); label != "" {
 				n := label
 				name = &n
 			}

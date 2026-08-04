@@ -20,6 +20,12 @@ type Email struct {
 	Size       uint32          `json:"size"`
 	ReceivedAt string          `json:"receivedAt"`
 
+	// Headers is every header field of the message, in the order it carries
+	// them, with the raw value (§4.1.2.1). It is what a client falls back to
+	// when it needs a field this type does not model and does not know the
+	// name in advance.
+	Headers []EmailHeader `json:"headers"`
+
 	// Header-derived fields (§4.1.2).
 	MessageID  []string       `json:"messageId"`
 	InReplyTo  []string       `json:"inReplyTo"`
@@ -41,6 +47,13 @@ type Email struct {
 	Attachments   []EmailBodyPart           `json:"attachments"`
 	HasAttachment bool                      `json:"hasAttachment"`
 	Preview       string                    `json:"preview"`
+}
+
+// EmailHeader is one header field as JMAP carries it (RFC 8621 §4.1.2.1). The
+// value is raw: everything after the colon, folding included, minus the CRLF.
+type EmailHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // EmailAddressGroup is an RFC 5322 address group as JMAP models it
