@@ -54,11 +54,23 @@ question:
 | `lmtp-job.yaml` | delivery, and through it FTS indexing | `fts_build_stage_seconds`, `fts_worker_busy_seconds_total`, `fts_index_queue_depth` |
 | `imap-job.yaml` | persistent sessions: append, fetch, store, expunge | per-command percentiles from the run's own summary |
 | `search-job.yaml` | SEARCH only, against an index the others filled | search latency without append traffic competing for the same per-user index |
+| `jmap-job.yaml` | the read chain a client opens with: session, `Mailbox/get`, `Email/query`+`get` | per-method latency, and `nr_throttled` beside it |
 
 ```sh
 kubectl apply -f hack/loadtest/lmtp-job.yaml
 kubectl -n yarilo-sb logs -f job/yarilo-loadtest-lmtp
 ```
+
+**The JMAP job measures the read path and does not check protocol behaviour.**
+The driver asks for `id`, `subject`, `from`, `receivedAt` and `threadId`, so
+nothing in a load run exercises the `header:*` forms or property validation.
+Those want a conformance check; a load run that happened to pass would say
+nothing about them.
+
+And for JMAP in particular, read
+[the throttling section](#check-for-cpu-throttling-before-believing-a-latency-number)
+first. A 5085 ms median once looked like an algorithmic defect and was a 500m
+CPU limit.
 
 ### Reading the result
 

@@ -1,0 +1,51 @@
+# JMAP read load against the sandbox.
+#
+# What a mail client does when it opens: discover the session once, list the
+# mailboxes, then ask for the newest messages in one request — Email/query and
+# Email/get joined by a back-reference, which is the round trip JMAP exists to
+# save.
+#
+# This measures the read path. It does not verify protocol behaviour: the driver
+# asks for id/subject/from/receivedAt/threadId, so nothing here exercises the
+# header:* forms or the property validation. Those want a conformance check,
+# not a load run.
+#
+#   kubectl apply -f hack/loadtest/jmap-job.yaml
+#   kubectl -n yarilo-sb logs -f job/yarilo-loadtest-jmap
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yarilo-loadtest-jmap
+  namespace: yarilo-sb
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadtest
+        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        args:
+        # A base URL, not host:port: the API endpoint is read out of the
+        # session resource rather than assembled, so the run follows whatever
+        # the server advertises.
+        - -protocol=jmap
+        - -addr=https://yarilo-jmap-login.yarilo-sb.svc.cluster.local:443
+        - -insecure
+        - -users=u1@d00001.test:150
+        - -password=Yarilo!test1
+        - -concurrency=8
+        - -duration=90s
+        # The listing window. Bounded for the same reason every fetch here is:
+        # an unbounded query costs more as the mailbox grows, so the same
+        # operation is cheap early in a run and expensive late.
+        - -window=20
+        - -interval=10s
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
