@@ -162,3 +162,28 @@ What it asserts beyond the forms themselves:
 - a misspelled property is refused with `invalidArguments` — silence there is
   indistinguishable from a property yarilo has not implemented;
 - `headers` lists every field in the order the message carries them.
+
+## What the smoke test writes, and what it removes
+
+It writes. Run it against an account whose mail you are willing to have touched
+in the ways below, and nothing else.
+
+| check | writes | removes |
+|:---|:---|:---|
+| sieve checks | one message per check, delivered by LMTP | its own message, by the unique subject it sent |
+| sieve `fileinto` and friends | messages into folders they create | those folders' contents |
+| FTS | one message with a unique marker | nothing |
+| JMAP header forms | one message in `YariloSmoke` | that message and the folder |
+
+**It does not empty INBOX**, and must not. It did until #1056: a helper selected
+INBOX, searched for everything and expunged it, twenty-five times per run.
+Nothing in the flags or in this document said the account had to be disposable,
+and the loss was silent — the delete ignored its error and the helper returned
+nothing on any failure path.
+
+Every check identifies its own message by a unique subject or marker, which is
+what it needed all along; the clearing was defensive and destructive at once.
+`TestNothingEmptiesTheInbox` reads the source and fails on any function that
+selects INBOX, searches `ALL` and deletes the result — deleting a message the
+check itself sent stays allowed, because the fault was the breadth and not the
+delete.

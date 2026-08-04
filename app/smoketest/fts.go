@@ -13,7 +13,6 @@ import (
 // sequential-scan fallback while fts_search_read_fallback is false, surfaces
 // as a hard SEARCH error rather than a silent miss.
 func checkFTS(user, pass string) error {
-	clearInbox(user, pass)
 
 	marker := fmt.Sprintf("ftsmarker%d", time.Now().UnixNano())
 	id := uniqueID()
