@@ -75,6 +75,7 @@ question:
 | `search-job.yaml` | SEARCH only, against an index the others filled | search latency without append traffic competing for the same per-user index |
 | `jmap-job.yaml` | the read chain a client opens with: session, `Mailbox/get`, `Email/query`+`get` | per-method latency, and `nr_throttled` beside it |
 | `pop3-job.yaml` | full POP3 sessions: connect, authenticate, survey, retrieve, quit | per-command latency, and the maildrop lock under concurrency |
+| `lmtp-mbox-job.yaml` | delivery of a **non-English** corpus | `fts_build_stage_seconds` in a language whose stopword list actually changed |
 
 ```sh
 kubectl apply -f hack/loadtest/lmtp-job.yaml
@@ -91,6 +92,39 @@ And for JMAP in particular, read
 [the throttling section](#check-for-cpu-throttling-before-believing-a-latency-number)
 first. A 5085 ms median once looked like an algorithmic defect and was a 500m
 CPU limit.
+
+### Measuring a language other than English
+
+The generator emits English, and the English stopword list was the one already
+correct — 174 words matching its source exactly, unchanged by #1021 and #1025.
+A sandbox run therefore shows **nothing** for those changes, by construction
+rather than by measurement.
+
+`lmtp-mbox-job.yaml` replays a corpus in a language whose list did change.
+Build it from yarilo's own lists:
+
+```sh
+hack/loadtest/corpus/gen-corpus.sh uk 250 > /tmp/uk.mbox
+kubectl -n yarilo-sb create configmap loadtest-corpus \
+    --from-file=corpus.mbox=/tmp/uk.mbox --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f hack/loadtest/lmtp-mbox-job.yaml
+```
+
+**The function words come from the server's own stopword lists**, so the corpus
+and the server cannot disagree about what a stopword is. The content words are
+pairs of function words run together — deterministic, valid UTF-8 in the same
+script, and not in the list. That is deliberate: what is being measured is how
+many tokens survive filtering and what they cost to stem, and inventing prose
+would put an unstated word-frequency distribution into a number that is supposed
+to be about the filter. The ratio is stated rather than incidental —
+`STOPWORD_RATIO` of every ten words, four by default, which is roughly what
+running text carries.
+
+Two limits worth knowing before you meet them: a **ConfigMap holds about 1 MiB**,
+and **SMTP carries at most 1000 octets per line** including the CRLF — a server
+given a longer one rejects the whole transaction, so one unwrapped line fails
+every delivery in the run. The generator wraps at nine words; the loader refuses
+a file that breaks the limit and names the message, line and length.
 
 ### Reading the result
 
