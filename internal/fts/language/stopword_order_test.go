@@ -63,6 +63,10 @@ func TestStopwordListsHoldCommonWords(t *testing.T) {
 		"it": {"che", "non", "per"},
 		"pt": {"que", "com", "para"},
 		"ru": {"и", "не", "что"},
+		// The four the previous Ukrainian source did not carry. With no
+		// stemmer for uk, stopwords are the only content filter it gets, so
+		// this is the language where a thin list costs the most.
+		"uk": {"і", "в", "не", "на"},
 	} {
 		list, ok := stopwordLists[lang]
 		if !ok {
