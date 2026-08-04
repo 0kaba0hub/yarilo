@@ -108,7 +108,9 @@ func TestUnknownPropertiesAreRefused(t *testing.T) {
 	for _, tc := range []struct {
 		method, args, named string
 	}{
-		{"Mailbox/get", `{"accountId":"u1@example.com","ids":null,"properties":["id","nmae"]}`, "nmae"},
+		// The misspelling is the input, not a mistake in the test: this is the
+		// case a client hits, and the spell checker has to be told so.
+		{"Mailbox/get", `{"accountId":"u1@example.com","ids":null,"properties":["id","nmae"]}`, "nmae"}, //nolint:misspell
 		{"Mailbox/get", `{"accountId":"u1@example.com","ids":null,"properties":["id","subject"]}`, "subject"},
 		{"Thread/get", `{"accountId":"u1@example.com","ids":["` + id + `"],"properties":["id","emailIDs"]}`, "emailIDs"},
 	} {
