@@ -24,6 +24,9 @@ func (s *Server) threadGet(_ context.Context, h *userHandle, accountID string, a
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrInvalidArguments,
 			Description: "Thread/get requires ids; a null ids would select every thread"}
 	}
+	if unknown := jmapcore.UnknownProperties(jmapcore.Thread{}, propsOfGet(req)); len(unknown) > 0 {
+		return nil, jmapcore.InvalidProperties(unknown)
+	}
 	want := make(map[string]bool, len(*req.IDs))
 	for _, id := range *req.IDs {
 		want[id] = true
@@ -32,10 +35,11 @@ func (s *Server) threadGet(_ context.Context, h *userHandle, accountID string, a
 	if err != nil {
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
 	}
-	resp := jmapcore.GetResponse[jmapcore.Thread]{
+	props := propsOfGet(req)
+	resp := jmapcore.GetResponse[any]{
 		AccountID: accountID,
 		State:     "0",
-		List:      []jmapcore.Thread{},
+		List:      []any{},
 		NotFound:  []string{},
 	}
 	for _, id := range *req.IDs {
@@ -43,7 +47,8 @@ func (s *Server) threadGet(_ context.Context, h *userHandle, accountID string, a
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		resp.List = append(resp.List, jmapcore.Thread{ID: id, EmailIDs: []string{id}})
+		resp.List = append(resp.List, jmapcore.Project(
+			jmapcore.Thread{ID: id, EmailIDs: []string{id}}, props, nil))
 	}
 	return resp, nil
 }
