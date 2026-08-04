@@ -116,6 +116,7 @@ data:
     protocol:
       imap:
         imap_idle_notify_interval: {{ .Values.protocol.imap.imap_idle_notify_interval }}
+        imap_quota: {{ .Values.protocol.imap.imap_quota }}
         imap_max_line_length: {{ .Values.protocol.imap.imap_max_line_length | int64 }}
         imap_id_send: {{ .Values.protocol.imap.imap_id_send | quote }}
         login_greeting: {{ .Values.protocol.imap.login_greeting | quote }}
@@ -133,6 +134,8 @@ data:
           {{- end }}
         {{- end }}
       pop3:
+        pop3_lock_session: {{ .Values.protocol.pop3.pop3_lock_session }}
+        pop3_save_uidl: {{ .Values.protocol.pop3.pop3_save_uidl }}
         pop3_no_flag_updates: {{ .Values.protocol.pop3.pop3_no_flag_updates }}
         pop3_reuse_xuidl: {{ .Values.protocol.pop3.pop3_reuse_xuidl }}
         pop3_uidl_format: {{ .Values.protocol.pop3.pop3_uidl_format | quote }}
@@ -234,6 +237,10 @@ data:
       imapsieve_global_after:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      sieve_execute_bin_dir: {{ index $sieve "sieve_execute_bin_dir" | default "/usr/lib/yarilo/sieve-execute" | quote }}
+      sieve_execute_socket_dir: {{ index $sieve "sieve_execute_socket_dir" | default "sieve-execute" | quote }}
+      sieve_execute_exec_timeout: {{ index $sieve "sieve_execute_exec_timeout" | default 10 | int64 }}
+      sieve_execute_input_eol: {{ index $sieve "sieve_execute_input_eol" | default "crlf" | quote }}
       sieve_pipe_bin_dir: {{ index $sieve "sieve_pipe_bin_dir" | default "/usr/lib/yarilo/sieve-pipe" | quote }}
       sieve_pipe_socket_dir: {{ index $sieve "sieve_pipe_socket_dir" | default "sieve-pipe" | quote }}
       sieve_pipe_exec_timeout: {{ index $sieve "sieve_pipe_exec_timeout" | default 10 }}
@@ -409,6 +416,7 @@ data:
     {{- with .Values.acl }}
     acl:
       enabled: {{ .enabled | default false }}
+      acl_cache_ttl: {{ .acl_cache_ttl | default 30 | int64 }}
       defaults_from_inbox: {{ .defaults_from_inbox | default false }}
       globals_only: {{ .globals_only | default false }}
       {{- with .global }}
@@ -469,6 +477,7 @@ data:
       fts_flatcurve_rotate_count: {{ $.Values.fts.fts_flatcurve_rotate_count }}
       fts_flatcurve_rotate_time: {{ $.Values.fts.fts_flatcurve_rotate_time }}
       fts_flatcurve_substring_search: {{ $.Values.fts.fts_flatcurve_substring_search }}
+      fts_flatcurve_prefix_search: {{ $.Values.fts.fts_flatcurve_prefix_search | quote }}
       fts_decoder_driver: {{ $.Values.fts.fts_decoder_driver | quote }}
       fts_decoder_script_addr: {{ $.Values.fts.fts_decoder_script_addr | quote }}
       fts_decoder_tika_url: {{ $.Values.fts.fts_decoder_tika_url | quote }}
