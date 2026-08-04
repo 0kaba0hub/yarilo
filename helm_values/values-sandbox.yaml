@@ -48,7 +48,12 @@ fts:
   # regressions (e.g. #638) are caught by smoketest instead of being masked.
   fts_search_read_fallback: false
   language_filters: [lowercase, stopwords, snowball]
-  languages: [en]
+  # The detector only picks among the languages listed here, so a single-entry
+  # list silently indexes every message as English -- including non-English mail,
+  # which then gets the wrong stopword list and stemmer. Listing several keeps the
+  # sandbox representative of real traffic and makes per-language FTS work
+  # measurable at all.
+  languages: [en, es, it, uk]
 
 ## Namespaces. Personal owns INBOX (storage from storage.mail_home_template);
 ## Public is a shared, non-owner store used to exercise delivery-through-namespaces.
