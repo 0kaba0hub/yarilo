@@ -28,6 +28,12 @@ import (
 //
 //	go test -tags '' -run xxx -bench FolderScaling -benchtime 20x ./internal/jmap/
 func benchServer(b *testing.B, folders, messagesPerFolder int) *Server {
+	return benchServerSized(b, folders, messagesPerFolder, 0)
+}
+
+// benchServerSized pads each message body to bodyBytes, so a benchmark can vary
+// what the MIME walk would have to read.
+func benchServerSized(b *testing.B, folders, messagesPerFolder, bodyBytes int) *Server {
 	b.Helper()
 	// The index logs a line per folder it creates, which at fifty folders
 	// buries the numbers this exists to produce.
@@ -54,7 +60,8 @@ func benchServer(b *testing.B, folders, messagesPerFolder int) *Server {
 
 	idx := file.New(file.WithLocker(locker))
 	ui := idx.OpenUser(info)
-	body := "Subject: bench\r\nFrom: a@example.com\r\n\r\nbody\r\n"
+	body := "Subject: bench\r\nFrom: a@example.com\r\nContent-Type: text/plain\r\n\r\n" +
+		strings.Repeat("filler line of ordinary words\r\n", 1+bodyBytes/30)
 	for _, name := range names {
 		f, err := ui.OpenFolder(name, 0)
 		if err != nil {
@@ -214,6 +221,55 @@ func BenchmarkAnswerSizeEmailQueryGet(b *testing.B) {
 					["Email/get",{"accountId":"u1@example.com",
 						"#ids":{"resultOf":"q0","name":"Email/query","path":"/ids"},
 						"properties":["id","subject","receivedAt"]},"g0"]]}`, limit)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				post(b, s, body)
+			}
+		})
+	}
+}
+
+// The commonest request a mail client makes: subject and sender for each row of
+// a listing. Nothing here needs the MIME tree, and walking it is what pulls the
+// message body off disk.
+//
+// The message size is the variable, because that is what the walk costs: if the
+// listing is answered from the header block, a 500 KB message costs the same as
+// a 2 KB one.
+func BenchmarkListingProperties(b *testing.B) {
+	for _, kb := range []int{2, 64, 512} {
+		b.Run(fmt.Sprintf("message=%dKB", kb), func(b *testing.B) {
+			s := benchServerSized(b, 1, 10, kb*1024)
+			const body = `{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],
+				"methodCalls":[
+					["Email/query",{"accountId":"u1@example.com","limit":10,
+						"sort":[{"property":"receivedAt","isAscending":false}]},"q0"],
+					["Email/get",{"accountId":"u1@example.com",
+						"#ids":{"resultOf":"q0","name":"Email/query","path":"/ids"},
+						"properties":["id","subject","from","receivedAt","threadId"]},"g0"]]}`
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				post(b, s, body)
+			}
+		})
+	}
+}
+
+// The other side: a client opening a message asks for body values, and that
+// request must still do all the work. This is what would catch the split being
+// wrong in the direction that loses data.
+func BenchmarkReadingAMessage(b *testing.B) {
+	for _, kb := range []int{2, 64, 512} {
+		b.Run(fmt.Sprintf("message=%dKB", kb), func(b *testing.B) {
+			s := benchServerSized(b, 1, 10, kb*1024)
+			const body = `{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],
+				"methodCalls":[
+					["Email/query",{"accountId":"u1@example.com","limit":10,
+						"sort":[{"property":"receivedAt","isAscending":false}]},"q0"],
+					["Email/get",{"accountId":"u1@example.com",
+						"#ids":{"resultOf":"q0","name":"Email/query","path":"/ids"},
+						"fetchTextBodyValues":true,
+						"properties":["id","subject","textBody","bodyValues"]},"g0"]]}`
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				post(b, s, body)
