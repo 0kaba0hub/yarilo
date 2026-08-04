@@ -33,6 +33,13 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrInvalidArguments,
 			Description: "Email/get requires ids; a null ids would select every message"}
 	}
+	// Property names are checked before any work is done: a request naming one
+	// the server does not carry is answered with an error rather than an object
+	// missing it, so a client can tell its own typo from a property yarilo has
+	// not implemented (§5.1).
+	if unknown := jmapcore.UnknownProperties(jmapcore.Email{}, propsOf(req)); len(unknown) > 0 {
+		return nil, jmapcore.InvalidProperties(unknown)
+	}
 	if n := s.opts.Limits.MaxObjectsInGet; n > 0 && len(*req.IDs) > n {
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrRequestTooLarge,
 			Description: "more ids than maxObjectsInGet"}
