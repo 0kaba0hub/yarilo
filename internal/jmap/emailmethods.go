@@ -9,6 +9,15 @@ import (
 )
 
 // emailGet implements Email/get (RFC 8621 §4.2).
+// propsOf returns the requested property names, or nil when the client named
+// none — which asks for all of them.
+func propsOf(req jmapcore.EmailGetRequest) []string {
+	if req.Properties == nil {
+		return nil
+	}
+	return *req.Properties
+}
+
 func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
 	var req jmapcore.EmailGetRequest
 	if err := json.Unmarshal(args, &req); err != nil {
@@ -39,10 +48,14 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
 	}
 
-	resp := jmapcore.GetResponse[jmapcore.Email]{
+	// Projected, not the object itself: a response must carry the properties
+	// the client asked for and no others (RFC 8620 §5.1). Returning the whole
+	// object states every field as fact, including the ones this request never
+	// computed.
+	resp := jmapcore.GetResponse[any]{
 		AccountID: accountID,
 		State:     "0", // Email state tracking arrives with Email/changes.
-		List:      []jmapcore.Email{},
+		List:      []any{},
 		NotFound:  []string{},
 	}
 	// Answer in the order the client asked, which is what it renders.
@@ -60,7 +73,7 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		resp.List = append(resp.List, email)
+		resp.List = append(resp.List, jmapcore.Project(email, propsOf(req)))
 	}
 	return resp, nil
 }

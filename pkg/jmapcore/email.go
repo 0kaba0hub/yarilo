@@ -86,9 +86,30 @@ func (r EmailGetRequest) WantsBodyValues() bool {
 	return r.FetchTextBodyValues || r.FetchHTMLBodyValues || r.FetchAllBodyValues
 }
 
-// bodyDerivedProperties are the Email properties that cannot be answered from
-// the index alone: each one needs the message parsed.
-var bodyDerivedProperties = map[string]bool{
+// headerDerivedProperties are answered from the message's header block alone.
+//
+// Kept apart from the structural ones because they are what a mailbox listing
+// asks for — subject and from on every row — and because answering them does
+// not require descending into the MIME tree. Conflating the two made the most
+// common request in a mail client pay for the rarest.
+var headerDerivedProperties = map[string]bool{
+	"headers":    true,
+	"messageId":  true,
+	"inReplyTo":  true,
+	"references": true,
+	"sender":     true,
+	"from":       true,
+	"to":         true,
+	"cc":         true,
+	"bcc":        true,
+	"replyTo":    true,
+	"subject":    true,
+	"sentAt":     true,
+}
+
+// structureDerivedProperties need the MIME tree walked and its text parts
+// decoded.
+var structureDerivedProperties = map[string]bool{
 	"bodyStructure": true,
 	"bodyValues":    true,
 	"textBody":      true,
@@ -96,18 +117,6 @@ var bodyDerivedProperties = map[string]bool{
 	"attachments":   true,
 	"hasAttachment": true,
 	"preview":       true,
-	"headers":       true,
-	"messageId":     true,
-	"inReplyTo":     true,
-	"references":    true,
-	"sender":        true,
-	"from":          true,
-	"to":            true,
-	"cc":            true,
-	"bcc":           true,
-	"replyTo":       true,
-	"subject":       true,
-	"sentAt":        true,
 }
 
 // NeedsMessage reports whether answering this request requires reading the
@@ -116,11 +125,35 @@ var bodyDerivedProperties = map[string]bool{
 // A client that named no properties gets the full default set, which does
 // require the message.
 func (r EmailGetRequest) NeedsMessage() bool {
+	return r.NeedsHeaders() || r.NeedsStructure()
+}
+
+// NeedsHeaders reports whether any requested property comes from the header
+// block.
+func (r EmailGetRequest) NeedsHeaders() bool {
+	if r.Properties == nil {
+		return true
+	}
+	for _, p := range *r.Properties {
+		if headerDerivedProperties[p] {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsStructure reports whether answering the request requires walking the
+// MIME tree and decoding its parts.
+//
+// A request naming only header properties does not: it is the shape a client
+// uses to render a message list, and the walk it used to pay for is the whole
+// body of every message in that list.
+func (r EmailGetRequest) NeedsStructure() bool {
 	if r.WantsBodyValues() || r.Properties == nil {
 		return true
 	}
 	for _, p := range *r.Properties {
-		if bodyDerivedProperties[p] {
+		if structureDerivedProperties[p] {
 			return true
 		}
 	}

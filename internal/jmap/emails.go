@@ -124,6 +124,14 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 	}
 	fillHeaders(&email, entity.Header)
 
+	// A request that named only header properties stops here. Walking the MIME
+	// tree is what pulls the message body off disk and decodes it, so for the
+	// commonest request a client makes — subject and sender for every row of a
+	// mailbox listing — the walk was the entire cost and none of the answer.
+	if !req.NeedsStructure() {
+		return email, nil
+	}
+
 	parts := collectParts(entity, "")
 	for _, p := range parts {
 		switch {

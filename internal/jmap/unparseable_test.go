@@ -25,7 +25,10 @@ func TestUnparseableMessageIsNotReportedAsMissing(t *testing.T) {
 		name, properties string
 	}{
 		{"index-only properties", `,"properties":["id","size"]`},
-		{"header-derived property", `,"properties":["id","subject"]`},
+		// size is named here because a response carries what was asked for and
+		// nothing else (RFC 8620 §5.1); the subject is what makes this case
+		// header-derived.
+		{"header-derived property", `,"properties":["id","size","subject"]`},
 		{"body values", `,"fetchTextBodyValues":true`},
 		{"default property set", ``},
 	}
