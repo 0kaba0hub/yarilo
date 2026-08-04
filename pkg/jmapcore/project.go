@@ -24,9 +24,14 @@ import (
 // client did ask for, that is a second pass over the body. Selecting the fields
 // and letting the encoder run once avoids both that and encoding the fields
 // nobody asked for.
-func Project(value any, props []string) any {
-	if props == nil {
+func Project(value any, props []string, extra map[string]any) any {
+	if props == nil && extra == nil {
 		return value
+	}
+	if props == nil {
+		// Every modelled property plus the computed ones. Marshalling the value
+		// and merging would re-encode it; naming the fields keeps one pass.
+		props = allJSONNames(value)
 	}
 	v := reflect.ValueOf(value)
 	for v.Kind() == reflect.Pointer {
@@ -60,6 +65,31 @@ func Project(value any, props []string) any {
 	}
 	for _, name := range props {
 		add(name)
+	}
+	// Computed properties are not fields of the object — header:* is named by
+	// the client and answered per request — so they are merged after.
+	for name, v := range extra {
+		out[name] = v
+	}
+	return out
+}
+
+// allJSONNames lists a struct's JSON property names.
+func allJSONNames(value any) []string {
+	v := reflect.ValueOf(value)
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	fields := jsonFields(v.Type())
+	out := make([]string, 0, len(fields))
+	for name := range fields {
+		out = append(out, name)
 	}
 	return out
 }

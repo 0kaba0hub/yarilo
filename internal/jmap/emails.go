@@ -80,7 +80,8 @@ func (s *Server) findMessages(h *userHandle, want map[string]bool) (map[string]m
 // buildEmail renders one Email. Bodies are read only when a body value or a
 // structural property was actually asked for: an Email/get for envelope fields
 // must not touch the message at all.
-func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGetRequest, ceiling uint32) (jmapcore.Email, error) {
+func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGetRequest, ceiling uint32) (jmapcore.Email, map[string]any, error) {
+	var headerFields map[string]any
 	m := ref.meta
 	email := jmapcore.Email{
 		ID:         emailID(m),
@@ -96,12 +97,12 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 	// Nothing below is answerable from the index, so a request that named only
 	// index-backed properties never opens the message.
 	if !req.NeedsMessage() {
-		return email, nil
+		return email, headerFields, nil
 	}
 
 	rc, err := h.box.Fetch(ref.folder, m.Filename, m.AltTier)
 	if err != nil {
-		return email, fmt.Errorf("jmap: fetch %s/%d: %w", ref.folder, m.UID, err)
+		return email, headerFields, fmt.Errorf("jmap: fetch %s/%d: %w", ref.folder, m.UID, err)
 	}
 	defer rc.Close() //nolint:errcheck
 
@@ -120,16 +121,19 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 	if err != nil && entity == nil {
 		slog.Warn("jmap: message could not be parsed, serving index-derived properties only",
 			"folder", ref.folder, "uid", m.UID, "id", email.ID, "err", err)
-		return email, nil
+		return email, headerFields, nil
 	}
 	fillHeaders(&email, entity.Header)
+	// Header field properties are answered from the same parsed block, so a
+	// request naming only them costs no more than one naming subject.
+	headerFields = headerFieldValues(entity.Header, req.HeaderProperties())
 
 	// A request that named only header properties stops here. Walking the MIME
 	// tree is what pulls the message body off disk and decodes it, so for the
 	// commonest request a client makes — subject and sender for every row of a
 	// mailbox listing — the walk was the entire cost and none of the answer.
 	if !req.NeedsStructure() {
-		return email, nil
+		return email, headerFields, nil
 	}
 
 	parts := collectParts(entity, "")
@@ -171,7 +175,7 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 			}
 		}
 	}
-	return email, nil
+	return email, headerFields, nil
 }
 
 func wantsPart(req jmapcore.EmailGetRequest, mediaType string) bool {
@@ -263,6 +267,7 @@ func collectParts(e *message.Entity, prefix string) []walkedPart {
 
 // fillHeaders lifts the envelope fields (RFC 8621 §4.1.2).
 func fillHeaders(email *jmapcore.Email, h message.Header) {
+	email.Headers = allHeaders(h)
 	if s := h.Get("Subject"); s != "" {
 		decoded := decodeWord(s)
 		email.Subject = &decoded

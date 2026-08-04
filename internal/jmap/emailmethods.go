@@ -65,7 +65,7 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		email, err := s.buildEmail(h, ref, req, s.opts.MaxBodyValueBytes)
+		email, headerFields, err := s.buildEmail(h, ref, req, s.opts.MaxBodyValueBytes)
 		if err != nil {
 			// One unreadable message must not fail the whole call: the client
 			// asked for several and the rest are answerable.
@@ -73,7 +73,7 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		resp.List = append(resp.List, jmapcore.Project(email, propsOf(req)))
+		resp.List = append(resp.List, jmapcore.Project(email, propsOf(req), headerFields))
 	}
 	return resp, nil
 }

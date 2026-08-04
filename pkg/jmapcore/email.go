@@ -20,6 +20,12 @@ type Email struct {
 	Size       uint32          `json:"size"`
 	ReceivedAt string          `json:"receivedAt"`
 
+	// Headers is every header field of the message, in the order it carries
+	// them, with the raw value (§4.1.2.1). It is what a client falls back to
+	// when it needs a field this type does not model and does not know the
+	// name in advance.
+	Headers []EmailHeader `json:"headers"`
+
 	// Header-derived fields (§4.1.2).
 	MessageID  []string       `json:"messageId"`
 	InReplyTo  []string       `json:"inReplyTo"`
@@ -41,6 +47,21 @@ type Email struct {
 	Attachments   []EmailBodyPart           `json:"attachments"`
 	HasAttachment bool                      `json:"hasAttachment"`
 	Preview       string                    `json:"preview"`
+}
+
+// EmailHeader is one header field as JMAP carries it (RFC 8621 §4.1.2.1). The
+// value is raw: everything after the colon, folding included, minus the CRLF.
+type EmailHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// EmailAddressGroup is an RFC 5322 address group as JMAP models it
+// (RFC 8621 §4.1.2.3). Addresses that belong to no group are carried under a
+// null name.
+type EmailAddressGroup struct {
+	Name      *string        `json:"name"`
+	Addresses []EmailAddress `json:"addresses"`
 }
 
 // EmailBodyPart describes one part of the message (RFC 8621 §4.1.4).
@@ -135,11 +156,26 @@ func (r EmailGetRequest) NeedsHeaders() bool {
 		return true
 	}
 	for _, p := range *r.Properties {
-		if headerDerivedProperties[p] {
+		if headerDerivedProperties[p] || IsHeaderProperty(p) {
 			return true
 		}
 	}
 	return false
+}
+
+// HeaderProperties returns the parsed header field properties of the request,
+// in the order the client named them.
+func (r EmailGetRequest) HeaderProperties() []HeaderProperty {
+	if r.Properties == nil {
+		return nil
+	}
+	var out []HeaderProperty
+	for _, p := range *r.Properties {
+		if hp, ok := ParseHeaderProperty(p); ok {
+			out = append(out, hp)
+		}
+	}
+	return out
 }
 
 // NeedsStructure reports whether answering the request requires walking the
