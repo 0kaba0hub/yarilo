@@ -18,8 +18,7 @@ import (
 //
 // Min and Max are in runes, not bytes: a two-character Cyrillic word is four
 // bytes, and a threshold that counted bytes would apply a different rule to
-// every script. (fts_flatcurve_min_term_size counts bytes today, which is the
-// same latent problem in the indexing gate; it is not changed here.)
+// every script. The indexing gate still counts bytes — #1055.
 type PrefixRange struct {
 	// Enabled false means no term is ever expanded.
 	Enabled bool

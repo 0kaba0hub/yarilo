@@ -929,6 +929,8 @@ type FTSConfig struct {
 	// length alone, so it cannot be chosen once for every deployment. Measure
 	// against a real index before narrowing it.
 	//
+	// The indexing gate fts_flatcurve_min_term_size still counts bytes (#1055).
+	//
 	// Note that fts_flatcurve_substring_search stores suffixes at index time
 	// and they are only reachable by prefix expansion, so "no" turns substring
 	// search off in effect. That combination is refused at startup rather than
