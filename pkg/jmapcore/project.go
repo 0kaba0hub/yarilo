@@ -70,7 +70,9 @@ var fieldCache sync.Map // reflect.Type → map[string]int
 // jsonFields resolves a struct's JSON names once per type.
 func jsonFields(t reflect.Type) map[string]int {
 	if cached, ok := fieldCache.Load(t); ok {
-		return cached.(map[string]int)
+		if fields, ok := cached.(map[string]int); ok {
+			return fields
+		}
 	}
 	fields := make(map[string]int, t.NumField())
 	for i := 0; i < t.NumField(); i++ {
