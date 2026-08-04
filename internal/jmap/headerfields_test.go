@@ -140,12 +140,17 @@ func TestHeaderFieldFolding(t *testing.T) {
 		t.Errorf("raw form lost the folding: %q", raw)
 	}
 
+	// Asserted as the whole value rather than "contains no newline". The weaker
+	// form survives the defect it was written for: unfolding that writes a
+	// space for the newline as well as keeping the one that followed it removes
+	// every newline and leaves two spaces at each fold, which is what shipped.
 	text, _ := headerProp(t, s, id, "header:Received:asText:all").([]any)
 	if len(text) != 2 {
 		t.Fatalf("want two, got %v", text)
 	}
-	if unfolded, _ := text[0].(string); strings.Contains(unfolded, "\n") {
-		t.Errorf("asText did not unfold: %q", unfolded)
+	const want = "from a.example.com by b.example.com; Tue, 05 Aug 2026 09:29:00 +0200"
+	if unfolded, _ := text[0].(string); unfolded != want {
+		t.Errorf("asText =\n got %q\nwant %q", unfolded, want)
 	}
 }
 
