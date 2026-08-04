@@ -102,6 +102,20 @@ func waitIndexed(t *testing.T, svc ftsproto.Service, uid uint32) {
 	t.Fatal("indexing did not reach the expected checkpoint")
 }
 
+// waitChecksumReplaced blocks until the mailbox's settings checksum is no
+// longer the forged one, which is what a completed rebuild leaves behind.
+func waitChecksumReplaced(t *testing.T, h *userHandle, forged uint32) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, sum, err := h.ui.Checkpoint(testMbox); err == nil && sum != forged {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the settings-drift rebuild did not replace the checkpoint checksum")
+}
+
 func lookupWord(word string) fts.Query {
 	return fts.Query{
 		Terms:    []fts.Term{{Field: fts.FieldBody, Words: []fts.Word{{Variants: []string{word}}}}},
@@ -250,13 +264,19 @@ func TestSettingsDriftRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.ui.SetCheckpoint(testMbox, 1, testMbox.UIDValidity, 12345); err != nil {
+	const foreignSum = 12345
+	if err := h.ui.SetCheckpoint(testMbox, 1, testMbox.UIDValidity, foreignSum); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Index(testUser, testMbox, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	waitIndexed(t, svc, 1)
+	// Not waitIndexed: the forged checkpoint already reports uid 1, so a wait
+	// on the last indexed uid returns before the rebuild has begun and the
+	// lookup below races it. What marks the rebuild done is the checksum being
+	// replaced with this build's own.
+	waitChecksumReplaced(t, h, foreignSum)
+
 	res, err := svc.Lookup(testUser, testMbox, lookupWord("driftcheck"))
 	if err != nil {
 		t.Fatal(err)
