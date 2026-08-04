@@ -2,7 +2,26 @@
 
 ## Smoke tests
 
-`app/smoketest` covers: telemetry `/healthz` + `/readyz`, POP3S greeting, ManageSieve, Sieve execution.
+There are two smoke binaries, and which one to reach for depends on the
+question. They are not alternatives.
+
+| | question it answers | how it is run |
+|:---|:---|:---|
+| [`app/smoketest`](../app/smoketest) | is *this deployment* serving correctly? | against a live cluster, per rollout — `smoke.yml`, or by hand |
+| [`app/smoketest-e2e`](../app/smoketest-e2e) | does mail get in and out at all? | against any yarilo — local binary, compose, or staging |
+
+**`app/smoketest`** is the per-rollout gate: telemetry `/healthz` and `/readyz`,
+the POP3S greeting, ManageSieve, Sieve execution, quota and ACL, FTS, and the
+JMAP checks including the header forms. It checks a deployment.
+
+**`app/smoketest-e2e`** drives the whole happy path in one pass — Submission
+AUTH over STARTTLS, LMTP delivery, then reading the same message back over both
+IMAPS and POP3S, with each protocol's native and SASL authentication. It checks
+that the parts fit together, which the per-rollout checks do not: each of those
+looks at one listener.
+
+It needs a seeded account, and both the seeding and the invocation are in
+**[SMOKE.md](SMOKE.md)**, which is also where the step-by-step table lives.
 
 IMAP conformance is covered separately by [dovecot/imaptest](https://github.com/dovecot/imaptest).
 
@@ -55,6 +74,7 @@ question:
 | `imap-job.yaml` | persistent sessions: append, fetch, store, expunge | per-command percentiles from the run's own summary |
 | `search-job.yaml` | SEARCH only, against an index the others filled | search latency without append traffic competing for the same per-user index |
 | `jmap-job.yaml` | the read chain a client opens with: session, `Mailbox/get`, `Email/query`+`get` | per-method latency, and `nr_throttled` beside it |
+| `pop3-job.yaml` | full POP3 sessions: connect, authenticate, survey, retrieve, quit | per-command latency, and the maildrop lock under concurrency |
 
 ```sh
 kubectl apply -f hack/loadtest/lmtp-job.yaml
@@ -100,6 +120,12 @@ one type measures that type.
 **`-msgs` is a steady state, not a total.** Without it the mailboxes grow
 through the whole run, so the same operation costs more at the end than at the
 start. `-msgs=0` turns it off, which is what the search-only Job needs.
+
+**POP3 opens and closes a session per iteration**, which is the protocol rather
+than a shortcut: the server locks the maildrop for the length of a session, so a
+generator that held its connections would measure its own lock contention and
+report it as the server's. `-delete` stays off — it consumes the mailboxes every
+other run measures against.
 
 **`-mailboxes-per-user=4`** produces the condition worth testing against a
 server that dispatches index work per user: more than one mailbox of one user

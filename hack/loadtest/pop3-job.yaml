@@ -1,0 +1,49 @@
+# POP3 session load against the sandbox.
+#
+# A full session per iteration — connect, USER, PASS, STAT, LIST, RETR, QUIT —
+# rather than a held connection. That is a protocol difference, not a shortcut:
+# a POP3 server locks the maildrop for the length of a session, so a client that
+# stays connected keeps every other client for that user locked out, and a
+# generator built that way measures its own lock contention.
+#
+#   kubectl apply -f hack/loadtest/pop3-job.yaml
+#   kubectl -n yarilo-sb logs -f job/yarilo-loadtest-pop3
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yarilo-loadtest-pop3
+  namespace: yarilo-sb
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadtest
+        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        args:
+        - -protocol=pop3
+        - -addr=yarilo-pop3-login.yarilo-sb.svc.cluster.local:110
+        - -users=u1@d00001.test:150
+        - -password=Yarilo!test1
+        - -concurrency=16
+        - -duration=3m
+        # Bounded retrieval: an unbounded RETR loop walks the whole maildrop, so
+        # its cost grows with the mailbox and the same operation is cheap early
+        # in a run and expensive late.
+        - -retr=10
+        # UIDL is what a client that leaves mail on the server uses to work out
+        # what it has not seen, and it is a separate cost from LIST.
+        - -uidl
+        # -delete stays off. It consumes the mailboxes every other run measures
+        # against; turn it on deliberately, to measure the expunge-on-QUIT path,
+        # knowing what it costs.
+        - -interval=10s
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
