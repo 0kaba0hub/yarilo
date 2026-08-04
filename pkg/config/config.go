@@ -900,6 +900,13 @@ type FTSConfig struct {
 	LanguageTokenizerExplicitPrefix bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
 
 	FlatcurveCommitLimit int `koanf:"fts_flatcurve_commit_limit"`
+	// FlatcurveMinTermSize is the shortest term worth indexing, in CHARACTERS.
+	//
+	// It counted bytes until #1055, which made it a different rule per script:
+	// a one-character Latin word was dropped while a one-character Cyrillic or
+	// CJK one was kept, because their bytes outnumbered their characters. The
+	// default of 2 now means what it was always meant to mean — drop single
+	// characters — in every script rather than only in Latin.
 	FlatcurveMinTermSize int `koanf:"fts_flatcurve_min_term_size"`
 	// FlatcurveOptimizeLimit queues a mailbox for automatic background
 	// shard compaction once its sealed-shard count reaches this value
@@ -928,8 +935,6 @@ type FTSConfig struct {
 	// useful threshold depends on how the corpus distributes prefixes, not on
 	// length alone, so it cannot be chosen once for every deployment. Measure
 	// against a real index before narrowing it.
-	//
-	// The indexing gate fts_flatcurve_min_term_size still counts bytes (#1055).
 	//
 	// Note that fts_flatcurve_substring_search stores suffixes at index time
 	// and they are only reachable by prefix expansion, so "no" turns substring
