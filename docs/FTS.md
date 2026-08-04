@@ -545,6 +545,7 @@ fts:
 
   ## Language chain.
   language_filters: [lowercase, stopwords, snowball]   # default ON
+  fts_flatcurve_prefix_search: "yes"   # yes | no | N | N-M — see below
   languages: [en]                   # >1 enables per-part detection (#696)
   fts_language_filters_override: {} # per-language override, e.g. {uk: [lowercase, stopwords]} (#726)
   fts_detection_sample_bytes: 0     # 0 = default 1024; bytes sampled per part
@@ -1064,3 +1065,35 @@ Implementation: `pkg/fts` (engine contract, score merges),
 
 External: Xapian (<https://xapian.org/docs/>), Bleve v2
 (<https://github.com/blevesearch/bleve>).
+
+## Prefix search
+
+`fts_flatcurve_prefix_search` decides which search terms are expanded as
+prefixes: `yes`, `no`, `N` (terms of at least N characters) or `N-M`. Lengths
+count characters, not bytes, so the rule is the same in every script.
+
+A prefix search asks the index for every term beginning with what was typed —
+which is what makes `corp` find `corporate`, and what makes `co` name a large
+part of the index. Measured against a vocabulary of 2000 words sharing prefixes:
+
+| term length | expanded | exact | |
+|---:|---:|---:|---:|
+| 2 | 1 179 µs | 45 µs | **26×** |
+| 4 | 1 181 µs | 45 µs | **26×** |
+| 6 | 98 µs | 45 µs | 2.2× |
+| 8 | 48 µs | 51 µs | — |
+
+**The default expands every term**, which is what the engine did before the
+setting existed, and it is *unmeasured as a default*. The measurement above
+establishes the shape and not a threshold: what a prefix costs depends on how
+many terms it matches, and length is only a proxy for that. In a vocabulary
+where four characters name everything, a minimum of four saves nothing. Measure
+against a real index before narrowing it.
+
+`fts_flatcurve_substring_search` stores suffixes at index time, and a stored
+suffix is only reachable by expanding the query — so `no` disables substring
+search in effect. That combination is corrected at startup with a log line
+rather than served as an index nothing can query.
+
+An unparseable value also expands everything, and says so. A search engine that
+narrows its own matching on a typo would be reported as missing mail.

@@ -14,6 +14,7 @@ func newFlatcurveEngine(cfg config.FTSConfig) (fts.Engine, error) {
 	return flatcurve.New(flatcurve.Options{
 		CommitLimit:     cfg.FlatcurveCommitLimit,
 		MinTermSize:     cfg.FlatcurveMinTermSize,
+		PrefixSearch:    cfg.FlatcurvePrefixSearch,
 		OptimizeLimit:   cfg.FlatcurveOptimizeLimit,
 		RotateCount:     uint32(cfg.FlatcurveRotateCount),
 		RotateTime:      time.Duration(cfg.FlatcurveRotateTimeMsecs) * time.Millisecond,

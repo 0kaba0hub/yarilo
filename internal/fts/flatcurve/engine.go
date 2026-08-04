@@ -50,8 +50,12 @@ var indexedHeaders = map[string]bool{
 
 // Options are the fts_flatcurve_* tunables with upstream defaults.
 type Options struct {
-	CommitLimit     int           // fts_flatcurve_commit_limit (500)
-	MinTermSize     int           // fts_flatcurve_min_term_size (2)
+	CommitLimit int // fts_flatcurve_commit_limit (500)
+	MinTermSize int // fts_flatcurve_min_term_size (2)
+	// PrefixSearch decides which terms a search expands as prefixes
+	// (fts_flatcurve_prefix_search): "yes", "no", "N" or "N-M". Empty means
+	// "yes", which is what the engine did before the setting existed.
+	PrefixSearch    string
 	OptimizeLimit   int           // fts_flatcurve_optimize_limit (10; 0 = disabled)
 	RotateCount     uint32        // fts_flatcurve_rotate_count (5000)
 	RotateTime      time.Duration // fts_flatcurve_rotate_time (5000ms; 0 = disabled)
@@ -102,6 +106,9 @@ func legacyMailboxDir(user fts.UserRef, mbox fts.MailboxRef) string {
 // Engine implements fts.Engine over Xapian.
 type Engine struct {
 	opts Options
+	// prefix is the parsed PrefixSearch setting, resolved once at construction
+	// so the query path does not re-parse a string per term.
+	prefix PrefixRange
 
 	// optimizeCB implements fts.OptimizeNotifier. Set once at startup before
 	// any indexing; stored via atomic.Pointer so every userIndex write path
@@ -111,8 +118,29 @@ type Engine struct {
 }
 
 // New returns a flatcurve engine.
+//
+// An unparseable or unworkable PrefixSearch falls back to expanding every term,
+// which is what the engine did before the setting existed, and says so. A
+// search engine that silently narrowed its own matching would be reported as
+// missing mail.
 func New(opts Options) *Engine {
-	return &Engine{opts: opts.withDefaults()}
+	o := opts.withDefaults()
+	prefix, err := ParsePrefixRange(o.PrefixSearch)
+	if err != nil {
+		slog.Error("fts/flatcurve: prefix search setting unusable, expanding every term",
+			"setting", o.PrefixSearch, "err", err)
+		prefix = PrefixRange{Enabled: true}
+	}
+	// Substring indexing stores suffixes of every term, and a suffix is only
+	// reachable by expanding the query as a prefix. The two settings are one
+	// mechanism seen from both ends: with expansion off, substring indexing
+	// writes terms nothing can ask for.
+	if o.SubstringSearch && !prefix.Enabled {
+		slog.Error("fts/flatcurve: substring search needs prefix expansion; expanding every term",
+			"substring_search", true, "prefix_search", o.PrefixSearch)
+		prefix = PrefixRange{Enabled: true}
+	}
+	return &Engine{opts: o, prefix: prefix}
 }
 
 // SetOptimizeCallback implements fts.OptimizeNotifier.
@@ -992,7 +1020,7 @@ func (u *userIndex) buildTerm(t fts.Term) (*xapian.Query, bool, error) {
 		q, err := xapian.QueryTerm(boolPrefix + name)
 		return q, false, err
 	}
-	minSize := u.eng.opts.MinTermSize
+	prefix := u.eng.prefix
 	var acc *xapian.Query
 	maybe := false
 	for _, w := range t.Words {
@@ -1002,7 +1030,7 @@ func (u *userIndex) buildTerm(t fts.Term) (*xapian.Query, bool, error) {
 			if v == "" {
 				continue
 			}
-			vq, vMaybe, err := buildVariant(t.Field, name, v, minSize)
+			vq, vMaybe, err := buildVariant(t.Field, name, v, prefix)
 			if err != nil {
 				wq.Free()
 				acc.Free()
@@ -1032,17 +1060,29 @@ func (u *userIndex) buildTerm(t fts.Term) (*xapian.Query, bool, error) {
 	return acc, maybe, nil
 }
 
-func buildVariant(field fts.FieldKind, hdrName, v string, minSize int) (*xapian.Query, bool, error) {
+// buildVariant turns one search word into a query.
+//
+// Whether a term is expanded as a prefix is the caller's setting, not a
+// property of the field. Expanding unconditionally is the most expensive of the
+// available behaviours and was reached by omission rather than by choice: this
+// function received the term-size threshold and never read it (#1052).
+func buildVariant(field fts.FieldKind, hdrName, v string, prefix PrefixRange) (*xapian.Query, bool, error) {
+	term := func(s string) (*xapian.Query, error) {
+		if prefix.Allows(v) {
+			return xapian.QueryWildcard(s)
+		}
+		return xapian.QueryTerm(s)
+	}
 	switch field {
 	case fts.FieldBody:
-		q, err := xapian.QueryWildcard(v)
+		q, err := term(v)
 		return q, false, err
 	case fts.FieldText:
-		hq, err := xapian.QueryWildcard(allHdrPrefix + v)
+		hq, err := term(allHdrPrefix + v)
 		if err != nil {
 			return nil, false, err
 		}
-		bq, err := xapian.QueryWildcard(v)
+		bq, err := term(v)
 		if err != nil {
 			hq.Free()
 			return nil, false, err
@@ -1051,12 +1091,12 @@ func buildVariant(field fts.FieldKind, hdrName, v string, minSize int) (*xapian.
 		return q, false, err
 	case fts.FieldHeader:
 		if indexedHeaders[hdrName] {
-			q, err := xapian.QueryWildcard(hdrPrefix + strings.ToUpper(hdrName) + v)
+			q, err := term(hdrPrefix + strings.ToUpper(hdrName) + v)
 			return q, false, err
 		}
 		// Non-indexed header: only the pooled A prefix knows the term, an
 		// over-approximation the caller must re-verify (maybe).
-		q, err := xapian.QueryWildcard(allHdrPrefix + v)
+		q, err := term(allHdrPrefix + v)
 		return q, true, err
 	default:
 		return nil, false, fmt.Errorf("fts/flatcurve: unknown field kind %d", field)
