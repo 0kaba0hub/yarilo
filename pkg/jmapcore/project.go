@@ -74,8 +74,8 @@ func Project(value any, props []string, extra map[string]any) any {
 	return out
 }
 
-// allJSONNames lists a struct's JSON property names.
-func allJSONNames(value any) []string {
+// structTypeOf resolves a value to the struct type behind it, or nil.
+func structTypeOf(value any) reflect.Type {
 	v := reflect.ValueOf(value)
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -86,7 +86,16 @@ func allJSONNames(value any) []string {
 	if v.Kind() != reflect.Struct {
 		return nil
 	}
-	fields := jsonFields(v.Type())
+	return v.Type()
+}
+
+// allJSONNames lists a struct's JSON property names.
+func allJSONNames(value any) []string {
+	t := structTypeOf(value)
+	if t == nil {
+		return nil
+	}
+	fields := jsonFields(t)
 	out := make([]string, 0, len(fields))
 	for name := range fields {
 		out = append(out, name)
@@ -101,13 +110,17 @@ var alwaysProjected = [...]string{"id"}
 // fieldCache maps a struct type to its JSON name → field index.
 var fieldCache sync.Map // reflect.Type → map[string]int
 
-// jsonFields resolves a struct's JSON names once per type.
+// jsonFields resolves a struct's JSON names once per type. A nil type has no
+// fields, which is what a non-struct value amounts to here.
 //
 // Embedded structs are not flattened: their fields are not reachable by the
 // name the encoder would give them. No JMAP object embeds one today, so this is
 // a constraint on future ones rather than a defect — an embedded field would be
 // silently unprojectable.
 func jsonFields(t reflect.Type) map[string]int {
+	if t == nil {
+		return nil
+	}
 	if cached, ok := fieldCache.Load(t); ok {
 		if fields, ok := cached.(map[string]int); ok {
 			return fields

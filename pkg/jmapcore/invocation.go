@@ -61,6 +61,10 @@ func (i *Invocation) UnmarshalJSON(b []byte) error {
 type MethodError struct {
 	Type        string `json:"type"`
 	Description string `json:"description,omitempty"`
+	// Arguments names the request arguments the error is about, which
+	// invalidArguments carries so a client can point at what it sent rather
+	// than re-reading the whole call (RFC 8620 §3.6.2).
+	Arguments []string `json:"arguments,omitempty"`
 }
 
 // Method error types this package raises itself. A server adds its own.
