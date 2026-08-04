@@ -2406,7 +2406,24 @@ fts:
   ## and few messages per shard, which rotate_count alone never catches.
   ## 0 disables the time-based trigger (rotate_count-only, explicit).
   fts_flatcurve_rotate_time: 5000
+  ## Suffix expansion at INDEX time: stores every suffix of a term so an inner
+  ## fragment can be found. Only reachable through prefix expansion below, so
+  ## the two are one mechanism seen from both ends.
   fts_flatcurve_substring_search: false
+  ## Which search terms are expanded as prefixes: yes | no | N | N-M, counted in
+  ## characters. A prefix search asks the index for every term beginning with
+  ## what was typed, so a short one can name a large part of it.
+  ##
+  ## unmeasured as a default — it expands everything, which is what the engine
+  ## did before the setting existed. Measured against a vocabulary sharing
+  ## prefixes, a two-character term cost 26x an exact match, six characters
+  ## 2.2x, and eight characters nothing; but the useful threshold depends on how
+  ## a corpus distributes prefixes rather than on length, so it cannot be chosen
+  ## once for every deployment. Measure against a real index before narrowing.
+  ##
+  ## "no" turns substring search off in effect, since a stored suffix is only
+  ## reachable by expansion. That combination is refused at startup.
+  fts_flatcurve_prefix_search: "yes"
   ## Attachment text extraction (#669): no built-in PDF/office parsing —
   ## delegates to an external decoder, opt-in per driver.
   fts_decoder_driver: none           # none | script | tika

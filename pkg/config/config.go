@@ -913,6 +913,28 @@ type FTSConfig struct {
 	FlatcurveRotateTimeMsecs int  `koanf:"fts_flatcurve_rotate_time"`
 	FlatcurveSubstringSearch bool `koanf:"fts_flatcurve_substring_search"`
 
+	// FlatcurvePrefixSearch decides which search terms are expanded as
+	// prefixes: "yes" (every term), "no" (none), "N" (terms of at least N
+	// characters) or "N-M" (a range). Lengths are counted in characters.
+	//
+	// It matters because a prefix search asks the index for every term
+	// beginning with what was typed, and a short one can name a large part of
+	// it. Measured against a vocabulary sharing prefixes: a two-character term
+	// cost 26x an exact match, a six-character one 2.2x, and an eight-character
+	// one nothing at all.
+	//
+	// The default expands everything, which is what the engine did before the
+	// setting existed. It is UNMEASURED as a default, in the sense of #1049: the
+	// useful threshold depends on how the corpus distributes prefixes, not on
+	// length alone, so it cannot be chosen once for every deployment. Measure
+	// against a real index before narrowing it.
+	//
+	// Note that fts_flatcurve_substring_search stores suffixes at index time
+	// and they are only reachable by prefix expansion, so "no" turns substring
+	// search off in effect. That combination is refused at startup rather than
+	// served quietly.
+	FlatcurvePrefixSearch string `koanf:"fts_flatcurve_prefix_search"`
+
 	// DecoderDriver selects the external attachment-text-extraction backend:
 	// "none" (default — attachments stay unindexed beyond HTML/text parts),
 	// "script" (a yarilo-owned line protocol over DecoderScriptAddr), or
@@ -2050,6 +2072,7 @@ func Load(path string) (*Config, error) {
 
 			FlatcurveCommitLimit:     500,
 			FlatcurveMinTermSize:     2,
+			FlatcurvePrefixSearch:    "yes",
 			FlatcurveOptimizeLimit:   10,
 			FlatcurveRotateCount:     5000,
 			FlatcurveRotateTimeMsecs: 5000,
