@@ -325,11 +325,31 @@ func checkJMAPMailboxQuery() error {
 }
 
 // jmapCall posts one batch and returns the first response's arguments.
+// jmapCall posts a batch and returns the FIRST METHOD'S ARGUMENTS -- not the
+// response envelope. A method-level error becomes a Go error, so a caller that
+// expects a refusal must use jmapCallRaw instead.
+//
+// The contract is stated here because it was not, and both readings looked
+// sensible on their own: a caller unwrapped the envelope a second time and
+// every assertion below it became unreachable, silently (#1043).
 func jmapCall(body string) (json.RawMessage, error) {
-	url := "https://" + net.JoinHostPort(jmapHost(), *flagJMAPPort) + "/jmap/api/"
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
+	name, args, err := jmapCallRaw(body)
 	if err != nil {
 		return nil, err
+	}
+	if name == "error" {
+		return nil, fmt.Errorf("method failed: %s", args)
+	}
+	return args, nil
+}
+
+// jmapCallRaw returns the first method response's name and arguments without
+// judging either, for the checks whose expected answer is a refusal.
+func jmapCallRaw(body string) (name string, args json.RawMessage, err error) {
+	url := jmapAPIURL()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return "", nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if *flagJMAPUser != "" {
@@ -337,30 +357,32 @@ func jmapCall(body string) (json.RawMessage, error) {
 	}
 	resp, err := jmapClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("post %s: %w", url, err)
+		return "", nil, fmt.Errorf("post %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, raw)
+		return "", nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, raw)
 	}
 	var out struct {
 		MethodResponses [][]json.RawMessage `json:"methodResponses"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return "", nil, fmt.Errorf("decode response: %w", err)
 	}
 	if len(out.MethodResponses) == 0 || len(out.MethodResponses[0]) != 3 {
-		return nil, fmt.Errorf("malformed response: %s", raw)
+		return "", nil, fmt.Errorf("malformed response: %s", raw)
 	}
-	var name string
 	if err := json.Unmarshal(out.MethodResponses[0][0], &name); err != nil {
-		return nil, fmt.Errorf("response name: %w", err)
+		return "", nil, fmt.Errorf("response name: %w", err)
 	}
-	if name == "error" {
-		return nil, fmt.Errorf("method failed: %s", out.MethodResponses[0][1])
-	}
-	return out.MethodResponses[0][1], nil
+	return name, out.MethodResponses[0][1], nil
+}
+
+// jmapAPIURL is where the batch endpoint lives. Separate so a test can point it
+// at a stub without a cluster.
+func jmapAPIURL() string {
+	return "https://" + net.JoinHostPort(jmapHost(), *flagJMAPPort) + "/jmap/api/"
 }
 
 // checkJMAPEmailDiscovery is what PR6 could not probe: Email/query finds an id,
