@@ -43,6 +43,14 @@ type Email struct {
 	Preview       string                    `json:"preview"`
 }
 
+// EmailAddressGroup is an RFC 5322 address group as JMAP models it
+// (RFC 8621 §4.1.2.3). Addresses that belong to no group are carried under a
+// null name.
+type EmailAddressGroup struct {
+	Name      *string        `json:"name"`
+	Addresses []EmailAddress `json:"addresses"`
+}
+
 // EmailBodyPart describes one part of the message (RFC 8621 §4.1.4).
 type EmailBodyPart struct {
 	PartID      *string         `json:"partId"`
@@ -135,11 +143,26 @@ func (r EmailGetRequest) NeedsHeaders() bool {
 		return true
 	}
 	for _, p := range *r.Properties {
-		if headerDerivedProperties[p] {
+		if headerDerivedProperties[p] || IsHeaderProperty(p) {
 			return true
 		}
 	}
 	return false
+}
+
+// HeaderProperties returns the parsed header field properties of the request,
+// in the order the client named them.
+func (r EmailGetRequest) HeaderProperties() []HeaderProperty {
+	if r.Properties == nil {
+		return nil
+	}
+	var out []HeaderProperty
+	for _, p := range *r.Properties {
+		if hp, ok := ParseHeaderProperty(p); ok {
+			out = append(out, hp)
+		}
+	}
+	return out
 }
 
 // NeedsStructure reports whether answering the request requires walking the

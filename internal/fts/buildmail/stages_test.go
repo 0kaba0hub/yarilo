@@ -51,11 +51,19 @@ func TestTrackAccumulates(t *testing.T) {
 func TestTrackPropagatesErrors(t *testing.T) {
 	var d time.Duration
 	want := errFake{}
-	if err := track(&d, func() error { return want }); err != want {
+	// The call sleeps, because the assertion is that a failing call is still
+	// timed and the only way to state that is against a duration the clock can
+	// resolve. Asserting d != 0 on a function that returns immediately tests
+	// the timer's resolution: it failed about a third of the time.
+	const work = 2 * time.Millisecond
+	if err := track(&d, func() error {
+		time.Sleep(work)
+		return want
+	}); err != want {
 		t.Errorf("err = %v, want the wrapped function's error", err)
 	}
-	if d == 0 {
-		t.Error("a failing call was not timed")
+	if d < work {
+		t.Errorf("a failing call was timed as %v, want at least %v", d, work)
 	}
 }
 
