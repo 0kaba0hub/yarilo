@@ -130,6 +130,13 @@ func headerFormValue(raw string, form jmapcore.HeaderForm) any {
 }
 
 // unfold joins the continuation lines of a folded header into one line.
+//
+// Unfolding is the removal of the CRLF and nothing else (RFC 5322 §2.2.3):
+// folding inserts a CRLF *before* whitespace that was already there, so the
+// space that follows a continuation is part of the value and reappears on its
+// own. Writing one for the newline as well produced two spaces at every fold,
+// which the address parsers tolerated and asText -- the form a client
+// displays -- did not hide.
 func unfold(raw string) string {
 	if !strings.ContainsAny(raw, "\r\n") {
 		return raw
@@ -137,9 +144,7 @@ func unfold(raw string) string {
 	var b strings.Builder
 	for i := 0; i < len(raw); i++ {
 		switch raw[i] {
-		case '\r':
-		case '\n':
-			b.WriteByte(' ')
+		case '\r', '\n':
 		default:
 			b.WriteByte(raw[i])
 		}

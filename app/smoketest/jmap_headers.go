@@ -200,11 +200,16 @@ func verifyHeaderForms(emailID string) error {
 		// not break the parse.
 		{`header:From:asAddresses`, `[{"name":"say \"hi\"","email":"sender@example.com"}]`},
 
-		// A group and plain addresses in one field: three groups, and the ones
-		// outside the group carry a null name.
+		// A group and plain addresses in one field. Two groups: the named one,
+		// and a null-named one holding what sits outside it.
+		//
+		// Not three. An earlier expectation opened with an empty null group,
+		// which matches no RFC 5322 syntax -- a null-named group exists only to
+		// hold addresses that belong to none, so an empty one describes nothing.
+		// It was written against how the code might look rather than against
+		// the grammar, and this path had never run to contradict it.
 		{`header:To:asGroupedAddresses`,
-			`[{"name":null,"addresses":[]},` +
-				`{"name":"Team","addresses":[{"name":null,"email":"alice@example.com"},` +
+			`[{"name":"Team","addresses":[{"name":null,"email":"alice@example.com"},` +
 				`{"name":null,"email":"bob@example.com"}]},` +
 				`{"name":null,"addresses":[{"name":null,"email":"carol@example.com"}]}]`},
 
