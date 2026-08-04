@@ -823,6 +823,43 @@ user iterate) carry no user and always use the fixed URL.
 
 ---
 
+## Where the chart's CPU limits come from
+
+**Two of nineteen were measured. The rest are starting points.**
+
+Every `limits.cpu` in `helm/values.yaml` now says which it is, so the file can be
+read for what it knows rather than what it appears to advise:
+
+| | |
+|:---|:---|
+| `fts` — `1` | measured: one core saturates under sandbox delivery load, which is why `fts_index_workers` stays at 1 |
+| `jmap` — `500m` | measured once and **found short**: 1.31 cores wanted under 8 clients and 50 users, with 81% of scheduling periods throttled (#1026) |
+| the other seventeen | unmeasured (#1040) |
+
+The numbers are not even uniform — `500m` for `director`, `pop3`, `lmtp`,
+`manageSieve` and `jmap`, `1000m` for `imap`, `200m` for most login layers — so
+there is no single policy behind them to reconstruct.
+
+**What an unexplained limit costs.** The first time anyone measured against one,
+JMAP read latency came out at a 5-second median and was investigated as an
+algorithmic defect twice, by two people, before the limit was found. A wrong
+limit does not fail; it produces numbers that look like a code problem.
+
+**So measure under your own load before trusting any of them.** The method is in
+[TESTING.md](TESTING.md#check-for-cpu-throttling-before-believing-a-latency-number):
+run the matching job from `hack/loadtest/`, read `cpu.stat` inside the container,
+and establish the appetite with a second run at a different limit — one run only
+tells you the limit you chose, not where the workload stops asking.
+
+**Throttling is invisible in yarilo's own `/metrics`.** It is a kubelet counter,
+`container_cpu_cfs_throttled_periods_total`, exported through cAdvisor. Nothing
+scrapes it in the sandbox, so the reading has to be taken during a run or
+recorded with the result — after the fact, "was it throttled yesterday" has no
+answer.
+
+The tables below are estimates from the same period as the defaults, and carry
+the same caveat.
+
 ## Sizing per backend pod
 
 | Workload | RAM | CPU |

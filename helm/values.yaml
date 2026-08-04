@@ -225,6 +225,7 @@ components:
         cpu: 10m
         memory: 16Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 100m
         memory: 64Mi
 
@@ -562,6 +563,7 @@ components:
         cpu: 100m
         memory: 64Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 500m
         memory: 256Mi
 
@@ -880,6 +882,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
@@ -934,6 +937,7 @@ components:
         cpu: 50m
         memory: 64Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 256Mi
 
@@ -1014,6 +1018,7 @@ components:
         cpu: 100m
         memory: 128Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 1000m
         memory: 512Mi
 
@@ -1046,6 +1051,7 @@ components:
         cpu: 50m
         memory: 64Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 500m
         memory: 256Mi
 
@@ -1074,6 +1080,7 @@ components:
         cpu: 50m
         memory: 64Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 500m
         memory: 256Mi
 
@@ -1131,6 +1138,7 @@ components:
         cpu: 10m
         memory: 16Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 100m
         memory: 64Mi
 
@@ -1148,6 +1156,8 @@ components:
         cpu: 100m
         memory: 128Mi
       limits:
+        ## measured: one core is saturated at ~100% utilisation under
+        ## sandbox delivery load, which is why fts_index_workers stays 1
         cpu: "1"
         memory: 1Gi
 
@@ -1212,6 +1222,7 @@ components:
         cpu: 10m
         memory: 16Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 100m
         memory: 64Mi
 
@@ -1251,6 +1262,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
@@ -1337,6 +1349,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
@@ -1406,6 +1419,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
@@ -1477,6 +1491,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
@@ -1544,6 +1559,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
@@ -1572,6 +1588,7 @@ components:
         cpu: 50m
         memory: 64Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 500m
         memory: 256Mi
 
@@ -1637,6 +1654,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
@@ -1682,6 +1700,8 @@ components:
         cpu: 50m
         memory: 64Mi
       limits:
+        ## measured once and found short: 1.31 cores wanted under 8 clients
+        ## and 50 users, 81% of scheduling periods throttled (#1026)
         cpu: 500m
         memory: 256Mi
 
@@ -1758,6 +1778,7 @@ components:
         cpu: 50m
         memory: 32Mi
       limits:
+        ## unmeasured — a starting point, not a recommendation (#1040)
         cpu: 200m
         memory: 128Mi
 
