@@ -64,21 +64,30 @@ func (s *Server) mailboxGet(_ context.Context, h *userHandle, accountID string, 
 	if merr := checkAccount(req.AccountID, accountID); merr != nil {
 		return nil, merr
 	}
+	// Property names are checked before any work: an unknown one is refused
+	// rather than ignored, so a client can tell its own typo from a property
+	// yarilo has not implemented (§5.1).
+	if unknown := jmapcore.UnknownProperties(jmapcore.Mailbox{}, propsOfGet(req)); len(unknown) > 0 {
+		return nil, jmapcore.InvalidProperties(unknown)
+	}
 	all, err := s.mailboxList(h)
 	if err != nil {
 		slog.Warn("jmap: Mailbox/get failed", "account", accountID, "err", err)
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
 	}
-	resp := jmapcore.GetResponse[jmapcore.Mailbox]{
+	props := propsOfGet(req)
+	resp := jmapcore.GetResponse[any]{
 		AccountID: accountID,
 		State:     mailboxState(all),
-		List:      []jmapcore.Mailbox{},
+		List:      []any{},
 		NotFound:  []string{},
 	}
 	// A null ids means every mailbox; an empty array means none. The two are
 	// different requests, which is why GetRequest.IDs is a pointer (§5.1).
 	if req.IDs == nil {
-		resp.List = all
+		for _, mb := range all {
+			resp.List = append(resp.List, jmapcore.Project(mb, props, nil))
+		}
 		return resp, nil
 	}
 	byID := make(map[string]jmapcore.Mailbox, len(all))
@@ -87,7 +96,7 @@ func (s *Server) mailboxGet(_ context.Context, h *userHandle, accountID string, 
 	}
 	for _, id := range *req.IDs {
 		if mb, ok := byID[id]; ok {
-			resp.List = append(resp.List, mb)
+			resp.List = append(resp.List, jmapcore.Project(mb, props, nil))
 			continue
 		}
 		resp.NotFound = append(resp.NotFound, id)

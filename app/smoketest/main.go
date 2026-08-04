@@ -255,6 +255,10 @@ func main() {
 		// Last of the JMAP checks because it is the only one that writes: it
 		// appends its own message so the answer does not depend on what happens
 		// to be in the mailbox, which differs per deployment.
+		//
+		// Gated on credentials rather than skipped for speed: components.jmap
+		// ships disabled, so a deployment that never enabled JMAP would fail
+		// smoke over a service it does not run.
 		if *flagJMAPUser != "" {
 			checks = append(checks, struct {
 				name string

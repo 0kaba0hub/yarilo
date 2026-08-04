@@ -11,7 +11,10 @@ import (
 // emailGet implements Email/get (RFC 8621 §4.2).
 // propsOf returns the requested property names, or nil when the client named
 // none — which asks for all of them.
-func propsOf(req jmapcore.EmailGetRequest) []string {
+func propsOf(req jmapcore.EmailGetRequest) []string { return propsOfGet(req.GetRequest) }
+
+// propsOfGet is the same for the plain /get request every other type uses.
+func propsOfGet(req jmapcore.GetRequest) []string {
 	if req.Properties == nil {
 		return nil
 	}
