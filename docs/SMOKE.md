@@ -134,3 +134,31 @@ If you want strict recipient validation at the LMTP layer (instead of trusting t
 |:---|:---|
 | 0 | All four steps passed. |
 | 1 | One or more steps failed (details on stderr). |
+
+## JMAP header forms and property validation
+
+The last JMAP check is the only one that **writes**. It appends its own message
+to a folder of its own, `YariloSmoke`, reads it back through every `header:*`
+form of RFC 8621 §4.1.3, and removes both afterwards.
+
+It brings its own message because the alternative is depending on whatever
+happens to be in the mailbox — which differs per deployment, so a green run
+would mean different things in different places.
+
+**The folder rather than INBOX** because the check runs on every rollout, and a
+message left behind changes the mailbox every other measurement is taken
+against. Cleanup is best effort and **reported when it fails**: leaving the
+folder is recoverable, not knowing it was left is not.
+
+It needs `-jmap-user` and `-jmap-pass`, and it is skipped without them.
+
+What it asserts beyond the forms themselves:
+
+- the response carries **only** the requested properties — an unprojected answer
+  states `hasAttachment: false` for a message that has one;
+- a missing header is answered `null` and is **present** in the object, checked
+  separately from its value because in Go a missing key and a null value are
+  both `nil`;
+- a misspelled property is refused with `invalidArguments` — silence there is
+  indistinguishable from a property yarilo has not implemented;
+- `headers` lists every field in the order the message carries them.

@@ -252,6 +252,15 @@ func main() {
 			name string
 			fn   func() error
 		}{"jmap download refuses another account's blob", checkJMAPDownloadIsolation})
+		// Last of the JMAP checks because it is the only one that writes: it
+		// appends its own message so the answer does not depend on what happens
+		// to be in the mailbox, which differs per deployment.
+		if *flagJMAPUser != "" {
+			checks = append(checks, struct {
+				name string
+				fn   func() error
+			}{"jmap header:* forms, headers, projection and property validation", checkJMAPHeaderForms})
+		}
 	}
 
 	slog.Info("smoke: start", "total", len(checks))
