@@ -1,0 +1,61 @@
+# LMTP delivery of a non-English corpus.
+#
+# The generated corpus is English, and the English stopword list was the one
+# already correct — unchanged by #1021 and #1025. So the ordinary lmtp-job
+# measures none of the code those changed, by construction (#1046). This one
+# replays a corpus in a language whose list did change.
+#
+# Build the ConfigMap first, from yarilo's own stopword lists:
+#
+#   hack/loadtest/corpus/gen-corpus.sh uk 250 > /tmp/uk.mbox
+#   kubectl -n yarilo-sb create configmap loadtest-corpus \
+#       --from-file=corpus.mbox=/tmp/uk.mbox --dry-run=client -o yaml \
+#       | kubectl apply -f -
+#
+#   kubectl apply -f hack/loadtest/lmtp-mbox-job.yaml
+#   kubectl -n yarilo-sb logs -f job/yarilo-loadtest-mbox
+#
+# A ConfigMap holds about 1 MiB, which bounds the corpus — 250 messages of the
+# default shape is roughly 4 MB, so scale the count down or the message down.
+# The generator prints its size; check it before creating the ConfigMap rather
+# than discovering the limit from kubectl.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yarilo-loadtest-mbox
+  namespace: yarilo-sb
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadtest
+        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        args:
+        - -protocol=lmtp
+        - -addr=yarilo-lmtp-login.yarilo-sb.svc.cluster.local:24
+        # Sizes and attachment ratio come from the corpus, not from the
+        # generator flags: -mbox replaces the generator entirely, and a run that
+        # passed both would be describing settings that had no effect.
+        - -mbox=/corpus/corpus.mbox
+        - -recipients=u1@d00001.test:150
+        - -concurrency=8
+        - -duration=5m
+        - -interval=10s
+        volumeMounts:
+        - name: corpus
+          mountPath: /corpus
+          readOnly: true
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+      volumes:
+      - name: corpus
+        configMap:
+          name: loadtest-corpus
