@@ -130,23 +130,15 @@ func jmapMailboxID(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var out struct {
-		MethodResponses [][]json.RawMessage `json:"methodResponses"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("decode Mailbox/get: %w", err)
-	}
-	if len(out.MethodResponses) == 0 {
-		return "", fmt.Errorf("Mailbox/get returned nothing: %s", raw)
-	}
+	// raw is the method's arguments already: jmapCall unwrapped the envelope.
 	var get struct {
 		List []struct {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"list"`
 	}
-	if err := json.Unmarshal(out.MethodResponses[0][1], &get); err != nil {
-		return "", fmt.Errorf("decode Mailbox/get list: %w", err)
+	if err := json.Unmarshal(raw, &get); err != nil {
+		return "", fmt.Errorf("decode Mailbox/get: %w", err)
 	}
 	for _, mbox := range get.List {
 		if mbox.Name == name {
@@ -165,17 +157,11 @@ func jmapNewestEmail(mailboxID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var out struct {
-		MethodResponses [][]json.RawMessage `json:"methodResponses"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("decode Email/query: %w", err)
-	}
 	var query struct {
 		IDs []string `json:"ids"`
 	}
-	if err := json.Unmarshal(out.MethodResponses[0][1], &query); err != nil {
-		return "", fmt.Errorf("decode Email/query ids: %w", err)
+	if err := json.Unmarshal(raw, &query); err != nil {
+		return "", fmt.Errorf("decode Email/query: %w", err)
 	}
 	if len(query.IDs) == 0 {
 		return "", fmt.Errorf("Email/query found nothing in the folder IMAP just appended to: %s", raw)
@@ -338,36 +324,25 @@ func verifyPropertyValidation(emailID string) error {
 		"header:List-Unsubscribe:asURL", // a form that does not exist
 		"subjekt",                       // a plain typo
 	} {
-		raw, err := jmapCall(`{"using":["urn:ietf:params:jmap:mail"],"methodCalls":[` +
+		// jmapCallRaw, not jmapCall: the expected answer here IS a method
+		// error, and jmapCall reports one as a failure of the call.
+		name, args, err := jmapCallRaw(`{"using":["urn:ietf:params:jmap:mail"],"methodCalls":[` +
 			`["Email/get",{"accountId":"` + *flagJMAPUser + `","ids":["` + emailID + `"],` +
 			`"properties":["id","` + property + `"]},"c0"]]}`)
 		if err != nil {
 			return err
 		}
-		var out struct {
-			MethodResponses [][]json.RawMessage `json:"methodResponses"`
-		}
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return fmt.Errorf("decode response: %w", err)
-		}
-		if len(out.MethodResponses) == 0 {
-			return fmt.Errorf("no method response for %q: %s", property, raw)
-		}
-		var name string
-		if err := json.Unmarshal(out.MethodResponses[0][0], &name); err != nil {
-			return fmt.Errorf("decode response name: %w", err)
-		}
 		if name != "error" {
 			return fmt.Errorf("%q was accepted; an unknown property must be refused, "+
 				"or a client cannot tell its own typo from a property yarilo has not implemented: %s",
-				property, raw)
+				property, args)
 		}
 		var merr struct {
 			Type        string   `json:"type"`
 			Description string   `json:"description"`
 			Arguments   []string `json:"arguments"`
 		}
-		if err := json.Unmarshal(out.MethodResponses[0][1], &merr); err != nil {
+		if err := json.Unmarshal(args, &merr); err != nil {
 			return fmt.Errorf("decode error object: %w", err)
 		}
 		if merr.Type != "invalidArguments" {
@@ -383,26 +358,10 @@ func verifyPropertyValidation(emailID string) error {
 // firstEmailObject pulls the single Email out of an Email/get response, as raw
 // JSON per property.
 func firstEmailObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
-	var out struct {
-		MethodResponses [][]json.RawMessage `json:"methodResponses"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	if len(out.MethodResponses) == 0 {
-		return nil, fmt.Errorf("no method responses: %s", raw)
-	}
-	var name string
-	if err := json.Unmarshal(out.MethodResponses[0][0], &name); err != nil {
-		return nil, fmt.Errorf("decode response name: %w", err)
-	}
-	if name == "error" {
-		return nil, fmt.Errorf("Email/get failed: %s", out.MethodResponses[0][1])
-	}
 	var get struct {
 		List []map[string]json.RawMessage `json:"list"`
 	}
-	if err := json.Unmarshal(out.MethodResponses[0][1], &get); err != nil {
+	if err := json.Unmarshal(raw, &get); err != nil {
 		return nil, fmt.Errorf("decode Email/get: %w", err)
 	}
 	if len(get.List) != 1 {
