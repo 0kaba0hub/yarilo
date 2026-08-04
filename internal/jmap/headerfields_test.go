@@ -222,6 +222,25 @@ func TestHeadersPropertyIsAnswered(t *testing.T) {
 //
 // Tested against the parser directly: routed through a whole Email/get, the
 // grouping came out the same either way, so the assertion said nothing.
+// A quoted-pair has to survive the split, not just fail to break it. The four
+// cases above assert where the groups fall, and the split is the same with the
+// backslash and without it — so they cannot see a parser that gets the
+// boundaries right and hands the downstream address parser something that is no
+// longer a valid address list.
+func TestGroupedAddressesKeepsTheEscapedValue(t *testing.T) {
+	got := groupedAddresses(`"say \"hi\"" <one@example.com>`)
+	if len(got) != 1 || len(got[0].Addresses) != 1 {
+		t.Fatalf("= %+v, want one address in one group — the escaped display name broke the parse", got)
+	}
+	addr := got[0].Addresses[0]
+	if addr.Email != "one@example.com" {
+		t.Errorf("email = %q, want one@example.com", addr.Email)
+	}
+	if addr.Name == nil || *addr.Name != `say "hi"` {
+		t.Errorf("name = %v, want the display name with its quotes", addr.Name)
+	}
+}
+
 func TestGroupedAddressesQuotedPair(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

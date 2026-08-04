@@ -209,8 +209,15 @@ func groupedAddresses(v string) []jmapcore.EmailAddressGroup {
 			// name containing an escaped quote flips the quoting state, and the
 			// group then splits on a ';' that is inside a string (RFC 5322
 			// §3.2.1).
+			//
+			// Both bytes are kept, not just the quoted one: what leaves here is
+			// handed to an address parser, and "say "hi"" is no longer an
+			// address list. Dropping the backslash moved the failure rather
+			// than removing it — the split became right and the value became
+			// unparseable.
 			escaped = false
 			if quoted {
+				segment.WriteByte('\\')
 				segment.WriteByte(c)
 			}
 		case c == '\\' && (quoted || depth > 0):
