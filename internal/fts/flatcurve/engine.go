@@ -563,8 +563,16 @@ func (up *update) SetBuildKey(k fts.BuildKey) (bool, error) {
 // normTerm normalizes a term: minimum length, the 200-byte cap
 // (multibyte-safe), and lowercasing the first ASCII character (Xapian treats a
 // leading capital as a term prefix).
+// normTerm drops a token below the minimum length and truncates one above the
+// storage bound.
+//
+// The minimum counts characters, the bound counts bytes, and the difference is
+// deliberate: the minimum is a judgement about what is worth indexing, which is
+// the same judgement in every script, while the bound is about how much room a
+// term takes on disk. Counting bytes for the minimum kept single-character
+// Cyrillic and CJK terms while dropping single-character Latin ones (#1055).
 func normTerm(tok string, minSize int) string {
-	if len(tok) < minSize {
+	if utf8.RuneCountInString(tok) < minSize {
 		return ""
 	}
 	if len(tok) > maxTermBytes {
@@ -597,7 +605,7 @@ func (up *update) addWithSuffixes(prefix, term string, substring bool, minSize i
 		}
 		_, size := utf8.DecodeRuneInString(s)
 		s = s[size:]
-		if len(s) < minSize {
+		if utf8.RuneCountInString(s) < minSize {
 			return nil
 		}
 	}

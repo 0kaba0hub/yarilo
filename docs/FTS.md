@@ -1097,3 +1097,31 @@ rather than served as an index nothing can query.
 
 An unparseable value also expands everything, and says so. A search engine that
 narrows its own matching on a typo would be reported as missing mail.
+
+## Term length is counted in characters
+
+`fts_flatcurve_min_term_size` (the indexing gate) and
+`fts_flatcurve_prefix_search` (the query gate) both count characters.
+
+The indexing gate counted bytes until #1055, which made one setting into a
+different rule per script:
+
+| term | characters | bytes | dropped at `min_term_size: 2`, counting bytes |
+|:---|---:|---:|:---|
+| `a` | 1 | 1 | yes |
+| `я` | 1 | 2 | **no** |
+| `日` | 1 | 3 | **no** |
+
+So single Cyrillic and CJK characters were indexed while single Latin ones were
+not, and at a higher setting the asymmetry widened — `min_term_size: 4` dropped
+four-letter Latin words while keeping two-letter Cyrillic ones.
+
+The default of `2` is unchanged and now means what it was meant to mean in every
+script. **Changing what is indexed is a re-index**, as with every filter-chain
+change: existing indexes keep the single-character non-Latin terms they already
+carry until the mailbox is rebuilt, which affects nothing but leaves them
+searchable a little longer than intended.
+
+The byte bound on term *length* (`maxTermBytes`) is unaffected and stays in
+bytes, deliberately: it is about how much room a term takes on disk, not about
+whether it is worth having.

@@ -2394,6 +2394,11 @@ fts:
   fts_detection_sample_bytes: "0"
   fts_detection_min_runes: 0
   fts_flatcurve_commit_limit: 500
+  ## Shortest term worth indexing, in CHARACTERS. It counted bytes until
+  ## #1055, which applied a different rule to every script: a one-character
+  ## Latin word was dropped while a one-character Cyrillic or CJK one was kept.
+  ## The default still means "drop single characters" — it just now means that
+  ## everywhere. Changing it changes index contents, so it is a re-index.
   fts_flatcurve_min_term_size: 2
   ## Queues a mailbox for automatic background shard compaction once its
   ## sealed-shard count reaches this value (#715), on top of the manual
