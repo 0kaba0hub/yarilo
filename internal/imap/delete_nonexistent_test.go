@@ -1,6 +1,7 @@
 package imap_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -65,7 +66,7 @@ func TestDeleteAndRenameStillWorkOnRealMailboxes(t *testing.T) {
 func assertNonexistent(t *testing.T, err error, cmd string) {
 	t.Helper()
 	var imapErr *imap.Error
-	if !asIMAPError(err, &imapErr) {
+	if !errors.As(err, &imapErr) {
 		t.Fatalf("%s returned %T (%v), want an IMAP error", cmd, err, err)
 	}
 	if imapErr.Type != imap.StatusResponseTypeNo {
@@ -78,12 +79,4 @@ func assertNonexistent(t *testing.T, err error, cmd string) {
 	if !strings.Contains(strings.ToLower(imapErr.Text), "mailbox") {
 		t.Errorf("%s text %q does not mention the mailbox", cmd, imapErr.Text)
 	}
-}
-
-func asIMAPError(err error, out **imap.Error) bool {
-	e, ok := err.(*imap.Error)
-	if ok {
-		*out = e
-	}
-	return ok
 }
