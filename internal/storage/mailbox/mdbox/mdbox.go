@@ -175,6 +175,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		home:         mailPath,
 		indexRoot:    u.IndexDir,
 		separator:    mailbox.SepOrDefault(u.Separator),
+		escapeChar:   u.StorageEscapeChar,
 		username:     u.Username,
 		owner:        makeOwner(u),
 		altBasePath:  resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
@@ -198,6 +199,7 @@ type userMailbox struct {
 	home         string
 	indexRoot    string // INDEX= target; "" means co-locate map index with payload
 	separator    string // IMAP hierarchy separator; converted to "/" on disk (fs nesting)
+	escapeChar   string // storage-name escape char; "" disables escaping
 	username     string
 	owner        string
 	altBasePath  string // expanded alt root + "/mdbox"; "" = disabled
@@ -237,6 +239,8 @@ func (u *userMailbox) folderRoot() string {
 	return filepath.Join(u.mdboxRoot(), mailboxesDir)
 }
 func (u *userMailbox) folderDiskName(folder string) string {
+	// Escape first, encode second; the reverse path mirrors it (#1078).
+	folder = mailbox.EscapeLogicalName(folder, u.separator, "/", u.escapeChar)
 	if u.normalizeNFC {
 		folder = mboxenc.NFC(folder)
 	}
@@ -456,6 +460,10 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 		if u.normalizeNFC {
 			logical = mboxenc.NFC(logical)
 		}
+		// Outermost on the way back: the escape sits at the logical-name
+		// boundary, above modUTF7 and NFC, so it is applied last here and
+		// first on the way in (#1078).
+		logical = mailbox.UnescapeStorageName(logical, u.escapeChar)
 		return logical, true
 	}
 	// A folder is selectable when it owns a dbox-Mails marker dir; a dir that

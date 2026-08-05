@@ -95,6 +95,13 @@ type UserInfo struct {
 	// "/".
 	Separator string
 
+	// StorageEscapeChar keeps a folder name literal on disk when the layout
+	// would reinterpret it: a single character, or "" for no escaping. Carried
+	// on UserInfo so every tree derived from the name -- mail, index, control,
+	// FTS -- escapes identically. A tree that skipped it would name the same
+	// mailbox differently from the others (#1078).
+	StorageEscapeChar string
+
 	// Phase 3 — filesystem ownership (yarilo runs as root, drops per-user):
 	// UID uint32
 	// GID uint32
@@ -157,6 +164,12 @@ type Resolver struct {
 	// MailPath == Home.
 	DefaultMailPath string
 
+	// DefaultStorageEscapeChar is stamped onto every UserInfo, so the mail,
+	// index, control and FTS trees all escape identically. A tree built with a
+	// different setting would name the same mailbox differently from the rest
+	// (#1078).
+	DefaultStorageEscapeChar string
+
 	// DefaultSeparator is the IMAP hierarchy separator stamped onto every
 	// UserInfo; the IMAP session overrides it per-namespace. Empty defaults to
 	// "/" at the point of use.
@@ -189,6 +202,8 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 		Home:       home,
 		QuotaRules: r.DefaultQuotaRules,
 		Separator:  r.DefaultSeparator,
+
+		StorageEscapeChar: r.DefaultStorageEscapeChar,
 	}
 	if r.DefaultVolatileDir != "" {
 		ui.VolatileDir = ExpandLocation(r.DefaultVolatileDir, home, username)

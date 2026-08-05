@@ -106,6 +106,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		explicitMailPath: explicit,
 		controlDir:       u.ControlDir,
 		separator:        mailbox.SepOrDefault(u.Separator),
+		escapeChar:       u.StorageEscapeChar,
 		username:         u.Username,
 		owner:            makeOwner(u),
 		listUTF8:         b.listUTF8,
@@ -132,6 +133,7 @@ type userMailbox struct {
 	explicitMailPath bool   // true when MailPath was set by userdb (changes INBOX layout)
 	controlDir       string // CONTROL= override root (empty = co-located with home)
 	separator        string // IMAP hierarchy separator; converted to "." on disk (maildir++)
+	escapeChar       string // storage-name escape char; "" disables escaping
 	username         string
 	owner            string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
 	listUTF8         bool                    // mirrors Backend.listUTF8
@@ -605,8 +607,16 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 			logical = nfcNormalize(logical)
 		}
 		// maildir++ stores hierarchy flat with "."; map it back to the
-		// namespace's IMAP separator (every "." is a level).
-		if u.separator != "." {
+		// namespace's IMAP separator (every "." is a level). With escaping on,
+		// a "." the client wrote literally is not one of those levels: it is
+		// an escape sequence, decoded per level after the split.
+		if u.escapeChar != "" {
+			parts := strings.Split(logical, ".")
+			for i, p := range parts {
+				parts[i] = mailbox.UnescapeStorageName(p, u.escapeChar)
+			}
+			logical = strings.Join(parts, u.separator)
+		} else if u.separator != "." {
 			logical = strings.ReplaceAll(logical, ".", u.separator)
 		}
 		folders = append(folders, mailbox.FolderEntry{Name: logical, Selectable: true})
@@ -1052,6 +1062,11 @@ func (u *userMailbox) folderCacheFor(folder string) *folderCache {
 // folderDiskName maps a logical UTF-8 folder name to the on-disk directory
 // component: NFC normalisation, then modified-UTF-7 when legacy encoding is set.
 func (u *userMailbox) folderDiskName(folder string) string {
+	// Escape first, encode second. The reverse path decodes and then
+	// unescapes, so the two are mirrored; escaping an already-encoded name
+	// works only while the escape character stays out of the base64 alphabet,
+	// which nothing here can promise (#1078).
+	folder = mailbox.EscapeLogicalName(folder, u.separator, ".", u.escapeChar)
 	if u.normalizeNFC {
 		folder = nfcNormalize(folder)
 	}

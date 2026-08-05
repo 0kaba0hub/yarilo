@@ -38,6 +38,9 @@ type Store struct {
 	driver string
 	// separator is the IMAP hierarchy separator.
 	separator string
+	// escapeChar is the storage-name escape char; it must match the mailbox
+	// driver's, or the ACL file lands beside a differently-named folder.
+	escapeChar string
 	// defaultsFromInbox resolves the namespace-root default from INBOX's ACL
 	// instead of the (maildir-disabled) folder "" default. Private/shared only.
 	defaultsFromInbox bool
@@ -72,7 +75,7 @@ type cacheEntry struct {
 
 // New constructs a Store rooted at mailPath when set, else home. pol carries
 // the operator ACL knobs; locker may be nil for tests / single-process runs.
-func New(home, mailPath, driver, separator, username, owner string, pol Policy, locker locks.Locker) *Store {
+func New(home, mailPath, driver, separator, escapeChar, username, owner string, pol Policy, locker locks.Locker) *Store {
 	root := home
 	if mailPath != "" {
 		root = mailPath
@@ -81,6 +84,7 @@ func New(home, mailPath, driver, separator, username, owner string, pol Policy, 
 		mailRoot:          root,
 		driver:            driver,
 		separator:         mailbox.SepOrDefault(separator),
+		escapeChar:        escapeChar,
 		username:          username,
 		owner:             owner,
 		defaultsFromInbox: pol.DefaultsFromInbox,
@@ -100,7 +104,7 @@ func New(home, mailPath, driver, separator, username, owner string, pol Policy, 
 // local per-namespace-root default ACL; for maildir it collides with INBOX and
 // is disabled — see rootDefaultDisabled.
 func (s *Store) Path(folder string) string {
-	return filepath.Join(s.mailRoot, mailbox.FolderSubpath(s.driver, folder, folder, s.separator), FileName)
+	return filepath.Join(s.mailRoot, mailbox.FolderSubpathEscaped(s.driver, folder, folder, s.separator, s.escapeChar), FileName)
 }
 
 // rootDefaultDisabled reports whether the local namespace-root default ACL

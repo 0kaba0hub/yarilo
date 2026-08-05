@@ -30,17 +30,29 @@ import (
 // For maildir, INBOX IS the maildir root (no INBOX/ subdir). An empty sep
 // defaults to "/" so callers that never set one keep the historical layout.
 func FolderSubpath(driver, folder, diskName, sep string) string {
+	return FolderSubpathEscaped(driver, folder, diskName, sep, "")
+}
+
+// FolderSubpathEscaped is FolderSubpath with storage-name escaping applied.
+//
+// escape is a single character, or "" for the default of no escaping. When set,
+// a layout separator the client wrote *literally* is hex-escaped, while the
+// hierarchy the client expressed with the namespace separator still becomes
+// levels on disk. That difference is the whole point: without it, "a.b" and
+// "a/b" are the same bytes under a maildir layout and one of the two names is
+// silently the other (#1078).
+func FolderSubpathEscaped(driver, folder, diskName, sep, escape string) string {
 	if sep == "" {
 		sep = "/"
 	}
 	switch driver {
 	case "mdbox", "sdbox", "dbox":
-		return filepath.Join(mailboxesSubdir, toDiskSep(diskName, sep, "/"), dboxMailsSubdir)
+		return filepath.Join(mailboxesSubdir, toDiskSep(diskName, sep, "/", escape), dboxMailsSubdir)
 	default: // maildir — maildir++ flat layout, "." separates hierarchy
 		if folder == "INBOX" {
 			return ""
 		}
-		return "." + toDiskSep(diskName, sep, ".")
+		return "." + toDiskSep(diskName, sep, ".", escape)
 	}
 }
 
@@ -56,11 +68,22 @@ func SepOrDefault(s string) string {
 
 // toDiskSep rewrites the IMAP hierarchy separator in name to the driver's
 // on-disk separator. When they already match it is a no-op.
-func toDiskSep(name, imapSep, diskSep string) string {
-	if imapSep == diskSep {
-		return name
+func toDiskSep(name, imapSep, diskSep, escape string) string {
+	if escape == "" {
+		if imapSep == diskSep {
+			return name
+		}
+		return strings.ReplaceAll(name, imapSep, diskSep)
 	}
-	return strings.ReplaceAll(name, imapSep, diskSep)
+	// Split on what the client meant as hierarchy first, escape each level,
+	// then join with what the layout writes. Escaping after the join would
+	// escape the separators the client asked for; escaping before the split
+	// would hide them from it.
+	parts := strings.Split(name, imapSep)
+	for i, p := range parts {
+		parts[i] = EscapeStorageName(p, diskSep, escape)
+	}
+	return strings.Join(parts, diskSep)
 }
 
 const (

@@ -103,6 +103,9 @@ func main() {
 	resolver := &mailbox.Resolver{
 		Root:         cfg.Storage.MaildirRoot,
 		HomeTemplate: cfg.Storage.MailHomeTemplate,
+		// The admin API resolves the same folders the session servers do, so
+		// it has to escape the same way or it addresses different paths.
+		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
 	}
 	if resolver.Root == "" {
 		resolver.Root = "/var/mail/vhosts"

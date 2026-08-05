@@ -29,6 +29,16 @@ type NameRules struct {
 	// protection would be advised to disable it.
 	RefuseLayoutSeparator bool
 
+	// StorageEscapeChar, when set, supersedes the two refusals that exist
+	// because such a name could not be represented on disk: the layout
+	// separator appearing literally, and a reserved segment. Escaping stores
+	// them faithfully instead, so refusing them as well would reject exactly
+	// the names escaping exists to allow (#1078).
+	//
+	// The traversal refusals are unaffected: ".." is not a name anyone means
+	// to own, and escaping it would create a folder no client asked for.
+	StorageEscapeChar string
+
 	// ReservedSegments are names a single hierarchy segment may not equal:
 	// the layout's own internal directories (cur/new/tmp, dbox-Mails). A
 	// folder called "cur" collides with maildir's own subdirectory and
@@ -97,7 +107,8 @@ func ValidateName(name, nsSep, layoutSep string, rules NameRules) error {
 	// The layout separator cannot appear in a name written with a different
 	// one: it silently becomes a hierarchy level on disk, one the client did
 	// not ask for and cannot address.
-	if rules.RefuseLayoutSeparator && layoutSep != nsSep && strings.Contains(name, layoutSep) {
+	if rules.RefuseLayoutSeparator && rules.StorageEscapeChar == "" &&
+		layoutSep != nsSep && strings.Contains(name, layoutSep) {
 		return fmt.Errorf("%w: %q contains %q, which is the on-disk hierarchy separator here",
 			ErrInvalidFolderName, name, layoutSep)
 	}
@@ -120,7 +131,7 @@ func ValidateName(name, nsSep, layoutSep string, rules NameRules) error {
 					return fmt.Errorf("%w: %q contains a %q path segment", ErrInvalidFolderName, name, segment)
 				}
 			}
-			for _, reserved := range rules.ReservedSegments {
+			for _, reserved := range reservedFor(rules) {
 				if strings.EqualFold(segment, reserved) {
 					return fmt.Errorf("%w: %q uses %q, which the storage layout owns",
 						ErrInvalidFolderName, name, reserved)
@@ -141,4 +152,14 @@ func LayoutSeparator(driver string) string {
 	default:
 		return "."
 	}
+}
+
+// reservedFor returns the reserved segments still worth refusing. With an
+// escape character configured there are none: such a name is stored escaped
+// rather than rejected.
+func reservedFor(rules NameRules) []string {
+	if rules.StorageEscapeChar != "" {
+		return nil
+	}
+	return rules.ReservedSegments
 }

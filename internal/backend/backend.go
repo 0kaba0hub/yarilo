@@ -127,14 +127,15 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg.Storage.MailHomeTemplate = "%d/%u"
 	}
 	resolver := &mailbox.Resolver{
-		Root:               cfg.Storage.MaildirRoot,
-		HomeTemplate:       cfg.Storage.MailHomeTemplate,
-		DefaultVolatileDir: cfg.Storage.VolatileDir,
-		DefaultIndexDir:    cfg.Storage.IndexDir,
-		DefaultControlDir:  cfg.Storage.ControlDir,
-		DefaultAltDir:      cfg.Storage.AltDir,
-		DefaultMailPath:    cfg.Storage.MailPath,
-		DefaultSeparator:   personalSeparator(cfg.Namespaces),
+		Root:                     cfg.Storage.MaildirRoot,
+		HomeTemplate:             cfg.Storage.MailHomeTemplate,
+		DefaultVolatileDir:       cfg.Storage.VolatileDir,
+		DefaultIndexDir:          cfg.Storage.IndexDir,
+		DefaultControlDir:        cfg.Storage.ControlDir,
+		DefaultAltDir:            cfg.Storage.AltDir,
+		DefaultMailPath:          cfg.Storage.MailPath,
+		DefaultSeparator:         personalSeparator(cfg.Namespaces),
+		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
 	}
 	locker, err := buildLocksClient(cfg)
 	if err != nil {
@@ -1148,14 +1149,15 @@ func BuildResolver(cfg *config.Config) *mailbox.Resolver {
 		sc.MailHomeTemplate = "%d/%u"
 	}
 	return &mailbox.Resolver{
-		Root:               sc.MaildirRoot,
-		HomeTemplate:       sc.MailHomeTemplate,
-		DefaultVolatileDir: sc.VolatileDir,
-		DefaultIndexDir:    sc.IndexDir,
-		DefaultControlDir:  sc.ControlDir,
-		DefaultAltDir:      sc.AltDir,
-		DefaultMailPath:    sc.MailPath,
-		DefaultSeparator:   personalSeparator(cfg.Namespaces),
+		Root:                     sc.MaildirRoot,
+		HomeTemplate:             sc.MailHomeTemplate,
+		DefaultVolatileDir:       sc.VolatileDir,
+		DefaultIndexDir:          sc.IndexDir,
+		DefaultControlDir:        sc.ControlDir,
+		DefaultAltDir:            sc.AltDir,
+		DefaultMailPath:          sc.MailPath,
+		DefaultSeparator:         personalSeparator(cfg.Namespaces),
+		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
 	}
 }
 

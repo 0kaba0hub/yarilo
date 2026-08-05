@@ -1886,6 +1886,26 @@ type StorageConfig struct {
 	// this refuses (#1069).
 	MailboxListRefuseLayoutSeparator bool `koanf:"mailbox_list_refuse_layout_separator"`
 
+	// MailboxListStorageEscapeChar keeps a client's folder name literal when
+	// the storage layout would otherwise reinterpret it. A single character;
+	// empty (the default) disables escaping and changes nothing.
+	//
+	// With namespace separator "/" over maildir++, "Invoices.2026" is written
+	// flat and read back as two levels, so the client is handed
+	// "Invoices/2026" -- a mailbox it never created. With an escape character
+	// the literal separator is stored as <escape><hex> and the name comes back
+	// as it was written. It also makes the name portable: the same folder is
+	// one mailbox on maildir and on dbox, so a format migration preserves it.
+	//
+	// Enabling it is NOT retroactive. A folder already on disk as
+	// ".Invoices.2026" keeps reading as "Invoices/2026"; only folders created
+	// afterwards are stored escaped (#1078).
+	//
+	// When set, it supersedes the refusals that exist because such names could
+	// not be represented: a name carrying the layout separator or a reserved
+	// segment is escaped and stored rather than refused.
+	MailboxListStorageEscapeChar string `koanf:"mailbox_list_storage_escape_char"`
+
 	// MailboxListReservedSegments are names a single hierarchy segment may not
 	// equal, because the storage layout owns the directory: cur, new, tmp and
 	// dbox-Mails. A folder called "cur" corrupts the mailbox from inside
@@ -2232,6 +2252,9 @@ func resolveSize(name, raw string) (int64, error) {
 }
 
 func (cfg *Config) validate() error {
+	if err := validateStorageEscapeChar(cfg.Storage.MailboxListStorageEscapeChar); err != nil {
+		return err
+	}
 	if cfg.InternalTLS.Enabled {
 		if cfg.InternalTLS.Cert == "" || cfg.InternalTLS.Key == "" || cfg.InternalTLS.CA == "" {
 			return fmt.Errorf("config: internal_tls.enabled is true but cert/key/ca are not set")
@@ -2410,4 +2433,39 @@ func CheckListenerTLS(name string, svc *ServiceConfig, ssl SSLConfig) (warning s
 			"STARTTLS will not be advertised and clients requiring it cannot connect", name), nil
 	}
 	return "", nil
+}
+
+// validateStorageEscapeChar refuses a value that cannot do the job, rather than
+// accepting it and producing folders that never list.
+//
+// One byte, because the escaper reads escape[0] and a longer value would be
+// silently truncated to something the operator did not choose. And punctuation,
+// because a letter or digit makes every escaped name unreadable on disk and
+// collides with the alphabets around it -- modified-UTF-7 output is base64, so
+// an escape character drawn from that alphabet sits inside encoded text.
+//
+// The ordering fix (escape before encode) means such a character no longer
+// corrupts the round trip, but it is still the wrong thing to hand an operator:
+// the value is unreachable to reason about and the failure it used to cause was
+// silent (#1078).
+func validateStorageEscapeChar(c string) error {
+	if c == "" {
+		return nil // escaping disabled
+	}
+	if len(c) != 1 {
+		return fmt.Errorf("config: storage.mailbox_list_storage_escape_char must be a single byte, got %q", c)
+	}
+	b := c[0]
+	switch {
+	case b >= 'A' && b <= 'Z', b >= 'a' && b <= 'z', b >= '0' && b <= '9', b == '+', b == ',':
+		return fmt.Errorf("config: storage.mailbox_list_storage_escape_char %q is in the modified-UTF-7 base64 alphabet; "+
+			"pick punctuation outside it, such as \"^\"", c)
+	case b == '.', b == '/':
+		return fmt.Errorf("config: storage.mailbox_list_storage_escape_char %q is a hierarchy separator", c)
+	case b == '&':
+		return fmt.Errorf("config: storage.mailbox_list_storage_escape_char %q is the modified-UTF-7 shift character", c)
+	case b < 0x21 || b > 0x7e:
+		return fmt.Errorf("config: storage.mailbox_list_storage_escape_char %q must be printable ASCII", c)
+	}
+	return nil
 }

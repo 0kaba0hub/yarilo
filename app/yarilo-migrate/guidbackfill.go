@@ -168,14 +168,15 @@ func guidConfig(path string) (*config.Config, error) {
 // built-in defaults are the last resort.
 func guidResolver(cfg *config.Config, o guidOpts) *mailbox.Resolver {
 	r := &mailbox.Resolver{
-		Root:               cfg.Storage.MaildirRoot,
-		HomeTemplate:       cfg.Storage.MailHomeTemplate,
-		DefaultVolatileDir: cfg.Storage.VolatileDir,
-		DefaultIndexDir:    cfg.Storage.IndexDir,
-		DefaultControlDir:  cfg.Storage.ControlDir,
-		DefaultAltDir:      cfg.Storage.AltDir,
-		DefaultMailPath:    cfg.Storage.MailPath,
-		DefaultSeparator:   guidSeparator(cfg.Namespaces),
+		Root:                     cfg.Storage.MaildirRoot,
+		HomeTemplate:             cfg.Storage.MailHomeTemplate,
+		DefaultVolatileDir:       cfg.Storage.VolatileDir,
+		DefaultIndexDir:          cfg.Storage.IndexDir,
+		DefaultControlDir:        cfg.Storage.ControlDir,
+		DefaultAltDir:            cfg.Storage.AltDir,
+		DefaultMailPath:          cfg.Storage.MailPath,
+		DefaultSeparator:         guidSeparator(cfg.Namespaces),
+		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
 	}
 	if o.Root != "" {
 		r.Root = o.Root
