@@ -619,6 +619,12 @@ data:
       {{- if $storage.mdbox_preallocate_space }}
       mdbox_preallocate_space: {{ $storage.mdbox_preallocate_space }}
       {{- end }}
+      {{- if hasKey $storage "mailbox_list_utf8" }}
+      mailbox_list_utf8: {{ $storage.mailbox_list_utf8 }}
+      {{- end }}
+      {{- if hasKey $storage "mailbox_list_normalize_to_nfc" }}
+      mailbox_list_normalize_to_nfc: {{ $storage.mailbox_list_normalize_to_nfc }}
+      {{- end }}
       {{- if hasKey $storage "mailbox_list_validate_fs_names" }}
       mailbox_list_validate_fs_names: {{ $storage.mailbox_list_validate_fs_names }}
       {{- end }}

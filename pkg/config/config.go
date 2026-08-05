@@ -2021,7 +2021,13 @@ func Load(path string) (*Config, error) {
 			},
 		},
 		Storage: StorageConfig{
-			MaildirSyncOnSelect:        true,
+			MaildirSyncOnSelect: true,
+			// Both are documented as defaulting to true and neither was
+			// defaulted, so ByDriver passed false and every folder name went
+			// to disk as modified-UTF-7 with no NFC normalisation -- the
+			// opposite of what values.yaml promises (#1074).
+			MailboxListUTF8:            true,
+			MailboxListNormalizeToNFC:  true,
 			DboxReactiveRebuild:        true,
 			MailboxListValidateFSNames: true,
 			// The layout's own directories. A sandbox count over 996 maildir
