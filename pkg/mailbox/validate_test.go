@@ -29,11 +29,11 @@ func TestValidateName(t *testing.T) {
 		{"home-relative", "~root/mail", "/", "/", `begins with "~"`},
 		{"NUL", "a\x00b", "/", "/", "NUL"},
 
-		// The separator-mismatch rule. With namespace "/" over a maildir++
-		// layout, a "." in the name would become a hierarchy level on disk
-		// that the client can neither address nor see.
-		{"layout separator in a name written with another", "a.b", "/", ".", "on-disk hierarchy separator"},
-		{"same separator, no mismatch rule", "a.b", ".", ".", ""},
+		// The separator rule is off in DefaultNameRules, so an ordinary dotted
+		// name is accepted: it is retroactive against names a mailbox may
+		// already hold.
+		{"dotted name with the rule off", "example.com", "/", ".", ""},
+		{"same separator is never a conflict", "a.b", ".", ".", ""},
 
 		// Reserved segments: a folder named cur collides with maildir's own
 		// subdirectory without ever leaving the mailbox.
@@ -99,5 +99,33 @@ func TestLayoutSeparator(t *testing.T) {
 		if got := LayoutSeparator(driver); got != want {
 			t.Errorf("LayoutSeparator(%q) = %q, want %q", driver, got, want)
 		}
+	}
+}
+
+// The separator rule has to be reachable on its own: an operator turning it on
+// must not have to accept anything else, and an operator leaving it off must
+// keep the traversal checks. Folding the two together was the defect -- it left
+// a deployment with dotted folder names no remedy except disabling the
+// traversal refusals as well.
+func TestRefuseLayoutSeparatorIsIndependent(t *testing.T) {
+	sepOnly := NameRules{RefuseLayoutSeparator: true}
+	if err := ValidateName("example.com", "/", ".", sepOnly); err == nil {
+		t.Error("with the separator rule on, \"example.com\" was accepted on a maildir layout")
+	}
+	// A plain nested name, since anything with ".." also contains the layout
+	// separator and would be refused by this rule for its own reason.
+	if err := ValidateName("Work/2026", "/", ".", sepOnly); err != nil {
+		t.Errorf("the separator rule alone refused %q: %v — it must not imply the path checks", "Work/2026", err)
+	}
+	if err := ValidateName("/etc/passwd", "/", "/", sepOnly); err != nil {
+		t.Errorf("the separator rule alone refused %q: %v — the leading-slash check belongs to ValidateFSNames", "/etc/passwd", err)
+	}
+
+	fsOnly := NameRules{ValidateFSNames: true}
+	if err := ValidateName("example.com", "/", ".", fsOnly); err != nil {
+		t.Errorf("with the separator rule off, ValidateName(\"example.com\") = %v; an existing mailbox would become unselectable", err)
+	}
+	if err := ValidateName("../victim/Maildir", "/", ".", fsOnly); err == nil {
+		t.Error("keeping dotted names cost the traversal check — that is the trade this key exists to avoid")
 	}
 }

@@ -118,3 +118,62 @@ func treeOf(t *testing.T, root string) string {
 	})
 	return b.String()
 }
+
+// A dotted folder name keeps working with the default rules. The
+// separator-conflict rule is real but retroactive against ordinary names, so it
+// is off unless a deployment turns it on: switching it on by default would make
+// an existing "example.com" folder visible in LIST and impossible to select.
+func TestDottedFolderNamesSurviveTheDefaultRules(t *testing.T) {
+	sc := config.StorageConfig{
+		MailboxListValidateFSNames:  true,
+		MailboxListReservedSegments: []string{"cur", "new", "tmp", "dbox-Mails"},
+	}
+	for _, driver := range []string{"maildir", "mdbox", "sdbox"} {
+		t.Run(driver, func(t *testing.T) {
+			u := ByDriver(driver, sc, nil).OpenUser(&mailbox.UserInfo{
+				Username:  "u@d.test",
+				Home:      t.TempDir(),
+				Driver:    driver,
+				Separator: "/",
+			})
+			t.Cleanup(func() { _ = u.Close() })
+			if err := u.Init(); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"example.com", "Invoices.2026", "lists.golang-nuts"} {
+				if err := u.Create(name); err != nil {
+					t.Errorf("Create(%q): %v — an existing folder would become unselectable", name, err)
+				}
+				ok, err := u.FolderExists(name)
+				if err != nil || !ok {
+					t.Errorf("FolderExists(%q) = %v, %v — visible in LIST but not selectable", name, ok, err)
+				}
+			}
+		})
+	}
+}
+
+// With the rule on, the same names are refused -- the collision it names is
+// real, and a deployment that enables it gets what it asked for.
+func TestDottedFolderNamesAreRefusedWhenTheRuleIsOn(t *testing.T) {
+	sc := config.StorageConfig{
+		MailboxListValidateFSNames:       true,
+		MailboxListRefuseLayoutSeparator: true,
+	}
+	u := ByDriver("maildir", sc, nil).OpenUser(&mailbox.UserInfo{
+		Username:  "u@d.test",
+		Home:      t.TempDir(),
+		Driver:    "maildir",
+		Separator: "/",
+	})
+	t.Cleanup(func() { _ = u.Close() })
+	if err := u.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.Create("example.com"); err == nil {
+		t.Error("with the separator rule on, Create(\"example.com\") was accepted")
+	}
+	if err := u.Create("Work/2026"); err != nil {
+		t.Errorf("Create(\"Work/2026\"): %v — ordinary nesting must still work", err)
+	}
+}

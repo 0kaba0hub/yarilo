@@ -622,6 +622,9 @@ data:
       {{- if hasKey $storage "mailbox_list_validate_fs_names" }}
       mailbox_list_validate_fs_names: {{ $storage.mailbox_list_validate_fs_names }}
       {{- end }}
+      {{- if hasKey $storage "mailbox_list_refuse_layout_separator" }}
+      mailbox_list_refuse_layout_separator: {{ $storage.mailbox_list_refuse_layout_separator }}
+      {{- end }}
       {{- if hasKey $storage "mailbox_list_reserved_segments" }}
       mailbox_list_reserved_segments: {{ toJson $storage.mailbox_list_reserved_segments }}
       {{- end }}

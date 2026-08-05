@@ -10,10 +10,24 @@ import (
 // the reference implementation exposes mailbox_list_validate_fs_names.
 type NameRules struct {
 	// ValidateFSNames enables the path-shaped checks: "." and ".." segments,
-	// adjacent separators, a leading "/" or "~", and the separator-mismatch
-	// rule. Off means the storage driver is trusted to be safe with any name,
-	// which is only true of a driver that does not build a path from it.
+	// adjacent separators, a leading "/" or "~". Off means the storage driver
+	// is trusted to be safe with any name, which is only true of a driver that
+	// does not build a path from it.
 	ValidateFSNames bool
+
+	// RefuseLayoutSeparator refuses a name containing the on-disk hierarchy
+	// separator when the namespace speaks a different one. The collision is
+	// real: with namespace "/" over maildir++, "a.b" and "a/b" both become
+	// ".a.b" on disk, so one folder answers for two names.
+	//
+	// It is a key of its own rather than part of ValidateFSNames because it is
+	// retroactive in a way the others are not. The others refuse names no user
+	// meant to own; this one refuses "example.com" and "Invoices.2026" --
+	// ordinary names that existing mailboxes may already carry. Folding it in
+	// would leave an operator with such folders only one remedy, turning off
+	// the traversal checks as well: the deployment that most needs the
+	// protection would be advised to disable it.
+	RefuseLayoutSeparator bool
 
 	// ReservedSegments are names a single hierarchy segment may not equal:
 	// the layout's own internal directories (cur/new/tmp, dbox-Mails). A
@@ -35,6 +49,10 @@ func DefaultNameRules() NameRules {
 	return NameRules{
 		ValidateFSNames:  true,
 		ReservedSegments: []string{"cur", "new", "tmp", dboxMailsSubdir},
+		// Off by default: see RefuseLayoutSeparator. A deployment turns it on
+		// after checking that no mailbox carries a name with the layout
+		// separator in it.
+		RefuseLayoutSeparator: false,
 	}
 }
 
@@ -58,7 +76,7 @@ func ValidateName(name, nsSep, layoutSep string, rules NameRules) error {
 	if strings.Contains(name, "\x00") {
 		return fmt.Errorf("%w: name contains a NUL", ErrInvalidFolderName)
 	}
-	if !rules.ValidateFSNames && len(rules.ReservedSegments) == 0 {
+	if !rules.ValidateFSNames && !rules.RefuseLayoutSeparator && len(rules.ReservedSegments) == 0 {
 		return nil
 	}
 	if nsSep == "" {
@@ -75,13 +93,13 @@ func ValidateName(name, nsSep, layoutSep string, rules NameRules) error {
 		if strings.HasPrefix(name, "~") {
 			return fmt.Errorf("%w: %q begins with %q", ErrInvalidFolderName, name, "~")
 		}
-		// The layout separator cannot appear in a name that is written with a
-		// different one: it would silently become a hierarchy level on disk,
-		// which is a level the client did not ask for and cannot address.
-		if layoutSep != nsSep && strings.Contains(name, layoutSep) {
-			return fmt.Errorf("%w: %q contains %q, which is the on-disk hierarchy separator here",
-				ErrInvalidFolderName, name, layoutSep)
-		}
+	}
+	// The layout separator cannot appear in a name written with a different
+	// one: it silently becomes a hierarchy level on disk, one the client did
+	// not ask for and cannot address.
+	if rules.RefuseLayoutSeparator && layoutSep != nsSep && strings.Contains(name, layoutSep) {
+		return fmt.Errorf("%w: %q contains %q, which is the on-disk hierarchy separator here",
+			ErrInvalidFolderName, name, layoutSep)
 	}
 
 	// Segments are examined under every separator that can split this name on

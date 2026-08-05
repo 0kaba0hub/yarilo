@@ -32,8 +32,9 @@ func ByDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailb
 	// and the backend API all receive a checked backend without having to
 	// remember to ask for one (#1069).
 	return mailbox.Validating(byDriver(driver, sc, locker), mailbox.NameRules{
-		ValidateFSNames:  sc.MailboxListValidateFSNames,
-		ReservedSegments: sc.MailboxListReservedSegments,
+		ValidateFSNames:       sc.MailboxListValidateFSNames,
+		RefuseLayoutSeparator: sc.MailboxListRefuseLayoutSeparator,
+		ReservedSegments:      sc.MailboxListReservedSegments,
 	})
 }
 

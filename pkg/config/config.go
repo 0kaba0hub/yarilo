@@ -1869,6 +1869,23 @@ type StorageConfig struct {
 	// driver that never builds a path from the name (#1069).
 	MailboxListValidateFSNames bool `koanf:"mailbox_list_validate_fs_names"`
 
+	// MailboxListRefuseLayoutSeparator refuses a folder name containing the
+	// on-disk hierarchy separator when the namespace speaks a different one.
+	// With namespace "/" over maildir++, "a.b" and "a/b" both land on ".a.b",
+	// so one folder answers for two names.
+	//
+	// Off by default, and a key of its own rather than part of
+	// mailbox_list_validate_fs_names, because it is retroactive against
+	// ordinary names: "example.com" and "Invoices.2026" are refused, and a
+	// mailbox may already hold them. Folding it in would leave such a
+	// deployment only one remedy -- turning the traversal checks off too.
+	//
+	// Turn it on after checking that no mailbox carries such a name. On
+	// maildir the check cannot be made by reading the disk: a nested "a/b"
+	// and a dotted "a.b" are the same bytes there, which is the collision
+	// this refuses (#1069).
+	MailboxListRefuseLayoutSeparator bool `koanf:"mailbox_list_refuse_layout_separator"`
+
 	// MailboxListReservedSegments are names a single hierarchy segment may not
 	// equal, because the storage layout owns the directory: cur, new, tmp and
 	// dbox-Mails. A folder called "cur" corrupts the mailbox from inside
