@@ -1861,6 +1861,23 @@ type StorageConfig struct {
 	// equivalent-but-differently-composed names (e.g. from macOS HFS+) are
 	// treated as the same folder.
 	MailboxListNormalizeToNFC bool `koanf:"mailbox_list_normalize_to_nfc"`
+
+	// MailboxListValidateFSNames refuses client-supplied folder names that are
+	// unsafe as paths: "." and ".." segments, adjacent separators, a leading
+	// "/" or "~", and the on-disk hierarchy separator when it is not the one
+	// the namespace speaks. Enabled by default. Turn it off only for a storage
+	// driver that never builds a path from the name (#1069).
+	MailboxListValidateFSNames bool `koanf:"mailbox_list_validate_fs_names"`
+
+	// MailboxListReservedSegments are names a single hierarchy segment may not
+	// equal, because the storage layout owns the directory: cur, new, tmp and
+	// dbox-Mails. A folder called "cur" corrupts the mailbox from inside
+	// without ever leaving it, which is a different hazard from traversal.
+	//
+	// The check is retroactive -- a user who already owns such a folder loses
+	// access to a folder that exists -- so it is configurable. Empty disables
+	// it. Default: the layout directories.
+	MailboxListReservedSegments []string `koanf:"mailbox_list_reserved_segments"`
 }
 
 type TelemetryConfig struct {
@@ -1987,8 +2004,13 @@ func Load(path string) (*Config, error) {
 			},
 		},
 		Storage: StorageConfig{
-			MaildirSyncOnSelect: true,
-			DboxReactiveRebuild: true,
+			MaildirSyncOnSelect:        true,
+			DboxReactiveRebuild:        true,
+			MailboxListValidateFSNames: true,
+			// The layout's own directories. A sandbox count over 996 maildir
+			// and 2338 dbox folders found no user folder colliding with one,
+			// so the default costs nothing there.
+			MailboxListReservedSegments: []string{"cur", "new", "tmp", "dbox-Mails"},
 		},
 		InternalTLS: InternalTLSConfig{
 			Enabled: true,

@@ -38,6 +38,9 @@ type ReactiveHealer interface {
 // CanReactiveHeal reports whether box can self-heal corruption. Marking a folder
 // corrupt must be gated on this: flag only what something will later clear.
 func CanReactiveHeal(box any) bool {
+	if um, ok := box.(UserMailbox); ok {
+		box = Driver(um)
+	}
 	_, ok := box.(ReactiveHealer)
 	return ok
 }

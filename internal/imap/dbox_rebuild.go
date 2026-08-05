@@ -76,7 +76,7 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 		delete(s.healAttempts, f.ID)
 		return nil
 	}
-	rb, ok := h.box.(mailbox.ReactiveHealer)
+	rb, ok := mailbox.Driver(h.box).(mailbox.ReactiveHealer)
 	if !ok {
 		return nil
 	}

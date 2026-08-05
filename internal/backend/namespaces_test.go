@@ -208,6 +208,9 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 					t.Errorf("override %q missing for type check", p)
 					continue
 				}
+				// Every backend is built through the validating wrapper, so
+				// the driver is asserted underneath it (#1069).
+				gotV = mailbox.DriverBackend(gotV)
 				switch want.(type) {
 				case *maildir.Backend:
 					if _, ok := gotV.(*maildir.Backend); !ok {

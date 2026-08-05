@@ -26,6 +26,18 @@ import (
 // every configured tunable. Unknown/empty drivers default to maildir so an
 // operator typo does not crash startup.
 func ByDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
+	// Every binary builds its backend here, so wrapping at this point is what
+	// makes folder-name validation unbypassable: IMAP, LMTP (Sieve fileinto
+	// names the folder from the user's own script), POP3, JMAP, ManageSieve
+	// and the backend API all receive a checked backend without having to
+	// remember to ask for one (#1069).
+	return mailbox.Validating(byDriver(driver, sc, locker), mailbox.NameRules{
+		ValidateFSNames:  sc.MailboxListValidateFSNames,
+		ReservedSegments: sc.MailboxListReservedSegments,
+	})
+}
+
+func byDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
 	switch strings.ToLower(driver) {
 	case "sdbox", "dbox":
 		return dboxv2.New(dboxv2.WithLocker(locker), dboxv2.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),

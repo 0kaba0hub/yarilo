@@ -1,0 +1,103 @@
+package mailbox
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestValidateName(t *testing.T) {
+	rules := DefaultNameRules()
+	cases := []struct {
+		name      string
+		folder    string
+		nsSep     string
+		layoutSep string
+		wantErr   string // substring; empty means the name is accepted
+	}{
+		{"plain name", "Archive", "/", "/", ""},
+		{"nested name", "Work/2026", "/", "/", ""},
+		{"INBOX is an ordinary name here", "INBOX", "/", ".", ""},
+		{"dotted name is not a traversal", "my.folder", ".", ".", ""},
+
+		{"empty", "", "/", "/", "empty name"},
+		{"parent segment", "..", "/", "/", `".." path segment`},
+		{"parent segment nested", "a/../b", "/", "/", `".." path segment`},
+		{"current segment", ".", "/", "/", `"." path segment`},
+		{"adjacent separators", "a//b", "/", "/", "empty hierarchy segment"},
+		{"absolute", "/etc/passwd", "/", "/", `begins with "/"`},
+		{"home-relative", "~root/mail", "/", "/", `begins with "~"`},
+		{"NUL", "a\x00b", "/", "/", "NUL"},
+
+		// The separator-mismatch rule. With namespace "/" over a maildir++
+		// layout, a "." in the name would become a hierarchy level on disk
+		// that the client can neither address nor see.
+		{"layout separator in a name written with another", "a.b", "/", ".", "on-disk hierarchy separator"},
+		{"same separator, no mismatch rule", "a.b", ".", ".", ""},
+
+		// Reserved segments: a folder named cur collides with maildir's own
+		// subdirectory without ever leaving the mailbox.
+		{"reserved cur", "cur", "/", "/", "storage layout owns"},
+		{"reserved nested", "Work/tmp", "/", "/", "storage layout owns"},
+		{"reserved dbox-Mails", "dbox-Mails", "/", "/", "storage layout owns"},
+		{"reserved is case-insensitive", "CUR", "/", "/", "storage layout owns"},
+		{"reserved only as a whole segment", "current", "/", "/", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateName(tc.folder, tc.nsSep, tc.layoutSep, rules)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("ValidateName(%q) = %v, want accepted", tc.folder, err)
+			case tc.wantErr != "" && err == nil:
+				t.Errorf("ValidateName(%q) accepted, want refused (%s)", tc.folder, tc.wantErr)
+			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+				t.Errorf("ValidateName(%q) = %v, want a refusal mentioning %q", tc.folder, err, tc.wantErr)
+			case tc.wantErr != "" && !errors.Is(err, ErrInvalidFolderName):
+				t.Errorf("ValidateName(%q) refusal does not carry ErrInvalidFolderName, so a protocol layer reports it as a server fault", tc.folder)
+			}
+		})
+	}
+}
+
+// The rules are configurable, which means "off" has to actually be off --
+// otherwise an operator who turns the check off still cannot use the names.
+func TestValidateNameRulesAreConfigurable(t *testing.T) {
+	off := NameRules{}
+	for _, folder := range []string{"..", "a/../b", "cur", "/abs"} {
+		if err := ValidateName(folder, "/", "/", off); err != nil {
+			t.Errorf("with all rules off, ValidateName(%q) = %v, want accepted", folder, err)
+		}
+	}
+	// Structural refusals stand regardless: an empty name is not a name, and a
+	// NUL cannot reach a filesystem call whatever the policy says.
+	for _, folder := range []string{"", "a\x00b"} {
+		if err := ValidateName(folder, "/", "/", off); err == nil {
+			t.Errorf("with all rules off, ValidateName(%q) was accepted", folder)
+		}
+	}
+
+	fsOnly := NameRules{ValidateFSNames: true}
+	if err := ValidateName("cur", "/", "/", fsOnly); err != nil {
+		t.Errorf("with no reserved segments, ValidateName(\"cur\") = %v, want accepted", err)
+	}
+	if err := ValidateName("..", "/", "/", fsOnly); err == nil {
+		t.Error("with fs names validated, ValidateName(\"..\") was accepted")
+	}
+}
+
+func TestLayoutSeparator(t *testing.T) {
+	for driver, want := range map[string]string{
+		"maildir": ".",
+		"":        ".",
+		"mdbox":   "/",
+		"sdbox":   "/",
+		"dbox":    "/",
+		"MDBOX":   "/",
+	} {
+		if got := LayoutSeparator(driver); got != want {
+			t.Errorf("LayoutSeparator(%q) = %q, want %q", driver, got, want)
+		}
+	}
+}
