@@ -174,3 +174,56 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// The ordering, pinned. Escaping belongs at the logical-name boundary: escape
+// then encode on the way in, decode then unescape on the way out. The first
+// version of this feature had it inverted -- escaping an already-encoded name --
+// and round-tripped only because "^" happens to sit outside the base64 alphabet
+// that modified-UTF-7 emits. A name that forces encoding, under an escape
+// character drawn from that alphabet, is what tells the two apart (#1078).
+func TestEscapingIsOrderedAroundTheEncoding(t *testing.T) {
+	const name = "Рахунки.2026" // non-ASCII forces modified-UTF-7 to act
+
+	// "B" is in the base64 alphabet that modified-UTF-7 emits. Config
+	// validation refuses it precisely because of that, so this constructs the
+	// config directly: the point is to pin the invariant *underneath* the
+	// validation, not to rely on it. With the orders inverted, this is the
+	// case that loses the folder; with "^" alone the test proves nothing.
+	for _, esc := range []string{"^", "%", "B"} {
+		for _, utf8 := range []bool{true, false} {
+			t.Run(esc+"/"+label("", utf8), func(t *testing.T) {
+				sc := config.StorageConfig{
+					MailboxListValidateFSNames:   true,
+					MailboxListStorageEscapeChar: esc,
+					MailboxListUTF8:              utf8,
+					MailboxListNormalizeToNFC:    true,
+				}
+				u := ByDriver("maildir", sc, nil).OpenUser(&mailbox.UserInfo{
+					Username: "u@d.test", Home: t.TempDir(), Driver: "maildir",
+					Separator: "/", StorageEscapeChar: esc,
+				})
+				t.Cleanup(func() { _ = u.Close() })
+				if err := u.Init(); err != nil {
+					t.Fatal(err)
+				}
+				if err := u.Create(name); err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+				listed, err := u.ListFolders()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var found bool
+				for _, f := range listed {
+					if f.Name == name {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("escape %q, utf8=%v: %q was created and did not come back; got %v",
+						esc, utf8, name, listed)
+				}
+			})
+		}
+	}
+}

@@ -239,6 +239,8 @@ func (u *userMailbox) folderRoot() string {
 	return filepath.Join(u.mdboxRoot(), mailboxesDir)
 }
 func (u *userMailbox) folderDiskName(folder string) string {
+	// Escape first, encode second; the reverse path mirrors it (#1078).
+	folder = mailbox.EscapeLogicalName(folder, u.separator, "/", u.escapeChar)
 	if u.normalizeNFC {
 		folder = mboxenc.NFC(folder)
 	}
@@ -249,7 +251,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpathEscaped("mdbox", folder, u.folderDiskName(folder), u.separator, u.escapeChar))
+	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpath("mdbox", folder, u.folderDiskName(folder), u.separator))
 }
 
 // folderDir is the mailbox directory itself (mailboxes/<name>), folderPath

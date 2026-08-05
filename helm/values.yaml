@@ -214,6 +214,10 @@ storage:
   ##                                      # could not be represented: the layout separator and reserved segments
   ##                                      # are escaped and stored rather than refused. Traversal names are still
   ##                                      # refused.
+  ##                                      # Must be a single printable ASCII byte outside the modified-UTF-7
+  ##                                      # base64 alphabet [A-Za-z0-9+,], and not "." "/" or "&". Startup fails
+  ##                                      # on anything else rather than accepting a value that would make folder
+  ##                                      # names unreadable on disk. "^" and "%" are good choices.
   ## mailbox_list_reserved_segments: ["cur", "new", "tmp", "dbox-Mails"]
   ##                                      # names a single hierarchy segment may not equal, because the storage
   ##                                      # layout owns the directory. Retroactive: a user who already owns such

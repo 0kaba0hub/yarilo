@@ -1062,6 +1062,11 @@ func (u *userMailbox) folderCacheFor(folder string) *folderCache {
 // folderDiskName maps a logical UTF-8 folder name to the on-disk directory
 // component: NFC normalisation, then modified-UTF-7 when legacy encoding is set.
 func (u *userMailbox) folderDiskName(folder string) string {
+	// Escape first, encode second. The reverse path decodes and then
+	// unescapes, so the two are mirrored; escaping an already-encoded name
+	// works only while the escape character stays out of the base64 alphabet,
+	// which nothing here can promise (#1078).
+	folder = mailbox.EscapeLogicalName(folder, u.separator, ".", u.escapeChar)
 	if u.normalizeNFC {
 		folder = nfcNormalize(folder)
 	}
@@ -1107,7 +1112,7 @@ func (u *userMailbox) folderPath(folder string) string {
 		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.mailPath, mailbox.FolderSubpathEscaped("maildir", folder, u.folderDiskName(folder), u.separator, u.escapeChar))
+	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator))
 }
 
 // controlFolderPath returns the directory for per-folder control files
@@ -1124,7 +1129,7 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 			return filepath.Join(u.mailPath, invalidFolderMarker)
 		}
 	}
-	sub := mailbox.FolderSubpathEscaped("maildir", folder, u.folderDiskName(folder), u.separator, u.escapeChar)
+	sub := mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator)
 	if u.controlDir != "" {
 		if folder == "INBOX" {
 			return filepath.Join(u.controlDir, "INBOX")

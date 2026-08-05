@@ -155,3 +155,29 @@ func unhex(c byte) (byte, bool) {
 	}
 	return 0, false
 }
+
+// EscapeLogicalName escapes a whole hierarchical name, segment by segment,
+// before any encoding is applied to it.
+//
+// Order is the point. Escaping belongs at the logical-name boundary: escape,
+// then encode on the way in; decode, then unescape on the way out. Applying it
+// to an already-encoded name round-trips only while the two alphabets happen
+// not to overlap -- which held for "^" and broke for an escape character that
+// is a base64 digit, because modified-UTF-7 output is base64 and the reverse
+// pass then cannot tell an escape from encoded text (#1078).
+//
+// nsSep is the separator the client speaks: hierarchy it asked for is preserved,
+// and only what is inside a level is escaped.
+func EscapeLogicalName(name, nsSep, layoutSep, escape string) string {
+	if escape == "" || name == "" {
+		return name
+	}
+	if nsSep == "" {
+		nsSep = "/"
+	}
+	parts := strings.Split(name, nsSep)
+	for i, p := range parts {
+		parts[i] = EscapeStorageName(p, layoutSep, escape)
+	}
+	return strings.Join(parts, nsSep)
+}

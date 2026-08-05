@@ -110,3 +110,38 @@ func TestSizeFieldsResolve(t *testing.T) {
 		t.Fatal("malformed fts_decoder_max_size should fail validate")
 	}
 }
+
+// A value that cannot work is refused at load rather than accepted and left to
+// produce folders that are created and then never list (#1078).
+func TestValidateStorageEscapeChar(t *testing.T) {
+	cases := []struct {
+		in      string
+		refused bool
+	}{
+		{"", false}, // disabled
+		{"^", false},
+		{"%", false},
+		{"!", false},
+		{"^^", true},  // silently truncated to one byte before
+		{"esc", true}, //
+		{"B", true},   // base64 alphabet: sits inside modified-UTF-7 output
+		{"A", true},   //
+		{"1", true},   //
+		{"+", true},   //
+		{",", true},   //
+		{".", true},   // hierarchy separator
+		{"/", true},   //
+		{"&", true},   // modified-UTF-7 shift
+		{" ", true},   // not printable-visible
+		{"é", true},   // multi-byte
+	}
+	for _, tc := range cases {
+		err := validateStorageEscapeChar(tc.in)
+		switch {
+		case tc.refused && err == nil:
+			t.Errorf("validateStorageEscapeChar(%q) accepted it", tc.in)
+		case !tc.refused && err != nil:
+			t.Errorf("validateStorageEscapeChar(%q) = %v, want accepted", tc.in, err)
+		}
+	}
+}
