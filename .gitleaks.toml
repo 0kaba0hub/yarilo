@@ -16,3 +16,10 @@ condition = "AND"
 regexTarget = "match"
 regexes = ['abc123def456']
 paths = ['''internal/auth/client/client_test\.go''']
+
+[[allowlists]]
+description = "Example mailbox names in the storage-escaping tests. generic-api-key reads a dotted folder name in a comment as a high-entropy key: the finding is the literal Invoices.2026, which is the example the whole test file is about. AND-scoped to that file AND that literal."
+condition = "AND"
+regexTarget = "match"
+regexes = ['Invoices\.2026']
+paths = ['''internal/storage/mailboxbuild/escape_test\.go''']
