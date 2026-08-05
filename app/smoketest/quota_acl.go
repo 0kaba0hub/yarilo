@@ -132,9 +132,15 @@ func checkACL(user, pass string) error {
 	}
 
 	const folder = "SmokeACL"
-	// Best-effort pre-clean, then always clean up on exit.
-	c.deleteFolder(folder)
-	defer c.deleteFolder(folder)
+	// Best-effort pre-clean (the folder is usually absent), then always clean
+	// up on exit. The exit path reports: a cleanup that silently failed is how
+	// the next run inherits state it did not create.
+	_ = c.deleteFolder(folder)
+	defer func() {
+		if err := c.deleteFolder(folder); err != nil {
+			fmt.Printf("  cleanup %q: %v\n", folder, err)
+		}
+	}()
 
 	if _, err := c.cmd(fmt.Sprintf("CREATE %q", folder)); err != nil {
 		return fmt.Errorf("create %q: %w", folder, err)

@@ -119,8 +119,7 @@ func cleanupSmokeFolder(c *imapClient) error {
 	}
 	// DELETE needs the folder unselected on a server that holds the lock.
 	c.cmd("CLOSE") //nolint:errcheck
-	c.deleteFolder(smokeFolder)
-	return nil
+	return c.deleteFolder(smokeFolder)
 }
 
 // jmapMailboxID resolves a folder name to its JMAP id.
