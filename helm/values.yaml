@@ -169,7 +169,19 @@ storage:
   ## index_log_compact_min_age_secs: 300    # 5 min  — minimum log age before min-size compaction fires
   ## max_concurrent_writes: 0           # 0 = unlimited; tune to storage type: ~32 HDD, ~256 SSD
   ## mailbox_list_utf8: true            # true = UTF-8 on disk (default); false = modified-UTF-7 for legacy migrations
+  ##                                    # UPGRADE NOTE: before 2.3.55 this key was documented but never rendered,
+  ##                                    # and the default was not applied either, so names went to disk as
+  ##                                    # modified-UTF-7 regardless. A deployment that already holds non-ASCII
+  ##                                    # folder names created under those releases must set this to false to keep
+  ##                                    # reading them; ASCII-only installations are unaffected.
+  ##                                    # Note that false leaves the two trees naming one mailbox differently:
+  ##                                    # the index (and volatile, and FTS) path is built from the logical folder
+  ##                                    # name and is therefore always UTF-8, while the mail directory is
+  ##                                    # modified-UTF-7. That is not new — it is what those releases already do —
+  ##                                    # but it means a later move to UTF-8 renames only the mail directories;
+  ##                                    # the index side is already there.
   ## mailbox_list_normalize_to_nfc: true # true = NFC-normalise folder names (default)
+  ##                                    # Same upgrade note: unrendered and undefaulted before 2.3.55.
   ## mailbox_list_validate_fs_names: true # refuse folder names unsafe as paths: "."/".." segments, adjacent
   ##                                      # separators, leading "/" or "~", and the on-disk hierarchy separator
   ##                                      # when it differs from the namespace one (default true; turn off only
