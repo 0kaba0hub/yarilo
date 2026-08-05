@@ -308,6 +308,19 @@ only when, the peer lacks the lookup right.** With `l` the peer already knows
 the mailbox is there, so naming the missing right discloses nothing and is far
 more useful to a client and an operator.
 
+It reaches every command that names a mailbox, by two routes:
+
+- `SELECT`, `STATUS`, `DELETE`, `RENAME`, `METADATA`, `APPEND`, `COPY`, `MOVE`
+  and the rest go through `requireRight`;
+- `GETACL`, `MYRIGHTS`, `LISTRIGHTS`, `SETACL` and `DELETEACL` do not use
+  `requireRight` at all — they share `resolveACLHandle`, which applies the same
+  rule. They were missed on the first pass, and `GETACL` was worse than an
+  oracle while they were: it answered a peer holding no rights with the
+  mailbox's full ACL, including the implicit owner entry, which names the owner.
+
+`GETACL` and `LISTRIGHTS` additionally require the `a` right (RFC 4314 §4);
+`MYRIGHTS` does not, because it answers only about the caller.
+
 Two things this deliberately is *not*:
 
 - It is **not** a reordering of the thirteen commands that check existence
