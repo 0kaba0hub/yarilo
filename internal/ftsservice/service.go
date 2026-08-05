@@ -58,6 +58,15 @@ type Options struct {
 	// the cross-process lock, and Index runs on every delivery — a network
 	// round trip to decide something that changes once in a mailbox's life.
 	SpecialUseDefaults map[string]string
+	// IndexRoot is where FTS data lives: a location template expanded per user
+	// with ~/, %h, %u, %n and %d, as every other storage location is. Empty
+	// keeps today's behaviour, which is the mail index tree.
+	//
+	// It exists because the two have different durability requirements and no
+	// way to express it: FTS data is derived and can be deleted and rebuilt,
+	// mail cannot. It is also write-heavy, and putting that load on a separate
+	// volume is a deployment shape that could not be described.
+	IndexRoot string
 	// Separator is the hierarchy delimiter exclusion patterns are written in,
 	// from the personal namespace. Empty is treated as "/".
 	//
@@ -111,6 +120,9 @@ func New(opts Options) (*Service, error) {
 	}
 	if opts.Workers <= 0 {
 		opts.Workers = 1
+	}
+	if err := checkIndexRoot(opts.IndexRoot); err != nil {
+		return nil, err
 	}
 	if opts.LockMailbox == nil {
 		opts.LockMailbox = func(_, _ string, fn func() error) error { return fn() }
@@ -180,7 +192,7 @@ func (s *Service) handle(user string) (*userHandle, error) {
 	}
 	ui, err := s.opts.Engine.OpenUser(context.Background(), fts.UserRef{
 		Username:  user,
-		IndexRoot: indexRoot(info),
+		IndexRoot: s.indexRoot(info),
 		Driver:    info.Driver,
 		Separator: info.Separator,
 	})
@@ -209,9 +221,39 @@ func (s *Service) mailboxFor(info *mailbox.UserInfo) mailbox.MailboxBackend {
 	return s.opts.Mailbox
 }
 
-// indexRoot mirrors the fileindex root resolution: INDEX= override → mail
-// path → home.
-func indexRoot(info *mailbox.UserInfo) string {
+// checkIndexRoot refuses a root that resolves to the same directory for every
+// user.
+//
+// The per-folder subpath below the root separates mailboxes, not accounts, so a
+// template naming no user puts alice's INBOX index and bob's at the same path.
+// That is not over-indexing, which is recoverable; it is two accounts writing
+// the same files. Refusing to start is the only answer that does not corrupt
+// something quietly.
+func checkIndexRoot(tmpl string) error {
+	if tmpl == "" {
+		return nil
+	}
+	for _, v := range []string{"%h", "%u", "%n", "%d", "~/"} {
+		if strings.Contains(tmpl, v) {
+			return nil
+		}
+	}
+	return fmt.Errorf("ftsservice: fts_index_root %q names no user (%%h, %%u, %%n, %%d or ~/), "+
+		"so every account would share one index directory", tmpl)
+}
+
+// indexRoot resolves where this user's FTS data lives.
+//
+// The configured root wins when set; otherwise the resolution mirrors
+// fileindex's — INDEX= override, then mail path, then home — which is where FTS
+// data has always gone. Changing the setting on a running deployment leaves
+// the old data where it was and starts writing to the new place — the index
+// rebuilds itself on demand, which is the property that makes FTS data movable
+// at all.
+func (s *Service) indexRoot(info *mailbox.UserInfo) string {
+	if s.opts.IndexRoot != "" {
+		return mailbox.ExpandLocation(s.opts.IndexRoot, info.Home, info.Username)
+	}
 	if info.IndexDir != "" {
 		return info.IndexDir
 	}

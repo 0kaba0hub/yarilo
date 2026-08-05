@@ -2411,6 +2411,18 @@ fts:
   ## and few messages per shard, which rotate_count alone never catches.
   ## 0 disables the time-based trigger (rotate_count-only, explicit).
   fts_flatcurve_rotate_time: 5000
+  ## Where FTS data lives: a location template expanded per user with ~/, %h,
+  ## %u, %n and %d, like every other storage location. Empty keeps it inside the
+  ## mail index tree, which is where it has always gone.
+  ##
+  ## Worth setting when FTS and mail want different volumes. FTS data is
+  ## derived — deletable and rebuildable — while mail is not, and FTS is
+  ## write-heavy: index writes are about a third of the pipeline.
+  ##
+  ## Changing it moves nothing. The old data stays where it was and the index
+  ## rebuilds at the new location on demand; remove the old fts-flatcurve
+  ## directories by hand if the space matters.
+  fts_index_root: ""
   ## Mailboxes autoindexing skips: special-use flags written with their
   ## backslash, or names with * and ? wildcards. Empty excludes nothing.
   ##

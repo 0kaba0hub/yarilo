@@ -1172,3 +1172,29 @@ pattern is the fallback.
 **`fts_autoindex_skipped_total`** counts what the setting refuses. Without it an
 over-broad pattern looks exactly like an index that has quietly stopped being
 written, which is the failure mode of every silent filter.
+
+## Where the index lives
+
+`fts_index_root` is a location template, expanded per user with `~/`, `%h`,
+`%u`, `%n` and `%d` like every other storage location. Empty keeps FTS data
+inside the mail index tree, which is where it has always gone.
+
+```yaml
+fts_index_root: "/srv/fts/%d/%n"
+```
+
+It exists because the two kinds of data have different requirements and there
+was no way to say so. **FTS data is derived** — it can be deleted and rebuilt,
+and mail cannot — and it is **write-heavy**, index writes being about a third of
+the pipeline. Placing them on different volumes is a legitimate deployment shape
+that could not previously be described.
+
+**A template naming no user is refused at startup.** The per-folder subpath
+below the root separates mailboxes, not accounts, so `/srv/fts` would put two
+people's INBOX index at one path. That is not over-indexing, which heals on the
+next pass; it is two accounts writing the same files.
+
+**Changing it moves nothing.** The old data stays where it was and the index
+rebuilds at the new location on demand — which is safe precisely because the
+data is derived, and is also why the old `fts-flatcurve` directories have to be
+removed by hand if the space matters.
