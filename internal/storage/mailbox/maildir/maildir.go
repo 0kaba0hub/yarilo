@@ -227,7 +227,7 @@ func (u *userMailbox) Delete(folder string) error {
 		// name: whatever was validated above, this must not be the mail root.
 		// On maildir++ INBOX *is* that root, so the difference between
 		// removing a folder and removing an account is one path (#1069).
-		if err := mailbox.GuardDestructivePath(u.mailPath, path); err != nil {
+		if err := mailbox.GuardDestructivePath(u.mailPath, path, u.inboxPath); err != nil {
 			return err
 		}
 		return os.RemoveAll(path)
@@ -248,7 +248,10 @@ func (u *userMailbox) Rename(oldName, newName string) error {
 		// Either end landing on the root is the same fault: renaming the root
 		// away is as destructive as removing it, and renaming onto it buries
 		// the mailbox under a folder.
-		if err := mailbox.GuardDestructivePaths(u.mailPath, from, to); err != nil {
+		if err := mailbox.GuardDestructivePath(u.mailPath, from, u.inboxPath); err != nil {
+			return err
+		}
+		if err := mailbox.GuardDestructivePath(u.mailPath, to, u.inboxPath); err != nil {
 			return err
 		}
 		return os.Rename(from, to)

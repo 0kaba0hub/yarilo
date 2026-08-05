@@ -2,6 +2,7 @@ package mailbox
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +61,30 @@ func TestGuardDestructivePathsChecksEvery(t *testing.T) {
 	}
 	if err := GuardDestructivePaths(root, root, root+"/.B"); err == nil {
 		t.Error("a rename of the root was allowed")
+	}
+}
+
+// With a separate mail_path, the INBOX directory can sit outside the folder
+// root. It is still the mailbox, and the refusal should say so: "outside the
+// root" describes a misplaced folder, which is the wrong fault to report and
+// the wrong thing for an operator to go looking for.
+func TestGuardNamesTheMailboxRatherThanCallingItMisplaced(t *testing.T) {
+	const root = "/var/mail/u/Maildir"
+	const inbox = "/var/spool/inbox/u"
+
+	err := GuardDestructivePath(root, inbox, inbox)
+	if err == nil {
+		t.Fatal("the INBOX directory was allowed")
+	}
+	if !errors.Is(err, ErrPathIsRoot) {
+		t.Errorf("refusal does not carry ErrPathIsRoot: %v", err)
+	}
+	if !strings.Contains(err.Error(), "is the mailbox itself") {
+		t.Errorf("refusal = %v; it should say the path is the mailbox, not that it is misplaced", err)
+	}
+
+	// An ordinary folder is unaffected by the extra root.
+	if err := GuardDestructivePath(root, root+"/.Archive", inbox); err != nil {
+		t.Errorf("an ordinary folder was refused: %v", err)
 	}
 }
