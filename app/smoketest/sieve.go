@@ -301,8 +301,49 @@ func (c *imapClient) deleteUIDs(uids []string) error {
 	return err
 }
 
-func (c *imapClient) deleteFolder(folder string) {
-	c.cmd(fmt.Sprintf("DELETE %q", folder)) //nolint:errcheck
+// isMailRoot reports whether folder names the user's mailbox itself rather than
+// a folder inside it. On maildir INBOX *is* the mail root, so deleting it takes
+// the account (#1063).
+func isMailRoot(folder string) bool {
+	return folder == "" || strings.EqualFold(folder, "INBOX")
+}
+
+// deleteFolder removes a folder the smoke run created.
+//
+// It refuses the mail root outright. The server refuses it too since 2.3.52,
+// but this is the caller that asked, and a test suite that asks to destroy an
+// account is a defect whether or not the server declines -- the refusal has to
+// be visible here, in the run's own output, rather than inferred from a server
+// log nobody reads during a smoke run.
+//
+// The error is returned rather than discarded. Discarding it is how a cleanup
+// that deleted the wrong thing kept reporting success (#1063, #1070).
+func (c *imapClient) deleteFolder(folder string) error {
+	if isMailRoot(folder) {
+		return fmt.Errorf("smoketest: refusing to DELETE %q: that is the mailbox itself, not a folder in it", folder)
+	}
+	if _, err := c.cmd(fmt.Sprintf("DELETE %q", folder)); err != nil {
+		return fmt.Errorf("DELETE %q: %w", folder, err)
+	}
+	return nil
+}
+
+// removeSeeded expunges only the messages this run injected, found by their
+// Message-ID. Used where the folder must survive the cleanup -- which is every
+// check against INBOX, since the alternative there is emptying a live mailbox.
+func (c *imapClient) removeSeeded(ids []string) error {
+	var uids []string
+	for _, id := range ids {
+		found, err := c.uidSearch(fmt.Sprintf("HEADER Message-Id %q", id))
+		if err != nil {
+			return fmt.Errorf("UID SEARCH for %s: %w", id, err)
+		}
+		uids = append(uids, found...)
+	}
+	if len(uids) == 0 {
+		return nil
+	}
+	return c.deleteUIDs(uids)
 }
 
 // ── per-test helpers ───────────────────────────────────────────────────────
@@ -330,7 +371,38 @@ func createFolder(user, pass, folder string) error {
 	return nil
 }
 
-func checkFolder(user, pass, folder string) error {
+// cleanupAfterCheck disposes of what a check delivered.
+//
+// A folder the run created is removed whole; the mail root is not, so only the
+// messages named in seeded leave it. Splitting on the folder rather than on the
+// call site is deliberate: the destructive choice then lives in one place
+// instead of at each of the fourteen callers.
+func (c *imapClient) cleanupAfterCheck(folder string, seeded []string) error {
+	if isMailRoot(folder) {
+		return c.removeSeeded(seeded)
+	}
+	return c.deleteFolder(folder)
+}
+
+// checkFolder waits for folder to hold a delivered message, then cleans up
+// after itself.
+//
+// seeded carries the Message-IDs this check injected. It is required when
+// folder is the mail root and unused otherwise: a folder the run created is
+// removed whole, which disposes of its messages, but INBOX must survive, so
+// only the seeded messages may be removed from it.
+//
+// The old cleanup ran UID SEARCH ALL followed by an expunge, then a DELETE, for
+// every folder including INBOX. Against a live account that emptied the mailbox
+// and destroyed it; with the server-side refusals in place it merely empties it
+// -- quieter, equally destructive, and invisible because the errors were
+// discarded (#1063, #1070).
+func checkFolder(user, pass, folder string, seeded ...string) error {
+	if isMailRoot(folder) && len(seeded) == 0 {
+		return fmt.Errorf("smoketest: checkFolder(%q) has nothing to clean up by: "+
+			"a check against the mailbox root must name the messages it injected, "+
+			"or its cleanup empties the account", folder)
+	}
 	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
 	for {
@@ -350,10 +422,11 @@ func checkFolder(user, pass, folder string) error {
 			// returns NONEXISTENT — keep polling
 			lastErr = selErr
 		case exists >= 1:
-			uids, _ := c.uidSearch("ALL")
-			c.deleteUIDs(uids) //nolint:errcheck
-			c.deleteFolder(folder)
+			err := c.cleanupAfterCheck(folder, seeded)
 			c.close()
+			if err != nil {
+				return fmt.Errorf("cleanup after checking %q: %w", folder, err)
+			}
 			return nil
 		}
 		c.close()
@@ -386,7 +459,9 @@ func checkAbsentInInbox(user, pass, subjectToken string) error {
 		return err
 	}
 	if len(uids) > 0 {
-		c.deleteUIDs(uids) //nolint:errcheck
+		if err := c.deleteUIDs(uids); err != nil {
+			fmt.Printf("  cleanup: expunging %d seeded message(s): %v\n", len(uids), err)
+		}
 		return fmt.Errorf("found %d unexpected message(s) with subject %q in INBOX", len(uids), subjectToken)
 	}
 	return nil
@@ -413,7 +488,9 @@ func cleanInboxBySubject(user, pass, subjectToken string) (int, error) {
 			return 0, err
 		}
 		if len(uids) > 0 {
-			c.deleteUIDs(uids) //nolint:errcheck
+			if err := c.deleteUIDs(uids); err != nil {
+				fmt.Printf("  cleanup: expunging %d seeded message(s): %v\n", len(uids), err)
+			}
 			c.close()
 			return len(uids), nil
 		}
@@ -457,7 +534,12 @@ func testSieveMailbox(user, pass, to string) error {
 		if err := c.login(user, pass); err != nil {
 			return
 		}
-		c.deleteFolder(folder)
+		// Pre-clean of a leftover from an earlier run: the folder is usually
+		// absent, so the error is expected and only worth a line if it is not
+		// a plain "no such mailbox".
+		if err := c.deleteFolder(folder); err != nil && !strings.Contains(err.Error(), "NONEXISTENT") {
+			fmt.Printf("  pre-clean %q: %v\n", folder, err)
+		}
 	}()
 	script := fmt.Sprintf("require [\"fileinto\",\"mailbox\"];\nfileinto :create %q;\n", folder)
 	if err := sieveInject(script, "sender@test.invalid", to, uniqueID(), "mailbox:create test", "body"); err != nil {
@@ -504,7 +586,9 @@ func testSieveImap4flags(user, pass, to string) error {
 			flagged = true
 		}
 	}
-	c.deleteUIDs(uids) //nolint:errcheck
+	if err := c.deleteUIDs(uids); err != nil {
+		fmt.Printf("  cleanup: expunging %d seeded message(s): %v\n", len(uids), err)
+	}
 	if !flagged {
 		return fmt.Errorf("message is not \\Flagged")
 	}
@@ -602,7 +686,9 @@ func testSieveDuplicate(user, pass, to string) error {
 	}
 	if _, err := c.selectFolder("INBOX"); err == nil {
 		uids, _ := c.uidSearch(fmt.Sprintf("HEADER Message-ID \"<%s>\"", fixedID))
-		c.deleteUIDs(uids) //nolint:errcheck
+		if err := c.deleteUIDs(uids); err != nil {
+			fmt.Printf("  cleanup: expunging %d seeded message(s): %v\n", len(uids), err)
+		}
 	}
 	return checkFolder(user, pass, folder)
 }
@@ -763,7 +849,9 @@ func inboxWaitByID(user, pass, id, failMsg string) error {
 			return fmt.Errorf("UID SEARCH: %w", err)
 		}
 		if len(uids) > 0 {
-			c.deleteUIDs(uids) //nolint:errcheck
+			if err := c.deleteUIDs(uids); err != nil {
+				fmt.Printf("  cleanup: expunging %d seeded message(s): %v\n", len(uids), err)
+			}
 			c.close()
 			return nil
 		}
@@ -798,7 +886,9 @@ func inboxWaitByUID(user, pass string, uidnext int, failMsg string) error {
 			return fmt.Errorf("UID SEARCH: %w", err)
 		}
 		if len(uids) > 0 {
-			c.deleteUIDs(uids) //nolint:errcheck
+			if err := c.deleteUIDs(uids); err != nil {
+				fmt.Printf("  cleanup: expunging %d seeded message(s): %v\n", len(uids), err)
+			}
 			c.close()
 			return nil
 		}
@@ -997,7 +1087,9 @@ func testIMAPObjectID(user, pass, to string) error {
 	if !strings.Contains(joined(f), "EMAILID (") {
 		return fmt.Errorf("FETCH missing EMAILID: %s", joined(f))
 	}
-	c.deleteUIDs(uids) //nolint:errcheck
+	if err := c.deleteUIDs(uids); err != nil {
+		fmt.Printf("  cleanup: expunging %d seeded message(s): %v\n", len(uids), err)
+	}
 	return nil
 }
 
@@ -1039,7 +1131,9 @@ func testSieveMaxActions(user, pass, to string) error {
 	if err := lmtpSend(id, "s@test.invalid", to, "maxactions", "body"); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
-	return checkFolder(user, pass, "INBOX") // implicit keep
+	// implicit keep lands in INBOX, so the cleanup is scoped to this message:
+	// the mailbox belongs to the account, not to the smoke run.
+	return checkFolder(user, pass, "INBOX", id)
 }
 
 // testSieveMailboxID verifies RFC 9042: fileinto :mailboxid delivers to the
@@ -1198,7 +1292,9 @@ func testSieveReport(user, pass, to string) error {
 	// its own subject. Emptying INBOX would take the account's mail with it,
 	// and nothing in this tool's flags says the account is disposable (#1056).
 	if len(reportUIDs) > 0 {
-		c.deleteUIDs(reportUIDs) //nolint:errcheck
+		if err := c.deleteUIDs(reportUIDs); err != nil {
+			fmt.Printf("  cleanup: expunging %d report message(s): %v\n", len(reportUIDs), err)
+		}
 	}
 	if _, err := cleanInboxBySubject(user, pass, trigger); err != nil {
 		return fmt.Errorf("cleanup of the trigger message: %w", err)
