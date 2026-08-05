@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1128,7 +1129,7 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 		}
 	}
 	if err := h.box.Create(rel); err != nil {
-		return err
+		return nameError(err)
 	}
 	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr for
 	// later LIST replies. The RFC allows one attr per folder; honour the
@@ -1141,6 +1142,22 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 	}
 	s.emitMailboxList(locks.EventMailboxCreate, name)
 	return nil
+}
+
+// nameError converts a folder-name refusal from the storage layer into a
+// protocol answer. Anything the library does not recognise as an *imap.Error
+// becomes NO [SERVERBUG] "Internal server error", which tells the client the
+// server is broken and sends the operator hunting a crash that never happened
+// -- the name was simply invalid (#1072).
+func nameError(err error) error {
+	if err == nil || !errors.Is(err, mailbox.ErrInvalidFolderName) {
+		return err
+	}
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Code: imaplib.ResponseCodeCannot,
+		Text: "Invalid mailbox name",
+	}
 }
 
 func (s *session) Delete(name string) error {
@@ -1183,7 +1200,7 @@ func (s *session) Delete(name string) error {
 		return err
 	}
 	if err := h.box.Delete(rel); err != nil {
-		return err
+		return nameError(err)
 	}
 	// drop the folder's index state. Non-fatal: the mailbox is already
 	// gone; any orphan index dir is reclaimed on next rebuild.
@@ -1243,7 +1260,7 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 		return err
 	}
 	if err := hOld.box.Rename(relOld, relNew); err != nil {
-		return err
+		return nameError(err)
 	}
 	if err := hOld.idx.RenameFolder(relOld, relNew); err != nil {
 		return err
@@ -1545,6 +1562,21 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if err != nil {
 		return nil, err
 	}
+	// Existence is checked before the index is touched, matching SELECT.
+	// Without it OpenFolder *creates* the folder's index, so STATUS on a name
+	// that resolves outside the mailbox initialised a fresh index at that
+	// path and reported it as an empty mailbox (#1072).
+	exists, err := h.box.FolderExists(rel)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
+	}
 	if err := s.requireRight(h, rel, mailbox.RightRead); err != nil {
 		return nil, err
 	}
@@ -1627,7 +1659,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	tAppend := time.Now()
 	h, rel, f, err := s.ensureFolderHandle(name)
 	if err != nil {
-		return nil, err
+		return nil, tryCreate(err)
 	}
 	if err := s.requireRight(h, rel, insertRight(h.spec)); err != nil {
 		return nil, err
@@ -2805,14 +2837,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	srcBox := s.folderBox()
 	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
 	if err != nil {
-		return nil, err
-	}
-	exists, err := destH.box.FolderExists(destRel)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+		return nil, tryCreate(err)
 	}
 	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
 		return nil, err
@@ -3095,6 +3120,21 @@ func (s *session) metadataResolve(folder string) (*nsHandle, [16]byte, error) {
 			return nil, [16]byte{}, err
 		}
 	}
+	// The last OpenFolder outside ensureFolderHandle, and it carried the same
+	// defect: METADATA on a name that resolves outside the mailbox answered OK
+	// and left a complete index behind for a mailbox that does not exist
+	// (#1072).
+	exists, err := h.box.FolderExists(rel)
+	if err != nil {
+		return nil, [16]byte{}, err
+	}
+	if !exists {
+		return nil, [16]byte{}, &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
+	}
 	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox lookup failed: " + err.Error()}
@@ -3157,14 +3197,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	srcBox := s.folderBox()
 	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
 	if err != nil {
-		return err
-	}
-	exists, err := destH.box.FolderExists(destRel)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+		return tryCreate(err)
 	}
 	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
 		return err
@@ -3324,6 +3357,11 @@ func (l *slogLogger) Printf(format string, args ...interface{}) {
 // folder lives on (APPEND, COPY, MOVE, METADATA). Re-uses the
 // currently-SELECTed folder when name matches, to avoid re-OpenFolder
 // round-trips inside short-lived ops.
+// errFolderNotFound reports a mailbox that does not exist. Each caller answers
+// with its own response code -- APPEND, COPY and MOVE owe the client TRYCREATE
+// (RFC 9051), which NONEXISTENT would not tell it.
+var errFolderNotFound = errors.New("imap: no such mailbox")
+
 func (s *session) ensureFolderHandle(name string) (*nsHandle, string, *mailbox.Folder, error) {
 	h, rel, err := s.dispatch(name)
 	if err != nil {
@@ -3332,11 +3370,39 @@ func (s *session) ensureFolderHandle(name string) (*nsHandle, string, *mailbox.F
 	if s.folder != nil && s.folder.Name == rel && s.folderNS == h {
 		return h, rel, s.folder, nil
 	}
+	// Existence is checked before the index is opened, not after. OpenFolder
+	// creates what it is asked for with a fresh UIDVALIDITY, so every caller
+	// that checked afterwards had already made index state for a mailbox that
+	// does not exist -- the same defect STATUS had, reached through APPEND,
+	// COPY and MOVE (#1072).
+	exists, err := h.box.FolderExists(rel)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if !exists {
+		return nil, "", nil, errFolderNotFound
+	}
 	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, "", nil, err
 	}
 	return h, rel, f, nil
+}
+
+// tryCreate turns the sentinel into the answer APPEND, COPY and MOVE owe a
+// client naming a mailbox that is not there, and a storage name refusal into
+// CANNOT. Anything else the library reports as an internal server error.
+func tryCreate(err error) error {
+	switch {
+	case errors.Is(err, errFolderNotFound):
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeTryCreate,
+			Text: "No such mailbox",
+		}
+	default:
+		return nameError(err)
+	}
 }
 
 func listMatch(name string, patterns []string) bool {

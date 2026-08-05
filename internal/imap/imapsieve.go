@@ -116,13 +116,18 @@ func (s *session) applyImapSieveResult(res *sieve.FilterResult, h *nsHandle, rel
 
 // imapSieveFileInto stores a copy of raw into the named mailbox.
 func (s *session) imapSieveFileInto(name string, raw []byte, flags []string, create bool) {
+	// :create runs before the handle is opened, not after. Opening no longer
+	// initialises the index for a mailbox that is not there (#1072), so the
+	// folder has to exist by the time the handle is taken.
+	if create {
+		if h, rel, derr := s.dispatch(name); derr == nil {
+			_ = h.box.Create(rel) // idempotent for imapsieve fileinto :create
+		}
+	}
 	dh, drel, df, err := s.ensureFolderHandle(name)
 	if err != nil {
 		slog.Warn("imapsieve: fileinto target", "folder", name, "err", err)
 		return
-	}
-	if create {
-		_ = dh.box.Create(drel) // idempotent for imapsieve fileinto :create
 	}
 	newFilename, vsize, guid, err := dh.box.Save(drel, bytes.NewReader(raw), 0, int64(len(raw)), flags, [16]byte{})
 	if err != nil {
