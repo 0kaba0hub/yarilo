@@ -193,6 +193,27 @@ storage:
   ##                                      # ordinary names such as example.com, and on maildir a nested "a/b" and
   ##                                      # a dotted "a.b" are the same bytes on disk, so existing names cannot be
   ##                                      # audited by reading the filesystem. Turn on for new deployments.
+  ##                                      # NOTE: with this off and no escape char set, such a name is not "kept"
+  ##                                      # on maildir — it is reinterpreted. CREATE "Invoices.2026" is accepted
+  ##                                      # and LIST returns "Invoices/2026": a parent and a child the client
+  ##                                      # never asked for. SELECT of the original name still works, so a client
+  ##                                      # that does not LIST never learns of the substitution. Set
+  ##                                      # mailbox_list_storage_escape_char to keep such names literal.
+  ## mailbox_list_storage_escape_char: "^"
+  ##                                      # single character; "" (default) disables escaping. When set, a folder
+  ##                                      # name is kept literal on disk: the layout separator the client wrote is
+  ##                                      # stored as <char><hex>, so "Invoices.2026" stays one mailbox and is
+  ##                                      # listed as written, while "a/b" still nests. It also makes the name
+  ##                                      # portable — the same folder is one mailbox on maildir and on dbox, so a
+  ##                                      # format migration preserves it.
+  ##                                      # NOT retroactive: a folder already on disk as ".Invoices.2026" keeps
+  ##                                      # listing as "Invoices/2026". Only folders created after it is enabled
+  ##                                      # are stored escaped. Changing or unsetting the character later has the
+  ##                                      # same effect in reverse, so pick one before creating mail.
+  ##                                      # When set, it supersedes the two refusals that exist because such names
+  ##                                      # could not be represented: the layout separator and reserved segments
+  ##                                      # are escaped and stored rather than refused. Traversal names are still
+  ##                                      # refused.
   ## mailbox_list_reserved_segments: ["cur", "new", "tmp", "dbox-Mails"]
   ##                                      # names a single hierarchy segment may not equal, because the storage
   ##                                      # layout owns the directory. Retroactive: a user who already owns such

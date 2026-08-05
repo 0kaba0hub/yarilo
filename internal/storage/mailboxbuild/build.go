@@ -35,6 +35,7 @@ func ByDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailb
 		ValidateFSNames:       sc.MailboxListValidateFSNames,
 		RefuseLayoutSeparator: sc.MailboxListRefuseLayoutSeparator,
 		ReservedSegments:      sc.MailboxListReservedSegments,
+		StorageEscapeChar:     sc.MailboxListStorageEscapeChar,
 	})
 }
 

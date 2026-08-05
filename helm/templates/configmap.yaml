@@ -631,6 +631,9 @@ data:
       {{- if hasKey $storage "mailbox_list_refuse_layout_separator" }}
       mailbox_list_refuse_layout_separator: {{ $storage.mailbox_list_refuse_layout_separator }}
       {{- end }}
+      {{- if hasKey $storage "mailbox_list_storage_escape_char" }}
+      mailbox_list_storage_escape_char: {{ $storage.mailbox_list_storage_escape_char | quote }}
+      {{- end }}
       {{- if hasKey $storage "mailbox_list_reserved_segments" }}
       mailbox_list_reserved_segments: {{ toJson $storage.mailbox_list_reserved_segments }}
       {{- end }}

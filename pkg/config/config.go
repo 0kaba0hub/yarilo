@@ -1886,6 +1886,26 @@ type StorageConfig struct {
 	// this refuses (#1069).
 	MailboxListRefuseLayoutSeparator bool `koanf:"mailbox_list_refuse_layout_separator"`
 
+	// MailboxListStorageEscapeChar keeps a client's folder name literal when
+	// the storage layout would otherwise reinterpret it. A single character;
+	// empty (the default) disables escaping and changes nothing.
+	//
+	// With namespace separator "/" over maildir++, "Invoices.2026" is written
+	// flat and read back as two levels, so the client is handed
+	// "Invoices/2026" -- a mailbox it never created. With an escape character
+	// the literal separator is stored as <escape><hex> and the name comes back
+	// as it was written. It also makes the name portable: the same folder is
+	// one mailbox on maildir and on dbox, so a format migration preserves it.
+	//
+	// Enabling it is NOT retroactive. A folder already on disk as
+	// ".Invoices.2026" keeps reading as "Invoices/2026"; only folders created
+	// afterwards are stored escaped (#1078).
+	//
+	// When set, it supersedes the refusals that exist because such names could
+	// not be represented: a name carrying the layout separator or a reserved
+	// segment is escaped and stored rather than refused.
+	MailboxListStorageEscapeChar string `koanf:"mailbox_list_storage_escape_char"`
+
 	// MailboxListReservedSegments are names a single hierarchy segment may not
 	// equal, because the storage layout owns the directory: cur, new, tmp and
 	// dbox-Mails. A folder called "cur" corrupts the mailbox from inside

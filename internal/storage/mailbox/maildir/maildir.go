@@ -106,6 +106,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		explicitMailPath: explicit,
 		controlDir:       u.ControlDir,
 		separator:        mailbox.SepOrDefault(u.Separator),
+		escapeChar:       u.StorageEscapeChar,
 		username:         u.Username,
 		owner:            makeOwner(u),
 		listUTF8:         b.listUTF8,
@@ -132,6 +133,7 @@ type userMailbox struct {
 	explicitMailPath bool   // true when MailPath was set by userdb (changes INBOX layout)
 	controlDir       string // CONTROL= override root (empty = co-located with home)
 	separator        string // IMAP hierarchy separator; converted to "." on disk (maildir++)
+	escapeChar       string // storage-name escape char; "" disables escaping
 	username         string
 	owner            string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
 	listUTF8         bool                    // mirrors Backend.listUTF8
@@ -605,8 +607,16 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 			logical = nfcNormalize(logical)
 		}
 		// maildir++ stores hierarchy flat with "."; map it back to the
-		// namespace's IMAP separator (every "." is a level).
-		if u.separator != "." {
+		// namespace's IMAP separator (every "." is a level). With escaping on,
+		// a "." the client wrote literally is not one of those levels: it is
+		// an escape sequence, decoded per level after the split.
+		if u.escapeChar != "" {
+			parts := strings.Split(logical, ".")
+			for i, p := range parts {
+				parts[i] = mailbox.UnescapeStorageName(p, u.escapeChar)
+			}
+			logical = strings.Join(parts, u.separator)
+		} else if u.separator != "." {
 			logical = strings.ReplaceAll(logical, ".", u.separator)
 		}
 		folders = append(folders, mailbox.FolderEntry{Name: logical, Selectable: true})
@@ -1097,7 +1107,7 @@ func (u *userMailbox) folderPath(folder string) string {
 		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator))
+	return filepath.Join(u.mailPath, mailbox.FolderSubpathEscaped("maildir", folder, u.folderDiskName(folder), u.separator, u.escapeChar))
 }
 
 // controlFolderPath returns the directory for per-folder control files
@@ -1114,7 +1124,7 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 			return filepath.Join(u.mailPath, invalidFolderMarker)
 		}
 	}
-	sub := mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator)
+	sub := mailbox.FolderSubpathEscaped("maildir", folder, u.folderDiskName(folder), u.separator, u.escapeChar)
 	if u.controlDir != "" {
 		if folder == "INBOX" {
 			return filepath.Join(u.controlDir, "INBOX")

@@ -58,14 +58,14 @@ func TestStore_GlobalMergeAndGlobalsOnly(t *testing.T) {
 	}
 
 	// Global grants bob lr on a mailbox with no local ACL.
-	s := New(t.TempDir(), "", "mdbox", "/", "alice", "test", Policy{Global: global}, nil)
+	s := New(t.TempDir(), "", "mdbox", "/", "", "alice", "test", Policy{Global: global}, nil)
 	if got, _ := s.EffectiveFor("Projects", "bob", nil, false, '/'); got != "lr" {
 		t.Errorf("global grant: EffectiveFor(Projects, bob)=%q, want lr", got)
 	}
 
 	// Local ACL adds on top of the global one.
 	home := t.TempDir()
-	s2 := New(home, "", "mdbox", "/", "alice", "test", Policy{Global: global}, nil)
+	s2 := New(home, "", "mdbox", "/", "", "alice", "test", Policy{Global: global}, nil)
 	if err := s2.Set("Projects", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "i"},
 	}); err != nil {
@@ -76,7 +76,7 @@ func TestStore_GlobalMergeAndGlobalsOnly(t *testing.T) {
 	}
 
 	// globals_only ignores the local ACL entirely.
-	s3 := New(home, "", "mdbox", "/", "alice", "test", Policy{Global: global, GlobalsOnly: true}, nil)
+	s3 := New(home, "", "mdbox", "/", "", "alice", "test", Policy{Global: global, GlobalsOnly: true}, nil)
 	if got, _ := s3.EffectiveFor("Projects", "bob", nil, false, '/'); got != "lr" {
 		t.Errorf("globals_only: EffectiveFor(Projects, bob)=%q, want lr (local ignored)", got)
 	}

@@ -548,7 +548,7 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 	// acl_defaults_from_inbox applies to private / shared namespaces only.
 	defaultsFromInbox := s.opts.ACLDefaultsFromInbox && ns.Type != "public"
 	lockOwner := fmt.Sprintf("yarilo-lmtp/%d/%s", os.Getpid(), ui.Username)
-	store := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.Username, lockOwner, acl.Policy{
+	store := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.StorageEscapeChar, ui.Username, lockOwner, acl.Policy{
 		DefaultsFromInbox: defaultsFromInbox,
 		GlobalsOnly:       s.opts.ACLGlobalsOnly,
 		Global:            s.opts.ACLGlobal,

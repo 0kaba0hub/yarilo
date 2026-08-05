@@ -199,6 +199,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			mailPath:    u.MailPath,
 			driver:      u.Driver,
 			separator:   mailbox.SepOrDefault(u.Separator),
+			escapeChar:  u.StorageEscapeChar,
 			volatileDir: u.VolatileDir,
 			indexRoot:   u.IndexDir,
 			username:    u.Username,
@@ -361,6 +362,7 @@ type userIndex struct {
 	mailPath    string // mail root; index co-locates here when INDEX= is unset
 	driver      string // mailbox driver; selects the per-folder layout
 	separator   string // IMAP hierarchy separator; passed to FolderSubpath
+	escapeChar  string // storage-name escape char; must match the mailbox driver or the trees diverge
 	volatileDir string // base volatile dir (empty = disabled)
 	indexRoot   string // INDEX= override root (empty = co-located with mail root)
 	username    string
@@ -547,7 +549,7 @@ func (u *userIndex) indexRootDir() string {
 // indexDir is the per-folder index directory: the index root joined with the
 // driver's folder sub-layout, so the index mirrors the mailbox tree.
 func (u *userIndex) indexDir(folder string) string {
-	return filepath.Join(u.indexRootDir(), mailbox.FolderSubpath(u.driver, folder, folder, u.separator))
+	return filepath.Join(u.indexRootDir(), mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar))
 }
 
 // folderVolatileDir returns the per-folder volatile directory when
@@ -556,7 +558,7 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 	if u.volatileDir == "" {
 		return ""
 	}
-	return filepath.Join(u.volatileDir, mailbox.FolderSubpath(u.driver, folder, folder, u.separator))
+	return filepath.Join(u.volatileDir, mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar))
 }
 
 // withFolderRO reloads the folder state, then runs read-only fn against the

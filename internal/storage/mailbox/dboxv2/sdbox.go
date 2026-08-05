@@ -101,6 +101,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		b:            b,
 		home:         mailPath,
 		separator:    mailbox.SepOrDefault(u.Separator),
+		escapeChar:   u.StorageEscapeChar,
 		username:     u.Username,
 		owner:        makeOwner(u),
 		listUTF8:     b.listUTF8,
@@ -113,6 +114,7 @@ type userMailbox struct {
 	b            *Backend
 	home         string
 	separator    string // IMAP hierarchy separator; converted to "/" on disk (fs nesting)
+	escapeChar   string // storage-name escape char; "" disables escaping
 	username     string
 	owner        string
 	listUTF8     bool
@@ -584,6 +586,10 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 		if u.normalizeNFC {
 			logical = mboxenc.NFC(logical)
 		}
+		// Outermost on the way back: the escape sits at the logical-name
+		// boundary, above modUTF7 and NFC, so it is applied last here and
+		// first on the way in (#1078).
+		logical = mailbox.UnescapeStorageName(logical, u.escapeChar)
 		return logical, true
 	}
 	isMarker := func(name string) bool { return name == dboxMailsDir }
@@ -668,7 +674,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpath("sdbox", folder, u.folderDiskName(folder), u.separator))
+	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpathEscaped("sdbox", folder, u.folderDiskName(folder), u.separator, u.escapeChar))
 }
 
 // folderDir is the mailbox directory (mailboxes/<name>) — folderPath without
