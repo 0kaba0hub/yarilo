@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
-
-	mailboxpkg "github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // RFC 4314 §3.3: the ACL commands answer NO for a mailbox that does not exist.
@@ -111,10 +109,7 @@ func TestRenameDestinationIsNotReportedAsAServerBug(t *testing.T) {
 // else. A stored ".." can only ever produce a subscription no command can act
 // on, handed back by LSUB as though it meant something (#1075).
 func TestSubscribeRefusesNamesNoCommandWouldAccept(t *testing.T) {
-	// Wrapped as mailboxbuild.ByDriver wraps it in production: the rules live
-	// in the decorator, so a test on a bare driver would assert nothing.
-	mb := mailboxpkg.Validating(maildirBackend(t), mailboxpkg.DefaultNameRules())
-	c := startServerWith(t, mb)
+	c := startServerWith(t, maildirBackend(t))
 	defer func() { c.Logout().Wait() }() //nolint:errcheck
 
 	for _, name := range []string{"..", ".", "../victim@x/Maildir"} {
