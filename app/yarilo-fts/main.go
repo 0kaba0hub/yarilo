@@ -92,6 +92,7 @@ func main() {
 	svc, err := ftsservice.New(ftsservice.Options{
 		Engine:             engine,
 		AutoindexExclude:   cfg.FTS.AutoindexExclude,
+		IndexRoot:          cfg.FTS.IndexRoot,
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
 		Separator:          personalSeparator(cfg),
 		Mailbox:            backend.BuildMailbox(cfg.Storage, locker),

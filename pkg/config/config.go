@@ -899,6 +899,20 @@ type FTSConfig struct {
 	LanguageTokenizerWB5A           bool   `koanf:"fts_language_tokenizer_generic_wb5a"`
 	LanguageTokenizerExplicitPrefix bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
 
+	// IndexRoot is where FTS data lives: a location template expanded per user
+	// with ~/, %h, %u, %n and %d, like every other storage location. Empty
+	// keeps it inside the mail index tree, which is where it has always gone.
+	//
+	// FTS data is derived — it can be deleted and rebuilt; mail cannot — and
+	// it is write-heavy. Those are different durability and I/O requirements
+	// with, until now, no way to place them accordingly.
+	//
+	// Changing it on a running deployment does not move anything: the old data
+	// stays where it was and the index rebuilds at the new location on demand.
+	// That is safe precisely because the data is derived, and it is also why
+	// the old directories have to be removed by hand if the space matters.
+	IndexRoot string `koanf:"fts_index_root"`
+
 	// AutoindexExclude lists mailboxes autoindexing skips: special-use flags
 	// written with their backslash ("\\Junk"), or names with * and ? wildcards
 	// (".EXPUNGED/*"). Empty excludes nothing.
