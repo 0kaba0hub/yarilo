@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -19,9 +20,17 @@ import (
 // The dbox layouts survived the same names because they put every folder under
 // a subdirectory, which is why this looked driver-specific rather than like the
 // missing check it is.
+// ErrInvalidFolderName marks every refusal from ValidateFolderName so a
+// protocol layer can answer "you named something invalid" rather than the
+// generic internal-error reply it gives an unrecognised error. CREATE with a
+// traversal name answered NO [SERVERBUG], which tells the client the server is
+// broken and sends the operator looking for a crash that never happened
+// (#1072).
+var ErrInvalidFolderName = errors.New("mailbox: invalid folder name")
+
 func ValidateFolderName(name, sep string) error {
 	if name == "" {
-		return fmt.Errorf("mailbox: empty folder name resolves to the mailbox root")
+		return fmt.Errorf("%w: empty name resolves to the mailbox root", ErrInvalidFolderName)
 	}
 	if sep == "" {
 		sep = "/"
@@ -33,12 +42,12 @@ func ValidateFolderName(name, sep string) error {
 		for _, segment := range strings.Split(name, s) {
 			switch segment {
 			case ".", "..":
-				return fmt.Errorf("mailbox: folder name %q contains a %q path segment", name, segment)
+				return fmt.Errorf("%w: %q contains a %q path segment", ErrInvalidFolderName, name, segment)
 			}
 		}
 	}
 	if strings.Contains(name, "\x00") {
-		return fmt.Errorf("mailbox: folder name contains a NUL")
+		return fmt.Errorf("%w: name contains a NUL", ErrInvalidFolderName)
 	}
 	return nil
 }
