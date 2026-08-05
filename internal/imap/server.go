@@ -1281,7 +1281,12 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 // messages are moved to the new mailbox; INBOX itself is cleared but not deleted.
 func (s *session) renameInbox(dest string) error {
 	if err := s.box.Create(dest); err != nil {
-		return fmt.Errorf("imap/rename-inbox create: %w", err)
+		// The destination is a name the client chose, so a refusal of it is a
+		// client error. Wrapping it plainly made the library report an
+		// internal server error, while the source argument one branch up
+		// answered correctly -- two answers to the same kind of mistake
+		// (#1075).
+		return nameError(fmt.Errorf("imap/rename-inbox create: %w", err))
 	}
 	srcFolder, err := s.idx.OpenFolder("INBOX", 0)
 	if err != nil {
@@ -1331,6 +1336,14 @@ func (s *session) Subscribe(name string) error {
 	}
 	if h.subs == nil {
 		return nil
+	}
+	// Existence is deliberately not checked: RFC 9051 6.3.7 allows subscribing
+	// to a mailbox that does not exist yet, and clients rely on it. The name
+	// itself still has to be one this server would accept somewhere -- storing
+	// ".." produces a subscription no command can ever act on, and LSUB would
+	// hand it back to the client as though it meant something (#1075).
+	if err := mailbox.CheckName(h.box, rel); err != nil {
+		return nameError(err)
 	}
 	if err := h.subs.Add(rel); err != nil {
 		return fmt.Errorf("imap: subscribe %q: %w", name, err)

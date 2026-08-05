@@ -26,7 +26,12 @@ func startServerWith(t *testing.T, mb mailbox.MailboxBackend) *imapclient.Client
 	resolver := &mailbox.Resolver{Root: t.TempDir(), HomeTemplate: "%d/%n"}
 	idx := file.New()
 	opts := imapserver.Options{
-		Mailbox:  mb,
+		// Wrapped here rather than at each caller, because production wraps in
+		// mailboxbuild.ByDriver and a test on a bare driver silently exercises
+		// a server that has no folder-name rules at all -- it passes while
+		// asserting nothing. Making the faithful arrangement the default is
+		// the same argument this package applies to shared resolvers (#1075).
+		Mailbox:  mailbox.Validating(mb, mailbox.DefaultNameRules()),
 		Index:    idx,
 		Resolver: resolver,
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
