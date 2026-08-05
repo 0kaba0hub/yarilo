@@ -1147,9 +1147,20 @@ mailbox, and so does the catch-up a search triggers, so an excluded folder is
 exclusion that made a mailbox unfindable would be a different feature with a
 different name.
 
-**`*` does not cross the hierarchy separator**, so `.EXPUNGED/*` names the
-children and `.EXPUNGED` names the folder itself — list both when both are
-meant.
+**`*` does not cross the hierarchy separator** — the one the deployment
+configures, not always `/`. Write patterns in the separator your namespace uses:
+with `separator: "."`, `EXPUNGED.*` names the children and `EXPUNGED` names the
+folder itself, so list both when both are meant.
+
+The separator is taken from the personal namespace, deployment-wide. A namespace
+configured with a different delimiter is matched by the personal one's, which is
+a limitation of resolving it once rather than per user — the same trade the
+special-use lookup makes below, for the same reason.
+
+**A malformed pattern is dropped with a log line at startup.** One that cannot
+be parsed matches nothing, and a pattern matching nothing is indistinguishable
+from one nobody wrote; the rest of the list keeps working, so a single typo does
+not disable every exclusion configured.
 
 **A flag resolves against `imap_special_use_defaults`, not the per-user
 special-use file.** Reading the per-user file takes the cross-process lock, and

@@ -2418,6 +2418,11 @@ fts:
   ## never searched, and indexing cost is dominated by tokenisation — that is
   ## the cost of keeping current an index of content nobody queries.
   ##
+  ## Patterns are written in the hierarchy separator the namespace configures:
+  ## with separator "." use "EXPUNGED.*", with "/" use "EXPUNGED/*". A star does
+  ## not cross the separator, so list the parent too when both are meant. A
+  ## malformed pattern is dropped with a log line at startup.
+  ##
   ## AUTOINDEXING only. An explicit rescan, and the catch-up a search triggers,
   ## both still index the mailbox: an excluded folder is un-pre-indexed rather
   ## than unsearchable.

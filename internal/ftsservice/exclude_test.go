@@ -1,6 +1,9 @@
 package ftsservice
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/yarilomail/yarilo/pkg/fts"
@@ -49,7 +52,7 @@ func TestExclusionMatching(t *testing.T) {
 		{"flag is not a name match", []string{`\Junk`}, `\Junk`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := NewExclusion(tc.patterns, specialUse)
+			e := NewExclusion(tc.patterns, specialUse, "/")
 			if got := e.Excludes(tc.folder); got != tc.excluded {
 				t.Errorf("Excludes(%q) with %v = %v, want %v", tc.folder, tc.patterns, got, tc.excluded)
 			}
@@ -60,7 +63,7 @@ func TestExclusionMatching(t *testing.T) {
 // A folder whose special-use is configured to a different name still matches by
 // role: that is what makes the flag form worth having over a name list.
 func TestExclusionFollowsTheConfiguredSpecialUse(t *testing.T) {
-	e := NewExclusion([]string{`\Junk`}, map[string]string{"Spam": `\Junk`})
+	e := NewExclusion([]string{`\Junk`}, map[string]string{"Spam": `\Junk`}, "/")
 	if !e.Excludes("Spam") {
 		t.Error("a folder mapped to \\Junk was not excluded; the flag form is matching names rather than roles")
 	}
@@ -70,15 +73,15 @@ func TestExclusionFollowsTheConfiguredSpecialUse(t *testing.T) {
 }
 
 func TestExclusionEmpty(t *testing.T) {
-	if !NewExclusion(nil, nil).Empty() {
+	if !NewExclusion(nil, nil, "/").Empty() {
 		t.Error("no patterns should be empty")
 	}
-	if NewExclusion([]string{`\Junk`}, nil).Empty() {
+	if NewExclusion([]string{`\Junk`}, nil, "/").Empty() {
 		t.Error("a configured pattern should not be empty")
 	}
 	// Whitespace and blank entries are not patterns: a values file that wraps a
 	// list over lines must not accidentally exclude everything.
-	if !NewExclusion([]string{"", "  "}, nil).Empty() {
+	if !NewExclusion([]string{"", "  "}, nil, "/").Empty() {
 		t.Error("blank entries should not count as patterns")
 	}
 }
@@ -89,7 +92,7 @@ func TestExclusionEmpty(t *testing.T) {
 // cannot be found in at all.
 func TestExclusionAppliesToAutoindexOnly(t *testing.T) {
 	s := &Service{
-		exclude: NewExclusion([]string{`\Junk`}, map[string]string{"Junk": `\Junk`}),
+		exclude: NewExclusion([]string{`\Junk`}, map[string]string{"Junk": `\Junk`}, "/"),
 		queue:   newQueue(),
 	}
 	junk := fts.MailboxRef{Name: "Junk"}
@@ -116,7 +119,7 @@ func TestExclusionAppliesToAutoindexOnly(t *testing.T) {
 // on a service that queues nothing at all.
 func TestUnexcludedMailboxStillAutoindexes(t *testing.T) {
 	s := &Service{
-		exclude: NewExclusion([]string{`\Junk`}, map[string]string{"Junk": `\Junk`}),
+		exclude: NewExclusion([]string{`\Junk`}, map[string]string{"Junk": `\Junk`}, "/"),
 		queue:   newQueue(),
 	}
 	if err := s.Index("u1", fts.MailboxRef{Name: "INBOX"}, 10, 0); err != nil {
@@ -124,5 +127,67 @@ func TestUnexcludedMailboxStillAutoindexes(t *testing.T) {
 	}
 	if got := s.queue.depth(); got != 1 {
 		t.Errorf("INBOX queued %d jobs, want 1", got)
+	}
+}
+
+// The separator is configuration, and path.Match hard-codes "/" as the boundary
+// `*` may not cross. On a deployment using "." every comment in this file
+// promised a boundary that was not there: a pattern meant for one folder also
+// excluded its whole subtree, silently and more broadly than configured (#1062).
+func TestExclusionHonoursTheConfiguredSeparator(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		separator string
+		pattern   string
+		folder    string
+		excluded  bool
+	}{
+		// With ".", a star must stop at the dot.
+		{"star does not cross a dot separator", ".", "Temp*", "Temp.Sub", false},
+		{"star matches within the segment", ".", "Temp*", "Temporary", true},
+		{"pattern names the children", ".", "EXPUNGED.*", "EXPUNGED.2026", true},
+		{"pattern does not name grandchildren", ".", "EXPUNGED.*", "EXPUNGED.a.b", false},
+		{"pattern does not name the parent", ".", "EXPUNGED.*", "EXPUNGED", false},
+		{"exact name still matches", ".", "EXPUNGED", "EXPUNGED", true},
+
+		// And the default is unchanged.
+		{"star does not cross a slash separator", "/", "Temp*", "Temp/Sub", false},
+		{"slash pattern names the children", "/", "EXPUNGED/*", "EXPUNGED/2026", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewExclusion([]string{tc.pattern}, nil, tc.separator)
+			if got := e.Excludes(tc.folder); got != tc.excluded {
+				t.Errorf("separator %q, pattern %q, folder %q = %v, want %v",
+					tc.separator, tc.pattern, tc.folder, got, tc.excluded)
+			}
+		})
+	}
+}
+
+// A malformed pattern matches nothing, and a pattern that matches nothing is
+// indistinguishable from one that was never written.
+//
+// The log line is the whole of the difference, so the log line is what this
+// asserts. Checking only the behaviour cannot tell "dropped at construction"
+// from "kept and never matching" — both answer false to everything, which is
+// how a typo would stay invisible.
+func TestMalformedPatternIsReported(t *testing.T) {
+	var logged bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(old)
+
+	e := NewExclusion([]string{"[unclosed", "Junk"}, nil, "/")
+
+	if !strings.Contains(logged.String(), "[unclosed") {
+		t.Errorf("a malformed pattern was accepted without a word: %q", logged.String())
+	}
+	if e.Excludes("[unclosed") {
+		t.Error("a malformed pattern was kept as a literal")
+	}
+	// And the rest of the list keeps working, or one typo would disable every
+	// exclusion the operator wrote.
+	if !e.Excludes("Junk") {
+		t.Error("a valid pattern after a malformed one was dropped too")
 	}
 }

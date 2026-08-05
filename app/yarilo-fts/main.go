@@ -93,6 +93,7 @@ func main() {
 		Engine:             engine,
 		AutoindexExclude:   cfg.FTS.AutoindexExclude,
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
+		Separator:          personalSeparator(cfg),
 		Mailbox:            backend.BuildMailbox(cfg.Storage, locker),
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
@@ -269,4 +270,16 @@ func languagesOr(xs []string, def string) []string {
 		return xs
 	}
 	return []string{def}
+}
+
+// personalSeparator is the hierarchy delimiter exclusion patterns are written
+// in: the personal namespace's, which is the one folder names arriving at the
+// autoindex hook belong to. Empty or absent means "/".
+func personalSeparator(cfg *config.Config) string {
+	for _, ns := range cfg.Namespaces {
+		if ns.Prefix == "" && ns.Separator != "" {
+			return ns.Separator
+		}
+	}
+	return "/"
 }

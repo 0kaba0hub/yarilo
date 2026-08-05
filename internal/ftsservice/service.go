@@ -58,6 +58,13 @@ type Options struct {
 	// the cross-process lock, and Index runs on every delivery — a network
 	// round trip to decide something that changes once in a mailbox's life.
 	SpecialUseDefaults map[string]string
+	// Separator is the hierarchy delimiter exclusion patterns are written in,
+	// from the personal namespace. Empty is treated as "/".
+	//
+	// Deployment-wide rather than per user, for the reason SpecialUseDefaults
+	// is: the autoindex hook runs on every delivery and resolving the user
+	// there costs a userdb lookup to decide something a deployment fixes once.
+	Separator string
 
 	// MailboxByDriver returns the mailbox backend for a per-user storage driver
 	// (mdbox / sdbox / maildir) when it differs from the global Mailbox — the
@@ -111,7 +118,7 @@ func New(opts Options) (*Service, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{
 		opts:          opts,
-		exclude:       NewExclusion(opts.AutoindexExclude, opts.SpecialUseDefaults),
+		exclude:       NewExclusion(opts.AutoindexExclude, opts.SpecialUseDefaults, opts.Separator),
 		builder:       buildmail.New(opts.Build, opts.Chain),
 		queue:         newQueue(),
 		optimizeQueue: newOptimizeQueue(),
