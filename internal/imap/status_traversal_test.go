@@ -3,10 +3,17 @@ package imap_test
 import (
 	"errors"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+
+	imapserver "github.com/yarilomail/yarilo/internal/imap"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 var statusAll = imap.StatusOptions{NumMessages: true, UIDValidity: true, UIDNext: true}
@@ -100,4 +107,121 @@ func TestCreateWithInvalidNameIsNotReportedAsAServerBug(t *testing.T) {
 	if ie.Code != imap.ResponseCodeCannot {
 		t.Errorf("CREATE answered code %q, want CANNOT", ie.Code)
 	}
+}
+
+// APPEND, COPY and MOVE opened the folder handle before checking that the
+// mailbox exists, and opening initialises the index -- so a refused name still
+// left index state behind, which is the same defect STATUS had (#1072).
+//
+// The response code is asserted per command: TRYCREATE is what tells a client
+// to create the mailbox and retry, and SERVERBUG would send the operator
+// hunting a crash that never happened.
+func TestAppendCopyMoveRefuseNamesOutsideTheMailbox(t *testing.T) {
+	for _, name := range []string{"..", ".", "", "../victim@x/Maildir"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			c := startServerWithRoot(t, maildirBackend(t), root)
+			defer func() { c.Logout().Wait() }() //nolint:errcheck
+			appendN(t, c, 1)
+			// The baseline is taken after SELECT, which legitimately creates
+			// the subscriptions file -- otherwise the test reports the
+			// server's own bookkeeping as a defect.
+			if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+				t.Fatal(err)
+			}
+			before := indexPaths(t, root)
+
+			const body = "From: a@b.com\r\nSubject: x\r\n\r\nx\r\n"
+			ac := c.Append(name, int64(len(body)), nil)
+			_, _ = ac.Write([]byte(body))
+			_ = ac.Close()
+			_, err := ac.Wait()
+			assertTryCreate(t, "APPEND", err)
+
+			_, err = c.Copy(seqSetAll(), name).Wait()
+			assertTryCreate(t, "COPY", err)
+
+			after := indexPaths(t, root)
+			for _, p := range after {
+				found := false
+				for _, q := range before {
+					if p == q {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("index state created for a mailbox that does not exist: %s", p)
+				}
+			}
+		})
+	}
+}
+
+func assertTryCreate(t *testing.T, cmd string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s on a name outside the mailbox was accepted", cmd)
+	}
+	var ie *imap.Error
+	if !errors.As(err, &ie) {
+		t.Fatalf("%s returned %T (%v), want an IMAP error", cmd, err, err)
+	}
+	if ie.Code == "SERVERBUG" {
+		t.Errorf("%s answered SERVERBUG for a client naming mistake: %q", cmd, ie.Text)
+	}
+	if ie.Code != imap.ResponseCodeTryCreate {
+		t.Errorf("%s answered code %q, want TRYCREATE", cmd, ie.Code)
+	}
+}
+
+// startServerWithRoot mirrors startServerWith but hands back the storage root
+// so a test can look at what landed on disk.
+func startServerWithRoot(t *testing.T, mb mailbox.MailboxBackend, root string) *imapclient.Client {
+	t.Helper()
+	opts := imapserver.Options{
+		Mailbox:  mb,
+		Index:    file.New(),
+		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
+		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+	}
+	srv := imapserver.New(opts)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// indexDirCount counts every path under root: index state created for a
+// mailbox that does not exist shows up as new entries.
+func indexPaths(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	_ = filepath.Walk(root, func(p string, _ os.FileInfo, _ error) error {
+		rel, _ := filepath.Rel(root, p)
+		out = append(out, rel)
+		return nil
+	})
+	return out
+}
+
+func seqSetAll() imap.NumSet {
+	var ss imap.SeqSet
+	ss.AddRange(1, 0)
+	return ss
 }

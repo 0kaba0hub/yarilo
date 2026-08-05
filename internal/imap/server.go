@@ -1659,7 +1659,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	tAppend := time.Now()
 	h, rel, f, err := s.ensureFolderHandle(name)
 	if err != nil {
-		return nil, err
+		return nil, tryCreate(err)
 	}
 	if err := s.requireRight(h, rel, insertRight(h.spec)); err != nil {
 		return nil, err
@@ -2837,14 +2837,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	srcBox := s.folderBox()
 	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
 	if err != nil {
-		return nil, err
-	}
-	exists, err := destH.box.FolderExists(destRel)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+		return nil, tryCreate(err)
 	}
 	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
 		return nil, err
@@ -3356,6 +3349,11 @@ func (l *slogLogger) Printf(format string, args ...interface{}) {
 // folder lives on (APPEND, COPY, MOVE, METADATA). Re-uses the
 // currently-SELECTed folder when name matches, to avoid re-OpenFolder
 // round-trips inside short-lived ops.
+// errFolderNotFound reports a mailbox that does not exist. Each caller answers
+// with its own response code -- APPEND, COPY and MOVE owe the client TRYCREATE
+// (RFC 9051), which NONEXISTENT would not tell it.
+var errFolderNotFound = errors.New("imap: no such mailbox")
+
 func (s *session) ensureFolderHandle(name string) (*nsHandle, string, *mailbox.Folder, error) {
 	h, rel, err := s.dispatch(name)
 	if err != nil {
@@ -3364,11 +3362,39 @@ func (s *session) ensureFolderHandle(name string) (*nsHandle, string, *mailbox.F
 	if s.folder != nil && s.folder.Name == rel && s.folderNS == h {
 		return h, rel, s.folder, nil
 	}
+	// Existence is checked before the index is opened, not after. OpenFolder
+	// creates what it is asked for with a fresh UIDVALIDITY, so every caller
+	// that checked afterwards had already made index state for a mailbox that
+	// does not exist -- the same defect STATUS had, reached through APPEND,
+	// COPY and MOVE (#1072).
+	exists, err := h.box.FolderExists(rel)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if !exists {
+		return nil, "", nil, errFolderNotFound
+	}
 	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, "", nil, err
 	}
 	return h, rel, f, nil
+}
+
+// tryCreate turns the sentinel into the answer APPEND, COPY and MOVE owe a
+// client naming a mailbox that is not there, and a storage name refusal into
+// CANNOT. Anything else the library reports as an internal server error.
+func tryCreate(err error) error {
+	switch {
+	case errors.Is(err, errFolderNotFound):
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeTryCreate,
+			Text: "No such mailbox",
+		}
+	default:
+		return nameError(err)
+	}
 }
 
 func listMatch(name string, patterns []string) bool {
