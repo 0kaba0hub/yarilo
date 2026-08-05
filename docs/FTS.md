@@ -1125,3 +1125,39 @@ searchable a little longer than intended.
 The byte bound on term *length* (`maxTermBytes`) is unaffected and stays in
 bytes, deliberately: it is about how much room a term takes on disk, not about
 whether it is worth having.
+
+## Excluding mailboxes from autoindexing
+
+`fts_autoindex_exclude` lists mailboxes autoindexing skips. Each entry is either
+a special-use flag written with its backslash, or a name with `*` and `?`
+wildcards:
+
+```yaml
+fts_autoindex_exclude: ["\\Junk", "\\Trash", ".EXPUNGED", ".EXPUNGED/*"]
+```
+
+Junk and trash are why it exists. They take high volumes of large,
+attachment-heavy mail, they are almost never searched, and indexing cost is
+dominated by tokenisation — so keeping them current spends the most expensive
+part of the pipeline on content nobody queries.
+
+**It applies to autoindexing and nothing else.** An explicit rescan indexes the
+mailbox, and so does the catch-up a search triggers, so an excluded folder is
+*un-pre-indexed* rather than unsearchable. That distinction is the point: an
+exclusion that made a mailbox unfindable would be a different feature with a
+different name.
+
+**`*` does not cross the hierarchy separator**, so `.EXPUNGED/*` names the
+children and `.EXPUNGED` names the folder itself — list both when both are
+meant.
+
+**A flag resolves against `imap_special_use_defaults`, not the per-user
+special-use file.** Reading the per-user file takes the cross-process lock, and
+the autoindex hook runs on every delivery — a network round trip to decide
+something that changes once in a mailbox's life. A user who applied `\Junk` to a
+folder of their own naming is therefore not covered by the flag form; a name
+pattern is the fallback.
+
+**`fts_autoindex_skipped_total`** counts what the setting refuses. Without it an
+over-broad pattern looks exactly like an index that has quietly stopped being
+written, which is the failure mode of every silent filter.

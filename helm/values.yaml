@@ -2411,6 +2411,25 @@ fts:
   ## and few messages per shard, which rotate_count alone never catches.
   ## 0 disables the time-based trigger (rotate_count-only, explicit).
   fts_flatcurve_rotate_time: 5000
+  ## Mailboxes autoindexing skips: special-use flags written with their
+  ## backslash, or names with * and ? wildcards. Empty excludes nothing.
+  ##
+  ## Junk and trash are why it exists: high volume, attachment-heavy, almost
+  ## never searched, and indexing cost is dominated by tokenisation — that is
+  ## the cost of keeping current an index of content nobody queries.
+  ##
+  ## AUTOINDEXING only. An explicit rescan, and the catch-up a search triggers,
+  ## both still index the mailbox: an excluded folder is un-pre-indexed rather
+  ## than unsearchable.
+  ##
+  ## A flag is resolved against imap_special_use_defaults, not the per-user
+  ## special-use file — reading that takes the cross-process lock and this runs
+  ## on every delivery. A user who moved \Junk to a folder of their own naming
+  ## is not covered; name patterns are the fallback for that.
+  ##
+  ## fts_autoindex_skipped_total counts what this refuses, so an over-broad
+  ## pattern is visible rather than looking like an index that stopped filling.
+  fts_autoindex_exclude: []
   ## Suffix expansion at INDEX time: stores every suffix of a term so an inner
   ## fragment can be found. Only reachable through prefix expansion below, so
   ## the two are one mechanism seen from both ends.

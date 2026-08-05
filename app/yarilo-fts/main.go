@@ -90,8 +90,10 @@ func main() {
 	}
 
 	svc, err := ftsservice.New(ftsservice.Options{
-		Engine:  engine,
-		Mailbox: backend.BuildMailbox(cfg.Storage, locker),
+		Engine:             engine,
+		AutoindexExclude:   cfg.FTS.AutoindexExclude,
+		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
+		Mailbox:            backend.BuildMailbox(cfg.Storage, locker),
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
 		},
