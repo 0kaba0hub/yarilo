@@ -131,6 +131,25 @@ func (s *session) resolveACLHandle(folder string) (*nsHandle, string, error) {
 	if h.acl == nil {
 		return nil, "", &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL store not wired for this namespace"}
 	}
+	// RFC 4314 3.3: the ACL commands answer NO for a mailbox that is not
+	// there. Nothing on this path checked, so every one of them answered for
+	// any name at all -- GETACL reported full rights on a mailbox that does
+	// not exist, which makes the command useless for auditing, the one thing
+	// it is for (#1075).
+	//
+	// Checked here rather than in each of the five commands: they already
+	// share this resolver, and five copies is how one of them ends up without.
+	exists, err := h.box.FolderExists(rel)
+	if err != nil {
+		return nil, "", err
+	}
+	if !exists {
+		return nil, "", &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
+	}
 	return h, rel, nil
 }
 

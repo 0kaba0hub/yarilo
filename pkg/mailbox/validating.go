@@ -169,3 +169,25 @@ func DriverBackend(b MailboxBackend) MailboxBackend {
 		b = u.Unwrap()
 	}
 }
+
+// NameValidator is implemented by a wrapped backend that checks folder names.
+type NameValidator interface {
+	ValidateName(folder string) error
+}
+
+func (v *validatingUser) ValidateName(folder string) error { return v.check(folder) }
+
+// CheckName applies the deployment's folder-name rules without performing an
+// operation, for a command that has a name to judge but nothing to do with it
+// yet -- SUBSCRIBE may name a mailbox that does not exist (RFC 9051 6.3.7), but
+// storing a name no other command will ever accept can only produce a
+// subscription that cannot be acted on.
+//
+// An unwrapped backend validates nothing and says so by returning nil, rather
+// than this reaching for a default set of rules the deployment did not choose.
+func CheckName(box UserMailbox, folder string) error {
+	if nv, ok := box.(NameValidator); ok {
+		return nv.ValidateName(folder)
+	}
+	return nil
+}
