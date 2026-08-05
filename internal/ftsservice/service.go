@@ -46,6 +46,26 @@ type Options struct {
 	// (pkg/locks; wired by the binary). nil = direct call (unit tests only).
 	LockMailbox func(user, folder string, fn func() error) error
 
+	// AutoindexExclude lists the mailboxes autoindexing skips
+	// (fts_autoindex_exclude): special-use flags written with their backslash,
+	// or names with * and ? wildcards.
+	AutoindexExclude []string
+	// SpecialUseDefaults maps folder name to special-use attribute, from
+	// imap_special_use_defaults, so a flag pattern can be resolved without
+	// reading the per-user special-use file.
+	//
+	// The per-user overrides are deliberately not consulted: reading them takes
+	// the cross-process lock, and Index runs on every delivery — a network
+	// round trip to decide something that changes once in a mailbox's life.
+	SpecialUseDefaults map[string]string
+	// Separator is the hierarchy delimiter exclusion patterns are written in,
+	// from the personal namespace. Empty is treated as "/".
+	//
+	// Deployment-wide rather than per user, for the reason SpecialUseDefaults
+	// is: the autoindex hook runs on every delivery and resolving the user
+	// there costs a userdb lookup to decide something a deployment fixes once.
+	Separator string
+
 	// MailboxByDriver returns the mailbox backend for a per-user storage driver
 	// (mdbox / sdbox / maildir) when it differs from the global Mailbox — the
 	// userdb mail_location driver, resolved as the session pods do. nil, or a
@@ -56,6 +76,7 @@ type Options struct {
 // Service implements ftsproto.Service.
 type Service struct {
 	opts          Options
+	exclude       *Exclusion
 	builder       *buildmail.Builder
 	queue         *queue
 	optimizeQueue *optimizeQueue
@@ -97,6 +118,7 @@ func New(opts Options) (*Service, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{
 		opts:          opts,
+		exclude:       NewExclusion(opts.AutoindexExclude, opts.SpecialUseDefaults, opts.Separator),
 		builder:       buildmail.New(opts.Build, opts.Chain),
 		queue:         newQueue(),
 		optimizeQueue: newOptimizeQueue(),
@@ -202,6 +224,14 @@ func indexRoot(info *mailbox.UserInfo) string {
 /* --- ftsproto.Service ------------------------------------------------------ */
 
 func (s *Service) Index(user string, mbox fts.MailboxRef, maxUID uint32, maxRecent int) error {
+	// Autoindex only. Rescan and the search catch-up (Prepend) enqueue
+	// directly, so an excluded mailbox stays searchable and stays rebuildable —
+	// it is not pre-indexed, which is a different thing from unsearchable.
+	if s.exclude.Excludes(mbox.Name) {
+		metricAutoindexSkipped.Inc()
+		slog.Debug("fts: autoindex skipped by exclusion", "user", user, "folder", mbox.Name)
+		return nil
+	}
 	id := nextJobID()
 	slog.Debug("fts: index job queued", "job_id", id, "user", user, "folder", mbox.Name, "guid", mbox.GUID,
 		"uidvalidity", mbox.UIDValidity, "max_uid", maxUID, "max_recent", maxRecent, "priority", false)

@@ -10,6 +10,19 @@ import (
 // FTS metrics, registered on the default registry. Cardinality is bounded:
 // no per-user/per-mailbox labels, never query terms (private content).
 var (
+	// metricAutoindexSkipped counts autoindex requests refused by
+	// fts_autoindex_exclude. Without it an over-broad pattern removes
+	// everything from the index and looks exactly like an index that is simply
+	// not being written (#1051).
+	//
+	// No mailbox label: the cardinality is per folder per user, and the
+	// question this answers is "is the pattern matching more than intended",
+	// which a total answers and a label only makes expensive.
+	metricAutoindexSkipped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fts_autoindex_skipped_total",
+		Help: "Autoindex requests skipped by fts_autoindex_exclude.",
+	})
+
 	metricIndexMessages = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fts_index_messages_total",
 		Help: "Messages indexed by the FTS worker.",

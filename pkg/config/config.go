@@ -899,6 +899,22 @@ type FTSConfig struct {
 	LanguageTokenizerWB5A           bool   `koanf:"fts_language_tokenizer_generic_wb5a"`
 	LanguageTokenizerExplicitPrefix bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
 
+	// AutoindexExclude lists mailboxes autoindexing skips: special-use flags
+	// written with their backslash ("\\Junk"), or names with * and ? wildcards
+	// (".EXPUNGED/*"). Empty excludes nothing.
+	//
+	// Junk and trash are the reason it exists: high volume, attachment-heavy,
+	// almost never searched, and indexing cost is dominated by tokenisation.
+	//
+	// Exclusion applies to AUTOINDEXING only. An explicit rescan and the
+	// catch-up a search triggers both still index the mailbox, so an excluded
+	// folder is un-pre-indexed rather than unsearchable.
+	//
+	// A flag is resolved against imap_special_use_defaults, not the per-user
+	// special-use file: reading that takes the cross-process lock, and the
+	// autoindex hook runs on every delivery.
+	AutoindexExclude []string `koanf:"fts_autoindex_exclude"`
+
 	FlatcurveCommitLimit int `koanf:"fts_flatcurve_commit_limit"`
 	// FlatcurveMinTermSize is the shortest term worth indexing, in CHARACTERS.
 	//
