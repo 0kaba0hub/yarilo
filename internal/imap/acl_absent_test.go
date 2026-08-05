@@ -123,3 +123,84 @@ func TestSubscribeRefusesNamesNoCommandWouldAccept(t *testing.T) {
 		t.Errorf("SUBSCRIBE of an absent but valid name was refused: %v — RFC 9051 §6.3.7 allows it", err)
 	}
 }
+
+// The whole ACL family must answer a peer without the lookup right exactly as
+// it answers for a mailbox that is not there. SELECT and STATUS reach that rule
+// through requireRight; these five do not use it, so they inherit it from the
+// resolver they share (#1068).
+//
+// GETACL was worse than an oracle before this: it handed a peer with no rights
+// the mailbox's full ACL, including the implicit owner entry, which names the
+// owner.
+func TestACLCommandsDoNotDiscloseExistenceToAPeerWithoutLookup(t *testing.T) {
+	_, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+
+	b := dial("bob") // no rights at all
+	const present = "Shared/INBOX"
+	const absent = "Shared/NoSuchMailboxAtAll"
+
+	cases := []struct {
+		cmd string
+		run func(folder string) error
+	}{
+		{"GETACL", func(f string) error { _, err := b.GetACL(f).Wait(); return err }},
+		{"MYRIGHTS", func(f string) error { _, err := b.MyRights(f).Wait(); return err }},
+		{"LISTRIGHTS", func(f string) error { _, err := b.ListRights(f, "bob").Wait(); return err }},
+		{"SETACL", func(f string) error {
+			return b.SetACL(f, "bob", imap.RightModificationReplace, imap.RightSet("lr")).Wait()
+		}},
+		{"DELETEACL", func(f string) error { return b.DeleteACL(f, "bob").Wait() }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.cmd, func(t *testing.T) {
+			errPresent := tc.run(present)
+			errAbsent := tc.run(absent)
+			if errPresent == nil {
+				t.Fatalf("%s answered for a mailbox the peer may not see", tc.cmd)
+			}
+			if errAbsent == nil {
+				t.Fatalf("%s answered for a mailbox that is not there", tc.cmd)
+			}
+			// The property, not the code: any difference between the two is
+			// the disclosure.
+			if errPresent.Error() != errAbsent.Error() {
+				t.Errorf("%s lets a peer tell the two apart:\n present: %v\n absent:  %v",
+					tc.cmd, errPresent, errAbsent)
+			}
+		})
+	}
+}
+
+// A peer that may see the mailbox still gets the precise answer, and the
+// administrative commands still require 'a' — otherwise the fix above would be
+// indistinguishable from disabling the commands.
+func TestACLCommandsAnswerAPeerThatMaySeeTheMailbox(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\n") // lookup and read, no admin
+
+	b := dial("bob")
+	if _, err := b.MyRights("Shared/INBOX").Wait(); err != nil {
+		t.Errorf("MYRIGHTS is about the caller and needs no admin right: %v", err)
+	}
+	if _, e := b.GetACL("Shared/INBOX").Wait(); e == nil {
+		t.Error("GETACL without the 'a' right was answered — RFC 4314 §4 reserves it")
+	} else if code := aclErrCode(e); code != imap.ResponseCodeNoPerm {
+		t.Errorf("GETACL without 'a': got %q, want NOPERM: %v", code, e)
+	}
+
+	seedACL(t, aliceHome, "INBOX", "user=bob lra\n")
+	if _, e := b.GetACL("Shared/INBOX").Wait(); e != nil {
+		t.Errorf("GETACL with the 'a' right: %v", e)
+	}
+}

@@ -64,7 +64,7 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	if effective.Has(right) {
 		return nil
 	}
-	return aclDenied(right)
+	return s.aclRefusal(h, folder, right)
 }
 
 // requireMetadataAccess gates RFC 5464 mailbox METADATA: the accessing user
@@ -86,6 +86,15 @@ func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
 		effective.Has(mailbox.RightPost)
 	if effective.Has(mailbox.RightLookup) && access {
 		return nil
+	}
+	if !effective.Has(mailbox.RightLookup) {
+		// Same answer an absent mailbox gets: without the lookup right the
+		// user must not learn this one is there (#1068).
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
 	}
 	return &imaplib.Error{
 		Type: imaplib.StatusResponseTypeNo,
@@ -116,7 +125,7 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 	}
 	for _, r := range rights {
 		if !effective.Has(r) {
-			return aclDenied(r)
+			return s.aclRefusal(h, folder, r)
 		}
 	}
 	return nil
@@ -135,7 +144,21 @@ func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) e
 		return nil
 	}
 	parent := parentFolder(folder, byte(h.spec.Separator))
-	return s.requireRight(h, parent, right)
+	effective, err := s.effectiveRights(h, parent)
+	if err != nil {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Text: "ACL read failed: " + err.Error(),
+		}
+	}
+	if effective.Has(right) {
+		return nil
+	}
+	// Deliberately not the hidden-existence answer. CREATE names a mailbox
+	// that does not exist yet, so "No such mailbox" would be true of the
+	// request and tell the user nothing about what went wrong; the disclosure
+	// this avoids elsewhere is about mailboxes that *are* there (#1068).
+	return aclDenied(right)
 }
 
 // parentFolder returns folder with its last segment stripped, or
@@ -182,6 +205,37 @@ func aclDenied(right rune) error {
 		Code: imaplib.ResponseCodeNoPerm,
 		Text: "Permission denied: missing right '" + string(right) + "'",
 	}
+}
+
+// aclRefusal is the answer for a user who may not do something to a mailbox.
+//
+// Without the lookup right it is the same answer an absent mailbox gets. That
+// is what closes the existence oracle: the commands check existence before
+// rights, so a user who could tell "no such mailbox" from "not allowed" could
+// enumerate names in a shared namespace they may not see. Making the two
+// answers identical costs nothing and does not require reordering the thirteen
+// commands that ask the question -- what leaked was the difference between the
+// replies, not the order in which they were reached (#1068).
+//
+// RFC 4314 §4 permits either, and the reference implementation resolves it the
+// same way: acl_mailbox_fail_not_found reports "no permission" to a user with
+// the lookup right and "mailbox not found" to one without.
+//
+// With the lookup right the user already knows the mailbox is there, so the
+// precise refusal is not a disclosure and is far more useful.
+func (s *session) aclRefusal(h *nsHandle, folder string, right rune) error {
+	if !s.aclEnforced(h) || s.isOwner(h) {
+		return aclDenied(right)
+	}
+	effective, err := s.effectiveRights(h, folder)
+	if err == nil && !effective.Has(mailbox.RightLookup) {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
+	}
+	return aclDenied(right)
 }
 
 // storeFlagRights maps a STORE flag list onto the set of right codes

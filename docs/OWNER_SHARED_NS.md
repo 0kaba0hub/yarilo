@@ -292,9 +292,51 @@ Boundary for item 3:
 |:---|:---|:---|
 | Owner not in userdb | `NO` (mailbox does not exist) | INBOX implicit keep + `Warn` |
 | Owner mailbox on a different farm tag (different PV) | `NO "requires NS-3"` | INBOX implicit keep + `Warn` |
-| Owner resolves, peer lacks ACL right | `NO NOPERM` (existing) | INBOX implicit keep (item 2) |
+| Owner resolves, peer lacks ACL right but holds `l` | `NO [NOPERM]` naming the missing right | INBOX implicit keep (item 2) |
+| Owner resolves, peer holds no `l` right | `NO [NONEXISTENT] No such mailbox` — byte-identical to an absent mailbox | INBOX implicit keep (item 2) |
 | Owner == self | personal handle alias | recipient's own store |
 | Malformed / traversal owner segment | userdb miss → `NO` | INBOX implicit keep |
+
+### 7.1 Existence disclosure — decided, not deferred
+
+The commands that name a mailbox check that it exists before they check rights,
+so a peer could once tell "no such mailbox" from "not allowed" and enumerate
+names in a shared namespace it may not see. RFC 4314 §4 permits either answer.
+
+**Decision: the refusal is identical to the absent-mailbox refusal when, and
+only when, the peer lacks the lookup right.** With `l` the peer already knows
+the mailbox is there, so naming the missing right discloses nothing and is far
+more useful to a client and an operator.
+
+It reaches every command that names a mailbox, by two routes:
+
+- `SELECT`, `STATUS`, `DELETE`, `RENAME`, `METADATA`, `APPEND`, `COPY`, `MOVE`
+  and the rest go through `requireRight`;
+- `GETACL`, `MYRIGHTS`, `LISTRIGHTS`, `SETACL` and `DELETEACL` do not use
+  `requireRight` at all — they share `resolveACLHandle`, which applies the same
+  rule. They were missed on the first pass, and `GETACL` was worse than an
+  oracle while they were: it answered a peer holding no rights with the
+  mailbox's full ACL, including the implicit owner entry, which names the owner.
+
+`GETACL` and `LISTRIGHTS` additionally require the `a` right (RFC 4314 §4);
+`MYRIGHTS` does not, because it answers only about the caller.
+
+Two things this deliberately is *not*:
+
+- It is **not** a reordering of the thirteen commands that check existence
+  before rights. What leaked was the difference between two replies, not the
+  order in which they were reached; making the replies equal is a smaller
+  change with the same effect, and it keeps the good error messages for owners.
+- It does **not** apply to `CREATE`'s parent check. `CREATE` names a mailbox
+  that does not exist yet, so "No such mailbox" would be true of the request and
+  say nothing about the failure. The disclosure being avoided is about mailboxes
+  that *are* there.
+
+Personal namespaces are unaffected: the owner holds every right, so no refusal
+of either kind arises. The same resolution is what the reference implementation
+reaches (`acl_mailbox_fail_not_found`).
+
+Tracked as #1068.
 
 ---
 

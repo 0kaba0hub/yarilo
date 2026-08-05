@@ -236,16 +236,50 @@ func enforceServerWithShared(t *testing.T) (aliceHome string, dial func(user str
 	return filepath.Join(root, "alice", "Maildir"), dial
 }
 
-func TestACLEnforce_PeerSelectDeniedWithoutRead(t *testing.T) {
-	aliceHome, dial := enforceServerWithShared(t)
+// A peer with no rights at all must not learn the mailbox is there. The reply
+// is the one an absent mailbox gets, so the two cannot be told apart -- which
+// is what closes the enumeration oracle in a shared namespace (#1068).
+func TestACLEnforce_PeerWithoutLookupCannotTellTheMailboxExists(t *testing.T) {
+	_, dial := enforceServerWithShared(t)
 
-	// Ensure alice's INBOX exists by having alice CREATE-imply via SELECT.
 	a := dial("alice")
 	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
 		t.Fatalf("alice SELECT INBOX: %v", err)
 	}
 	// No yarilo-acl seeded — bob is a non-owner with zero rights.
-	_ = aliceHome
+
+	b := dial("bob")
+	_, errPresent := b.Select("Shared/INBOX", nil).Wait()
+	if errPresent == nil {
+		t.Fatal("peer SELECT without rights should fail")
+	}
+	_, errAbsent := b.Select("Shared/NoSuchMailboxAtAll", nil).Wait()
+	if errAbsent == nil {
+		t.Fatal("SELECT of an absent mailbox should fail")
+	}
+
+	if got := aclErrCode(errPresent); got != imaplib.ResponseCodeNonExistent {
+		t.Errorf("existing-but-unreadable answered %q, want NONEXISTENT: %v", got, errPresent)
+	}
+	// The property, not the code: the two replies must be identical, or the
+	// difference between them is the disclosure.
+	if errPresent.Error() != errAbsent.Error() {
+		t.Errorf("a peer can tell a mailbox it may not see from one that is not there:\n present: %v\n absent:  %v",
+			errPresent, errAbsent)
+	}
+}
+
+// A peer that *does* hold the lookup right already knows the mailbox exists, so
+// the refusal names the right it lacks. This is the case that distinguishes the
+// policy from "always answer NONEXISTENT", which would be simpler and useless.
+func TestACLEnforce_PeerWithLookupIsToldWhichRightIsMissing(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	seedACL(t, aliceHome, "INBOX", "user=bob l\n") // lookup, but no read
 
 	b := dial("bob")
 	_, err := b.Select("Shared/INBOX", nil).Wait()
@@ -608,7 +642,10 @@ func TestACLEnforce_StatusNeedsRead(t *testing.T) {
 	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
 		t.Fatalf("alice SELECT INBOX: %v", err)
 	}
-	_ = aliceHome
+	// Lookup but not read: the test is about the missing 'r'. With no rights
+	// at all the answer is NONEXISTENT instead, which is a different claim and
+	// has its own test (#1068).
+	seedACL(t, aliceHome, "INBOX", "user=bob l\n")
 
 	b := dial("bob")
 	_, err := b.Status("Shared/INBOX", &imaplib.StatusOptions{NumMessages: true}).Wait()
@@ -710,10 +747,13 @@ func TestACLEnforce_MaildirNoRootDefaultWithoutFlag(t *testing.T) {
 	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
 
 	b := dial("bob")
+	// bob holds rights on INBOX and none on Projects, so Projects must look
+	// absent to him: rights on one mailbox must not disclose the existence of
+	// its siblings (#1068).
 	if _, err := b.Select("Shared/Projects", nil).Wait(); err == nil {
 		t.Fatal("peer SELECT without a root default should fail")
-	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
-		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNonExistent {
+		t.Errorf("got code %q, want NONEXISTENT: err=%v", code, err)
 	}
 }
 
@@ -882,12 +922,22 @@ func TestACLEnforce_MetadataRequiresRights(t *testing.T) {
 	}
 	a.Logout() //nolint:errcheck
 
-	// bob has no ACL on the shared mailbox → GETMETADATA denied.
+	// bob has no ACL at all → the mailbox must look absent to him, not
+	// merely forbidden (#1068).
 	b := dial("bob")
 	if _, err := b.GetMetadata("Shared/Box", []string{"/shared/comment"}, nil).Wait(); err == nil {
 		t.Fatal("bob GETMETADATA without rights should fail")
+	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNonExistent {
+		t.Errorf("got code %q, want NONEXISTENT: err=%v", code, err)
+	}
+
+	// With lookup but no access right, the refusal names what is missing: he
+	// already knows the mailbox is there.
+	seedACL(t, aliceHome, "Box", "user=bob l\n")
+	if _, err := b.GetMetadata("Shared/Box", []string{"/shared/comment"}, nil).Wait(); err == nil {
+		t.Fatal("bob GETMETADATA with only 'l' should fail")
 	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
-		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
+		t.Errorf("with lookup: got code %q, want NOPERM: err=%v", code, err)
 	}
 
 	// Grant bob lr → the ACL gate now passes (the metadata command is

@@ -150,7 +150,43 @@ func (s *session) resolveACLHandle(folder string) (*nsHandle, string, error) {
 			Text: "No such mailbox",
 		}
 	}
+	// Same answer for a mailbox the caller may not see. All five ACL commands
+	// share this resolver, so equalising here is what keeps them from
+	// disclosing existence -- SELECT and STATUS reach the same rule through
+	// requireRight, which these commands do not use (#1068).
+	//
+	// It also stops GETACL before it reads anything: without this it answered
+	// a peer with no rights at all with the mailbox's full ACL, including the
+	// implicit owner entry, which names the owner.
+	if s.aclEnforced(h) && !s.isOwner(h) {
+		effective, rerr := s.effectiveRights(h, rel)
+		if rerr == nil && !effective.Has(mailbox.RightLookup) {
+			return nil, "", &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Code: imaplib.ResponseCodeNonExistent,
+				Text: "No such mailbox",
+			}
+		}
+	}
 	return h, rel, nil
+}
+
+// requireAdminOn gates the commands RFC 4314 §4 reserves for the 'a' right:
+// GETACL and LISTRIGHTS disclose who may do what, which is administrative
+// information about the mailbox. MYRIGHTS is deliberately not gated -- it
+// answers only about the caller.
+func (s *session) requireAdminOn(h *nsHandle, folder string) error {
+	if !s.aclEnforced(h) || s.isOwner(h) {
+		return nil
+	}
+	effective, err := s.effectiveRights(h, folder)
+	if err != nil {
+		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
+	}
+	if effective.Has(mailbox.RightAdminister) {
+		return nil
+	}
+	return aclDenied(mailbox.RightAdminister)
 }
 
 // requireACLEnabled returns a NO error when the operator has disabled
@@ -194,6 +230,11 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	}
 	h, rel, err := s.resolveACLHandle(folder)
 	if err != nil {
+		return nil, err
+	}
+	// RFC 4314 4: reading who may do what needs the 'a' right. Without this a
+	// peer holding only 'l' could read the whole ACL, owner entry included.
+	if err := s.requireAdminOn(h, rel); err != nil {
 		return nil, err
 	}
 	stored, err := h.acl.Get(rel)
@@ -264,6 +305,10 @@ func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier)
 	}
 	h, rel, err := s.resolveACLHandle(folder)
 	if err != nil {
+		return nil, err
+	}
+	// RFC 4314 4: LISTRIGHTS is administrative, same gate as GETACL.
+	if err := s.requireAdminOn(h, rel); err != nil {
 		return nil, err
 	}
 	if _, _, err := identifierFromIMAP(identifier); err != nil {
