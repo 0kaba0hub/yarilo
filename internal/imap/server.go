@@ -1156,6 +1156,7 @@ func (s *session) Delete(name string) error {
 	if strings.EqualFold(rel, "INBOX") {
 		return &imaplib.Error{
 			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeCannot,
 			Text: "INBOX cannot be deleted",
 		}
 	}

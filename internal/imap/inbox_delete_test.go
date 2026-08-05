@@ -42,6 +42,12 @@ func TestDeleteInboxIsRefusedOnEveryBackend(t *testing.T) {
 				if ie.Type != imap.StatusResponseTypeNo {
 					t.Errorf("DELETE %q answered %v, want NO", name, ie.Type)
 				}
+				// The code, not the text, is what a client acts on (#1067):
+				// CANNOT says the server will never perform this, as opposed
+				// to a transient or rights-based refusal.
+				if ie.Code != imap.ResponseCodeCannot {
+					t.Errorf("DELETE %q answered code %q, want CANNOT — a client cannot tell a permanent refusal from a temporary one without it", name, ie.Code)
+				}
 				if !strings.Contains(strings.ToUpper(ie.Text), "INBOX") {
 					t.Errorf("DELETE %q text %q does not say which mailbox was refused", name, ie.Text)
 				}
