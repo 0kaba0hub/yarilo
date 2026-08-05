@@ -221,8 +221,6 @@ func (s *Service) mailboxFor(info *mailbox.UserInfo) mailbox.MailboxBackend {
 	return s.opts.Mailbox
 }
 
-// indexRoot mirrors the fileindex root resolution: INDEX= override → mail
-// path → home.
 // checkIndexRoot refuses a root that resolves to the same directory for every
 // user.
 //
@@ -246,8 +244,9 @@ func checkIndexRoot(tmpl string) error {
 
 // indexRoot resolves where this user's FTS data lives.
 //
-// The configured root wins when set; otherwise the mail index tree, which is
-// where it has always gone. Changing the setting on a running deployment leaves
+// The configured root wins when set; otherwise the resolution mirrors
+// fileindex's — INDEX= override, then mail path, then home — which is where FTS
+// data has always gone. Changing the setting on a running deployment leaves
 // the old data where it was and starts writing to the new place — the index
 // rebuilds itself on demand, which is the property that makes FTS data movable
 // at all.
