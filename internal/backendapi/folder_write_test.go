@@ -274,3 +274,35 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// The admin path must refuse to delete INBOX for the same reason its Rename
+// sibling does: on maildir INBOX is the mail root, so the call destroys the
+// account rather than a folder (#1063).
+//
+// The surviving mailbox is asserted through the API rather than by looking for
+// a "cur" directory anywhere under the root -- other users and the index carry
+// one, so that check stayed green while the root was gone.
+func TestFolderDelete_RejectsINBOX(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "",
+		map[string]any{"user": user})
+
+	for _, name := range []string{"INBOX", "inbox"} {
+		status, body := doJSON(t, ts, http.MethodPost, "/api/backend/folder/delete", "",
+			map[string]any{"user": user, "folder": name})
+		if status != http.StatusBadRequest {
+			t.Errorf("delete %q: status=%d, want 400: body=%s", name, status, body)
+		}
+	}
+
+	_, body := doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "",
+		map[string]any{"user": user})
+	var listResp struct {
+		Folders []string `json:"folders"`
+	}
+	decodeJSONBody(t, body, &listResp)
+	if !containsString(listResp.Folders, "INBOX") {
+		t.Errorf("INBOX gone after refused delete: %v", listResp.Folders)
+	}
+}

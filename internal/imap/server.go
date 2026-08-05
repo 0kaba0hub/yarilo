@@ -1149,6 +1149,16 @@ func (s *session) Delete(name string) error {
 	if err != nil {
 		return err
 	}
+	// RFC 9051 6.3.5: DELETE of INBOX is refused. The name is legitimate
+	// everywhere else, so the refusal belongs to the destructive verb rather
+	// than to name validation -- on maildir INBOX *is* the mail root, and
+	// removing it takes every message and the root index (#1063).
+	if strings.EqualFold(rel, "INBOX") {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Text: "INBOX cannot be deleted",
+		}
+	}
 	// A mailbox that is not there is refused, not reported as deleted
 	// (RFC 9051 §6.3.5, code from RFC 5530). The client asked for it to be
 	// gone and it is gone, so the difference looks academic -- but a cleanup

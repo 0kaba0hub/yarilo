@@ -133,6 +133,14 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "folder required", http.StatusBadRequest)
 		return
 	}
+	// On maildir INBOX is the mail root, so removing it takes every message
+	// and the root index with it. The Rename sibling already refuses; this
+	// path did not, and an admin call naming the wrong folder was
+	// indistinguishable from a successful cleanup (#1063).
+	if strings.EqualFold(req.Folder, "INBOX") {
+		apiError(w, "INBOX cannot be deleted", http.StatusBadRequest)
+		return
+	}
 	uc, err := s.openUserContext(req.User)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
