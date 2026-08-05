@@ -93,31 +93,13 @@ func TestNothingEmptiesTheInbox(t *testing.T) {
 	}
 }
 
-// Deleting inside a folder the check created is the correct shape and must stay
-// allowed, or the guard above would push the next author towards leaving state
-// behind instead.
-func TestDeletingInsideAnOwnedFolderIsAllowed(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sieve.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "checkFolder" {
-			continue
-		}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok {
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "deleteUIDs" {
-					found = true
-				}
-			}
-			return true
-		})
-	}
-	if !found {
-		t.Skip("checkFolder no longer deletes; the guard's boundary has moved and wants rereading")
-	}
-}
+// The counterweight to the guard above -- that deleting inside a folder the
+// check created stays allowed -- used to be asserted here by looking for a
+// deleteUIDs call inside checkFolder. That call moved into cleanupAfterCheck in
+// #1070 and the assertion skipped itself rather than failing.
+//
+// It is not retargeted, it is gone: TestOwnedFolderCleanupIssuesTheDelete
+// asserts the same property directly, by driving a recording server and
+// checking that the DELETE was sent. Reading the tree for a call by name was
+// only ever an approximation of that, and this is the second time the
+// approximation moved out from under itself.
