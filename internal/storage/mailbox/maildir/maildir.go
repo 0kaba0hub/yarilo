@@ -201,6 +201,9 @@ func (u *userMailbox) Init() error {
 
 // Create provisions the cur/new/tmp triplet for a folder under the X lock.
 func (u *userMailbox) Create(folder string) error {
+	if err := u.checkName(folder); err != nil {
+		return err
+	}
 	return u.withMailboxLock(folder, func() error {
 		base := u.folderPath(folder)
 		for _, sub := range []string{"cur", "new", "tmp"} {
@@ -215,6 +218,9 @@ func (u *userMailbox) Create(folder string) error {
 // Delete removes the entire folder tree (cur/new/tmp + uidlist + markers)
 // under the X lock.
 func (u *userMailbox) Delete(folder string) error {
+	if err := u.checkName(folder); err != nil {
+		return err
+	}
 	return u.withMailboxLock(folder, func() error {
 		return os.RemoveAll(u.folderPath(folder))
 	})
@@ -223,6 +229,12 @@ func (u *userMailbox) Delete(folder string) error {
 // Rename renames a folder on disk, holding the X lock on both names in
 // lexicographic order so concurrent Renames cannot deadlock.
 func (u *userMailbox) Rename(oldName, newName string) error {
+	if err := u.checkName(oldName); err != nil {
+		return err
+	}
+	if err := u.checkName(newName); err != nil {
+		return err
+	}
 	return u.withTwoMailboxLocks(oldName, newName, func() error {
 		return os.Rename(u.folderPath(oldName), u.folderPath(newName))
 	})
@@ -269,6 +281,9 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // later List() / Fetch() resolution.
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string, guid [16]byte) (string, uint32, [16]byte, error) {
 	var noGUID [16]byte
+	if err := u.checkName(folder); err != nil {
+		return "", 0, noGUID, err
+	}
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
 		defer func() { <-u.b.writeSem }()
@@ -1028,7 +1043,36 @@ func (u *userMailbox) folderDiskName(folder string) string {
 	return folder
 }
 
+// checkName refuses a folder name that would resolve outside its own folder.
+//
+// INBOX is exempt because it names the root deliberately; every other name that
+// resolves there does so by accident, and the accident removes a mailbox.
+func (u *userMailbox) checkName(folder string) error {
+	if folder == "INBOX" {
+		return nil
+	}
+	return mailbox.ValidateFolderName(folder, u.separator)
+}
+
+// folderPath maps a folder name to its directory.
+//
+// A name that would resolve to the mailbox root or above it is mapped to a
+// path that cannot exist instead. Refusing here rather than only in the
+// mutating operations is what makes it safe: the same names read another
+// account's mail on a deployment whose IMAP separator is "." — the rewrite to
+// the on-disk separator neutralises "../" only while the two differ, which is
+// configuration rather than a guarantee (#1063).
+//
+// Every caller then fails with "no such file or directory", which is the right
+// answer for a mailbox that cannot exist. The operations that destroy data
+// check the name explicitly as well, so they refuse with a message naming the
+// cause rather than a missing path.
 func (u *userMailbox) folderPath(folder string) string {
+	if folder != "INBOX" {
+		if err := mailbox.ValidateFolderName(folder, u.separator); err != nil {
+			return filepath.Join(u.mailPath, invalidFolderMarker)
+		}
+	}
 	if folder == "INBOX" {
 		if u.explicitMailPath {
 			return u.inboxPath
@@ -1041,7 +1085,17 @@ func (u *userMailbox) folderPath(folder string) string {
 // controlFolderPath returns the directory for per-folder control files
 // (yarilo-uidlist): under controlDir when CONTROL= is set, else co-located
 // with the folder.
+// invalidFolderMarker is the directory an invalid name resolves to. It is not
+// a legal maildir++ folder name — a folder is ".name" — so it cannot collide
+// with a real one, and it does not exist, so every read and write fails.
+const invalidFolderMarker = "invalid-folder-name"
+
 func (u *userMailbox) controlFolderPath(folder string) string {
+	if folder != "INBOX" {
+		if err := mailbox.ValidateFolderName(folder, u.separator); err != nil {
+			return filepath.Join(u.mailPath, invalidFolderMarker)
+		}
+	}
 	sub := mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator)
 	if u.controlDir != "" {
 		if folder == "INBOX" {
