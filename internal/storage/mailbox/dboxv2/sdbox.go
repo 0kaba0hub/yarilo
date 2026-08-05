@@ -252,9 +252,21 @@ func (u *userMailbox) Create(folder string) error {
 	})
 }
 
+// foldersRoot is the directory every folder lives under. folderDir("") resolves
+// to it, which is what made an empty name remove all of the user's folders
+// before names were validated above the drivers (#1069).
+func (u *userMailbox) foldersRoot() string { return u.folderDir("") }
+
 func (u *userMailbox) Delete(folder string) error {
 	return u.withMailboxLock(folder, func() error {
-		if err := os.RemoveAll(u.folderDir(folder)); err != nil {
+		dir := u.folderDir(folder)
+		// Last check before the removal, on the resolved path rather than the
+		// name. Whatever was validated above, this must land on a folder and
+		// not on the directory that holds them all.
+		if err := mailbox.GuardDestructivePath(u.foldersRoot(), dir); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("sdbox/delete: %w", err)
 		}
 		return nil
@@ -263,10 +275,14 @@ func (u *userMailbox) Delete(folder string) error {
 
 func (u *userMailbox) Rename(oldName, newName string) error {
 	return u.withTwoMailboxLocks(oldName, newName, func() error {
-		if err := os.MkdirAll(filepath.Dir(u.folderDir(newName)), 0o700); err != nil {
+		from, to := u.folderDir(oldName), u.folderDir(newName)
+		if err := mailbox.GuardDestructivePaths(u.foldersRoot(), from, to); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
 			return fmt.Errorf("sdbox/rename: mkdir: %w", err)
 		}
-		if err := os.Rename(u.folderDir(oldName), u.folderDir(newName)); err != nil {
+		if err := os.Rename(from, to); err != nil {
 			return fmt.Errorf("sdbox/rename %s → %s: %w", oldName, newName, err)
 		}
 		return nil
