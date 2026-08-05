@@ -3,8 +3,8 @@ name: yarilo
 description: Production-grade IMAP/POP3/Submission mail server
 type: application
 
-version: 2.3.58
-appVersion: "2.3.58"
+version: 2.3.59
+appVersion: "2.3.59"
 
 keywords:
   - imap

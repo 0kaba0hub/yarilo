@@ -28,7 +28,18 @@ var ErrPathIsRoot = errors.New("mailbox: path is a storage root")
 // A guard here can never be the primary defence: it fires after a name has
 // already been accepted everywhere else, so anything it catches is a defect
 // somewhere above. That is the point -- it turns a silent one into a loud one.
-func GuardDestructivePath(root, path string) error {
+// Scope is deliberate: Delete and Rename only. Save, Move and Remove name a
+// message inside a folder rather than the folder itself, so the worst a bad
+// name does there is create or touch a stray file -- recoverable, and already
+// refused by the name rules above. Delete and Rename are the two that can
+// remove a mailbox, which is the loss this exists to make loud. Widening it
+// would cost a path comparison on every message write for no case it can catch.
+//
+// alsoRoots are further paths that are the mailbox rather than a folder in it.
+// maildir needs this: with an explicit mail_path the INBOX directory can sit
+// outside the folder root entirely, and refusing it as "outside the root" would
+// describe the wrong fault -- it is not misplaced, it is the mailbox.
+func GuardDestructivePath(root, path string, alsoRoots ...string) error {
 	if root == "" {
 		// Nothing to compare against; a driver that cannot say where its root
 		// is cannot be guarded, and pretending otherwise would be worse.
@@ -39,6 +50,11 @@ func GuardDestructivePath(root, path string) error {
 
 	if cleanPath == cleanRoot {
 		return fmt.Errorf("%w: %q is the storage root itself", ErrPathIsRoot, cleanPath)
+	}
+	for _, other := range alsoRoots {
+		if other != "" && cleanPath == filepath.Clean(other) {
+			return fmt.Errorf("%w: %q is the mailbox itself, not a folder in it", ErrPathIsRoot, cleanPath)
+		}
 	}
 	if !strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator)) {
 		return fmt.Errorf("%w: %q is outside %q", ErrPathIsRoot, cleanPath, cleanRoot)
