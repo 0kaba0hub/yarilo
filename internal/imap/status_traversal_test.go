@@ -13,6 +13,7 @@ import (
 
 	imapserver "github.com/yarilomail/yarilo/internal/imap"
 	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/pkg/dict"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -141,6 +142,12 @@ func TestAppendCopyMoveRefuseNamesOutsideTheMailbox(t *testing.T) {
 			_, err = c.Copy(seqSetAll(), name).Wait()
 			assertTryCreate(t, "COPY", err)
 
+			// MOVE kept a FolderExists block of its own that the sentinel made
+			// unreachable, so the case looked handled while the bare error was
+			// still reported as SERVERBUG.
+			_, err = c.Move(seqSetAll(), name).Wait()
+			assertTryCreate(t, "MOVE", err)
+
 			after := indexPaths(t, root)
 			for _, p := range after {
 				found := false
@@ -178,12 +185,22 @@ func assertTryCreate(t *testing.T, cmd string, err error) {
 // startServerWithRoot mirrors startServerWith but hands back the storage root
 // so a test can look at what landed on disk.
 func startServerWithRoot(t *testing.T, mb mailbox.MailboxBackend, root string) *imapclient.Client {
+	return startServerWithOptsBackend(t, root, mb, nil)
+}
+
+// startServerWithOpts is startServerWithRoot with a metadata dict wired up.
+func startServerWithOpts(t *testing.T, root string, md dict.Dict) *imapclient.Client {
+	return startServerWithOptsBackend(t, root, maildirBackend(t), md)
+}
+
+func startServerWithOptsBackend(t *testing.T, root string, mb mailbox.MailboxBackend, md dict.Dict) *imapclient.Client {
 	t.Helper()
 	opts := imapserver.Options{
-		Mailbox:  mb,
-		Index:    file.New(),
-		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
-		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
+		Mailbox:      mb,
+		Index:        file.New(),
+		Resolver:     &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
+		Auth:         &stubPassdb{user: "user@test.com", pass: "testpass"},
+		MetadataDict: md,
 	}
 	srv := imapserver.New(opts)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -224,4 +241,64 @@ func seqSetAll() imap.NumSet {
 	var ss imap.SeqSet
 	ss.AddRange(1, 0)
 	return ss
+}
+
+// METADATA resolves the mailbox through metadataResolve, the last OpenFolder
+// outside ensureFolderHandle. It answered OK for a name that resolves outside
+// the mailbox and left a complete index behind for it (#1072).
+func TestMetadataRefusesNamesOutsideTheMailbox(t *testing.T) {
+	root := t.TempDir()
+	md, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
+
+	c := startServerWithOpts(t, root, md)
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	appendN(t, c, 1)
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	before := indexPaths(t, root)
+
+	for _, name := range []string{"..", ".", "../victim@x/Maildir"} {
+		_, err := c.GetMetadata(name, []string{"/private/comment"}, &imap.GetMetadataOptions{}).Wait()
+		if err == nil {
+			t.Errorf("GETMETADATA %q was answered for a name outside the mailbox", name)
+			continue
+		}
+		var ie *imap.Error
+		if errors.As(err, &ie) && ie.Code != imap.ResponseCodeNonExistent {
+			t.Errorf("GETMETADATA %q answered code %q, want NONEXISTENT", name, ie.Code)
+		}
+	}
+
+	for _, p := range indexPaths(t, root) {
+		found := false
+		for _, q := range before {
+			if p == q {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("index state created for a mailbox that does not exist: %s", p)
+		}
+	}
+}
+
+// METADATA must still answer for a real mailbox.
+func TestMetadataStillAnswersForRealMailboxes(t *testing.T) {
+	md, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
+
+	c := startServerWithOpts(t, t.TempDir(), md)
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	if _, err := c.GetMetadata("INBOX", []string{"/private/comment"}, &imap.GetMetadataOptions{}).Wait(); err != nil {
+		t.Errorf("GETMETADATA INBOX: %v", err)
+	}
 }

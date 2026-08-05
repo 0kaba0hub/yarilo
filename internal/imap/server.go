@@ -3120,6 +3120,21 @@ func (s *session) metadataResolve(folder string) (*nsHandle, [16]byte, error) {
 			return nil, [16]byte{}, err
 		}
 	}
+	// The last OpenFolder outside ensureFolderHandle, and it carried the same
+	// defect: METADATA on a name that resolves outside the mailbox answered OK
+	// and left a complete index behind for a mailbox that does not exist
+	// (#1072).
+	exists, err := h.box.FolderExists(rel)
+	if err != nil {
+		return nil, [16]byte{}, err
+	}
+	if !exists {
+		return nil, [16]byte{}, &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
+	}
 	f, err := h.idx.OpenFolder(rel, uint32(time.Now().Unix()))
 	if err != nil {
 		return nil, [16]byte{}, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Mailbox lookup failed: " + err.Error()}
@@ -3182,14 +3197,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	srcBox := s.folderBox()
 	destH, destRel, destFolder, err := s.ensureFolderHandle(dest)
 	if err != nil {
-		return err
-	}
-	exists, err := destH.box.FolderExists(destRel)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeTryCreate, Text: "No such mailbox"}
+		return tryCreate(err)
 	}
 	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
 		return err
