@@ -32,7 +32,7 @@ func (s *session) reconcileFolder(h *nsHandle, rel string) bool {
 	if !s.srv.opts.MaildirSyncOnSelect {
 		return false
 	}
-	ps, ok := h.box.(proactiveSyncer)
+	ps, ok := mailbox.Driver(h.box).(proactiveSyncer)
 	if !ok || !ps.ProactiveScan() {
 		return false
 	}

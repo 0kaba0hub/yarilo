@@ -170,6 +170,21 @@ storage:
   ## max_concurrent_writes: 0           # 0 = unlimited; tune to storage type: ~32 HDD, ~256 SSD
   ## mailbox_list_utf8: true            # true = UTF-8 on disk (default); false = modified-UTF-7 for legacy migrations
   ## mailbox_list_normalize_to_nfc: true # true = NFC-normalise folder names (default)
+  ## mailbox_list_validate_fs_names: true # refuse folder names unsafe as paths: "."/".." segments, adjacent
+  ##                                      # separators, leading "/" or "~", and the on-disk hierarchy separator
+  ##                                      # when it differs from the namespace one (default true; turn off only
+  ##                                      # for a driver that never builds a path from the name)
+  ## mailbox_list_refuse_layout_separator: false
+  ##                                      # refuse names containing the on-disk hierarchy separator when the
+  ##                                      # namespace uses a different one (with separator "/" on maildir, that
+  ##                                      # means any name with a "."). Off by default: it is retroactive against
+  ##                                      # ordinary names such as example.com, and on maildir a nested "a/b" and
+  ##                                      # a dotted "a.b" are the same bytes on disk, so existing names cannot be
+  ##                                      # audited by reading the filesystem. Turn on for new deployments.
+  ## mailbox_list_reserved_segments: ["cur", "new", "tmp", "dbox-Mails"]
+  ##                                      # names a single hierarchy segment may not equal, because the storage
+  ##                                      # layout owns the directory. Retroactive: a user who already owns such
+  ##                                      # a folder loses access to it. [] disables the check.
   persistence:
     enabled: true
     storageClass: ""

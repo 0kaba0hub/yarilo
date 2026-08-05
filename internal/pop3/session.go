@@ -676,7 +676,7 @@ func (s *session) loadMailbox() error {
 	// heal a corrupt-flagged dbox folder at login so a POP3-only mailbox
 	// does not stay broken waiting for an IMAP SELECT
 	if folder.Fsckd {
-		if rb, ok := s.box.(mailbox.ReactiveHealer); ok {
+		if rb, ok := mailbox.Driver(s.box).(mailbox.ReactiveHealer); ok {
 			// no FTS client here: expunged UIDs leave FTS ghost documents
 			// until the next rescan. Heal runs at most once per session
 			// (at login), so no retry bound is needed.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	mdboxdriver "github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // registerMdboxRoutes registers mdbox-specific admin routes.
@@ -54,7 +55,7 @@ func (s *Server) handleMdboxPurge(w http.ResponseWriter, r *http.Request) {
 	type purger interface {
 		Purge() (mdboxdriver.PurgeStats, error)
 	}
-	p, ok := bundle.box.(purger)
+	p, ok := mailbox.Driver(bundle.box).(purger)
 	if !ok {
 		apiError(w, "purge: storage driver does not implement mdbox purge (only mdbox does)", http.StatusBadRequest)
 		return
@@ -117,7 +118,7 @@ func (s *Server) handleMdboxAltMove(w http.ResponseWriter, r *http.Request) {
 		AltMove(mdboxdriver.AltMoveQuery) (mdboxdriver.AltMoveStats, error)
 		AltEnabled() bool
 	}
-	am, ok := bundle.box.(altMover)
+	am, ok := mailbox.Driver(bundle.box).(altMover)
 	if !ok {
 		apiError(w, "altmove: storage driver does not implement mdbox altmove", http.StatusBadRequest)
 		return

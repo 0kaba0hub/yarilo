@@ -75,7 +75,7 @@ func (s *Server) rebuildFolder(ctx context.Context, req rebuildRequest) (*rebuil
 	// A folder-agnostic driver (mdbox) has a storage-wide Scan: the per-folder
 	// rebuild would import every stored message into this folder with fresh UIDs
 	// (cross-folder pollution + duplicates). Reject; use the storage-wide rebuild.
-	if fa, ok := bundle.box.(mailbox.FolderAgnosticStorage); ok && fa.FolderAgnosticScan() {
+	if fa, ok := mailbox.Driver(bundle.box).(mailbox.FolderAgnosticStorage); ok && fa.FolderAgnosticScan() {
 		return nil, http.StatusNotImplemented, errMdboxRebuildUnsupported
 	}
 
@@ -172,7 +172,7 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	rb, ok := bundle.box.(mailbox.StorageWideRebuilder)
+	rb, ok := mailbox.Driver(bundle.box).(mailbox.StorageWideRebuilder)
 	if !ok {
 		apiError(w, "storage-wide rebuild is only for folder-agnostic drivers (mdbox); use /api/backend/index/rebuild per folder", http.StatusBadRequest)
 		return

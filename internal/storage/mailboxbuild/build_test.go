@@ -29,7 +29,9 @@ func TestParseIntervalSeconds(t *testing.T) {
 func TestByDriverThreadsMdboxAltStorage(t *testing.T) {
 	altEnabled := func(sc config.StorageConfig) bool {
 		u := ByDriver("mdbox", sc, nil).OpenUser(&mailbox.UserInfo{Username: "u@d.test", Home: t.TempDir()})
-		return u.(interface{ AltEnabled() bool }).AltEnabled()
+		// The factory hands back a validating wrapper, so the driver's own
+		// optional capabilities are asserted underneath it (#1069).
+		return mailbox.Driver(u).(interface{ AltEnabled() bool }).AltEnabled()
 	}
 	if !altEnabled(config.StorageConfig{MdboxAltStoragePath: "/mnt/cold/%d/%n"}) {
 		t.Error("mdbox_alt_storage_path set but AltEnabled() is false — alt storage not threaded (#639)")
