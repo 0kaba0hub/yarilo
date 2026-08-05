@@ -1149,6 +1149,25 @@ func (s *session) Delete(name string) error {
 	if err != nil {
 		return err
 	}
+	// A mailbox that is not there is refused, not reported as deleted
+	// (RFC 9051 §6.3.5, code from RFC 5530). The client asked for it to be
+	// gone and it is gone, so the difference looks academic -- but a cleanup
+	// that deletes the wrong name reporting success is how a mailbox being
+	// destroyed by an unidentified caller stayed unidentified (#1063, #1066).
+	//
+	// Existence before rights, as SELECT does at line 986: the same answer to
+	// the same question, rather than two orders for a client to reason about.
+	exists, err := h.box.FolderExists(rel)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
+	}
 	if err := s.requireRight(h, rel, mailbox.RightDeleteMailbox); err != nil {
 		return err
 	}
@@ -1188,6 +1207,20 @@ func (s *session) Rename(oldName, newName string, _ *imaplib.RenameOptions) erro
 		return &imaplib.Error{
 			Type: imaplib.StatusResponseTypeNo,
 			Text: "RENAME across namespaces is not supported",
+		}
+	}
+	// Same as DELETE: renaming a mailbox that is not there is refused rather
+	// than answered OK (RFC 9051 §6.3.6). The two share the lookup and the
+	// failure they hide.
+	exists, err := hOld.box.FolderExists(relOld)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
 		}
 	}
 	// RENAME requires DELETE on the source plus CREATE on the destination's
