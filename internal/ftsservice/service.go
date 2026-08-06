@@ -228,13 +228,35 @@ func checkIndexRoot(tmpl string) error {
 	if tmpl == "" {
 		return nil
 	}
-	for _, v := range []string{"%h", "%u", "%n", "%d", "~/"} {
-		if strings.Contains(tmpl, v) {
-			return nil
-		}
+	// Answered by resolving, not by reading the template.
+	//
+	// Every syntactic version of this check has been wrong in a new way: the
+	// first accepted any variable, so %d (a whole domain) and %n (a local part
+	// repeated across domains) passed; the second looked for those two by
+	// substring, so "%%d" -- an escaped percent followed by a literal d --
+	// counted as a domain, and a hash variable like %2.256Nu counted as
+	// nothing at all, though it is per-account and the sandbox uses that form
+	// for VOLATILEDIR (#1095).
+	//
+	// Resolving three accounts and requiring three answers asks the question
+	// the check is for. It is immune to the escaping, to hash variables, and
+	// to whatever the expander grows next, because it uses the expander.
+	probes := []*mailbox.UserInfo{
+		{Username: "probe-a@probe-one.invalid", Home: "/probe/probe-one.invalid/probe-a"},
+		{Username: "probe-b@probe-one.invalid", Home: "/probe/probe-one.invalid/probe-b"},
+		{Username: "probe-a@probe-two.invalid", Home: "/probe/probe-two.invalid/probe-a"},
 	}
-	return fmt.Errorf("ftsservice: fts_index_root %q names no user (%%h, %%u, %%n, %%d or ~/), "+
-		"so every account would share one index directory", tmpl)
+	seen := make(map[string]string, len(probes))
+	for _, p := range probes {
+		root := mailbox.ExpandLocation(ftsPathOf(tmpl), p.Home, p.Username)
+		if other, dup := seen[root]; dup {
+			return fmt.Errorf("ftsservice: fts_index_root %q resolves to the same directory for %s and %s, "+
+				"so their indexes would merge; name the account with %%h, %%u, ~/, or %%d together with %%n",
+				tmpl, other, p.Username)
+		}
+		seen[root] = p.Username
+	}
+	return nil
 }
 
 // indexRoot resolves where this user's FTS data lives.

@@ -925,6 +925,12 @@ type FTSConfig struct {
 	// The default changed in 2.3.64, so an upgrade is such a change: existing
 	// indexes are orphaned in the mail tree and rebuilt under %h/fts on first
 	// search or autoindex. Set it to "" to keep the old placement.
+	//
+	// That promise covers *moving* a root, not sharing one. A template that
+	// does not distinguish accounts merges their indexes, and a rebuild does
+	// not unmerge what merged -- it merges it again. Hence the startup check:
+	// %h, %u and ~/ separate accounts on their own, %d and %n only together
+	// (#1095).
 	IndexRoot string `koanf:"fts_index_root"`
 
 	// AutoindexExclude lists mailboxes autoindexing skips: special-use flags

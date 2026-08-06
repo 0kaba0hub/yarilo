@@ -2486,6 +2486,13 @@ fts:
   ##
   ## Set to "" to keep the historical placement inside the mail index tree.
   ##
+  ## The path must distinguish accounts: %h, %u or ~/ on their own, or %d
+  ## together with %n. %d alone is one directory per domain and %n alone
+  ## repeats across domains; both merge accounts' indexes, and startup fails
+  ## rather than letting one user's search return another's mail. Note that
+  ## "changing the root is safe, the index rebuilds" applies to moving a root
+  ## and not to sharing one — a rebuild re-merges what merged.
+  ##
   ## UPGRADE NOTE (2.3.64): the default changed from "" to %h/fts, so an
   ## upgrade moves the location. Nothing is migrated — existing indexes are
   ## orphaned where they are and rebuilt under %h/fts on first search or
