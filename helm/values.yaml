@@ -2464,17 +2464,23 @@ fts:
   ## 0 disables the time-based trigger (rotate_count-only, explicit).
   fts_flatcurve_rotate_time: 5000
   ## Where FTS data lives: a location template expanded per user with ~/, %h,
-  ## %u, %n and %d, like every other storage location. Empty keeps it inside the
-  ## mail index tree, which is where it has always gone.
+  ## %u, %n and %d, like every other storage location.
   ##
-  ## Worth setting when FTS and mail want different volumes. FTS data is
-  ## derived — deletable and rebuildable — while mail is not, and FTS is
-  ## write-heavy: index writes are about a third of the pipeline.
+  ## Defaults to %h/fts, outside the mail tree. FTS data is derived — deletable
+  ## and rebuildable — while mail is not, and FTS is write-heavy: index writes
+  ## are about a third of the pipeline. Those are different durability and I/O
+  ## requirements, so they get different places, and a volume can be given to
+  ## one without the other.
   ##
-  ## Changing it moves nothing. The old data stays where it was and the index
-  ## rebuilds at the new location on demand; remove the old fts-flatcurve
-  ## directories by hand if the space matters.
-  fts_index_root: ""
+  ## Set to "" to keep the historical placement inside the mail index tree.
+  ##
+  ## UPGRADE NOTE (2.3.64): the default changed from "" to %h/fts, so an
+  ## upgrade moves the location. Nothing is migrated — existing indexes are
+  ## orphaned where they are and rebuilt under %h/fts on first search or
+  ## autoindex, which is safe because the data is derived but costs a reindex
+  ## and leaves the old fts-flatcurve directories occupying space until they
+  ## are removed by hand. Set fts_index_root: "" to keep the old placement.
+  fts_index_root: "%h/fts"
   ## Mailboxes autoindexing skips: special-use flags written with their
   ## backslash, or names with * and ? wildcards. Empty excludes nothing.
   ##

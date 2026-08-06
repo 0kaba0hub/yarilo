@@ -900,8 +900,11 @@ type FTSConfig struct {
 	LanguageTokenizerExplicitPrefix bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
 
 	// IndexRoot is where FTS data lives: a location template expanded per user
-	// with ~/, %h, %u, %n and %d, like every other storage location. Empty
-	// keeps it inside the mail index tree, which is where it has always gone.
+	// with ~/, %h, %u, %n and %d, like every other storage location.
+	//
+	// Defaults to %h/fts — outside the mail tree, which is the placement the
+	// two data kinds want. Empty restores the historical behaviour of keeping
+	// it inside the mail index tree (INDEX= override → mail path → home).
 	//
 	// FTS data is derived — it can be deleted and rebuilt; mail cannot — and
 	// it is write-heavy. Those are different durability and I/O requirements
@@ -911,6 +914,10 @@ type FTSConfig struct {
 	// stays where it was and the index rebuilds at the new location on demand.
 	// That is safe precisely because the data is derived, and it is also why
 	// the old directories have to be removed by hand if the space matters.
+	//
+	// The default changed in 2.3.64, so an upgrade is such a change: existing
+	// indexes are orphaned in the mail tree and rebuilt under %h/fts on first
+	// search or autoindex. Set it to "" to keep the old placement.
 	IndexRoot string `koanf:"fts_index_root"`
 
 	// AutoindexExclude lists mailboxes autoindexing skips: special-use flags
@@ -2157,6 +2164,10 @@ func Load(path string) (*Config, error) {
 			CloneFlushDelay:   10,
 		},
 		FTS: FTSConfig{
+			// FTS data is derived and write-heavy; mail is neither. Keeping
+			// them apart by default is the placement that suits both, and
+			// %h/fts is where an operator looks for it.
+			IndexRoot:                  "%h/fts",
 			Mode:                       "remote",
 			Listen:                     ":9106",
 			MaxConns:                   4,

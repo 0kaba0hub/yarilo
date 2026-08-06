@@ -1,9 +1,12 @@
 package ftsservice
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -90,5 +93,41 @@ func TestIndexRootWithoutAUserVariableIsRefused(t *testing.T) {
 				t.Errorf("the error does not say what goes wrong: %v", err)
 			}
 		})
+	}
+}
+
+// The shipped default puts FTS outside the mail tree. Asserted against the
+// loaded config rather than a literal, because the value that matters is the
+// one a deployment gets without saying anything (#1053).
+func TestDefaultIndexRootIsOutsideTheMailTree(t *testing.T) {
+	// A config that says nothing about the location: whatever comes back is
+	// what a deployment gets by saying nothing.
+	path := filepath.Join(t.TempDir(), "yarilo.yaml")
+	if err := os.WriteFile(path, []byte("fts:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FTS.IndexRoot != "%h/fts" {
+		t.Fatalf("default fts_index_root = %q, want %q", cfg.FTS.IndexRoot, "%h/fts")
+	}
+
+	s := &Service{opts: Options{IndexRoot: cfg.FTS.IndexRoot}}
+	info := &mailbox.UserInfo{
+		Username: "alice@example.com",
+		Home:     "/var/mail/example.com/alice",
+		MailPath: "/var/mail/example.com/alice/Maildir",
+		IndexDir: "/var/index/example.com/alice",
+	}
+	got := s.indexRoot(info)
+	if got != "/var/mail/example.com/alice/fts" {
+		t.Errorf("indexRoot = %q, want the home-relative fts directory", got)
+	}
+	// The point of the default: not under the mail path, and not under the
+	// index dir either — those are the two places it used to land.
+	if strings.HasPrefix(got, info.MailPath) || strings.HasPrefix(got, info.IndexDir) {
+		t.Errorf("indexRoot %q is still inside the mail tree", got)
 	}
 }
