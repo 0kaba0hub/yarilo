@@ -163,12 +163,16 @@ func TestValidateNamespaceTypes(t *testing.T) {
 		{"other", false},
 		{"other_users", false},
 		{"Shared", false}, // case-insensitive, as the builder reads it
-		{"", false},       // unset: the builder defaults it
-		{"public", true},  // plausible, documented nowhere, silently skipped
+		// Refused, because the builder refuses it: an absent type falls into
+		// the same default branch and the namespace is dropped. The two sets
+		// have to agree, or one value passes startup and then vanishes
+		// (#1086).
+		{"", true},
+		{"public", true}, // plausible, documented nowhere, silently skipped
 		{"bogus", true},
 	}
 	for _, tc := range cases {
-		err := validateNamespaceTypes([]NamespaceConfig{{Type: tc.typ, Prefix: "X/"}})
+		err := ValidateNamespaceTypes([]NamespaceConfig{{Type: tc.typ, Prefix: "X/"}})
 		switch {
 		case tc.refused && err == nil:
 			t.Errorf("namespace type %q was accepted", tc.typ)
@@ -179,7 +183,7 @@ func TestValidateNamespaceTypes(t *testing.T) {
 
 	// The message has to name the fix, because "public" is the value an
 	// operator reaches for and the answer is not obvious.
-	err := validateNamespaceTypes([]NamespaceConfig{{Type: "public", Prefix: "Public/"}})
+	err := ValidateNamespaceTypes([]NamespaceConfig{{Type: "public", Prefix: "Public/"}})
 	if err == nil || !strings.Contains(err.Error(), "type: shared") {
 		t.Errorf("refusal = %v; it should say a public namespace is type: shared", err)
 	}

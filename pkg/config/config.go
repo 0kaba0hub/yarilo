@@ -2255,7 +2255,7 @@ func (cfg *Config) validate() error {
 	if err := validateStorageEscapeChar(cfg.Storage.MailboxListStorageEscapeChar); err != nil {
 		return err
 	}
-	if err := validateNamespaceTypes(cfg.Namespaces); err != nil {
+	if err := ValidateNamespaceTypes(cfg.Namespaces); err != nil {
 		return err
 	}
 	if cfg.InternalTLS.Enabled {
@@ -2485,10 +2485,22 @@ func validateStorageEscapeChar(c string) error {
 // That is what "type: public" produced -- a plausible value the documentation
 // never listed, since a public namespace is declared as type: shared with a
 // public prefix and location (#1086).
-func validateNamespaceTypes(namespaces []NamespaceConfig) error {
+//
+// An absent type is refused with the rest, because the builder refuses it too:
+// it falls into the same default branch and is dropped. Accepting it here would
+// leave one value that passes startup and then vanishes -- the very failure
+// this check exists to prevent, kept alive for the field that is easiest to
+// forget.
+// Exported so the backend package can assert that its builder accepts exactly
+// this set: the two disagreed once, on the absent type, and each side's own
+// tests passed.
+func ValidateNamespaceTypes(namespaces []NamespaceConfig) error {
 	for i, ns := range namespaces {
-		switch strings.ToLower(ns.Type) {
-		case "", "personal", "shared", "other", "other_users":
+		// TrimSpace as well as ToLower, because the builder does: without it a
+		// stray space fails startup on a type the builder would have accepted.
+		// The two sets have to be the same set, in both directions.
+		switch strings.ToLower(strings.TrimSpace(ns.Type)) {
+		case "personal", "shared", "other", "other_users":
 		default:
 			return fmt.Errorf("config: namespace %d (prefix %q) has unknown type %q; "+
 				"valid types are personal, shared and other -- a public namespace is "+
