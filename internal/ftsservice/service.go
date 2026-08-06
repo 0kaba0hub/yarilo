@@ -259,9 +259,33 @@ func userRefFor(info *mailbox.UserInfo, indexRoot string) fts.UserRef {
 	}
 }
 
+// ftsPathOf strips the storage-driver prefix from an index-root setting.
+//
+// The value is written "driver:path", the form namespace locations already use,
+// so an operator reads one syntax across the config -- and so the setting says
+// on its face that it names a filesystem path rather than a location in some
+// store. Only posix exists; ValidateFTSIndexRoot refuses anything else at load
+// rather than letting an unimplemented driver be silently treated as a path.
+//
+// A bare path is accepted and means posix: the key shipped without a prefix and
+// deployments already carry values written that way.
+func ftsPathOf(root string) string {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(root), "posix:")
+	if !ok {
+		return root
+	}
+	// posix:prefix=/path is the reference form and what a migrated
+	// configuration carries; posix:/path is the form our namespace locations
+	// use. Both name the same thing, so both are read.
+	if p, ok := strings.CutPrefix(rest, "prefix="); ok {
+		return p
+	}
+	return rest
+}
+
 func (s *Service) indexRoot(info *mailbox.UserInfo) string {
 	if s.opts.IndexRoot != "" {
-		return mailbox.ExpandLocation(s.opts.IndexRoot, info.Home, info.Username)
+		return mailbox.ExpandLocation(ftsPathOf(s.opts.IndexRoot), info.Home, info.Username)
 	}
 	if info.IndexDir != "" {
 		return info.IndexDir

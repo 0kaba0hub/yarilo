@@ -188,3 +188,40 @@ func TestValidateNamespaceTypes(t *testing.T) {
 		t.Errorf("refusal = %v; it should say a public namespace is type: shared", err)
 	}
 }
+
+// An unimplemented driver must be refused, not taken for part of a path: the
+// index would land in a directory named after the driver and the setting would
+// be doing something other than what it says (#1053).
+func TestValidateFTSIndexRoot(t *testing.T) {
+	cases := []struct {
+		in      string
+		refused bool
+	}{
+		{"", false},               // disabled: index stays in the mail tree
+		{"posix:%h/fts", false},   // the default
+		{"POSIX:/var/fts", false}, // driver names are case-insensitive
+		{"/var/fts/%d/%n", false}, // bare path: the form the key shipped with
+		{"%h/fts", false},
+		{"s3:bucket/fts", true}, // plausible, unimplemented
+		{"obox:%h/fts", true},   //
+		{"posix:", true},        // a driver and no path
+		{"posix:   ", true},     //
+		{"posix:prefix=", true}, // the argument with no path
+		{"posix:size=10", true}, // an argument the driver does not take
+	}
+	for _, tc := range cases {
+		err := ValidateFTSIndexRoot(tc.in)
+		switch {
+		case tc.refused && err == nil:
+			t.Errorf("fts_index_root %q was accepted", tc.in)
+		case !tc.refused && err != nil:
+			t.Errorf("fts_index_root %q = %v, want accepted", tc.in, err)
+		}
+	}
+
+	// The message has to show the working form, because the value looks right.
+	err := ValidateFTSIndexRoot("s3:%h/fts")
+	if err == nil || !strings.Contains(err.Error(), "posix:") {
+		t.Errorf("refusal = %v; it should show the form that works", err)
+	}
+}

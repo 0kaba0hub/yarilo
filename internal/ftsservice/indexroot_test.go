@@ -110,8 +110,8 @@ func TestDefaultIndexRootIsOutsideTheMailTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.FTS.IndexRoot != "%h/fts" {
-		t.Fatalf("default fts_index_root = %q, want %q", cfg.FTS.IndexRoot, "%h/fts")
+	if cfg.FTS.IndexRoot != "posix:prefix=%h/fts/" {
+		t.Fatalf("default fts_index_root = %q, want %q", cfg.FTS.IndexRoot, "posix:prefix=%h/fts/")
 	}
 
 	s := &Service{opts: Options{IndexRoot: cfg.FTS.IndexRoot}}
@@ -122,7 +122,7 @@ func TestDefaultIndexRootIsOutsideTheMailTree(t *testing.T) {
 		IndexDir: "/var/index/example.com/alice",
 	}
 	got := s.indexRoot(info)
-	if got != "/var/mail/example.com/alice/fts" {
+	if got != "/var/mail/example.com/alice/fts/" {
 		t.Errorf("indexRoot = %q, want the home-relative fts directory", got)
 	}
 	// The point of the default: not under the mail path, and not under the
@@ -175,5 +175,28 @@ func TestServicePassesTheEscapeCharToTheEngine(t *testing.T) {
 	ref := userRefFor(info, "/var/mail/example.com/alice/fts")
 	if ref.EscapeChar != "^" {
 		t.Errorf("UserRef.EscapeChar = %q, want the user's %q", ref.EscapeChar, info.StorageEscapeChar)
+	}
+}
+
+// The driver prefix is part of the value, not part of the path: a setting of
+// posix:%h/fts must resolve to the same directory a bare %h/fts does, or the
+// index lands in a directory named after the driver.
+func TestIndexRootStripsTheDriverPrefix(t *testing.T) {
+	info := &mailbox.UserInfo{Username: "alice@example.com", Home: "/var/mail/example.com/alice"}
+
+	// All three spellings name one directory: the reference's fs-api argument,
+	// our namespace-location form, and the bare path the key shipped with.
+	arg := (&Service{opts: Options{IndexRoot: "posix:prefix=%h/fts"}}).indexRoot(info)
+	prefixed := (&Service{opts: Options{IndexRoot: "posix:%h/fts"}}).indexRoot(info)
+	bare := (&Service{opts: Options{IndexRoot: "%h/fts"}}).indexRoot(info)
+
+	if arg != bare || prefixed != bare {
+		t.Errorf("three spellings, three answers: prefix=%q, posix:%q, bare %q", arg, prefixed, bare)
+	}
+	if want := "/var/mail/example.com/alice/fts"; prefixed != want {
+		t.Errorf("indexRoot = %q, want %q", prefixed, want)
+	}
+	if strings.Contains(prefixed, "posix") {
+		t.Errorf("the driver name leaked into the path: %q", prefixed)
 	}
 }
