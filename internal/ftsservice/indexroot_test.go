@@ -200,3 +200,70 @@ func TestIndexRootStripsTheDriverPrefix(t *testing.T) {
 		t.Errorf("the driver name leaked into the path: %q", prefixed)
 	}
 }
+
+// The check asks whether the template distinguishes accounts, not whether it
+// names a variable. It used to ask the second question and so admitted the
+// failure its own message describes: %d is the domain, %n the local part, and
+// neither is unique to an account (#1095).
+//
+// Asserted against resolved roots for three accounts rather than against the
+// error alone: the property is "two accounts never share a directory", and a
+// template can satisfy the wording of a check while failing that.
+func TestIndexRootMustDistinguishAccounts(t *testing.T) {
+	users := []*mailbox.UserInfo{
+		{Username: "u1@d1.test", Home: "/var/mail/d1.test/u1"},
+		{Username: "u2@d1.test", Home: "/var/mail/d1.test/u2"},
+		{Username: "u1@d2.test", Home: "/var/mail/d2.test/u1"},
+	}
+
+	for _, tc := range []struct {
+		tmpl    string
+		accept  bool
+		because string
+	}{
+		{"posix:prefix=%h/fts/", true, "the home is per-account"},
+		{"/var/fts/%u", true, "the full address is per-account"},
+		{"~/fts", true, "the home again"},
+		{"/var/fts/%d/%n", true, "domain and local part together"},
+		{"/var/fts/%n/%d", true, "either order"},
+		{"/var/fts/%d", false, "every account in a domain would share it"},
+		{"/var/fts/%n", false, "the local part repeats across domains"},
+		{"/var/fts", false, "no variable at all"},
+	} {
+		t.Run(tc.tmpl, func(t *testing.T) {
+			err := checkIndexRoot(tc.tmpl)
+			if tc.accept && err != nil {
+				t.Fatalf("refused (%s): %v", tc.because, err)
+			}
+			if !tc.accept {
+				if err == nil {
+					t.Fatalf("accepted, but %s", tc.because)
+				}
+				return
+			}
+
+			// Accepted templates must actually separate the three accounts.
+			s := &Service{opts: Options{IndexRoot: tc.tmpl}}
+			seen := map[string]string{}
+			for _, u := range users {
+				root := s.indexRoot(u)
+				if other, dup := seen[root]; dup {
+					t.Errorf("%s and %s share %s", other, u.Username, root)
+				}
+				seen[root] = u.Username
+			}
+		})
+	}
+}
+
+// The refusals name their own reason: "add %n" and "add %d" are different
+// repairs, and an operator who is told the generic message has to work out
+// which applies.
+func TestIndexRootRefusalsNameTheReason(t *testing.T) {
+	if err := checkIndexRoot("/var/fts/%d"); err == nil || !strings.Contains(err.Error(), "%n") {
+		t.Errorf("refusing %%d should suggest adding %%n, got %v", err)
+	}
+	if err := checkIndexRoot("/var/fts/%n"); err == nil || !strings.Contains(err.Error(), "%d") {
+		t.Errorf("refusing %%n should suggest adding %%d, got %v", err)
+	}
+}
