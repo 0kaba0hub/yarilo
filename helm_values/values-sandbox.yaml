@@ -64,7 +64,10 @@ namespaces:
     list: true
     subscriptions: true
     inbox: true
-  - type: public
+  # A public namespace is declared as type: shared with a public prefix and
+  # location; there is no "public" type. It was silently skipped, so nothing
+  # under Public/ was ever a shared mailbox (#1086).
+  - type: shared
     prefix: "Public/"
     separator: "/"
     list: true

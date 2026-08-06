@@ -2255,6 +2255,9 @@ func (cfg *Config) validate() error {
 	if err := validateStorageEscapeChar(cfg.Storage.MailboxListStorageEscapeChar); err != nil {
 		return err
 	}
+	if err := validateNamespaceTypes(cfg.Namespaces); err != nil {
+		return err
+	}
 	if cfg.InternalTLS.Enabled {
 		if cfg.InternalTLS.Cert == "" || cfg.InternalTLS.Key == "" || cfg.InternalTLS.CA == "" {
 			return fmt.Errorf("config: internal_tls.enabled is true but cert/key/ca are not set")
@@ -2466,6 +2469,31 @@ func validateStorageEscapeChar(c string) error {
 		return fmt.Errorf("config: storage.mailbox_list_storage_escape_char %q is the modified-UTF-7 shift character", c)
 	case b < 0x21 || b > 0x7e:
 		return fmt.Errorf("config: storage.mailbox_list_storage_escape_char %q must be printable ASCII", c)
+	}
+	return nil
+}
+
+// validateNamespaceTypes refuses a namespace type the server does not
+// implement, rather than dropping the namespace with a log line.
+//
+// Skipping loses the whole namespace, and every mailbox addressed under its
+// prefix silently becomes a personal folder whose name happens to start with
+// the prefix. One user creates it in their own store, another looks in theirs
+// and is told it does not exist, and no ACL grant can bridge them, because
+// there is no shared mailbox to grant anything on.
+//
+// That is what "type: public" produced -- a plausible value the documentation
+// never listed, since a public namespace is declared as type: shared with a
+// public prefix and location (#1086).
+func validateNamespaceTypes(namespaces []NamespaceConfig) error {
+	for i, ns := range namespaces {
+		switch strings.ToLower(ns.Type) {
+		case "", "personal", "shared", "other", "other_users":
+		default:
+			return fmt.Errorf("config: namespace %d (prefix %q) has unknown type %q; "+
+				"valid types are personal, shared and other -- a public namespace is "+
+				"type: shared with its own prefix and location", i, ns.Prefix, ns.Type)
+		}
 	}
 	return nil
 }
