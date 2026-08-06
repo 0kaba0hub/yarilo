@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestValidateBackendOrDirector (#735) proves a login/proxy component must
 // have at least one of backend_addr/director_addr set — the guard that
@@ -143,5 +146,45 @@ func TestValidateStorageEscapeChar(t *testing.T) {
 		case !tc.refused && err != nil:
 			t.Errorf("validateStorageEscapeChar(%q) = %v, want accepted", tc.in, err)
 		}
+	}
+}
+
+// A namespace the server cannot build must fail startup, not disappear.
+// Dropping it turns every mailbox under its prefix into a personal folder in
+// whichever user happens to create it, and no ACL grant can bridge two users
+// who are each looking in their own store (#1086).
+func TestValidateNamespaceTypes(t *testing.T) {
+	cases := []struct {
+		typ     string
+		refused bool
+	}{
+		{"personal", false},
+		{"shared", false},
+		{"other", false},
+		{"other_users", false},
+		{"Shared", false}, // case-insensitive, as the builder reads it
+		// Refused, because the builder refuses it: an absent type falls into
+		// the same default branch and the namespace is dropped. The two sets
+		// have to agree, or one value passes startup and then vanishes
+		// (#1086).
+		{"", true},
+		{"public", true}, // plausible, documented nowhere, silently skipped
+		{"bogus", true},
+	}
+	for _, tc := range cases {
+		err := ValidateNamespaceTypes([]NamespaceConfig{{Type: tc.typ, Prefix: "X/"}})
+		switch {
+		case tc.refused && err == nil:
+			t.Errorf("namespace type %q was accepted", tc.typ)
+		case !tc.refused && err != nil:
+			t.Errorf("namespace type %q = %v, want accepted", tc.typ, err)
+		}
+	}
+
+	// The message has to name the fix, because "public" is the value an
+	// operator reaches for and the answer is not obvious.
+	err := ValidateNamespaceTypes([]NamespaceConfig{{Type: "public", Prefix: "Public/"}})
+	if err == nil || !strings.Contains(err.Error(), "type: shared") {
+		t.Errorf("refusal = %v; it should say a public namespace is type: shared", err)
 	}
 }
