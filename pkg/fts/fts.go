@@ -39,6 +39,12 @@ type UserRef struct {
 	// A path-derived engine uses it so its on-disk layout matches the shared
 	// per-folder index convention instead of a flat folder-name path.
 	Driver string
+	// EscapeChar is the storage-name escape character
+	// (mailbox_list_storage_escape_char). A path-derived engine must apply it
+	// or its tree names folders differently from the mail and index trees:
+	// with escaping on, "Invoices.2026" is one directory there and two levels
+	// here, so two distinct mailboxes can share one FTS index (#1053, #1078).
+	EscapeChar string
 	// Separator is the IMAP hierarchy separator, for mapping a folder name to
 	// its on-disk sub-path. Empty is treated as "/".
 	Separator string

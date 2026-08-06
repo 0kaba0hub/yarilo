@@ -190,12 +190,7 @@ func (s *Service) handle(user string) (*userHandle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ftsservice: userdb %s: %w", user, err)
 	}
-	ui, err := s.opts.Engine.OpenUser(context.Background(), fts.UserRef{
-		Username:  user,
-		IndexRoot: s.indexRoot(info),
-		Driver:    info.Driver,
-		Separator: info.Separator,
-	})
+	ui, err := s.opts.Engine.OpenUser(context.Background(), userRefFor(info, s.indexRoot(info)))
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +245,20 @@ func checkIndexRoot(tmpl string) error {
 // the old data where it was and starts writing to the new place — the index
 // rebuilds itself on demand, which is the property that makes FTS data movable
 // at all.
+// userRefFor builds the engine's view of a user. Extracted so the wiring can be
+// asserted on its own: a path-derived engine that is not told the escape
+// character silently names folders differently from the mail tree, and that is
+// invisible from anywhere except the two paths side by side (#1053).
+func userRefFor(info *mailbox.UserInfo, indexRoot string) fts.UserRef {
+	return fts.UserRef{
+		Username:   info.Username,
+		IndexRoot:  indexRoot,
+		Driver:     info.Driver,
+		Separator:  info.Separator,
+		EscapeChar: info.StorageEscapeChar,
+	}
+}
+
 func (s *Service) indexRoot(info *mailbox.UserInfo) string {
 	if s.opts.IndexRoot != "" {
 		return mailbox.ExpandLocation(s.opts.IndexRoot, info.Home, info.Username)

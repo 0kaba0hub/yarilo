@@ -89,8 +89,8 @@ func (o Options) withDefaults() Options {
 		// → <root>/mailboxes/INBOX/dbox-Mails/fts-flatcurve. Matches where the
 		// real index data lives, not a flat <root>/<folder>/fts-flatcurve.
 		o.MailboxDir = func(user fts.UserRef, mbox fts.MailboxRef) string {
-			sub := mailbox.FolderSubpath(user.Driver, mbox.Name, mbox.Name,
-				mailbox.SepOrDefault(user.Separator))
+			sub := mailbox.FolderSubpathEscaped(user.Driver, mbox.Name, mbox.Name,
+				mailbox.SepOrDefault(user.Separator), user.EscapeChar)
 			return filepath.Join(user.IndexRoot, sub, Label)
 		}
 	}

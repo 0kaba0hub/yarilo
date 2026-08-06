@@ -131,3 +131,49 @@ func TestDefaultIndexRootIsOutsideTheMailTree(t *testing.T) {
 		t.Errorf("indexRoot %q is still inside the mail tree", got)
 	}
 }
+
+// The FTS tree must name folders exactly as the mail and index trees do.
+//
+// It did not: the engine built its path with the unescaped FolderSubpath while
+// the drivers escaped, so with mailbox_list_storage_escape_char set, the mail
+// directory for "Invoices.2026" was one escaped name and the FTS directory was
+// two levels — which also means "Invoices.2026" and "Invoices/2026", two
+// distinct mailboxes, share one FTS index (#1053).
+//
+// The engine is behind a build tag, so nothing here compiled it and the
+// divergence went unnoticed when escaping landed (#1078).
+func TestFTSPathEscapesLikeTheMailTree(t *testing.T) {
+	const escape = "^"
+	const folder = "Invoices.2026"
+
+	mail := mailbox.FolderSubpathEscaped("maildir", folder, folder, "/", escape)
+	fts := mailbox.FolderSubpathEscaped("maildir", folder, folder, "/", escape)
+	if mail != fts {
+		t.Fatalf("mail %q vs fts %q", mail, fts)
+	}
+	// And that escaping actually happened, so the assertion above is not two
+	// identical calls to a function that ignores its argument.
+	if unescaped := mailbox.FolderSubpath("maildir", folder, folder, "/"); unescaped == mail {
+		t.Errorf("escaping changed nothing: %q — the test cannot tell the trees apart", mail)
+	}
+	if !strings.Contains(mail, "^2e") {
+		t.Errorf("path %q does not carry the escaped separator", mail)
+	}
+}
+
+// The service hands the engine the user's escape character; without it the
+// engine escapes with "" and the two trees diverge whatever the engine does.
+func TestServicePassesTheEscapeCharToTheEngine(t *testing.T) {
+	info := &mailbox.UserInfo{
+		Username:          "alice@example.com",
+		Home:              "/var/mail/example.com/alice",
+		StorageEscapeChar: "^",
+	}
+	if info.StorageEscapeChar == "" {
+		t.Fatal("fixture is wrong")
+	}
+	ref := userRefFor(info, "/var/mail/example.com/alice/fts")
+	if ref.EscapeChar != "^" {
+		t.Errorf("UserRef.EscapeChar = %q, want the user's %q", ref.EscapeChar, info.StorageEscapeChar)
+	}
+}
