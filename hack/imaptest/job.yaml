@@ -20,14 +20,24 @@ spec:
       containers:
       - name: imaptest
         image: dovecot/imaptest:latest
+        ## Sized for the sandbox node, not for a load test. Four cores, shared
+        ## with everything else on it: at clients=500 / msgs=5000 the node
+        ## saturates, the run does not finish, and the kubelet stops serving
+        ## pods/log while still reporting Ready -- so the run produces neither
+        ## a result nor a readable failure. At these numbers it completes in
+        ## about ninety seconds with every command exercised.
+        ##
+        ## Raise them only against a stand with headroom to spare, and check
+        ## container_cpu_cfs_throttled_periods_total afterwards either way; see
+        ## docs/TESTING.md.
         args:
         - host=yarilo-imap-login.yarilo-sb.svc.cluster.local
         - port=143
         - user=u%d@d00001.test
-        - users=1-100
+        - users=1-20
         - pass=Yarilo!test1
-        - clients=500
-        - msgs=5000
+        - clients=50
+        - msgs=500
         - secs=90
         - mbox=/mbox/test.mbox
         volumeMounts:
