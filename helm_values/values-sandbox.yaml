@@ -291,6 +291,22 @@ components:
 
   ## internal mTLS for co-located backend + shared services (sandbox #856 gate)
   backend:
+    ## 2, not the chart default of 3: three do not fit. The node has 4 cores,
+    ## other namespaces hold ~1590m of it, and each backend pod requests 460m
+    ## across its eight containers -- the third is refused outright with
+    ## "0/1 nodes are available: 1 Insufficient cpu".
+    ##
+    ## It fit historically only because the pods were placed one at a time as
+    ## the node filled; after any restart that replaces all three, the last one
+    ## stays Pending. That state is worse than two replicas rather than merely
+    ## smaller: the ring is built for three, so every user hashing to the
+    ## missing pod is unroutable, and nothing reports it as a failure.
+    ##
+    ## Two also stops the node saturating: with three declared, the smoke jobs
+    ## and imaptest ran for fifteen minutes without finishing and the kubelet
+    ## stopped serving pods/log while staying Ready. Both complete normally at
+    ## two.
+    replicas: 2
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
