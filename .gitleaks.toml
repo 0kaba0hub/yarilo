@@ -18,8 +18,6 @@ regexes = ['abc123def456']
 paths = ['''internal/auth/client/client_test\.go''']
 
 [[allowlists]]
-description = "Example mailbox names in the storage-escaping tests. generic-api-key reads a dotted folder name in a comment as a high-entropy key: the finding is the literal Invoices.2026, which is the example the whole test file is about. AND-scoped to that file AND that literal."
-condition = "AND"
+description = "Invoices.2026 — the example mailbox name used throughout the storage-escaping work (#1078). generic-api-key reads a dotted folder name as a high-entropy key. Not path-scoped: it was, and the finding simply moved to the next file that explained the feature. The literal is fixed and carries no secret, so the exact string is allowlisted wherever it appears rather than chased from file to file."
 regexTarget = "match"
 regexes = ['Invoices\.2026']
-paths = ['''internal/storage/mailboxbuild/escape_test\.go''']
