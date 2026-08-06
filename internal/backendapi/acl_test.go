@@ -289,3 +289,46 @@ func treeSnapshot(t *testing.T, root string) string {
 	})
 	return b.String()
 }
+
+// The namespace root is grantable through the admin API — the bootstrap a
+// shared namespace needs, since nobody can create its first mailbox without
+// the create right and there is nowhere else to put it (#1091).
+//
+// Addressed by an explicit "root": true rather than by an empty folder: folder
+// is required everywhere else, so a typo that dropped it would otherwise become
+// a legitimate grant on the whole namespace.
+func TestACL_RootIsAddressableAndNotByOmission(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	// Omitting the folder is still an error, not a grant on the root.
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user,
+		"acl":  []map[string]any{{"identifier": "bob@example.com", "rights": "lk"}},
+	})
+	if status != http.StatusBadRequest {
+		t.Errorf("a missing folder: status=%d, want 400: %s", status, body)
+	}
+
+	// Asking for the root explicitly works.
+	status, body = doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user,
+		"root": true,
+		"acl":  []map[string]any{{"identifier": "bob@example.com", "rights": "lk"}},
+	})
+	if status != 200 {
+		t.Fatalf("root grant: status=%d: %s", status, body)
+	}
+
+	// And sending both is refused rather than one silently winning.
+	status, body = doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user":   user,
+		"root":   true,
+		"folder": "INBOX",
+		"acl":    []map[string]any{{"identifier": "bob@example.com", "rights": "lk"}},
+	})
+	if status != http.StatusBadRequest {
+		t.Errorf("root plus folder: status=%d, want 400: %s", status, body)
+	}
+}

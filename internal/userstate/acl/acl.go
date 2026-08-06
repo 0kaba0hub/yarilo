@@ -100,19 +100,26 @@ func New(home, mailPath, driver, separator, escapeChar, username, owner string, 
 	return s
 }
 
-// Path returns the on-disk yarilo-acl path for folder. folder == "" is the
-// local per-namespace-root default ACL; for maildir it collides with INBOX and
-// is disabled — see rootDefaultDisabled.
-func (s *Store) Path(folder string) string {
-	return filepath.Join(s.mailRoot, mailbox.FolderSubpathEscaped(s.driver, folder, folder, s.separator, s.escapeChar), FileName)
-}
+// RootFileName is the namespace-root ACL, kept in a file of its own.
+//
+// It cannot be yarilo-acl: on maildir INBOX *is* the mail root, so the root's
+// ACL and INBOX's would be one file and each would be read as the other. That
+// collision used to disable the root ACL entirely, which left a shared
+// namespace with nowhere to grant the create right -- no user could make the
+// first mailbox in it, and no admin call could change that (#1091).
+//
+// A distinct name removes the collision rather than working around it, and it
+// is the same shape of fix as giving FTS its own root: two things that are not
+// the same thing stop sharing a location.
+const RootFileName = "yarilo-acl-root"
 
-// rootDefaultDisabled reports whether the local namespace-root default ACL
-// (folder == "") is unavailable because its path collides with INBOX's — the
-// maildir case, where INBOX is the maildir root. A global ACL (separate
-// configured directory) is the intended source of defaults in that setup.
-func (s *Store) rootDefaultDisabled() bool {
-	return s.Path("") == s.Path("INBOX")
+// Path returns the on-disk ACL path for folder. folder == "" is the
+// namespace-root ACL, which lives in RootFileName beside the mailbox tree.
+func (s *Store) Path(folder string) string {
+	if folder == "" {
+		return filepath.Join(s.mailboxesRoot(), RootFileName)
+	}
+	return filepath.Join(s.mailRoot, mailbox.FolderSubpathEscaped(s.driver, folder, folder, s.separator, s.escapeChar), FileName)
 }
 
 // mailboxesRoot is the mailbox-tree root: the mail root for maildir,
@@ -240,9 +247,6 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 	if err := s.checkInsideRoot(folder); err != nil {
 		return fmt.Errorf("userstate/acl: refusing folder %q: %w", folder, err)
 	}
-	if folder == "" && s.rootDefaultDisabled() {
-		return fmt.Errorf("userstate/acl: namespace-root default ACL unavailable (collides with INBOX); use a global ACL instead")
-	}
 	if err := s.withLock(folder, func() error {
 		return s.writeAtomicLocked(folder, acl)
 	}); err != nil {
@@ -306,19 +310,17 @@ func (s *Store) localACLFor(folder string, sep byte) (mailbox.ACL, error) {
 	return s.rootDefaultACL()
 }
 
-// rootDefaultACL loads the namespace-root default ACL. With
-// acl_defaults_from_inbox the default is INBOX's ACL; otherwise it is the
-// local folder-"" default, which is disabled for maildir (collides with
-// INBOX). Returns nil when no default source applies.
+// rootDefaultACL loads the namespace-root default ACL: INBOX's ACL with
+// acl_defaults_from_inbox, otherwise the root's own. Returns nil when neither
+// exists.
+//
+// The root case used to be unavailable on maildir, where its file collided
+// with INBOX's; it now has one of its own (RootFileName), so both sources are
+// reachable on every driver (#1091).
 func (s *Store) rootDefaultACL() (mailbox.ACL, error) {
-	var defFolder string
-	switch {
-	case s.defaultsFromInbox:
+	defFolder := ""
+	if s.defaultsFromInbox {
 		defFolder = "INBOX"
-	case s.rootDefaultDisabled():
-		return nil, nil
-	default:
-		defFolder = ""
 	}
 	return s.Get(defFolder)
 }

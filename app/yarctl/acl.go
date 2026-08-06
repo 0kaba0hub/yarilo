@@ -89,11 +89,19 @@ func aclGet(args []string) error {
 func aclSet(args []string) error {
 	fs := flag.NewFlagSet("acl set", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
+	// The namespace root is named by a flag, not by an empty mailbox argument:
+	// a shell that swallows an argument would otherwise grant on the whole
+	// namespace instead of failing (#1091).
+	root := fs.Bool("root", false, "address the namespace root rather than a mailbox")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
+	if *root {
+		return aclSetRoot(fs, *ns)
+	}
 	if fs.NArg() < 3 {
-		return fmt.Errorf("usage: yarctl backend acl set <user> <mailbox> <identifier> <rights> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl set <user> <mailbox> <identifier> <rights> [--namespace NS]\n" +
+			"       yarctl backend acl set --root <user> <identifier> <rights> [--namespace NS]")
 	}
 	user, mbox, identifier := fs.Arg(0), fs.Arg(1), fs.Arg(2)
 	rights := ""
@@ -179,12 +187,16 @@ type aclEntryWire struct {
 // fetchACLEntries GETs the current ACL of (user, mailbox) and decodes it into a
 // slice the CLI can mutate before pushing back. The /get endpoint returns an
 // empty array when no file exists, so the caller gets an empty slice, not an error.
+func fetchACLRootEntries(user, ns string) ([]aclEntryWire, error) {
+	return fetchACLFrom(map[string]any{"user": user, "namespace": ns, "root": true})
+}
+
 func fetchACLEntries(user, ns, mbox string) ([]aclEntryWire, error) {
-	body, err := backendAPIPost("/api/backend/acl/get", map[string]any{
-		"user":      user,
-		"namespace": ns,
-		"folder":    mbox,
-	})
+	return fetchACLFrom(map[string]any{"user": user, "namespace": ns, "folder": mbox})
+}
+
+func fetchACLFrom(req map[string]any) ([]aclEntryWire, error) {
+	body, err := backendAPIPost("/api/backend/acl/get", req)
 	if err != nil {
 		return nil, err
 	}
@@ -240,4 +252,28 @@ func dropIdentifier(in []aclEntryWire, identifier string) []aclEntryWire {
 		out = append(out, e)
 	}
 	return out
+}
+
+// aclSetRoot upserts one entry on the namespace-root ACL. A shared namespace
+// needs it before anyone can create its first mailbox: the create right is
+// checked on the parent, and for a top-level name the parent is the root.
+func aclSetRoot(fs *flag.FlagSet, ns string) error {
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: yarctl backend acl set --root <user> <identifier> <rights> [--namespace NS]")
+	}
+	user, identifier := fs.Arg(0), fs.Arg(1)
+	rights := ""
+	if fs.NArg() >= 3 {
+		rights = fs.Arg(2)
+	}
+	current, err := fetchACLRootEntries(user, ns)
+	if err != nil {
+		return err
+	}
+	return printJSON(backendAPIPost("/api/backend/acl/set", map[string]any{
+		"user":      user,
+		"namespace": ns,
+		"root":      true,
+		"acl":       upsertEntry(current, identifier, rights),
+	}))
 }

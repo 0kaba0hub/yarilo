@@ -8,6 +8,7 @@ var (
 	errFolderRequired = errors.New("folder required")
 	errFolderNotFound = errors.New("folder not found")
 	errUserRequired   = errors.New("user required")
+	errRootWithFolder = errors.New(`"root" and "folder" are alternatives`)
 	errAttrRequired   = errors.New("attr required")
 	errEntryRequired  = errors.New("entry required")
 

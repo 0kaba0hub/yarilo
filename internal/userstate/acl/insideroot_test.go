@@ -1,6 +1,7 @@
 package acl
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,5 +60,30 @@ func TestStoreAllowsAnyFileInsideTheNamespaceRoot(t *testing.T) {
 	// case: inside the root, not a folder anyone named.
 	if err := s.checkInsideRoot(""); err != nil {
 		t.Errorf("the namespace root was refused: %v", err)
+	}
+}
+
+// The guard was written before the root ACL had a real spelling, so it asserted
+// a property about a hypothesis: "a file inside the root will pass". Now that
+// RootFileName exists, it is run against the name actually chosen, on every
+// layout — the maildir case being the one the old collision made impossible.
+func TestGuardAllowsTheRealNamespaceRootFile(t *testing.T) {
+	for _, driver := range []string{"maildir", "mdbox", "sdbox"} {
+		root := t.TempDir()
+		s := New(root, root, driver, "/", "", "u@d.test", "test", Policy{}, nil)
+
+		if err := s.checkInsideRoot(""); err != nil {
+			t.Errorf("%s: the namespace root was refused by the guard: %v", driver, err)
+		}
+		// Not by assumption: the path the guard passed is the file the store
+		// actually writes, and it is inside the tree the guard bounds.
+		got := s.Path("")
+		if filepath.Base(got) != RootFileName {
+			t.Errorf("%s: Path(\"\") = %q, which is not the root ACL file", driver, got)
+		}
+		if !strings.HasPrefix(got, s.mailboxesRoot()) {
+			t.Errorf("%s: root ACL %q is outside %q — the guard passed it for the wrong reason",
+				driver, got, s.mailboxesRoot())
+		}
 	}
 }
