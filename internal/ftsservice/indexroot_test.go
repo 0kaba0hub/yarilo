@@ -89,7 +89,7 @@ func TestIndexRootWithoutAUserVariableIsRefused(t *testing.T) {
 			if accepted := err == nil; accepted != tc.accepted {
 				t.Errorf("checkIndexRoot(%q) error = %v, want accepted=%v", tc.tmpl, err, tc.accepted)
 			}
-			if !tc.accepted && err != nil && !strings.Contains(err.Error(), "share one index directory") {
+			if !tc.accepted && err != nil && !strings.Contains(err.Error(), "indexes would merge") {
 				t.Errorf("the error does not say what goes wrong: %v", err)
 			}
 		})
@@ -229,6 +229,15 @@ func TestIndexRootMustDistinguishAccounts(t *testing.T) {
 		{"/var/fts/%d", false, "every account in a domain would share it"},
 		{"/var/fts/%n", false, "the local part repeats across domains"},
 		{"/var/fts", false, "no variable at all"},
+		// The two a syntactic check gets wrong in opposite directions.
+		//
+		// "%%d" is an escaped percent followed by a literal "d" — not a
+		// domain, though a substring search sees one. It resolves to one
+		// directory for everyone.
+		{"/var/fts/%%d/%n", false, "%%d is a literal, so only the local part varies"},
+		// A hash variable is per-account and a substring search knows nothing
+		// about it. The sandbox uses this form for VOLATILEDIR.
+		{"/var/fts/%2.256Nu", true, "a hash of the username is per-account"},
 	} {
 		t.Run(tc.tmpl, func(t *testing.T) {
 			err := checkIndexRoot(tc.tmpl)
