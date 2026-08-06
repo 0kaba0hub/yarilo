@@ -738,3 +738,66 @@ func TestStore_RootACLOnDisk(t *testing.T) {
 		})
 	}
 }
+
+// A namespace-root ACL written before RootFileName existed must keep working.
+//
+// On the dbox layouts the old path was real and enabled — mailboxes/dbox-Mails/
+// yarilo-acl — so a deployment can have grants there today. Reading only the
+// new name would drop them, and the symptom (everyone in a shared namespace
+// loses access after an upgrade) points nowhere near the cause (#1091).
+func TestStore_ReadsALegacyRootACL(t *testing.T) {
+	for _, driver := range []string{"mdbox", "sdbox"} {
+		t.Run(driver, func(t *testing.T) {
+			home := t.TempDir()
+			s := New(home, "", driver, "/", "", "alice", "test", Policy{}, nil)
+
+			legacy := filepath.Join(home, "mailboxes", "dbox-Mails", FileName)
+			if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacy, []byte("user=bob lk\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := s.Get("")
+			if err != nil {
+				t.Fatalf("Get root: %v", err)
+			}
+			if len(got) != 1 || got[0].Identifier.Name != "bob" {
+				t.Errorf("legacy root ACL not read: %+v", got)
+			}
+
+			// And a grant written now goes to the new file, so the fallback is
+			// a read path and not a second home.
+			if err := s.Set("", mailbox.ACL{
+				{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"}, Rights: "lr"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(home, "mailboxes", RootFileName)); err != nil {
+				t.Errorf("a new grant did not go to the root file: %v", err)
+			}
+		})
+	}
+}
+
+// The fallback must not reach INBOX's file on maildir: there the old root path
+// *is* INBOX's, and reading it as the root default is the confusion this change
+// removed. Reintroducing it through a compatibility path would undo the fix.
+func TestStore_LegacyFallbackDoesNotReadINBOXOnMaildir(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "", "maildir", ".", "", "alice", "test", Policy{}, nil)
+
+	if err := s.Set("INBOX", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrk"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("")
+	if err != nil {
+		t.Fatalf("Get root: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("the root read INBOX's ACL as its own: %+v", got)
+	}
+}
