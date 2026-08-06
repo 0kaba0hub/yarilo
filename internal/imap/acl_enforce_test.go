@@ -97,6 +97,15 @@ func (p *enforcePassdb) Authenticate(username, password, _, _ string) (*protocol
 // alice's mailbox so SELECT / FETCH / etc. cross-namespace cases
 // can be exercised without a SETACL round-trip (which would itself
 // need owner credentials).
+// seedRootACL writes the namespace-root ACL — the file that did not exist
+// before #1091, and the only place a top-level create right can go.
+func seedRootACL(t *testing.T, aliceHome, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(aliceHome, acl.RootFileName), []byte(body), 0o600); err != nil {
+		t.Fatalf("write %s: %v", acl.RootFileName, err)
+	}
+}
+
 func seedACL(t *testing.T, aliceHome, folder string, body string) {
 	t.Helper()
 	dir := filepath.Join(aliceHome, mailboxpkg.FolderSubpath("maildir", folder, folder, "."))

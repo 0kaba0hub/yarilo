@@ -226,6 +226,17 @@ storage driver (`UserMailbox.ListFolders`).
 
 CLI: `yarctl backend folder list <user> [--namespace NS]`
 
+> **`NS` is the namespace slug, taken from its prefix, not from its type.** A
+> namespace declared `type: shared` with `prefix: "Public/"` is addressed as
+> `--namespace public`; `--namespace shared` reports that no such namespace is
+> configured. Both readings are natural, which is why it is stated here.
+>
+> **The namespace root** — the ACL a shared namespace needs before anyone can
+> create a mailbox in it — is addressed with `--root` on the CLI and
+> `"root": true` on the wire, never by omitting the folder. Folder is required
+> everywhere else, so a dropped argument fails instead of becoming a grant on
+> the whole namespace.
+
 ### `POST /api/backend/folder/info`
 
 Folder metadata. `guid` is the 16-byte rename-stable identifier

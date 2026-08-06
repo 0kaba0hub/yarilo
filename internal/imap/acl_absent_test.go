@@ -204,3 +204,31 @@ func TestACLCommandsAnswerAPeerThatMaySeeTheMailbox(t *testing.T) {
 		t.Errorf("GETACL with the 'a' right: %v", e)
 	}
 }
+
+// A shared namespace could not hold its first mailbox: CREATE checks the create
+// right on the parent, the parent of a top-level name is the namespace root,
+// and on maildir the root ACL shared INBOX's file and was therefore disabled.
+// No user and no admin call could grant it (#1091).
+//
+// This is the property the fix exists for, so it is asserted end to end: a
+// grant on the root, then a CREATE that now succeeds.
+func TestSharedNamespaceCanBeBootstrappedByGrantingOnTheRoot(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+
+	b := dial("bob")
+	if err := b.Create("Shared/Sales", nil).Wait(); err == nil {
+		t.Fatal("a peer created a top-level mailbox with no grant anywhere")
+	}
+
+	// The grant that was impossible before: on the namespace root itself.
+	seedRootACL(t, aliceHome, "user=bob lk\n")
+
+	if err := b.Create("Shared/Sales", nil).Wait(); err != nil {
+		t.Errorf("with 'k' on the namespace root, CREATE still fails: %v — the root grant is unreachable", err)
+	}
+}

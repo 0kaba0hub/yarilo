@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -439,12 +440,12 @@ func TestStore_EffectiveForNegativeInInheritedACL(t *testing.T) {
 
 func TestStore_PathEmptyFolderIsNamespaceRoot(t *testing.T) {
 	home := t.TempDir()
-	// mdbox: the namespace root is mailboxes/dbox-Mails, distinct from INBOX,
-	// so the local root default is available (unlike maildir — see the
-	// disabled test).
+	// The namespace root has a file of its own, beside the mailbox tree,
+	// on every driver: it used to share INBOX's on maildir, which left a
+	// shared namespace with nowhere to grant the create right (#1091).
 	s := New(home, "", "mdbox", "/", "", "alice", "test", Policy{}, nil)
 	got := s.Path("")
-	want := filepath.Join(home, "mailboxes", "dbox-Mails", FileName)
+	want := filepath.Join(home, "mailboxes", RootFileName)
 	if got != want {
 		t.Errorf("Path(\"\") = %q, want %q (namespace-root file)", got, want)
 	}
@@ -459,7 +460,7 @@ func TestStore_SetGetRootACL(t *testing.T) {
 	if err := s.Set("", in); err != nil {
 		t.Fatalf("Set root: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "mailboxes", "dbox-Mails", FileName)); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "mailboxes", RootFileName)); err != nil {
 		t.Errorf("root file not created: %v", err)
 	}
 	got, err := s.Get("")
@@ -492,21 +493,34 @@ func TestStore_EffectiveForFallsThroughToRoot(t *testing.T) {
 // TestStore_MaildirRootDefaultDisabled asserts that for maildir the local
 // namespace-root default ACL is unavailable — its path is INBOX's own, so
 // Set("") is refused and inheritance never falls through to it; a global ACL is the intended default source in that case.
-func TestStore_MaildirRootDefaultDisabled(t *testing.T) {
+// The namespace root is grantable on maildir too. It was not: its ACL shared
+// INBOX's file, so the root default was disabled to keep one from being read as
+// the other — which left a shared maildir namespace with nowhere to grant the
+// create right, and therefore unable to hold its first mailbox (#1091).
+func TestStore_MaildirRootIsGrantable(t *testing.T) {
 	home := t.TempDir()
 	s := New(home, "", "maildir", ".", "", "alice", "test", Policy{}, nil)
-	err := s.Set("", mailbox.ACL{
-		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "l"},
-	})
-	if err == nil {
-		t.Fatal("Set(\"\") should be refused for maildir (collides with INBOX)")
+	if err := s.Set("", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lk"},
+	}); err != nil {
+		t.Fatalf("Set root: %v", err)
 	}
 	got, err := s.EffectiveFor("TopLevel", "bob", nil, false, '/')
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
-	if got != "" {
-		t.Errorf("got %q, want empty (no maildir root default)", got)
+	if !strings.ContainsRune(string(got), 'k') {
+		t.Errorf("effective rights on a top-level name = %q, want the root grant to carry 'k'", got)
+	}
+
+	// And it did not land on INBOX: the two are separate files, which is the
+	// whole point. Read the directory rather than the API, because a store
+	// that writes and reads one file for both would agree with itself.
+	if _, err := os.Stat(filepath.Join(home, RootFileName)); err != nil {
+		t.Errorf("root ACL file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, FileName)); err == nil {
+		t.Error("the root grant was written to INBOX's ACL file")
 	}
 }
 
@@ -680,5 +694,110 @@ func TestStore_CacheTTL(t *testing.T) {
 	got, _ = s.Get("Work")
 	if str(got) != str(acl1) {
 		t.Errorf("after local Set Get = %q, want acl1 (invalidated)", str(got))
+	}
+}
+
+// The root ACL is a new entity in the on-disk layout, so it is inspected as
+// bytes in a directory rather than through the API that wrote it: a store that
+// writes and reads one file for both the root and INBOX is self-consistent and
+// proves nothing (the lesson from mailbox_list_utf8, #1074).
+func TestStore_RootACLOnDisk(t *testing.T) {
+	for _, tc := range []struct{ driver, wantDir string }{
+		{"maildir", ""},
+		{"mdbox", "mailboxes"},
+		{"sdbox", "mailboxes"},
+	} {
+		t.Run(tc.driver, func(t *testing.T) {
+			home := t.TempDir()
+			s := New(home, "", tc.driver, "/", "", "alice", "test", Policy{}, nil)
+
+			if err := s.Set("", mailbox.ACL{
+				{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lk"},
+			}); err != nil {
+				t.Fatalf("Set root: %v", err)
+			}
+			if err := s.Set("INBOX", mailbox.ACL{
+				{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"}, Rights: "lr"},
+			}); err != nil {
+				t.Fatalf("Set INBOX: %v", err)
+			}
+
+			rootFile := filepath.Join(home, tc.wantDir, RootFileName)
+			rootBytes, err := os.ReadFile(rootFile)
+			if err != nil {
+				t.Fatalf("root ACL not on disk at %s: %v", rootFile, err)
+			}
+			if !strings.Contains(string(rootBytes), "bob") {
+				t.Errorf("%s holds %q, which is not the root grant", rootFile, rootBytes)
+			}
+			// The two grants are in two files. One file holding both is the
+			// collision this change exists to remove.
+			if strings.Contains(string(rootBytes), "carol") {
+				t.Errorf("%s holds INBOX's grant too:\n%s", rootFile, rootBytes)
+			}
+		})
+	}
+}
+
+// A namespace-root ACL written before RootFileName existed must keep working.
+//
+// On the dbox layouts the old path was real and enabled — mailboxes/dbox-Mails/
+// yarilo-acl — so a deployment can have grants there today. Reading only the
+// new name would drop them, and the symptom (everyone in a shared namespace
+// loses access after an upgrade) points nowhere near the cause (#1091).
+func TestStore_ReadsALegacyRootACL(t *testing.T) {
+	for _, driver := range []string{"mdbox", "sdbox"} {
+		t.Run(driver, func(t *testing.T) {
+			home := t.TempDir()
+			s := New(home, "", driver, "/", "", "alice", "test", Policy{}, nil)
+
+			legacy := filepath.Join(home, "mailboxes", "dbox-Mails", FileName)
+			if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacy, []byte("user=bob lk\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := s.Get("")
+			if err != nil {
+				t.Fatalf("Get root: %v", err)
+			}
+			if len(got) != 1 || got[0].Identifier.Name != "bob" {
+				t.Errorf("legacy root ACL not read: %+v", got)
+			}
+
+			// And a grant written now goes to the new file, so the fallback is
+			// a read path and not a second home.
+			if err := s.Set("", mailbox.ACL{
+				{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"}, Rights: "lr"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(home, "mailboxes", RootFileName)); err != nil {
+				t.Errorf("a new grant did not go to the root file: %v", err)
+			}
+		})
+	}
+}
+
+// The fallback must not reach INBOX's file on maildir: there the old root path
+// *is* INBOX's, and reading it as the root default is the confusion this change
+// removed. Reintroducing it through a compatibility path would undo the fix.
+func TestStore_LegacyFallbackDoesNotReadINBOXOnMaildir(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "", "maildir", ".", "", "alice", "test", Policy{}, nil)
+
+	if err := s.Set("INBOX", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lrk"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("")
+	if err != nil {
+		t.Fatalf("Get root: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("the root read INBOX's ACL as its own: %+v", got)
 	}
 }

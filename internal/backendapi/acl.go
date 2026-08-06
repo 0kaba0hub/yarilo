@@ -41,6 +41,14 @@ type aclRequest struct {
 	Folder    string         `json:"folder"`
 	ACL       []aclEntryJSON `json:"acl,omitempty"`
 	Folders   []string       `json:"folders,omitempty"`
+	// Root addresses the namespace-root ACL, the one a shared namespace needs
+	// before anyone can create a mailbox in it.
+	//
+	// An explicit field rather than "an empty folder now means the root":
+	// folder is required everywhere else, so a typo that dropped it would
+	// otherwise become a legitimate grant on the root of the namespace
+	// (#1091).
+	Root bool `json:"root,omitempty"`
 }
 
 // aclEntryJSON is the wire-format representation of a single ACL
@@ -71,8 +79,8 @@ func (s *Server) handleACLGet(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	if req.Folder == "" {
-		apiError(w, "folder required", http.StatusBadRequest)
+	if req.Folder == "" && !req.Root {
+		apiError(w, `folder required (or "root": true for the namespace root)`, http.StatusBadRequest)
 		return
 	}
 	parsed, err := store.Get(req.Folder)
@@ -91,8 +99,8 @@ func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	if req.Folder == "" {
-		apiError(w, "folder required", http.StatusBadRequest)
+	if req.Folder == "" && !req.Root {
+		apiError(w, `folder required (or "root": true for the namespace root)`, http.StatusBadRequest)
 		return
 	}
 	parsed, err := jsonToACL(req.ACL)
@@ -112,8 +120,8 @@ func (s *Server) handleACLDelete(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	if req.Folder == "" {
-		apiError(w, "folder required", http.StatusBadRequest)
+	if req.Folder == "" && !req.Root {
+		apiError(w, `folder required (or "root": true for the namespace root)`, http.StatusBadRequest)
 		return
 	}
 	if err := store.Remove(req.Folder); err != nil {
@@ -186,6 +194,10 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	//
 	// The empty name is left to each handler: it means "the namespace root" to
 	// some of them and nothing to others.
+	if req.Root && req.Folder != "" {
+		apiError(w, `"root" addresses the namespace root; do not send "folder" with it`, http.StatusBadRequest)
+		return nil, nil, errRootWithFolder
+	}
 	if req.Folder != "" {
 		if err := mailbox.CheckName(bundle.box, req.Folder); err != nil {
 			apiError(w, err.Error(), http.StatusBadRequest)
