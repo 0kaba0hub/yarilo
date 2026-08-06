@@ -129,3 +129,29 @@ func TestRefuseLayoutSeparatorIsIndependent(t *testing.T) {
 		t.Error("keeping dotted names cost the traversal check — that is the trade this key exists to avoid")
 	}
 }
+
+// The reserved-segment rule applies only where a folder directory sits beside
+// the layout's own. On maildir++ every folder carries a leading "." — ".new"
+// cannot collide with the "new" the layout owns — so refusing the name there
+// protected nothing and cost ordinary ones: "New" is a folder people make, and
+// it was refused (#1091, found by an unrelated test that renamed to "New").
+func TestReservedSegmentsApplyOnlyWhereTheyCanCollide(t *testing.T) {
+	rules := DefaultNameRules()
+
+	for _, name := range []string{"new", "cur", "New", "tmp"} {
+		if err := ValidateName(name, "/", ".", rules); err != nil {
+			t.Errorf("maildir layout: ValidateName(%q) = %v; the leading dot keeps it apart", name, err)
+		}
+	}
+	for _, name := range []string{"new", "cur", "dbox-Mails"} {
+		if err := ValidateName(name, "/", "/", rules); err == nil {
+			t.Errorf("nested layout: ValidateName(%q) was accepted; here it does sit beside the layout's own", name)
+		}
+	}
+	// The traversal rules are unaffected by the layout.
+	for _, sep := range []string{".", "/"} {
+		if err := ValidateName("../victim", "/", sep, rules); err == nil {
+			t.Errorf("layout %q: a traversal name was accepted", sep)
+		}
+	}
+}

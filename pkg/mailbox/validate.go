@@ -131,7 +131,7 @@ func ValidateName(name, nsSep, layoutSep string, rules NameRules) error {
 					return fmt.Errorf("%w: %q contains a %q path segment", ErrInvalidFolderName, name, segment)
 				}
 			}
-			for _, reserved := range reservedFor(rules) {
+			for _, reserved := range reservedFor(rules, layoutSep) {
 				if strings.EqualFold(segment, reserved) {
 					return fmt.Errorf("%w: %q uses %q, which the storage layout owns",
 						ErrInvalidFolderName, name, reserved)
@@ -157,8 +157,18 @@ func LayoutSeparator(driver string) string {
 // reservedFor returns the reserved segments still worth refusing. With an
 // escape character configured there are none: such a name is stored escaped
 // rather than rejected.
-func reservedFor(rules NameRules) []string {
+func reservedFor(rules NameRules, layoutSep string) []string {
 	if rules.StorageEscapeChar != "" {
+		return nil
+	}
+	// The maildir++ layout gives every folder a leading "." -- a folder called
+	// "new" is stored as ".new" and cannot collide with the "new" the layout
+	// owns. Refusing the name there protects nothing and costs ordinary names:
+	// "New" is a folder people make.
+	//
+	// The nested layouts have no such marker, so a folder directory sits
+	// beside the layout's own and the check earns its place.
+	if layoutSep == "." {
 		return nil
 	}
 	return rules.ReservedSegments

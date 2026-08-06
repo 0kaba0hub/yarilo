@@ -23,7 +23,11 @@ import (
 func storageTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
-	mb := maildir.New()
+	// Wrapped as mailboxbuild.ByDriver wraps it in production: the folder-name
+	// rules live in the decorator, so a bare driver here would give the admin
+	// API a server with no name rules at all and every check on them would
+	// pass while asserting nothing (#1091).
+	mb := mailbox.Validating(maildir.New(), mailbox.DefaultNameRules())
 	idx := file.New()
 	d, err := dict.Open(dict.Config{Driver: "memory"})
 	if err != nil {
@@ -222,7 +226,11 @@ func TestSubscriptionsRoundTrip(t *testing.T) {
 func TestSubscriptions_LiveAtMailRoot(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
-	mb := maildir.New()
+	// Wrapped as mailboxbuild.ByDriver wraps it in production: the folder-name
+	// rules live in the decorator, so a bare driver here would give the admin
+	// API a server with no name rules at all and every check on them would
+	// pass while asserting nothing (#1091).
+	mb := mailbox.Validating(maildir.New(), mailbox.DefaultNameRules())
 	idx := file.New()
 	s := New(Options{
 		Mailbox: mb,

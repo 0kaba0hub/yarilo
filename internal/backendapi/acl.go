@@ -179,6 +179,19 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	}
 	// Admin surface manages explicit entries, not effective-with-default
 	// resolution, so acl_defaults_from_inbox does not apply here.
+	// The admin path writes the files the IMAP commands read, so a name IMAP
+	// refuses must not be writable here. It was: "/" and "." were accepted and
+	// stored (#1091). Checked through the same configured rules the session
+	// servers use, rather than a second list that could drift from them.
+	//
+	// The empty name is left to each handler: it means "the namespace root" to
+	// some of them and nothing to others.
+	if req.Folder != "" {
+		if err := mailbox.CheckName(bundle.box, req.Folder); err != nil {
+			apiError(w, err.Error(), http.StatusBadRequest)
+			return nil, nil, err
+		}
+	}
 	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
 	return store, &req, nil
 }

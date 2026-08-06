@@ -217,7 +217,29 @@ func (s *Store) invalidate(folder string) {
 // writes an empty file (not removal — use Remove for that), atomic via
 // tmp+rename. The yarilo-acl-list namespace-wide index is updated in the same
 // call so LIST optimisations see the change.
+// checkInsideRoot refuses a folder name whose ACL file would land outside the
+// namespace this store serves.
+//
+// The store writes the files the IMAP commands read, so a name IMAP refuses
+// must not be writable through the admin path -- and "." and "/" were. On
+// maildir both resolve to <mailroot>/../yarilo-acl: outside the namespace,
+// in the directory every user's tree shares, where another namespace's store
+// reads it as its own root default. One admin call could hand rights to
+// mailboxes in a namespace it never named (#1091).
+//
+// The question is asked of the resolved path rather than of the name, the same
+// way the drivers ask it before a destructive operation (#1069). That also
+// means the namespace-root ACL file, once it has one of its own, is permitted
+// without this needing to learn its spelling: it is inside the root, which is
+// the whole test.
+func (s *Store) checkInsideRoot(folder string) error {
+	return mailbox.GuardDestructivePath(s.mailboxesRoot(), s.Path(folder))
+}
+
 func (s *Store) Set(folder string, acl mailbox.ACL) error {
+	if err := s.checkInsideRoot(folder); err != nil {
+		return fmt.Errorf("userstate/acl: refusing folder %q: %w", folder, err)
+	}
 	if folder == "" && s.rootDefaultDisabled() {
 		return fmt.Errorf("userstate/acl: namespace-root default ACL unavailable (collides with INBOX); use a global ACL instead")
 	}
