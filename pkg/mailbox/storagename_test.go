@@ -50,8 +50,12 @@ func TestEscapeStorageNameEscapesWhatTheLayoutWouldConsume(t *testing.T) {
 		{"a^b", ".", "a^5eb"},
 		{".hidden", ".", "^2ehidden"},
 		{"~t", ".", "^7et"},
-		{"cur", ".", "^63ur"},
-		{"CUR", ".", "^43UR"},
+		// Nothing is escaped for a collision the layout cannot have: on
+		// maildir++ the leading dot already keeps ".cur" from "cur".
+		{"cur", ".", "cur"},
+		{"CUR", ".", "CUR"},
+		// The nested layout does own its marker.
+		{"dbox-Mails", "/", "^64box-Mails"},
 		{"current", ".", "current"}, // only a whole segment counts
 		{"plain", ".", "plain"},
 	}

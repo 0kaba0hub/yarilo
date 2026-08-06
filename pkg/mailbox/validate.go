@@ -131,7 +131,7 @@ func ValidateName(name, nsSep, layoutSep string, rules NameRules) error {
 					return fmt.Errorf("%w: %q contains a %q path segment", ErrInvalidFolderName, name, segment)
 				}
 			}
-			for _, reserved := range reservedFor(rules) {
+			for _, reserved := range reservedFor(rules, layoutSep) {
 				if strings.EqualFold(segment, reserved) {
 					return fmt.Errorf("%w: %q uses %q, which the storage layout owns",
 						ErrInvalidFolderName, name, reserved)
@@ -157,9 +157,49 @@ func LayoutSeparator(driver string) string {
 // reservedFor returns the reserved segments still worth refusing. With an
 // escape character configured there are none: such a name is stored escaped
 // rather than rejected.
-func reservedFor(rules NameRules) []string {
+func reservedFor(rules NameRules, layoutSep string) []string {
 	if rules.StorageEscapeChar != "" {
 		return nil
 	}
-	return rules.ReservedSegments
+	return intersectOwned(rules.ReservedSegments, layoutSep)
+}
+
+// layoutOwnedNames are the directory names a layout puts beside a folder's own,
+// where a folder of the same name would be ambiguous.
+//
+// maildir++ owns none: every folder is stored with a leading "." (".new"), so
+// it can never be confused with the "new" the layout keeps inside a mailbox.
+// cur, new and tmp are maildir's directories and do not occur in the dbox
+// layouts at all; the only name a nested layout owns is its marker.
+//
+// Deriving the set from the layout rather than applying one list everywhere is
+// the difference between a check and a superstition: a name refused where it
+// cannot collide costs an ordinary folder and protects nothing. "New" is the
+// example -- a folder people make, and the name that surfaced this.
+func layoutOwnedNames(layoutSep string) []string {
+	if layoutSep == "." {
+		return nil // maildir++: the leading dot keeps folders apart
+	}
+	return []string{dboxMailsSubdir}
+}
+
+// intersectOwned keeps the configured names the layout actually owns. A name an
+// operator adds that the layout does not own is not a collision, so it is not
+// enforced as one; the key exists to turn the check off, not to invent
+// collisions.
+func intersectOwned(configured []string, layoutSep string) []string {
+	owned := layoutOwnedNames(layoutSep)
+	if len(configured) == 0 || len(owned) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(owned))
+	for _, o := range owned {
+		for _, c := range configured {
+			if strings.EqualFold(c, o) {
+				out = append(out, o)
+				break
+			}
+		}
+	}
+	return out
 }

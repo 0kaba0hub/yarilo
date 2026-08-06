@@ -220,8 +220,13 @@ storage:
   ##                                      # names unreadable on disk. "^" and "%" are good choices.
   ## mailbox_list_reserved_segments: ["cur", "new", "tmp", "dbox-Mails"]
   ##                                      # names a single hierarchy segment may not equal, because the storage
-  ##                                      # layout owns the directory. Retroactive: a user who already owns such
-  ##                                      # a folder loses access to it. [] disables the check.
+  ##                                      # layout owns the directory. Only the names the layout in use actually
+  ##                                      # owns are enforced: maildir++ gives every folder a leading "." so a
+  ##                                      # folder called "new" is ".new" and collides with nothing, while the
+  ##                                      # dbox layouts own only their "dbox-Mails" marker. A name listed here
+  ##                                      # that the layout does not own is not a collision and is ignored.
+  ##                                      # Retroactive where it does apply: a user who already owns such a
+  ##                                      # folder loses access to it. [] disables the check.
   persistence:
     enabled: true
     storageClass: ""

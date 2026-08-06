@@ -2,6 +2,9 @@ package backendapi
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -223,4 +226,66 @@ func TestACL_RequestRejectsMissingUser(t *testing.T) {
 	if status != 400 {
 		t.Errorf("expected 400 on missing user, got %d", status)
 	}
+}
+
+// The admin path writes the files the IMAP commands read, so a name IMAP
+// refuses must not be writable through it. "/" and "." were accepted and
+// stored, and on maildir both resolve to <mailroot>/../yarilo-acl — outside the
+// namespace, in the directory every user's tree shares, where another
+// namespace's store reads it as its own root default (#1091).
+func TestACL_SetRefusesNamesIMAPWouldRefuse(t *testing.T) {
+	ts, root := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	before := treeSnapshot(t, root)
+
+	for _, folder := range []string{".", "/", "..", "../elsewhere", "a/../b"} {
+		status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+			"user":   user,
+			"folder": folder,
+			"acl":    []map[string]any{{"identifier": "bob@example.com", "rights": "lr"}},
+		})
+		if status != http.StatusBadRequest {
+			t.Errorf("set %q: status=%d, want 400: %s", folder, status, body)
+		}
+	}
+
+	// Asserted on the tree, not the status: a handler that refused after
+	// writing would pass a status-only check, and what matters here is that
+	// nothing was written anywhere.
+	if after := treeSnapshot(t, root); after != before {
+		t.Errorf("the storage tree changed:\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+// An ordinary name still works, or the check would have disabled the command
+// rather than bounded it.
+func TestACL_SetStillAcceptsOrdinaryNames(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/create", "", map[string]any{"user": user, "folder": "Sales"})
+
+	for _, folder := range []string{"INBOX", "Sales"} {
+		status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+			"user":   user,
+			"folder": folder,
+			"acl":    []map[string]any{{"identifier": "bob@example.com", "rights": "lr"}},
+		})
+		if status != 200 {
+			t.Errorf("set %q: status=%d: %s", folder, status, body)
+		}
+	}
+}
+
+func treeSnapshot(t *testing.T, root string) string {
+	t.Helper()
+	var b strings.Builder
+	_ = filepath.Walk(root, func(p string, _ os.FileInfo, _ error) error {
+		rel, _ := filepath.Rel(root, p)
+		b.WriteString(rel + "\n")
+		return nil
+	})
+	return b.String()
 }

@@ -89,7 +89,14 @@ func escapeReservedSegments(name string, esc byte, layoutSep string) string {
 	if layoutSep != "" && layoutSep != "/" {
 		seps = append(seps, layoutSep)
 	}
-	reserved := []string{"cur", "new", "tmp", dboxMailsSubdir}
+	// The same set the validator refuses, for the same reason: escaping a name
+	// the layout does not own makes an ordinary folder unreadable on disk
+	// against a collision that cannot happen. On maildir++ that is all of them,
+	// so "New" stays "New" rather than becoming "^4eew".
+	reserved := layoutOwnedNames(layoutSep)
+	if len(reserved) == 0 {
+		return name
+	}
 
 	out := name
 	for _, sep := range seps {
