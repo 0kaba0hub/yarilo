@@ -1398,7 +1398,7 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		if rootName == "" {
 			continue
 		}
-		if !listMatch(rootName, patterns) {
+		if !listMatch(rootName, refPatterns(ref, patterns), byte(spec.Separator)) {
 			continue
 		}
 		attrs := []imaplib.MailboxAttr{
@@ -1498,9 +1498,13 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 
 	for _, entry := range entries {
 		name := entry.Name
-		// wire-protocol name = namespace prefix + relative name.
-		full := ref + h.fullName(name)
-		if !listMatch(full, patterns) {
+		// wire-protocol name = namespace prefix + relative name. The
+		// reference is not part of it: it combines with the pattern (RFC 9051
+		// 6.3.9), and gluing it onto results made LIST answer with names that
+		// exist nowhere -- a personal folder wearing another namespace's
+		// prefix (#1099).
+		full := h.fullName(name)
+		if !listMatch(full, refPatterns(ref, patterns), byte(h.spec.Separator)) {
 			continue
 		}
 		// SELECT SUBSCRIBED drops folders the user has not subscribed to.
@@ -3418,16 +3422,91 @@ func tryCreate(err error) error {
 	}
 }
 
-func listMatch(name string, patterns []string) bool {
+// refPatterns combines the LIST reference with each pattern, which is what the
+// reference is for: "the reference argument and the mailbox name argument are
+// concatenated" (RFC 9051 6.3.9). It selects what to match, not what to
+// return.
+func refPatterns(ref string, patterns []string) []string {
+	if ref == "" {
+		return patterns
+	}
+	out := make([]string, len(patterns))
+	for i, p := range patterns {
+		out[i] = ref + p
+	}
+	return out
+}
+
+// listMatch reports whether name matches any of the LIST patterns, with the
+// wildcards RFC 9051 6.3.9 defines: "*" spans hierarchy levels, "%" stops at
+// the separator.
+//
+// It used to accept only a bare "*" or "%" or an exact name, so every other
+// pattern matched nothing at all: LIST "" "Shared/*" and LIST "" "W*" both
+// answered empty, and "%" behaved like "*". A client that lists a subtree --
+// which is the ordinary way to explore a namespace -- was told it is empty
+// (#1099).
+func listMatch(name string, patterns []string, sep byte) bool {
+	if len(patterns) == 0 {
+		return true
+	}
 	for _, p := range patterns {
-		if p == "*" || p == "%" {
-			return true
-		}
-		if strings.EqualFold(name, p) {
+		if matchPattern(name, p, sep) {
 			return true
 		}
 	}
-	return len(patterns) == 0
+	return false
+}
+
+// matchPattern is the RFC 9051 6.3.9 wildcard match.
+//
+// Case-sensitive, except that INBOX is matched case-insensitively -- the one
+// name RFC 9051 5.1 says is. Folding everything would have been a quiet
+// behaviour change riding in with the rewrite: mailbox names are
+// case-sensitive here and ValidateFolderName says so, so LIST "" "work" must
+// not return "Work".
+//
+// sep == 0 makes "%" equivalent to "*": with no hierarchy separator there is no
+// level for it to stop at.
+func matchPattern(name, pattern string, sep byte) bool {
+	if strings.EqualFold(name, "INBOX") && strings.EqualFold(pattern, "INBOX") {
+		return true
+	}
+
+	var match func(n, p int) bool
+	match = func(n, p int) bool {
+		for p < len(pattern) {
+			switch pattern[p] {
+			case '*':
+				// Spans everything, including separators.
+				for i := n; i <= len(name); i++ {
+					if match(i, p+1) {
+						return true
+					}
+				}
+				return false
+			case '%':
+				// Stops at the separator: try every split up to the next one.
+				for i := n; i <= len(name); i++ {
+					if i > n && sep != 0 && name[i-1] == sep {
+						break
+					}
+					if match(i, p+1) {
+						return true
+					}
+				}
+				return false
+			default:
+				if n >= len(name) || name[n] != pattern[p] {
+					return false
+				}
+				n++
+				p++
+			}
+		}
+		return n == len(name)
+	}
+	return match(0, 0)
 }
 
 func hasFlag(flags []string, f string) bool {
