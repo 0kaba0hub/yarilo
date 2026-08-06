@@ -900,8 +900,18 @@ type FTSConfig struct {
 	LanguageTokenizerExplicitPrefix bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
 
 	// IndexRoot is where FTS data lives: a location template expanded per user
-	// with ~/, %h, %u, %n and %d, like every other storage location. Empty
-	// keeps it inside the mail index tree, which is where it has always gone.
+	// with ~/, %h, %u, %n and %d, like every other storage location.
+	//
+	// Written "posix:prefix=<path>", the fs-api form, so a value carried over
+	// from an equivalent deployment needs no editing. Naming the driver says
+	// the value is a filesystem path rather than a location in some store, and
+	// leaves room for a store that is not one without changing what already
+	// works. posix:<path> and a bare path are also read.
+	//
+	// Defaults to posix:prefix=%h/fts/ — outside the mail tree, which is the
+	// placement the two data kinds want. Empty restores the historical behaviour of
+	// keeping it inside the mail index tree (INDEX= override → mail path →
+	// home).
 	//
 	// FTS data is derived — it can be deleted and rebuilt; mail cannot — and
 	// it is write-heavy. Those are different durability and I/O requirements
@@ -911,6 +921,10 @@ type FTSConfig struct {
 	// stays where it was and the index rebuilds at the new location on demand.
 	// That is safe precisely because the data is derived, and it is also why
 	// the old directories have to be removed by hand if the space matters.
+	//
+	// The default changed in 2.3.64, so an upgrade is such a change: existing
+	// indexes are orphaned in the mail tree and rebuilt under %h/fts on first
+	// search or autoindex. Set it to "" to keep the old placement.
 	IndexRoot string `koanf:"fts_index_root"`
 
 	// AutoindexExclude lists mailboxes autoindexing skips: special-use flags
@@ -2157,6 +2171,10 @@ func Load(path string) (*Config, error) {
 			CloneFlushDelay:   10,
 		},
 		FTS: FTSConfig{
+			// FTS data is derived and write-heavy; mail is neither. Keeping
+			// them apart by default is the placement that suits both, and
+			// %h/fts is where an operator looks for it.
+			IndexRoot:                  "posix:prefix=%h/fts/",
 			Mode:                       "remote",
 			Listen:                     ":9106",
 			MaxConns:                   4,
@@ -2256,6 +2274,9 @@ func (cfg *Config) validate() error {
 		return err
 	}
 	if err := ValidateNamespaceTypes(cfg.Namespaces); err != nil {
+		return err
+	}
+	if err := ValidateFTSIndexRoot(cfg.FTS.IndexRoot); err != nil {
 		return err
 	}
 	if cfg.InternalTLS.Enabled {
@@ -2506,6 +2527,44 @@ func ValidateNamespaceTypes(namespaces []NamespaceConfig) error {
 				"valid types are personal, shared and other -- a public namespace is "+
 				"type: shared with its own prefix and location", i, ns.Prefix, ns.Type)
 		}
+	}
+	return nil
+}
+
+// ValidateFTSIndexRoot refuses a storage driver the FTS engine cannot use.
+//
+// Only posix exists. An unimplemented driver -- "s3:", "obox:" -- would
+// otherwise be taken for part of a path and the index would land in a
+// directory named after it, which is the shape of failure that cost a day in
+// #1086: a plausible value, accepted, doing something other than what it says.
+//
+// A bare path is accepted and means posix, because the key shipped without a
+// prefix and existing values are written that way.
+func ValidateFTSIndexRoot(root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil // keep the index inside the mail tree
+	}
+	driver, rest, ok := strings.Cut(root, ":")
+	if !ok {
+		return nil // bare path
+	}
+	if strings.ToLower(driver) != "posix" {
+		return fmt.Errorf("config: fts_index_root %q names storage driver %q; only posix is implemented "+
+			"(write posix:prefix=%s, or a bare path)", root, driver, rest)
+	}
+	// Either the reference's fs-api argument or a bare path. An argument that
+	// is not "prefix" is refused rather than read as a path: fts_index_root
+	// "posix:size=10" would otherwise put the index in a directory called
+	// "size=10".
+	if arg, val, isArg := strings.Cut(rest, "="); isArg {
+		if strings.ToLower(strings.TrimSpace(arg)) != "prefix" {
+			return fmt.Errorf("config: fts_index_root %q sets %q; the posix driver takes prefix=<path>", root, arg)
+		}
+		rest = val
+	}
+	if strings.TrimSpace(rest) == "" {
+		return fmt.Errorf("config: fts_index_root %q has no path after the driver", root)
 	}
 	return nil
 }

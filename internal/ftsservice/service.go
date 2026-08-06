@@ -190,12 +190,7 @@ func (s *Service) handle(user string) (*userHandle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ftsservice: userdb %s: %w", user, err)
 	}
-	ui, err := s.opts.Engine.OpenUser(context.Background(), fts.UserRef{
-		Username:  user,
-		IndexRoot: s.indexRoot(info),
-		Driver:    info.Driver,
-		Separator: info.Separator,
-	})
+	ui, err := s.opts.Engine.OpenUser(context.Background(), userRefFor(info, s.indexRoot(info)))
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +245,47 @@ func checkIndexRoot(tmpl string) error {
 // the old data where it was and starts writing to the new place — the index
 // rebuilds itself on demand, which is the property that makes FTS data movable
 // at all.
+// userRefFor builds the engine's view of a user. Extracted so the wiring can be
+// asserted on its own: a path-derived engine that is not told the escape
+// character silently names folders differently from the mail tree, and that is
+// invisible from anywhere except the two paths side by side (#1053).
+func userRefFor(info *mailbox.UserInfo, indexRoot string) fts.UserRef {
+	return fts.UserRef{
+		Username:   info.Username,
+		IndexRoot:  indexRoot,
+		Driver:     info.Driver,
+		Separator:  info.Separator,
+		EscapeChar: info.StorageEscapeChar,
+	}
+}
+
+// ftsPathOf strips the storage-driver prefix from an index-root setting.
+//
+// The value is written "driver:path", the form namespace locations already use,
+// so an operator reads one syntax across the config -- and so the setting says
+// on its face that it names a filesystem path rather than a location in some
+// store. Only posix exists; ValidateFTSIndexRoot refuses anything else at load
+// rather than letting an unimplemented driver be silently treated as a path.
+//
+// A bare path is accepted and means posix: the key shipped without a prefix and
+// deployments already carry values written that way.
+func ftsPathOf(root string) string {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(root), "posix:")
+	if !ok {
+		return root
+	}
+	// posix:prefix=/path is the reference form and what a migrated
+	// configuration carries; posix:/path is the form our namespace locations
+	// use. Both name the same thing, so both are read.
+	if p, ok := strings.CutPrefix(rest, "prefix="); ok {
+		return p
+	}
+	return rest
+}
+
 func (s *Service) indexRoot(info *mailbox.UserInfo) string {
 	if s.opts.IndexRoot != "" {
-		return mailbox.ExpandLocation(s.opts.IndexRoot, info.Home, info.Username)
+		return mailbox.ExpandLocation(ftsPathOf(s.opts.IndexRoot), info.Home, info.Username)
 	}
 	if info.IndexDir != "" {
 		return info.IndexDir

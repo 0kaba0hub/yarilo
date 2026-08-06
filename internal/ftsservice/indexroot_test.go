@@ -1,9 +1,12 @@
 package ftsservice
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -90,5 +93,110 @@ func TestIndexRootWithoutAUserVariableIsRefused(t *testing.T) {
 				t.Errorf("the error does not say what goes wrong: %v", err)
 			}
 		})
+	}
+}
+
+// The shipped default puts FTS outside the mail tree. Asserted against the
+// loaded config rather than a literal, because the value that matters is the
+// one a deployment gets without saying anything (#1053).
+func TestDefaultIndexRootIsOutsideTheMailTree(t *testing.T) {
+	// A config that says nothing about the location: whatever comes back is
+	// what a deployment gets by saying nothing.
+	path := filepath.Join(t.TempDir(), "yarilo.yaml")
+	if err := os.WriteFile(path, []byte("fts:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FTS.IndexRoot != "posix:prefix=%h/fts/" {
+		t.Fatalf("default fts_index_root = %q, want %q", cfg.FTS.IndexRoot, "posix:prefix=%h/fts/")
+	}
+
+	s := &Service{opts: Options{IndexRoot: cfg.FTS.IndexRoot}}
+	info := &mailbox.UserInfo{
+		Username: "alice@example.com",
+		Home:     "/var/mail/example.com/alice",
+		MailPath: "/var/mail/example.com/alice/Maildir",
+		IndexDir: "/var/index/example.com/alice",
+	}
+	got := s.indexRoot(info)
+	if got != "/var/mail/example.com/alice/fts/" {
+		t.Errorf("indexRoot = %q, want the home-relative fts directory", got)
+	}
+	// The point of the default: not under the mail path, and not under the
+	// index dir either — those are the two places it used to land.
+	if strings.HasPrefix(got, info.MailPath) || strings.HasPrefix(got, info.IndexDir) {
+		t.Errorf("indexRoot %q is still inside the mail tree", got)
+	}
+}
+
+// The FTS tree must name folders exactly as the mail and index trees do.
+//
+// It did not: the engine built its path with the unescaped FolderSubpath while
+// the drivers escaped, so with mailbox_list_storage_escape_char set, the mail
+// directory for "Invoices.2026" was one escaped name and the FTS directory was
+// two levels — which also means "Invoices.2026" and "Invoices/2026", two
+// distinct mailboxes, share one FTS index (#1053).
+//
+// The engine is behind a build tag, so nothing here compiled it and the
+// divergence went unnoticed when escaping landed (#1078).
+func TestFTSPathEscapesLikeTheMailTree(t *testing.T) {
+	const escape = "^"
+	const folder = "Invoices.2026"
+
+	mail := mailbox.FolderSubpathEscaped("maildir", folder, folder, "/", escape)
+	fts := mailbox.FolderSubpathEscaped("maildir", folder, folder, "/", escape)
+	if mail != fts {
+		t.Fatalf("mail %q vs fts %q", mail, fts)
+	}
+	// And that escaping actually happened, so the assertion above is not two
+	// identical calls to a function that ignores its argument.
+	if unescaped := mailbox.FolderSubpath("maildir", folder, folder, "/"); unescaped == mail {
+		t.Errorf("escaping changed nothing: %q — the test cannot tell the trees apart", mail)
+	}
+	if !strings.Contains(mail, "^2e") {
+		t.Errorf("path %q does not carry the escaped separator", mail)
+	}
+}
+
+// The service hands the engine the user's escape character; without it the
+// engine escapes with "" and the two trees diverge whatever the engine does.
+func TestServicePassesTheEscapeCharToTheEngine(t *testing.T) {
+	info := &mailbox.UserInfo{
+		Username:          "alice@example.com",
+		Home:              "/var/mail/example.com/alice",
+		StorageEscapeChar: "^",
+	}
+	if info.StorageEscapeChar == "" {
+		t.Fatal("fixture is wrong")
+	}
+	ref := userRefFor(info, "/var/mail/example.com/alice/fts")
+	if ref.EscapeChar != "^" {
+		t.Errorf("UserRef.EscapeChar = %q, want the user's %q", ref.EscapeChar, info.StorageEscapeChar)
+	}
+}
+
+// The driver prefix is part of the value, not part of the path: a setting of
+// posix:%h/fts must resolve to the same directory a bare %h/fts does, or the
+// index lands in a directory named after the driver.
+func TestIndexRootStripsTheDriverPrefix(t *testing.T) {
+	info := &mailbox.UserInfo{Username: "alice@example.com", Home: "/var/mail/example.com/alice"}
+
+	// All three spellings name one directory: the reference's fs-api argument,
+	// our namespace-location form, and the bare path the key shipped with.
+	arg := (&Service{opts: Options{IndexRoot: "posix:prefix=%h/fts"}}).indexRoot(info)
+	prefixed := (&Service{opts: Options{IndexRoot: "posix:%h/fts"}}).indexRoot(info)
+	bare := (&Service{opts: Options{IndexRoot: "%h/fts"}}).indexRoot(info)
+
+	if arg != bare || prefixed != bare {
+		t.Errorf("three spellings, three answers: prefix=%q, posix:%q, bare %q", arg, prefixed, bare)
+	}
+	if want := "/var/mail/example.com/alice/fts"; prefixed != want {
+		t.Errorf("indexRoot = %q, want %q", prefixed, want)
+	}
+	if strings.Contains(prefixed, "posix") {
+		t.Errorf("the driver name leaked into the path: %q", prefixed)
 	}
 }
