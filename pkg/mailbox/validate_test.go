@@ -35,13 +35,15 @@ func TestValidateName(t *testing.T) {
 		{"dotted name with the rule off", "example.com", "/", ".", ""},
 		{"same separator is never a conflict", "a.b", ".", ".", ""},
 
-		// Reserved segments: a folder named cur collides with maildir's own
-		// subdirectory without ever leaving the mailbox.
-		{"reserved cur", "cur", "/", "/", "storage layout owns"},
-		{"reserved nested", "Work/tmp", "/", "/", "storage layout owns"},
-		{"reserved dbox-Mails", "dbox-Mails", "/", "/", "storage layout owns"},
-		{"reserved is case-insensitive", "CUR", "/", "/", "storage layout owns"},
-		{"reserved only as a whole segment", "current", "/", "/", ""},
+		// Reserved segments are the names the *layout* owns, so the nested
+		// layouts refuse their marker and nothing else: cur/new/tmp are
+		// maildir's directories and do not occur here at all.
+		{"the nested layout's own marker", "dbox-Mails", "/", "/", "storage layout owns"},
+		{"and nested under a parent", "Work/dbox-Mails", "/", "/", "storage layout owns"},
+		{"case-insensitive", "DBOX-mails", "/", "/", "storage layout owns"},
+		{"only as a whole segment", "dbox-Mails-old", "/", "/", ""},
+		{"a maildir directory name is not the nested layout's", "cur", "/", "/", ""},
+		{"nor is it maildir's own problem, given the leading dot", "cur", "/", ".", ""},
 	}
 
 	for _, tc := range cases {
@@ -143,15 +145,42 @@ func TestReservedSegmentsApplyOnlyWhereTheyCanCollide(t *testing.T) {
 			t.Errorf("maildir layout: ValidateName(%q) = %v; the leading dot keeps it apart", name, err)
 		}
 	}
-	for _, name := range []string{"new", "cur", "dbox-Mails"} {
-		if err := ValidateName(name, "/", "/", rules); err == nil {
-			t.Errorf("nested layout: ValidateName(%q) was accepted; here it does sit beside the layout's own", name)
+	// The nested layouts own their marker and nothing else: cur/new/tmp are
+	// maildir's directories and never appear here, so refusing them protected
+	// nothing on this side either.
+	if err := ValidateName("dbox-Mails", "/", "/", rules); err == nil {
+		t.Error("nested layout: the marker name was accepted; a folder there is ambiguous with it")
+	}
+	for _, name := range []string{"new", "cur", "tmp", "New"} {
+		if err := ValidateName(name, "/", "/", rules); err != nil {
+			t.Errorf("nested layout: ValidateName(%q) = %v; that name is maildir's, not this layout's", name, err)
 		}
 	}
 	// The traversal rules are unaffected by the layout.
 	for _, sep := range []string{".", "/"} {
 		if err := ValidateName("../victim", "/", sep, rules); err == nil {
 			t.Errorf("layout %q: a traversal name was accepted", sep)
+		}
+	}
+}
+
+// The validator and the escaper must reserve the same names, or one refuses a
+// folder the other would have stored safely — the same "two sets, one set"
+// requirement as the config validator and the namespace builder (#1087).
+func TestValidatorAndEscaperReserveTheSameNames(t *testing.T) {
+	rules := DefaultNameRules()
+	candidates := []string{"cur", "new", "tmp", "New", "dbox-Mails", "DBOX-Mails", "Sales", "dbox-Mails-old"}
+
+	for _, layoutSep := range []string{".", "/"} {
+		for _, name := range candidates {
+			refused := ValidateName(name, "/", layoutSep, rules) != nil
+			escaped := EscapeStorageName(name, layoutSep, "^") != name
+
+			if refused != escaped {
+				t.Errorf("layout %q, name %q: validator refuses=%v, escaper escapes=%v — "+
+					"one of them is protecting against a collision the other does not believe in",
+					layoutSep, name, refused, escaped)
+			}
 		}
 	}
 }
