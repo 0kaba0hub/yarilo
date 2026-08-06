@@ -80,7 +80,9 @@ func aclNoOracle(peer *imapClient, present, prefix string) error {
 		if errAbsent == nil {
 			return fmt.Errorf("%s answered for %q, which does not exist", name, absent)
 		}
-		if errPresent.Error() != errAbsent.Error() {
+		gotPresent := comparableRefusal(errPresent, present)
+		gotAbsent := comparableRefusal(errAbsent, absent)
+		if gotPresent != gotAbsent {
 			return fmt.Errorf("%s lets a peer tell a mailbox it may not see from one that is not there:\n"+
 				"  present: %v\n  absent:  %v", name, errPresent, errAbsent)
 		}
@@ -126,4 +128,29 @@ func aclGrantsAreReachable(owner, peer *imapClient, folder, peerUser string) err
 		return fmt.Errorf("with 'a' granted, GETACL still fails: %w", err)
 	}
 	return nil
+}
+
+// comparableRefusal reduces a tagged reply to the part a client acts on.
+//
+// Two things differ between the two probes for reasons that are not
+// disclosure, and both would make an identical server look like a leaking one:
+//
+//   - the command tag. cmd() returns the whole line, and the tag increments per
+//     command, so the present probe is S0007 and the absent one S0008 --
+//     different strings, same answer;
+//   - the mailbox name, if a reply ever quotes it. Today none do, but the point
+//     of comparing full text is to catch a rewording, and a rewording that
+//     included the name would fire here for the wrong reason.
+//
+// Everything after that is kept and compared, because a difference in wording
+// between the two answers is exactly what this is looking for.
+func comparableRefusal(err error, folder string) string {
+	if err == nil {
+		return ""
+	}
+	line := err.Error()
+	if _, rest, ok := strings.Cut(line, " "); ok {
+		line = rest
+	}
+	return strings.ReplaceAll(line, folder, "<probe>")
 }
