@@ -69,6 +69,11 @@ var (
 	flagQuotaOverPass = flag.String("quota-over-pass", "", "password for -quota-over-user")
 	flagACLUser       = flag.String("acl-user", "", "IMAP username for the ACL extension check (enables it)")
 	flagACLPass       = flag.String("acl-pass", "", "password for -acl-user")
+	// The shared-namespace disclosure matrix (#1085) needs a second account and
+	// a namespace both can name. Enabled only when all three are set.
+	flagACLPeerUser     = flag.String("acl-peer-user", "", "second IMAP username for the shared-namespace ACL check")
+	flagACLPeerPass     = flag.String("acl-peer-pass", "", "password for -acl-peer-user")
+	flagACLSharedPrefix = flag.String("acl-shared-prefix", "", `shared namespace prefix for the ACL check, e.g. "Public/"`)
 
 	flagFTSUser = flag.String("fts-user", "", "IMAP username for the full-text search check (enables it)")
 	flagFTSPass = flag.String("fts-pass", "", "password for -fts-user")
@@ -203,6 +208,15 @@ func main() {
 			fn   func() error
 		}{"imap ACL (MYRIGHTS + SETACL round-trip)", func() error {
 			return checkACL(*flagACLUser, *flagACLPass)
+		}})
+	}
+	if *flagACLUser != "" && *flagACLPeerUser != "" && *flagACLSharedPrefix != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap ACL disclosure (shared namespace, peer vs absent mailbox)", func() error {
+			return checkACLDisclosure(*flagACLUser, *flagACLPass,
+				*flagACLPeerUser, *flagACLPeerPass, *flagACLSharedPrefix)
 		}})
 	}
 	if *flagFTSUser != "" {

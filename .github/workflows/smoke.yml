@@ -73,6 +73,9 @@ jobs:
           SMOKE_QUOTA_OVER_USER: ${{ vars.SMOKE_QUOTA_OVER_USER }}
           SMOKE_QUOTA_OVER_PASS: ${{ secrets.SMOKE_QUOTA_OVER_PASS }}
           DIRECTOR_API_TOKEN: ${{ secrets.SMOKE_DIRECTOR_API_TOKEN }}
+          SMOKE_ACL_PEER_USER: ${{ vars.SMOKE_ACL_PEER_USER }}
+          SMOKE_ACL_PEER_PASS: ${{ secrets.SMOKE_ACL_PEER_PASS }}
+          SMOKE_ACL_SHARED_PREFIX: ${{ vars.SMOKE_ACL_SHARED_PREFIX }}
         run: |
           POP3S_FLAGS=""
           if [ -n "${{ inputs.pop3s_port }}" ]; then
@@ -89,6 +92,11 @@ jobs:
           QUOTA_ACL_FLAGS=""
           if [ -n "$SMOKE_IMAP_USER" ]; then
             QUOTA_ACL_FLAGS="-quota-user $SMOKE_IMAP_USER -quota-pass $SMOKE_IMAP_PASS -acl-user $SMOKE_IMAP_USER -acl-pass $SMOKE_IMAP_PASS"
+          fi
+          # The shared-namespace disclosure matrix needs a second account and a
+          # namespace both can name; it stays off until both are configured.
+          if [ -n "$SMOKE_ACL_PEER_USER" ] && [ -n "$SMOKE_ACL_SHARED_PREFIX" ]; then
+            QUOTA_ACL_FLAGS="$QUOTA_ACL_FLAGS -acl-peer-user $SMOKE_ACL_PEER_USER -acl-peer-pass $SMOKE_ACL_PEER_PASS -acl-shared-prefix $SMOKE_ACL_SHARED_PREFIX"
           fi
           # Enforcement check only runs when a dedicated over-quota user is set.
           if [ -n "$SMOKE_QUOTA_OVER_USER" ]; then
