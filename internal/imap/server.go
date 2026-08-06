@@ -3458,14 +3458,20 @@ func listMatch(name string, patterns []string, sep byte) bool {
 	return false
 }
 
-// matchPattern is the RFC 9051 6.3.9 wildcard match, case-insensitive because
-// mailbox names are compared that way here (INBOX especially).
+// matchPattern is the RFC 9051 6.3.9 wildcard match.
+//
+// Case-sensitive, except that INBOX is matched case-insensitively -- the one
+// name RFC 9051 5.1 says is. Folding everything would have been a quiet
+// behaviour change riding in with the rewrite: mailbox names are
+// case-sensitive here and ValidateFolderName says so, so LIST "" "work" must
+// not return "Work".
 //
 // sep == 0 makes "%" equivalent to "*": with no hierarchy separator there is no
 // level for it to stop at.
 func matchPattern(name, pattern string, sep byte) bool {
-	name = strings.ToLower(name)
-	pattern = strings.ToLower(pattern)
+	if strings.EqualFold(name, "INBOX") && strings.EqualFold(pattern, "INBOX") {
+		return true
+	}
 
 	var match func(n, p int) bool
 	match = func(n, p int) bool {

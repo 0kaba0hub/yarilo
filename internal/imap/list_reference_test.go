@@ -99,3 +99,27 @@ func listNames(t *testing.T, c *imapclient.Client, ref, pattern string) []string
 	}
 	return out
 }
+
+// Mailbox names are case-sensitive; INBOX is the exception RFC 9051 §5.1
+// names. Folding both sides in the matcher would have been a behaviour change
+// riding in with the rewrite — quiet, because every test used matching case.
+func TestListMatchingIsCaseSensitiveExceptINBOX(t *testing.T) {
+	c := startServerWith(t, maildirBackend(t))
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+
+	if err := c.Create("Work", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := listNames(t, c, "", "work"); len(got) != 0 {
+		t.Errorf(`LIST "" "work" returned %v; mailbox names are case-sensitive`, got)
+	}
+	if got := listNames(t, c, "", "Work"); len(got) != 1 {
+		t.Errorf(`LIST "" "Work" returned %v, want the folder itself`, got)
+	}
+	for _, spelling := range []string{"inbox", "InBoX", "INBOX"} {
+		if got := listNames(t, c, "", spelling); len(got) != 1 {
+			t.Errorf("LIST %q returned %v; INBOX is case-insensitive", spelling, got)
+		}
+	}
+}
