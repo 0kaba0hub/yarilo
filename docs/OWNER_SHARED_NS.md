@@ -338,6 +338,60 @@ reaches (`acl_mailbox_fail_not_found`).
 
 Tracked as #1068.
 
+### 7.2 The bootstrap grant — why `k` alone leaves a namespace nobody can clean up
+
+A shared namespace starts empty and grantable only at its root: nobody can
+create its first mailbox without the create right, and there is nowhere else to
+put that right. The grant goes on the root, addressed with `--root` on the CLI
+and `"root": true` on the wire.
+
+An incomplete grant produces a namespace that fills up and cannot be emptied:
+
+```
+u2: CREATE   "Public/Reg69"    OK
+u2: SELECT   "Public/Reg69"    OK [READ-WRITE]
+u2: MYRIGHTS "Public/Reg69"    lrsk
+u2: DELETE   "Public/Reg69"    NO [NOPERM] Permission denied: missing right 'x'
+```
+
+That `k` (create) and `x` (delete mailbox) are separate rights is RFC 4314 and
+needs no documenting here. Two things about how they behave in this model are
+not in the RFC, and both are why the recipe below matters.
+
+**A shared namespace has no owner.** `isOwner` is true only for a personal
+namespace, where "I created it, so I can delete it" holds through the owner
+shortcut rather than through any ACL. That shortcut exists for nobody here. So
+the consequence of a grant without `x` is not "somebody else needs the right" —
+it is that **no user of the namespace holds it at all**. An operator carrying
+intuition over from the personal namespace gets a mailbox nobody can remove.
+
+**Children inherit the root grant.** A mailbox created in the namespace inherits
+exactly what the root granted — `MYRIGHTS` above returns the root's `lrsk`
+verbatim. An incomplete bootstrap grant is therefore not a local mistake: it is
+replicated onto everything created in that namespace afterwards.
+
+It is not irreversible — `yarctl acl set ... --root` can add rights later — but
+it is not fixable from inside a session, which is why the recipe belongs here
+rather than in someone's head.
+
+**The recipe.** For a manageable shared namespace the root grant needs at
+minimum **`lkx`** — see it, create in it, delete from it. In practice
+**`lrswipkxte`**. Add **`a`** for whoever is allowed to delegate further: with
+`a` the grantee can repair the rest themselves, without it every later
+adjustment needs an administrator.
+
+```
+yarctl backend acl set --root <owner> <grantee> lrswipkxte --namespace public
+```
+
+**The deploy check depends on this.** `checkACLDisclosure` (see `docs/SMOKE.md`)
+creates `<prefix>SmokeAclProbe` and removes it afterwards, which needs `x`.
+Since 2.3.70 a cleanup it cannot complete fails the check rather than printing a
+note, so a smoke user granted without `x` reports a failure on every run instead
+of quietly leaving another probe mailbox behind.
+
+Tracked as #1104.
+
 ---
 
 ## 8. Testing plan

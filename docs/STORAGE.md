@@ -122,3 +122,45 @@ another session clears the marker. The **POP3** path carries no such bound: a PO
 heals at most once, at login, not in a command loop, so it cannot spin; a rapidly
 reconnecting client during a purge could still reproduce the storm across logins, but POP3
 sessions are short and a cross-login bound would need persistent state — an accepted gap.
+
+## Moving a user between mailbox formats
+
+One folder name is legal under one format and not under another: **`dbox-Mails`**.
+Maildir++ gives every folder a leading `.`, so `.dbox-Mails` collides with
+nothing; the dbox layouts store a folder as `mailboxes/<name>/dbox-Mails`, where
+that name is their own marker, and a folder called `dbox-Mails` would produce
+`mailboxes/dbox-Mails/dbox-Mails` — an outer directory that is a folder and an
+inner one that is a marker, indistinguishable to a tree walk. So it is refused
+on mdbox and sdbox and accepted on maildir:
+
+| name | mdbox | maildir | sdbox |
+|:--|:--|:--|:--|
+| `New`, `cur`, `new`, `tmp` | OK | OK | OK |
+| `dbox-Mails` | `NO [CANNOT]` | **OK** | `NO [CANNOT]` |
+
+The first row is the reserved-segment rule working as intended: only the names
+the layout in use actually owns are enforced, and no layout owns those.
+
+**It is a precondition, not a wall.** Set `mailbox_list_storage_escape_char` on
+the target and the name is stored escaped, out from under the marker:
+
+```
+esc=""   ValidateName("dbox-Mails") = refused
+         path = mailboxes/dbox-Mails/dbox-Mails        <- the collision
+
+esc="^"  ValidateName("dbox-Mails") = accepted
+         path = mailboxes/^64box-Mails/dbox-Mails      <- stored literally
+```
+
+Escaping supersedes the refusals that exist because a name could not be
+*represented*, which is what this one is. So the rule for a format migration is:
+
+- **without an escape character on the target** — such a folder cannot be
+  migrated;
+- **with one configured** — it migrates and is stored escaped.
+
+And it inherits that key's retroactivity: enabling it is **not** retroactive, so
+it has to be set on the target **before** the mail arrives, not after.
+
+This is the only name that exists under one driver and cannot exist under
+another, which is why it is stated here rather than left to be discovered.
