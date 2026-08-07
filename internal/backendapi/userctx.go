@@ -146,9 +146,14 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 	if !valid {
 		return nil, fmt.Errorf("backendapi/userctx: namespace %q location empty", name)
 	}
-	nsInfo := &mailbox.UserInfo{
-		Username: uc.info.Username,
-		Home:     loc.Path,
+	// Username and Home alone are not enough: the consumers fall into
+	// different defaults for everything else, so the mailbox backend looked
+	// under <location>/Maildir while the ACL store looked in <location> and
+	// every per-mailbox ACL call here answered "folder not found" (#1109).
+	// One builder, shared with the IMAP path that had it right.
+	nsInfo, err := mailbox.NamespaceUserInfo(uc.info, loc, spec.Separator)
+	if err != nil {
+		return nil, fmt.Errorf("backendapi/userctx: namespace %q: %w", name, err)
 	}
 	b, err := s.openNS(spec, nsInfo, nil)
 	if err != nil {
@@ -208,7 +213,7 @@ func (s *Server) openNSReadOnly(spec config.NamespaceConfig, ui *mailbox.UserInf
 
 func (s *Server) openNSInner(spec config.NamespaceConfig, ui *mailbox.UserInfo, mb mailbox.MailboxBackend, skipInit bool) (*nsBundle, error) {
 	if mb == nil {
-		mb = s.mailboxBackendFor(spec)
+		mb = s.mailboxBackendFor(spec, ui)
 	}
 	if mb == nil {
 		return nil, fmt.Errorf("backendapi: no mailbox backend wired")
@@ -235,9 +240,16 @@ func (s *Server) openNSInner(spec config.NamespaceConfig, ui *mailbox.UserInfo, 
 
 // mailboxBackendFor returns the backend for a namespace: the per-namespace
 // override wins, otherwise the global default.
-func (s *Server) mailboxBackendFor(spec config.NamespaceConfig) mailbox.MailboxBackend {
+func (s *Server) mailboxBackendFor(spec config.NamespaceConfig, ui *mailbox.UserInfo) mailbox.MailboxBackend {
 	if override, ok := s.opts.NamespaceMailboxes[spec.Prefix]; ok && override != nil {
 		return override
+	}
+	// Then the driver the namespace's own location names, not the
+	// deployment-wide one. Selecting by prefix agreed with the location only
+	// while every namespace used one format -- which is the case the Driver
+	// field was added for (#1109).
+	if ui != nil && ui.Driver != "" {
+		return s.mailboxForDriver(ui.Driver)
 	}
 	return s.opts.Mailbox
 }

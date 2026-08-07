@@ -499,19 +499,11 @@ func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.Use
 	if rel == "" {
 		rel = "INBOX" // delivery to a bare namespace prefix → its INBOX
 	}
-	ui := &mailbox.UserInfo{
-		Username:    userInfo.Username,
-		Home:        loc.Path,
-		MailPath:    loc.Path,
-		Driver:      loc.Driver,
-		IndexDir:    loc.IndexDir,
-		VolatileDir: loc.VolatileDir,
-		ControlDir:  loc.ControlDir,
-		AltDir:      loc.AltDir,
-		Separator:   ns.Separator,
-		Groups:      userInfo.Groups,
-		ACLUser:     userInfo.ACLUser,
-		ACLGroups:   userInfo.ACLGroups,
+	ui, err := mailbox.NamespaceUserInfo(userInfo, loc, ns.Separator)
+	if err != nil {
+		slog.Warn("lmtp: namespace not usable, delivering to INBOX",
+			"prefix", ns.Prefix, "location", ns.Location, "err", err)
+		return rcptBox, rcptIdx, "INBOX", noop
 	}
 	if enforcePost && !s.postAllowed(ui, ns, rel) {
 		slog.Warn("lmtp: post right denied, falling back to INBOX",
