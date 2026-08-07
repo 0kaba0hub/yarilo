@@ -129,8 +129,41 @@ Both entry points already have (or can be handed) a userdb-master client:
   userdb-master lookup for an arbitrary (non-authenticating) user.
 
 The lookup returns the owner's `Home`, `MailPath`, `Driver`, and mail-location
-modifiers. `ParseLocation(spec.Location, ownerUI)` then expands the template
-against the owner.
+modifiers, built by the same `ResolveUserInfo` → `StampLocation` path the
+session user goes through — one implementation, so an owner resolves exactly as
+a logged-in user does.
+
+**Precedence, decided before the code: the owner's userdb `mail_location`
+decides the driver; the root comes from expanding a template against the owner.**
+This is what `StampLocation` already does for the session user (resolve.go):
+it sets `ui.Driver` from `mail_location`, fills the `INDEX=` / `CONTROL=` /
+`ALT=` / `VOLATILEDIR=` modifiers **only where nothing has set them yet** — for
+the session user the deployment defaults (`DefaultIndexDir` and the rest) have
+usually filled them already, so a userdb modifier reaches the user only when the
+deployment left that field unset — and it does *not* touch `MailPath` or `Home`.
+The root is `DefaultMailPath` expanded against the user; for an owner-templated
+namespace it is the namespace `location:` expanded against the owner, exactly as
+the reference expands its own location template.
+
+The gap-filling is first-writer-wins, so whether an owner's `INDEX=` lands turns
+entirely on whether `StampLocation` runs before or after the namespace template
+fills those fields. The lookup PR builds the owner `UserInfo` and must make that
+order an explicit choice — `StampLocation` closes gaps, it does not override —
+rather than an accident of operator sequence.
+
+The driver is the field that mattered: it is per-user here — the deployment runs
+mdbox, maildir and sdbox for different accounts — and it arrives only through the
+owner's `mail_location`, which is the whole reason the lookup is a full userdb
+lookup rather than a template expansion (§7.6). A namespace `location:` written
+`maildir:%h` while the owner's userdb says `mdbox:~/mdbox` resolves to the
+`mdbox` driver over the namespace template's `%h` root — `StampLocation` wins the
+driver, the namespace template wins the root, and the two do not fight because
+they decide different fields.
+
+The namespace `location:` must carry a per-owner variable (config validation
+enforces it, since 2.3.84) because it always supplies the root, per owner: a
+fixed location would resolve every owner to one shared path, the parallel tree
+this design exists to prevent.
 
 ### 3.4 On-demand handle construction + caching
 
@@ -607,6 +640,32 @@ Tracked as #1117.
 
 ---
 
+
+### 7.6 Owner resolution follows the userdb, not the reference's no-lookup path
+
+Two deliberate divergences from 2.4, both because this deployment carries
+per-user storage the reference's shared-namespace model does not express.
+
+- **Full userdb lookup, not `no_userdb_lookup`.** 2.4 resolves a shared
+  namespace's owner without a userdb round-trip (`no_userdb_lookup = TRUE`),
+  deriving the owner's home from the template alone. It can, because its shared
+  spaces are homogeneous by assumption — one driver, one layout for every owner.
+  Ours are not: the userdb assigns a driver per account (mdbox / maildir / sdbox
+  by range), and only a full userdb lookup surfaces it. Following the reference
+  here would import a limitation the deployment already violates, so the owner is
+  looked up in full and the result cached to pay the round-trip once (§3.4).
+
+- **The driver comes from the owner's `mail_location`, not the namespace
+  `location:`.** The same fact drives §3.3's precedence: `StampLocation` takes
+  the driver from the owner's userdb, while the root is the namespace template
+  expanded against the owner. They decide different fields, so a namespace whose
+  template happened to name a different driver does not open the wrong backend —
+  the userdb driver wins, which is what the full lookup exists to guarantee.
+
+Both are the shape of §7.5's escape-order note: the reference is self-consistent,
+and yarilo diverges on purpose where the deployment's shape demands it. Written
+down so a later reader does not "restore parity" by dropping the lookup and
+reintroducing the per-user-driver bug through config.
 ## 8. Testing plan
 
 - **Unit (`pkg/mailbox`)**: owner extraction from names for `%u` prefixes
