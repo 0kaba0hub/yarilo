@@ -10,6 +10,7 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
@@ -2533,8 +2534,61 @@ func ValidateNamespaceTypes(namespaces []NamespaceConfig) error {
 				"valid types are personal, shared and other -- a public namespace is "+
 				"type: shared with its own prefix and location", i, ns.Prefix, ns.Type)
 		}
+		if err := validateOwnerTemplatedNamespace(i, ns); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// validateOwnerTemplatedNamespace fails startup, loudly, on a misconfigured
+// owner-templated namespace -- a prefix carrying the owner variable (%u).
+//
+// A new kind of namespace that is silently skipped is the #1087 failure from
+// the other side: type: public was dropped without a word and cost a day. A
+// templated namespace whose location does not resolve per owner is the same
+// trap wearing config -- it would open every owner's space at one shared path,
+// the parallel-tree shape this project keeps closing. So it is refused at
+// startup rather than accepted and left to misbehave.
+//
+// Checked: the location is set and is itself templated (carries a per-owner
+// variable), and the prefix is <literal>%u followed by the separator or nothing
+// -- the shape the resolver (extractOwner) parses. A richer post-variable
+// literal is not yet supported, so it fails here rather than resolves wrongly.
+func validateOwnerTemplatedNamespace(i int, ns NamespaceConfig) error {
+	if !mailbox.PrefixIsOwnerTemplated(ns.Prefix) {
+		return nil
+	}
+	loc := strings.TrimSpace(ns.Location)
+	if loc == "" {
+		return fmt.Errorf("config: namespace %d (prefix %q) is owner-templated (%s in the prefix) "+
+			"but has no location; it cannot resolve to per-owner storage", i, ns.Prefix, mailbox.OwnerVar)
+	}
+	if !containsOwnerLocationVar(loc) {
+		return fmt.Errorf("config: namespace %d (prefix %q) is owner-templated but its location %q carries no "+
+			"per-owner variable (%%h/%%u/%%n/%%d); it would open every owner's space at one shared path", i, ns.Prefix, ns.Location)
+	}
+	sep := strings.TrimSpace(ns.Separator)
+	if sep == "" {
+		sep = "/"
+	}
+	_, after, _ := strings.Cut(ns.Prefix, mailbox.OwnerVar)
+	if after != "" && after != sep {
+		return fmt.Errorf("config: namespace %d (prefix %q) puts %q after the owner variable; v1 supports "+
+			"only <literal>%s followed by the separator %q or nothing", i, ns.Prefix, after, mailbox.OwnerVar, sep)
+	}
+	return nil
+}
+
+// containsOwnerLocationVar reports whether a location template carries a
+// variable that varies per owner.
+func containsOwnerLocationVar(loc string) bool {
+	for _, v := range []string{"%h", "%u", "%n", "%d"} {
+		if strings.Contains(loc, v) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateFTSIndexRoot refuses a storage driver the FTS engine cannot use.
