@@ -784,3 +784,85 @@ func TestACL_OwnerNamingWritesRefusedButRemovable(t *testing.T) {
 		t.Errorf("apply for a peer status=%d body=%s, want 200", status, body)
 	}
 }
+
+// rebuild of a named subset must MERGE: the folders it was not asked about keep
+// their index rows. Before #1151 it wrote the collected rows as the whole index,
+// so repairing one folder silently deleted the rest -- and answered ok.
+// --all replaces instead, which is what clears rows for folders that are gone.
+func TestACL_RebuildSubsetMerges_AllReplaces(t *testing.T) {
+	const user = "alice@example.com"
+	setup := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		ts, _ := storageTestServer(t)
+		doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+		for _, f := range []string{"Keep", "Reseed"} {
+			doJSON(t, ts, http.MethodPost, "/api/backend/folder/create", "", map[string]any{"user": user, "folder": f})
+			doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+				"user": user, "folder": f,
+				"acl": []map[string]any{{"identifier": "bob@example.com", "rights": "lr"}},
+			})
+		}
+		return ts
+	}
+	indexFolders := func(t *testing.T, ts *httptest.Server) map[string]bool {
+		t.Helper()
+		_, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/list", "", map[string]any{"user": user})
+		var resp struct {
+			Entries []struct {
+				Mailbox string `json:"mailbox"`
+			} `json:"entries"`
+		}
+		decodeJSONBody(t, body, &resp)
+		out := map[string]bool{}
+		for _, e := range resp.Entries {
+			out[e.Mailbox] = true
+		}
+		return out
+	}
+
+	t.Run("subset keeps the folders it was not given", func(t *testing.T) {
+		ts := setup(t)
+		status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{
+			"user": user, "folders": []string{"Reseed"},
+		})
+		if status != 200 {
+			t.Fatalf("rebuild status=%d body=%s", status, body)
+		}
+		got := indexFolders(t, ts)
+		if !got["Keep"] {
+			t.Error("rebuilding Reseed deleted Keep's index rows (#1151)")
+		}
+		if !got["Reseed"] {
+			t.Error("rebuilt folder missing from the index")
+		}
+	})
+
+	t.Run("all replaces and drops rows for folders that are gone", func(t *testing.T) {
+		ts := setup(t)
+		// Delete the folder behind Keep's rows: only a replacing rebuild clears them.
+		doJSON(t, ts, http.MethodPost, "/api/backend/folder/delete", "", map[string]any{"user": user, "folder": "Keep"})
+
+		status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{
+			"user": user, "all": true,
+		})
+		if status != 200 {
+			t.Fatalf("rebuild --all status=%d body=%s", status, body)
+		}
+		got := indexFolders(t, ts)
+		if got["Keep"] {
+			t.Error("--all left rows for a folder that no longer exists")
+		}
+		if !got["Reseed"] {
+			t.Error("--all dropped a live folder's rows")
+		}
+	})
+
+	t.Run("all and folders together are refused", func(t *testing.T) {
+		ts := setup(t)
+		if status, _ := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{
+			"user": user, "all": true, "folders": []string{"Reseed"},
+		}); status != http.StatusBadRequest {
+			t.Errorf("all+folders status=%d, want 400", status)
+		}
+	})
+}

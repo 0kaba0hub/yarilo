@@ -167,18 +167,61 @@ func (s *Store) ListRename(oldFolder, newFolder string) error {
 // (and the production caller does) take the folder lock -- e.g. pass Store.Get.
 // It must not take the list lock itself (no ListUpdate / ListRebuild), which is
 // the only re-entrancy the ordering forbids.
+//
+// ListRebuild MERGES: it reseeds the rows for the named folders and leaves every
+// other folder's rows untouched. A partial call ("rebuild Sent") is therefore
+// safe -- it does not delete the rest of the index (#1151). Rebuilding a folder
+// whose ACL file is now gone drops that folder's stale rows, which is the
+// repair. To replace the whole index (drop rows for folders no longer present),
+// walk every folder and call ListReplaceAll instead.
 func (s *Store) ListRebuild(folders []string, resolveACL func(folder string) (mailbox.ACL, error)) error {
-	// Resolve every folder's ACL BEFORE the list lock. resolveACL takes the
-	// folder lock (Store.Get), so holding the list lock across it would be
-	// list -> folder, the reverse of Update's folder -> list -- a concurrent
-	// SETACL and rebuild would each hold one lock and wait for the other until
-	// the 30s timeout (#1147). Collecting first makes the order folder -> list
-	// everywhere, and shortens the list-lock hold, which rebuild --all needs.
+	fresh, err := s.collectListEntries(folders, resolveACL)
+	if err != nil {
+		return err
+	}
+	rebuilding := make(map[string]bool, len(folders))
+	for _, f := range folders {
+		rebuilding[f] = true
+	}
+	return s.withListLock(func() error {
+		existing, err := s.loadListLocked()
+		if err != nil {
+			return err
+		}
+		out := make([]ListEntry, 0, len(existing)+len(fresh))
+		for _, e := range existing {
+			if !rebuilding[e.Mailbox] { // keep the folders we are not rebuilding
+				out = append(out, e)
+			}
+		}
+		out = append(out, fresh...)
+		return s.writeListAtomicLocked(out)
+	})
+}
+
+// ListReplaceAll rebuilds the entire index from the given folders, which must be
+// the complete set (every folder in the namespace). Unlike ListRebuild it does
+// not merge: any row for a folder not in the set is dropped, so it cleans up
+// orphan rows for folders that no longer exist. This is the `rebuild --all`
+// path; a subset here would silently truncate the index, which is #1151.
+func (s *Store) ListReplaceAll(folders []string, resolveACL func(folder string) (mailbox.ACL, error)) error {
+	fresh, err := s.collectListEntries(folders, resolveACL)
+	if err != nil {
+		return err
+	}
+	return s.withListLock(func() error {
+		return s.writeListAtomicLocked(fresh)
+	})
+}
+
+// collectListEntries resolves each folder's ACL into index rows, BEFORE any list
+// lock (the resolver takes the folder lock; see ListRebuild's note on ordering).
+func (s *Store) collectListEntries(folders []string, resolveACL func(folder string) (mailbox.ACL, error)) ([]ListEntry, error) {
 	var entries []ListEntry
 	for _, folder := range folders {
 		acl, err := resolveACL(folder)
 		if err != nil {
-			return fmt.Errorf("userstate/acl: rebuild %s: %w", folder, err)
+			return nil, fmt.Errorf("userstate/acl: rebuild %s: %w", folder, err)
 		}
 		for _, e := range acl {
 			entries = append(entries, ListEntry{
@@ -189,9 +232,7 @@ func (s *Store) ListRebuild(folders []string, resolveACL func(folder string) (ma
 			})
 		}
 	}
-	return s.withListLock(func() error {
-		return s.writeListAtomicLocked(entries)
-	})
+	return entries, nil
 }
 
 // ---- internal helpers ----

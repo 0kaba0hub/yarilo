@@ -75,6 +75,12 @@ type aclRequest struct {
 	// another account's owner-templated namespace, the lock must be held under
 	// the operator, not the store owner.
 	Actor string `json:"actor,omitempty"`
+	// All makes rebuild address every folder in the namespace, which is the only
+	// way to reconcile drift the operator cannot enumerate (the drifted index was
+	// what would have told them). It also selects replace semantics: rebuild of a
+	// named subset merges, --all replaces, so rows for folders that no longer
+	// exist are dropped (#1147, #1151).
+	All bool `json:"all,omitempty"`
 }
 
 // aclEntryJSON is the wire-format representation of a single ACL
@@ -243,7 +249,13 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Folders) == 0 {
-		apiError(w, "folders required", http.StatusBadRequest)
+		if req.All {
+			// --all on a namespace with no folders: nothing to reseed, and
+			// replacing with an empty set would blank the index.
+			apiJSON(w, map[string]any{"status": "ok", "all": true, "folders": 0, "rebuilt": []string{}, "skipped": []map[string]string{}})
+			return
+		}
+		apiError(w, `folders required (or "all": true for the whole namespace)`, http.StatusBadRequest)
 		return
 	}
 	// Unlike set, rebuild does not create anything: it reseeds the index from
@@ -258,7 +270,14 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 	// with the number they expected and went away believing the index reseeded.
 	rebuilt := make([]string, 0, len(req.Folders))
 	skipped := make([]map[string]string, 0)
-	err = store.ListRebuild(req.Folders, func(folder string) (mailbox.ACL, error) {
+	// Merge for a named subset, replace for --all. A subset must not delete the
+	// rows of folders it was not asked about (#1151); --all carries the complete
+	// set, so replacing is what clears rows for folders that are gone.
+	reseed := store.ListRebuild
+	if req.All {
+		reseed = store.ListReplaceAll
+	}
+	err = reseed(req.Folders, func(folder string) (mailbox.ACL, error) {
 		if !present[folder] {
 			skipped = append(skipped, map[string]string{"folder": folder, "reason": "folder not found"})
 			return nil, nil
@@ -279,7 +298,10 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiJSON(w, map[string]any{
-		"status":  "ok",
+		"status": "ok",
+		// Which mode ran: replace (all) or merge (a named subset). The two differ
+		// in what happens to folders not named, so the reply says which.
+		"all":     req.All,
 		"folders": len(rebuilt),
 		"rebuilt": rebuilt,
 		"skipped": skipped,
@@ -379,6 +401,20 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	// Existence for the rebuild batch, resolved here because the storage
 	// handle is closed when this returns. rebuild does not refuse an absent
 	// name -- see the handler -- but it must not report it as rebuilt either.
+	// --all: enumerate the namespace here, where the storage handle is still
+	// open. Everything downstream then sees an ordinary folder list.
+	if req.All {
+		if len(req.Folders) > 0 {
+			apiError(w, `"all" addresses every folder; do not send "folders" with it`, http.StatusBadRequest)
+			return nil, nil, nil, "", errAllWithFolders
+		}
+		entries, lerr := bundle.box.ListFolders()
+		if lerr != nil {
+			apiError(w, "list folders: "+lerr.Error(), http.StatusInternalServerError)
+			return nil, nil, nil, "", lerr
+		}
+		req.Folders = mailbox.SelectableNames(entries)
+	}
 	var present map[string]bool
 	if len(req.Folders) > 0 {
 		present = make(map[string]bool, len(req.Folders))
