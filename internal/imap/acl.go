@@ -359,11 +359,16 @@ func (s *session) DeleteACL(folder string, identifier imaplib.RightsIdentifier) 
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeBad, Text: err.Error()}
 	}
 	return h.acl.Update(rel, func(cur mailbox.ACL) (mailbox.ACL, error) {
-		if cur == nil {
-			return nil, nil
-		}
+		// Rights first, emptiness second. The other way round answered OK to a
+		// caller without 'a' whenever there was nothing to delete, so the reply
+		// told them whether an identifier held rights on a mailbox they may not
+		// administer -- the oracle #1085 closed, in the one command still
+		// answering it (#1109).
 		if err := s.requireAdminOn(h, rel); err != nil {
 			return nil, err
+		}
+		if cur == nil {
+			return nil, nil
 		}
 		return dropIdentifier(cur, id, negative), nil
 	})

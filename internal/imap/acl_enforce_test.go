@@ -1228,3 +1228,73 @@ func TestACLEnforce_AMailboxACLStaysExhaustive(t *testing.T) {
 		t.Error("bob reached a mailbox whose ACL leaves him out — omission stopped restricting")
 	}
 }
+
+// DELETEACL must answer a caller without 'a' the same way whichever mailbox
+// they name. It did not: the callback returned early when the mailbox had no
+// ACL of its own, before the rights check, so a mailbox with nothing to delete
+// answered OK while one carrying an entry answered NOPERM. That tells a caller
+// who may not administer these mailboxes which of them has an ACL at all --
+// the oracle #1085 closed, in the one command still answering it (#1109).
+//
+// Asserted as the difference between the two replies rather than as a code: a
+// server leaking through wording would pass a check on the code alone.
+func TestACLEnforce_DeleteACLDoesNotRevealWhetherAnACLExists(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// bob may see and read both mailboxes and administer neither: the rights
+	// come from the namespace root, which both inherit.
+	seedRootACL(t, aliceHome, "user=alice lrskxa\nuser=bob lr\n")
+	if err := a.Create("Shared/WithACL", nil).Wait(); err != nil {
+		t.Fatalf("CREATE: %v", err)
+	}
+	if err := a.Create("Shared/Bare", nil).Wait(); err != nil {
+		t.Fatalf("CREATE: %v", err)
+	}
+	// One carries an ACL of its own; the other has none.
+	seedACL(t, aliceHome, "WithACL", "user=bob lr\nuser=carol lr\n")
+	removeACL(t, aliceHome, "Bare")
+
+	carol, err := imaplib.NewRightsIdentifierUsername("carol")
+	if err != nil {
+		t.Fatalf("NewRightsIdentifierUsername: %v", err)
+	}
+
+	b := dial("bob")
+	errWith := b.DeleteACL("Shared/WithACL", carol).Wait()
+	errBare := b.DeleteACL("Shared/Bare", carol).Wait()
+
+	if errWith == nil || errBare == nil {
+		t.Fatalf("DELETEACL succeeded without the admin right: with=%v bare=%v", errWith, errBare)
+	}
+	if comparableACLError(errWith) != comparableACLError(errBare) {
+		t.Errorf("DELETEACL tells a mailbox with an ACL from one without:\n  with: %v\n  bare: %v",
+			errWith, errBare)
+	}
+}
+
+// removeACL deletes a mailbox's own ACL file, leaving it to inherit. CREATE
+// materialises one (#1111), so a test that needs a bare mailbox has to say so.
+func removeACL(t *testing.T, aliceHome, folder string) {
+	t.Helper()
+	path := filepath.Join(aliceHome, mailboxpkg.FolderSubpath("maildir", folder, folder, "."), "yarilo-acl")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove %s: %v", path, err)
+	}
+}
+
+// comparableACLError strips the tag so two replies to the same session can be
+// compared to each other rather than to a constant.
+func comparableACLError(err error) string {
+	if err == nil {
+		return "<ok>"
+	}
+	line := err.Error()
+	if _, rest, ok := strings.Cut(line, " "); ok && strings.HasPrefix(line, "imap:") {
+		line = rest
+	}
+	return line
+}
