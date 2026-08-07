@@ -383,43 +383,21 @@ func (s *session) DeleteACL(folder string, identifier imaplib.RightsIdentifier) 
 // SETACL is performed with an empty rights argument, the existing rights are
 // deleted").
 func applySetACL(cur mailbox.ACL, id mailbox.Identifier, negative bool, mod imaplib.RightModification, rights mailbox.Rights) mailbox.ACL {
-	idx := -1
-	for i, e := range cur {
-		if e.Negative == negative && e.Identifier == id {
-			idx = i
-			break
-		}
-	}
+	return cur.ApplyEntry(id, negative, aclModifyFromIMAP(mod), rights)
+}
 
+// aclModifyFromIMAP maps the go-imap SETACL modification to the shared mode. The
+// mapping lives here so pkg/mailbox does not depend on go-imap; the admin API
+// maps its own wire word to the same enum.
+func aclModifyFromIMAP(mod imaplib.RightModification) mailbox.ACLModify {
 	switch mod {
-	case imaplib.RightModificationReplace:
-		if rights == "" {
-			if idx >= 0 {
-				return append(cur[:idx], cur[idx+1:]...)
-			}
-			return cur
-		}
-		if idx >= 0 {
-			cur[idx].Rights = rights
-			return cur
-		}
-		return append(cur, mailbox.Entry{Identifier: id, Rights: rights, Negative: negative})
 	case imaplib.RightModificationAdd:
-		if idx >= 0 {
-			cur[idx].Rights = cur[idx].Rights.Add(rights)
-			return cur
-		}
-		return append(cur, mailbox.Entry{Identifier: id, Rights: rights, Negative: negative})
+		return mailbox.ACLAdd
 	case imaplib.RightModificationRemove:
-		if idx >= 0 {
-			cur[idx].Rights = cur[idx].Rights.Remove(rights)
-			if cur[idx].Rights == "" {
-				return append(cur[:idx], cur[idx+1:]...)
-			}
-		}
-		return cur
+		return mailbox.ACLRemove
+	default:
+		return mailbox.ACLReplace
 	}
-	return cur
 }
 
 // dropIdentifier removes the entry for the given identifier and negativity —

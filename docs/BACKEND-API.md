@@ -244,6 +244,17 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > mailbox with permissions and no messages. `--root` names no folder, so it is
 > not affected.
 >
+> **`apply` changes one entry atomically.** `POST /api/backend/acl/apply`
+> (`yarctl backend acl set`) modifies a single identifier — `"mode": "add" |
+> "remove" | "replace"`, default replace, empty rights with replace removes the
+> entry (RFC 4314 §3.1). The read-modify-write runs on the server inside the
+> folder lock, so a concurrent IMAP `SETACL` between the read and the write
+> cannot be lost. The CLI used to `get` the whole ACL, edit it and `set` it back
+> across two unlocked calls, which lost a concurrent write and made the client
+> own the canonical identifier form; `set`/`delete` of a single identifier now
+> route through `apply`. Full-ACL replace stays on `/acl/set` for callers that
+> genuinely mean to write the whole file.
+>
 > **`materialise` repairs inheritance.** `POST /api/backend/acl/materialise`
 > (`yarctl backend acl materialise <user> <folder>…`) writes what each mailbox
 > inherits into its own ACL, for mailboxes created before inheritance was

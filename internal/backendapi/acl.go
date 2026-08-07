@@ -20,6 +20,7 @@ import (
 //	POST /api/backend/acl/list    — every mailbox with an explicit ACL
 //	POST /api/backend/acl/get     — parsed ACL for one mailbox
 //	POST /api/backend/acl/set     — replace ACL for one mailbox
+//	POST /api/backend/acl/apply   — add/remove/replace ONE identifier, atomic
 //	POST /api/backend/acl/delete  — drop ACL for one mailbox
 //	POST /api/backend/acl/materialise — write inherited entries into the ACL
 //	                                of each mailbox that lacks them (repair for
@@ -33,6 +34,7 @@ func (s *Server) registerACLRoutes() {
 	s.mux.Handle("POST /api/backend/acl/list", s.middleware(s.handleACLList))
 	s.mux.Handle("POST /api/backend/acl/get", s.middleware(s.handleACLGet))
 	s.mux.Handle("POST /api/backend/acl/set", s.middleware(s.handleACLSet))
+	s.mux.Handle("POST /api/backend/acl/apply", s.middleware(s.handleACLApply))
 	s.mux.Handle("POST /api/backend/acl/delete", s.middleware(s.handleACLDelete))
 	s.mux.Handle("POST /api/backend/acl/rebuild", s.middleware(s.handleACLRebuild))
 	s.mux.Handle("POST /api/backend/acl/materialise", s.middleware(s.handleACLMaterialise))
@@ -55,6 +57,13 @@ type aclRequest struct {
 	// otherwise become a legitimate grant on the root of the namespace
 	// (#1091).
 	Root bool `json:"root,omitempty"`
+	// Identifier / Rights / Mode drive /acl/apply: one entry changed under the
+	// folder lock, so the CLI stops doing get-then-set with no lock between --
+	// which lost a concurrent SETACL entirely, not just miscompared identifiers
+	// (#1114). Mode is "add" | "remove" | "replace" (default replace).
+	Identifier string `json:"identifier,omitempty"`
+	Rights     string `json:"rights,omitempty"`
+	Mode       string `json:"mode,omitempty"`
 	// Apply turns a materialise run from a dry run into a write. Absent means
 	// dry run: the operation changes who can reach mail, so "show me what you
 	// would do" is how it is meant to be run first, not a flag remembered
@@ -124,6 +133,70 @@ func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleACLApply(w http.ResponseWriter, r *http.Request) {
+	store, req, _, err := s.openACLStore(w, r)
+	if err != nil {
+		return
+	}
+	if req.Folder == "" && !req.Root {
+		apiError(w, `folder required (or "root": true for the namespace root)`, http.StatusBadRequest)
+		return
+	}
+	if req.Identifier == "" {
+		apiError(w, "identifier required", http.StatusBadRequest)
+		return
+	}
+	idStr := req.Identifier
+	negative := false
+	if idStr[0] == '-' {
+		negative, idStr = true, idStr[1:]
+	}
+	id, err := parseAdminIdentifier(idStr)
+	if err != nil {
+		apiError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rights, err := mailbox.ParseRights(req.Rights)
+	if err != nil {
+		apiError(w, "rights: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	mode, err := aclModeFromWire(req.Mode)
+	if err != nil {
+		apiError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// The read-modify-write runs inside Store.Update, under the folder lock, so
+	// a concurrent IMAP SETACL between the read and the write cannot be lost --
+	// the window a client-side get-then-set left wide open (#1114).
+	if err := store.Update(req.Folder, func(cur mailbox.ACL) (mailbox.ACL, error) {
+		if cur == nil {
+			cur = mailbox.ACL{}
+		}
+		return cur.ApplyEntry(id, negative, mode, rights), nil
+	}); err != nil {
+		apiError(w, "apply: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, map[string]string{"status": "ok"})
+}
+
+// aclModeFromWire maps the API's mode word to the shared modify enum. The same
+// three modes the IMAP SETACL path uses, so the admin path is not a special
+// case (#1114).
+func aclModeFromWire(s string) (mailbox.ACLModify, error) {
+	switch s {
+	case "", "replace":
+		return mailbox.ACLReplace, nil
+	case "add":
+		return mailbox.ACLAdd, nil
+	case "remove":
+		return mailbox.ACLRemove, nil
+	default:
+		return mailbox.ACLReplace, fmt.Errorf("backendapi/acl: unknown mode %q (want add|remove|replace)", s)
+	}
 }
 
 func (s *Server) handleACLDelete(w http.ResponseWriter, r *http.Request) {

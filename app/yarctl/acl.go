@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 )
@@ -90,9 +89,10 @@ func aclGet(args []string) error {
 	}))
 }
 
-// aclSet upserts one entry: the CLI does not accept a full ACL JSON. It GETs
-// the current ACL, swaps in the supplied (identifier, rights), and pushes the
-// whole thing back through the same /set endpoint the API uses for full-replace.
+// aclSet changes one entry through /acl/apply, which does the read-modify-write
+// server-side under the folder lock. The CLI used to GET the whole ACL, edit it
+// and push it back with no lock between the two, so a concurrent SETACL was lost
+// and the canonical identifier form was the client's to guess (#1114).
 func aclSet(args []string) error {
 	fs := flag.NewFlagSet("acl set", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
@@ -115,16 +115,13 @@ func aclSet(args []string) error {
 	if fs.NArg() >= 4 {
 		rights = fs.Arg(3)
 	}
-	current, err := fetchACLEntries(user, *ns, mbox)
-	if err != nil {
-		return err
-	}
-	updated := upsertEntry(current, identifier, rights)
-	return printJSON(backendAPIPost("/api/backend/acl/set", map[string]any{
-		"user":      user,
-		"namespace": *ns,
-		"folder":    mbox,
-		"acl":       updated,
+	return printJSON(backendAPIPost("/api/backend/acl/apply", map[string]any{
+		"user":       user,
+		"namespace":  *ns,
+		"folder":     mbox,
+		"identifier": identifier,
+		"rights":     rights,
+		"mode":       "replace",
 	}))
 }
 
@@ -146,18 +143,17 @@ func aclDelete(args []string) error {
 			"folder":    mbox,
 		}))
 	}
-	// Single-identifier delete: GET, drop matching entry, SET.
+	// Single-identifier delete is a replace with empty rights, applied
+	// server-side under the lock -- DELETEACL semantics (RFC 4314 §3.2), and no
+	// client-side read-modify-write to lose a concurrent write (#1114).
 	identifier := fs.Arg(2)
-	current, err := fetchACLEntries(user, *ns, mbox)
-	if err != nil {
-		return err
-	}
-	updated := dropIdentifier(current, identifier)
-	return printJSON(backendAPIPost("/api/backend/acl/set", map[string]any{
-		"user":      user,
-		"namespace": *ns,
-		"folder":    mbox,
-		"acl":       updated,
+	return printJSON(backendAPIPost("/api/backend/acl/apply", map[string]any{
+		"user":       user,
+		"namespace":  *ns,
+		"folder":     mbox,
+		"identifier": identifier,
+		"rights":     "",
+		"mode":       "replace",
 	}))
 }
 
@@ -183,85 +179,8 @@ func aclRebuild(args []string) error {
 
 // ---- helpers ----
 
-// aclEntryWire is the wire shape the /get and /set endpoints expose. Kept
-// JSON-compatible with backendapi.aclEntryJSON so the CLI can round-trip.
-type aclEntryWire struct {
-	Identifier string `json:"identifier"`
-	Rights     string `json:"rights"`
-	Negative   bool   `json:"negative,omitempty"`
-}
-
-// fetchACLEntries GETs the current ACL of (user, mailbox) and decodes it into a
-// slice the CLI can mutate before pushing back. The /get endpoint returns an
-// empty array when no file exists, so the caller gets an empty slice, not an error.
-func fetchACLRootEntries(user, ns string) ([]aclEntryWire, error) {
-	return fetchACLFrom(map[string]any{"user": user, "namespace": ns, "root": true})
-}
-
-func fetchACLEntries(user, ns, mbox string) ([]aclEntryWire, error) {
-	return fetchACLFrom(map[string]any{"user": user, "namespace": ns, "folder": mbox})
-}
-
-func fetchACLFrom(req map[string]any) ([]aclEntryWire, error) {
-	body, err := backendAPIPost("/api/backend/acl/get", req)
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		ACL []aclEntryWire `json:"acl"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("decode acl get: %w", err)
-	}
-	return resp.ACL, nil
-}
-
-// upsertEntry replaces the entry with matching identifier, or appends when none
-// exists. Empty rights with a non-`-` identifier collapses to "drop that
-// identifier", per RFC 4314 SETACL empty-rights semantics.
-func upsertEntry(in []aclEntryWire, identifier, rights string) []aclEntryWire {
-	if rights == "" && len(identifier) > 0 && identifier[0] != '-' {
-		return dropIdentifier(in, identifier)
-	}
-	out := make([]aclEntryWire, 0, len(in)+1)
-	replaced := false
-	for _, e := range in {
-		if e.Identifier == identifier {
-			out = append(out, aclEntryWire{Identifier: identifier, Rights: rights})
-			replaced = true
-			continue
-		}
-		out = append(out, e)
-	}
-	if !replaced {
-		out = append(out, aclEntryWire{Identifier: identifier, Rights: rights})
-	}
-	return out
-}
-
-// dropIdentifier removes every entry whose identifier matches after normalising
-// the '-' prefix: DELETEACL drops both positive and negative entries for the
-// identifier per RFC 4314 §3.2.
-func dropIdentifier(in []aclEntryWire, identifier string) []aclEntryWire {
-	wantBare := identifier
-	if len(wantBare) > 0 && wantBare[0] == '-' {
-		wantBare = wantBare[1:]
-	}
-	out := make([]aclEntryWire, 0, len(in))
-	for _, e := range in {
-		bare := e.Identifier
-		if len(bare) > 0 && bare[0] == '-' {
-			bare = bare[1:]
-		}
-		if bare == wantBare {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
-// aclSetRoot upserts one entry on the namespace-root ACL. A shared namespace
+// aclSetRoot changes one entry on the namespace-root ACL through /acl/apply,
+// atomic under the lock. A shared namespace
 // needs it before anyone can create its first mailbox: the create right is
 // checked on the parent, and for a top-level name the parent is the root.
 func aclSetRoot(fs *flag.FlagSet, ns string) error {
@@ -273,15 +192,13 @@ func aclSetRoot(fs *flag.FlagSet, ns string) error {
 	if fs.NArg() >= 3 {
 		rights = fs.Arg(2)
 	}
-	current, err := fetchACLRootEntries(user, ns)
-	if err != nil {
-		return err
-	}
-	return printJSON(backendAPIPost("/api/backend/acl/set", map[string]any{
-		"user":      user,
-		"namespace": ns,
-		"root":      true,
-		"acl":       upsertEntry(current, identifier, rights),
+	return printJSON(backendAPIPost("/api/backend/acl/apply", map[string]any{
+		"user":       user,
+		"namespace":  ns,
+		"root":       true,
+		"identifier": identifier,
+		"rights":     rights,
+		"mode":       "replace",
 	}))
 }
 
