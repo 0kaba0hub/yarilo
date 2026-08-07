@@ -43,17 +43,17 @@ func byDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailb
 	switch strings.ToLower(driver) {
 	case "sdbox", "dbox":
 		return dboxv2.New(dboxv2.WithLocker(locker), dboxv2.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),
-			dboxv2.WithListUTF8(sc.MailboxListUTF8), dboxv2.WithNormalizeNFC(sc.MailboxListNormalizeToNFC))
+			dboxv2.WithListUTF8(sc.MailboxListUTF8))
 	case "mdbox":
 		return mdbox.New(mdbox.WithLocker(locker), mdbox.WithAltStorage(sc.MdboxAltStoragePath),
 			mdbox.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),
-			mdbox.WithListUTF8(sc.MailboxListUTF8), mdbox.WithNormalizeNFC(sc.MailboxListNormalizeToNFC),
+			mdbox.WithListUTF8(sc.MailboxListUTF8),
 			mdbox.WithRotateSize(uint32(quota.ParseSize(sc.MdboxRotateSize))),
 			mdbox.WithRotateInterval(time.Duration(ParseIntervalSeconds(sc.MdboxRotateInterval))*time.Second),
 			mdbox.WithPreallocate(sc.MdboxPreallocateSpace))
 	default:
 		return maildir.New(maildir.WithLocker(locker), maildir.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),
-			maildir.WithListUTF8(sc.MailboxListUTF8), maildir.WithNormalizeNFC(sc.MailboxListNormalizeToNFC))
+			maildir.WithListUTF8(sc.MailboxListUTF8))
 	}
 }
 

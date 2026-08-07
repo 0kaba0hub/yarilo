@@ -13,3 +13,23 @@ import "golang.org/x/text/unicode/norm"
 // addressed in two Unicode forms was one directory in the mail tree and two in
 // each of the others (#1092).
 func NFC(s string) string { return norm.NFC.String(s) }
+
+// NormalizeName returns the NFC form of a folder name, or the name unchanged
+// when skip is set (mailbox_list_normalize_to_nfc = false).
+//
+// This is the one owner of the transformation. It is called once, where a wire
+// name becomes the logical name a session threads to every tree -- mail, index,
+// ACL, FTS -- so path derivation never normalises and there is no second place
+// for the order of NFC-against-escaping to be held by convention (#1113). Path
+// builders below it (FolderSubpathForm, the drivers' disk-name step) take the
+// name as given, already in whichever form this decided.
+//
+// It is placed inside each namespace resolver rather than at each use of the
+// name, so the set that must remember it is "every resolver" -- a small,
+// enumerable set an AST guard can check -- rather than "every use of rel".
+func NormalizeName(name string, skip bool) string {
+	if skip {
+		return name
+	}
+	return NFC(name)
+}

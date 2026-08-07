@@ -29,13 +29,12 @@ import (
 // Backend is the Maildir MailboxBackend factory. Holds only
 // process-wide state (hostname, pid, counter); per-user state lives in userMailbox.
 type Backend struct {
-	hostname     string
-	pid          int
-	counter      atomic.Uint64
-	locker       locks.Locker
-	writeSem     chan struct{} // nil = unlimited
-	listUTF8     bool          // true = UTF-8 on disk (default); false = modified-UTF-7
-	normalizeNFC bool          // true = NFC-normalise folder names (default)
+	hostname string
+	pid      int
+	counter  atomic.Uint64
+	locker   locks.Locker
+	writeSem chan struct{} // nil = unlimited
+	listUTF8 bool          // true = UTF-8 on disk (default); false = modified-UTF-7
 }
 
 // Option configures a Backend at construction time.
@@ -62,9 +61,7 @@ func WithMaxConcurrentWrites(n int) Option {
 // false modified-UTF-7 (RFC 3501 §5.1.3) for legacy installations.
 func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 
-// WithNormalizeNFC enables Unicode NFC normalization of folder names
 // before storage and comparison. Default true.
-func WithNormalizeNFC(v bool) Option { return func(b *Backend) { b.normalizeNFC = v } }
 
 // New creates a Maildir backend.
 func New(opts ...Option) *Backend {
@@ -73,10 +70,9 @@ func New(opts ...Option) *Backend {
 		hostname = "localhost"
 	}
 	b := &Backend{
-		hostname:     hostname,
-		pid:          os.Getpid(),
-		listUTF8:     true,
-		normalizeNFC: true,
+		hostname: hostname,
+		pid:      os.Getpid(),
+		listUTF8: true,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -110,7 +106,6 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		username:         u.Username,
 		owner:            makeOwner(u),
 		listUTF8:         b.listUTF8,
-		normalizeNFC:     b.normalizeNFC,
 	}
 }
 
@@ -137,7 +132,6 @@ type userMailbox struct {
 	username         string
 	owner            string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
 	listUTF8         bool                    // mirrors Backend.listUTF8
-	normalizeNFC     bool                    // mirrors Backend.normalizeNFC
 	mu               sync.Mutex              // in-process fast-path; cross-process barrier is b.locker
 	cache            map[string]*folderCache // keyed by folder name; lazy-initialised
 }
@@ -616,12 +610,6 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 		} else if u.separator != "." {
 			logical = strings.ReplaceAll(logical, ".", u.separator)
 		}
-		// NFC last, mirroring the forward path where it is first: unescaping
-		// after normalising would let a combining mark that follows an escaped
-		// byte compose with the escape's hex and hide the sequence (#1092).
-		if u.normalizeNFC {
-			logical = nfcNormalize(logical)
-		}
 		folders = append(folders, mailbox.FolderEntry{Name: logical, Selectable: true})
 	}
 	return folders, nil
@@ -1062,21 +1050,15 @@ func (u *userMailbox) folderCacheFor(folder string) *folderCache {
 
 // ---- path helpers ----------------------------------------------------------
 
-// folderDiskName maps a logical UTF-8 folder name to the on-disk directory
-// component: NFC normalisation, then modified-UTF-7 when legacy encoding is set.
+// folderDiskName maps a logical folder name to the on-disk directory component:
+// storage-name escaping, then modified-UTF-7 when legacy encoding is set.
+//
+// It does not normalise. NFC is applied once at the name-entry boundary
+// (mailbox.NormalizeName), so folder arrives already in its final form and the
+// order of NFC against escaping -- which lived here and in FolderSubpath both,
+// and broke a name with a combining mark straight after an escape -- no longer
+// exists to get wrong (#1113).
 func (u *userMailbox) folderDiskName(folder string) string {
-	// Normalise, then escape, then encode. #1078 required escaping to precede
-	// modUTF7 -- escaping an already-base64 name is safe only while the escape
-	// character stays out of that alphabet -- and said nothing about where NFC
-	// sits. It has to precede escaping: escaping emits ASCII hex, so a
-	// combining mark after an escaped byte composes with one of the hex digits
-	// and eats the escape ("^" U+0301 "x" -> "^5" é "x"). That both re-splits
-	// the trees this order exists to keep together and breaks the round trip,
-	// since UnescapeStorageName can no longer find the sequence it wrote
-	// (#1092).
-	if u.normalizeNFC {
-		folder = nfcNormalize(folder)
-	}
 	folder = mailbox.EscapeLogicalName(folder, u.separator, ".", u.escapeChar)
 	if !u.listUTF8 {
 		folder = toModUTF7(folder)
@@ -1120,7 +1102,7 @@ func (u *userMailbox) folderPath(folder string) string {
 		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.mailPath, mailbox.FolderSubpathForm("maildir", folder, u.folderDiskName(folder), u.separator, "", !u.normalizeNFC))
+	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator))
 }
 
 // controlFolderPath returns the directory for per-folder control files
@@ -1137,7 +1119,7 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 			return filepath.Join(u.mailPath, invalidFolderMarker)
 		}
 	}
-	sub := mailbox.FolderSubpathForm("maildir", folder, u.folderDiskName(folder), u.separator, "", !u.normalizeNFC)
+	sub := mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator)
 	if u.controlDir != "" {
 		if folder == "INBOX" {
 			return filepath.Join(u.controlDir, "INBOX")

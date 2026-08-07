@@ -83,6 +83,9 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// One owner of NFC on the admin surface too, so a decomposed name from a
+	// tool addresses the same folder a client created (#1113).
+	req.Folder = mailbox.NormalizeName(req.Folder, bundle.info.SkipNFCNormalize)
 
 	exists, err := bundle.box.FolderExists(req.Folder)
 	if err != nil {
@@ -156,6 +159,9 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// One owner of NFC on the admin surface too, so a decomposed name from a
+	// tool addresses the same folder a client created (#1113).
+	req.Folder = mailbox.NormalizeName(req.Folder, bundle.info.SkipNFCNormalize)
 
 	exists, err := bundle.box.FolderExists(req.Folder)
 	if err != nil {
@@ -210,6 +216,8 @@ func (s *Server) handleFolderRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.OldFolder = mailbox.NormalizeName(req.OldFolder, bundle.info.SkipNFCNormalize)
+	req.NewFolder = mailbox.NormalizeName(req.NewFolder, bundle.info.SkipNFCNormalize)
 	srcExists, err := bundle.box.FolderExists(req.OldFolder)
 	if err != nil {
 		apiError(w, "src exists check: "+err.Error(), http.StatusInternalServerError)
@@ -269,6 +277,9 @@ func (s *Server) handleFolderExpunge(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// One owner of NFC on the admin surface too, so a decomposed name from a
+	// tool addresses the same folder a client created (#1113).
+	req.Folder = mailbox.NormalizeName(req.Folder, bundle.info.SkipNFCNormalize)
 
 	exists, err := bundle.box.FolderExists(req.Folder)
 	if err != nil {

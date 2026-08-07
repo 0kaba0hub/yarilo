@@ -52,6 +52,12 @@ func createFolder(t *testing.T, sc config.StorageConfig, name string) string {
 	if err := u.Init(); err != nil {
 		t.Fatal(err)
 	}
+	// Normalisation moved out of the driver to the name-entry boundary
+	// (mailbox.NormalizeName, driven by mailbox_list_normalize_to_nfc). A driver
+	// call bypasses that boundary, so the test applies it here the way a session
+	// resolver does -- otherwise it would assert the driver still owns the
+	// transform, which is exactly what #1113 removed.
+	name = mailbox.NormalizeName(name, !sc.MailboxListNormalizeToNFC)
 	if err := u.Create(name); err != nil {
 		t.Fatal(err)
 	}

@@ -153,7 +153,6 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		GlobalsOnly:       s.srv.opts.ACLGlobalsOnly,
 		CacheTTL:          s.srv.opts.ACLCacheTTL,
 		Global:            s.srv.opts.ACLGlobal,
-		SkipNFCNormalize:  ui.SkipNFCNormalize,
 	}, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,
@@ -198,6 +197,11 @@ func (s *session) dispatch(name string) (*nsHandle, string, error) {
 	if strings.EqualFold(name, "INBOX") {
 		return s.primary, "INBOX", nil
 	}
+	// Normalise the wire name to its final form here, at the one point that
+	// produces the rel every tree is addressed by, so no later use of rel can
+	// see a different spelling than the mail directory holds (#1113). INBOX is
+	// canonical ASCII and returns above.
+	name = s.normaliseName(name)
 
 	// Reject declared-but-unimplemented namespaces first. Iterate the wire
 	// spec list to catch other_users prefixes that opened no handle.
@@ -233,6 +237,14 @@ func (s *session) dispatch(name string) (*nsHandle, string, error) {
 		return best, strings.TrimPrefix(name, bestPrefix), nil
 	}
 	return s.primary, name, nil
+}
+
+// normaliseName applies the deployment's NFC policy to a wire folder name. It
+// is the single owner of the transformation; every other tree takes the name
+// as given (mailbox.NormalizeName).
+func (s *session) normaliseName(name string) string {
+	skip := s.userInfo != nil && s.userInfo.SkipNFCNormalize
+	return mailbox.NormalizeName(name, skip)
 }
 
 // orderedHandles returns the implemented namespace handles in stable order

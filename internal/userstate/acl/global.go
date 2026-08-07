@@ -23,11 +23,6 @@ type Policy struct {
 	// file's mtime+size are re-validated (the acl_cache_ttl knob, default 30s).
 	// Zero disables caching — every read hits the filesystem.
 	CacheTTL time.Duration
-	// SkipNFCNormalize mirrors UserInfo.SkipNFCNormalize: the ACL file has to
-	// land beside the folder the mail driver made, so it derives its path in
-	// the same name form (#1092). Inverted for the same reason -- the zero
-	// value must mean "normalise", since the config key defaults to true.
-	SkipNFCNormalize bool
 }
 
 // Global is the parsed, operator-configured global ACL: rules that apply

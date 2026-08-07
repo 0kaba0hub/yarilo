@@ -157,6 +157,11 @@ func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBacke
 	folders := map[string]*mailbox.Folder{}
 
 	err := walker.Walk(srcHome, func(msg sourceMessage) error {
+		// The migrator is an entry boundary like a protocol: a source folder
+		// name in a decomposed form must land on disk in the same NFC form a
+		// live session would create, since the drivers no longer normalise on
+		// their own (#1113).
+		msg.Folder = mailbox.NormalizeName(msg.Folder, info.SkipNFCNormalize)
 		// Lazy folder create + index OpenFolder.
 		if !createdFolders[msg.Folder] {
 			if err := box.Create(msg.Folder); err != nil {

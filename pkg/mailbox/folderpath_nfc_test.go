@@ -7,67 +7,56 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// One mailbox addressed in two Unicode forms must be one directory in every
-// tree derived from its name. The mail drivers normalised before building their
-// path; the index, volatile, ACL and FTS trees passed the logical name through,
-// so the same mailbox was one directory on the mail side and two on each of the
-// others -- a second UID space and a fresh UIDVALIDITY for the index, a split
-// index for FTS (#1092).
+const (
+	nfcComposed = "Café"  // é as one rune
+	nfcDecomp   = "Café" // e + combining acute
+)
+
+// The path builder no longer normalises: NFC lives at the name-entry boundary
+// now, so FolderSubpathEscaped takes the name exactly as given. Two spellings
+// therefore give two paths here — which is correct, because by the time a name
+// reaches this function it has already been through NormalizeName once.
 //
-// The comparison is of the computed strings, not of directories: macOS
-// normalises names on creation, so a filesystem probe shows the two trees
-// agreeing when the paths do not.
-func TestFolderSubpathIsOneNameInEveryForm(t *testing.T) {
-	const (
-		composed   = "Caf\u00e9"       // é as one rune
-		decomposed = "Cafe\u0301"      // e + combining acute
-		nested     = "Work/Caf\u00e9"  // the same, one level down
-		nestedNFD  = "Work/Cafe\u0301" //
-	)
-	if composed == decomposed {
+// This is the inverse of the old #1092 assertion, and deliberately so: proving
+// the builder is form-preserving is what proves normalisation is not hiding in
+// it as a second owner (#1113).
+func TestFolderSubpathIsFormPreserving(t *testing.T) {
+	if nfcComposed == nfcDecomp {
 		t.Fatal("the two spellings are the same string; the fixture proves nothing")
 	}
+	a := mailbox.FolderSubpathEscaped("maildir", nfcComposed, nfcComposed, "/", "")
+	b := mailbox.FolderSubpathEscaped("maildir", nfcDecomp, nfcDecomp, "/", "")
+	if a == b {
+		t.Errorf("the path builder normalised %q and %q to one path; NFC must live at the boundary, not here", nfcComposed, nfcDecomp)
+	}
+}
 
+// The property that used to belong to the builder now belongs to the boundary
+// plus the builder: normalise first, and the two spellings become one path in
+// every tree. This is what the four trees actually rely on, now expressed
+// through the single owner rather than smuggled into path derivation.
+func TestNormalizeThenSubpathIsOneNameInEveryForm(t *testing.T) {
 	for _, driver := range []string{"maildir", "mdbox", "sdbox"} {
-		for _, pair := range [][2]string{{composed, decomposed}, {nested, nestedNFD}} {
-			a := mailbox.FolderSubpathForm(driver, pair[0], pair[0], "/", "", false)
-			b := mailbox.FolderSubpathForm(driver, pair[1], pair[1], "/", "", false)
-			if a != b {
-				t.Errorf("%s: %q -> %q and %q -> %q; one mailbox, two directories",
-					driver, pair[0], a, pair[1], b)
-			}
-			if !strings.Contains(a, composed) {
-				t.Errorf("%s: %q is not the NFC form: %q", driver, a, composed)
-			}
+		ca := mailbox.NormalizeName(nfcComposed, false)
+		cb := mailbox.NormalizeName(nfcDecomp, false)
+		a := mailbox.FolderSubpathEscaped(driver, ca, ca, "/", "")
+		b := mailbox.FolderSubpathEscaped(driver, cb, cb, "/", "")
+		if a != b {
+			t.Errorf("%s: normalised forms still gave %q and %q", driver, a, b)
+		}
+		if !strings.Contains(a, nfcComposed) {
+			t.Errorf("%s: %q is not the NFC form", driver, a)
 		}
 	}
 }
 
-// With mailbox_list_normalize_to_nfc turned off, the two forms stay apart --
-// the knob still means something, and the fix is not "always normalise".
-func TestFolderSubpathKeepsFormsApartWhenNormalisationIsOff(t *testing.T) {
-	const (
-		composed   = "Caf\u00e9"  // é as one rune
-		decomposed = "Cafe\u0301" // e + combining acute
-	)
-	a := mailbox.FolderSubpathForm("maildir", composed, composed, "/", "", true)
-	b := mailbox.FolderSubpathForm("maildir", decomposed, decomposed, "/", "", true)
-	if a == b {
-		t.Errorf("normalisation is disabled and both forms still gave %q", a)
+// NormalizeName is the knob: skip leaves the name exactly as written, so a
+// deployment with mailbox_list_normalize_to_nfc off keeps the two forms apart.
+func TestNormalizeNameHonoursTheSkipFlag(t *testing.T) {
+	if got := mailbox.NormalizeName(nfcDecomp, false); got != nfcComposed {
+		t.Errorf("normalise on: %q, want the composed form", got)
 	}
-}
-
-// The default path -- what a caller that passes no form gets -- normalises,
-// because the config key defaults to true and the zero value has to agree with
-// it. A field spelled NormalizeNFC would have made every caller that forgot it
-// disable normalisation silently, which is the defect, not the fix.
-func TestFolderSubpathDefaultsToNormalising(t *testing.T) {
-	const (
-		composed   = "Caf\u00e9"  // é as one rune
-		decomposed = "Cafe\u0301" // e + combining acute
-	)
-	if got, want := mailbox.FolderSubpathEscaped("maildir", decomposed, decomposed, "/", ""),
-		mailbox.FolderSubpathEscaped("maildir", composed, composed, "/", ""); got != want {
-		t.Errorf("default form gave %q for NFD and %q for NFC", got, want)
+	if got := mailbox.NormalizeName(nfcDecomp, true); got != nfcDecomp {
+		t.Errorf("normalise off: %q, want the decomposed form unchanged", got)
 	}
 }
