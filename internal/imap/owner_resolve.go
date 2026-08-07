@@ -45,11 +45,17 @@ func resolveOwnerUserInfo(
 	if owner == "" {
 		return nil, fmt.Errorf("imap: empty owner")
 	}
-	ownerUI, err := lookup(ctx, owner)
-	if err != nil || ownerUI == nil {
+	found, err := lookup(ctx, owner)
+	if err != nil || found == nil {
 		// A userdb miss is the answer: no such user, so no such owner.
 		return nil, fmt.Errorf("imap: owner %q not found: %w", owner, err)
 	}
+	// Copy before mutating: this function overwrites Home/MailPath/Separator, and
+	// a lookup that ever returns a shared pointer (a cache) would otherwise have
+	// its entry rewritten under it. Safe regardless of what the lookup returns
+	// -- the on-demand cache stores the resolved result, not this input.
+	uiCopy := *found
+	ownerUI := &uiCopy
 
 	// Root from the namespace location, expanded against the owner.
 	loc, ok, perr := mailbox.ParseLocation(spec.Location, ownerUI)

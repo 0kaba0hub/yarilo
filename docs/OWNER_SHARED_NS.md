@@ -190,9 +190,14 @@ dispatch(name):
 - **fileindex**: the cache-key fix from #503 (index keyed by resolved storage
   root, not username alone) already makes distinct owners get distinct index
   state — a prerequisite this design depends on.
-- **Bound**: cap the per-session owner-handle cache (e.g. 64) with LRU
-  eviction + close, so a session that walks thousands of owners does not grow
-  unbounded. `log()` an eviction at debug.
+- **Bound**: the per-session owner-handle cache is capped (v1: 64). When full,
+  one cached handle is evicted and closed so a session walking many owners does
+  not grow unbounded. v1 evicts an arbitrary entry (insertion order), not strict
+  LRU — enough as a memory cap; a hot owner re-resolved after eviction costs one
+  userdb lookup. The cache stores the **resolved handle**, not the userdb lookup
+  response, and `resolveOwnerUserInfo` copies the looked-up `UserInfo` before
+  mutating it, so a future lookup cache that returned a shared pointer could not
+  have its entry rewritten under it.
 
 ### 3.5 ACL owner tier
 

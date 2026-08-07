@@ -73,6 +73,16 @@ namespaces:
     list: true
     subscriptions: false
     location: "maildir:/var/mail/vhosts/public"
+  # Owner-templated shared namespace (B1): user/<owner>/ resolves the owner via
+  # userdb and opens the owner's own store. The driver comes from the owner's
+  # userdb mail_location (so the mdbox/maildir/sdbox matrix is honoured); the
+  # root is this location expanded against the owner. %h -> the owner's home.
+  - type: shared
+    prefix: "user/%u/"
+    separator: "/"
+    list: true
+    subscriptions: false
+    location: "maildir:%h/Maildir"
 
 storage:
   volatileDir: "/tmp/yarilo-volatile/%d/%n"

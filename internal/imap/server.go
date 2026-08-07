@@ -228,6 +228,18 @@ const (
 
 // New creates an IMAP server.
 func New(opts Options) *Server {
+	// A declared owner-templated namespace that cannot resolve an owner is the
+	// #1132 config error one layer up: without UserdbLookup wired, every
+	// SELECT user/... would fail at runtime with an internals message. Fail at
+	// startup instead, with the reason named -- the pod crashes loudly rather
+	// than serving a namespace it can never open (docs/OWNER_SHARED_NS.md 3.3).
+	for _, ns := range opts.Namespaces {
+		if mailbox.PrefixIsOwnerTemplated(ns.Prefix) && opts.UserdbLookup == nil {
+			panic(fmt.Sprintf("imap: namespace %q is owner-templated but no userdb lookup is wired; "+
+				"owner-templated namespaces need a configured auth master to resolve the owner", ns.Prefix))
+		}
+	}
+
 	s := &Server{
 		opts:         opts,
 		wardenClient: newImapWardenClient(opts.WardenAddr, opts.WardenTLS),
@@ -500,6 +512,9 @@ type session struct {
 	namespaces map[string]*nsHandle
 	// primary is the personal namespace handle; equals namespaces[""].
 	primary *nsHandle
+	// ownerHandles caches owner-templated namespace handles built on demand,
+	// keyed by prefix + owner. Bounded and closed at teardown (dispatch.go).
+	ownerHandles map[string]*nsHandle
 	// folderNS is the namespace handle of the selected folder, captured at
 	// SELECT so folder-bound ops route without re-parsing the name. Nil
 	// means s.primary.
