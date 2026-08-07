@@ -187,11 +187,7 @@ func subsFileFor(spec config.NamespaceConfig) string {
 	if spec.Type == "personal" {
 		return "subscriptions"
 	}
-	slug := strings.ToLower(strings.TrimSuffix(spec.Prefix, "/"))
-	if slug == "" {
-		slug = strings.ToLower(spec.Type)
-	}
-	return "subscriptions-" + slug
+	return "subscriptions-" + mailbox.NamespaceFileSlug(spec.Prefix, spec.Separator, spec.Type)
 }
 
 // mailboxForUser returns the MailboxBackend that matches the driver in

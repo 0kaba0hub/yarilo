@@ -40,3 +40,26 @@ func TestValidateOwnerTemplatedNamespace(t *testing.T) {
 		})
 	}
 }
+
+// Two namespaces whose prefixes reduce to one on-disk name would share a
+// subscriptions file and show each other's subscriptions. Startup names the
+// pair instead (#1159).
+func TestValidateNamespaceTypes_RejectsCollidingFileSlugs(t *testing.T) {
+	err := ValidateNamespaceTypes([]NamespaceConfig{
+		{Type: "shared", Prefix: "Public/Team/", Separator: "/"},
+		{Type: "shared", Prefix: "Public-Team/", Separator: "/"},
+	})
+	if err == nil {
+		t.Fatal("colliding on-disk names accepted; want a startup error")
+	}
+	if !strings.Contains(err.Error(), "public-team") {
+		t.Errorf("error does not name the collision: %v", err)
+	}
+	// Distinct names still pass.
+	if err := ValidateNamespaceTypes([]NamespaceConfig{
+		{Type: "shared", Prefix: "Public/", Separator: "/"},
+		{Type: "shared", Prefix: "Shared/", Separator: "/"},
+	}); err != nil {
+		t.Errorf("distinct namespaces rejected: %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package imap_test
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -95,5 +96,25 @@ func TestOwnerTemplated_OwnerStillWritesTheirOwnSpace(t *testing.T) {
 	}
 	if err := a.Subscribe("user/alice/Own").Wait(); err != nil {
 		t.Errorf("owner SUBSCRIBE in her own space: %v", err)
+	}
+}
+
+// The per-namespace subscriptions file must be a FILE. The slug came from the
+// client-visible prefix, so "user/%u/" made "subscriptions-user/%u" -- a
+// directory named subscriptions-user holding a file named from an unexpanded
+// template (#1159).
+func TestOwnerTemplated_SubscriptionsFileIsAFileNotAPath(t *testing.T) {
+	root, dial := ownerTemplatedServer(t)
+	a := dial("alice")
+	if err := a.Subscribe("user/alice/INBOX").Wait(); err != nil {
+		t.Fatalf("owner subscribe: %v", err)
+	}
+	store := filepath.Join(root, "alice", "Maildir")
+	st, err := os.Stat(filepath.Join(store, "subscriptions-user"))
+	if err != nil {
+		t.Fatalf("per-namespace subscriptions file missing: %v", err)
+	}
+	if st.IsDir() {
+		t.Error("the subscriptions slug was taken as a path: it created a directory where a file was intended (#1159)")
 	}
 }

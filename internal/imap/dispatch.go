@@ -111,7 +111,7 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 			if !ok {
 				continue
 			}
-			subsFile := "subscriptions-" + nsSlug(spec)
+			subsFile := "subscriptions-" + mailbox.NamespaceFileSlug(spec.Prefix, string(spec.Separator), string(spec.Type))
 			// MailPath as well as Home, plus driver and modifiers, so the
 			// mailbox backend, fileindex and ACL store resolve to one root;
 			// otherwise the ACL store (falls back to Home) and a maildir
@@ -412,7 +412,7 @@ func (s *session) ownerHandle(spec NamespaceSpec, owner string) (*nsHandle, erro
 	if err != nil {
 		return nil, err
 	}
-	subsFile := "subscriptions-" + nsSlug(spec)
+	subsFile := "subscriptions-" + mailbox.NamespaceFileSlug(spec.Prefix, string(spec.Separator), string(spec.Type))
 	h, err := s.openHandle(spec, nsSlug(spec), ownerUI, s.owner(ownerUI.Username), subsFile)
 	if err != nil {
 		return nil, err

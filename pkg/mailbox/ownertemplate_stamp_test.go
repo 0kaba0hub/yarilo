@@ -1,6 +1,9 @@
 package mailbox
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // StampOwnerLocation must take the root and driver from the owner's userdb
 // UserInfo and let the namespace template fill only the gaps. The distinguishing
@@ -46,4 +49,34 @@ func TestStampOwnerLocation(t *testing.T) {
 			t.Error("empty location accepted; want an error")
 		}
 	})
+}
+
+func TestNamespaceFileSlug(t *testing.T) {
+	cases := []struct{ prefix, sep, nsType, want string }{
+		// The common shapes are unchanged, so no deployment renames a file it
+		// already has.
+		{"Public/", "/", "shared", "public"},
+		{"Shared/", "/", "shared", "shared"},
+		{"", "/", "personal", "personal"},
+		// A separator inside the prefix must not become a path (#1159).
+		{"Public/Team/", "/", "shared", "public-team"},
+		{"Shared.Team.", ".", "shared", "shared-team"},
+		// Everything from the first variable is dropped: it varies per user,
+		// while this names a file inside one store.
+		{"user/%u/", "/", "shared", "user"},
+		{"people/%u/", "/", "shared", "people"},
+		// A prefix that is nothing but a variable falls back to the type.
+		{"%u/", "/", "shared", "shared"},
+	}
+	for _, c := range cases {
+		if got := NamespaceFileSlug(c.prefix, c.sep, c.nsType); got != c.want {
+			t.Errorf("NamespaceFileSlug(%q, %q, %q) = %q, want %q", c.prefix, c.sep, c.nsType, got, c.want)
+		}
+	}
+	// Whatever the prefix, the result is one path segment.
+	for _, p := range []string{"a/b/c/", "x\\y/", "user/%u/", "Public/Team/Sub/"} {
+		if got := NamespaceFileSlug(p, "/", "shared"); strings.ContainsAny(got, `/\`) {
+			t.Errorf("NamespaceFileSlug(%q) = %q, which is a path, not a filename", p, got)
+		}
+	}
 }
