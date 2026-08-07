@@ -312,7 +312,53 @@ func ParseACL(r io.Reader) (ACL, error) {
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("mailbox/acl: read: %w", err)
 	}
-	return out, nil
+	return out.Collapse(), nil
+}
+
+// Collapse reduces the ACL to one entry per (identifier, sign): the last line
+// for an identifier is the one that counts, in the position the first one held.
+//
+// Last wins rather than union, because a line is a statement about an
+// identifier and the later statement is the current one -- the same thing a
+// write means. Union would preserve every grant ever appended, which is the
+// behaviour that made reduction impossible: "lrskxa" followed by "lr" would
+// still resolve to "lrskxa". It also errs towards fewer rights when a file is
+// ambiguous, which is the direction to err in.
+//
+// Duplicates were legal on disk and unioned at evaluation time, which made a
+// write path that appended instead of replacing look like it worked: granting
+// "lr" and then "sk" resolved to "lrsk", and an attempt to reduce "lrskxa" to
+// "lr" resolved to "lrskxa" -- so an ACL could only ever widen, and the only
+// trace was a second line in a file nobody opens (#1114).
+//
+// Collapsing at parse rather than at write means it holds for files written by
+// any past version, by hand, or by a tool we do not own, instead of only for
+// the writes we control.
+//
+// The two signs stay separate entries -- the file format has no single line
+// carrying both -- but there is now at most one of each per identifier, so the
+// negative mask for an identifier is decided by one entry rather than by how
+// many lines happen to mention it and in what order.
+func (acl ACL) Collapse() ACL {
+	if len(acl) < 2 {
+		return acl
+	}
+	type key struct {
+		id       Identifier
+		negative bool
+	}
+	at := make(map[key]int, len(acl))
+	out := make(ACL, 0, len(acl))
+	for _, e := range acl {
+		k := key{e.Identifier, e.Negative}
+		if i, seen := at[k]; seen {
+			out[i].Rights = e.Rights
+			continue
+		}
+		at[k] = len(out)
+		out = append(out, e)
+	}
+	return out
 }
 
 // ParseACLString is a convenience wrapper for tests and CLI input.
@@ -387,6 +433,16 @@ func aclTier(t IdentifierType) int {
 // are returned separately so a global ACL can be merged at the right precedence
 // (see EffectiveWithGlobal); Effective itself is pos.Remove(neg).
 func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, neg Rights, matched bool) {
+	pos, neg, matched, _ = acl.effectiveMasksSigned(user, groups, isOwner)
+	return pos, neg, matched
+}
+
+// effectiveMasksSigned is effectiveMasks plus whether a positive entry matched.
+// A caller layering one ACL over another needs to know whether the upper layer
+// spoke about the positive mask: a global entry that only revokes must not
+// blank the positive rights the local ACL granted, while one that grants must
+// replace them (#1117).
+func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) (pos, neg Rights, matched, posMatched bool) {
 	groupSet := makeGroupSet(groups)
 
 	type match struct {
@@ -412,9 +468,24 @@ func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, 
 		}
 		matches = append(matches, match{aclTier(e.Identifier.Type), e.Rights, e.Negative})
 	}
-	// Owner default: full positive rights at the owner tier when no explicit
-	// owner-tier entry exists.
 	if isOwner {
+		// The owner skips every entry below the owner tier (2.4:
+		// acl-api.c:323-338). Evaluating them is equivalent for positives --
+		// the owner tier replaces them -- and wrong for negatives: the owner's
+		// implicit record carries none, and a record without negatives does not
+		// reset the mask inherited from a lower tier. So "-anyone a" stripped
+		// the administer right from the mailbox owner (#1117).
+		kept := matches[:0]
+		for _, m := range matches {
+			if m.tier < tierOwner {
+				continue
+			}
+			kept = append(kept, m)
+		}
+		matches = kept
+
+		// Owner default: full positive rights at the owner tier when no
+		// explicit owner-tier entry exists.
 		hasOwnerTier := false
 		for _, m := range matches {
 			if m.tier == tierOwner {
@@ -427,45 +498,61 @@ func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, 
 		}
 	}
 	if len(matches) == 0 {
-		return "", "", false
+		return "", "", false, false
 	}
 	sort.SliceStable(matches, func(i, j int) bool { return matches[i].tier < matches[j].tier })
 
+	// Each mask keeps its own tier boundary. A single prevTier shared by the
+	// two streams let whichever sign came first at a tier eat the boundary, so
+	// the second merged with the tier below instead of replacing it -- and
+	// which sign came first was decided by Sorted()'s file order, so our own
+	// files took the wrong branch (#1117).
 	var myPos, myNeg Rights
-	prevTier := -1
+	prevPosTier, prevNegTier := -1, -1
 	for _, m := range matches {
-		boundary := m.tier != prevTier
 		if m.negative {
-			if boundary {
+			if m.tier != prevNegTier {
 				myNeg = Rights("").Add(m.rights) // REPLACE (canonicalised)
 			} else {
 				myNeg = myNeg.Add(m.rights)
 			}
+			prevNegTier = m.tier
 		} else {
-			if boundary {
+			if m.tier != prevPosTier {
 				myPos = Rights("").Add(m.rights) // REPLACE (canonicalised)
 			} else {
 				myPos = myPos.Add(m.rights)
 			}
+			prevPosTier = m.tier
 		}
-		prevTier = m.tier
 	}
-	return myPos, myNeg, true
+	return myPos, myNeg, true, prevPosTier >= 0
 }
 
-// EffectiveWithGlobal resolves rights from a local ACL and a global ACL with
-// the global taking precedence: global positives add on top of the local
-// result and global negatives revoke even locally-granted rights. When any
-// global entry matches the user, local negative rights are reset so they
-// cannot undermine a global grant. The owner default (full rights) flows
-// through the local masks, and a matching global entry can still override it.
+// EffectiveWithGlobal resolves rights from a local ACL and a global ACL, with
+// the global ACL forming a tier ladder above the local one: a matching global
+// entry REPLACES the local result rather than adding to it, and the local
+// negative mask is reset at the first global match so local negatives cannot
+// undermine a global grant (2.4: acl-rights.c:251-254, acl-api.c:364-369).
+//
+// It used to be `lpos.Add(gpos).Remove(gneg)`, which failed open twice over:
+// global positives added to local ones, and every local negative was discarded
+// whenever any global entry matched. So a local "-user=alice a" plus an
+// unrelated global "anyone l" re-granted alice the administer right (#1117).
 func EffectiveWithGlobal(local, global ACL, user string, groups []string, isOwner bool) Rights {
 	lpos, lneg, _ := local.effectiveMasks(user, groups, isOwner)
-	gpos, gneg, gmatched := global.effectiveMasks(user, groups, false)
-	if gmatched {
-		return lpos.Add(gpos).Remove(gneg)
+	gpos, gneg, gmatched, gposMatched := global.effectiveMasksSigned(user, groups, false)
+	if !gmatched {
+		return lpos.Remove(lneg)
 	}
-	return lpos.Remove(lneg)
+	// First global match resets the local negatives, so they cannot undermine
+	// a global grant. Then each mask the globals spoke about replaces the local
+	// one; a global that only revokes leaves the local positives standing.
+	pos := lpos
+	if gposMatched {
+		pos = gpos
+	}
+	return pos.Remove(gneg)
 }
 
 // makeGroupSet builds a fast-lookup set from a groups slice.

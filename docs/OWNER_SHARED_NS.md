@@ -542,6 +542,52 @@ written with a wildcard would quietly reintroduce what the interface withholds.
 
 Tracked as #1111.
 
+### 7.4 Duplicate ACL entries: last statement wins, not union
+
+An ACL file holds at most one entry per identifier per sign. Duplicates are
+collapsed when the file is read and when it is written, and where two lines name
+one identifier with one sign the later line is the one that counts.
+
+This is a deliberate divergence from the reference, which merges duplicate
+records (`acl_right_names_merge`, `acl-api.c:262-266`). The histories differ, and
+so the default does: our duplicate corpus is machine-generated — by a CLI that
+appended instead of replacing — where the later line is literally the write the
+operator asked for; a Dovecot file acquires a duplicate only from hand-editing,
+where merging is the kinder reading. Union was also the behaviour that made an
+ACL impossible to reduce, so merging would have fixed the accumulation and kept
+the defect.
+
+The consequence to keep in mind once the write path no longer appends: the only
+remaining source of a duplicate is hand-editing, and there last-wins silently
+drops rights an operator listed on purpose — `user=alice lr` then
+`user=alice s` resolves to `s` here and to `lrs` in Dovecot. That is an accepted
+trade today; it is written down so it is not later rediscovered as a bug.
+
+### 7.5 Evaluation order and the storage-name byte layout
+
+Two more places yarilo and the reference reach the same result by different
+means, recorded so a migration does not read them as faults:
+
+- **Rights evaluation is equivalent, the record shape is not.** The reference
+  folds an identifier's positive and negative rights into one record and decides
+  the tier boundary once; yarilo keeps them as separate lines and decides the
+  boundary once per sign. Same answer, including the owner short-circuit, the
+  global-over-local ladder and negative subtraction — but a yarilo ACL file lists
+  a negative on its own line where a Dovecot one carries it in the identifier's
+  record.
+
+- **Escape-before-encode is the reverse of the reference, and it is a
+  byte-compatibility boundary.** yarilo escapes the storage name and then
+  encodes to modified UTF-7; the reference encodes first and escapes second
+  (`mailbox-list.c:316-343`), which it can because its escaper is mUTF-7-aware.
+  Both are self-consistent, but a folder name containing **both** a non-ASCII
+  character and the escape character is stored as different bytes on disk under
+  the two. A store migrated from Dovecot is not byte-identical for such a name;
+  it must be re-derived through yarilo, not copied. This belongs in the migration
+  runbook, not in a code change.
+
+Tracked as #1117.
+
 ---
 
 ## 8. Testing plan

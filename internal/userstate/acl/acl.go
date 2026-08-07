@@ -441,6 +441,11 @@ func (s *Store) loadLocked(folder string) (mailbox.ACL, error) {
 }
 
 func (s *Store) writeAtomicLocked(folder string, acl mailbox.ACL) error {
+	// Collapsed on the way out as well as on the way in: reading a file
+	// normalises it, but a caller that assembled duplicates in memory would
+	// otherwise write them and have them read back merged -- the file and what
+	// the caller believes it wrote would differ (#1114).
+	acl = acl.Collapse()
 	dst := s.Path(folder)
 	dir := filepath.Dir(dst)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

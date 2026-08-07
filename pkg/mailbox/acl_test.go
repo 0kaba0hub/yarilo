@@ -567,9 +567,23 @@ func TestACL_EffectiveWithGlobal(t *testing.T) {
 		{"global negative overrides even the owner", ACL{u("bob", "lr", false)}, ACL{anyone("lr", true)}, "bob", true, ""},
 		{"global only, no local", nil, ACL{u("bob", "lr", false)}, "bob", false, "lr"},
 		{"local only, global does not match", ACL{u("bob", "lr", false)}, ACL{u("carol", "lrswi", false)}, "bob", false, "lr"},
-		{"global adds on top of local", ACL{u("bob", "lr", false)}, ACL{anyone("i", false)}, "bob", false, "lri"},
+		// A matching global positive REPLACES the local mask rather than adding
+		// to it: the globals are a tier ladder above the local ACL, not a
+		// second opinion merged into it. This case used to expect "lri" and
+		// that expectation was the defect written down (#1117).
+		{"global positive replaces the local grant", ACL{u("bob", "lr", false)}, ACL{anyone("i", false)}, "bob", false, "i"},
 		{"global negative revokes a local grant", ACL{u("bob", "lrs", false)}, ACL{u("bob", "s", true)}, "bob", false, "lr"},
-		{"global matching resets local negative", ACL{anyone("lr", true), u("bob", "lr", false)}, ACL{anyone("i", false)}, "bob", false, "lri"},
+		{"global matching resets local negative", ACL{anyone("lr", true), u("bob", "lr", false)}, ACL{anyone("i", false)}, "bob", false, "i"},
+		// The half that fails open, and the reason this one is worth fixing
+		// first: a local negative used to be discarded whenever ANY global
+		// entry matched, so an unrelated global grant re-granted what the
+		// mailbox had explicitly revoked.
+		{"an unrelated global does not re-grant what the local ACL revoked",
+			ACL{u("alice", "lra", false), u("alice", "a", true)}, ACL{anyone("l", false)}, "alice", false, "l"},
+		// A global that only revokes leaves the local positives standing: it
+		// spoke about the negative mask, so only that mask is replaced.
+		{"global negative alone does not blank the local grant",
+			ACL{u("bob", "lrs", false)}, ACL{anyone("s", true)}, "bob", false, "lr"},
 		{"neither local nor global", nil, nil, "bob", false, ""},
 	}
 	for _, tc := range tests {
