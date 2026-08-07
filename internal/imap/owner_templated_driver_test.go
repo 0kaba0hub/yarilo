@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -127,4 +128,82 @@ func TestOwnerTemplated_OpensOwnersDriverNotTheTemplate(t *testing.T) {
 func dirExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.IsDir()
+}
+
+// MailboxByDriver builds a backend (mdbox.New(...) etc.), each with its own
+// write semaphore. It must run once per driver per process, not once per handle:
+// otherwise a session touching many owners holds many independent write budgets
+// and max_concurrent_writes stops limiting the shared volume (#1144). Two owners
+// on the same driver -- across two sessions -- must share one built backend.
+func TestOwnerTemplated_BackendBuiltOncePerDriver(t *testing.T) {
+	root := t.TempDir()
+	var mu sync.Mutex
+	builds := map[string]int{}
+	lookup := func(_ context.Context, owner string) (*mailboxpkg.UserInfo, error) {
+		if owner == "alice" || owner == "carol" {
+			home := filepath.Join(root, owner)
+			return &mailboxpkg.UserInfo{Username: owner, Home: home, MailPath: filepath.Join(home, "mdbox"), Driver: "mdbox"}, nil
+		}
+		return nil, &notFoundError{owner}
+	}
+	byDriver := func(d string) mailboxpkg.MailboxBackend {
+		mu.Lock()
+		builds[d]++
+		mu.Unlock()
+		if d == "mdbox" {
+			return mdbox.New()
+		}
+		return nil
+	}
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:         maildir.New(),
+		MailboxByDriver: byDriver,
+		Index:           file.New(),
+		Resolver:        &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"},
+		Auth:            &enforcePassdb{users: map[string]string{"alice": "pw", "carol": "pw"}},
+		ACLEnabled:      true,
+		UserdbLookup:    lookup,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "user/%u/", Separator: '/', List: true, Location: "maildir:%h/Maildir"},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+
+	dial := func(user string) *imapclient.Client {
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		c := imapclient.New(conn, nil)
+		if err := c.WaitGreeting(); err != nil {
+			t.Fatalf("greeting: %v", err)
+		}
+		if err := c.Login(user, "pw").Wait(); err != nil {
+			t.Fatalf("login %q: %v", user, err)
+		}
+		return c
+	}
+
+	// Two owners, same driver, two sessions -- each opens its own owner handle.
+	for _, u := range []string{"alice", "carol"} {
+		c := dial(u)
+		if _, err := c.Select("user/"+u+"/INBOX", nil).Wait(); err != nil {
+			t.Fatalf("%s SELECT own templated INBOX: %v", u, err)
+		}
+		c.Logout().Wait() //nolint:errcheck
+	}
+
+	mu.Lock()
+	n := builds["mdbox"]
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("mdbox backend built %d times across two owner handles, want 1 (the write semaphore must be shared)", n)
+	}
 }
