@@ -58,6 +58,31 @@ docker run --rm dovecot/imaptest \
   count=5
 ```
 
+## What the deployment gate does not cover, on purpose
+
+`mailbox_list_storage_escape_char` is unset in the committed sandbox values, so
+the storage-name escaping path is not exercised by any routine rollout gate.
+This is deliberate, and it is written here so the gap is not later mistaken for
+an oversight and patched with a second mechanism.
+
+The escaping path — and the NFC-against-escaping interaction that #1113 turned
+into a form-preserving property — is covered by unit tests that assert on
+computed strings, plus one end-to-end IMAP test with a `t.Skip` precondition:
+it needs a filesystem that does not compose names on creation, so it skips on
+macOS (APFS) and carries the weight on the CI runners (self-hosted Linux, which
+production also is). CI covers exactly what the gate no longer does.
+
+This is the same shape as two earlier blind spots — a build tag the compiler
+never sees, a deployment flag the tests never run — a config key that is off by
+default, so the enabled path is walked nowhere routine. The resolution is the
+same: the discipline lives where the path is actually taken, which for escaping
+is the CI unit and skip-guarded integration tests, not the sandbox gate.
+
+If deployment-level coverage is ever wanted, the cheap way is not to enable
+escaping in the committed values — it changes on-disk names for every folder —
+but to add one gate run with `--set storage.mailbox_list_storage_escape_char=^`
+alongside the default run.
+
 ## Load tests
 
 [yarilo-loadtest](https://github.com/yarilomail/yarilo-loadtest) is the load
