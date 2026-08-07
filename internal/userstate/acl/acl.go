@@ -15,6 +15,7 @@ package acl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -243,10 +244,16 @@ func (s *Store) checkInsideRoot(folder string) error {
 	return mailbox.GuardDestructivePath(s.mailboxesRoot(), s.Path(folder))
 }
 
-// Set replaces a folder's ACL. It is Update with a constant function, so the
-// file write and the yarilo-acl-list update live in exactly one place -- there
-// is no second write path that can forget the index (#1147). A nil acl is "no
-// change"; clear a folder by passing an empty (non-nil) ACL.
+// errACLFileCorrupt marks a load failure as an unparseable file (#1140 p.5: one
+// bad line fails the whole file) rather than an I/O error, so a write can choose
+// to repair it -- see Update.
+var errACLFileCorrupt = errors.New("acl file is corrupt")
+
+// Set replaces a folder's ACL. It is Update with a constant function, so file
+// and index are written in one place (see Update for the nil / removal
+// semantics). The constant ignores the current value, so Set repairs a folder
+// whose file is corrupt -- Update does not require the load to succeed for a
+// function that produces a concrete result.
 func (s *Store) Set(folder string, acl mailbox.ACL) error {
 	return s.Update(folder, func(mailbox.ACL) (mailbox.ACL, error) { return acl, nil })
 }
@@ -408,27 +415,39 @@ func (s *Store) Update(folder string, fn func(mailbox.ACL) (mailbox.ACL, error))
 	}
 	err := s.withLock(folder, func() error {
 		current, err := s.loadLocked(folder)
+		var corruptErr error
 		if err != nil {
-			return err
+			if !errors.Is(err, errACLFileCorrupt) {
+				return err // an I/O error, not corruption: do not clobber the file
+			}
+			// A corrupt file is unreadable to the evaluator too, so the mailbox
+			// is already inaccessible. Offer it to fn as empty: a function that
+			// produces a concrete result (Set, SETACL) then repairs it. Remember
+			// the error for the case where fn declines to.
+			corruptErr, current = err, nil
 		}
 		next, err := fn(current)
 		if err != nil {
 			return err
 		}
 		if next == nil {
-			return nil
+			// No change. If the file was corrupt and fn did not replace it, the
+			// corruption stands -- surface it rather than a silent OK.
+			return corruptErr
 		}
 		if err := s.writeAtomicLocked(folder, next); err != nil {
 			return err
 		}
 		// Same lock as the file: the yarilo-acl-list index (a separate lock of
-		// its own) is updated before this critical section ends, so the window
-		// where the file changed and the index has not is closed.
+		// its own) is updated before this critical section ends, so no reader
+		// sees the file changed and the index not.
 		return s.ListUpdate(folder, next)
 	})
-	if err == nil {
-		s.invalidate(folder)
-	}
+	// Invalidate whenever the file may have been written -- including when
+	// ListUpdate failed after the file write, so the cache does not keep serving
+	// the pre-write rights on the call that reported the error. A no-op reload is
+	// harmless.
+	s.invalidate(folder)
 	return err
 }
 
@@ -447,7 +466,7 @@ func (s *Store) loadLocked(folder string) (mailbox.ACL, error) {
 	defer f.Close()
 	acl, err := mailbox.ParseACL(f)
 	if err != nil {
-		return nil, fmt.Errorf("userstate/acl: parse %s: %w", path, err)
+		return nil, fmt.Errorf("userstate/acl: parse %s: %w: %w", path, errACLFileCorrupt, err)
 	}
 	return acl, nil
 }
@@ -542,7 +561,7 @@ func (s *Store) loadFrom(path string) (mailbox.ACL, error) {
 	defer f.Close()
 	acl, err := mailbox.ParseACL(f)
 	if err != nil {
-		return nil, fmt.Errorf("userstate/acl: parse %s: %w", path, err)
+		return nil, fmt.Errorf("userstate/acl: parse %s: %w: %w", path, errACLFileCorrupt, err)
 	}
 	return acl, nil
 }
