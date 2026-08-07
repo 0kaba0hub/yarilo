@@ -369,8 +369,13 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	return store, &req, present, adminNamespaceOwner(bundle.spec, uc.info.Username), nil
 }
 
-// adminNamespaceOwner mirrors the IMAP dispatcher's h.owner: the account for its
-// own personal or owner-templated namespace, nobody for a fixed shared one.
+// adminNamespaceOwner returns the owner this request addresses: the request
+// account for a personal or owner-templated namespace, nobody for a fixed shared
+// one. Not the IMAP dispatcher's h.owner -- this path never resolves a foreign
+// instance (it has no path-derived owner and no userdb lookup), so the owner is
+// always the request account where there is one. That holds only because %u
+// expands to the request account here; the admin path does not implement B1
+// owner-templated resolution (#1142).
 func adminNamespaceOwner(spec config.NamespaceConfig, account string) string {
 	if spec.Type == "personal" || mailbox.PrefixIsOwnerTemplated(spec.Prefix) {
 		return account
