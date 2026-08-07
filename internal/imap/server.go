@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	imaplib "github.com/emersion/go-imap/v2"
@@ -45,6 +46,34 @@ type Server struct {
 	srv          *imapserver.Server
 	opts         Options
 	wardenClient *imapWardenClient
+
+	// mailboxByDriver memoises Options.MailboxByDriver per process: it BUILDS a
+	// backend (mdbox.New(...) etc.), each with its own write semaphore, so
+	// calling it per handle would give a session touching N owners N independent
+	// write budgets and defeat max_concurrent_writes -- the semaphore must limit
+	// the process, not the connection (#1144).
+	mailboxByDriverMu    sync.Mutex
+	mailboxByDriverCache map[string]mailbox.MailboxBackend
+}
+
+// backendForDriver returns the process-wide MailboxBackend for driver, building
+// it once via Options.MailboxByDriver and reusing it thereafter so its write
+// semaphore stays shared. A nil result (unknown driver) is cached too.
+func (s *Server) backendForDriver(driver string) mailbox.MailboxBackend {
+	if s.opts.MailboxByDriver == nil {
+		return nil
+	}
+	s.mailboxByDriverMu.Lock()
+	defer s.mailboxByDriverMu.Unlock()
+	if b, ok := s.mailboxByDriverCache[driver]; ok {
+		return b
+	}
+	b := s.opts.MailboxByDriver(driver)
+	if s.mailboxByDriverCache == nil {
+		s.mailboxByDriverCache = make(map[string]mailbox.MailboxBackend)
+	}
+	s.mailboxByDriverCache[driver] = b
+	return b
 }
 
 // Options configures the IMAP server.
@@ -431,11 +460,6 @@ type session struct {
 	box  mailbox.UserMailbox
 	idx  mailbox.UserIndex
 	subs *subs.Store
-
-	// personalMailbox overrides Options.Mailbox for the personal namespace
-	// when the user's mail_location driver differs from the server default.
-	// Nil means use the global default.
-	personalMailbox mailbox.MailboxBackend
 
 	limitIP string
 	folder  *mailbox.Folder
@@ -928,14 +952,13 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	}
 
 	// Stamp the per-user driver + INDEX=/CONTROL=/ALT=/VOLATILEDIR=
-	// modifiers via the shared resolver (same parse as POP3 and LMTP).
-	// personalMailbox stays nil for the global driver, so dispatch falls
-	// through to the global backend.
+	// modifiers via the shared resolver (same parse as POP3 and LMTP). The
+	// backend is then chosen from userInfo.Driver at handle-open time
+	// (mailboxBackendFor), so nothing is precomputed here.
 	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
 		slog.Warn("imap: mail_location parse failed; using global mailbox backend",
 			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)
 	}
-	s.personalMailbox = mailbox.SelectPersonalBackend(nil, s.srv.opts.MailboxByDriver, userInfo.Driver)
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
 		ip := remoteIP(s.imapConn.NetConn())
