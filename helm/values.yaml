@@ -2647,20 +2647,6 @@ quota:
   quota_over_status_execute: ""   # program name in quota_warning_bin_dir
 
 acl:
-  ## UPGRADE NOTE (2.3.73): the namespace-root ACL is now a base layer under
-  ## each mailbox's own ACL instead of a fallback used only when no mailbox in
-  ## the chain has one. This errs towards MORE access, unlike most changes:
-  ## a per-mailbox ACL is no longer exhaustive, so every identifier named at
-  ## the root regains its root rights on every mailbox in that namespace --
-  ## including mailboxes whose own ACL was written to leave them out.
-  ## Restriction expressed by omission has to be re-expressed as a negative
-  ## entry ("-user=bob ..." / "-anyone ..."), which is what RFC 4314 provides
-  ## for it.
-  ## AUDIT: in namespaces that have a root ACL, review the per-mailbox
-  ## yarilo-acl files that omit identifiers the root names -- that is exactly
-  ## where rights widen. Pay particular attention to an "anyone" entry in the
-  ## root: it becomes a namespace-wide floor on every mailbox, and it is the
-  ## widening hardest to notice, since no identifier in any file names it.
   enabled: false
   ## Root-level default ACLs resolve from INBOX's ACL for private and
   ## shared namespaces. This is the maildir answer to the namespace
