@@ -42,19 +42,33 @@ func checkACLDisclosure(ownerUser, ownerPass, peerUser, peerPass, prefix string)
 		err = aclCleanupResult(err, owner.deleteFolder(folder), folder, prefix)
 	}()
 
-	peer, err := imapDial()
+	// A fresh peer session, dialed on demand. The ACL cache (acl_cache_ttl)
+	// holds a session's pre-grant answer for up to the TTL, so a peer opened
+	// before a grant keeps the stale view; reconnecting after each grant is how
+	// a real client sees it, and it asserts the thing that matters -- a grant
+	// is visible to a new session -- without waiting the TTL out (#1121).
+	dialPeer := func() (*imapClient, error) {
+		c, derr := imapDial()
+		if derr != nil {
+			return nil, fmt.Errorf("dial (peer): %w", derr)
+		}
+		if lerr := c.login(peerUser, peerPass); lerr != nil {
+			c.close()
+			return nil, fmt.Errorf("login %q: %w", peerUser, lerr)
+		}
+		return c, nil
+	}
+
+	peer, err := dialPeer()
 	if err != nil {
-		return fmt.Errorf("dial (peer): %w", err)
+		return err
 	}
-	defer peer.close()
-	if err := peer.login(peerUser, peerPass); err != nil {
-		return fmt.Errorf("login %q: %w", peerUser, err)
-	}
+	defer func() { peer.close() }()
 
 	if err := aclNoOracle(peer, folder, prefix); err != nil {
 		return err
 	}
-	if err := aclGrantsAreReachable(owner, peer, folder, peerUser); err != nil {
+	if err := aclGrantsAreReachable(owner, &peer, folder, peerUser, dialPeer); err != nil {
 		return err
 	}
 	return nil
@@ -92,38 +106,56 @@ func aclNoOracle(peer *imapClient, present, prefix string) error {
 // aclGrantsAreReachable asserts the other half: a grant must change what the
 // peer sees. Without this the check would pass on a server that answers
 // NONEXISTENT to every non-owner, which is what #1086 looked like.
-func aclGrantsAreReachable(owner, peer *imapClient, folder, peerUser string) error {
+func aclGrantsAreReachable(owner *imapClient, peer **imapClient, folder, peerUser string, dialPeer func() (*imapClient, error)) error {
+	// Grant, then reconnect the peer so it sees the grant now rather than after
+	// acl_cache_ttl. The pre-grant session would hold its cached refusal for up
+	// to the TTL, which is what made this check fail against a correct server
+	// while the same ladder passed by hand -- each manual probe was a new
+	// connection (#1121).
+	grant := func(rights string) error {
+		if _, err := owner.cmd(fmt.Sprintf("SETACL %q %q %s", folder, peerUser, rights)); err != nil {
+			return fmt.Errorf("SETACL %s: %w", rights, err)
+		}
+		(*peer).close()
+		next, err := dialPeer()
+		if err != nil {
+			return err
+		}
+		*peer = next
+		return nil
+	}
+
 	// Lookup only: the peer may now see that the mailbox exists, and the
 	// refusal names the right it lacks instead of hiding the mailbox.
-	if _, err := owner.cmd(fmt.Sprintf("SETACL %q %q l", folder, peerUser)); err != nil {
-		return fmt.Errorf("SETACL l: %w", err)
+	if err := grant("l"); err != nil {
+		return err
 	}
-	if _, err := peer.cmd(fmt.Sprintf("SELECT %q", folder)); err == nil {
+	if _, err := (*peer).cmd(fmt.Sprintf("SELECT %q", folder)); err == nil {
 		return fmt.Errorf("SELECT succeeded for a peer holding only 'l'")
 	} else if !strings.Contains(err.Error(), "NOPERM") {
-		return fmt.Errorf("with 'l' granted, SELECT still hides the mailbox: %v — a grant that changes nothing "+
-			"is the failure mode of #1086", err)
+		return fmt.Errorf("with 'l' granted, SELECT does not name the missing right: %v — expected NOPERM, "+
+			"so the grant is applied and the peer lacks only 'r'", err)
 	}
-	if _, err := peer.cmd(fmt.Sprintf("MYRIGHTS %q", folder)); err != nil {
+	if _, err := (*peer).cmd(fmt.Sprintf("MYRIGHTS %q", folder)); err != nil {
 		return fmt.Errorf("MYRIGHTS is not gated on the admin right and should answer with 'l': %w", err)
 	}
-	if _, err := peer.cmd(fmt.Sprintf("GETACL %q", folder)); err == nil {
+	if _, err := (*peer).cmd(fmt.Sprintf("GETACL %q", folder)); err == nil {
 		return fmt.Errorf("GETACL answered a peer without the 'a' right (RFC 4314 §4)")
 	}
 
 	// Read: the peer can open the mailbox.
-	if _, err := owner.cmd(fmt.Sprintf("SETACL %q %q lr", folder, peerUser)); err != nil {
-		return fmt.Errorf("SETACL lr: %w", err)
+	if err := grant("lr"); err != nil {
+		return err
 	}
-	if _, err := peer.cmd(fmt.Sprintf("SELECT %q", folder)); err != nil {
+	if _, err := (*peer).cmd(fmt.Sprintf("SELECT %q", folder)); err != nil {
 		return fmt.Errorf("with 'lr' granted, SELECT still fails: %w", err)
 	}
 
 	// Admin: the peer can read the ACL.
-	if _, err := owner.cmd(fmt.Sprintf("SETACL %q %q lra", folder, peerUser)); err != nil {
-		return fmt.Errorf("SETACL lra: %w", err)
+	if err := grant("lra"); err != nil {
+		return err
 	}
-	if _, err := peer.cmd(fmt.Sprintf("GETACL %q", folder)); err != nil {
+	if _, err := (*peer).cmd(fmt.Sprintf("GETACL %q", folder)); err != nil {
 		return fmt.Errorf("with 'a' granted, GETACL still fails: %w", err)
 	}
 	return nil
