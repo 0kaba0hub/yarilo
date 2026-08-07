@@ -666,6 +666,13 @@ Both are the shape of §7.5's escape-order note: the reference is self-consisten
 and yarilo diverges on purpose where the deployment's shape demands it. Written
 down so a later reader does not "restore parity" by dropping the lookup and
 reintroducing the per-user-driver bug through config.
+
+- **An unresolved owner is a `NO [NONEXISTENT]`, not an unusable namespace.**
+  2.4 marks a shared namespace whose owner does not resolve with
+  `NAMESPACE_FLAG_UNUSABLE`, because there the namespace is already built by the
+  time the owner is checked. Here the userdb lookup precedes the handle, so a
+  miss is answered before anything is constructed -- cheaper and simpler, and a
+  userdb miss already means "no such user". Deliberate.
 ## 8. Testing plan
 
 - **Unit (`pkg/mailbox`)**: owner extraction from names for `%u` prefixes
