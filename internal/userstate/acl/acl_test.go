@@ -801,3 +801,48 @@ func TestStore_LegacyFallbackDoesNotReadINBOXOnMaildir(t *testing.T) {
 		t.Errorf("the root read INBOX's ACL as its own: %+v", got)
 	}
 }
+
+// A file that accumulated duplicates -- what an appending write path leaves
+// behind -- resolves to the last statement about each identifier, and is
+// rewritten as one entry the next time anything writes it.
+//
+// Under the old rule duplicates unioned at evaluation, so "lrskxa" followed by
+// an attempt to reduce to "lr" still resolved to "lrskxa": the admin path could
+// widen and could not narrow, and the only trace was a second line (#1114).
+func TestStore_DuplicateEntriesResolveToTheLastStatement(t *testing.T) {
+	home := t.TempDir()
+	s := New(home, "", "mdbox", "/", "", "alice", "test", Policy{}, nil)
+
+	// Written the way an appending CLI leaves it.
+	rootFile := s.Path("")
+	if err := os.MkdirAll(filepath.Dir(rootFile), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(rootFile, []byte("user=u2 lrskxa\nuser=u2 lr\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, err := s.EffectiveFor("", "u2", nil, false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
+	if got != "lr" {
+		t.Errorf("effective = %q, want lr — the reduction did not take effect", got)
+	}
+
+	// And the file is normalised by the next write rather than growing.
+	acl, err := s.Get("")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := s.Set("", acl); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	body, err := os.ReadFile(rootFile)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(body) != "user=u2 lr\n" {
+		t.Errorf("file = %q, want a single entry", body)
+	}
+}

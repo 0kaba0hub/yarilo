@@ -312,7 +312,53 @@ func ParseACL(r io.Reader) (ACL, error) {
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("mailbox/acl: read: %w", err)
 	}
-	return out, nil
+	return out.Collapse(), nil
+}
+
+// Collapse reduces the ACL to one entry per (identifier, sign): the last line
+// for an identifier is the one that counts, in the position the first one held.
+//
+// Last wins rather than union, because a line is a statement about an
+// identifier and the later statement is the current one -- the same thing a
+// write means. Union would preserve every grant ever appended, which is the
+// behaviour that made reduction impossible: "lrskxa" followed by "lr" would
+// still resolve to "lrskxa". It also errs towards fewer rights when a file is
+// ambiguous, which is the direction to err in.
+//
+// Duplicates were legal on disk and unioned at evaluation time, which made a
+// write path that appended instead of replacing look like it worked: granting
+// "lr" and then "sk" resolved to "lrsk", and an attempt to reduce "lrskxa" to
+// "lr" resolved to "lrskxa" -- so an ACL could only ever widen, and the only
+// trace was a second line in a file nobody opens (#1114).
+//
+// Collapsing at parse rather than at write means it holds for files written by
+// any past version, by hand, or by a tool we do not own, instead of only for
+// the writes we control.
+//
+// The two signs stay separate entries -- the file format has no single line
+// carrying both -- but there is now at most one of each per identifier, so the
+// negative mask for an identifier is decided by one entry rather than by how
+// many lines happen to mention it and in what order.
+func (acl ACL) Collapse() ACL {
+	if len(acl) < 2 {
+		return acl
+	}
+	type key struct {
+		id       Identifier
+		negative bool
+	}
+	at := make(map[key]int, len(acl))
+	out := make(ACL, 0, len(acl))
+	for _, e := range acl {
+		k := key{e.Identifier, e.Negative}
+		if i, seen := at[k]; seen {
+			out[i].Rights = e.Rights
+			continue
+		}
+		at[k] = len(out)
+		out = append(out, e)
+	}
+	return out
 }
 
 // ParseACLString is a convenience wrapper for tests and CLI input.
