@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Options wires the backend.
@@ -54,6 +55,12 @@ type Server struct {
 
 // New builds the server and registers its routes.
 func New(opts Options) *Server {
+	// Memoise the per-driver backend once. JMAP has no session, so a store is
+	// built per request; without this each request's per-user handle builds a
+	// fresh backend and its own write semaphore (#1149).
+	if opts.Storage != nil {
+		opts.Storage.MailboxByDriver = mailbox.MemoizeByDriver(opts.Storage.MailboxByDriver)
+	}
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET "+jmapcore.SessionPath, s.guard(s.handleSession))
 	s.mux.HandleFunc("POST "+apiPath, s.guard(s.handleAPI))

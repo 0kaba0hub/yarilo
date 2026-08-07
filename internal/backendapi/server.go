@@ -34,7 +34,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yarilomail/yarilo/pkg/authclient"
@@ -50,9 +49,6 @@ import (
 type Server struct {
 	opts Options
 	mux  *http.ServeMux
-
-	driverCacheMu sync.Mutex
-	driverCache   map[string]mailbox.MailboxBackend
 }
 
 // Options configures Server.
@@ -117,26 +113,17 @@ type Options struct {
 }
 
 // mailboxForDriver returns the MailboxBackend for driver, using opts.Mailbox
-// when driver matches the global or when no factory is configured.
-// Results are cached so the factory is called at most once per driver.
+// when driver matches the global or when no factory is configured. The factory
+// is memoised once in New (mailbox.MemoizeByDriver), so it builds at most once
+// per driver -- no separate cache here.
 func (s *Server) mailboxForDriver(driver string) mailbox.MailboxBackend {
 	if driver == "" || s.opts.MailboxByDriver == nil {
 		return s.opts.Mailbox
 	}
-	s.driverCacheMu.Lock()
-	defer s.driverCacheMu.Unlock()
-	if mb, ok := s.driverCache[driver]; ok {
+	if mb := s.opts.MailboxByDriver(driver); mb != nil {
 		return mb
 	}
-	mb := s.opts.MailboxByDriver(driver)
-	if mb == nil {
-		return s.opts.Mailbox
-	}
-	if s.driverCache == nil {
-		s.driverCache = make(map[string]mailbox.MailboxBackend)
-	}
-	s.driverCache[driver] = mb
-	return mb
+	return s.opts.Mailbox
 }
 
 // New constructs a Server and registers the backend endpoints onto an internal
@@ -158,6 +145,10 @@ func (s *Server) skipNFC() bool {
 }
 
 func New(opts Options) *Server {
+	// Memoise the per-driver backend once (the shared primitive), replacing the
+	// server's former bespoke driverCache so all surfaces use one mechanism
+	// (#1149).
+	opts.MailboxByDriver = mailbox.MemoizeByDriver(opts.MailboxByDriver)
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 	s.registerHealth()
 	s.registerDictRoutes()

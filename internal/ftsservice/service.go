@@ -115,6 +115,11 @@ func New(opts Options) (*Service, error) {
 		opts.ResolveUser == nil || opts.Chain == nil {
 		return nil, fmt.Errorf("ftsservice: incomplete options")
 	}
+	// Memoise the per-driver backend once: mailboxFor caches a per-user handle,
+	// so without this the builder runs per account and holds one backend (and
+	// one write semaphore) per user -- the second-heaviest write path after LMTP
+	// (#1149).
+	opts.MailboxByDriver = mailbox.MemoizeByDriver(opts.MailboxByDriver)
 	if opts.CommitLimit <= 0 {
 		opts.CommitLimit = 500
 	}

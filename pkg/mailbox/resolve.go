@@ -9,6 +9,12 @@ import "sync"
 // max_concurrent_writes bounding the shared volume (#1149). Each server wraps
 // its Options.MailboxByDriver with this once at construction. Concurrency-safe.
 // Returns nil when build is nil.
+//
+// The cache is per instance, and "per instance" is "per process" only because
+// each protocol runs as its own binary (imap / pop3 / lmtp / fts / jmap /
+// backend-api). Two servers in one process would each keep their own map, by
+// design: each closes over its own StorageConfig, so a single driver name can
+// mean different roots on different surfaces (#1148).
 func MemoizeByDriver(build func(driver string) MailboxBackend) func(string) MailboxBackend {
 	if build == nil {
 		return nil
