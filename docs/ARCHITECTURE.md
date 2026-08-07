@@ -16,6 +16,69 @@ If something in the code contradicts this document — the code is wrong.
 
 ---
 
+## Two rules the ACL/naming series proved
+
+A run of defects through the ACL, namespace and folder-name code all had one
+shape, and closing them taught two rules worth stating so the next reader starts
+from the right question rather than rediscovering them.
+
+### One idea, one implementation
+
+Every defect in that series sat where **two implementations of one idea
+disagreed**. Four constructions of a namespace's storage context; two owners of
+NFC normalisation (a driver step and the path builder); no single entry per ACL
+identifier; two definitions of "owner" (by namespace type and by person); two
+meanings of the insert right (IMAP vs delivery); two write paths for an ACL
+(client read-modify-write and the server). None was a logic error in either
+copy — each copy was defensible alone; the bug was that they drifted.
+
+So the fix that closes the *class* rather than the *instance* removes one of the
+two, it does not reconcile them:
+
+- `insertRight(spec)` was deleted, not corrected — the predicate itself was the
+  defect.
+- `FolderSubpathForm`'s NFC parameter was removed, not typed — a path builder
+  must not decide the name form; normalisation moved to one owner at the entry
+  boundary.
+- the CLI's read-modify-write helpers were erased, not canonicalised — leaving
+  them would keep a second, unlocked way to write an ACL, and the next author
+  reaches for what already exists.
+
+When you find a defect in this area, the first question is not "which branch is
+wrong" but **"where are the two implementations of one idea, and can one of them
+be removed?"** A shared constructor with fewer fields than the one it did not
+absorb is worse than two explicit ones, because it looks authoritative — so
+"one implementation" means *complete*, not merely *single*.
+
+### A test's fixture must distinguish the two behaviours
+
+Several defects that week survived review because a test passed. Each had a
+fixture whose inputs could not tell the correct behaviour from the broken one,
+so it stayed green under both and read as coverage: an escape-matrix row with no
+combining mark after the escaped byte, an FTS-root check with only one account,
+an IMAP normalisation test on a filesystem (APFS) that composed the name itself,
+an ACL evaluator test with no lower-tier negative, a smoke check that reused a
+cached session.
+
+A test that cannot fail under the defect it names asserts nothing. The
+discipline is to choose the one input that separates the behaviours and to make
+that visible:
+
+- the `wasa` column in the ACL evaluator matrix records what the old code
+  answered, so a row where `wasa == want` is visibly proving nothing;
+- a fixture that cannot distinguish in one environment declares it — the
+  end-to-end normalisation test carries a `t.Skip` when the filesystem composes
+  names, rather than vanishing from the CI runners where it works;
+- where the placement is by hand across many sites, an AST guard turns "N things
+  to remember" into one that fails — the folder-normalisation and
+  dispatch-normalisation guards, and the FolderSubpath-signature guard.
+
+Both rules are one idea at different layers: a thing defined in two places
+drifts, whether the thing is an implementation or the input that a test claims
+to cover.
+
+---
+
 ## Deployment model
 
 yarilo is a **multi-binary** system. Each component is a separate compiled binary deployed as a separate
