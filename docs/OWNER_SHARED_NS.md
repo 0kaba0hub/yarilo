@@ -717,6 +717,30 @@ store owner.
   time the owner is checked. Here the userdb lookup precedes the handle, so a
   miss is answered before anything is constructed -- cheaper and simpler, and a
   userdb miss already means "no such user". Deliberate.
+
+### 7.7 Every ACL surface reads back what the evaluator resolves
+
+Three defects with three different causes shared one consequence: stored ACL
+state could not be read back by the same path that wrote it. #1109 -- the admin
+API read the wrong store, so shared-namespace folders were invisible to it.
+#1145 -- `GETACL` never listed negative entries (a pre-#1141 surfacing), so the
+listing overstated the rights in force. #1147 -- IMAP `SETACL`/`DELETEACL`
+updated the per-mailbox file but not the `yarilo-acl-list` index, so `yarctl acl
+list` named grants that were changed or removed.
+
+The absent invariant, stated once:
+
+> **Every surface that shows an ACL must show what the evaluator would resolve
+> from the same inputs.** GETACL, `yarctl acl get`, `yarctl acl list`, and
+> enforcement all read the one stored state; none may show a view the evaluator
+> would not.
+
+This converts each such defect into a single per-surface test -- write through a
+surface, read back through it, compare against the evaluator -- rather than three
+separate investigations that each had to start from a symptom. The #1147 fix
+follows it structurally: `Set` is `Update` with a constant function, so the file
+and the index are written in one place with no second path to forget the index.
+
 ## 8. Testing plan
 
 - **Unit (`pkg/mailbox`)**: owner extraction from names for `%u` prefixes

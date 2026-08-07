@@ -243,17 +243,12 @@ func (s *Store) checkInsideRoot(folder string) error {
 	return mailbox.GuardDestructivePath(s.mailboxesRoot(), s.Path(folder))
 }
 
+// Set replaces a folder's ACL. It is Update with a constant function, so the
+// file write and the yarilo-acl-list update live in exactly one place -- there
+// is no second write path that can forget the index (#1147). A nil acl is "no
+// change"; clear a folder by passing an empty (non-nil) ACL.
 func (s *Store) Set(folder string, acl mailbox.ACL) error {
-	if err := s.checkInsideRoot(folder); err != nil {
-		return fmt.Errorf("userstate/acl: refusing folder %q: %w", folder, err)
-	}
-	if err := s.withLock(folder, func() error {
-		return s.writeAtomicLocked(folder, acl)
-	}); err != nil {
-		return err
-	}
-	s.invalidate(folder)
-	return s.ListUpdate(folder, acl)
+	return s.Update(folder, func(mailbox.ACL) (mailbox.ACL, error) { return acl, nil })
 }
 
 // EffectiveFor resolves the user's effective rights on folder, walking
@@ -401,7 +396,16 @@ func (s *Store) Rename(oldFolder, newFolder string) error {
 // Update read-modify-writes the ACL under the folder lock: fn receives the
 // current ACL (nil when absent) and returns the ACL to persist. A nil return
 // leaves disk as-is; return an empty (non-nil) ACL to drop all entries.
+// Update is the one write path for a folder's ACL: read-modify-write the file
+// and the yarilo-acl-list index together, under the folder lock, so no reader
+// sees the two disagree and no caller can update one and forget the other
+// (#1147). fn returning nil means "no change" -- the file and index are both
+// left alone; to clear a folder return an empty (non-nil) ACL, which writes an
+// empty file and drops the folder's index rows.
 func (s *Store) Update(folder string, fn func(mailbox.ACL) (mailbox.ACL, error)) error {
+	if err := s.checkInsideRoot(folder); err != nil {
+		return fmt.Errorf("userstate/acl: refusing folder %q: %w", folder, err)
+	}
 	err := s.withLock(folder, func() error {
 		current, err := s.loadLocked(folder)
 		if err != nil {
@@ -414,7 +418,13 @@ func (s *Store) Update(folder string, fn func(mailbox.ACL) (mailbox.ACL, error))
 		if next == nil {
 			return nil
 		}
-		return s.writeAtomicLocked(folder, next)
+		if err := s.writeAtomicLocked(folder, next); err != nil {
+			return err
+		}
+		// Same lock as the file: the yarilo-acl-list index (a separate lock of
+		// its own) is updated before this critical section ends, so the window
+		// where the file changed and the index has not is closed.
+		return s.ListUpdate(folder, next)
 	})
 	if err == nil {
 		s.invalidate(folder)
