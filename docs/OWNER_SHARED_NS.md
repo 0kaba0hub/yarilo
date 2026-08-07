@@ -129,8 +129,28 @@ Both entry points already have (or can be handed) a userdb-master client:
   userdb-master lookup for an arbitrary (non-authenticating) user.
 
 The lookup returns the owner's `Home`, `MailPath`, `Driver`, and mail-location
-modifiers. `ParseLocation(spec.Location, ownerUI)` then expands the template
-against the owner.
+modifiers, built by the same `ResolveUserInfo` → `StampLocation` path the
+session user goes through — one implementation, so an owner resolves exactly as
+a logged-in user does.
+
+**Precedence, decided before the code: the owner's userdb `mail_location`
+decides the driver and the root; the namespace `location:` fills only what the
+userdb did not.** This matters because the driver is per-user here — the
+deployment runs mdbox, maildir and sdbox for different accounts — and it arrives
+through the owner's `mail_location`, which is the whole reason the lookup is a
+full userdb lookup rather than a template expansion (§7.6). If the namespace
+`location:` named a driver (`maildir:%h/Maildir`) and the owner's userdb said
+`mdbox:~/mdbox`, expanding the namespace template would open the wrong backend —
+the exact failure the full lookup was chosen to avoid, paid for with a
+round-trip and then thrown away. So `StampLocation(ownerUI, <owner mail_location>)`
+is authoritative for driver and root, and the namespace template supplies only
+fields the userdb left unset (a namespace-specific `INDEX=`, or the root itself
+for an owner with no explicit `mail_location`).
+
+The namespace `location:` must still carry a per-owner variable (config
+validation enforces it, since 2.3.84): in the one case where it wins — an owner
+whose userdb gives no `mail_location` — a fixed location would resolve every
+such owner to one shared path, the parallel tree this design exists to prevent.
 
 ### 3.4 On-demand handle construction + caching
 
@@ -607,6 +627,31 @@ Tracked as #1117.
 
 ---
 
+
+### 7.6 Owner resolution follows the userdb, not the reference's no-lookup path
+
+Two deliberate divergences from 2.4, both because this deployment carries
+per-user storage the reference's shared-namespace model does not express.
+
+- **Full userdb lookup, not `no_userdb_lookup`.** 2.4 resolves a shared
+  namespace's owner without a userdb round-trip (`no_userdb_lookup = TRUE`),
+  deriving the owner's home from the template alone. It can, because its shared
+  spaces are homogeneous by assumption — one driver, one layout for every owner.
+  Ours are not: the userdb assigns a driver per account (mdbox / maildir / sdbox
+  by range), and only a full userdb lookup surfaces it. Following the reference
+  here would import a limitation the deployment already violates, so the owner is
+  looked up in full and the result cached to pay the round-trip once (§3.4).
+
+- **The owner's `mail_location` wins over the namespace `location:`.** The same
+  fact drives §3.3's precedence: the driver and root come from the owner's
+  userdb, not from expanding the namespace template. A namespace whose template
+  named a different driver than the owner's userdb would open the wrong backend,
+  which is what the full lookup exists to prevent.
+
+Both are the shape of §7.5's escape-order note: the reference is self-consistent,
+and yarilo diverges on purpose where the deployment's shape demands it. Written
+down so a later reader does not "restore parity" by dropping the lookup and
+reintroducing the per-user-driver bug through config.
 ## 8. Testing plan
 
 - **Unit (`pkg/mailbox`)**: owner extraction from names for `%u` prefixes
