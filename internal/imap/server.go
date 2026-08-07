@@ -1768,7 +1768,20 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		// A short literal is not the malformed-tail case (#1137, a complete
 		// literal with garbage after it) -- it is an incomplete message. Remove
 		// it rather than keep mangled mail, and refuse.
-		_ = h.box.Remove(rel, filename)
+		if rmErr := h.box.Remove(rel, filename); rmErr != nil {
+			// The truncated file survived: it is exactly the orphan
+			// ReconcileIndex would import with a fresh UID -- the #1129 outcome,
+			// inside the branch that exists to prevent it. BAD would claim nothing
+			// ran while something is on disk, so answer NO [SERVERBUG] instead and
+			// log the orphan for cleanup.
+			slog.Error("imap: APPEND under-delivered literal; cleanup failed, truncated file orphaned",
+				"user", s.userInfo.Username, "folder", rel, "file", filename, "err", rmErr)
+			return nil, &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Code: imaplib.ResponseCodeServerBug,
+				Text: "APPEND literal under-delivered and cleanup failed; message may be partially stored",
+			}
+		}
 		return nil, &imaplib.Error{
 			Type: imaplib.StatusResponseTypeBad,
 			Code: imaplib.ResponseCodeClientBug,

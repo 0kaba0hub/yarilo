@@ -11,7 +11,9 @@ import (
 
 	imapserver "github.com/yarilomail/yarilo/internal/imap"
 	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 	mailboxpkg "github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -169,51 +171,90 @@ func countFiles(t *testing.T, dir string) int {
 	return n
 }
 
+// rawPersonalServer brings up a server whose personal namespace uses mb, so the
+// same test runs against maildir, mdbox and sdbox -- "not stored" means a
+// deleted file, a locked delete, and a refcount decrement respectively, and the
+// invariant must hold under all three, not only the one a file count can see.
+func rawPersonalServer(t *testing.T, mb mailboxpkg.MailboxBackend) (addr string) {
+	t.Helper()
+	root := t.TempDir()
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:    mb,
+		Index:      file.New(),
+		Resolver:   &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"},
+		Auth:       &enforcePassdb{users: map[string]string{"alice": "pw"}},
+		ACLEnabled: true,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+	return ln.Addr().String()
+}
+
 // An APPEND whose literal is under-delivered -- fewer octets than declared, a
-// mid-body EOF -- must not be stored and must not answer OK. This is the branch
-// #1137's "stored -> OK" rested on implicitly: box.Save copies to EOF without
-// checking the count, so a truncated literal used to be stored and confirmed.
-// The client half-closes after a short body so the server reads EOF and can
-// still send the tagged response (#1129).
+// mid-body EOF -- must not be stored and must not answer OK. box.Save copies to
+// EOF without checking the count, so a truncated literal used to be stored and
+// confirmed. "Not stored" is asserted through SELECT (0 EXISTS), the invariant
+// that holds on every driver because the index step is skipped before the
+// count check -- a file count would only see maildir. The client half-closes
+// after a short body so the server reads EOF and can still answer (#1129).
 func TestAppendUnderDeliveredLiteralIsRefusedAndNotStored(t *testing.T) {
-	aliceHome, addr := rawSharedServer(t)
-	a := dialRaw(t, addr)
-	if !strings.Contains(a.cmd("LOGIN alice pw"), "OK") {
-		t.Fatal("login")
+	backends := []struct {
+		name string
+		mb   mailboxpkg.MailboxBackend
+	}{
+		{"maildir", maildir.New()},
+		{"mdbox", mdbox.New()},
+		{"sdbox", dboxv2.New()},
 	}
+	for _, be := range backends {
+		t.Run(be.name, func(t *testing.T) {
+			addr := rawPersonalServer(t, be.mb)
+			a := dialRaw(t, addr)
+			if !strings.Contains(a.cmd("LOGIN alice pw"), "OK") {
+				t.Fatal("login")
+			}
+			// Declare 100 octets, deliver 15, then half-close: EOF at 15.
+			fmt.Fprintf(a.conn, "z1 APPEND INBOX {100}\r\n")
+			if cont := a.readLine(); !strings.HasPrefix(cont, "+") {
+				t.Fatalf("expected continuation, got %q", cont)
+			}
+			a.conn.Write([]byte("short body only")) //nolint:errcheck
+			tcp, ok := a.conn.(*net.TCPConn)
+			if !ok {
+				t.Fatalf("expected *net.TCPConn, got %T", a.conn)
+			}
+			tcp.CloseWrite() //nolint:errcheck
 
-	// Declare 100 octets, deliver 15, then half-close: the server reads EOF at 15.
-	fmt.Fprintf(a.conn, "z1 APPEND INBOX {100}\r\n")
-	if cont := a.readLine(); !strings.HasPrefix(cont, "+") {
-		t.Fatalf("expected continuation, got %q", cont)
-	}
-	a.conn.Write([]byte("short body only")) //nolint:errcheck
-	tcp, ok := a.conn.(*net.TCPConn)
-	if !ok {
-		t.Fatalf("expected *net.TCPConn, got %T", a.conn)
-	}
-	tcp.CloseWrite() //nolint:errcheck
+			a.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			var got string
+			for {
+				line, err := a.r.ReadString('\n')
+				if err != nil && line == "" {
+					break
+				}
+				if strings.HasPrefix(line, "z1 ") {
+					got = strings.TrimRight(line, "\r\n")
+					break
+				}
+			}
+			if strings.Contains(got, "OK") {
+				t.Errorf("under-delivered APPEND answered %q, want a refusal (not OK)", got)
+			}
 
-	a.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	var got string
-	for {
-		line, err := a.r.ReadString('\n')
-		if err != nil && line == "" {
-			break
-		}
-		if strings.HasPrefix(line, "z1 ") {
-			got = strings.TrimRight(line, "\r\n")
-			break
-		}
-	}
-	if strings.Contains(got, "OK") {
-		t.Errorf("under-delivered APPEND answered %q, want a refusal (not OK)", got)
-	}
-
-	// Nothing stored: the truncated file was removed.
-	n := countFiles(t, filepath.Join(aliceHome, "Maildir", "cur")) +
-		countFiles(t, filepath.Join(aliceHome, "Maildir", "new"))
-	if n != 0 {
-		t.Errorf("truncated message left on disk: %d files, want 0", n)
+			// Nothing became visible: a fresh connection sees an empty INBOX.
+			b := dialRaw(t, addr)
+			b.cmd("LOGIN alice pw")
+			sel := b.cmd("SELECT INBOX")
+			if !strings.Contains(sel, "* 0 EXISTS") {
+				t.Errorf("INBOX not empty after a refused APPEND; SELECT:\n%s", sel)
+			}
+		})
 	}
 }
