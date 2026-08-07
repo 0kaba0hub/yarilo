@@ -1,5 +1,7 @@
 package mailbox
 
+import "fmt"
+
 // NamespaceUserInfo builds the UserInfo a non-personal namespace's storage
 // handles resolve against: the session's identity, with every path field taken
 // from the namespace's own location.
@@ -19,7 +21,17 @@ package mailbox
 //
 // separator comes from the namespace spec rather than from base: it is a
 // property of the namespace, and the personal one may use another.
-func NamespaceUserInfo(base *UserInfo, loc Location, separator string) *UserInfo {
+//
+// An empty loc.Path is refused rather than defaulted. Every field here exists
+// because a consumer left to its own default resolves somewhere else, so a
+// constructor that accepted an empty root would reintroduce the class it is
+// meant to close -- and it would do so from the one place that is supposed to
+// make it impossible. The reference asserts at the same point
+// (mailbox-list.c:132).
+func NamespaceUserInfo(base *UserInfo, loc Location, separator string) (*UserInfo, error) {
+	if loc.Path == "" {
+		return nil, fmt.Errorf("mailbox: namespace location has no root path")
+	}
 	ui := &UserInfo{
 		Home:        loc.Path,
 		MailPath:    loc.Path,
@@ -37,6 +49,15 @@ func NamespaceUserInfo(base *UserInfo, loc Location, separator string) *UserInfo
 		// would name the same mailbox differently on disk (#1078, #1092).
 		ui.StorageEscapeChar = base.StorageEscapeChar
 		ui.SkipNFCNormalize = base.SkipNFCNormalize
+		// The ACL identity travels too. Leaving it out is what made this
+		// constructor not shared: the delivery path carried these and the other
+		// two did not, so an ACL entry naming a group resolved differently at
+		// delivery than at SELECT of the same shared mailbox -- and a later
+		// change routing delivery through here would have silently switched
+		// group ACLs off instead.
+		ui.Groups = base.Groups
+		ui.ACLUser = base.ACLUser
+		ui.ACLGroups = base.ACLGroups
 	}
-	return ui
+	return ui, nil
 }
