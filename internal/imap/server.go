@@ -157,6 +157,14 @@ type Options struct {
 	// file's mtime+size are re-validated. Zero disables caching.
 	ACLCacheTTL time.Duration
 
+	// UserdbLookup resolves an arbitrary (non-authenticating) user's storage
+	// identity via the yarilo-auth master -- the same lookup LMTP uses for a
+	// recipient. Owner-templated shared namespaces (B1) need it to open the
+	// owner's store: the owner is not the session user, and the owner's driver
+	// comes only from their userdb mail_location (docs/OWNER_SHARED_NS.md 3.3).
+	// nil disables owner-templated resolution.
+	UserdbLookup func(ctx context.Context, username string) (*mailbox.UserInfo, error)
+
 	// Namespaces drives the IMAP NAMESPACE response (RFC 2342 / RFC 9051
 	// §6.3.10). When nil/empty a single personal namespace with separator
 	// "/" is assumed.

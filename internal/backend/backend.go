@@ -269,6 +269,7 @@ func New(cfg *config.Config) (*Server, error) {
 			},
 			Index:              idx,
 			Resolver:           resolver,
+			UserdbLookup:       ownerUserdbLookup(masterAddr, authTLS, resolver),
 			Auth:               authChain,
 			ProxyProtocol:      primary.HAProxy,
 			HAProxyTimeout:     haproxyTimeout,
@@ -1077,6 +1078,21 @@ func lazyUserdbLookup(addr string, dial func() (*authclient.Client, error), reso
 		}
 		return ResolveUserInfo(resolver, username, ui), nil
 	}
+}
+
+// ownerUserdbLookup builds the IMAP UserdbLookup for owner-templated namespaces,
+// the same lazy auth-master lookup LMTP uses. Returns nil when no master is
+// configured, which leaves owner resolution failing closed rather than half-wired.
+func ownerUserdbLookup(masterAddr string, authTLS *tls.Config, resolver *mailbox.Resolver) func(context.Context, string) (*mailbox.UserInfo, error) {
+	if masterAddr == "" {
+		return nil
+	}
+	if resolver == nil {
+		resolver = &mailbox.Resolver{}
+	}
+	return lazyUserdbLookup(masterAddr,
+		func() (*authclient.Client, error) { return authclient.Dial(masterAddr, authTLS) },
+		resolver)
 }
 
 func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.UserInfo) *mailbox.UserInfo {
