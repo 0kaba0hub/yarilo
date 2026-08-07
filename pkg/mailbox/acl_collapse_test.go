@@ -70,27 +70,31 @@ func TestParseACLCollapsesDuplicateIdentifiers(t *testing.T) {
 	}
 }
 
-// The structural half: with one entry per identifier and sign, an identifier's
-// two masks are decided by one entry each, so which of the two lines comes
-// first in the file cannot change the answer.
+// The structural half — with a fixture that can tell the behaviours apart.
 //
-// (Two lines of the *same* sign are order-dependent on purpose — the later is
-// the current statement. That is the point of collapsing, not a side effect.)
+// The first version of this test used user=u2 lrs + -user=u2 s and passed
+// under the defect too: with no lower-tier negative underneath, "replace" and
+// "merge" at the tier boundary give the same answer, so the two orders agreed
+// whichever branch ran. The -authenticated r underneath is what makes the
+// input distinguish: if the first sign at the user tier eats the shared
+// boundary, the second merges with that inherited r instead of replacing it,
+// and the two orders answer "l" and "lr".
 func TestPositiveAndNegativeOrderDoesNotMatter(t *testing.T) {
-	forward, err := mailbox.ParseACLString("user=u2 lrs\n-user=u2 s\n")
+	forward, err := mailbox.ParseACLString("-authenticated r\nuser=alice lrs\n-user=alice s\n")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	reverse, err := mailbox.ParseACLString("-user=u2 s\nuser=u2 lrs\n")
+	reverse, err := mailbox.ParseACLString("-authenticated r\n-user=alice s\nuser=alice lrs\n")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	gotF, gotR := forward.Effective("u2", nil, false), reverse.Effective("u2", nil, false)
+	gotF := forward.Effective("alice", nil, false)
+	gotR := reverse.Effective("alice", nil, false)
 	if gotF != gotR {
 		t.Errorf("same ACL, different line order: %q vs %q", gotF, gotR)
 	}
 	if gotF != "lr" {
-		t.Errorf("effective = %q, want lr — the negative removes s", gotF)
+		t.Errorf("effective = %q, want lr — the user-tier negative replaces the authenticated-tier one", gotF)
 	}
 }
 

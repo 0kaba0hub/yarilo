@@ -63,7 +63,9 @@ func TestStore_GlobalMergeAndGlobalsOnly(t *testing.T) {
 		t.Errorf("global grant: EffectiveFor(Projects, bob)=%q, want lr", got)
 	}
 
-	// Local ACL adds on top of the global one.
+	// A matching global entry replaces the local grant rather than adding to
+	// it: the globals are a ladder above the local ACL. This used to expect
+	// "lri", which was the additive defect written down as a contract (#1117).
 	home := t.TempDir()
 	s2 := New(home, "", "mdbox", "/", "", "alice", "test", Policy{Global: global}, nil)
 	if err := s2.Set("Projects", mailbox.ACL{
@@ -71,8 +73,8 @@ func TestStore_GlobalMergeAndGlobalsOnly(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set local: %v", err)
 	}
-	if got, _ := s2.EffectiveFor("Projects", "bob", nil, false, '/'); got != "lri" {
-		t.Errorf("local+global: EffectiveFor(Projects, bob)=%q, want lri", got)
+	if got, _ := s2.EffectiveFor("Projects", "bob", nil, false, '/'); got != "lr" {
+		t.Errorf("local+global: EffectiveFor(Projects, bob)=%q, want lr (the global replaces)", got)
 	}
 
 	// globals_only ignores the local ACL entirely.
