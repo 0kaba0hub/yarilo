@@ -235,37 +235,65 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	// no implicit owner entry to synthesise (#544/B1, the isOwner root from
 	// #1107).
 	ownerName := h.owner
-	ownerHasExplicit := false
-	if ownerName != "" {
-		for _, e := range stored {
-			if !e.Negative && e.Identifier.Type == mailbox.IDUser && e.Identifier.Name == ownerName {
-				ownerHasExplicit = true
-				break
-			}
-		}
+	if ownerName == "" {
+		// Nobody owns the namespace (fixed shared/public): no owner line to add,
+		// and no owner-naming entry to suppress. Surface the stored ACL as-is.
+		return &imaplib.GetACLData{Mailbox: folder, ACL: aclSurfaceEntries(stored)}, nil
 	}
-	entries := aclSurfaceEntries(stored)
-	if ownerName != "" && !ownerHasExplicit {
-		// The owner's implicit rights come from the resolver, not a hand-built
-		// FullRights entry: MYRIGHTS resolves the owner the same way, so the two
-		// agree by construction rather than because two code paths both happen to
-		// spell out full rights. isOwner is true -- this is the owner of the
-		// namespace instance -- so EffectiveFor short-circuits to the owner grant
-		// without reading a file, and groups are irrelevant to it.
-		ownerRights, err := h.acl.EffectiveFor(rel, ownerName, nil, true, byte(h.spec.Separator))
-		if err != nil {
-			return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
+	// The owner's line comes from the resolver -- FullRights under the strong
+	// grant -- the same source MYRIGHTS reads, so the two agree by construction.
+	// Any stored entry that names the owner (a user=<owner> of either sign, or
+	// the inert owner keyword) cannot change what the owner gets, so surfacing it
+	// would put a second, contradicting row for the owner beside the resolved
+	// one -- a reduced user=<owner> read as the owner's rights, a -user=<owner>
+	// read as a cap that does not exist. Drop those and show the single resolved
+	// line. isOwner is true, so EffectiveFor short-circuits to the grant without
+	// any I/O, and groups are irrelevant to it.
+	var surface mailbox.ACL
+	for _, e := range stored {
+		if identifierNamesOwner(e.Identifier, ownerName) {
+			continue
 		}
-		implicit := imaplib.ACLEntry{
-			Identifier: imaplib.RightsIdentifier(ownerName),
-			Rights:     rightsToIMAP(ownerRights),
-		}
-		entries = append([]imaplib.ACLEntry{implicit}, entries...)
+		surface = append(surface, e)
 	}
+	ownerRights, err := h.acl.EffectiveFor(rel, ownerName, nil, true, byte(h.spec.Separator))
+	if err != nil {
+		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
+	}
+	entries := append([]imaplib.ACLEntry{{
+		Identifier: imaplib.RightsIdentifier(ownerName),
+		Rights:     rightsToIMAP(ownerRights),
+	}}, aclSurfaceEntries(surface)...)
 	return &imaplib.GetACLData{
 		Mailbox: folder,
 		ACL:     entries,
 	}, nil
+}
+
+// identifierNamesOwner reports whether an ACL identifier addresses the owner of
+// the namespace instance -- either the owner's own user= identity (of either
+// sign) or the owner keyword. Such an entry cannot change the owner's rights
+// under the strong grant, so SETACL/DELETEACL refuse to write it and GETACL does
+// not surface it. The owner keyword is inert for everyone (the owner resolves to
+// full; a non-owner never matches the owner tier), so it is named here even when
+// the namespace has no owner.
+func identifierNamesOwner(id mailbox.Identifier, owner string) bool {
+	if id.Type == mailbox.IDOwner {
+		return true
+	}
+	return owner != "" && id.Type == mailbox.IDUser && id.Name == owner
+}
+
+// ownerACLImmutable is the refusal for a SETACL/DELETEACL that names the owner.
+// The owner resolves to full rights regardless of the ACL, so such a write would
+// answer OK and change nothing -- the shape #1114 removed. Refusing tells the
+// operator, at the write, that freezing a mailbox (a suspended account, a hold)
+// is a separate mechanism, not an ACL edit (§7.6).
+func ownerACLImmutable() error {
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Text: "the owner's rights cannot be changed through ACL; freeze a mailbox by another mechanism",
+	}
 }
 
 // MyRights implements imapserver.SessionACL.
@@ -360,6 +388,11 @@ func (s *session) SetACL(folder string, identifier imaplib.RightsIdentifier, mod
 		if err := s.requireAdminOn(h, rel); err != nil {
 			return nil, err
 		}
+		// After the admin gate, so a caller who may not administer learns nothing
+		// about the owner: the owner cannot be modified through the ACL.
+		if identifierNamesOwner(id, h.owner) {
+			return nil, ownerACLImmutable()
+		}
 		return applySetACL(cur, id, negative, modification, parsed), nil
 	})
 }
@@ -386,6 +419,9 @@ func (s *session) DeleteACL(folder string, identifier imaplib.RightsIdentifier) 
 		// answering it (#1109).
 		if err := s.requireAdminOn(h, rel); err != nil {
 			return nil, err
+		}
+		if identifierNamesOwner(id, h.owner) {
+			return nil, ownerACLImmutable()
 		}
 		if cur == nil {
 			return nil, nil

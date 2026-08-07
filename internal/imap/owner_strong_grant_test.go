@@ -8,49 +8,102 @@ import (
 	mailboxpkg "github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// The strong owner grant (§3.7): the owner resolves to FullRights regardless of
-// any entry, so a negative aimed at the owner -- the SETACL that would otherwise
-// lock them out of their own mail -- changes nothing. Enforcement, MYRIGHTS and
-// GETACL are checked together because the point of consolidating onto one
-// mechanism is that the three agree by construction, not by coincidence: all
-// three now read the owner from the resolver.
-func TestOwnerStrongGrant_NegativeOnOwnerChangesNothing(t *testing.T) {
-	aliceHome, dial := enforceServer(t)
-	// Strip every right from alice on her own INBOX with a negative entry. It is
-	// Negative, so GETACL still synthesises the implicit owner line rather than
-	// showing this as her stored rights.
-	seedACL(t, aliceHome, "INBOX", "-user=alice lrswipkxtea\n")
+// The strong owner grant (§7.6): the owner resolves to FullRights regardless of
+// any stored entry, so an entry that names the owner -- a reduced user=<owner>,
+// a -user=<owner> negative, or the inert owner keyword -- changes nothing.
+//
+// Enforcement, MYRIGHTS and GETACL are checked together: the point of one
+// mechanism is that the three agree by construction. GETACL must not surface a
+// second row for the owner that contradicts what MYRIGHTS resolved -- the seeds
+// below each produced exactly such a row before this fix (a reduced positive
+// read as the owner's rights, a negative under the -alice key, the owner keyword
+// as its own row), which the fixture distinguishes by asserting the absent keys,
+// not only ga.Rights[alice].
+func TestOwnerStrongGrant_OwnerNamingEntriesAreInert(t *testing.T) {
+	full := sortedString(string(mailboxpkg.FullRights))
+	alicePos, _ := imaplib.NewRightsIdentifierUsername("alice")
+	aliceNeg := imaplib.RightsIdentifier("-alice")
+	ownerKw := imaplib.RightsIdentifier("owner")
 
+	seeds := []struct {
+		name string
+		acl  string
+		// the owner-naming key that must NOT appear as a separate GETACL row.
+		absentKey imaplib.RightsIdentifier
+	}{
+		{"reduced positive user= for the owner", "user=alice lr\n", ""},
+		{"negative on the owner", "-user=alice lrswipkxtea\n", aliceNeg},
+		{"inert owner keyword", "owner lr\n", ownerKw},
+	}
+
+	for _, tc := range seeds {
+		t.Run(tc.name, func(t *testing.T) {
+			aliceHome, dial := enforceServer(t)
+			seedACL(t, aliceHome, "INBOX", tc.acl)
+			c := dial("alice")
+
+			// Enforcement: a create under INBOX needs 'k' and SELECT needs
+			// 'r'/lookup -- both are what the reduced/negative seeds withhold, and
+			// the owner does them anyway.
+			if err := c.Create("INBOX/Sub", nil).Wait(); err != nil {
+				t.Errorf("owner CREATE despite %q: %v", tc.acl, err)
+			}
+			if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+				t.Errorf("owner SELECT despite %q: %v", tc.acl, err)
+			}
+
+			mr, err := c.MyRights("INBOX").Wait()
+			if err != nil {
+				t.Fatalf("MYRIGHTS: %v", err)
+			}
+			if got := sortedString(string(mr.Rights)); got != full {
+				t.Errorf("MYRIGHTS = %q, want full", got)
+			}
+
+			ga, err := c.GetACL("INBOX").Wait()
+			if err != nil {
+				t.Fatalf("GETACL: %v", err)
+			}
+			// The single owner row equals MYRIGHTS.
+			if got := sortedString(string(ga.Rights[alicePos])); got != full {
+				t.Errorf("GETACL owner row = %q, want full (must match MYRIGHTS)", got)
+			}
+			// And there is no contradicting owner-naming row beside it.
+			if tc.absentKey != "" {
+				if _, ok := ga.Rights[tc.absentKey]; ok {
+					t.Errorf("GETACL surfaced an inert owner-naming row %q: %v", tc.absentKey, ga.Rights)
+				}
+			}
+		})
+	}
+}
+
+// SETACL that names the owner is refused, not answered OK over a no-op: the
+// owner cannot be capped or granted through the ACL (strong grant), so a write
+// that names them would change nothing while replying OK -- the shape #1114
+// removed. The operator learns at the write that freezing is a separate
+// mechanism.
+func TestOwnerStrongGrant_SetACLOnOwnerRefused(t *testing.T) {
+	aliceHome, dial := enforceServer(t)
+	_ = aliceHome
 	c := dial("alice")
 
-	// Enforcement: a create under INBOX needs 'k', which the negative strips --
-	// the owner does it anyway.
-	if err := c.Create("INBOX/Sub", nil).Wait(); err != nil {
-		t.Errorf("owner CREATE despite a negative on herself: %v", err)
-	}
-	// Enforcement: SELECT needs 'r'/lookup, also stripped.
-	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
-		t.Errorf("owner SELECT despite a negative on herself: %v", err)
-	}
-
-	// MYRIGHTS: full.
-	mr, err := c.MyRights("INBOX").Wait()
-	if err != nil {
-		t.Fatalf("MYRIGHTS: %v", err)
-	}
-	if got := sortedString(string(mr.Rights)); got != sortedString(string(mailboxpkg.FullRights)) {
-		t.Errorf("MYRIGHTS = %q, want full", got)
-	}
-
-	// GETACL: the owner line reads full, and it is the same answer MYRIGHTS gave
-	// because both come from the resolver.
-	ga, err := c.GetACL("INBOX").Wait()
-	if err != nil {
-		t.Fatalf("GETACL: %v", err)
-	}
+	// A reduced positive, a negative, and the owner keyword are all refused.
 	alice, _ := imaplib.NewRightsIdentifierUsername("alice")
-	if got := sortedString(string(ga.Rights[alice])); got != sortedString(string(mailboxpkg.FullRights)) {
-		t.Errorf("GETACL owner rights = %q, want full", got)
+	for _, id := range []imaplib.RightsIdentifier{alice, imaplib.RightsIdentifier("-alice"), imaplib.RightsIdentifier("owner")} {
+		if err := c.SetACL("INBOX", id, imaplib.RightModificationReplace, imaplib.RightSet("lr")).Wait(); err == nil {
+			t.Errorf("SETACL naming the owner (%q) answered OK; want a refusal", id)
+		}
+	}
+	// DELETEACL naming the owner is refused too.
+	if err := c.DeleteACL("INBOX", alice).Wait(); err == nil {
+		t.Error("DELETEACL naming the owner answered OK; want a refusal")
+	}
+
+	// A non-owner identifier is unaffected: alice can still administer peers.
+	bob, _ := imaplib.NewRightsIdentifierUsername("bob")
+	if err := c.SetACL("INBOX", bob, imaplib.RightModificationReplace, imaplib.RightSet("lr")).Wait(); err != nil {
+		t.Errorf("SETACL for a peer must still work: %v", err)
 	}
 }
 

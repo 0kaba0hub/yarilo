@@ -676,7 +676,11 @@ per-user storage the reference's shared-namespace model does not express.
   weak form would have let one entry lock alice out of her own mail on the
   hottest path. Two consequences follow and are deliberate:
   - **Capping the owner through the ACL is no longer possible** — not by a
-    negative, an explicit entry, or a global. Freezing a mailbox (a suspended
+    negative, an explicit entry, or a global. Because such a write would answer
+    OK and change nothing (the shape #1114 removed), `SETACL`/`DELETEACL` that
+    name the owner — the owner's `user=` identity of either sign, or the now-inert
+    `owner` keyword — are refused, and GETACL shows the single resolved owner row
+    rather than the inert stored entry beside it. Freezing a mailbox (a suspended
     account, a legal hold) is a separate mechanism, not an ACL edit; calling it
     a bug would be reading this divergence as an oversight.
   - **The global ACL loses to the owner.** #1118 made global entries *replace*
