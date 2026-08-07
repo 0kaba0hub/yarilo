@@ -3,6 +3,7 @@ package imap_test
 import (
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,4 +96,75 @@ func TestAppendDenialAnswersWithSynchronizingLiteral(t *testing.T) {
 	if !strings.Contains(got, "BAD") && !strings.Contains(got, "NO") {
 		t.Errorf("APPEND answered %q, want a tagged BAD or NO", got)
 	}
+}
+
+// An APPEND the server accepts and stores must answer OK, even when the command
+// tail is malformed. #1127 gave the malformed tail a tagged response, but it was
+// BAD -- and the store runs before the trailing CRLF is read, so an accepted
+// APPEND with a mis-framed tail stored the message and then reported BAD. A
+// client reads BAD (RFC 9051 §7.1.3: the command did not run), retries, and
+// stores a second copy. The truthful answer to a store that happened is OK
+// (#1129).
+func TestAppendStoredAnswersOKOnMalformedTail(t *testing.T) {
+	aliceHome, addr := rawSharedServer(t)
+
+	a := dialRaw(t, addr)
+	if !strings.Contains(a.cmd("LOGIN alice pw"), "OK") {
+		t.Fatal("alice login")
+	}
+
+	body := "From: x@y\r\nSubject: t\r\n\r\nhi\r\n"
+	fmt.Fprintf(a.conn, "a2 APPEND INBOX {%d}\r\n", len(body))
+	if cont := a.readLine(); !strings.HasPrefix(cont, "+") {
+		t.Fatalf("expected continuation request, got %q", cont)
+	}
+	// The same malformed tail as the denial test -- an extra CR -- but on an
+	// APPEND alice is allowed to make into her own INBOX.
+	fmt.Fprintf(a.conn, "%s\r\r\n", body)
+
+	a.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var got string
+	for {
+		line, err := a.r.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if strings.HasPrefix(line, "a2 ") {
+			got = strings.TrimRight(line, "\r\n")
+			break
+		}
+	}
+	if got == "" {
+		t.Fatal("APPEND returned no tagged response")
+	}
+	if !strings.Contains(got, "OK") {
+		t.Errorf("stored APPEND with a malformed tail answered %q, want OK (#1129)", got)
+	}
+
+	// Exactly one message on disk: the store must have happened once, not zero
+	// times (silently dropped) and not twice (a retry the OK now prevents).
+	cur := filepath.Join(aliceHome, "Maildir", "cur")
+	newDir := filepath.Join(aliceHome, "Maildir", "new")
+	n := countFiles(t, cur) + countFiles(t, newDir)
+	if n != 1 {
+		t.Errorf("message count on disk = %d, want exactly 1", n)
+	}
+}
+
+func countFiles(t *testing.T, dir string) int {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatalf("readdir %s: %v", dir, err)
+	}
+	n := 0
+	for _, e := range ents {
+		if !e.IsDir() {
+			n++
+		}
+	}
+	return n
 }
