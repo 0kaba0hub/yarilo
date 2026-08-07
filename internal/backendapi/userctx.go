@@ -145,8 +145,11 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 		// uc.info is the owner's resolved userdb identity (the caller opened the
 		// context for the extracted owner), so the root and driver come from the
 		// owner's mail_location; the template fills only the gaps -- the same
-		// producer the IMAP path uses (#1142).
-		nsInfo, err = mailbox.StampOwnerLocation(uc.info, uc.info, spec.Location, sepByte(spec.Separator))
+		// producer the IMAP path uses (#1142). base carries the deployment-wide
+		// storage-name form (#1078, #1092), not the owner: it must not vary per
+		// user the day the userdb starts answering those fields, so it comes from
+		// the resolver's deployment defaults, not from uc.info.
+		nsInfo, err = mailbox.StampOwnerLocation(uc.info, s.deploymentBase(), spec.Location, sepByte(spec.Separator))
 		if err != nil {
 			return nil, fmt.Errorf("backendapi/userctx: namespace %q: %w", name, err)
 		}
@@ -289,6 +292,17 @@ func (s *Server) namespaceByName(name string) (config.NamespaceConfig, bool) {
 		return config.NamespaceConfig{Type: "personal", Prefix: "", Separator: "/", List: true}, true
 	}
 	return config.NamespaceConfig{}, false
+}
+
+// deploymentBase is a user-less identity carrying only the deployment-wide
+// storage-name form (StorageEscapeChar, SkipNFCNormalize). It is the base a
+// namespace producer stamps so the same mailbox is spelled the same on disk for
+// every user (#1078, #1092), independent of any one owner's userdb.
+func (s *Server) deploymentBase() *mailbox.UserInfo {
+	if s.opts.Resolver == nil {
+		return nil
+	}
+	return s.opts.Resolver.UserInfo("", "")
 }
 
 // sepByte returns the namespace separator as a byte, defaulting to '/'.

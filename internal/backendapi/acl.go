@@ -396,29 +396,58 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 }
 
 // ownerTemplatedTarget resolves which owner an owner-templated request addresses
-// and rewrites req.Folder to the folder relative to that owner. The owner comes
-// from the addressed mailbox name (as in IMAP); req.User, when given, must equal
-// it. The root carries no mailbox to name the owner, so it takes the owner from
-// req.User instead.
+// and rewrites the owner-qualified names it carries (Folder and each of Folders)
+// to the owner's relative form, as IMAP names them. The owner comes from what
+// the request actually addresses -- Folder, else the first of Folders, else
+// req.User (list and root carry no mailbox). A batch naming two owners is
+// rejected: one request addresses one owner. req.User, when given, must equal
+// the owner the names imply.
 func ownerTemplatedTarget(spec config.NamespaceConfig, req *aclRequest) (owner string, err error) {
-	if req.Root {
+	prefix, sep := spec.Prefix, sepByte(spec.Separator)
+	extract := func(name string) (string, string, error) {
+		o, rel, ok := mailbox.ExtractOwner(prefix, sep, name)
+		if !ok {
+			return "", "", fmt.Errorf("mailbox %q does not name an owner under prefix %q", name, prefix)
+		}
+		return o, rel, nil
+	}
+
+	if req.Folder != "" {
+		o, rel, err := extract(req.Folder)
+		if err != nil {
+			return "", err
+		}
+		owner, req.Folder = o, rel
+	}
+	if len(req.Folders) > 0 {
+		rels := make([]string, len(req.Folders))
+		for i, f := range req.Folders {
+			o, rel, err := extract(f)
+			if err != nil {
+				return "", err
+			}
+			if owner == "" {
+				owner = o
+			} else if o != owner {
+				return "", fmt.Errorf("mailboxes name more than one owner (%q and %q); one request addresses one owner", owner, o)
+			}
+			rels[i] = rel
+		}
+		req.Folders = rels
+	}
+
+	// No owner-qualified name (list, or the namespace root): the owner is
+	// req.User, which is why it is still required here.
+	if owner == "" {
 		if req.User == "" {
-			return "", fmt.Errorf(`owner-templated namespace root needs "user" naming the owner`)
+			return "", fmt.Errorf(`owner-templated namespace needs "user" naming the owner, or a mailbox that names it`)
 		}
 		return req.User, nil
 	}
-	if req.Folder == "" {
-		return "", fmt.Errorf("owner-templated namespace needs a mailbox that names the owner")
+	if req.User != "" && req.User != owner {
+		return "", fmt.Errorf("user %q does not match the owner %q named by the mailbox", req.User, owner)
 	}
-	o, rel, ok := mailbox.ExtractOwner(spec.Prefix, sepByte(spec.Separator), req.Folder)
-	if !ok {
-		return "", fmt.Errorf("mailbox %q does not name an owner under prefix %q", req.Folder, spec.Prefix)
-	}
-	if req.User != "" && req.User != o {
-		return "", fmt.Errorf("user %q does not match the owner %q named by the mailbox", req.User, o)
-	}
-	req.Folder = rel
-	return o, nil
+	return owner, nil
 }
 
 // adminNamespaceOwner returns the owner this request addresses: the store

@@ -124,3 +124,60 @@ func TestSetActor_LockOwnerIsTheActor(t *testing.T) {
 		t.Errorf("empty actor changed the lock owner to %q", uc.lockOwner())
 	}
 }
+
+// list and rebuild carry no owner-qualified Folder by nature; they must still
+// work on an owner-templated namespace (they did before #1142, and rebuild is
+// the repair tool for exactly this residue).
+func TestACL_OwnerTemplated_ListAndRebuildWork(t *testing.T) {
+	root := t.TempDir()
+	userdbRoot := filepath.Join(root, "store", "alice")
+	udb := &stubIteratorUserdb{users: map[string]*protocol.UserInfo{
+		"alice@example.com": {Username: "alice@example.com", Home: userdbRoot, MailLocation: "maildir:" + userdbRoot},
+	}}
+	ts := ownerTemplatedServer(t, root, udb)
+
+	// Seed a Sent folder with an ACL at the userdb root.
+	sentDir := filepath.Join(userdbRoot, ".Sent")
+	if err := os.MkdirAll(sentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sentDir, "yarilo-acl"), []byte("user=bob@example.com lr\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// list: no folder, owner from user.
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/list", "", map[string]any{
+		"user": "alice@example.com", "namespace": otSlug,
+	}); status != 200 {
+		t.Errorf("list status=%d body=%s, want 200", status, body)
+	}
+
+	// rebuild: owner-qualified names, rewritten to rel and reseeded.
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{
+		"user": "alice@example.com", "namespace": otSlug,
+		"folders": []string{"user/alice@example.com/Sent"},
+	})
+	if status != 200 {
+		t.Fatalf("rebuild status=%d body=%s, want 200", status, body)
+	}
+	if !strings.Contains(string(body), `"Sent"`) {
+		t.Errorf("rebuild did not reseed the folder under its relative name: %s", body)
+	}
+}
+
+// A batch naming two owners is rejected, not sifted against the first.
+func TestACL_OwnerTemplated_RebuildTwoOwnersRefused(t *testing.T) {
+	root := t.TempDir()
+	udb := &stubIteratorUserdb{users: map[string]*protocol.UserInfo{
+		"alice@example.com": {Username: "alice@example.com", Home: filepath.Join(root, "a")},
+	}}
+	ts := ownerTemplatedServer(t, root, udb)
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{
+		"user": "alice@example.com", "namespace": otSlug,
+		"folders": []string{"user/alice@example.com/Sent", "user/bob@example.com/Sent"},
+	})
+	if status != http.StatusBadRequest {
+		t.Errorf("two-owner batch status=%d body=%s, want 400", status, body)
+	}
+}
