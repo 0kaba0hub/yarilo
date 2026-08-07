@@ -91,20 +91,13 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 				continue
 			}
 			subsFile := "subscriptions-" + nsSlug(spec)
-			// Set MailPath (not just Home) plus driver and modifiers so the
-			// mailbox backend, fileindex and ACL store all resolve to the same
-			// root; otherwise the ACL store (falls back to Home) and a maildir
-			// backend (falls back to Home/Maildir) disagree.
-			ui := &mailbox.UserInfo{
-				Username:    personalUI.Username,
-				Home:        loc.Path,
-				MailPath:    loc.Path,
-				Driver:      loc.Driver,
-				IndexDir:    loc.IndexDir,
-				VolatileDir: loc.VolatileDir,
-				ControlDir:  loc.ControlDir,
-				AltDir:      loc.AltDir,
-			}
+			// MailPath as well as Home, plus driver and modifiers, so the
+			// mailbox backend, fileindex and ACL store resolve to one root;
+			// otherwise the ACL store (falls back to Home) and a maildir
+			// backend (falls back to Home/Maildir) disagree. Shared with the
+			// admin API, which built the same structure from two fields and
+			// therefore disagreed with this one (#1109).
+			ui := mailbox.NamespaceUserInfo(personalUI, loc, string(spec.Separator))
 			h, err := s.openHandle(spec, nsSlug(spec), ui, owner, subsFile)
 			if err != nil {
 				return nil, nil, fmt.Errorf("imap: open %s namespace: %w", spec.Type, err)

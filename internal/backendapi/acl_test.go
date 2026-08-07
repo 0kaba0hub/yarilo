@@ -2,10 +2,17 @@ package backendapi
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/dict"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestACL_SetGetListDeleteRoundTrip exercises the admin ACL
@@ -537,5 +544,77 @@ func TestACL_MaterialiseIsADryRunUnlessAsked(t *testing.T) {
 	decodeJSONBody(t, body2, &again)
 	if len(again.Added) != 0 {
 		t.Errorf("the second run added %v", again.Added)
+	}
+}
+
+// The admin path must reach a mailbox in a shared namespace. It could not: the
+// namespace's UserInfo was built from Username and Home alone, so the mailbox
+// backend resolved under <location>/Maildir while the ACL store resolved in
+// <location>, and every per-mailbox call answered "folder not found" for a
+// mailbox that was there (#1109).
+//
+// The assertion is that create, set and get agree about where the mailbox is —
+// one path building the folder and another failing to find it is the defect,
+// whatever either answers alone.
+func TestACL_SharedNamespaceMailboxIsReachable(t *testing.T) {
+	root := t.TempDir()
+	mb := mailbox.Validating(maildir.New(), mailbox.DefaultNameRules())
+	d, err := dict.Open(dict.Config{Driver: "memory"})
+	if err != nil {
+		t.Fatalf("open memory dict: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	s := New(Options{
+		Dicts:    map[string]dict.Dict{"metadata": d},
+		Mailbox:  mb,
+		Index:    file.New(),
+		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
+		Namespaces: []config.NamespaceConfig{
+			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "shared", Prefix: "Public/", Separator: "/", List: true,
+				Location: "maildir:" + filepath.Join(root, "public")},
+		},
+		MetadataDict: d,
+	})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	// The mailbox is made the way a session makes it: the namespace location is
+	// the mail root. Creating it through the admin API instead would prove
+	// nothing -- with the wrong bundle both halves of the admin path are wrong
+	// together and agree with each other, which is exactly how this survived.
+	pub := filepath.Join(root, "public")
+	sess := mb.OpenUser(&mailbox.UserInfo{
+		Username: user, Home: pub, MailPath: pub, Driver: "maildir", Separator: "/",
+	})
+	if err := sess.Create("News"); err != nil {
+		t.Fatalf("create News in the namespace location: %v", err)
+	}
+	_ = sess.Close()
+
+	// The mailbox the admin path just created is a mailbox the admin path can
+	// address.
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user, "namespace": "public", "folder": "News",
+		"acl": []map[string]any{{"identifier": "bob@example.com", "rights": "lr"}},
+	}); status != 200 {
+		t.Fatalf("acl set on a shared-namespace mailbox: status=%d %s", status, body)
+	}
+	_, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{
+		"user": user, "namespace": "public", "folder": "News",
+	})
+	if !strings.Contains(string(body), "bob@example.com") {
+		t.Errorf("acl get on a shared-namespace mailbox: %s", body)
+	}
+
+	// And it landed beside the mail rather than in a second tree: the ACL file
+	// is inside the namespace location, which is what the two consumers
+	// disagreed about.
+	if _, err := os.Stat(filepath.Join(root, "public", ".News", "yarilo-acl")); err != nil {
+		t.Errorf("ACL file is not beside the mailbox: %v", err)
 	}
 }

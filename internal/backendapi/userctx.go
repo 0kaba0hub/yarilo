@@ -146,10 +146,12 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 	if !valid {
 		return nil, fmt.Errorf("backendapi/userctx: namespace %q location empty", name)
 	}
-	nsInfo := &mailbox.UserInfo{
-		Username: uc.info.Username,
-		Home:     loc.Path,
-	}
+	// Username and Home alone are not enough: the consumers fall into
+	// different defaults for everything else, so the mailbox backend looked
+	// under <location>/Maildir while the ACL store looked in <location> and
+	// every per-mailbox ACL call here answered "folder not found" (#1109).
+	// One builder, shared with the IMAP path that had it right.
+	nsInfo := mailbox.NamespaceUserInfo(uc.info, loc, spec.Separator)
 	b, err := s.openNS(spec, nsInfo, nil)
 	if err != nil {
 		return nil, fmt.Errorf("backendapi/userctx: open %q: %w", name, err)
