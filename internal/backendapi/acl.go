@@ -432,6 +432,13 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		// again, inside the verb written to fix it. "Every folder that exists" is
 		// not the same set as "everything the index may hold"; the difference is
 		// exactly the root.
+		//
+		// SelectableNames also drops \NoSelect entries. That is safe only while an
+		// ACL cannot exist on one -- the existence gate refuses acl/set on a
+		// non-selectable folder, as IMAP does (#1075, #1105). Relax that gate (an
+		// ACL on a \NoSelect parent to grant a subtree is a plausible want) and
+		// this set must widen with it, or --all deletes those rows exactly as it
+		// would have deleted the root's.
 		req.Folders = append([]string{""}, mailbox.SelectableNames(entries)...)
 	}
 	var present map[string]bool
