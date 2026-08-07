@@ -470,3 +470,65 @@ func TestACL_RebuildReportsWhatItSkipped(t *testing.T) {
 		t.Errorf("index after rebuild = %+v, want the INBOX entry alone", listResp.Entries)
 	}
 }
+
+// The repair path for mailboxes that predate copy-at-create: a dry run by
+// default, additive only, idempotent (#1111).
+func TestACL_MaterialiseIsADryRunUnlessAsked(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/create", "", map[string]any{"user": user, "folder": "Sales"})
+
+	// Root grants the administrator; the mailbox names only a peer — the state
+	// the old rule left behind.
+	doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user, "root": true,
+		"acl": []map[string]any{{"identifier": "admin@example.com", "rights": "lrswipkxtea"}},
+	})
+	doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user, "folder": "Sales",
+		"acl": []map[string]any{{"identifier": "carol@example.com", "rights": "l"}},
+	})
+
+	// Default is a dry run.
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/materialise", "", map[string]any{
+		"user": user, "folders": []string{"Sales"},
+	})
+	if status != 200 {
+		t.Fatalf("materialise: status=%d %s", status, body)
+	}
+	var dry struct {
+		Applied bool                `json:"applied"`
+		Added   map[string][]string `json:"added"`
+	}
+	decodeJSONBody(t, body, &dry)
+	if dry.Applied {
+		t.Error("a run without apply reported itself as applied")
+	}
+	if got := dry.Added["Sales"]; len(got) != 1 || got[0] != "user=admin@example.com" {
+		t.Errorf("added = %v, want the administrator from the root", got)
+	}
+	_, body = doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{"user": user, "folder": "Sales"})
+	if strings.Contains(string(body), "admin@example.com") {
+		t.Error("the dry run wrote to disk")
+	}
+
+	// Apply, then apply again: the second run changes nothing.
+	doJSON(t, ts, http.MethodPost, "/api/backend/acl/materialise", "", map[string]any{
+		"user": user, "folders": []string{"Sales"}, "apply": true,
+	})
+	_, body = doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{"user": user, "folder": "Sales"})
+	if !strings.Contains(string(body), "admin@example.com") {
+		t.Fatalf("apply did not write: %s", body)
+	}
+	_, body2 := doJSON(t, ts, http.MethodPost, "/api/backend/acl/materialise", "", map[string]any{
+		"user": user, "folders": []string{"Sales"}, "apply": true,
+	})
+	var again struct {
+		Added map[string][]string `json:"added"`
+	}
+	decodeJSONBody(t, body2, &again)
+	if len(again.Added) != 0 {
+		t.Errorf("the second run added %v", again.Added)
+	}
+}

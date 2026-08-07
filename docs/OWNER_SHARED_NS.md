@@ -466,6 +466,58 @@ of quietly leaving another probe mailbox behind.
 
 Tracked as #1104.
 
+### 7.3 Inheritance is materialised at creation, not resolved at every check
+
+When a mailbox is created it is given an ACL file of its own carrying what it
+inherits — the first ancestor with an ACL, else the namespace-root default.
+After that the file is authoritative: nothing is layered underneath it.
+
+**The file is the answer to "who has rights here".** That is the reason, ahead
+of parity. Audits, backups, restores and incident work all read files; if
+inheritance were resolved live, the same file would mean different things before
+and after an administrator edited the root, and no snapshot of the disk would be
+self-contained.
+
+It also removes #1111 at the source. `u2`, holding the create right at the
+namespace root, creates `Public/Matrix`; the root's entry for `u2` is written
+into the new mailbox's ACL there and then, so the first `SETACL` `u2` issues on
+it does not replace the grant they are acting under. There is nothing to shadow.
+
+**Global ACLs are not copied.** They keep merging live at resolve time, which is
+what a global ACL is for, and the reference excludes them from the copy for the
+same reason (`if (!update.rights.global)`). In yarilo they cannot be copied even
+by accident: the global ACL is operator configuration and never a stored entry.
+A creator whose rights come from it holds them without appearing in the file.
+
+The alternative — merging the namespace root under every mailbox at resolve
+time — was implemented first and reverted. It fixes this case by making a
+per-mailbox ACL *additive*: every identifier the root names regains its rights on
+every mailbox, including ones whose file was written to leave them out.
+Restriction by omission stops working, silently, and that is the wrong direction
+for access control. Merging is the global ACL's semantics, one layer up, and the
+root is a different thing wearing a similar shape.
+
+**Two consequences worth stating rather than discovering:**
+
+- Every mailbox created in a namespace that has a root ACL now has an ACL file
+  of its own. That is the point — it is what makes the state readable — but it
+  is more files than before.
+- A later change to the root does **not** reach mailboxes that already exist.
+  Changing policy across a namespace is an administrative operation over its
+  mailboxes, which makes #1109 a precondition for operating this rather than a
+  convenience.
+
+**Repairing what predates it.** `yarctl backend acl materialise <user> <folder>…`
+adds, per mailbox, the inherited identifiers the mailbox does not already name.
+It is a dry run unless `--apply`, it never rewrites an entry that is already
+there, and running it twice adds nothing. It is deliberately not automatic: a
+mailbox orphaned by the old rule and a mailbox whose ACL leaves out an
+identifier on purpose are the same file on disk, so a resolver doing this on
+read would widen access exactly where it was narrowed deliberately. The report
+lists what it added and what it skipped.
+
+Tracked as #1111.
+
 ---
 
 ## 8. Testing plan

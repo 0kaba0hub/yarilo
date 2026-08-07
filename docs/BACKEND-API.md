@@ -244,6 +244,15 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > mailbox with permissions and no messages. `--root` names no folder, so it is
 > not affected.
 >
+> **`materialise` repairs inheritance.** `POST /api/backend/acl/materialise`
+> (`yarctl backend acl materialise <user> <folder>…`) writes what each mailbox
+> inherits into its own ACL, for mailboxes created before inheritance was
+> materialised at creation. It is a **dry run unless `"apply": true`**, it only
+> ever adds — an entry already in the file is left exactly as it is and reported
+> under `skipped` — and a second run adds nothing. It is not automatic on
+> purpose: a mailbox orphaned by the old rule and one whose ACL deliberately
+> omits an identifier are the same file on disk.
+>
 > **`rebuild` is the exception, deliberately.** It reseeds the index from files
 > already on disk, creates nothing, and is run precisely when the state is
 > already inconsistent — refusing the whole batch over one stale name would

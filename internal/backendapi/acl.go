@@ -21,6 +21,11 @@ import (
 //	POST /api/backend/acl/get     — parsed ACL for one mailbox
 //	POST /api/backend/acl/set     — replace ACL for one mailbox
 //	POST /api/backend/acl/delete  — drop ACL for one mailbox
+//	POST /api/backend/acl/materialise — write inherited entries into the ACL
+//	                                of each mailbox that lacks them (repair for
+//	                                mailboxes created before inheritance was
+//	                                materialised at creation); dry_run unless
+//	                                asked otherwise
 //	POST /api/backend/acl/rebuild — reseed namespace-wide index from
 //	                                per-mailbox files (folders arg
 //	                                supplied by caller)
@@ -30,6 +35,7 @@ func (s *Server) registerACLRoutes() {
 	s.mux.Handle("POST /api/backend/acl/set", s.middleware(s.handleACLSet))
 	s.mux.Handle("POST /api/backend/acl/delete", s.middleware(s.handleACLDelete))
 	s.mux.Handle("POST /api/backend/acl/rebuild", s.middleware(s.handleACLRebuild))
+	s.mux.Handle("POST /api/backend/acl/materialise", s.middleware(s.handleACLMaterialise))
 }
 
 // aclRequest is the common request body for the admin endpoints.
@@ -49,6 +55,11 @@ type aclRequest struct {
 	// otherwise become a legitimate grant on the root of the namespace
 	// (#1091).
 	Root bool `json:"root,omitempty"`
+	// Apply turns a materialise run from a dry run into a write. Absent means
+	// dry run: the operation changes who can reach mail, so "show me what you
+	// would do" is how it is meant to be run first, not a flag remembered
+	// afterwards.
+	Apply bool `json:"apply,omitempty"`
 }
 
 // aclEntryJSON is the wire-format representation of a single ACL
@@ -368,4 +379,44 @@ func entriesToJSON(in []acl.ListEntry) []map[string]any {
 		})
 	}
 	return out
+}
+
+// handleACLMaterialise writes what each mailbox inherits into its own ACL,
+// for mailboxes that have an ACL of their own and do not name those
+// identifiers.
+//
+// It repairs what copy-at-create cannot: mailboxes created before it, whose
+// file replaced the inherited grant outright and can therefore name a peer and
+// nobody able to administer the mailbox (#1111).
+//
+// A dry run unless "apply": true. It only adds, never rewrites an entry that is
+// already there -- an existing entry is an explicit statement, and a mailbox
+// whose ACL deliberately leaves out an identifier the root names is
+// indistinguishable on disk from one orphaned by the old rule. That is also why
+// this is an operator action and not something a resolver does on read.
+func (s *Server) handleACLMaterialise(w http.ResponseWriter, r *http.Request) {
+	store, req, _, err := s.openACLStore(w, r)
+	if err != nil {
+		return
+	}
+	if req.Folder != "" || req.Root {
+		apiError(w, "materialise runs over a whole namespace; do not send a folder", http.StatusBadRequest)
+		return
+	}
+	folders := req.Folders
+	if len(folders) == 0 {
+		apiError(w, "folders required", http.StatusBadRequest)
+		return
+	}
+	rep, err := store.MaterialiseExisting(folders, !req.Apply)
+	if err != nil {
+		apiError(w, "materialise: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, map[string]any{
+		"status":  "ok",
+		"applied": req.Apply,
+		"added":   rep.Added,
+		"skipped": rep.Skipped,
+	})
 }

@@ -1154,3 +1154,77 @@ func TestACLEnforce_WithoutAdminRightNeitherReadNorWrite(t *testing.T) {
 		t.Error("SETACL answered a peer without the admin right")
 	}
 }
+
+// The sequence from #1111, end to end: an administrator who holds rights only
+// at the namespace root creates a mailbox and grants a peer on it, and must
+// still hold everything afterwards.
+//
+// It works because CREATE materialises what the mailbox inherits into its own
+// ACL, so the administrator is named there before any SETACL can replace the
+// grant they were acting under. Resolving inheritance live instead would make
+// the per-mailbox file additive, which fixes this case by widening every other
+// mailbox in the namespace -- the wrong direction for access control.
+func TestACLEnforce_GrantingOnAMailboxDoesNotRevokeTheGranter(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	seedRootACL(t, aliceHome, "user=bob lrskxa\n")
+
+	b := dial("bob")
+	if err := b.Create("Shared/Matrix", nil).Wait(); err != nil {
+		t.Fatalf("bob CREATE with 'k' on the root: %v", err)
+	}
+	carol, err := imaplib.NewRightsIdentifierUsername("carol")
+	if err != nil {
+		t.Fatalf("NewRightsIdentifierUsername: %v", err)
+	}
+	if err := b.SetACL("Shared/Matrix", carol, imaplib.RightModificationReplace, imaplib.RightSet("l")).Wait(); err != nil {
+		t.Fatalf("bob SETACL: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{"SELECT", func() error { _, err := b.Select("Shared/Matrix", nil).Wait(); return err }},
+		{"GETACL", func() error { _, err := b.GetACL("Shared/Matrix").Wait(); return err }},
+		{"SETACL again", func() error {
+			return b.SetACL("Shared/Matrix", carol, imaplib.RightModificationReplace, imaplib.RightSet("lr")).Wait()
+		}},
+		{"DELETE", func() error { return b.Delete("Shared/Matrix").Wait() }},
+	} {
+		if err := tc.run(); err != nil {
+			t.Errorf("after granting a peer, %s fails for the granter: %v", tc.name, err)
+		}
+	}
+}
+
+// The other direction, which the merge model could not keep: a per-mailbox ACL
+// stays exhaustive. An identifier the root names and the mailbox does not is
+// not reachable there, so restriction by omission still restricts.
+func TestACLEnforce_AMailboxACLStaysExhaustive(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	if err := a.Create("Shared/Private", nil).Wait(); err == nil {
+		// alice is not the owner of a shared namespace either; seed and retry.
+		t.Log("unexpected success without a grant")
+	}
+	seedRootACL(t, aliceHome, "user=alice lrskxa\nuser=bob lrs\n")
+	if err := a.Create("Shared/Private", nil).Wait(); err != nil {
+		t.Fatalf("alice CREATE: %v", err)
+	}
+	// The mailbox is then narrowed on purpose: only alice.
+	seedACL(t, aliceHome, "Private", "user=alice lrswipkxtea\n")
+
+	b := dial("bob")
+	if _, err := b.Select("Shared/Private", nil).Wait(); err == nil {
+		t.Error("bob reached a mailbox whose ACL leaves him out — omission stopped restricting")
+	}
+}
