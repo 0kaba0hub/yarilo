@@ -1,10 +1,6 @@
 package imap
 
-import (
-	"strings"
-
-	"github.com/yarilomail/yarilo/pkg/mailbox"
-)
+import "github.com/yarilomail/yarilo/pkg/mailbox"
 
 // isOwnerTemplated reports whether spec's prefix carries the owner variable.
 // The detection and the variable itself live in pkg/mailbox, so config
@@ -35,42 +31,5 @@ func isOwnerTemplated(spec NamespaceSpec) bool {
 // separator (the v1 limitation). A false result must resolve to no owner, never
 // to the session user.
 func extractOwner(spec NamespaceSpec, name string) (owner, rel string, ok bool) {
-	if !isOwnerTemplated(spec) {
-		return "", "", false
-	}
-	before, after, _ := strings.Cut(spec.Prefix, mailbox.OwnerVar)
-	if !strings.HasPrefix(name, before) {
-		return "", "", false
-	}
-	sep := string(spec.Separator)
-	if sep == "" {
-		sep = "/"
-	}
-	// v1: the variable is the last meaningful element of the prefix, followed by
-	// the separator or nothing. A richer post-variable literal (e.g.
-	// "user/%u/mail/") is not parsed here rather than parsed wrongly.
-	if after != "" && after != sep {
-		return "", "", false
-	}
-	rest := name[len(before):]
-	seg, tail, hasSep := strings.Cut(rest, sep)
-	if !validOwnerSegment(seg) {
-		return "", "", false
-	}
-	if !hasSep || tail == "" {
-		// "user/alice" or "user/alice/" -> the owner's INBOX.
-		return seg, "INBOX", true
-	}
-	return seg, tail, true
-}
-
-// validOwnerSegment rejects a segment that cannot be a username: empty, or the
-// filesystem-relative "." / "..". Everything else is left to the userdb lookup,
-// which fails closed for an owner that does not exist.
-func validOwnerSegment(seg string) bool {
-	switch seg {
-	case "", ".", "..":
-		return false
-	}
-	return true
+	return mailbox.ExtractOwner(spec.Prefix, byte(spec.Separator), name)
 }

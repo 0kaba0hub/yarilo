@@ -139,21 +139,37 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 	if spec.Location == "" {
 		return nil, fmt.Errorf("backendapi/userctx: namespace %q has no location", name)
 	}
-	loc, valid, err := mailbox.ParseLocation(spec.Location, nil)
-	if err != nil {
-		return nil, fmt.Errorf("backendapi/userctx: namespace %q location: %w", name, err)
-	}
-	if !valid {
-		return nil, fmt.Errorf("backendapi/userctx: namespace %q location empty", name)
-	}
-	// Username and Home alone are not enough: the consumers fall into
-	// different defaults for everything else, so the mailbox backend looked
-	// under <location>/Maildir while the ACL store looked in <location> and
-	// every per-mailbox ACL call here answered "folder not found" (#1109).
-	// One builder, shared with the IMAP path that had it right.
-	nsInfo, err := mailbox.NamespaceUserInfo(uc.info, loc, spec.Separator)
-	if err != nil {
-		return nil, fmt.Errorf("backendapi/userctx: namespace %q: %w", name, err)
+	var nsInfo *mailbox.UserInfo
+	var err error
+	if mailbox.PrefixIsOwnerTemplated(spec.Prefix) {
+		// uc.info is the owner's resolved userdb identity (the caller opened the
+		// context for the extracted owner), so the root and driver come from the
+		// owner's mail_location; the template fills only the gaps -- the same
+		// producer the IMAP path uses (#1142). base carries the deployment-wide
+		// storage-name form (#1078, #1092), not the owner: it must not vary per
+		// user the day the userdb starts answering those fields, so it comes from
+		// the resolver's deployment defaults, not from uc.info.
+		nsInfo, err = mailbox.StampOwnerLocation(uc.info, s.deploymentBase(), spec.Location, sepByte(spec.Separator))
+		if err != nil {
+			return nil, fmt.Errorf("backendapi/userctx: namespace %q: %w", name, err)
+		}
+	} else {
+		loc, valid, perr := mailbox.ParseLocation(spec.Location, nil)
+		if perr != nil {
+			return nil, fmt.Errorf("backendapi/userctx: namespace %q location: %w", name, perr)
+		}
+		if !valid {
+			return nil, fmt.Errorf("backendapi/userctx: namespace %q location empty", name)
+		}
+		// Username and Home alone are not enough: the consumers fall into
+		// different defaults for everything else, so the mailbox backend looked
+		// under <location>/Maildir while the ACL store looked in <location> and
+		// every per-mailbox ACL call here answered "folder not found" (#1109).
+		// One builder, shared with the IMAP path that had it right.
+		nsInfo, err = mailbox.NamespaceUserInfo(uc.info, loc, spec.Separator)
+		if err != nil {
+			return nil, fmt.Errorf("backendapi/userctx: namespace %q: %w", name, err)
+		}
 	}
 	b, err := s.openNS(spec, nsInfo, nil)
 	if err != nil {
@@ -278,6 +294,25 @@ func (s *Server) namespaceByName(name string) (config.NamespaceConfig, bool) {
 	return config.NamespaceConfig{}, false
 }
 
+// deploymentBase is a user-less identity carrying only the deployment-wide
+// storage-name form (StorageEscapeChar, SkipNFCNormalize). It is the base a
+// namespace producer stamps so the same mailbox is spelled the same on disk for
+// every user (#1078, #1092), independent of any one owner's userdb.
+func (s *Server) deploymentBase() *mailbox.UserInfo {
+	if s.opts.Resolver == nil {
+		return nil
+	}
+	return s.opts.Resolver.UserInfo("", "")
+}
+
+// sepByte returns the namespace separator as a byte, defaulting to '/'.
+func sepByte(sep string) byte {
+	if sep == "" {
+		return '/'
+	}
+	return sep[0]
+}
+
 // slugFor returns the canonical slug for a namespace spec, so the wire
 // identifier used by admin requests matches the on-disk per-namespace
 // filenames.
@@ -309,6 +344,16 @@ func (b *nsBundle) folderControlRoot() string {
 // this admin request acquires. Format mirrors the session owner so operators
 // can correlate.
 func (uc *userContext) lockOwner() string { return uc.owner }
+
+// setActor records the acting identity for lock ownership, so an operator
+// editing another account's namespace holds the lock under their own name, not
+// the store owner's. No-op when actor is empty.
+func (uc *userContext) setActor(actor string) {
+	if actor == "" {
+		return
+	}
+	uc.owner = fmt.Sprintf("yarilo-backend-api/%d/%s", os.Getpid(), actor)
+}
 
 // dirExists reports whether path is an existing directory.
 func dirExists(path string) bool {
