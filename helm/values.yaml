@@ -193,6 +193,16 @@ storage:
   ##                                    # mailbox reindexes and its UIDVALIDITY changes once. The mail is not
   ##                                    # touched: it was always in the one directory. ASCII-only folder
   ##                                    # names are unaffected.
+  ##                                    # UPGRADE NOTE (2.3.77): normalisation moved once more, from path
+  ##                                    # derivation to the name-entry boundary -- one owner, applied where a
+  ##                                    # wire name becomes the name every tree is addressed by. Behaviour for
+  ##                                    # new names is unchanged; the retroactivity above (a decomposed name's
+  ##                                    # index/ACL/FTS trees rebuilt once, UIDVALIDITY changing once, mail
+  ##                                    # untouched) is the same event and happens on the 2.3.72 -> 2.3.77
+  ##                                    # upgrade if it did not already. One extra caveat: a SUBSCRIBE recorded
+  ##                                    # under a decomposed name keeps its stored spelling, so LSUB may return
+  ##                                    # a name in a different form than LIST until it is re-subscribed. SELECT
+  ##                                    # of either form resolves the same folder, so nothing is lost.
   ## mailbox_list_validate_fs_names: true # refuse folder names unsafe as paths: "."/".." segments, adjacent
   ##                                      # separators, leading "/" or "~", and the on-disk hierarchy separator
   ##                                      # when it differs from the namespace one (default true; turn off only

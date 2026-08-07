@@ -233,6 +233,9 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		return nil, nil, nil, errRootWithFolder
 	}
 	if req.Folder != "" {
+		// Same NFC owner as every other admin entry: address the folder the
+		// client created, not a decomposed spelling of it (#1113).
+		req.Folder = mailbox.NormalizeName(req.Folder, bundle.info.SkipNFCNormalize)
 		if err := mailbox.CheckName(bundle.box, req.Folder); err != nil {
 			apiError(w, err.Error(), http.StatusBadRequest)
 			return nil, nil, nil, err
@@ -272,7 +275,7 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 			present[f] = exists
 		}
 	}
-	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{SkipNFCNormalize: bundle.info.SkipNFCNormalize}, s.opts.Locker)
+	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
 	return store, &req, present, nil
 }
 

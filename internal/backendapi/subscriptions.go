@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // registerSubscriptionRoutes registers IMAP subscription routes.
@@ -107,5 +108,7 @@ func (s *Server) openSubsStore(w http.ResponseWriter, r *http.Request) (*subs.St
 		uc.lockOwner(),
 		s.opts.Locker,
 	)
-	return store, req.Folder, nil
+	// One owner of NFC: a subscription addresses the same folder a session
+	// created, and new records go in NFC (#1113).
+	return store, mailbox.NormalizeName(req.Folder, bundle.info.SkipNFCNormalize), nil
 }

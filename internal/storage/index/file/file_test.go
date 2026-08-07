@@ -753,16 +753,13 @@ func TestApplyLogRecountsAfterCorruptedHeaderUpdate(t *testing.T) {
 	b3.Close() //nolint:errcheck
 }
 
-// The index tree names a folder in the same Unicode form the mail tree does.
-// It did not: the drivers normalised before building their path and this tree
-// passed the logical name through, so one mailbox addressed in two forms got
-// two index directories -- two UID spaces, and a UIDVALIDITY change telling the
-// client to discard what it knew (#1092).
-//
-// Asserted on the computed path rather than by creating directories: macOS
-// normalises names on creation, so a filesystem probe agrees while the paths
-// differ.
-func TestIndexDirIsOneNameInEveryUnicodeForm(t *testing.T) {
+// The index tree is form-preserving: it names a folder by exactly the name it
+// is given. Normalisation happens once upstream, at the name-entry boundary, so
+// the session hands this tree an already-NFC name and the index directory
+// matches the mail directory without this tree owning a copy of the transform
+// (#1113). The earlier version of this test asserted the index itself
+// normalised (#1092); moving the owner up inverts that, deliberately.
+func TestIndexDirIsFormPreserving(t *testing.T) {
 	const (
 		composed   = "Caf\u00e9"  // é as one rune
 		decomposed = "Cafe\u0301" // e + combining acute
@@ -774,17 +771,17 @@ func TestIndexDirIsOneNameInEveryUnicodeForm(t *testing.T) {
 	ui := New().OpenUser(&mailbox.UserInfo{
 		Username: "u@test", Home: "/srv/u", Driver: "maildir", Separator: "/",
 	}).(*userHandle).ui
-	if got, want := ui.indexDir(decomposed), ui.indexDir(composed); got != want {
-		t.Errorf("index dir for NFD = %q, for NFC = %q; one mailbox, two index trees", got, want)
-	}
 
-	// And with normalisation turned off the two stay apart, so the knob still
-	// decides rather than the tree.
-	off := New().OpenUser(&mailbox.UserInfo{
-		Username: "u@test", Home: "/srv/u", Driver: "maildir", Separator: "/",
-		SkipNFCNormalize: true,
-	}).(*userHandle).ui
-	if off.indexDir(decomposed) == off.indexDir(composed) {
-		t.Error("normalisation is disabled and both forms still gave one index dir")
+	// Given two forms, two directories -- because normalising is not this
+	// tree's job. The session normalises before it ever calls here, so in
+	// production both arrive as the composed form.
+	if ui.indexDir(composed) == ui.indexDir(decomposed) {
+		t.Error("indexDir normalised its input; NFC must live at the boundary, not in the index tree")
+	}
+	// And with both fed the boundary's output, they agree -- the property the
+	// four trees actually rely on.
+	ca := mailbox.NormalizeName(decomposed, false)
+	if ui.indexDir(ca) != ui.indexDir(composed) {
+		t.Error("a normalised NFD name does not match the composed one in the index tree")
 	}
 }

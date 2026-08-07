@@ -576,6 +576,16 @@ means, recorded so a migration does not read them as faults:
   a negative on its own line where a Dovecot one carries it in the identifier's
   record.
 
+- **NFC is applied once, at the name-entry boundary.** The reference normalises
+  in `mailbox_alloc`, the single point every protocol funnels through; yarilo
+  has no such shared point across protocols, so normalisation lives in
+  `mailbox.NormalizeName`, called inside each namespace resolver (IMAP dispatch,
+  LMTP delivery, the admin API, the migrator). Path derivation -- the drivers'
+  disk-name step and `FolderSubpathEscaped` -- takes the name as given and never
+  normalises, so the order of NFC against escaping, which used to be held by
+  convention across two owners, no longer exists to get wrong (#1078, #1092,
+  #1113).
+
 - **Escape-before-encode is the reverse of the reference, and it is a
   byte-compatibility boundary.** yarilo escapes the storage name and then
   encodes to modified UTF-7; the reference encodes first and escapes second

@@ -45,6 +45,7 @@ func (s *Server) handleIndexRebuild(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "reset_uids=true not supported in v1 — DELETE+CREATE the folder via IMAP instead", http.StatusNotImplemented)
 		return
 	}
+	req.Folder = mailbox.NormalizeName(req.Folder, s.skipNFC())
 	stats, status, err := s.rebuildFolder(r.Context(), req)
 	if err != nil {
 		apiError(w, err.Error(), status)
@@ -230,6 +231,7 @@ func (s *Server) handleIndexOptimize(w http.ResponseWriter, r *http.Request) {
 		apiError(w, errFolderRequired.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Folder = mailbox.NormalizeName(req.Folder, s.skipNFC())
 	stats, status, err := s.optimizeFolder(r.Context(), req)
 	if err != nil {
 		apiError(w, err.Error(), status)
@@ -298,6 +300,7 @@ func (s *Server) handleFolderRepair(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "reset_uids=true not supported in v1 — DELETE+CREATE the folder via IMAP instead", http.StatusNotImplemented)
 		return
 	}
+	req.Folder = mailbox.NormalizeName(req.Folder, s.skipNFC())
 	rb, status, err := s.rebuildFolder(r.Context(), req)
 	if err != nil {
 		apiError(w, err.Error(), status)

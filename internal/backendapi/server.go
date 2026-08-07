@@ -142,6 +142,21 @@ func (s *Server) mailboxForDriver(driver string) mailbox.MailboxBackend {
 // New constructs a Server and registers the backend endpoints onto an internal
 // ServeMux. Per-service routes are registered from their own files (acl.go,
 // quota.go, dict.go, ...).
+// skipNFC is the deployment-wide "do not normalise folder names" setting, read
+// at a decode boundary that has not yet resolved a bundle. It is the same value
+// stamped onto every UserInfo, so normalising with it matches what the
+// bundle-holding handlers do (#1113).
+//
+// The equality is by construction, not coincidence: UserInfo.SkipNFCNormalize is
+// only ever set from Resolver.DefaultSkipNFCNormalize (StampLocation, path.go),
+// there being no per-user source today. If a userdb field for it is ever added,
+// this read stays the deployment default while ui.SkipNFCNormalize follows the
+// user -- and the two would diverge here, silently. Route this through the
+// resolved UserInfo at that point rather than the resolver default.
+func (s *Server) skipNFC() bool {
+	return s.opts.Resolver != nil && s.opts.Resolver.DefaultSkipNFCNormalize
+}
+
 func New(opts Options) *Server {
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 	s.registerHealth()

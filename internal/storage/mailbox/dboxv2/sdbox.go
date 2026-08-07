@@ -39,13 +39,12 @@ const (
 // Backend is the sdbox MailboxBackend factory; per-user state lives in
 // userMailbox.
 type Backend struct {
-	hostname     string
-	pid          int
-	tmpSeq       atomic.Uint64 // per-process counter for unique .temp.* names
-	locker       locks.Locker
-	writeSem     chan struct{} // nil = unlimited
-	listUTF8     bool
-	normalizeNFC bool
+	hostname string
+	pid      int
+	tmpSeq   atomic.Uint64 // per-process counter for unique .temp.* names
+	locker   locks.Locker
+	writeSem chan struct{} // nil = unlimited
+	listUTF8 bool
 }
 
 // Option configures a Backend at construction time.
@@ -73,16 +72,13 @@ func WithMaxConcurrentWrites(n int) Option {
 // false modified-UTF-7 (RFC 3501 §5.1.3) for legacy installations.
 func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 
-// WithNormalizeNFC enables Unicode NFC normalization of folder names. Default true.
-func WithNormalizeNFC(v bool) Option { return func(b *Backend) { b.normalizeNFC = v } }
-
 // New constructs an sdbox Backend.
 func New(opts ...Option) *Backend {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "localhost"
 	}
-	b := &Backend{hostname: host, pid: os.Getpid(), listUTF8: true, normalizeNFC: true}
+	b := &Backend{hostname: host, pid: os.Getpid(), listUTF8: true}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -98,28 +94,26 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		mailPath = filepath.Join(u.Home, sdboxRoot)
 	}
 	return &userMailbox{
-		b:            b,
-		home:         mailPath,
-		separator:    mailbox.SepOrDefault(u.Separator),
-		escapeChar:   u.StorageEscapeChar,
-		username:     u.Username,
-		owner:        makeOwner(u),
-		listUTF8:     b.listUTF8,
-		normalizeNFC: b.normalizeNFC,
+		b:          b,
+		home:       mailPath,
+		separator:  mailbox.SepOrDefault(u.Separator),
+		escapeChar: u.StorageEscapeChar,
+		username:   u.Username,
+		owner:      makeOwner(u),
+		listUTF8:   b.listUTF8,
 	}
 }
 
 // userMailbox is a per-session sdbox storage handle.
 type userMailbox struct {
-	b            *Backend
-	home         string
-	separator    string // IMAP hierarchy separator; converted to "/" on disk (fs nesting)
-	escapeChar   string // storage-name escape char; "" disables escaping
-	username     string
-	owner        string
-	listUTF8     bool
-	normalizeNFC bool
-	mu           sync.Mutex
+	b          *Backend
+	home       string
+	separator  string // IMAP hierarchy separator; converted to "/" on disk (fs nesting)
+	escapeChar string // storage-name escape char; "" disables escaping
+	username   string
+	owner      string
+	listUTF8   bool
+	mu         sync.Mutex
 }
 
 func makeOwner(u *mailbox.UserInfo) string {
@@ -585,13 +579,10 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 		}
 		// Outermost on the way back: the escape sits at the logical-name
 		// boundary, above modUTF7, so it is applied last here and first on the
-		// way in (#1078). NFC follows it rather than preceding it: normalising
-		// first would let a combining mark after an escaped byte compose with
-		// the escape's hex digit and hide the sequence (#1092).
+		// way in (#1078). No NFC here: the disk name is already in the form the
+		// boundary chose, and re-normalising it is the second owner this change
+		// removed (#1113).
 		logical = mailbox.UnescapeStorageName(logical, u.escapeChar)
-		if u.normalizeNFC {
-			logical = mboxenc.NFC(logical)
-		}
 		return logical, true
 	}
 	isMarker := func(name string) bool { return name == dboxMailsDir }
@@ -666,14 +657,10 @@ func (u *userMailbox) mailboxesRoot() string {
 	return filepath.Join(u.sdboxRoot(), mailboxesDir)
 }
 func (u *userMailbox) folderDiskName(folder string) string {
-	// Escape first, encode second; the reverse path mirrors it (#1078).
-	// NFC precedes escaping: escaping emits ASCII hex, so a combining mark
-	// after an escaped byte composes with a hex digit and eats the escape
-	// sequence. #1078's requirement was escaping before modUTF7, which this
-	// keeps (#1092).
-	if u.normalizeNFC {
-		folder = mboxenc.NFC(folder)
-	}
+	// Escape first, encode second; the reverse path mirrors it (#1078). NFC is
+	// applied once at the name-entry boundary (mailbox.NormalizeName), not
+	// here, so folder arrives in its final form and there is no ordering of NFC
+	// against escaping left to get wrong (#1113).
 	folder = mailbox.EscapeLogicalName(folder, u.separator, "/", u.escapeChar)
 	if !u.listUTF8 {
 		folder = mboxenc.ToModUTF7(folder)
@@ -682,7 +669,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpathForm("sdbox", folder, u.folderDiskName(folder), u.separator, "", !u.normalizeNFC))
+	return filepath.Join(u.sdboxRoot(), mailbox.FolderSubpath("sdbox", folder, u.folderDiskName(folder), u.separator))
 }
 
 // folderDir is the mailbox directory (mailboxes/<name>) — folderPath without

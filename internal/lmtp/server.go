@@ -485,6 +485,10 @@ func (s *session) lookupMetadata(ctx context.Context, userInfo *mailbox.UserInfo
 
 func (s *session) deliveryTarget(userInfo *mailbox.UserInfo, rcptBox mailbox.UserMailbox, rcptIdx mailbox.UserIndex, folder string, enforcePost bool) (mailbox.UserMailbox, mailbox.UserIndex, string, func()) {
 	noop := func() {}
+	// One owner of NFC, here at the resolver, so a Sieve fileinto naming a
+	// folder in a decomposed form addresses the same directory the mail tree
+	// holds (#1113).
+	folder = mailbox.NormalizeName(folder, userInfo != nil && userInfo.SkipNFCNormalize)
 	ns := s.matchNamespace(folder)
 	if ns == nil {
 		return rcptBox, rcptIdx, folder, noop
@@ -545,7 +549,6 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 		GlobalsOnly:       s.opts.ACLGlobalsOnly,
 		Global:            s.opts.ACLGlobal,
 		CacheTTL:          s.opts.ACLCacheTTL,
-		SkipNFCNormalize:  ui.SkipNFCNormalize,
 	}, s.opts.Locker)
 	var sep byte = '/'
 	if ns.Separator != "" {

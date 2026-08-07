@@ -59,6 +59,7 @@ func (s *Server) handleIndexDump(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Folder = mailbox.NormalizeName(req.Folder, bundle.info.SkipNFCNormalize)
 	exists, err := bundle.box.FolderExists(req.Folder)
 	if err != nil {
 		apiError(w, "folder exists: "+err.Error(), http.StatusInternalServerError)
