@@ -203,6 +203,25 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 			apiError(w, err.Error(), http.StatusBadRequest)
 			return nil, nil, err
 		}
+		// RFC 4314 3.3, the rule #1075 put on the IMAP side: the ACL commands
+		// answer for a mailbox that is there. This path never checked, so
+		// setting an ACL on a misspelt name was not an error -- the store
+		// created the directory and wrote the file, and a typo became a
+		// mailbox with permissions and no messages.
+		//
+		// Asked here rather than in each handler, for the reason
+		// resolveACLHandle gives: four copies is how one of them ends up
+		// without. The root is exempt by construction -- it carries no folder
+		// name, so it never reaches this branch (#1096).
+		exists, err := bundle.box.FolderExists(req.Folder)
+		if err != nil {
+			apiError(w, "folder exists: "+err.Error(), http.StatusInternalServerError)
+			return nil, nil, err
+		}
+		if !exists {
+			apiError(w, "folder not found", http.StatusNotFound)
+			return nil, nil, errFolderNotFound
+		}
 	}
 	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
 	return store, &req, nil

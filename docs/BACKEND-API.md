@@ -236,6 +236,13 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > `"root": true` on the wire, never by omitting the folder. Folder is required
 > everywhere else, so a dropped argument fails instead of becoming a grant on
 > the whole namespace.
+>
+> **A named folder must exist.** `get`, `set` and `delete` answer `404 folder
+> not found` for a mailbox that is not there, matching what the IMAP ACL
+> commands have answered since 2.3.62. Previously a misspelt name was written
+> as given, and the store created the directory on the way — a typo became a
+> mailbox with permissions and no messages. `--root` names no folder, so it is
+> not affected.
 
 ### `POST /api/backend/folder/info`
 

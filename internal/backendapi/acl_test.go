@@ -332,3 +332,68 @@ func TestACL_RootIsAddressableAndNotByOmission(t *testing.T) {
 		t.Errorf("root plus folder: status=%d, want 400: %s", status, body)
 	}
 }
+
+// An ACL may only be set on a mailbox that exists. Nothing checked here, so a
+// misspelt name was not an error: the store created the directory and wrote
+// the file, and the result was a mailbox with permissions and no messages
+// (#1101). The IMAP side has refused since #1075; this is the same rule on the
+// admin side of the wire.
+//
+// The assertion is on the disk as well as on the status: a 404 that still left
+// the folder behind would be the same defect with a better answer.
+func TestACL_MissingFolderIsRefusedAndCreatesNothing(t *testing.T) {
+	ts, root := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	const missing = "Slaes" // the typo the operator makes for "Sales"
+	cases := []struct {
+		name string
+		path string
+		body map[string]any
+	}{
+		{"set", "/api/backend/acl/set", map[string]any{
+			"user": user, "folder": missing,
+			"acl": []map[string]any{{"identifier": "bob@example.com", "rights": "lrswipkxtea"}},
+		}},
+		{"get", "/api/backend/acl/get", map[string]any{"user": user, "folder": missing}},
+		{"delete", "/api/backend/acl/delete", map[string]any{"user": user, "folder": missing}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := doJSON(t, ts, http.MethodPost, tc.path, "", tc.body)
+			if status != http.StatusNotFound {
+				t.Errorf("status=%d, want 404: %s", status, body)
+			}
+		})
+	}
+
+	// Nothing named after the typo anywhere under the account.
+	var found []string
+	home := filepath.Join(root, "example.com", "alice")
+	_ = filepath.WalkDir(home, func(p string, d os.DirEntry, err error) error {
+		if err == nil && strings.Contains(d.Name(), missing) {
+			found = append(found, p)
+		}
+		return nil
+	})
+	if len(found) != 0 {
+		t.Errorf("the refused name left %v on disk", found)
+	}
+
+	// The mailbox that does exist is unaffected.
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{
+		"user": user, "folder": "INBOX",
+	}); status != 200 {
+		t.Errorf("INBOX get: status=%d, want 200: %s", status, body)
+	}
+
+	// And the namespace root, which names no folder, still is not caught by
+	// the existence check (#1096).
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user, "root": true,
+		"acl": []map[string]any{{"identifier": "bob@example.com", "rights": "lrswipkxte"}},
+	}); status != 200 {
+		t.Errorf("root grant: status=%d, want 200: %s", status, body)
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -115,4 +116,47 @@ func replyingClient(t *testing.T, reply func(cmd string) string) (*imapClient, f
 		}
 	}()
 	return &imapClient{conn: clientSide, r: bufio.NewReader(clientSide)}, stop
+}
+
+// A probe that could not be removed is a failed check, not a printed note. The
+// old code reported it through fmt.Printf and returned nil, so every run left
+// another mailbox in the shared namespace and still exited 0 (#1104).
+func TestACLCleanupFailureIsACheckFailure(t *testing.T) {
+	checkFailed := errors.New("SELECT answered a peer with no rights")
+	deleteFailed := errors.New("NO [NOPERM] missing right 'x'")
+
+	cases := []struct {
+		name       string
+		check      error
+		cleanup    error
+		wantErr    bool
+		wantSubstr []string
+	}{
+		{"both clean", nil, nil, false, nil},
+		{"cleanup failed alone", nil, deleteFailed, true,
+			[]string{"missing right 'x'", "Public/SmokeAclProbe", "still in"}},
+		{"check failed, cleanup fine", checkFailed, nil, true,
+			[]string{"answered a peer with no rights"}},
+		// Both: the check's own error is the one that names the defect, so it
+		// stays the message and the wrapped error, while the survived probe is
+		// still reported rather than dropped.
+		{"both failed", checkFailed, deleteFailed, true,
+			[]string{"answered a peer with no rights", "cleanup", "missing right 'x'"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := aclCleanupResult(tc.check, tc.cleanup, "Public/SmokeAclProbe", "Public/")
+			if (got != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error: %v", got, tc.wantErr)
+			}
+			for _, want := range tc.wantSubstr {
+				if !strings.Contains(got.Error(), want) {
+					t.Errorf("error %q does not mention %q", got, want)
+				}
+			}
+			if tc.check != nil && got != nil && !errors.Is(got, tc.check) {
+				t.Errorf("the check's own error was lost: %v", got)
+			}
+		})
+	}
 }
