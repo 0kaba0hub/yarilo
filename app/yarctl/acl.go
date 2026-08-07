@@ -25,8 +25,10 @@ func dispatchACL(args []string) error {
 		return aclDelete(args[1:])
 	case "rebuild":
 		return aclRebuild(args[1:])
+	case "materialise", "materialize":
+		return aclMaterialise(args[1:])
 	default:
-		return fmt.Errorf("unknown acl command %q — available: list, get, set, delete, rebuild", args[0])
+		return fmt.Errorf("unknown acl command %q — available: list, get, set, delete, rebuild, materialise", args[0])
 	}
 }
 
@@ -44,9 +46,14 @@ Commands:
                                                 with identifier: drop just that entry
   rebuild <user> <folder> [<folder> ...]      — reseed namespace-wide index from
                                                 per-mailbox files (admin recovery)
+  materialise <user> <folder> [<folder> ...]  — write what each mailbox inherits into
+                                                its own ACL; repairs mailboxes created
+                                                before inheritance was materialised at
+                                                creation. Dry run unless --apply.
 
 Common flags:
   --namespace NS    namespace slug; default "personal"
+  --apply           materialise only: write, instead of reporting what would change
 
 Reuses the same on-disk format + lock keys as IMAP SETACL/DELETEACL
 so admin and live IMAP sessions stay consistent.`)
@@ -275,5 +282,33 @@ func aclSetRoot(fs *flag.FlagSet, ns string) error {
 		"namespace": ns,
 		"root":      true,
 		"acl":       upsertEntry(current, identifier, rights),
+	}))
+}
+
+// aclMaterialise writes what each mailbox inherits into its own ACL, repairing
+// mailboxes created before inheritance was materialised at creation (#1111).
+//
+// A dry run unless --apply: the operation changes who can reach mail, so
+// "show me what you would do" is how it is meant to be run the first time
+// rather than a flag an operator is expected to remember.
+func aclMaterialise(args []string) error {
+	fs := flag.NewFlagSet("acl materialise", flag.ContinueOnError)
+	ns := fs.String("namespace", "personal", "namespace slug")
+	apply := fs.Bool("apply", false, "write the changes; without it, report what would change")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: yarctl backend acl materialise <user> <folder> [<folder> ...] [--apply] [--namespace NS]")
+	}
+	folders := make([]string, 0, fs.NArg()-1)
+	for i := 1; i < fs.NArg(); i++ {
+		folders = append(folders, fs.Arg(i))
+	}
+	return printJSON(backendAPIPost("/api/backend/acl/materialise", map[string]any{
+		"user":      fs.Arg(0),
+		"namespace": *ns,
+		"folders":   folders,
+		"apply":     *apply,
 	}))
 }

@@ -1131,6 +1131,16 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 	if err := h.box.Create(rel); err != nil {
 		return nameError(err)
 	}
+	// Inheritance is materialised here rather than resolved on every check:
+	// the new mailbox gets its own ACL file carrying what it inherited, so the
+	// user who just created it -- often holding the create right only at the
+	// namespace root -- is named in it before they can issue a SETACL that
+	// would otherwise replace the grant they are acting under (#1111).
+	if h.acl != nil && s.aclEnforced(h) {
+		if err := h.acl.MaterialiseOnCreate(rel); err != nil {
+			slog.Warn("imap: acl inheritance not materialised", "folder", name, "err", err)
+		}
+	}
 	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr for
 	// later LIST replies. The RFC allows one attr per folder; honour the
 	// first, ignore the rest. Personal namespace only.

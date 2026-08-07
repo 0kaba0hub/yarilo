@@ -97,6 +97,10 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "create: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if err := s.materialiseFolderACL(bundle, req.Folder); err != nil {
+		apiError(w, "materialise acl: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// Only meaningful on personal; shared / public folders do not carry
 	// per-user RFC 6154 attrs.
@@ -331,6 +335,25 @@ func hasDeletedFlag(flags []string) bool {
 		}
 	}
 	return false
+}
+
+// materialiseFolderACL writes what a newly created mailbox inherits into its
+// own ACL file, the same way the IMAP CREATE path does -- otherwise a mailbox
+// made through the admin API would resolve its rights differently from one made
+// by a client (#1111).
+func (s *Server) materialiseFolderACL(bundle *nsBundle, folder string) error {
+	store := acl.New(
+		bundle.folderHome(),
+		bundle.info.MailPath,
+		bundle.info.Driver,
+		bundle.info.Separator,
+		bundle.info.StorageEscapeChar,
+		bundle.info.Username,
+		"backendapi/folder.create",
+		acl.Policy{},
+		s.opts.Locker,
+	)
+	return store.MaterialiseOnCreate(folder)
 }
 
 // dropFolderACL removes the per-folder yarilo-acl file and its namespace-wide
