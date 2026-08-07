@@ -57,7 +57,11 @@ type Server struct {
 func New(opts Options) *Server {
 	// Memoise the per-driver backend once. JMAP has no session, so a store is
 	// built per request; without this each request's per-user handle builds a
-	// fresh backend and its own write semaphore (#1149).
+	// fresh backend and its own write semaphore (#1149). Storage is a pointer,
+	// so this mutates the caller's struct in place (unlike the copy-of-opts wrap
+	// on the other surfaces) -- deliberate: New runs once and the caller does not
+	// reuse the Storage, and a second New would only re-wrap an already-memoised
+	// accessor, a harmless no-op.
 	if opts.Storage != nil {
 		opts.Storage.MailboxByDriver = mailbox.MemoizeByDriver(opts.Storage.MailboxByDriver)
 	}
