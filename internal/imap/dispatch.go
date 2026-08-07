@@ -157,6 +157,7 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		GlobalsOnly:       s.srv.opts.ACLGlobalsOnly,
 		CacheTTL:          s.srv.opts.ACLCacheTTL,
 		Global:            s.srv.opts.ACLGlobal,
+		SkipNFCNormalize:  ui.SkipNFCNormalize,
 	}, s.srv.opts.Locker)
 	return &nsHandle{
 		name:     name,

@@ -42,6 +42,24 @@ func FolderSubpath(driver, folder, diskName, sep string) string {
 // "a/b" are the same bytes under a maildir layout and one of the two names is
 // silently the other (#1078).
 func FolderSubpathEscaped(driver, folder, diskName, sep, escape string) string {
+	return FolderSubpathForm(driver, folder, diskName, sep, escape, false)
+}
+
+// FolderSubpathForm is FolderSubpathEscaped with the name form decided here
+// rather than by the caller.
+//
+// skipNFC is inverted deliberately: mailbox_list_normalize_to_nfc defaults to
+// true, so the zero value has to mean "normalise". Callers that forget the
+// argument get the default rather than a tree that silently spells names
+// differently from every other tree (#1092).
+//
+// Normalisation is applied to the storage name here even though the mail
+// drivers also apply it before calling: NFC is idempotent, and one of the two
+// has to be the place that guarantees it for all five trees.
+func FolderSubpathForm(driver, folder, diskName, sep, escape string, skipNFC bool) string {
+	if !skipNFC {
+		diskName = NFC(diskName)
+	}
 	if sep == "" {
 		sep = "/"
 	}

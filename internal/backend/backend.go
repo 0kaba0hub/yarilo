@@ -136,6 +136,7 @@ func New(cfg *config.Config) (*Server, error) {
 		DefaultMailPath:          cfg.Storage.MailPath,
 		DefaultSeparator:         personalSeparator(cfg.Namespaces),
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
+		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeToNFC,
 	}
 	locker, err := buildLocksClient(cfg)
 	if err != nil {
@@ -1158,6 +1159,7 @@ func BuildResolver(cfg *config.Config) *mailbox.Resolver {
 		DefaultMailPath:          sc.MailPath,
 		DefaultSeparator:         personalSeparator(cfg.Namespaces),
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
+		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeToNFC,
 	}
 }
 

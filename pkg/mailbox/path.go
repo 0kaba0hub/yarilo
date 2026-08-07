@@ -102,6 +102,14 @@ type UserInfo struct {
 	// mailbox differently from the others (#1078).
 	StorageEscapeChar string
 
+	// SkipNFCNormalize turns off the NFC normalisation that turning a folder
+	// name into a storage name otherwise applies. Inverted on purpose: the
+	// config key (mailbox_list_normalize_to_nfc) defaults to true, so the zero
+	// value of this field has to mean "normalise". A NormalizeNFC bool would
+	// disable it for every UserInfo built without the field being set --
+	// exactly the silent divergence this exists to remove (#1092).
+	SkipNFCNormalize bool
+
 	// Phase 3 — filesystem ownership (yarilo runs as root, drops per-user):
 	// UID uint32
 	// GID uint32
@@ -170,6 +178,10 @@ type Resolver struct {
 	// (#1078).
 	DefaultStorageEscapeChar string
 
+	// DefaultSkipNFCNormalize is stamped onto every UserInfo alongside the
+	// escape character, for the same reason: one derivation, one answer.
+	DefaultSkipNFCNormalize bool
+
 	// DefaultSeparator is the IMAP hierarchy separator stamped onto every
 	// UserInfo; the IMAP session overrides it per-namespace. Empty defaults to
 	// "/" at the point of use.
@@ -204,6 +216,7 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 		Separator:  r.DefaultSeparator,
 
 		StorageEscapeChar: r.DefaultStorageEscapeChar,
+		SkipNFCNormalize:  r.DefaultSkipNFCNormalize,
 	}
 	if r.DefaultVolatileDir != "" {
 		ui.VolatileDir = ExpandLocation(r.DefaultVolatileDir, home, username)

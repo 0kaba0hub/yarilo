@@ -41,6 +41,8 @@ type Store struct {
 	// escapeChar is the storage-name escape char; it must match the mailbox
 	// driver's, or the ACL file lands beside a differently-named folder.
 	escapeChar string
+	// skipNFC matches the driver's name form, for the same reason.
+	skipNFC bool
 	// defaultsFromInbox resolves the namespace-root default from INBOX's ACL
 	// instead of the (maildir-disabled) folder "" default. Private/shared only.
 	defaultsFromInbox bool
@@ -85,6 +87,7 @@ func New(home, mailPath, driver, separator, escapeChar, username, owner string, 
 		driver:            driver,
 		separator:         mailbox.SepOrDefault(separator),
 		escapeChar:        escapeChar,
+		skipNFC:           pol.SkipNFCNormalize,
 		username:          username,
 		owner:             owner,
 		defaultsFromInbox: pol.DefaultsFromInbox,
@@ -119,7 +122,7 @@ func (s *Store) Path(folder string) string {
 	if folder == "" {
 		return filepath.Join(s.mailboxesRoot(), RootFileName)
 	}
-	return filepath.Join(s.mailRoot, mailbox.FolderSubpathEscaped(s.driver, folder, folder, s.separator, s.escapeChar), FileName)
+	return filepath.Join(s.mailRoot, mailbox.FolderSubpathForm(s.driver, folder, folder, s.separator, s.escapeChar, s.skipNFC), FileName)
 }
 
 // mailboxesRoot is the mailbox-tree root: the mail root for maildir,
@@ -503,7 +506,7 @@ func (s *Store) legacyRootPath(folder string) string {
 		return ""
 	}
 	legacy := filepath.Join(s.mailRoot,
-		mailbox.FolderSubpathEscaped(s.driver, "", "", s.separator, s.escapeChar), FileName)
+		mailbox.FolderSubpathForm(s.driver, "", "", s.separator, s.escapeChar, s.skipNFC), FileName)
 	if legacy == s.Path("INBOX") {
 		return ""
 	}

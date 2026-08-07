@@ -48,6 +48,12 @@ type UserRef struct {
 	// Separator is the IMAP hierarchy separator, for mapping a folder name to
 	// its on-disk sub-path. Empty is treated as "/".
 	Separator string
+	// SkipNFCNormalize mirrors UserInfo.SkipNFCNormalize. Same argument as
+	// EscapeChar, one step further: a tree that does not normalise gives one
+	// mailbox addressed in two Unicode forms two indexes, so a search misses
+	// what was written under the other spelling (#1092). Inverted so the zero
+	// value normalises, matching the config default.
+	SkipNFCNormalize bool
 }
 
 // MailboxRef identifies one mailbox within a user's index.

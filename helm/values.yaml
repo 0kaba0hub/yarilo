@@ -182,6 +182,17 @@ storage:
   ##                                    # the index side is already there.
   ## mailbox_list_normalize_to_nfc: true # true = NFC-normalise folder names (default)
   ##                                    # Same upgrade note: unrendered and undefaulted before 2.3.55.
+  ##                                    # UPGRADE NOTE (2.3.72): normalisation now happens where a folder
+  ##                                    # name becomes a storage name, so the index, volatile, ACL and FTS
+  ##                                    # trees spell a name the way the mail tree already did. Before, one
+  ##                                    # mailbox addressed in two Unicode forms was one mail directory and
+  ##                                    # two of each of the others. A deployment that already holds a
+  ##                                    # decomposed (NFD) folder name -- non-ASCII, created by a client that
+  ##                                    # sends NFD, macOS clients historically did -- gets a fresh index and
+  ##                                    # FTS directory for it on first access after the upgrade, so that
+  ##                                    # mailbox reindexes and its UIDVALIDITY changes once. The mail is not
+  ##                                    # touched: it was always in the one directory. ASCII-only folder
+  ##                                    # names are unaffected.
   ## mailbox_list_validate_fs_names: true # refuse folder names unsafe as paths: "."/".." segments, adjacent
   ##                                      # separators, leading "/" or "~", and the on-disk hierarchy separator
   ##                                      # when it differs from the namespace one (default true; turn off only

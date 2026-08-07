@@ -106,6 +106,7 @@ func main() {
 		// The admin API resolves the same folders the session servers do, so
 		// it has to escape the same way or it addresses different paths.
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
+		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeToNFC,
 	}
 	if resolver.Root == "" {
 		resolver.Root = "/var/mail/vhosts"
