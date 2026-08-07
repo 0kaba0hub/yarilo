@@ -19,36 +19,61 @@ If something in the code contradicts this document — the code is wrong.
 ## Two rules the ACL/naming series proved
 
 A run of defects through the ACL, namespace and folder-name code all had one
-shape, and closing them taught two rules worth stating so the next reader starts
-from the right question rather than rediscovering them.
+shape. Closing them taught two rules worth stating so the next reader starts
+from the right question rather than rediscovering them. The examples name things
+that **were removed** in the course of those fixes, not code you will find
+today — that is the point of the first rule.
 
 ### One idea, one implementation
 
 Every defect in that series sat where **two implementations of one idea
-disagreed**. Four constructions of a namespace's storage context; two owners of
+disagreed**: four constructions of a namespace's storage context; two owners of
 NFC normalisation (a driver step and the path builder); no single entry per ACL
 identifier; two definitions of "owner" (by namespace type and by person); two
 meanings of the insert right (IMAP vs delivery); two write paths for an ACL
-(client read-modify-write and the server). None was a logic error in either
-copy — each copy was defensible alone; the bug was that they drifted.
+(a client read-modify-write and the server). None was a logic error in either
+copy — each was defensible alone; the bug was that they drifted.
 
-So the fix that closes the *class* rather than the *instance* removes one of the
-two, it does not reconcile them:
+**When you find a defect here, do not ask which branch is wrong. Ask where the
+two implementations of one idea are.** Then close the gap one of two ways:
 
-- `insertRight(spec)` was deleted, not corrected — the predicate itself was the
-  defect.
-- `FolderSubpathForm`'s NFC parameter was removed, not typed — a path builder
-  must not decide the name form; normalisation moved to one owner at the entry
-  boundary.
-- the CLI's read-modify-write helpers were erased, not canonicalised — leaving
-  them would keep a second, unlocked way to write an ACL, and the next author
-  reaches for what already exists.
+- **remove one of them**, when there can be a single implementation;
+- **make one an owner and guard the rest**, when the idea has many call sites
+  that cannot collapse into one function — `mailbox.NormalizeName` is called
+  from every namespace resolver and stays the only place NFC happens, held there
+  not by deletion but by an AST guard that fails if a resolver forgets it. Reach
+  for a guard only when removal is genuinely impossible; a guard is a promise the
+  compiler cannot keep, so it is second choice.
 
-When you find a defect in this area, the first question is not "which branch is
-wrong" but **"where are the two implementations of one idea, and can one of them
-be removed?"** A shared constructor with fewer fields than the one it did not
-absorb is worse than two explicit ones, because it looks authoritative — so
-"one implementation" means *complete*, not merely *single*.
+The fixes that closed the *class* rather than the *instance* each did one of
+these, never a reconciliation of the two copies:
+
+- `insertRight(spec)` was **deleted**, not corrected — the predicate that chose
+  the right by namespace type was itself the defect; IMAP now always requires
+  the insert right (#1119).
+- `FolderSubpathForm`'s NFC parameter was **removed**, not typed — a path
+  builder must not decide the name form; normalisation moved to the one owner,
+  `mailbox.NormalizeName`, at the name-entry boundary (#1113).
+- `adminCheckPRc` was **deleted** — it carried the admin path's own, weaker
+  resolution of the `a` right, and the fix was a call to the same
+  `requireAdminOn` the IMAP path uses, not a repair of its logic. It is the
+  sharpest case, and the one to remember: the second implementation was not
+  merely drifting, it was **letting a peer escalate** — `SETACL` in a shared
+  namespace was ungated because its private owner-check compared the session
+  user against themselves. Two implementations of one idea are not always a
+  cosmetic cost (#1107, #1108).
+- the CLI's `get`→edit→`set` helpers were **erased**, not canonicalised —
+  leaving them would keep a second, unlocked way to write an ACL, and the next
+  author reaches for what already exists (#1114).
+
+A corollary, made checkable: "one implementation" means *complete*, not merely
+*single*. A shared constructor with fewer fields than the one it did not absorb
+is worse than two explicit ones, because it looks authoritative. `NamespaceUserInfo`
+first omitted `Groups`/`ACLUser`/`ACLGroups` — exactly the fields the LMTP
+construction carried — so wiring LMTP to it, the obvious next step, would have
+**silently switched group ACLs off at delivery**. The check is: compare the
+field set against the *most complete* of the constructions you are absorbing,
+not the first (#1109, #1115).
 
 ### A test's fixture must distinguish the two behaviours
 
@@ -57,25 +82,35 @@ fixture whose inputs could not tell the correct behaviour from the broken one,
 so it stayed green under both and read as coverage: an escape-matrix row with no
 combining mark after the escaped byte, an FTS-root check with only one account,
 an IMAP normalisation test on a filesystem (APFS) that composed the name itself,
-an ACL evaluator test with no lower-tier negative, a smoke check that reused a
-cached session.
+an ACL evaluator case with no lower-tier negative, a smoke check that reused a
+cached session, an APPEND test whose client framed the literal correctly and so
+never hit the tail the server mishandled.
 
-A test that cannot fail under the defect it names asserts nothing. The
-discipline is to choose the one input that separates the behaviours and to make
-that visible:
+**A test that cannot fail under the defect it names asserts nothing. Choose the
+one input that separates the two behaviours, and make the non-distinguishing
+case visible rather than absent.** The rule holds on the *assertion* as much as
+the input: `if ui.indexDir(composed) != ui.indexDir(composed)` shipped in a test
+whose fixture four lines above already guarded that the two spellings differ —
+the lesson applied to the input and not to the comparison, which staticcheck
+(SA4000) caught because the expression is identical on both sides. Watch the
+assertion as closely as the fixture.
+
+The mechanisms now in the tree are three shapes of this:
 
 - the `wasa` column in the ACL evaluator matrix records what the old code
   answered, so a row where `wasa == want` is visibly proving nothing;
 - a fixture that cannot distinguish in one environment declares it — the
   end-to-end normalisation test carries a `t.Skip` when the filesystem composes
   names, rather than vanishing from the CI runners where it works;
-- where the placement is by hand across many sites, an AST guard turns "N things
-  to remember" into one that fails — the folder-normalisation and
-  dispatch-normalisation guards, and the FolderSubpath-signature guard.
+- where a rule is enforced by hand across many sites, an AST guard turns "N
+  things to remember" into one that fails — the folder-normalisation guard over
+  the admin decode boundaries, the dispatch-normalisation guard, and the
+  `FolderSubpath`-signature guard that keeps the removed NFC parameter from
+  returning.
 
 Both rules are one idea at different layers: a thing defined in two places
-drifts, whether the thing is an implementation or the input that a test claims
-to cover.
+drifts, whether the thing is an implementation or the input a test claims to
+cover.
 
 ---
 
