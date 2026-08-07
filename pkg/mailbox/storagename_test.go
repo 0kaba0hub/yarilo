@@ -21,6 +21,8 @@ func TestStorageNameRoundTrip(t *testing.T) {
 		"dbox-Mails",  // the dbox marker
 		"ordinary",    // untouched
 		"Ünïcödé.txt", // non-ASCII around an escaped byte
+		"^\u0301x",    // combining mark straight after the escape character
+		"a.b\u0301c",  // and after an escaped layout separator
 	}
 
 	for _, layoutSep := range []string{".", "/"} {

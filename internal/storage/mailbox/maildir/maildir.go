@@ -603,9 +603,6 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 			}
 			logical = decoded
 		}
-		if u.normalizeNFC {
-			logical = nfcNormalize(logical)
-		}
 		// maildir++ stores hierarchy flat with "."; map it back to the
 		// namespace's IMAP separator (every "." is a level). With escaping on,
 		// a "." the client wrote literally is not one of those levels: it is
@@ -618,6 +615,12 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 			logical = strings.Join(parts, u.separator)
 		} else if u.separator != "." {
 			logical = strings.ReplaceAll(logical, ".", u.separator)
+		}
+		// NFC last, mirroring the forward path where it is first: unescaping
+		// after normalising would let a combining mark that follows an escaped
+		// byte compose with the escape's hex and hide the sequence (#1092).
+		if u.normalizeNFC {
+			logical = nfcNormalize(logical)
 		}
 		folders = append(folders, mailbox.FolderEntry{Name: logical, Selectable: true})
 	}
@@ -1062,14 +1065,19 @@ func (u *userMailbox) folderCacheFor(folder string) *folderCache {
 // folderDiskName maps a logical UTF-8 folder name to the on-disk directory
 // component: NFC normalisation, then modified-UTF-7 when legacy encoding is set.
 func (u *userMailbox) folderDiskName(folder string) string {
-	// Escape first, encode second. The reverse path decodes and then
-	// unescapes, so the two are mirrored; escaping an already-encoded name
-	// works only while the escape character stays out of the base64 alphabet,
-	// which nothing here can promise (#1078).
-	folder = mailbox.EscapeLogicalName(folder, u.separator, ".", u.escapeChar)
+	// Normalise, then escape, then encode. #1078 required escaping to precede
+	// modUTF7 -- escaping an already-base64 name is safe only while the escape
+	// character stays out of that alphabet -- and said nothing about where NFC
+	// sits. It has to precede escaping: escaping emits ASCII hex, so a
+	// combining mark after an escaped byte composes with one of the hex digits
+	// and eats the escape ("^" U+0301 "x" -> "^5" é "x"). That both re-splits
+	// the trees this order exists to keep together and breaks the round trip,
+	// since UnescapeStorageName can no longer find the sequence it wrote
+	// (#1092).
 	if u.normalizeNFC {
 		folder = nfcNormalize(folder)
 	}
+	folder = mailbox.EscapeLogicalName(folder, u.separator, ".", u.escapeChar)
 	if !u.listUTF8 {
 		folder = toModUTF7(folder)
 	}

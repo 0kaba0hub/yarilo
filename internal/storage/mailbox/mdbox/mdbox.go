@@ -240,10 +240,14 @@ func (u *userMailbox) folderRoot() string {
 }
 func (u *userMailbox) folderDiskName(folder string) string {
 	// Escape first, encode second; the reverse path mirrors it (#1078).
-	folder = mailbox.EscapeLogicalName(folder, u.separator, "/", u.escapeChar)
+	// NFC precedes escaping: escaping emits ASCII hex, so a combining mark
+	// after an escaped byte composes with a hex digit and eats the escape
+	// sequence. #1078's requirement was escaping before modUTF7, which this
+	// keeps (#1092).
 	if u.normalizeNFC {
 		folder = mboxenc.NFC(folder)
 	}
+	folder = mailbox.EscapeLogicalName(folder, u.separator, "/", u.escapeChar)
 	if !u.listUTF8 {
 		folder = mboxenc.ToModUTF7(folder)
 	}
@@ -457,13 +461,15 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 			}
 			logical = decoded
 		}
+		// Outermost on the way back: the escape sits at the logical-name
+		// boundary, above modUTF7, so it is applied last here and first on the
+		// way in (#1078). NFC follows it rather than preceding it: normalising
+		// first would let a combining mark after an escaped byte compose with
+		// the escape's hex digit and hide the sequence (#1092).
+		logical = mailbox.UnescapeStorageName(logical, u.escapeChar)
 		if u.normalizeNFC {
 			logical = mboxenc.NFC(logical)
 		}
-		// Outermost on the way back: the escape sits at the logical-name
-		// boundary, above modUTF7 and NFC, so it is applied last here and
-		// first on the way in (#1078).
-		logical = mailbox.UnescapeStorageName(logical, u.escapeChar)
 		return logical, true
 	}
 	// A folder is selectable when it owns a dbox-Mails marker dir; a dir that
