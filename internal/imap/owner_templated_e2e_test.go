@@ -34,10 +34,14 @@ func ownerTemplatedServer(t *testing.T) (root string, dial func(user string) *im
 			return nil, &notFoundError{owner}
 		}
 		home := filepath.Join(root, owner)
-		// userdb returns the owner's real mail root (home/Maildir) and driver;
-		// the namespace template is a fallback, not an override.
+		// userdb returns the owner's real mail root -- deliberately at "store",
+		// NOT the "Maildir" the namespace template names. The store landing at
+		// the userdb root distinguishes the fix (root from userdb) from the bug
+		// (root overwritten by the template); a fixture whose userdb root equalled
+		// the template root would pass under both -- the maildir owner (u51) that
+		// passes on the old code.
 		return &mailboxpkg.UserInfo{
-			Username: owner, Home: home, MailPath: filepath.Join(home, "Maildir"), Driver: "maildir",
+			Username: owner, Home: home, MailPath: filepath.Join(home, "store"), Driver: "maildir",
 		}, nil
 	}
 
@@ -163,14 +167,21 @@ func TestOwnerTemplated_TwoOwnersTwoStores(t *testing.T) {
 	if _, err := a.Select("user/alice/Only", nil).Wait(); err != nil {
 		t.Errorf("alice cannot see her own folder: %v", err)
 	}
-	// The maildir landed under alice's home (<root>/alice/Maildir), proving the
-	// root came from the namespace template expanded against the owner -- not a
+	// The store landed under alice's userdb root (<root>/alice/store), proving
+	// the root came from the userdb -- not the template's "Maildir", not a
 	// shared path, and not bob's.
-	aliceFolder := filepath.Join(root, "alice", "Maildir", ".Only")
+	aliceFolder := filepath.Join(root, "alice", "store", ".Only")
 	if _, err := os.Stat(aliceFolder); err != nil {
-		t.Errorf("alice's folder not under her own store: %v", err)
+		t.Errorf("alice's folder not under her own userdb store: %v", err)
 	}
-	bobPath := filepath.Join(root, "bob", "Maildir", ".Only")
+	// NOT at the template root: had the template overwritten the userdb root,
+	// the store would be at <home>/Maildir. This is the assertion the
+	// maildir-equals-template fixture could not make.
+	templatePath := filepath.Join(root, "alice", "Maildir", ".Only")
+	if _, err := os.Stat(templatePath); err == nil {
+		t.Errorf("store landed at the template root %s; the userdb root should have won", templatePath)
+	}
+	bobPath := filepath.Join(root, "bob", "store", ".Only")
 	if _, err := os.Stat(bobPath); err == nil {
 		t.Errorf("alice's folder leaked into bob's store at %s", bobPath)
 	}
