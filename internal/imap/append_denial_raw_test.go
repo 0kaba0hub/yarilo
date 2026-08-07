@@ -11,7 +11,10 @@ import (
 
 	imapserver "github.com/yarilomail/yarilo/internal/imap"
 	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 	mailboxpkg "github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -167,4 +170,144 @@ func countFiles(t *testing.T, dir string) int {
 		}
 	}
 	return n
+}
+
+// rawPersonalServer brings up a server whose personal namespace uses mb and
+// returns alice's home, so a test can inspect the physical store directly.
+func rawPersonalServer(t *testing.T, mb mailboxpkg.MailboxBackend) (addr, home string) {
+	t.Helper()
+	root := t.TempDir()
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:    mb,
+		Index:      file.New(),
+		Resolver:   &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"},
+		Auth:       &enforcePassdb{users: map[string]string{"alice": "pw"}},
+		ACLEnabled: true,
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+	return ln.Addr().String(), filepath.Join(root, "alice")
+}
+
+// An APPEND whose literal is under-delivered -- fewer octets than declared, a
+// mid-body EOF -- must not be stored and must not answer OK. box.Save copies to
+// EOF without checking the count, so a truncated literal used to be stored and
+// confirmed. The client half-closes after a short body so the server reads EOF
+// and can still answer (#1129).
+//
+// Two assertions, one of them driver-specific because "removed" is three
+// operations: SELECT shows 0 EXISTS on every driver (no UID spent, nothing
+// visible -- the index step is skipped before the count check); and the physical
+// store is checked directly, because 0 EXISTS alone passes even with removal
+// disabled (the index never saw the file). maildir/sdbox delete the file, so a
+// List of the physical store is empty; mdbox decrements the map refcount to 0
+// (the bytes linger until purge), so the honest check there is the refcount.
+func TestAppendUnderDeliveredLiteralIsRefusedAndNotStored(t *testing.T) {
+	backends := []struct {
+		name string
+		mb   mailboxpkg.MailboxBackend
+		// orphans reports how many messages the physical store still holds under
+		// home -- the count that must be 0 once the truncated message is removed.
+		orphans func(t *testing.T, home string) int
+	}{
+		{"maildir", maildir.New(), func(t *testing.T, home string) int {
+			return physicalListCount(t, maildir.New(), home)
+		}},
+		{"sdbox", dboxv2.New(), func(t *testing.T, home string) int {
+			return physicalListCount(t, dboxv2.New(), home)
+		}},
+		{"mdbox", mdbox.New(), mdboxLiveRefcount},
+	}
+	for _, be := range backends {
+		t.Run(be.name, func(t *testing.T) {
+			addr, home := rawPersonalServer(t, be.mb)
+			a := dialRaw(t, addr)
+			if !strings.Contains(a.cmd("LOGIN alice pw"), "OK") {
+				t.Fatal("login")
+			}
+			// Declare 100 octets, deliver 15, then half-close: EOF at 15.
+			fmt.Fprintf(a.conn, "z1 APPEND INBOX {100}\r\n")
+			if cont := a.readLine(); !strings.HasPrefix(cont, "+") {
+				t.Fatalf("expected continuation, got %q", cont)
+			}
+			a.conn.Write([]byte("short body only")) //nolint:errcheck
+			tcp, ok := a.conn.(*net.TCPConn)
+			if !ok {
+				t.Fatalf("expected *net.TCPConn, got %T", a.conn)
+			}
+			tcp.CloseWrite() //nolint:errcheck
+
+			a.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			var got string
+			for {
+				line, err := a.r.ReadString('\n')
+				if err != nil && line == "" {
+					break
+				}
+				if strings.HasPrefix(line, "z1 ") {
+					got = strings.TrimRight(line, "\r\n")
+					break
+				}
+			}
+			if strings.Contains(got, "OK") {
+				t.Errorf("under-delivered APPEND answered %q, want a refusal (not OK)", got)
+			}
+			a.conn.Close() //nolint:errcheck // release the session before inspecting the store
+
+			// The truncated message left no live copy in the physical store.
+			if n := be.orphans(t, home); n != 0 {
+				t.Errorf("physical store still holds %d live message(s) after a refused APPEND, want 0", n)
+			}
+
+			// And nothing became visible: a fresh connection sees an empty INBOX.
+			b := dialRaw(t, addr)
+			b.cmd("LOGIN alice pw")
+			sel := b.cmd("SELECT INBOX")
+			if !strings.Contains(sel, "* 0 EXISTS") {
+				t.Errorf("INBOX not empty after a refused APPEND; SELECT:\n%s", sel)
+			}
+		})
+	}
+}
+
+// physicalListCount opens a fresh handle on the same home and lists INBOX's
+// on-disk messages (maildir reads cur/, sdbox reads its u.* files) -- a left
+// file counts, so this distinguishes a real removal from a disabled one.
+func physicalListCount(t *testing.T, mb mailboxpkg.MailboxBackend, home string) int {
+	t.Helper()
+	box := mb.OpenUser(&mailboxpkg.UserInfo{Username: "alice", Home: home})
+	defer box.Close() //nolint:errcheck
+	msgs, err := box.List("INBOX")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	return len(msgs)
+}
+
+// mdboxLiveRefcount reads the map refcount of the first (and only) message the
+// refused APPEND wrote. mdbox Remove decrements it to 0 and leaves the bytes in
+// the shared file until purge, so a file scan always sees 1 -- the refcount is
+// the only honest signal that the message was removed.
+func mdboxLiveRefcount(t *testing.T, home string) int {
+	t.Helper()
+	m, err := mdboxmap.Open(filepath.Join(home, "mdbox", "storage"), "alice")
+	if err != nil {
+		t.Fatalf("open mdbox map: %v", err)
+	}
+	defer m.Close() //nolint:errcheck
+	e, ok, err := m.Lookup(1)
+	if err != nil {
+		t.Fatalf("map lookup: %v", err)
+	}
+	if !ok {
+		return 0 // never recorded
+	}
+	return int(e.RefCount)
 }
