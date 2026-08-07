@@ -34,8 +34,10 @@ func ownerTemplatedServer(t *testing.T) (root string, dial func(user string) *im
 			return nil, &notFoundError{owner}
 		}
 		home := filepath.Join(root, owner)
+		// userdb returns the owner's real mail root (home/Maildir) and driver;
+		// the namespace template is a fallback, not an override.
 		return &mailboxpkg.UserInfo{
-			Username: owner, Home: home, MailPath: home, Driver: "maildir",
+			Username: owner, Home: home, MailPath: filepath.Join(home, "Maildir"), Driver: "maildir",
 		}, nil
 	}
 
