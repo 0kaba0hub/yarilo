@@ -226,16 +226,26 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	if err != nil {
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
 	}
-	ownerName := h.userInfo.Username
+	// The owner comes from h.owner, the principal who owns this namespace
+	// instance, not h.userInfo.Username. For a shared handle the latter is the
+	// caller (dispatch builds it from personalUI.Username), so GETACL on a
+	// shared mailbox with no explicit entry used to show the caller with full
+	// rights -- an entry no file grants and no resolver would produce. When
+	// nobody owns the namespace (fixed shared/public, h.owner == ""), there is
+	// no implicit owner entry to synthesise (#544/B1, the isOwner root from
+	// #1107).
+	ownerName := h.owner
 	ownerHasExplicit := false
-	for _, e := range stored {
-		if !e.Negative && e.Identifier.Type == mailbox.IDUser && e.Identifier.Name == ownerName {
-			ownerHasExplicit = true
-			break
+	if ownerName != "" {
+		for _, e := range stored {
+			if !e.Negative && e.Identifier.Type == mailbox.IDUser && e.Identifier.Name == ownerName {
+				ownerHasExplicit = true
+				break
+			}
 		}
 	}
 	entries := aclSurfaceEntries(stored)
-	if !ownerHasExplicit {
+	if ownerName != "" && !ownerHasExplicit {
 		implicit := imaplib.ACLEntry{
 			Identifier: imaplib.RightsIdentifier(ownerName),
 			Rights:     rightsToIMAP(mailbox.FullRights),
