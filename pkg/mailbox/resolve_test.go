@@ -77,3 +77,20 @@ func TestSelectPersonalBackend(t *testing.T) {
 		t.Errorf("nil-global empty-driver = %v, want nil", got)
 	}
 }
+
+func TestMemoizeByDriver(t *testing.T) {
+	builds := map[string]int{}
+	acc := MemoizeByDriver(func(d string) MailboxBackend { builds[d]++; return nil })
+	acc("mdbox")
+	acc("mdbox")
+	acc("sdbox")
+	if builds["mdbox"] != 1 {
+		t.Errorf("mdbox built %d times, want 1 (the write semaphore must be shared)", builds["mdbox"])
+	}
+	if builds["sdbox"] != 1 {
+		t.Errorf("sdbox built %d times, want 1", builds["sdbox"])
+	}
+	if MemoizeByDriver(nil) != nil {
+		t.Error("MemoizeByDriver(nil) must return nil")
+	}
+}

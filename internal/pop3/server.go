@@ -79,6 +79,10 @@ type Server struct {
 
 // New creates a POP3 server.
 func New(opts Options) *Server {
+	// Memoise the per-driver backend once, so a per-session backend selection
+	// shares one write semaphore instead of building a fresh one each login
+	// (#1149).
+	opts.MailboxByDriver = mailbox.MemoizeByDriver(opts.MailboxByDriver)
 	return &Server{opts: opts, locks: make(map[string]struct{})}
 }
 

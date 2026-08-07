@@ -15,7 +15,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	imaplib "github.com/emersion/go-imap/v2"
@@ -46,34 +45,6 @@ type Server struct {
 	srv          *imapserver.Server
 	opts         Options
 	wardenClient *imapWardenClient
-
-	// mailboxByDriver memoises Options.MailboxByDriver per process: it BUILDS a
-	// backend (mdbox.New(...) etc.), each with its own write semaphore, so
-	// calling it per handle would give a session touching N owners N independent
-	// write budgets and defeat max_concurrent_writes -- the semaphore must limit
-	// the process, not the connection (#1144).
-	mailboxByDriverMu    sync.Mutex
-	mailboxByDriverCache map[string]mailbox.MailboxBackend
-}
-
-// backendForDriver returns the process-wide MailboxBackend for driver, building
-// it once via Options.MailboxByDriver and reusing it thereafter so its write
-// semaphore stays shared. A nil result (unknown driver) is cached too.
-func (s *Server) backendForDriver(driver string) mailbox.MailboxBackend {
-	if s.opts.MailboxByDriver == nil {
-		return nil
-	}
-	s.mailboxByDriverMu.Lock()
-	defer s.mailboxByDriverMu.Unlock()
-	if b, ok := s.mailboxByDriverCache[driver]; ok {
-		return b
-	}
-	b := s.opts.MailboxByDriver(driver)
-	if s.mailboxByDriverCache == nil {
-		s.mailboxByDriverCache = make(map[string]mailbox.MailboxBackend)
-	}
-	s.mailboxByDriverCache[driver] = b
-	return b
 }
 
 // Options configures the IMAP server.
@@ -268,6 +239,12 @@ func New(opts Options) *Server {
 				"owner-templated namespaces need a configured auth master to resolve the owner", ns.Prefix))
 		}
 	}
+
+	// Memoise the per-driver backend once, so selecting it per handle (personal,
+	// each fixed namespace, and every owner handle) shares one write semaphore
+	// instead of building a fresh one -- max_concurrent_writes must bound the
+	// process, not the connection (#1144, #1149).
+	opts.MailboxByDriver = mailbox.MemoizeByDriver(opts.MailboxByDriver)
 
 	s := &Server{
 		opts:         opts,

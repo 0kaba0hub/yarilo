@@ -210,7 +210,7 @@ func (s *session) mailboxBackendFor(spec NamespaceSpec, ui *mailbox.UserInfo) ma
 		return override
 	}
 	if ui != nil && ui.Driver != "" {
-		return mailbox.SelectPersonalBackend(s.srv.opts.Mailbox, s.srv.backendForDriver, ui.Driver)
+		return mailbox.SelectPersonalBackend(s.srv.opts.Mailbox, s.srv.opts.MailboxByDriver, ui.Driver)
 	}
 	return s.srv.opts.Mailbox
 }

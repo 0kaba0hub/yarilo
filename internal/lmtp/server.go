@@ -128,6 +128,12 @@ type Server struct {
 
 // New creates an LMTP server from Options.
 func New(opts Options) *Server {
+	// Memoise the per-driver backend once. LMTP selected it per recipient per
+	// message, so every delivery built a fresh backend with its own write
+	// semaphore and max_concurrent_writes never bounded the highest-volume write
+	// path on the shared volume (#1149).
+	opts.MailboxByDriver = mailbox.MemoizeByDriver(opts.MailboxByDriver)
+
 	var router *proxyRouter
 	if opts.Router != nil {
 		timeout := time.Duration(opts.Config.Proxy.Timeout) * time.Second
