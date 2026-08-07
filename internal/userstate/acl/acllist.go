@@ -163,9 +163,10 @@ func (s *Store) ListRename(oldFolder, newFolder string) error {
 // (e.g. operator edits a yarilo-acl file by hand without going
 // through SETACL).
 //
-// resolveACL is called for each folder under the lock; it MUST NOT
-// re-enter the Store (no Set / Get / ListUpdate calls), or it will
-// deadlock against the list lock.
+// resolveACL is called for each folder BEFORE the list lock is taken, so it may
+// (and the production caller does) take the folder lock -- e.g. pass Store.Get.
+// It must not take the list lock itself (no ListUpdate / ListRebuild), which is
+// the only re-entrancy the ordering forbids.
 func (s *Store) ListRebuild(folders []string, resolveACL func(folder string) (mailbox.ACL, error)) error {
 	// Resolve every folder's ACL BEFORE the list lock. resolveACL takes the
 	// folder lock (Store.Get), so holding the list lock across it would be

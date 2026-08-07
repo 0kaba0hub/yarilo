@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -423,7 +424,11 @@ func (s *Store) Update(folder string, fn func(mailbox.ACL) (mailbox.ACL, error))
 			// A corrupt file is unreadable to the evaluator too, so the mailbox
 			// is already inaccessible. Offer it to fn as empty: a function that
 			// produces a concrete result (Set, SETACL) then repairs it. Remember
-			// the error for the case where fn declines to.
+			// the error for the case where fn declines to. Log first: a repair
+			// overwrites bytes a human might have salvaged by hand, so the
+			// discard leaves a trace.
+			slog.Warn("userstate/acl: replacing a corrupt ACL file on write; previous content discarded",
+				"user", s.username, "folder", folder, "err", err)
 			corruptErr, current = err, nil
 		}
 		next, err := fn(current)
