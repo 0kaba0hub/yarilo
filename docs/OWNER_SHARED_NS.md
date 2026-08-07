@@ -509,6 +509,29 @@ switch turns off inheritance *between mailboxes*, and the namespace root is not
 one of them. A namespace with no separator configured would otherwise lose the
 administrators it names.
 
+**Before deploying this on data that already has ACLs.** Almost everything else
+in this series errs towards refusing; this one errs towards granting, and that
+is the direction that matters for access control. Under first-hit-wins a
+per-mailbox ACL was exhaustive: it listed `u2`, so `u2` was who had rights.
+Merged, it is additive, and every identifier the root names regains its root
+rights on that mailbox:
+
+```
+                 before      after
+admin            ""          lrskxa   <- the fix: named only at the root
+u3               ""          lrs      <- also named at the root, absent from the mailbox
+stranger         ""          l        <- through "anyone" at the root
+```
+
+So restriction expressed by omission stops working, silently and without a
+message. Re-express it as a negative entry, which is the mechanism for it.
+
+Audit before rolling out: in namespaces that have a root ACL, review the
+per-mailbox ACLs that omit identifiers the root names — that is where rights
+widen. An `anyone` entry in the root deserves its own pass: it becomes a floor
+under every mailbox in the namespace, and it is the hardest widening to spot,
+because no file names the identifier that gained.
+
 Tracked as #1111.
 
 ---
