@@ -1,5 +1,38 @@
 package mailbox
 
+import "sync"
+
+// MemoizeByDriver wraps a backend builder so each driver is built once and the
+// instance -- and its write semaphore (max_concurrent_writes) -- is shared for
+// the process. build BUILDS a backend (mdbox.New(...) etc.); calling it per
+// request would give every session or delivery its own semaphore and stop
+// max_concurrent_writes bounding the shared volume (#1149). Each server wraps
+// its Options.MailboxByDriver with this once at construction. Concurrency-safe.
+// Returns nil when build is nil.
+//
+// The cache is per instance, and "per instance" is "per process" only because
+// each protocol runs as its own binary (imap / pop3 / lmtp / fts / jmap /
+// backend-api). Two servers in one process would each keep their own map, by
+// design: each closes over its own StorageConfig, so a single driver name can
+// mean different roots on different surfaces (#1148).
+func MemoizeByDriver(build func(driver string) MailboxBackend) func(string) MailboxBackend {
+	if build == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	cache := make(map[string]MailboxBackend)
+	return func(driver string) MailboxBackend {
+		mu.Lock()
+		defer mu.Unlock()
+		if b, ok := cache[driver]; ok {
+			return b
+		}
+		b := build(driver)
+		cache[driver] = b
+		return b
+	}
+}
+
 // StampLocation parses mailLoc and stamps the per-user driver and the
 // INDEX=/CONTROL=/ALT=/VOLATILEDIR= modifiers onto ui. Separate userdb dir
 // fields already set on ui win — an embedded modifier only fills a blank. A
