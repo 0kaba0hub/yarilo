@@ -332,12 +332,14 @@ func TestACL_Effective(t *testing.T) {
 		want    Rights
 	}{
 		{
-			// user= (tier 4) is more specific than the owner default (tier 3),
-			// so an explicit user= entry for the owner replaces the default.
-			name: "owner: user= entry for self replaces the owner default",
+			// Strong owner grant (§3.7): the owner resolves to FullRights
+			// regardless of entries, so a reduced user= entry for the owner does
+			// NOT cap them -- a shared/personal namespace has no second owner to
+			// undo a SETACL that locked the first out.
+			name: "owner: a reduced user= entry for self does not cap the owner",
 			acl:  ACL{{Identifier: Identifier{Type: IDUser, Name: "alice"}, Rights: "lr"}},
 			user: "alice", isOwner: true,
-			want: "lr",
+			want: owner,
 		},
 		{
 			name: "owner on empty ACL still gets everything",
@@ -564,7 +566,7 @@ func TestACL_EffectiveWithGlobal(t *testing.T) {
 		want          string
 	}{
 		{"owner default full when no global matches", nil, nil, "alice", true, "lrswipkxtea"},
-		{"global negative overrides even the owner", ACL{u("bob", "lr", false)}, ACL{anyone("lr", true)}, "bob", true, ""},
+		{"the owner beats a global negative", ACL{u("bob", "lr", false)}, ACL{anyone("lr", true)}, "bob", true, "lrswipkxtea"},
 		{"global only, no local", nil, ACL{u("bob", "lr", false)}, "bob", false, "lr"},
 		{"local only, global does not match", ACL{u("bob", "lr", false)}, ACL{u("carol", "lrswi", false)}, "bob", false, "lr"},
 		// A matching global positive REPLACES the local mask rather than adding
@@ -599,6 +601,9 @@ func TestACL_EffectiveWithGlobal(t *testing.T) {
 // TestACL_EffectiveLadder locks the RFC 4314 identifier specificity ladder:
 // anyone < authenticated < group= < owner < user= < group-override=, where a
 // positive higher tier replaces lower tiers and a negative one only subtracts.
+// The ladder governs non-owners; the owner is resolved off the ladder entirely
+// (strong grant, §3.7) and sits above every tier -- the owner row below pins
+// that a higher tier does not restrict them.
 func TestACL_EffectiveLadder(t *testing.T) {
 	e := func(t IdentifierType, name, rights string, neg bool) Entry {
 		return Entry{Identifier: Identifier{Type: t, Name: name}, Rights: MustParseRights(rights), Negative: neg}
@@ -615,7 +620,7 @@ func TestACL_EffectiveLadder(t *testing.T) {
 		{"group-override= replaces user=", ACL{e(IDUser, "bob", "l", false), e(IDGroupOverride, "admin", "lrswi", false)}, "bob", []string{"admin"}, false, "lrswi"},
 		{"two group= entries merge within their tier", ACL{e(IDGroup, "a", "lr", false), e(IDGroup, "b", "si", false)}, "bob", []string{"a", "b"}, false, "lrsi"},
 		{"negative user= subtracts, keeps anyone's positive", ACL{e(IDAnyone, "", "lrs", false), e(IDUser, "bob", "s", true)}, "bob", nil, false, "lr"},
-		{"group-override= can restrict the owner", ACL{e(IDGroupOverride, "locked", "lr", false)}, "alice", []string{"locked"}, true, "lr"},
+		{"group-override= does not restrict the owner (strong grant)", ACL{e(IDGroupOverride, "locked", "lr", false)}, "alice", []string{"locked"}, true, "lrswipkxtea"},
 		{"authenticated replaces anyone", ACL{e(IDAnyone, "", "l", false), e(IDAuthenticated, "", "rs", false)}, "bob", nil, false, "rs"},
 	}
 	for _, tc := range tests {

@@ -46,29 +46,37 @@ func TestEvaluatorMatrix(t *testing.T) {
 			local: "-authenticated r\n-user=alice s\nuser=alice lrs\n",
 			user:  "alice", want: "lr", wasa: "lr",
 		},
-		// --- owner short-circuit -------------------------------------------
+		// --- owner: the strong grant beats every entry ---------------------
+		// The owner resolves to FullRights unconditionally (§3.7). No entry --
+		// below the owner tier, above it, or an explicit owner entry that grants
+		// less -- reduces the owner, because a shared/personal namespace has no
+		// second owner to repair one SETACL that locked the first out.
 		{
-			// The owner's implicit record carries no negatives, and a record
-			// without negatives does not reset an inherited negative mask — so
-			// a lower-tier negative reached the owner.
 			name:  "a negative below the owner tier does not touch the owner",
 			local: "-anyone a\n",
-			user:  "alice", isOwner: true, want: "lrswipkxtea", wasa: "lrswipkxte",
+			user:  "alice", isOwner: true, want: "lrswipkxtea",
 		},
 		{
-			// The skip is only below the owner tier: group-override sits above
-			// it and must still restrict, which is what makes this a skip and
-			// not "the owner ignores ACLs".
-			name:  "group-override still restricts the owner",
+			// group-override sits above the owner tier, yet the strong grant
+			// wins: the owner is not reducible through the ACL at all.
+			name:  "group-override does not restrict the owner",
 			local: "group-override=locked lr\n",
 			user:  "alice", groups: []string{"locked"}, isOwner: true,
-			want: "lr", wasa: "lr",
+			want: "lrswipkxtea",
 		},
 		{
-			// An explicit owner-tier entry still replaces the implicit default.
-			name:  "an explicit owner entry still applies",
+			// A user= negative aimed at the owner is exactly the SETACL that
+			// would otherwise lock the owner out of their own mail.
+			name:  "a user negative on the owner does not reduce the owner",
+			local: "user=alice lrswipkxtea\n-user=alice a\n",
+			user:  "alice", isOwner: true, want: "lrswipkxtea",
+		},
+		{
+			// An explicit owner entry that grants less is overridden too: the
+			// owner cannot be capped below full.
+			name:  "an explicit reduced owner entry does not cap the owner",
 			local: "owner lr\n",
-			user:  "alice", isOwner: true, want: "lr", wasa: "lr",
+			user:  "alice", isOwner: true, want: "lrswipkxtea",
 		},
 		// --- global precedence ---------------------------------------------
 		{

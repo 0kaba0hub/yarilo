@@ -246,9 +246,19 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	}
 	entries := aclSurfaceEntries(stored)
 	if ownerName != "" && !ownerHasExplicit {
+		// The owner's implicit rights come from the resolver, not a hand-built
+		// FullRights entry: MYRIGHTS resolves the owner the same way, so the two
+		// agree by construction rather than because two code paths both happen to
+		// spell out full rights. isOwner is true -- this is the owner of the
+		// namespace instance -- so EffectiveFor short-circuits to the owner grant
+		// without reading a file, and groups are irrelevant to it.
+		ownerRights, err := h.acl.EffectiveFor(rel, ownerName, nil, true, byte(h.spec.Separator))
+		if err != nil {
+			return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
+		}
 		implicit := imaplib.ACLEntry{
 			Identifier: imaplib.RightsIdentifier(ownerName),
-			Rights:     rightsToIMAP(mailbox.FullRights),
+			Rights:     rightsToIMAP(ownerRights),
 		}
 		entries = append([]imaplib.ACLEntry{implicit}, entries...)
 	}

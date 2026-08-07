@@ -312,15 +312,16 @@ func TestStore_EffectiveForOwnerDefault(t *testing.T) {
 	if got, _ := s.EffectiveFor("Lists/news", "alice", nil, true, '/'); got != mailbox.FullRights {
 		t.Errorf("owner default: got %q, want FullRights", got)
 	}
-	// An explicit user= entry for the owner replaces the owner default —
-	// user= (tier 4) is more specific than the owner tier (3).
+	// Strong owner grant (§3.7): a reduced user= entry for the owner does NOT
+	// cap them. The owner is resolved above every tier, so this SETACL -- which
+	// would otherwise lock alice out of her own mail -- leaves her at full.
 	if err := s.Set("Lists/news", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: "lr"},
 	}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if got, _ := s.EffectiveFor("Lists/news", "alice", nil, true, '/'); got != mailbox.MustParseRights("lr") {
-		t.Errorf("owner with user= entry: got %q, want lr", got)
+	if got, _ := s.EffectiveFor("Lists/news", "alice", nil, true, '/'); got != mailbox.FullRights {
+		t.Errorf("owner with reduced user= entry: got %q, want FullRights", got)
 	}
 }
 
