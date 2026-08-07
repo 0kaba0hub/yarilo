@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -88,6 +89,15 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 				primary = h
 			}
 		case NamespaceShared, NamespaceOther: //nolint:exhaustive
+			if isOwnerTemplated(spec) {
+				// Owner-templated: the owner is not known at login, so no
+				// handle is built here. dispatch resolves it on demand, per
+				// referenced owner, and caches it on the session (§3.4).
+				// Expanding the location with a nil owner now would produce a
+				// degenerate path shared by everyone -- the parallel tree this
+				// design prevents -- so it is deliberately not attempted.
+				continue
+			}
 			if spec.Location == "" {
 				// Declared without storage: visible in NAMESPACE, but
 				// SELECT under its prefix returns NO.
@@ -240,6 +250,30 @@ func (s *session) dispatch(name string) (*nsHandle, string, error) {
 		}
 	}
 
+	// Owner-templated namespaces: resolve the owner from the name and open its
+	// handle on demand (§3.4). A malformed owner (traversal, empty) makes
+	// extractOwner return ok=false, so it falls through to the literal match and
+	// then to the personal namespace -- resolving to nobody, never the caller,
+	// which is what keeps isOwner honest (#544/B1).
+	for _, spec := range specs {
+		if !isOwnerTemplated(spec) {
+			continue
+		}
+		owner, rel, ok := extractOwner(spec, name)
+		if !ok {
+			continue
+		}
+		h, err := s.ownerHandle(spec, owner)
+		if err != nil {
+			return nil, "", &imaplib.Error{
+				Type: imaplib.StatusResponseTypeNo,
+				Code: imaplib.ResponseCodeNonExistent,
+				Text: "No such mailbox",
+			}
+		}
+		return h, rel, nil
+	}
+
 	// Longest non-empty prefix match wins.
 	var bestPrefix string
 	var best *nsHandle
@@ -291,15 +325,79 @@ func (s *session) orderedHandles() []*nsHandle {
 	return out
 }
 
+// maxOwnerHandles bounds the per-session owner-handle cache so a session that
+// walks many owners does not grow unbounded. When full, the oldest-inserted
+// handle is evicted and closed. Not strict LRU -- insertion order, not access
+// order -- which is enough to cap memory; a hot owner re-resolved after eviction
+// costs one userdb lookup, logged at debug.
+const maxOwnerHandles = 64
+
+// ownerHandle returns the handle for one owner of an owner-templated namespace,
+// building it on first reference and caching it for the session. The owner is
+// resolved through the userdb (resolveOwnerUserInfo), so the handle carries the
+// owner's per-user driver and root; h.owner is set to the owner, which is what
+// makes isOwner true for the owner's own session and false for a peer (#1130).
+func (s *session) ownerHandle(spec NamespaceSpec, owner string) (*nsHandle, error) {
+	key := spec.Prefix + "\x00" + owner
+	if s.ownerHandles != nil {
+		if h, ok := s.ownerHandles[key]; ok {
+			return h, nil
+		}
+	}
+	ownerUI, err := resolveOwnerUserInfo(context.Background(), s.srv.opts.UserdbLookup, s.userInfo, spec, owner)
+	if err != nil {
+		return nil, err
+	}
+	subsFile := "subscriptions-" + nsSlug(spec)
+	h, err := s.openHandle(spec, nsSlug(spec), ownerUI, s.owner(ownerUI.Username), subsFile)
+	if err != nil {
+		return nil, err
+	}
+	// The person who owns this instance -- the resolved owner, not the session
+	// user. isOwner compares this against the session user (#1130).
+	h.owner = owner
+	h.location = ownerUI.MailPath
+
+	if s.ownerHandles == nil {
+		s.ownerHandles = make(map[string]*nsHandle)
+	}
+	if len(s.ownerHandles) >= maxOwnerHandles {
+		s.evictOneOwnerHandle()
+	}
+	s.ownerHandles[key] = h
+	return h, nil
+}
+
+// evictOneOwnerHandle closes and removes one cached owner handle to stay under
+// the bound. Arbitrary victim (map order); the bound is a memory cap, not a
+// fairness policy.
+func (s *session) evictOneOwnerHandle() {
+	for k, h := range s.ownerHandles {
+		closeHandle(h)
+		delete(s.ownerHandles, k)
+		return
+	}
+}
+
 // closeHandles releases per-namespace resources at session teardown.
 func (s *session) closeHandles() {
 	for _, h := range s.namespaces {
-		if h.box != nil {
-			h.box.Close() //nolint:errcheck
-		}
-		if h.idx != nil {
-			h.idx.Close() //nolint:errcheck
-		}
+		closeHandle(h)
+	}
+	for _, h := range s.ownerHandles {
+		closeHandle(h)
+	}
+}
+
+func closeHandle(h *nsHandle) {
+	if h == nil {
+		return
+	}
+	if h.box != nil {
+		h.box.Close() //nolint:errcheck
+	}
+	if h.idx != nil {
+		h.idx.Close() //nolint:errcheck
 	}
 }
 

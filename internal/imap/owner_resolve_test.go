@@ -48,15 +48,30 @@ func TestResolveOwnerUserInfo(t *testing.T) {
 		}
 	})
 
-	t.Run("root from the namespace template, not the userdb", func(t *testing.T) {
+	t.Run("root from the userdb, not the namespace template", func(t *testing.T) {
 		ui, err := resolveOwnerUserInfo(context.Background(), db, base, spec, "alice")
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
-		// userdb root is /srv/alice; the namespace template maildir:%h/shared
-		// expands %h against the owner home -> /srv/alice/shared.
-		if ui.MailPath != "/srv/alice/shared" {
-			t.Errorf("MailPath = %q, want /srv/alice/shared (namespace template over userdb root)", ui.MailPath)
+		// userdb gave MailPath /srv/alice; the namespace template maildir:%h/shared
+		// must NOT overwrite it -- the owner's real store wins, so a per-user
+		// driver is never pointed at a template path.
+		if ui.MailPath != "/srv/alice" {
+			t.Errorf("MailPath = %q, want /srv/alice (userdb root over the template)", ui.MailPath)
+		}
+	})
+
+	t.Run("template fills the root only when the userdb gave none", func(t *testing.T) {
+		// An owner whose userdb returns no MailPath falls back to the template.
+		noPath := fakeUserdb(map[string]*mailbox.UserInfo{
+			"carol": {Username: "carol", Home: "/srv/carol", Driver: "maildir"},
+		})
+		ui, err := resolveOwnerUserInfo(context.Background(), noPath, base, spec, "carol")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if ui.MailPath != "/srv/carol/shared" {
+			t.Errorf("MailPath = %q, want /srv/carol/shared (template fills the empty userdb root)", ui.MailPath)
 		}
 	})
 

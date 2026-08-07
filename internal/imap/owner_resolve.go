@@ -45,11 +45,17 @@ func resolveOwnerUserInfo(
 	if owner == "" {
 		return nil, fmt.Errorf("imap: empty owner")
 	}
-	ownerUI, err := lookup(ctx, owner)
-	if err != nil || ownerUI == nil {
+	found, err := lookup(ctx, owner)
+	if err != nil || found == nil {
 		// A userdb miss is the answer: no such user, so no such owner.
 		return nil, fmt.Errorf("imap: owner %q not found: %w", owner, err)
 	}
+	// Copy before mutating: this function overwrites Home/MailPath/Separator, and
+	// a lookup that ever returns a shared pointer (a cache) would otherwise have
+	// its entry rewritten under it. Safe regardless of what the lookup returns
+	// -- the on-demand cache stores the resolved result, not this input.
+	uiCopy := *found
+	ownerUI := &uiCopy
 
 	// Root from the namespace location, expanded against the owner.
 	loc, ok, perr := mailbox.ParseLocation(spec.Location, ownerUI)
@@ -59,8 +65,17 @@ func resolveOwnerUserInfo(
 	if !ok || loc.Path == "" {
 		return nil, fmt.Errorf("imap: namespace location %q resolved to no path for owner %q", spec.Location, owner)
 	}
-	ownerUI.Home = loc.Path
-	ownerUI.MailPath = loc.Path
+	// Root from the owner's userdb when it gave one, the namespace template
+	// only otherwise -- fillIfEmpty on the root, the same rule the session user
+	// already follows (server.go: userdb MailPath wins when present). The lookup
+	// set Home and MailPath to the owner's real store, and overwriting them with
+	// the namespace template would point the owner's userdb driver at a
+	// template path: for a deployment with per-user drivers (mdbox/maildir/sdbox
+	// by account) one template cannot name all three roots, so it would open an
+	// mdbox driver on a maildir tree -- the parallel tree this design prevents.
+	// The template fills only an owner whose userdb gave no mail_location.
+	fillIfEmpty(&ownerUI.MailPath, loc.Path)
+	fillIfEmpty(&ownerUI.Home, loc.Path)
 	ownerUI.Separator = string(spec.Separator)
 
 	// Namespace-location modifiers fill only what the userdb left empty.

@@ -133,37 +133,31 @@ modifiers, built by the same `ResolveUserInfo` → `StampLocation` path the
 session user goes through — one implementation, so an owner resolves exactly as
 a logged-in user does.
 
-**Precedence, decided before the code: the owner's userdb `mail_location`
-decides the driver; the root comes from expanding a template against the owner.**
-This is what `StampLocation` already does for the session user (resolve.go):
-it sets `ui.Driver` from `mail_location`, fills the `INDEX=` / `CONTROL=` /
-`ALT=` / `VOLATILEDIR=` modifiers **only where nothing has set them yet** — for
-the session user the deployment defaults (`DefaultIndexDir` and the rest) have
-usually filled them already, so a userdb modifier reaches the user only when the
-deployment left that field unset — and it does *not* touch `MailPath` or `Home`.
-The root is `DefaultMailPath` expanded against the user; for an owner-templated
-namespace it is the namespace `location:` expanded against the owner, exactly as
-the reference expands its own location template.
+**Precedence, decided before the code: the owner's userdb decides the driver and
+the root; the namespace template supplies the root only when the userdb gave
+none.** This is the same rule the session user already follows (`server.go`:
+`if res.MailPath != "" { ... }` -- the userdb path wins when present). The lookup
+returns the owner with their real store: `ResolveUserInfo` sets `MailPath` and
+`Home` from the owner's `mail_location`, and `StampLocation` sets the driver and
+fills the `INDEX=` / `CONTROL=` / `ALT=` / `VOLATILEDIR=` modifiers only where
+nothing has set them yet (`resolve.go`).
 
-The gap-filling is first-writer-wins, so whether an owner's `INDEX=` lands turns
-entirely on whether `StampLocation` runs before or after the namespace template
-fills those fields. The lookup PR builds the owner `UserInfo` and must make that
-order an explicit choice — `StampLocation` closes gaps, it does not override —
-rather than an accident of operator sequence.
+`resolveOwnerUserInfo` therefore keeps `MailPath`/`Home` from the lookup and
+lets the namespace `location:` fill them only when the userdb left them empty --
+`fillIfEmpty` on the root, the same gap-fill it does on the modifiers, so the
+owner and the session user resolve by one rule, not two. It does **not**
+overwrite the root with the template: a deployment with per-user drivers
+(mdbox / maildir / sdbox by account, each at its own path -- `~/mdbox`,
+`~/Maildir`, `~/sdbox`) has no single template that names all three roots, and
+forcing one would point the owner's userdb driver at a template path -- an
+`mdbox` driver on a `maildir` tree, the parallel tree this design exists to
+prevent. The driver is never overwritten after the lookup for the same reason.
 
-The driver is the field that mattered: it is per-user here — the deployment runs
-mdbox, maildir and sdbox for different accounts — and it arrives only through the
-owner's `mail_location`, which is the whole reason the lookup is a full userdb
-lookup rather than a template expansion (§7.6). A namespace `location:` written
-`maildir:%h` while the owner's userdb says `mdbox:~/mdbox` resolves to the
-`mdbox` driver over the namespace template's `%h` root — `StampLocation` wins the
-driver, the namespace template wins the root, and the two do not fight because
-they decide different fields.
-
-The namespace `location:` must carry a per-owner variable (config validation
-enforces it, since 2.3.84) because it always supplies the root, per owner: a
-fixed location would resolve every owner to one shared path, the parallel tree
-this design exists to prevent.
+The namespace `location:` must still carry a per-owner variable (config
+validation enforces it, since 2.3.84), because in the one case it is used -- an
+owner whose userdb gives no `mail_location` -- it becomes the root, and a fixed
+location would resolve every such owner to one shared path, the same tree this
+design exists to prevent.
 
 ### 3.4 On-demand handle construction + caching
 
@@ -190,9 +184,14 @@ dispatch(name):
 - **fileindex**: the cache-key fix from #503 (index keyed by resolved storage
   root, not username alone) already makes distinct owners get distinct index
   state — a prerequisite this design depends on.
-- **Bound**: cap the per-session owner-handle cache (e.g. 64) with LRU
-  eviction + close, so a session that walks thousands of owners does not grow
-  unbounded. `log()` an eviction at debug.
+- **Bound**: the per-session owner-handle cache is capped (v1: 64). When full,
+  one cached handle is evicted and closed so a session walking many owners does
+  not grow unbounded. v1 evicts an arbitrary entry (insertion order), not strict
+  LRU — enough as a memory cap; a hot owner re-resolved after eviction costs one
+  userdb lookup. The cache stores the **resolved handle**, not the userdb lookup
+  response, and `resolveOwnerUserInfo` copies the looked-up `UserInfo` before
+  mutating it, so a future lookup cache that returned a shared pointer could not
+  have its entry rewritten under it.
 
 ### 3.5 ACL owner tier
 
@@ -655,12 +654,13 @@ per-user storage the reference's shared-namespace model does not express.
   here would import a limitation the deployment already violates, so the owner is
   looked up in full and the result cached to pay the round-trip once (§3.4).
 
-- **The driver comes from the owner's `mail_location`, not the namespace
-  `location:`.** The same fact drives §3.3's precedence: `StampLocation` takes
-  the driver from the owner's userdb, while the root is the namespace template
-  expanded against the owner. They decide different fields, so a namespace whose
-  template happened to name a different driver does not open the wrong backend —
-  the userdb driver wins, which is what the full lookup exists to guarantee.
+- **The driver and the root come from the owner's userdb, not the namespace
+  `location:`.** The same fact drives §3.3's precedence: the deployment's
+  per-user drivers live in the owner's `mail_location`, and so does the owner's
+  real root. The namespace template supplies the root only for an owner whose
+  userdb gives no `mail_location`; otherwise the userdb wins both. A template
+  that overwrote the root would point a per-user driver at a path it does not
+  match — the parallel-tree bug.
 
 Both are the shape of §7.5's escape-order note: the reference is self-consistent,
 and yarilo diverges on purpose where the deployment's shape demands it. Written
