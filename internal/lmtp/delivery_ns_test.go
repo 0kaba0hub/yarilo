@@ -156,6 +156,29 @@ func TestDeliveryTargetPostRight(t *testing.T) {
 		}
 	})
 
+	// The other half of #1119: the delivery right is 'p', not 'i'. A peer with
+	// exactly the insert right -- the one IMAP APPEND requires -- must still not
+	// receive delivery, or the two paths would disagree about what each right
+	// means. Together with the APPEND test (insert allows, post does not) this
+	// pins them against each other.
+	t.Run("insert alone does not deliver", func(t *testing.T) {
+		root := t.TempDir()
+		publicDir := filepath.Join(root, "public")
+		mb, idx := maildir.New(), fileindex.New()
+		seedPostACL(t, publicDir, "News", "user=alice@x lri\n") // insert, no post
+		s := newSession(publicDir, mb, idx)
+		ui, rcptBox, rcptIdx := newRcpt(t, root, mb, idx)
+
+		box, _, rel, done := s.deliveryTarget(ui, rcptBox, rcptIdx, "Public/News", true)
+		defer done()
+		if box != rcptBox {
+			t.Fatal("delivery routed to the public store for a peer holding only 'i'; the delivery right is 'p'")
+		}
+		if rel != "INBOX" {
+			t.Errorf("fallback rel = %q, want INBOX", rel)
+		}
+	})
+
 	t.Run("no ACL falls back to INBOX", func(t *testing.T) {
 		root := t.TempDir()
 		publicDir := filepath.Join(root, "public")

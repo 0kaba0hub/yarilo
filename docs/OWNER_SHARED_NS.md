@@ -454,6 +454,13 @@ minimum **`lkx`** — see it, create in it, delete from it. In practice
 `a` the grantee can repair the rest themselves, without it every later
 adjustment needs an administrator.
 
+The letter that lets a peer *add* mail over IMAP is **`i`** (insert), the same
+in a shared namespace as in a personal one — not `p`. `p` (post) is the
+delivery right, checked only on the LMTP path; an IMAP `APPEND`/`COPY`/`MOVE`
+never consults it (#1119). The practical `lrswipkxte` carries both letters, so
+it works either way; a minimal grant for a peer who should `APPEND` must
+include `i`, and `p` alone will not do it.
+
 ```
 yarctl backend acl set --root <owner> <grantee> lrswipkxte --namespace public
 ```
