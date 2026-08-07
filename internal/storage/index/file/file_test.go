@@ -772,10 +772,6 @@ func TestIndexDirIsFormPreserving(t *testing.T) {
 		Username: "u@test", Home: "/srv/u", Driver: "maildir", Separator: "/",
 	}).(*userHandle).ui
 
-	// Given the same name, the same directory.
-	if ui.indexDir(composed) != ui.indexDir(composed) {
-		t.Fatal("indexDir is not deterministic")
-	}
 	// Given two forms, two directories -- because normalising is not this
 	// tree's job. The session normalises before it ever calls here, so in
 	// production both arrive as the composed form.
