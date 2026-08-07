@@ -1,16 +1,17 @@
 package imap
 
-import "strings"
+import (
+	"strings"
 
-// ownerVar is the owner variable v1 supports in a namespace prefix. A prefix
-// containing it is owner-templated: the segment filling its slot names the
-// owner of the instance. %n / %d split-slot forms are a documented follow-up
-// (docs/OWNER_SHARED_NS.md 3.1-3.2).
-const ownerVar = "%u"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
+)
 
 // isOwnerTemplated reports whether spec's prefix carries the owner variable.
+// The detection and the variable itself live in pkg/mailbox, so config
+// validation and this resolver share one definition (mailbox.OwnerVar,
+// mailbox.PrefixIsOwnerTemplated).
 func isOwnerTemplated(spec NamespaceSpec) bool {
-	return strings.Contains(spec.Prefix, ownerVar)
+	return mailbox.PrefixIsOwnerTemplated(spec.Prefix)
 }
 
 // extractOwner parses a wire mailbox name under an owner-templated namespace
@@ -37,7 +38,7 @@ func extractOwner(spec NamespaceSpec, name string) (owner, rel string, ok bool) 
 	if !isOwnerTemplated(spec) {
 		return "", "", false
 	}
-	before, after, _ := strings.Cut(spec.Prefix, ownerVar)
+	before, after, _ := strings.Cut(spec.Prefix, mailbox.OwnerVar)
 	if !strings.HasPrefix(name, before) {
 		return "", "", false
 	}
