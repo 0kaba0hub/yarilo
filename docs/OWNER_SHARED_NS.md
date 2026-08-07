@@ -188,6 +188,72 @@ opened via userdb. Detect `owner == s.userInfo.Username` and alias to the
 personal handle with `rel = X`. Avoids a redundant userdb round-trip and keeps
 one index/lock domain for the user's own mail.
 
+### 3.7 One owner, one definition, and where the shortcut lives
+
+Two definitions of "owner" already coexist in the code, and B1 is what forces
+them together — not what introduces the second one:
+
+```go
+isOwner(h)      (acl_check.go)   -> h.spec.Type == NamespacePersonal   // by namespace type
+adminCheckPRc   (acl.go:204)     -> s.userInfo.Username == h.userInfo.Username   // by person
+```
+
+The second is already the definition §3.5 needs. So B1 does not add an owner to
+a shared namespace; it makes the by-type definition the by-person one, and the
+risk is a third appearing rather than a second.
+
+**Decided, before the code:**
+
+**One definition.** `isOwner` becomes "the session user is the owner of this
+instance of the namespace", and nothing keeps a private version of it.
+`adminCheckPRc` goes and its two call sites use `requireAdminOn` — tracked as
+#1107, and to be done **before** B1, so B1 has one admin route to reason about
+rather than two. Same order as #1094 before #1096: harden the writing path,
+then give it new targets.
+
+**Implicit grant, not a bypass — with the shortcut inside the resolver.** Being
+the owner means `Effective()` returns the full right set for that user, not that
+the callers return early before resolving anything. The distinction is not
+philosophical: with the bypass, `MYRIGHTS` and `GETACL` reach their answers by
+different routes and agree by coincidence, which is the exact shape of every
+defect this series has caught — the validator against the builder, escaping
+against encoding, the FTS tree against the mail tree. Each half right, the pair
+not, and nothing saying so.
+
+The cost argument for a bypass does not survive the move: `Effective()` answers
+the owner from the definition without reading a file, so the owner is still
+free. The shortcut lives one level down, inside the single source every caller
+already uses, instead of being repeated in each of them.
+
+It also removes the synthesis in `GetACL`: it stops inventing an
+`owner=FullRights` entry when none is stored and shows what the resolver
+returned, which is now the same thing.
+
+**The implicit grant beats an explicit negative.** `-user=alice` on the owner
+does not remove the owner's rights. Under a bypass the question could not
+arise; under an implicit grant it arises on the first test, so it is settled
+here. The reason is the same one that makes §7.2 matter: a shared namespace has
+no second owner to repair it, so one `SETACL` could make the namespace
+unmanageable from inside, with no session able to undo it.
+
+**Owner and root grant are independent.** The owner holds rights because they
+are the owner; peers hold what the namespace-root ACL and the per-mailbox ACLs
+give them. Stated explicitly because the first deployment of B1 will ask "why a
+root grant at all, if there is an owner", and the answer belongs here rather
+than being reconstructed afterwards: an owner-templated namespace has an owner,
+a fixed shared one does not, and both use the same root.
+
+**#1096 is a precondition, not a happy accident.** Before it, the root ACL was
+INBOX's own file — `Path("") == Path("INBOX")`. An owner-templated namespace is
+the first to have both an INBOX of its own *and* a namespace-root ACL, so
+without the separate `yarilo-acl-root` file B1 would walk straight into #1091 on
+its first deployment: a grant meant for the namespace would be read as INBOX's,
+or the reverse.
+
+Whether an owner sees the existence-hiding rule of §7.1 is deliberately not
+decided here — it is a property of the refusal, so it belongs beside the
+refusal.
+
 ---
 
 ## 4. Config schema
@@ -336,7 +402,69 @@ Personal namespaces are unaffected: the owner holds every right, so no refusal
 of either kind arises. The same resolution is what the reference implementation
 reaches (`acl_mailbox_fail_not_found`).
 
+**An owner never meets either refusal**, and once §3.7 makes ownership an
+implicit grant inside `Effective()` that stops being a separate statement: the
+owner resolves with the lookup right, so the rule that equalises the two
+refusals is never reached. That is the fourth surface of the same decision, and
+it is stated here rather than in §3.7 because it is a property of the refusal.
+It is what makes an owner-templated namespace behave for its owner exactly as a
+personal one does, without a second code path saying so.
+
 Tracked as #1068.
+
+### 7.2 The bootstrap grant — why `k` alone leaves a namespace nobody can clean up
+
+A shared namespace starts empty and grantable only at its root: nobody can
+create its first mailbox without the create right, and there is nowhere else to
+put that right. The grant goes on the root, addressed with `--root` on the CLI
+and `"root": true` on the wire.
+
+An incomplete grant produces a namespace that fills up and cannot be emptied:
+
+```
+u2: CREATE   "Public/Reg69"    OK
+u2: SELECT   "Public/Reg69"    OK [READ-WRITE]
+u2: MYRIGHTS "Public/Reg69"    lrsk
+u2: DELETE   "Public/Reg69"    NO [NOPERM] Permission denied: missing right 'x'
+```
+
+That `k` (create) and `x` (delete mailbox) are separate rights is RFC 4314 and
+needs no documenting here. Two things about how they behave in this model are
+not in the RFC, and both are why the recipe below matters.
+
+**A shared namespace has no owner.** `isOwner` is true only for a personal
+namespace, where "I created it, so I can delete it" holds through the owner
+shortcut rather than through any ACL. That shortcut exists for nobody here. So
+the consequence of a grant without `x` is not "somebody else needs the right" —
+it is that **no user of the namespace holds it at all**. An operator carrying
+intuition over from the personal namespace gets a mailbox nobody can remove.
+
+**Children inherit the root grant.** A mailbox created in the namespace inherits
+exactly what the root granted — `MYRIGHTS` above returns the root's `lrsk`
+verbatim. An incomplete bootstrap grant is therefore not a local mistake: it is
+replicated onto everything created in that namespace afterwards.
+
+It is not irreversible — `yarctl acl set ... --root` can add rights later — but
+it is not fixable from inside a session, which is why the recipe belongs here
+rather than in someone's head.
+
+**The recipe.** For a manageable shared namespace the root grant needs at
+minimum **`lkx`** — see it, create in it, delete from it. In practice
+**`lrswipkxte`**. Add **`a`** for whoever is allowed to delegate further: with
+`a` the grantee can repair the rest themselves, without it every later
+adjustment needs an administrator.
+
+```
+yarctl backend acl set --root <owner> <grantee> lrswipkxte --namespace public
+```
+
+**The deploy check depends on this.** `checkACLDisclosure` (see `docs/SMOKE.md`)
+creates `<prefix>SmokeAclProbe` and removes it afterwards, which needs `x`.
+Since 2.3.70 a cleanup it cannot complete fails the check rather than printing a
+note, so a smoke user granted without `x` reports a failure on every run instead
+of quietly leaving another probe mailbox behind.
+
+Tracked as #1104.
 
 ---
 
