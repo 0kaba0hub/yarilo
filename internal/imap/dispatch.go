@@ -35,8 +35,18 @@ type nsHandle struct {
 	// each folder's index dir; nil for declared-only namespaces.
 	acl *acl.Store
 	// userInfo is who the handle was opened for. Shared/public use a
-	// synthetic UserInfo whose Home is the namespace root.
+	// synthetic UserInfo whose Home is the namespace root -- so userInfo.Username
+	// is the *session* user, not an owner, which is why comparing the two once
+	// made every peer look like the owner (#1107).
 	userInfo *mailbox.UserInfo
+	// owner is the person who owns this instance of the namespace, or "" when
+	// none does. A personal namespace is owned by the session user; a fixed
+	// shared or public namespace is owned by nobody -- there is no principal who
+	// holds rights implicitly, which is what makes a bootstrap grant necessary
+	// (see docs/OWNER_SHARED_NS.md 7.2). An owner-templated namespace (B1) will
+	// carry the resolved owner here. isOwner compares this against the session
+	// user, so the definition is by person, not by namespace type.
+	owner string
 }
 
 // implemented reports whether this namespace has working backends.
@@ -154,6 +164,14 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		CacheTTL:          s.srv.opts.ACLCacheTTL,
 		Global:            s.srv.opts.ACLGlobal,
 	}, s.srv.opts.Locker)
+	// The namespace-instance owner. A personal namespace is owned by the user
+	// it was opened for; a fixed shared/public one by nobody. Owner-templated
+	// namespaces (B1) set this to the resolved owner, and isOwner then works for
+	// them through the same definition rather than a second one.
+	nsOwner := ""
+	if spec.Type == NamespacePersonal {
+		nsOwner = ui.Username
+	}
 	return &nsHandle{
 		name:     name,
 		spec:     spec,
@@ -162,6 +180,7 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		subs:     store,
 		acl:      aclStore,
 		userInfo: ui,
+		owner:    nsOwner,
 	}, nil
 }
 

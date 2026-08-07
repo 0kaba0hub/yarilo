@@ -15,8 +15,19 @@ import (
 // given namespace handle. Owner == personal namespace: every mailbox in the
 // user's own home is owned by them regardless of any explicit `owner` ACL
 // entry. Shared/public mailboxes are never auto-owned.
+// isOwner reports whether the session user owns this instance of the namespace.
+//
+// By person, not by namespace type: h.owner is the principal who owns the
+// instance ("" when none), and this compares it against the session user. For a
+// personal namespace the two are the same user, so the answer is unchanged from
+// the old type-based predicate; for a fixed shared/public namespace h.owner is
+// "" and nobody is the owner. The person-based form is what an owner-templated
+// namespace (B1) needs -- and it is the definition adminCheckPRc once carried
+// privately before it was removed so there would be exactly one (#1107, #1119
+// removed insertRight for the same reason: a predicate deciding by type where
+// the question is about the subject).
 func (s *session) isOwner(h *nsHandle) bool {
-	return h.spec.Type == NamespacePersonal
+	return h.owner != "" && s.userInfo != nil && s.userInfo.Username == h.owner
 }
 
 // aclEnforced reports whether ACL checks fire for this handle: ACL enabled
