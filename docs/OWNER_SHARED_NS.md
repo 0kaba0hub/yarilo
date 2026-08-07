@@ -444,6 +444,29 @@ personal one does, without a second code path saying so.
 
 Tracked as #1068.
 
+**In an owner-templated namespace the rule moves to the resolve layer, and the
+write verbs inherit it.** Here the probed segment is a *username*, so the split
+this rule governs is no longer "does this mailbox exist" but "does this account
+exist" — a directory of the deployment, readable by anyone who can log in. Two
+verbs escaped the per-command rule and showed why it cannot stay per-command:
+`CREATE` refuses with `NOPERM` by deliberate design (§7.1 above: naming a mailbox
+that does not exist yet, "no such mailbox" would tell the user nothing), and
+`SUBSCRIBE` checks no rights at all — RFC 9051 §6.3.7 lets it accept an
+unvalidated name, so it answered `OK` for a stranger's mailbox. Each was
+defensible alone; paired with the `NONEXISTENT` an unknown owner gets, both
+became oracles (#1138).
+
+So the owner-templated resolver decides visibility once, before any verb runs: a
+caller who holds **no right at all** on the addressed name is told exactly what an
+unknown owner is told, from one error value used for both. A caller holding any
+right is not hidden from — they already know the space is there, so the precise
+refusal discloses nothing, and hiding from them would break the namespace rather
+than protect it. The owner is never hidden from their own space. Deciding it at
+the resolver is what makes verbs added later inherit the answer instead of each
+needing its own patch — and it is why an unreadable ACL hides too: that failure
+is only reachable for an owner that resolved, so reporting it would answer the
+question the hiding refuses (it is logged instead).
+
 ### 7.2 The bootstrap grant — why `k` alone leaves a namespace nobody can clean up
 
 A shared namespace starts empty and grantable only at its root: nobody can
