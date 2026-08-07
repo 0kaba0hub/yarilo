@@ -19,7 +19,7 @@ import (
 //
 // owner creates and grants; peer is refused or admitted. Both must exist in the
 // passdb, and prefix must name a configured shared namespace (e.g. "Public/").
-func checkACLDisclosure(ownerUser, ownerPass, peerUser, peerPass, prefix string) error {
+func checkACLDisclosure(ownerUser, ownerPass, peerUser, peerPass, prefix string) (err error) {
 	folder := prefix + "SmokeAclProbe"
 
 	owner, err := imapDial()
@@ -37,10 +37,9 @@ func checkACLDisclosure(ownerUser, ownerPass, peerUser, peerPass, prefix string)
 	if _, err := owner.cmd(fmt.Sprintf("CREATE %q", folder)); err != nil {
 		return fmt.Errorf("CREATE %q: %w — is %q a configured namespace on this deployment?", folder, err, prefix)
 	}
+	// Cleanup failure is a failure of the check, not a note in the output.
 	defer func() {
-		if err := owner.deleteFolder(folder); err != nil {
-			fmt.Printf("  cleanup %q: %v\n", folder, err)
-		}
+		err = aclCleanupResult(err, owner.deleteFolder(folder), folder, prefix)
 	}()
 
 	peer, err := imapDial()
@@ -153,4 +152,24 @@ func comparableRefusal(err error, folder string) string {
 		line = rest
 	}
 	return strings.ReplaceAll(line, folder, "<probe>")
+}
+
+// aclCleanupResult decides what a failed cleanup does to the check's result.
+//
+// It used to do nothing: the deferred delete reported through fmt.Printf, so a
+// probe left behind exited 0 and the check accumulated mailboxes in the very
+// namespace it exists to inspect. The likeliest cause is a bootstrap grant
+// without 'x' (#1104), but any cause leaves the same litter, so the answer does
+// not depend on knowing which.
+//
+// A check that already failed keeps its own error -- that one names the defect,
+// this one only says the probe survived.
+func aclCleanupResult(checkErr, cleanupErr error, folder, prefix string) error {
+	if cleanupErr == nil {
+		return checkErr
+	}
+	if checkErr == nil {
+		return fmt.Errorf("cleanup %q: %w — the probe is still in %q", folder, cleanupErr, prefix)
+	}
+	return fmt.Errorf("%w (cleanup %q also failed: %v)", checkErr, folder, cleanupErr)
 }

@@ -62,7 +62,7 @@ type aclEntryJSON struct {
 }
 
 func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
-	store, _, err := s.openACLStore(w, r)
+	store, _, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -75,7 +75,7 @@ func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLGet(w http.ResponseWriter, r *http.Request) {
-	store, req, err := s.openACLStore(w, r)
+	store, req, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -95,7 +95,7 @@ func (s *Server) handleACLGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
-	store, req, err := s.openACLStore(w, r)
+	store, req, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -116,7 +116,7 @@ func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLDelete(w http.ResponseWriter, r *http.Request) {
-	store, req, err := s.openACLStore(w, r)
+	store, req, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -132,7 +132,7 @@ func (s *Server) handleACLDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
-	store, req, err := s.openACLStore(w, r)
+	store, req, present, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -140,11 +140,32 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "folders required", http.StatusBadRequest)
 		return
 	}
+	// Unlike set, rebuild does not create anything: it reseeds the index from
+	// files already on disk, so a name that is not there contributes nothing
+	// and cannot become a mailbox with permissions. It is also the repair
+	// tool, run precisely when the state is already inconsistent, so refusing
+	// the whole batch over one stale name would fail on the state it repairs.
+	//
+	// Permissive, then, but not silent: the count used to be len(req.Folders),
+	// so a batch of three names of which two did not exist answered
+	// {"folders":3,"status":"ok"} -- an operator who misspelt one got a success
+	// with the number they expected and went away believing the index reseeded.
+	rebuilt := make([]string, 0, len(req.Folders))
+	skipped := make([]map[string]string, 0)
 	err = store.ListRebuild(req.Folders, func(folder string) (mailbox.ACL, error) {
+		if !present[folder] {
+			skipped = append(skipped, map[string]string{"folder": folder, "reason": "folder not found"})
+			return nil, nil
+		}
 		acl, err := store.Get(folder)
 		if err != nil {
 			return nil, err
 		}
+		if len(acl) == 0 {
+			skipped = append(skipped, map[string]string{"folder": folder, "reason": "no ACL"})
+			return nil, nil
+		}
+		rebuilt = append(rebuilt, folder)
 		return acl, nil
 	})
 	if err != nil {
@@ -153,26 +174,28 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 	}
 	apiJSON(w, map[string]any{
 		"status":  "ok",
-		"folders": len(req.Folders),
+		"folders": len(rebuilt),
+		"rebuilt": rebuilt,
+		"skipped": skipped,
 	})
 }
 
 // openACLStore decodes the common request body, resolves the
 // per-namespace bundle, and returns the acl.Store. Mirrors
 // openSubsStore / openSpecialUseStore in this package.
-func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Store, *aclRequest, error) {
+func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Store, *aclRequest, map[string]bool, error) {
 	var req aclRequest
 	if !decodeJSON(w, r, &req) {
-		return nil, nil, errDecode
+		return nil, nil, nil, errDecode
 	}
 	if req.User == "" {
 		apiError(w, errUserRequired.Error(), http.StatusBadRequest)
-		return nil, nil, errUserRequired
+		return nil, nil, nil, errUserRequired
 	}
 	uc, err := s.openUserContext(req.User)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer uc.Close()
 
@@ -183,7 +206,7 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	bundle, err := uc.ns(s, nsName)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// Admin surface manages explicit entries, not effective-with-default
 	// resolution, so acl_defaults_from_inbox does not apply here.
@@ -196,16 +219,50 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	// some of them and nothing to others.
 	if req.Root && req.Folder != "" {
 		apiError(w, `"root" addresses the namespace root; do not send "folder" with it`, http.StatusBadRequest)
-		return nil, nil, errRootWithFolder
+		return nil, nil, nil, errRootWithFolder
 	}
 	if req.Folder != "" {
 		if err := mailbox.CheckName(bundle.box, req.Folder); err != nil {
 			apiError(w, err.Error(), http.StatusBadRequest)
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+		// RFC 4314 3.3, the rule #1075 put on the IMAP side: the ACL commands
+		// answer for a mailbox that is there. This path never checked, so
+		// setting an ACL on a misspelt name was not an error -- the store
+		// created the directory and wrote the file, and a typo became a
+		// mailbox with permissions and no messages.
+		//
+		// Asked here rather than in each handler, for the reason
+		// resolveACLHandle gives: four copies is how one of them ends up
+		// without. The root is exempt by construction -- it carries no folder
+		// name, so it never reaches this branch (#1096).
+		exists, err := bundle.box.FolderExists(req.Folder)
+		if err != nil {
+			apiError(w, "folder exists: "+err.Error(), http.StatusInternalServerError)
+			return nil, nil, nil, err
+		}
+		if !exists {
+			apiError(w, "folder not found", http.StatusNotFound)
+			return nil, nil, nil, errFolderNotFound
+		}
+	}
+	// Existence for the rebuild batch, resolved here because the storage
+	// handle is closed when this returns. rebuild does not refuse an absent
+	// name -- see the handler -- but it must not report it as rebuilt either.
+	var present map[string]bool
+	if len(req.Folders) > 0 {
+		present = make(map[string]bool, len(req.Folders))
+		for _, f := range req.Folders {
+			exists, ferr := bundle.box.FolderExists(f)
+			if ferr != nil {
+				apiError(w, "folder exists: "+ferr.Error(), http.StatusInternalServerError)
+				return nil, nil, nil, ferr
+			}
+			present[f] = exists
 		}
 	}
 	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
-	return store, &req, nil
+	return store, &req, present, nil
 }
 
 // aclToJSON / jsonToACL bridge the in-memory ACL representation and
