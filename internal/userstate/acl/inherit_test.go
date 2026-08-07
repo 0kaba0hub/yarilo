@@ -77,11 +77,13 @@ func TestMaterialiseExistingAddsOnlyWhatIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
-	if got := rep.Added["Matrix"]; len(got) != 1 || got[0] != "user=bob" {
-		t.Errorf("dry run added = %v, want [user=bob]", got)
+	// The rights are the point of the report: two identifiers with no rights
+	// beside them print a repair and a widening identically.
+	if got := rep.Added["Matrix"]; len(got) != 1 || got[0].Identifier != "user=bob" || got[0].Rights != "lrskxa" {
+		t.Errorf("dry run added = %+v, want user=bob with the rights it would gain", got)
 	}
-	if got := rep.Skipped["Matrix"]; len(got) != 1 || got[0] != "user=dave" {
-		t.Errorf("dry run skipped = %v, want [user=dave] — an entry already there is not touched", got)
+	if got := rep.Skipped["Matrix"]; len(got) != 1 || got[0].Identifier != "user=dave" || got[0].Rights != "l" {
+		t.Errorf("dry run skipped = %+v, want user=dave with the rights the mailbox keeps giving them", got)
 	}
 	after, _ := s.Get("Matrix")
 	if len(after) != 2 {

@@ -498,15 +498,20 @@ func TestACL_MaterialiseIsADryRunUnlessAsked(t *testing.T) {
 		t.Fatalf("materialise: status=%d %s", status, body)
 	}
 	var dry struct {
-		Applied bool                `json:"applied"`
-		Added   map[string][]string `json:"added"`
+		Applied bool `json:"applied"`
+		Added   map[string][]struct {
+			Identifier string `json:"identifier"`
+			Rights     string `json:"rights"`
+		} `json:"added"`
 	}
 	decodeJSONBody(t, body, &dry)
 	if dry.Applied {
 		t.Error("a run without apply reported itself as applied")
 	}
-	if got := dry.Added["Sales"]; len(got) != 1 || got[0] != "user=admin@example.com" {
-		t.Errorf("added = %v, want the administrator from the root", got)
+	if got := dry.Added["Sales"]; len(got) != 1 || got[0].Identifier != "user=admin@example.com" {
+		t.Fatalf("added = %+v, want the administrator from the root", got)
+	} else if got[0].Rights != "lrswipkxtea" {
+		t.Errorf("added rights = %q, want the rights applying would grant", got[0].Rights)
 	}
 	_, body = doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{"user": user, "folder": "Sales"})
 	if strings.Contains(string(body), "admin@example.com") {
@@ -525,7 +530,9 @@ func TestACL_MaterialiseIsADryRunUnlessAsked(t *testing.T) {
 		"user": user, "folders": []string{"Sales"}, "apply": true,
 	})
 	var again struct {
-		Added map[string][]string `json:"added"`
+		Added map[string][]struct {
+			Identifier string `json:"identifier"`
+		} `json:"added"`
 	}
 	decodeJSONBody(t, body2, &again)
 	if len(again.Added) != 0 {

@@ -77,14 +77,28 @@ func (s *Store) inheritedFor(folder string) (mailbox.ACL, error) {
 	return s.rootDefaultACL()
 }
 
-// MaterialiseReport is what one namespace-wide materialisation did, or would do
-// on a dry run.
+// MaterialiseReport is what one materialisation did, or would do on a dry run.
 type MaterialiseReport struct {
-	// Added maps a mailbox to the identifiers written into its ACL.
-	Added map[string][]string
+	// Added maps a mailbox to the entries written into its ACL.
+	Added map[string][]MaterialiseEntry
 	// Skipped maps a mailbox to the identifiers it inherits and already names,
-	// which are left exactly as they are.
-	Skipped map[string][]string
+	// with the rights the mailbox's own entry gives them -- those are left
+	// exactly as they are.
+	Skipped map[string][]MaterialiseEntry
+}
+
+// MaterialiseEntry is one line of the report: who, and what they get.
+//
+// The rights are not decoration. The whole point of the dry run is that the
+// tool cannot tell a mailbox orphaned by the old rule from one whose file was
+// written to leave somebody out, so the judgement is handed to an operator --
+// and a list of bare identifiers prints those two cases identically. With the
+// rights, "anyone -> lr" on a mailbox whose ACL names one person reads as a
+// mistake at a glance, and "user=u2 -> lrskxa" says the run hands u2 full
+// administrative control rather than merely mentioning them.
+type MaterialiseEntry struct {
+	Identifier string `json:"identifier"`
+	Rights     string `json:"rights"`
 }
 
 // MaterialiseExisting repairs mailboxes created before inheritance was
@@ -110,7 +124,7 @@ type MaterialiseReport struct {
 //
 // dryRun answers what it would do without writing.
 func (s *Store) MaterialiseExisting(folders []string, dryRun bool) (*MaterialiseReport, error) {
-	rep := &MaterialiseReport{Added: map[string][]string{}, Skipped: map[string][]string{}}
+	rep := &MaterialiseReport{Added: map[string][]MaterialiseEntry{}, Skipped: map[string][]MaterialiseEntry{}}
 	for _, folder := range folders {
 		if folder == "" {
 			continue
@@ -131,18 +145,22 @@ func (s *Store) MaterialiseExisting(folders []string, dryRun bool) (*Materialise
 			// writing one would only freeze a value that is still live.
 			continue
 		}
-		named := map[string]bool{}
+		named := map[string]mailbox.Rights{}
 		for _, e := range current {
-			named[identityKey(e)] = true
+			named[identityKey(e)] = e.Rights
 		}
 		next := append(mailbox.ACL(nil), current...)
 		for _, e := range inherited {
-			if named[identityKey(e)] {
-				rep.Skipped[folder] = append(rep.Skipped[folder], identityKey(e))
+			if have, ok := named[identityKey(e)]; ok {
+				// Reported with the rights the mailbox itself gives them, not
+				// the ones it would have inherited: that is what stays in force.
+				rep.Skipped[folder] = append(rep.Skipped[folder],
+					MaterialiseEntry{Identifier: identityKey(e), Rights: string(have)})
 				continue
 			}
 			next = append(next, e)
-			rep.Added[folder] = append(rep.Added[folder], identityKey(e))
+			rep.Added[folder] = append(rep.Added[folder],
+				MaterialiseEntry{Identifier: identityKey(e), Rights: string(e.Rights)})
 		}
 		if len(rep.Added[folder]) == 0 || dryRun {
 			continue

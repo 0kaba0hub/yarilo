@@ -483,6 +483,12 @@ namespace root, creates `Public/Matrix`; the root's entry for `u2` is written
 into the new mailbox's ACL there and then, so the first `SETACL` `u2` issues on
 it does not replace the grant they are acting under. There is nothing to shadow.
 
+A mailbox with **no** file of its own is not given one, by creation or by the
+repair below: it still resolves live through its ancestors to the root default,
+exactly as the reference's `acl_backend_vfile_object_init_parent` does on
+lookup. So the section title holds for the mailboxes that have a file, which is
+what makes `materialise` a repair rather than a migration everybody has to run.
+
 **Global ACLs are not copied.** They keep merging live at resolve time, which is
 what a global ACL is for, and the reference excludes them from the copy for the
 same reason (`if (!update.rights.global)`). In yarilo they cannot be copied even
@@ -513,8 +519,26 @@ It is a dry run unless `--apply`, it never rewrites an entry that is already
 there, and running it twice adds nothing. It is deliberately not automatic: a
 mailbox orphaned by the old rule and a mailbox whose ACL leaves out an
 identifier on purpose are the same file on disk, so a resolver doing this on
-read would widen access exactly where it was narrowed deliberately. The report
-lists what it added and what it skipped.
+read would widen access exactly where it was narrowed deliberately.
+
+The report names the rights, not just the identifiers, because that judgement is
+the operator's and two bare names print a repair and a widening identically:
+
+```
+$ yarctl backend acl materialise public Matrix Sales --namespace public
+added = {"Matrix": [{"identifier":"user=u2","rights":"lrskxa"}],
+         "Sales":  [{"identifier":"anyone","rights":"lr"},
+                    {"identifier":"user=u2","rights":"lrskxa"}]}
+```
+
+The first line is the repair; the second is `anyone` gaining read access to a
+mailbox whose ACL deliberately named one person, which is visible as a mistake
+at a glance only because the rights are there. `skipped` carries the rights the
+mailbox's own entry keeps giving, for the same reason.
+
+Name the mailboxes. The API takes an explicit list and offers no way to sweep a
+namespace, so that widening a whole namespace cannot be one keystroke; a recipe
+written with a wildcard would quietly reintroduce what the interface withholds.
 
 Tracked as #1111.
 

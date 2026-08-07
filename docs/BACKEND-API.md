@@ -251,7 +251,11 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > ever adds — an entry already in the file is left exactly as it is and reported
 > under `skipped` — and a second run adds nothing. It is not automatic on
 > purpose: a mailbox orphaned by the old rule and one whose ACL deliberately
-> omits an identifier are the same file on disk.
+> omits an identifier are the same file on disk. Both lists name the rights as
+> well as the identifier — the operator is being asked to tell a repair from a
+> widening, and bare identifiers print the two the same. The mailboxes are named
+> explicitly; there is no namespace-wide sweep, so widening a whole namespace is
+> not one keystroke.
 >
 > **`rebuild` is the exception, deliberately.** It reseeds the index from files
 > already on disk, creates nothing, and is run precisely when the state is
