@@ -248,33 +248,78 @@ func TestList_ParseErrorAnnotatesLine(t *testing.T) {
 	}
 }
 
-func TestList_RebuildSeedsFromCallback(t *testing.T) {
-	home := t.TempDir()
-	s := New(home, "", "", "/", "", "alice", "test", Policy{}, nil)
-	// Seed inconsistent state directly via the file (skipping Set),
-	// then rebuild from a callback that knows the truth.
-	if err := os.WriteFile(filepath.Join(home, ListFileName),
-		[]byte("Stale\tuser=ghost\tlr\n"), 0o600); err != nil {
-		t.Fatalf("seed stale: %v", err)
-	}
+// The two verbs, pinned: ListRebuild reseeds the named folders and MERGES
+// (a partial call must not delete the rest of the index -- #1151), while
+// ListReplaceAll takes the complete set and replaces the index, which is what
+// clears rows for folders that no longer exist.
+func TestList_RebuildMergesAndReplaceAllReplaces(t *testing.T) {
 	truth := map[string]mailbox.ACL{
 		"A": {{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "bob"}, Rights: "lr"}},
 		"B": {{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"}, Rights: "lrs"}},
 	}
-	folders := []string{"A", "B"}
-	err := s.ListRebuild(folders, func(folder string) (mailbox.ACL, error) {
-		return truth[folder], nil
-	})
-	if err != nil {
-		t.Fatalf("ListRebuild: %v", err)
-	}
-	entries, _ := s.ListSnapshot()
-	if len(entries) != 2 {
-		t.Errorf("expected 2 entries after rebuild, got %d: %+v", len(entries), entries)
-	}
-	for _, e := range entries {
-		if e.Mailbox == "Stale" {
-			t.Errorf("stale entry survived rebuild: %+v", e)
+	resolve := func(folder string) (mailbox.ACL, error) { return truth[folder], nil }
+	seed := func(t *testing.T) *Store {
+		t.Helper()
+		home := t.TempDir()
+		s := New(home, "", "", "/", "", "alice", "test", Policy{}, nil)
+		// State the callback does not know about: another folder's rows.
+		if err := os.WriteFile(filepath.Join(home, ListFileName),
+			[]byte("Other\tuser=ghost\tlr\n"), 0o600); err != nil {
+			t.Fatalf("seed: %v", err)
 		}
+		return s
 	}
+
+	t.Run("rebuild of a subset keeps the other folders", func(t *testing.T) {
+		s := seed(t)
+		if err := s.ListRebuild([]string{"A", "B"}, resolve); err != nil {
+			t.Fatalf("ListRebuild: %v", err)
+		}
+		entries, _ := s.ListSnapshot()
+		var other, a, b bool
+		for _, e := range entries {
+			switch e.Mailbox {
+			case "Other":
+				other = true
+			case "A":
+				a = true
+			case "B":
+				b = true
+			}
+		}
+		if !other {
+			t.Error("rebuilding A and B deleted Other's rows: a partial rebuild must merge (#1151)")
+		}
+		if !a || !b {
+			t.Errorf("rebuilt folders missing: A=%v B=%v (%+v)", a, b, entries)
+		}
+	})
+
+	t.Run("rebuild reseeds a folder it is given, replacing its old rows", func(t *testing.T) {
+		s := seed(t)
+		// "Other" is rebuilt with no ACL -> its stale rows go, and only its own.
+		if err := s.ListRebuild([]string{"Other"}, func(string) (mailbox.ACL, error) { return nil, nil }); err != nil {
+			t.Fatalf("ListRebuild: %v", err)
+		}
+		entries, _ := s.ListSnapshot()
+		if len(entries) != 0 {
+			t.Errorf("stale rows survived a rebuild of their own folder: %+v", entries)
+		}
+	})
+
+	t.Run("replace-all drops folders outside the set", func(t *testing.T) {
+		s := seed(t)
+		if err := s.ListReplaceAll([]string{"A", "B"}, resolve); err != nil {
+			t.Fatalf("ListReplaceAll: %v", err)
+		}
+		entries, _ := s.ListSnapshot()
+		if len(entries) != 2 {
+			t.Errorf("expected exactly A and B after replace-all, got %+v", entries)
+		}
+		for _, e := range entries {
+			if e.Mailbox == "Other" {
+				t.Errorf("replace-all kept a folder outside the set: %+v", e)
+			}
+		}
+	})
 }

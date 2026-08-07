@@ -43,8 +43,11 @@ Commands:
                                                 identifier; '-' prefix marks negative)
   delete  <user> <mailbox> [<identifier>]     — without identifier: drop entire file;
                                                 with identifier: drop just that entry
-  rebuild <user> <folder> [<folder> ...]      — reseed namespace-wide index from
-                                                per-mailbox files (admin recovery)
+  rebuild <user> <folder> [<folder> ...]      — reseed those folders in the namespace-wide
+                                                index from per-mailbox files (merges:
+                                                other folders are left alone)
+  rebuild <user> --all                        — reseed every folder, replacing the index
+                                                (drops rows for folders that are gone)
   materialise <user> <folder> [<folder> ...]  — write what each mailbox inherits into
                                                 its own ACL; repairs mailboxes created
                                                 before inheritance was materialised at
@@ -160,11 +163,22 @@ func aclDelete(args []string) error {
 func aclRebuild(args []string) error {
 	fs := flag.NewFlagSet("acl rebuild", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
+	all := fs.Bool("all", false, "rebuild every folder in the namespace")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
+	if *all {
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: yarctl backend acl rebuild <user> --all [--namespace NS] (no folder list with --all)")
+		}
+		return printJSON(backendAPIPost("/api/backend/acl/rebuild", map[string]any{
+			"user":      fs.Arg(0),
+			"namespace": *ns,
+			"all":       true,
+		}))
+	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarctl backend acl rebuild <user> <folder> [<folder> ...] [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl rebuild <user> <folder> [<folder> ...] [--namespace NS], or --all")
 	}
 	folders := make([]string, 0, fs.NArg()-1)
 	for i := 1; i < fs.NArg(); i++ {
