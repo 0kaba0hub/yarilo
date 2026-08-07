@@ -19,6 +19,11 @@ commit_parsers = [
   { message = "^ci: update .* image tag", skip = true },
   { message = "^ci:", skip = true },
   { message = "\\[skip ci\\]", skip = true },
+  # A security fix is grouped by its body, not its type: it is still a fix, and
+  # the subject line is what a reader sees in the notes. A commit whose body
+  # carries a SECURITY: paragraph is lifted out of Bug Fixes, because whether an
+  # operator goes and audits their data depends on telling the two apart.
+  { body = "(?s).*SECURITY:.*", group = "Security" },
   { message = "^feat", group = "Features" },
   { message = "^fix", group = "Bug Fixes" },
   { message = "^docs", group = "Documentation" },

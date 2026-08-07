@@ -171,10 +171,16 @@ func (s *session) resolveACLHandle(folder string) (*nsHandle, string, error) {
 	return h, rel, nil
 }
 
-// requireAdminOn gates the commands RFC 4314 §4 reserves for the 'a' right:
-// GETACL and LISTRIGHTS disclose who may do what, which is administrative
-// information about the mailbox. MYRIGHTS is deliberately not gated -- it
-// answers only about the caller.
+// requireAdminOn gates every command RFC 4314 §4 reserves for the 'a' right:
+// GETACL and LISTRIGHTS disclose who may do what, and SETACL and DELETEACL
+// change it. MYRIGHTS is deliberately not gated -- it answers only about the
+// caller.
+//
+// The writing pair used to authorise themselves, honouring 'a' only from an
+// explicit user= entry on the mailbox itself. So a peer granted 'a' through a
+// group, through an ancestor, or through anyone could read the ACL here and was
+// refused when writing it -- one and the same ACL answering that the peer both
+// has and has not got the right (#1107). One resolver, one answer.
 func (s *session) requireAdminOn(h *nsHandle, folder string) error {
 	if !s.aclEnforced(h) || s.isOwner(h) {
 		return nil
@@ -196,27 +202,6 @@ func (s *session) requireACLEnabled() error {
 		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL extension disabled by operator"}
 	}
 	return nil
-}
-
-// adminCheckPRc authorises SETACL/DELETEACL: allow when the accessing user is
-// the namespace user, or when an explicit user= entry for them carries the 'a'
-// (administer) right.
-func (s *session) adminCheckPRc(h *nsHandle, current mailbox.ACL) error {
-	if s.userInfo.Username == h.userInfo.Username {
-		return nil
-	}
-	want := imaplib.RightAdminister
-	for _, e := range current {
-		if e.Negative {
-			continue
-		}
-		if e.Identifier.Type == mailbox.IDUser && e.Identifier.Name == s.userInfo.Username {
-			if strings.ContainsRune(string(e.Rights), rune(want)) {
-				return nil
-			}
-		}
-	}
-	return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "Permission denied: admin right required"}
 }
 
 // GetACL implements imapserver.SessionACL.
@@ -352,7 +337,7 @@ func (s *session) SetACL(folder string, identifier imaplib.RightsIdentifier, mod
 		if cur == nil {
 			cur = mailbox.ACL{}
 		}
-		if err := s.adminCheckPRc(h, cur); err != nil {
+		if err := s.requireAdminOn(h, rel); err != nil {
 			return nil, err
 		}
 		return applySetACL(cur, id, negative, modification, parsed), nil
@@ -377,7 +362,7 @@ func (s *session) DeleteACL(folder string, identifier imaplib.RightsIdentifier) 
 		if cur == nil {
 			return nil, nil
 		}
-		if err := s.adminCheckPRc(h, cur); err != nil {
+		if err := s.requireAdminOn(h, rel); err != nil {
 			return nil, err
 		}
 		return dropIdentifier(cur, id, negative), nil
