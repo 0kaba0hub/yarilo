@@ -163,26 +163,33 @@ func (s *Store) ListRename(oldFolder, newFolder string) error {
 // (e.g. operator edits a yarilo-acl file by hand without going
 // through SETACL).
 //
-// resolveACL is called for each folder under the lock; it MUST NOT
-// re-enter the Store (no Set / Get / ListUpdate calls), or it will
-// deadlock against the list lock.
+// resolveACL is called for each folder BEFORE the list lock is taken, so it may
+// (and the production caller does) take the folder lock -- e.g. pass Store.Get.
+// It must not take the list lock itself (no ListUpdate / ListRebuild), which is
+// the only re-entrancy the ordering forbids.
 func (s *Store) ListRebuild(folders []string, resolveACL func(folder string) (mailbox.ACL, error)) error {
-	return s.withListLock(func() error {
-		var entries []ListEntry
-		for _, folder := range folders {
-			acl, err := resolveACL(folder)
-			if err != nil {
-				return fmt.Errorf("userstate/acl: rebuild %s: %w", folder, err)
-			}
-			for _, e := range acl {
-				entries = append(entries, ListEntry{
-					Mailbox:    folder,
-					Identifier: e.Identifier,
-					Rights:     e.Rights,
-					Negative:   e.Negative,
-				})
-			}
+	// Resolve every folder's ACL BEFORE the list lock. resolveACL takes the
+	// folder lock (Store.Get), so holding the list lock across it would be
+	// list -> folder, the reverse of Update's folder -> list -- a concurrent
+	// SETACL and rebuild would each hold one lock and wait for the other until
+	// the 30s timeout (#1147). Collecting first makes the order folder -> list
+	// everywhere, and shortens the list-lock hold, which rebuild --all needs.
+	var entries []ListEntry
+	for _, folder := range folders {
+		acl, err := resolveACL(folder)
+		if err != nil {
+			return fmt.Errorf("userstate/acl: rebuild %s: %w", folder, err)
 		}
+		for _, e := range acl {
+			entries = append(entries, ListEntry{
+				Mailbox:    folder,
+				Identifier: e.Identifier,
+				Rights:     e.Rights,
+				Negative:   e.Negative,
+			})
+		}
+	}
+	return s.withListLock(func() error {
 		return s.writeListAtomicLocked(entries)
 	})
 }
