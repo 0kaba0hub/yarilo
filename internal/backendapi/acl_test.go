@@ -618,3 +618,113 @@ func TestACL_SharedNamespaceMailboxIsReachable(t *testing.T) {
 		t.Errorf("ACL file is not beside the mailbox: %v", err)
 	}
 }
+
+// /acl/apply changes one entry server-side. The CLI used to GET the whole ACL,
+// edit it and PUT it back through /acl/set with no lock between the two calls,
+// so a concurrent write was lost and the client owned the canonical identifier
+// form. apply collapses that to one call the server reads-modifies-writes under
+// the folder lock (#1114).
+func TestACL_ApplyChangesOneEntryServerSide(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	// The distinguishing case: an entry already on the folder, put there by a
+	// path the apply caller never saw. apply is told only about carol, yet bob
+	// survives -- because the server reads the current file, not a stale ACL
+	// the client assembled. A get-then-set from a client whose snapshot predated
+	// bob would have dropped him.
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user, "folder": "INBOX",
+		"acl": []map[string]any{{"identifier": "bob@example.com", "rights": "lr"}},
+	}); status != 200 {
+		t.Fatalf("seed bob: %d %s", status, body)
+	}
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/apply", "", map[string]any{
+		"user": user, "folder": "INBOX",
+		"identifier": "carol@example.com", "rights": "l", "mode": "replace",
+	}); status != 200 {
+		t.Fatalf("apply carol: %d %s", status, body)
+	}
+	got := aclIdentifiers(t, ts, user, "INBOX")
+	if !got["user=bob@example.com"] || !got["user=carol@example.com"] {
+		t.Errorf("after apply, ACL = %v; want both bob (untouched) and carol (added)", got)
+	}
+}
+
+// The three modes, each read-modify-writing the one identifier.
+func TestACL_ApplyModes(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	apply := func(mode, rights string) (int, []byte) {
+		return doJSON(t, ts, http.MethodPost, "/api/backend/acl/apply", "", map[string]any{
+			"user": user, "folder": "INBOX",
+			"identifier": "bob@example.com", "rights": rights, "mode": mode,
+		})
+	}
+	rightsOf := func() string {
+		_, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{"user": user, "folder": "INBOX"})
+		var resp struct {
+			ACL []struct {
+				Identifier string `json:"identifier"`
+				Rights     string `json:"rights"`
+			} `json:"acl"`
+		}
+		decodeJSONBody(t, body, &resp)
+		for _, e := range resp.ACL {
+			if e.Identifier == "user=bob@example.com" {
+				return e.Rights
+			}
+		}
+		return ""
+	}
+
+	if s, b := apply("replace", "lr"); s != 200 {
+		t.Fatalf("replace: %d %s", s, b)
+	}
+	if got := rightsOf(); got != "lr" {
+		t.Errorf("after replace lr: %q", got)
+	}
+	if s, _ := apply("add", "sk"); s != 200 {
+		t.Fatal("add")
+	}
+	if got := rightsOf(); got != "lrsk" {
+		t.Errorf("after add sk: %q, want lrsk (canonical RFC order)", got)
+	}
+	if s, _ := apply("remove", "s"); s != 200 {
+		t.Fatal("remove")
+	}
+	if got := rightsOf(); got != "lrk" {
+		t.Errorf("after remove s: %q, want lrk", got)
+	}
+	// Replace with empty rights removes the entry (RFC 4314 §3.1).
+	if s, _ := apply("replace", ""); s != 200 {
+		t.Fatal("replace empty")
+	}
+	if got := rightsOf(); got != "" {
+		t.Errorf("after replace empty: %q, want the entry gone", got)
+	}
+	// An unknown mode is a 400, not a silent replace.
+	if s, _ := apply("toggle", "l"); s != http.StatusBadRequest {
+		t.Errorf("unknown mode: status %d, want 400", s)
+	}
+}
+
+// aclIdentifiers returns the set of identifiers on a folder's ACL.
+func aclIdentifiers(t *testing.T, ts *httptest.Server, user, folder string) map[string]bool {
+	t.Helper()
+	_, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{"user": user, "folder": folder})
+	var resp struct {
+		ACL []struct {
+			Identifier string `json:"identifier"`
+		} `json:"acl"`
+	}
+	decodeJSONBody(t, body, &resp)
+	out := map[string]bool{}
+	for _, e := range resp.ACL {
+		out[e.Identifier] = true
+	}
+	return out
+}
