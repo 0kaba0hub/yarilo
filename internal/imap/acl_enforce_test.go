@@ -1371,3 +1371,36 @@ func TestACLEnforce_DecomposedNameResolvesToOneFolder(t *testing.T) {
 		t.Errorf("LIST returned %d entries for one mailbox: %+v", len(listed), listed)
 	}
 }
+
+// GETACL on a shared mailbox with no explicit owner entry must not invent one
+// for the caller. The synthesised implicit owner=FullRights used to key on
+// h.userInfo.Username, which for a shared handle is the caller, so a peer who
+// could reach GETACL (via 'a' granted through anyone or a group, not an
+// explicit user= entry) saw themselves with full rights on a mailbox no file
+// grants them. h.owner is "" for a fixed shared namespace, so nobody is
+// synthesised (#544/B1, the isOwner root from #1107).
+func TestACLEnforce_GetACLDoesNotInventAnOwnerForTheCaller(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// bob's admin right comes from anyone, so he has no explicit user=bob entry
+	// -- exactly the shape the old synthesis turned into a phantom.
+	seedACL(t, aliceHome, "INBOX", "anyone lra\n")
+
+	b := dial("bob")
+	data, err := b.GetACL("Shared/INBOX").Wait()
+	if err != nil {
+		t.Fatalf("bob GETACL (allowed via anyone 'a'): %v", err)
+	}
+	bob, _ := imaplib.NewRightsIdentifierUsername("bob")
+	if _, ok := data.Rights[bob]; ok {
+		t.Errorf("GETACL invented an entry for the caller: bob=%q; no file grants it",
+			string(data.Rights[bob]))
+	}
+	anyone := imaplib.RightsIdentifier("anyone")
+	if got := string(data.Rights[anyone]); got == "" {
+		t.Errorf("the real anyone entry is missing: %+v", data.Rights)
+	}
+}
