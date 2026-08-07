@@ -1298,3 +1298,62 @@ func comparableACLError(err error) string {
 	}
 	return line
 }
+
+// A folder created in a decomposed (NFD) form must resolve, list and index as
+// one folder, because the name is normalised once at dispatch before it reaches
+// any tree. Under the pre-#1113 arrangement the mail tree normalised and the
+// index tree did not, so the same mailbox had two directories (#1092).
+//
+// This test declares what it needs rather than disappearing where it cannot
+// run: on a filesystem that composes names on creation (APFS on macOS, the
+// developer machine) it cannot tell the code path from the filesystem's own
+// normalisation, so it skips and says so. On the CI filesystem (self-hosted
+// Linux, which does not compose) it carries the weight -- and production is
+// Linux, so it guards where it matters. Deleting it for being unreliable on the
+// developer machine would remove the only coverage from where it is reliable.
+func TestACLEnforce_DecomposedNameResolvesToOneFolder(t *testing.T) {
+	aliceDir, dial := enforceServer(t)
+	c := dial("alice")
+
+	const (
+		composed = "Rendezé"  // 'é' precomposed (stand-in non-ASCII name)
+		decomp   = "Rendezé" // 'e' + combining acute
+	)
+	if composed == decomp {
+		t.Fatal("fixture spellings are identical")
+	}
+
+	if err := c.Create(decomp, nil).Wait(); err != nil {
+		t.Fatalf("CREATE %q: %v", decomp, err)
+	}
+
+	// Precondition: did the filesystem keep the decomposed spelling? If the
+	// mail directory came back composed, the FS normalised on creation and this
+	// test cannot distinguish the code from the filesystem -- skip honestly.
+	entries, err := os.ReadDir(aliceDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", aliceDir, err)
+	}
+	var sawDecomposed bool
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "́") {
+			sawDecomposed = true
+		}
+	}
+	if !sawDecomposed {
+		t.Skip("filesystem composes names on creation (APFS); this test distinguishes the code path only where the FS does not")
+	}
+
+	// The FS preserves the decomposed bytes, so the dispatch normalisation is
+	// the only thing that can make the composed spelling reach the same folder.
+	if _, err := c.Select(composed, nil).Wait(); err != nil {
+		t.Errorf("SELECT of the composed spelling did not reach the folder: %v — dispatch did not normalise", err)
+	}
+	listed, err := c.List("", decomp, nil).Collect()
+	if err != nil {
+		t.Fatalf("LIST: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Errorf("LIST returned %d entries for one mailbox: %+v", len(listed), listed)
+	}
+}
