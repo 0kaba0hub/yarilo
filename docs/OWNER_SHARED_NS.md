@@ -136,11 +136,20 @@ a logged-in user does.
 **Precedence, decided before the code: the owner's userdb `mail_location`
 decides the driver; the root comes from expanding a template against the owner.**
 This is what `StampLocation` already does for the session user (resolve.go):
-it sets `ui.Driver` from `mail_location` and fills the `INDEX=` / `CONTROL=` /
-`ALT=` / `VOLATILEDIR=` modifiers the userdb set — and it does *not* touch
-`MailPath` or `Home`. The root is `DefaultMailPath` expanded against the user;
-for an owner-templated namespace it is the namespace `location:` expanded
-against the owner, exactly as the reference expands its own location template.
+it sets `ui.Driver` from `mail_location`, fills the `INDEX=` / `CONTROL=` /
+`ALT=` / `VOLATILEDIR=` modifiers **only where nothing has set them yet** — for
+the session user the deployment defaults (`DefaultIndexDir` and the rest) have
+usually filled them already, so a userdb modifier reaches the user only when the
+deployment left that field unset — and it does *not* touch `MailPath` or `Home`.
+The root is `DefaultMailPath` expanded against the user; for an owner-templated
+namespace it is the namespace `location:` expanded against the owner, exactly as
+the reference expands its own location template.
+
+The gap-filling is first-writer-wins, so whether an owner's `INDEX=` lands turns
+entirely on whether `StampLocation` runs before or after the namespace template
+fills those fields. The lookup PR builds the owner `UserInfo` and must make that
+order an explicit choice — `StampLocation` closes gaps, it does not override —
+rather than an accident of operator sequence.
 
 The driver is the field that mattered: it is per-user here — the deployment runs
 mdbox, maildir and sdbox for different accounts — and it arrives only through the
