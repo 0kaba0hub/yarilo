@@ -382,13 +382,34 @@ func (acl ACL) String() string {
 	return b.String()
 }
 
+// IdentifierNamesOwner reports whether id addresses the owner: their user=
+// identity (either sign) or the owner keyword. Such an entry is inert under the
+// strong grant. The keyword is inert for everyone, so it counts even when
+// owner == "".
+func IdentifierNamesOwner(id Identifier, owner string) bool {
+	if id.Type == IDOwner {
+		return true
+	}
+	return owner != "" && id.Type == IDUser && id.Name == owner
+}
+
+// OwnerImmutableReason explains a refused owner-naming ACL write. The keyword
+// text does not presuppose an owner (it is refused in an ownerless namespace).
+func OwnerImmutableReason(id Identifier) string {
+	if id.Type == IDOwner {
+		return "the owner keyword cannot be set: it matches no identity (the mailbox owner always holds full rights)"
+	}
+	return "the owner's rights cannot be changed through ACL; freeze a mailbox by another mechanism"
+}
+
 // Effective resolves the rights user has on this stored ACL (RFC 4314 §3.5).
-// isOwner true returns FullRights regardless of entries; otherwise it is the
-// positive entries matching the user (by tier precedence) minus matching negatives.
-// groups is the user's supplementary groups (nil when none). A nil ACL with
-// isOwner false yields the empty set — the RFC 4314 default for non-owners.
+// isOwner true returns FullRights regardless of entries (strong grant, §7.6);
+// otherwise positive matches by tier precedence minus matching negatives.
 func (acl ACL) Effective(user string, groups []string, isOwner bool) Rights {
-	pos, neg, _ := acl.effectiveMasks(user, groups, isOwner)
+	if isOwner {
+		return FullRights
+	}
+	pos, neg, _ := acl.effectiveMasks(user, groups)
 	return pos.Remove(neg)
 }
 
@@ -428,12 +449,14 @@ func aclTier(t IdentifierType) int {
 
 // effectiveMasks resolves the user's positive and negative right masks by applying
 // every matching entry in ascending tier order: a mask REPLACES at a new tier and
-// ADDs (merges) within a tier, separately for positives and negatives. An owner
-// with no explicit owner-tier entry gets full rights at the owner tier. The masks
-// are returned separately so a global ACL can be merged at the right precedence
-// (see EffectiveWithGlobal); Effective itself is pos.Remove(neg).
-func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, neg Rights, matched bool) {
-	pos, neg, matched, _ = acl.effectiveMasksSigned(user, groups, isOwner)
+// ADDs (merges) within a tier, separately for positives and negatives. It resolves
+// non-owners only; the owner is decided at the boundary (Effective /
+// EffectiveWithGlobal short-circuit to FullRights), so an owner-tier stored entry
+// never applies here. The masks are returned separately so a global ACL can be
+// merged at the right precedence (see EffectiveWithGlobal); Effective itself is
+// pos.Remove(neg).
+func (acl ACL) effectiveMasks(user string, groups []string) (pos, neg Rights, matched bool) {
+	pos, neg, matched, _ = acl.effectiveMasksSigned(user, groups)
 	return pos, neg, matched
 }
 
@@ -442,7 +465,7 @@ func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, 
 // spoke about the positive mask: a global entry that only revokes must not
 // blank the positive rights the local ACL granted, while one that grants must
 // replace them (#1117).
-func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) (pos, neg Rights, matched, posMatched bool) {
+func (acl ACL) effectiveMasksSigned(user string, groups []string) (pos, neg Rights, matched, posMatched bool) {
 	groupSet := makeGroupSet(groups)
 
 	type match struct {
@@ -457,7 +480,9 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) 
 		case IDAnyone, IDAuthenticated:
 			isMatch = true
 		case IDOwner:
-			isMatch = isOwner
+			// Owner is resolved at the boundary; this runs for non-owners only,
+			// and an owner-tier entry never applies to a non-owner.
+			isMatch = false
 		case IDUser:
 			isMatch = e.Identifier.Name == user
 		case IDGroup, IDGroupOverride:
@@ -467,35 +492,6 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) 
 			continue
 		}
 		matches = append(matches, match{aclTier(e.Identifier.Type), e.Rights, e.Negative})
-	}
-	if isOwner {
-		// The owner skips every entry below the owner tier (2.4:
-		// acl-api.c:323-338). Evaluating them is equivalent for positives --
-		// the owner tier replaces them -- and wrong for negatives: the owner's
-		// implicit record carries none, and a record without negatives does not
-		// reset the mask inherited from a lower tier. So "-anyone a" stripped
-		// the administer right from the mailbox owner (#1117).
-		kept := matches[:0]
-		for _, m := range matches {
-			if m.tier < tierOwner {
-				continue
-			}
-			kept = append(kept, m)
-		}
-		matches = kept
-
-		// Owner default: full positive rights at the owner tier when no
-		// explicit owner-tier entry exists.
-		hasOwnerTier := false
-		for _, m := range matches {
-			if m.tier == tierOwner {
-				hasOwnerTier = true
-				break
-			}
-		}
-		if !hasOwnerTier {
-			matches = append(matches, match{tierOwner, FullRights, false})
-		}
 	}
 	if len(matches) == 0 {
 		return "", "", false, false
@@ -540,8 +536,13 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) 
 // whenever any global entry matched. So a local "-user=alice a" plus an
 // unrelated global "anyone l" re-granted alice the administer right (#1117).
 func EffectiveWithGlobal(local, global ACL, user string, groups []string, isOwner bool) Rights {
-	lpos, lneg, _ := local.effectiveMasks(user, groups, isOwner)
-	gpos, gneg, gmatched, gposMatched := global.effectiveMasksSigned(user, groups, false)
+	// Owner beats everything, global included: #1118 makes global replace local,
+	// so without this a global negative would strip the owner (§7.6).
+	if isOwner {
+		return FullRights
+	}
+	lpos, lneg, _ := local.effectiveMasks(user, groups)
+	gpos, gneg, gmatched, gposMatched := global.effectiveMasksSigned(user, groups)
 	if !gmatched {
 		return lpos.Remove(lneg)
 	}

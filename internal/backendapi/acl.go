@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
+	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -82,7 +83,7 @@ type aclEntryJSON struct {
 }
 
 func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
-	store, _, _, err := s.openACLStore(w, r)
+	store, _, _, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -95,7 +96,7 @@ func (s *Server) handleACLList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLGet(w http.ResponseWriter, r *http.Request) {
-	store, req, _, err := s.openACLStore(w, r)
+	store, req, _, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -115,7 +116,7 @@ func (s *Server) handleACLGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
-	store, req, _, err := s.openACLStore(w, r)
+	store, req, _, owner, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -128,6 +129,14 @@ func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "acl: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// A set that includes an owner-naming entry is adding an inert one; a set
+	// that omits them clears any residue (§7.6).
+	for _, e := range parsed {
+		if mailbox.IdentifierNamesOwner(e.Identifier, owner) {
+			apiError(w, mailbox.OwnerImmutableReason(e.Identifier), http.StatusConflict)
+			return
+		}
+	}
 	if err := store.Set(req.Folder, parsed); err != nil {
 		apiError(w, "set: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -136,7 +145,7 @@ func (s *Server) handleACLSet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLApply(w http.ResponseWriter, r *http.Request) {
-	store, req, _, err := s.openACLStore(w, r)
+	store, req, _, owner, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -168,9 +177,17 @@ func (s *Server) handleACLApply(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// The read-modify-write runs inside Store.Update, under the folder lock, so
-	// a concurrent IMAP SETACL between the read and the write cannot be lost --
-	// the window a client-side get-then-set left wide open (#1114).
+	// Refuse to grant an owner-naming entry (inert), but leave removal working --
+	// the admin path is the only way to clear such residue, since GETACL hides it
+	// and IMAP refuses it (§7.6). A grant is add, or replace with rights; remove
+	// and replace-with-empty (a delete) are allowed.
+	grantsOwner := mailbox.IdentifierNamesOwner(id, owner) &&
+		(mode == mailbox.ACLAdd || (mode == mailbox.ACLReplace && rights != ""))
+	if grantsOwner {
+		apiError(w, mailbox.OwnerImmutableReason(id), http.StatusConflict)
+		return
+	}
+	// Update runs the read-modify-write under the folder lock (#1114).
 	if err := store.Update(req.Folder, func(cur mailbox.ACL) (mailbox.ACL, error) {
 		if cur == nil {
 			cur = mailbox.ACL{}
@@ -200,7 +217,7 @@ func aclModeFromWire(s string) (mailbox.ACLModify, error) {
 }
 
 func (s *Server) handleACLDelete(w http.ResponseWriter, r *http.Request) {
-	store, req, _, err := s.openACLStore(w, r)
+	store, req, _, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -216,7 +233,7 @@ func (s *Server) handleACLDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
-	store, req, present, err := s.openACLStore(w, r)
+	store, req, present, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}
@@ -267,19 +284,19 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 // openACLStore decodes the common request body, resolves the
 // per-namespace bundle, and returns the acl.Store. Mirrors
 // openSubsStore / openSpecialUseStore in this package.
-func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Store, *aclRequest, map[string]bool, error) {
+func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Store, *aclRequest, map[string]bool, string, error) {
 	var req aclRequest
 	if !decodeJSON(w, r, &req) {
-		return nil, nil, nil, errDecode
+		return nil, nil, nil, "", errDecode
 	}
 	if req.User == "" {
 		apiError(w, errUserRequired.Error(), http.StatusBadRequest)
-		return nil, nil, nil, errUserRequired
+		return nil, nil, nil, "", errUserRequired
 	}
 	uc, err := s.openUserContext(req.User)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
 	}
 	defer uc.Close()
 
@@ -290,7 +307,7 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	bundle, err := uc.ns(s, nsName)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
-		return nil, nil, nil, err
+		return nil, nil, nil, "", err
 	}
 	// Admin surface manages explicit entries, not effective-with-default
 	// resolution, so acl_defaults_from_inbox does not apply here.
@@ -303,7 +320,7 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	// some of them and nothing to others.
 	if req.Root && req.Folder != "" {
 		apiError(w, `"root" addresses the namespace root; do not send "folder" with it`, http.StatusBadRequest)
-		return nil, nil, nil, errRootWithFolder
+		return nil, nil, nil, "", errRootWithFolder
 	}
 	if req.Folder != "" {
 		// Same NFC owner as every other admin entry: address the folder the
@@ -311,7 +328,7 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		req.Folder = mailbox.NormalizeName(req.Folder, bundle.info.SkipNFCNormalize)
 		if err := mailbox.CheckName(bundle.box, req.Folder); err != nil {
 			apiError(w, err.Error(), http.StatusBadRequest)
-			return nil, nil, nil, err
+			return nil, nil, nil, "", err
 		}
 		// RFC 4314 3.3, the rule #1075 put on the IMAP side: the ACL commands
 		// answer for a mailbox that is there. This path never checked, so
@@ -326,11 +343,11 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		exists, err := bundle.box.FolderExists(req.Folder)
 		if err != nil {
 			apiError(w, "folder exists: "+err.Error(), http.StatusInternalServerError)
-			return nil, nil, nil, err
+			return nil, nil, nil, "", err
 		}
 		if !exists {
 			apiError(w, "folder not found", http.StatusNotFound)
-			return nil, nil, nil, errFolderNotFound
+			return nil, nil, nil, "", errFolderNotFound
 		}
 	}
 	// Existence for the rebuild batch, resolved here because the storage
@@ -343,13 +360,27 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 			exists, ferr := bundle.box.FolderExists(f)
 			if ferr != nil {
 				apiError(w, "folder exists: "+ferr.Error(), http.StatusInternalServerError)
-				return nil, nil, nil, ferr
+				return nil, nil, nil, "", ferr
 			}
 			present[f] = exists
 		}
 	}
 	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
-	return store, &req, present, nil
+	return store, &req, present, adminNamespaceOwner(bundle.spec, uc.info.Username), nil
+}
+
+// adminNamespaceOwner returns the owner this request addresses: the request
+// account for a personal or owner-templated namespace, nobody for a fixed shared
+// one. Not the IMAP dispatcher's h.owner -- this path never resolves a foreign
+// instance (it has no path-derived owner and no userdb lookup), so the owner is
+// always the request account where there is one. That holds only because %u
+// expands to the request account here; the admin path does not implement B1
+// owner-templated resolution (#1142).
+func adminNamespaceOwner(spec config.NamespaceConfig, account string) string {
+	if spec.Type == "personal" || mailbox.PrefixIsOwnerTemplated(spec.Prefix) {
+		return account
+	}
+	return ""
 }
 
 // aclToJSON / jsonToACL bridge the in-memory ACL representation and
@@ -471,7 +502,7 @@ func entriesToJSON(in []acl.ListEntry) []map[string]any {
 // indistinguishable on disk from one orphaned by the old rule. That is also why
 // this is an operator action and not something a resolver does on read.
 func (s *Server) handleACLMaterialise(w http.ResponseWriter, r *http.Request) {
-	store, req, _, err := s.openACLStore(w, r)
+	store, req, _, _, err := s.openACLStore(w, r)
 	if err != nil {
 		return
 	}

@@ -53,9 +53,6 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	if !s.aclEnforced(h) {
 		return nil
 	}
-	if s.isOwner(h) {
-		return nil
-	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
 		return &imaplib.Error{
@@ -74,9 +71,6 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 // and ACL-disabled sessions pass without a lookup.
 func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
 	if !s.aclEnforced(h) {
-		return nil
-	}
-	if s.isOwner(h) {
 		return nil
 	}
 	effective, err := s.effectiveRights(h, folder)
@@ -112,9 +106,6 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 	if !s.aclEnforced(h) {
 		return nil
 	}
-	if s.isOwner(h) {
-		return nil
-	}
 	if len(rights) == 0 {
 		return nil
 	}
@@ -140,9 +131,6 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 // create top-level mailboxes.
 func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) error {
 	if !s.aclEnforced(h) {
-		return nil
-	}
-	if s.isOwner(h) {
 		return nil
 	}
 	parent := parentFolder(folder, byte(h.spec.Separator))
@@ -226,7 +214,12 @@ func aclDenied(right rune) error {
 // With the lookup right the user already knows the mailbox is there, so the
 // precise refusal is not a disclosure and is far more useful.
 func (s *session) aclRefusal(h *nsHandle, folder string, right rune) error {
-	if !s.aclEnforced(h) || s.isOwner(h) {
+	// The owner never reaches here: they resolve to FullRights, so no required
+	// right is ever absent for them. That is by construction, not an early exit
+	// in this function -- if a resolver change ever let the owner miss a right,
+	// this hiding path must not start returning "No such mailbox" for the
+	// owner's own folder, which a test pins (TestOwnerNeverGetsHiddenExistence).
+	if !s.aclEnforced(h) {
 		return aclDenied(right)
 	}
 	effective, err := s.effectiveRights(h, folder)

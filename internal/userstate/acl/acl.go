@@ -267,6 +267,11 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 // never merges deeper ancestors: the first ACL found fully determines the
 // rights, so a shared-mailbox admin's single ACL overrides the inherited one.
 func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool, sep byte) (mailbox.Rights, error) {
+	// Owner short-circuit before any read: the strong grant (§7.6) means no
+	// entry can change it, so there is nothing to walk.
+	if isOwner {
+		return mailbox.FullRights, nil
+	}
 	var localACL mailbox.ACL
 	if !s.globalsOnly {
 		a, err := s.localACLFor(folder, sep)
@@ -276,12 +281,12 @@ func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool,
 		localACL = a
 	}
 	globalACL := s.global.For(folder)
-	// A non-owner with no ACL at all has no rights. The owner still gets the
-	// owner-default rights via the tier ladder, so it must fall through.
-	if localACL == nil && globalACL == nil && !isOwner {
+	// A non-owner with no ACL at all has no rights (the owner already returned
+	// above).
+	if localACL == nil && globalACL == nil {
 		return "", nil
 	}
-	return mailbox.EffectiveWithGlobal(localACL, globalACL, user, groups, isOwner), nil
+	return mailbox.EffectiveWithGlobal(localACL, globalACL, user, groups, false), nil
 }
 
 // localACLFor resolves the local per-mailbox ACL that applies to folder: the
