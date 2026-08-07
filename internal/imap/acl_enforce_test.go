@@ -328,47 +328,62 @@ func TestACLEnforce_PeerSelectAllowedWithRead(t *testing.T) {
 	}
 }
 
-func TestACLEnforce_PeerAppendDeniedWithoutPost(t *testing.T) {
-	aliceHome, dial := enforceServerWithShared(t)
-	a := dial("alice")
-	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
-		t.Fatalf("alice SELECT INBOX: %v", err)
-	}
-	// Grant bob read only — APPEND on a shared namespace needs 'p'.
-	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
-
-	b := dial("bob")
+func appendErr(b *imapclient.Client, folder string) error {
 	body := []byte("From: x@y\r\nSubject: t\r\n\r\nbody\r\n")
-	ac := b.Append("Shared/INBOX", int64(len(body)), nil)
-	_, _ = ac.Write(body)
-	_ = ac.Close()
-	if _, err := ac.Wait(); err == nil {
-		t.Fatal("peer APPEND without 'p' should fail")
-	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
-		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
-	}
-}
-
-func TestACLEnforce_PeerAppendAllowedWithPost(t *testing.T) {
-	aliceHome, dial := enforceServerWithShared(t)
-	a := dial("alice")
-	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
-		t.Fatalf("alice SELECT INBOX: %v", err)
-	}
-	// Shared namespace APPEND requires 'p', not 'i'.
-	seedACL(t, aliceHome, "INBOX", "user=bob lrp\n")
-
-	b := dial("bob")
-	body := []byte("From: x@y\r\nSubject: t\r\n\r\nbody\r\n")
-	ac := b.Append("Shared/INBOX", int64(len(body)), nil)
+	ac := b.Append(folder, int64(len(body)), nil)
 	if _, err := ac.Write(body); err != nil {
-		t.Fatalf("APPEND write: %v", err)
+		return err
 	}
 	if err := ac.Close(); err != nil {
-		t.Fatalf("APPEND close: %v", err)
+		return err
 	}
-	if _, err := ac.Wait(); err != nil {
-		t.Errorf("peer APPEND with 'p': %v", err)
+	_, err := ac.Wait()
+	return err
+}
+
+// APPEND requires 'i' (insert), in every namespace, because the right depends on
+// the kind of session and an IMAP session is never a delivery (POST) session.
+// 'p' is the delivery right; it used to be demanded for APPEND into a shared
+// mailbox, which refused the peer granted the RFC-correct right and accepted one
+// granted a right whose RFC meaning is about submission, not APPEND (#1119).
+//
+// The two rights are asserted against each other, since the defect was that the
+// IMAP and delivery paths disagreed about what 'i' and 'p' mean: a peer with
+// exactly 'i' may APPEND and (below) may not receive delivery; a peer with
+// exactly 'p' is the reverse.
+func TestACLEnforce_AppendRequiresInsertNotPost(t *testing.T) {
+	cases := []struct {
+		name   string
+		rights string
+		wantOK bool
+	}{
+		{"insert allows APPEND", "lri", true},
+		{"post alone does not", "lrp", false},
+		{"read alone does not", "lr", false},
+		{"both letters still allow it", "lrip", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			aliceHome, dial := enforceServerWithShared(t)
+			a := dial("alice")
+			if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+				t.Fatalf("alice SELECT INBOX: %v", err)
+			}
+			seedACL(t, aliceHome, "INBOX", "user=bob "+tc.rights+"\n")
+
+			b := dial("bob")
+			err := appendErr(b, "Shared/INBOX")
+			if tc.wantOK && err != nil {
+				t.Errorf("APPEND with %q refused: %v — the operation right is 'i'", tc.rights, err)
+			}
+			if !tc.wantOK {
+				if err == nil {
+					t.Errorf("APPEND with %q succeeded; it lacks the insert right", tc.rights)
+				} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
+					t.Errorf("APPEND with %q: got code %q, want NOPERM: %v", tc.rights, code, err)
+				}
+			}
+		})
 	}
 }
 
@@ -451,10 +466,9 @@ func TestACLEnforce_CopyNeedsInsertOnDest(t *testing.T) {
 	if _, err := ac.Wait(); err != nil {
 		t.Fatalf("alice APPEND: %v", err)
 	}
-	// Bob has read on alice's INBOX (source) but no rights on dest
-	// — Shared/INBOX is alice's INBOX itself; for a destination-
-	// denial check we COPY back into Shared/INBOX which needs 'p'
-	// (shared namespace) that bob does not have.
+	// Bob has read on alice's INBOX (source) but no insert on dest -- COPY into
+	// Shared/INBOX needs 'i' in every namespace (the operation right; #1119),
+	// which bob's 'lr' lacks.
 	seedACL(t, aliceHome, "INBOX", "user=bob lr\n")
 
 	b := dial("bob")
@@ -463,7 +477,7 @@ func TestACLEnforce_CopyNeedsInsertOnDest(t *testing.T) {
 	}
 	_, err := b.Copy(imaplib.UIDSetNum(1), "Shared/INBOX").Wait()
 	if err == nil {
-		t.Fatal("peer COPY without dest 'p' should fail")
+		t.Fatal("peer COPY without dest 'i' should fail")
 	} else if code := aclErrCode(err); code != imaplib.ResponseCodeNoPerm {
 		t.Errorf("got code %q, want NOPERM: err=%v", code, err)
 	}

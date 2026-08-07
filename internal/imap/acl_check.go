@@ -19,15 +19,6 @@ func (s *session) isOwner(h *nsHandle) bool {
 	return h.spec.Type == NamespacePersonal
 }
 
-// insertRight returns the right APPEND / COPY dest / MOVE dest must carry,
-// per RFC 4314 §5.1.1: personal → 'i' (insert), shared/public → 'p' (post).
-func insertRight(spec NamespaceSpec) rune {
-	if spec.Type == NamespacePersonal {
-		return mailbox.RightInsert
-	}
-	return mailbox.RightPost
-}
-
 // aclEnforced reports whether ACL checks fire for this handle: ACL enabled
 // server-wide AND the namespace does not carry acl_ignore.
 func (s *session) aclEnforced(h *nsHandle) bool {

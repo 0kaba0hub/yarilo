@@ -1688,7 +1688,13 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	if err != nil {
 		return nil, tryCreate(err)
 	}
-	if err := s.requireRight(h, rel, insertRight(h.spec)); err != nil {
+	// APPEND requires 'i' (insert), in every namespace. The right depends on
+	// the kind of session, not the namespace type: 'p' (post) is the delivery
+	// right, set only by the LMTP path, and an IMAP session never carries it
+	// (RFC 4314 §4; reference: MAILBOX_FLAG_POST_SESSION). Choosing by namespace
+	// type demanded 'p' for APPEND into a shared mailbox, refusing the peer
+	// granted the RFC-correct right for the operation (#1119).
+	if err := s.requireRight(h, rel, mailbox.RightInsert); err != nil {
 		return nil, err
 	}
 
@@ -2866,7 +2872,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	if err != nil {
 		return nil, tryCreate(err)
 	}
-	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
+	if err := s.requireRight(destH, destRel, mailbox.RightInsert); err != nil {
 		return nil, err
 	}
 	msgs, err := srcIdx.GetMessages(s.folder.ID, mailbox.SeqSet{})
@@ -3226,7 +3232,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	if err != nil {
 		return tryCreate(err)
 	}
-	if err := s.requireRight(destH, destRel, insertRight(destH.spec)); err != nil {
+	if err := s.requireRight(destH, destRel, mailbox.RightInsert); err != nil {
 		return err
 	}
 	msgs, err := srcIdx.GetMessages(s.folder.ID, mailbox.SeqSet{})
