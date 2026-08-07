@@ -702,6 +702,15 @@ down so a later reader does not "restore parity" by dropping the lookup and
 reintroducing the per-user-driver bug through config, or by lowering the owner
 back under `user=` and reintroducing the lock-out.
 
+The IMAP resolver and the admin ACL API both build the owner identity through one
+producer (`mailbox.StampOwnerLocation`): each owns its userdb lookup — the IMAP
+on-demand cache, the admin `AuthClient` — but the precedence lives in one place,
+so neither can drift into the template-root bug the other avoids (#1142). The
+admin path derives the owner from the addressed mailbox name, exactly as IMAP
+does, and `req.User` (when given) must equal it; the acting operator is a separate
+`actor` field, so a cross-owner edit holds its lock under the operator, not the
+store owner.
+
 - **An unresolved owner is a `NO [NONEXISTENT]`, not an unusable namespace.**
   2.4 marks a shared namespace whose owner does not resolve with
   `NAMESPACE_FLAG_UNUSABLE`, because there the namespace is already built by the

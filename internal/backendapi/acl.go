@@ -70,6 +70,11 @@ type aclRequest struct {
 	// would do" is how it is meant to be run first, not a flag remembered
 	// afterwards.
 	Apply bool `json:"apply,omitempty"`
+	// Actor is the acting identity for lock ownership and audit -- separate from
+	// User, which keeps its meaning (the store account). When an operator edits
+	// another account's owner-templated namespace, the lock must be held under
+	// the operator, not the store owner.
+	Actor string `json:"actor,omitempty"`
 }
 
 // aclEntryJSON is the wire-format representation of a single ACL
@@ -289,21 +294,42 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 	if !decodeJSON(w, r, &req) {
 		return nil, nil, nil, "", errDecode
 	}
-	if req.User == "" {
+	nsName := req.Namespace
+	if nsName == "" {
+		nsName = "personal"
+	}
+	spec, ok := s.namespaceByName(nsName)
+	if !ok {
+		err := fmt.Errorf("namespace %q not configured", nsName)
+		apiError(w, err.Error(), http.StatusBadRequest)
+		return nil, nil, nil, "", err
+	}
+	// The store account: the request user for personal/fixed-shared, and for an
+	// owner-templated namespace the owner named by the mailbox (mirroring IMAP).
+	// req.User keeps its meaning -- it may be omitted, but if given must equal
+	// that owner; it is never reinterpreted as the operator.
+	account := req.User
+	if mailbox.PrefixIsOwnerTemplated(spec.Prefix) {
+		owner, err := ownerTemplatedTarget(spec, &req)
+		if err != nil {
+			apiError(w, err.Error(), http.StatusBadRequest)
+			return nil, nil, nil, "", err
+		}
+		account = owner
+	} else if account == "" {
 		apiError(w, errUserRequired.Error(), http.StatusBadRequest)
 		return nil, nil, nil, "", errUserRequired
 	}
-	uc, err := s.openUserContext(req.User)
+	uc, err := s.openUserContext(account)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
 		return nil, nil, nil, "", err
 	}
 	defer uc.Close()
+	// The acting identity holds the lock, not the store owner (an operator
+	// editing another account's namespace must show as themselves in BUSY).
+	uc.setActor(req.Actor)
 
-	nsName := req.Namespace
-	if nsName == "" {
-		nsName = "personal"
-	}
 	bundle, err := uc.ns(s, nsName)
 	if err != nil {
 		apiError(w, err.Error(), http.StatusBadRequest)
@@ -366,16 +392,39 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		}
 	}
 	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
-	return store, &req, present, adminNamespaceOwner(bundle.spec, uc.info.Username), nil
+	return store, &req, present, adminNamespaceOwner(bundle.spec, account), nil
 }
 
-// adminNamespaceOwner returns the owner this request addresses: the request
-// account for a personal or owner-templated namespace, nobody for a fixed shared
-// one. Not the IMAP dispatcher's h.owner -- this path never resolves a foreign
-// instance (it has no path-derived owner and no userdb lookup), so the owner is
-// always the request account where there is one. That holds only because %u
-// expands to the request account here; the admin path does not implement B1
-// owner-templated resolution (#1142).
+// ownerTemplatedTarget resolves which owner an owner-templated request addresses
+// and rewrites req.Folder to the folder relative to that owner. The owner comes
+// from the addressed mailbox name (as in IMAP); req.User, when given, must equal
+// it. The root carries no mailbox to name the owner, so it takes the owner from
+// req.User instead.
+func ownerTemplatedTarget(spec config.NamespaceConfig, req *aclRequest) (owner string, err error) {
+	if req.Root {
+		if req.User == "" {
+			return "", fmt.Errorf(`owner-templated namespace root needs "user" naming the owner`)
+		}
+		return req.User, nil
+	}
+	if req.Folder == "" {
+		return "", fmt.Errorf("owner-templated namespace needs a mailbox that names the owner")
+	}
+	o, rel, ok := mailbox.ExtractOwner(spec.Prefix, sepByte(spec.Separator), req.Folder)
+	if !ok {
+		return "", fmt.Errorf("mailbox %q does not name an owner under prefix %q", req.Folder, spec.Prefix)
+	}
+	if req.User != "" && req.User != o {
+		return "", fmt.Errorf("user %q does not match the owner %q named by the mailbox", req.User, o)
+	}
+	req.Folder = rel
+	return o, nil
+}
+
+// adminNamespaceOwner returns the owner this request addresses: the store
+// account for a personal or owner-templated namespace (the account is the
+// path-derived owner in the owner-templated case), nobody for a fixed shared
+// one.
 func adminNamespaceOwner(spec config.NamespaceConfig, account string) string {
 	if spec.Type == "personal" || mailbox.PrefixIsOwnerTemplated(spec.Prefix) {
 		return account
