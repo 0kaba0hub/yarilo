@@ -677,12 +677,20 @@ per-user storage the reference's shared-namespace model does not express.
   hottest path. Two consequences follow and are deliberate:
   - **Capping the owner through the ACL is no longer possible** — not by a
     negative, an explicit entry, or a global. Because such a write would answer
-    OK and change nothing (the shape #1114 removed), `SETACL`/`DELETEACL` that
-    name the owner — the owner's `user=` identity of either sign, or the now-inert
-    `owner` keyword — are refused, and GETACL shows the single resolved owner row
-    rather than the inert stored entry beside it. Freezing a mailbox (a suspended
-    account, a legal hold) is a separate mechanism, not an ACL edit; calling it
-    a bug would be reading this divergence as an oversight.
+    OK and change nothing (the shape #1114 removed), an owner-naming entry — the
+    owner's `user=` identity of either sign, or the now-inert `owner` keyword — is
+    refused on write, and GETACL shows the single resolved owner row rather than
+    the inert stored entry beside it. Freezing a mailbox (a suspended account, a
+    legal hold) is a separate mechanism, not an ACL edit; calling it a bug would
+    be reading this divergence as an oversight.
+
+    The two write surfaces are deliberately asymmetric. IMAP refuses every
+    owner-naming write; the admin API refuses only a *grant* (add, or replace
+    with rights) and leaves *removal* (remove, replace-with-empty, delete the
+    file) working. The reason is this very filter: GETACL hides owner residue and
+    IMAP will not delete it, so if the admin API also refused removal, a file that
+    already carried `-user=alice …` or `owner lr` would be invisible, inert, and
+    indelible. The admin API is the one path that can clear it.
   - **The global ACL loses to the owner.** #1118 made global entries *replace*
     local ones, so without the boundary short-circuit an operator-set global
     negative would strip the owner — stated because the next reader, seeing

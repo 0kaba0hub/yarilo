@@ -1,6 +1,7 @@
 package imap_test
 
 import (
+	"strings"
 	"testing"
 
 	imaplib "github.com/emersion/go-imap/v2"
@@ -127,5 +128,32 @@ func TestOwnerNeverGetsHiddenExistence(t *testing.T) {
 			t.Fatal("owner got NONEXISTENT on her own INBOX: the hiding path leaked to the owner")
 		}
 		t.Fatalf("owner SELECT of own INBOX: %v", err)
+	}
+}
+
+// In a namespace with no owner (fixed shared/public), the owner keyword is inert
+// for everyone: GETACL does not surface a stored `owner` row, and SETACL refuses
+// it -- with the keyword text, not a message about an owner's rights that does
+// not exist here.
+func TestOwnerlessNamespace_OwnerKeywordInert(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+	// bob gets admin on the shared mailbox; an owner keyword entry is the residue.
+	seedACL(t, aliceHome, "INBOX", "user=bob lrswipkxtea\nowner lr\n")
+
+	b := dial("bob")
+	ga, err := b.GetACL("Shared/INBOX").Wait()
+	if err != nil {
+		t.Fatalf("GETACL: %v", err)
+	}
+	if _, ok := ga.Rights[imaplib.RightsIdentifier("owner")]; ok {
+		t.Errorf("GETACL surfaced an inert owner keyword row: %v", ga.Rights)
+	}
+
+	err = b.SetACL("Shared/INBOX", imaplib.RightsIdentifier("owner"), imaplib.RightModificationReplace, imaplib.RightSet("lr")).Wait()
+	if err == nil {
+		t.Fatal("SETACL owner in an ownerless namespace answered OK; want a refusal")
+	}
+	if !strings.Contains(err.Error(), "keyword") {
+		t.Errorf("refusal %q does not use the keyword text (must not claim an owner's rights)", err)
 	}
 }

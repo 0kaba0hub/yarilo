@@ -267,11 +267,8 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 // never merges deeper ancestors: the first ACL found fully determines the
 // rights, so a shared-mailbox admin's single ACL overrides the inherited one.
 func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool, sep byte) (mailbox.Rights, error) {
-	// The owner resolves above the ACL entirely (strong grant, §7.6): no local,
-	// ancestor, or global entry can change what they get, so there is nothing to
-	// read. Short-circuiting here -- not after the tree walk in
-	// EffectiveWithGlobal -- is what makes the "no I/O for the owner" claim at the
-	// call sites (GETACL, enforcement) true rather than aspirational.
+	// Owner short-circuit before any read: the strong grant (§7.6) means no
+	// entry can change it, so there is nothing to walk.
 	if isOwner {
 		return mailbox.FullRights, nil
 	}

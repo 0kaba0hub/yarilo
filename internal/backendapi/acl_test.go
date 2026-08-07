@@ -728,3 +728,59 @@ func aclIdentifiers(t *testing.T, ts *httptest.Server, user, folder string) map[
 	}
 	return out
 }
+
+// TestACL_OwnerNamingWritesRefusedButRemovable pins the admin-path asymmetry:
+// adding/replacing an owner-naming entry is refused (it would be an inert no-op,
+// #1114), but removing one still works -- the admin path is the only way to
+// clear residue, since IMAP hides and refuses it (§7.6).
+func TestACL_OwnerNamingWritesRefusedButRemovable(t *testing.T) {
+	ts, root := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	// Seed owner residue directly on disk (the write paths now refuse to create it).
+	home := filepath.Join(root, "example.com", "alice")
+	dir := filepath.Join(home, mailbox.FolderSubpath("maildir", "INBOX", "INBOX", "."))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "yarilo-acl"), []byte("-user=alice@example.com lrswipkxtea\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Adding/replacing an owner-naming entry is refused; a peer is unaffected.
+	refused := []map[string]any{
+		{"user": user, "folder": "INBOX", "identifier": "alice@example.com", "rights": "lr", "mode": "add"},
+		{"user": user, "folder": "INBOX", "identifier": "owner", "rights": "lr", "mode": "replace"},
+	}
+	for _, req := range refused {
+		if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/apply", "", req); status != http.StatusConflict {
+			t.Errorf("apply %v status=%d body=%s, want 409", req["identifier"], status, body)
+		}
+	}
+	// set carrying an owner-naming entry is refused too.
+	if status, _ := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user, "folder": "INBOX",
+		"acl": []map[string]any{{"identifier": "alice@example.com", "rights": "lr"}},
+	}); status != http.StatusConflict {
+		t.Errorf("set with owner entry status=%d, want 409", status)
+	}
+
+	// Removal of the residue works.
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/apply", "", map[string]any{
+		"user": user, "folder": "INBOX", "identifier": "-alice@example.com", "rights": "", "mode": "replace",
+	}); status != 200 {
+		t.Fatalf("apply remove owner residue status=%d body=%s, want 200", status, body)
+	}
+	_, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/get", "", map[string]any{"user": user, "folder": "INBOX"})
+	if strings.Contains(string(body), "alice@example.com") {
+		t.Errorf("owner residue still present after remove: %s", body)
+	}
+
+	// A peer identifier is unaffected by the guard.
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/apply", "", map[string]any{
+		"user": user, "folder": "INBOX", "identifier": "bob@example.com", "rights": "lr", "mode": "add",
+	}); status != 200 {
+		t.Errorf("apply for a peer status=%d body=%s, want 200", status, body)
+	}
+}

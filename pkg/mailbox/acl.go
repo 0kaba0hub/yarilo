@@ -382,14 +382,29 @@ func (acl ACL) String() string {
 	return b.String()
 }
 
+// IdentifierNamesOwner reports whether id addresses the owner: their user=
+// identity (either sign) or the owner keyword. Such an entry is inert under the
+// strong grant. The keyword is inert for everyone, so it counts even when
+// owner == "".
+func IdentifierNamesOwner(id Identifier, owner string) bool {
+	if id.Type == IDOwner {
+		return true
+	}
+	return owner != "" && id.Type == IDUser && id.Name == owner
+}
+
+// OwnerImmutableReason explains a refused owner-naming ACL write. The keyword
+// text does not presuppose an owner (it is refused in an ownerless namespace).
+func OwnerImmutableReason(id Identifier) string {
+	if id.Type == IDOwner {
+		return "the owner keyword cannot be set: it matches no identity (the mailbox owner always holds full rights)"
+	}
+	return "the owner's rights cannot be changed through ACL; freeze a mailbox by another mechanism"
+}
+
 // Effective resolves the rights user has on this stored ACL (RFC 4314 §3.5).
-// isOwner true returns FullRights regardless of entries -- no stored entry,
-// negative, or global ACL can reduce the owner (see the owner-tier note on
-// effectiveMasksSigned and §7.6 of docs/OWNER_SHARED_NS.md). Otherwise it is the
-// positive entries matching the user (by tier precedence) minus matching
-// negatives. groups is the user's supplementary groups (nil when none). A nil
-// ACL with isOwner false yields the empty set -- the RFC 4314 default for
-// non-owners.
+// isOwner true returns FullRights regardless of entries (strong grant, §7.6);
+// otherwise positive matches by tier precedence minus matching negatives.
 func (acl ACL) Effective(user string, groups []string, isOwner bool) Rights {
 	if isOwner {
 		return FullRights
@@ -465,11 +480,8 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string) (pos, neg Righ
 		case IDAnyone, IDAuthenticated:
 			isMatch = true
 		case IDOwner:
-			// The owner is resolved at the boundary (Effective /
-			// EffectiveWithGlobal short-circuit to FullRights), so this func only
-			// ever runs for non-owners, and an owner-tier entry never applies to a
-			// non-owner. GETACL surfaces such a stored entry separately; it just
-			// does not participate in a peer's effective rights.
+			// Owner is resolved at the boundary; this runs for non-owners only,
+			// and an owner-tier entry never applies to a non-owner.
 			isMatch = false
 		case IDUser:
 			isMatch = e.Identifier.Name == user
@@ -524,11 +536,8 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string) (pos, neg Righ
 // whenever any global entry matched. So a local "-user=alice a" plus an
 // unrelated global "anyone l" re-granted alice the administer right (#1117).
 func EffectiveWithGlobal(local, global ACL, user string, groups []string, isOwner bool) Rights {
-	// The owner beats everything, the global ACL included. #1118 made global
-	// entries replace local ones, so without this an operator-set global
-	// negative would strip the owner -- the one outcome the owner grant exists
-	// to prevent (§3.7, §7.6). The owner is resolved here, at the boundary, not
-	// inside effectiveMasks.
+	// Owner beats everything, global included: #1118 makes global replace local,
+	// so without this a global negative would strip the owner (§7.6).
 	if isOwner {
 		return FullRights
 	}
