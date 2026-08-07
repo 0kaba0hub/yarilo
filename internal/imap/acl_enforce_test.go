@@ -83,11 +83,14 @@ func enforceServer(t *testing.T) (aliceDir string, dial func(user string) *imapc
 	return filepath.Join(root, "alice"), dial
 }
 
-type enforcePassdb struct{ users map[string]string }
+type enforcePassdb struct {
+	users  map[string]string
+	groups map[string][]string
+}
 
 func (p *enforcePassdb) Authenticate(username, password, _, _ string) (*protocol.AuthResponse, error) {
 	if want, ok := p.users[username]; ok && want == password {
-		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username}, nil
+		return &protocol.AuthResponse{Result: protocol.AuthOK, Username: username, Groups: p.groups[username]}, nil
 	}
 	return &protocol.AuthResponse{Result: protocol.AuthFail}, nil
 }
@@ -192,6 +195,14 @@ func TestACLEnforce_DisabledLetsEverythingThrough(t *testing.T) {
 
 func enforceServerWithShared(t *testing.T) (aliceHome string, dial func(user string) *imapclient.Client) {
 	t.Helper()
+	return enforceServerWithSharedGroups(t, nil)
+}
+
+// enforceServerWithSharedGroups is the same server with supplementary groups on
+// the peer, so a grant to $group can be exercised the way a userdb would
+// deliver it.
+func enforceServerWithSharedGroups(t *testing.T, groups map[string][]string) (aliceHome string, dial func(user string) *imapclient.Client) {
+	t.Helper()
 	root := t.TempDir()
 	mb := maildir.New()
 	idx := file.New()
@@ -200,7 +211,7 @@ func enforceServerWithShared(t *testing.T) (aliceHome string, dial func(user str
 	passdb := &enforcePassdb{users: map[string]string{
 		"alice": "pw",
 		"bob":   "pw",
-	}}
+	}, groups: groups}
 
 	// Shared namespace anchored at alice's home so bob can reach
 	// "Shared/INBOX" → alice's INBOX. This is a synthetic mapping
@@ -1032,5 +1043,114 @@ func TestACLEnforce_IgnoreACLBypasses(t *testing.T) {
 	}
 	if !seen {
 		t.Error("acl_ignore namespace folder should be visible in LIST")
+	}
+}
+
+// SETACL and GETACL must answer the same question the same way. The writing
+// pair used to authorise themselves, honouring 'a' only from an explicit user=
+// entry on the mailbox itself, so a peer granted it any other way could read
+// the ACL and not write it -- one ACL saying the peer both has and has not got
+// the right (#1107).
+//
+// The assertion is the difference between the two replies, not the wording of
+// either: both are defensible alone, and it is the pair that is wrong.
+func TestACLEnforce_AdminRightResolvesTheSameForReadsAndWrites(t *testing.T) {
+	carol, err := imaplib.NewRightsIdentifierUsername("carol")
+	if err != nil {
+		t.Fatalf("NewRightsIdentifierUsername: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		groups map[string][]string
+		// seed writes the grant that gives bob 'a' by some route other than a
+		// bare user= entry on the folder itself.
+		seed   func(t *testing.T, aliceHome string)
+		folder string
+	}{
+		{
+			name:   "through a group",
+			groups: map[string][]string{"bob": {"admins"}},
+			seed: func(t *testing.T, aliceHome string) {
+				seedACL(t, aliceHome, "INBOX", "group=admins lra\n")
+			},
+			folder: "Shared/INBOX",
+		},
+		{
+			name: "through anyone",
+			seed: func(t *testing.T, aliceHome string) {
+				seedACL(t, aliceHome, "INBOX", "anyone lra\n")
+			},
+			folder: "Shared/INBOX",
+		},
+		{
+			// Inheritance: the grant is on the parent and the child has an ACL
+			// of its own that says nothing about bob's admin right.
+			name: "through an ancestor",
+			seed: func(t *testing.T, aliceHome string) {
+				seedACL(t, aliceHome, "Work", "user=bob lra\n")
+				seedACL(t, aliceHome, "Work/Reports", "user=bob lr\n")
+			},
+			folder: "Shared/Work/Reports",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			aliceHome, dial := enforceServerWithSharedGroups(t, tc.groups)
+
+			a := dial("alice")
+			for _, f := range []string{"Work", "Work/Reports"} {
+				a.Create(f, nil).Wait() //nolint:errcheck — only Work/* cases need them
+			}
+			if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+				t.Fatalf("alice SELECT INBOX: %v", err)
+			}
+			tc.seed(t, aliceHome)
+
+			b := dial("bob")
+			_, readErr := b.GetACL(tc.folder).Wait()
+			writeErr := b.SetACL(tc.folder, carol, imaplib.RightModificationReplace, imaplib.RightSet("lr")).Wait()
+
+			switch {
+			case readErr == nil && writeErr != nil:
+				t.Errorf("GETACL %s allowed and SETACL refused on the same ACL: %v", tc.folder, writeErr)
+			case readErr != nil && writeErr == nil:
+				t.Errorf("SETACL %s allowed and GETACL refused on the same ACL: %v", tc.folder, readErr)
+			case readErr != nil:
+				t.Errorf("the peer holds 'a' by this route and neither command allowed it: %v", readErr)
+			}
+		})
+	}
+}
+
+// The other direction, and the case that actually distinguishes the fix: a peer
+// with no admin right by any route is refused by both commands.
+//
+// It is the sharp one because the old check compared s.userInfo.Username with
+// h.userInfo.Username, and a shared namespace's handle carries the *session*
+// user's name (dispatch.go: Username: personalUI.Username). The comparison was
+// therefore a user against themselves -- true for every peer -- so SETACL and
+// DELETEACL were open to anyone who could reach the mailbox at all.
+func TestACLEnforce_WithoutAdminRightNeitherReadNorWrite(t *testing.T) {
+	carol, err := imaplib.NewRightsIdentifierUsername("carol")
+	if err != nil {
+		t.Fatalf("NewRightsIdentifierUsername: %v", err)
+	}
+	aliceHome, dial := enforceServerWithSharedGroups(t, map[string][]string{"bob": {"users"}})
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// Lookup and read, and an admin grant to a group bob is not in.
+	seedACL(t, aliceHome, "INBOX", "user=bob lr\ngroup=admins lra\n")
+
+	b := dial("bob")
+	if _, err := b.GetACL("Shared/INBOX").Wait(); err == nil {
+		t.Error("GETACL answered a peer without the admin right")
+	}
+	if err := b.SetACL("Shared/INBOX", carol, imaplib.RightModificationReplace, imaplib.RightSet("lr")).Wait(); err == nil {
+		t.Error("SETACL answered a peer without the admin right")
 	}
 }
